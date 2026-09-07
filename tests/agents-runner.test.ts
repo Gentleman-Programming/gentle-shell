@@ -531,6 +531,9 @@ test("childArguments builds an rpc launch with model, thinking, tools, session d
 	const resumed = childArguments(request({ resumeSessionPath: "/sessions/old.jsonl", model: undefined, thinking: undefined, agent: { ...explorer, tools: [] } }));
 	assert.equal(resumed[resumed.indexOf("--session") + 1], "/sessions/old.jsonl");
 	assert.ok(!resumed.includes("--model") && !resumed.includes("--tools"));
+	const extensions = childArguments(request({ extensions: ["/extensions/first.js", "", "/extensions/second.js"] }));
+	assert.deepEqual(extensions.slice(extensions.indexOf("--no-extensions"), extensions.indexOf("--tools")), ["--no-extensions", "--extension", "/extensions/first.js", "--extension", "/extensions/second.js"]);
+	assert.deepEqual(childArguments(request({ extensions: [] })).filter((arg) => arg === "--no-extensions" || arg === "--extension"), ["--no-extensions"]);
 });
 
 test("childArguments preserves a max profile instead of the definition's medium effort", () => {

@@ -208,6 +208,14 @@ test("parseAgentsConfig resolves the tool-call stall ceiling above the idle sile
 	assert.equal(parseAgentsConfig({ stall_timeout_ms: 45 * 60_000, tool_stall_timeout_ms: 1_000 }, undefined).toolStallTimeoutMs, 45 * 60_000, "the tool ceiling must never fall below the idle budget");
 });
 
+test("parseAgentsConfig preserves extensions' absent, isolated, and ordered states across scopes", () => {
+	assert.equal(parseAgentsConfig(undefined, undefined).extensions, undefined);
+	assert.deepEqual(parseAgentsConfig({ extensions: ["/global-a", "/global-b"] }, undefined).extensions, ["/global-a", "/global-b"]);
+	assert.deepEqual(parseAgentsConfig({ extensions: ["/global"] }, { extensions: [] }).extensions, []);
+	assert.equal(parseAgentsConfig({ extensions: ["/global"] }, { extensions: ["/project", 1] }).extensions, undefined);
+	assert.deepEqual(parseAgentsConfig(undefined, { extensions: ["", "/project"] }).extensions, ["/project"]);
+});
+
 test("resolveAgentProfile prefers the profile, then the definition, then the defaults", () => {
 	const config = parseAgentsConfig({ default_model: "openai-codex/gpt-6-astra", default_effort: "medium", model_profiles: { "gentle-ai-explore": { effort: "high" } } }, undefined);
 	const explore = parseAgentDefinition(EXPLORER, "/x/explore.md", "global");

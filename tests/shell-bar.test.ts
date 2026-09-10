@@ -7,6 +7,7 @@ import {
 	gaugeTone,
 	renderGauge,
 	renderShellBar,
+	renderShellSidebarBar,
 	shellEnabled,
 	type ShellBarModel,
 	type ShellBarTheme,
@@ -117,6 +118,15 @@ test("renderShellBar adds the subscription windows after the cost when usage is 
 	};
 	const [line] = renderShellBar(model({ usage }), plainTheme, 200);
 	assert.match(line, /\$9\.49 sub ⟡ codex 5h ▰▰▰▰▰▱▱▱ 62% · week 31%$/);
+});
+
+test("renderShellSidebarBar lists every usage snapshot with the active provider first", () => {
+	const codex = { provider: "openai-codex", plan: "pro", fetchedAt: 0, limits: [{ name: "codex", limitReached: false, windows: [{ label: "5h", usedPercent: 10, windowSeconds: 18_000, resetAt: null }] }] };
+	const go = { provider: "opencode-go", plan: undefined, fetchedAt: 0, limits: [{ name: "opencode go", limitReached: false, windows: [{ label: "5h", usedPercent: 20, windowSeconds: 18_000, resetAt: null }] }] };
+	const text = renderShellSidebarBar(model({ usage: go, usages: [codex, go], usageNow: 0, activeProvider: "opencode-go" }), plainTheme, 80).join("\n");
+	assert.ok(text.indexOf("✿ opencode-go") < text.indexOf("openai-codex"));
+	assert.match(text, /opencode go/);
+	assert.match(text, /codex/);
 });
 
 test("renderShellBar shows an unknown context as a question mark after compaction", () => {

@@ -54,8 +54,22 @@ interface RawCodexUsage {
 	additional_rate_limits?: RawAdditionalLimit[] | null;
 }
 
+interface RawOpenCodeGoWindow {
+	percent?: unknown;
+	resetsAt?: unknown;
+}
+
+interface RawOpenCodeGoUsage {
+	usage?: {
+		rolling?: RawOpenCodeGoWindow;
+		weekly?: RawOpenCodeGoWindow;
+		monthly?: RawOpenCodeGoWindow;
+	};
+}
+
 export const CODEX_PROVIDER = "openai-codex";
 export const ANTHROPIC_PROVIDER = "anthropic";
+export const OPENCODE_GO_PROVIDER = "opencode-go";
 const ANTHROPIC_MAIN_LIMIT = "claude";
 const ANTHROPIC_PREFIX = "anthropic-ratelimit-unified-";
 const ANTHROPIC_WINDOWS: ReadonlyArray<[key: string, seconds: number]> = [
@@ -71,6 +85,7 @@ const MINUTE = 60;
 const HOUR = 3600;
 const DAY = 86_400;
 const WEEK = 604_800;
+const MONTH = 2_592_000;
 const ROLE = {
 	PROVIDER: "text",
 	PLAN: "muted",
@@ -81,10 +96,11 @@ const ROLE = {
 	SEPARATOR: "muted",
 } as const;
 export const USAGE_EMPTY_MESSAGE = "No subscription usage yet. Usage arrives with the next response, or press r to fetch it.";
-export const SUPPORTED_USAGE_PROVIDERS: readonly string[] = [CODEX_PROVIDER, ANTHROPIC_PROVIDER];
+export const SUPPORTED_USAGE_PROVIDERS: readonly string[] = [CODEX_PROVIDER, ANTHROPIC_PROVIDER, OPENCODE_GO_PROVIDER];
 const PENDING_NOTE: Record<string, string> = {
 	[CODEX_PROVIDER]: "no usage yet · r to fetch",
 	[ANTHROPIC_PROVIDER]: "usage arrives with the first response",
+	[OPENCODE_GO_PROVIDER]: "no usage yet · r to fetch",
 };
 const UNSUPPORTED_NOTE = "no subscription usage for this provider";
 const ACTIVE_MARK = "✿";
@@ -137,6 +153,27 @@ export function parseCodexUsage(payload: unknown, now: number): ProviderUsage {
 		if (limit) limits.push(limit);
 	}
 	return { provider: CODEX_PROVIDER, plan: typeof raw.plan_type === "string" ? raw.plan_type : undefined, limits, fetchedAt: now };
+}
+
+function parseOpenCodeGoWindow(raw: RawOpenCodeGoWindow | undefined, label: string, windowSeconds: number): UsageWindow | undefined {
+	if (typeof raw?.percent !== "number" || !Number.isFinite(raw.percent) || typeof raw.resetsAt !== "string") return undefined;
+	const resetAt = Date.parse(raw.resetsAt);
+	if (!Number.isFinite(resetAt)) return undefined;
+	return { label, usedPercent: raw.percent, windowSeconds, resetAt };
+}
+
+// OpenCode Go publishes API-key subscription windows. The rolling window is
+// required; optional malformed windows are simply omitted from the snapshot.
+export function parseOpenCodeGoUsage(payload: unknown, now: number): ProviderUsage | undefined {
+	const raw = (payload ?? {}) as RawOpenCodeGoUsage;
+	const rolling = parseOpenCodeGoWindow(raw.usage?.rolling, "5h", 18_000);
+	if (!rolling) return undefined;
+	const windows = [
+		rolling,
+		parseOpenCodeGoWindow(raw.usage?.weekly, "week", WEEK),
+		parseOpenCodeGoWindow(raw.usage?.monthly, "month", MONTH),
+	].filter((window): window is UsageWindow => window !== undefined);
+	return { provider: OPENCODE_GO_PROVIDER, plan: undefined, limits: [{ name: "opencode go", windows, limitReached: rolling.usedPercent >= 100 }], fetchedAt: now };
 }
 
 function headerWindow(headers: Record<string, string>, kind: "primary" | "secondary", now: number): UsageWindow | undefined {

@@ -1,6 +1,6 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { GAUGE_CELLS, gaugeTone, paintGauge, renderGauge, type GaugeTone } from "./shell-gauge.ts";
-import { renderUsageBar, type ProviderUsage } from "./shell-usage.ts";
+import { renderUsageBar, renderUsagePanel, type ProviderUsage } from "./shell-usage.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { CARD_TONE, cardInnerWidth, renderCard } from "./shell-card.ts";
 
@@ -22,6 +22,9 @@ export interface ShellBarModel {
 	costTotal: number;
 	subscription: boolean;
 	usage: ProviderUsage | undefined;
+	usages?: ProviderUsage[];
+	usageNow?: number;
+	activeProvider?: string;
 	statuses: string[];
 }
 
@@ -127,6 +130,9 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 	const percent = model.contextPercent === null ? "?%" : `${Math.round(model.contextPercent)}%`;
 	const capacity = label(`${formatTokens(model.contextWindow)} tokens`);
 	const usage = model.usage ? renderUsageBar(model.usage, theme) : undefined;
+	const usageLines = model.usages
+		? renderUsagePanel(model.usages, theme, Math.max(1, cardInnerWidth(width) - 1), model.usageNow ?? Date.now(), model.activeProvider ? { provider: model.activeProvider } : undefined)
+		: usage ? [usage] : [];
 	const groups: Array<{ title: string; lines: string[] }> = [
 		{
 			title: "Project",
@@ -146,7 +152,7 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 		},
 		{
 			title: "Usage",
-			lines: [`${label("Cost")} ${value(formatCost(model.costTotal, model.subscription))}`, ...(usage ? [usage] : [])],
+			lines: [`${label("Cost")} ${value(formatCost(model.costTotal, model.subscription))}`, ...usageLines],
 		},
 		...(model.statuses.length ? [{ title: "Integrations", lines: model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status))) }] : []),
 	];

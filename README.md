@@ -693,8 +693,9 @@ Subscription usage shows in the bar after the cost, and `/gentle:usage` opens a 
 
 - For Codex, usage comes from the same account usage endpoint the Codex CLI reads, using the OAuth token pi already holds. It is fetched at session start, at most every 5 minutes after a turn, and on `r` in the panel. Rate-limit headers on SSE responses are picked up too.
 - For Claude Pro/Max, usage arrives in the rate-limit headers of every response, so the 5h and weekly windows appear after the first turn.
-- The bar names the subscription it shows (`codex`, `claude`) and always follows the active model. The panel puts the active provider first, marked with the petal, and says why it has no data when it does not: API-key providers have no subscription windows, Claude reports after the first response, Codex waits for a fetch.
-- Only the plan name and the windows are kept; account details in the payload are discarded.
+- For OpenCode Go, Gentle Shell fetches `https://opencode.ai/zen/go/v1/usage` with only the API key held by Pi's model registry. Its rolling, weekly, and monthly windows render as 5h, week, and month. OpenCode Go is subscription-backed (`sub`) even though Pi authenticates it with an API key.
+- The bar names the active subscription it shows (`codex`, `claude`, `opencode go`) and always follows the active model. `/gentle:usage` and the fullscreen sidebar show every collected provider snapshot, with the active provider first and marked with the petal. Providers without data explain their supported refresh behavior.
+- Only the plan name and windows are kept; account details and API keys are discarded.
 - Gauges turn amber at 80% and red at 95%, like the context gauge.
 
 Gentle notices are drawn as cards: the same rounded frame as the prompt, with the left rail and the title in the tone of the notice and the rest of the frame in the theme's border color.

@@ -11,7 +11,7 @@ import { SessionWorktreeRegistry, SESSION_WORKTREE_CHANGED, resolveSessionWorktr
 import { CARD_TONE, renderCard, type Card, type CardTheme } from "../lib/shell-card.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { framePromptLines, PROMPT_HINT, PROMPT_STATE, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
-import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, parseCodexUsage, parseUsageHeaders, UsageStore, type ProviderUsage } from "../lib/shell-usage.ts";
+import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, OPENCODE_GO_PROVIDER, parseCodexUsage, parseOpenCodeGoUsage, parseUsageHeaders, UsageStore, type ProviderUsage } from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarPart } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
@@ -42,6 +42,8 @@ interface BuildOptions {
 	home?: string;
 	dirty?: number;
 	usage?: ProviderUsage;
+	usages?: ProviderUsage[];
+	usageNow?: number;
 }
 
 export type DevBinaryNotice = { state: "active"; path: string; sha256: string } | { state: "invalid"; reason: string };
@@ -112,8 +114,11 @@ export function buildShellBarModel(
 		contextPercent: usage?.percent ?? null,
 		contextWindow: usage?.contextWindow ?? model?.contextWindow ?? 0,
 		costTotal: sessionCost(ctx),
-		subscription: model ? ctx.modelRegistry.isUsingOAuth(model) : false,
+		subscription: model ? ctx.modelRegistry.isUsingOAuth(model) || model.provider === OPENCODE_GO_PROVIDER : false,
 		usage: options.usage,
+		usages: options.usages,
+		usageNow: options.usageNow,
+		activeProvider: model?.provider,
 		statuses,
 	};
 }
@@ -449,22 +454,41 @@ export async function fetchCodexUsage(token: string | undefined, fetchFn: typeof
 	}
 }
 
+export const OPENCODE_GO_USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
+
+export async function fetchOpenCodeGoUsage(key: string | undefined, fetchFn: typeof fetch, now: number): Promise<ProviderUsage | undefined> {
+	if (!key) return undefined;
+	try {
+		const response = await fetchFn(OPENCODE_GO_USAGE_URL, { headers: { Authorization: `Bearer ${key}`, Accept: "application/json" } });
+		if (response.status !== 200) return undefined;
+		return parseOpenCodeGoUsage(await response.json(), now);
+	} catch {
+		return undefined;
+	}
+}
+
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	if (!shellEnabled(env)) return;
 	const deps: ShellDeps = { ...defaultShellDeps, ...overrides };
 	const usage = new UsageStore();
 	let renderHost: ShellRenderHost | undefined;
-	let usageFetchedAt = 0;
+	const usageFetchedAt = new Map<string, number>();
 	const refreshUsage = async (ctx: ExtensionContext, force: boolean) => {
-		const provider = ctx.model?.provider;
-		if (provider !== CODEX_PROVIDER) return;
-		const now = deps.now();
-		if (!force && now - usageFetchedAt < USAGE_REFRESH_MS) return;
-		usageFetchedAt = now;
-		const token = await ctx.modelRegistry.getApiKeyForProvider(CODEX_PROVIDER).catch(() => undefined);
-		const fetched = await fetchCodexUsage(token, deps.fetch, deps.now());
-		if (!fetched) return;
-		usage.record(fetched);
+		let changed = false;
+		for (const provider of [CODEX_PROVIDER, OPENCODE_GO_PROVIDER]) {
+			const now = deps.now();
+			if (!force && now - (usageFetchedAt.get(provider) ?? 0) < USAGE_REFRESH_MS) continue;
+			const key = await ctx.modelRegistry.getApiKeyForProvider(provider).catch(() => undefined);
+			if (!key) continue;
+			usageFetchedAt.set(provider, now);
+			const fetched = provider === CODEX_PROVIDER
+				? await fetchCodexUsage(key, deps.fetch, deps.now())
+				: await fetchOpenCodeGoUsage(key, deps.fetch, deps.now());
+			if (!fetched) continue;
+			usage.record(fetched);
+			changed = true;
+		}
+		if (!changed) return;
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
 	};
@@ -554,7 +578,12 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			renderHost = { requestRender: () => tui.requestRender(), invalidateSidebar: () => invalidateSidebar(tui) };
 			const bottom = createShellBarComponent(pi, ctx, renderHost, theme, footerData, () => tracker.model.files.length, () => usage.get(ctx.model?.provider ?? ""));
 			const part = sidebarPart(tui, "footer", bottom, {
-				render: (width) => renderShellSidebarBar(buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: usage.get(ctx.model?.provider ?? "") }), theme, width),
+				render: (width) => renderShellSidebarBar(buildShellBarModel(pi, ctx, footerData, {
+					dirty: tracker.model.files.length,
+					usage: usage.get(ctx.model?.provider ?? ""),
+					usages: usage.all(),
+					usageNow: deps.now(),
+				}), theme, width),
 				invalidate() {},
 			});
 			const uninstall = installSidebar(tui, theme);

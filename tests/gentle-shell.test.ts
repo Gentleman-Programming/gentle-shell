@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import installGentleShell, { buildShellBarModel, changesShortcut, devBinaryCard, fetchCodexUsage, loadFileDiff, shellGitRunner, openInExternalEditor, type GentlePromptEditor } from "../extensions/gentle-shell.ts";
+import installGentleShell, { buildShellBarModel, changesShortcut, devBinaryCard, fetchCodexUsage, fetchOpenCodeGoUsage, loadFileDiff, shellGitRunner, openInExternalEditor, type GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { CHANGE_STATUS } from "../lib/shell-changes.ts";
 import type { ShellBarTheme } from "../lib/shell-bar.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
@@ -107,7 +107,7 @@ async function fire(handlers: Map<string, Array<(event: unknown, ctx: ExtensionC
 	for (const handler of handlers.get(event) ?? []) await handler({}, ctx);
 }
 
-function fakeContext(options: { hasUI?: boolean; entries?: unknown[]; oauth?: boolean; pending?: boolean; editorFactory?: unknown; token?: string } = {}): { ctx: ExtensionContext; ui: FakeUi; overlayReady: Promise<void> } {
+function fakeContext(options: { hasUI?: boolean; entries?: unknown[]; oauth?: boolean; pending?: boolean; editorFactory?: unknown; token?: string; tokens?: Record<string, string | undefined> } = {}): { ctx: ExtensionContext; ui: FakeUi; overlayReady: Promise<void> } {
 	const ui: FakeUi = { footerFactory: undefined, editorFactory: options.editorFactory, widgets: new Map(), widgetSets: 0, workingVisible: undefined, notices: [], overlay: undefined, overlayView: undefined, closeOverlay: undefined };
 	let resolveOverlay: () => void;
 	const overlayReady = new Promise<void>((resolve) => { resolveOverlay = resolve; });
@@ -123,7 +123,10 @@ function fakeContext(options: { hasUI?: boolean; entries?: unknown[]; oauth?: bo
 			getEntries: () => entries,
 			getSessionId: () => "shell-session",
 		},
-		modelRegistry: { isUsingOAuth: () => options.oauth ?? true, getApiKeyForProvider: async () => options.token },
+		modelRegistry: {
+			isUsingOAuth: () => options.oauth ?? true,
+			getApiKeyForProvider: async (provider: string) => options.tokens ? options.tokens[provider] : provider === "openai-codex" ? options.token : undefined,
+		},
 		getContextUsage: () => ({ tokens: 122_400, contextWindow: 272_000, percent: 45 }),
 		ui: {
 			theme: plainTheme,
@@ -191,6 +194,14 @@ test("buildShellBarModel reads session, model, and footer data", () => {
 	assert.equal(built.costTotal, 0.75);
 	assert.equal(built.subscription, true);
 	assert.deepEqual(built.statuses, ["MCP: 3 servers enabled"]);
+});
+
+test("buildShellBarModel treats OpenCode Go API-key usage as subscription-backed", () => {
+	const { pi } = fakePi();
+	const { ctx } = fakeContext({ oauth: false });
+	(ctx as unknown as { model: { provider: string } }).model.provider = "opencode-go";
+	const footerData = { getGitBranch: () => null, getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} };
+	assert.equal(buildShellBarModel(pi, ctx, footerData).subscription, true);
 });
 
 test("buildShellBarModel shortens the home directory and hides effort for non-reasoning models", () => {
@@ -675,6 +686,19 @@ test("fetchCodexUsage sends the token and account id and parses the payload", as
 	assert.equal(plain.calls.length, 0, "a non-OAuth key must not be sent anywhere");
 	assert.equal(await fetchCodexUsage(JWT, fakeFetch({}, false).fetchFn, 0), undefined);
 	assert.equal(await fetchCodexUsage(undefined, plain.fetchFn, 0), undefined);
+});
+
+test("fetchOpenCodeGoUsage uses only the bearer key and fails closed for non-200 or malformed payloads", async () => {
+	const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+	const fetchFn = (async (url: string | URL, init?: RequestInit) => {
+		calls.push({ url: String(url), headers: (init?.headers ?? {}) as Record<string, string> });
+		return { status: 200, json: async () => ({ usage: { rolling: { percent: 20, resetsAt: "2026-09-01T12:00:00.000Z" } } }) } as Response;
+	}) as typeof fetch;
+	const usage = await fetchOpenCodeGoUsage("go-key", fetchFn, 0);
+	assert.equal(usage?.provider, "opencode-go");
+	assert.deepEqual(calls, [{ url: "https://opencode.ai/zen/go/v1/usage", headers: { Authorization: "Bearer go-key", Accept: "application/json" } }]);
+	assert.equal(await fetchOpenCodeGoUsage("go-key", (async () => ({ status: 403 } as Response)) as typeof fetch, 0), undefined);
+	assert.equal(await fetchOpenCodeGoUsage("go-key", (async () => ({ status: 200, json: async () => ({ usage: {} }) } as Response)) as typeof fetch, 0), undefined);
 });
 
 test("gentleShell fetches Codex usage on session start and shows it in the bar", async () => {

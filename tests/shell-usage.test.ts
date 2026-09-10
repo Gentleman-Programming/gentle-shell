@@ -8,6 +8,9 @@ import {
 	parseCodexHeaders,
 	parseUsageHeaders,
 	parseCodexUsage,
+	providerNote,
+	SUPPORTED_USAGE_PROVIDERS,
+	parseOpenCodeGoUsage,
 	renderUsageBar,
 	renderUsagePanel,
 	UsageStore,
@@ -194,4 +197,26 @@ test("parseUsageHeaders picks whichever provider the headers belong to", () => {
 	assert.equal(parseUsageHeaders({ "x-codex-primary-used-percent": "10", "x-codex-primary-window-minutes": "300" }, NOW)?.provider, "openai-codex");
 	assert.equal(parseUsageHeaders({ "anthropic-ratelimit-unified-5h-utilization": "0.1" }, NOW)?.provider, "anthropic");
 	assert.equal(parseUsageHeaders({ "content-type": "application/json" }, NOW), undefined);
+});
+
+test("OpenCode Go is a supported usage provider with a refresh note", () => {
+	assert.ok(SUPPORTED_USAGE_PROVIDERS.includes("opencode-go"));
+	assert.equal(providerNote("opencode-go"), "no usage yet · r to fetch");
+});
+
+test("parseOpenCodeGoUsage maps required rolling and optional weekly/monthly API windows", () => {
+	const usage = parseOpenCodeGoUsage({
+		usage: {
+			rolling: { status: "ok", percent: 25, resetsAt: "2026-09-01T12:00:00.000Z" },
+			weekly: { status: "ok", percent: 50, resetsAt: "2026-09-07T12:00:00.000Z" },
+			monthly: { status: "ok", percent: 75, resetsAt: "2026-10-01T12:00:00.000Z" },
+		},
+	}, NOW);
+	assert.ok(usage);
+	assert.equal(usage.provider, "opencode-go");
+	assert.deepEqual(usage.limits[0].windows.map((window) => `${window.label}:${window.usedPercent}:${window.resetAt}`), [
+		"5h:25:1788264000000", "week:50:1788782400000", "month:75:1790856000000",
+	]);
+	assert.equal(parseOpenCodeGoUsage({ usage: { rolling: { percent: "25", resetsAt: "bad" } } }, NOW), undefined);
+	assert.equal(parseOpenCodeGoUsage({ usage: { rolling: { percent: 25, resetsAt: "2026-09-01T12:00:00.000Z" }, weekly: { percent: "bad", resetsAt: "bad" } } }, NOW)?.limits[0].windows.length, 1);
 });

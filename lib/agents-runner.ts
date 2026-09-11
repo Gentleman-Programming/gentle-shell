@@ -181,7 +181,7 @@ export interface TaskRequest {
 	 * Omission preserves the explicit opt-in producer API, not policy authority.
 	 */
 	canCollectResponseObservations?: () => boolean;
-	extensions: string[] | undefined;
+	extensions?: string[];
 	// This closure stays only in the parent process. Its presence creates an
 	// inherited fd, never an environment boolean or model-visible permission.
 	authorizeParentStandingReviewPermission?: (repositoryIdentity: string) => boolean;
@@ -401,10 +401,13 @@ export class AgentRunner {
 		const task = this.createTask(request);
 		// A caller can retain and mutate its request after dispatch. Preserve only
 		// the identity selected at construction for this child launch.
-		const launchRequest = {
-			...request,
-			sddChange: request.sddChange && { ...request.sddChange },
-		};
+		const launchRequest = request.sddChange === undefined && request.extensions === undefined
+			? request
+			: {
+				...request,
+				...(request.sddChange !== undefined ? { sddChange: { ...request.sddChange } } : {}),
+				...(request.extensions !== undefined ? { extensions: [...request.extensions] } : {}),
+			};
 		this.queue.push({ task, request: launchRequest });
 		queueMicrotask(() => this.pump());
 		return task;

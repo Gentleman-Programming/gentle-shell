@@ -658,7 +658,10 @@ type BashPolicySeamArgs = Parameters<typeof __testing.evaluateBashPolicies>;
 function makeBashPolicySeamHarness(cwd: string) {
 	return {
 		ctx: { cwd, hasUI: false, ui: {} } as BashPolicySeamArgs[1],
-		events: { emit: () => {}, on: () => {} } as BashPolicySeamArgs[2],
+		events: {
+			emit: (_channel: string, _data: unknown) => {},
+			on: (_channel: string, _handler: (data: unknown) => void) => () => {},
+		},
 		herdrLifecycle: {
 			begin: () => {},
 			settle: () => {},

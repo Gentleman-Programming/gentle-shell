@@ -829,8 +829,11 @@ test("AgentRunner has no total-duration watchdog but keeps active work alive and
 	children[0].emit({ type: "response", id: "r1", success: true });
 	await tick();
 	assert.equal(initialStall.cancelled, true, "every child RPC event, including a response, re-arms the inactivity watchdog");
+	const afterResponse = timers.filter((timer) => timer.ms === 10_000 && !timer.cancelled).at(-1);
+	assert.ok(afterResponse);
 	children[0].emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "still working" } });
 	await tick();
+	assert.equal(afterResponse!.cancelled, true, "normalized task progress re-arms the inactivity watchdog");
 	assert.equal(store.get(task.id)?.status, TASK_STATUS.RUNNING, "ongoing RPC activity keeps a long-running task active");
 	const stall = timers.filter((timer) => timer.ms === 10_000 && !timer.cancelled).at(-1);
 	assert.ok(stall);
@@ -871,6 +874,54 @@ test("a finished tool call returns the task to the idle silence budget", async (
 	await tick();
 	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.TIMED_OUT);
 	assert.equal(h.store.get(task.id)?.error, "stalled for 4 min after: bash");
+});
+
+test("ignored non-dialog UI traffic does not renew the idle silence budget", async () => {
+	const h = harness({ stallTimeoutMs: FOUR_MIN_MS, toolStallTimeoutMs: 30 * 60_000 });
+	const task = h.runner.run(request());
+	await tick();
+	const armed = h.timers.at(-1);
+	assert.ok(armed, "launch arms the idle silence budget");
+	assert.equal(armed!.ms, FOUR_MIN_MS);
+	// Fire-and-forget UI notifications normalize to zero task events and prove
+	// only that the transport is alive; they must not postpone the silence bound.
+	h.children[0].emit({ type: "extension_ui_request", id: "u1", method: "setStatus", statusKey: "fixture", statusText: "idle" });
+	h.children[0].emit({ type: "extension_ui_request", id: "u2", method: "notify", message: "still here" });
+	await tick();
+	assert.equal(armed!.cancelled, false, "ignored UI traffic must not cancel the armed silence budget");
+	assert.equal(h.timers.filter((timer) => !timer.cancelled && timer.ms === FOUR_MIN_MS).length, 1, "no replacement timer is scheduled for ignored UI traffic");
+	assert.equal(h.timers.filter((timer) => timer.ms === 30 * 60_000).length, 0, "ignored UI traffic never earns the tool ceiling");
+	armed!.fn();
+	await tick();
+	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.TIMED_OUT);
+	assert.equal(h.store.get(task.id)?.error, "stalled for 4 min after: prompt accepted");
+});
+
+test("an unrecognized RPC object does not renew the idle silence budget", async () => {
+	const h = harness({ stallTimeoutMs: FOUR_MIN_MS });
+	const task = h.runner.run(request());
+	await tick();
+	const armed = h.timers.at(-1);
+	assert.ok(armed);
+	h.children[0].emit({ type: "some_future_event", payload: { nested: true } });
+	await tick();
+	assert.equal(armed!.cancelled, false, "an unknown object is not progress");
+	assert.equal(h.timers.filter((timer) => !timer.cancelled).length, 1);
+	armed!.fn();
+	await tick();
+	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.TIMED_OUT);
+});
+
+test("a blocking child dialog still re-arms the idle silence budget", async () => {
+	const h = harness({ stallTimeoutMs: FOUR_MIN_MS, answer: { confirmed: true } });
+	h.runner.run(request());
+	await tick();
+	const armed = h.timers.at(-1);
+	assert.ok(armed);
+	h.children[0].emit({ type: "extension_ui_request", id: "u1", method: "confirm", title: "Continue?" });
+	await tick();
+	assert.equal(armed!.cancelled, true, "a dialog the parent must answer is meaningful activity");
+	assert.equal(h.asks.length, 1);
 });
 
 test("the tool ceiling holds while any announced tool call is still in flight", async () => {

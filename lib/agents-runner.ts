@@ -815,7 +815,13 @@ export class AgentRunner {
 			return;
 		}
 		this.checkObservationGrant(live);
-		for (const event of normalizeRpcEvent(raw, { observeResponses: live.observations !== undefined })) {
+		const events = normalizeRpcEvent(raw, { observeResponses: live.observations !== undefined });
+		// A parsed object is not progress by itself. Only a recognized run event
+		// renews the watchdog here, so fire-and-forget UI traffic that normalizes
+		// to nothing cannot keep a child that never started its run alive forever
+		// (#1034); the pre-existing timer stays armed until real progress arrives.
+		const progress = events.length > 0;
+		for (const event of events) {
 			if (event.type === TASK_EVENT.RESPONSE_OBSERVATION) {
 				const buffer = live.observations;
 				if (buffer) {
@@ -855,7 +861,7 @@ export class AgentRunner {
 				else this.requestStop(id, TASK_STATUS.FAILED, "assistant settled without a final report");
 			}
 		}
-		if (!live.terminal) this.armStall(id, live);
+		if (!live.terminal && progress) this.armStall(id, live);
 	}
 
 	// Task-mode subagents may ask the human through the host; background ones

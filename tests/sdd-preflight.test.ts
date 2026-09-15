@@ -496,7 +496,7 @@ test("a persisted canonical 'hybrid' artifact store loads unchanged", async () =
 test("the shared shipped SDD inventory includes every executor, including remediation", () => {
 	assert.deepEqual(SHIPPED_SDD_AGENT_NAMES, [
 		"sdd-init", "sdd-onboard", "sdd-explore", "sdd-research", "sdd-proposal", "sdd-spec", "sdd-design",
-		"sdd-tasks", "sdd-status", "sdd-apply", "sdd-verify", "sdd-sync", "sdd-archive", "sdd-remediate",
+		"sdd-tasks", "sdd-status", "sdd-apply", "sdd-verify", "sdd-archive", "sdd-remediate",
 	]);
 });
 

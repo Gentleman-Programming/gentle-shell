@@ -193,6 +193,21 @@ test("parseAgentsConfig applies defaults, validates values, and silently ignores
 	assert.equal(parseAgentsConfig({ default_mode: "background" }, undefined).defaultMode, AGENT_MODE.BACKGROUND);
 });
 
+test("parseAgentsConfig resolves the tool-call stall ceiling above the idle silence budget", () => {
+	const defaults = parseAgentsConfig(undefined, undefined);
+	assert.equal(defaults.stallTimeoutMs, 4 * 60_000);
+	assert.equal(defaults.toolStallTimeoutMs, 30 * 60_000);
+	const explicit = parseAgentsConfig({ stall_timeout_ms: 12_000, tool_stall_timeout_ms: 20 * 60_000 }, undefined);
+	assert.equal(explicit.stallTimeoutMs, 12_000);
+	assert.equal(explicit.toolStallTimeoutMs, 20 * 60_000);
+	const projectWins = parseAgentsConfig({ tool_stall_timeout_ms: 20 * 60_000 }, { tool_stall_timeout_ms: 15 * 60_000 });
+	assert.equal(projectWins.toolStallTimeoutMs, 15 * 60_000);
+	for (const invalid of ["forever", 0, -1, 12.5, null]) {
+		assert.equal(parseAgentsConfig({ tool_stall_timeout_ms: invalid }, undefined).toolStallTimeoutMs, 30 * 60_000, `invalid tool_stall_timeout_ms ${String(invalid)} must fall back to the default`);
+	}
+	assert.equal(parseAgentsConfig({ stall_timeout_ms: 45 * 60_000, tool_stall_timeout_ms: 1_000 }, undefined).toolStallTimeoutMs, 45 * 60_000, "the tool ceiling must never fall below the idle budget");
+});
+
 test("resolveAgentProfile prefers the profile, then the definition, then the defaults", () => {
 	const config = parseAgentsConfig({ default_model: "openai-codex/gpt-6-astra", default_effort: "medium", model_profiles: { "gentle-ai-explore": { effort: "high" } } }, undefined);
 	const explore = parseAgentDefinition(EXPLORER, "/x/explore.md", "global");

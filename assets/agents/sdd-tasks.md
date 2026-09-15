@@ -81,21 +81,21 @@ Chain strategy: stacked-to-main|feature-branch-chain|size-exception|pending
 - Work units must have clear start, finish, verification, and rollback boundaries.
 - If chain strategy is not known, set it to `pending` and set `Decision needed before apply` according to delivery strategy.
 
-## Task Ownership
+## Task Format
 
-Every generated Markdown checkbox MUST end with this terminal ownership marker:
+Use ordinary numbered Markdown checkboxes:
 
 ```markdown
-- [ ] Implement and verify the behavior. <!-- sdd-owner: implementation -->
+- [ ] 1. Implement and verify the behavior.
 ```
 
-Use `implementation` for RED/GREEN/TRIANGULATE/REFACTOR, code, tests, and apply-owned verification. Do not generate RDD authority, receipt, or delivery-gate tasks. Do not add owner values or infer ownership from headings.
+Keep completion tied to actual implementation and applicable checks. Do not generate ownership metadata, RDD authority, receipt, or delivery-gate tasks. Preserve existing historical comments without treating them as new planning prerequisites.
 
 ## Task Rules
 
 - Every task references concrete file paths or concrete discovery targets.
 - Tasks are specific, actionable, verifiable, and dependency ordered.
-- If tests exist or strict TDD is enabled, sequence tasks as RED → GREEN → TRIANGULATE → REFACTOR.
+- Only when configured strict TDD is active, sequence tasks as RED → GREEN → TRIANGULATE → REFACTOR using the configured test command. Test availability alone does not enable TDD; otherwise plan applicable practical checks without changing the setting.
 - Each task should fit one focused session; split oversized tasks.
 - Keep `tasks.md` concise and reviewable.
 - Do NOT launch child subagents. Parent/orchestrator owns delegation.

@@ -99,7 +99,6 @@ export const SHIPPED_SDD_AGENT_NAMES = Object.freeze([
 	"sdd-status",
 	"sdd-apply",
 	"sdd-verify",
-	"sdd-sync",
 	"sdd-archive",
 	"sdd-remediate",
 ]);
@@ -725,6 +724,8 @@ function copyDirectoryFiles(
 // history); user-modified copies are left in place and only lose managed
 // ownership.
 const RETIRED_MANAGED_ASSETS = Object.freeze([
+	// Canonical spec composition now belongs to archive (gentle-pi#1051).
+	"agents/sdd-sync.md",
 	"agents/review-refuter.md",
 	"agents/review-validator.md",
 ]);

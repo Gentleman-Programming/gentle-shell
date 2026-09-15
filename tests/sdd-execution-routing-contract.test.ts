@@ -20,9 +20,25 @@ for (const path of guidancePaths) {
 	});
 }
 
-test("workflow preserves explicit continuation and the manual sync resolver", () => {
+test("workflow preserves explicit continuation and native-only classical completion", () => {
 	const workflow = readFileSync(new URL("../assets/sdd-orchestrator-workflow.md", import.meta.url), "utf8");
 	assert.match(workflow, /only.*sdd-continue|sdd-continue.*only/i);
-	assert.match(workflow, /manual sdd-sync/i);
+	assert.doesNotMatch(workflow, /manual sdd-sync|local resolver/i);
+	assert.match(workflow, /verification is optional/);
 	assert.doesNotMatch(workflow, /sdd-(?:apply|verify|archive).*local|local.*sdd-(?:apply|verify|archive)/i);
+});
+
+test("archive owns composition without mandatory verification or a standalone sync receipt", () => {
+	const archive = readFileSync(new URL("../assets/agents/sdd-archive.md", import.meta.url), "utf8");
+	const full = readFileSync(new URL("../assets/chains/sdd-full.chain.md", import.meta.url), "utf8");
+	assert.doesNotMatch(full, /^## sdd-(verify|sync)$/m);
+	assert.match(full, /apply -> archive/);
+	assert.match(archive, /missing optional report is not a blocker/);
+	assert.match(archive, /no separate sync phase or successful sync-report artifact is required/);
+	for (const guard of ["Final Task Completion Gate", "allowed edit roots", "resolved symlink targets", "existing archive destination",
+		"ADDED Requirements", "MODIFIED Requirements", "REMOVED Requirements", "RENAMED Requirements",
+		"explicit composition/archive order", "explicit approval for the destructive sync", "dependsOn", "rules.sync",
+		"archive-report", "observation-ID traceability", "Preserve every canonical requirement not mentioned by the delta"]) {
+		assert.ok(archive.includes(guard), `archive retains ${guard}`);
+	}
 });

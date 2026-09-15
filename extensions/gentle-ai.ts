@@ -102,7 +102,6 @@ import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-inte
 import {
 	parseSddStatusCommandArgs,
 	renderNativeSddPhasePrompt,
-	resolveSddStatus,
 	type SddPhase,
 } from "../lib/sdd-status.ts";
 import {
@@ -1361,9 +1360,9 @@ Current persona mode: ${persona}
 You are el Gentleman: a Pi-specific coding-agent harness for controlled development work.
 
 Identity contract:
-- When the user asks who or what you are, answer as el Gentleman, not as a generic assistant, and never introduce yourself as only "your assistant" or "the default assistant". Convey this meaning, translated into the user's language: "I am el Gentleman: a Pi-specific coding-agent harness for controlled development, with a senior architect persona. I work with SDD/OpenSpec when the task justifies it, coordinate subagents, use phase artifacts, run commands, and edit files. I am not a generic chatbot."
+- When the user asks who or what you are, answer as el Gentleman, not as a generic assistant, and never introduce yourself as only "your assistant" or "the default assistant". Convey this meaning, translated into the user's language: "I am el Gentleman: a Pi-specific coding-agent harness for controlled development, with a senior architect persona. I run Organic Driven Development by default and SDD/OpenSpec when explicitly selected, coordinate subagents, use phase artifacts, run commands, and edit files. I am not a generic chatbot."
 - Follow the currently selected persona mode.
-- Mention SDD/OpenSpec phase artifacts and subagents as core capabilities.
+- Mention ODD as the default workflow, SDD/OpenSpec phase artifacts, and subagents as core capabilities.
 - Mention memory only when memory packages or callable memory tools are actually active; never invent persistent memory.
 - Do not claim portability outside the Pi runtime.
 
@@ -1371,13 +1370,24 @@ ${personaPrompt}
 
 ${languageBoundary}
 
+Default workflow: Organic Driven Development (MANDATORY)
+Organic Driven Development (ODD) is the predefined workflow of this orchestrator. Every request enters it, without the user asking for a workflow, a plan, or task tracking. SDD is a branch inside ODD, entered only by an explicit request or an accepted proposal. Never describe this workflow only when asked about it: run it. Run these steps in this order on every request:
+1. **Authorize.** Investigation, explanation, review, comparison, and proposal-only requests stay read-only: no writer, apply, or implementation artifacts. Ambiguous or conditional change intent gets one clarification; stop and wait.
+2. **Explore.** Explore existing code and requirements first, proportionately to the request, before proposing or writing anything.
+3. **Resolve uncertainty.** Recommend optional research only for a named uncertainty; ask one focused user question only for a real unresolved product decision, then stop and wait; use at most one scoped read-only assumption challenge for a high-consequence unproven premise.
+4. **Classify.** The work is substantial when exploration yields two or more meaningful implementation steps, or progress worth recovering after an interruption. Small, understood work stays small and creates no durable task artifacts.
+5. **Track before the first write.** For substantial authorized implementation, create \`odd/tasks/<feature-name>.md\` and its Engram mirror \`odd/<feature-name>/tasks\` automatically, before the first source write, without asking permission for tasks or storage. Tell the user in one line which feature document was created and how many tasks it holds.
+6. **Implement task by task.** Route each task through the orchestrator's Work Routing Ladder, with the configured TDD mode and applicable checks. Check an item off only after its outcome and checks were observed; update the file and the mirror after each task.
+7. **Close.** Report the verified outcome, every failed, skipped, or pending check, and the next step. Native review applies only at the deliverable boundary and only under the user-owned RDD switch.
+Resume an interrupted feature with \`mem_context\`, then project- and feature-scoped \`mem_search\`, then \`mem_get_observation\` for the full document, then the task file itself; reconcile before continuing the next unfinished task. Detail for steps 3–7: \`orchestrator-delegation.md\` and \`orchestrator-memory.md\`.
+
 Harness principles:
 - el Gentleman is not prompt engineering. It is runtime discipline around powerful agents.
-- Prefer SDD/OpenSpec artifacts over floating chat context for non-trivial work.
+- Organic Driven Development (ODD) is the predefined workflow for every request: authorize, explore, resolve uncertainty, classify, track substantial work before the first write, implement task by task with proportionate checks, close. SDD is explicitly selected.
 - Clarify scope, constraints, acceptance criteria, and non-goals before implementation.
 - Use subagents when available for exploration, planning, implementation, and review, while keeping one parent session responsible for orchestration.
 - Keep writes single-threaded unless the user explicitly approves parallel write isolation.
-- If tests exist, use strict TDD evidence: RED, GREEN, TRIANGULATE, REFACTOR.
+- Use configured TDD mode, source, and exact runner; test presence does not enable it. Follow orchestrator-delegation.md for ODD forwarding and evidence.
 - Protect the human reviewer: avoid oversized changes, surface review workload risk, and ask before turning one task into a large multi-area change.
 - Never claim persistent memory is available because of this package. Memory is provided by separate packages or MCP tools when installed and callable.
 
@@ -1752,7 +1762,7 @@ function isNamedAgentStartEvent(event: unknown): boolean {
 }
 
 function sddPhaseFromAgentStartEvent(event: unknown): SddPhase | "remediate" | undefined {
-	const phases = ["apply", "verify", "sync", "archive", "remediate"] as const;
+	const phases = ["apply", "verify", "archive", "remediate"] as const;
 	const names = readAgentStartNames(event);
 	const systemPrompt = readStringPath(event, ["systemPrompt"]) ?? "";
 	const promptPhases = phases.filter((phase) => new RegExp(`\\bSDD ${phase} executor\\b`, "i").test(systemPrompt));
@@ -1762,7 +1772,7 @@ function sddPhaseFromAgentStartEvent(event: unknown): SddPhase | "remediate" | u
 		(promptPhases.length === 0 || promptPhases[0] === phase));
 }
 
-function resolveSddChangeSelection(serialized: unknown, cwd: string, agentName: string) {
+function resolveSddChangeSelection(serialized: unknown, cwd: string, agentName: string): { changeName: string; workspaceRoot: string; phase: SddPhase | "remediate"; failedEvidenceRevision?: string } {
 	if (typeof serialized !== "string") throw new Error("SDD selection must be a JSON string.");
 	let value: unknown;
 	try {
@@ -1776,7 +1786,7 @@ function resolveSddChangeSelection(serialized: unknown, cwd: string, agentName: 
 	const { changeName, workspaceRoot, phase } = value;
 	if (typeof changeName !== "string" || changeName.length === 0 ||
 		typeof workspaceRoot !== "string" || workspaceRoot.length === 0 ||
-		(phase !== "apply" && phase !== "verify" && phase !== "sync" && phase !== "archive" && phase !== "remediate")) {
+		(phase !== "apply" && phase !== "verify" && phase !== "archive" && phase !== "remediate")) {
 		throw new Error("SDD selection has an invalid identity.");
 	}
 	if (agentName !== `sdd-${phase}`) throw new Error("SDD selection phase does not match the child agent.");
@@ -1795,18 +1805,23 @@ function resolveSddChangeSelection(serialized: unknown, cwd: string, agentName: 
 	return { changeName, workspaceRoot: canonicalCwd, phase, ...(phase === "remediate" ? { failedEvidenceRevision: value.failedEvidenceRevision as string } : {}) };
 }
 
-function resolveSddChangeStartup(
-	serialized: unknown,
-	cwd: string,
-	agentName: string,
-	resolver: (options: Parameters<typeof resolveSddStatus>[0]) => ReturnType<typeof resolveSddStatus> = resolveSddStatus,
-) {
-	const selection = resolveSddChangeSelection(serialized, cwd, agentName);
-	const status = resolver({ cwd: selection.workspaceRoot, workspaceRoot: selection.workspaceRoot, changeName: selection.changeName, includeInstructions: true });
-	if (status.actionContext.workspaceRoot !== selection.workspaceRoot || status.changeName !== selection.changeName) {
-		throw new Error("SDD selection resolver returned a mismatched status.");
+function assertNativeSddPhaseReady(status: NativeSddStatusV2, phase: SddPhase | "remediate"): void {
+	if (!status.phaseInstructions || !(phase in status.phaseInstructions)) {
+		throw new Error(`Native SDD status cannot represent phase ${phase}.`);
 	}
-	return { selection, status };
+	if (phase === "remediate") {
+		if (status.nextRecommended !== phase) throw new Error("Native SDD status does not select remediation.");
+		return;
+	}
+	// Optional verification may be explicitly selected when native recommends
+	// apply or archive. Preserve that recommendation; never advance an older provider.
+	const optionalVerify = phase === "verify" && (status.nextRecommended === "archive" || status.nextRecommended === "apply") && status.blockedReasons.length === 0;
+	if ((!optionalVerify && status.nextRecommended !== phase) || status.dependencies[phase] !== "ready" ||
+		(status.blockedReasons.length > 0 && phase !== "verify")) {
+		// A native-selected verify can refresh the evidence named by a blocker.
+		// Apply/archive never inherit that exception (gentle-pi#972).
+		throw new Error(`SDD selection native status blocks phase ${phase}; it cannot execute.`);
+	}
 }
 
 async function resolveSelectedNativeSddChangeStartup(
@@ -1814,16 +1829,8 @@ async function resolveSelectedNativeSddChangeStartup(
 	cwd: string,
 	agentName: string,
 	native: Pick<NativeReviewCli, "sddStatus"> | null | undefined,
-	localResolver: (options: Parameters<typeof resolveSddStatus>[0]) => ReturnType<typeof resolveSddStatus> = resolveSddStatus,
-): Promise<{ selection: { changeName: string; workspaceRoot: string; phase: SddPhase | "remediate"; failedEvidenceRevision?: string }; status: NativeSddStatusV2 | ReturnType<typeof resolveSddStatus> }> {
+): Promise<{ selection: { changeName: string; workspaceRoot: string; phase: SddPhase | "remediate"; failedEvidenceRevision?: string }; status: NativeSddStatusV2 }> {
 	const selection = resolveSddChangeSelection(serialized, cwd, agentName);
-	if (selection.phase === "sync") {
-		const status = localResolver({ cwd: selection.workspaceRoot, workspaceRoot: selection.workspaceRoot, changeName: selection.changeName, includeInstructions: true });
-		if (status.actionContext.workspaceRoot !== selection.workspaceRoot || status.changeName !== selection.changeName) {
-			throw new Error("SDD selection resolver returned a mismatched status.");
-		}
-		return { selection, status };
-	}
 	if (native?.sddStatus === undefined) throw new Error("SDD selection native status is unavailable.");
 	let status: NativeSddStatusV2;
 	try {
@@ -1834,21 +1841,9 @@ async function resolveSelectedNativeSddChangeStartup(
 	} catch (error) {
 		throw new Error(`SDD selection native status is blocked: ${error instanceof Error ? error.message : String(error)}`);
 	}
-	if ((selection.phase !== "remediate" && !(selection.phase in status.dependencies)) || status.phaseInstructions === undefined || !(selection.phase in status.phaseInstructions)) {
-		throw new Error(`SDD selection native status cannot represent phase ${selection.phase}.`);
-	}
-	if (selection.phase === "remediate") {
-		if (status.nextRecommended !== "remediate" || status.remediationState?.failedEvidenceRevision !== selection.failedEvidenceRevision) throw new Error("Stale remediation selection");
-	} else if (status.nextRecommended !== selection.phase || status.dependencies[selection.phase] !== "ready" || (status.blockedReasons.length > 0 && selection.phase !== "verify")) {
-		// Native's contract gates terminal, archive, and apply work on a
-		// non-empty `blockedReasons`, and it deliberately keeps the `verify`
-		// route runnable, because the blocker can name the evidence refresh
-		// that is its own remedy ("failed verification evidence is incomplete;
-		// rerun SDD verification", gentle-ai#3538). Vetoing that route made the
-		// native-recommended phase unreachable (gentle-pi#972). The other
-		// phases still fail closed, and every blocker stays in the injected
-		// status for reporting.
-		throw new Error(`SDD selection native status blocks phase ${selection.phase}; it cannot execute.`);
+	assertNativeSddPhaseReady(status, selection.phase);
+	if (selection.phase === "remediate" && status.remediationState?.failedEvidenceRevision !== selection.failedEvidenceRevision) {
+		throw new Error("Stale remediation selection");
 	}
 	return { selection, status };
 }
@@ -3554,6 +3549,8 @@ type ProfilesPanelResult =
 	| { type: "import" }
 	| { type: "close" };
 
+type ProfilesSnapshotHandler = (name: string) => AgentProfilesFile;
+
 const PROFILES_PANEL_MIN_BODY_ROWS = 6;
 
 type ProfilesPanelPointerLayout = AgentsViewLayout & { listTop: number };
@@ -3582,10 +3579,14 @@ class ProfilesPanel implements OverlayComponent {
 	private lastDetailLineCount = 0;
 	private lastDetailRows = 0;
 	private lastSelectedId: string | undefined;
+	private feedback: string | undefined;
 	readonly list: NativeChoiceList<ProfileListItem>;
-	private readonly file: AgentProfilesFile;
+	private file: AgentProfilesFile;
 	private readonly currentConfig: AgentModelConfig;
 	private readonly done: (result: ProfilesPanelResult) => void;
+	private readonly saveSnapshot: ProfilesSnapshotHandler;
+	private readonly requestRender: () => void;
+	private readonly listItems: ProfileListItem[];
 	private readonly theme: Theme | undefined;
 	private readonly rows: () => number;
 	private readonly orchestratorSettings: OrchestratorSettingsReadResult;
@@ -3599,14 +3600,19 @@ class ProfilesPanel implements OverlayComponent {
 		selectedName: string | undefined,
 		rows: () => number,
 		orchestratorSettings: OrchestratorSettingsReadResult,
+		saveSnapshot: ProfilesSnapshotHandler,
+		requestRender: () => void,
 	) {
 		this.file = file;
 		this.currentConfig = currentConfig;
 		this.done = done;
+		this.saveSnapshot = saveSnapshot;
+		this.requestRender = requestRender;
 		this.theme = theme;
 		this.rows = rows;
 		this.orchestratorSettings = orchestratorSettings;
 		const items = buildProfileListItems(file);
+		this.listItems = items;
 		this.list = new NativeChoiceList<ProfileListItem>(
 			items,
 			{
@@ -3657,7 +3663,17 @@ class ProfilesPanel implements OverlayComponent {
 		if (data === "c") return this.finish({ type: "create" });
 		if (data === "i") return this.finish({ type: "import" });
 		if (!name) return this.list.handleInput(data);
-		if (data === "s") return this.finish({ type: "update", name });
+		if (data === "s") {
+			try {
+				this.file = this.saveSnapshot(name);
+				this.refreshListItems();
+				this.feedback = `Snapshot saved; live routing unchanged. Profile "${name}" saved from current routing.`;
+			} catch (error) {
+				this.feedback = `Snapshot failed; live routing unchanged. Profile "${name}" was not saved from current routing: ${profilesErrorMessage(error)}`;
+			}
+			this.requestRender();
+			return;
+		}
 		if (data === "d") return this.finish({ type: "duplicate", name });
 		if (data === "r") return this.finish({ type: "rename", name });
 		if (data === "x") return this.finish({ type: "delete", name });
@@ -3731,6 +3747,16 @@ class ProfilesPanel implements OverlayComponent {
 		);
 	}
 
+	private refreshListItems(): void {
+		// Keep the list instance (and its pointer observer) alive while refreshing the
+		// mutable item records that NativeChoiceList already holds by reference.
+		for (const item of buildProfileListItems(this.file)) {
+			const current = this.listItems.find((candidate) => candidate.id === item.id);
+			if (current) Object.assign(current, item);
+		}
+		this.list.refreshItems();
+	}
+
 	private pageRows(): number {
 		return Math.max(1, this.lastDetailRows - 1);
 	}
@@ -3771,11 +3797,12 @@ class ProfilesPanel implements OverlayComponent {
 
 	private renderFooterRow(width: number): string {
 		const hints =
-			"enter apply · c create · s update · d duplicate · r rename · x delete · e export · i import · j/k line · ctrl+j/k page · esc close";
+			"enter apply · c create · s snapshot · d duplicate · r rename · x delete · e export · i import · j/k line · ctrl+j/k page · esc close";
+		const text = this.feedback ?? hints;
 		return [
 			this.renderText("│", "border"),
 			" ",
-			this.fitPaneLine(this.renderText(hints, "muted"), width - 4),
+			this.fitPaneLine(this.renderText(text, this.feedback ? "status" : "muted"), width - 4),
 			" ",
 			this.renderText("│", "border"),
 		].join("");
@@ -3861,7 +3888,8 @@ async function showProfilesPanel(
 	ctx: ExtensionContext,
 	file: AgentProfilesFile,
 	currentConfig: AgentModelConfig,
-	selectedName?: string,
+	selectedName: string | undefined,
+	saveSnapshot: ProfilesSnapshotHandler,
 ): Promise<ProfilesPanelResult> {
 	// Read once, for the panel lifetime. The orchestrator shown as "now" is the
 	// state the panel opened on, not a value that changes mid-panel.
@@ -3877,6 +3905,8 @@ async function showProfilesPanel(
 				selectedName,
 				() => Math.max(0, tui.terminal.rows),
 				orchestratorSettings,
+				saveSnapshot,
+				() => tui.requestRender(),
 			);
 			const container = createNativeFullscreenInteraction({
 				keyboardTarget: panel,
@@ -3920,6 +3950,17 @@ function reportProfilesDrops(ctx: ExtensionContext, path: string, drops: Profile
 			"warning",
 		);
 	}
+}
+
+function profileSnapshotFrom(
+	current: AgentModelConfig,
+	settings: OrchestratorSettingsReadResult,
+): AgentModelConfig {
+	const snapshot = cloneModelConfig(current);
+	if (settings.status === "valid" && settings.entry !== undefined) {
+		snapshot[PROFILE_ORCHESTRATOR_KEY] = { ...settings.entry };
+	}
+	return snapshot;
 }
 
 async function runProfilesPanelAction(
@@ -4063,16 +4104,14 @@ async function runProfilesPanelAction(
 			}
 		}
 		case "update": {
-			const current = await readEffectiveModelConfigAsync(ctx.cwd);
 			// A profile is a complete snapshot, so capturing the current routing also
 			// captures the orchestrator the routing is running under. A settings file
 			// that cannot be read leaves the snapshot without an orchestrator entry
 			// rather than inventing one.
-			const settings = readOrchestratorSettings(orchestratorSettingsPath());
-			const snapshot: AgentModelConfig = cloneModelConfig(current);
-			if (settings.status === "valid" && settings.entry !== undefined) {
-				snapshot[PROFILE_ORCHESTRATOR_KEY] = { ...settings.entry };
-			}
+			const snapshot = profileSnapshotFrom(
+				await readEffectiveModelConfigAsync(ctx.cwd),
+				readOrchestratorSettings(orchestratorSettingsPath()),
+			);
 			try {
 				const next = updateProfile(file, result.name, snapshot);
 				writeProfilesFileSync(path, next);
@@ -4214,12 +4253,37 @@ async function handleProfilesCommand(ctx: ExtensionContext): Promise<void> {
 		file = read.file;
 		reportProfilesDrops(ctx, path, read.drops);
 	}
+	const saveSnapshot: ProfilesSnapshotHandler = (name) => {
+		const next = updateProfile(
+			file,
+			name,
+			profileSnapshotFrom(
+				readEffectiveModelConfig(ctx.cwd),
+				readOrchestratorSettings(orchestratorSettingsPath()),
+			),
+		);
+		writeProfilesFileSync(path, next);
+		file = next;
+		return next;
+	};
 	let selectedName: string | undefined;
-	let result = await showProfilesPanel(ctx, file, await readEffectiveModelConfigAsync(ctx.cwd), selectedName);
+	let result = await showProfilesPanel(
+		ctx,
+		file,
+		await readEffectiveModelConfigAsync(ctx.cwd),
+		selectedName,
+		saveSnapshot,
+	);
 	while (result.type !== "close") {
 		selectedName = "name" in result ? result.name : undefined;
 		file = await runProfilesPanelAction(ctx, path, file, result);
-		result = await showProfilesPanel(ctx, file, await readEffectiveModelConfigAsync(ctx.cwd), selectedName);
+		result = await showProfilesPanel(
+			ctx,
+			file,
+			await readEffectiveModelConfigAsync(ctx.cwd),
+			selectedName,
+			saveSnapshot,
+		);
 	}
 }
 
@@ -8133,32 +8197,11 @@ export const __testing = {
 	readNativeReviewOutcome,
 	recordNativeReviewOutcome,
 	clearNativeReviewOutcomeMemoForTesting,
-	resolveControllerSddStatus,
-	resolveStartupControllerSddStatus,
-	resolveSddChangeStartup,
 	resolveSelectedNativeSddChangeStartup,
 	readSddChangeFlag,
 	resetTelemetryTriggerGuardForTesting,
 	createGentleAiExtension: createGentleAiExtensionForTesting,
 };
-
-function resolveControllerSddStatus(
-	cwd: string,
-	changeName: string | undefined,
-	includeInstructions: boolean,
-	artifactStore: SddPreflightPreferences["artifactStore"] | undefined,
-) {
-	return resolveSddStatus({ cwd, changeName, includeInstructions, artifactStore });
-}
-
-function resolveStartupControllerSddStatus(
-	cwd: string,
-	changeName: string | undefined,
-	includeInstructions: boolean,
-	artifactStore: SddPreflightPreferences["artifactStore"] | undefined,
-) {
-	return resolveControllerSddStatus(cwd, changeName, includeInstructions, artifactStore);
-}
 
 export interface GentleAiRuntimeDependencies {
 	nativeReviewCli?: NativeReviewCli | null;
@@ -8594,6 +8637,11 @@ function createGentleAiExtensionForTesting(
 		if (typeof event.text !== "string" || !isSddPreflightTrigger(event.text)) {
 			return { action: "continue" };
 		}
+		// An RPC child consumes the parent-rendered preflight block transported in
+		// its task context; it never originates preflight. Re-entering the
+		// parent-only resolver here would reject, and consuming the rejection
+		// would swallow the delegated prompt before the agent ever starts.
+		if (ctx.mode === "rpc") return { action: "continue" };
 		try { await runSddPreflight(ctx); }
 		catch (error) {
 			if (ctx.hasUI) ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
@@ -8605,7 +8653,8 @@ function createGentleAiExtensionForTesting(
 	let nativeSddStartupBlock: string | undefined;
 	pi.on("before_agent_start", async (event, ctx) => {
 		nativeSddStartupBlock = undefined;
-		const isSddAgent = isSddAgentStartEvent(event);
+		const retiredSync = readAgentStartNames(event).includes("sdd-sync") || /\bSDD sync executor\b/i.test(event.systemPrompt ?? "");
+		const isSddAgent = retiredSync || isSddAgentStartEvent(event);
 		const isNamedAgent = isNamedAgentStartEvent(event);
 		const subagentDepthKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
 		if (isSddAgent || isNamedAgent) {
@@ -8652,14 +8701,15 @@ function createGentleAiExtensionForTesting(
 				: "";
 		const phase = isSddAgent ? sddPhaseFromAgentStartEvent(event) : undefined;
 		const launchSddChange = readSddChangeFlag(pi);
-		if (launchSddChange !== undefined && !phase) nativeSddStartupBlock = "Receiving agent has no recognized SDD phase";
+		if (retiredSync) nativeSddStartupBlock = "Standalone sync is retired. Return to the parent for native archive selection; archive composes applicable specs.";
+		else if (launchSddChange !== undefined && !phase) nativeSddStartupBlock = "Receiving agent has no recognized SDD phase";
 		const nativeStatusPrompt = phase
 			? await (async () => {
 				try {
 					if (launchSddChange === undefined) {
-						if (phase === "sync") return `\n\n${renderNativeSddPhasePrompt(resolveStartupControllerSddStatus(ctx.cwd, undefined, true, prefs?.artifactStore), phase)}`;
 						const { status } = await readCommandSddStatus("", ctx);
-						if (status.changeName === null || !status.phaseInstructions || status.nextRecommended !== phase) throw new Error(`Native SDD discovery cannot run ${phase}.`);
+						if (status.changeName === null) throw new Error(`Native SDD discovery cannot run ${phase}.`);
+						assertNativeSddPhaseReady(status, phase);
 						return `\n\n${renderNativeSddPhasePrompt(status, phase)}`;
 					}
 					const agentName = `sdd-${phase}`;
@@ -8668,12 +8718,6 @@ function createGentleAiExtensionForTesting(
 						ctx.cwd,
 						agentName,
 						nativeReviewCli,
-						(options) => resolveControllerSddStatus(
-							options.cwd,
-							options.changeName,
-							true,
-							prefs?.artifactStore,
-						),
 					);
 					return `\n\n${renderNativeSddPhasePrompt(startup.status, phase)}`;
 				} catch (error) {
@@ -8681,9 +8725,9 @@ function createGentleAiExtensionForTesting(
 					return `\n\n## Native SDD Status Engine\nSDD selection blocked: ${nativeSddStartupBlock}\nDo not run phase work; return this blocker to the parent.`;
 				}
 			})()
-			: launchSddChange === undefined
+			: nativeSddStartupBlock === undefined
 				? ""
-				: "\n\n## Native SDD Status Engine\nSDD selection blocked: the receiving agent has no recognized SDD phase.\nDo not run phase work; return this blocker to the parent.";
+				: `\n\n## Native SDD Status Engine\nSDD selection blocked: ${nativeSddStartupBlock}\nDo not run phase work; return this blocker to the parent.`;
 		// gentle-pi#661: the RDD status line (and the rest of the gentle prompt)
 		// is built only for the primary session, mirrored on the
 		// reviewContractPrompt condition below -- named/SDD agents never reach

@@ -2,6 +2,8 @@
 
 Gentle Shell is the `gentle-shell` coding-agent workspace built for Pi, not a theme. The `gentle-pi` package integrates the shell bar, workspace changes, provider usage where Pi exposes it, and native agent orchestration views into a Pi session. Start with the [README](../README.md#features) for the product overview.
 
+For everyday development, use [ODD and feature recovery](readme-reference.md#organic-driven-development). Choose SDD explicitly when you want its formal phase artifacts; the workspace supports both. TDD follows configured mode, and native review remains a separate user-owned choice.
+
 Source map: [shell extension](../extensions/gentle-shell.ts), [shell bar](../lib/shell-bar.ts), [changes model](../lib/shell-changes.ts), [changes view](../lib/shell-changes-view.ts), [usage model](../lib/shell-usage.ts), [usage view](../lib/shell-usage-view.ts), [agents extension](../extensions/gentle-agents.ts), and [agent runner](../lib/agents-runner.ts).
 
 ## v2.6.0 workspace updates
@@ -13,7 +15,7 @@ The [v2.6.0 release](https://github.com/Gentleman-Programming/gentle-pi/releases
 - The Agents List and Details views preserve the orchestrator/session hierarchy and completion, abort, and lost-exit history. Parent-child queries and notifications have an explicit handoff path, while model, effort, and usage stay observable per task.
 - Named `/gentle:profiles` atomically route the orchestrator separately from packaged and review roles; see the [technical reference](readme-reference.md#agent-model-profiles) for the profile model.
 
-The source checkout currently prepares `gentle-pi` `2.6.4` with a package-local Gentle AI `v2.9.0` pin; this is not a claim that `2.6.4` is published.
+The source checkout currently prepares `gentle-pi` `2.7.0` with a package-local Gentle AI `v2.9.1` pin; this is not a claim that `2.7.0` is published.
 
 ## Shell interactions and runtime behavior
 
@@ -22,6 +24,8 @@ Gentle Shell is the Pi workspace experience provided by the `gentle-pi` package.
 In fullscreen at 140 columns or wider, the right sidebar scrolls **✿ Gentle-Pi ✿ → Status → Changes → Agents → TODO** together. The one-line heading is horizontally centered within the usable rail width, with pink flowers and normal white text in the Gentleman themes. Colors follow the active theme; no artwork scaling or custom fonts are used. Narrow/mobile terminals and regular mode retain bottom widgets without the sidebar heading. The original rose and text logo remain in the main chat startup intro.
 
 The rail reuses its last frame until something it paints changes, so silent frames stay cheap and live session state still lands on the next frame: a model switch, a new thinking level, context growth, session cost, session name and extension statuses all refresh the Status card without a redraw of the rest of the sidebar.
+
+The sidebar Status card also shows `Profile` in its Model section when the profiles store has a valid active marker. It follows profile changes on the next render. Missing, unreadable, or invalid stores leave the line hidden. The compact bottom bar is unchanged.
 
 The status bar replaces pi's three-line footer with a single line of segments:
 
@@ -47,28 +51,38 @@ The prompt wraps pi's editor in a rounded frame with a petal that shows what the
 - The hint appears only while the editor is empty.
 - If another extension already installed a custom editor, Gentle Shell leaves it alone.
 
-Changes across this session's registered worktrees show up below the editor and as an aggregate `±N` next to the session branch in the bar:
+Changes shows **captured write/edit operations from this agent session and its owned subagents**. It does not scan the repository on startup, read all untracked files, or poll live files in the background. Fullscreen, the sidebar, and mouse interaction are unchanged.
 
 ```text
 ✎ 3 files · +42 −7 · extensions/gentle-shell.ts, lib/shell-bar.ts, tests/x.test.ts · /gentle:changes
 ```
 
-- Each registered root shows **all** dirty files: plain `git diff` against HEAD plus untracked files, including edits that predate this session. There are no baselines or file-level attribution filters.
-- The canonical session cwd root is included automatically. Successful standard `read`, `write`, `edit`, `grep`, `find`, and `ls` calls register their target worktree after completion. Failed calls, shell command text, and prose never register roots. Only roots sharing the session's Git common directory are accepted.
-- For opaque shell use or worktrees used earlier, call `session_worktree_register` with `{"path":"/path/to/worktree"}`. Registration is explicit, canonicalized, and deduplicated; unrelated dirty siblings remain invisible without an ignored-roots list.
-- The root registry persists in Pi custom entries (`gentle-pi.session-worktree/v1`). Exit/resume and `/reload` restore the same session UUID; `/tree` keeps roots session-wide. New sessions, `/fork`, and `/clone` ignore inherited registrations with another UUID. Clean roots stay registered but hidden until dirty; missing/prunable roots are skipped safely. Ephemeral `--no-session` runs cannot persist across exit.
-- Counts refresh after every tool call, at the end of each turn, and every 5 seconds in the background, so edits made from nvim or another agent show up without touching pi. `GENTLE_PI_SHELL_CHANGES_WATCH_MS` changes the interval; `off` leaves only the tool-driven refresh. Outside a git repository the widget stays hidden.
-- On narrow terminals the file list is dropped before the summary is truncated.
+### What appears in Changes
 
-`/gentle:changes` or `alt+g` opens the framed two-pane viewer. Dirty worktrees are accordion groups in the left pane, labeled with branch and directory basename (`detached` when there is no branch). Expand groups to reveal indented changed files; multiple groups can stay expanded. The right pane previews the selected file's lazy-loaded diff, or shows the selected group's full directory and summary. Clean, bare, missing, and prunable roots remain hidden; untracked-only roots are included.
+- A worktree appears only after a captured successful mutation. Reading a file, opening a directory, registering a worktree, or launching a child is not mutation evidence.
+- Diffs compare the content observed before the agent's first captured operation with its latest captured result, not with HEAD. Consecutive agent edits combine; an agent revert removes its net change.
+- Edits from your editor or other sessions do not update these captured diffs. If an external or unobserved edit breaks continuity before the next agent operation on the same file, the file is marked **diff unavailable**, rather than mixing ownership.
+- Only worktrees in the coordinating session's Git clone are accepted. Child evidence is accepted only from an owned task with paired successful write/edit events and a matching target.
+- **Coverage is deliberately limited to write/edit tools.** Shell commands, custom mutation tools, failed/interrupted outcomes and children without the capture extension provide no attributed diff. A missing row does not mean the repository is clean or that no other changes occurred.
 
-- `j`/`k` or up/down traverse visible groups and files, keeping the selection in view. On a group, `enter`, space, or right arrow toggles expansion. Left arrow or backspace moves a file selection to its parent, or collapses the selected group. `ctrl+j`/`ctrl+k` or `pgdn`/`pgup` scroll the diff; `esc` or `q` closes the overlay.
-- In fullscreen mode, left-click selects a visible file and loads its diff without opening the editor. Mouse wheels scroll the file list and selected diff independently; hovering does not select or open anything.
-- Opening, pressing `r`, and the background/overlay refresh cadence scan only registered roots. Worktree discovery supplies branch labels, never registration. No changes in registered roots means no widget and an informational notice instead of an overlay.
-- While the overlay is open, git is polled every 2 seconds, so edits made from nvim, another agent, or a checkout show up in place. Expansion and selection stick to the raw worktree root and file path across refreshes; a diff reloads when its counts move.
-- `GENTLE_PI_SHELL_CHANGES_KEY` rebinds the shortcut (pi key syntax, for example `ctrl+shift+g`); `off` disables it. On macOS, `alt+g` needs the terminal to send Option as Meta.
-- On a file row, `o` (or `enter`) opens the selected file in `$VISUAL` or `$EDITOR`, with the selected worktree as the editor's working directory, and returns to pi when the editor exits. Diff lookup and caches are also scoped to that root; identical relative filenames in other worktrees cannot share a diff.
-- Untracked files are diffed against an empty file so new files show their full content.
+### Bounds and session lifetime
+
+Capture reads only the named target, up to 64 KiB and 2,000 text lines. Binary, oversized, nonregular and unverifiable snapshots show unavailable counts, never fabricated zero-count proof. At most 256 operation identities and 4 MiB of serialized evidence are retained per session; reaching the limit produces a warning.
+
+Snapshots are stored locally in Pi custom entries (`gentle-pi.session-change/v1`), including bounded before/after source text. Exit/resume and reload restore captures only for the exact same session UUID. New sessions and forks do not inherit attribution from another UUID. Ephemeral `--no-session` runs do not persist after exit. Capturing remains active in headless children and when the visual shell is disabled.
+
+The separate `session_worktree_register` tool still registers canonical same-clone roots for coordination, but registration alone never adds files to Changes. Existing `gentle-pi.session-worktree/v1` entries do not establish file-level attribution.
+
+### Browse captured diffs
+
+`/gentle:changes` or `alt+g` opens the two-pane viewer. Worktrees are accordion groups on the left; selecting a file displays its captured diff on the right.
+
+- `j`/`k` or arrows navigate. On a group, Enter, Space or Right expands it; Left returns to its parent or collapses it. `ctrl+j/k` or Page Up/Down scroll the diff; Escape or `q` closes.
+- Fullscreen left-click selects files; mouse wheels scroll the file list and diff independently. Hover does not open files.
+- Opening, pressing `r`, and the overlay's refresh cadence consult only the captured session model. They never rescan Git or load the current file contents. Same-line-count edits invalidate the diff preview by content revision.
+- On a file, `o` or Enter opens the actual current file in `$VISUAL` or `$EDITOR`, with its worktree as cwd. Edits made there are external and are not attributed to the agent.
+- `GENTLE_PI_SHELL_CHANGES_KEY` rebinds the shortcut; `off` disables it. `GENTLE_PI_SHELL_CHANGES_POLL_MS` controls only the open overlay's in-memory refresh. `GENTLE_PI_SHELL_CHANGES_WATCH_MS` no longer enables filesystem polling.
+- No captured changes means no widget and an informational notice; it does not assert that the working tree is clean.
 
 Subscription usage shows in the bar after the cost, and `/gentle:usage` opens a panel with every window per provider:
 
@@ -99,7 +113,9 @@ Gentle notices are drawn as cards: the same rounded frame as the prompt, with th
 
 The current package requires Pi 0.85.1 or newer (development tests pin 0.85.1). Use the latest Pi release; gentle-pi does not update your installed Pi automatically. Children, including any `GENTLE_PI_AGENTS_PI` override, must emit `agent_settled`: `agent_end` records a run's output but is not completion because retries or queued continuations may follow.
 
-The `subagent_*` tools and the agents card replace the third-party subagents package (remove `npm:pi-subagents-j0k3r` from your pi packages; while it is still installed the tools stay unregistered and a warning says so at startup). Agent definitions and settings are the ones you already have: markdown agents in `~/.pi/agent/agents/`, `~/.pi/agent/subagents/`, `<cwd>/.pi/agents/`, `<cwd>/.pi/subagents/` (project beats global, `subagents/` beats `agents/`), and `subagents.json` at the global and project level (`default_model`, `default_effort`, `default_mode`, `model_profiles`, `stall_timeout_ms`, `max_concurrency`, `history_max_tasks`, `extensions`).
+The `subagent_*` tools and the agents card replace the third-party subagents package (remove `npm:pi-subagents-j0k3r` from your pi packages; while it is still installed the tools stay unregistered and a warning says so at startup). Agent definitions and settings are the ones you already have: markdown agents in `~/.pi/agent/agents/`, `~/.pi/agent/subagents/`, `<cwd>/.pi/agents/`, `<cwd>/.pi/subagents/` (project beats global, `subagents/` beats `agents/`), and `subagents.json` at the global and project level (`default_model`, `default_effort`, `default_mode`, `model_profiles`, `stall_timeout_ms`, `tool_stall_timeout_ms`, `max_concurrency`, `history_max_tasks`, `extensions`).
+
+`extensions` controls each child's Pi extensions: omit it to use Pi's ambient discovery, set `[]` to launch with only `--no-extensions`, or list paths to launch with `--no-extensions` and those extensions in order. A project value replaces the global value.
 
 Agent paths follow `GENTLE_PI_AGENT_HOME`, then `PI_CODING_AGENT_DIR`, then `~/.pi/agent` for definitions, config, history, child sessions, and transcripts. These overrides select the agent profile; they do not sandbox project or shared global resources.
 
@@ -110,9 +126,7 @@ Agent paths follow `GENTLE_PI_AGENT_HOME`, then `PI_CODING_AGENT_DIR`, then `~/.
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-Every subagent is its own `pi --mode rpc` child process, so the terminal never runs subagent work: the host reads JSON lines, applies each one as a small delta to a bounded per-task thread, and notifies only the listeners of that task. A task-mode child's question (`ctx.ui.select`, `confirm`, `input`, `editor`) reaches you as an ordinary pi dialog; a background child's question is dismissed. Subagents have no automatic total execution timeout: a long-running child remains live while it continues emitting RPC events. A silent child still times out through the configurable `stall_timeout_ms` watchdog (default four minutes). Closing pi stops the children that are still running.
-
-`extensions` controls each child's Pi extensions: omit it to use Pi's ambient discovery, set `[]` to launch with only `--no-extensions`, or list paths to launch with `--no-extensions` and those extensions in order. A project value replaces the global value.
+Every subagent is its own `pi --mode rpc` child process, so the terminal never runs subagent work: the host reads JSON lines, applies each one as a small delta to a bounded per-task thread, and notifies only the listeners of that task. A task-mode child's question (`ctx.ui.select`, `confirm`, `input`, `editor`) reaches you as an ordinary pi dialog; a background child's question is dismissed. Subagents have no automatic total execution timeout: a long-running child remains live while it continues emitting RPC events. A silent child still times out through the configurable `stall_timeout_ms` watchdog (default four minutes). An announced tool call that is still running is live work, not silence, so it is bounded by `tool_stall_timeout_ms` instead (default 30 minutes, never below `stall_timeout_ms`). Closing pi stops the children that are still running.
 
 - `subagent_list_agents`, `subagent_run` (`agent`, `task`, `label?`, `context?`, `workspace_root?`, `mode?` task or background), `subagent_status`, `subagent_result`, `subagent_list_tasks`, `subagent_reply` (one current-session reply to a live child query), `subagent_cancel`, `subagent_send_message` (steer a running child), `subagent_continue` (resume a finished task in its own session).
 - `subagent_run.workspace_root` selects an existing worktree in the session's Git clone. Validation happens before queueing; the child runs at that canonical root. Successful OS spawn registers the root in the originating parent session, including delayed queued launches, even without an active shell listener. Failed spawns do not register. `subagent_continue` retains the previous task's cwd; status and task details expose it.

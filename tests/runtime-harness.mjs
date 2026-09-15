@@ -1254,7 +1254,7 @@ async function run() {
 		assert.equal(existsSync(join(lazySddCwd, ".pi", "chains", "sdd-full.chain.md")), false);
 		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
 		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-status.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-sync.md")), true);
+		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-sync.md")), false);
 		assert.equal(existsSync(join(globalAgentHome, "gentle-ai", "support", "sdd-status-contract.md")), true);
 		assert.equal(existsSync(join(globalAgentHome, "chains", "sdd-full.chain.md")), true);
 		assert.equal(ctx.ui.selections.length, 1, "first interactive SDD trigger confirms session suggestions");
@@ -1286,7 +1286,7 @@ async function run() {
 		assert.equal(existsSync(join(lazySddCwd, ".pi", "chains", "sdd-full.chain.md")), false);
 		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
 		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-status.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-sync.md")), true);
+		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-sync.md")), false);
 		assert.equal(existsSync(join(globalAgentHome, "gentle-ai", "support", "sdd-status-contract.md")), true);
 		assert.equal(existsSync(join(globalAgentHome, "chains", "sdd-full.chain.md")), true);
 		const globalSddApply = await readFile(
@@ -1793,7 +1793,7 @@ async function run() {
 		await writeFile(join(staleAssetsCwd, ".pi", "gentle-ai", "support", "sdd-status-contract.md"), "stale status contract\n");
 		const ctx = createCtx(staleAssetsCwd, true);
 		await commands.get("gentle:status").handler("", ctx);
-		assert.match(ctx.ui.notifications.at(-1).message, /Active SDD agent overrides: 6 file\(s\)/);
+		assert.match(ctx.ui.notifications.at(-1).message, /Active SDD agent overrides: 5 file\(s\)/);
 		assert.match(ctx.ui.notifications.at(-1).message, /active non-builtin SDD agents shadow package assets/);
 		await commands.get("gentle:doctor").handler("", ctx);
 		assert.match(ctx.ui.notifications.at(-1).message, /el Gentleman doctor/);
@@ -1823,7 +1823,7 @@ async function run() {
 		assert.equal(existsSync(join(sddCwd, ".pi", "chains", "sdd-full.chain.md")), false);
 		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
 		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-status.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-sync.md")), true);
+		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-sync.md")), false);
 		assert.equal(existsSync(join(globalAgentHome, "gentle-ai", "support", "sdd-status-contract.md")), true);
 		assert.equal(existsSync(join(globalAgentHome, "chains", "sdd-full.chain.md")), true);
 		assert.equal(ctx.ui.selections.length, 1, "sdd-init confirms session preflight before project initialization");

@@ -1783,9 +1783,9 @@ test("bash tool_call confirms every compound action and centers a long git -C pu
 	assert.match(preview, /push origin main && npm publish --tag beta/);
 	assert.ok(preview.startsWith("…"));
 });
-// /gentle:profiles reopens its panel after every action, so a test that applies
-// once must confirm on the first visit and close on the next, or the panel and
-// the action loop feed each other forever.
+// /gentle:profiles reopens its panel after actions that finish the interaction,
+// so a test that applies once must confirm on the first visit and close on the
+// next, or the panel and the action loop feed each other forever.
 function applyOnce(
 	fixture: { onInput(action: (panel: { handleInput(data: string): void }) => void): void },
 ): void {
@@ -1928,6 +1928,83 @@ test("a failed apply restores the previous profile's routing with the same repla
 	assert.doesNotMatch(readFileSync(join(fixture.root, ".pi", "agents", "worker.md"), "utf8"), /^model:/m);
 	const store = JSON.parse(readFileSync(join(fixture.configHome, "profiles.json"), "utf8"));
 	assert.equal(store.active, "old");
+});
+
+test("s snapshots current routing in place without applying or reopening the profiles panel", async (t) => {
+	const { fixture, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha", thinking: "minimal" } }, null, 2)}\n`);
+	const subagentsPath = join(fixture.root, ".pi", "subagents.json");
+	writeFileSync(subagentsPath, `${JSON.stringify({ model_profiles: { worker: { model: "openai/beta", effort: "high" } } }, null, 2)}\n`);
+	const workerPath = join(fixture.root, ".pi", "agents", "worker.md");
+	const before = {
+		models: readFileSync(fixture.globalPath, "utf8"),
+		subagents: readFileSync(subagentsPath, "utf8"),
+		worker: readFileSync(workerPath, "utf8"),
+		settings: readFileSync(settingsPath, "utf8"),
+	};
+	writeStore({
+		"a-target": {},
+		"z-active": { worker: { model: "openai/beta" } },
+	}, "z-active");
+
+	let firstPanel: RoutingConsumerPanel | undefined;
+	fixture.onInput((panel) => {
+		if (firstPanel === undefined) {
+			firstPanel = panel;
+			panel.handleInput("s");
+			panel.handleInput("\x1b");
+		} else {
+			panel.handleInput("\x1b");
+		}
+	});
+	await fixture.run("gentle:profiles");
+
+	const store = JSON.parse(readFileSync(join(fixture.configHome, "profiles.json"), "utf8"));
+	assert.deepEqual(store.profiles["a-target"], {
+		worker: { model: "openai/alpha", thinking: "minimal" },
+		orchestrator: { model: "nan/deepseek-v4-flash", thinking: "high" },
+	});
+	assert.deepEqual(store.profiles["z-active"], { worker: { model: "openai/beta" } });
+	assert.equal(store.active, "z-active");
+	assert.match(fixture.panels[0] ?? "", /enter apply · c create · s snapshot/);
+	assert.equal(readFileSync(fixture.globalPath, "utf8"), before.models);
+	assert.equal(readFileSync(subagentsPath, "utf8"), before.subagents);
+	assert.equal(readFileSync(workerPath, "utf8"), before.worker);
+	assert.equal(readFileSync(settingsPath, "utf8"), before.settings);
+	assert.equal(fixture.panelVisits(), 1, "snapshot keeps the same panel open");
+	assert.ok(firstPanel);
+	const targetRow = renderComponent(firstPanel!).split("\n");
+	const targetIndex = targetRow.findIndex((line) => line.includes("a-target"));
+	assert.ok(targetIndex >= 0, "selected profile remains in the list");
+	assert.match(targetRow[targetIndex + 1] ?? "", /1 role/);
+	assert.match(renderComponent(firstPanel!), /Snapshot saved; live routing unchanged\. Profile "a-target" saved from current routing\./);
+});
+
+test("snapshot feedback keeps both outcomes visible for long profile names at narrow widths", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	const longName = `a${"x".repeat(63)}`;
+	writeStore({ [longName]: {} });
+	let firstPanel: RoutingConsumerPanel | undefined;
+	fixture.onInput((panel) => {
+		if (firstPanel === undefined) {
+			firstPanel = panel;
+			panel.handleInput("s");
+			const success = stripAnsi(panel.render(60).join("\n"));
+			assert.match(success, /Snapshot saved; live routing unchanged\./);
+			rmSync(storePath);
+			mkdirSync(storePath);
+			panel.handleInput("s");
+			panel.handleInput("\x1b");
+		} else {
+			panel.handleInput("\x1b");
+		}
+	});
+	await fixture.run("gentle:profiles");
+	assert.ok(firstPanel);
+	const constrained = stripAnsi(firstPanel!.render(60).join("\n"));
+	assert.match(constrained, /Snapshot failed; live routing unchanged\./);
 });
 
 test("the profiles command seeds and shows the routing the runtime uses when models.json is sparse", async (t) => {

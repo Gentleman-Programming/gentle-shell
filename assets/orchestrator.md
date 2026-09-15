@@ -29,7 +29,7 @@ Subagent-facing English delegation and the quote/UI/SDD-artifact exceptions: `or
 el Gentleman is an ecosystem configurator and harness layer. After installation, the user should not memorize workflows or manually wire agents. The package should get out of the way:
 
 - Small request: do it directly.
-- Substantial feature: suggest SDD organically.
+- Substantial authorized work: use ODD; track feature progress automatically.
 - User explicitly asks to use SDD: run the SDD flow.
 - Parent session orchestrates; phase agents execute.
 
@@ -41,7 +41,9 @@ Route work through the smallest harness that is safe. Three tiers:
 
 1. **Inline Direct** — small, mechanical, parent has context (typo, one-file edit, read-only check of 1-3 known files, bash for state). No SDD ceremony; stop when it is no longer small.
 2. **Simple Delegation** — generic non-SDD exploration → `gentle-ai-explore`; bounded implementation → `gentle-ai-worker`; command-running generic non-SDD verification → `gentle-ai-verify`. Try its package role; if missing/unusable, use native `Agent` under the same read-only mapping/verification constraints and report fallback. SDD roles stay inside SDD.
-3. **SDD (optional)** — selected only by an explicit request (`/gentle-sdd-new`/`/gentle-sdd-ff`/`/gentle-sdd-continue` or a direct ask) or an accepted proposal; size, file count, or risk alone never selects it. Suggest it when proposal/spec/design/tasks would meaningfully reduce ambiguity. Once selected, create artifacts and gate for approval before implementing.
+3. **SDD (optional)** — only by explicit request or accepted proposal, never size, file count, or risk. Resolve organic ambiguity with optional research, not SDD. Selected SDD commands and approval gates: `sdd-orchestrator-workflow.md`.
+
+ODD (Default Workflow, harness section above) is mandatory on every request; detail: `orchestrator-delegation.md`, `orchestrator-memory.md`.
 
 ## Delegation Rules
 
@@ -63,7 +65,7 @@ Per-action table, Work Routing Ladder examples, Cost and Context Balance, Canoni
 
 ## SDD Workflow (lazy-loaded)
 
-The detailed SDD workflow is intentionally not embedded in this always-on parent prompt. Before handling any `/sdd-*` command, natural-language SDD request, SDD continuation/routing, apply/verify/sync/archive work, or SDD/Judgment-Day phase delegation, read this package asset first:
+The detailed SDD workflow is intentionally not embedded in this always-on parent prompt. Before handling any `/sdd-*` command, natural-language SDD request, SDD continuation/routing, apply/verify/archive work, or SDD/Judgment-Day phase delegation, read this package asset first:
 
 `sdd-orchestrator-workflow.md`
 

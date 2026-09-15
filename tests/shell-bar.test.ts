@@ -7,6 +7,7 @@ import {
 	gaugeTone,
 	renderGauge,
 	renderShellBar,
+	renderShellSidebarBar,
 	shellEnabled,
 	type ShellBarModel,
 	type ShellBarTheme,
@@ -173,4 +174,17 @@ test("shellEnabled honors GENTLE_PI_SHELL=0", () => {
 	assert.equal(shellEnabled({ GENTLE_PI_SHELL: "1" }), true);
 	assert.equal(shellEnabled({ GENTLE_PI_SHELL: "0" }), false);
 	assert.equal(shellEnabled({ GENTLE_PI_SHELL: "false" }), false);
+});
+
+test("sidebar profile wraps long names without changing the compact bar", () => {
+	const profile = "team-" + "x".repeat(59);
+	const base = model();
+	const active = model({ profile });
+	for (const width of [24, 46]) {
+		const lines = renderShellSidebarBar(active, plainTheme, width);
+		assert.ok(lines.every((line) => visibleWidth(line) <= width));
+		assert.match(lines.join("\n"), /Profile/);
+		assert.ok(lines.join("").replace(/[│\s]/g, "").includes(profile));
+	}
+	assert.deepEqual(renderShellBar(active, plainTheme, 120), renderShellBar(base, plainTheme, 120));
 });

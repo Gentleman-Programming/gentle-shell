@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
-import { acquireTaskLock, historyDir, loadHistory, loadStoredTask, pruneHistory, saveTask } from "../lib/agents-history.ts";
+import { historyDir, loadHistory, loadStoredTask, pruneHistory, saveTask } from "../lib/agents-history.ts";
 import { applyTaskEvent, emptyThread, TASK_EVENT, TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
 
 // Gentle Agents history: JSON per task, async, lazy, pruned by count.
@@ -12,13 +11,6 @@ import { applyTaskEvent, emptyThread, TASK_EVENT, TASK_STATUS, TaskStore, type T
 const root = mkdtempSync(join(tmpdir(), "gentle-agents-history-"));
 after(() => rmSync(root, { recursive: true, force: true }));
 const dir = join(root, "tasks");
-
-function orphanLock(lockDir: string, id: string): void {
-	const moduleUrl = new URL("../lib/agents-history.ts", import.meta.url).href;
-	const source = `import { acquireTaskLock } from ${JSON.stringify(moduleUrl)}; const [dir, id] = process.argv.slice(-2); acquireTaskLock(dir, id);`;
-	const child = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", source, lockDir, id], { encoding: "utf8" });
-	assert.equal(child.status, 0, child.stderr || child.stdout);
-}
 
 function task(id: string, createdAt: number): TaskRecord {
 	return { id, agent: "explore", mode: "task", prompt: "p", label: "p", cwd: "/r", parentSessionId: "s", status: TASK_STATUS.COMPLETED, createdAt, startedAt: createdAt, endedAt: createdAt + 5, model: "m", thinking: undefined, sessionPath: null, error: null, result: "ok", lastStep: "done", lastActivityAt: createdAt, turns: 1, toolCalls: 0, tokens: 10, cost: 0.01 };
@@ -41,20 +33,6 @@ test("saveTask writes a task with its thread and loadStoredTask reads it back", 
 	assert.deepEqual(readdirSync(dir), ["a1.json"], "no temp file is left behind");
 });
 
-test("task reconciliation elections bypass dead candidates and fail closed for active or ambiguous candidates", () => {
-	const lockDir = join(root, "task-locks"), token = "11111111-1111-4111-8111-111111111111";
-	const held = acquireTaskLock(lockDir, "busy");
-	assert.match(held.path, /busy\.reconcile\.[0-9a-f-]+$/);
-	assert.throws(() => acquireTaskLock(lockDir, "busy"), /busy|active|ambiguous/i); held.release();
-	orphanLock(lockDir, "dead");
-	const deadName = readdirSync(lockDir).find(name => name.startsWith("dead.reconcile."))!;
-	const bypassed = acquireTaskLock(lockDir, "dead");
-	assert.notEqual(bypassed.path, join(lockDir, deadName)); assert.ok(!readdirSync(lockDir).includes(deadName)); bypassed.release();
-	const malformed = join(lockDir, `malformed.reconcile.${token}`); writeFileSync(malformed, "not-json");
-	assert.throws(() => acquireTaskLock(lockDir, "malformed"), /busy|active|ambiguous|malformed/i);
-	const foreign = join(lockDir, `foreign.reconcile.${token}`); writeFileSync(foreign, JSON.stringify({ schema: "gentle-pi.task-reconciliation-lock/v1", taskId: "foreign", token, pid: process.pid, host: "foreign-host" }));
-	assert.throws(() => acquireTaskLock(lockDir, "foreign"), /busy|active|ambiguous|foreign/i);
-});
 test("loadHistory skips broken files, sorts newest first, and pruneHistory keeps the newest N", async () => {
 	await saveTask(dir, task("b2", 3000), emptyThread());
 	await saveTask(dir, task("c3", 2000), emptyThread());
@@ -73,4 +51,14 @@ test("TaskStore.restore adds a stored task without clobbering a live one", () =>
 	assert.equal(store.thread("r1").items.length, 1);
 	assert.equal(store.restore({ ...task("r1", 1000), result: "other" }, emptyThread()), false);
 	assert.equal(store.get("r1")?.result, "ok");
+});
+
+test("retired remediation payloads remain readable and are never automatically pruned or replayed", async () => {
+	const legacyDir = join(root, "legacy-remediation");
+	const legacy = { ...task("legacy", 1), sddRemediation: { acquire: { requestId: "old" }, token: "historical", settlement: { state: "complete" } } };
+	await saveTask(legacyDir, legacy, emptyThread());
+	const before = readFileSync(join(legacyDir, "legacy.json"), "utf8");
+	assert.equal(await pruneHistory(legacyDir, 0), 0);
+	assert.deepEqual((await loadStoredTask(legacyDir, "legacy"))?.task, JSON.parse(before).task);
+	assert.equal(readFileSync(join(legacyDir, "legacy.json"), "utf8"), before);
 });

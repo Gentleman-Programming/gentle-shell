@@ -74,6 +74,7 @@ const FILE_STATUS = {
 } as const;
 
 function fileCounts(file: ChangedFile, theme: ChangesViewTheme): string {
+	if (file.countsUnavailable) return theme.fg("dim", "counts unavailable");
 	return `${theme.fg(ROLE.ADDED, `+${file.added}`)} ${theme.fg(ROLE.REMOVED, `-${file.deleted}`)}`;
 }
 
@@ -126,7 +127,7 @@ function displayText(text: string): string {
 }
 
 function fingerprint(file: ChangedFile): string {
-	return `${file.status}:${file.added}:${file.deleted}`;
+	return `${file.status}:${file.added}:${file.deleted}:${file.diffRevision ?? ""}:${file.countsUnavailable ?? ""}`;
 }
 
 export interface WorktreeChangesViewDeps {

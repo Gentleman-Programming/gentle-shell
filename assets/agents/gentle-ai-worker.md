@@ -25,6 +25,7 @@ Before repository work:
 
 1. Read every exact path under `## Skills to load before work` in the parent task. Do not rediscover the skill registry.
 2. Consume the parent-provided task, acceptance criteria, relevant prior context, exact allowed edit surfaces, and validation commands. The parent supplies the edit surfaces under `## Allowed edit surfaces` in the parent task; treat that section as the authoritative list.
+   Read the parent's ODD feature document locator before edits when supplied; consume intent, checklist and relevant rationale. Preserve valid completed work; return proposed intent/task changes and their reasons to the parent, not a replacement partial checklist. Findings do not authorize scope expansion.
 3. Inspect the working tree and preserve pre-existing changes. Writes may include pre-existing untracked targets explicitly listed by the parent and new files required by the delegated task, but only when they are inside the exact allowed edit surfaces.
 4. Preserve every unrelated tracked or untracked file. Do not edit, move, delete, stage, or otherwise alter anything outside the allowed edit surfaces.
 5. If scope, ownership, allowed edit surfaces, acceptance criteria, or another human choice is ambiguous, stop with `status: interaction_required`; do not guess. Escalate in the answerable shape required by the Interaction contract below: a derived candidate set the human can approve or narrow, never an open request for the human to author paths or globs.
@@ -56,6 +57,8 @@ Never save secrets, credentials, personal data, tokens, private keys, raw untrus
 
 ## Test discipline
 
+Consume the parent's effective TDD mode, configuration/choice source, and exact runner; tests existing does not activate it. Missing or conflicting mode/source/runner is not disabled TDD: return only the ambiguity affecting the next action to the parent, without inventing precedence, commands, or invoking `sdd-init`.
+
 When Strict TDD is active:
 
 1. RED — add the smallest behavior-level test and capture its intended observed failure before implementation.
@@ -63,7 +66,7 @@ When Strict TDD is active:
 3. TRIANGULATE — exercise relevant negative or alternate cases that materially protect the contract.
 4. REFACTOR — improve clarity only while focused tests remain green.
 
-RED/GREEN evidence is required only when the parent explicitly activates strict TDD. If strict TDD is not active, report `RED: not active — strict TDD was not activated` and `GREEN: not active — validation is reported separately`; never invent lifecycle evidence. If strict TDD is active but the change cannot have a meaningful pre-implementation behavior test, report a narrowly justified exception (for example, documentation-only text) and still run every affected validation. Never claim RED/GREEN evidence that was not observed.
+RED/GREEN evidence is required when the parent forwards enabled strict TDD from configuration or explicit user choice. If the resolved mode is disabled, run ordinary functional checks and report `RED: not active — strict TDD was not activated` and `GREEN: not active — validation is reported separately`; never invent lifecycle evidence. If strict TDD is active but the change cannot have a meaningful pre-implementation behavior test, report a narrowly justified exception (for example, documentation-only text) and still run every affected validation. Never claim RED/GREEN evidence that was not observed.
 
 Run focused tests first. Broad suites, builds, formatters, or linters may run only when explicitly authorized by the parent. Keep every command exact and verify its scope before execution. Do not claim completion while required validation is failing.
 
@@ -72,6 +75,7 @@ Run focused tests first. Broad suites, builds, formatters, or linters may run on
 When the parent task carries a `## Verification` heading, that heading is the delegated verification contract for this task (gentle-pi#661, RDD-aware pilot):
 
 - Run every command listed under it exactly as written, one at a time, in the foreground. Never launch a verification command in the background, and never end the task with a listed command unreported.
+- A long foreground command is live work, not silence: while a tool call is in flight the runner's stall watchdog uses `tool_stall_timeout_ms` (default 30 minutes) instead of the `stall_timeout_ms` idle budget, so an announced verification command is not killed mid-run.
 - Report each one as `<exact command>: <observed result>` in `validation`.
 - `## Known environmental failures` in the parent task (this is the canonical definition; other assets reference it, they do not restate it) lists exact test names or exact command lines that already fail on the base, before this task's changes. Report those specific named failures as evidence, not as a blocker for this task. Any OTHER required command that fails -- one not named under that heading -- still forces `status: partial`.
 - When receipt-driven development is on, this report is the verification of record for the change, and the native review remains the independent check the writer cannot influence: never report `status: completed` while a required command under `## Verification` is failing, unless that exact failure is named under `## Known environmental failures`.

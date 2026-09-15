@@ -19,6 +19,8 @@ export interface ChangedFile {
 	added: number;
 	deleted: number;
 	status: ChangeStatus;
+	countsUnavailable?: string;
+	diffRevision?: string;
 }
 
 export interface ChangesModel {
@@ -115,7 +117,7 @@ export function changesModel(changed: ChangedFile[]): ChangesModel {
 
 export function changesSummary(model: ChangesModel): string {
 	const noun = model.files.length === 1 ? "file" : "files";
-	return `${model.files.length} ${noun} · +${model.added} −${model.deleted}`;
+	return `${model.files.length} ${noun} · +${model.added} −${model.deleted}${model.files.some(file => file.countsUnavailable) ? " · partial counts" : ""}`;
 }
 
 // One line: summary, the files joined by dots, and the command pushed to
@@ -124,7 +126,7 @@ export function renderChangesWidget(model: ChangesModel, theme: ChangesTheme, wi
 	if (model.files.length === 0) return [];
 	const noun = model.files.length === 1 ? "file" : "files";
 	const dot = theme.fg("muted", "·");
-	const head = `${theme.fg("accent", WIDGET_GLYPH)} ${theme.fg("text", `${model.files.length} ${noun}`)} ${dot} ${theme.fg("success", `+${model.added}`)} ${theme.fg("error", `−${model.deleted}`)}`;
+	const head = `${theme.fg("accent", WIDGET_GLYPH)} ${theme.fg("text", `${model.files.length} ${noun}`)} ${dot} ${theme.fg("success", `+${model.added}`)} ${theme.fg("error", `−${model.deleted}`)}${model.files.some(file => file.countsUnavailable) ? " · partial counts" : ""}`;
 	const hint = theme.fg("dim", CHANGES_COMMAND);
 	const list = model.files.map((file) => theme.fg("muted", file.path)).join(` ${dot} `);
 	const left = `${head} ${dot} ${list}`;

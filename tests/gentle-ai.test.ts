@@ -2033,6 +2033,22 @@ test("the profiles command seeds and shows the routing the runtime uses when mod
 	assert.doesNotMatch(rendered, /No routing entries/);
 });
 
+for (const reader of ["readEffectiveModelConfig", "readEffectiveModelConfigAsync"] as const) {
+	test(`${reader} retains frontmatter model with a profile-only effort override`, async (t) => {
+		const fixture = routingConsumerFixture(t, ["worker"]);
+		writeMarkdown(join(fixture.root, ".pi", "agents", "worker.md"), "---\nname: worker\ndescription: Worker\nmodel: openai-codex/gpt-5.6-terra\nthinking: high\n---\nbody\n");
+		writeFileSync(join(fixture.root, ".pi", "subagents.json"), `${JSON.stringify({
+			model_profiles: { worker: { effort: "low" } },
+		})}\n`);
+
+		const effective = await __testing[reader](fixture.root);
+		assert.deepEqual(JSON.parse(JSON.stringify(effective.worker)), {
+			model: "openai-codex/gpt-5.6-terra",
+			thinking: "low",
+		});
+	});
+}
+
 test("effective routing prefers models.json over the materialized stores", (t) => {
 	const fixture = routingConsumerFixture(t, ["worker", "helper"]);
 	mkdirSync(fixture.configHome, { recursive: true });

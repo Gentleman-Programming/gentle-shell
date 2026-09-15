@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { __testing } from "../extensions/gentle-ai.ts";
 
 // These are instruction-delivery contracts, not proof of autonomous model adherence.
 const read = (path: string) => readFileSync(join(import.meta.dirname, "..", path), "utf8");
@@ -17,7 +18,7 @@ function containsAll(text: string, clauses: readonly string[]): void {
 test("organic entry stays read-only without authorization and loads detail before work", () => {
 	containsAll(core, [
 		"Substantial authorized work: use ODD",
-		"Before organic exploration, implementation, or resume",
+		"ODD (Default Workflow, harness section above) is mandatory on every request",
 		"orchestrator-delegation.md",
 		"orchestrator-memory.md",
 	]);
@@ -155,4 +156,53 @@ test("ODD forwards configured TDD without equating test presence with enablement
 		"Missing or conflicting mode/source/runner is not disabled TDD",
 	]);
 	assert.doesNotMatch(wrapper, /If tests exist, use strict TDD/);
+});
+
+test("ODD protocol is always-on in the rendered system prompt and runs by default", () => {
+	const orderedClauses = [
+		"Default workflow: Organic Driven Development (MANDATORY)",
+		"predefined workflow of this orchestrator",
+		"SDD is a branch inside ODD",
+		"Never describe this workflow only when asked about it: run it.",
+		"1. **Authorize.**",
+		"2. **Explore.**",
+		"3. **Resolve uncertainty.**",
+		"4. **Classify.**",
+		"two or more meaningful implementation steps",
+		"5. **Track before the first write.**",
+		"Tell the user in one line which feature document was created and how many tasks it holds",
+		"6. **Implement task by task.**",
+		"7. **Close.**",
+		"Harness principles:",
+		"# el Gentleman Orchestrator",
+	];
+	for (const persona of ["gentleman", "neutral"] as const) {
+		const prompt = __testing.buildGentlePrompt(persona);
+		let cursor = -1;
+		for (const clause of orderedClauses) {
+			const index = prompt.indexOf(clause);
+			assert.ok(index !== -1, `[${persona}] missing contract: ${clause}`);
+			assert.ok(
+				index > cursor,
+				`[${persona}] clause out of order (must appear after the previous one): ${clause}`,
+			);
+			cursor = index;
+		}
+	}
+
+	assert.ok(
+		wrapper.includes("Organic Driven Development (ODD) is the predefined workflow for every request"),
+		"missing contract: extensions/gentle-ai.ts harness principle",
+	);
+	assert.ok(
+		wrapper.includes(
+			"I run Organic Driven Development by default and SDD/OpenSpec when explicitly selected",
+		),
+		"missing contract: extensions/gentle-ai.ts identity sentence",
+	);
+	assert.ok(
+		core.includes("ODD (Default Workflow, harness section above) is mandatory on every request"),
+		"missing contract: assets/orchestrator.md pointer sentence",
+	);
+	containsAll(core, ["orchestrator-delegation.md", "orchestrator-memory.md"]);
 });

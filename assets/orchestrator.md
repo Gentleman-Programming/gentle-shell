@@ -43,7 +43,7 @@ Route work through the smallest harness that is safe. Three tiers:
 2. **Simple Delegation** — generic non-SDD exploration → `gentle-ai-explore`; bounded implementation → `gentle-ai-worker`; command-running generic non-SDD verification → `gentle-ai-verify`. Try its package role; if missing/unusable, use native `Agent` under the same read-only mapping/verification constraints and report fallback. SDD roles stay inside SDD.
 3. **SDD (optional)** — only by explicit request or accepted proposal, never size, file count, or risk. Resolve organic ambiguity with optional research, not SDD. Selected SDD commands and approval gates: `sdd-orchestrator-workflow.md`.
 
-Before organic exploration, implementation, or resume, read `orchestrator-delegation.md` and `orchestrator-memory.md` for ODD.
+ODD (Default Workflow, harness section above) is mandatory on every request; detail: `orchestrator-delegation.md`, `orchestrator-memory.md`.
 
 ## Delegation Rules
 
@@ -65,7 +65,7 @@ Per-action table, Work Routing Ladder examples, Cost and Context Balance, Canoni
 
 ## SDD Workflow (lazy-loaded)
 
-The detailed SDD workflow is intentionally not embedded in this always-on parent prompt. Before handling any `/sdd-*` command, natural-language SDD request, SDD continuation/routing, apply/verify/sync/archive work, or SDD/Judgment-Day phase delegation, read this package asset first:
+The detailed SDD workflow is intentionally not embedded in this always-on parent prompt. Before handling any `/sdd-*` command, natural-language SDD request, SDD continuation/routing, apply/verify/archive work, or SDD/Judgment-Day phase delegation, read this package asset first:
 
 `sdd-orchestrator-workflow.md`
 

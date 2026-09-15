@@ -4,7 +4,7 @@ Shared OpenSpec-style contract for Gentle Pi SDD phases. Use this before acting 
 
 ## Purpose
 
-Any phase that selects, continues, applies, verifies, syncs, or archives an SDD change MUST first produce or consume structured status. The status is the handoff between the parent orchestrator and phase executor.
+Any phase that selects, continues, applies, verifies, or archives an SDD change MUST first produce or consume structured status. The status is the handoff between the parent orchestrator and phase executor.
 
 ## Change Selection
 
@@ -18,7 +18,8 @@ Any phase that selects, continues, applies, verifies, syncs, or archives an SDD 
 - `gentle-ai sdd-status --contract gentle-ai.sdd-status/v2` is the sole status authority for every store. It is read-only: inspect its native projection unchanged and never launch a phase, prepare consent, or grant roots while reading it.
 - If native status is unavailable, malformed, or does not select the requested change/workspace, stop and report that failure. Do not construct a local status, infer readiness from artifacts, substitute continuation, or bypass it through Engram.
 - `nextRecommended`, `dependencies`, `blockedReasons`, `actionContext`, and optional `phaseInstructions` are producer facts. Route only by their typed values, never by prose or a local lifecycle graph. A genuine blocker's human-readable explanation belongs in `blockedReasons`; a non-blocking diagnostic belongs in `notes`; neither belongs in `nextRecommended`.
-- Runtime-attempt authority is separate from status: runtime-bearing work uses the provider `sdd-attempt acquire|settle` flow and its `proceed`, `blocked`, or `complete` result.
+- Ordinary SDD actors follow native selection and real edit grants; no attempt acquire/settle budget is required.
+- Within one Pi runner, only one managed remediation actor may be queued or live in a canonical worktree. Wait for confirmed cleanup (or cancel and wait), then request fresh human authorization. This launch-local exclusion is not a cross-process lock; historical tasks are not admission authority. Other worktrees and ordinary tasks retain their existing concurrency.
 - Only an explicitly authorized `gentle-ai sdd-continue` may prepare a missing change-instance marker. `ensureChangeInstanceMarker` has no status caller; its sole production path is `PrepareChangeInstanceConsent` through `sdd-continue`.
 
 ## Bounded Planning Routing
@@ -36,7 +37,7 @@ Native unprefixed tokens are the only automatic planning routes. Prefixed or loc
 
 These planning routes remain runnable when missing planning artifacts leave `dependencies.apply: blocked`; do not require apply readiness to produce those artifacts. This is a planning-only exception, not permission to run apply or another blocked non-planning phase.
 
-Before any planning launch, stop for ambiguous change selection, unresolved session preflight, or unsafe action context. Carry `actionContext` and prove planned writes are within the authoritative workspace or allowed edit roots; workspace-planning without allowed edit roots remains read-only. Planning does not bypass the init guard, pre-proposal gate, or phase approval requirements.
+Before any planning launch, stop for ambiguous change selection, unresolved session preflight, or unsafe action context. Carry `actionContext` and prove planned writes are within the authoritative workspace or allowed edit roots; workspace-planning without allowed edit roots remains read-only. Planning does not bypass the init guard, optional research guidance, or phase approval requirements.
 
 ## Bounded Execution Routing
 
@@ -47,7 +48,7 @@ Before any planning launch, stop for ambiguous change selection, unresolved sess
 | `remediate` | `sdd-remediate` |
 | `archive` | `sdd-archive` |
 
-Execute only a native selected action whose dependency and `actionContext` permit it. Unknown, malformed, blocked, or unsupported actions stop before work; no local route, prefixed token, or prose can replace them. `notes` is separate from `blockedReasons` and never gates: report a non-empty `notes` value as informational and proceed when the dependency and `blockedReasons` gates allow. Manual `sdd-sync` remains its intentional local resolver and is never an automatic native-status dispatch.
+For automatic continuation, execute only a native selected action whose dependency and `actionContext` permit it. Unknown, malformed, blocked, or unsupported actions stop before work; no local route, prefixed token, or prose can replace them. `notes` is separate from `blockedReasons` and never gates: report a non-empty `notes` value as informational and proceed when the dependency and `blockedReasons` gates allow.
 
 ## Status Schema
 
@@ -61,14 +62,6 @@ The orchestrator MUST carry `actionContext` into any phase launch.
 - If `allowedEditRoots` is present, only edit or move files within those roots.
 - If a phase cannot prove a file is inside the authoritative workspace or allowed edit roots, stop and ask for clarification.
 
-## Native Runtime Attempt Authority
-
-The compact SDD runtime attempt authority is separate from artifact dispatch and status. It is artifact-store agnostic: the same acquire/settle discipline applies to `openspec`, `engram`, `both`, and `none` stores. Its payload MUST NOT be embedded in the SDD v1 status schema above; status reports artifact state only, never attempt tokens or attempt counters. No OpenSpec or Engram attempt ledger may be created or mirrored by Pi.
-
-Before every runtime-bearing `sdd-apply`, `sdd-verify`, or remediation launch, the orchestrator MUST acquire a bounded attempt from the provider compact CLI; after the external run completes it MUST settle. The acquire and settle request IDs are distinct; an operation's own request ID is reused only for idempotent replay of that exact operation. Continuation routes only from the provider-returned `proceed|blocked|complete` — launch only on `proceed`, stop on `blocked` or `complete`. `reset` is never automatic and requires an explicit maintainer scope decision.
-
-For the exact compact acquire/settle shapes and the full field semantics, see the `Native Runtime Attempt Authority` section of the lazy-loaded `SDD Orchestrator Workflow` contract. Do not look up `assets/...` paths at runtime; those are package source paths before installation.
-
 ## Status Output
 
 Every command or agent that acts on a change MUST show or consume status before doing phase work:
@@ -78,3 +71,7 @@ Every command or agent that acts on a change MUST show or consume status before 
 - task progress and unchecked task list when tasks exist;
 - next recommended action;
 - any `actionContext` or edit-root warnings.
+
+## Classical completion
+
+After completed apply, follow fresh native status to archive; verification is optional and explicitly invokable when its native dependency is ready and the provider recommends apply or archive. Never rewrite a pinned provider that still selects verify. Archive owns applicable delta-spec composition and retains task truth, dependsOn, real edit authority, confinement, collision/destructive-change consent, archive history and recovery. There is no standalone sync phase or post-SDD RDD prerequisite.

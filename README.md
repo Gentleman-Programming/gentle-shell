@@ -34,7 +34,7 @@
 
 <p align="center"><sub>One workspace. A coding agent you direct. A workflow you can inspect.</sub></p>
 
-<p align="center"><strong>BUILT FOR PI</strong> &nbsp;·&nbsp; Coding-agent workspace &nbsp;·&nbsp; Focused agents &nbsp;·&nbsp; Optional SDD</p>
+<p align="center"><strong>BUILT FOR PI</strong> &nbsp;·&nbsp; Coding-agent workspace &nbsp;·&nbsp; Focused agents &nbsp;·&nbsp; ODD + optional SDD</p>
 
 <p align="center">
   <a href="https://github.com/Gentleman-Programming/gentle-pi/stargazers"><strong>★ Star gentle-shell on GitHub</strong></a>
@@ -114,13 +114,27 @@ Bring in help without losing the thread. Focused package-owned Pi agents can map
 
 ---
 
-### Optional SDD/TDD — Durable plans, earned evidence
+### ODD — The everyday workflow
+
+**Organic Driven Development (ODD)** is the recommended path for everyday work: explore the code, clarify real decisions, implement authorized changes, and run proportionate checks. Ask for an outcome, for example: "Add CSV export using the existing report filters." Small/read-only work needs no durable implementation artifacts; substantial work can use focused workers without entering SDD.
+
+One `odd/tasks/<feature-name>.md` keeps objective/problem/why, scope/constraints, actionable tasks, evidence, progress, next step, and meaningful accepted-change rationale. Engram mirrors the full document under project-scoped `odd/<feature-name>/tasks`; accepted changes update intent and affected tasks while preserving valid completed work. Memory is separately installed; if unavailable, local progress survives with an explicitly pending mirror.
+
+TDD follows configured mode, source, and exact runner, forwarded to workers and refreshed on resume. Tests existing does not enable it; disabled TDD still runs functional checks. Native RDD is separate and user-owned.
+
+**Why not SDD every day?** Its separate proposal/spec/design/tasks artifacts and phase handoffs add coordination that ordinary work often does not need. Choose SDD explicitly when you want those formal artifacts, never automatically because of size, ambiguity, or risk. SDD remains supported, not deprecated.
+
+**[→ ODD details and recovery](docs/readme-reference.md#organic-driven-development)**
+
+---
+
+### Optional SDD — Formal phases when you choose them
 
 <p align="center">
   <img src="docs/assets/diagrams/sdd-cycle.svg" width="1200" alt="Diagram of an optional specification-driven development cycle from explore through archive, with TDD evidence attached to apply when available">
 </p>
 
-When a change needs a plan people can follow, choose SDD/OpenSpec and keep the proposal, specification, design, tasks, and verification record together. If Strict TDD is active and the project provides the test capability, apply work records RED → GREEN → TRIANGULATE → REFACTOR evidence as it happens.
+When you explicitly want separate proposal, specification, design, tasks, and verification artifacts, choose SDD/OpenSpec. Configured Strict TDD records RED → GREEN → TRIANGULATE → REFACTOR evidence during apply. TDD is also available in ODD; it does not require SDD.
 
 **[→ Explore the SDD/OpenSpec flow](docs/readme-reference.md#sddopenspec-flow)**
 
@@ -209,7 +223,7 @@ See the [v2.6.0 release notes](https://github.com/Gentleman-Programming/gentle-p
 
 > **Fullscreen installation note:** a recognized global installation persists Pi’s `"tuiMode": "fullscreen"` setting. Project-local and other install paths do not receive that change.
 
-For prerequisites, source-checkout instructions, full install behavior, and release policy, use the **[installation reference](docs/readme-reference.md#install)**. For substantial work, choose SDD/OpenSpec explicitly and review the phase artifacts before implementation.
+For prerequisites, source-checkout instructions, full install behavior, and release policy, use the **[installation reference](docs/readme-reference.md#install)**. For everyday work, describe the outcome and follow [ODD](#odd--the-everyday-workflow). Choose SDD/OpenSpec explicitly only when you want its separate phase artifacts.
 
 <p align="right"><a href="#top">Back to top ↑</a></p>
 
@@ -224,7 +238,7 @@ Start with the product-facing destination, then move into the operational refere
 | Destination | Purpose |
 | --- | --- |
 | [gentle-shell reference](docs/gentle-shell.md) | Workspace layout, changes, usage, agents, and todo interactions. |
-| [README technical reference](docs/readme-reference.md) | Preserved installation, release policy, configuration, SDD/OpenSpec, commands, skills, and contributor detail. |
+| [ODD workflow](docs/readme-reference.md#organic-driven-development) · [Technical reference](docs/readme-reference.md) | Everyday work and recovery, optional SDD/OpenSpec, installation, configuration, commands, and contributor detail. |
 | [Review integration](docs/review-integration.md) | The provider/consumer boundary for native review. |
 | [Native authority architecture](docs/native-authority-architecture.md) | Ownership boundaries and review architecture. |
 | [Telemetry](docs/telemetry.md) | Approved fields and source limitations. |

@@ -426,8 +426,8 @@ test("quiet tool rendering identifies only routine Gentle AI SDD and RDD command
 	assert.equal(gentleAiRoutineCommand({ command: "./.gentle-ai/v2.2.0/gentle-ai sdd-status rose --json" }), "sdd-status");
 	assert.equal(gentleAiRoutineCommand({ command: ".\\.gentle-ai\\v2.2.0\\gentle-ai.exe review status --next-transition" }), "review");
 	assert.equal(gentleAiRoutineCommand({ command: "C:\\package\\.gentle-ai\\v2.2.0\\gentle-ai.exe sdd-continue rose" }), "sdd-continue");
-	assert.equal(gentleAiRoutineCommand({ command: "gentle-ai sdd-attempt acquire --change fix-rose" }), "sdd-attempt");
-	assert.equal(gentleAiRoutineCommand({ command: "gentle-ai sdd-attempt settle --change fix-rose" }), "sdd-attempt");
+	assert.equal(gentleAiRoutineCommand({ command: "gentle-ai sdd-attempt acquire --change fix-rose" }), undefined);
+	assert.equal(gentleAiRoutineCommand({ command: "gentle-ai sdd-attempt settle --change fix-rose" }), undefined);
 	assert.equal(gentleAiRoutineCommand({ command: "gentle-ai review status --next-transition" }), "review");
 	assert.equal(gentleAiRoutineCommand({ command: "gentle-ai version" }), undefined);
 	assert.equal(gentleAiRoutineCommand({ command: "gentle-ai sdd-attempt inspect" }), undefined);
@@ -591,8 +591,8 @@ test("quiet tool rendering displays only finite safe Gentle AI operation paths",
 	const cases = [
 		["gentle-ai sdd-status change-123 --cwd /repo/private", "sdd status"],
 		["gentle-ai sdd-continue change-123 --json", "sdd continue"],
-		["gentle-ai sdd-attempt acquire --change change-123", "sdd attempt acquire"],
-		["gentle-ai sdd-attempt settle --change change-123 --actor maintainer", "sdd attempt settle"],
+		["gentle-ai sdd-attempt acquire --change change-123", "sdd attempt"],
+		["gentle-ai sdd-attempt settle --change change-123 --actor maintainer", "sdd attempt"],
 		["gentle-ai review capabilities --cwd /repo/private", "review capabilities"],
 		["gentle-ai review start --target sha256:secret --path src/private.ts", "review start"],
 		["gentle-ai review finalize --lineage lineage-secret --payload '{\"secret\":true}'", "review finalize"],

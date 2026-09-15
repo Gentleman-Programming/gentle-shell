@@ -70,6 +70,7 @@ export interface AgentsConfig {
 	defaultMode: AgentMode;
 	modelProfiles: Record<string, ModelProfile>;
 	stallTimeoutMs: number;
+	toolStallTimeoutMs: number;
 	maxConcurrency: number;
 	historyMaxTasks: number;
 }
@@ -104,6 +105,7 @@ export interface Frontmatter {
 }
 
 const DEFAULT_STALL_TIMEOUT_MS = 4 * 60_000;
+const DEFAULT_TOOL_STALL_TIMEOUT_MS = 30 * 60_000;
 const DEFAULT_MAX_CONCURRENCY = 5;
 const DEFAULT_HISTORY_MAX_TASKS = 200;
 const THINKING_LEVELS: readonly string[] = ROUTING_THINKING_LEVELS;
@@ -263,6 +265,7 @@ export function parseAgentsConfig(global: RawConfig, project: RawConfig): Agents
 	const merged: Record<string, unknown> = { ...(global ?? {}), ...(project ?? {}) };
 	const thinking = parseThinking(merged.default_effort ?? merged.default_thinking_level ?? merged.default_thinking);
 	const mode = parseMode(merged.default_mode);
+	const stallTimeoutMs = positiveInteger(merged.stall_timeout_ms, DEFAULT_STALL_TIMEOUT_MS);
 	return {
 		defaultModel: parseModelRef(merged.default_model),
 		defaultThinking: thinking !== undefined && THINKING_LEVELS.includes(thinking) ? (thinking as ThinkingLevel) : undefined,
@@ -270,7 +273,11 @@ export function parseAgentsConfig(global: RawConfig, project: RawConfig): Agents
 		modelProfiles: mergeProfiles(parseProfiles(global?.model_profiles), parseProfiles(project?.model_profiles)),
 		// `timeout_ms` remains accepted as an inert legacy key so existing JSON
 		// files load normally; only silence is bounded by `stall_timeout_ms`.
-		stallTimeoutMs: positiveInteger(merged.stall_timeout_ms, DEFAULT_STALL_TIMEOUT_MS),
+		stallTimeoutMs,
+		// An announced tool call in flight is live work, not silence, so it gets a
+		// longer ceiling; the idle budget still bounds a genuinely quiet child and
+		// remains the hard floor for this one.
+		toolStallTimeoutMs: Math.max(positiveInteger(merged.tool_stall_timeout_ms, DEFAULT_TOOL_STALL_TIMEOUT_MS), stallTimeoutMs),
 		maxConcurrency: positiveInteger(merged.max_concurrency, DEFAULT_MAX_CONCURRENCY),
 		historyMaxTasks: positiveInteger(merged.history_max_tasks, DEFAULT_HISTORY_MAX_TASKS),
 	};

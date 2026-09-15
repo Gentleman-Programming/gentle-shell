@@ -48,6 +48,7 @@ A follow-up live review also found inaccurate missing-file documentation, an emp
 - [x] **T7 — Eliminate indefinitely stale positive Git identities.** Preserve the panel's render-time snapshot, but ensure each status read resolves current identity so repository replacement cannot stay stale; cover replacement behavior and resolver call frequency.
 - [x] **T8 — Remove timing from the atomic no-op test.** Set a fixed historical mtime with `utimesSync`, prove identical bytes preserve it, and prove changed bytes replace it.
 - [x] **T9 — Verify the follow-up candidate.** Run the requested focused suites, typecheck, and diff check.
+- [x] **T10 — Integrate current main without behavior loss.** Merged `origin/main` at `6f11f8f040203f47c3095bdd28b0c0e929b955a9` without committing, preserving the PR's per-repository profile-pin launch routing and all latest-main behavior, including the RPC preflight fix (#1036) and progress-only stall re-arm fix (#1086).
 
 ## Acceptance Criteria
 
@@ -72,6 +73,8 @@ A follow-up live review also found inaccurate missing-file documentation, an emp
 - T7 complete: status reads no longer retain positive identities indefinitely; the panel still snapshots status at construction, so renders do not invoke Git.
 - T8 complete: the atomic no-op test uses a fixed historical mtime instead of timing pauses.
 - T9 complete: the requested focused suite, typecheck, and diff check all pass.
+- T10 reopened for current main `6f11f8f0`; CodeGraph and the stage-3 main version confirmed that the sole conflict remains the import boundary, while #1036 and #1086 auto-merge in `extensions/gentle-ai.ts` and `lib/agents-runner.ts` respectively.
+- T10 complete: the import resolution retains `gentlePiConfigHome`, `resolveProfilePin`, and `withPinnedModelProfiles` while accepting main's simplified research imports. Latest-main behavior was preserved rather than copied from the stale saved resolution; no merge-specific behavioral gap required a new RED test.
 
 ## Checks
 
@@ -87,7 +90,13 @@ A follow-up live review also found inaccurate missing-file documentation, an emp
 - `pnpm run typecheck`: rc=0; `types: 200 recorded diagnostic(s), no regressions`.
 - `git diff --check`: rc=0; no output.
 - `node --experimental-strip-types --test tests/profile-pin.test.ts tests/gentle-ai.test.ts tests/gentle-agents.test.ts`: rc=1; 162 passed, 5 failed. All 38 profile-pin/gentle-ai pin regressions passed; the five failures are the documented pre-existing `gentle-agents` research/provenance/remediation failures at lines 743, 2072, 2091, 2219, and 2376.
+- Current-main integration suite: `node --experimental-strip-types --test tests/gentle-agents.test.ts tests/agents-config.test.ts tests/profile-pin.test.ts tests/gentle-ai.test.ts`: rc=1; 176 passed, 2 failed. Both failures are `managed dispatch needs real consent but no attempt command` (`granted` and `declined`) and reproduce unchanged on a clean archive of current `origin/main` (75/77 in `tests/gentle-agents.test.ts`) because macOS canonicalizes the temporary path differently from the fixture input.
+- Latest-main classical SDD and stall-watchdog suite: `node --experimental-strip-types --test tests/sdd-classical-continuation.test.ts tests/agents-runner.test.ts`: rc=0; 106 passed, 0 failed.
+- RPC input preflight spot check for #1036: `node --experimental-strip-types --test tests/sdd-preflight-rpc-input.test.ts`: rc=0; 4 passed, 0 failed.
+- Current-main `pnpm run typecheck`: rc=0; `types: 197 recorded diagnostic(s), no regressions; 2 file/code pair(s) improved, run --update to shrink the baseline`.
+- Current-main `git diff --cached --check`: rc=0; no output.
+- Merge-state check: `MERGE_HEAD` is `6f11f8f040203f47c3095bdd28b0c0e929b955a9`, with 68 staged paths, 0 unstaged paths, 0 unmerged paths, and no conflict markers.
 
 ## Next Step
 
-Parent spot-check and delivery steps; this writer must not commit, push, post, or merge.
+Parent may spot-check and commit the resolved local merge. This writer must not commit or push.

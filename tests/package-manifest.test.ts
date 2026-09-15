@@ -548,7 +548,7 @@ const EXPECTED_OWNER_ASSETS: Record<PackageAssetOwner, readonly string[]> = {
 		"agents/sdd-apply.md", "agents/sdd-archive.md", "agents/sdd-design.md",
 		"agents/sdd-explore.md", "agents/sdd-init.md", "agents/sdd-onboard.md",
 		"agents/sdd-proposal.md", "agents/sdd-remediate.md", "agents/sdd-research.md", "agents/sdd-spec.md",
-		"agents/sdd-status.md", "agents/sdd-sync.md", "agents/sdd-tasks.md", "agents/sdd-verify.md",
+		"agents/sdd-status.md", "agents/sdd-tasks.md", "agents/sdd-verify.md",
 		"chains/sdd-full.chain.md", "chains/sdd-plan.chain.md", "chains/sdd-verify.chain.md",
 		"gentle-ai/support/sdd-status-contract.md", "gentle-ai/support/strict-tdd-verify.md",
 		"gentle-ai/support/strict-tdd.md",
@@ -591,10 +591,10 @@ test("legacy all-assets installation covers every packaged file with explicit ow
 		assert.equal(getPackageAssetOwner(key), undefined, "unknown assets must not default to SDD");
 	}
 	withIsolatedAssetHome((agentHome) => {
-		assert.deepEqual(installSddAssets(agentHome, false), { agents: 24, chains: 4, support: 3, skipped: 0 });
+		assert.deepEqual(installSddAssets(agentHome, false), { agents: 23, chains: 4, support: 3, skipped: 0 });
 		assert.deepEqual(Object.keys(installedAssetManifest(agentHome).assets).sort(), packaged);
-		assert.deepEqual(installSddAssets(agentHome, false), { agents: 0, chains: 0, support: 0, skipped: 31 });
-		assert.deepEqual(installSddAssets(agentHome, true), { agents: 24, chains: 4, support: 3, skipped: 0 });
+		assert.deepEqual(installSddAssets(agentHome, false), { agents: 0, chains: 0, support: 0, skipped: 30 });
+		assert.deepEqual(installSddAssets(agentHome, true), { agents: 23, chains: 4, support: 3, skipped: 0 });
 	});
 });
 
@@ -651,14 +651,8 @@ test("selective review migration adopts only untouched legacy copies and preserv
 });
 
 test("unowned legacy research migrates by exact normalized hash, preserving routing and user edits", () => {
-	const packaged = readFileSync(join(PACKAGE_ROOT, "assets", "agents", "sdd-research.md"), "utf8");
-	const oldAdmission = "- Evidence grants for this runtime are `documentation=[]; open-web=[]`. Never infer evidence capability from bash, persistence tools, or any inherited tool; persistence tools are not evidence grants. Unsupported or undeclared classes deny admission and emit no claims.\n- Because this runtime declares no evidence grants, retain the selected request, persist a `blocked` outcome with no claims, and stop.\n";
-	const legacy = packaged
-		.replace(/## Parent Preflight Transport\n[\s\S]*?(?=## Skill Resolution Contract)/, "")
-		.replace(/## Bounded artifact handoff\n[\s\S]*?(?=## Memory Contract)/, "")
-		.replace(/  - fetch_content\n  - web_search\n  - source_check\n  - get_search_content\n/, "")
-		.replace(/- Use the injected `## SDD Research Capabilities`[\s\S]*?(?=- Admission denial)/, oldAdmission)
-		.replace(/Use `done` only when all selected questions[\s\S]*?product decisions remain separately confirmed by the parent\./i, "For this runtime the outcome is `blocked` with an admission denial and no claims.");
+	// Historical bytes must not be reconstructed from the evolving current agent.
+	const legacy = readFileSync(join(PACKAGE_ROOT, "tests/fixtures/legacy/sdd-research-v2.5.0.md"), "utf8");
 	const manifest = JSON.parse(readFileSync(join(PACKAGE_ROOT, "assets", "migrations", "managed-assets-v2.5.0.json"), "utf8"));
 	assert.equal(sha256(legacy), manifest.assets["agents/sdd-research.md"], "fixture reconstruction must match observed old package bytes");
 	const temporary = mkdtempSync(join(tmpdir(), "gentle-research-migration-"));
@@ -1558,4 +1552,27 @@ test("technical reference documents dynamic Gentle AI RDD ownership and the inst
 
 test("package verification explicitly requires the managed remediation actor", () => {
 	assert.match(readFileSync(join(PACKAGE_ROOT, "scripts/verify-package-files.mjs"), "utf8"), /assets\/agents\/sdd-remediate\.md/);
+});
+
+test("SDD installation retires owned sync but preserves modified copies and unrelated owners", () => {
+	withIsolatedAssetHome((agentHome) => {
+		installSddAssets(agentHome, false);
+		const path = join(agentHome, "agents/sdd-sync.md");
+		const manifestPath = join(agentHome, "gentle-ai/managed-assets.json");
+		const legacy = "Previously managed sync executor\n";
+		const manifest = installedAssetManifest(agentHome);
+		manifest.assets["agents/sdd-sync.md"] = sha256(legacy);
+		writeFileSync(path, legacy);
+		writeFileSync(manifestPath, JSON.stringify(manifest));
+		installPackageAssets(agentHome, true, ["delegation"]);
+		assert.equal(readFileSync(path, "utf8"), legacy);
+		installPackageAssets(agentHome, true, ["sdd"]);
+		assert.equal(existsSync(path), false);
+		assert.equal(installedAssetManifest(agentHome).assets["agents/sdd-sync.md"], undefined);
+		writeFileSync(path, "User-modified sync instructions\n");
+		writeFileSync(manifestPath, JSON.stringify(manifest));
+		installPackageAssets(agentHome, true, ["sdd"]);
+		assert.equal(readFileSync(path, "utf8"), "User-modified sync instructions\n");
+		assert.equal(installedAssetManifest(agentHome).assets["agents/sdd-sync.md"], undefined);
+	});
 });

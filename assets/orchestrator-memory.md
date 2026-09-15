@@ -18,25 +18,24 @@ The existing `todo` tool is an optional session/UI projection, not a third autho
 
 ### SDD phases
 
-Each SDD phase subagent reads its own required inputs directly from the active backend; the parent passes artifact references (topic keys or file paths), NOT the content itself. Phase subagents persist their artifact before returning.
+Except for output-only `sdd-research`, each SDD phase subagent reads its own required inputs directly from the active backend; the parent passes artifact references (topic keys or file paths), NOT the content itself. Phase subagents persist their artifact before returning.
 
 | Phase          | Reads                                                   | Writes           |
 | -------------- | ------------------------------------------------------- | ---------------- |
 | `sdd-explore`  | nothing                                                 | `explore`        |
-| `sdd-research` | exploration                                             | `research` + `preproposal` |
+| `sdd-research` | parent-supplied context (when available)                 | inline findings; parent may persist |
 | `sdd-proposal` | exploration (optional)                                  | `proposal`       |
 | `sdd-spec`     | proposal (required)                                     | `spec`           |
 | `sdd-design`   | proposal (required)                                     | `design`         |
 | `sdd-tasks`    | spec + design (required)                                | `tasks`          |
 | `sdd-apply`    | tasks + spec + design + `apply-progress` (if it exists) | `apply-progress` |
 | `sdd-verify`   | spec + tasks + `apply-progress`                         | `verify-report`  |
-| `sdd-sync`     | proposal + spec + design + tasks + `verify-report`      | `sync-report`    |
 | `sdd-archive`  | all artifacts                                           | `archive-report` |
 | `sdd-status`   | change artifacts (read-only)                            | nothing          |
 
-- SDD artifact keys: in memory/hybrid mode, phase artifacts use stable topic keys such as `sdd/<change>/proposal`, `sdd/<change>/spec`, `sdd/<change>/design`, `sdd/<change>/tasks`, `sdd/<change>/apply-progress`, `sdd/<change>/verify-report`, `sdd/<change>/sync-report`, and `sdd/<change>/archive-report`.
-- When the optional research lane is selected, `sdd-research` uses the additional topic keys `sdd/<change>/research` and `sdd/<change>/preproposal` (openspec: `openspec/changes/<change>/research.md`).
-- If memory tools are unavailable, do not pretend persistence exists; return artifacts inline and/or write OpenSpec files.
+- SDD artifact keys: in memory/hybrid mode, phase artifacts use stable topic keys such as `sdd/<change>/proposal`, `sdd/<change>/spec`, `sdd/<change>/design`, `sdd/<change>/tasks`, `sdd/<change>/apply-progress`, `sdd/<change>/verify-report`, `sdd/<change>/archive-report`.
+- Research is output-only. The parent may persist useful findings at `sdd/<change>/research` or `openspec/changes/<change>/research.md` through actual authorized tools and read back claimed output. Historical pre-proposal records remain readable but are not prerequisites or readiness authority.
+- If memory tools are unavailable, do not pretend persistence exists and do not switch the selected store. Return useful artifacts inline with the persistence limitation; write OpenSpec files only when that backend was already selected and authorized. In hybrid mode, report each backend's actual outcome rather than presenting a one-sided write as complete persistence.
 
 Memory lifecycle rule (when Engram exposes lifecycle metadata/tooling):
 

@@ -75,6 +75,7 @@ Run focused tests first. Broad suites, builds, formatters, or linters may run on
 When the parent task carries a `## Verification` heading, that heading is the delegated verification contract for this task (gentle-pi#661, RDD-aware pilot):
 
 - Run every command listed under it exactly as written, one at a time, in the foreground. Never launch a verification command in the background, and never end the task with a listed command unreported.
+- A long foreground command is live work, not silence: while a tool call is in flight the runner's stall watchdog uses `tool_stall_timeout_ms` (default 30 minutes) instead of the `stall_timeout_ms` idle budget, so an announced verification command is not killed mid-run.
 - Report each one as `<exact command>: <observed result>` in `validation`.
 - `## Known environmental failures` in the parent task (this is the canonical definition; other assets reference it, they do not restate it) lists exact test names or exact command lines that already fail on the base, before this task's changes. Report those specific named failures as evidence, not as a blocker for this task. Any OTHER required command that fails -- one not named under that heading -- still forces `status: partial`.
 - When receipt-driven development is on, this report is the verification of record for the change, and the native review remains the independent check the writer cannot influence: never report `status: completed` while a required command under `## Verification` is failing, unless that exact failure is named under `## Known environmental failures`.

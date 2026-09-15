@@ -1,11 +1,25 @@
 # README technical reference
 
-This reference preserves the detailed installation, configuration, SDD/OpenSpec, runtime, and contributor material previously carried by the README. Start with the [README](../README.md) for the product overview; use this document when you need operational detail. Historical compatibility and authority passages remain reference material, not newly endorsed operator instructions.
+This reference preserves the detailed installation, configuration, ODD, optional SDD/OpenSpec, runtime, and contributor material previously carried by the README. Start with the [README](../README.md) for the product overview; use this document when you need operational detail. Historical compatibility and authority passages remain reference material, not newly endorsed operator instructions.
 
 
 ## Organic Driven Development
 
-ODD keeps explore → implement → proportionate checks as the default, while explicitly selected SDD remains separate. For substantial authorized implementation, the parent automatically tracks feature progress after exploration, without asking for task-tracking or storage permission. Small, understood work creates no durable task artifact; investigation and proposal-only work stay read-only.
+Organic Driven Development (ODD) keeps explore → implement → proportionate checks as the everyday default, while explicitly selected SDD remains separate. For substantial authorized implementation, the parent automatically tracks feature progress after exploration, without asking for task-tracking or storage permission. Small, understood work creates no durable task artifact; investigation and proposal-only work stay read-only.
+
+Choose SDD explicitly when you want separate proposal, spec, design, tasks, and verification artifacts. Its phases and handoffs add coordination; everyday work usually needs the intent and evidence, not that extra workflow. ODD keeps those in one document. Size, ambiguity, and risk alone never select SDD.
+
+### The ODD protocol
+
+ODD is the predefined workflow: it runs by default on every request, without the user asking for a workflow, a plan, or task tracking. SDD is a branch inside ODD, entered only by an explicit request or an accepted proposal.
+
+1. **Authorize** — read-only unless implementation is authorized; ask one clarification when intent is ambiguous.
+2. **Explore** — read existing code and requirements first, proportionately to the request.
+3. **Resolve uncertainty** — optional research or one focused product question only for a real unresolved decision.
+4. **Classify** — substantial when exploration yields two or more meaningful implementation steps; small work stays small.
+5. **Track before the first write** — create the feature document and Engram mirror automatically for substantial work, and tell the user in one line.
+6. **Implement task by task** — route each task through the smallest safe workflow, with configured TDD and applicable checks.
+7. **Close** — report the verified outcome, failed/pending checks, and the next step.
 
 - **One feature document:** `odd/tasks/<feature-name>.md` holds objective, problem, why, scope, constraints, actionable checklist with stable IDs and acceptance criteria, verification evidence, progress, and next step. Project-scoped Engram topic `odd/<feature-name>/tasks` mirrors the full document and repository-relative locator. Keep concise rationale for meaningful accepted changes here, not a separate plan or exhaustive journal. Accepted user, review, or verification changes update intent and tasks together; preserve valid completed work, add new tasks or reopen invalidated items with reasons. Findings alone do not authorize expansion or acceptance. Routine corrections stay with their tasks; checkoffs require observed proof.
 - **Recovery:** write local progress first and read back both copies; writes are not atomic. Unavailable Engram leaves an explicit pending mirror, not invented success or a block on unrelated safe work. Before implementation or resume, the parent reads full feature memory and the actual task file, reconciles code and evidence, and preserves conflicting versions. Pass the locator and relevant context; workers read the document before edits. The existing Todo UI is a projection, not another authority.
@@ -60,7 +74,8 @@ This is guidance through existing tools, not a new CLI, phase, state engine, or 
 
 - [Capabilities](#capability-reference)
 - [Installation and release policy](#install)
-- [SDD/OpenSpec and review architecture](#sddopenspec-flow)
+- [ODD workflow and recovery](#organic-driven-development)
+- [Optional SDD/OpenSpec and review architecture](#sddopenspec-flow)
 - [Configuration, commands, skills, memory, and telemetry](#persona-modes)
 - [Package contents and development](#package-contents)
 
@@ -70,11 +85,11 @@ This is guidance through existing tools, not a new CLI, phase, state engine, or 
 | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | **el Gentleman persona**       | Makes Pi behave like a senior architect and teacher, not a generic chatbot. Spanish responses use Rioplatense voseo by default; neutral mode is saved globally with project overrides. |
 | **Configurable startup intro** | Adds a rose/text-logo startup intro, compact runtime panel, color presets, and commands to hide or show the decorative parts.                  |
-| **Work routing discipline**    | Small tasks stay inline. Context-heavy exploration can be delegated. Large or risky changes go through SDD/OpenSpec.                          |
-| **SDD/OpenSpec assets**        | Installs phase agents and chains for `init`, `onboard`, `explore`, `proposal`, `spec`, `design`, `tasks`, `apply`, `verify`, `sync`, and `archive`. |
+| **Work routing discipline**    | ODD keeps small tasks inline and delegates context-heavy work. SDD is explicitly selected when its formal artifacts are wanted, not because of size or risk.                          |
+| **SDD/OpenSpec assets**        | Installs phase agents and chains for `init`, `onboard`, `explore`, `proposal`, `spec`, `design`, `tasks`, `apply`, optional `verify` and `archive`. |
 | **Lazy SDD preflight**         | Confirms SDD mode, artifact store, delivery strategy, and review budget on the first SDD invocation of every interactive session, including saved preferences; the parent transports the confirmed block to RPC SDD children.              |
 | **Subagent orchestration**     | Keeps one parent session responsible while child agents explore, implement, test, or review with focused context.                             |
-| **Strict TDD support**         | When project config declares a test command, apply/verify phases must record RED → GREEN → TRIANGULATE → REFACTOR evidence.                   |
+| **Strict TDD support**         | TDD mode, source, and runner come from configuration or explicit choice in ODD and SDD. Enabled TDD requires observed evidence; a test command alone does not enable it.                   |
 | **Closed choice prompts** | Per-option hover/click/wheel in fullscreen; keyboard selection in either TUI mode. |
 | **Native pointer regions** | Compose hover, press, click, and wheel behavior around public TUI components. |
 | **Agent overlay close control** | Adds a header close button that adapts to available width. |
@@ -123,6 +138,24 @@ The stable release is [`v2.6.0`](https://github.com/Gentleman-Programming/gentle
 
 This checkout prepares `gentle-pi` `2.7.0`; it is source state, not a published release. Its package-local native runtime pin is Gentle AI `v2.9.1`, distinct from the published `v2.6.0` pairing.
 
+The native SDD status consumer accepts both the pinned producer's legacy
+`apply`/`verify`/`remediate`/`archive` instruction record and the classical
+`apply`/`verify`/`archive` record. It preserves the provider's instructions and
+selected route; it does not fabricate a remediation phase for a newer producer.
+Unknown or incomplete instruction records still fail closed.
+
+The Pi runtime now uses native status exclusively for SDD and retires standalone
+sync. The full chain follows completed apply to archive, where applicable delta
+specs are composed; verification remains explicitly invokable. With the current
+2.9.1 pin, native still requires verification and its emitted evidence requirements;
+a plain practical PASS report does not satisfy that legacy native gate. Pi forwards
+those exact instructions without overriding readiness or inventing legacy evidence.
+Classical direct-archive behavior is compatibility-tested with an identified
+upstream development build, not presented as a published fix or version bump.
+The complete classical flow awaits a compatible published native version; this
+change does not bump the pin. Ordinary attempt governance and research/planning simplification remain separate
+work under [SDD parity #1051](https://github.com/Gentleman-Programming/gentle-pi/issues/1051).
+
 ### Pi compatibility
 
 The current package requires Pi 0.85.1 or newer (development tests pin 0.85.1). Use the latest Pi release; gentle-pi does not update your installed Pi automatically. Children, including any `GENTLE_PI_AGENTS_PI` override, must emit `agent_settled`: `agent_end` records a run's output but is not completion because retries or queued continuations may follow.
@@ -166,7 +199,7 @@ Then start Pi in a project:
 pi
 ```
 
-`gentle-pi` installs delegation and review agents at startup. SDD agents, chains, and support are global Pi runtime assets installed on demand, not per-project setup. The first SDD flow in a session runs a one-time SDD preflight for preferences and managed-asset refresh; for natural-language requests, el Gentleman decides when SDD is needed and runs the explicit preflight first.
+`gentle-pi` installs delegation and review agents at startup. SDD agents, chains, and support are global Pi runtime assets installed on demand, not per-project setup. The first SDD flow in a session runs a one-time SDD preflight for preferences and managed-asset refresh; natural-language SDD requests or accepted proposals select that workflow, then run its preflight. Ordinary ODD does not run SDD initialization.
 
 ## Quick start
 
@@ -187,16 +220,16 @@ Typical flow:
 
 1. Open Pi in your repo.
 2. Run `/gentle:status`.
-3. Run `/gentle-sdd-init` once per project, or when test/project capabilities change. This also runs the session SDD preflight.
-4. For a substantial change, ask Pi to use SDD. Natural-language requests are classified by the parent agent, not by brittle runtime regexes.
-5. Review the phase artifacts instead of trusting floating chat context.
+3. Describe the outcome, for example: "Add CSV export using the existing report filters." ODD explores, implements authorized changes, and checks the result.
+4. For substantial work, inspect the feature document and evidence; resume reconciles the full file and Engram copy. No SDD initialization is needed.
+5. If you explicitly choose SDD instead, follow [its preflight and project setup](#sdd-preflight-and-project-files) and review its phase artifacts.
 
 ## Core workflow
 
 1. **Install and inspect.** Install `gentle-pi`, open Pi in the target repository, then run `/gentle:status` or `/gentle:doctor`.
-2. **Plan when risk justifies it.** Small work stays direct; substantial work uses SDD with Engram, OpenSpec, or both so requirements and decisions survive compaction.
-3. **Build with evidence.** One focused writer implements the approved scope. When Strict TDD is available, apply and verify preserve RED → GREEN → TRIANGULATE → REFACTOR evidence.
-4. **Use runtime-owned RDD when available.** Gentle AI supplies any runtime-specific review instructions; this package does not recreate a lifecycle in documentation or prompts.
+2. **Use ODD by default.** Explore and clarify proportionately; track substantial work in one feature document with a full Engram recovery copy. Choose SDD only when its separate formal artifacts are explicitly wanted.
+3. **Build with evidence.** One focused writer implements authorized scope using the forwarded TDD mode/source/runner. Enabled TDD requires observed RED → GREEN → REFACTOR; disabled still runs functional checks. Test presence is not activation.
+4. **Use runtime-owned RDD only when enabled by the user.** Gentle AI supplies any runtime-specific review instructions; this package does not recreate a lifecycle in documentation or prompts.
 5. **Deliver through ordinary repository policy.** Review and Judgment Day evidence is informational only; Pi never creates a delivery route, authorization, target rederivation, or receipt gate.
 
 > **Trust what the system can derive, not what an agent claims.** Agents analyze the candidate. The package-local Gentle AI runtime owns scope, risk, findings, and review authority. Review outcomes inform delivery; ordinary repository policy decides delivery commands. Dangerous-command safety and destructive-review consent remain independent. See Gentle AI's [review authority threat model](https://github.com/Gentleman-Programming/gentle-ai/blob/main/docs/review-authority-threat-model.md) and [Chapter 21 — Verifiable Trust](https://the-amazing-gentleman-programming-book.vercel.app/en/book/Chapter21_Verifiable-Trust).
@@ -209,9 +242,10 @@ Typical flow:
 | --------------------------------------------------------------------------- | ---------------------------- |
 | Small, clear, local edit                                                    | Inline direct work.          |
 | Unknown codebase area or context-heavy investigation                        | Focused subagent delegation. |
-| Large, ambiguous, architectural, product-facing, or high-review-risk change | SDD/OpenSpec flow.           |
+| Substantial authorized work needing recoverable progress | ODD with a feature document and focused workers. |
+| Explicit request or accepted proposal for formal phase artifacts | Optional SDD/OpenSpec flow. |
 
-The goal is not ceremony. The goal is to avoid accidental chaos. Once a task stops being small, delegation is mandatory.
+Size and uncertainty can call for scoped exploration or delegation within ODD, not automatic SDD enrollment. The delegation triggers below select execution topology, not a different development method.
 
 ### Delegation triggers
 
@@ -386,11 +420,13 @@ Adversarial review roles (the refuter and the targeted validator) are never Pi-a
 
 ## SDD/OpenSpec flow
 
+This is the explicitly selected alternative to [everyday ODD](#organic-driven-development), not a requirement for substantial or risky work. Keep the formal phase artifacts when they are part of what you want to review and maintain.
+
 ```text
 init
   ↓
 explore → research (optional) → proposal → spec ─┬→ design ─┐
-                                                  └─────────┴→ tasks → apply → verify → sync → archive
+                                                  └─────────┴→ tasks → apply → archive (verification optional)
 ```
 
 The main loop is intentionally file-backed when you choose `openspec` or `both`:
@@ -398,17 +434,17 @@ The main loop is intentionally file-backed when you choose `openspec` or `both`:
 ```text
 planning artifacts                implementation evidence        canonical update
 ──────────────────                ───────────────────────        ────────────────
-proposal/spec/design/tasks   →    apply-progress/verify-report → sync-report → archive-report
+proposal/spec/design/tasks   →    apply-progress → optional verify-report → archive-report + canonical update
 ```
 
-For substantial work, the parent session coordinates the flow and each phase writes artifacts. That gives you:
+For explicitly selected SDD work, the parent session coordinates the flow and each phase writes artifacts. That gives you:
 
 - explicit requirements and non-goals;
 - design decisions that survive compaction;
 - task plans reviewers can reason about;
 - implementation evidence;
 - verification reports;
-- sync reports that update canonical specs while keeping the change active;
+- archive-time canonical spec composition with explicit destructive-change consent;
 - archive notes for future agents.
 
 ### OpenSpec artifact model
@@ -428,8 +464,7 @@ openspec/
     │   ├── design.md
     │   ├── tasks.md
     │   ├── apply-progress.md
-    │   ├── verify-report.md
-    │   └── sync-report.md
+    │   └── verify-report.md                   # optional
     └── archive/YYYY-MM-DD-{change}/           # immutable audit trail
 ```
 
@@ -438,7 +473,7 @@ Delta flow:
 ```text
 openspec/changes/{change}/specs/{domain}/spec.md
         │
-        │  sdd-sync applies ADDED / MODIFIED / REMOVED
+        │  sdd-archive applies ADDED / MODIFIED / REMOVED
         ▼
 openspec/specs/{domain}/spec.md
         │
@@ -457,13 +492,13 @@ When a canonical spec already exists, change specs use requirement operation sec
 ## REMOVED Requirements
 ```
 
-`MODIFIED` requirements must include the full requirement block, including still-valid scenarios, because sync replaces the canonical block by requirement name. `sdd-sync` syncs file-backed deltas into `openspec/specs/{domain}/spec.md` while keeping the change active; `sdd-archive` then moves the synced change to `openspec/changes/archive/YYYY-MM-DD-{change}/`.
+`MODIFIED` requirements must include the full requirement block, including still-valid scenarios, because sync replaces the canonical block by requirement name. `sdd-archive` composes applicable file-backed deltas into `openspec/specs/{domain}/spec.md`, then moves the completed change to `openspec/changes/archive/YYYY-MM-DD-{change}/`.
 
 Engram-only mode is different by design: Engram is working memory and does not maintain a canonical spec merge layer. Use `openspec` or `both` (hybrid file + memory persistence) when you need canonical spec evolution.
 
 ## SDD preflight and project files
 
-`gentle-pi` does not require SDD agents to be copied into every project. The package installs and refreshes global Pi SDD assets under the Pi agent home on SDD activation, and treats project-local files only as overrides/debug copies. Slash SDD flows such as `/sdd-*`, `/gentle-sdd-init`, and the explicit `/gentle:sdd-preflight` command run a lazy preflight and resolve session-scoped SDD preferences. For natural-language requests, the parent agent decides whether the work should use SDD and must run/reuse `/gentle:sdd-preflight` before continuing.
+`gentle-pi` does not require SDD agents to be copied into every project. The package installs and refreshes global Pi SDD assets under the Pi agent home on SDD activation, and treats project-local files only as overrides/debug copies. Slash SDD flows such as `/sdd-*`, `/gentle-sdd-init`, and the explicit `/gentle:sdd-preflight` command run a lazy preflight and resolve session-scoped SDD preferences. For natural-language requests, SDD requires an explicit user request or accepted proposal; only then does the parent run/reuse `/gentle:sdd-preflight` before continuing. ODD does not use this setup.
 
 ```text
 ~/.pi/agent/agents/sdd-*.md
@@ -877,7 +912,7 @@ To opt out:
 | `extensions/skill-registry.ts` | Maintains `.atl/skill-registry.md` from project/user skills and closes file watchers on shutdown.          |
 | `assets/orchestrator.md`       | Parent-session orchestration contract (always-on core).                                                    |
 | `assets/orchestrator-delegation.md` | Lazy-loaded delegation/routing/review detail, including the mirrored gentle-ai canon.                 |
-| `assets/orchestrator-memory.md` | Lazy-loaded SDD memory phase table, artifact keys, and lifecycle rule.                                    |
+| `assets/orchestrator-memory.md` | Lazy-loaded ODD feature continuity plus SDD memory phase table, artifact keys, and lifecycle rule.                                    |
 | `assets/orchestrator-skills.md` | Lazy-loaded skill registry fallback semantics and intent-driven skill discovery.                          |
 | `assets/sdd-orchestrator-workflow.md` | Lazy-loaded SDD workflow surface for the parent orchestrator.                                       |
 | `assets/agents/`               | Delegation, review, and on-demand SDD agents installed as global Pi runtime assets.                                                          |
@@ -961,7 +996,7 @@ Do not run `npm publish` locally for `gentle-pi`. Dispatch the trusted workflow 
 - Human control over agent momentum.
 - Concepts before code.
 - Artifacts over floating chat context.
-- SDD when risk justifies it.
-- Strict TDD when tests exist.
+- ODD for everyday work; SDD when its formal phase artifacts are explicitly wanted.
+- TDD from configured mode or explicit choice, not test presence.
 - One parent orchestrator, focused subagents.
 - Reviewable changes over giant diffs.

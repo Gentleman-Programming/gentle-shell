@@ -66,7 +66,7 @@ test("before_agent_start injects the mirrored review execution contract for the 
 	assert.match(result.systemPrompt, /Use configured TDD mode, source, and exact runner/);
 	assert.match(result.systemPrompt, /test presence does not enable it/);
 	assert.doesNotMatch(result.systemPrompt, /If tests exist, use strict TDD/);
-	assert.match(result.systemPrompt, /Before organic exploration, implementation, or resume/);
+	assert.match(result.systemPrompt, /ODD \(Default Workflow, harness section above\) is mandatory on every request/);
 	assert.doesNotMatch(result.systemPrompt, /Prefer SDD\/OpenSpec artifacts/);
 	assert.match(result.systemPrompt, /## Gentle AI review execution contract \(mirrored provider bundle 1\.2\.0\)/);
 	assert.ok(result.systemPrompt.includes(expected), "the mirrored orchestration/pi.md text must appear verbatim");

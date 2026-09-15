@@ -180,45 +180,26 @@ export function readProfilePin(path: string): string | undefined {
 
 let profilePinWorktreeResolver: WorktreeResolver = resolveSessionWorktreeWithGit;
 
-// Resolving an established Git identity shells out to Git and is stable enough to
-// memoize per directory. Misses are deliberately retried: a long-running Pi session
-// can `git init` its working directory, and caching `undefined` would leave the panel
-// disagreeing with the launch path. Pin *contents* are never memoized.
-const profilePinWorktreeIdentityCache = new Map<string, WorktreeIdentity>();
-
 /**
  * Test seam, mirroring the other injectable seams in `lib/`: the `/gentle:profiles`
  * panel resolves the pin through the ambient resolver, and a test must not depend
  * on where the test runner's working directory happens to sit. The launch path
- * passes its own resolver instead, so it needs no seam. Changing the resolver drops
- * every memoized identity, because those answers belong to the previous resolver.
+ * passes its own resolver instead, so it needs no seam.
  */
 export function setProfilePinWorktreeResolverForTesting(resolver?: WorktreeResolver): void {
 	profilePinWorktreeResolver = resolver ?? resolveSessionWorktreeWithGit;
-	profilePinWorktreeIdentityCache.clear();
-}
-
-/** Drop the per-directory identity memo without changing the active resolver. */
-export function resetProfilePinWorktreeIdentityCacheForTesting(): void {
-	profilePinWorktreeIdentityCache.clear();
 }
 
 function gentlePiWorktreeIdentity(
 	cwd: string,
 	resolveWorktree: WorktreeResolver,
 ): WorktreeIdentity | undefined {
-	// Only the ambient resolver is memoized. The launch path injects a resolver per
-	// call, and a memoized answer from a different resolver would be a lie.
-	const memoized = resolveWorktree === profilePinWorktreeResolver;
-	const cached = memoized ? profilePinWorktreeIdentityCache.get(cwd) : undefined;
-	if (cached !== undefined) return cached;
 	let identity: WorktreeIdentity | undefined;
 	try {
 		identity = resolveWorktree(cwd, cwd);
 	} catch {
 		identity = undefined;
 	}
-	if (memoized && identity !== undefined) profilePinWorktreeIdentityCache.set(cwd, identity);
 	return identity;
 }
 

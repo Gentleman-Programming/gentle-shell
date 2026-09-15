@@ -12,5 +12,5 @@ export function resolveGentlePiAgentHome(env: NodeJS.ProcessEnv = process.env): 
 // resolver reads the same profiles store the `/gentle:profiles` panel writes, and
 // two spellings of the override would silently read two different stores.
 export function gentlePiConfigHome(env: NodeJS.ProcessEnv = process.env): string {
-	return env.GENTLE_PI_CONFIG_HOME ?? join(homedir(), ".pi", "gentle-ai");
+	return env.GENTLE_PI_CONFIG_HOME || join(homedir(), ".pi", "gentle-ai");
 }

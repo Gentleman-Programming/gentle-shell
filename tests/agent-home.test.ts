@@ -31,6 +31,7 @@ function isolatedHome(t: test.TestContext): string {
 test("gentlePiConfigHome honours GENTLE_PI_CONFIG_HOME and otherwise falls back to ~/.pi/gentle-ai", (t) => {
 	const home = isolatedHome(t);
 	assert.equal(gentlePiConfigHome({ GENTLE_PI_CONFIG_HOME: "/custom/gentle-ai" }), "/custom/gentle-ai");
+	assert.equal(gentlePiConfigHome({ GENTLE_PI_CONFIG_HOME: "" }), join(homedir(), ".pi", "gentle-ai"));
 	assert.equal(gentlePiConfigHome({}), join(homedir(), ".pi", "gentle-ai"));
 	assert.equal(gentlePiConfigHome(), join(homedir(), ".pi", "gentle-ai"));
 	assert.equal(

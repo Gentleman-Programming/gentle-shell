@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -638,21 +638,16 @@ test("writeJsonFileAtomicallySync writes exact bytes, creates parents, and leave
 });
 
 test("writeJsonFileAtomicallySync skips an identical rewrite so the file is not replaced", () => {
-	// A synchronous pause so a real write would move the mtime while an unchanged one
-	// would not, even on a filesystem with coarse timestamps.
-	const pause = (milliseconds: number): void => {
-		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
-	};
 	const path = join(root, "atomic-noop", "artifact.json");
 	const text = `${JSON.stringify({ kind: "gentle-pi.test", value: 1 }, null, 2)}\n`;
 	writeJsonFileAtomicallySync(path, text);
+	const historicalTime = new Date("2000-01-01T00:00:00.000Z");
+	utimesSync(path, historicalTime, historicalTime);
 	const first = statSync(path).mtimeMs;
-	pause(20);
 	writeJsonFileAtomicallySync(path, text);
 	const skipped = statSync(path).mtimeMs;
 	assert.equal(readFileSync(path, "utf8"), text);
 	assert.equal(skipped, first, "an identical rewrite leaves the file untouched");
-	pause(20);
 	writeJsonFileAtomicallySync(path, "changed\n");
 	assert.notEqual(statSync(path).mtimeMs, skipped, "a changed rewrite still replaces the file");
 });

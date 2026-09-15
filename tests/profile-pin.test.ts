@@ -18,7 +18,6 @@ import {
 	readProfilePinResult,
 	readProfilePinStatus,
 	repoProfileDeclarationPath,
-	resetProfilePinWorktreeIdentityCacheForTesting,
 	resolveProfilePin,
 	serializeProfilePin,
 	setProfilePinWorktreeResolverForTesting,
@@ -156,15 +155,28 @@ test("readProfilePinStatus reads both layers and reports nothing outside a Git w
 test("an ambient Git identity miss is retried after the directory becomes a repository", () => {
 	const repo = join(root, "late-git-init");
 	mkdirSync(repo, { recursive: true });
-	resetProfilePinWorktreeIdentityCacheForTesting();
+	assert.equal(readProfilePinStatus(repo), undefined);
+	execFileSync("git", ["init", "--quiet", repo]);
+	const status = readProfilePinStatus(repo);
+	assert.ok(status, "a prior miss must not hide a Git identity that appeared later");
+	assert.equal(status.repoPath, repoProfileDeclarationPath(status.root));
+});
+
+test("an ambient Git identity is resolved again after the repository identity changes", () => {
+	const cwd = join(root, "replaced-repository");
+	const before = identityAt("replaced-before");
+	const afterReplacement = identityAt("replaced-after");
+	let calls = 0;
+	setProfilePinWorktreeResolverForTesting(() => {
+		calls += 1;
+		return calls === 1 ? before : afterReplacement;
+	});
 	try {
-		assert.equal(readProfilePinStatus(repo), undefined);
-		execFileSync("git", ["init", "--quiet", repo]);
-		const status = readProfilePinStatus(repo);
-		assert.ok(status, "a prior miss must not hide a Git identity that appeared later");
-		assert.equal(status.repoPath, repoProfileDeclarationPath(status.root));
+		assert.equal(readProfilePinStatus(cwd)?.root, before.root);
+		assert.equal(readProfilePinStatus(cwd)?.root, afterReplacement.root);
+		assert.equal(calls, 2, "each status read observes the repository identity that exists now");
 	} finally {
-		resetProfilePinWorktreeIdentityCacheForTesting();
+		setProfilePinWorktreeResolverForTesting();
 	}
 });
 
@@ -328,8 +340,7 @@ test("two worktrees of one clone read the same clone-local pin but keep their ow
 	assert.deepEqual(second?.repo, { status: "missing" }, "the declaration is per worktree, not shared with the sibling");
 });
 
-test("the ambient worktree resolver is consulted once per directory and never memoizes an injected one", () => {
-	resetProfilePinWorktreeIdentityCacheForTesting();
+test("each status read resolves the current worktree identity and injected resolvers stay isolated", () => {
 	let calls = 0;
 	const injected = identityAt("memo-injected");
 	setProfilePinWorktreeResolverForTesting((cwd) => {
@@ -339,12 +350,12 @@ test("the ambient worktree resolver is consulted once per directory and never me
 	try {
 		readProfilePinStatus(join(root, "memo-a"));
 		readProfilePinStatus(join(root, "memo-a"));
-		assert.equal(calls, 1, "the same directory resolves its Git identity once");
+		assert.equal(calls, 2, "each status read resolves the identity that exists now");
 		readProfilePinStatus(join(root, "memo-b"));
-		assert.equal(calls, 2, "a second directory resolves its own identity");
-		// A resolver injected per call is never served a memoized answer.
+		assert.equal(calls, 3, "a second directory resolves its own identity");
+		// A resolver injected per call remains independent from the ambient seam.
 		readProfilePinStatus(join(root, "memo-a"), () => injected);
-		assert.equal(calls, 2, "the injected resolver does not touch the memo");
+		assert.equal(calls, 3, "the injected resolver does not touch the ambient resolver");
 	} finally {
 		setProfilePinWorktreeResolverForTesting();
 	}

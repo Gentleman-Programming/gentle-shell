@@ -132,6 +132,25 @@ export function taskHeader(task: TaskRecord, now: number): string {
 	return parts.filter((part) => part.length > 0).join(" · ");
 }
 
+// One task's contribution to the presence signature: every display-relevant
+// field this view renders or sorts by (taskLine, taskHeader, the thread pane
+// header and error fallback, group headings, Stop/Open gating, ordering).
+function taskSignature(task: TaskRecord): string {
+	return `|${task.id}:${task.status}:${task.agent}:${task.model}:${task.label}:${task.createdAt}:${task.startedAt}:${task.endedAt}:${task.lastActivityAt}:${task.lastStep}:${task.tokens}:${task.cost}:${task.error ?? ""}:${task.sessionPath ?? ""}`;
+}
+
+// FNV-1a over the last TAIL_HASH_CHARS characters of a thread item string:
+// a cheap, allocation-light differentiator for same-length keepTail rewrites
+// that lengths alone cannot see. Zero-padded to a fixed width so signature
+// fields keep deterministic boundaries.
+const TAIL_HASH_CHARS = 64;
+function tailHash(text: string): string {
+	const start = text.length > TAIL_HASH_CHARS ? text.length - TAIL_HASH_CHARS : 0;
+	let hash = 0x811c9dc5;
+	for (let index = start; index < text.length; index += 1) hash = Math.imul(hash ^ text.charCodeAt(index), 0x01000193);
+	return (hash >>> 0).toString(36).padStart(7, "0");
+}
+
 export class AgentsView {
 	private readonly deps: AgentsViewDeps;
 	private tasks: TaskRecord[] = [];
@@ -172,6 +191,7 @@ export class AgentsView {
 	private remoteThreads = new Map<string, TaskThread>();
 	private presenceCursor?: PresenceCursor;
 	private presenceTimer?: ReturnType<typeof setTimeout>;
+	private lastPresenceSignature?: string;
 
 	// One directory page or one pinned activity per turn; yield between reads.
 	// Keep the previous directory until a traversal completes, avoiding page flicker.
@@ -208,11 +228,17 @@ export class AgentsView {
 					pending = page.entries.filter((entry) => entry.recent);
 					overflow = page.overflow;
 				} else {
-					this.peers = groups;
-					this.remoteThreads = threads;
-					this.refreshTasks();
-					this.clearFooterLayout();
-					this.deps.requestRender();
+					// Render only when the poll changed something the UI shows;
+					// a quiet peer re-arms the timer without a layout pass.
+					const signature = this.presenceSignature(groups, threads);
+					if (signature !== this.lastPresenceSignature) {
+						this.lastPresenceSignature = signature;
+						this.peers = groups;
+						this.remoteThreads = threads;
+						this.refreshTasks();
+						this.clearFooterLayout();
+						this.deps.requestRender();
+					}
 					this.stopPresenceRefresh();
 					this.presenceTimer = setTimeout(() => this.refreshPresence(), 1000);
 					this.presenceTimer.unref();
@@ -221,6 +247,9 @@ export class AgentsView {
 			} catch {
 				this.peers = [];
 				this.remoteThreads.clear();
+				// The error path always re-renders; anchor the next comparison
+				// to the emptied state the UI now shows.
+				this.lastPresenceSignature = this.presenceSignature([], new Map<string, TaskThread>());
 				this.refreshTasks();
 				this.clearFooterLayout();
 				this.deps.requestRender();
@@ -239,6 +268,44 @@ export class AgentsView {
 		clearTimeout(this.presenceTimer);
 		this.presenceCursor?.close();
 		this.presenceCursor = undefined;
+	}
+
+	// Cheap change signature over everything a presence poll feeds into the
+	// UI, so a quiet peer can skip the state swap and layout pass. Covered:
+	// - local tasks, filtered exactly like refreshTasks() (parentSessionId,
+	//   unfinished, isLocalTask): taskSignature() per task, in store.list()
+	//   order, so store ordering changes are covered too;
+	// - peer groups: group id, display label (including its unavailable
+	//   suffix), task count, and taskSignature() per task in poll order;
+	// - remote threads: task id, dropped count, item count, and per item the
+	//   kind plus cheap shape fields (text length plus an FNV-1a hash of its
+	//   last 64 characters; tool name, running, isError, output length plus
+	//   the same output tail hash). Item content is deliberately not
+	//   serialized: streaming merges and tool updates move those lengths,
+	//   while hashing full content would reintroduce the cost this gate
+	//   removes. The tail hash closes the one length-only blind spot:
+	//   keepTail capping lets a streaming peer rewrite capped content in
+	//   place with the same length, which lengths alone cannot see. Fields
+	//   not rendered from this state (thread version, turns, toolCalls,
+	//   result) stay out so streaming locals and quiet peers remain quiet.
+	private presenceSignature(groups: SessionGroup[], threads: Map<string, TaskThread>): string {
+		const local = this.deps.store.list().filter((task) => task.parentSessionId === this.deps.sessionId
+			&& !isFinished(task.status) && (this.deps.isLocalTask?.(task) ?? true));
+		let signature = "";
+		for (const task of local) signature += taskSignature(task);
+		for (const group of groups) {
+			signature += `|group:${group.id}:${group.label ?? ""}:${group.tasks.length}`;
+			for (const task of group.tasks) signature += taskSignature(task);
+		}
+		for (const [id, thread] of threads) {
+			signature += `|thread:${id}:${thread.dropped}:${thread.items.length}`;
+			for (const item of thread.items) {
+				signature += `,${item.kind}`;
+				if (item.kind === "tool") signature += `:${item.name}:${item.running ? 1 : 0}:${item.isError ? 1 : 0}:${item.output.length}:${tailHash(item.output)}`;
+				else signature += `:${item.text.length}:${tailHash(item.text)}`;
+			}
+		}
+		return signature;
 	}
 
 	constructor(deps: AgentsViewDeps) {

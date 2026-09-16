@@ -496,8 +496,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const usageFetchedAt = new Map<string, number>();
 	const usageInFlight = new Map<string, { session: number; task: Promise<void> }>();
 	/** Record and render a snapshot only while its originating session is active. */
-	const redrawUsage = (ctx: ExtensionContext, fetched: ProviderUsage | undefined) => {
-		if (!fetched || currentContext !== ctx) return;
+	const redrawUsage = (ctx: ExtensionContext, session: number, fetched: ProviderUsage | undefined) => {
+		if (!fetched || currentContext !== ctx || usageSession !== session) return;
 		usage.record(fetched);
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
@@ -520,7 +520,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const fetched = provider === CODEX_PROVIDER
 				? await fetchCodexUsage(credential, deps.fetch, deps.now())
 				: await fetchOptionalProviderUsage(provider, credential, deps.fetch, deps.now(), env);
-			redrawUsage(ctx, fetched);
+			redrawUsage(ctx, session, fetched);
 		})();
 		usageInFlight.set(provider, { session, task });
 		try {

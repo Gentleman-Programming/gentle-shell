@@ -779,6 +779,35 @@ test("gentleShell refreshes OpenCode Go on lifecycle events without a polling ti
 	assert.equal(handlers.has("timer"), false, "usage refresh is driven by Pi events, not a timer");
 });
 
+test("a new session never reuses an optional-provider request from the previous session", async () => {
+	const { pi, handlers } = fakePi();
+	let resolveFirst: ((response: Response) => void) | undefined;
+	const calls: string[] = [];
+	const fetchFn = (async (url: string | URL | Request) => {
+		calls.push(String(url));
+		if (calls.length === 1) return new Promise<Response>((resolve) => { resolveFirst = resolve; });
+		return { ok: true, json: async () => ({ usage: { rolling: { status: "ok", percent: 50 } } }) } as Response;
+	}) as typeof fetch;
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => 1_788_600_000_000 });
+	const first = fakeContext({ tokens: { "opencode-go": "old-key" } });
+	(first.ctx as unknown as { model: { provider: string; id: string } }).model = { ...first.ctx.model!, provider: "opencode-go", id: "muse-spark" };
+	await fire(handlers, "session_start", first.ctx);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(calls.length, 1);
+	await fire(handlers, "session_shutdown", first.ctx);
+
+	const next = fakeContext({ tokens: { "opencode-go": "new-key" } });
+	(next.ctx as unknown as { model: { provider: string; id: string } }).model = { ...next.ctx.model!, provider: "opencode-go", id: "muse-spark" };
+	await fire(handlers, "session_start", next.ctx);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(calls.length, 2, "the new session performs its own initial request");
+	assert.match(renderFooter(next.ui), /opencode 5h ▰▰▰▰▱▱▱▱ 50%/);
+
+	resolveFirst?.({ ok: true, json: async () => ({ usage: { rolling: { status: "ok", percent: 25 } } }) } as Response);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.match(renderFooter(next.ui), /opencode 5h ▰▰▰▰▱▱▱▱ 50%/, "the stale response cannot overwrite the active session");
+});
+
 test("gentleShell fetches a newly selected optional provider on the model-select event", async () => {
 	const { pi, handlers } = fakePi();
 	const calls: string[] = [];

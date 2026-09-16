@@ -57,6 +57,16 @@ test("parseOpenCodeGoUsage maps rolling, weekly and monthly utilization", () => 
 	assert.doesNotMatch(JSON.stringify(usage), /must-not-survive|example\.com/);
 });
 
+test("parseOpenCodeGoUsage marks the plan exhausted when any quota window is full", () => {
+	const usage = parseOpenCodeGoUsage({
+		usage: {
+			rolling: { status: "ok", percent: 20 },
+			weekly: { status: "ok", percent: 100 },
+		},
+	}, NOW);
+	assert.equal(usage?.limits[0]?.limitReached, true);
+});
+
 test("parseAntigravityUsage converts remaining fractions and keeps independent shared pools", () => {
 	const usage = parseAntigravityUsage({
 		email: "must-not-survive@example.com",
@@ -104,6 +114,18 @@ test("parseCommandCodeUsage keeps windows, billing credits and plan but drops id
 	assert.equal(usage?.limits[1]?.windows[0]?.usedPercent, 20);
 	assert.equal(usage?.limits[1]?.windows[0]?.resetAt, Date.parse("2026-10-13T14:42:32Z"));
 	assert.doesNotMatch(JSON.stringify(usage), /must-not-survive/);
+});
+
+test("parseCommandCodeUsage does not invent an exhausted balance from absent or invalid credits", () => {
+	for (const credits of [undefined, {}, { monthlyCredits: "invalid", purchasedCredits: -1, freeCredits: null }]) {
+		const usage = parseCommandCodeUsage(
+			{ windowLimits: { fiveHour: { used: 1, cap: 4 } }, ...(credits === undefined ? {} : { credits }) },
+			{ data: { planId: "pro" } },
+			{ totalCost: 20 },
+			NOW,
+		);
+		assert.deepEqual(usage?.limits.map((limit) => limit.name), ["command code"]);
+	}
 });
 
 test("provider reset timestamps reject malformed or impossible RFC3339 values", () => {
@@ -165,6 +187,26 @@ test("fetchCommandCodeUsage follows the provider plugin's dependent quota reques
 		"https://command.example/alpha/usage/summary?orgId=org%20one&since=2026-09-01",
 	]);
 	assert.doesNotMatch(JSON.stringify(usage), /org one|private/);
+});
+
+test("fetchCommandCodeUsage refuses remote cleartext API overrides before sending a credential", async () => {
+	let calls = 0;
+	const fetchFn = (async () => {
+		calls += 1;
+		return response({});
+	}) as typeof fetch;
+	assert.equal(await fetchCommandCodeUsage("cmd-secret", fetchFn, NOW, "http://command.example"), undefined);
+	assert.equal(calls, 0);
+});
+
+test("fetchCommandCodeUsage permits loopback HTTP for local provider development", async () => {
+	const calls: string[] = [];
+	const fetchFn = (async (url: string | URL | Request) => {
+		calls.push(String(url));
+		return response(calls.length === 1 ? { org: {} } : calls.length === 2 ? { windowLimits: { fiveHour: { used: 1, cap: 2 } } } : calls.length === 3 ? { data: {} } : { totalCost: 0 });
+	}) as typeof fetch;
+	assert.ok(await fetchCommandCodeUsage("cmd-secret", fetchFn, NOW, "http://127.0.0.1:8787/provider/v1"));
+	assert.equal(calls[0], "http://127.0.0.1:8787/alpha/whoami");
 });
 
 test("Command Code usage preserves the provider plugin's zero-data-retention header", async () => {

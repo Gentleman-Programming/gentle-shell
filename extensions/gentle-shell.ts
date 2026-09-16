@@ -491,37 +491,44 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const usage = new UsageStore();
 	let renderHost: ShellRenderHost | undefined;
 	let currentContext: ExtensionContext | undefined;
+	let usageSession = 0;
 	const usageFetchedAt = new Map<string, number>();
-	const usageInFlight = new Map<string, Promise<void>>();
+	const usageInFlight = new Map<string, { session: number; task: Promise<void> }>();
+	/** Record and render a snapshot only while its originating session is active. */
 	const redrawUsage = (ctx: ExtensionContext, fetched: ProviderUsage | undefined) => {
 		if (!fetched || currentContext !== ctx) return;
 		usage.record(fetched);
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
 	};
+	/** Fetch at most once concurrently per provider and active session. */
 	const refreshProviderUsage = async (ctx: ExtensionContext, provider: string, force: boolean) => {
+		if (currentContext !== ctx) return;
+		const session = usageSession;
 		const now = deps.now();
 		const fetchedAt = usageFetchedAt.get(provider) ?? 0;
 		// Codex retains its existing five-minute protection. The optional provider
 		// endpoints refresh only on Pi lifecycle events, never on a timer.
 		if (!force && provider === CODEX_PROVIDER && now - fetchedAt < USAGE_REFRESH_MS) return;
 		const pending = usageInFlight.get(provider);
-		if (pending) return pending;
+		if (pending?.session === session) return pending.task;
 		usageFetchedAt.set(provider, now);
 		const task = (async () => {
 			const credential = await ctx.modelRegistry.getApiKeyForProvider(provider).catch(() => undefined);
+			if (currentContext !== ctx || usageSession !== session) return;
 			const fetched = provider === CODEX_PROVIDER
 				? await fetchCodexUsage(credential, deps.fetch, deps.now())
 				: await fetchOptionalProviderUsage(provider, credential, deps.fetch, deps.now(), env);
 			redrawUsage(ctx, fetched);
 		})();
-		usageInFlight.set(provider, task);
+		usageInFlight.set(provider, { session, task });
 		try {
 			await task;
 		} finally {
-			if (usageInFlight.get(provider) === task) usageInFlight.delete(provider);
+			if (usageInFlight.get(provider)?.task === task) usageInFlight.delete(provider);
 		}
 	};
+	/** Refresh the active provider, or every connected provider for the usage panel. */
 	const refreshUsage = async (ctx: ExtensionContext, force: boolean, all = false) => {
 		const provider = ctx.model?.provider;
 		const providers = all
@@ -599,6 +606,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	});
 	pi.on("session_start", async (_event, ctx) => {
 		registry?.close();
+		usageSession += 1;
+		usageInFlight.clear();
 		currentContext = ctx;
 		changes = undefined;
 		registry = new SessionWorktreeRegistry(pi, ctx.sessionManager, ctx.cwd, deps.resolveWorktree);
@@ -645,6 +654,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		applyChanges(ctx, tracker.model);
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
+		usageSession += 1;
+		usageInFlight.clear();
 		prompt?.dispose();
 		prompt = undefined;
 		if ((ctx.ui.getEditorComponent() as PromptFactory | undefined)?.[PROMPT_OWNER]) {

@@ -124,7 +124,7 @@ export function parseOpenCodeGoUsage(payload: unknown, now: number): ProviderUsa
 		});
 	}
 	if (windows.length === 0) return undefined;
-	return { provider: OPENCODE_GO_PROVIDER, plan: "Go", limits: [{ name: "opencode", windows, limitReached: windows[0]!.usedPercent >= 100 }], fetchedAt: now };
+	return { provider: OPENCODE_GO_PROVIDER, plan: "Go", limits: [{ name: "opencode", windows, limitReached: windows.some((window) => window.usedPercent >= 100) }], fetchedAt: now };
 }
 
 /** Parse Antigravity's shared quota groups into used percentages. */
@@ -187,12 +187,16 @@ export function parseCommandCodeUsage(
 	}
 
 	const creditSources = record(creditsRoot?.credits);
-	const remaining = (nonnegative(creditSources?.monthlyCredits) ?? 0)
-		+ (nonnegative(creditSources?.purchasedCredits) ?? 0)
-		+ (nonnegative(creditSources?.freeCredits) ?? 0);
+	const creditValues = [
+		nonnegative(creditSources?.monthlyCredits),
+		nonnegative(creditSources?.purchasedCredits),
+		nonnegative(creditSources?.freeCredits),
+	];
+	const hasCreditBalance = creditValues.some((value) => value !== undefined);
+	const remaining = creditValues.reduce<number>((sum, value) => sum + (value ?? 0), 0);
 	const spent = nonnegative(record(summaryPayload)?.totalCost);
 	const subscription = record(record(subscriptionPayload)?.data);
-	if (spent !== undefined && remaining + spent > 0) {
+	if (spent !== undefined && hasCreditBalance && remaining + spent > 0) {
 		const resetAt = timestamp(subscription?.currentPeriodEnd);
 		const periodStart = timestamp(subscription?.currentPeriodStart);
 		const seconds = resetAt !== null && periodStart !== null ? Math.max(0, Math.round((resetAt - periodStart) / 1000)) : 0;
@@ -264,6 +268,20 @@ function query(orgId: unknown): string {
 	return id ? `?orgId=${encodeURIComponent(id)}` : "";
 }
 
+/** Normalize a Command Code API URL without permitting credentials over cleartext. */
+function commandCodeApiBase(value: string): string | undefined {
+	try {
+		const url = new URL(value);
+		const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
+		if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) return undefined;
+		if (url.username || url.password || url.search || url.hash) return undefined;
+		url.pathname = url.pathname.replace(/\/provider\/v1\/?$/, "").replace(/\/+$/, "");
+		return url.toString().replace(/\/$/, "");
+	} catch {
+		return undefined;
+	}
+}
+
 /** Fetch one Command Code quota snapshot through its dependent API calls. */
 export async function fetchCommandCodeUsage(
 	token: string,
@@ -273,9 +291,11 @@ export async function fetchCommandCodeUsage(
 	extraHeaders: Record<string, string> = {},
 ): Promise<ProviderUsage | undefined> {
 	try {
+		const safeBaseUrl = commandCodeApiBase(baseUrl);
+		if (!safeBaseUrl) return undefined;
 		const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
 		const headers = { Authorization: `Bearer ${token}`, Accept: "application/json", ...extraHeaders };
-		const get = (path: string) => fetchFn(`${baseUrl}${path}`, { headers, signal }).then(json);
+		const get = (path: string) => fetchFn(`${safeBaseUrl}${path}`, { headers, signal, redirect: "error" }).then(json);
 		const whoami = record(await get("/alpha/whoami"));
 		if (!whoami) return undefined;
 		const org = query(record(whoami.org)?.id);
@@ -306,7 +326,7 @@ export async function fetchOptionalProviderUsage(
 	if (provider === OPENCODE_GO_PROVIDER) return fetchOpenCodeGoUsage(token, fetchFn, now);
 	if (provider === ANTIGRAVITY_PROVIDER) return fetchAntigravityUsage(token, fetchFn, now);
 	if (provider === COMMAND_CODE_PROVIDER) {
-		const base = (env.COMMANDCODE_API_BASE ?? COMMAND_CODE_API_URL).replace(/\/provider\/v1\/?$/, "");
+		const base = env.COMMANDCODE_API_BASE ?? COMMAND_CODE_API_URL;
 		const headers = env.CMD_ZDR === "1" || env.COMMANDCODE_ZDR === "1" ? { "x-cmd-zdr": "1" } : {};
 		return fetchCommandCodeUsage(token, fetchFn, now, base, headers);
 	}

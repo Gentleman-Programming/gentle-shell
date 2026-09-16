@@ -53,11 +53,11 @@ test("renderCard collapses to the frame and the first body line with an expand h
 	assert.equal(visibleWidth(lines[1]), 60);
 });
 
-test("renderCard keeps the rail and its corners in the tone and the rest of the frame in the border color", () => {
+test("renderCard uses the card tone across the full frame while preserving content roles", () => {
 	const info = renderCard(card(), taggedTheme, 80, { expanded: true });
-	assert.match(info[0], /^<customMessageLabel>╭<\/customMessageLabel><border>─ <\/border><customMessageLabel>✿ Gentle AI<\/customMessageLabel> <muted>·<\/muted> <muted>review preflight<\/muted><border> ─+<\/border><border>╮<\/border>$/);
-	assert.match(info[1], /^<customMessageLabel>│<\/customMessageLabel> <text>.*<border>│<\/border>$/);
-	assert.match(info[info.length - 1], /^<customMessageLabel>╰<\/customMessageLabel><border>─+╯<\/border>$/);
+	assert.match(info[0], /^<customMessageLabel>╭<\/customMessageLabel><customMessageLabel>─ <\/customMessageLabel><customMessageLabel>✿ Gentle AI<\/customMessageLabel> <muted>·<\/muted> <muted>review preflight<\/muted><customMessageLabel> ─+<\/customMessageLabel><customMessageLabel>╮<\/customMessageLabel>$/);
+	assert.match(info[1], /^<customMessageLabel>│<\/customMessageLabel> <text>.*<customMessageLabel>│<\/customMessageLabel>$/);
+	assert.match(info[info.length - 1], /^<customMessageLabel>╰<\/customMessageLabel><customMessageLabel>─+╯<\/customMessageLabel>$/);
 
 	const warning = renderCard(card({ tone: CARD_TONE.WARNING, subtitle: undefined }), taggedTheme, 80, { expanded: true });
 	assert.match(warning[0], /^<warning>╭<\/warning>/);
@@ -65,8 +65,10 @@ test("renderCard keeps the rail and its corners in the tone and the rest of the 
 	assert.match(warning[1], /^<warning>│<\/warning> /);
 	assert.match(warning[warning.length - 1], /^<warning>╰<\/warning>/);
 
-	const error = renderCard(card({ tone: CARD_TONE.ERROR }), taggedTheme, 80, { expanded: true });
-	assert.match(error[0], /<error>✿ Gentle AI<\/error>/);
+	const error = renderCard(card({ tone: CARD_TONE.ERROR }), taggedTheme, 80, { expanded: true, hint: "ctrl+o to expand" });
+	assert.match(error[0], /^<error>╭<\/error><error>─ <\/error><error>✿ Gentle AI<\/error> <muted>·<\/muted> <muted>review preflight<\/muted><error> ─+<\/error> <dim>ctrl\+o to expand<\/dim> <error>╮<\/error>$/);
+	assert.match(error[1], /^<error>│<\/error> <text>.*<error>│<\/error>$/);
+	assert.match(error[error.length - 1], /^<error>╰<\/error><error>─+╯<\/error>$/);
 	assert.equal(CARD_TONE.SUCCESS, "success");
 });
 

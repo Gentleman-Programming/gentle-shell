@@ -1,5 +1,6 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { paintGauge } from "./shell-gauge.ts";
+import { ANTIGRAVITY_PROVIDER, COMMAND_CODE_PROVIDER, OPENCODE_GO_PROVIDER } from "./shell-usage-providers.ts";
 
 // Gentle Shell subscription usage: the rate-limit windows each connected
 // provider reports. Codex sends them as SSE headers and through its usage
@@ -81,10 +82,19 @@ const ROLE = {
 	SEPARATOR: "muted",
 } as const;
 export const USAGE_EMPTY_MESSAGE = "No subscription usage yet. Usage arrives with the next response, or press r to fetch it.";
-export const SUPPORTED_USAGE_PROVIDERS: readonly string[] = [CODEX_PROVIDER, ANTHROPIC_PROVIDER];
+export const SUPPORTED_USAGE_PROVIDERS: readonly string[] = [
+	CODEX_PROVIDER,
+	ANTHROPIC_PROVIDER,
+	OPENCODE_GO_PROVIDER,
+	ANTIGRAVITY_PROVIDER,
+	COMMAND_CODE_PROVIDER,
+];
 const PENDING_NOTE: Record<string, string> = {
 	[CODEX_PROVIDER]: "no usage yet · r to fetch",
 	[ANTHROPIC_PROVIDER]: "usage arrives with the first response",
+	[OPENCODE_GO_PROVIDER]: "no usage yet · r to fetch",
+	[ANTIGRAVITY_PROVIDER]: "requires pi-antigravity · r to fetch",
+	[COMMAND_CODE_PROVIDER]: "requires pi-commandcode-provider · r to fetch",
 };
 const UNSUPPORTED_NOTE = "no subscription usage for this provider";
 const ACTIVE_MARK = "✿";

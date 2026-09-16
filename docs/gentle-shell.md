@@ -98,7 +98,11 @@ Subscription usage shows in the bar after the cost, and `/gentle:usage` opens a 
 
 - For Codex, usage comes from the same account usage endpoint the Codex CLI reads, using the OAuth token pi already holds. It is fetched at session start, at most every 5 minutes after a turn, and on `r` in the panel. Rate-limit headers on SSE responses are picked up too.
 - For Claude Pro/Max, usage arrives in the rate-limit headers of every response, so the 5h and weekly windows appear after the first turn.
-- The bar names the subscription it shows (`codex`, `claude`) and always follows the active model. The panel puts the active provider first, marked with the petal, and says why it has no data when it does not: API-key providers have no subscription windows, Claude reports after the first response, Codex waits for a fetch.
+- For OpenCode Go, Gentle reads the rolling 5h, weekly, and monthly windows from the Go usage endpoint with the provider credential Pi already holds.
+- Antigravity support requires the optional [`pi-antigravity`](https://github.com/Rahularya01/pi-antigravity) provider package. Gentle reads the same shared 5h and weekly quota groups as `/antigravity.usage`; it does not keep the Google account, email, project, or token.
+- Command Code support requires the optional [`pi-commandcode-provider`](https://github.com/patlux/pi-commandcode-provider) package. Gentle follows the same identity → credits/subscription → period-summary request flow as `/commandcode-quota`, then discards the identity and keeps only the 5h, weekly, and billing-credit windows.
+- These provider endpoints are event-driven: the active account is read at session start, on a real model switch, and after one of its turns completes. Opening `/gentle:usage` or pressing `r` explicitly refreshes every connected supported account. There is no usage polling timer.
+- The bar names the subscription it shows and always follows the active model. The panel puts the active provider first, marked with the petal, and says why it has no data when it does not: Claude reports after the first response, fetch-backed providers wait for a refresh, and unrelated API-key providers have no known subscription windows.
 - Only the plan name and the windows are kept; account details in the payload are discarded.
 - Gauges turn amber at 80% and red at 95%, like the context gauge.
 
@@ -170,4 +174,3 @@ Three things keep the list current, which a static tool description cannot:
 A finished list stays on screen for the turn it finished in and clears at the next. `ctrl+shift+t` collapses the card to the task in progress (`GENTLE_PI_TODO_KEY` rebinds it, `off` disables it); `GENTLE_PI_TODO=0` disables the tool and the card.
 
 Set `GENTLE_PI_SHELL=0` to keep pi's built-in footer and editor.
-

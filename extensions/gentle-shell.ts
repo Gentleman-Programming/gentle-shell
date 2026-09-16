@@ -16,6 +16,7 @@ import { agentsViewKey } from "../lib/agents-keys.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { framePromptLines, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
 import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, parseCodexUsage, parseUsageHeaders, UsageStore, type ProviderUsage } from "../lib/shell-usage.ts";
+import { ANTIGRAVITY_PROVIDER, COMMAND_CODE_PROVIDER, fetchOptionalProviderUsage, OPENCODE_GO_PROVIDER } from "../lib/shell-usage-providers.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarPart } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
@@ -464,6 +465,7 @@ export function devBinaryCard(notice: DevBinaryNotice): Card {
 }
 
 const USAGE_REFRESH_MS = 5 * 60_000;
+const OPTIONAL_USAGE_PROVIDERS = [OPENCODE_GO_PROVIDER, ANTIGRAVITY_PROVIDER, COMMAND_CODE_PROVIDER] as const;
 
 // The Codex usage endpoint is what the Codex CLI itself reads. The OAuth
 // token pi already holds carries the account id; nothing else is sent.
@@ -488,19 +490,46 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const deps: ShellDeps = { ...defaultShellDeps, activeProfile: createActiveProfileReader(env), ...overrides };
 	const usage = new UsageStore();
 	let renderHost: ShellRenderHost | undefined;
-	let usageFetchedAt = 0;
-	const refreshUsage = async (ctx: ExtensionContext, force: boolean) => {
-		const provider = ctx.model?.provider;
-		if (provider !== CODEX_PROVIDER) return;
-		const now = deps.now();
-		if (!force && now - usageFetchedAt < USAGE_REFRESH_MS) return;
-		usageFetchedAt = now;
-		const token = await ctx.modelRegistry.getApiKeyForProvider(CODEX_PROVIDER).catch(() => undefined);
-		const fetched = await fetchCodexUsage(token, deps.fetch, deps.now());
-		if (!fetched) return;
+	let currentContext: ExtensionContext | undefined;
+	const usageFetchedAt = new Map<string, number>();
+	const usageInFlight = new Map<string, Promise<void>>();
+	const redrawUsage = (ctx: ExtensionContext, fetched: ProviderUsage | undefined) => {
+		if (!fetched || currentContext !== ctx) return;
 		usage.record(fetched);
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
+	};
+	const refreshProviderUsage = async (ctx: ExtensionContext, provider: string, force: boolean) => {
+		const now = deps.now();
+		const fetchedAt = usageFetchedAt.get(provider) ?? 0;
+		// Codex retains its existing five-minute protection. The optional provider
+		// endpoints refresh only on Pi lifecycle events, never on a timer.
+		if (!force && provider === CODEX_PROVIDER && now - fetchedAt < USAGE_REFRESH_MS) return;
+		const pending = usageInFlight.get(provider);
+		if (pending) return pending;
+		usageFetchedAt.set(provider, now);
+		const task = (async () => {
+			const credential = await ctx.modelRegistry.getApiKeyForProvider(provider).catch(() => undefined);
+			const fetched = provider === CODEX_PROVIDER
+				? await fetchCodexUsage(credential, deps.fetch, deps.now())
+				: await fetchOptionalProviderUsage(provider, credential, deps.fetch, deps.now(), env);
+			redrawUsage(ctx, fetched);
+		})();
+		usageInFlight.set(provider, task);
+		try {
+			await task;
+		} finally {
+			if (usageInFlight.get(provider) === task) usageInFlight.delete(provider);
+		}
+	};
+	const refreshUsage = async (ctx: ExtensionContext, force: boolean, all = false) => {
+		const provider = ctx.model?.provider;
+		const providers = all
+			? [CODEX_PROVIDER, ...OPTIONAL_USAGE_PROVIDERS]
+			: provider && (provider === CODEX_PROVIDER || OPTIONAL_USAGE_PROVIDERS.includes(provider as typeof OPTIONAL_USAGE_PROVIDERS[number]))
+				? [provider]
+				: [];
+		await Promise.all(providers.map((candidate) => refreshProviderUsage(ctx, candidate, force)));
 	};
 	pi.on("after_provider_response", (event) => {
 		const parsed = parseUsageHeaders(event.headers, deps.now());
@@ -517,14 +546,14 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	pi.registerCommand(USAGE_COMMAND_NAME, {
 		description: "Show subscription usage windows for the connected providers. Press r to refetch.",
 		handler: async (_args, ctx) => {
-			await refreshUsage(ctx, true);
+			await refreshUsage(ctx, true, true);
 			await ctx.ui.custom<null>(
 				(tui, theme, _keybindings, done) =>
 					new UsageView(usage, {
 						theme,
 						now: () => deps.now(),
 						active: () => (ctx.model ? { provider: ctx.model.provider } : undefined),
-						onRefresh: () => refreshUsage(ctx, true),
+						onRefresh: () => refreshUsage(ctx, true, true),
 						onClose: () => done(null),
 						requestRender: () => tui.requestRender(),
 					}),
@@ -535,7 +564,6 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let prompt: GentlePromptEditor | undefined;
 	let changes: SessionChanges | undefined;
 	let registry: SessionWorktreeRegistry | undefined;
-	let currentContext: ExtensionContext | undefined;
 	let shown = "";
 	const applyChanges = (ctx: ExtensionContext, model: ChangesModel) => {
 		const fingerprint = changesFingerprint(model);
@@ -668,6 +696,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	});
 	pi.on("agent_settled", () => {
 		prompt?.setWorking(false);
+	});
+	pi.on("model_select", (_event, ctx) => {
+		// A model switch is an explicit opportunity to populate the new active
+		// provider without a background timer or waiting for its first response.
+		void refreshUsage(ctx, true);
 	});
 	pi.on("agent_end", async (_event, ctx) => {
 		await refreshChanges(ctx);

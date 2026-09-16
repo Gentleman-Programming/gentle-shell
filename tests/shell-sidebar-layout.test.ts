@@ -32,7 +32,7 @@ test("grouped Status preserves structured fields and opaque integration text", (
 	}, theme, 46);
 	const text = lines.join("\n");
 	let previous = -1;
-	for (const heading of ["Status", "Project", "Model", "Context", "Usage", "Integrations"]) {
+	for (const heading of ["Status", "Project", "Changes", "Usage", "Integrations"]) {
 		const index = text.indexOf(heading);
 		assert.ok(index > previous, heading);
 		previous = index;
@@ -67,13 +67,13 @@ test("only fullscreen at 140 columns activates; shrinking restores bottom paint"
 	}
 });
 
-test("rail orders Status, changes, agents, TODO independent of registration order", (t) => {
+test("rail orders unified Status, agents, TODO without standalone changes", (t) => {
 	const f = fixture();
 	for (const key of ["todo", "agents", "changes"]) {
 		sidebarPart(f.tui, key, { render: () => [key, ""], invalidate() {} });
 	}
 	t.after(installSidebar(f.tui, theme));
-	assert.deepEqual(rail(f).render(50).map((line) => line.trim()), ["✿ Gentle Shell ✿", "", "Status", "", "changes", "", "agents", "", "todo"]);
+	assert.deepEqual(rail(f).render(50).map((line) => line.trim()), ["✿ Gentle Shell ✿", "", "Status", "", "agents", "", "todo"]);
 });
 
 test("branding belongs to scroll content before Status, never transcript or narrow bottom", (t) => {
@@ -249,30 +249,30 @@ test("real layout frames reuse unchanged sidebar output and invalidate at state 
 	t.after(installSidebar(f.tui, theme));
 
 	const first = renderLayoutFrame(f.root, 140, 20, () => {});
-	assert.deepEqual(counts, { footer: 1, changes: 1, agents: 1, todo: 1 });
+	assert.deepEqual(counts, { footer: 1, changes: 0, agents: 1, todo: 1 });
 	const sidebarRail = first.root.children[1]?.component as ScrollView;
 	renderLayoutFrame(f.root, 140, 20, () => {});
-	assert.deepEqual(counts, { footer: 1, changes: 1, agents: 1, todo: 1 });
+	assert.deepEqual(counts, { footer: 1, changes: 0, agents: 1, todo: 1 });
 
 	todo = "Todo two";
 	sidebarRail.invalidate();
 	const changed = renderLayoutFrame(f.root, 140, 20, () => {});
 	assert.match(changed.lines.join("\n"), /Todo two/);
-	assert.deepEqual(counts, { footer: 2, changes: 2, agents: 2, todo: 2 });
+	assert.deepEqual(counts, { footer: 2, changes: 0, agents: 2, todo: 2 });
 
 	f.host.terminal.columns = 139;
 	renderLayoutFrame(f.root, 139, 20, () => {});
 	assert.deepEqual(f.bottom.render(80), ["Status"]);
 	f.host.terminal.columns = 140;
 	renderLayoutFrame(f.root, 140, 20, () => {});
-	assert.deepEqual(counts, { footer: 3, changes: 3, agents: 3, todo: 3 });
+	assert.deepEqual(counts, { footer: 3, changes: 0, agents: 3, todo: 3 });
 
 	f.host.mode = "regular";
 	renderLayoutFrame(f.root, 140, 20, () => {});
 	assert.deepEqual(f.bottom.render(80), ["Status"]);
 	f.host.mode = "fullscreen";
 	renderLayoutFrame(f.root, 140, 20, () => {});
-	assert.deepEqual(counts, { footer: 4, changes: 4, agents: 4, todo: 4 });
+	assert.deepEqual(counts, { footer: 4, changes: 0, agents: 4, todo: 4 });
 
 	let replacementRenders = 0;
 	sidebarPart(f.tui, "todo", {

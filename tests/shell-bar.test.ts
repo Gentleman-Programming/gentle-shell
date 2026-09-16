@@ -176,6 +176,27 @@ test("shellEnabled honors GENTLE_PI_SHELL=0", () => {
 	assert.equal(shellEnabled({ GENTLE_PI_SHELL: "false" }), false);
 });
 
+test("sidebar unifies project, captured changes, usage and integrations in one frame", () => {
+	const data = model({ changes: { files: 2, added: 7, deleted: 3, notice: "capture warning" }, statuses: ["MCP connected"] });
+	const lines = renderShellSidebarBar(data, plainTheme, 46);
+	const text = lines.join("\n");
+	assert.equal(lines.filter((line) => line.startsWith("╭")).length, 1);
+	let previous = -1;
+	for (const heading of ["Status", "Project", "Changes", "Usage", "Integrations"]) {
+		const index = text.indexOf(heading);
+		assert.ok(index > previous, heading);
+		previous = index;
+	}
+	assert.match(text, /2 files.*\+7.*−3/);
+	assert.match(text, /capture warning/);
+	assert.match(text, /\/gentle:changes/);
+	assert.match(text, /gpt-5\.5/);
+	for (const width of [1, 8, 24, 46]) assert.ok(renderShellSidebarBar(data, plainTheme, width).every((line) => visibleWidth(line) <= width));
+	const empty = renderShellSidebarBar(model(), plainTheme, 46).join("\n");
+	assert.match(empty, /No captured changes/);
+	assert.match(empty, /Integrations/);
+});
+
 test("sidebar profile wraps long names without changing the compact bar", () => {
 	const profile = "team-" + "x".repeat(59);
 	const base = model();

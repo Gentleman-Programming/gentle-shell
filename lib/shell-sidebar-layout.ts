@@ -134,7 +134,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 		}
 		try {
 			const contentWidth = scroll.getContentWidth(RAIL_WIDTH);
-			const sections = ["footer", "changes", "agents", "todo"].map((key) => {
+			const sections = ["footer", "agents", "todo"].map((key) => {
 				const component = state.parts.get(key);
 				const lines = [...(component?.render(contentWidth - RAIL_PADDING * 2) ?? [])];
 				while (lines.length && lines[lines.length - 1]?.trim() === "") lines.pop();

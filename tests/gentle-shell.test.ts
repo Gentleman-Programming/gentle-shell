@@ -405,13 +405,39 @@ test("gentleShell shows working while the agent runs and queued when messages wa
 	const editor = installedPrompt(ctx, ui, handlers);
 
 	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
-	assert.match(stripAnsi(editor.render(60)[0]), /^╭─ [✿❀❁✾] working ─+╮$/);
+	assert.match(stripAnsi(editor.render(60)[0]), /^╭─ ✿ working… ─+╮$/);
 	pending.value = true;
 	assert.match(stripAnsi(editor.render(60)[0]), /^╭─ [✿❀❁✾] queued ─+╮$/);
 	for (const handler of handlers.get("agent_end") ?? []) handler({}, ctx);
+	assert.match(stripAnsi(editor.render(60)[0]), /queued/, "low-level run end is not settled");
 	pending.value = false;
+	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
 	assert.match(stripAnsi(editor.render(60)[0]), /^╭─ ✿ ─+╮$/);
 	editor.dispose();
+});
+
+test("prompt uses the compact banner cadence and releases its unref timer at settlement", (t) => {
+	const delays: number[] = [];
+	let active = 0;
+	let unrefs = 0;
+	t.mock.method(globalThis, "setInterval", (_callback: () => void, delay: number) => {
+		delays.push(delay);
+		active++;
+		return { unref() { unrefs++; } };
+	});
+	t.mock.method(globalThis, "clearInterval", () => { active--; });
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	assert.equal(active, 0);
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	assert.deepEqual(delays, [80]);
+	assert.equal(unrefs, 1);
+	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
+	assert.equal(active, 0);
+	editor.dispose();
+	assert.equal(active, 0);
 });
 
 test("gentleShell leaves an editor another extension already installed", () => {
@@ -421,6 +447,26 @@ test("gentleShell leaves an editor another extension already installed", () => {
 	const { ctx, ui } = fakeContext({ editorFactory: theirs });
 	for (const handler of handlers.get("session_start") ?? []) handler({}, ctx);
 	assert.equal(ui.editorFactory, theirs);
+	assert.notEqual(ui.workingVisible, false, "a custom owner still needs native working feedback");
+});
+
+test("Gentle replaces its retained factory on reload so new lifecycle handlers own the prompt", () => {
+	const first = fakePi();
+	gentleShell(first.pi, {});
+	const { ctx, ui } = fakeContext();
+	const oldEditor = installedPrompt(ctx, ui, first.handlers);
+	const previousFactory = ui.editorFactory;
+	const next = fakePi();
+	gentleShell(next.pi, {});
+	const editor = installedPrompt(ctx, ui, next.handlers);
+	try {
+		assert.notEqual(ui.editorFactory, previousFactory);
+		for (const handler of next.handlers.get("agent_start") ?? []) handler({}, ctx);
+		assert.match(stripAnsi(editor.render(60)[0]), /working/);
+	} finally {
+		oldEditor.dispose();
+		editor.dispose();
+	}
 });
 
 const footerData = { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} };
@@ -451,6 +497,13 @@ test("captured changes update the widget and bar without repository scans", asyn
  const factory=ui.widgets.get("gentle-shell-changes") as any;
  assert.match(factory(fakeTui,plainTheme).render(140)[0],/1 file · \+2 −0/);
  assert.match(renderFooter(ui),/main ±1/);
+ const rail = sidebarState(fakeTui as unknown as TUI).parts.get("footer")!;
+ const digest = rail.digest!();
+ assert.match(rail.render(46).join("\n"), /1 file · \+2 −0/);
+ sessionChange(ctx,"b","/repo","lib/b.ts","one\ntwo\n","one\ntwo\nthree\n");
+ await fire(handlers,"agent_end",ctx);
+ assert.notEqual(rail.digest!(), digest, "same-count line changes invalidate the unified Status");
+ assert.match(rail.render(46).join("\n"), /1 file · \+3 −0/);
  assert.equal(git.length,0);
  await fire(handlers,"session_shutdown",ctx);
 });

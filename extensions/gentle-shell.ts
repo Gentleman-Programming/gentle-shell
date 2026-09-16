@@ -14,7 +14,7 @@ import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/c
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { agentsViewKey } from "../lib/agents-keys.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
-import { framePromptLines, PROMPT_HINT, PROMPT_STATE, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
+import { framePromptLines, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
 import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, parseCodexUsage, parseUsageHeaders, UsageStore, type ProviderUsage } from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarPart } from "../lib/shell-sidebar.ts";
@@ -185,8 +185,6 @@ interface PromptEditorDeps {
 
 const PROMPT_FRAME_ROLE = "border";
 
-const PETAL_PULSE_MS = 160;
-
 export class GentlePromptEditor extends CustomEditor {
 	private promptState: PromptState = PROMPT_STATE.IDLE;
 	private tick = 0;
@@ -205,7 +203,7 @@ export class GentlePromptEditor extends CustomEditor {
 			this.pulse = setInterval(() => {
 				this.tick += 1;
 				this.deps.requestRender();
-			}, PETAL_PULSE_MS);
+			}, SHELL_PULSE_MS);
 			this.pulse.unref();
 		}
 		this.deps.requestRender();
@@ -237,9 +235,14 @@ export class GentlePromptEditor extends CustomEditor {
 	}
 }
 
-function installPrompt(ctx: ExtensionContext, onCreated: (prompt: GentlePromptEditor) => void): void {
-	if (ctx.ui.getEditorComponent()) return;
-	ctx.ui.setEditorComponent((tui, theme, keybindings) => {
+// Stable across extension module reloads; never infer ownership from a name.
+const PROMPT_OWNER = Symbol.for("gentle-pi.prompt-owner");
+type PromptFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorComponent"]>> & { [PROMPT_OWNER]?: boolean };
+
+function installPrompt(ctx: ExtensionContext, onCreated: (prompt: GentlePromptEditor) => void): boolean {
+	const previous = ctx.ui.getEditorComponent() as PromptFactory | undefined;
+	if (previous && !previous[PROMPT_OWNER]) return false;
+	const factory: PromptFactory = (tui, theme, keybindings) => {
 		const prompt = new GentlePromptEditor(tui, theme, keybindings, {
 			fg: (color, text) => ctx.ui.theme.fg(color as Parameters<typeof ctx.ui.theme.fg>[0], text),
 			bold: (text) => ctx.ui.theme.bold(text),
@@ -248,7 +251,10 @@ function installPrompt(ctx: ExtensionContext, onCreated: (prompt: GentlePromptEd
 		});
 		onCreated(prompt);
 		return prompt;
-	});
+	};
+	factory[PROMPT_OWNER] = true;
+	ctx.ui.setEditorComponent(factory);
+	return true;
 }
 
 const CHANGES_WIDGET_KEY = "gentle-shell-changes";
@@ -403,21 +409,6 @@ function showChanges(ctx: ExtensionContext, model: ChangesModel): void {
 		(tui, theme) => sidebarPart(tui, "changes", {
 			render(width: number) {
 				return renderChangesWidget(model, theme, width);
-			},
-			invalidate() {},
-		}, {
-			render(width: number) {
-				const noun = model.files.length === 1 ? "file" : "files";
-				return renderCard({
-					title: "Changes",
-					tone: CARD_TONE.INFO,
-					body: [
-						`${model.files.length} ${noun} · ${theme.fg("success", `+${model.added}`)} ${theme.fg("error", `−${model.deleted}`)}`,
-						...(model.notice ? [theme.fg("warning", model.notice)] : []),
-						"",
-						theme.fg("muted", `/${CHANGES_COMMAND_NAME}`),
-					],
-				}, theme, width, { expanded: true });
 			},
 			invalidate() {},
 		}),
@@ -594,7 +585,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// part for: model, effort, context, cost, session name and extension
 			// statuses. The digest is what keeps the fullscreen memo honest, and it
 			// rebuilds the model exactly as the narrow bottom bar does every frame.
-			const footerModel = () => buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: usage.get(ctx.model?.provider ?? ""), profile: deps.activeProfile() });
+			const footerModel = (): ShellBarModel => ({
+				...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: usage.get(ctx.model?.provider ?? ""), profile: deps.activeProfile() }),
+				changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted, notice: tracker.model.notice },
+			});
 			const part = sidebarPart(tui, "footer", bottom, {
 				digest: () => JSON.stringify(footerModel()),
 				render: (width) => renderShellSidebarBar(footerModel(), theme, width),
@@ -604,11 +598,13 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			return { ...part, dispose() { uninstall(); part.dispose(); } };
 		});
 		void refreshUsage(ctx, true);
-		installPrompt(ctx, (created) => {
+		const ownsPrompt = installPrompt(ctx, (created) => {
+			prompt?.dispose();
 			prompt = created;
 		});
-		// The petal already says the agent is working; pi's own "Working" row would say it twice.
-		ctx.ui.setWorkingVisible(false);
+		// Hide native feedback only when our petal replaces it. Native transcript
+		// thinking blocks remain Pi-owned; this changes only the supported loader UI.
+		if (ownsPrompt) ctx.ui.setWorkingVisible(false);
 		const notice = deps.devBinary();
 		ctx.ui.setWidget(
 			DEV_BINARY_WIDGET_KEY,
@@ -620,7 +616,13 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		shown = "";
 		applyChanges(ctx, tracker.model);
 	});
-	pi.on("session_shutdown", () => {
+	pi.on("session_shutdown", (_event, ctx) => {
+		prompt?.dispose();
+		prompt = undefined;
+		if ((ctx.ui.getEditorComponent() as PromptFactory | undefined)?.[PROMPT_OWNER]) {
+			ctx.ui.setEditorComponent(undefined);
+			ctx.ui.setWorkingVisible(true);
+		}
 		registry?.close();
 		registry = undefined;
 		changes = undefined;
@@ -664,8 +666,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// The dev-binary card is a startup notice: it leaves with the first prompt.
 		if (ctx.hasUI) ctx.ui.setWidget(DEV_BINARY_WIDGET_KEY, undefined);
 	});
-	pi.on("agent_end", async (_event, ctx) => {
+	pi.on("agent_settled", () => {
 		prompt?.setWorking(false);
+	});
+	pi.on("agent_end", async (_event, ctx) => {
 		await refreshChanges(ctx);
 		void refreshUsage(ctx, false);
 	});

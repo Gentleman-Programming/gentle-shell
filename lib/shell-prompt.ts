@@ -23,9 +23,24 @@ const PETAL_TONE = {
 
 export type PetalTone = (typeof PETAL_TONE)[keyof typeof PETAL_TONE];
 
-// The Gentle themes map these to the rose ramp: active pink, rose, soft
-// rose, deep pink. The spin walks the ramp one shade per frame.
-const PETAL_TONE_FRAMES = [PETAL_TONE.BRIGHT, PETAL_TONE.ROSE, PETAL_TONE.SOFT, PETAL_TONE.DEEP] as const;
+// Keep Pi's original loader cadence while carrying the banner's reflected-light
+// language into the compact working labels. The highlight enters before the
+// word, crosses it as a soft symmetric wave, then exits before wrapping.
+export const SHELL_PULSE_MS = 80;
+export const SHELL_SCANNER_STEPS = 15;
+const SCANNER_ENTRY_OFFSET = 3;
+
+/** Banner-style reflected-light wave across text; foreground only. */
+export function scanWorkingText(text: string, tick: number, fg: (role: string, text: string) => string): string {
+	const phase = ((Math.floor(tick) % SHELL_SCANNER_STEPS) + SHELL_SCANNER_STEPS) % SHELL_SCANNER_STEPS;
+	const head = phase - SCANNER_ENTRY_OFFSET;
+	return Array.from(text, (char, index) => {
+		const distance = Math.abs(head - index);
+		const role = distance === 0 ? "borderAccent" : distance === 1 ? "accent" : distance === 2 ? "thinkingHigh" : "muted";
+		return fg(role, char);
+	}).join("");
+}
+const PETAL_TONE_FRAMES = [PETAL_TONE.DEEP, PETAL_TONE.SOFT, PETAL_TONE.ROSE, PETAL_TONE.BRIGHT, PETAL_TONE.ROSE, PETAL_TONE.SOFT, PETAL_TONE.DEEP, PETAL_TONE.DEEP] as const;
 
 export interface PromptFrameOptions {
 	state: PromptState;
@@ -46,7 +61,7 @@ const FAKE_CURSOR = "\x1b[7m \x1b[0m";
 const SCROLL_INDICATOR = /[↑↓] \d+ more/;
 const STATE_LABEL: Record<PromptState, string | undefined> = {
 	[PROMPT_STATE.IDLE]: undefined,
-	[PROMPT_STATE.WORKING]: "working",
+	[PROMPT_STATE.WORKING]: "working…",
 	[PROMPT_STATE.QUEUED]: "queued",
 };
 
@@ -71,13 +86,15 @@ function rule(length: number): string {
 
 function topRule(width: number, options: PromptFrameOptions, indicator: string | undefined): string {
 	const label = indicator ?? STATE_LABEL[options.state];
+	const scanning = options.state === PROMPT_STATE.WORKING;
 	const glyph = petalGlyph(options.state, options.tick);
 	const petal = options.fg(petalTone(options.state, options.tick), options.bold ? options.bold(glyph) : glyph);
-	const labelText = label ? ` ${options.fg(LABEL_ROLE, label)}` : "";
-	const labelWidth = label ? label.length + 1 : 0;
-	const fill = width - 3 - visibleWidth(glyph) - labelWidth - 1 - 1;
+	const paintedLabel = label && scanning && !indicator ? scanWorkingText(label, options.tick, options.fg) : label ? options.fg(LABEL_ROLE, label) : "";
+	const title = [petal, paintedLabel].filter(Boolean).join(" ");
+	const titleWidth = visibleWidth(glyph) + (label ? visibleWidth(label) + (glyph ? 1 : 0) : 0);
+	const fill = width - titleWidth - 5;
 	if (fill < 0) return options.borderColor(`╭${rule(width - 2)}╮`);
-	return options.borderColor("╭─ ") + petal + labelText + options.borderColor(` ${rule(fill)}╮`);
+	return options.borderColor("╭─ ") + title + options.borderColor(` ${rule(fill)}╮`);
 }
 
 function bottomRule(width: number, options: PromptFrameOptions, indicator: string | undefined): string {

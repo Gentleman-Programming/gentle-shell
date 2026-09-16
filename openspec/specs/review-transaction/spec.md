@@ -40,10 +40,10 @@ Each mutation MUST atomically append `{operation, idempotency_key, request_hash,
 
 ### Requirement: Negotiated native ordinary authority
 
-The consumer MUST resolve the integrity-verified package-local Gentle AI v2.9.1 executable, independently hash it, negotiate `gentle-ai.review-integration/v2` outside repository context, and cache capabilities only by that digest. Capabilities, START (`start/v3`/`start/v4`), target status (`status/v3`), FINALIZE, validation, bind-sdd, and repair (`repair/v2`) MUST pass the same v2 contract identifier; consent (`consent/v2`) and failure (`failure/v2`) envelopes MUST decode under the same identity. Native compact-v2 MUST be the sole mutable ordinary authority; legacy-v1 and Pi authority remain compatibility-read-only. No `gentle-ai.review-integration/v1` identity MAY remain in `lib/`, `runtime/`, or `tests/`; v1 contract schemas stay on disk only as `$ref` targets for v2 schemas. Unknown mandatory behavior, incompatible protocol/schema identity, or executable drift MUST fail closed, naming the expected pinned version in the failure. Advertised optional additions MAY be ignored without disabling mandatory operations. A test asserting binary-dependent negotiation MUST fail, not silently skip, when the pinned binary is unexpectedly absent.
+The consumer MUST resolve the integrity-verified package-local Gentle AI v3.0.1 executable, independently hash it, negotiate `gentle-ai.review-integration/v2` outside repository context, and cache capabilities only by that digest. Capabilities, START (`start/v3`/`start/v4`), target status (`status/v3`), FINALIZE, validation, bind-sdd, and repair (`repair/v2`) MUST pass the same v2 contract identifier; consent (`consent/v2`) and failure (`failure/v2`) envelopes MUST decode under the same identity. Native compact-v2 MUST be the sole mutable ordinary authority; legacy-v1 and Pi authority remain compatibility-read-only. No `gentle-ai.review-integration/v1` identity MAY remain in `lib/`, `runtime/`, or `tests/`; v1 contract schemas stay on disk only as `$ref` targets for v2 schemas. Unknown mandatory behavior, incompatible protocol/schema identity, or executable drift MUST fail closed, naming the expected pinned version in the failure. Advertised optional additions MAY be ignored without disabling mandatory operations. A test asserting binary-dependent negotiation MUST fail, not silently skip, when the pinned binary is unexpectedly absent.
 (Previously: pinned v2.1.11, `gentle-ai.review-integration/v1`, five call sites with no `consent`/`repair` decoders.)
 
-#### Scenario: Explicit v2.9.1 maintenance
+#### Scenario: Explicit v3.0.1 maintenance
 
 - GIVEN a caller supplies one published maintenance operation and its exact binding inputs
 - WHEN Pi invokes abandon, quarantine-legacy, reconciliation, or repair-legacy-alias
@@ -63,15 +63,15 @@ The consumer MUST resolve the integrity-verified package-local Gentle AI v2.9.1 
 
 #### Scenario: v2 identity at every call site
 
-- GIVEN Pi negotiates against the pinned v2.9.1 provider
+- GIVEN Pi negotiates against the pinned v3.0.1 provider
 - WHEN capabilities, start, status, finalize, validate, bind-sdd, and repair execute
 - THEN every call site pins `gentle-ai.review-integration/v2`, decodes `start/v3`, `start/v4`, `status/v3`, `consent/v2`, `failure/v2`, `operation/v2`, `repair/v2`, and no v1 identity remains in `lib/`, `runtime/`, or `tests/`
 
 #### Scenario: Half-upgraded install fails hard
 
-- GIVEN `.gentle-ai/` holds only pre-v2.9.1 runtimes
+- GIVEN `.gentle-ai/` holds only pre-v3.0.1 runtimes
 - WHEN Pi resolves the pinned executable
-- THEN negotiation fails hard, naming the expected v2.9.1 version, rather than degrading to an older runtime
+- THEN negotiation fails hard, naming the expected v3.0.1 version, rather than degrading to an older runtime
 
 #### Scenario: Loud skip on missing binary
 

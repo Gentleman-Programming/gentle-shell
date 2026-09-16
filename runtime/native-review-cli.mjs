@@ -969,6 +969,24 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// exactly. riskEvidence and hint remain dark because neither is proven to
 	// reach the negotiated START path Pi consumes.
 	"2.9.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v3.0.0 shipped ODD as the orchestrator's mandatory default protocol and
+	// integrated the simplified SDD workflow into it (gentle-ai #4642, #4644),
+	// with the provider contract byte-frozen at 1.2.0. Ground-truthed by
+	// diffing contracts/review-integration/v2 and
+	// contracts/review-provider-contract between the v2.9.1 and v3.0.0 tags
+	// in the gentle-ai source tree: zero bytes changed. Neither change touches
+	// the closed START/STATUS fields this row negotiates, so it repeats 2.9.1
+	// exactly. riskEvidence and hint remain dark because neither is proven to
+	// reach the negotiated START path Pi consumes.
+	"3.0.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v3.0.1 moved the Go module path to github.com/gentleman-programming/gentle-ai/v3
+	// with no contract change (gentle-ai #4683). Ground-truthed by diffing
+	// contracts/review-integration/v2 and contracts/review-provider-contract
+	// between the v3.0.0 and v3.0.1 tags in the gentle-ai source tree: zero
+	// bytes changed. This row repeats 3.0.0 (and 2.9.1) exactly. riskEvidence
+	// and hint remain dark because neither is proven to reach the negotiated
+	// START path Pi consumes.
+	"3.0.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 });
 
 

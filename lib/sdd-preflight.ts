@@ -835,26 +835,12 @@ export function installPackageAssets(
 	}, lockOptions);
 }
 
-function hasAffirmativeSddIntent(text: string): boolean {
-	// Natural-language routing must not depend on a closed list of complete
-	// phrases. An SDD mention becomes an invocation only with an imperative,
-	// request, or first-person intent marker; a neutral statement such as
-	// "I use SDD sometimes" remains ordinary conversation.
-	if (!/\bsdd\b/i.test(text)) return false;
-	return /(?:\b(?:please|por\s+favor)\b|\b(?:want|need|would\s+like|let'?s|quiero|queremos|necesito|quisiera|me\s+gustar[ií]a|vamos|vayamos|hagamos|usemos)\b|^(?:use|run|start|build|create|implement|handle|make|usa|usá|corre|corré|arranca|arrancá|inicia|iniciá|empeza|empezá|hacelo|hazlo|hacerlo)\b)/i.test(text);
-}
-
+// Input interception is intentionally syntax-only. Natural-language SDD intent
+// belongs to the parent/orchestrator; dispatch and before_agent_start gates run
+// or reuse preflight when an SDD action is actually attempted. This keeps mere
+// mentions side-effect free without trying to encode language in a regex.
 export function isSddPreflightTrigger(text: string): boolean {
-	const trimmed = text.trim();
-	if (/^\/(?:gentle-)?sdd(?:[-:][^\s]*)?(?:\s|$)/i.test(trimmed)) return true;
-	if (/[?？]\s*$/.test(trimmed)) return false;
-	if (
-		/(?:\b(?:don't|do\s+not|never)\b|\bnot\s+(?:want|need|plan(?:ning)?|intend|use|using)\b)[^.!?\n]{0,80}\bsdd\b/i.test(trimmed) ||
-		/\b(?:sin\s+usar|no\s+(?:quiero|queremos|necesito|necesitamos|quisiera|quisiéramos|vamos\s+a|pienso|planeo|usar))\b[^.!?\n]{0,80}\bsdd\b/i.test(trimmed)
-	) {
-		return false;
-	}
-	return hasAffirmativeSddIntent(trimmed);
+	return /^\/(?:gentle-)?sdd(?:[-:][^\s]*)?(?:\s|$)/i.test(text.trim());
 }
 
 export function sddPreflightSessionKey(ctx: ExtensionContext): string {

@@ -169,6 +169,9 @@ test("UsageStore keeps the latest snapshot per provider and lists them in order"
 	store.record(second);
 	assert.equal(store.get("openai-codex"), second);
 	assert.deepEqual(store.all().map((usage) => usage.provider), ["openai-codex", "anthropic"]);
+	store.clear();
+	assert.equal(store.get("openai-codex"), undefined);
+	assert.deepEqual(store.all(), []);
 });
 
 test("parseAnthropicHeaders turns the unified utilization fractions into 5h and weekly windows", () => {

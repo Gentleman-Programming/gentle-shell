@@ -806,6 +806,29 @@ test("a restarted session never reuses or renders a previous optional-provider r
 	assert.match(renderFooter(session.ui), /opencode 5h ▰▰▰▰▱▱▱▱ 50%/, "the stale response cannot overwrite the active session");
 });
 
+test("a restarted session does not retain usage from the previous account when refresh is unavailable", async () => {
+	const { pi, handlers } = fakePi();
+	const tokens: Record<string, string | undefined> = { "opencode-go": "old-key" };
+	let calls = 0;
+	const fetchFn = (async () => {
+		calls += 1;
+		return { ok: true, json: async () => ({ usage: { rolling: { status: "ok", percent: 25 } } }) } as Response;
+	}) as typeof fetch;
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => 1_788_600_000_000 });
+	const session = fakeContext({ tokens });
+	(session.ctx as unknown as { model: { provider: string; id: string } }).model = { ...session.ctx.model!, provider: "opencode-go", id: "muse-spark" };
+	await fire(handlers, "session_start", session.ctx);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.match(renderFooter(session.ui), /opencode 5h ▰▰▱▱▱▱▱▱ 25%/);
+
+	await fire(handlers, "session_shutdown", session.ctx);
+	tokens["opencode-go"] = undefined;
+	await fire(handlers, "session_start", session.ctx);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(calls, 1, "a missing new-session credential performs no request");
+	assert.doesNotMatch(renderFooter(session.ui), /opencode|25%/, "the previous account's quota is not rendered");
+});
+
 test("gentleShell fetches a newly selected optional provider on the model-select event", async () => {
 	const { pi, handlers } = fakePi();
 	const calls: string[] = [];

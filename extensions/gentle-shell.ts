@@ -609,6 +609,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		registry?.close();
 		usageSession += 1;
 		usageInFlight.clear();
+		usage.clear();
 		currentContext = ctx;
 		changes = undefined;
 		registry = new SessionWorktreeRegistry(pi, ctx.sessionManager, ctx.cwd, deps.resolveWorktree);
@@ -657,6 +658,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	pi.on("session_shutdown", (_event, ctx) => {
 		usageSession += 1;
 		usageInFlight.clear();
+		usage.clear();
 		prompt?.dispose();
 		prompt = undefined;
 		if ((ctx.ui.getEditorComponent() as PromptFactory | undefined)?.[PROMPT_OWNER]) {

@@ -242,6 +242,11 @@ export function renderUsagePanel(usages: ProviderUsage[], theme: UsageTheme, wid
 export class UsageStore {
 	private readonly usages = new Map<string, ProviderUsage>();
 
+	/** Drop account-scoped snapshots when the active session changes. */
+	clear(): void {
+		this.usages.clear();
+	}
+
 	record(usage: ProviderUsage): void {
 		this.usages.set(usage.provider, usage);
 	}

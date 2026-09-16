@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, rm, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
-import { SessionChanges, SESSION_CHANGE_ENTRY } from "../lib/session-changes.ts";
+import { SessionChanges, SESSION_CHANGE_ENTRY, SESSION_CHANGE_EVENT } from "../lib/session-changes.ts";
 
 async function fixture(run: (f: any) => Promise<void>, child = false) {
 	const root = await realpath(await mkdtemp(join(tmpdir(), "change-capture-")));
@@ -17,7 +17,7 @@ async function fixture(run: (f: any) => Promise<void>, child = false) {
 	const ctx = { cwd:root, sessionManager: { getSessionId: () => id, getEntries: () => entries } };
 	installSessionChangeCapture(pi as never, child ? {GENTLE_PI_AGENTS_CHILD:"1"} : {}, () => ({root,commonDir:root}));
 	const fire = (key, event = {}) => handlers.get(key)?.(event, ctx);
-	try { await fire("session_start"); await run({root, entries, ctx, fire, switchSession: () => id = "other"}); }
+	try { await fire("session_start"); await run({root, entries, ctx, fire, pi, switchSession: () => id = "other"}); }
 	finally { await rm(root, {recursive:true,force:true}); }
 }
 
@@ -66,3 +66,21 @@ test("child carries bounded evidence in the existing tool-result details transpo
 	assert.equal(result.details.gentleSessionChange.path,"new");
 	assert.deepEqual(entries,[]);
 },true));
+
+test("the capture-limit warning is emitted once, not on every later write", async () => fixture(async ({root,fire,pi}) => {
+	const events: Array<{notice?: string}> = [];
+	pi.events.on(SESSION_CHANGE_EVENT, (data: {notice?: string}) => events.push(data));
+	for (let i = 0; i < 80; i++) {
+		const path = `f${i}`;
+		const content = "x".repeat(60 * 1024) + "\n";
+		const event = {toolCallId:`w${i}`,toolName:"write",input:{path,content}};
+		await fire("tool_call",event);
+		await writeFile(join(root,path),content);
+		await fire("tool_result",{...event,isError:false});
+		await fire("tool_execution_end",{toolCallId:`w${i}`,toolName:"write",isError:false});
+	}
+	const withNotice = events.filter(event => event.notice !== undefined);
+	assert.equal(withNotice.length,1);
+	assert.match(withNotice[0].notice!,/limit reached/);
+	assert.equal(events.length,80);
+}));

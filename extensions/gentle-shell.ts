@@ -318,7 +318,7 @@ function changesPollMs(env: NodeJS.ProcessEnv): number {
 }
 
 function changesFingerprint(model: ChangesModel): string {
-	return model.files.map((file) => `${file.path}:${file.status}:${file.added}:${file.deleted}:${file.diffRevision ?? ""}:${file.countsUnavailable ?? ""}`).join("|");
+	return [model.notice ?? "", ...model.files.map((file) => `${file.path}:${file.status}:${file.added}:${file.deleted}:${file.diffRevision ?? ""}:${file.countsUnavailable ?? ""}`)].join("|");
 }
 
 interface OverlayDeps {
@@ -386,6 +386,7 @@ function showChanges(ctx: ExtensionContext, model: ChangesModel): void {
 					tone: CARD_TONE.INFO,
 					body: [
 						`${model.files.length} ${noun} · ${theme.fg("success", `+${model.added}`)} ${theme.fg("error", `−${model.deleted}`)}`,
+						...(model.notice ? [theme.fg("warning", model.notice)] : []),
 						"",
 						theme.fg("muted", `/${CHANGES_COMMAND_NAME}`),
 					],
@@ -533,7 +534,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	};
 	const unsubscribeWorktrees = pi.events.on(SESSION_CHANGE_EVENT, (data) => {
 		if (!currentContext || !registry || (data as { sessionId?: string } | undefined)?.sessionId !== registry.sessionId) return;
-		if ((data as { notice?: string }).notice) currentContext.ui.notify((data as { notice: string }).notice, "warning");
+		const notice = (data as { notice?: string } | undefined)?.notice;
+		if (notice) { if (changes) changes.notice = notice; currentContext.ui.notify(notice, "warning"); }
 		void refreshChanges(currentContext);
 	});
 	pi.registerTool({

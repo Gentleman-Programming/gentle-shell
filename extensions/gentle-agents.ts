@@ -1077,6 +1077,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	};
 
 	const launch = async (ctx: ExtensionContext, request: TaskRequest, signal?: AbortSignal): Promise<ToolText> => {
+		if (ctx.mode === "print" && request.mode === AGENT_MODE.BACKGROUND) {
+			throw new Error("Background subagents are unavailable in print mode: pi -p exits before a parent session can receive results. Use task mode, RPC mode, or interactive Pi.");
+		}
 		// This is the process-spawn boundary. A child receives its task context only
 		// after its RPC process starts, so validate the single parent transport here
 		// rather than letting a child invent/persist preferences during startup.

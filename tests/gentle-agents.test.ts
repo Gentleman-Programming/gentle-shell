@@ -221,6 +221,79 @@ function deps(): { deps: Partial<AgentsDeps>; children: FakeChild[]; spawned: st
 	};
 }
 
+const PRINT_BACKGROUND_ERROR = "Background subagents are unavailable in print mode: pi -p exits before a parent session can receive results. Use task mode, RPC mode, or interactive Pi.";
+
+for (const continuation of [false, true]) {
+	test(`print mode rejects background ${continuation ? "continuation" : "launch"} before allocating a task`, async (t) => {
+		const h = fakePi();
+		const runtime = deps();
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		Object.assign(ctx, { mode: "print", hasUI: false });
+		await h.fire("session_start", ctx);
+		let taskId: string | undefined;
+		if (continuation) {
+			const pending = h.tools.get("subagent_run")!.execute("seed", { agent: "explore", task: "Map", mode: "task" }, undefined, undefined, ctx);
+			await tick();
+			runtime.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "mapped" }] }] });
+			runtime.children[0].emit({ type: "agent_settled" });
+			const result = await pending;
+			taskId = (result.details.gentleAgents as { taskId: string }).taskId;
+		}
+		const run = t.mock.method(AgentRunner.prototype, "run");
+		const spawnedBefore = runtime.spawned.length;
+		const entriesBefore = [...h.entries];
+		const historyBefore = await loadHistory(home);
+		const listBefore = await h.tools.get("subagent_list_tasks")!.execute("before", {}, undefined, undefined, ctx);
+		const tool = h.tools.get(continuation ? "subagent_continue" : "subagent_run")!;
+		await assert.rejects(tool.execute("denied", continuation
+			? { task_id: taskId, prompt: "Follow up", mode: "background" }
+			: { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx), { message: PRINT_BACKGROUND_ERROR });
+		await tick();
+		assert.equal(run.mock.callCount(), 0, "rejection must precede runner task ID allocation");
+		assert.equal(runtime.spawned.length, spawnedBefore, "no child spawned");
+		assert.deepEqual(await h.tools.get("subagent_list_tasks")!.execute("after", {}, undefined, undefined, ctx), listBefore, "no new task record");
+		assert.deepEqual(await loadHistory(home), historyBefore, "no history write");
+		assert.deepEqual(h.entries, entriesBefore, "no worktree registration");
+	});
+}
+
+for (const mode of ["print", "tui", "rpc"] as const) {
+	test(`${mode} preserves ${mode === "print" ? "bounded task" : "background"} execution`, async () => {
+		const h = fakePi();
+		const runtime = deps();
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		Object.assign(ctx, { mode, hasUI: mode === "tui" });
+		await h.fire("session_start", ctx);
+		let resolved = false;
+		const pending = h.tools.get("subagent_run")!.execute("control", { agent: "explore", task: "Map", mode: mode === "print" ? "task" : "background" }, undefined, undefined, ctx).then(result => { resolved = true; return result; });
+		await tick();
+		assert.equal(runtime.spawned.length, 1);
+		assert.equal(resolved, mode !== "print", "only task mode waits for completion");
+		runtime.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "mapped" }] }] });
+		runtime.children[0].emit({ type: "agent_settled" });
+		const result = await pending;
+		if (mode === "print") assert.match(result.content[0].text, /mapped/);
+		const taskId = (result.details.gentleAgents as { taskId: string }).taskId;
+		assert.ok(taskId);
+		if (mode !== "print") {
+			await tick();
+			assert.match((await h.tools.get("subagent_status")!.execute("status", { task_id: taskId }, undefined, undefined, ctx)).content[0].text, /completed · background/);
+			assert.equal(h.sent.length, 1, "settlement delivers exactly one completion");
+			assert.equal(h.sent[0].message.customType, "gentle-agents.result");
+			assert.equal(h.sent[0].message.content, `Subagent explore (task ${taskId}, "Map") finished.\n\nmapped`);
+			assert.equal(h.sent[0].message.display, true);
+			assert.deepEqual(h.sent[0].options, { deliverAs: "steer", triggerTurn: true });
+			await h.fire("turn_end", ctx);
+			await h.fire("turn_end", ctx);
+			await tick();
+			assert.equal(h.sent.length, 1, "later turns must not redeliver the completion");
+			assert.equal((await h.tools.get("subagent_result")!.execute("result", { task_id: taskId }, undefined, undefined, ctx)).content[0].text, "mapped");
+		}
+	});
+}
+
 test("all nine subagent registrations own their transcript shell", () => {
 	const { pi, tools } = fakePi();
 	gentleAgents(pi, {}, deps().deps);

@@ -207,6 +207,7 @@ interface PendingReply {
 
 interface LiveTask {
 	child: ChildLike;
+	sawRunEvent: boolean;
 	observations?: ChildObservationBuffer;
 	observationGuard?: () => boolean;
 	observationPreparation?: () => boolean;
@@ -511,7 +512,7 @@ export class AgentRunner {
 			return;
 		}
 		const processGroup = detached && typeof child.pid === "number" && child.pid > 0 ? child.pid : undefined;
-		const live: LiveTask = { child, mutationStarts: new Map(), inFlightTools: new Map(), pending: new Map(), queries: new Map(), replies: new Map(), cancelStall: () => {}, cancelGrace: () => {}, processGroup, terminal: undefined, childExit: undefined, cleanupDeadlineAt: undefined, quarantined: false, nextId: 0, ipcClosed: false, acknowledgedIpcIds: new Set(), acknowledgedIpcOrder: [], stderrTail: "" };
+		const live: LiveTask = { child, sawRunEvent: false, mutationStarts: new Map(), inFlightTools: new Map(), pending: new Map(), queries: new Map(), replies: new Map(), cancelStall: () => {}, cancelGrace: () => {}, processGroup, terminal: undefined, childExit: undefined, cleanupDeadlineAt: undefined, quarantined: false, nextId: 0, ipcClosed: false, acknowledgedIpcIds: new Set(), acknowledgedIpcOrder: [], stderrTail: "" };
 		if (request.prepareResponseObservations) {
 			let ready = false;
 			live.observationPreparation = () => ready;
@@ -605,7 +606,10 @@ export class AgentRunner {
 		live.cancelStall = this.deps.schedule(() => {
 			const lastStep = this.store.get(id)?.lastStep ?? "starting";
 			const minutes = Math.round(budget / 60_000);
-			if (tool === undefined) this.requestStop(id, TASK_STATUS.TIMED_OUT, `stalled for ${minutes} min after: ${lastStep}${this.stderrSuffix(live)}`);
+			if (tool === undefined) {
+				const boundary = lastStep === "prompt accepted" && !live.sawRunEvent ? `; no first run event received for model: ${this.store.get(id)?.model}` : "";
+				this.requestStop(id, TASK_STATUS.TIMED_OUT, `stalled for ${minutes} min after: ${lastStep}${boundary}${this.stderrSuffix(live)}`);
+			}
 			else this.requestStop(id, TASK_STATUS.TIMED_OUT, `stalled for ${minutes} min with tool "${tool}" still running after: ${lastStep}${this.stderrSuffix(live)}`);
 		}, budget);
 	}
@@ -770,6 +774,7 @@ export class AgentRunner {
 				}
 				continue; // Separate from store persistence, UI totals and notifications.
 			}
+			live.sawRunEvent = true;
 			this.store.apply(id, event, this.deps.now());
 			if (event.type === TASK_EVENT.TOOL_START && event.callId) {
 				live.inFlightTools.set(event.callId, event.name);

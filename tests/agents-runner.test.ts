@@ -129,7 +129,38 @@ test("stall after get_state and prompt responses records the prompt accepted sta
 	assert.ok(stall);
 	stall!.fn();
 	await tick();
-	assert.equal(h.store.get(task.id)?.error, "stalled for 4 min after: prompt accepted");
+	assert.equal(h.store.get(task.id)?.error, "stalled for 4 min after: prompt accepted; no first run event received for model: openai-codex/gpt-5.6-terra");
+});
+
+test("text progress after prompt acceptance retains the generic idle timeout diagnostic", async () => {
+	const h = harness({ stallTimeoutMs: FOUR_MIN_MS });
+	const task = h.runner.run(request());
+	await tick();
+	assert.equal(h.store.get(task.id)?.lastStep, "prompt accepted");
+	h.children[0].emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "progress" } });
+	await tick();
+	assert.equal(h.store.get(task.id)?.lastStep, "prompt accepted");
+	const stall = h.timers.filter((timer) => timer.ms === FOUR_MIN_MS && !timer.cancelled).at(-1);
+	assert.ok(stall);
+	stall.fn();
+	await tick();
+	const error = h.store.get(task.id)?.error;
+	assert.doesNotMatch(error!, /no first run event received/);
+	assert.equal(error, "stalled for 4 min after: prompt accepted");
+});
+
+test("prompt-accepted stall names the resolved model and preserves the stderr suffix", async () => {
+	const h = harness({ stallTimeoutMs: FOUR_MIN_MS, state: { model: { provider: "resolved-provider", id: "resolved-model" } } });
+	const task = h.runner.run(request());
+	await tick();
+	assert.equal(h.store.get(task.id)?.model, "resolved-provider/resolved-model");
+	(h.children[0].child.stderr as unknown as PassThrough).write("child diagnostic\n");
+	await tick();
+	const stall = h.timers.filter((timer) => timer.ms === FOUR_MIN_MS && !timer.cancelled).at(-1);
+	assert.ok(stall);
+	stall.fn();
+	await tick();
+	assert.equal(h.store.get(task.id)?.error, "stalled for 4 min after: prompt accepted; no first run event received for model: resolved-provider/resolved-model; stderr: child diagnostic");
 });
 
 test("stderr tail bounds the child's raw output to 512 characters before stripping ANSI escapes", async () => {
@@ -896,7 +927,7 @@ test("ignored non-dialog UI traffic does not renew the idle silence budget", asy
 	armed!.fn();
 	await tick();
 	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.TIMED_OUT);
-	assert.equal(h.store.get(task.id)?.error, "stalled for 4 min after: prompt accepted");
+	assert.equal(h.store.get(task.id)?.error, "stalled for 4 min after: prompt accepted; no first run event received for model: openai-codex/gpt-5.6-terra");
 });
 
 test("an unrecognized RPC object does not renew the idle silence budget", async () => {

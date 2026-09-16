@@ -525,6 +525,83 @@ async function countPackageExtensions(packages: unknown[]): Promise<number> {
   return count;
 }
 
+interface McpServerEntry {
+  disabled?: boolean;
+}
+
+interface McpConfigFile {
+  mcpServers?: unknown;
+  "mcp-servers"?: unknown;
+}
+
+/** MCP config layers, lowest precedence first, as `getConfigSources` in
+ *  pi-mcp-adapter orders them (verified against 2.34.0). A later layer replaces
+ *  the earlier entry for a server of the same name, which is how `/mcp disable`
+ *  turns a globally configured server off for one project.
+ *
+ *  Reading only the two Pi-owned files missed a server defined in a shared
+ *  layer entirely, and let an omitted higher-precedence `disabled` entry keep a
+ *  server in the count that the session does not load.
+ *
+ *  Four adapter sources are deliberately NOT mirrored, because none of them can
+ *  be resolved from a config path alone: exclusive-config mode, opt-in host and
+ *  ancestor discovery, and the package / agent-plugin / Claude-plugin configs.
+ *  A banner that walks those would be a second implementation of the loader
+ *  rather than a reading of it. */
+export function mcpConfigPaths(cwd: string): string[] {
+  const home = os.homedir();
+  return [
+    join(home, ".config", "mcp", "mcp.json"),
+    join(home, ".agents", "mcp.json"),
+    join(home, ".agents", "mcp", "mcp.json"),
+    join(PI_AGENT_DIR, "mcp.json"),
+    join(cwd, ".mcp.json"),
+    join(cwd, ".pi", "mcp.json"),
+  ];
+}
+
+/** The adapter's own entry test (`isRecord` in its `config.ts`): a null, a
+ *  primitive or an array is not a server definition and never reaches the
+ *  session, so it must not reach the count either. */
+function isMcpServerEntry(value: unknown): value is McpServerEntry {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** How many MCP servers this session actually loads.
+ *
+ * Counting the keys of the global config file overstated it twice over: a
+ * server carrying `"disabled": true` connects to nothing and registers no
+ * tools, and a server configured only in the project layer was invisible to a
+ * global-file parse. A layer that is absent or unparseable contributes
+ * nothing and does not discard the others.
+ */
+export async function countEnabledMcpServers(
+  cwd: string,
+  read: (path: string) => Promise<string> = (path) => readFile(path, "utf8"),
+): Promise<number> {
+  const servers = new Map<string, McpServerEntry>();
+  for (const path of mcpConfigPaths(cwd)) {
+    let entries: unknown;
+    try {
+      const file = JSON.parse(await read(path)) as McpConfigFile | null;
+      // `mcp-servers` is the alias the adapter reads alongside `mcpServers`.
+      entries = file?.mcpServers ?? file?.["mcp-servers"];
+    } catch {
+      continue;
+    }
+    if (!isMcpServerEntry(entries)) continue;
+    for (const [name, entry] of Object.entries(entries)) {
+      if (!isMcpServerEntry(entry)) continue;
+      servers.set(name, entry);
+    }
+  }
+  let enabled = 0;
+  for (const entry of servers.values()) {
+    if (entry?.disabled !== true) enabled += 1;
+  }
+  return enabled;
+}
+
 export function readGitBranch(cwd: string, run: typeof execFile = execFile): Promise<string> {
   return new Promise((resolve) => {
     run("git", ["-C", cwd, "branch", "--show-current"], {
@@ -654,16 +731,7 @@ export default function (pi: ExtensionAPI) {
 
     setTimeout(() => {
       (async () => {
-        try {
-          const raw = await readFile(
-            join(os.homedir(), ".pi", "agent", "mcp.json"),
-            "utf8",
-          );
-          const cfg = JSON.parse(raw);
-          mcpServersCount = Object.keys(cfg.mcpServers || {}).length;
-        } catch {
-          mcpServersCount = 0;
-        }
+        mcpServersCount = await countEnabledMcpServers(ctx.cwd);
         refreshStats();
       })();
     }, 150);

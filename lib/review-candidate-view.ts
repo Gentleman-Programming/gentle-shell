@@ -1,6 +1,6 @@
 import { execFileSync, type ExecFileSyncOptions } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, utimesSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, utimesSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -593,7 +593,14 @@ function entryContentHash(root: string, entry: CandidateTreeEntry): string {
 	if (entry.mode === "120000") {
 		if (!item.isSymbolicLink()) throw new CandidateViewError("candidate view symlink does not match its frozen tree");
 		const target = readlinkSync(path, "buffer");
-		const bytes = Buffer.isBuffer(target) ? target : Buffer.from(target);
+		// libuv reports Windows symlink targets with backslash separators even
+		// when the link was materialized from a forward-slash blob target, so raw
+		// readlink bytes can never equal the frozen blob on win32. Normalize win32
+		// separators back to POSIX form before the safety checks and the content
+		// hash; every other platform stays byte-exact.
+		const bytes = process.platform === "win32"
+			? Buffer.from(target.toString("utf8").replace(/\\/g, "/"), "utf8")
+			: Buffer.isBuffer(target) ? target : Buffer.from(target);
 		assertSafeSymlinkTarget(root, entry.path, bytes);
 		return createHash("sha256").update(bytes).digest("hex");
 	}
@@ -761,6 +768,27 @@ export function resolveCanonicalCandidateBase(contributorRoot: string, baseRef: 
 	return resolveCandidateBase(realpathSync(contributorRoot), baseRef, process.env, defaultCandidateGitExecutor);
 }
 
+function materializeSymlinkEntries(root: string, entries: readonly CandidateTreeEntry[], executor: CandidateGitExecutor): void {
+	if (entries.length === 0) return;
+	for (const entry of entries) {
+		const target = candidateGit(root, ["cat-file", "blob", entry.objectId], process.env, "buffer", executor) as Buffer;
+		// The frozen blob bytes are the authoritative symlink target: validate
+		// them lexically before creating anything, so committed targets that are
+		// genuinely unsafe (backslashes, escapes, metadata) are rejected on every
+		// platform identically, independent of how the host readlink renders
+		// separators.
+		assertSafeSymlinkTarget(root, entry.path, target);
+		const path = join(root, entry.path);
+		mkdirSync(dirname(path), { recursive: true });
+		rmSync(path, { force: true });
+		try {
+			symlinkSync(target.toString("utf8"), path);
+		} catch {
+			throw new CandidateViewError("candidate view symlink could not be materialized; the host requires symlink privilege for committed symlinks", "symlink-materialization-failed");
+		}
+	}
+}
+
 function checkoutMaterializedEntries(root: string, entries: readonly CandidateTreeEntry[], executor: CandidateGitExecutor): void {
 	let batch: string[] = [];
 	let bytes = 0;
@@ -770,11 +798,22 @@ function checkoutMaterializedEntries(root: string, entries: readonly CandidateTr
 		batch = []; bytes = 0;
 	};
 	for (const entry of entries) {
+		// Committed symlinks (mode 120000) are excluded from checkout-index and
+		// materialized directly from their blob bytes. Git for Windows cannot
+		// round-trip symlink targets: with core.symlinks=false it writes the
+		// target as a plain file, and even with core.symlinks=true it rewrites
+		// forward slashes to backslashes, so the frozen-tree verification in
+		// entryContentHash (which compares readlinkSync bytes with the blob)
+		// fails with "candidate view symlink does not match its frozen tree" or
+		// an unsafe-target rejection. Node symlinkSync preserves the blob bytes
+		// verbatim on every platform.
+		if (entry.mode === "120000") continue;
 		const size = Buffer.byteLength(entry.path, "utf8") + 1;
 		if (batch.length > 0 && bytes + size > 16_384) flush();
 		batch.push(entry.path); bytes += size;
 	}
 	flush();
+	materializeSymlinkEntries(root, entries.filter((entry) => entry.mode === "120000"), executor);
 }
 
 // Creates an unborn worktree (symbolic HEAD pointing at a branch with no

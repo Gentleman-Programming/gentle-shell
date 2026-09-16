@@ -1571,6 +1571,33 @@ test("candidate view detects symlink target-byte tampering after materialization
 	}
 });
 
+test("candidate view materializes committed symlinks from their exact blob targets on every platform", (t) => {
+	const contributorRoot = repository(t);
+	// A committed forward-slash relative target, the canonical POSIX form and
+	// the form Git for Windows cannot round-trip through checkout-index (plain
+	// file with core.symlinks=false, backslash target even with core.symlinks=true).
+	mkdirSync(join(contributorRoot, "target-dir"), { recursive: true });
+	writeFileSync(join(contributorRoot, "target-dir", "file.txt"), "content\n");
+	mkdirSync(join(contributorRoot, "nested"));
+	try {
+		symlinkSync("../target-dir/file.txt", join(contributorRoot, "nested", "committed-link"));
+	} catch {
+		t.skip("platform does not support symlinks");
+		return;
+	}
+	git(contributorRoot, "add", "-A");
+	git(contributorRoot, "-c", "user.name=Candidate Test", "-c", "user.email=candidate@example.invalid", "commit", "-m", "symlink");
+	const registry = new CandidateViewRegistry();
+	const view = registry.create({ contributorRoot });
+	try {
+		const frozenLink = join(view.root, "nested", "committed-link");
+		assert.equal(lstatSync(frozenLink).isSymbolicLink(), true);
+		view.verify();
+	} finally {
+		view.cleanup();
+	}
+});
+
 test("candidate view retains a valid dangling symlink through bind and finalize resolution", (t) => {
 	const contributorRoot = repository(t);
 	try {

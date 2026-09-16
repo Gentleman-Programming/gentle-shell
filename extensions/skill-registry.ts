@@ -516,6 +516,11 @@ async function startSkillRegistryWatcher(
 	for (const dir of dirs) {
 		try {
 			const watcher = watch(dir, { recursive: true }, refresh);
+			// An 'error' event with no listener is rethrown by EventEmitter as an
+			// uncaughtException that kills the whole process. Node's recursive watch
+			// can emit 'error' (e.g. ENOENT) when a watched subdirectory is removed
+			// mid-rescan, so keep the watcher best-effort instead of crashing.
+			watcher.on("error", () => {});
 			activeWatchers.add(watcher);
 		} catch {
 			// Some filesystems do not support recursive watches; session_start/manual refresh still work.
@@ -540,6 +545,9 @@ export const __testing = {
 	closeSkillRegistryWatchers,
 	activeWatcherCount() {
 		return activeWatchers.size;
+	},
+	activeWatchers() {
+		return Array.from(activeWatchers);
 	},
 };
 

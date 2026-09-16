@@ -144,6 +144,31 @@ test("findSkillFiles follows symlinked skill directories", async (t) => {
 	assert.deepEqual(await __testing.findSkillFiles(root), [skillPath]);
 });
 
+test("skill registry watchers survive an 'error' event instead of crashing the process", async () => {
+	const root = join(tmpdir(), `gentle-pi-watcher-error-${Date.now()}`);
+	const skillPath = join(root, "skills", "docs", "SKILL.md");
+	mkdirSync(dirname(skillPath), { recursive: true });
+	writeFileSync(skillPath, "---\nname: docs\ndescription: Docs.\n---\n");
+
+	await __testing.startSkillRegistryWatcher(root, () => undefined);
+	try {
+		assert.ok(__testing.activeWatcherCount() > 0, "watcher must be registered");
+		for (const watcher of __testing.activeWatchers()) {
+			// Node rethrows an 'error' event with no listener as an uncaughtException.
+			// A recursive watch emits ENOENT when a watched subdirectory is removed
+			// mid-rescan, so each watcher must carry an error listener.
+			assert.ok(
+				watcher.listenerCount("error") >= 1,
+				"recursive watcher must attach an error listener",
+			);
+			watcher.emit("error", new Error("ENOENT: no such file or directory, scandir 'storage'"));
+		}
+	} finally {
+		__testing.closeSkillRegistryWatchers();
+	}
+	assert.equal(__testing.activeWatcherCount(), 0);
+});
+
 test("skill registry watchers close on shutdown", async () => {
 	const root = join(tmpdir(), `gentle-pi-watchers-${Date.now()}`);
 	const skillPath = join(root, "skills", "docs", "SKILL.md");

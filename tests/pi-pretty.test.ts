@@ -18,13 +18,18 @@ test("bundled pretty cannot replace or restore an editor owned by the host", asy
 		setWorkingVisible(value: boolean) { visible = value; },
 		theme: { fg: (role: string, text: string) => `<${role}>${text}</${role}>`, bold: (text: string) => text },
 	} };
+	const previousThinkingIndicator = process.env.PRETTY_THINKING_INDICATOR;
+	let thinkingIndicatorDuringActivation: string | undefined;
 	await pretty(pi, undefined, async (api: any) => {
+		thinkingIndicatorDuringActivation = process.env.PRETTY_THINKING_INDICATOR;
 		api.on("session_start", (_event: unknown, context: any) => {
 			context.ui.setEditorComponent(() => "pretty");
 			context.ui.setWorkingIndicator({ frames: ["foreign"] });
 		});
 		api.on("session_shutdown", (_event: unknown, context: any) => context.ui.setEditorComponent(undefined));
 	}, {});
+	assert.equal(thinkingIndicatorDuringActivation, "off", "Gentle Shell disables pi-pretty's global Thinking shimmer");
+	assert.equal(process.env.PRETTY_THINKING_INDICATOR, previousThinkingIndicator, "activation must restore the caller's environment");
 	for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
 	assert.equal(editor, owner);
 	assert.equal(visible, false, "the prompt frame owns the live working state without a duplicate loader row");

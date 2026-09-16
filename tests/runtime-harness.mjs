@@ -1250,24 +1250,26 @@ async function run() {
 			await inputHook({ text: "vamos con sdd", source: "interactive" }, ctx),
 			{ action: "continue" },
 		);
+		assert.deepEqual(
+			await inputHook({ text: "please use sdd for this change", source: "interactive" }, ctx),
+			{ action: "continue" },
+		);
 		assert.equal(existsSync(join(lazySddCwd, ".pi", "agents", "sdd-apply.md")), false);
 		assert.equal(existsSync(join(lazySddCwd, ".pi", "chains", "sdd-full.chain.md")), false);
+		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), false);
+		assert.equal(ctx.ui.selections.length, 0, "natural-language SDD text has no input-hook side effect");
+
+		assert.deepEqual(
+			await inputHook({ text: "/sdd", source: "interactive" }, ctx),
+			{ action: "continue" },
+		);
 		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
 		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-status.md")), true);
 		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-sync.md")), false);
 		assert.equal(existsSync(join(globalAgentHome, "gentle-ai", "support", "sdd-status-contract.md")), true);
 		assert.equal(existsSync(join(globalAgentHome, "chains", "sdd-full.chain.md")), true);
-		assert.equal(ctx.ui.selections.length, 1, "first interactive SDD trigger confirms session suggestions");
+		assert.equal(ctx.ui.selections.length, 1, "first slash SDD trigger confirms session suggestions");
 		assert.match(ctx.ui.notifications.at(-1).message, /Preference source: explicit session choice/);
-		assert.deepEqual(
-			await inputHook({ text: "please use sdd for this change", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.equal(ctx.ui.selections.length, 1, "natural SDD triggers reuse confirmed session choices");
-		assert.deepEqual(
-			await inputHook({ text: "/sdd", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
 		assert.deepEqual(
 			await inputHook({ text: "/sdd plan", source: "interactive" }, ctx),
 			{ action: "continue" },

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createRequire, syncBuiltinESMExports } from "node:module";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -102,7 +102,7 @@ async function captureOwnedRoutes(t: TestContext): Promise<{ captures: Capture[]
 	const cp = childProcess();
 	const original = { execFileSync: cp.execFileSync, execFile: cp.execFile, spawnSync: cp.spawnSync };
 	const captures: Capture[] = [];
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-windows-hidden-workspace-"));
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-windows-hidden-workspace-")));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	mkdirSync(join(cwd, ".git"), { recursive: true });
 	const fakeSync = ((command: string, args: readonly string[], options: Options = {}) => {

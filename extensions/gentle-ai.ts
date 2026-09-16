@@ -1733,7 +1733,10 @@ const MODEL_CONTROL_OPTIONS = [
 	CUSTOM_MODEL,
 ] as const;
 const MODEL_PANEL_MAX_RENDER_ROWS = 20;
-const AGENT_LIST_MAX_VISIBLE_ROWS = MODEL_PANEL_MAX_RENDER_ROWS - 13;
+// Rows the agent list does not own: two borders, title, current-profile line,
+// blank, "Current assignments:", blank, both scroll indicators, blank, Continue,
+// Back, blank, and the two footer rows.
+const AGENT_LIST_MAX_VISIBLE_ROWS = MODEL_PANEL_MAX_RENDER_ROWS - 15;
 const MODEL_LIST_MAX_VISIBLE_ROWS = 12;
 
 function readStringPath(value: unknown, path: string[]): string | undefined {

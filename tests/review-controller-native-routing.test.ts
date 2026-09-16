@@ -1059,13 +1059,19 @@ for (const statusSchema of ["gentle-ai.review-integration.status/v6", "gentle-ai
 	assert.deepEqual(requests.map((request) => request.cwd), [cwd, cwd, cwd]);
 	assert.equal(starts[0]!.cwd, cwd);
 	assert.deepEqual(starts[0]!.intendedUntrackedSelection, { argumentTokens: selection.submission!.argumentTokens, value: JSON.stringify({ schema: "gentle-ai.review-intended-untracked-selection/v1", untracked_scope: "select", expected_untracked_inventory: SHA, intended_untracked: [eligible] }) });
-	for (const invalid of [
-		{ selectionBinding: selectionBinding.replace(eligible, "docs/stale.md"), intendedUntracked: [eligible] },
-		{ selectionBinding, intendedUntracked: [eligible, eligible] }, { selectionBinding, intendedUntracked: ["docs/unknown.md"] },
-	]) {
+	// gentle-pi#941: every refusal named its own check, so a caller holding
+	// provider-issued bytes can tell a stale binding from an ineligible path
+	// instead of retrying the same call.
+	for (const { reason, field, ...invalid } of [
+		{ selectionBinding: selectionBinding.replace(eligible, "docs/stale.md"), intendedUntracked: [eligible], reason: "binding-mismatch" },
+		{ selectionBinding, intendedUntracked: [eligible, eligible], reason: "untracked-selection-invalid" },
+		{ selectionBinding, intendedUntracked: ["docs/unknown.md"], reason: "path-not-eligible", field: "docs/unknown.md" },
+	] as ReadonlyArray<{ reason: string; field?: string; selectionBinding: string; intendedUntracked: readonly string[] }>) {
 		const rejection = await __testing.executeReviewControllerOperation({ operation: "select-intended-untracked", ...invalid } as never, cwd, native, undefined, undefined, undefined, retained);
 		assert.equal(rejection.status, "blocked", JSON.stringify(invalid));
 		assert.equal(rejection.outcome, "intended-untracked-selection-binding-rejected", JSON.stringify(invalid));
+		assert.equal(rejection.reason, reason, JSON.stringify(rejection));
+		assert.equal(rejection.field, field, JSON.stringify(rejection));
 		assert.equal(rejection.mutation_performed, false, JSON.stringify(invalid));
 		assert.equal(rejection.mutation_outcome, "none", JSON.stringify(invalid));
 	}
@@ -1073,6 +1079,71 @@ for (const statusSchema of ["gentle-ai.review-integration.status/v6", "gentle-ai
 	assert.equal(starts.length, 1);
 	assert.equal(requests.every((request) => !("lineageId" in request)), true);
 });
+
+// gentle-pi#941: a selection refused because the live status moved names the field
+// that moved, and an empty selection -- the only honest answer when the candidate
+// touches no untracked file -- is accepted rather than refused.
+for (const scenario of [
+	{ name: "target_identity", moved: (status: ReviewStatusV3) => ({ ...status, targetIdentity: `sha256:${"d".repeat(64)}` }) },
+	{ name: "candidate_tree", moved: (status: ReviewStatusV3) => ({ ...status, projection: { ...status.projection, currentCandidateTree: "e".repeat(40) } }) },
+]) test(`a moved ${scenario.name} refuses the selection by name rather than opaquely`, async (t) => {
+	const cwd = realpathSync(repository(t)), eligible = "selected.md";
+	writeFileSync(join(cwd, eligible), "selected\n");
+	const initialTarget = startStatus(cwd, undefined, [eligible]);
+	const selection = intendedUntrackedSelection(initialTarget, [eligible]);
+	const initial = { ...initialTarget, nextTransition: { kind: "collect", reasonCode: "intended_untracked_selection_required", collect: { inputs: [selection] } }, raw: { schema: "gentle-ai.review-integration.status/v7" } } as ReviewStatusV3;
+	let statusCalls = 0;
+	const starts: Array<Record<string, unknown>> = [], retained = new Map();
+	const native = {
+		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "on", effective: "on", source: "clone_local" } }),
+		// The binding is issued against the first status and revalidated against
+		// the second, which is where a real repository drifts under the caller.
+		targetStatus: async () => (++statusCalls === 1 ? initial : scenario.moved(initial)),
+		start: async (request: Record<string, unknown>) => { starts.push(request); return { lineageId: "unreachable", state: "reviewing", riskLevel: "low", selectedLenses: [], changedFiles: 1, changedLines: 1, correctionBudget: 1, action: "created", lensesRequired: false, riskReasons: [], raw: {} }; },
+	} as unknown as NativeReviewCli;
+	const listed = await __testing.executeReviewControllerOperation({ operation: "status", workspaceRoot: cwd }, cwd, native, undefined, undefined, undefined, retained);
+	const rejection = await __testing.executeReviewControllerOperation({ operation: "select-intended-untracked", selectionBinding: listed.selectionBinding as string, intendedUntracked: [eligible], workspaceRoot: cwd } as never, cwd, native, undefined, undefined, undefined, retained);
+	assert.equal(rejection.outcome, "intended-untracked-selection-binding-rejected", JSON.stringify(rejection));
+	assert.equal(rejection.reason, "status-field-mismatch", JSON.stringify(rejection));
+	assert.equal(rejection.field, scenario.name, JSON.stringify(rejection));
+	assert.equal(starts.length, 0);
+});
+
+// The reporter's own case in gentle-pi#941: the candidate touches only tracked
+// files while the repository carries an unrelated untracked inventory, so the
+// only honest selection is the empty one. It must start, not be refused.
+test("an empty intended-untracked selection excludes every eligible path and starts", async (t) => {
+	const cwd = realpathSync(repository(t)), sessionCwd = repository(t);
+	writeFileSync(join(cwd, "qa screenshot 1.png"), "noise\n");
+	writeFileSync(join(cwd, "mcp.log"), "noise\n");
+	const initialTarget = startStatus(cwd), target = startStatus(cwd);
+	const selection = intendedUntrackedSelection(initialTarget, ["qa screenshot 1.png", "mcp.log"]);
+	const initial = { ...initialTarget, nextTransition: { kind: "collect", reasonCode: "intended_untracked_selection_required", collect: { inputs: [selection] } }, raw: { schema: "gentle-ai.review-integration.status/v7" } } as ReviewStatusV3;
+	const starts: Array<Record<string, unknown>> = [], retained = new Map();
+	const native = {
+		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "on", effective: "on", source: "clone_local" } }),
+		targetStatus: async (request: Record<string, unknown>) => ("intendedUntrackedSelection" in request ? target : initial),
+		start: async (request: Record<string, unknown>) => { starts.push(request); return { lineageId: "excluded", state: "reviewing", riskLevel: "low", selectedLenses: [], changedFiles: 1, changedLines: 1, correctionBudget: 1, action: "created", lensesRequired: false, riskReasons: [], raw: {} }; },
+	} as unknown as NativeReviewCli;
+	const listed = await __testing.executeReviewControllerOperation({ operation: "status", workspaceRoot: cwd }, sessionCwd, native, undefined, undefined, undefined, retained);
+	const result = await __testing.executeReviewControllerOperation({ operation: "select-intended-untracked", selectionBinding: listed.selectionBinding as string, intendedUntracked: [], workspaceRoot: cwd } as never, sessionCwd, native, undefined, undefined, undefined, retained);
+	assert.equal(starts.length, 1, JSON.stringify(result));
+	// EXCLUDE, with an empty selection: nothing untracked joins the candidate.
+	assert.deepEqual(starts[0]!.intendedUntrackedSelection, { argumentTokens: selection.submission!.argumentTokens, value: JSON.stringify({ schema: "gentle-ai.review-intended-untracked-selection/v1", untracked_scope: "exclude", expected_untracked_inventory: SHA, intended_untracked: [] }) });
+	assert.equal(result.reason, undefined, JSON.stringify(result));
+});
+
+function intendedUntrackedSelection(status: ReviewStatusV3, eligible: readonly string[]): ReviewCollectInputV3 {
+	return {
+		name: "intended_untracked_selection", schema: "gentle-ai.review-intended-untracked-selection/v1", captureOperation: "external.select_intended_untracked",
+		arguments: [
+			{ name: "target_identity", value: SHA }, { name: "projection", value: "workspace" },
+			{ name: "base_tree", value: status.projection.baseTree }, { name: "candidate_tree", value: status.projection.currentCandidateTree },
+			{ name: "eligible_paths_json", value: JSON.stringify([...eligible]) }, { name: "expected_untracked_inventory", value: SHA },
+		],
+		submission: { operationToken: "status", argumentTokens: ["--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", "--intended-untracked-selection={{value}}"], values: [{ slot: "intended_untracked_selection", domain: "schema_bound_json", schema: "gentle-ai.review-intended-untracked-selection/v1", substitutionLocation: 4 }] },
+	} as unknown as ReviewCollectInputV3;
+}
 
 // gentle-pi#706: inspect names the exact continuation for the intended-untracked
 // stop and can resolve it in one call through top-level untrackedScope.

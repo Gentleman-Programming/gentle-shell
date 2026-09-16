@@ -835,12 +835,21 @@ export function installPackageAssets(
 	}, lockOptions);
 }
 
+// `non-SDD` names the path that is NOT the workflow, so it is an exclusion
+// rather than a mention. The hyphen is a word boundary, so a bare `\bsdd\b`
+// test reads such a brief as a request to start SDD. The negative phrasing
+// list below cannot cover this: it matches clauses like `do not use SDD`,
+// never a compound. Discount only the negated occurrence — a brief that
+// excludes one path and still asks for the workflow elsewhere keeps its
+// affirmative mention.
+const SDD_MENTION = /(?<!\bnon[-\s])\bsdd\b/i;
+
 function hasAffirmativeSddIntent(text: string): boolean {
 	// Natural-language routing must not depend on a closed list of complete
 	// phrases. An SDD mention becomes an invocation only with an imperative,
 	// request, or first-person intent marker; a neutral statement such as
 	// "I use SDD sometimes" remains ordinary conversation.
-	if (!/\bsdd\b/i.test(text)) return false;
+	if (!SDD_MENTION.test(text)) return false;
 	return /(?:\b(?:please|por\s+favor)\b|\b(?:want|need|would\s+like|let'?s|quiero|queremos|necesito|quisiera|me\s+gustar[ií]a|vamos|vayamos|hagamos|usemos)\b|^(?:use|run|start|build|create|implement|handle|make|usa|usá|corre|corré|arranca|arrancá|inicia|iniciá|empeza|empezá|hacelo|hazlo|hacerlo)\b)/i.test(text);
 }
 

@@ -526,6 +526,26 @@ test("affirmative natural-language SDD requests trigger preflight without matchi
 	}
 });
 
+// gentle-pi#1001 (jfortez): the hyphen in `non-SDD` is a word boundary, so a
+// bare `\bsdd\b` mention test reads a brief that rules the workflow OUT as a
+// request to start it. The negative-exclusion phrasing list cannot catch this:
+// it matches clauses like `do not use SDD`, never a negative compound.
+test("a negative SDD compound is an exclusion, not an invocation", () => {
+	for (const text of [
+		"Implement the non-SDD path for this runner.",
+		"Implement the Non-SDD fallback.",
+		"Implement a non-SDD diagnostic and report back.",
+		"Create the non SDD branch of the dispatcher.",
+	]) {
+		assert.equal(isSddPreflightTrigger(text), false, text);
+	}
+	// A brief that excludes one path and still asks for the workflow elsewhere
+	// keeps triggering: only the negated mention is discounted, not the text.
+	assert.equal(isSddPreflightTrigger("Implement the non-SDD path, then let's plan the SDD change."), true);
+	// A word merely ending in `non` never suppresses the mention that follows.
+	assert.equal(isSddPreflightTrigger("Implement the canon-SDD alignment."), true);
+});
+
 test("slash SDD preflight trigger accepts the gentle-sdd command prefix", () => {
 	for (const text of ["/gentle-sdd-init", "/gentle-sdd-continue", "/gentle-sdd-status fix-rose --json", "/sdd", "/sdd:plan", "/sdd-plan this change"]) {
 		assert.equal(isSddPreflightTrigger(text), true, text);

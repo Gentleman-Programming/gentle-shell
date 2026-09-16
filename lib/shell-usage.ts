@@ -62,6 +62,15 @@ const ANTHROPIC_WINDOWS: ReadonlyArray<[key: string, seconds: number]> = [
 	["5h", 18_000],
 	["7d", 604_800],
 ];
+// kimi-coding is the Kimi Code subscription OAuth provider; the matching usage
+// endpoint lives at api.kimi.com and answers the weekly quota plus every
+// rate-limit window the plan exposes.
+export const KIMI_PROVIDER = "kimi-coding";
+export const KIMI_DISPLAY_NAME = "kimi";
+export const KIMI_USAGE_URL = "https://api.kimi.com/coding/v1/usages";
+// The top-level "usage" row is the weekly plan quota; limits[] carry per-window
+// caps. Both share the same numeric shape, so one parser handles them.
+const KIMI_WEEKLY_LIMIT = "kimi";
 export const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const CODEX_MAIN_LIMIT = "codex";
 const CODEX_ACCOUNT_CLAIM = "https://api.openai.com/auth";
@@ -71,6 +80,12 @@ const MINUTE = 60;
 const HOUR = 3600;
 const DAY = 86_400;
 const WEEK = 604_800;
+const KIMI_TIME_UNITS: Readonly<Record<string, number>> = {
+	TIME_UNIT_MINUTE: MINUTE,
+	TIME_UNIT_HOUR: HOUR,
+	TIME_UNIT_DAY: DAY,
+	TIME_UNIT_WEEK: WEEK,
+};
 const ROLE = {
 	PROVIDER: "text",
 	PLAN: "muted",
@@ -81,10 +96,11 @@ const ROLE = {
 	SEPARATOR: "muted",
 } as const;
 export const USAGE_EMPTY_MESSAGE = "No subscription usage yet. Usage arrives with the next response, or press r to fetch it.";
-export const SUPPORTED_USAGE_PROVIDERS: readonly string[] = [CODEX_PROVIDER, ANTHROPIC_PROVIDER];
+export const SUPPORTED_USAGE_PROVIDERS: readonly string[] = [CODEX_PROVIDER, ANTHROPIC_PROVIDER, KIMI_PROVIDER];
 const PENDING_NOTE: Record<string, string> = {
 	[CODEX_PROVIDER]: "no usage yet · r to fetch",
 	[ANTHROPIC_PROVIDER]: "usage arrives with the first response",
+	[KIMI_PROVIDER]: "no usage yet · r to fetch",
 };
 const UNSUPPORTED_NOTE = "no subscription usage for this provider";
 const ACTIVE_MARK = "✿";
@@ -172,6 +188,93 @@ export function parseAnthropicHeaders(headers: Record<string, string>, now: numb
 
 export function parseUsageHeaders(headers: Record<string, string>, now: number): ProviderUsage | undefined {
 	return parseCodexHeaders(headers, now) ?? parseAnthropicHeaders(headers, now);
+}
+
+interface RawKimiWindow {
+	duration?: unknown;
+	timeUnit?: unknown;
+}
+
+interface RawKimiDetail {
+	limit?: unknown;
+	used?: unknown;
+	remaining?: unknown;
+	resetTime?: unknown;
+}
+
+interface RawKimiLimit {
+	name?: unknown;
+	window?: RawKimiWindow | null;
+	detail?: RawKimiDetail | null;
+}
+
+interface RawKimiUsage {
+	usage?: RawKimiDetail | null;
+	limits?: RawKimiLimit[] | null;
+}
+
+function toFiniteNumber(value: unknown): number | undefined {
+	if (typeof value === "number" && Number.isFinite(value)) return value;
+	if (typeof value === "string") {
+		const parsed = Number.parseFloat(value);
+		return Number.isFinite(parsed) ? parsed : undefined;
+	}
+	return undefined;
+}
+
+function kimiWindowSeconds(window: RawKimiWindow | null | undefined): number | undefined {
+	if (!window) return undefined;
+	const duration = toFiniteNumber(window.duration);
+	const unitSeconds = typeof window.timeUnit === "string" ? KIMI_TIME_UNITS[window.timeUnit] : undefined;
+	if (duration === undefined || unitSeconds === undefined) return undefined;
+	const seconds = duration * unitSeconds;
+	return Number.isFinite(seconds) && seconds > 0 ? seconds : undefined;
+}
+
+function kimiPercent(detail: RawKimiDetail | null | undefined): number | undefined {
+	if (!detail) return undefined;
+	const used = toFiniteNumber(detail.used);
+	const limit = toFiniteNumber(detail.limit);
+	if (limit === undefined || limit <= 0 || used === undefined) return undefined;
+	const percent = Math.min(100, Math.max(0, (used / limit) * 100));
+	return percent;
+}
+
+function kimiReset(detail: RawKimiDetail | null | undefined): number | null {
+	if (!detail || typeof detail.resetTime !== "string") return null;
+	const millis = Date.parse(detail.resetTime);
+	return Number.isFinite(millis) ? millis : null;
+}
+
+// The top-level "usage" row is the weekly plan quota; limits[] carry per-window
+// caps. Both share the same numeric shape, so one parser handles them.
+function kimiWindow(detail: RawKimiDetail | null | undefined, window: RawKimiWindow | null | undefined, fallbackSeconds: number): UsageWindow | undefined {
+	const seconds = kimiWindowSeconds(window) ?? fallbackSeconds;
+	const usedPercent = kimiPercent(detail);
+	if (usedPercent === undefined) return undefined;
+	return { label: windowLabel(seconds), usedPercent, windowSeconds: seconds, resetAt: kimiReset(detail) };
+}
+
+export function parseKimiUsage(payload: unknown, now: number): ProviderUsage | undefined {
+	const raw = (payload ?? {}) as RawKimiUsage;
+	const windows: UsageWindow[] = [];
+	// The top-level usage row is the weekly plan quota. The endpoint omits the
+	// window object for that one, so fall back to a week window when it is present.
+	const weekly = kimiWindow(raw.usage, undefined, WEEK);
+	if (weekly) windows.push(weekly);
+	for (const entry of raw.limits ?? []) {
+		const win = kimiWindow(entry.detail ?? null, entry.window ?? null, 0);
+		if (win && Number.isFinite(win.windowSeconds) && win.windowSeconds > 0) windows.push(win);
+	}
+	if (windows.length === 0) return undefined;
+	// The weekly row is the plan quota and is reported under the KIMI display name;
+	// per-window rows live alongside it inside the same limit bucket.
+	return {
+		provider: KIMI_PROVIDER,
+		plan: undefined,
+		limits: [{ name: KIMI_WEEKLY_LIMIT, windows, limitReached: windows.some((window) => window.usedPercent >= 100) }],
+		fetchedAt: now,
+	};
 }
 
 export function accountIdFromToken(token: string): string | undefined {

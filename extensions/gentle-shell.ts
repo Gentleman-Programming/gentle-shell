@@ -2,6 +2,7 @@ import { CustomEditor, keyHint, type ExtensionAPI, type ExtensionContext, type K
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui";
 import { execFile, spawnSync } from "node:child_process";
 import { statSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { profilesFilePath, readProfilesFileResult } from "../lib/agent-profiles.ts";
 import * as os from "node:os";
 import { join } from "node:path";
@@ -12,7 +13,7 @@ import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment
 import { CARD_TONE, renderCard, type Card, type CardTheme } from "../lib/shell-card.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { framePromptLines, PROMPT_HINT, PROMPT_STATE, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
-import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, parseCodexUsage, parseUsageHeaders, UsageStore, type ProviderUsage } from "../lib/shell-usage.ts";
+import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, KIMI_PROVIDER, KIMI_USAGE_URL, parseCodexUsage, parseKimiUsage, parseUsageHeaders, UsageStore, type ProviderUsage } from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarPart } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
@@ -57,6 +58,8 @@ export interface ShellDeps {
 	devBinary(): DevBinaryNotice | undefined;
 	resolveWorktree: WorktreeResolver;
 	gitRunner(cwd: string): GitRunner;
+	readFile(path: string, encoding: "utf8"): Promise<string>;
+	homedir(): string;
 }
 
 // The rail digest runs every frame. Cache parsing by file identity and metadata,
@@ -94,7 +97,7 @@ function ambientDevBinary(): DevBinaryNotice | undefined {
 	}
 }
 
-const defaultShellDeps: Omit<ShellDeps, "activeProfile"> = { fetch: (...args) => globalThis.fetch(...args), now: () => Date.now(), devBinary: ambientDevBinary, resolveWorktree: resolveSessionWorktree, gitRunner: shellGitRunner };
+const defaultShellDeps: Omit<ShellDeps, "activeProfile"> = { fetch: (...args) => globalThis.fetch(...args), now: () => Date.now(), devBinary: ambientDevBinary, resolveWorktree: resolveSessionWorktree, gitRunner: shellGitRunner, readFile: (path, encoding) => readFile(path, encoding), homedir: () => os.homedir() };
 
 interface AssistantUsageEntry {
 	type: string;
@@ -463,6 +466,34 @@ export async function fetchCodexUsage(token: string | undefined, fetchFn: typeof
 	}
 }
 
+// Kimi Code usage is reachable with the same bearer token pi holds for the
+// subscription. The endpoint answers the weekly plan quota plus per-window caps.
+// Unlike Codex, Kimi's OAuth credential exposes the token under headers.Authorization
+// rather than auth.apiKey, so we read it from the auth file the way Claude does.
+export async function readKimiCodeToken(deps: Pick<ShellDeps, "readFile" | "homedir">, now: number): Promise<string | undefined> {
+	try {
+		const raw = await deps.readFile(join(deps.homedir(), ".pi", "agent", "auth.json"), "utf8");
+		const data = JSON.parse(raw) as { "kimi-coding"?: { type?: string; access?: string; expires?: number } };
+		const credential = data["kimi-coding"];
+		if (credential?.type !== "oauth" || typeof credential.access !== "string" || credential.access.length === 0) return undefined;
+		if (typeof credential.expires === "number" && credential.expires <= now) return undefined;
+		return credential.access;
+	} catch {
+		return undefined;
+	}
+}
+
+export async function fetchKimiUsage(token: string | undefined, fetchFn: typeof fetch, now: number): Promise<ProviderUsage | undefined> {
+	if (!token) return undefined;
+	try {
+		const response = await fetchFn(KIMI_USAGE_URL, { headers: { Authorization: `Bearer ${token}`, "User-Agent": "gentle-pi" } });
+		if (!response.ok) return undefined;
+		return parseKimiUsage(await response.json(), now);
+	} catch {
+		return undefined;
+	}
+}
+
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	installSessionChangeCapture(pi, env, overrides.resolveWorktree ?? resolveSessionWorktree);
 	if (!shellEnabled(env)) return;
@@ -472,17 +503,30 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let usageFetchedAt = 0;
 	const refreshUsage = async (ctx: ExtensionContext, force: boolean) => {
 		const provider = ctx.model?.provider;
-		if (provider !== CODEX_PROVIDER) return;
+		if (provider !== CODEX_PROVIDER && provider !== KIMI_PROVIDER) return;
 		const now = deps.now();
 		if (!force && now - usageFetchedAt < USAGE_REFRESH_MS) return;
 		usageFetchedAt = now;
-		const token = await ctx.modelRegistry.getApiKeyForProvider(CODEX_PROVIDER).catch(() => undefined);
-		const fetched = await fetchCodexUsage(token, deps.fetch, deps.now());
+		let fetched: ProviderUsage | undefined;
+		if (provider === KIMI_PROVIDER) {
+			const token = await readKimiCodeToken(deps, deps.now());
+			fetched = await fetchKimiUsage(token, deps.fetch, deps.now());
+		} else {
+			const token = await ctx.modelRegistry.getApiKeyForProvider(CODEX_PROVIDER).catch(() => undefined);
+			fetched = await fetchCodexUsage(token, deps.fetch, deps.now());
+		}
 		if (!fetched) return;
 		usage.record(fetched);
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
 	};
+	pi.on("model_select", (_event, ctx) => {
+		renderHost?.invalidateSidebar?.();
+		renderHost?.requestRender();
+		if (ctx?.model?.provider === KIMI_PROVIDER) {
+			void refreshUsage(ctx, true);
+		}
+	});
 	pi.on("after_provider_response", (event) => {
 		const parsed = parseUsageHeaders(event.headers, deps.now());
 		if (!parsed) return;

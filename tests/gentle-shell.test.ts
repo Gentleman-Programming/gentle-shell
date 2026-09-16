@@ -6,7 +6,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
-import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, fetchCodexUsage, loadFileDiff, shellGitRunner, openInExternalEditor, type GentlePromptEditor } from "../extensions/gentle-shell.ts";
+import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, fetchCodexUsage, fetchKimiUsage, loadFileDiff, shellGitRunner, openInExternalEditor, type GentlePromptEditor } from "../extensions/gentle-shell.ts";
+import { KIMI_USAGE_URL } from "../lib/shell-usage.ts";
 import { CHANGE_STATUS } from "../lib/shell-changes.ts";
 import { sidebarState, type SidebarRail } from "../lib/shell-sidebar.ts";
 import type { ShellBarTheme } from "../lib/shell-bar.ts";
@@ -755,4 +756,72 @@ test("gentleShell keeps a dev-binary override visible above the editor for the w
 	assert.equal(fresh.ui.widgets.has("gentle-shell-dev-binary"), false);
 
 	assert.equal(devBinaryCard({ state: "invalid", reason: "binary missing" }).tone, "error");
+});
+
+test("kimi-coding usage is fetched with the subscription bearer token and lands in the bar", async () => {
+	const { pi, handlers } = fakePi();
+	let fetches = 0;
+	const deps = {
+		fetch: (async (url: string, init: { headers: Record<string, string> }) => {
+			assert.equal(url, KIMI_USAGE_URL);
+			assert.equal(init.headers.Authorization, "Bearer kimi-key");
+			fetches += 1;
+			return {
+				ok: true,
+				json: async () => ({
+					usage: { limit: "2048", used: "214", remaining: "1834", resetTime: "2026-01-09T15:23:13.716Z" },
+					limits: [
+						{ window: { duration: 300, timeUnit: "TIME_UNIT_MINUTE" }, detail: { limit: "200", used: "139", remaining: "61", resetTime: "2026-01-06T13:33:02.717Z" } },
+						{ window: { duration: 1, timeUnit: "TIME_UNIT_DAY" }, detail: { limit: "1000", used: "500", remaining: "500", resetTime: "2026-01-07T00:00:00.000Z" } },
+					],
+				}),
+			};
+		}) as unknown as typeof fetch,
+		readFile: async (path: string) => {
+			if (path.includes("auth.json")) return JSON.stringify({ "kimi-coding": { type: "oauth", access: "kimi-key", expires: Date.now() + 3600_000 } });
+			throw new Error("not found");
+		},
+		homedir: () => "/home/alan",
+	};
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, deps);
+	const { ctx, ui } = fakeContext({ token: "kimi-key" });
+	(ctx as unknown as { model: { provider: string; id: string } }).model.provider = "kimi-coding";
+	(ctx as unknown as { model: { provider: string; id: string } }).model.id = "kimi-for-coding";
+	await fire(handlers, "session_start", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(fetches, 1, "the session opens with one quota call");
+
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { render(width: number): string[] };
+	const lines = factory(fakeTui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} }).render(200);
+	const bar = stripAnsi(lines[0]);
+	assert.match(bar, /kimi week ▰+▱+ 10%/, "214 of 2048 spent ~10% on the weekly quota");
+	assert.match(bar, /5h 70%/, "the 5h window shows 70% spent");
+	assert.match(bar, /1d 50%/, "the daily window shows 50% spent");
+
+	await fire(handlers, "model_select", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(fetches, 2, "picking the model forces a fresh read past the throttle");
+});
+
+test("kimi-coding usage skips the fetch when no bearer token is available", async () => {
+	const { pi, handlers } = fakePi();
+	let fetches = 0;
+	const deps = {
+		fetch: (async () => { fetches += 1; return { ok: true, json: async () => ({ usage: {}, limits: [] }) }; }) as unknown as typeof fetch,
+		readFile: async () => { throw new Error("not found"); },
+		homedir: () => "/home/alan",
+	};
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, deps);
+	const { ctx, ui } = fakeContext({ token: undefined });
+	(ctx as unknown as { model: { provider: string; id: string } }).model.provider = "kimi-coding";
+	(ctx as unknown as { model: { provider: string; id: string } }).model.id = "kimi-for-coding";
+	await fire(handlers, "session_start", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(fetches, 0, "no token means no quota call");
+
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { render(width: number): string[] };
+	const lines = factory(fakeTui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} }).render(200);
+	const bar = stripAnsi(lines[0]);
+	assert.ok(!/kimi week/.test(bar), "without a token the bar omits the kimi usage segment");
+	assert.ok(bar.includes("kimi-for-coding"), "the bar still shows the active model id");
 });

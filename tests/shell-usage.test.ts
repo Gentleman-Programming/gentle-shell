@@ -8,6 +8,7 @@ import {
 	parseCodexHeaders,
 	parseUsageHeaders,
 	parseCodexUsage,
+	parseKimiUsage,
 	renderUsageBar,
 	renderUsagePanel,
 	UsageStore,
@@ -194,4 +195,75 @@ test("parseUsageHeaders picks whichever provider the headers belong to", () => {
 	assert.equal(parseUsageHeaders({ "x-codex-primary-used-percent": "10", "x-codex-primary-window-minutes": "300" }, NOW)?.provider, "openai-codex");
 	assert.equal(parseUsageHeaders({ "anthropic-ratelimit-unified-5h-utilization": "0.1" }, NOW)?.provider, "anthropic");
 	assert.equal(parseUsageHeaders({ "content-type": "application/json" }, NOW), undefined);
+});
+
+test("parseKimiUsage reads the weekly quota plus every rate-limit window", () => {
+	const payload = {
+		usage: { limit: "2048", used: "214", remaining: "1834", resetTime: "2026-01-09T15:23:13.716Z" },
+		limits: [
+			{ window: { duration: 300, timeUnit: "TIME_UNIT_MINUTE" }, detail: { limit: "200", used: "139", remaining: "61", resetTime: "2026-01-06T13:33:02.717Z" } },
+			{ window: { duration: 1, timeUnit: "TIME_UNIT_DAY" }, detail: { limit: "1000", used: "500", remaining: "500", resetTime: "2026-01-07T00:00:00.000Z" } },
+		],
+	};
+	const usage = parseKimiUsage(payload, NOW);
+	assert.ok(usage);
+	assert.equal(usage.provider, "kimi-coding");
+	assert.deepEqual(usage.limits.map((limit) => limit.name), ["kimi"]);
+	const [weekly, fiveHour, daily] = usage.limits[0].windows;
+	assert.equal(weekly.label, "week");
+	assert.equal(Math.round(weekly.usedPercent * 100) / 100, 10.45, "214 of 2048 spent ~10.45%");
+	assert.equal(weekly.resetAt, Date.parse("2026-01-09T15:23:13.716Z"));
+	assert.equal(fiveHour.label, "5h");
+	assert.equal(fiveHour.usedPercent, 69.5);
+	assert.equal(daily.label, "1d");
+	assert.equal(daily.usedPercent, 50);
+	assert.equal(usage.limits[0].limitReached, false);
+});
+
+test("parseKimiUsage keeps the weekly row even when limits are missing", () => {
+	const usage = parseKimiUsage({ usage: { limit: 100, used: 25, remaining: 75, resetTime: "2026-02-01T00:00:00.000Z" } }, NOW);
+	assert.ok(usage);
+	assert.deepEqual(usage.limits[0].windows.map((window) => `${window.label}:${window.usedPercent}`), ["week:25"]);
+	assert.equal(usage.limits[0].windows[0].resetAt, Date.parse("2026-02-01T00:00:00.000Z"));
+});
+
+test("parseKimiUsage keeps per-window rows when only limits are present", () => {
+	const usage = parseKimiUsage(
+		{ limits: [{ window: { duration: 60, timeUnit: "TIME_UNIT_MINUTE" }, detail: { limit: 50, used: 5, remaining: 45, resetTime: null } }] },
+		NOW,
+	);
+	assert.ok(usage);
+	assert.deepEqual(usage.limits[0].windows.map((window) => `${window.label}:${window.usedPercent}`), ["1h:10"]);
+	assert.equal(usage.limits[0].windows[0].resetAt, null);
+});
+
+test("parseKimiUsage marks the limit reached when any window is exhausted", () => {
+	const usage = parseKimiUsage(
+		{ usage: { limit: 100, used: 100, remaining: 0, resetTime: null }, limits: [] },
+		NOW,
+	);
+	assert.ok(usage);
+	assert.equal(usage.limits[0].limitReached, true);
+});
+
+test("parseKimiUsage skips unknown time units and returns undefined when nothing remains", () => {
+	const usage = parseKimiUsage(
+		{ limits: [{ window: { duration: 5, timeUnit: "TIME_UNIT_FORTNIGHT" }, detail: { limit: 10, used: 1, remaining: 9, resetTime: null } }] },
+		NOW,
+	);
+	assert.equal(usage, undefined, "an unknown unit is not a window the panel can draw");
+	assert.equal(parseKimiUsage({}, NOW), undefined);
+	assert.equal(parseKimiUsage({ usage: { limit: 0, used: 0, remaining: 0, resetTime: null }, limits: [] }, NOW), undefined, "a zero-limit quota yields no window");
+});
+
+test("renderUsageBar shows kimi with the weekly window and any extras as percentages", () => {
+	const usage = parseKimiUsage(
+		{
+			usage: { limit: 2048, used: 214, remaining: 1834, resetTime: "2026-01-09T15:23:13.716Z" },
+			limits: [{ window: { duration: 300, timeUnit: "TIME_UNIT_MINUTE" }, detail: { limit: 200, used: 139, remaining: 61, resetTime: "2026-01-06T13:33:02.717Z" } }],
+		},
+		NOW,
+	);
+	assert.ok(usage);
+	assert.equal(renderUsageBar(usage, plainTheme), "kimi week ▰▱▱▱▱▱▱▱ 10% · 5h 70%");
 });

@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import { agentsViewKey, agentsCollapseKey, agentsStopKey } from "../lib/agents-keys.ts";
 import { extractParentConfirmedSddPreflightContext, getPackageAssetOwner, isParentConfirmedSddPreflightContext, SHIPPED_SDD_AGENT_NAMES } from "../lib/sdd-preflight.ts";
 import { NativeReviewCliV216, createNodeExecFileAdapter, decodeNativeSddStatusV2, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { spawn } from "node:child_process";
@@ -47,9 +48,6 @@ export const AGENTS_RESULT_TYPE = "gentle-agents.result";
 export const AGENTS_MESSAGE_TYPE = "gentle-agents.message";
 export const AGENTS_ORCHESTRATOR_MESSAGE_TYPE = "gentle-agents.orchestrator-message";
 export const AGENTS_STALE_RESULT_TYPE = "gentle-agents.stale-result";
-const COLLAPSE_KEY_DEFAULT = "ctrl+shift+a";
-const VIEW_KEY_DEFAULT = "alt+a";
-const STOP_KEY_DEFAULT = "alt+s";
 const RENDER_COALESCE_MS = 400;
 const CLOCK_TICK_MS = 1000;
 const TOOL_PREFIX = "subagent_";
@@ -260,23 +258,7 @@ function legacySubagentsInstalledAt(agentHome: string): boolean {
 	}
 }
 
-export function agentsViewKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env.GENTLE_PI_AGENTS_VIEW_KEY?.trim();
-	if (value === undefined) return VIEW_KEY_DEFAULT;
-	return value === "" || value.toLowerCase() === "off" ? undefined : value;
-}
-
-export function agentsCollapseKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env.GENTLE_PI_AGENTS_KEY?.trim();
-	if (value === undefined) return COLLAPSE_KEY_DEFAULT;
-	return value === "" || value.toLowerCase() === "off" ? undefined : value;
-}
-
-export function agentsStopKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env.GENTLE_PI_AGENTS_STOP_KEY?.trim();
-	if (value === undefined) return STOP_KEY_DEFAULT;
-	return value === "" || value.toLowerCase() === "off" ? undefined : value;
-}
+export { agentsViewKey, agentsCollapseKey, agentsStopKey };
 
 function sanitizeTerminalText(value: string): string {
 	return value.replace(/[\x00-\x08\x0B-\x1F\x7F-\x9F]/g, (control) => `\\x${control.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);

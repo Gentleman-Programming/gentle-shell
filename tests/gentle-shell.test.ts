@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { initTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, fetchCodexUsage, loadFileDiff, shellGitRunner, openInExternalEditor, type GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { CHANGE_STATUS } from "../lib/shell-changes.ts";
@@ -63,12 +63,25 @@ interface ShortcutRegistration {
 type MessageRenderer = (message: { customType: string; content: unknown }, options: { expanded: boolean }, theme: unknown) => { render(width: number): string[] };
 const renderers = new Map<string, MessageRenderer>();
 
-function fakePi(script: GitScript[] = [{ numstat: "", porcelain: "" }]) {
+const FAKE_SOURCE_INFO: SourceInfo = { path: "extensions/gentle-shell.ts", source: "gentle-shell", scope: "project", origin: "top-level" };
+
+const DEFAULT_COMMANDS: SlashCommandInfo[] = [
+	{ name: "gentle:models", description: "Configure models", source: "extension", sourceInfo: FAKE_SOURCE_INFO },
+	{ name: "gentle:changes", description: "Browse changes", source: "extension", sourceInfo: FAKE_SOURCE_INFO },
+	{ name: "gentle:status", description: "Show Gentle AI status", source: "extension", sourceInfo: FAKE_SOURCE_INFO },
+	{ name: "skill-registry:refresh", description: "Regenerate the skill registry", source: "extension", sourceInfo: FAKE_SOURCE_INFO },
+	{ name: "gentle:commands", description: "Open the command palette", source: "extension", sourceInfo: FAKE_SOURCE_INFO },
+	{ name: "gentle:not-in-catalog", description: "Not a curated command", source: "extension", sourceInfo: FAKE_SOURCE_INFO },
+	{ name: "skill:foo", description: "A skill", source: "skill", sourceInfo: FAKE_SOURCE_INFO },
+];
+
+function fakePi(script: GitScript[] = [{ numstat: "", porcelain: "" }], commandsList: SlashCommandInfo[] = DEFAULT_COMMANDS) {
 	const handlers = new Map<string, Array<(event: unknown, ctx: ExtensionContext) => unknown>>();
 	const commands = new Map<string, CommandRegistration>();
 	const shortcuts = new Map<string, ShortcutRegistration>();
 	const git: string[][] = [];
 	let entries: unknown[] = [];
+	const sentMessages: Array<{ content: string; options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean } }> = [];
 	const tools = new Map<string, { renderShell?: string; execute(id: string, params: unknown, signal: undefined, update: undefined, ctx: ExtensionContext): Promise<unknown> }>();
 	const listeners = new Map<string, (data: unknown) => void>();
 	let round = 0;
@@ -94,6 +107,12 @@ function fakePi(script: GitScript[] = [{ numstat: "", porcelain: "" }]) {
 		getThinkingLevel() {
 			return "medium";
 		},
+		getCommands() {
+			return commandsList;
+		},
+		sendUserMessage(content: string, options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean }) {
+			sentMessages.push({ content, options });
+		},
 		async exec(_command: string, args: string[]) {
 			git.push(args);
 			if (args.includes("worktree")) return { stdout: "worktree /repo\0branch refs/heads/main\0\0", stderr: "", code: 0, killed: false };
@@ -102,7 +121,7 @@ function fakePi(script: GitScript[] = [{ numstat: "", porcelain: "" }]) {
 			return { stdout: isNumstat ? step.numstat : step.porcelain, stderr: "", code: 0, killed: false };
 		},
 	} as unknown as ExtensionAPI;
-	return { pi, handlers, git, commands, shortcuts, tools };
+	return { pi, handlers, git, commands, shortcuts, tools, sentMessages };
 }
 
 async function fire(handlers: Map<string, Array<(event: unknown, ctx: ExtensionContext) => unknown>>, event: string, ctx: ExtensionContext): Promise<void> {
@@ -149,11 +168,15 @@ function fakeContext(options: { hasUI?: boolean; entries?: unknown[]; oauth?: bo
 			setWorkingVisible(visible: boolean) {
 				ui.workingVisible = visible;
 			},
-			custom(factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (value: null) => void) => { render(width: number): string[]; handleInput(data: string): void }) {
+			// Generic over the result type: real callers resolve `custom` with
+			// whatever their `done` callback is given (see ExtensionUIContext.custom
+			// in pi-coding-agent), not always null. `closeOverlay` stays a
+			// null-resolving escape hatch for tests that only need to end the wait.
+			custom<T>(factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (value: T) => void) => { render(width: number): string[]; handleInput(data: string): void }) {
 				ui.overlay = factory;
-				return new Promise<null>((resolve) => {
+				return new Promise<T | null>((resolve) => {
 					ui.closeOverlay = () => resolve(null);
-					ui.overlayView = factory(fakeTui, plainTheme, fakeKeybindings, () => resolve(null));
+					ui.overlayView = factory(fakeTui, plainTheme, fakeKeybindings, (value: T) => resolve(value));
 					resolveOverlay();
 				});
 			},
@@ -619,7 +642,7 @@ test("gentleShell binds the changes shortcut to the same handler as the command"
 
 	const silent = fakePi();
 	gentleShell(silent.pi, { GENTLE_PI_SHELL_CHANGES_KEY: "off" });
-	assert.equal(silent.shortcuts.size, 0);
+	assert.equal(silent.shortcuts.has("alt+g"), false, "the changes shortcut must not register when disabled");
 });
 
 test("external edits do not pollute Changes or trigger background Git scans", async () => {
@@ -755,4 +778,121 @@ test("gentleShell keeps a dev-binary override visible above the editor for the w
 	assert.equal(fresh.ui.widgets.has("gentle-shell-dev-binary"), false);
 
 	assert.equal(devBinaryCard({ state: "invalid", reason: "binary missing" }).tone, "error");
+});
+
+test("gentle:commands registers alt+k by default", () => {
+	const { pi, shortcuts } = fakePi();
+	gentleShell(pi, {});
+	assert.ok(shortcuts.has("alt+k"));
+});
+
+test("gentle:commands honors GENTLE_PI_COMMANDS_KEY", () => {
+	const { pi, shortcuts } = fakePi();
+	gentleShell(pi, { GENTLE_PI_COMMANDS_KEY: "ctrl+p" });
+	assert.ok(shortcuts.has("ctrl+p"));
+	assert.equal(shortcuts.has("alt+k"), false);
+});
+
+test("GENTLE_PI_COMMANDS_KEY=off registers no command-palette shortcut", () => {
+	const { pi, shortcuts } = fakePi();
+	gentleShell(pi, { GENTLE_PI_COMMANDS_KEY: "off" });
+	assert.equal(shortcuts.has("alt+k"), false);
+	assert.ok(shortcuts.has("alt+g"), "the unrelated changes shortcut still registers");
+});
+
+test("/gentle:commands shows only curated, registered commands, grouped, by their labels", async () => {
+	const { pi, commands } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui, overlayReady } = fakeContext();
+	const opened = commands.get("gentle:commands")!.handler("", ctx);
+	await overlayReady;
+	const lines = ui.overlayView!.render(100);
+	const rendered = lines.join("\n");
+	assert.match(rendered, /Configuration/);
+	assert.match(rendered, /Session/);
+	assert.match(rendered, /Diagnostics/);
+	assert.match(rendered, /Skills/);
+	assert.doesNotMatch(rendered, /\bSDD\b/, "the SDD group has no registered commands and must not appear");
+	assert.match(rendered, /Assign models and effort/);
+	assert.match(rendered, /Browse captured changes/);
+	assert.match(rendered, /Gentle AI status/);
+	assert.match(rendered, /Refresh skill registry/);
+	assert.doesNotMatch(rendered, /gentle:models|gentle:changes|gentle:status|skill-registry:refresh/, "raw command names must not leak; only labels are shown");
+	assert.doesNotMatch(rendered, /gentle:not-in-catalog/);
+	assert.doesNotMatch(rendered, /skill:foo/);
+	const changesLine = lines.find((line) => line.includes("Browse captured changes"));
+	assert.match(changesLine ?? "", /alt\+g/, "expected the configured alt+g shortcut hint next to Browse captured changes");
+	ui.overlayView!.handleInput("\x1b");
+	await opened;
+});
+
+test("selecting a command from the palette by its label sends the underlying command as a slash message", async () => {
+	const { pi, commands, sentMessages } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui, overlayReady } = fakeContext();
+	const opened = commands.get("gentle:commands")!.handler("", ctx);
+	await overlayReady;
+	// "mod" only matches the "Assign models and effort" label (it contains
+	// "mod" via "models"); nothing else in the fixture does.
+	for (const ch of "mod") ui.overlayView!.handleInput(ch);
+	assert.match(ui.overlayView!.render(100).join("\n"), /Assign models and effort/);
+	ui.overlayView!.handleInput("\r");
+	await opened;
+	assert.deepEqual(sentMessages, [{ content: "/gentle:models", options: { expandPromptTemplates: true } }]);
+});
+
+test("escaping the palette sends no message", async () => {
+	const { pi, commands, sentMessages } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui, overlayReady } = fakeContext();
+	const opened = commands.get("gentle:commands")!.handler("", ctx);
+	await overlayReady;
+	ui.overlayView!.handleInput("\x1b");
+	await opened;
+	assert.deepEqual(sentMessages, []);
+});
+
+test("/gentle:commands notifies when nothing in the catalog is registered", async () => {
+	const { pi, commands } = fakePi(undefined, [
+		{ name: "skill:foo", description: "A skill", source: "skill", sourceInfo: FAKE_SOURCE_INFO },
+		{ name: "gentle:not-in-catalog", description: "Not curated", source: "extension", sourceInfo: FAKE_SOURCE_INFO },
+	]);
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	await commands.get("gentle:commands")!.handler("", ctx);
+	assert.match(ui.notices.join("\n"), /No Gentle commands are registered\./);
+	assert.equal(ui.overlay, undefined);
+});
+
+test("/gentle:commands does nothing in a headless context", async () => {
+	const { pi, commands, sentMessages } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext({ hasUI: false });
+	await commands.get("gentle:commands")!.handler("", ctx);
+	assert.equal(ui.overlay, undefined);
+	assert.deepEqual(sentMessages, []);
+});
+
+test("the alt+k shortcut opens the same command palette as the command", async () => {
+	const { pi, shortcuts } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui, overlayReady } = fakeContext();
+	const shortcut = shortcuts.get("alt+k");
+	assert.ok(shortcut, "alt+k not registered");
+	const opened = shortcut.handler(ctx);
+	await overlayReady;
+	assert.match(ui.overlayView!.render(100).join("\n"), /Assign models and effort/);
+	ui.overlayView!.handleInput("\x1b");
+	await opened;
+});
+
+test("resolving the overlay through closeOverlay sends nothing and does not throw", async () => {
+	const { pi, commands, sentMessages } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui, overlayReady } = fakeContext();
+	const opened = commands.get("gentle:commands")!.handler("", ctx);
+	await overlayReady;
+	ui.closeOverlay?.();
+	await opened;
+	assert.deepEqual(sentMessages, []);
 });

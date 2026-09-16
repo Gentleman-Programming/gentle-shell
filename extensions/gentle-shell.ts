@@ -10,6 +10,9 @@ import { CHANGE_STATUS, renderChangesWidget, type ChangedFile, type ChangesModel
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver } from "../lib/session-worktree-registry.ts";
 import { CARD_TONE, renderCard, type Card, type CardTheme } from "../lib/shell-card.ts";
+import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/command-palette.ts";
+import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
+import { agentsViewKey } from "../lib/agents-keys.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { framePromptLines, PROMPT_HINT, PROMPT_STATE, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
 import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, parseCodexUsage, parseUsageHeaders, UsageStore, type ProviderUsage } from "../lib/shell-usage.ts";
@@ -253,6 +256,7 @@ const CHANGES_COMMAND_NAME = "gentle:changes";
 const CHANGES_SHORTCUT_DEFAULT = "alt+g";
 const CHANGES_POLL_DEFAULT_MS = 2000;
 const GIT_TIMEOUT_MS = 5000;
+const COMMANDS_COMMAND_NAME = "gentle:commands";
 const OVERLAY_HEIGHT_RATIO = 0.8;
 const OVERLAY_MIN_ROWS = 8;
 
@@ -364,6 +368,29 @@ async function showChangesOverlay(ctx: ExtensionContext, deps: OverlayDeps): Pro
 		view?.dispose();
 		view = undefined;
 	}
+}
+
+// The command palette is a curated, grouped menu (Configuration, Session,
+// Diagnostics, SDD, Skills), not a raw listing of every registered
+// extension command: buildCommandPaletteGroups keeps only the catalog
+// entries that are actually registered, so a missing extension never shows
+// a dead row. Selecting an entry runs it exactly as if the user had typed
+// the underlying slash command.
+async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext, env: NodeJS.ProcessEnv): Promise<void> {
+	if (!ctx.hasUI) return;
+	const groups = buildCommandPaletteGroups(pi.getCommands(), {
+		"gentle:changes": changesShortcut(env),
+		"gentle:agents": agentsViewKey(env),
+	});
+	if (groups.length === 0) {
+		ctx.ui.notify("No Gentle commands are registered.", "info");
+		return;
+	}
+	const result = await ctx.ui.custom<CommandPaletteResult>(
+		(tui, theme, _keybindings, done) => new CommandPalette(groups, done, theme, () => Math.max(0, tui.terminal.rows)),
+		{ overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "85%" } },
+	);
+	if (result?.type === "run") pi.sendUserMessage(`/${result.name}`, { expandPromptTemplates: true });
 }
 
 function showChanges(ctx: ExtensionContext, model: ChangesModel): void {
@@ -619,6 +646,17 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		pi.registerShortcut(shortcut as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Open captured agent session changes",
 			handler: async (ctx) => openChanges(ctx),
+		});
+	}
+	pi.registerCommand(COMMANDS_COMMAND_NAME, {
+		description: "Open the command palette: a curated, grouped menu of Gentle commands.",
+		handler: async (_args, ctx) => showCommandPalette(pi, ctx, env),
+	});
+	const commandsShortcut = commandsKey(env);
+	if (commandsShortcut) {
+		pi.registerShortcut(commandsShortcut as Parameters<ExtensionAPI["registerShortcut"]>[0], {
+			description: "Open the command palette",
+			handler: async (ctx) => showCommandPalette(pi, ctx, env),
 		});
 	}
 	pi.on("agent_start", (_event, ctx) => {

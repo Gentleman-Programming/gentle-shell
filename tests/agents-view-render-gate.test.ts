@@ -134,7 +134,7 @@ test("peer membership and availability changes render again", (t) => {
 	view.dispose();
 });
 
-test("local task changes render again while presence stays identical", (t) => {
+test("local task changes render once and the next poll stays silent", (t) => {
 	const profile = tempProfile(t);
 	const publisher = PresencePublisher.start({ profile, sessionId: "peer-a", label: "Peer A", activity: [peer("p1")] });
 	t.after(() => publisher.dispose());
@@ -145,14 +145,54 @@ test("local task changes render again while presence stays identical", (t) => {
 	assert.equal(renders(), 2, "the store change itself renders immediately");
 	nextPoll(t);
 	assert.equal(polls(), 2);
-	assert.equal(renders(), 3, "the next poll renders again because the local snapshot changed");
+	assert.equal(renders(), 2, "the poll after a store render stays silent: the gate re-anchored to the new local snapshot");
 	store.update("mine", { lastStep: "edited" });
-	assert.equal(renders(), 4, "the subscribed selection renders on its own update");
+	assert.equal(renders(), 3, "the subscribed selection renders on its own update");
 	nextPoll(t);
 	assert.equal(polls(), 3);
-	assert.equal(renders(), 5, "a local lastStep change is covered by the poll signature");
+	assert.equal(renders(), 3, "the re-anchored gate keeps the next poll silent");
 	nextPoll(t);
-	assert.equal(renders(), 5, "an unchanged store stops rendering again");
+	assert.equal(renders(), 3, "an unchanged store stays silent too");
+	view.dispose();
+});
+
+test("a same-length rewrite before the tail of peer thread content renders again", (t) => {
+	const profile = tempProfile(t);
+	// keepTail (TEXT_CAP / maxOutputChars) lets a streaming peer rewrite item
+	// content in place; a rewrite that preserves length outside the final 64
+	// characters must still trip the gate, which a tail-only hash would miss.
+	const tail = "this tail stays byte-identical across the rewrite";
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer-a", label: "Peer A", activity: [peer("p1", {}, { version: 1, dropped: 0, items: [{ kind: "text", text: `${"X".repeat(72)}${tail}` }] })] });
+	t.after(() => publisher.dispose());
+	const { view, renders } = gateHarness(t, profile);
+	settle(t);
+	assert.equal(renders(), 1);
+	publisher.update([peer("p1", {}, { version: 1, dropped: 0, items: [{ kind: "text", text: `${"Y".repeat(72)}${tail}` }] })]);
+	t.mock.timers.tick(500);
+	nextPoll(t);
+	assert.equal(renders(), 2, "a same-length rewrite before the final 64 characters renders on the next poll");
+	nextPoll(t);
+	assert.equal(renders(), 2, "the settled state stops rendering again");
+	view.dispose();
+});
+
+test("delimiter-colliding task fields do not collapse the gate", (t) => {
+	const profile = tempProfile(t);
+	// Under a raw colon-joined signature, agent "w:x" with model "m:y" and
+	// agent "w" with model "x:m:y" produce identical signature text while
+	// rendering different headers; the length-prefixed encoding keeps them
+	// distinct.
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer-a", label: "Peer A", activity: [peer("p1", { agent: "w:x", model: "m:y" })] });
+	t.after(() => publisher.dispose());
+	const { view, renders } = gateHarness(t, profile);
+	settle(t);
+	assert.equal(renders(), 1);
+	publisher.update([peer("p1", { agent: "w", model: "x:m:y" })]);
+	t.mock.timers.tick(500);
+	nextPoll(t);
+	assert.equal(renders(), 2, "a field-boundary collision renders as the real change it is");
+	nextPoll(t);
+	assert.equal(renders(), 2, "the settled state stops rendering again");
 	view.dispose();
 });
 

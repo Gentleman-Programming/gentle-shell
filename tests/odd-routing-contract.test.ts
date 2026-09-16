@@ -81,7 +81,11 @@ test("organic progress preserves both complete feature copies and reconciles act
 		"mem_get_observation",
 		"read the actual task file",
 		"not a third authority",
+		"create or rebuild the visible `todo` list",
+		"before the first source write",
+		"after every task transition and material plan change",
 	]);
+	assert.doesNotMatch(memory, /`todo` tool is an optional session\/UI projection/);
 });
 
 test("assumption challenge and task checks do not activate or duplicate native review", () => {
@@ -170,6 +174,7 @@ test("ODD protocol is always-on in the rendered system prompt and runs by defaul
 		"4. **Classify.**",
 		"two or more meaningful implementation steps",
 		"5. **Track before the first write.**",
+		"create or rebuild the visible `todo` list from the reconciled feature tasks",
 		"Tell the user in one line which feature document was created and how many tasks it holds",
 		"6. **Implement task by task.**",
 		"7. **Close.**",

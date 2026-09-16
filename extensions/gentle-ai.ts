@@ -88,6 +88,7 @@ import {
 	type AgentProfilesFile,
 	type ProfileListItem,
 	type ProfileRoutingRow,
+	type ProfilesFileReadResult,
 	type ProfilesParseDrops,
 } from "../lib/agent-profiles.ts";
 import {
@@ -2339,8 +2340,11 @@ function pinnedEffectiveModelConfig(cwd: string): AgentModelConfig | undefined {
  * live (#1012). A winning pin outranks both. Reading never writes.
  */
 function readEffectiveModelConfig(cwd: string): AgentModelConfig {
-	const pinned = pinnedEffectiveModelConfig(cwd);
-	if (pinned) return pinned;
+	return pinnedEffectiveModelConfig(cwd) ?? readGlobalEffectiveModelConfig(cwd);
+}
+
+/** The routing in effect once the pin is set aside: what a global save materializes. */
+function readGlobalEffectiveModelConfig(cwd: string): AgentModelConfig {
 	const effective = cloneModelConfig(readModelConfig(cwd));
 	const profilesByPath = new Map<string, Record<string, unknown>>();
 	for (const agent of listDiscoverableAgents(cwd)) {
@@ -2948,6 +2952,9 @@ interface OverlayComponent {
 
 type ModelPanelResult =
 	| { type: "save"; config: AgentModelConfig }
+	// `save`, then snapshot the saved routing into the current profile: the step
+	// `/gentle:profiles` performs with `s`, reachable without leaving this panel.
+	| { type: "save-profile"; config: AgentModelConfig }
 	| { type: "custom"; agent: string | "all"; config: AgentModelConfig }
 	| { type: "export"; config: AgentModelConfig }
 	| { type: "restore"; config: AgentModelConfig }
@@ -2987,6 +2994,8 @@ class SddModelPanel implements OverlayComponent {
 	private readonly modelOptions: string[];
 	private readonly done: (result: ModelPanelResult) => void;
 	private readonly theme: Theme | undefined;
+	// The profile `u` writes to, named up front so the key never targets a surprise.
+	private readonly profileLabel: string;
 
 	constructor(
 		initialConfig: AgentModelConfig,
@@ -2994,12 +3003,14 @@ class SddModelPanel implements OverlayComponent {
 		agents: string[],
 		done: (result: ModelPanelResult) => void,
 		theme?: Theme,
+		profileLabel = "none",
 	) {
 		this.draft = cloneModelConfig(initialConfig);
 		this.rows = [SET_ALL_AGENTS, ...agents];
 		this.modelOptions = modelOptions;
 		this.done = done;
 		this.theme = theme;
+		this.profileLabel = profileLabel;
 	}
 
 	invalidate(): void {}
@@ -3077,6 +3088,10 @@ class SddModelPanel implements OverlayComponent {
 		}
 		if (matchesKey(data, "ctrl+s")) {
 			this.done({ type: "save", config: this.draft });
+			return;
+		}
+		if (matchesKey(data, "u")) {
+			this.done({ type: "save-profile", config: this.draft });
 			return;
 		}
 		if (matchesKey(data, "down") || matchesKey(data, "j")) {
@@ -3254,6 +3269,7 @@ class SddModelPanel implements OverlayComponent {
 		const line = (text = "", tone?: PanelTone) =>
 			this.renderLine(text, width, tone);
 		lines.push(line("Assign Models and Effort to Agents", "title"));
+		lines.push(line(`Current profile: ${this.profileLabel}`, "muted"));
 		lines.push("");
 		lines.push(line("Current assignments:", "muted"));
 		lines.push("");
@@ -3293,9 +3309,17 @@ class SddModelPanel implements OverlayComponent {
 			)}`,
 		);
 		lines.push("");
+		// Two rows: editing keys, then the keys that leave the panel. One row no
+		// longer fits the minimum width once the profile key joins the save keys.
 		lines.push(
 			line(
-				`j/k scroll • enter model/save • e effort • i ${isProviderReviewRole(this.rows[this.cursor] ?? "") ? "Pi persisted defaults" : "inherit"} • c custom • x export • r restore • ctrl+s save • esc back`,
+				`j/k scroll • enter model/save • e effort • i ${isProviderReviewRole(this.rows[this.cursor] ?? "") ? "Pi persisted defaults" : "inherit"} • c custom`,
+				"muted",
+			),
+		);
+		lines.push(
+			line(
+				`x export • r restore • ctrl+s save • u update profile "${this.profileLabel}" • esc back`,
 				"muted",
 			),
 		);
@@ -3439,12 +3463,13 @@ function renderSddModelPanelForTesting(
 async function showSddModelPanel(
 	ctx: ExtensionContext,
 	config: AgentModelConfig,
+	profileLabel: string,
 ): Promise<ModelPanelResult> {
 	const modelOptions = await getPiModelOptions(ctx);
 	const agents = modelAssignmentNames(ctx.cwd);
 	return ctx.ui.custom<ModelPanelResult>(
 		(_tui, theme, _keybindings, done) =>
-			new SddModelPanel(config, modelOptions, agents, done, theme),
+			new SddModelPanel(config, modelOptions, agents, done, theme, profileLabel),
 		{
 			overlay: true,
 			overlayOptions: {
@@ -3476,7 +3501,8 @@ async function handleModelsCommand(ctx: ExtensionContext): Promise<void> {
 		return;
 	}
 	let config = savedConfig.status === "valid" ? savedConfig.config : {};
-	let result = await showSddModelPanel(ctx, config);
+	const profileLabel = describeCurrentProfileTarget(resolveCurrentProfileTarget(ctx.cwd));
+	let result = await showSddModelPanel(ctx, config, profileLabel);
 	while (result.type === "custom" || result.type === "export" || result.type === "restore") {
 		config = cloneModelConfig(result.config);
 		if (result.type === "export") {
@@ -3486,14 +3512,14 @@ async function handleModelsCommand(ctx: ExtensionContext): Promise<void> {
 			} catch (error) {
 				ctx.ui.notify(`Model routing export failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
 			}
-			result = await showSddModelPanel(ctx, config);
+			result = await showSddModelPanel(ctx, config, profileLabel);
 			continue;
 		}
 		if (result.type === "restore") {
 			const restored = await readModelExport(ctx);
 			if (!restored) {
 				ctx.ui.notify(`Model routing restore failed: ${modelExportPath(ctx.cwd)} is missing or invalid.`, "warning");
-				result = await showSddModelPanel(ctx, config);
+				result = await showSddModelPanel(ctx, config, profileLabel);
 				continue;
 			}
 			const approved = await ctx.ui.confirm("Restore saved model routing?", `Replace ${modelConfigPath(ctx.cwd)} with ${modelExportPath(ctx.cwd)}`);
@@ -3502,7 +3528,7 @@ async function handleModelsCommand(ctx: ExtensionContext): Promise<void> {
 					await writeModelConfigAsync(ctx.cwd, restored);
 				} catch (error) {
 					ctx.ui.notify(`Model routing restore failed before writing config: ${error instanceof Error ? error.message : String(error)}`, "warning");
-					result = await showSddModelPanel(ctx, config);
+					result = await showSddModelPanel(ctx, config, profileLabel);
 					continue;
 				}
 				config = restored;
@@ -3522,7 +3548,7 @@ async function handleModelsCommand(ctx: ExtensionContext): Promise<void> {
 					].join("\n"), "warning");
 				}
 			}
-			result = await showSddModelPanel(ctx, config);
+			result = await showSddModelPanel(ctx, config, profileLabel);
 			continue;
 		}
 		const current =
@@ -3542,7 +3568,7 @@ async function handleModelsCommand(ctx: ExtensionContext): Promise<void> {
 					"Custom model id must be a single-line provider/model identifier using letters, numbers, '.', '-', '_', '~', ':', '@', '/', '+', '%' only.",
 					"warning",
 				);
-				result = await showSddModelPanel(ctx, config);
+				result = await showSddModelPanel(ctx, config, profileLabel);
 				continue;
 			}
 			if (result.agent === "all") {
@@ -3564,9 +3590,9 @@ async function handleModelsCommand(ctx: ExtensionContext): Promise<void> {
 				};
 			}
 		}
-		result = await showSddModelPanel(ctx, config);
+		result = await showSddModelPanel(ctx, config, profileLabel);
 	}
-	if (result.type !== "save") return;
+	if (result.type !== "save" && result.type !== "save-profile") return;
 	writeModelConfig(ctx.cwd, result.config);
 	const applyResult = await applyModelConfigAsync(ctx.cwd, result.config);
 	ctx.ui.notify(
@@ -3575,6 +3601,97 @@ async function handleModelsCommand(ctx: ExtensionContext): Promise<void> {
 			`Global config: ${modelConfigPath(ctx.cwd)}`,
 			`Agents updated: ${applyResult.updated}`,
 			...describeModelConfig(ctx.cwd, result.config),
+		].join("\n"),
+		"info",
+	);
+	if (result.type === "save-profile") updateCurrentProfileFromSavedRouting(ctx);
+}
+
+/** The profile `u` in `/gentle:models` writes to, and why it is that one. */
+interface CurrentProfileTarget {
+	name: string;
+	source: "pinned" | "active";
+}
+
+/**
+ * A pinned repository launches with its pinned profile, so that profile is the
+ * one worth updating from here; anywhere else the globally active profile is.
+ * Neither existing yields no target rather than a guess.
+ */
+function resolveCurrentProfileTarget(
+	cwd: string,
+	store: ProfilesFileReadResult = readProfilesFileResult(profilesFilePath(gentleAiConfigHome())),
+): CurrentProfileTarget | undefined {
+	const pin = resolveProfilePin({ cwd, configHome: gentleAiConfigHome() });
+	if (pin) return { name: pin.profile, source: "pinned" };
+	if (store.status !== "valid" || store.file.active === undefined) return undefined;
+	if (!hasOwnProfile(store.file.profiles, store.file.active)) return undefined;
+	return { name: store.file.active, source: "active" };
+}
+
+function describeCurrentProfileTarget(target: CurrentProfileTarget | undefined): string {
+	if (!target) return "none";
+	return target.source === "pinned" ? `${target.name} (pinned)` : target.name;
+}
+
+/**
+ * The second half of `u`: the same snapshot `/gentle:profiles` takes with `s`,
+ * aimed at the current profile. The snapshot reads the global routing the save
+ * just materialized, never the pin, so a pinned repository does not copy its
+ * pinned profile onto itself. The global save has already been reported, so every
+ * outcome here speaks only about the profile.
+ */
+function updateCurrentProfileFromSavedRouting(ctx: ExtensionContext): void {
+	const path = profilesFilePath(gentleAiConfigHome());
+	const read = readProfilesFileResult(path);
+	if (read.status === "invalid") {
+		ctx.ui.notify(
+			`el Gentleman saved the global routing, but cannot update a profile because ${sanitizeTerminalText(path)} is invalid JSON or not a profiles file. Fix or remove the file, then run /gentle:profiles again.`,
+			"warning",
+		);
+		return;
+	}
+	const snapshot = profileSnapshotFrom(
+		readGlobalEffectiveModelConfig(ctx.cwd),
+		readOrchestratorSettings(orchestratorSettingsPath()),
+	);
+	if (read.status === "missing") {
+		// The same seed `/gentle:profiles` performs on its first open, so pressing
+		// `u` before ever opening that panel lands on the same "current" profile.
+		try {
+			writeProfilesFileSync(path, bootstrapProfilesFile(snapshot));
+		} catch (error) {
+			ctx.ui.notify(
+				`el Gentleman saved the global routing, but could not create ${sanitizeTerminalText(path)}: ${profilesErrorMessage(error)}`,
+				"warning",
+			);
+			return;
+		}
+		ctx.ui.notify(`el Gentleman seeded the "current" profile in ${sanitizeTerminalText(path)} from the routing just saved.`, "info");
+		return;
+	}
+	reportProfilesDrops(ctx, path, read.drops);
+	const target = resolveCurrentProfileTarget(ctx.cwd, read);
+	if (!target) {
+		ctx.ui.notify(
+			"el Gentleman saved the global routing, but no profile is current: none is active and this repository pins none. Apply or create one with /gentle:profiles, then press u here or s there.",
+			"warning",
+		);
+		return;
+	}
+	try {
+		writeProfilesFileSync(path, updateProfile(read.file, target.name, snapshot));
+	} catch (error) {
+		ctx.ui.notify(
+			`el Gentleman saved the global routing, but profile "${target.name}" was not updated: ${profilesErrorMessage(error)}`,
+			"warning",
+		);
+		return;
+	}
+	ctx.ui.notify(
+		[
+			`el Gentleman: Profile "${target.name}" updated from the routing just saved (${target.source === "pinned" ? "this repository's pinned profile" : "the active profile"}).`,
+			`Profiles store: ${sanitizeTerminalText(path)}`,
 		].join("\n"),
 		"info",
 	);

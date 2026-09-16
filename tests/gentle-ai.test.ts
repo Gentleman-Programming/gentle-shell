@@ -2005,6 +2005,121 @@ test("s snapshots current routing in place without applying or reopening the pro
 	assert.match(renderComponent(firstPanel!), /Snapshot saved; live routing unchanged\. Profile "a-target" saved from current routing\./);
 });
 
+// /gentle:models can finish with `u`: the global save `ctrl+s` performs, followed
+// by the snapshot `/gentle:profiles` performs with `s` on the current profile.
+function pickWorkerModelThenUpdateProfile(panel: RoutingConsumerPanel): void {
+	// Rows: "Set all agents", the two provider review roles, then "worker".
+	for (let step = 0; step < 3; step += 1) panel.handleInput("j");
+	assert.match(renderComponent(panel), /▸ worker/);
+	panel.handleInput("\r");
+	for (const character of "alpha") panel.handleInput(character);
+	panel.handleInput("\r");
+	panel.handleInput("u");
+}
+
+test("u saves global routing from /gentle:models and updates the active profile", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	writeStore({
+		team: { worker: { model: "openai/beta" } },
+		other: { worker: { model: "openai/beta", thinking: "high" } },
+	}, "team");
+	fixture.onInput((panel) => {
+		assert.match(renderComponent(panel), /Current profile: team/);
+		assert.match(renderComponent(panel), /u update profile/);
+		pickWorkerModelThenUpdateProfile(panel);
+	});
+	await fixture.run("gentle:models");
+
+	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), { worker: { model: "openai/alpha" } });
+	const store = JSON.parse(readFileSync(storePath, "utf8"));
+	assert.deepEqual(store.profiles.team, {
+		worker: { model: "openai/alpha" },
+		orchestrator: { model: "nan/deepseek-v4-flash", thinking: "high" },
+	});
+	assert.deepEqual(store.profiles.other, { worker: { model: "openai/beta", thinking: "high" } });
+	assert.equal(store.active, "team");
+	assert.equal(fixture.panelVisits(), 1, "u finishes the interaction");
+	assert.ok(
+		fixture.notifications.some((entry) => entry.severity === "info" && /global model config saved/.test(entry.message)),
+		"the global save is still reported",
+	);
+	assert.ok(
+		fixture.notifications.some((entry) => entry.severity === "info" && /Profile "team" updated from the routing just saved/.test(entry.message)),
+		`profile update is reported: ${JSON.stringify(fixture.notifications)}`,
+	);
+});
+
+test("u updates the pinned profile instead of the active one inside a pinned repository", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings, writePin, localPinPath } = profilesStoreFixture(t);
+	writeSettings();
+	writeStore({
+		team: { worker: { model: "openai/beta" } },
+		other: { worker: { model: "openai/beta", thinking: "high" } },
+	}, "team");
+	writePin(localPinPath, "other");
+	fixture.onInput((panel) => {
+		assert.match(renderComponent(panel), /Current profile: other \(pinned\)/);
+		pickWorkerModelThenUpdateProfile(panel);
+	});
+	await fixture.run("gentle:models");
+
+	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), { worker: { model: "openai/alpha" } });
+	const store = JSON.parse(readFileSync(storePath, "utf8"));
+	assert.deepEqual(store.profiles.other, {
+		worker: { model: "openai/alpha" },
+		orchestrator: { model: "nan/deepseek-v4-flash", thinking: "high" },
+	});
+	assert.deepEqual(store.profiles.team, { worker: { model: "openai/beta" } });
+	assert.equal(store.active, "team");
+	assert.ok(
+		fixture.notifications.some((entry) => entry.severity === "info" && /Profile "other" updated from the routing just saved/.test(entry.message)),
+		`pinned profile update is reported: ${JSON.stringify(fixture.notifications)}`,
+	);
+});
+
+test("u keeps the global save and reports when no profile is current", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	writeStore({ team: { worker: { model: "openai/beta" } } });
+	const before = readFileSync(storePath, "utf8");
+	fixture.onInput((panel) => {
+		assert.match(renderComponent(panel), /Current profile: none/);
+		pickWorkerModelThenUpdateProfile(panel);
+	});
+	await fixture.run("gentle:models");
+
+	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), { worker: { model: "openai/alpha" } });
+	assert.equal(readFileSync(storePath, "utf8"), before, "the store is untouched");
+	assert.ok(
+		fixture.notifications.some((entry) => entry.severity === "warning" && /no profile is current/.test(entry.message) && /\/gentle:profiles/.test(entry.message)),
+		`missing current profile is reported: ${JSON.stringify(fixture.notifications)}`,
+	);
+});
+
+test("u seeds the profiles store the way /gentle:profiles does when it is missing", async (t) => {
+	const { fixture, storePath, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	assert.equal(existsSync(storePath), false);
+	fixture.onInput((panel) => {
+		assert.match(renderComponent(panel), /Current profile: none/);
+		pickWorkerModelThenUpdateProfile(panel);
+	});
+	await fixture.run("gentle:models");
+
+	const store = JSON.parse(readFileSync(storePath, "utf8"));
+	assert.equal(store.kind, PROFILES_KIND);
+	assert.deepEqual(store.profiles.current, {
+		worker: { model: "openai/alpha" },
+		orchestrator: { model: "nan/deepseek-v4-flash", thinking: "high" },
+	});
+	assert.equal(store.active, "current");
+	assert.ok(
+		fixture.notifications.some((entry) => entry.severity === "info" && /seeded the "current" profile/.test(entry.message)),
+		`seeding is reported: ${JSON.stringify(fixture.notifications)}`,
+	);
+});
+
 test("snapshot feedback keeps both outcomes visible for long profile names at narrow widths", async (t) => {
 	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
 	const longName = `a${"x".repeat(63)}`;

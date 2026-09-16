@@ -61,7 +61,19 @@ export default async function gentlePiPrettyExtension(
 			};
 		},
 	});
-	const result = await extension(delegated, deps);
+	// pi-pretty's hidden-thinking API is global. Its best-effort private per-row
+	// patch can miss the host's actual component class and then animate every
+	// historical Thinking row. Gentle Shell chooses the robust presentation:
+	// keep collapsed labels static while preserving the separate working frame.
+	const previousThinkingIndicator = process.env.PRETTY_THINKING_INDICATOR;
+	process.env.PRETTY_THINKING_INDICATOR = "off";
+	let result: unknown;
+	try {
+		result = await extension(delegated, deps);
+	} finally {
+		if (previousThinkingIndicator === undefined) delete process.env.PRETTY_THINKING_INDICATOR;
+		else process.env.PRETTY_THINKING_INDICATOR = previousThinkingIndicator;
+	}
 	// GentlePromptEditor already carries the live working state in its frame.
 	// Hide Pi's separate loader row to avoid repeating Thinking above the input;
 	// transcript thinking blocks remain untouched as historical reasoning markers.

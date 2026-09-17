@@ -6,10 +6,13 @@ import {
 	formatReset,
 	parseAnthropicHeaders,
 	parseCodexHeaders,
+	parseNanQuota,
 	parseUsageHeaders,
 	parseCodexUsage,
+	providerNote,
 	renderUsageBar,
 	renderUsagePanel,
+	SUPPORTED_USAGE_PROVIDERS,
 	UsageStore,
 	windowLabel,
 	type ProviderUsage,
@@ -158,6 +161,87 @@ test("renderUsagePanel puts the active provider first and explains missing data"
 	const pending = renderUsagePanel([], plainTheme, 100, NOW, { provider: "anthropic" });
 	assert.deepEqual(pending, ["✿ anthropic · usage arrives with the first response"]);
 	assert.deepEqual(renderUsagePanel([], plainTheme, 100, NOW, { provider: "openai-codex" }), ["✿ openai-codex · no usage yet · r to fetch"]);
+});
+
+// NaN Cloud quota: per-model allowances for the billing period, plus the
+// rolling window the model reports. Percentages are tokensUsed over cap, the
+// same ratio the dashboard draws. The payload shape was read off the official
+// dashboard bundle, not a published schema, so every field stays optional.
+const NAN_QUOTA = {
+	periodEnd: "2026-10-01T00:00:00.000Z",
+	models: [
+		{
+			model: "glm5.3",
+			cap: 3_000_000_000,
+			fullCap: 3_000_000_000,
+			tokensUsed: 820_000_000,
+			windowHours: 4,
+			windowTokens: 400_000_000,
+			windowTokensUsed: 120_000_000,
+			windowResetsAt: 1_788_620_161,
+			email: "someone@example.com",
+		},
+		{ model: "deepseek-v4-flash", cap: 1_500_000_000, tokensUsed: 150_000_000 },
+		{ model: "qwen3.8-flash", cap: 0, tokensUsed: 10 },
+	],
+};
+
+test("parseNanQuota maps each model allowance and its rolling window", () => {
+	const usage = parseNanQuota(NAN_QUOTA, NOW);
+	assert.equal(usage.provider, "nan");
+	assert.equal(usage.plan, undefined);
+	assert.equal(usage.fetchedAt, NOW);
+	assert.deepEqual(usage.limits.map((limit) => limit.name), ["glm5.3", "deepseek-v4-flash"]);
+
+	const [glm, deepseek] = usage.limits;
+	assert.deepEqual(glm.windows.map((window) => window.label), ["period", "4h"]);
+	assert.equal(glm.windows[0].usedPercent, (820_000_000 / 3_000_000_000) * 100);
+	assert.equal(glm.windows[0].windowSeconds, 2_212_800);
+	assert.equal(glm.windows[0].resetAt, 1_790_812_800_000);
+	assert.equal(glm.windows[1].usedPercent, 30);
+	assert.equal(glm.windows[1].windowSeconds, 14_400);
+	assert.equal(glm.windows[1].resetAt, 1_788_620_161_000);
+	assert.equal(glm.limitReached, false);
+	assert.deepEqual(deepseek.windows.map((window) => `${window.label}:${window.usedPercent}`), ["period:10"]);
+	assert.equal(JSON.stringify(usage).includes("example.com"), false, "the quota parser must not keep unrelated account fields");
+});
+
+test("parseNanQuota falls back to the top-level period end and defaults the window budget", () => {
+	const topLevel = parseNanQuota({ periodEnd: 1_790_812_800, models: [{ model: "glm5.3", cap: 3_000_000_000, tokensUsed: 0 }] }, NOW);
+	assert.equal(topLevel.limits[0].windows[0].resetAt, 1_790_812_800_000);
+
+	const defaulted = parseNanQuota({ models: [{ model: "glm5.3", cap: 3_000_000_000, tokensUsed: 0, windowTokensUsed: 100_000_000 }] }, NOW);
+	assert.deepEqual(defaulted.limits[0].windows.map((window) => `${window.label}:${window.usedPercent}`), ["period:0", "4h:25"]);
+
+	const overCap = parseNanQuota({ models: [{ model: "glm5.3", cap: 3_000_000_000, tokensUsed: 3_000_000_000, windowHours: 12, windowTokensUsed: 60_000_000 }] }, NOW);
+	assert.deepEqual(overCap.limits[0].windows.map((window) => `${window.label}:${window.usedPercent}`), ["period:100", "12h:15"]);
+	assert.equal(overCap.limits[0].limitReached, true);
+});
+
+test("parseNanQuota degrades to no data instead of throwing", () => {
+	assert.deepEqual(parseNanQuota({}, NOW).limits, []);
+	assert.deepEqual(parseNanQuota(undefined, NOW).limits, []);
+	assert.deepEqual(parseNanQuota({ models: "nope" }, NOW).limits, []);
+	assert.deepEqual(parseNanQuota({ models: [null, "glm5.3", 7] }, NOW).limits, []);
+	assert.deepEqual(parseNanQuota({ models: [{ model: "glm5.3", cap: "3000000000", tokensUsed: 1 }] }, NOW).limits, []);
+	assert.deepEqual(parseNanQuota({ models: [{ model: "glm5.3", cap: 3_000_000_000 }] }, NOW).limits, []);
+	assert.deepEqual(parseNanQuota({ models: [{ model: "", cap: 3_000_000_000, tokensUsed: 1 }] }, NOW).limits, []);
+});
+
+test("nan is a supported usage provider with its own pending note", () => {
+	assert.ok(SUPPORTED_USAGE_PROVIDERS.includes("nan"));
+	assert.equal(providerNote("nan"), "no usage yet · r to fetch");
+	assert.deepEqual(renderUsagePanel([], plainTheme, 100, NOW, { provider: "nan" }), ["✿ nan · no usage yet · r to fetch"]);
+});
+
+test("renderUsagePanel lists NaN allowances per model", () => {
+	const usage = parseNanQuota(NAN_QUOTA, NOW);
+	const lines = renderUsagePanel([usage], plainTheme, 80, NOW, { provider: "nan" });
+	assert.match(lines[0], /^✿ nan · updated just now$/);
+	assert.match(lines[1], /^ {2}glm5\.3$/);
+	assert.match(lines[2], /^ {4}period .+ 27% +resets in \d+d \d+h$/);
+	assert.match(lines[3], /^ {4}4h .+ 30% +resets in \d+h \d+m$/);
+	assert.match(lines[4], /^ {2}deepseek-v4-flash$/);
 });
 
 test("UsageStore keeps the latest snapshot per provider and lists them in order", () => {

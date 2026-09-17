@@ -54,8 +54,26 @@ interface RawCodexUsage {
 	additional_rate_limits?: RawAdditionalLimit[] | null;
 }
 
+interface RawNanModel {
+	model?: unknown;
+	cap?: unknown;
+	tokensUsed?: unknown;
+	periodEnd?: unknown;
+	windowHours?: unknown;
+	windowTokens?: unknown;
+	fullWindowTokens?: unknown;
+	windowTokensUsed?: unknown;
+	windowResetsAt?: unknown;
+}
+
+interface RawNanQuota {
+	models?: unknown;
+	periodEnd?: unknown;
+}
+
 export const CODEX_PROVIDER = "openai-codex";
 export const ANTHROPIC_PROVIDER = "anthropic";
+export const NAN_PROVIDER = "nan";
 const ANTHROPIC_MAIN_LIMIT = "claude";
 const ANTHROPIC_PREFIX = "anthropic-ratelimit-unified-";
 const ANTHROPIC_WINDOWS: ReadonlyArray<[key: string, seconds: number]> = [
@@ -63,6 +81,14 @@ const ANTHROPIC_WINDOWS: ReadonlyArray<[key: string, seconds: number]> = [
 	["7d", 604_800],
 ];
 export const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+// The NaN Cloud dashboard backend; not part of NaN's published OpenAPI, so the
+// fetch that uses it is fixed-origin, redirect-refusing, and schema-validated.
+export const NAN_QUOTA_URL = "https://cloud-api.nan.builders/api/usage/quota";
+const NAN_MAIN_LIMIT = "period";
+// The dashboard's own published fallbacks for a model that reports rolling
+// numbers without naming its budget.
+const NAN_DEFAULT_WINDOW_TOKENS = 400_000_000;
+const NAN_DEFAULT_WINDOW_HOURS = 4;
 const CODEX_MAIN_LIMIT = "codex";
 const CODEX_ACCOUNT_CLAIM = "https://api.openai.com/auth";
 const HEADER_PREFIX = "x-codex-";
@@ -81,9 +107,10 @@ const ROLE = {
 	SEPARATOR: "muted",
 } as const;
 export const USAGE_EMPTY_MESSAGE = "No subscription usage yet. Usage arrives with the next response, or press r to fetch it.";
-export const SUPPORTED_USAGE_PROVIDERS: readonly string[] = [CODEX_PROVIDER, ANTHROPIC_PROVIDER];
+export const SUPPORTED_USAGE_PROVIDERS: readonly string[] = [CODEX_PROVIDER, ANTHROPIC_PROVIDER, NAN_PROVIDER];
 const PENDING_NOTE: Record<string, string> = {
 	[CODEX_PROVIDER]: "no usage yet · r to fetch",
+	[NAN_PROVIDER]: "no usage yet · r to fetch",
 	[ANTHROPIC_PROVIDER]: "usage arrives with the first response",
 };
 const UNSUPPORTED_NOTE = "no subscription usage for this provider";
@@ -172,6 +199,55 @@ export function parseAnthropicHeaders(headers: Record<string, string>, now: numb
 
 export function parseUsageHeaders(headers: Record<string, string>, now: number): ProviderUsage | undefined {
 	return parseCodexHeaders(headers, now) ?? parseAnthropicHeaders(headers, now);
+}
+
+// NaN Cloud reports one allowance per model for the billing period, plus the
+// rolling window the model applies on top of it. Percentages follow the
+// dashboard exactly: tokens used over the period allowance, and window tokens
+// over the full window budget. Every field is optional, because this payload
+// lives outside NaN's published contract.
+function quotaTimestamp(value: unknown): number | null {
+	if (typeof value === "number" && Number.isFinite(value) && value > 0) return value * 1000;
+	if (typeof value !== "string") return null;
+	const parsed = Date.parse(value);
+	return Number.isNaN(parsed) ? null : parsed;
+}
+
+function quotaNumber(value: unknown, positive: boolean): number | undefined {
+	if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+	return positive ? (value > 0 ? value : undefined) : value >= 0 ? value : undefined;
+}
+
+function nanRollingWindow(raw: RawNanModel): UsageWindow | undefined {
+	const used = quotaNumber(raw.windowTokensUsed, false);
+	if (used === undefined) return undefined;
+	const budget = quotaNumber(raw.fullWindowTokens, true) ?? quotaNumber(raw.windowTokens, true) ?? NAN_DEFAULT_WINDOW_TOKENS;
+	const hours = quotaNumber(raw.windowHours, true) ?? NAN_DEFAULT_WINDOW_HOURS;
+	return { label: windowLabel(hours * HOUR), usedPercent: (used / budget) * 100, windowSeconds: hours * HOUR, resetAt: quotaTimestamp(raw.windowResetsAt) };
+}
+
+export function parseNanQuota(payload: unknown, now: number): ProviderUsage {
+	const raw = (payload ?? {}) as RawNanQuota;
+	const fallbackResetAt = quotaTimestamp(raw.periodEnd);
+	const limits: UsageLimit[] = [];
+	if (Array.isArray(raw.models)) {
+		for (const entry of raw.models) {
+			if (!entry || typeof entry !== "object") continue;
+			const model = entry as RawNanModel;
+			if (typeof model.model !== "string" || model.model.length === 0) continue;
+			const cap = quotaNumber(model.cap, true);
+			const tokensUsed = quotaNumber(model.tokensUsed, false);
+			if (cap === undefined || tokensUsed === undefined) continue;
+			const resetAt = quotaTimestamp(model.periodEnd) ?? fallbackResetAt;
+			const windows: UsageWindow[] = [
+				{ label: NAN_MAIN_LIMIT, usedPercent: (tokensUsed / cap) * 100, windowSeconds: resetAt === null ? 0 : Math.max(0, Math.round((resetAt - now) / 1000)), resetAt },
+			];
+			const rolling = nanRollingWindow(model);
+			if (rolling) windows.push(rolling);
+			limits.push({ name: model.model, windows, limitReached: tokensUsed >= cap });
+		}
+	}
+	return { provider: NAN_PROVIDER, plan: undefined, limits, fetchedAt: now };
 }
 
 export function accountIdFromToken(token: string): string | undefined {

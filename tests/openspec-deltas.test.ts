@@ -207,3 +207,35 @@ The system MUST do one thing.
 		/duplicate delta operation.*Same Behavior/i,
 	);
 });
+
+test("parseRequirementBlocks preserves internal markdown horizontal rules and only removes trailing separator", () => {
+	const specWithInternalDivider = `# Specification
+
+## Requirements
+
+### Requirement: Internal Divider Behavior
+
+The system MUST support structured content.
+
+---
+
+Here is additional details after an internal divider.
+
+---
+
+### Requirement: Next Requirement
+
+Another requirement.
+`;
+
+	const blocks = parseRequirementBlocks(specWithInternalDivider);
+	assert.equal(blocks.length, 2);
+	assert.equal(blocks[0].name, "Internal Divider Behavior");
+	assert.match(
+		blocks[0].content,
+		/The system MUST support structured content\.\n\n---\n\nHere is additional details after an internal divider\./,
+	);
+	assert.doesNotMatch(blocks[0].content, /---\s*$/);
+	assert.equal(blocks[1].name, "Next Requirement");
+});
+

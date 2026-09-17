@@ -49,11 +49,11 @@ entry (so the rolling `4h` row never renders on real data).
 
 ## Tasks
 
-- [ ] NAN-A1 — RED: lock the bar selection ladder and the raw window numbers with failing tests.
-- [ ] NAN-A2 — GREEN: keep `used`/`budget` on the NaN period window and select the bar limit by active model.
-- [ ] NAN-A3 — RED: lock the grouped panel (account row, family rows, no aggregate reset, provider guard) with failing tests.
-- [ ] NAN-A4 — GREEN: group the limits in the view layer without touching the parser contract.
-- [ ] NAN-A5 — Wire the bar to `ShellBarModel.modelId`, update the docs, verify (focused tests, full suite, typecheck).
+- [x] NAN-A1 — RED: lock the bar selection ladder and the raw window numbers with failing tests.
+- [x] NAN-A2 — GREEN: keep `used`/`budget` on the NaN period window and select the bar limit by active model.
+- [x] NAN-A3 — RED: lock the grouped panel (account row, family rows, no aggregate reset, provider guard) with failing tests.
+- [x] NAN-A4 — GREEN: group the limits in the view layer without touching the parser contract.
+- [x] NAN-A5 — Wire the bar to `ShellBarModel.modelId`, update the docs, verify (focused tests, full suite, typecheck).
 
 ## Acceptance criteria
 
@@ -68,11 +68,20 @@ entry (so the rolling `4h` row never renders on real data).
 ## Progress
 
 - 2026-09-18: user authorized C + grouping after seeing rendered mockups against the live payload.
+- 2026-09-18: NAN-A1..A5 closed. Commits `8057b8af` (raw numbers + bar ladder + tests), `8b3b35f6` (grouping + panel + tests), `4d04e0f7` (bar wiring, docs).
 
 ## Verification evidence
 
-- Pending.
+- NAN-A1 RED: `node --experimental-strip-types --test tests/shell-usage.test.ts` — 3 failing (`renderUsageBar prefers…`, `…without raw allowances…`, `parseNanQuota keeps the raw numbers…`).
+- NAN-A2 GREEN: 20 passed, 0 failed.
+- NAN-A3 RED: 2 failing (`renderUsagePanel groups…`, `renderUsagePanel lists the NaN account total…`).
+- NAN-A4 GREEN: `tests/shell-usage.test.ts tests/shell-usage-view.test.ts tests/shell-bar.test.ts tests/gentle-shell.test.ts` — 86 passed, 0 failed.
+- NAN-A5 RED: `tests/shell-bar.test.ts` failed with the bar drawing `deepseek-v4-flash period ▰▱▱▱▱▱▱▱ 18%` inside a `glm5.3-flash` session; GREEN after passing `model.modelId`: 43 passed, 0 failed across the usage and bar suites.
+- Full suite: `pnpm test` — exit 0, 2691 tests, 2653 passed, 0 failed, 38 skipped, provider contract mirror passed, runtime harness ran clean.
+- Typecheck: `pnpm run typecheck` — exit 0, 197 recorded diagnostics, no regressions, and 2 file/code pairs improved (baseline left untouched: it is outside this change's edit surfaces).
+- Live check with the real payload and the product code (`GET /api/usage/quota` → HTTP 200, 2026-09-18 ~01:20 CEST): `glm5.3-flash → glm5.3-flash period ▰▱▱▱▱▱▱▱ 10%`, `deepseek-v4-flash → deepseek-v4-flash period ▰▰▱▱▱▱▱▱ 19%`, `qwen3.6` and `gemma4` (unmetered) → `nan total period ▰▱▱▱▱▱▱▱ 6%`; panel shows `nan total`, `deepseek-v4-flash`, `glm total`, then the three GLM models.
+- Shared-path change to flag for review: a panel window without a reset no longer ends in a dangling separator (it also affects a Codex window whose payload omits `reset_at`; whitespace only).
 
 ## Next step
 
-NAN-A1: write the failing tests.
+Feature branch holds three unreviewed work-unit commits. User decision: native review of each commit or of the branch slice, then PR.

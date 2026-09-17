@@ -94,8 +94,8 @@ test("assumption challenge and task checks do not activate or duplicate native r
 		"high-consequence unproven premise",
 		"Deterministic failures need fixes",
 		"native RDD refuter",
-		"functional checks per task, not an RDD cycle per TODO",
-		"deliverable candidate boundary",
+		"functional checks per task",
+		"native review runs at that work-unit commit or PR slice boundary",
 		"native candidate risk assessment",
 		"gentle_review` with `{\"operation\":\"assess\"}",
 		"Passive/low",
@@ -104,6 +104,48 @@ test("assumption challenge and task checks do not activate or duplicate native r
 		"decline continues under ordinary policy",
 		"never infer low risk from a failed assessment",
 		"When RDD is disabled, do not start or prompt for RDD",
+	]);
+});
+
+test("ODD closes each task with a work-unit commit and reviews the commit or PR slice", () => {
+	containsAll(wrapper, [
+		"Every task closes with at least one work-unit commit on the feature branch, branch first when on the default branch",
+		"with tests and docs alongside the behavior, using a Conventional Commit message",
+		"record the commit identity in the feature document as evidence",
+		"Work-unit commits on the feature branch are part of authorized substantial ODD implementation; push, pull request creation, and merge remain the user's decisions",
+		"The native review candidate is a work-unit commit or a PR slice, never a TODO checkbox and never the accumulated feature branch",
+		"close each task with a work-unit commit",
+	]);
+	containsAll(delegation, [
+		'after each work-unit commit, assess it with that same call and `{"baseRef":"<last reviewed boundary>","committedOnly":true}`',
+		"Passive/low: silent structural checks, no reviewer or consent ceremony, and the boundary advances",
+		'start native review on it right away at that base with `gentle_review` `{"operation":"start"}`',
+		"Medium: defer to the PR slice",
+		"bounded by the delivery budget of about 400 authored changed lines",
+		"The first boundary is the branch point, and every reviewed boundary becomes the next base",
+		"Record per task the assessed tier and outcome: granted, declined, passive, deferred to slice, or unavailable",
+		"Delivery follows work units",
+		"forecast authored changed lines (additions plus deletions, generated files excluded) from the task list",
+		"keep a running count from work-unit commits",
+		"`ask-on-risk` (default), `auto-chain`, `single-pr`, or `exception-ok`",
+		"apply the chosen strategy before the next commit",
+		"`ask-on-risk` asks once for the chain strategy, `stacked-to-main` or `feature-branch-chain`",
+		"`auto-chain` asks only for a missing chain strategy and slices automatically",
+		"Cache both choices, and record slice boundaries",
+		"Resolve the `work-unit-commits` and `chained-pr` skills by registry name",
+		"never hardcode their paths",
+		"The delivery budget below reads the accumulated branch, not this per-task heuristic",
+	]);
+	const docs = read("docs/readme-reference.md");
+	containsAll(docs, [
+		"Every task closes with at least one work-unit commit on the feature branch (branch first when on the default branch)",
+		"the feature document records the commit identity as evidence",
+		"The native review candidate is a work-unit commit or a PR slice, never a TODO checkbox and never the accumulated feature branch",
+		"**Delivery:**",
+		"Close task with a work-unit commit",
+		"RDD enabled at work-unit commit boundary",
+		"Running authored lines over 400",
+		"Apply delivery strategy: chained PR slice",
 	]);
 });
 

@@ -18,8 +18,8 @@ ODD is the predefined workflow: it runs by default on every request, without the
 3. **Resolve uncertainty** — optional research or one focused product question only for a real unresolved decision.
 4. **Classify** — substantial when exploration yields two or more meaningful implementation steps; small work stays small.
 5. **Track before the first write** — create the feature document and Engram mirror automatically for substantial work, and tell the user in one line.
-6. **Implement task by task** — route each task through the smallest safe workflow, with configured TDD and applicable checks.
-7. **Close** — report the verified outcome, failed/pending checks, and the next step.
+6. **Implement task by task** — route each task through the smallest safe workflow, with configured TDD and applicable checks. Every task closes with at least one work-unit commit on the feature branch (branch first when on the default branch), with tests and docs alongside the behavior, using a Conventional Commit message; the feature document records the commit identity as evidence.
+7. **Close** — report the verified outcome, failed/pending checks, and the next step. The native review candidate is a work-unit commit or a PR slice, never a TODO checkbox and never the accumulated feature branch.
 
 - **One feature document:** `odd/tasks/<feature-name>.md` holds objective, problem, why, scope, constraints, actionable checklist with stable IDs and acceptance criteria, verification evidence, progress, and next step. Project-scoped Engram topic `odd/<feature-name>/tasks` mirrors the full document and repository-relative locator. Keep concise rationale for meaningful accepted changes here, not a separate plan or exhaustive journal. Accepted user, review, or verification changes update intent and tasks together; preserve valid completed work, add new tasks or reopen invalidated items with reasons. Findings alone do not authorize expansion or acceptance. Routine corrections stay with their tasks; checkoffs require observed proof.
 - **Recovery:** write local progress first and read back both copies; writes are not atomic. Unavailable Engram leaves an explicit pending mirror, not invented success or a block on unrelated safe work. Before implementation or resume, the parent reads full feature memory and the actual task file, reconciles code and evidence, and preserves conflicting versions. Pass the locator and relevant context; workers read the document before edits. The existing Todo UI is a projection, not another authority.
@@ -27,7 +27,8 @@ ODD is the predefined workflow: it runs by default on every request, without the
 - **Research:** optional research addresses a named uncertainty. Establish problem, intended outcome, constraints, and current evidence; inspect code and adapt depth to consequence, not fixed questionnaires or rounds. The parent asks one focused product question only when needed, then waits; workers return gaps. Use available authorized documentation/web tools, prefer primary sources, and attribute claims to URLs/code locations. Distinguish facts, assumptions, contradictions, freshness, and gaps; return a recommendation, tradeoffs, open questions, and implementation implications. Forward these instructions to an existing fresh general worker, not a specialized agent or `sdd-research`. Unavailable evidence pauses only unsafe dependent decisions. Research stays read-only with no new persistence/readiness machinery; a brief proposal is needed only for a real decision.
 - **Assumptions:** at most one scoped independent read-only challenge for a high-consequence unproven premise, including a small security-critical change. Deterministic failures need fixes, not debate. Native RDD claims stay with its refuter.
 - **TDD:** resolve on/off from existing project/session configuration or explicit user choice; retain source and exact runner in the feature document when present and forward all three on every implementation delegation, refreshing on resume. Test presence does not enable TDD. Enabled requires observed RED before implementation → GREEN → REFACTOR; disabled still requires ordinary functional checks. Unknown/conflicting mode or a missing runner needs only the clarification affecting the next action, never invented precedence, commands, or `sdd-init`.
-- **Checks:** functional checks run per task, not RDD per checkbox. At a meaningful deliverable boundary, enabled RDD uses native candidate risk first via existing `gentle_review` assessment: passive/low stays silent; medium/high relays existing candidate consent and runs the native plan only on grant. Decline follows ordinary policy; unavailable assessment never means low risk. Disabled RDD never starts or prompts. Preserve native continuations and existing delivery gates.
+- **Checks:** functional checks run per task; a TODO checkbox never triggers a review cycle. The native review candidate is a work-unit commit or a PR slice, never a TODO checkbox and never the accumulated feature branch. After each work-unit commit, when RDD is enabled, assess it with `gentle_review` `{"operation":"assess"}` and `{"baseRef":"<last reviewed boundary>","committedOnly":true}`. Passive or low stays silent and the boundary advances. High, or an unavailable or failed assessment, reviews the commit itself right away at that base. Medium defers to the PR slice, the commits accumulated since the last reviewed boundary, bounded by the delivery budget of about 400 authored changed lines, and reviews at slice close. The first boundary is the branch point, and every reviewed boundary becomes the next base. Record the assessed tier and outcome per task: granted, declined, passive, deferred to slice, or unavailable. Existing risk, consent, and authority stay unchanged; never infer low risk from a failed assessment. Never skip an existing delivery gate.
+- **Delivery:** at feature-document creation, forecast authored changed lines (additions plus deletions, generated files excluded) from the task list, and keep a running count from work-unit commits. Choose one delivery strategy per feature: `ask-on-risk` (default), `auto-chain`, `single-pr`, or `exception-ok`. When the forecast or running count exceeds about 400 authored changed lines, apply the chosen strategy before the next commit. `ask-on-risk` asks once for the chain strategy (`stacked-to-main` or `feature-branch-chain`); `auto-chain` asks only for a missing chain strategy and slices automatically. Cache both choices, and record slice boundaries (which commits each PR holds) in the feature document. Resolve the `work-unit-commits` and `chained-pr` skills by registry name before planning or creating any PR.
 
 ```mermaid
 flowchart TD
@@ -49,20 +50,25 @@ flowchart TD
     TC --> M[Implement next authorized task]
     M --> N[Applicable functional checks]
     N --> O[Record truthful results; update tracked intent, tasks and mirror]
-    O --> P{Authorized work remains?}
+    O --> OC[Close task with a work-unit commit]
+    OC --> P{Authorized work remains?}
     P -->|Yes| M
-    P -->|No| Q{RDD enabled at deliverable boundary?}
+    P -->|No| Q{RDD enabled at work-unit commit boundary?}
     Q -->|No| R[Ordinary checks and policy]
-    Q -->|Yes| S{Native candidate risk}
-    S -->|Passive or low| T[Silent structural checks; no reviewer or prompt]
-    S -->|Medium or high| U{Existing candidate consent}
-    S -->|Unavailable| V[Native continuation; never assume low risk]
+    Q -->|Yes| S{Native candidate risk per commit}
+    S -->|Passive or low| T[Silent structural checks; boundary advances]
+    S -->|Medium| U{Existing candidate consent for PR slice}
+    S -->|High or unavailable| V[Review the commit now at that base]
     U -->|Granted| W[Native review plan and authority]
     U -->|Declined| R
-    R --> X[Existing delivery gates]
-    T --> X
+    V --> X[Existing delivery gates]
     W --> X
-    X --> Y[Deliver]
+    T --> X
+    R --> X
+    X --> AG{Running authored lines over 400?}
+    AG -->|Yes| AH[Apply delivery strategy: chained PR slice]
+    AG -->|No| Y[Deliver]
+    AH --> Y
     Z[Resume] --> AA[Full feature memory and actual task file]
     AA --> AB[Reconcile requirements, code, proof and conflicts]
     AB --> TC

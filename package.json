@@ -1,6 +1,6 @@
 {
 	"name": "gentle-pi",
-	"version": "2.7.0",
+	"version": "3.2.0",
 	"description": "Turn Pi into el Gentleman: a senior-architect development harness with SDD/OpenSpec, subagents, strict TDD evidence, review guardrails, and skill discovery.",
 	"license": "MIT",
 	"type": "module",
@@ -20,7 +20,7 @@
 	],
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/Gentleman-Programming/gentle-pi.git"
+		"url": "git+https://github.com/Gentleman-Programming/gentle-shell.git"
 	},
 	"files": [
 		"assets/",
@@ -68,7 +68,7 @@
 	},
 	"dependencies": {
 		"@earendil-works/pi-tui": "0.85.1",
-		"@heyhuynhgiabuu/pi-pretty": "0.6.14"
+		"@heyhuynhgiabuu/pi-pretty": "0.6.27"
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-coding-agent": ">=0.85.1",

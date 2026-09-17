@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ScrollView, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import { renderLayoutFrame } from "@earendil-works/pi-tui/dist/layout.js";
+import { CURSOR_MARKER, ScrollView, VStack, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { getScrollViewsAt, renderLayoutFrame, type LayoutBox } from "@earendil-works/pi-tui/dist/layout.js";
 import { installSidebar, invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import { sidebarPart, sidebarState } from "../lib/shell-sidebar.ts";
 import { renderShellSidebarBar } from "../lib/shell-bar.ts";
@@ -32,7 +32,7 @@ test("grouped Status preserves structured fields and opaque integration text", (
 	}, theme, 46);
 	const text = lines.join("\n");
 	let previous = -1;
-	for (const heading of ["Status", "Project", "Model", "Context", "Usage", "Integrations"]) {
+	for (const heading of ["Status", "Project", "Changes", "Usage", "Integrations"]) {
 		const index = text.indexOf(heading);
 		assert.ok(index > previous, heading);
 		previous = index;
@@ -67,13 +67,13 @@ test("only fullscreen at 140 columns activates; shrinking restores bottom paint"
 	}
 });
 
-test("rail orders Status, changes, agents, TODO independent of registration order", (t) => {
+test("rail orders unified Status, agents, TODO without standalone changes", (t) => {
 	const f = fixture();
 	for (const key of ["todo", "agents", "changes"]) {
 		sidebarPart(f.tui, key, { render: () => [key, ""], invalidate() {} });
 	}
 	t.after(installSidebar(f.tui, theme));
-	assert.deepEqual(rail(f).render(50).map((line) => line.trim()), ["✿ Gentle-Pi ✿", "", "Status", "", "changes", "", "agents", "", "todo"]);
+	assert.deepEqual(rail(f).render(50).map((line) => line.trim()), ["✿ Gentle Shell ✿", "", "Status", "", "agents", "", "todo"]);
 });
 
 test("branding belongs to scroll content before Status, never transcript or narrow bottom", (t) => {
@@ -81,14 +81,14 @@ test("branding belongs to scroll content before Status, never transcript or narr
 	t.after(installSidebar(f.tui, theme));
 	const scroll = rail(f);
 	const lines = scroll.render(50);
-	const brandIndex = lines.findIndex((line) => line.includes("✿ Gentle-Pi ✿"));
+	const brandIndex = lines.findIndex((line) => line.includes("✿ Gentle Shell ✿"));
 	assert.ok(brandIndex >= 0 && brandIndex < lines.findIndex((line) => line.includes("Status")));
 	assert.doesNotMatch(lines.join("\n"), /[\u2800-\u28ff]/);
 	const heading = lines[brandIndex];
 	const usableWidth = scroll.getContentWidth(50) - 2;
-	const spare = usableWidth - visibleWidth("✿ Gentle-Pi ✿");
+	const spare = usableWidth - visibleWidth("✿ Gentle Shell ✿");
 	const scrollbarWidth = 50 - scroll.getContentWidth(50);
-	assert.equal(heading, " ".repeat(1 + Math.floor(spare / 2)) + "✿ Gentle-Pi ✿" + " ".repeat(1 + Math.ceil(spare / 2) + scrollbarWidth));
+	assert.equal(heading, " ".repeat(1 + Math.floor(spare / 2)) + "✿ Gentle Shell ✿" + " ".repeat(1 + Math.ceil(spare / 2) + scrollbarWidth));
 	assert.deepEqual(f.root.render(), ["transcript"]);
 	scroll.updateLayout(lines.length, 2, () => {});
 	scroll.scrollBy(9);
@@ -249,30 +249,30 @@ test("real layout frames reuse unchanged sidebar output and invalidate at state 
 	t.after(installSidebar(f.tui, theme));
 
 	const first = renderLayoutFrame(f.root, 140, 20, () => {});
-	assert.deepEqual(counts, { footer: 1, changes: 1, agents: 1, todo: 1 });
+	assert.deepEqual(counts, { footer: 1, changes: 0, agents: 1, todo: 1 });
 	const sidebarRail = first.root.children[1]?.component as ScrollView;
 	renderLayoutFrame(f.root, 140, 20, () => {});
-	assert.deepEqual(counts, { footer: 1, changes: 1, agents: 1, todo: 1 });
+	assert.deepEqual(counts, { footer: 1, changes: 0, agents: 1, todo: 1 });
 
 	todo = "Todo two";
 	sidebarRail.invalidate();
 	const changed = renderLayoutFrame(f.root, 140, 20, () => {});
 	assert.match(changed.lines.join("\n"), /Todo two/);
-	assert.deepEqual(counts, { footer: 2, changes: 2, agents: 2, todo: 2 });
+	assert.deepEqual(counts, { footer: 2, changes: 0, agents: 2, todo: 2 });
 
 	f.host.terminal.columns = 139;
 	renderLayoutFrame(f.root, 139, 20, () => {});
 	assert.deepEqual(f.bottom.render(80), ["Status"]);
 	f.host.terminal.columns = 140;
 	renderLayoutFrame(f.root, 140, 20, () => {});
-	assert.deepEqual(counts, { footer: 3, changes: 3, agents: 3, todo: 3 });
+	assert.deepEqual(counts, { footer: 3, changes: 0, agents: 3, todo: 3 });
 
 	f.host.mode = "regular";
 	renderLayoutFrame(f.root, 140, 20, () => {});
 	assert.deepEqual(f.bottom.render(80), ["Status"]);
 	f.host.mode = "fullscreen";
 	renderLayoutFrame(f.root, 140, 20, () => {});
-	assert.deepEqual(counts, { footer: 4, changes: 4, agents: 4, todo: 4 });
+	assert.deepEqual(counts, { footer: 4, changes: 0, agents: 4, todo: 4 });
 
 	let replacementRenders = 0;
 	sidebarPart(f.tui, "todo", {
@@ -384,4 +384,88 @@ test("unsupported roots, empty rails and overflowing parts leave native layout i
 	Reflect.deleteProperty(f.root, NODE);
 	t.after(installSidebar(f.tui, theme));
 	assert.deepEqual(f.bottom.render(80), ["Status"]);
+});
+
+// A real native subtree exposes duplicate rendering hidden by empty-layout fixtures.
+function nativeSidebarFixture(legacyMeasurement = false) {
+	let transcriptRenders = 0;
+	let editorRows = 1;
+	const transcript = {
+		render(width: number) {
+			transcriptRenders++;
+			return Array.from({ length: 1000 }, (_, index) => `\x1b[32mEntry ${index} 界 é at ${width}\x1b[0m`);
+		},
+		invalidate() {},
+	};
+	const primary = new ScrollView(transcript, { primary: true, follow: "end", scrollbar: "always" });
+	const editor = { render: () => Array.from({ length: editorRows }, (_, index) => `Editor ${index}${index === editorRows - 1 ? CURSOR_MARKER : ""}`), invalidate() {} };
+	const root = new VStack([{ component: primary, basis: 0, grow: 1 }, { component: editor }]);
+	const originalRender = root.render;
+	const host = { mode: "fullscreen", terminal: { columns: 180 }, layoutRoot: root, requestRender() {} };
+	const tui = host as unknown as TUI;
+	sidebarPart(tui, "footer", { render: () => Array.from({ length: 100 }, (_, i) => `Status ${i}`), invalidate() {} });
+	const dispose = installSidebar(tui, theme);
+	const nativeRoot = root as unknown as { [NODE](): { entries: Array<{ component: { render(width: number): string[] } }> } };
+	if (legacyMeasurement) nativeRoot[NODE]().entries[0].component.render = (width) => root.render(width);
+	return {
+		root, primary, host, dispose, originalRender,
+		growEditor: () => { editorRows = 4; },
+		frame(width = host.terminal.columns, height = 30) {
+			host.terminal.columns = width;
+			transcriptRenders = 0;
+			const frame = renderLayoutFrame(root, width, height, () => {});
+			return { frame, transcriptRenders };
+		},
+	};
+}
+
+function layoutGeometry(box: LayoutBox): unknown {
+	return { rect: box.rect, clip: box.clip, lineOffset: box.lineOffset, scroll: !!box.scrollView, children: box.children.map(layoutGeometry) };
+}
+
+test("fullscreen native transcript renders once without changing bytes, geometry or primary scroll", (t) => {
+	const current = nativeSidebarFixture();
+	const legacy = nativeSidebarFixture(true);
+	t.after(current.dispose);
+	t.after(legacy.dispose);
+	for (const grow of [false, true]) {
+		if (grow) { current.growEditor(); legacy.growEditor(); }
+		for (const [width, height] of [[180, 30], [140, 18], [220, 50]]) {
+			const actual = current.frame(width, height);
+			const expected = legacy.frame(width, height);
+			assert.equal(actual.transcriptRenders, 1, "measurement must not render the native transcript");
+			assert.equal(expected.transcriptRenders, 2, "legacy control must reproduce the redundant render");
+			assert.deepEqual(actual.frame.lines, expected.frame.lines);
+			assert.deepEqual(layoutGeometry(actual.frame.root), layoutGeometry(expected.frame.root));
+			assert.equal(actual.frame.primaryScrollView, current.primary);
+			assert.equal(current.root.render, current.originalRender, "native root rendering is not patched");
+			assert.ok(actual.frame.lines.some(line => line.includes(CURSOR_MARKER)), "editor cursor remains visible");
+		}
+	}
+});
+
+test("native transcript and sidebar keep separate scroll routing across resize, breakpoint and mode transitions", (t) => {
+	const fixture = nativeSidebarFixture();
+	t.after(fixture.dispose);
+	let result = fixture.frame();
+	const rail = result.frame.root.children[1].component as ScrollView;
+	assert.equal(getScrollViewsAt(result.frame, 1, 1)[0], fixture.primary);
+	assert.equal(getScrollViewsAt(result.frame, 179, 1)[0], rail);
+	const transcriptTop = fixture.primary.scrollTop;
+	rail.scrollBy(5);
+	result = fixture.frame();
+	assert.equal(fixture.primary.scrollTop, transcriptTop);
+	assert.equal(rail.scrollTop, 5);
+	fixture.primary.scrollBy(-7);
+	result = fixture.frame();
+	assert.equal(fixture.primary.scrollTop, transcriptTop - 7);
+	assert.equal(rail.scrollTop, 5);
+	assert.equal(result.transcriptRenders, 1);
+	for (const [mode, width] of [["fullscreen", 139], ["fullscreen", 140], ["regular", 180], ["fullscreen", 180]] as const) {
+		fixture.host.mode = mode;
+		result = fixture.frame(width);
+		assert.equal(result.transcriptRenders, 1);
+		assert.equal(result.frame.primaryScrollView, fixture.primary);
+		assert.equal(result.frame.root.children.some(box => box.component === rail), mode === "fullscreen" && width >= 140);
+	}
 });

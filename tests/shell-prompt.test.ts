@@ -4,12 +4,45 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import {
 	framePromptLines,
+	scanWorkingText,
 	PROMPT_STATE,
 	petalGlyph,
 	petalTone,
+	SHELL_PULSE_MS,
+	SHELL_SCANNER_STEPS,
 	withPromptHint,
 	type PromptFrameOptions,
 } from "../lib/shell-prompt.ts";
+
+test("scanner reflects a symmetric light wave across working text at Pi's original cadence", () => {
+	const fg = (role: string, char: string) => `<${role}>${char}</${role}>`;
+	assert.equal(SHELL_PULSE_MS, 80);
+	assert.equal(SHELL_SCANNER_STEPS, 15);
+	for (const word of ["working…", "Thinking…"]) {
+		for (let tick = 0; tick < SHELL_SCANNER_STEPS; tick++) {
+			const frame = scanWorkingText(word, tick, fg);
+			assert.equal(frame.replace(/<[^>]+>/g, ""), word);
+		}
+		assert.match(scanWorkingText(word, 0, fg), /^(<muted>.<\/muted>)+$/);
+		assert.match(scanWorkingText(word, 3, fg), new RegExp(`^<borderAccent>${word[0]}</borderAccent><accent>${word[1]}</accent><thinkingHigh>${word[2]}</thinkingHigh>`));
+		assert.match(scanWorkingText(word, 4, fg), new RegExp(`^<accent>${word[0]}</accent><borderAccent>${word[1]}</borderAccent><accent>${word[2]}</accent>`));
+		assert.match(scanWorkingText(word, 5, fg), new RegExp(`^<thinkingHigh>${word[0]}</thinkingHigh><accent>${word[1]}</accent><borderAccent>${word[2]}</borderAccent>`));
+		assert.match(scanWorkingText(word, 14, fg), /^(<muted>.<\/muted>)+$/);
+		assert.equal(scanWorkingText(word, SHELL_SCANNER_STEPS, fg), scanWorkingText(word, 0, fg));
+	}
+	for (const width of [1, 8, 20, 40]) {
+		for (let tick = 0; tick < SHELL_SCANNER_STEPS; tick++) {
+			const lines = framePromptLines(editorLines(Math.max(4, width)), width, options({ state: PROMPT_STATE.WORKING, tick, fg: (_role, text) => text }));
+			assert.ok(lines.every((line) => visibleWidth(line) <= width));
+		}
+	}
+});
+
+test("compact banner pulse rises from ink through fresh color to a bright tip then fades", () => {
+	const tones = Array.from({ length: 8 }, (_, tick) => petalTone(PROMPT_STATE.WORKING, tick));
+	assert.deepEqual(tones, ["mdQuoteBorder", "thinkingHigh", "accent", "borderAccent", "accent", "thinkingHigh", "mdQuoteBorder", "mdQuoteBorder"]);
+	assert.equal(petalTone(PROMPT_STATE.WORKING, 8), tones[0]);
+});
 
 // The Gentle Shell prompt wraps pi's editor output (a top rule, padded content
 // lines, a bottom rule) in a rounded frame with a petal that shows the agent
@@ -56,7 +89,7 @@ test("framePromptLines paints the frame with the editor border color and the pet
 
 test("petalTone rests bright, walks the rose ramp while working, and turns to warning when queued", () => {
 	assert.equal(petalTone(PROMPT_STATE.IDLE, 2), "borderAccent");
-	assert.deepEqual([0, 1, 2, 3, 4].map((tick) => petalTone(PROMPT_STATE.WORKING, tick)), ["borderAccent", "accent", "thinkingHigh", "mdQuoteBorder", "borderAccent"]);
+	assert.deepEqual([0, 1, 2, 3, 4].map((tick) => petalTone(PROMPT_STATE.WORKING, tick)), ["mdQuoteBorder", "thinkingHigh", "accent", "borderAccent", "accent"]);
 	assert.equal(petalTone(PROMPT_STATE.QUEUED, 1), "warning");
 });
 
@@ -66,13 +99,14 @@ test("petalGlyph spins through the flowers while working and rests otherwise", (
 	assert.equal(petalGlyph(PROMPT_STATE.QUEUED, 1), "❀");
 });
 
-test("framePromptLines spins the petal and labels the working and queued states", () => {
+test("framePromptLines scans the working word while preserving the frame and queued state", () => {
 	const plain = (_color: string, text: string) => text;
-	const working = framePromptLines(editorLines(40), 40, options({ state: PROMPT_STATE.WORKING, tick: 1 }));
-	assert.match(working[0], /<accent>❀<\/accent>/);
-	assert.match(working[0], /<muted>working<\/muted>/);
-	const workingPlain = framePromptLines(editorLines(40), 40, options({ state: PROMPT_STATE.WORKING, tick: 1, fg: plain }));
-	assert.match(stripAnsi(workingPlain[0]), /^╭─ ❀ working ─+╮$/);
+	const working = framePromptLines(editorLines(40), 40, options({ state: PROMPT_STATE.WORKING, tick: 3 }));
+	assert.match(working[0], /<borderAccent>✾<\/borderAccent>/);
+	assert.match(working[0], /<borderAccent>w<\/borderAccent><accent>o<\/accent><thinkingHigh>r<\/thinkingHigh>/);
+	assert.equal(working[0].replace(/<[^>]+>/g, "").includes("working…"), true);
+	const workingPlain = framePromptLines(editorLines(40), 40, options({ state: PROMPT_STATE.WORKING, tick: 3, fg: plain }));
+	assert.match(stripAnsi(workingPlain[0]), /^╭─ ✾ working… ─+╮$/);
 	assert.equal(visibleWidth(workingPlain[0]), 40);
 
 	const queued = framePromptLines(editorLines(40), 40, options({ state: PROMPT_STATE.QUEUED }));

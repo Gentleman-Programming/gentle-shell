@@ -1,6 +1,6 @@
 ---
 name: sdd-archive
-description: Archive a verified SDD change into OpenSpec source specs.
+description: Archive a completed SDD change into OpenSpec source specs.
 tools:
   - read
   - grep
@@ -41,7 +41,7 @@ Never claim persistence you did not perform.
 
 ## Purpose
 
-Archive a completed SDD change. In file-backed modes, this requires canonical spec sync to be complete (normally via `sdd-sync`), then moves the active change folder to the dated archive. In Engram-only mode, this records traceability without creating a canonical merge layer.
+Archive a completed SDD change. In file-backed modes, archive composes applicable delta specs into canonical specs, then moves the active change folder to the dated archive. In Engram-only mode, this records traceability without creating a canonical merge layer.
 
 ## Status and Action Context Guard
 
@@ -53,7 +53,7 @@ Stop with `blocked` if:
 
 - active change selection is missing or ambiguous;
 - `actionContext.mode: workspace-planning` and no `allowedEditRoots` are provided;
-- archive paths, sync fallback writes, or move targets are outside the authoritative workspace or allowed edit roots.
+- archive paths, spec composition writes, or move targets are outside the authoritative workspace or allowed edit roots.
 
 Archive does not own normal task completion. `sdd-apply` owns persisted task checkbox updates; `sdd-verify` and `sdd-archive` validate them.
 
@@ -65,24 +65,22 @@ Before archiving, read:
 - `openspec/changes/{change}/specs/` or memory artifact `sdd/{change}/spec`
 - `openspec/changes/{change}/design.md`
 - `openspec/changes/{change}/tasks.md`
-- `openspec/changes/{change}/verify-report.md`
+- `openspec/changes/{change}/verify-report.md` when verification was run
 - `openspec/changes/{change}/sync-report.md` when file-backed sync was run
 - `openspec/config.yaml` when present
 
 Stop with `blocked` if:
 
-- the verification report is missing;
-- the verification report is not clearly passing, or contains unresolved `FAIL`, `BLOCKED`, `CRITICAL`, or verification blockers;
+- a current verification report records unresolved `FAIL`, `BLOCKED`, `CRITICAL`, or verification blockers; optional verification is not a missing-artifact gate;
 - required artifacts are missing;
 - tasks are incomplete and no explicit stale-checkbox reconciliation proof is recorded;
 - `tasks.md` or the memory tasks artifact contains unchecked implementation task markers matching `^\s*- \[ \]` and no explicit stale-checkbox reconciliation instruction names those exact unchecked tasks with proof from apply-progress and verify-report;
-- file-backed mode has no successful `sync-report.md` and the parent prompt does not explicitly approve archive-time sync fallback;
 - a legacy flat `openspec/changes/{change}/spec.md` is the only spec artifact in file-backed mode;
 - the merge would be destructive and the parent prompt does not include explicit confirmation.
 
 ## Final Task Completion Gate
 
-Immediately before any archive-time sync fallback, archive report write, or folder move, re-read the persisted tasks artifact:
+Immediately before any archive-time spec composition, archive report write, or folder move, re-read the persisted tasks artifact:
 
 - `openspec` / `both`: `openspec/changes/{change}/tasks.md`
 - `engram`: `sdd/{change}/tasks` observation when memory tools are explicitly available
@@ -90,7 +88,7 @@ Immediately before any archive-time sync fallback, archive report write, or fold
 If any implementation task remains unchecked (`- [ ]`):
 
 1. STOP with status `blocked`.
-2. Do not perform archive-time sync fallback.
+2. Do not perform archive-time spec composition.
 3. Do not move the change to `openspec/changes/archive/`.
 4. Report the exact unchecked lines and state that `sdd-apply` must be rerun or corrected so it marks completed tasks in the persisted tasks artifact.
 
@@ -100,16 +98,16 @@ CRITICAL verification issues always block archive and cannot be overridden. Expl
 
 ## Artifact Store Modes
 
-- `openspec`: require completed filesystem sync, then perform archive move.
-- `both` / `hybrid`: require completed filesystem sync, move the archive, and save the archive report to memory when tools are available.
-- `engram`: skip filesystem sync/archive. Engram is working memory; do not create or require `sdd/canonical/<domain>/spec` topics. Record proposal/spec/design/tasks/verify observation IDs in the archive report.
+- `openspec`: compose applicable filesystem delta specs, then perform the archive move.
+- `both` / `hybrid`: compose applicable filesystem delta specs, move the archive, and save the archive report to memory when tools are available.
+- `engram`: skip filesystem composition/archive. Engram is working memory; do not create or require `sdd/canonical/<domain>/spec` topics. Record proposal/spec/design/tasks and available verification observation IDs in the archive report.
 - `none`: return a closure summary only.
 
-## Archive-Time Sync Fallback
+## Archive-Time Spec Composition
 
-Prefer `sdd-sync` before `sdd-archive`. File-backed archive requires a successful `sync-report.md`; archive may perform the same file-backed sync only when the parent prompt explicitly approves archive-time sync fallback.
+Archive owns applicable file-backed spec composition; no separate sync phase or successful sync-report artifact is required. A legacy sync report is history, not permission to skip inspecting current deltas and canonical specs.
 
-Do not start archive-time sync fallback until the Final Task Completion Gate passes.
+Do not start archive-time spec composition until the Final Task Completion Gate passes.
 
 For each domain spec in:
 
@@ -122,6 +120,23 @@ sync into:
 ```text
 openspec/specs/{domain}/spec.md
 ```
+
+### Resume prior composition
+
+Before writing, inspect current deltas and canonical content together with existing change-specific artifacts and relevant repository history when available. A legacy `sync-report.md`, prior archive report, or apply-progress may identify domains, canonical files, operation names, recorded checks and destructive approvals. Read the actual supporting content; a PASS label or absence alone is not proof that this change applied an operation. Do not require a legacy report when ordinary artifacts/history already establish the result.
+
+Classify each operation as already applied, pending, or unresolved:
+
+| Operation | Already applied | Pending or unresolved |
+| --- | --- | --- |
+| ADDED / MODIFIED | The full current requirement block matches the intended delta result, and existing artifacts/history corroborate this change's application of that same operation. | Apply only a demonstrably pending operation. An existing ADDED target or differing current content after recorded application is unresolved; do not overwrite later work. |
+| REMOVED | The target is absent and corroborating history establishes that the same requirement was removed by this change using the current delta, with its recorded destructive approval. | An existing target is pending only when its content and history agree with the intended removal; a missing target without corroborating history is unresolved. |
+
+For mixed or interrupted composition, reconcile each operation separately; a domain-level success claim cannot skip pending operations. Apply only pending operations, leaving already-applied effects and unrelated canonical content unchanged. The strict delta helper rejects repeated ADDED/REMOVED operations: do not replay the full delta against an already-composed canonical spec or weaken that helper to treat absence as success.
+
+Stop and report any unresolved operation before any canonical write or archive move. Name the affected requirement and the missing or conflicting fact; request clarification rather than fabricate application history. Current same-domain collision checks and explicit composition/archive order still apply, including to already-applied effects. Existing task completion, native readiness, grants/confinement and archive-destination checks also still apply. Destructive approval for a prior operation does not authorize new or changed destructive writes.
+
+Record already-applied, pending and unresolved operations with supporting artifact/history references and current-content checks in the ordinary archive report. Do not create a new report schema, hash inventory, token or mandatory attestation; do not mutate historical sync reports. This reconciliation applies only to file-backed composition, not to an Engram-only canonical merge layer.
 
 ### New canonical spec
 
@@ -142,8 +157,10 @@ Merge rules:
 - Match requirements by exact `### Requirement: {Name}` heading.
 - Preserve every canonical requirement not mentioned by the delta.
 - Preserve heading hierarchy and Markdown formatting.
-- Fail or block if a MODIFIED or REMOVED requirement does not exist in the canonical spec.
-- Warn if another active change under `openspec/changes/*/specs/{domain}/spec.md` touches the same domain.
+- Fail or block if a MODIFIED requirement is missing, or a REMOVED target is missing without corroborating history under Resume prior composition; only a proven already-applied operation is excluded from the pending delta.
+- If another active change under `openspec/changes/*/specs/{domain}/spec.md` touches the same domain, report the collision and require the parent's explicit composition/archive order before writing.
+- Block on unsupported `## RENAMED Requirements`; require a corrected ADDED/MODIFIED/REMOVED delta rather than improvising.
+- Preserve completed `dependsOn` and archive-history checks from native status; never replace them with local readiness.
 - Report all ADDED/MODIFIED/REMOVED requirement names in the archive report.
 
 ## Destructive Merge Guard
@@ -161,12 +178,14 @@ Never silently drop scenarios from a MODIFIED requirement. If a MODIFIED delta a
 
 ## Move to Archive
 
-After successful file-backed sync, move:
+After applicable pending composition succeeds and already-applied effects are reconciled, move:
 
 ```text
 openspec/changes/{change}/
   -> openspec/changes/archive/YYYY-MM-DD-{change}/
 ```
+
+Block rather than overwrite an existing archive destination. Check canonical and archive paths against authoritative roots, including resolved symlink targets, before writes or moves.
 
 Use today's ISO date. Create `openspec/changes/archive/` if missing. The archive is an audit trail; never delete or modify archived changes silently.
 
@@ -176,7 +195,7 @@ Archive report handling depends on mode:
 
 - `openspec`: write `openspec/changes/{change}/archive-report.md` before moving the change.
 - `both` / `hybrid`: write the file report before moving the change and save `sdd/{change}/archive-report` to memory when tools are available.
-- `engram`: save or return the archive report with observation-ID traceability only; do not perform filesystem sync/archive.
+- `engram`: save or return the archive report with observation-ID traceability only; do not perform filesystem composition/archive.
 
 Include:
 
@@ -194,11 +213,11 @@ Include:
 
 ## Rules
 
-- Read verify report before archiving.
-- Re-read the persisted tasks artifact before any sync fallback or move; block on unchecked implementation tasks unless explicit stale-checkbox reconciliation is recorded and backed by apply-progress/verify-report proof.
-- Require file-backed specs to be synced before moving the change to archive; use archive-time sync fallback only with explicit parent approval.
+- Read an existing verify report when present; a missing optional report is not a blocker.
+- Re-read the persisted tasks artifact before any spec composition or move; block on unchecked implementation tasks unless explicit stale-checkbox reconciliation is recorded and backed by apply-progress/verify-report proof.
+- Compose applicable file-backed specs inside archive before moving the change; retain explicit consent for destructive writes, not a separate permission prompt for ordinary composition.
 - Preserve audit trail; never delete active artifacts silently.
-- Apply `rules.archive` from `openspec/config.yaml` when present.
+- Apply `rules.archive` and applicable canonical-composition `rules.sync` from `openspec/config.yaml` when present.
 - Do NOT launch child subagents. Parent/orchestrator owns delegation.
 
 Return the standard phase envelope with status, executive_summary, artifacts, next_recommended, risks, and skill_resolution.

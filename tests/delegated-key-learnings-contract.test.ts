@@ -93,7 +93,7 @@ test("SDD executor coverage is exhaustive against actual agent files", () => {
 	const expected = [
 		"sdd-apply.md", "sdd-archive.md", "sdd-design.md", "sdd-explore.md",
 		"sdd-init.md", "sdd-onboard.md", "sdd-proposal.md", "sdd-remediate.md", "sdd-research.md",
-		"sdd-spec.md", "sdd-status.md", "sdd-sync.md", "sdd-tasks.md",
+		"sdd-spec.md", "sdd-status.md", "sdd-tasks.md",
 		"sdd-verify.md",
 	];
 	assert.deepEqual(actual, expected, "SDD agent set must match the known allowlist");
@@ -231,7 +231,7 @@ test("modified SDD agents are packaged and installed by the existing installer",
 		"assets/agents/sdd-init.md", "assets/agents/sdd-onboard.md",
 		"assets/agents/sdd-proposal.md", "assets/agents/sdd-research.md",
 		"assets/agents/sdd-spec.md", "assets/agents/sdd-status.md",
-		"assets/agents/sdd-sync.md", "assets/agents/sdd-tasks.md",
+		"assets/agents/sdd-tasks.md",
 		"assets/agents/sdd-verify.md",
 	];
 	for (const path of expected) {

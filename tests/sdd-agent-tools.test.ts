@@ -67,10 +67,9 @@ const requiredToolsByAgent: Record<string, string[]> = {
 	"sdd-init.md": ["read", "grep", "find", "edit", "write", "bash", "mem_search", "mem_get_observation", "mem_save", "mem_update"],
 	"sdd-onboard.md": ["read", "grep", "find", "edit", "write", "bash", "mem_search", "mem_get_observation", "mem_save", "mem_update"],
 	"sdd-proposal.md": ["read", "grep", "find", "edit", "write", "mem_search", "mem_get_observation", "mem_save"],
-	"sdd-research.md": ["read", "grep", "find", "edit", "write", "mem_search", "mem_get_observation", "mem_save", "fetch_content", "web_search", "source_check", "get_search_content"],
+	"sdd-research.md": [ "fetch_content", "web_search", "source_check", "get_search_content"],
 	"sdd-spec.md": ["read", "grep", "find", "edit", "write", "mem_search", "mem_get_observation", "mem_save"],
 	"sdd-status.md": ["read", "grep", "find", "bash", "mem_search", "mem_get_observation"],
-	"sdd-sync.md": ["read", "grep", "find", "edit", "write", "bash", "mem_search", "mem_get_observation", "mem_save", "mem_update"],
 	"sdd-tasks.md": ["read", "grep", "find", "edit", "write", "mem_search", "mem_get_observation", "mem_save"],
 	"sdd-verify.md": ["read", "grep", "find", "edit", "write", "bash", "mem_search", "mem_get_observation", "mem_save"],
 };
@@ -91,13 +90,14 @@ test("SDD package agents declare role-appropriate tools as YAML arrays", () => {
 
 test("artifact-producing SDD agents can persist OpenSpec files while status remains read-only", () => {
 	for (const fileName of Object.keys(requiredToolsByAgent).filter(
-		(fileName) => fileName !== "sdd-status.md",
+		(fileName) => !["sdd-status.md", "sdd-research.md"].includes(fileName),
 	)) {
 		const tools = readTools(join(assetsAgentsDir, fileName));
 		assert.ok(tools.includes("edit"), `${fileName} must include edit`);
 		assert.ok(tools.includes("write"), `${fileName} must include write`);
 	}
 
+	assert.deepEqual(readTools(join(assetsAgentsDir, "sdd-research.md")), requiredToolsByAgent["sdd-research.md"]);
 	const statusTools = readTools(join(assetsAgentsDir, "sdd-status.md"));
 	assert.ok(!statusTools.includes("edit"), "sdd-status.md must remain read-only");
 	assert.ok(!statusTools.includes("write"), "sdd-status.md must remain read-only");
@@ -108,7 +108,7 @@ test("research instructions require executed evidence rather than blanket denial
 	assert.doesNotMatch(source, /documentation=\[\]; open-web=\[\]/);
 	assert.match(source, /Actually call approved tools/);
 	assert.match(source, /claim maps to source IDs/);
-	assert.match(source, /proposal_ready: false/);
+	assert.match(source, /partial or unavailable research is not a failed proposal gate/);
 	assert.ok(!readTools(join(assetsAgentsDir, "sdd-research.md")).includes("bash"));
 });
 
@@ -132,39 +132,18 @@ test("generic non-SDD agents declare exact role tool allowlists", () => {
 	}
 });
 
-test("sdd-verify phase text carries the verify-result envelope and validate-before-persist rule", () => {
-	// gentle-pi#535 row 5: the phase must produce a natively admissible report
-	// on its first persistence attempt without hunting the format elsewhere.
-	const envelopeFields = [
-		"schema: gentle-ai.verify-result/v1",
-		"evidence_revision: sha256:",
-		"verdict:",
-		"blockers:",
-		"critical_findings:",
-		"requirements:",
-		"scenarios:",
-		"test_command:",
-		"test_exit_code:",
-		"test_output_hash: sha256:",
-		"build_command:",
-		"build_exit_code:",
-		"build_output_hash: sha256:",
-	];
-
-	const agentSource = readFileSync(join(assetsAgentsDir, "sdd-verify.md"), "utf8");
-	assert.match(agentSource, /```yaml\nschema: gentle-ai\.verify-result\/v1\n/);
-	for (const field of envelopeFields) {
-		assert.ok(agentSource.includes(field), `sdd-verify.md envelope must carry \`${field}\``);
+test("optional verification retains practical evidence without retired attestation admission", () => {
+	const agent = readFileSync(join(assetsAgentsDir, "sdd-verify.md"), "utf8");
+	const chain = readFileSync(join(repoRoot, "assets/chains/sdd-verify.chain.md"), "utf8");
+	for (const source of [agent, chain]) {
+		assert.doesNotMatch(source, /sdd-verify-validate|gentle-ai\.verify-result\/v1/);
+		assert.match(source, /commands/);
+		assert.match(source, /blockers/);
 	}
-	assert.match(agentSource, /first non-empty content/);
-	assert.match(
-		agentSource,
-		/gentle-ai sdd-verify-validate --input <path\|-> --requirements <n> --scenarios <n>/,
-	);
-
-	const chainSource = readFileSync(join(repoRoot, "assets", "chains", "sdd-verify.chain.md"), "utf8");
-	assert.match(chainSource, /gentle-ai\.verify-result\/v1/);
-	assert.match(chainSource, /sdd-verify-validate/);
+	assert.match(agent, /strict TDD compliance/);
+	assert.match(agent, /exit codes/);
+	assert.match(agent, /never fabricate PASS/);
+	assert.match(chain, /does not make verification mandatory/);
 });
 
 test("the retired Pi adversarial role agents are not packaged", () => {

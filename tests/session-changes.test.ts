@@ -102,6 +102,17 @@ test("capture capacity is explicit instead of growing without limit", () => {
 	assert.match(changes.notice!,/limit reached/);
 });
 
+test("capture-limit notice is delivered once but stays on the model", () => {
+	const changes = new SessionChanges("session");
+	for(let i=0;i<257;i++) changes.record(evidence(String(i),"/repo",String(i)+".ts"));
+	assert.match(changes.takeNotice()!,/limit reached/);
+	assert.equal(changes.takeNotice(),undefined);
+	assert.match(changes.notice!,/limit reached/);
+	assert.match(changes.model.notice!,/limit reached/);
+	assert.equal(new SessionChanges("s").takeNotice(),undefined);
+	assert.equal(new SessionChanges("s").model.notice,undefined);
+});
+
 test("many edits to few files never reach the cap, because the cap counts files (#1043)", () => {
 	// The long-session shape the old bound got wrong: every repeat `write`/`edit`
 	// of a file already on screen spent a slot, so the panel froze after 256

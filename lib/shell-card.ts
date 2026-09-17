@@ -60,12 +60,8 @@ function bodyLines(card: Card, innerWidth: number): string[] {
 	return card.body.flatMap((paragraph) => (paragraph === "" ? [""] : wrapTextWithAnsi(paragraph, innerWidth)));
 }
 
-// The left rail, corners included, carries the tone at full strength; the
-// rest of the frame stays in the theme's border color, so the state reads from the rail.
-const FRAME_ROLE = "border";
-
-function soft(theme: CardTheme, _tone: CardTone, text: string): string {
-	return theme.fg(FRAME_ROLE, text);
+function frame(theme: CardTheme, tone: CardTone, text: string): string {
+	return theme.fg(TONE_ROLE[tone], text);
 }
 
 export function cardTop(card: Card, theme: CardTheme, width: number, hint?: string): string {
@@ -74,7 +70,7 @@ export function cardTop(card: Card, theme: CardTheme, width: number, hint?: stri
 	if (targetWidth < 5) {
 		const left = theme.fg(TONE_ROLE[card.tone], "╭");
 		if (targetWidth === 1) return left;
-		return left + soft(theme, card.tone, `${rule(targetWidth - 2)}╮`);
+		return left + frame(theme, card.tone, `${rule(targetWidth - 2)}╮`);
 	}
 
 	const title = titleText(card, theme);
@@ -86,7 +82,7 @@ export function cardTop(card: Card, theme: CardTheme, width: number, hint?: stri
 	const styledTitleWidth = title.width <= titleWidth ? title.width : visibleWidth(styledTitle);
 	const fill = rule(targetWidth - styledTitleWidth - 5 - hintWidth);
 	const tail = shownHint ? ` ${theme.fg(HINT_ROLE, shownHint)} ` : "";
-	return theme.fg(TONE_ROLE[card.tone], "╭") + soft(theme, card.tone, "─ ") + styledTitle + soft(theme, card.tone, ` ${fill}`) + tail + soft(theme, card.tone, "╮");
+	return theme.fg(TONE_ROLE[card.tone], "╭") + frame(theme, card.tone, "─ ") + styledTitle + frame(theme, card.tone, ` ${fill}`) + tail + frame(theme, card.tone, "╮");
 }
 
 export function cardLine(text: string, tone: CardTone, theme: CardTheme, width: number): string {
@@ -94,13 +90,13 @@ export function cardLine(text: string, tone: CardTone, theme: CardTheme, width: 
 	if (targetWidth === 0) return "";
 	const left = theme.fg(TONE_ROLE[tone], "│");
 	if (targetWidth === 1) return left;
-	if (targetWidth === 2) return left + soft(theme, tone, "│");
-	if (targetWidth === 3) return `${left} ${soft(theme, tone, "│")}`;
+	if (targetWidth === 2) return left + frame(theme, tone, "│");
+	if (targetWidth === 3) return `${left} ${frame(theme, tone, "│")}`;
 
 	const innerWidth = targetWidth - FRAME_COLUMNS;
 	const clipped = innerWidth === 0 ? "" : truncateToWidth(text, innerWidth, "…");
 	const padding = " ".repeat(Math.max(0, innerWidth - visibleWidth(clipped)));
-	return `${left} ${clipped}${padding} ${soft(theme, tone, "│")}`;
+	return `${left} ${clipped}${padding} ${frame(theme, tone, "│")}`;
 }
 
 export function cardBottom(tone: CardTone, theme: CardTheme, width: number): string {
@@ -108,7 +104,7 @@ export function cardBottom(tone: CardTone, theme: CardTheme, width: number): str
 	if (targetWidth === 0) return "";
 	const left = theme.fg(TONE_ROLE[tone], "╰");
 	if (targetWidth === 1) return left;
-	return left + soft(theme, tone, `${rule(targetWidth - 2)}╯`);
+	return left + frame(theme, tone, `${rule(targetWidth - 2)}╯`);
 }
 
 export function cardInnerWidth(width: number): number {

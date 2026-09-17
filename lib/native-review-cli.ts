@@ -68,7 +68,6 @@ export const NATIVE_REVIEW_OPERATION = {
 	CAPTURE_UNACHIEVABLE: "review/capture-unachievable",
 	ACKNOWLEDGE_APPROVED: "review/acknowledge-approved",
 	SDD_STATUS: "sdd-status",
-	SDD_ATTEMPT: "sdd-attempt",
 	SDD_CONTINUE: "sdd-continue",
 } as const;
 export type NativeReviewOperation = (typeof NATIVE_REVIEW_OPERATION)[keyof typeof NATIVE_REVIEW_OPERATION];
@@ -127,39 +126,6 @@ export interface NativeReviewCli {
 	// delivery or review-transaction authority.
 	sddStatus?(request: NativeSddStatusRequest): Promise<NativeSddStatusV2>;
 	sddContinue?(request: NativeSddStatusRequest): Promise<NativeSddStatusV2>;
-	sddAttemptAcquire?(request: NativeSddAcquireRequest): Promise<NativeSddAttemptResult>;
-	sddAttemptSettle?(request: NativeSddSettleRequest): Promise<NativeSddAttemptResult>;
-}
-
-export interface NativeSddAttemptRequest extends Pick<NativeUntrackedSelectionRequest, "untrackedScope" | "expectedUntrackedInventory" | "intendedUntracked"> {
-	workspaceRoot: string;
-	changeName: string;
-	requestId: string;
-	remediatesEvidenceRevision?: string;
-}
-export interface NativeSddAcquireRequest extends NativeSddAttemptRequest {
-	workUnit: string;
-	evidenceGoal: string;
-	maxAttempts?: number;
-	maxChangedLines?: number;
-	expectedRevision?: string;
-	token?: string;
-}
-export const SDD_ATTEMPT_OUTCOME = { PASSED: "passed", FAILED: "failed", INTERRUPTED: "interrupted" } as const;
-export interface NativeSddSettleRequest extends NativeSddAttemptRequest {
-	token: string;
-	outcome: (typeof SDD_ATTEMPT_OUTCOME)[keyof typeof SDD_ATTEMPT_OUTCOME];
-	evidenceRevision?: string;
-	remediationEvidence?: string;
-	diagnosis: string;
-	harnessDisposition: "reused" | "invalidated";
-	cleanupEvidence: string;
-	processEvidence: string;
-}
-export interface NativeSddAttemptResult {
-	state: "proceed" | "blocked" | "complete";
-	token?: string;
-	reason?: string;
 }
 
 export const NATIVE_REVIEW_MODE_OPERATION = {
@@ -219,7 +185,7 @@ export interface NativeSddStatusV2 extends Readonly<Record<string, unknown>> {
 	changeRoot: string | null;
 	actionContext: Readonly<Record<string, unknown>> & { mode: "repo-local"; workspaceRoot: string; allowedEditRoots: readonly string[] };
 	dependencies: Readonly<Record<(typeof NATIVE_SDD_DEPENDENCIES)[number], NativeSddDependencyState>>;
-	phaseInstructions?: Readonly<Record<(typeof NATIVE_SDD_INSTRUCTION_PHASES)[number], readonly string[]>>;
+	phaseInstructions?: Readonly<Record<(typeof NATIVE_SDD_INSTRUCTION_PHASES)[number], readonly string[]> & { remediate?: readonly string[] }>;
 	blockedReasons: readonly string[];
 	nextRecommended: string;
 	remediationState?: { required: boolean; complete: boolean; failedEvidenceRevision: string };
@@ -1002,6 +968,33 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// exactly. riskEvidence and hint remain dark because neither is proven to
 	// reach the negotiated START path Pi consumes.
 	"2.9.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v3.0.0 shipped ODD as the orchestrator's mandatory default protocol and
+	// integrated the simplified SDD workflow into it (gentle-ai #4642, #4644),
+	// with the provider contract byte-frozen at 1.2.0. Ground-truthed by
+	// diffing contracts/review-integration/v2 and
+	// contracts/review-provider-contract between the v2.9.1 and v3.0.0 tags
+	// in the gentle-ai source tree: zero bytes changed. Neither change touches
+	// the closed START/STATUS fields this row negotiates, so it repeats 2.9.1
+	// exactly. riskEvidence and hint remain dark because neither is proven to
+	// reach the negotiated START path Pi consumes.
+	"3.0.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v3.0.1 moved the Go module path to github.com/gentleman-programming/gentle-ai/v3
+	// with no contract change (gentle-ai #4683). Ground-truthed by diffing
+	// contracts/review-integration/v2 and contracts/review-provider-contract
+	// between the v3.0.0 and v3.0.1 tags in the gentle-ai source tree: zero
+	// bytes changed. This row repeats 3.0.0 (and 2.9.1) exactly. riskEvidence
+	// and hint remain dark because neither is proven to reach the negotiated
+	// START path Pi consumes.
+	"3.0.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v3.1.0 changed the ODD orchestrator contract only (gentle-ai #4714).
+	// Ground-truthed by diffing contracts/review-integration/v2 and
+	// contracts/review-provider-contract between the v3.0.2 and v3.1.0 tags
+	// in the gentle-ai source tree: zero bytes changed (provider contract
+	// stays 1.2.0). Neither change touches the closed START/STATUS fields
+	// this row negotiates, so it repeats 3.0.1 exactly. riskEvidence and hint
+	// remain dark because neither is proven to reach the negotiated START
+	// path Pi consumes.
+	"3.1.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 });
 
 export interface NativeReviewProcessDiagnostics {
@@ -1033,7 +1026,7 @@ export class NativeReviewCliError extends Error {
 		this.launchAttempted = launchAttempted;
 		this.mutating = mutating;
 		this.mutationOutcome = launchAttempted && mutating ? "unknown" : "none";
-		this.nextAction = this.mutationOutcome === "unknown" && operation !== NATIVE_REVIEW_OPERATION.SDD_ATTEMPT ? "review.status" : undefined;
+		this.nextAction = this.mutationOutcome === "unknown" ? "review.status" : undefined;
 		this.diagnostics = diagnostics ?? { operation, error_code: code, timed_out: false, output_limit_exceeded: false };
 		this.auditRecord = auditRecord;
 	}
@@ -1459,7 +1452,7 @@ interface NativeJsonExecution {
 }
 
 const NATIVE_SDD_DEPENDENCIES = ["proposal", "specs", "design", "tasks", "apply", "verify", "archive"] as const;
-const NATIVE_SDD_INSTRUCTION_PHASES = ["apply", "verify", "remediate", "archive"] as const;
+const NATIVE_SDD_INSTRUCTION_PHASES = ["apply", "verify", "archive"] as const;
 const NATIVE_SDD_NEXT_RECOMMENDATIONS = ["apply", "verify", "remediate", "archive", "archived", "resolve-blockers", "sdd-new", "select-change", "propose", "spec", "design", "tasks"] as const;
 const NATIVE_SDD_DEPENDENCY_STATES = ["blocked", "ready", "all_done"] as const;
 
@@ -1487,7 +1480,13 @@ export function decodeNativeSddStatusV2(value: unknown, request: Pick<NativeSddS
 	if (status.phaseInstructions !== undefined) {
 		const instructions = object(status.phaseInstructions);
 		for (const phase of NATIVE_SDD_INSTRUCTION_PHASES) stringArray(instructions[phase]);
-		if (Object.keys(instructions).length !== NATIVE_SDD_INSTRUCTION_PHASES.length) throw new Error("native SDD instructions have an unsupported shape");
+		// Classical SDD no longer emits a remediation phase. Keep the published
+		// producer's optional legacy instructions intact without inventing them
+		// for a newer producer or accepting unknown phase keys.
+		const hasRemediation = Object.hasOwn(instructions, "remediate");
+		if (hasRemediation) stringArray(instructions.remediate);
+		if (Object.keys(instructions).length !== NATIVE_SDD_INSTRUCTION_PHASES.length + Number(hasRemediation)) throw new Error("native SDD instructions have an unsupported shape");
+		if (status.nextRecommended === "remediate" && !hasRemediation) throw new Error("native SDD remediation instructions are missing");
 	}
 	if (status.nextRecommended === "remediate" || status.remediationState !== undefined) {
 		const remediation = object(status.remediationState);
@@ -2134,65 +2133,6 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		toleratedStderr: readonly string[] = [],
 	): Promise<NegotiatedExecution> {
 		return this.invoke(operation, cwd, arguments_, mutating, signal, this.executablePath(operation, mutating), toleratedStderr);
-	}
-
-	async sddAttemptAcquire(request: NativeSddAcquireRequest): Promise<NativeSddAttemptResult> {
-		return this.sddAttempt("acquire", request);
-	}
-
-	async sddAttemptSettle(request: NativeSddSettleRequest): Promise<NativeSddAttemptResult> {
-		return this.sddAttempt("settle", request);
-	}
-
-	private async sddAttempt(verb: "acquire" | "settle", request: NativeSddAcquireRequest | NativeSddSettleRequest): Promise<NativeSddAttemptResult> {
-		const args = ["sdd-attempt", verb, "--cwd", request.workspaceRoot, "--change", request.changeName, "--request-id", request.requestId];
-		if (!isAbsolute(request.workspaceRoot) || !isCanonicalProcessString(request.workspaceRoot) || !isCanonicalProcessString(request.changeName) || !/^[a-z0-9][a-z0-9._-]{0,127}$/.test(request.requestId)) throw new TypeError("Invalid SDD attempt identity");
-		const text = (flag: string, value: string, max: number) => {
-			if (!isCanonicalProcessString(value) || /[\r\n]/.test(value) || Buffer.byteLength(value) > max) throw new TypeError(`Invalid ${flag}`);
-			args.push(flag, value);
-		};
-		const revision = (flag: string, value: string | undefined) => {
-			if (value === undefined) return;
-			if (!/^sha256:[0-9a-f]{64}$/.test(value)) throw new TypeError(`Invalid ${flag}`);
-			args.push(flag, value);
-		};
-		if (verb === "acquire") {
-			const acquire = request as NativeSddAcquireRequest;
-			text("--work-unit", acquire.workUnit, 160);
-			text("--evidence-goal", acquire.evidenceGoal, 240);
-			for (const [flag, value, max] of [["--max-attempts", acquire.maxAttempts, 100], ["--max-changed-lines", acquire.maxChangedLines, 1_000_000]] as const) {
-				if (value === undefined) continue;
-				if (!Number.isInteger(value) || value < 1 || value > max) throw new TypeError(`Invalid ${flag}`);
-				args.push(flag, String(value));
-			}
-			if (acquire.expectedRevision === "") args.push("--expected-revision", "");
-			else revision("--expected-revision", acquire.expectedRevision);
-			if (acquire.token !== undefined) text("--token", acquire.token, 500);
-		} else {
-			const settle = request as NativeSddSettleRequest;
-			text("--token", settle.token, 500);
-			if (!Object.values(SDD_ATTEMPT_OUTCOME).includes(settle.outcome)) throw new TypeError("Invalid outcome");
-			args.push("--outcome", settle.outcome);
-			if (settle.outcome === "interrupted" ? settle.evidenceRevision !== undefined || settle.remediationEvidence !== undefined : !settle.evidenceRevision && !(settle.outcome === "passed" && settle.remediationEvidence)) throw new TypeError("Invalid terminal evidence");
-			revision("--evidence-revision", settle.evidenceRevision);
-			text("--diagnosis", settle.diagnosis, 500);
-			if (!["reused", "invalidated"].includes(settle.harnessDisposition)) throw new TypeError("Invalid harness disposition");
-			args.push("--harness-disposition", settle.harnessDisposition);
-			text("--cleanup-evidence", settle.cleanupEvidence, 500);
-			text("--process-evidence", settle.processEvidence, 500);
-			if (settle.remediationEvidence !== undefined) args.push("--remediation-evidence", settle.remediationEvidence);
-		}
-		revision("--remediates-evidence-revision", request.remediatesEvidenceRevision);
-		args.push(...nativeUntrackedSelectionArguments(nativeUntrackedSelection(request)));
-		const operation = NATIVE_REVIEW_OPERATION.SDD_ATTEMPT;
-		const { body } = await this.negotiated(operation, request.workspaceRoot, args, true);
-		return decode(operation, true, () => {
-			const result = body as unknown as NativeSddAttemptResult;
-			if (!result || !["proceed", "blocked", "complete"].includes(result.state)) throw new TypeError("Invalid compact state");
-			if (verb === "acquire" && result.state === "proceed" && !isCanonicalProcessString(result.token)) throw new TypeError("Missing compact token");
-			if (result.reason !== undefined && typeof result.reason !== "string") throw new TypeError("Invalid compact reason");
-			return { state: result.state, ...(result.token === undefined ? {} : { token: result.token }), ...(result.reason === undefined ? {} : { reason: result.reason }) };
-		});
 	}
 
 	async sddStatus(request: NativeSddStatusRequest): Promise<NativeSddStatusV2> {

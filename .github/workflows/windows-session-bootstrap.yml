@@ -1,0 +1,133 @@
+name: Windows Session Bootstrap
+
+on:
+  push:
+    branches:
+      - test/windows-session-bootstrap-ci
+  workflow_dispatch:
+    inputs:
+      run_windows_startup_experiment:
+        description: "Run the completed paired Windows startup experiment"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    if: github.repository == 'decode2/gentle-pi'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: macos-latest
+            platform: darwin
+          - os: windows-latest
+            platform: windows
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      npm_config_ignore_scripts: "true"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Setup pnpm
+        if: runner.environment == 'github-hosted'
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        env:
+          npm_config_store_dir: ${{ runner.temp }}/pnpm-store
+        with:
+          version: 11.1.1
+          dest: ${{ runner.temp }}/setup-pnpm
+      - name: Install pinned dependencies without lifecycle scripts (Windows)
+        id: install_windows_dependencies
+        if: matrix.platform == 'windows' && runner.environment == 'github-hosted'
+        shell: pwsh
+        run: pnpm install --frozen-lockfile --ignore-scripts --store-dir "$env:RUNNER_TEMP\pnpm-store"
+      - name: Install pinned dependencies without lifecycle scripts (Unix)
+        id: install_unix_dependencies
+        if: matrix.platform != 'windows' && runner.environment == 'github-hosted'
+        shell: bash
+        run: pnpm install --frozen-lockfile --ignore-scripts --store-dir "$RUNNER_TEMP/pnpm-store"
+      - name: Type check focused Windows package
+        if: "!cancelled() && matrix.platform == 'windows' && steps.install_windows_dependencies.outcome == 'success'"
+        shell: pwsh
+        run: pnpm run typecheck
+      - name: Type check focused Unix package
+        if: "!cancelled() && matrix.platform != 'windows' && steps.install_unix_dependencies.outcome == 'success'"
+        shell: bash
+        run: pnpm run typecheck
+      - name: Run Windows bootstrap startup control
+        if: matrix.platform == 'windows'
+        shell: cmd
+        run: node --experimental-strip-types --test --test-name-pattern="^Windows bootstrap startup control$" tests/windows-session-bootstrap.test.ts
+      - name: Run Windows profile bootstrap acceptance
+        if: matrix.platform == 'windows'
+        shell: cmd
+        run: node --experimental-strip-types --test --test-name-pattern="^Windows-native " tests/windows-session-bootstrap.test.ts
+      - name: Run Windows registry observation semantics
+        if: matrix.platform == 'windows'
+        shell: cmd
+        run: node --experimental-strip-types --test --test-name-pattern="^(Windows native listener setup closes the first acquired registry when the second acquisition rejects|Windows phase sequence (preserves failed start with successful cleanup|preserves failed initialize with successful cleanup|admits only complete successful operations|preserves an operation failure when cleanup fails|preserves bounded rejection sites and the first operation failure|retains a last observed startup marker through deadline and cleanup|rejects duplicate, out-of-order, and invalid events permanently))$" tests/windows-session-bootstrap.test.ts
+      - name: Run Windows registry observer integration
+        if: matrix.platform == 'windows'
+        shell: cmd
+        run: node --experimental-strip-types --test --test-name-pattern="^Windows default transport (creates a registry without an observer|emits fixed ordered phase events for its own registry|rejects asynchronous observer setup without awaiting it)$" tests/windows-session-bootstrap.test.ts
+      - name: Run Windows registry and marker source/stream guards
+        if: matrix.platform == 'windows'
+        shell: cmd
+        run: node --experimental-strip-types --test --test-name-pattern="^(Windows registry source guard preserves operation failure through observer cleanup|packed lifecycle source uses the exported phase sequence|Windows listener (source guard publishes only from its Gate-protected readiness transition|failure source guard emits only a fixed post-cleanup generation event|source guard retains owned pipe continuity across the last close|ACK watchdog source guard releases Gate before asynchronous write)|Windows startup marker source emits fixed ordinal control records|packed Windows startup timing source guard uses the installed helper direct driver|Windows startup environment delta admits only the fixed machine path allowlist|Windows startup environment operational validation rejects noncanonical machine paths|Windows packed startup environment experiment source guard selects the paired CI case|Windows packed runner entrypoint guard distinguishes imports, aliases, and unresolved entries|Windows helper control stream enforces fixed marker framing and order|held helper reader rejects deferred malformed and duplicate control frames|held helper reader rejects truncated and oversized suffixes after valid replies)$" tests/windows-session-bootstrap.test.ts
+      - name: Run Windows startup marker transport semantics
+        if: matrix.platform == 'windows'
+        shell: cmd
+        run: node --experimental-strip-types --test --test-name-pattern="^(Windows startup markers are monotonic and never satisfy start readiness|Windows startup marker transport rejects unknown, duplicate, and regressive frames)$" tests/windows-session-transport.test.ts
+      - name: Run extension and portable Windows transport tests (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: node --experimental-strip-types --test tests/gentle-agents.test.ts tests/windows-session-compile.test.ts tests/windows-session-transport.test.ts
+      - name: Run extension and portable Windows transport tests (Unix)
+        if: matrix.platform != 'windows'
+        shell: bash
+        run: node --experimental-strip-types --test tests/gentle-agents.test.ts tests/windows-session-compile.test.ts tests/windows-session-transport.test.ts
+      - name: Run AgentRunner permission FD3 platform matrix (Windows)
+        if: matrix.platform == 'windows'
+        shell: cmd
+        run: node --experimental-strip-types --test --test-name-pattern="^AgentRunner (platform matrix scopes permission fd3 transport|primary IPC cleanup respects native connection state)$" tests/agents-runner.test.ts
+      - name: Run AgentRunner permission FD3 platform matrix (Unix)
+        if: matrix.platform != 'windows'
+        shell: bash
+        run: node --experimental-strip-types --test --test-name-pattern="^AgentRunner (platform matrix scopes permission fd3 transport|primary IPC cleanup respects native connection state)$" tests/agents-runner.test.ts
+      - name: Run standing permission IPC boundary test (Windows)
+        if: "!cancelled() && matrix.platform == 'windows' && steps.install_windows_dependencies.outcome == 'success'"
+        shell: pwsh
+        run: node --experimental-strip-types --test tests/review-session-standing-permission-ipc.test.ts
+      - name: Run POSIX session transport tests
+        if: matrix.platform != 'windows'
+        shell: bash
+        run: node --experimental-strip-types --test tests/agents-session-transport.test.ts tests/agents-session-transport-process.test.ts
+      - name: Prove packed unhooked imports and default registrations (Windows)
+        if: "!cancelled() && matrix.platform == 'windows' && steps.install_windows_dependencies.outcome == 'success'"
+        shell: cmd
+        run: node scripts\test-packed-runner.mjs --unhooked-imports
+      - name: Prove packed unhooked imports and default registrations (Unix)
+        if: "!cancelled() && matrix.platform != 'windows' && steps.install_unix_dependencies.outcome == 'success'"
+        shell: bash
+        run: node scripts/test-packed-runner.mjs --unhooked-imports
+      - name: Prove packed real SDK session lifecycle (Windows)
+        if: "!cancelled() && matrix.platform == 'windows' && steps.install_windows_dependencies.outcome == 'success'"
+        shell: cmd
+        run: node scripts\test-packed-runner.mjs --sdk-lifecycle
+      - name: Prove packed real SDK session lifecycle (Unix)
+        if: "!cancelled() && matrix.platform != 'windows' && steps.install_unix_dependencies.outcome == 'success'"
+        shell: bash
+        run: node scripts/test-packed-runner.mjs --sdk-lifecycle
+      - name: Measure paired packed Windows helper startup environment experiment (experimental)
+        if: "!cancelled() && inputs.run_windows_startup_experiment == true && matrix.platform == 'windows' && steps.install_windows_dependencies.outcome == 'success'"
+        shell: cmd
+        run: node scripts\test-packed-runner.mjs --windows-startup-timing-environment

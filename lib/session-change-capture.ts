@@ -20,7 +20,8 @@ export function installSessionChangeCapture(pi: ExtensionAPI, env: NodeJS.Proces
 	const publish = (evidence: SessionChangeEvidence) => {
 		if (!current || !store || current.sessionManager.getSessionId() !== store.sessionId) return;
 		if (store.record(evidence)) pi.appendEntry(SESSION_CHANGE_ENTRY, { sessionId: store.sessionId, evidence });
-		pi.events.emit(SESSION_CHANGE_EVENT, { sessionId: store.sessionId, notice: store.notice });
+		const notice = store.takeNotice();
+		pi.events.emit(SESSION_CHANGE_EVENT, { sessionId: store.sessionId, ...(notice ? { notice } : {}) });
 	};
 	pi.on("session_start", (_event, ctx) => {
 		pending.clear(); current = ctx;

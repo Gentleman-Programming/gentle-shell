@@ -238,7 +238,7 @@ function shellTokens(command: string): ShellTokenization {
 function isAssignment(token: string): boolean {
 	return /^[A-Za-z_][A-Za-z0-9_]*=/.test(token);
 }
-const SDD_ATTEMPT_VERBS = new Set(["acquire", "settle", "grant"]);
+const SDD_ATTEMPT_VERBS = new Set(["grant"]);
 
 const REVIEW_DIRECT_OPERATIONS = new Set([
 	"capabilities",
@@ -354,7 +354,6 @@ function gentleAiOperationPathFrom(tokens: string[]): string {
 	if (tokens[0] === "sdd-attempt") {
 		const verb = tokens[1] ?? "";
 		if (!SDD_ATTEMPT_VERBS.has(verb)) return "sdd attempt";
-		if (verb !== "grant") return `sdd attempt ${verb}`;
 		const rootCount = authorizationRootCount(tokens);
 		return rootCount > 0
 			? `sdd attempt grant · ${rootCount} root${rootCount === 1 ? "" : "s"}`

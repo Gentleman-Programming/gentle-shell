@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -37,6 +37,7 @@ import {
 	setActiveProfile,
 	summarizeProfile,
 	updateProfile,
+	writeJsonFileAtomicallySync,
 	writeProfilesFileSync,
 } from "../lib/agent-profiles.ts";
 import type { AgentModelConfig } from "../lib/model-routing-authority.ts";
@@ -621,6 +622,34 @@ test("writeProfilesFileSync creates missing parent directories", () => {
 	const path = join(root, "nested", "deeper", "profiles.json");
 	writeProfilesFileSync(path, createProfile(emptyProfilesFile(), "team", CONFIG));
 	assert.equal(readProfilesFileResult(path).status, "valid");
+});
+
+// The profiles store and the per-repository profile pin both replace their file
+// through this helper, so the interruption guarantee belongs to the helper and not
+// to one store's serializer.
+test("writeJsonFileAtomicallySync writes exact bytes, creates parents, and leaves no temp file behind", () => {
+	const path = join(root, "atomic-text", "artifact.json");
+	const first = `${JSON.stringify({ kind: "gentle-pi.test", value: 1 }, null, 2)}\n`;
+	writeJsonFileAtomicallySync(path, first);
+	assert.equal(readFileSync(path, "utf8"), first);
+	writeJsonFileAtomicallySync(path, "second\n");
+	assert.equal(readFileSync(path, "utf8"), "second\n");
+	assert.deepEqual(readdirSync(join(root, "atomic-text")).filter((entry) => entry.includes(".tmp")), []);
+});
+
+test("writeJsonFileAtomicallySync skips an identical rewrite so the file is not replaced", () => {
+	const path = join(root, "atomic-noop", "artifact.json");
+	const text = `${JSON.stringify({ kind: "gentle-pi.test", value: 1 }, null, 2)}\n`;
+	writeJsonFileAtomicallySync(path, text);
+	const historicalTime = new Date("2000-01-01T00:00:00.000Z");
+	utimesSync(path, historicalTime, historicalTime);
+	const first = statSync(path).mtimeMs;
+	writeJsonFileAtomicallySync(path, text);
+	const skipped = statSync(path).mtimeMs;
+	assert.equal(readFileSync(path, "utf8"), text);
+	assert.equal(skipped, first, "an identical rewrite leaves the file untouched");
+	writeJsonFileAtomicallySync(path, "changed\n");
+	assert.notEqual(statSync(path).mtimeMs, skipped, "a changed rewrite still replaces the file");
 });
 
 test("writeProfilesFileSync replaces the store and leaves no temp file behind", () => {

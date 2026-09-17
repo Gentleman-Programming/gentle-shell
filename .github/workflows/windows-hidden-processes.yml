@@ -1,0 +1,51 @@
+name: Windows Hidden Internal Processes
+
+on:
+  push:
+    branches:
+      - fix/windows-hidden-internal-processes
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    if: github.repository == 'decode2/gentle-pi'
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      npm_config_ignore_scripts: "true"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.20.0
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 11.1.1
+          dest: ${{ runner.temp }}/setup-pnpm
+      - name: Install pinned dependencies without lifecycle scripts (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: pnpm install --frozen-lockfile --ignore-scripts --store-dir "$env:RUNNER_TEMP\pnpm-store"
+      - name: Install pinned dependencies without lifecycle scripts (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: pnpm install --frozen-lockfile --ignore-scripts --store-dir "$RUNNER_TEMP/pnpm-store"
+      - name: Run hidden-process contract tests (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: node --experimental-strip-types --test tests/windows-hidden-processes.test.ts
+      - name: Run hidden-process contract tests (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: node --experimental-strip-types --test tests/windows-hidden-processes.test.ts

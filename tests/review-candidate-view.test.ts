@@ -10,6 +10,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
 import {
+	BASE_REF_ACCEPTED_FORMS,
 	CandidateViewRegistry,
 	CandidateViewError,
 	hasExpectedExecutableBits,
@@ -20,6 +21,7 @@ import {
 	digestChangedPathManifest,
 	injectReviewCandidateView,
 	readCandidateContextManifestPage,
+	resolveCanonicalCandidateBase,
 	type NativeCandidateProjectionDescriptor,
 } from "../lib/review-candidate-view.ts";
 import { assertCandidateOwnerParent, assertTrustedWindowsOwner, prepareCandidateOwnerParent, setWindowsAclAuthorityForTesting, validatePrivateWindowsDacl, validatePrivateWindowsOwner, WindowsDaclValidationError, WindowsOwnerValidationError } from "../lib/review-candidate-view-owner.ts";
@@ -651,6 +653,59 @@ test("explicit base resolution preserves structured for-each-ref output-limit di
 		message: "candidate-view Git command for-each-ref exceeded the 67108864-byte output limit; inspect the candidate state before any new START",
 	});
 	assert.doesNotMatch(failure.message, /sensitive base-reference output/);
+});
+
+test("resolving an abbreviated commit id as an explicit base ref names the accepted forms", (t) => {
+	const contributorRoot = repository(t);
+	const fullId = git(contributorRoot, "rev-parse", "HEAD");
+	const abbreviated = fullId.slice(0, 7);
+	assert.throws(
+		() => resolveCanonicalCandidateBase(contributorRoot, abbreviated),
+		(error: unknown) => {
+			assert.ok(error instanceof CandidateViewError);
+			assert.equal(error.reason, "base-ref-unresolvable");
+			assert.match(error.message, /accepted forms/);
+			assert.ok(error.message.includes(BASE_REF_ACCEPTED_FORMS));
+			assert.match(error.message, /abbreviated commit ids are not accepted/);
+			return true;
+		},
+	);
+});
+
+test("resolving an ambiguous explicit base ref names the accepted forms", (t) => {
+	const contributorRoot = repository(t);
+	git(contributorRoot, "tag", "dupe");
+	git(contributorRoot, "branch", "dupe");
+	assert.throws(
+		() => resolveCanonicalCandidateBase(contributorRoot, "dupe"),
+		(error: unknown) => {
+			assert.ok(error instanceof CandidateViewError);
+			assert.equal(error.reason, "base-ref-ambiguous");
+			assert.match(error.message, /accepted forms/);
+			assert.ok(error.message.includes(BASE_REF_ACCEPTED_FORMS));
+			return true;
+		},
+	);
+});
+
+test("resolving an explicit base ref that names a tree, not a commit, reports it as unresolvable with the accepted forms instead of a generic git failure", (t) => {
+	const contributorRoot = repository(t);
+	const treeId = "b".repeat(40);
+	const executor: CandidateGitExecutor = (file, arguments_, options) => {
+		if (arguments_.at(-1) === `${treeId}^{commit}`) throw Object.assign(new Error("fatal: not a commit"), { status: 128, stdout: Buffer.from("") });
+		return execFileSync(file, arguments_, options);
+	};
+	let failure: unknown;
+	try {
+		new CandidateViewRegistry(executor).create({ contributorRoot, baseRef: treeId });
+	} catch (error) {
+		failure = error;
+	}
+	assert.ok(failure instanceof CandidateViewError);
+	assert.equal(failure.reason, "base-ref-unresolvable");
+	assert.match(failure.message, /it does not name a commit/);
+	assert.match(failure.message, /accepted forms/);
+	assert.ok(failure.message.includes(BASE_REF_ACCEPTED_FORMS));
 });
 
 test("every synchronous candidate-view Git command receives the explicit 64 MiB output limit", (t) => {

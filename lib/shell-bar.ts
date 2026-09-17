@@ -12,6 +12,7 @@ export { gaugeTone, renderGauge, type GaugeTone };
 
 export interface ShellBarModel {
 	profile?: string;
+	changes?: { files: number; added: number; deleted: number; notice?: string };
 	cwd: string;
 	branch: string | null;
 	dirty: number | undefined;
@@ -123,7 +124,7 @@ function joinSegments(segments: string[], theme: ShellBarTheme): string {
 export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme, width: number): string[] {
 	const value = (text: string) => theme.fg(ROLE.VALUE, theme.bold(text));
 	const label = (text: string) => theme.fg(ROLE.LABEL, text);
-	const dirty = model.dirty ? theme.fg(ROLE.DIRTY, `±${model.dirty}`) : "";
+	const changes = model.changes;
 	const branch = model.branch ? `${label("Branch")} ${value(model.branch)}` : "";
 	const percent = model.contextPercent === null ? "?%" : `${Math.round(model.contextPercent)}%`;
 	const capacity = label(`${formatTokens(model.contextWindow)} tokens`);
@@ -133,27 +134,35 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 			title: "Project",
 			lines: [
 				value(model.cwd),
-				...((branch || dirty) ? [[branch, dirty].filter(Boolean).join(" ")] : []),
+				...(branch ? [branch] : []),
 				...(model.sessionName ? [`${label("Session")} ${value(model.sessionName)}`] : []),
-			],
-		},
-		{
-			title: "Model",
-			lines: [
-				value(model.modelId),
+				`${label("Model")} ${value(model.modelId)}`,
 				...(model.effort ? [`${label("Effort")} ${theme.fg(ROLE.EFFORT, model.effort)}`] : []),
 				...(model.profile ? [`${label("Profile")} ${value(sanitizeStatus(model.profile))}`] : []),
 			],
 		},
 		{
-			title: "Context",
-			lines: [`${paintGauge(model.contextPercent, theme)} ${value(percent)}  ${capacity}`],
+			title: "Changes",
+			lines: [
+				changes?.files
+					? `${changes.files} ${changes.files === 1 ? "file" : "files"} · ${theme.fg("success", `+${changes.added}`)} ${theme.fg("error", `−${changes.deleted}`)}`
+					: label("No captured changes"),
+				...(changes?.notice ? [theme.fg("warning", sanitizeStatus(changes.notice))] : []),
+				label("/gentle:changes"),
+			],
 		},
 		{
 			title: "Usage",
-			lines: [`${label("Cost")} ${value(formatCost(model.costTotal, model.subscription))}`, ...(usage ? [usage] : [])],
+			lines: [
+				`${label("Context")} ${paintGauge(model.contextPercent, theme)} ${value(percent)}`,
+				capacity,
+				`${label("Cost")} ${value(formatCost(model.costTotal, model.subscription))}`,
+				...(usage ? [usage] : []),
+			],
 		},
-		...(model.statuses.length ? [{ title: "Integrations", lines: model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status))) }] : []),
+		{ title: "Integrations", lines: model.statuses.length
+			? model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)))
+			: [label("No status reported")] },
 	];
 	// Pre-wrap values before indenting so Unicode/ANSI continuation lines keep
 	// the same inset without consuming the card's right border.

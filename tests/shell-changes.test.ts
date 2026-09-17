@@ -98,6 +98,14 @@ test("changesSummary and the widget describe the session at a glance", () => {
 	assert.equal(visibleWidth(line), 120, "the command sits on the right edge");
 });
 
+test("changesSummary and the widget surface the capture limit", () => {
+	const model = changesModel([file("a.ts", 1, 0)]);
+	model.notice = "Session change capture limit reached; additional changes are not displayed.";
+	assert.equal(changesSummary(model), "1 file · +1 −0 · capture limit reached");
+	assert.match(renderChangesWidget(model, plainTheme, 200)[0], /capture limit reached/);
+	assert.doesNotMatch(changesSummary(changesModel([file("a.ts", 1, 0)])), /capture limit reached/);
+});
+
 test("renderChangesWidget colors counts by direction and yields nothing when clean", () => {
 	const model = changesModel([file("a.ts", 1, 2)]);
 	const [line] = renderChangesWidget(model, taggedTheme, 400);

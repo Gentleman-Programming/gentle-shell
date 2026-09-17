@@ -134,7 +134,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 		}
 		try {
 			const contentWidth = scroll.getContentWidth(RAIL_WIDTH);
-			const sections = ["footer", "changes", "agents", "todo"].map((key) => {
+			const sections = ["footer", "agents", "todo"].map((key) => {
 				const component = state.parts.get(key);
 				const lines = [...(component?.render(contentWidth - RAIL_PADDING * 2) ?? [])];
 				while (lines.length && lines[lines.length - 1]?.trim() === "") lines.pop();
@@ -171,7 +171,10 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 			if (roots.has(root)) return;
 			const original = root[NODE]!;
 			const descriptor = Object.getOwnPropertyDescriptor(root, NODE);
-			const left = { render: (width: number) => root.render(width), invalidate() {}, [NODE]: () => original.call(root) };
+			// Fullscreen gives this stretched stack an explicit viewport height.
+			// Its intrinsic-height probe is unused; real painting traverses NODE.
+			// Delegating that probe to root.render would render the transcript twice.
+			const left = { render: () => [], invalidate() {}, [NODE]: () => original.call(root) };
 			const replacement = () => {
 				if (!prepare(tui.terminal.columns, root)) return original.call(root);
 				const current = prepared!;

@@ -39,10 +39,10 @@ Verified against the official NaN Cloud dashboard bundle (`https://cloud.nan.bui
 
 ## Tasks
 
-- [ ] NAN-1 — Lock the NaN usage contract with failing tests (parser, provider note, fetcher, refresh wiring).
-- [ ] NAN-2 — Implement the bounded NaN quota parser in `lib/shell-usage.ts`.
-- [ ] NAN-3 — Implement the fixed-origin fetcher and wire the `nan` provider into the refresh path and render surfaces.
-- [ ] NAN-4 — Verify (focused tests, full suite, typecheck) and document the feature.
+- [x] NAN-1 — Lock the NaN usage contract with failing tests (parser, provider note, fetcher, refresh wiring).
+- [x] NAN-2 — Implement the bounded NaN quota parser in `lib/shell-usage.ts`.
+- [x] NAN-3 — Implement the fixed-origin fetcher and wire the `nan` provider into the refresh path and render surfaces.
+- [x] NAN-4 — Verify (focused tests, full suite, typecheck) and document the feature.
 
 ## Acceptance criteria
 
@@ -62,8 +62,14 @@ Verified against the official NaN Cloud dashboard bundle (`https://cloud.nan.bui
 ## Verification evidence
 
 - Baseline before changes: `node --experimental-strip-types --test tests/shell-usage.test.ts tests/shell-usage-view.test.ts` — 14 passed, 0 failed.
-- Pending.
+- NAN-1 RED: `node --experimental-strip-types --test tests/shell-usage.test.ts` — 1 failed, `does not provide an export named 'parseNanQuota'`.
+- NAN-1 RED: `node --experimental-strip-types --test tests/gentle-shell.test.ts` — 1 failed, `does not provide an export named 'fetchNanUsage'`.
+- NAN-2 GREEN: `node --experimental-strip-types --test tests/shell-usage.test.ts tests/shell-usage-view.test.ts` — 19 passed, 0 failed.
+- NAN-3 GREEN: `node --experimental-strip-types --test tests/gentle-shell.test.ts` — 44 passed, 0 failed.
+- Suite: `pnpm test` — exit 0, 2685 tests, 2647 passed, 0 failed, 38 skipped; provider contract mirror check passed; runtime harness ran clean. (The first suite attempt failed in `test:harness` only because `pnpm install --ignore-scripts` had skipped the gentle-ai binary; `node scripts/install-gentle-ai.mjs` installed v3.1.0 and the harness then passed.)
+- Typecheck: `node scripts/check-types.mjs` — 197 recorded diagnostics, no regressions.
+- Commits: `7fd803fc` (parser + tests + this tracker), `9bc7b9dd` (fetcher, wiring, docs, tests).
 
 ## Next step
 
-NAN-1 RED: add the failing NaN parser/provider/fetcher tests.
+Feature complete and verified on `feat/nan-usage-sidebar`. Nothing is pushed. The remaining decision is the user's: open a PR, or sign in with a NaN key in a live session to see the real payload rendered in the bar.

@@ -986,6 +986,15 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// and hint remain dark because neither is proven to reach the negotiated
 	// START path Pi consumes.
 	"3.0.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v3.1.0 changed the ODD orchestrator contract only (gentle-ai #4714).
+	// Ground-truthed by diffing contracts/review-integration/v2 and
+	// contracts/review-provider-contract between the v3.0.2 and v3.1.0 tags
+	// in the gentle-ai source tree: zero bytes changed (provider contract
+	// stays 1.2.0). Neither change touches the closed START/STATUS fields
+	// this row negotiates, so it repeats 3.0.1 exactly. riskEvidence and hint
+	// remain dark because neither is proven to reach the negotiated START
+	// path Pi consumes.
+	"3.1.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 });
 
 export interface NativeReviewProcessDiagnostics {

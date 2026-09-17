@@ -659,6 +659,8 @@ function isFullCommitId(selector: string): boolean {
 	return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(selector);
 }
 
+export const BASE_REF_ACCEPTED_FORMS = "HEAD, a full 40- or 64-character commit id, or a ref name (branch, tag, remote, or refs/...); abbreviated commit ids are not accepted";
+
 function explicitBaseRefCandidates(cwd: string, selector: string, env: NodeJS.ProcessEnv, executor: CandidateGitExecutor): string[] {
 	if (selector === "HEAD" || isFullCommitId(selector)) return [selector];
 	const refs = new Set(git(cwd, ["for-each-ref", "--format=%(refname)"], env, executor).split("\n").filter((ref) => ref.length > 0));
@@ -719,8 +721,27 @@ function resolveEmptyTree(cwd: string, env: NodeJS.ProcessEnv, executor: Candida
 	return git(cwd, ["mktree"], env, executor);
 }
 
+// Resolves `<selector>^{commit}` to a commit id. For an explicit (caller-
+// supplied) baseRef, a nonzero exit is reported as base-ref-unresolvable with
+// the accepted forms rather than as a generic git failure: the selector may
+// be well-formed (a full commit id, a resolvable ref) and still not name a
+// commit, e.g. a full hex id that names a tree object. Timeouts and output-
+// limit failures still propagate as real git failures through
+// probeCandidateGit, the same way isUnbornSymbolicHead handles them. The
+// implicit default (HEAD, no baseRef) keeps the original fail-closed
+// git-failure behavior, since HEAD not resolving signals repository
+// corruption rather than a caller mistake.
+function resolveCommitSelector(cwd: string, selector: string, env: NodeJS.ProcessEnv, executor: CandidateGitExecutor, explicit: boolean): string {
+	const arguments_ = ["rev-parse", "--verify", "--end-of-options", `${selector}^{commit}`];
+	if (!explicit) return git(cwd, arguments_, env, executor);
+	const probe = probeCandidateGit(cwd, arguments_, env, executor);
+	if (probe.status !== 0) throw new CandidateViewError(`candidate base reference is unresolvable; it does not name a commit; accepted forms: ${BASE_REF_ACCEPTED_FORMS}`, "base-ref-unresolvable");
+	return probe.stdout;
+}
+
 function resolveCandidateBase(cwd: string, baseRef: string | undefined, env: NodeJS.ProcessEnv, executor: CandidateGitExecutor): ResolvedCandidateBase {
 	const selector = baseRef ?? "HEAD";
+	const explicit = baseRef !== undefined;
 	// An unborn repository has a symbolic HEAD pointing at a branch with no
 	// commits yet. Its review base is Git's repository-native empty tree, not a
 	// missing or malformed commit. Only the default/HEAD selector is entitled to
@@ -729,21 +750,21 @@ function resolveCandidateBase(cwd: string, baseRef: string | undefined, env: Nod
 		return { commit: "HEAD", tree: resolveEmptyTree(cwd, env, executor) };
 	}
 	try {
-		if (baseRef !== undefined) {
+		if (explicit) {
 			const candidates = explicitBaseRefCandidates(cwd, selector, env, executor);
-			if (candidates.length > 1) throw new CandidateViewError("candidate base reference is ambiguous", "base-ref-ambiguous");
-			if (candidates.length === 0) throw new CandidateViewError("candidate base reference is unresolvable", "base-ref-unresolvable");
+			if (candidates.length > 1) throw new CandidateViewError(`candidate base reference is ambiguous (matches more than one ref); accepted forms: ${BASE_REF_ACCEPTED_FORMS}`, "base-ref-ambiguous");
+			if (candidates.length === 0) throw new CandidateViewError(`candidate base reference is unresolvable; accepted forms: ${BASE_REF_ACCEPTED_FORMS}`, "base-ref-unresolvable");
 		}
-		const firstCommit = git(cwd, ["rev-parse", "--verify", "--end-of-options", `${selector}^{commit}`], env, executor);
+		const firstCommit = resolveCommitSelector(cwd, selector, env, executor, explicit);
 		const tree = git(cwd, ["rev-parse", "--verify", "--end-of-options", `${firstCommit}^{tree}`], env, executor);
-		const confirmedCommit = git(cwd, ["rev-parse", "--verify", "--end-of-options", `${selector}^{commit}`], env, executor);
+		const confirmedCommit = resolveCommitSelector(cwd, selector, env, executor, explicit);
 		if (firstCommit !== confirmedCommit) throw new CandidateViewError("candidate base reference moved during resolution", "base-ref-moved");
 		const confirmedTree = git(cwd, ["rev-parse", "--verify", "--end-of-options", `${confirmedCommit}^{tree}`], env, executor);
 		if (tree !== confirmedTree) throw new CandidateViewError("candidate base tree changed during resolution", "base-ref-moved");
 		return { commit: confirmedCommit, tree: confirmedTree };
 	} catch (error) {
 		if (error instanceof CandidateViewError && (error.diagnostics !== undefined || error.reason === "base-ref-ambiguous" || error.reason === "base-ref-moved" || error.reason === "base-ref-unresolvable")) throw error;
-		throw new CandidateViewError("candidate base reference is unresolvable", "base-ref-unresolvable");
+		throw new CandidateViewError(`candidate base reference is unresolvable; accepted forms: ${BASE_REF_ACCEPTED_FORMS}`, "base-ref-unresolvable");
 	}
 }
 

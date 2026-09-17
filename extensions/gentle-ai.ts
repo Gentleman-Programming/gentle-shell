@@ -158,7 +158,7 @@ import {
 } from "../lib/review-snapshot.ts";
 import { renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
 import { sanitizeTerminalText, stripAnsi } from "../lib/terminal-theme.ts";
-import { CandidateViewError, CandidateViewRegistry, injectReviewCandidateView, readCandidateContextManifestPage, resolveCanonicalCandidateBase, type CandidateView } from "../lib/review-candidate-view.ts";
+import { BASE_REF_ACCEPTED_FORMS, CandidateViewError, CandidateViewRegistry, injectReviewCandidateView, readCandidateContextManifestPage, resolveCanonicalCandidateBase, type CandidateView } from "../lib/review-candidate-view.ts";
 import {
 	GentleAiDevBinaryOverrideError,
 	GENTLE_AI_INSTALL_RECOVERY_COMMAND,
@@ -4805,7 +4805,7 @@ const REVIEW_CONTROLLER_PARAMETERS = {
 		},
 		input: {
 			type: "string",
-			description: "A JSON-serialized object string, not a nested object. New native ordinary START uses {\"mode\":\"ordinary\"}; answer-consent uses exactly {\"consentBinding\":\"<opaque id>\",\"answer\":\"granted|declined\"}. Ordinary provider capture belongs only to gentle_review_capture. An explicit baseRef requires committedOnly: true and requests a committed range, while repository-local policyPath remains optional. ASSESS accepts an optional object with baseRef, committedOnly, writerModelId, writerEffort, and nativeReviewOutcome (gentle-pi#662/#668); omitting writerModelId and writerEffort assesses the ambient working tree and fails closed to a small writer profile (never large) because the writer's actual profile is unknown to this call. nativeReviewOutcome (one of closed, declined, unavailable, unknown) tells ASSESS whether the native review actually closed for this candidate: when Receipt-driven development reads on but the review was declined for this candidate, is unavailable, or its outcome is unknown, ASSESS falls back to the exact risk-gated plan it returns when RDD is off, re-enabling the separate verifier -- a decline is candidate-scoped and never lowers the bar below the RDD-off path. Omitting it lets ASSESS try to derive declined/unavailable from what this process itself recorded for this exact candidate (never a different one, and never from repository state alone), failing closed to unknown when it cannot; `closed` is never derived -- pass it explicitly, and only right after acknowledging the approved review for this same candidate. The returned outcome_source (explicit|derived|unknown) says which of these produced the value. Legacy controller input remains separate.",
+			description: "A JSON-serialized object string, not a nested object. New native ordinary START uses {\"mode\":\"ordinary\"}; answer-consent uses exactly {\"consentBinding\":\"<opaque id>\",\"answer\":\"granted|declined\"}. Ordinary provider capture belongs only to gentle_review_capture. An explicit baseRef requires committedOnly: true and requests a committed range, while repository-local policyPath remains optional. baseRef must be HEAD, a full 40- or 64-character commit id, or a ref name; abbreviated commit ids are rejected as base-ref-unresolvable. ASSESS accepts an optional object with baseRef, committedOnly, writerModelId, writerEffort, and nativeReviewOutcome (gentle-pi#662/#668); omitting writerModelId and writerEffort assesses the ambient working tree and fails closed to a small writer profile (never large) because the writer's actual profile is unknown to this call. nativeReviewOutcome (one of closed, declined, unavailable, unknown) tells ASSESS whether the native review actually closed for this candidate: when Receipt-driven development reads on but the review was declined for this candidate, is unavailable, or its outcome is unknown, ASSESS falls back to the exact risk-gated plan it returns when RDD is off, re-enabling the separate verifier -- a decline is candidate-scoped and never lowers the bar below the RDD-off path. Omitting it lets ASSESS try to derive declined/unavailable from what this process itself recorded for this exact candidate (never a different one, and never from repository state alone), failing closed to unknown when it cannot; `closed` is never derived -- pass it explicitly, and only right after acknowledging the approved review for this same candidate. The returned outcome_source (explicit|derived|unknown) says which of these produced the value. Legacy controller input remains separate.",
 		},
 		outputPath: { type: "string", description: "Retired with legacy bundle export; ignored. Export returns legacy-operation-retired." },
 		inputPath: { type: "string", description: "Repository-local JSON input file for the separate legacy controller flow (alternative to input). Legacy bundle import is retired." },
@@ -5840,6 +5840,12 @@ function validateNativeStartUntrackedSelection(value: Record<string, unknown>): 
 	};
 }
 
+const BASE_REF_REJECTION_REASONS = new Set(["base-ref-unresolvable", "base-ref-ambiguous", "base-ref-moved", "base-ref-invalid"]);
+
+function baseRefRejectionHint(reason: string): { hint?: string } {
+	return BASE_REF_REJECTION_REASONS.has(reason) ? { hint: BASE_REF_ACCEPTED_FORMS } : {};
+}
+
 function nativeStartRejection(reason: string, field?: string): Record<string, unknown> {
 	return {
 		operation: REVIEW_CONTROLLER_OPERATION.START,
@@ -5861,6 +5867,7 @@ function nativeStartRejection(reason: string, field?: string): Record<string, un
 									: "native-start-policy-path-invalid",
 		reason,
 		...(field === undefined ? {} : { field }),
+		...baseRefRejectionHint(reason),
 		...nativeStartPreAuthorityRejection(),
 	};
 }
@@ -5872,6 +5879,7 @@ function nativeStatusInputRejection(reason: string, field?: string): Record<stri
 		outcome: "native-status-input-invalid",
 		reason,
 		...(field === undefined ? {} : { field }),
+		...baseRefRejectionHint(reason),
 		mutation_performed: false,
 		mutation_outcome: "none",
 	};
@@ -8595,6 +8603,8 @@ export const __testing = {
 	loadRuntimeGuardrailsConfig,
 	buildGentlePrompt,
 	nativeStatusUnsupported,
+	nativeStartRejection,
+	nativeStatusInputRejection,
 	executeReviewControllerOperation,
 	executeReviewCaptureOperation,
 	executeReviewCaptureGroupOperation,

@@ -59,6 +59,7 @@ import {
 	type SddPreflightField,
 	type SddPreflightPreferences,
 	updatePackageManagedSddAgentOwnership,
+	hasWritableEngramTool,
 } from "../lib/sdd-preflight.ts";
 import {
 	THINKING_LEVELS,
@@ -1775,25 +1776,6 @@ function collectPathInputs(value: unknown, key?: string): string[] {
 	);
 }
 
-function hasWritableEngramTool(pi: ExtensionAPI): boolean {
-	try {
-		const getActiveTools = (pi as unknown as { getActiveTools?: () => unknown[] })
-			.getActiveTools;
-		if (typeof getActiveTools !== "function") return false;
-		const tools = getActiveTools.call(pi);
-		return tools.some((tool) => {
-			const name =
-				typeof tool === "string"
-					? tool
-					: isRecord(tool) && typeof tool.name === "string"
-						? tool.name
-						: "";
-			return name === "mem_save" || name.endsWith(".mem_save");
-		});
-	} catch {
-		return false;
-	}
-}
 
 function evaluateSensitivePathTool(
 	toolName: string,

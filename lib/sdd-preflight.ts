@@ -860,7 +860,21 @@ export function sddPreflightSessionKey(ctx: ExtensionContext): string {
 	return ctx.cwd;
 }
 
-function hasWritableEngramTool(pi: ExtensionAPI): boolean {
+/** Whether `name` is Engram's `mem_save` under any adapter tool-prefix mode.
+ *
+ * `pi-mcp-adapter` builds a direct tool name as `${prefix}_${tool}` and only
+ * the `none` mode leaves the prefix empty, so the default `server` mode
+ * registers `engram_mem_save`. Matching the bare name plus a dotted suffix
+ * therefore saw nothing under every mode but one, `engramAvailable` was always
+ * false, and a persisted `hybrid` artifact store was rewritten back to
+ * `openspec` without a word (#1044). The dotted form stays matched: it is an
+ * earlier naming scheme this used to be written against.
+ */
+export function isEngramSaveToolName(name: string): boolean {
+	return /^(?:.*[._])?mem_save$/.test(name);
+}
+
+export function hasWritableEngramTool(pi: ExtensionAPI): boolean {
 	try {
 		const getActiveTools = (pi as unknown as { getActiveTools?: () => unknown[] })
 			.getActiveTools;
@@ -873,7 +887,7 @@ function hasWritableEngramTool(pi: ExtensionAPI): boolean {
 					: isRecord(tool) && typeof tool.name === "string"
 						? tool.name
 						: "";
-			return name === "mem_save" || name.endsWith(".mem_save");
+			return isEngramSaveToolName(name);
 		});
 	} catch {
 		return false;

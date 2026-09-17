@@ -18,6 +18,8 @@ import {
 	collectSddPreflightPreferences,
 	ensureSddPreflight,
 	getSddPreflightPreferences,
+	hasWritableEngramTool,
+	isEngramSaveToolName,
 	DEFAULT_SDD_PREFLIGHT,
 	installPackageAssets,
 	installSddAssets,
@@ -538,4 +540,53 @@ test("slash SDD preflight trigger accepts the gentle-sdd command prefix", () => 
 	for (const text of ["/gentle-sddx", "/gentle:sdd-preflight", "/gentle-status", "gentle-sdd-init"]) {
 		assert.equal(isSddPreflightTrigger(text), false, text);
 	}
+});
+
+// Engram is invisible whenever the MCP adapter prefixes tool names (#1044).
+// `pi-mcp-adapter` builds a direct tool name as `${prefix}_${tool}` and only its
+// `none` mode leaves the prefix empty, so under the DEFAULT `server` mode the
+// registered name is `engram_mem_save`. The probe compared the bare name and a
+// dotted suffix, so `engramAvailable` was false under every mode but one, and a
+// persisted `hybrid` artifact store was rewritten back to `openspec` silently.
+test("the engram save tool is recognised under every adapter prefix mode (#1044)", () => {
+	for (const name of [
+		"mem_save",	// toolPrefix: none
+		"engram_mem_save",	// toolPrefix: server (the default) or short
+		"mcp__engram_mem_save",	// toolPrefix: mcp
+		"engram.mem_save",	// the earlier dot-separated scheme, still matched
+	]) {
+		assert.equal(isEngramSaveToolName(name), true, name);
+	}
+});
+
+test("a name that merely contains mem_save is not the engram save tool (#1044)", () => {
+	// The accept control for the widening. A suffix match is only safe while it
+	// stays anchored to a separator and to the end: `mem_saved` and `remem_save`
+	// would otherwise report Engram present and offer `hybrid` against a store
+	// that cannot persist anything.
+	for (const name of ["mem_search", "mem_saved", "remem_save", "save", "", "mem_save_all"]) {
+		assert.equal(isEngramSaveToolName(name), false, name);
+	}
+});
+
+test("hasWritableEngramTool reads the active registry and tolerates its absence (#1044)", () => {
+	const withTools = (tools: unknown[]) =>
+		hasWritableEngramTool({ getActiveTools: () => tools } as never);
+
+	// Both shapes the registry hands back: bare strings and `{ name }` records.
+	assert.equal(withTools(["read", "engram_mem_save"]), true);
+	assert.equal(withTools([{ name: "engram_mem_save" }]), true);
+	assert.equal(withTools(["read", "mem_search"]), false);
+
+	// A host without the accessor, and one whose accessor throws, both answer
+	// "no Engram" rather than taking the preflight down with them.
+	assert.equal(hasWritableEngramTool({} as never), false);
+	assert.equal(
+		hasWritableEngramTool({
+			getActiveTools: () => {
+				throw new Error("registry unavailable");
+			},
+		} as never),
+		false,
+	);
 });

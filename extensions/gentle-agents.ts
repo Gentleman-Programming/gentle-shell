@@ -17,6 +17,7 @@ import { sidebarPart } from "../lib/shell-sidebar.ts";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import { createCompletionQueue } from "../lib/agents-completion-delivery.ts";
 import { AGENT_MODE, discoverAgents, parseAgentDefinition, loadAgentsConfig, resolveAgentProfile, withPinnedModelProfiles, type AgentDefinition, type AgentMode } from "../lib/agents-config.ts";
+import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-policy.ts";
 import { isFinished, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
 import { AgentRunner, piCommand, abortReasonText, plannedCommands, type RemediationPlan, type RemediationScope, REMEDIATION_PLAN_ENV, parseRemediationPlan, type AskAnswer, type RunnerDeps, type SddChangeSelection, type TaskRequest } from "../lib/agents-runner.ts";
 import { ChildMessenger, type IpcEndpoint } from "../lib/agents-messaging.ts";
@@ -339,6 +340,22 @@ function expandHint(expanded: boolean): string {
 	} catch {
 		return expanded ? "collapse" : "expand";
 	}
+}
+
+// The default mode for a subagent_run request that named neither an explicit
+// mode nor an agent-defined one. Background is a runtime default only when
+// the background-subagents policy is on AND the parent can receive results:
+// print mode exits before a parent session exists to deliver them to (see
+// the `ctx.mode === "print"` guard in `launch` below), so it must keep the
+// configured default (normally task) even when the policy is on.
+export function resolveDefaultSubagentMode(input: {
+	configuredDefault: AgentMode;
+	policy: "on" | "off";
+	parentMode: string | undefined;
+}): AgentMode {
+	return input.policy === "on" && input.parentMode !== "print"
+		? AGENT_MODE.BACKGROUND
+		: input.configuredDefault;
 }
 
 // What the model reads when a background task ends: the outcome first, then
@@ -1248,7 +1265,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			const { agents } = discoverAgents(roots(ctx));
 			const agent = agents.find((candidate) => candidate.name === params.agent);
 			if (!agent) return text(`Error: no subagent named "${String(params.agent)}". Known: ${agents.map((candidate) => candidate.name).join(", ") || "none"}`, { error: "unknown agent" });
-			const mode = (params.mode as AgentMode | undefined) ?? agent.mode ?? loadAgentsConfig(roots(ctx)).defaultMode;
+			const mode = (params.mode as AgentMode | undefined) ?? agent.mode ?? resolveDefaultSubagentMode({
+				configuredDefault: loadAgentsConfig(roots(ctx)).defaultMode,
+				policy: resolveBackgroundSubagentsPolicy(ctx.cwd).policy,
+				parentMode: ctx.mode,
+			});
 			let sddChange: SddChangeSelection | undefined;
 			try { sddChange = parseSddChange(params.sdd_change, agent.name); }
 			catch (error) { return text(`Error: ${error instanceof Error ? error.message : String(error)}`, { error: "invalid sdd_change" }); }

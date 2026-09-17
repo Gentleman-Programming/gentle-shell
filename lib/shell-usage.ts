@@ -11,6 +11,11 @@ export interface UsageWindow {
 	usedPercent: number;
 	windowSeconds: number;
 	resetAt: number | null;
+	// Raw allowance numbers, kept only by providers that report them (NaN).
+	// Aggregates are weighted by budget, so averaging percentages is never
+	// needed; nothing renders these fields directly.
+	used?: number;
+	budget?: number;
 }
 
 export interface UsageLimit {
@@ -226,6 +231,20 @@ function nanRollingWindow(raw: RawNanModel): UsageWindow | undefined {
 	return { label: windowLabel(hours * HOUR), usedPercent: (used / budget) * 100, windowSeconds: hours * HOUR, resetAt: quotaTimestamp(raw.windowResetsAt) };
 }
 
+// One allowance per metered model, weighted by that model's own cap. The raw
+// numbers travel with the period window so the bar and the panel can aggregate
+// without ever averaging percentages.
+function nanPeriodWindow(tokensUsed: number, cap: number, resetAt: number | null, now: number): UsageWindow {
+	return {
+		label: NAN_MAIN_LIMIT,
+		usedPercent: (tokensUsed / cap) * 100,
+		windowSeconds: resetAt === null ? 0 : Math.max(0, Math.round((resetAt - now) / 1000)),
+		resetAt,
+		used: tokensUsed,
+		budget: cap,
+	};
+}
+
 export function parseNanQuota(payload: unknown, now: number): ProviderUsage {
 	const raw = (payload ?? {}) as RawNanQuota;
 	const fallbackResetAt = quotaTimestamp(raw.periodEnd);
@@ -239,15 +258,75 @@ export function parseNanQuota(payload: unknown, now: number): ProviderUsage {
 			const tokensUsed = quotaNumber(model.tokensUsed, false);
 			if (cap === undefined || tokensUsed === undefined) continue;
 			const resetAt = quotaTimestamp(model.periodEnd) ?? fallbackResetAt;
-			const windows: UsageWindow[] = [
-				{ label: NAN_MAIN_LIMIT, usedPercent: (tokensUsed / cap) * 100, windowSeconds: resetAt === null ? 0 : Math.max(0, Math.round((resetAt - now) / 1000)), resetAt },
-			];
+			const windows: UsageWindow[] = [nanPeriodWindow(tokensUsed, cap, resetAt, now)];
 			const rolling = nanRollingWindow(model);
 			if (rolling) windows.push(rolling);
 			limits.push({ name: model.model, windows, limitReached: tokensUsed >= cap });
 		}
 	}
 	return { provider: NAN_PROVIDER, plan: undefined, limits, fetchedAt: now };
+}
+
+// Aggregation. NaN reports one allowance per metered model and the payload
+// order is the server's business, so surfaces pick by meaning, not by position.
+function rawAllowance(limit: UsageLimit): UsageWindow | undefined {
+	const [first] = limit.windows;
+	if (!first || first.used === undefined || first.budget === undefined) return undefined;
+	return first.budget > 0 ? first : undefined;
+}
+
+// The leading alphabetic run of a model id: glm5.3-flash and glm5.2 are both
+// "glm". Derived from the id the payload reports, never from a vendor list.
+export function modelFamily(modelId: string): string {
+	return (/^[a-z]+/i.exec(modelId)?.[0] ?? modelId).toLowerCase();
+}
+
+// Only NaN carries raw allowance numbers, so this one gate is what keeps Codex
+// and Anthropic on exactly the rows and the meter they had before.
+export function allowanceGroupsSupported(limits: readonly UsageLimit[]): boolean {
+	return limits.length > 1 && limits.every((limit) => rawAllowance(limit) !== undefined);
+}
+
+function percentOf(limit: UsageLimit): number {
+	return limit.windows[0]?.usedPercent ?? 0;
+}
+
+const GROUP_SUFFIX = " total";
+
+// A group is an allowance share, never an average of shares: Σused / Σbudget.
+// It carries no reset, because its members close their own billing period on
+// their own date, and a single reset would be a lie.
+function allowanceTotal(name: string, limits: readonly UsageLimit[]): UsageLimit | undefined {
+	const windows = limits.map(rawAllowance).filter((window): window is UsageWindow => window !== undefined);
+	if (windows.length === 0 || windows.length !== limits.length) return undefined;
+	const used = windows.reduce((total, window) => total + (window.used ?? 0), 0);
+	const budget = windows.reduce((total, window) => total + (window.budget ?? 0), 0);
+	if (budget <= 0) return undefined;
+	return {
+		name,
+		windows: [{ label: NAN_MAIN_LIMIT, usedPercent: (used / budget) * 100, windowSeconds: 0, resetAt: null }],
+		limitReached: limits.some((limit) => limit.limitReached),
+	};
+}
+
+// The bar follows the model the session is using: exact allowance, then its
+// family, then the account total, then the first limit (which is what every
+// provider without raw numbers keeps using, and what a missing model keeps).
+export function selectUsageLimit(usage: ProviderUsage, activeModelId?: string): UsageLimit | undefined {
+	if (!activeModelId) return usage.limits[0];
+	const exact = usage.limits.find((limit) => limit.name === activeModelId);
+	if (exact) return exact;
+	if (allowanceGroupsSupported(usage.limits)) {
+		const family = modelFamily(activeModelId);
+		const members = usage.limits.filter((limit) => modelFamily(limit.name) === family);
+		if (members.length > 1) {
+			const total = allowanceTotal(`${family}${GROUP_SUFFIX}`, members);
+			if (total) return total;
+		}
+		const account = allowanceTotal(`${usage.provider}${GROUP_SUFFIX}`, usage.limits);
+		if (account) return account;
+	}
+	return usage.limits[0];
 }
 
 export function accountIdFromToken(token: string): string | undefined {
@@ -266,8 +345,8 @@ function paintMeter(percent: number, cells: number, theme: UsageTheme): string {
 	return paintGauge(percent, theme, cells);
 }
 
-export function renderUsageBar(usage: ProviderUsage, theme: UsageTheme): string | undefined {
-	const main = usage.limits[0];
+export function renderUsageBar(usage: ProviderUsage, theme: UsageTheme, activeModelId?: string): string | undefined {
+	const main = selectUsageLimit(usage, activeModelId);
 	const [first, ...rest] = main?.windows ?? [];
 	if (!first) return undefined;
 	const head = `${theme.fg(ROLE.LABEL, main.name)} ${theme.fg(ROLE.LABEL, first.label)} ${paintMeter(first.usedPercent, 8, theme)} ${theme.fg(ROLE.PERCENT, `${Math.round(first.usedPercent)}%`)}`;

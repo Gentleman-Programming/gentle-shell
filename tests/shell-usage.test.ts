@@ -244,6 +244,32 @@ test("renderUsagePanel lists NaN allowances per model", () => {
 	assert.match(lines[4], /^ {2}deepseek-v4-flash$/);
 });
 
+// The server picks the order of the per-model allowances, so drawing the first
+// one showed DeepSeek's meter inside a GLM session. The bar follows the model
+// the session actually uses, and falls back to the account total when that
+// model holds no allowance of its own.
+test("renderUsageBar prefers the active model allowance over the payload order", () => {
+	const usage = parseNanQuota(NAN_QUOTA, NOW);
+	assert.equal(renderUsageBar(usage, plainTheme, "deepseek-v4-flash"), "deepseek-v4-flash period ▰▱▱▱▱▱▱▱ 10%");
+	assert.equal(renderUsageBar(usage, plainTheme, "glm5.3"), "glm5.3 period ▰▰▱▱▱▱▱▱ 27% · 4h 30%");
+	assert.equal(renderUsageBar(usage, plainTheme), "glm5.3 period ▰▰▱▱▱▱▱▱ 27% · 4h 30%", "without an active model the first limit still wins");
+	assert.equal(renderUsageBar(usage, plainTheme, "gemma4"), "nan total period ▰▰▱▱▱▱▱▱ 22%", "an unmetered model reports the account, never another model");
+	assert.equal(renderUsageBar(usage, plainTheme, "qwen3.8-flash"), "nan total period ▰▰▱▱▱▱▱▱ 22%", "a model the payload skips holds no allowance either");
+});
+
+test("renderUsageBar leaves providers without raw allowances on their first limit", () => {
+	assert.equal(renderUsageBar(parseCodexUsage(CODEX_PAYLOAD, NOW), plainTheme, "gpt-5.2-codex"), "codex week ▰▰▰▱▱▱▱▱ 40%");
+});
+
+test("parseNanQuota keeps the raw numbers the aggregates are weighted by", () => {
+	const [glm] = parseNanQuota(NAN_QUOTA, NOW).limits;
+	assert.equal(glm.windows[0].used, 820_000_000);
+	assert.equal(glm.windows[0].budget, 3_000_000_000);
+	const [codex] = parseCodexUsage(CODEX_PAYLOAD, NOW).limits[0].windows;
+	assert.equal(codex.used, undefined, "only NaN reports raw allowance numbers, which is what gates the aggregates");
+	assert.equal(codex.budget, undefined);
+});
+
 test("UsageStore keeps the latest snapshot per provider and lists them in order", () => {
 	const store = new UsageStore();
 	const first: ProviderUsage = { provider: "openai-codex", plan: "pro", limits: [], fetchedAt: 1 };

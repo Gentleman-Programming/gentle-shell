@@ -98,7 +98,8 @@ Subscription usage shows in the bar after the cost, and `/gentle:usage` opens a 
 
 - For Codex, usage comes from the same account usage endpoint the Codex CLI reads, using the OAuth token pi already holds. It is fetched at session start, at most every 5 minutes after a turn, and on `r` in the panel. Rate-limit headers on SSE responses are picked up too.
 - For Claude Pro/Max, usage arrives in the rate-limit headers of every response, so the 5h and weekly windows appear after the first turn.
-- The bar names the subscription it shows (`codex`, `claude`) and always follows the active model. The panel puts the active provider first, marked with the petal, and says why it has no data when it does not: API-key providers have no subscription windows, Claude reports after the first response, Codex waits for a fetch.
+- For NaN Cloud, usage comes from the quota endpoint the official dashboard reads, with the same API key pi already holds. Each model reports its billing-period allowance as `period`, plus the rolling window it applies on top (`4h` on most models); percentages are tokens used over the allowance, exactly as the dashboard draws them. It is fetched under the same 5-minute rule as Codex, refuses redirects so the bearer cannot be replayed to another origin, and keeps no cached copy. The endpoint sits outside NaN's published OpenAPI, so a malformed or changed payload degrades to the pending note instead of breaking the bar.
+- The bar names the subscription it shows (`codex`, `claude`, a NaN model) and always follows the active model. The panel puts the active provider first, marked with the petal, and says why it has no data when it does not: API-key providers have no subscription windows, Claude reports after the first response, Codex and NaN wait for a fetch.
 - Only the plan name and the windows are kept; account details in the payload are discarded.
 - Gauges turn amber at 80% and red at 95%, like the context gauge.
 

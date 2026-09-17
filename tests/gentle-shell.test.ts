@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
-import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, fetchCodexUsage, loadFileDiff, shellGitRunner, openInExternalEditor, type GentlePromptEditor } from "../extensions/gentle-shell.ts";
+import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, type GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { CHANGE_STATUS } from "../lib/shell-changes.ts";
 import { sidebarState, type SidebarRail } from "../lib/shell-sidebar.ts";
 import type { ShellBarTheme } from "../lib/shell-bar.ts";
@@ -715,9 +715,9 @@ const JWT = `h.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { c
 const USAGE_PAYLOAD = { plan_type: "pro", rate_limit: { primary_window: { used_percent: 40, limit_window_seconds: 604_800, reset_at: 1_788_777_491 } } };
 
 function fakeFetch(payload: unknown = USAGE_PAYLOAD, ok = true) {
-	const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+	const calls: Array<{ url: string; headers: Record<string, string>; init: RequestInit }> = [];
 	const fetchFn = (async (url: string | URL, init?: RequestInit) => {
-		calls.push({ url: String(url), headers: (init?.headers ?? {}) as Record<string, string> });
+		calls.push({ url: String(url), headers: (init?.headers ?? {}) as Record<string, string>, init: init ?? {} });
 		return { ok, json: async () => payload } as Response;
 	}) as typeof fetch;
 	return { fetchFn, calls };
@@ -736,6 +736,92 @@ test("fetchCodexUsage sends the token and account id and parses the payload", as
 	assert.equal(plain.calls.length, 0, "a non-OAuth key must not be sent anywhere");
 	assert.equal(await fetchCodexUsage(JWT, fakeFetch({}, false).fetchFn, 0), undefined);
 	assert.equal(await fetchCodexUsage(undefined, plain.fetchFn, 0), undefined);
+});
+
+const NAN_QUOTA_PAYLOAD = {
+	periodEnd: "2026-10-01T00:00:00.000Z",
+	models: [
+		{
+			model: "glm5.3",
+			cap: 3_000_000_000,
+			fullCap: 3_000_000_000,
+			tokensUsed: 820_000_000,
+			windowHours: 4,
+			windowTokens: 400_000_000,
+			windowTokensUsed: 120_000_000,
+			windowResetsAt: 1_788_620_161,
+		},
+	],
+};
+
+test("fetchNanUsage sends the key to the fixed quota origin and never follows a redirect", async () => {
+	const { fetchFn, calls } = fakeFetch(NAN_QUOTA_PAYLOAD);
+	const usage = await fetchNanUsage("sk-nan-secret", fetchFn, 1_788_600_000_000);
+	assert.equal(usage?.provider, "nan");
+	assert.equal(usage?.limits[0].name, "glm5.3");
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].url, "https://cloud-api.nan.builders/api/usage/quota");
+	assert.equal(calls[0].headers.Authorization, "Bearer sk-nan-secret");
+	assert.equal(calls[0].init.redirect, "error", "a redirect would forward the bearer to another origin");
+	assert.equal(calls[0].init.cache, "no-store");
+	assert.equal(JSON.stringify(usage).includes("sk-nan-secret"), false);
+});
+
+test("fetchNanUsage degrades to no snapshot without ever throwing", async () => {
+	const noKey = fakeFetch(NAN_QUOTA_PAYLOAD);
+	assert.equal(await fetchNanUsage(undefined, noKey.fetchFn, 0), undefined);
+	assert.equal(await fetchNanUsage("", noKey.fetchFn, 0), undefined);
+	assert.equal(noKey.calls.length, 0, "no key, no request");
+
+	assert.equal(await fetchNanUsage("sk-nan-secret", fakeFetch(NAN_QUOTA_PAYLOAD, false).fetchFn, 0), undefined, "a non-OK response is not a snapshot");
+	assert.equal(await fetchNanUsage("sk-nan-secret", fakeFetch({ models: [] }).fetchFn, 0), undefined, "an empty quota is not a snapshot");
+	assert.equal(await fetchNanUsage("sk-nan-secret", fakeFetch({ models: [{ model: "glm5.3", cap: 0, tokensUsed: 0 }] }).fetchFn, 0), undefined);
+	const refused = (async () => {
+		throw new TypeError("redirect mode is not supported");
+	}) as unknown as typeof fetch;
+	assert.equal(await fetchNanUsage("sk-nan-secret", refused, 0), undefined, "a refused redirect degrades silently");
+});
+
+test("gentleShell fetches NaN quota on session start and shows it in the bar", async () => {
+	const { pi, handlers } = fakePi();
+	const { fetchFn, calls } = fakeFetch(NAN_QUOTA_PAYLOAD);
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => 1_788_600_000_000 });
+	const { ctx, ui } = fakeContext({ token: "sk-nan-secret" });
+	(ctx as unknown as { model: { provider: string } }).model.provider = "nan";
+	await fire(handlers, "session_start", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].url, "https://cloud-api.nan.builders/api/usage/quota");
+	assert.match(renderFooter(ui), /\$0\.000 sub ⟡ glm5\.3 period ▰+▱+ 27%/);
+
+	await fire(handlers, "agent_end", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(calls.length, 1, "agent_end must not refetch within the refresh window");
+});
+
+test("a failed NaN refresh keeps the last valid snapshot", async () => {
+	const { pi, handlers } = fakePi();
+	const calls: string[] = [];
+	let fail = false;
+	const fetchFn = (async (url: string | URL) => {
+		calls.push(String(url));
+		if (fail) throw new TypeError("network down");
+		return { ok: true, json: async () => NAN_QUOTA_PAYLOAD } as Response;
+	}) as typeof fetch;
+	let now = 1_788_600_000_000;
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => now });
+	const { ctx, ui } = fakeContext({ token: "sk-nan-secret" });
+	(ctx as unknown as { model: { provider: string } }).model.provider = "nan";
+	await fire(handlers, "session_start", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.match(renderFooter(ui), /glm5\.3 period/);
+
+	fail = true;
+	now += 6 * 60_000;
+	await fire(handlers, "agent_end", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(calls.length, 2, "the refresh window elapsed, so the retry was attempted");
+	assert.match(renderFooter(ui), /glm5\.3 period/, "a failed refresh cannot erase the last valid snapshot");
 });
 
 test("gentleShell fetches Codex usage on session start and shows it in the bar", async () => {

@@ -207,6 +207,23 @@ pi
 
 `gentle-pi` installs delegation and review agents at startup. SDD agents, chains, and support are global Pi runtime assets installed on demand, not per-project setup. The first SDD flow in a session runs a one-time SDD preflight for preferences and managed-asset refresh; natural-language SDD requests or accepted proposals select that workflow, then run its preflight. Ordinary ODD does not run SDD initialization.
 
+### Base references for review
+
+An explicit `baseRef` accepts one of these forms:
+
+- `HEAD`.
+- A full 40- or 64-character commit id.
+- A ref name: a branch, a tag, a remote-tracking ref, or an explicit `refs/...` path.
+
+Abbreviated commit ids are rejected as `base-ref-unresolvable`; a rejected `baseRef` names its accepted forms in the response. Explicit tree ids are not accepted today.
+
+Under the ODD contract, the orchestrator passes the last reviewed boundary as `baseRef` for each work-unit commit or slice, so base refs are routine input, not an edge case.
+
+An orphan branch with commits and no parent has no branch point to name as `baseRef`. Before the first work-unit commit, either:
+
+- Create an empty root commit to open the branch: `git commit --allow-empty -m "chore: open the feature branch"`. The next commit can then use that root commit as its `baseRef`.
+- Omit `baseRef` while the branch is still unborn (no commits yet); the review uses Git's empty tree as the base automatically.
+
 ## Quick start
 
 ```text

@@ -83,9 +83,22 @@ const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-agents-ext-")));
 const activeSessionTeardowns = new Set<() => Promise<void>>();
 const stopActiveSessions = () => Promise.all([...activeSessionTeardowns].map((shutdown) => shutdown()));
 afterEach(stopActiveSessions);
+// subagent_run's default mode now reads the background-subagents policy
+// in-process (gentle-pi#background-subagents-default-mode), which falls
+// back to the real ~/.pi/gentle-ai/background-subagents.json when
+// GENTLE_PI_CONFIG_HOME is unset. Point it at an empty scratch directory so
+// this file's expectations never depend on the developer's own global
+// policy file (a real "on" file on the runner's machine would otherwise
+// flip every unrelated fixture's default mode to background).
+const previousGentlePiConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+process.env.GENTLE_PI_CONFIG_HOME = join(root, "gentle-ai-config-home");
 after(async () => {
 	try { await stopActiveSessions(); }
-	finally { rmSync(root, { recursive: true, force: true }); }
+	finally {
+		if (previousGentlePiConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previousGentlePiConfigHome;
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 const home = join(root, "home");
 const cwd = join(root, "project");

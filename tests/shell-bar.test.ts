@@ -120,6 +120,25 @@ test("renderShellBar adds the subscription windows after the cost when usage is 
 	assert.match(line, /\$9\.49 sub ⟡ codex 5h ▰▰▰▰▰▱▱▱ 62% · week 31%$/);
 });
 
+test("renderShellBar meters the model the session is using inside a multi-model provider", () => {
+	const usage = {
+		provider: "nan",
+		plan: undefined,
+		fetchedAt: 0,
+		limits: [
+			{ name: "deepseek-v4-flash", limitReached: false, windows: [{ label: "period", usedPercent: 18, windowSeconds: 0, resetAt: null, used: 545_000_000, budget: 3_000_000_000 }] },
+			{ name: "glm5.3-flash", limitReached: false, windows: [{ label: "period", usedPercent: 10, windowSeconds: 0, resetAt: null, used: 200_000_000, budget: 2_000_000_000 }] },
+		],
+	};
+	const [glm] = renderShellBar(model({ modelId: "glm5.3-flash", usage }), plainTheme, 200);
+	assert.match(glm, /glm5\.3-flash period ▰▱▱▱▱▱▱▱ 10%$/);
+	assert.doesNotMatch(glm, /deepseek-v4-flash period/);
+	const [other] = renderShellBar(model({ modelId: "deepseek-v4-flash", usage }), plainTheme, 200);
+	assert.match(other, /deepseek-v4-flash period ▰▱▱▱▱▱▱▱ 18%$/);
+	const sidebar = renderShellSidebarBar(model({ modelId: "glm5.3-flash", usage }), plainTheme, 60);
+	assert.ok(sidebar.some((line) => line.includes("glm5.3-flash period")), sidebar.join("\n"));
+});
+
 test("renderShellBar shows an unknown context as a question mark after compaction", () => {
 	const [line] = renderShellBar(model({ contextPercent: null }), plainTheme, 160);
 	assert.match(line, /ctx ▱▱▱▱▱▱▱▱ \?%/);

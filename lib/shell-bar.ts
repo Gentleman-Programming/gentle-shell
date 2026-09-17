@@ -90,7 +90,7 @@ function buildSegments(model: ShellBarModel, theme: ShellBarTheme): string[] {
 	const percentText = model.contextPercent === null ? "?%" : `${Math.round(model.contextPercent)}%`;
 	const context = `${theme.fg(ROLE.LABEL, "ctx")} ${paintGauge(model.contextPercent, theme)} ${theme.fg(ROLE.VALUE, percentText)}`;
 	const cost = theme.fg(ROLE.VALUE, formatCost(model.costTotal, model.subscription));
-	const usage = model.usage ? renderUsageBar(model.usage, theme) : undefined;
+	const usage = model.usage ? renderUsageBar(model.usage, theme, model.modelId) : undefined;
 	const statuses = model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)));
 	return [theme.fg(ROLE.BRAND, SHELL_BAR_BRAND), location, modelSegment, context, cost, ...(usage ? [usage] : []), ...statuses];
 }
@@ -128,7 +128,7 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 	const branch = model.branch ? `${label("Branch")} ${value(model.branch)}` : "";
 	const percent = model.contextPercent === null ? "?%" : `${Math.round(model.contextPercent)}%`;
 	const capacity = label(`${formatTokens(model.contextWindow)} tokens`);
-	const usage = model.usage ? renderUsageBar(model.usage, theme) : undefined;
+	const usage = model.usage ? renderUsageBar(model.usage, theme, model.modelId) : undefined;
 	const groups: Array<{ title: string; lines: string[] }> = [
 		{
 			title: "Project",

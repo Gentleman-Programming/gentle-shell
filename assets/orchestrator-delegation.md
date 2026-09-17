@@ -196,7 +196,7 @@ Background execution is policy-gated: the always-on orchestrator prompt renders 
 
 When the policy is on and `subagent_run` is available:
 
-- Default to `subagent_run` `mode: "background"`. It returns a task id at once; the terminal stays free and the human keeps typing. Pass a `label` of three to six words naming the work.
+- The runtime already defaults `subagent_run` to `mode: "background"` under this policy in interactive and RPC sessions, so omit `mode` for ordinary delegation. It returns a task id at once; the terminal stays free and the human keeps typing. Pass a `label` of three to six words naming the work.
 - A child `agent_end` retains its latest answer but is not completion: Pi may still retry, compact, or run a queued follow-up. Treat the task as finished only at `agent_settled`; only then release its queue slot, publish its background result, or terminate it. If it exits first, report failure with its retained answer as diagnostics.
 - When a background task settles, its result arrives as a message in this session (custom type `gentle-agents.result`, one per task) and starts a new turn if you are idle. Wait for it: end the turn once launches and any non-overlapping work are done. Never poll, sleep, or call `subagent_status`/`subagent_result` for completion.
 - Do not claim an implementation ready or RDD-ready while its required verification or correction follow-up remains queued. Run the required focused verification before that claim, and retain legitimate post-correction verification. This does not invent a universal full-suite requirement or make a receipt a delivery gate.

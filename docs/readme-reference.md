@@ -825,6 +825,8 @@ Startup installs and refreshes only delegation and review assets. SDD assets are
 
 Background delegation requires a live interactive/RPC parent and is rejected in `pi -p`, even when the policy is on. Use task mode for bounded print-mode work.
 
+With the policy `on`, `subagent_run` defaults to `mode: "background"` at the runtime level in interactive and RPC sessions; print mode keeps `task` regardless of the policy, since `pi -p` exits before a parent session can receive a background result. `mode: "task"` remains available as an explicit opt-in for work that must ask the human mid-flight, such as a dialog-driven task or one the caller wants to wait on.
+
 Background delegation is off unless you turn it on. The policy is user-owned: only an explicit `/gentle:background-subagents enable` or `disable` writes it, and Pi automation never toggles it.
 
 ```text

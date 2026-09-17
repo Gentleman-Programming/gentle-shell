@@ -234,14 +234,16 @@ test("nan is a supported usage provider with its own pending note", () => {
 	assert.deepEqual(renderUsagePanel([], plainTheme, 100, NOW, { provider: "nan" }), ["✿ nan · no usage yet · r to fetch"]);
 });
 
-test("renderUsagePanel lists NaN allowances per model", () => {
+test("renderUsagePanel lists the NaN account total ahead of the per-model allowances", () => {
 	const usage = parseNanQuota(NAN_QUOTA, NOW);
 	const lines = renderUsagePanel([usage], plainTheme, 80, NOW, { provider: "nan" });
 	assert.match(lines[0], /^✿ nan · updated just now$/);
-	assert.match(lines[1], /^ {2}glm5\.3$/);
-	assert.match(lines[2], /^ {4}period .+ 27% +resets in \d+d \d+h$/);
-	assert.match(lines[3], /^ {4}4h .+ 30% +resets in \d+h \d+m$/);
-	assert.match(lines[4], /^ {2}deepseek-v4-flash$/);
+	assert.match(lines[1], /^ {2}nan total$/);
+	assert.match(lines[2], /^ {4}period .+ 22%$/);
+	assert.match(lines[3], /^ {2}glm5\.3$/);
+	assert.match(lines[4], /^ {4}period .+ 27% +resets in \d+d \d+h$/);
+	assert.match(lines[5], /^ {4}4h .+ 30% +resets in \d+h \d+m$/);
+	assert.match(lines[6], /^ {2}deepseek-v4-flash$/);
 });
 
 // The server picks the order of the per-model allowances, so drawing the first
@@ -268,6 +270,45 @@ test("parseNanQuota keeps the raw numbers the aggregates are weighted by", () =>
 	const [codex] = parseCodexUsage(CODEX_PAYLOAD, NOW).limits[0].windows;
 	assert.equal(codex.used, undefined, "only NaN reports raw allowance numbers, which is what gates the aggregates");
 	assert.equal(codex.budget, undefined);
+});
+
+// Grouping is a presentation decision: the panel adds the account total and one
+// row per family with more than one metered model, and each of those rows is an
+// ordinary limit block, the shape Codex already uses for its extra limits.
+const GROUPED_NAN_QUOTA = {
+	periodEnd: "2026-10-01T00:00:00.000Z",
+	models: [
+		{ model: "glm5.3-flash", cap: 2_000_000_000, tokensUsed: 200_000_000 },
+		{ model: "glm5.3", cap: 3_000_000_000, tokensUsed: 0, periodEnd: "2026-10-17T05:53:20.000Z" },
+		{ model: "glm5.2", cap: 3_000_000_000, tokensUsed: 0, periodEnd: "2026-10-17T05:53:20.000Z" },
+		{ model: "deepseek-v4-flash", cap: 3_000_000_000, tokensUsed: 300_000_000 },
+	],
+};
+
+function panelNames(lines: string[]): string[] {
+	return lines.filter((line) => !line.trim().startsWith("period")).map((line) => line.trim());
+}
+
+function panelPercents(lines: string[]): number[] {
+	return lines.filter((line) => line.trim().startsWith("period")).map((line) => Number.parseInt(line.trim().match(/(\d+)%/)![1] ?? "", 10));
+}
+
+test("renderUsagePanel groups NaN allowances by family and totals the account", () => {
+	const lines = renderUsagePanel([parseNanQuota(GROUPED_NAN_QUOTA, NOW)], plainTheme, 80, NOW, { provider: "nan" }).map((line) => line.trimEnd());
+	assert.deepEqual(panelNames(lines), ["✿ nan · updated just now", "nan total", "deepseek-v4-flash", "glm total", "glm5.3-flash", "glm5.3", "glm5.2"]);
+	// 500M of 11B account-wide, 200M of 8B across the GLM members, then each model.
+	assert.deepEqual(panelPercents(lines), [5, 10, 3, 10, 0, 0]);
+	assert.deepEqual(
+		lines.filter((line) => line.trim().startsWith("period")).map((line) => line.includes("resets in")),
+		[false, true, false, true, true, true],
+		"a group closes when its members do, so it carries no single reset",
+	);
+});
+
+test("renderUsagePanel leaves providers without raw allowances ungrouped", () => {
+	const lines = renderUsagePanel([parseCodexUsage(CODEX_PAYLOAD, NOW)], plainTheme, 70, NOW);
+	assert.equal(lines.some((line) => line.includes("total")), false);
+	assert.match(lines[1], /^ {2}codex$/);
 });
 
 test("UsageStore keeps the latest snapshot per provider and lists them in order", () => {

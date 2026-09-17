@@ -309,6 +309,40 @@ function allowanceTotal(name: string, limits: readonly UsageLimit[]): UsageLimit
 	};
 }
 
+// The panel groups what the bar aggregates: the account total first, then one
+// row per family with more than one metered model, then the models themselves,
+// most consumed first. Every row is a limit block, so nothing here introduces a
+// shape the other providers do not already use.
+export function groupUsageLimits(limits: readonly UsageLimit[], provider: string): UsageLimit[] {
+	if (!allowanceGroupsSupported(limits)) return [...limits];
+	const account = allowanceTotal(`${provider}${GROUP_SUFFIX}`, limits);
+	if (!account) return [...limits];
+	const order: string[] = [];
+	const members = new Map<string, UsageLimit[]>();
+	for (const limit of limits) {
+		const family = modelFamily(limit.name);
+		if (!members.has(family)) {
+			members.set(family, []);
+			order.push(family);
+		}
+		members.get(family)?.push(limit);
+	}
+	const families = order
+		.map((family) => {
+			const rows = members.get(family) ?? [];
+			const sorted = [...rows].sort((a, b) => percentOf(b) - percentOf(a));
+			const total = allowanceTotal(`${family}${GROUP_SUFFIX}`, rows);
+			return { total, percent: total?.windows[0]?.usedPercent ?? percentOf(sorted[0]), sorted };
+		})
+		.sort((a, b) => b.percent - a.percent);
+	const grouped = [account];
+	for (const family of families) {
+		if (family.sorted.length > 1 && family.total && family.total.name !== account.name) grouped.push(family.total);
+		grouped.push(...family.sorted);
+	}
+	return grouped;
+}
+
 // The bar follows the model the session is using: exact allowance, then its
 // family, then the account total, then the first limit (which is what every
 // provider without raw numbers keeps using, and what a missing model keeps).
@@ -373,11 +407,14 @@ export function renderUsagePanel(usages: ProviderUsage[], theme: UsageTheme, wid
 		const mark = usage === activeUsage ? `${theme.fg(ROLE.LIMIT, ACTIVE_MARK)} ` : "";
 		const plan = usage.plan ? ` ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.PLAN, usage.plan)}` : "";
 		lines.push(`${mark}${theme.fg(ROLE.PROVIDER, usage.provider)}${plan} ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.RESET, updatedAgo(usage.fetchedAt, now))}`);
-		for (const limit of usage.limits) {
+		for (const limit of groupUsageLimits(usage.limits, usage.provider)) {
 			lines.push(`  ${theme.fg(ROLE.LIMIT, limit.name)}`);
 			for (const window of limit.windows) {
 				const percent = `${Math.round(window.usedPercent)}%`.padStart(4);
-				lines.push(`    ${theme.fg(ROLE.LABEL, window.label.padEnd(5))} ${paintMeter(window.usedPercent, PANEL_METER_CELLS, theme)} ${theme.fg(ROLE.PERCENT, percent)}  ${theme.fg(ROLE.RESET, formatReset(window.resetAt, now))}`);
+				const reset = formatReset(window.resetAt, now);
+				// No reset means no trailing separator: a group closes when its members do.
+				const tail = reset.length > 0 ? `  ${theme.fg(ROLE.RESET, reset)}` : "";
+				lines.push(`    ${theme.fg(ROLE.LABEL, window.label.padEnd(5))} ${paintMeter(window.usedPercent, PANEL_METER_CELLS, theme)} ${theme.fg(ROLE.PERCENT, percent)}${tail}`);
 			}
 		}
 	}

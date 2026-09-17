@@ -72,4 +72,15 @@ Verified against the official NaN Cloud dashboard bundle (`https://cloud.nan.bui
 
 ## Next step
 
-Feature complete and verified on `feat/nan-usage-sidebar`. Nothing is pushed. The remaining decision is the user's: open a PR, or sign in with a NaN key in a live session to see the real payload rendered in the bar.
+Feature complete and verified on `feat/nan-usage-sidebar`. Nothing is pushed. The native review could not start for this candidate; see below.
+
+## Native review attempt (blocked, no authority created)
+
+- Target root: `/home/egdev/proyectos/gentle-shell` (unrelated to the session repository, authorized explicitly by the user).
+- `gentle_review inspect` → `ready`, lineage `review-76fe20947051c2bb`, forecast `execute/fresh_target_ready`, offered route `--base-ref=2b579c80 --committed-only=true --consent=relay`.
+- `gentle_review start` with `{"mode":"ordinary","baseRef":"2b579c80…","committedOnly":true}` → `blocked`, `native-operation-failed`, `error_code: schema-incompatible`, `lineage_created: false`, `mutation_outcome: none`.
+- Target-scoped `gentle_review status` → `blocked`, `next_transition` `collect/empty_candidate_base_ref_required`, `collectBindings` one slot (`captureOperation: external.select_base_ref`, schema `gentle-ai.review-base-ref-selection/v1`). Confirmed `repair.counts.lineages: 0` and `candidates: []`, so nothing was created by the failed attempt.
+- `gentle_review_capture` with that exact provider slot and the inspect-issued lineage → `capture-binding-rejected` ("unknown, expired, or belongs to a different session route"), `mutation_outcome: none`.
+- Diagnosis: with a clean worktree the workspace projection is empty (`paths: []`, `base_tree == candidate_tree == 7484118a`), so native asks for an explicit base-ref selection. The running facade's `start` requires an executable `review.start` transition, and its public capture tools require a lineage this pre-lineage slot does not have. `extensions/gentle-ai.ts` `mapNativeTargetStatus` passes any non-untracked collect through as a `collectBindings` entry, which exposes the slot without a consumer. Upstream is already at `2b579c80`, so no update resolves it.
+- This is a provider/facade lifecycle gap for an already-committed candidate with a clean worktree, not a defect in this feature.
+- Retry plan (user decision: restart Pi, then retry): after `/reload` or a full restart, `gentle_review inspect` with `workspaceRoot=/home/egdev/proyectos/gentle-shell`, then `gentle_review start` with a fresh `idempotencyKey` and the same committed-range input. A fresh START is legal because no lineage exists.

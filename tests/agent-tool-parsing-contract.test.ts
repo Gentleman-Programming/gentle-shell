@@ -66,7 +66,11 @@ function readRawToolsBlock(path: string): string {
 }
 
 function expectedBlockEntries(rawTools: string): string[] {
-	return rawTools.split("\n").map((line) => line.replace(/^-\s+/, "").trim());
+	return rawTools
+		.split("\n")
+		.flatMap((line) => line.replace(/^-\s+/, "").split(","))
+		.map((entry) => entry.trim())
+		.filter(Boolean);
 }
 
 test("packaged agent tool blocks match the pi-subagents parsing contract", () => {

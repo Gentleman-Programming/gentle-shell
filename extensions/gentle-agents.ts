@@ -13,7 +13,6 @@ import os from "node:os";
 import { join, resolve, isAbsolute, sep } from "node:path";
 import { createBashToolDefinition, createLocalBashOperations, type BashOperations, keyHint, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, type TUI } from "@earendil-works/pi-tui";
-import { sidebarPart } from "../lib/shell-sidebar.ts";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import { createCompletionQueue } from "../lib/agents-completion-delivery.ts";
 import { AGENT_MODE, discoverAgents, parseAgentDefinition, loadAgentsConfig, resolveAgentProfile, withPinnedModelProfiles, type AgentDefinition, type AgentMode } from "../lib/agents-config.ts";
@@ -974,19 +973,19 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		ui = ctx.hasUI ? ctx.ui : undefined;
 		sessions = ctx.sessionManager;
 		tickClock();
+		// Agents is not a rail part: the fullscreen sidebar only suppresses
+		// bottom components registered through sidebarPart, and this widget is
+		// the only Agents surface in every mode, so it stays a plain component.
 		ui?.setWidget(AGENTS_WIDGET_KEY, (tui, theme) => {
 			host = tui;
 			sidebarTui = tui;
-			return sidebarPart(tui, "agents", {
+			return {
 				render(width: number) {
 					const lines = renderAgentsCard(visibleTasks(), theme, width, deps.now(), { collapsed, collapseKey, maxRows: widgetRows(tui.terminal?.rows), viewKey });
 					return lines.length === 0 ? [] : [...lines, ""];
 				},
 				invalidate() {},
-			}, {
-				render: (width) => renderAgentsCard(visibleTasks(), theme, width, deps.now(), { collapsed, collapseKey, viewKey }),
-				invalidate() {},
-			});
+			};
 		});
 	};
 

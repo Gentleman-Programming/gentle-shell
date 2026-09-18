@@ -30,6 +30,25 @@ interface Columns {
 	task: number;
 	meta: number;
 	fullMetrics: boolean;
+	// Populated only when fullMetrics is true: each field gets its own fixed,
+	// right-aligned column sized to the widest value among shown tasks, so
+	// model·effort, tokens, cost, and elapsed line up vertically across rows
+	// regardless of any individual row's value widths.
+	metaWidths?: MetaColumnWidths;
+}
+
+interface MetaFields {
+	exec: string;
+	tokens: string;
+	cost: string;
+	elapsed: string;
+}
+
+interface MetaColumnWidths {
+	exec: number;
+	tokens: number;
+	cost: number;
+	elapsed: number;
 }
 
 const LOOK: Record<TaskStatus, StatusLook> = {
@@ -150,11 +169,48 @@ function executionLabel(task: TaskRecord, width = Infinity): string {
 	return clip(model, width - visibleWidth(suffix)) + suffix;
 }
 
-function meta(task: TaskRecord, now: number, fullMetrics: boolean): string {
-	if (task.status === TASK_STATUS.QUEUED) return "queued";
-	if (!fullMetrics) return executionLabel(task);
-	const parts = [executionLabel(task), task.tokens > 0 ? formatTokens(task.tokens) : "", task.cost > 0 ? `$${task.cost.toFixed(2)}` : "", elapsed(task, now)];
-	return parts.filter((part) => part.length > 0).join(" · ");
+// Narrow (non-fullMetrics) rows keep the single-string contract: a queued
+// task shows the bare word, everything else shows its exec label.
+function narrowMetaText(task: TaskRecord): string {
+	return task.status === TASK_STATUS.QUEUED ? "queued" : executionLabel(task);
+}
+
+// Queued rows carry no model, token, or cost data yet, so every field but
+// elapsed stays blank — and elapsed itself becomes the literal word "queued"
+// rather than the empty string startedAt === null would otherwise produce.
+function metaFields(task: TaskRecord, now: number): MetaFields {
+	if (task.status === TASK_STATUS.QUEUED) return { exec: "", tokens: "", cost: "", elapsed: "queued" };
+	return {
+		exec: executionLabel(task),
+		tokens: task.tokens > 0 ? formatTokens(task.tokens) : "",
+		cost: task.cost > 0 ? `$${task.cost.toFixed(2)}` : "",
+		elapsed: elapsed(task, now),
+	};
+}
+
+function metaColumnWidths(tasks: readonly TaskRecord[], now: number): MetaColumnWidths {
+	const fields = tasks.map((task) => metaFields(task, now));
+	const widest = (pick: (field: MetaFields) => string) => Math.max(0, ...fields.map((field) => visibleWidth(pick(field))));
+	return { exec: widest((field) => field.exec), tokens: widest((field) => field.tokens), cost: widest((field) => field.cost), elapsed: widest((field) => field.elapsed) };
+}
+
+// A column whose widest value is empty across every shown task (e.g. no task
+// carries a cost yet) is dropped entirely, together with its separator —
+// exactly like the old joined string dropped an empty field, but decided once
+// for the whole card rather than per row, so the remaining columns still align.
+function metaTotalWidth(widths: MetaColumnWidths): number {
+	const active = [widths.exec, widths.tokens, widths.cost, widths.elapsed].filter((width) => width > 0);
+	return active.reduce((sum, width) => sum + width, 0) + Math.max(0, active.length - 1) * visibleWidth(" · ");
+}
+
+function metaRowText(task: TaskRecord, now: number, widths: MetaColumnWidths): string {
+	const fields = metaFields(task, now);
+	const parts: string[] = [];
+	if (widths.exec > 0) parts.push(fields.exec.padStart(widths.exec));
+	if (widths.tokens > 0) parts.push(fields.tokens.padStart(widths.tokens));
+	if (widths.cost > 0) parts.push(fields.cost.padStart(widths.cost));
+	if (widths.elapsed > 0) parts.push(fields.elapsed.padStart(widths.elapsed));
+	return parts.join(" · ");
 }
 
 function taskText(task: TaskRecord): string {
@@ -167,18 +223,19 @@ function taskText(task: TaskRecord): string {
 function columns(tasks: readonly TaskRecord[], inner: number, now: number): Columns {
 	const name = Math.max(0, Math.min(NAME_MAX, inner - 3, Math.max(...tasks.map((task) => visibleWidth(task.agent)))));
 	const fixed = 1 + GLYPH_GAP.length + name + COLUMN_GAP.length;
-	const metaWidth = (fullMetrics: boolean) => Math.max(...tasks.map((task) => visibleWidth(meta(task, now, fullMetrics))));
-	const full = metaWidth(true);
+	const metaWidths = metaColumnWidths(tasks, now);
+	const full = metaTotalWidth(metaWidths);
 	const task = inner - fixed - full - COLUMN_GAP.length;
-	if (task >= TASK_MIN) return { inner, name, meta: full, task, fullMetrics: true };
-	return { inner, name, meta: Math.max(0, Math.min(inner - fixed, metaWidth(false))), task: 0, fullMetrics: false };
+	if (task >= TASK_MIN) return { inner, name, meta: full, task, fullMetrics: true, metaWidths };
+	const narrow = Math.max(0, ...tasks.map((task) => visibleWidth(narrowMetaText(task))));
+	return { inner, name, meta: Math.max(0, Math.min(inner - fixed, narrow)), task: 0, fullMetrics: false };
 }
 
 function row(task: TaskRecord, theme: CardTheme, cols: Columns, now: number, allowMetadataRow: boolean): string[] {
 	const look = LOOK[task.status];
 	const name = clip(task.agent, cols.name);
 	const head = `${theme.fg(look.role, look.glyph)}${GLYPH_GAP}${theme.fg(NAME_ROLE, name)}${" ".repeat(cols.name - visibleWidth(name))}`;
-	const metadata = cols.fullMetrics ? meta(task, now, true) : task.status === TASK_STATUS.QUEUED ? clip("queued", cols.meta) : executionLabel(task, cols.meta);
+	const metadata = cols.fullMetrics && cols.metaWidths ? metaRowText(task, now, cols.metaWidths) : task.status === TASK_STATUS.QUEUED ? clip("queued", cols.meta) : executionLabel(task, cols.meta);
 	const tail = theme.fg(META_ROLE, " ".repeat(Math.max(0, cols.meta - visibleWidth(metadata))) + metadata);
 	if (cols.inner < 3) return [theme.fg(look.role, clip(look.glyph, cols.inner))];
 	// The scrollable sidebar can preserve identity and execution metadata on

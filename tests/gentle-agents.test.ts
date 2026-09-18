@@ -9,7 +9,8 @@ import { SESSION_WORKTREE_ENTRY, SESSION_WORKTREE_CHANGED } from "../lib/session
 import test, { after, afterEach, mock } from "node:test";
 import type { TestContext } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { sidebarState } from "../lib/shell-sidebar.ts";
 import gentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, answerThroughUi, completionText, createDefaultSessionTransport, legacySubagentsInstalled, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener } from "../lib/windows-session-transport.ts";
@@ -1927,6 +1928,32 @@ test("subagent_list_agents and subagent_run in task mode launch a child with the
 	await tick();
 	assert.deepEqual(harness.children[1].killed, ["SIGTERM"], "closing pi stops the running children");
 	assert.match(tools.get("subagent_run")!.renderCall({ agent: "explore" }, plainTheme).render(60).join(""), /❀ agent run · explore/);
+});
+
+test("the Agents widget never registers a sidebar rail part and stays visible even while the fullscreen sidebar owns the host", async () => {
+	const { pi, tools, fire } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, harness.deps);
+	// A terminal-bearing host is what makes sidebarPart do anything at all
+	// (a host with no .terminal is already a passthrough); this is the host
+	// shape the fullscreen layout actually uses.
+	const terminalTui = { requestRender() {}, terminal: { columns: 160, rows: 40 } };
+	const { ctx, widget } = fakeContext(terminalTui);
+	await fire("session_start", ctx);
+	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Map lib/", label: "map lib modules", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+
+	// The factory only runs (and only then could register a rail part) once
+	// something actually renders the widget, exactly like the real host.
+	assert.match(widget()![1]!, /explore  map lib modules/);
+	const state = sidebarState(terminalTui as unknown as TUI);
+	assert.equal(state.parts.has("agents"), false, "Agents never claims a rail slot; the above-editor widget is its only surface");
+
+	// Simulate the fullscreen sidebar actively owning the host, the same
+	// condition sidebarPart used to suppress a registered bottom widget under.
+	state.active = true;
+	state.ownsHost = () => true;
+	assert.match(widget()![1]!, /explore  map lib modules/, "the widget keeps rendering regardless of sidebar ownership");
 });
 
 test("background runs return at once; status, result, send_message, cancel, and continue follow the task", async () => {

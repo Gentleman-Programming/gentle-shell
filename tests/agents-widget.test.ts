@@ -58,6 +58,49 @@ test("renderAgentsCard draws columns for agent, task, and model · tokens · cos
 	assert.deepEqual(renderAgentsCard([], plainTheme, 60, 0, { collapsed: false }), []);
 });
 
+test("renderAgentsCard right-aligns model·effort, tokens, cost, and elapsed in fixed columns that line up across rows", () => {
+	const tasks = [
+		task({ id: "a", agent: "a", model: "claude-sonnet-5", thinking: "medium", startedAt: 1000, endedAt: 26_000, tokens: 34_000, cost: 0.27 }),
+		task({ id: "b", agent: "b", model: "openai/gpt-5", thinking: "high", startedAt: 2000, endedAt: null, tokens: 1_200_000, cost: 12.5 }),
+	];
+	const lines = renderAgentsCard(tasks, plainTheme, 100, 30_000, { collapsed: false }).map(stripAnsi);
+	const [, rowA, rowB] = lines as [string, string, string];
+	assert.match(rowA, /34k/);
+	assert.match(rowB, /1\.2M/);
+	assert.match(rowA, /\$0\.27/);
+	assert.match(rowB, /\$12\.50/);
+	// Each column has a fixed width, so a shorter value in one row (e.g. "34k"
+	// next to "1.2M") still ends at the exact same offset as the wider one.
+	const tokensEndA = rowA.indexOf("34k") + "34k".length;
+	const tokensEndB = rowB.indexOf("1.2M") + "1.2M".length;
+	assert.equal(tokensEndA, tokensEndB, "the tokens column ends at the same offset on every row");
+	const costEndA = rowA.indexOf("$0.27") + "$0.27".length;
+	const costEndB = rowB.indexOf("$12.50") + "$12.50".length;
+	assert.equal(costEndA, costEndB, "the cost column ends at the same offset on every row");
+	assert.equal(visibleWidth(rowA), visibleWidth(rowB));
+});
+
+test("renderAgentsCard fills only the elapsed column with 'queued', leaving model, tokens, and cost blank", () => {
+	const tasks = [
+		task({ id: "running", status: TASK_STATUS.RUNNING, startedAt: 1000, endedAt: null }),
+		task({ id: "queued", status: TASK_STATUS.QUEUED, createdAt: 1500, startedAt: null, tokens: 0, cost: 0 }),
+	];
+	const lines = renderAgentsCard(tasks, plainTheme, 90, 5000, { collapsed: false }).map(stripAnsi);
+	const [, running, queued] = lines as [string, string, string];
+	assert.match(running, /claude-sonnet-5/);
+	assert.doesNotMatch(queued, /claude-sonnet-5|34k|\$0\.27/, "queued leaves the model, tokens, and cost columns blank");
+	assert.match(queued, /queued\s*│$/, "'queued' lands in the elapsed column, against the right border");
+	assert.equal(visibleWidth(running), visibleWidth(queued));
+	const queuedStart = queued.indexOf("queued");
+	const runningElapsedMatch = running.match(/\ds\s*│$/);
+	assert.ok(runningElapsedMatch, "the running row's elapsed value sits in the same trailing column");
+	// "queued" (6 chars) is wider than a short elapsed value like "4s" (2
+	// chars), so the elapsed column itself must have grown to fit it: the
+	// running row's elapsed value should now start at or before that offset,
+	// both ending flush against the same right border.
+	assert.ok(queuedStart <= runningElapsedMatch.index!);
+});
+
 test("renderAgentsCard renders singleton elapsed time only on its task row", () => {
 	const lines = renderAgentsCard([task({})], plainTheme, 84, 5_000, { collapsed: false }).map(stripAnsi);
 	assert.equal(lines.join("\n").match(/4s/g)?.length, 1);
@@ -82,9 +125,14 @@ test("renderAgentsCard shows questions and failures in place of the task, and co
 	];
 	const plain = renderAgentsCard(tasks, plainTheme, 80, 3000, { collapsed: false }).map(stripAnsi);
 	assert.match(plain[0], /^╭─ ❀ Agents · 1 waiting · 1 queued · 1 failed ─+ 2s ╮$/);
-	assert.match(plain[1], /^│ \?  sdd-explore  asked: Delete\? +claude-sonnet-5 · 2s │$/);
-	assert.match(plain[2], /^│ ✗  sdd-explore  pi exited with code 1 +claude-sonnet-5 · 34k · \$0\.27 · 1s │$/);
-	assert.match(plain[3], /^│ ○  sdd-explore  map footer data sources +queued │$/);
+	// The waiting row carries no tokens/cost of its own, but the failed row
+	// below it does, so those columns stay reserved (blank) rather than
+	// collapsing — the whole point of fixed columns over the old per-row join.
+	assert.match(plain[1], /^│ \?  sdd-explore  asked: Delete\? +claude-sonnet-5 · {5}· {7}· {5}2s │$/);
+	assert.match(plain[2], /^│ ✗  sdd-explore  pi exited with code… +claude-sonnet-5 · 34k · \$0\.27 · {5}1s │$/);
+	// Queued fills only the elapsed column with the literal word; model,
+	// tokens, and cost stay blank rather than the row's text spilling past them.
+	assert.match(plain[3], /^│ ○  sdd-explore  map footer data sou… +· {5}· {7}· queued │$/);
 	const collapsed = renderAgentsCard(tasks, plainTheme, 80, 3000, { collapsed: true, collapseKey: "ctrl+shift+a" }).map(stripAnsi);
 	assert.equal(collapsed.length, 3);
 	assert.match(collapsed[0], /ctrl\+shift\+a expand ╮$/);

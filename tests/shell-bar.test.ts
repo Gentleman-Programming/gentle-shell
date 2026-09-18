@@ -12,6 +12,7 @@ import {
 	type ShellBarModel,
 	type ShellBarTheme,
 } from "../lib/shell-bar.ts";
+import { parseNanQuota } from "../lib/shell-usage.ts";
 
 // The Gentle Shell bar replaces pi's three-line footer with one line of
 // segments. Rendering is pure so it can be verified without a TUI.
@@ -50,6 +51,28 @@ function model(overrides: Partial<ShellBarModel> = {}): ShellBarModel {
 		statuses: [],
 		...overrides,
 	};
+}
+
+// The grouped NaN fixture the panel test uses, so both surfaces are asserted
+// against the same payload, the same order and the same percentages.
+const GROUPED_NAN_QUOTA = {
+	periodEnd: "2026-10-01T00:00:00.000Z",
+	models: [
+		{ model: "glm5.3-flash", cap: 2_000_000_000, tokensUsed: 200_000_000 },
+		{ model: "glm5.3", cap: 3_000_000_000, tokensUsed: 0, periodEnd: "2026-10-17T05:53:20.000Z" },
+		{ model: "glm5.2", cap: 3_000_000_000, tokensUsed: 0, periodEnd: "2026-10-17T05:53:20.000Z" },
+		{ model: "deepseek-v4-flash", cap: 3_000_000_000, tokensUsed: 300_000_000 },
+	],
+};
+
+// The sidebar prints the card body between its borders; the Usage rows are the
+// metered block between the Usage heading and Integrations, minus the context
+// meter, which is not a subscription allowance.
+function sidebarUsageRows(lines: string[]): string[] {
+	const body = lines.filter((line) => line.startsWith("│ ")).map((line) => line.slice(2, -2).trim());
+	const start = body.indexOf("Usage");
+	const end = body.indexOf("Integrations");
+	return body.slice(start + 1, end).filter((line) => /[▰▱]/.test(line) && !line.startsWith("Context"));
 }
 
 test("renderGauge fills cells proportionally to the percentage", () => {
@@ -135,8 +158,38 @@ test("renderShellBar meters the model the session is using inside a multi-model 
 	assert.doesNotMatch(glm, /deepseek-v4-flash ▰/);
 	const [other] = renderShellBar(model({ modelId: "deepseek-v4-flash", usage }), plainTheme, 200);
 	assert.match(other, /deepseek-v4-flash ▰▱▱▱▱▱▱▱ 18%$/);
-	const sidebar = renderShellSidebarBar(model({ modelId: "glm5.3-flash", usage }), plainTheme, 60);
-	assert.ok(sidebar.some((line) => line.includes("glm5.3-flash ▰")), sidebar.join("\n"));
+	const sidebar = renderShellSidebarBar(model({ modelId: "glm5.3-flash", usage }), plainTheme, 60).join("\n");
+	assert.match(sidebar, /glm5\.3-flash +▰▱▱▱▱▱▱▱ +10%/, "the sidebar lists the session model's own allowance");
+});
+
+// The sidebar is the surface that never needs opening, so a provider with
+// per-model allowances shows the panel's grouped rows there too — the account
+// total, the family totals and the models — without the reset dates, which the
+// panel owns.
+test("sidebar groups the NaN allowances by subscription without the panel resets", () => {
+	const usage = parseNanQuota(GROUPED_NAN_QUOTA, 0);
+	const lines = renderShellSidebarBar(model({ modelId: "glm5.3-flash", usage }), plainTheme, 60);
+	const rows = sidebarUsageRows(lines);
+	assert.deepEqual(rows.map((row) => row.replace(/\s*[▰▱].*$/, "")), ["nan total", "deepseek-v4-flash", "glm total", "glm5.3-flash", "glm5.3", "glm5.2"]);
+	assert.deepEqual(rows.map((row) => Number.parseInt(row.match(/(\d+)%$/)![1] ?? "", 10)), [5, 10, 3, 10, 0, 0]);
+	assert.equal(lines.join("\n").includes("resets in"), false, "the reset dates belong to the panel");
+	for (const width of [24, 46, 60]) {
+		assert.ok(renderShellSidebarBar(model({ usage }), plainTheme, width).every((line) => visibleWidth(line) <= width));
+	}
+});
+
+test("sidebar keeps one aggregate line for a provider without raw allowances", () => {
+	const usage = {
+		provider: "openai-codex",
+		plan: "pro",
+		fetchedAt: 0,
+		limits: [{ name: "codex", limitReached: false, windows: [
+			{ label: "5h", usedPercent: 62, windowSeconds: 18_000, resetAt: null },
+			{ label: "week", usedPercent: 31, windowSeconds: 604_800, resetAt: null },
+		] }],
+	};
+	const lines = renderShellSidebarBar(model({ usage }), plainTheme, 60);
+	assert.deepEqual(sidebarUsageRows(lines), ["codex 5h ▰▰▰▰▰▱▱▱ 62% · week 31%"]);
 });
 
 test("renderShellBar shows an unknown context as a question mark after compaction", () => {

@@ -1,6 +1,6 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { GAUGE_CELLS, gaugeTone, paintGauge, renderGauge, type GaugeTone } from "./shell-gauge.ts";
-import { renderUsageBar, type ProviderUsage } from "./shell-usage.ts";
+import { allowanceGroupsSupported, groupUsageLimits, renderUsageBar, type ProviderUsage } from "./shell-usage.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { CARD_TONE, cardInnerWidth, renderCard } from "./shell-card.ts";
 
@@ -53,6 +53,12 @@ export const SHELL_BAR_SEPARATOR = "⟡";
 export const SHELL_BAR_GAUGE_CELLS = GAUGE_CELLS;
 const RIGHT_PADDING = 2;
 const COMPACT_BRANCH_WIDTH = 15;
+// The rows the sidebar prints for a provider with per-model allowances use the
+// bar's shorter meter: the rail is 50 columns wide, and the panel's 16 cells
+// would leave no room for the model ids.
+const SIDEBAR_USAGE_METER_CELLS = GAUGE_CELLS;
+// Meter, its two spaces and the right-aligned percentage.
+const SIDEBAR_USAGE_ROW_FIXED = SIDEBAR_USAGE_METER_CELLS + 6;
 
 export function shellEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 	if (env.GENTLE_PI_AGENTS_CHILD === "1") return false;
@@ -119,6 +125,31 @@ function joinSegments(segments: string[], theme: ShellBarTheme): string {
 	return segments.join(` ${theme.fg(ROLE.SEPARATOR, SHELL_BAR_SEPARATOR)} `);
 }
 
+// The sidebar is the surface that never needs opening, so a provider with
+// per-model allowances prints the same grouped rows as the panel — the account
+// total, its family totals and the models themselves, in the panel's order and
+// with the panel's percentages — and leaves every reset date to the panel,
+// which has the room. Providers without raw allowances keep the one aggregate
+// line the bar has always drawn for the model in use.
+function sidebarUsageLines(usage: ProviderUsage, modelId: string, theme: ShellBarTheme, available: number): string[] {
+	if (!allowanceGroupsSupported(usage.limits)) {
+		const line = renderUsageBar(usage, theme, modelId);
+		return line ? [line] : [];
+	}
+	const rows = groupUsageLimits(usage.limits, usage.provider).flatMap((limit) =>
+		limit.windows.map((window) => ({ name: [limit.name, window.label].filter((part) => part.length > 0).join(" "), window })),
+	);
+	// The name column gives way first: it is the only part that can be clipped
+	// without losing the number the row exists to show.
+	const widest = rows.reduce((width, row) => Math.max(width, row.name.length), 0);
+	const nameWidth = Math.min(widest, Math.max(1, available - SIDEBAR_USAGE_ROW_FIXED));
+	return rows.map((row) => {
+		const name = row.name.length > nameWidth ? clipText(row.name, nameWidth) : row.name.padEnd(nameWidth);
+		const percent = `${Math.round(row.window.usedPercent)}%`.padStart(4);
+		return `${theme.fg(ROLE.LABEL, name)} ${paintGauge(row.window.usedPercent, theme, SIDEBAR_USAGE_METER_CELLS)} ${theme.fg(ROLE.VALUE, percent)}`;
+	});
+}
+
 // Sidebar groups use structured fields, never positional compact-bar segments
 // or inferred meanings from opaque extension status strings.
 export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme, width: number): string[] {
@@ -128,7 +159,11 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 	const branch = model.branch ? `${label("Branch")} ${value(model.branch)}` : "";
 	const percent = model.contextPercent === null ? "?%" : `${Math.round(model.contextPercent)}%`;
 	const capacity = label(`${formatTokens(model.contextWindow)} tokens`);
-	const usage = model.usage ? renderUsageBar(model.usage, theme, model.modelId) : undefined;
+	// Pre-wrap values before indenting so Unicode/ANSI continuation lines keep
+	// the same inset without consuming the card's right border.
+	const innerWidth = cardInnerWidth(width);
+	const inset = Math.min(1, innerWidth - 1);
+	const usageLines = model.usage ? sidebarUsageLines(model.usage, model.modelId, theme, innerWidth - inset) : [];
 	const groups: Array<{ title: string; lines: string[] }> = [
 		{
 			title: "Project",
@@ -157,17 +192,15 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 				`${label("Context")} ${paintGauge(model.contextPercent, theme)} ${value(percent)}`,
 				capacity,
 				`${label("Cost")} ${value(formatCost(model.costTotal, model.subscription))}`,
-				...(usage ? [usage] : []),
+				...usageLines,
 			],
 		},
 		{ title: "Integrations", lines: model.statuses.length
 			? model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)))
 			: [label("No status reported")] },
 	];
-	// Pre-wrap values before indenting so Unicode/ANSI continuation lines keep
-	// the same inset without consuming the card's right border.
-	const innerWidth = cardInnerWidth(width);
-	const inset = Math.min(1, innerWidth - 1);
+	// Wrap and indent every group line before it reaches the card, so Unicode and
+	// ANSI continuation lines keep the same inset without consuming the right border.
 	const body = groups.flatMap((group, index) => [
 		...(index ? [""] : []),
 		label(group.title),

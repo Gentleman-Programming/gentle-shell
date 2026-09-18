@@ -71,13 +71,25 @@ export class UsageView {
 			this.deps.onClose();
 			return;
 		}
-		if (data === "r" && !this.refreshing) {
-			this.refreshing = true;
+		if (data === "r") this.refresh();
+	}
+
+	// A failing usage fetch is the store's problem to report (its rows already
+	// carry the last error); the panel only clears its "refreshing" state. The
+	// rejection must never leave this method: an unhandled rejection is fatal
+	// to the whole shell on current Node.
+	private refresh(): void {
+		if (this.refreshing) return;
+		this.refreshing = true;
+		this.deps.requestRender();
+		const settle = () => {
+			this.refreshing = false;
 			this.deps.requestRender();
-			void this.deps.onRefresh().finally(() => {
-				this.refreshing = false;
-				this.deps.requestRender();
-			});
+		};
+		try {
+			this.deps.onRefresh().then(settle, settle);
+		} catch {
+			settle();
 		}
 	}
 
@@ -122,14 +134,7 @@ export class UsageView {
 			this.deps.onClose();
 			return { handled: true, render: true };
 		}
-		if (!this.refreshing) {
-			this.refreshing = true;
-			this.deps.requestRender();
-			void this.deps.onRefresh().finally(() => {
-				this.refreshing = false;
-				this.deps.requestRender();
-			});
-		}
+		this.refresh();
 		return { handled: true, render: true };
 	}
 

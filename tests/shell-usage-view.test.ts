@@ -157,3 +157,26 @@ test("UsageView.handleMouse paints the shared hover role over a footer hint, and
 	assert.deepEqual(left, { handled: true, render: true }, "leaving the last hovered hint still requests a repaint");
 	assert.doesNotMatch(view.render(width).join("\n"), /<warning>/, "nothing stays painted once the pointer leaves");
 });
+
+test("a rejected refresh from a click or key never escapes as an unhandled rejection", async () => {
+	const store = new UsageStore();
+	const events: string[] = [];
+	const unhandled: unknown[] = [];
+	const onUnhandled = (reason: unknown) => unhandled.push(reason);
+	process.on("unhandledRejection", onUnhandled);
+	try {
+		const view = new UsageView(store, { theme: plainTheme, now: () => NOW, active: () => undefined, onRefresh: async () => { throw new Error("provider down"); }, onClose: () => events.push("close"), requestRender: () => events.push("render") });
+		const lines = view.render(80);
+		const row = lines.length - 2;
+		const column = lines[row]!.indexOf("r refresh") + 1;
+		view.handleMouse({ type: "click", button: "left", x: column, y: row, width: 80, height: lines.length, screenX: column, screenY: row, shift: false, alt: false, ctrl: false } as never);
+		await new Promise((resolve) => setImmediate(resolve));
+		view.handleInput("r");
+		await new Promise((resolve) => setImmediate(resolve));
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.deepEqual(unhandled, [], "a failing usage fetch is reported by the panel, never thrown at the process");
+		assert.match(view.render(80).join("\n"), /r refresh/, "the refresh hint is back after the failure");
+	} finally {
+		process.off("unhandledRejection", onUnhandled);
+	}
+});

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter as pathDelimiter, join } from "node:path";
 import test from "node:test";
 import { createNodeExecFileAdapter } from "../lib/native-review-cli.ts";
 import {
@@ -11,10 +11,13 @@ import {
 	REVIEW_HOST_RELAY_PI_TIMEOUT_FLOOR_MS,
 	REVIEW_HOST_RELAY_PI_TIMEOUT_MAX_MS,
 	REVIEW_HOST_RELAY_PI_TIMEOUT_PER_MEBIBYTE_MS,
+	REVIEW_HOST_RELAY_CONFIG_FILE,
+	REVIEW_HOST_RELAY_EXTENSIONS_ENV,
 	REVIEW_HOST_RELAY_SUBMISSION_MISSING_MESSAGE,
 	REVIEW_HOST_RELAY_UNAVAILABLE_MESSAGE,
 	ReviewHostRelayError,
 	classifyReviewHostRelayRefusal,
+	resolveReviewHostRelayExtensionPaths,
 	resolveReviewHostRelayPiTimeoutMs,
 	resolveReviewHostRelaySubmission,
 	reviewHostRelaySlots,
@@ -1037,4 +1040,85 @@ test("the negotiated decoder carries the provider submission through the capture
 		...rawInput,
 		submission: { ...rawSubmission, values: [{ slot: "reviewer_result", domain: "artifact_path_or_stdin", substitution_location: rawSubmission.argument_tokens.length }] },
 	}] } }), /substitution_location/);
+});
+
+// gentle-shell#1198: the extension allowlist resolves from the global
+// review-relay.json file, with the environment variable as a full override.
+
+function extensionResolverFixture(t: { after(fn: () => void): void }): { configHome: string; file: string } {
+	const configHome = mkdtempSync(join(tmpdir(), "gentle-review-relay-config-"));
+	t.after(() => rmSync(configHome, { recursive: true, force: true }));
+	return { configHome, file: join(configHome, REVIEW_HOST_RELAY_CONFIG_FILE) };
+}
+
+test("the extension allowlist resolves from the global config file when the environment is unset", (t) => {
+	const { configHome, file } = extensionResolverFixture(t);
+	writeFileSync(file, JSON.stringify({ reviewerExtensionPaths: [" /abs/one.ts ", "/abs/two.ts"] }));
+	assert.deepEqual(resolveReviewHostRelayExtensionPaths({}, configHome), ["/abs/one.ts", "/abs/two.ts"]);
+});
+
+test("the extension allowlist resolves from the environment when no config file exists", (t) => {
+	const { configHome } = extensionResolverFixture(t);
+	const environment = { [REVIEW_HOST_RELAY_EXTENSIONS_ENV]: ["/abs/env-one.ts", "/abs/env-two.ts"].join(pathDelimiter) };
+	assert.deepEqual(resolveReviewHostRelayExtensionPaths(environment, configHome), ["/abs/env-one.ts", "/abs/env-two.ts"]);
+});
+
+test("a set non-empty environment value replaces the config file entirely instead of merging", (t) => {
+	const { configHome, file } = extensionResolverFixture(t);
+	writeFileSync(file, JSON.stringify({ reviewerExtensionPaths: ["/abs/file-only.ts"] }));
+	const environment = { [REVIEW_HOST_RELAY_EXTENSIONS_ENV]: "/abs/env-only.ts" };
+	assert.deepEqual(resolveReviewHostRelayExtensionPaths(environment, configHome), ["/abs/env-only.ts"]);
+});
+
+test("a whitespace-only environment value is unset and falls through to the config file", (t) => {
+	const { configHome, file } = extensionResolverFixture(t);
+	writeFileSync(file, JSON.stringify({ reviewerExtensionPaths: ["/abs/file.ts"] }));
+	const environment = { [REVIEW_HOST_RELAY_EXTENSIONS_ENV]: "   " };
+	assert.deepEqual(resolveReviewHostRelayExtensionPaths(environment, configHome), ["/abs/file.ts"]);
+});
+
+test("a missing config file and unset environment resolve to an empty allowlist", (t) => {
+	const { configHome } = extensionResolverFixture(t);
+	assert.deepEqual(resolveReviewHostRelayExtensionPaths({}, configHome), []);
+});
+
+test("a config file without the reviewerExtensionPaths key resolves to an empty allowlist", (t) => {
+	const { configHome, file } = extensionResolverFixture(t);
+	writeFileSync(file, JSON.stringify({}));
+	assert.deepEqual(resolveReviewHostRelayExtensionPaths({}, configHome), []);
+});
+
+test("a malformed config file is a typed reviewer-config refusal, never a silent fallback", (t) => {
+	const { configHome, file } = extensionResolverFixture(t);
+	writeFileSync(file, "{ not json");
+	assert.throws(() => resolveReviewHostRelayExtensionPaths({}, configHome), (error: unknown) => {
+		assert.ok(error instanceof ReviewHostRelayError);
+		assert.equal(error.kind, REVIEW_HOST_RELAY_FAILURE.REVIEWER_CONFIG_INVALID);
+		assert.match(error.message, /not valid JSON/);
+		return true;
+	});
+});
+
+test("a config file whose top level is not an object is a typed reviewer-config refusal", (t) => {
+	const { configHome, file } = extensionResolverFixture(t);
+	writeFileSync(file, JSON.stringify(["/abs/one.ts"]));
+	assert.throws(() => resolveReviewHostRelayExtensionPaths({}, configHome), (error: unknown) => {
+		assert.ok(error instanceof ReviewHostRelayError);
+		assert.equal(error.kind, REVIEW_HOST_RELAY_FAILURE.REVIEWER_CONFIG_INVALID);
+		assert.match(error.message, /must be a JSON object/);
+		return true;
+	});
+});
+
+test("non-array and non-string reviewerExtensionPaths entries are typed reviewer-config refusals", (t) => {
+	const { configHome, file } = extensionResolverFixture(t);
+	for (const body of [{ reviewerExtensionPaths: "/abs/one.ts" }, { reviewerExtensionPaths: [42] }, { reviewerExtensionPaths: ["/abs/one.ts", ""] }]) {
+		writeFileSync(file, JSON.stringify(body));
+		assert.throws(() => resolveReviewHostRelayExtensionPaths({}, configHome), (error: unknown) => {
+			assert.ok(error instanceof ReviewHostRelayError);
+			assert.equal(error.kind, REVIEW_HOST_RELAY_FAILURE.REVIEWER_CONFIG_INVALID);
+			assert.match(error.message, /array of non-empty strings/);
+			return true;
+		});
+	}
 });

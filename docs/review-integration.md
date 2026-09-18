@@ -26,7 +26,9 @@ The adapter does not parse bindings, select work, rebuild prompts, inspect repos
 The default reviewer launch is selection-free: no model flag, no extensions, no ambient inheritance of the session's model. Two optional, user-owned selections ride the request and are validated before any process launches; a broken value is refused typed as `reviewer-config-invalid`, never a mid-review transport failure:
 
 - **Lens model** — the capture path reads the lens's entry from the agent model routing config (`review-risk`, `review-resilience`, `review-readability`, `review-reliability`) and forwards it as `--model <provider/id>`.
-- **Extension allowlist** — `GENTLE_PI_REVIEW_RELAY_EXTENSIONS` holds absolute extension file paths separated by the platform path delimiter. They are loaded through explicit `-e` paths, which pi honors even under `--no-extensions`; this is how a subscription provider's OAuth billing adapter rides along without re-enabling extension discovery.
+- **Extension allowlist** — absolute extension file paths loaded through explicit `-e` paths, which pi honors even under `--no-extensions`; this is how a subscription provider's OAuth billing adapter rides along without re-enabling extension discovery. Two sources, override semantics:
+  - `${gentlePiConfigHome}/review-relay.json` (default `~/.pi/gentle-ai/review-relay.json`) with `{"reviewerExtensionPaths": ["/abs/path/to/adapter.ts"]}`. Global only by design: a repository-local variant would let a cloned repository inject extension code into the reviewer child. A present but malformed file is refused typed as `reviewer-config-invalid`, never silently ignored.
+  - `GENTLE_PI_REVIEW_RELAY_EXTENSIONS` — absolute paths separated by the platform path delimiter. When set and non-empty it replaces the file entirely as a per-invocation override; the two sources never merge.
 
 A typed Pi transport refusal fails closed. The coordinator reports the refusal — including the reviewer evidence and a bounded stderr excerpt on an empty-output failure — without an agentless lifecycle fallback, local retry policy, synthetic result, or alternate approval path.
 

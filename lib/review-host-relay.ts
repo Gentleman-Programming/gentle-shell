@@ -31,8 +31,9 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { resolveGentleAiBinary } from "./gentle-ai-binary.ts";
 import { SAFE_MODEL_ID_PATTERN } from "./model-routing-authority.ts";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { delimiter as pathDelimiter } from "node:path";
+import { gentlePiConfigHome } from "./agent-home.ts";
 import {
 	OPAQUE_PI_REVIEWER_TRANSPORT_FAILURE,
 	OpaquePiReviewerTransportError,
@@ -521,17 +522,41 @@ function assertTokens(name: string, tokens: readonly string[]): void {
 }
 
 export const REVIEW_HOST_RELAY_EXTENSIONS_ENV = "GENTLE_PI_REVIEW_RELAY_EXTENSIONS";
+export const REVIEW_HOST_RELAY_CONFIG_FILE = "review-relay.json";
 
 /**
- * The user-owned extension allowlist for the reviewer child, read from the
- * environment (gentle-shell#1158). Entries are split on the platform path
- * delimiter; empty entries are skipped. Validation of each path happens at
- * snapshot time, so a broken entry is refused typed before anything launches.
+ * The user-owned extension allowlist for the reviewer child (gentle-shell#1158,
+ * #1198). Two sources: the environment variable (path-delimiter separated) and
+ * the global `${gentlePiConfigHome}/review-relay.json` file with
+ * `{"reviewerExtensionPaths": ["..."]}`. A set, non-empty environment value
+ * replaces the file entirely as a per-invocation override; it never merges.
+ * The file is global-only by design: a repository-local variant would let a
+ * cloned repo inject extension code into the reviewer child. A present but
+ * unusable file is a typed refusal, not a silent fallback — path-level
+ * validation (absolute, existing) still happens at snapshot time.
  */
-export function resolveReviewHostRelayExtensionPaths(environment: NodeJS.ProcessEnv = process.env): readonly string[] {
+export function resolveReviewHostRelayExtensionPaths(environment: NodeJS.ProcessEnv = process.env, configHome: string = gentlePiConfigHome(environment)): readonly string[] {
 	const configured = environment[REVIEW_HOST_RELAY_EXTENSIONS_ENV];
-	if (configured === undefined || configured.trim().length === 0) return [];
-	return configured.split(pathDelimiter).map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+	if (configured !== undefined && configured.trim().length > 0) {
+		return configured.split(pathDelimiter).map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+	}
+	const filePath = join(configHome, REVIEW_HOST_RELAY_CONFIG_FILE);
+	if (!existsSync(filePath)) return [];
+	let decoded: unknown;
+	try {
+		decoded = JSON.parse(readFileSync(filePath, "utf8"));
+	} catch {
+		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.REVIEWER_CONFIG_INVALID, "pi", `Pi host relay reviewer launch configuration is invalid: ${filePath} is not valid JSON`);
+	}
+	if (typeof decoded !== "object" || decoded === null || Array.isArray(decoded)) {
+		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.REVIEWER_CONFIG_INVALID, "pi", `Pi host relay reviewer launch configuration is invalid: ${filePath} must be a JSON object`);
+	}
+	const entries = (decoded as Record<string, unknown>).reviewerExtensionPaths;
+	if (entries === undefined) return [];
+	if (!Array.isArray(entries) || entries.some((entry) => typeof entry !== "string" || entry.trim().length === 0)) {
+		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.REVIEWER_CONFIG_INVALID, "pi", `Pi host relay reviewer launch configuration is invalid: ${filePath} reviewerExtensionPaths must be an array of non-empty strings`);
+	}
+	return entries.map((entry) => entry.trim());
 }
 
 // The tokens a validated caller-owned selection contributes to the child's

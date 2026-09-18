@@ -6595,10 +6595,11 @@ function reviewHostRelayFailureReport(error: ReviewHostRelayError): Record<strin
 	};
 }
 
-// gentle-shell#1136 / #1158: the only two user-owned launch selections the
-// relay accepts. The lens's model comes from the agent model routing config
-// under the lens's agent name; the extension allowlist comes from the
-// environment. Both are optional, and neither is ever invented here.
+// gentle-shell#1136 / #1158 / #1198: the only two user-owned launch selections
+// the relay accepts. The lens's model comes from the agent model routing config
+// under the lens's agent name; the extension allowlist comes from the global
+// review-relay.json file, with the environment variable as a per-invocation
+// override. Both are optional, and neither is ever invented here.
 function reviewHostRelayLaunchSelection(lens: string | undefined, config: AgentModelConfig, environment: NodeJS.ProcessEnv): { reviewerModel?: string; reviewerExtensionPaths?: readonly string[] } {
 	const agentName = lens === undefined || lens.length === 0 ? undefined : lens.startsWith("review-") ? lens : `review-${lens}`;
 	const entry = agentName === undefined ? undefined : config[agentName];

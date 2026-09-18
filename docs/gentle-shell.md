@@ -19,15 +19,24 @@ The source checkout currently prepares `gentle-pi` `3.2.0` with a package-local 
 
 ## Shell interactions and runtime behavior
 
-Gentle Shell is the Pi workspace experience provided by the `gentle-pi` package. It follows the Gentle themes: one border language, champagne titles, rose for whatever is alive.
+Gentle Shell is the Pi workspace experience provided by the `gentle-pi` package. It follows the Gentle themes: one border language, rose for whatever is alive.
 
-In fullscreen at 140 columns or wider, the right sidebar scrolls **✿ Gentle-Pi ✿ → Status → Changes → Agents → TODO** together. The one-line heading is horizontally centered within the usable rail width, with pink flowers and normal white text in the Gentleman themes. Colors follow the active theme; no artwork scaling or custom fonts are used. Narrow/mobile terminals and regular mode retain bottom widgets without the sidebar heading. The original rose and text logo remain in the main chat startup intro.
+### Fullscreen layout
 
-The rail reuses its last frame until something it paints changes, so silent frames stay cheap and live session state still lands on the next frame: a model switch, a new thinking level, context growth, session cost, session name and extension statuses all refresh the Status card without a redraw of the rest of the sidebar.
+At 140 columns or wider, fullscreen splits into a live header row over a transcript-and-rail split, both driven by [`lib/shell-sidebar-layout.ts`](../lib/shell-sidebar-layout.ts):
 
-The sidebar Status card also shows `Profile` in its Model section when the profiles store has a valid active marker. It follows profile changes on the next render. Missing, unreadable, or invalid stores leave the line hidden. The compact bottom bar is unchanged.
+```text
+✿ Gentle Shell ⟡ ~/work/gentle-pi main ⟡ gpt-5.5 · medium · team              ctx ▰▰▰▰▱▱▱▱ 45% ⟡ $9.49 sub
+```
 
-The status bar replaces pi's three-line footer with a single line of segments:
+- The header is one row, always visible, and carries only what changes every frame: session identity on the left (brand, cwd, branch, dirty count, model · effort · profile) and the two live counters right-aligned (the context gauge and session cost). It never shows the working/thinking state or extension statuses — those stay in the prompt title and the compact bar. When the terminal is too narrow for everything, segments give way in a fixed order — profile, then effort, then the whole cwd/branch/dirty group — before the counters are touched; below that, only the brand survives, and below that the header renders nothing.
+- The right rail scrolls **Status → Changes → TODO**, each an event-driven card that only repaints when its own state changes: a model switch or a cost tick refreshes the header, not the rail. Every card (sidebar or not) paints the same rose frame — the rounded border in the theme's plain border role, the title in the accent role — the look every `CARD_TONE.INFO` card in Gentle Shell uses (warning/error/success cards keep their own tone colors).
+- The Status card carries only what an explicit event refreshes: Project (cwd, branch, session name, active profile), Changes, and Integrations (other extensions' statuses). Model, effort, context, cost, and the per-model usage table live in the header instead — the header ticks every frame, so duplicating them in a card would just make that card repaint every frame too.
+- Gentle Agents is not part of the rail in any mode: its one card stays above the editor, where it already lived, with fixed right-aligned columns for `model · effort`, tokens, cost, and elapsed, each sized to the widest value among the shown tasks — so the numbers line up vertically even when one row's values are much shorter than another's. A queued task fills only the elapsed column with the word `queued`, leaving the other columns blank rather than overwriting the row.
+- The sidebar reuses its last frame until something it paints changes, so silent frames stay cheap; a per-section cache means one card's changing digest (or the header's) never forces an unrelated card to redraw. The reserved footer row Pi's own dock layout otherwise keeps under the editor is reclaimed while the sidebar is active, so there is no permanent blank line there.
+- Narrow terminals and regular mode keep the compact bottom bar and the above-editor Agents widget, with no header row and no sidebar.
+
+Below 140 columns, or in regular mode, the compact bottom bar replaces pi's three-line footer with a single line of segments instead:
 
 ```text
 ✿ gentle shell ⟡ ~/work/gentle-pi main ⟡ gpt-5.5 · medium ⟡ ctx ▰▰▰▰▱▱▱▱ 45% ⟡ $9.49 sub ⟡ MCP: 3 servers enabled        Release notes
@@ -112,7 +121,7 @@ The panel rows a provider reports its windows with:
 - Only the plan name and the windows are kept; account details in the payload are discarded.
 - Gauges turn amber at 80% and red at 95%, like the context gauge.
 
-Gentle notices are drawn as cards: the same rounded frame as the prompt, with the left rail and the title in the tone of the notice and the rest of the frame in the theme's border color.
+Gentle notices are drawn as cards: the same rounded frame as the prompt. An informational card paints the rounded frame in the theme's plain border role and its title in the accent role — the rose look every sidebar card, the review preflight reminder, and a quiet Agents card share. A warning, error, or success card paints its frame and title in its own tone color instead.
 
 ```text
 ╭─ ✿ Gentle AI · review preflight ─────────────────────────────────────╮
@@ -135,10 +144,12 @@ Agent paths follow `GENTLE_PI_AGENT_HOME`, then `PI_CODING_AGENT_DIR`, then `~/.
 
 ```text
 ╭─ ❀ Agents · 1 active · 1 done ─────────────────────────────── 1m24s ╮
-│ ✓  sdd-explore  map footer data sources    gpt-5.6-terra · 34k · $0.27 · 25s │
-│ ◐  sdd-apply    write gentle-shell footer  gpt-5.6-terra · 12k · $0.09 · 41s │
-╰──────────────────────────────────────────────────────────────────────────────╯
+│ ✓  sdd-explore  map footer data sources     gpt-5.6-terra ·  34k ·  $0.27 · 25s │
+│ ◐  sdd-apply    write gentle-shell footer   gpt-5.6-terra · 120k · $12.50 · 41s │
+╰──────────────────────────────────────────────────────────────────────────────────╯
 ```
+
+The card is above the editor in every mode, including fullscreen — it is not one of the sidebar's cards. Each metadata field (`model · effort`, tokens, cost, elapsed) gets its own fixed, right-aligned column sized to the widest value among the shown tasks, so the numbers line up vertically even when one row's values are much shorter than another's; a queued task fills only the elapsed column with the word `queued`, leaving the rest of the row blank rather than overwriting it.
 
 Every subagent is its own `pi --mode rpc` child process, so the terminal never runs subagent work: the host reads JSON lines, applies each one as a small delta to a bounded per-task thread, and notifies only the listeners of that task. A task-mode child's question (`ctx.ui.select`, `confirm`, `input`, `editor`) reaches you as an ordinary pi dialog; a background child's question is dismissed. Subagents have no automatic total execution timeout: a long-running child remains live while it continues emitting RPC events. A silent child still times out through the configurable `stall_timeout_ms` watchdog (default four minutes). An announced tool call that is still running is live work, not silence, so it is bounded by `tool_stall_timeout_ms` instead (default 30 minutes, never below `stall_timeout_ms`). Closing pi stops the children that are still running.
 

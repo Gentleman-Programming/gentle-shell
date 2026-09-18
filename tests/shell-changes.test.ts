@@ -72,6 +72,16 @@ test("parsePorcelain reads NUL-separated status entries including renames and un
 	);
 });
 
+test("parsePorcelain drops embedded-repository markers, never a real file", () => {
+	// Git reports a nested .git directory (an embedded/foreign repository, the
+	// live evidence's ~/work/NaN-builders inside ~/work) as one directory-shaped
+	// "?? path/" line, never expanded into files, even with --untracked-files=all.
+	// Treating that line as a changed file creates a phantom entry for whatever
+	// ancestor repository happens to contain the nested one.
+	const raw = ["?? NaN-builders/", "?? notes.md", " M lib/a.ts"].join("\0") + "\0";
+	assert.deepEqual([...parsePorcelain(raw).entries()], [["notes.md", CHANGE_STATUS.UNTRACKED], ["lib/a.ts", CHANGE_STATUS.MODIFIED]]);
+});
+
 test("snapshotChanges merges status with counts and keeps untracked files without counts", () => {
 	const files = snapshotChanges({
 		numstat: "4\t2\tlib/a.ts\n",
@@ -263,6 +273,78 @@ test("registration during an in-flight status scan is included before refresh re
 
 test("worktree porcelain preserves unusual directory names and detached fallback", () => {
 	assert.deepEqual(parseWorktrees("worktree /a\nbranch strange\0HEAD abc\0detached\0\0"), [{ root: "/a\nbranch strange" }]);
+});
+
+// C3 (odd/tasks/usage-click-and-changes-attribution.md): a root registered by
+// the session but absent from a single `git worktree list` scan -- because it
+// belongs to a different Git clone entirely, e.g. an inner repository nested
+// inside an outer one -- must not default to "detached". It must be asked
+// directly, and "no commits yet" must read differently from a real branch.
+test("a root missing from worktree list resolves its own branch instead of defaulting to detached", async (t) => {
+	const scenarios: Array<{ name: string; symbolic: { stdout: string; code: number }; verify: { stdout: string; code: number }; expected: string | undefined }> = [
+		{ name: "a normal branch on a foreign clone", symbolic: { stdout: "feature\n", code: 0 }, verify: { stdout: "deadbeef\n", code: 0 }, expected: "feature" },
+		{ name: "an unborn branch (no commits yet)", symbolic: { stdout: "main\n", code: 0 }, verify: { stdout: "", code: 1 }, expected: "no commits yet" },
+		{ name: "a genuinely detached HEAD", symbolic: { stdout: "", code: 1 }, verify: { stdout: "deadbeef\n", code: 0 }, expected: undefined },
+	];
+	for (const scenario of scenarios) {
+		await t.test(scenario.name, async () => {
+			const calls: string[][] = [];
+			const tracker = new WorktreeChangesTracker(
+				async () => ({ stdout: "", code: 0 }), // /foreign never appears in this clone's own worktree list
+				() => async (args) => {
+					calls.push(args);
+					if (args[0] === "status") return { stdout: "?? changed.ts\0", code: 0 };
+					if (args[0] === "symbolic-ref") return scenario.symbolic;
+					if (args[0] === "rev-parse") return scenario.verify;
+					return { stdout: "", code: 0 };
+				},
+				undefined,
+				() => ["/foreign"],
+			);
+			await tracker.start();
+			assert.deepEqual(tracker.worktrees.map((tree) => [tree.root, tree.branch]), [["/foreign", scenario.expected]]);
+			assert.ok(calls.some((args) => args[0] === "symbolic-ref"), "a root absent from worktree list must be asked directly");
+		});
+	}
+});
+
+// A root already described by the same clone's own worktree list is trusted
+// as-is: a real "detached" marker there is already 100% accurate, so no
+// redundant per-root call is needed (and none happens).
+test("a root already described by worktree list is trusted without a redundant lookup", async () => {
+	const calls: string[][] = [];
+	const tracker = new WorktreeChangesTracker(
+		async () => ({ stdout: "worktree /known\0detached\0\0", code: 0 }),
+		() => async (args) => {
+			calls.push(args);
+			return { stdout: args[0] === "status" ? "?? changed.ts\0" : "", code: 0 };
+		},
+		undefined,
+		() => ["/known"],
+	);
+	await tracker.start();
+	assert.deepEqual(tracker.worktrees.map((tree) => [tree.root, tree.branch]), [["/known", undefined]]);
+	assert.ok(!calls.some((args) => args[0] === "symbolic-ref"), "a known worktree-list entry must not trigger a fallback call");
+});
+
+// The live evidence: an outer repo (~/work, no commits) whose ONLY change is
+// the embedded inner repository (~/work/NaN-builders) itself must never show
+// up as a phantom tree once the embedded-repo marker is filtered out of its
+// own file list -- it never had a real file to show in the first place.
+test("an outer ancestor whose only change is the embedded inner repository is never a phantom tree", async () => {
+	const tracker = new WorktreeChangesTracker(
+		async () => ({ stdout: "", code: 0 }), // neither root belongs to the other's clone
+		(root) => async (args) => {
+			if (args[0] !== "status") return { stdout: "", code: 0 };
+			// The outer root's only "change" is the nested repo directory marker;
+			// the inner root has a real file of its own.
+			return { stdout: root === "/outer" ? "?? NaN-builders/\0" : "?? jpg-png-converter.md\0", code: 0 };
+		},
+		undefined,
+		() => ["/outer", "/outer/NaN-builders"],
+	);
+	await tracker.start();
+	assert.deepEqual(tracker.worktrees.map((tree) => tree.root), ["/outer/NaN-builders"]);
 });
 
 test("registered roots remain scannable during metadata discovery failure", async () => {

@@ -90,8 +90,13 @@ export function parsePorcelain(text: string): Map<string, ChangeStatus> {
 		const record = records[index];
 		const code = record.slice(0, 2);
 		const path = record.slice(3);
-		const status = STATUS_BY_CODE[code[0]] ?? STATUS_BY_CODE[code[1]] ?? CHANGE_STATUS.MODIFIED;
-		statuses.set(path, status);
+		// A trailing "/" is Git's own marker for an embedded repository (a
+		// nested .git directory, e.g. an inner repo inside an outer one) or an
+		// excluded directory -- never an individual file. Even with
+		// --untracked-files=all, Git reports these as one directory-shaped line
+		// instead of expanding into files, so keeping it would show a phantom
+		// changed "file" on whatever ancestor repository contains the nested one.
+		if (!path.endsWith("/")) statuses.set(path, STATUS_BY_CODE[code[0]] ?? STATUS_BY_CODE[code[1]] ?? CHANGE_STATUS.MODIFIED);
 		if (code[0] === "R" || code[0] === "C") index += 1;
 	}
 	return statuses;
@@ -163,6 +168,18 @@ export function parseWorktrees(text: string): Array<{ root: string; branch?: str
 	});
 }
 
+// Resolve a foreign clone's own HEAD directly instead of assuming "detached":
+// a real branch name, "no commits yet" for an unborn branch (a branch ref
+// that exists but has no commit), or undefined for a genuine detached HEAD
+// (the caller falls back to "detached" in that case).
+async function foreignRootBranch(git: GitRunner): Promise<string | undefined> {
+	const symbolic = await git(["symbolic-ref", "--quiet", "--short", "HEAD"]).catch(() => ({ code: 1, stdout: "" }) as GitResult);
+	const branch = symbolic.code === 0 ? symbolic.stdout.trim() : "";
+	if (!branch) return undefined;
+	const verified = await git(["rev-parse", "--verify", "-q", "HEAD"]).catch(() => ({ code: 1, stdout: "" }) as GitResult);
+	return verified.code === 0 ? branch : "no commits yet";
+}
+
 export class WorktreeChangesTracker {
 	worktrees: WorktreeChanges[] = [];
 	private inFlight: Promise<ChangesModel> | undefined;
@@ -208,11 +225,19 @@ export class WorktreeChangesTracker {
 		// Discovery labels registered roots; it never grants visibility to siblings.
 		const roots = new Set(this.registeredRoots());
 		for (const root of roots) {
-			const tree = metadata.get(root) ?? { root };
+			const known = metadata.get(root);
 			try {
-				const tracker = new ChangesTracker(this.gitForRoot(tree.root), this.linesForRoot(tree.root));
+				const tracker = new ChangesTracker(this.gitForRoot(root), this.linesForRoot(root));
 				await tracker.start();
-				if (tracker.model.files.length) trees.push({ ...tree, model: tracker.model });
+				if (!tracker.model.files.length) continue;
+				// A root missing from this discovery scan belongs to a different Git
+				// clone entirely (e.g. an inner repository nested inside an outer
+				// one) -- worktree list can never describe a foreign clone, so ask
+				// it directly instead of defaulting to "detached". A root the scan
+				// DID describe is trusted as-is: its own "detached" marker (or lack
+				// of a branch) is already accurate for that clone.
+				const branch = known ? known.branch : await foreignRootBranch(this.gitForRoot(root));
+				trees.push({ root, ...(branch ? { branch } : {}), model: tracker.model });
 			} catch {
 				// Linked roots can disappear between discovery and status.
 			}

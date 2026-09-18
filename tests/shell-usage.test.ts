@@ -138,11 +138,13 @@ test("renderUsagePanel lists each provider with meters, resets, and a stale mark
 	const lines = renderUsagePanel([usage], plainTheme, 70, NOW + 3 * 60_000);
 	for (const line of lines) assert.ok(visibleWidth(line) <= 70, `too wide: ${line}`);
 	assert.match(lines[0], /^openai-codex · pro · updated 3m ago$/);
-	assert.match(lines[1], /^ {2}codex$/);
-	assert.match(lines[2], /^ {4}week +▰+▱+ +40% +resets in 2d 1h$/);
-	assert.match(lines[3], /^ {2}codex_spark$/);
-	assert.match(lines[4], /^ {4}5h /);
-	assert.match(lines[5], /^ {4}week /);
+	// One row per window: the name and its meter share a line, the reset sits under it.
+	assert.match(lines[1], /^ {2}codex week +[▰▱]{16} +40%$/);
+	assert.match(lines[2], /^ {19}resets in 2d 1h$/);
+	assert.match(lines[3], /^ {2}codex_spark 5h +[▰▱]{16} +12%$/);
+	assert.match(lines[4], /^ {19}resets in \d+h \d+m$/);
+	assert.match(lines[5], /^ {2}codex_spark week +[▰▱]{16} +3%$/);
+	assert.match(lines[6], /^ {19}resets in \d+d \d+h$/);
 	assert.deepEqual(renderUsagePanel([], plainTheme, 120, NOW), ["No subscription usage yet. Usage arrives with the next response, or press r to fetch it."]);
 });
 
@@ -152,7 +154,7 @@ test("renderUsagePanel puts the active provider first and explains missing data"
 	assert.ok(claude);
 	const both = renderUsagePanel([codex, claude], plainTheme, 100, NOW, { provider: "anthropic" });
 	assert.match(both[0], /^✿ anthropic · updated just now$/);
-	assert.match(both[1], /^ {2}claude$/);
+	assert.match(both[1], /^ {2}claude 5h +[▰▱]{16} +20%$/);
 	assert.match(both.find((line) => line.startsWith("openai-codex")) ?? "", /^openai-codex · pro/);
 
 	const apiKey = renderUsagePanel([codex], plainTheme, 100, NOW, { provider: "openai" });
@@ -246,13 +248,16 @@ test("nan is a supported usage provider with its own pending note", () => {
 test("renderUsagePanel lists the NaN account total ahead of the per-model allowances", () => {
 	const usage = parseNanQuota(NAN_QUOTA, NOW);
 	const lines = renderUsagePanel([usage], plainTheme, 80, NOW, { provider: "nan" });
+	for (const line of lines) assert.ok(visibleWidth(line) <= 80, `too wide: ${line}`);
 	assert.match(lines[0], /^✿ nan · updated just now$/);
-	assert.match(lines[1], /^ {2}nan total$/);
-	assert.match(lines[2], /^ {10}▰.+ 22%$/);
-	assert.match(lines[3], /^ {2}glm5\.3$/);
-	assert.match(lines[4], /^ {10}▰.+ 27% +resets in \d+d \d+h$/);
-	assert.match(lines[5], /^ {4}4h .+ 30% +resets in \d+h \d+m$/);
-	assert.match(lines[6], /^ {2}deepseek-v4-flash$/);
+	assert.match(lines[1], /^ {2}nan total +[▰▱]{16} +22%$/);
+	assert.match(lines[2], /^ {2}glm5\.3 +[▰▱]{16} +27%$/);
+	assert.match(lines[3], /^ {20}resets in \d+d \d+h$/);
+	// The rolling window a model reports is a row of its own, with its own reset.
+	assert.match(lines[4], /^ {2}glm5\.3 4h +[▰▱]{16} +30%$/);
+	assert.match(lines[5], /^ {20}resets in \d+h \d+m$/);
+	assert.match(lines[6], /^ {2}deepseek-v4-flash +[▰▱]{16} +10%$/);
+	assert.match(lines[7], /^ {20}resets in \d+d \d+h$/);
 });
 
 // The server picks the order of the per-model allowances, so drawing the first
@@ -295,35 +300,36 @@ const GROUPED_NAN_QUOTA = {
 };
 
 function panelNames(lines: string[]): string[] {
-	return lines.filter((line) => !isWindowRow(line)).map((line) => line.trim());
+	return lines.filter(isMeterRow).map((line) => line.trim().replace(/\s*[▰▱].*$/, ""));
 }
 
-// A window row is the indent and the gauge: the billing-period window no longer
-// announces itself with a label, so the meter is what identifies the row.
-function isWindowRow(line: string): boolean {
-	return /^[▰▱]/.test(line.trim());
+// A meter row carries the row name and its gauge on one line; the reset, when the
+// window reports one, is the line underneath.
+function isMeterRow(line: string): boolean {
+	return /[▰▱]/.test(line);
+}
+
+function isResetRow(line: string): boolean {
+	return line.trim().startsWith("resets in");
 }
 
 function panelPercents(lines: string[]): number[] {
-	return lines.filter(isWindowRow).map((line) => Number.parseInt(line.trim().match(/(\d+)%/)![1] ?? "", 10));
+	return lines.filter(isMeterRow).map((line) => Number.parseInt(line.trim().match(/(\d+)%/)![1] ?? "", 10));
 }
 
 test("renderUsagePanel groups NaN allowances by family and totals the account", () => {
 	const lines = renderUsagePanel([parseNanQuota(GROUPED_NAN_QUOTA, NOW)], plainTheme, 80, NOW, { provider: "nan" }).map((line) => line.trimEnd());
-	assert.deepEqual(panelNames(lines), ["✿ nan · updated just now", "nan total", "deepseek-v4-flash", "glm total", "glm5.3-flash", "glm5.3", "glm5.2"]);
+	assert.deepEqual(panelNames(lines), ["nan total", "deepseek-v4-flash", "glm total", "glm5.3-flash", "glm5.3", "glm5.2"]);
 	// 500M of 11B account-wide, 200M of 8B across the GLM members, then each model.
 	assert.deepEqual(panelPercents(lines), [5, 10, 3, 10, 0, 0]);
-	assert.deepEqual(
-		lines.filter(isWindowRow).map((line) => line.includes("resets in")),
-		[false, true, false, true, true, true],
-		"a group closes when its members do, so it carries no single reset",
-	);
+	// A group closes when its members do, so only the four models carry a reset.
+	assert.equal(lines.filter(isResetRow).length, 4);
 });
 
 test("renderUsagePanel leaves providers without raw allowances ungrouped", () => {
 	const lines = renderUsagePanel([parseCodexUsage(CODEX_PAYLOAD, NOW)], plainTheme, 70, NOW);
 	assert.equal(lines.some((line) => line.includes("total")), false);
-	assert.match(lines[1], /^ {2}codex$/);
+	assert.match(lines[1], /^ {2}codex week /);
 });
 
 test("UsageStore keeps the latest snapshot per provider and lists them in order", () => {

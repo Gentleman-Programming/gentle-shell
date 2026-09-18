@@ -54,6 +54,7 @@ entry (so the rolling `4h` row never renders on real data).
 - [x] NAN-A3 — RED: lock the grouped panel (account row, family rows, no aggregate reset, provider guard) with failing tests.
 - [x] NAN-A4 — GREEN: group the limits in the view layer without touching the parser contract.
 - [x] NAN-A5 — Wire the bar to `ShellBarModel.modelId`, update the docs, verify (focused tests, full suite, typecheck).
+- [x] NAN-A7 — One panel row per window: the limit name and its meter on one line, the reset under it, for every provider, with a shared name column.
 - [x] NAN-A6 — Drop the redundant window label: the period allowance prints as `name meter percent` in the bar, the sidebar and the panel, while a labeled sub-window (`4h`) keeps its column.
 
 ## Acceptance criteria

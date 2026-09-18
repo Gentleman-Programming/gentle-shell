@@ -34,7 +34,8 @@ test("UsageView frames the panel, keeps every line at width, and shows the empty
 	for (const line of lines) assert.equal(visibleWidth(line), 90, `"${stripAnsi(line)}" is not 90 wide`);
 	const plain = lines.map(stripAnsi);
 	assert.match(plain[1], /^│ openai-codex · pro · updated just now +│$/);
-	assert.match(plain[3], /^│ {5}week +▰+▱+ +40% +resets in 2h 0m +│$/);
+	assert.match(plain[2], /^│ {3}codex week +[▰▱]{16} +40% +│$/);
+	assert.match(plain[3], /^│ {14}resets in 2h 0m +│$/);
 });
 
 test("UsageView refetches on r and closes on escape or q", async () => {
@@ -54,7 +55,7 @@ test("UsageView refetches on r and closes on escape or q", async () => {
 	view.handleInput("r");
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	assert.deepEqual(events, ["render", "refresh", "render"]);
-	assert.match(stripAnsi(view.render(90)[3]), /55%/);
+	assert.match(stripAnsi(view.render(90)[2]), /55%/);
 	assert.match(stripAnsi(view.render(90)[1]), /^│ ✿ openai-codex · pro · updated just now/);
 	view.handleInput("\x1b");
 	view.handleInput("q");

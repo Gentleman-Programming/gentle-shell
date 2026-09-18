@@ -411,15 +411,19 @@ export function renderUsagePanel(usages: ProviderUsage[], theme: UsageTheme, wid
 		const mark = usage === activeUsage ? `${theme.fg(ROLE.LIMIT, ACTIVE_MARK)} ` : "";
 		const plan = usage.plan ? ` ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.PLAN, usage.plan)}` : "";
 		lines.push(`${mark}${theme.fg(ROLE.PROVIDER, usage.provider)}${plan} ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.RESET, updatedAgo(usage.fetchedAt, now))}`);
-		for (const limit of groupUsageLimits(usage.limits, usage.provider)) {
-			lines.push(`  ${theme.fg(ROLE.LIMIT, limit.name)}`);
-			for (const window of limit.windows) {
-				const percent = `${Math.round(window.usedPercent)}%`.padStart(4);
-				const reset = formatReset(window.resetAt, now);
-				// No reset means no trailing separator: a group closes when its members do.
-				const tail = reset.length > 0 ? `  ${theme.fg(ROLE.RESET, reset)}` : "";
-				lines.push(`    ${theme.fg(ROLE.LABEL, window.label.padEnd(5))} ${paintMeter(window.usedPercent, PANEL_METER_CELLS, theme)} ${theme.fg(ROLE.PERCENT, percent)}${tail}`);
-			}
+		// One row per window: the limit name and its meter share a line, and the
+		// reset that window reports sits under it, aligned with the meter. A window
+		// without its own label (the model's allowance) is named by its limit alone.
+		const rows = groupUsageLimits(usage.limits, usage.provider).flatMap((limit) =>
+			limit.windows.map((window) => ({ name: [limit.name, window.label].filter((part) => part.length > 0).join(" "), window })),
+		);
+		const nameWidth = rows.reduce((widest, row) => Math.max(widest, row.name.length), 0);
+		const resetIndent = " ".repeat(nameWidth + 1);
+		for (const row of rows) {
+			const percent = `${Math.round(row.window.usedPercent)}%`.padStart(4);
+			lines.push(`  ${theme.fg(ROLE.LABEL, row.name.padEnd(nameWidth))} ${paintMeter(row.window.usedPercent, PANEL_METER_CELLS, theme)} ${theme.fg(ROLE.PERCENT, percent)}`);
+			const reset = formatReset(row.window.resetAt, now);
+			if (reset.length > 0) lines.push(`  ${resetIndent}${theme.fg(ROLE.RESET, reset)}`);
 		}
 	}
 	return lines.map((line) => truncateToWidth(line, width, "…"));

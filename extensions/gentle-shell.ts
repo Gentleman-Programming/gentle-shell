@@ -5,7 +5,7 @@ import { statSync } from "node:fs";
 import { profilesFilePath, readProfilesFileResult } from "../lib/agent-profiles.ts";
 import * as os from "node:os";
 import { join } from "node:path";
-import { renderShellBar, renderShellSidebarBar, shellEnabled, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
+import { buildShellHeaderModel, renderShellBar, renderShellHeaderBar, renderShellSidebarBar, shellEnabled, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
 import { CHANGE_STATUS, renderChangesWidget, type ChangedFile, type ChangesModel, type GitRunner, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver } from "../lib/session-worktree-registry.ts";
@@ -17,7 +17,7 @@ import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from
 import { framePromptLines, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
 import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseUsageHeaders, UsageStore, type ProviderUsage } from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
-import { sidebarPart } from "../lib/shell-sidebar.ts";
+import { sidebarHeader, sidebarPart } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import { SessionChanges, SESSION_CHANGE_EVENT } from "../lib/session-changes.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
@@ -616,8 +616,16 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				render: (width) => renderShellSidebarBar(footerModel(), theme, width),
 				invalidate() {},
 			});
+			// The header row carries everything that ticks every frame (model,
+			// effort, context, cost) plus session identity; it never sees
+			// extension statuses or the working/thinking state.
+			const disposeHeader = sidebarHeader(tui, {
+				digest: () => JSON.stringify(buildShellHeaderModel(footerModel())),
+				render: (width) => [renderShellHeaderBar(buildShellHeaderModel(footerModel()), theme, width)],
+				invalidate() {},
+			});
 			const uninstall = installSidebar(tui, theme);
-			return { ...part, dispose() { uninstall(); part.dispose(); } };
+			return { ...part, dispose() { disposeHeader(); uninstall(); part.dispose(); } };
 		});
 		void refreshUsage(ctx, true);
 		const ownsPrompt = installPrompt(ctx, (created) => {

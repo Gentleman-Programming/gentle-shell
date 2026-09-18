@@ -1,6 +1,6 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { GAUGE_CELLS, gaugeTone, paintGauge, renderGauge, type GaugeTone } from "./shell-gauge.ts";
-import { allowanceGroupsSupported, groupUsageLimits, renderUsageBar, selectUsageLimit, type ProviderUsage } from "./shell-usage.ts";
+import { renderUsageBar, type ProviderUsage } from "./shell-usage.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { CARD_TONE, cardInnerWidth, renderCard } from "./shell-card.ts";
 
@@ -25,6 +25,28 @@ export interface ShellBarModel {
 	subscription: boolean;
 	usage: ProviderUsage | undefined;
 	statuses: string[];
+}
+
+// The live header row above the fullscreen rail: session identity plus the
+// two counters that tick every frame (context, cost). Deliberately narrower
+// than ShellBarModel — extension statuses and the working/thinking state
+// never reach the header, so there is nothing on this type for them to leak
+// through.
+export interface ShellHeaderModel {
+	cwd: string;
+	branch: string | null;
+	dirty: number | undefined;
+	modelId: string;
+	effort: string | undefined;
+	profile?: string;
+	contextPercent: number | null;
+	costTotal: number;
+	subscription: boolean;
+}
+
+export function buildShellHeaderModel(model: ShellBarModel): ShellHeaderModel {
+	const { cwd, branch, dirty, modelId, effort, profile, contextPercent, costTotal, subscription } = model;
+	return { cwd, branch, dirty, modelId, effort, profile, contextPercent, costTotal, subscription };
 }
 
 export interface ShellBarTheme {
@@ -53,12 +75,6 @@ export const SHELL_BAR_SEPARATOR = "⟡";
 export const SHELL_BAR_GAUGE_CELLS = GAUGE_CELLS;
 const RIGHT_PADDING = 2;
 const COMPACT_BRANCH_WIDTH = 15;
-// The rows the sidebar prints for a provider with per-model allowances use the
-// bar's shorter meter: the rail is 50 columns wide, and the panel's 16 cells
-// would leave no room for the model ids.
-const SIDEBAR_USAGE_METER_CELLS = GAUGE_CELLS;
-// Meter, its two spaces and the right-aligned percentage.
-const SIDEBAR_USAGE_ROW_FIXED = SIDEBAR_USAGE_METER_CELLS + 6;
 
 export function shellEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 	if (env.GENTLE_PI_AGENTS_CHILD === "1") return false;
@@ -85,17 +101,36 @@ function sanitizeStatus(text: string): string {
 	return sanitizeTerminalText(text.replace(/[\r\n\t]/g, " ")).replace(/ +/g, " ").trim();
 }
 
-function buildSegments(model: ShellBarModel, theme: ShellBarTheme): string[] {
+// Shared by the compact bar, the sidebar Status card, and the fullscreen
+// header row, so the three surfaces never drift on how they paint the same
+// facts.
+function locationSegment(model: Pick<ShellBarModel, "cwd" | "branch" | "dirty">, theme: ShellBarTheme): string {
 	const dirty = model.dirty ? ` ${theme.fg(ROLE.DIRTY, `±${model.dirty}`)}` : "";
-	const location = model.branch
+	return model.branch
 		? `${theme.fg(ROLE.PATH, model.cwd)} ${theme.fg(ROLE.BRANCH, model.branch)}${dirty}`
 		: theme.fg(ROLE.PATH, model.cwd) + dirty;
-	const modelSegment = model.effort
-		? `${theme.fg(ROLE.MODEL, model.modelId)} ${theme.fg(ROLE.LABEL, "·")} ${theme.fg(ROLE.EFFORT, model.effort)}`
-		: theme.fg(ROLE.MODEL, model.modelId);
-	const percentText = model.contextPercent === null ? "?%" : `${Math.round(model.contextPercent)}%`;
-	const context = `${theme.fg(ROLE.LABEL, "ctx")} ${paintGauge(model.contextPercent, theme)} ${theme.fg(ROLE.VALUE, percentText)}`;
-	const cost = theme.fg(ROLE.VALUE, formatCost(model.costTotal, model.subscription));
+}
+
+function executionSegment(modelId: string, effort: string | undefined, theme: ShellBarTheme): string {
+	return effort
+		? `${theme.fg(ROLE.MODEL, modelId)} ${theme.fg(ROLE.LABEL, "·")} ${theme.fg(ROLE.EFFORT, effort)}`
+		: theme.fg(ROLE.MODEL, modelId);
+}
+
+function contextSegment(contextPercent: number | null, theme: ShellBarTheme): string {
+	const percentText = contextPercent === null ? "?%" : `${Math.round(contextPercent)}%`;
+	return `${theme.fg(ROLE.LABEL, "ctx")} ${paintGauge(contextPercent, theme)} ${theme.fg(ROLE.VALUE, percentText)}`;
+}
+
+function costSegment(costTotal: number, subscription: boolean, theme: ShellBarTheme): string {
+	return theme.fg(ROLE.VALUE, formatCost(costTotal, subscription));
+}
+
+function buildSegments(model: ShellBarModel, theme: ShellBarTheme): string[] {
+	const location = locationSegment(model, theme);
+	const modelSegment = executionSegment(model.modelId, model.effort, theme);
+	const context = contextSegment(model.contextPercent, theme);
+	const cost = costSegment(model.costTotal, model.subscription, theme);
 	const usage = model.usage ? renderUsageBar(model.usage, theme, model.modelId) : undefined;
 	const statuses = model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)));
 	return [theme.fg(ROLE.BRAND, SHELL_BAR_BRAND), location, modelSegment, context, cost, ...(usage ? [usage] : []), ...statuses];
@@ -125,52 +160,6 @@ function joinSegments(segments: string[], theme: ShellBarTheme): string {
 	return segments.join(` ${theme.fg(ROLE.SEPARATOR, SHELL_BAR_SEPARATOR)} `);
 }
 
-// A row exists to show what is being consumed, so a window that consumed
-// nothing is noise the sidebar drops. The threshold is the row's own number and
-// nothing else: the render path prints `Math.round(percent)`, so a fraction
-// below half a percent prints `0%` and disappears while half a percent keeps its
-// row and prints `1%` — no second scale and no separate epsilon. A window whose
-// percent is not a number never equals zero, so it keeps its row instead of
-// being dropped in silence. The bar and the panel keep their own contract and
-// still print a zero allowance.
-function consumedNothing(usedPercent: number): boolean {
-	return Math.round(usedPercent) === 0;
-}
-
-// The sidebar is the surface that never needs opening, so a provider with
-// per-model allowances prints the panel's model rows there too — the most
-// consumed family first, its models inside it — and leaves the aggregate totals
-// and the reset dates to the bar and the panel. Providers without raw
-// allowances keep the one aggregate line the bar has always drawn for the model
-// in use.
-function sidebarUsageLines(usage: ProviderUsage, modelId: string, theme: ShellBarTheme, available: number): string[] {
-	if (!allowanceGroupsSupported(usage.limits)) {
-		// The aggregate line is one row, so its windows decide together: one
-		// consumed window keeps the sharing row, all of them zero drop it. A limit
-		// with no windows is not "zero consumption" — there is nothing to draw, and
-		// renderUsageBar already answers that — so the rule only speaks when there
-		// is a window to judge.
-		const windows = selectUsageLimit(usage, modelId)?.windows ?? [];
-		if (windows.length > 0 && windows.every((window) => consumedNothing(window.usedPercent))) return [];
-		const line = renderUsageBar(usage, theme, modelId);
-		return line ? [line] : [];
-	}
-	const rows = groupUsageLimits(usage.limits)
-		.flatMap((limit) =>
-			limit.windows.map((window) => ({ name: [limit.name, window.label].filter((part) => part.length > 0).join(" "), window })),
-		)
-		.filter((row) => !consumedNothing(row.window.usedPercent));
-	// The name column gives way first: it is the only part that can be clipped
-	// without losing the number the row exists to show.
-	const widest = rows.reduce((width, row) => Math.max(width, row.name.length), 0);
-	const nameWidth = Math.min(widest, Math.max(1, available - SIDEBAR_USAGE_ROW_FIXED));
-	return rows.map((row) => {
-		const name = row.name.length > nameWidth ? clipText(row.name, nameWidth) : row.name.padEnd(nameWidth);
-		const percent = `${Math.round(row.window.usedPercent)}%`.padStart(4);
-		return `${theme.fg(ROLE.LABEL, name)} ${paintGauge(row.window.usedPercent, theme, SIDEBAR_USAGE_METER_CELLS)} ${theme.fg(ROLE.VALUE, percent)}`;
-	});
-}
-
 // Sidebar groups use structured fields, never positional compact-bar segments
 // or inferred meanings from opaque extension status strings.
 export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme, width: number): string[] {
@@ -178,13 +167,14 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 	const label = (text: string) => theme.fg(ROLE.LABEL, text);
 	const changes = model.changes;
 	const branch = model.branch ? `${label("Branch")} ${value(model.branch)}` : "";
-	const percent = model.contextPercent === null ? "?%" : `${Math.round(model.contextPercent)}%`;
-	const capacity = label(`${formatTokens(model.contextWindow)} tokens`);
 	// Pre-wrap values before indenting so Unicode/ANSI continuation lines keep
 	// the same inset without consuming the card's right border.
 	const innerWidth = cardInnerWidth(width);
 	const inset = Math.min(1, innerWidth - 1);
-	const usageLines = model.usage ? sidebarUsageLines(model.usage, model.modelId, theme, innerWidth - inset) : [];
+	// Model, effort, context, cost, and the per-model usage table now live in
+	// the always-visible header row (and /gentle:usage for the full table);
+	// this event-driven card keeps only what a footer/model-switch event does
+	// not already refresh every frame.
 	const groups: Array<{ title: string; lines: string[] }> = [
 		{
 			title: "Project",
@@ -192,8 +182,6 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 				value(model.cwd),
 				...(branch ? [branch] : []),
 				...(model.sessionName ? [`${label("Session")} ${value(model.sessionName)}`] : []),
-				`${label("Model")} ${value(model.modelId)}`,
-				...(model.effort ? [`${label("Effort")} ${theme.fg(ROLE.EFFORT, model.effort)}`] : []),
 				...(model.profile ? [`${label("Profile")} ${value(sanitizeStatus(model.profile))}`] : []),
 			],
 		},
@@ -205,15 +193,6 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 					: label("No captured changes"),
 				...(changes?.notice ? [theme.fg("warning", sanitizeStatus(changes.notice))] : []),
 				label("/gentle:changes"),
-			],
-		},
-		{
-			title: "Usage",
-			lines: [
-				`${label("Context")} ${paintGauge(model.contextPercent, theme)} ${value(percent)}`,
-				capacity,
-				`${label("Cost")} ${value(formatCost(model.costTotal, model.subscription))}`,
-				...usageLines,
 			],
 		},
 		{ title: "Integrations", lines: model.statuses.length
@@ -228,6 +207,40 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 		...group.lines.flatMap((line) => wrapTextWithAnsi(line, innerWidth - inset).map((part) => " ".repeat(inset) + part)),
 	]);
 	return renderCard({ title: "Status", body, tone: CARD_TONE.PANEL }, theme, width, { expanded: true });
+}
+
+const HEADER_BRAND = "✿ Gentle Shell";
+
+// Narrower than the width, widest first: dropping the profile, then the
+// effort, then the whole location keeps the brand and the bare model id
+// alive as long as anything can still share the row with the right-aligned
+// counters.
+function headerLeftStages(model: ShellHeaderModel, theme: ShellBarTheme): string[][] {
+	const brand = theme.fg(ROLE.BRAND, theme.bold(HEADER_BRAND));
+	const location = locationSegment(model, theme);
+	const withEffort = executionSegment(model.modelId, model.effort, theme);
+	const modelOnly = executionSegment(model.modelId, undefined, theme);
+	const withProfile = model.profile ? `${withEffort} ${theme.fg(ROLE.LABEL, "·")} ${theme.fg(ROLE.MODEL, sanitizeStatus(model.profile))}` : withEffort;
+	return [
+		[brand, location, withProfile],
+		[brand, location, withEffort],
+		[brand, location, modelOnly],
+		[brand, modelOnly],
+		[brand],
+	];
+}
+
+export function renderShellHeaderBar(model: ShellHeaderModel, theme: ShellBarTheme, width: number): string {
+	const targetWidth = Math.max(0, Math.floor(width));
+	const right = joinSegments([contextSegment(model.contextPercent, theme), costSegment(model.costTotal, model.subscription, theme)], theme);
+	for (const segments of headerLeftStages(model, theme)) {
+		const left = joinSegments(segments, theme);
+		if (visibleWidth(left) + RIGHT_PADDING + visibleWidth(right) <= targetWidth) {
+			return left + " ".repeat(targetWidth - visibleWidth(left) - visibleWidth(right)) + right;
+		}
+	}
+	const brand = theme.fg(ROLE.BRAND, theme.bold(HEADER_BRAND));
+	return visibleWidth(brand) <= targetWidth ? brand : "";
 }
 
 export function renderShellBar(model: ShellBarModel, theme: ShellBarTheme, width: number): string[] {

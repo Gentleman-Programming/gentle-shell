@@ -3,7 +3,7 @@ import test from "node:test";
 import { CURSOR_MARKER, ScrollView, VStack, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { getScrollViewsAt, renderLayoutFrame, type LayoutBox } from "@earendil-works/pi-tui/dist/layout.js";
 import { installSidebar, invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
-import { sidebarPart, sidebarState } from "../lib/shell-sidebar.ts";
+import { sidebarHeader, sidebarPart, sidebarState } from "../lib/shell-sidebar.ts";
 import { renderShellSidebarBar } from "../lib/shell-bar.ts";
 import { renderTodoCard, type TodoState } from "../lib/shell-todo.ts";
 
@@ -23,6 +23,20 @@ function rail(f: ReturnType<typeof fixture>): ScrollView {
 	assert.equal(node.type, "hstack");
 	return node.entries[1].component;
 }
+type HstackNode = { type: string; gap: number; align: string; entries: { component: unknown; basis: number; grow: number; shrink: number; minSize: number }[] };
+// Finds the [left, scroll] hstack regardless of whether it is returned
+// directly (no active header) or nested one level under the header vstack.
+function hstackOf(f: ReturnType<typeof fixture>): HstackNode {
+	const node = f.root[NODE]() as unknown as { type: string; entries: { component: { [NODE]?(): HstackNode } }[] };
+	if (node.type === "hstack") return node as unknown as HstackNode;
+	assert.equal(node.type, "vstack");
+	const nested = node.entries[1]?.component[NODE]?.();
+	assert.ok(nested, "the vstack's second entry must expose the hstack via NODE");
+	return nested!;
+}
+function railWithHeader(f: ReturnType<typeof fixture>): ScrollView {
+	return hstackOf(f).entries[1].component as ScrollView;
+}
 
 test("grouped Status preserves structured fields and opaque integration text", () => {
 	const lines = renderShellSidebarBar({
@@ -32,13 +46,14 @@ test("grouped Status preserves structured fields and opaque integration text", (
 	}, theme, 46);
 	const text = lines.join("\n");
 	let previous = -1;
-	for (const heading of ["Status", "Project", "Changes", "Usage", "Integrations"]) {
+	for (const heading of ["Status", "Project", "Changes", "Integrations"]) {
 		const index = text.indexOf(heading);
 		assert.ok(index > previous, heading);
 		previous = index;
 	}
 	assert.match(text, /opaque integration/);
 	assert.match(text, /Branch.*main/);
+	assert.doesNotMatch(text, /Usage/);
 });
 
 test("scrollable TODO keeps every task while bottom and collapsed cards stay bounded", () => {
@@ -468,4 +483,92 @@ test("native transcript and sidebar keep separate scroll routing across resize, 
 		assert.equal(result.frame.primaryScrollView, fixture.primary);
 		assert.equal(result.frame.root.children.some(box => box.component === rail), mode === "fullscreen" && width >= 140);
 	}
+});
+
+// T2: the live header row. A registered "header" part wraps the existing
+// [left, scroll] hstack in a one-row-taller vstack and takes over the brand
+// the banner used to carry inside the rail. Hosts that never register a
+// header (every fixture above) keep the exact old hstack-direct shape.
+
+test("an active header wraps the hstack in a vstack and removes the banner from the rail", (t) => {
+	const f = fixture();
+	sidebarHeader(f.tui, { render: (width: number) => [`HEADER ${width}`], invalidate() {} });
+	t.after(installSidebar(f.tui, theme));
+
+	const node = f.root[NODE]() as unknown as HstackNode;
+	assert.equal(node.type, "vstack");
+	assert.equal(node.gap, 0);
+	assert.equal(node.align, "stretch");
+	assert.deepEqual(node.entries.map(({ basis, grow, shrink, minSize }) => ({ basis, grow, shrink, minSize })), [
+		{ basis: 1, grow: 0, shrink: 0, minSize: 1 },
+		{ basis: 0, grow: 1, shrink: 1, minSize: 1 },
+	]);
+	const header = node.entries[0].component as { render(width: number): string[] };
+	assert.deepEqual(header.render(0), ["HEADER 140"], "the header renders at the full terminal width, not the rail width");
+
+	const hstack = hstackOf(f);
+	assert.equal(hstack.type, "hstack");
+	const scroll = railWithHeader(f);
+	assert.doesNotMatch(scroll.render(50).join("\n"), /✿ Gentle Shell ✿/, "the header carries the brand now, not the banner");
+});
+
+test("without a registered header the rail keeps the banner and the plain hstack", (t) => {
+	const f = fixture();
+	t.after(installSidebar(f.tui, theme));
+	const node = f.root[NODE]() as unknown as { type: string };
+	assert.equal(node.type, "hstack");
+	const scroll = rail(f);
+	assert.match(scroll.render(50).join("\n"), /✿ Gentle Shell ✿/);
+});
+
+test("a header too narrow to show anything falls back to the plain hstack and the banner", (t) => {
+	const f = fixture();
+	sidebarHeader(f.tui, { render: () => [""], invalidate() {} });
+	t.after(installSidebar(f.tui, theme));
+	const node = f.root[NODE]() as unknown as { type: string };
+	assert.equal(node.type, "hstack", "a blank header line does not earn its own row");
+	const scroll = rail(f);
+	assert.match(scroll.render(50).join("\n"), /✿ Gentle Shell ✿/);
+});
+
+test("header content changes reach the header row while an unrelated part is untouched", (t) => {
+	const f = fixture();
+	let label = "one";
+	sidebarHeader(f.tui, { digest: () => label, render: () => [`HEADER ${label}`], invalidate() {} });
+	t.after(installSidebar(f.tui, theme));
+
+	const headerLines = () => (f.root[NODE]() as unknown as HstackNode).entries[0].component as { render(width: number): string[] };
+	assert.deepEqual(headerLines().render(0), ["HEADER one"]);
+	label = "two";
+	assert.deepEqual(headerLines().render(0), ["HEADER two"]);
+});
+
+test("rail mouse dispatch still maps clicks correctly with the header row above it", (t) => {
+	const f = fixture();
+	let clicks = 0;
+	const todo = {
+		render: () => ["Todo header", "Todo body"],
+		invalidate() {},
+		handleMouse(event: TuiMouseEvent) {
+			if (event.type !== "click" || event.button !== "left" || event.y !== 0) return undefined;
+			clicks++;
+			return { handled: true, render: true };
+		},
+	};
+	sidebarPart(f.tui, "todo", todo);
+	sidebarHeader(f.tui, { render: () => ["HEADER"], invalidate() {} });
+	const dispose = installSidebar(f.tui, theme);
+	t.after(dispose);
+	const scroll = railWithHeader(f);
+	const content = scroll.render(50);
+	scroll.updateLayout(content.length, 5, () => {});
+	const headerY = content.findIndex((line) => line.includes("Todo header"));
+	assert.ok(headerY >= 0);
+	// The mouse event carries coordinates local to the scroll component itself
+	// (pi-tui's layout tree translates screen coordinates before dispatch), so
+	// nesting the hstack one level deeper under the header row does not shift
+	// what the rail receives.
+	const hit = scroll.handleMouse({ type: "click", button: "left", x: 2, y: headerY, screenX: 92, screenY: 31 + headerY, width: 50, height: 5, shift: false, alt: false, ctrl: false });
+	assert.equal(hit?.handled, true);
+	assert.equal(clicks, 1);
 });

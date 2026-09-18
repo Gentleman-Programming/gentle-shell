@@ -253,12 +253,11 @@ test("gentleShell installs the footer on session_start when a UI exists", () => 
 	assert.match(lines[0], /main ⟡ gpt-5\.5 · medium/);
 });
 
-test("the fullscreen Status rail carries a live digest so a model switch refreshes it", async () => {
+test("the fullscreen Status rail carries a live digest so a profile switch refreshes it", async () => {
 	const { pi, handlers } = fakePi();
 	let profile: string | undefined = "team";
 	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { activeProfile: () => profile });
-	const entries: unknown[] = [];
-	const { ctx, ui } = fakeContext({ entries });
+	const { ctx, ui } = fakeContext();
 	await fire(handlers, "session_start", ctx);
 
 	const statuses = new Map<string, string>();
@@ -270,7 +269,7 @@ test("the fullscreen Status rail carries a live digest so a model switch refresh
 		const rail = sidebarState(tui as unknown as TUI).parts.get("footer") as SidebarRail;
 		const live = () => rail.digest?.();
 		assert.equal(typeof rail.digest, "function", "the Status card paints live state and must declare a digest");
-		assert.match(rail.render(46).join("\n"), /gpt-5\.5/);
+		assert.doesNotMatch(rail.render(46).join("\n"), /gpt-5\.5/, "model now lives in the header, not the Status card");
 
 		assert.match(rail.render(46).join("\n"), /Profile.*team/);
 		const beforeProfile = live();
@@ -280,26 +279,51 @@ test("the fullscreen Status rail carries a live digest so a model switch refresh
 		profile = undefined;
 		assert.doesNotMatch(rail.render(46).join("\n"), /Profile/);
 
-		const beforeModel = live();
-		(ctx.model as { id: string }).id = "gpt-5.6";
-		assert.notEqual(live(), beforeModel, "/model must change the digest");
-		assert.match(rail.render(46).join("\n"), /gpt-5\.6/);
-
-		const beforeUsage = live();
-		(ctx as unknown as { getContextUsage: () => unknown }).getContextUsage = () => ({ tokens: 200_000, contextWindow: 272_000, percent: 74 });
-		assert.notEqual(live(), beforeUsage, "context usage must change the digest");
-		assert.match(rail.render(46).join("\n"), /74%/);
-
-		const beforeCost = live();
-		entries.push(assistantEntry({ input: 100, output: 20, cost: 0.42 }));
-		assert.notEqual(live(), beforeCost, "session cost must change the digest");
-		assert.match(rail.render(46).join("\n"), /\$0\.420/);
-
 		const beforeStatus = live();
 		statuses.set("mcp", "MCP: 3 servers enabled");
 		assert.notEqual(live(), beforeStatus, "extension statuses have no event and must change the digest");
 		assert.match(rail.render(46).join("\n"), /MCP: 3 servers enabled/);
 		assert.equal(live(), live(), "an unchanged digest still reuses the prepared rail");
+	} finally {
+		component.dispose();
+	}
+});
+
+test("the fullscreen header rail carries a live digest so model, context, and cost changes refresh it", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" });
+	const entries: unknown[] = [];
+	const { ctx, ui } = fakeContext({ entries });
+	await fire(handlers, "session_start", ctx);
+
+	const liveFooterData = { getGitBranch: () => "main", getExtensionStatuses: () => new Map([["mcp", "MCP: 3 servers enabled"]]), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} };
+	const tui = { terminal: { rows: 40, columns: 160 }, requestRender() {} };
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { render(width: number): string[]; dispose(): void };
+	const component = factory(tui, plainTheme, liveFooterData);
+	try {
+		const header = sidebarState(tui as unknown as TUI).parts.get("header") as SidebarRail;
+		assert.equal(typeof header.digest, "function", "the header paints live state every frame and must declare a digest");
+		const live = () => header.digest?.();
+		const text = () => header.render(160).join("\n");
+		assert.match(text(), /gpt-5\.5/);
+		assert.doesNotMatch(text(), /MCP: 3 servers/, "extension statuses never reach the header");
+		assert.doesNotMatch(text(), /working/i, "the working state never reaches the header");
+
+		const beforeModel = live();
+		(ctx.model as { id: string }).id = "gpt-5.6";
+		assert.notEqual(live(), beforeModel, "/model must change the header digest");
+		assert.match(text(), /gpt-5\.6/);
+
+		const beforeUsage = live();
+		(ctx as unknown as { getContextUsage: () => unknown }).getContextUsage = () => ({ tokens: 200_000, contextWindow: 272_000, percent: 74 });
+		assert.notEqual(live(), beforeUsage, "context usage must change the header digest");
+		assert.match(text(), /74%/);
+
+		const beforeCost = live();
+		entries.push(assistantEntry({ input: 100, output: 20, cost: 0.42 }));
+		assert.notEqual(live(), beforeCost, "session cost must change the header digest");
+		assert.match(text(), /\$0\.420/);
+		assert.equal(live(), live(), "an unchanged digest still reuses the prepared header");
 	} finally {
 		component.dispose();
 	}

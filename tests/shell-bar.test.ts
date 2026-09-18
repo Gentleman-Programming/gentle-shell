@@ -2,17 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
+	buildShellHeaderModel,
 	formatCost,
 	formatTokens,
 	gaugeTone,
 	renderGauge,
 	renderShellBar,
+	renderShellHeaderBar,
 	renderShellSidebarBar,
 	shellEnabled,
 	type ShellBarModel,
 	type ShellBarTheme,
 } from "../lib/shell-bar.ts";
-import { parseNanQuota } from "../lib/shell-usage.ts";
 
 // The Gentle Shell bar replaces pi's three-line footer with one line of
 // segments. Rendering is pure so it can be verified without a TUI.
@@ -51,28 +52,6 @@ function model(overrides: Partial<ShellBarModel> = {}): ShellBarModel {
 		statuses: [],
 		...overrides,
 	};
-}
-
-// The grouped NaN fixture the panel test uses, so both surfaces are asserted
-// against the same payload, the same order and the same percentages.
-const GROUPED_NAN_QUOTA = {
-	periodEnd: "2026-10-01T00:00:00.000Z",
-	models: [
-		{ model: "glm5.3-flash", cap: 2_000_000_000, tokensUsed: 200_000_000 },
-		{ model: "glm5.3", cap: 3_000_000_000, tokensUsed: 0, periodEnd: "2026-10-17T05:53:20.000Z" },
-		{ model: "glm5.2", cap: 3_000_000_000, tokensUsed: 0, periodEnd: "2026-10-17T05:53:20.000Z" },
-		{ model: "deepseek-v4-flash", cap: 3_000_000_000, tokensUsed: 300_000_000 },
-	],
-};
-
-// The sidebar prints the card body between its borders; the Usage rows are the
-// metered block between the Usage heading and Integrations, minus the context
-// meter, which is not a subscription allowance.
-function sidebarUsageRows(lines: string[]): string[] {
-	const body = lines.filter((line) => line.startsWith("│ ")).map((line) => line.slice(2, -2).trim());
-	const start = body.indexOf("Usage");
-	const end = body.indexOf("Integrations");
-	return body.slice(start + 1, end).filter((line) => /[▰▱]/.test(line) && !line.startsWith("Context"));
 }
 
 test("renderGauge fills cells proportionally to the percentage", () => {
@@ -158,57 +137,9 @@ test("renderShellBar meters the model the session is using inside a multi-model 
 	assert.doesNotMatch(glm, /deepseek-v4-flash ▰/);
 	const [other] = renderShellBar(model({ modelId: "deepseek-v4-flash", usage }), plainTheme, 200);
 	assert.match(other, /deepseek-v4-flash ▰▱▱▱▱▱▱▱ 18%$/);
-	const sidebar = renderShellSidebarBar(model({ modelId: "glm5.3-flash", usage }), plainTheme, 60).join("\n");
-	assert.match(sidebar, /glm5\.3-flash +▰▱▱▱▱▱▱▱ +10%/, "the sidebar lists the session model's own allowance");
 });
 
-// The sidebar is the surface that never needs opening, so a provider with
-// per-model allowances shows the panel's model rows there too — most consumed
-// family first, its models inside it — and leaves the aggregate totals and the
-// reset dates to the bar and the panel.
-test("sidebar groups the NaN allowances by subscription without totals or resets", () => {
-	const usage = parseNanQuota(GROUPED_NAN_QUOTA, 0);
-	const lines = renderShellSidebarBar(model({ modelId: "glm5.3-flash", usage }), plainTheme, 60);
-	const rows = sidebarUsageRows(lines);
-	assert.deepEqual(rows.map((row) => row.replace(/\s*[▰▱].*$/, "")), ["deepseek-v4-flash", "glm5.3-flash"]);
-	assert.deepEqual(rows.map((row) => Number.parseInt(row.match(/(\d+)%$/)![1] ?? "", 10)), [10, 10]);
-	assert.equal(rows.some((row) => / 0%$/.test(row)), false, "a window that consumed nothing only spends space");
-	assert.equal(lines.join("\n").includes("total"), false, "an aggregate row only costs space");
-	assert.equal(lines.join("\n").includes("resets in"), false, "the reset dates belong to the panel");
-	for (const width of [24, 46, 60]) {
-		assert.ok(renderShellSidebarBar(model({ usage }), plainTheme, width).every((line) => visibleWidth(line) <= width));
-	}
-});
-
-test("sidebar treats one metered NaN allowance as a per-model provider", () => {
-	const usage = parseNanQuota({
-		periodEnd: "2026-10-01T00:00:00.000Z",
-		models: [{ model: "glm5.3-flash", cap: 2_000_000_000, tokensUsed: 400_000_000, windowHours: 4, windowTokens: 400_000_000, windowTokensUsed: 120_000_000, windowResetsAt: 1_788_620_161 }],
-	}, 0);
-	const lines = renderShellSidebarBar(model({ modelId: "glm5.3-flash", usage }), plainTheme, 60);
-	const rows = sidebarUsageRows(lines).map((row) => row.replace(/\s+/g, " "));
-	// A single allowance is still the panel's rows, not the bar's one-line meter:
-	// the rolling window it reports is a row of its own here too, and the reset
-	// stays in the panel.
-	assert.deepEqual(rows, ["glm5.3-flash ▰▰▱▱▱▱▱▱ 20%", "glm5.3-flash 4h ▰▰▱▱▱▱▱▱ 30%"]);
-	assert.equal(lines.join("\n").includes("resets in"), false);
-});
-
-test("sidebar keeps one aggregate line for a provider without raw allowances", () => {
-	const usage = {
-		provider: "openai-codex",
-		plan: "pro",
-		fetchedAt: 0,
-		limits: [{ name: "codex", limitReached: false, windows: [
-			{ label: "5h", usedPercent: 62, windowSeconds: 18_000, resetAt: null },
-			{ label: "week", usedPercent: 31, windowSeconds: 604_800, resetAt: null },
-		] }],
-	};
-	const lines = renderShellSidebarBar(model({ usage }), plainTheme, 60);
-	assert.deepEqual(sidebarUsageRows(lines), ["codex 5h ▰▰▰▰▰▱▱▱ 62% · week 31%"]);
-});
-
-test("sidebar drops an aggregate allowance that consumed nothing", () => {
+test("renderShellBar keeps its own zero-window contract independent of the sidebar", () => {
 	const usage = {
 		provider: "openai-codex",
 		plan: "pro",
@@ -218,56 +149,7 @@ test("sidebar drops an aggregate allowance that consumed nothing", () => {
 			{ label: "week", usedPercent: 0, windowSeconds: 604_800, resetAt: null },
 		] }],
 	};
-	const lines = renderShellSidebarBar(model({ usage }), plainTheme, 60);
-	assert.deepEqual(sidebarUsageRows(lines), []);
-	const text = lines.join("\n");
-	assert.match(text, /Usage/);
-	assert.match(text, /Context/);
-	assert.match(text, /Cost/);
-	// The bar keeps its own contract: only the sidebar gives zero rows the boot.
 	assert.match(renderShellBar(model({ usage }), plainTheme, 200)[0], /codex 5h ▱▱▱▱▱▱▱▱ 0% · week 0%$/);
-});
-
-test("sidebar keeps the Usage group when nothing was consumed", () => {
-	const usage = parseNanQuota({
-		periodEnd: "2026-10-01T00:00:00.000Z",
-		models: [
-			{ model: "glm5.3", cap: 3_000_000_000, tokensUsed: 0 },
-			{ model: "glm5.2", cap: 3_000_000_000, tokensUsed: 0 },
-		],
-	}, 0);
-	const lines = renderShellSidebarBar(model({ usage }), plainTheme, 60);
-	const text = lines.join("\n");
-	assert.deepEqual(sidebarUsageRows(lines), []);
-	assert.match(text, /Usage/);
-	assert.match(text, /Context/);
-	assert.match(text, /Cost/);
-	assert.match(text, /Integrations/);
-});
-
-test("sidebar hides exactly the rows that would print 0%, rounding included", () => {
-	// The row's own rounding is the only threshold: a fraction below half a
-	// percent is a 0% row and leaves; half a percent keeps its row and prints 1%.
-	const usage = (usedPercent: number) => ({
-		provider: "openai-codex",
-		plan: "pro",
-		fetchedAt: 0,
-		limits: [{ name: "codex", limitReached: false, windows: [{ label: "5h", usedPercent, windowSeconds: 18_000, resetAt: null }] }],
-	});
-	assert.deepEqual(sidebarUsageRows(renderShellSidebarBar(model({ usage: usage(0.4) }), plainTheme, 60)), []);
-	assert.deepEqual(sidebarUsageRows(renderShellSidebarBar(model({ usage: usage(0.5) }), plainTheme, 60)), ["codex 5h ▱▱▱▱▱▱▱▱ 1%"]);
-});
-
-test("sidebar reads a limit without windows as nothing to draw, not as zero consumption", () => {
-	const usage = {
-		provider: "openai-codex",
-		plan: "pro",
-		fetchedAt: 0,
-		limits: [{ name: "codex", limitReached: false, windows: [] }],
-	};
-	const lines = renderShellSidebarBar(model({ usage }), plainTheme, 60);
-	assert.deepEqual(sidebarUsageRows(lines), []);
-	assert.match(lines.join("\n"), /Cost/);
 });
 
 test("renderShellBar shows an unknown context as a question mark after compaction", () => {
@@ -333,13 +215,13 @@ test("renderShellSidebarBar paints the Status card frame with border and the tit
 	assert.match(lines[lines.length - 1], /^<border>╰<\/border>/);
 });
 
-test("sidebar unifies project, captured changes, usage and integrations in one frame", () => {
+test("sidebar unifies project, captured changes and integrations in one frame", () => {
 	const data = model({ changes: { files: 2, added: 7, deleted: 3, notice: "capture warning" }, statuses: ["MCP connected"] });
 	const lines = renderShellSidebarBar(data, plainTheme, 46);
 	const text = lines.join("\n");
 	assert.equal(lines.filter((line) => line.startsWith("╭")).length, 1);
 	let previous = -1;
-	for (const heading of ["Status", "Project", "Changes", "Usage", "Integrations"]) {
+	for (const heading of ["Status", "Project", "Changes", "Integrations"]) {
 		const index = text.indexOf(heading);
 		assert.ok(index > previous, heading);
 		previous = index;
@@ -347,7 +229,7 @@ test("sidebar unifies project, captured changes, usage and integrations in one f
 	assert.match(text, /2 files.*\+7.*−3/);
 	assert.match(text, /capture warning/);
 	assert.match(text, /\/gentle:changes/);
-	assert.match(text, /gpt-5\.5/);
+	assert.match(text, /main/);
 	for (const width of [1, 8, 24, 46]) assert.ok(renderShellSidebarBar(data, plainTheme, width).every((line) => visibleWidth(line) <= width));
 	const empty = renderShellSidebarBar(model(), plainTheme, 46).join("\n");
 	assert.match(empty, /No captured changes/);
@@ -365,4 +247,110 @@ test("sidebar profile wraps long names without changing the compact bar", () => 
 		assert.ok(lines.join("").replace(/[│\s]/g, "").includes(profile));
 	}
 	assert.deepEqual(renderShellBar(active, plainTheme, 120), renderShellBar(base, plainTheme, 120));
+});
+
+test("sidebar Status card drops Model, Effort, Context, Cost and Usage, keeping Project, Changes and Integrations", () => {
+	const usage = {
+		provider: "openai-codex",
+		plan: "pro",
+		fetchedAt: 0,
+		limits: [{ name: "codex", limitReached: false, windows: [{ label: "5h", usedPercent: 62, windowSeconds: 18_000, resetAt: null }] }],
+	};
+	const data = model({ profile: "team", sessionName: "session", usage, changes: { files: 1, added: 2, deleted: 1 }, statuses: ["MCP connected"] });
+	const text = renderShellSidebarBar(data, plainTheme, 60).join("\n");
+	assert.doesNotMatch(text, /Usage/);
+	assert.doesNotMatch(text, /Model/);
+	assert.doesNotMatch(text, /Effort/);
+	assert.doesNotMatch(text, /Context/);
+	assert.doesNotMatch(text, /Cost/);
+	assert.doesNotMatch(text, /\$9\.49/);
+	assert.doesNotMatch(text, /codex 5h/);
+	for (const heading of ["Status", "Project", "Changes", "Integrations"]) assert.match(text, new RegExp(heading));
+	assert.match(text, /Branch.*main/);
+	assert.match(text, /Session.*session/);
+	assert.match(text, /Profile.*team/);
+});
+
+// The live header row above the fullscreen rail: identity on the left (brand,
+// location, model · effort · profile), the per-frame counters right-aligned
+// (context gauge, cost). Never the working/thinking state or extension
+// statuses — those stay in the prompt and the Status card.
+
+test("buildShellHeaderModel keeps only the header's fields from the bar model", () => {
+	const header = buildShellHeaderModel(model({ profile: "team", statuses: ["MCP: 3 servers"] }));
+	assert.deepEqual(header, {
+		cwd: "~/work/gentle-pi",
+		branch: "main",
+		dirty: undefined,
+		modelId: "gpt-5.5",
+		effort: "medium",
+		profile: "team",
+		contextPercent: 45,
+		costTotal: 9.49,
+		subscription: true,
+	});
+	assert.ok(!("statuses" in header), "extension statuses never reach the header");
+	assert.ok(!("usage" in header), "the header never carries the per-model usage table");
+});
+
+test("renderShellHeaderBar draws the brand, identity, and right-aligned counters in one line", () => {
+	const header = buildShellHeaderModel(model({ profile: "team" }));
+	const line = renderShellHeaderBar(header, plainTheme, 100);
+	assert.equal(
+		line,
+		"✿ Gentle Shell ⟡ ~/work/gentle-pi main ⟡ gpt-5.5 · medium · team" +
+			" ".repeat(100 - visibleWidth("✿ Gentle Shell ⟡ ~/work/gentle-pi main ⟡ gpt-5.5 · medium · team") - visibleWidth("ctx ▰▰▰▰▱▱▱▱ 45% ⟡ $9.49 sub")) +
+			"ctx ▰▰▰▰▱▱▱▱ 45% ⟡ $9.49 sub",
+	);
+	assert.equal(visibleWidth(line), 100);
+});
+
+test("renderShellHeaderBar never shows working state or extension statuses", () => {
+	const header = buildShellHeaderModel(model({ statuses: ["MCP: 3 servers", "working…"] }));
+	const line = renderShellHeaderBar(header, plainTheme, 120);
+	assert.doesNotMatch(line, /MCP: 3 servers/);
+	assert.doesNotMatch(line, /working/);
+});
+
+test("renderShellHeaderBar colors the brand bold and by role", () => {
+	const bolding = { fg: (color: string, text: string) => `<${color}>${text}</${color}>`, bold: (text: string) => `**${text}**` };
+	const header = buildShellHeaderModel(model());
+	const line = renderShellHeaderBar(header, bolding, 120);
+	assert.match(line, /<accent>\*\*✿ Gentle Shell\*\*<\/accent>/);
+});
+
+test("renderShellHeaderBar drops the profile, then the effort, then the whole location before the right group", () => {
+	const withProfile = buildShellHeaderModel(model({ profile: "team" }));
+	const wide = renderShellHeaderBar(withProfile, plainTheme, 120);
+	assert.match(wide, /gpt-5\.5 · medium · team/);
+	assert.match(wide, /~\/work\/gentle-pi main/);
+	assert.match(wide, /ctx ▰▰▰▰▱▱▱▱ 45% ⟡ \$9\.49 sub$/);
+
+	// 90 cols: the profile no longer fits, but effort and location still do.
+	const noProfile = renderShellHeaderBar(withProfile, plainTheme, 90);
+	assert.doesNotMatch(noProfile, /team/);
+	assert.match(noProfile, /gpt-5\.5 · medium/);
+	assert.match(noProfile, /~\/work\/gentle-pi main/);
+	assert.equal(visibleWidth(noProfile), 90);
+
+	// 82 cols: effort goes too, only the bare model id remains next to location.
+	const noEffort = renderShellHeaderBar(withProfile, plainTheme, 82);
+	assert.doesNotMatch(noEffort, /medium/);
+	assert.doesNotMatch(noEffort, /team/);
+	assert.match(noEffort, /gpt-5\.5/);
+	assert.match(noEffort, /~\/work\/gentle-pi main/);
+	assert.equal(visibleWidth(noEffort), 82);
+
+	// 60 cols: the whole location segment goes; brand and model survive with the counters.
+	const noLocation = renderShellHeaderBar(withProfile, plainTheme, 60);
+	assert.doesNotMatch(noLocation, /~\/work\/gentle-pi/);
+	assert.match(noLocation, /gpt-5\.5/);
+	assert.match(noLocation, /✿ Gentle Shell/);
+	assert.match(noLocation, /ctx ▰▰▰▰▱▱▱▱ 45% ⟡ \$9\.49 sub$/);
+	assert.equal(visibleWidth(noLocation), 60);
+});
+
+test("renderShellHeaderBar returns an empty string only once the brand itself cannot fit", () => {
+	assert.equal(renderShellHeaderBar(buildShellHeaderModel(model()), plainTheme, 3), "");
+	assert.match(renderShellHeaderBar(buildShellHeaderModel(model()), plainTheme, 40), /✿ Gentle Shell/);
 });

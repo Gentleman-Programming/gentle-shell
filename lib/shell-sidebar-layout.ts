@@ -6,6 +6,11 @@ import { renderSidebarBanner } from "./shell-sidebar-banner.ts";
 export const SIDEBAR_BREAKPOINT = 140;
 const RAIL_WIDTH = 50;
 const RAIL_PADDING = 1;
+// The rail's ScrollView keeps one column for its scrollbar; with the rail
+// padding that puts the card's right border two columns in from the edge.
+// The header row stops at the same column so its right group lines up with
+// the card instead of touching the terminal edge.
+const HEADER_RIGHT_INSET = RAIL_PADDING + 1;
 const GAP = 3;
 // Experimental Pi 0.85.1 internals. Only the fullscreen layout tree is adapted;
 // regular mode keeps native scrollback and the original bottom components.
@@ -161,9 +166,10 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 		}
 		try {
 			// The header is a full-width sibling row, not a rail section: it reads
-			// the whole terminal width, never the 50-column rail's content width.
+			// the terminal width (minus the rail's right inset), never the
+			// 50-column rail's content width.
 			const headerPart = state.parts.get("header");
-			const preparedHeaderLines = [...(headerPart?.render(width) ?? [])];
+			const preparedHeaderLines = [...(headerPart?.render(Math.max(0, width - HEADER_RIGHT_INSET)) ?? [])];
 			const headerActive = headerPart !== undefined && preparedHeaderLines.some((line) => line.trim() !== "");
 			const contentWidth = scroll.getContentWidth(RAIL_WIDTH);
 			const sections = ["footer", "agents", "todo"].map((key) => {

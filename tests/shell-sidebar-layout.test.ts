@@ -591,7 +591,10 @@ test("an active header wraps the hstack in a vstack and removes the banner from 
 		{ basis: 0, grow: 1, shrink: 1, minSize: 1 },
 	]);
 	const header = node.entries[0].component as { render(width: number): string[] };
-	assert.deepEqual(header.render(0), ["HEADER 140"], "the header renders at the full terminal width, not the rail width");
+	// The rail card ends two columns before the terminal edge (its padding plus
+	// the scrollbar column); the header stops there too so its right group
+	// lines up with the card border instead of touching the edge.
+	assert.deepEqual(header.render(0), ["HEADER 138"], "the header renders at the terminal width minus the rail's right inset, not the rail width");
 
 	const hstack = hstackOf(f);
 	assert.equal(hstack.type, "hstack");

@@ -508,13 +508,15 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const deps: ShellDeps = { ...defaultShellDeps, activeProfile: createActiveProfileReader(env), ...overrides };
 	const usage = new UsageStore();
 	let renderHost: ShellRenderHost | undefined;
-	let usageFetchedAt = 0;
+	// The 5-minute rule is per provider: one provider's fetch cannot leave the
+	// next one waiting for an interval it never used.
+	const usageFetchedAt = new Map<string, number>();
 	const refreshUsage = async (ctx: ExtensionContext, force: boolean) => {
 		const provider = ctx.model?.provider;
 		if (provider !== CODEX_PROVIDER && provider !== NAN_PROVIDER) return;
 		const now = deps.now();
-		if (!force && now - usageFetchedAt < USAGE_REFRESH_MS) return;
-		usageFetchedAt = now;
+		if (!force && now - (usageFetchedAt.get(provider) ?? 0) < USAGE_REFRESH_MS) return;
+		usageFetchedAt.set(provider, now);
 		const apiKey = await ctx.modelRegistry.getApiKeyForProvider(provider).catch(() => undefined);
 		const fetched = provider === NAN_PROVIDER ? await fetchNanUsage(apiKey, deps.fetch, deps.now()) : await fetchCodexUsage(apiKey, deps.fetch, deps.now());
 		if (!fetched) return;

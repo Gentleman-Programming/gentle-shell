@@ -839,6 +839,24 @@ test("gentleShell fetches Codex usage on session start and shows it in the bar",
 	assert.equal(calls.length, 1, "agent_end must not refetch within the refresh window");
 });
 
+test("a provider switch refreshes the new provider inside the same window", async () => {
+	const { pi, handlers } = fakePi();
+	const { fetchFn, calls } = fakeFetch(NAN_QUOTA_PAYLOAD);
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => 1_788_600_000_000 });
+	const { ctx } = fakeContext({ token: JWT });
+	await fire(handlers, "session_start", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(calls.length, 1);
+
+	// The 5-minute rule is per provider: the timestamp one provider set cannot
+	// leave the next one waiting for a fetch it never made.
+	(ctx as unknown as { model: { provider: string } }).model.provider = "nan";
+	await fire(handlers, "agent_end", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(calls.length, 2, "a provider switch is a reason to fetch, not to wait");
+	assert.equal(calls[1].url, "https://cloud-api.nan.builders/api/usage/quota");
+});
+
 test("gentleShell records SSE rate-limit headers from provider responses", async () => {
 	const { pi, handlers } = fakePi();
 	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch({}, false).fetchFn, now: () => 0 });

@@ -15,6 +15,7 @@ type LayoutRoot = Component & { [NODE]?: () => LayoutNode };
 type Host = TUI & { mode?: string; layoutRoot?: LayoutRoot };
 type SidebarCache = { revision: number };
 type RailHit = { key: string; component: Component; startY: number; height: number; width: number };
+type SectionCacheEntry = { component: Component; digest: string | undefined; revision: number; contentWidth: number; theme: ShellBarTheme; lines: string[] };
 type SidebarPresentation = { scrollTop: number; output: LayoutNode };
 type PreparedRail = {
 	revision: number;
@@ -73,6 +74,13 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 	let railLines: string[] = [];
 	let headerLines: string[] = [];
 	let prepared: PreparedRail | undefined;
+	// One rendered-lines cache per rail section key, independent of the
+	// whole-rail `prepared` memo below: a section with its own digest is
+	// revalidated by that digest alone, so a sibling's ticking digest (the
+	// header/Status counters) never forces Agents or TODO to re-render. A
+	// section with no digest (or a throwing one) falls back to the shared
+	// revision counter, exactly like the whole-rail memo already did.
+	const sectionCache = new Map<string, SectionCacheEntry>();
 	state.active = false;
 	state.ownsHost = () => !stopped && host.mode === "fullscreen" && !!host.layoutRoot && roots.has(host.layoutRoot);
 	const rail: Component = {
@@ -153,8 +161,20 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 			const contentWidth = scroll.getContentWidth(RAIL_WIDTH);
 			const sections = ["footer", "agents", "todo"].map((key) => {
 				const component = state.parts.get(key);
-				const lines = [...(component?.render(contentWidth - RAIL_PADDING * 2) ?? [])];
-				while (lines.length && lines[lines.length - 1]?.trim() === "") lines.pop();
+				if (!component) {
+					sectionCache.delete(key);
+					return { key, component, lines: [] as string[] };
+				}
+				const digest = railDigest(component);
+				const existing = sectionCache.get(key);
+				const reusable = existing?.component === component && existing.contentWidth === contentWidth && existing.theme === theme &&
+					(digest !== undefined ? existing.digest === digest : existing.digest === undefined && existing.revision === cache.revision);
+				const lines = reusable ? existing.lines : (() => {
+					const rendered = [...(component.render(contentWidth - RAIL_PADDING * 2) ?? [])];
+					while (rendered.length && rendered[rendered.length - 1]?.trim() === "") rendered.pop();
+					return rendered;
+				})();
+				sectionCache.set(key, { component, digest, revision: cache.revision, contentWidth, theme, lines });
 				return { key, component, lines };
 			}).filter((section) => section.component !== undefined && section.lines.length > 0) as Array<{ key: string; component: Component; lines: string[] }>;
 			// The header carries the brand once it is active; the banner is the

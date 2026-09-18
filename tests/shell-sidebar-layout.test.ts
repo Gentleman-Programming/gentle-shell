@@ -280,14 +280,17 @@ test("real layout frames reuse unchanged sidebar output and invalidate at state 
 	assert.deepEqual(f.bottom.render(80), ["Status"]);
 	f.host.terminal.columns = 140;
 	renderLayoutFrame(f.root, 140, 20, () => {});
-	assert.deepEqual(counts, { footer: 3, changes: 0, agents: 3, todo: 3 });
+	// Dipping below the breakpoint and back nulls the whole-rail `prepared`
+	// memo, but the per-section cache survives underneath it: the revision
+	// never moved, so no section actually needed to re-render.
+	assert.deepEqual(counts, { footer: 2, changes: 0, agents: 2, todo: 2 });
 
 	f.host.mode = "regular";
 	renderLayoutFrame(f.root, 140, 20, () => {});
 	assert.deepEqual(f.bottom.render(80), ["Status"]);
 	f.host.mode = "fullscreen";
 	renderLayoutFrame(f.root, 140, 20, () => {});
-	assert.deepEqual(counts, { footer: 4, changes: 0, agents: 4, todo: 4 });
+	assert.deepEqual(counts, { footer: 2, changes: 0, agents: 2, todo: 2 });
 
 	let replacementRenders = 0;
 	sidebarPart(f.tui, "todo", {
@@ -483,6 +486,90 @@ test("native transcript and sidebar keep separate scroll routing across resize, 
 		assert.equal(result.frame.primaryScrollView, fixture.primary);
 		assert.equal(result.frame.root.children.some(box => box.component === rail), mode === "fullscreen" && width >= 140);
 	}
+});
+
+// T3: per-section render memo. Each rail section caches its rendered lines by
+// its own digest, so a section whose digest did not change is never re-run
+// when a sibling section's digest ticks — only the whole rail's assembled
+// `lines`/`hits` are rebuilt from the (possibly cached) per-section lines.
+
+test("a footer digest change does not re-render Agents or TODO", (t) => {
+	const f = fixture();
+	let footerLabel = "one";
+	const counts = { footer: 0, agents: 0, todo: 0 };
+	sidebarPart(f.tui, "footer", { render: () => ["Status"], invalidate() {} }, {
+		digest: () => footerLabel,
+		render: () => { counts.footer++; return [`Footer ${footerLabel}`]; },
+		invalidate() {},
+	});
+	for (const key of ["agents", "todo"] as const) {
+		sidebarPart(f.tui, key, { render: () => [key], invalidate() {} }, {
+			render: () => { counts[key]++; return [key]; },
+			invalidate() {},
+		});
+	}
+	t.after(installSidebar(f.tui, theme));
+
+	assert.match(rail(f).render(50).join("\n"), /Footer one/);
+	assert.deepEqual(counts, { footer: 1, agents: 1, todo: 1 });
+
+	// Re-render with nothing changed at all: the outer unchanged fast path
+	// must not call any section's render either.
+	assert.match(rail(f).render(50).join("\n"), /Footer one/);
+	assert.deepEqual(counts, { footer: 1, agents: 1, todo: 1 });
+
+	footerLabel = "two";
+	assert.match(rail(f).render(50).join("\n"), /Footer two/);
+	assert.deepEqual(counts, { footer: 2, agents: 1, todo: 1 }, "only the section whose digest changed re-renders");
+
+	// invalidateSidebar bumps the global revision, which is only what a
+	// no-digest section keys its cache on: footer's own unchanged digest
+	// still protects it from re-rendering.
+	invalidateSidebar(f.tui);
+	assert.match(rail(f).render(50).join("\n"), /Footer two/);
+	assert.deepEqual(counts, { footer: 2, agents: 2, todo: 2 }, "revision invalidation reaches only the sections with no digest of their own");
+});
+
+test("a throwing digest still degrades to invalidation-only under the per-section memo", (t) => {
+	const f = fixture();
+	let todoRenders = 0;
+	sidebarPart(f.tui, "todo", { render: () => ["Todo"], invalidate() {} }, {
+		digest: () => { throw new Error("broken digest"); },
+		render: () => { todoRenders++; return ["Todo card"]; },
+		invalidate() {},
+	});
+	t.after(installSidebar(f.tui, theme));
+
+	assert.match(rail(f).render(50).join("\n"), /Todo card/);
+	assert.equal(todoRenders, 1);
+	assert.match(rail(f).render(50).join("\n"), /Todo card/);
+	assert.equal(todoRenders, 1, "an unchanged frame reuses the cached section even without a digest");
+
+	invalidateSidebar(f.tui);
+	assert.match(rail(f).render(50).join("\n"), /Todo card/);
+	assert.equal(todoRenders, 2, "explicit invalidation still reaches a rail without a digest");
+});
+
+test("a part replaced under the same key never reuses the previous part's cached lines", (t) => {
+	const f = fixture();
+	let firstRenders = 0;
+	sidebarPart(f.tui, "todo", { render: () => ["Todo"], invalidate() {} }, {
+		render: () => { firstRenders++; return ["first"]; },
+		invalidate() {},
+	});
+	t.after(installSidebar(f.tui, theme));
+	assert.match(rail(f).render(50).join("\n"), /first/);
+	assert.equal(firstRenders, 1);
+
+	let secondRenders = 0;
+	sidebarPart(f.tui, "todo", { render: () => ["Todo"], invalidate() {} }, {
+		render: () => { secondRenders++; return ["second"]; },
+		invalidate() {},
+	});
+	const text = rail(f).render(50).join("\n");
+	assert.match(text, /second/);
+	assert.doesNotMatch(text, /first/);
+	assert.equal(secondRenders, 1);
 });
 
 // T2: the live header row. A registered "header" part wraps the existing

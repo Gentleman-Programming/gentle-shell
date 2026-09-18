@@ -197,9 +197,15 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 			railLines = [];
 			if (sections.length && branding.length) {
 				railLines.push(...branding.map((line) => " ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING)));
+			} else if (sections.length && headerActive) {
+				// The banner used to hold the first card off the top; the header
+				// took its place, so keep one blank row between them.
+				railLines.push("");
 			}
 			for (const section of sections) {
-				if (railLines.length > 0) railLines.push("");
+				// One blank row separates a section from the banner or the
+				// previous section; the header gap above is not a section.
+				if (hits.length > 0 || branding.length > 0) railLines.push("");
 				const startY = railLines.length;
 				railLines.push(...section.lines.map((line) => " ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING)));
 				hits.push({ key: section.key, component: section.component, startY, height: section.lines.length, width: contentWidth - RAIL_PADDING * 2 });

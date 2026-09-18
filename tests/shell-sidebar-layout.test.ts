@@ -599,7 +599,13 @@ test("an active header wraps the hstack in a vstack and removes the banner from 
 	const hstack = hstackOf(f);
 	assert.equal(hstack.type, "hstack");
 	const scroll = railWithHeader(f);
-	assert.doesNotMatch(scroll.render(50).join("\n"), /✿ Gentle Shell ✿/, "the header carries the brand now, not the banner");
+	const rail = scroll.render(50);
+	assert.doesNotMatch(rail.join("\n"), /✿ Gentle Shell ✿/, "the header carries the brand now, not the banner");
+	// The banner used to hold the first card away from the top; with the
+	// header in its place the rail keeps one blank row so the first card does
+	// not sit flush against the header.
+	assert.equal(rail[0]?.trim(), "", "the rail opens with a blank row under the header");
+	assert.notEqual(rail[1]?.trim(), "", "the first card starts on the second row");
 });
 
 test("without a registered header the rail keeps the banner and the plain hstack", (t) => {

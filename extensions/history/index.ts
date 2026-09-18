@@ -4,8 +4,8 @@
 // Prompt-history extension entry (slice 3): the selector TUI, overlay glue,
 // and the shortcut/command wiring over the slice-1 writer, slice-2 drains,
 // and slice-4 init sequence (legacy migration + seed bootstrap run once
-// inside getWriter). Deletion (slice 5) is wired here; GC/compaction
-// (slice 6) arrives in a later slice.
+// inside getWriter). Deletion (slice 5) and GC/compaction (slice 6) are
+// wired here.
 
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -22,6 +22,7 @@ import {
   deleteFromProject,
   drainGlobal,
   drainProject,
+  gcProjectDir,
   ensureRegistryEntry,
   migrateLegacyStores,
   openSessionWriter,
@@ -1012,6 +1013,15 @@ export default function promptHistoryExtension(pi: ExtensionAPI) {
     } catch {
       // A capture failure must never break the agent loop or unregister
       // the handler - swallow and keep the next prompt capturable.
+    }
+  });
+
+  // Backup pass: enforce the 1000-line limit on graceful shutdown.
+  pi.on("session_shutdown", () => {
+    try {
+      gcProjectDir(PI_HISTORY_ROOT, CURRENT_CWD);
+    } catch {
+      // GC is best-effort
     }
   });
 

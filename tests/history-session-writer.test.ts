@@ -88,12 +88,12 @@ test("two writers own separate files in the same project dir", () => {
   assert.deepEqual(files, ["inst-a.jsonl", "inst-b.jsonl"]);
 });
 
-test("the extension entry registers exactly the slice-3 wiring surface", () => {
+test("the extension entry registers exactly the final wiring surface", () => {
   // Module load must stay side-effect free (importing index.ts parses the
   // whole graph without touching the real ~/.pi store root). Wiring as of
-  // slice 3: before_agent_start capture + tool_call overlay dismiss, the
-  // ctrl+shift+r shortcut, and the history command. session_shutdown is
-  // slice 6 and must not appear yet.
+  // slice 6 (final): before_agent_start capture, session_shutdown GC,
+  // tool_call overlay dismiss, the ctrl+shift+r shortcut, and the
+  // history command.
   const registered: Array<[string, unknown]> = [];
   const shortcuts: Array<[string, unknown]> = [];
   const commands: Array<[string, unknown]> = [];
@@ -111,7 +111,7 @@ test("the extension entry registers exactly the slice-3 wiring surface", () => {
   promptHistoryExtension(pi as never);
   assert.deepEqual(
     registered.map(([event]) => event),
-    ["before_agent_start", "tool_call"],
+    ["before_agent_start", "session_shutdown", "tool_call"],
   );
   assert.deepEqual(shortcuts.map(([key]) => key), ["ctrl+shift+r"]);
   assert.deepEqual(commands.map(([name]) => name), ["history"]);

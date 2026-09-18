@@ -1,13 +1,12 @@
 // SPDX-FileCopyrightText: 2026 ExoPro. Inspired by @jasonish/pi-prompt-history
 // SPDX-License-Identifier: MIT
 
-// Consolidated multi-concurrency store (v2), slices 1+2+4: project paths
+// Consolidated multi-concurrency store (v2), slices 1-6: project paths
 // and identity, the advisory registry, entry primitives, the per-instance
 // session writer, the scope drain/reader/query section (ordering, dedup,
-// tombstone filter, project/global drains), legacy migration, and the
-// project seed bootstrap. Scope deletes and GC/compaction arrive in later
-// slices. Formerly store-paths.ts + registry.ts + multi-store.ts (+ v1
-// primitives).
+// tombstone filter, project/global drains), scope deletes, legacy
+// migration, the project seed bootstrap, and GC/compaction. Formerly
+// store-paths.ts + registry.ts + multi-store.ts (+ v1 primitives).
 
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -193,8 +192,7 @@ export function parseStoreLine(raw: string): StoreEntry | null {
 }
 
 // ===========================================================================
-// Instance writer (formerly multi-store.ts; GC/compaction arrives in a
-// later slice)
+// Instance writer (formerly multi-store.ts)
 // ===========================================================================
 
 /** Mutable state of ONE pi instance's exclusive capture file. */
@@ -670,4 +668,101 @@ export function bootstrapProjectSeed(
   );
   fs.renameSync(tmp, seed);
   return { seeded: collected.length, ran: true };
+}
+
+// ---------------------------------------------------------------------------
+// GC / compaction (design v2)
+// ---------------------------------------------------------------------------
+
+const GC_FILE_THRESHOLD = 50;
+const GC_LINE_THRESHOLD = 5000;
+const GC_KEEP_NEWEST = 10;
+
+export interface GcResult {
+  compacted: boolean;
+  merged: number;
+}
+
+/**
+ * Threshold check + compaction entry point (called at shutdown and at
+ * selector close). Compacts when a project dir holds more than
+ * GC_FILE_THRESHOLD files or GC_LINE_THRESHOLD total lines.
+ */
+export function gcProjectDir(
+  root: string,
+  cwd: string,
+  opts: {
+    fileThreshold?: number;
+    lineThreshold?: number;
+    keepNewest?: number;
+  } = {},
+): GcResult {
+  const fileThreshold = opts.fileThreshold ?? GC_FILE_THRESHOLD;
+  const lineThreshold = opts.lineThreshold ?? GC_LINE_THRESHOLD;
+  const keepNewest = opts.keepNewest ?? GC_KEEP_NEWEST;
+  const dir = path.join(root, "projects", projectHash(cwd));
+  const files = listProjectFiles(dir); // mtime-desc
+  if (files.length === 0) return { compacted: false, merged: 0 };
+
+  let totalLines = 0;
+  for (const file of files) {
+    try {
+      totalLines += fs
+        .readFileSync(file, "utf8")
+        .split("\n")
+        .filter((l) => l.trim().length > 0).length;
+    } catch {
+      // unreadable file: skip counting
+    }
+  }
+  if (files.length <= fileThreshold && totalLines <= lineThreshold) {
+    return { compacted: false, merged: 0 };
+  }
+  return compactFiles(files, keepNewest);
+}
+
+/**
+ * Merge all but the newest `keepNewest` files into one `compact-<ts>.jsonl`
+ * (chronological within the merged content). One atomic write; the
+ * originals are removed only after the compact file lands. Readers see
+ * either the old set or the compacted set. (Upstream exposed this as
+ * compactProjectDir; dropped here — zero callers, gcProjectDir is the
+ * single entry point.)
+ */
+function compactFiles(
+  filesMtimeDesc: string[],
+  keepNewest: number,
+): GcResult {
+  if (filesMtimeDesc.length <= keepNewest) {
+    return { compacted: false, merged: 0 };
+  }
+  const toMerge = filesMtimeDesc.slice(keepNewest); // oldest tail
+  const mergedLines: string[] = [];
+  for (const file of toMerge) {
+    try {
+      const raw = fs.readFileSync(file, "utf8");
+      for (const lineText of raw.split("\n")) {
+        const parsed = parseStoreLine(lineText);
+        if (parsed) mergedLines.push(JSON.stringify(parsed));
+      }
+    } catch {
+      // unreadable file: skip its content, still remove nothing
+      continue;
+    }
+  }
+  if (mergedLines.length === 0) return { compacted: false, merged: 0 };
+
+  const dir = path.dirname(toMerge[0]);
+  const compact = path.join(dir, `compact-${Date.now()}.jsonl`);
+  const tmp = `${compact}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(tmp, mergedLines.join("\n") + "\n", "utf8");
+  fs.renameSync(tmp, compact);
+  for (const file of toMerge) {
+    try {
+      fs.rmSync(file);
+    } catch {
+      // a surviving original is harmless (readers dedupe by identity)
+    }
+  }
+  return { compacted: true, merged: toMerge.length };
 }

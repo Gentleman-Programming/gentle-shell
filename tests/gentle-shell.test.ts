@@ -128,7 +128,7 @@ async function fire(handlers: Map<string, Array<(event: unknown, ctx: ExtensionC
 	for (const handler of handlers.get(event) ?? []) await handler({}, ctx);
 }
 
-function fakeContext(options: { hasUI?: boolean; entries?: unknown[]; oauth?: boolean; pending?: boolean; editorFactory?: unknown; token?: string } = {}): { ctx: ExtensionContext; ui: FakeUi; overlayReady: Promise<void> } {
+function fakeContext(options: { hasUI?: boolean; entries?: unknown[]; oauth?: boolean; pending?: boolean; editorFactory?: unknown; token?: string; tokens?: Record<string, string | undefined> } = {}): { ctx: ExtensionContext; ui: FakeUi; overlayReady: Promise<void> } {
 	const ui: FakeUi = { footerFactory: undefined, editorFactory: options.editorFactory, widgets: new Map(), widgetSets: 0, workingVisible: undefined, notices: [], overlay: undefined, overlayView: undefined, closeOverlay: undefined };
 	let resolveOverlay: () => void;
 	const overlayReady = new Promise<void>((resolve) => { resolveOverlay = resolve; });
@@ -144,7 +144,7 @@ function fakeContext(options: { hasUI?: boolean; entries?: unknown[]; oauth?: bo
 			getEntries: () => entries,
 			getSessionId: () => "shell-session",
 		},
-		modelRegistry: { isUsingOAuth: () => options.oauth ?? true, getApiKeyForProvider: async () => options.token },
+		modelRegistry: { isUsingOAuth: () => options.oauth ?? true, getApiKeyForProvider: async (provider: string) => options.tokens?.[provider] ?? options.token },
 		getContextUsage: () => ({ tokens: 122_400, contextWindow: 272_000, percent: 45 }),
 		ui: {
 			theme: plainTheme,
@@ -751,6 +751,101 @@ test("gentleShell fetches Codex usage on session start and shows it in the bar",
 	await fire(handlers, "agent_end", ctx);
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	assert.equal(calls.length, 1, "agent_end must not refetch within the refresh window");
+});
+
+test("gentleShell refreshes OpenCode Go on lifecycle events without a polling timer", async () => {
+	const { pi, handlers } = fakePi();
+	const calls: string[] = [];
+	const fetchFn = (async (url: string | URL | Request) => {
+		calls.push(String(url));
+		return { ok: true, json: async () => ({ usage: {
+			rolling: { status: "ok", percent: calls.length === 1 ? 25 : 50 },
+			weekly: { status: "ok", percent: 10 },
+			monthly: { status: "ok", percent: 5 },
+		} }) } as Response;
+	}) as typeof fetch;
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => 1_788_600_000_000 });
+	const { ctx, ui } = fakeContext({ tokens: { "opencode-go": "oc-key" } });
+	(ctx as unknown as { model: { provider: string; id: string } }).model = { ...ctx.model!, provider: "opencode-go", id: "muse-spark" };
+	await fire(handlers, "session_start", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(calls.length, 1);
+	assert.match(renderFooter(ui), /opencode 5h ▰▰▱▱▱▱▱▱ 25% · week 10% · month 5%/);
+
+	await fire(handlers, "agent_end", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(calls.length, 2, "one completed provider turn triggers one refresh");
+	assert.match(renderFooter(ui), /opencode 5h ▰▰▰▰▱▱▱▱ 50%/);
+	assert.equal(handlers.has("timer"), false, "usage refresh is driven by Pi events, not a timer");
+});
+
+test("a restarted session never reuses or renders a previous optional-provider request when Pi reuses its context", async () => {
+	const { pi, handlers } = fakePi();
+	let resolveFirst: ((response: Response) => void) | undefined;
+	const calls: string[] = [];
+	const fetchFn = (async (url: string | URL | Request) => {
+		calls.push(String(url));
+		if (calls.length === 1) return new Promise<Response>((resolve) => { resolveFirst = resolve; });
+		return { ok: true, json: async () => ({ usage: { rolling: { status: "ok", percent: 50 } } }) } as Response;
+	}) as typeof fetch;
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => 1_788_600_000_000 });
+	const session = fakeContext({ tokens: { "opencode-go": "oc-key" } });
+	(session.ctx as unknown as { model: { provider: string; id: string } }).model = { ...session.ctx.model!, provider: "opencode-go", id: "muse-spark" };
+	await fire(handlers, "session_start", session.ctx);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(calls.length, 1);
+	await fire(handlers, "session_shutdown", session.ctx);
+
+	await fire(handlers, "session_start", session.ctx);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(calls.length, 2, "the new session performs its own initial request");
+	assert.match(renderFooter(session.ui), /opencode 5h ▰▰▰▰▱▱▱▱ 50%/);
+
+	resolveFirst?.({ ok: true, json: async () => ({ usage: { rolling: { status: "ok", percent: 25 } } }) } as Response);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.match(renderFooter(session.ui), /opencode 5h ▰▰▰▰▱▱▱▱ 50%/, "the stale response cannot overwrite the active session");
+});
+
+test("a restarted session does not retain usage from the previous account when refresh is unavailable", async () => {
+	const { pi, handlers } = fakePi();
+	const tokens: Record<string, string | undefined> = { "opencode-go": "old-key" };
+	let calls = 0;
+	const fetchFn = (async () => {
+		calls += 1;
+		return { ok: true, json: async () => ({ usage: { rolling: { status: "ok", percent: 25 } } }) } as Response;
+	}) as typeof fetch;
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => 1_788_600_000_000 });
+	const session = fakeContext({ tokens });
+	(session.ctx as unknown as { model: { provider: string; id: string } }).model = { ...session.ctx.model!, provider: "opencode-go", id: "muse-spark" };
+	await fire(handlers, "session_start", session.ctx);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.match(renderFooter(session.ui), /opencode 5h ▰▰▱▱▱▱▱▱ 25%/);
+
+	await fire(handlers, "session_shutdown", session.ctx);
+	tokens["opencode-go"] = undefined;
+	await fire(handlers, "session_start", session.ctx);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(calls, 1, "a missing new-session credential performs no request");
+	assert.doesNotMatch(renderFooter(session.ui), /opencode|25%/, "the previous account's quota is not rendered");
+});
+
+test("gentleShell fetches a newly selected optional provider on the model-select event", async () => {
+	const { pi, handlers } = fakePi();
+	const calls: string[] = [];
+	const fetchFn = (async (url: string | URL | Request) => {
+		calls.push(String(url));
+		if (String(url).includes("opencode.ai")) return { ok: true, json: async () => ({ usage: { rolling: { status: "ok", percent: 1 } } }) } as Response;
+		return { ok: false, json: async () => ({}) } as Response;
+	}) as typeof fetch;
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => 1_788_600_000_000 });
+	const { ctx } = fakeContext({ tokens: { "openai-codex": undefined, "opencode-go": "oc-key" } });
+	await fire(handlers, "session_start", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(calls.length, 0);
+	(ctx as unknown as { model: { provider: string; id: string } }).model = { ...ctx.model!, provider: "opencode-go", id: "muse-spark" };
+	await fire(handlers, "model_select", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(calls.length, 1);
 });
 
 test("gentleShell records SSE rate-limit headers from provider responses", async () => {

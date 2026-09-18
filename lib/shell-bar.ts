@@ -1,6 +1,6 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { GAUGE_CELLS, gaugeTone, paintGauge, renderGauge, type GaugeTone } from "./shell-gauge.ts";
-import { allowanceGroupsSupported, groupUsageLimits, renderUsageBar, type ProviderUsage } from "./shell-usage.ts";
+import { allowanceGroupsSupported, groupUsageLimits, renderUsageBar, selectUsageLimit, type ProviderUsage } from "./shell-usage.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { CARD_TONE, cardInnerWidth, renderCard } from "./shell-card.ts";
 
@@ -125,6 +125,18 @@ function joinSegments(segments: string[], theme: ShellBarTheme): string {
 	return segments.join(` ${theme.fg(ROLE.SEPARATOR, SHELL_BAR_SEPARATOR)} `);
 }
 
+// A row exists to show what is being consumed, so a window that consumed
+// nothing is noise the sidebar drops. The threshold is the row's own number and
+// nothing else: the render path prints `Math.round(percent)`, so a fraction
+// below half a percent prints `0%` and disappears while half a percent keeps its
+// row and prints `1%` — no second scale and no separate epsilon. A window whose
+// percent is not a number never equals zero, so it keeps its row instead of
+// being dropped in silence. The bar and the panel keep their own contract and
+// still print a zero allowance.
+function consumedNothing(usedPercent: number): boolean {
+	return Math.round(usedPercent) === 0;
+}
+
 // The sidebar is the surface that never needs opening, so a provider with
 // per-model allowances prints the panel's model rows there too — the most
 // consumed family first, its models inside it — and leaves the aggregate totals
@@ -133,12 +145,21 @@ function joinSegments(segments: string[], theme: ShellBarTheme): string {
 // in use.
 function sidebarUsageLines(usage: ProviderUsage, modelId: string, theme: ShellBarTheme, available: number): string[] {
 	if (!allowanceGroupsSupported(usage.limits)) {
+		// The aggregate line is one row, so its windows decide together: one
+		// consumed window keeps the sharing row, all of them zero drop it. A limit
+		// with no windows is not "zero consumption" — there is nothing to draw, and
+		// renderUsageBar already answers that — so the rule only speaks when there
+		// is a window to judge.
+		const windows = selectUsageLimit(usage, modelId)?.windows ?? [];
+		if (windows.length > 0 && windows.every((window) => consumedNothing(window.usedPercent))) return [];
 		const line = renderUsageBar(usage, theme, modelId);
 		return line ? [line] : [];
 	}
-	const rows = groupUsageLimits(usage.limits).flatMap((limit) =>
-		limit.windows.map((window) => ({ name: [limit.name, window.label].filter((part) => part.length > 0).join(" "), window })),
-	);
+	const rows = groupUsageLimits(usage.limits)
+		.flatMap((limit) =>
+			limit.windows.map((window) => ({ name: [limit.name, window.label].filter((part) => part.length > 0).join(" "), window })),
+		)
+		.filter((row) => !consumedNothing(row.window.usedPercent));
 	// The name column gives way first: it is the only part that can be clipped
 	// without losing the number the row exists to show.
 	const widest = rows.reduce((width, row) => Math.max(width, row.name.length), 0);

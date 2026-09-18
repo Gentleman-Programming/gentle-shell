@@ -170,8 +170,9 @@ test("sidebar groups the NaN allowances by subscription without totals or resets
 	const usage = parseNanQuota(GROUPED_NAN_QUOTA, 0);
 	const lines = renderShellSidebarBar(model({ modelId: "glm5.3-flash", usage }), plainTheme, 60);
 	const rows = sidebarUsageRows(lines);
-	assert.deepEqual(rows.map((row) => row.replace(/\s*[▰▱].*$/, "")), ["deepseek-v4-flash", "glm5.3-flash", "glm5.3", "glm5.2"]);
-	assert.deepEqual(rows.map((row) => Number.parseInt(row.match(/(\d+)%$/)![1] ?? "", 10)), [10, 10, 0, 0]);
+	assert.deepEqual(rows.map((row) => row.replace(/\s*[▰▱].*$/, "")), ["deepseek-v4-flash", "glm5.3-flash"]);
+	assert.deepEqual(rows.map((row) => Number.parseInt(row.match(/(\d+)%$/)![1] ?? "", 10)), [10, 10]);
+	assert.equal(rows.some((row) => / 0%$/.test(row)), false, "a window that consumed nothing only spends space");
 	assert.equal(lines.join("\n").includes("total"), false, "an aggregate row only costs space");
 	assert.equal(lines.join("\n").includes("resets in"), false, "the reset dates belong to the panel");
 	for (const width of [24, 46, 60]) {
@@ -191,6 +192,68 @@ test("sidebar keeps one aggregate line for a provider without raw allowances", (
 	};
 	const lines = renderShellSidebarBar(model({ usage }), plainTheme, 60);
 	assert.deepEqual(sidebarUsageRows(lines), ["codex 5h ▰▰▰▰▰▱▱▱ 62% · week 31%"]);
+});
+
+test("sidebar drops an aggregate allowance that consumed nothing", () => {
+	const usage = {
+		provider: "openai-codex",
+		plan: "pro",
+		fetchedAt: 0,
+		limits: [{ name: "codex", limitReached: false, windows: [
+			{ label: "5h", usedPercent: 0, windowSeconds: 18_000, resetAt: null },
+			{ label: "week", usedPercent: 0, windowSeconds: 604_800, resetAt: null },
+		] }],
+	};
+	const lines = renderShellSidebarBar(model({ usage }), plainTheme, 60);
+	assert.deepEqual(sidebarUsageRows(lines), []);
+	const text = lines.join("\n");
+	assert.match(text, /Usage/);
+	assert.match(text, /Context/);
+	assert.match(text, /Cost/);
+	// The bar keeps its own contract: only the sidebar gives zero rows the boot.
+	assert.match(renderShellBar(model({ usage }), plainTheme, 200)[0], /codex 5h ▱▱▱▱▱▱▱▱ 0% · week 0%$/);
+});
+
+test("sidebar keeps the Usage group when nothing was consumed", () => {
+	const usage = parseNanQuota({
+		periodEnd: "2026-10-01T00:00:00.000Z",
+		models: [
+			{ model: "glm5.3", cap: 3_000_000_000, tokensUsed: 0 },
+			{ model: "glm5.2", cap: 3_000_000_000, tokensUsed: 0 },
+		],
+	}, 0);
+	const lines = renderShellSidebarBar(model({ usage }), plainTheme, 60);
+	const text = lines.join("\n");
+	assert.deepEqual(sidebarUsageRows(lines), []);
+	assert.match(text, /Usage/);
+	assert.match(text, /Context/);
+	assert.match(text, /Cost/);
+	assert.match(text, /Integrations/);
+});
+
+test("sidebar hides exactly the rows that would print 0%, rounding included", () => {
+	// The row's own rounding is the only threshold: a fraction below half a
+	// percent is a 0% row and leaves; half a percent keeps its row and prints 1%.
+	const usage = (usedPercent: number) => ({
+		provider: "openai-codex",
+		plan: "pro",
+		fetchedAt: 0,
+		limits: [{ name: "codex", limitReached: false, windows: [{ label: "5h", usedPercent, windowSeconds: 18_000, resetAt: null }] }],
+	});
+	assert.deepEqual(sidebarUsageRows(renderShellSidebarBar(model({ usage: usage(0.4) }), plainTheme, 60)), []);
+	assert.deepEqual(sidebarUsageRows(renderShellSidebarBar(model({ usage: usage(0.5) }), plainTheme, 60)), ["codex 5h ▱▱▱▱▱▱▱▱ 1%"]);
+});
+
+test("sidebar reads a limit without windows as nothing to draw, not as zero consumption", () => {
+	const usage = {
+		provider: "openai-codex",
+		plan: "pro",
+		fetchedAt: 0,
+		limits: [{ name: "codex", limitReached: false, windows: [] }],
+	};
+	const lines = renderShellSidebarBar(model({ usage }), plainTheme, 60);
+	assert.deepEqual(sidebarUsageRows(lines), []);
+	assert.match(lines.join("\n"), /Cost/);
 });
 
 test("renderShellBar shows an unknown context as a question mark after compaction", () => {

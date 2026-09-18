@@ -60,7 +60,7 @@ extensions) for hosts that need nothing.
 - [x] RELAY-4 — RED/GREEN: the extension resolves the lens model from the
       routing config and the extension allowlist from the environment, and the
       failure report carries reviewer evidence.
-- [ ] RELAY-5 — Docs (`docs/review-integration.md`) + full suite + typecheck +
+- [x] RELAY-5 — Docs (`docs/review-integration.md`) + full suite + typecheck +
       live relay smoke if a review candidate is available.
 
 ## Progress
@@ -109,3 +109,30 @@ extensions) for hosts that need nothing.
   `failure.reviewer`. One test lesson: the resolution reads the real config
   home when GENTLE_PI_CONFIG_HOME is unset, so the selection-free test
   isolates the config home.
+
+- 2026-09-18 RELAY-5: docs/review-integration.md now states the JSON event
+  transport, the evidenced empty-output failure, and the two user-owned launch
+  selections (lens model routing entry, GENTLE_PI_REVIEW_RELAY_EXTENSIONS)
+  with their typed pre-launch validation. Full suite: `pnpm test` — exit 0,
+  2723 tests, 2685 passed, 0 failed, 38 skipped; provider contract mirror
+  check passed; runtime harness ran clean. Typecheck: 197 recorded
+  diagnostics, no regressions (2 file/code pairs improved). Live transport
+  smoke against a real pi child: prompt bytes in, assistant text `{"ok":
+  true}` extracted from the authentic JSON event stream. The mirrored
+  provider bundle does not pin the old text mode, so no mirror regeneration
+  was needed.
+
+## Closure notes
+
+- The four issues share one root: the reviewer child's frozen launch. #1140
+  and #1156 close through the JSON event transport with typed evidence;
+  #1136 closes through lens model forwarding; #1158 closes through the
+  user-owned extension allowlist. The review lifecycle itself (freezing,
+  admission, receipts) stays provider-owned; nothing here touches authority.
+- Upstream pi findings recorded during exploration, not fixable here:
+  (1) a fresh `pi --print --model <catalog-provider>/<id>` can fail model
+  resolution while the same model appears in `--list-models` and can drive
+  the default selection — catalog-provider registration appears to race the
+  print path; the relay surfaces that child stderr verbatim now.
+  (2) text-mode print swallows a turn spent on a tool call as zero bytes and
+  exit 0; JSON mode avoids relying on that path entirely.

@@ -546,6 +546,54 @@ test("reclaims Pi's reserved footer row while the sidebar is active, leaving the
 	assert.equal(inactiveDock.entries[inactiveDock.entries.length - 1]!.minSize, 1);
 });
 
+// Regression: pi-tui measures an "auto"-basis vstack entry (the dock, whose
+// basis is "auto" in chat-viewport.js) by calling `.render(width).length`
+// directly, never through `[NODE]`. A wrapper component that stubs render()
+// to `[]` (matching `left`'s existing, always-safe stub) reports zero lines
+// for the WHOLE dock, so the outer allocator clamps it down to its own
+// minSize and gives every other row to the transcript — collapsing the
+// editor along with the footer. The wrapper's render must delegate to the
+// real dock's render so this measurement stays correct; only the recursive
+// NODE-based paint is allowed to see the reclaimed footer minSize.
+test("reclaiming the footer row never collapses the rest of the dock (the editor stays fully visible)", (t) => {
+	const editorRows = 4;
+	const transcript = {
+		render(width: number) {
+			return Array.from({ length: 200 }, (_, index) => `Entry ${index} at ${width}`);
+		},
+		invalidate() {},
+	};
+	const primary = new ScrollView(transcript, { primary: true, follow: "end", scrollbar: "always" });
+	const pendingMessages = { render: () => [], invalidate() {} };
+	const status = { render: () => [], invalidate() {} };
+	const editor = { render: () => Array.from({ length: editorRows }, (_, index) => `Editor line ${index}`), invalidate() {} };
+	// A suppressed footer, exactly like sidebarPart's wrapper while the
+	// sidebar owns the host: it renders zero lines but still asks for a
+	// reserved row via minSize.
+	const footer = { render: () => [], invalidate() {} };
+	const dock = new VStack([
+		{ component: pendingMessages, shrink: 1, minSize: 0 },
+		{ component: status, shrink: 1, minSize: 0 },
+		{ component: editor, shrink: 1, minSize: 3 },
+		{ component: footer, shrink: 1, minSize: 1 },
+	]);
+	const root = new VStack([
+		{ component: primary, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+		{ component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 },
+	]);
+	const host = { mode: "fullscreen", terminal: { columns: 160 }, layoutRoot: root, requestRender() {} };
+	const tui = host as unknown as TUI;
+	sidebarPart(tui, "footer", { render: () => Array.from({ length: 100 }, (_, i) => `Status ${i}`), invalidate() {} });
+	const dispose = installSidebar(tui, theme);
+	t.after(dispose);
+
+	const frame = renderLayoutFrame(root, 160, 30, () => {});
+	const text = frame.lines.join("\n");
+	for (let index = 0; index < editorRows; index++) {
+		assert.match(text, new RegExp(`Editor line ${index}`), `editor row ${index} must stay visible, not be squeezed out by a mismeasured dock`);
+	}
+});
+
 // T3: per-section render memo. Each rail section caches its rendered lines by
 // its own digest, so a section whose digest did not change is never re-run
 // when a sibling section's digest ticks — only the whole rail's assembled

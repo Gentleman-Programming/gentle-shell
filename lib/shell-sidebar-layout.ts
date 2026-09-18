@@ -81,9 +81,16 @@ function reclaimFooterRow(node: LayoutNode): LayoutNode {
 		...dockNode,
 		entries: dockEntries.map((entry, index) => (index === footerIndex ? { ...entry, minSize: 0 } : entry)),
 	};
+	// pi-tui measures an "auto"-basis vstack entry by calling `.render(width)`
+	// directly — never through `[NODE]` — to size the dock as a whole before it
+	// recurses into the dock's own entries for painting. A stub here (like
+	// `left`'s, which is never auto-measured) would report zero lines for the
+	// whole dock and collapse it — editor included — down to its own outer
+	// minSize. Delegating to the real dock's render keeps that measurement
+	// correct; only the recursive NODE-based paint sees the reclaimed minSize.
 	const reclaimedDock: Component & { [NODE](): LayoutNode } = {
-		render: () => [],
-		invalidate() {},
+		render: (width) => dockEntry.component.render(width),
+		invalidate: () => dockEntry.component.invalidate(),
 		[NODE]: () => reclaimedDockNode,
 	};
 	return {

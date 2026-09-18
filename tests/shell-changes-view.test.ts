@@ -439,11 +439,38 @@ test("colorDiff drops git headers and colors hunks, additions, and removals by r
 	const lines = colorDiff(DIFF_A, taggedTheme);
 	assert.deepEqual(lines, [
 		"<customMessageLabel>@@ -1,2 +1,3 @@</customMessageLabel>",
-		"<toolDiffContext> const a = 1;</toolDiffContext>",
 		"<toolDiffRemoved>-const b = 2;</toolDiffRemoved>",
 		"<toolDiffAdded>+const b = 3;</toolDiffAdded>",
 		"<toolDiffAdded>+const c = 4;</toolDiffAdded>",
 	]);
+});
+
+test("colorDiff omits unchanged unified-diff context so the pane matches +N", () => {
+	const patch = [
+		"diff --git a/src/ui/agent-changes.ts b/src/ui/agent-changes.ts",
+		"@@ -132,10 +132,15 @@",
+		" // filler before",
+		" const AGENT_CHANGES_TREE_INDENT_WIDTH = 2;",
+		"+// Width of one visual tree indent step in columns. Keep this aligned",
+		"+// with the treePrefix() padding so nested rows stay aligned.",
+		" ",
+		"+// Width of the treePrefix() string: two spaces, then either \"└─ \"",
+		"+// or \"  \" for nested rows. Keep this aligned with",
+		"+// AGENT_CHANGES_TREE_INDENT_WIDTH.",
+		" export const AGENT_CHANGES_TREE_PREFIX_WIDTH =",
+		"   2 + Math.max(\"└─ \".length, \"  \".length);",
+	].join("\n");
+	const lines = colorDiff(patch, plainTheme);
+	assert.deepEqual(lines, [
+		"@@ -132,10 +132,15 @@",
+		"+// Width of one visual tree indent step in columns. Keep this aligned",
+		"+// with the treePrefix() padding so nested rows stay aligned.",
+		"+// Width of the treePrefix() string: two spaces, then either \"└─ \"",
+		"+// or \"  \" for nested rows. Keep this aligned with",
+		"+// AGENT_CHANGES_TREE_INDENT_WIDTH.",
+	]);
+	assert.equal(lines.filter((line) => line.startsWith("+")).length, 5);
+	assert.ok(!lines.some((line) => line.includes("filler") || line.includes("TREE_INDENT_WIDTH = 2") || line.includes("TREE_PREFIX_WIDTH =")));
 });
 
 test("ChangesView renders a framed two-pane layout at the requested size", async () => {
@@ -455,7 +482,7 @@ test("ChangesView renders a framed two-pane layout at the requested size", async
 	const plain = lines.map(stripAnsi);
 	assert.match(plain[0], /^╭─ ✎ Changes · 2 files · \+12 −1 ─+╮$/);
 	assert.match(plain[1], /^│ ▸ M lib\/a\.ts +\+2 -1 +│ @@ -1,2 \+1,3 @@ +│$/);
-	assert.match(plain[2], /^│   A lib\/b\.ts +\+10 -0 +│  const a = 1; +│$/);
+	assert.match(plain[2], /^│   A lib\/b\.ts +\+10 -0 +│ -const b = 2; +│$/);
 	assert.match(plain[11], /^╰─+╯$/);
 	assert.match(plain[10], /j\/k file .* o open in editor .* esc close/);
 });

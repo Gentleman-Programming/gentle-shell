@@ -25,6 +25,22 @@ export interface PromptEntry {
   ts?: number;
 }
 
+export interface VisibleRange {
+  start: number;
+  end: number;
+}
+
+export interface VisiblePromptRecord {
+  index: number;
+  record: PromptRecord;
+  isSelected: boolean;
+}
+
+export interface PiHistoryGlobals {
+  __piHistoryExpand?: () => void;
+  __piHistoryTrim?: () => void;
+}
+
 export function buildPromptRecords(
   entries: ReadonlyArray<string | PromptEntry>,
 ): PromptRecord[] {
@@ -44,6 +60,56 @@ export function buildPromptRecords(
     }
     return record;
   });
+}
+
+export function clampSelectedIndex(
+  selectedIndex: number,
+  total: number,
+): number {
+  return Math.max(0, Math.min(selectedIndex, Math.max(0, total - 1)));
+}
+
+export function clampPreviewOffset(
+  offset: number,
+  totalLines: number,
+  viewportRows: number,
+): number {
+  return Math.max(0, Math.min(offset, Math.max(0, totalLines - viewportRows)));
+}
+
+export function computeVisibleRange(
+  selectedIndex: number,
+  total: number,
+  maxVisible: number,
+): VisibleRange {
+  if (total <= 0 || maxVisible <= 0) return { start: 0, end: 0 };
+  if (total <= maxVisible) return { start: 0, end: total };
+
+  const half = Math.floor(maxVisible / 2);
+  const start = Math.max(0, Math.min(selectedIndex - half, total - maxVisible));
+
+  return {
+    start,
+    end: Math.min(start + maxVisible, total),
+  };
+}
+
+export function moveSelectedIndex(
+  selectedIndex: number,
+  total: number,
+  delta: number,
+): number {
+  if (total === 0) return 0;
+  return (selectedIndex + delta + total) % total;
+}
+
+export function pageSelectedIndex(
+  selectedIndex: number,
+  total: number,
+  pageSize: number,
+): number {
+  if (total === 0) return 0;
+  return clampSelectedIndex(selectedIndex + pageSize, total);
 }
 
 /**
@@ -85,6 +151,112 @@ export function dedupePromptEntries<T extends string | PromptEntry>(
     }
   }
   return deduped;
+}
+
+/**
+ * First-paint window size (spec C1, AC-L1-1): min(initialBatch, total),
+ * floored at 0 — small stores open fully loaded (exhausted at open),
+ * identical to today's behavior for R <= INITIAL_BATCH.
+ */
+export function initialLoadedCount(
+  total: number,
+  initialBatch: number,
+): number {
+  return Math.max(0, Math.min(initialBatch, total));
+}
+
+/**
+ * Prefetch trigger (spec C2's normative expression, AC-L2-1): growth fires
+ * iff rows remain unloaded AND the 0-based cursor sits within the final
+ * preloadBuffer rows of the loaded window. Reads UNFILTERED counts only —
+ * filteredRecords.length appears in no trigger arithmetic (AC-L2-2).
+ */
+export function shouldGrowWindow(
+  selectedIndex: number,
+  loadedCount: number,
+  totalCount: number,
+  preloadBuffer: number,
+): boolean {
+  return (
+    loadedCount < totalCount && selectedIndex + preloadBuffer >= loadedCount
+  );
+}
+
+/**
+ * One growth step (spec C2, AC-L2-1): min(L + max(1, batchSize), R). The
+ * max(1, ·) guard also keeps loadedCountForTarget's loop terminating on a
+ * degenerate batch size.
+ */
+export function nextLoadedCount(
+  loadedCount: number,
+  totalCount: number,
+  batchSize: number,
+): number {
+  const step = Math.max(1, batchSize);
+  return Math.min(loadedCount + step, totalCount);
+}
+
+/**
+ * PgDn catch-up (spec C1, AC-L1-5): the smallest whole-batch count that
+ * strictly covers targetIndex (a 0-based master row), clamped at totalCount.
+ * No-op when the target is already covered or the window is exhausted.
+ * Terminates by construction: each step adds ≥ 1, bounded by totalCount.
+ */
+export function loadedCountForTarget(
+  loadedCount: number,
+  totalCount: number,
+  targetIndex: number,
+  batchSize: number,
+): number {
+  let next = loadedCount;
+  while (next <= targetIndex && next < totalCount) {
+    next = nextLoadedCount(next, totalCount, batchSize);
+  }
+  return next;
+}
+
+export function getVisiblePromptRecords(
+  records: PromptRecord[],
+  selectedIndex: number,
+  maxVisible: number,
+): VisiblePromptRecord[] {
+  const { start, end } = computeVisibleRange(
+    selectedIndex,
+    records.length,
+    maxVisible,
+  );
+  return records.slice(start, end).map((record, offset) => ({
+    index: start + offset,
+    record,
+    isSelected: start + offset === selectedIndex,
+  }));
+}
+
+export async function withExpandedHistoryGlobals<T>(
+  globals: PiHistoryGlobals,
+  run: () => Promise<T>,
+): Promise<T> {
+  globals.__piHistoryExpand?.();
+  try {
+    return await run();
+  } finally {
+    globals.__piHistoryTrim?.();
+  }
+}
+
+/**
+ * Full-snapshot visibility for non-empty queries (AC-L2-3r, user-directed
+ * 2026-09-08): searching must see the whole deduped snapshot, not just the
+ * loaded prefix. One-shot and idempotent — returns the total, never an
+ * incremental batch — so per-keypress growth stays impossible. Empty or
+ * whitespace-only queries leave the lazy window untouched.
+ */
+export function loadedCountForQuery(
+  loadedCount: number,
+  totalCount: number,
+  query: string,
+): number {
+  return query.trim().length > 0 ? totalCount : loadedCount;
 }
 
 const MAX_RESULTS = 10000;

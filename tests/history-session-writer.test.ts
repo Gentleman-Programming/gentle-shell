@@ -88,22 +88,36 @@ test("two writers own separate files in the same project dir", () => {
   assert.deepEqual(files, ["inst-a.jsonl", "inst-b.jsonl"]);
 });
 
-test("the slice-1 extension entry registers only the capture handler", () => {
+test("the extension entry registers exactly the slice-3 wiring surface", () => {
   // Module load must stay side-effect free (importing index.ts parses the
-  // whole slice-1 graph without touching the real ~/.pi store root), and
-  // slice 1 wires exactly one handler: before_agent_start.
+  // whole graph without touching the real ~/.pi store root). Wiring as of
+  // slice 3: before_agent_start capture + tool_call overlay dismiss, the
+  // ctrl+shift+r shortcut, and the history command. session_shutdown is
+  // slice 6 and must not appear yet.
   const registered: Array<[string, unknown]> = [];
+  const shortcuts: Array<[string, unknown]> = [];
+  const commands: Array<[string, unknown]> = [];
   const pi = {
     on: (event: string, handler: unknown) => {
       registered.push([event, handler]);
+    },
+    registerShortcut: (key: string, def: unknown) => {
+      shortcuts.push([key, def]);
+    },
+    registerCommand: (name: string, def: unknown) => {
+      commands.push([name, def]);
     },
   };
   promptHistoryExtension(pi as never);
   assert.deepEqual(
     registered.map(([event]) => event),
-    ["before_agent_start"],
+    ["before_agent_start", "tool_call"],
   );
-  // The handler is callable but is NEVER invoked here: a real invocation
+  assert.deepEqual(shortcuts.map(([key]) => key), ["ctrl+shift+r"]);
+  assert.deepEqual(commands.map(([name]) => name), ["history"]);
+  // Handlers are callable but are NEVER invoked here: a real invocation
   // would run getWriter() against the user's real ~/.pi/agent/history.
-  assert.equal(typeof registered[0][1], "function");
+  for (const [, handler] of registered) {
+    assert.equal(typeof handler, "function");
+  }
 });

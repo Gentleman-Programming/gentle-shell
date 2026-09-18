@@ -54,7 +54,7 @@ extensions) for hosts that need nothing.
 - [x] RELAY-1 — RED: adapter tests lock the json-event extraction, the
       evidence-carrying empty-output failure, and `--mode json` in the argv.
 - [x] RELAY-2 — GREEN: adapter implements json event extraction + evidence.
-- [ ] RELAY-3 — RED/GREEN: relay forwards `reviewerModel` and
+- [x] RELAY-3 — RED/GREEN: relay forwards `reviewerModel` and
       `reviewerExtensionPaths` to the adapter; typed validation (model id
       pattern, absolute extension paths) before launch.
 - [ ] RELAY-4 — RED/GREEN: the extension resolves the lens model from the
@@ -86,3 +86,14 @@ extensions) for hosts that need nothing.
   verbatim and are validated non-empty before spawn. The identifier guard test
   gained one documented exception: pi's quoted wire key for the selection the
   child reports is data, stripped before the scan.
+
+- 2026-09-18 RELAY-3: RED (3 new tests failing) then GREEN —
+  `node --experimental-strip-types --test tests/review-host-relay.test.ts`
+  41 passed, 0 failed; adapter + routing + restart-parity + transport-agent +
+  contract suites: 55 passed, 0 failed. The relay validates the caller-owned
+  reviewer selection (safe model id) and extension allowlist (absolute,
+  existing paths) in the snapshot phase, refuses them typed as
+  `reviewer-config-invalid` before any process launches, and forwards them as
+  `--model` / `-e` tokens. `pi-empty-output` now carries the child's own
+  evidence, a bounded stderr excerpt, and the two remedies (lens selection,
+  GENTLE_PI_REVIEW_RELAY_EXTENSIONS).

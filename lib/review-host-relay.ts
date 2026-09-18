@@ -30,10 +30,14 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { resolveGentleAiBinary } from "./gentle-ai-binary.ts";
+import { SAFE_MODEL_ID_PATTERN } from "./model-routing-authority.ts";
+import { existsSync } from "node:fs";
+import { delimiter as pathDelimiter } from "node:path";
 import {
 	OPAQUE_PI_REVIEWER_TRANSPORT_FAILURE,
 	OpaquePiReviewerTransportError,
 	runOpaquePiReviewer,
+	type PiReviewOutputEvidence,
 	type OpaquePiReviewerResult,
 } from "./opaque-pi-reviewer-adapter.ts";
 import { REVIEW_PROVIDER_ROLE_CAPTURE_OPERATION, REVIEW_PROVIDER_ROLE_CAPTURE_OPERATIONS, type ReviewCaptureSubmissionV1, type ReviewCollectInputV3 } from "./review-integration-v2.ts";
@@ -60,6 +64,11 @@ export const REVIEW_HOST_RELAY_FAILURE = {
 	// continuation instead of hiding inside `pi-failed`.
 	PI_TIMED_OUT: "pi-timed-out",
 	PI_EMPTY_OUTPUT: "pi-empty-output",
+	// gentle-shell#1158 / #1136: a caller-owned reviewer selection that cannot
+	// possibly launch (a malformed selection id, a relative or missing extension
+	// path) is a configuration failure, refused typed before anything runs —
+	// never a mid-review transport mystery.
+	REVIEWER_CONFIG_INVALID: "reviewer-config-invalid",
 	SUBMISSION_REFUSED: "submission-refused",
 } as const;
 export type ReviewHostRelayFailureKind = (typeof REVIEW_HOST_RELAY_FAILURE)[keyof typeof REVIEW_HOST_RELAY_FAILURE];
@@ -90,7 +99,9 @@ export class ReviewHostRelayError extends Error {
 	// "none" again: the provider states that the lens slot was not consumed
 	// (gentle-pi#522 / #524).
 	readonly mutationOutcome: "none" | "unknown";
-	constructor(kind: ReviewHostRelayFailureKind, stage: ReviewHostRelayStage, message: string, details?: { exitCode?: number | null; stderr?: string; timedOut?: boolean; elapsedMs?: number; timeoutMs?: number; mutationOutcome?: "none" | "unknown" }) {
+	/** What the reviewer child's own event stream revealed on an empty-output failure. */
+	readonly reviewerEvidence: PiReviewOutputEvidence | undefined;
+	constructor(kind: ReviewHostRelayFailureKind, stage: ReviewHostRelayStage, message: string, details?: { exitCode?: number | null; stderr?: string; timedOut?: boolean; elapsedMs?: number; timeoutMs?: number; mutationOutcome?: "none" | "unknown"; reviewerEvidence?: PiReviewOutputEvidence }) {
 		super(message);
 		this.name = "ReviewHostRelayError";
 		this.kind = kind;
@@ -101,6 +112,7 @@ export class ReviewHostRelayError extends Error {
 		this.elapsedMs = details?.elapsedMs ?? null;
 		this.timeoutMs = details?.timeoutMs ?? null;
 		this.mutationOutcome = details?.mutationOutcome ?? (stage === "submit" ? "unknown" : "none");
+		this.reviewerEvidence = details?.reviewerEvidence;
 	}
 }
 
@@ -296,6 +308,21 @@ export interface ReviewHostRelayRequest {
 	readonly environment?: NodeJS.ProcessEnv;
 	readonly gentleAiTimeoutMs?: number;
 	/**
+	 * User-owned reviewer selection forwarded to the child as `--model`. The
+	 * relay never invents one; the default launch stays selection-free. Must
+	 * match {@link SAFE_MODEL_ID_PATTERN}; anything else is refused typed
+	 * before any process launches (gentle-shell#1136).
+	 */
+	readonly reviewerModel?: string;
+	/**
+	 * User-owned extension files loaded into the isolated child through
+	 * explicit `-e` paths (pi keeps explicit loads under `--no-extensions`),
+	 * so a subscription provider's auth adapter can ride along without
+	 * re-enabling extension discovery (gentle-shell#1158). Every path must be
+	 * absolute and exist; anything else is refused typed before launch.
+	 */
+	readonly reviewerExtensionPaths?: readonly string[];
+	/**
 	 * Overrides the reviewer bound entirely. Production leaves it unset and the
 	 * relay derives the bound from the materialized prompt bytes and
 	 * {@link REVIEW_HOST_RELAY_PI_TIMEOUT_ENV}; this seam exists so tests can
@@ -464,7 +491,18 @@ function relayPiTransportError(error: unknown, promptByteLength: number, piTimeo
 		);
 	}
 	if (error.kind === OPAQUE_PI_REVIEWER_TRANSPORT_FAILURE.EMPTY_OUTPUT) {
-		return new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_EMPTY_OUTPUT, "pi", "pi subprocess produced no output bytes", details);
+		// #1156: the envelope says what the child's own stream revealed, and the
+		// message names the remedies, because a bare kind code is what sent the
+		// #1140 reporter into a retry loop with nothing to inspect.
+		const evidence = error.evidence;
+		const summary: string[] = [`stdout kind: ${evidence?.stdoutKind ?? "unknown"}`];
+		if (evidence?.reviewerModel !== undefined) summary.push(`reviewer selection: ${evidence.reviewerModel}`);
+		if (evidence?.toolCallAttempted) summary.push("a tool call was attempted");
+		const stderrExcerpt = details.stderr.length > 0 ? ` child stderr: ${details.stderr.slice(0, 400).replace(/\s+/g, " ").trim()}` : "";
+		const message = `pi subprocess produced no assistant text (${summary.join("; ")}).${stderrExcerpt}`
+			+ " A reviewer that spent its turn on a tool call, a selection the child could not resolve, or a stream pi did not produce all land here; the evidence above says which."
+			+ " Assign the lens a reviewer selection that answers in text (the lens's entry in the agent model routing config), and when the provider needs an auth adapter, name its absolute file path in " + REVIEW_HOST_RELAY_EXTENSIONS_ENV + ".";
+		return new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_EMPTY_OUTPUT, "pi", message, { ...details, ...(evidence === undefined ? {} : { reviewerEvidence: evidence }) });
 	}
 	if (
 		error.kind === OPAQUE_PI_REVIEWER_TRANSPORT_FAILURE.LAUNCH_FAILED
@@ -482,8 +520,60 @@ function assertTokens(name: string, tokens: readonly string[]): void {
 	}
 }
 
+export const REVIEW_HOST_RELAY_EXTENSIONS_ENV = "GENTLE_PI_REVIEW_RELAY_EXTENSIONS";
+
+/**
+ * The user-owned extension allowlist for the reviewer child, read from the
+ * environment (gentle-shell#1158). Entries are split on the platform path
+ * delimiter; empty entries are skipped. Validation of each path happens at
+ * snapshot time, so a broken entry is refused typed before anything launches.
+ */
+export function resolveReviewHostRelayExtensionPaths(environment: NodeJS.ProcessEnv = process.env): readonly string[] {
+	const configured = environment[REVIEW_HOST_RELAY_EXTENSIONS_ENV];
+	if (configured === undefined || configured.trim().length === 0) return [];
+	return configured.split(pathDelimiter).map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+}
+
+// The tokens a validated caller-owned selection contributes to the child's
+// argv. Only these two shapes may ride the forwarding path.
+function reviewerLaunchArguments(reviewerModel: string | undefined, reviewerExtensionPaths: readonly string[] | undefined): readonly string[] {
+	return [
+		...(reviewerModel === undefined ? [] : ["--model", reviewerModel]),
+		...(reviewerExtensionPaths ?? []).flatMap((path) => ["-e", path]),
+	];
+}
+
+function validateReviewerLaunchConfiguration(request: ReviewHostRelayRequest): { reviewerModel?: string; reviewerExtensionPaths?: readonly string[] } {
+	if (request.reviewerModel !== undefined) {
+		if (typeof request.reviewerModel !== "string" || request.reviewerModel.length === 0 || !SAFE_MODEL_ID_PATTERN.test(request.reviewerModel)) {
+			throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.REVIEWER_CONFIG_INVALID, "pi", `Pi host relay reviewer launch configuration is invalid: the caller-owned reviewer selection ${JSON.stringify(request.reviewerModel)} is not a safe model id`);
+		}
+	}
+	if (request.reviewerExtensionPaths !== undefined) {
+		if (!Array.isArray(request.reviewerExtensionPaths) || request.reviewerExtensionPaths.some((path) => typeof path !== "string" || path.length === 0)) {
+			throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.REVIEWER_CONFIG_INVALID, "pi", "Pi host relay reviewer launch configuration is invalid: extension paths must all be non-empty strings");
+		}
+		for (const path of request.reviewerExtensionPaths) {
+			if (!isAbsolute(path)) {
+				throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.REVIEWER_CONFIG_INVALID, "pi", `Pi host relay reviewer launch configuration is invalid: the extension path ${JSON.stringify(path)} is not absolute`);
+			}
+			if (!existsSync(path)) {
+				throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.REVIEWER_CONFIG_INVALID, "pi", `Pi host relay reviewer launch configuration is invalid: the extension path ${JSON.stringify(path)} does not exist`);
+			}
+		}
+	}
+	return {
+		...(request.reviewerModel === undefined ? {} : { reviewerModel: request.reviewerModel }),
+		...(request.reviewerExtensionPaths === undefined || request.reviewerExtensionPaths.length === 0 ? {} : { reviewerExtensionPaths: Object.freeze([...request.reviewerExtensionPaths]) }),
+	};
+}
+
 function snapshotReviewHostRelayRequest(request: ReviewHostRelayRequest): ReviewHostRelayRequest {
 	assertTokens("capture", request.captureArgumentTokens);
+	// Caller-owned reviewer selection is validated before any process launches:
+	// a broken configuration is a typed refusal, never a mid-review transport
+	// failure (gentle-shell#1158 / #1136).
+	const reviewerLaunch = validateReviewerLaunchConfiguration(request);
 	// The completing form is validated before any process launches: a materialize
 	// slot without a provider-owned submission is a typed contract mismatch,
 	// never a synthesized invocation.
@@ -500,6 +590,7 @@ function snapshotReviewHostRelayRequest(request: ReviewHostRelayRequest): Review
 		...request,
 		captureArgumentTokens: Object.freeze([...request.captureArgumentTokens]),
 		...(submission === undefined ? {} : { submission }),
+		...reviewerLaunch,
 		gentleAiExecutable,
 		environment,
 		gentleAiTimeoutMs: request.gentleAiTimeoutMs ?? DEFAULT_GENTLE_AI_TIMEOUT_MS,
@@ -574,6 +665,7 @@ export async function prepareReviewHostRelaySlot(
 
 	// The pure adapter owns the fresh isolated Pi process. Its input and output
 	// are opaque bytes; this coordinator only maps transport failures.
+	const launchArguments = reviewerLaunchArguments(preparedRequest.reviewerModel, preparedRequest.reviewerExtensionPaths);
 	let piResult: OpaquePiReviewerResult;
 	try {
 		piResult = await reviewer(promptBytes, {
@@ -581,6 +673,7 @@ export async function prepareReviewHostRelaySlot(
 			environment: preparedRequest.environment,
 			timeoutMs: piTimeoutMs,
 			...(preparedRequest.signal === undefined ? {} : { signal: preparedRequest.signal }),
+			...(launchArguments.length === 0 ? {} : { extraArguments: launchArguments }),
 		});
 	} catch (error) {
 		throw relayPiTransportError(error, promptBytes.length, piTimeoutMs);

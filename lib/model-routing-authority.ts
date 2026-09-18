@@ -25,7 +25,7 @@ export type ModelConfigFileResult =
 	| { status: "invalid"; path: string }
 	| { status: "valid"; config: AgentModelConfig };
 
-const SAFE_MODEL_ID_PATTERN = /^[A-Za-z0-9._~:@/+%-]+$/;
+export const SAFE_MODEL_ID_PATTERN = /^[A-Za-z0-9._~:@/+%-]+$/;
 const SAFE_AGENT_NAME_PATTERN = /^[A-Za-z0-9._:@/+%-]+$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {

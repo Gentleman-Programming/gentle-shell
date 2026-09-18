@@ -2527,6 +2527,54 @@ test("resuming a session restores its own finished tasks as history, never anoth
 	await freshFire("session_shutdown", freshCtx);
 });
 
+// A1 follow-up: Pi reports "startup" (not "resume") when the CLI is launched
+// directly into an existing session file (--continue / --resume picker,
+// agent-session.js:152) -- "resume" is only the in-session /resume switch.
+// A startup into a session that already has entries must restore its history
+// too; a "startup" with no entries (nothing pre-existing to restore) must not.
+test("starting up into an existing session also restores its own finished history; a startup with no prior entries does not", async () => {
+	const historyHome = join(root, "startup-history-home");
+	const finished: TaskRecord = { id: "startup-1", agent: "explore-startup", mode: "background", prompt: "p", label: "p", cwd, parentSessionId: "startup-session", status: TASK_STATUS.COMPLETED, createdAt: 1, startedAt: 1, endedAt: 100, model: "m", thinking: undefined, sessionPath: null, error: null, result: "done", lastStep: "responded", lastActivityAt: 100, turns: 1, toolCalls: 0, tokens: 0, cost: 0 };
+	await saveTask(historyDir(historyHome), finished, emptyThread());
+
+	{
+		// Startup into a session file that already has entries: restores.
+		const { pi, fire, commands } = fakePi();
+		const harness = deps();
+		harness.deps.home = historyHome;
+		gentleAgents(pi, {}, harness.deps);
+		const { ctx, overlays } = fakeContext();
+		ctx.sessionManager.getSessionId = () => "startup-session";
+		ctx.sessionManager.getEntries = (() => [{ type: "message" }]) as typeof ctx.sessionManager.getEntries;
+		await fire("session_start", ctx, { reason: "startup" });
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		const opened = commands.get("gentle:agents")!.handler("", ctx);
+		for (let attempt = 0; attempt < 40 && overlays.length === 0; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+		assert.match(stripAnsi(overlays[0]!.render(100).join("\n")), /Subagent explore-startup/, "startup into an existing session restores its own finished history");
+		overlays[0]!.handleInput("\x1b");
+		await opened;
+		await fire("session_shutdown", ctx);
+	}
+	{
+		// Startup reported for a session with no prior entries: nothing to
+		// restore, even though the reason is "startup" and the id matches.
+		const { pi, fire, commands } = fakePi();
+		const harness = deps();
+		harness.deps.home = historyHome;
+		gentleAgents(pi, {}, harness.deps);
+		const { ctx, overlays } = fakeContext();
+		ctx.sessionManager.getSessionId = () => "startup-session";
+		await fire("session_start", ctx, { reason: "startup" });
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		const opened = commands.get("gentle:agents")!.handler("", ctx);
+		for (let attempt = 0; attempt < 40 && overlays.length === 0; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+		assert.doesNotMatch(stripAnsi(overlays[0]!.render(100).join("\n")), /explore-startup/, "a startup report with no prior entries restores nothing");
+		overlays[0]!.handleInput("\x1b");
+		await opened;
+		await fire("session_shutdown", ctx);
+	}
+});
+
 test("Alt+S confirms a snapshot of active subagents and suppresses their follow-up delivery", async () => {
 	const { pi, tools, fire, shortcuts, sent } = fakePi();
 	const harness = deps();

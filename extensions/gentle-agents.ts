@@ -1389,12 +1389,18 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		presence?.dispose();
 		registryFor(ctx);
 		showWidget(ctx);
-		// Only an explicit resume brings this session's own finished subagents
-		// back from disk. Every other reason (a brand-new session, ordinary
-		// startup, reload, fork) restores nothing here, matching the existing
-		// on-demand resolveTask path for anything else.
+		// An explicit in-session /resume always brings this session's own
+		// finished subagents back from disk. Pi also reports "startup" (not
+		// "resume") when the CLI is launched directly into an existing session
+		// file, e.g. --continue or the --resume picker (agent-session.js:152
+		// defaults to "startup"); that case restores too, but only when the
+		// session actually has prior entries -- a brand-new session can also be
+		// announced as "startup", and a fresh session has none. "new", "fork",
+		// and "reload" never restore here, matching the existing on-demand
+		// resolveTask path for anything else.
 		const sessionId = ctx.sessionManager.getSessionId();
-		if (event.reason === "resume" && sessionId) void restoreSessionHistory(ctx, sessionId);
+		const preexisting = event.reason === "resume" || (event.reason === "startup" && ctx.sessionManager.getEntries().length > 0);
+		if (preexisting && sessionId) void restoreSessionHistory(ctx, sessionId);
 		try {
 			presence = PresencePublisher.start({ profile: agentHome, sessionId: activeSessionId() ?? "",
 				label: ctx.sessionManager.getSessionName?.() || ctx.sessionManager.getCwd().split(/[\\/]/).pop() || "Orchestrator", activity: [] });

@@ -984,7 +984,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				},
 				invalidate() {},
 			}, {
-				render: (width) => renderAgentsCard(visibleTasks(), theme, width, deps.now(), { collapsed, collapseKey, viewKey, panel: true }),
+				render: (width) => renderAgentsCard(visibleTasks(), theme, width, deps.now(), { collapsed, collapseKey, viewKey }),
 				invalidate() {},
 			});
 		});

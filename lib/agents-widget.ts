@@ -17,10 +17,6 @@ export interface AgentsWidgetOptions {
 	// "… N more" line so the card never pushes the editor off the screen.
 	maxRows?: number;
 	viewKey?: string;
-	// The sidebar rail card uses the rose panel frame instead of the
-	// champagne info frame while no task needs attention; a waiting or
-	// failed batch keeps its warning/error tone regardless.
-	panel?: boolean;
 }
 
 interface StatusLook {
@@ -212,10 +208,10 @@ function counts(tasks: readonly TaskRecord[]): string {
 		.join(" · ");
 }
 
-function tone(tasks: readonly TaskRecord[], panel: boolean): CardTone {
+function tone(tasks: readonly TaskRecord[]): CardTone {
 	if (tasks.some((task) => task.status === TASK_STATUS.WAITING)) return CARD_TONE.WARNING;
 	if (tasks.some((task) => task.status === TASK_STATUS.FAILED || task.status === TASK_STATUS.TIMED_OUT)) return CARD_TONE.ERROR;
-	return panel ? CARD_TONE.PANEL : CARD_TONE.INFO;
+	return CARD_TONE.INFO;
 }
 
 // The batch clock: from the first start among the shown tasks until now, or
@@ -237,7 +233,7 @@ export function renderAgentsCard(tasks: readonly TaskRecord[], theme: CardTheme,
 	const body = listed.flatMap((task) => row(task, theme, cols, now, options.maxRows === undefined));
 	if (hidden > 0) body.push(overflowRow(hidden, theme, options.viewKey));
 	return renderCard(
-		{ title: "Agents", subtitle: counts(shown), body, tone: tone(shown, options.panel ?? false), glyph: AGENTS_GLYPH },
+		{ title: "Agents", subtitle: counts(shown), body, tone: tone(shown), glyph: AGENTS_GLYPH },
 		theme,
 		width,
 		{ expanded: true, hint },

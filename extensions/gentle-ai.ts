@@ -1,5 +1,6 @@
 import { consumeReviewMutation, pendingReviewMutation, recordReviewMutation } from "../lib/review-reminder-receipt.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
+import { OddRuntimeDelegationGate } from "../lib/odd-runtime-delegation-gate.ts";
 import { resolveResearchCapabilities, renderResearchCapabilities } from "../lib/sdd-research-capabilities.ts";
 import { declareReviewRelayHandshake } from "../lib/review-relay-contract.ts";
 import { execFileSync } from "node:child_process";
@@ -8648,6 +8649,11 @@ function createGentleAiExtensionForTesting(
 	const candidateViews = dependencies.candidateViews === undefined ? new CandidateViewRegistry() : dependencies.candidateViews;
 	const herdrLifecycle = createHerdrConfirmationLifecycle(pi.events);
 	const permissionEnvironment = dependencies.processEnv ?? process.env;
+	const oddDelegationGate = new OddRuntimeDelegationGate();
+	const oddSessionId = (ctx: ExtensionContext): string => {
+		try { return ctx.sessionManager.getSessionId(); }
+		catch { return ""; }
+	};
 
 	const setReviewSessionPermissionStatus = (context: ExtensionContext, active: boolean): void => {
 		try {
@@ -9043,6 +9049,10 @@ function createGentleAiExtensionForTesting(
 		const retiredSync = readAgentStartNames(event).includes("sdd-sync") || /\bSDD sync executor\b/i.test(event.systemPrompt ?? "");
 		const isSddAgent = retiredSync || isSddAgentStartEvent(event);
 		const isNamedAgent = isNamedAgentStartEvent(event);
+		oddDelegationGate.start(
+			oddSessionId(ctx),
+			!isNamedAgent && !isSddAgent && permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1",
+		);
 		const subagentDepthKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
 		if (isSddAgent || isNamedAgent) {
 			processAgentEndSubagentDepth.set(subagentDepthKey, (processAgentEndSubagentDepth.get(subagentDepthKey) ?? 0) + 1);
@@ -9152,6 +9162,7 @@ function createGentleAiExtensionForTesting(
 	// consent, or chooses a partial candidate. Durable own-mutation receipts
 	// gate STATUS and consume only the generation captured before that await.
 	pi.on("agent_end", async (_event, ctx) => {
+		oddDelegationGate.endChild(oddSessionId(ctx));
 		if (nativeReviewCli?.reviewMode === undefined || nativeReviewCli.targetStatus === undefined) return;
 		if (ctx.hasUI !== true || !reminderSessionActive) return;
 		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
@@ -9187,6 +9198,7 @@ function createGentleAiExtensionForTesting(
 	pi.on("tool_result", (event, ctx) => {
 		if (!reminderSessionActive || event.isError !== false || (event.toolName !== "write" && event.toolName !== "edit")) return;
 		if (!isRecord(event.input) || typeof event.input.path !== "string" || !event.input.path.trim()) return;
+		oddDelegationGate.recordSuccess(oddSessionId(ctx), event.toolName, event.input, ctx.cwd);
 		try {
 			const root = resolveSessionWorktree(event.input.path, ctx.cwd)?.root;
 			if (root) recordReviewMutation(pi, ctx.sessionManager, root, { source: "direct", toolName: event.toolName, toolCallId: event.toolCallId });
@@ -9200,6 +9212,10 @@ function createGentleAiExtensionForTesting(
 			event.input,
 		);
 		if (sensitivePathDenied) return sensitivePathDenied;
+		const oddDelegationDenied = oddDelegationGate.beforeTool(
+			oddSessionId(ctx), event.toolName, event.input, ctx.cwd, readActiveToolNames(pi),
+		);
+		if (oddDelegationDenied) return oddDelegationDenied;
 		if (event.toolName === "subagent_run") {
 			const sddAgent = sddDispatchAgentName(event.input);
 			if (sddAgent === "invalid") {

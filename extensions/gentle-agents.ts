@@ -933,10 +933,14 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// The session may have moved on while disk was read; a stale restore
 		// must never land in the wrong session's store.
 		if (ctx.sessionManager.getSessionId() !== sessionId) return;
-		for (const { task, thread } of history) {
-			if (task.parentSessionId !== sessionId) continue;
-			if (store.restore(task, thread)) restoredTaskIds.add(task.id);
-		}
+		// Fire-and-forget from session_start: a throwing summary subscriber must
+		// never surface as an unhandled rejection. History is best-effort.
+		try {
+			for (const { task, thread } of history) {
+				if (task.parentSessionId !== sessionId) continue;
+				if (store.restore(task, thread)) restoredTaskIds.add(task.id);
+			}
+		} catch { /* Partial history is acceptable; the live session keeps running. */ }
 	};
 
 	const openOverlay = async (ctx: ExtensionContext) => {

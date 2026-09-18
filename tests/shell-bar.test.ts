@@ -126,17 +126,17 @@ test("renderShellBar meters the model the session is using inside a multi-model 
 		plan: undefined,
 		fetchedAt: 0,
 		limits: [
-			{ name: "deepseek-v4-flash", limitReached: false, windows: [{ label: "period", usedPercent: 18, windowSeconds: 0, resetAt: null, used: 545_000_000, budget: 3_000_000_000 }] },
-			{ name: "glm5.3-flash", limitReached: false, windows: [{ label: "period", usedPercent: 10, windowSeconds: 0, resetAt: null, used: 200_000_000, budget: 2_000_000_000 }] },
+			{ name: "deepseek-v4-flash", limitReached: false, windows: [{ label: "", usedPercent: 18, windowSeconds: 0, resetAt: null, used: 545_000_000, budget: 3_000_000_000 }] },
+			{ name: "glm5.3-flash", limitReached: false, windows: [{ label: "", usedPercent: 10, windowSeconds: 0, resetAt: null, used: 200_000_000, budget: 2_000_000_000 }] },
 		],
 	};
 	const [glm] = renderShellBar(model({ modelId: "glm5.3-flash", usage }), plainTheme, 200);
-	assert.match(glm, /glm5\.3-flash period ▰▱▱▱▱▱▱▱ 10%$/);
-	assert.doesNotMatch(glm, /deepseek-v4-flash period/);
+	assert.match(glm, /glm5\.3-flash ▰▱▱▱▱▱▱▱ 10%$/);
+	assert.doesNotMatch(glm, /deepseek-v4-flash ▰/);
 	const [other] = renderShellBar(model({ modelId: "deepseek-v4-flash", usage }), plainTheme, 200);
-	assert.match(other, /deepseek-v4-flash period ▰▱▱▱▱▱▱▱ 18%$/);
+	assert.match(other, /deepseek-v4-flash ▰▱▱▱▱▱▱▱ 18%$/);
 	const sidebar = renderShellSidebarBar(model({ modelId: "glm5.3-flash", usage }), plainTheme, 60);
-	assert.ok(sidebar.some((line) => line.includes("glm5.3-flash period")), sidebar.join("\n"));
+	assert.ok(sidebar.some((line) => line.includes("glm5.3-flash ▰")), sidebar.join("\n"));
 });
 
 test("renderShellBar shows an unknown context as a question mark after compaction", () => {

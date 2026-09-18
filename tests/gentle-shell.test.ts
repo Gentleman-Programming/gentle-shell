@@ -792,7 +792,7 @@ test("gentleShell fetches NaN quota on session start and shows it in the bar", a
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	assert.equal(calls.length, 1);
 	assert.equal(calls[0].url, "https://cloud-api.nan.builders/api/usage/quota");
-	assert.match(renderFooter(ui), /\$0\.000 sub ⟡ glm5\.3 period ▰+▱+ 27%/);
+	assert.match(renderFooter(ui), /\$0\.000 sub ⟡ glm5\.3 ▰+▱+ 27%/);
 
 	await fire(handlers, "agent_end", ctx);
 	await new Promise((resolve) => setTimeout(resolve, 0));
@@ -814,14 +814,14 @@ test("a failed NaN refresh keeps the last valid snapshot", async () => {
 	(ctx as unknown as { model: { provider: string } }).model.provider = "nan";
 	await fire(handlers, "session_start", ctx);
 	await new Promise((resolve) => setTimeout(resolve, 0));
-	assert.match(renderFooter(ui), /glm5\.3 period/);
+	assert.match(renderFooter(ui), /glm5\.3 ▰+▱+/);
 
 	fail = true;
 	now += 6 * 60_000;
 	await fire(handlers, "agent_end", ctx);
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	assert.equal(calls.length, 2, "the refresh window elapsed, so the retry was attempted");
-	assert.match(renderFooter(ui), /glm5\.3 period/, "a failed refresh cannot erase the last valid snapshot");
+	assert.match(renderFooter(ui), /glm5\.3 ▰+▱+/, "a failed refresh cannot erase the last valid snapshot");
 });
 
 test("gentleShell fetches Codex usage on session start and shows it in the bar", async () => {

@@ -89,7 +89,10 @@ export const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 // The NaN Cloud dashboard backend; not part of NaN's published OpenAPI, so the
 // fetch that uses it is fixed-origin, redirect-refusing, and schema-validated.
 export const NAN_QUOTA_URL = "https://cloud-api.nan.builders/api/usage/quota";
-const NAN_MAIN_LIMIT = "period";
+// The model's own allowance for the billing period carries no label: the model
+// id names it in the bar, and the reset text says what the window is in the
+// panel. Only a sub-window on top of it (a rolling `4h`) needs a name.
+const NAN_PERIOD_LABEL = "";
 // The dashboard's own published fallbacks for a model that reports rolling
 // numbers without naming its budget.
 const NAN_DEFAULT_WINDOW_TOKENS = 400_000_000;
@@ -236,7 +239,7 @@ function nanRollingWindow(raw: RawNanModel): UsageWindow | undefined {
 // without ever averaging percentages.
 function nanPeriodWindow(tokensUsed: number, cap: number, resetAt: number | null, now: number): UsageWindow {
 	return {
-		label: NAN_MAIN_LIMIT,
+		label: NAN_PERIOD_LABEL,
 		usedPercent: (tokensUsed / cap) * 100,
 		windowSeconds: resetAt === null ? 0 : Math.max(0, Math.round((resetAt - now) / 1000)),
 		resetAt,
@@ -304,7 +307,7 @@ function allowanceTotal(name: string, limits: readonly UsageLimit[]): UsageLimit
 	if (budget <= 0) return undefined;
 	return {
 		name,
-		windows: [{ label: NAN_MAIN_LIMIT, usedPercent: (used / budget) * 100, windowSeconds: 0, resetAt: null }],
+		windows: [{ label: NAN_PERIOD_LABEL, usedPercent: (used / budget) * 100, windowSeconds: 0, resetAt: null }],
 		limitReached: limits.some((limit) => limit.limitReached),
 	};
 }
@@ -383,7 +386,8 @@ export function renderUsageBar(usage: ProviderUsage, theme: UsageTheme, activeMo
 	const main = selectUsageLimit(usage, activeModelId);
 	const [first, ...rest] = main?.windows ?? [];
 	if (!first) return undefined;
-	const head = `${theme.fg(ROLE.LABEL, main.name)} ${theme.fg(ROLE.LABEL, first.label)} ${paintMeter(first.usedPercent, 8, theme)} ${theme.fg(ROLE.PERCENT, `${Math.round(first.usedPercent)}%`)}`;
+	// An unlabeled window prints as the name, the meter and the percentage.
+	const head = [theme.fg(ROLE.LABEL, main.name), ...(first.label.length === 0 ? [] : [theme.fg(ROLE.LABEL, first.label)]), paintMeter(first.usedPercent, 8, theme), theme.fg(ROLE.PERCENT, `${Math.round(first.usedPercent)}%`)].join(" ");
 	const tail = rest.map((window) => `${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.LABEL, window.label)} ${theme.fg(ROLE.PERCENT, `${Math.round(window.usedPercent)}%`)}`);
 	return [head, ...tail].join(" ");
 }

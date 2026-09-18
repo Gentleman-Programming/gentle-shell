@@ -16,6 +16,7 @@ import {
 	UsageStore,
 	windowLabel,
 	type ProviderUsage,
+	type UsageWindow,
 } from "../lib/shell-usage.ts";
 
 // Subscription usage: what each connected provider says about its windows.
@@ -186,6 +187,14 @@ const NAN_QUOTA = {
 	],
 };
 
+// The billing-period window carries no label: the model id in front of it names
+// the allowance, and the reset text says what the window is. Only a sub-window
+// on top (a rolling `4h`) needs a name, so `windowText` spells the unlabeled one
+// out for the assertions below.
+function windowText(window: UsageWindow): string {
+	return `${window.label === "" ? "period" : window.label}:${window.usedPercent}`;
+}
+
 test("parseNanQuota maps each model allowance and its rolling window", () => {
 	const usage = parseNanQuota(NAN_QUOTA, NOW);
 	assert.equal(usage.provider, "nan");
@@ -194,7 +203,7 @@ test("parseNanQuota maps each model allowance and its rolling window", () => {
 	assert.deepEqual(usage.limits.map((limit) => limit.name), ["glm5.3", "deepseek-v4-flash"]);
 
 	const [glm, deepseek] = usage.limits;
-	assert.deepEqual(glm.windows.map((window) => window.label), ["period", "4h"]);
+	assert.deepEqual(glm.windows.map((window) => window.label), ["", "4h"]);
 	assert.equal(glm.windows[0].usedPercent, (820_000_000 / 3_000_000_000) * 100);
 	assert.equal(glm.windows[0].windowSeconds, 2_212_800);
 	assert.equal(glm.windows[0].resetAt, 1_790_812_800_000);
@@ -202,7 +211,7 @@ test("parseNanQuota maps each model allowance and its rolling window", () => {
 	assert.equal(glm.windows[1].windowSeconds, 14_400);
 	assert.equal(glm.windows[1].resetAt, 1_788_620_161_000);
 	assert.equal(glm.limitReached, false);
-	assert.deepEqual(deepseek.windows.map((window) => `${window.label}:${window.usedPercent}`), ["period:10"]);
+	assert.deepEqual(deepseek.windows.map(windowText), ["period:10"]);
 	assert.equal(JSON.stringify(usage).includes("example.com"), false, "the quota parser must not keep unrelated account fields");
 });
 
@@ -211,10 +220,10 @@ test("parseNanQuota falls back to the top-level period end and defaults the wind
 	assert.equal(topLevel.limits[0].windows[0].resetAt, 1_790_812_800_000);
 
 	const defaulted = parseNanQuota({ models: [{ model: "glm5.3", cap: 3_000_000_000, tokensUsed: 0, windowTokensUsed: 100_000_000 }] }, NOW);
-	assert.deepEqual(defaulted.limits[0].windows.map((window) => `${window.label}:${window.usedPercent}`), ["period:0", "4h:25"]);
+	assert.deepEqual(defaulted.limits[0].windows.map(windowText), ["period:0", "4h:25"]);
 
 	const overCap = parseNanQuota({ models: [{ model: "glm5.3", cap: 3_000_000_000, tokensUsed: 3_000_000_000, windowHours: 12, windowTokensUsed: 60_000_000 }] }, NOW);
-	assert.deepEqual(overCap.limits[0].windows.map((window) => `${window.label}:${window.usedPercent}`), ["period:100", "12h:15"]);
+	assert.deepEqual(overCap.limits[0].windows.map(windowText), ["period:100", "12h:15"]);
 	assert.equal(overCap.limits[0].limitReached, true);
 });
 
@@ -239,9 +248,9 @@ test("renderUsagePanel lists the NaN account total ahead of the per-model allowa
 	const lines = renderUsagePanel([usage], plainTheme, 80, NOW, { provider: "nan" });
 	assert.match(lines[0], /^✿ nan · updated just now$/);
 	assert.match(lines[1], /^ {2}nan total$/);
-	assert.match(lines[2], /^ {4}period .+ 22%$/);
+	assert.match(lines[2], /^ {10}▰.+ 22%$/);
 	assert.match(lines[3], /^ {2}glm5\.3$/);
-	assert.match(lines[4], /^ {4}period .+ 27% +resets in \d+d \d+h$/);
+	assert.match(lines[4], /^ {10}▰.+ 27% +resets in \d+d \d+h$/);
 	assert.match(lines[5], /^ {4}4h .+ 30% +resets in \d+h \d+m$/);
 	assert.match(lines[6], /^ {2}deepseek-v4-flash$/);
 });
@@ -252,11 +261,11 @@ test("renderUsagePanel lists the NaN account total ahead of the per-model allowa
 // model holds no allowance of its own.
 test("renderUsageBar prefers the active model allowance over the payload order", () => {
 	const usage = parseNanQuota(NAN_QUOTA, NOW);
-	assert.equal(renderUsageBar(usage, plainTheme, "deepseek-v4-flash"), "deepseek-v4-flash period ▰▱▱▱▱▱▱▱ 10%");
-	assert.equal(renderUsageBar(usage, plainTheme, "glm5.3"), "glm5.3 period ▰▰▱▱▱▱▱▱ 27% · 4h 30%");
-	assert.equal(renderUsageBar(usage, plainTheme), "glm5.3 period ▰▰▱▱▱▱▱▱ 27% · 4h 30%", "without an active model the first limit still wins");
-	assert.equal(renderUsageBar(usage, plainTheme, "gemma4"), "nan total period ▰▰▱▱▱▱▱▱ 22%", "an unmetered model reports the account, never another model");
-	assert.equal(renderUsageBar(usage, plainTheme, "qwen3.8-flash"), "nan total period ▰▰▱▱▱▱▱▱ 22%", "a model the payload skips holds no allowance either");
+	assert.equal(renderUsageBar(usage, plainTheme, "deepseek-v4-flash"), "deepseek-v4-flash ▰▱▱▱▱▱▱▱ 10%");
+	assert.equal(renderUsageBar(usage, plainTheme, "glm5.3"), "glm5.3 ▰▰▱▱▱▱▱▱ 27% · 4h 30%");
+	assert.equal(renderUsageBar(usage, plainTheme), "glm5.3 ▰▰▱▱▱▱▱▱ 27% · 4h 30%", "without an active model the first limit still wins");
+	assert.equal(renderUsageBar(usage, plainTheme, "gemma4"), "nan total ▰▰▱▱▱▱▱▱ 22%", "an unmetered model reports the account, never another model");
+	assert.equal(renderUsageBar(usage, plainTheme, "qwen3.8-flash"), "nan total ▰▰▱▱▱▱▱▱ 22%", "a model the payload skips holds no allowance either");
 });
 
 test("renderUsageBar leaves providers without raw allowances on their first limit", () => {
@@ -286,11 +295,17 @@ const GROUPED_NAN_QUOTA = {
 };
 
 function panelNames(lines: string[]): string[] {
-	return lines.filter((line) => !line.trim().startsWith("period")).map((line) => line.trim());
+	return lines.filter((line) => !isWindowRow(line)).map((line) => line.trim());
+}
+
+// A window row is the indent and the gauge: the billing-period window no longer
+// announces itself with a label, so the meter is what identifies the row.
+function isWindowRow(line: string): boolean {
+	return /^[▰▱]/.test(line.trim());
 }
 
 function panelPercents(lines: string[]): number[] {
-	return lines.filter((line) => line.trim().startsWith("period")).map((line) => Number.parseInt(line.trim().match(/(\d+)%/)![1] ?? "", 10));
+	return lines.filter(isWindowRow).map((line) => Number.parseInt(line.trim().match(/(\d+)%/)![1] ?? "", 10));
 }
 
 test("renderUsagePanel groups NaN allowances by family and totals the account", () => {
@@ -299,7 +314,7 @@ test("renderUsagePanel groups NaN allowances by family and totals the account", 
 	// 500M of 11B account-wide, 200M of 8B across the GLM members, then each model.
 	assert.deepEqual(panelPercents(lines), [5, 10, 3, 10, 0, 0]);
 	assert.deepEqual(
-		lines.filter((line) => line.trim().startsWith("period")).map((line) => line.includes("resets in")),
+		lines.filter(isWindowRow).map((line) => line.includes("resets in")),
 		[false, true, false, true, true, true],
 		"a group closes when its members do, so it carries no single reset",
 	);

@@ -54,6 +54,7 @@ entry (so the rolling `4h` row never renders on real data).
 - [x] NAN-A3 — RED: lock the grouped panel (account row, family rows, no aggregate reset, provider guard) with failing tests.
 - [x] NAN-A4 — GREEN: group the limits in the view layer without touching the parser contract.
 - [x] NAN-A5 — Wire the bar to `ShellBarModel.modelId`, update the docs, verify (focused tests, full suite, typecheck).
+- [x] NAN-A6 — Drop the redundant window label: the period allowance prints as `name meter percent` in the bar, the sidebar and the panel, while a labeled sub-window (`4h`) keeps its column.
 
 ## Acceptance criteria
 
@@ -82,6 +83,17 @@ entry (so the rolling `4h` row never renders on real data).
 - Live check with the real payload and the product code (`GET /api/usage/quota` → HTTP 200, 2026-09-18 ~01:20 CEST): `glm5.3-flash → glm5.3-flash period ▰▱▱▱▱▱▱▱ 10%`, `deepseek-v4-flash → deepseek-v4-flash period ▰▰▱▱▱▱▱▱ 19%`, `qwen3.6` and `gemma4` (unmetered) → `nan total period ▰▱▱▱▱▱▱▱ 6%`; panel shows `nan total`, `deepseek-v4-flash`, `glm total`, then the three GLM models.
 - Shared-path change to flag for review: a panel window without a reset no longer ends in a dangling separator (it also affects a Codex window whose payload omits `reset_at`; whitespace only).
 
+## Native review (closed, approved)
+
+- Lineage `review-73622327c0dfb3c6`, tier `high` (`process_boundary` on `extensions/gentle-shell.ts`), 4 lenses, 673 original changed lines, budget 200 with no correction opened.
+- First START returned `consent-binding-stale` (10-minute window, `lineage_created: false`); a second START with a fresh idempotency key created the lineage.
+- The group capture failed with `pi-empty-output` and single-slot captures were the working route; the three remaining lenses only admitted after setting `settings.json` `defaultModel` to `glm5.3-flash` for the relay child (restored right after). Root cause is recorded in the tracker follow-up below.
+- Closed `approved`; acknowledgement burned authority (`gentle-ai.review-acknowledged/v1`, revision `sha256:ce7084e0…`); delivery left to ordinary repository policy. All 9 findings were admitted as advisory and non-blocking (`R2-doc-contract-fullcap`, `R2-family-percent-dead-fallback`, `R2-quotanumber-bool-flag`, `R2-shared-refresh-timestamp`, `R3-fullcap-omitted`, `R3-timestamp-scale`, `R4-1`, `R4-2`, `R4-3`).
+
+## Relay defect found while reviewing (not caused by this candidate)
+
+The host relay spawns `pi --print --mode text --no-tools …` with the provider prompt on stdin. With the default model `nan/deepseek-v4-flash` the reviewer answers with a tool call, `--no-tools` strips it, and the child exits 0 with empty stdout, which the relay reports as `pi-host-relay-transport-failure` / `pi-empty-output`. Reproduced outside the review with the exact argv (52 KB prompt: 0 bytes, exit 0, ~70s; `--model nan/glm5.3-flash`: 6059 bytes of findings JSON; `--mode json`: 4.3 MB of events). The upstream fix belongs in `lib/review-host-relay.ts` / `lib/opaque-pi-reviewer-adapter.ts`.
+
 ## Next step
 
-Feature branch holds three unreviewed work-unit commits. User decision: native review of each commit or of the branch slice, then PR.
+This commit (NAN-A6) moves the branch one work unit past the reviewed candidate `2b579c80..5669bfb5`, so a new candidate starts at the next review. Delivery (PR) is still the user's decision.

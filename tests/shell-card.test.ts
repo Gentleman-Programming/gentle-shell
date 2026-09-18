@@ -72,6 +72,13 @@ test("renderCard uses the card tone across the full frame while preserving conte
 	assert.equal(CARD_TONE.SUCCESS, "success");
 });
 
+test("renderCard paints the panel tone frame with border and the title with accent", () => {
+	const lines = renderCard(card({ tone: CARD_TONE.PANEL, subtitle: undefined }), taggedTheme, 60, { expanded: true });
+	assert.match(lines[0], /^<border>╭<\/border><border>─ <\/border><accent>✿ Gentle AI<\/accent><border> ─+<\/border><border>╮<\/border>$/);
+	assert.match(lines[1], /^<border>│<\/border> <text>.*<border>│<\/border>$/);
+	assert.match(lines[lines.length - 1], /^<border>╰<\/border><border>─+╯<\/border>$/);
+});
+
 test("renderCard places a hint at the right end of the top rule without background fill", () => {
 	const lines = renderCard(card(), plainTheme, 60, { expanded: false, hint: "ctrl+o expand" });
 	assert.match(stripAnsi(lines[0]), /^╭─ ✿ Gentle AI · review preflight ─+ ctrl\+o expand ╮$/);

@@ -43,6 +43,20 @@ test("widgetExpiryMs says how long until the next finished row leaves the card",
 	assert.equal(widgetExpiryMs([], 100_000), undefined);
 });
 
+test("renderAgentsCard paints the sidebar rail with the panel tone and keeps warning/error tones as-is", () => {
+	const taggedTheme = { fg: (color: string, text: string) => `<${color}>${text}</${color}>` };
+	const running = [task({ status: TASK_STATUS.RUNNING })];
+	const panel = renderAgentsCard(running, taggedTheme, 60, 5000, { collapsed: false, panel: true });
+	assert.match(panel[0], /^<border>╭<\/border>/);
+	assert.match(panel[0], /<accent>❀ Agents<\/accent>/);
+	const bottom = renderAgentsCard(running, taggedTheme, 60, 5000, { collapsed: false });
+	assert.match(bottom[0], /^<customMessageLabel>╭<\/customMessageLabel>/);
+
+	const waiting = [task({ status: TASK_STATUS.WAITING, lastStep: "asked: Delete?" })];
+	const panelWaiting = renderAgentsCard(waiting, taggedTheme, 60, 5000, { collapsed: false, panel: true });
+	assert.match(panelWaiting[0], /^<warning>╭<\/warning>/, "panel never overrides a warning/error tone");
+});
+
 test("renderAgentsCard draws columns for agent, task, and model · tokens · cost · time, with the batch time in the rule", () => {
 	const tasks = [
 		task({ id: "a", status: TASK_STATUS.COMPLETED, startedAt: 1000, endedAt: 26_000 }),

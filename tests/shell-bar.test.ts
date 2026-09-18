@@ -326,6 +326,13 @@ test("shellEnabled honors GENTLE_PI_SHELL=0", () => {
 	assert.equal(shellEnabled({ GENTLE_PI_SHELL: "false" }), false);
 });
 
+test("renderShellSidebarBar paints the Status card frame with border and the title with accent", () => {
+	const lines = renderShellSidebarBar(model(), taggedTheme, 46);
+	assert.match(lines[0], /^<border>╭<\/border>/);
+	assert.match(lines[0], /<accent>✿ Status<\/accent>/);
+	assert.match(lines[lines.length - 1], /^<border>╰<\/border>/);
+});
+
 test("sidebar unifies project, captured changes, usage and integrations in one frame", () => {
 	const data = model({ changes: { files: 2, added: 7, deleted: 3, notice: "capture warning" }, statuses: ["MCP connected"] });
 	const lines = renderShellSidebarBar(data, plainTheme, 46);

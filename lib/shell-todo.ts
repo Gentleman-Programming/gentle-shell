@@ -289,7 +289,7 @@ export function renderTodoCard(state: TodoState, theme: TodoTheme, width: number
 	const rows = options.collapsed ? [collapsedRow(state, theme, width)] : options.scrollable ? state.tasks.map((task) => taskRow(task, theme, width)) : bodyRows(state, theme, width);
 	const body = stale ? [theme.fg(NOTE_ROLE, `stale · ${options.staleTurns} turns`), ...rows] : rows;
 	return renderCard(
-		{ title: `Todos ${theme.fg("accent", control)}`, subtitle: `${done} of ${total}`, body, tone: stale ? CARD_TONE.WARNING : CARD_TONE.INFO, glyph: TODO_GLYPH },
+		{ title: `Todos ${theme.fg("accent", control)}`, subtitle: `${done} of ${total}`, body, tone: stale ? CARD_TONE.WARNING : options.scrollable ? CARD_TONE.PANEL : CARD_TONE.INFO, glyph: TODO_GLYPH },
 		theme,
 		width,
 		{ expanded: true, hint },

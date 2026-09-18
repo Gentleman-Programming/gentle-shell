@@ -54,6 +54,17 @@ The four code findings were accepted: the re-review raised one finding, document
 - Commit: `docs(shell): state when the NaN rolling window exists`.
 - No behavior change and no test change: `pnpm test` and `pnpm run typecheck` were already green on this branch for the code of the round, and the second commit touches a task document only.
 
+## Third round (CodeRabbit re-review of `e384753f`)
+
+One finding, posted in the review body because it fell outside the diff: `allowanceGroupsSupported` required `limits.length > 1`, so a NaN payload that reports exactly one metered model read as "this provider carries no raw allowances", and the bar fell back to `usage.limits[0]` — the payload's first model, which is the defect this feature exists to remove.
+
+The gate answers "does this provider report allowances", never "are there enough rows to sort", so it now accepts a non-empty set. The change also moves that provider's sidebar onto the panel's rows, which is what the docs promise for a provider with per-model allowances.
+
+- RED: `node --experimental-strip-types --test tests/shell-usage.test.ts tests/shell-bar.test.ts` — 2 failed, 50 passed. `a single metered allowance still takes the family and account names` drew `glm5.3-flash ▰▰▱▱▱▱▱▱ 20%` where the family was expected, and `sidebar treats one metered NaN allowance as a per-model provider` drew the bar's one-line meter with the `4h` tail instead of the panel's rows.
+- GREEN: `node --experimental-strip-types --test tests/shell-usage.test.ts tests/shell-bar.test.ts tests/gentle-shell.test.ts tests/shell-usage-view.test.ts` — 99 passed, 0 failed.
+- Two existing footer assertions in `tests/gentle-shell.test.ts` were updated on purpose: their fixture pairs a session model with no NaN allowance with a single-model NaN payload, so the footer now names the account total instead of echoing `glm5.3`. The acceptance criterion that said "existing tests need no edit" is corrected in `odd/tasks/nan-usage-active-model.md`.
+- Commit: `fix(shell): read one metered allowance as per-model data`.
+
 ## Next step
 
 Push the branch to the fork and answer the review on PR #1180 with the applied and rejected findings. The native review lineage `review-fc5d4a7930c49ebe` was open at 2 of 4 lenses when this round started and is deliberately left untouched: this round moves the candidate, so the lineage cannot be resumed against the pre-fix tree. Delivery stays the user's decision.

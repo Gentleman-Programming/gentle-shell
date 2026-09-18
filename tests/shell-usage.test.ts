@@ -283,6 +283,23 @@ test("renderUsageBar prefers the active model's family before the account total"
 	assert.match(renderUsageBar(usage, plainTheme, "gemma4") ?? "", /^nan total ▰▱▱▱▱▱▱▱ 7%$/, "no member of the family means the account is the only honest name");
 });
 
+test("a single metered allowance still takes the family and account names", () => {
+	const usage = parseNanQuota({
+		periodEnd: "2026-10-01T00:00:00.000Z",
+		models: [
+			{ model: "glm5.3-flash", cap: 2_000_000_000, tokensUsed: 400_000_000 },
+			{ model: "gemma4", cap: 0 },
+		],
+	}, NOW);
+	// One metered model is still a payload that carries raw allowances, so the bar
+	// names the allowance the session draws from instead of listing whichever
+	// model the payload happened to report.
+	assert.deepEqual(usage.limits.map((limit) => limit.name), ["glm5.3-flash"]);
+	assert.equal(renderUsageBar(usage, plainTheme, "glm5.3-flash"), "glm5.3-flash ▰▰▱▱▱▱▱▱ 20%");
+	assert.match(renderUsageBar(usage, plainTheme, "glm5.4") ?? "", /^glm total ▰▰▱▱▱▱▱▱ 20%$/);
+	assert.match(renderUsageBar(usage, plainTheme, "gemma4") ?? "", /^nan total ▰▰▱▱▱▱▱▱ 20%$/);
+});
+
 test("renderUsageBar leaves providers without raw allowances on their first limit", () => {
 	assert.equal(renderUsageBar(parseCodexUsage(CODEX_PAYLOAD, NOW), plainTheme, "gpt-5.2-codex"), "codex week ▰▰▰▱▱▱▱▱ 40%");
 });

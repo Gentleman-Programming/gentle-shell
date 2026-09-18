@@ -180,6 +180,20 @@ test("sidebar groups the NaN allowances by subscription without totals or resets
 	}
 });
 
+test("sidebar treats one metered NaN allowance as a per-model provider", () => {
+	const usage = parseNanQuota({
+		periodEnd: "2026-10-01T00:00:00.000Z",
+		models: [{ model: "glm5.3-flash", cap: 2_000_000_000, tokensUsed: 400_000_000, windowHours: 4, windowTokens: 400_000_000, windowTokensUsed: 120_000_000, windowResetsAt: 1_788_620_161 }],
+	}, 0);
+	const lines = renderShellSidebarBar(model({ modelId: "glm5.3-flash", usage }), plainTheme, 60);
+	const rows = sidebarUsageRows(lines).map((row) => row.replace(/\s+/g, " "));
+	// A single allowance is still the panel's rows, not the bar's one-line meter:
+	// the rolling window it reports is a row of its own here too, and the reset
+	// stays in the panel.
+	assert.deepEqual(rows, ["glm5.3-flash ▰▰▱▱▱▱▱▱ 20%", "glm5.3-flash 4h ▰▰▱▱▱▱▱▱ 30%"]);
+	assert.equal(lines.join("\n").includes("resets in"), false);
+});
+
 test("sidebar keeps one aggregate line for a provider without raw allowances", () => {
 	const usage = {
 		provider: "openai-codex",

@@ -300,9 +300,13 @@ export function modelFamily(modelId: string): string {
 }
 
 // Only NaN carries raw allowance numbers, so this one gate is what keeps Codex
-// and Anthropic on exactly the rows and the meter they had before.
+// and Anthropic on exactly the rows and the meter they had before. One metered
+// model is still a payload that carries them: the gate answers "does this
+// provider report allowances", never "are there enough rows to sort", because
+// a single allowance read as "no allowances" sent the bar back to whichever
+// model the payload listed first.
 export function allowanceGroupsSupported(limits: readonly UsageLimit[]): boolean {
-	return limits.length > 1 && limits.every((limit) => rawAllowance(limit) !== undefined);
+	return limits.length > 0 && limits.every((limit) => rawAllowance(limit) !== undefined);
 }
 
 function percentOf(limit: UsageLimit): number {

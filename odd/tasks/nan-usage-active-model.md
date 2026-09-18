@@ -64,13 +64,13 @@ entry (so the rolling `4h` row never renders on real data).
 - The panel lists `nan total` and `glm total` as normal limit blocks, and the per-model rows stay.
 - Aggregate rows carry no `resets in`.
 - Codex and Anthropic keep their meters, rows and order; existing tests need no edit. Superseded for the shared row grammar: the later inline-reset request (`odd/tasks/nan-usage-compact-rows.md`) moved the reset onto the row for every provider, so a Codex window whose payload omits `reset_at` no longer ends on a dangling separator. The sidebar's zero-row rule (`odd/tasks/nan-usage-zero-rows.md`) also applies to every provider. Both changes are deliberate and covered by tests.
-- `renderUsageBar(usage, theme)` with two arguments keeps today's behavior; existing tests need no edit.
+- `renderUsageBar(usage, theme)` with two arguments keeps today's behavior (the first limit, because no active model is known). Existing tests need one intentional edit: a NaN payload with a single metered model is per-model data now, so the footer and the bar name that allowance's family or the account total instead of echoing the model the payload listed. See `odd/tasks/pr-1180-review-fixes.md`.
 - Focused tests, `pnpm test`, and `pnpm run typecheck` pass.
 
 ## Progress
 
 - 2026-09-18: user authorized C + grouping after seeing rendered mockups against the live payload.
-- 2026-09-18 (PR #1180 review round): the effective-allowance rule (`fullCap`), the per-provider refresh window and the single-member family rung were corrected; see `odd/tasks/pr-1180-review-fixes.md`.
+- 2026-09-18 (PR #1180 review round): the effective-allowance rule (`fullCap`), the per-provider refresh window, the single-member family rung and the single-allowance gate were corrected; see `odd/tasks/pr-1180-review-fixes.md`.
 - 2026-09-18: NAN-A1..A5 closed. Commits `8057b8af` (raw numbers + bar ladder + tests), `8b3b35f6` (grouping + panel + tests), `4d04e0f7` (bar wiring, docs).
 
 ## Verification evidence

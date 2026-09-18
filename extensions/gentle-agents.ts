@@ -17,7 +17,7 @@ import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import { createCompletionQueue } from "../lib/agents-completion-delivery.ts";
 import { AGENT_MODE, discoverAgents, parseAgentDefinition, loadAgentsConfig, resolveAgentProfile, withPinnedModelProfiles, type AgentDefinition, type AgentMode } from "../lib/agents-config.ts";
 import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-policy.ts";
-import { isFinished, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
+import { isFinished, TASK_EVENT, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
 import { AgentRunner, piCommand, abortReasonText, plannedCommands, type RemediationPlan, type RemediationScope, REMEDIATION_PLAN_ENV, parseRemediationPlan, type AskAnswer, type RunnerDeps, type SddChangeSelection, type TaskRequest } from "../lib/agents-runner.ts";
 import { ChildMessenger, type IpcEndpoint } from "../lib/agents-messaging.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
@@ -498,6 +498,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	let renderQueued = false;
 	let cancelClock: (() => void) | undefined;
 	const ownedTaskIds = new Set<string>();
+	// One diagnostic note per (task, guard): a dropped mutation says why once,
+	// not once per file, so a chatty child cannot flood its own thread.
+	const droppedAttributionGuards = new Set<string>();
 	const stoppingTaskIds = new Set<string>();
 	const yieldedTaskIds = new Set<string>();
 	const metricsNow = deps.metricsNow ?? (() => performance.now());
@@ -743,16 +746,34 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			}
 		},
 		onSuccessfulMutation: (task, tool) => {
-			if (!sessions || !worktrees || task.parentSessionId !== activeSessionId() || !ownedTaskIds.has(task.id)) return;
+			// Guard chain and posture are unchanged from before this diagnostic was
+			// added: only owned tasks of the active parent, inside registered
+			// roots, ever relay. This only explains a drop -- it never widens or
+			// narrows what gets attributed.
 			const root = deps.resolveWorktree(tool.path, task.cwd)?.root;
 			const childRoot = deps.resolveWorktree(task.cwd, task.cwd)?.root;
-			if (!root || root !== childRoot || !worktrees.roots().includes(root)) return;
+			const noteDrop = (guard: string) => {
+				const key = `${task.id}:${guard}`;
+				if (droppedAttributionGuards.has(key)) return;
+				droppedAttributionGuards.add(key);
+				try { store.apply(task.id, { type: TASK_EVENT.NOTE, text: `changes not attributed: ${guard} (root=${root ?? "unknown"}, child=${childRoot ?? "unknown"})` }, deps.now()); }
+				catch { /* A note is best-effort explanation; it must never block the guard it is explaining. */ }
+			};
+			if (!sessions || !worktrees) return noteDrop("session-inactive");
+			if (task.parentSessionId !== activeSessionId()) return noteDrop("parent-session-mismatch");
+			if (!ownedTaskIds.has(task.id)) return noteDrop("not-owned");
+			if (!root) return noteDrop("root-unresolved");
+			if (root !== childRoot) return noteDrop("root-mismatch");
+			if (!worktrees.roots().includes(root)) return noteDrop("root-not-registered");
 			if (tool.evidence?.root === root) {
 				try {
 					let path = tool.path.replace(/^@/, "");
 					if (path === "~" || path.startsWith("~/")) path = os.homedir() + path.slice(1);
 					if (realpathSync(resolve(task.cwd, path)) === resolve(root, tool.evidence.path)) pi.events.emit(SESSION_CHANGE_RELAY, { sessionId: task.parentSessionId, evidence: { ...tool.evidence, id: `${task.id}:${tool.toolCallId}` } });
-				} catch { /* Missing or mismatched targets cannot supply session diffs. */ }
+					else noteDrop("evidence-path-mismatch");
+				} catch { noteDrop("evidence-path-mismatch"); }
+			} else {
+				noteDrop("evidence-root-mismatch");
 			}
 			recordReviewMutation(pi, sessions, root, { source: "subagent", taskId: task.id, toolName: tool.toolName, toolCallId: tool.toolCallId });
 		},

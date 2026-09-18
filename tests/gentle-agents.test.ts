@@ -1524,6 +1524,175 @@ for (const scenario of ["own", "other-root", "escaped", "sibling", "session-swit
 	});
 }
 
+// C1 diagnostics (odd/tasks/usage-click-and-changes-attribution.md): the
+// guard chain's posture is unchanged (spawn-gated registration stays, a
+// parent decision) -- these only verify each drop explains itself once, in
+// the task's own thread, naming the exact guard that fired.
+async function openTaskThread(commands: ReturnType<typeof fakePi>["commands"], ctx: ExtensionContext, overlays: Overlay[]): Promise<string> {
+	const opened = commands.get("gentle:agents")!.handler("", ctx);
+	for (let attempt = 0; attempt < 40 && overlays.length === 0; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+	const overlay = overlays[0];
+	const text = overlay ? stripAnsi(overlay.render(100).join("\n")) : "";
+	overlay?.handleInput("\x1b");
+	await opened;
+	overlays.length = 0;
+	return text;
+}
+
+for (const [scenario, guard] of [
+	["escaped", "root-unresolved"],
+	["sibling", "root-mismatch"],
+	["session-switch", "parent-session-mismatch"],
+	["unregistered", "root-not-registered"],
+] as const) {
+	test(`a dropped mutation explains itself in the task thread: ${scenario} -> ${guard}`, async () => {
+		const h = fakePi();
+		const d = deps();
+		const { ctx, overlays } = fakeContext();
+		let sessionId = "s1";
+		const sibling = join(root, `sibling-${scenario}`);
+		ctx.sessionManager.getSessionId = () => sessionId;
+		ctx.sessionManager.getEntries = (() => h.entries) as typeof ctx.sessionManager.getEntries;
+		ctx.sessionManager.getBranch = (() => h.entries) as typeof ctx.sessionManager.getBranch;
+		d.deps.resolveWorktree = (path, base) => {
+			const absolute = resolve(base, path);
+			const worktree = [cwd, sibling].find((candidate) => containsResolvedPath(candidate, absolute));
+			return worktree ? { root: worktree, commonDir: "/fixture/common" } : undefined;
+		};
+		const spawn = d.deps.spawn!;
+		d.deps.spawn = (...args) => {
+			const child = spawn(...args);
+			const on = child.on.bind(child);
+			child.on = ((event: string, listener: () => void) => {
+				if (event === "spawn" && scenario !== "unregistered") queueMicrotask(listener);
+				return on(event as "spawn", listener);
+			}) as typeof child.on;
+			return child;
+		};
+		gentleAgents(h.pi, {}, d.deps);
+		await h.fire("session_start", ctx);
+		await h.tools.get("subagent_run")!.execute("mutation", { agent: "explore", task: "Write", mode: "background", workspace_root: cwd }, undefined, undefined, ctx);
+		await tick();
+		if (scenario === "session-switch") sessionId = "s2";
+		const path = scenario === "escaped" ? "../../outside.ts" : scenario === "sibling" ? join(sibling, "file.ts") : "file.ts";
+		d.children[0].emit({ type: "tool_execution_start", toolCallId: "write", toolName: "write", args: { path } });
+		d.children[0].emit({ type: "tool_execution_end", toolCallId: "write", isError: false, result: { content: [] } });
+		await tick();
+		if (scenario === "session-switch") sessionId = "s1"; // back to the task's own session to inspect its thread
+		const rendered = await openTaskThread(h.commands, ctx, overlays);
+		assert.match(rendered, new RegExp(`changes not attributed: ${guard}\\b`), `expected the ${guard} guard to explain itself`);
+		// The same drop repeated for the same task must not add a second note.
+		d.children[0].emit({ type: "tool_execution_start", toolCallId: "write2", toolName: "write", args: { path } });
+		d.children[0].emit({ type: "tool_execution_end", toolCallId: "write2", isError: false, result: { content: [] } });
+		await tick();
+		const renderedAgain = await openTaskThread(h.commands, ctx, overlays);
+		assert.equal((renderedAgain.match(new RegExp(`changes not attributed: ${guard}`, "g")) ?? []).length, 1, "one note per (task, guard), not one per file");
+		await h.fire("session_shutdown", ctx);
+		await tick();
+	});
+}
+
+test("a mutation dropped for lacking any session-change evidence explains itself once", async () => {
+	const h = fakePi();
+	const d = deps();
+	const { ctx, overlays } = fakeContext();
+	ctx.sessionManager.getEntries = (() => h.entries) as typeof ctx.sessionManager.getEntries;
+	ctx.sessionManager.getBranch = (() => h.entries) as typeof ctx.sessionManager.getBranch;
+	d.deps.resolveWorktree = (path, base) => {
+		const full = resolve(base, path);
+		return full === cwd || full.startsWith(cwd + "/") ? { root: cwd, commonDir: "/fixture/common" } : undefined;
+	};
+	const spawn = d.deps.spawn!;
+	d.deps.spawn = (...args) => {
+		const child = spawn(...args);
+		const on = child.on.bind(child);
+		child.on = ((event: string, listener: () => void) => { if (event === "spawn") queueMicrotask(listener); return on(event as "spawn", listener); }) as typeof child.on;
+		return child;
+	};
+	gentleAgents(h.pi, {}, d.deps);
+	await h.fire("session_start", ctx);
+	await h.tools.get("subagent_run")!.execute("mutation", { agent: "explore", task: "Write", mode: "background", workspace_root: cwd }, undefined, undefined, ctx);
+	await tick();
+	// No details.gentleSessionChange at all -- the evidence never surfaced.
+	d.children[0].emit({ type: "tool_execution_start", toolCallId: "write", toolName: "write", args: { path: "file.ts" } });
+	d.children[0].emit({ type: "tool_execution_end", toolCallId: "write", isError: false, result: { content: [] } });
+	await tick();
+	const rendered = await openTaskThread(h.commands, ctx, overlays);
+	assert.match(rendered, /changes not attributed: evidence-root-mismatch\b/);
+	await h.fire("session_shutdown", ctx);
+	await tick();
+});
+
+test("a mutation dropped for mismatched session-change evidence explains itself once", async () => {
+	const h = fakePi();
+	const d = deps();
+	const { ctx, overlays } = fakeContext();
+	const target = realpathSync(cwd);
+	(ctx as unknown as { cwd: string }).cwd = target;
+	ctx.sessionManager.getCwd = () => target;
+	ctx.sessionManager.getEntries = (() => h.entries) as typeof ctx.sessionManager.getEntries;
+	ctx.sessionManager.getBranch = (() => h.entries) as typeof ctx.sessionManager.getBranch;
+	d.deps.resolveWorktree = (path, base) => {
+		const full = resolve(base, path);
+		return full === target || full.startsWith(target + "/") ? { root: target, commonDir: "/fixture/common" } : undefined;
+	};
+	const spawn = d.deps.spawn!;
+	d.deps.spawn = (...args) => {
+		const child = spawn(...args);
+		const on = child.on.bind(child);
+		child.on = ((event: string, listener: () => void) => { if (event === "spawn") queueMicrotask(listener); return on(event as "spawn", listener); }) as typeof child.on;
+		return child;
+	};
+	gentleAgents(h.pi, {}, d.deps);
+	await h.fire("session_start", ctx);
+	await h.tools.get("subagent_run")!.execute("mutation", { agent: "explore", task: "Write", mode: "background", workspace_root: target }, undefined, undefined, ctx);
+	await tick();
+	writeFileSync(join(target, "evidence-mismatch-test.ts"), "agent\n");
+	const evidence = { id: "write", root: target, path: "different-file.ts", before: { kind: "text", text: "original\n" }, after: { kind: "text", text: "agent\n" } };
+	d.children[0].emit({ type: "tool_execution_start", toolCallId: "write", toolName: "write", args: { path: "evidence-mismatch-test.ts" } });
+	d.children[0].emit({ type: "tool_execution_end", toolCallId: "write", isError: false, result: { content: [], details: { gentleSessionChange: evidence } } });
+	await tick();
+	const rendered = await openTaskThread(h.commands, ctx, overlays);
+	assert.match(rendered, /changes not attributed: evidence-path-mismatch\b/);
+	await h.fire("session_shutdown", ctx);
+	await tick();
+});
+
+test("a successfully attributed mutation adds no drop note", async () => {
+	const h = fakePi();
+	const d = deps();
+	const { ctx, overlays } = fakeContext();
+	const target = realpathSync(cwd);
+	(ctx as unknown as { cwd: string }).cwd = target;
+	ctx.sessionManager.getCwd = () => target;
+	ctx.sessionManager.getEntries = (() => h.entries) as typeof ctx.sessionManager.getEntries;
+	ctx.sessionManager.getBranch = (() => h.entries) as typeof ctx.sessionManager.getBranch;
+	d.deps.resolveWorktree = (path, base) => {
+		const full = resolve(base, path);
+		return full === target || full.startsWith(target + "/") ? { root: target, commonDir: "/fixture/common" } : undefined;
+	};
+	const spawn = d.deps.spawn!;
+	d.deps.spawn = (...args) => {
+		const child = spawn(...args);
+		const on = child.on.bind(child);
+		child.on = ((event: string, listener: () => void) => { if (event === "spawn") queueMicrotask(listener); return on(event as "spawn", listener); }) as typeof child.on;
+		return child;
+	};
+	gentleAgents(h.pi, {}, d.deps);
+	await h.fire("session_start", ctx);
+	await h.tools.get("subagent_run")!.execute("mutation", { agent: "explore", task: "Write", mode: "background", workspace_root: target }, undefined, undefined, ctx);
+	await tick();
+	writeFileSync(join(target, "happy-path-test.ts"), "agent\n");
+	const evidence = { id: "write", root: target, path: "happy-path-test.ts", before: { kind: "text", text: "original\n" }, after: { kind: "text", text: "agent\n" } };
+	d.children[0].emit({ type: "tool_execution_start", toolCallId: "write", toolName: "write", args: { path: "happy-path-test.ts" } });
+	d.children[0].emit({ type: "tool_execution_end", toolCallId: "write", isError: false, result: { content: [], details: { gentleSessionChange: evidence } } });
+	await tick();
+	const rendered = await openTaskThread(h.commands, ctx, overlays);
+	assert.doesNotMatch(rendered, /changes not attributed/);
+	await h.fire("session_shutdown", ctx);
+	await tick();
+});
+
 test("worktree attribution containment respects Windows path boundaries", () => {
 	const candidate = win32.resolve("C:\\fixture", "project");
 	assert.equal(containsResolvedPath(candidate, win32.resolve(candidate), win32), true, "the worktree root itself is contained");

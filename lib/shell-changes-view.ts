@@ -2,6 +2,7 @@ import { Key, matchesKey, truncateToWidth, visibleWidth, type TuiMouseEvent, typ
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { basename } from "node:path";
 import { CHANGE_STATUS, changesSummary, type ChangedFile, type ChangesModel, type WorktreeChanges } from "./shell-changes.ts";
+import { HOVER_ROLE } from "./shell-hover.ts";
 
 // Gentle Shell changes overlay: a framed two-pane view with the working
 // tree's changed files on the left and the selected file's diff on the right.
@@ -158,6 +159,7 @@ export class WorktreeChangesView {
 	private pointerLayout: PointerLayout | undefined;
 	private disposed = false;
 	private leftPressActive = false;
+	private hoveredIndex: number | undefined;
 	private readonly expanded = new Set<string>();
 	private readonly previews = new Map<string, { fingerprint: string; view: ChangesView }>();
 
@@ -172,6 +174,7 @@ export class WorktreeChangesView {
 
 	update(trees: WorktreeChanges[]): void {
 		this.leftPressActive = false;
+		this.hoveredIndex = undefined;
 		if (this.disposed) return;
 		this.pointerLayout = undefined;
 		const before = this.visibleRows()[this.selected];
@@ -239,6 +242,7 @@ export class WorktreeChangesView {
 			}
 			return undefined;
 		}
+		if (event.type === "move" && event.button === "none") return this.hoverRow(inFiles ? this.listOffset + event.y - 1 : undefined);
 		if (!inFiles) return undefined;
 		if (event.type === "press") {
 			if (event.button !== "left") return undefined;
@@ -255,6 +259,15 @@ export class WorktreeChangesView {
 		return { handled: true, render: changed };
 	}
 
+	// Row hover: the shared hover role paints an unselected row while the
+	// pointer is over it, never overriding the already-selected row's role.
+	private hoverRow(index: number | undefined): TuiMouseEventResult | undefined {
+		const next = index !== undefined && index >= 0 && index < this.visibleRows().length ? index : undefined;
+		if (next === this.hoveredIndex) return next === undefined ? undefined : { handled: true };
+		this.hoveredIndex = next;
+		return { handled: true, render: true };
+	}
+
 	render(width: number): string[] {
 		const theme = this.deps.theme;
 		const rows = this.visibleRows();
@@ -266,8 +279,9 @@ export class WorktreeChangesView {
 			const row = rows[index + this.listOffset];
 			if (!row) return "";
 			const active = index + this.listOffset === this.selected;
+			const role = active ? ROLE.SELECTED : index + this.listOffset === this.hoveredIndex ? HOVER_ROLE : ROLE.PATH_IDLE;
 			const marker = active ? theme.fg(ROLE.SELECTED, "▸") : " ";
-			const text = row.file ? `  ${fileLabel(row.file, theme, active ? ROLE.SELECTED : ROLE.PATH_IDLE)}` : theme.fg(active ? ROLE.SELECTED : ROLE.PATH_IDLE, `${this.expanded.has(row.tree.root) ? "▾" : "▸"} ${displayText(row.tree.branch ?? "detached")} · ${displayText(basename(row.tree.root))}`);
+			const text = row.file ? `  ${fileLabel(row.file, theme, role)}` : theme.fg(role, `${this.expanded.has(row.tree.root) ? "▾" : "▸"} ${displayText(row.tree.branch ?? "detached")} · ${displayText(basename(row.tree.root))}`);
 			return `${marker} ${text}`;
 		};
 		const keys = theme.fg(ROLE.KEY_TEXT, "j/k select   enter toggle/open   ← parent/fold   ctrl+j/k scroll   r refresh   esc close");
@@ -277,6 +291,7 @@ export class WorktreeChangesView {
 
 	invalidate(): void {
 		this.leftPressActive = false;
+		this.hoveredIndex = undefined;
 		this.pointerLayout = undefined;
 		for (const preview of this.previews.values()) preview.view.invalidate();
 	}
@@ -284,6 +299,7 @@ export class WorktreeChangesView {
 	dispose(): void {
 		this.disposed = true;
 		this.leftPressActive = false;
+		this.hoveredIndex = undefined;
 		this.pointerLayout = undefined;
 		for (const preview of this.previews.values()) preview.view.dispose();
 		this.previews.clear();
@@ -333,6 +349,7 @@ export class ChangesView {
 	private pointerLayout: PointerLayout | undefined;
 	private disposed = false;
 	private leftPressActive = false;
+	private hoveredIndex: number | undefined;
 	private readonly diffs = new Map<string, string[]>();
 
 	constructor(model: ChangesModel, deps: ChangesViewDeps) {
@@ -345,6 +362,7 @@ export class ChangesView {
 	// diffs for files whose counts moved so they reload.
 	update(model: ChangesModel): void {
 		this.leftPressActive = false;
+		this.hoveredIndex = undefined;
 		if (this.disposed) return;
 		this.pointerLayout = undefined;
 		const selectedPath = this.model.files[this.selected]?.path;
@@ -368,6 +386,7 @@ export class ChangesView {
 	dispose(): void {
 		this.disposed = true;
 		this.leftPressActive = false;
+		this.hoveredIndex = undefined;
 		this.pointerLayout = undefined;
 	}
 
@@ -409,6 +428,7 @@ export class ChangesView {
 			if (inDiff) return { handled: true, render: this.scrollDiff(event.wheelDelta ?? 0, layout.bodyRows) };
 			return undefined;
 		}
+		if (event.type === "move" && event.button === "none") return this.hoverRow(inFiles ? this.fileScroll + event.y - 1 : undefined);
 		if (!inFiles) return undefined;
 		if (event.type === "press") {
 			if (event.button !== "left") return undefined;
@@ -423,6 +443,15 @@ export class ChangesView {
 		return { handled: true, render: changed };
 	}
 
+	// Row hover: the shared hover role paints an unselected file row while the
+	// pointer is over it, never overriding the already-selected row's role.
+	private hoverRow(index: number | undefined): TuiMouseEventResult | undefined {
+		const next = index !== undefined && index >= 0 && index < this.model.files.length ? index : undefined;
+		if (next === this.hoveredIndex) return next === undefined ? undefined : { handled: true };
+		this.hoveredIndex = next;
+		return { handled: true, render: true };
+	}
+
 	render(width: number): string[] {
 		const theme = this.deps.theme;
 		const rows = this.bodyRows();
@@ -434,6 +463,7 @@ export class ChangesView {
 
 	invalidate(): void {
 		this.leftPressActive = false;
+		this.hoveredIndex = undefined;
 		this.pointerLayout = undefined;
 	}
 
@@ -451,8 +481,10 @@ export class ChangesView {
 		const file = this.model.files[index];
 		if (!file) return "";
 		const theme = this.deps.theme;
-		const marker = index === this.selected ? theme.fg(ROLE.SELECTED, "▸") : " ";
-		return `${marker} ${fileLabel(file, theme, index === this.selected ? ROLE.PATH : ROLE.PATH_IDLE)}`;
+		const selected = index === this.selected;
+		const marker = selected ? theme.fg(ROLE.SELECTED, "▸") : " ";
+		const role = selected ? ROLE.PATH : index === this.hoveredIndex ? HOVER_ROLE : ROLE.PATH_IDLE;
+		return `${marker} ${fileLabel(file, theme, role)}`;
 	}
 
 	private visibleDiff(rows: number): string[] {

@@ -67,7 +67,7 @@ authorized.
 ## Delivery and forecast
 
 - Strategy: `exception-ok`; the maintainer explicitly accepted
-  `size:exception` after final verification measured 438 authored lines.
+  `size:exception` after final review measured 469 authored lines.
 - Rationale: runtime policy, hook wiring, behavioral tests, harness coverage,
   documentation, and recovery evidence form one indivisible review unit.
   Splitting tests or enforcement from integration would create a non-working
@@ -76,7 +76,7 @@ authorized.
 
 ## Tasks
 
-- [ ] **ODD-GATE-1 — Enforce the primary direct multi-file write boundary.**
+- [x] **ODD-GATE-1 — Enforce the primary direct multi-file write boundary.**
   - Route: **delegated direct**, one bounded writer.
   - Trigger evidence: 2+ non-trivial files plus reading that prepares writes;
     Multi-file write and Preparation triggers both fire.
@@ -126,16 +126,20 @@ The delegated writer runs these in the foreground and reports
   with 0 pass / 1 fail because the second direct path returned `undefined`.
 - [x] Independent verification caught and corrected nested-child state loss,
   symlink identity bypasses, SDD fixture drift, and a missing harness Git root.
-- [x] Final focused spot-check: 7 pass / 0 fail.
+- [x] Final focused spot-check: 8 pass / 0 fail.
 - [x] Routing regressions: 52 pass / 0 fail.
 - [x] `pnpm run test:harness`: pass.
 - [x] `pnpm run typecheck`: pass with 197 baseline diagnostics, no regressions,
   and two improvements.
-- [x] `pnpm test`: pass with 2694 pass / 0 fail / 38 skipped; provider contract
+- [x] `pnpm test`: pass with 2695 pass / 0 fail / 38 skipped; provider contract
   and final harness pass.
-- [x] Maintainer accepted a single PR with `size:exception` for the verified
-  438-line coherent unit.
-- [ ] ODD-GATE-1 commit and native review evidence pending.
+- [x] Maintainer accepted a single PR with `size:exception` for the final
+  469-line coherent unit.
+- [x] Work-unit commits: `655e2e2e` (runtime gate, tests, harness, docs) and
+  `a6a7eb77` (native R3-001 canonical absolute-path correction).
+- [x] Native high-risk review `review-28f6518225f3fc61` corrected R3-001,
+  approved target `sha256:9cf03850768674c5350df93cba6c696efce2331c9ad55788fdf2dab57428040c`,
+  and burned its authority through exact acknowledgement.
 
-Next: mirror this decision, create the work-unit commit, run native review, and
-then complete issue-first PR delivery through the authorized GitHub session.
+Next: commit this evidence-only task update, then complete issue-first PR
+delivery through the explicitly authorized GitHub session.

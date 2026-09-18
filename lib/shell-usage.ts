@@ -62,6 +62,7 @@ interface RawCodexUsage {
 interface RawNanModel {
 	model?: unknown;
 	cap?: unknown;
+	fullCap?: unknown;
 	tokensUsed?: unknown;
 	periodEnd?: unknown;
 	windowHours?: unknown;
@@ -234,6 +235,14 @@ function nanRollingWindow(raw: RawNanModel): UsageWindow | undefined {
 	return { label: windowLabel(hours * HOUR), usedPercent: (used / budget) * 100, windowSeconds: hours * HOUR, resetAt: quotaTimestamp(raw.windowResetsAt) };
 }
 
+// The allowance the dashboard divides by is the full-period cap, because `cap`
+// is the allowance of the period in progress and comes back prorated on a first
+// period. A model that reports neither figure reports no allowance at all, which
+// is a state the surfaces already know how to draw nothing for.
+function nanEffectiveAllowance(raw: RawNanModel): number | undefined {
+	return quotaNumber(raw.fullCap, true) ?? quotaNumber(raw.cap, true);
+}
+
 // One allowance per metered model, weighted by that model's own cap. The raw
 // numbers travel with the period window so the bar and the panel can aggregate
 // without ever averaging percentages.
@@ -257,14 +266,20 @@ export function parseNanQuota(payload: unknown, now: number): ProviderUsage {
 			if (!entry || typeof entry !== "object") continue;
 			const model = entry as RawNanModel;
 			if (typeof model.model !== "string" || model.model.length === 0) continue;
-			const cap = quotaNumber(model.cap, true);
+			const allowance = nanEffectiveAllowance(model);
+			// A model that reports no allowance is not drift — the dashboard draws
+			// nothing for it either, and the live payload carries such entries. A metered
+			// allowance whose usage cannot be read is drift: a partial snapshot would
+			// understate every aggregate it feeds, so the read fails whole and the last
+			// valid snapshot survives instead.
+			if (allowance === undefined) continue;
 			const tokensUsed = quotaNumber(model.tokensUsed, false);
-			if (cap === undefined || tokensUsed === undefined) continue;
+			if (tokensUsed === undefined) return { provider: NAN_PROVIDER, plan: undefined, limits: [], fetchedAt: now };
 			const resetAt = quotaTimestamp(model.periodEnd) ?? fallbackResetAt;
-			const windows: UsageWindow[] = [nanPeriodWindow(tokensUsed, cap, resetAt, now)];
+			const windows: UsageWindow[] = [nanPeriodWindow(tokensUsed, allowance, resetAt, now)];
 			const rolling = nanRollingWindow(model);
 			if (rolling) windows.push(rolling);
-			limits.push({ name: model.model, windows, limitReached: tokensUsed >= cap });
+			limits.push({ name: model.model, windows, limitReached: tokensUsed >= allowance });
 		}
 	}
 	return { provider: NAN_PROVIDER, plan: undefined, limits, fetchedAt: now };
@@ -350,7 +365,10 @@ export function selectUsageLimit(usage: ProviderUsage, activeModelId?: string): 
 	if (allowanceGroupsSupported(usage.limits)) {
 		const family = modelFamily(activeModelId);
 		const members = usage.limits.filter((limit) => modelFamily(limit.name) === family);
-		if (members.length > 1) {
+		// The family rung is about the name of the meter, not about printing a row,
+		// so a single member counts: its family is a closer statement of what the
+		// session is drawing from than the whole account.
+		if (members.length > 0) {
 			const total = allowanceTotal(`${family}${GROUP_SUFFIX}`, members);
 			if (total) return total;
 		}

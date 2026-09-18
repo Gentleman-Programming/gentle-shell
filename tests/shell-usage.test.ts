@@ -268,8 +268,67 @@ test("renderUsageBar prefers the active model allowance over the payload order",
 	assert.equal(renderUsageBar(usage, plainTheme, "qwen3.8-flash"), "nan total ▰▰▱▱▱▱▱▱ 22%", "a model the payload skips holds no allowance either");
 });
 
+test("renderUsageBar prefers the active model's family before the account total", () => {
+	const usage = parseNanQuota({
+		periodEnd: "2026-10-01T00:00:00.000Z",
+		models: [
+			{ model: "glm5.3-flash", cap: 2_000_000_000, tokensUsed: 200_000_000 },
+			{ model: "deepseek-v4-flash", cap: 4_000_000_000, tokensUsed: 200_000_000 },
+		],
+	}, NOW);
+	// The session model holds no allowance of its own and its family has exactly
+	// one member: the family is still a closer name for the meter than the whole
+	// account, so the ladder visits it before the account rung.
+	assert.match(renderUsageBar(usage, plainTheme, "glm5.3-turbo") ?? "", /^glm total ▰▱▱▱▱▱▱▱ 10%$/);
+	assert.match(renderUsageBar(usage, plainTheme, "gemma4") ?? "", /^nan total ▰▱▱▱▱▱▱▱ 7%$/, "no member of the family means the account is the only honest name");
+});
+
 test("renderUsageBar leaves providers without raw allowances on their first limit", () => {
 	assert.equal(renderUsageBar(parseCodexUsage(CODEX_PAYLOAD, NOW), plainTheme, "gpt-5.2-codex"), "codex week ▰▰▰▱▱▱▱▱ 40%");
+});
+
+test("parseNanQuota weights the period window by the effective allowance", () => {
+	const usage = parseNanQuota({
+		periodEnd: "2026-10-01T00:00:00.000Z",
+		models: [
+			{ model: "glm5.3-flash", cap: 1_500_000_000, fullCap: 2_000_000_000, tokensUsed: 200_000_000 },
+			{ model: "glm5.3", cap: 0, fullCap: 3_000_000_000, tokensUsed: 300_000_000 },
+		],
+	}, NOW);
+	// The dashboard divides by the full-period allowance, not by the prorated cap
+	// the current period reports, so the percentages keep matching it.
+	assert.deepEqual(usage.limits.map((limit) => limit.name), ["glm5.3-flash", "glm5.3"]);
+	const [prorated, noPeriodCap] = usage.limits;
+	assert.equal(prorated.windows[0].budget, 2_000_000_000, "fullCap is the denominator when it is positive");
+	assert.equal(prorated.windows[0].usedPercent, 10);
+	assert.equal(noPeriodCap.windows[0].budget, 3_000_000_000, "a period cap prorated to zero still reports a metered model");
+	assert.equal(noPeriodCap.windows[0].usedPercent, 10);
+	assert.equal(noPeriodCap.limitReached, false);
+});
+
+test("parseNanQuota refuses a payload that hides a metered model's usage", () => {
+	// A sibling with a metered allowance whose usage cannot be read is drift, not
+	// a model to skip: a partial snapshot would understate every aggregate it
+	// feeds, so the read fails whole and the last valid snapshot survives.
+	const drifted = parseNanQuota({
+		periodEnd: "2026-10-01T00:00:00.000Z",
+		models: [
+			{ model: "glm5.3", cap: 3_000_000_000, tokensUsed: 820_000_000 },
+			{ model: "deepseek-v4-flash", cap: 2_000_000_000 },
+		],
+	}, NOW);
+	assert.deepEqual(drifted.limits, []);
+	// No allowance at all is not drift: the dashboard draws nothing for these
+	// models either, and today's real payload carries them.
+	const unmetered = parseNanQuota({
+		models: [
+			{ model: "glm5.3", cap: 3_000_000_000, tokensUsed: 820_000_000 },
+			{ model: "gemma4", cap: 0 },
+			{ model: "qwen3.8-flash", tokensUsed: 10 },
+		],
+	}, NOW);
+	assert.deepEqual(unmetered.limits.map((limit) => limit.name), ["glm5.3"]);
+	assert.deepEqual(parseNanQuota({ models: "none" }, NOW).limits, []);
 });
 
 test("parseNanQuota keeps the raw numbers the aggregates are weighted by", () => {

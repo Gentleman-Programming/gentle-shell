@@ -63,13 +63,14 @@ entry (so the rolling `4h` row never renders on real data).
 - A NaN session whose model is not metered shows the account total (`nan total period ▰… 6%`).
 - The panel lists `nan total` and `glm total` as normal limit blocks, and the per-model rows stay.
 - Aggregate rows carry no `resets in`.
-- Codex and Anthropic bar and panel output is byte-identical to before these changes.
+- Codex and Anthropic keep their meters, rows and order; existing tests need no edit. Superseded for the shared row grammar: the later inline-reset request (`odd/tasks/nan-usage-compact-rows.md`) moved the reset onto the row for every provider, so a Codex window whose payload omits `reset_at` no longer ends on a dangling separator. The sidebar's zero-row rule (`odd/tasks/nan-usage-zero-rows.md`) also applies to every provider. Both changes are deliberate and covered by tests.
 - `renderUsageBar(usage, theme)` with two arguments keeps today's behavior; existing tests need no edit.
 - Focused tests, `pnpm test`, and `pnpm run typecheck` pass.
 
 ## Progress
 
 - 2026-09-18: user authorized C + grouping after seeing rendered mockups against the live payload.
+- 2026-09-18 (PR #1180 review round): the effective-allowance rule (`fullCap`), the per-provider refresh window and the single-member family rung were corrected; see `odd/tasks/pr-1180-review-fixes.md`.
 - 2026-09-18: NAN-A1..A5 closed. Commits `8057b8af` (raw numbers + bar ladder + tests), `8b3b35f6` (grouping + panel + tests), `4d04e0f7` (bar wiring, docs).
 
 ## Verification evidence

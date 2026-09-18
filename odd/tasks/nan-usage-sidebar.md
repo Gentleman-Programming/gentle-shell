@@ -10,7 +10,7 @@ Show the authoritative NaN Cloud per-model token allowance in Gentle Shell's exi
 - NaN Cloud origin is fixed; redirects are refused and responses are not cached.
 - The API key is never logged, persisted, rendered, or included in any error path.
 - Refresh is throttled to at most every 5 minutes, plus session start and an explicit `r`.
-- Parsing is bounded: unknown or malformed payloads degrade to "no data", never throw.
+- Parsing is bounded: unknown or malformed payloads degrade to "no data", never throw. A model that reports no allowance is skipped, as the dashboard skips it; a metered model whose usage cannot be read fails the whole read, because a partial payload would understate every aggregate drawn from it.
 - The last valid snapshot survives a failed refresh.
 - Codex and Anthropic behavior stays unchanged.
 - No delivery actions (no push, no PR) without an explicit user decision.
@@ -34,7 +34,7 @@ Verified against the official NaN Cloud dashboard bundle (`https://cloud.nan.bui
 
 - `GET https://cloud-api.nan.builders/api/usage/quota` with `Authorization: Bearer <NaN API key>`.
 - Response: `{ models: [ { model, cap, fullCap, tokensUsed, periodEnd, windowHours, windowTokens, fullWindowTokens, windowTokensUsed, windowResetsAt } ], periodEnd }`.
-- Dashboard semantics mirrored here: effective period allowance = `fullCap > 0 ? fullCap : cap`; rolling budget = `fullWindowTokens > 0 ? fullWindowTokens : windowTokens` (dashboard default 4h / 400M when the model sends none); `windowHours` defaults to 4; `cap < fullCap` means a prorated first period.
+- Dashboard semantics mirrored here: effective period allowance = `fullCap > 0 ? fullCap : cap`; rolling budget = `fullWindowTokens > 0 ? fullWindowTokens : windowTokens` (dashboard default 4h / 400M when the model sends none); `windowHours` defaults to 4; `cap < fullCap` means a prorated first period. The effective allowance is the divisor the parser puts on the period window, so the percentages match the dashboard in a prorated period too.
 - Not part of NaN's public OpenAPI contract, so the integration stays defensive by design.
 
 ## Tasks

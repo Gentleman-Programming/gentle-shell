@@ -1,8 +1,16 @@
 // One shared hover treatment for every clickable inline text/button surface
-// in the shell: the header usage segment, the usage overlay's footer hints,
-// the changes modal's rows and controls, and the agents panel. A single role
-// swap on hover -- no per-surface variant -- so every clickable text reads
-// the same way once the pointer is over it.
+// in the shell: the usage overlay's footer hints, the changes modal's rows
+// and controls, the agents panel, and the todo card's collapse control. A
+// single role swap on hover -- no per-surface variant -- so every clickable
+// text reads the same way once the pointer is over it.
+//
+// The header's usage segment deliberately does NOT use this: it is a single
+// one-row component outside any wrapping region, so pi-tui's fullscreen
+// dispatch (which only calls handleMouse on whichever leaf is under the
+// pointer, lib/shell-sidebar-layout.ts) never delivers a "leave" once the
+// pointer moves off it into the body below -- there is no move event left to
+// clear the paint. A background self-expiry timer could paper over that, but
+// was rejected as inelegant; the header usage segment stays click-only.
 //
 // This is presentation only. Each surface still tracks its own hovered state
 // from its own "move" events (or, where it already uses NativePointerRegion,

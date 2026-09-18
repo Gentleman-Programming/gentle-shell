@@ -5,7 +5,9 @@ import { homedir, tmpdir } from "node:os";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { pendingReviewMutation, REVIEW_REMINDER_RECEIPT } from "../lib/review-reminder-receipt.ts";
-import { SESSION_WORKTREE_ENTRY, SESSION_WORKTREE_CHANGED } from "../lib/session-worktree-registry.ts";
+import { SESSION_WORKTREE_ENTRY, SESSION_WORKTREE_CHANGED, resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
+import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
+import type { SessionChangeEvidence } from "../lib/session-changes.ts";
 import test, { after, afterEach, mock } from "node:test";
 import type { TestContext } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -1359,6 +1361,123 @@ for (const matching of [true, false]) {
   await h.fire("session_shutdown",ctx); await tick();
  });
 }
+
+// Runs the CHILD half of installSessionChangeCapture against a real repo, the
+// same way an actual subagent process would: a tool_call/tool_result pair
+// with GENTLE_PI_AGENTS_CHILD set, using the real git-backed resolver rather
+// than a stub. Returns exactly the evidence object the child would put in
+// its tool result's details.gentleSessionChange.
+async function childSessionChangeEvidence(root: string, relPath: string, toolCallId: string, content: string): Promise<SessionChangeEvidence> {
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	const childPi = {
+		on: (key: string, fn: (event: unknown, ctx: unknown) => unknown) => handlers.set(key, fn),
+		appendEntry: () => {},
+		events: { on: () => () => {}, emit: () => {} },
+	} as unknown as ExtensionAPI;
+	const childCtx = { cwd: root, sessionManager: { getSessionId: () => "child-session", getEntries: () => [] } } as unknown as ExtensionContext;
+	installSessionChangeCapture(childPi, { GENTLE_PI_AGENTS_CHILD: "1" }, resolveSessionWorktree);
+	await handlers.get("session_start")?.({}, childCtx);
+	const event = { toolCallId, toolName: "write", input: { path: relPath, content } };
+	await handlers.get("tool_call")?.(event, childCtx);
+	writeFileSync(join(root, relPath), content);
+	const result = (await handlers.get("tool_result")?.({ ...event, isError: false }, childCtx)) as { details: { gentleSessionChange: SessionChangeEvidence } } | undefined;
+	assert.ok(result?.details.gentleSessionChange, "the child must attach session-change evidence to its tool result");
+	return result.details.gentleSessionChange;
+}
+
+// C1 investigation (odd/tasks/usage-click-and-changes-attribution.md): tried
+// to reproduce the live session's "16 subagent_run calls, zero relayed"
+// evidence end to end — real repo, real git-backed resolver on both the
+// child and parent sides (not the trivial path-echoing stub the other
+// fixtures in this file use), a real child tool_call/tool_result pair
+// producing the session-change evidence, and the real onSuccessfulMutation
+// guard chain in extensions/gentle-agents.ts, round-tripped through actual
+// JSON serialization the same way agents-fake-child.ts's emit() does for
+// every other test here. With every guard input constructed faithfully, the
+// relay fires correctly: parentSessionId/ownedTaskIds, root === childRoot,
+// worktrees.roots().includes(root), tool.evidence.root === root, and the
+// realpath comparison all pass.
+//
+// The one drop this file could reproduce was a test-harness gap, not a
+// product bug: SessionWorktreeRegistry.start() is never called for this
+// extension's own registry (registryFor() in extensions/gentle-agents.ts),
+// so worktrees.roots() is empty until some subagent's onLaunch callback
+// registers a root on the real child process's "spawn" event. In production
+// that event always fires before any tool call can complete, so the root is
+// registered well before any mutation; the fake child here only reproduces
+// that if the test explicitly wires "spawn" (as this test does). Making
+// registryFor() call start() eagerly was tried and reverted: it makes the
+// parent's own cwd a registered root at session start regardless of whether
+// any subagent ever actually launches into it, which breaks two existing,
+// deliberate invariants — "child mutation attribution through registered
+// subagent_run: unregistered" (a queued-but-never-spawned task must not be
+// attributed) and "queueing and returning a child handle do not register
+// roots" / "delayed child spawn retains the originating session..." (merely
+// constructing the registry must not append an entry). Deciding whether the
+// session's own root should be trusted before any subagent proves it by
+// actually spawning is a product/security question, not a guard bug fix, so
+// it was left to the parent instead of guessed at here.
+test("C1 investigation: the relay mechanism is correct when every guard input is real", async () => {
+	// A real repository, spawned through the real (unstubbed) git-backed
+	// resolver on both the child and parent sides — the same resolver the
+	// live session used — rather than the trivial path-echoing stub the other
+	// fixtures in this file use.
+	const repoRoot = mkdtempSync(join(tmpdir(), "gentle-agents-c1-"));
+	try {
+		execFileSync("git", ["init", "--quiet", "-b", "main", repoRoot]);
+		execFileSync("git", ["-C", repoRoot, "config", "user.email", "test@example.com"]);
+		execFileSync("git", ["-C", repoRoot, "config", "user.name", "Test"]);
+		writeFileSync(join(repoRoot, "README.md"), "seed\n");
+		execFileSync("git", ["-C", repoRoot, "add", "README.md"]);
+		execFileSync("git", ["-C", repoRoot, "commit", "--quiet", "-m", "seed"]);
+
+		const h = fakePi();
+		const d = deps();
+		const { ctx } = fakeContext();
+		ctx.sessionManager.getCwd = () => repoRoot;
+		ctx.sessionManager.getEntries = (() => h.entries) as typeof ctx.sessionManager.getEntries;
+		ctx.sessionManager.getBranch = (() => h.entries) as typeof ctx.sessionManager.getBranch;
+		d.deps.resolveWorktree = resolveSessionWorktree;
+		// Mirror a real child process: the OS "spawn" event fires as soon as the
+		// process starts, which is what triggers onLaunch -> registry.register.
+		const spawn = d.deps.spawn!;
+		d.deps.spawn = (...args) => {
+			const child = spawn(...args);
+			const on = child.on.bind(child);
+			child.on = ((event: string, listener: () => void) => {
+				if (event === "spawn") queueMicrotask(listener);
+				return on(event as "spawn", listener);
+			}) as typeof child.on;
+			return child;
+		};
+		gentleAgents(h.pi, {}, d.deps);
+		await h.fire("session_start", ctx);
+
+		const launched = await h.tools.get("subagent_run")!.execute("mutation", { agent: "explore", task: "Write a file", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		const gentleAgentsDetails = launched.details.gentleAgents as { taskId: string; cwd: string };
+		const taskId = gentleAgentsDetails.taskId;
+		// The task's cwd is whatever buildRequest resolved from the real
+		// resolver: confirming this here pins down which value onSuccessfulMutation
+		// will later compare against the freshly-resolved root.
+		const childCwd = gentleAgentsDetails.cwd;
+
+		const evidence = await childSessionChangeEvidence(childCwd, "notes.md", "write", "agent output\n");
+
+		d.children[0].emit({ type: "tool_execution_start", toolCallId: "write", toolName: "write", args: { path: "notes.md" } });
+		d.children[0].emit({ type: "tool_execution_end", toolCallId: "write", isError: false, result: { content: [], details: { gentleSessionChange: evidence } } });
+		await tick();
+
+		const relays = h.events.filter((event) => event.name === "gentle-pi:child-session-change");
+		assert.equal(relays.length, 1, `expected the child mutation to relay; evidence=${JSON.stringify(evidence)} childCwd=${childCwd}`);
+		assert.equal((relays[0].data as { evidence: { id: string } }).evidence.id, `${taskId}:write`);
+
+		await h.fire("session_shutdown", ctx);
+		await tick();
+	} finally {
+		rmSync(repoRoot, { recursive: true, force: true });
+	}
+});
 
 for (const scenario of ["own", "other-root", "escaped", "sibling", "session-switch", "shutdown", "unregistered"] as const) {
 	test(`child mutation attribution through registered subagent_run: ${scenario}`, async () => {

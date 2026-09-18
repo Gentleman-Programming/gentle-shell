@@ -114,7 +114,7 @@ function userTurn(text: string): unknown[] {
 	];
 }
 
-function assistantTurn(parts: readonly Record<string, unknown>, reviewerModel?: string): unknown[] {
+function assistantTurn(parts: readonly Record<string, unknown>[], reviewerModel?: string): unknown[] {
 	const content = parts.map((part) => ({ ...part }));
 	const message: Record<string, unknown> = { role: "assistant", content };
 	if (reviewerModel !== undefined) message.model = reviewerModel;

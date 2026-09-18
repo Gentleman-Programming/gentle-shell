@@ -163,15 +163,16 @@ test("renderShellBar meters the model the session is using inside a multi-model 
 });
 
 // The sidebar is the surface that never needs opening, so a provider with
-// per-model allowances shows the panel's grouped rows there too — the account
-// total, the family totals and the models — without the reset dates, which the
-// panel owns.
-test("sidebar groups the NaN allowances by subscription without the panel resets", () => {
+// per-model allowances shows the panel's model rows there too — most consumed
+// family first, its models inside it — and leaves the aggregate totals and the
+// reset dates to the bar and the panel.
+test("sidebar groups the NaN allowances by subscription without totals or resets", () => {
 	const usage = parseNanQuota(GROUPED_NAN_QUOTA, 0);
 	const lines = renderShellSidebarBar(model({ modelId: "glm5.3-flash", usage }), plainTheme, 60);
 	const rows = sidebarUsageRows(lines);
-	assert.deepEqual(rows.map((row) => row.replace(/\s*[▰▱].*$/, "")), ["nan total", "deepseek-v4-flash", "glm total", "glm5.3-flash", "glm5.3", "glm5.2"]);
-	assert.deepEqual(rows.map((row) => Number.parseInt(row.match(/(\d+)%$/)![1] ?? "", 10)), [5, 10, 3, 10, 0, 0]);
+	assert.deepEqual(rows.map((row) => row.replace(/\s*[▰▱].*$/, "")), ["deepseek-v4-flash", "glm5.3-flash", "glm5.3", "glm5.2"]);
+	assert.deepEqual(rows.map((row) => Number.parseInt(row.match(/(\d+)%$/)![1] ?? "", 10)), [10, 10, 0, 0]);
+	assert.equal(lines.join("\n").includes("total"), false, "an aggregate row only costs space");
 	assert.equal(lines.join("\n").includes("resets in"), false, "the reset dates belong to the panel");
 	for (const width of [24, 46, 60]) {
 		assert.ok(renderShellSidebarBar(model({ usage }), plainTheme, width).every((line) => visibleWidth(line) <= width));

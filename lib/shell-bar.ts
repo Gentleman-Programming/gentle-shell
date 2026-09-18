@@ -126,17 +126,17 @@ function joinSegments(segments: string[], theme: ShellBarTheme): string {
 }
 
 // The sidebar is the surface that never needs opening, so a provider with
-// per-model allowances prints the same grouped rows as the panel — the account
-// total, its family totals and the models themselves, in the panel's order and
-// with the panel's percentages — and leaves every reset date to the panel,
-// which has the room. Providers without raw allowances keep the one aggregate
-// line the bar has always drawn for the model in use.
+// per-model allowances prints the panel's model rows there too — the most
+// consumed family first, its models inside it — and leaves the aggregate totals
+// and the reset dates to the bar and the panel. Providers without raw
+// allowances keep the one aggregate line the bar has always drawn for the model
+// in use.
 function sidebarUsageLines(usage: ProviderUsage, modelId: string, theme: ShellBarTheme, available: number): string[] {
 	if (!allowanceGroupsSupported(usage.limits)) {
 		const line = renderUsageBar(usage, theme, modelId);
 		return line ? [line] : [];
 	}
-	const rows = groupUsageLimits(usage.limits, usage.provider).flatMap((limit) =>
+	const rows = groupUsageLimits(usage.limits).flatMap((limit) =>
 		limit.windows.map((window) => ({ name: [limit.name, window.label].filter((part) => part.length > 0).join(" "), window })),
 	);
 	// The name column gives way first: it is the only part that can be clipped

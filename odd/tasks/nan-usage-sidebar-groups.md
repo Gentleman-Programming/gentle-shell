@@ -61,4 +61,4 @@ so the grouped view has to be readable there too.
 
 ## Next step
 
-Feature verified on `feat/nan-usage-sidebar`. Nothing is pushed; the native review and the PR remain the user's decisions. A new review candidate starts at this commit.
+Superseded before review by `odd/tasks/nan-usage-compact-rows.md`: the user asked to drop the `nan total` / `glm total` rows from both surfaces and to print the panel's resets inline, so the reviewed candidate starts one commit later. Nothing is pushed; the native review and the PR remain the user's decisions.

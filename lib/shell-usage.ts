@@ -312,14 +312,14 @@ function allowanceTotal(name: string, limits: readonly UsageLimit[]): UsageLimit
 	};
 }
 
-// The panel groups what the bar aggregates: the account total first, then one
-// row per family with more than one metered model, then the models themselves,
-// most consumed first. Every row is a limit block, so nothing here introduces a
-// shape the other providers do not already use.
-export function groupUsageLimits(limits: readonly UsageLimit[], provider: string): UsageLimit[] {
+// What the grouping is for now that the totals are gone: the order. A family
+// stays together, families sort by what they consume and the members inside one
+// follow the same rule, most used first. The account and family totals are the
+// bar's fallback ladder only — they are never rows, because a total nobody can
+// act on only costs space. Every row is a limit block, so nothing here
+// introduces a shape the other providers do not already use.
+export function groupUsageLimits(limits: readonly UsageLimit[]): UsageLimit[] {
 	if (!allowanceGroupsSupported(limits)) return [...limits];
-	const account = allowanceTotal(`${provider}${GROUP_SUFFIX}`, limits);
-	if (!account) return [...limits];
 	const order: string[] = [];
 	const members = new Map<string, UsageLimit[]>();
 	for (const limit of limits) {
@@ -330,20 +330,14 @@ export function groupUsageLimits(limits: readonly UsageLimit[], provider: string
 		}
 		members.get(family)?.push(limit);
 	}
-	const families = order
+	return order
 		.map((family) => {
-			const rows = members.get(family) ?? [];
-			const sorted = [...rows].sort((a, b) => percentOf(b) - percentOf(a));
-			const total = allowanceTotal(`${family}${GROUP_SUFFIX}`, rows);
-			return { total, percent: total?.windows[0]?.usedPercent ?? percentOf(sorted[0]), sorted };
+			const sorted = [...(members.get(family) ?? [])].sort((a, b) => percentOf(b) - percentOf(a));
+			const total = allowanceTotal(`${family}${GROUP_SUFFIX}`, sorted);
+			return { percent: total?.windows[0]?.usedPercent ?? percentOf(sorted[0]), sorted };
 		})
-		.sort((a, b) => b.percent - a.percent);
-	const grouped = [account];
-	for (const family of families) {
-		if (family.sorted.length > 1 && family.total && family.total.name !== account.name) grouped.push(family.total);
-		grouped.push(...family.sorted);
-	}
-	return grouped;
+		.sort((a, b) => b.percent - a.percent)
+		.flatMap((family) => family.sorted);
 }
 
 // The bar follows the model the session is using: exact allowance, then its
@@ -411,19 +405,19 @@ export function renderUsagePanel(usages: ProviderUsage[], theme: UsageTheme, wid
 		const mark = usage === activeUsage ? `${theme.fg(ROLE.LIMIT, ACTIVE_MARK)} ` : "";
 		const plan = usage.plan ? ` ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.PLAN, usage.plan)}` : "";
 		lines.push(`${mark}${theme.fg(ROLE.PROVIDER, usage.provider)}${plan} ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.RESET, updatedAgo(usage.fetchedAt, now))}`);
-		// One row per window: the limit name and its meter share a line, and the
-		// reset that window reports sits under it, aligned with the meter. A window
-		// without its own label (the model's allowance) is named by its limit alone.
-		const rows = groupUsageLimits(usage.limits, usage.provider).flatMap((limit) =>
+		// One row per window: the limit name, its meter, its percentage and the reset
+		// that window reports, all on one line. A window without its own label (the
+		// model's allowance) is named by its limit alone, and one without a reset ends
+		// at its percentage, never on a dangling separator.
+		const rows = groupUsageLimits(usage.limits).flatMap((limit) =>
 			limit.windows.map((window) => ({ name: [limit.name, window.label].filter((part) => part.length > 0).join(" "), window })),
 		);
 		const nameWidth = rows.reduce((widest, row) => Math.max(widest, row.name.length), 0);
-		const resetIndent = " ".repeat(nameWidth + 1);
 		for (const row of rows) {
 			const percent = `${Math.round(row.window.usedPercent)}%`.padStart(4);
-			lines.push(`  ${theme.fg(ROLE.LABEL, row.name.padEnd(nameWidth))} ${paintMeter(row.window.usedPercent, PANEL_METER_CELLS, theme)} ${theme.fg(ROLE.PERCENT, percent)}`);
 			const reset = formatReset(row.window.resetAt, now);
-			if (reset.length > 0) lines.push(`  ${resetIndent}${theme.fg(ROLE.RESET, reset)}`);
+			const tail = reset.length > 0 ? ` ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.RESET, reset)}` : "";
+			lines.push(`  ${theme.fg(ROLE.LABEL, row.name.padEnd(nameWidth))} ${paintMeter(row.window.usedPercent, PANEL_METER_CELLS, theme)} ${theme.fg(ROLE.PERCENT, percent)}${tail}`);
 		}
 	}
 	return lines.map((line) => truncateToWidth(line, width, "…"));

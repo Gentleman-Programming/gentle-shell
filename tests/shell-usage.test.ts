@@ -138,13 +138,11 @@ test("renderUsagePanel lists each provider with meters, resets, and a stale mark
 	const lines = renderUsagePanel([usage], plainTheme, 70, NOW + 3 * 60_000);
 	for (const line of lines) assert.ok(visibleWidth(line) <= 70, `too wide: ${line}`);
 	assert.match(lines[0], /^openai-codex · pro · updated 3m ago$/);
-	// One row per window: the name and its meter share a line, the reset sits under it.
-	assert.match(lines[1], /^ {2}codex week +[▰▱]{16} +40%$/);
-	assert.match(lines[2], /^ {19}resets in 2d 1h$/);
-	assert.match(lines[3], /^ {2}codex_spark 5h +[▰▱]{16} +12%$/);
-	assert.match(lines[4], /^ {19}resets in \d+h \d+m$/);
-	assert.match(lines[5], /^ {2}codex_spark week +[▰▱]{16} +3%$/);
-	assert.match(lines[6], /^ {19}resets in \d+d \d+h$/);
+	// One row per window: the name, its meter, its percentage and, when the window
+	// reports one, its reset, all on the same line.
+	assert.match(lines[1], /^ {2}codex week +[▰▱]{16} +40% · resets in 2d 1h$/);
+	assert.match(lines[2], /^ {2}codex_spark 5h +[▰▱]{16} +12% · resets in \d+h \d+m$/);
+	assert.match(lines[3], /^ {2}codex_spark week +[▰▱]{16} +3% · resets in \d+d \d+h$/);
 	assert.deepEqual(renderUsagePanel([], plainTheme, 120, NOW), ["No subscription usage yet. Usage arrives with the next response, or press r to fetch it."]);
 });
 
@@ -245,19 +243,16 @@ test("nan is a supported usage provider with its own pending note", () => {
 	assert.deepEqual(renderUsagePanel([], plainTheme, 100, NOW, { provider: "nan" }), ["✿ nan · no usage yet · r to fetch"]);
 });
 
-test("renderUsagePanel lists the NaN account total ahead of the per-model allowances", () => {
+test("renderUsagePanel lists each NaN model allowance with its reset on the same row", () => {
 	const usage = parseNanQuota(NAN_QUOTA, NOW);
 	const lines = renderUsagePanel([usage], plainTheme, 80, NOW, { provider: "nan" });
 	for (const line of lines) assert.ok(visibleWidth(line) <= 80, `too wide: ${line}`);
 	assert.match(lines[0], /^✿ nan · updated just now$/);
-	assert.match(lines[1], /^ {2}nan total +[▰▱]{16} +22%$/);
-	assert.match(lines[2], /^ {2}glm5\.3 +[▰▱]{16} +27%$/);
-	assert.match(lines[3], /^ {20}resets in \d+d \d+h$/);
+	assert.match(lines[1], /^ {2}glm5\.3 +[▰▱]{16} +27% · resets in \d+d \d+h$/);
 	// The rolling window a model reports is a row of its own, with its own reset.
-	assert.match(lines[4], /^ {2}glm5\.3 4h +[▰▱]{16} +30%$/);
-	assert.match(lines[5], /^ {20}resets in \d+h \d+m$/);
-	assert.match(lines[6], /^ {2}deepseek-v4-flash +[▰▱]{16} +10%$/);
-	assert.match(lines[7], /^ {20}resets in \d+d \d+h$/);
+	assert.match(lines[2], /^ {2}glm5\.3 4h +[▰▱]{16} +30% · resets in \d+h \d+m$/);
+	assert.match(lines[3], /^ {2}deepseek-v4-flash +[▰▱]{16} +10% · resets in \d+d \d+h$/);
+	assert.equal(lines.some((line) => line.includes("total")), false, "an aggregate row only costs space");
 });
 
 // The server picks the order of the per-model allowances, so drawing the first
@@ -309,21 +304,26 @@ function isMeterRow(line: string): boolean {
 	return /[▰▱]/.test(line);
 }
 
-function isResetRow(line: string): boolean {
-	return line.trim().startsWith("resets in");
+// A row carries its own reset on the same line when the window reports one.
+function panelResets(lines: string[]): string[] {
+	return lines.filter(isMeterRow).map((line) => /resets in .*$/.exec(line)?.[0] ?? "").filter((reset) => reset.length > 0);
 }
 
 function panelPercents(lines: string[]): number[] {
 	return lines.filter(isMeterRow).map((line) => Number.parseInt(line.trim().match(/(\d+)%/)![1] ?? "", 10));
 }
 
-test("renderUsagePanel groups NaN allowances by family and totals the account", () => {
+test("renderUsagePanel orders the NaN allowances by family and prints no totals", () => {
 	const lines = renderUsagePanel([parseNanQuota(GROUPED_NAN_QUOTA, NOW)], plainTheme, 80, NOW, { provider: "nan" }).map((line) => line.trimEnd());
-	assert.deepEqual(panelNames(lines), ["nan total", "deepseek-v4-flash", "glm total", "glm5.3-flash", "glm5.3", "glm5.2"]);
-	// 500M of 11B account-wide, 200M of 8B across the GLM members, then each model.
-	assert.deepEqual(panelPercents(lines), [5, 10, 3, 10, 0, 0]);
-	// A group closes when its members do, so only the four models carry a reset.
-	assert.equal(lines.filter(isResetRow).length, 4);
+	assert.deepEqual(panelNames(lines), ["deepseek-v4-flash", "glm5.3-flash", "glm5.3", "glm5.2"]);
+	// 300M of 3B for DeepSeek first, then the GLM family by its own allowance.
+	assert.deepEqual(panelPercents(lines), [10, 10, 0, 0]);
+	// Every row keeps its own reset, inline: one line per window, never two.
+	const resets = panelResets(lines);
+	assert.equal(resets.length, 4);
+	assert.equal(resets[0], resets[1], "the two models on the 2026-10-01 period share their date");
+	assert.equal(resets[2], resets[3], "the two models on the 2026-10-17 period share theirs");
+	assert.notEqual(resets[1], resets[2], "each row carries its own window's reset, not its family's");
 });
 
 test("renderUsagePanel leaves providers without raw allowances ungrouped", () => {

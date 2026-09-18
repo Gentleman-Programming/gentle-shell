@@ -90,7 +90,7 @@ The separate `session_worktree_register` tool still registers canonical same-clo
 
 To use `ctrl+p` like OpenCode, rebind Pi's `app.model.cycleForward` in `~/.pi/agent/keybindings.json` (Pi reserves that action, so an extension cannot take `ctrl+p` while it holds it) and set `GENTLE_PI_COMMANDS_KEY=ctrl+p`.
 
-Subscription usage shows in the bar after the cost, and `/gentle:usage` opens a panel with one row per window of every provider: the limit name and its meter share a line, and the reset that window reports sits under it, aligned with the meter. Codex, Claude and NaN all read the same way:
+Subscription usage shows in the bar after the cost, and `/gentle:usage` opens a panel with one row per window of every provider: the limit name, its meter, its percentage and, when that window reports one, its reset, all on one line. Codex, Claude and NaN all read the same way:
 
 ```text
 ✿ gentle-pi ⟡ … ⟡ $9.49 sub ⟡ codex 5h ▰▰▰▰▰▱▱▱ 62% · week 31%
@@ -100,17 +100,15 @@ The panel rows a provider reports its windows with:
 
 ```text
 ✿ nan · updated just now
-  deepseek-v4-flash ▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱  26%
-                    resets in 12d 17h
-  glm5.3-flash      ▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱  11%
-                    resets in 12d 17h
+  deepseek-v4-flash ▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱  26% · resets in 12d 17h
+  glm5.3-flash      ▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱  11% · resets in 12d 17h
 ```
 
 - For Codex, usage comes from the same account usage endpoint the Codex CLI reads, using the OAuth token pi already holds. It is fetched at session start, at most every 5 minutes after a turn, and on `r` in the panel. Rate-limit headers on SSE responses are picked up too.
 - For Claude Pro/Max, usage arrives in the rate-limit headers of every response, so the 5h and weekly windows appear after the first turn.
 - For NaN Cloud, usage comes from the quota endpoint the official dashboard reads, with the same API key pi already holds. Each metered model reports one allowance for the billing period, and that window carries no label: the model id names it in the bar and the reset text says what it is in the panel. A model that also reports a rolling window shows that one labeled next to it (`4h`), which today's payload does not send; percentages are tokens used over the allowance, exactly as the dashboard draws them. It is fetched under the same 5-minute rule as Codex, refuses redirects so the bearer cannot be replayed to another origin, and keeps no cached copy. The endpoint sits outside NaN's published OpenAPI, so a malformed or changed payload degrades to the pending note instead of breaking the bar.
-- The bar names the subscription it shows (`codex`, `claude`, a NaN model) and always follows the active model. A provider with per-model allowances draws the session model's own meter, falling back to its family and then to the account total, never to whichever model the payload happens to list first. The panel puts the active provider first, marked with the petal, and says why it has no data when it does not: API-key providers have no subscription windows, Claude reports after the first response, Codex and NaN wait for a fetch.
-- The NaN panel adds two rows named `<provider> total` and `<family> total`, the same shape Codex uses for its extra limits: `<provider> total` for the account and `<family> total` for every family with more than one metered model. Both weight by allowance (`Σ tokens used / Σ allowance`), so three GLM models share 2.42% and never the 3.33% an average of percentages would invent. A group carries no `resets in`, because its members close their own billing period on their own date, and a family with a single metered model earns no row. Like the per-model rows, an allowance row leaves the window label empty and prints `name meter percent`, while a labeled sub-window (`4h`) keeps its column. The sidebar's Usage group prints those same grouped rows in that same order, so the breakdown does not require opening the panel, and stops at the percentages: `resets in` stays in the panel, which owns the dates. Providers without per-model allowances keep the single aggregate line there, and the one-line bar keeps naming the model in use.
+- The bar names the subscription it shows (`codex`, `claude`, a NaN model) and always follows the active model. A provider with per-model allowances draws the session model's own meter, falling back to its family and then to the account total, never to whichever model the payload happens to list first. The panel puts the active provider first, marked with the petal, and says why it has no data when it does not: API-key providers have no subscription windows, Claude reports after the first response, Codex and NaN wait for a fetch. A provider without per-model allowances keeps its single aggregate line in the sidebar, unchanged.
+- A provider with per-model allowances is ordered by family on both surfaces: a family stays together, the family that consumes most comes first, and the models inside it follow the same rule, most used first. There are no `total` rows anywhere — an aggregate nobody can act on only costs space — so the account and family totals survive only as the bar's fallback name when the session model holds no allowance of its own (`nan total`). An allowance row leaves the window label empty and prints `name meter percent`, while a labeled sub-window (`4h`) keeps its column, and the reset a window reports rides that same line after a `·`; a window without one ends at its percentage, never on a dangling separator. The sidebar's Usage group prints those same rows in that same order, so the breakdown does not require opening the panel, and stops at the percentage: the reset dates stay in the panel.
 - Only the plan name and the windows are kept; account details in the payload are discarded.
 - Gauges turn amber at 80% and red at 95%, like the context gauge.
 

@@ -34,8 +34,8 @@ test("UsageView frames the panel, keeps every line at width, and shows the empty
 	for (const line of lines) assert.equal(visibleWidth(line), 90, `"${stripAnsi(line)}" is not 90 wide`);
 	const plain = lines.map(stripAnsi);
 	assert.match(plain[1], /^│ openai-codex · pro · updated just now +│$/);
-	assert.match(plain[2], /^│ {3}codex week +[▰▱]{16} +40% +│$/);
-	assert.match(plain[3], /^│ {14}resets in 2h 0m +│$/);
+	assert.match(plain[2], /^│ {3}codex week +[▰▱]{16} +40% · resets in 2h 0m +│$/);
+	assert.match(plain[3], /r refresh .* esc close/);
 });
 
 test("UsageView refetches on r and closes on escape or q", async () => {

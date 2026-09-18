@@ -722,7 +722,8 @@ export function gcProjectDir(
 }
 
 /**
- * Merge all but the newest `keepNewest` files into one `compact-<ts>.jsonl`
+ * Merge all but the newest `keepNewest` files into one
+ * `compact-<pid>-<ts>.jsonl`
  * (chronological within the merged content). One atomic write; the
  * originals are removed only after the compact file lands. Readers see
  * either the old set or the compacted set. (Upstream exposed this as
@@ -753,7 +754,7 @@ function compactFiles(
   if (mergedLines.length === 0) return { compacted: false, merged: 0 };
 
   const dir = path.dirname(toMerge[0]);
-  const compact = path.join(dir, `compact-${Date.now()}.jsonl`);
+  const compact = path.join(dir, `compact-${process.pid}-${Date.now()}.jsonl`);
   const tmp = `${compact}.tmp-${process.pid}-${Date.now()}`;
   fs.writeFileSync(tmp, mergedLines.join("\n") + "\n", "utf8");
   fs.renameSync(tmp, compact);

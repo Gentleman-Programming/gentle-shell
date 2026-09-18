@@ -123,7 +123,7 @@ test("file-count threshold merges the oldest files into one compact file", () =>
   // The compact file is the renamed final artifact, not a staging leftover.
   assert.match(
     fs.readdirSync(dir).find((f) => f.startsWith("compact-")) ?? "",
-    /^compact-\d+\.jsonl$/,
+    /^compact-\d+-\d+\.jsonl$/,
   );
   assert.deepEqual(
     fs.readdirSync(dir).filter((f) => f.includes(".tmp-")),

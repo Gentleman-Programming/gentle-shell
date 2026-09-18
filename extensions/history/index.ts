@@ -1016,7 +1016,8 @@ export default function promptHistoryExtension(pi: ExtensionAPI) {
     }
   });
 
-  // Backup pass: enforce the 1000-line limit on graceful shutdown.
+  // Maintenance pass on graceful shutdown: compaction runs at the GC
+  // thresholds (50 files / 5000 lines / keep-newest-10).
   pi.on("session_shutdown", () => {
     try {
       gcProjectDir(PI_HISTORY_ROOT, CURRENT_CWD);

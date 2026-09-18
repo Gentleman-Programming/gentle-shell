@@ -1,17 +1,24 @@
 // SPDX-FileCopyrightText: 2026 ExoPro. Inspired by @jasonish/pi-prompt-history
 // SPDX-License-Identifier: MIT
 
-// Consolidated multi-concurrency store (v2), slices 1+2: project paths and
-// identity, the advisory registry, entry primitives, the per-instance
-// session writer, and the scope drain/reader/query section (ordering,
-// dedup, tombstone filter, project/global drains). Legacy migration and
-// seed bootstrap, scope deletes, and GC/compaction arrive in later slices.
-// Formerly store-paths.ts + registry.ts + multi-store.ts (+ v1 primitives).
+// Consolidated multi-concurrency store (v2), slices 1+2+4: project paths
+// and identity, the advisory registry, entry primitives, the per-instance
+// session writer, the scope drain/reader/query section (ordering, dedup,
+// tombstone filter, project/global drains), legacy migration, and the
+// project seed bootstrap. Scope deletes and GC/compaction arrive in later
+// slices. Formerly store-paths.ts + registry.ts + multi-store.ts (+ v1
+// primitives).
 
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { loadHiddenPrompts } from "./hide-prompts.ts";
+import { loadSharedHistory } from "./load-shared-history.ts";
+import {
+  extractPromptsFromFile,
+  listSessionFiles,
+  type ExtractedPrompt,
+} from "./session-scan.ts";
 
 // ===========================================================================
 // Paths (formerly store-paths.ts)
@@ -402,4 +409,185 @@ export function drainGlobal(
     limit,
     stateDir ? loadHiddenPrompts(stateDir) : new Set<string>(),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Legacy migration (design v2: one-time, gated)
+// ---------------------------------------------------------------------------
+
+export interface MigrationResult {
+  migrated: number;
+  ran: boolean;
+}
+
+function readValidLines(file: string): StoreEntry[] {
+  try {
+    const raw = fs.readFileSync(file, "utf8");
+    const entries: StoreEntry[] = [];
+    for (const lineText of raw.split("\n")) {
+      const parsed = parseStoreLine(lineText);
+      if (parsed) entries.push(parsed);
+    }
+    return entries;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * One-time migration from the v1 stores into the v2 global seed:
+ * - `~/.pi/agent/editor-history.jsonl` (v1 single-file store)
+ * - `~/.pi/agent/editor-history.json` (pre-v1 array, newest-first)
+ * Content lands in `pi-history/history-global.jsonl` chronologically; each
+ * source is renamed `.imported`, never deleted. Gated: an existing global
+ * seed means migration already ran.
+ */
+export function migrateLegacyStores(
+  root: string,
+  agentDir: string,
+): MigrationResult {
+  const seed = globalSeedPath(root);
+  if (fs.existsSync(seed)) return { migrated: 0, ran: false };
+
+  const collected: StoreEntry[] = [];
+
+  // Pre-v1 array (newest-first) → reverse to chronological.
+  const legacyArray = path.join(agentDir, "editor-history.json");
+  if (fs.existsSync(legacyArray)) {
+    const texts = loadSharedHistory(legacyArray);
+    if (texts.length > 0) {
+      for (let i = texts.length - 1; i >= 0; i--) {
+        collected.push({ v: 1, text: texts[i] });
+      }
+    }
+    try {
+      fs.renameSync(legacyArray, `${legacyArray}.imported`);
+    } catch {
+      // The seed write below is the source of truth; rename failure is benign.
+    }
+  }
+
+  // v1 single-file store — already chronological.
+  const v1File = path.join(agentDir, "editor-history.jsonl");
+  if (fs.existsSync(v1File)) {
+    collected.push(...readValidLines(v1File));
+    try {
+      fs.renameSync(v1File, `${v1File}.imported`);
+    } catch {
+      // benign
+    }
+  }
+
+  if (collected.length === 0) return { migrated: 0, ran: false };
+
+  fs.mkdirSync(path.dirname(seed), { recursive: true });
+  const tmp = `${seed}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(
+    tmp,
+    collected.map((e) => JSON.stringify(e)).join("\n") + "\n",
+    "utf8",
+  );
+  fs.renameSync(tmp, seed);
+  return { migrated: collected.length, ran: true };
+}
+
+// ---------------------------------------------------------------------------
+// Project bootstrap (design v2: seed.jsonl)
+// ---------------------------------------------------------------------------
+
+export interface SeedResult {
+  seeded: number;
+  ran: boolean;
+}
+
+/**
+ * Seed `projects/<hash>/seed.jsonl` from the project's pi transcripts when
+ * the project dir holds fewer than `target` entries. Existing session files
+ * are counted; their prompts are NOT re-seeded (dedupe by UI-level key).
+ * The seed is a rebuildable cache — rewritten only when the dir is empty.
+ */
+export function bootstrapProjectSeed(
+  root: string,
+  cwd: string,
+  sessionsRoot: string,
+  target: number,
+  stateDir?: string,
+): SeedResult {
+  const dir = path.join(root, "projects", projectHash(cwd));
+
+  // Count existing entries and collect their identities.
+  const existingKeys = new Set<string>();
+  let existingCount = 0;
+  for (const file of listProjectFiles(dir)) {
+    let raw = "";
+    try {
+      raw = fs.readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    for (const lineText of raw.split("\n")) {
+      const parsed = parseStoreLine(lineText);
+      if (parsed) {
+        existingCount += 1;
+        existingKeys.add(promptKey(parsed.text));
+      }
+    }
+  }
+  if (existingCount >= target) return { seeded: 0, ran: false };
+  // The seed is written ONCE: an existing seed is never regenerated, so a
+  // deleted prompt cannot be resurrected from transcripts on a new session.
+  if (fs.existsSync(seedFilePath(root, cwd))) {
+    return { seeded: 0, ran: false };
+  }
+  // Tombstones (user deletions) suppress transcript prompts from seeding.
+  const hidden = stateDir ? loadHiddenPrompts(stateDir) : new Set<string>();
+
+  // Scan transcripts: session files of THIS project's dir, newest first.
+  let files: string[] = [];
+  try {
+    const dirName = cwd
+      .replace(/^[/\\]/, "")
+      .replace(/[/\\:]/g, "-");
+    files = listSessionFiles(sessionsRoot).filter((file) =>
+      file.includes(`${path.sep}--${dirName}--${path.sep}`),
+    );
+  } catch {
+    return { seeded: 0, ran: false };
+  }
+  files.sort((a, b) => fileMtimeMs(b) - fileMtimeMs(a));
+
+  const collected: StoreEntry[] = [];
+  outer: for (const file of files) {
+    let prompts: ExtractedPrompt[] = [];
+    try {
+      prompts = extractPromptsFromFile(file).prompts;
+    } catch {
+      continue;
+    }
+    for (let i = prompts.length - 1; i >= 0; i--) {
+      const text = prompts[i].text;
+      if (/^\/[A-Za-z]/.test(text.trim())) continue;
+      if (hidden.size > 0 && hidden.has(promptDedupKeyOf(text))) continue;
+      const key = promptKey(text);
+      if (existingKeys.has(key)) continue;
+      existingKeys.add(key);
+      const entry: StoreEntry = { v: 1, text };
+      if (Number.isFinite(prompts[i].ts)) entry.ts = prompts[i].ts;
+      collected.push(entry);
+      if (collected.length >= target - existingCount) break outer;
+    }
+  }
+  if (collected.length === 0) return { seeded: 0, ran: false };
+
+  collected.reverse(); // chronological (oldest first)
+  const seed = seedFilePath(root, cwd);
+  fs.mkdirSync(path.dirname(seed), { recursive: true });
+  const tmp = `${seed}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(
+    tmp,
+    collected.map((e) => JSON.stringify(e)).join("\n") + "\n",
+    "utf8",
+  );
+  fs.renameSync(tmp, seed);
+  return { seeded: collected.length, ran: true };
 }

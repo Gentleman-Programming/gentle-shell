@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 // Prompt-history extension entry (slice 3): the selector TUI, overlay glue,
-// and the shortcut/command wiring over the slice-1 writer and slice-2
-// drains. Legacy migration and seed bootstrap (slice 4), deletion (slice 5),
-// and GC/compaction (slice 6) arrive in later slices.
+// and the shortcut/command wiring over the slice-1 writer, slice-2 drains,
+// and slice-4 init sequence (legacy migration + seed bootstrap run once
+// inside getWriter). Deletion (slice 5) and GC/compaction (slice 6) arrive
+// in later slices.
 
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -16,9 +17,11 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   appendSessionCapture,
+  bootstrapProjectSeed,
   drainGlobal,
   drainProject,
   ensureRegistryEntry,
+  migrateLegacyStores,
   openSessionWriter,
   type SessionWriterState,
 } from "./store.ts";
@@ -91,6 +94,11 @@ const PI_HISTORY_NAV_STATE_DIR = join(
   "agent",
   "history",
 );
+
+// Sessions root for the one-level transcript scan (spec C1, design §D5):
+// ~/.pi/agent/sessions/. Read-only by invariant — transcripts are never
+// written by this extension.
+const SESSIONS_ROOT = join(homedir(), ".pi", "agent", "sessions");
 
 /** Width of the "→ " / "  " prefix on each entry line. */
 const ENTRY_PREFIX_WIDTH = 2;
@@ -847,16 +855,31 @@ let selectorTui: { requestRender(): void } | null = null;
 let writerState: SessionWriterState | null = null;
 
 /**
- * One-time init per extension load: register the project in the advisory
- * registry, then open this instance's exclusive capture file. Legacy
- * migration and seed bootstrap join this init order in a later slice.
+ * One-time init per extension load: migrate legacy stores, register the
+ * project, bootstrap the seed, then open this instance's exclusive file.
  */
 function getWriter(): SessionWriterState {
   if (!writerState) {
     try {
+      migrateLegacyStores(PI_HISTORY_ROOT, AGENT_DIR);
+    } catch {
+      // migration is best-effort; the gate keeps it one-shot
+    }
+    try {
       ensureRegistryEntry(PI_HISTORY_ROOT, CURRENT_CWD);
     } catch {
       // registry is advisory
+    }
+    try {
+      bootstrapProjectSeed(
+        PI_HISTORY_ROOT,
+        CURRENT_CWD,
+        SESSIONS_ROOT,
+        500,
+        PI_HISTORY_NAV_STATE_DIR,
+      );
+    } catch {
+      // bootstrap is a rebuildable cache
     }
     writerState = openSessionWriter(PI_HISTORY_ROOT, CURRENT_CWD, INSTANCE_ID);
   }

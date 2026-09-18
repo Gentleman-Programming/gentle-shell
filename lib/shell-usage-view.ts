@@ -1,5 +1,6 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { renderUsagePanel, type ActiveProvider, type UsageStore, type UsageTheme } from "./shell-usage.ts";
+import { HOVER_ROLE } from "./shell-hover.ts";
 
 // Gentle Shell subscriptions overlay: a framed panel over the usage store.
 // It reads the store on every render, so a refresh only needs to record.
@@ -58,6 +59,7 @@ export class UsageView {
 	private readonly deps: UsageViewDeps;
 	private refreshing = false;
 	private pointer: PointerLayout | undefined;
+	private hoveredHint: HintAction | undefined;
 
 	constructor(store: UsageStore, deps: UsageViewDeps) {
 		this.store = store;
@@ -87,8 +89,13 @@ export class UsageView {
 		const body = renderUsagePanel(this.store.all(), theme, inner - 2, this.deps.now(), this.deps.active()).map(
 			(line) => `${theme.fg(FRAME_ROLE, "│")} ${fit(line, inner - 2)} ${theme.fg(FRAME_ROLE, "│")}`,
 		);
-		const hints = KEYS.map(([key, label]) => ({ key, label, text: `${key} ${label}` }));
-		const keys = hints.map(({ key, label }) => `${theme.fg(KEY_ROLE, key)} ${theme.fg(KEY_TEXT_ROLE, label)}`).join(HINT_GAP);
+		const hints = KEYS.map(([key, label]) => ({ key, label, text: `${key} ${label}`, action: (key === "r" ? "refresh" : "close") as HintAction }));
+		// The hovered hint paints entirely in the shared hover role (key and
+		// label together, one color) instead of its ordinary two-role split --
+		// the same treatment every other clickable surface uses.
+		const keys = hints
+			.map(({ key, label, action }) => (this.hoveredHint === action ? theme.fg(HOVER_ROLE, `${key} ${label}`) : `${theme.fg(KEY_ROLE, key)} ${theme.fg(KEY_TEXT_ROLE, label)}`))
+			.join(HINT_GAP);
 		const keysLine = `${theme.fg(FRAME_ROLE, "│")} ${fit(keys, inner - 2)} ${theme.fg(FRAME_ROLE, "│")}`;
 		const bottom = theme.fg(FRAME_ROLE, `╰${rule(inner)}╯`);
 		const lines = [top, ...body, keysLine, bottom];
@@ -97,6 +104,15 @@ export class UsageView {
 	}
 
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (event.type === "move" && event.button === "none") {
+			const layout = this.pointer;
+			const action = layout && event.width === layout.width && event.height === layout.height && event.y === layout.row
+				? layout.spans.find((candidate) => event.x >= candidate.start && event.x < candidate.end)?.action
+				: undefined;
+			if (action === this.hoveredHint) return action ? { handled: true } : undefined;
+			this.hoveredHint = action;
+			return { handled: true, render: true };
+		}
 		if (event.type !== "click" || event.button !== "left") return undefined;
 		const layout = this.pointer;
 		if (!layout || event.width !== layout.width || event.height !== layout.height || event.y !== layout.row) return undefined;
@@ -119,6 +135,7 @@ export class UsageView {
 
 	invalidate(): void {
 		this.pointer = undefined;
+		this.hoveredHint = undefined;
 	}
 
 	// Spans are only registered when the hints text fits without truncation:

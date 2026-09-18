@@ -110,3 +110,50 @@ test("UsageView.handleMouse clicks the footer hints like the matching key", asyn
 	assert.deepEqual(view.handleMouse(click(closeStart + 1, rowIndex, width, lines.length)), { handled: true, render: true });
 	assert.equal(events.filter((event) => event === "close").length, 1);
 });
+
+function move(x: number, y: number, width: number, height: number): TuiMouseEvent {
+	return { type: "move", button: "none", x, y, screenX: x, screenY: y, width, height, shift: false, alt: false, ctrl: false };
+}
+
+// H1 (odd/tasks/usage-click-and-changes-attribution.md): the same shared
+// hover role every other clickable surface uses.
+test("UsageView.handleMouse paints the shared hover role over a footer hint, and clears it on leave", () => {
+	const store = new UsageStore();
+	const taggedTheme = { fg: (role: string, text: string) => `<${role}>${text}</${role}>` };
+	const view = new UsageView(store, {
+		theme: taggedTheme,
+		now: () => NOW,
+		active: () => undefined,
+		onRefresh: async () => {},
+		onClose: () => {},
+		requestRender: () => {},
+	});
+	const width = 90;
+	const lines = view.render(width);
+	// The frame draws "│ " (2 columns) before the fitted footer content, and
+	// hints are laid out as plain "key label" text joined by 3 spaces -- these
+	// column offsets are computed purely from that plain text, independent of
+	// the theme, so they hold under taggedTheme exactly as under plainTheme.
+	const rowIndex = lines.length - 2;
+	const refreshStart = 2;
+	const closeStart = refreshStart + "r refresh".length + 3;
+	const height = lines.length;
+
+	assert.equal(view.handleMouse(move(0, rowIndex, width, height)), undefined, "a move outside any hint is not this component's gesture");
+	assert.doesNotMatch(view.render(width).join("\n"), /<warning>/, "idle: nothing painted yet");
+
+	const entered = view.handleMouse(move(refreshStart + 1, rowIndex, width, height));
+	assert.deepEqual(entered, { handled: true, render: true });
+	assert.match(view.render(width).join("\n"), /<warning>r refresh<\/warning>/, "hovering the refresh hint paints it, key and label together");
+	assert.doesNotMatch(view.render(width).join("\n"), new RegExp(`<warning>esc close`), "the other hint stays unpainted");
+
+	// Moving straight to the other hint switches which one is painted.
+	const switched = view.handleMouse(move(closeStart + 1, rowIndex, width, height));
+	assert.deepEqual(switched, { handled: true, render: true });
+	assert.match(view.render(width).join("\n"), /<warning>esc close<\/warning>/);
+	assert.doesNotMatch(view.render(width).join("\n"), /<warning>r refresh/);
+
+	const left = view.handleMouse(move(0, rowIndex, width, height));
+	assert.deepEqual(left, { handled: true, render: true }, "leaving the last hovered hint still requests a repaint");
+	assert.doesNotMatch(view.render(width).join("\n"), /<warning>/, "nothing stays painted once the pointer leaves");
+});

@@ -12,6 +12,7 @@ const GAP = 3;
 const NODE = Symbol.for("@earendil-works/pi-tui/layout-node");
 type LayoutNode = { type: string; entries?: unknown[]; gap?: number; align?: string };
 type LayoutRoot = Component & { [NODE]?: () => LayoutNode };
+type StackEntry = { component: Component & { [NODE]?: () => LayoutNode }; minSize?: number; [key: string]: unknown };
 type Host = TUI & { mode?: string; layoutRoot?: LayoutRoot };
 type SidebarCache = { revision: number };
 type RailHit = { key: string; component: Component; startY: number; height: number; width: number };
@@ -60,6 +61,35 @@ function railDigest(rail: SidebarRail): string | undefined {
 	} catch {
 		return undefined;
 	}
+}
+
+// Pi's dock always reserves a row for the footer (chat-viewport.js:
+// `{ component: footer, shrink: 1, minSize: 1 }`), even once sidebarPart
+// suppresses it down to an empty render. Rebuild — never mutate — the root's
+// node so that reserved row collapses to zero while the sidebar paints: the
+// dock is the root's last entry, and the footer is the dock's own last entry.
+function reclaimFooterRow(node: LayoutNode): LayoutNode {
+	const entries = node.entries as StackEntry[] | undefined;
+	if (!entries || entries.length === 0) return node;
+	const dockEntry = entries[entries.length - 1]!;
+	const dockNode = dockEntry.component[NODE]?.();
+	const dockEntries = dockNode?.entries as StackEntry[] | undefined;
+	if (!dockNode || !dockEntries || dockEntries.length === 0) return node;
+	const footerIndex = dockEntries.length - 1;
+	if ((dockEntries[footerIndex]!.minSize ?? 0) === 0) return node;
+	const reclaimedDockNode: LayoutNode = {
+		...dockNode,
+		entries: dockEntries.map((entry, index) => (index === footerIndex ? { ...entry, minSize: 0 } : entry)),
+	};
+	const reclaimedDock: Component & { [NODE](): LayoutNode } = {
+		render: () => [],
+		invalidate() {},
+		[NODE]: () => reclaimedDockNode,
+	};
+	return {
+		...node,
+		entries: entries.map((entry, index) => (index === entries.length - 1 ? { ...entry, component: reclaimedDock } : entry)),
+	};
 }
 
 export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
@@ -214,7 +244,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 			// Fullscreen gives this stretched stack an explicit viewport height.
 			// Its intrinsic-height probe is unused; real painting traverses NODE.
 			// Delegating that probe to root.render would render the transcript twice.
-			const left = { render: () => [], invalidate() {}, [NODE]: () => original.call(root) };
+			const left = { render: () => [], invalidate() {}, [NODE]: () => reclaimFooterRow(original.call(root)) };
 			// Stable component wrapping the [left, scroll] hstack behind its own
 			// NODE, exactly like `left` wraps the native transcript: the header
 			// vstack's second entry recurses into it the same way pi-tui already

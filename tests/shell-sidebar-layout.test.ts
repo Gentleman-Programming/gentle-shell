@@ -488,6 +488,64 @@ test("native transcript and sidebar keep separate scroll routing across resize, 
 	}
 });
 
+// T7: Pi's dock always reserves a row for the footer (chat-viewport.js:
+// `{ component: footer, shrink: 1, minSize: 1 }`), even once the sidebar
+// suppresses it to an empty render. While the sidebar is active, the
+// transcript+dock branch's own NODE must present that footer entry with
+// minSize 0 — a rebuilt node, never a mutation of Pi's own dock object.
+
+function dockFixture(mode = "fullscreen", columns = 140) {
+	const footerComponent = { render: () => [], invalidate() {} };
+	const editorComponent = { render: () => ["editor"], invalidate() {} };
+	const dockEntries = [
+		{ component: { render: () => [], invalidate() {} }, shrink: 1, minSize: 0 },
+		{ component: editorComponent, shrink: 1, minSize: 3 },
+		{ component: footerComponent, shrink: 1, minSize: 1 },
+	];
+	const dockNode = { type: "vstack", entries: dockEntries, gap: 0, align: "stretch" };
+	const dockComponent = { render: () => [], invalidate() {}, [NODE]: () => dockNode };
+	const transcriptComponent = { render: () => ["transcript"], invalidate() {} };
+	const original = () => ({
+		type: "vstack",
+		entries: [
+			{ component: transcriptComponent, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+			{ component: dockComponent, basis: "auto", grow: 0, shrink: 1, minSize: 1 },
+		],
+		gap: 0,
+		align: "stretch",
+	});
+	const root = { render: () => ["transcript"], invalidate() {}, [NODE]: original };
+	const host = { mode, terminal: { columns }, layoutRoot: root, requestRender() {} };
+	const tui = host as unknown as TUI;
+	sidebarPart(tui, "footer", { render: (_width: number) => ["Status"], invalidate() {} });
+	return { host, tui, root, original, dockNode, dockComponent, footerComponent };
+}
+
+test("reclaims Pi's reserved footer row while the sidebar is active, leaving the real dock node untouched", (t) => {
+	const f = dockFixture();
+	t.after(installSidebar(f.tui, theme));
+
+	const node = f.root[NODE]() as unknown as { type: string; entries: { component: unknown }[] };
+	assert.equal(node.type, "hstack", "no header registered, so the transcript+dock branch is the hstack's first entry");
+	const left = node.entries[0].component as { [NODE](): { entries: { component: { [NODE](): { entries: { minSize?: number }[] } } }[] } };
+	const reclaimedRoot = left[NODE]();
+	const reclaimedDock = reclaimedRoot.entries[1]!.component[NODE]();
+	const reclaimedFooter = reclaimedDock.entries[reclaimedDock.entries.length - 1]!;
+	assert.equal(reclaimedFooter.minSize, 0, "the footer entry's reserved row is collapsed while the sidebar paints");
+
+	// The real dock object Pi owns is never mutated: its own node still
+	// reports the footer's original minSize.
+	assert.equal(f.dockNode.entries[f.dockNode.entries.length - 1]!.minSize, 1);
+	assert.notEqual(reclaimedDock, f.dockNode, "a new node object is returned, not the mutated original");
+
+	// Inactive: dip below the breakpoint, the original node is returned untouched.
+	f.host.terminal.columns = 100;
+	const inactive = f.root[NODE]() as unknown as { entries: { component: unknown }[] };
+	assert.equal(inactive.entries[1]!.component, f.dockComponent, "the real dock component, unwrapped");
+	const inactiveDock = f.dockComponent[NODE]();
+	assert.equal(inactiveDock.entries[inactiveDock.entries.length - 1]!.minSize, 1);
+});
+
 // T3: per-section render memo. Each rail section caches its rendered lines by
 // its own digest, so a section whose digest did not change is never re-run
 // when a sibling section's digest ticks — only the whole rail's assembled

@@ -36,7 +36,7 @@ function sessionPath(toolName: string, input: unknown, cwd: string): string | un
 	const spelling = path.replace(/^@/, "");
 	const canonicalCwd = realpathSync(cwd);
 	const lexicalTarget = isAbsolute(spelling)
-		? resolve(canonicalCwd, relative(resolve(cwd), resolve(spelling)))
+		? resolve(spelling)
 		: resolve(canonicalCwd, spelling);
 	const target = canonicalTarget(lexicalTarget);
 	const repositoryPath = relative(root, target);

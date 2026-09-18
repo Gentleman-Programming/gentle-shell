@@ -139,6 +139,26 @@ test("a nested named child cannot erase its primary parent's recorded path", asy
 	}
 });
 
+test("canonical absolute targets remain inside a repository reached through a nested symlink cwd", async () => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-odd-real-root-")));
+	const aliases = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-odd-cwd-alias-")));
+	try {
+		execFileSync("git", ["init", "--quiet"], { cwd: root });
+		mkdirSync(join(root, "workspace", "nested"), { recursive: true });
+		const linkedRoot = join(aliases, "repository");
+		symlinkSync(root, linkedRoot, "dir");
+		const ctx = context(join(linkedRoot, "workspace", "nested"));
+		const handlers = harness();
+		await handlers.get("before_agent_start")!({ systemPrompt: "primary" }, ctx);
+		await successfulMutation(handlers, ctx, "write", join(root, "workspace", "nested", "first.ts"));
+		const second = await handlers.get("tool_call")!({ toolName: "write", input: { path: join(root, "workspace", "nested", "second.ts") } }, ctx) as { block?: boolean } | undefined;
+		assert.equal(second?.block, true, "canonical absolute targets must not be rebased through the lexical symlink cwd");
+	} finally {
+		rmSync(aliases, { recursive: true, force: true });
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("canonical paths collapse aliases and cannot disguise source as ODD bookkeeping", async (t) => {
 	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-odd-canonical-path-"));
 	try {

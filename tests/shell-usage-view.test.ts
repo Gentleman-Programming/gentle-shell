@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { parseCodexUsage, UsageStore } from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
@@ -60,4 +60,53 @@ test("UsageView refetches on r and closes on escape or q", async () => {
 	view.handleInput("\x1b");
 	view.handleInput("q");
 	assert.equal(events.filter((event) => event === "close").length, 2);
+});
+
+function click(x: number, y: number, width: number, height: number): TuiMouseEvent {
+	return { type: "click", button: "left", x, y, screenX: x, screenY: y, width, height, shift: false, alt: false, ctrl: false };
+}
+
+test("UsageView.handleMouse clicks the footer hints like the matching key", async () => {
+	const store = new UsageStore();
+	const events: string[] = [];
+	let resolveRefresh: (() => void) | undefined;
+	const view = new UsageView(store, {
+		theme: plainTheme,
+		now: () => NOW,
+		active: () => undefined,
+		onRefresh: () =>
+			new Promise<void>((resolve) => {
+				events.push("refresh");
+				resolveRefresh = resolve;
+			}),
+		onClose: () => events.push("close"),
+		requestRender: () => events.push("render"),
+	});
+	const width = 90;
+	const lines = view.render(width);
+	const rowIndex = lines.findIndex((line) => stripAnsi(line).includes("r refresh"));
+	assert.ok(rowIndex > 0, "the footer hints row must be present");
+	const plain = stripAnsi(lines[rowIndex]);
+	const refreshStart = plain.indexOf("r refresh");
+	const closeStart = plain.indexOf("esc close");
+	assert.ok(refreshStart >= 0 && closeStart >= 0);
+
+	// A click outside any hint span is ignored, like a click on an empty part of the frame.
+	assert.equal(view.handleMouse(click(0, rowIndex, width, lines.length)), undefined);
+	assert.deepEqual(events, []);
+
+	// A click on "r refresh" triggers the same refresh as the r key.
+	assert.deepEqual(view.handleMouse(click(refreshStart + 1, rowIndex, width, lines.length)), { handled: true, render: true });
+	assert.deepEqual(events, ["render", "refresh"]);
+
+	// A second click while the refresh is still in flight must not re-enter it.
+	assert.deepEqual(view.handleMouse(click(refreshStart + 1, rowIndex, width, lines.length)), { handled: true, render: true });
+	assert.deepEqual(events, ["render", "refresh"]);
+	resolveRefresh?.();
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.deepEqual(events, ["render", "refresh", "render"]);
+
+	// A click on "esc close" closes the overlay, like the esc/q keys.
+	assert.deepEqual(view.handleMouse(click(closeStart + 1, rowIndex, width, lines.length)), { handled: true, render: true });
+	assert.equal(events.filter((event) => event === "close").length, 1);
 });

@@ -1,4 +1,4 @@
-import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Key, matchesKey, truncateToWidth, visibleWidth, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { renderUsagePanel, type ActiveProvider, type UsageStore, type UsageTheme } from "./shell-usage.ts";
 
 // Gentle Shell subscriptions overlay: a framed panel over the usage store.
@@ -33,10 +33,31 @@ function fit(text: string, width: number): string {
 	return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
 }
 
+// Column offset of the footer's hint text within the rendered line: the
+// frame draws "│ " before the fitted content starts.
+const HINT_CONTENT_OFFSET = 2;
+const HINT_GAP = "   ";
+
+type HintAction = "refresh" | "close";
+
+interface HintSpan {
+	start: number;
+	end: number;
+	action: HintAction;
+}
+
+interface PointerLayout {
+	width: number;
+	height: number;
+	row: number;
+	spans: HintSpan[];
+}
+
 export class UsageView {
 	private readonly store: UsageStore;
 	private readonly deps: UsageViewDeps;
 	private refreshing = false;
+	private pointer: PointerLayout | undefined;
 
 	constructor(store: UsageStore, deps: UsageViewDeps) {
 		this.store = store;
@@ -66,11 +87,56 @@ export class UsageView {
 		const body = renderUsagePanel(this.store.all(), theme, inner - 2, this.deps.now(), this.deps.active()).map(
 			(line) => `${theme.fg(FRAME_ROLE, "│")} ${fit(line, inner - 2)} ${theme.fg(FRAME_ROLE, "│")}`,
 		);
-		const keys = KEYS.map(([key, label]) => `${theme.fg(KEY_ROLE, key)} ${theme.fg(KEY_TEXT_ROLE, label)}`).join("   ");
+		const hints = KEYS.map(([key, label]) => ({ key, label, text: `${key} ${label}` }));
+		const keys = hints.map(({ key, label }) => `${theme.fg(KEY_ROLE, key)} ${theme.fg(KEY_TEXT_ROLE, label)}`).join(HINT_GAP);
 		const keysLine = `${theme.fg(FRAME_ROLE, "│")} ${fit(keys, inner - 2)} ${theme.fg(FRAME_ROLE, "│")}`;
 		const bottom = theme.fg(FRAME_ROLE, `╰${rule(inner)}╯`);
-		return [top, ...body, keysLine, bottom];
+		const lines = [top, ...body, keysLine, bottom];
+		this.pointer = this.hintLayout(width, lines.length, body.length + 1, hints, inner - 2);
+		return lines;
 	}
 
-	invalidate(): void {}
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (event.type !== "click" || event.button !== "left") return undefined;
+		const layout = this.pointer;
+		if (!layout || event.width !== layout.width || event.height !== layout.height || event.y !== layout.row) return undefined;
+		const span = layout.spans.find((candidate) => event.x >= candidate.start && event.x < candidate.end);
+		if (!span) return undefined;
+		if (span.action === "close") {
+			this.deps.onClose();
+			return { handled: true, render: true };
+		}
+		if (!this.refreshing) {
+			this.refreshing = true;
+			this.deps.requestRender();
+			void this.deps.onRefresh().finally(() => {
+				this.refreshing = false;
+				this.deps.requestRender();
+			});
+		}
+		return { handled: true, render: true };
+	}
+
+	invalidate(): void {
+		this.pointer = undefined;
+	}
+
+	// Spans are only registered when the hints text fits without truncation:
+	// past that point `fit` clips it with an ellipsis and per-hint columns no
+	// longer line up with the plain "key label" text used here.
+	private hintLayout(width: number, height: number, row: number, hints: Array<{ text: string }>, contentWidth: number): PointerLayout | undefined {
+		const plainWidth = hints.reduce((total, hint) => total + hint.text.length, 0) + HINT_GAP.length * Math.max(0, hints.length - 1);
+		if (plainWidth > contentWidth) return undefined;
+		const spans: HintSpan[] = [];
+		let cursor = HINT_CONTENT_OFFSET;
+		for (let index = 0; index < KEYS.length; index += 1) {
+			const [key] = KEYS[index]!;
+			const text = hints[index]!.text;
+			const start = cursor;
+			const end = start + text.length;
+			spans.push({ start, end, action: key === "r" ? "refresh" : "close" });
+			cursor = end + HINT_GAP.length;
+		}
+		return { width, height, row, spans };
+	}
 }

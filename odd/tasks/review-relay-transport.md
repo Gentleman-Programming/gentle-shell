@@ -57,7 +57,7 @@ extensions) for hosts that need nothing.
 - [x] RELAY-3 — RED/GREEN: relay forwards `reviewerModel` and
       `reviewerExtensionPaths` to the adapter; typed validation (model id
       pattern, absolute extension paths) before launch.
-- [ ] RELAY-4 — RED/GREEN: the extension resolves the lens model from the
+- [x] RELAY-4 — RED/GREEN: the extension resolves the lens model from the
       routing config and the extension allowlist from the environment, and the
       failure report carries reviewer evidence.
 - [ ] RELAY-5 — Docs (`docs/review-integration.md`) + full suite + typecheck +
@@ -97,3 +97,15 @@ extensions) for hosts that need nothing.
   `--model` / `-e` tokens. `pi-empty-output` now carries the child's own
   evidence, a bounded stderr excerpt, and the two remedies (lens selection,
   GENTLE_PI_REVIEW_RELAY_EXTENSIONS).
+
+- 2026-09-18 RELAY-4: RED (2 failing) then GREEN —
+  `node --experimental-strip-types --test tests/review-relay-transport-agent.test.ts`
+  11 passed, 0 failed; relay + routing + restart-parity + adapter + controller
+  routing: 157 passed, 0 failed. The capture path resolves the lens's
+  reviewer selection from the agent model routing config (agent name
+  `review-<lens>`) and the extension allowlist from
+  GENTLE_PI_REVIEW_RELAY_EXTENSIONS, on both the single-slot and the group
+  capture paths, and the failure report carries the child's own evidence as
+  `failure.reviewer`. One test lesson: the resolution reads the real config
+  home when GENTLE_PI_CONFIG_HOME is unset, so the selection-free test
+  isolates the config home.

@@ -136,6 +136,7 @@ import {
 	reviewHostRelayUnachievableDetail,
 	reviewHostRelayUnachievableReason,
 	reviewProviderRoleVectorSlots,
+	resolveReviewHostRelayExtensionPaths,
 	resolveReviewHostRelaySubmission,
 	runReviewHostRelayReviewerGroup,
 	runReviewHostRelaySlot,
@@ -6588,6 +6589,23 @@ function reviewHostRelayFailureReport(error: ReviewHostRelayError): Record<strin
 		// refusal reason lives (gentle-pi#524); dropping it hid every admission
 		// refusal behind "submission-refused".
 		...(error.stderr.length === 0 ? {} : { stderr: error.stderr }),
+		// gentle-shell#1156: what the reviewer child's own event stream revealed.
+		...(error.reviewerEvidence === undefined ? {} : { reviewer: error.reviewerEvidence }),
+	};
+}
+
+// gentle-shell#1136 / #1158: the only two user-owned launch selections the
+// relay accepts. The lens's model comes from the agent model routing config
+// under the lens's agent name; the extension allowlist comes from the
+// environment. Both are optional, and neither is ever invented here.
+function reviewHostRelayLaunchSelection(lens: string | undefined, config: AgentModelConfig, environment: NodeJS.ProcessEnv): { reviewerModel?: string; reviewerExtensionPaths?: readonly string[] } {
+	const agentName = lens === undefined || lens.length === 0 ? undefined : lens.startsWith("review-") ? lens : `review-${lens}`;
+	const entry = agentName === undefined ? undefined : config[agentName];
+	const model = typeof entry === "object" && entry !== null && typeof (entry as AgentRoutingEntry).model === "string" && (entry as AgentRoutingEntry).model!.length > 0 ? (entry as AgentRoutingEntry).model : undefined;
+	const extensionPaths = resolveReviewHostRelayExtensionPaths(environment);
+	return {
+		...(model === undefined ? {} : { reviewerModel: model }),
+		...(extensionPaths.length === 0 ? {} : { reviewerExtensionPaths: extensionPaths }),
 	};
 }
 
@@ -6699,12 +6717,19 @@ async function executeReviewHostRelayCapture(
 				REVIEW_HOST_RELAY_SUBMISSION_MISSING_MESSAGE,
 			);
 		}
-		const result = await activeReviewHostRelayRunner({
-			captureArgumentTokens: slot.captureArgumentTokens,
-			targetCwd: cwd,
-			submission: slot.submission,
-			...(signal === undefined ? {} : { signal }),
-		});
+		const result = await activeReviewHostRelayRunner((() => {
+			// gentle-shell#1136 / #1158: the lens's user-owned reviewer selection and
+			// the extension allowlist ride the request; the relay validates and
+			// refuses broken configurations typed before anything launches.
+			const launch = reviewHostRelayLaunchSelection(slot.lens, readModelConfig(cwd), process.env);
+			return {
+				captureArgumentTokens: slot.captureArgumentTokens,
+				targetCwd: cwd,
+				submission: slot.submission,
+				...launch,
+				...(signal === undefined ? {} : { signal }),
+			};
+		})());
 		const closure = decodeRelayLastEventClosure(result.submission);
 		if (closure !== undefined) return mapAndClearLastEventClosure(closure, binding, selections, cwd);
 		return {
@@ -7476,6 +7501,7 @@ async function executeReviewCaptureGroupOperation(
 		captureArgumentTokens: slot.captureArgumentTokens,
 		targetCwd: cwd,
 		submission: slot.submission!,
+		...reviewHostRelayLaunchSelection(slot.lens, readModelConfig(cwd), process.env),
 		...(signal === undefined ? {} : { signal }),
 	}));
 	let prepared: readonly ReviewHostRelayPreparedResult[];

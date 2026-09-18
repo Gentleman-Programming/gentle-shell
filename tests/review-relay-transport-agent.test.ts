@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter as pathDelimiter, join } from "node:path";
 import test from "node:test";
 import { __testing } from "../extensions/gentle-ai.ts";
+import { REVIEW_HOST_RELAY_FAILURE, ReviewHostRelayError, type ReviewHostRelayRequest } from "../lib/review-host-relay.ts";
 import { NativeReviewIntegrationError, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
 import type { ReviewCollectInputV3, ReviewStatusV3 } from "../lib/review-integration-v2.ts";
@@ -184,6 +185,90 @@ test("the negotiated status asks for the pi agent so the provider offers its mat
 	const hostRelay = result.host_relay as { transport: string } | undefined;
 	assert.ok(hostRelay !== undefined, "the envelope reports the one relay capture");
 	assert.equal(hostRelay.transport, "pi_host_relay");
+});
+
+// gentle-shell#1136 / #1158: the lens's user-owned reviewer selection (agent
+// model routing config) and the extension allowlist environment ride the relay
+// request; without them the child runs the ambient default with no auth
+// adapters. With neither configured the launch stays selection-free.
+test("capture forwards the lens's user-owned reviewer selection and extension allowlist to the relay request", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const configHome = mkdtempSync(join(tmpdir(), "gentle-pi-relay-config-"));
+	const cwd = repository(t);
+	t.after(() => rmSync(configHome, { recursive: true, force: true }));
+	writeFileSync(join(configHome, "models.json"), JSON.stringify({ "review-reliability": { model: "minimax/MiniMax-M3" } }), "utf8");
+	const adapter = join(configHome, "auth-adapter.ts");
+	const second = join(configHome, "second-adapter.ts");
+	writeFileSync(adapter, "export default () => {};");
+	writeFileSync(second, "export default () => {};");
+	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+	const previousExtensions = process.env.GENTLE_PI_REVIEW_RELAY_EXTENSIONS;
+	process.env.GENTLE_PI_CONFIG_HOME = configHome;
+	process.env.GENTLE_PI_REVIEW_RELAY_EXTENSIONS = [adapter, second].join(pathDelimiter);
+	t.after(() => {
+		if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+		if (previousExtensions === undefined) delete process.env.GENTLE_PI_REVIEW_RELAY_EXTENSIONS;
+		else process.env.GENTLE_PI_REVIEW_RELAY_EXTENSIONS = previousExtensions;
+	});
+	const { native } = transportAwareNative();
+	const relayed: ReviewHostRelayRequest[] = [];
+	__testing.setReviewHostRelayRunnerForTesting(async (request: ReviewHostRelayRequest) => {
+		relayed.push(request);
+		return { promptByteLength: 128, resultByteLength: 64, submission: '{"admission_decision":"completed"}' };
+	});
+
+	await runCapture(cwd, native, "selection-lineage");
+	assert.equal(relayed.length, 1);
+	assert.equal(relayed[0]!.reviewerModel, "minimax/MiniMax-M3", "the lens's routing entry must name the child's selection");
+	assert.deepEqual(relayed[0]!.reviewerExtensionPaths, [adapter, second]);
+});
+
+test("capture keeps the relay launch selection-free when the user configured neither a selection nor extensions", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const configHome = mkdtempSync(join(tmpdir(), "gentle-pi-relay-config-empty-"));
+	const cwd = repository(t);
+	t.after(() => rmSync(configHome, { recursive: true, force: true }));
+	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+	const previousExtensions = process.env.GENTLE_PI_REVIEW_RELAY_EXTENSIONS;
+	process.env.GENTLE_PI_CONFIG_HOME = configHome;
+	delete process.env.GENTLE_PI_REVIEW_RELAY_EXTENSIONS;
+	t.after(() => {
+		if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+		if (previousExtensions === undefined) delete process.env.GENTLE_PI_REVIEW_RELAY_EXTENSIONS;
+		else process.env.GENTLE_PI_REVIEW_RELAY_EXTENSIONS = previousExtensions;
+	});
+	const { native } = transportAwareNative();
+	const relayed: ReviewHostRelayRequest[] = [];
+	__testing.setReviewHostRelayRunnerForTesting(async (request: ReviewHostRelayRequest) => {
+		relayed.push(request);
+		return { promptByteLength: 128, resultByteLength: 64, submission: '{"admission_decision":"completed"}' };
+	});
+
+	await runCapture(cwd, native, "default-lineage");
+	assert.equal(relayed.length, 1);
+	assert.equal(relayed[0]!.reviewerModel, undefined);
+	assert.equal(relayed[0]!.reviewerExtensionPaths, undefined);
+});
+
+test("a relayed empty-output failure carries the child's own evidence in the failure report", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const cwd = repository(t);
+	const { native } = transportAwareNative();
+	__testing.setReviewHostRelayRunnerForTesting(async () => {
+		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_EMPTY_OUTPUT, "pi", "pi subprocess produced no assistant text (stdout kind: no-assistant-text; a tool call was attempted)", {
+			reviewerEvidence: { stdoutKind: "no-assistant-text", reviewerModel: "nan/deepseek-v4-flash", toolCallAttempted: true },
+		});
+	});
+
+	const result = await runCapture(cwd, native, "evidence-lineage");
+	assert.equal(result.outcome, "pi-host-relay-transport-failure");
+	const failure = result.failure as { reviewer?: { stdoutKind?: string; reviewerModel?: string; toolCallAttempted?: boolean } } | undefined;
+	assert.ok(failure !== undefined, "the envelope carries the failure report");
+	assert.equal(failure.reviewer?.stdoutKind, "no-assistant-text");
+	assert.equal(failure.reviewer?.reviewerModel, "nan/deepseek-v4-flash");
+	assert.equal(failure.reviewer?.toolCallAttempted, true);
 });
 
 test("capture forecasts the reviewer model run once and spends nothing until it is acknowledged", async (t) => {

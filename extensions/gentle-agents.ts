@@ -894,6 +894,27 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		return stored?.task;
 	};
 
+	// On resuming (or reloading, or restarting into) an existing session, bring
+	// this exact session's own finished subagents back as visible history --
+	// never another session's. Marked in restoredTaskIds like any other disk
+	// restoration, so it stays non-cancellable (ownedTaskIds never gained the
+	// id either way) and is skipped if the id is somehow already live.
+	const restoreSessionHistory = async (ctx: ExtensionContext, sessionId: string): Promise<void> => {
+		let history: Awaited<ReturnType<typeof loadHistory>>;
+		try {
+			history = await loadHistory(tasksDir);
+		} catch {
+			return;
+		}
+		// The session may have moved on while disk was read; a stale restore
+		// must never land in the wrong session's store.
+		if (ctx.sessionManager.getSessionId() !== sessionId) return;
+		for (const { task, thread } of history) {
+			if (task.parentSessionId !== sessionId) continue;
+			if (store.restore(task, thread)) restoredTaskIds.add(task.id);
+		}
+	};
+
 	const openOverlay = async (ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
 		if (ctx.mode !== "tui") {
@@ -1361,13 +1382,19 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		});
 	}
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		// A resumed, reloaded, or replaced session starts with an empty completion
 		// queue so nothing pending from another session can replay here.
 		completions.dropAll();
 		presence?.dispose();
 		registryFor(ctx);
 		showWidget(ctx);
+		// Only an explicit resume brings this session's own finished subagents
+		// back from disk. Every other reason (a brand-new session, ordinary
+		// startup, reload, fork) restores nothing here, matching the existing
+		// on-demand resolveTask path for anything else.
+		const sessionId = ctx.sessionManager.getSessionId();
+		if (event.reason === "resume" && sessionId) void restoreSessionHistory(ctx, sessionId);
 		try {
 			presence = PresencePublisher.start({ profile: agentHome, sessionId: activeSessionId() ?? "",
 				label: ctx.sessionManager.getSessionName?.() || ctx.sessionManager.getCwd().split(/[\\/]/).pop() || "Orchestrator", activity: [] });

@@ -2330,7 +2330,7 @@ test("AgentsView production footer uses rendered bounds and invalidates them bef
 	}
 });
 
-test("finished tasks remain available through resolveTask but never reappear in the live-only overlay", async () => {
+test("a task that finishes live stays visible as history, in both scopes, and its result also resolves after a restart", async () => {
 	const { pi, tools, fire, commands, shortcuts } = fakePi();
 	const harness = deps();
 	gentleAgents(pi, {}, harness.deps);
@@ -2350,21 +2350,25 @@ test("finished tasks remain available through resolveTask but never reappear in 
 	}
 	assert.ok(stored.some((entry) => entry.task.id === id && entry.task.result === "Kept."), "the finished task is on disk");
 
+	// A completely different session still resolves it by id on demand, with
+	// nothing restored in advance.
 	const fresh = fakePi();
 	gentleAgents(fresh.pi, {}, deps().deps);
 	const again = fakeContext();
 	await fresh.fire("session_start", again.ctx);
 	assert.equal((await fresh.tools.get("subagent_result")!.execute("c2", { task_id: id }, undefined, undefined, again.ctx)).content[0].text, "Kept.");
 
+	// Back in the session where it actually finished, it stays listed as
+	// history -- in the current-session view and under "all sessions" too.
 	assert.ok(commands.has("gentle:agents") && shortcuts.has("alt+a"));
 	const opened = commands.get("gentle:agents")!.handler("", ctx);
 	for (let attempt = 0; attempt < 40 && overlays.length === 0; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 25));
 	const overlay = overlays[0];
 	assert.ok(overlay, "the overlay component was created");
-	assert.doesNotMatch(overlay.render(80).map(stripAnsi).join("\n"), /finished|Subagent explore|Current orchestrator/);
+	assert.match(overlay.render(80).map(stripAnsi).join("\n"), /finished|Subagent explore/, "the task that finished in this session stays visible as history");
 	overlay.handleInput("a");
 	overlay.handleInput("\x1b[C");
-	assert.doesNotMatch(overlay.render(80).map(stripAnsi).join("\n"), /✓ Subagent explore/, "all sessions is not a historical-task browser");
+	assert.match(overlay.render(80).map(stripAnsi).join("\n"), /Subagent explore/, "the current session's own history shows under all sessions too");
 	overlay.handleInput("\x1b");
 	await opened;
 });
@@ -2477,6 +2481,50 @@ test("restored task history cannot enter the live panel or execute stop even wit
 	assert.deepEqual(dialogs, []);
 	overlays[0]!.handleInput("\x1b");
 	await opened;
+});
+
+// A1 (odd/tasks/usage-click-and-changes-attribution.md): resuming a session
+// brings its own finished subagents back as visible history, never another
+// session's, and a brand-new session starts with none restored.
+test("resuming a session restores its own finished tasks as history, never another session's", async () => {
+	const { pi, fire, commands } = fakePi();
+	const harness = deps();
+	const historyHome = join(root, "resume-history-home");
+	const base: TaskRecord = { id: "own-1", agent: "explore-a", mode: "background", prompt: "p", label: "p", cwd, parentSessionId: "resumed-session", status: TASK_STATUS.COMPLETED, createdAt: 1, startedAt: 1, endedAt: 100, model: "m", thinking: undefined, sessionPath: null, error: null, result: "done", lastStep: "responded", lastActivityAt: 100, turns: 1, toolCalls: 0, tokens: 0, cost: 0 };
+	const own1 = base;
+	const own2: TaskRecord = { ...base, id: "own-2", agent: "explore-b", status: TASK_STATUS.FAILED, endedAt: 200, error: "boom", result: null };
+	const other: TaskRecord = { ...base, id: "not-mine", agent: "explore-other", parentSessionId: "other-session" };
+	await saveTask(historyDir(historyHome), own1, emptyThread());
+	await saveTask(historyDir(historyHome), own2, emptyThread());
+	await saveTask(historyDir(historyHome), other, emptyThread());
+	harness.deps.home = historyHome;
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx, overlays } = fakeContext();
+	ctx.sessionManager.getSessionId = () => "resumed-session";
+	await fire("session_start", ctx, { reason: "resume" });
+	await new Promise((resolve) => setTimeout(resolve, 50)); // disk history read is fire-and-forget
+	const opened = commands.get("gentle:agents")!.handler("", ctx);
+	for (let attempt = 0; attempt < 40 && overlays.length === 0; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+	const rendered = stripAnsi(overlays[0]!.render(100).join("\n"));
+	assert.match(rendered, /Subagent explore-a/, "the resumed session's own finished task is restored");
+	assert.match(rendered, /Subagent explore-b/, "a second finished task of the same session is restored too");
+	assert.doesNotMatch(rendered, /explore-other/, "another session's finished task never restores here");
+	overlays[0]!.handleInput("\x1b");
+	await opened;
+	await fire("session_shutdown", ctx);
+
+	const { pi: freshPi, fire: freshFire, commands: freshCommands } = fakePi();
+	gentleAgents(freshPi, {}, harness.deps);
+	const { ctx: freshCtx, overlays: freshOverlays } = fakeContext();
+	freshCtx.sessionManager.getSessionId = () => "brand-new-session";
+	await freshFire("session_start", freshCtx, { reason: "new" });
+	await tick();
+	const freshOpened = freshCommands.get("gentle:agents")!.handler("", freshCtx);
+	for (let attempt = 0; attempt < 40 && freshOverlays.length === 0; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+	assert.doesNotMatch(stripAnsi(freshOverlays[0]!.render(100).join("\n")), /explore/, "a brand-new session restores nothing");
+	freshOverlays[0]!.handleInput("\x1b");
+	await freshOpened;
+	await freshFire("session_shutdown", freshCtx);
 });
 
 test("Alt+S confirms a snapshot of active subagents and suppresses their follow-up delivery", async () => {

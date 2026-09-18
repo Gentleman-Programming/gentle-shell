@@ -357,6 +357,52 @@ test("clicking the header's usage segment opens the usage panel; other header cl
 	}
 });
 
+// H1 (odd/tasks/usage-click-and-changes-attribution.md): every clickable
+// surface paints the same shared hover role. The header usage segment is the
+// first one wired up.
+test("hovering the header's usage segment paints the shared hover role; moving off it clears the paint", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" });
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+
+	const taggedTheme = { ...plainTheme, fg: (color: string, value: string) => `<${color}>${value}</${color}>` };
+	const liveFooterData = { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} };
+	// Wide enough that taggedTheme's literal <role> markers (not real ANSI, so
+	// they count toward visibleWidth) cannot themselves push the usage segment
+	// into a narrower degraded stage or off the line entirely.
+	const width = 400;
+	const tui = { terminal: { rows: 40, columns: width }, requestRender() {} };
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { render(width: number): string[]; dispose(): void };
+	const component = factory(tui, taggedTheme, liveFooterData);
+	try {
+		const header = sidebarState(tui as unknown as TUI).parts.get("header") as SidebarRail;
+		const line = header.render(width).join("");
+		const usageAt = line.indexOf("usage");
+		assert.ok(usageAt >= 0, "the header shows a standing usage segment");
+		assert.doesNotMatch(line, /<warning>usage/, "idle: no hover paint yet");
+
+		const move = (x: number) => header.handleMouse?.({ type: "move", button: "none", x, y: 0, screenX: x, screenY: 0, width, height: 1, shift: false, alt: false, ctrl: false } as TuiMouseEvent);
+		const digestIdle = header.digest?.();
+		const outsideResult = move(0); // over the brand, not the usage segment
+		assert.equal(outsideResult, undefined, "a move outside the segment is not this component's gesture");
+		assert.doesNotMatch(header.render(width).join(""), /<warning>usage/, "still idle: the move landed outside the segment");
+
+		const hit = move(usageAt + 1);
+		assert.equal(hit?.handled, true);
+		assert.equal(hit?.render, true, "entering the segment requests a repaint");
+		assert.notEqual(header.digest?.(), digestIdle, "hovering changes the digest so the fullscreen memo repaints");
+		assert.match(header.render(width).join(""), /<warning>usage/, "hovering paints the shared hover role");
+
+		const leave = move(0);
+		assert.equal(leave?.render, true, "leaving the segment also requests a repaint");
+		assert.doesNotMatch(header.render(width).join(""), /<warning>usage/, "leaving clears the hover paint");
+		assert.equal(header.digest?.(), digestIdle, "the digest returns to its idle value");
+	} finally {
+		component.dispose();
+	}
+});
+
 test("profile reader follows store changes and rejects missing or invalid active markers", (t) => {
 	const root = mkdtempSync(join(tmpdir(), "shell-profile-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));

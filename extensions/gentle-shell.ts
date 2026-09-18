@@ -634,12 +634,27 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// The header row carries everything that ticks every frame (model,
 			// effort, context, cost, usage) plus session identity; it never sees
 			// extension statuses or the working/thinking state.
-			const headerBar = (width: number) => renderShellHeaderBar(buildShellHeaderModel(footerModel()), theme, width, usageShortcutKey);
+			let usageHovered = false;
+			const headerBar = (width: number) => renderShellHeaderBar(buildShellHeaderModel(footerModel()), theme, width, usageShortcutKey, usageHovered);
 			const disposeHeader = sidebarHeader(tui, {
-				digest: () => JSON.stringify(buildShellHeaderModel(footerModel())),
+				digest: () => JSON.stringify([buildShellHeaderModel(footerModel()), usageHovered]),
 				render: (width) => [headerBar(width).text],
-				invalidate() {},
+				invalidate() { usageHovered = false; },
 				handleMouse(event) {
+					if (event.type === "move" && event.button === "none") {
+						// pi-tui's fullscreen dispatch only calls handleMouse on whichever
+						// leaf is under the pointer (lib/shell-sidebar-layout.ts), so this
+						// only ever sees a move while it's already over the header row;
+						// hovering the usage segment then moving to another leaf entirely
+						// (never back over this row) leaves no move here to clear it. Under
+						// tmux/zellij/screen pi-tui sends no move events at all (see
+						// lib/shell-hover.ts), so this simply never activates there.
+						const { usageSpan } = headerBar(event.width);
+						const inside = Boolean(usageSpan && event.x >= usageSpan.start && event.x < usageSpan.end);
+						if (inside === usageHovered) return usageHovered ? { handled: true } : undefined;
+						usageHovered = inside;
+						return { handled: true, render: true };
+					}
 					if (event.type !== "click" || event.button !== "left") return undefined;
 					const { usageSpan } = headerBar(event.width);
 					if (!usageSpan || event.x < usageSpan.start || event.x >= usageSpan.end) return undefined;

@@ -1,5 +1,6 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { measureAgentsViewLayout, type AgentsViewLayout } from "./agents-view-layout.ts";
+import { HOVER_ROLE } from "./shell-hover.ts";
 import { emptyThread, isFinished, TASK_STATUS, type TaskRecord, type TaskStore, type TaskThread, type ThreadItem } from "./agents-protocol.ts";
 import { renderThreadItem, type AgentsThreadTheme } from "./agents-thread-view.ts";
 import { formatElapsed } from "./agents-widget.ts";
@@ -42,7 +43,7 @@ const ROLE = {
 	FRAME: "border",
 	TITLE: "customMessageLabel",
 	SELECTED: "accent",
-	HOVER: "warning",
+	HOVER: HOVER_ROLE,
 	NAME: "text",
 	NAME_IDLE: "muted",
 	META: "dim",

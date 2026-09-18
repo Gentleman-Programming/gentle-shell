@@ -383,6 +383,31 @@ test("renderShellHeaderBar shows every usage window with its gauge and the short
 	assert.equal(text.slice(usageSpan.start, usageSpan.end), "usage 5h ▰▰▱▱▱▱▱▱ 26% · week ▰▱▱▱▱▱▱▱ 12% · alt+u");
 });
 
+// H1 (odd/tasks/usage-click-and-changes-attribution.md): hovering the
+// clickable usage segment paints it in the shared hover role, the same one
+// every other clickable surface uses -- without changing its visible width,
+// so usageSpan still points at the right columns.
+test("renderShellHeaderBar paints the usage segment in the shared hover role when hovered", () => {
+	const header = buildShellHeaderModel(model({ usage: USAGE_TWO_WINDOWS }));
+	// plainTheme proves layout is untouched: same visible width, same span,
+	// under the exact width this segment must degrade at.
+	const idlePlain = renderShellHeaderBar(header, plainTheme, 140, "alt+u");
+	const hoveredPlain = renderShellHeaderBar(header, plainTheme, 140, "alt+u", true);
+	assert.equal(visibleWidth(idlePlain.text), visibleWidth(hoveredPlain.text), "hover never changes layout width");
+	assert.deepEqual(hoveredPlain.usageSpan, idlePlain.usageSpan, "hover never moves the clickable span");
+	assert.equal(idlePlain.text, hoveredPlain.text, "plainTheme cannot distinguish roles, only layout");
+
+	// taggedTheme, at a width generous enough that its literal tag overhead
+	// cannot itself change which degradation stage fits, proves the coloring.
+	// (usageSpan's own offsets are computed from real visibleWidth, which does
+	// not strip taggedTheme's literal <role> markers, so this checks the full
+	// line rather than slicing by that span.)
+	const idle = renderShellHeaderBar(header, taggedTheme, 400, "alt+u").text;
+	const hovered = renderShellHeaderBar(header, taggedTheme, 400, "alt+u", true).text;
+	assert.match(hovered, /<warning>usage 5h ▰▰▱▱▱▱▱▱ 26% · week ▰▱▱▱▱▱▱▱ 12% · alt\+u<\/warning>$/);
+	assert.doesNotMatch(idle, /<warning>usage/, "idle keeps its ordinary per-part roles");
+});
+
 test("renderShellHeaderBar shows 'usage · <shortcut>' with no data, and drops the hint when the shortcut is disabled", () => {
 	const withHint = renderShellHeaderBar(buildShellHeaderModel(model({ usage: undefined })), plainTheme, 140, "alt+u");
 	assert.match(withHint.text, /usage · alt\+u$/);

@@ -3,6 +3,7 @@ import { GAUGE_CELLS, gaugeTone, paintGauge, renderGauge, type GaugeTone } from 
 import { renderUsageBar, selectUsageLimit, type ProviderUsage, type UsageWindow } from "./shell-usage.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { CARD_TONE, cardInnerWidth, renderCard } from "./shell-card.ts";
+import { HOVER_ROLE } from "./shell-hover.ts";
 
 export { gaugeTone, renderGauge, type GaugeTone };
 
@@ -248,12 +249,15 @@ function headerLeftStages(model: ShellHeaderModel, theme: ShellBarTheme): string
 const USAGE_LABEL_ROLE = ROLE.LABEL;
 const USAGE_HINT_ROLE = "dim";
 
-function usageWindowText(window: UsageWindow, theme: ShellBarTheme, withGauge: boolean): string {
+// Hovered skips every per-part role (including the gauge's own fill/empty
+// colors) so the whole segment can carry exactly one outer hover color
+// instead of nesting theme.fg() calls that would each reset the others.
+function usageWindowText(window: UsageWindow, theme: ShellBarTheme, withGauge: boolean, hovered: boolean): string {
 	const percent = `${Math.round(window.usedPercent)}%`;
 	const parts = [
-		...(window.label.length > 0 ? [theme.fg(ROLE.LABEL, window.label)] : []),
-		...(withGauge ? [paintGauge(window.usedPercent, theme)] : []),
-		theme.fg(ROLE.VALUE, percent),
+		...(window.label.length > 0 ? [hovered ? window.label : theme.fg(ROLE.LABEL, window.label)] : []),
+		...(withGauge ? [hovered ? renderGauge(window.usedPercent) : paintGauge(window.usedPercent, theme)] : []),
+		hovered ? percent : theme.fg(ROLE.VALUE, percent),
 	];
 	return parts.join(" ");
 }
@@ -263,15 +267,20 @@ function usageWindowText(window: UsageWindow, theme: ShellBarTheme, withGauge: b
 // text only. A provider with no usage data at all has no windows to shape,
 // so all three collapse to the bare "usage" label plus the shortcut hint.
 type UsageStage = "full" | "text" | "primary";
-function usageSegmentText(windows: UsageWindow[], theme: ShellBarTheme, stage: UsageStage, hint: string | undefined): string {
-	const label = theme.fg(USAGE_LABEL_ROLE, "usage");
+function usageSegmentText(windows: UsageWindow[], theme: ShellBarTheme, stage: UsageStage, hint: string | undefined, hovered: boolean): string {
+	const dot = hovered ? "·" : theme.fg(ROLE.LABEL, "·");
+	const label = hovered ? "usage" : theme.fg(USAGE_LABEL_ROLE, "usage");
 	const shown = stage === "primary" ? windows.slice(0, 1) : windows;
-	const body = shown.map((window) => usageWindowText(window, theme, stage === "full")).join(` ${theme.fg(ROLE.LABEL, "·")} `);
+	const body = shown.map((window) => usageWindowText(window, theme, stage === "full", hovered)).join(` ${dot} `);
 	const head = body.length > 0 ? `${label} ${body}` : label;
-	return hint ? `${head} ${theme.fg(ROLE.LABEL, "·")} ${theme.fg(USAGE_HINT_ROLE, hint)}` : head;
+	const plain = hint ? `${head} ${dot} ${hovered ? hint : theme.fg(USAGE_HINT_ROLE, hint)}` : head;
+	// The whole standing, clickable segment reads in the one shared hover
+	// role while the pointer is over it -- same treatment every other
+	// clickable surface uses, and it never changes this text's visible width.
+	return hovered ? theme.fg(HOVER_ROLE, plain) : plain;
 }
 
-export function renderShellHeaderBar(model: ShellHeaderModel, theme: ShellBarTheme, width: number, usageHint?: string): ShellHeaderResult {
+export function renderShellHeaderBar(model: ShellHeaderModel, theme: ShellBarTheme, width: number, usageHint?: string, usageHovered = false): ShellHeaderResult {
 	const targetWidth = Math.max(0, Math.floor(width));
 	const ctxCost = joinSegments([contextSegment(model.contextPercent, theme), costSegment(model.costTotal, model.subscription, theme)], theme);
 	const windows = model.usage ? (selectUsageLimit(model.usage, model.modelId)?.windows ?? []) : [];
@@ -292,7 +301,7 @@ export function renderShellHeaderBar(model: ShellHeaderModel, theme: ShellBarThe
 		{ leftIndex: leftStages.length - 1, usageStage: undefined },
 	];
 	for (const { leftIndex, usageStage } of attempts) {
-		const usageText = usageStage ? usageSegmentText(windows, theme, usageStage, usageHint) : undefined;
+		const usageText = usageStage ? usageSegmentText(windows, theme, usageStage, usageHint, usageHovered) : undefined;
 		const right = usageText ? joinSegments([ctxCost, usageText], theme) : ctxCost;
 		const left = joinSegments(leftStages[leftIndex]!, theme);
 		if (visibleWidth(left) + RIGHT_PADDING + visibleWidth(right) > targetWidth) continue;

@@ -107,3 +107,14 @@ Delivery budget boundary: branch point `0c844e8f` on main.
 
 ## Next step
 T7 is reverted (known pre-existing reserved-row cosmetic issue restored, no collapse). T8 is shipped (usage segment, shortcut, click) on commit da7417e8. The user should confirm both visually on the live branch — this session has no way to see the actual terminal. Separately, the user asked (live, mid-session) whether the header row could get left/right padding to align with the input/editor below it; that request is not yet actioned — it needs a design decision (how much padding, and against what reference column, given the header spans both the transcript and the rail) and, given this session's two footer-row misses, should ideally get a visual check before landing. If the user still wants T7's reserved-row fix, it needs a way to verify against the real running Pi session before landing again, not just unit tests against a hand-built fixture, since that already produced two confident-but-wrong "passing" states.
+
+## Native review (RDD)
+- Assess over `0c844e8f..HEAD` (`--committed-only`, untracked excluded): risk `high` (process boundary in extensions/gentle-agents.ts), 17 paths, 1463 lines.
+- Consent: granted by the user. Lineage `review-9a28ec4c147ba8e4`, 4 lenses (risk, resilience, readability, reliability).
+- Outcome: **approved**, acknowledged and burned (`gentle-ai.review-acknowledged/v1`). No blocking findings.
+- Advisory WARNINGs (non-blocking, later work): R4-001/R3-002 header click fires `void openUsage(ctx)` without re-entrancy guard or rejection handler (extensions/gentle-shell.ts:642-648); R2-001 `headerActive` carries two meanings in lib/shell-sidebar-layout.ts:204; R2-002 docs/gentle-shell.md:32 header section predates T8 (usage segment missing); R2-003 two layout tests never call `handleMouse`; R3-001 header mouse path proven only by direct call, not via pi-tui dispatch; R3-003 per-section memo means `invalidateSidebar` no longer forces a digest-bearing section to re-render.
+- Reviewed boundary advances to HEAD (`4150867c`).
+
+## Delivery
+Branch is at ~1463 changed lines, above the ~400 delivery budget; strategy `ask-on-risk` → ask the user for chain strategy (`stacked-to-main` | `feature-branch-chain`) or a single PR before opening any PR. Push/PR/merge remain the user's call.
+

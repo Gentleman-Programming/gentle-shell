@@ -1490,7 +1490,11 @@ for (const scenario of ["own", "other-root", "escaped", "sibling", "session-swit
 		ctx.sessionManager.getSessionId = () => sessionId;
 		ctx.sessionManager.getEntries = (() => h.entries) as typeof ctx.sessionManager.getEntries;
 		ctx.sessionManager.getBranch = (() => h.entries) as typeof ctx.sessionManager.getBranch;
+		// The cheap session/ownership guards run before any worktree resolution:
+		// a mutation from a switched-away session must never reach git.
+		let resolutions = 0;
 		d.deps.resolveWorktree = (path, base) => {
+			resolutions++;
 			const absolute = resolve(base, path);
 			const worktree = [cwd, sibling].find((candidate) => containsResolvedPath(candidate, absolute));
 			return worktree ? { root: worktree, commonDir: "/fixture/common" } : undefined;
@@ -1554,7 +1558,11 @@ for (const [scenario, guard] of [
 		ctx.sessionManager.getSessionId = () => sessionId;
 		ctx.sessionManager.getEntries = (() => h.entries) as typeof ctx.sessionManager.getEntries;
 		ctx.sessionManager.getBranch = (() => h.entries) as typeof ctx.sessionManager.getBranch;
+		// The cheap session/ownership guards run before any worktree resolution:
+		// a mutation from a switched-away session must never reach git.
+		let resolutions = 0;
 		d.deps.resolveWorktree = (path, base) => {
+			resolutions++;
 			const absolute = resolve(base, path);
 			const worktree = [cwd, sibling].find((candidate) => containsResolvedPath(candidate, absolute));
 			return worktree ? { root: worktree, commonDir: "/fixture/common" } : undefined;
@@ -1575,9 +1583,11 @@ for (const [scenario, guard] of [
 		await tick();
 		if (scenario === "session-switch") sessionId = "s2";
 		const path = scenario === "escaped" ? "../../outside.ts" : scenario === "sibling" ? join(sibling, "file.ts") : "file.ts";
+		resolutions = 0; // spawn-time registration may resolve; only the mutation matters here
 		d.children[0].emit({ type: "tool_execution_start", toolCallId: "write", toolName: "write", args: { path } });
 		d.children[0].emit({ type: "tool_execution_end", toolCallId: "write", isError: false, result: { content: [] } });
 		await tick();
+		if (scenario === "session-switch") assert.equal(resolutions, 0, "session mismatch is decided before resolving any worktree");
 		if (scenario === "session-switch") sessionId = "s1"; // back to the task's own session to inspect its thread
 		const rendered = await openTaskThread(h.commands, ctx, overlays);
 		assert.match(rendered, new RegExp(`changes not attributed: ${guard}\\b`), `expected the ${guard} guard to explain itself`);

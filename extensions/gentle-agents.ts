@@ -746,12 +746,13 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			}
 		},
 		onSuccessfulMutation: (task, tool) => {
-			// Guard chain and posture are unchanged from before this diagnostic was
-			// added: only owned tasks of the active parent, inside registered
-			// roots, ever relay. This only explains a drop -- it never widens or
-			// narrows what gets attributed.
-			const root = deps.resolveWorktree(tool.path, task.cwd)?.root;
-			const childRoot = deps.resolveWorktree(task.cwd, task.cwd)?.root;
+			// Guard chain and posture are unchanged: only owned tasks of the
+			// active parent, inside registered roots, ever relay. The notes only
+			// explain a drop -- they never widen or narrow what gets attributed.
+			// The cheap session/ownership guards decide before any worktree
+			// resolution, so a foreign or stale mutation never reaches git.
+			let root: string | undefined;
+			let childRoot: string | undefined;
 			const noteDrop = (guard: string) => {
 				const key = `${task.id}:${guard}`;
 				if (droppedAttributionGuards.has(key)) return;
@@ -762,6 +763,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			if (!sessions || !worktrees) return noteDrop("session-inactive");
 			if (task.parentSessionId !== activeSessionId()) return noteDrop("parent-session-mismatch");
 			if (!ownedTaskIds.has(task.id)) return noteDrop("not-owned");
+			root = deps.resolveWorktree(tool.path, task.cwd)?.root;
+			childRoot = deps.resolveWorktree(task.cwd, task.cwd)?.root;
 			if (!root) return noteDrop("root-unresolved");
 			if (root !== childRoot) return noteDrop("root-mismatch");
 			if (!worktrees.roots().includes(root)) return noteDrop("root-not-registered");

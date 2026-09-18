@@ -1171,6 +1171,7 @@ for (const statusSchema of [
 
 test("inspect with untrackedScope exclude resolves the intended-untracked stop in one round trip", async (t) => {
 	const { cwd, initial, target, selection } = untrackedStopFixture(t);
+	const baseRef = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
 	const requests: Array<Record<string, unknown>> = [],
 		retained = new Map();
 	const native = {
@@ -1180,7 +1181,11 @@ test("inspect with untrackedScope exclude resolves the intended-untracked stop i
 		},
 	} as unknown as NativeReviewCli;
 	const result = await __testing.executeReviewControllerOperation(
-		{ operation: "inspect", untrackedScope: "exclude" },
+		{
+			operation: "inspect",
+			input: JSON.stringify({ baseRef: "HEAD", committedOnly: true }),
+			untrackedScope: "exclude",
+		},
 		cwd,
 		native,
 		undefined,
@@ -1191,6 +1196,10 @@ test("inspect with untrackedScope exclude resolves the intended-untracked stop i
 	assert.equal(result.status, "ready");
 	assert.equal("selectionBinding" in result, false);
 	assert.equal(requests.length, 2);
+	for (const request of requests) {
+		assert.equal(request.baseRef, baseRef);
+		assert.equal(request.committedOnly, true);
+	}
 	assert.equal(requests[1]!.untrackedScope, "exclude");
 	assert.equal(requests[1]!.expectedUntrackedInventory, SHA);
 	assert.deepEqual(requests[1]!.intendedUntracked, []);
@@ -1958,6 +1967,56 @@ test("ordinary START transports native focus and safe policy inputs without rebu
 		assert.equal(rejected.mutation_outcome, "none");
 	}
 	assert.equal(statusCalls, 0);
+});
+
+test("INSPECT forwards an explicit committed-only base selector to negotiated STATUS", async (t) => {
+	const cwd = repository(t);
+	const baseRef = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+	const requests: Array<Record<string, unknown>> = [];
+	const native = {
+		targetStatus: async (request: Record<string, unknown>) => {
+			requests.push(request);
+			return startStatus(cwd, baseRef);
+		},
+	} as unknown as NativeReviewCli;
+
+	const result = await __testing.executeReviewControllerOperation(
+		{ operation: "inspect", input: JSON.stringify({ baseRef, committedOnly: true }) },
+		cwd,
+		native,
+	);
+
+	assert.equal(result.status, "ready");
+	assert.deepEqual(
+		requests.map(({ baseRef: selectedBase, committedOnly }) => ({ baseRef: selectedBase, committedOnly })),
+		[{ baseRef, committedOnly: true }],
+	);
+});
+
+test("INSPECT rejects malformed committed-range selectors before negotiated STATUS", async (t) => {
+	const cwd = repository(t);
+	let targetCalls = 0;
+	const native = {
+		targetStatus: async () => {
+			targetCalls += 1;
+			return startStatus(cwd);
+		},
+	} as unknown as NativeReviewCli;
+
+	for (const input of [
+		{ baseRef: "HEAD", committedOnly: false },
+		{ committedOnly: true },
+		{ baseRef: "HEAD", committedOnly: true, mode: "ordinary" },
+	]) {
+		const rejected = await __testing.executeReviewControllerOperation(
+			{ operation: "inspect", input: JSON.stringify(input) },
+			cwd,
+			native,
+		);
+		assert.equal(rejected.outcome, "native-inspect-input-invalid");
+		assert.equal(rejected.mutation_outcome, "none");
+	}
+	assert.equal(targetCalls, 0);
 });
 
 test("ordinary START keeps default and explicit base selection fail-closed before native mutation", async (t) => {

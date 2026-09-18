@@ -5770,6 +5770,19 @@ function nativeStatusInputRejection(reason: string, field?: string): Record<stri
 	};
 }
 
+function nativeInspectInputRejection(reason: string, field?: string): Record<string, unknown> {
+	return {
+		operation: REVIEW_CONTROLLER_OPERATION.INSPECT,
+		status: "blocked",
+		outcome: "native-inspect-input-invalid",
+		reason,
+		...(field === undefined ? {} : { field }),
+		...baseRefRejectionHint(reason),
+		mutation_performed: false,
+		mutation_outcome: "none",
+	};
+}
+
 const PENDING_REVIEW_CONSENT_TTL_MS = 10 * 60 * 1000;
 const REVIEW_SESSION_PERMISSION_STATUS_KEY = "gentle-review-session-permission";
 const REVIEW_SESSION_PERMISSION_STATUS_TEXT = "reviews allowed for this session";
@@ -7585,6 +7598,30 @@ async function executeReviewControllerOperation(
 		parameters.operation === REVIEW_CONTROLLER_OPERATION.INSPECT &&
 		nativeReviewCli !== null
 	) {
+		const rawInspect = parameters.input === undefined
+			? undefined
+			: parseControllerJson(parameters.input, REVIEW_CONTROLLER_OPERATION.INSPECT);
+		const unknownField = rawInspect === undefined
+			? undefined
+			: Object.keys(rawInspect).find((field) => !["baseRef", "committedOnly"].includes(field));
+		if (unknownField !== undefined) return nativeInspectInputRejection("unknown-field", unknownField);
+		const baseRef = rawInspect?.baseRef;
+		if (baseRef !== undefined && !isCanonicalProcessString(baseRef)) return nativeInspectInputRejection("base-ref-invalid");
+		if (baseRef !== undefined && rawInspect?.committedOnly !== true) return nativeInspectInputRejection("committed-only-required");
+		if (rawInspect !== undefined && baseRef === undefined) return nativeInspectInputRejection("committed-only-invalid");
+		let canonicalBaseRef: string | undefined;
+		if (typeof baseRef === "string") {
+			try {
+				canonicalBaseRef = resolveCanonicalCandidateBase(defaultCwd, baseRef).commit;
+			} catch (error) {
+				if (error instanceof CandidateViewError && error.diagnostics !== undefined) return nativeOperationFailure(parameters.operation, Object.assign(error, { candidateViewPreNative: true }));
+				if (error instanceof CandidateViewError && (error.reason === "base-ref-ambiguous" || error.reason === "base-ref-unresolvable" || error.reason === "base-ref-moved")) return nativeInspectInputRejection(error.reason);
+				return nativeInspectInputRejection("base-ref-unresolvable");
+			}
+		}
+		const inspectSelector = canonicalBaseRef === undefined
+			? {}
+			: { baseRef: canonicalBaseRef, committedOnly: true as const };
 		// A new inspect supersedes every pre-lineage selection before its first
 		// STATUS attempt. A failed or changed-candidate inspect cannot leave an
 		// older selection available for a later START.
@@ -7595,6 +7632,7 @@ async function executeReviewControllerOperation(
 					nativeReviewCli,
 					{
 						cwd: defaultCwd,
+						...inspectSelector,
 						...(signal === undefined ? {} : { signal }),
 					},
 					retainedUntrackedSelections,
@@ -7670,6 +7708,7 @@ async function executeReviewControllerOperation(
 					nativeReviewCli,
 					{
 						cwd: defaultCwd,
+						...inspectSelector,
 						untrackedScope: parameters.untrackedScope,
 						expectedUntrackedInventory: inventory,
 						intendedUntracked: selected.intendedUntracked,

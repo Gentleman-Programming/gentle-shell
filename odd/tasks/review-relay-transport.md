@@ -136,3 +136,16 @@ extensions) for hosts that need nothing.
   print path; the relay surfaces that child stderr verbatim now.
   (2) text-mode print swallows a turn spent on a tool call as zero bytes and
   exit 0; JSON mode avoids relying on that path entirely.
+
+- 2026-09-18 post-rebase incident and recovery: a parallel session in this
+  worktree advanced main (2337b328) and checked out `feat/odd-routing-ratchet`
+  here mid-feature, so this feature's five commits landed on that branch.
+  Recovery without touching their work: the two pending type-diagnostic test
+  fixes were committed, the branch pointer `fix/review-relay-transport` was
+  moved to the stacked HEAD, and the five commits were rebased onto current
+  main with `git rebase --onto main 3bc43e85`. Post-rebase verification:
+  `pnpm test` — 2718 tests, 2680 passed, 0 failed, 38 skipped; provider
+  contract mirror check passed; typecheck 197 recorded diagnostics, no
+  regressions. Known residue: `feat/odd-routing-ratchet` still carries the
+  stacked commits above 3bc43e85; restoring its tip (a hard reset to its
+  original commit) is the other session's call and was left untouched.

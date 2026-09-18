@@ -92,9 +92,16 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 	};
 	// The header row: a plain leaf component, one line tall, painted above the
 	// hstack when a "header" part is registered and has something to show.
+	// The header is not inside the rail's ScrollView, so it never goes through
+	// dispatchPartMouse: it is its own leaf in the layout tree (no [NODE]),
+	// and pi-tui's mouse dispatch (tui-alt-screen.js dispatchMouseToLayout)
+	// finds and calls handleMouse on whatever leaf box is under the pointer
+	// directly, without any wiring of our own. Delegate straight to whatever
+	// the registered "header" part declares.
 	const header: Component = {
 		render: () => headerLines,
 		invalidate() {},
+		handleMouse: (event) => state.parts.get("header")?.handleMouse?.(event),
 	};
 	const scroll = new ScrollView(rail, {
 		follow: "none",

@@ -1,6 +1,6 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { GAUGE_CELLS, gaugeTone, paintGauge, renderGauge, type GaugeTone } from "./shell-gauge.ts";
-import { renderUsageBar, type ProviderUsage } from "./shell-usage.ts";
+import { renderUsageBar, selectUsageLimit, type ProviderUsage, type UsageWindow } from "./shell-usage.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { CARD_TONE, cardInnerWidth, renderCard } from "./shell-card.ts";
 
@@ -42,11 +42,26 @@ export interface ShellHeaderModel {
 	contextPercent: number | null;
 	costTotal: number;
 	subscription: boolean;
+	// The active provider's subscription usage, shown as its own segment after
+	// cost. Unlike the sidebar's old per-model usage table, this is one
+	// compact line — the same windows the compact bar already meters.
+	usage: ProviderUsage | undefined;
 }
 
 export function buildShellHeaderModel(model: ShellBarModel): ShellHeaderModel {
-	const { cwd, branch, dirty, modelId, effort, profile, contextPercent, costTotal, subscription } = model;
-	return { cwd, branch, dirty, modelId, effort, profile, contextPercent, costTotal, subscription };
+	const { cwd, branch, dirty, modelId, effort, profile, contextPercent, costTotal, subscription, usage } = model;
+	return { cwd, branch, dirty, modelId, effort, profile, contextPercent, costTotal, subscription, usage };
+}
+
+/** A column span (`[start, end)`, in the rendered line's visible columns) a click must land in to hit the usage segment. */
+export interface HeaderUsageSpan {
+	start: number;
+	end: number;
+}
+
+export interface ShellHeaderResult {
+	text: string;
+	usageSpan?: HeaderUsageSpan;
 }
 
 export interface ShellBarTheme {
@@ -230,17 +245,64 @@ function headerLeftStages(model: ShellHeaderModel, theme: ShellBarTheme): string
 	];
 }
 
-export function renderShellHeaderBar(model: ShellHeaderModel, theme: ShellBarTheme, width: number): string {
+const USAGE_LABEL_ROLE = ROLE.LABEL;
+const USAGE_HINT_ROLE = "dim";
+
+function usageWindowText(window: UsageWindow, theme: ShellBarTheme, withGauge: boolean): string {
+	const percent = `${Math.round(window.usedPercent)}%`;
+	const parts = [
+		...(window.label.length > 0 ? [theme.fg(ROLE.LABEL, window.label)] : []),
+		...(withGauge ? [paintGauge(window.usedPercent, theme)] : []),
+		theme.fg(ROLE.VALUE, percent),
+	];
+	return parts.join(" ");
+}
+
+// Three degrading shapes for the same windows, narrowest last: every window
+// with its gauge, every window as text only, or just the first window as
+// text only. A provider with no usage data at all has no windows to shape,
+// so all three collapse to the bare "usage" label plus the shortcut hint.
+type UsageStage = "full" | "text" | "primary";
+function usageSegmentText(windows: UsageWindow[], theme: ShellBarTheme, stage: UsageStage, hint: string | undefined): string {
+	const label = theme.fg(USAGE_LABEL_ROLE, "usage");
+	const shown = stage === "primary" ? windows.slice(0, 1) : windows;
+	const body = shown.map((window) => usageWindowText(window, theme, stage === "full")).join(` ${theme.fg(ROLE.LABEL, "·")} `);
+	const head = body.length > 0 ? `${label} ${body}` : label;
+	return hint ? `${head} ${theme.fg(ROLE.LABEL, "·")} ${theme.fg(USAGE_HINT_ROLE, hint)}` : head;
+}
+
+export function renderShellHeaderBar(model: ShellHeaderModel, theme: ShellBarTheme, width: number, usageHint?: string): ShellHeaderResult {
 	const targetWidth = Math.max(0, Math.floor(width));
-	const right = joinSegments([contextSegment(model.contextPercent, theme), costSegment(model.costTotal, model.subscription, theme)], theme);
-	for (const segments of headerLeftStages(model, theme)) {
-		const left = joinSegments(segments, theme);
-		if (visibleWidth(left) + RIGHT_PADDING + visibleWidth(right) <= targetWidth) {
-			return left + " ".repeat(targetWidth - visibleWidth(left) - visibleWidth(right)) + right;
-		}
+	const ctxCost = joinSegments([contextSegment(model.contextPercent, theme), costSegment(model.costTotal, model.subscription, theme)], theme);
+	const windows = model.usage ? (selectUsageLimit(model.usage, model.modelId)?.windows ?? []) : [];
+	const leftStages = headerLeftStages(model, theme);
+	const minimalLeft = leftStages.length - 2; // brand + bare model id, before dropping the model too
+	// One flat, ordered cascade — never a per-stage nested search — so the
+	// left group fully degrades (profile → effort → location) before usage
+	// ever gives anything up, and usage fully degrades (gauges → secondary
+	// windows → the whole segment) before ctx/cost is touched: every window
+	// with its gauge, then text-only, then the first window only, then gone.
+	// Unlike the compact bar's usage meter (hidden with no data), this is a
+	// standing, clickable affordance — even with nothing to report it still
+	// reads "usage" plus the shortcut hint, unless disabled, width permitting.
+	const usageStages: Array<UsageStage | undefined> = ["full", "text", "primary", undefined];
+	const attempts: Array<{ leftIndex: number; usageStage: UsageStage | undefined }> = [
+		...leftStages.slice(0, minimalLeft).map((_, leftIndex) => ({ leftIndex, usageStage: "full" as UsageStage })),
+		...usageStages.map((usageStage) => ({ leftIndex: minimalLeft, usageStage })),
+		{ leftIndex: leftStages.length - 1, usageStage: undefined },
+	];
+	for (const { leftIndex, usageStage } of attempts) {
+		const usageText = usageStage ? usageSegmentText(windows, theme, usageStage, usageHint) : undefined;
+		const right = usageText ? joinSegments([ctxCost, usageText], theme) : ctxCost;
+		const left = joinSegments(leftStages[leftIndex]!, theme);
+		if (visibleWidth(left) + RIGHT_PADDING + visibleWidth(right) > targetWidth) continue;
+		const text = left + " ".repeat(targetWidth - visibleWidth(left) - visibleWidth(right)) + right;
+		if (!usageText) return { text };
+		const usageStart = visibleWidth(left) + (targetWidth - visibleWidth(left) - visibleWidth(right)) + visibleWidth(ctxCost) + visibleWidth(` ${SHELL_BAR_SEPARATOR} `);
+		return { text, usageSpan: { start: usageStart, end: usageStart + visibleWidth(usageText) } };
 	}
 	const brand = theme.fg(ROLE.BRAND, theme.bold(HEADER_BRAND));
-	return visibleWidth(brand) <= targetWidth ? brand : "";
+	return { text: visibleWidth(brand) <= targetWidth ? brand : "" };
 }
 
 export function renderShellBar(model: ShellBarModel, theme: ShellBarTheme, width: number): string[] {

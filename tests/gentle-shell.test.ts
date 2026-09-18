@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
-import type { TUI } from "@earendil-works/pi-tui";
-import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, type GentlePromptEditor } from "../extensions/gentle-shell.ts";
+import type { TUI, TuiMouseEvent } from "@earendil-works/pi-tui";
+import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, type GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { CHANGE_STATUS } from "../lib/shell-changes.ts";
 import { sidebarState, type SidebarRail } from "../lib/shell-sidebar.ts";
 import type { ShellBarTheme } from "../lib/shell-bar.ts";
@@ -324,6 +324,34 @@ test("the fullscreen header rail carries a live digest so model, context, and co
 		assert.notEqual(live(), beforeCost, "session cost must change the header digest");
 		assert.match(text(), /\$0\.420/);
 		assert.equal(live(), live(), "an unchanged digest still reuses the prepared header");
+	} finally {
+		component.dispose();
+	}
+});
+
+test("clicking the header's usage segment opens the usage panel; other header clicks are ignored", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" });
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+
+	const liveFooterData = { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} };
+	const tui = { terminal: { rows: 40, columns: 160 }, requestRender() {} };
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { render(width: number): string[]; dispose(): void };
+	const component = factory(tui, plainTheme, liveFooterData);
+	try {
+		const header = sidebarState(tui as unknown as TUI).parts.get("header") as SidebarRail;
+		const line = header.render(160).join("");
+		const usageAt = line.indexOf("usage");
+		assert.ok(usageAt >= 0, "the header shows a standing usage segment");
+
+		const click = (x: number) => header.handleMouse?.({ type: "click", button: "left", x, y: 0, screenX: x, screenY: 0, width: 160, height: 1, shift: false, alt: false, ctrl: false } as TuiMouseEvent);
+		assert.equal(click(0), undefined, "a click on the brand does not open the panel");
+		const hit = click(usageAt + 1);
+		assert.equal(hit?.handled, true);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		assert.match(ui.overlayView!.render(90).join("\n"), /Subscriptions/);
+		ui.closeOverlay?.();
 	} finally {
 		component.dispose();
 	}
@@ -913,6 +941,32 @@ test("gentleShell registers /gentle:usage and opens the subscriptions overlay", 
 	assert.match(plain[1], /✿ openai-codex · pro/);
 	ui.closeOverlay?.();
 	await opened;
+});
+
+test("usageShortcut defaults to alt+u and can be overridden or disabled", () => {
+	assert.equal(usageShortcut({}), "alt+u");
+	assert.equal(usageShortcut({ GENTLE_PI_SHELL_USAGE_KEY: "ctrl+shift+u" }), "ctrl+shift+u");
+	assert.equal(usageShortcut({ GENTLE_PI_SHELL_USAGE_KEY: "off" }), undefined);
+	assert.equal(usageShortcut({ GENTLE_PI_SHELL_USAGE_KEY: "" }), undefined);
+});
+
+test("gentleShell binds the usage shortcut to the same handler as /gentle:usage", async () => {
+	const { pi, handlers, shortcuts } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch().fetchFn, now: () => 1_788_600_000_000 });
+	const { ctx, ui } = fakeContext({ token: JWT });
+	await fire(handlers, "session_start", ctx);
+	const shortcut = shortcuts.get("alt+u");
+	assert.ok(shortcut, "alt+u not registered");
+	const opened = shortcut.handler(ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	const plain = ui.overlayView!.render(90).map(stripAnsi);
+	assert.match(plain[0], /Subscriptions/);
+	ui.closeOverlay?.();
+	await opened;
+
+	const silent = fakePi();
+	gentleShell(silent.pi, { GENTLE_PI_SHELL_USAGE_KEY: "off" });
+	assert.equal(silent.shortcuts.has("alt+u"), false, "the usage shortcut must not register when disabled");
 });
 
 test("gentleShell draws the review preflight message as a Gentle card", () => {

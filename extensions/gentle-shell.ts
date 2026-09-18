@@ -318,6 +318,12 @@ export function changesShortcut(env: NodeJS.ProcessEnv = process.env): string | 
 	return value === "" || value.toLowerCase() === "off" ? undefined : value;
 }
 
+export function usageShortcut(env: NodeJS.ProcessEnv = process.env): string | undefined {
+	const value = env.GENTLE_PI_SHELL_USAGE_KEY?.trim();
+	if (value === undefined) return USAGE_SHORTCUT_DEFAULT;
+	return value === "" || value.toLowerCase() === "off" ? undefined : value;
+}
+
 function positiveMs(value: string | undefined, fallback: number): number {
 	const parsed = Number.parseInt(value ?? "", 10);
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -417,6 +423,7 @@ function showChanges(ctx: ExtensionContext, model: ChangesModel): void {
 }
 
 const USAGE_COMMAND_NAME = "gentle:usage";
+const USAGE_SHORTCUT_DEFAULT = "alt+u";
 const REVIEW_PREFLIGHT_TYPE = "gentle-pi.review-preflight";
 const DEV_BINARY_WIDGET_KEY = "gentle-shell-dev-binary";
 const SHA_PREFIX_LENGTH = 16;
@@ -536,24 +543,32 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		const hint = keyHint("app.tools.expand", options.expanded ? "collapse" : "expand");
 		return cardComponent({ title: "Gentle AI", subtitle: "review preflight", body, tone: CARD_TONE.INFO }, theme, { expanded: options.expanded, hint });
 	});
+	const openUsage = async (ctx: ExtensionContext) => {
+		await refreshUsage(ctx, true);
+		await ctx.ui.custom<null>(
+			(tui, theme, _keybindings, done) =>
+				new UsageView(usage, {
+					theme,
+					now: () => deps.now(),
+					active: () => (ctx.model ? { provider: ctx.model.provider } : undefined),
+					onRefresh: () => refreshUsage(ctx, true),
+					onClose: () => done(null),
+					requestRender: () => tui.requestRender(),
+				}),
+			{ overlay: true, overlayOptions: { width: "70%", minWidth: 60, anchor: "center" } },
+		);
+	};
 	pi.registerCommand(USAGE_COMMAND_NAME, {
 		description: "Show subscription usage windows for the connected providers. Press r to refetch.",
-		handler: async (_args, ctx) => {
-			await refreshUsage(ctx, true);
-			await ctx.ui.custom<null>(
-				(tui, theme, _keybindings, done) =>
-					new UsageView(usage, {
-						theme,
-						now: () => deps.now(),
-						active: () => (ctx.model ? { provider: ctx.model.provider } : undefined),
-						onRefresh: () => refreshUsage(ctx, true),
-						onClose: () => done(null),
-						requestRender: () => tui.requestRender(),
-					}),
-				{ overlay: true, overlayOptions: { width: "70%", minWidth: 60, anchor: "center" } },
-			);
-		},
+		handler: async (_args, ctx) => openUsage(ctx),
 	});
+	const usageShortcutKey = usageShortcut(env);
+	if (usageShortcutKey) {
+		pi.registerShortcut(usageShortcutKey as Parameters<ExtensionAPI["registerShortcut"]>[0], {
+			description: "Show subscription usage windows for the connected providers",
+			handler: async (ctx) => openUsage(ctx),
+		});
+	}
 	let prompt: GentlePromptEditor | undefined;
 	let changes: SessionChanges | undefined;
 	let registry: SessionWorktreeRegistry | undefined;
@@ -617,12 +632,20 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				invalidate() {},
 			});
 			// The header row carries everything that ticks every frame (model,
-			// effort, context, cost) plus session identity; it never sees
+			// effort, context, cost, usage) plus session identity; it never sees
 			// extension statuses or the working/thinking state.
+			const headerBar = (width: number) => renderShellHeaderBar(buildShellHeaderModel(footerModel()), theme, width, usageShortcutKey);
 			const disposeHeader = sidebarHeader(tui, {
 				digest: () => JSON.stringify(buildShellHeaderModel(footerModel())),
-				render: (width) => [renderShellHeaderBar(buildShellHeaderModel(footerModel()), theme, width)],
+				render: (width) => [headerBar(width).text],
 				invalidate() {},
+				handleMouse(event) {
+					if (event.type !== "click" || event.button !== "left") return undefined;
+					const { usageSpan } = headerBar(event.width);
+					if (!usageSpan || event.x < usageSpan.start || event.x >= usageSpan.end) return undefined;
+					void openUsage(ctx);
+					return { handled: true, render: true };
+				},
 			});
 			const uninstall = installSidebar(tui, theme);
 			return { ...part, dispose() { disposeHeader(); uninstall(); part.dispose(); } };

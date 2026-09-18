@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CURSOR_MARKER, ScrollView, VStack, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, ScrollView, VStack, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { getScrollViewsAt, renderLayoutFrame, type LayoutBox } from "@earendil-works/pi-tui/dist/layout.js";
 import { installSidebar, invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import { sidebarHeader, sidebarPart, sidebarState } from "../lib/shell-sidebar.ts";
@@ -658,4 +658,43 @@ test("rail mouse dispatch still maps clicks correctly with the header row above 
 	const hit = scroll.handleMouse({ type: "click", button: "left", x: 2, y: headerY, screenX: 92, screenY: 31 + headerY, width: 50, height: 5, shift: false, alt: false, ctrl: false });
 	assert.equal(hit?.handled, true);
 	assert.equal(clicks, 1);
+});
+
+// T8(c): the header row is a leaf in the layout tree, not inside the rail's
+// ScrollView, so pi-tui's mouse dispatch (tui-alt-screen.js) finds and calls
+// its own handleMouse directly — it never goes through dispatchPartMouse.
+test("the header component's handleMouse delegates to the registered header part", (t) => {
+	const f = fixture();
+	const received: TuiMouseEvent[] = [];
+	let result: { handled: boolean; render?: boolean } | undefined = { handled: true, render: true };
+	sidebarHeader(f.tui, {
+		render: () => ["HEADER"],
+		invalidate() {},
+		handleMouse(event: TuiMouseEvent) {
+			received.push(event);
+			return result;
+		},
+	});
+	t.after(installSidebar(f.tui, theme));
+
+	const node = f.root[NODE]() as unknown as { type: string; entries: { component: Component }[] };
+	assert.equal(node.type, "vstack", "an active header wraps the hstack in a vstack");
+	const header = node.entries[0]!.component as { handleMouse(event: TuiMouseEvent): { handled: boolean; render?: boolean } | undefined };
+
+	const event = { type: "click", button: "left", x: 5, y: 0, screenX: 5, screenY: 0, width: 140, height: 1, shift: false, alt: false, ctrl: false } as TuiMouseEvent;
+	assert.deepEqual(header.handleMouse(event), { handled: true, render: true });
+	assert.equal(received.length, 1);
+	assert.equal(received[0], event, "the event reaches the registered part unmodified");
+
+	result = undefined;
+	assert.equal(header.handleMouse(event), undefined, "an ignored click returns undefined, same as any other component");
+});
+
+test("the header component's handleMouse is a harmless no-op when no header part is registered", (t) => {
+	const f = fixture();
+	t.after(installSidebar(f.tui, theme));
+	const node = f.root[NODE]() as unknown as { type: string; entries?: { component: Component }[] };
+	// No header registered: the active node stays the plain hstack (T2's
+	// backward-compatible fallback), so there is no header leaf to click at all.
+	assert.equal(node.type, "hstack");
 });

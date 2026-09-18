@@ -55,6 +55,7 @@ Gentle-shell issue #1091 reports `candidate-target-projection-drift` when review
 - Strict TDD RED confirmed the controller dropped the explicit inspect selector and accepted malformed selector input.
 - Minimal implementation and focused GREEN complete.
 - Independent verification passed every acceptance criterion. A low test-coverage note was closed by asserting symbolic `HEAD` canonicalization and selector retention across both intended-untracked STATUS reads.
+- Work-unit commit: `19932eacd8612cda070d23c73e452cc8a4b80791` (`fix(review): align inspect committed range`).
 - Engram mirror pending: the active Pi session is bound to the `gentle-ai` Engram project and refused a cross-project write.
 
 ## Checks
@@ -71,4 +72,4 @@ Gentle-shell issue #1091 reports `candidate-target-projection-drift` when review
 
 ## Next Step
 
-Await a user decision on commit/push/PR. The Engram mirror remains pending because this session is bound to another project.
+Run the authorized native review over the committed work unit, then push and open the authorized PR. The Engram mirror remains pending because this session is bound to another project.

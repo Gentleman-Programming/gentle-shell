@@ -438,9 +438,10 @@ function readValidLines(file: string): StoreEntry[] {
  * One-time migration from the v1 stores into the v2 global seed:
  * - `~/.pi/agent/editor-history.jsonl` (v1 single-file store)
  * - `~/.pi/agent/editor-history.json` (pre-v1 array, newest-first)
- * Content lands in `pi-history/history-global.jsonl` chronologically; each
- * source is renamed `.imported`, never deleted. Gated: an existing global
- * seed means migration already ran.
+ * Content lands in `pi-history/history-global.jsonl` chronologically; only
+ * after the seed write succeeds is each source renamed `.imported`, never
+ * deleted — a failed write leaves sources untouched for a later retry.
+ * Gated: an existing global seed means migration already ran.
  */
 export function migrateLegacyStores(
   root: string,
@@ -455,15 +456,8 @@ export function migrateLegacyStores(
   const legacyArray = path.join(agentDir, "editor-history.json");
   if (fs.existsSync(legacyArray)) {
     const texts = loadSharedHistory(legacyArray);
-    if (texts.length > 0) {
-      for (let i = texts.length - 1; i >= 0; i--) {
-        collected.push({ v: 1, text: texts[i] });
-      }
-    }
-    try {
-      fs.renameSync(legacyArray, `${legacyArray}.imported`);
-    } catch {
-      // The seed write below is the source of truth; rename failure is benign.
+    for (let i = texts.length - 1; i >= 0; i--) {
+      collected.push({ v: 1, text: texts[i] });
     }
   }
 
@@ -471,11 +465,6 @@ export function migrateLegacyStores(
   const v1File = path.join(agentDir, "editor-history.jsonl");
   if (fs.existsSync(v1File)) {
     collected.push(...readValidLines(v1File));
-    try {
-      fs.renameSync(v1File, `${v1File}.imported`);
-    } catch {
-      // benign
-    }
   }
 
   if (collected.length === 0) return { migrated: 0, ran: false };
@@ -488,6 +477,16 @@ export function migrateLegacyStores(
     "utf8",
   );
   fs.renameSync(tmp, seed);
+
+  // The seed write is the source of truth: rename sources only once it
+  // succeeded, so a failure can never strand entries in .imported files.
+  for (const src of [legacyArray, v1File]) {
+    try {
+      if (fs.existsSync(src)) fs.renameSync(src, `${src}.imported`);
+    } catch {
+      // benign: the seed gate prevents duplicate import on the next run
+    }
+  }
   return { migrated: collected.length, ran: true };
 }
 

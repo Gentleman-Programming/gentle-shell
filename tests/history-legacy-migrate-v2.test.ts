@@ -118,6 +118,46 @@ const sealedLegacyTest = (name: string, fn: () => void) =>
     { skip: process.getuid?.() === 0 ? "requires non-root" : false },
     fn,
   );
+
+// chmod-based failure injection is also invisible to the superuser.
+const seedFailureTest = (name: string, fn: () => void) =>
+  test(
+    name,
+    { skip: process.getuid?.() === 0 ? "requires non-root" : false },
+    fn,
+  );
+
+seedFailureTest(
+  "a failed seed write leaves legacy sources untouched for retry",
+  () => {
+    const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "migrate-fail-"));
+    const v1 = path.join(agentDir, "editor-history.jsonl");
+    fs.writeFileSync(
+      v1,
+      `${JSON.stringify({ v: 1, text: "survives-retry" })}\n`,
+      "utf8",
+    );
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "migrate-fail-root-"));
+    // A read-only store root makes the seed write fail AFTER the sources
+    // have been read but BEFORE any rename.
+    fs.chmodSync(root, 0o555);
+    try {
+      assert.throws(() => migrateLegacyStores(root, agentDir));
+      // The source was NOT renamed: the retry path is intact.
+      assert.equal(fs.existsSync(v1), true);
+      assert.equal(fs.existsSync(`${v1}.imported`), false);
+      assert.equal(fs.existsSync(globalSeedPath(root)), false);
+    } finally {
+      fs.chmodSync(root, 0o755);
+    }
+    // Retry after the failure clears: full migration, then rename.
+    const result = migrateLegacyStores(root, agentDir);
+    assert.deepEqual(result, { migrated: 1, ran: true });
+    assert.equal(fs.existsSync(`${v1}.imported`), true);
+    assert.deepEqual(fileTexts(globalSeedPath(root)), ["survives-retry"]);
+  },
+);
+
 sealedLegacyTest(
   "an unreadable legacy file is skipped; the readable file still migrates",
   () => {

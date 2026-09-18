@@ -82,3 +82,24 @@ test("in-UI hint describes multi-word AND substring matching, not fuzzy", () => 
     "hint should describe multi-word AND substring filtering (AC-P1-6.1)",
   );
 });
+
+test("writer init is scheduled off the first-prompt path via setImmediate", () => {
+  const entry = source.indexOf("export default function promptHistoryExtension");
+  assert.notStrictEqual(entry, -1, "extension entry point should exist");
+
+  const body = source.slice(entry);
+  assert.ok(
+    body.includes("setImmediate(() => {"),
+    "init must be scheduled with setImmediate so bootstrap never runs on\nthe first-prompt path",
+  );
+  assert.ok(
+    /setImmediate\(\(\) => \{[\s\S]*?getWriter\(\);/.test(body),
+    "the scheduled callback should warm getWriter()",
+  );
+  // The synchronous fallback stays: a prompt arriving before the
+  // scheduled call still initializes lazily inside the capture handler.
+  assert.ok(
+    /before_agent_start[\s\S]*?appendSessionCapture\(getWriter\(\)/.test(body),
+    "capture handler keeps the synchronous getWriter() fallback",
+  );
+});

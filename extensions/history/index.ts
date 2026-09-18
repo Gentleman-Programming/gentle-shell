@@ -933,6 +933,18 @@ function recordsFromEntries(
 
 export default function promptHistoryExtension(pi: ExtensionAPI) {
   // One writer per extension load; see getWriter() for the init order.
+  // Warm migrate/registry/seed OFF the first-prompt path: the scheduled
+  // init runs once, immediately after load. A prompt arriving earlier
+  // falls back to the synchronous lazy init in getWriter(), whose
+  // writerState guard makes whichever runs second a no-op — bootstrap
+  // work is never duplicated.
+  setImmediate(() => {
+    try {
+      getWriter();
+    } catch {
+      // init is best-effort; the lazy path retries on the next prompt
+    }
+  });
 
   // Persist every delivered user prompt (write-through, append-only JSONL).
   // The local ExtensionAPI stub types handler args as unknown; narrow here.

@@ -43,6 +43,13 @@ test("widgetExpiryMs says how long until the next finished row leaves the card",
 	assert.equal(widgetExpiryMs([], 100_000), undefined);
 });
 
+test("renderAgentsCard paints the quiet-state INFO card with the rose frame (border) and title (accent)", () => {
+	const taggedTheme = { fg: (color: string, text: string) => `<${color}>${text}</${color}>` };
+	const lines = renderAgentsCard([task({ status: TASK_STATUS.RUNNING })], taggedTheme, 60, 5000, { collapsed: false });
+	assert.match(lines[0]!, /^<border>╭<\/border>/);
+	assert.match(lines[0]!, /<accent>❀ Agents<\/accent>/);
+});
+
 test("renderAgentsCard draws columns for agent, task, and model · tokens · cost · time, with the batch time in the rule", () => {
 	const tasks = [
 		task({ id: "a", status: TASK_STATUS.COMPLETED, startedAt: 1000, endedAt: 26_000 }),

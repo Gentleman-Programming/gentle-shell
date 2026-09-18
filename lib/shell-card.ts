@@ -9,10 +9,6 @@ export const CARD_TONE = {
 	SUCCESS: "success",
 	WARNING: "warning",
 	ERROR: "error",
-	// Rose frame palette for sidebar cards: the frame reads as a plain panel
-	// (the theme's border role) while the title still carries the accent, so
-	// the rail's cards stop shouting champagne next to the header's brand.
-	PANEL: "panel",
 } as const;
 
 export type CardTone = (typeof CARD_TONE)[keyof typeof CARD_TONE];
@@ -36,22 +32,21 @@ export interface CardRenderOptions {
 }
 
 export const CARD_GLYPH = "✿";
-// Frame and title paint with the same role for every tone except PANEL,
-// which keeps the rounded frame in the theme's plain border role while the
-// title still reads in the accent role.
+// Frame and title paint with the same role for every tone except INFO, whose
+// rounded frame stays in the theme's plain border role while its title
+// carries the accent role — the rose look every informational card (sidebar,
+// review preflight, a quiet Agents widget, ...) uses.
 const FRAME_ROLE: Record<CardTone, string> = {
-	[CARD_TONE.INFO]: "customMessageLabel",
+	[CARD_TONE.INFO]: "border",
 	[CARD_TONE.SUCCESS]: "success",
 	[CARD_TONE.WARNING]: "warning",
 	[CARD_TONE.ERROR]: "error",
-	[CARD_TONE.PANEL]: "border",
 };
 const TITLE_ROLE: Record<CardTone, string> = {
-	[CARD_TONE.INFO]: "customMessageLabel",
+	[CARD_TONE.INFO]: "accent",
 	[CARD_TONE.SUCCESS]: "success",
 	[CARD_TONE.WARNING]: "warning",
 	[CARD_TONE.ERROR]: "error",
-	[CARD_TONE.PANEL]: "accent",
 };
 const HINT_ROLE = "dim";
 const SUBTITLE_ROLE = "muted";

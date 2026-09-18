@@ -933,6 +933,17 @@ test("gentleShell draws the review preflight message as a Gentle card", () => {
 	assert.equal(collapsed.length, 3);
 });
 
+test("the review preflight card paints the rose INFO frame (border) and title (accent)", () => {
+	const { pi } = fakePi();
+	gentleShell(pi, {});
+	const renderer = renderers.get("gentle-pi.review-preflight")!;
+	const taggedTheme = { ...plainTheme, fg: (color: string, text: string) => `<${color}>${text}</${color}>` };
+	const message = { customType: "gentle-pi.review-preflight", content: "Receipt-driven development is enabled." };
+	const lines = renderer(message, { expanded: true }, taggedTheme).render(60);
+	assert.match(lines[0]!, /^<border>╭<\/border>/);
+	assert.match(lines[0]!, /<accent>✿ Gentle AI<\/accent>/);
+});
+
 test("gentleShell keeps a dev-binary override visible above the editor for the whole session", async () => {
 	const { pi, handlers } = fakePi();
 	const deps = { fetch: fakeFetch({}, false).fetchFn, now: () => 0, devBinary: () => ({ state: "active" as const, path: "/Users/me/go/bin/gentle-ai", sha256: "6e53bfc6305a3949deadbeef" }) };

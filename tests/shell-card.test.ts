@@ -54,10 +54,12 @@ test("renderCard collapses to the frame and the first body line with an expand h
 });
 
 test("renderCard uses the card tone across the full frame while preserving content roles", () => {
+	// INFO paints the rose frame: the rounded border in the plain border role,
+	// the title in accent — the same look every sidebar card already used.
 	const info = renderCard(card(), taggedTheme, 80, { expanded: true });
-	assert.match(info[0], /^<customMessageLabel>╭<\/customMessageLabel><customMessageLabel>─ <\/customMessageLabel><customMessageLabel>✿ Gentle AI<\/customMessageLabel> <muted>·<\/muted> <muted>review preflight<\/muted><customMessageLabel> ─+<\/customMessageLabel><customMessageLabel>╮<\/customMessageLabel>$/);
-	assert.match(info[1], /^<customMessageLabel>│<\/customMessageLabel> <text>.*<customMessageLabel>│<\/customMessageLabel>$/);
-	assert.match(info[info.length - 1], /^<customMessageLabel>╰<\/customMessageLabel><customMessageLabel>─+╯<\/customMessageLabel>$/);
+	assert.match(info[0], /^<border>╭<\/border><border>─ <\/border><accent>✿ Gentle AI<\/accent> <muted>·<\/muted> <muted>review preflight<\/muted><border> ─+<\/border><border>╮<\/border>$/);
+	assert.match(info[1], /^<border>│<\/border> <text>.*<border>│<\/border>$/);
+	assert.match(info[info.length - 1], /^<border>╰<\/border><border>─+╯<\/border>$/);
 
 	const warning = renderCard(card({ tone: CARD_TONE.WARNING, subtitle: undefined }), taggedTheme, 80, { expanded: true });
 	assert.match(warning[0], /^<warning>╭<\/warning>/);
@@ -70,13 +72,6 @@ test("renderCard uses the card tone across the full frame while preserving conte
 	assert.match(error[1], /^<error>│<\/error> <text>.*<error>│<\/error>$/);
 	assert.match(error[error.length - 1], /^<error>╰<\/error><error>─+╯<\/error>$/);
 	assert.equal(CARD_TONE.SUCCESS, "success");
-});
-
-test("renderCard paints the panel tone frame with border and the title with accent", () => {
-	const lines = renderCard(card({ tone: CARD_TONE.PANEL, subtitle: undefined }), taggedTheme, 60, { expanded: true });
-	assert.match(lines[0], /^<border>╭<\/border><border>─ <\/border><accent>✿ Gentle AI<\/accent><border> ─+<\/border><border>╮<\/border>$/);
-	assert.match(lines[1], /^<border>│<\/border> <text>.*<border>│<\/border>$/);
-	assert.match(lines[lines.length - 1], /^<border>╰<\/border><border>─+╯<\/border>$/);
 });
 
 test("renderCard places a hint at the right end of the top rule without background fill", () => {

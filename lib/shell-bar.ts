@@ -206,7 +206,7 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 		label(group.title),
 		...group.lines.flatMap((line) => wrapTextWithAnsi(line, innerWidth - inset).map((part) => " ".repeat(inset) + part)),
 	]);
-	return renderCard({ title: "Status", body, tone: CARD_TONE.PANEL }, theme, width, { expanded: true });
+	return renderCard({ title: "Status", body, tone: CARD_TONE.INFO }, theme, width, { expanded: true });
 }
 
 const HEADER_BRAND = "✿ Gentle Shell";

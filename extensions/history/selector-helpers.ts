@@ -215,6 +215,46 @@ export function loadedCountForTarget(
   return next;
 }
 
+/**
+ * Delete backfill (spec C4's two steps verbatim, AC-L4-1..3): decrement the
+ * window against the splice-shrunk snapshot; while unloaded rows remain,
+ * backfill one row (clamped) so the next unloaded record slides into the
+ * deleted slot and the visible list length stays stable; at exhaustion the
+ * decrement is the genuine shrink. Written stepwise — NOT the algebraic
+ * min(L, T') shortcut — so the unit tests pin the contract, not an
+ * equivalence. Callers guarantee the deleted row sits inside the loaded
+ * prefix (idx < loadedCount by construction).
+ */
+export function loadedCountAfterDelete(
+  loadedCount: number,
+  totalCountAfterSplice: number,
+): number {
+  const decrement = loadedCount - 1;
+  if (decrement < totalCountAfterSplice) {
+    return Math.min(decrement + 1, totalCountAfterSplice);
+  }
+  return decrement;
+}
+
+/**
+ * Pure delete-flow planner (spec C4, design §F): maps a record's provenance
+ * to the two delete actions. "editor" deletes from the editor store on disk
+ * AND writes the tombstone (twin suppression — the session copy of the same
+ * text would otherwise resurface next open); "session" writes the tombstone
+ * only (session transcripts are NEVER written). Takes source as a plain
+ * parameter (no member reads — the T23 provenance pin keeps overlay
+ * consumers source-agnostic outside deleteCurrent); the only consumer is
+ * deleteCurrent in history/index.ts.
+ */
+export function deletionActionsFor(
+  source: PromptSource,
+): { deleteFromEditorStore: boolean; writeTombstone: boolean } {
+  if (source === "editor") {
+    return { deleteFromEditorStore: true, writeTombstone: true };
+  }
+  return { deleteFromEditorStore: false, writeTombstone: true };
+}
+
 export function getVisiblePromptRecords(
   records: PromptRecord[],
   selectedIndex: number,

@@ -10,8 +10,7 @@ import { fileURLToPath } from "node:url";
  * PromptHistorySelector is private to extensions/history/index.ts and needs
  * the pi-tui runtime (Container, Input, TUI, Theme), so these tests read the
  * source file and pin the normative §B2 shape instead of importing it:
- * exactly 11 explicit entries in a fixed order (the ctrl+shift+backspace
- * delete entry joins with deletion in slice 5), then the implicit
+ * exactly 12 explicit entries in a fixed order, then the implicit
  * forwardToSearch fallthrough inside handleInput.
  */
 
@@ -34,6 +33,7 @@ const EXPECTED_MATCHERS = [
   'kb.matches(_d, "tui.select.cancel")',
   'matchesKey(d, "home")',
   'matchesKey(d, "end")',
+  'matchesKey(d, "ctrl+shift+backspace")',
   'matchesKey(d, "ctrl+shift+up")',
   'matchesKey(d, "ctrl+shift+down")',
 ];
@@ -49,6 +49,7 @@ const EXPECTED_HANDLERS = [
   "this.onCancel()",
   "this.jumpToFirst()",
   "this.jumpToLast()",
+  "this.deleteCurrent()",
   "this.previewPageUp()",
   "this.previewPageDown()",
 ];
@@ -84,13 +85,13 @@ function methodBody(name: string): string {
 }
 
 describe("dispatch table (source-parsed, §B2)", () => {
-  it("has exactly 11 explicit match: entries (AC-P2-4.1)", () => {
+  it("has exactly 12 explicit match: entries (AC-P2-4.1)", () => {
     const table = dispatchTable();
     const matchCount = table.split("match:").length - 1;
     assert.strictEqual(
       matchCount,
-      11,
-      `expected 11 explicit entries, found ${matchCount}`,
+      12,
+      `expected 12 explicit entries, found ${matchCount}`,
     );
   });
 

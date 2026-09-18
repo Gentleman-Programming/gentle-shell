@@ -4,8 +4,8 @@
 // Prompt-history extension entry (slice 3): the selector TUI, overlay glue,
 // and the shortcut/command wiring over the slice-1 writer, slice-2 drains,
 // and slice-4 init sequence (legacy migration + seed bootstrap run once
-// inside getWriter). Deletion (slice 5) and GC/compaction (slice 6) arrive
-// in later slices.
+// inside getWriter). Deletion (slice 5) is wired here; GC/compaction
+// (slice 6) arrives in a later slice.
 
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -18,6 +18,8 @@ import {
 import {
   appendSessionCapture,
   bootstrapProjectSeed,
+  deleteFromGlobal,
+  deleteFromProject,
   drainGlobal,
   drainProject,
   ensureRegistryEntry,
@@ -26,15 +28,18 @@ import {
   type SessionWriterState,
 } from "./store.ts";
 import { randomUUID } from "node:crypto";
+import { hidePrompt } from "./hide-prompts.ts";
 import {
   buildPromptRecords,
   filterPrompts,
   type PromptEntry,
   clampPreviewOffset,
   clampSelectedIndex,
+  deletionActionsFor,
   dedupePromptEntries,
   getVisiblePromptRecords,
   initialLoadedCount,
+  loadedCountAfterDelete,
   loadedCountForQuery,
   loadedCountForTarget,
   moveSelectedIndex,
@@ -293,6 +298,10 @@ class PromptHistorySelector extends Container implements Focusable {
       handler: () => this.jumpToLast(),
     },
     {
+      match: (d, _kb) => matchesKey(d, "ctrl+shift+backspace"),
+      handler: () => this.deleteCurrent(),
+    },
+    {
       match: (d, _kb) => matchesKey(d, "ctrl+shift+up"),
       handler: () => this.previewPageUp(),
     },
@@ -364,7 +373,7 @@ class PromptHistorySelector extends Container implements Focusable {
       new FixedRowText(
         theme.fg(
           "dim",
-          "↑↓ move • PgUp/PgDn page • tab scope • enter select and quit • ctrl+shift+↑/↓ preview • esc cancel",
+          "↑↓ move • PgUp/PgDn page • tab scope • enter select and quit • ctrl+shift+↑/↓ preview • ctrl+shift+backspace delete • esc cancel",
         ),
         true /* centered */,
       ),
@@ -544,6 +553,54 @@ class PromptHistorySelector extends Container implements Focusable {
     const entries = drainForScope(this.scope);
     this.records = recordsFromEntries(entries);
     this.loadedCount = initialLoadedCount(this.records.length, INITIAL_BATCH);
+    this.applyFilter(this.searchInput.getValue());
+  }
+
+  /** Delete the currently selected prompt from disk and refresh the list. */
+  private deleteCurrent(): void {
+    const selected = this.filteredRecords[this.selectedIndex];
+    if (!selected) return;
+
+    // C4 delete flows (design §F): the record's provenance decides the
+    // actions via the pure planner; module constants are used directly.
+    const actions = deletionActionsFor(selected.source ?? "editor");
+
+    if (actions.deleteFromEditorStore) {
+      // Store path: physically remove EVERY copy from the JSONL store
+      // (memory + file in one atomic rewrite).
+      const { removed } =
+        this.scope === "global"
+          ? deleteFromGlobal(PI_HISTORY_ROOT, selected.text)
+          : deleteFromProject(PI_HISTORY_ROOT, CURRENT_CWD, selected.text);
+      if (removed === 0) return;
+    }
+
+    // Tombstone ALWAYS: the session transcripts are immutable and would
+    // re-supply the deleted prompt on the next merge (hide-file suppresses
+    // the twin). Only the session path aborts on a hide error — the store
+    // row is already gone on the editor path, so the splice proceeds.
+    const hide = hidePrompt(PI_HISTORY_NAV_STATE_DIR, selected.text);
+    if (hide.status === "error") {
+      this.onNotify?.(hide.message, "error");
+      if (!actions.deleteFromEditorStore) {
+        return;
+      }
+    }
+    // Remove from the master records array so a subsequent filter doesn't
+    // bring it back.
+    const idx = this.records.indexOf(selected);
+    if (idx !== -1) {
+      this.records.splice(idx, 1);
+      // C4 delete backfill (design §B3): shrink the window with the splice,
+      // then pull the next unloaded row while any remain — genuine shrink
+      // only at exhaustion.
+      this.loadedCount = loadedCountAfterDelete(
+        this.loadedCount,
+        this.records.length,
+      );
+    }
+
+    // Re-apply current filter (rebuilds filteredRecords, list, preview).
     this.applyFilter(this.searchInput.getValue());
   }
 

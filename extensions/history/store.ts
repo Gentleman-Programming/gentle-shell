@@ -193,8 +193,8 @@ export function parseStoreLine(raw: string): StoreEntry | null {
 }
 
 // ===========================================================================
-// Instance writer (formerly multi-store.ts; scope deletes and GC arrive
-// in later slices)
+// Instance writer (formerly multi-store.ts; GC/compaction arrives in a
+// later slice)
 // ===========================================================================
 
 /** Mutable state of ONE pi instance's exclusive capture file. */
@@ -409,6 +409,87 @@ export function drainGlobal(
     limit,
     stateDir ? loadHiddenPrompts(stateDir) : new Set<string>(),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Scope delete (design v2)
+// ---------------------------------------------------------------------------
+
+interface SweepResult {
+  filesAffected: number;
+  removed: number;
+}
+
+/**
+ * Remove every line whose prompt identity matches `text` from each file in
+ * `files`, one atomic rewrite (tmp + rename) per affected file. Files whose
+ * every line matched are kept as empty files (never removed — the instance
+ * owning a session file may still append to it).
+ */
+function sweepFiles(files: string[], text: string): SweepResult {
+  const key = promptKey(text);
+  let filesAffected = 0;
+  let removed = 0;
+  for (const file of files) {
+    let raw = "";
+    try {
+      raw = fs.readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    const kept: string[] = [];
+    let fileRemoved = 0;
+    for (const lineText of raw.split("\n")) {
+      const parsed = parseStoreLine(lineText);
+      if (!parsed) continue;
+      if (promptKey(parsed.text) === key) {
+        fileRemoved += 1;
+      } else {
+        kept.push(JSON.stringify(parsed));
+      }
+    }
+    if (fileRemoved === 0) continue;
+    const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+    fs.writeFileSync(tmp, kept.length > 0 ? kept.join("\n") + "\n" : "", "utf8");
+    fs.renameSync(tmp, file);
+    filesAffected += 1;
+    removed += fileRemoved;
+  }
+  return { filesAffected, removed };
+}
+
+/** Delete every copy of a prompt from the CURRENT project's scope. */
+export function deleteFromProject(
+  root: string,
+  cwd: string,
+  text: string,
+): SweepResult {
+  return sweepFiles(
+    listProjectFiles(path.join(root, "projects", projectHash(cwd))),
+    text,
+  );
+}
+
+/** Delete every copy of a prompt from the GLOBAL scope (all projects + seed). */
+export function deleteFromGlobal(root: string, text: string): SweepResult {
+  const files: string[] = [];
+  const globalSeed = globalSeedPath(root);
+  if (fs.existsSync(globalSeed)) files.push(globalSeed);
+  let projectDirs: fs.Dirent[];
+  try {
+    projectDirs = fs.readdirSync(path.join(root, "projects"), {
+      withFileTypes: true,
+    });
+  } catch {
+    projectDirs = [];
+  }
+  for (const dirEntry of projectDirs) {
+    if (!dirEntry.isDirectory()) continue;
+    files.push(
+      ...listProjectFiles(path.join(root, "projects", dirEntry.name)),
+    );
+  }
+  return sweepFiles(files, text);
 }
 
 // ---------------------------------------------------------------------------

@@ -47,6 +47,13 @@ The review raised six findings. Four of them are real: the period allowance igno
 - Typecheck: `pnpm run typecheck` — exit 0, 197 recorded diagnostics, no regressions.
 - Commits: `fix(shell): read the NaN allowance the dashboard reads` (parser, ladder, docs, this document) and `fix(shell): refresh each usage provider on its own clock` (extension and its test).
 
+## Second round (CodeRabbit re-review of `b4f0752e`)
+
+The four code findings were accepted: the re-review raised one finding, documentation-only, on the rolling-window condition in `odd/tasks/nan-usage-sidebar.md`. The line now states that the rolling window is a row only when the model reports `windowTokensUsed` as a finite non-negative number, and that the 400M and 4h dashboard defaults apply only when the field carries no usable positive value.
+
+- Commit: `docs(shell): state when the NaN rolling window exists`.
+- No behavior change and no test change: `pnpm test` and `pnpm run typecheck` were already green on this branch for the code of the round, and the second commit touches a task document only.
+
 ## Next step
 
 Push the branch to the fork and answer the review on PR #1180 with the applied and rejected findings. The native review lineage `review-fc5d4a7930c49ebe` was open at 2 of 4 lenses when this round started and is deliberately left untouched: this round moves the candidate, so the lineage cannot be resumed against the pre-fix tree. Delivery stays the user's decision.

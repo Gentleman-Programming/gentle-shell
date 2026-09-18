@@ -34,7 +34,7 @@ Verified against the official NaN Cloud dashboard bundle (`https://cloud.nan.bui
 
 - `GET https://cloud-api.nan.builders/api/usage/quota` with `Authorization: Bearer <NaN API key>`.
 - Response: `{ models: [ { model, cap, fullCap, tokensUsed, periodEnd, windowHours, windowTokens, fullWindowTokens, windowTokensUsed, windowResetsAt } ], periodEnd }`.
-- Dashboard semantics mirrored here: effective period allowance = `fullCap > 0 ? fullCap : cap`; rolling budget = `fullWindowTokens > 0 ? fullWindowTokens : windowTokens` (dashboard default 4h / 400M when the model sends none); `windowHours` defaults to 4; `cap < fullCap` means a prorated first period. The effective allowance is the divisor the parser puts on the period window, so the percentages match the dashboard in a prorated period too.
+- Dashboard semantics mirrored here: effective period allowance = `fullCap > 0 ? fullCap : cap`; rolling budget = `fullWindowTokens > 0 ? fullWindowTokens : windowTokens`, and `windowHours` is the hours the model reports. The dashboard's 400M and 4h defaults apply only when the field has no usable positive value, never over one that does; `cap < fullCap` means a prorated first period. The effective allowance is the divisor the parser puts on the period window, so the percentages match the dashboard in a prorated period too. The rolling window is a row only when the model reports `windowTokensUsed` as a finite non-negative number: with no such marker there is no second window, and the period allowance is the whole story.
 - Not part of NaN's public OpenAPI contract, so the integration stays defensive by design.
 
 ## Tasks

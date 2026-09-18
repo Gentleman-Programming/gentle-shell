@@ -223,7 +223,7 @@ See the [v2.6.0 release notes](https://github.com/Gentleman-Programming/gentle-p
 
 > **RDD is opt-in:** enable native receipt-driven development only through an explicit `/gentle:review-mode enable` decision.
 
-> **Fullscreen installation note:** a recognized global installation persists Pi’s `"tuiMode": "fullscreen"` setting. Project-local and other install paths do not receive that change.
+> **Fullscreen installation note:** a recognized global installation persists Pi’s `"tuiMode": "fullscreen"` setting only when `tuiMode` is unset or unrecognized; an explicit `"regular"` choice is preserved across updates. Project-local and other install paths do not receive that change.
 
 For prerequisites, source-checkout instructions, full install behavior, and release policy, use the **[installation reference](docs/readme-reference.md#install)**. For everyday work, describe the outcome and follow [ODD](#odd--the-everyday-workflow). Choose SDD/OpenSpec explicitly only when you want its separate phase artifacts.
 

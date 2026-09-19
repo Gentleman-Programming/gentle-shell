@@ -843,31 +843,36 @@ export default function (pi: ExtensionAPI) {
                   .slice(0, w)
                   .padEnd(w);
               const addWideRow = (
-                l1: string,
-                v1: string,
-                l2: string,
-                v2: string,
+                l1: string, v1: string,
+                l2: string, v2: string,
+                l3?: string, v3?: string,
               ) => {
                 b.addRow();
-                b.add("label", fit(l1, 10));
+                b.add("label", fit(l1, 7));
                 b.add("none", " ");
-                b.add("value", fit(v1, 48));
-                b.add("none", "   ");
-                b.add("label", fit(l2, 12));
+                b.add("value", fit(v1, 20));
+                b.add("none", "  ");
+                b.add("label", fit(l2, 11));
                 b.add("none", " ");
-                b.add("value", fit(v2, 46));
+                b.add("value", fit(v2, 16));
+                if (l3 !== undefined) {
+                  b.add("none", "  ");
+                  b.add("label", fit(l3, 5));
+                  b.add("none", " ");
+                  b.add("value", fit(v3 ?? "", 24));
+                }
                 b.center(width);
               };
               const narrowRows: Array<[string, string]> = [
-                ["GIT:", gitBranch],
                 ["PATH:", ctx.cwd],
+                ["GIT:", gitBranch],
                 ["MCP:", `${mcpServersCount} server(s)`],
-                ["AGENTS:", `${sddAgentsCount} phases`],
                 ["PLUGINS:", `${packagesCount} package(s)`],
+                ["AGENTS:", `${sddAgentsCount} phases`],
                 ["SKILLS:", `${skills.length} loaded`],
                 ["EXTENSIONS:", `${extensionsCount} active`],
-                ["VER:", `v${VERSION}`],
                 ["TOOLS:", `${customTools.length} custom`],
+                ["VER:", `v${VERSION}`],
               ];
               const narrowLabelW = Math.max(...narrowRows.map(([l]) => l.length));
               const narrowValueW = Math.max(
@@ -886,36 +891,20 @@ export default function (pi: ExtensionAPI) {
               };
 
               if (wideStats) {
-                addWideRow("GIT:", gitBranch, "PATH:", ctx.cwd);
-                addWideRow(
-                  "MCP:",
-                  `${mcpServersCount} server(s)`,
-                  "PLUGINS:",
-                  `${packagesCount} package(s)`,
-                );
-                addWideRow(
-                  "AGENTS:",
-                  `${sddAgentsCount} phases`,
-                  "EXTENSIONS:",
-                  `${extensionsCount} active`,
-                );
-                addWideRow(
-                  "SKILLS:",
-                  `${skills.length} loaded`,
-                  "TOOLS:",
-                  `${customTools.length} custom`,
-                );
-                addWideRow("VER:", `v${VERSION}`, "", "");
+                addWideRow("PATH:", ctx.cwd, "EXTENSIONS:", `${extensionsCount} active`, "VER:", `v${VERSION}`);
+                addWideRow("GIT:", gitBranch, "PLUGINS:", `${packagesCount} package(s)`);
+                addWideRow("MCP:", `${mcpServersCount} server(s)`, "SKILLS:", `${skills.length} loaded`);
+                addWideRow("AGENTS:", `${sddAgentsCount} phases`, "TOOLS:", `${customTools.length} custom`);
               } else {
-                addNarrowRow("GIT:", gitBranch);
                 addNarrowRow("PATH:", ctx.cwd);
+                addNarrowRow("GIT:", gitBranch);
                 addNarrowRow("MCP:", `${mcpServersCount} server(s)`);
                 addNarrowRow("PLUGINS:", `${packagesCount} package(s)`);
                 addNarrowRow("AGENTS:", `${sddAgentsCount} phases`);
                 addNarrowRow("SKILLS:", `${skills.length} loaded`);
                 addNarrowRow("EXTENSIONS:", `${extensionsCount} active`);
-                addNarrowRow("VER:", `v${VERSION}`);
                 addNarrowRow("TOOLS:", `${customTools.length} custom`);
+                addNarrowRow("VER:", `v${VERSION}`);
               }
 
               b.addRow();

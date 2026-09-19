@@ -168,24 +168,34 @@ export function parseWorktrees(text: string): Array<{ root: string; branch?: str
 	});
 }
 
+// A root the view shows as-is when its own HEAD could not be determined at
+// all -- distinct from "detached", which means git answered and there really
+// is no branch. Exported so callers and tests share one literal.
+export const UNKNOWN_BRANCH = "unknown";
+
 // Resolve a foreign clone's own HEAD directly instead of assuming "detached":
 // a real branch name, "no commits yet" for an unborn branch (a branch ref
 // that exists but has no commit), or undefined for a genuine detached HEAD
-// (the caller falls back to "detached" in that case).
+// (the caller falls back to "detached" in that case). A GitRunner that
+// cannot even ask -- it rejects, e.g. because the root was removed or git
+// itself is unavailable -- rejects here too, on purpose: that is a real
+// failure to distinguish from git successfully reporting "no branch", and
+// callers must not fold the two into the same undefined result.
 export async function foreignRootBranch(git: GitRunner): Promise<string | undefined> {
-	const symbolic = await git(["symbolic-ref", "--quiet", "--short", "HEAD"]).catch(() => ({ code: 1, stdout: "" }) as GitResult);
+	const symbolic = await git(["symbolic-ref", "--quiet", "--short", "HEAD"]);
 	const branch = symbolic.code === 0 ? symbolic.stdout.trim() : "";
 	if (!branch) return undefined;
-	const verified = await git(["rev-parse", "--verify", "-q", "HEAD"]).catch(() => ({ code: 1, stdout: "" }) as GitResult);
+	const verified = await git(["rev-parse", "--verify", "-q", "HEAD"]);
 	return verified.code === 0 ? branch : "no commits yet";
 }
 
 // The session-evidence tracker behind /gentle:changes records roots, never
 // branches, so the overlay would label every tree "detached". This resolves
-// each root's own HEAD state once (branch, "no commits yet", or undefined for
-// a real detached HEAD), decorates the trees from the cache, and tells the
-// caller when a fresh answer arrived so the view can repaint. Git is touched
-// only while the overlay is open, never at startup or on evidence refresh.
+// each root's own HEAD state once (branch, "no commits yet", undefined for a
+// real detached HEAD, or UNKNOWN_BRANCH when the root could not even be
+// asked), decorates the trees from the cache, and tells the caller when a
+// fresh answer arrived so the view can repaint. Git is touched only while the
+// overlay is open, never at startup or on evidence refresh.
 export class RootBranchLabels {
 	private readonly labels = new Map<string, string | undefined>();
 	private readonly pending = new Map<string, Promise<void>>();
@@ -212,8 +222,14 @@ export class RootBranchLabels {
 
 	private resolve(root: string): void {
 		if (this.pending.has(root)) return;
+		// A rejection here means the root could not even be asked -- distinct
+		// from foreignRootBranch resolving to undefined, which means git
+		// answered and there really is no branch (a real detached HEAD).
 		const task = foreignRootBranch(this.gitForRoot(root))
-			.catch(() => undefined)
+			.then(
+				(branch) => branch,
+				() => UNKNOWN_BRANCH,
+			)
 			.then((branch) => {
 				this.labels.set(root, branch);
 				this.pending.delete(root);
@@ -278,8 +294,11 @@ export class WorktreeChangesTracker {
 				// one) -- worktree list can never describe a foreign clone, so ask
 				// it directly instead of defaulting to "detached". A root the scan
 				// DID describe is trusted as-is: its own "detached" marker (or lack
-				// of a branch) is already accurate for that clone.
-				const branch = known ? known.branch : await foreignRootBranch(this.gitForRoot(root));
+				// of a branch) is already accurate for that clone. The direct ask
+				// can fail on its own (root gone, git unavailable) without the
+				// change scan above failing -- that must label the root
+				// UNKNOWN_BRANCH, not drop real, already-captured changes.
+				const branch = known ? known.branch : await foreignRootBranch(this.gitForRoot(root)).catch(() => UNKNOWN_BRANCH);
 				trees.push({ root, ...(branch ? { branch } : {}), model: tracker.model });
 			} catch {
 				// Linked roots can disappear between discovery and status.

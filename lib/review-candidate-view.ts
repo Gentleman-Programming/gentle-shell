@@ -5,7 +5,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
-import { assertCandidateOwnerParent, createCandidateOwner, prepareCandidateOwnerParent, removeCandidateOwner, samePath, sweepCandidateOwners, type CandidateViewOwner } from "./review-candidate-view-owner.ts";
+import { assertCandidateOwnerParent, createCandidateOwner, prepareCandidateOwnerParent, removeCandidateOwner, samePath, sweepCandidateOwners, WindowsOwnerCommandTimeoutError, type CandidateViewOwner } from "./review-candidate-view-owner.ts";
 
 const REVIEW_LENS = ["review-risk", "review-resilience", "review-readability", "review-reliability"] as const;
 export type ReviewLens = (typeof REVIEW_LENS)[number];
@@ -634,6 +634,18 @@ function makeWritableForCleanup(path: string): void {
 	chmodSync(path, 0o644);
 }
 
+function candidateOwnerPreparationFailure(error: unknown): CandidateViewError {
+	if (error instanceof WindowsOwnerCommandTimeoutError) {
+		return new CandidateViewError(
+			`candidate view owner preparation failed: ${error.executable} timed out after ${error.timeoutMs}ms`,
+			"candidate-owner-preparation-failed",
+			undefined,
+			{ cause: error },
+		);
+	}
+	return new CandidateViewError("candidate view owner preparation failed", "candidate-owner-preparation-failed", undefined, { cause: error });
+}
+
 function candidateViewParent(commonDir: string, platform: NodeJS.Platform): string {
 	const control = join(commonDir, "gentle-ai");
 	mkdirSync(control, { recursive: true, mode: 0o700 });
@@ -646,7 +658,7 @@ function candidateViewParent(commonDir: string, platform: NodeJS.Platform): stri
 	try {
 		return prepareCandidateOwnerParent(commonDir, platform);
 	} catch (error) {
-		throw new CandidateViewError("candidate view owner preparation failed", "candidate-owner-preparation-failed", undefined, { cause: error });
+		throw candidateOwnerPreparationFailure(error);
 	}
 }
 
@@ -916,7 +928,7 @@ function materializeCandidateView(request: CreateCandidateViewRequest, executor:
 		try {
 			owner = createCandidateOwner(canonicalCommonDir, root, platform);
 		} catch (error) {
-			throw new CandidateViewError("candidate view owner preparation failed", "candidate-owner-preparation-failed", undefined, { cause: error });
+			throw candidateOwnerPreparationFailure(error);
 		}
 		// The worktree is created under the same try/catch cleanup boundary as
 		// the read-tree materialization that follows. addUnbornWorktree's

@@ -6,7 +6,7 @@ import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
 import {
@@ -282,6 +282,77 @@ test("private candidate owner ignores a spoofed SystemRoot when invoking Windows
 		assert.ok(aclExecutables.length > 0);
 	} finally {
 		view.cleanup();
+	}
+});
+
+test("candidate owner Windows commands use a bounded shared timeout and sanitize timeouts", (t) => {
+	const realpath = fs.realpathSync.native;
+	const execFile = childProcess.execFileSync;
+	const operations = [
+		{ identity: "user-sid", executable: "whoami.exe" },
+		{ identity: "local-administrator-sid", executable: "powershell.exe" },
+		{ identity: "dacl-read", executable: "icacls.exe" },
+		{ identity: "owner-query", executable: "powershell.exe" },
+		{ identity: "acl-enforcement", executable: "powershell.exe" },
+	] as const;
+	type OperationIdentity = (typeof operations)[number]["identity"];
+	const calls: Array<{ identity: OperationIdentity; executable: string; timeout: number | undefined }> = [];
+	const operationOf = (executable: string, environment: NodeJS.ProcessEnv | undefined): OperationIdentity => {
+		if (executable.endsWith("whoami.exe")) return "user-sid";
+		if (executable.endsWith("icacls.exe")) return "dacl-read";
+		if (environment?.GENTLE_PI_CANDIDATE_OWNER_PATH !== undefined) return "owner-query";
+		if (environment?.GENTLE_PI_CANDIDATE_ACL_PATH !== undefined && environment.GENTLE_PI_CANDIDATE_ACL_SDDL !== undefined) return "acl-enforcement";
+		return "local-administrator-sid";
+	};
+	t.mock.method(fs.realpathSync, "native", (path: fs.PathLike) => {
+		const value = String(path);
+		return value.startsWith("\\\\?\\GLOBALROOT\\SystemRoot\\System32") ? value : realpath(path);
+	});
+	let timeoutFailure: { identity: OperationIdentity; detail: { code?: string; killed?: boolean } } | undefined;
+	t.mock.method(childProcess, "execFileSync", (file, arguments_, options) => {
+		const executable = String(file);
+		if (!executable.startsWith("\\\\?\\GLOBALROOT\\SystemRoot\\System32")) return execFile(file, arguments_, options);
+		const identity = operationOf(executable, options?.env);
+		if (timeoutFailure?.identity === identity) {
+			throw Object.assign(new Error("fixture raw message: C:\\Users\\private; fixture encoded payload"), timeoutFailure.detail, { stderr: Buffer.from("fixture stderr") });
+		}
+		calls.push({ identity, executable: executable.endsWith("whoami.exe") ? "whoami.exe" : executable.endsWith("icacls.exe") ? "icacls.exe" : "powershell.exe", timeout: options?.timeout });
+		if (identity === "user-sid") return "\"user\",\"S-1-5-21-1-2-3-1001\"\n";
+		if (identity === "dacl-read") {
+			const [path, , archive] = arguments_ as string[];
+			const dacl = path.endsWith(".owner.json")
+				? "D:(A;ID;FA;;;S-1-5-21-1-2-3-1001)(A;ID;FA;;;SY)(A;ID;FA;;;BA)\r\n"
+				: "D:P(A;OICI;FA;;;S-1-5-21-1-2-3-1001)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)\r\n";
+			writeFileSync(join(dirname(path), archive!), dacl, "utf16le");
+			return "";
+		}
+		return identity === "local-administrator-sid" ? "S-1-5-21-1-2-3-500\n" : "S-1-5-21-1-2-3-1001\n";
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	try {
+		new CandidateViewRegistry(undefined, "win32").create({ contributorRoot: repository(t) });
+	} catch (error) {
+		throw new Error(`Windows command fixture setup failed: ${error instanceof Error && error.cause instanceof Error ? error.cause.message : "unknown"}; ${JSON.stringify(calls)}`);
+	}
+	assert.deepEqual([...new Set(calls.map((call) => call.identity))].sort(), operations.map((operation) => operation.identity).sort());
+	assert.ok(calls.every((call) => call.timeout === 30_000), JSON.stringify(calls));
+
+	for (const operation of operations) for (const detail of [{ code: "ETIMEDOUT" }, { killed: true }] as const) {
+		timeoutFailure = { identity: operation.identity, detail };
+		let failure: unknown;
+		try {
+			new CandidateViewRegistry(undefined, "win32").create({ contributorRoot: repository(t) });
+		} catch (error) {
+			failure = error;
+		}
+		assert.ok(failure instanceof CandidateViewError, `${operation.identity} must fail`);
+		assert.equal(failure.reason, "candidate-owner-preparation-failed");
+		assert.equal(failure.message, `candidate view owner preparation failed: ${operation.executable} timed out after 30000ms`);
+		assert.ok(failure.cause instanceof Error);
+		assert.equal(failure.cause.message, `candidate owner command ${operation.executable} timed out after 30000ms`);
+		assert.doesNotMatch(failure.message, /fixture raw message|fixture stderr|C:\\Users\\private|fixture encoded payload/i);
+		assert.doesNotMatch(failure.cause.message, /fixture raw message|fixture stderr|C:\\Users\\private|fixture encoded payload/i);
 	}
 });
 

@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, type ExecFileSyncOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
@@ -26,6 +26,19 @@ export function setWindowsAclAuthorityForTesting(authority?: WindowsAclAuthority
 const WINDOWS_SYSTEM = "S-1-5-18";
 const WINDOWS_ADMINISTRATORS = "S-1-5-32-544";
 const WINDOWS_SYSTEM_DIRECTORY = "\\\\?\\GLOBALROOT\\SystemRoot\\System32";
+const WINDOWS_OWNER_COMMAND_TIMEOUT_MS = 30_000;
+type WindowsOwnerCommandExecutable = "whoami.exe" | "icacls.exe" | "powershell.exe";
+
+export class WindowsOwnerCommandTimeoutError extends Error {
+	readonly executable: WindowsOwnerCommandExecutable;
+	readonly timeoutMs: number;
+	constructor(executable: WindowsOwnerCommandExecutable, timeoutMs: number) {
+		super(`candidate owner command ${executable} timed out after ${timeoutMs}ms`);
+		this.name = "WindowsOwnerCommandTimeoutError";
+		this.executable = executable;
+		this.timeoutMs = timeoutMs;
+	}
+}
 
 function windowsSystemExecutable(name: "whoami.exe" | "icacls.exe" | "WindowsPowerShell\\v1.0\\powershell.exe"): string {
 	try {
@@ -35,8 +48,19 @@ function windowsSystemExecutable(name: "whoami.exe" | "icacls.exe" | "WindowsPow
 	}
 }
 
+function windowsOwnerCommand(executable: WindowsOwnerCommandExecutable, arguments_: string[], options: Omit<ExecFileSyncOptions, "timeout">): string {
+	const systemName = executable === "powershell.exe" ? "WindowsPowerShell\\v1.0\\powershell.exe" : executable;
+	try {
+		return execFileSync(windowsSystemExecutable(systemName), arguments_, { ...options, timeout: WINDOWS_OWNER_COMMAND_TIMEOUT_MS }) as string;
+	} catch (error) {
+		const detail = error as NodeJS.ErrnoException & { killed?: boolean };
+		if (detail.code === "ETIMEDOUT" || detail.killed === true) throw new WindowsOwnerCommandTimeoutError(executable, WINDOWS_OWNER_COMMAND_TIMEOUT_MS);
+		throw error;
+	}
+}
+
 function windowsUserSid(): string {
-	const output = execFileSync(windowsSystemExecutable("whoami.exe"), ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", timeout: 5000, maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+	const output = windowsOwnerCommand("whoami.exe", ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
 	const matches = output.match(/S-\d+(?:-\d+)+/gi) ?? [];
 	if (matches.length !== 1) throw new Error("Windows user SID is unavailable");
 	return matches[0]!.toUpperCase();
@@ -45,7 +69,7 @@ function windowsUserSid(): string {
 function windowsLocalAdministratorSid(): string {
 	const script = "$ErrorActionPreference='Stop';$descriptor=New-Object System.Security.AccessControl.RawSecurityDescriptor 'D:(A;;FA;;;LA)';$descriptor.DiscretionaryAcl[0].SecurityIdentifier.Value";
 	const systemRoot = dirname(dirname(windowsSystemExecutable("whoami.exe")));
-	const output = execFileSync(windowsSystemExecutable("WindowsPowerShell\\v1.0\\powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", timeout: 5000, maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: { ...process.env, SystemRoot: systemRoot } });
+	const output = windowsOwnerCommand("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: { ...process.env, SystemRoot: systemRoot } });
 	const matches = output.match(/S-\d+(?:-\d+)+/gi) ?? [];
 	if (matches.length !== 1 || !isWindowsSid(matches[0]!)) throw new Error("Windows local Administrator SID is unavailable");
 	return matches[0]!.toUpperCase();
@@ -55,7 +79,7 @@ function windowsDacl(path: string): string {
 	const archive = `.gentle-ai-acl-${randomUUID()}.txt`;
 	const archivePath = join(dirname(path), archive);
 	try {
-		execFileSync(windowsSystemExecutable("icacls.exe"), [path, "/save", archive, "/c"], { cwd: dirname(path), encoding: "utf8", timeout: 5000, maxBuffer: 16384, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+		windowsOwnerCommand("icacls.exe", [path, "/save", archive, "/c"], { cwd: dirname(path), encoding: "utf8", maxBuffer: 16384, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
 		const sddl = readFileSync(archivePath, "utf16le").match(/D:[^\r\n]+/)?.[0];
 		if (sddl === undefined) throw new Error("Windows DACL is unavailable");
 		return sddl;
@@ -151,8 +175,9 @@ function windowsOwnerSid(path: string, kind: WindowsObjectKind): string {
 	const systemRoot = dirname(dirname(windowsSystemExecutable("whoami.exe")));
 	let output: string;
 	try {
-		output = execFileSync(windowsSystemExecutable("WindowsPowerShell\\v1.0\\powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", timeout: 5000, maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: { ...process.env, SystemRoot: systemRoot, GENTLE_PI_CANDIDATE_OWNER_PATH: path } });
-	} catch {
+		output = windowsOwnerCommand("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: { ...process.env, SystemRoot: systemRoot, GENTLE_PI_CANDIDATE_OWNER_PATH: path } });
+	} catch (error) {
+		if (error instanceof WindowsOwnerCommandTimeoutError) throw error;
 		throw new WindowsOwnerValidationError();
 	}
 	const matches = output.match(/S-\d+(?:-\d+)+/gi) ?? [];
@@ -175,7 +200,7 @@ function enforcePrivateWindowsDacl(path: string, identity: WindowsAclIdentity = 
 	const sddl = `D:P(A;OICI;FA;;;${user})(A;OICI;FA;;;${WINDOWS_SYSTEM})(A;OICI;FA;;;${WINDOWS_ADMINISTRATORS})`;
 	const script = "$ErrorActionPreference='Stop';$acl=New-Object System.Security.AccessControl.DirectorySecurity;$acl.SetSecurityDescriptorSddlForm($env:GENTLE_PI_CANDIDATE_ACL_SDDL,[System.Security.AccessControl.AccessControlSections]::Access);[System.IO.Directory]::SetAccessControl($env:GENTLE_PI_CANDIDATE_ACL_PATH,$acl)";
 	const systemRoot = dirname(dirname(windowsSystemExecutable("whoami.exe")));
-	execFileSync(windowsSystemExecutable("WindowsPowerShell\\v1.0\\powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", timeout: 5000, maxBuffer: 16384, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: { ...process.env, SystemRoot: systemRoot, GENTLE_PI_CANDIDATE_ACL_PATH: path, GENTLE_PI_CANDIDATE_ACL_SDDL: sddl } });
+	windowsOwnerCommand("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", maxBuffer: 16384, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: { ...process.env, SystemRoot: systemRoot, GENTLE_PI_CANDIDATE_ACL_PATH: path, GENTLE_PI_CANDIDATE_ACL_SDDL: sddl } });
 	assertPrivateWindowsDacl(path, "directory", true, identity);
 }
 

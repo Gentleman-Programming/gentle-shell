@@ -148,17 +148,15 @@ export class UsageView {
 	// Spans are only registered when the hints text fits without truncation:
 	// past that point `fit` clips it with an ellipsis and per-hint columns no
 	// longer line up with the plain "key label" text used here.
-	private hintLayout(width: number, height: number, row: number, hints: Array<{ text: string }>, contentWidth: number): PointerLayout | undefined {
+	private hintLayout(width: number, height: number, row: number, hints: Array<{ text: string; action: HintAction }>, contentWidth: number): PointerLayout | undefined {
 		const plainWidth = hints.reduce((total, hint) => total + hint.text.length, 0) + HINT_GAP.length * Math.max(0, hints.length - 1);
 		if (plainWidth > contentWidth) return undefined;
 		const spans: HintSpan[] = [];
 		let cursor = HINT_CONTENT_OFFSET;
-		for (let index = 0; index < KEYS.length; index += 1) {
-			const [key] = KEYS[index]!;
-			const text = hints[index]!.text;
+		for (const hint of hints) {
 			const start = cursor;
-			const end = start + text.length;
-			spans.push({ start, end, action: key === "r" ? "refresh" : "close" });
+			const end = start + hint.text.length;
+			spans.push({ start, end, action: hint.action });
 			cursor = end + HINT_GAP.length;
 		}
 		return { width, height, row, spans };

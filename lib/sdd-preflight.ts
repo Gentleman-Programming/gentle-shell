@@ -678,25 +678,24 @@ function copyDirectoryFiles(
 				: managedAssetHash(installedContent);
 			if (managedHash === undefined) {
 				const legacyHashes = legacyAssetHashes?.()[ownershipKey];
+				const exactLegacyMatch =
+					installedHash !== undefined && legacyHashes?.includes(installedHash) === true;
 				const comparableLegacyHash = installedContent === undefined
 					? undefined
 					: managedAssetHash(
 							legacyComparableAssetContent(ownershipKey, installedContent),
 						);
-				if (
-					legacyHashes === undefined ||
-					comparableLegacyHash === undefined ||
-					!legacyHashes.includes(comparableLegacyHash)
-				) {
+				const comparableLegacyMatch =
+					comparableLegacyHash !== undefined &&
+					legacyHashes?.includes(comparableLegacyHash) === true;
+				if (!exactLegacyMatch && !comparableLegacyMatch) {
 					delete manifest.assets[ownershipKey];
 					skipped += 1;
 					continue;
 				}
-				nextSource = migrateLegacyAssetContent(
-					ownershipKey,
-					installedContent,
-					source,
-				);
+				nextSource = exactLegacyMatch
+					? source
+					: migrateLegacyAssetContent(ownershipKey, installedContent ?? "", source);
 			} else if (installedHash !== managedHash) {
 				delete manifest.assets[ownershipKey];
 				skipped += 1;

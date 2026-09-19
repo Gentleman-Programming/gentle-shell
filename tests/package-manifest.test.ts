@@ -22,6 +22,7 @@ const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const MANAGED_EXEMPLAR_FILE = "gentle-ai-explore.md";
 const RETIRED_REFUTER_FILE = "review-refuter.md";
 const REVIEW_RISK_FILE = "review-risk.md";
+const SDD_INIT_FILE = "sdd-init.md";
 const V013_REVIEW_RISK_FIXTURE = join(
 	PACKAGE_ROOT,
 	"tests",
@@ -30,6 +31,15 @@ const V013_REVIEW_RISK_FIXTURE = join(
 	"assets",
 	"agents",
 	REVIEW_RISK_FILE,
+);
+const V013_SDD_INIT_FIXTURE = join(
+	PACKAGE_ROOT,
+	"tests",
+	"fixtures",
+	"v0.13",
+	"assets",
+	"agents",
+	SDD_INIT_FILE,
 );
 const V013_MANAGED_ASSETS = join(
 	PACKAGE_ROOT,
@@ -518,6 +528,14 @@ test("packaged agents use YAML list syntax for tool allowlists", () => {
 	}
 });
 
+test("package-owned sdd-init does not pin a provider-specific model", () => {
+	const frontmatter = readAgentFrontmatter(
+		join(PACKAGE_ROOT, "assets", "agents", SDD_INIT_FILE),
+	);
+
+	assert.doesNotMatch(frontmatter, /^model:\s*\S+$/m);
+});
+
 // The Pi child-session tool registry exposes `find` for filesystem discovery
 // and has no `glob` or `webfetch` builtin (see tests/runtime-harness.mjs and
 // the working builtin `reviewer` canary in issue #62). A packaged agent that
@@ -834,6 +852,92 @@ test("v0.13 ownership evidence is bundled and matches the self-contained upgrade
 		sha256(legacyReviewRisk),
 		"published migration evidence must fingerprint the exact v0.13 package asset",
 	);
+	assert.equal(
+		legacyManifest.assets[`agents/${SDD_INIT_FILE}`],
+		sha256(readFileSync(V013_SDD_INIT_FIXTURE, "utf8")),
+		"published migration evidence must fingerprint the exact legacy sdd-init asset",
+	);
+});
+
+test("first forced sync migrates exact legacy sdd-init ownership and records the current hash", () => {
+	const temporaryAgentHome = mkdtempSync(join(tmpdir(), "gentle-pi-sdd-init-v013-upgrade-"));
+	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
+	const installedSddInit = join(temporaryAgentHome, "agents", SDD_INIT_FILE);
+	const managedAssetsManifest = join(
+		temporaryAgentHome,
+		"gentle-ai",
+		"managed-assets.json",
+	);
+	const legacySource = readFileSync(V013_SDD_INIT_FIXTURE, "utf8");
+
+	try {
+		process.env.GENTLE_PI_AGENT_HOME = temporaryAgentHome;
+		mkdirSync(dirname(installedSddInit), { recursive: true });
+		writeFileSync(installedSddInit, legacySource);
+		assert.equal(existsSync(managedAssetsManifest), false, "legacy installs had no ownership manifest");
+
+		installSddAssets(PACKAGE_ROOT, true);
+
+		const currentPackageSource = readFileSync(
+			join(PACKAGE_ROOT, "assets", "agents", SDD_INIT_FILE),
+			"utf8",
+		);
+		assert.equal(
+			readFileSync(installedSddInit, "utf8"),
+			currentPackageSource,
+			"an untouched legacy sdd-init must migrate to the provider-neutral package asset",
+		);
+		assert.doesNotMatch(readFileSync(installedSddInit, "utf8"), /^model:\s*\S+$/m);
+
+		const manifest = JSON.parse(
+			readFileSync(managedAssetsManifest, "utf8"),
+		) as ManagedAssetsManifest;
+		assert.equal(
+			manifest.assets[`agents/${SDD_INIT_FILE}`],
+			sha256(currentPackageSource),
+			"the migrated asset must be owned by its current package hash",
+		);
+	} finally {
+		if (previousAgentHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
+		else process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
+		rmSync(temporaryAgentHome, { recursive: true, force: true });
+	}
+});
+
+test("first forced sync preserves an explicitly routed legacy sdd-init asset", () => {
+	const temporaryAgentHome = mkdtempSync(join(tmpdir(), "gentle-pi-sdd-init-v013-routed-"));
+	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
+	const installedSddInit = join(temporaryAgentHome, "agents", SDD_INIT_FILE);
+	const routedLegacySource = readFileSync(V013_SDD_INIT_FIXTURE, "utf8").replace(
+		"model: openai-codex/gpt-5.3-codex",
+		"model: private/user-model",
+	);
+
+	try {
+		process.env.GENTLE_PI_AGENT_HOME = temporaryAgentHome;
+		mkdirSync(dirname(installedSddInit), { recursive: true });
+		writeFileSync(installedSddInit, routedLegacySource);
+
+		installSddAssets(PACKAGE_ROOT, true);
+
+		assert.deepEqual(
+			readFileSync(installedSddInit),
+			Buffer.from(routedLegacySource),
+			"an explicitly routed legacy definition must remain byte-for-byte intact",
+		);
+		const manifest = JSON.parse(
+			readFileSync(join(temporaryAgentHome, "gentle-ai", "managed-assets.json"), "utf8"),
+		) as ManagedAssetsManifest;
+		assert.equal(
+			manifest.assets[`agents/${SDD_INIT_FILE}`],
+			undefined,
+			"a user-routed legacy definition must not be re-certified as package-owned",
+		);
+	} finally {
+		if (previousAgentHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
+		else process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
+		rmSync(temporaryAgentHome, { recursive: true, force: true });
+	}
 });
 
 test("v0.14 ownership evidence is bundled and matches the self-contained bounded-review fixture", () => {

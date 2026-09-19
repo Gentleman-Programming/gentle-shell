@@ -735,7 +735,7 @@ test("working cancel: queued text is never sent twice even if agent_settled fire
 	editor.dispose();
 });
 
-test("working cancel: a new agent_start before the aborted run settles delivers the pending text as a follow-up instead of discarding it", (t) => {
+test("working cancel: a new agent_start before the aborted run settles keeps the pending text and sends it once that turn settles", (t) => {
 	const { pi, handlers, sentMessages } = fakePi();
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) });
 	const { ctx, ui } = fakeContext();
@@ -745,11 +745,44 @@ test("working cancel: a new agent_start before the aborted run settles delivers 
 	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
 	editor.handleInput("\x1b");
 	// The user sent the draft (or another turn started) before the aborted
-	// run's own agent_settled fired; the pending text must not be lost.
+	// run's own agent_settled fired. Nothing is sent from inside agent_start:
+	// Pi is mid-turn there, so the text waits for that turn to settle.
 	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
-	assert.deepEqual(sentMessages.map((m) => ({ content: m.content, deliverAs: m.options?.deliverAs })), [{ content: "follow up", deliverAs: "followUp" }]);
+	assert.equal(sentMessages.length, 0, "never send from inside agent_start");
 	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
-	assert.equal(sentMessages.length, 1, "the pending text must not be delivered a second time from agent_settled");
+	assert.deepEqual(sentMessages.map((m) => ({ content: m.content, deliverAs: m.options?.deliverAs })), [{ content: "follow up", deliverAs: undefined }]);
+	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
+	assert.equal(sentMessages.length, 1, "the pending text must not be delivered a second time");
+	editor.dispose();
+});
+
+test("working cancel: a whitespace-only recognized queue is treated as no queue and never dispatched", (t) => {
+	const { pi, handlers, sentMessages } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	editor.setText("draft reply");
+	editor.onEscape = () => { editor.setText(`   \n\n${editor.getText()}`); };
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	editor.handleInput("\x1b");
+	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
+	assert.equal(sentMessages.length, 0, "whitespace is not a message");
+	editor.dispose();
+});
+
+test("working cancel: a failing sendUserMessage on settle is reported, not thrown, and the prompt still leaves the working state", (t) => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	editor.setText("draft reply");
+	editor.onEscape = () => { editor.setText(`follow up\n\n${editor.getText()}`); };
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	editor.handleInput("\x1b");
+	(pi as unknown as { sendUserMessage: (content: string) => void }).sendUserMessage = () => { throw new Error("session is switching"); };
+	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
+	assert.ok(ui.notices.some((notice) => /session is switching/.test(notice)), "the failure surfaces as a notice");
+	assert.doesNotMatch(stripAnsi(editor.render(60).join("\n")), /esc again to cancel/, "the prompt is idle again");
 	editor.dispose();
 });
 
@@ -874,6 +907,7 @@ test("idle draft: editing the text between two Esc presses starts a fresh clear 
 	editor.setText("draft reply");
 	editor.handleInput("\x1b");
 	editor.setText("draft reply, edited");
+	assert.doesNotMatch(stripAnsi(editor.render(60).join("\n")), /esc again to clear/, "the edit invalidates the pending clear, so the hint goes away with it");
 	now += 400;
 	editor.handleInput("\x1b");
 	assert.equal(editor.getText(), "draft reply, edited", "an edit invalidates the earlier snapshot, so this must not clear");

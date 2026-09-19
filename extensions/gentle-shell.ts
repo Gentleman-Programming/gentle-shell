@@ -251,13 +251,11 @@ export class GentlePromptEditor extends CustomEditor {
 	setWorking(working: boolean): void {
 		this.promptState = working ? PROMPT_STATE.WORKING : PROMPT_STATE.IDLE;
 		this.stopPulse();
-		if (working) {
+		if (!working) {
+			this.pendingEscapeCancelDeadline = undefined;
+		} else {
 			this.pendingIdleClearDeadline = undefined;
 			this.pendingIdleClearText = undefined;
-		} else {
-			this.pendingEscapeCancelDeadline = undefined;
-		}
-		if (working) {
 			this.pulse = setInterval(() => {
 				this.tick += 1;
 				this.deps.requestRender();
@@ -357,7 +355,9 @@ export class GentlePromptEditor extends CustomEditor {
 		const draft = this.getText();
 		super.handleInput(data);
 		const queued = extractQueuedText(this.getText(), draft);
-		if (!queued) return;
+		// undefined: unrecognized shape, Pi's own text stays. "" or whitespace:
+		// nothing was queued, so the editor is left exactly as Pi set it.
+		if (queued === undefined || queued.trim() === "") return;
 		this.setText(draft);
 		this.deps.dispatchQueuedText(queued);
 	}
@@ -391,7 +391,11 @@ export class GentlePromptEditor extends CustomEditor {
 	}
 
 	private isPendingIdleClear(): boolean {
-		return this.pendingIdleClearDeadline !== undefined && this.deps.now() < this.pendingIdleClearDeadline;
+		return (
+			this.pendingIdleClearDeadline !== undefined &&
+			this.deps.now() < this.pendingIdleClearDeadline &&
+			this.pendingIdleClearText === this.getText()
+		);
 	}
 
 	private stopPulse(): void {
@@ -992,24 +996,22 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	pi.on("agent_start", (_event, ctx) => {
 		// A turn can start any other way (the user sending the draft, an
 		// extension, a shortcut) before the aborted run's own agent_settled
-		// below has delivered the pending text. That text must never be
-		// silently lost: hand it to the just-started turn as a follow-up
-		// instead of discarding it.
-		if (pendingQueuedText !== undefined) {
-			const queued = pendingQueuedText;
-			pendingQueuedText = undefined;
-			pi.sendUserMessage(queued, { deliverAs: "followUp" });
-		}
+		// below has delivered the pending text. Nothing is sent from here: Pi
+		// is mid-turn, so the text simply waits and goes out, once, when that
+		// turn settles. It is never dropped.
 		prompt?.setWorking(true);
 		// The dev-binary card is a startup notice: it leaves with the first prompt.
 		if (ctx.hasUI) ctx.ui.setWidget(DEV_BINARY_WIDGET_KEY, undefined);
 	});
-	pi.on("agent_settled", () => {
+	pi.on("agent_settled", (_event, ctx) => {
 		prompt?.setWorking(false);
-		if (pendingQueuedText !== undefined) {
-			const queued = pendingQueuedText;
-			pendingQueuedText = undefined;
+		if (pendingQueuedText === undefined) return;
+		const queued = pendingQueuedText;
+		pendingQueuedText = undefined;
+		try {
 			pi.sendUserMessage(queued);
+		} catch (error) {
+			if (ctx.hasUI) ctx.ui.notify(`Could not send the queued message after cancel: ${error instanceof Error ? error.message : String(error)}`, "error");
 		}
 	});
 	pi.on("agent_end", async (_event, ctx) => {

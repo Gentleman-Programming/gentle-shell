@@ -117,6 +117,7 @@ import {
 	readOrchestratorSettings,
 	restoreOrchestratorSettings,
 	type OrchestratorSettingsReadResult,
+	parseOrchestratorModelRef,
 } from "../lib/profiles-orchestrator.ts";
 import { measureAgentsViewLayout, type AgentsViewLayout } from "../lib/agents-view-layout.ts";
 import { NativeChoiceList } from "../lib/native-choice-list.ts";
@@ -4139,6 +4140,33 @@ function reportProfilesDrops(ctx: ExtensionContext, path: string, drops: Profile
 	}
 }
 
+/**
+ * Switch the running session to the profile's orchestrator. `settings.json`
+ * is the default for new sessions only; Pi's `setModel`/`setThinkingLevel`
+ * are what move the live one. Failures never undo the persisted default: the
+ * profile is applied for the next session either way, and the note says what
+ * this session did.
+ */
+/** Pi's own live-session controls: the ExtensionAPI's setModel/setThinkingLevel. */
+type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel">;
+
+async function switchLiveOrchestrator(ctx: ExtensionContext, live: LiveSession, entry: AgentRoutingEntry): Promise<string> {
+	const reference = parseOrchestratorModelRef(entry.model);
+	if (reference === undefined) return "";
+	const label = `${reference.provider}/${reference.model}`;
+	const model = ctx.modelRegistry.find(reference.provider, reference.model);
+	if (model === undefined) return `\n${label} is not in the model catalog; this session keeps its current model.`;
+	let switched = false;
+	try {
+		switched = await live.setModel(model);
+	} catch (error) {
+		return `\nThis session could not switch to ${label}: ${sanitizeTerminalText(error instanceof Error ? error.message : String(error))}.`;
+	}
+	if (!switched) return `\nno authentication is configured for ${reference.provider}; this session keeps its current model.`;
+	if (entry.thinking !== undefined) live.setThinkingLevel(entry.thinking);
+	return `\nThis session now runs on ${label}${entry.thinking === undefined ? "" : ` · ${entry.thinking}`}.`;
+}
+
 function profileSnapshotFrom(
 	current: AgentModelConfig,
 	settings: OrchestratorSettingsReadResult,
@@ -4152,6 +4180,7 @@ function profileSnapshotFrom(
 
 async function runProfilesPanelAction(
 	ctx: ExtensionContext,
+	live: LiveSession,
 	path: string,
 	file: AgentProfilesFile,
 	result: Exclude<ProfilesPanelResult, { type: "close" }>,
@@ -4293,6 +4322,10 @@ async function runProfilesPanelAction(
 					orchestratorRollback = () => restoreOrchestratorSettings(settingsPath, previous);
 					orchestratorNote = `\nOrchestrator set to ${formatOrchestratorSelection(orchestratorEntry)} in ${sanitizeTerminalText(settingsPath)}.`;
 				}
+				// settings.json only governs future sessions. The session the user is
+				// sitting in keeps its model until told otherwise, which made a profile
+				// look applied while the orchestrator kept answering with the old one.
+				orchestratorNote += await switchLiveOrchestrator(ctx, live, orchestratorEntry);
 			}
 			// A pin that does not resolve changes nothing at launch, so the global apply
 			// above is what governs this repository. Saying so keeps a broken pin from
@@ -4539,7 +4572,7 @@ async function runProfilesPanelAction(
 	}
 }
 
-async function handleProfilesCommand(ctx: ExtensionContext): Promise<void> {
+async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): Promise<void> {
 	const path = profilesFilePath(gentleAiConfigHome());
 	const read = readProfilesFileResult(path);
 	if (read.status === "invalid") {
@@ -4589,7 +4622,7 @@ async function handleProfilesCommand(ctx: ExtensionContext): Promise<void> {
 	);
 	while (result.type !== "close") {
 		selectedName = "name" in result ? result.name : undefined;
-		file = await runProfilesPanelAction(ctx, path, file, result);
+		file = await runProfilesPanelAction(ctx, live, path, file, result);
 		result = await showProfilesPanel(
 			ctx,
 			file,
@@ -9428,7 +9461,7 @@ function createGentleAiExtensionForTesting(
 	pi.registerCommand("gentle:profiles", {
 		description: "Create, switch, and manage global agent-model profiles for el Gentleman.",
 		handler: async (_args, ctx) => {
-			await handleProfilesCommand(ctx);
+			await handleProfilesCommand(ctx, pi);
 		},
 	});
 

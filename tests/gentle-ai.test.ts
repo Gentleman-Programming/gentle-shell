@@ -364,11 +364,17 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 		rmSync(root, { recursive: true, force: true });
 	});
 	const commands = new Map<string, Parameters<ExtensionAPI["registerCommand"]>[1]>();
+	// The live session seam a profile apply drives: Pi's own setModel and
+	// setThinkingLevel on the ExtensionAPI move the session the user is in.
+	const liveSwitches: Array<{ kind: "model"; provider: string; id: string } | { kind: "thinking"; level: string }> = [];
+	let setModelResult = true;
 	createGentleAiExtension({ nativeReviewCli: null })({
 		on() {},
 		registerTool() {},
 		registerCommand(name, command) { commands.set(name, command); },
-	} as ExtensionAPI);
+		setModel: async (model: { provider: string; id: string }) => { liveSwitches.push({ kind: "model", provider: model.provider, id: model.id }); return setModelResult; },
+		setThinkingLevel: (level: string) => { liveSwitches.push({ kind: "thinking", level }); },
+	} as unknown as ExtensionAPI);
 	const notifications: Array<{ message: string; severity: string }> = [];
 	// The profiles panel reads the terminal rows to size its full-screen frame, so
 	// the fake UI hands every factory a TUI-shaped stand-in with a mutable height.
@@ -377,13 +383,19 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 	const panels: string[] = [];
 	let onPanel = () => ({ type: "cancel", config: {} });
 	let onInput: ((panel: RoutingConsumerPanel) => void) | undefined;
+	// The orchestrator model is looked up in the registry before switching.
+	const registryModels = [
+		{ provider: "openai", id: "alpha" },
+		{ provider: "openai", id: "beta" },
+		{ provider: "nan", id: "glm5.3" },
+	];
 	const ctx = {
 		cwd: root,
 		hasUI: true,
-		modelRegistry: { getAvailable: async () => [
-			{ provider: "openai", id: "alpha" },
-			{ provider: "openai", id: "beta" },
-		] },
+		modelRegistry: {
+			getAvailable: async () => registryModels.filter((model) => model.provider === "openai"),
+			find: (provider: string, id: string) => registryModels.find((model) => model.provider === provider && model.id === id),
+		},
 		ui: {
 			notify(message: string, severity: string) { notifications.push({ message, severity }); },
 			custom: async (factory: (tui: unknown, theme: Theme, keybindings: unknown, done: (result: unknown) => void) => RoutingConsumerPanel) => {
@@ -404,6 +416,8 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 		root, agentHome, configHome, projectPath, globalPath, exportPath, notifications, panels,
 		tui: fixtureTui as { terminal: { rows: number } },
 		panelVisits: () => panelVisits,
+		liveSwitches,
+		refuseSetModel() { setModelResult = false; },
 		onPanel(action: typeof onPanel) { onPanel = action; },
 		onInput(action: (panel: RoutingConsumerPanel) => void) { onInput = action; },
 		run: (name: string) => commands.get(name)!.handler("", ctx),
@@ -1871,6 +1885,38 @@ test("applying a profile persists its orchestrator and never leaks the key into 
 	assert.match(readFileSync(join(fixture.root, ".pi", "agents", "worker.md"), "utf8"), /model: openai\/alpha/);
 	const applied = fixture.notifications.at(-1)?.message ?? "";
 	assert.match(applied, /Orchestrator set to nan\/glm5\.3 · max/);
+	// Persisting the default is not enough: the session the user is sitting in
+	// must switch too, or the profile looks applied while the orchestrator keeps
+	// answering with the old model.
+	assert.deepEqual(fixture.liveSwitches, [
+		{ kind: "model", provider: "nan", id: "glm5.3" },
+		{ kind: "thinking", level: "max" },
+	], "the live session switches to the profile's orchestrator");
+});
+
+test("applying a profile whose orchestrator model is unknown to the registry persists the default and says the session did not switch", async (t) => {
+	const { fixture, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	writeStore({ team: { orchestrator: { model: "nan/not-in-catalog", thinking: "high" }, worker: { model: "openai/alpha" } } });
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+	const after = JSON.parse(readFileSync(settingsPath, "utf8"));
+	assert.equal(after.defaultModel, "not-in-catalog", "the default for new sessions is still recorded");
+	assert.deepEqual(fixture.liveSwitches, [], "nothing is switched live without a registry model");
+	const applied = fixture.notifications.at(-1)?.message ?? "";
+	assert.match(applied, /nan\/not-in-catalog is not in the model catalog; this session keeps its current model/);
+});
+
+test("applying a profile whose orchestrator provider has no auth persists the default and reports the refused switch", async (t) => {
+	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	writeStore({ team: { orchestrator: { model: "nan/glm5.3" }, worker: { model: "openai/alpha" } } });
+	fixture.refuseSetModel();
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+	assert.deepEqual(fixture.liveSwitches, [{ kind: "model", provider: "nan", id: "glm5.3" }], "the switch was attempted, no thinking level without one in the profile");
+	const applied = fixture.notifications.at(-1)?.message ?? "";
+	assert.match(applied, /no authentication is configured for nan; this session keeps its current model/);
 });
 
 test("applying a profile without an orchestrator entry leaves settings.json untouched", async (t) => {

@@ -87,6 +87,23 @@ test("renderAgentsCard right-aligns model·effort, tokens, cost, and elapsed in 
 	assert.equal(visibleWidth(rowA), visibleWidth(rowB));
 });
 
+test("renderAgentsCard preserves tokens, cost, and elapsed when a long model exhausts the metadata budget", () => {
+	const now = 200_000;
+	const lines = renderAgentsCard(
+		[task({ agent: "worker", model: "provider/claude-sonnet-4-5-20250929", thinking: "high", tokens: 12_345, cost: 0.42, startedAt: now - 184_000 })],
+		plainTheme,
+		46,
+		now,
+		{ collapsed: false },
+	).map(stripAnsi);
+	assert.equal(lines.length, 3);
+	assert.match(lines[1], /12k/);
+	assert.match(lines[1], /\$0\.42/);
+	assert.match(lines[1], /3m04s/);
+	assert.doesNotMatch(lines[1], /claude-sonnet-4-5-20250929/, "the long model yields space before usage and elapsed");
+	assert.equal(visibleWidth(lines[1]), 46);
+});
+
 test("renderAgentsCard fills only the elapsed column with 'queued', leaving model, tokens, and cost blank", () => {
 	const tasks = [
 		task({ id: "running", status: TASK_STATUS.RUNNING, startedAt: 1000, endedAt: null }),
@@ -121,7 +138,8 @@ test("renderAgentsCard keeps every task on one line, clipping long labels, and d
 	assert.match(wide[1], /^│ ◐  sdd-explore  write the gentle shell foot… +claude-sonnet-5 · 34k · \$0\.27 · 4s │$/);
 	const narrow = renderAgentsCard(tasks, plainTheme, 44, 5_000, { collapsed: false }).map(stripAnsi);
 	assert.equal(narrow.length, 3);
-	assert.match(narrow[1], /^│ ◐  sdd-explore +claude-sonnet-5 +│$/);
+	assert.match(narrow[1], /34k · \$0\.27 · 4s/);
+	assert.doesNotMatch(narrow[1], /claude-sonnet-5/, "narrow cards sacrifice the model before usage and elapsed");
 });
 
 test("renderAgentsCard shows questions and failures in place of the task, and collapses to the first row", () => {
@@ -146,24 +164,26 @@ test("renderAgentsCard shows questions and failures in place of the task, and co
 	assert.match(collapsed[1], /^│ \?  sdd-explore  asked: Delete\?/);
 });
 
-test("agent model and effort outrank usage at sidebar widths without inventing unknown values", () => {
+test("elapsed outranks model metadata at narrow widths without inventing unknown values", () => {
 	for (const width of [32, 44, 60, 100]) {
 		const lines = renderAgentsCard([task({ agent: "worker", model: "openai/gpt-5", thinking: "high" })], plainTheme, width, 5000, { collapsed: false });
 		assert.equal(lines.length, 3);
 		assert.match(lines[1], /worker/);
-		assert.match(lines[1], /gpt-5 · high/);
+		assert.match(lines[1], /4s/, "elapsed remains visible while the task row can represent metadata");
 		for (const line of lines) assert.equal(visibleWidth(line), width);
-		if (width <= 44) assert.doesNotMatch(lines[1], /34k|\$0\.27|4s/);
+		if (width === 32) assert.doesNotMatch(lines[1], /gpt-5/, "model metadata yields before elapsed at the narrowest ordinary width");
+		if (width >= 60) assert.match(lines[1], /gpt-5 · high/);
 	}
 	for (const width of [0, 1, 2, 3, 4, 8, 16, 24]) {
 		const lines = renderAgentsCard([task({ agent: "界worker", thinking: "xhigh" })], plainTheme, width, 5000, { collapsed: false });
-		assert.ok(lines.length <= 4, "narrow metadata gets at most one dedicated row");
+		assert.ok(lines.length <= 4, "narrow metadata never adds an unbounded extra row");
 		for (const line of lines) assert.equal(visibleWidth(line), width);
 	}
-	const sidebar = renderAgentsCard([task({ agent: "gentle-ai-worker", model: "openai/gpt-5.6", thinking: "high" })], plainTheme, 32, 5000, { collapsed: false });
-	assert.match(sidebar.join("\n"), /gentle-ai-worker/);
-	assert.match(sidebar.join("\n"), /gpt-5\.6 · high/);
-	for (const line of sidebar) assert.equal(visibleWidth(line), 32);
+	const narrow = renderAgentsCard([task({ agent: "gentle-ai-worker", model: "openai/gpt-5.6", thinking: "high" })], plainTheme, 32, 5000, { collapsed: false });
+	assert.match(narrow.join("\n"), /gentle-ai-worker/);
+	assert.match(narrow.join("\n"), /4s/);
+	assert.doesNotMatch(narrow.join("\n"), /gpt-5\.6/, "long model metadata yields before elapsed");
+	for (const line of narrow) assert.equal(visibleWidth(line), 32);
 	const unknown = renderAgentsCard([task({ model: "default", thinking: undefined })], plainTheme, 80, 5000, { collapsed: false }).join("\n");
 	assert.doesNotMatch(unknown, /default|undefined|high|off/);
 	const off = renderAgentsCard([task({ thinking: "off" })], plainTheme, 80, 5000, { collapsed: false }).join("\n");

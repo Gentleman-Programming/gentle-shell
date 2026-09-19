@@ -448,6 +448,26 @@ test("launch registration waits for actual spawn, including queued launches, and
 	assert.deepEqual(cwds, ["/child", "/queued", "/missing", "/throws"]);
 });
 
+test("a queued launch keeps the extension selection captured at dispatch", async () => {
+	const args: string[][] = [];
+	const store = new TaskStore();
+	const runner = new AgentRunner(store, { maxConcurrency: 1, stallTimeoutMs: 1000 }, {
+		spawn: (_command, launchArgs) => {
+			args.push(launchArgs);
+			return fakeChild().child;
+		},
+		now: () => 1000, schedule: () => () => {}, pi: { command: "pi", args: [] },
+	}, { askUser: async () => ({ cancelled: true }) });
+	const selected = ["/extensions/first.js"];
+	const task = runner.run(request({ extensions: selected }));
+	selected.push("/extensions/mutated-after-dispatch.js");
+	await tick();
+	assert.ok(args[0]?.includes("/extensions/first.js"), "the dispatched selection reaches the child launch");
+	assert.ok(!args[0]?.includes("/extensions/mutated-after-dispatch.js"), "post-dispatch array mutation must not leak into the launch");
+	runner.cancel(task.id);
+	await tick();
+});
+
 test("runner captures resolved model and effort, retaining omitted launch values", async () => {
 	for (const scenario of [
 		{ state: { model: { provider: "anthropic", id: "resolved-model" }, thinkingLevel: "off" }, model: "anthropic/resolved-model", thinking: "off" },
@@ -562,6 +582,9 @@ test("childArguments builds an rpc launch with model, thinking, tools, session d
 	const resumed = childArguments(request({ resumeSessionPath: "/sessions/old.jsonl", model: undefined, thinking: undefined, agent: { ...explorer, tools: [] } }));
 	assert.equal(resumed[resumed.indexOf("--session") + 1], "/sessions/old.jsonl");
 	assert.ok(!resumed.includes("--model") && !resumed.includes("--tools"));
+	const extensions = childArguments(request({ extensions: ["/extensions/first.js", "", "/extensions/second.js"] }));
+	assert.deepEqual(extensions.slice(extensions.indexOf("--no-extensions"), extensions.indexOf("--tools")), ["--no-extensions", "--extension", "/extensions/first.js", "--extension", "/extensions/second.js"]);
+	assert.deepEqual(childArguments(request({ extensions: [] })).filter((arg) => arg === "--no-extensions" || arg === "--extension"), ["--no-extensions"]);
 });
 
 test("childArguments preserves a max profile instead of the definition's medium effort", () => {

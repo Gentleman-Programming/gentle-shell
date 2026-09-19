@@ -10,6 +10,7 @@ import {
 	CHANGE_STATUS,
 	ChangesTracker,
 	WorktreeChangesTracker,
+	RootBranchLabels,
 	parseWorktrees,
 	changesSummary,
 	emptyChanges,
@@ -437,4 +438,35 @@ test("ChangesTracker counts the lines of untracked files, which git numstat leav
 	assert.deepEqual(model.files, [file("empty.md", 0, 0, CHANGE_STATUS.UNTRACKED), file("notes.md", 3, 0, CHANGE_STATUS.UNTRACKED)]);
 	assert.equal(model.added, 3);
 	assert.deepEqual(counted, ["notes.md", "empty.md"]);
+});
+
+// The session-evidence tracker behind /gentle:changes knows roots, never
+// branches. The overlay decorates its trees with each root's own HEAD state,
+// resolved once per root and reported back so the view can repaint; until git
+// answers the tree shows no branch (the view's "detached" fallback), and a
+// genuinely detached HEAD stays that way.
+test("RootBranchLabels decorates session trees with each root's branch once git answers", async () => {
+	const calls = new Map<string, string[][]>();
+	const answers: Record<string, { symbolic: { stdout: string; code: number }; verify: { stdout: string; code: number } }> = {
+		"/repo": { symbolic: { stdout: "feature\n", code: 0 }, verify: { stdout: "deadbeef\n", code: 0 } },
+		"/fresh": { symbolic: { stdout: "main\n", code: 0 }, verify: { stdout: "", code: 1 } },
+		"/pinned": { symbolic: { stdout: "", code: 1 }, verify: { stdout: "deadbeef\n", code: 0 } },
+	};
+	let changed = 0;
+	const labels = new RootBranchLabels((root) => async (args) => {
+		calls.set(root, [...(calls.get(root) ?? []), args]);
+		await new Promise((resolve) => setImmediate(resolve));
+		return args[0] === "symbolic-ref" ? answers[root]!.symbolic : answers[root]!.verify;
+	}, () => changed++);
+	const trees = Object.keys(answers).map((root) => ({ root, model: changesModel([]) }));
+	const first = labels.decorate(trees);
+	assert.deepEqual(first.map((tree) => tree.branch), [undefined, undefined, undefined], "nothing is labelled before git answers");
+	await labels.settled();
+	assert.equal(changed, 3, "each resolved root asks the view to repaint once");
+	const second = labels.decorate(trees);
+	assert.deepEqual(second.map((tree) => tree.branch), ["feature", "no commits yet", undefined]);
+	labels.decorate(trees);
+	await labels.settled();
+	assert.deepEqual([...calls.values()].map((list) => list.length), [2, 2, 1], "one resolution per root, never per decorate call");
+	assert.equal(changed, 3);
 });

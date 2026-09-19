@@ -6,7 +6,7 @@ import { profilesFilePath, readProfilesFileResult } from "../lib/agent-profiles.
 import * as os from "node:os";
 import { join } from "node:path";
 import { buildShellHeaderModel, renderShellBar, renderShellHeaderBar, renderShellSidebarBar, shellEnabled, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
-import { CHANGE_STATUS, renderChangesWidget, type ChangedFile, type ChangesModel, type GitRunner, type WorktreeChanges } from "../lib/shell-changes.ts";
+import { CHANGE_STATUS, RootBranchLabels, renderChangesWidget, type ChangedFile, type ChangesModel, type GitRunner, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver } from "../lib/session-worktree-registry.ts";
 import { CARD_TONE, renderCard, type Card, type CardTheme } from "../lib/shell-card.ts";
@@ -343,15 +343,24 @@ interface OverlayDeps {
 	refresh(): Promise<ChangesModel>;
 	apply(ctx: ExtensionContext, model: ChangesModel): void;
 	pollMs: number;
+	gitForRoot(root: string): GitRunner;
 }
 
-// Refresh only the captured session model. Never read live files or Git here.
+// Refresh only the captured session model. Never read live files here; the
+// only Git the overlay touches is each root's HEAD, to label its tree.
 async function showChangesOverlay(ctx: ExtensionContext, deps: OverlayDeps): Promise<void> {
 	let host: ExternalEditorHost | undefined;
 	let view: WorktreeChangesView | undefined;
+	// Session evidence knows roots, not branches; label them while the overlay
+	// is open and repaint when Git answers.
+	const labels = new RootBranchLabels(deps.gitForRoot, () => {
+		view?.update(labels.decorate(deps.worktrees()));
+		host?.requestRender();
+	});
+	const worktrees = () => labels.decorate(deps.worktrees());
 	const refresh = async () => {
 		const latest = await deps.refresh();
-		view?.update(deps.worktrees());
+		view?.update(worktrees());
 		deps.apply(ctx, latest);
 	};
 	const poll = setInterval(() => void refresh(), deps.pollMs);
@@ -360,7 +369,7 @@ async function showChangesOverlay(ctx: ExtensionContext, deps: OverlayDeps): Pro
 		const chosen = await ctx.ui.custom<{ root: string; file: ChangedFile } | null>(
 			(tui, theme, _keybindings, done) => {
 				host = tui;
-				view = new WorktreeChangesView(deps.worktrees(), {
+				view = new WorktreeChangesView(worktrees(), {
 					theme,
 					rows: () => Math.max(OVERLAY_MIN_ROWS, Math.floor(tui.terminal.rows * OVERLAY_HEIGHT_RATIO)),
 					loadDiff: (root, file) => Promise.resolve(deps.loadDiff(root, file)),
@@ -690,7 +699,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			ctx.ui.notify("No captured agent changes. Only successful write/edit operations from this session and its subagents are shown; shell changes are not attributed.", "info");
 			return;
 		}
-		await showChangesOverlay(ctx, { loadDiff: (root, file) => tracker.loadDiff(root, file), worktrees: () => tracker.worktrees, refresh: () => tracker.refresh(), apply: applyChanges, pollMs: changesPollMs(env) });
+		await showChangesOverlay(ctx, { loadDiff: (root, file) => tracker.loadDiff(root, file), worktrees: () => tracker.worktrees, refresh: () => tracker.refresh(), apply: applyChanges, pollMs: changesPollMs(env), gitForRoot: (root) => deps.gitRunner(root) });
 	};
 	pi.registerCommand(CHANGES_COMMAND_NAME, {
 		description: "Browse captured write/edit changes from this agent session and its subagents, excluding preexisting and external edits. Shell changes are not attributed. Press o to open $EDITOR.",

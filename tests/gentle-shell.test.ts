@@ -560,6 +560,15 @@ test("captured changes update the widget and bar without repository scans", asyn
  await fire(handlers,"session_shutdown",ctx);
 });
 
+
+// The changes overlay may ask Git for each captured root's HEAD label, and
+// nothing else: no status, diff, numstat or worktree scan behind the user's
+// back. Labelling is metadata, scanning is the behaviour these tests forbid.
+const onlyHeadLabels = (git: readonly string[][]) => git.every((args) => {
+ const command = args[0] === "-C" ? args.slice(2) : args;
+ return command[0] === "symbolic-ref" || (command[0] === "rev-parse" && command.includes("--verify"));
+});
+
 test("Changes opens only for captured mutations, not registered dirty roots", async () => {
  const {pi,handlers,commands,tools,git}=fakePi();
  gentleShell(pi,{});
@@ -574,7 +583,7 @@ test("Changes opens only for captured mutations, not registered dirty roots", as
  const opened=commands.get("gentle:changes")!.handler("",ctx);
  await overlayReady;
  assert.match(ui.overlayView!.render(140).join("\n"),/linked/);
- assert.equal(git.length,0);
+ assert.ok(onlyHeadLabels(git), `overlay ran more than HEAD labelling: ${JSON.stringify(git)}`);
  ui.closeOverlay?.(); await opened;
  await fire(handlers,"session_shutdown",ctx);
 });
@@ -597,7 +606,7 @@ test("overlay groups captured roots and refreshes same-count diffs without HEAD 
   await new Promise(resolve=>setTimeout(resolve,20));
   assert.match(ui.overlayView!.render(140).join("\n"),/second/);
   assert.doesNotMatch(ui.overlayView!.render(140).join("\n"),/first/);
-  assert.equal(git.length,0);
+  assert.ok(onlyHeadLabels(git), `overlay ran more than HEAD labelling: ${JSON.stringify(git)}`);
  } finally { ui.closeOverlay?.(); await opened; await fire(handlers,"session_shutdown",ctx); }
 });
 

@@ -36,3 +36,30 @@ test("reload and new evidence refresh Changes without Git or live file reads",as
 	assert.equal(typeof f.widgets.get("gentle-shell-changes"),"function");
 	await f.fire("session_shutdown");
 });
+test("the changes overlay labels each session tree with its root's branch instead of detached",async()=>{
+	const evidence=(root:string,id:string)=>({type:"custom",customType:SESSION_CHANGE_ENTRY,data:{sessionId:"session",evidence:{id,root,path:"own.ts",before:{kind:"absent"},after:{kind:"text",text:"own\n"}}}});
+	const entries=[evidence("/repo","child:1"),evidence("/other","child:2")];
+	const handlers=new Map<string,Function[]>();
+	const commands=new Map<string,any>();
+	const gitRoots:string[]=[];
+	const pi:any={on:(key,fn)=>handlers.set(key,[...(handlers.get(key)??[]),fn]),events:{on:()=>()=>{},emit(){}},appendEntry(){},registerTool(){},registerShortcut(){},registerMessageRenderer(){},registerCommand:(key,registration)=>commands.set(key,registration)};
+	let view:any; let renders=0;
+	const ctx:any={hasUI:true,cwd:"/repo",sessionManager:{getSessionId:()=>"session",getEntries:()=>entries},
+		ui:{setFooter(){},getEditorComponent:()=>({}),setWorkingVisible(){},setWidget(){},notify(){},
+			custom:async(factory:any)=>{view=factory({terminal:{rows:40,columns:120},requestRender:()=>renders++},{fg:(_c:string,t:string)=>t,bold:(t:string)=>t},{},()=>{});return new Promise(()=>{});}}};
+	shell(pi,{},{resolveWorktree:()=>({root:"/repo",commonDir:"/git"}),devBinary:()=>undefined,
+		gitRunner:(root:string)=>async(args:string[])=>{gitRoots.push(root);await new Promise(r=>setImmediate(r));
+			if(args[0]==="symbolic-ref")return root==="/repo"?{stdout:"feature\n",code:0}:{stdout:"",code:1};
+			return {stdout:"deadbeef\n",code:0};}});
+	for(const fn of handlers.get("session_start")??[])await fn({},ctx);
+	void commands.get("gentle:changes").handler("",ctx);
+	await new Promise(r=>setImmediate(r));
+	assert.ok(view,"the overlay opened");
+	for(let i=0;i<6;i++)await new Promise(r=>setImmediate(r));
+	const rendered=view.render(120).join("\n");
+	assert.match(rendered,/feature · repo/,"the repo tree carries its branch");
+	assert.match(rendered,/detached · other/,"a genuinely detached root still reads detached");
+	assert.deepEqual([...new Set(gitRoots)].sort(),["/other","/repo"],"git is asked once per root, only while the overlay is open");
+	assert.ok(renders>0,"a resolved label asks the overlay to repaint");
+	for(const fn of handlers.get("session_shutdown")??[])await fn({},ctx);
+});

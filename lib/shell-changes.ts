@@ -172,12 +172,55 @@ export function parseWorktrees(text: string): Array<{ root: string; branch?: str
 // a real branch name, "no commits yet" for an unborn branch (a branch ref
 // that exists but has no commit), or undefined for a genuine detached HEAD
 // (the caller falls back to "detached" in that case).
-async function foreignRootBranch(git: GitRunner): Promise<string | undefined> {
+export async function foreignRootBranch(git: GitRunner): Promise<string | undefined> {
 	const symbolic = await git(["symbolic-ref", "--quiet", "--short", "HEAD"]).catch(() => ({ code: 1, stdout: "" }) as GitResult);
 	const branch = symbolic.code === 0 ? symbolic.stdout.trim() : "";
 	if (!branch) return undefined;
 	const verified = await git(["rev-parse", "--verify", "-q", "HEAD"]).catch(() => ({ code: 1, stdout: "" }) as GitResult);
 	return verified.code === 0 ? branch : "no commits yet";
+}
+
+// The session-evidence tracker behind /gentle:changes records roots, never
+// branches, so the overlay would label every tree "detached". This resolves
+// each root's own HEAD state once (branch, "no commits yet", or undefined for
+// a real detached HEAD), decorates the trees from the cache, and tells the
+// caller when a fresh answer arrived so the view can repaint. Git is touched
+// only while the overlay is open, never at startup or on evidence refresh.
+export class RootBranchLabels {
+	private readonly labels = new Map<string, string | undefined>();
+	private readonly pending = new Map<string, Promise<void>>();
+	private readonly gitForRoot: (root: string) => GitRunner;
+	private readonly onChange: () => void;
+	constructor(gitForRoot: (root: string) => GitRunner, onChange: () => void = () => {}) {
+		this.gitForRoot = gitForRoot;
+		this.onChange = onChange;
+	}
+
+	decorate(trees: readonly WorktreeChanges[]): WorktreeChanges[] {
+		return trees.map((tree) => {
+			if (tree.branch !== undefined) return tree;
+			if (!this.labels.has(tree.root)) this.resolve(tree.root);
+			const branch = this.labels.get(tree.root);
+			return branch === undefined ? tree : { ...tree, branch };
+		});
+	}
+
+	/** Every in-flight resolution has finished. */
+	async settled(): Promise<void> {
+		while (this.pending.size) await Promise.all(this.pending.values());
+	}
+
+	private resolve(root: string): void {
+		if (this.pending.has(root)) return;
+		const task = foreignRootBranch(this.gitForRoot(root))
+			.catch(() => undefined)
+			.then((branch) => {
+				this.labels.set(root, branch);
+				this.pending.delete(root);
+				this.onChange();
+			});
+		this.pending.set(root, task);
+	}
 }
 
 export class WorktreeChangesTracker {

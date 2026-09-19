@@ -186,4 +186,52 @@ module in memory; a fresh session is required to exercise the fix.
 
 ## Delivery evidence
 
-_Pending._
+- Commit `9841de69 fix(review): carry OpenCode session attribution into the
+  in-process reviewer` — 7 files, +483/-5, on branch
+  `fix/reviewer-opencode-session-headers`.
+- Issue: `Gentleman-Programming/gentle-shell#1242`.
+- Pull request: `Gentleman-Programming/gentle-shell#1243` (1 commit, 7 files,
+  base `main`), opened from the fork `IGabrielRC/gentle-shell`.
+- The contributing account `IGabrielRC` has `pull` but not `push` on the
+  upstream, so the fork route was the only one available. The fork was created
+  from the upstream and renamed to `gentle-shell` to match the canonical
+  repository name (`gentle-pi` is an alias; `gh repo view` reports
+  `Gentleman-Programming/gentle-shell`).
+- Git identity was unset in the working clone (no local, no global
+  `user.email`), so the first commit attempt failed outright. The repository now
+  carries a local identity matching the one already used in the author's other
+  clone.
+
+### CI state — and what it means for verification
+
+- This PR's CI run (`35465492773`) is **`action_required`**: GitHub does not run
+  workflows for fork pull requests until a maintainer approves them. It ran for
+  0s and never started. Every other fork PR in this repository shows the same
+  state, so this is the standard gate, not a defect of this branch.
+- The latest CI on `main` (`35463530035`):
+  - `verify` (ubuntu, full `pnpm test`) — **success**
+  - `session-transport-macos` — success
+  - `review-repository-windows` — **failure, pre-existing and unrelated to this
+    branch**
+- Consequence: once a maintainer approves the run, `verify` green on this PR is
+  the meaningful verification — it is the job that runs the two new relay tests
+  which cannot run on Windows. If the overall PR still shows red, the red job is
+  `review-repository-windows` failing for its own pre-existing reason, already
+  red on `main`.
+
+### House convention that cannot be satisfied from this account
+
+The `branch-pr` skill requires `status:approved` on the linked issue and exactly
+one `type:*` label on the PR. Both fail with
+`AddLabelsToLabelable` permission denied for `IGabrielRC`. The `PR Validation`
+jobs the skill documents (`Check Issue Reference`,
+`Check Issue Has status:approved`, `Check PR Has type:* Label`) are **not
+registered in this repository**: the actions list contains only `CI`, `Publish
+to npm`, `Copilot`, and the two Windows workflows. Nothing automated blocks the
+PR; the labels remain a maintainer action.
+
+### Operational step still owed
+
+The harness repository is the live extension, so the fix reaches the runtime only
+at the next Pi session start. The session that produced the `MissingSessionID`
+failure had the old module in memory.

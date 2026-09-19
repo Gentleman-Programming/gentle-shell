@@ -1,4 +1,4 @@
-import { ScrollView, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { ScrollView, VStack, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { sidebarState, type SidebarRail } from "./shell-sidebar.ts";
 import type { ShellBarTheme } from "./shell-bar.ts";
 import { renderSidebarBanner } from "./shell-sidebar-banner.ts";
@@ -15,7 +15,8 @@ const GAP = 3;
 // Experimental Pi 0.85.1 internals. Only the fullscreen layout tree is adapted;
 // regular mode keeps native scrollback and the original bottom components.
 const NODE = Symbol.for("@earendil-works/pi-tui/layout-node");
-type LayoutNode = { type: string; entries?: unknown[]; gap?: number; align?: string };
+type LayoutNode = { type: string; entries?: unknown[]; gap?: number; align?: "stretch" | "start" | "center" | "end" };
+type StackLayoutEntry = ConstructorParameters<typeof VStack>[0] extends Array<infer T> | undefined ? Exclude<T, Component> : never;
 type LayoutRoot = Component & { [NODE]?: () => LayoutNode };
 type Host = TUI & { mode?: string; layoutRoot?: LayoutRoot };
 type SidebarCache = { revision: number };
@@ -233,7 +234,31 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 			// Fullscreen gives this stretched stack an explicit viewport height.
 			// Its intrinsic-height probe is unused; real painting traverses NODE.
 			// Delegating that probe to root.render would render the transcript twice.
-			const left = { render: () => [], invalidate() {}, [NODE]: () => original.call(root) };
+			// Pi's dock reserves one row for the footer (chat-viewport: minSize 1)
+			// even though our footer paints nothing while the sidebar is active.
+			// The row is baked in twice: the dock's own VStack.render pads it into
+			// the intrinsic height the root measures, and its layout node keeps
+			// it as minSize. Overriding only the node leaves the measured blank
+			// row in place, so the dock is re-hosted in a real VStack over the
+			// same children with the footer entry free to shrink to zero. One
+			// wrapper per dock keeps component identity stable across frames.
+			const docks = new WeakMap<Component, VStack>();
+			const reclaimFooterRow = (node: LayoutNode): LayoutNode => {
+				if (node.type !== "vstack" || !node.entries?.length) return node;
+				const entries = node.entries as Array<{ component: Component & { [NODE]?: () => LayoutNode } }>;
+				const dock = entries[entries.length - 1]!.component;
+				if (typeof dock[NODE] !== "function") return node;
+				let wrapped = docks.get(dock);
+				if (!wrapped) {
+					const inner = dock[NODE]!();
+					if (inner.type !== "vstack" || !inner.entries?.length) return node;
+					const last = inner.entries.length - 1;
+					wrapped = new VStack(inner.entries.map((entry, index) => index === last ? { ...(entry as StackLayoutEntry), minSize: 0 } : entry as StackLayoutEntry), { gap: inner.gap, align: inner.align });
+					docks.set(dock, wrapped);
+				}
+				return { ...node, entries: entries.map((entry, index) => index === entries.length - 1 ? { ...entry, component: wrapped! } : entry) };
+			};
+			const left = { render: () => [], invalidate() {}, [NODE]: () => reclaimFooterRow(original.call(root)) };
 			// Stable component wrapping the [left, scroll] hstack behind its own
 			// NODE, exactly like `left` wraps the native transcript: the header
 			// vstack's second entry recurses into it the same way pi-tui already

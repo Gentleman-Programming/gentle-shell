@@ -28,7 +28,7 @@ function nextTopLevelSection(markdown: string, from: number): number {
 }
 
 function cleanRequirementContent(content: string): string {
-	return content.trimEnd().replace(/\n\s*---\s*$/m, "").trimEnd();
+	return content.trimEnd().replace(/(?:\r?\n\s*---\s*)+$/, "").trimEnd();
 }
 
 function operationKey(label: string): DeltaOperation {

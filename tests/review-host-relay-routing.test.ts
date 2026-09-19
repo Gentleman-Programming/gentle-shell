@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { __testing } from "../extensions/gentle-ai.ts";
 import type { NativeReviewCli, NativeReviewUnachievableLensCaptureArtifact, NativeReviewUnachievableLensCaptureRequest } from "../lib/native-review-cli.ts";
-import { REVIEW_HOST_RELAY_FAILURE, REVIEW_HOST_RELAY_PI_TIMEOUT_ENV, REVIEW_HOST_RELAY_PI_TIMEOUT_MAX_MS, REVIEW_HOST_RELAY_SUBMISSION_MISSING_MESSAGE, REVIEW_HOST_RELAY_UNAVAILABLE_MESSAGE, ReviewHostRelayError, type ReviewHostRelayRequest } from "../lib/review-host-relay.ts";
+import { REVIEW_HOST_RELAY_CONFIG_FILE, REVIEW_HOST_RELAY_EXTENSIONS_ENV, REVIEW_HOST_RELAY_FAILURE, REVIEW_HOST_RELAY_PI_TIMEOUT_ENV, REVIEW_HOST_RELAY_PI_TIMEOUT_MAX_MS, REVIEW_HOST_RELAY_SUBMISSION_MISSING_MESSAGE, REVIEW_HOST_RELAY_UNAVAILABLE_MESSAGE, ReviewHostRelayError, type ReviewHostRelayRequest } from "../lib/review-host-relay.ts";
 import { decodeReviewNextTransitionV3, decodeReviewStatusV3, type ReviewArtifactSubjectV2, type ReviewCaptureSubmissionV1, type ReviewCollectInputV3, type ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 
 // One-slot capture routing: the host relay runs only when the selected
@@ -271,6 +271,33 @@ test("grouped capture forecasts once, reaches a four-reviewer barrier, and recon
 	assert.equal(harness.statusCalls.at(-1)?.agent, "pi", "post-last-capture reconciliation preserves the Pi host runtime");
 	assert.equal((result.next_transition as { kind?: string; reasonCode?: string } | undefined)?.kind, "collect");
 	assert.equal((result.next_transition as { kind?: string; reasonCode?: string } | undefined)?.reasonCode, "provider_refuter_required");
+});
+
+// gentle-shell#1198: resolveReviewHostRelayExtensionPaths can now throw
+// ReviewHostRelayError while building the group's requests, before the
+// existing try/catch around the group runner. Confirms that throw is mapped
+// to the same typed blocked envelope the single-slot path already produces.
+test("a malformed global review-relay.json surfaces as a typed blocked result from the group capture path", async (t) => {
+	t.after(() => __testing.setReviewHostRelayGroupRunnersForTesting());
+	const cwd = repository(t), lineageId = "relay-group-config-invalid", inputs = groupInputs(lineageId);
+	const configHome = mkdtempSync(join(tmpdir(), "gentle-review-relay-config-"));
+	t.after(() => rmSync(configHome, { recursive: true, force: true }));
+	writeFileSync(join(configHome, REVIEW_HOST_RELAY_CONFIG_FILE), "{ not json");
+	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME, previousExtensions = process.env[REVIEW_HOST_RELAY_EXTENSIONS_ENV];
+	process.env.GENTLE_PI_CONFIG_HOME = configHome;
+	delete process.env[REVIEW_HOST_RELAY_EXTENSIONS_ENV];
+	t.after(() => {
+		if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME; else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+		if (previousExtensions === undefined) delete process.env[REVIEW_HOST_RELAY_EXTENSIONS_ENV]; else process.env[REVIEW_HOST_RELAY_EXTENSIONS_ENV] = previousExtensions;
+	});
+	let launches = 0;
+	__testing.setReviewHostRelayGroupRunnersForTesting(async (requests) => { launches += requests.length; return requests.map(prepared); });
+
+	const result = await runCaptureGroup(cwd, nativeHarness([finalizeStatus(lineageId, inputs)]), lineageId, inputs);
+
+	assert.equal(result.status, "blocked");
+	assert.equal((result.failure as { kind?: string } | undefined)?.kind, "reviewer-config-invalid");
+	assert.equal(launches, 0, "a malformed global config refuses before any reviewer model launch");
 });
 
 test("captured v5 STATUS accepts capture-phase Pn when authority has advanced to Rn at the forecast boundary", async (t) => {

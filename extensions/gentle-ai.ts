@@ -7499,15 +7499,15 @@ async function executeReviewCaptureGroupOperation(
 			mutation_outcome: "none",
 		};
 	}
-	const requests: readonly ReviewHostRelayRequest[] = group.slots.map((slot) => ({
-		captureArgumentTokens: slot.captureArgumentTokens,
-		targetCwd: cwd,
-		submission: slot.submission!,
-		...reviewHostRelayLaunchSelection(slot.lens, readModelConfig(cwd), process.env),
-		...(signal === undefined ? {} : { signal }),
-	}));
 	let prepared: readonly ReviewHostRelayPreparedResult[];
 	try {
+		const requests: readonly ReviewHostRelayRequest[] = group.slots.map((slot) => ({
+			captureArgumentTokens: slot.captureArgumentTokens,
+			targetCwd: cwd,
+			submission: slot.submission!,
+			...reviewHostRelayLaunchSelection(slot.lens, readModelConfig(cwd), process.env),
+			...(signal === undefined ? {} : { signal }),
+		}));
 		prepared = await activeReviewHostRelayReviewerGroupRunner(requests);
 		if (prepared.length !== requests.length) throw new Error("Pi host relay reviewer group returned a different number of prepared results");
 	} catch (error) {

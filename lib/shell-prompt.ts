@@ -48,6 +48,13 @@ export interface PromptFrameOptions {
 	borderColor: (text: string) => string;
 	fg: (color: string, text: string) => string;
 	bold?: (text: string) => string;
+	/**
+	 * Overrides the editor's own bottom scroll indicator (e.g. "esc again to
+	 * cancel"). Both share the bottom rule's single label slot; an explicit
+	 * hint always wins because it reflects state the editor cannot render on
+	 * its own.
+	 */
+	escHint?: string;
 }
 
 // A terminal cell cannot grow, so the petal earns presence with weight and
@@ -55,6 +62,7 @@ export interface PromptFrameOptions {
 export const PROMPT_PETAL = "✿";
 const PETAL_FRAMES = ["✿", "❀", "❁", "✾"] as const;
 export const PROMPT_HINT = "type, or / for commands";
+export const DOUBLE_ESC_CANCEL_HINT = "esc again to cancel";
 const LABEL_ROLE = "muted";
 const HINT_ROLE = "dim";
 const FAKE_CURSOR = "\x1b[7m \x1b[0m";
@@ -119,7 +127,7 @@ export function framePromptLines(lines: string[], width: number, options: Prompt
 	const top = lines[0];
 	const bottom = lines[lines.length - 1];
 	const content = lines.slice(1, -1).map((line) => sideRules(line, innerWidth, options));
-	return [topRule(width, options, scrollIndicator(top)), ...content, bottomRule(width, options, scrollIndicator(bottom))];
+	return [topRule(width, options, scrollIndicator(top)), ...content, bottomRule(width, options, options.escHint ?? scrollIndicator(bottom))];
 }
 
 export function withPromptHint(line: string, hint: string, fg: PromptFrameOptions["fg"]): string {

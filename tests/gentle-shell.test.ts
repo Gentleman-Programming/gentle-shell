@@ -407,10 +407,15 @@ const fakeTui = { terminal: { rows: 40, columns: 120 }, requestRender() {} };
 const editorTheme = { borderColor: (text: string) => text, selectList: {} };
 const fakeKeybindings = { matches: () => false };
 
-function installedPrompt(ctx: ExtensionContext, ui: FakeUi, handlers: Map<string, Array<(event: unknown, ctx: ExtensionContext) => unknown>>): GentlePromptEditor {
+function installedPrompt(
+	ctx: ExtensionContext,
+	ui: FakeUi,
+	handlers: Map<string, Array<(event: unknown, ctx: ExtensionContext) => unknown>>,
+	keybindings: unknown = fakeKeybindings,
+): GentlePromptEditor {
 	for (const handler of handlers.get("session_start") ?? []) handler({}, ctx);
 	const factory = ui.editorFactory as (tui: unknown, theme: unknown, keybindings: unknown) => GentlePromptEditor;
-	return factory(fakeTui, editorTheme, fakeKeybindings);
+	return factory(fakeTui, editorTheme, keybindings);
 }
 
 test("gentleShell frames the editor with the petal prompt and a hint while empty", () => {
@@ -490,6 +495,118 @@ test("prompt uses the compact banner cadence and releases its unref timer at set
 	assert.equal(active, 0);
 	editor.dispose();
 	assert.equal(active, 0);
+});
+
+// ---------------------------------------------------------------------------
+// double-esc-cancel (issue #1163): opt-in, off by default. While the prompt
+// is working and autocomplete is hidden, the first Esc is swallowed and the
+// frame shows a hint; a second Esc within the window falls through to
+// CustomEditor's own handleInput so Pi's onEscape performs the abort exactly
+// as it always has. Idle double-Esc (tree/fork), bash-mode Esc, and
+// autocomplete cancel live entirely in Pi's own onEscape/CustomEditor and are
+// untouched by this gate.
+// ---------------------------------------------------------------------------
+
+const escapeKeybindings = { matches: (_data: string, keybinding: string) => keybinding === "app.interrupt" };
+
+test("double-esc-cancel default off: a single Esc while working still aborts immediately, exactly as before", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	let aborted = 0;
+	editor.onEscape = () => { aborted++; };
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	editor.handleInput("\x1b");
+	assert.equal(aborted, 1);
+	assert.doesNotMatch(stripAnsi(editor.render(60).join("\n")), /esc again to cancel/);
+	editor.dispose();
+});
+
+function scopedDoubleEscCancelConfigHome(t: { after(callback: () => void): void }): string {
+	const configHome = mkdtempSync(join(tmpdir(), "gp-esc-cfg-"));
+	t.after(() => rmSync(configHome, { recursive: true, force: true }));
+	return configHome;
+}
+
+test("double-esc-cancel enabled: the first Esc while working is swallowed and shows the hint instead of aborting", (t) => {
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_DOUBLE_ESC_CANCEL: "on", GENTLE_PI_CONFIG_HOME: configHome });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	let aborted = 0;
+	editor.onEscape = () => { aborted++; };
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	editor.handleInput("\x1b");
+	assert.equal(aborted, 0, "the first Esc must be swallowed, not aborted");
+	assert.match(stripAnsi(editor.render(60).join("\n")), /esc again to cancel/);
+	editor.dispose();
+});
+
+test("double-esc-cancel enabled: a second Esc within the window falls through and aborts, clearing the hint", (t) => {
+	let now = 1_000_000;
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_DOUBLE_ESC_CANCEL: "on", GENTLE_PI_CONFIG_HOME: configHome }, { now: () => now });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	let aborted = 0;
+	editor.onEscape = () => { aborted++; };
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	editor.handleInput("\x1b");
+	assert.equal(aborted, 0);
+	now += 500;
+	editor.handleInput("\x1b");
+	assert.equal(aborted, 1, "the second Esc within the window must fall through to abort");
+	assert.doesNotMatch(stripAnsi(editor.render(60).join("\n")), /esc again to cancel/);
+	editor.dispose();
+});
+
+test("double-esc-cancel enabled: an Esc after the window expires is a fresh first press, not an abort", (t) => {
+	let now = 1_000_000;
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_DOUBLE_ESC_CANCEL: "on", GENTLE_PI_CONFIG_HOME: configHome }, { now: () => now });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	let aborted = 0;
+	editor.onEscape = () => { aborted++; };
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	editor.handleInput("\x1b");
+	assert.equal(aborted, 0);
+	now += 1001;
+	editor.handleInput("\x1b");
+	assert.equal(aborted, 0, "the window expired, so this must be treated as a new first press");
+	assert.match(stripAnsi(editor.render(60).join("\n")), /esc again to cancel/);
+	editor.dispose();
+});
+
+test("double-esc-cancel enabled: Esc while idle passes straight through, untouched by this gate", (t) => {
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_DOUBLE_ESC_CANCEL: "on", GENTLE_PI_CONFIG_HOME: configHome });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	let aborted = 0;
+	editor.onEscape = () => { aborted++; };
+	// agent_start never fired: the prompt stays idle.
+	editor.handleInput("\x1b");
+	assert.equal(aborted, 1, "idle Esc must be unaffected by the policy");
+	editor.dispose();
+});
+
+test("double-esc-cancel enabled: Esc while autocomplete is visible bypasses this gate entirely", (t) => {
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_DOUBLE_ESC_CANCEL: "on", GENTLE_PI_CONFIG_HOME: configHome });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	(editor as unknown as { isShowingAutocomplete(): boolean }).isShowingAutocomplete = () => true;
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	editor.handleInput("\x1b");
+	assert.doesNotMatch(stripAnsi(editor.render(60).join("\n")), /esc again to cancel/, "autocomplete must bypass the gate, matching CustomEditor's own guard");
+	editor.dispose();
 });
 
 test("gentleShell leaves an editor another extension already installed", () => {

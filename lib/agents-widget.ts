@@ -157,7 +157,10 @@ function elapsed(task: TaskRecord, now: number): string {
 }
 
 function modelLabel(task: TaskRecord): string {
-	const id = task.model.includes("/") ? task.model.slice(task.model.lastIndexOf("/") + 1) : task.model;
+	// Older or remote task records may omit model metadata. The card must remain
+	// renderable even when launch metadata is unavailable.
+	const model = typeof task.model === "string" ? task.model : "default";
+	const id = model.includes("/") ? model.slice(model.lastIndexOf("/") + 1) : model;
 	return id === "default" ? "" : id;
 }
 

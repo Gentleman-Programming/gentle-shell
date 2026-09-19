@@ -43,6 +43,12 @@ test("widgetExpiryMs says how long until the next finished row leaves the card",
 	assert.equal(widgetExpiryMs([], 100_000), undefined);
 });
 
+test("renderAgentsCard tolerates missing model metadata", () => {
+	const lines = renderAgentsCard([task({ model: undefined })], plainTheme, 60, 5_000, { collapsed: false });
+	assert.equal(lines.length, 3);
+	assert.doesNotMatch(lines.join("\n"), /undefined/);
+});
+
 test("renderAgentsCard paints the quiet-state INFO card with the rose frame (border) and title (accent)", () => {
 	const taggedTheme = { fg: (color: string, text: string) => `<${color}>${text}</${color}>` };
 	const lines = renderAgentsCard([task({ status: TASK_STATUS.RUNNING })], taggedTheme, 60, 5000, { collapsed: false });

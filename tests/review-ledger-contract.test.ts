@@ -22,7 +22,6 @@ const README = "README.md";
 const TECHNICAL_REFERENCE = "docs/readme-reference.md";
 const CHAIN = "assets/chains/4r-review.chain.md";
 const SDD_WORKFLOW = "assets/sdd-orchestrator-workflow.md";
-const RELEASE_SKILL = "skills/release/SKILL.md";
 const WORKER = "assets/agents/gentle-ai-worker.md";
 const CANONICAL_LIFECYCLE_SPECS = [
 	"openspec/specs/review-orchestration/spec.md",
@@ -400,7 +399,7 @@ test("technical reference documents the dynamic runtime authority boundary witho
 });
 
 test("managed contracts retain no fresh lifecycle review directive", () => {
-	const managed = union([...ORCHESTRATOR, SDD_WORKFLOW, RELEASE_SKILL, WORKER, GENTLE_SKILL, README]);
+	const managed = union([...ORCHESTRATOR, SDD_WORKFLOW, WORKER, GENTLE_SKILL, README]);
 	for (const obsolete of [
 		"A fresh review still follows delegated implementation.",
 		"run a fresh-context review lens unless",

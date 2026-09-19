@@ -142,7 +142,6 @@ test("package verification names the native review runtime boundary and packaged
 
 test("npm publication is bound to the exact package tag and triggering commit", () => {
 	const workflow = readFileSync(join(PACKAGE_ROOT, ".github", "workflows", "publish.yml"), "utf8");
-	const releaseSkill = readFileSync(join(PACKAGE_ROOT, "skills", "release", "SKILL.md"), "utf8");
 	const packageJson = readPackageJson();
 	const dispatchBlock = workflow.match(
 		/^ {2}workflow_dispatch:\n([\s\S]*?)^\npermissions:/m,
@@ -189,16 +188,6 @@ test("npm publication is bound to the exact package tag and triggering commit", 
 	);
 	assert.match(workflow, /npm publish --provenance --access public/);
 	assert.doesNotMatch(workflow, /pnpm publish|--no-git-checks|NODE_AUTH_TOKEN/);
-
-	assert.match(releaseSkill, /tag="v\$\{version\}"/);
-	assert.match(releaseSkill, /release_sha="\$\(git rev-parse 'origin\/main\^\{commit\}'\)"/);
-	assert.match(releaseSkill, /git rev-parse "\$\{tag\}\^\{commit\}"/);
-	assert.match(releaseSkill, /git fetch --no-tags origin "refs\/tags\/\$\{tag\}"/);
-	assert.match(releaseSkill, /gh release create "\$\{tag\}"[\s\S]*--verify-tag/);
-	assert.match(releaseSkill, /--ref main/);
-	assert.match(releaseSkill, /-f tag="\$\{tag\}"/);
-	assert.match(releaseSkill, /trusted OIDC with provenance/);
-	assert.doesNotMatch(releaseSkill, /--ref "\$\{tag\}"|-f dist-tag=/);
 });
 
 test("Pi delivery relay is absent from the packaged extension", () => {

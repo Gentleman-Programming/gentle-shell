@@ -105,7 +105,6 @@ const requiredPaths = [
   "skills/issue-creation/SKILL.md",
   "skills/judgment-day/SKILL.md",
   "skills/rdd-defect-workflow/SKILL.md",
-  "skills/release/SKILL.md",
   "skills/skill-creator/SKILL.md",
   "skills/skill-improver/SKILL.md",
   "skills/skill-registry/SKILL.md",

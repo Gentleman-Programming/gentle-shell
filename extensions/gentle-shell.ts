@@ -19,7 +19,9 @@ import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import {
 	DOUBLE_ESC_CANCEL_WINDOW_MS,
 	resolveDoubleEscCancelPolicy,
+	writeDoubleEscCancelPolicy,
 	type DoubleEscCancelPolicy,
+	type DoubleEscCancelResolution,
 } from "../lib/double-esc-cancel-policy.ts";
 import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseUsageHeaders, UsageStore, type ProviderUsage } from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
@@ -315,6 +317,45 @@ function installPrompt(
 	factory[PROMPT_OWNER] = true;
 	ctx.ui.setEditorComponent(factory);
 	return true;
+}
+
+const DOUBLE_ESC_CANCEL_COMMAND_NAME = "gentle:double-esc-cancel";
+
+function describeDoubleEscCancelSource(resolution: DoubleEscCancelResolution): string {
+	switch (resolution.source) {
+		case "global_file":
+			return `global file ${resolution.globalFile}`;
+		case "environment":
+			return "GENTLE_PI_DOUBLE_ESC_CANCEL";
+		default:
+			return "built-in default";
+	}
+}
+
+/**
+ * Report the effective policy, the source that decided it, and (when this
+ * invocation just wrote one) the policy it wrote. Unlike background-subagents
+ * there is no project-file layer to outrank the write, so a write always
+ * takes effect immediately.
+ */
+function renderDoubleEscCancelReport(
+	resolution: DoubleEscCancelResolution,
+	wrote?: DoubleEscCancelPolicy,
+): { message: string; type: "info" | "warning" } {
+	const lines = [`double-esc-cancel: ${resolution.policy} (decided by ${describeDoubleEscCancelSource(resolution)})`];
+	if (wrote !== undefined) lines.push(`Wrote ${wrote} to the global file ${resolution.globalFile}.`);
+	if (resolution.malformed) {
+		lines.push(`${resolution.globalFile} is present but malformed, so the policy fails closed to off and the environment variable is not consulted.`);
+	}
+	if (resolution.envValue !== undefined && resolution.source !== "environment") {
+		lines.push(
+			resolution.envValue === "on" || resolution.envValue === "off"
+				? `GENTLE_PI_DOUBLE_ESC_CANCEL=${resolution.envValue} is set, but the global file exists and decides; the env var applies only when no file exists.`
+				: `GENTLE_PI_DOUBLE_ESC_CANCEL="${resolution.envValue}" is not a recognized value ("on" or "off"), so it is ignored.`,
+		);
+	}
+	lines.push("Resolution order (first hit wins): global file, GENTLE_PI_DOUBLE_ESC_CANCEL, built-in default off.");
+	return { message: lines.join("\n"), type: resolution.malformed ? "warning" : "info" };
 }
 
 const CHANGES_WIDGET_KEY = "gentle-shell-changes";
@@ -794,6 +835,37 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			handler: async (ctx) => showCommandPalette(pi, ctx, env),
 		});
 	}
+	// User-owned, like gentle:background-subagents and gentle:review-mode: the
+	// only writer is this handler, reached only by explicit invocation. Unlike
+	// those two, no argument toggles the effective policy instead of merely
+	// reporting it (see odd/tasks/double-esc-cancel.md).
+	pi.registerCommand(DOUBLE_ESC_CANCEL_COMMAND_NAME, {
+		description: "Show or set the double-esc-cancel preference (status|enable|disable); no argument toggles it. User-initiated only.",
+		handler: async (args, ctx) => {
+			const trimmed = args.trim();
+			if (trimmed !== "" && trimmed !== "status" && trimmed !== "enable" && trimmed !== "disable") {
+				ctx.ui.notify(`Unknown /${DOUBLE_ESC_CANCEL_COMMAND_NAME} sub-action "${trimmed}". Use status, enable, or disable.`, "warning");
+				return;
+			}
+			try {
+				const before = resolveDoubleEscCancelPolicy({ env, gentlePiConfigHome: doubleEscCancelConfigHome });
+				const subAction = trimmed === "" ? (before.policy === "on" ? "disable" : "enable") : trimmed;
+				if (subAction === "status") {
+					const report = renderDoubleEscCancelReport(before);
+					ctx.ui.notify(report.message, report.type);
+					return;
+				}
+				const wrote: DoubleEscCancelPolicy = subAction === "enable" ? "on" : "off";
+				writeDoubleEscCancelPolicy(wrote, { gentlePiConfigHome: doubleEscCancelConfigHome });
+				doubleEscCancelPolicy = wrote;
+				const after = resolveDoubleEscCancelPolicy({ env, gentlePiConfigHome: doubleEscCancelConfigHome });
+				const report = renderDoubleEscCancelReport(after, wrote);
+				ctx.ui.notify(report.message, report.type);
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+			}
+		},
+	});
 	pi.on("agent_start", (_event, ctx) => {
 		prompt?.setWorking(true);
 		// The dev-binary card is a startup notice: it leaves with the first prompt.

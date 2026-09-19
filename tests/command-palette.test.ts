@@ -336,6 +336,7 @@ test("COMMAND_PALETTE_CATALOG matches the curated command set, in order", () => 
 		"gentle:persona",
 		"gentle:review-mode",
 		"gentle:background-subagents",
+		"gentle:double-esc-cancel",
 		"gentle:telemetry",
 		"gentle:banner",
 		"gentle:banner-color",

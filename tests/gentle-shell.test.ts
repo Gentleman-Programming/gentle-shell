@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -53,6 +53,7 @@ interface GitScript {
 }
 
 interface CommandRegistration {
+	description?: string;
 	handler: (args: string, ctx: ExtensionContext) => Promise<void>;
 }
 
@@ -606,6 +607,109 @@ test("double-esc-cancel enabled: Esc while autocomplete is visible bypasses this
 	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
 	editor.handleInput("\x1b");
 	assert.doesNotMatch(stripAnsi(editor.render(60).join("\n")), /esc again to cancel/, "autocomplete must bypass the gate, matching CustomEditor's own guard");
+	editor.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// /gentle:double-esc-cancel (issue #1163). Unlike /gentle:background-subagents,
+// no argument toggles the effective policy rather than merely reporting it.
+// ---------------------------------------------------------------------------
+
+test("gentle:double-esc-cancel is registered and declares user-initiated sub-actions with a toggling no-argument form", () => {
+	const { pi, commands } = fakePi();
+	gentleShell(pi, {});
+	const command = commands.get("gentle:double-esc-cancel");
+	assert.ok(command, "gentle:double-esc-cancel must be registered");
+	assert.match(command!.description ?? "", /status\|enable\|disable/);
+	assert.match(command!.description ?? "", /no argument toggles/);
+});
+
+test("gentle:double-esc-cancel status reports off by default and writes nothing", async (t) => {
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome });
+	const { ctx, ui } = fakeContext();
+	await commands.get("gentle:double-esc-cancel")!.handler("status", ctx);
+	assert.equal(ui.notices.length, 1);
+	assert.match(ui.notices[0]!, /^double-esc-cancel: off \(decided by built-in default\)/);
+	assert.equal(existsSync(join(configHome, "double-esc-cancel.json")), false);
+});
+
+test("gentle:double-esc-cancel enable writes the global file, reports it, and takes effect immediately", async (t) => {
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome });
+	const { ctx, ui } = fakeContext();
+	await commands.get("gentle:double-esc-cancel")!.handler("enable", ctx);
+	assert.match(ui.notices[0]!, /^double-esc-cancel: on \(decided by global file/);
+	assert.match(ui.notices[0]!, /Wrote on to the global file/);
+	assert.deepEqual(
+		JSON.parse(readFileSync(join(configHome, "double-esc-cancel.json"), "utf8")),
+		{ schema: "gentle-pi.double-esc-cancel/v1", policy: "on" },
+	);
+});
+
+test("gentle:double-esc-cancel disable writes off", async (t) => {
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome });
+	const { ctx, ui } = fakeContext();
+	await commands.get("gentle:double-esc-cancel")!.handler("enable", ctx);
+	await commands.get("gentle:double-esc-cancel")!.handler("disable", ctx);
+	assert.match(ui.notices[1]!, /^double-esc-cancel: off \(decided by global file/);
+	assert.deepEqual(
+		JSON.parse(readFileSync(join(configHome, "double-esc-cancel.json"), "utf8")),
+		{ schema: "gentle-pi.double-esc-cancel/v1", policy: "off" },
+	);
+});
+
+test("gentle:double-esc-cancel with no argument toggles the effective policy each time", async (t) => {
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome });
+	const { ctx, ui } = fakeContext();
+	await commands.get("gentle:double-esc-cancel")!.handler("", ctx);
+	assert.match(ui.notices[0]!, /^double-esc-cancel: on /, "off -> on on the first toggle");
+	await commands.get("gentle:double-esc-cancel")!.handler("", ctx);
+	assert.match(ui.notices[1]!, /^double-esc-cancel: off /, "on -> off on the second toggle");
+});
+
+test("gentle:double-esc-cancel reports a malformed global file as fail-closed, not as an ordinary off", async (t) => {
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	mkdirSync(configHome, { recursive: true });
+	writeFileSync(join(configHome, "double-esc-cancel.json"), "{malformed");
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome });
+	const { ctx, ui } = fakeContext();
+	await commands.get("gentle:double-esc-cancel")!.handler("status", ctx);
+	assert.match(ui.notices[0]!, /present but malformed/);
+});
+
+test("gentle:double-esc-cancel an unknown sub-action warns and changes nothing", async (t) => {
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome });
+	const { ctx, ui } = fakeContext();
+	await commands.get("gentle:double-esc-cancel")!.handler("toggle", ctx);
+	assert.match(ui.notices[0]!, /Unknown \/gentle:double-esc-cancel sub-action "toggle"/);
+	assert.equal(existsSync(join(configHome, "double-esc-cancel.json")), false);
+});
+
+test("gentle:double-esc-cancel enable updates the in-memory policy so an already-installed prompt picks it up without re-reading the file", async (t) => {
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	let aborted = 0;
+	editor.onEscape = () => { aborted++; };
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	editor.handleInput("\x1b");
+	assert.equal(aborted, 1, "off by default: the first Esc still aborts");
+	await commands.get("gentle:double-esc-cancel")!.handler("enable", ctx);
+	editor.handleInput("\x1b");
+	assert.equal(aborted, 1, "now on: the same prompt instance must swallow the first Esc instead of aborting");
+	assert.match(stripAnsi(editor.render(60).join("\n")), /esc again to cancel/);
 	editor.dispose();
 });
 

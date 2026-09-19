@@ -25,6 +25,7 @@ export const COMMAND_PALETTE_CATALOG: readonly CommandPaletteCatalogGroup[] = [
 			{ command: "gentle:persona", label: "Switch persona" },
 			{ command: "gentle:review-mode", label: "Review mode (receipt-driven development)" },
 			{ command: "gentle:background-subagents", label: "Background subagents" },
+			{ command: "gentle:double-esc-cancel", label: "Require double Esc to cancel" },
 			{ command: "gentle:telemetry", label: "Telemetry" },
 			{ command: "gentle:banner", label: "Startup banner" },
 			{ command: "gentle:banner-color", label: "Banner color" },

@@ -768,15 +768,21 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			if (!root) return noteDrop("root-unresolved");
 			if (root !== childRoot) return noteDrop("root-mismatch");
 			if (!worktrees.roots().includes(root)) return noteDrop("root-not-registered");
-			if (tool.evidence?.root === root) {
-				try {
-					let path = tool.path.replace(/^@/, "");
-					if (path === "~" || path.startsWith("~/")) path = os.homedir() + path.slice(1);
-					if (realpathSync(resolve(task.cwd, path)) === resolve(root, tool.evidence.path)) pi.events.emit(SESSION_CHANGE_RELAY, { sessionId: task.parentSessionId, evidence: { ...tool.evidence, id: `${task.id}:${tool.toolCallId}` } });
-					else noteDrop("evidence-path-mismatch");
-				} catch { noteDrop("evidence-path-mismatch"); }
-			} else {
+			if (!tool.evidence) {
+				noteDrop("evidence-missing");
+			} else if (tool.evidence.root !== root) {
 				noteDrop("evidence-root-mismatch");
+			} else {
+				let path = tool.path.replace(/^@/, "");
+				if (path === "~" || path.startsWith("~/")) path = os.homedir() + path.slice(1);
+				let resolvedPath: string | undefined;
+				try {
+					resolvedPath = realpathSync(resolve(task.cwd, path));
+				} catch {
+					noteDrop("evidence-path-unreadable");
+				}
+				if (resolvedPath === resolve(root, tool.evidence.path)) pi.events.emit(SESSION_CHANGE_RELAY, { sessionId: task.parentSessionId, evidence: { ...tool.evidence, id: `${task.id}:${tool.toolCallId}` } });
+				else if (resolvedPath !== undefined) noteDrop("evidence-path-mismatch");
 			}
 			recordReviewMutation(pi, sessions, root, { source: "subagent", taskId: task.id, toolName: tool.toolName, toolCallId: tool.toolCallId });
 		},
@@ -918,11 +924,13 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		return stored?.task;
 	};
 
-	// On resuming (or reloading, or restarting into) an existing session, bring
-	// this exact session's own finished subagents back as visible history --
-	// never another session's. Marked in restoredTaskIds like any other disk
-	// restoration, so it stays non-cancellable (ownedTaskIds never gained the
-	// id either way) and is skipped if the id is somehow already live.
+	// Restores this exact session's own finished subagents as visible history
+	// on an explicit resume, or on startup into a session that already has
+	// entries -- never on new, fork, or reload (see the session_start handler's
+	// preexisting check below, which is the actual gate). Marked in
+	// restoredTaskIds like any other disk restoration, so it stays
+	// non-cancellable (ownedTaskIds never gained the id either way) and is
+	// skipped if the id is somehow already live.
 	const restoreSessionHistory = async (ctx: ExtensionContext, sessionId: string): Promise<void> => {
 		let history: Awaited<ReturnType<typeof loadHistory>>;
 		try {

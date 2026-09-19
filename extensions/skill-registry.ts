@@ -94,6 +94,11 @@ function projectSkillDirs(cwd: string): string[] {
 	];
 }
 
+function isMissingSkillFileError(error: unknown): boolean {
+	if (typeof error !== "object" || error === null || !("code" in error)) return false;
+	return error.code === "ENOENT" || error.code === "ENOTDIR";
+}
+
 async function findSkillFiles(root: string): Promise<string[]> {
 	if (!(await pathExists(root))) return [];
 	let entries;
@@ -103,7 +108,8 @@ async function findSkillFiles(root: string): Promise<string[]> {
 		return [];
 	}
 
-	const out: string[] = [];
+	const directSkills: string[] = [];
+	const nestedSkills: string[] = [];
 	for (const entry of entries) {
 		const skillDir = join(root, entry.name);
 		let dirInfo;
@@ -117,12 +123,40 @@ async function findSkillFiles(root: string): Promise<string[]> {
 		const candidate = join(skillDir, "SKILL.md");
 		try {
 			const skillInfo = await stat(candidate);
-			if (skillInfo.isFile()) out.push(candidate);
+			if (skillInfo.isFile()) directSkills.push(candidate);
+			continue;
+		} catch (error) {
+			if (!isMissingSkillFileError(error)) continue;
+		}
+		if (entry.isSymbolicLink() || isExcluded(entry.name)) continue;
+
+		let nestedEntries;
+		try {
+			nestedEntries = await readdir(skillDir, { withFileTypes: true });
 		} catch {
-			// Missing or unreadable skill files are ignored; the registry is best-effort.
+			continue;
+		}
+		for (const nestedEntry of nestedEntries) {
+			if (nestedEntry.isSymbolicLink()) continue;
+			const nestedSkillDir = join(skillDir, nestedEntry.name);
+			let nestedDirInfo;
+			try {
+				nestedDirInfo = await stat(nestedSkillDir);
+			} catch {
+				continue;
+			}
+			if (!nestedDirInfo.isDirectory()) continue;
+
+			const nestedCandidate = join(nestedSkillDir, "SKILL.md");
+			try {
+				const nestedSkillInfo = await stat(nestedCandidate);
+				if (nestedSkillInfo.isFile()) nestedSkills.push(nestedCandidate);
+			} catch {
+				// Missing or unreadable skill files are ignored; the registry is best-effort.
+			}
 		}
 	}
-	return out.sort();
+	return [...directSkills.sort(), ...nestedSkills.sort()];
 }
 
 function parseFrontmatter(source: string): { name?: string; description?: string; body: string } {
@@ -527,6 +561,7 @@ export const __testing = {
 	projectSkillDirs,
 	userSkillDirs,
 	findSkillFiles,
+	isMissingSkillFileError,
 	uniqueExistingDirs,
 	dedupeBySkillName,
 	scopeForPath,

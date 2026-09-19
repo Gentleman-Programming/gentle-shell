@@ -1438,13 +1438,19 @@ test("C1 investigation: the relay mechanism is correct when every guard input is
 	// live session used — rather than the trivial path-echoing stub the other
 	// fixtures in this file use.
 	const repoRoot = mkdtempSync(join(tmpdir(), "gentle-agents-c1-"));
+	// Isolate every git spawn below from the developer's own environment: no
+	// global/system config, no ambient $HOME gitconfig, no signing prompt, and
+	// no hooks -- only the identity this fixture supplies explicitly.
+	const gitHome = mkdtempSync(join(tmpdir(), "gentle-agents-c1-git-home-"));
+	const gitHooksDir = mkdtempSync(join(tmpdir(), "gentle-agents-c1-git-hooks-"));
+	const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", HOME: gitHome };
+	const gitIdentity = ["-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "-c", `core.hooksPath=${gitHooksDir}`];
+	const runGit = (args: string[]) => execFileSync("git", [...gitIdentity, ...args], { env: gitEnv });
 	try {
-		execFileSync("git", ["init", "--quiet", "-b", "main", repoRoot]);
-		execFileSync("git", ["-C", repoRoot, "config", "user.email", "test@example.com"]);
-		execFileSync("git", ["-C", repoRoot, "config", "user.name", "Test"]);
+		runGit(["init", "--quiet", "-b", "main", repoRoot]);
 		writeFileSync(join(repoRoot, "README.md"), "seed\n");
-		execFileSync("git", ["-C", repoRoot, "add", "README.md"]);
-		execFileSync("git", ["-C", repoRoot, "commit", "--quiet", "-m", "seed"]);
+		runGit(["-C", repoRoot, "add", "README.md"]);
+		runGit(["-C", repoRoot, "commit", "--quiet", "-m", "seed"]);
 
 		const h = fakePi();
 		const d = deps();
@@ -1491,6 +1497,8 @@ test("C1 investigation: the relay mechanism is correct when every guard input is
 		await tick();
 	} finally {
 		rmSync(repoRoot, { recursive: true, force: true });
+		rmSync(gitHome, { recursive: true, force: true });
+		rmSync(gitHooksDir, { recursive: true, force: true });
 	}
 });
 

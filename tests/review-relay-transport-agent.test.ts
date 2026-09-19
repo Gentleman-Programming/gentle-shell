@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { __testing } from "../extensions/gentle-ai.ts";
+import { REVIEW_HOST_RELAY_FAILURE, ReviewHostRelayError } from "../lib/review-host-relay.ts";
 import { NativeReviewIntegrationError, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
 import type { ReviewCollectInputV3, ReviewStatusV3 } from "../lib/review-integration-v2.ts";
@@ -184,6 +185,88 @@ test("the negotiated status asks for the pi agent so the provider offers its mat
 	const hostRelay = result.host_relay as { transport: string } | undefined;
 	assert.ok(hostRelay !== undefined, "the envelope reports the one relay capture");
 	assert.equal(hostRelay.transport, "pi_host_relay");
+});
+
+// gentle-pi#311 P2 (superseding gentle-shell#1136 / #1158): the lens's
+// user-owned completion selection (agent model routing config) rides the
+// relay request alongside the live model registry; there is no extension
+// allowlist and no ambient default model to fall back to.
+test("capture forwards the lens's user-owned selection and thinking level to the relay request", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const configHome = mkdtempSync(join(tmpdir(), "gentle-pi-relay-config-"));
+	const cwd = repository(t);
+	t.after(() => rmSync(configHome, { recursive: true, force: true }));
+	writeFileSync(join(configHome, "models.json"), JSON.stringify({ "review-reliability": { model: "minimax/MiniMax-M3", thinking: "high" } }), "utf8");
+	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = configHome;
+	t.after(() => {
+		if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+	});
+	const { native } = transportAwareNative();
+	const relayed: ReviewHostRelayRequest[] = [];
+	__testing.setReviewHostRelayRunnerForTesting(async (request: ReviewHostRelayRequest) => {
+		relayed.push(request);
+		return { promptByteLength: 128, resultByteLength: 64, submission: '{"admission_decision":"completed"}' };
+	});
+
+	await runCapture(cwd, native, "selection-lineage");
+	assert.equal(relayed.length, 1);
+	assert.equal(relayed[0]!.selection, "minimax/MiniMax-M3", "the lens's routing entry must name the completion's selection");
+	assert.equal(relayed[0]!.thinking, "high");
+	assert.equal(relayed[0]!.routingKey, "review-reliability");
+});
+
+// gentle-pi#311 P2 decision (flagged for confirmation): the in-process path
+// has no ambient default model. A routing entry with no configured model used
+// to launch the child selection-free (inheriting pi's own default); the real
+// relay now refuses it typed instead, since there is no child to inherit a
+// default from (lib/review-host-relay.ts's own tests exercise that refusal
+// through the real, unfaked runner). This extension layer only forwards
+// whatever the routing config yields — it never validates the selection
+// itself — so with the runner faked here the request still reaches it, and
+// its `selection` field is simply absent.
+test("capture forwards no selection when the lens has no configured model, leaving the missing-model refusal to the relay", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const configHome = mkdtempSync(join(tmpdir(), "gentle-pi-relay-config-empty-"));
+	const cwd = repository(t);
+	t.after(() => rmSync(configHome, { recursive: true, force: true }));
+	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = configHome;
+	t.after(() => {
+		if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+	});
+	const { native } = transportAwareNative();
+	const relayed: ReviewHostRelayRequest[] = [];
+	__testing.setReviewHostRelayRunnerForTesting(async (request: ReviewHostRelayRequest) => {
+		relayed.push(request);
+		return { promptByteLength: 128, resultByteLength: 64, submission: '{"admission_decision":"completed"}' };
+	});
+
+	await runCapture(cwd, native, "default-lineage");
+	assert.equal(relayed.length, 1);
+	assert.equal(relayed[0]!.selection, undefined);
+	assert.equal(relayed[0]!.routingKey, "review-reliability");
+});
+
+test("a relayed empty-output failure carries the child's own evidence in the failure report", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const cwd = repository(t);
+	const { native } = transportAwareNative();
+	__testing.setReviewHostRelayRunnerForTesting(async () => {
+		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_EMPTY_OUTPUT, "pi", "pi subprocess produced no assistant text (stdout kind: no-assistant-text; a tool call was attempted)", {
+			reviewerEvidence: { stdoutKind: "no-assistant-text", reviewerModel: "nan/deepseek-v4-flash", toolCallAttempted: true },
+		});
+	});
+
+	const result = await runCapture(cwd, native, "evidence-lineage");
+	assert.equal(result.outcome, "pi-host-relay-transport-failure");
+	const failure = result.failure as { reviewer?: { stdoutKind?: string; reviewerModel?: string; toolCallAttempted?: boolean } } | undefined;
+	assert.ok(failure !== undefined, "the envelope carries the failure report");
+	assert.equal(failure.reviewer?.stdoutKind, "no-assistant-text");
+	assert.equal(failure.reviewer?.reviewerModel, "nan/deepseek-v4-flash");
+	assert.equal(failure.reviewer?.toolCallAttempted, true);
 });
 
 test("capture forecasts the reviewer model run once and spends nothing until it is acknowledged", async (t) => {

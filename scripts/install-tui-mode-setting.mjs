@@ -14,8 +14,8 @@ function sameFile(left, right) {
 	return left && right && left.dev === right.dev && left.ino === right.ino;
 }
 
-function assertDirectories(home, packageRoot) {
-	for (const path of [home, join(home, "npm"), join(home, "npm", "node_modules"), packageRoot]) {
+function assertDirectories(paths) {
+	for (const path of paths) {
 		const stat = inspect(path);
 		if (!stat?.isDirectory() || stat.isSymbolicLink() || realpathSync(path) !== path) {
 			throw new Error(`Unsafe fullscreen settings installation path: ${path}`);
@@ -53,7 +53,7 @@ async function acquireLock(path) {
 	}
 }
 
-/** Only a physically owned global Pi npm install may mutate Pi settings.
+/** Only physically owned global Pi npm or exact Git installs may mutate Pi settings.
  * Atomic rename protects readers from partial JSON, not arbitrary writers or
  * malicious same-user ancestor swaps. No lifecycle cwd or store symlink grants ownership.
  */
@@ -64,18 +64,28 @@ export async function installTuiModeSetting(options = {}) {
 	let home;
 	try { home = realpathSync(requestedHome); }
 	catch (error) { if (error.code === "ENOENT") return { changed: false, recognized: false }; throw error; }
-	const expected = join(home, "npm", "node_modules", "gentle-pi");
+	const installations = [
+		{
+			packageRoot: join(home, "npm", "node_modules", "gentle-pi"),
+			paths: [home, join(home, "npm"), join(home, "npm", "node_modules"), join(home, "npm", "node_modules", "gentle-pi")],
+		},
+		{
+			packageRoot: join(home, "git", "github.com", "Gentleman-Programming", "gentle-pi"),
+			paths: [home, join(home, "git"), join(home, "git", "github.com"), join(home, "git", "github.com", "Gentleman-Programming"), join(home, "git", "github.com", "Gentleman-Programming", "gentle-pi")],
+		},
+	];
 	// Canonical agent-home aliases (including macOS /var) are supported.
-	// pnpm's physical store and npm link targets are not owned global installs.
-	if (realpathSync(packageRoot) !== expected) return { changed: false, recognized: false };
-	assertDirectories(home, expected);
+	// pnpm's physical store, npm links, and Git aliases are not owned global installs.
+	const installation = installations.find(({ packageRoot: expected }) => realpathSync(packageRoot) === expected);
+	if (!installation) return { changed: false, recognized: false };
+	assertDirectories(installation.paths);
 	const settingsPath = join(home, "settings.json");
 	const lockPath = `${settingsPath}.lock`;
 	const lock = await acquireLock(lockPath);
 	const started = Date.now();
 	let staging;
 	try {
-		assertDirectories(home, expected);
+		assertDirectories(installation.paths);
 		const original = readSettings(settingsPath);
 		if (original.value.tuiMode === "fullscreen") return { changed: false, recognized: true };
 		staging = join(home, `.settings-fullscreen-${randomUUID()}.tmp`);
@@ -85,7 +95,7 @@ export async function installTuiModeSetting(options = {}) {
 			writeFileSync(fd, `${JSON.stringify({ ...original.value, tuiMode: "fullscreen" }, null, 2)}\n`, "utf8");
 			fsyncSync(fd);
 		} finally { closeSync(fd); }
-		assertDirectories(home, expected);
+		assertDirectories(installation.paths);
 		const latest = readSettings(settingsPath);
 		if (latest.text !== original.text || (original.stat ? !sameFile(original.stat, latest.stat) : latest.stat !== undefined)) {
 			throw new Error("settings.json changed concurrently; retry installation");

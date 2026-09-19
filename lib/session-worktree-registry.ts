@@ -23,7 +23,7 @@ export function worktreeGitEnvironment(env: NodeJS.ProcessEnv = process.env): No
 }
 
 // Match Pi's ordinary path spelling; Git, not the argument, establishes identity.
-export const resolveSessionWorktree: WorktreeResolver = (path, cwd) => {
+export function resolveSessionWorktreeWithGit(path: string, cwd: string, run: typeof execFileSync = execFileSync): WorktreeIdentity | undefined {
 	try {
 		let spelling = path.replace(/^@/, "").replace(/[\u00a0\u2000-\u200a\u202f\u205f\u3000]/g, " ");
 		if (spelling === "~" || spelling.startsWith("~/")) spelling = homedir() + spelling.slice(1);
@@ -31,12 +31,14 @@ export const resolveSessionWorktree: WorktreeResolver = (path, cwd) => {
 		const directory = statSync(canonical).isDirectory() ? canonical : dirname(canonical);
 		// Ambient Git routing must not redirect a path into another repository.
 		const env = worktreeGitEnvironment();
-		const git = (arg: string) => execFileSync("git", ["--no-optional-locks", "-C", directory, "rev-parse", "--path-format=absolute", arg], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "pipe"], env }).replace(/\r?\n$/, "");
+		const git = (arg: string) => String(run("git", ["--no-optional-locks", "-C", directory, "rev-parse", "--path-format=absolute", arg], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "pipe"], shell: false, windowsHide: true, env })).replace(/\r?\n$/, "");
 		return { root: realpathSync(git("--show-toplevel")), commonDir: realpathSync(git("--git-common-dir")) };
 	} catch {
 		return undefined;
 	}
-};
+}
+
+export const resolveSessionWorktree: WorktreeResolver = resolveSessionWorktreeWithGit;
 
 export function toolWorktreePath(name: string, input: Record<string, unknown>): string | undefined {
 	if (!["read", "write", "edit", "grep", "find", "ls"].includes(name)) return undefined;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { stripTerminalSequences } from "@earendil-works/pi-tui";
+import { getKeybindings, KeybindingsManager, setKeybindings, stripTerminalSequences, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import askUserChoice from "../extensions/ask-user-choice.ts";
 
 interface ChoiceResult {
@@ -17,6 +17,7 @@ interface ChoiceParameters {
 	additionalProperties?: boolean;
 	properties?: {
 		question?: unknown;
+		allowCustomResponse?: unknown;
 		options?: {
 			minItems?: number;
 			maxItems?: number;
@@ -28,6 +29,8 @@ interface ChoiceParameters {
 interface ChoiceTool {
 	renderShell?: string;
 	name: string;
+	description?: string;
+	promptGuidelines?: string[];
 	parameters: ChoiceParameters;
 	execute: (...args: unknown[]) => Promise<ChoiceResult>;
 }
@@ -164,14 +167,17 @@ test("ask_user_choice registers without runtime actions or overriding the open q
 	assert.deepEqual(registration.activeTools(), ["read", "ask_user_question"]);
 });
 
-test("ask_user_choice exposes a strict closed single-select schema", () => {
+test("ask_user_choice keeps closed mode by default and makes custom mode opt-in", () => {
 	const { tool } = registerChoiceTool();
 	const optionsSchema = tool.parameters.properties?.options;
 	const optionSchema = optionsSchema?.items;
 
 	assert.equal(tool.name, "ask_user_choice");
 	assert.equal(tool.parameters.additionalProperties, false);
-	assert.deepEqual(Object.keys(tool.parameters.properties ?? {}).sort(), ["options", "question"]);
+	assert.deepEqual(Object.keys(tool.parameters.properties ?? {}).sort(), ["allowCustomResponse", "options", "question"]);
+	assert.equal(tool.parameters.properties?.allowCustomResponse !== undefined, true);
+	assert.match(tool.description ?? "", /allowCustomResponse/);
+	assert.match((tool.promptGuidelines ?? []).join(" "), /Never enable allowCustomResponse.*provider-owned consent prompts.*maintenance authorizations.*exact opaque token/);
 	assert.equal(optionsSchema?.minItems, 2);
 	assert.equal(optionsSchema?.maxItems, 4);
 	assert.equal(optionSchema?.additionalProperties, false);
@@ -298,6 +304,161 @@ test("ask_user_choice retains native rendered hit testing for mouse selection", 
 		index: 2,
 	});
 	assert.equal(completionCalls, 1, "late keyboard input cannot complete the choice twice");
+});
+
+test("ask_user_choice supports an opt-in custom response from keyboard navigation", async () => {
+	const { tool } = registerChoiceTool();
+	const rendered: string[] = [];
+	const response = "  exactly as typed  ";
+	const result = await tool.execute("call", { question: "Explain?", options, allowCustomResponse: true }, new AbortController().signal, undefined, {
+		mode: "tui",
+		ui: {
+			custom: async (factory: ChoiceCustomFactory) => {
+				let completed: unknown;
+				const component = factory(
+					{ requestRender() {} },
+					{ fg: (_color, text) => text, bg: (_color, text) => text, bold: (text) => text },
+					{},
+					(value) => { completed = value; },
+				);
+				rendered.push(component.render(80).join("\n"));
+				component.handleInput("\x1b[B");
+				component.handleInput("\x1b[B");
+				component.handleInput("\r");
+				rendered.push(component.render(80).join("\n"));
+				component.handleInput(response);
+				component.handleInput("\r");
+				return completed;
+			},
+		},
+	});
+	assert.match(rendered[0] ?? "", /Other…/);
+	assert.match(rendered[1] ?? "", /Custom response/);
+	assert.deepEqual(result.details, { question: "Explain?", options, customResponse: response });
+	assert.equal(result.content[0]?.text, `User responded: ${response}`);
+});
+
+test("ask_user_choice uses native input decoding and supplied custom editor keybindings", async () => {
+	const { tool } = registerChoiceTool();
+	const configured = new KeybindingsManager(TUI_KEYBINDINGS, {
+		"tui.select.down": "ctrl+n",
+		"tui.select.confirm": "ctrl+o",
+		"tui.select.cancel": "ctrl+x",
+		"tui.input.submit": "ctrl+s",
+		"tui.editor.deleteCharBackward": "ctrl+h",
+	});
+	const previous = getKeybindings();
+	setKeybindings(configured);
+	try {
+		const result = await tool.execute("call", { question: "Explain?", options, allowCustomResponse: true }, new AbortController().signal, undefined, {
+			mode: "tui",
+			ui: { custom: async (factory: ChoiceCustomFactory) => {
+				let completed: unknown;
+				const component = factory(
+					{ requestRender() {} },
+					{ fg: (_color, text) => text, bg: (_color, text) => text, bold: (text) => text },
+					configured, (value) => { completed = value; },
+				);
+				component.handleInput("\x0e");
+				component.handleInput("\x0e");
+				component.handleInput("\x0f");
+				component.handleInput("\x1b[97u");
+				component.handleInput("\x1b[98u");
+				component.handleInput("\x08");
+				component.handleInput("\x18");
+				assert.match(component.render(80).join("\n"), /Other…/);
+				component.handleInput("\x0f");
+				component.handleInput("\x13");
+				return completed;
+			} },
+		});
+		assert.deepEqual(result.details, { question: "Explain?", options, customResponse: "a" });
+	} finally {
+		setKeybindings(previous);
+	}
+});
+
+test("ask_user_choice activates an opt-in custom response from the Other row pointer target", async () => {
+	const { tool } = registerChoiceTool();
+	const result = await tool.execute("call", { question: "Explain?", options, allowCustomResponse: true }, new AbortController().signal, undefined, {
+		mode: "tui",
+		ui: {
+			custom: async (factory: ChoiceCustomFactory) => {
+				let completed: unknown;
+				const component = factory(
+					{ requestRender() {} },
+					{ fg: (_color, text) => text, bg: (_color, text) => text, bold: (text) => text },
+					{},
+					(value) => { completed = value; },
+				);
+				const lines = component.render(80);
+				const otherRow = lines.findIndex((line) => stripTerminalSequences(line).includes("Other…"));
+				assert.ok(otherRow >= 0);
+				const event = (type: string) => ({
+					type, button: "left", x: 0, y: otherRow, screenX: 0, screenY: otherRow,
+					width: 80, height: lines.length, shift: false, alt: false, ctrl: false,
+				});
+				assert.equal(component.handleMouse?.(event("press"))?.focus, true);
+				component.handleMouse?.(event("click"));
+				component.handleInput("pointer response");
+				component.handleInput("\r");
+				return completed;
+			},
+		},
+	});
+	assert.deepEqual(result.details, { question: "Explain?", options, customResponse: "pointer response" });
+});
+
+test("ask_user_choice rejects empty custom responses and escapes back to list cancellation", async () => {
+	const { tool } = registerChoiceTool();
+	const result = await tool.execute("call", { question: "Explain?", options, allowCustomResponse: true }, new AbortController().signal, undefined, {
+		mode: "tui",
+		ui: {
+			custom: async (factory: ChoiceCustomFactory) => {
+				let completed: unknown;
+				const choice = factory(
+					{ requestRender() {} },
+					{ fg: (_color, text) => text, bg: (_color, text) => text, bold: (text) => text },
+					{},
+					(value) => { completed = value; },
+				);
+				choice.handleInput("\x1b[B");
+				choice.handleInput("\x1b[B");
+				choice.handleInput("\r");
+				assert.match(choice.render(80).join("\n"), /Custom response/);
+				choice.handleInput("   ");
+				choice.handleInput("\r");
+				assert.equal(completed, undefined, "whitespace-only submission stays in the editor");
+				assert.match(choice.render(80).join("\n"), /Custom response/);
+				choice.handleInput("\x1b");
+				assert.match(choice.render(80).join("\n"), /Other…/);
+				choice.handleInput("\x1b");
+				return completed;
+			},
+		},
+	});
+	assert.deepEqual(result.details, { question: "Explain?", options, cancelled: true });
+});
+
+test("ask_user_choice renders Other only when custom response is explicitly enabled", async () => {
+	const { tool } = registerChoiceTool();
+	for (const allowCustomResponse of [undefined, false, true]) {
+		let rendered = "";
+		await tool.execute("call", { question: "Proceed?", options, ...(allowCustomResponse === undefined ? {} : { allowCustomResponse }) }, new AbortController().signal, undefined, {
+			mode: "tui",
+			ui: { custom: async (factory: ChoiceCustomFactory) => {
+				const component = factory(
+					{ requestRender() {} },
+					{ fg: (_color, text) => text, bg: (_color, text) => text, bold: (text) => text },
+					{}, () => {},
+				);
+				rendered = component.render(80).join("\n");
+				component.handleInput("\x1b");
+				return undefined;
+			} },
+		});
+		assert.equal(rendered.includes("Other…"), allowCustomResponse === true);
+	}
 });
 
 test("ask_user_choice handles a closed Kilo hash decision with an opaque envelope value", async () => {

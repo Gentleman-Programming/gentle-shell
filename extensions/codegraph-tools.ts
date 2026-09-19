@@ -81,6 +81,7 @@ function resolveWorkspaceCwd(cwd: string): string {
 			cwd: resolved,
 			encoding: "utf8",
 			stdio: ["ignore", "pipe", "ignore"],
+			windowsHide: true,
 		}).trim());
 		if (root !== resolved) {
 			throw new Error("CodeGraph requires a real Git project root equal to the current workspace.");
@@ -246,6 +247,7 @@ const runCodeGraphCommand: CodeGraphRunner = async (args, options) => {
 		cwd: options.cwd,
 		signal: options.signal,
 		maxBuffer: options.maxBuffer,
+		windowsHide: true,
 	};
 	let unavailableError: unknown;
 

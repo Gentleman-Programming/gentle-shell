@@ -38,6 +38,14 @@ async function main() {
 	if ((mode !== "--write" && mode !== "--check") || process.argv.length !== 3) {
 		throw new Error("usage: build-runtime-modules.mjs --write|--check");
 	}
+	// Pi loads these directly as TypeScript. Check syntax without generating
+	// another runtime copy or expanding the published module boundary.
+	for (const path of ["lib/runtime-metrics-delivery.ts", "lib/runtime-metrics-native.ts",
+		"lib/runtime-metrics-children.ts", "extensions/runtime-metrics.ts"]) {
+		const source = await readFile(join(root, path), "utf8");
+		assertNoTrailingWhitespace(source, path);
+		stripTypeScriptTypes(source, { mode: "strip" });
+	}
 	const runtime = join(root, "runtime");
 	if (mode === "--write") await mkdir(runtime, { recursive: true });
 	const drift = [];
@@ -59,7 +67,7 @@ async function main() {
 	if (drift.length > 0) {
 		throw new Error(`generated runtime is stale: ${drift.join(", ")}`);
 	}
-	process.stdout.write(`runtime ${mode === "--write" ? "generated" : "matches TypeScript sources"} (${sources.length} modules)\n`);
+	process.stdout.write(`runtime ${mode === "--write" ? "generated" : "matches TypeScript sources"} (${sources.length} generated modules; one-shot metrics sources validated)\n`);
 }
 
 main().catch((error) => {

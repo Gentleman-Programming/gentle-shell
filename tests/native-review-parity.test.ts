@@ -511,13 +511,18 @@ test("launched answer-consent failures remain blocked after fresh-target STATUS 
 	let answerCalls = 0;
 	fixture.native.answerConsent = async () => {
 		answerCalls += 1;
-		throw new NativeReviewCliError(
-			NATIVE_REVIEW_ERROR_CODE.NON_ZERO,
-			NATIVE_REVIEW_OPERATION.START,
-			true,
-			true,
-			"native review/start failed after launch",
-		);
+		throw {
+			name: "NativeReviewCliError",
+			code: NATIVE_REVIEW_ERROR_CODE.NON_ZERO,
+			mutationOutcome: "unknown",
+			nextAction: "review.status",
+			diagnostics: {
+				operation: NATIVE_REVIEW_OPERATION.START,
+				error_code: NATIVE_REVIEW_ERROR_CODE.NON_ZERO,
+				timed_out: false,
+				output_limit_exceeded: false,
+			},
+		};
 	};
 	const runtime = parityRuntime(fixture.native);
 	const blocked = await beginConsent(runtime, cwd);
@@ -533,6 +538,8 @@ test("launched answer-consent failures remain blocked after fresh-target STATUS 
 		output_limit_exceeded: false,
 	});
 	assert.deepEqual(first.reconciliation, freshTargetStatus.raw);
+	assert.match(String(first.required_status_action), /Run target-scoped review\.status/);
+	assert.equal(first.next_action, "start");
 	assert.equal(statusRequests.length, 2, "the launched failure reconciles exactly once after the initial START status");
 	assert.equal(answerCalls, 1, "reconciliation must not replay answer-consent");
 

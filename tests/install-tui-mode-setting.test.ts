@@ -9,11 +9,11 @@ import { test } from "node:test";
 const helperUrl = new URL("../scripts/install-tui-mode-setting.mjs", import.meta.url);
 const { installTuiModeSetting } = await import(helperUrl.href);
 
-function fixture(t: { after(fn: () => void): void }) {
+function fixture(t: { after(fn: () => void): void }, packagePath: readonly string[] = ["npm", "node_modules", "gentle-pi"]) {
 	const root = mkdtempSync(join(tmpdir(), "gentle-tui-test-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const home = join(root, "agent");
-	const packageRoot = join(home, "npm", "node_modules", "gentle-pi");
+	const packageRoot = join(home, ...packagePath);
 	mkdirSync(packageRoot, { recursive: true });
 	const settings = join(home, "settings.json");
 	const env = { GENTLE_PI_AGENT_HOME: home, PI_CODING_AGENT_DIR: join(root, "other-agent") };
@@ -24,20 +24,17 @@ function link(target: string, path: string, directory = false) {
 	symlinkSync(target, path, directory ? "junction" : "file");
 }
 
-test("recognized global installation persists fullscreen and preserves other settings", async () => {
-	const root = mkdtempSync(join(tmpdir(), "gentle-tui-test-"));
-	try {
-		const home = join(root, "agent");
-		const packageRoot = join(home, "npm", "node_modules", "gentle-pi");
-		mkdirSync(packageRoot, { recursive: true });
-		writeFileSync(join(home, "settings.json"), JSON.stringify({ tuiMode: "regular", theme: "rose", nested: { enabled: false } }));
-		const { installTuiModeSetting } = await import(helperUrl.href);
-		await installTuiModeSetting({ packageRoot, env: { GENTLE_PI_AGENT_HOME: home, PI_CODING_AGENT_DIR: join(root, "unused") }, home: root });
-		assert.deepEqual(JSON.parse(readFileSync(join(home, "settings.json"), "utf8")), { tuiMode: "fullscreen", theme: "rose", nested: { enabled: false } });
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
-});
+for (const [name, packagePath] of [
+	["npm", ["npm", "node_modules", "gentle-pi"]],
+	["Pi Git", ["git", "github.com", "Gentleman-Programming", "gentle-pi"]],
+] as const) {
+	test(`recognized global ${name} installation persists fullscreen and preserves other settings`, async (t) => {
+		const f = fixture(t, packagePath);
+		writeFileSync(f.settings, JSON.stringify({ tuiMode: "regular", theme: "rose", nested: { enabled: false } }));
+		assert.deepEqual(await installTuiModeSetting(f.options), { changed: true, recognized: true });
+		assert.deepEqual(JSON.parse(readFileSync(f.settings, "utf8")), { tuiMode: "fullscreen", theme: "rose", nested: { enabled: false } });
+	});
+}
 
 for (const initial of [undefined, '{ "tuiMode": "regular", "packages": ["npm:example"] }']) {
 	test(`creates or resets fullscreen: ${initial ?? "missing"}`, async (t) => {
@@ -76,7 +73,15 @@ for (const name of ["GENTLE_PI_AGENT_HOME", "PI_CODING_AGENT_DIR", "default"]) {
 	});
 }
 
-for (const relative of ["project/.pi/npm/node_modules/gentle-pi", "consumer/node_modules/gentle-pi", "checkout", "agent/git/github.com/gentle-pi", "temporary/npm/node_modules/gentle-pi", "store/.pnpm/gentle-pi/node_modules/gentle-pi"]) {
+for (const relative of [
+	"project/.pi/npm/node_modules/gentle-pi",
+	"project/.pi/git/github.com/Gentleman-Programming/gentle-pi",
+	"consumer/node_modules/gentle-pi",
+	"checkout",
+	"agent/git/github.com/gentle-pi",
+	"temporary/npm/node_modules/gentle-pi",
+	"store/.pnpm/gentle-pi/node_modules/gentle-pi",
+]) {
 	test(`unowned install is untouched: ${relative}`, async (t) => {
 		const f = fixture(t);
 		const packageRoot = join(f.root, relative);
@@ -88,20 +93,40 @@ for (const relative of ["project/.pi/npm/node_modules/gentle-pi", "consumer/node
 	});
 }
 
+for (const packagePath of [
+	["git", "gitlab.com", "Gentleman-Programming", "gentle-pi"],
+	["git", "github.com", "Other-Organization", "gentle-pi"],
+	["git", "github.com", "Gentleman-Programming", "other-pi"],
+]) {
+	test(`unowned global Pi Git install is untouched: ${packagePath.join("/")}`, async (t) => {
+		const f = fixture(t);
+		const packageRoot = join(f.home, ...packagePath);
+		mkdirSync(packageRoot, { recursive: true });
+		writeFileSync(f.settings, '{"tuiMode":"regular"}');
+		assert.deepEqual(await installTuiModeSetting({ ...f.options, packageRoot }), { changed: false, recognized: false });
+		assert.equal(readFileSync(f.settings, "utf8"), '{"tuiMode":"regular"}');
+	});
+}
+
 test("missing configured agent home is a no-op", async (t) => {
 	const f = fixture(t);
 	assert.equal((await installTuiModeSetting({ ...f.options, env: { GENTLE_PI_AGENT_HOME: join(f.root, "absent") } })).recognized, false);
 });
 
-test("global package symlink into a store is not ownership", async (t) => {
-	const f = fixture(t);
-	const home = join(f.root, "linked-agent");
-	mkdirSync(join(home, "npm", "node_modules"), { recursive: true });
-	const packageRoot = join(home, "npm", "node_modules", "gentle-pi");
-	link(f.packageRoot, packageRoot, true);
-	assert.equal((await installTuiModeSetting({ packageRoot, env: { GENTLE_PI_AGENT_HOME: home }, home: f.root })).recognized, false);
-	assert.equal(existsSync(join(home, "settings.json")), false);
-});
+for (const [name, packagePath] of [
+	["npm", ["npm", "node_modules", "gentle-pi"]],
+	["Pi Git", ["git", "github.com", "Gentleman-Programming", "gentle-pi"]],
+] as const) {
+	test(`global ${name} package symlink into a store is not ownership`, async (t) => {
+		const f = fixture(t);
+		const home = join(f.root, "linked-agent");
+		const packageRoot = join(home, ...packagePath);
+		mkdirSync(join(packageRoot, ".."), { recursive: true });
+		link(f.packageRoot, packageRoot, true);
+		assert.equal((await installTuiModeSetting({ packageRoot, env: { GENTLE_PI_AGENT_HOME: home }, home: f.root })).recognized, false);
+		assert.equal(existsSync(join(home, "settings.json")), false);
+	});
+}
 
 test("canonical agent-home alias is supported", async (t) => {
 	const f = fixture(t);
@@ -184,16 +209,22 @@ test("Pi's later packages-only save retains persisted fullscreen", async (t) => 
 	assert.equal(JSON.parse(readFileSync(f.settings, "utf8")).tuiMode, "regular");
 });
 
-test("symlinked npm ancestor cannot grant settings ownership", async (t) => {
-	const f = fixture(t);
-	const home = join(f.root, "unsafe-agent");
-	mkdirSync(home);
-	link(join(f.home, "npm"), join(home, "npm"), true);
-	const result = await installTuiModeSetting({ packageRoot: join(home, "npm", "node_modules", "gentle-pi"), env: { GENTLE_PI_AGENT_HOME: home }, home: f.root });
-	assert.equal(result.recognized, false);
-	assert.equal(existsSync(join(home, "settings.json")), false);
-	assert.equal(existsSync(f.settings), false);
-});
+for (const [name, packagePath] of [
+	["npm", ["npm", "node_modules", "gentle-pi"]],
+	["Pi Git", ["git", "github.com", "Gentleman-Programming", "gentle-pi"]],
+] as const) {
+	test(`symlinked ${name} ancestor cannot grant settings ownership`, async (t) => {
+		const f = fixture(t);
+		const home = join(f.root, "unsafe-agent");
+		mkdirSync(home);
+		mkdirSync(join(f.home, ...packagePath), { recursive: true });
+		link(join(f.home, packagePath[0]), join(home, packagePath[0]), true);
+		const result = await installTuiModeSetting({ packageRoot: join(home, ...packagePath), env: { GENTLE_PI_AGENT_HOME: home }, home: f.root });
+		assert.equal(result.recognized, false);
+		assert.equal(existsSync(join(home, "settings.json")), false);
+		assert.equal(existsSync(f.settings), false);
+	});
+}
 
 test("waiting installer rereads another cooperative writer's settings", async (t) => {
 	const f = fixture(t);
@@ -238,20 +269,56 @@ for (const fault of ["write", "rename", "concurrent-change"]) {
 	});
 }
 
-for (const route of ["skip", "success", "failure"]) {
-	test(`postinstall lifecycle: ${route}`, (t) => {
-		const f = fixture(t);
-		const scripts = join(f.packageRoot, "scripts");
-		mkdirSync(scripts);
-		copyFileSync(helperUrl, join(scripts, "install-tui-mode-setting.mjs"));
-		copyFileSync(new URL("../scripts/install-gentle-ai.mjs", import.meta.url), join(scripts, "install-gentle-ai.mjs"));
-		writeFileSync(join(scripts, "gentle-ai-installer.mjs"), `export const INSTALLER_VERSION = "test"; export async function installGentleAi() { ${route === "failure" ? 'throw new Error("native failed")' : 'return { installed: true, binaryPath: "fixture" }'}; }`);
-		const result = spawnSync(process.execPath, [join(scripts, "install-gentle-ai.mjs")], {
-			encoding: "utf8", env: { ...process.env, ...f.env, GENTLE_PI_SKIP_GENTLE_AI_INSTALL: route === "skip" ? "1" : "0" },
-		});
-		assert.equal(result.status, route === "failure" ? 1 : 0, result.stderr);
-		assert.equal(existsSync(f.settings), route !== "failure");
-		if (route !== "failure") assert.equal(JSON.parse(readFileSync(f.settings, "utf8")).tuiMode, "fullscreen");
+type PostinstallRoute = "skip" | "success" | "failure";
+
+function writePostinstallFixture(f: ReturnType<typeof fixture>, route: PostinstallRoute) {
+	const scripts = join(f.packageRoot, "scripts");
+	mkdirSync(scripts);
+	copyFileSync(helperUrl, join(scripts, "install-tui-mode-setting.mjs"));
+	copyFileSync(new URL("../scripts/install-gentle-ai.mjs", import.meta.url), join(scripts, "install-gentle-ai.mjs"));
+	const installer = route === "failure"
+		? 'throw new Error("native failed")'
+		: route === "skip"
+			? 'throw new Error("skip fixture native installer was invoked")'
+			: 'return { installed: true, binaryPath: "fixture" }';
+	writeFileSync(join(scripts, "gentle-ai-installer.mjs"), `export const INSTALLER_VERSION = "test"; export async function installGentleAi() { ${installer}; }`);
+	return scripts;
+}
+
+function runPostinstall(f: ReturnType<typeof fixture>, route: PostinstallRoute) {
+	const scripts = writePostinstallFixture(f, route);
+	return spawnSync(process.execPath, [join(scripts, "install-gentle-ai.mjs")], {
+		encoding: "utf8", env: { ...process.env, ...f.env, GENTLE_PI_SKIP_GENTLE_AI_INSTALL: route === "skip" ? "1" : "0" },
 	});
 }
 
+function assertPostinstallLifecycle(f: ReturnType<typeof fixture>, route: PostinstallRoute, result: ReturnType<typeof runPostinstall>, settingsExists = route !== "failure") {
+	assert.equal(result.status, route === "failure" ? 1 : 0, result.stderr);
+	assert.equal(existsSync(f.settings), settingsExists);
+	if (route === "failure") assert.match(result.stderr, /gentle-pi could not install its package-local Gentle AI vtest binary: native failed/);
+	else {
+		assert.doesNotMatch(result.stderr, /skip fixture native installer was invoked/);
+		assert.equal(JSON.parse(readFileSync(f.settings, "utf8")).tuiMode, "fullscreen");
+	}
+}
+
+for (const [name, packagePath] of [
+	["npm", ["npm", "node_modules", "gentle-pi"]],
+	["Pi Git", ["git", "github.com", "Gentleman-Programming", "gentle-pi"]],
+] as const) {
+	for (const route of ["skip", "success", "failure"] as const) {
+		test(`${name} postinstall lifecycle: ${route}`, (t) => {
+			const f = fixture(t, packagePath);
+			const result = runPostinstall(f, route);
+			assertPostinstallLifecycle(f, route, result);
+			if (route === "failure") {
+				const existing = fixture(t, packagePath);
+				const original = '{"tuiMode":"regular","theme":"kept"}';
+				writeFileSync(existing.settings, original);
+				const existingResult = runPostinstall(existing, route);
+				assertPostinstallLifecycle(existing, route, existingResult, true);
+				assert.equal(readFileSync(existing.settings, "utf8"), original);
+			}
+		});
+	}
+}

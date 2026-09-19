@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="590" viewBox="0 0 960 590" role="img" aria-labelledby="workflow-title workflow-desc">
+  <title id="workflow-title">el Gentleman workflow</title>
+  <desc id="workflow-desc">A human-directed sequence from intent through clarification, workflow choice, work, evidence, and a final human decision.</desc>
+  <defs>
+    <linearGradient id="workflow-bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#100c15"/><stop offset="1" stop-color="#21101f"/></linearGradient>
+    <marker id="workflow-arrow" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" viewBox="0 0 10 10" refX="10" refY="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#f095c8"/></marker>
+  </defs>
+  <rect width="960" height="590" rx="20" fill="url(#workflow-bg)"/>
+  <text x="58" y="65" fill="#fff7f1" font-family="Arial, Helvetica, sans-serif" font-size="44" font-weight="700">From intent to evidence.</text>
+  <text x="58" y="120" fill="#d7a0b8" font-family="Arial, Helvetica, sans-serif" font-size="44" font-weight="700">You stay in control.</text>
+  <g fill="#1c1420" stroke="#d7a0b8" stroke-width="2"><rect x="58" y="190" width="240" height="140" rx="16"/><rect x="350" y="190" width="240" height="140" rx="16"/><rect x="642" y="190" width="240" height="140" rx="16"/><rect x="642" y="370" width="240" height="140" rx="16"/><rect x="350" y="370" width="240" height="140" rx="16"/><rect x="58" y="370" width="240" height="140" rx="16"/></g>
+  <g fill="none" stroke="#f095c8" stroke-width="3" stroke-linecap="round" marker-end="url(#workflow-arrow)"><path d="M298 260H350"/><path d="M590 260H642"/><path d="M762 330V370"/><path d="M642 440H590"/><path d="M350 440H298"/></g>
+  <g fill="#fff7f1" font-family="Arial, Helvetica, sans-serif" font-size="36" font-weight="700" text-anchor="middle"><text x="178" y="272">Intent</text><text x="470" y="272">Clarify</text><text x="762" y="272">Workflow</text><text x="762" y="452">Work</text><text x="470" y="452">Evidence</text><text x="178" y="452">Decision</text></g>
+  <path d="M58 548H902" stroke="#f095c8" stroke-opacity=".28" stroke-width="2"/>
+</svg>

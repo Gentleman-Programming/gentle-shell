@@ -1104,8 +1104,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			cwd: target ?? parentWorktreeRoot,
 			parentSessionId,
 			...(target === undefined ? {} : { onLaunch: () => { registry.register(target, "subagent:spawn"); } }),
-			model: profile.model,
-			thinking: profile.thinking,
+			// A model-less profile route inherits the parent session's live model.
+			// Use the canonical ModelRef shape expected by TaskRequest.
+			model: profile.model ?? (ctx.model ? { provider: ctx.model.provider, id: ctx.model.id } : { provider: undefined, id: "default" }),
+			thinking: profile.thinking ?? ctx.thinkingLevel,
 			sessionDir,
 			resumeSessionPath: resume,
 			env: research ? { ...deps.env, [RESEARCH_CHILD_TOOLS_ENV]: JSON.stringify([...research.agent.tools, "subagent_parent_message"]) } : deps.env,

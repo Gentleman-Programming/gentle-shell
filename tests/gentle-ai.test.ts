@@ -368,12 +368,16 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 	// setThinkingLevel on the ExtensionAPI move the session the user is in.
 	const liveSwitches: Array<{ kind: "model"; provider: string; id: string } | { kind: "thinking"; level: string }> = [];
 	let setModelResult = true;
+	let thinkingRejects = false;
 	createGentleAiExtension({ nativeReviewCli: null })({
 		on() {},
 		registerTool() {},
 		registerCommand(name, command) { commands.set(name, command); },
 		setModel: async (model: { provider: string; id: string }) => { liveSwitches.push({ kind: "model", provider: model.provider, id: model.id }); return setModelResult; },
-		setThinkingLevel: (level: string) => { liveSwitches.push({ kind: "thinking", level }); },
+		setThinkingLevel: (level: string) => {
+			if (thinkingRejects) throw new Error(`thinking level ${level} is not supported by this model`);
+			liveSwitches.push({ kind: "thinking", level });
+		},
 	} as unknown as ExtensionAPI);
 	const notifications: Array<{ message: string; severity: string }> = [];
 	// The profiles panel reads the terminal rows to size its full-screen frame, so
@@ -418,6 +422,7 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 		panelVisits: () => panelVisits,
 		liveSwitches,
 		refuseSetModel() { setModelResult = false; },
+		rejectThinkingLevel() { thinkingRejects = true; },
 		onPanel(action: typeof onPanel) { onPanel = action; },
 		onInput(action: (panel: RoutingConsumerPanel) => void) { onInput = action; },
 		run: (name: string) => commands.get(name)!.handler("", ctx),
@@ -1905,6 +1910,19 @@ test("applying a profile whose orchestrator model is unknown to the registry per
 	assert.deepEqual(fixture.liveSwitches, [], "nothing is switched live without a registry model");
 	const applied = fixture.notifications.at(-1)?.message ?? "";
 	assert.match(applied, /nan\/not-in-catalog is not in the model catalog; this session keeps its current model/);
+});
+
+test("a thinking level the switched model rejects keeps the model switch and reports the level", async (t) => {
+	const { fixture, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	writeStore({ team: { orchestrator: { model: "nan/glm5.3", thinking: "max" }, worker: { model: "openai/alpha" } } });
+	fixture.rejectThinkingLevel();
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+	assert.equal(JSON.parse(readFileSync(settingsPath, "utf8")).defaultThinkingLevel, "max", "the persisted default is untouched by the live refusal");
+	assert.deepEqual(fixture.liveSwitches, [{ kind: "model", provider: "nan", id: "glm5.3" }], "the model switch stands");
+	const applied = fixture.notifications.at(-1)?.message ?? "";
+	assert.match(applied, /This session now runs on nan\/glm5\.3, but its thinking level could not be set to max: thinking level max is not supported by this model/);
 });
 
 test("applying a profile whose orchestrator provider has no auth persists the default and reports the refused switch", async (t) => {

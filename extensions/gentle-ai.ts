@@ -4140,16 +4140,17 @@ function reportProfilesDrops(ctx: ExtensionContext, path: string, drops: Profile
 	}
 }
 
+/** Pi's own live-session controls: the ExtensionAPI's setModel/setThinkingLevel. */
+type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel">;
+
 /**
  * Switch the running session to the profile's orchestrator. `settings.json`
  * is the default for new sessions only; Pi's `setModel`/`setThinkingLevel`
  * are what move the live one. Failures never undo the persisted default: the
  * profile is applied for the next session either way, and the note says what
- * this session did.
+ * this session did. Nothing here may throw — settings.json is already written
+ * and the apply must finish reporting.
  */
-/** Pi's own live-session controls: the ExtensionAPI's setModel/setThinkingLevel. */
-type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel">;
-
 async function switchLiveOrchestrator(ctx: ExtensionContext, live: LiveSession, entry: AgentRoutingEntry): Promise<string> {
 	const reference = parseOrchestratorModelRef(entry.model);
 	if (reference === undefined) return "";
@@ -4163,8 +4164,13 @@ async function switchLiveOrchestrator(ctx: ExtensionContext, live: LiveSession, 
 		return `\nThis session could not switch to ${label}: ${sanitizeTerminalText(error instanceof Error ? error.message : String(error))}.`;
 	}
 	if (!switched) return `\nno authentication is configured for ${reference.provider}; this session keeps its current model.`;
-	if (entry.thinking !== undefined) live.setThinkingLevel(entry.thinking);
-	return `\nThis session now runs on ${label}${entry.thinking === undefined ? "" : ` · ${entry.thinking}`}.`;
+	if (entry.thinking === undefined) return `\nThis session now runs on ${label}.`;
+	try {
+		live.setThinkingLevel(entry.thinking);
+	} catch (error) {
+		return `\nThis session now runs on ${label}, but its thinking level could not be set to ${entry.thinking}: ${sanitizeTerminalText(error instanceof Error ? error.message : String(error))}.`;
+	}
+	return `\nThis session now runs on ${label} · ${entry.thinking}.`;
 }
 
 function profileSnapshotFrom(

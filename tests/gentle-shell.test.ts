@@ -510,9 +510,9 @@ test("prompt uses the compact banner cadence and releases its unref timer at set
 
 const escapeKeybindings = { matches: (_data: string, keybinding: string) => keybinding === "app.interrupt" };
 
-test("double-esc-cancel default off: a single Esc while working still aborts immediately, exactly as before", () => {
+test("double-esc-cancel default off: a single Esc while working still aborts immediately, exactly as before", (t) => {
 	const { pi, handlers } = fakePi();
-	gentleShell(pi, {});
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) });
 	const { ctx, ui } = fakeContext();
 	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
 	let aborted = 0;
@@ -710,6 +710,30 @@ test("gentle:double-esc-cancel enable updates the in-memory policy so an already
 	editor.handleInput("\x1b");
 	assert.equal(aborted, 1, "now on: the same prompt instance must swallow the first Esc instead of aborting");
 	assert.match(stripAnsi(editor.render(60).join("\n")), /esc again to cancel/);
+	editor.dispose();
+});
+
+test("gentle:double-esc-cancel re-syncs the keypress gate from the global file so status, toggle direction, and Esc behavior agree", async (t) => {
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	let aborted = 0;
+	editor.onEscape = () => { aborted++; };
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	// Another session (or a hand edit) turns the preference on underneath this one.
+	mkdirSync(configHome, { recursive: true });
+	writeFileSync(join(configHome, "double-esc-cancel.json"), JSON.stringify({ schema: "gentle-pi.double-esc-cancel/v1", policy: "on" }));
+	await commands.get("gentle:double-esc-cancel")!.handler("status", ctx);
+	assert.match(ui.notices[0]!, /^double-esc-cancel: on \(decided by global file/);
+	editor.handleInput("\x1b");
+	assert.equal(aborted, 0, "status reported on, so the gate must swallow the first Esc rather than abort");
+	assert.match(stripAnsi(editor.render(60).join("\n")), /esc again to cancel/);
+	// The no-argument toggle flips relative to that same on-disk value: on -> off.
+	await commands.get("gentle:double-esc-cancel")!.handler("", ctx);
+	assert.match(ui.notices[1]!, /^double-esc-cancel: off /);
+	assert.deepEqual(JSON.parse(readFileSync(join(configHome, "double-esc-cancel.json"), "utf8")), { schema: "gentle-pi.double-esc-cancel/v1", policy: "off" });
 	editor.dispose();
 });
 

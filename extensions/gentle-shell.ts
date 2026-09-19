@@ -680,8 +680,12 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		});
 	}
 	let prompt: GentlePromptEditor | undefined;
-	// Resolved once at startup; the /gentle:double-esc-cancel command below
-	// updates this in-memory so the editor never re-reads the file per keypress.
+	// Resolved once at startup and cached in memory so the editor never
+	// re-reads the file per keypress. The /gentle:double-esc-cancel command
+	// below is the only place that touches the file, and every invocation
+	// re-syncs this cache from disk first, so status, the no-argument toggle
+	// direction, and the Esc gate always describe the same effective policy
+	// even when another session or a hand edit changed the file mid-session.
 	const doubleEscCancelConfigHome = gentlePiConfigHome(env);
 	let doubleEscCancelPolicy: DoubleEscCancelPolicy = resolveDoubleEscCancelPolicy({
 		env,
@@ -849,6 +853,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			}
 			try {
 				const before = resolveDoubleEscCancelPolicy({ env, gentlePiConfigHome: doubleEscCancelConfigHome });
+				doubleEscCancelPolicy = before.policy;
 				const subAction = trimmed === "" ? (before.policy === "on" ? "disable" : "enable") : trimmed;
 				if (subAction === "status") {
 					const report = renderDoubleEscCancelReport(before);

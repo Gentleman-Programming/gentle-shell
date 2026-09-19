@@ -355,10 +355,13 @@ export class GentlePromptEditor extends CustomEditor {
 		const draft = this.getText();
 		super.handleInput(data);
 		const queued = extractQueuedText(this.getText(), draft);
-		// undefined: unrecognized shape, Pi's own text stays. "" or whitespace:
-		// nothing was queued, so the editor is left exactly as Pi set it.
-		if (queued === undefined || queued.trim() === "") return;
-		this.setText(draft);
+		// undefined: unrecognized shape, Pi's own text stays untouched.
+		if (queued === undefined) return;
+		// "": nothing was queued, and the editor already holds the draft, so no
+		// redundant write. Anything else was recognized: the draft comes back
+		// alone, and only real text (not whitespace) is worth a turn.
+		if (queued !== "") this.setText(draft);
+		if (queued.trim() === "") return;
 		this.deps.dispatchQueuedText(queued);
 	}
 
@@ -1006,12 +1009,23 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	pi.on("agent_settled", (_event, ctx) => {
 		prompt?.setWorking(false);
 		if (pendingQueuedText === undefined) return;
+		// Only an idle settle may start the next turn; if a run is still in
+		// flight the text keeps waiting for the next settle, never mid-turn.
+		if (!ctx.isIdle()) return;
 		const queued = pendingQueuedText;
 		pendingQueuedText = undefined;
 		try {
 			pi.sendUserMessage(queued);
 		} catch (error) {
-			if (ctx.hasUI) ctx.ui.notify(`Could not send the queued message after cancel: ${error instanceof Error ? error.message : String(error)}`, "error");
+			// Never drop the user's words: put them back in front of the draft,
+			// exactly the shape Pi's own restore would have left, and say why.
+			if (prompt) {
+				const current = prompt.getText();
+				prompt.setText([queued, current].filter((text) => text.trim() !== "").join("\n\n"));
+			} else {
+				pendingQueuedText = queued;
+			}
+			if (ctx.hasUI) ctx.ui.notify(`Could not send the queued message after cancel; it is back in the editor: ${error instanceof Error ? error.message : String(error)}`, "error");
 		}
 	});
 	pi.on("agent_end", async (_event, ctx) => {

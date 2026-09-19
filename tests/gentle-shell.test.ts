@@ -129,7 +129,7 @@ async function fire(handlers: Map<string, Array<(event: unknown, ctx: ExtensionC
 	for (const handler of handlers.get(event) ?? []) await handler({}, ctx);
 }
 
-function fakeContext(options: { hasUI?: boolean; entries?: unknown[]; oauth?: boolean; pending?: boolean; editorFactory?: unknown; token?: string } = {}): { ctx: ExtensionContext; ui: FakeUi; overlayReady: Promise<void> } {
+function fakeContext(options: { hasUI?: boolean; entries?: unknown[]; oauth?: boolean; pending?: boolean; idle?: boolean; editorFactory?: unknown; token?: string } = {}): { ctx: ExtensionContext; ui: FakeUi; overlayReady: Promise<void> } {
 	const ui: FakeUi = { footerFactory: undefined, editorFactory: options.editorFactory, widgets: new Map(), widgetSets: 0, workingVisible: undefined, notices: [], overlay: undefined, overlayView: undefined, closeOverlay: undefined };
 	let resolveOverlay: () => void;
 	const overlayReady = new Promise<void>((resolve) => { resolveOverlay = resolve; });
@@ -137,6 +137,7 @@ function fakeContext(options: { hasUI?: boolean; entries?: unknown[]; oauth?: bo
 	const ctx = {
 		hasUI: options.hasUI ?? true,
 		hasPendingMessages: () => options.pending ?? false,
+		isIdle: () => options.idle ?? true,
 		cwd: "/repo",
 		model: { id: "gpt-5.5", provider: "openai-codex", reasoning: true, contextWindow: 272_000 },
 		sessionManager: {
@@ -767,6 +768,7 @@ test("working cancel: a whitespace-only recognized queue is treated as no queue 
 	editor.handleInput("\x1b");
 	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
 	assert.equal(sentMessages.length, 0, "whitespace is not a message");
+	assert.equal(editor.getText(), "draft reply", "the recognized whitespace prefix is stripped and the draft comes back alone");
 	editor.dispose();
 });
 
@@ -782,7 +784,42 @@ test("working cancel: a failing sendUserMessage on settle is reported, not throw
 	(pi as unknown as { sendUserMessage: (content: string) => void }).sendUserMessage = () => { throw new Error("session is switching"); };
 	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
 	assert.ok(ui.notices.some((notice) => /session is switching/.test(notice)), "the failure surfaces as a notice");
+	assert.equal(editor.getText(), "follow up\n\ndraft reply", "the queued text is put back in front of the draft, exactly as Pi's own restore would have left it");
 	assert.doesNotMatch(stripAnsi(editor.render(60).join("\n")), /esc again to cancel/, "the prompt is idle again");
+	editor.dispose();
+});
+
+test("working cancel: a failing send reported through a context without UI still restores the queued text into the editor", (t) => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) });
+	const { ctx, ui } = fakeContext();
+	const headless = fakeContext({ hasUI: false });
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	editor.setText("draft reply");
+	editor.onEscape = () => { editor.setText(`follow up\n\n${editor.getText()}`); };
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	editor.handleInput("\x1b");
+	(pi as unknown as { sendUserMessage: (content: string) => void }).sendUserMessage = () => { throw new Error("session is switching"); };
+	for (const handler of handlers.get("agent_settled") ?? []) handler({}, headless.ctx);
+	assert.equal(headless.ui.notices.length, 0, "no UI, no notice");
+	assert.equal(editor.getText(), "follow up\n\ndraft reply", "with or without a UI to tell the user, the text is never dropped");
+	editor.dispose();
+});
+
+test("working cancel: agent_settled never sends while another turn is still in flight; the text waits for an idle settle", (t) => {
+	const { pi, handlers, sentMessages } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) });
+	const { ctx, ui } = fakeContext();
+	const busy = fakeContext({ idle: false }).ctx;
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	editor.setText("draft reply");
+	editor.onEscape = () => { editor.setText(`follow up\n\n${editor.getText()}`); };
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	editor.handleInput("\x1b");
+	for (const handler of handlers.get("agent_settled") ?? []) handler({}, busy);
+	assert.equal(sentMessages.length, 0, "a settle reported while not idle must not inject the text mid-turn");
+	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
+	assert.deepEqual(sentMessages.map((m) => m.content), ["follow up"]);
 	editor.dispose();
 });
 

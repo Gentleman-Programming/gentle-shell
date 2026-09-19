@@ -279,6 +279,12 @@ export class GentlePromptEditor extends CustomEditor {
 	 * and never reach this branch.
 	 */
 	override handleInput(data: string): void {
+		// Any keystroke that is not the confirming Esc ends the pending idle
+		// clear, even one that leaves the text identical (type, then delete).
+		if (this.pendingIdleClearDeadline !== undefined && !this.keybindingsManager.matches(data, "app.interrupt")) {
+			this.pendingIdleClearDeadline = undefined;
+			this.pendingIdleClearText = undefined;
+		}
 		if (
 			this.promptState === PROMPT_STATE.WORKING &&
 			!this.isShowingAutocomplete() &&
@@ -800,7 +806,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let prompt: GentlePromptEditor | undefined;
 	// Set by abortAndDispatchQueued via dispatchQueuedText when an Esc aborts
 	// a turn with a non-empty queue; sent exactly once, from agent_settled,
-	// once the aborted run has fully settled (issue #1218).
+	// once the aborted run has fully settled (issue #1218). Several aborts
+	// before that settle append in order, joined the way Pi joins its own
+	// queue, so nothing is overwritten. It belongs to the current session and
+	// is dropped on session_shutdown.
 	let pendingQueuedText: string | undefined;
 	// Resolved once at startup and cached in memory so the editor never
 	// re-reads the file per keypress. The /gentle:double-esc-cancel command
@@ -900,7 +909,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				prompt?.dispose();
 				prompt = created;
 			},
-			{ now: () => deps.now(), doubleEscCancelEnabled: () => doubleEscCancelPolicy === "on", dispatchQueuedText: (text) => { pendingQueuedText = text; } },
+			{ now: () => deps.now(), doubleEscCancelEnabled: () => doubleEscCancelPolicy === "on", dispatchQueuedText: (text) => { pendingQueuedText = pendingQueuedText === undefined ? text : `${pendingQueuedText}\n\n${text}`; } },
 		);
 		// Hide native feedback only when our petal replaces it. Native transcript
 		// thinking blocks remain Pi-owned; this changes only the supported loader UI.
@@ -917,6 +926,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		applyChanges(ctx, tracker.model);
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
+		pendingQueuedText = undefined;
 		prompt?.dispose();
 		prompt = undefined;
 		if ((ctx.ui.getEditorComponent() as PromptFactory | undefined)?.[PROMPT_OWNER]) {
@@ -1007,11 +1017,12 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		if (ctx.hasUI) ctx.ui.setWidget(DEV_BINARY_WIDGET_KEY, undefined);
 	});
 	pi.on("agent_settled", (_event, ctx) => {
+		// Pi clears its own run-active flag before emitting agent_settled, so
+		// this is normally idle; if a run is somehow still in flight the prompt
+		// stays working and the pending text waits for the next settle.
+		if (!ctx.isIdle()) return;
 		prompt?.setWorking(false);
 		if (pendingQueuedText === undefined) return;
-		// Only an idle settle may start the next turn; if a run is still in
-		// flight the text keeps waiting for the next settle, never mid-turn.
-		if (!ctx.isIdle()) return;
 		const queued = pendingQueuedText;
 		pendingQueuedText = undefined;
 		try {

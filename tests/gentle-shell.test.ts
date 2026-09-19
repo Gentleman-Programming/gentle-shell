@@ -818,9 +818,46 @@ test("working cancel: agent_settled never sends while another turn is still in f
 	editor.handleInput("\x1b");
 	for (const handler of handlers.get("agent_settled") ?? []) handler({}, busy);
 	assert.equal(sentMessages.length, 0, "a settle reported while not idle must not inject the text mid-turn");
+	let aborted = 0;
+	editor.onEscape = () => { aborted++; };
+	editor.handleInput("\x1b");
+	assert.equal(aborted, 1, "a run is still in flight, so the prompt stays working and Esc takes the cancel path");
+	assert.doesNotMatch(stripAnsi(editor.render(60).join("\n")), /esc again to clear/, "not the idle clear");
 	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
 	assert.deepEqual(sentMessages.map((m) => m.content), ["follow up"]);
 	editor.dispose();
+});
+
+test("working cancel: two aborts before an idle settle deliver both queued texts, in order, as one message", (t) => {
+	const { pi, handlers, sentMessages } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) });
+	const { ctx, ui } = fakeContext();
+	const busy = fakeContext({ idle: false }).ctx;
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	let aborts = 0;
+	editor.onEscape = () => { aborts++; editor.setText(aborts === 1 ? "first" : "second"); };
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	editor.handleInput("\x1b");
+	for (const handler of handlers.get("agent_settled") ?? []) handler({}, busy);
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	editor.handleInput("\x1b");
+	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
+	assert.deepEqual(sentMessages.map((m) => m.content), ["first\n\nsecond"], "nothing from the first abort is lost, and order is preserved");
+	editor.dispose();
+});
+
+test("working cancel: pending queued text never crosses a session boundary", (t) => {
+	const { pi, handlers, sentMessages } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	editor.setText("draft reply");
+	editor.onEscape = () => { editor.setText(`follow up\n\n${editor.getText()}`); };
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	editor.handleInput("\x1b");
+	for (const handler of handlers.get("session_shutdown") ?? []) handler({}, ctx);
+	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
+	assert.equal(sentMessages.length, 0, "the old session's queued text must not be sent into the next session");
 });
 
 test("working cancel: agent_settled firing first delivers the pending text without a deliverAs override", (t) => {
@@ -952,6 +989,25 @@ test("idle draft: editing the text between two Esc presses starts a fresh clear 
 	now += 400;
 	editor.handleInput("\x1b");
 	assert.equal(editor.getText(), "", "the fresh window's own second Esc, on the unchanged edited text, does clear");
+	editor.dispose();
+});
+
+test("idle draft: typing and deleting between two Esc presses still invalidates the pending clear", (t) => {
+	let now = 1_000_000;
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) }, { now: () => now });
+	const { ctx, ui } = fakeContext();
+	// Esc-only matching: ordinary keystrokes must reach the editor as text.
+	const preciseEscape = { matches: (data: string, keybinding: string) => keybinding === "app.interrupt" && data === "\x1b" };
+	const editor = installedPrompt(ctx, ui, handlers, preciseEscape);
+	editor.setText("draft reply");
+	editor.handleInput("\x1b");
+	editor.handleInput("x");
+	editor.handleInput("\x7f");
+	assert.equal(editor.getText(), "draft reply", "type then backspace lands on the same text");
+	now += 400;
+	editor.handleInput("\x1b");
+	assert.equal(editor.getText(), "draft reply", "an intervening keystroke invalidates the confirmation even when the text ends up identical");
 	editor.dispose();
 });
 

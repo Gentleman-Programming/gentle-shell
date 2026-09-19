@@ -567,7 +567,7 @@ async function recoverInterruptedPublication(runtimeRoot, bundleIsValid, options
 	const live = versionBundlePath(runtimeRoot);
 	const liveExists = await realBundleDirectory(live, runtimeRoot, "live bundle");
 	if (!liveExists) {
-		try { await (options.rename ?? rename)(backup, live); }
+		try { await renameWithWindowsPublicationRetry(backup, live, options); }
 		catch (error) { throw bundleRecoveryError(runtimeRoot, `could not restore valid backup ${backup}: ${error instanceof Error ? error.message : String(error)}`); }
 		return;
 	}
@@ -584,21 +584,43 @@ async function cleanupStaleStagingBundles(runtimeRoot) {
 	}
 }
 
+// Windows publication can lose a race with the just-executed gentle-ai.exe or a
+// real-time scanner still holding the staging directory. Retry only those lock
+// codes, and only on the effective win32 platform, so a permanent failure still
+// surfaces as the original error instead of a successful install.
+const WINDOWS_PUBLICATION_RETRY_DELAYS_MS = [200, 400, 800, 1600];
+
+function isRetryableWindowsPublicationLock(error) {
+	return Boolean(error && typeof error === "object" && ["EPERM", "EBUSY", "EACCES"].includes(error.code));
+}
+
+async function renameWithWindowsPublicationRetry(from, to, options) {
+	const renameFile = options.rename ?? rename;
+	if ((options.platform ?? process.platform) !== "win32") return renameFile(from, to);
+	for (let attempt = 0; attempt <= WINDOWS_PUBLICATION_RETRY_DELAYS_MS.length; attempt += 1) {
+		try { return await renameFile(from, to); }
+		catch (error) {
+			if (attempt === WINDOWS_PUBLICATION_RETRY_DELAYS_MS.length || !isRetryableWindowsPublicationLock(error)) throw error;
+			await new Promise((resolve) => setTimeout(resolve, WINDOWS_PUBLICATION_RETRY_DELAYS_MS[attempt]));
+		}
+	}
+}
+
 async function publishBundle(runtimeRoot, stagingDirectory, options) {
-	const versionDirectory = join(runtimeRoot, `v${INSTALLER_VERSION}`), renameFile = options.rename ?? rename;
+	const versionDirectory = join(runtimeRoot, `v${INSTALLER_VERSION}`);
 	const backupDirectory = join(runtimeRoot, `.v${INSTALLER_VERSION}.backup-${process.pid}-${Date.now()}`);
 	let movedPrior = false;
 	try {
 		try {
 			const current = await lstat(versionDirectory);
 			if (!current.isDirectory() || current.isSymbolicLink()) throw new Error("Gentle AI package-local version directory must be a real directory");
-			await renameFile(versionDirectory, backupDirectory);
+			await renameWithWindowsPublicationRetry(versionDirectory, backupDirectory, options);
 			movedPrior = true;
 		} catch (error) { if (!(error && typeof error === "object" && error.code === "ENOENT")) throw error; }
-		await renameFile(stagingDirectory, versionDirectory);
+		await renameWithWindowsPublicationRetry(stagingDirectory, versionDirectory, options);
 	} catch (error) {
 		if (movedPrior) {
-			try { await renameFile(backupDirectory, versionDirectory); }
+			try { await renameWithWindowsPublicationRetry(backupDirectory, versionDirectory, options); }
 			catch (rollbackError) { throw new Error("Gentle AI bundle publication failed and rollback could not restore the prior bundle", { cause: rollbackError }); }
 		}
 		throw error;

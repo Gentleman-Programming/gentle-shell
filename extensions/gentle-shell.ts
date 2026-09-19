@@ -210,12 +210,20 @@ const IDLE_ESC_CLEAR_WINDOW_MS = 500;
  * itself and the queued text dispatched as the next turn. `draft` is empty
  * (including whitespace-only) whenever `.trim() === ""`, matching the
  * `filter` predicate above exactly.
+ *
+ * Returns `""` only for the genuine no-queue case (`combined === draft`, or
+ * both empty). Returns `undefined` when `combined` does not match Pi's join
+ * shape at all — a future Pi change, or anything else that touched the
+ * editor during the abort. That distinction matters to the caller: an empty
+ * queue means "nothing to restore," while an unrecognized shape means "do
+ * not touch what Pi already wrote," so a mismatch is never silently treated
+ * as an empty queue.
  */
-export function extractQueuedText(combined: string, draft: string): string {
-	if (draft.trim() === "") return combined;
+export function extractQueuedText(combined: string, draft: string): string | undefined {
 	if (combined === draft) return "";
+	if (draft.trim() === "") return combined;
 	const suffix = `\n\n${draft}`;
-	return combined.endsWith(suffix) ? combined.slice(0, combined.length - suffix.length) : "";
+	return combined.endsWith(suffix) ? combined.slice(0, combined.length - suffix.length) : undefined;
 }
 
 export class GentlePromptEditor extends CustomEditor {
@@ -229,6 +237,10 @@ export class GentlePromptEditor extends CustomEditor {
 	private readonly keybindingsManager: KeybindingsManager;
 	private pendingEscapeCancelDeadline: number | undefined;
 	private pendingIdleClearDeadline: number | undefined;
+	// Snapshot of the draft at the first Esc; the second Esc only clears when
+	// the text is still exactly this, so an edit in between never gets
+	// silently discarded (issue #1218 review).
+	private pendingIdleClearText: string | undefined;
 
 	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, deps: PromptEditorDeps) {
 		super(tui, theme, keybindings);
@@ -239,8 +251,12 @@ export class GentlePromptEditor extends CustomEditor {
 	setWorking(working: boolean): void {
 		this.promptState = working ? PROMPT_STATE.WORKING : PROMPT_STATE.IDLE;
 		this.stopPulse();
-		if (working) this.pendingIdleClearDeadline = undefined;
-		else this.pendingEscapeCancelDeadline = undefined;
+		if (working) {
+			this.pendingIdleClearDeadline = undefined;
+			this.pendingIdleClearText = undefined;
+		} else {
+			this.pendingEscapeCancelDeadline = undefined;
+		}
 		if (working) {
 			this.pulse = setInterval(() => {
 				this.tick += 1;
@@ -290,24 +306,32 @@ export class GentlePromptEditor extends CustomEditor {
 		// empty editor (tree/fork), so a draft's first Esc would otherwise do
 		// nothing. Mirror the same swallow-then-confirm shape as the
 		// working-cancel gate above, on the same 500ms window as Pi's own idle
-		// double-Esc (issue #1218).
+		// double-Esc (issue #1218). Bash-mode drafts ("!...", the same rule
+		// Pi's own interactive-mode uses to detect bash mode) are Pi's own
+		// bash-mode Esc territory and must never reach this gate.
 		if (
 			this.promptState === PROMPT_STATE.IDLE &&
 			!this.isShowingAutocomplete() &&
-			this.getText().trim() !== "" &&
 			this.keybindingsManager.matches(data, "app.interrupt")
 		) {
-			if (this.isPendingIdleClear()) {
-				this.pendingIdleClearDeadline = undefined;
-				const text = this.getText();
-				this.addToHistory(text);
-				this.setText("");
+			const text = this.getText();
+			if (text.trim() !== "" && !text.trimStart().startsWith("!")) {
+				// The second Esc only clears when the text is still exactly what
+				// it was at the first Esc; an edit in between starts a fresh
+				// first press on the new text instead of silently discarding it.
+				if (this.isPendingIdleClear() && this.pendingIdleClearText === text) {
+					this.pendingIdleClearDeadline = undefined;
+					this.pendingIdleClearText = undefined;
+					this.addToHistory(text);
+					this.setText("");
+					this.deps.requestRender();
+					return;
+				}
+				this.pendingIdleClearDeadline = this.deps.now() + IDLE_ESC_CLEAR_WINDOW_MS;
+				this.pendingIdleClearText = text;
 				this.deps.requestRender();
 				return;
 			}
-			this.pendingIdleClearDeadline = this.deps.now() + IDLE_ESC_CLEAR_WINDOW_MS;
-			this.deps.requestRender();
-			return;
 		}
 		super.handleInput(data);
 	}
@@ -321,13 +345,21 @@ export class GentlePromptEditor extends CustomEditor {
 	 * settles (see the `agent_settled` handler in `gentleShell`). Images
 	 * inside queued messages are already dropped by Pi's own restore, before
 	 * this code ever sees the text.
+	 *
+	 * `extractQueuedText` returning `undefined` means the restored text does
+	 * not match Pi's own join shape; Pi's own text wins and is left exactly
+	 * as it is, nothing is dispatched. An empty string means a genuine empty
+	 * queue: there is nothing to restore, so `setText` is not called at all
+	 * on the common no-queue path. Only a recognized, non-empty queue
+	 * restores the draft and dispatches.
 	 */
 	private abortAndDispatchQueued(data: string): void {
 		const draft = this.getText();
 		super.handleInput(data);
 		const queued = extractQueuedText(this.getText(), draft);
+		if (!queued) return;
 		this.setText(draft);
-		if (queued.trim() !== "") this.deps.dispatchQueuedText(queued);
+		this.deps.dispatchQueuedText(queued);
 	}
 
 	render(width: number): string[] {
@@ -958,11 +990,16 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		},
 	});
 	pi.on("agent_start", (_event, ctx) => {
-		// A new turn starting must never let an earlier abort's queued text
-		// leak into it; the normal path already clears this in agent_settled
-		// below before sendUserMessage triggers the next turn, but this guard
-		// covers a turn started any other way.
-		pendingQueuedText = undefined;
+		// A turn can start any other way (the user sending the draft, an
+		// extension, a shortcut) before the aborted run's own agent_settled
+		// below has delivered the pending text. That text must never be
+		// silently lost: hand it to the just-started turn as a follow-up
+		// instead of discarding it.
+		if (pendingQueuedText !== undefined) {
+			const queued = pendingQueuedText;
+			pendingQueuedText = undefined;
+			pi.sendUserMessage(queued, { deliverAs: "followUp" });
+		}
 		prompt?.setWorking(true);
 		// The dev-binary card is a startup notice: it leaves with the first prompt.
 		if (ctx.hasUI) ctx.ui.setWidget(DEV_BINARY_WIDGET_KEY, undefined);

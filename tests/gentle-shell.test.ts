@@ -624,7 +624,12 @@ test("extractQueuedText reverses Pi's queued+draft join", () => {
 	assert.equal(extractQueuedText("draft reply", "draft reply"), "", "no queue: the join degenerates to the draft alone");
 	assert.equal(extractQueuedText("only queued", ""), "only queued", "empty draft: the join degenerates to the queue alone");
 	assert.equal(extractQueuedText("", ""), "", "both empty");
-	assert.equal(extractQueuedText("unrelated text", "draft reply"), "", "a shape that does not match the join is treated as nothing queued");
+	assert.equal(extractQueuedText("unrelated text", "draft reply"), undefined, "a shape that does not match the join is unrecognized, not an empty queue: Pi's own text must win, not be discarded");
+});
+
+test("extractQueuedText treats a whitespace-only draft as empty, matching Pi's own trim filter", () => {
+	assert.equal(extractQueuedText("only queued", "   "), "only queued", "a whitespace-only draft never survives Pi's filter, so the whole join is the queue");
+	assert.equal(extractQueuedText("", "   "), "", "whitespace-only draft with no queue is still no queue, not unrecognized");
 });
 
 test("working cancel: an aborted turn with a queued message sends it once settled and keeps the draft", (t) => {
@@ -643,18 +648,42 @@ test("working cancel: an aborted turn with a queued message sends it once settle
 	editor.dispose();
 });
 
-test("working cancel: an aborted turn with no queued messages behaves exactly as before", (t) => {
+test("working cancel: an aborted turn with no queued messages behaves exactly as before, with no redundant setText", (t) => {
 	const { pi, handlers, sentMessages } = fakePi();
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) });
 	const { ctx, ui } = fakeContext();
 	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
 	editor.setText("draft reply");
+	// Pi's own onEscape restore is the one real setText call on this path
+	// (it always writes the combined text, even when that equals the
+	// draft); the spy below counts every call, so it must see only that one
+	// and none added by abortAndDispatchQueued itself.
 	editor.onEscape = () => { editor.setText(editor.getText()); };
+	let setTextCalls = 0;
+	const originalSetText = editor.setText.bind(editor);
+	(editor as unknown as { setText(text: string): void }).setText = (text: string) => { setTextCalls++; originalSetText(text); };
 	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
 	editor.handleInput("\x1b");
+	assert.equal(setTextCalls, 1, "the no-queue path must not add its own write on top of Pi's own restore");
 	assert.equal(editor.getText(), "draft reply");
 	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
 	assert.equal(sentMessages.length, 0, "an empty queue must never trigger a send");
+	editor.dispose();
+});
+
+test("working cancel: an unrecognized restore shape leaves Pi's own text untouched and dispatches nothing", (t) => {
+	const { pi, handlers, sentMessages } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	editor.setText("draft reply");
+	// Simulates a future Pi restore shape this code does not recognize.
+	editor.onEscape = () => { editor.setText("an unrecognized shape"); };
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	editor.handleInput("\x1b");
+	assert.equal(editor.getText(), "an unrecognized shape", "Pi's own restore wins on a shape mismatch; nothing here overwrites it");
+	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
+	assert.equal(sentMessages.length, 0, "an unrecognized shape must never be dispatched as if it were queued text");
 	editor.dispose();
 });
 
@@ -706,7 +735,7 @@ test("working cancel: queued text is never sent twice even if agent_settled fire
 	editor.dispose();
 });
 
-test("working cancel: a new agent_start before the aborted run settles clears the stale queued text", (t) => {
+test("working cancel: a new agent_start before the aborted run settles delivers the pending text as a follow-up instead of discarding it", (t) => {
 	const { pi, handlers, sentMessages } = fakePi();
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) });
 	const { ctx, ui } = fakeContext();
@@ -715,11 +744,29 @@ test("working cancel: a new agent_start before the aborted run settles clears th
 	editor.onEscape = () => { editor.setText(`follow up\n\n${editor.getText()}`); };
 	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
 	editor.handleInput("\x1b");
-	// A new turn starting before the aborted run's own settle fires must not
-	// let the earlier abort's queued text leak into it.
+	// The user sent the draft (or another turn started) before the aborted
+	// run's own agent_settled fired; the pending text must not be lost.
 	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	assert.deepEqual(sentMessages.map((m) => ({ content: m.content, deliverAs: m.options?.deliverAs })), [{ content: "follow up", deliverAs: "followUp" }]);
 	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
-	assert.equal(sentMessages.length, 0, "the stale queued text from the earlier abort must not be sent");
+	assert.equal(sentMessages.length, 1, "the pending text must not be delivered a second time from agent_settled");
+	editor.dispose();
+});
+
+test("working cancel: agent_settled firing first delivers the pending text without a deliverAs override", (t) => {
+	const { pi, handlers, sentMessages } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	editor.setText("draft reply");
+	editor.onEscape = () => { editor.setText(`follow up\n\n${editor.getText()}`); };
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	editor.handleInput("\x1b");
+	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
+	assert.deepEqual(sentMessages.map((m) => ({ content: m.content, deliverAs: m.options?.deliverAs })), [{ content: "follow up", deliverAs: undefined }]);
+	// The next turn's own agent_start must not re-deliver the already-sent text.
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	assert.equal(sentMessages.length, 1);
 	editor.dispose();
 });
 
@@ -815,6 +862,53 @@ test("working state: a non-empty draft's Esc is decided by the working-cancel ga
 	editor.onEscape = () => { editor.setText(editor.getText()); };
 	editor.handleInput("\x1b");
 	assert.doesNotMatch(stripAnsi(editor.render(60).join("\n")), /esc again to clear/, "working must never show the idle-clear hint");
+	editor.dispose();
+});
+
+test("idle draft: editing the text between two Esc presses starts a fresh clear window instead of clearing the edit away", (t) => {
+	let now = 1_000_000;
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) }, { now: () => now });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	editor.setText("draft reply");
+	editor.handleInput("\x1b");
+	editor.setText("draft reply, edited");
+	now += 400;
+	editor.handleInput("\x1b");
+	assert.equal(editor.getText(), "draft reply, edited", "an edit invalidates the earlier snapshot, so this must not clear");
+	assert.match(stripAnsi(editor.render(60).join("\n")), /esc again to clear/, "the edit starts a fresh first press, with its own hint");
+	now += 400;
+	editor.handleInput("\x1b");
+	assert.equal(editor.getText(), "", "the fresh window's own second Esc, on the unchanged edited text, does clear");
+	editor.dispose();
+});
+
+test("idle draft: a bash-mode draft's Esc bypasses the idle-clear gate entirely", (t) => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	editor.setText("!ls");
+	let aborted = 0;
+	editor.onEscape = () => { aborted++; };
+	editor.handleInput("\x1b");
+	assert.equal(aborted, 1, "a bash-mode draft's first Esc must reach Pi's own bash-mode onEscape, which clears bash mode");
+	assert.equal(editor.getText(), "!ls", "this gate never touches bash-mode text; Pi's own onEscape owns it");
+	assert.doesNotMatch(stripAnsi(editor.render(60).join("\n")), /esc again to clear/, "bash mode must bypass the idle-clear gate, matching Pi's own bash-mode Esc");
+	editor.dispose();
+});
+
+test("idle draft: a bash-mode draft with leading whitespace still bypasses the idle-clear gate", (t) => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	editor.setText("  !ls");
+	let aborted = 0;
+	editor.onEscape = () => { aborted++; };
+	editor.handleInput("\x1b");
+	assert.equal(aborted, 1, "Pi detects bash mode from the trimmed start of the text, so this gate must match the same rule");
 	editor.dispose();
 });
 

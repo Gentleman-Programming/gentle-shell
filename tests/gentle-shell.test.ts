@@ -212,7 +212,7 @@ test("buildShellBarModel reads session, model, and footer data", () => {
 	assert.equal(built.cwd, "/repo");
 	assert.equal(built.branch, "main");
 	assert.equal(built.sessionName, "Release notes");
-	assert.equal(built.modelId, "gpt-5.5");
+	assert.equal(built.modelId, "openai-codex/gpt-5.5");
 	assert.equal(built.effort, "medium");
 	assert.equal(built.contextPercent, 45);
 	assert.equal(built.costTotal, 0.75);
@@ -252,7 +252,7 @@ test("gentleShell installs the footer on session_start when a UI exists", () => 
 	);
 	const lines = component.render(120);
 	assert.equal(lines.length, 1);
-	assert.match(lines[0], /main ⟡ gpt-5\.5 · medium/);
+	assert.match(lines[0], /main ⟡ openai-codex\/gpt-5\.5 · medium/);
 });
 
 test("the fullscreen Status rail carries a live digest so a profile switch refreshes it", async () => {

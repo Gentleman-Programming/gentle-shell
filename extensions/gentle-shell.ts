@@ -149,7 +149,7 @@ export function buildShellBarModel(
 		branch: footerData.getGitBranch(),
 		dirty: options.dirty,
 		sessionName: ctx.sessionManager.getSessionName(),
-		modelId: model?.id ?? "no-model",
+		modelId: model ? `${model.provider}/${model.id}` : "no-model",
 		effort: model?.reasoning ? pi.getThinkingLevel() : undefined,
 		contextPercent: usage?.percent ?? null,
 		contextWindow: usage?.contextWindow ?? model?.contextWindow ?? 0,

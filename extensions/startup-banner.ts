@@ -5,6 +5,7 @@ import * as os from "node:os";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
 
 const PI_AGENT_DIR = join(os.homedir(), ".pi", "agent");
 const PI_NPM_DIR = join(PI_AGENT_DIR, "npm", "node_modules");
@@ -720,16 +721,24 @@ export default function (pi: ExtensionAPI) {
         if (state.timer) clearInterval(state.timer);
 
         refreshStats = () => tui.requestRender();
+        // Capture once: a command changes the live prompt, not this intro.
+        const animationPolicy = resolveAnimationPolicy().policy;
         const animStart = Date.now();
-        state.timer = setInterval(() => {
-          tick++;
-          const finished = allStrokesReady() && tick > WRITING_END_TICK + 22;
-          if (finished || Date.now() - animStart > 5000) {
-            clearInterval(state.timer!);
-            state.timer = null;
-          }
-          try { tui.requestRender(); } catch { cleanup(); }
-        }, 25);
+        if (animationPolicy === "potato") {
+          tick = Number.MAX_SAFE_INTEGER;
+          state.timer = null;
+        } else {
+          const performance = animationPolicy === "performance";
+          state.timer = setInterval(() => {
+            tick += performance ? 10 : 1;
+            const finished = allStrokesReady() && tick > WRITING_END_TICK + 22;
+            if (finished || Date.now() - animStart > 5000) {
+              clearInterval(state.timer!);
+              state.timer = null;
+            }
+            try { tui.requestRender(); } catch { cleanup(); }
+          }, performance ? 250 : 25);
+        }
 
         // Grace period: pi-tui emite resizes transitorios mientras compone su layout inicial.
         const bootStart = Date.now();

@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { syncBuiltinESMExports } from "node:module";
 import fs from "node:fs/promises";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import startup, { readGitBranch } from "../extensions/startup-banner.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
@@ -74,6 +76,15 @@ test("startup branch lookup uses direct git argv and hides its Windows child", a
 });
 
 test("startup banner keeps animating after invalidate and cleans up on dispose", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "gp-banner-quality-"));
+	writeFileSync(join(home, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"quality"}');
+	const previousHome = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = home;
+	t.after(() => {
+		if (previousHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previousHome;
+		rmSync(home, { recursive: true, force: true });
+	});
 	t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
 	t.mock.method(fs, "readFile", async () => JSON.stringify({ showRose: true, showTextLogo: true, color: "pink" }));
 	syncBuiltinESMExports();
@@ -115,6 +126,85 @@ test("startup banner keeps animating after invalidate and cleans up on dispose",
 	assert.equal(renders, afterDispose, "session_shutdown cleanup stays idle");
 });
 
+test("animation modes retain banner lifetime policy, final artwork and approximate duration", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "gp-banner-animations-"));
+	const previousHome = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = home;
+	t.after(() => {
+		if (previousHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previousHome;
+		rmSync(home, { recursive: true, force: true });
+	});
+	t.mock.method(fs, "readFile", async () => JSON.stringify({ showRose: true, showTextLogo: true, color: "pink" }));
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const argv = process.argv;
+	process.argv = ["node"];
+	t.after(() => { process.argv = argv; });
+	for (const [key, value] of [["rows", 40], ["columns", 200]] as const) {
+		const descriptor = Object.getOwnPropertyDescriptor(process.stdout, key);
+		Object.defineProperty(process.stdout, key, { configurable: true, writable: true, value });
+		t.after(() => descriptor ? Object.defineProperty(process.stdout, key, descriptor) : Reflect.deleteProperty(process.stdout, key));
+	}
+	let boot: () => void;
+	let pulse: () => void;
+	let active = false;
+	let delay = 0;
+	let clock = 0;
+	let paints = 0;
+	t.mock.method(Date, "now", () => clock);
+	t.mock.method(globalThis, "setTimeout", (callback: () => void, ms: number) => {
+		if (ms === 50) boot = callback; // Never run operational stats/home reads.
+		return {};
+	});
+	t.mock.method(globalThis, "setInterval", (callback: () => void, ms: number) => {
+		pulse = callback; delay = ms; active = true; return {};
+	});
+	t.mock.method(globalThis, "clearInterval", () => { active = false; });
+	let start: (event: unknown, ctx: unknown) => Promise<void>;
+	let shutdown: () => void;
+	let header: { render(width: number): string[]; dispose(): void };
+	// Stroke warmup is module-global; keep duration driving isolated from cold-start tests.
+	const { default: isolatedStartup } = await import(new URL("../extensions/startup-banner.ts?animations", import.meta.url).href) as typeof import("../extensions/startup-banner.ts");
+	isolatedStartup({ on: (name: string, fn: typeof start) => {
+		if (name === "session_start") start = fn;
+		if (name === "session_shutdown") shutdown = fn as unknown as () => void;
+	}, registerCommand() {}, getCommands: () => [], getAllTools: () => [] } as unknown as ExtensionAPI);
+	const ctx = { hasUI: true, cwd: "/fixture", ui: { setHeader(factory: (tui: unknown, theme: unknown) => typeof header) {
+		header = factory({ requestRender() { paints++; } }, { fg: (_role: string, text: string) => text });
+	} } };
+	const save = (policy: string) => writeFileSync(join(home, "animations.json"), JSON.stringify({ schema: "gentle-pi.animations/v1", policy }));
+	try {
+		save("potato");
+		await start!({}, ctx); boot!();
+		assert.equal(active, false, "potato starts no animation interval");
+		const staticArt = stripAnsi(header!.render(200).join("\n"));
+		assert.match(staticArt, /[▄▀█]/);
+		assert.match(staticArt, /[\u2800-\u28ff]/);
+		header!.dispose();
+		let qualityDuration = 0;
+		let qualityPaints = 0;
+		for (const policy of ["quality", "performance"]) {
+			save(policy);
+			await start!({}, ctx); boot!();
+			for (let i = 0; i < 15; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.equal(delay, policy === "quality" ? 25 : 250);
+			save("potato"); // Already-created animation keeps its policy.
+			const began = clock;
+			const before = paints;
+			while (active && clock - began <= 5500) { clock += delay; pulse!(); }
+			assert.equal(active, false, "finishes and clears the interval");
+			assert.equal(stripAnsi(header!.render(200).join("\n")), staticArt);
+			if (policy === "quality") { qualityDuration = clock - began; qualityPaints = paints - before; }
+			else {
+				assert.ok(Math.abs(clock - began - qualityDuration) <= 250);
+				assert.ok(paints - before <= Math.ceil(qualityPaints / 10));
+			}
+			header!.dispose();
+		}
+	} finally { shutdown!(); }
+});
+
 // Drive the real header factory; background git/home reads never run.
 for (const showRose of [false, true]) for (const showTextLogo of [false, true]) {
 	test(`startup art respects rose=${showRose}, logo=${showTextLogo} and cyan palette`, async (t) => {
@@ -134,7 +224,8 @@ for (const showRose of [false, true]) for (const showTextLogo of [false, true]) 
 		let shutdown: Function;
 		let header: { render(width: number): string[]; dispose(): void };
 		const writes: string[] = [];
-		startup({ on: (name: string, fn: Function) => {
+		const { default: coldStartup } = await import(new URL(`../extensions/startup-banner.ts?art-${showRose}-${showTextLogo}`, import.meta.url).href) as typeof import("../extensions/startup-banner.ts");
+		coldStartup({ on: (name: string, fn: Function) => {
 			if (name === "session_start") start = fn;
 			if (name === "session_shutdown") shutdown = fn;
 		}, registerCommand() {}, getCommands: () => [], getAllTools: () => [] } as unknown as ExtensionAPI);

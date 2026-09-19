@@ -16,6 +16,7 @@ import { agentsViewKey } from "../lib/agents-keys.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { DOUBLE_ESC_CANCEL_HINT, framePromptLines, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
+import { resolveAnimationPolicy, writeAnimationPolicy, type AnimationPolicy } from "../lib/animation-policy.ts";
 import {
 	DOUBLE_ESC_CANCEL_WINDOW_MS,
 	resolveDoubleEscCancelPolicy,
@@ -229,6 +230,7 @@ export function extractQueuedText(combined: string, draft: string): string | und
 export class GentlePromptEditor extends CustomEditor {
 	private promptState: PromptState = PROMPT_STATE.IDLE;
 	private tick = 0;
+	private animationPolicy: AnimationPolicy = "quality";
 	private pulse: NodeJS.Timeout | undefined;
 	private readonly deps: PromptEditorDeps;
 	// CustomEditor keeps its own `keybindings` private, so this class holds
@@ -248,6 +250,23 @@ export class GentlePromptEditor extends CustomEditor {
 		this.keybindingsManager = keybindings;
 	}
 
+	setAnimationPolicy(policy: AnimationPolicy): void {
+		if (this.animationPolicy === policy) return;
+		this.animationPolicy = policy;
+		this.stopPulse();
+		if (this.promptState === PROMPT_STATE.WORKING) this.startPulse();
+		this.deps.requestRender();
+	}
+
+	private startPulse(): void {
+		if (this.animationPolicy === "potato") return;
+		this.pulse = setInterval(() => {
+			this.tick += 1;
+			this.deps.requestRender();
+		}, this.animationPolicy === "performance" ? 1000 : SHELL_PULSE_MS);
+		this.pulse.unref();
+	}
+
 	setWorking(working: boolean): void {
 		this.promptState = working ? PROMPT_STATE.WORKING : PROMPT_STATE.IDLE;
 		this.stopPulse();
@@ -256,11 +275,7 @@ export class GentlePromptEditor extends CustomEditor {
 		} else {
 			this.pendingIdleClearDeadline = undefined;
 			this.pendingIdleClearText = undefined;
-			this.pulse = setInterval(() => {
-				this.tick += 1;
-				this.deps.requestRender();
-			}, SHELL_PULSE_MS);
-			this.pulse.unref();
+			this.startPulse();
 		}
 		this.deps.requestRender();
 	}
@@ -818,6 +833,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	// direction, and the Esc gate always describe the same effective policy
 	// even when another session or a hand edit changed the file mid-session.
 	const doubleEscCancelConfigHome = gentlePiConfigHome(env);
+	const animationOptions = { gentlePiConfigHome: doubleEscCancelConfigHome };
+	let animationPolicy = resolveAnimationPolicy(animationOptions).policy;
 	let doubleEscCancelPolicy: DoubleEscCancelPolicy = resolveDoubleEscCancelPolicy({
 		env,
 		gentlePiConfigHome: doubleEscCancelConfigHome,
@@ -908,6 +925,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			(created) => {
 				prompt?.dispose();
 				prompt = created;
+				prompt.setAnimationPolicy(animationPolicy);
 			},
 			{ now: () => deps.now(), doubleEscCancelEnabled: () => doubleEscCancelPolicy === "on", dispatchQueuedText: (text) => { pendingQueuedText = pendingQueuedText === undefined ? text : `${pendingQueuedText}\n\n${text}`; } },
 		);
@@ -971,6 +989,26 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			handler: async (ctx) => showCommandPalette(pi, ctx, env),
 		});
 	}
+	pi.registerCommand("gentle:animations", {
+		description: "Show or set global animations (status|quality|performance|potato); no argument reports status.",
+		handler: async (args, ctx) => {
+			const action = args.trim() || "status";
+			if (action !== "status" && action !== "quality" && action !== "performance" && action !== "potato") {
+				ctx.ui.notify("Use /gentle:animations status|quality|performance|potato.", "warning");
+				return;
+			}
+			try {
+				if (action !== "status") writeAnimationPolicy(action, animationOptions);
+				const result = resolveAnimationPolicy(animationOptions);
+				animationPolicy = result.policy;
+				prompt?.setAnimationPolicy(animationPolicy);
+				const source = result.source === "default" ? "built-in default" : `global file ${result.globalFile}`;
+				ctx.ui.notify(`animations: ${result.policy} (decided by ${source})${result.malformed ? "; malformed or unreadable file, falling back to quality" : ""}. Prompt applies now; startup banner applies at next creation.`, result.malformed ? "warning" : "info");
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+			}
+		},
+	});
 	// User-owned, like gentle:background-subagents and gentle:review-mode: the
 	// only writer is this handler, reached only by explicit invocation. Unlike
 	// those two, no argument toggles the effective policy instead of merely

@@ -475,7 +475,94 @@ test("gentleShell shows working while the agent runs and queued when messages wa
 	editor.dispose();
 });
 
+test("animations command reports without writing and switches the live pulse", async (t) => {
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	const delays: number[] = [];
+	let active = 0;
+	t.mock.method(globalThis, "setInterval", (_callback: () => void, delay: number) => {
+		delays.push(delay); active++; return { unref() {} };
+	});
+	t.mock.method(globalThis, "clearInterval", () => { active--; });
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	const command = commands.get("gentle:animations");
+	assert.ok(command);
+	await command.handler("", ctx);
+	assert.match(ui.notices.at(-1)!, /animations: quality/);
+	assert.equal(existsSync(join(configHome, "animations.json")), false);
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	assert.deepEqual(delays, [80]);
+	await command.handler("performance", ctx);
+	assert.deepEqual(delays, [80, 1000]);
+	assert.equal(active, 1);
+	await command.handler("potato", ctx);
+	assert.equal(active, 0);
+	assert.match(stripAnsi(editor.render(60)[0]), /working/);
+	assert.equal(JSON.parse(readFileSync(join(configHome, "animations.json"), "utf8")).policy, "potato");
+	await command.handler("invalid", ctx);
+	assert.equal(JSON.parse(readFileSync(join(configHome, "animations.json"), "utf8")).policy, "potato");
+	await command.handler("quality", ctx);
+	assert.deepEqual(delays, [80, 1000, 80]);
+	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
+	assert.equal(active, 0);
+	editor.dispose();
+});
+
+test("potato repaints start/settle and shows queued state on the host's next render without intervals", async (t) => {
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	writeFileSync(join(configHome, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"potato"}');
+	const intervals = t.mock.method(globalThis, "setInterval", () => { throw new Error("potato must not animate"); });
+	const renders = t.mock.method(fakeTui, "requestRender", () => {});
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome });
+	const { ctx, ui } = fakeContext();
+	const pending = { value: false };
+	(ctx as unknown as { hasPendingMessages(): boolean }).hasPendingMessages = () => pending.value;
+	const editor = installedPrompt(ctx, ui, handlers);
+	let before = renders.mock.callCount();
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	assert.ok(renders.mock.callCount() > before);
+	assert.match(stripAnsi(editor.render(60)[0]), /✿ working/);
+	before = renders.mock.callCount();
+	pending.value = true;
+	assert.equal(renders.mock.callCount(), before, "changing the queue flag is not a Gentle repaint event");
+	// Pi owns enqueue and its repaint scheduling; this fake context exposes only
+	// hasPendingMessages, not Pi's enqueue path. Simulate the host's render request:
+	// this proves next-render visibility, not real Pi enqueue-to-paint latency.
+	fakeTui.requestRender();
+	assert.equal(renders.mock.callCount(), before + 1);
+	assert.match(stripAnsi(editor.render(60)[0]), /✿ queued/);
+	before = renders.mock.callCount();
+	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
+	assert.ok(renders.mock.callCount() > before);
+	assert.doesNotMatch(stripAnsi(editor.render(60)[0]), /working|queued/);
+	await commands.get("gentle:animations")!.handler("status", ctx);
+	assert.match(ui.notices.at(-1)!, /animations: potato/);
+	for (const handler of handlers.get("session_shutdown") ?? []) handler({}, ctx);
+	assert.equal(intervals.mock.callCount(), 0);
+});
+
+test("animations status attributes malformed files and reports a failed write", async (t) => {
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	const path = join(configHome, "animations.json");
+	writeFileSync(path, "broken");
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome });
+	const { ctx, ui } = fakeContext();
+	await commands.get("gentle:animations")!.handler("", ctx);
+	assert.match(ui.notices.at(-1)!, /animations: quality.*global file.*malformed/);
+	assert.equal(readFileSync(path, "utf8"), "broken");
+	rmSync(path);
+	mkdirSync(path);
+	await commands.get("gentle:animations")!.handler("potato", ctx);
+	assert.match(ui.notices.at(-1)!, /EISDIR|ENOTEMPTY|EPERM/);
+});
+
 test("prompt uses the compact banner cadence and releases its unref timer at settlement", (t) => {
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	writeFileSync(join(configHome, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"quality"}');
 	const delays: number[] = [];
 	let active = 0;
 	let unrefs = 0;
@@ -486,7 +573,7 @@ test("prompt uses the compact banner cadence and releases its unref timer at set
 	});
 	t.mock.method(globalThis, "clearInterval", () => { active--; });
 	const { pi, handlers } = fakePi();
-	gentleShell(pi, {});
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome });
 	const { ctx, ui } = fakeContext();
 	const editor = installedPrompt(ctx, ui, handlers);
 	assert.equal(active, 0);

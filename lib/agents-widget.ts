@@ -29,11 +29,13 @@ interface Columns {
 	name: number;
 	task: number;
 	meta: number;
-	fullMetrics: boolean;
-	// Populated only when fullMetrics is true: each field gets its own fixed,
+	// Columnar rows give each surviving metadata field its own fixed,
 	// right-aligned column sized to the widest value among shown tasks, so
-	// model·effort, tokens, cost, and elapsed line up vertically across rows
-	// regardless of any individual row's value widths.
+	// model·effort, tokens, cost, and elapsed line up vertically across rows.
+	// A narrow card may have dropped some of those columns and still be
+	// columnar; false means the clipped single-string fallback.
+	columnar: boolean;
+	// Populated only when columnar is true.
 	metaWidths?: MetaColumnWidths;
 }
 
@@ -169,7 +171,7 @@ function executionLabel(task: TaskRecord, width = Infinity): string {
 	return clip(model, width - visibleWidth(suffix)) + suffix;
 }
 
-// Narrow (non-fullMetrics) rows keep the single-string contract: a queued
+// Narrow (non-columnar) rows keep the single-string contract: a queued
 // task shows the bare word, everything else shows its exec label.
 function narrowMetaText(task: TaskRecord): string {
 	return task.status === TASK_STATUS.QUEUED ? "queued" : executionLabel(task);
@@ -231,28 +233,28 @@ function columns(tasks: readonly TaskRecord[], inner: number, now: number): Colu
 	const metaWidths = metaColumnWidths(tasks, now);
 	const full = metaTotalWidth(metaWidths);
 	const task = inner - fixed - full - COLUMN_GAP.length;
-	if (task >= TASK_MIN) return { inner, name, meta: full, task, fullMetrics: true, metaWidths };
+	if (task >= TASK_MIN) return { inner, name, meta: full, task, columnar: true, metaWidths };
 	let widths = metaWidths;
 	for (const drop of ["exec", "tokens", "cost"] as const) {
 		if (metaTotalWidth(widths) <= inner - fixed) break;
 		widths = { ...widths, [drop]: 0 };
 	}
 	const meta = metaTotalWidth(widths);
-	if (meta > 0 && meta <= inner - fixed) return { inner, name, meta, task: 0, fullMetrics: true, metaWidths: widths };
+	if (meta > 0 && meta <= inner - fixed) return { inner, name, meta, task: 0, columnar: true, metaWidths: widths };
 	const narrow = Math.max(0, ...tasks.map((task) => visibleWidth(narrowMetaText(task))));
-	return { inner, name, meta: Math.max(0, Math.min(inner - fixed, narrow)), task: 0, fullMetrics: false };
+	return { inner, name, meta: Math.max(0, Math.min(inner - fixed, narrow)), task: 0, columnar: false };
 }
 
 function row(task: TaskRecord, theme: CardTheme, cols: Columns, now: number, allowMetadataRow: boolean): string[] {
 	const look = LOOK[task.status];
 	const name = clip(task.agent, cols.name);
 	const head = `${theme.fg(look.role, look.glyph)}${GLYPH_GAP}${theme.fg(NAME_ROLE, name)}${" ".repeat(cols.name - visibleWidth(name))}`;
-	const metadata = cols.fullMetrics && cols.metaWidths ? metaRowText(task, now, cols.metaWidths) : task.status === TASK_STATUS.QUEUED ? clip("queued", cols.meta) : executionLabel(task, cols.meta);
+	const metadata = cols.columnar && cols.metaWidths ? metaRowText(task, now, cols.metaWidths) : task.status === TASK_STATUS.QUEUED ? clip("queued", cols.meta) : executionLabel(task, cols.meta);
 	const tail = theme.fg(META_ROLE, " ".repeat(Math.max(0, cols.meta - visibleWidth(metadata))) + metadata);
 	if (cols.inner < 3) return [theme.fg(look.role, clip(look.glyph, cols.inner))];
 	// The scrollable sidebar can preserve identity and execution metadata on
 	// separate rows. The height-capped above-editor widget keeps its row budget.
-	if (allowMetadataRow && !cols.fullMetrics && cols.task === 0 && task.status !== TASK_STATUS.QUEUED && visibleWidth(executionLabel(task)) > cols.meta) {
+	if (allowMetadataRow && !cols.columnar && cols.task === 0 && task.status !== TASK_STATUS.QUEUED && visibleWidth(executionLabel(task)) > cols.meta) {
 		return [head, theme.fg(META_ROLE, executionLabel(task, cols.inner))];
 	}
 	if (cols.task === 0) return [`${head}${" ".repeat(Math.max(0, cols.inner - visibleWidth(head) - visibleWidth(tail)))}${tail}`];

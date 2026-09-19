@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
 import type { TUI, TuiMouseEvent } from "@earendil-works/pi-tui";
-import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, type GentlePromptEditor } from "../extensions/gentle-shell.ts";
+import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, type GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { CHANGE_STATUS } from "../lib/shell-changes.ts";
 import { sidebarState, type SidebarRail } from "../lib/shell-sidebar.ts";
 import type { ShellBarTheme } from "../lib/shell-bar.ts";
@@ -607,6 +607,119 @@ test("double-esc-cancel enabled: Esc while autocomplete is visible bypasses this
 	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
 	editor.handleInput("\x1b");
 	assert.doesNotMatch(stripAnsi(editor.render(60).join("\n")), /esc again to cancel/, "autocomplete must bypass the gate, matching CustomEditor's own guard");
+	editor.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// Working-cancel keeps the queue moving (issue #1218). Pi's own onEscape
+// restores `[queuedText, currentText].filter(t => t.trim()).join("\n\n")`
+// into the editor and aborts. These tests fake that join in `onEscape` (the
+// same seam the double-esc-cancel tests above use), then check that the
+// user's own draft is all that is left in the editor and that the queued
+// text is sent exactly once, after the aborted run settles.
+// ---------------------------------------------------------------------------
+
+test("extractQueuedText reverses Pi's queued+draft join", () => {
+	assert.equal(extractQueuedText("follow up\n\ndraft reply", "draft reply"), "follow up");
+	assert.equal(extractQueuedText("draft reply", "draft reply"), "", "no queue: the join degenerates to the draft alone");
+	assert.equal(extractQueuedText("only queued", ""), "only queued", "empty draft: the join degenerates to the queue alone");
+	assert.equal(extractQueuedText("", ""), "", "both empty");
+	assert.equal(extractQueuedText("unrelated text", "draft reply"), "", "a shape that does not match the join is treated as nothing queued");
+});
+
+test("working cancel: an aborted turn with a queued message sends it once settled and keeps the draft", (t) => {
+	const { pi, handlers, sentMessages } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	editor.setText("draft reply");
+	editor.onEscape = () => { editor.setText(`follow up\n\n${editor.getText()}`); };
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	editor.handleInput("\x1b");
+	assert.equal(editor.getText(), "draft reply", "the user's own draft stays in the editor");
+	assert.equal(sentMessages.length, 0, "nothing is sent until the aborted run settles");
+	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
+	assert.deepEqual(sentMessages.map((m) => m.content), ["follow up"]);
+	editor.dispose();
+});
+
+test("working cancel: an aborted turn with no queued messages behaves exactly as before", (t) => {
+	const { pi, handlers, sentMessages } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	editor.setText("draft reply");
+	editor.onEscape = () => { editor.setText(editor.getText()); };
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	editor.handleInput("\x1b");
+	assert.equal(editor.getText(), "draft reply");
+	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
+	assert.equal(sentMessages.length, 0, "an empty queue must never trigger a send");
+	editor.dispose();
+});
+
+test("working cancel: an empty draft with a queued message sends the whole queue and leaves the editor empty", (t) => {
+	const { pi, handlers, sentMessages } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	editor.onEscape = () => { editor.setText("only queued"); };
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	editor.handleInput("\x1b");
+	assert.equal(editor.getText(), "", "an empty draft stays empty");
+	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
+	assert.deepEqual(sentMessages.map((m) => m.content), ["only queued"]);
+	editor.dispose();
+});
+
+test("working cancel: the same dispatch applies to the confirming second Esc when double-esc-cancel is enabled", (t) => {
+	let now = 1_000_000;
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	const { pi, handlers, sentMessages } = fakePi();
+	gentleShell(pi, { GENTLE_PI_DOUBLE_ESC_CANCEL: "on", GENTLE_PI_CONFIG_HOME: configHome }, { now: () => now });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	editor.setText("draft reply");
+	editor.onEscape = () => { editor.setText(`follow up\n\n${editor.getText()}`); };
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	editor.handleInput("\x1b");
+	now += 500;
+	editor.handleInput("\x1b");
+	assert.equal(editor.getText(), "draft reply");
+	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
+	assert.deepEqual(sentMessages.map((m) => m.content), ["follow up"]);
+	editor.dispose();
+});
+
+test("working cancel: queued text is never sent twice even if agent_settled fires again", (t) => {
+	const { pi, handlers, sentMessages } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	editor.setText("draft reply");
+	editor.onEscape = () => { editor.setText(`follow up\n\n${editor.getText()}`); };
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	editor.handleInput("\x1b");
+	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
+	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
+	assert.deepEqual(sentMessages.map((m) => m.content), ["follow up"]);
+	editor.dispose();
+});
+
+test("working cancel: a new agent_start before the aborted run settles clears the stale queued text", (t) => {
+	const { pi, handlers, sentMessages } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	editor.setText("draft reply");
+	editor.onEscape = () => { editor.setText(`follow up\n\n${editor.getText()}`); };
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	editor.handleInput("\x1b");
+	// A new turn starting before the aborted run's own settle fires must not
+	// let the earlier abort's queued text leak into it.
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
+	assert.equal(sentMessages.length, 0, "the stale queued text from the earlier abort must not be sent");
 	editor.dispose();
 });
 

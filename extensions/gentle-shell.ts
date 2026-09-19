@@ -192,9 +192,28 @@ interface PromptEditorDeps {
 	now(): number;
 	/** Read fresh on every keypress: the command handler updates this in-memory, the editor never re-reads the file. */
 	doubleEscCancelEnabled(): boolean;
+	/** Hand off text reconstructed from Pi's Esc-abort restore so it is sent as the next turn instead of sitting in the editor. */
+	dispatchQueuedText(text: string): void;
 }
 
 const PROMPT_FRAME_ROLE = "border";
+
+/**
+ * Pi's own Esc-abort handler (`restoreQueuedMessagesToEditor({ abort: true
+ * })`) rebuilds the editor text as
+ * `[queuedText, currentText].filter((t) => t.trim()).join("\n\n")`, where
+ * `currentText` is the draft captured just before the abort. Reverse that
+ * join to recover the queued text alone, so the draft can be restored by
+ * itself and the queued text dispatched as the next turn. `draft` is empty
+ * (including whitespace-only) whenever `.trim() === ""`, matching the
+ * `filter` predicate above exactly.
+ */
+export function extractQueuedText(combined: string, draft: string): string {
+	if (draft.trim() === "") return combined;
+	if (combined === draft) return "";
+	const suffix = `\n\n${draft}`;
+	return combined.endsWith(suffix) ? combined.slice(0, combined.length - suffix.length) : "";
+}
 
 export class GentlePromptEditor extends CustomEditor {
 	private promptState: PromptState = PROMPT_STATE.IDLE;
@@ -232,22 +251,27 @@ export class GentlePromptEditor extends CustomEditor {
 	 * doubleEscCancelEnabled(). `pi.registerShortcut("escape")` is not viable
 	 * here: Pi reserves app.interrupt and skips colliding extension
 	 * shortcuts, so this has to sit in front of CustomEditor's own
-	 * handleInput instead. The second Esc within the window is never handled
-	 * here: it falls straight through to `super.handleInput`, which runs
-	 * Pi's own onEscape and performs the actual abort. Idle double-Esc
-	 * (tree/fork), bash-mode Esc, and autocomplete cancel are all decided by
-	 * CustomEditor/onEscape and never reach this branch.
+	 * handleInput instead. The Esc that actually aborts the turn (the single
+	 * Esc when double-esc-cancel is off, or the confirming second Esc when
+	 * it is on) always goes through abortAndDispatchQueued so the queued
+	 * text Pi would otherwise dump back into the editor is sent as the next
+	 * turn instead (issue #1218). Idle double-Esc (tree/fork), bash-mode
+	 * Esc, and autocomplete cancel are all decided by CustomEditor/onEscape
+	 * and never reach this branch.
 	 */
 	override handleInput(data: string): void {
 		if (
 			this.promptState === PROMPT_STATE.WORKING &&
 			!this.isShowingAutocomplete() &&
-			this.deps.doubleEscCancelEnabled() &&
 			this.keybindingsManager.matches(data, "app.interrupt")
 		) {
+			if (!this.deps.doubleEscCancelEnabled()) {
+				this.abortAndDispatchQueued(data);
+				return;
+			}
 			if (this.isPendingEscapeCancel()) {
 				this.pendingEscapeCancelDeadline = undefined;
-				super.handleInput(data);
+				this.abortAndDispatchQueued(data);
 				return;
 			}
 			// Pi's own idle double-Esc (empty editor -> /tree or /fork) uses a
@@ -258,6 +282,24 @@ export class GentlePromptEditor extends CustomEditor {
 			return;
 		}
 		super.handleInput(data);
+	}
+
+	/**
+	 * Runs the Esc that actually aborts the turn. Pi's own onEscape (invoked
+	 * synchronously by `super.handleInput`) restores `queuedText + draft`
+	 * into the editor and aborts; snapshot the draft first, reconstruct the
+	 * queued text from what comes back, restore the draft alone, and hand
+	 * the queued text to the dispatcher so it is sent once the aborted run
+	 * settles (see the `agent_settled` handler in `gentleShell`). Images
+	 * inside queued messages are already dropped by Pi's own restore, before
+	 * this code ever sees the text.
+	 */
+	private abortAndDispatchQueued(data: string): void {
+		const draft = this.getText();
+		super.handleInput(data);
+		const queued = extractQueuedText(this.getText(), draft);
+		this.setText(draft);
+		if (queued.trim() !== "") this.deps.dispatchQueuedText(queued);
 	}
 
 	render(width: number): string[] {
@@ -298,7 +340,7 @@ type PromptFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorCom
 function installPrompt(
 	ctx: ExtensionContext,
 	onCreated: (prompt: GentlePromptEditor) => void,
-	promptDeps: { now: () => number; doubleEscCancelEnabled: () => boolean },
+	promptDeps: { now: () => number; doubleEscCancelEnabled: () => boolean; dispatchQueuedText: (text: string) => void },
 ): boolean {
 	const previous = ctx.ui.getEditorComponent() as PromptFactory | undefined;
 	if (previous && !previous[PROMPT_OWNER]) return false;
@@ -310,6 +352,7 @@ function installPrompt(
 			pending: () => ctx.hasPendingMessages(),
 			now: promptDeps.now,
 			doubleEscCancelEnabled: promptDeps.doubleEscCancelEnabled,
+			dispatchQueuedText: promptDeps.dispatchQueuedText,
 		});
 		onCreated(prompt);
 		return prompt;
@@ -680,6 +723,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		});
 	}
 	let prompt: GentlePromptEditor | undefined;
+	// Set by abortAndDispatchQueued via dispatchQueuedText when an Esc aborts
+	// a turn with a non-empty queue; sent exactly once, from agent_settled,
+	// once the aborted run has fully settled (issue #1218).
+	let pendingQueuedText: string | undefined;
 	// Resolved once at startup and cached in memory so the editor never
 	// re-reads the file per keypress. The /gentle:double-esc-cancel command
 	// below is the only place that touches the file, and every invocation
@@ -778,7 +825,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				prompt?.dispose();
 				prompt = created;
 			},
-			{ now: () => deps.now(), doubleEscCancelEnabled: () => doubleEscCancelPolicy === "on" },
+			{ now: () => deps.now(), doubleEscCancelEnabled: () => doubleEscCancelPolicy === "on", dispatchQueuedText: (text) => { pendingQueuedText = text; } },
 		);
 		// Hide native feedback only when our petal replaces it. Native transcript
 		// thinking blocks remain Pi-owned; this changes only the supported loader UI.
@@ -875,12 +922,22 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		},
 	});
 	pi.on("agent_start", (_event, ctx) => {
+		// A new turn starting must never let an earlier abort's queued text
+		// leak into it; the normal path already clears this in agent_settled
+		// below before sendUserMessage triggers the next turn, but this guard
+		// covers a turn started any other way.
+		pendingQueuedText = undefined;
 		prompt?.setWorking(true);
 		// The dev-binary card is a startup notice: it leaves with the first prompt.
 		if (ctx.hasUI) ctx.ui.setWidget(DEV_BINARY_WIDGET_KEY, undefined);
 	});
 	pi.on("agent_settled", () => {
 		prompt?.setWorking(false);
+		if (pendingQueuedText !== undefined) {
+			const queued = pendingQueuedText;
+			pendingQueuedText = undefined;
+			pi.sendUserMessage(queued);
+		}
 	});
 	pi.on("agent_end", async (_event, ctx) => {
 		await refreshChanges(ctx);

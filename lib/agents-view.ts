@@ -1,6 +1,6 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { measureAgentsViewLayout, type AgentsViewLayout } from "./agents-view-layout.ts";
-import { HOVER_ROLE } from "./shell-hover.ts";
+import { HOVER_ROLE, paintHoverable } from "./shell-hover.ts";
 import { emptyThread, isFinished, TASK_STATUS, type TaskRecord, type TaskStore, type TaskThread, type ThreadItem } from "./agents-protocol.ts";
 import { renderThreadItem, type AgentsThreadTheme } from "./agents-thread-view.ts";
 import { formatElapsed } from "./agents-widget.ts";
@@ -662,16 +662,18 @@ export class AgentsView {
 		const theme = this.deps.theme;
 		this.taskRegion(row).render(this.pointerLayout?.listWidth ?? 1);
 		const selected = entry.id === this.selectedRow()?.id;
-		const hovered = entry.id === this.hoveredId;
-		const emphasis = selected ? ROLE.SELECTED : hovered ? ROLE.HOVER : undefined;
-		const marker = emphasis ? theme.fg(emphasis, selected ? "▸" : "▹") : " ";
+		// Selection always outranks hover; the shared hover painter only
+		// applies once selection is ruled out.
+		const hovered = !selected && entry.id === this.hoveredId;
+		const markerRole = selected ? ROLE.SELECTED : hovered ? ROLE.HOVER : undefined;
+		const marker = markerRole ? theme.fg(markerRole, selected ? "▸" : "▹") : " ";
 		if (entry.kind === "heading") {
 			const state = this.isExpanded(entry.group) ? "▾" : "▸";
-			return `${marker}${theme.fg(emphasis ?? ROLE.SELECTED, state)} ${theme.fg(emphasis ?? ROLE.NAME_IDLE, this.groupHeading(entry.group))}`;
+			return `${marker}${paintHoverable(theme, state, hovered, ROLE.SELECTED)} ${paintHoverable(theme, this.groupHeading(entry.group), hovered, selected ? ROLE.SELECTED : ROLE.NAME_IDLE)}`;
 		}
 		const task = entry.task;
 		const glyph = theme.fg(GLYPH_ROLE[task.status] ?? ROLE.META, GLYPH[task.status] ?? "?");
-		const name = theme.fg(emphasis ?? ROLE.NAME_IDLE, `Subagent ${task.agent}`);
+		const name = paintHoverable(theme, `Subagent ${task.agent}`, hovered, selected ? ROLE.SELECTED : ROLE.NAME_IDLE);
 		const time = task.startedAt === null ? "" : theme.fg(ROLE.META, formatElapsed((task.endedAt ?? this.deps.now()) - task.startedAt));
 		return `${marker} ${theme.fg(ROLE.META, "└")} ${glyph} ${name}  ${time}`;
 	}
@@ -781,7 +783,7 @@ export class AgentsView {
 			actions.push({ x: 2 + visibleWidth(text), width: label.length, region: control.region });
 			control.region.render(label.length);
 			const hovered = (control.region === this.followRegion && this.hoveredControl === "follow") || (control.region === this.openRegion && this.hoveredControl === "open");
-			text += this.deps.theme.fg(!control.enabled ? ROLE.META : hovered ? ROLE.HOVER : ROLE.KEY, label);
+			text += control.enabled ? paintHoverable(this.deps.theme, label, hovered, ROLE.KEY) : this.deps.theme.fg(ROLE.META, label);
 		}
 		if (required > width) {
 			const more = this.actionRegion("more", () => {

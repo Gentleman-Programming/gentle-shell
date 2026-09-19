@@ -2,7 +2,7 @@ import { Key, matchesKey, truncateToWidth, visibleWidth, type TuiMouseEvent, typ
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { basename } from "node:path";
 import { CHANGE_STATUS, changesSummary, type ChangedFile, type ChangesModel, type WorktreeChanges } from "./shell-changes.ts";
-import { HOVER_ROLE } from "./shell-hover.ts";
+import { paintHoverable } from "./shell-hover.ts";
 
 // Gentle Shell changes overlay: a framed two-pane view with the working
 // tree's changed files on the left and the selected file's diff on the right.
@@ -79,8 +79,8 @@ function fileCounts(file: ChangedFile, theme: ChangesViewTheme): string {
 	return `${theme.fg(ROLE.ADDED, `+${file.added}`)} ${theme.fg(ROLE.REMOVED, `-${file.deleted}`)}`;
 }
 
-function fileLabel(file: ChangedFile, theme: ChangesViewTheme, role: string): string {
-	return `${theme.fg(role, `${FILE_STATUS[file.status]} ${displayText(file.path)}`)}  ${fileCounts(file, theme)}`;
+function fileLabel(file: ChangedFile, theme: ChangesViewTheme, hovered: boolean, idleRole: string): string {
+	return `${paintHoverable(theme, `${FILE_STATUS[file.status]} ${displayText(file.path)}`, hovered, idleRole)}  ${fileCounts(file, theme)}`;
 }
 
 function fit(text: string, width: number): string {
@@ -279,9 +279,14 @@ export class WorktreeChangesView {
 			const row = rows[index + this.listOffset];
 			if (!row) return "";
 			const active = index + this.listOffset === this.selected;
-			const role = active ? ROLE.SELECTED : index + this.listOffset === this.hoveredIndex ? HOVER_ROLE : ROLE.PATH_IDLE;
+			// Selection always outranks hover; the shared hover painter only
+			// applies once selection is ruled out.
+			const hovered = !active && index + this.listOffset === this.hoveredIndex;
+			const idleRole = active ? ROLE.SELECTED : ROLE.PATH_IDLE;
 			const marker = active ? theme.fg(ROLE.SELECTED, "▸") : " ";
-			const text = row.file ? `  ${fileLabel(row.file, theme, role)}` : theme.fg(role, `${this.expanded.has(row.tree.root) ? "▾" : "▸"} ${displayText(row.tree.branch ?? "detached")} · ${displayText(basename(row.tree.root))}`);
+			const text = row.file
+				? `  ${fileLabel(row.file, theme, hovered, idleRole)}`
+				: paintHoverable(theme, `${this.expanded.has(row.tree.root) ? "▾" : "▸"} ${displayText(row.tree.branch ?? "detached")} · ${displayText(basename(row.tree.root))}`, hovered, idleRole);
 			return `${marker} ${text}`;
 		};
 		const keys = theme.fg(ROLE.KEY_TEXT, "j/k select   enter toggle/open   ← parent/fold   ctrl+j/k scroll   r refresh   esc close");
@@ -483,8 +488,9 @@ export class ChangesView {
 		const theme = this.deps.theme;
 		const selected = index === this.selected;
 		const marker = selected ? theme.fg(ROLE.SELECTED, "▸") : " ";
-		const role = selected ? ROLE.PATH : index === this.hoveredIndex ? HOVER_ROLE : ROLE.PATH_IDLE;
-		return `${marker} ${fileLabel(file, theme, role)}`;
+		const hovered = !selected && index === this.hoveredIndex;
+		const idleRole = selected ? ROLE.PATH : ROLE.PATH_IDLE;
+		return `${marker} ${fileLabel(file, theme, hovered, idleRole)}`;
 	}
 
 	private visibleDiff(rows: number): string[] {

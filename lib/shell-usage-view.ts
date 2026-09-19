@@ -1,6 +1,6 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { renderUsagePanel, type ActiveProvider, type UsageStore, type UsageTheme } from "./shell-usage.ts";
-import { HOVER_ROLE } from "./shell-hover.ts";
+import { paintHoverable } from "./shell-hover.ts";
 
 // Gentle Shell subscriptions overlay: a framed panel over the usage store.
 // It reads the store on every render, so a refresh only needs to record.
@@ -106,7 +106,9 @@ export class UsageView {
 		// label together, one color) instead of its ordinary two-role split --
 		// the same treatment every other clickable surface uses.
 		const keys = hints
-			.map(({ key, label, action }) => (this.hoveredHint === action ? theme.fg(HOVER_ROLE, `${key} ${label}`) : `${theme.fg(KEY_ROLE, key)} ${theme.fg(KEY_TEXT_ROLE, label)}`))
+			.map(({ key, label, action }) =>
+				this.hoveredHint === action ? paintHoverable(theme, `${key} ${label}`, true) : `${theme.fg(KEY_ROLE, key)} ${theme.fg(KEY_TEXT_ROLE, label)}`,
+			)
 			.join(HINT_GAP);
 		const keysLine = `${theme.fg(FRAME_ROLE, "│")} ${fit(keys, inner - 2)} ${theme.fg(FRAME_ROLE, "│")}`;
 		const bottom = theme.fg(FRAME_ROLE, `╰${rule(inner)}╯`);

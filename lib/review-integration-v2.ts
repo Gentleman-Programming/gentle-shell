@@ -199,6 +199,22 @@ const CAPABILITIES_SCHEMA_IDENTITIES: Readonly<Record<string, { protocolMinor: n
 		requiredMandatoryFeatures: REQUIRED_MANDATORY_FEATURES_V23,
 		optionalFeatureFloor: 14,
 	}),
+	// Ground-truthed against the published v3.4.0 binary: capabilities/v2.6
+	// advertises the same required surface as v2.5 (status/v6 is still
+	// advertised for compatibility) plus the status/v7 and status/v8 schemas,
+	// which are superset-checked additions, not requirements --
+	// decodeReviewStatusV3 already accepts v7/v8/v9 as additive extensions of
+	// v6, so the required-schema floor stays unchanged. `review assess` also
+	// gained review_due/review_due_reason/next_transition, which is unrelated
+	// to this negotiated capabilities surface. The v3.4.0 binary advertised
+	// 15 optional features, same as v2.5's binary (floor stays at 14, its
+	// established minimum).
+	"gentle-ai.review-integration.capabilities/v2.6": Object.freeze({
+		protocolMinor: 6,
+		requiredSchemas: Object.freeze([...REQUIRED_SCHEMAS_COMMON_V23, "gentle-ai.review-integration.capabilities/v2.6", "gentle-ai.review-integration.consent/v3", "gentle-ai.review-integration.start/v4", "gentle-ai.review-integration.status/v6", "gentle-ai.review-intended-untracked-selection/v1"]),
+		requiredMandatoryFeatures: REQUIRED_MANDATORY_FEATURES_V23,
+		optionalFeatureFloor: 14,
+	}),
 });
 const OPTIONAL_FEATURE_NAMES = Object.freeze([
 	"base_ref_workspace_overlay",

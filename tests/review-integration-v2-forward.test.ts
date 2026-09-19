@@ -440,6 +440,42 @@ test("capabilities/v2.5 negotiates the v2.6.0 advertisement and status/v7 decode
 	assert.throws(() => decodeReviewStatusV3(v6WithDigest), /eligible_untracked_inventory/);
 });
 
+test("capabilities/v2.6 negotiates the v3.4.0 advertisement on the same v2.5 requirement floor", () => {
+	// gentle-ai v3.4.0 advertises capabilities/v2.6: the v2.5 surface plus
+	// status/v8 (status/v6 and status/v7 stay advertised for compatibility).
+	// The `review assess` review_due/review_due_reason/next_transition
+	// additions are a separate schema (gentle-ai.review-assessment/v1),
+	// unrelated to this negotiated capabilities surface.
+	const v26 = clone(fixture(DEV_FIXTURES, "capabilities-v2.2.captured.json") as JsonObject);
+	v26.schema = "gentle-ai.review-integration.capabilities/v2.6";
+	(v26.protocol as JsonObject).minor = 6;
+	const features = v26.features as JsonObject;
+	features.mandatory = (features.mandatory as JsonObject[]).filter((feature) =>
+		!["exact_receipt_replay", "five_delivery_gates", "sdd_receipt_binding"].includes(feature.name as string));
+	v26.schemas = [
+		...(v26.schemas as string[]).map((schema) => schema
+			.replace("capabilities/v2.2", "capabilities/v2.6")
+			.replace("start/v3", "start/v4")
+			.replace("status/v5", "status/v6")),
+		"gentle-ai.review-intended-untracked-selection/v1",
+		"gentle-ai.review-integration.status/v7",
+		"gentle-ai.review-integration.status/v8",
+	];
+	const decoded = decodeReviewCapabilitiesV2(v26, CAPTURED_DIGEST);
+	assert.equal(decoded.schemas.has("gentle-ai.review-integration.status/v6"), true);
+	// The negotiated set is the v2.5 requirement floor unchanged; status/v7
+	// and status/v8 are additive and never required, so an advertisement
+	// without either still negotiates.
+	const withoutV7V8 = clone(v26);
+	withoutV7V8.schemas = (withoutV7V8.schemas as string[]).filter((schema) => !["gentle-ai.review-integration.status/v7", "gentle-ai.review-integration.status/v8"].includes(schema as string));
+	assert.equal(decodeReviewCapabilitiesV2(withoutV7V8, CAPTURED_DIGEST).schemas.has("gentle-ai.review-integration.status/v6"), true);
+
+	// status/v6 stays required: v7/v8 are additive extensions, not a replacement.
+	const missingStatusV6 = clone(v26);
+	missingStatusV6.schemas = (missingStatusV6.schemas as string[]).filter((schema) => schema !== "gentle-ai.review-integration.status/v6");
+	assert.throws(() => decodeReviewCapabilitiesV2(missingStatusV6, CAPTURED_DIGEST), /status\/v6/);
+});
+
 // status/v8 (gentle-ai main, PR #4765; the current released contract) only
 // extended the reviewer-result transition for OpenCode provider tasks -- no
 // new top-level key -- so it decodes on the exact v7 surface: same optional

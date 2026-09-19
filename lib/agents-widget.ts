@@ -29,12 +29,10 @@ interface Columns {
 	name: number;
 	task: number;
 	meta: number;
-	fullMetrics: boolean;
-	// Populated only when fullMetrics is true: each field gets its own fixed,
-	// right-aligned column sized to the widest value among shown tasks, so
-	// model·effort, tokens, cost, and elapsed line up vertically across rows
-	// regardless of any individual row's value widths.
-	metaWidths?: MetaColumnWidths;
+	// Each surviving field keeps one fixed, right-aligned column sized to the
+	// widest visible value among shown tasks. Narrow cards progressively shrink
+	// or remove lower-priority fields instead of dropping all usage at once.
+	metaWidths: MetaColumnWidths;
 }
 
 interface MetaFields {
@@ -169,12 +167,6 @@ function executionLabel(task: TaskRecord, width = Infinity): string {
 	return clip(model, width - visibleWidth(suffix)) + suffix;
 }
 
-// Narrow (non-fullMetrics) rows keep the single-string contract: a queued
-// task shows the bare word, everything else shows its exec label.
-function narrowMetaText(task: TaskRecord): string {
-	return task.status === TASK_STATUS.QUEUED ? "queued" : executionLabel(task);
-}
-
 // Queued rows carry no model, token, or cost data yet, so every field but
 // elapsed stays blank — and elapsed itself becomes the literal word "queued"
 // rather than the empty string startedAt === null would otherwise produce.
@@ -203,13 +195,40 @@ function metaTotalWidth(widths: MetaColumnWidths): number {
 	return active.reduce((sum, width) => sum + width, 0) + Math.max(0, active.length - 1) * visibleWidth(" · ");
 }
 
+// Fit metadata to one task row in the maintainer-approved degradation order:
+// task text is removed by columns() first; then execution/model context shrinks,
+// then tokens and cost disappear. Elapsed stays visible until it cannot fit.
+function fitMetaColumnWidths(widths: MetaColumnWidths, available: number): MetaColumnWidths {
+	const limit = Math.max(0, available);
+	const fitted = { ...widths };
+	if (metaTotalWidth(fitted) <= limit) return fitted;
+
+	if (fitted.exec > 0) {
+		const withoutExec = { ...fitted, exec: 0 };
+		const rest = metaTotalWidth(withoutExec);
+		const separator = rest > 0 ? visibleWidth(" · ") : 0;
+		fitted.exec = Math.max(0, Math.min(fitted.exec, limit - rest - separator));
+	}
+	if (metaTotalWidth(fitted) <= limit) return fitted;
+
+	fitted.tokens = 0;
+	if (metaTotalWidth(fitted) <= limit) return fitted;
+
+	fitted.cost = 0;
+	if (metaTotalWidth(fitted) <= limit) return fitted;
+
+	fitted.elapsed = Math.max(0, Math.min(fitted.elapsed, limit));
+	return fitted;
+}
+
 function metaRowText(task: TaskRecord, now: number, widths: MetaColumnWidths): string {
 	const fields = metaFields(task, now);
+	const cell = (value: string, width: number) => clip(value, width).padStart(width);
 	const parts: string[] = [];
-	if (widths.exec > 0) parts.push(fields.exec.padStart(widths.exec));
-	if (widths.tokens > 0) parts.push(fields.tokens.padStart(widths.tokens));
-	if (widths.cost > 0) parts.push(fields.cost.padStart(widths.cost));
-	if (widths.elapsed > 0) parts.push(fields.elapsed.padStart(widths.elapsed));
+	if (widths.exec > 0) parts.push(cell(fields.exec, widths.exec));
+	if (widths.tokens > 0) parts.push(cell(fields.tokens, widths.tokens));
+	if (widths.cost > 0) parts.push(cell(fields.cost, widths.cost));
+	if (widths.elapsed > 0) parts.push(cell(fields.elapsed, widths.elapsed));
 	return parts.join(" · ");
 }
 
@@ -219,30 +238,27 @@ function taskText(task: TaskRecord): string {
 	return task.label;
 }
 
-// Narrow cards give up the task and usage columns before execution metadata.
+// Narrow cards drop task text first, then progressively degrade metadata while
+// preserving elapsed for as long as the row has room for it.
 function columns(tasks: readonly TaskRecord[], inner: number, now: number): Columns {
 	const name = Math.max(0, Math.min(NAME_MAX, inner - 3, Math.max(...tasks.map((task) => visibleWidth(task.agent)))));
 	const fixed = 1 + GLYPH_GAP.length + name + COLUMN_GAP.length;
 	const metaWidths = metaColumnWidths(tasks, now);
 	const full = metaTotalWidth(metaWidths);
 	const task = inner - fixed - full - COLUMN_GAP.length;
-	if (task >= TASK_MIN) return { inner, name, meta: full, task, fullMetrics: true, metaWidths };
-	const narrow = Math.max(0, ...tasks.map((task) => visibleWidth(narrowMetaText(task))));
-	return { inner, name, meta: Math.max(0, Math.min(inner - fixed, narrow)), task: 0, fullMetrics: false };
+	if (task >= TASK_MIN) return { inner, name, meta: full, task, metaWidths };
+
+	const fittedMetaWidths = fitMetaColumnWidths(metaWidths, inner - fixed);
+	return { inner, name, meta: metaTotalWidth(fittedMetaWidths), task: 0, metaWidths: fittedMetaWidths };
 }
 
-function row(task: TaskRecord, theme: CardTheme, cols: Columns, now: number, allowMetadataRow: boolean): string[] {
+function row(task: TaskRecord, theme: CardTheme, cols: Columns, now: number): string[] {
 	const look = LOOK[task.status];
 	const name = clip(task.agent, cols.name);
 	const head = `${theme.fg(look.role, look.glyph)}${GLYPH_GAP}${theme.fg(NAME_ROLE, name)}${" ".repeat(cols.name - visibleWidth(name))}`;
-	const metadata = cols.fullMetrics && cols.metaWidths ? metaRowText(task, now, cols.metaWidths) : task.status === TASK_STATUS.QUEUED ? clip("queued", cols.meta) : executionLabel(task, cols.meta);
+	const metadata = metaRowText(task, now, cols.metaWidths);
 	const tail = theme.fg(META_ROLE, " ".repeat(Math.max(0, cols.meta - visibleWidth(metadata))) + metadata);
 	if (cols.inner < 3) return [theme.fg(look.role, clip(look.glyph, cols.inner))];
-	// The scrollable sidebar can preserve identity and execution metadata on
-	// separate rows. The height-capped above-editor widget keeps its row budget.
-	if (allowMetadataRow && cols.task === 0 && task.status !== TASK_STATUS.QUEUED && visibleWidth(executionLabel(task)) > cols.meta) {
-		return [head, theme.fg(META_ROLE, executionLabel(task, cols.inner))];
-	}
 	if (cols.task === 0) return [`${head}${" ".repeat(Math.max(0, cols.inner - visibleWidth(head) - visibleWidth(tail)))}${tail}`];
 	const text = clip(taskText(task), cols.task);
 	return [`${head}${COLUMN_GAP}${theme.fg(TASK_ROLE, text)}${" ".repeat(cols.task - visibleWidth(text))}${COLUMN_GAP}${tail}`];
@@ -287,7 +303,7 @@ export function renderAgentsCard(tasks: readonly TaskRecord[], theme: CardTheme,
 	const cols = columns(shown, cardInnerWidth(width), now);
 	const { listed, hidden } = options.collapsed ? { listed: [shown[0]], hidden: 0 } : visibleRows(shown, options.maxRows);
 	const hint = options.collapsed && options.collapseKey ? `${options.collapseKey} expand` : shown.length > 1 ? batchElapsed(shown, now) : undefined;
-	const body = listed.flatMap((task) => row(task, theme, cols, now, options.maxRows === undefined));
+	const body = listed.flatMap((task) => row(task, theme, cols, now));
 	if (hidden > 0) body.push(overflowRow(hidden, theme, options.viewKey));
 	return renderCard(
 		{ title: "Agents", subtitle: counts(shown), body, tone: tone(shown), glyph: AGENTS_GLYPH },

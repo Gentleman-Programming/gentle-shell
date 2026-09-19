@@ -9,6 +9,7 @@ import {
 	renderGauge,
 	renderShellBar,
 	renderShellHeaderBar,
+	renderShellHeaderRule,
 	renderShellSidebarBar,
 	shellEnabled,
 	type ShellBarModel,
@@ -426,4 +427,11 @@ test("renderShellHeaderBar's usage span always points at the usage text, not ctx
 		assert.match(text.slice(usageSpan.start, usageSpan.end), /^usage/);
 		assert.equal(usageSpan.end, visibleWidth(text), "the usage segment always ends at the right edge");
 	}
+});
+
+test("renderShellHeaderRule paints one full-width line in the editor frame color", () => {
+	assert.equal(renderShellHeaderRule(taggedTheme, 4), "<border>────</border>", "the rule uses the editor frame's border role");
+	assert.equal(renderShellHeaderRule(plainTheme, 12), "─".repeat(12), "the rule spans the full width");
+	assert.equal(renderShellHeaderRule(plainTheme, 0), "");
+	assert.equal(renderShellHeaderRule(plainTheme, -3), "", "negative widths clamp to an empty rule");
 });

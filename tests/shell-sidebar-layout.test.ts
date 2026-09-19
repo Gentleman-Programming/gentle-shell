@@ -23,7 +23,7 @@ function rail(f: ReturnType<typeof fixture>): ScrollView {
 	assert.equal(node.type, "hstack");
 	return node.entries[1].component;
 }
-type HstackNode = { type: string; gap: number; align: string; entries: { component: unknown; basis: number; grow: number; shrink: number; minSize: number }[] };
+type HstackNode = { type: string; gap: number; align: string; entries: { component: unknown; basis: number | string; grow: number; shrink: number; minSize: number }[] };
 // Finds the [left, scroll] hstack regardless of whether it is returned
 // directly (no active header) or nested one level under the header vstack.
 function hstackOf(f: ReturnType<typeof fixture>): HstackNode {
@@ -130,7 +130,7 @@ test("wheel scrolls the rail and is consumed at both boundaries and blank space"
 	f.host.terminal.columns = 160;
 	const restored = rail(f);
 	assert.deepEqual(f.bottom.render(80), []);
-	const layout = f.root[NODE]() as unknown as { gap: number; entries: { basis: number; grow: number; shrink: number; minSize: number }[] };
+	const layout = f.root[NODE]() as unknown as { gap: number; entries: { basis: number | string; grow: number; shrink: number; minSize: number }[] };
 	assert.equal(layout.gap, 3);
 	assert.deepEqual(layout.entries.map(({ basis, grow, shrink, minSize }) => ({ basis, grow, shrink, minSize })), [
 		{ basis: 0, grow: 1, shrink: 1, minSize: 1 },
@@ -586,8 +586,10 @@ test("an active header wraps the hstack in a vstack and removes the banner from 
 	assert.equal(node.type, "vstack");
 	assert.equal(node.gap, 0);
 	assert.equal(node.align, "stretch");
+	// basis "auto": pi-tui measures the header leaf from its rendered lines
+	// (one line: the status bar; with the rule row: two) instead of hard-pinning the row.
 	assert.deepEqual(node.entries.map(({ basis, grow, shrink, minSize }) => ({ basis, grow, shrink, minSize })), [
-		{ basis: 1, grow: 0, shrink: 0, minSize: 1 },
+		{ basis: "auto", grow: 0, shrink: 0, minSize: 1 },
 		{ basis: 0, grow: 1, shrink: 1, minSize: 1 },
 	]);
 	const header = node.entries[0].component as { render(width: number): string[] };
@@ -606,6 +608,31 @@ test("an active header wraps the hstack in a vstack and removes the banner from 
 	// not sit flush against the header.
 	assert.equal(rail[0]?.trim(), "", "the rail opens with a blank row under the header");
 	assert.notEqual(rail[1]?.trim(), "", "the first card starts on the second row");
+});
+
+test("the header leaf carries the rule row: a two-line header renders both lines at full width", (t) => {
+	const f = fixture();
+	sidebarHeader(f.tui, {
+		render: (width: number) => [`HEADER ${width}`, `RULE ${width}`],
+		invalidate() {},
+	});
+	t.after(installSidebar(f.tui, theme));
+
+	const node = f.root[NODE]() as unknown as { type: string; entries: { component: Component }[] };
+	assert.equal(node.type, "vstack", "a two-line header still wraps the hstack in a vstack");
+	const header = node.entries[0]!.component as { render(width: number): string[] };
+	assert.deepEqual(header.render(0), ["HEADER 138", "RULE 138"], "both the status line and the rule row reach the layout, rendered at the terminal width minus the rail's right inset");
+});
+
+test("below the sidebar breakpoint a rule-like header paints no rule row", (t) => {
+	const f = fixture("fullscreen", 139);
+	sidebarHeader(f.tui, { render: (width: number) => [`HEADER ${width}`, `RULE ${width}`], invalidate() {} });
+	t.after(installSidebar(f.tui, theme));
+
+	// Below SIDEBAR_BREAKPOINT prepare() declines, so the replacement hands
+	// back the native root's own layout node: neither the header wrapper nor
+	// a rule row ever paints.
+	assert.deepEqual(f.root[NODE](), f.original(), "below the breakpoint the rule is removed with the whole sidebar");
 });
 
 test("without a registered header the rail keeps the banner and the plain hstack", (t) => {

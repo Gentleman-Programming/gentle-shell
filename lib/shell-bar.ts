@@ -305,6 +305,19 @@ export function renderShellHeaderBar(model: ShellHeaderModel, theme: ShellBarThe
 	return { text: visibleWidth(brand) <= targetWidth ? brand : "" };
 }
 
+// The rule row painted directly under the header bar: one full-width horizontal
+// line in the same theme role as the editor frame (PROMPT_FRAME_ROLE in
+// extensions/gentle-shell.ts), so the status row and the prompt read as one
+// panel. It exists only while the fullscreen sidebar is active — when the
+// sidebar is not shown the header rail never renders and the rule goes away
+// with it.
+const HEADER_RULE_CHAR = "─";
+const HEADER_RULE_ROLE = "border";
+
+export function renderShellHeaderRule(theme: ShellBarTheme, width: number): string {
+	return theme.fg(HEADER_RULE_ROLE, HEADER_RULE_CHAR.repeat(Math.max(0, Math.floor(width))));
+}
+
 export function renderShellBar(model: ShellBarModel, theme: ShellBarTheme, width: number): string[] {
 	let segments = buildSegments(model, theme);
 	const right = model.sessionName ? theme.fg(ROLE.SESSION, model.sessionName) : undefined;

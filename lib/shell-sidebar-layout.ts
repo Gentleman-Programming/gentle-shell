@@ -96,8 +96,10 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 			for (const part of state.parts.values()) part.invalidate();
 		},
 	};
-	// The header row: a plain leaf component, one line tall, painted above the
-	// hstack when a "header" part is registered and has something to show.
+	// The header row: a plain leaf component measured from its rendered lines
+	// (one line with just the status bar; two once the rule row joins it),
+	// painted full-width above the hstack when a "header" part is registered
+	// and has something to show.
 	// The header is not inside the rail's ScrollView, so it never goes through
 	// dispatchPartMouse: it is its own leaf in the layout tree (no [NODE]),
 	// and pi-tui's mouse dispatch (tui-alt-screen.js dispatchMouseToLayout)
@@ -277,7 +279,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 				if (current.presentation?.scrollTop === scroll.scrollTop) return current.presentation.output;
 				const output: LayoutNode = current.headerActive
 					? { type: "vstack", gap: 0, align: "stretch", entries: [
-						{ component: header, basis: 1, grow: 0, shrink: 0, minSize: 1 },
+						{ component: header, basis: "auto", grow: 0, shrink: 0, minSize: 1 },
 						{ component: hstackHost, basis: 0, grow: 1, shrink: 1, minSize: 1 },
 					] }
 					: hstackHost[NODE]();

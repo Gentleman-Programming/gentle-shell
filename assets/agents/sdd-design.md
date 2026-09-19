@@ -26,7 +26,7 @@ If skill paths are missing, explicit fallback loading is allowed only as degrade
 
 - Read proposal, specs, and relevant code before designing.
 - Document decisions, data flow, file changes, contracts, tests, and rollout.
-- Keep design centered on `packages/coding-agent` unless scope explicitly expands.
+- Keep design within the approved change scope defined by the proposal and specs; obtain explicit approval before expanding scope.
 - Do NOT launch child subagents. Parent/orchestrator owns delegation.
 - Return the SDD result contract.
 ## Memory Contract

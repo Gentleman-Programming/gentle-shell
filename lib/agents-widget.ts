@@ -219,7 +219,12 @@ function taskText(task: TaskRecord): string {
 	return task.label;
 }
 
-// Narrow cards give up the task and usage columns before execution metadata.
+// Narrow cards degrade per column, decided once for the whole card so the
+// surviving columns keep lining up: the task text goes first, then the
+// model·effort label, then tokens, then cost. Elapsed is the one value the
+// reader cannot rebuild from anything else on screen, so it is the last to go
+// (gentle-shell#1143). Only when even elapsed alone does not fit does the row
+// fall back to the clipped single-string label.
 function columns(tasks: readonly TaskRecord[], inner: number, now: number): Columns {
 	const name = Math.max(0, Math.min(NAME_MAX, inner - 3, Math.max(...tasks.map((task) => visibleWidth(task.agent)))));
 	const fixed = 1 + GLYPH_GAP.length + name + COLUMN_GAP.length;
@@ -227,6 +232,13 @@ function columns(tasks: readonly TaskRecord[], inner: number, now: number): Colu
 	const full = metaTotalWidth(metaWidths);
 	const task = inner - fixed - full - COLUMN_GAP.length;
 	if (task >= TASK_MIN) return { inner, name, meta: full, task, fullMetrics: true, metaWidths };
+	let widths = metaWidths;
+	for (const drop of ["exec", "tokens", "cost"] as const) {
+		if (metaTotalWidth(widths) <= inner - fixed) break;
+		widths = { ...widths, [drop]: 0 };
+	}
+	const meta = metaTotalWidth(widths);
+	if (meta > 0 && meta <= inner - fixed) return { inner, name, meta, task: 0, fullMetrics: true, metaWidths: widths };
 	const narrow = Math.max(0, ...tasks.map((task) => visibleWidth(narrowMetaText(task))));
 	return { inner, name, meta: Math.max(0, Math.min(inner - fixed, narrow)), task: 0, fullMetrics: false };
 }
@@ -240,7 +252,7 @@ function row(task: TaskRecord, theme: CardTheme, cols: Columns, now: number, all
 	if (cols.inner < 3) return [theme.fg(look.role, clip(look.glyph, cols.inner))];
 	// The scrollable sidebar can preserve identity and execution metadata on
 	// separate rows. The height-capped above-editor widget keeps its row budget.
-	if (allowMetadataRow && cols.task === 0 && task.status !== TASK_STATUS.QUEUED && visibleWidth(executionLabel(task)) > cols.meta) {
+	if (allowMetadataRow && !cols.fullMetrics && cols.task === 0 && task.status !== TASK_STATUS.QUEUED && visibleWidth(executionLabel(task)) > cols.meta) {
 		return [head, theme.fg(META_ROLE, executionLabel(task, cols.inner))];
 	}
 	if (cols.task === 0) return [`${head}${" ".repeat(Math.max(0, cols.inner - visibleWidth(head) - visibleWidth(tail)))}${tail}`];

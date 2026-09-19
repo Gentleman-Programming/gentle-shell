@@ -119,9 +119,36 @@ test("renderAgentsCard keeps every task on one line, clipping long labels, and d
 	const wide = renderAgentsCard(tasks, plainTheme, 84, 5_000, { collapsed: false }).map(stripAnsi);
 	assert.equal(wide.length, 3);
 	assert.match(wide[1], /^│ ◐  sdd-explore  write the gentle shell foot… +claude-sonnet-5 · 34k · \$0\.27 · 4s │$/);
+	// Narrow cards degrade per column: task text first, then the model name,
+	// then tokens and cost. Elapsed is the one value the reader cannot rebuild
+	// from anything else on screen, so it is the last to go.
 	const narrow = renderAgentsCard(tasks, plainTheme, 44, 5_000, { collapsed: false }).map(stripAnsi);
 	assert.equal(narrow.length, 3);
-	assert.match(narrow[1], /^│ ◐  sdd-explore +claude-sonnet-5 +│$/);
+	assert.match(narrow[1], /^│ ◐  sdd-explore +34k · \$0\.27 · 4s │$/, "the model name goes before tokens, cost and elapsed");
+});
+
+// gentle-shell#1143: one long model id used to flip the whole card to the
+// model-only fallback, silently dropping tokens, cost and the running time.
+test("renderAgentsCard keeps tokens, cost and elapsed when a long model name no longer fits", () => {
+	const tasks = [task({ id: "a", model: "anthropic/claude-sonnet-4-5-20250929", tokens: 12_345, cost: 0.42, startedAt: 5_000 - 184_000 })];
+	const lines = renderAgentsCard(tasks, plainTheme, 46, 5_000, { collapsed: false }).map(stripAnsi);
+	assert.equal(lines.length, 3);
+	assert.match(lines[1], /^│ ◐  sdd-explore +12k · \$0\.42 · 3m04s │$/, "tokens, cost and elapsed survive; the model name is what gives way");
+	const tighter = renderAgentsCard(tasks, plainTheme, 34, 5_000, { collapsed: false }).map(stripAnsi);
+	assert.match(tighter[1], /^│ ◐  sdd-explore +\$0\.42 · 3m04s │$/, "then tokens go, then cost, elapsed last");
+	const tightest = renderAgentsCard(tasks, plainTheme, 28, 5_000, { collapsed: false }).map(stripAnsi);
+	assert.match(tightest[1], /^│ ◐  sdd-explore +3m04s │$/, "elapsed is the last column standing");
+});
+
+test("renderAgentsCard degrades every row of a mixed card together so columns still align", () => {
+	const tasks = [
+		task({ id: "a", model: "anthropic/claude-sonnet-4-5-20250929", tokens: 12_345, cost: 0.42 }),
+		task({ id: "b", agent: "writer", model: "openai/gpt-5", tokens: 900, cost: 0.01 }),
+	];
+	const lines = renderAgentsCard(tasks, plainTheme, 46, 5_000, { collapsed: false }).map(stripAnsi);
+	assert.match(lines[1], /12k · \$0\.42 · 4s │$/);
+	assert.match(lines[2], /900 · \$0\.01 · 4s │$/);
+	assert.equal(lines[1].indexOf("· 4s"), lines[2].indexOf("· 4s"), "elapsed stays in one column across rows");
 });
 
 test("renderAgentsCard shows questions and failures in place of the task, and collapses to the first row", () => {
@@ -146,24 +173,30 @@ test("renderAgentsCard shows questions and failures in place of the task, and co
 	assert.match(collapsed[1], /^│ \?  sdd-explore  asked: Delete\?/);
 });
 
-test("agent model and effort outrank usage at sidebar widths without inventing unknown values", () => {
-	for (const width of [32, 44, 60, 100]) {
+// gentle-shell#1143 reversed the old priority: usage (tokens, cost and above
+// all elapsed) outranks the model·effort label when the row is narrow, since
+// the label is the one value the user already chose and can look up.
+test("usage outranks the model label at narrow widths without inventing unknown values", () => {
+	for (const width of [60, 100]) {
 		const lines = renderAgentsCard([task({ agent: "worker", model: "openai/gpt-5", thinking: "high" })], plainTheme, width, 5000, { collapsed: false });
 		assert.equal(lines.length, 3);
 		assert.match(lines[1], /worker/);
-		assert.match(lines[1], /gpt-5 · high/);
+		assert.match(lines[1], /gpt-5 · high · 34k · \$0\.27 · 4s/, "wide enough for every column");
 		for (const line of lines) assert.equal(visibleWidth(line), width);
-		if (width <= 44) assert.doesNotMatch(lines[1], /34k|\$0\.27|4s/);
+	}
+	for (const width of [32, 44]) {
+		const lines = renderAgentsCard([task({ agent: "worker", model: "openai/gpt-5", thinking: "high" })], plainTheme, width, 5000, { collapsed: false });
+		assert.equal(lines.length, 3);
+		assert.match(lines[1], /worker/);
+		assert.doesNotMatch(lines[1], /gpt-5/, "the model label is the first column to go");
+		assert.match(lines[1], /4s/, "elapsed is the last column standing");
+		for (const line of lines) assert.equal(visibleWidth(line), width);
 	}
 	for (const width of [0, 1, 2, 3, 4, 8, 16, 24]) {
 		const lines = renderAgentsCard([task({ agent: "界worker", thinking: "xhigh" })], plainTheme, width, 5000, { collapsed: false });
 		assert.ok(lines.length <= 4, "narrow metadata gets at most one dedicated row");
 		for (const line of lines) assert.equal(visibleWidth(line), width);
 	}
-	const sidebar = renderAgentsCard([task({ agent: "gentle-ai-worker", model: "openai/gpt-5.6", thinking: "high" })], plainTheme, 32, 5000, { collapsed: false });
-	assert.match(sidebar.join("\n"), /gentle-ai-worker/);
-	assert.match(sidebar.join("\n"), /gpt-5\.6 · high/);
-	for (const line of sidebar) assert.equal(visibleWidth(line), 32);
 	const unknown = renderAgentsCard([task({ model: "default", thinking: undefined })], plainTheme, 80, 5000, { collapsed: false }).join("\n");
 	assert.doesNotMatch(unknown, /default|undefined|high|off/);
 	const off = renderAgentsCard([task({ thinking: "off" })], plainTheme, 80, 5000, { collapsed: false }).join("\n");

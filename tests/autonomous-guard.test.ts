@@ -650,3 +650,138 @@ test("loadRuntimeGuardrailsConfig: autonomousMode:{} (object) in JSON does NOT a
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
+// evaluateBashPolicies — ordered bash command policy seam (gentle-pi#405 S1)
+// ---------------------------------------------------------------------------
+
+type BashPolicySeamArgs = Parameters<typeof __testing.evaluateBashPolicies>;
+
+function makeBashPolicySeamHarness(cwd: string) {
+	return {
+		ctx: { cwd, hasUI: false, ui: {} } as BashPolicySeamArgs[1],
+		events: {
+			emit: (_channel: string, _data: unknown) => {},
+			on: (_channel: string, _handler: (data: unknown) => void) => () => {},
+		},
+		herdrLifecycle: {
+			begin: () => {},
+			settle: () => {},
+		} as BashPolicySeamArgs[3],
+	};
+}
+
+function makeStubBashPolicy(
+	name: string,
+	verdict: { block: true; reason: string } | undefined,
+	calls: string[],
+): NonNullable<BashPolicySeamArgs[4]>[number] {
+	return {
+		name,
+		async evaluate(_command: string) {
+			calls.push(name);
+			return verdict;
+		},
+	};
+}
+
+test('evaluateBashPolicies: ordered policy list is exactly ["runtime-guardrails"]', () => {
+	assert.deepEqual(
+		__testing.BASH_COMMAND_POLICIES.map((policy) => policy.name),
+		["runtime-guardrails"],
+	);
+	assert.ok(
+		__testing.BASH_COMMAND_POLICIES.every(
+			(policy) => typeof policy.evaluate === "function",
+		),
+		"every policy must expose an evaluate function",
+	);
+});
+
+test("evaluateBashPolicies: short-circuits on the first verdict (later policies are not evaluated)", async () => {
+	const calls: string[] = [];
+	const firstVerdict = { block: true, reason: "first policy verdict" } as const;
+	const seam = makeBashPolicySeamHarness("/stub-cwd");
+	const result = await __testing.evaluateBashPolicies(
+		"ignored by stubs",
+		seam.ctx,
+		seam.events,
+		seam.herdrLifecycle,
+		[
+			makeStubBashPolicy("first", firstVerdict, calls),
+			makeStubBashPolicy(
+				"second",
+				{ block: true, reason: "second policy verdict" },
+				calls,
+			),
+		],
+	);
+	assert.deepEqual(result, firstVerdict);
+	assert.deepEqual(
+		calls,
+		["first"],
+		"the second policy must not run after a verdict",
+	);
+});
+
+test("evaluateBashPolicies: allow verdict from the last policy returns undefined overall", async () => {
+	const calls: string[] = [];
+	const seam = makeBashPolicySeamHarness("/stub-cwd");
+	const result = await __testing.evaluateBashPolicies(
+		"ignored by stubs",
+		seam.ctx,
+		seam.events,
+		seam.herdrLifecycle,
+		[
+			makeStubBashPolicy("first-allow", undefined, calls),
+			makeStubBashPolicy("last-allow", undefined, calls),
+		],
+	);
+	assert.equal(result, undefined);
+	assert.deepEqual(
+		calls,
+		["first-allow", "last-allow"],
+		"an allow must not short-circuit remaining policies",
+	);
+});
+
+test("evaluateBashPolicies: real runtime-guardrails policy blocks hard-deny commands through the seam", async () => {
+	const dir = makeTmpDir();
+	const originalConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = join(dir, "config-home");
+	try {
+		const seam = makeBashPolicySeamHarness(dir);
+		const result = await __testing.evaluateBashPolicies(
+			"rm -rf /",
+			seam.ctx,
+			seam.events,
+			seam.herdrLifecycle,
+		);
+		assert.equal(result?.block, true);
+		assert.match(result?.reason ?? "", /destructive/);
+	} finally {
+		if (originalConfigHome === undefined)
+			delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = originalConfigHome;
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("evaluateBashPolicies: real runtime-guardrails policy allows a non-guarded command through the seam", async () => {
+	const dir = makeTmpDir();
+	const originalConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = join(dir, "config-home");
+	try {
+		const seam = makeBashPolicySeamHarness(dir);
+		const result = await __testing.evaluateBashPolicies(
+			"echo hello",
+			seam.ctx,
+			seam.events,
+			seam.herdrLifecycle,
+		);
+		assert.equal(result, undefined);
+	} finally {
+		if (originalConfigHome === undefined)
+			delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = originalConfigHome;
+		rmSync(dir, { recursive: true, force: true });
+	}
+});

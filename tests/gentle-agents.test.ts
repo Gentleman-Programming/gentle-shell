@@ -465,6 +465,21 @@ const drainLifecycle = async (label: string, promise: Promise<LifecycleOutcome>)
 	catch (error) { return { label, error }; }
 };
 
+// The disk history read behind restoreSessionHistory is fire-and-forget from
+// session_start, so nothing signals when it lands. Poll the overlay's own
+// render output (backed by the live, shared TaskStore) on setImmediate ticks
+// instead of sleeping a fixed guess: fast when the restore already landed,
+// bounded at 2s so a genuine regression still fails instead of hanging.
+async function waitForOverlayMatch(render: () => string, pattern: RegExp, timeoutMs = 2000): Promise<string> {
+	const deadline = Date.now() + timeoutMs;
+	let rendered = render();
+	while (!pattern.test(rendered) && Date.now() < deadline) {
+		await tick();
+		rendered = render();
+	}
+	return rendered;
+}
+
 test("overlapping session transport startups preserve ownership and shutdown waits for every pending operation", async (t: TestContext) => {
 	const h = fakePi();
 	const runtime = deps();
@@ -2754,10 +2769,11 @@ test("resuming a session restores its own finished tasks as history, never anoth
 	const { ctx, overlays } = fakeContext();
 	ctx.sessionManager.getSessionId = () => "resumed-session";
 	await fire("session_start", ctx, { reason: "resume" });
-	await new Promise((resolve) => setTimeout(resolve, 50)); // disk history read is fire-and-forget
 	const opened = commands.get("gentle:agents")!.handler("", ctx);
 	for (let attempt = 0; attempt < 40 && overlays.length === 0; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 25));
-	const rendered = stripAnsi(overlays[0]!.render(100).join("\n"));
+	// The disk history read behind restoreSessionHistory is fire-and-forget,
+	// so poll the overlay's own render output instead of sleeping a guess.
+	const rendered = await waitForOverlayMatch(() => stripAnsi(overlays[0]!.render(100).join("\n")), /Subagent explore-a/);
 	assert.match(rendered, /Subagent explore-a/, "the resumed session's own finished task is restored");
 	assert.match(rendered, /Subagent explore-b/, "a second finished task of the same session is restored too");
 	assert.doesNotMatch(rendered, /explore-other/, "another session's finished task never restores here");
@@ -2799,10 +2815,12 @@ test("starting up into an existing session also restores its own finished histor
 		ctx.sessionManager.getSessionId = () => "startup-session";
 		ctx.sessionManager.getEntries = (() => [{ type: "message" }]) as typeof ctx.sessionManager.getEntries;
 		await fire("session_start", ctx, { reason: "startup" });
-		await new Promise((resolve) => setTimeout(resolve, 50));
 		const opened = commands.get("gentle:agents")!.handler("", ctx);
 		for (let attempt = 0; attempt < 40 && overlays.length === 0; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 25));
-		assert.match(stripAnsi(overlays[0]!.render(100).join("\n")), /Subagent explore-startup/, "startup into an existing session restores its own finished history");
+		// The disk history read behind restoreSessionHistory is fire-and-forget,
+		// so poll the overlay's own render output instead of sleeping a guess.
+		const rendered = await waitForOverlayMatch(() => stripAnsi(overlays[0]!.render(100).join("\n")), /Subagent explore-startup/);
+		assert.match(rendered, /Subagent explore-startup/, "startup into an existing session restores its own finished history");
 		overlays[0]!.handleInput("\x1b");
 		await opened;
 		await fire("session_shutdown", ctx);
@@ -2817,7 +2835,10 @@ test("starting up into an existing session also restores its own finished histor
 		const { ctx, overlays } = fakeContext();
 		ctx.sessionManager.getSessionId = () => "startup-session";
 		await fire("session_start", ctx, { reason: "startup" });
-		await new Promise((resolve) => setTimeout(resolve, 50));
+		// getEntries defaults to [] here, so preexisting is false and
+		// restoreSessionHistory never runs -- nothing to wait for beyond
+		// letting the already-fired session_start handler settle.
+		await tick();
 		const opened = commands.get("gentle:agents")!.handler("", ctx);
 		for (let attempt = 0; attempt < 40 && overlays.length === 0; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 25));
 		assert.doesNotMatch(stripAnsi(overlays[0]!.render(100).join("\n")), /explore-startup/, "a startup report with no prior entries restores nothing");

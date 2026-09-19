@@ -63,6 +63,7 @@ export const PROMPT_PETAL = "✿";
 const PETAL_FRAMES = ["✿", "❀", "❁", "✾"] as const;
 export const PROMPT_HINT = "type, or / for commands";
 export const DOUBLE_ESC_CANCEL_HINT = "esc again to cancel";
+export const IDLE_ESC_CLEAR_HINT = "esc again to clear";
 const LABEL_ROLE = "muted";
 const HINT_ROLE = "dim";
 const FAKE_CURSOR = "\x1b[7m \x1b[0m";

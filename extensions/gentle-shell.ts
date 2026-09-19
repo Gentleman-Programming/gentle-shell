@@ -14,7 +14,7 @@ import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/c
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { agentsViewKey } from "../lib/agents-keys.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
-import { DOUBLE_ESC_CANCEL_HINT, framePromptLines, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
+import { DOUBLE_ESC_CANCEL_HINT, framePromptLines, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import {
 	DOUBLE_ESC_CANCEL_WINDOW_MS,
@@ -197,6 +197,9 @@ interface PromptEditorDeps {
 }
 
 const PROMPT_FRAME_ROLE = "border";
+// Matches Pi's own idle double-Esc window (empty editor -> /tree or /fork);
+// this is the same muscle memory applied to clearing a non-empty draft.
+const IDLE_ESC_CLEAR_WINDOW_MS = 500;
 
 /**
  * Pi's own Esc-abort handler (`restoreQueuedMessagesToEditor({ abort: true
@@ -225,6 +228,7 @@ export class GentlePromptEditor extends CustomEditor {
 	// whether to swallow the keystroke.
 	private readonly keybindingsManager: KeybindingsManager;
 	private pendingEscapeCancelDeadline: number | undefined;
+	private pendingIdleClearDeadline: number | undefined;
 
 	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, deps: PromptEditorDeps) {
 		super(tui, theme, keybindings);
@@ -235,7 +239,8 @@ export class GentlePromptEditor extends CustomEditor {
 	setWorking(working: boolean): void {
 		this.promptState = working ? PROMPT_STATE.WORKING : PROMPT_STATE.IDLE;
 		this.stopPulse();
-		if (!working) this.pendingEscapeCancelDeadline = undefined;
+		if (working) this.pendingIdleClearDeadline = undefined;
+		else this.pendingEscapeCancelDeadline = undefined;
 		if (working) {
 			this.pulse = setInterval(() => {
 				this.tick += 1;
@@ -281,6 +286,29 @@ export class GentlePromptEditor extends CustomEditor {
 			this.deps.requestRender();
 			return;
 		}
+		// Idle with a non-empty draft: Pi's own idle double-Esc only acts on an
+		// empty editor (tree/fork), so a draft's first Esc would otherwise do
+		// nothing. Mirror the same swallow-then-confirm shape as the
+		// working-cancel gate above, on the same 500ms window as Pi's own idle
+		// double-Esc (issue #1218).
+		if (
+			this.promptState === PROMPT_STATE.IDLE &&
+			!this.isShowingAutocomplete() &&
+			this.getText().trim() !== "" &&
+			this.keybindingsManager.matches(data, "app.interrupt")
+		) {
+			if (this.isPendingIdleClear()) {
+				this.pendingIdleClearDeadline = undefined;
+				const text = this.getText();
+				this.addToHistory(text);
+				this.setText("");
+				this.deps.requestRender();
+				return;
+			}
+			this.pendingIdleClearDeadline = this.deps.now() + IDLE_ESC_CLEAR_WINDOW_MS;
+			this.deps.requestRender();
+			return;
+		}
 		super.handleInput(data);
 	}
 
@@ -314,7 +342,11 @@ export class GentlePromptEditor extends CustomEditor {
 			borderColor: (text) => this.deps.fg(PROMPT_FRAME_ROLE, text),
 			fg: this.deps.fg,
 			bold: this.deps.bold,
-			escHint: this.promptState === PROMPT_STATE.WORKING && this.isPendingEscapeCancel() ? DOUBLE_ESC_CANCEL_HINT : undefined,
+			escHint: this.promptState === PROMPT_STATE.WORKING && this.isPendingEscapeCancel()
+				? DOUBLE_ESC_CANCEL_HINT
+				: this.promptState === PROMPT_STATE.IDLE && this.isPendingIdleClear()
+					? IDLE_ESC_CLEAR_HINT
+					: undefined,
 		});
 	}
 
@@ -324,6 +356,10 @@ export class GentlePromptEditor extends CustomEditor {
 
 	private isPendingEscapeCancel(): boolean {
 		return this.pendingEscapeCancelDeadline !== undefined && this.deps.now() < this.pendingEscapeCancelDeadline;
+	}
+
+	private isPendingIdleClear(): boolean {
+		return this.pendingIdleClearDeadline !== undefined && this.deps.now() < this.pendingIdleClearDeadline;
 	}
 
 	private stopPulse(): void {

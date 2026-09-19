@@ -724,6 +724,101 @@ test("working cancel: a new agent_start before the aborted run settles clears th
 });
 
 // ---------------------------------------------------------------------------
+// Idle double-Esc clears the draft (issue #1218). With the prompt idle,
+// autocomplete hidden, and a non-empty draft, a first Esc shows a hint
+// instead of doing nothing; a second Esc within 500ms adds the draft to
+// history and clears it. An empty editor, autocomplete, or the working state
+// are all untouched: Pi's own idle double-Esc (tree/fork) and the
+// working-cancel gate above keep deciding those cases.
+// ---------------------------------------------------------------------------
+
+test("idle draft: the first Esc shows the clear hint and keeps the text", (t) => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	editor.setText("draft reply");
+	let aborted = 0;
+	editor.onEscape = () => { aborted++; };
+	editor.handleInput("\x1b");
+	assert.equal(aborted, 0, "the first Esc must be swallowed, not passed to Pi's own idle handler");
+	assert.equal(editor.getText(), "draft reply");
+	assert.match(stripAnsi(editor.render(60).join("\n")), /esc again to clear/);
+	editor.dispose();
+});
+
+test("idle draft: a second Esc within the window adds the draft to history and clears it", (t) => {
+	let now = 1_000_000;
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) }, { now: () => now });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	editor.setText("draft reply");
+	const history: string[] = [];
+	(editor as unknown as { addToHistory(text: string): void }).addToHistory = (text: string) => history.push(text);
+	editor.handleInput("\x1b");
+	now += 400;
+	editor.handleInput("\x1b");
+	assert.deepEqual(history, ["draft reply"]);
+	assert.equal(editor.getText(), "");
+	assert.doesNotMatch(stripAnsi(editor.render(60).join("\n")), /esc again to clear/);
+	editor.dispose();
+});
+
+test("idle draft: an Esc after the window expires is a fresh first press, not a clear", (t) => {
+	let now = 1_000_000;
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) }, { now: () => now });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	editor.setText("draft reply");
+	editor.handleInput("\x1b");
+	now += 501;
+	editor.handleInput("\x1b");
+	assert.equal(editor.getText(), "draft reply", "the window expired, so this is a new first press, not a clear");
+	assert.match(stripAnsi(editor.render(60).join("\n")), /esc again to clear/);
+	editor.dispose();
+});
+
+test("idle empty editor: Esc passes straight through to Pi's own tree/fork double-Esc", (t) => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	let aborted = 0;
+	editor.onEscape = () => { aborted++; };
+	editor.handleInput("\x1b");
+	assert.equal(aborted, 1, "an empty editor must be untouched by the idle-clear gate");
+	editor.dispose();
+});
+
+test("idle draft: Esc while autocomplete is visible bypasses the idle-clear gate", (t) => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	editor.setText("draft reply");
+	(editor as unknown as { isShowingAutocomplete(): boolean }).isShowingAutocomplete = () => true;
+	editor.handleInput("\x1b");
+	assert.equal(editor.getText(), "draft reply", "autocomplete cancel must never clear the draft");
+	assert.doesNotMatch(stripAnsi(editor.render(60).join("\n")), /esc again to clear/, "autocomplete must bypass the idle-clear gate, matching CustomEditor's own guard");
+	editor.dispose();
+});
+
+test("working state: a non-empty draft's Esc is decided by the working-cancel gate, never the idle-clear hint", (t) => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers, escapeKeybindings);
+	editor.setText("draft reply");
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	editor.onEscape = () => { editor.setText(editor.getText()); };
+	editor.handleInput("\x1b");
+	assert.doesNotMatch(stripAnsi(editor.render(60).join("\n")), /esc again to clear/, "working must never show the idle-clear hint");
+	editor.dispose();
+});
+
+// ---------------------------------------------------------------------------
 // /gentle:double-esc-cancel (issue #1163). Unlike /gentle:background-subagents,
 // no argument toggles the effective policy rather than merely reporting it.
 // ---------------------------------------------------------------------------

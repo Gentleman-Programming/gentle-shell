@@ -386,6 +386,14 @@ export interface ReviewHostRelayRequest {
 	readonly selection?: string;
 	/** The routing entry's thinking label, forwarded verbatim to the completion. */
 	readonly thinking?: string;
+	/**
+	 * The caller's live pi session id, forwarded into the in-process completion
+	 * request so an OpenCode-routed reviewer model carries its
+	 * `x-opencode-session` attribution header (a side-call bypasses pi's main
+	 * agent loop, where pi adds those headers itself). Absent forwards nothing:
+	 * no invented header, no error.
+	 */
+	readonly reviewerSessionId?: string;
 	/** Names the routing config key (e.g. "review-risk") in refusal messages; defaults to a generic label when absent. */
 	readonly routingKey?: string;
 	/**
@@ -608,6 +616,7 @@ function validateReviewerSelectionConfiguration(request: ReviewHostRelayRequest)
 		reviewerRegistry: request.reviewerRegistry,
 		selection: request.selection,
 		...(request.thinking === undefined ? {} : { thinking: request.thinking }),
+		...(request.reviewerSessionId === undefined ? {} : { reviewerSessionId: request.reviewerSessionId }),
 		routingKey,
 	};
 }
@@ -728,6 +737,7 @@ export async function prepareReviewHostRelaySlot(
 			{
 				selection: preparedRequest.selection!,
 				...(preparedRequest.thinking === undefined ? {} : { thinking: preparedRequest.thinking }),
+				...(preparedRequest.reviewerSessionId === undefined ? {} : { sessionId: preparedRequest.reviewerSessionId }),
 				prompt: promptBytes,
 				timeoutMs: piTimeoutMs,
 				...(preparedRequest.signal === undefined ? {} : { signal: preparedRequest.signal }),

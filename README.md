@@ -253,6 +253,35 @@ Start with the product-facing destination, then move into the operational refere
   <img src="docs/assets/brand/terminal-divider.svg" width="480" alt="">
 </p>
 
+| Path                           | Purpose                                                                                                    |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| `extensions/gentle-ai.ts`      | Injects identity, orchestrates native review authority, refreshes global SDD assets, registers commands, applies model/persona config, and enforces runtime safety. |
+| `lib/native-review-cli.ts`     | Strict package-local adapter for Gentle AI START, FINALIZE, VALIDATE, SDD binding, and status contracts.     |
+| `lib/review-integration-v2.ts` | Strict consumer decoder for negotiated capabilities, operations, target status, projections, repair, and failures against contract `review-integration/v2` (active today).  |
+| `lib/review-candidate-view.ts` | Builds immutable changed-scope actor views while preserving full-tree, path, mode, symlink, and index integrity. |
+| `lib/review-canonical.ts`      | Permanent Pi-owned canonical JSON and domain-hash primitives for consumer-side identities.                   |
+| `lib/review-repository.ts`     | Permanent Pi-owned Git common-directory identity, safe Git environment, and authority-root binding.          |
+| `lib/gentle-ai-binary.ts`      | Resolves and verifies the confined package-local Gentle AI runtime without global or PATH fallback.          |
+| `scripts/gentle-ai-installer.mjs` | Installs signed Darwin/Linux archives or exact Go SumDB-verified Windows source builds into the package-local runtime. |
+| `contracts/review-integration/v1/` | Byte-identical provider schemas and conformance fixtures for contract `review-integration/v1`, hash-checked before packaging; retained on disk permanently because `/v2`'s schemas `$ref` into these fragments. |
+| `contracts/review-integration/v2/` | Byte-identical provider schemas and conformance fixtures for contract `review-integration/v2` (immutable `base_tree`/`candidate_tree`, ordered `changed_path_manifest`, no inline candidate diff), hash-checked before packaging. |
+| `extensions/startup-banner.ts` | Shows and configures the startup intro, color presets, and compact runtime panel.     |
+| `extensions/sdd-init.ts`       | Registers `/gentle-sdd-init` for OpenSpec initialization.                                                         |
+| `extensions/skill-registry.ts` | Maintains `.atl/skill-registry.md` from project/user skills and closes file watchers on shutdown.          |
+| `extensions/shift-selection-extension/` | Shift+Home/End text-selection editor: alt+a select all, selection replace/delete with one-step undo, reverse-video highlight, and a `PI_SHIFT_SELECTION_DEBUG` key tap. |
+| `assets/orchestrator.md`       | Parent-session orchestration contract (always-on core).                                                    |
+| `assets/orchestrator-delegation.md` | Lazy-loaded delegation/routing/review detail, including the mirrored gentle-ai canon.                 |
+| `assets/orchestrator-memory.md` | Lazy-loaded SDD memory phase table, artifact keys, and lifecycle rule.                                    |
+| `assets/orchestrator-skills.md` | Lazy-loaded skill registry fallback semantics and intent-driven skill discovery.                          |
+| `assets/sdd-orchestrator-workflow.md` | Lazy-loaded SDD workflow surface for the parent orchestrator.                                       |
+| `assets/agents/`               | SDD agents installed as global Pi runtime assets.                                                          |
+| `assets/chains/`               | SDD chains installed as global Pi runtime assets.                                                          |
+| `assets/support/`              | Strict TDD support docs for apply/verify phases.                                                           |
+| `skills/`                      | Gentle AI delivery and collaboration skills.                                                               |
+| `prompts/`                     | The `/skill-creation` prompt template.                                                                     |
+| `docs/skill-style-guide.md`    | Normative style guide used by the packaged skill creation/improvement skills.                              |
+| `docs/native-authority-architecture.md` | Post-U8 ownership boundary, reproducible slimming metrics, Windows evidence, exact #191 seam, and the `review-integration/v1`→`v2` migration status, including the "compact-v2" naming disambiguation.     |
+| `docs/review-integration.md`   | Negotiated provider/consumer contract and the current Gentle Pi adoption boundary.                         |
 ## Community
 
 This project is built in public. Bring a real workflow, a sharp question, a bug report, or a small improvement that makes the next person’s work clearer.

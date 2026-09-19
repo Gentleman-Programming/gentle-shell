@@ -89,7 +89,7 @@ export function resolveDoubleEscCancelPolicy(
 	const envValue = env.GENTLE_PI_DOUBLE_ESC_CANCEL;
 	let globalFile = "";
 	try {
-		const configHome = options.gentlePiConfigHome ?? gentlePiConfigHome();
+		const configHome = options.gentlePiConfigHome ?? gentlePiConfigHome(env);
 		globalFile = join(configHome, DOUBLE_ESC_CANCEL_FILE);
 		const globalFileExists = existsSync(globalFile);
 		if (globalFileExists) {

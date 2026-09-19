@@ -862,8 +862,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				}
 				const wrote: DoubleEscCancelPolicy = subAction === "enable" ? "on" : "off";
 				writeDoubleEscCancelPolicy(wrote, { gentlePiConfigHome: doubleEscCancelConfigHome });
-				doubleEscCancelPolicy = wrote;
 				const after = resolveDoubleEscCancelPolicy({ env, gentlePiConfigHome: doubleEscCancelConfigHome });
+				// Cache what the file actually resolves to, not what was written: a
+				// competing writer or a read failure would otherwise leave the gate
+				// and the report disagreeing.
+				doubleEscCancelPolicy = after.policy;
 				const report = renderDoubleEscCancelReport(after, wrote);
 				ctx.ui.notify(report.message, report.type);
 			} catch (error) {

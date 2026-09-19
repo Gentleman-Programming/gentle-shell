@@ -75,6 +75,14 @@ test("default is off with no file and no env", () => {
 	assert.equal(loadDoubleEscCancelPolicy({ gentlePiConfigHome: configHome, env: EMPTY_ENV }), "off");
 });
 
+test("the resolver reads GENTLE_PI_CONFIG_HOME from the given env, never from process.env", () => {
+	const root = makeScratch("gp-esc-envhome-");
+	writePolicyFile(root, "on");
+	const result = resolveDoubleEscCancelPolicy({ env: { GENTLE_PI_CONFIG_HOME: root } });
+	assert.equal(result.policy, "on");
+	assert.equal(result.globalFile, join(root, "double-esc-cancel.json"));
+});
+
 test("global file overrides env", () => {
 	const configHome = join(makeScratch("gp-esc-home-"), "gentle-ai");
 	writePolicyFile(configHome, "on");

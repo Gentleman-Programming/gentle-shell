@@ -97,22 +97,20 @@ function truncate(text: string, limit: number): string {
 /**
  * Register the first-party questionnaire tool.
  *
- * Name-collision semantics (verified against the installed Pi dist):
+ * Name-collision semantics (live-verified against the installed Pi runtime):
+ * - Tool names are exclusive across extensions. Pi has no precedence, override,
+ *   or silent shadowing: loading two extensions that register the same tool
+ *   name fails the whole load with a hard error
+ *   (`Tool "ask_user_question" conflicts with <other extension>`; the runtime
+ *   exits non-zero). The name is either free or fatal, full stop.
  * - `registerTool` writes into the calling extension's own tool map keyed by
  *   name, so re-registering inside one extension overwrites that entry
- *   (`loader.js:240`).
- * - Cross-extension aggregation keeps the FIRST registration per tool name in
- *   extension load order (`runner.js:324`, "first registration per name wins").
- *   Name collisions are diagnostics only and never throw
- *   (`resource-loader.js` conflict detection keeps every extension loaded).
- * - Load order is decided before load by the resource precedence rank, where a
- *   package resource ranks last (`package-manager.js:54-67`), and the resolved
- *   list is sorted ascending by that rank (`package-manager.js:2077`).
- *
- * There is no public tool-override or unregister API, so plain registration is
- * the correct "ours wins" strategy: this first-party extension outranks the
- * third-party `@juicesharp/rpiv-ask-user-question` package and therefore owns
- * the `ask_user_question` name at aggregation.
+ *   (`loader.js:240`). That same-name write is the only one Pi tolerates.
+ * - This first-party tool ships as THE `ask_user_question` provider. A competing
+ *   provider such as the third-party `@juicesharp/rpiv-ask-user-question`
+ *   package fails the load by design and must be removed from the user's Pi
+ *   settings; that deletion is the documented migration path, not a runtime
+ *   precedence choice.
  */
 export default function askUserQuestion(pi: ExtensionAPI): void {
 	pi.registerTool({

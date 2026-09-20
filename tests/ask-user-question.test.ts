@@ -66,22 +66,6 @@ interface ExtensionSlot {
 }
 
 const OURS_PATH = "gentle-pi/extensions/ask-user-question.ts";
-const THIRD_PARTY_PATH = "package:@juicesharp/rpiv-ask-user-question";
-
-/**
- * Mirror Pi's cross-extension aggregation: extensions arrive pre-ordered, and
- * the runner keeps the FIRST registration per tool name
- * (`runner.js:324`, "first registration per name wins").
- */
-function aggregateToolsByName(extensions: ExtensionSlot[]): Map<string, RegisteredTool> {
-	const toolsByName = new Map<string, RegisteredTool>();
-	for (const extension of extensions) {
-		for (const tool of extension.tools.values()) {
-			if (!toolsByName.has(tool.name)) toolsByName.set(tool.name, tool);
-		}
-	}
-	return toolsByName;
-}
 
 function registerQuestionTool(slot?: ExtensionSlot): { tool: RegisteredTool; slot: ExtensionSlot; emitted: LifecycleEvent[] } {
 	const target: ExtensionSlot = slot ?? { path: OURS_PATH, tools: new Map() };
@@ -314,25 +298,24 @@ test("ask_user_question settles its lifecycle after a custom UI error", async ()
 	]);
 });
 
-test("ask_user_question wins the name collision through load-order precedence", () => {
-	// The third-party package registered first in wall-clock time, but a package
-	// resource ranks below a first-party extension in load order
-	// (`package-manager.js:54-67`, sorted at `package-manager.js:2077`), and the
-	// runner keeps the first registration per name (`runner.js:324`).
-	const thirdParty: ExtensionSlot = { path: THIRD_PARTY_PATH, tools: new Map() };
-	const thirdPartyTool = { name: "ask_user_question", label: "Third-party questionnaire" } as unknown as RegisteredTool;
-	thirdParty.tools.set("ask_user_question", thirdPartyTool);
-
+test("ask_user_question owns an exclusive tool name across extensions", () => {
+	// Live-verified against the installed Pi runtime: tool names are exclusive
+	// across extensions. Loading two extensions that register
+	// `ask_user_question` aborts the whole load with a hard error
+	// (`Tool "ask_user_question" conflicts with <other extension>`; the runtime
+	// exits non-zero) -- there is no precedence, override, or silent shadowing.
+	// This fake registry is a per-extension Map and cannot reproduce Pi's
+	// cross-extension load error, so it pins the part it can: our single
+	// registration owns the name within its own extension, and the runtime, not
+	// resource order, enforces exclusivity outside it. The competing
+	// `@juicesharp/rpiv-ask-user-question` package must be removed from the
+	// user's settings before this extension can load.
 	const ours: ExtensionSlot = { path: OURS_PATH, tools: new Map() };
 	const registration = registerQuestionTool(ours);
 
-	const resolved = aggregateToolsByName([ours, thirdParty]).get("ask_user_question");
-	assert.equal(resolved, registration.tool, "the first-party extension owns the name at aggregation");
-	assert.equal(resolved?.label, "Ask User Question");
-
-	// Documenting the mechanism: with the package ahead in load order, the first
-	// registration wins instead. Load order, not call order, decides the winner.
-	assert.equal(aggregateToolsByName([thirdParty, ours]).get("ask_user_question"), thirdPartyTool);
+	assert.equal(ours.tools.get("ask_user_question"), registration.tool, "the first-party extension owns its name");
+	assert.equal(registration.tool.name, "ask_user_question");
+	assert.equal(registration.tool.label, "Ask User Question");
 });
 
 test("re-registering inside one extension overwrites its own tool entry", () => {

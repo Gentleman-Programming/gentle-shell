@@ -68,6 +68,7 @@ function railDigest(rail: SidebarRail): string | undefined {
 	}
 }
 
+/** Installs the fullscreen rail: wraps the host layout root with the [rail, transcript] hstack and returns a disposer restoring the original layout. */
 export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 	if (!tui.terminal) return () => {};
 	const host = tui as Host;

@@ -548,6 +548,7 @@ class BoundedRows implements Component {
 		this.cacheKey = cacheKey;
 	}
 
+	/** Renders each section through the wrapped-line cache, sliced to the section row budget; cache hits skip re-tokenizing and re-wrapping the section text. */
 	render(width: number): string[] {
 		const cache = this.cacheKey ? boundedRowsLineCache.get(this.cacheKey) : undefined;
 		return this.sections.flatMap(({ text, rows, tail = false }, index) => {
@@ -657,6 +658,7 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 			}
 			return new Text(formatToolCall(toolName, callArgs, theme), 0, 0);
 		},
+		/** Builds the card component for this render pass; collapsed cards delegate to the wrapped-line cache keyed by the tool result object. */
 		renderResult(result, options, theme, context) {
 			const renderContext = context as ToolRenderContextLike | undefined;
 			const cacheKey = typeof result === "object" && result !== null ? result : undefined;

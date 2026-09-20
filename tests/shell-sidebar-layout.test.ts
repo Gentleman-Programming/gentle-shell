@@ -188,7 +188,9 @@ test("rail dispatches a clipped, scroll-translated left click to only the matchi
 	const hit = scroll.handleMouse(mouse("click", "left", headerY));
 	assert.equal(hit?.handled, true);
 	assert.equal(clicks, 1);
-	assert.deepEqual(received.at(-1) && { x: received.at(-1)!.x, y: received.at(-1)!.y, width: received.at(-1)!.width, height: received.at(-1)!.height }, { x: 1, y: 0, width: 47, height: 2 });
+		// With a transient scrollbar the rail no longer reserves a column, so
+	// clipped parts are one column wider than in the always-on geometry.
+	assert.deepEqual(received.at(-1) && { x: received.at(-1)!.x, y: received.at(-1)!.y, width: received.at(-1)!.width, height: received.at(-1)!.height }, { x: 1, y: 0, width: 48, height: 2 });
 
 	const gapY = headerY - 1;
 	assert.equal(scroll.handleMouse(mouse("click", "left", gapY)), undefined, "section gaps do not hit a neighbor");
@@ -706,4 +708,30 @@ test("the header component's handleMouse is a harmless no-op when no header part
 	// No header registered: the active node stays the plain hstack (T2's
 	// backward-compatible fallback), so there is no header leaf to click at all.
 	assert.equal(node.type, "hstack");
+});
+
+test("rail scrollbar is transient: hidden by default, visible only while scrolling overflow", (t) => {
+	const f = fixture();
+	t.after(installSidebar(f.tui, theme));
+	const scroll = rail(f);
+	// Regression guard: the rail scroll view used to hardcode scrollbar
+	// "always", re-slicing its column on every render pass even when idle.
+	assert.equal(scroll.scrollbar, "auto");
+	sidebarPart(f.tui, "todo", { render: () => Array.from({ length: 60 }, (_, i) => `todo row ${i}`), invalidate() {} });
+	renderLayoutFrame(f.root, 140, 20, () => {});
+	assert.equal(scroll.isScrollbarVisible, false, "no scroll yet: hidden even with overflow");
+	scroll.scrollBy(1);
+	scroll.markScrollbarActivity();
+	assert.equal(scroll.isScrollbarVisible, true, "rail scroll reveals the transient scrollbar");
+	scroll.hideTransientScrollbar();
+	assert.equal(scroll.isScrollbarVisible, false, "hidden again after the transient window");
+});
+
+test("rail scrollbar stays hidden when the rail does not overflow", (t) => {
+	const f = fixture();
+	t.after(installSidebar(f.tui, theme));
+	const scroll = rail(f);
+	renderLayoutFrame(f.root, 140, 20, () => {});
+	scroll.markScrollbarActivity();
+	assert.equal(scroll.isScrollbarVisible, false);
 });

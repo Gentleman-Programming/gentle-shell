@@ -763,6 +763,7 @@ export default function (pi: ExtensionAPI) {
         process.stdout.on("resize", resizeHandler);
 
         return {
+          /** Renders the persistent header grid; memoized per width, tick, mode and stats so static passes reuse the built lines. */
           render(width: number): string[] {
             if (state.mode === "skip") return [];
             const headerKey = `${width}|${tick}|${state.mode}|${gitBranch}|${mcpServersCount}|${extensionsCount}|${packagesCount}|${sddAgentsCount}`;

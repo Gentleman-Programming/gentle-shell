@@ -129,7 +129,7 @@ async function fire(handlers: Map<string, Array<(event: unknown, ctx: ExtensionC
 	for (const handler of handlers.get(event) ?? []) await handler({}, ctx);
 }
 
-function fakeContext(options: { hasUI?: boolean; entries?: unknown[]; oauth?: boolean; pending?: boolean; idle?: boolean; editorFactory?: unknown; token?: string } = {}): { ctx: ExtensionContext; ui: FakeUi; overlayReady: Promise<void> } {
+function fakeContext(options: { hasUI?: boolean; entries?: unknown[]; oauth?: boolean; pending?: boolean; idle?: boolean; editorFactory?: unknown; token?: string; select?: (title: string, options: string[]) => Promise<string | undefined> } = {}): { ctx: ExtensionContext; ui: FakeUi; overlayReady: Promise<void> } {
 	const ui: FakeUi = { footerFactory: undefined, editorFactory: options.editorFactory, widgets: new Map(), widgetSets: 0, workingVisible: undefined, notices: [], overlay: undefined, overlayView: undefined, closeOverlay: undefined };
 	let resolveOverlay: () => void;
 	const overlayReady = new Promise<void>((resolve) => { resolveOverlay = resolve; });
@@ -150,6 +150,9 @@ function fakeContext(options: { hasUI?: boolean; entries?: unknown[]; oauth?: bo
 		getContextUsage: () => ({ tokens: 122_400, contextWindow: 272_000, percent: 45 }),
 		ui: {
 			theme: plainTheme,
+			// Added only when requested: an absent select keeps the no-menu fallback
+			// that every pre-existing test relies on.
+			...(options.select ? { select: options.select } : {}),
 			setFooter(factory: unknown) {
 				ui.footerFactory = factory;
 			},
@@ -558,6 +561,34 @@ test("animations status attributes malformed files and reports a failed write", 
 	mkdirSync(path);
 	await commands.get("gentle:animations")!.handler("potato", ctx);
 	assert.match(ui.notices.at(-1)!, /EISDIR|ENOTEMPTY|EPERM/);
+});
+
+test("animations with no argument opens a selectable menu and applies the chosen policy", async (t) => {
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	const path = join(configHome, "animations.json");
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome });
+	// No editor/prompt is installed: the handler's `prompt?.setAnimationPolicy`
+	// optional chain must tolerate the interactive menu without one.
+	const chosen = fakeContext({
+		select: async (title, options) => {
+			assert.match(title, /Gentle animations/);
+			assert.deepEqual(options, ["quality", "performance", "potato", "status"]);
+			return "potato";
+		},
+	});
+	await commands.get("gentle:animations")!.handler("", chosen.ctx);
+	assert.equal(JSON.parse(readFileSync(path, "utf8")).policy, "potato");
+	assert.match(chosen.ui.notices.at(-1)!, /animations: potato/);
+
+	// A dismissed menu (undefined selection) reports nothing and writes nothing.
+	const dismissHome = scopedDoubleEscCancelConfigHome(t);
+	const { pi: dismissPi, commands: dismissCommands } = fakePi();
+	gentleShell(dismissPi, { GENTLE_PI_CONFIG_HOME: dismissHome });
+	const dismissed = fakeContext({ select: async () => undefined });
+	await dismissCommands.get("gentle:animations")!.handler("", dismissed.ctx);
+	assert.equal(dismissed.ui.notices.length, 0);
+	assert.equal(existsSync(join(dismissHome, "animations.json")), false);
 });
 
 test("prompt uses the compact banner cadence and releases its unref timer at settlement", (t) => {

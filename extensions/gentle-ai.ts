@@ -9706,9 +9706,16 @@ function createGentleAiExtensionForTesting(
 	// background subagents may be launched at all, so nothing in Pi may write
 	// it. The only writer is this handler, reached only by explicit invocation.
 	pi.registerCommand("gentle:background-subagents", {
-		description: "Show or set the managed background-subagents policy (status|enable|disable). Every sub-action is user-initiated only; Pi automation never toggles it.",
+		description: "Show or set the managed background-subagents policy; no argument opens a selectable menu (status|enable|disable). Every sub-action is user-initiated only; Pi automation never toggles it.",
+		// No argument opens a selectable menu when an interactive UI is present;
+		// headless callers and fakes without ui.select keep the status fallback.
 		handler: async (args, ctx) => {
-			const subAction = args.trim().length === 0 ? "status" : args.trim();
+			let subAction = args.trim().length === 0 ? "status" : args.trim();
+			if (args.trim().length === 0 && ctx.hasUI && typeof ctx.ui.select === "function") {
+				const selected = await ctx.ui.select("Background subagents policy", ["status", "enable", "disable"]);
+				if (selected === undefined) return;
+				subAction = selected;
+			}
 			if (subAction !== "status" && subAction !== "enable" && subAction !== "disable") {
 				ctx.ui.notify(`Unknown /gentle:background-subagents sub-action "${subAction}". Use status, enable, or disable.`, "warning");
 				return;

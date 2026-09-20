@@ -990,9 +990,19 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		});
 	}
 	pi.registerCommand("gentle:animations", {
-		description: "Show or set global animations (status|quality|performance|potato); no argument reports status.",
+		description: "Show or set global animations; no argument opens a selectable menu (quality|performance|potato, plus status).",
+		// No argument opens a selectable menu when an interactive UI is present;
+		// headless callers and fakes without ui.select keep the status fallback.
 		handler: async (args, ctx) => {
-			const action = args.trim() || "status";
+			let action = args.trim() || "status";
+			if (args.trim().length === 0 && ctx.hasUI && typeof ctx.ui.select === "function") {
+				const selected = await ctx.ui.select(
+					`Gentle animations (current: ${animationPolicy})`,
+					["quality", "performance", "potato", "status"],
+				);
+				if (selected === undefined) return;
+				action = selected;
+			}
 			if (action !== "status" && action !== "quality" && action !== "performance" && action !== "potato") {
 				ctx.ui.notify("Use /gentle:animations status|quality|performance|potato.", "warning");
 				return;

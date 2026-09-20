@@ -720,6 +720,7 @@ export default function (pi: ExtensionAPI) {
     setTimeout(() => {
       ctx.ui.setHeader((tui, theme) => {
         if (state.timer) clearInterval(state.timer);
+        headerCache = null;
 
         refreshStats = () => tui.requestRender();
         // Capture once: a command changes the live prompt, not this intro.
@@ -766,7 +767,7 @@ export default function (pi: ExtensionAPI) {
           /** Renders the persistent header grid; memoized per width, tick, mode and stats so static passes reuse the built lines. */
           render(width: number): string[] {
             if (state.mode === "skip") return [];
-            const headerKey = `${width}|${tick}|${state.mode}|${gitBranch}|${mcpServersCount}|${extensionsCount}|${packagesCount}|${sddAgentsCount}`;
+            const headerKey = `${width}|${tick}|${state.mode}|${gitBranch}|${mcpServersCount}|${extensionsCount}|${packagesCount}|${sddAgentsCount}|${ctx.cwd}|${skills.length}|${customTools.length}`;
             if (headerCache?.key === headerKey) return headerCache.out;
 
             const flashStartTick = 10;
@@ -1066,7 +1067,7 @@ export default function (pi: ExtensionAPI) {
             headerCache = { key: headerKey, out };
             return out;
           },
-          invalidate() {},
+          invalidate() { headerCache = null; },
           dispose() {
             cleanup();
           },

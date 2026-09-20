@@ -692,6 +692,7 @@ export default function (pi: ExtensionAPI) {
 
     let tick = 0;
     let refreshStats = () => {};
+    let headerCache: { key: string; out: string[] } | null = null;
     const state = {
       timer: null as NodeJS.Timeout | null,
       mode: currentIntroMode() as IntroMode,
@@ -764,6 +765,8 @@ export default function (pi: ExtensionAPI) {
         return {
           render(width: number): string[] {
             if (state.mode === "skip") return [];
+            const headerKey = `${width}|${tick}|${state.mode}|${gitBranch}|${mcpServersCount}|${extensionsCount}|${packagesCount}|${sddAgentsCount}`;
+            if (headerCache?.key === headerKey) return headerCache.out;
 
             const flashStartTick = 10;
             const roseOpacity = Math.min(1, tick / 10);
@@ -1059,6 +1062,7 @@ export default function (pi: ExtensionAPI) {
               out.push(truncateToWidth(line, Math.max(1, width), ""));
             }
 
+            headerCache = { key: headerKey, out };
             return out;
           },
           invalidate() {},

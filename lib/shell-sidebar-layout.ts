@@ -113,7 +113,10 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme): () => void {
 		follow: "none",
 		primary: false,
 		overscroll: "contain",
-		scrollbar: "always",
+		// "always" re-slices the scrollbar column of every rail line on every
+		// render pass (grapheme measurement per row). "auto" keeps the rail
+		// scrollbar transient like pi's own fullscreen scrollbar.
+		scrollbar: "auto",
 		scrollbarTrackStyle: (text) => theme.fg("border", text),
 		scrollbarThumbStyle: (text) => theme.fg("accent", text),
 	});

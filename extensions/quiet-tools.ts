@@ -535,17 +535,33 @@ interface BoundedRowSection {
 	tail?: boolean;
 }
 
+// Cache wrapped lines per stable tool-result object: pi re-renders every visible
+// card each frame, so re-tokenizing the full output text per pass is pure waste.
+const boundedRowsLineCache = new WeakMap<object, Array<{ text: string; width: number; lines: string[] } | undefined>>();
+
 class BoundedRows implements Component {
 	private readonly sections: readonly BoundedRowSection[];
+	private readonly cacheKey: object | undefined;
 
-	constructor(sections: readonly BoundedRowSection[]) {
+	constructor(sections: readonly BoundedRowSection[], cacheKey?: object) {
 		this.sections = sections;
+		this.cacheKey = cacheKey;
 	}
 
 	render(width: number): string[] {
-		return this.sections.flatMap(({ text, rows, tail = false }) => {
+		const cache = this.cacheKey ? boundedRowsLineCache.get(this.cacheKey) : undefined;
+		return this.sections.flatMap(({ text, rows, tail = false }, index) => {
 			if (rows <= 0) return [];
+			const hit = cache?.[index];
+			if (hit && hit.text === text && hit.width === width) {
+				return tail ? hit.lines.slice(-rows) : hit.lines.slice(0, rows);
+			}
 			const rendered = new Text(text, 0, 0).render(width);
+			if (this.cacheKey) {
+				const slot = boundedRowsLineCache.get(this.cacheKey) ?? [];
+				slot[index] = { text, width, lines: rendered };
+				boundedRowsLineCache.set(this.cacheKey, slot);
+			}
 			return tail ? rendered.slice(-rows) : rendered.slice(0, rows);
 		});
 	}
@@ -643,6 +659,7 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 		},
 		renderResult(result, options, theme, context) {
 			const renderContext = context as ToolRenderContextLike | undefined;
+			const cacheKey = typeof result === "object" && result !== null ? result : undefined;
 			const safeResult = sanitizedResult(result);
 			const text = safeText(extractTextContent(safeResult));
 			const isError = renderContext?.isError ?? options.isError ?? false;
@@ -661,7 +678,7 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 				return new BoundedRows([
 					{ text: theme.fg("warning", partialLabel(toolName, text)), rows: 1 },
 					...(visible ? [{ text: theme.fg("muted", visible), rows: PREVIEW_LINE_LIMIT, tail: true }] : []),
-				]);
+				], cacheKey);
 			}
 			if (options.expanded && toolName === "read" && hasImageContent(safeResult) && officialRenderResult) {
 				return officialRenderResult(
@@ -686,7 +703,7 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 				return new BoundedRows([
 					{ text: theme.fg(color, output.replace(/^\n/, "")), rows: PREVIEW_LINE_LIMIT, tail },
 					...(hint ? [{ text: theme.fg(color, hint.slice(1)), rows: 1 }] : []),
-				]);
+				], cacheKey);
 			}
 			return new Text(hint ? theme.fg(color, hint.slice(1)) : "", 0, 0);
 		},

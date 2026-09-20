@@ -558,6 +558,40 @@ async function backupBundlePaths(runtimeRoot) {
 	return backups;
 }
 
+// On Windows, publishing the freshly built bundle races a transient handle
+// lock on the built binary: the installer executes it right before publishing
+// (`assertExactGentleAiVersion`), and a directory rename can return
+// ERROR_ACCESS_DENIED (node EPERM) while the image handle of the just-exited
+// process is still being released (scanner activity can contribute on a brand
+// new unsigned binary). The window is short (measured ~0.2-1.5 s) but the
+// publish rename is single-shot, so the whole update fails deterministically
+// on Windows. A bounded retry overrides that window; the bundle's integrity
+// manifest still guards the end state, and non-transient errors fail through
+// immediately (they report a real defect, not a race).
+const TRANSIENT_RENAME_ERROR_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
+const DEFAULT_RENAME_RETRY_ATTEMPTS = 5;
+const DEFAULT_RENAME_RETRY_BASE_DELAY_MS = 200;
+
+async function renameWithTransientRetry(from, to, options = {}) {
+	const attempts = options.attempts ?? DEFAULT_RENAME_RETRY_ATTEMPTS;
+	const baseDelayMs = options.baseDelayMs ?? DEFAULT_RENAME_RETRY_BASE_DELAY_MS;
+	const underlyingRename = options.rename ?? rename;
+	const sleep = options.sleep ?? defaultSleep;
+	let lastError;
+	for (let attempt = 1; attempt <= attempts; attempt++) {
+		try {
+			await underlyingRename(from, to);
+			return;
+		} catch (error) {
+			lastError = error;
+			const code = error && typeof error === "object" ? error.code : undefined;
+			if (!TRANSIENT_RENAME_ERROR_CODES.has(code)) throw error;
+			if (attempt < attempts) await sleep(baseDelayMs * attempt);
+		}
+	}
+	throw lastError;
+}
+
 async function recoverInterruptedPublication(runtimeRoot, bundleIsValid, options) {
 	const backups = await backupBundlePaths(runtimeRoot);
 	if (backups.length === 0) return;
@@ -567,7 +601,7 @@ async function recoverInterruptedPublication(runtimeRoot, bundleIsValid, options
 	const live = versionBundlePath(runtimeRoot);
 	const liveExists = await realBundleDirectory(live, runtimeRoot, "live bundle");
 	if (!liveExists) {
-		try { await (options.rename ?? rename)(backup, live); }
+		try { await (options.rename ?? renameWithTransientRetry)(backup, live); }
 		catch (error) { throw bundleRecoveryError(runtimeRoot, `could not restore valid backup ${backup}: ${error instanceof Error ? error.message : String(error)}`); }
 		return;
 	}
@@ -585,7 +619,7 @@ async function cleanupStaleStagingBundles(runtimeRoot) {
 }
 
 async function publishBundle(runtimeRoot, stagingDirectory, options) {
-	const versionDirectory = join(runtimeRoot, `v${INSTALLER_VERSION}`), renameFile = options.rename ?? rename;
+	const versionDirectory = join(runtimeRoot, `v${INSTALLER_VERSION}`), renameFile = options.rename ?? renameWithTransientRetry;
 	const backupDirectory = join(runtimeRoot, `.v${INSTALLER_VERSION}.backup-${process.pid}-${Date.now()}`);
 	let movedPrior = false;
 	try {
@@ -650,7 +684,11 @@ async function installWindowsGentleAiFromGoSumdb(options, packageRoot, architect
 	});
 }
 
-async function installSignedRelease(options, packageRoot, platform, arch, asset) {
+async function defaultSleep(milliseconds) {
+	return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function installSignedRelease(options, packageRoot, platform, arch, asset) {
 	return withInstallLock(packageRoot, options, async (runtimeRoot) => {
 		await recoverInterruptedPublication(runtimeRoot, (directory) => existingSignedBundleMatches(directory, asset, platform), options);
 		await cleanupStaleStagingBundles(runtimeRoot);
@@ -680,6 +718,13 @@ async function installSignedRelease(options, packageRoot, platform, arch, asset)
 		} finally { await safeRemoveDirectory(stagingDirectory); }
 	});
 }
+
+export {
+	DEFAULT_RENAME_RETRY_ATTEMPTS,
+	DEFAULT_RENAME_RETRY_BASE_DELAY_MS,
+	TRANSIENT_RENAME_ERROR_CODES,
+	renameWithTransientRetry,
+};
 
 export async function installGentleAi(options = {}) {
 	const packageRoot = options.packageRoot ?? resolveGentleAiInstallerPackageRoot();

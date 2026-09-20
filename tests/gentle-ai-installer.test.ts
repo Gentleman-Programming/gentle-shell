@@ -15,6 +15,7 @@ import {
 	downloadGentleAiAsset,
 	gentleAiAssetForm,
 	installGentleAi,
+	renameWithTransientRetry,
 	resolveGentleAiInstallerPackageRoot,
 	resolveGentleAiReleaseAsset,
 	trustedSystemExtractor,
@@ -579,6 +580,53 @@ test("Windows concurrent installs fail closed until normal release, then reuse t
 	assert.equal((await first).installed, true);
 	assert.equal((await installGentleAi({ packageRoot, platform: "win32", arch: "x64", execFile: fixture.run, resolveGoExecutable: fixture.resolveGoExecutable })).installed, false);
 	assert.equal(fixture.calls.filter((call) => call.file === fixture.goPath && call.arguments_[0] === "install").length, 1);
+});
+
+test("bundle publication retries transient Windows handle locks and succeeds within budget", async () => {
+	let attempts = 0;
+	const flakyRename = async () => {
+		attempts += 1;
+		if (attempts < 3) {
+			const error = new Error("simulated transient handle lock");
+			error.code = "EPERM";
+			throw error;
+		}
+		return undefined;
+	};
+	await assert.doesNotReject(() =>
+		renameWithTransientRetry("from", "to", { rename: flakyRename, attempts: 5, baseDelayMs: 1, sleep: () => Promise.resolve() }),
+	);
+	assert.equal(attempts, 3);
+});
+
+test("bundle publication fails closed when the transient lock outlasts the retry budget", async () => {
+	let attempts = 0;
+	const alwaysLocked = async () => {
+		attempts += 1;
+		const error = new Error("simulated persistent handle lock");
+		error.code = "EBUSY";
+		throw error;
+	};
+	await assert.rejects(
+		() => renameWithTransientRetry("from", "to", { rename: alwaysLocked, attempts: 3, baseDelayMs: 1, sleep: () => Promise.resolve() }),
+		/simulated persistent handle lock/,
+	);
+	assert.equal(attempts, 3);
+});
+
+test("bundle publication never retries non-transient rename errors", async () => {
+	let attempts = 0;
+	const invalidPath = async () => {
+		attempts += 1;
+		const error = new Error("simulated invalid argument");
+		error.code = "EINVAL";
+		throw error;
+	};
+	await assert.rejects(
+		() => renameWithTransientRetry("from", "to", { rename: invalidPath, attempts: 5, baseDelayMs: 1, sleep: () => Promise.resolve() }),
+		/simulated invalid argument/,
+	);
+	assert.equal(attempts, 1);
 });
 
 test("Windows source publication rolls back a prior bundle when final directory swap fails", async () => {

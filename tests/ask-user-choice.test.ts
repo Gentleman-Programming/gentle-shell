@@ -291,6 +291,8 @@ test("ask_user_choice retains native rendered hit testing for mouse selection", 
 					assert.equal(press?.focus, true);
 					assert.equal(completed, undefined, "press focuses and selects but never answers");
 					component.handleMouse?.(event("click", "left", secondRow));
+					assert.equal(completed, undefined, "first completed click only selects");
+					component.handleMouse?.(event("press", "left", secondRow));
 					component.handleMouse?.(event("click", "left", secondRow));
 					component.handleInput("\r");
 					return completed;
@@ -400,6 +402,19 @@ test("ask_user_choice activates an opt-in custom response from the Other row poi
 				});
 				assert.equal(component.handleMouse?.(event("press"))?.focus, true);
 				component.handleMouse?.(event("click"));
+				assert.doesNotMatch(component.render(80).join("\n"), /Custom response/);
+				component.handleInput("\r");
+				assert.match(component.render(80).join("\n"), /Custom response/);
+				component.handleInput("\x1b");
+				assert.match(component.render(80).join("\n"), /Other…/);
+				component.handleMouse?.(event("press"));
+				component.handleMouse?.(event("release"));
+				component.handleMouse?.(event("click"));
+				assert.doesNotMatch(component.render(80).join("\n"), /Custom response/, "keyboard confirmation consumes the prior pointer selection");
+				assert.equal(completed, undefined);
+				component.handleMouse?.(event("press"));
+				component.handleMouse?.(event("click"));
+				assert.match(component.render(80).join("\n"), /Custom response/);
 				component.handleInput("pointer response");
 				component.handleInput("\r");
 				return completed;

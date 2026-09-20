@@ -196,7 +196,7 @@ export default function askUserChoice(pi: ExtensionAPI): void {
 						selectedText: (text) => theme.fg("accent", text),
 						description: (text) => theme.fg("muted", text),
 						hoverBackground: (text) => theme.bg("toolPendingBg", text),
-					}, keybindings);
+					}, keybindings, { confirmOnSecondClick: true });
 					let completed = false;
 					const finish = (result: ChoiceResult | undefined) => {
 						if (completed) return;

@@ -535,9 +535,12 @@ interface BoundedRowSection {
 	tail?: boolean;
 }
 
-// Cache wrapped lines per stable tool-result object: pi re-renders every visible
-// card each frame, so re-tokenizing the full output text per pass is pure waste.
-const boundedRowsLineCache = new WeakMap<object, Array<{ text: string; width: number; lines: string[] } | undefined>>();
+// Cache the rendered preview slice per stable tool-result object: pi re-renders
+// every visible card each frame, so re-tokenizing the full output text per pass is
+// pure waste. Only the returned preview slice is retained, never the full wrapped
+// text, so an arbitrarily large output cannot pin every wrapped line for the
+// result object's lifetime.
+const boundedRowsLineCache = new WeakMap<object, Array<{ text: string; width: number; rows: number; tail: boolean; lines: string[] } | undefined>>();
 
 class BoundedRows implements Component {
 	private readonly sections: readonly BoundedRowSection[];
@@ -554,16 +557,17 @@ class BoundedRows implements Component {
 		return this.sections.flatMap(({ text, rows, tail = false }, index) => {
 			if (rows <= 0) return [];
 			const hit = cache?.[index];
-			if (hit && hit.text === text && hit.width === width) {
-				return tail ? hit.lines.slice(-rows) : hit.lines.slice(0, rows);
+			if (hit && hit.text === text && hit.width === width && hit.rows === rows && hit.tail === tail) {
+				return [...hit.lines];
 			}
 			const rendered = new Text(text, 0, 0).render(width);
+			const sliced = tail ? rendered.slice(-rows) : rendered.slice(0, rows);
 			if (this.cacheKey) {
 				const slot = boundedRowsLineCache.get(this.cacheKey) ?? [];
-				slot[index] = { text, width, lines: rendered };
+				slot[index] = { text, width, rows, tail, lines: sliced };
 				boundedRowsLineCache.set(this.cacheKey, slot);
 			}
-			return tail ? rendered.slice(-rows) : rendered.slice(0, rows);
+			return [...sliced];
 		});
 	}
 

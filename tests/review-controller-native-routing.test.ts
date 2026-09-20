@@ -959,6 +959,33 @@ test("ordinary START binds the native workspace candidate and returns the native
 	assert.equal(startCalls, 1);
 });
 
+test("ordinary START materializes an excluded-untracked candidate exactly once before native START", async (t) => {
+	const cwd = repository(t);
+	writeFileSync(join(cwd, "unrelated.md"), "not part of the review\n");
+	const target = startStatus(cwd, undefined, []);
+	const candidateViews = new CandidateViewRegistry();
+	t.after(() => candidateViews.cleanupAll());
+	const creation = t.mock.method(candidateViews, "createOrReuse");
+	let startCalls = 0;
+	const native = {
+		targetStatus: async () => target,
+		start: async () => {
+			startCalls += 1;
+			return { lineageId: "excluded-untracked-start", state: "reviewing", riskLevel: "low", selectedLenses: [], changedFiles: 1, changedLines: 1, correctionBudget: 1, action: "created", lensesRequired: false, riskReasons: [], raw: {} };
+		},
+	} as unknown as NativeReviewCli;
+
+	const result = await __testing.executeReviewControllerOperation(
+		{ operation: "start", input: JSON.stringify({ mode: "ordinary" }) },
+		cwd, native, undefined, candidateViews,
+	);
+
+	assert.equal(result.operation, "start");
+	assert.equal(creation.mock.callCount(), 1);
+	assert.deepEqual(creation.mock.calls[0]!.arguments[0].intendedUntracked, []);
+	assert.equal(startCalls, 1);
+});
+
 test("ordinary START preserves sanitized foreign diagnostics through one ambiguous reconciliation", async (t) => {
 	const cwd = repository(t);
 	const target = startStatus(cwd);

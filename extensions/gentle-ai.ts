@@ -8327,11 +8327,13 @@ async function executeReviewControllerOperation(
 				// native START are resolved, and re-derive the target for that range,
 				// so all three agree on one base-diff identity. Adopting the offer
 				// later left the workspace target and the base-diff candidate view
-				// disagreeing, and START failed with identity-mismatch. Both an
-				// explicit caller baseRef and any START with an untracked selection in
-				// play keep today's single-STATUS flow; only an adopted offer pays the
-				// second read-only STATUS.
-				if (canonicalBaseRef === undefined && untrackedSelection.untrackedScope === undefined && untrackedSubmission === undefined) {
+				// disagreeing, and START failed with identity-mismatch. An explicit
+				// caller baseRef still wins (it already is the adopted range), but an
+				// in-play untracked selection now also pays this second read-only
+				// STATUS: the renegotiated target is a base-diff projection, so the
+				// candidate view must be materialized WITH the offered base instead of
+				// the base-less view that tripped candidate-target-projection-drift.
+				if (canonicalBaseRef === undefined) {
 					const offeredBaseRef = offeredCommittedRangeBaseRef(target);
 					if (offeredBaseRef !== undefined) {
 						const renegotiated = await negotiatedStatusForHostTransport(nativeReviewCli, {
@@ -8339,6 +8341,8 @@ async function executeReviewControllerOperation(
 							...(parameters.lineageId === undefined ? {} : { lineageId: parameters.lineageId }),
 							baseRef: offeredBaseRef,
 							committedOnly: true,
+							...(untrackedSelection.untrackedScope === undefined ? {} : untrackedSelection),
+							...(untrackedSubmission === undefined ? {} : { intendedUntrackedSelection: untrackedSubmission }),
 							...(signal === undefined ? {} : { signal }),
 						}, retainedUntrackedSelections, defaultCwd);
 						if (renegotiated.transport !== undefined) return hostTransportUnavailable(parameters.operation, renegotiated.transport);

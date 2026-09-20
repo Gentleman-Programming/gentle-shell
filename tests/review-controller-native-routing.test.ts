@@ -986,6 +986,65 @@ test("ordinary START materializes an excluded-untracked candidate exactly once b
 	assert.equal(startCalls, 1);
 });
 
+test("ordinary START adopts the offered committed-range base while an untracked selection is in play", async (t) => {
+	// Live-reproduced blocker (gentle-pi#874): the committed-range adoption was
+	// skipped whenever an untracked selection was in play, so the provider's
+	// base-diff projection was compared against a base-less candidate view and
+	// assertNativeStartCandidateBinding failed with
+	// candidate-target-projection-drift before native START ever ran. An in-play
+	// selection must still pay the second read-only STATUS and materialize the
+	// candidate view WITH the offered base.
+	const cwd = repository(t);
+	// Commit the candidate change so a real committed range exists: the offered
+	// base commit's tree is the projection baseTree and the committed changed
+	// path is the candidate scope.
+	execFileSync("git", ["add", "tracked.txt"], { cwd });
+	execFileSync("git", ["-c", "user.name=Routing Test", "-c", "user.email=routing@example.invalid", "commit", "-m", "candidate"], { cwd });
+	const baseRef = execFileSync("git", ["rev-parse", "HEAD~1"], { cwd, encoding: "utf8" }).trim();
+	const selection = { untrackedScope: "exclude", expectedUntrackedInventory: "inventory-sha256", intendedUntracked: [] as string[] };
+	const offered = startStatus(cwd);
+	offered.nextTransition = {
+		kind: "execute",
+		reasonCode: "start_required",
+		execute: {
+			operation: "review.start",
+			arguments: [{ name: "base-ref", value: baseRef }, { name: "committed-only", value: "true" }],
+			preconditions: [],
+			binding: {},
+		},
+	} as unknown as ReviewStatusV3["nextTransition"];
+	const adopted = startStatus(cwd, baseRef, []);
+	const requests: Array<Record<string, unknown>> = [];
+	const candidateViews = new CandidateViewRegistry();
+	t.after(() => candidateViews.cleanupAll());
+	const creation = t.mock.method(candidateViews, "createOrReuse");
+	let startCalls = 0;
+	const native = {
+		targetStatus: async (request: Record<string, unknown>) => {
+			requests.push(request);
+			return requests.length === 1 ? offered : adopted;
+		},
+		start: async () => {
+			startCalls += 1;
+			return { lineageId: "adopted-base-untracked", state: "reviewing", riskLevel: "low", selectedLenses: [], changedFiles: 1, changedLines: 1, correctionBudget: 1, action: "created", lensesRequired: false, riskReasons: [], raw: {} };
+		},
+	} as unknown as NativeReviewCli;
+
+	const result = await __testing.executeReviewControllerOperation(
+		{ operation: "start", input: JSON.stringify({ mode: "ordinary", ...selection }) },
+		cwd, native, undefined, candidateViews,
+	);
+
+	assert.equal(result.operation, "start");
+	assert.deepEqual(requests, [
+		{ cwd, agent: "pi", ...selection },
+		{ cwd, agent: "pi", baseRef, committedOnly: true, ...selection },
+	]);
+	assert.equal(creation.mock.callCount(), 1);
+	assert.equal(creation.mock.calls[0]!.arguments[0].baseRef, baseRef, "the candidate view adopts the offered base");
+	assert.equal(startCalls, 1, "native START is reached exactly once without drift");
+});
+
 test("ordinary START preserves sanitized foreign diagnostics through one ambiguous reconciliation", async (t) => {
 	const cwd = repository(t);
 	const target = startStatus(cwd);

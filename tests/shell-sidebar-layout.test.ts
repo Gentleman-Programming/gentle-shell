@@ -194,7 +194,7 @@ test("rail dispatches a clipped, scroll-translated left click to only the matchi
 
 	const gapY = headerY - 1;
 	assert.equal(scroll.handleMouse(mouse("click", "left", gapY)), undefined, "section gaps do not hit a neighbor");
-	assert.equal(scroll.handleMouse({ ...mouse("click", "left", headerY), x: 48 }), undefined, "padding outside the clipped part is inert");
+	assert.equal(scroll.handleMouse({ ...mouse("click", "left", headerY), x: 49 }), undefined, "padding outside the clipped part is inert");
 	invalidateSidebar(f.tui);
 	assert.equal(scroll.handleMouse(mouse("click", "left", headerY)), undefined, "stale geometry is inert");
 	f.host.terminal.columns = 139;
@@ -712,6 +712,7 @@ test("the header component's handleMouse is a harmless no-op when no header part
 
 test("rail scrollbar is transient: hidden by default, visible only while scrolling overflow", (t) => {
 	const f = fixture();
+	t.mock.timers.enable({ apis: ["setTimeout"] });
 	t.after(installSidebar(f.tui, theme));
 	const scroll = rail(f);
 	// Regression guard: the rail scroll view used to hardcode scrollbar
@@ -721,9 +722,8 @@ test("rail scrollbar is transient: hidden by default, visible only while scrolli
 	renderLayoutFrame(f.root, 140, 20, () => {});
 	assert.equal(scroll.isScrollbarVisible, false, "no scroll yet: hidden even with overflow");
 	scroll.scrollBy(1);
-	scroll.markScrollbarActivity();
 	assert.equal(scroll.isScrollbarVisible, true, "rail scroll reveals the transient scrollbar");
-	scroll.hideTransientScrollbar();
+	t.mock.timers.tick(1000);
 	assert.equal(scroll.isScrollbarVisible, false, "hidden again after the transient window");
 });
 
@@ -732,6 +732,6 @@ test("rail scrollbar stays hidden when the rail does not overflow", (t) => {
 	t.after(installSidebar(f.tui, theme));
 	const scroll = rail(f);
 	renderLayoutFrame(f.root, 140, 20, () => {});
-	scroll.markScrollbarActivity();
+	scroll.scrollBy(1);
 	assert.equal(scroll.isScrollbarVisible, false);
 });

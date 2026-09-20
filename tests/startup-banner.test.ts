@@ -272,7 +272,11 @@ for (const showRose of [false, true]) for (const showTextLogo of [false, true]) 
 			t.mock.timers.tick(150);
 			const minimal = stripAnsi(header!.render(80).join("\n"));
 			assert.doesNotMatch(minimal, /[\u2800-\u28ff]/);
-			assert.equal(/[▒▄▀█]/.test(minimal), showTextLogo);
+			assert.equal(/✿ Gentle Shell ✿/.test(minimal), showTextLogo);
+			if (showTextLogo) {
+				const wideMinimal = stripAnsi(header!.render(160).join("\n"));
+				assert.equal(/[▒▄▀█]/.test(wideMinimal), true);
+			}
 			assert.deepEqual(writes, [], "Pi owns stdout during startup and resize");
 		} finally {
 			shutdown!();

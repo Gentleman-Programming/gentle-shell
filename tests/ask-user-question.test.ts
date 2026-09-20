@@ -191,7 +191,8 @@ test("ask_user_question commits a single-select answer end-to-end", async () => 
 
 	const result = await run(tool, { questions: single() }, tuiContext(["\r"], rendered));
 
-	assert.match(rendered.value, /\[1\/1\] Proceed/);
+	assert.match(rendered.value, /\[1\/1\]/);
+	assert.match(rendered.value, /▸ Proceed/);
 	assert.match(rendered.value, /Alpha/);
 	assert.equal(result.content[0]?.text, "1. Proceed? — Alpha");
 	assert.deepEqual(result.details.answers, [
@@ -225,6 +226,41 @@ test("ask_user_question mounts through ctx.ui.custom without an overlay option",
 	await run(tool, { questions: single() }, ctx);
 
 	assert.equal(customArgCount, 1, "a dock swap passes the factory only; no overlay options");
+});
+
+test("ask_user_question mounts exactly one active question and switches with Tab", async () => {
+	const { tool } = registerQuestionTool();
+	const questions = [
+		{ question: "First?", header: "First", options: [option("Alpha"), option("Beta")] },
+		{ question: "Second?", header: "Second", options: [option("Gamma"), option("Delta")] },
+	];
+	let component: Renderable | undefined;
+	const pending = run(tool, { questions }, {
+		mode: "tui",
+		ui: {
+			custom: (factory: CustomFactory) => new Promise((resolve) => {
+				component = factory({ requestRender() {} }, theme, {}, resolve);
+			}),
+		},
+	});
+
+	assert.ok(component, "the tool mounts the questionnaire component");
+	const first = component!.render(100).join("\n");
+	assert.match(first, /\[1\/2\]/);
+	assert.match(first, /▸ First/);
+	assert.match(first, /❯ Alpha/);
+	assert.doesNotMatch(first, /Gamma/);
+	assert.doesNotMatch(first, /Second\?/);
+
+	component!.handleInput?.("\t");
+	const second = component!.render(100).join("\n");
+	assert.match(second, /\[2\/2\]/);
+	assert.match(second, /▸ Second/);
+	assert.match(second, /❯ Gamma/);
+	assert.doesNotMatch(second, /First\?/);
+
+	component!.handleInput?.("\x1b"); // cancel to settle the tool
+	await pending;
 });
 
 test("ask_user_question echoes an option preview beside the answer", async () => {
@@ -268,6 +304,28 @@ test("ask_user_question commits a free-text custom answer", async () => {
 	assert.deepEqual(result.details.answers, [
 		{ questionIndex: 0, question: "Proceed?", kind: "custom", answer: "custom text" },
 	]);
+});
+
+test("ask_user_question keeps toggled options in a multiSelect custom answer", async () => {
+	const { tool } = registerQuestionTool();
+	const questions = [
+		{ question: "Pick?", header: "Pick", options: [option("One"), option("Two")], multiSelect: true },
+	];
+
+	// Toggle One, move to the custom row, open the editor, type, and submit.
+	const result = await run(
+		tool,
+		{ questions },
+		tuiContext([" ", "\x1b[B", "\x1b[B", "\r", "free note", "\r"]),
+	);
+
+	assert.equal(result.content[0]?.text, "1. Pick? — (custom) free note — selected: One");
+	assert.deepEqual(result.details.answers, [
+		{ questionIndex: 0, question: "Pick?", kind: "custom", answer: "free note", selected: ["One"] },
+	]);
+
+	const rendered = tool.renderResult(result, { expanded: false }, theme).render(200).join("\n");
+	assert.equal(rendered.trimEnd(), "✓ Pick? — (custom) free note — selected: One");
 });
 
 test("ask_user_question reports cancellation without answers", async () => {

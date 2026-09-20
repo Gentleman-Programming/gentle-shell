@@ -52,6 +52,22 @@ function unavailableResult(): QuestionnaireToolResult {
 }
 
 /**
+ * Human-readable body for one answer. A custom answer on a multiSelect
+ * question keeps the toggled options, so the text must name them explicitly:
+ * the free-text value alone would silently drop the user's selections. Plain
+ * custom answers (no selections) stay concise.
+ */
+function answerBody(answer: AnswerRow): string {
+	if (answer.kind === "multi") return `selected: ${(answer.selected ?? []).join(", ")}`;
+	if (answer.kind === "custom") {
+		const body = `(custom) ${answer.answer ?? ""}`;
+		const selected = answer.selected ?? [];
+		return selected.length > 0 ? `${body} — selected: ${selected.join(", ")}` : body;
+	}
+	return answer.answer ?? "";
+}
+
+/**
  * Compact LLM-facing transcript of the committed answers. Each row keeps the
  * original one-based question index so a partially answered questionnaire
  * (the last question committed early) still reads in order.
@@ -61,15 +77,7 @@ function answersText(answers: AnswerRow[]): string {
 	const lines: string[] = [];
 	for (const answer of answers) {
 		const prefix = `${answer.questionIndex + 1}. ${answer.question}`;
-		if (answer.kind === "multi") {
-			lines.push(`${prefix} — selected: ${(answer.selected ?? []).join(", ")}`);
-		}
-		else if (answer.kind === "custom") {
-			lines.push(`${prefix} — (custom) ${answer.answer ?? ""}`);
-		}
-		else {
-			lines.push(`${prefix} — ${answer.answer ?? ""}`);
-		}
+		lines.push(`${prefix} — ${answerBody(answer)}`);
 		if (answer.preview !== undefined) lines.push(`   selected preview: ${answer.preview}`);
 	}
 	return lines.join("\n");
@@ -193,7 +201,7 @@ export default function askUserQuestion(pi: ExtensionAPI): void {
 			if (answers.length === 0) return new Text(theme.fg("warning", "No answers"), 0, 0);
 			const lines = answers.map((answer) => {
 				if (answer.kind === "multi") return theme.fg("success", `✓ ${answer.question} — ${(answer.selected ?? []).join(", ")}`);
-				if (answer.kind === "custom") return theme.fg("success", `✓ ${answer.question} — (custom) ${answer.answer ?? ""}`);
+				if (answer.kind === "custom") return theme.fg("success", `✓ ${answer.question} — ${answerBody(answer)}`);
 				return theme.fg("success", `✓ ${answer.question} — ${answer.answer ?? ""}`);
 			});
 			return new Text(lines.join("\n"), 0, 0);

@@ -5,6 +5,7 @@ import {
 	matchesKey,
 	Text,
 	visibleWidth,
+	type Focusable,
 	type KeybindingsManager,
 	type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
@@ -12,6 +13,12 @@ import { CUSTOM_ROW_LABEL, type QuestionData } from "./schema.ts";
 
 /** Minimum terminal width at which the preview pane splits beside the list. */
 export const MIN_PREVIEW_WIDTH = 80;
+
+/** Fraction of the width given to the option column when a preview pane is shown. */
+const PREVIEW_SPLIT = 0.45;
+
+/** Two-space gutter between the option column and the preview pane. No divider frame. */
+const PREVIEW_GAP = "  ";
 
 /** Theme surface used by the questionnaire, compatible with the Pi TUI theme. */
 export interface QuestionnaireTheme {
@@ -48,6 +55,7 @@ interface QuestionState {
 	cursor: number;
 	toggled: Set<number>;
 	answer: AnswerRow | undefined;
+	customDraft: string;
 }
 
 interface LineOwner {
@@ -71,14 +79,24 @@ class CustomTextEditor extends Container {
 		this.keybindings = keybindings;
 		this.onSubmit = onSubmit;
 		this.onCancel = onCancel;
-		this.input.focused = true;
+		this.input.focused = false;
 		this.addChild(new Text("Custom response", 1, 0));
 		this.addChild(this.input);
-		this.addChild(new Text("Enter to submit • Esc to return", 1, 0));
+		this.addChild(new Text("Enter to submit • Esc to return to choices", 1, 0));
 	}
 
-	reset(): void {
-		this.input.setValue("");
+	setFocused(focused: boolean): void {
+		this.input.focused = focused;
+	}
+
+	getValue(): string {
+		return this.input.getValue();
+	}
+
+	setValue(value: string): void {
+		this.input.setValue(value);
+		// Place the caret at the end of a restored draft so typing appends to it.
+		this.input.handleInput("\x1b[F");
 		this.invalidate();
 	}
 
@@ -104,14 +122,20 @@ class CustomTextEditor extends Container {
 }
 
 /**
- * A single questionnaire view that renders every question as a vertical stack.
+ * One-question-at-a-time questionnaire.
+ *
+ * The whole questionnaire is represented as a compact tab strip: exactly one
+ * question body is rendered at a time, and Tab/Shift-Tab switches the active
+ * question while each question keeps its own cursor, toggles, and custom-text
+ * draft. This keeps the component's height bounded for one to four questions
+ * so it fits the native dock area instead of overflowing the viewport.
  *
  * Native dock-swap component: it is a {@link Container}, never an overlay, so
- * the transcript stays scrollable while it is focused. It owns keyboard and
- * pointer handling for all questions and completes through the `onComplete`
- * callback in the same shape as a `ctx.ui.custom` factory.
+ * the transcript stays scrollable while it is focused. Keyboard handling uses
+ * the public Pi TUI input protocol (`matchesKey()` and the injected
+ * `KeybindingsManager`), matching how the shipped agent views read input.
  */
-export class QuestionnaireView extends Container {
+export class QuestionnaireView extends Container implements Focusable {
 	private readonly questions: QuestionData[];
 	private readonly theme: QuestionnaireTheme;
 	private readonly keybindings: KeybindingsManager | undefined;
@@ -123,6 +147,7 @@ export class QuestionnaireView extends Container {
 	private completed = false;
 	private result: QuestionnaireResult | undefined;
 	private lineOwners: Array<LineOwner | undefined> = [];
+	private _focused = false;
 
 	constructor(options: QuestionnaireViewOptions) {
 		super();
@@ -130,7 +155,12 @@ export class QuestionnaireView extends Container {
 		this.theme = options.theme;
 		this.keybindings = options.keybindings;
 		this.onComplete = options.onComplete;
-		this.states = options.questions.map(() => ({ cursor: 0, toggled: new Set<number>(), answer: undefined }));
+		this.states = options.questions.map(() => ({
+			cursor: 0,
+			toggled: new Set<number>(),
+			answer: undefined,
+			customDraft: "",
+		}));
 		this.editor = new CustomTextEditor(
 			options.keybindings,
 			(value) => this.submitCustom(value),
@@ -138,15 +168,42 @@ export class QuestionnaireView extends Container {
 		);
 	}
 
+	/** Focusable: propagate focus so the free-text input gets the IME cursor. */
+	get focused(): boolean {
+		return this._focused;
+	}
+
+	set focused(value: boolean) {
+		this._focused = value;
+		this.editor.setFocused(value);
+		this.invalidate();
+	}
+
 	/** Current committed result. Safe to call before completion. */
 	getResult(): QuestionnaireResult {
 		return this.result ?? { cancelled: false, answers: this.collectedAnswers() };
+	}
+
+	/** Active question index; exposed for tests and for callers that drive the view. */
+	get activeQuestion(): number {
+		return this.focusedQuestion;
 	}
 
 	handleInput(data: string): void {
 		if (this.completed || isKeyRelease(data)) return;
 
 		if (this.editingQuestion !== undefined) {
+			// Tab still switches questions while editing; the draft is preserved.
+			if (this.matchesTab(data, false)) {
+				this.closeEditor();
+				this.moveFocus(1);
+				return;
+			}
+			if (this.matchesTab(data, true)) {
+				this.closeEditor();
+				this.moveFocus(-1);
+				return;
+			}
 			this.editor.handleInput(data);
 			return;
 		}
@@ -176,10 +233,12 @@ export class QuestionnaireView extends Container {
 			return;
 		}
 
-		const question = this.questions[this.focusedQuestion];
-		if (question?.multiSelect && matchesKey(data, "space")) {
-			this.toggleCursor();
-			return;
+		if (matchesKey(data, "space")) {
+			const question = this.questions[this.focusedQuestion];
+			if (question?.multiSelect) {
+				this.toggleCursor();
+				return;
+			}
 		}
 
 		if (this.matches(data, "tui.select.confirm")) {
@@ -200,8 +259,16 @@ export class QuestionnaireView extends Container {
 		}
 
 		if (event.type === "click") {
+			const question = this.questions[owner.questionIndex];
 			this.focusRow(owner.questionIndex, owner.rowIndex);
-			this.commit();
+			// A multiSelect option toggles in place; only single-select (or the
+			// custom row, which opens the editor) commits on click.
+			if (question?.multiSelect && owner.rowIndex < question.options.length) {
+				this.toggleCursor();
+			}
+			else {
+				this.commit();
+			}
 			return { handled: true as const, render: true, target: this.mouseTarget(event) };
 		}
 
@@ -209,11 +276,45 @@ export class QuestionnaireView extends Container {
 	}
 
 	override render(width: number): string[] {
-		const preview = this.currentPreview();
-		if (preview !== undefined && width >= MIN_PREVIEW_WIDTH) {
-			return this.renderWithPreview(width, preview);
+		const viewport = Math.max(1, width);
+		const lines: string[] = [];
+		const owners: Array<LineOwner | undefined> = [];
+		const push = (text: string, owner?: LineOwner) => {
+			for (const line of this.wrap(text, viewport)) {
+				lines.push(line);
+				owners.push(owner);
+			}
+		};
+
+		if (this.questions.length === 0) {
+			this.lineOwners = [];
+			return [];
 		}
-		const { lines, owners } = this.renderQuestions(width, true);
+
+		push(this.renderTabs());
+		push("");
+
+		const preview = this.currentPreview();
+		if (preview !== undefined && viewport >= MIN_PREVIEW_WIDTH) {
+			const leftWidth = Math.max(1, Math.floor(viewport * PREVIEW_SPLIT));
+			const rightWidth = Math.max(1, viewport - leftWidth - PREVIEW_GAP.length);
+			const left = this.renderBody(leftWidth, false);
+			const right = this.wrap(this.theme.fg("dim", preview), rightWidth);
+			const rows = Math.max(left.lines.length, right.length);
+			for (let index = 0; index < rows; index++) {
+				lines.push(`${padTo(left.lines[index] ?? "", leftWidth)}${PREVIEW_GAP}${right[index] ?? ""}`);
+				owners.push(left.owners[index]);
+			}
+		}
+		else {
+			const body = this.renderBody(viewport, preview !== undefined);
+			lines.push(...body.lines);
+			owners.push(...body.owners);
+		}
+
+		push("");
+		push(this.hint());
+
 		this.lineOwners = owners;
 		return lines;
 	}
@@ -221,76 +322,82 @@ export class QuestionnaireView extends Container {
 	override invalidate(): void {
 		this.lineOwners = [];
 		super.invalidate();
+		this.editor.setFocused(this._focused);
 	}
 
-	private renderWithPreview(width: number, preview: string): string[] {
-		const separator = " │ ";
-		const leftWidth = Math.max(1, Math.floor(width * 0.45));
-		const rightWidth = Math.max(1, width - leftWidth - separator.length);
-		const { lines: left, owners } = this.renderQuestions(leftWidth, false);
-		const right = this.wrapPreview(preview, rightWidth);
-		const rows = Math.max(left.length, right.length);
-		const out: string[] = [];
-		this.lineOwners = [];
-		for (let index = 0; index < rows; index++) {
-			out.push(`${padTo(left[index] ?? "", leftWidth)}${separator}${right[index] ?? ""}`);
-			this.lineOwners.push(owners[index]);
-		}
-		return out;
+	/** Compact tab strip: every question is a chip, exactly one is active. */
+	private renderTabs(): string {
+		const total = this.questions.length;
+		const progress = this.theme.fg("dim", `[${this.focusedQuestion + 1}/${total}]`);
+		const chips = this.questions.map((question, index) => {
+			const answered = this.states[index]?.answer !== undefined;
+			const label = `${answered ? "✓ " : ""}${question.header}`;
+			return index === this.focusedQuestion
+				? this.accent(`▸ ${label}`)
+				: this.theme.fg("muted", `  ${label}`);
+		});
+		return `${progress}  ${chips.join("   ")}`;
 	}
 
-	private renderQuestions(width: number, inlinePreview: boolean): { lines: string[]; owners: Array<LineOwner | undefined> } {
+	/** Body for the active question only. */
+	private renderBody(width: number, inlinePreview: boolean): { lines: string[]; owners: Array<LineOwner | undefined> } {
 		const lines: string[] = [];
 		const owners: Array<LineOwner | undefined> = [];
 		const push = (text: string, owner?: LineOwner) => {
-			for (const line of new Text(text, 0, 0).render(width)) {
+			for (const line of this.wrap(text, width)) {
 				lines.push(line);
 				owners.push(owner);
 			}
 		};
 
-		for (const [questionIndex, question] of this.questions.entries()) {
-			if (questionIndex > 0) push("");
-			const headerOwner: LineOwner = { questionIndex, rowIndex: -1 };
-			push(this.theme.fg("accent", `[${questionIndex + 1}/${this.questions.length}] ${question.header}`), headerOwner);
-			push(this.accent(question.question), headerOwner);
+		const question = this.questions[this.focusedQuestion];
+		const state = this.states[this.focusedQuestion];
+		if (!question || !state) return { lines, owners };
 
-			if (this.editingQuestion === questionIndex) {
-				for (const line of this.editor.render(width)) {
-					lines.push(line);
-					owners.push(headerOwner);
-				}
-				continue;
+		const headerOwner: LineOwner = { questionIndex: this.focusedQuestion, rowIndex: -1 };
+		push(this.accent(question.question), headerOwner);
+
+		if (this.editingQuestion === this.focusedQuestion) {
+			for (const line of this.editor.render(width)) {
+				lines.push(line);
+				owners.push(headerOwner);
 			}
-
-			const state = this.states[questionIndex];
-			const isFocused = questionIndex === this.focusedQuestion;
-			const customIndex = question.options.length;
-
-			for (const [optionIndex, option] of question.options.entries()) {
-				const owner: LineOwner = { questionIndex, rowIndex: optionIndex };
-				const cursor = isFocused && state.cursor === optionIndex ? this.theme.fg("accent", "❯ ") : "  ";
-				const marker = question.multiSelect ? `${state.toggled.has(optionIndex) ? "[x]" : "[ ]"} ` : "";
-				push(`${cursor}${marker}${option.label}`, owner);
-				push(`    ${this.theme.fg("dim", option.description)}`, owner);
-				if (inlinePreview && isFocused && state.cursor === optionIndex && option.preview !== undefined) {
-					for (const line of this.wrapPreview(option.preview, Math.max(1, width - 4))) {
-						push(`    ${line}`, owner);
-					}
-				}
-			}
-
-			const customOwner: LineOwner = { questionIndex, rowIndex: customIndex };
-			const customCursor = isFocused && state.cursor === customIndex ? this.theme.fg("accent", "❯ ") : "  ";
-			const customMarker = question.multiSelect ? `${state.toggled.has(customIndex) ? "[x]" : "[ ]"} ` : "";
-			push(`${customCursor}${customMarker}${CUSTOM_ROW_LABEL}`, customOwner);
+			return { lines, owners };
 		}
+
+		const customIndex = question.options.length;
+		for (const [optionIndex, option] of question.options.entries()) {
+			const owner: LineOwner = { questionIndex: this.focusedQuestion, rowIndex: optionIndex };
+			const cursor = state.cursor === optionIndex ? this.accent("❯ ") : "  ";
+			const marker = question.multiSelect ? `${state.toggled.has(optionIndex) ? "[x]" : "[ ]"} ` : "";
+			push(`${cursor}${marker}${option.label}`, owner);
+			push(`    ${this.theme.fg("dim", option.description)}`, owner);
+			if (inlinePreview && state.cursor === optionIndex && option.preview !== undefined) {
+				for (const line of this.wrap(this.theme.fg("dim", option.preview), Math.max(1, width - 4))) {
+					push(`    ${line}`, owner);
+				}
+			}
+		}
+
+		const customOwner: LineOwner = { questionIndex: this.focusedQuestion, rowIndex: customIndex };
+		const customCursor = state.cursor === customIndex ? this.accent("❯ ") : "  ";
+		const customDone = state.answer?.kind === "custom" ? "✓ " : "";
+		push(`${customCursor}${customDone}${CUSTOM_ROW_LABEL}`, customOwner);
 
 		return { lines, owners };
 	}
 
-	private wrapPreview(preview: string, width: number): string[] {
-		return new Text(this.theme.fg("dim", preview), 0, 0).render(Math.max(1, width));
+	/** Bottom hint for the active question's interaction model. */
+	private hint(): string {
+		const question = this.questions[this.focusedQuestion];
+		const parts = ["↑↓ move"];
+		if (question?.multiSelect) parts.push("space toggle");
+		parts.push("enter select", "tab switch", "esc cancel");
+		return this.theme.fg("dim", parts.join(" · "));
+	}
+
+	private wrap(text: string, width: number): string[] {
+		return new Text(text, 0, 0).render(Math.max(1, width));
 	}
 
 	private accent(text: string): string {
@@ -324,8 +431,13 @@ export class QuestionnaireView extends Container {
 	}
 
 	private toggleCursor(): void {
+		const question = this.questions[this.focusedQuestion];
 		const state = this.states[this.focusedQuestion];
-		if (!state) return;
+		if (!question || !state) return;
+		if (state.cursor === question.options.length) {
+			this.openEditor(this.focusedQuestion);
+			return;
+		}
 		if (state.toggled.has(state.cursor)) state.toggled.delete(state.cursor);
 		else state.toggled.add(state.cursor);
 		this.invalidate();
@@ -348,26 +460,24 @@ export class QuestionnaireView extends Container {
 		if (!question || !state) return;
 		const customIndex = question.options.length;
 
+		if (state.cursor === customIndex) {
+			this.openEditor(this.focusedQuestion);
+			return;
+		}
+
 		if (question.multiSelect) {
-			if (state.toggled.has(customIndex)) {
-				this.openEditor(this.focusedQuestion);
-				return;
-			}
-			const toggled = [...state.toggled].filter((index) => index < customIndex).sort((a, b) => a - b);
+			const toggled = [...state.toggled]
+				.filter((index) => index < customIndex)
+				.sort((a, b) => a - b);
 			if (toggled.length === 0) return;
 			state.answer = {
 				questionIndex: this.focusedQuestion,
 				question: question.question,
 				kind: "multi",
 				answer: null,
-				selected: toggled.map((index) => question.options[index].label),
+				selected: toggled.map((index) => question.options[index]!.label),
 			};
 			this.afterCommit(this.focusedQuestion);
-			return;
-		}
-
-		if (state.cursor === customIndex) {
-			this.openEditor(this.focusedQuestion);
 			return;
 		}
 
@@ -384,28 +494,36 @@ export class QuestionnaireView extends Container {
 	}
 
 	private openEditor(questionIndex: number): void {
+		const state = this.states[questionIndex];
+		if (!state) return;
 		this.editingQuestion = questionIndex;
-		this.editor.reset();
+		this.editor.setValue(state.customDraft);
+		this.editor.setFocused(this._focused);
 		this.invalidate();
 	}
 
 	private closeEditor(): void {
 		if (this.editingQuestion === undefined) return;
+		const state = this.states[this.editingQuestion];
+		if (state) state.customDraft = this.editor.getValue();
 		this.editingQuestion = undefined;
-		this.editor.reset();
+		this.editor.setValue("");
+		this.editor.setFocused(false);
 		this.invalidate();
 	}
 
 	private submitCustom(value: string): void {
 		const questionIndex = this.editingQuestion;
 		if (questionIndex === undefined) return;
-		if (value.trim().length === 0) {
-			this.closeEditor();
-			return;
-		}
 		const question = this.questions[questionIndex];
 		const state = this.states[questionIndex];
 		if (!question || !state) {
+			this.closeEditor();
+			return;
+		}
+		if (value.trim().length === 0) {
+			// Whitespace-only is treated as empty: discard it so reopening is clean.
+			this.editor.setValue("");
 			this.closeEditor();
 			return;
 		}
@@ -413,7 +531,8 @@ export class QuestionnaireView extends Container {
 		const selected = [...state.toggled]
 			.filter((index) => index < customIndex)
 			.sort((a, b) => a - b)
-			.map((index) => question.options[index].label);
+			.map((index) => question.options[index]!.label);
+		state.customDraft = value;
 		state.answer = {
 			questionIndex,
 			question: question.question,
@@ -426,10 +545,14 @@ export class QuestionnaireView extends Container {
 	}
 
 	private afterCommit(questionIndex: number): void {
-		if (questionIndex === this.questions.length - 1 || this.states.every((state) => state.answer !== undefined)) {
+		if (this.states.every((state) => state.answer !== undefined)) {
 			this.finish({ cancelled: false, answers: this.collectedAnswers() });
 			return;
 		}
+		// Advance to the first unanswered question so a commit is visible and the
+		// tab strip keeps moving; committed answers stay reachable with Tab.
+		const next = this.states.findIndex((state) => state.answer === undefined);
+		if (next !== -1 && next !== questionIndex) this.focusedQuestion = next;
 		this.invalidate();
 	}
 

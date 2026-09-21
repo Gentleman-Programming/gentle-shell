@@ -7,6 +7,7 @@ import test from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
 import type { TUI, TuiMouseEvent } from "@earendil-works/pi-tui";
 import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, type GentlePromptEditor } from "../extensions/gentle-shell.ts";
+import { USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA } from "../lib/shell-usage.ts";
 import { CHANGE_STATUS } from "../lib/shell-changes.ts";
 import { sidebarState, type SidebarRail } from "../lib/shell-sidebar.ts";
 import type { ShellBarTheme } from "../lib/shell-bar.ts";
@@ -1710,6 +1711,240 @@ test("a provider switch refreshes the new provider inside the same window", asyn
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	assert.equal(calls.length, 2, "a provider switch is a reason to fetch, not to wait");
 	assert.equal(calls[1].url, "https://cloud-api.nan.builders/api/usage/quota");
+});
+
+// A generic hook: any extension can register a usage source for its own
+// provider on `pi.events`, and gentle-shell dispatches to it exactly like it
+// dispatches to the built-in Codex/NaN fetchers, without knowing the
+// provider's name ahead of time.
+
+function acmeSource(onFetch: (apiKey: string | undefined) => void, plan = "Acme cloud"): unknown {
+	return {
+		schema: USAGE_SOURCE_SCHEMA,
+		provider: "acme-cloud",
+		fetch: async (apiKey: string | undefined) => {
+			onFetch(apiKey);
+			return {
+				provider: "acme-cloud",
+				plan,
+				limits: [{ name: "acme-cloud", windows: [{ label: "week", usedPercent: 40, windowSeconds: 604_800, resetAt: null }], limitReached: false }],
+				fetchedAt: 0,
+			};
+		},
+	};
+}
+
+test("gentleShell fetches usage through a source registered before session start", async () => {
+	const { pi, handlers } = fakePi();
+	const seen: Array<string | undefined> = [];
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { now: () => 1_788_600_000_000 });
+	pi.events.emit(USAGE_SOURCE_EVENT, acmeSource((apiKey) => seen.push(apiKey)));
+	const { ctx, ui } = fakeContext({ token: "acme-token" });
+	(ctx as unknown as { model: { provider: string } }).model.provider = "acme-cloud";
+	await fire(handlers, "session_start", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.deepEqual(seen, ["acme-token"], "the registered fetch gets the api key modelRegistry resolves for its provider");
+	assert.match(renderFooter(ui), /acme-cloud week ▰▰▰▱▱▱▱▱ 40%/);
+});
+
+test("gentleShell forces one refresh when a usage source registers after session start for the active provider", async () => {
+	const { pi, handlers } = fakePi();
+	let calls = 0;
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { now: () => 1_788_600_000_000 });
+	const { ctx, ui } = fakeContext({ token: "acme-token" });
+	(ctx as unknown as { model: { provider: string } }).model.provider = "acme-cloud";
+	await fire(handlers, "session_start", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.doesNotMatch(renderFooter(ui), /acme-cloud/, "no source registered yet, nothing to show");
+
+	pi.events.emit(USAGE_SOURCE_EVENT, acmeSource(() => { calls += 1; }));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(calls, 1, "late registration for the active provider triggers one forced refresh, not a wait for the next turn");
+	assert.match(renderFooter(ui), /acme-cloud week ▰▰▰▱▱▱▱▱ 40%/);
+});
+
+test("a usage source registered for a different provider does not force a refresh", async () => {
+	const { pi, handlers } = fakePi();
+	let calls = 0;
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { now: () => 1_788_600_000_000 });
+	const { ctx, ui } = fakeContext({ token: "acme-token" });
+	(ctx as unknown as { model: { provider: string } }).model.provider = "openai-codex";
+	await fire(handlers, "session_start", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+
+	pi.events.emit(USAGE_SOURCE_EVENT, acmeSource(() => { calls += 1; }));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(calls, 0, "the active provider is codex, so an acme-cloud registration fetches nothing yet");
+	assert.doesNotMatch(renderFooter(ui), /acme-cloud/);
+});
+
+test("gentleShell shows the unsupported note for a provider with no built-in or registered source", async () => {
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { now: () => 1_788_600_000_000 });
+	const { ctx, ui } = fakeContext({ token: undefined });
+	(ctx as unknown as { model: { provider: string } }).model.provider = "acme-cloud";
+	await fire(handlers, "session_start", ctx);
+	const opened = commands.get("gentle:usage")!.handler("", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	const plain = ui.overlayView!.render(90).map(stripAnsi);
+	assert.match(plain[1], /✿ acme-cloud · no subscription usage for this provider/);
+	ui.closeOverlay?.();
+	await opened;
+});
+
+test("gentleShell ignores a malformed usage-source registration payload", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { now: () => 1_788_600_000_000 });
+	pi.events.emit(USAGE_SOURCE_EVENT, { schema: "wrong-schema", provider: "acme-cloud", fetch: async () => undefined });
+	pi.events.emit(USAGE_SOURCE_EVENT, { schema: USAGE_SOURCE_SCHEMA, provider: "acme-cloud", fetch: "not-a-function" });
+	pi.events.emit(USAGE_SOURCE_EVENT, "not-an-object");
+	pi.events.emit(USAGE_SOURCE_EVENT, undefined);
+	const { ctx, ui } = fakeContext({ token: undefined });
+	(ctx as unknown as { model: { provider: string } }).model.provider = "acme-cloud";
+	await fire(handlers, "session_start", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.doesNotMatch(renderFooter(ui), /acme-cloud/, "no malformed payload registered a usable source");
+});
+
+// A registered source is foreign code running inside a fire-and-forget
+// refresh (`void refreshUsage(...)`, both at session_start and on a late
+// registration): if its fetch rejects and nothing catches it, the rejection
+// is unhandled and, under Node's default policy, takes the whole process
+// down. The doc promises a foreign source is "ignored rather than crashing
+// the shell", so a throw must degrade exactly like a built-in fetcher's.
+test("a registered source's rejecting fetch never crashes the shell or poisons the store", async () => {
+	const { pi, handlers, commands } = fakePi();
+	let calls = 0;
+	const rejectingSource = () => ({
+		schema: USAGE_SOURCE_SCHEMA,
+		provider: "acme-cloud",
+		fetch: async () => {
+			calls += 1;
+			throw new Error("acme is down");
+		},
+	});
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { now: () => 1_788_600_000_000 });
+	const { ctx, ui } = fakeContext({ token: "acme-token" });
+	(ctx as unknown as { model: { provider: string } }).model.provider = "acme-cloud";
+
+	const unhandled: unknown[] = [];
+	const onUnhandled = (reason: unknown) => unhandled.push(reason);
+	process.on("unhandledRejection", onUnhandled);
+	try {
+		// Registered before session start: session_start's own fire-and-forget
+		// refresh dispatches straight to the rejecting fetch.
+		pi.events.emit(USAGE_SOURCE_EVENT, rejectingSource());
+		await fire(handlers, "session_start", ctx);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		assert.equal(calls, 1);
+		assert.doesNotMatch(renderFooter(ui), /acme-cloud/, "a rejecting fetch must never be recorded as a snapshot");
+
+		// A second, late registration for the already-active provider dispatches
+		// through the USAGE_SOURCE_EVENT handler's own fire-and-forget refresh.
+		pi.events.emit(USAGE_SOURCE_EVENT, rejectingSource());
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		assert.equal(calls, 2);
+		assert.doesNotMatch(renderFooter(ui), /acme-cloud/);
+	} finally {
+		process.off("unhandledRejection", onUnhandled);
+	}
+	assert.deepEqual(unhandled, [], "a foreign source's rejection must never surface as an unhandled rejection");
+
+	// The panel still explains itself with the pending note, never a crash,
+	// even through the awaited refresh openUsage runs on open.
+	const opened = commands.get("gentle:usage")!.handler("", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	const plain = ui.overlayView!.render(90).map(stripAnsi);
+	assert.match(plain[1], /✿ acme-cloud · no usage yet · r to fetch/);
+	ui.closeOverlay?.();
+	await opened;
+});
+
+// A registered source's resolved value is foreign code's own object: it must
+// be validated like any other parsed payload (never trusted to name the
+// provider it actually is, never trusted to be well-formed), and a source
+// that gets replaced mid-flight must never let its late, stale answer land
+// after the replacement already recorded its own.
+
+test("a registered source resolving usage for another provider is rejected without overwriting that provider's snapshot", async () => {
+	const { pi, handlers } = fakePi();
+	const { fetchFn } = fakeFetch(NAN_QUOTA_PAYLOAD);
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => 1_788_600_000_000 });
+	const { ctx, ui } = fakeContext({ token: "sk-nan-secret" });
+	(ctx as unknown as { model: { provider: string } }).model.provider = "nan";
+	await fire(handlers, "session_start", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.match(renderFooter(ui), /nan total ▰+▱+/, "the real nan snapshot recorded first");
+
+	(ctx as unknown as { model: { provider: string } }).model.provider = "acme-cloud";
+	pi.events.emit(USAGE_SOURCE_EVENT, {
+		schema: USAGE_SOURCE_SCHEMA,
+		provider: "acme-cloud",
+		fetch: async () => ({ provider: "nan", plan: undefined, limits: [], fetchedAt: 0 }),
+	});
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.doesNotMatch(renderFooter(ui), /acme-cloud/, "a resolution naming another provider must not surface as the active one");
+
+	(ctx as unknown as { model: { provider: string } }).model.provider = "nan";
+	assert.match(renderFooter(ui), /nan total ▰+▱+/, "the real nan snapshot must survive a mismatched acme-cloud resolution untouched");
+});
+
+test("gentleShell leaves the pending note when a registered source resolves a malformed usage", async () => {
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { now: () => 1_788_600_000_000 });
+	pi.events.emit(USAGE_SOURCE_EVENT, {
+		schema: USAGE_SOURCE_SCHEMA,
+		provider: "acme-cloud",
+		fetch: async () => ({ provider: "acme-cloud", plan: "Acme", fetchedAt: 0, limits: "nope" }),
+	});
+	const { ctx, ui } = fakeContext({ token: "acme-token" });
+	(ctx as unknown as { model: { provider: string } }).model.provider = "acme-cloud";
+	await fire(handlers, "session_start", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.doesNotMatch(renderFooter(ui), /acme-cloud/, "a malformed result must never be recorded");
+
+	const opened = commands.get("gentle:usage")!.handler("", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	const plain = ui.overlayView!.render(90).map(stripAnsi);
+	assert.match(plain[1], /✿ acme-cloud · no usage yet · r to fetch/);
+	ui.closeOverlay?.();
+	await opened;
+});
+
+test("a slow fetch from a replaced source never records after its replacement resolves", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { now: () => 1_788_600_000_000 });
+	const { ctx, ui } = fakeContext({ token: "acme-token" });
+	(ctx as unknown as { model: { provider: string } }).model.provider = "acme-cloud";
+
+	let resolveSlow!: (value: unknown) => void;
+	const slow = new Promise((resolve) => { resolveSlow = resolve; });
+	pi.events.emit(USAGE_SOURCE_EVENT, {
+		schema: USAGE_SOURCE_SCHEMA,
+		provider: "acme-cloud",
+		fetch: async () => {
+			await slow;
+			return { provider: "acme-cloud", plan: "Stale", fetchedAt: 0, limits: [{ name: "acme-cloud", limitReached: false, windows: [{ label: "week", usedPercent: 10, windowSeconds: 604_800, resetAt: null }] }] };
+		},
+	});
+	await fire(handlers, "session_start", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.doesNotMatch(renderFooter(ui), /acme-cloud/, "the slow fetch has not resolved yet");
+
+	// Replace the source before the slow fetch resolves; the late registration
+	// forces its own refresh, which resolves immediately.
+	pi.events.emit(USAGE_SOURCE_EVENT, {
+		schema: USAGE_SOURCE_SCHEMA,
+		provider: "acme-cloud",
+		fetch: async () => ({ provider: "acme-cloud", plan: "Fresh", fetchedAt: 0, limits: [{ name: "acme-cloud", limitReached: false, windows: [{ label: "week", usedPercent: 40, windowSeconds: 604_800, resetAt: null }] }] }),
+	});
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.match(renderFooter(ui), /acme-cloud week ▰▰▰▱▱▱▱▱ 40%/, "the replacement's own refresh recorded first");
+
+	// Now let the stale fetch resolve; it must never overwrite the fresh record.
+	resolveSlow(undefined);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.match(renderFooter(ui), /acme-cloud week ▰▰▰▱▱▱▱▱ 40%/, "the stale refresh must never record after being replaced");
 });
 
 test("gentleShell records SSE rate-limit headers from provider responses", async () => {

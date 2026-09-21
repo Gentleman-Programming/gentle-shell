@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
-import { initTheme, keyHint } from "@earendil-works/pi-coding-agent";
+import { initTheme } from "@earendil-works/pi-coding-agent";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -295,7 +295,6 @@ test("registered Gentle Review tools preserve result envelopes and redact collap
 	assert.deepEqual(result.details, visibleEnvelope);
 
 	const resultText = "safe result\x1b[31m\nlineage=secret body=private";
-	const expandHint = keyHint("app.tools.expand", "to expand");
 	for (const name of ["gentle_review", "gentle_review_scope", "gentle_review_capture"]) {
 		const tool = tools.get(name);
 		assert.equal(typeof tool?.renderResult, "function", `${name} must define result rendering`);
@@ -305,8 +304,9 @@ test("registered Gentle Review tools preserve result envelopes and redact collap
 			{ expanded: false, isPartial: false, isError: true },
 		]) {
 			const collapsed = renderComponent(tool.renderResult({ content: [{ type: "text", text: resultText }] }, options, lifecycleTheme, {}));
-			assert.match(cardBody(collapsed), /\d+ lines?\b/, `${name} collapsed output must contain one expand hint`);
-			assert.match(cardBody(collapsed), /\d+ lines?\b/, `${name} collapsed output must start with the hint`);
+			const collapsedBody = cardBody(collapsed);
+			assert.equal((collapsedBody.match(/\d+ lines?\b/g) ?? []).length, 1, `${name} collapsed output must contain one expand hint`);
+			assert.match(collapsedBody, /^<dim>\d+ lines?\b<\/dim>/, `${name} collapsed output must start with the hint`);
 			assert.doesNotMatch(collapsed, /safe result|lineage=secret|private/);
 		}
 		const expanded = renderComponent(tool.renderResult({ content: [{ type: "text", text: resultText }] }, { expanded: true, isPartial: false, isError: true }, lifecycleTheme, {}));
@@ -1121,6 +1121,58 @@ test("discoverable model agents include installed Judgment Day agents", (t) => {
 	assert.deepEqual(
 		discovered.filter((name) => name.startsWith("jd-")),
 		["jd-judge-a", "jd-judge-b", "jd-fix-agent"],
+	);
+});
+
+test("per-JD-agent model assignment keeps judge-a and judge-b profiles divergent", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "gentle-pi-jd-diversity-"));
+	const previousHome = process.env.GENTLE_PI_AGENT_HOME;
+	process.env.GENTLE_PI_AGENT_HOME = root;
+	t.after(() => {
+		if (previousHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
+		else process.env.GENTLE_PI_AGENT_HOME = previousHome;
+		rmSync(root, { recursive: true, force: true });
+	});
+	writeMarkdown(
+		join(root, "agents", "jd-judge-a.md"),
+		"---\nname: jd-judge-a\ndescription: Judgment Day judge A\n---\n\nYou are Judgment Day judge A.\n",
+	);
+	writeMarkdown(
+		join(root, "agents", "jd-judge-b.md"),
+		"---\nname: jd-judge-b\ndescription: Judgment Day judge B\n---\n\nYou are Judgment Day judge B.\n",
+	);
+	writeMarkdown(join(root, "agents", "jd-fix-agent.md"), "name: jd-fix-agent\n");
+
+	applyModelConfig(root, {
+		"jd-judge-a": { model: "anthropic/claude-3-7-sonnet", thinking: "high" },
+		"jd-judge-b": { model: "openai/gpt-4o", thinking: "low" },
+	});
+
+	const judgeA = readFileSync(join(root, "agents", "jd-judge-a.md"), "utf8");
+	assert.match(judgeA, /^model: anthropic\/claude-3-7-sonnet$/m);
+	assert.match(judgeA, /^thinking: high$/m);
+
+	const judgeB = readFileSync(join(root, "agents", "jd-judge-b.md"), "utf8");
+	assert.match(judgeB, /^model: openai\/gpt-4o$/m);
+	assert.match(judgeB, /^thinking: low$/m);
+
+	const profiles = JSON.parse(
+		readFileSync(join(root, "subagents.json"), "utf8"),
+	);
+	assert.equal(
+		profiles.model_profiles["jd-judge-a"].model,
+		"anthropic/claude-3-7-sonnet",
+	);
+	assert.equal(profiles.model_profiles["jd-judge-a"].effort, "high");
+	assert.equal(
+		profiles.model_profiles["jd-judge-b"].model,
+		"openai/gpt-4o",
+	);
+	assert.equal(profiles.model_profiles["jd-judge-b"].effort, "low");
+	assert.notEqual(
+		profiles.model_profiles["jd-judge-a"].model,
+		profiles.model_profiles["jd-judge-b"].model,
+		"judge-a and judge-b must be able to run with different models in one JD run",
 	);
 });
 

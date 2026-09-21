@@ -1806,6 +1806,60 @@ test("gentleShell ignores a malformed usage-source registration payload", async 
 	assert.doesNotMatch(renderFooter(ui), /acme-cloud/, "no malformed payload registered a usable source");
 });
 
+// A registered source is foreign code running inside a fire-and-forget
+// refresh (`void refreshUsage(...)`, both at session_start and on a late
+// registration): if its fetch rejects and nothing catches it, the rejection
+// is unhandled and, under Node's default policy, takes the whole process
+// down. The doc promises a foreign source is "ignored rather than crashing
+// the shell", so a throw must degrade exactly like a built-in fetcher's.
+test("a registered source's rejecting fetch never crashes the shell or poisons the store", async () => {
+	const { pi, handlers, commands } = fakePi();
+	let calls = 0;
+	const rejectingSource = () => ({
+		schema: USAGE_SOURCE_SCHEMA,
+		provider: "acme-cloud",
+		fetch: async () => {
+			calls += 1;
+			throw new Error("acme is down");
+		},
+	});
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { now: () => 1_788_600_000_000 });
+	const { ctx, ui } = fakeContext({ token: "acme-token" });
+	(ctx as unknown as { model: { provider: string } }).model.provider = "acme-cloud";
+
+	const unhandled: unknown[] = [];
+	const onUnhandled = (reason: unknown) => unhandled.push(reason);
+	process.on("unhandledRejection", onUnhandled);
+	try {
+		// Registered before session start: session_start's own fire-and-forget
+		// refresh dispatches straight to the rejecting fetch.
+		pi.events.emit(USAGE_SOURCE_EVENT, rejectingSource());
+		await fire(handlers, "session_start", ctx);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		assert.equal(calls, 1);
+		assert.doesNotMatch(renderFooter(ui), /acme-cloud/, "a rejecting fetch must never be recorded as a snapshot");
+
+		// A second, late registration for the already-active provider dispatches
+		// through the USAGE_SOURCE_EVENT handler's own fire-and-forget refresh.
+		pi.events.emit(USAGE_SOURCE_EVENT, rejectingSource());
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		assert.equal(calls, 2);
+		assert.doesNotMatch(renderFooter(ui), /acme-cloud/);
+	} finally {
+		process.off("unhandledRejection", onUnhandled);
+	}
+	assert.deepEqual(unhandled, [], "a foreign source's rejection must never surface as an unhandled rejection");
+
+	// The panel still explains itself with the pending note, never a crash,
+	// even through the awaited refresh openUsage runs on open.
+	const opened = commands.get("gentle:usage")!.handler("", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	const plain = ui.overlayView!.render(90).map(stripAnsi);
+	assert.match(plain[1], /✿ acme-cloud · no usage yet · r to fetch/);
+	ui.closeOverlay?.();
+	await opened;
+});
+
 test("gentleShell records SSE rate-limit headers from provider responses", async () => {
 	const { pi, handlers } = fakePi();
 	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch({}, false).fetchFn, now: () => 0 });

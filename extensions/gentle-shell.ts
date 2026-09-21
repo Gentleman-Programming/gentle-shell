@@ -24,7 +24,7 @@ import {
 	type DoubleEscCancelPolicy,
 	type DoubleEscCancelResolution,
 } from "../lib/double-esc-cancel-policy.ts";
-import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseUsageHeaders, parseUsageSource, UsageSourceRegistry, UsageStore, USAGE_SOURCE_EVENT, type ProviderUsage } from "../lib/shell-usage.ts";
+import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseUsageHeaders, parseUsageSource, UsageSourceRegistry, UsageStore, USAGE_SOURCE_EVENT, type ProviderUsage, type UsageSource } from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarHeader, sidebarPart } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
@@ -758,6 +758,17 @@ export async function fetchNanUsage(apiKey: string | undefined, fetchFn: typeof 
 	}
 }
 
+// A registered source is foreign code running inside a fire-and-forget
+// refresh: it must degrade exactly like the built-in fetchers above, never
+// throw past this call, and never leave an unhandled rejection behind.
+async function fetchFromSource(source: UsageSource, apiKey: string | undefined, fetchFn: typeof fetch, now: number): Promise<ProviderUsage | undefined> {
+	try {
+		return await source.fetch(apiKey, fetchFn, now);
+	} catch {
+		return undefined;
+	}
+}
+
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	installSessionChangeCapture(pi, env, overrides.resolveWorktree ?? resolveSessionWorktree);
 	if (!shellEnabled(env)) return;
@@ -781,7 +792,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		usageFetchedAt.set(provider, now);
 		const apiKey = await ctx.modelRegistry.getApiKeyForProvider(provider).catch(() => undefined);
 		const fetched = source
-			? await source.fetch(apiKey, deps.fetch, deps.now())
+			? await fetchFromSource(source, apiKey, deps.fetch, deps.now())
 			: provider === NAN_PROVIDER
 				? await fetchNanUsage(apiKey, deps.fetch, deps.now())
 				: await fetchCodexUsage(apiKey, deps.fetch, deps.now());

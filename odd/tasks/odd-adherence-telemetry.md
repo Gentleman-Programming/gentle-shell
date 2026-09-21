@@ -112,9 +112,13 @@ One line per primary turn, appended to `$HOME/.gentle-ai/odd-adherence.jsonl`:
 - [x] **ODD-ADH-4 — Documentation.**
   - One section in `docs/readme-reference.md`: what is recorded, where, how to
     read it, and how to opt out.
-- [ ] **ODD-ADH-5 — Parent verification and close.**
-  - Verification observed; the work-unit commit is the remaining step and is
-    pending the maintainer's decision.
+- [x] **ODD-ADH-5 — Parent verification and close.**
+  - Work unit: `6f755eba` (`feat(odd): record local adherence telemetry for the
+    delegation gate`), 8 files, 914 insertions.
+  - Size: 746 authored lines excluding this document, above the ~400-line
+    planning heuristic. Recorded as one indivisible review unit (recorder,
+    wiring, tests, reader, docs); splitting it would leave a non-working slice
+    or separate the tests from the behavior they measure.
 
 ## Verification evidence
 
@@ -136,6 +140,13 @@ One line per primary turn, appended to `$HOME/.gentle-ai/odd-adherence.jsonl`:
   now guards `edit`/`write` at the boundary, and the recorder no longer resolves
   canonical paths on the `tool_call` path (resolution moved to the refusal branch
   and to `tool_result`).
+- Motivation evidence (read-only, after the gate merged on 2026-09-19): the gate
+  refused two real second-path writes in the fintec session of 2026-09-21 and
+  the session delegated through `subagent_run` immediately after each refusal
+  (transcript lines 149/150-154 and 199/200). Pre-gate, the same population had
+  45 to 64 violations in about 109 mutation turns; the three post-gate sessions
+  observed so far contain one mutation turn and zero violations, which is
+  directionally consistent but far too small to read as a rate.
 
 ## Acceptance criteria
 
@@ -166,3 +177,6 @@ the verifier runs `pnpm test`.
 
 - [x] Pre-gate adherence baseline measured from local transcripts (read-only).
 - [x] Feature document created; writer dispatch next.
+- [x] Implementation, corrections, verification, and the work-unit commit.
+- [ ] Telemetry live: fast-forward `odd-adherence-telemetry` into the running
+  checkout, then read `scripts/odd-adherence-report.mjs` after normal sessions.

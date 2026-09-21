@@ -630,6 +630,51 @@ test("applyResolvedSkillsUpdate writes the registry from pi-resolved skills", as
 	);
 });
 
+test("resolved set spans global packages, project-local packages, and custom paths", async () => {
+	// Issue #369 acceptance: global and project-local npm packages plus custom
+	// package-declared paths must all be represented by their exact SKILL.md path.
+	const cwd = join(tmpdir(), `gentle-pi-apply-matrix-${Date.now()}`);
+	const globalPkgPath = join("/", "usr", "lib", "node_modules", "@scope", "pkg-a", "skills", "global-pkg-skill", "SKILL.md");
+	const projectPkgPath = join(cwd, "node_modules", "pkg-b", "skills", "project-pkg-skill", "SKILL.md");
+	const customPath = join(cwd, "custom-declared", "skills", "custom-path-skill", "SKILL.md");
+
+	const result = await __testing.applyResolvedSkillsUpdate(cwd, [
+		{
+			name: "global-pkg-skill",
+			description: "Trigger: global npm package skill.",
+			filePath: globalPkgPath,
+			sourceInfo: { scope: "user", origin: "package" },
+		},
+		{
+			name: "project-pkg-skill",
+			description: "Trigger: project-local npm package skill.",
+			filePath: projectPkgPath,
+			sourceInfo: { scope: "project", origin: "package" },
+		},
+		{
+			name: "custom-path-skill",
+			description: "Trigger: custom package-declared path skill.",
+			filePath: customPath,
+			sourceInfo: { scope: "project", origin: "top-level" },
+		},
+	] satisfies ResolvedSkill[]);
+
+	assert.equal(result.regenerated, true);
+	// The loose scan merges this host's real user skill dirs, so the count is a
+	// lower bound; the exact-path assertions below carry the acceptance weight.
+	assert.ok(result.skillCount >= 3, `expected >= 3 skills, got ${result.skillCount}`);
+	const registry = readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8");
+	for (const path of [globalPkgPath, projectPkgPath, customPath]) {
+		assert.match(registry, new RegExp(escapeRegExp(path)));
+	}
+	assert.match(registry, /user · package/);
+	assert.match(registry, /project · package/);
+	assert.match(
+		registry,
+		/Pi-resolved runtime authority \(before_agent_start\.systemPromptOptions\.skills\): 3 skill\(s\)/,
+	);
+});
+
 test("applyResolvedSkillsUpdate is idempotent for an unchanged resolved set", async () => {
 	const cwd = join(tmpdir(), `gentle-pi-apply-idempotent-${Date.now()}`);
 	const resolved: ResolvedSkill[] = [

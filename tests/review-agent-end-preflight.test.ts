@@ -30,7 +30,7 @@ type RegisteredTool = Parameters<ExtensionAPI["registerTool"]>[0];
 type SentMessage = { message: Record<string, unknown>; options: Record<string, unknown> };
 
 type CustomEntry = { type: string; customType: string; data: unknown };
-function harness(nativeReviewCli: NativeReviewCli | null, entries: CustomEntry[] = []): {
+function harness(nativeReviewCli: NativeReviewCli | null, entries: CustomEntry[] = [], processEnv?: NodeJS.ProcessEnv): {
 	handlers: Map<string, AnyHandler>;
 	sent: SentMessage[];
 	tools: Map<string, RegisteredTool>;
@@ -53,7 +53,7 @@ function harness(nativeReviewCli: NativeReviewCli | null, entries: CustomEntry[]
 			sent.push({ message, options });
 		},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli })(pi);
+	createGentleAiExtension({ nativeReviewCli, processEnv })(pi);
 	return { handlers, sent, tools };
 }
 
@@ -377,6 +377,25 @@ test("gentle-ai-worker agent_end never queries native review", async () => {
 	const session = ctx("agent-end-generic-worker");
 	assert.equal(typeof beforeAgentStart, "function");
 	await beforeAgentStart!({ agentName: "gentle-ai-worker", systemPrompt: "" }, session);
+	await directWrite(handlers, session);
+	await agentEnd!(agentEndEvent, session);
+	assert.deepEqual(statusRequests, []);
+	assert.deepEqual(sent, []);
+});
+
+test("agent_end sends nothing and performs no STATUS call when GENTLE_PI_AGENTS_CHILD is 1", async () => {
+	const statusRequests: unknown[] = [];
+	const native = {
+		reviewMode: onMode("on"),
+		targetStatus: async (request: unknown) => {
+			statusRequests.push(request);
+			throw new Error("targetStatus must not be called in a child session");
+		},
+	} as unknown as NativeReviewCli;
+	const { handlers, sent } = harness(native, [], { GENTLE_PI_AGENTS_CHILD: "1" });
+	const agentEnd = handlers.get("agent_end");
+	assert.equal(typeof agentEnd, "function");
+	const session = ctx("agent-end-child");
 	await directWrite(handlers, session);
 	await agentEnd!(agentEndEvent, session);
 	assert.deepEqual(statusRequests, []);

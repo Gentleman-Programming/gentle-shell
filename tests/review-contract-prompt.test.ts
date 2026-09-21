@@ -30,7 +30,7 @@ function mirroredPiOrchestrationText(): string {
 	).trim();
 }
 
-function harness(nativeReviewCli: NativeReviewCli | null): { beforeAgentStart: BeforeAgentStartHandler } {
+function harness(nativeReviewCli: NativeReviewCli | null, processEnv?: NodeJS.ProcessEnv): { beforeAgentStart: BeforeAgentStartHandler } {
 	const handlers = new Map<string, BeforeAgentStartHandler>();
 	const pi = {
 		on(name: string, handler: BeforeAgentStartHandler) {
@@ -40,7 +40,7 @@ function harness(nativeReviewCli: NativeReviewCli | null): { beforeAgentStart: B
 		registerCommand() {},
 		registerTool() {},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli })(pi);
+	createGentleAiExtension({ nativeReviewCli, processEnv })(pi);
 	const beforeAgentStart = handlers.get("before_agent_start");
 	assert.equal(typeof beforeAgentStart, "function");
 	return { beforeAgentStart: beforeAgentStart as BeforeAgentStartHandler };
@@ -123,6 +123,15 @@ test("before_agent_start does not let legacy prompt text bypass primary ODD and 
 	assert.match(result.systemPrompt, /Substantial authorized work: use ODD/);
 	assert.match(result.systemPrompt, /Gentle AI review execution contract/);
 	assert.doesNotMatch(result.systemPrompt, /### 3\. SDD \(optional\)/);
+});
+
+test("before_agent_start does not inject the review execution contract or gentlePrompt for a child session (GENTLE_PI_AGENTS_CHILD=1)", async () => {
+	const { beforeAgentStart } = harness({} as NativeReviewCli, { GENTLE_PI_AGENTS_CHILD: "1" });
+	const result = await beforeAgentStart(primaryEvent, ctx());
+	assert.equal(result.systemPrompt, "base");
+	assert.doesNotMatch(result.systemPrompt, /Substantial authorized work: use ODD/);
+	assert.doesNotMatch(result.systemPrompt, /Gentle AI review execution contract/);
+	assert.doesNotMatch(result.systemPrompt, /el Gentleman/);
 });
 
 test("before_agent_start injects nothing when nativeReviewCli is null", async () => {

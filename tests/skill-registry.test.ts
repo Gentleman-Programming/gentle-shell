@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { __testing } from "../extensions/skill-registry.ts";
+import { __testing, type ResolvedSkill } from "../extensions/skill-registry.ts";
 
 test("project skill dirs include supported workspace roots", () => {
 	const cwd = "/repo";
@@ -315,4 +315,277 @@ test("non-forced regeneration invalidates cache when skill bytes change but path
 	const secondRegistry = readFileSync(registryPath, "utf8");
 	assert.match(secondRegistry, /Variant two\. Body B\./);
 	assert.doesNotMatch(secondRegistry, /Variant one\. Body A\./);
+});
+
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+test("toResolvedEntry maps exact file path and scope from sourceInfo", () => {
+	const cwd = join(tmpdir(), `gentle-pi-resolved-${Date.now()}`);
+	const projectPath = join(cwd, "skills", "go-testing", "SKILL.md");
+	const projectEntry = __testing.toResolvedEntry(
+		{
+			name: "go-testing",
+			description: "Trigger: Go tests.\nApply focused patterns.",
+			filePath: projectPath,
+			sourceInfo: { scope: "project" },
+		} satisfies ResolvedSkill,
+		cwd,
+	);
+	assert.ok(projectEntry);
+	assert.equal(projectEntry.name, "go-testing");
+	assert.equal(projectEntry.path, projectPath, "resolved path must be preserved exactly");
+	assert.equal(projectEntry.description, "Trigger: Go tests. Apply focused patterns.");
+	assert.equal(projectEntry.scope, "project");
+
+	const userEntry = __testing.toResolvedEntry(
+		{
+			name: "docs",
+			description: "Docs.",
+			filePath: "/home/u/.pi/agent/skills/docs/SKILL.md",
+			sourceInfo: { scope: "user" },
+		} satisfies ResolvedSkill,
+		cwd,
+	);
+	assert.ok(userEntry);
+	assert.equal(userEntry.scope, "user");
+
+	const temporaryEntry = __testing.toResolvedEntry(
+		{
+			name: "temp",
+			description: "Temp.",
+			filePath: "/run/pi/temp-skills/temp/SKILL.md",
+			sourceInfo: { scope: "temporary" },
+		} satisfies ResolvedSkill,
+		cwd,
+	);
+	assert.ok(temporaryEntry);
+	assert.equal(temporaryEntry.scope, "user", "temporary scope maps to the user label");
+
+	const absentEntry = __testing.toResolvedEntry(
+		{ name: "plain", description: "Plain.", filePath: "/anywhere/plain/SKILL.md" } satisfies ResolvedSkill,
+		cwd,
+	);
+	assert.ok(absentEntry);
+	assert.equal(absentEntry.scope, "user", "absent sourceInfo falls back to the user label");
+});
+
+test("toResolvedEntry appends package origin to the scope label", () => {
+	const cwd = join(tmpdir(), `gentle-pi-resolved-package-${Date.now()}`);
+	const packaged = __testing.toResolvedEntry(
+		{
+			name: "packaged",
+			description: "Packaged.",
+			filePath: "/pkg/skills/packaged/SKILL.md",
+			sourceInfo: { scope: "user", origin: "package" },
+		} satisfies ResolvedSkill,
+		cwd,
+	);
+	assert.ok(packaged);
+	assert.equal(packaged.scope, "user · package");
+
+	const projectPackaged = __testing.toResolvedEntry(
+		{
+			name: "project-packaged",
+			description: "Packaged.",
+			filePath: "/pkg/skills/project-packaged/SKILL.md",
+			sourceInfo: { scope: "project", origin: "package" },
+		} satisfies ResolvedSkill,
+		cwd,
+	);
+	assert.ok(projectPackaged);
+	assert.equal(projectPackaged.scope, "project · package");
+
+	const topLevel = __testing.toResolvedEntry(
+		{
+			name: "top",
+			description: "Top.",
+			filePath: "/pkg/skills/top/SKILL.md",
+			sourceInfo: { scope: "user", origin: "top-level" },
+		} satisfies ResolvedSkill,
+		cwd,
+	);
+	assert.ok(topLevel);
+	assert.equal(topLevel.scope, "user", "top-level origin must not append the package label");
+});
+
+test("toResolvedEntry returns undefined when model invocation is disabled", () => {
+	assert.equal(
+		__testing.toResolvedEntry(
+			{
+				name: "internal",
+				description: "Internal.",
+				filePath: "/skills/internal/SKILL.md",
+				disableModelInvocation: true,
+			} satisfies ResolvedSkill,
+			"/repo",
+		),
+		undefined,
+	);
+});
+
+test("toResolvedEntry returns undefined for excluded skill names", () => {
+	assert.equal(
+		__testing.toResolvedEntry(
+			{
+				name: "sdd-research",
+				description: "Research.",
+				filePath: "/skills/sdd-research/SKILL.md",
+			} satisfies ResolvedSkill,
+			"/repo",
+		),
+		undefined,
+	);
+	assert.equal(
+		__testing.toResolvedEntry(
+			{
+				name: "_shared",
+				description: "Shared.",
+				filePath: "/skills/_shared/SKILL.md",
+			} satisfies ResolvedSkill,
+			"/repo",
+		),
+		undefined,
+	);
+});
+
+test("mergeResolvedWithLoose gives resolved paths per-path authority", () => {
+	const cwd = join(tmpdir(), `gentle-pi-merge-${Date.now()}`);
+	const resolvedPath = join(tmpdir(), `gentle-pi-merge-pkg-${Date.now()}`, "skills", "dup", "SKILL.md");
+	const otherPath = join(cwd, ".opencode", "skills", "other", "SKILL.md");
+	const merged = __testing.mergeResolvedWithLoose(
+		[{ name: "dup", path: resolvedPath, description: "resolved", scope: "user · package" }],
+		[
+			{ name: "dup", path: resolvedPath, description: "loose" },
+			{ name: "other", path: otherPath, description: "loose-other" },
+		],
+		cwd,
+	);
+
+	assert.equal(merged.length, 2, "only the path-colliding loose entry is dropped");
+	const dup = merged.find((entry) => entry.name === "dup");
+	assert.ok(dup);
+	assert.equal(dup.path, resolvedPath, "the exact resolved path must survive");
+	assert.equal(dup.description, "resolved");
+	assert.ok(merged.some((entry) => entry.name === "other"), "unrelated loose entries survive");
+});
+
+test("mergeResolvedWithLoose keeps project-over-user name precedence", () => {
+	const cwd = join(tmpdir(), `gentle-pi-merge-precedence-${Date.now()}`);
+	const packagePath = join(tmpdir(), `gentle-pi-merge-pkg2-${Date.now()}`, "skills", "dup", "SKILL.md");
+	const projectPath = join(cwd, "skills", "dup", "SKILL.md");
+
+	const looseProjectWins = __testing.mergeResolvedWithLoose(
+		[{ name: "dup", path: packagePath, description: "resolved", scope: "user · package" }],
+		[{ name: "dup", path: projectPath, description: "loose" }],
+		cwd,
+	);
+	assert.equal(looseProjectWins.length, 1);
+	assert.equal(looseProjectWins[0].path, projectPath, "loose project path beats resolved user/package path");
+
+	const resolvedProjectPath = join(cwd, ".claude", "skills", "dup", "SKILL.md");
+	const userPath = join(tmpdir(), `gentle-pi-merge-home-${Date.now()}`, ".pi", "agent", "skills", "dup", "SKILL.md");
+	const resolvedWins = __testing.mergeResolvedWithLoose(
+		[{ name: "dup", path: resolvedProjectPath, description: "resolved", scope: "project" }],
+		[{ name: "dup", path: userPath, description: "loose" }],
+		cwd,
+	);
+	assert.equal(resolvedWins.length, 1);
+	assert.equal(resolvedWins[0].path, resolvedProjectPath, "resolved project path beats loose user path");
+});
+
+test("mergeResolvedWithLoose with empty resolved matches the loose-only result", () => {
+	const cwd = join(tmpdir(), `gentle-pi-merge-empty-${Date.now()}`);
+	const loose = [
+		{ name: "zeta", path: join(cwd, "skills", "zeta", "SKILL.md"), description: "z" },
+		{
+			name: "alpha",
+			path: join(tmpdir(), `gentle-pi-merge-empty-home-${Date.now()}`, "skills", "alpha", "SKILL.md"),
+			description: "a-user",
+		},
+		{ name: "alpha", path: join(cwd, ".opencode", "skills", "alpha", "SKILL.md"), description: "a-project" },
+	];
+
+	assert.deepEqual(
+		__testing.mergeResolvedWithLoose([], loose, cwd),
+		__testing.dedupeBySkillName(loose, cwd),
+	);
+});
+
+test("regenerateRegistry merges pi-resolved skills with the loose scan", async () => {
+	const cwd = join(tmpdir(), `gentle-pi-regen-resolved-${Date.now()}`);
+	const looseSkillPath = join(cwd, "skills", "loose-one", "SKILL.md");
+	mkdirSync(dirname(looseSkillPath), { recursive: true });
+	writeFileSync(looseSkillPath, "---\nname: loose-one\ndescription: Loose skill.\n---\n");
+
+	const pkgRoot = join(tmpdir(), `gentle-pi-regen-pkg-${Date.now()}`);
+	const resolvedSkillPath = join(pkgRoot, "skills", "resolved-one", "SKILL.md");
+	const resolved: ResolvedSkill[] = [
+		{
+			name: "resolved-one",
+			description: "Trigger: resolved skill. Runtime authority.",
+			filePath: resolvedSkillPath,
+			sourceInfo: { scope: "project", origin: "package" },
+		},
+	];
+
+	const first = await __testing.regenerateRegistry(cwd, false, resolved);
+	assert.equal(first.regenerated, true, "first regeneration writes the registry");
+	assert.equal(first.reason, "fingerprint-changed");
+	assert.ok(
+		first.skillCount >= 2,
+		"merged count must include the resolved skill and the loose skill (host user skills may add more)",
+	);
+
+	const registryPath = join(cwd, ".atl", "skill-registry.md");
+	const registry = readFileSync(registryPath, "utf8");
+	assert.match(registry, new RegExp(escapeRegExp(resolvedSkillPath)));
+	assert.match(registry, new RegExp(escapeRegExp(looseSkillPath)));
+	assert.match(registry, /project · package/);
+	assert.match(
+		registry,
+		/Pi-resolved runtime authority \(before_agent_start\.systemPromptOptions\.skills\): 1 skill\(s\)/,
+	);
+
+	const second = await __testing.regenerateRegistry(cwd, false, resolved);
+	assert.equal(second.regenerated, false, "identical resolved set must be a cache hit");
+	assert.equal(second.reason, "cache-hit");
+
+	const changed: ResolvedSkill[] = [
+		...resolved,
+		{
+			name: "resolved-two",
+			description: "Second resolved skill.",
+			filePath: join(pkgRoot, "skills", "resolved-two", "SKILL.md"),
+			sourceInfo: { scope: "user" },
+		},
+	];
+	const third = await __testing.regenerateRegistry(cwd, false, changed);
+	assert.equal(third.regenerated, true, "changed resolved set must regenerate");
+	assert.equal(third.reason, "fingerprint-changed");
+	const updated = readFileSync(registryPath, "utf8");
+	assert.match(updated, /resolved-two/);
+	assert.match(
+		updated,
+		/Pi-resolved runtime authority \(before_agent_start\.systemPromptOptions\.skills\): 2 skill\(s\)/,
+	);
+});
+
+test("renderRegistry emits the pi-resolved authority bullet only when resolved entries exist", () => {
+	const cwd = join(tmpdir(), `gentle-pi-render-resolved-${Date.now()}`);
+	const entry = { name: "docs", path: join(cwd, "skills", "docs", "SKILL.md"), description: "Docs." };
+
+	const withResolved = __testing.renderRegistry(cwd, ["skills"], [entry], 1);
+	const sourcesIndex = withResolved.indexOf("## Sources scanned");
+	const bulletText = "- Pi-resolved runtime authority (before_agent_start.systemPromptOptions.skills): 1 skill(s)";
+	const bulletIndex = withResolved.indexOf(bulletText);
+	assert.ok(bulletIndex > sourcesIndex, "authority bullet must live in the sources section");
+	assert.ok(
+		withResolved.indexOf("- skills") > bulletIndex,
+		"authority bullet must be the first source bullet",
+	);
+
+	const withoutResolved = __testing.renderRegistry(cwd, ["skills"], [entry], 0);
+	assert.doesNotMatch(withoutResolved, /Pi-resolved runtime authority/);
 });

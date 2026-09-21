@@ -24,7 +24,7 @@ import {
 	type DoubleEscCancelPolicy,
 	type DoubleEscCancelResolution,
 } from "../lib/double-esc-cancel-policy.ts";
-import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseUsageHeaders, parseUsageSource, UsageSourceRegistry, UsageStore, USAGE_SOURCE_EVENT, type ProviderUsage, type UsageSource } from "../lib/shell-usage.ts";
+import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseProviderUsage, parseUsageHeaders, parseUsageSource, UsageSourceRegistry, UsageStore, USAGE_SOURCE_EVENT, type ProviderUsage, type UsageSource } from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarHeader, sidebarPart } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
@@ -763,7 +763,8 @@ export async function fetchNanUsage(apiKey: string | undefined, fetchFn: typeof 
 // throw past this call, and never leave an unhandled rejection behind.
 async function fetchFromSource(source: UsageSource, apiKey: string | undefined, fetchFn: typeof fetch, now: number): Promise<ProviderUsage | undefined> {
 	try {
-		return await source.fetch(apiKey, fetchFn, now);
+		const result = await source.fetch(apiKey, fetchFn, now);
+		return result === undefined ? undefined : parseProviderUsage(result, source.provider);
 	} catch {
 		return undefined;
 	}
@@ -797,6 +798,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				? await fetchNanUsage(apiKey, deps.fetch, deps.now())
 				: await fetchCodexUsage(apiKey, deps.fetch, deps.now());
 		if (!fetched) return;
+		// A registered source can be replaced while its own fetch is still in
+		// flight; the identity captured above is this call's source, so a stale
+		// answer that outlives its replacement is discarded instead of
+		// overwriting whatever the replacement already recorded.
+		if (source && usageSources.get(provider) !== source) return;
 		usage.record(fetched);
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();

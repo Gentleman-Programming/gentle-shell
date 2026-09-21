@@ -192,6 +192,61 @@ export function providerNote(provider: string, registry?: UsageSourceRegistry): 
 	return PENDING_NOTE[provider] ?? registry?.note(provider) ?? UNSUPPORTED_NOTE;
 }
 
+function isFiniteNumber(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value);
+}
+
+function parseSourceUsageWindow(value: unknown): UsageWindow | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const raw = value as Record<string, unknown>;
+	if (typeof raw.label !== "string") return undefined;
+	if (!isFiniteNumber(raw.usedPercent)) return undefined;
+	if (!isFiniteNumber(raw.windowSeconds)) return undefined;
+	if (raw.resetAt !== null && !isFiniteNumber(raw.resetAt)) return undefined;
+	if (raw.used !== undefined && !isFiniteNumber(raw.used)) return undefined;
+	if (raw.budget !== undefined && !isFiniteNumber(raw.budget)) return undefined;
+	const window: UsageWindow = { label: raw.label, usedPercent: raw.usedPercent, windowSeconds: raw.windowSeconds, resetAt: raw.resetAt as number | null };
+	if (raw.used !== undefined) window.used = raw.used as number;
+	if (raw.budget !== undefined) window.budget = raw.budget as number;
+	return window;
+}
+
+function parseSourceUsageLimit(value: unknown): UsageLimit | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const raw = value as Record<string, unknown>;
+	if (typeof raw.name !== "string") return undefined;
+	if (typeof raw.limitReached !== "boolean") return undefined;
+	if (!Array.isArray(raw.windows)) return undefined;
+	const windows: UsageWindow[] = [];
+	for (const entry of raw.windows) {
+		const window = parseSourceUsageWindow(entry);
+		if (!window) return undefined;
+		windows.push(window);
+	}
+	return { name: raw.name, limitReached: raw.limitReached, windows };
+}
+
+// A registered source's resolved value crosses the same trust boundary a
+// parsed HTTP payload does: it is foreign code's own object, so it is
+// validated field by field and never recorded by reference. Every accepted
+// shape is rebuilt from scratch, so a source mutating its own object after
+// returning it can never reach a snapshot gentle-shell already recorded.
+export function parseProviderUsage(value: unknown, expectedProvider: string): ProviderUsage | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const raw = value as Record<string, unknown>;
+	if (raw.provider !== expectedProvider) return undefined;
+	if (raw.plan !== undefined && typeof raw.plan !== "string") return undefined;
+	if (!isFiniteNumber(raw.fetchedAt)) return undefined;
+	if (!Array.isArray(raw.limits)) return undefined;
+	const limits: UsageLimit[] = [];
+	for (const entry of raw.limits) {
+		const limit = parseSourceUsageLimit(entry);
+		if (!limit) return undefined;
+		limits.push(limit);
+	}
+	return { provider: raw.provider, plan: typeof raw.plan === "string" ? raw.plan : undefined, limits, fetchedAt: raw.fetchedAt };
+}
+
 export function windowLabel(seconds: number): string {
 	if (seconds === WEEK) return "week";
 	if (seconds >= DAY && seconds % DAY === 0) return `${seconds / DAY}d`;

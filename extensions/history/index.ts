@@ -427,6 +427,19 @@ class PromptHistorySelector extends Container implements Focusable {
     this.rebuildListWithWidth(this.lastWidth);
   }
 
+  /** Styled title + position + loaded-counts prefix shared by the inline and stacked header layouts. */
+  private headerCountsText(
+    titleText: string,
+    positionText: string,
+    loadedText: string,
+  ): string {
+    return (
+      this.theme.fg("accent", this.theme.bold(titleText)) +
+      this.theme.fg("dim", positionText) +
+      this.theme.fg("dim", loadedText)
+    );
+  }
+
   /** Rebuild list rows: header counter + entries. Always MAX_VISIBLE rows (MAX_VISIBLE - 1 in compact mode). */
   private rebuildListWithWidth(width: number): void {
     const count = this.filteredRecords.length;
@@ -450,9 +463,7 @@ class PromptHistorySelector extends Container implements Focusable {
     this.headerMode = mode;
     if (mode === "inline") {
       this.headerRow.setText(
-        this.theme.fg("accent", this.theme.bold(titleText)) +
-          this.theme.fg("dim", positionText) +
-          this.theme.fg("dim", loadedText) +
+        this.headerCountsText(titleText, positionText, loadedText) +
           // Right-aligned scope radio: pad from plain-text lengths so the
           // radio ends flush at the header's last column at any width.
           " ".repeat(Math.max(1, width - leftWidth - radioText.length)) +
@@ -464,9 +475,7 @@ class PromptHistorySelector extends Container implements Focusable {
       // Tablet: the spacer is deleted — the radio wraps to its own row
       // under the full counts line (user-directed paste, leading space).
       this.headerRow.setText(
-        this.theme.fg("accent", this.theme.bold(titleText)) +
-          this.theme.fg("dim", positionText) +
-          this.theme.fg("dim", loadedText),
+        this.headerCountsText(titleText, positionText, loadedText),
       );
       this.headerLine2.setText(` ${this.theme.fg("dim", radioText)}`);
       this.headerLine3.setText("");

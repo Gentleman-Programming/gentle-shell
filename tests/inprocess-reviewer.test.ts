@@ -667,3 +667,116 @@ for (const transport of ["sse", "websocket", "websocket-cached", "auto", undefin
 		});
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Transient transport error retries (issue #1307)
+// ---------------------------------------------------------------------------
+
+test("retries on transient JSON parse error and succeeds on subsequent attempt", async () => {
+	let attempt = 0;
+	const sleepCalls: number[] = [];
+	const outcome = await runInProcessReviewer(baseRequest(), {
+		registry: fakeRegistry([fakeModel()]),
+		complete: (async () => {
+			attempt += 1;
+			if (attempt === 1) {
+				throw new Error("Expected property name or '}' in JSON at position 1 (line 1 column 2)");
+			}
+			return assistantText("Valid reviewer findings");
+		}) as typeof completeSimple,
+		sleep: async (ms) => {
+			sleepCalls.push(ms);
+		},
+	});
+	const text = expectText(outcome);
+	assert.equal(text.text, "Valid reviewer findings");
+	assert.equal(attempt, 2, "must have retried once after transient error");
+	assert.equal(sleepCalls.length, 1, "must have called sleep between attempts");
+});
+
+test("retries on transient stopReason error and succeeds on subsequent attempt", async () => {
+	let attempt = 0;
+	const sleepCalls: number[] = [];
+	const outcome = await runInProcessReviewer(baseRequest(), {
+		registry: fakeRegistry([fakeModel()]),
+		complete: (async () => {
+			attempt += 1;
+			if (attempt === 1) {
+				return assistantText("", {
+					stopReason: "error",
+					errorMessage: "Expected property name or '}' in JSON at position 1 (line 1 column 2)",
+				});
+			}
+			return assistantText("Valid reviewer findings on attempt 2");
+		}) as typeof completeSimple,
+		sleep: async (ms) => {
+			sleepCalls.push(ms);
+		},
+	});
+	const text = expectText(outcome);
+	assert.equal(text.text, "Valid reviewer findings on attempt 2");
+	assert.equal(attempt, 2);
+	assert.equal(sleepCalls.length, 1);
+});
+
+test("refuses with PROVIDER_FAILED after exhausting attempts for persistent transient error", async () => {
+	let attempt = 0;
+	const outcome = await runInProcessReviewer(baseRequest(), {
+		registry: fakeRegistry([fakeModel()]),
+		complete: (async () => {
+			attempt += 1;
+			throw new Error("Expected property name or '}' in JSON at position 1 (line 1 column 2)");
+		}) as typeof completeSimple,
+		sleep: async () => {},
+	});
+	const refused = expectRefused(outcome);
+	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED);
+	assert.match(refused.message, /Expected property name/);
+	assert.equal(attempt, 2, "must have stopped after 2 attempts");
+});
+
+test("does not retry on non-transient error", async () => {
+	let attempt = 0;
+	const sleepCalls: number[] = [];
+	const outcome = await runInProcessReviewer(baseRequest(), {
+		registry: fakeRegistry([fakeModel()]),
+		complete: (async () => {
+			attempt += 1;
+			throw new Error("Invalid request parameter: temperature must be between 0 and 2");
+		}) as typeof completeSimple,
+		sleep: async (ms) => {
+			sleepCalls.push(ms);
+		},
+	});
+	const refused = expectRefused(outcome);
+	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED);
+	assert.equal(attempt, 1, "must not retry non-transient error");
+	assert.equal(sleepCalls.length, 0, "must not sleep when not retrying");
+});
+
+test("retries on transient streamSimple failure through composed provider and succeeds", async () => {
+	let attempt = 0;
+	const sleepCalls: number[] = [];
+	const getProvider = () => ({
+		streamSimple: () => ({
+			result: async () => {
+				attempt += 1;
+				if (attempt === 1) {
+					throw new Error("Expected property name or '}' in JSON at position 1 (line 1 column 2)");
+				}
+				return assistantText("Valid findings from composed provider");
+			},
+		}),
+	});
+	const outcome = await runInProcessReviewer(baseRequest(), {
+		registry: { ...fakeRegistry([fakeModel()]), getProvider },
+		complete: unreachableComplete,
+		sleep: async (ms) => {
+			sleepCalls.push(ms);
+		},
+	});
+	const text = expectText(outcome);
+	assert.equal(text.text, "Valid findings from composed provider");
+	assert.equal(attempt, 2, "must have retried once through composed provider");
+	assert.equal(sleepCalls.length, 1);
+});

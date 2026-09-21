@@ -18,6 +18,7 @@ Use this skill after installing, removing, creating, moving, or renaming skills,
 - Always write `.atl/skill-registry.md` regardless of SDD persistence mode.
 - Save the registry to Engram as `topic_key: skill-registry` when available, with `capture_prompt: false`.
 - Skip `sdd-*`, `_shared`, and `skill-registry`; deduplicate by skill name, preferring project-level skills over user-level skills.
+- The registry mirrors Pi's runtime-resolved skill set (`before_agent_start.systemPromptOptions.skills`) for Pi-managed resources; loose directory scanning covers intentional non-Pi roots only. Never rescan `node_modules` or reparse `pi.skills` yourself.
 - Add `.atl/` to `.gitignore` when possible unless explicitly disabled.
 
 ## Decision Gates
@@ -25,13 +26,14 @@ Use this skill after installing, removing, creating, moving, or renaming skills,
 | Situation | Action |
 | --- | --- |
 | Same skill exists globally and in project | Keep the project-level skill |
+| Pi-resolved skill and loose scan share a path | Keep the Pi-resolved record (exact path and source metadata) |
 | Same skill exists in multiple global locations | Keep the first source in scan order |
 | No skills found | Write an empty registry so agents stop searching blindly |
 | Agent will delegate work | Select matching registry rows and pass their `SKILL.md` paths |
 
 ## Execution Steps
 
-1. Scan all known user and project skill directories for `*/SKILL.md`.
+1. Scan all known user and project skill directories for `*/SKILL.md`; npm-package and package-declared (`pi.skills`) skills arrive through the extension's runtime capture, not through this scan.
 2. Read frontmatter only as needed to extract `name` and `description` trigger text.
 3. Render `.atl/skill-registry.md` with scanned sources, registry contract, skill name, trigger/description, scope, and exact path.
 4. Persist to Engram when available using `title: skill-registry`, `topic_key: skill-registry`, `type: config`, and `capture_prompt: false`.

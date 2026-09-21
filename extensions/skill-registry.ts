@@ -250,6 +250,32 @@ function resolvedScopeLabel(skill: ResolvedSkill): string {
 	return skill.sourceInfo?.origin === "package" ? `${scope} · package` : scope;
 }
 
+// Runtime capture state: pi-resolved skills from the latest before_agent_start
+// event, trimmed to only the fields the registry seam consumes. Never retain
+// the full runtime event objects.
+let lastResolvedSkills: ResolvedSkill[] = [];
+
+function trimResolvedSkill(skill: ResolvedSkill): ResolvedSkill {
+	const trimmed: ResolvedSkill = {
+		name: skill.name,
+		description: skill.description,
+		filePath: skill.filePath,
+	};
+	if (skill.disableModelInvocation === true) trimmed.disableModelInvocation = true;
+	if (skill.sourceInfo) {
+		trimmed.sourceInfo = {
+			scope: skill.sourceInfo.scope,
+			origin: skill.sourceInfo.origin,
+		};
+	}
+	return trimmed;
+}
+
+async function applyResolvedSkillsUpdate(cwd: string, skills: ResolvedSkill[]): Promise<RegenResult> {
+	lastResolvedSkills = skills.map(trimResolvedSkill);
+	return regenerateRegistry(cwd, false, lastResolvedSkills);
+}
+
 function toResolvedEntry(skill: ResolvedSkill, cwd: string): SkillEntry | undefined {
 	// cwd is reserved: pi-resolved paths are already absolute, but the seam stays
 	// symmetric with the loose scan for future scoping needs.
@@ -592,6 +618,7 @@ export const __testing = {
 	parseFrontmatter,
 	renderRegistry,
 	regenerateRegistry,
+	applyResolvedSkillsUpdate,
 	shouldSkipSkillRegistryStartup,
 	shouldSkipDuplicateExtensionLoad,
 	startSkillRegistryWatcher,
@@ -606,6 +633,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", () => {
 		closeSkillRegistryWatchers();
+		lastResolvedSkills = [];
 	});
 
 	pi.registerFlag(NO_SKILL_REGISTRY_FLAG, {
@@ -660,12 +688,29 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
+	pi.on("before_agent_start", async (event, ctx) => {
+		if (shouldSkipSkillRegistryStartup(pi)) return;
+		const skills = event.systemPromptOptions?.skills;
+		if (!Array.isArray(skills)) return;
+		try {
+			const result = await applyResolvedSkillsUpdate(ctx.cwd, skills);
+			if (result.regenerated && ctx.hasUI) {
+				ctx.ui.notify(
+					`Skill registry refreshed (${result.skillCount} skills)`,
+					"info",
+				);
+			}
+		} catch {
+			// Keep the runtime capture best-effort; a failed refresh must never break the agent turn.
+		}
+	});
+
 	pi.registerCommand("skill-registry:refresh", {
 		description: "Regenerate .atl/skill-registry.md from local skill sources.",
 		handler: async (_args, ctx) => {
 			try {
 				await ensureAtlIgnored(ctx.cwd);
-				const result = await regenerateRegistry(ctx.cwd, true);
+				const result = await regenerateRegistry(ctx.cwd, true, lastResolvedSkills);
 				ctx.ui.notify(
 					`Skill registry: ${result.skillCount} skill(s) written to ${REGISTRY_REL_PATH}`,
 					"info",

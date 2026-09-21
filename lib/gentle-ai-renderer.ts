@@ -19,10 +19,14 @@ export interface GentleAiRenderState {
 	 * call (which pi never marks as started) still shows its outcome. */
 	finished?: boolean;
 	failed?: boolean;
-	/** Wall-clock ms of the first non-terminal observation and of the terminal
-	 * freeze, so a replayed row still shows the true call duration. */
+	/** Wall-clock ms of the first LIVE non-terminal observation — replays never
+	 * stamp a start — and of the terminal freeze, so a replayed row still shows
+	 * the true call duration. */
 	startedAt?: number;
 	endedAt?: number;
+	/** The row's single pending live-duration wake-up. Every render used to stack
+	 * another untracked timer; a terminal render must leave none behind. */
+	pendingTimer?: ReturnType<typeof setTimeout>;
 }
 
 export interface GentleAiRenderContext {
@@ -196,7 +200,10 @@ export function renderGentleAiLifecycleCall(
 			// A terminal observation without a start (replayed call, session reload)
 			// has no true duration — leaving both unset keeps the card honest.
 			if (state.startedAt !== undefined) state.endedAt ??= now;
-		} else {
+		} else if (status === LIFECYCLE_STATUS.RUNNING || context?.executionStarted === true) {
+			// Stamp only live signals: pi never raises executionStarted/argsComplete on
+			// replayed rows, and a historical row renders preparing before its stored
+			// result arrives — stamping there would invent a duration.
 			state.startedAt ??= now;
 		}
 	}
@@ -212,9 +219,19 @@ export function renderGentleAiLifecycleCall(
 	if (state) state.lifecycleComponent = true;
 	component.update(status, operationPath, theme, detail ? sanitizeTerminalText(detail) : undefined, hint, elapsed);
 	// While the call runs, wake the row once a second so the live duration ticks.
-	if (status === LIFECYCLE_STATUS.RUNNING || status === LIFECYCLE_STATUS.PREPARING) {
-		const timer = setTimeout(() => context?.invalidate?.(), 1000);
-		timer.unref?.();
+	// At most one pending timer per row: frequent renders must not stack
+	// independent invalidation chains, and none may outlive the terminal render.
+	if (state) {
+		if (state.pendingTimer !== undefined) clearTimeout(state.pendingTimer);
+		if ((status === LIFECYCLE_STATUS.RUNNING || status === LIFECYCLE_STATUS.PREPARING) && state.startedAt !== undefined) {
+			state.pendingTimer = setTimeout(() => {
+				state.pendingTimer = undefined;
+				context?.invalidate?.();
+			}, 1000);
+			state.pendingTimer.unref?.();
+		} else {
+			state.pendingTimer = undefined;
+		}
 	}
 	return component;
 }

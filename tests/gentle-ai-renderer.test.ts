@@ -113,6 +113,10 @@ function stateEndedAt(rowState: Record<string, unknown>): number | undefined {
 	return (rowState.gentleAiRender as Record<string, unknown> | undefined)?.endedAt as number | undefined;
 }
 
+function statePendingTimer(rowState: Record<string, unknown>): unknown {
+	return (rowState.gentleAiRender as Record<string, unknown> | undefined)?.pendingTimer;
+}
+
 test("a call card stamps its duration from first sight to terminal freeze", () => {
 	const rowState: Record<string, unknown> = {};
 	const running = renderGentleAiLifecycleCall("review capture · risk", plainTheme, { state: rowState, argsComplete: true, executionStarted: false } as never, undefined, 1_000);
@@ -150,4 +154,41 @@ test("a card with no render state stays honest about unknown duration", () => {
 	const line = card.render(80).map(stripAnsi)[0];
 	assert.match(line, /· completed · review capture /);
 	assert.doesNotMatch(line, /\d+s/);
+});
+
+test("a historical replay never invents a duration: fresh state, preparing render, stored result, invalidation", async () => {
+	const rowState: Record<string, unknown> = {};
+	const initial = renderGentleAiLifecycleCall("review status", plainTheme, { state: rowState, executionStarted: false, argsComplete: false } as never, undefined, 90_000);
+	const initialLines = initial.render(90).map(stripAnsi);
+	assert.match(initialLines[0], /· preparing · review status /);
+	assert.doesNotMatch(initialLines.join("\n"), /\d+s/);
+	assert.equal(stateStartedAt(rowState), undefined, "the preparing render of a replayed row must not invent a start");
+	const resultCard = renderGentleAiResult({ content: [{ type: "text", text: "x" }] } as never, { expanded: false }, plainTheme, { state: rowState, invalidate: () => {} } as never);
+	const resultLines = resultCard.render(90).map(stripAnsi);
+	assert.doesNotMatch(resultLines.join("\n"), /\d+s/, "no persisted stamps means no duration on the closing rule");
+	await new Promise((resolve) => queueMicrotask(() => resolve(undefined)));
+	const replayed = renderGentleAiLifecycleCall("review status", plainTheme, { state: rowState, executionStarted: false, argsComplete: false } as never, undefined, 90_040);
+	const replayedLine = replayed.render(90).map(stripAnsi)[0];
+	assert.match(replayedLine, /· completed · review status /);
+	assert.doesNotMatch(replayedLine, /\d+s/, "a replayed row with no persisted timestamps omits the unknown duration");
+	assert.equal(stateStartedAt(rowState), undefined);
+	assert.equal(stateEndedAt(rowState), undefined);
+});
+
+test("running renders keep a single pending duration timer and the terminal render clears it", (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const rowState: Record<string, unknown> = {};
+	let invalidations = 0;
+	const context = { state: rowState, argsComplete: true, executionStarted: false, invalidate: () => { invalidations += 1; } };
+	renderGentleAiLifecycleCall("review capture", plainTheme, context as never, undefined, 1_000);
+	const firstTimer = statePendingTimer(rowState);
+	assert.ok(firstTimer, "a live running row keeps one pending duration timer");
+	renderGentleAiLifecycleCall("review capture", plainTheme, context as never, undefined, 1_500);
+	assert.notEqual(statePendingTimer(rowState), firstTimer, "a new render replaces the pending timer instead of stacking one");
+	t.mock.timers.tick(1_000);
+	assert.equal(invalidations, 1, "only the latest timer fires; the replaced one was cleared");
+	renderGentleAiLifecycleCall("review capture", plainTheme, { ...context, executionStarted: true, isPartial: false } as never, undefined, 31_000);
+	assert.equal(statePendingTimer(rowState), undefined, "a terminal render clears the pending timer");
+	t.mock.timers.tick(60_000);
+	assert.equal(invalidations, 1, "no timer outlives the terminal render");
 });

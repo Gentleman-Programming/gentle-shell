@@ -204,10 +204,9 @@ module in memory; a fresh session is required to exercise the fix.
 
 ### CI state — and what it means for verification
 
-- This PR's CI run (`35465492773`) is **`action_required`**: GitHub does not run
-  workflows for fork pull requests until a maintainer approves them. It ran for
-  0s and never started. Every other fork PR in this repository shows the same
-  state, so this is the standard gate, not a defect of this branch.
+- This PR's CI run (`35465492773`) is **`action_required`**. It ran for 0s and
+  never started. This is the observed repository-specific state, not evidence
+  of a defect in this branch.
 - The latest CI on `main` (`35463530035`):
   - `verify` (ubuntu, full `pnpm test`) — **success**
   - `session-transport-macos` — success
@@ -227,7 +226,8 @@ one `type:*` label on the PR. Both fail with
 jobs the skill documents (`Check Issue Reference`,
 `Check Issue Has status:approved`, `Check PR Has type:* Label`) are **not
 registered in this repository**: the actions list contains only `CI`, `Publish
-to npm`, `Copilot`, and the two Windows workflows. Nothing automated blocks the
+to npm`, `Copilot`, and the two Windows workflows. This does not determine
+whether branch protection, required status checks, or external checks block the
 PR; the labels remain a maintainer action.
 
 ### Operational step still owed

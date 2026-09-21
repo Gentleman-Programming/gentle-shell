@@ -97,7 +97,33 @@ export interface InProcessReviewerDeps {
 	readonly complete: typeof completeSimple;
 	/** Test seam for the single user message's timestamp; defaults to Date.now. */
 	readonly now?: () => number;
+	/** Test seam for backoff delay between retry attempts; defaults to setTimeout. */
+	readonly sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
+
+export const MAX_REVIEWER_COMPLETION_ATTEMPTS = 2;
+export const REVIEWER_RETRY_BACKOFF_MS = 1_000;
+
+function isTransientReviewerError(errorMessage: string): boolean {
+	return (
+		/Expected property name|Unexpected token|in JSON at position|JSON\.parse/i.test(errorMessage) ||
+		/ECONNRESET|ETIMEDOUT|ECONNREFUSED|fetch failed|socket hang up|premature close/i.test(errorMessage) ||
+		/\b(502|503|504|429)\b/.test(errorMessage)
+	);
+}
+
+const defaultSleep = async (ms: number, signal?: AbortSignal): Promise<void> => {
+	if (signal?.aborted) return;
+	await new Promise<void>((resolve) => {
+		const timer = setTimeout(resolve, ms);
+		if (signal) {
+			signal.addEventListener("abort", () => {
+				clearTimeout(timer);
+				resolve();
+			}, { once: true });
+		}
+	});
+};
 
 // No existing bound covers the reviewer's completion text: the child this
 // module replaced returned its extracted text unbounded. 4 MiB matches this
@@ -290,32 +316,68 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 		return undefined;
 	};
 
-	// `SimpleStreamOptions` is identical on both paths; only the return shape
-	// differs (an event stream versus a promise), hence `.result()` — which is
-	// exactly what pi-ai's own compat layer does with the same stream.
-	let assistant: AssistantMessage;
-	try {
-		assistant = provider === undefined ? await deps.complete(model, context, options) : await provider.streamSimple(model, context, options).result();
-	} catch (error) {
-		return abortRefusal() ?? refuse(INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED, `Reviewer completion failed for ${request.routingKey}: ${sanitizeErrorExcerpt(error)}`);
+	let assistant: AssistantMessage | undefined;
+	let lastRefusal: InProcessReviewerOutcome | undefined;
+
+	for (let attempt = 1; attempt <= MAX_REVIEWER_COMPLETION_ATTEMPTS; attempt++) {
+		const abortBeforeAttempt = abortRefusal();
+		if (abortBeforeAttempt !== undefined) return abortBeforeAttempt;
+
+		let attemptError: unknown;
+		try {
+			// `SimpleStreamOptions` is identical on both paths; only the return shape
+			// differs (an event stream versus a promise), hence `.result()` — which is
+			// exactly what pi-ai's own compat layer does with the same stream.
+			assistant = provider === undefined
+				? await deps.complete(model, context, options)
+				: await provider.streamSimple(model, context, options).result();
+		} catch (error) {
+			attemptError = error;
+		}
+
+		const abortAfterAttempt = abortRefusal();
+		if (abortAfterAttempt !== undefined) return abortAfterAttempt;
+
+		if (attemptError !== undefined) {
+			const errorExcerpt = sanitizeErrorExcerpt(attemptError);
+			lastRefusal = refuse(
+				INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED,
+				`Reviewer completion failed for ${request.routingKey}: ${errorExcerpt}`,
+			);
+			if (attempt < MAX_REVIEWER_COMPLETION_ATTEMPTS && isTransientReviewerError(String(attemptError))) {
+				await (deps.sleep ?? defaultSleep)(REVIEWER_RETRY_BACKOFF_MS, combinedSignal);
+				continue;
+			}
+			return lastRefusal;
+		}
+
+		if (assistant!.stopReason === "aborted") {
+			// No signal of ours fired, so the provider cut the completion on its
+			// own: that is a provider failure, and its partial text is not a review.
+			return refuse(
+				INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED,
+				`Reviewer completion failed for ${request.routingKey}: the provider reported an aborted completion (${assistant!.errorMessage ?? "no provider message"}).`,
+			);
+		}
+
+		if (assistant!.stopReason === "error") {
+			const errorMessage = assistant!.errorMessage ?? "unknown provider error";
+			lastRefusal = refuse(
+				INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED,
+				`Reviewer completion failed for ${request.routingKey}: ${errorMessage}`,
+			);
+			if (attempt < MAX_REVIEWER_COMPLETION_ATTEMPTS && isTransientReviewerError(errorMessage)) {
+				await (deps.sleep ?? defaultSleep)(REVIEWER_RETRY_BACKOFF_MS, combinedSignal);
+				continue;
+			}
+			return lastRefusal;
+		}
+
+		break;
 	}
 
-	const resolvedAbort = abortRefusal();
-	if (resolvedAbort !== undefined) return resolvedAbort;
-	if (assistant.stopReason === "aborted") {
-		// No signal of ours fired, so the provider cut the completion on its
-		// own: that is a provider failure, and its partial text is not a review.
-		return refuse(
-			INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED,
-			`Reviewer completion failed for ${request.routingKey}: the provider reported an aborted completion (${assistant.errorMessage ?? "no provider message"}).`,
-		);
-	}
-
-	if (assistant.stopReason === "error") {
-		return refuse(
-			INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED,
-			`Reviewer completion failed for ${request.routingKey}: ${assistant.errorMessage ?? "unknown provider error"}`,
-		);
+	if (assistant === undefined) {
+		return lastRefusal ?? refuse(INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED, `Reviewer completion failed for ${request.routingKey}: unknown provider error`);
 	}
 	if (assistant.content.some((part) => part.type === "toolCall")) {
 		return refuse(

@@ -6,6 +6,7 @@ import {
 	INPROCESS_REVIEWER_FAILURE,
 	INPROCESS_REVIEWER_OUTPUT_MAX_BYTES,
 	runInProcessReviewer,
+	openCodeSessionAttributionHeaders,
 	type InProcessReviewerOutcome,
 	type InProcessReviewerRegistry,
 	type InProcessReviewerRequest,
@@ -343,6 +344,97 @@ test("omits reasoning for a non-reasoning model even with a valid label", async 
 		complete,
 	});
 	assert.ok(!("reasoning" in (calls[0]!.options ?? {})));
+});
+
+// ---------------------------------------------------------------------------
+// OpenCode session attribution headers
+//
+// Pi adds OpenCode attribution headers inside the main agent loop
+// (provider-attribution.js#getSessionHeaders). This completion is an extension
+// side-call that bypasses that loop, so it must add the same headers itself:
+// provider opencode / opencode-go, or a baseUrl whose host is opencode.ai,
+// carrying the live session id — and nothing for any other provider.
+// ---------------------------------------------------------------------------
+
+const OPENCODE_ATTRIBUTION_TESTS: Array<{ readonly name: string; readonly model: Partial<Model<Api>>; readonly selection: string }> = [
+	{ name: "an opencode provider model", model: { provider: "opencode", id: "sonnet-4", baseUrl: "https://opencode.ai" }, selection: "opencode/sonnet-4" },
+	{ name: "an opencode-go provider model", model: { provider: "opencode-go", id: "gpt-5", baseUrl: "https://opencode.ai" }, selection: "opencode-go/gpt-5" },
+	{ name: "a custom provider whose baseUrl host is opencode.ai", model: { provider: "custom", id: "relay-model", baseUrl: "https://opencode.ai/v1" }, selection: "custom/relay-model" },
+];
+
+for (const { name, model, selection } of OPENCODE_ATTRIBUTION_TESTS) {
+	test(`${name} receives both attribution headers carrying the live session id`, async () => {
+		const { complete, calls } = capturingComplete(assistantText("ok"));
+		const outcome = await runInProcessReviewer(baseRequest({ selection, sessionId: "ses-live-1" }), {
+			registry: fakeRegistry([fakeModel(model)]),
+			complete,
+		});
+		expectText(outcome);
+		assert.equal(calls.length, 1);
+		assert.equal(calls[0]!.options?.headers?.["x-opencode-session"], "ses-live-1");
+		assert.equal(calls[0]!.options?.headers?.["x-opencode-client"], "pi");
+	});
+}
+
+for (const { name, model, selection } of OPENCODE_ATTRIBUTION_TESTS) {
+	test(`${name} without a session id adds no attribution header and still completes`, async () => {
+		const { complete, calls } = capturingComplete(assistantText("ok"));
+		const outcome = await runInProcessReviewer(baseRequest({ selection }), {
+			registry: fakeRegistry([fakeModel(model)]),
+			complete,
+		});
+		expectText(outcome);
+		assert.equal(calls.length, 1);
+		assert.ok(!("headers" in (calls[0]!.options ?? {})), "a missing session id must never invent a header");
+	});
+}
+
+test("a non-OpenCode model adds no attribution headers and leaves the options unchanged", async () => {
+	const { complete, calls } = capturingComplete(assistantText("ok"));
+	const outcome = await runInProcessReviewer(baseRequest({ selection: "anthropic/claude-sonnet-4", sessionId: "ses-live-1" }), {
+		registry: fakeRegistry([fakeModel({ provider: "anthropic", id: "claude-sonnet-4", baseUrl: "https://api.anthropic.com" })]),
+		complete,
+	});
+	expectText(outcome);
+	assert.equal(calls.length, 1);
+	assert.ok(!("headers" in (calls[0]!.options ?? {})));
+});
+
+test("registry auth headers win over the attribution defaults and both survive the merge", async () => {
+	const { complete, calls } = capturingComplete(assistantText("ok"));
+	const outcome = await runInProcessReviewer(baseRequest({ selection: "opencode/sonnet-4", sessionId: "ses-live-1" }), {
+		registry: fakeRegistry([fakeModel({ provider: "opencode", id: "sonnet-4" })], async () => ({
+			ok: true,
+			headers: { "x-api-key": "registry-key", "x-opencode-session": "registry-session" },
+		})),
+		complete,
+	});
+	expectText(outcome);
+	const headers = calls[0]!.options?.headers;
+	assert.equal(headers?.["x-api-key"], "registry-key", "registry auth headers must survive");
+	assert.equal(headers?.["x-opencode-session"], "registry-session", "explicit registry headers must not be clobbered by the attribution default");
+	assert.equal(headers?.["x-opencode-client"], "pi");
+});
+
+test("an unparseable baseUrl never throws: attribution follows the provider condition only", async () => {
+	const { complete, calls } = capturingComplete(assistantText("ok"));
+	const outcome = await runInProcessReviewer(baseRequest({ selection: "custom/relay-model", sessionId: "ses-live-1" }), {
+		registry: fakeRegistry([fakeModel({ provider: "custom", id: "relay-model", baseUrl: "not-a-url" })]),
+		complete,
+	});
+	expectText(outcome);
+	assert.ok(!("headers" in (calls[0]!.options ?? {})));
+});
+
+test("openCodeSessionAttributionHeaders mirrors pi's condition exactly", () => {
+	const opencode = fakeModel({ provider: "opencode", baseUrl: "https://example.com" });
+	assert.deepEqual(openCodeSessionAttributionHeaders(opencode, "ses-1"), { "x-opencode-session": "ses-1", "x-opencode-client": "pi" });
+	assert.deepEqual(openCodeSessionAttributionHeaders(fakeModel({ provider: "opencode-go" }), "ses-1"), { "x-opencode-session": "ses-1", "x-opencode-client": "pi" });
+	assert.deepEqual(openCodeSessionAttributionHeaders(fakeModel({ provider: "custom", baseUrl: "https://opencode.ai/v1" }), "ses-1"), { "x-opencode-session": "ses-1", "x-opencode-client": "pi" });
+	assert.equal(openCodeSessionAttributionHeaders(fakeModel({ provider: "custom", baseUrl: "https://api.opencode.ai" }), "ses-1"), undefined, "a subdomain host is not opencode.ai");
+	assert.equal(openCodeSessionAttributionHeaders(fakeModel(), "ses-1"), undefined);
+	assert.equal(openCodeSessionAttributionHeaders(opencode, undefined), undefined, "no session id, no header");
+	assert.equal(openCodeSessionAttributionHeaders(opencode, ""), undefined, "an empty session id is no session id");
 });
 
 // ---------------------------------------------------------------------------

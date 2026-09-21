@@ -59,6 +59,13 @@ export interface InProcessReviewerRequest {
 	readonly prompt: Buffer;
 	readonly timeoutMs: number;
 	readonly signal?: AbortSignal;
+	/**
+	 * The live pi session id, threaded from the extension context. Pi's main
+	 * agent loop adds OpenCode attribution headers itself; this side-call must
+	 * carry them itself instead. Absent (or empty) means no attribution header,
+	 * never an invented one and never an error.
+	 */
+	readonly sessionId?: string;
 	/** e.g. "review-risk" — only used to name the routing config key in refusal messages. */
 	readonly routingKey: string;
 }
@@ -127,6 +134,30 @@ function isTextContent(part: { type?: unknown }): part is TextContent {
 }
 
 /**
+ * Mirrors pi's main-loop OpenCode attribution condition exactly
+ * (core/provider-attribution.js#getSessionHeaders): the model's provider is
+ * `opencode` or `opencode-go`, or its baseUrl host is `opencode.ai`. Returns
+ * the `{ x-opencode-session, x-opencode-client }` attribution pair, or
+ * undefined when the model is not OpenCode-routed or there is no live session
+ * id — a missing session id is never an error and never invents a header.
+ * The URL parse is guarded: an unparseable baseUrl follows the provider
+ * condition alone.
+ */
+export function openCodeSessionAttributionHeaders(model: Model<Api>, sessionId: string | undefined): ProviderHeaders | undefined {
+	const isOpenCode = model.provider === "opencode"
+		|| model.provider === "opencode-go"
+		|| (() => {
+			try {
+				return new URL(String(model.baseUrl ?? "")).hostname === "opencode.ai";
+			} catch {
+				return false;
+			}
+		})();
+	if (!isOpenCode || typeof sessionId !== "string" || sessionId.length === 0) return undefined;
+	return { "x-opencode-session": sessionId, "x-opencode-client": "pi" };
+}
+
+/**
  * Runs one reviewer completion in-process: resolve the model, authenticate,
  * map the routing thinking label, and complete exactly one frozen prompt as
  * a single user message. Never retries, never falls back to another model,
@@ -168,6 +199,12 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 		);
 	}
 
+	// Extension side-calls bypass pi's main agent loop, which is where OpenCode
+	// attribution headers are otherwise added, so this completion carries them
+	// itself — as a default beneath the registry's own auth headers, the same
+	// merge order pi's core uses for explicit header sources.
+	const attributionHeaders = openCodeSessionAttributionHeaders(model, request.sessionId);
+
 	// The caller's own signal (if any) and a floor timeout race together:
 	// whichever fires first aborts the completion. The catch branch below
 	// tells them apart by which underlying signal actually fired, never by
@@ -188,7 +225,7 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 		signal: combinedSignal,
 		timeoutMs: request.timeoutMs,
 		...(auth.apiKey === undefined ? {} : { apiKey: auth.apiKey }),
-		...(auth.headers === undefined ? {} : { headers: auth.headers }),
+		...(auth.headers === undefined && attributionHeaders === undefined ? {} : { headers: attributionHeaders === undefined ? auth.headers : { ...attributionHeaders, ...auth.headers } }),
 		...(reasoning.reasoning === undefined ? {} : { reasoning: reasoning.reasoning }),
 	};
 

@@ -556,6 +556,27 @@ test("the relay forwards the caller-owned selection and thinking level to the co
 	assert.equal(calls[0]!.routingKey, "review-risk");
 });
 
+// The in-process reviewer completion is an extension side-call that bypasses
+// pi's main agent loop, so the relay must forward the caller's live session id
+// into the completion request; the completion itself turns it into the
+// OpenCode attribution headers (lib/inprocess-reviewer.ts). A absent session
+// id forwards nothing and is never an error.
+test("the relay forwards the caller's reviewer session id into the completion request", async (t) => {
+	const fixture = harness(t);
+	const { runReviewer, calls } = textReviewer(REVIEWER_TEXT);
+	await runRelay(fixture, { reviewerSessionId: "ses-live-1" }, runReviewer);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0]!.sessionId, "ses-live-1");
+});
+
+test("a relay request with no reviewer session id adds no session id to the completion request", async (t) => {
+	const fixture = harness(t);
+	const { runReviewer, calls } = textReviewer(REVIEWER_TEXT);
+	await runRelay(fixture, {}, runReviewer);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0]!.sessionId, undefined);
+});
+
 test("a missing model registry is refused typed before materialize ever runs", async (t) => {
 	const fixture = harness(t);
 	const { runReviewer, calls } = textReviewer(REVIEWER_TEXT);

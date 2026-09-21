@@ -2837,7 +2837,19 @@ function describeModelConfig(cwd: string, config: AgentModelConfig): string[] {
 }
 
 async function getPiModelOptions(ctx: ExtensionContext): Promise<string[]> {
-	const models = await ctx.modelRegistry.getAvailable();
+	const registry = ctx.modelRegistry;
+	if (!registry) {
+		return [...MODEL_CONTROL_OPTIONS];
+	}
+	let models: { provider: string; id: string }[];
+	try {
+		models = await registry.getAvailable();
+	} catch {
+		return [...MODEL_CONTROL_OPTIONS];
+	}
+	if (!Array.isArray(models)) {
+		return [...MODEL_CONTROL_OPTIONS];
+	}
 	const modelIds = models
 		.map((model) => normalizeModelId(`${model.provider}/${model.id}`))
 		.filter((model): model is string => model !== undefined)
@@ -4164,7 +4176,9 @@ async function switchLiveOrchestrator(ctx: ExtensionContext, live: LiveSession, 
 	const reference = parseOrchestratorModelRef(entry.model);
 	if (reference === undefined) return "";
 	const label = `${reference.provider}/${reference.model}`;
-	const model = ctx.modelRegistry.find(reference.provider, reference.model);
+	const registry = ctx.modelRegistry;
+	if (!registry) return `\nModel registry unavailable; this session keeps its current model.`;
+	const model = registry.find(reference.provider, reference.model);
 	if (model === undefined) return `\n${label} is not in the model catalog; this session keeps its current model.`;
 	let switched = false;
 	try {

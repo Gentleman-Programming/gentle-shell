@@ -8,12 +8,10 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import {
 	existsSync,
 	lstatSync,
-	mkdtempSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
 	realpathSync,
-	rmSync,
 	writeFileSync,
 } from "node:fs";
 import {
@@ -23,7 +21,7 @@ import {
 	readdir,
 	writeFile,
 } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -197,7 +195,7 @@ import {
 	nativeReviewLegacyQuarantineAuthorization,
 	nativeReviewReconcileAuthorization,
 	nativeReviewRecoverAuthorization,
-	normalizeNativeReviewCwd,
+
 	NativeReviewCliError,
 	nativeUntrackedSelection,
 	NativeReviewConsentBindingError,
@@ -2437,24 +2435,6 @@ function builtinAgentDirs(cwd: string): string[] {
 		join(cwd, ".pi", "npm", "node_modules", "pi-subagents", "agents"),
 		join(homedir(), ".local", "lib", "node_modules", "pi-subagents", "agents"),
 	];
-}
-
-function listBuiltinAgentNames(cwd: string): Set<string> {
-	return new Set(
-		builtinAgentDirs(cwd).flatMap((dir) =>
-			listAgentsFromDir(dir, "builtin").map((agent) => agent.name),
-		),
-	);
-}
-
-async function listBuiltinAgentNamesAsync(cwd: string): Promise<Set<string>> {
-	const names = new Set<string>();
-	for (const dir of builtinAgentDirs(cwd)) {
-		for (const agent of await listAgentsFromDirAsync(dir, "builtin")) {
-			names.add(agent.name);
-		}
-	}
-	return names;
 }
 
 function listDiscoverableAgents(cwd: string): AgentEntry[] {
@@ -5157,14 +5137,6 @@ function parseStartInput(value: Record<string, unknown>): ReviewControllerStartI
 
 function isReviewTransition(value: string): value is ReviewTransition {
 	return Object.values(REVIEW_TRANSITION).some((transition) => transition === value);
-}
-
-function isGraphV1JudgmentDayLineage(cwd: string, lineageId: string): boolean {
-	try {
-		return ReviewTransactionStore.forRepository(cwd).read(lineageId).mode === REVIEW_MODE.JUDGMENT_DAY;
-	} catch {
-		return false;
-	}
 }
 
 interface NativeStartPreAuthorityRejection {

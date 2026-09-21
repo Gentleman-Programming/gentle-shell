@@ -9,13 +9,17 @@ import {
 	parseNanQuota,
 	parseUsageHeaders,
 	parseCodexUsage,
+	parseUsageSource,
 	providerNote,
 	renderUsageBar,
 	renderUsagePanel,
 	SUPPORTED_USAGE_PROVIDERS,
+	UsageSourceRegistry,
+	USAGE_SOURCE_SCHEMA,
 	UsageStore,
 	windowLabel,
 	type ProviderUsage,
+	type UsageSource,
 	type UsageWindow,
 } from "../lib/shell-usage.ts";
 
@@ -241,6 +245,59 @@ test("nan is a supported usage provider with its own pending note", () => {
 	assert.ok(SUPPORTED_USAGE_PROVIDERS.includes("nan"));
 	assert.equal(providerNote("nan"), "no usage yet · r to fetch");
 	assert.deepEqual(renderUsagePanel([], plainTheme, 100, NOW, { provider: "nan" }), ["✿ nan · no usage yet · r to fetch"]);
+});
+
+// A generic hook: any extension can register a usage source for its own
+// provider at runtime, without gentle-shell knowing anything about it.
+
+test("parseUsageSource validates the registration payload and ignores anything malformed", () => {
+	const fetchFn = async () => undefined;
+	const valid = parseUsageSource({ schema: USAGE_SOURCE_SCHEMA, provider: "acme-cloud", fetch: fetchFn });
+	assert.equal(valid?.schema, USAGE_SOURCE_SCHEMA);
+	assert.equal(valid?.provider, "acme-cloud");
+	assert.equal(valid?.fetch, fetchFn);
+	assert.equal(valid?.pendingNote, undefined);
+
+	const withNote = parseUsageSource({ schema: USAGE_SOURCE_SCHEMA, provider: "acme-cloud", pendingNote: "warming up", fetch: fetchFn });
+	assert.equal(withNote?.pendingNote, "warming up");
+
+	assert.equal(parseUsageSource({ schema: "gentle-pi.usage-source/v0", provider: "acme-cloud", fetch: fetchFn }), undefined, "wrong schema");
+	assert.equal(parseUsageSource({ schema: USAGE_SOURCE_SCHEMA, provider: "", fetch: fetchFn }), undefined, "empty provider");
+	assert.equal(parseUsageSource({ schema: USAGE_SOURCE_SCHEMA, provider: "acme cloud", fetch: fetchFn }), undefined, "unsafe provider id");
+	assert.equal(parseUsageSource({ schema: USAGE_SOURCE_SCHEMA, provider: "acme-cloud", fetch: "nope" }), undefined, "fetch not a function");
+	assert.equal(parseUsageSource({ schema: USAGE_SOURCE_SCHEMA, provider: "acme-cloud", pendingNote: 7, fetch: fetchFn }), undefined, "pendingNote must be a string when present");
+	assert.equal(parseUsageSource(null), undefined);
+	assert.equal(parseUsageSource(undefined), undefined);
+	assert.equal(parseUsageSource("acme-cloud"), undefined);
+	assert.equal(parseUsageSource({}), undefined);
+});
+
+test("UsageSourceRegistry replaces a provider's source on re-registration", () => {
+	const registry = new UsageSourceRegistry();
+	assert.equal(registry.has("acme-cloud"), false);
+	assert.equal(registry.get("acme-cloud"), undefined);
+	assert.equal(registry.note("acme-cloud"), undefined);
+
+	const first: UsageSource = { schema: USAGE_SOURCE_SCHEMA, provider: "acme-cloud", fetch: async () => undefined };
+	registry.register(first);
+	assert.equal(registry.has("acme-cloud"), true);
+	assert.equal(registry.get("acme-cloud"), first);
+	assert.equal(registry.note("acme-cloud"), "no usage yet · r to fetch", "default note when the source sets none");
+
+	const second: UsageSource = { schema: USAGE_SOURCE_SCHEMA, provider: "acme-cloud", pendingNote: "still warming up", fetch: async () => undefined };
+	registry.register(second);
+	assert.equal(registry.get("acme-cloud"), second, "re-registration replaces, never accumulates");
+	assert.equal(registry.note("acme-cloud"), "still warming up");
+});
+
+test("a registered provider is supported without touching the built-in note map", () => {
+	const registry = new UsageSourceRegistry();
+	assert.equal(providerNote("acme-cloud"), "no subscription usage for this provider");
+	assert.equal(providerNote("acme-cloud", registry), "no subscription usage for this provider", "an empty registry changes nothing");
+	registry.register({ schema: USAGE_SOURCE_SCHEMA, provider: "acme-cloud", fetch: async () => undefined });
+	assert.equal(providerNote("acme-cloud", registry), "no usage yet · r to fetch");
+	assert.equal(providerNote("nan", registry), "no usage yet · r to fetch", "the static built-ins are unaffected");
+	assert.deepEqual(renderUsagePanel([], plainTheme, 100, NOW, { provider: "acme-cloud" }, registry), ["✿ acme-cloud · no usage yet · r to fetch"]);
 });
 
 test("renderUsagePanel lists each NaN model allowance with its reset on the same row", () => {

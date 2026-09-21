@@ -1,5 +1,5 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
-import { renderUsagePanel, type ActiveProvider, type UsageStore, type UsageTheme } from "./shell-usage.ts";
+import { renderUsagePanel, type ActiveProvider, type UsageSourceRegistry, type UsageStore, type UsageTheme } from "./shell-usage.ts";
 import { paintHoverable } from "./shell-hover.ts";
 
 // Gentle Shell subscriptions overlay: a framed panel over the usage store.
@@ -9,6 +9,9 @@ export interface UsageViewDeps {
 	theme: UsageTheme;
 	now(): number;
 	active(): ActiveProvider | undefined;
+	// Optional: lets the panel resolve the pending note of a provider whose
+	// usage source was registered at runtime instead of built in.
+	registry?(): UsageSourceRegistry | undefined;
 	onRefresh(): Promise<void>;
 	onClose(): void;
 	requestRender(): void;
@@ -98,7 +101,7 @@ export class UsageView {
 		const inner = width - 2;
 		const title = this.refreshing ? REFRESHING : TITLE;
 		const top = theme.fg(FRAME_ROLE, "╭─ ") + theme.fg(TITLE_ROLE, title) + theme.fg(FRAME_ROLE, ` ${rule(inner - visibleWidth(title) - 3)}╮`);
-		const body = renderUsagePanel(this.store.all(), theme, inner - 2, this.deps.now(), this.deps.active()).map(
+		const body = renderUsagePanel(this.store.all(), theme, inner - 2, this.deps.now(), this.deps.active(), this.deps.registry?.()).map(
 			(line) => `${theme.fg(FRAME_ROLE, "│")} ${fit(line, inner - 2)} ${theme.fg(FRAME_ROLE, "│")}`,
 		);
 		const hints = KEYS.map(([key, label]) => ({ key, label, text: `${key} ${label}`, action: (key === "r" ? "refresh" : "close") as HintAction }));

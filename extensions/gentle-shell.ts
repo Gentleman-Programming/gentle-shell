@@ -24,7 +24,7 @@ import {
 	type DoubleEscCancelPolicy,
 	type DoubleEscCancelResolution,
 } from "../lib/double-esc-cancel-policy.ts";
-import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseUsageHeaders, UsageStore, type ProviderUsage } from "../lib/shell-usage.ts";
+import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseUsageHeaders, parseUsageSource, UsageSourceRegistry, UsageStore, USAGE_SOURCE_EVENT, type ProviderUsage } from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarHeader, sidebarPart } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
@@ -763,23 +763,45 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	if (!shellEnabled(env)) return;
 	const deps: ShellDeps = { ...defaultShellDeps, activeProfile: createActiveProfileReader(env), ...overrides };
 	const usage = new UsageStore();
+	// Providers gentle-shell has never heard of get a usage source too, when
+	// the extension that owns them registers one on pi.events; see the
+	// USAGE_SOURCE_EVENT subscription below.
+	const usageSources = new UsageSourceRegistry();
 	let renderHost: ShellRenderHost | undefined;
 	// The 5-minute rule is per provider: one provider's fetch cannot leave the
 	// next one waiting for an interval it never used.
 	const usageFetchedAt = new Map<string, number>();
 	const refreshUsage = async (ctx: ExtensionContext, force: boolean) => {
 		const provider = ctx.model?.provider;
-		if (provider !== CODEX_PROVIDER && provider !== NAN_PROVIDER) return;
+		if (!provider) return;
+		const source = usageSources.get(provider);
+		if (!source && provider !== CODEX_PROVIDER && provider !== NAN_PROVIDER) return;
 		const now = deps.now();
 		if (!force && now - (usageFetchedAt.get(provider) ?? 0) < USAGE_REFRESH_MS) return;
 		usageFetchedAt.set(provider, now);
 		const apiKey = await ctx.modelRegistry.getApiKeyForProvider(provider).catch(() => undefined);
-		const fetched = provider === NAN_PROVIDER ? await fetchNanUsage(apiKey, deps.fetch, deps.now()) : await fetchCodexUsage(apiKey, deps.fetch, deps.now());
+		const fetched = source
+			? await source.fetch(apiKey, deps.fetch, deps.now())
+			: provider === NAN_PROVIDER
+				? await fetchNanUsage(apiKey, deps.fetch, deps.now())
+				: await fetchCodexUsage(apiKey, deps.fetch, deps.now());
 		if (!fetched) return;
 		usage.record(fetched);
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
 	};
+	// Subscribed once, for the life of the extension: a registration can
+	// arrive before the first session_start (the owning extension's factory
+	// runs first) or after it (its own session_start fires later, or it
+	// registers lazily). Either order is fine: a registration for the
+	// currently active provider forces exactly one refresh, so the panel
+	// never waits for the 5-minute window or the next turn to notice it.
+	pi.events.on(USAGE_SOURCE_EVENT, (payload) => {
+		const source = parseUsageSource(payload);
+		if (!source) return;
+		usageSources.register(source);
+		if (currentContext?.model?.provider === source.provider) void refreshUsage(currentContext, true);
+	});
 	pi.on("after_provider_response", (event) => {
 		const parsed = parseUsageHeaders(event.headers, deps.now());
 		if (!parsed) return;
@@ -800,6 +822,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					theme,
 					now: () => deps.now(),
 					active: () => (ctx.model ? { provider: ctx.model.provider } : undefined),
+					registry: () => usageSources,
 					onRefresh: () => refreshUsage(ctx, true),
 					onClose: () => done(null),
 					requestRender: () => tui.requestRender(),

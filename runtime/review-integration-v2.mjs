@@ -200,6 +200,22 @@ const CAPABILITIES_SCHEMA_IDENTITIES                                            
 		requiredMandatoryFeatures: REQUIRED_MANDATORY_FEATURES_V23,
 		optionalFeatureFloor: 14,
 	}),
+	// Ground-truthed against the published v3.4.0 binary: capabilities/v2.6
+	// advertises the same required surface as v2.5 (status/v6 is still
+	// advertised for compatibility) plus the status/v7 and status/v8 schemas,
+	// which are superset-checked additions, not requirements --
+	// decodeReviewStatusV3 already accepts v7/v8/v9 as additive extensions of
+	// v6, so the required-schema floor stays unchanged. `review assess` also
+	// gained review_due/review_due_reason/next_transition, which is unrelated
+	// to this negotiated capabilities surface. The v3.4.0 binary advertised
+	// 15 optional features, same as v2.5's binary (floor stays at 14, its
+	// established minimum).
+	"gentle-ai.review-integration.capabilities/v2.6": Object.freeze({
+		protocolMinor: 6,
+		requiredSchemas: Object.freeze([...REQUIRED_SCHEMAS_COMMON_V23, "gentle-ai.review-integration.capabilities/v2.6", "gentle-ai.review-integration.consent/v3", "gentle-ai.review-integration.start/v4", "gentle-ai.review-integration.status/v6", "gentle-ai.review-intended-untracked-selection/v1"]),
+		requiredMandatoryFeatures: REQUIRED_MANDATORY_FEATURES_V23,
+		optionalFeatureFloor: 14,
+	}),
 });
 const OPTIONAL_FEATURE_NAMES = Object.freeze([
 	"base_ref_workspace_overlay",
@@ -439,11 +455,21 @@ const REPOSITORY_CONTEXT_OUTCOMES = ["applied", "pending", "blocked_conflict", "
 
 
 
-// The two Go-owned non-lens provider role capture operations (gentle-pi#311
-// P4-roles; provider side gentle-ai#3264). Their collect inputs are
-// self-contained authority-advancing vectors: binding tokens plus
-// `--agent=pi --execute=true`, with NO submission descriptor. The known set
-// is closed — an unknown role capture operation is never executed.
+// The two non-lens provider role capture operations (gentle-pi#311 P4-roles;
+// provider side gentle-ai#3264). An older gentle-ai still renders each one as
+// a self-contained authority-advancing vector: binding tokens plus
+// `--agent=pi --execute=true`, with NO submission descriptor — executing the
+// exact rendered tokens makes Go materialize the role prompt, run its own
+// locked-down pi subprocess, and admit the verdict itself.
+//
+// gentle-ai's v9 contract makes both roles host-mediated exactly like a lens
+// materialize slot instead (gentle-pi#311 P3): the collect input carries
+// `--materialize=true` (never alongside `--execute`) plus a provider-owned
+// `submission` descriptor, and the host completes the frozen prompt
+// in-process and submits the result through that exact descriptor. The two
+// wire forms are mutually exclusive on one input; see the gating in
+// decodeCollectInput below. The known operation set is closed — an unknown
+// role capture operation is never executed either way.
 export const REVIEW_PROVIDER_ROLE_CAPTURE_OPERATION = {
 	CAPTURE_REFUTER: "review.capture-refuter",
 	CAPTURE_VALIDATION: "review.capture-validation",
@@ -1452,11 +1478,18 @@ function decodeCaptureSubmission(value         , label        , v5         , v6 
 	// one-entry values array the host relay already consumes. A payload
 	// carrying both wire forms at once matches no captured shape and falls
 	// through to the legacy decoder, which rejects the unknown `value` key.
+	//
+	// gentle-ai's v9 contract renders the same singular-value shape for the
+	// two host-mediated provider role operations (capture-refuter,
+	// capture-validation): they carry a `schema` key exactly like
+	// capture-result, since both bind one artifact-path-or-stdin value, never
+	// the correction-plan's numeric bounds (gentle-pi#311 P3).
 	if (v5 && typeof value === "object" && value !== null && "value" in value && !("values" in value)) {
 		const submission = exactRecord(value, label, ["operation_token", "argument_tokens", "value"]);
-		const operationToken = enumeration(submission.operation_token, ["capture-result", "capture-correction-plan"]         , `${label}.operation_token`);
+		const operationToken = enumeration(submission.operation_token, ["capture-result", "capture-correction-plan", "capture-refuter", "capture-validation"]         , `${label}.operation_token`);
 		const argumentTokens = stringArray(submission.argument_tokens, `${label}.argument_tokens`, { minimum: 1 });
-		const row = operationToken === "capture-result"
+		const bindsArtifactSchema = operationToken === "capture-result" || operationToken === "capture-refuter" || operationToken === "capture-validation";
+		const row = bindsArtifactSchema
 			? exactRecord(submission.value, `${label}.value`, ["slot", "domain", "schema", "substitution_location"])
 			: exactRecord(submission.value, `${label}.value`, ["slot", "domain", "minimum", "maximum", "substitution_location"]);
 		return {
@@ -1465,7 +1498,11 @@ function decodeCaptureSubmission(value         , label        , v5         , v6 
 			values: [{
 				slot: operationToken === "capture-result"
 					? enumeration(row.slot, ["reviewer_result"]         , `${label}.value.slot`)
-					: enumeration(row.slot, ["correction_lines"]         , `${label}.value.slot`),
+					: operationToken === "capture-correction-plan"
+					? enumeration(row.slot, ["correction_lines"]         , `${label}.value.slot`)
+					: operationToken === "capture-refuter"
+					? enumeration(row.slot, ["provider_refuter"]         , `${label}.value.slot`)
+					: enumeration(row.slot, ["provider_targeted_validator"]         , `${label}.value.slot`),
 				domain: nonempty(row.domain, `${label}.value.domain`),
 				...(row.schema === undefined ? {} : { schema: nonempty(row.schema, `${label}.value.schema`) }),
 				...(row.minimum === undefined ? {} : { minimum: integer(row.minimum, `${label}.value.minimum`, 1, 200) }),
@@ -1606,7 +1643,7 @@ const CORRECTION_REQUEST_REASON_CODES = Object.freeze(["correction_plan_required
 // v5 capture operations that must carry a submission descriptor.
 const V5_SUBMISSION_CAPTURE_OPERATIONS = Object.freeze(["review.capture-correction-plan"]         );
 
-function decodeCollectInput(value         , label        , v5         , v6         )                       {
+function decodeCollectInput(value         , label        , v5         , v6         , v9         )                       {
 	const input = exactRecord(value, label, ["name", "schema", "capture_operation", "arguments"], ["artifact_subject", "base_tree", "candidate_tree", "changed_path_manifest", "submission", ...(v5 ? ["provider_task", "validation_request"] : [])]);
 	const name = text(input.name, `${label}.name`, { minimum: 1, pattern: /^[a-z0-9_]+$/ });
 	const schema = nonempty(input.schema, `${label}.schema`);
@@ -1657,13 +1694,18 @@ function decodeCollectInput(value         , label        , v5         , v6      
 		sha256(argumentsList[5] .value, `${label}.arguments[5].value`);
 	}
 
-	// gentle-pi#311 P4-roles: the two Go-owned non-lens provider role capture
-	// operations render SELF-CONTAINED authority-advancing vectors. Executing
+	// gentle-pi#311 P4-roles / P3: the two non-lens provider role capture
+	// operations render either wire form on one input, never both at once.
+	// An older gentle-ai renders a SELF-CONTAINED authority-advancing vector
+	// (binding tokens + --agent=pi --execute=true, no submission): executing
 	// the exact rendered tokens makes Go materialize the role prompt, run its
-	// own locked-down pi subprocess, and admit the raw verdict — so a
-	// submission descriptor (the host-mediated completing form) on one of
-	// these inputs would hand the caller a way to author the verdict and is
-	// rejected as a provider contract violation.
+	// own locked-down pi subprocess, and admit the raw verdict. gentle-ai's
+	// v9 contract instead renders a HOST-MEDIATED form: the same binding
+	// tokens plus --materialize=true (never --execute) and a provider-owned
+	// submission descriptor, exactly like a lens capture-result materialize
+	// slot — the host completes the frozen prompt in-process and submits
+	// through that descriptor.
+	const isRoleCaptureOperation = (REVIEW_PROVIDER_ROLE_CAPTURE_OPERATIONS                     ).includes(captureOperation);
 	if (captureOperation === REVIEW_PROVIDER_ROLE_CAPTURE_OPERATION.CAPTURE_REFUTER && schema !== "https://gentle-ai.dev/schema/review/refuter/v1") {
 		throw new TypeError(`${label}.schema must be https://gentle-ai.dev/schema/review/refuter/v1`);
 	}
@@ -1694,8 +1736,30 @@ function decodeCollectInput(value         , label        , v5         , v6      
 		if (providerArgument("target") !== validationRequest.correctionTargetIdentity) throw new TypeError(`${label}.arguments target must bind validation_request.correction_target_identity`);
 		if (providerArgument("request-hash") !== validationRequest.requestHash) throw new TypeError(`${label}.arguments request-hash must bind validation_request.request_hash`);
 	}
-	if (input.submission !== undefined && (REVIEW_PROVIDER_ROLE_CAPTURE_OPERATIONS                     ).includes(captureOperation)) {
-		throw new TypeError(`${label}.submission is not allowed on the self-contained ${captureOperation} vector`);
+	if (isRoleCaptureOperation && input.submission !== undefined) {
+		// A submission descriptor only ever rides the v9 host-mediated form
+		// (gentle-ai's v9 provider contract; the sibling branch ahead of the
+		// currently-released v8). A v8-or-earlier provider (status/v3..v8) never
+		// renders one, even if it happened to carry a submission-shaped payload,
+		// so this is gated on v9 specifically — not on v5, which v8 already
+		// satisfies. Within a v9 payload the discriminator is exactly the
+		// materialize slot's --materialize=true with no --execute, the same one
+		// a lens capture-result materialize slot already uses. Mixing a
+		// submission with the old self-contained --execute=true vector, or with
+		// neither flag, is a malformed vector.
+		if (!v9) {
+			throw new TypeError(`${label}.submission requires the v9 provider contract for the host-mediated ${captureOperation} form`);
+		}
+		const argumentNamed = (argumentName        )                     => {
+			const matches = argumentsList.filter((argument) => argument.name === argumentName);
+			return matches.length === 1 ? matches[0] .value : undefined;
+		};
+		if (argumentNamed("materialize") !== "true") {
+			throw new TypeError(`${label}.submission requires --materialize=true on the host-mediated ${captureOperation} form`);
+		}
+		if (argumentNamed("execute") !== undefined) {
+			throw new TypeError(`${label} must not carry --execute alongside a submission descriptor on ${captureOperation}`);
+		}
 	}
 
 	if (captureOperation === "review.capture-result") {
@@ -1712,7 +1776,12 @@ function decodeCollectInput(value         , label        , v5         , v6      
 	const submissionOperations                    = v5
 		? ["review.capture-result", "review.capture-correction-plan", ...(v6 ? ["external.select_intended_untracked"] : [])]
 		: ["review.capture-result"];
-	if (input.submission !== undefined && !submissionOperations.includes(captureOperation)) {
+	// Role operations are gated above by the materialize/execute discriminator
+	// instead of this allowlist: an older gentle-ai's self-contained vector
+	// legitimately carries no submission regardless of v5/v6, so they cannot
+	// simply join the list the way every other submission-carrying operation
+	// does.
+	if (input.submission !== undefined && !isRoleCaptureOperation && !submissionOperations.includes(captureOperation)) {
 		throw new TypeError(v5 ? `${label}.submission is only valid for ${submissionOperations.join(", ")}` : `${label}.submission is only valid for review.capture-result`);
 	}
 	if (intendedUntracked && input.submission === undefined) throw new TypeError(`${label}.submission is required for external.select_intended_untracked`);
@@ -1750,8 +1819,14 @@ export function decodeReviewManagedAssetsContinuationV1(value         , label   
 	return { operation, command, ...(agent === undefined ? {} : { agent }), ...(staleAssets === undefined ? {} : { staleAssets }) };
 }
 
-export function decodeReviewNextTransitionV3(value         , options                                 = {})                         {
-	const v6 = options.v6 === true;
+export function decodeReviewNextTransitionV3(value         , options                                               = {})                         {
+	// v9 (gentle-ai's next contract, ahead of the currently-released v8) is
+	// the only rung this sub-decoder distinguishes beyond v6: v7 and v8 add
+	// nothing to next_transition/collect-input decoding (v8 only extended the
+	// reviewer-result transition for OpenCode provider tasks at the top
+	// status level), so they decode on the exact v6 surface here.
+	const v9 = options.v9 === true;
+	const v6 = options.v6 === true || v9;
 	const v5 = options.v5 === true || v6;
 	const transition = exactRecord(value, "next_transition", ["kind", "reason_code"], ["execute", "collect", ...(v5 ? ["correction_request"] : []), "continuation", "unachievable_lens_slots"]);
 	const kind = enumeration(transition.kind, ["execute", "collect", "stop"]         , "next_transition.kind");
@@ -1813,7 +1888,7 @@ export function decodeReviewNextTransitionV3(value         , options            
 	}
 	if (kind === "collect") {
 		const collect = exactRecord(transition.collect, "next_transition.collect", ["inputs"]);
-		const inputs = array(collect.inputs, "next_transition.collect.inputs", (entry, label) => decodeCollectInput(entry, label, v5, v6), { minimum: 1 });
+		const inputs = array(collect.inputs, "next_transition.collect.inputs", (entry, label) => decodeCollectInput(entry, label, v5, v6, v9), { minimum: 1 });
 		if (transition.execute !== undefined) throw new TypeError("next_transition.execute is incompatible with collect");
 		return { kind, reasonCode, collect: { inputs }, ...(correctionRequest === undefined ? {} : { correctionRequest }) };
 	}
@@ -1926,16 +2001,25 @@ export function decodeReviewStatusV3(value         )                 {
 	// surfaces. status/v6 adds the intended-untracked selection; status/v7
 	// (gentle-ai v2.6.0, advertised through capabilities/v2.5 alongside v6)
 	// adds optional `eligible_untracked_inventory` and escalation metadata,
-	// so it is decoded on the v6 surface. v3 keeps rejecting every v5/v6/v7-only
-	// field.
+	// so it is decoded on the v6 surface. status/v8 (gentle-ai main, PR #4765;
+	// the current released contract) only extended the reviewer-result
+	// transition for OpenCode provider tasks -- no new top-level key -- so it
+	// decodes on the exact v7 surface too. status/v9 (the sibling gentle-ai
+	// branch's contract, ahead of the released v8) adds nothing at this top
+	// level either: its one addition is the host-mediated role `submission`
+	// on a next_transition.collect input (gentle-pi#311 P3), gated on v9 in
+	// decodeCollectInput, not here. v3 keeps rejecting every
+	// v5/v6/v7/v8/v9-only field.
 	const schema = typeof value === "object" && value !== null ? (value                           ).schema : undefined;
-	const v7 = schema === "gentle-ai.review-integration.status/v7";
+	const v9 = schema === "gentle-ai.review-integration.status/v9";
+	const v8 = v9 || schema === "gentle-ai.review-integration.status/v8";
+	const v7 = v8 || schema === "gentle-ai.review-integration.status/v7";
 	const v6 = v7 || schema === "gentle-ai.review-integration.status/v6";
 	const v5 = v6 || schema === "gentle-ai.review-integration.status/v5";
 	const body = exactRecord(value, "status", [
 		"schema", "contract", "operation", "applicability", "action", "replayability", "target_identity", "projection", "repair", "candidates",
 	], ["authority", "frozen", "action_disposition", "eligibility", "next_transition", "authority_target_identity", ...(v5 ? ["receipt", "forecast", "repository_context", "validation_request"] : []), ...(v7 ? ["eligible_untracked_inventory", "escalation"] : [])]);
-	requireIdentity(body, v7 ? "gentle-ai.review-integration.status/v7" : v6 ? "gentle-ai.review-integration.status/v6" : v5 ? "gentle-ai.review-integration.status/v5" : "gentle-ai.review-integration.status/v3", REVIEW_INTEGRATION_OPERATION.STATUS);
+	requireIdentity(body, v9 ? "gentle-ai.review-integration.status/v9" : v8 ? "gentle-ai.review-integration.status/v8" : v7 ? "gentle-ai.review-integration.status/v7" : v6 ? "gentle-ai.review-integration.status/v6" : v5 ? "gentle-ai.review-integration.status/v5" : "gentle-ai.review-integration.status/v3", REVIEW_INTEGRATION_OPERATION.STATUS);
 
 	const applicability = enumeration(body.applicability, ["current_target", "unrelated", "ambiguous", "corrupted"]         , "status.applicability");
 	let receipt                                   ;
@@ -1983,7 +2067,7 @@ export function decodeReviewStatusV3(value         )                 {
 	if (action === "recover" && actionDisposition === undefined) throw new TypeError("recover status requires action_disposition");
 	if (action !== "recover" && actionDisposition !== undefined) throw new TypeError("status.action_disposition is only valid for the recover action");
 	if (body.eligibility !== undefined) decodeEligibility(body.eligibility, "status.eligibility");
-	const nextTransition = body.next_transition === undefined ? undefined : decodeReviewNextTransitionV3(body.next_transition, { v5, v6 });
+	const nextTransition = body.next_transition === undefined ? undefined : decodeReviewNextTransitionV3(body.next_transition, { v5, v6, v9 });
 	const validationRequest = v5 && body.validation_request !== undefined
 		? decodeReviewTargetedValidationRequestV1(body.validation_request, "status.validation_request")
 		: undefined;

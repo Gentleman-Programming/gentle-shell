@@ -154,7 +154,7 @@ if (!childRole) test("installed AI producer → fixed Pi extensions → managed 
 			},
 		}, { askUser: async () => ({ cancelled: true }) });
 		try {
-			const task = runner.run({ agent: { ...actor(phase), ...(phase === "research" ? { tools: ["read", "write", "fetch_content"] } : {}) }, prompt: "Controlled boundary probe only; no implementation or acceptance.", label: undefined, context: phase === "research" ? JSON.stringify(status) : undefined, mode: "task", cwd, parentSessionId: "uptake", model: undefined, thinking: undefined, sessionDir: join(directory, "sessions"), resumeSessionPath: undefined, env: { PATH: process.env.PATH, HOME: home, PI_CODING_AGENT_DIR: home, GENTLE_PI_AGENT_HOME: home, PI_OFFLINE: "1", UPTAKE_CHILD: "1", UPTAKE_RUN: directory, UPTAKE_SCRIPT: scriptPath, GENTLE_PI_GENTLE_AI_DEV_BINARY: binary, ...(phase === "research" ? { [RESEARCH_CHILD_TOOLS_ENV]: JSON.stringify(["read", "write", "fetch_content"]) } : {}), ...options.env }, extensionPaths: [...fixed, ...(options.absentTool ? [] : [docExtension])], researchSelection: selection, researchArtifact: options.artifact, sddRemediation: options.remediation, ...(phase === "research" ? {} : { sddChange: { phase, changeName: "uptake", workspaceRoot: cwd, ...options.selection } }) });
+			const task = runner.run({ agent: { ...actor(phase), ...(phase === "research" ? { tools: ["read", "write", "fetch_content"] } : {}) }, prompt: "Controlled boundary probe only; no implementation or acceptance.", label: undefined, context: phase === "research" ? JSON.stringify(status) : undefined, mode: "task", cwd, parentSessionId: "uptake", model: undefined, thinking: undefined, sessionDir: join(directory, "sessions"), resumeSessionPath: undefined, env: { PATH: process.env.PATH, HOME: home, PI_CODING_AGENT_DIR: home, GENTLE_PI_AGENT_HOME: home, PI_OFFLINE: "1", UPTAKE_CHILD: "1", UPTAKE_RUN: directory, UPTAKE_SCRIPT: scriptPath, GENTLE_PI_GENTLE_AI_DEV_BINARY: binary, ...(phase === "research" ? { [RESEARCH_CHILD_TOOLS_ENV]: JSON.stringify(["read", "write", "fetch_content"]) } : {}), ...options.env }, extensionPaths: [...fixed, ...(options.absentTool ? [] : [docExtension])], researchSelection: selection, sddRemediation: options.remediation, ...(phase === "research" ? {} : { sddChange: { phase, changeName: "uptake", workspaceRoot: cwd, ...options.selection } }) });
 			const result = await runner.waitFor(task.id);
 			assert.equal(launches.length, 1);
 			assert.deepEqual(launches[0].args.flatMap((arg, i, args) => arg === "--extension" ? [args[i + 1]] : []), [...fixed, ...(options.absentTool ? [] : [docExtension])]);
@@ -173,30 +173,20 @@ if (!childRole) test("installed AI producer → fixed Pi extensions → managed 
 		assert.equal(ended(observed, "read").length, 1); assert.equal(ended(observed, "read")[0].isError, false);
 		assert.match(JSON.stringify(ended(observed, "read")[0].result), /Native uptake controlled fixture/);
 	});
-	const path = join(change, "research.md"), initial = '{"revision":1,"outcome":"blocked"}', next = '{"revision":2,"outcome":"partial","intent":"retain docs request"}';
-	const artifact = { store: "openspec", worktree: cwd, changeName: "uptake", retainedIntent: "retain docs request", locators: [{ artifact: "research", path, revision: 1, digest: digest(initial) }] };
-	writeFileSync(path, initial);
-	for (const absentTool of [true, false]) await t.test(`research provisioning absent=${absentTool} retains bounded denial persistence`, async () => {
-		const content = absentTool ? next : '{"revision":3,"outcome":"partial","intent":"retain docs request"}';
-		if (!absentTool) { artifact.locators[0].revision = 2; artifact.locators[0].digest = digest(next); }
-		const observed = await run(`research-${absentTool}`, "research", [[["fetch_content", {}]], [["read", { path }]], [["write", { path, content }]], [["read", { path }]], [["write", { path: join(cwd, "forbidden"), content }]]], { artifact, absentTool });
+	const path = join(change, "research.md");
+	for (const absentTool of [true, false]) await t.test(`output-only research provisioning absent=${absentTool} preserves parent ownership`, async () => {
+		const content = "# Partial research\nExternal questions remain open.\n";
+		const before = existsSync(path) ? readFileSync(path, "utf8") : undefined;
+		const observed = await run(`research-${absentTool}`, "research", [[["fetch_content", {}]], [["read", { path }]], [["write", { path, content }]]], { absentTool });
 		assert.equal(observed.result.status, "completed", JSON.stringify(observed.result));
-		assert.ok(JSON.stringify(observed.input).includes("gentle-ai.sdd-status"));
 		assert.equal(ended(observed, "fetch_content")[0].isError, absentTool);
 		assert.equal(existsSync(join(observed.directory, "fetch-calls")), !absentTool);
+		for (const tool of ["read", "write"]) assert.equal(ended(observed, tool)[0].isError, true);
+		assert.equal(existsSync(path) ? readFileSync(path, "utf8") : undefined, before);
+		// Scripted parent persistence/readback, not autonomous model proof.
+		writeFileSync(path, content);
 		assert.equal(readFileSync(path, "utf8"), content);
-		assert.equal(existsSync(join(cwd, "forbidden")), false);
-		assert.equal(ended(observed, "write")[1].isError, true);
-		assert.match(JSON.stringify(ended(observed, "read").at(-1).result), /Readback identity matched/);
 		if (!absentTool) assert.equal(json(join(observed.directory, "inventory.json")).find(tool => tool.name === "fetch_content").sourceInfo.path, docExtension);
-	});
-	for (const fault of ["stale", "worktree"]) await t.test(`research ${fault} refuses before mutation`, async () => {
-		const bytes = readFileSync(path, "utf8");
-		const scope = { ...artifact, worktree: fault === "worktree" ? root : cwd, locators: [{ ...artifact.locators[0], revision: 3, digest: fault === "stale" ? "0".repeat(64) : digest(bytes) }] };
-		const observed = await run(`research-${fault}`, "research", [[["read", { path }]], [["write", { path, content: '{"revision":4}' }]]], { artifact: scope });
-		assert.equal(ended(observed, "read")[0].isError, true);
-		assert.equal(ended(observed, "write")[0].isError, true);
-		assert.equal(readFileSync(path, "utf8"), bytes);
 	});
 
 	await t.test("wrong native worktree refuses actual child tool work", async () => {
@@ -211,7 +201,7 @@ if (!childRole) test("installed AI producer → fixed Pi extensions → managed 
 		rmSync(definition.filePath);
 		let acquires = 0;
 		try {
-			await assert.rejects(admitManagedRemediation({ agent: definition, cwd, sddChange: { phase: "remediate", changeName: "uptake", workspaceRoot: cwd, failedEvidenceRevision: `sha256:${"a".repeat(64)}` } } as unknown as TaskRequest, {}, { ...native, sddAttemptAcquire: async () => { acquires++; throw new Error("Must not acquire"); } } as unknown as import("../lib/native-review-cli.ts").NativeReviewCli, async () => {}), /unsupported/i);
+			await assert.rejects(admitManagedRemediation({ agent: definition, cwd, sddChange: { phase: "remediate", changeName: "uptake", workspaceRoot: cwd, failedEvidenceRevision: `sha256:${"a".repeat(64)}` } } as unknown as TaskRequest, {}, { ...native, sddAttemptAcquire: async () => { acquires++; throw new Error("Must not acquire"); } } as unknown as import("../lib/native-review-cli.ts").NativeReviewCli), /unsupported/i);
 			assert.equal(acquires, 0);
 		} finally { writeFileSync(definition.filePath, bytes); }
 	});

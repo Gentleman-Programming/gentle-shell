@@ -1,25 +1,30 @@
 import { fileURLToPath } from "node:url";
+import { agentsViewKey, agentsCollapseKey, agentsStopKey } from "../lib/agents-keys.ts";
 import { extractParentConfirmedSddPreflightContext, getPackageAssetOwner, isParentConfirmedSddPreflightContext, SHIPPED_SDD_AGENT_NAMES } from "../lib/sdd-preflight.ts";
-import { NativeReviewCliV216, NativeReviewCliError, createNodeExecFileAdapter, decodeNativeSddStatusV2, type NativeReviewCli, type NativeSddAcquireRequest, type NativeSddAttemptResult, type NativeSddSettleRequest } from "../lib/native-review-cli.ts";
+import { NativeReviewCliV216, createNodeExecFileAdapter, decodeNativeSddStatusV2, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { spawn } from "node:child_process";
 import { recordReviewMutation } from "../lib/review-reminder-receipt.ts";
+import { SESSION_CHANGE_RELAY } from "../lib/session-changes.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, type WorktreeResolver } from "../lib/session-worktree-registry.ts";
 import { existsSync, mkdirSync, readFileSync, lstatSync, realpathSync } from "node:fs";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { join, resolve, isAbsolute, sep } from "node:path";
 import { createBashToolDefinition, createLocalBashOperations, type BashOperations, keyHint, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, type TUI } from "@earendil-works/pi-tui";
-import { sidebarPart } from "../lib/shell-sidebar.ts";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import { createCompletionQueue } from "../lib/agents-completion-delivery.ts";
-import { AGENT_MODE, discoverAgents, parseAgentDefinition, loadAgentsConfig, resolveAgentProfile, type AgentDefinition, type AgentMode } from "../lib/agents-config.ts";
-import { isFinished, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
-import { AgentRunner, piCommand, abortReasonText, plannedCommands, type RemediationPlan, type RemediationScope, REMEDIATION_PLAN_ENV, parseRemediationPlan, remediationEvidence, type AskAnswer, type RunnerDeps, type SddChangeSelection, type TaskRequest, type RemediationTerminalFacts } from "../lib/agents-runner.ts";
+import { AGENT_MODE, discoverAgents, parseAgentDefinition, loadAgentsConfig, resolveAgentProfile, withPinnedModelProfiles, type AgentDefinition, type AgentMode } from "../lib/agents-config.ts";
+import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-policy.ts";
+import { installBackgroundCacheWarming } from "../lib/background-cache-warming.ts";
+import { isFinished, TASK_EVENT, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
+import { AgentRunner, piCommand, abortReasonText, plannedCommands, type RemediationPlan, type RemediationScope, REMEDIATION_PLAN_ENV, parseRemediationPlan, type AskAnswer, type RunnerDeps, type SddChangeSelection, type TaskRequest } from "../lib/agents-runner.ts";
 import { ChildMessenger, type IpcEndpoint } from "../lib/agents-messaging.ts";
+import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
+import { WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessionPresenceRegistry, type WindowsSessionRegistryPhaseObserver } from "../lib/windows-session-transport.ts";
 import { hasReviewSessionPermission, resolveCanonicalGitRepositoryIdentitySync, type ReviewSessionManager } from "../lib/review-session-standing-permission.ts";
-import { acquireTaskLock, historyDir, remediationUnresolved, loadHistory, loadStoredTask, pruneHistory, saveTask } from "../lib/agents-history.ts";
+import { historyDir, loadHistory, loadStoredTask, pruneHistory, saveTask } from "../lib/agents-history.ts";
 import { sessionToMarkdown } from "../lib/agents-transcript.ts";
 import { AgentsView } from "../lib/agents-view.ts";
 import { PresencePublisher } from "../lib/orchestrator-presence.ts";
@@ -27,8 +32,9 @@ import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-inte
 import { AGENTS_GLYPH, renderAgentsCard, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
 import { CARD_TONE, renderCard } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
-import { resolveGentlePiAgentHome } from "../lib/agent-home.ts";
-import { assertResearchCheckpoint, parseResearchPersistence, RESEARCH_PERSISTENCE_ENTRY, canonicalArtifactPath, researchAgent, renderResearchCapabilities, RESEARCH_CHILD_TOOLS_ENV, RESEARCH_SELECTION_ENV, RESEARCH_ARTIFACT_ENV, parseResearchArtifactIntent, researchArtifactCall, researchArtifactReadback, type ResearchArtifactIntent, type ResearchWriteIdentity } from "../lib/sdd-research-capabilities.ts";
+import { resolveGentlePiAgentHome, gentlePiConfigHome } from "../lib/agent-home.ts";
+import { resolveProfilePin } from "../lib/agent-profile-pin.ts";
+import { canonicalArtifactPath, researchAgent, renderResearchCapabilities, RESEARCH_CHILD_TOOLS_ENV, RESEARCH_SELECTION_ENV } from "../lib/sdd-research-capabilities.ts";
 import { CHILD_METRICS_EVENT, CHILD_METRICS_REVOKED, childEvent, launchSelection, type LaunchSelection } from "../lib/runtime-metrics-children.ts";
 import { runtimeMetricsEnvAllows, type RuntimeMetricsPolicyDeps } from "../lib/runtime-metrics-policy.ts";
 
@@ -41,10 +47,8 @@ export const AGENTS_WIDGET_KEY = "gentle-agents";
 export const AGENTS_COMMAND_NAME = "gentle:agents";
 export const AGENTS_RESULT_TYPE = "gentle-agents.result";
 export const AGENTS_MESSAGE_TYPE = "gentle-agents.message";
+export const AGENTS_ORCHESTRATOR_MESSAGE_TYPE = "gentle-agents.orchestrator-message";
 export const AGENTS_STALE_RESULT_TYPE = "gentle-agents.stale-result";
-const COLLAPSE_KEY_DEFAULT = "ctrl+shift+a";
-const VIEW_KEY_DEFAULT = "alt+a";
-const STOP_KEY_DEFAULT = "alt+s";
 const RENDER_COALESCE_MS = 400;
 const CLOCK_TICK_MS = 1000;
 const TOOL_PREFIX = "subagent_";
@@ -54,7 +58,6 @@ const SDD_PHASE_BY_AGENT = {
 	"sdd-apply": "apply",
 	"sdd-remediate": "remediate",
 	"sdd-verify": "verify",
-	"sdd-sync": "sync",
 	"sdd-archive": "archive",
 } as const;
 
@@ -65,7 +68,7 @@ function sddPhaseForAgent(name: string): SddChangeSelection["phase"] | undefined
 function parseSddChange(value: unknown, agentName: string): SddChangeSelection | undefined {
 	if (value === undefined) return undefined;
 	const expectedPhase = sddPhaseForAgent(agentName);
-	if (!expectedPhase) throw new Error("sdd_change is allowed only for SDD apply, verify, sync, or archive agents.");
+	if (!expectedPhase) throw new Error("sdd_change is allowed only for SDD apply, verify, or archive agents.");
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("sdd_change must be an object with changeName, workspaceRoot, and phase.");
 	const selection = value as Record<string, unknown>;
 	const keys = Object.keys(selection).sort();
@@ -76,22 +79,18 @@ function parseSddChange(value: unknown, agentName: string): SddChangeSelection |
 		throw new Error("sdd_change must contain only a non-empty changeName, workspaceRoot, and the agent's matching phase.");
 	}
 	if (expectedPhase === "remediate" && (typeof selection.failedEvidenceRevision !== "string" || !/^sha256:[0-9a-f]{64}$/.test(selection.failedEvidenceRevision))) throw new Error("Invalid remediation revision");
-	return { changeName: selection.changeName, workspaceRoot: selection.workspaceRoot, phase: selection.phase, ...(expectedPhase === "remediate" ? { failedEvidenceRevision: selection.failedEvidenceRevision as string } : {}) };
+	return { changeName: selection.changeName, workspaceRoot: selection.workspaceRoot, phase: expectedPhase, ...(expectedPhase === "remediate" ? { failedEvidenceRevision: selection.failedEvidenceRevision as string } : {}) };
 }
 
 const REMEDIATION_SCHEMA = {
-	type: "object", additionalProperties: false, required: ["plan", "attempt"],
+	type: "object", additionalProperties: false, required: ["plan"],
 	properties: {
 		plan: { type: "object", additionalProperties: false, required: ["cwd", "commands", "runtimeHarness", "rollback"], properties: {
 			editPaths: { type: "array", maxItems: 32, items: { type: "string" }, description: "Exact canonical files requested for this launch; no entry means no edit/write authority." }, cwd: { type: "string" }, commands: { type: "array", minItems: 1, maxItems: 16, items: { type: "string" } },
 			runtimeHarness: { type: "object", additionalProperties: false, description: "Exactly one concrete command or prior concrete naReason containing because.", properties: { command: { type: "string" }, naReason: { type: "string" } } },
 			rollback: { type: "object", additionalProperties: false, required: ["boundary", "command"], properties: { boundary: { type: "string" }, command: { type: "string" } } },
 		} },
-		attempt: { type: "object", additionalProperties: false, required: ["requestId", "workUnit", "evidenceGoal"], properties: {
-			requestId: { type: "string" }, workUnit: { type: "string" }, evidenceGoal: { type: "string" }, token: { type: "string" }, expectedRevision: { type: "string" },
-			maxAttempts: { type: "integer", minimum: 1, maximum: 100 }, maxChangedLines: { type: "integer", minimum: 1, maximum: 1000000 },
-			untrackedScope: { type: "string", enum: ["select", "exclude"] }, expectedUntrackedInventory: { type: "string" }, intendedUntracked: { type: "array", items: { type: "string" } },
-		} },
+
 	},
 };
 
@@ -129,175 +128,21 @@ export function remediationToolAllowed(scope: RemediationScope | undefined, cwd:
 	} catch { return false; }
 }
 
-export interface RemediationReconciliationResult {
-	acquireState?: NativeSddAttemptResult["state"];
-	settlementState?: NativeSddAttemptResult["state"];
-}
-
-async function replayUncertainNativeMutation<T>(label: "acquire" | "settlement", invoke: () => Promise<T>): Promise<T> {
-	try { return await invoke(); }
-	catch (error) {
-		if (error instanceof TypeError || error instanceof NativeReviewCliError && error.mutationOutcome === "none") throw error;
-		try { return await invoke(); }
-		catch { throw new Error(`Native remediation ${label} remains unresolved; retry only this exact retained task`); }
-	}
-}
-
-function finishReconciledTask(task: TaskRecord, message: string): void {
-	task.status = TASK_STATUS.FAILED;
-	task.error = message;
-	task.lastStep = "reconciled";
-	task.endedAt ??= Date.now();
-	task.lastActivityAt = Date.now();
-}
-
-export async function reconcileManagedRemediation(task: TaskRecord, native: NativeReviewCli, persist: (task: TaskRecord) => Promise<void>): Promise<RemediationReconciliationResult> {
-	const state = task.sddRemediation;
-	if (task.agent !== "sdd-remediate" || !state?.acquire || state.acquire.workspaceRoot !== task.cwd) throw new Error("Task is not an exact managed remediation record");
-	if (state.settlement) throw new Error("Managed remediation task already has a terminal settlement");
-
-	const settleExact = async (settle: NativeSddSettleRequest, acquireState?: NativeSddAttemptResult["state"]): Promise<RemediationReconciliationResult> => {
-		if (!native.sddAttemptSettle) throw new Error("Native remediation settlement reconciliation is unavailable");
-		let settlement: NativeSddAttemptResult;
-		try { settlement = await replayUncertainNativeMutation("settlement", () => native.sddAttemptSettle!(structuredClone(settle))); }
-		catch (error) {
-			state.settlementUncertain = true;
-			await persist(task);
-			throw error;
-		}
-		state.settlement = structuredClone(settlement);
-		delete state.settlementUncertain;
-		finishReconciledTask(task, `Managed remediation settlement reconciled as ${settlement.state}${settlement.reason ? `(${settlement.reason})` : ""}; no actor started`);
-		await persist(task);
-		return { ...(acquireState === undefined ? {} : { acquireState }), settlementState: settlement.state };
-	};
-
-	if (state.settle) {
-		const settle = state.settle, acquire = state.acquire;
-		const sameUntracked = JSON.stringify({ scope: settle.untrackedScope, inventory: settle.expectedUntrackedInventory, intended: settle.intendedUntracked }) === JSON.stringify({ scope: acquire.untrackedScope, inventory: acquire.expectedUntrackedInventory, intended: acquire.intendedUntracked });
-		if (state.acquireResult?.state !== "proceed" || !state.token || state.acquireResult.token !== state.token || settle.token !== state.token || settle.workspaceRoot !== acquire.workspaceRoot || settle.changeName !== acquire.changeName || settle.remediatesEvidenceRevision !== acquire.remediatesEvidenceRevision || !sameUntracked) throw new Error("Retained remediation settlement does not match its exact acquired authority");
-		return settleExact(structuredClone(settle), state.acquireResult.state);
-	}
-	if (!state.acquireUncertain) throw new Error("Managed remediation task has no uncertain acquire or settlement to reconcile");
-	if (state.actorClaimed) throw new Error("Managed remediation actor effects are uncertain; exact settlement or maintainer intervention is required");
-	if (state.acquireResult || state.token || state.settlementUncertain) throw new Error("Managed remediation acquire history is inconsistent; maintainer intervention is required");
-	if (!native.sddAttemptAcquire) throw new Error("Native remediation acquire reconciliation is unavailable");
-
-	let acquired: NativeSddAttemptResult;
-	try { acquired = await replayUncertainNativeMutation("acquire", () => native.sddAttemptAcquire!(structuredClone(state.acquire))); }
-	catch (error) {
-		state.acquireUncertain = true;
-		await persist(task);
-		throw error;
-	}
-	if (acquired.state === "proceed" && !acquired.token) throw new Error("Native remediation acquire reconciliation returned no token");
-	state.acquireResult = structuredClone(acquired);
-	delete state.acquireUncertain;
-	if (acquired.state !== "proceed") {
-		delete state.token;
-		finishReconciledTask(task, `Managed remediation acquire reconciled as ${acquired.state}${acquired.reason ? `(${acquired.reason})` : ""}; no actor started`);
-		await persist(task);
-		return { acquireState: acquired.state };
-	}
-
-	state.token = acquired.token;
-	const acquire = state.acquire;
-	const settle: NativeSddSettleRequest = {
-		workspaceRoot: acquire.workspaceRoot,
-		changeName: acquire.changeName,
-		token: acquired.token!,
-		requestId: `reconcile-${createHash("sha256").update(JSON.stringify(acquire)).digest("hex").slice(0, 32)}`,
-		outcome: "interrupted",
-		diagnosis: "Acquire outcome was recovered after the actor launch boundary was refused; no managed actor was launched",
-		harnessDisposition: "invalidated",
-		cleanupEvidence: "No managed actor was spawned; no child cleanup was required",
-		processEvidence: "spawned=false; actor_claimed=false; reconciliation=acquire",
-		remediatesEvidenceRevision: acquire.remediatesEvidenceRevision,
-		...(acquire.untrackedScope === undefined ? {} : { untrackedScope: acquire.untrackedScope, expectedUntrackedInventory: acquire.expectedUntrackedInventory, intendedUntracked: acquire.intendedUntracked }),
-	};
-	state.settle = structuredClone(settle);
-	await persist(task); // Recovered token and exact settlement replay input become durable atomically before native mutation.
-	return settleExact(settle, acquired.state);
-}
-
-export async function admitManagedRemediation(request: TaskRequest, input: unknown, native: NativeReviewCli, persist: (task: TaskRecord) => Promise<void>, context?: Pick<ExtensionContext, "hasUI" | "ui">, preparedTask?: TaskRecord): Promise<Partial<TaskRequest>> {
+export async function admitManagedRemediation(request: TaskRequest, input: unknown, native: NativeReviewCli, context?: Pick<ExtensionContext, "hasUI" | "ui">): Promise<Partial<TaskRequest>> {
 	const selected = request.sddChange;
 	const asset = fileURLToPath(new URL("../assets/agents/sdd-remediate.md", import.meta.url));
-	if (request.agent.name !== "sdd-remediate" || selected?.phase !== "remediate" || selected.workspaceRoot !== request.cwd || !native.sddStatus || !native.sddAttemptAcquire || !native.sddAttemptSettle || getPackageAssetOwner("agents/sdd-remediate.md") !== "sdd" || !existsSync(request.agent.filePath) ) throw new Error("Unsupported managed remediation owner/asset or native capability; install matching package assets before retrying");
+	if (request.agent.name !== "sdd-remediate" || selected?.phase !== "remediate" || selected.workspaceRoot !== request.cwd || !native.sddStatus || getPackageAssetOwner("agents/sdd-remediate.md") !== "sdd" || !existsSync(request.agent.filePath) ) throw new Error("Unsupported managed remediation owner/asset or native capability; install matching package assets before retrying");
 	const owned = parseAgentDefinition(readFileSync(asset, "utf8"), asset, "global");
 	const installed = parseAgentDefinition(readFileSync(request.agent.filePath, "utf8"), request.agent.filePath, request.agent.scope);
 	if (!("instructions" in owned) || !("instructions" in installed) || [request.agent, installed].some(agent => agent.instructions !== owned.instructions || JSON.stringify(agent.tools) !== JSON.stringify(owned.tools))) throw new Error("Unsupported remediation actor content; install matching managed assets");
-	const value = input as { plan?: unknown; attempt?: NativeSddAcquireRequest };
+	const value = input as { plan?: unknown };
 	const plan = parseRemediationPlan(value?.plan, request.cwd);
 	const status = decodeNativeSddStatusV2(await native.sddStatus({ workspaceRoot: request.cwd, changeName: selected.changeName }), selected);
-	if (status.nextRecommended !== "remediate" || !status.phaseInstructions?.remediate || status.remediationState?.failedEvidenceRevision !== selected.failedEvidenceRevision) throw new Error("Stale remediation selection; refresh native status");
-	if (!value?.attempt || value.attempt.remediatesEvidenceRevision !== undefined && value.attempt.remediatesEvidenceRevision !== selected.failedEvidenceRevision) throw new Error("Invalid remediation attempt intent");
-	const acquire: NativeSddAcquireRequest = { ...structuredClone(value.attempt), workspaceRoot: request.cwd, changeName: selected.changeName, remediatesEvidenceRevision: selected.failedEvidenceRevision };
+	// Legacy remediation status carries the verification failure being repaired;
+	// that is not permission to bypass a missing native edit grant.
+	if (status.blockedReasons.some(reason => reason.includes("edit_authority_missing")) || status.nextRecommended !== "remediate" || !status.phaseInstructions?.remediate || status.remediationState?.failedEvidenceRevision !== selected.failedEvidenceRevision) throw new Error("Stale remediation selection; refresh native status");
 	const scope = await confirmRemediationScope(plan, status.actionContext, context);
-	if (!preparedTask || preparedTask.cwd !== request.cwd || preparedTask.agent !== request.agent.name) throw new Error("Durable prepared remediation task required before acquire");
-	preparedTask.sddRemediation = { scope, failedEvidenceRevision: selected.failedEvidenceRevision!, plan, observations: [], pending: {}, invalid: false, acquire: structuredClone(acquire) };
-	await persist(preparedTask);
-	let admitted;
-	try { admitted = await native.sddAttemptAcquire(structuredClone(acquire)); }
-	catch (error) {
-		if (error instanceof TypeError || error instanceof NativeReviewCliError && error.mutationOutcome === "none") {
-			preparedTask.sddRemediation.acquireResult = { state: "blocked" };
-			await persist(preparedTask);
-			throw error;
-		}
-		try { admitted = await native.sddAttemptAcquire(structuredClone(acquire)); }
-		catch { preparedTask.sddRemediation.acquireUncertain = true; await persist(preparedTask); throw new Error("Unknown acquire outcome; reconcile the exact retained request, never rerun an actor"); }
-	}
-	preparedTask.sddRemediation.acquireResult = structuredClone(admitted);
-	if (admitted.state === "proceed" && admitted.token) preparedTask.sddRemediation.token = admitted.token;
-	await persist(preparedTask); // Token durability precedes any actor dispatch.
-	if (admitted.state !== "proceed" || !admitted.token) throw new Error(`Managed remediation admission ${admitted.state}; no actor started`);
-	let finalizationStarted = false;
-	return {
-		sddRemediation: preparedTask.sddRemediation,
-		finalizeRemediation: async (task: TaskRecord, facts: RemediationTerminalFacts) => {
-			if (finalizationStarted) return;
-			finalizationStarted = true;
-			const state = task.sddRemediation!;
-			const evidence = state.failedEvidenceRevision === acquire.remediatesEvidenceRevision && task.status === TASK_STATUS.COMPLETED && facts.exited && facts.cleanupConfirmed ? remediationEvidence(state) : undefined;
-			const interrupted = !facts.spawned || !facts.exited || !facts.cleanupConfirmed || task.status === TASK_STATUS.CANCELLED || task.status === TASK_STATUS.TIMED_OUT;
-			const payload: NativeSddSettleRequest = {
-				workspaceRoot: acquire.workspaceRoot, changeName: acquire.changeName, token: state.token!, requestId: randomUUID(),
-				outcome: interrupted ? "interrupted" : evidence ? "passed" : "failed",
-				diagnosis: interrupted ? "Managed remediation interrupted; retain observed uncertainty" : evidence ? "All planned remediation commands observed exit zero; independent verification remains required" : "Managed remediation failed or planned command evidence is incomplete",
-				harnessDisposition: facts.cleanupConfirmed ? "reused" : "invalidated",
-				cleanupEvidence: facts.cleanupConfirmed ? "Runner confirmed process cleanup" : "Runner could not confirm process cleanup; effects remain unknown",
-				processEvidence: `spawned=${facts.spawned}; exited=${facts.exited}; task=${task.status}; observations=${state.observations.length}`,
-				remediatesEvidenceRevision: acquire.remediatesEvidenceRevision,
-				...(acquire.untrackedScope === undefined ? {} : { untrackedScope: acquire.untrackedScope, expectedUntrackedInventory: acquire.expectedUntrackedInventory, intendedUntracked: acquire.intendedUntracked }),
-				...(interrupted ? {} : evidence ? { remediationEvidence: JSON.stringify(evidence) } : { evidenceRevision: `sha256:${createHash("sha256").update(JSON.stringify({ facts, observations: state.observations, invalid: state.invalid, pending: state.pending })).digest("hex")}` }),
-			};
-			const actorStatus = task.status;
-			if (actorStatus === TASK_STATUS.COMPLETED) task.status = payload.outcome === "passed" ? TASK_STATUS.WAITING : TASK_STATUS.FAILED;
-			state.settle = structuredClone(payload);
-			await persist(task); // Exact native replay inputs must be durable BEFORE mutation.
-			try { state.settlement = await native.sddAttemptSettle!(structuredClone(payload)); }
-			catch (error) {
-				if (!(error instanceof TypeError) && !(error instanceof NativeReviewCliError && error.mutationOutcome === "none")) {
-					try { state.settlement = await native.sddAttemptSettle!(structuredClone(payload)); }
-					catch { state.settlementUncertain = true; }
-				} else state.settlementUncertain = true;
-			}
-			if (payload.outcome === "failed" && actorStatus === TASK_STATUS.COMPLETED) {
-				task.status = TASK_STATUS.FAILED;
-				task.error = "Managed remediation lacks complete passing planned-command evidence";
-			}
-			if (payload.outcome === "passed" && state.settlement && state.settlement.state !== "blocked") task.status = TASK_STATUS.COMPLETED;
-			if (!state.settlement) {
-				task.status = TASK_STATUS.FAILED;
-				task.error = "Native remediation settlement unresolved; retain exact history for reconciliation";
-			} else if (state.settlement.state === "blocked") {
-				task.status = TASK_STATUS.FAILED;
-				task.error = `Native remediation settlement blocked(${state.settlement.reason ?? "unspecified"}); current native admission decides any later attempt`;
-			}
-			await persist(task);
-		},
-	};
+	return { sddRemediation: { scope, failedEvidenceRevision: selected.failedEvidenceRevision!, plan } };
 }
 
 // Installed only for the admitted remediation child. Stock shell execution,
@@ -327,11 +172,36 @@ export function remediationBash(cwd: string, operations: BashOperations = create
 	};
 }
 
+export interface SessionTransportRegistry {
+	list(excludeSessionId?: string): Promise<readonly SessionPresenceCandidate[]>;
+	listActivations(excludeSessionId?: string): Promise<readonly PresenceRecord[]>;
+	close?(): Promise<void>;
+}
+
+export interface SessionTransportListener {
+	readonly registry: SessionTransportRegistry;
+	readonly closesRegistry?: boolean;
+	start(): Promise<void>;
+	close(): Promise<void>;
+}
+
+export interface SessionTransportClient {
+	close(): void;
+	sendNotification(recipientSessionId: string, message: string, options?: { id?: string; expectedActivation?: PresenceRecord; beforeConnect?: () => boolean | Promise<boolean>; signal?: AbortSignal }): Promise<SentNotification>;
+}
+
+export interface SessionTransportFactory {
+	createRegistry(agentHome: string, observeWindowsPhase?: WindowsSessionRegistryPhaseObserver): Promise<SessionTransportRegistry>;
+	createListener(registry: SessionTransportRegistry, sessionId: string, onNotification: (notification: ReceivedNotification) => Promise<void>): SessionTransportListener;
+	createClient(registry: SessionTransportRegistry, sessionId: string): SessionTransportClient;
+}
+
 export interface AgentsDeps extends RunnerDeps {
 	nativeSdd?: NativeReviewCli;
 	home: string;
 	agentHome?: string;
 	childIpc?: IpcEndpoint;
+	sessionTransport?: SessionTransportFactory;
 	env: NodeJS.ProcessEnv;
 	resolveWorktree: WorktreeResolver;
 	runtimeMetricsPolicy?: RuntimeMetricsPolicyDeps;
@@ -389,23 +259,7 @@ function legacySubagentsInstalledAt(agentHome: string): boolean {
 	}
 }
 
-export function agentsViewKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env.GENTLE_PI_AGENTS_VIEW_KEY?.trim();
-	if (value === undefined) return VIEW_KEY_DEFAULT;
-	return value === "" || value.toLowerCase() === "off" ? undefined : value;
-}
-
-export function agentsCollapseKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env.GENTLE_PI_AGENTS_KEY?.trim();
-	if (value === undefined) return COLLAPSE_KEY_DEFAULT;
-	return value === "" || value.toLowerCase() === "off" ? undefined : value;
-}
-
-export function agentsStopKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env.GENTLE_PI_AGENTS_STOP_KEY?.trim();
-	if (value === undefined) return STOP_KEY_DEFAULT;
-	return value === "" || value.toLowerCase() === "off" ? undefined : value;
-}
+export { agentsViewKey, agentsCollapseKey, agentsStopKey };
 
 function sanitizeTerminalText(value: string): string {
 	return value.replace(/[\x00-\x08\x0B-\x1F\x7F-\x9F]/g, (control) => `\\x${control.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
@@ -443,6 +297,22 @@ function registerChildMessaging(pi: ExtensionAPI, ipc: IpcEndpoint): void {
 	});
 }
 
+const posixSessionTransport: SessionTransportFactory = {
+	createRegistry(agentHome) { return SessionPresenceRegistry.create(agentHome); },
+	createListener(registry: SessionPresenceRegistry, sessionId, onNotification) { return Object.assign(new ActiveSessionListener(registry, sessionId, onNotification), { closesRegistry: false }); },
+	createClient(registry: SessionPresenceRegistry, sessionId) { return new ActiveSessionClient(registry, sessionId); },
+};
+
+const windowsSessionTransport: SessionTransportFactory = {
+	createRegistry(agentHome, observeWindowsPhase) { return WindowsSessionPresenceRegistry.create(agentHome, observeWindowsPhase); },
+	createListener(registry: WindowsSessionPresenceRegistry, sessionId, onNotification) { return Object.assign(new WindowsActiveSessionListener(registry, sessionId, onNotification), { closesRegistry: true }); },
+	createClient(registry: WindowsSessionPresenceRegistry, sessionId) { return new WindowsActiveSessionClient(registry, sessionId); },
+};
+
+export function createDefaultSessionTransport(platform: NodeJS.Platform = process.platform): SessionTransportFactory {
+	return platform === "win32" ? windowsSessionTransport : posixSessionTransport;
+}
+
 function text(value: string, details: Record<string, unknown> = {}, terminate = false): ToolText {
 	return { content: [{ type: "text", text: value }], details, ...(terminate ? { terminate: true } : {}) };
 }
@@ -470,6 +340,22 @@ function expandHint(expanded: boolean): string {
 	} catch {
 		return expanded ? "collapse" : "expand";
 	}
+}
+
+// The default mode for a subagent_run request that named neither an explicit
+// mode nor an agent-defined one. Background is a runtime default only when
+// the background-subagents policy is on AND the parent can receive results:
+// print mode exits before a parent session exists to deliver them to (see
+// the `ctx.mode === "print"` guard in `launch` below), so it must keep the
+// configured default (normally task) even when the policy is on.
+export function resolveDefaultSubagentMode(input: {
+	configuredDefault: AgentMode;
+	policy: "on" | "off";
+	parentMode: string | undefined;
+}): AgentMode {
+	return input.policy === "on" && input.parentMode !== "print"
+		? AGENT_MODE.BACKGROUND
+		: input.configuredDefault;
 }
 
 // What the model reads when a background task ends: the outcome first, then
@@ -505,21 +391,6 @@ export async function answerThroughUi(ui: ExtensionContext["ui"] | undefined, as
 	}
 }
 
-interface ResearchArtifactCallObservation {
-	index: number;
-	desired?: ResearchWriteIdentity;
-}
-const RESEARCH_ARTIFACT_SCHEMA = {
-	type: "object", description: "Untrusted exact artifact intent, never authorization or readback. Same bounds required on continuation.",
-	required: ["store", "worktree", "changeName", "retainedIntent", "locators"],
-	properties: {
-		store: { type: "string", enum: ["openspec", "engram", "both", "none"] }, worktree: { type: "string" }, changeName: { type: "string" }, retainedIntent: { type: "string" },
-		locators: { type: "array", maxItems: 3, items: { type: "object", required: ["artifact", "revision", "digest"], properties: {
-			artifact: { type: "string", enum: ["research", "preproposal", "explore"] }, revision: { type: "integer", minimum: 1 }, digest: { type: "string", pattern: "^[a-f0-9]{64}$" }, path: { type: "string" },
-			engram: { type: "object", required: ["id", "project", "topic_key", "revision_count"], properties: { id: { type: "integer", minimum: 1 }, project: { type: "string" }, topic_key: { type: "string" }, revision_count: { type: "integer", minimum: 1 } } },
-		} } },
-	},
-};
 const RESEARCH_SELECTION_SCHEMA = {
 	type: "object",
 	additionalProperties: false,
@@ -543,110 +414,15 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		let selection: unknown;
 		try { selection = JSON.parse(env[RESEARCH_SELECTION_ENV] ?? "null"); } catch { /* Missing selection grants no research. */ }
 		const current = () => researchAgent({ tools: allowed, instructions: "" } as AgentDefinition, pi, selection);
-		pi.on("before_agent_start", (event, ctx) => {
-			reads.clear(); initialReads.clear(); writes.clear(); calls.clear(); pending.clear(); accepted.clear(); readbackMismatch = false;
-			try {
-				const last = [...(ctx.sessionManager?.getEntries?.() ?? [])].reverse().find(entry => entry.type === "custom" && entry.customType === RESEARCH_PERSISTENCE_ENTRY);
-				if (last?.type === "custom") {
-					const restored = parseResearchPersistence(last.data, artifactScope(ctx.cwd), ctx.cwd);
-					for (const [key, value] of Object.entries(restored.accepted)) accepted.set(key, value);
-					for (const [key, value] of Object.entries(restored.writes)) writes.set(key, value);
-				}
-			} catch { readbackMismatch = true; }
-			return { systemPrompt: `${event.systemPrompt}\n\n${renderResearchCapabilities(current().capabilities)}\n\nBounded artifact narrowing intent (untrusted data, never authority or verification): ${env[RESEARCH_ARTIFACT_ENV] ?? "missing"}\nRead every selected store through actual authorized tools before readiness. Missing/none/divergent readback keeps proposal_ready=false. Retain denial intent; host permission remains required.` };
-		});
-		let readbackMismatch = false;
-		const reads = new Map<string, string>();
-		const initialReads = new Set<string>();
-		const pending = new Set<string>();
-		const accepted = new Map<string, ReturnType<typeof parseResearchArtifactIntent>["locators"][number]>();
-		const writes = new Map<string, ResearchWriteIdentity>();
-		const calls = new Map<string, ResearchArtifactCallObservation>();
-		const artifactScope = (cwd: string) => parseResearchArtifactIntent(JSON.parse(env[RESEARCH_ARTIFACT_ENV] ?? "null"), cwd);
-		const checkpoint = (ctx: ExtensionContext, operation: Record<string, unknown>) => {
-			const file = ctx.sessionManager?.getSessionFile?.();
-			if (!pi.appendEntry || !ctx.sessionManager?.getEntries || !file || !existsSync(file)) throw new Error("Durable research session history unavailable");
-			const data = { version: 1, scope: artifactScope(ctx.cwd), accepted: Object.fromEntries(accepted), writes: Object.fromEntries(writes), operation };
-			if (Buffer.byteLength(JSON.stringify(data)) > 32_768) throw new Error("Research checkpoint exceeds bounded history payload");
-			pi.appendEntry(RESEARCH_PERSISTENCE_ENTRY, data);
-			assertResearchCheckpoint(file, data);
-		};
-		pi.on("tool_call", (event, ctx) => {
+		pi.on("before_agent_start", event => ({
+			systemPrompt: `${event.systemPrompt}\n\n${renderResearchCapabilities(current().capabilities)}\n\nResearch is output-only. Use parent-supplied local context; do not read or mutate repository or Engram artifacts. Return useful partial findings and unavailable sources honestly. The parent owns authorized persistence and actual readback.`,
+		}));
+		pi.on("tool_call", event => {
 			const registered = pi.getAllTools().some(tool => tool.name === event.toolName && tool.sourceInfo?.source !== "sdk");
 			const selected = current().agent.tools.includes(event.toolName) || event.toolName === "subagent_parent_message";
 			if (!registered || !selected || !allowed.includes(event.toolName) || !pi.getActiveTools().includes(event.toolName)) {
-				return { block: true, reason: "Tool is outside the research child's active launch allowlist." };
+				return { block: true, reason: "Tool is outside the output-only research child's active launch allowlist." };
 			}
-			if (event.toolName === "subagent_parent_message" || ["fetch_content", "web_search", "source_check", "get_search_content"].includes(event.toolName)) return;
-			try {
-				const scope = artifactScope(ctx.cwd);
-				const index = researchArtifactCall(scope, ctx.cwd, event.toolName, event.input);
-				let desired: ResearchWriteIdentity | undefined;
-				if (["write", "edit", "mem_save"].includes(event.toolName)) {
-					if (readbackMismatch || pending.size) throw new Error("Stale/divergent state requires explicit identical-scope re-entry.");
-					const tools = scope.store === "both" ? ["read", "mem_get_observation"] : [scope.store === "openspec" ? "read" : "mem_get_observation"];
-					if (!scope.locators.every((_, i) => tools.every(tool => initialReads.has(`${i}:${tool}`)))) throw new Error("Every selected artifact requires matching initial readback before mutation.");
-					reads.clear();
-					const content = "content" in event.input ? event.input.content : undefined;
-					if (event.toolName === "edit" || typeof content !== "string") throw new Error("Use a full bounded write/save for post-write readback.");
-					const key = `${index}:${event.toolName === "write" ? "read" : "mem_get_observation"}`;
-					if (!initialReads.has(key) || writes.has(key)) throw new Error("Fresh matching readback required before mutation.");
-					const revision: unknown = JSON.parse(content).revision;
-					if (!Number.isSafeInteger(revision) || Number(revision) <= (accepted.get(key) ?? scope.locators[index]).revision) throw new Error("Full write requires a newer positive revision.");
-					desired = { revision: Number(revision), digest: createHash("sha256").update(content).digest("hex") };
-					if (scope.store === "both") {
-						const peerKey = `${index}:${event.toolName === "write" ? "mem_get_observation" : "read"}`;
-						const peer = writes.get(peerKey) ?? accepted.get(peerKey);
-						if (peer && peer.revision > (accepted.get(key) ?? scope.locators[index]).revision && (peer.revision !== desired.revision || peer.digest !== desired.digest)) throw new Error("Hybrid desired identity divergence refused before mutation");
-					}
-					calls.clear(); pending.add(event.toolCallId); writes.set(key, desired);
-					checkpoint(ctx, { toolCallId: event.toolCallId, tool: event.toolName, index, desired });
-				}
-				calls.set(event.toolCallId, { index, desired });
-			} catch (error) { return { block: true, reason: `Research scope refused: ${String(error)}. Retain intent and uncertainty; no replacement store.` }; }
-		});
-		pi.on("tool_result", (event, ctx) => {
-			const call = calls.get(event.toolCallId);
-			calls.delete(event.toolCallId);
-			if (!call) return;
-			const { index, desired } = call;
-			if (desired) {
-				let valid = false;
-				try {
-					valid = event.isError === false && Array.isArray(event.content) && event.content.length > 0 && Array.from(event.content).every(part => part !== null && typeof part === "object" && part.type === "text" && typeof part.text === "string" && part.text.trim().length > 0);
-				} catch { /* Malformed mutation results cannot authorize completion. */ }
-				if (!valid) readbackMismatch = true;
-				try { checkpoint(ctx, { toolCallId: event.toolCallId, tool: event.toolName, index, valid, isError: event.isError, resultDigest: createHash("sha256").update(JSON.stringify(event.content) ?? "undefined").digest("hex") }); }
-				catch { readbackMismatch = true; }
-				pending.delete(event.toolCallId); reads.clear();
-				return;
-			}
-			if (!["read", "mem_get_observation"].includes(event.toolName)) return;
-			if (pending.size) return { content: [...event.content, { type: "text" as const, text: "Research readback incomplete: proposal_ready=false; mutation pending." }] };
-			let matched = false, complete = false;
-			try {
-				const scope = artifactScope(ctx.cwd);
-				researchArtifactCall(scope, ctx.cwd, event.toolName, event.input);
-				const bytes = event.content.map(part => part.type === "text" ? part.text : "").join("");
-				const returned = event.toolName === "read" ? bytes : JSON.parse(bytes);
-				const key = `${index}:${event.toolName}`, written = writes.get(key);
-				const expected = { ...(accepted.get(key) ?? scope.locators[index]), ...written };
-				matched = !event.isError && researchArtifactReadback(expected, event.toolName, returned, written !== undefined);
-				if (matched) {
-					reads.set(key, expected.digest);
-					initialReads.add(key);
-					accepted.set(key, event.toolName === "read" ? expected : { ...expected, engram: { ...expected.engram!, revision_count: returned.revision_count } });
-					writes.delete(key);
-					checkpoint(ctx, { toolCallId: event.toolCallId, tool: event.toolName, index, matched: true });
-				}
-				const tools = scope.store === "both" ? ["read", "mem_get_observation"] : [scope.store === "openspec" ? "read" : "mem_get_observation"];
-				const divergent = scope.locators.some((_, i) => tools.every(tool => reads.has(`${i}:${tool}`)) && new Set(tools.map(tool => reads.get(`${i}:${tool}`))).size !== 1);
-				if (divergent) matched = false;
-				complete = matched && !readbackMismatch && scope.store !== "none" && scope.locators.every((_, i) => tools.every(tool => reads.has(`${i}:${tool}`)));
-			} catch { matched = false; /* Unsupported or undurable readback is not evidence. */ }
-			if (!matched) { reads.clear(); readbackMismatch = true; }
-			const note = !matched ? "Research readback mismatch: proposal_ready=false; retain intent and uncertainty." : complete ? "Readback identity matched in all selected stores; not evidence validation or proposal admission." : "Research readback incomplete: proposal_ready=false; read every selected store.";
-			return { content: [...event.content, { type: "text" as const, text: note }], isError: event.isError || !matched };
 		});
 	}
 	const childIpc = ownedChildIpc(env, overrides.childIpc ?? (process.send ? process as unknown as IpcEndpoint : undefined));
@@ -682,6 +458,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		: environmentHome && (selectedHome.startsWith("~/") || (process.platform === "win32" && selectedHome.startsWith("~\\"))) ? join(deps.home, selectedHome.slice(2)) : selectedHome;
 	// Freeze the host's root before a child uses a different session cwd.
 	const agentHome = resolve(expandedHome);
+	const sessionTransport = deps.sessionTransport ?? createDefaultSessionTransport();
 	if (legacySubagentsInstalledAt(agentHome)) {
 		pi.on("session_start", (_event, ctx) => {
 			if (ctx.hasUI) ctx.ui.notify(`${AGENTS_GLYPH} Gentle Agents is waiting: remove the old package first with "pi remove npm:${LEGACY_SUBAGENTS_PACKAGE}"`, "warning");
@@ -722,6 +499,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	let renderQueued = false;
 	let cancelClock: (() => void) | undefined;
 	const ownedTaskIds = new Set<string>();
+	// One diagnostic note per (task, guard): a dropped mutation says why once,
+	// not once per file, so a chatty child cannot flood its own thread.
+	const droppedAttributionGuards = new Set<string>();
 	const stoppingTaskIds = new Set<string>();
 	const yieldedTaskIds = new Set<string>();
 	const metricsNow = deps.metricsNow ?? (() => performance.now());
@@ -750,7 +530,99 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// started before /new or /resume stays in the store and comes back with
 	// its session. Before the first session_start there is nothing to scope by.
 	const activeSessionId = (): string | undefined => (sessions === undefined ? undefined : sessions.getSessionId() ?? "");
+	// Pi 0.86.1 adds this event; the package's pinned 0.85.1 types predate it.
+	installBackgroundCacheWarming(pi as unknown as Parameters<typeof installBackgroundCacheWarming>[0], () => ({
+		sessionId: activeSessionId(),
+		ownedTaskIds,
+		tasks: store.list(activeSessionId()),
+	}));
 	const visibleTasks = (): TaskRecord[] => store.list(activeSessionId());
+	type SessionTransport = { generation: number; sessionId: string; sessionManager: ExtensionContext["sessionManager"]; client: SessionTransportClient; listener: SessionTransportListener; registry: SessionTransportRegistry; close(): Promise<void> };
+	let transportGeneration = 0;
+	let activeSessionTransport: SessionTransport | undefined;
+	const pendingTransportStartups = new Set<Promise<void>>();
+	const validTransportSessionId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value);
+	const closeSessionTransport = async (transport: SessionTransport | undefined) => {
+		if (!transport) return;
+		await transport.close();
+	};
+	const trackTransportOperation = (operation: Promise<void>) => {
+		pendingTransportStartups.add(operation);
+		operation.then(() => { pendingTransportStartups.delete(operation); }, () => { pendingTransportStartups.delete(operation); });
+		return operation;
+	};
+	const startSessionTransport = (ctx: ExtensionContext) => {
+		const previous = activeSessionTransport;
+		const generation = ++transportGeneration;
+		const sessionManager = ctx.sessionManager;
+		activeSessionTransport = undefined;
+		const operation = (async () => {
+			let registry: SessionTransportRegistry | undefined;
+			let listener: SessionTransportListener | undefined;
+			let client: SessionTransportClient | undefined;
+			let closePromise: Promise<void> | undefined;
+			const closeStartupTransport = () => {
+				if (closePromise) return closePromise;
+				closePromise = Promise.resolve().then(async () => {
+					await Promise.allSettled([
+						(async () => { try { client?.close(); } catch {} })(),
+						(async () => { try { await listener?.close(); } catch {} })(),
+						(async () => { try { if (registry && (!listener || !listener.closesRegistry)) await registry.close?.(); } catch {} })(),
+					]);
+				});
+				return closePromise;
+			};
+			try {
+				if (previous) trackTransportOperation(closeSessionTransport(previous));
+				const sessionId = sessionManager.getSessionId();
+				if (!validTransportSessionId(sessionId) || sessions !== sessionManager || generation !== transportGeneration) return;
+				registry = await sessionTransport.createRegistry(agentHome);
+				if (sessions !== sessionManager || generation !== transportGeneration) {
+					await closeStartupTransport();
+					return;
+				}
+				listener = sessionTransport.createListener(registry, sessionId, async (notification) => {
+					const active = activeSessionTransport;
+					if (!active || active.generation !== generation || active.sessionManager !== sessionManager || active.sessionId !== sessionId || sessions !== sessionManager || activeSessionId() !== sessionId) throw new Error("stale session transport");
+					pi.sendMessage({ customType: AGENTS_ORCHESTRATOR_MESSAGE_TYPE, content: `Session message from ${notification.senderSessionId} (correlation ${notification.id}): ${notification.message}`, display: true, details: { gentleAgents: { senderSessionId: notification.senderSessionId, recipientSessionId: sessionId, correlationId: notification.id, direction: "incoming" } } }, { deliverAs: "followUp", triggerTurn: true });
+				});
+				client = sessionTransport.createClient(registry, sessionId);
+				if (sessions !== sessionManager || generation !== transportGeneration || activeSessionId() !== sessionId) {
+					await closeStartupTransport();
+					return;
+				}
+				const transport = { generation, sessionId, sessionManager, client, listener, registry, close: closeStartupTransport };
+				// The listener deliberately accepts while publishing. Bind its callback
+				// first so a peer accepted in that interval remains current-session work.
+				activeSessionTransport = transport;
+				await listener.start();
+				if (sessions !== sessionManager || generation !== transportGeneration || activeSessionId() !== sessionId) {
+					if (activeSessionTransport === transport) activeSessionTransport = undefined;
+					await closeStartupTransport();
+					return;
+				}
+			} catch {
+				if (activeSessionTransport?.generation === generation) activeSessionTransport = undefined;
+				await closeStartupTransport();
+			}
+		})();
+		trackTransportOperation(operation);
+		return operation;
+	};
+	const shutdownSessionTransport = async () => {
+		const active = activeSessionTransport;
+		activeSessionTransport = undefined;
+		transportGeneration++;
+		if (active) await closeSessionTransport(active);
+		while (pendingTransportStartups.size > 0) {
+			await Promise.allSettled([...pendingTransportStartups]);
+		}
+	};
+	const activeTransportFor = (ctx: ExtensionContext) => {
+		const active = activeSessionTransport;
+		const sessionId = ctx.sessionManager.getSessionId();
+		return active && active.generation === transportGeneration && active.sessionManager === ctx.sessionManager && active.sessionId === sessionId && sessions === ctx.sessionManager ? active : undefined;
+	};
 
 	const requestRender = () => {
 		if (renderQueued) return;
@@ -881,10 +753,44 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			}
 		},
 		onSuccessfulMutation: (task, tool) => {
-			if (!sessions || !worktrees || task.parentSessionId !== activeSessionId() || !ownedTaskIds.has(task.id)) return;
-			const root = deps.resolveWorktree(tool.path, task.cwd)?.root;
-			const childRoot = deps.resolveWorktree(task.cwd, task.cwd)?.root;
-			if (!root || root !== childRoot || !worktrees.roots().includes(root)) return;
+			// Guard chain and posture are unchanged: only owned tasks of the
+			// active parent, inside registered roots, ever relay. The notes only
+			// explain a drop -- they never widen or narrow what gets attributed.
+			// The cheap session/ownership guards decide before any worktree
+			// resolution, so a foreign or stale mutation never reaches git.
+			let root: string | undefined;
+			let childRoot: string | undefined;
+			const noteDrop = (guard: string) => {
+				const key = `${task.id}:${guard}`;
+				if (droppedAttributionGuards.has(key)) return;
+				droppedAttributionGuards.add(key);
+				try { store.apply(task.id, { type: TASK_EVENT.NOTE, text: `changes not attributed: ${guard} (root=${root ?? "unknown"}, child=${childRoot ?? "unknown"})` }, deps.now()); }
+				catch { /* A note is best-effort explanation; it must never block the guard it is explaining. */ }
+			};
+			if (!sessions || !worktrees) return noteDrop("session-inactive");
+			if (task.parentSessionId !== activeSessionId()) return noteDrop("parent-session-mismatch");
+			if (!ownedTaskIds.has(task.id)) return noteDrop("not-owned");
+			root = deps.resolveWorktree(tool.path, task.cwd)?.root;
+			childRoot = deps.resolveWorktree(task.cwd, task.cwd)?.root;
+			if (!root) return noteDrop("root-unresolved");
+			if (root !== childRoot) return noteDrop("root-mismatch");
+			if (!worktrees.roots().includes(root)) return noteDrop("root-not-registered");
+			if (!tool.evidence) {
+				noteDrop("evidence-missing");
+			} else if (tool.evidence.root !== root) {
+				noteDrop("evidence-root-mismatch");
+			} else {
+				let path = tool.path.replace(/^@/, "");
+				if (path === "~" || path.startsWith("~/")) path = os.homedir() + path.slice(1);
+				let resolvedPath: string | undefined;
+				try {
+					resolvedPath = realpathSync(resolve(task.cwd, path));
+				} catch {
+					noteDrop("evidence-path-unreadable");
+				}
+				if (resolvedPath === resolve(root, tool.evidence.path)) pi.events.emit(SESSION_CHANGE_RELAY, { sessionId: task.parentSessionId, evidence: { ...tool.evidence, id: `${task.id}:${tool.toolCallId}` } });
+				else if (resolvedPath !== undefined) noteDrop("evidence-path-mismatch");
+			}
 			recordReviewMutation(pi, sessions, root, { source: "subagent", taskId: task.id, toolName: tool.toolName, toolCallId: tool.toolCallId });
 		},
 		onFinish: (task, observations) => {
@@ -916,6 +822,14 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const taskId = typeof details?.taskId === "string" ? details.taskId : "unknown";
 		const agent = typeof details?.agent === "string" ? details.agent : "Subagent";
 		const heading = `${sanitizeTerminalText(agent)} message · Task ${sanitizeTerminalText(taskId)}`;
+		const body = sanitizeTerminalText(messageText(message.content));
+		return new Text(`${theme.fg("customMessageLabel", heading)}\n${theme.fg("customMessageText", body)}`, options.outputPad, 0);
+	});
+
+	pi.registerMessageRenderer(AGENTS_ORCHESTRATOR_MESSAGE_TYPE, (message, options, theme) => {
+		const details = (message.details as { gentleAgents?: { senderSessionId?: unknown } } | undefined)?.gentleAgents;
+		const sender = typeof details?.senderSessionId === "string" ? details.senderSessionId : "unknown";
+		const heading = `⇄ Orchestrator message · Received · From ${sanitizeTerminalText(sender)}`;
 		const body = sanitizeTerminalText(messageText(message.content));
 		return new Text(`${theme.fg("customMessageLabel", heading)}\n${theme.fg("customMessageText", body)}`, options.outputPad, 0);
 	});
@@ -962,7 +876,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const selected = store.get(task.id);
 		if (!isOwnedActive(selected)) return;
 		if (selected.status === TASK_STATUS.QUEUED) {
-			if (runner.cancel(selected.id)) ctx.ui.notify(`Stopped ${selected.agent}.`);
+			if (runner.cancel(selected.id, "stopped from the agents panel")) ctx.ui.notify(`Stopped ${selected.agent}.`);
 			else ctx.ui.notify(`Task ${selected.agent} already finished.`, "warning");
 			return;
 		}
@@ -976,7 +890,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				ctx.ui.notify(`Task ${selected.agent} already finished.`, "warning");
 				return;
 			}
-			if (runner.cancel(current.id)) ctx.ui.notify(`Stopped ${current.agent}.`);
+			if (runner.cancel(current.id, "stopped from the agents panel")) ctx.ui.notify(`Stopped ${current.agent}.`);
 			else ctx.ui.notify(`Task ${current.agent} already finished.`, "warning");
 		} finally {
 			stoppingTaskIds.delete(selected.id);
@@ -995,7 +909,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const confirmation = (async () => {
 			try {
 				if (!await ctx.ui.confirm(`Stop ${count} active ${noun}?`, `Only these ${count} ${noun} will stop. Current work may be incomplete.`)) return;
-				const cancelled = active.filter((task) => runner.cancel(task.id)).length;
+				const cancelled = active.filter((task) => runner.cancel(task.id, "stopped from the agents panel (stop all)")).length;
 				ctx.ui.notify(`Stopped ${cancelled} ${cancelled === 1 ? "subagent" : "subagents"}.`);
 			} finally {
 				stopAllConfirmation = undefined;
@@ -1015,6 +929,33 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			store.restore(stored.task, stored.thread);
 		}
 		return stored?.task;
+	};
+
+	// Restores this exact session's own finished subagents as visible history
+	// on an explicit resume, or on startup into a session that already has
+	// entries -- never on new, fork, or reload (see the session_start handler's
+	// preexisting check below, which is the actual gate). Marked in
+	// restoredTaskIds like any other disk restoration, so it stays
+	// non-cancellable (ownedTaskIds never gained the id either way) and is
+	// skipped if the id is somehow already live.
+	const restoreSessionHistory = async (ctx: ExtensionContext, sessionId: string): Promise<void> => {
+		let history: Awaited<ReturnType<typeof loadHistory>>;
+		try {
+			history = await loadHistory(tasksDir);
+		} catch {
+			return;
+		}
+		// The session may have moved on while disk was read; a stale restore
+		// must never land in the wrong session's store.
+		if (ctx.sessionManager.getSessionId() !== sessionId) return;
+		// Fire-and-forget from session_start: a throwing summary subscriber must
+		// never surface as an unhandled rejection. History is best-effort.
+		try {
+			for (const { task, thread } of history) {
+				if (task.parentSessionId !== sessionId) continue;
+				if (store.restore(task, thread)) restoredTaskIds.add(task.id);
+			}
+		} catch { /* Partial history is acceptable; the live session keeps running. */ }
 	};
 
 	const openOverlay = async (ctx: ExtensionContext) => {
@@ -1096,25 +1037,25 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		ui = ctx.hasUI ? ctx.ui : undefined;
 		sessions = ctx.sessionManager;
 		tickClock();
+		// Agents is not a rail part: the fullscreen sidebar only suppresses
+		// bottom components registered through sidebarPart, and this widget is
+		// the only Agents surface in every mode, so it stays a plain component.
 		ui?.setWidget(AGENTS_WIDGET_KEY, (tui, theme) => {
 			host = tui;
 			sidebarTui = tui;
-			return sidebarPart(tui, "agents", {
+			return {
 				render(width: number) {
 					const lines = renderAgentsCard(visibleTasks(), theme, width, deps.now(), { collapsed, collapseKey, maxRows: widgetRows(tui.terminal?.rows), viewKey });
 					return lines.length === 0 ? [] : [...lines, ""];
 				},
 				invalidate() {},
-			}, {
-				render: (width) => renderAgentsCard(visibleTasks(), theme, width, deps.now(), { collapsed, collapseKey, viewKey }),
-				invalidate() {},
-			});
+			};
 		});
 	};
 
 	const roots = (ctx: ExtensionContext) => ({ cwd: ctx.sessionManager.getCwd(), home: deps.home, agentHome });
 
-	const buildRequest = (ctx: ExtensionContext, agent: AgentDefinition, prompt: string, label: string | undefined, context: string | undefined, mode: AgentMode, resume?: string, workspaceRoot?: string, sddChange?: SddChangeSelection, researchSelection?: unknown, researchArtifact?: unknown, remediationIntent?: unknown): TaskRequest => {
+	const buildRequest = (ctx: ExtensionContext, agent: AgentDefinition, prompt: string, label: string | undefined, context: string | undefined, mode: AgentMode, resume?: string, workspaceRoot?: string, sddChange?: SddChangeSelection, researchSelection?: unknown, remediationIntent?: unknown): TaskRequest => {
 		const registry = registryFor(ctx);
 		const parentCwd = ctx.sessionManager.getCwd();
 		// An explicit target is validated before any queue or session-dir writes.
@@ -1129,7 +1070,25 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const launchSddChange = sddChange === undefined || target === undefined
 			? undefined
 			: { ...sddChange, workspaceRoot: target };
-		const config = loadAgentsConfig(roots(ctx));
+		// A per-repository profile pin replaces subagent routing for this launch without
+		// materialising anything: the global stores stay untouched, so two repositories
+		// worked in parallel stop fighting over one global routing. The child's own
+		// worktree is the repository in question, and the local pin sits in the shared
+		// Git common directory, so it survives every worktree of the clone. When the
+		// launch stays in the session's own worktree the identity already resolved above
+		// is reused instead of asking Git a second time. The orchestrator is out of
+		// scope: only `modelProfiles` is replaced.
+		const pinIdentity: WorktreeResolver = target !== undefined && parentIdentity !== undefined && target === parentIdentity.root
+			? () => parentIdentity
+			: deps.resolveWorktree;
+		const config = withPinnedModelProfiles(
+			loadAgentsConfig(roots(ctx)),
+			resolveProfilePin({
+				cwd: target ?? parentCwd,
+				configHome: gentlePiConfigHome(deps.env),
+				resolveWorktree: pinIdentity,
+			})?.modelProfiles,
+		);
 		const profile = resolveAgentProfile(agent, config);
 		const research = agent.name === "sdd-research" ? researchAgent(agent, pi, researchSelection) : undefined;
 		const sessionDir = agentRuntimePaths(deps.home, agentHome).sessions;
@@ -1157,7 +1116,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			sessionDir,
 			resumeSessionPath: resume,
 			env: research ? { ...deps.env, [RESEARCH_CHILD_TOOLS_ENV]: JSON.stringify([...research.agent.tools, "subagent_parent_message"]) } : deps.env,
-			...(research ? { researchSelection, extensionPaths: research.extensionPaths, researchArtifact: researchArtifact === undefined ? undefined : parseResearchArtifactIntent(researchArtifact, target ?? parentCwd) } : {}),
+			...(research ? { researchSelection, extensionPaths: research.extensionPaths } : {}),
 			...(launchSddChange === undefined ? {} : { sddChange: launchSddChange }),
 			...(parentRepositoryIdentity === undefined ? {} : {
 				authorizeParentStandingReviewPermission: (repositoryIdentity: string) => {
@@ -1180,26 +1139,21 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	};
 
 	const launch = async (ctx: ExtensionContext, request: TaskRequest, signal?: AbortSignal): Promise<ToolText> => {
+		if (ctx.mode === "print" && request.mode === AGENT_MODE.BACKGROUND) {
+			throw new Error("Background subagents are unavailable in print mode: pi -p exits before a parent session can receive results. Use task mode, RPC mode, or interactive Pi.");
+		}
 		// This is the process-spawn boundary. A child receives its task context only
 		// after its RPC process starts, so validate the single parent transport here
 		// rather than letting a child invent/persist preferences during startup.
 		if (SHIPPED_SDD_AGENT_NAME_SET.has(request.agent.name) && !isParentConfirmedSddPreflightContext(request.context)) {
 			throw new Error("SDD child dispatch refused: parent-confirmed SDD preflight context is missing or malformed.");
 		}
-		let prepared: TaskRecord | undefined;
 		if (request.agent.name === "sdd-remediate") {
-			const previous = await loadHistory(tasksDir);
-			if (previous.some(({ task }) => task.cwd === request.cwd && task.sddRemediation?.acquire.changeName === request.sddChange?.changeName && remediationUnresolved(task))) throw new Error("Retained remediation operation unresolved; reconcile exact history without actor replay");
-			prepared = runner.prepareRemediation(request);
-			const persist = (task: TaskRecord) => saveTask(tasksDir, task, store.thread(task.id));
-			try {
-				const native = deps.nativeSdd ?? new NativeReviewCliV216(createNodeExecFileAdapter());
-				Object.assign(request, await admitManagedRemediation(request, request.remediationIntent, native, persist, ctx, prepared));
-				if (activeSessionId() !== request.parentSessionId) throw new Error("Parent session changed; retain admission and refuse actor replay");
-				prepared.sddRemediation!.actorClaimed = true;
-				await persist(prepared); // A crash beyond here is an unknown actor effect, not rerun permission.
-			} catch (error) { store.update(prepared.id, { status: TASK_STATUS.FAILED, error: "Remediation admission/dispatch refused; reconcile retained history" }); throw error; }
+			const native = deps.nativeSdd ?? new NativeReviewCliV216(createNodeExecFileAdapter());
+			Object.assign(request, await admitManagedRemediation(request, request.remediationIntent, native, ctx));
+			if (activeSessionId() !== request.parentSessionId) throw new Error("Parent session changed; request fresh authorization before dispatch");
 		}
+
 		// Bounded live observation only. Native send owns the fresh policy decision;
 		// child execution never starts a telemetry policy process or renewal timer.
 		const owner = metricsOwner;
@@ -1217,17 +1171,17 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				metrics.started = metricsNow();
 				return metrics.valid();
 			} } : {}),
-		}, prepared);
+		});
 		if (observe) metricTasks.set(task.id, metrics);
 		ownedTaskIds.add(task.id);
 		store.subscribe(task.id, () => { publishActivity(); requestRender(); });
-		if (request.mode === AGENT_MODE.BACKGROUND) return text(`Started ${task.agent} in the background as task ${task.id}. Use subagent_status or subagent_result with that id.`, taskDetails(task));
+		if (request.mode === AGENT_MODE.BACKGROUND) return text(`Started ${task.agent} in the background as task ${task.id}. Retain that id; completion is pushed automatically. Never sleep or periodically poll subagent_status/subagent_result for completion or cache maintenance. Inspect status only at a real orchestration decision boundary; never relaunch equivalent queued/running work.`, taskDetails(task));
 		// A tool call aborted by the host (a human interrupting the turn, a timeout)
 		// would otherwise leave the child running and end the call with no result and
 		// no recorded reason. Cancel through the runner so the lifecycle runs and the
 		// record is persisted, and tell the user why.
 		const onAbort = (): void => {
-			if (runner.cancel(task.id)) {
+			if (runner.cancel(task.id, `cancelled: the tool call was aborted${abortReasonText(signal?.reason)}`)) {
 				ctx.ui.notify(
 					`Subagent ${task.agent} cancelled: the tool call was aborted${abortReasonText(signal?.reason)}. The run is recorded as cancelled.`,
 					"warning",
@@ -1271,6 +1225,82 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		});
 	};
 
+	pi.registerTool({
+		name: "orchestrator_session_id",
+		label: "Orchestrator session ID",
+		description: "Return this host session's active ID.",
+		parameters: { type: "object", additionalProperties: false, properties: {} } as never,
+		async execute(_id, _params, _signal, _onUpdate, ctx) {
+			const transport = activeTransportFor(ctx);
+			return transport ? text(`Active session ID: ${transport.sessionId}`, { gentleAgents: { senderSessionId: transport.sessionId } }) : text("Error: session messaging is not ready.", { error: "not ready" });
+		},
+	});
+	pi.registerTool({
+		name: "orchestrator_list",
+		label: "List orchestrators",
+		description: "List other sessions advertised by the trusted local profile. Advertised reachability is unknown and does not prove a session is live.",
+		parameters: { type: "object", additionalProperties: false, properties: {} } as never,
+		async execute(_id, _params, _signal, _onUpdate, ctx) {
+			const transport = activeTransportFor(ctx);
+			if (!transport) return text("Error: session discovery is not ready.", { error: "not ready" });
+			try {
+				const peers = await transport.listener.registry.list(transport.sessionId);
+				if (activeTransportFor(ctx) !== transport) return text("Error: session discovery became unavailable before results were confirmed.", { error: "stale" });
+				return peers.length === 0 ? text("No other sessions are currently advertised. Advertisements have unknown reachability and do not guarantee a live session.") : text(`Advertised sessions (reachability is unknown):\n${peers.map((peer) => `- ${peer.sessionId}`).join("\n")}`, { gentleAgents: { candidates: peers } });
+			} catch {
+				return text("Error: session discovery is unavailable.", { error: "unavailable" });
+			}
+		},
+	});
+	pi.registerTool({
+		name: "orchestrator_send_message",
+		label: "Send orchestrator message",
+		description: "Send a notification to another active session in this trusted local profile. If recipient_session_id is omitted, the sole peer is selected or the user selects one. Acceptance means enqueued, not read or completed.",
+		parameters: { type: "object", additionalProperties: false, required: ["message"], properties: { recipient_session_id: { type: "string" }, message: { type: "string" } } } as never,
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			const transport = activeTransportFor(ctx);
+			const input = params as { recipient_session_id?: unknown; message?: unknown };
+			if (!transport) return text("Error: session messaging is not ready.", { error: "not ready" });
+			if (typeof input.message !== "string" || Buffer.byteLength(input.message, "utf8") > 8192) return text("Error: recipient session ID or message is invalid.", { error: "invalid input" });
+			let recipient: string | undefined;
+			let activation: PresenceRecord | undefined;
+			if (input.recipient_session_id !== undefined) {
+				if (!validTransportSessionId(input.recipient_session_id)) return text("Error: recipient session ID or message is invalid.", { error: "invalid input" });
+				recipient = input.recipient_session_id;
+			}
+			if (recipient === undefined) {
+				try {
+					const candidates = (await transport.listener.registry.listActivations(transport.sessionId)).filter((candidate) => candidate.sessionId !== transport.sessionId);
+					if (activeTransportFor(ctx) !== transport || signal?.aborted) return text("Message selection was cancelled.", { error: "cancelled" });
+					if (candidates.length === 0) return text("No other sessions are currently advertised; message delivery is unavailable.", { error: "unavailable" });
+					if (candidates.length === 1) {
+						recipient = candidates[0].sessionId;
+						activation = candidates[0];
+					} else if (!ctx.hasUI) return text("Several recipient orchestrators are available. Ask the user to choose a recipient label; do not ask for a session ID.", { gentleAgents: { candidates: candidates.map((candidate) => ({ label: `Orchestrator ${candidate.sessionId}`, sessionId: candidate.sessionId })) } });
+					else {
+						const labels = candidates.map((candidate) => `Orchestrator ${candidate.sessionId}`);
+						const selected = await ctx.ui.select("Select recipient orchestrator", labels, { signal });
+						if (selected === undefined || activeTransportFor(ctx) !== transport || signal?.aborted) return text("Message selection was cancelled.", { error: "cancelled" });
+						const index = labels.indexOf(selected);
+						if (index < 0) return text("Message selection was cancelled.", { error: "cancelled" });
+						recipient = candidates[index].sessionId;
+						activation = candidates[index];
+					}
+				} catch {
+					return text("Error: session discovery is unavailable.", { error: "unavailable" });
+				}
+			}
+			if (recipient === undefined || !validTransportSessionId(recipient)) return text("Error: recipient session ID or message is invalid.", { error: "invalid input" });
+			if (recipient === transport.sessionId) return text("Error: cannot send a message to the active session.", { error: "self" });
+			try {
+				const accepted = await transport.client.sendNotification(recipient, input.message, { signal, expectedActivation: activation, beforeConnect: () => activeTransportFor(ctx) === transport });
+				return activeTransportFor(ctx) === transport ? text(`Message ${accepted.id} from ${transport.sessionId} to ${recipient} accepted for delivery; it is not a delivery or read receipt.`, { gentleAgents: { messageId: accepted.id, senderSessionId: transport.sessionId, recipientSessionId: recipient, state: "accepted" } }) : text("Error: session messaging is not ready.", { error: "stale" });
+			} catch {
+				return text("Error: session message was not accepted.", { error: "not accepted" });
+			}
+		},
+	});
+
 	tool("list_agents", "List the subagents defined for this project and user, with their descriptions.", { properties: {} }, async (_params, ctx) => {
 		const { agents, errors } = discoverAgents(roots(ctx));
 		const lines = agents.map((agent) => `- ${agent.name} (${agent.scope}): ${agent.description || "no description"}`);
@@ -1289,8 +1319,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				label: { type: "string", description: "Three to six words naming the work, shown on the agents card, e.g. 'map footer data sources'." },
 				context: { type: "string", description: "Optional extra context appended to the task." },
 				workspace_root: { type: "string", description: "Optional worktree in the same Git clone. Validated before queueing; the child runs at its canonical root and registers it on actual launch." },
-				research_artifact: RESEARCH_ARTIFACT_SCHEMA, research_selection: RESEARCH_SELECTION_SCHEMA,
-				remediation: REMEDIATION_SCHEMA, sdd_change: { type: "object", additionalProperties: false, required: ["changeName", "workspaceRoot", "phase"], properties: { changeName: { type: "string" }, workspaceRoot: { type: "string" }, failedEvidenceRevision: { type: "string" }, phase: { type: "string", enum: ["apply", "verify", "sync", "archive", "remediate"] } }, description: "Launch-local selected SDD identity, accepted only by matching SDD phase agents." },
+				research_selection: RESEARCH_SELECTION_SCHEMA,
+				remediation: REMEDIATION_SCHEMA, sdd_change: { type: "object", additionalProperties: false, required: ["changeName", "workspaceRoot", "phase"], properties: { changeName: { type: "string" }, workspaceRoot: { type: "string" }, failedEvidenceRevision: { type: "string" }, phase: { type: "string", enum: ["apply", "verify", "archive", "remediate"] } }, description: "Launch-local selected SDD identity, accepted only by matching SDD phase agents." },
 				mode: { type: "string", enum: ["task", "background"], description: "task waits for the result (default); background returns immediately." },
 			},
 		},
@@ -1298,36 +1328,21 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			const { agents } = discoverAgents(roots(ctx));
 			const agent = agents.find((candidate) => candidate.name === params.agent);
 			if (!agent) return text(`Error: no subagent named "${String(params.agent)}". Known: ${agents.map((candidate) => candidate.name).join(", ") || "none"}`, { error: "unknown agent" });
-			const mode = (params.mode as AgentMode | undefined) ?? agent.mode ?? loadAgentsConfig(roots(ctx)).defaultMode;
+			const mode = (params.mode as AgentMode | undefined) ?? agent.mode ?? resolveDefaultSubagentMode({
+				configuredDefault: loadAgentsConfig(roots(ctx)).defaultMode,
+				policy: resolveBackgroundSubagentsPolicy(ctx.cwd).policy,
+				parentMode: ctx.mode,
+			});
 			let sddChange: SddChangeSelection | undefined;
 			try { sddChange = parseSddChange(params.sdd_change, agent.name); }
 			catch (error) { return text(`Error: ${error instanceof Error ? error.message : String(error)}`, { error: "invalid sdd_change" }); }
-			return launch(ctx, buildRequest(ctx, agent, String(params.task ?? ""), typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, undefined, typeof params.workspace_root === "string" ? params.workspace_root : undefined, sddChange, params.research_selection, params.research_artifact, params.remediation), signal);
+			return launch(ctx, buildRequest(ctx, agent, String(params.task ?? ""), typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, undefined, typeof params.workspace_root === "string" ? params.workspace_root : undefined, sddChange, params.research_selection, params.remediation), signal);
 		},
 	);
 
 	tool("status", "Report the status of one subagent task.", { required: ["task_id"], properties: { task_id: { type: "string" } } }, async (params) => {
 		const task = await resolveTask(String(params.task_id));
 		return task ? text(describeTask(task), taskDetails(task)) : text(`Error: no task ${String(params.task_id)}`, { error: "unknown task" });
-	});
-
-	tool("reconcile", "Reconcile one retained managed remediation mutation without launching an actor.", { required: ["task_id"], properties: { task_id: { type: "string" } } }, async (params, ctx) => {
-		const id = String(params.task_id);
-		const lock = acquireTaskLock(tasksDir, id);
-		try {
-			const stored = await loadStoredTask(tasksDir, id);
-			if (!stored) return text(`Error: no task ${id}`, { error: "unknown task" });
-			const task = stored.task, retainedThread = stored.thread;
-			const target = registryFor(ctx).validate(task.cwd);
-			if (target !== resolve(task.cwd) || task.sddRemediation?.acquire.workspaceRoot !== target) throw new Error("Retained remediation task must resolve to its exact worktree in the same Git clone as this session");
-			const native = deps.nativeSdd ?? new NativeReviewCliV216(createNodeExecFileAdapter());
-			const persist = async (current: TaskRecord) => {
-				await saveTask(tasksDir, current, retainedThread);
-				store.update(current.id, { status: current.status, error: current.error, lastStep: current.lastStep, endedAt: current.endedAt, lastActivityAt: current.lastActivityAt, sddRemediation: current.sddRemediation });
-			};
-			const result = await reconcileManagedRemediation(task, native, persist);
-			return text(`Managed remediation task ${task.id} reconciled; no actor started. Use fresh native status and admission for later work.`, { gentleAgents: { taskId: task.id, agent: task.agent, status: task.status, mode: task.mode }, reconciliation: { ...result, actorStarted: false } });
-		} finally { lock.release(); }
 	});
 
 	tool("result", "Return the final answer of a finished subagent task, or its current state if it is still running.", { required: ["task_id"], properties: { task_id: { type: "string" } } }, async (params) => {
@@ -1351,7 +1366,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 
 	tool("cancel",  "Cancel a queued or running subagent task.", { required: ["task_id"], properties: { task_id: { type: "string" } } }, async (params) => {
 		const id = String(params.task_id);
-		return runner.cancel(id) ? text(`Cancelled task ${id}.`) : text(`Error: task ${id} is not running.`, { error: "not running" });
+		return runner.cancel(id, "cancelled by the cancel tool") ? text(`Cancelled task ${id}.`) : text(`Error: task ${id} is not running.`, { error: "not running" });
 	});
 
 	tool("send_message", "Steer a running subagent with a message delivered before its next model call.", { required: ["task_id", "message"], properties: { task_id: { type: "string" }, message: { type: "string" } } }, async (params) => {
@@ -1362,7 +1377,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	tool(
 		"continue",
 		"Resume a finished subagent task in its own session with a follow-up prompt.",
-		{ required: ["task_id", "prompt"], properties: { research_artifact: RESEARCH_ARTIFACT_SCHEMA, research_selection: RESEARCH_SELECTION_SCHEMA, task_id: { type: "string" }, prompt: { type: "string" }, label: { type: "string", description: "Three to six words naming the follow-up." }, remediation: REMEDIATION_SCHEMA, sdd_change: { type: "object", additionalProperties: false, required: ["changeName", "workspaceRoot", "phase"], properties: { changeName: { type: "string" }, workspaceRoot: { type: "string" }, failedEvidenceRevision: { type: "string" }, phase: { type: "string", enum: ["apply", "verify", "sync", "archive", "remediate"] } }, description: "Fresh launch-local selected SDD identity, required when continuing an SDD phase agent." }, mode: { type: "string", enum: ["task", "background"] } } },
+		{ required: ["task_id", "prompt"], properties: { research_selection: RESEARCH_SELECTION_SCHEMA, task_id: { type: "string" }, prompt: { type: "string" }, label: { type: "string", description: "Three to six words naming the follow-up." }, remediation: REMEDIATION_SCHEMA, sdd_change: { type: "object", additionalProperties: false, required: ["changeName", "workspaceRoot", "phase"], properties: { changeName: { type: "string" }, workspaceRoot: { type: "string" }, failedEvidenceRevision: { type: "string" }, phase: { type: "string", enum: ["apply", "verify", "archive", "remediate"] } }, description: "Fresh launch-local selected SDD identity, required when continuing an SDD phase agent." }, mode: { type: "string", enum: ["task", "background"] } } },
 		async (params, ctx, signal) => {
 			const previous = await resolveTask(String(params.task_id));
 			if (!previous) return text(`Error: no task ${String(params.task_id)}`, { error: "unknown task" });
@@ -1377,14 +1392,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			try { sddChange = parseSddChange(params.sdd_change, agent.name); }
 			catch (error) { return text(`Error: ${error instanceof Error ? error.message : String(error)}`, { error: "invalid sdd_change" }); }
 			if (sddPhaseForAgent(agent.name) && !sddChange) return text("Error: continuing an SDD phase agent requires a fresh sdd_change selection.", { error: "missing sdd_change" });
-			let artifact: ResearchArtifactIntent | undefined;
-			if (agent.name === "sdd-research") {
-				try {
-					const prior = parseResearchArtifactIntent("researchArtifact" in previous ? previous.researchArtifact : undefined, previous.cwd);
-					artifact = parseResearchArtifactIntent(params.research_artifact ?? prior, previous.cwd, prior);
-				} catch (error) { return text(`Error: research continuation scope refused: ${String(error)}`, { error: "research scope" }); }
-			}
-			return launch(ctx, buildRequest(ctx, agent, String(params.prompt ?? ""), typeof params.label === "string" ? params.label : undefined, previous.sddPreflightContext, mode, previous.sessionPath, sddChange?.workspaceRoot ?? previous.cwd, sddChange, params.research_selection, artifact, params.remediation), signal);
+
+			return launch(ctx, buildRequest(ctx, agent, String(params.prompt ?? ""), typeof params.label === "string" ? params.label : undefined, previous.sddPreflightContext, mode, previous.sessionPath, sddChange?.workspaceRoot ?? previous.cwd, sddChange, params.research_selection, params.remediation), signal);
 		},
 	);
 
@@ -1416,20 +1425,33 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		});
 	}
 
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		// A resumed, reloaded, or replaced session starts with an empty completion
 		// queue so nothing pending from another session can replay here.
 		completions.dropAll();
 		presence?.dispose();
 		registryFor(ctx);
 		showWidget(ctx);
+		// An explicit in-session /resume always brings this session's own
+		// finished subagents back from disk. Pi also reports "startup" (not
+		// "resume") when the CLI is launched directly into an existing session
+		// file, e.g. --continue or the --resume picker (agent-session.js:152
+		// defaults to "startup"); that case restores too, but only when the
+		// session actually has prior entries -- a brand-new session can also be
+		// announced as "startup", and a fresh session has none. "new", "fork",
+		// and "reload" never restore here, matching the existing on-demand
+		// resolveTask path for anything else.
+		const sessionId = ctx.sessionManager.getSessionId();
+		const preexisting = event.reason === "resume" || (event.reason === "startup" && ctx.sessionManager.getEntries().length > 0);
+		if (preexisting && sessionId) void restoreSessionHistory(ctx, sessionId);
 		try {
 			presence = PresencePublisher.start({ profile: agentHome, sessionId: activeSessionId() ?? "",
 				label: ctx.sessionManager.getSessionName?.() || ctx.sessionManager.getCwd().split(/[\\/]/).pop() || "Orchestrator", activity: [] });
 			publishActivity();
 		} catch { presence = undefined; }
+		void startSessionTransport(ctx);
 	});
-	pi.on("session_shutdown", () => {
+	pi.on("session_shutdown", async () => {
 		completions.dropAll();
 		activeAgentRuns = 0;
 		presence?.dispose();
@@ -1441,6 +1463,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		sidebarTui = undefined;
 		worktrees?.close();
 		worktrees = undefined;
-		runner.cancelAll();
+		const stopped = shutdownSessionTransport();
+		runner.cancelAll("cancelled: parent session shut down");
+		await stopped;
 	});
 }

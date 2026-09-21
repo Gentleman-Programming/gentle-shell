@@ -818,11 +818,14 @@ test("next_transition decodes the self-contained provider role capture vectors s
 		() => decodeRoleTransition(roleInput("provider_refuter", "review.capture-refuter", "https://gentle-ai.dev/schema/review/reviewer/v1")),
 		/schema must be https:\/\/gentle-ai\.dev\/schema\/review\/refuter\/v1/,
 	);
+	// This fixture decodes on the v5 surface only (no v9): a submission
+	// descriptor on a role input is rejected for lacking the v9 provider
+	// contract, before the materialize/execute discriminator is even read.
 	assert.throws(
 		() => decodeRoleTransition(roleInput("provider_refuter", "review.capture-refuter", "https://gentle-ai.dev/schema/review/refuter/v1", {
 			submission: { operation_token: "capture-refuter", argument_tokens: ["--input={{value}}"], values: [{ slot: "{{value}}", domain: "artifact-path", substitution_location: 0 }] },
 		})),
-		/submission is not allowed on the self-contained/,
+		/submission requires the v9 provider contract/,
 	);
 
 	const validator = roleInput("provider_targeted_validator", "review.capture-validation", "https://gentle-ai.dev/schema/review/validator/v1");
@@ -834,6 +837,87 @@ test("next_transition decodes the self-contained provider role capture vectors s
 	assert.throws(
 		() => decodeRoleTransition(roleInput("provider_targeted_validator", "review.capture-validation", "https://gentle-ai.dev/schema/review/refuter/v1")),
 		/schema must be https:\/\/gentle-ai\.dev\/schema\/review\/validator\/v1/,
+	);
+});
+
+// gentle-ai's v9 contract makes the same two role operations host-mediated
+// exactly like a lens materialize slot: the input carries a submission
+// descriptor alongside --materialize=true (never --execute), and the host
+// completes the frozen prompt in-process and submits through that
+// descriptor instead of executing a Go-owned pi subprocess.
+test("next_transition decodes the v9 host-mediated provider role submission form", () => {
+	const materializeArguments = [
+		{ name: "lineage", value: "review-fixture", token: "--lineage=review-fixture" },
+		{ name: "expected-revision", value: digest, token: `--expected-revision=${digest}` },
+		{ name: "target", value: digest, token: `--target=${digest}` },
+		{ name: "repository-context", value: `rctx1_${"c".repeat(64)}`, token: `--repository-context=rctx1_${"c".repeat(64)}` },
+		{ name: "agent", value: "pi", token: "--agent=pi" },
+		{ name: "materialize", value: "true", token: "--materialize=true" },
+	];
+	const roleInput = (name: string, captureOperation: string, schema: string, extra: Record<string, unknown> = {}) => ({
+		kind: "collect",
+		reason_code: "provider_refuter_required",
+		collect: { inputs: [{ name, schema, capture_operation: captureOperation, arguments: materializeArguments, ...extra }] },
+	});
+	// This decoder path is gated on v9 specifically -- the sibling gentle-ai
+	// branch's contract, ahead of the currently-released v8 -- not on v5,
+	// which v8 (and v6/v7) already satisfy.
+	const decodeRoleTransition = (value: unknown) => decodeReviewNextTransitionV3(value, { v9: true });
+	const refuterSubmission = {
+		operation_token: "capture-refuter",
+		argument_tokens: [...materializeArguments.map((argument) => argument.token), "--input={{value}}"],
+		value: { slot: "provider_refuter", domain: "artifact_path_or_stdin", schema: "https://gentle-ai.dev/schema/review/refuter/v1", substitution_location: materializeArguments.length },
+	};
+
+	const refuter = roleInput("provider_refuter", "review.capture-refuter", "https://gentle-ai.dev/schema/review/refuter/v1", { submission: refuterSubmission });
+	const decodedSubmission = decodeRoleTransition(refuter).collect?.inputs[0]?.submission;
+	assert.equal(decodedSubmission?.operationToken, "capture-refuter");
+	assert.equal(decodedSubmission?.argumentTokens.length, materializeArguments.length + 1);
+	assert.deepEqual(decodedSubmission?.values, [{
+		slot: "provider_refuter",
+		domain: "artifact_path_or_stdin",
+		schema: "https://gentle-ai.dev/schema/review/refuter/v1",
+		substitutionLocation: materializeArguments.length,
+	}]);
+
+	// The exact same payload under v8 (or any earlier non-v9 rung) is
+	// rejected: v8 only extended the reviewer-result transition for OpenCode
+	// provider tasks and never renders a role submission descriptor.
+	assert.throws(
+		() => decodeReviewNextTransitionV3(refuter, { v6: true }),
+		/submission requires the v9 provider contract/,
+	);
+
+	// A submission descriptor with no --materialize=true (and no --execute
+	// either) matches neither wire form.
+	assert.throws(
+		() => decodeRoleTransition(roleInput("provider_refuter", "review.capture-refuter", "https://gentle-ai.dev/schema/review/refuter/v1", {
+			submission: refuterSubmission,
+			arguments: materializeArguments.filter((argument) => argument.name !== "materialize"),
+		})),
+		/submission requires --materialize=true/,
+	);
+
+	// --execute alongside a submission descriptor mixes both wire forms on
+	// one input, which is never valid.
+	assert.throws(
+		() => decodeRoleTransition(roleInput("provider_refuter", "review.capture-refuter", "https://gentle-ai.dev/schema/review/refuter/v1", {
+			submission: refuterSubmission,
+			arguments: [...materializeArguments, { name: "execute", value: "true", token: "--execute=true" }],
+		})),
+		/must not carry --execute alongside a submission descriptor/,
+	);
+
+	// The targeted-validator's host-mediated form still requires its
+	// validation_request, exactly like the self-contained vector.
+	const validatorSubmission = {
+		operation_token: "capture-validation",
+		argument_tokens: [...materializeArguments.map((argument) => argument.token), "--input={{value}}"],
+		value: { slot: "provider_targeted_validator", domain: "artifact_path_or_stdin", schema: "https://gentle-ai.dev/schema/review/validator/v1", substitution_location: materializeArguments.length },
+	};
+	assert.throws(
+		() => decodeRoleTransition(roleInput("provider_targeted_validator", "review.capture-validation", "https://gentle-ai.dev/schema/review/validator/v1", { submission: validatorSubmission })),
+		/validation_request is required/,
 	);
 });
 
@@ -912,6 +996,37 @@ test("v5 targeted-validator collect inputs carry the exact provider-owned valida
 		proof: "selected.txt:1",
 	}]);
 	assert.deepEqual(decoded.collect?.inputs[0]?.arguments, input.arguments, "provider-rendered arguments must remain unchanged");
+
+	// The same validation_request rides the v9 host-mediated form too: swap
+	// --execute=true for --materialize=true and add the provider-owned
+	// submission descriptor.
+	const materializeArguments = input.arguments.map((argument) => argument.name === "execute" ? { name: "materialize", value: "true", token: "--materialize=true" } : argument);
+	const hostMediatedInput = {
+		...input,
+		arguments: materializeArguments,
+		submission: {
+			operation_token: "capture-validation",
+			argument_tokens: [...materializeArguments.map((argument) => argument.token), "--input={{value}}"],
+			value: { slot: "provider_targeted_validator", domain: "artifact_path_or_stdin", schema: "https://gentle-ai.dev/schema/review/validator/v1", substitution_location: materializeArguments.length },
+		},
+	};
+	const hostMediatedTransition = { kind: "collect" as const, reason_code: "targeted_validation_required", collect: { inputs: [hostMediatedInput] } };
+	const decodedHostMediated = decodeReviewNextTransitionV3(hostMediatedTransition, { v9: true });
+	assert.equal(decodedHostMediated.collect?.inputs[0]?.submission?.operationToken, "capture-validation");
+	assert.deepEqual(decodedHostMediated.collect?.inputs[0]?.submission?.values, [{
+		slot: "provider_targeted_validator",
+		domain: "artifact_path_or_stdin",
+		schema: "https://gentle-ai.dev/schema/review/validator/v1",
+		substitutionLocation: materializeArguments.length,
+	}]);
+	assert.equal(decodedHostMediated.collect?.inputs[0]?.validationRequest?.requestHash, requestHash);
+
+	// The identical v8 surface (v6/v7/v8 all decode collect inputs alike)
+	// rejects the same host-mediated submission: only v9 renders it.
+	assert.throws(
+		() => decodeReviewNextTransitionV3(hostMediatedTransition, { v6: true }),
+		/submission requires the v9 provider contract/,
+	);
 
 	const missingRequest = clone(transition);
 	delete (missingRequest.collect.inputs[0] as JsonObject).validation_request;

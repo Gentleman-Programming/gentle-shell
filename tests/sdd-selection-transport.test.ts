@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -92,12 +92,14 @@ test("selected SDD change snapshots at task construction and reaches child start
 	const concurrent = spawned[1]![spawned[1]!.indexOf("--gentle-sdd-change") + 1]!;
 	assert.deepEqual(JSON.parse(serialized), { changeName: "alpha", workspaceRoot: root, phase: "apply" });
 	assert.deepEqual(JSON.parse(concurrent), { changeName: "beta", workspaceRoot: root, phase: "apply" });
-	const startup = __testing.resolveSddChangeStartup(serialized, root, "sdd-apply");
+	const authority = { ...commandStatus(root), nextRecommended: "apply", blockedReasons: [],
+		dependencies: { ...commandStatus(root).dependencies, apply: "ready" } };
+	const startup = await nativeStartup(serialized, root, "sdd-apply", { sddStatus: async () => authority });
 	assert.equal(startup.status.changeName, "alpha");
-	assert.equal(startup.status.nextRecommended, "sdd-propose");
+	assert.equal(startup.status.nextRecommended, "apply");
 });
 
-test("selected native v2 archive authority is injected whole and never falls back to the local resolver", async (t) => {
+test("selected native v2 archive authority is injected whole without a competing local projection", async (t) => {
 	const root = workspace(t);
 	const serialized = JSON.stringify({ changeName: "alpha", workspaceRoot: root, phase: "archive" });
 	const nativeAuthority = {
@@ -114,31 +116,16 @@ test("selected native v2 archive authority is injected whole and never falls bac
 		nextRecommended: "archive",
 	};
 	const nativeCalls: unknown[] = [];
-	let localResolverCalls = 0;
-	const startup = await (__testing as unknown as {
-		resolveSelectedNativeSddChangeStartup(
-			serialized: unknown,
-			cwd: string,
-			agentName: string,
-			native: { sddStatus?: (request: unknown) => Promise<unknown> },
-			localResolver: () => unknown,
-		): Promise<{ selection: { changeName: string; workspaceRoot: string; phase: string }; status: unknown }>;
-	}).resolveSelectedNativeSddChangeStartup(serialized, root, "sdd-archive", {
+	const startup = await nativeStartup(serialized, root, "sdd-archive", {
 		sddStatus: async (request) => { nativeCalls.push(request); return nativeAuthority; },
-	}, () => {
-		localResolverCalls += 1;
-		// Simulates local v1's missing sync-report.md result: it must never
-		// overlay the native archive-ready authority.
-		return { dependencies: { verify: "all_done", sync: "blocked", archive: "blocked" } };
 	});
 
 	assert.deepEqual(startup.selection, { changeName: "alpha", workspaceRoot: root, phase: "archive" });
 	assert.equal(startup.status, nativeAuthority, "the validated native status object is injected without a local overlay");
 	assert.deepEqual(nativeCalls, [{ changeName: "alpha", workspaceRoot: root }]);
-	assert.equal(localResolverCalls, 0);
 });
 
-test("selected native v2 failures fail closed without consulting the local resolver", async (t) => {
+test("selected native v2 failures fail closed without local status reconstruction", async (t) => {
 	const root = workspace(t);
 	const serialized = JSON.stringify({ changeName: "alpha", workspaceRoot: root, phase: "archive" });
 	const valid = {
@@ -163,66 +150,17 @@ test("selected native v2 failures fail closed without consulting the local resol
 		{ sddStatus: async () => ({ ...valid, blockedReasons: "invalid" }) },
 	];
 	for (const native of failures) {
-		let localResolverCalls = 0;
-		await assert.rejects(
-			() => (__testing as unknown as {
-				resolveSelectedNativeSddChangeStartup(
-					serialized: unknown, cwd: string, agentName: string,
-					native: { sddStatus?: () => Promise<unknown> }, localResolver: () => unknown,
-				): Promise<unknown>;
-			}).resolveSelectedNativeSddChangeStartup(serialized, root, "sdd-archive", native, () => { localResolverCalls += 1; return {}; }),
-			/SDD selection native status/i,
-		);
-		assert.equal(localResolverCalls, 0);
+		await assert.rejects(() => nativeStartup(serialized, root, "sdd-archive", native), /SDD selection native status/i);
 	}
+	await assert.rejects(() => nativeStartup(serialized, root, "sdd-archive", { sddStatus: async () => valid }), /native status.*blocks|cannot execute/i);
 
-	await assert.rejects(
-		() => (__testing as unknown as {
-			resolveSelectedNativeSddChangeStartup(
-				serialized: unknown, cwd: string, agentName: string,
-				native: { sddStatus?: () => Promise<unknown> }, localResolver: () => unknown,
-			): Promise<unknown>;
-		}).resolveSelectedNativeSddChangeStartup(serialized, root, "sdd-archive", { sddStatus: async () => valid }, () => {
-			throw new Error("local resolver must not run");
-		}),
-		/native status.*blocks|cannot execute/i,
-	);
-
-	const syncSerialized = JSON.stringify({ changeName: "alpha", workspaceRoot: root, phase: "sync" });
-	const localStatus = __testing.resolveSddChangeStartup(syncSerialized, root, "sdd-sync").status;
-	const syncNativeCalls: unknown[] = [];
-	const syncLocalCalls: unknown[] = [];
-	const sync = await (__testing as unknown as {
-		resolveSelectedNativeSddChangeStartup(
-			serialized: unknown, cwd: string, agentName: string,
-			native: { sddStatus?: (request: unknown) => Promise<unknown> }, localResolver: (options: unknown) => unknown,
-		): Promise<{ status: unknown }>;
-	}).resolveSelectedNativeSddChangeStartup(syncSerialized, root, "sdd-sync", {
-		sddStatus: async (request) => { syncNativeCalls.push(request); throw new Error("native must not run"); },
-	}, (options) => {
-		syncLocalCalls.push(options);
-		return localStatus;
-	});
-	assert.equal(sync.status, localStatus, "selected sync injects the exact local status");
-	assert.deepEqual(syncLocalCalls, [{ cwd: root, workspaceRoot: root, changeName: "alpha", includeInstructions: true }]);
-	assert.deepEqual(syncNativeCalls, []);
-
-	await assert.rejects(
-		() => (__testing as unknown as {
-			resolveSelectedNativeSddChangeStartup(
-				serialized: unknown, cwd: string, agentName: string,
-				native: { sddStatus?: () => Promise<unknown> }, localResolver: () => typeof localStatus,
-			): Promise<unknown>;
-		}).resolveSelectedNativeSddChangeStartup(syncSerialized, root, "sdd-sync", undefined, () => ({ ...localStatus, changeName: "beta" })),
-		/mismatched status/i,
-	);
 });
 
 function nativeStartup(
 	serialized: unknown,
 	cwd: string,
 	agentName: string,
-	native: { sddStatus: (request: unknown) => Promise<unknown> },
+	native: { sddStatus?: (request: unknown) => Promise<unknown> },
 ) {
 	return (__testing as unknown as {
 		resolveSelectedNativeSddChangeStartup(
@@ -275,24 +213,24 @@ test("a native verify evidence-refresh route starts under its own blocker while 
 	}
 });
 
-test("a throwing SDD selection flag reader fails closed without resolving an unselected status", (t) => {
+test("a throwing SDD selection flag reader fails closed without resolving an unselected status", async (t) => {
 	const root = workspace(t);
 	assert.equal(__testing.readSddChangeFlag({ getFlag: () => false } as never), undefined);
 	const selection = __testing.readSddChangeFlag({
 		getFlag() { throw new Error("flag reader failed"); },
 	} as never);
 	let resolverCalls = 0;
-	assert.throws(
-		() => __testing.resolveSddChangeStartup(selection, root, "sdd-apply", () => {
+	await assert.rejects(
+		() => nativeStartup(selection, root, "sdd-apply", { sddStatus: async () => {
 			resolverCalls += 1;
 			throw new Error("status resolver must not run");
-		}),
+		} }),
 		/SDD selection must be a JSON string/i,
 	);
 	assert.equal(resolverCalls, 0);
 });
 
-test("selected SDD startup fails closed for malformed identity, root, phase, symlink, and resolver errors", (t) => {
+test("selected SDD startup fails closed for malformed identity, root, phase, symlink, and resolver errors", async (t) => {
 	const root = workspace(t);
 	const selected = JSON.stringify({ changeName: "alpha", workspaceRoot: root, phase: "apply" });
 	const outside = mkdtempSync(join(tmpdir(), "gentle-pi-sdd-selection-outside-"));
@@ -308,11 +246,11 @@ test("selected SDD startup fails closed for malformed identity, root, phase, sym
 		JSON.stringify({ changeName: "alpha", workspaceRoot: join(root, "wrong"), phase: "apply" }),
 		JSON.stringify({ changeName: "alpha", workspaceRoot: escaped, phase: "apply" }),
 	]) {
-		assert.throws(() => __testing.resolveSddChangeStartup(value, root, "sdd-apply"), /SDD selection/i);
+		await assert.rejects(() => nativeStartup(value, root, "sdd-apply", {}), /SDD selection/i);
 	}
-	assert.throws(() => __testing.resolveSddChangeStartup(selected, root, "sdd-verify"), /phase/i);
-	assert.throws(
-		() => __testing.resolveSddChangeStartup(selected, root, "sdd-apply", () => { throw new Error("resolver failed"); }),
+	await assert.rejects(() => nativeStartup(selected, root, "sdd-verify", {}), /phase/i);
+	await assert.rejects(
+		() => nativeStartup(selected, root, "sdd-apply", { sddStatus: async () => { throw new Error("resolver failed"); } }),
 		/resolver failed/i,
 	);
 });
@@ -395,14 +333,10 @@ test("before_agent_start resolves the unnamed packaged executor and renders nati
 	for (const phase of ["apply", "verify", "remediate", "archive"] as const) {
 		const phasePrompt = readFileSync(new URL(`../assets/agents/sdd-${phase}.md`, import.meta.url), "utf8").replace(/^---\n[\s\S]*?\n---\n/, "");
 		serialized = undefined;
-		nativeReply = { ...status, nextRecommended: phase, ...(phase === "remediate" ? { remediationState: { required: true, complete: false, failedEvidenceRevision: `sha256:${"a".repeat(64)}` } } : {}) };
+		nativeReply = { ...status, nextRecommended: phase, dependencies: { ...status.dependencies, ...(phase === "remediate" ? {} : { [phase]: "ready" }) }, ...(phase === "remediate" ? { remediationState: { required: true, complete: false, failedEvidenceRevision: `sha256:${"a".repeat(64)}` } } : {}) };
 		assert.doesNotMatch((await hooks.get("before_agent_start")!({ systemPrompt: phasePrompt }, ctx)).systemPrompt, /SDD selection blocked:/);
 		assert.equal((await callTool({ toolName: "read", input: {} }, ctx))?.block, undefined, `${phase} accepts its matching native recommendation`);
 	}
-	const syncPrompt = readFileSync(new URL("../assets/agents/sdd-sync.md", import.meta.url), "utf8").replace(/^---\n[\s\S]*?\n---\n/, "");
-	calls.length = 0; nativeReply = { ...status, changeName: null };
-	assert.doesNotMatch((await hooks.get("before_agent_start")!({ systemPrompt: syncPrompt }, ctx)).systemPrompt, /SDD selection blocked:/);
-	assert.deepEqual(calls, [], "manual sync remains local and never consults native discovery");
 	serialized = JSON.stringify(selection);
 	for (const blockedReply of [
 		{ ...status, dependencies: { ...status.dependencies, apply: "blocked" }, blockedReasons: ["missing native prerequisite"] },
@@ -426,8 +360,16 @@ test("producer v2 preservation: selected status is read-only and retains all sev
 	assert.equal(first, second);
 	const status = decodeNativeSddStatusV2(JSON.parse(first), { changeName: "alpha", workspaceRoot: root });
 	assert.deepEqual(Object.keys(status.dependencies).sort(), ["apply", "archive", "design", "proposal", "specs", "tasks", "verify"]);
-	assert.deepEqual(Object.keys(status.phaseInstructions!).sort(), ["apply", "archive", "remediate", "verify"]);
+	assert.deepEqual(Object.keys(status.phaseInstructions!).sort(), "remediate" in status.phaseInstructions!
+		? ["apply", "archive", "remediate", "verify"] : ["apply", "archive", "verify"]);
 	assert.equal(status.nextRecommended, "propose");
+	if (!("remediate" in status.phaseInstructions!)) {
+		assert.throws(() => execFileSync(process.env.SDD_TEST_PRODUCER!, ["sdd-verify-validate"], {
+			encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+		}), (error: unknown) => error instanceof Error && "stderr" in error && /unknown command/.test(String(error.stderr)));
+		const verifier = readFileSync(new URL("../assets/agents/sdd-verify.md", import.meta.url), "utf8");
+		assert.doesNotMatch(verifier, /sdd-verify-validate|gentle-ai\.verify-result\/v1/);
+	}
 	const verbs: string[] = [];
 	const adapter = createNodeExecFileAdapter();
 	const native = new NativeReviewCliV216(async (request) => { verbs.push(request.arguments[0]!); return adapter(request); }, process.env.SDD_TEST_PRODUCER!);
@@ -472,6 +414,156 @@ function commandStatus(root: string) {
 		blockedReasons: ["prepare only; source roots remain ungranted"], nextRecommended: "propose",
 	};
 }
+
+test("classical native instructions reach selected apply, verify and archive startup unchanged", async (t) => {
+	const root = workspace(t);
+	for (const phase of ["apply", "verify", "archive"] as const) {
+		const legacy = commandStatus(root);
+		const { remediate: _legacyOnly, ...phaseInstructions } = legacy.phaseInstructions;
+		const status = { ...legacy, phaseInstructions, blockedReasons: [], nextRecommended: phase,
+			dependencies: { ...legacy.dependencies, [phase]: "ready" } };
+		const calls: unknown[] = [];
+		const result = await nativeStartup(JSON.stringify({ changeName: "alpha", workspaceRoot: root, phase }), root, `sdd-${phase}`, {
+			sddStatus: async (request) => { calls.push(request); return status; },
+		});
+		assert.equal(result.status, status, "transport preserves the provider's original object");
+		assert.equal("remediate" in result.status.phaseInstructions!, false, "never synthesize retired instructions");
+		assert.deepEqual(calls, [{ changeName: "alpha", workspaceRoot: root }]);
+	}
+});
+
+test("native instruction compatibility does not admit incomplete or foreign phase records", (t) => {
+	const root = workspace(t), legacy = commandStatus(root);
+	const { remediate: _legacyOnly, ...classical } = legacy.phaseInstructions;
+	const request = { changeName: "alpha", workspaceRoot: root };
+	assert.equal(decodeNativeSddStatusV2(legacy, request), legacy, "pinned producer remains supported");
+	for (const phaseInstructions of [
+		{ ...classical, verify: undefined }, { ...classical, remediate: undefined },
+		{ ...classical, remediate: "not an instruction list" }, { ...classical, sync: [] },
+		{ ...classical, unknown: [] },
+	]) assert.throws(() => decodeNativeSddStatusV2({ ...legacy, phaseInstructions }, request));
+	assert.throws(() => decodeNativeSddStatusV2({ ...legacy, phaseInstructions: classical,
+		nextRecommended: "remediate", remediationState: { required: true, complete: false, failedEvidenceRevision: `sha256:${"a".repeat(64)}` },
+	}, request), /remediation/i);
+});
+
+test("producer instructions reach actual selected-child startup without provider replacement", { skip: !process.env.SDD_TEST_PRODUCER }, async (t) => {
+	const root = workspace(t), change = join(root, "openspec/changes/alpha");
+	rmSync(join(root, "openspec/changes/beta"), { recursive: true });
+	execFileSync("git", ["init", "--quiet", root]);
+	mkdirSync(join(change, "specs/feature"), { recursive: true });
+	for (const [path, content] of Object.entries({ "proposal.md": "# Proposal\n", "design.md": "# Design\n",
+		"specs/feature/spec.md": "# Spec\n", "tasks.md": "- [ ] 1.1 Implement\n" })) writeFileSync(join(change, path), content);
+	const invoked: string[] = [];
+	const adapter = createNodeExecFileAdapter();
+	const native = new NativeReviewCliV216(async (request) => {
+		invoked.push(request.arguments[0]!);
+		return adapter(request);
+	}, process.env.SDD_TEST_PRODUCER!);
+	t.after(() => assert.ok(invoked.every((verb) => verb === "sdd-status"), "registered startup never invokes attempt acquire/settle"));
+	const status = await native.sddStatus!({ workspaceRoot: root, changeName: "alpha" });
+	assert.equal(status.nextRecommended, "apply");
+	let selection: string | undefined = JSON.stringify({ changeName: "alpha", workspaceRoot: root, phase: "apply" });
+	const hooks = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<{ systemPrompt: string }>>();
+	const pi = { on(name: string, hook: never) { hooks.set(name, hook); }, events: { emit() {} },
+		registerCommand() {}, registerTool() {}, getFlag: () => selection, getActiveTools: () => [],
+	} as unknown as ExtensionAPI;
+	const ctx = { cwd: root, hasUI: false, sessionManager: { getSessionId: () => root } } as unknown as ExtensionContext;
+	await ensureSddPreflight(ctx, { pi, installAssets: () => ({ agents: 0, chains: 0, support: 0, skipped: 0 }) });
+	createGentleAiExtension({ nativeReviewCli: native, processEnv: {},
+		resolveTelemetryTriggerBinary: () => { throw new Error("no telemetry in producer test"); },
+	})(pi);
+	const result = await hooks.get("before_agent_start")!({ systemPrompt: "SDD apply executor" }, ctx);
+	assert.doesNotMatch(result.systemPrompt, /SDD selection blocked:/);
+	assert.ok(result.systemPrompt.includes(JSON.stringify(status, null, 2)));
+	assert.match(result.systemPrompt, /### apply instructions/);
+	writeFileSync(join(change, "tasks.md"), "- [x] 1.1 Implement\n");
+	const completed = await native.sddStatus!({ workspaceRoot: root, changeName: "alpha" });
+	// The current pin requests verify; the classical producer requests archive.
+	// This slice consumes either producer, without changing its chosen route.
+	const next = "remediate" in completed.phaseInstructions! ? "verify" : "archive";
+	assert.equal(completed.nextRecommended, next);
+	selection = JSON.stringify({ changeName: "alpha", workspaceRoot: root, phase: next });
+	const completion = await hooks.get("before_agent_start")!({ systemPrompt: `SDD ${next} executor` }, ctx);
+	assert.doesNotMatch(completion.systemPrompt, /SDD selection blocked:/);
+	assert.ok(completion.systemPrompt.includes(JSON.stringify(completed, null, 2)));
+	for (const selected of [true, false]) {
+		for (const phase of new Set([next, "verify"])) {
+			selection = selected ? JSON.stringify({ changeName: "alpha", workspaceRoot: root, phase }) : undefined;
+			const result = await hooks.get("before_agent_start")!({ systemPrompt: `SDD ${phase} executor` }, ctx);
+			assert.doesNotMatch(result.systemPrompt, /SDD selection blocked:/);
+			assert.ok(result.systemPrompt.includes(JSON.stringify(completed, null, 2)));
+		}
+	}
+	writeFileSync(join(change, "verify-report.md"), "# Verification\nPASS\n");
+	const practical = await native.sddStatus!({ workspaceRoot: root, changeName: "alpha" });
+	assert.equal(practical.nextRecommended, next, "plain PASS cannot bypass a legacy provider's emitted evidence requirements");
+	if (next === "verify") assert.ok(practical.blockedReasons.some((reason) => reason.includes("verification evidence")));
+	for (const selected of [true, false]) {
+		selection = selected ? JSON.stringify({ changeName: "alpha", workspaceRoot: root, phase: next }) : undefined;
+		const result = await hooks.get("before_agent_start")!({ systemPrompt: `SDD ${next} executor` }, ctx);
+		assert.doesNotMatch(result.systemPrompt, /SDD selection blocked:/);
+		assert.ok(result.systemPrompt.includes(JSON.stringify(practical, null, 2)), "forward exact current provider instructions, including legacy evidence requirements");
+	}
+	writeFileSync(join(change, "tasks.md"), "- [ ] 1.1 Implement\n");
+	const partial = await native.sddStatus!({ workspaceRoot: root, changeName: "alpha" });
+	selection = JSON.stringify({ changeName: "alpha", workspaceRoot: root, phase: "verify" });
+	const partialVerify = await hooks.get("before_agent_start")!({ systemPrompt: "SDD verify executor" }, ctx);
+	if (partial.dependencies.verify === "ready") {
+		assert.doesNotMatch(partialVerify.systemPrompt, /SDD selection blocked:/);
+		assert.ok(partialVerify.systemPrompt.includes(JSON.stringify(partial, null, 2)));
+	} else {
+		assert.match(partialVerify.systemPrompt, /SDD selection blocked:/, "do not override the pinned provider's verification readiness");
+	}
+	for (const selected of [true, false]) {
+		selection = selected ? JSON.stringify({ changeName: "alpha", workspaceRoot: root, phase: "archive" }) : undefined;
+		assert.match((await hooks.get("before_agent_start")!({ systemPrompt: "SDD archive executor" }, ctx)).systemPrompt, /SDD selection blocked:/);
+	}
+	const outside = join(root, "..", "ungranted-source.ts");
+	writeFileSync(join(change, "tasks.md"), `- [ ] Edit \`${outside}\`\n`);
+	const denied = await native.sddStatus!({ workspaceRoot: root, changeName: "alpha" });
+	assert.ok(denied.blockedReasons.some((reason) => reason.includes("edit_authority_missing")));
+	assert.deepEqual(denied.actionContext.allowedEditRoots, [root]);
+	selection = JSON.stringify({ changeName: "alpha", workspaceRoot: root, phase: "archive" });
+	assert.match((await hooks.get("before_agent_start")!({ systemPrompt: "SDD archive executor" }, ctx)).systemPrompt, /SDD selection blocked:/);
+
+	// Optional local integration proof uses the real Engram CLI, but never the
+	// user's data directory. No in-memory status substitute proves persistence.
+	if (process.env.SDD_TEST_ENGRAM) {
+		const originalData = process.env.ENGRAM_DATA_DIR;
+		const originalProject = process.env.ENGRAM_PROJECT;
+		try {
+			process.env.ENGRAM_PROJECT = "pi-sdd-parity-fixture";
+			writeFileSync(join(root, "openspec/config.yaml"), "sdd:\n  artifact_store: engram\n");
+			rmSync(join(root, "openspec/changes"), { recursive: true });
+			for (const complete of [false, true]) {
+				await t.test(`persisted Engram complete=${complete}`, async () => {
+					process.env.ENGRAM_DATA_DIR = join(root, `memory-${complete}`);
+					for (const [kind, content] of Object.entries({ proposal: "# Proposal", spec: "# Spec", design: "# Design",
+						tasks: complete ? "- [x] 1.1 Implement" : "- [ ] 1.1 Implement" })) {
+						execFileSync(process.env.SDD_TEST_ENGRAM!, ["save", `sdd/alpha/${kind}`, content, "--project", "pi-sdd-parity-fixture", "--scope", "project"], { cwd: root, stdio: "pipe" });
+					}
+					const memory = await native.sddStatus!({ workspaceRoot: root, changeName: "alpha" });
+					assert.equal(memory.artifactStore, "engram");
+					assert.equal(memory.nextRecommended, complete ? next : "apply");
+					for (const selected of [true, false]) {
+						selection = selected ? JSON.stringify({ changeName: "alpha", workspaceRoot: root, phase: memory.nextRecommended }) : undefined;
+						const result = await hooks.get("before_agent_start")!({ systemPrompt: `SDD ${memory.nextRecommended} executor` }, ctx);
+						assert.doesNotMatch(result.systemPrompt, /SDD selection blocked:/);
+						assert.ok(result.systemPrompt.includes(JSON.stringify(memory, null, 2)));
+					}
+					if (!complete) {
+						selection = JSON.stringify({ changeName: "alpha", workspaceRoot: root, phase: "archive" });
+						assert.match((await hooks.get("before_agent_start")!({ systemPrompt: "SDD archive executor" }, ctx)).systemPrompt, /SDD selection blocked:/);
+					}
+				});
+			}
+		} finally {
+			if (originalData === undefined) delete process.env.ENGRAM_DATA_DIR; else process.env.ENGRAM_DATA_DIR = originalData;
+			if (originalProject === undefined) delete process.env.ENGRAM_PROJECT; else process.env.ENGRAM_PROJECT = originalProject;
+		}
+	}
+});
 
 test("status command renders native facts without confirmation, mutation, or phase launch", async (t) => {
 	const root = workspace(t);

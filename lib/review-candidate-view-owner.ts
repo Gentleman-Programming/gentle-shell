@@ -40,6 +40,21 @@ export class WindowsOwnerCommandTimeoutError extends Error {
 	}
 }
 
+// Cold Windows runners occasionally exceed the bounded 5-second probe timeout
+// on first process start (whoami/PowerShell/icacls). One bounded retry of an
+// idempotent system probe recovers that transient; authority validation is
+// never retried or weakened because it happens after the probe returns.
+const TRANSIENT_WINDOWS_PROBE_CODES = new Set(["ETIMEDOUT", "EAGAIN", "EBUSY"]);
+
+export function withWindowsSystemProbeRetry<T>(probe: () => T): T {
+	try {
+		return probe();
+	} catch (error) {
+		if (!TRANSIENT_WINDOWS_PROBE_CODES.has((error as NodeJS.ErrnoException | undefined)?.code ?? "")) throw error;
+		return probe();
+	}
+}
+
 function windowsSystemExecutable(name: "whoami.exe" | "icacls.exe" | "WindowsPowerShell\\v1.0\\powershell.exe"): string {
 	try {
 		return realpathSync.native(join(WINDOWS_SYSTEM_DIRECTORY, name));
@@ -51,7 +66,11 @@ function windowsSystemExecutable(name: "whoami.exe" | "icacls.exe" | "WindowsPow
 function windowsOwnerCommand(executable: WindowsOwnerCommandExecutable, arguments_: string[], options: Omit<ExecFileSyncOptions, "timeout">): string {
 	const systemName = executable === "powershell.exe" ? "WindowsPowerShell\\v1.0\\powershell.exe" : executable;
 	try {
-		return execFileSync(windowsSystemExecutable(systemName), arguments_, { ...options, timeout: WINDOWS_OWNER_COMMAND_TIMEOUT_MS }) as string;
+		// The transient-probe retry from #1288 rides inside the bounded owner
+		// command: a cold-runner first start still gets its one idempotent retry,
+		// while the 30-second bound and the typed timeout stay the contract of
+		// every owner command call site (#990).
+		return withWindowsSystemProbeRetry(() => execFileSync(windowsSystemExecutable(systemName), arguments_, { ...options, timeout: WINDOWS_OWNER_COMMAND_TIMEOUT_MS })) as string;
 	} catch (error) {
 		const detail = error as NodeJS.ErrnoException & { killed?: boolean };
 		if (detail.code === "ETIMEDOUT" || detail.killed === true) throw new WindowsOwnerCommandTimeoutError(executable, WINDOWS_OWNER_COMMAND_TIMEOUT_MS);

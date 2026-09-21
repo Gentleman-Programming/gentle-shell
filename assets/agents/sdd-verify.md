@@ -45,7 +45,7 @@ Never claim persistence you did not perform.
 
 Before verification, consume structured SDD status from the parent prompt. If missing, produce the same fields using this lookup order: project override `.pi/gentle-ai/support/sdd-status-contract.md`, then globally installed `~/.pi/agent/gentle-ai/support/sdd-status-contract.md`, then the embedded status contract. Do not use `assets/support/...` as a runtime path; that is only the package source path before installation.
 
-Consume native `gentle-ai.sdd-status` v2 as the authoritative, read-only projection for every store. Do not recompute readiness from OpenSpec or Engram artifacts, fabricate status, or use a store-specific bypass. If native status is unavailable, malformed, or ambiguous, stop and report it; only its selected action, dependency, and `actionContext` can authorize verification.
+Consume native `gentle-ai.sdd-status` v2 as the authoritative, read-only projection for every store. Do not recompute readiness from OpenSpec or Engram artifacts, fabricate status, or use a store-specific bypass. If native status is unavailable, malformed, or ambiguous, stop and report it; only its dependency and `actionContext` can authorize verification. Explicit optional verification is also admitted when native recommends apply or archive and verification is ready; preserve the native recommendation unchanged.
 
 Stop with `blocked` if:
 
@@ -88,13 +88,9 @@ Verify that implementation respected the `Review Workload Forecast` from `tasks.
 
 Scan `openspec/changes/{change}/tasks.md` or the memory tasks artifact for unchecked implementation task markers matching `^\s*- \[ \]`.
 
-If unchecked implementation tasks remain:
+Report the exact unchecked lines as remaining work, including tasks outside an approved partial slice. Do not return a clean `PASS` for incomplete assigned work or turn stale progress into a completion claim. Reconcile apparent stale checkboxes against actual implementation and persisted progress; never check off unfinished work to obtain a desired route.
 
-- mark each as a CRITICAL completeness issue and archive blocker;
-- include the exact unchecked lines;
-- do not return a clean `PASS` or say ready for archive while unchecked implementation tasks remain.
-
-If a partial slice is approved, report unchecked lines as remaining scope and state that archive is not ready. Archive exceptions are limited to non-critical partial archives or stale-checkbox reconciliation proven by apply-progress/verify-report; they do not turn incomplete tasks into a clean verification pass.
+Archive admission follows fresh native status and real permissions, not verifier-authored task-count blockers or partial-archive exceptions. Report genuine failures and risks honestly; do not override native readiness or the archive's actual safety checks.
 
 ## Graceful Artifact Handling
 
@@ -104,27 +100,9 @@ If a partial slice is approved, report unchecked lines as remaining scope and st
 
 ## Report
 
-The report's first non-empty content MUST be this exact fenced YAML envelope, with every field exactly once and counts taken from the actual retrieved specs (no front matter, `~~~` fences, untagged fences, or any content before the fence):
+Persist a practical verification report in the selected backend (`openspec/changes/{change}/verify-report.md` for files). With a classical provider, do not require a retired attestation envelope or validation command before saving useful results. If the installed legacy provider emits additional verification requirements, follow those exact native instructions; do not override its readiness or synthesize a legacy format or command. Record actual test/build commands, exit codes and evidence, including failures or unavailable checks; never fabricate PASS.
 
-```yaml
-schema: gentle-ai.verify-result/v1
-evidence_revision: sha256:{current-evidence-digest}
-verdict: pass
-blockers: 0
-critical_findings: 0
-requirements: {complete}/{actual-total}
-scenarios: {complete}/{actual-total}
-test_command: {exact command}
-test_exit_code: 0
-test_output_hash: sha256:{exact-output-digest}
-build_command: {exact command}
-build_exit_code: 0
-build_output_hash: sha256:{exact-output-digest}
-```
-
-Before the first persistence attempt, hold the complete report as exact candidate bytes and run `gentle-ai sdd-verify-validate --input <path|-> --requirements <n> --scenarios <n>` before any OpenSpec or Engram write. If the validator is unavailable or denies admission, make zero writes and preserve the prior report; otherwise persist the same bytes, including a valid `fail`.
-
-The report is `openspec/changes/{change}/verify-report.md`. After the envelope, it continues with:
+Include:
 
 - pass/fail status;
 - spec coverage;

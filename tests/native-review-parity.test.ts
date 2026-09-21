@@ -344,6 +344,25 @@ function assertStaleConsentBinding(outcome: Record<string, unknown>, binding: un
 	assert.equal(outcome.next_action, "restart-for-fresh-consent");
 }
 
+test("synthetic default-ON status reaches review consent without changing RDD mode", async (t) => {
+	const cwd = repository(t);
+	const fixture = consentNative(cwd);
+	const operations: string[] = [];
+	fixture.native.reviewMode = async ({ operation }) => {
+		operations.push(operation);
+		return {
+			operation: "status",
+			scope: "clone",
+			status: { global: "", cloneLocal: "", effective: "on", source: "default" },
+		};
+	};
+	await beginConsent(parityRuntime(fixture.native), cwd);
+	assert.equal(fixture.starts.count, 1, "default ON must not skip native review START");
+	assert.ok(operations.length > 0);
+	assert.ok(operations.every((operation) => operation === "status"), "automation must only read RDD mode");
+	assert.deepEqual(fixture.answers, [], "default ON does not grant candidate consent");
+});
+
 test("review-mode gate retains every off-source continuation and fails closed on native errors", async () => {
 	for (const [source, expected] of [
 		["clone_local", /clear this clone-local override/],

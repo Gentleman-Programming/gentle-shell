@@ -1,5 +1,6 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { measureAgentsViewLayout, type AgentsViewLayout } from "./agents-view-layout.ts";
+import { HOVER_ROLE, paintHoverable } from "./shell-hover.ts";
 import { emptyThread, isFinished, TASK_STATUS, type TaskRecord, type TaskStore, type TaskThread, type ThreadItem } from "./agents-protocol.ts";
 import { renderThreadItem, type AgentsThreadTheme } from "./agents-thread-view.ts";
 import { formatElapsed } from "./agents-widget.ts";
@@ -42,7 +43,7 @@ const ROLE = {
 	FRAME: "border",
 	TITLE: "customMessageLabel",
 	SELECTED: "accent",
-	HOVER: "warning",
+	HOVER: HOVER_ROLE,
 	NAME: "text",
 	NAME_IDLE: "muted",
 	META: "dim",
@@ -69,7 +70,7 @@ const GLYPH_ROLE: Record<string, string> = {
 	[TASK_STATUS.CANCELLED]: "dim",
 	[TASK_STATUS.TIMED_OUT]: "error",
 };
-export const SESSION_FINISHED_TTL_MS = 15 * 60_000;
+const MAX_FINISHED_PER_SESSION = 200;
 const SCOPE_LABEL: Record<ViewScope, string> = { [VIEW_SCOPE.SESSION]: "this session", [VIEW_SCOPE.ALL]: "all sessions" };
 const SCOPE_KEY: Record<ViewScope, string> = { [VIEW_SCOPE.SESSION]: "all sessions", [VIEW_SCOPE.ALL]: "this session" };
 const EMPTY_LIST = "no tasks yet";
@@ -428,7 +429,8 @@ export class AgentsView {
 
 	private counts(): string {
 		const active = this.tasks.filter((task) => !isFinished(task.status)).length;
-		return `${active} active`;
+		const finished = this.tasks.length - active;
+		return `${active} active · ${finished} finished`;
 	}
 
 	private actionableTask(): TaskRecord | undefined {
@@ -470,8 +472,12 @@ export class AgentsView {
 	}
 
 	private inScope(task: TaskRecord, _now: number): boolean {
-		return !isFinished(task.status) && (task.parentSessionId === this.deps.sessionId
-			|| (this.scope === VIEW_SCOPE.ALL && this.remoteThreads.has(task.id)));
+		// A local task (this session's own, active or finished history) always
+		// belongs; refreshTasks() is the single authority on which finished ones
+		// survive its own retention cap. A remote (presence) task never keeps
+		// history -- it drops out of scope the moment it finishes.
+		if (task.parentSessionId === this.deps.sessionId) return true;
+		return !isFinished(task.status) && this.scope === VIEW_SCOPE.ALL && this.remoteThreads.has(task.id);
 	}
 
 	private directoryRoot(): boolean {
@@ -534,8 +540,19 @@ export class AgentsView {
 	}
 
 	private refreshTasks(): void {
-		this.tasks = this.deps.store.list().filter((task) => task.parentSessionId === this.deps.sessionId
-			&& !isFinished(task.status) && (this.deps.isLocalTask?.(task) ?? true));
+		// Finished history bypasses isLocalTask: that dep exists to keep an
+		// unrelated task resolveTask pulled in on demand (e.g. `subagent_result`
+		// for an id from another session) out of the live panel, never to hide
+		// this session's own finished subagents -- those belong here whether
+		// they were restored on resume or just finished live.
+		const local = this.deps.store.list().filter((task) => task.parentSessionId === this.deps.sessionId
+			&& (isFinished(task.status) || (this.deps.isLocalTask?.(task) ?? true)));
+		const active = local.filter((task) => !isFinished(task.status));
+		const finished = local
+			.filter((task) => isFinished(task.status))
+			.sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
+			.slice(0, MAX_FINISHED_PER_SESSION);
+		this.tasks = [...active, ...finished];
 		if (this.scope === VIEW_SCOPE.ALL) this.tasks.push(...this.peers.flatMap((group) => group.tasks));
 		const groups = this.sessionGroups();
 		const present = new Set(groups.map((group) => group.id));
@@ -564,7 +581,15 @@ export class AgentsView {
 			group.tasks.push(task);
 		}
 		for (const group of groups.values()) {
-			group.tasks.sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+			// Active tasks first (newest created), then finished ones as history
+			// (newest ended first) -- a task never reorders within its own group
+			// just because it finished.
+			group.tasks.sort((a, b) => {
+				const finishedRank = Number(isFinished(a.status)) - Number(isFinished(b.status));
+				if (finishedRank !== 0) return finishedRank;
+				if (isFinished(a.status)) return (b.endedAt ?? 0) - (a.endedAt ?? 0);
+				return b.createdAt - a.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+			});
 		}
 		if (this.scope === VIEW_SCOPE.ALL) {
 			const localId = `session:${this.deps.sessionId}`;
@@ -637,16 +662,18 @@ export class AgentsView {
 		const theme = this.deps.theme;
 		this.taskRegion(row).render(this.pointerLayout?.listWidth ?? 1);
 		const selected = entry.id === this.selectedRow()?.id;
-		const hovered = entry.id === this.hoveredId;
-		const emphasis = selected ? ROLE.SELECTED : hovered ? ROLE.HOVER : undefined;
-		const marker = emphasis ? theme.fg(emphasis, selected ? "▸" : "▹") : " ";
+		// Selection always outranks hover; the shared hover painter only
+		// applies once selection is ruled out.
+		const hovered = !selected && entry.id === this.hoveredId;
+		const markerRole = selected ? ROLE.SELECTED : hovered ? ROLE.HOVER : undefined;
+		const marker = markerRole ? theme.fg(markerRole, selected ? "▸" : "▹") : " ";
 		if (entry.kind === "heading") {
 			const state = this.isExpanded(entry.group) ? "▾" : "▸";
-			return `${marker}${theme.fg(emphasis ?? ROLE.SELECTED, state)} ${theme.fg(emphasis ?? ROLE.NAME_IDLE, this.groupHeading(entry.group))}`;
+			return `${marker}${paintHoverable(theme, state, hovered, ROLE.SELECTED)} ${paintHoverable(theme, this.groupHeading(entry.group), hovered, selected ? ROLE.SELECTED : ROLE.NAME_IDLE)}`;
 		}
 		const task = entry.task;
 		const glyph = theme.fg(GLYPH_ROLE[task.status] ?? ROLE.META, GLYPH[task.status] ?? "?");
-		const name = theme.fg(emphasis ?? ROLE.NAME_IDLE, `Subagent ${task.agent}`);
+		const name = paintHoverable(theme, `Subagent ${task.agent}`, hovered, selected ? ROLE.SELECTED : ROLE.NAME_IDLE);
 		const time = task.startedAt === null ? "" : theme.fg(ROLE.META, formatElapsed((task.endedAt ?? this.deps.now()) - task.startedAt));
 		return `${marker} ${theme.fg(ROLE.META, "└")} ${glyph} ${name}  ${time}`;
 	}
@@ -756,7 +783,7 @@ export class AgentsView {
 			actions.push({ x: 2 + visibleWidth(text), width: label.length, region: control.region });
 			control.region.render(label.length);
 			const hovered = (control.region === this.followRegion && this.hoveredControl === "follow") || (control.region === this.openRegion && this.hoveredControl === "open");
-			text += this.deps.theme.fg(!control.enabled ? ROLE.META : hovered ? ROLE.HOVER : ROLE.KEY, label);
+			text += control.enabled ? paintHoverable(this.deps.theme, label, hovered, ROLE.KEY) : this.deps.theme.fg(ROLE.META, label);
 		}
 		if (required > width) {
 			const more = this.actionRegion("more", () => {

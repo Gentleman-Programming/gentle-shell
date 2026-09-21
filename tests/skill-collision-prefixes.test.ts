@@ -25,7 +25,7 @@ const PREFIXED_NAMES: Record<string, string> = {
 	"work-unit-commits": "gentle-ai-work-unit-commits",
 };
 
-const UNPREFIXED_DIRS = ["gentle-ai", "release"];
+const UNPREFIXED_DIRS = ["gentle-ai"];
 
 for (const [dir, expectedName] of Object.entries(PREFIXED_NAMES)) {
 	test(`skills/${dir}/SKILL.md frontmatter name is prefixed`, () => {

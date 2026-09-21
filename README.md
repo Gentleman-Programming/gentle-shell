@@ -34,7 +34,7 @@
 
 <p align="center"><sub>One workspace. A coding agent you direct. A workflow you can inspect.</sub></p>
 
-<p align="center"><strong>BUILT FOR PI</strong> &nbsp;·&nbsp; Coding-agent workspace &nbsp;·&nbsp; Focused agents &nbsp;·&nbsp; Optional SDD</p>
+<p align="center"><strong>BUILT FOR PI</strong> &nbsp;·&nbsp; Coding-agent workspace &nbsp;·&nbsp; Focused agents &nbsp;·&nbsp; ODD</p>
 
 <p align="center">
   <a href="https://github.com/Gentleman-Programming/gentle-pi/stargazers"><strong>★ Star gentle-shell on GitHub</strong></a>
@@ -74,65 +74,114 @@
 
 ### gentle-shell — Your coding agent, in the workspace you lead
 
-<p align="center">
-  <img src="docs/assets/features/gentle-shell.png" width="1200" alt="gentle-shell showing an SDD agent task, todo list, changes summary, status bar, and usage footer in Pi">
-</p>
+<img width="100%" src="https://github.com/user-attachments/assets/5d9eefc2-7b2a-48f8-b212-1439834ce195" alt="gentle-shell running a live agent session: a header row with branch, model, and context gauge above the transcript, with status, changes, and todo cards in the right rail">
 
-<strong>A complete workspace for the agent you direct.</strong> gentle-shell is your coding agent, built for Pi, with native workspace features for agent orchestration, usage monitoring for supported provider accounts, and built-in diff views—all in one integrated layout.
-
-See active tasks, session changes, and runtime status without leaving the work you are leading.
+A bare terminal answers "what is the agent doing?" only with scrollback. gentle-shell turns your Pi session into a workspace: agent orchestration, live changes and runtime status, usage monitoring for supported provider accounts, and built-in diff views — so you lead the work instead of chasing it.
 
 <p align="center"><sub>gentle-shell in action. Screenshot from <a href="https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/main/docs/assets/features/gentle-shell.png">Gentle-AI</a>.</sub></p>
 
-**[→ Read the gentle-shell reference](docs/gentle-shell.md)**
+**[Docs →](docs/gentle-shell.md)**
 
 ---
 
 ### el Gentleman — Think before you build
 
-<p align="center">
-  <img src="docs/assets/diagrams/gentleman-workflow.svg" width="1200" alt="Diagram of el Gentleman turning human intent into clarified scope, a smallest workflow choice, evidence, and a human delivery decision">
-</p>
+<img width="100%" src="docs/assets/diagrams/gentleman-workflow.svg" alt="Diagram of el Gentleman turning human intent into clarified scope, a smallest workflow choice, evidence, and a human delivery decision">
 
-Say what you need once, then keep moving. el Gentleman helps turn intent into clear scope, a sensible next step, and evidence people can review—without making every task feel like a process meeting.
+Say what you need once, then keep moving. el Gentleman helps turn intent into clear scope, a sensible next step, and evidence people can review — without making every task feel like a process meeting.
 
-**[→ See persona modes and routing](docs/readme-reference.md#persona-modes)**
+**[Docs →](docs/readme-reference.md#organic-driven-development)**
 
 ---
 
 ### Focused agents — Context with a return path
 
-<p align="center">
-  <img src="docs/assets/diagrams/agent-orchestration.svg" width="1200" alt="Diagram of one parent session directing bounded map, implementation, and verification work and receiving evidence back">
-</p>
+<img width="100%" src="docs/assets/diagrams/agent-orchestration.svg" alt="Diagram of one parent session directing bounded map, implementation, and verification work and receiving evidence back">
 
 Bring in help without losing the thread. Focused package-owned Pi agents can map a codebase, implement a bounded change, or verify it, while one parent stays accountable for the scope, the decisions, and the final summary.
 
-**[→ Learn how work is routed](docs/readme-reference.md#how-the-harness-decides-what-to-do)**
+**[Docs →](docs/readme-reference.md#how-the-harness-decides-what-to-do)**
 
 ---
 
-### Optional SDD/TDD — Durable plans, earned evidence
+### ODD — The everyday workflow
 
-<p align="center">
-  <img src="docs/assets/diagrams/sdd-cycle.svg" width="1200" alt="Diagram of an optional specification-driven development cycle from explore through archive, with TDD evidence attached to apply when available">
-</p>
+<img width="100%" src="docs/assets/diagrams/odd-workflow.svg" alt="Organic Driven Development as seven numbered steps: Authorize, Explore, Resolve uncertainty, and Classify across the top row; Classify forks, so small understood work stays light while substantial work gets step five, Track, with one feature document; both paths converge on Implement task by task and then Close, above a dashed band marking that one feature document mirrored in Engram lets work resume across sessions">
 
-When a change needs a plan people can follow, choose SDD/OpenSpec and keep the proposal, specification, design, tasks, and verification record together. If Strict TDD is active and the project provides the test capability, apply work records RED → GREEN → TRIANGULATE → REFACTOR evidence as it happens.
+**Organic Driven Development (ODD)** is the everyday path: the agent explores before changing anything, clarifies only real decisions, and keeps small understood work small. Substantial, authorized work gets one recoverable feature document — mirrored in memory when available — so progress, evidence, and the next step survive an interruption; checks follow the configured TDD mode.
 
-**[→ Explore the SDD/OpenSpec flow](docs/readme-reference.md#sddopenspec-flow)**
+**[Docs →](docs/readme-reference.md#organic-driven-development)**
 
 ---
 
 ### Native review — Review the exact change
 
-<p align="center">
-  <img src="docs/assets/diagrams/native-review.svg" width="1200" alt="Diagram showing one frozen candidate passing through risk-scoped native review to an outcome, while human delivery choices stay separate">
-</p>
+<img width="100%" src="docs/assets/diagrams/native-review.svg" alt="Diagram showing one frozen candidate passing through risk-scoped native review to an outcome, while human delivery choices stay separate">
 
 Review the exact change, not a moving target. Native review keeps one candidate in view, returns risk-scoped evidence, and can surface a bounded correction path. You still decide what happens next in your repository.
 
-**[→ Read the review integration boundary](docs/review-integration.md)**
+**[Docs →](docs/review-integration.md)**
+
+---
+
+### Gentle Changes — Every edit, attributed and reviewable
+
+<img width="100%" src="docs/assets/features/changes-view.png" alt="Gentle Changes viewer: worktree accordion with per-file status on the left, the captured diff with line counts on the right, and a keyboard hint row">
+
+You should not have to run `git status` to find out what your agent did. Gentle Changes captures the successful write and edit tool calls from the current session and its owned subagents — no repository scans, no background polling — and shows them in a two-pane viewer with per-file line counts and an honest **diff unavailable** when an external edit breaks continuity. Coverage stops at those tools, so shell commands and failed runs leave no row, and a missing entry never proves a clean tree. `alt+g` opens it; `o` drops the real file into your editor.
+
+**[Docs →](docs/gentle-shell.md#browse-captured-diffs)**
+
+---
+
+### Gentle Agents — Parallel work with a live view
+
+<img width="100%" src="docs/assets/features/agents-view.png" alt="Gentle Agents overlay showing a completed subagent thread with model, tokens, and elapsed columns, and the structured handoff it returned">
+
+Delegating work should not mean losing it. Every subagent runs as its own process with a live card above the editor — model, tokens, cost, elapsed — and `alt+a` opens the full view with retained threads, stop controls, and history restored on resume. A child can ask you a question as an ordinary dialog, and background results come back as cards that start a new turn — nothing polls.
+
+**[Docs →](docs/gentle-shell.md#gentle-agents)**
+
+---
+
+### Profiles and model routing — One deliberate decision per knob
+
+<img width="100%" src="docs/assets/features/profiles-routing.png" alt="Profiles view: profile list on the left, orchestrator model and effort on the right, with per-role profile routing and effective current routing">
+
+Model, effort, and who does what should be choices, not accidents. Named profiles route the orchestrator atomically and independently from packaged and review roles; a repository can pin its profile so its subagents stop following the globally active one, and the panel always shows the routing the runtime actually uses.
+
+**[Docs →](docs/readme-reference.md#agent-model-profiles)**
+
+---
+
+### Command palette — Every command, one keystroke away
+
+<img width="100%" src="docs/assets/features/command-palette.png" alt="Command palette with a search field and grouped entries: Configuration, Session, Diagnostics, SDD, and Skills">
+
+Extension commands are only useful if you can find them. `alt+k` opens a curated, grouped palette — Configuration, Session, Diagnostics, SDD, and Skills — searchable by label, command name, or description, showing entries only when they are actually registered.
+
+**[Docs →](docs/gentle-shell.md#command-palette)**
+
+---
+
+### Also in the box
+
+| Component | What it does |
+| :--- | :--- |
+| Startup and runtime panel | A configurable gentle-shell entry point and visible runtime state for Pi. |
+| Skills and delivery guidance | Package skills for documentation, issue work, PRs, reviews, and reviewable work units. |
+| Model, effort, persona, and profile controls | Explicit knobs for how Pi routes and presents work. |
+| Safety boundaries | Guards around destructive operations and sensitive-path handling. |
+| Optional companion packages | Extra capabilities you may choose to add; persistent memory is **not** bundled with `gentle-pi`. |
+| Fullscreen workspace layout | Header row plus a scrolling Status → Changes → TODO rail on wide terminals. |
+| Live status bar and prompt petal | One-line gauge, cost, and statuses; the petal shows `working` and `queued`. |
+| Parent ↔ subagent communication | Delegate, steer, reply, and cross-session notification within your local profile. |
+| Native interactive tools | Built-in questions, choices, and review captures — no third-party dependency. |
+| Gentle Todo | A plan card that turns amber when the model lets it go stale. |
+| Subscription usage | Per-window meters and resets for supported provider accounts. |
+| Gentle notices | Gentle AI calls and review reminders as cards in the transcript. |
+
+> **Every component, skill and preset: [Full breakdown →](docs/gentle-shell.md)**
 
 ---
 
@@ -140,38 +189,11 @@ Review the exact change, not a moving target. Native review keeps one candidate 
 
 The [v2.6.0 release](https://github.com/Gentleman-Programming/gentle-pi/releases/tag/v2.6.0) brings a more persistent, inspectable Pi workspace:
 
-- **Shell:** registered worktrees survive reloads; `/gentle:changes` groups dirty roots with diffs, status, and line counts; fullscreen navigation, responsive sidebars, and cached frames stay live without unnecessary redraws.
-- **Agents and profiles:** the Agents view shows orchestrator/session hierarchy, retained completion, abort, and lost-exit history, parent-child handoff, and model, effort, and usage observability. Named `/gentle:profiles` atomically route the orchestrator independently from packaged and review roles.
+- **Shell:** `/gentle:changes` groups captured write/edit changes from the current agent session and its subagents, without startup repository scans; fullscreen navigation, sidebars, and mouse support stay available. See the [capture limits and shell-command coverage](docs/gentle-shell.md#what-appears-in-changes).
+- **Agents and profiles:** the Agents view shows orchestrator/session hierarchy, retained completion, abort, and lost-exit history, parent-child handoff, and model, effort, and usage observability. Named `/gentle:profiles` atomically route the orchestrator independently from packaged and review roles; applying one replaces the routing of every agent, a repository can be pinned to a profile with `p` so its subagent launches stop following the globally active profile, and the panel shows the routing the runtime actually uses even when `models.json` is sparse.
 - **Control and recovery:** native SDD requires parent-confirmed preflight; native review supports intended-untracked selection, consent, and provider continuations. Subsystems install with explicit recovery guidance when npm lifecycle scripts were skipped; Pi Git installs are recognized globally; custom ask responses are opt-in. Windows keeps child consoles hidden and fixes ownership mode; Gentle Todo keeps the next pending task visible when collapsed.
 
 ---
-
-### Also in the box
-
-| Capability | What it brings to the workspace |
-| --- | --- |
-| Startup and runtime panel | A configurable gentle-shell entry point and visible runtime state for Pi. |
-| Skills and delivery guidance | Package skills for documentation, issue work, PRs, reviews, and reviewable work units. |
-| Model, effort, persona, and profile controls | Explicit knobs for how Pi routes and presents work. |
-| Safety boundaries | Guards around destructive operations and sensitive-path handling. |
-| Optional companion packages | Extra capabilities you may choose to add; persistent memory is **not** bundled with `gentle-pi`. |
-
-<details>
-<summary><strong>Optional companions, when they fit your setup</strong></summary>
-
-<br>
-
-| Package | Optional role |
-| --- | --- |
-| `pi-intercom` | Cross-session communication where your Pi setup supports it. |
-| `gentle-engram` | Persistent memory, separately installed and configured. |
-| `pi-web-access` | Web access when a task needs it and your policy allows it. |
-| `pi-lens` | Additional inspection surfaces. |
-| `@juicesharp/rpiv-ask-user-question` | Interactive choice support. |
-
-These are companions, not hidden prerequisites or a claim that every Pi installation has every capability.
-
-</details>
 
 <p align="right"><a href="#top">Back to top ↑</a></p>
 
@@ -207,7 +229,7 @@ See the [v2.6.0 release notes](https://github.com/Gentleman-Programming/gentle-p
 
 > **Fullscreen installation note:** a recognized global installation persists Pi’s `"tuiMode": "fullscreen"` setting. Project-local and other install paths do not receive that change.
 
-For prerequisites, source-checkout instructions, full install behavior, and release policy, use the **[installation reference](docs/readme-reference.md#install)**. For substantial work, choose SDD/OpenSpec explicitly and review the phase artifacts before implementation.
+For prerequisites, source-checkout instructions, full install behavior, and release policy, use the **[installation reference](docs/readme-reference.md#install)**. For everyday work, describe the outcome and follow [ODD](#odd--the-everyday-workflow).
 
 <p align="right"><a href="#top">Back to top ↑</a></p>
 
@@ -222,7 +244,7 @@ Start with the product-facing destination, then move into the operational refere
 | Destination | Purpose |
 | --- | --- |
 | [gentle-shell reference](docs/gentle-shell.md) | Workspace layout, changes, usage, agents, and todo interactions. |
-| [README technical reference](docs/readme-reference.md) | Preserved installation, release policy, configuration, SDD/OpenSpec, commands, skills, and contributor detail. |
+| [ODD workflow](docs/readme-reference.md#organic-driven-development) · [Technical reference](docs/readme-reference.md) | Everyday work and recovery, optional SDD/OpenSpec, installation, configuration, commands, and contributor detail. |
 | [Review integration](docs/review-integration.md) | The provider/consumer boundary for native review. |
 | [Native authority architecture](docs/native-authority-architecture.md) | Ownership boundaries and review architecture. |
 | [Telemetry](docs/telemetry.md) | Approved fields and source limitations. |

@@ -7,14 +7,18 @@
 //
 //   1. Run the exact provider-issued capture binding with `--agent pi
 //      --materialize` and take stdout as opaque prompt BYTES, verbatim.
-//   2. Pass those prompt bytes to the pure opaque Pi adapter, which owns its
-//      locked-down print-mode subprocess and fresh empty scratch directory;
-//      take its stdout as raw final bytes. Model/provider/profile selection
-//      stays user-owned: no --model, no --provider, environment untouched.
-//   3. Submit those bytes untouched through the provider-owned `submission`
-//      form carried by the collect input: execute its exact operation and
-//      argument tokens with only the tempfile path substituted into the
-//      declared {{value}} slot (BOM-less: the buffer is written
+//   2. Run that prompt through one in-process reviewer completion
+//      (lib/inprocess-reviewer.ts#runInProcessReviewer): resolve the lens's
+//      "provider/id" selection through the live model registry, authenticate
+//      through the registry's own resolver, and complete the frozen prompt as
+//      a single user message. There is no child process, no extension
+//      allowlist, and no ambient default model — a missing registry or a
+//      routing entry with no model is a typed refusal before materialize ever
+//      runs (gentle-ai#4611; gentle-pi#311 P2).
+//   3. Submit the completion's text untouched through the provider-owned
+//      `submission` form carried by the collect input: execute its exact
+//      operation and argument tokens with only the tempfile path substituted
+//      into the declared {{value}} slot (BOM-less: the buffer is written
 //      byte-for-byte). The host never synthesizes or filters the completing
 //      form; a materialize slot without a provider submission is a typed
 //      contract mismatch, never a rebuilt invocation.
@@ -25,23 +29,21 @@
 // never from transcript inference. The relay never parses or rebuilds
 // binding, evidence, prompt, schema, budgets, or admission.
 
-import { spawn } from "node:child_process";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import { completeSimple } from "@earendil-works/pi-ai/compat";
 import { resolveGentleAiBinary } from "./gentle-ai-binary.ts";
 import {
-	OPAQUE_PI_REVIEWER_TRANSPORT_FAILURE,
-	OpaquePiReviewerTransportError,
-	runOpaquePiReviewer,
-	type OpaquePiReviewerResult,
-} from "./opaque-pi-reviewer-adapter.ts";
+	INPROCESS_REVIEWER_FAILURE,
+	runInProcessReviewer,
+	type InProcessReviewerFailureCode,
+	type InProcessReviewerOutcome,
+	type InProcessReviewerRegistry,
+} from "./inprocess-reviewer.ts";
 import { REVIEW_PROVIDER_ROLE_CAPTURE_OPERATION, REVIEW_PROVIDER_ROLE_CAPTURE_OPERATIONS, type ReviewCaptureSubmissionV1, type ReviewCollectInputV3 } from "./review-integration-v2.ts";
 import { GENTLE_PI_REVIEW_RELAY_CONTRACT, GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV } from "./review-relay-contract.ts";
-
-// Compatibility export for existing relay consumers. The pure adapter owns the
-// fixed Pi process boundary and its locked-down argv.
-export { OPAQUE_PI_REVIEWER_ARGV as REVIEW_HOST_RELAY_PI_ARGV } from "./opaque-pi-reviewer-adapter.ts";
 
 export const REVIEW_HOST_RELAY_UNAVAILABLE_MESSAGE =
 	"provider relay requires a gentle-ai build with the pi host relay surface";
@@ -52,14 +54,40 @@ export const REVIEW_HOST_RELAY_FAILURE = {
 	SUBMISSION_CONTRACT_MISMATCH: "submission-contract-mismatch",
 	MATERIALIZE_FAILED: "materialize-failed",
 	EMPTY_PROMPT: "empty-prompt",
+	// gentle-pi#311 P2: these four names predate the in-process completion,
+	// when a killed or crashed child process was the only way a reviewer
+	// failed. They stay exactly as they are — including their "pi" wording —
+	// because other test lanes (the maintainer provider-relay matrix, the
+	// restart-parity harness) construct `ReviewHostRelayError` literals with
+	// them directly and are out of this change's scope (gentle-pi#311 P4).
+	// PI_TIMED_OUT and PI_FAILED are still reachable from production: a
+	// reviewer completion that exceeds its bound or fails for any reason not
+	// covered by a more specific REVIEWER_* code below reuses them, since the
+	// semantics (a deterministic bound; a generic failure) carried over
+	// unchanged. PI_LAUNCH_FAILED and PI_EMPTY_OUTPUT are no longer produced
+	// by this module — there is no child to fail to launch, and empty output
+	// is now REVIEWER_EMPTY_OUTPUT with different evidence — but the codes
+	// stay defined for the lanes above.
 	PI_LAUNCH_FAILED: "pi-launch-failed",
 	PI_FAILED: "pi-failed",
-	// gentle-pi#367: a reviewer killed by the relay bound is not a crash. It
-	// is the one failure class that a byte-identical relaunch cannot survive,
-	// so it carries its own kind, its own elapsed/limit evidence, and its own
-	// continuation instead of hiding inside `pi-failed`.
 	PI_TIMED_OUT: "pi-timed-out",
 	PI_EMPTY_OUTPUT: "pi-empty-output",
+	// gentle-shell#1158 / #1136 (superseded by gentle-pi#311 P2): a caller-owned
+	// reviewer selection that cannot possibly complete — no model registry, or
+	// a routing entry with no configured model — is a configuration failure,
+	// refused typed before anything runs, never a mid-review transport
+	// mystery. The in-process path has no ambient default model to fall back
+	// to, so a missing selection is refused here rather than launched anyway.
+	REVIEWER_CONFIG_INVALID: "reviewer-config-invalid",
+	// gentle-pi#311 P2 — in-process completion outcomes with no equivalent
+	// above (lib/inprocess-reviewer.ts#INPROCESS_REVIEWER_FAILURE).
+	REVIEWER_MODEL_NOT_FOUND: "reviewer-model-not-found",
+	REVIEWER_AUTH_UNAVAILABLE: "reviewer-auth-unavailable",
+	REVIEWER_THINKING_INVALID: "reviewer-thinking-invalid",
+	REVIEWER_TOOL_CALL: "reviewer-tool-call-attempted",
+	REVIEWER_EMPTY_OUTPUT: "reviewer-empty-output",
+	REVIEWER_OUTPUT_TOO_LARGE: "reviewer-output-too-large",
+	REVIEWER_ABORTED: "reviewer-aborted",
 	SUBMISSION_REFUSED: "submission-refused",
 } as const;
 export type ReviewHostRelayFailureKind = (typeof REVIEW_HOST_RELAY_FAILURE)[keyof typeof REVIEW_HOST_RELAY_FAILURE];
@@ -77,10 +105,11 @@ export class ReviewHostRelayError extends Error {
 	readonly exitCode: number | null;
 	readonly stderr: string;
 	readonly timedOut: boolean;
-	// Wall time the killed or failed child actually consumed, and the bound it
-	// was measured against. Both are null only when no child process ran.
-	// Without them a transport failure cannot be told apart from a crash, which
-	// is what forced the gentle-pi#367 reporter to measure the relay by hand.
+	// Wall time the aborted, timed-out, or failed reviewer completion actually
+	// consumed, and the bound it was measured against. Both are null only when
+	// no completion ran. Without them a transport failure cannot be told apart
+	// from a crash, which is what forced the gentle-pi#367 reporter to measure
+	// the relay by hand.
 	readonly elapsedMs: number | null;
 	readonly timeoutMs: number | null;
 	// "none" until the submission invocation launches; a launched submission
@@ -90,7 +119,9 @@ export class ReviewHostRelayError extends Error {
 	// "none" again: the provider states that the lens slot was not consumed
 	// (gentle-pi#522 / #524).
 	readonly mutationOutcome: "none" | "unknown";
-	constructor(kind: ReviewHostRelayFailureKind, stage: ReviewHostRelayStage, message: string, details?: { exitCode?: number | null; stderr?: string; timedOut?: boolean; elapsedMs?: number; timeoutMs?: number; mutationOutcome?: "none" | "unknown" }) {
+	/** What the in-process reviewer outcome carried as structured evidence (e.g. the completion's stopReason on an empty-output refusal). */
+	readonly reviewerEvidence: Record<string, unknown> | undefined;
+	constructor(kind: ReviewHostRelayFailureKind, stage: ReviewHostRelayStage, message: string, details?: { exitCode?: number | null; stderr?: string; timedOut?: boolean; elapsedMs?: number; timeoutMs?: number; mutationOutcome?: "none" | "unknown"; reviewerEvidence?: Record<string, unknown> }) {
 		super(message);
 		this.name = "ReviewHostRelayError";
 		this.kind = kind;
@@ -101,6 +132,7 @@ export class ReviewHostRelayError extends Error {
 		this.elapsedMs = details?.elapsedMs ?? null;
 		this.timeoutMs = details?.timeoutMs ?? null;
 		this.mutationOutcome = details?.mutationOutcome ?? (stage === "submit" ? "unknown" : "none");
+		this.reviewerEvidence = details?.reviewerEvidence;
 	}
 }
 
@@ -187,6 +219,16 @@ export interface ReviewHostRelaySlot {
 	readonly lens?: string;
 	readonly order?: string;
 	readonly subjectHash?: string;
+	/**
+	 * Overrides the routing config key the reviewer selection resolves
+	 * through (gentle-pi#311 P3). A lens slot leaves this unset and resolves
+	 * through `lens` instead; a v9 host-mediated refuter/targeted-validator
+	 * slot sets it to its fixed `review-refuter` / `review-validator` key,
+	 * since those roles carry no per-slot lens identity.
+	 */
+	readonly routingKey?: string;
+	/** The provider-declared collect input name (e.g. `provider_refuter`), carried for diagnostics only. */
+	readonly name?: string;
 }
 
 function argumentValue(input: ReviewCollectInputV3, name: string): string | undefined {
@@ -248,6 +290,40 @@ export function reviewProviderRoleVectorSlots(inputs: readonly ReviewCollectInpu
 	}));
 }
 
+// ---------------------------------------------------------------------------
+// Host-mediated provider role slots (gentle-pi#311 P3; provider contract
+// v9) — the same two role capture operations above, but rendered exactly
+// like a lens materialize slot: binding tokens plus `--agent=pi
+// --materialize=true` (never `--execute`) and a provider-owned submission
+// descriptor. These slots run through the SAME relay machinery a lens slot
+// does (`prepareReviewHostRelaySlot` / `submitReviewHostRelayPreparedResult`)
+// — there is no second relay. The only role-specific parts are the fixed
+// `routingKey` (there is no per-slot lens identity to read one from) and the
+// input's own schema, which already names refuter vs targeted-validator in
+// every refusal that carries the request.
+// ---------------------------------------------------------------------------
+
+const REVIEW_HOST_MEDIATED_ROLE_ROUTING_KEY: Record<ReviewProviderRoleVectorSlot["captureOperation"], "review-refuter" | "review-validator"> = {
+	[REVIEW_PROVIDER_ROLE_CAPTURE_OPERATION.CAPTURE_REFUTER]: "review-refuter",
+	[REVIEW_PROVIDER_ROLE_CAPTURE_OPERATION.CAPTURE_VALIDATION]: "review-validator",
+};
+
+export function isReviewHostMediatedRoleCollectInput(input: ReviewCollectInputV3): boolean {
+	return (REVIEW_PROVIDER_ROLE_CAPTURE_OPERATIONS as readonly string[]).includes(input.captureOperation)
+		&& argumentValue(input, "materialize") === "true"
+		&& argumentValue(input, "agent") === "pi"
+		&& input.submission !== undefined;
+}
+
+export function reviewHostMediatedRoleSlots(inputs: readonly ReviewCollectInputV3[]): readonly ReviewHostRelaySlot[] {
+	return inputs.filter((input) => isReviewHostMediatedRoleCollectInput(input)).map((input) => ({
+		captureArgumentTokens: input.arguments.map((argument) => renderToken(argument)),
+		submission: input.submission!,
+		routingKey: REVIEW_HOST_MEDIATED_ROLE_ROUTING_KEY[input.captureOperation as ReviewProviderRoleVectorSlot["captureOperation"]],
+		name: input.name,
+	}));
+}
+
 // Resolves the provider-owned submission form into an executable binding.
 // Fails closed with a typed contract-mismatch error whenever the completing
 // form is absent or cannot bind exactly one artifact value; the relay never
@@ -291,10 +367,27 @@ export interface ReviewHostRelayRequest {
 	readonly submission?: ReviewCaptureSubmissionV1;
 	/** Absolute path; defaults to the verified package-local binary. */
 	readonly gentleAiExecutable?: string;
-	/** User-owned pi launcher; defaults to `pi` on PATH. */
-	readonly piExecutable?: string;
 	readonly environment?: NodeJS.ProcessEnv;
 	readonly gentleAiTimeoutMs?: number;
+	/**
+	 * The live model registry the reviewer completion resolves its selection
+	 * and credentials through — structurally, pi's own `ModelRegistry`
+	 * (`ctx.modelRegistry`). Absent is a typed refusal before materialize ever
+	 * runs; the relay never falls back to a child process or an ambient
+	 * default model (gentle-ai#4611; gentle-pi#311 P2).
+	 */
+	readonly reviewerRegistry?: InProcessReviewerRegistry;
+	/**
+	 * The lens's user-owned "provider/id" selection, read from the agent model
+	 * routing config's `review-<lens>` entry. The relay never invents one: a
+	 * routing entry with no configured model is refused typed before
+	 * materialize, naming {@link ReviewHostRelayRequest.routingKey}.
+	 */
+	readonly selection?: string;
+	/** The routing entry's thinking label, forwarded verbatim to the completion. */
+	readonly thinking?: string;
+	/** Names the routing config key (e.g. "review-risk") in refusal messages; defaults to a generic label when absent. */
+	readonly routingKey?: string;
 	/**
 	 * Overrides the reviewer bound entirely. Production leaves it unset and the
 	 * relay derives the bound from the materialized prompt bytes and
@@ -329,7 +422,7 @@ export type ReviewHostRelaySubmissionRunner = (prepared: ReviewHostRelayPrepared
 const DEFAULT_GENTLE_AI_TIMEOUT_MS = 120_000;
 
 // ---------------------------------------------------------------------------
-// The reviewer subprocess bound (gentle-pi#367).
+// The reviewer completion bound (gentle-pi#367).
 //
 // The previous bound was a single hardcoded 600_000 ms reachable only through
 // the test-injectable runner. A field-measured lens legitimately needed 478s
@@ -351,7 +444,7 @@ const DEFAULT_GENTLE_AI_TIMEOUT_MS = 120_000;
 // established numeric-override shape (GENTLE_PI_CANDIDATE_GIT_TIMEOUT_MS,
 // GENTLE_PI_REVIEW_MAX_BUFFER_BYTES): a positive decimal, silently ignored
 // when malformed, and clamped to the same hard ceiling so no configuration can
-// turn a foreground FINALIZE into an unbounded child process.
+// turn a foreground FINALIZE into an unbounded completion.
 // ---------------------------------------------------------------------------
 
 export const REVIEW_HOST_RELAY_PI_TIMEOUT_ENV = "GENTLE_PI_REVIEW_RELAY_PI_TIMEOUT_MS";
@@ -371,11 +464,12 @@ export function resolveReviewHostRelayPiTimeoutMs(promptByteLength: number, envi
 	return Math.min(scaled, REVIEW_HOST_RELAY_PI_TIMEOUT_MAX_MS);
 }
 
-// The reviewer ran out of time; it did not crash. The message states both
-// measurements and names the two things that can change the outcome, because
-// the one thing that cannot is relaunching the identical slot.
+// The reviewer completion ran out of time; it did not crash. The message
+// states both measurements and names the two things that can change the
+// outcome, because the one thing that cannot is relaunching the identical
+// slot.
 export function reviewHostRelayPiTimeoutMessage(elapsedMs: number, timeoutMs: number, promptByteLength: number): string {
-	return `pi reviewer subprocess exceeded the relay bound: killed after ${elapsedMs}ms against a ${timeoutMs}ms limit for a ${promptByteLength}-byte materialized prompt. `
+	return `the reviewer completion exceeded the relay bound: aborted after ${elapsedMs}ms against a ${timeoutMs}ms limit for a ${promptByteLength}-byte materialized prompt. `
 		+ `Relaunching the same slot unchanged reaches the same wall. Raise ${REVIEW_HOST_RELAY_PI_TIMEOUT_ENV} above the reviewer's real wall time (ceiling ${REVIEW_HOST_RELAY_PI_TIMEOUT_MAX_MS}ms) or reduce the candidate scope so the materialized prompt is smaller.`;
 }
 
@@ -436,43 +530,48 @@ function collectGentleAiProcess(
 	});
 }
 
-function relayPiTransportError(error: unknown, promptByteLength: number, piTimeoutMs: number): ReviewHostRelayError {
-	if (!(error instanceof OpaquePiReviewerTransportError)) {
-		return new ReviewHostRelayError(
-			REVIEW_HOST_RELAY_FAILURE.PI_LAUNCH_FAILED,
-			"pi",
-			`pi subprocess could not start: ${error instanceof Error ? error.message : String(error)}`,
-		);
+// Maps one in-process reviewer refusal onto a typed relay error. TIMED_OUT
+// reuses PI_TIMED_OUT and PROVIDER_FAILED reuses PI_FAILED (identical
+// semantics: a deterministic bound; a generic failure bucket); every other
+// code gets its own REVIEWER_* kind with no prior equivalent.
+function relayReviewerRefusalError(
+	outcome: Extract<InProcessReviewerOutcome, { kind: "refused" }>,
+	timing: { elapsedMs: number; timeoutMs: number },
+	promptByteLength: number,
+): ReviewHostRelayError {
+	const details = { ...timing, ...(outcome.evidence === undefined ? {} : { reviewerEvidence: outcome.evidence }) };
+	const code: InProcessReviewerFailureCode = outcome.code;
+	switch (code) {
+		case INPROCESS_REVIEWER_FAILURE.MODEL_NOT_FOUND:
+			return new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.REVIEWER_MODEL_NOT_FOUND, "pi", outcome.message, details);
+		case INPROCESS_REVIEWER_FAILURE.AUTH_UNAVAILABLE:
+			return new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.REVIEWER_AUTH_UNAVAILABLE, "pi", outcome.message, details);
+		case INPROCESS_REVIEWER_FAILURE.THINKING_INVALID:
+			return new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.REVIEWER_THINKING_INVALID, "pi", outcome.message, details);
+		case INPROCESS_REVIEWER_FAILURE.TOOL_CALL_ATTEMPTED:
+			return new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.REVIEWER_TOOL_CALL, "pi", outcome.message, details);
+		case INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT:
+			return new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.REVIEWER_EMPTY_OUTPUT, "pi", outcome.message, details);
+		case INPROCESS_REVIEWER_FAILURE.OUTPUT_TOO_LARGE:
+			return new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.REVIEWER_OUTPUT_TOO_LARGE, "pi", outcome.message, details);
+		case INPROCESS_REVIEWER_FAILURE.ABORTED:
+			return new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.REVIEWER_ABORTED, "pi", outcome.message, details);
+		case INPROCESS_REVIEWER_FAILURE.SELECTION_INVALID:
+			return new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.REVIEWER_CONFIG_INVALID, "pi", outcome.message, details);
+		case INPROCESS_REVIEWER_FAILURE.TIMED_OUT:
+			return new ReviewHostRelayError(
+				REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT,
+				"pi",
+				reviewHostRelayPiTimeoutMessage(timing.elapsedMs, timing.timeoutMs, promptByteLength),
+				{ ...details, timedOut: true },
+			);
+		case INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED:
+			return new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_FAILED, "pi", outcome.message, details);
+		default: {
+			const unreachable: never = code;
+			return new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_FAILED, "pi", `unrecognized reviewer refusal code ${String(unreachable)}`, details);
+		}
 	}
-	const details = {
-		exitCode: error.exitCode,
-		stderr: error.stderr.toString("utf8"),
-		timedOut: error.timedOut,
-		...(error.elapsedMs === null ? {} : { elapsedMs: error.elapsedMs }),
-		...(error.timeoutMs === null ? {} : { timeoutMs: error.timeoutMs }),
-	};
-	if (
-		error.kind === OPAQUE_PI_REVIEWER_TRANSPORT_FAILURE.TIMED_OUT
-		&& error.elapsedMs !== null
-		&& error.timeoutMs !== null
-	) {
-		return new ReviewHostRelayError(
-			REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT,
-			"pi",
-			reviewHostRelayPiTimeoutMessage(error.elapsedMs, error.timeoutMs, promptByteLength),
-			{ ...details, timedOut: true, elapsedMs: error.elapsedMs, timeoutMs: error.timeoutMs },
-		);
-	}
-	if (error.kind === OPAQUE_PI_REVIEWER_TRANSPORT_FAILURE.EMPTY_OUTPUT) {
-		return new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_EMPTY_OUTPUT, "pi", "pi subprocess produced no output bytes", details);
-	}
-	if (
-		error.kind === OPAQUE_PI_REVIEWER_TRANSPORT_FAILURE.LAUNCH_FAILED
-		|| error.kind === OPAQUE_PI_REVIEWER_TRANSPORT_FAILURE.SCRATCH_FAILED
-	) {
-		return new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_LAUNCH_FAILED, "pi", `pi subprocess could not start: ${error.message}`, details);
-	}
-	return new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_FAILED, "pi", "pi subprocess failed", details);
 }
 
 function assertTokens(name: string, tokens: readonly string[]): void {
@@ -482,14 +581,52 @@ function assertTokens(name: string, tokens: readonly string[]): void {
 	}
 }
 
+/**
+ * Validates the caller-owned reviewer selection before any process launches: a
+ * missing model registry or a routing entry with no configured model is a
+ * typed refusal, never a mid-review transport failure and never a fallback to
+ * an ambient default model (gentle-ai#4611; gentle-pi#311 P2, superseding
+ * gentle-shell#1158 / #1136's child-process launch configuration).
+ */
+function validateReviewerSelectionConfiguration(request: ReviewHostRelayRequest): { reviewerRegistry: InProcessReviewerRegistry; selection: string; thinking?: string; routingKey: string } {
+	const routingKey = typeof request.routingKey === "string" && request.routingKey.length > 0 ? request.routingKey : "review capture";
+	if (request.reviewerRegistry === undefined) {
+		throw new ReviewHostRelayError(
+			REVIEW_HOST_RELAY_FAILURE.REVIEWER_CONFIG_INVALID,
+			"pi",
+			`Pi host relay reviewer launch configuration is invalid: no model registry is available to complete ${routingKey}`,
+		);
+	}
+	if (typeof request.selection !== "string" || request.selection.length === 0) {
+		throw new ReviewHostRelayError(
+			REVIEW_HOST_RELAY_FAILURE.REVIEWER_CONFIG_INVALID,
+			"pi",
+			`Pi host relay reviewer launch configuration is invalid: no model is configured for ${routingKey}; assign it a model in the agent model routing config`,
+		);
+	}
+	return {
+		reviewerRegistry: request.reviewerRegistry,
+		selection: request.selection,
+		...(request.thinking === undefined ? {} : { thinking: request.thinking }),
+		routingKey,
+	};
+}
+
 function snapshotReviewHostRelayRequest(request: ReviewHostRelayRequest): ReviewHostRelayRequest {
+	// Structural malformations (empty/blank tokens, a non-absolute executable)
+	// are TypeErrors — a programmer mistake, never a typed relay refusal — and
+	// are checked before the business-level reviewer selection below.
 	assertTokens("capture", request.captureArgumentTokens);
+	const gentleAiExecutable = request.gentleAiExecutable ?? resolveGentleAiBinary();
+	if (!isAbsolute(gentleAiExecutable)) throw new TypeError("Pi host relay requires an absolute gentle-ai executable path");
+	// Caller-owned reviewer selection is validated before any process launches:
+	// a broken configuration is a typed refusal, never a mid-review transport
+	// failure (gentle-pi#311 P2).
+	const reviewerSelection = validateReviewerSelectionConfiguration(request);
 	// The completing form is validated before any process launches: a materialize
 	// slot without a provider-owned submission is a typed contract mismatch,
 	// never a synthesized invocation.
 	resolveReviewHostRelaySubmission(request.submission);
-	const gentleAiExecutable = request.gentleAiExecutable ?? resolveGentleAiBinary();
-	if (!isAbsolute(gentleAiExecutable)) throw new TypeError("Pi host relay requires an absolute gentle-ai executable path");
 	const environment = Object.freeze({ ...(request.environment ?? process.env) }) as NodeJS.ProcessEnv;
 	const submission = request.submission === undefined ? undefined : Object.freeze({
 		operationToken: request.submission.operationToken,
@@ -500,6 +637,7 @@ function snapshotReviewHostRelayRequest(request: ReviewHostRelayRequest): Review
 		...request,
 		captureArgumentTokens: Object.freeze([...request.captureArgumentTokens]),
 		...(submission === undefined ? {} : { submission }),
+		...reviewerSelection,
 		gentleAiExecutable,
 		environment,
 		gentleAiTimeoutMs: request.gentleAiTimeoutMs ?? DEFAULT_GENTLE_AI_TIMEOUT_MS,
@@ -508,13 +646,14 @@ function snapshotReviewHostRelayRequest(request: ReviewHostRelayRequest): Review
 }
 
 /**
- * Materializes one provider-bound reviewer prompt and runs its opaque Pi
- * subprocess. It does not submit anything, so independent reviewer work can
- * finish before the caller performs provider-ordered admission.
+ * Materializes one provider-bound reviewer prompt and runs it through one
+ * in-process reviewer completion. It does not submit anything, so independent
+ * reviewer work can finish before the caller performs provider-ordered
+ * admission.
  */
 export async function prepareReviewHostRelaySlot(
 	request: ReviewHostRelayRequest,
-	reviewer: typeof runOpaquePiReviewer = runOpaquePiReviewer,
+	runReviewer: typeof runInProcessReviewer = runInProcessReviewer,
 ): Promise<ReviewHostRelayPreparedResult> {
 	// Copy mutable transport configuration before the first async boundary. The
 	// supplied AbortSignal intentionally stays live across materialize, reviewer,
@@ -523,9 +662,14 @@ export async function prepareReviewHostRelaySlot(
 
 	// The provider materializes the opaque prompt and detects whether this relay
 	// surface is available. No version sniffing or prompt reconstruction occurs.
+	// The materialize subcommand is the provider's own submission operation
+	// token (validated present above): "capture-result" for a lens slot,
+	// "capture-refuter" or "capture-validation" for a v9 host-mediated role
+	// slot — the provider always names the same operation for both the
+	// materialize and the submit leg of one slot.
 	let materialized: ProcessCapture;
 	try {
-		materialized = await collectGentleAiProcess(preparedRequest.gentleAiExecutable!, ["review", "capture-result", ...preparedRequest.captureArgumentTokens], {
+		materialized = await collectGentleAiProcess(preparedRequest.gentleAiExecutable!, ["review", preparedRequest.submission!.operationToken, ...preparedRequest.captureArgumentTokens], {
 			cwd: preparedRequest.targetCwd!,
 			env: { ...preparedRequest.environment!, [GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV]: GENTLE_PI_REVIEW_RELAY_CONTRACT },
 			timeoutMs: preparedRequest.gentleAiTimeoutMs!,
@@ -572,25 +716,43 @@ export async function prepareReviewHostRelaySlot(
 	// both the user-owned environment override and the scale-derived bound.
 	const piTimeoutMs = preparedRequest.piTimeoutMs ?? resolveReviewHostRelayPiTimeoutMs(promptBytes.length, preparedRequest.environment);
 
-	// The pure adapter owns the fresh isolated Pi process. Its input and output
-	// are opaque bytes; this coordinator only maps transport failures.
-	let piResult: OpaquePiReviewerResult;
+	// The completion runs in-process through the live model registry: no
+	// child, no extension allowlist, no ambient default model. Elapsed time is
+	// measured here (there is no killed process to read it from) so a timed-out
+	// or aborted refusal still carries the same elapsed/limit evidence a killed
+	// child used to.
+	const startedAt = Date.now();
+	let outcome: InProcessReviewerOutcome;
 	try {
-		piResult = await reviewer(promptBytes, {
-			...(preparedRequest.piExecutable === undefined ? {} : { piExecutable: preparedRequest.piExecutable }),
-			environment: preparedRequest.environment,
-			timeoutMs: piTimeoutMs,
-			...(preparedRequest.signal === undefined ? {} : { signal: preparedRequest.signal }),
-		});
+		outcome = await runReviewer(
+			{
+				selection: preparedRequest.selection!,
+				...(preparedRequest.thinking === undefined ? {} : { thinking: preparedRequest.thinking }),
+				prompt: promptBytes,
+				timeoutMs: piTimeoutMs,
+				...(preparedRequest.signal === undefined ? {} : { signal: preparedRequest.signal }),
+				routingKey: preparedRequest.routingKey!,
+			},
+			{ registry: preparedRequest.reviewerRegistry!, complete: completeSimple },
+		);
 	} catch (error) {
-		throw relayPiTransportError(error, promptBytes.length, piTimeoutMs);
+		throw new ReviewHostRelayError(
+			REVIEW_HOST_RELAY_FAILURE.PI_FAILED,
+			"pi",
+			`the reviewer completion could not run: ${error instanceof Error ? error.message : String(error)}`,
+			{ elapsedMs: Date.now() - startedAt, timeoutMs: piTimeoutMs },
+		);
 	}
+	if (outcome.kind === "refused") {
+		throw relayReviewerRefusalError(outcome, { elapsedMs: Date.now() - startedAt, timeoutMs: piTimeoutMs }, promptBytes.length);
+	}
+	const resultBytes = Buffer.from(outcome.text, "utf8");
 	const prepared = Object.freeze({
 		request: preparedRequest,
 		promptByteLength: promptBytes.length,
-		resultByteLength: piResult.stdoutByteLength,
+		resultByteLength: resultBytes.length,
 	});
-	preparedResultBytes.set(prepared, Buffer.from(piResult.stdout));
+	preparedResultBytes.set(prepared, resultBytes);
 	return prepared;
 }
 
@@ -684,9 +846,15 @@ export async function submitReviewHostRelayPreparedResult(prepared: ReviewHostRe
 }
 
 /**
- * Compatibility one-binding path: materialize → opaque Pi adapter → submit.
- * It preserves the established API and its typed failure behavior exactly.
+ * Compatibility one-binding path: materialize → in-process reviewer
+ * completion → submit. It preserves the established API and its typed
+ * failure behavior exactly. `runReviewer` is the same test seam
+ * {@link prepareReviewHostRelaySlot} takes, threaded through so a caller never
+ * needs to call the two-step path just to inject a fake completion.
  */
-export async function runReviewHostRelaySlot(request: ReviewHostRelayRequest): Promise<ReviewHostRelayResult> {
-	return await submitReviewHostRelayPreparedResult(await prepareReviewHostRelaySlot(request));
+export async function runReviewHostRelaySlot(
+	request: ReviewHostRelayRequest,
+	runReviewer: typeof runInProcessReviewer = runInProcessReviewer,
+): Promise<ReviewHostRelayResult> {
+	return await submitReviewHostRelayPreparedResult(await prepareReviewHostRelaySlot(request, runReviewer));
 }

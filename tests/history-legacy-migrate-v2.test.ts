@@ -8,7 +8,11 @@ import { globalSeedPath, migrateLegacyStores } from "../extensions/history/store
 const skipIf =
   (condition: unknown) =>
   (name: string, fn: () => unknown) =>
-    test(name, { skip: condition ? "requires non-root" : false }, fn);
+    test(
+      name,
+      { skip: condition ? "requires non-root" : false },
+      fn as () => void | Promise<void>,
+    );
 
 
 function makeDirs(): { root: string; agentDir: string } {

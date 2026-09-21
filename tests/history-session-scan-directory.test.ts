@@ -8,7 +8,11 @@ import { listSessionFiles } from "../extensions/history/session-scan.ts";
 const skipIf =
   (condition: unknown) =>
   (name: string, fn: () => unknown) =>
-    test(name, { skip: condition ? "requires non-root" : false }, fn);
+    test(
+      name,
+      { skip: condition ? "requires non-root" : false },
+      fn as () => void | Promise<void>,
+    );
 
 
 /**

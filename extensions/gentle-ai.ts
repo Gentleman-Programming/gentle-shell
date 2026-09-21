@@ -1,6 +1,7 @@
 import { consumeReviewMutation, pendingReviewMutation, recordReviewMutation } from "../lib/review-reminder-receipt.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { OddRuntimeDelegationGate } from "../lib/odd-runtime-delegation-gate.ts";
+import { createOddAdherenceAppender, OddAdherenceTelemetry } from "../lib/odd-adherence-telemetry.ts";
 import { resolveResearchCapabilities, renderResearchCapabilities } from "../lib/sdd-research-capabilities.ts";
 import { declareReviewRelayHandshake } from "../lib/review-relay-contract.ts";
 import { execFileSync } from "node:child_process";
@@ -8760,6 +8761,7 @@ function createGentleAiExtensionForTesting(
 	const herdrLifecycle = createHerdrConfirmationLifecycle(pi.events);
 	const permissionEnvironment = dependencies.processEnv ?? process.env;
 	const oddDelegationGate = new OddRuntimeDelegationGate();
+	const oddAdherenceTelemetry = new OddAdherenceTelemetry(createOddAdherenceAppender(permissionEnvironment));
 	const oddSessionId = (ctx: ExtensionContext): string => {
 		try { return ctx.sessionManager.getSessionId(); }
 		catch { return ""; }
@@ -9169,10 +9171,9 @@ function createGentleAiExtensionForTesting(
 		const retiredSync = readAgentStartNames(event).includes("sdd-sync") || /\bSDD sync executor\b/i.test(event.systemPrompt ?? "");
 		const isSddAgent = retiredSync || isSddAgentStartEvent(event);
 		const isNamedAgent = isNamedAgentStartEvent(event);
-		oddDelegationGate.start(
-			oddSessionId(ctx),
-			!isNamedAgent && !isSddAgent && permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1",
-		);
+		const oddPrimaryTurn = !isNamedAgent && !isSddAgent && permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1";
+		oddAdherenceTelemetry.start(oddSessionId(ctx), oddPrimaryTurn, ctx.cwd);
+		oddDelegationGate.start(oddSessionId(ctx), oddPrimaryTurn);
 		const subagentDepthKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
 		if (isSddAgent || isNamedAgent) {
 			processAgentEndSubagentDepth.set(subagentDepthKey, (processAgentEndSubagentDepth.get(subagentDepthKey) ?? 0) + 1);
@@ -9282,6 +9283,8 @@ function createGentleAiExtensionForTesting(
 	// consent, or chooses a partial candidate. Durable own-mutation receipts
 	// gate STATUS and consume only the generation captured before that await.
 	pi.on("agent_end", async (_event, ctx) => {
+		oddAdherenceTelemetry.endTurn(oddSessionId(ctx));
+		oddAdherenceTelemetry.endChild(oddSessionId(ctx));
 		oddDelegationGate.endChild(oddSessionId(ctx));
 		if (nativeReviewCli?.reviewMode === undefined || nativeReviewCli.targetStatus === undefined) return;
 		if (ctx.hasUI !== true || !reminderSessionActive) return;
@@ -9316,6 +9319,13 @@ function createGentleAiExtensionForTesting(
 	});
 
 	pi.on("tool_result", (event, ctx) => {
+		oddAdherenceTelemetry.observeToolResult(
+			oddSessionId(ctx),
+			event.toolName,
+			event.input,
+			ctx.cwd,
+			event.isError === false,
+		);
 		if (!reminderSessionActive || event.isError !== false || (event.toolName !== "write" && event.toolName !== "edit")) return;
 		if (!isRecord(event.input) || typeof event.input.path !== "string" || !event.input.path.trim()) return;
 		oddDelegationGate.recordSuccess(oddSessionId(ctx), event.toolName, event.input, ctx.cwd);
@@ -9326,6 +9336,7 @@ function createGentleAiExtensionForTesting(
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
+		const oddToolCall = oddAdherenceTelemetry.observeToolCall(oddSessionId(ctx), event.toolName, event.input, ctx.cwd);
 		if (nativeSddStartupBlock && event.toolName !== "subagent_parent_message") return { block: true, reason: `SDD selection blocked: ${nativeSddStartupBlock}` };
 		const sensitivePathDenied = evaluateSensitivePathTool(
 			event.toolName,
@@ -9335,6 +9346,7 @@ function createGentleAiExtensionForTesting(
 		const oddDelegationDenied = oddDelegationGate.beforeTool(
 			oddSessionId(ctx), event.toolName, event.input, ctx.cwd, readActiveToolNames(pi),
 		);
+		oddAdherenceTelemetry.observeGateDecision(oddToolCall, oddDelegationDenied);
 		if (oddDelegationDenied) return oddDelegationDenied;
 		if (event.toolName === "subagent_run") {
 			const sddAgent = sddDispatchAgentName(event.input);

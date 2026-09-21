@@ -77,6 +77,10 @@ flowchart TD
 
 This is guidance through existing tools, not a new CLI, phase, state engine, or execution harness. Static prompt tests and scripted hook checks prove instruction delivery, not autonomous model adherence; actual create/update/resume behavior requires observed Pi sessions.
 
+### ODD adherence telemetry
+
+Each primary turn records only schema-v1 counts, hashes, gate refusals, delegation use, and crossed backstops; it never records paths, prompts, content, or tool output. Lines are stored locally at `$HOME/.gentle-ai/odd-adherence.jsonl`. Read them with `node scripts/odd-adherence-report.mjs --log $HOME/.gentle-ai/odd-adherence.jsonl` (or omit `--log` for the default). Telemetry is local-only and can be disabled with `DO_NOT_TRACK=1` or `CI=true`.
+
 ## Navigation
 
 - [Capabilities](#capability-reference)

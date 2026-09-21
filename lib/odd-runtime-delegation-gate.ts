@@ -27,11 +27,15 @@ function canonicalTarget(path: string): string {
 	}
 }
 
-function sessionPath(toolName: string, input: unknown, cwd: string): string | undefined {
-	if ((toolName !== "edit" && toolName !== "write") || !input || typeof input !== "object") return undefined;
+export function sessionRoot(cwd: string): string | undefined {
+	return resolveSessionWorktree(cwd, cwd)?.root;
+}
+
+export function sessionPath(toolName: string, input: unknown, cwd: string): string | undefined {
+	if ((toolName !== "read" && toolName !== "edit" && toolName !== "write") || !input || typeof input !== "object") return undefined;
 	const path = (input as { path?: unknown }).path;
 	if (typeof path !== "string" || path.trim().length === 0) return undefined;
-	const root = resolveSessionWorktree(cwd, cwd)?.root;
+	const root = sessionRoot(cwd);
 	if (!root) return undefined;
 	const spelling = path.replace(/^@/, "");
 	const canonicalCwd = realpathSync(cwd);
@@ -69,7 +73,7 @@ export class OddRuntimeDelegationGate {
 	): OddDelegationRefusal | undefined {
 		const state = this.sessions.get(sessionId);
 		if (!state?.primary || state.childDepth > 0) return undefined;
-		const path = sessionPath(toolName, input, cwd);
+		const path = toolName === "edit" || toolName === "write" ? sessionPath(toolName, input, cwd) : undefined;
 		if (!path || !state.firstSuccessfulPath || path === state.firstSuccessfulPath) return undefined;
 		return {
 			block: true,
@@ -80,6 +84,7 @@ export class OddRuntimeDelegationGate {
 	}
 
 	recordSuccess(sessionId: string, toolName: string, input: unknown, cwd: string): void {
+		if (toolName !== "edit" && toolName !== "write") return;
 		const state = this.sessions.get(sessionId);
 		if (!state?.primary || state.childDepth > 0 || state.firstSuccessfulPath) return;
 		const path = sessionPath(toolName, input, cwd);

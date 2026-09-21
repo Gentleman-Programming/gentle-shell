@@ -5,11 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { bootstrapProjectSeed, seedFilePath } from "../extensions/history/store.ts";
 
-// Fake project cwd (never created on disk): projectHash falls back to
-// raw-string hashing for nonexistent paths, and the transcript dirName
-// encoding derives from the same string.
-const CWD = "/pi-history-test/seed-regen-project";
-const DIR = "--pi-history-test-seed-regen-project--";
+const CWD = "/Users/admin/Dev/pi/pi-history";
+const DIR = `--Users-admin-Dev-pi-pi-history--`;
 
 function setup() {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "seed2-"));

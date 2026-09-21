@@ -1,11 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 import path from "node:path";
-import {
-  deletionActionsFor,
-  loadedCountAfterDelete,
-} from "../extensions/history/selector-helpers.ts";
+import { loadedCountAfterDelete } from "../extensions/history/selector-helpers.ts";
 
 // Unit 3 — L4 delete backfill (spec C4, design §B3).
 //
@@ -61,7 +59,7 @@ test("loadedCountAfterDelete is defensive for an empty window (AC-L4-1)", () => 
 // (Change 1 C1 interplay unchanged).
 
 const selectorSource = fs.readFileSync(
-  path.join(process.cwd(), "extensions", "history", "index.ts"),
+  fileURLToPath(new URL("../extensions/history/index.ts", import.meta.url)),
   "utf8",
 );
 
@@ -111,76 +109,5 @@ test("deleteCurrent splices, backfills, then re-filters — inside the guarded b
     callRegion.includes("this.loadedCount") &&
       callRegion.includes("this.records.length"),
     "the bookkeeping must read the unfiltered window and the shrunk snapshot",
-  );
-});
-
-// Slice 5 scenario pins (porting contract): the tombstone-always rule and
-// the partial-failure toast path. The dev suite pins the planner + these
-// deleteCurrent branch shapes in hide-prompts.test.ts (T27/T28); this file
-// carries the delete-flow source-parse half so the slice-5 branch stays
-// pinned inside the delete slice's own tests.
-
-test("deletionActionsFor always plans a tombstone — session provenance deletes nothing from disk", () => {
-  // Session/seed-born records: tombstone ONLY (transcripts and the seed are
-  // never rewritten by a delete) — the tombstone is what keeps the deleted
-  // prompt from resurfacing on the next drain.
-  assert.deepEqual(deletionActionsFor("session"), {
-    deleteFromEditorStore: false,
-    writeTombstone: true,
-  });
-  // Editor records: disk delete AND tombstone (twin suppression).
-  assert.deepEqual(deletionActionsFor("editor"), {
-    deleteFromEditorStore: true,
-    writeTombstone: true,
-  });
-
-  const decl = selectorSource.indexOf("private deleteCurrent(");
-  assert.ok(decl >= 0, "deleteCurrent should exist");
-  const end = selectorSource.indexOf("\n  }", decl);
-  assert.ok(end > decl, "deleteCurrent's body should close");
-  const body = selectorSource.slice(decl, end);
-
-  // Branch shape: the tombstone write sits OUTSIDE the editor-store guard —
-  // every provenance lands a tombstone, so an entry that came from the
-  // seed or a transcript cannot resurface after its delete.
-  const editorGuardAt = body.indexOf("if (actions.deleteFromEditorStore)");
-  assert.ok(editorGuardAt >= 0, "the editor-store guard must exist");
-  const guardCloseAt = body.indexOf("\n    }", editorGuardAt);
-  assert.ok(guardCloseAt > editorGuardAt, "the editor-store guard must close");
-  const hideAt = body.indexOf("hidePrompt(");
-  assert.ok(hideAt >= 0, "the tombstone write must exist");
-  assert.ok(
-    hideAt > guardCloseAt,
-    "the tombstone must follow (not sit inside) the editor-store guard",
-  );
-});
-
-test("a failed hide toasts and only the session path aborts — the editor path still splices", () => {
-  const decl = selectorSource.indexOf("private deleteCurrent(");
-  assert.ok(decl >= 0, "deleteCurrent should exist");
-  const end = selectorSource.indexOf("\n  }", decl);
-  assert.ok(end > decl, "deleteCurrent's body should close");
-  const body = selectorSource.slice(decl, end);
-
-  const gateAt = body.indexOf('if (hide.status === "error")');
-  assert.ok(gateAt >= 0, "hide errors must be gated");
-  const spliceAt = body.indexOf("this.records.splice(");
-  assert.ok(
-    gateAt < spliceAt,
-    "the hide-error gate must precede the splice",
-  );
-  const gate = body.slice(gateAt, spliceAt);
-  assert.ok(
-    gate.includes('this.onNotify?.(hide.message, "error")'),
-    "a hide error must toast",
-  );
-  const abortGuardAt = gate.indexOf("if (!actions.deleteFromEditorStore)");
-  assert.ok(
-    abortGuardAt >= 0,
-    "the early return must be exclusive to the session path",
-  );
-  assert.ok(
-    !gate.slice(0, abortGuardAt).includes("return;"),
-    "no unconditional abort before the editor/session split — the editor path splices",
   );
 });

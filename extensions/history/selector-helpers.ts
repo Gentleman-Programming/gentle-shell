@@ -119,7 +119,7 @@ export function pageSelectedIndex(
  * The literal is the single-backslash applied-patch form; the raw patch
  * file stores \\s+ only because its code sits inside a template literal.
  * Shared by contract (spec C4): hide-prompts tombstone keys and the
- * merge-history session-half tombstone filter MUST byte-match this key.
+ * store seeding tombstone filter MUST byte-match this key.
  */
 export function promptDedupKey(entry: string): string {
   return entry.replace(/\s+/g, " ").trim().slice(0, 120).toLowerCase();
@@ -244,11 +244,12 @@ export function loadedCountAfterDelete(
  * only (session transcripts are NEVER written). Takes source as a plain
  * parameter (no member reads — the T23 provenance pin keeps overlay
  * consumers source-agnostic outside deleteCurrent); the only consumer is
- * deleteCurrent in history/index.ts.
+ * deleteCurrent in src/index.ts.
  */
-export function deletionActionsFor(
-  source: PromptSource,
-): { deleteFromEditorStore: boolean; writeTombstone: boolean } {
+export function deletionActionsFor(source: PromptSource): {
+  deleteFromEditorStore: boolean;
+  writeTombstone: boolean;
+} {
   if (source === "editor") {
     return { deleteFromEditorStore: true, writeTombstone: true };
   }
@@ -314,4 +315,101 @@ export function filterPrompts(
   });
 
   return filtered.slice(0, MAX_RESULTS);
+}
+
+/**
+ * Cross-extension fullscreen-sidebar state contract (gentle-shell): stored on
+ * the shared ProcessTerminal under a global-registry symbol so any extension
+ * can read it without importing gentle-shell. Shape per its lib/shell-sidebar.ts:
+ * `{ active: boolean; ownsHost?: () => boolean; parts: Map<string, unknown> }`.
+ */
+const SIDEBAR_STATE_SYMBOL = Symbol.for("gentle-pi.experimental-sidebar.state");
+
+/**
+ * Geometry overlay right margin that confines a full-width overlay to the
+ * editor column while the gentle-shell fullscreen sidebar paints: its layout
+ * hstack reserves 50 columns (RAIL_WIDTH) for the rail plus a 3-column gap
+ * (GAP) before it, and it only activates at >= 140 columns. pi-tui resolves
+ * overlay width "100%" and the bottom-center anchor inside
+ * `[0, columns - margin)`, which is then exactly the editor column.
+ */
+export const SIDEBAR_RAIL_OVERLAY_MARGIN = 53;
+
+/**
+ * Visual breathing room between the picker and the sidebar rail, added on top
+ * of the geometry margin (user-directed: 1 column, 2026-09-21).
+ */
+export const SIDEBAR_OVERLAY_PADDING = 1;
+
+interface SidebarStateShape {
+  active?: unknown;
+  ownsHost?: () => unknown;
+}
+
+/**
+ * Overlay right margin for the current terminal: the geometry margin plus
+ * padding while the gentle-shell sidebar rail is painting, else 0 (native
+ * full-window overlay). Reads the terminal-owned state contract defensively —
+ * any absent, malformed, or non-owning state degrades to 0 so the picker
+ * keeps opening. Purity note: this returns the CURRENT margin per call; live
+ * refresh while an overlay stays open is the caller's job (the picker wires
+ * visible() plus a getter margin — pi-tui re-reads both every render).
+ */
+export function editorOverlayMargin(terminal: unknown): number {
+  if (typeof terminal !== "object" || terminal === null) return 0;
+  const state = (terminal as Record<symbol, unknown>)[SIDEBAR_STATE_SYMBOL] as
+    | SidebarStateShape
+    | undefined;
+  if (typeof state !== "object" || state === null) return 0;
+  if (state.active !== true || typeof state.ownsHost !== "function") return 0;
+  try {
+    return state.ownsHost() === true
+      ? SIDEBAR_RAIL_OVERLAY_MARGIN + SIDEBAR_OVERLAY_PADDING
+      : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Responsive picker-header mode at the current render width. */
+export type HeaderLayoutMode = "inline" | "stacked" | "compact";
+
+/**
+ * Fit-driven header plan (user-directed responsive header): "inline" keeps
+ * title + counts + right-flushed radio on one row; "stacked" (tablet) deletes
+ * the spacer — the radio wraps to its own row under the full counts line;
+ * "compact" (mobile) further splits the counts off and abbreviates the radio.
+ * Thresholds derive from the ACTUAL text widths, so any count size flips the
+ * mode at the exact column where the previous layout stops fitting.
+ */
+export function planHeaderLayout(
+  width: number,
+  leftWidth: number,
+  radioWidth: number,
+  minGap: number,
+): HeaderLayoutMode {
+  if (width >= leftWidth + minGap + radioWidth) return "inline";
+  if (width >= leftWidth) return "stacked";
+  return "compact";
+}
+
+/** Full scope radio: both scope labels spelled out. */
+export const SCOPE_RADIO_FULL_PROJECT = "◉ Current project | ○ All projects";
+export const SCOPE_RADIO_FULL_GLOBAL = "○ Current project | ◉ All projects";
+/** Abbreviated radio: the ACTIVE scope keeps its full label, the other shortens. */
+export const SCOPE_RADIO_COMPACT_PROJECT = "◉ Current project | ○ All";
+export const SCOPE_RADIO_COMPACT_GLOBAL = "○ Current | ◉ All projects";
+
+/**
+ * Scope radio text for the current width: abbreviated only when the full
+ * radio cannot fit the row it would occupy (compact widths).
+ */
+export function scopeRadioText(
+  scope: "project" | "global",
+  compact: boolean,
+): string {
+  if (scope === "project") {
+    return compact ? SCOPE_RADIO_COMPACT_PROJECT : SCOPE_RADIO_FULL_PROJECT;
+  }
+  return compact ? SCOPE_RADIO_COMPACT_GLOBAL : SCOPE_RADIO_FULL_GLOBAL;
 }

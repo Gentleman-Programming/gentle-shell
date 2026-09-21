@@ -4,17 +4,20 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  deleteFromProject,
   drainGlobal,
   drainProject,
   globalSeedPath,
   projectHash,
 } from "../extensions/history/store.ts";
+// node:test has no test.skipIf (Bun-ism): emulate via the options object.
+const skipIf =
+  (condition: unknown) =>
+  (name: string, fn: () => unknown) =>
+    test(name, { skip: condition ? "requires non-root" : false }, fn);
 
-// Portable project identity: a never-existing literal. projectHash falls
-// back to hashing the raw string when realpath fails, so the identity is
-// deterministic on every machine (no machine-specific absolute paths).
 
-const CWD = "/pi-history-test/drain-order-project";
+const CWD = "/Users/admin/Dev/pi/pi-history";
 
 function writeTs(file: string, texts: string[], ts: number): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -31,11 +34,8 @@ test("atomic rewrite (delete) does not reshuffle the drain order", () => {
   writeTs(path.join(dir, "old.jsonl"), ["a-old"], 100);
   writeTs(path.join(dir, "new.jsonl"), ["z-new"], 200);
   assert.deepEqual(drainProject(root, CWD), ["z-new", "a-old"]);
-  // Slice 5 ports deleteFromProject; its observable effect on the drain is
-  // simulated directly here: an atomic rewrite of the affected file that
-  // empties it — the mtime jumps to NOW, and the drain order must not move.
-  fs.writeFileSync(path.join(dir, "old.jsonl"), "", "utf8");
-  fs.utimesSync(path.join(dir, "old.jsonl"), new Date(), new Date());
+  // Deleting from the old file rewrites it — mtime jumps to NOW.
+  deleteFromProject(root, CWD, "a-old");
   assert.deepEqual(drainProject(root, CWD), ["z-new"]);
   // Re-add with an OLD ts via direct write: still ordered by ts, not mtime.
   writeTs(path.join(dir, "old2.jsonl"), ["b-old"], 150);
@@ -57,9 +57,9 @@ test("global drain puts the legacy seed last regardless of its fresh mtime", () 
   assert.deepEqual(drainGlobal(root), ["fresh", "legacy-2", "legacy-1"]);
 });
 
-test(
+const sealedDrainTest = skipIf(process.getuid?.() === 0);
+sealedDrainTest(
   "an unreadable store file is skipped; the rest drain in the expected order",
-  { skip: process.getuid?.() === 0 },
   () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ord-sealed-"));
     const dir = path.join(root, "projects", projectHash(CWD));

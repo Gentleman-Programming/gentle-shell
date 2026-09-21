@@ -1,14 +1,9 @@
 // SPDX-FileCopyrightText: 2026 ExoPro. Inspired by @jasonish/pi-prompt-history
 // SPDX-License-Identifier: MIT
 
-// Prompt-history extension entry (slice 3): the selector TUI, overlay glue,
-// and the shortcut/command wiring over the slice-1 writer, slice-2 drains,
-// and slice-4 init sequence (legacy migration + seed bootstrap run once
-// inside getWriter). Deletion (slice 5) and GC/compaction (slice 6) are
-// wired here.
-
-import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   DynamicBorder,
   type ExtensionAPI,
@@ -16,58 +11,61 @@ import {
   type Theme,
 } from "@earendil-works/pi-coding-agent";
 import {
-  appendSessionCapture,
-  bootstrapProjectSeed,
-  deleteFromGlobal,
-  deleteFromProject,
-  drainGlobal,
-  drainProject,
-  gcProjectDir,
-  ensureRegistryEntry,
-  migrateLegacyStores,
-  openSessionWriter,
-  type SessionWriterState,
-} from "./store.ts";
-import { randomUUID } from "node:crypto";
+  Container,
+  type Focusable,
+  getKeybindings,
+  Input,
+  matchesKey,
+  stripTerminalSequences,
+  type TUI,
+  type TuiMouseEvent,
+  truncateToWidth,
+} from "@earendil-works/pi-tui";
 import { hidePrompt } from "./hide-prompts.ts";
 import {
   buildPromptRecords,
-  filterPrompts,
-  type PromptEntry,
   clampPreviewOffset,
   clampSelectedIndex,
-  deletionActionsFor,
   dedupePromptEntries,
+  deletionActionsFor,
+  editorOverlayMargin,
+  filterPrompts,
   getVisiblePromptRecords,
+  type HeaderLayoutMode,
   initialLoadedCount,
   loadedCountAfterDelete,
   loadedCountForQuery,
   loadedCountForTarget,
   moveSelectedIndex,
   nextLoadedCount,
+  type PiHistoryGlobals,
+  type PromptEntry,
+  type PromptRecord,
   pageSelectedIndex,
+  planHeaderLayout,
+  scopeRadioText,
   shouldGrowWindow,
   withExpandedHistoryGlobals,
-  type PiHistoryGlobals,
-  type PromptRecord,
 } from "./selector-helpers.ts";
 import {
-  Container,
-  type Focusable,
-  getKeybindings,
-  Input,
-  matchesKey,
-  Text,
-  type TUI,
-  type TuiMouseEvent,
-  truncateToWidth,
-} from "@earendil-works/pi-tui";
+  appendSessionCapture,
+  bootstrapProjectSeed,
+  deleteFromGlobal,
+  deleteFromProject,
+  drainGlobal,
+  drainProject,
+  ensureRegistryEntry,
+  gcProjectDir,
+  migrateLegacyStores,
+  openSessionWriter,
+  type SessionWriterState,
+} from "./store.ts";
 
 const SHORTCUT = "ctrl+shift+r";
 const MAX_VISIBLE = 10;
 const PREVIEW_ROWS = 10;
-// Lazy windowing (design §D3; user-tuned 2026-09-08). PRELOAD_BUFFER=3
-// fires growth as the cursor enters the final 3 loaded rows; BATCH_SIZE=10
+// Lazy windowing (design §D3; user-tuned 2026-09-08). PRELOAD_BUFFER=2
+// fires growth as the cursor enters the final 2 loaded rows; BATCH_SIZE=10
 // loads exactly one viewport per growth; INITIAL_BATCH=10 paints one
 // viewport at open. PRELOAD_BUFFER <= MAX_VISIBLE keeps a jump within one
 // viewport covered by the catch-up loop; review all three together.
@@ -75,12 +73,16 @@ const INITIAL_BATCH = 10;
 const BATCH_SIZE = 10;
 const PRELOAD_BUFFER = 3;
 // Wheel regions over the fixed 30-row overlay geometry (design §D6): the
-// list container renders at rows 5-14 and the preview container at rows
-// 17-26; every other row is a consumed no-op.
+// preview container always renders at rows 17-26. The list region is
+// mode-dependent (see listWheelFirstRow): the responsive header reclaims
+// rows without changing the 30-row total, and only the compact mode both
+// shifts the list start (border at row 5) and paints one list row fewer.
 const LIST_WHEEL_Y_FIRST = 5;
 const LIST_WHEEL_Y_LAST = 14;
 const PREVIEW_WHEEL_Y_FIRST = 17;
 const PREVIEW_WHEEL_Y_LAST = 26;
+/** Minimum columns between the counts text and a right-flushed radio before shrinking deletes the spacer and stacks the header (user-directed). */
+const HEADER_INLINE_MIN_GAP = 4;
 
 // v2 multi-concurrency store root (design: tmp/multi-concurrency-design.md).
 const PI_HISTORY_ROOT = join(homedir(), ".pi", "agent", "history");
@@ -89,17 +91,13 @@ const CURRENT_CWD = process.cwd();
 // Instance identity: one exclusive capture file per pi process.
 const INSTANCE_ID = randomUUID();
 
+// State dir for the session index and the tombstone file (spec C2/C4,
+// design §D5). Derived state only — deleting the directory restores cold
+// start and unhides every prompt; transcripts and the editor store are
+// never written here.
 // Tombstone state dir: the store root itself (user-directed FINAL):
 // ~/.pi/agent/history/hidden.json — one directory for everything.
-// Derived state only — deleting the directory restores cold start and
-// unhides every prompt; transcripts and the editor store are never written
-// here.
-const PI_HISTORY_NAV_STATE_DIR = join(
-  homedir(),
-  ".pi",
-  "agent",
-  "history",
-);
+const PI_HISTORY_NAV_STATE_DIR = join(homedir(), ".pi", "agent", "history");
 
 // Sessions root for the one-level transcript scan (spec C1, design §D5):
 // ~/.pi/agent/sessions/. Read-only by invariant — transcripts are never
@@ -121,20 +119,18 @@ const ENTRY_PREFIX_WIDTH = 2;
 function sanitizeForDisplay(text: string): string {
   let out = "";
   for (let i = 0; i < text.length; i++) {
-    const cp = text.codePointAt(i)!;
+    const cp = text.codePointAt(i);
+    if (cp === undefined) break;
     if (cp === 0x0a) {
       out += "\n";
     } else if (cp === 0x09) {
       out += "\t";
     } else if (cp < 0x20 || cp === 0x7f) {
-      out += "\\x" + cp.toString(16).padStart(2, "0");
+      out += `\\x${cp.toString(16).padStart(2, "0")}`;
     } else if (cp >= 0x80 && cp < 0xa0) {
-      out += "\\x" + cp.toString(16).padStart(2, "0");
+      out += `\\x${cp.toString(16).padStart(2, "0")}`;
     } else {
-      // Astral code points (> 0xFFFF) span a surrogate pair; append the
-      // full code point, not just the high surrogate at text[i], so emoji
-      // and other non-BMP characters survive sanitization intact.
-      out += cp > 0xffff ? String.fromCodePoint(cp) : text[i];
+      out += text[i];
     }
     if (cp > 0xffff) i++; // skip low surrogate of astral pair
   }
@@ -159,17 +155,17 @@ interface DispatchEntry {
 }
 
 /** Notification sink for selector feedback; an absent callback drops notifications. */
-type SelectorNotify = (message: string, level: "error" | "warning" | "info") => void;
+type SelectorNotify = (
+  message: string,
+  level: "error" | "warning" | "info",
+) => void;
 
 /** Single rendered row; always occupies exactly one terminal row. */
 class FixedRowText {
-  private text: string;
-  private readonly centered: boolean;
-
-  constructor(text: string = "", centered = false) {
-    this.text = text;
-    this.centered = centered;
-  }
+  constructor(
+    private text: string = "",
+    private readonly centered = false,
+  ) {}
 
   /** Replace the row content in place; padding contract comes from render(). */
   setText(next: string): void {
@@ -190,17 +186,30 @@ class FixedRowText {
           // Truncate first so an overlong help row can never exceed width,
           // then center the truncated copy (design §C hardening).
           const truncated = truncateToWidth(this.text, width, "…");
-          const visible = truncated.replace(/\x1b\[[0-9;]*m/g, "");
+          const visible = stripTerminalSequences(truncated);
           const pad = Math.max(0, Math.floor((width - visible.length) / 2));
           return " ".repeat(pad) + truncated;
         })()
       : truncateToWidth(this.text, width, "…");
     // Pad to full terminal width so the overlay fully overwrites
     // whatever is beneath it and leaves no ghost characters on dismiss.
-    // Measure the VISIBLE width: SGR escape sequences (colored rows from
-    // rebuildListWithWidth) occupy no terminal cells.
-    const visible = rendered.replace(/\x1b\[[0-9;]*m/g, "");
-    return [rendered + " ".repeat(Math.max(0, width - visible.length))];
+    return [rendered + " ".repeat(Math.max(0, width - rendered.length))];
+  }
+}
+
+/** A row that renders as ZERO lines when its text is empty, letting the fixed 30-row overlay reclaim the row instead of pushing content out the bottom. */
+class OptionalRow {
+  private text = "";
+
+  setText(next: string): void {
+    this.text = next;
+  }
+
+  invalidate(): void {}
+
+  render(width: number): string[] {
+    if (this.text.length === 0) return [];
+    return [truncateToWidth(this.text, width, "…")];
   }
 }
 
@@ -242,14 +251,18 @@ class PromptHistorySelector extends Container implements Focusable {
   private readonly previewContainer: Container;
   private readonly listContainer: Container;
   private readonly headerRow: FixedRowText;
+  private readonly headerLine2: OptionalRow;
+  private readonly headerLine3: OptionalRow;
+  private readonly hintRow: OptionalRow;
+  private readonly hintText: string;
+  /** Current responsive header mode; drives the list wheel region. */
+  private headerMode: HeaderLayoutMode = "inline";
   private readonly previewLabelRow: FixedRowText;
   private records: PromptRecord[];
   private readonly theme: Theme;
   private readonly tui: TUI;
   private readonly onSelect: (record: PromptRecord) => void;
   private readonly onCancel: () => void;
-  /** Notification sink for selector feedback (wired by the factory). */
-  private readonly onNotify?: SelectorNotify;
   private filteredRecords: PromptRecord[] = [];
   private selectedIndex = 0;
   /** Number of records loaded (newest-first) from the top of `records`. */
@@ -327,16 +340,16 @@ class PromptHistorySelector extends Container implements Focusable {
     records: PromptRecord[],
     onSelect: (record: PromptRecord) => void,
     onCancel: () => void,
-    onNotify?: SelectorNotify,
+    private readonly onNotify?: SelectorNotify,
   ) {
     super();
+
     this.tui = tui;
     this.theme = theme;
     this.records = records;
     this.loadedCount = initialLoadedCount(records.length, INITIAL_BATCH);
     this.onSelect = onSelect;
     this.onCancel = onCancel;
-    this.onNotify = onNotify;
 
     // ── Search panel (top) ──
     this.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
@@ -344,13 +357,15 @@ class PromptHistorySelector extends Container implements Focusable {
       theme.fg("accent", theme.bold(" History Search ")),
     );
     this.addChild(this.headerRow);
-    this.addChild(
-      new Text(
-        theme.fg("dim", "Type to filter (multi-word AND substring, case-insensitive)"),
-        0,
-        0,
-      ),
-    );
+    this.headerLine2 = new OptionalRow();
+    this.headerLine3 = new OptionalRow();
+    this.addChild(this.headerLine2);
+    this.addChild(this.headerLine3);
+    this.hintText =
+      "Type to filter (multi-word AND substring, case-insensitive)";
+    this.hintRow = new OptionalRow();
+    this.hintRow.setText(this.theme.fg("dim", this.hintText));
+    this.addChild(this.hintRow);
     this.searchInput = new Input();
     this.searchInput.onSubmit = () => this.selectCurrent();
     this.searchInput.onEscape = () => this.onCancel();
@@ -412,33 +427,69 @@ class PromptHistorySelector extends Container implements Focusable {
     this.rebuildListWithWidth(this.lastWidth);
   }
 
-  /** Rebuild list rows: header counter + entries. Always MAX_VISIBLE rows. */
+  /** Rebuild list rows: header counter + entries. Always MAX_VISIBLE rows (MAX_VISIBLE - 1 in compact mode). */
   private rebuildListWithWidth(width: number): void {
     const count = this.filteredRecords.length;
     const position = count === 0 ? 0 : this.selectedIndex + 1;
-    this.headerRow.setText(
-      this.theme.fg("accent", this.theme.bold(" History Search ")) +
-        this.theme.fg("dim", ` · ${position} of ${count} `) +
+    const titleText = " History Search ";
+    const positionText = ` · ${position} of ${count} `;
+    const loadedText = ` · loaded ${this.loadedCount} of ${this.records.length} `;
+    const leftWidth =
+      titleText.length + positionText.length + loadedText.length;
+    const radioFull = scopeRadioText(this.scope, false);
+    // Radio label compaction is fit-driven too: abbreviate only when the
+    // full radio cannot fit the row it would occupy (user-directed paste).
+    const radioText =
+      width >= radioFull.length ? radioFull : scopeRadioText(this.scope, true);
+    const mode = planHeaderLayout(
+      width,
+      leftWidth,
+      radioFull.length,
+      HEADER_INLINE_MIN_GAP,
+    );
+    this.headerMode = mode;
+    if (mode === "inline") {
+      this.headerRow.setText(
+        this.theme.fg("accent", this.theme.bold(titleText)) +
+          this.theme.fg("dim", positionText) +
+          this.theme.fg("dim", loadedText) +
+          // Right-aligned scope radio: pad from plain-text lengths so the
+          // radio ends flush at the header's last column at any width.
+          " ".repeat(Math.max(1, width - leftWidth - radioText.length)) +
+          this.theme.fg("dim", radioText),
+      );
+      this.headerLine2.setText("");
+      this.headerLine3.setText("");
+    } else if (mode === "stacked") {
+      // Tablet: the spacer is deleted — the radio wraps to its own row
+      // under the full counts line (user-directed paste, leading space).
+      this.headerRow.setText(
+        this.theme.fg("accent", this.theme.bold(titleText)) +
+          this.theme.fg("dim", positionText) +
+          this.theme.fg("dim", loadedText),
+      );
+      this.headerLine2.setText(` ${this.theme.fg("dim", radioText)}`);
+      this.headerLine3.setText("");
+    } else {
+      // Compact (mobile): three rows — counts split off, radio abbreviated
+      // (user-directed paste).
+      this.headerRow.setText(
+        this.theme.fg("accent", this.theme.bold(titleText)) +
+          this.theme.fg("dim", ` · ${position} of ${count}`),
+      );
+      // Leading space aligns both rows with the title's own left padding
+      // space (user-directed compact paste).
+      this.headerLine2.setText(
         this.theme.fg(
           "dim",
-          ` · loaded ${this.loadedCount} of ${this.records.length} `,
-        ) +
-        // Right-aligned scope radio: pad from plain-text lengths so the
-        // radio ends flush at the header's last column at any width.
-        (() => {
-          const scopeRadio =
-            this.scope === "project"
-              ? "◉ Current project | ○ All projects"
-              : "○ Current project | ◉ All projects";
-          const leftWidth =
-            " History Search ".length +
-            ` · ${position} of ${count} `.length +
-            ` · loaded ${this.loadedCount} of ${this.records.length} `.length;
-          return (
-            " ".repeat(Math.max(1, width - leftWidth - scopeRadio.length)) +
-            this.theme.fg("dim", scopeRadio)
-          );
-        })(),
+          ` loaded ${this.loadedCount} of ${this.records.length}`,
+        ),
+      );
+      this.headerLine3.setText(` ${this.theme.fg("dim", radioText)}`);
+    }
+    // Stacked modes reclaim the hint row so the overlay stays 30 rows.
+    this.hintRow.setText(
+      mode === "inline" ? this.theme.fg("dim", this.hintText) : "",
     );
     this.listContainer.clear();
 
@@ -446,18 +497,24 @@ class PromptHistorySelector extends Container implements Focusable {
       this.listContainer.addChild(
         new FixedRowText(this.theme.fg("warning", "No matching prompts")),
       );
-      for (let i = 1; i < MAX_VISIBLE; i++) {
+      // Compact still paints one list row fewer in the empty state, or the
+      // 3-row header would push the fixed 30-row overlay to 31 rows.
+      const listRows = mode === "compact" ? MAX_VISIBLE - 1 : MAX_VISIBLE;
+      for (let i = 1; i < listRows; i++) {
         this.listContainer.addChild(new FixedRowText());
       }
       return;
     }
 
+    // Compact paints one list row fewer (reclaimed by the 3-row header);
+    // the preview block keeps PREVIEW_ROWS so the 30-row total holds.
+    const listRows = mode === "compact" ? MAX_VISIBLE - 1 : MAX_VISIBLE;
     const entryMax = Math.floor(width * 0.95) - ENTRY_PREFIX_WIDTH;
 
     const visible = getVisiblePromptRecords(
       this.filteredRecords,
       this.selectedIndex,
-      MAX_VISIBLE,
+      listRows,
     );
 
     for (const { record, isSelected } of visible) {
@@ -471,9 +528,16 @@ class PromptHistorySelector extends Container implements Focusable {
       this.listContainer.addChild(new FixedRowText(line));
     }
 
-    for (let i = visible.length; i < MAX_VISIBLE; i++) {
+    for (let i = visible.length; i < listRows; i++) {
       this.listContainer.addChild(new FixedRowText());
     }
+  }
+
+  /** List wheel region start: compact shifts the list down one row. */
+  private get listWheelFirstRow(): number {
+    return this.headerMode === "compact"
+      ? LIST_WHEEL_Y_FIRST + 1
+      : LIST_WHEEL_Y_FIRST;
   }
 
   /**
@@ -605,14 +669,12 @@ class PromptHistorySelector extends Container implements Focusable {
     this.applyFilter(this.searchInput.getValue());
   }
 
-  // -- Navigation ---------------------------------------------------------
-
-  private moveUp(): void {
-    this.selectedIndex = moveSelectedIndex(
-      this.selectedIndex,
-      this.filteredRecords.length,
-      -1,
-    );
+  /**
+   * Lazy-load growth shared by moveUp/moveDown (design §D1): when the cursor
+   * sits in the final PRELOAD_BUFFER rows of the loaded window, grow via
+   * nextLoadedCount and re-apply the filter so fresh rows become visible.
+   */
+  private growLoadedWindowIfNeeded(): void {
     if (
       shouldGrowWindow(
         this.selectedIndex,
@@ -628,6 +690,17 @@ class PromptHistorySelector extends Container implements Focusable {
       );
       this.applyFilter(this.searchInput.getValue());
     }
+  }
+
+  // -- Navigation ---------------------------------------------------------
+
+  private moveUp(): void {
+    this.selectedIndex = moveSelectedIndex(
+      this.selectedIndex,
+      this.filteredRecords.length,
+      -1,
+    );
+    this.growLoadedWindowIfNeeded();
     this.previewScrollOffset = 0;
     this.rebuildList();
     this.rebuildPreview();
@@ -638,21 +711,7 @@ class PromptHistorySelector extends Container implements Focusable {
     // sits in the final PRELOAD_BUFFER rows of the loaded window, so the
     // modulo below moves into freshly loaded rows — a wrap to index 0 is
     // reachable only on the exhausted set.
-    if (
-      shouldGrowWindow(
-        this.selectedIndex,
-        this.loadedCount,
-        this.records.length,
-        PRELOAD_BUFFER,
-      )
-    ) {
-      this.loadedCount = nextLoadedCount(
-        this.loadedCount,
-        this.records.length,
-        BATCH_SIZE,
-      );
-      this.applyFilter(this.searchInput.getValue());
-    }
+    this.growLoadedWindowIfNeeded();
     this.selectedIndex = moveSelectedIndex(
       this.selectedIndex,
       this.filteredRecords.length,
@@ -774,7 +833,7 @@ class PromptHistorySelector extends Container implements Focusable {
   ): ReturnType<Container["handleMouse"]> {
     if (event.type !== "wheel") return undefined;
     const delta = event.wheelDelta ?? 0;
-    if (event.y >= LIST_WHEEL_Y_FIRST && event.y <= LIST_WHEEL_Y_LAST) {
+    if (event.y >= this.listWheelFirstRow && event.y <= LIST_WHEEL_Y_LAST) {
       const steps = Math.min(Math.abs(delta), this.filteredRecords.length);
       for (let i = 0; i < steps; i++) {
         if (delta > 0) this.moveDown();
@@ -836,7 +895,7 @@ class PromptHistorySelector extends Container implements Focusable {
 }
 
 // ---------------------------------------------------------------------------
-// Overlay glue
+// Extension entry point
 // ---------------------------------------------------------------------------
 
 type SelectorDone = (result: PromptRecord | null) => void;
@@ -860,7 +919,7 @@ function createPromptHistorySelectorFactory(
   onNotify?: SelectorNotify,
 ): SelectorFactory {
   return (tui, theme, _keybindings, done) => {
-    selectorTui = tui as { requestRender(): void };
+    selectorTui = tui as { requestRender(): void; terminal?: unknown };
     const finish = (result: PromptRecord | null) => {
       activeOverlayClose = null;
       done(result);
@@ -895,20 +954,44 @@ async function runPromptHistorySelection(
       ),
       {
         overlay: true,
-        overlayOptions: { anchor: "bottom-center", width: "100%", offsetY: 5 },
+        // pi-tui freezes the options object at showOverlay time, but calls
+        // visible() on EVERY render pass before resolving the overlay layout
+        // (compositeOverlays filters visible entries first), and re-reads
+        // margin per layout resolution — the getter below therefore stays
+        // live: resizing across the sidebar breakpoint re-seats the picker
+        // while it stays open. While the gentle-shell fullscreen sidebar
+        // paints, the margin confines width "100%" (and the bottom-center
+        // anchor) to the editor column plus 3 columns of padding; 0 keeps
+        // the native full-window behavior.
+        overlayOptions: () => {
+          let rightMargin = editorOverlayMargin(selectorTui?.terminal);
+          return {
+            anchor: "bottom-center" as const,
+            width: "100%" as const,
+            offsetY: 5,
+            get margin() {
+              return rightMargin > 0 ? { right: rightMargin } : undefined;
+            },
+            visible: () => {
+              rightMargin = editorOverlayMargin(selectorTui?.terminal);
+              return true;
+            },
+          };
+        },
       },
     ),
   );
 }
 
+/** Shared entry point for the ctrl+shift+r shortcut and the /history command. */
 // ---------------------------------------------------------------------------
 // Multi-concurrency store (v2): per-session writes, scope drains
 // ---------------------------------------------------------------------------
 
 type HistoryScope = "project" | "global";
 
-/** TUI handle captured when the selector overlay mounts. */
-let selectorTui: { requestRender(): void } | null = null;
+/** TUI handle captured when the selector overlay mounts. `terminal` feeds the sidebar overlay margin. */
+let selectorTui: { requestRender(): void; terminal?: unknown } | null = null;
 
 let writerState: SessionWriterState | null = null;
 
@@ -945,9 +1028,10 @@ function getWriter(): SessionWriterState {
 }
 
 /**
- * Scope drain for the selector: project scope drains the project's store
- * files; global scope is the store-only cross-project view (all project
- * dirs + the legacy global seed). Both filter tombstoned prompts.
+ * Scope drain for the selector: project scope drains this project's store
+ * files (transcript prompts enter once via bootstrapProjectSeed); global
+ * scope is the cross-project view (all project dirs + the legacy global
+ * seed).
  */
 function drainForScope(scope: HistoryScope): string[] {
   getWriter(); // ensure init ran
@@ -963,11 +1047,9 @@ async function openHistorySelector(
   // symmetrically — no live transcript merge (the one-time seed bootstrap
   // covers pre-store history).
   const entries = drainForScope("project");
-  if (entries.length === 0) {
-    ctx.ui.notify("No prompt history available.", "warning");
-    return;
-  }
-
+  // Always open the selector (user-directed): an empty store still shows
+  // the overlay with its "No matching prompts" empty state instead of a
+  // warning notify.
   const records = recordsFromEntries(entries);
   const selected = await runPromptHistorySelection(ctx, records);
   if (selected) {
@@ -991,18 +1073,6 @@ function recordsFromEntries(
 
 export default function promptHistoryExtension(pi: ExtensionAPI) {
   // One writer per extension load; see getWriter() for the init order.
-  // Warm migrate/registry/seed OFF the first-prompt path: the scheduled
-  // init runs once, immediately after load. A prompt arriving earlier
-  // falls back to the synchronous lazy init in getWriter(), whose
-  // writerState guard makes whichever runs second a no-op — bootstrap
-  // work is never duplicated.
-  setImmediate(() => {
-    try {
-      getWriter();
-    } catch {
-      // init is best-effort; the lazy path retries on the next prompt
-    }
-  });
 
   // Persist every delivered user prompt (write-through, append-only JSONL).
   // The local ExtensionAPI stub types handler args as unknown; narrow here.
@@ -1016,8 +1086,7 @@ export default function promptHistoryExtension(pi: ExtensionAPI) {
     }
   });
 
-  // Maintenance pass on graceful shutdown: compaction runs at the GC
-  // thresholds (50 files / 5000 lines / keep-newest-10).
+  // Backup pass: enforce the 1000-line limit on graceful shutdown.
   pi.on("session_shutdown", () => {
     try {
       gcProjectDir(PI_HISTORY_ROOT, CURRENT_CWD);

@@ -1,14 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import { fileURLToPath } from "node:url";
+import fs from "node:fs";
+import path from "node:path";
 
 /**
- * WU5 tests (AC-S6-1..3): the open-flow wiring in extensions/history/index.ts.
- * NEVER import it — it pulls the pi-tui runtime graph (design §D3). The
- * wiring is pinned by source-parse (command-registration pattern); loader
- * behavior uses fs-only fixtures under the OS temp dir — NEVER the user's
- * real ~/.pi/agent/history.
+ * WU5 tests (AC-S6-1..3): the open-flow wiring in src/index.ts. NEVER
+ * import src/index.ts — it pulls the pi-tui runtime graph (design §D3).
+ * The wiring is pinned by source-parse (command-registration pattern); the
+ * loader behavior uses fs-only fixtures under the OS temp dir — NEVER the
  */
 
 const indexSource = fs.readFileSync(
@@ -27,14 +27,14 @@ function openHistorySelectorBody(): string {
 /** Method body slice (lazy-windowing.test.ts pattern; first "\n  }" close). */
 function methodBodyOf(name: string): string {
   const decl = indexSource.indexOf(`private ${name}(`);
-  assert.ok(decl >= 0, `private ${name}() should exist in extensions/history/index.ts`);
+  assert.ok(decl >= 0, `private ${name}() should exist in src/index.ts`);
   const end = indexSource.indexOf("\n  }", decl);
   assert.ok(end > decl, `private ${name}() body should close`);
   return indexSource.slice(decl, end);
 }
 
 // ---------------------------------------------------------------------------
-// T31 — AC-S6-1: store-only drain wiring (source-parse, §I load-bearing shape).
+// T31 — AC-S6-1: combined-loader wiring (source-parse, §I load-bearing shape).
 // ---------------------------------------------------------------------------
 
 test("T31 (AC-S6-1): the store drain is the entries source — no live transcript merge (§I pin 1)", () => {
@@ -49,8 +49,8 @@ test("T31 (AC-S6-1): the store drain is the entries source — no live transcrip
     "the live transcript merge is GONE from the open flow (user-directed store-only scopes)",
   );
   assert.ok(
-    body.indexOf("if (entries.length === 0)") >= 0,
-    "the PR-branch empty guard stands: no history warns instead of opening an empty overlay",
+    body.indexOf("if (entries.length === 0)") === -1,
+    "the empty guard is gone — the selector always opens",
   );
 });
 
@@ -72,6 +72,11 @@ test("T31 (AC-S6-1): the three command-registration pins hold beside the swap", 
     calls,
     2,
     "exactly the two entry-point call sites — the swap adds no occurrence",
+  );
+  const body = openHistorySelectorBody();
+  assert.ok(
+    !body.includes('"No prompt history available."'),
+    "the warning string is removed from the shared entry point",
   );
 });
 
@@ -125,7 +130,6 @@ test("T33 (AC-S6-3): loaded segment present, indexing segment removed", () => {
     "the indexing segment stays removed",
   );
 });
-
 test("T33 (AC-S6-3): Change 2 structural pins still hold beside the third segment", () => {
   assert.ok(
     indexSource.includes("private static readonly OVERLAY_LINES = 30;"),
@@ -139,5 +143,5 @@ test("T33 (AC-S6-3): Change 2 structural pins still hold beside the third segmen
   const ctorEnd = indexSource.indexOf('this.applyFilter("")', ctorAt);
   const ctorAddChild =
     indexSource.slice(ctorAt, ctorEnd).split("this.addChild(").length - 1;
-  assert.equal(ctorAddChild, 12, "the constructor child sequence is unchanged");
+  assert.equal(ctorAddChild, 14, "the constructor child sequence is unchanged");
 });

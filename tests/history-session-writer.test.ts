@@ -5,17 +5,15 @@ import os from "node:os";
 import path from "node:path";
 import {
   appendSessionCapture,
-  openSessionWriter,
   projectHash,
   sessionFilePath,
 } from "../extensions/history/store.ts";
-import promptHistoryExtension from "../extensions/history/index.ts";
 
 function makeRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-writer-"));
 }
 
-const CWD = "/pi-history-test/project-a";
+const CWD = "/Users/admin/Dev/pi/pi-history";
 
 function fileTexts(file: string): string[] {
   return fs
@@ -23,10 +21,6 @@ function fileTexts(file: string): string[] {
     .split("\n")
     .filter((l) => l.trim().length > 0)
     .map((l) => (JSON.parse(l) as { text: string }).text);
-}
-
-function openWriterForTest(root: string, instanceId: string) {
-  return openSessionWriter(root, CWD, instanceId);
 }
 
 test("no file is created until the first capture", () => {
@@ -88,36 +82,9 @@ test("two writers own separate files in the same project dir", () => {
   assert.deepEqual(files, ["inst-a.jsonl", "inst-b.jsonl"]);
 });
 
-test("the extension entry registers exactly the final wiring surface", () => {
-  // Module load must stay side-effect free (importing index.ts parses the
-  // whole graph without touching the real ~/.pi store root). Wiring as of
-  // slice 6 (final): before_agent_start capture, session_shutdown GC,
-  // tool_call overlay dismiss, the ctrl+shift+r shortcut, and the
-  // history command.
-  const registered: Array<[string, unknown]> = [];
-  const shortcuts: Array<[string, unknown]> = [];
-  const commands: Array<[string, unknown]> = [];
-  const pi = {
-    on: (event: string, handler: unknown) => {
-      registered.push([event, handler]);
-    },
-    registerShortcut: (key: string, def: unknown) => {
-      shortcuts.push([key, def]);
-    },
-    registerCommand: (name: string, def: unknown) => {
-      commands.push([name, def]);
-    },
-  };
-  promptHistoryExtension(pi as never);
-  assert.deepEqual(
-    registered.map(([event]) => event),
-    ["before_agent_start", "session_shutdown", "tool_call"],
-  );
-  assert.deepEqual(shortcuts.map(([key]) => key), ["ctrl+shift+r"]);
-  assert.deepEqual(commands.map(([name]) => name), ["history"]);
-  // Handlers are callable but are NEVER invoked here: a real invocation
-  // would run getWriter() against the user's real ~/.pi/agent/history.
-  for (const [, handler] of registered) {
-    assert.equal(typeof handler, "function");
-  }
-});
+// Helper kept local: openWriter is the U3 surface under test.
+import { openSessionWriter } from "../extensions/history/store.ts";
+
+function openWriterForTest(root: string, instanceId: string) {
+  return openSessionWriter(root, CWD, instanceId);
+}

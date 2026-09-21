@@ -15,23 +15,21 @@ import {
 const ROOT = path.join(os.tmpdir(), "pi-history-test-root");
 
 test("projectHash returns 16 lowercase hex chars", () => {
-  const hash = projectHash("/pi-history-test/project-a");
+  const hash = projectHash("/Users/admin/Dev/pi/pi-history");
   assert.match(hash, /^[0-9a-f]{16}$/);
 });
 
 test("known vector: stable hash for a fixed path", () => {
-  // The literal exists on no machine, so every platform exercises the
-  // documented raw-string fallback: sha256(literal), first 16 hex chars.
   assert.equal(
-    projectHash("/pi-history-test/project-a"),
-    "4be15ec687e9df85",
+    projectHash("/Users/admin/Dev/pi/pi-history"),
+    "28e0f06819c468cb",
   );
 });
 
 test("distinct paths produce distinct hashes", () => {
   assert.notEqual(
-    projectHash("/pi-history-test/project-a"),
-    projectHash("/pi-history-test/project-b"),
+    projectHash("/Users/admin/Dev/pi/pi-history"),
+    projectHash("/Users/admin/Dev/github/pi"),
   );
 });
 
@@ -56,7 +54,7 @@ test("nonexistent path falls back to hashing the raw string (no throw)", () => {
 });
 
 test("path derivations compose under the root", () => {
-  const cwd = "/pi-history-test/project-a";
+  const cwd = "/Users/admin/Dev/pi/pi-history";
   const hash = projectHash(cwd);
   assert.equal(projectDir(ROOT, cwd), path.join(ROOT, "projects", hash));
   assert.equal(
@@ -72,8 +70,8 @@ test("path derivations compose under the root", () => {
 });
 
 test("two cwds map to sibling project dirs", () => {
-  const a = projectDir(ROOT, "/pi-history-test/project-a");
-  const b = projectDir(ROOT, "/pi-history-test/project-b");
+  const a = projectDir(ROOT, "/Users/admin/Dev/pi/pi-history");
+  const b = projectDir(ROOT, "/Users/admin/Dev/github/pi");
   assert.notEqual(a, b);
   assert.equal(path.dirname(a), path.dirname(b));
 });

@@ -1,23 +1,24 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import { fileURLToPath } from "node:url";
+import fs from "node:fs";
+import path from "node:path";
 
 // Unit 4 — L6 wheel slice (spec C5, design §D6).
 //
-// Source-parse structural pins on extensions/history/index.ts (no pi-tui
-// runtime graph — the same discipline as the other source-parse suites).
-// The overlay renders only through pi-tui, so the unit-level contract is the
-// SHAPE of the handleMouse override:
+// Source-parse structural pins on src/index.ts (no pi-tui runtime graph —
+// the same discipline as the other source-parse suites). The overlay renders
+// only through pi-tui, so the unit-level contract is the SHAPE of the
+// handleMouse override:
 //
 // - wheel-only: every non-wheel event type returns undefined (press/click/
-//   drag stay host-owned) and the dispatch table gains no extra entry (wheel
-//   is not a keybinding — dispatch.test.ts remains the authoritative
+//   drag stay host-owned) and the 12-entry dispatch table gains no 13th entry
+//   (wheel is not a keybinding — dispatch.test.ts remains the authoritative
 //   untouched pin);
 // - ONE consumed wheel return: `handled: true` plus the synthetic target
 //   enrichment, reached by every wheel path including the no-op regions —
 //   this closes the pre-existing fullscreen SGR-fallthrough hazard by
-//   construction;
+//   construction (see tmp/c2u4-qa-prechange-record.md);
 // - fixed 30-row geometry routing: list region y 5–14, preview region y 17–26,
 //   all other rows consumed no-ops;
 // - list wheel: sign × |wheelDelta| steps through moveDown (the arrow grow
@@ -32,7 +33,7 @@ const selectorSource = fs.readFileSync(
   "utf8",
 );
 
-// T13 — AC-L6-1: wheel-only override + no extra dispatch entry.
+// T13 — AC-L6-1: wheel-only override + no 13th dispatch entry.
 
 test("handleMouse override is wheel-only and the dispatch table keeps 12 entries (AC-L6-1)", () => {
   const decl = selectorSource.indexOf("override handleMouse(");
@@ -142,7 +143,7 @@ test("region constants 5-14 / 17-26 route the y comparisons (AC-L6-3)", () => {
   const body = selectorSource.slice(decl, end);
 
   assert.ok(
-    body.includes("event.y >= LIST_WHEEL_Y_FIRST") &&
+    body.includes("event.y >= this.listWheelFirstRow") &&
       body.includes("event.y <= LIST_WHEEL_Y_LAST"),
     "the list branch must compare y against the list band",
   );
@@ -169,7 +170,7 @@ test("list wheel routes sign-clamped steps through moveDown/moveUp (AC-L6-4)", (
     "delta must default an absent wheelDelta to 0",
   );
 
-  const listStart = body.indexOf("if (event.y >= LIST_WHEEL_Y_FIRST");
+  const listStart = body.indexOf("if (event.y >= this.listWheelFirstRow");
   const listEnd = body.indexOf("} else if (", listStart);
   assert.ok(
     listStart >= 0 && listEnd > listStart,

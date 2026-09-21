@@ -1,7 +1,8 @@
 import { keyHint, type AgentToolResult } from "@earendil-works/pi-coding-agent";
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { CARD_TONE, cardBottom, cardInnerWidth, cardLine, cardTop, type Card, type CardTheme, type CardTone } from "./shell-card.ts";
-import { sanitizeTerminalText } from "./terminal-theme.ts";
+import { formatElapsed } from "./agents-widget.ts";
+import { sanitizeTerminalText, stripAnsi } from "./terminal-theme.ts";
 
 // Gentle AI tool cards: every call into the gentle-ai binary and every
 // gentle_review tool draws the same card as the other Gentle notices. The
@@ -18,6 +19,10 @@ export interface GentleAiRenderState {
 	 * call (which pi never marks as started) still shows its outcome. */
 	finished?: boolean;
 	failed?: boolean;
+	/** Wall-clock ms of the first non-terminal observation and of the terminal
+	 * freeze, so a replayed row still shows the true call duration. */
+	startedAt?: number;
+	endedAt?: number;
 }
 
 export interface GentleAiRenderContext {
@@ -72,20 +77,22 @@ export class GentleAiCallCard {
 	private theme: GentleAiRenderTheme = passthroughTheme;
 	private detail: string | undefined;
 	private hint: string | undefined;
+	private elapsed = "";
 	private open = true;
 
-	update(status: LifecycleStatus, operationPath: string, theme: GentleAiRenderTheme, detail?: string, hint?: string): void {
+	update(status: LifecycleStatus, operationPath: string, theme: GentleAiRenderTheme, detail?: string, hint?: string, elapsed?: string): void {
 		this.card = { title: CARD_TITLE, subtitle: `${status} · ${operationPath}`, body: [], tone: STATUS_TONE[status], glyph: CARD_GLYPH };
 		this.theme = theme;
 		this.detail = detail;
 		this.hint = hint;
+		this.elapsed = elapsed ?? "";
 		this.open = status === LIFECYCLE_STATUS.RUNNING || status === LIFECYCLE_STATUS.PREPARING;
 	}
 
 	render(width: number): string[] {
 		const lines = [cardTop(this.card, this.theme, width, this.hint)];
 		if (this.detail) lines.push(cardLine(this.theme.fg(DETAIL_ROLE, this.detail), this.card.tone, this.theme, width));
-		if (this.open) lines.push(cardBottom(this.card.tone, this.theme, width));
+		if (this.open) lines.push(cardBottom(this.card.tone, this.theme, width, this.elapsed || undefined));
 		return lines;
 	}
 
@@ -102,13 +109,15 @@ export class GentleAiResultCard {
 	private readonly tone: CardTone;
 	private readonly theme: GentleAiRenderTheme;
 	private readonly partial: boolean;
+	private readonly elapsed: string;
 
-	constructor(text: string, expanded: boolean, tone: CardTone, theme: GentleAiRenderTheme, partial = false) {
+	constructor(text: string, expanded: boolean, tone: CardTone, theme: GentleAiRenderTheme, partial = false, elapsed = "") {
 		this.text = text;
 		this.expanded = expanded;
 		this.tone = tone;
 		this.theme = theme;
 		this.partial = partial;
+		this.elapsed = elapsed;
 	}
 
 	render(width: number): string[] {
@@ -125,7 +134,7 @@ export class GentleAiResultCard {
 			}
 		}
 		// A partial result sits under a running call card, which still closes the frame.
-		if (!this.partial) lines.push(cardBottom(this.tone, this.theme, width));
+		if (!this.partial) lines.push(cardBottom(this.tone, this.theme, width, this.elapsed || undefined));
 		return lines;
 	}
 
@@ -148,6 +157,9 @@ export function renderGentleAiResult(
 	const text = textItems.some((item) => item.length > 0) ? textItems.join("\n") : "";
 	const tone = options.isError ? CARD_TONE.ERROR : options.isPartial ? CARD_TONE.WARNING : CARD_TONE.SUCCESS;
 	const state = getGentleAiRenderState(context?.state);
+	// The frozen duration rides the closing rule, right-aligned.
+	let elapsed: string | undefined;
+	if (state?.startedAt !== undefined && state.endedAt !== undefined) elapsed = formatElapsed(state.endedAt - state.startedAt);
 	if (state && options.isPartial !== true) {
 		const changed = state.finished !== true || state.failed !== (options.isError === true);
 		state.finished = true;
@@ -157,7 +169,7 @@ export function renderGentleAiResult(
 		// same container. Deferring it keeps one frame per execution.
 		if (changed) queueMicrotask(() => context?.invalidate?.());
 	}
-	return new GentleAiResultCard(text, options.expanded === true, tone, theme, options.isPartial === true);
+	return new GentleAiResultCard(text, options.expanded === true, tone, theme, options.isPartial === true, elapsed ?? "");
 }
 
 export function renderGentleAiLifecycleCall(
@@ -165,6 +177,7 @@ export function renderGentleAiLifecycleCall(
 	theme: GentleAiRenderTheme,
 	context?: GentleAiRenderContext,
 	detail?: string,
+	now: number = Date.now(),
 ): GentleAiCallCard {
 	// A finished execution is completed even when pi replays it without
 	// argsComplete (session reload); preparing only applies before it starts.
@@ -178,11 +191,30 @@ export function renderGentleAiLifecycleCall(
 			: context?.argsComplete === false
 				? LIFECYCLE_STATUS.PREPARING
 				: LIFECYCLE_STATUS.RUNNING;
+	if (state) {
+		if (status === LIFECYCLE_STATUS.COMPLETED || status === LIFECYCLE_STATUS.FAILED) {
+			// A terminal observation without a start (replayed call, session reload)
+			// has no true duration — leaving both unset keeps the card honest.
+			if (state.startedAt !== undefined) state.endedAt ??= now;
+		} else {
+			state.startedAt ??= now;
+		}
+	}
+	// Elapsed is live from the first observation: every re-render recomputes it
+	// from now, and the terminal freeze keeps the final value stable.
+	const elapsed = state?.startedAt === undefined ? "" : formatElapsed((state.endedAt ?? now) - state.startedAt);
+	// Hint: the expand key only — the elapsed lives on the bottom rule.
+	const expandHint = finished ? stripAnsi(keyHint("app.tools.expand", context?.expanded ? "to collapse" : "to expand")) : undefined;
+	const hint = [expandHint].filter((part): part is string => part !== undefined && part.length > 0).join(" · ");
 	const component = context?.lastComponent instanceof GentleAiCallCard && (!state || state.lifecycleComponent === true)
 		? context.lastComponent
 		: new GentleAiCallCard();
 	if (state) state.lifecycleComponent = true;
-	const hint = finished ? keyHint("app.tools.expand", context?.expanded ? "to collapse" : "to expand") : undefined;
-	component.update(status, operationPath, theme, detail ? sanitizeTerminalText(detail) : undefined, hint);
+	component.update(status, operationPath, theme, detail ? sanitizeTerminalText(detail) : undefined, hint, elapsed);
+	// While the call runs, wake the row once a second so the live duration ticks.
+	if (status === LIFECYCLE_STATUS.RUNNING || status === LIFECYCLE_STATUS.PREPARING) {
+		const timer = setTimeout(() => context?.invalidate?.(), 1000);
+		timer.unref?.();
+	}
 	return component;
 }

@@ -1,7 +1,7 @@
 <a id="top"></a>
 
 <div align="center">
-  <img src="docs/assets/brand/gentle-pi-banner.png" width="1200" alt="gentle-shell — Ecosystem, Agent, One shell">
+  <img src="docs/assets/brand/gentle-shell-banner.gif" width="1200" alt="gentle-shell — Ecosystem, Agent, One shell">
 </div>
 
 <h1 align="center">gentle-shell™</h1>

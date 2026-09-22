@@ -1026,6 +1026,13 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// and hint remain dark because neither is proven to reach the negotiated
 	// START path Pi consumes.
 	"3.4.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v3.5.0 repeats 3.4.0: the published provider contract bundle is
+	// byte-identical at 1.2.0, both binaries advertise capabilities/v2.6
+	// with only build-identity differences, and no review-integration schema
+	// changed. The v2 preflight failure identity fix does not change the
+	// closed START/STATUS fields this row negotiates. riskEvidence and hint
+	// remain dark; neither is proven to reach Pi's negotiated START path.
+	"3.5.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 });
 
 

@@ -36,12 +36,6 @@ const OWN_CHROME_ROWS = 4;
 const HOST_FRAME_ROWS = 2;
 
 /**
- * Floor for the body so a short terminal still shows the active question.
- * Below this the options, not the preview, are the thing worth keeping.
- */
-const MIN_BODY_ROWS = 6;
-
-/**
  * Fraction of the terminal the preview pane may claim. Half keeps the option
  * list readable and leaves the transcript room to stay visible, which is the
  * whole point of the dock swap over an overlay.
@@ -461,11 +455,39 @@ export class QuestionnaireView extends Container implements Focusable {
 		inlinePreview: boolean,
 		bodyBudget: number,
 	): { lines: string[]; owners: Array<LineOwner | undefined> } {
-		if (!inlinePreview) return this.renderBody(width, undefined);
 		const measured = this.renderBody(width, undefined);
+		if (!inlinePreview) return this.windowBody(measured, bodyBudget);
 		const remaining = Math.max(1, bodyBudget - measured.lines.length);
-		const body = this.renderBody(width, remaining);
-		return { lines: body.lines.slice(0, bodyBudget), owners: body.owners.slice(0, bodyBudget) };
+		return this.windowBody(this.renderBody(width, remaining), bodyBudget);
+	}
+
+	/**
+	 * Slice the body to `bodyBudget` rows around the focused row. The option list
+	 * is the interactive part, so when it does not fit, the window follows the
+	 * cursor instead of keeping the header and dropping the focused row out of
+	 * view. Bodies that already fit are returned untouched.
+	 */
+	private windowBody(
+		body: { lines: string[]; owners: Array<LineOwner | undefined> },
+		bodyBudget: number,
+	): { lines: string[]; owners: Array<LineOwner | undefined> } {
+		if (bodyBudget <= 0) return { lines: [], owners: [] };
+		if (body.lines.length <= bodyBudget) return body;
+		const focus = body.owners.findIndex((owner) => owner !== undefined
+			&& owner.questionIndex === this.focusedQuestion
+			&& owner.rowIndex === this.focusedRowIndex());
+		const offset = focus < 0
+			? 0
+			: Math.max(0, Math.min(body.lines.length - bodyBudget, focus - bodyBudget + 1));
+		return {
+			lines: body.lines.slice(offset, offset + bodyBudget),
+			owners: body.owners.slice(offset, offset + bodyBudget),
+		};
+	}
+
+	/** Row the cursor owns: -1 is the header, options are 0..n-1, the custom row is n. */
+	private focusedRowIndex(): number {
+		return this.states[this.focusedQuestion]?.cursor ?? -1;
 	}
 
 	/** Bottom hint for the active question's interaction model. */
@@ -497,10 +519,12 @@ export class QuestionnaireView extends Container implements Focusable {
 
 	/**
 	 * Hard ceiling for the body. The panel plus the host's frame must fit the
-	 * terminal, or the host clips the tail and the hint disappears with it.
+	 * terminal, or the host clips the tail and the hint disappears with it. There
+	 * is deliberately no floor above the viewport: a floor that exceeds the
+	 * terminal is the overflow this bound exists to prevent.
 	 */
 	private bodyRows(): number {
-		return Math.max(MIN_BODY_ROWS, this.terminalRows() - OWN_CHROME_ROWS - HOST_FRAME_ROWS);
+		return Math.max(0, this.terminalRows() - OWN_CHROME_ROWS - HOST_FRAME_ROWS);
 	}
 
 	/**
@@ -510,7 +534,7 @@ export class QuestionnaireView extends Container implements Focusable {
 	 */
 	private previewRows(): number {
 		const target = Math.floor(this.terminalRows() * PREVIEW_HEIGHT_RATIO);
-		return Math.max(MIN_PREVIEW_ROWS, Math.min(this.bodyRows(), target));
+		return Math.min(this.bodyRows(), Math.max(MIN_PREVIEW_ROWS, target));
 	}
 
 	/**
@@ -520,21 +544,32 @@ export class QuestionnaireView extends Container implements Focusable {
 	 * keys, so the pane stays informative instead of silently truncating.
 	 */
 	private windowedPreview(text: string, width: number, rows: number): string[] {
+		const budget = Math.max(0, Math.trunc(rows));
+		if (budget === 0) {
+			this.previewTotal = 0;
+			this.previewVisibleRows = 0;
+			this.previewScroll = 0;
+			return [];
+		}
 		const wrapped = this.wrap(this.theme.fg("dim", text), Math.max(1, width));
-		const budget = Math.max(1, Math.trunc(rows));
 		if (wrapped.length <= budget) {
 			this.previewTotal = wrapped.length;
 			this.previewVisibleRows = wrapped.length;
 			this.previewScroll = 0;
 			return wrapped;
 		}
-		const contentRows = Math.max(1, budget - 1);
+		// The indicator owns one row of the window, so it is only reserved when the
+		// budget can spare it: a one-row window shows content and stays silent
+		// rather than exceeding the budget it was given.
+		const contentRows = budget > 1 ? budget - 1 : 1;
 		const offset = Math.max(0, Math.min(wrapped.length - contentRows, this.previewScroll));
 		this.previewTotal = wrapped.length;
 		this.previewVisibleRows = contentRows;
 		this.previewScroll = offset;
+		const content = wrapped.slice(offset, offset + contentRows);
+		if (budget === 1) return content;
 		return [
-			...wrapped.slice(offset, offset + contentRows),
+			...content,
 			// Truncated, not wrapped: the indicator must own exactly one row of the
 			// window, and a long counter would otherwise widen the pane.
 			truncateToWidth(

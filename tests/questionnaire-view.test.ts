@@ -444,6 +444,69 @@ test("an unreadable terminal height still bounds the preview", () => {
 	}
 });
 
+test("the panel fits the terminal on short terminals in both layouts", () => {
+	// The ceiling is rows - HOST_FRAME_ROWS: a body floor above the viewport is
+	// the overflow this bound exists to prevent, so the guard has to hold for
+	// terminals too short to give the preview its half.
+	for (const rows of [8, 10, 12, 14, 20]) {
+		for (const width of [40, 60, 100]) {
+			const view = longPreviewView(rows);
+			const lines = view.render(width);
+			assert.ok(
+				lines.length <= rows - 2,
+				`rows=${rows} width=${width}: panel ${lines.length} exceeds ${rows - 2}`,
+			);
+			assertFits(view, width);
+		}
+	}
+});
+
+test("a narrow body budget keeps the focused row in the window", () => {
+	const build = (rows: number): QuestionnaireView =>
+		createView(
+			[
+				question(
+					"A question long enough to wrap across several rows in a narrow body column, which pushes the option list past the body budget on a short terminal",
+					[
+						option("Alpha", "First choice"),
+						option("Beta", "Second choice"),
+						option("Gamma", "Third choice"),
+						option("Delta", "Fourth choice"),
+					],
+				),
+			],
+			{ rows },
+		);
+
+	for (const width of [60, 100]) {
+		const view = build(12);
+		view.render(width);
+		for (let step = 0; step < 3; step += 1) view.handleInput(KEY.down[0]);
+
+		const onDelta = view.render(width);
+		assert.ok(onDelta.length <= 10, `rows=12 width=${width}: panel ${onDelta.length} exceeds 10`);
+		assert.match(plain(onDelta.join("\n")), /❯ Delta/);
+		assertFits(view, width);
+
+		// The custom row is the last interactive row, so it is the one a top slice drops.
+		view.handleInput(KEY.down[0]);
+		const onCustom = view.render(width);
+		assert.ok(onCustom.length <= 10, `rows=12 width=${width}: panel ${onCustom.length} exceeds 10`);
+		assert.match(plain(onCustom.join("\n")), /❯ Type something\./);
+		assertFits(view, width);
+	}
+});
+
+test("a one-row preview budget spends it on content, not on the indicator", () => {
+	// rows=7 leaves a single body row. The indicator may only take a row it can
+	// spare, so the window must not grow past its budget to make room for it.
+	const view = longPreviewView(7);
+	const lines = view.render(100);
+	assert.ok(lines.length <= 5, `panel ${lines.length} exceeds 5`);
+	assert.doesNotMatch(plain(lines.join("\n")), /pageUp\/pageDown scroll/);
+	assertFits(view, 100);
+});
+
 test("a scrollable preview still commits on a real Enter", () => {
 	const { view, completed } = viewWithResult(
 		[question("Proceed?", [option("Alpha", "First choice", longPreview()), option("Beta")])],

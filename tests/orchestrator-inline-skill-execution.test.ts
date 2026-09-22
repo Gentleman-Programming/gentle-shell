@@ -14,12 +14,14 @@ import { fileURLToPath } from "node:url";
 // 1. A project skill with an `## Output Contract` body is indexed by the
 //    gentle-ai skill registry (discovery succeeds — `.atl/skill-registry.md`
 //    lists it with scope `project`).
-// 2. The composed parent prompt (the exact `buildGentlePrompt` composition the
-//    primary session's `before_agent_start` handler injects) only binds
-//    SUBAGENTS to read the exact indexed `SKILL.md` ("subagents read those
-//    `SKILL.md` files first"). It imposes no parent-inline read obligation:
-//    there is no "Parent inline execution" section and no wording binding the
-//    parent's own inline path to read the indexed `SKILL.md` in-session.
+// 2. The parent prompt the registered `before_agent_start` handler
+//    actually returns (persona, cwd, active tool names, RDD status line,
+//    research capabilities — the real production composition path) only
+//    binds SUBAGENTS to read the exact indexed `SKILL.md` ("subagents read
+//    those `SKILL.md` files first"). It imposes no parent-inline read
+//    obligation: there is no "Parent inline execution" section and no
+//    wording binding the parent's own inline path to read the indexed
+//    `SKILL.md` in-session.
 // 3. Consequently the skill's contract body marker can never reach
 //    parent-inline results through the composed prompt.
 //
@@ -200,22 +202,51 @@ async function proveInlineSkillContractGap(): Promise<void> {
 			"registry index must not inline skill bodies (it carries metadata only)",
 		);
 
-		// Composed parent prompt capture: `buildGentlePrompt` is the exact
-		// composition the primary session's `before_agent_start` handler
-		// injects (persona, cwd, active tool names, RDD status line). With
-		// `nativeReviewCli: null` the resolved RDD line equals the default
-		// worst-case "unknown" line, so this call reproduces the boot
-		// composition for the primary session byte-for-byte. The module
-		// instance is shared with the shim (same absolute path), and
-		// `getOrchestratorPrompt` memoization is per background-policy key —
-		// irrelevant here because this repro asserts prompt content, not
-		// per-cwd variance.
-		const { __testing } = await import("../extensions/gentle-ai.ts");
+		// Parent prompt capture (CodeRabbit review fix): assert against the
+		// prompt the REGISTERED `before_agent_start` handler returns, not a
+		// `buildGentlePrompt` reconstruction. The handler is the production
+		// composition path (persona from ctx.cwd, active tool names via
+		// pi.getActiveTools, the fail-closed RDD line, research capabilities),
+		// so the gap assertions below bind the prompt the primary session
+		// would actually deliver. The capture-pi mirrors the accepted minimal
+		// registration surface from tests/runtime-harness.mjs; telemetry is
+		// deterministically skipped through the GENTLE_AI_TELEMETRY kill
+		// switch, and `nativeReviewCli: null` resolves the worst-case
+		// "unknown" RDD line exactly like the shim's boot.
+		const { createGentleAiExtension } = await import("../extensions/gentle-ai.ts");
 		const toolNames = session.agent.state.tools.map((tool) => tool.name);
-		const prompt = __testing.buildGentlePrompt("gentleman", cwd, toolNames);
+		const captureHooks = new Map<string, Array<(event: unknown, ctx: unknown) => Promise<unknown>>>();
+		const noop = () => {};
+		const capturePi = {
+			events: { on: () => noop, emit: noop },
+			on(name: string, handler: (event: unknown, ctx: unknown) => Promise<unknown>) {
+				captureHooks.set(name, [...(captureHooks.get(name) ?? []), handler]);
+			},
+			registerCommand: noop,
+			registerFlag: noop,
+			registerTool: noop,
+			getFlag: () => false,
+			getCommands: () => [],
+			getActiveTools: () => toolNames,
+			getAllTools: () => toolNames.map((name) => ({ name })),
+		};
+		createGentleAiExtension({
+			nativeReviewCli: null,
+			candidateViews: null,
+			processEnv: { GENTLE_AI_TELEMETRY: "0" },
+		})(capturePi as never);
+		const promptHandler = captureHooks.get("before_agent_start")?.[0];
+		assert.ok(promptHandler, "the gentle-ai extension must register a before_agent_start handler");
+		const handlerResult = (await promptHandler(
+				{ systemPrompt: "PROBE-BASE" },
+				{ cwd, hasUI: false, sessionManager: { getSessionId: () => "inline-skill-probe" } },
+			)) as { systemPrompt: string };
+		const prompt = handlerResult.systemPrompt;
 
-		// Fidelity pin: the render actually went through the composition
-		// pipeline (assets root substitution + background/RDD status block).
+		// Fidelity pins: the handler result really went through the production
+		// composition pipeline (base prompt carried through, assets-root
+		// substitution, background/RDD status block with the fail-closed line).
+		assert.ok(prompt.startsWith("PROBE-BASE"), "the handler must compose over the base system prompt");
 		assert.match(
 			prompt,
 			/Receipt-driven development: unknown \(native status unavailable\)/,

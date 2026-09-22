@@ -31,6 +31,7 @@ import { installSidebar, invalidateSidebar } from "../lib/shell-sidebar-layout.t
 import { SessionChanges, SESSION_CHANGE_EVENT } from "../lib/session-changes.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
+import { SelectionEngine } from "../lib/selection-engine.ts";
 
 // Gentle Shell: the visual layer gentle-pi puts on top of pi. It installs the
 // status bar, the petal prompt, the working-tree changes widget and overlay,
@@ -234,6 +235,11 @@ export class GentlePromptEditor extends CustomEditor {
 	private animationPolicy: AnimationPolicy = "quality";
 	private pulse: NodeJS.Timeout | undefined;
 	private readonly deps: PromptEditorDeps;
+	// Native selection engine (shift+home/end, alt+a, replace-on-key): ported
+	// from pi-select-del so the petal prompt owns the feature without factory
+	// composition. Constructed with `this`; the internals probe degrades to
+	// passthrough on pi drift, costing only the selection features.
+	private readonly selectionEngine: SelectionEngine;
 	// CustomEditor keeps its own `keybindings` private, so this class holds
 	// its own reference to run the same app.interrupt match before deciding
 	// whether to swallow the keystroke.
@@ -247,6 +253,7 @@ export class GentlePromptEditor extends CustomEditor {
 
 	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, deps: PromptEditorDeps) {
 		super(tui, theme, keybindings);
+		this.selectionEngine = new SelectionEngine(this);
 		this.deps = deps;
 		this.keybindingsManager = keybindings;
 	}
@@ -295,6 +302,13 @@ export class GentlePromptEditor extends CustomEditor {
 	 * and never reach this branch.
 	 */
 	override handleInput(data: string): void {
+		// Selection keys (shift+home/end, alt+a, replace-on-selection) are
+		// dispatched here, in front of the petal's own chain; everything else
+		// collapses any active selection and flows into handleInputNative.
+		this.selectionEngine.handleInput(data, (d) => this.handleInputNative(d));
+	}
+
+	private handleInputNative(data: string): void {
 		// Any keystroke that is not the confirming Esc ends the pending idle
 		// clear, even one that leaves the text identical (type, then delete).
 		if (this.pendingIdleClearDeadline !== undefined && !this.keybindingsManager.matches(data, "app.interrupt")) {
@@ -388,12 +402,16 @@ export class GentlePromptEditor extends CustomEditor {
 	}
 
 	render(width: number): string[] {
-		const lines = super.render(Math.max(1, width - 2));
+		const inner = Math.max(1, width - 2);
+		const lines = super.render(inner);
 		if (this.getText() === "" && lines.length === 3) lines[1] = withPromptHint(lines[1], PROMPT_HINT, this.deps.fg);
+		// Native selection highlight on the content rows (before the frame walls
+		// are added); the selection hint rides the petal's bottom rule below.
+		const decorated = this.selectionEngine.decorateRows(lines, inner, 0);
 		const state = this.promptState === PROMPT_STATE.WORKING && this.deps.pending() ? PROMPT_STATE.QUEUED : this.promptState;
 		// The frame keeps the theme's border color rather than pi's thinking-level
 		// color, so the prompt reads as one panel with the cards around it.
-		return framePromptLines(lines, width, {
+		const rows = framePromptLines(decorated, width, {
 			state,
 			tick: this.tick,
 			borderColor: (text) => this.deps.fg(PROMPT_FRAME_ROLE, text),
@@ -405,6 +423,8 @@ export class GentlePromptEditor extends CustomEditor {
 					? IDLE_ESC_CLEAR_HINT
 					: undefined,
 		});
+		rows[rows.length - 1] = this.selectionEngine.decorateBottomRule(rows[rows.length - 1] ?? "", width, "╯");
+		return rows;
 	}
 
 	dispose(): void {

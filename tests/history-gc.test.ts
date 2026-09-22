@@ -8,18 +8,8 @@ import {
   gcProjectDir,
   projectHash,
 } from "../extensions/history/store.ts";
-// node:test has no test.skipIf (Bun-ism): emulate via the options object.
-const skipIf =
-  (condition: unknown) =>
-  (name: string, fn: () => unknown) =>
-    test(
-      name,
-      { skip: condition ? "requires non-root" : false },
-      fn as () => void | Promise<void>,
-    );
 
-
-const CWD = "/Users/admin/Dev/pi/pi-history";
+const CWD = "/pi-history-fixtures/project-a";
 
 function makeRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-gc-"));
@@ -143,7 +133,9 @@ test("compaction keeps the newest 10 files, merges the rest", () => {
   assert.equal(names.includes("h06.jsonl"), true);
 });
 
-const sealedGcTest = skipIf(process.getuid?.() === 0);
+const isRoot = process.getuid?.() === 0;
+const sealedGcTest = (name: string, fn: () => unknown) =>
+  test(name, { skip: isRoot && "requires a non-root user" }, fn);
 sealedGcTest(
   "compactProjectDir skips an unreadable file's content and compacts the readable entries",
   () => {

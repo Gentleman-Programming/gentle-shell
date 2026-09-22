@@ -5,8 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { bootstrapProjectSeed, seedFilePath } from "../extensions/history/store.ts";
 
-const CWD = "/Users/admin/Dev/pi/pi-history";
-const DIR = `--Users-admin-Dev-pi-pi-history--`;
+const CWD = "/pi-history-fixtures/project-a";
+const DIR = `--pi-history-fixtures-project-a--`;
 
 function setup() {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "seed2-"));

@@ -10,7 +10,7 @@ import {
   projectHash,
 } from "../extensions/history/store.ts";
 
-const CWD = "/Users/admin/Dev/pi/pi-history";
+const CWD = "/pi-history-fixtures/project-a";
 
 function write(file: string, texts: string[], ts = 100): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });

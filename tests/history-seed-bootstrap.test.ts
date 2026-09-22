@@ -8,18 +8,8 @@ import {
   projectHash,
   seedFilePath,
 } from "../extensions/history/store.ts";
-// node:test has no test.skipIf (Bun-ism): emulate via the options object.
-const skipIf =
-  (condition: unknown) =>
-  (name: string, fn: () => unknown) =>
-    test(
-      name,
-      { skip: condition ? "requires non-root" : false },
-      fn as () => void | Promise<void>,
-    );
 
-
-const CWD = "/Users/admin/Dev/pi/pi-history";
+const CWD = "/pi-history-fixtures/project-a";
 
 function makeDirs(): { root: string; sessionsRoot: string } {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-seed-"));
@@ -84,7 +74,7 @@ test("no sessions and no project dir: bootstrap seeds nothing", () => {
 
 test("empty project dir bootstraps from the project's transcripts", () => {
   const { root, sessionsRoot } = makeDirs();
-  writeSession(sessionsRoot, `--Users-admin-Dev-pi-pi-history--`, "s1.jsonl", [
+  writeSession(sessionsRoot, `--pi-history-fixtures-project-a--`, "s1.jsonl", [
     "real prompt",
     "/compact",
     "   ",
@@ -98,7 +88,7 @@ test("empty project dir bootstraps from the project's transcripts", () => {
 
 test("only the project's own session dir is scanned", () => {
   const { root, sessionsRoot } = makeDirs();
-  writeSession(sessionsRoot, `--Users-admin-Dev-pi-pi-history--`, "s1.jsonl", [
+  writeSession(sessionsRoot, `--pi-history-fixtures-project-a--`, "s1.jsonl", [
     "mine",
   ]);
   writeSession(sessionsRoot, "--Other--", "s2.jsonl", ["not mine"]);
@@ -112,7 +102,7 @@ test("caps at the target keeping the newest", () => {
   for (let i = 1; i <= 600; i++) texts.push(`p${i}`);
   writeSession(
     sessionsRoot,
-    `--Users-admin-Dev-pi-pi-history--`,
+    `--pi-history-fixtures-project-a--`,
     "big.jsonl",
     texts,
   );
@@ -138,7 +128,7 @@ test("project dir already populated above target: no scan, seed untouched", () =
   );
   const marker = writeSession(
     sessionsRoot,
-    `--Users-admin-Dev-pi-pi-history--`,
+    `--pi-history-fixtures-project-a--`,
     "s.jsonl",
     ["marker"],
   );
@@ -153,7 +143,9 @@ test("project dir already populated above target: no scan, seed untouched", () =
   assert.equal(fs.readFileSync(existing, "utf8").includes("marker"), false);
 });
 
-const sealedStoreTest = skipIf(process.getuid?.() === 0);
+const isRoot = process.getuid?.() === 0;
+const sealedStoreTest = (name: string, fn: () => unknown) =>
+  test(name, { skip: isRoot && "requires a non-root user" }, fn);
 sealedStoreTest(
   "an unreadable existing store file is skipped during counting; seeding still runs from transcripts",
   () => {
@@ -169,7 +161,7 @@ sealedStoreTest(
     fs.chmodSync(sealed, 0o000);
     writeSession(
       sessionsRoot,
-      `--Users-admin-Dev-pi-pi-history--`,
+      `--pi-history-fixtures-project-a--`,
       "s1.jsonl",
       ["from transcript"],
     );

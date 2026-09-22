@@ -14,22 +14,28 @@ import {
 
 const ROOT = path.join(os.tmpdir(), "pi-history-test-root");
 
+// A path that does not exist on any machine: realpathSync fails and
+// projectHash falls back to hashing the raw string, so this vector pins the
+// algorithm with a digest that is identical everywhere.
+const KNOWN_VECTOR_INPUT = "/pi-history-known-vector/missing-project";
+const KNOWN_VECTOR_EXPECTED = "fdcfb7426fb80158";
+
+function makeProject(prefix: string): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
 test("projectHash returns 16 lowercase hex chars", () => {
-  const hash = projectHash("/Users/admin/Dev/pi/pi-history");
-  assert.match(hash, /^[0-9a-f]{16}$/);
+  assert.match(projectHash(makeProject("paths-shape-")), /^[0-9a-f]{16}$/);
 });
 
 test("known vector: stable hash for a fixed path", () => {
-  assert.equal(
-    projectHash("/Users/admin/Dev/pi/pi-history"),
-    "28e0f06819c468cb",
-  );
+  assert.equal(projectHash(KNOWN_VECTOR_INPUT), KNOWN_VECTOR_EXPECTED);
 });
 
 test("distinct paths produce distinct hashes", () => {
   assert.notEqual(
-    projectHash("/Users/admin/Dev/pi/pi-history"),
-    projectHash("/Users/admin/Dev/github/pi"),
+    projectHash(makeProject("paths-distinct-a-")),
+    projectHash(makeProject("paths-distinct-b-")),
   );
 });
 
@@ -54,7 +60,7 @@ test("nonexistent path falls back to hashing the raw string (no throw)", () => {
 });
 
 test("path derivations compose under the root", () => {
-  const cwd = "/Users/admin/Dev/pi/pi-history";
+  const cwd = makeProject("paths-compose-");
   const hash = projectHash(cwd);
   assert.equal(projectDir(ROOT, cwd), path.join(ROOT, "projects", hash));
   assert.equal(
@@ -70,8 +76,8 @@ test("path derivations compose under the root", () => {
 });
 
 test("two cwds map to sibling project dirs", () => {
-  const a = projectDir(ROOT, "/Users/admin/Dev/pi/pi-history");
-  const b = projectDir(ROOT, "/Users/admin/Dev/github/pi");
+  const a = projectDir(ROOT, makeProject("paths-sibling-a-"));
+  const b = projectDir(ROOT, makeProject("paths-sibling-b-"));
   assert.notEqual(a, b);
   assert.equal(path.dirname(a), path.dirname(b));
 });

@@ -9,19 +9,9 @@ import {
   globalSeedPath,
   projectHash,
 } from "../extensions/history/store.ts";
-// node:test has no test.skipIf (Bun-ism): emulate via the options object.
-const skipIf =
-  (condition: unknown) =>
-  (name: string, fn: () => unknown) =>
-    test(
-      name,
-      { skip: condition ? "requires non-root" : false },
-      fn as () => void | Promise<void>,
-    );
 
-
-const PROJECT_A = "/Users/admin/Dev/pi/pi-history";
-const PROJECT_B = "/Users/admin/Dev/github/pi";
+const PROJECT_A = "/pi-history-fixtures/project-a";
+const PROJECT_B = "/pi-history-fixtures/project-b";
 
 function makeRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-del-"));
@@ -110,7 +100,9 @@ test("delete leaves no tmp files behind", () => {
   assert.deepEqual(leftovers, []);
 });
 
-const sealedFileTest = skipIf(process.getuid?.() === 0);
+const isRoot = process.getuid?.() === 0;
+const sealedFileTest = (name: string, fn: () => unknown) =>
+  test(name, { skip: isRoot && "requires a non-root user" }, fn);
 
 sealedFileTest(
   "an unreadable store file (chmod 000) is skipped; readable copies still swept",

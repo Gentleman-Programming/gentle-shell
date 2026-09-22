@@ -129,7 +129,7 @@ function fit(text: string, width: number): string {
 }
 
 export function taskHeader(task: TaskRecord, now: number): string {
-	const parts = [task.agent, task.status, task.model, task.tokens > 0 ? formatTokens(task.tokens) : "", task.cost > 0 ? `$${task.cost.toFixed(2)}` : "", task.startedAt === null ? "" : formatElapsed((task.endedAt ?? now) - task.startedAt)];
+	const parts = [task.agent, task.status, typeof task.model === "string" ? task.model : "", task.tokens > 0 ? formatTokens(task.tokens) : "", task.cost > 0 ? `$${task.cost.toFixed(2)}` : "", task.startedAt === null ? "" : formatElapsed((task.endedAt ?? now) - task.startedAt)];
 	return parts.filter((part) => part.length > 0).join(" · ");
 }
 

@@ -175,6 +175,55 @@ test("a historical replay never invents a duration: fresh state, preparing rende
 	assert.equal(stateEndedAt(rowState), undefined);
 });
 
+test("a replayed row restores its true frozen duration from durable session timing", async () => {
+	const rowState: Record<string, unknown> = {};
+	const durable = new Map([["call-1", { toolCallId: "call-1", startedAt: 1_000, endedAt: 31_000 }]]);
+	const context = {
+		state: rowState,
+		toolCallId: "call-1",
+		elapsedTiming: { lookup: (id: string) => durable.get(id) },
+		executionStarted: false,
+		argsComplete: false,
+		invalidate: () => {},
+	};
+	const initial = renderGentleAiLifecycleCall("review status", plainTheme, context as never, undefined, 90_000);
+	assert.match(initial.render(90).map(stripAnsi).join("\n"), / 30s ╯$/, "the seeded preparing card shows the durable duration");
+	assert.equal(stateStartedAt(rowState), 1_000);
+	assert.equal(stateEndedAt(rowState), 31_000);
+	const resultCard = renderGentleAiResult({ content: [{ type: "text", text: "x" }] } as never, { expanded: false }, plainTheme, { state: rowState, invalidate: context.invalidate } as never);
+	assert.match(resultCard.render(90).map(stripAnsi).join("\n"), /─* 30s ╯$/, "the stored result closes the frame with the frozen duration");
+	await new Promise((resolve) => queueMicrotask(() => resolve(undefined)));
+	const replayed = renderGentleAiLifecycleCall("review status", plainTheme, { ...context } as never, undefined, 90_040);
+	const replayedLines = replayed.render(90).map(stripAnsi);
+	assert.match(replayedLines[0], /· completed · review status /);
+	assert.doesNotMatch(replayedLines[0], /90s|89s/, "the terminal re-render never grows the duration to the replay clock");
+	assert.equal(stateStartedAt(rowState), 1_000, "the durable start survives the replay");
+	assert.equal(stateEndedAt(rowState), 31_000, "the replayed row must not invent a new end");
+	assert.equal(statePendingTimer(rowState), undefined, "the transient replay timer is cleared by the terminal render");
+});
+
+test("a replayed row with a start-only durable record never invents an end", async () => {
+	const rowState: Record<string, unknown> = {};
+	const durable = new Map([["call-2", { toolCallId: "call-2", startedAt: 1_000 }]]);
+	const context = {
+		state: rowState,
+		toolCallId: "call-2",
+		elapsedTiming: { lookup: (id: string) => durable.get(id) },
+		executionStarted: false,
+		argsComplete: false,
+		invalidate: () => {},
+	};
+	const initial = renderGentleAiLifecycleCall("review status", plainTheme, context as never, undefined, 90_000);
+	assert.doesNotMatch(initial.render(90).map(stripAnsi).join("\n"), /\d+s/, "a start without a durable end shows no duration");
+	renderGentleAiResult({ content: [{ type: "text", text: "x" }] } as never, { expanded: false }, plainTheme, { state: rowState, invalidate: context.invalidate } as never);
+	await new Promise((resolve) => queueMicrotask(() => resolve(undefined)));
+	const replayed = renderGentleAiLifecycleCall("review status", plainTheme, { ...context } as never, undefined, 90_040);
+	assert.match(replayed.render(90).map(stripAnsi)[0], /· completed · review status /);
+	assert.equal(stateEndedAt(rowState), undefined, "a live-only end freeze must not fire on a replayed row");
+	const final = renderGentleAiResult({ content: [{ type: "text", text: "x" }] } as never, { expanded: false }, plainTheme, { state: rowState } as never);
+	assert.doesNotMatch(final.render(90).map(stripAnsi).join("\n"), /\d+s/);
+});
+
 test("running renders keep a single pending duration timer and the terminal render clears it", (t) => {
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 	const rowState: Record<string, unknown> = {};

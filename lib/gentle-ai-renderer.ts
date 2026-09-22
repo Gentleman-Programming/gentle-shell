@@ -1,5 +1,6 @@
 import { keyHint, type AgentToolResult } from "@earendil-works/pi-coding-agent";
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { type GentleAiTimingLookup } from "./gentle-ai-elapsed-store.ts";
 import { CARD_TONE, cardBottom, cardInnerWidth, cardLine, cardTop, type Card, type CardTheme, type CardTone } from "./shell-card.ts";
 import { formatElapsed } from "./agents-widget.ts";
 import { sanitizeTerminalText, stripAnsi } from "./terminal-theme.ts";
@@ -38,6 +39,11 @@ export interface GentleAiRenderContext {
 	lastComponent?: unknown;
 	state?: unknown;
 	invalidate?: () => void;
+	/** pi's stable id for this tool execution; keys the durable timing lookup. */
+	toolCallId?: string;
+	/** Durable timing source (session entries). pi's row `state` is render-local,
+	 * so only this survives the fresh state a historical replay constructs. */
+	elapsedTiming?: GentleAiTimingLookup;
 }
 
 const LIFECYCLE_STATUS = {
@@ -186,6 +192,19 @@ export function renderGentleAiLifecycleCall(
 	// A finished execution is completed even when pi replays it without
 	// argsComplete (session reload); preparing only applies before it starts.
 	const state = getGentleAiRenderState(context?.state);
+	// Durable timestamps live in session entries; the row state is render-local
+	// and a replay constructs a fresh one. Seed from the durable record for this
+	// tool call; without one the stamps stay unset and the card stays honest.
+	if (state && state.startedAt === undefined && state.endedAt === undefined && typeof context?.toolCallId === "string") {
+		const durable = context.elapsedTiming?.lookup(context.toolCallId);
+		// Only a complete start+end record restores: a start-only record has no
+		// honest duration, and seeding its start would make a replayed card tick
+		// against the replay clock instead of the execution that ended long ago.
+		if (durable?.endedAt !== undefined) {
+			state.startedAt = durable.startedAt;
+			state.endedAt = durable.endedAt;
+		}
+	}
 	const finished = (context?.executionStarted === true && context.isPartial !== true) || state?.finished === true;
 	const failed = context?.isError === true || state?.failed === true;
 	const status: LifecycleStatus = failed
@@ -197,9 +216,10 @@ export function renderGentleAiLifecycleCall(
 				: LIFECYCLE_STATUS.RUNNING;
 	if (state) {
 		if (status === LIFECYCLE_STATUS.COMPLETED || status === LIFECYCLE_STATUS.FAILED) {
-			// A terminal observation without a start (replayed call, session reload)
-			// has no true duration — leaving both unset keeps the card honest.
-			if (state.startedAt !== undefined) state.endedAt ??= now;
+			// Only a live terminal observation may freeze the end (pi never raises
+			// executionStarted on replayed rows): a replayed start-only record would
+			// otherwise grow an invented end at replay time.
+			if (state.startedAt !== undefined && context?.executionStarted === true) state.endedAt ??= now;
 		} else if (status === LIFECYCLE_STATUS.RUNNING || context?.executionStarted === true) {
 			// Stamp only live signals: pi never raises executionStarted/argsComplete on
 			// replayed rows, and a historical row renders preparing before its stored

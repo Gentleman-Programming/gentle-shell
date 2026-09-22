@@ -166,6 +166,7 @@ import {
 	type ReviewMode,
 	type ReviewProjectionV1,
 } from "../lib/review-snapshot.ts";
+import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
 import { renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
 import { sanitizeTerminalText, stripAnsi } from "../lib/terminal-theme.ts";
 import { BASE_REF_ACCEPTED_FORMS, CandidateViewError, CandidateViewRegistry, injectReviewCandidateView, readCandidateContextManifestPage, resolveCanonicalCandidateBase, type CandidateView } from "../lib/review-candidate-view.ts";
@@ -8801,6 +8802,21 @@ function createGentleAiExtensionForTesting(
 		processAgentEndSubagentDepth.delete(sessionKey);
 	});
 
+	const GENTLE_TIMED_TOOLS = new Set(["gentle_review_scope", "gentle_review_capture_group", "gentle_review_capture", "gentle_review"]);
+	let elapsedTiming: GentleAiElapsedTimingLedger | undefined;
+	const recordReviewTiming = (event: { toolCallId: string; toolName: string }, endedAt?: number): void => {
+		const ledger = elapsedTiming;
+		if (!ledger || !GENTLE_TIMED_TOOLS.has(event.toolName)) return;
+		try {
+			if (endedAt === undefined) ledger.recordStart(event.toolCallId, Date.now());
+			else ledger.recordEnd(event.toolCallId, endedAt);
+		} catch { /* Timing persistence is best-effort and never breaks the tool event. */ }
+	};
+	pi.on("tool_execution_start", (event) => recordReviewTiming(event));
+	pi.on("tool_execution_end", (event) => recordReviewTiming(event, Date.now()));
+	const timingContext = (context: GentleAiRenderContext | undefined): GentleAiRenderContext | undefined =>
+		elapsedTiming && context ? { ...context, elapsedTiming } : context;
+
 	pi.registerTool({
 		name: "gentle_review_scope",
 		renderShell: "self",
@@ -8812,11 +8828,11 @@ function createGentleAiExtensionForTesting(
 			return renderGentleAiLifecycleCall(
 				"review scope",
 				theme,
-				context as GentleAiRenderContext | undefined,
+				timingContext(context as GentleAiRenderContext | undefined),
 			);
 		},
 		renderResult(result, options, theme, context) {
-			return renderGentleAiResult(result, options, theme, context as GentleAiRenderContext | undefined);
+			return renderGentleAiResult(result, options, theme, timingContext(context as GentleAiRenderContext | undefined));
 		},
 		async execute(_toolCallId, parameters) {
 			const input = parameters as ReviewScopeParameters;
@@ -8859,10 +8875,10 @@ function createGentleAiExtensionForTesting(
 		renderCall(args, theme, context) {
 			const bindings = (args as { collectBindings?: unknown }).collectBindings;
 			const lenses = Array.isArray(bindings) ? bindings.map(collectBindingLens) : [];
-			return renderGentleAiLifecycleCall(withLenses("review capture group", lenses), theme, context as GentleAiRenderContext | undefined);
+			return renderGentleAiLifecycleCall(withLenses("review capture group", lenses), theme, timingContext(context as GentleAiRenderContext | undefined));
 		},
 		renderResult(result, options, theme, context) {
-			return renderGentleAiResult(result, options, theme, context as GentleAiRenderContext | undefined);
+			return renderGentleAiResult(result, options, theme, timingContext(context as GentleAiRenderContext | undefined));
 		},
 		async execute(_toolCallId, parameters, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new Error("Review capture group was cancelled");
@@ -8901,11 +8917,11 @@ function createGentleAiExtensionForTesting(
 			return renderGentleAiLifecycleCall(
 				withLenses("review capture", [collectBindingLens((args as { collectBinding?: unknown }).collectBinding)]),
 				theme,
-				context as GentleAiRenderContext | undefined,
+				timingContext(context as GentleAiRenderContext | undefined),
 			);
 		},
 		renderResult(result, options, theme, context) {
-			return renderGentleAiResult(result, options, theme, context as GentleAiRenderContext | undefined);
+			return renderGentleAiResult(result, options, theme, timingContext(context as GentleAiRenderContext | undefined));
 		},
 		async execute(_toolCallId, parameters, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new Error("Review capture was cancelled");
@@ -8954,11 +8970,11 @@ function createGentleAiExtensionForTesting(
 			return renderGentleAiLifecycleCall(
 				reviewToolOperationPath(args),
 				theme,
-				context as GentleAiRenderContext | undefined,
+				timingContext(context as GentleAiRenderContext | undefined),
 			);
 		},
 		renderResult(result, options, theme, context) {
-			return renderGentleAiResult(result, options, theme, context as GentleAiRenderContext | undefined);
+			return renderGentleAiResult(result, options, theme, timingContext(context as GentleAiRenderContext | undefined));
 		},
 		async execute(_toolCallId, parameters, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new Error("Review controller operation was cancelled");
@@ -9083,6 +9099,7 @@ function createGentleAiExtensionForTesting(
 	}
 
 	pi.on("session_start", async (event, ctx) => {
+		elapsedTiming = new GentleAiElapsedTimingLedger(ctx.sessionManager, pi);
 		reminderSessionActive = true;
 		reminderEpoch += 1;
 		try { candidateViews?.sweepOrphans(ctx.cwd); } catch { /* Ownership sweeping must not block startup. */ }

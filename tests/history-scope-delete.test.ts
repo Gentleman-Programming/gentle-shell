@@ -101,7 +101,7 @@ test("delete leaves no tmp files behind", () => {
 });
 
 const isRoot = process.getuid?.() === 0;
-const sealedFileTest = (name: string, fn: () => unknown) =>
+const sealedFileTest = (name: string, fn: () => void | Promise<void>) =>
   test(name, { skip: isRoot && "requires a non-root user" }, fn);
 
 sealedFileTest(

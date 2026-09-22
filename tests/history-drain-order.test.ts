@@ -52,7 +52,7 @@ test("global drain puts the legacy seed last regardless of its fresh mtime", () 
 });
 
 const isRoot = process.getuid?.() === 0;
-const sealedDrainTest = (name: string, fn: () => unknown) =>
+const sealedDrainTest = (name: string, fn: () => void | Promise<void>) =>
   test(name, { skip: isRoot && "requires a non-root user" }, fn);
 sealedDrainTest(
   "an unreadable store file is skipped; the rest drain in the expected order",

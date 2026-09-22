@@ -144,7 +144,7 @@ test("project dir already populated above target: no scan, seed untouched", () =
 });
 
 const isRoot = process.getuid?.() === 0;
-const sealedStoreTest = (name: string, fn: () => unknown) =>
+const sealedStoreTest = (name: string, fn: () => void | Promise<void>) =>
   test(name, { skip: isRoot && "requires a non-root user" }, fn);
 sealedStoreTest(
   "an unreadable existing store file is skipped during counting; seeding still runs from transcripts",

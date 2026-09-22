@@ -134,7 +134,7 @@ test("compaction keeps the newest 10 files, merges the rest", () => {
 });
 
 const isRoot = process.getuid?.() === 0;
-const sealedGcTest = (name: string, fn: () => unknown) =>
+const sealedGcTest = (name: string, fn: () => void | Promise<void>) =>
   test(name, { skip: isRoot && "requires a non-root user" }, fn);
 sealedGcTest(
   "compactProjectDir skips an unreadable file's content and compacts the readable entries",

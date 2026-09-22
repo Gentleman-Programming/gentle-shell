@@ -37,6 +37,7 @@ The current registry fingerprint omits resolved fields that change rendered outp
 - Forecast: approximately 160 authored changed lines, below the 400-line review heuristic.
 - Work unit: one cohesive correction commit containing behavior, tests, and instruction alignment.
 - Branch: `fix/369-skill-registry-pi-resolved`.
+- Native review: medium-risk reliability review approved and acknowledged; lineage `review-81d5b6672bf79eae`.
 
 ## Tasks
 
@@ -60,8 +61,9 @@ The current registry fingerprint omits resolved fields that change rendered outp
 - Independent re-verification: focused registry tests passed 35/35; typecheck exited 0 with 196 baseline diagnostics; `git diff --check` passed.
 - Parent spot check: focused registry tests passed 35/35 and `git diff --check` passed.
 - Work-unit commit: `d28f1303` (`fix(skill-registry): preserve resolved authority on refresh`).
+- Native review: `review-81d5b6672bf79eae` approved with no correction required; acknowledgement burned revision `sha256:386e1925237f6a9d01b32cd79483f16b82dd4f6278a6b7d730be87738d6de101`.
 - Engram mirror pending: the active Pi session is bound to the outer `gentleman` project, so Engram rejected a `gentle-shell`-scoped save. The local tracker remains authoritative for this session.
 
 ## Next Step
 
-Run the native review lifecycle for the completed candidate, then leave push and review-comment delivery to the user.
+Push the three local commits to the fork and answer the CodeRabbit findings on PR #1320 when the user chooses delivery.

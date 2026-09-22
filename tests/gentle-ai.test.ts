@@ -2575,3 +2575,79 @@ test("a rename follows the clone pin and leaves the committed declaration naming
 		rmSync(base, { recursive: true, force: true });
 	}
 });
+
+// getPiModelOptions guard branches (gentle-pi regression coverage)
+
+function makeContext(registry?: ExtensionContext["modelRegistry"]): ExtensionContext {
+	return {
+		cwd: process.cwd(),
+		hasUI: true,
+		modelRegistry: registry,
+		ui: { notify() {} },
+	} as unknown as ExtensionContext;
+}
+
+test("getPiModelOptions returns MODEL_CONTROL_OPTIONS when modelRegistry is absent", async () => {
+	const options = await __testing.getPiModelOptions(makeContext());
+	assert.deepEqual(options, [...__testing.MODEL_CONTROL_OPTIONS]);
+});
+
+test("getPiModelOptions returns MODEL_CONTROL_OPTIONS when getAvailable throws", async () => {
+	const registry = {
+		getAvailable: async () => { throw new Error("registry unavailable"); },
+	} as unknown as ExtensionContext["modelRegistry"];
+	const options = await __testing.getPiModelOptions(makeContext(registry));
+	assert.deepEqual(options, [...__testing.MODEL_CONTROL_OPTIONS]);
+});
+
+test("getPiModelOptions returns MODEL_CONTROL_OPTIONS when getAvailable returns non-array", async () => {
+	const registry = {
+		getAvailable: async () => ({ provider: "openai", id: "gpt-5" }),
+	} as unknown as ExtensionContext["modelRegistry"];
+	const options = await __testing.getPiModelOptions(makeContext(registry));
+	assert.deepEqual(options, [...__testing.MODEL_CONTROL_OPTIONS]);
+});
+
+test("getPiModelOptions merges MODEL_CONTROL_OPTIONS with normalized sorted model list", async () => {
+	const registry = {
+		getAvailable: async () => [
+			{ provider: "openai", id: "gpt-5.5" },
+			{ provider: "anthropic", id: "opus-4" },
+			{ provider: "openai", id: "gpt-5" },
+		],
+	} as unknown as ExtensionContext["modelRegistry"];
+	const options = await __testing.getPiModelOptions(makeContext(registry));
+
+	assert.equal(options[0], __testing.MODEL_CONTROL_OPTIONS[0]);
+	assert.equal(options[1], __testing.MODEL_CONTROL_OPTIONS[1]);
+	assert.equal(options[2], __testing.MODEL_CONTROL_OPTIONS[2]);
+
+	const modelPart = options.slice(3);
+	assert.deepEqual(
+		modelPart,
+		[
+			"anthropic/opus-4",
+			"openai/gpt-5",
+			"openai/gpt-5.5",
+		],
+	);
+});
+
+test("getPiModelOptions drops models that normalize to undefined", async () => {
+	const registry = {
+		getAvailable: async () => [
+			{ provider: "openai", id: "gpt-5" },
+			{ provider: "anthropic", id: "claude 4" }, // space fails SAFE_MODEL_ID_PATTERN
+			{ provider: "o|penai", id: "gpt-5" },       // pipe fails SAFE_MODEL_ID_PATTERN
+		],
+	} as unknown as ExtensionContext["modelRegistry"];
+	const options = await __testing.getPiModelOptions(makeContext(registry));
+
+	const modelPart = options.slice(3);
+	assert.deepEqual(
+		modelPart,
+		[
+			"openai/gpt-5",
+		],
+	);
+});

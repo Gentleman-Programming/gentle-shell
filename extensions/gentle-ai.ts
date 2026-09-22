@@ -8712,6 +8712,8 @@ export const __testing = {
 	readSddChangeFlag,
 	resetTelemetryTriggerGuardForTesting,
 	createGentleAiExtension: createGentleAiExtensionForTesting,
+	getPiModelOptions,
+	MODEL_CONTROL_OPTIONS,
 };
 
 export interface GentleAiRuntimeDependencies {

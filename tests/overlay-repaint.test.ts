@@ -21,35 +21,39 @@ function fakeTui() {
 	return { tui, calls };
 }
 
-test("withOverlayRepaint: done runs first, then full repaint (invalidate + requestRender)", () => {
-	const { tui, calls } = fakeTui();
-	const seen: Array<string | null> = [];
+test("withOverlayRepaint: forces a full render (requestRender(true)) after done", () => {
+	const calls: string[] = [];
+	const tui = {
+		requestRender: (force?: boolean) => {
+			calls.push(`requestRender:${force === true}`);
+		},
+	} as unknown as TUI;
 	const close = withOverlayRepaint<string | null>(tui, (result) => {
-		seen.push(result);
-		calls.push("done");
+		calls.push(`done:${String(result)}`);
 	});
-	close("task-1");
-	assert.deepEqual(seen, ["task-1"]);
-	assert.deepEqual(calls, ["done", "invalidate", "requestRender"]);
+	close(null);
+	assert.deepEqual(calls, ["done:null", "requestRender:true"]);
 });
 
 test("withOverlayRepaint: forwards null results (plain close)", () => {
-	const { tui, calls } = fakeTui();
+	const calls: string[] = [];
+	const tui = {
+		requestRender: (force?: boolean) => {
+			calls.push(`requestRender:${force === true}`);
+		},
+	} as unknown as TUI;
 	const seen: Array<string | null> = [];
 	const close = withOverlayRepaint<string | null>(tui, (result) => {
 		seen.push(result);
 	});
 	close(null);
 	assert.deepEqual(seen, [null]);
-	assert.deepEqual(calls, ["invalidate", "requestRender"]);
+	assert.deepEqual(calls, ["requestRender:true"]);
 });
 
 test("withOverlayRepaint: paint failure is swallowed, done result still delivered", () => {
 	const seen: Array<string | null> = [];
 	const tui = {
-		invalidate: () => {
-			throw new Error("EIO");
-		},
 		requestRender: () => {
 			throw new Error("EIO");
 		},

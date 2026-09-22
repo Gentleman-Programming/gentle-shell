@@ -2426,6 +2426,10 @@ function discoverableNonBuiltinAgentRoots(cwd: string): DiscoverableNonBuiltinAg
 	return [...unique.values()];
 }
 
+/**
+ * Resolved directories where the `pi-subagents-j0k3r` and `pi-subagents`
+ * packages install their `agents/` subdirectories, in lookup priority order.
+ */
 function builtinAgentDirs(cwd: string): string[] {
 	return [
 		join(PACKAGE_ROOT, "..", "pi-subagents-j0k3r", "agents"),
@@ -2807,6 +2811,11 @@ export async function applySavedModelConfig(
 	);
 }
 
+/**
+ * Renders the model configuration for every known agent into human-readable
+ * lines like `agentName: model=x, effort=y`. Skips undefined entries
+ * gracefully and applies routing defaults when values are absent.
+ */
 function describeModelConfig(cwd: string, config: AgentModelConfig): string[] {
 	return modelAssignmentNames(cwd).map((name) => {
 		const entry = config[name];
@@ -2816,6 +2825,12 @@ function describeModelConfig(cwd: string, config: AgentModelConfig): string[] {
 	});
 }
 
+/**
+ * Returns the list of models available for assignment in the "Assign models
+ * and effort" panel. Falls back to the three control options (keep current,
+ * inherit active/default, custom model id) when the registry is unavailable,
+ * throws, or returns a non-array.
+ */
 async function getPiModelOptions(ctx: ExtensionContext): Promise<string[]> {
 	const registry = ctx.modelRegistry;
 	if (!registry) {
@@ -5135,6 +5150,10 @@ function parseStartInput(value: Record<string, unknown>): ReviewControllerStartI
 	return result;
 }
 
+/**
+ * Type guard that checks whether `value` matches one of the known review
+ * transition identifiers in `REVIEW_TRANSITION`.
+ */
 function isReviewTransition(value: string): value is ReviewTransition {
 	return Object.values(REVIEW_TRANSITION).some((transition) => transition === value);
 }

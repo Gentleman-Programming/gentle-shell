@@ -283,6 +283,10 @@ export default function askUserQuestion(pi: ExtensionAPI): void {
 						questions: params.questions,
 						theme,
 						keybindings,
+						// The view bounds its own height, the preview pane included, so it
+						// needs the terminal height the dock swap is sharing. A host that
+						// cannot report one leaves the view on its safe default.
+						rows: () => Math.max(0, tui.terminal?.rows ?? 0),
 						onComplete: (result) => done(result),
 					});
 					// Native dock swap, never an overlay: the transcript stays scrollable

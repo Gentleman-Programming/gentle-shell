@@ -45,21 +45,31 @@ const two = (): QuestionData[] => [
 
 function createView(
 	questions: QuestionData[],
-	options: { onComplete?: (result: QuestionnaireResult) => void; keybindings?: KeybindingsManager } = {},
+	options: {
+		onComplete?: (result: QuestionnaireResult) => void;
+		keybindings?: KeybindingsManager;
+		rows?: number | (() => number);
+	} = {},
 ): QuestionnaireView {
 	return new QuestionnaireView({
 		questions,
 		theme,
 		onComplete: options.onComplete,
 		...(options.keybindings === undefined ? {} : { keybindings: options.keybindings }),
+		...(options.rows === undefined ? {} : { rows: options.rows }),
 	});
 }
 
-function viewWithResult(questions: QuestionData[], keybindings?: KeybindingsManager) {
+function viewWithResult(
+	questions: QuestionData[],
+	keybindings?: KeybindingsManager,
+	rows?: number | (() => number),
+) {
 	const completed: QuestionnaireResult[] = [];
 	const view = createView(questions, {
 		onComplete: (result) => completed.push(result),
 		...(keybindings === undefined ? {} : { keybindings }),
+		...(rows === undefined ? {} : { rows }),
 	});
 	return { view, completed };
 }
@@ -107,6 +117,8 @@ const KEY = {
 	tab: "\t",
 	shiftTab: "\x1b[Z",
 	escape: "\x1b",
+	pageUp: "\x1b[5~",
+	pageDown: "\x1b[6~",
 } as const;
 
 test("renders exactly one active question plus a tab strip for all questions", () => {
@@ -312,6 +324,136 @@ test("narrow widths render the preview inline without corrupting the body", () =
 	assert.match(narrow, /❯ Alpha/);
 	assert.match(narrow, /Type something\./);
 	assertFits(view, 60);
+});
+
+/**
+ * 120 wrapped rows with a unique head and tail. Both markers matter: the head
+ * proves where the window starts, the tail proves the panel did not grow to
+ * hold the whole preview.
+ */
+const longPreview = (): string => [
+	"detail-head-marker",
+	...Array.from({ length: 118 }, (_, index) => `detail body ${index + 1}`),
+	"detail-tail-marker",
+].join("\n");
+
+const longPreviewView = (rows: number | (() => number) = 24): QuestionnaireView =>
+	createView([question("Proceed?", [option("Alpha", "First choice", longPreview()), option("Beta")])], { rows });
+
+/**
+ * 24 terminal rows minus the 2 frame rows the host draws around the view. This
+ * is the guarantee that matters: the panel plus its frame fits the terminal, so
+ * the host never clips the hint or the free-text row off the bottom.
+ */
+const PANEL_CEILING = 22;
+
+/**
+ * The split panel is shorter still: the preview pane claims half the terminal
+ * (12 rows), so the panel is that pane plus the view's own 4 chrome rows.
+ */
+const SPLIT_PANEL_CEILING = 16;
+
+const assertFitsTerminal = (
+	view: QuestionnaireView,
+	width: number,
+	ceiling = PANEL_CEILING,
+): string[] => {
+	const lines = view.render(width);
+	assert.ok(
+		lines.length <= ceiling,
+		`panel must fit the terminal: got ${lines.length} rows, ceiling ${ceiling}`,
+	);
+	assertFits(view, width);
+	return lines;
+};
+
+test("a long preview is windowed instead of growing past the terminal", () => {
+	const view = longPreviewView();
+	const rendered = plain(assertFitsTerminal(view, 100, SPLIT_PANEL_CEILING).join("\n"));
+
+	// The option list survives and the preview stops at a named slice.
+	assert.match(rendered, /❯ Alpha/);
+	assert.match(rendered, /Type something\./);
+	assert.match(rendered, /detail-head-marker/);
+	assert.doesNotMatch(rendered, /detail-tail-marker/);
+	assert.match(rendered, /\d+\/120 lines · pageUp\/pageDown scroll/);
+});
+
+test("pageDown scrolls the preview window and pageUp returns to the top", () => {
+	const view = longPreviewView();
+	assert.match(plain(view.render(100).join("\n")), /detail-head-marker/);
+
+	view.handleInput(KEY.pageDown);
+	const scrolled = plain(assertFitsTerminal(view, 100).join("\n"));
+	assert.doesNotMatch(scrolled, /detail-head-marker/);
+
+	view.handleInput(KEY.pageUp);
+	assert.match(plain(assertFitsTerminal(view, 100).join("\n")), /detail-head-marker/);
+});
+
+test("scrolling stops at the last row instead of running past the preview", () => {
+	const view = longPreviewView();
+	view.render(100);
+	for (let page = 0; page < 40; page += 1) view.handleInput(KEY.pageDown);
+	const bottom = plain(assertFitsTerminal(view, 100).join("\n"));
+	assert.match(bottom, /detail-tail-marker/);
+
+	// pageUp from the bottom lands on the head again, not before it.
+	for (let page = 0; page < 40; page += 1) view.handleInput(KEY.pageUp);
+	assert.match(plain(assertFitsTerminal(view, 100).join("\n")), /detail-head-marker/);
+});
+
+test("a preview that fits renders whole with no scroll indicator", () => {
+	const { view } = viewWithResult(single("One short preview line"), undefined, 24);
+	const rendered = plain(assertFitsTerminal(view, 100).join("\n"));
+	assert.match(rendered, /One short preview line/);
+	assert.doesNotMatch(rendered, /pageUp\/pageDown scroll/);
+});
+
+test("narrow widths window the inline preview too", () => {
+	const view = longPreviewView();
+	const rendered = plain(assertFitsTerminal(view, 60).join("\n"));
+	assert.match(rendered, /❯ Alpha/);
+	assert.match(rendered, /Type something\./);
+	assert.match(rendered, /detail-head-marker/);
+	assert.doesNotMatch(rendered, /detail-tail-marker/);
+	assert.match(rendered, /pageUp\/pageDown scroll/);
+});
+
+test("moving the selection resets the preview window", () => {
+	const view = createView(
+		[
+			question("Proceed?", [
+				option("Alpha", "First choice", longPreview()),
+				option("Beta", "Second choice", longPreview()),
+			]),
+		],
+		{ rows: 24 },
+	);
+	view.render(100);
+	view.handleInput(KEY.pageDown);
+	assert.doesNotMatch(plain(view.render(100).join("\n")), /detail-head-marker/);
+
+	view.handleInput(KEY.down[0]);
+	assert.match(plain(assertFitsTerminal(view, 100).join("\n")), /detail-head-marker/);
+});
+
+test("an unreadable terminal height still bounds the preview", () => {
+	for (const rows of [0, -1, Number.NaN] as const) {
+		assertFitsTerminal(longPreviewView(rows), 100);
+	}
+});
+
+test("a scrollable preview still commits on a real Enter", () => {
+	const { view, completed } = viewWithResult(
+		[question("Proceed?", [option("Alpha", "First choice", longPreview()), option("Beta")])],
+		undefined,
+		24,
+	);
+	view.render(100);
+	view.handleInput(KEY.enter);
+	assert.equal(completed.length, 1);
+	assert.equal(view.getResult().answers[0]?.answer, "Alpha");
 });
 
 test("height stays bounded as the question count grows", () => {

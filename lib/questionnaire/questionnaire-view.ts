@@ -1,9 +1,11 @@
 import {
 	Container,
 	Input,
+	Key,
 	isKeyRelease,
 	matchesKey,
 	Text,
+	truncateToWidth,
 	visibleWidth,
 	type Focusable,
 	type KeybindingsManager,
@@ -19,6 +21,35 @@ const PREVIEW_SPLIT = 0.45;
 
 /** Two-space gutter between the option column and the preview pane. No divider frame. */
 const PREVIEW_GAP = "  ";
+
+/**
+ * Terminal rows assumed when the host cannot report a height. An unknown
+ * height must fail safe: the preview window stays bounded either way, because
+ * a preview that grows with its content pushes the transcript off screen.
+ */
+const DEFAULT_TERMINAL_ROWS = 24;
+
+/** Rows the view spends on the tab strip, the blank separators, and the hint. */
+const OWN_CHROME_ROWS = 4;
+
+/** Rows reserved for the two frame borders the host draws around the view. */
+const HOST_FRAME_ROWS = 2;
+
+/**
+ * Floor for the body so a short terminal still shows the active question.
+ * Below this the options, not the preview, are the thing worth keeping.
+ */
+const MIN_BODY_ROWS = 6;
+
+/**
+ * Fraction of the terminal the preview pane may claim. Half keeps the option
+ * list readable and leaves the transcript room to stay visible, which is the
+ * whole point of the dock swap over an overlay.
+ */
+const PREVIEW_HEIGHT_RATIO = 0.5;
+
+/** Floor for the preview window so a short preview renders without scrolling. */
+const MIN_PREVIEW_ROWS = 4;
 
 /** Theme surface used by the questionnaire, compatible with the Pi TUI theme. */
 export interface QuestionnaireTheme {
@@ -49,6 +80,12 @@ export interface QuestionnaireViewOptions {
 	theme: QuestionnaireTheme;
 	keybindings?: KeybindingsManager;
 	onComplete?: (result: QuestionnaireResult) => void;
+	/**
+	 * Terminal rows, or a getter for them. The view bounds its own height from
+	 * this value; an unknown or unreadable height falls back to
+	 * {@link DEFAULT_TERMINAL_ROWS} instead of rendering an unbounded preview.
+	 */
+	rows?: number | (() => number);
 }
 
 interface QuestionState {
@@ -130,6 +167,12 @@ class CustomTextEditor extends Container {
  * draft. This keeps the component's height bounded for one to four questions
  * so it fits the native dock area instead of overflowing the viewport.
  *
+ * Option previews are the other unbounded input, so they render through a
+ * window rather than growing the panel: the pane claims at most half the
+ * terminal, pageUp/pageDown (and ctrl+k/ctrl+j) scroll it, and an indicator
+ * names the visible slice. A preview taller than the window used to push the
+ * panel past the viewport, hiding the transcript and the options with it.
+ *
  * Native dock-swap component: it is a {@link Container}, never an overlay, so
  * the transcript stays scrollable while it is focused. Keyboard handling uses
  * the public Pi TUI input protocol (`matchesKey()` and the injected
@@ -144,9 +187,15 @@ export class QuestionnaireView extends Container implements Focusable {
 	private readonly editor: CustomTextEditor;
 	private focusedQuestion = 0;
 	private editingQuestion: number | undefined;
+	private readonly rows: number | (() => number) | undefined;
 	private completed = false;
 	private result: QuestionnaireResult | undefined;
 	private lineOwners: Array<LineOwner | undefined> = [];
+	private previewScroll = 0;
+	/** Wrapped preview rows available to scroll; 0 when no preview is shown. */
+	private previewTotal = 0;
+	/** Preview rows the last render could show; 0 when no preview is shown. */
+	private previewVisibleRows = 0;
 	private _focused = false;
 
 	constructor(options: QuestionnaireViewOptions) {
@@ -155,6 +204,7 @@ export class QuestionnaireView extends Container implements Focusable {
 		this.theme = options.theme;
 		this.keybindings = options.keybindings;
 		this.onComplete = options.onComplete;
+		this.rows = options.rows;
 		this.states = options.questions.map(() => ({
 			cursor: 0,
 			toggled: new Set<number>(),
@@ -241,6 +291,10 @@ export class QuestionnaireView extends Container implements Focusable {
 			}
 		}
 
+		// ctrl+j arrives as a bare line feed, which pi also reads as enter, so the
+		// preview scroll keys are checked before the commit key.
+		if (this.scrollPreviewKey(data)) return;
+
 		if (this.matches(data, "tui.select.confirm")) {
 			this.commit();
 		}
@@ -294,20 +348,26 @@ export class QuestionnaireView extends Container implements Focusable {
 		push(this.renderTabs());
 		push("");
 
+		const bodyBudget = this.bodyRows();
 		const preview = this.currentPreview();
+		if (preview === undefined) {
+			this.previewTotal = 0;
+			this.previewVisibleRows = 0;
+		}
+
 		if (preview !== undefined && viewport >= MIN_PREVIEW_WIDTH) {
 			const leftWidth = Math.max(1, Math.floor(viewport * PREVIEW_SPLIT));
 			const rightWidth = Math.max(1, viewport - leftWidth - PREVIEW_GAP.length);
-			const left = this.renderBody(leftWidth, false);
-			const right = this.wrap(this.theme.fg("dim", preview), rightWidth);
-			const rows = Math.max(left.lines.length, right.length);
+			const left = this.bodyWithin(leftWidth, false, bodyBudget);
+			const right = this.windowedPreview(preview, rightWidth, this.previewRows());
+			const rows = Math.min(bodyBudget, Math.max(left.lines.length, right.length));
 			for (let index = 0; index < rows; index++) {
 				lines.push(`${padTo(left.lines[index] ?? "", leftWidth)}${PREVIEW_GAP}${right[index] ?? ""}`);
 				owners.push(left.owners[index]);
 			}
 		}
 		else {
-			const body = this.renderBody(viewport, preview !== undefined);
+			const body = this.bodyWithin(viewport, preview !== undefined, bodyBudget);
 			lines.push(...body.lines);
 			owners.push(...body.owners);
 		}
@@ -339,8 +399,11 @@ export class QuestionnaireView extends Container implements Focusable {
 		return `${progress}  ${chips.join("   ")}`;
 	}
 
-	/** Body for the active question only. */
-	private renderBody(width: number, inlinePreview: boolean): { lines: string[]; owners: Array<LineOwner | undefined> } {
+	/**
+	 * Body for the active question. `inlinePreviewRows` is the row budget for the
+	 * focused option's inline preview, or `undefined` when no preview is drawn.
+	 */
+	private renderBody(width: number, inlinePreviewRows: number | undefined): { lines: string[]; owners: Array<LineOwner | undefined> } {
 		const lines: string[] = [];
 		const owners: Array<LineOwner | undefined> = [];
 		const push = (text: string, owner?: LineOwner) => {
@@ -372,8 +435,8 @@ export class QuestionnaireView extends Container implements Focusable {
 			const marker = question.multiSelect ? `${state.toggled.has(optionIndex) ? "[x]" : "[ ]"} ` : "";
 			push(`${cursor}${marker}${option.label}`, owner);
 			push(`    ${this.theme.fg("dim", option.description)}`, owner);
-			if (inlinePreview && state.cursor === optionIndex && option.preview !== undefined) {
-				for (const line of this.wrap(this.theme.fg("dim", option.preview), Math.max(1, width - 4))) {
+			if (inlinePreviewRows !== undefined && state.cursor === optionIndex && option.preview !== undefined) {
+				for (const line of this.windowedPreview(option.preview, Math.max(1, width - 4), inlinePreviewRows)) {
 					push(`    ${line}`, owner);
 				}
 			}
@@ -385,6 +448,24 @@ export class QuestionnaireView extends Container implements Focusable {
 		push(`${customCursor}${customDone}${CUSTOM_ROW_LABEL}`, customOwner);
 
 		return { lines, owners };
+	}
+
+	/**
+	 * Body within `bodyBudget` rows. The inline preview shares the body with the
+	 * option list and the rows after it, so the list is measured first and the
+	 * preview window takes exactly what is left over. Sizing the window from the
+	 * rows spent so far would push the free-text row off the panel.
+	 */
+	private bodyWithin(
+		width: number,
+		inlinePreview: boolean,
+		bodyBudget: number,
+	): { lines: string[]; owners: Array<LineOwner | undefined> } {
+		if (!inlinePreview) return this.renderBody(width, undefined);
+		const measured = this.renderBody(width, undefined);
+		const remaining = Math.max(1, bodyBudget - measured.lines.length);
+		const body = this.renderBody(width, remaining);
+		return { lines: body.lines.slice(0, bodyBudget), owners: body.owners.slice(0, bodyBudget) };
 	}
 
 	/** Bottom hint for the active question's interaction model. */
@@ -405,6 +486,104 @@ export class QuestionnaireView extends Container implements Focusable {
 		return this.theme.fg("accent", bold);
 	}
 
+	/** Terminal rows the host reports, or a safe default when it cannot tell. */
+	private terminalRows(): number {
+		const source = this.rows;
+		const rows = typeof source === "function" ? source() : source;
+		return typeof rows === "number" && Number.isFinite(rows) && rows > 0
+			? Math.trunc(rows)
+			: DEFAULT_TERMINAL_ROWS;
+	}
+
+	/**
+	 * Hard ceiling for the body. The panel plus the host's frame must fit the
+	 * terminal, or the host clips the tail and the hint disappears with it.
+	 */
+	private bodyRows(): number {
+		return Math.max(MIN_BODY_ROWS, this.terminalRows() - OWN_CHROME_ROWS - HOST_FRAME_ROWS);
+	}
+
+	/**
+	 * Rows the preview pane may occupy: half the terminal, floored at
+	 * {@link MIN_PREVIEW_ROWS} so a short preview needs no scrolling, and capped
+	 * by the body ceiling so it can never exceed the terminal.
+	 */
+	private previewRows(): number {
+		const target = Math.floor(this.terminalRows() * PREVIEW_HEIGHT_RATIO);
+		return Math.max(MIN_PREVIEW_ROWS, Math.min(this.bodyRows(), target));
+	}
+
+	/**
+	 * Wrap `text` to `width` and return the visible slice for `rows`, recording
+	 * the scrollable totals read by {@link scrollPreviewKey}. When the text does
+	 * not fit, the last row becomes a dim indicator naming the slice and the
+	 * keys, so the pane stays informative instead of silently truncating.
+	 */
+	private windowedPreview(text: string, width: number, rows: number): string[] {
+		const wrapped = this.wrap(this.theme.fg("dim", text), Math.max(1, width));
+		const budget = Math.max(1, Math.trunc(rows));
+		if (wrapped.length <= budget) {
+			this.previewTotal = wrapped.length;
+			this.previewVisibleRows = wrapped.length;
+			this.previewScroll = 0;
+			return wrapped;
+		}
+		const contentRows = Math.max(1, budget - 1);
+		const offset = Math.max(0, Math.min(wrapped.length - contentRows, this.previewScroll));
+		this.previewTotal = wrapped.length;
+		this.previewVisibleRows = contentRows;
+		this.previewScroll = offset;
+		return [
+			...wrapped.slice(offset, offset + contentRows),
+			// Truncated, not wrapped: the indicator must own exactly one row of the
+			// window, and a long counter would otherwise widen the pane.
+			truncateToWidth(
+				this.theme.fg("dim", `… ${offset + contentRows}/${wrapped.length} lines · pageUp/pageDown scroll`),
+				Math.max(1, width),
+			),
+		];
+	}
+
+	/**
+	 * Preview scroll keys, checked before the commit key because ctrl+j arrives
+	 * as a bare line feed that pi also reads as enter. The keys are only claimed
+	 * while the preview has hidden rows, so a plain Enter still commits.
+	 *
+	 * The bounds come from the last render: the window depends on the wrap width,
+	 * which only a render knows. The host renders a focused component before it
+	 * dispatches input, so a key press always reads a measured window, and a
+	 * never-rendered view reports "nothing to scroll" instead of guessing.
+	 */
+	private scrollPreviewKey(data: string): boolean {
+		if (this.previewTotal <= this.previewVisibleRows) return false;
+		if (matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("j"))) {
+			return this.scrollPreview(this.previewVisibleRows);
+		}
+		if (matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("k"))) {
+			return this.scrollPreview(-this.previewVisibleRows);
+		}
+		return false;
+	}
+
+	/** Move the preview window, clamped to the rows the last render measured. */
+	private scrollPreview(delta: number): boolean {
+		const max = Math.max(0, this.previewTotal - this.previewVisibleRows);
+		if (max === 0) return false;
+		const next = Math.max(0, Math.min(max, this.previewScroll + Math.trunc(delta)));
+		if (next === this.previewScroll) return false;
+		this.previewScroll = next;
+		this.invalidate();
+		return true;
+	}
+
+	/**
+	 * Reset the preview window when the selection moves: an offset measured
+	 * against one option's preview reads as lost content on the next one.
+	 */
+	private resetPreviewScroll(): void {
+		this.previewScroll = 0;
+	}
+
 	private currentPreview(): string | undefined {
 		if (this.completed || this.editingQuestion !== undefined) return undefined;
 		const question = this.questions[this.focusedQuestion];
@@ -418,6 +597,7 @@ export class QuestionnaireView extends Container implements Focusable {
 		const total = this.questions.length;
 		if (total === 0) return;
 		this.focusedQuestion = (this.focusedQuestion + delta + total) % total;
+		this.resetPreviewScroll();
 		this.invalidate();
 	}
 
@@ -427,6 +607,7 @@ export class QuestionnaireView extends Container implements Focusable {
 		if (!question || !state) return;
 		const total = question.options.length + 1;
 		state.cursor = Math.max(0, Math.min(total - 1, state.cursor + delta));
+		this.resetPreviewScroll();
 		this.invalidate();
 	}
 
@@ -440,6 +621,7 @@ export class QuestionnaireView extends Container implements Focusable {
 		}
 		if (state.toggled.has(state.cursor)) state.toggled.delete(state.cursor);
 		else state.toggled.add(state.cursor);
+		this.resetPreviewScroll();
 		this.invalidate();
 	}
 
@@ -450,6 +632,7 @@ export class QuestionnaireView extends Container implements Focusable {
 		const changed = this.focusedQuestion !== questionIndex || state.cursor !== rowIndex;
 		this.focusedQuestion = questionIndex;
 		state.cursor = Math.max(0, Math.min(question.options.length, rowIndex));
+		this.resetPreviewScroll();
 		this.invalidate();
 		return changed;
 	}

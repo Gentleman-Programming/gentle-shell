@@ -27,6 +27,7 @@ import { hasReviewSessionPermission, resolveCanonicalGitRepositoryIdentitySync, 
 import { historyDir, loadHistory, loadStoredTask, pruneHistory, saveTask } from "../lib/agents-history.ts";
 import { sessionToMarkdown } from "../lib/agents-transcript.ts";
 import { AgentsView } from "../lib/agents-view.ts";
+import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
 import { PresencePublisher } from "../lib/orchestrator-presence.ts";
 import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/agents-rpc-publisher.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
@@ -976,6 +977,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		let overlayHost: { requestRender(force?: boolean): void; stop(): void; start(): void } | undefined;
 		const chosen = await ctx.ui.custom<TaskRecord | null>(
 			(tui, theme, _keybindings, done) => {
+				const close = withOverlayRepaint(tui, done);
 				overlayHost = tui;
 				view = new AgentsView({
 					theme,
@@ -990,8 +992,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					onCancel: (task) => void stopSelected(task, ctx),
 					canCancel: isOwnedActive,
 					isLocalTask: (task) => !restoredTaskIds.has(task.id),
-					onOpen: (task) => done(task),
-					onClose: () => done(null),
+					onOpen: (task) => close(task),
+					onClose: () => close(null),
 					requestRender: () => tui.requestRender(),
 				});
 				overlays.add(view);

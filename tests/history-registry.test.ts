@@ -14,35 +14,41 @@ function makeRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-registry-"));
 }
 
+function makeProject(prefix = "pi-history-registry-proj-"): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
 test("creates the registry with the first entry (idempotent)", () => {
   const root = makeRoot();
-  const result = ensureRegistryEntry(root, "/Users/admin/Dev/pi/pi-history");
-  assert.deepEqual(result, { hash: "28e0f06819c468cb", created: true });
-  ensureRegistryEntry(root, "/Users/admin/Dev/pi/pi-history");
+  const cwd = makeProject();
+  const result = ensureRegistryEntry(root, cwd);
+  assert.deepEqual(result, { hash: projectHash(cwd), created: true });
+  ensureRegistryEntry(root, cwd);
   const raw = JSON.parse(
     fs.readFileSync(path.join(root, "registry.json"), "utf8"),
   );
-  assert.deepEqual(raw, {
-    "28e0f06819c468cb": "/Users/admin/Dev/pi/pi-history",
-  });
+  assert.deepEqual(raw, { [projectHash(cwd)]: cwd });
 });
 
 test("second project appends without touching the first", () => {
   const root = makeRoot();
-  ensureRegistryEntry(root, "/Users/admin/Dev/pi/pi-history");
-  const b = ensureRegistryEntry(root, "/Users/admin/Dev/github/pi");
+  const cwdA = makeProject();
+  const cwdB = makeProject();
+  ensureRegistryEntry(root, cwdA);
+  const b = ensureRegistryEntry(root, cwdB);
   assert.equal(b.created, true);
   const raw = JSON.parse(
     fs.readFileSync(path.join(root, "registry.json"), "utf8"),
   );
   assert.equal(Object.keys(raw).length, 2);
-  assert.equal(raw[b.hash], "/Users/admin/Dev/github/pi");
+  assert.equal(raw[b.hash], cwdB);
 });
 
 test("lookupCwd resolves known hashes and null for unknown", () => {
   const root = makeRoot();
-  const { hash } = ensureRegistryEntry(root, "/Users/admin/Dev/pi/pi-history");
-  assert.equal(lookupCwd(root, hash), "/Users/admin/Dev/pi/pi-history");
+  const cwd = makeProject();
+  const { hash } = ensureRegistryEntry(root, cwd);
+  assert.equal(lookupCwd(root, hash), cwd);
   assert.equal(lookupCwd(root, "0000000000000000"), null);
   assert.equal(lookupCwd(makeRoot(), hash), null);
 });
@@ -50,15 +56,14 @@ test("lookupCwd resolves known hashes and null for unknown", () => {
 test("corrupt registry json is treated as empty and rebuilt on next entry", () => {
   const root = makeRoot();
   fs.writeFileSync(path.join(root, "registry.json"), "{not-json", "utf8");
-  assert.equal(lookupCwd(root, "28e0f06819c468cb"), null);
-  const result = ensureRegistryEntry(root, "/Users/admin/Dev/pi/pi-history");
+  assert.equal(lookupCwd(root, "0000000000000000"), null);
+  const cwd = makeProject();
+  const result = ensureRegistryEntry(root, cwd);
   assert.equal(result.created, true);
   const raw = JSON.parse(
     fs.readFileSync(path.join(root, "registry.json"), "utf8"),
   );
-  assert.deepEqual(raw, {
-    "28e0f06819c468cb": "/Users/admin/Dev/pi/pi-history",
-  });
+  assert.deepEqual(raw, { [projectHash(cwd)]: cwd });
 });
 
 test("no leftover tmp files after writes", () => {
@@ -71,7 +76,7 @@ test("no leftover tmp files after writes", () => {
 
 test("hash collision re-keys the existing occupant; the new cwd keeps the short hash", () => {
   const root = makeRoot();
-  const cwd = "/Users/admin/Dev/pi/pi-history";
+  const cwd = makeProject();
   const hash = projectHash(cwd);
   // Simulate a collision: the short hash is pre-mapped to a different cwd.
   fs.mkdirSync(root, { recursive: true });
@@ -96,7 +101,7 @@ test("wrong-shaped registry (array / scalar / null) fails open and is rebuilt on
   // empty registry — lookups fail open to null, and the next entry rebuilds
   // a valid object-mapped registry around itself.
   const shapes: unknown[] = [["an", "array"], "scalar-string", null];
-  const cwd = "/Users/admin/Dev/pi/pi-history";
+  const cwd = makeProject();
   for (const shape of shapes) {
     const root = makeRoot();
     fs.writeFileSync(registryPath(root), JSON.stringify(shape), "utf8");

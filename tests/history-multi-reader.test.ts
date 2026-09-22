@@ -11,8 +11,8 @@ import {
   seedFilePath,
 } from "../extensions/history/store.ts";
 
-const PROJECT_A = "/Users/admin/Dev/pi/pi-history";
-const PROJECT_B = "/Users/admin/Dev/github/pi";
+const PROJECT_A = "/pi-history-fixtures/project-a";
+const PROJECT_B = "/pi-history-fixtures/project-b";
 
 function makeRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-reader-"));

@@ -10,18 +10,8 @@ import {
   globalSeedPath,
   projectHash,
 } from "../extensions/history/store.ts";
-// node:test has no test.skipIf (Bun-ism): emulate via the options object.
-const skipIf =
-  (condition: unknown) =>
-  (name: string, fn: () => unknown) =>
-    test(
-      name,
-      { skip: condition ? "requires non-root" : false },
-      fn as () => void | Promise<void>,
-    );
 
-
-const CWD = "/Users/admin/Dev/pi/pi-history";
+const CWD = "/pi-history-fixtures/project-a";
 
 function writeTs(file: string, texts: string[], ts: number): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -61,7 +51,9 @@ test("global drain puts the legacy seed last regardless of its fresh mtime", () 
   assert.deepEqual(drainGlobal(root), ["fresh", "legacy-2", "legacy-1"]);
 });
 
-const sealedDrainTest = skipIf(process.getuid?.() === 0);
+const isRoot = process.getuid?.() === 0;
+const sealedDrainTest = (name: string, fn: () => unknown) =>
+  test(name, { skip: isRoot && "requires a non-root user" }, fn);
 sealedDrainTest(
   "an unreadable store file is skipped; the rest drain in the expected order",
   () => {

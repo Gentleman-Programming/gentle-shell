@@ -13,7 +13,7 @@ function makeRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-writer-"));
 }
 
-const CWD = "/Users/admin/Dev/pi/pi-history";
+const CWD = "/pi-history-fixtures/project-a";
 
 function fileTexts(file: string): string[] {
   return fs

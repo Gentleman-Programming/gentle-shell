@@ -33,7 +33,7 @@ Use this skill after installing, removing, creating, moving, or renaming skills,
 
 ## Execution Steps
 
-1. Scan all known user and project skill directories for `*/SKILL.md`; npm-package and package-declared (`pi.skills`) skills arrive through the extension's runtime capture, not through this scan.
+1. Scan only the intentional non-Pi user and project loose-scan directories for `*/SKILL.md`; npm-package and package-declared (`pi.skills`) skills arrive through the extension's runtime capture, not through this scan.
 2. Read frontmatter only as needed to extract `name` and `description` trigger text.
 3. Render `.atl/skill-registry.md` with scanned sources, registry contract, skill name, trigger/description, scope, and exact path.
 4. Persist to Engram when available using `title: skill-registry`, `topic_key: skill-registry`, `type: config`, and `capture_prompt: false`.

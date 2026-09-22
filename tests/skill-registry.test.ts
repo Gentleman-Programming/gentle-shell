@@ -720,6 +720,132 @@ test("applyResolvedSkillsUpdate regenerates when the resolved set changes", asyn
 	assert.match(registry, new RegExp(escapeRegExp(secondPath)));
 });
 
+test("resolved fingerprint tracks normalized descriptions, effective disabled state, and runtime order", async () => {
+	const cwd = join(tmpdir(), `gentle-pi-resolved-fingerprint-${Date.now()}`);
+	const alphaPath = "/pkg/skills/fingerprint-alpha/SKILL.md";
+	const betaPath = "/pkg/skills/fingerprint-beta/SKILL.md";
+	const first: ResolvedSkill[] = [
+		{ name: "duplicate", description: "Trigger: first entry.", filePath: alphaPath },
+		{ name: "duplicate", description: "Trigger: second entry.", filePath: betaPath },
+	];
+
+	assert.equal((await __testing.regenerateRegistry(cwd, false, first)).regenerated, true);
+	assert.equal(
+		(await __testing.regenerateRegistry(cwd, false, [
+			{ ...first[0], description: "  Trigger:   first entry.  " },
+			first[1],
+		])).regenerated,
+		false,
+		"whitespace-only description changes must remain cache-equivalent",
+	);
+	assert.equal(
+		(await __testing.regenerateRegistry(cwd, false, [
+			{ ...first[0], description: "Trigger: updated first entry." },
+			first[1],
+		])).regenerated,
+		true,
+		"normalized description changes must invalidate the cache",
+	);
+	assert.equal(
+		(await __testing.regenerateRegistry(cwd, false, [
+			{ ...first[0], description: "Trigger: updated first entry.", disableModelInvocation: true },
+			first[1],
+		])).regenerated,
+		true,
+		"effective disabled-state changes must invalidate the cache",
+	);
+
+	const orderCwd = join(tmpdir(), `gentle-pi-resolved-order-${Date.now()}`);
+	assert.equal((await __testing.regenerateRegistry(orderCwd, false, first)).regenerated, true);
+	const reordered = [first[1], first[0]];
+	assert.equal(
+		(await __testing.regenerateRegistry(orderCwd, false, reordered)).regenerated,
+		true,
+		"runtime order changes must invalidate the cache",
+	);
+	const registry = readFileSync(join(orderCwd, ".atl", "skill-registry.md"), "utf8");
+	assert.match(registry, new RegExp(escapeRegExp(betaPath)));
+	assert.doesNotMatch(registry, new RegExp(escapeRegExp(alphaPath)));
+});
+
+test("before_agent_start rejects malformed batches and preserves prior resolved skills", async () => {
+	const cwd = join(tmpdir(), `gentle-pi-wire-malformed-batch-${Date.now()}`);
+	const skillPath = "/pkg/skills/valid-before-malformed/SKILL.md";
+	const { pi, handlers, commands } = fakeSkillRegistryPi();
+	skillRegistryExtension(pi);
+	const handler = handlers.get("before_agent_start")?.[0];
+	const refresh = commands.get("skill-registry:refresh");
+	assert.ok(handler);
+	assert.ok(refresh);
+
+	await handler(
+		{ systemPromptOptions: { skills: [{ name: "valid", description: "Valid runtime skill.", filePath: skillPath }] } },
+		{ cwd, hasUI: false },
+	);
+	for (const skills of [
+		[
+			{ name: "replacement-scope", description: "Must not partially apply.", filePath: "/pkg/skills/replacement-scope/SKILL.md" },
+			{
+				name: "invalid-scope",
+				description: "Invalid nested metadata.",
+				filePath: "/pkg/skills/invalid-scope/SKILL.md",
+				sourceInfo: { scope: 42 },
+			},
+		],
+		[
+			{ name: "replacement-origin", description: "Must not partially apply.", filePath: "/pkg/skills/replacement-origin/SKILL.md" },
+			{
+				name: "invalid-origin",
+				description: "Invalid nested metadata.",
+				filePath: "/pkg/skills/invalid-origin/SKILL.md",
+				sourceInfo: { origin: "invalid" },
+			},
+		],
+	]) {
+		writeFileSync(join(cwd, ".atl", "skill-registry.md"), "sentinel\n");
+		await handler({ systemPromptOptions: { skills } }, { cwd, hasUI: false });
+		await refresh.handler("", { cwd, hasUI: false, ui: { notify() {} } });
+
+		const registry = readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8");
+		assert.match(registry, new RegExp(escapeRegExp(skillPath)));
+		assert.doesNotMatch(registry, new RegExp(escapeRegExp(skills[0].filePath)));
+		assert.doesNotMatch(registry, /sentinel/);
+	}
+});
+
+test("watcher refresh retains captured runtime-resolved skills", { timeout: 5_000 }, async () => {
+	const cwd = join(tmpdir(), `gentle-pi-watch-resolved-${Date.now()}`);
+	const looseSkillPath = join(cwd, "skills", "loose", "SKILL.md");
+	const resolvedPath = "/pkg/skills/watcher-retained/SKILL.md";
+	mkdirSync(dirname(looseSkillPath), { recursive: true });
+	writeFileSync(looseSkillPath, "---\nname: loose\ndescription: Before watcher refresh.\n---\n");
+	await __testing.applyResolvedSkillsUpdate(cwd, [
+		{ name: "retained", description: "Runtime authority.", filePath: resolvedPath },
+	]);
+
+	let resolveRefresh: (() => void) | undefined;
+	let timeout: ReturnType<typeof setTimeout> | undefined;
+	const refreshed = new Promise<void>((resolve) => {
+		resolveRefresh = resolve;
+	});
+	try {
+		await __testing.startSkillRegistryWatcher(cwd, () => resolveRefresh?.());
+		writeFileSync(looseSkillPath, "---\nname: loose\ndescription: After watcher refresh.\n---\n");
+		await Promise.race([
+			refreshed,
+			new Promise<void>((_resolve, reject) => {
+				timeout = setTimeout(() => reject(new Error("watcher did not refresh the registry")), 3_000);
+			}),
+		]);
+	} finally {
+		if (timeout) clearTimeout(timeout);
+		__testing.closeSkillRegistryWatchers();
+	}
+
+	const registry = readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8");
+	assert.match(registry, new RegExp(escapeRegExp(resolvedPath)));
+});
+
 test("before_agent_start handler wires pi-resolved skills into the registry", async () => {
 	// Happy path: the handler captures runtime-resolved skills for the session cwd.
 	{

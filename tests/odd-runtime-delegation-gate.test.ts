@@ -7,6 +7,7 @@ import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
+import { OddRuntimeDelegationGate } from "../lib/odd-runtime-delegation-gate.ts";
 
 type Handler = (event: Record<string, unknown>, ctx: ExtensionContext) => unknown;
 
@@ -53,6 +54,22 @@ function context(cwd: string): ExtensionContext {
 		sessionManager: { getSessionId: () => "odd-runtime-delegation-red" },
 	} as unknown as ExtensionContext;
 }
+
+test("a read cannot consume the primary direct write path budget", () => {
+	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-odd-runtime-read-budget-"));
+	try {
+		execFileSync("git", ["init", "--quiet"], { cwd });
+		const gate = new OddRuntimeDelegationGate();
+		gate.start("session", true);
+		gate.recordSuccess("session", "read", { path: join(cwd, "first.ts") }, cwd);
+		assert.equal(
+			gate.beforeTool("session", "write", { path: join(cwd, "second.ts") }, cwd, ["subagent_run"]),
+			undefined,
+		);
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
 
 test("primary ODD runtime blocks the second distinct direct source write before mutation", async () => {
 	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-odd-runtime-gate-"));

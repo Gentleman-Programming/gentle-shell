@@ -21,7 +21,7 @@ const EXCLUDE_NAMES = new Set(["_shared", "skill-registry"]);
 const EXCLUDE_PREFIXES = ["sdd-"];
 const ATL_IGNORE_ENTRY = ".atl/";
 const WATCH_DEBOUNCE_MS = 500;
-const REGISTRY_SCHEMA_VERSION = 8;
+const REGISTRY_SCHEMA_VERSION = 9;
 const NO_SKILL_REGISTRY_FLAG = "no-skill-registry";
 const NO_SKILL_REGISTRY_ENV = "GENTLE_PI_NO_SKILL_REGISTRY";
 const LEGACY_PROJECT_REGISTRY_REL_PATH = ".pi/extensions/skill-registry.ts";
@@ -271,6 +271,30 @@ function trimResolvedSkill(skill: ResolvedSkill): ResolvedSkill {
 	return trimmed;
 }
 
+function isResolvedSourceInfo(value: unknown): value is NonNullable<ResolvedSkill["sourceInfo"]> {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const sourceInfo = value as NonNullable<ResolvedSkill["sourceInfo"]>;
+	return (
+		(sourceInfo.scope === undefined ||
+			sourceInfo.scope === "user" ||
+			sourceInfo.scope === "project" ||
+			sourceInfo.scope === "temporary") &&
+		(sourceInfo.origin === undefined || sourceInfo.origin === "package" || sourceInfo.origin === "top-level")
+	);
+}
+
+function isResolvedSkill(value: unknown): value is ResolvedSkill {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const skill = value as Partial<ResolvedSkill>;
+	return (
+		typeof skill.name === "string" &&
+		typeof skill.description === "string" &&
+		typeof skill.filePath === "string" &&
+		(skill.disableModelInvocation === undefined || typeof skill.disableModelInvocation === "boolean") &&
+		(skill.sourceInfo === undefined || isResolvedSourceInfo(skill.sourceInfo))
+	);
+}
+
 async function applyResolvedSkillsUpdate(cwd: string, skills: ResolvedSkill[]): Promise<RegenResult> {
 	lastResolvedSkills = skills.map(trimResolvedSkill);
 	return regenerateRegistry(cwd, false, lastResolvedSkills);
@@ -317,12 +341,18 @@ function isCacheFile(value: unknown): value is { fingerprint: string } {
 }
 
 async function fingerprint(files: string[], resolved: ResolvedSkill[] = []): Promise<string> {
-	const lines: string[] = [`schema:${REGISTRY_SCHEMA_VERSION}`];
-	for (const skill of resolved) {
-		lines.push(
-			`resolved:${skill.name}:${skill.filePath}:${skill.sourceInfo?.scope ?? ""}:${skill.sourceInfo?.origin ?? ""}`,
-		);
-	}
+	const resolvedLines = resolved.map((skill) =>
+		JSON.stringify([
+			"resolved",
+			skill.name,
+			normalizeSkillDescription(skill.description),
+			skill.filePath,
+			skill.disableModelInvocation === true,
+			skill.sourceInfo?.scope ?? "",
+			skill.sourceInfo?.origin ?? "",
+		]),
+	);
+	const fileLines: string[] = [];
 	for (const file of files) {
 		try {
 			const info = await stat(file);
@@ -330,16 +360,17 @@ async function fingerprint(files: string[], resolved: ResolvedSkill[] = []): Pro
 			try {
 				contentHash = createHash("sha1").update(await readFile(file)).digest("hex");
 			} catch {
-				lines.push(`${file}:unreadable`);
+				fileLines.push(`${file}:unreadable`);
 				continue;
 			}
-			lines.push(`${file}:${info.mtimeMs}:${info.size}:${contentHash}`);
+			fileLines.push(`${file}:${info.mtimeMs}:${info.size}:${contentHash}`);
 		} catch {
-			lines.push(`${file}:missing`);
+			fileLines.push(`${file}:missing`);
 		}
 	}
-	lines.sort();
-	return createHash("sha1").update(lines.join("\n")).digest("hex");
+	return createHash("sha1")
+		.update([`schema:${REGISTRY_SCHEMA_VERSION}`, ...resolvedLines, ...fileLines.sort()].join("\n"))
+		.digest("hex");
 }
 
 function renderRegistry(cwd: string, sources: string[], entries: SkillEntry[], resolvedCount = 0): string {
@@ -585,7 +616,7 @@ async function startSkillRegistryWatcher(
 		timer = setTimeout(() => {
 			void (async () => {
 				try {
-					const result = await regenerateRegistry(cwd, false);
+					const result = await regenerateRegistry(cwd, false, lastResolvedSkills);
 					if (result.regenerated) {
 						notify(`Skill registry refreshed (${result.skillCount} skills)`);
 					}
@@ -691,7 +722,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("before_agent_start", async (event, ctx) => {
 		if (shouldSkipSkillRegistryStartup(pi)) return;
 		const skills = event.systemPromptOptions?.skills;
-		if (!Array.isArray(skills)) return;
+		if (!Array.isArray(skills) || !skills.every(isResolvedSkill)) return;
 		try {
 			const result = await applyResolvedSkillsUpdate(ctx.cwd, skills);
 			if (result.regenerated && ctx.hasUI) {

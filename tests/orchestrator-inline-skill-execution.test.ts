@@ -7,25 +7,26 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------------------
-// gentle-shell#348 — slice 1 (repro): the parent-inline skill contract gap.
+// gentle-shell#348 — slice 1 (repro, extended by slice 3): the parent-inline
+// skill contract.
 //
-// Deterministic reproduction, expected to PASS on unmodified main:
+// What this test proves on the current tree:
 //
 // 1. A project skill with an `## Output Contract` body is indexed by the
 //    gentle-ai skill registry (discovery succeeds — `.atl/skill-registry.md`
 //    lists it with scope `project`).
 // 2. The composed parent prompt (the exact `buildGentlePrompt` composition the
-//    primary session's `before_agent_start` handler injects) only binds
-//    SUBAGENTS to read the exact indexed `SKILL.md` ("subagents read those
-//    `SKILL.md` files first"). It imposes no parent-inline read obligation:
-//    there is no "Parent inline execution" section and no wording binding the
-//    parent's own inline path to read the indexed `SKILL.md` in-session.
-// 3. Consequently the skill's contract body marker can never reach
-//    parent-inline results through the composed prompt.
-//
-// Slice 2 must flip exactly the two guarded helpers below:
-//   `assertParentPromptHasNoInlineSkillReadObligation` (the c-check) and
-//   `assertParentPromptOmitsSkillContractBody` (the d-check).
+//    primary session's `before_agent_start` handler injects) delivers BOTH
+//    halves of the read duty at the composition boundary: the subagent-directed
+//    clause ("subagents read those `SKILL.md` files first") AND the parent's
+//    own inline duty ("the parent's own inline path owes the same read"). The
+//    always-on core clause is the delivery path; the execution detail
+//    (attribution line, contract markers, unreadable-path fallback) lives in
+//    the lazy `assets/orchestrator-skills.md` `### Parent inline execution`
+//    section and is bound by tests/orchestrator-skills-inline-contract.test.ts.
+// 3. The skill's contract body itself still never reaches the composed prompt
+//    (the registry indexes metadata only; the in-session read delivers the
+//    body at runtime).
 //
 // Harness: same accepted offline runtime pattern as
 // tests/asset-installation-runtime.test.ts — the parent test builds a throwaway
@@ -71,31 +72,27 @@ export default function (pi) {
 `;
 }
 
-// --- guarded flip targets for slice 2 -------------------------------------
+// --- composition-boundary delivery guards ---------------------------------
 
-// c-check: the composed parent prompt must not bind the parent's OWN inline
-// execution path to reading the indexed `SKILL.md` in-session. On main only
-// subagents owe that read (the asymmetry under test). Slice 2 inverts this
-// helper (or narrows its patterns) once the prompt carries the obligation.
-function assertParentPromptHasNoInlineSkillReadObligation(prompt: string): void {
-	const patterns: readonly RegExp[] = [
-		/parent[ -]inline[ -]execution/i,
-		/inline[^.\n]{0,120}`SKILL\.md`/i,
-		/`SKILL\.md`[^.\n]{0,120}inline/i,
-	];
-	for (const pattern of patterns) {
-		const match = pattern.exec(prompt);
-		const line = match === null ? "" : prompt.split("\n").find((l) => pattern.test(l)) ?? "";
-		assert.ok(
-			match === null,
-			`composed parent prompt binds the inline path to SKILL.md reading via /${pattern.source}/: ${JSON.stringify(line.trim())}`,
-		);
-	}
+// c-check: the composed parent prompt must deliver the core clause binding the
+// parent's OWN inline path to the same exact-file read subagents owe (landed
+// in assets/orchestrator.md, Skill Registry Protocol sentence). Anchored on
+// the exact landed wording; the execution detail (attribution line, contract
+// markers, unreadable-path fallback) is delivered via the lazy
+// `orchestrator-skills.md` section bound by the slice-2 contract test.
+function assertParentPromptCarriesInlineSkillReadObligation(prompt: string): void {
+	assert.match(
+		prompt,
+		/; the parent's own inline path owes the same read\./,
+		"composed parent prompt must bind the parent's own inline path to the same exact-file SKILL.md read subagents owe",
+	);
 }
 
-// d-check: the fixture skill's contract body never reaches the composed parent
-// prompt (the registry indexes metadata only). Slice 2 flips this helper if
-// contract bodies start being delivered inline; otherwise it stays a guard.
+// d-check: the fixture skill's contract body still never reaches the composed
+// parent prompt (the registry indexes metadata only; the obligation directs
+// the parent to read the indexed file in-session, which delivers the body at
+// runtime, not through the prompt). Keeping this guard prevents a future
+// "fix" that re-imports skill bodies into the always-on prompt.
 function assertParentPromptOmitsSkillContractBody(prompt: string, marker: string): void {
 	assert.ok(
 		!prompt.includes(marker),
@@ -223,7 +220,7 @@ async function proveInlineSkillContractGap(): Promise<void> {
 		);
 		assert.doesNotMatch(prompt, /\{\{/, "composed prompt must have every placeholder resolved");
 
-		// b-check (asymmetry baseline): the subagent-directed read clause IS
+		// b-check (subagent half): the subagent-directed read clause stays
 		// delivered to the parent prompt — subagents owe the exact read.
 		assert.match(
 			prompt,
@@ -231,13 +228,14 @@ async function proveInlineSkillContractGap(): Promise<void> {
 			"parent prompt must carry the subagent-directed SKILL.md read clause",
 		);
 
-		// c-check + d-check: the gap. No parent-inline read obligation, and
-		// the indexed contract body never reaches parent context.
-		assertParentPromptHasNoInlineSkillReadObligation(prompt);
+		// c-check + d-check: composition-boundary delivery of the parent's own
+		// inline duty (core clause), with the contract body itself still kept
+		// out of the prompt (runtime in-session read delivers it).
+		assertParentPromptCarriesInlineSkillReadObligation(prompt);
 		assertParentPromptOmitsSkillContractBody(prompt, FIXTURE_MARKER);
 
 		console.log(
-			"inline-skill-probe: fixture indexed (project) -> composed parent prompt has the subagent-only SKILL.md read clause, no parent-inline obligation, no contract body",
+			"inline-skill-probe: fixture indexed (project) -> composed parent prompt carries the subagent SKILL.md read clause AND the parent's own inline duty; contract body stays out of the prompt",
 		);
 	} finally {
 		await runtime.dispose();
@@ -247,7 +245,7 @@ async function proveInlineSkillContractGap(): Promise<void> {
 if (process.env[CHILD_FLAG] === "1") {
 	await proveInlineSkillContractGap();
 } else {
-	test("gentle-shell#348 slice 1: registry-indexed skill contract cannot reach the parent-inline path", () => {
+	test("gentle-shell#348: the parent-inline skill read duty is delivered at the composition boundary", () => {
 		const root = mkdtempSync(join(tmpdir(), "gentle-pi-348-probe-"));
 		try {
 			const home = join(root, "home");

@@ -30,7 +30,10 @@ import test, { after } from "node:test";
 const REPO_ROOT = join(import.meta.dirname, "..");
 const REAL_ASSETS_DIR = join(REPO_ROOT, "assets");
 const FIXTURE_PATH = join(import.meta.dirname, "fixtures", "orchestrator.pre-diet.md");
-const BUDGET_BYTES = 8192;
+// Canonical always-on budget. gentle-shell#348: the parent-inline skill-read
+// duty clause costs +49 B and the controlled-long assets root previously had
+// 7 B headroom; the step 8192 -> 8320 restores ~86 B margin.
+const BUDGET_BYTES = 8320;
 const MIN_CONTROLLED_LONG_ASSETS_ROOT_CHARS = 93;
 
 const LAZY_ASSET_NAMES = [
@@ -123,7 +126,7 @@ function measureOrchestratorPromptBytes(assetsDir: string): number {
 // measuring a shorter render again.
 const RDD_WORST_CASE_LINE = "Receipt-driven development: unknown (native status unavailable)";
 
-test("getOrchestratorPrompt return value stays within the canonical 8,192 B budget at a short assets root", () => {
+test("getOrchestratorPrompt return value stays within the canonical 8,320 B budget at a short assets root", () => {
 	const rendered = __testing.renderOrchestratorPrompt(representativeProductionAssetsDir);
 	assert.ok(
 		rendered.includes(RDD_WORST_CASE_LINE),

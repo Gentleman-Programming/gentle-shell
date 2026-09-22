@@ -2821,15 +2821,16 @@ async function getPiModelOptions(ctx: ExtensionContext): Promise<string[]> {
 	if (!registry) {
 		return [...MODEL_CONTROL_OPTIONS];
 	}
-	let models: { provider: string; id: string }[];
+	let raw: unknown;
 	try {
-		models = await registry.getAvailable();
+		raw = await registry.getAvailable();
 	} catch {
 		return [...MODEL_CONTROL_OPTIONS];
 	}
-	if (!Array.isArray(models)) {
+	if (!Array.isArray(raw)) {
 		return [...MODEL_CONTROL_OPTIONS];
 	}
+	const models = raw as { provider: string; id: string }[];
 	const modelIds = models
 		.map((model) => normalizeModelId(`${model.provider}/${model.id}`))
 		.filter((model): model is string => model !== undefined)
@@ -4157,7 +4158,12 @@ async function switchLiveOrchestrator(ctx: ExtensionContext, live: LiveSession, 
 	if (reference === undefined) return "";
 	const label = `${reference.provider}/${reference.model}`;
 	const registry = ctx.modelRegistry;
-	if (!registry) return `\nModel registry unavailable; this session keeps its current model.`;
+	if (!registry) {
+		if (ctx.hasUI && ctx.ui.notify) {
+			ctx.ui.notify("Model registry unavailable; this session keeps its current model.", "warning");
+		}
+		return `\nModel registry unavailable; this session keeps its current model.`;
+	}
 	const model = registry.find(reference.provider, reference.model);
 	if (model === undefined) return `\n${label} is not in the model catalog; this session keeps its current model.`;
 	let switched = false;
@@ -8671,6 +8677,7 @@ export const __testing = {
 	createGentleAiExtension: createGentleAiExtensionForTesting,
 	getPiModelOptions,
 	MODEL_CONTROL_OPTIONS,
+	switchLiveOrchestrator,
 };
 
 export interface GentleAiRuntimeDependencies {

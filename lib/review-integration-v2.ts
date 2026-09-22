@@ -310,6 +310,7 @@ export interface ChangedPathEntry {
 	readonly typeChanged: boolean;
 	readonly modeOnly: boolean;
 	readonly intendedUntracked: boolean;
+	readonly generated?: true;
 }
 
 export interface ReviewArtifactSubjectV2 {
@@ -1150,7 +1151,8 @@ export function decodeReviewArtifactSubjectV2(value: unknown): ReviewArtifactSub
 }
 
 function decodeChangedPathEntry(value: unknown, label: string): ChangedPathEntry {
-	const body = exactRecord(value, label, ["path", "status", "old_mode", "new_mode", "deleted", "type_changed", "mode_only", "intended_untracked"]);
+	const body = exactRecord(value, label, ["path", "status", "old_mode", "new_mode", "deleted", "type_changed", "mode_only", "intended_untracked"], ["generated"]);
+	if (body.generated !== undefined && body.generated !== true) throw new TypeError(`${label}.generated must be true when present`);
 	return {
 		path: nonempty(body.path, `${label}.path`),
 		status: enumeration(body.status, ["A", "D", "M", "T"] as const, `${label}.status`),
@@ -1160,6 +1162,7 @@ function decodeChangedPathEntry(value: unknown, label: string): ChangedPathEntry
 		typeChanged: boolean(body.type_changed, `${label}.type_changed`),
 		modeOnly: boolean(body.mode_only, `${label}.mode_only`),
 		intendedUntracked: boolean(body.intended_untracked, `${label}.intended_untracked`),
+		...(body.generated === undefined ? {} : { generated: true }),
 	};
 }
 

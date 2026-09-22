@@ -6760,14 +6760,6 @@ async function reconcileUnknownReviewCaptureFailure(
 	}
 }
 
-/**
- * Executes a single review capture slot through the Pi host relay. Launches
- * the relay request with the slot's routing key and optional in-process model
- * registry, then maps the result back into the session-local binding and
- * selections. Handles relay failures (unavailable, handshake refused,
- * unachievable lens declaration, timeout, transport) and surfaces a typed
- * capture or blocked status for each path.
- */
 async function executeReviewHostRelayCapture(
 	slot: ReviewHostRelaySlot,
 	nativeReviewCli: NativeReviewCli,
@@ -7389,14 +7381,6 @@ function reviewHostRelayGroupFailure(
 	};
 }
 
-/**
- * Orchestrates a single review capture operation. Validates parameters and
- * native CLI state, negotiates the reviewer STATUS, selects the exact capture
- * binding, and dispatches to the appropriate runner: host relay for lens and
- * host-mediated role slots (lens/refuter/validator), native correction-plan
- * capture for correction-plan bindings, or provider role vector slots. Passes
- * the live model registry through for in-process completion when available.
- */
 async function executeReviewCaptureOperation(
 	parametersValue: unknown,
 	sessionCwd: string,
@@ -7566,14 +7550,6 @@ function reviewHostRelayGroupProgress(
 	};
 }
 
-/**
- * Orchestrates a review capture group operation. Validates parameters and
- * native CLI state, negotiates the reviewer STATUS, parses all collect
- * bindings, and dispatches the group to the host relay for concurrent
- * execution of independent reviewer slots. Accepts the same parameters as
- * `executeReviewCaptureOperation` plus a bindings array and a
- * reviewerRunAcknowledged flag.
- */
 async function executeReviewCaptureGroupOperation(
 	parametersValue: unknown,
 	sessionCwd: string,
@@ -8750,13 +8726,6 @@ export function createGentleAiExtension(dependencies: GentleAiRuntimeDependencie
 	return createGentleAiExtensionForTesting(dependencies);
 }
 
-/**
- * Creates a test fixture for the gentle-ai extension. Wires up a default
- * native review CLI, child-standing review permission client, test timer
- * scheduling, telemetry binary resolution, and other dependencies passed
- * through `GentleAiRuntimeDependencies` so that the extension can run
- * without real native tooling during unit or integration tests.
- */
 function createGentleAiExtensionForTesting(
 	dependencies: GentleAiRuntimeDependencies = {},
 ): (pi: ExtensionAPI) => void {

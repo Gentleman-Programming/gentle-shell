@@ -156,6 +156,45 @@ test("strictly decodes the real zero-lens closed START and every last-event clos
 	}
 });
 
+test("approved closure preserves complete admitted reviewer results before acknowledgement", () => {
+	const approved = closure("review/capture-result", "review-results");
+	approved.reviewer_results = [{
+		lens: "review-reliability",
+		findings: [{
+			id: "R3-W01",
+			lens: "reliability",
+			location: "lib/session.ts:4",
+			severity: "SUGGESTION",
+			claim: "the complete explanatory narrative remains available",
+			proof_refs: ["the changed line was inspected"],
+			evidence_class: "insufficient",
+			causal_disposition: "pre-existing",
+		}],
+		evidence: ["inspected the complete frozen candidate"],
+		result_hash: SHA,
+	}];
+	const decoded = decodeReviewLastEventClosureV1(approved);
+	assert.deepEqual(decoded.reviewerResults, [{
+		lens: "review-reliability",
+		findings: [{
+			id: "R3-W01",
+			lens: "reliability",
+			location: "lib/session.ts:4",
+			severity: "SUGGESTION",
+			claim: "the complete explanatory narrative remains available",
+			proofRefs: ["the changed line was inspected"],
+			evidenceClass: "insufficient",
+			causalDisposition: "pre-existing",
+		}],
+		evidence: ["inspected the complete frozen candidate"],
+		resultHash: SHA,
+	}]);
+
+	const correctionPlan = closure("review.capture-correction-plan", "review-results");
+	correctionPlan.reviewer_results = approved.reviewer_results;
+	assert.throws(() => decodeReviewLastEventClosureV1(correctionPlan), /reviewer_results requires approved state/);
+});
+
 test("retired legacy client no longer exposes a FINALIZE route", () => {
 	assert.equal("NativeReviewCliV214" in nativeReviewCliModule, false);
 	assert.equal("NativeReviewCliV213" in nativeReviewCliModule, false);
@@ -337,7 +376,7 @@ test("unknown-capture reconciliation preserves agentless legacy callers and forw
 		targetStatus: async (request: Record<string, unknown>) => {
 			calls.push(request);
 			assert.equal(request.lineageId, "reconcile-lineage");
-			return { targetIdentity: SHA, authority: { lineageId: "reconcile-lineage" } } as ReviewStatusV3;
+			return { applicability: "current_target", targetIdentity: SHA, authority: { lineageId: "reconcile-lineage" } } as ReviewStatusV3;
 		},
 	} as unknown as NativeReviewCli;
 	const result = await reconcileUnknownReviewLastEventCapture(native, "/repo", { lineageId: "reconcile-lineage", targetIdentity: SHA });
@@ -353,6 +392,71 @@ test("unknown-capture reconciliation preserves agentless legacy callers and forw
 	const strictNative = new nativeReviewCliModule.NativeReviewCliV216(async () => { launches += 1; throw new Error("must not launch"); }, "/package/.gentle-ai/gentle-ai");
 	for (const selector of [{ committedOnly: true }, { baseRef: "refs/heads/main" }, { baseRef: "refs/heads/main", committedOnly: false }] as unknown as readonly Parameters<typeof reconcileUnknownReviewLastEventCapture>[3][]) await assert.rejects(() => reconcileUnknownReviewLastEventCapture(strictNative, "/repo", { lineageId: "reconcile-lineage", targetIdentity: SHA }, selector));
 	assert.equal(launches, 0);
+});
+
+test("unknown targeted-validator capture reconciliation requires current exact authority and target", async () => {
+	const lineageId = "targeted-validator-reconciliation";
+	const input = roleInput(lineageId, "review.capture-validation");
+	const expected = status(lineageId, [input]);
+	const cases = [
+		["current matching STATUS", expected, true],
+		["unrelated STATUS", { ...expected, applicability: "unrelated" }, false],
+		["STATUS without authority", { ...expected, authority: undefined }, false],
+		["STATUS for another lineage", { ...expected, authority: { ...expected.authority!, lineageId: "other-lineage" } }, false],
+		["STATUS for another target", { ...expected, targetIdentity: `sha256:${"d".repeat(64)}` }, false],
+	] as const;
+
+	for (const [_name, reconciliationStatus, trusted] of cases) {
+		let statusCalls = 0;
+		let captureCalls = 0;
+		let startCalls = 0;
+		const native = {
+			targetStatus: async () => {
+				statusCalls += 1;
+				return statusCalls === 1 ? expected : reconciliationStatus;
+			},
+			captureProviderRole: async () => {
+				captureCalls += 1;
+				throw Object.assign(new Error("targeted-validator response lost"), {
+					mutationOutcome: "unknown",
+					nextAction: "review.status",
+					failureEnvelope: { raw: { code: "targeted-validator-response-lost" }, mutationOutcome: "unknown" },
+				});
+			},
+			start: async () => { startCalls += 1; },
+		} as unknown as NativeReviewCli;
+
+		const result = await capture(lineageId, input, native);
+		assert.equal(result.outcome, trusted ? "native-capture-outcome-unknown" : "native-capture-status-reconciliation-failed");
+		assert.equal(captureCalls, 1, "an ambiguous capture is never replayed");
+		assert.equal(statusCalls, 2, "an ambiguous capture gets one reconciliation STATUS");
+		assert.equal(startCalls, 0, "reconciliation never invokes START");
+		if (trusted) {
+			assert.equal(result.status, "reconciled");
+			assert.deepEqual((result.native_failure as { native_failure: unknown }).native_failure, { code: "targeted-validator-response-lost" });
+		} else {
+			assert.deepEqual(result.native_failure, { code: "targeted-validator-response-lost" }, "the original capture failure is preserved");
+			assert.ok(result.reconciliation_failure, "the rejected STATUS diagnostic remains nested");
+		}
+	}
+});
+
+test("unknown-capture reconciliation rejects a binding without a target identity", async () => {
+	const lineageId = "missing-reconciliation-target";
+	const input = roleInput(lineageId, "review.capture-validation");
+	let statusCalls = 0;
+	const native = {
+		targetStatus: async () => {
+			statusCalls += 1;
+			return status(lineageId, [input]);
+		},
+	} as unknown as NativeReviewCli;
+
+	await assert.rejects(
+		() => reconcileUnknownReviewLastEventCapture(native, process.cwd(), { lineageId }),
+		/capture reconciliation returned missing or different target/,
+	);
+	assert.equal(statusCalls, 1, "the missing binding is rejected after one reconciliation STATUS");
 });
 
 // One approved terminal closure carrying the exact continuation the provider

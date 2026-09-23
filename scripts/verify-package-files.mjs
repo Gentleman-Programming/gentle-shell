@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const root = join(fileURLToPath(new URL("..", import.meta.url)));
 
 const requiredPaths = [
+  "bin/gentle-shell.mjs",
   "assets/orchestrator.md",
   "assets/orchestrator-delegation.md",
   "assets/orchestrator-memory.md",
@@ -30,10 +31,10 @@ const requiredPaths = [
   "assets/agents/sdd-init.md",
   "assets/agents/sdd-onboard.md",
   "assets/agents/sdd-proposal.md",
+  "assets/agents/sdd-remediate.md",
   "assets/agents/sdd-research.md",
   "assets/agents/sdd-spec.md",
   "assets/agents/sdd-status.md",
-  "assets/agents/sdd-sync.md",
   "assets/agents/sdd-tasks.md",
   "assets/agents/sdd-verify.md",
   "assets/chains/4r-review.chain.md",
@@ -54,6 +55,7 @@ const requiredPaths = [
   "extensions/sdd-init.ts",
   "extensions/skill-registry.ts",
   "lib/gentle-ai-binary.ts",
+  "lib/gentle-shell-launcher.ts",
   "lib/native-review-cli.ts",
   "lib/provider-contract-bundle.ts",
   "lib/review-host-relay.ts",
@@ -62,6 +64,7 @@ const requiredPaths = [
   "lib/sdd-preflight.ts",
   "lib/telemetry-trigger.ts",
 	"runtime/gentle-ai-binary.mjs",
+	"runtime/gentle-shell-launcher.mjs",
 	"runtime/native-review-cli.mjs",
 	"runtime/review-integration-v2.mjs",
 	"runtime/review-risk-assessment.mjs",
@@ -70,6 +73,7 @@ const requiredPaths = [
   "scripts/check-provider-contract.mjs",
   "scripts/gentle-ai-installer.mjs",
   "scripts/install-gentle-ai.mjs",
+  "scripts/install-tui-mode-setting.mjs",
   "scripts/mirror-provider-contract.mjs",
   "tests/fixtures/native-review-cli/v2.1.3/start.json",
   "tests/fixtures/provider-contract-bundle/v1.1.0/README.md",
@@ -105,7 +109,6 @@ const requiredPaths = [
   "skills/issue-creation/SKILL.md",
   "skills/judgment-day/SKILL.md",
   "skills/rdd-defect-workflow/SKILL.md",
-  "skills/release/SKILL.md",
   "skills/skill-creator/SKILL.md",
   "skills/skill-improver/SKILL.md",
   "skills/skill-registry/SKILL.md",
@@ -180,7 +183,8 @@ const contractHashes = {
   "contracts/review-integration/v2/schemas/repair.schema.json": "98a85fd45a8ae7f6211ffeeb3f9c478fa1dd1c17f385751f15f2111e6c3ab167",
   "contracts/review-integration/v2/schemas/start.schema.json": "2991e3fcca672d9257d61b6a336fb34e58b15a8e03f8a09a7adf892cae6a8085",
   "contracts/review-integration/v2/schemas/status.schema.json": "c4dcc736cfc6300560a3c4262d2d982368529d5c49d58d499552a3b0beef9212",
-  "docs/review-integration.md": "95a3df92785bc4d9f3b99e702aaf817ae0440bd16c83218d2c3f2aca67c280fb",
+  "contracts/telemetry/runtime-aggregate-v1.schema.json": "eb0f2993d9271f55cb42eca343e6fbb601a733fb90bd40daeebc92ee60ae1ba9",
+  "docs/review-integration.md": "9b60fa2775129c468f7eb3510905014553cee5f3cbcb78a608f08baf8bbd7336",
 };
 
 requiredPaths.push(...Object.keys(contractHashes));
@@ -338,7 +342,7 @@ async function main() {
   });
 
   if (driftedContracts.length > 0) {
-    console.error("gentle-pi packaged review-integration/v1 and review-integration/v2 contract bytes drifted from the pinned v2.7.0 runtime's vendored Gentle AI contract artifacts:");
+    console.error("gentle-pi packaged review-integration/v1 and review-integration/v2 contract bytes drifted from the pinned v3.7.0 runtime's vendored Gentle AI contract artifacts:");
     for (const drift of driftedContracts) console.error(`- ${drift.relativePath}: expected ${drift.expected}, got ${drift.actual}`);
     process.exit(1);
   }
@@ -383,7 +387,7 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`gentle-pi package resource check passed (${requiredPaths.length} files; ${Object.keys(contractHashes).length} exact byte-pinned contract artifacts for the v2.7.0 runtime).`);
+  console.log(`gentle-pi package resource check passed (${requiredPaths.length} files; ${Object.keys(contractHashes).length} exact byte-pinned contract artifacts for the v3.7.0 runtime).`);
 }
 
 const isMainModule = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;

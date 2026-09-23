@@ -94,6 +94,18 @@ test("model routing authority normalizes and preserves sync/async source status"
 		path: invalidGlobalPath,
 	});
 
+	const sourceCases = [
+		[missingPath, missingPath, { status: "missing" }],
+		[missingPath, projectPath, { status: "valid", config: { project: { model: "google/gemini" } } }],
+		[validGlobalPath, projectPath, validSync],
+		[missingPath, invalidGlobalPath, { status: "invalid", path: invalidGlobalPath }],
+		[invalidGlobalPath, projectPath, { status: "invalid", path: invalidGlobalPath }],
+	] as const;
+	for (const [globalSource, projectSource, expected] of sourceCases) {
+		assert.deepEqual(authority.readSavedModelConfig(globalSource, projectSource), expected);
+		assert.deepEqual(await authority.readSavedModelConfigAsync(globalSource, projectSource), expected);
+	}
+
 	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
 	process.env.GENTLE_PI_CONFIG_HOME = globalDir;
 	t.after(() => {

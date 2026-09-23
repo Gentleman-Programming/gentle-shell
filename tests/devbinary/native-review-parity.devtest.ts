@@ -306,6 +306,8 @@ test("dev-binary: v7 intended-untracked selection decodes both selected statuses
 	assert.equal("lineage_created" in result, false, "reconciled unknown mutation must not claim lineage creation");
 	assert.equal("mutation_performed" in result, false, "reconciled unknown mutation must not claim a mutation result");
 	assert.equal(result.mutation_outcome, "unknown", "the controller cannot prove mutation status after an intercepted launch");
+	assert.match(String(result.required_status_action), /Run target-scoped review\.status/, "ambiguous START must retain its executable-safe STATUS instruction");
+	assert.equal(result.next_action, "start", "the reconciled provider action remains visible without authoring a replay");
 	const after = await native.targetStatus({ cwd, agent: "pi" });
 	assert.equal(after.authority, undefined, "post-intercept STATUS must not expose authority");
 });

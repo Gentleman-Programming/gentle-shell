@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="570" viewBox="0 0 960 570" role="img" aria-labelledby="review-title review-desc">
+  <title id="review-title">Native review boundary</title>
+  <desc id="review-desc">A frozen candidate moves through risk-scoped review to a result. A separate, clearly bounded human decision determines repository delivery.</desc>
+  <defs>
+    <linearGradient id="review-bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0d0b12"/><stop offset="1" stop-color="#241020"/></linearGradient>
+    <marker id="review-arrow" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" viewBox="0 0 10 10" refX="10" refY="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#f095c8"/></marker>
+  </defs>
+  <rect width="960" height="570" rx="20" fill="url(#review-bg)"/>
+  <text x="58" y="65" fill="#fff7f1" font-family="Arial, Helvetica, sans-serif" font-size="44" font-weight="700">Review the exact change.</text>
+  <text x="58" y="120" fill="#d7a0b8" font-family="Arial, Helvetica, sans-serif" font-size="44" font-weight="700">Keep delivery in your hands.</text>
+  <g fill="#1c1420" stroke="#d7a0b8" stroke-width="2"><rect x="50" y="205" width="230" height="130" rx="16"/><rect x="365" y="185" width="230" height="170" rx="16" fill="#2a1426" stroke="#f095c8" stroke-width="3"/><rect x="680" y="205" width="230" height="130" rx="16"/></g>
+  <g fill="none" stroke="#f095c8" stroke-width="3" stroke-linecap="round" marker-end="url(#review-arrow)"><path d="M280 270H365"/><path d="M595 270H680"/></g>
+  <g font-family="Arial, Helvetica, sans-serif" text-anchor="middle"><g fill="#fff7f1" font-size="36" font-weight="700"><text x="165" y="264">Candidate</text><text x="480" y="250">Review</text><text x="795" y="264">Outcome</text></g><g fill="#d7a0b8" font-size="32"><text x="165" y="309">Frozen</text><text x="480" y="300">By risk</text><text x="795" y="309">Evidence</text></g></g>
+  <rect x="120" y="415" width="720" height="94" rx="16" fill="#18121b" stroke="#d7a0b8" stroke-width="2" stroke-dasharray="8 7"/>
+  <g font-family="Arial, Helvetica, sans-serif" text-anchor="middle"><text x="480" y="452" fill="#fff7f1" font-size="36" font-weight="700">You decide what ships</text><text x="480" y="493" fill="#d7a0b8" font-size="32">Review does not publish.</text></g>
+</svg>

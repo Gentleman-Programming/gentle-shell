@@ -73,7 +73,7 @@ test("shouldTriggerTelemetry: pure predicate table", () => {
 	}
 });
 
-test("spawnTelemetryTrigger: launches the expected argv, detached and stdio-ignored", () => {
+test("spawnTelemetryTrigger: launches the expected argv, detached, hidden, and stdio-ignored", () => {
 	const fake = fakeSpawn();
 	const result = spawnTelemetryTrigger({
 		executable: "/opt/gentle-ai/gentle-ai",
@@ -88,6 +88,7 @@ test("spawnTelemetryTrigger: launches the expected argv, detached and stdio-igno
 	assert.deepEqual(call.args, ["telemetry", "trigger", "--json"]);
 	assert.equal(call.options.cwd, "/work/project");
 	assert.equal(call.options.detached, true);
+	assert.equal(call.options.windowsHide, true);
 	assert.equal(call.options.stdio, "ignore");
 });
 
@@ -212,6 +213,7 @@ test("activation: spawns the telemetry trigger exactly once for a primary sessio
 	assert.deepEqual(call.args, ["telemetry", "trigger", "--json"]);
 	assert.equal(call.options.cwd, "/work/project");
 	assert.equal(call.options.detached, true);
+	assert.equal(call.options.windowsHide, true);
 	assert.equal(call.options.stdio, "ignore");
 });
 

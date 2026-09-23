@@ -146,6 +146,174 @@ test("optional verification retains practical evidence without retired attestati
 	assert.match(chain, /does not make verification mandatory/);
 });
 
+/** Reject stale local instructions and tracker targets while allowing external source/schema URLs. */
+function assertCurrentRepositoryInstructions(source: string, label: string): void {
+	// Repository flags are actionable targets, even when their values are URLs.
+	assert.doesNotMatch(source, /--repo(?:\s*=\s*|\s+)["']?https?:\/\/(?:www\.)?github\.com\/(?:badlogic|earendil-works)\/pi-mono(?![\w-]|\.[\w.-])/i, label);
+	// Upstream source/schema URLs are references, not local implementation paths.
+	assert.doesNotMatch(source, /github\.com\/(?:badlogic|earendil-works)\/pi-mono\/(?:issues|pulls?|discussions)\b/i, label);
+	const localInstructions = source.replace(/https?:\/\/[^\s<>`"\)]+/g, "");
+	// Dots and hyphens belong to names; slashes delimit components (including ./ and ../).
+	// A trailing sentence period is punctuation, but a dotted suffix continues the name.
+	assert.doesNotMatch(localInstructions, /(?<![\w.-])(?:packages\/|(?:AGENTS\.md|pi-mono|prompts\/(?:gpr|gcl)\.md)(?![\w-]|\.[\w.-]))/i, label);
+}
+
+/** Collect Markdown instruction files recursively beneath a shipped directory. */
+function markdownFiles(directory: string): string[] {
+	return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+		const path = join(directory, entry.name);
+		return entry.isDirectory() ? markdownFiles(path) : entry.isFile() && entry.name.endsWith(".md") ? [path] : [];
+	});
+}
+
+test("shipped prompt and agent instructions do not restore monorepo paths or tracker targets", () => {
+	const manifest = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+	// Assets include agent definitions and the orchestrator's injected/lazy prompts.
+	const assetRoots = manifest.files.filter((path: string) => /^assets\/?$/.test(path));
+	assert.equal(assetRoots.length, 1, "the shipped instruction asset root must be covered");
+	assert.ok(manifest.pi.prompts.length > 0, "Pi prompt discovery must be covered");
+	for (const root of [...assetRoots, ...manifest.pi.prompts]) {
+		const files = markdownFiles(join(repoRoot, root));
+		assert.ok(files.length > 0, `${root} must contain instruction Markdown`);
+		for (const path of files) assertCurrentRepositoryInstructions(readFileSync(path, "utf8"), path);
+	}
+});
+
+test("instruction guard rejects stale local paths and trackers but permits external references", () => {
+	for (const source of [
+		"Keep design centered on `packages/coding-agent`.",
+		"Run tests in pi-mono.",
+		"Read prompts/gpr.md and prompts/gcl.md.",
+		"gh issue create --repo badlogic/pi-mono",
+		"gh issue create --repo https://github.com/badlogic/pi-mono",
+		'gh issue create --repo "https://github.com/badlogic/pi-mono"',
+		"gh issue create --repo='https://github.com/earendil-works/pi-mono'",
+		"gh issue create --repo=https://github.com/badlogic/pi-mono",
+		"File bugs at https://github.com/earendil-works/pi-mono/issues/new",
+	]) {
+		assert.throws(() => assertCurrentRepositoryInstructions(source, "stale fixture"), assert.AssertionError);
+	}
+	for (const source of [
+		"https://raw.githubusercontent.com/earendil-works/pi-mono/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
+		"[Upstream source](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/README.md)",
+		"gh issue create --repo Gentleman-Programming/gentle-pi",
+		'gh issue create --repo="https://github.com/Gentleman-Programming/gentle-pi"',
+		"Read openspec/changes/{change}/proposal.md and follow the approved change scope.",
+	]) assertCurrentRepositoryInstructions(source, "valid fixture");
+});
+
+for (const source of ["my-packages/tool", "my-AGENTS.md", "pi-mono-fork", "my.packages/tool", "AGENTS.md.backup", "pi-mono.docs"]) {
+	test(`instruction guard permits hyphenated or dotted near miss ${source}`, () => {
+		assertCurrentRepositoryInstructions(source, "near-miss fixture");
+	});
+}
+
+test("instruction guard distinguishes path components from hyphenated names", () => {
+	for (const source of [
+		"Read ./packages/tool and /workspace/packages/widget.",
+		"Read docs/AGENTS.md.",
+		"Use (pi-mono).",
+		"Read ./prompts/gpr.md.",
+		"Read ./prompts/gcl.md.",
+		"File bugs at https://github.com/badlogic/pi-mono/pull/918",
+		"Discuss at https://github.com/earendil-works/pi-mono/discussions/1",
+	]) {
+		assert.throws(() => assertCurrentRepositoryInstructions(source, "path boundary fixture"), assert.AssertionError);
+	}
+	for (const source of [
+		"Read ./my-packages/tool and docs/my-AGENTS.md.",
+		"Use my-pi-mono and pi-mono-fork.",
+		"Read my-prompts/gpr.md and prompts/gcl.md-backup.",
+		"[Source](https://example.com/packages/tool/AGENTS.md) then edit my-packages/tool.",
+	]) assertCurrentRepositoryInstructions(source, "similar name fixture");
+});
+
+// Each generated case runs independently so one failed boundary cannot hide another.
+for (const host of ["github.com", "www.github.com"]) {
+	test(`instruction guard preserves references and mixed local checks on ${host}`, () => {
+		for (const source of [
+			`[Source](https://${host}/badlogic/pi-mono/blob/main/packages/tool/AGENTS.md)`,
+			`https://${host}/earendil-works/pi-mono/blob/main/packages/tool/schema.json`,
+			`gh issue create --repo='https://${host}/Gentleman-Programming/gentle-pi'`,
+			`https://${host}/Gentleman-Programming/gentle-pi/issues/298`,
+		]) {
+			assertCurrentRepositoryInstructions(source, "reference matrix");
+			assert.throws(() => assertCurrentRepositoryInstructions(`${source} then read ../AGENTS.md.`, "mixed matrix"), assert.AssertionError);
+		}
+	});
+	for (const owner of ["badlogic", "earendil-works"]) {
+		for (const repo of ["pi-mono", "pi-mono-fork", "pi-mono.docs"]) {
+			const url = `https://${host}/${owner}/${repo}`;
+			for (const source of [
+				...[[" ", ""], ["=", ""], [' "', '"'], ["='", "'"], ["  '", "'"], [' = "', '"']].map(([prefix, suffix]) =>
+					`gh issue create --repo${prefix}${url}${suffix}`),
+				...["issues/new", "pull/918", "pulls/918", "discussions/1"].map((path) => `${url}/${path}`),
+			]) {
+				test(`instruction guard tracker boundary: ${source}`, () => {
+					if (repo === "pi-mono") {
+						assert.throws(() => assertCurrentRepositoryInstructions(source, "tracker matrix"), assert.AssertionError);
+					} else assertCurrentRepositoryInstructions(source, "tracker near-miss matrix");
+				});
+			}
+		}
+	}
+}
+
+for (const path of ["packages/tool", "AGENTS.md", "pi-mono", "prompts/gpr.md", "prompts/gcl.md"]) {
+	for (const prefix of ["", "./", "../", "docs/"]) {
+		for (const suffix of ["", ".", ",", ")", "/child"]) {
+			const source = `Read ${prefix}${path}${suffix}`;
+			test(`instruction guard rejects exact local component: ${source}`, () => {
+				assert.throws(() => assertCurrentRepositoryInstructions(source, "local matrix"), assert.AssertionError);
+			});
+		}
+	}
+	for (const source of [`my.${path}`, `my-${path}`, `https://example.com/${path} then read my.${path}`,
+		...(path === "packages/tool" ? [] : [`${path}.backup`, `${path}-backup`])]) {
+		test(`instruction guard permits local near miss: ${source}`, () => {
+			assertCurrentRepositoryInstructions(source, "local near-miss matrix");
+		});
+	}
+}
+
+test("instruction guard rejects local packages outside coding-agent", () => {
+	assert.throws(
+		() => assertCurrentRepositoryInstructions("Edit `packages/other-tool/src/index.ts`.", "local package fixture"),
+		assert.AssertionError,
+	);
+});
+
+test("instruction guard rejects local AGENTS.md references", () => {
+	assert.throws(
+		() => assertCurrentRepositoryInstructions("Read `AGENTS.md` before implementation.", "local agent fixture"),
+		assert.AssertionError,
+	);
+});
+
+test("instruction guard permits external package and agent source/schema URLs", () => {
+	for (const source of [
+		"[Source](https://github.com/example/upstream/blob/main/packages/other-tool/AGENTS.md)",
+		"https://raw.githubusercontent.com/example/upstream/main/packages/other-tool/schema.json",
+		"<https://github.com/example/upstream/blob/main/AGENTS.md>",
+	]) assertCurrentRepositoryInstructions(source, "external reference fixture");
+});
+
+test("instruction guard still rejects local paths alongside external references", () => {
+	for (const source of [
+		"[Source](https://example.com/packages/tool/schema.json) then edit ./packages/widget/index.ts.",
+		"<https://example.com/AGENTS.md> then read docs/agents.MD.",
+	]) {
+		assert.throws(() => assertCurrentRepositoryInstructions(source, "mixed fixture"), assert.AssertionError);
+	}
+});
+
+test("sdd-design follows approved change scope and requires approval before expansion", () => {
+	const source = readFileSync(join(assetsAgentsDir, "sdd-design.md"), "utf8");
+	assert.match(source, /within the approved change scope/i);
+	assert.match(source, /obtain explicit approval before expanding (?:the )?scope/i);
+	assert.doesNotMatch(source, /`(?:lib|extensions|runtime)\/`/);
+});
+
 test("the retired Pi adversarial role agents are not packaged", () => {
 	// gentle-pi#311 P5: the refuter and targeted validator verdicts execute
 	// through Go-owned pi processes via provider-rendered self-contained

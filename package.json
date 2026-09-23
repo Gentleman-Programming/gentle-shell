@@ -44,7 +44,7 @@
 		"check:provider-contract": "node scripts/check-provider-contract.mjs",
 		"mirror:odd-routing": "node scripts/mirror-odd-routing.mjs",
 		"postinstall": "node scripts/install-gentle-ai.mjs",
-		"test": "node --experimental-strip-types --test tests/*.test.ts && pnpm run check:provider-contract && pnpm run test:harness",
+		"test": "node scripts/run-test-suite.mjs",
 		"test:harness": "node --experimental-strip-types tests/runtime-harness.mjs",
 		"test:dev-binary": "node --experimental-strip-types --test tests/devbinary/*.devtest.ts",
 		"test:cross-lane": "node tests/crosslane/cross-lane.mjs",

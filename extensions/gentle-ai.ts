@@ -1,4 +1,5 @@
 import { consumeReviewMutation, pendingReviewMutation, recordReviewMutation } from "../lib/review-reminder-receipt.ts";
+import { DELEGATION_REMINDER_TYPE, OrchestratorDelegationReminders } from "../lib/orchestrator-delegation-reminders.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { resolveResearchCapabilities, renderResearchCapabilities } from "../lib/sdd-research-capabilities.ts";
 import { declareReviewRelayHandshake } from "../lib/review-relay-contract.ts";
@@ -8784,9 +8785,16 @@ function createGentleAiExtensionForTesting(
 
 	let reminderSessionActive = true;
 	let reminderEpoch = 0;
+	const delegationReminders = new OrchestratorDelegationReminders();
+	const delegationSessionId = (ctx: ExtensionContext): string => {
+		try { return ctx.sessionManager.getSessionId(); }
+		catch { return ""; }
+	};
 	pi.on("session_shutdown", (event, context) => {
 		reminderSessionActive = false;
 		reminderEpoch += 1;
+		try { delegationReminders.reset(delegationSessionId(context)); }
+		catch { /* Interval cleanup must not break shutdown. */ }
 		// Pi tears down this registry on reload as well as session replacement/quit.
 		try { candidateViews?.cleanupAll(); } catch { /* Preserve failed owned views for later recovery. */ }
 		const reason = (event as { reason?: unknown }).reason;
@@ -9300,12 +9308,38 @@ function createGentleAiExtensionForTesting(
 	});
 
 	pi.on("tool_result", (event, ctx) => {
-		if (!reminderSessionActive || event.isError !== false || (event.toolName !== "write" && event.toolName !== "edit")) return;
-		if (!isRecord(event.input) || typeof event.input.path !== "string" || !event.input.path.trim()) return;
+		if (reminderSessionActive && event.isError === false && (event.toolName === "write" || event.toolName === "edit")) {
+			if (isRecord(event.input) && typeof event.input.path === "string" && event.input.path.trim()) {
+				try {
+					const root = resolveSessionWorktree(event.input.path, ctx.cwd)?.root;
+					if (root) recordReviewMutation(pi, ctx.sessionManager, root, { source: "direct", toolName: event.toolName, toolCallId: event.toolCallId });
+				} catch { /* Receipt persistence must not change a successful tool result. */ }
+			}
+		}
+		// ODR-1 orchestrator delegation reminders: post-tool, next-decision,
+		// parent primary loop only. Never blocks and never mutates the
+		// result (this handler returns undefined); delivery is a `steer`
+		// message consumed at the next model decision of the already active
+		// turn, so no idle turn is ever started.
 		try {
-			const root = resolveSessionWorktree(event.input.path, ctx.cwd)?.root;
-			if (root) recordReviewMutation(pi, ctx.sessionManager, root, { source: "direct", toolName: event.toolName, toolCallId: event.toolCallId });
-		} catch { /* Receipt persistence must not change a successful tool result. */ }
+			if (ctx.mode === "rpc") return;
+			if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") return;
+			const depthKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
+			if ((processAgentEndSubagentDepth.get(depthKey) ?? 0) > 0) return;
+			const content = delegationReminders.record({
+				sessionId: delegationSessionId(ctx),
+				toolName: event.toolName,
+				input: event.input,
+				cwd: ctx.cwd,
+				isError: event.isError,
+			});
+			if (content !== undefined) {
+				pi.sendMessage(
+					{ customType: DELEGATION_REMINDER_TYPE, content, display: false },
+					{ deliverAs: "steer", triggerTurn: true },
+				);
+			}
+		} catch { /* Reminder delivery must not change a tool result. */ }
 	});
 
 	pi.on("tool_call", async (event, ctx) => {

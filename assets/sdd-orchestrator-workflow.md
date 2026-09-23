@@ -1,70 +1,85 @@
 # SDD Orchestrator Workflow
 
-This is the lazy-loaded SDD workflow surface for el Gentleman on Pi. Read this file before handling `/sdd-*`, natural-language SDD requests, SDD continuation/routing, apply/verify/sync/archive work, or SDD/Judgment-Day phase delegation.
+This is the lazy-loaded SDD workflow surface for el Gentleman on Pi. Read this file before handling `/sdd-*`, natural-language SDD requests, SDD continuation/routing, apply/verify/archive work, or SDD/Judgment-Day phase delegation.
 
 ## SDD Workflow
 
 SDD phases:
 
 ```text
-init → explore → research (optional) → proposal → spec → design → tasks → apply → verify → sync → archive
+init → explore → research (optional) → proposal → spec → design → tasks → apply → archive (verification optional)
 ```
 
 Dependency graph:
 
 ```text
 explore → research (optional) → proposal
-proposal → spec ─┬→ tasks → apply → verify → sync → archive
+proposal → spec ─┬→ tasks → apply → archive (verification optional)
 proposal → design ┘
 ```
 
-`/gentle-sdd-status [change]` is the read-only status action for resolving the active change, artifact paths, task progress, dependency readiness, and action context before apply/verify/sync/archive.
+`/gentle-sdd-status [change]` is the read-only status action for resolving the active change, artifact paths, task progress, dependency readiness, and action context before apply/verify/archive.
 
 ## Native SDD Dispatcher
 
-The user expresses intent; they should not have to administer phases manually. For natural-language SDD requests and `/gentle-sdd-continue`, the parent/orchestrator must use the native status engine as the state authority, decide the next phase, and delegate only the phase that status marks ready.
+`gentle-ai sdd-status --contract gentle-ai.sdd-status/v2` is the sole, read-only status authority for every store. The orchestrator carries its projection unchanged; it never reconstructs readiness, selects a replacement action, uses an Engram bypass, or launches a recommendation merely because status displayed it.
 
-Flow:
+`/gentle-sdd-status` only inspects and renders that projection. Only explicitly authorized `/gentle-sdd-continue` may call native `sdd-continue` to prepare a missing change-instance marker; this is not a status fallback and grants no source roots. If native status is unavailable, malformed, or mismatched, stop and report the failure.
 
-```text
-user intent → preflight/init guard → native status engine → phase decision → subagent gets status JSON + generated instructions → artifact/progress write → status recalculation → continue or stop
-```
+## Bounded Planning Routing
 
-Rules:
+For authoritative native status, route only by the bounded `nextRecommended` token and dependency states; never infer a route from prose. Keep genuine blockers in `blockedReasons` and non-blocking diagnostics in `notes`, never in `nextRecommended`, and report them without discarding them to enable a route.
 
-- `/gentle-sdd-status` is a debug/status command, not the main UX.
-- `/gentle-sdd-continue` is the native dispatcher command: resolve status, choose the next ready phase, and carry status/instructions into the subagent prompt.
-- `sdd-apply`, `sdd-verify`, `sdd-sync`, and `sdd-archive` must obey parent-provided native status; they must not reconstruct readiness from prompt inference when status JSON is present.
-- Do not launch a phase when native status marks that dependency `blocked`.
-- `sdd-archive` cannot proceed unless native status says `dependencies.archive` is `ready` or `all_done` — UNLESS the store carve-out is active (`nextRecommended: "resolve-via-engram"`), in which case resolve archive readiness from Engram instead of treating `not_applicable` as a gate failure.
-- **Non-authoritative store carve-out:** when `nextRecommended: "resolve-via-engram"` is set, native status is **not authoritative**. This applies to `artifactStore: engram`, `artifactStore: none`, and `artifactStore: both` when the `openspec/` directory does not exist. For non-authoritative stores: resolve readiness from Engram using the Engram memory tools injected by the memory provider on the change topic keys (`sdd/{change-name}/proposal`, `sdd/{change-name}/spec`, `sdd/{change-name}/design`, `sdd/{change-name}/tasks`, etc.). Do **not** treat `blockedReasons` or `not_applicable` dependency states from the native engine as real blockers when the store carve-out is active.
+| `nextRecommended` | Planning route |
+| --- | --- |
+| `propose` | `sdd-proposal` |
+| `spec` | `sdd-spec` |
+| `design` | `sdd-design` |
+| `tasks` | `sdd-tasks` |
+
+Native unprefixed tokens are the only automatic planning routes. Prefixed or locally derived status tokens never authorize a phase.
+
+These planning routes remain runnable when missing planning artifacts leave `dependencies.apply: blocked`; do not require apply readiness to produce those artifacts. This is a planning-only exception, not permission to run apply or another blocked non-planning phase.
+
+Before any planning launch, stop for ambiguous change selection, unresolved session preflight, or unsafe action context. Carry `actionContext` and prove planned writes are within the authoritative workspace or allowed edit roots; workspace-planning without allowed edit roots remains read-only. Planning does not bypass the init guard, optional research guidance, or phase approval requirements.
+
+## Bounded Execution Routing
+
+| Native `nextRecommended` | Pi executor |
+| --- | --- |
+| `apply` | `sdd-apply` |
+| `verify` | `sdd-verify` |
+| `remediate` | `sdd-remediate` |
+| `archive` | `sdd-archive` |
+
+For automatic continuation, execute only the selected native action when its dependency and `actionContext` permit it. Unknown, malformed, blocked, or unsupported values stop before work; prose and local routing cannot replace them. `notes` is separate from `blockedReasons` and never gates: report a non-empty `notes` value as informational and proceed when the dependency and `blockedReasons` gates allow.
 
 ## SDD Status Contract
 
-Before `/gentle-sdd-continue`, `sdd-apply`, `sdd-verify`, `sdd-sync`, or `sdd-archive`, resolve and carry structured status. Lookup order: parent-provided status, then project override `.pi/gentle-ai/support/sdd-status-contract.md`, then globally installed `~/.pi/agent/gentle-ai/support/sdd-status-contract.md`, then the embedded `sdd-status` prompt contract. Do not use `assets/support/...` as a runtime path; that is only the package source path before installation.
+Before `/gentle-sdd-continue`, `sdd-apply`, `sdd-verify`, or `sdd-archive`, resolve and carry structured status. Lookup order: parent-provided status, then project override `.pi/gentle-ai/support/sdd-status-contract.md`, then globally installed `~/.pi/agent/gentle-ai/support/sdd-status-contract.md`, then the embedded `sdd-status` prompt contract. Do not use `assets/support/...` as a runtime path; that is only the package source path before installation.
 
 Status must include:
 
 - active change selection and how it was resolved;
-- artifact store and paths/topics for proposal, specs, design, tasks, apply-progress, verify-report, and sync-report;
+- artifact store and paths/topics for proposal, specs, design, tasks, apply-progress and optional verify-report;
 - task progress with exact unchecked `- [ ]` implementation task lines;
-- dependency states for apply, verify, sync, and archive;
+- dependency states for apply, verify, and archive;
 - `actionContext` with mode, workspace root, allowed edit roots, and warnings;
 - next recommended action.
 
-Do not guess the active change. If change selection is ambiguous, ask the user and stop. If `actionContext.mode: workspace-planning` and no allowed edit roots are provided, stop before apply/verify/sync/archive and ask for an explicit implementation/edit scope.
+Do not guess the active change. If change selection is ambiguous, ask the user and stop. If `actionContext.mode: workspace-planning` and no allowed edit roots are provided, stop before apply/verify/archive and ask for an explicit implementation/edit scope.
 
 ## Lazy SDD Preflight
 
-Do not ask SDD setup questions on session start. The first time the user initiates an SDD process in a Pi session, run the SDD preflight once and keep those choices for the rest of that session. Runtime trigger detection is intentionally deterministic: slash SDD flows and `/gentle-sdd-init` run preflight automatically; for natural-language requests, the parent/orchestrator decides semantically whether SDD is needed and must run/reuse `/gentle:sdd-preflight` before continuing.
+Do not ask SDD setup questions on session start. The first time the user initiates an SDD process in a Pi session, run the SDD preflight once and keep those choices for the rest of that session. Runtime input detection is intentionally syntax-only: slash SDD flows and `/gentle-sdd-init` run preflight automatically; ordinary natural-language text never triggers preflight by itself. For natural-language requests, the parent/orchestrator decides semantically whether the user explicitly selected SDD. Only after that selection, when the parent is about to dispatch the first SDD operation or agent, the execution gate runs or reuses `/gentle:sdd-preflight` before allowing SDD work to start. Merely mentioning, asking about, explaining, comparing, auditing, or referencing SDD — including questions ("what is SDD?"), negatives ("don't use SDD for this"), conditionals ("could we use SDD?"), bug reports about SDD itself, and passing references — stays in the normal read-only flow without preflight, the init guard, or any SDD phase. When a message is ambiguous between discussing SDD and requesting it, ask one clarification and remain read-only until answered.
 
 **Hard gate:** `openspec/config.yaml`, existing SDD changes, installed `.pi`/global SDD assets, or a todo named "preflight" are not session preflight. They are project context only. Do not mark SDD preflight complete, start `sdd-init`, launch SDD subagents/chains, or move to explore/proposal/spec/design/tasks until this session has an injected `## SDD Session Preflight` block or an equivalent resolution from the canonical authority order below.
 
-Resolve each field in this order: (1) explicit current user/session choice, (2) valid persisted preference, (3) capability or already-selected strategy constraint, (4) canonical documented default, and (5) ask only when the field is genuinely unresolved. If `/gentle:sdd-preflight` cannot be invoked, resolve the same order inline; do not recreate a four-question setup prompt. Missing Engram is a capability constraint that resolves the artifact store to `openspec` unless the user has made an incompatible explicit request, which remains a human decision.
+On the first SDD invocation of EACH new interactive session, confirm the preflight choices even when valid preferences are saved. Persisted preferences and canonical defaults are preselected suggestions, not current-session consent. Offer confirmation of the grouped suggestions or changes; cancellation leaves preflight unresolved. Explicit current-session choices take precedence and, once resolved, are reused throughout that session. If `/gentle:sdd-preflight` is unavailable, perform the same confirmation inline. The parent `subagent_run` dispatch boundary resolves this gate for every shipped SDD agent, prepends the exact rendered `## SDD Session Preflight` block to the existing child `context`, and blocks launch on cancellation or failure. An RPC child consumes that transport but never originates or persists defaults; missing or malformed transport fails closed before process spawn. Only a safely distinguishable standalone headless parent may retain canonical/persisted defaults without UI. Missing Engram constrains the artifact store to `openspec` unless an incompatible explicit request needs a human decision.
 
 Preflight canonical defaults are execution `auto`, artifact store `openspec`, delivery strategy `ask-on-risk`, and review budget `400`; capability and already-selected constraints may narrow them.
 
-Selectors/inputs appear only for genuinely unresolved fields. Defaulted and one-option fields do not prompt; persisted/session values are reused, and an explicit current choice overrides them when presented. `chain_strategy` remains deferred, and `exception-ok` requires explicit `size:exception` acceptance and is never inferred.
+The grouped session confirmation includes defaulted and capability-constrained suggestions. If changes are requested, preselect saved values and omit redundant one-option selectors. Never reinitialize project context merely because a new session needs confirmation. `chain_strategy` remains deferred, and `exception-ok` requires explicit `size:exception` acceptance and is never inferred.
 
 The exact `delivery_strategy` domain accepted by `sdd-tasks` and `sdd-apply` is `ask-on-risk`, `auto-chain`, `single-pr`, or `exception-ok`; above the review threshold, `auto-chain` resolves without asking again.
 
@@ -120,17 +135,15 @@ Interactive approval is phase-scoped. A user response such as "continue", "dale"
 
 Before `sdd-proposal` in interactive mode, offer the user a proposal question round instead of silently deciding whether the proposal is clear enough. Explain that the questions are meant to improve the PRD/proposal by uncovering business understanding, business rules, implications, impact, edge cases, and product tradeoffs. Prefer 3–5 concrete product questions per round, then summarize the resulting assumptions and ask whether the user wants to correct anything or run a second question round. Cover business/product/PRD decisions: business problem, target users and situations, business rules, product outcome, current-state gap, implications and impact, edge cases, decision gaps, first-slice scope boundaries, non-goals, product constraints, and business tradeoffs. Do not ask about test commands, PR shape, changed-line budget, or other harness mechanics at proposal time unless the user explicitly asks to discuss delivery.
 
-## Research and Pre-Proposal Gate
+## Optional Research
 
-This gate is MANDATORY and applies in both execution modes; in interactive mode it runs alongside the proposal question round above, and the two never contradict: the question round shapes the proposal, the gate decides whether `sdd-proposal` may launch at all.
+Recommend research when complexity, consequential uncertainty, or external facts warrant it, before or after exploration as useful. Research is not a prerequisite for questions, proposal, spec, design, or tasks; selection does not turn it into a completion gate. Supply concrete questions, requested depth, relevant local context and skill instructions, and source restrictions to the output-only `sdd-research` child; do not pass local paths as child read obligations.
 
-- Offer `sdd-research` immediately after `sdd-explore`. Research is optional until selected; selection makes completion mandatory.
-- Before every proposal, invoke `sdd-proposal` only when selected research is `done` or research is unselected, product decisions are `confirmed`, evidence references are valid, and the selected artifact-store state is ready.
-- The orchestrator owns product discovery. In automatic mode, unresolved product choices require one lossless grouped prompt with all context, options, consequences, allowed answers, and exact tokens; the orchestrator MUST persist the pending pre-proposal state before prompting, then STOP without invoking `sdd-proposal`.
-- The proposer receives a confirmed pre-proposal handoff and MUST NOT interview the user or infer consent.
-- Pi's native `gentle-pi.sdd-status` contract remains the sole status contract. Research and pre-proposal state are orchestrator-owned prose and artifacts (`sdd/{change}/research`, `sdd/{change}/preproposal`, `openspec/changes/{change}/research.md`) layered on top — never a native status field.
+The parent owns local reads, product choices, and any authorized persistence/readback. Do not make the research child fetch local artifacts or write files/Engram. Use the existing parent tools and selected store when findings merit persistence: exact change-local paths or project/topic keys, with actual readback before claiming success. First artifacts and in-memory sessions require no prior identity or checkpoint. For hybrid storage, report each actual write/readback result and resolve genuine divergence before overwriting; do not create another authority or claim a failed save succeeded. Preserve historical artifacts without requiring them for new research.
 
-Runtime note: this runtime declares no evidence grants (`documentation=[]; open-web=[]`), so a SELECTED research lane fail-closes to a `blocked` outcome and blocks proposal readiness until the user deselects research or evidence capability arrives. SDD chains treat research as unselected.
+Use individually authorized tools from the injected `## SDD Research Capabilities`. Documentation uses `fetch_content`; open-web uses any authorized available subset of `web_search`, `source_check`, `fetch_content`, and `get_search_content`. Forward exact observed class-specific tools and existing extension provenance in `research_selection`; never broaden source restrictions, invent online access, or treat generic MCP gateways as narrow grants. The child rechecks actual availability and provenance. Inventory is not evidence: require source-backed claims, original sources, publisher/version/date, and honest limits.
+
+Useful partial findings, unavailable sources, or an unpersisted inline result do not automatically block proposal or trigger a retry. Retain unanswered questions and explain their implications. Only a genuine unresolved product choice, unsafe dependent action, or actual permission denial blocks the work that depends on it. The parent relays product choices without inferring consent; no persisted pre-proposal readiness certificate is required. Native `gentle-ai.sdd-status` remains the sole SDD status authority; research adds no native phase or state.
 
 ## Delivery Strategy
 
@@ -177,57 +190,25 @@ Every installed SDD phase executor agent (`assets/agents/sdd-*.md`) carries the 
 
 In `auto` execution mode, the parent/orchestrator is the quality gate between SDD phases. After a delegated phase returns and before launching the next phase, validate that the phase actually reached its objective. This validation is autonomous: do not ask the user on the happy path, but stop and report if the gate catches a real problem.
 
+**Optional research takes precedence over the success-only checks below:** accept honest partial, unavailable, or inline findings without requiring an artifact or retry. Check only claimed persistence through parent-owned readback; never force a research/pre-proposal certificate. Genuine product decisions, unsafe dependencies, and actual permission denials still constrain their dependent actions.
+
 Check every phase result against the Result Contract:
 
 - **Contract conformance:** the phase returned `status`, `executive_summary`, `artifacts`, `next_recommended`, `risks`, and `skill_resolution`, and `status` indicates success rather than partial, failed, or blocked.
 - **Artifact existence:** every declared artifact exists and is readable in the active backend. For memory-backed flows, retrieve the topic with the available memory tools; for OpenSpec/file-backed flows, read the declared path. A successful phase with no retrievable artifact fails the gate.
 - **No hallucinated references:** spot-check concrete file paths, symbols, commands, and artifacts the phase claims it created or used. Referenced paths or artifacts that do not resolve fail the gate.
-- **No scope drift:** the output must stay consistent with its inputs and the dependency graph: spec stays within proposal scope, design answers the proposal, tasks cover spec and design, apply implements the tasks, verify checks the implementation against the spec, and sync reflects the verified state before archive.
+- **No scope drift:** the output must stay consistent with its inputs and the dependency graph: spec stays within proposal scope, design answers the proposal, tasks cover spec and design, apply implements the tasks, verify checks the implementation against the spec, and archive composes applicable specs while preserving task truth and safety.
 - **Routing coherence:** `next_recommended` must follow the SDD dependency graph, and no unaddressed critical risk may be carried silently into the next phase.
 
 Use cost-aware validation:
 
-- For lower-risk phases (`sdd-explore`, `sdd-research`, `sdd-spec`, `sdd-tasks`, `sdd-sync`, `sdd-archive`), the parent may validate inline by reading artifacts back and checking claims.
+- For lower-risk phases (`sdd-explore`, `sdd-research`, `sdd-spec`, `sdd-tasks`, `sdd-archive`), the parent may validate inline by reading artifacts back and checking claims.
 - For higher-risk phases (`sdd-design`, `sdd-apply`), validate the artifact, declared paths, task state, and focused test evidence directly before continuing because errors there compound downstream.
 - If a gate finds any smell — missing artifact, status mismatch, unresolved path, likely drift, or critical risk — rerun the same SDD phase once with corrective feedback. SDD phase validation does not start ordinary review or Judgment Day.
 
 On gate pass, continue automatically to the next phase. On gate fail, rerun the same phase exactly once with corrective feedback naming the specific failures. Validate the rerun. If it fails again, stop the automatic chain and report the phase, failures from both attempts, and the recommended fix. Never advance to dependent phases on a failed gate.
 
 The gatekeeper is additive: it does not relax the Review Workload Guard, Strict TDD Forwarding, native status dependency checks, or mandatory delegation rules. It never creates a post-SDD review pass.
-
-## Native Runtime Attempt Authority
-
-The package-local Gentle AI runtime owns the Git-common-dir compact SDD attempt ledger. It is the sole attempt and changed-line budget authority for both OpenSpec and Engram flows on Pi. Pi must not implement a local attempt mirror, counter, token store, state machine, or extension interception layer; such code would duplicate provider authority and could not truthfully settle all runs.
-
-Before every runtime-bearing `sdd-apply`, `sdd-verify`, or remediation actor/harness launch, the orchestrator MUST call the compact acquire:
-
-```text
-gentle-ai sdd-attempt acquire --cwd <repo> --change <change> --request-id <id> --work-unit <label> --evidence-goal <goal> --max-attempts <count> --max-changed-lines <count>
-```
-
-Pass `--token` only to continue an active attempt; pass `--remediates-evidence-revision` only for an unmanaged remediation. Do not invent continuation or remediation state the provider has not returned.
-
-The provider returns exactly one routing state from `proceed|blocked|complete`:
-
-- `proceed`: launch only on `proceed`; retain the opaque token for settle.
-- `blocked`: do not launch; stop and report.
-- `complete`: do not launch; the objective is settled.
-
-Never persist caller-authored attempt counters, tokens, or state in OpenSpec artifacts, Engram memory, prompts, or any Pi-owned state.
-
-After the external run completes, call the compact settle with a request ID distinct from acquire, reusing an operation's own ID only for idempotent replay of that exact operation:
-
-```text
-gentle-ai sdd-attempt settle --cwd <repo> --change <change> --token <token> --request-id <id> --outcome <failed|interrupted|passed> --evidence-revision <sha256:...> --diagnosis <text> --harness-disposition <reused|invalidated> --cleanup-evidence <text> --process-evidence <text>
-```
-
-Every settle field is required: `cwd`, `change`, `token`, `request-id`, `outcome`, `evidence-revision`, `diagnosis`, `harness-disposition`, `cleanup-evidence`, and `process-evidence`. `evidence-revision` is never `none`. Pass `--successor-lineage` only for a distinct approved successor; the current/bound lineage remains itself otherwise. Pass `--remediates-evidence-revision` only when repairing a specific failed evidence revision. Settle derives binding and remediation inputs; the orchestrator never invents them.
-
-`status`, `begin`, `finish`, and `reset` are diagnostic/compatibility surfaces, not the normal runtime route. Route continuation only from the provider-returned `proceed|blocked|complete`. `reset` is never automatic and requires an explicit maintainer scope decision.
-
-### Gatekeeper Reconciliation
-
-The Automatic Mode Gatekeeper one-rerun rule above is a quality gate, not a launch authorization. A rerun never bypasses native attempt authority: every rerun still requires a fresh compact acquire, and the rerun must stop immediately if the provider returns `blocked` or `complete`. The gatekeeper quality rule is preserved and remains subordinate to this authority.
 
 ## SDD Phase Delegation Mode
 
@@ -244,19 +225,36 @@ On Pi, phase model routing is user-owned and persisted, not prompt-passed: `/gen
 | Phase        | Default tier   | Reason                                     |
 | ------------ | -------------- | ------------------------------------------ |
 | sdd-explore  | balanced       | Reads code, structural - not architectural |
-| sdd-research | balanced       | Fail-closed evidence record keeping        |
+| sdd-research | balanced       | Optional source-backed investigation        |
 | sdd-proposal | deep-reasoning | Architectural decisions                    |
 | sdd-spec     | balanced       | Structured writing                         |
 | sdd-design   | deep-reasoning | Architecture decisions                     |
 | sdd-tasks    | balanced       | Mechanical breakdown                       |
 | sdd-apply    | balanced       | Implementation                             |
 | sdd-verify   | balanced       | Validation against spec                    |
-| sdd-sync     | fast           | Reflect verified state                     |
 | sdd-archive  | fast           | Copy and close                             |
 | jd-judge-a   | deep-reasoning | Adversarial review                         |
 | jd-judge-b   | deep-reasoning | Adversarial review                         |
 | jd-fix-agent | balanced       | Surgical confirmed fixes                   |
-| default      | balanced       | SDD/JD phase fallback                      |
+| default      | balanced       | SDD phase fallback; never a Judgment Day role |
+
+## Judgment Day fix routing
+
+Judgment Day phase roles are never generic fallbacks. If the generic writer chain is unavailable, use the documented native generic fallback or stop. Judgment Day is independent: it neither enables nor replaces ordinary review; a separately requested ordinary review remains independent. A standalone Judgment Day fix requires no graph-v1 or native review lineage. Launch `jd-fix-agent` only for an explicit Judgment Day fix batch with this exact runtime-accepted Markdown shape: `## Judgment Day activation` contains only `User explicitly requested Judgment Day.`. Replace the example ID, frozen ledger hash, row data, and surface with controller-authorized values. The correction batch contains only one round (`1 of 2` or `2 of 2`) and one lowercase SHA-256. The exact frozen finding rows are one JSON object per line, use only the canonical row fields, and exactly match the authorized IDs.
+
+```markdown
+## Judgment Day activation
+User explicitly requested Judgment Day.
+## Exact authorized severe IDs
+- `JD-A-001`
+## Judgment Day correction batch
+Round: 1 of 2.
+Frozen ledger SHA-256: `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`
+## Exact frozen finding rows
+{"id":"JD-A-001","lens":"judgment-day","location":"path/to/authorized-file.ts:1","severity":"CRITICAL","status_at_freeze":"open","evidence_class":"deterministic","evidence_claim":"Concrete user-impact claim supported by the frozen location."}
+## Allowed edit surfaces
+path/to/authorized-file.ts
+```
 
 ## Sub-Agent Launch Deduplication
 
@@ -310,10 +308,12 @@ Automatic mode does not override reviewer burnout protection.
 
 ## Recovery
 
-- `engram` → resolve state with the injected memory search/get tools on the change topic keys (`sdd/{change-name}/...`).
-- `openspec` → read `openspec/changes/<change>/` artifacts and re-derive readiness through the native status engine.
-- `none` → state is not persisted; explain the limitation.
+For every store, request a fresh native v2 status projection. Artifact reads may supply phase inputs only after native selection; they never re-derive readiness, replace status, or bypass native refusal.
 
 ## Provider Defect Handoff
 
 When an SDD task encounters a possible Gentle AI provider defect, the full contract lives in `assets/orchestrator-delegation.md` under `#### Gentle AI Provider Defect Handoff (MANDATORY)`. This workflow intentionally provides no summary, alternate report route, or RDD lifecycle instruction.
+
+## Classical completion
+
+After completed apply, follow fresh native status to archive; verification is optional and explicitly invokable when its native dependency is ready and the provider recommends apply or archive. Never rewrite a pinned provider that still selects verify. Archive owns applicable delta-spec composition and retains task truth, dependsOn, real edit authority, confinement, collision/destructive-change consent, archive history and recovery. There is no standalone sync phase or post-SDD RDD prerequisite.

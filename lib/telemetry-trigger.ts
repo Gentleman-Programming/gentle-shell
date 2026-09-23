@@ -89,6 +89,7 @@ export interface TelemetryTriggerSpawnOptions {
 	cwd: string;
 	env: NodeJS.ProcessEnv;
 	detached: boolean;
+	windowsHide: boolean;
 	stdio: "ignore";
 }
 
@@ -129,6 +130,7 @@ export function spawnTelemetryTrigger(options: SpawnTelemetryTriggerOptions): Te
 			cwd: options.cwd,
 			env: options.env,
 			detached: true,
+			windowsHide: true,
 			stdio: "ignore",
 		});
 		child.on("error", () => {

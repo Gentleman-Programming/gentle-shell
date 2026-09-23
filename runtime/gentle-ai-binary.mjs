@@ -17,6 +17,8 @@ import {
 import { fileURLToPath } from "node:url";
 
 export const GENTLE_AI_BINARY_MISSING_CODE = "package-local-binary-missing";
+export const GENTLE_AI_INSTALL_RECOVERY_COMMAND = "node scripts/install-gentle-ai.mjs";
+export const GENTLE_AI_INSTALL_RECOVERY_INSTRUCTIONS = `If GENTLE_PI_SKIP_GENTLE_AI_INSTALL is set, remove or unset it before changing to the installed gentle-pi package directory and running \`${GENTLE_AI_INSTALL_RECOVERY_COMMAND}\`.`;
 // Derived from the one authoritative pinned version in
 // scripts/gentle-ai-installer.mjs rather than repeating the literal here, so
 // the two can never independently drift apart the way they once did.
@@ -26,7 +28,7 @@ export class PackageLocalGentleAiBinaryMissingError extends Error {
 	         code = GENTLE_AI_BINARY_MISSING_CODE;
 	constructor(path        ) {
 		super(
-			`${GENTLE_AI_BINARY_MISSING_CODE}: Gentle AI v${GENTLE_AI_VERSION} is not installed at ${path}. Reinstall gentle-pi, or use GENTLE_PI_SKIP_GENTLE_AI_INSTALL=1 only for development/offline installs.`,
+			`${GENTLE_AI_BINARY_MISSING_CODE}: Gentle AI v${GENTLE_AI_VERSION} is not installed at ${path}. ${GENTLE_AI_INSTALL_RECOVERY_INSTRUCTIONS} A missing binary can result from skipped lifecycle scripts, but does not prove install lifecycle scripts were disabled.`,
 		);
 		this.name = "PackageLocalGentleAiBinaryMissingError";
 	}

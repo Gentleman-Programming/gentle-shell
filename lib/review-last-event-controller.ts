@@ -26,11 +26,14 @@ export async function reconcileUnknownReviewLastEventCapture(
 		lineageId: binding.lineageId,
 		...(selector === undefined ? {} : selector),
 	});
-	if (binding.targetIdentity !== undefined && status.targetIdentity !== binding.targetIdentity) {
-		throw new TypeError("capture reconciliation returned a different target");
+	if (status.applicability !== "current_target") {
+		throw new TypeError("capture reconciliation STATUS is not current for the bound target");
 	}
-	if (status.authority?.lineageId !== undefined && status.authority.lineageId !== binding.lineageId) {
-		throw new TypeError("capture reconciliation returned a different lineage");
+	if (status.authority?.lineageId !== binding.lineageId) {
+		throw new TypeError("capture reconciliation returned missing or different lineage authority");
+	}
+	if (binding.targetIdentity === undefined || status.targetIdentity !== binding.targetIdentity) {
+		throw new TypeError("capture reconciliation returned missing or different target");
 	}
 	return status;
 }

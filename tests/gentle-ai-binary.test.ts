@@ -95,9 +95,9 @@ async function writeWindowsSourceBinary(packageRoot: string): Promise<{ binaryPa
 	await writeFile(manifestPath, `${JSON.stringify({
 		version: GENTLE_AI_VERSION,
 		method: "go-sumdb-source-build",
-		package: "github.com/gentleman-programming/gentle-ai/v2/cmd/gentle-ai",
-		module: "github.com/gentleman-programming/gentle-ai/v2",
-		tag: "v2.7.0",
+		package: "github.com/gentleman-programming/gentle-ai/v3/cmd/gentle-ai",
+		module: "github.com/gentleman-programming/gentle-ai/v3",
+		tag: "v3.7.0",
 		architecture: process.arch === "x64" ? "x64" : "arm64",
 		binarySha256: createHash("sha256").update(binary).digest("hex"),
 		moduleChecksum: GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM,
@@ -260,7 +260,12 @@ test("runtime fails closed when the package-local binary is missing", async () =
 		() => resolveGentleAiBinary(packageRoot, "linux"),
 		(error: unknown) => error instanceof PackageLocalGentleAiBinaryMissingError
 			&& error.code === GENTLE_AI_BINARY_MISSING_CODE
-			&& error.message.includes("package-local-binary-missing"),
+			&& error.message.includes("package-local-binary-missing")
+			&& error.message.includes("If GENTLE_PI_SKIP_GENTLE_AI_INSTALL is set, remove or unset it before")
+			&& error.message.includes("installed gentle-pi package directory")
+			&& error.message.includes("GENTLE_PI_SKIP_GENTLE_AI_INSTALL")
+			&& error.message.includes("remove or unset it before")
+			&& error.message.includes("does not prove install lifecycle scripts were disabled"),
 	);
 });
 

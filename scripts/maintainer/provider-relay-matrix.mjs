@@ -9,10 +9,11 @@
 // `pnpm test` never imports it; `pnpm run test:maintainer` runs the tests;
 // the CLI is the entry point the separate verifier uses for the real organic
 // positive journey after a user-visible forecast.
+import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { delimiter, isAbsolute, resolve } from "node:path";
+import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { REVIEW_HOST_RELAY_FAILURE, ReviewHostRelayError, classifyReviewHostRelayRefusal, resolveReviewHostRelaySubmission, runReviewHostRelaySlot } from "../../lib/review-host-relay.ts";
 import { GENTLE_PI_REVIEW_RELAY_CONTRACT, GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV } from "../../lib/review-relay-contract.ts";
 export const DESCRIPTOR_SCHEMA = "gentle-pi.maintainer.provider-relay-descriptor/v1";
@@ -88,13 +89,17 @@ const exactKeys = (obj, allowed, label) => {
 // the completing form is provably bindable before any process launches.
 export function validateDescriptor(value) {
 	if (!isObj(value)) fail("descriptor must be a JSON object");
-	exactKeys(value, new Set(["schema", "gentleAiExecutable", "piExecutable", "cases"]), "descriptor");
+	exactKeys(value, new Set(["schema", "gentleAiExecutable", "reviewerSelection", "cases"]), "descriptor");
 	if (value.schema !== DESCRIPTOR_SCHEMA) fail(`descriptor.schema must be exactly "${DESCRIPTOR_SCHEMA}"`);
 	if (!isStr(value.gentleAiExecutable) || !isAbsolute(value.gentleAiExecutable)) fail("descriptor.gentleAiExecutable must be a non-empty absolute path; the runner never re-resolves the production binary");
-	if (!isStr(value.piExecutable)) fail("descriptor.piExecutable must be a non-empty string");
+	// gentle-pi#311 P4: the positive-lens journey used to need a declared real
+	// `pi` binary; lens captures now run in-process, so it instead needs a
+	// "provider/id" reviewer selection the armed run resolves through a
+	// scripted-but-real completion (never a fake pi child).
+	if (!isStr(value.reviewerSelection)) fail("descriptor.reviewerSelection must be a non-empty string");
 	if (!Array.isArray(value.cases) || value.cases.length === 0) fail("descriptor.cases must be a non-empty array");
 	const seen = new Set();
-	return { schema: value.schema, gentleAiExecutable: value.gentleAiExecutable, piExecutable: value.piExecutable, cases: value.cases.map((entry, index) => {
+	return { schema: value.schema, gentleAiExecutable: value.gentleAiExecutable, reviewerSelection: value.reviewerSelection, cases: value.cases.map((entry, index) => {
 			if (!isObj(entry)) fail(`descriptor.cases[${index}] must be an object`);
 			if (!isStr(entry.name)) fail(`descriptor.cases[${index}].name must be a non-empty string`);
 			if (seen.has(entry.name)) fail(`descriptor.cases[${index}].name "${entry.name}" is duplicated`);
@@ -205,13 +210,77 @@ export function resolveDeclaredExecutable(executable) {
 	return null;
 }
 const missingReason = (executable, label) => `${label} "${executable}" is not an existing executable; arm the descriptor with a real binary, or set GENTLE_PI_REQUIRE_MAINTAINER=1 to fail instead of block.`;
-// A guaranteed-nonexistent pi path inside a fresh private directory. mkdtemp
-// picks an unpredictable name and 0700 keeps it ours, so nothing can race a
-// file into the slot between the mkdtemp and the spawn.
-function unlaunchablePi() {
-	const directory = mkdtempSync(join(tmpdir(), "gentle-pi-maintainer-no-pi-"));
-	chmodSync(directory, 0o700);
-	return { directory, executable: join(directory, "pi-must-never-launch") };
+// A reviewer registry whose `find` always misses. Mirrors the pre-in-process
+// "unlaunchable pi" trick this replaced: the maintainer-declared `kind` is
+// not evidence that the declared gentle-ai binary is actually incapable, so
+// a `relay-unavailable` negative control against a mis-declared CAPABLE
+// binary must still never complete a reviewer or submit anything. Resolving
+// nothing guarantees a typed MODEL_NOT_FOUND refusal before any completion
+// or submission, so the control cannot become a hidden real mutation even
+// against a binary that turns out to be capable (gentle-pi#311 P4).
+function unresolvableReviewerRegistry() {
+	return {
+		find: () => undefined,
+		getApiKeyAndHeaders: async () => ({ ok: false, error: "the relay-unavailable negative control never resolves a reviewer" }),
+	};
+}
+// The armed, organic positive-lens journey needs the real gentle-ai binary's
+// materialize/submit protocol exercised end-to-end, but this harness cannot
+// assume a maintainer's real provider credentials. Instead of a fake pi
+// child, this registers pi-ai's own faux provider -- the SAME api-registry
+// the real `completeSimple` dispatches through in production -- so the real
+// `runInProcessReviewer` -> real `completeSimple` path runs with no network.
+// The scripted response reads the frozen prompt's `GENTLE_AI_REVIEW_BINDING`
+// line for the subject_hash and its `GENTLE_AI_REVIEW_CONTEXT` line for the
+// changed-path manifest, and answers with every field the reviewer result
+// contract requires -- subject_hash, a completed inspection over exactly the
+// frozen paths, findings, evidence -- so the real Go admission accepts it
+// (gentle-pi#311 P4). Not unregistered: each
+// call uses a fresh random api id, and this runs at most once per short-lived
+// process (the CLI's single `main()` or one test), so a leaked entry in the
+// process-global api-registry is harmless.
+// Reads the one-line JSON that follows a frozen prompt marker (the binding
+// and context lines Go writes at the top of every reviewer task). Returns
+// undefined when the marker is absent or its JSON is malformed, so the faux
+// reviewer answers with an incomplete result that real admission refuses
+// instead of throwing inside the provider and masking the contract drift.
+function frozenPromptMarkerJson(promptText, marker) {
+	const prefix = `${marker} `;
+	for (const line of promptText.split("\n")) {
+		if (!line.startsWith(prefix)) continue;
+		try { return JSON.parse(line.slice(prefix.length)); } catch { return undefined; }
+	}
+	return undefined;
+}
+function armedFauxReviewerRegistry(reviewerSelection) {
+	const separatorIndex = reviewerSelection.indexOf("/");
+	if (separatorIndex <= 0 || separatorIndex === reviewerSelection.length - 1) {
+		throw new DescriptorValidationError(`descriptor.reviewerSelection "${reviewerSelection}" must have the "provider/id" shape`);
+	}
+	const provider = reviewerSelection.slice(0, separatorIndex);
+	const modelId = reviewerSelection.slice(separatorIndex + 1);
+	const api = `gentle-pi-maintainer-faux-reviewer-${randomUUID()}`;
+	const faux = registerFauxProvider({ api, provider, models: [{ id: modelId }] });
+	faux.setResponses([(context) => {
+		const content = context.messages[0]?.content;
+		const textPart = Array.isArray(content) ? content.find((part) => part.type === "text") : undefined;
+		const promptText = textPart?.text ?? "";
+		const binding = frozenPromptMarkerJson(promptText, "GENTLE_AI_REVIEW_BINDING");
+		const frozenContext = frozenPromptMarkerJson(promptText, "GENTLE_AI_REVIEW_CONTEXT");
+		const manifest = Array.isArray(frozenContext?.changed_path_manifest) ? frozenContext.changed_path_manifest : [];
+		const paths = manifest.map((entry) => entry?.path).filter((path) => typeof path === "string" && path.length > 0);
+		return fauxAssistantMessage(JSON.stringify({
+			subject_hash: binding?.subject_hash,
+			inspection: { status: "completed", paths },
+			findings: [],
+			evidence: ["armed maintainer faux reviewer inspected every frozen candidate path"],
+		}));
+	}]);
+	const model = faux.getModel();
+	return {
+		find: () => model,
+		getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "faux-key" }),
+	};
 }
 function terminateRoleProcessTree(child) {
 	if (child.pid === undefined) return false;
@@ -317,39 +386,41 @@ export async function runMatrix(descriptor, options = {}) {
 			}
 			continue;
 		}
-		// The positive lens needs a real pi AND an explicit arm; the negative
-		// control never launches pi (fails closed at materialize). The precheck
-		// resolves the declared Pi executable ONCE and reuses that exact
-		// concrete path for launch; a bare declaration is never re-resolved
-		// between precheck and spawn, so the relay launches exactly the
-		// executable the harness checked (issue #324).
-		let piPath = null;
-		if (caseEntry.kind === "positive-lens") {
-			piPath = resolveDeclaredExecutable(descriptor.piExecutable);
-			if (piPath === null) {
-				verdicts.push({ name: caseEntry.name, kind: caseEntry.kind, verdict: "blocked", reason: missingReason(descriptor.piExecutable, "piExecutable"), command: POSITIVE_JOURNEY_COMMAND });
-				continue;
-			}
-			if (!positiveArmed) {
-				verdicts.push({ name: caseEntry.name, kind: caseEntry.kind, verdict: "blocked", reason: `positive-lens case is not explicitly armed; set ${ARM_POSITIVE_ENV}=1 with a real capable gentle-ai binary, a real pi, and a real review session (real binding tokens from \`gentle-ai review status --next-transition\`) to run the organic journey. The runner never synthesizes a provider result.`, command: POSITIVE_JOURNEY_COMMAND });
-				continue;
-			}
+		// The positive lens needs an explicit arm; the negative control never
+		// resolves a reviewer (fails closed at the reviewer stage or earlier).
+		if (caseEntry.kind === "positive-lens" && !positiveArmed) {
+			verdicts.push({ name: caseEntry.name, kind: caseEntry.kind, verdict: "blocked", reason: `positive-lens case is not explicitly armed; set ${ARM_POSITIVE_ENV}=1 with a real capable gentle-ai binary and a real review session (real binding tokens from \`gentle-ai review status --next-transition\`) to run the organic journey. The runner never synthesizes a provider result.`, command: POSITIVE_JOURNEY_COMMAND });
+			continue;
 		}
-		// `relay-unavailable` is a NEGATIVE CONTROL: it must never launch pi and
-		// never submit. The maintainer-declared `kind` is not evidence that the
-		// declared binary is actually incapable, so the arm gate cannot key off
-		// the declaration alone. Pointed at a mis-declared CAPABLE binary, a
-		// declaration-only gate materializes, runs a REAL pi model, and executes
-		// a REAL `capture-result --input=...` submission, and only then reports
-		// `fail` — the mutation already happened. So give the negative control a
-		// pi that cannot exist: an incapable binary still classifies
-		// relay-unavailable at materialize (the control stays genuine, since it
-		// never reached pi anyway), while a capable one fails closed at the pi
-		// stage as kind=pi-launch-failed stage=pi mutationOutcome=none, with
-		// zero pi launch and zero submission.
-		const negativeControl = caseEntry.kind === "relay-unavailable" ? unlaunchablePi() : null;
-		const request = { captureArgumentTokens: caseEntry.captureArgumentTokens, submission: caseEntry.submission, gentleAiExecutable: gentleAiPath, piExecutable: negativeControl === null ? piPath : negativeControl.executable, ...(options.signal === undefined ? {} : { signal: options.signal }) };
+		// `relay-unavailable` is a NEGATIVE CONTROL: it must never complete a
+		// reviewer and never submit. The maintainer-declared `kind` is not
+		// evidence that the declared binary is actually incapable, so the arm
+		// gate cannot key off the declaration alone. Pointed at a mis-declared
+		// CAPABLE binary, a declaration-only gate materializes, runs a REAL
+		// reviewer completion, and executes a REAL `capture-result --input=...`
+		// submission, and only then reports `fail` — the mutation already
+		// happened. So give the negative control a reviewer registry that can
+		// never resolve: an incapable binary still classifies relay-unavailable
+		// at materialize (the control stays genuine, since it never reached the
+		// reviewer stage anyway), while a capable one fails closed at the
+		// reviewer stage as kind=reviewer-model-not-found stage=pi
+		// mutationOutcome=none, with zero completion and zero submission
+		// (gentle-pi#311 P4, superseding the pre-in-process "unlaunchable pi").
 		try {
+			// A malformed `reviewerSelection` (caught here rather than at
+			// descriptor-validation time, since it is only ever exercised by an
+			// armed positive-lens case) must fail this case the same way a real
+			// relay error would, never crash the whole matrix.
+			const reviewerRegistry = caseEntry.kind === "relay-unavailable" ? unresolvableReviewerRegistry() : armedFauxReviewerRegistry(descriptor.reviewerSelection);
+			const request = {
+				captureArgumentTokens: caseEntry.captureArgumentTokens,
+				submission: caseEntry.submission,
+				gentleAiExecutable: gentleAiPath,
+				reviewerRegistry,
+				selection: descriptor.reviewerSelection,
+				routingKey: "review-relay-matrix",
+				...(options.signal === undefined ? {} : { signal: options.signal }),
+			};
 			const result = await relay(request);
 			if (caseEntry.kind === "relay-unavailable") {
 				verdicts.push({ name: caseEntry.name, kind: caseEntry.kind, verdict: "fail", reason: "expected relay-unavailable (runtime without --materialize) but the relay succeeded; the descriptor's binary is unexpectedly capable" });
@@ -357,7 +428,9 @@ export async function runMatrix(descriptor, options = {}) {
 				verdicts.push({ name: caseEntry.name, kind: caseEntry.kind, verdict: "pass", promptByteLength: result.promptByteLength, resultByteLength: result.resultByteLength, submissionByteLength: result.submission.length });
 			}
 		} catch (error) {
-			if (error instanceof ReviewHostRelayError) {
+			if (error instanceof DescriptorValidationError) {
+				verdicts.push({ name: caseEntry.name, kind: caseEntry.kind, verdict: "fail", reason: error.message });
+			} else if (error instanceof ReviewHostRelayError) {
 				if (caseEntry.kind === "relay-unavailable") {
 					if (error.kind === REVIEW_HOST_RELAY_FAILURE.RELAY_UNAVAILABLE && error.stage === "materialize" && error.mutationOutcome === "none") {
 						verdicts.push({ name: caseEntry.name, kind: caseEntry.kind, verdict: "pass", stage: error.stage, mutationOutcome: error.mutationOutcome, reason: REVIEW_HOST_RELAY_FAILURE.RELAY_UNAVAILABLE });
@@ -372,8 +445,6 @@ export async function runMatrix(descriptor, options = {}) {
 			} else {
 				verdicts.push({ name: caseEntry.name, kind: caseEntry.kind, verdict: "fail", reason: `unexpected non-relay error: ${error instanceof Error ? error.message : String(error)}` });
 			}
-		} finally {
-			if (negativeControl !== null) rmSync(negativeControl.directory, { recursive: true, force: true });
 		}
 	}
 	return verdicts;

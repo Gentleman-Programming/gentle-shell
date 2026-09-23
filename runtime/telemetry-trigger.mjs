@@ -113,6 +113,7 @@ export function shouldTriggerTelemetry(env                                      
 
 
 
+
 /**
  * Nudges `<executable> telemetry trigger --json`, detached and
  * fire-and-forget. Never throws, never awaits the child's exit, and never
@@ -130,6 +131,7 @@ export function spawnTelemetryTrigger(options                              )    
 			cwd: options.cwd,
 			env: options.env,
 			detached: true,
+			windowsHide: true,
 			stdio: "ignore",
 		});
 		child.on("error", () => {

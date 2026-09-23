@@ -1,6 +1,62 @@
 # Telemetry
 
-`gentle-pi` does not collect anything itself. [`gentle-ai`](https://github.com/Gentleman-Programming/gentle-ai) (issue [#4309](https://github.com/Gentleman-Programming/gentle-ai/issues/4309)) owns anonymous usage telemetry end to end: install and heartbeat events, the exact fields sent, rate limiting, and every opt-out. See gentle-ai's own README/docs for that contract. Gentle Pi's only involvement is a best-effort nudge that asks the local binary to act.
+Runtime usage telemetry is best effort: an available usage event gets at most one
+asynchronous attempt through `gentle-ai telemetry runtime send --json`. Busy,
+failed, disabled, or cancelled attempts are discarded silently. There is no
+metrics disk storage, outbox, retry, backoff, cooldown, daemon, or session reconstruction.
+
+The production encoder uses the byte-identical [native schema mirror](../contracts/telemetry/runtime-aggregate-v1.schema.json).
+[The synthetic fixture](../tests/fixtures/runtime-metrics-native-batches.json) pins its
+SHA-256 and exact one-shot stdin bytes. No old intake fallback is used. These are
+fake-subprocess tests, not a live collector or deployment verification.
+
+## Runtime usage flow
+
+1. A finalized primary assistant message or child completion supplies available usage.
+   Child-host extensions do not independently consume primary usage.
+2. Pi builds event-local sanitized rows, not cumulative session totals. An occupied
+   attempt slot discards the event; it never queues it for later.
+3. One cancellable immediate defers binary verification and subprocess launch beyond
+   the provider callback. The native command owns fresh policy and exactly one POST.
+4. Only `stored`, `duplicate`, `discarded`, or `disabled` results are recognized.
+   All are terminal. `stored` and `duplicate` reflect collector acknowledgement,
+   not client persistence; Pi retains nothing and never retries.
+
+There is no policy or capability subprocess before send, and no ingest or flush call.
+The packaged binary is verified; development overrides are refused for runtime usage.
+Missing binaries and unsupported commands discard without installation or fallback.
+
+Replacement and shutdown cancel an unstarted attempt or request termination of its
+child immediately, without a wait loop or final send. The process slot remains busy
+until actual close, preventing overlap even if a cancelled process is slow to exit.
+A one-second process timeout requests termination; it is not a retry timer or a hard
+bound on synchronous binary verification or event-loop stalls.
+
+## Data and source limits
+
+Wire fields are the schema/registry, host, public model with evidence, available
+selected/effective effort, orchestrator or known built-in subagent class, source
+launch/response occurrence coverage, six token coverages, explicitly reported typed
+duration, and a sanitized error category. Occurrences never represent sessions.
+Prompts, responses, code, paths, private names, source IDs, and raw errors never enter
+the payload. There is no `batch_id`; native creates the remote `delivery_id`.
+
+One event produces 1–32 rows within 16 KiB. Oversized or invalid events discard
+whole rather than splitting into multiple sends. Child launch selection is a separate
+row with zero response-token coverage, never substituted for per-response evidence.
+
+- Token coverage distinguishes reported, unavailable, and unsupported values. Pi's
+  SDK-positive counters are usable; zero defaults and absence do not prove reported zero.
+- Selected model/effort is captured at the request hook, separately from response
+  model and effective-effort evidence. Ambiguous request sequences discard selection.
+- Pi hooks do not correlate requests/retries reliably, so this adapter does not infer duration.
+- Child configuration classification uses packaged built-in definitions, not agent names.
+  Launch configuration is not proof of the model or selected effort of each child response.
+- Bounded live child observations remain in RAM until completion. No completed child
+  event is retained for forwarding. A completion without usage creates no usage send.
+- Primary object deduplication uses weak tombstones; copied objects are distinct.
+  Child completion tombstones are capped at 256 per extension session. Source IDs
+  stay local and are never exported. No session history is read or reconstructed.
 
 ## What Gentle Pi does
 

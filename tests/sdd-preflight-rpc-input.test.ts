@@ -73,6 +73,26 @@ test("an RPC child's natural-language SDD prompt is not consumed by the input ho
 	}
 });
 
+test("an RPC child's explicit slash SDD command does not originate preflight", async () => {
+	const input = inputHook();
+	const cwd = await mkdtemp(join(tmpdir(), "gentle-pi-rpc-slash-input-"));
+	try {
+		const result = await input(
+			{ text: "/sdd-new delegated-feature" },
+			ctx({
+				cwd,
+				hasUI: false,
+				mode: "rpc",
+				sessionManager: { getSessionId: () => "sdd-preflight-rpc-slash-child" },
+			}),
+		);
+		assert.deepEqual(result, { action: "continue" }, "a delegated slash prompt must reach the agent");
+		assert.equal(existsSync(sddPreflightDiskPath(cwd)), false, "an RPC child must not persist preflight defaults");
+	} finally {
+		await rm(cwd, { recursive: true, force: true });
+	}
+});
+
 test("an RPC child's ordinary prompt still continues", async () => {
 	const input = inputHook();
 	const cwd = await mkdtemp(join(tmpdir(), "gentle-pi-rpc-input-control-"));

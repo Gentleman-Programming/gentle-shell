@@ -220,10 +220,11 @@ export function renderGentleAiLifecycleCall(
 			// executionStarted on replayed rows): a replayed start-only record would
 			// otherwise grow an invented end at replay time.
 			if (state.startedAt !== undefined && context?.executionStarted === true) state.endedAt ??= now;
-		} else if (status === LIFECYCLE_STATUS.RUNNING || context?.executionStarted === true) {
-			// Stamp only live signals: pi never raises executionStarted/argsComplete on
-			// replayed rows, and a historical row renders preparing before its stored
-			// result arrives — stamping there would invent a duration.
+		} else if ((status === LIFECYCLE_STATUS.RUNNING && context?.argsComplete === true) || context?.executionStarted === true) {
+			// Stamp only on live evidence: a live running row carries argsComplete
+			// (true), while a replayed row omits it entirely — an unexplained RUNNING
+			// on a historical row must not fabricate a start. executionStarted never
+			// fires on replays.
 			state.startedAt ??= now;
 		}
 	}
@@ -243,7 +244,7 @@ export function renderGentleAiLifecycleCall(
 	// independent invalidation chains, and none may outlive the terminal render.
 	if (state) {
 		if (state.pendingTimer !== undefined) clearTimeout(state.pendingTimer);
-		if ((status === LIFECYCLE_STATUS.RUNNING || status === LIFECYCLE_STATUS.PREPARING) && state.startedAt !== undefined) {
+		if ((status === LIFECYCLE_STATUS.RUNNING || status === LIFECYCLE_STATUS.PREPARING) && state.startedAt !== undefined && state.endedAt === undefined) {
 			state.pendingTimer = setTimeout(() => {
 				state.pendingTimer = undefined;
 				context?.invalidate?.();

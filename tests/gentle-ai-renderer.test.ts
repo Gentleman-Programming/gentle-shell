@@ -241,3 +241,61 @@ test("running renders keep a single pending duration timer and the terminal rend
 	t.mock.timers.tick(60_000);
 	assert.equal(invalidations, 1, "no timer outlives the terminal render");
 });
+
+// R4-replay-running-start-fabrication regressions. Real replays carry NO
+// argsComplete (pi omits it on historical rows), unlike the older replay
+// fixtures above that pass argsComplete: false (the PREPARING path).
+
+test("a replayed row without argsComplete renders running but never fabricates a start", () => {
+	const rowState: Record<string, unknown> = {};
+	let invalidations = 0;
+	const context = { state: rowState, executionStarted: false, invalidate: () => { invalidations += 1; } };
+	const replayed = renderGentleAiLifecycleCall("review status", plainTheme, context as never, undefined, 90_000);
+	const line = replayed.render(90).map(stripAnsi)[0];
+	assert.match(line, /· running · review status /, "a replayed unfinished row computes to running (absent argsComplete)");
+	assert.doesNotMatch(line, /\d+s/, "a replayed running row without durable stamps shows no duration");
+	assert.equal(stateStartedAt(rowState), undefined, "an unexplained RUNNING on a replayed row must not stamp a start");
+	assert.equal(statePendingTimer(rowState), undefined, "no start means no ticking timer for a dead row");
+	assert.equal(invalidations, 0, "no invalidation fires during the render itself");
+});
+
+test("a start-only durable record under an args-less replay stays honest", () => {
+	const rowState: Record<string, unknown> = {};
+	const durable = new Map([["call-3", { toolCallId: "call-3", startedAt: 1_000 }]]);
+	const context = {
+		state: rowState,
+		toolCallId: "call-3",
+		elapsedTiming: { lookup: (id: string) => durable.get(id) },
+		executionStarted: false,
+		invalidate: () => {},
+	};
+	const initial = renderGentleAiLifecycleCall("review status", plainTheme, context as never, undefined, 90_000);
+	assert.doesNotMatch(initial.render(90).map(stripAnsi).join("\n"), /\d+s/, "a start-only record shows no duration");
+	assert.equal(stateStartedAt(rowState), undefined, "the start-only record is not seeded onto the replay");
+	assert.equal(statePendingTimer(rowState), undefined, "no fabricated start means the 1 Hz invalidate loop never arms");
+});
+
+test("a live running row still stamps its start and keeps one timer", () => {
+	const rowState: Record<string, unknown> = {};
+	const context = { state: rowState, argsComplete: true, executionStarted: false, invalidate: () => {} };
+	renderGentleAiLifecycleCall("review capture", plainTheme, context as never, undefined, 1_000);
+	assert.equal(stateStartedAt(rowState), 1_000, "live evidence (argsComplete true) still stamps the start");
+	assert.match(renderGentleAiLifecycleCall("review capture", plainTheme, { ...context } as never, undefined, 1_500).render(90).map(stripAnsi).join("\n"), /\d+s/);
+	assert.ok(statePendingTimer(rowState), "the live row keeps its duration timer");
+});
+
+test("a seeded replay with a frozen end arms no ticking timer", () => {
+	const rowState: Record<string, unknown> = {};
+	const durable = new Map([["call-4", { toolCallId: "call-4", startedAt: 1_000, endedAt: 31_000 }]]);
+	const context = {
+		state: rowState,
+		toolCallId: "call-4",
+		elapsedTiming: { lookup: (id: string) => durable.get(id) },
+		executionStarted: false,
+		invalidate: () => {},
+	};
+	renderGentleAiLifecycleCall("review status", plainTheme, context as never, undefined, 90_000);
+	assert.equal(stateStartedAt(rowState), 1_000, "the durable start is seeded");
+	assert.equal(stateEndedAt(rowState), 31_000, "the durable end is seeded");
+	assert.equal(statePendingTimer(rowState), undefined, "a frozen duration needs no wake-up timer");
+});

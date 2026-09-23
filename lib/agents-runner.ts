@@ -1,10 +1,12 @@
-import { createHash } from "node:crypto";
+import { isSessionChangeEvidence, type SessionChangeEvidence } from "./session-changes.ts";
 import type { Duplex, Readable, Writable } from "node:stream";
-import { RESEARCH_SELECTION_ENV, RESEARCH_ARTIFACT_ENV, type ResearchArtifactIntent } from "./sdd-research-capabilities.ts";
+import { stripVTControlCharacters } from "node:util";
+import { RESEARCH_SELECTION_ENV } from "./sdd-research-capabilities.ts";
+import { withoutInteractiveHost } from "./rpc-host.ts";
 import { AGENT_MODE, formatModelRef, type AgentDefinition, type AgentMode, type ModelRef } from "./agents-config.ts";
 import { CHILD_QUERY_MAX_INFLIGHT, CHILD_QUERY_TIMEOUT_MS, parseChildFrame, validChildMessage, validChildQueryId } from "./agents-messaging.ts";
 import { ParentStandingReviewPermissionBroker } from "./review-session-standing-permission-ipc.ts";
-import { isFinished, normalizeRpcEvent, TASK_EVENT, TASK_STATUS, taskLabel, type AskRequest, type ChildResponseObservation, type TaskRecord, type RemediationTaskState, type TaskStore } from "./agents-protocol.ts";
+import { isFinished, normalizeRpcEvent, TASK_EVENT, TASK_STATUS, taskLabel, type AskRequest, type ChildResponseObservation, type TaskRecord, type TaskStore } from "./agents-protocol.ts";
 
 // Gentle Agents runner. Every subagent is its own `pi --mode rpc` process:
 // the host never runs subagent work on the TUI thread. It writes JSON
@@ -13,6 +15,7 @@ import { isFinished, normalizeRpcEvent, TASK_EVENT, TASK_STATUS, taskLabel, type
 
 export interface ChildLike {
 	pid: number | undefined;
+	connected?: boolean;
 	stdin: Writable;
 	stdout: Readable;
 	stderr: Readable | null | undefined;
@@ -30,7 +33,7 @@ export interface SpawnOptions {
 	cwd: string;
 	env: NodeJS.ProcessEnv;
 	detached?: boolean;
-	stdio?: Array<"pipe" | "ignore" | "inherit" | "ipc">;
+	stdio?: Array<"pipe" | "ignore" | "inherit" | "ipc" | "overlapped">;
 }
 
 export type Spawn = (command: string, args: string[], options: SpawnOptions) => ChildLike;
@@ -56,6 +59,9 @@ export interface RunnerDeps {
 export interface RunnerLimits {
 	maxConcurrency: number;
 	stallTimeoutMs: number;
+	// Longer ceiling used while an announced tool call is in flight. Optional so
+	// callers that only bound silence keep the idle budget as the tool ceiling.
+	toolStallTimeoutMs?: number;
 }
 
 export interface AskAnswer {
@@ -99,7 +105,7 @@ export interface RunnerHooks {
 	onNotification?(task: TaskRecord, message: string): boolean | void;
 	onQuery?(task: TaskRecord, requestId: string, message: string): boolean | void;
 	// Parent-only observation of a paired successful filesystem tool, not prose.
-	onSuccessfulMutation?(task: TaskRecord, tool: { toolName: "write" | "edit"; toolCallId: string; path: string }): void | Promise<void>;
+	onSuccessfulMutation?(task: TaskRecord, tool: { toolName: "write" | "edit"; toolCallId: string; path: string; evidence?: SessionChangeEvidence }): void | Promise<void>;
 }
 
 export interface RemediationHarnessPlan { command?: string; naReason?: string }
@@ -112,21 +118,6 @@ export interface RemediationPlan {
 	runtimeHarness: RemediationHarnessPlan;
 	rollback: RemediationRollbackPlan;
 }
-export interface RemediationObservation {
-	slot: number;
-	toolCallId: string;
-	command: string;
-	cwd: string;
-	exitCode: number | null;
-	result: string;
-}
-export interface RemediationObservations {
-	failedEvidenceRevision: string;
-	plan: RemediationPlan;
-	observations: RemediationObservation[];
-	pending: Record<string, number>;
-	invalid: boolean;
-}
 const concrete = (value: unknown): value is string => typeof value === "string" && value.trim() === value && value.length > 3 && value.length <= 4096 && !/[\0\r\n]/.test(value);
 export function parseRemediationPlan(value: unknown, cwd: string): RemediationPlan {
 	const plan = value as RemediationPlan;
@@ -136,65 +127,28 @@ export function parseRemediationPlan(value: unknown, cwd: string): RemediationPl
 	return structuredClone(plan);
 }
 export const plannedCommands = (plan: RemediationPlan) => [...plan.commands, ...(plan.runtimeHarness.command ? [plan.runtimeHarness.command] : []), plan.rollback.command];
-const evidenceDigest = (value: string) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
-
-// Only paired stock-shell observations may fill this remediation-only plan.
-export function observeRemediationTool(state: RemediationObservations, raw: Record<string, unknown>): void {
-	if (raw.toolName !== "bash" || typeof raw.toolCallId !== "string") return;
-	const id = raw.toolCallId;
-	if (raw.type === "tool_execution_start") {
-		const command = (raw.args as { command?: unknown } | undefined)?.command;
-		if (typeof command !== "string" || !plannedCommands(state.plan).includes(command)) return;
-		if (Object.hasOwn(state.pending, id) || state.observations.some(item => item.toolCallId === id) || Object.keys(state.pending).length >= 32) { state.invalid = true; return; }
-		const slot = plannedCommands(state.plan).findIndex((item, index) => item === command && !state.observations.some(observation => observation.slot === index) && !Object.values(state.pending).includes(index));
-		if (slot < 0) { state.invalid = true; return; }
-		state.pending[id] = slot;
-	}
-	if (raw.type !== "tool_execution_end" || !Object.hasOwn(state.pending, id)) return;
-	const slot = state.pending[id];
-	const command = plannedCommands(state.plan)[slot];
-	delete state.pending[id];
-	const result = raw.result as { content?: unknown; details?: { truncation?: unknown; fullOutputPath?: unknown; remediationCommand?: RemediationObservation & { truncated?: boolean } } } | undefined;
-	const observed = result?.details?.remediationCommand;
-	const output = JSON.stringify(result?.content ?? null);
-	if (!observed || observed.toolCallId !== id || observed.command !== command || observed.cwd !== state.plan.cwd ||
-		!(observed.exitCode === null || Number.isInteger(observed.exitCode)) || state.observations.length >= 32) { state.invalid = true; return; }
-	const contentValid = Array.isArray(result?.content) && result.content.length > 0 && result.content.every(part =>
-		part && typeof part === "object" && (part as { type?: unknown }).type === "text" && typeof (part as { text?: unknown }).text === "string");
-	if (raw.isError !== false || observed.exitCode !== 0 || observed.truncated || result?.details?.truncation || result?.details?.fullOutputPath || output.length > 16_000 || !contentValid) state.invalid = true;
-	state.observations.push({ slot, toolCallId: id, command, cwd: observed.cwd, exitCode: observed.exitCode, result: `Observed command output ${evidenceDigest(output)}: ${output.slice(0, 400)}` });
-}
-export function remediationEvidence(state: RemediationObservations) {
-	const find = (slot: number) => state.observations.find(item => item.slot === slot && item.command === plannedCommands(state.plan)[slot] && item.cwd === state.plan.cwd && item.exitCode === 0);
-	if (state.invalid || Object.keys(state.pending).length || !/^sha256:[0-9a-f]{64}$/.test(state.failedEvidenceRevision) || !plannedCommands(state.plan).every((_, slot) => find(slot))) return undefined;
-	const result = (slot: number) => `cwd ${state.plan.cwd}; retained command observation ${evidenceDigest(JSON.stringify(find(slot)))}`;
-	return {
-		schema: "gentle-ai.remediation-evidence/v1",
-		failed_evidence_revision: state.failedEvidenceRevision,
-		commands: state.plan.commands.map((command, slot) => ({ command, exit_code: 0, result: result(slot) })),
-		runtime_harness: state.plan.runtimeHarness.command ? { status: "passed", command: state.plan.runtimeHarness.command, result: result(state.plan.commands.length) } : { status: "not_applicable", na_reason: state.plan.runtimeHarness.naReason },
-		rollback: { boundary: state.plan.rollback.boundary, evidence: result(plannedCommands(state.plan).length - 1) },
-	};
+// Launch-local scope only; task history is not an attempt authority.
+export interface RemediationContext {
+	failedEvidenceRevision: string;
+	plan: RemediationPlan;
+	scope: RemediationScope;
 }
 
 export interface SddChangeSelection {
 	changeName: string;
 	workspaceRoot: string;
-	phase: "apply" | "verify" | "sync" | "archive" | "remediate";
+	phase: "apply" | "verify" | "archive" | "remediate";
 	failedEvidenceRevision?: string;
 }
 
 export const SDD_CHANGE_FLAG = "--gentle-sdd-change";
 
-export interface RemediationTerminalFacts { spawned: boolean; exited: boolean; cleanupConfirmed: boolean }
-
 export const REMEDIATION_PLAN_ENV = "GENTLE_PI_SDD_REMEDIATION_PLAN";
 
 export interface TaskRequest {
 	remediationIntent?: unknown;
-	sddRemediation?: RemediationTaskState;
+	sddRemediation?: RemediationContext;
 	sddPreflightContext?: string;
-	finalizeRemediation?: (task: TaskRecord, facts: RemediationTerminalFacts) => Promise<void>;
 	agent: AgentDefinition;
 	prompt: string;
 	label: string | undefined;
@@ -211,8 +165,10 @@ export interface TaskRequest {
 	sddChange?: SddChangeSelection;
 	// Untrusted narrowing intent; paths come only from matching host provenance.
 	researchSelection?: unknown;
-	researchArtifact?: ResearchArtifactIntent;
 	extensionPaths?: string[];
+	// Synchronous admission recheck at dequeue, before any OS spawn. Throws fail
+	// only this task; unlike onLaunch, it must never persist Changes evidence.
+	beforeSpawn?: () => void;
 	// Captures the originating session; invoked only after successful OS spawn.
 	onLaunch?: () => void;
 	/** Default off. Parent owns policy before opting into bounded local buffering,
@@ -256,6 +212,7 @@ interface PendingReply {
 
 interface LiveTask {
 	child: ChildLike;
+	sawRunEvent: boolean;
 	observations?: ChildObservationBuffer;
 	observationGuard?: () => boolean;
 	observationPreparation?: () => boolean;
@@ -275,8 +232,17 @@ interface LiveTask {
 	acknowledgedIpcIds: Set<string>;
 	acknowledgedIpcOrder: string[];
 	mutationStarts: Map<string, { toolName: "write" | "edit"; toolCallId: string; path: string }>;
+	// Tool calls the child announced and has not ended yet. A call in flight is
+	// live work, so the watchdog gives it the tool ceiling instead of the idle
+	// silence budget. Keyed by call id, holding the announced tool name.
+	inFlightTools: Map<string, string>;
+	// Bounded ring buffer of the child's raw stderr output, capped to the last
+	// STDERR_TAIL_MAX characters. Only surfaced on the stall and pre-settle exit
+	// terminal paths, never on completed, cancelled, or other failure reasons.
+	stderrTail: string;
 }
 
+const STDERR_TAIL_MAX = 512;
 const CHILD_MARKER = "GENTLE_PI_AGENTS_CHILD";
 const IPC_MARKER = "GENTLE_PI_AGENTS_OWNED_IPC";
 const PARENT_NOTIFICATION_TOOL = "subagent_parent_message";
@@ -320,7 +286,7 @@ export function childArguments(request: TaskRequest): string[] {
 	if (request.resumeSessionPath) args.push("--session", request.resumeSessionPath);
 	if (request.model) args.push("--model", request.thinking ? `${formatModelRef(request.model)}:${request.thinking}` : formatModelRef(request.model));
 	else if (request.thinking) args.push("--thinking", request.thinking);
-	const tools = request.agent.tools.length > 0 ? [...new Set([...request.agent.tools, PARENT_NOTIFICATION_TOOL])] : DEFAULT_TOOLS;
+	const tools = request.agent.tools.length > 0 || request.agent.name === "sdd-research" ? [...new Set([...request.agent.tools, PARENT_NOTIFICATION_TOOL])] : DEFAULT_TOOLS;
 	if (tools.length > 0) args.push("--tools", tools.join(","));
 	if (request.agent.instructions.length > 0) args.push("--append-system-prompt", request.agent.instructions);
 	return args;
@@ -367,7 +333,7 @@ export class JsonLines {
 
 export function promptText(request: TaskRequest): string {
 	const prompt = request.context ? `${request.prompt}\n\n## Context\n${request.context}` : request.prompt;
-	return request.sddRemediation ? `${prompt}\n\n## Host-owned remediation evidence plan\nExecute these exact commands in the selected cwd; do not perform native acquire or settle.\n${JSON.stringify(request.sddRemediation.plan)}\nFailed evidence: ${request.sddRemediation.failedEvidenceRevision}` : prompt;
+	return request.sddRemediation ? `${prompt}\n\n## Human-authorized remediation plan\nExecute only these exact commands in the selected cwd; report actual results without claiming native verification.\n${JSON.stringify(request.sddRemediation.plan)}\nFailed evidence: ${request.sddRemediation.failedEvidenceRevision}` : prompt;
 }
 
 export class AgentRunner {
@@ -378,8 +344,6 @@ export class AgentRunner {
 	private readonly processControl: ProcessControl;
 	private readonly queue: Array<{ task: TaskRecord; request: TaskRequest }> = [];
 	private readonly live = new Map<string, LiveTask>();
-	private readonly remediationFinalizers = new Map<string, NonNullable<TaskRequest["finalizeRemediation"]>>();
-	private readonly finalizingRemediation = new Set<string>();
 	private readonly waiters = new Map<string, Array<(task: TaskRecord) => void>>();
 	private readonly queryWaiters = new Map<string, Array<(query: TaskQuery | undefined) => void>>();
 	private readonly firstQueries = new Map<string, TaskQuery>();
@@ -393,22 +357,15 @@ export class AgentRunner {
 		this.processControl = deps.process ?? hostProcess;
 	}
 
-	prepareRemediation(request: TaskRequest): TaskRecord {
-		if (request.agent.name !== "sdd-remediate" || this.store.list().some(task => task.agent === "sdd-remediate" && task.cwd === request.cwd && !isFinished(task.status))) throw new Error("Remediation already preparing/running; reconcile its retained task before another actor");
-		return this.createTask(request);
-	}
-
 	private createTask(request: TaskRequest): TaskRecord {
 		const now = this.deps.now();
 		this.counter += 1;
 		const task: TaskRecord = {
 			id: `${now.toString(36)}-${this.counter.toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
 			agent: request.agent.name,
-			...(request.sddRemediation ? { sddRemediation: structuredClone(request.sddRemediation) } : {}),
 			...(request.sddPreflightContext ? { sddPreflightContext: request.sddPreflightContext } : {}),
 			mode: request.mode,
 			prompt: request.prompt,
-			...(request.researchArtifact ? { researchArtifact: structuredClone(request.researchArtifact) } : {}),
 			label: taskLabel(request.prompt, request.label),
 			cwd: request.cwd,
 			parentSessionId: request.parentSessionId,
@@ -432,17 +389,22 @@ export class AgentRunner {
 		return task;
 	}
 
-	run(request: TaskRequest, preparedRemediation?: TaskRecord): TaskRecord {
-		if (preparedRemediation && (this.store.get(preparedRemediation.id) !== preparedRemediation || preparedRemediation.cwd !== request.cwd || preparedRemediation.agent !== "sdd-remediate" || preparedRemediation.status !== TASK_STATUS.QUEUED || this.queue.some(entry => entry.task.id === preparedRemediation.id))) throw new Error("Invalid or already dispatched remediation task");
-		const task = preparedRemediation ?? this.createTask(request);
-		if (request.sddRemediation) task.sddRemediation = structuredClone(request.sddRemediation);
-		if (request.finalizeRemediation) this.remediationFinalizers.set(task.id, request.finalizeRemediation);
+	run(request: TaskRequest): TaskRecord {
+		// Admission already confirmed the canonical cwd and human edit scope.
+		// Check this runner's queue/live slots before scheduling any launch: history
+		// is not a lock, and quarantined children still own their live slot.
+		if (request.sddRemediation) {
+			const active = [...this.queue.map(entry => entry.task), ...[...this.live.keys()].map(id => this.store.get(id))];
+			if (active.some(task => task?.agent === "sdd-remediate" && task.cwd === request.cwd)) {
+				throw new Error("Remediation already queued or running in this worktree; wait for confirmed cleanup or cancel the active task before requesting fresh authorization");
+			}
+		}
+		const task = this.createTask(request);
 		// A caller can retain and mutate its request after dispatch. Preserve only
 		// the identity selected at construction for this child launch.
 		const launchRequest = {
 			...request,
 			sddChange: request.sddChange && { ...request.sddChange },
-			researchArtifact: request.researchArtifact && structuredClone(request.researchArtifact),
 		};
 		this.queue.push({ task, request: launchRequest });
 		queueMicrotask(() => this.pump());
@@ -487,15 +449,15 @@ export class AgentRunner {
 		return accepted;
 	}
 
-	cancel(id: string): boolean {
+	cancel(id: string, reason = "cancelled"): boolean {
 		const queued = this.queue.findIndex((entry) => entry.task.id === id);
 		if (queued >= 0) {
 			this.queue.splice(queued, 1);
-			this.finish(id, TASK_STATUS.CANCELLED, "cancelled before start");
+			this.finish(id, TASK_STATUS.CANCELLED, `${reason} before start`);
 			return true;
 		}
 		if (!this.live.has(id)) return false;
-		this.requestStop(id, TASK_STATUS.CANCELLED, "cancelled", true);
+		this.requestStop(id, TASK_STATUS.CANCELLED, reason, true);
 		return true;
 	}
 
@@ -506,9 +468,9 @@ export class AgentRunner {
 		if (live) { live.observations = undefined; live.observationGuard = undefined; }
 	}
 
-	cancelAll(): number {
+	cancelAll(reason = "cancelled"): number {
 		const ids = [...this.queue.map((entry) => entry.task.id), ...this.live.keys()];
-		return ids.filter((id) => this.cancel(id)).length;
+		return ids.filter((id) => this.cancel(id, reason)).length;
 	}
 
 	steer(id: string, message: string): boolean {
@@ -530,15 +492,26 @@ export class AgentRunner {
 	// A child that cannot start (missing pi, bad cwd) fails only its task:
 	// spawn exceptions and process errors settle without uncaught host errors.
 	private launch(id: string, request: TaskRequest): void {
+		try { request.beforeSpawn?.(); }
+		catch (error) {
+			this.store.update(id, { status: TASK_STATUS.RUNNING, startedAt: this.deps.now(), lastStep: "starting" });
+			this.finish(id, TASK_STATUS.FAILED, `could not start pi: ${error instanceof Error ? error.message : String(error)}`);
+			return;
+		}
 		const detached = this.processControl.platform !== "win32";
 		const hasParentPermissionChannel = request.authorizeParentStandingReviewPermission !== undefined;
-		const env = {
+		const permissionChannelStdio = this.processControl.platform === "win32" ? "overlapped" : "pipe";
+		// Subagent children are always headless: strip the desktop app's
+		// interactive-host signal even if it leaked into `request.env`, so a
+		// child spawned from an interactive RPC host never mistakes itself for
+		// one (`lib/rpc-host.ts`).
+		const env = withoutInteractiveHost({
 			...request.env,
-			...(request.extensionPaths ? { [RESEARCH_SELECTION_ENV]: JSON.stringify(request.researchSelection ?? null), [RESEARCH_ARTIFACT_ENV]: JSON.stringify(request.researchArtifact ?? null) } : {}),
+			...(request.extensionPaths ? { [RESEARCH_SELECTION_ENV]: JSON.stringify(request.researchSelection ?? null) } : {}),
 			[CHILD_MARKER]: "1",
 			[IPC_MARKER]: `${this.deps.now()}-${Math.random().toString(36).slice(2)}`,
 			...(hasParentPermissionChannel ? { GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3" } : {}),
-		};
+		});
 		delete env[REMEDIATION_PLAN_ENV];
 		if (request.sddRemediation) env[REMEDIATION_PLAN_ENV] = JSON.stringify({ plan: request.sddRemediation.plan, scope: request.sddRemediation.scope, selection: request.sddChange });
 		let child: ChildLike;
@@ -547,7 +520,7 @@ export class AgentRunner {
 				cwd: request.cwd,
 				env,
 				detached,
-				stdio: hasParentPermissionChannel ? ["pipe", "pipe", "pipe", "pipe", "ipc"] : ["pipe", "pipe", "pipe", "ipc"],
+				stdio: hasParentPermissionChannel ? ["pipe", "pipe", "pipe", permissionChannelStdio, "ipc"] : ["pipe", "pipe", "pipe", "ipc"],
 			});
 		} catch (error) {
 			this.store.update(id, { status: TASK_STATUS.RUNNING, startedAt: this.deps.now(), lastStep: "starting" });
@@ -555,7 +528,7 @@ export class AgentRunner {
 			return;
 		}
 		const processGroup = detached && typeof child.pid === "number" && child.pid > 0 ? child.pid : undefined;
-		const live: LiveTask = { child, mutationStarts: new Map(), pending: new Map(), queries: new Map(), replies: new Map(), cancelStall: () => {}, cancelGrace: () => {}, processGroup, terminal: undefined, childExit: undefined, cleanupDeadlineAt: undefined, quarantined: false, nextId: 0, ipcClosed: false, acknowledgedIpcIds: new Set(), acknowledgedIpcOrder: [] };
+		const live: LiveTask = { child, sawRunEvent: false, mutationStarts: new Map(), inFlightTools: new Map(), pending: new Map(), queries: new Map(), replies: new Map(), cancelStall: () => {}, cancelGrace: () => {}, processGroup, terminal: undefined, childExit: undefined, cleanupDeadlineAt: undefined, quarantined: false, nextId: 0, ipcClosed: false, acknowledgedIpcIds: new Set(), acknowledgedIpcOrder: [], stderrTail: "" };
 		if (request.prepareResponseObservations) {
 			let ready = false;
 			live.observationPreparation = () => ready;
@@ -592,7 +565,11 @@ export class AgentRunner {
 		const lines = new JsonLines((value) => this.receive(id, request, value));
 		child.stdout.setEncoding("utf8");
 		child.stdout.on("data", (chunk: string) => lines.push(chunk));
-		child.stderr?.on("data", () => {});
+		child.stderr?.setEncoding("utf8");
+		child.stderr?.on("data", (chunk: string) => {
+			const tail = live.stderrTail + chunk;
+			live.stderrTail = tail.length > STDERR_TAIL_MAX ? tail.slice(-STDERR_TAIL_MAX) : tail;
+		});
 		child.on("exit", (code) => this.exited(id, code));
 		if (request.sddRemediation && child.pid === undefined) {
 			this.childError(id, new Error("remediation child has no process ID"));
@@ -602,6 +579,7 @@ export class AgentRunner {
 			const data = response.data as { sessionFile?: unknown; model?: { provider?: unknown; id?: unknown } | null; thinkingLevel?: unknown } | undefined;
 			if (response.success !== true || live.terminal || this.live.get(id) !== live || !data) return;
 			const resolved: Partial<TaskRecord> = {};
+			if (this.canAdvanceLastStep(id, ["starting"])) resolved.lastStep = "pi ready";
 			if (typeof data.sessionFile === "string" && data.sessionFile) resolved.sessionPath = data.sessionFile;
 			if (data.model === null) resolved.model = "default";
 			else if (typeof data.model?.provider === "string" && data.model.provider && typeof data.model.id === "string" && data.model.id) {
@@ -611,13 +589,45 @@ export class AgentRunner {
 			this.store.update(id, resolved);
 		});
 		void this.send(id, { type: "prompt", message: promptText(request) }).then((response) => {
-			if (response.success === false) this.requestStop(id, TASK_STATUS.FAILED, String(response.error ?? "prompt rejected"));
+			if (response.success === false) {
+				this.requestStop(id, TASK_STATUS.FAILED, String(response.error ?? "prompt rejected"));
+				return;
+			}
+			if (!live.terminal && this.live.get(id) === live && this.canAdvanceLastStep(id, ["starting", "pi ready"])) this.store.update(id, { lastStep: "prompt accepted" });
 		});
 	}
 
+	// A late get_state/prompt reply must never overwrite a stage that a child
+	// event (or the other reply) has already advanced lastStep past.
+	private canAdvanceLastStep(id: string, from: readonly string[]): boolean {
+		const current = this.store.get(id)?.lastStep;
+		return current !== undefined && from.includes(current);
+	}
+
+	// Cleaned for display only: raw bytes stay in live.stderrTail so later
+	// appends keep working from the unstripped ring buffer.
+	private stderrSuffix(live: LiveTask): string {
+		const cleaned = stripVTControlCharacters(live.stderrTail).replace(/\s+/g, " ").trim();
+		return cleaned ? `; stderr: ${cleaned}` : "";
+	}
+
+	// An idle child is bounded by the silence budget; a child whose announced
+	// tool call is still running is live work and bounded by the longer tool
+	// ceiling. The budget is chosen from the state at arm time, and every RPC
+	// object re-arms, so a finished tool call returns the task to idle silence.
 	private armStall(id: string, live: LiveTask): void {
 		live.cancelStall();
-		live.cancelStall = this.deps.schedule(() => this.requestStop(id, TASK_STATUS.TIMED_OUT, `stalled for ${Math.round(this.limits.stallTimeoutMs / 60_000)} min`), this.limits.stallTimeoutMs);
+		const tool = live.inFlightTools.values().next().value;
+		const budget = tool === undefined ? this.limits.stallTimeoutMs : Math.max(this.limits.toolStallTimeoutMs ?? this.limits.stallTimeoutMs, this.limits.stallTimeoutMs);
+		live.cancelStall = this.deps.schedule(() => {
+			const lastStep = this.store.get(id)?.lastStep ?? "starting";
+			const minutes = Math.round(budget / 60_000);
+			if (tool === undefined) {
+				const boundary = lastStep === "prompt accepted" && !live.sawRunEvent ? `; no first run event received for model: ${this.store.get(id)?.model}` : "";
+				this.requestStop(id, TASK_STATUS.TIMED_OUT, `stalled for ${minutes} min after: ${lastStep}${boundary}${this.stderrSuffix(live)}`);
+			}
+			else this.requestStop(id, TASK_STATUS.TIMED_OUT, `stalled for ${minutes} min with tool "${tool}" still running after: ${lastStep}${this.stderrSuffix(live)}`);
+		}, budget);
 	}
 
 	private send(id: string, command: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -725,8 +735,10 @@ export class AgentRunner {
 		for (const pending of live.replies.values()) pending.resolve(false);
 		live.replies.clear();
 		live.child.channel?.unref?.();
-		try { live.child.disconnect?.(); }
-		catch { /* Channel may already be disconnected. */ }
+		if (live.child.connected !== false) {
+			try { live.child.disconnect?.(); }
+			catch { /* Channel may already be disconnected. */ }
+		}
 	}
 
 	private write(live: LiveTask, payload: Record<string, unknown>): void {
@@ -754,10 +766,8 @@ export class AgentRunner {
 		const live = this.live.get(id);
 		if (!live || live.terminal || !value || typeof value !== "object") return;
 		const raw = value as Record<string, unknown>;
-		const remediation = this.store.get(id)?.sddRemediation;
-		if (remediation) observeRemediationTool(remediation, raw);
-		this.armStall(id, live);
 		if (raw.type === "response") {
+			this.armStall(id, live);
 			if (!live.observationPreparation) this.checkObservationGrant(live);
 			const pending = typeof raw.id === "string" ? live.pending.get(raw.id) : undefined;
 			if (pending) {
@@ -767,7 +777,13 @@ export class AgentRunner {
 			return;
 		}
 		this.checkObservationGrant(live);
-		for (const event of normalizeRpcEvent(raw, { observeResponses: live.observations !== undefined })) {
+		const events = normalizeRpcEvent(raw, { observeResponses: live.observations !== undefined });
+		// A parsed object is not progress by itself. Only a recognized run event
+		// renews the watchdog here, so fire-and-forget UI traffic that normalizes
+		// to nothing cannot keep a child that never started its run alive forever
+		// (#1034); the pre-existing timer stays armed until real progress arrives.
+		const progress = events.length > 0;
+		for (const event of events) {
 			if (event.type === TASK_EVENT.RESPONSE_OBSERVATION) {
 				const buffer = live.observations;
 				if (buffer) {
@@ -776,19 +792,26 @@ export class AgentRunner {
 				}
 				continue; // Separate from store persistence, UI totals and notifications.
 			}
+			live.sawRunEvent = true;
 			this.store.apply(id, event, this.deps.now());
 			if (event.type === TASK_EVENT.TOOL_START && event.callId) {
+				live.inFlightTools.set(event.callId, event.name);
 				live.mutationStarts.delete(event.callId);
 				if ((event.name === "write" || event.name === "edit") && typeof event.args.path === "string" && event.args.path.trim()) {
 					live.mutationStarts.set(event.callId, { toolName: event.name, toolCallId: event.callId, path: event.args.path });
 				}
 			}
 			if (event.type === TASK_EVENT.TOOL_END) {
+				live.inFlightTools.delete(event.callId);
 				const mutation = live.mutationStarts.get(event.callId);
 				live.mutationStarts.delete(event.callId);
 				const task = this.store.get(id);
 				if (mutation && task && raw.isError === false && !event.isError) {
-					try { void Promise.resolve(this.hooks.onSuccessfulMutation?.(task, mutation)).catch(() => {}); }
+					try {
+						const evidence = (raw.result as { details?: { gentleSessionChange?: unknown } } | undefined)?.details?.gentleSessionChange;
+						const observed = isSessionChangeEvidence(evidence) && evidence.id === mutation.toolCallId ? { ...mutation, evidence: structuredClone(evidence) } : mutation;
+						void Promise.resolve(this.hooks.onSuccessfulMutation?.(task, observed)).catch(() => {});
+					}
 					catch { /* Bookkeeping failure must not rewrite a successful tool or stop the child. */ }
 				}
 			}
@@ -801,6 +824,7 @@ export class AgentRunner {
 				else this.requestStop(id, TASK_STATUS.FAILED, "assistant settled without a final report");
 			}
 		}
+		if (!live.terminal && progress) this.armStall(id, live);
 	}
 
 	// Task-mode subagents may ask the human through the host; background ones
@@ -843,6 +867,7 @@ export class AgentRunner {
 		if (!live || live.terminal) return;
 		live.terminal = { status, error };
 		live.mutationStarts.clear();
+		live.inFlightTools.clear();
 		live.cleanupDeadlineAt = this.deps.now() + GROUP_CONFIRM_DEADLINE_MS;
 		live.permissionBroker?.close();
 		this.closeIpc(live);
@@ -933,7 +958,7 @@ export class AgentRunner {
 		if (!live) return;
 		live.childExit = code;
 		if (this.groupExists(live)) {
-			if (!live.terminal) this.requestStop(id, TASK_STATUS.FAILED, `pi exited with code ${code ?? "unknown"} before agent_settled`);
+			if (!live.terminal) this.requestStop(id, TASK_STATUS.FAILED, `pi exited with code ${code ?? "unknown"} before agent_settled${this.stderrSuffix(live)}`);
 			return;
 		}
 		this.completeExit(id, live);
@@ -951,29 +976,12 @@ export class AgentRunner {
 			return;
 		}
 		const terminal = live.terminal;
-		this.finish(id, terminal ? terminal.status : TASK_STATUS.FAILED, terminal ? terminal.error : `pi exited with code ${live.childExit ?? "unknown"} before agent_settled`, live);
+		this.finish(id, terminal ? terminal.status : TASK_STATUS.FAILED, terminal ? terminal.error : `pi exited with code ${live.childExit ?? "unknown"} before agent_settled${this.stderrSuffix(live)}`, live);
 	}
 
 	private finish(id: string, status: TaskRecord["status"], error: string | null, live?: LiveTask): void {
 		const current = this.store.get(id);
-		if (!current || isFinished(current.status) || this.finalizingRemediation.has(id)) return;
-		const finalize = this.remediationFinalizers.get(id);
-		if (finalize) {
-			this.finalizingRemediation.add(id);
-			const terminal = { ...current, status, error };
-			void finalize(terminal, { spawned: typeof live?.child.pid === "number", exited: live?.childExit !== undefined, cleanupConfirmed: !live || !live.quarantined && live.childExit !== undefined }).then(() => {
-				status = terminal.status;
-				error = terminal.error;
-			}).catch(() => {
-				status = TASK_STATUS.FAILED;
-				error = "Native remediation settlement could not be durably finalized; retain task history and reconcile before further execution";
-			}).finally(() => {
-				this.remediationFinalizers.delete(id);
-				this.finalizingRemediation.delete(id);
-				this.finish(id, status, error, live);
-			});
-			return;
-		}
+		if (!current || isFinished(current.status)) return;
 		const finished = this.store.update(id, { status, endedAt: this.deps.now(), error, lastStep: error ?? "done" });
 		if (finished) {
 			if (live) this.checkObservationGrant(live);

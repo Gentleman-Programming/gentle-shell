@@ -19,9 +19,9 @@ const JD_SKILL = "skills/judgment-day/SKILL.md";
 const JD_PROMPTS = "skills/judgment-day/references/prompts-and-formats.md";
 const GENTLE_SKILL = "skills/gentle-ai/SKILL.md";
 const README = "README.md";
+const TECHNICAL_REFERENCE = "docs/readme-reference.md";
 const CHAIN = "assets/chains/4r-review.chain.md";
 const SDD_WORKFLOW = "assets/sdd-orchestrator-workflow.md";
-const RELEASE_SKILL = "skills/release/SKILL.md";
 const WORKER = "assets/agents/gentle-ai-worker.md";
 const CANONICAL_LIFECYCLE_SPECS = [
 	"openspec/specs/review-orchestration/spec.md",
@@ -132,7 +132,8 @@ test("canonical contract defines compact risk, causal admission, correction, CAS
 		/untrusted repository content.*malformed inputs.*stale authority.*path drift.*external callers/i,
 		...JUDGMENT_DAY_DISCOVERY_PATTERNS,
 	]);
-	assert.match(read(README), /Review outcomes and receipt state are informational; commit, push, pull-request, and release delivery follow ordinary repository policy\./);
+	assert.match(read(TECHNICAL_REFERENCE), /Review outcomes and receipt state are informational; commit, push, pull-request, and release delivery follow ordinary repository policy\./);
+	assert.match(read(README), /\]\(docs\/readme-reference\.md(?:#[^)]+)?\)/);
 	assert.doesNotMatch(read(README), /one one-shot authorization for the exact command/i);
 	assert.doesNotMatch(read(README), /review-publication-gate/i);
 });
@@ -365,14 +366,14 @@ test("Judgment Day fix routing has one canonical shape and never falls back to g
 	assert.match(read(SDD_WORKFLOW), /\| default\s+\| balanced\s+\| SDD phase fallback; never a Judgment Day role\s+\|/);
 });
 
-test("orchestrator, injected skill, and README defer RDD lifecycle ownership to Gentle AI", () => {
+test("orchestrator, injected skill, and technical reference defer RDD lifecycle ownership to Gentle AI", () => {
 	const boundary = "This package injects the mirrored provider-bundle review execution contract into this session's system prompt at start; Gentle AI writes nothing into the Pi system prompt, and this package owns everything else here. Absent that mirrored contract, this package invents no lifecycle instructions.";
 	const orchestrator = union(ORCHESTRATOR);
 	assert.ok(orchestrator.includes(boundary), "orchestrator must carry the sole static ownership boundary");
 
 	for (const [label, content] of [
 		[GENTLE_SKILL, read(GENTLE_SKILL)],
-		[README, read(README)],
+		[TECHNICAL_REFERENCE, read(TECHNICAL_REFERENCE)],
 	] as const) {
 		assertMatches(label, content, [
 			/Gentle AI dynamically supplies runtime-specific RDD instructions/i,
@@ -388,8 +389,8 @@ test("orchestrator, injected skill, and README defer RDD lifecycle ownership to 
 	}
 });
 
-test("README documents the dynamic runtime authority boundary without an old package route", () => {
-	const content = read(README);
+test("technical reference documents the dynamic runtime authority boundary without an old package route", () => {
+	const content = read(TECHNICAL_REFERENCE);
 	assert.match(content, /Gentle AI dynamically supplies runtime-specific RDD instructions/i);
 	assert.match(content, /does not define an RDD lifecycle/i);
 	assert.doesNotMatch(content, /New ordinary review uses compact `gentle_review` `start -> finalize -> validate`\./);
@@ -398,7 +399,7 @@ test("README documents the dynamic runtime authority boundary without an old pac
 });
 
 test("managed contracts retain no fresh lifecycle review directive", () => {
-	const managed = union([...ORCHESTRATOR, SDD_WORKFLOW, RELEASE_SKILL, WORKER, GENTLE_SKILL, README]);
+	const managed = union([...ORCHESTRATOR, SDD_WORKFLOW, WORKER, GENTLE_SKILL, README]);
 	for (const obsolete of [
 		"A fresh review still follows delegated implementation.",
 		"run a fresh-context review lens unless",

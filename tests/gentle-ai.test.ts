@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
-import { initTheme, keyHint } from "@earendil-works/pi-coding-agent";
+import { initTheme } from "@earendil-works/pi-coding-agent";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -15,12 +15,15 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { PROFILES_KIND, PROFILES_VERSION } from "../lib/agent-profiles.ts";
+import type { AgentRoutingEntry } from "../lib/model-routing-authority.ts";
+type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel">;
+import { PROFILE_PIN_KIND, PROFILE_PIN_VERSION, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
 import { NATIVE_REVIEW_ERROR_CODE, NativeReviewCliError, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { CandidateViewError, type CandidateViewRegistry } from "../lib/review-candidate-view.ts";
 import { installPackageAssets } from "../lib/sdd-preflight.ts";
 import type { ReviewCollectInputV3, ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
-import { cardBody, cardHint, cardTitle, cardTone } from "./gentle-card-text.ts";
+import { cardBody, cardTitle, cardTone } from "./gentle-card-text.ts";
 
 initTheme("dark");
 
@@ -273,7 +276,7 @@ test("registered Gentle Review tools preserve result envelopes and redact collap
 	const scope = tools.get("gentle_review_scope");
 	const manifest = { version: 1, scopeByMode: { "100644": ["src/file.ts"] }, gitlinks: {} };
 	const bytes = Buffer.from(JSON.stringify(manifest), "utf8");
-	const encoded = gzipSync(bytes, { mtime: 0 }).toString("base64url");
+	const encoded = gzipSync(bytes).toString("base64url");
 	const sha256 = createHash("sha256").update(bytes).digest("hex");
 
 	const result = await scope.execute(
@@ -294,7 +297,6 @@ test("registered Gentle Review tools preserve result envelopes and redact collap
 	assert.deepEqual(result.details, visibleEnvelope);
 
 	const resultText = "safe result\x1b[31m\nlineage=secret body=private";
-	const expandHint = keyHint("app.tools.expand", "to expand");
 	for (const name of ["gentle_review", "gentle_review_scope", "gentle_review_capture"]) {
 		const tool = tools.get(name);
 		assert.equal(typeof tool?.renderResult, "function", `${name} must define result rendering`);
@@ -304,8 +306,9 @@ test("registered Gentle Review tools preserve result envelopes and redact collap
 			{ expanded: false, isPartial: false, isError: true },
 		]) {
 			const collapsed = renderComponent(tool.renderResult({ content: [{ type: "text", text: resultText }] }, options, lifecycleTheme, {}));
-			assert.match(cardBody(collapsed), /\d+ lines?\b/, `${name} collapsed output must contain one expand hint`);
-			assert.match(cardBody(collapsed), /\d+ lines?\b/, `${name} collapsed output must start with the hint`);
+			const collapsedBody = cardBody(collapsed);
+			assert.equal((collapsedBody.match(/\d+ lines?\b/g) ?? []).length, 1, `${name} collapsed output must contain one expand hint`);
+			assert.match(collapsedBody, /^<dim>\d+ lines?\b<\/dim>/, `${name} collapsed output must start with the hint`);
 			assert.doesNotMatch(collapsed, /safe result|lineage=secret|private/);
 		}
 		const expanded = renderComponent(tool.renderResult({ content: [{ type: "text", text: resultText }] }, { expanded: true, isPartial: false, isError: true }, lifecycleTheme, {}));
@@ -363,11 +366,21 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 		rmSync(root, { recursive: true, force: true });
 	});
 	const commands = new Map<string, Parameters<ExtensionAPI["registerCommand"]>[1]>();
+	// The live session seam a profile apply drives: Pi's own setModel and
+	// setThinkingLevel on the ExtensionAPI move the session the user is in.
+	const liveSwitches: Array<{ kind: "model"; provider: string; id: string } | { kind: "thinking"; level: string }> = [];
+	let setModelResult = true;
+	let thinkingRejects = false;
 	createGentleAiExtension({ nativeReviewCli: null })({
 		on() {},
 		registerTool() {},
 		registerCommand(name, command) { commands.set(name, command); },
-	} as ExtensionAPI);
+		setModel: async (model: { provider: string; id: string }) => { liveSwitches.push({ kind: "model", provider: model.provider, id: model.id }); return setModelResult; },
+		setThinkingLevel: (level: string) => {
+			if (thinkingRejects) throw new Error(`thinking level ${level} is not supported by this model`);
+			liveSwitches.push({ kind: "thinking", level });
+		},
+	} as unknown as ExtensionAPI);
 	const notifications: Array<{ message: string; severity: string }> = [];
 	// The profiles panel reads the terminal rows to size its full-screen frame, so
 	// the fake UI hands every factory a TUI-shaped stand-in with a mutable height.
@@ -376,13 +389,19 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 	const panels: string[] = [];
 	let onPanel = () => ({ type: "cancel", config: {} });
 	let onInput: ((panel: RoutingConsumerPanel) => void) | undefined;
+	// The orchestrator model is looked up in the registry before switching.
+	const registryModels = [
+		{ provider: "openai", id: "alpha" },
+		{ provider: "openai", id: "beta" },
+		{ provider: "nan", id: "glm5.3" },
+	];
 	const ctx = {
 		cwd: root,
 		hasUI: true,
-		modelRegistry: { getAvailable: async () => [
-			{ provider: "openai", id: "alpha" },
-			{ provider: "openai", id: "beta" },
-		] },
+		modelRegistry: {
+			getAvailable: async () => registryModels.filter((model) => model.provider === "openai"),
+			find: (provider: string, id: string) => registryModels.find((model) => model.provider === provider && model.id === id),
+		},
 		ui: {
 			notify(message: string, severity: string) { notifications.push({ message, severity }); },
 			custom: async (factory: (tui: unknown, theme: Theme, keybindings: unknown, done: (result: unknown) => void) => RoutingConsumerPanel) => {
@@ -403,6 +422,9 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 		root, agentHome, configHome, projectPath, globalPath, exportPath, notifications, panels,
 		tui: fixtureTui as { terminal: { rows: number } },
 		panelVisits: () => panelVisits,
+		liveSwitches,
+		refuseSetModel() { setModelResult = false; },
+		rejectThinkingLevel() { thinkingRejects = true; },
 		onPanel(action: typeof onPanel) { onPanel = action; },
 		onInput(action: (panel: RoutingConsumerPanel) => void) { onInput = action; },
 		run: (name: string) => commands.get(name)!.handler("", ctx),
@@ -800,8 +822,9 @@ test("a later alias keeps managed-root precedence and manifest ownership", (t) =
 	assert.equal(manifest.assets["agents/sdd-apply.md"], createHash("sha256").update(routed).digest("hex"));
 });
 
-test("runtime guidance keeps review policy out of the static orchestrator", () => {
-	const staticReferences = ["README.md", "skills/gentle-ai/SKILL.md"];
+test("runtime guidance keeps review policy out of the static orchestrator and technical reference", () => {
+	const staticReferences = ["docs/readme-reference.md", "skills/gentle-ai/SKILL.md"];
+	assert.match(readFileSync("README.md", "utf8"), /\]\(docs\/readme-reference\.md(?:#[^)]+)?\)/);
 	const forbiddenGenericRoutes = [
 		/fresh-context `reviewer`/,
 		/fresh reviewer audits/,
@@ -1100,6 +1123,58 @@ test("discoverable model agents include installed Judgment Day agents", (t) => {
 	assert.deepEqual(
 		discovered.filter((name) => name.startsWith("jd-")),
 		["jd-judge-a", "jd-judge-b", "jd-fix-agent"],
+	);
+});
+
+test("per-JD-agent model assignment keeps judge-a and judge-b profiles divergent", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "gentle-pi-jd-diversity-"));
+	const previousHome = process.env.GENTLE_PI_AGENT_HOME;
+	process.env.GENTLE_PI_AGENT_HOME = root;
+	t.after(() => {
+		if (previousHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
+		else process.env.GENTLE_PI_AGENT_HOME = previousHome;
+		rmSync(root, { recursive: true, force: true });
+	});
+	writeMarkdown(
+		join(root, "agents", "jd-judge-a.md"),
+		"---\nname: jd-judge-a\ndescription: Judgment Day judge A\n---\n\nYou are Judgment Day judge A.\n",
+	);
+	writeMarkdown(
+		join(root, "agents", "jd-judge-b.md"),
+		"---\nname: jd-judge-b\ndescription: Judgment Day judge B\n---\n\nYou are Judgment Day judge B.\n",
+	);
+	writeMarkdown(join(root, "agents", "jd-fix-agent.md"), "name: jd-fix-agent\n");
+
+	applyModelConfig(root, {
+		"jd-judge-a": { model: "anthropic/claude-3-7-sonnet", thinking: "high" },
+		"jd-judge-b": { model: "openai/gpt-4o", thinking: "low" },
+	});
+
+	const judgeA = readFileSync(join(root, "agents", "jd-judge-a.md"), "utf8");
+	assert.match(judgeA, /^model: anthropic\/claude-3-7-sonnet$/m);
+	assert.match(judgeA, /^thinking: high$/m);
+
+	const judgeB = readFileSync(join(root, "agents", "jd-judge-b.md"), "utf8");
+	assert.match(judgeB, /^model: openai\/gpt-4o$/m);
+	assert.match(judgeB, /^thinking: low$/m);
+
+	const profiles = JSON.parse(
+		readFileSync(join(root, "subagents.json"), "utf8"),
+	);
+	assert.equal(
+		profiles.model_profiles["jd-judge-a"].model,
+		"anthropic/claude-3-7-sonnet",
+	);
+	assert.equal(profiles.model_profiles["jd-judge-a"].effort, "high");
+	assert.equal(
+		profiles.model_profiles["jd-judge-b"].model,
+		"openai/gpt-4o",
+	);
+	assert.equal(profiles.model_profiles["jd-judge-b"].effort, "low");
+	assert.notEqual(
+		profiles.model_profiles["jd-judge-a"].model,
+		profiles.model_profiles["jd-judge-b"].model,
+		"judge-a and judge-b must be able to run with different models in one JD run",
 	);
 });
 
@@ -1782,9 +1857,9 @@ test("bash tool_call confirms every compound action and centers a long git -C pu
 	assert.match(preview, /push origin main && npm publish --tag beta/);
 	assert.ok(preview.startsWith("…"));
 });
-// /gentle:profiles reopens its panel after every action, so a test that applies
-// once must confirm on the first visit and close on the next, or the panel and
-// the action loop feed each other forever.
+// /gentle:profiles reopens its panel after actions that finish the interaction,
+// so a test that applies once must confirm on the first visit and close on the
+// next, or the panel and the action loop feed each other forever.
 function applyOnce(
 	fixture: { onInput(action: (panel: { handleInput(data: string): void }) => void): void },
 ): void {
@@ -1799,6 +1874,19 @@ function profilesStoreFixture(t: test.TestContext) {
 	const fixture = routingConsumerFixture(t, ["worker"]);
 	const storePath = join(fixture.configHome, "profiles.json");
 	const settingsPath = join(fixture.agentHome, "settings.json");
+	// The panel resolves the per-repository profile pin through a Git seam, so
+	// point it at a sandbox identity: a pin test can then write the two layers the
+	// production resolver reads without depending on where the test runner's
+	// directory happens to sit.
+	const pinRoot = join(fixture.root, "worktree");
+	const pinCommonDir = join(fixture.root, "git-common");
+	for (const dir of [pinRoot, pinCommonDir]) mkdirSync(dir, { recursive: true });
+	setProfilePinWorktreeResolverForTesting(() => ({ root: pinRoot, commonDir: pinCommonDir }));
+	t.after(() => setProfilePinWorktreeResolverForTesting());
+	const writePin = (path: string, profile: string) => {
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, `${JSON.stringify({ kind: PROFILE_PIN_KIND, version: PROFILE_PIN_VERSION, profile }, null, 2)}\n`);
+	};
 	const writeStore = (profiles: Record<string, unknown>, active?: string) => {
 		mkdirSync(fixture.configHome, { recursive: true });
 		const store: Record<string, unknown> = { kind: PROFILES_KIND, version: PROFILES_VERSION, profiles };
@@ -1817,7 +1905,16 @@ function profilesStoreFixture(t: test.TestContext) {
 		writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
 		return settings;
 	};
-	return { fixture, storePath, settingsPath, writeStore, writeSettings };
+	return {
+		fixture,
+		storePath,
+		settingsPath,
+		writeStore,
+		writeSettings,
+		localPinPath: join(pinCommonDir, "gentle-ai", "profile-pin.json"),
+		repoPinPath: join(pinRoot, ".pi", "gentle-ai", "profile.json"),
+		writePin,
+	};
 }
 
 test("applying a profile persists its orchestrator and never leaks the key into agent routing", async (t) => {
@@ -1847,6 +1944,51 @@ test("applying a profile persists its orchestrator and never leaks the key into 
 	assert.match(readFileSync(join(fixture.root, ".pi", "agents", "worker.md"), "utf8"), /model: openai\/alpha/);
 	const applied = fixture.notifications.at(-1)?.message ?? "";
 	assert.match(applied, /Orchestrator set to nan\/glm5\.3 · max/);
+	// Persisting the default is not enough: the session the user is sitting in
+	// must switch too, or the profile looks applied while the orchestrator keeps
+	// answering with the old model.
+	assert.deepEqual(fixture.liveSwitches, [
+		{ kind: "model", provider: "nan", id: "glm5.3" },
+		{ kind: "thinking", level: "max" },
+	], "the live session switches to the profile's orchestrator");
+});
+
+test("applying a profile whose orchestrator model is unknown to the registry persists the default and says the session did not switch", async (t) => {
+	const { fixture, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	writeStore({ team: { orchestrator: { model: "nan/not-in-catalog", thinking: "high" }, worker: { model: "openai/alpha" } } });
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+	const after = JSON.parse(readFileSync(settingsPath, "utf8"));
+	assert.equal(after.defaultModel, "not-in-catalog", "the default for new sessions is still recorded");
+	assert.deepEqual(fixture.liveSwitches, [], "nothing is switched live without a registry model");
+	const applied = fixture.notifications.at(-1)?.message ?? "";
+	assert.match(applied, /nan\/not-in-catalog is not in the model catalog; this session keeps its current model/);
+});
+
+test("a thinking level the switched model rejects keeps the model switch and reports the level", async (t) => {
+	const { fixture, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	writeStore({ team: { orchestrator: { model: "nan/glm5.3", thinking: "max" }, worker: { model: "openai/alpha" } } });
+	fixture.rejectThinkingLevel();
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+	assert.equal(JSON.parse(readFileSync(settingsPath, "utf8")).defaultThinkingLevel, "max", "the persisted default is untouched by the live refusal");
+	assert.deepEqual(fixture.liveSwitches, [{ kind: "model", provider: "nan", id: "glm5.3" }], "the model switch stands");
+	const applied = fixture.notifications.at(-1)?.message ?? "";
+	assert.match(applied, /This session now runs on nan\/glm5\.3, but its thinking level could not be set to max: thinking level max is not supported by this model/);
+});
+
+test("applying a profile whose orchestrator provider has no auth persists the default and reports the refused switch", async (t) => {
+	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	writeStore({ team: { orchestrator: { model: "nan/glm5.3" }, worker: { model: "openai/alpha" } } });
+	fixture.refuseSetModel();
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+	assert.deepEqual(fixture.liveSwitches, [{ kind: "model", provider: "nan", id: "glm5.3" }], "the switch was attempted, no thinking level without one in the profile");
+	const applied = fixture.notifications.at(-1)?.message ?? "";
+	assert.match(applied, /no authentication is configured for nan; this session keeps its current model/);
 });
 
 test("applying a profile without an orchestrator entry leaves settings.json untouched", async (t) => {
@@ -1872,6 +2014,310 @@ test("a profile store entry with only the orchestrator key counts zero roles", a
 	const applied = fixture.notifications.at(-1)?.message ?? "";
 	assert.match(applied, /0 agents updated/);
 	assert.match(applied, /Orchestrator set to nan\/glm5\.3 · high/);
+});
+
+test("applying a profile replaces materialized routing for agents the profile omits", async (t) => {
+	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	// Routing materialized earlier (a previous profile, /gentle:models, or a
+	// migration) for an agent the new profile does not mention.
+	const helperPath = join(fixture.root, ".pi", "agents", "helper.md");
+	writeMarkdown(helperPath, "---\nname: helper\ndescription: Helper\nmodel: openai/beta\nthinking: high\n---\nbody\n");
+	const subagentsPath = join(fixture.root, ".pi", "subagents.json");
+	writeFileSync(subagentsPath, `${JSON.stringify({ model_profiles: { helper: { model: "openai/beta", effort: "high" } } }, null, 2)}\n`);
+	writeStore({ team: { worker: { model: "openai/alpha" } } });
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	const profiles = JSON.parse(readFileSync(subagentsPath, "utf8"));
+	assert.deepEqual(profiles.model_profiles, { worker: { model: "openai/alpha" } }, "omitted agents lose their materialized route");
+	const helper = readFileSync(helperPath, "utf8");
+	assert.doesNotMatch(helper, /^model:/m);
+	assert.doesNotMatch(helper, /^thinking:/m);
+	assert.match(readFileSync(join(fixture.root, ".pi", "agents", "worker.md"), "utf8"), /model: openai\/alpha/);
+	// models.json stays the profile itself, not a padded copy.
+	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), { worker: { model: "openai/alpha" } });
+	const applied = fixture.notifications.at(-1)?.message ?? "";
+	assert.match(applied, /applied profile "team"/);
+});
+
+test("a failed apply restores the previous profile's routing with the same replacement semantics", async (t) => {
+	const { fixture, settingsPath, writeStore } = profilesStoreFixture(t);
+	// An unreadable settings.json makes the orchestrator write fail after the
+	// routing was already materialized, which triggers the rollback path.
+	writeFileSync(settingsPath, "{ not json\n");
+	const helperPath = join(fixture.root, ".pi", "agents", "helper.md");
+	writeMarkdown(helperPath, "---\nname: helper\ndescription: Helper\nmodel: openai/beta\n---\nbody\n");
+	const subagentsPath = join(fixture.root, ".pi", "subagents.json");
+	writeFileSync(subagentsPath, `${JSON.stringify({ model_profiles: { helper: { model: "openai/beta" } } }, null, 2)}\n`);
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ helper: { model: "openai/beta" } }, null, 2)}\n`);
+	// "team" is listed first, so Enter applies it while "old" stays the active one.
+	writeStore({
+		team: { orchestrator: { model: "nan/glm5.3" }, worker: { model: "openai/alpha" } },
+		old: { helper: { model: "openai/beta" } },
+	}, "old");
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	const warning = fixture.notifications.find((entry) => /could not apply profile "team"/.test(entry.message));
+	assert.ok(warning, "the failed apply is reported");
+	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), { helper: { model: "openai/beta" } });
+	const profiles = JSON.parse(readFileSync(subagentsPath, "utf8"));
+	assert.deepEqual(profiles.model_profiles, { helper: { model: "openai/beta" } }, "the previous routing is materialized again and the failed profile's routes are cleared");
+	assert.match(readFileSync(helperPath, "utf8"), /model: openai\/beta/);
+	assert.doesNotMatch(readFileSync(join(fixture.root, ".pi", "agents", "worker.md"), "utf8"), /^model:/m);
+	const store = JSON.parse(readFileSync(join(fixture.configHome, "profiles.json"), "utf8"));
+	assert.equal(store.active, "old");
+});
+
+test("s snapshots current routing in place without applying or reopening the profiles panel", async (t) => {
+	const { fixture, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha", thinking: "minimal" } }, null, 2)}\n`);
+	const subagentsPath = join(fixture.root, ".pi", "subagents.json");
+	writeFileSync(subagentsPath, `${JSON.stringify({ model_profiles: { worker: { model: "openai/beta", effort: "high" } } }, null, 2)}\n`);
+	const workerPath = join(fixture.root, ".pi", "agents", "worker.md");
+	const before = {
+		models: readFileSync(fixture.globalPath, "utf8"),
+		subagents: readFileSync(subagentsPath, "utf8"),
+		worker: readFileSync(workerPath, "utf8"),
+		settings: readFileSync(settingsPath, "utf8"),
+	};
+	writeStore({
+		"a-target": {},
+		"z-active": { worker: { model: "openai/beta" } },
+	}, "z-active");
+
+	let firstPanel: RoutingConsumerPanel | undefined;
+	fixture.onInput((panel) => {
+		if (firstPanel === undefined) {
+			firstPanel = panel;
+			panel.handleInput("s");
+			panel.handleInput("\x1b");
+		} else {
+			panel.handleInput("\x1b");
+		}
+	});
+	await fixture.run("gentle:profiles");
+
+	const store = JSON.parse(readFileSync(join(fixture.configHome, "profiles.json"), "utf8"));
+	assert.deepEqual(store.profiles["a-target"], {
+		worker: { model: "openai/alpha", thinking: "minimal" },
+		orchestrator: { model: "nan/deepseek-v4-flash", thinking: "high" },
+	});
+	assert.deepEqual(store.profiles["z-active"], { worker: { model: "openai/beta" } });
+	assert.equal(store.active, "z-active");
+	assert.match(fixture.panels[0] ?? "", /enter apply · c create · s snapshot/);
+	assert.equal(readFileSync(fixture.globalPath, "utf8"), before.models);
+	assert.equal(readFileSync(subagentsPath, "utf8"), before.subagents);
+	assert.equal(readFileSync(workerPath, "utf8"), before.worker);
+	assert.equal(readFileSync(settingsPath, "utf8"), before.settings);
+	assert.equal(fixture.panelVisits(), 1, "snapshot keeps the same panel open");
+	assert.ok(firstPanel);
+	const targetRow = renderComponent(firstPanel!).split("\n");
+	const targetIndex = targetRow.findIndex((line) => line.includes("a-target"));
+	assert.ok(targetIndex >= 0, "selected profile remains in the list");
+	assert.match(targetRow[targetIndex + 1] ?? "", /1 role/);
+	assert.match(renderComponent(firstPanel!), /Snapshot saved; live routing unchanged\. Profile "a-target" saved from current routing\./);
+});
+
+// /gentle:models can finish with `u`: the global save `ctrl+s` performs, followed
+// by the snapshot `/gentle:profiles` performs with `s` on the current profile.
+function pickWorkerModelThenUpdateProfile(panel: RoutingConsumerPanel): void {
+	// Rows: "Set all agents", the two provider review roles, then "worker".
+	for (let step = 0; step < 3; step += 1) panel.handleInput("j");
+	assert.match(renderComponent(panel), /▸ worker/);
+	panel.handleInput("\r");
+	for (const character of "alpha") panel.handleInput(character);
+	panel.handleInput("\r");
+	panel.handleInput("u");
+}
+
+test("u saves global routing from /gentle:models and updates the active profile", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	writeStore({
+		team: { worker: { model: "openai/beta" } },
+		other: { worker: { model: "openai/beta", thinking: "high" } },
+	}, "team");
+	fixture.onInput((panel) => {
+		assert.match(renderComponent(panel), /Current profile: team/);
+		assert.match(renderComponent(panel), /u update profile/);
+		pickWorkerModelThenUpdateProfile(panel);
+	});
+	await fixture.run("gentle:models");
+
+	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), { worker: { model: "openai/alpha" } });
+	const store = JSON.parse(readFileSync(storePath, "utf8"));
+	assert.deepEqual(store.profiles.team, {
+		worker: { model: "openai/alpha" },
+		orchestrator: { model: "nan/deepseek-v4-flash", thinking: "high" },
+	});
+	assert.deepEqual(store.profiles.other, { worker: { model: "openai/beta", thinking: "high" } });
+	assert.equal(store.active, "team");
+	assert.equal(fixture.panelVisits(), 1, "u finishes the interaction");
+	assert.ok(
+		fixture.notifications.some((entry) => entry.severity === "info" && /global model config saved/.test(entry.message)),
+		"the global save is still reported",
+	);
+	assert.ok(
+		fixture.notifications.some((entry) => entry.severity === "info" && /Profile "team" updated from the routing just saved/.test(entry.message)),
+		`profile update is reported: ${JSON.stringify(fixture.notifications)}`,
+	);
+});
+
+test("u updates the pinned profile instead of the active one inside a pinned repository", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings, writePin, localPinPath } = profilesStoreFixture(t);
+	writeSettings();
+	writeStore({
+		team: { worker: { model: "openai/beta" } },
+		other: { worker: { model: "openai/beta", thinking: "high" } },
+	}, "team");
+	writePin(localPinPath, "other");
+	fixture.onInput((panel) => {
+		assert.match(renderComponent(panel), /Current profile: other \(pinned\)/);
+		pickWorkerModelThenUpdateProfile(panel);
+	});
+	await fixture.run("gentle:models");
+
+	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), { worker: { model: "openai/alpha" } });
+	const store = JSON.parse(readFileSync(storePath, "utf8"));
+	assert.deepEqual(store.profiles.other, {
+		worker: { model: "openai/alpha" },
+		orchestrator: { model: "nan/deepseek-v4-flash", thinking: "high" },
+	});
+	assert.deepEqual(store.profiles.team, { worker: { model: "openai/beta" } });
+	assert.equal(store.active, "team");
+	assert.ok(
+		fixture.notifications.some((entry) => entry.severity === "info" && /Profile "other" updated from the routing just saved/.test(entry.message)),
+		`pinned profile update is reported: ${JSON.stringify(fixture.notifications)}`,
+	);
+});
+
+test("u keeps the global save and reports when no profile is current", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	writeStore({ team: { worker: { model: "openai/beta" } } });
+	const before = readFileSync(storePath, "utf8");
+	fixture.onInput((panel) => {
+		assert.match(renderComponent(panel), /Current profile: none/);
+		pickWorkerModelThenUpdateProfile(panel);
+	});
+	await fixture.run("gentle:models");
+
+	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), { worker: { model: "openai/alpha" } });
+	assert.equal(readFileSync(storePath, "utf8"), before, "the store is untouched");
+	assert.ok(
+		fixture.notifications.some((entry) => entry.severity === "warning" && /no profile is current/.test(entry.message) && /\/gentle:profiles/.test(entry.message)),
+		`missing current profile is reported: ${JSON.stringify(fixture.notifications)}`,
+	);
+});
+
+test("u seeds the profiles store the way /gentle:profiles does when it is missing", async (t) => {
+	const { fixture, storePath, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	assert.equal(existsSync(storePath), false);
+	fixture.onInput((panel) => {
+		assert.match(renderComponent(panel), /Current profile: none/);
+		pickWorkerModelThenUpdateProfile(panel);
+	});
+	await fixture.run("gentle:models");
+
+	const store = JSON.parse(readFileSync(storePath, "utf8"));
+	assert.equal(store.kind, PROFILES_KIND);
+	assert.deepEqual(store.profiles.current, {
+		worker: { model: "openai/alpha" },
+		orchestrator: { model: "nan/deepseek-v4-flash", thinking: "high" },
+	});
+	assert.equal(store.active, "current");
+	assert.ok(
+		fixture.notifications.some((entry) => entry.severity === "info" && /seeded the "current" profile/.test(entry.message)),
+		`seeding is reported: ${JSON.stringify(fixture.notifications)}`,
+	);
+});
+
+test("snapshot feedback keeps both outcomes visible for long profile names at narrow widths", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	const longName = `a${"x".repeat(63)}`;
+	writeStore({ [longName]: {} });
+	let firstPanel: RoutingConsumerPanel | undefined;
+	fixture.onInput((panel) => {
+		if (firstPanel === undefined) {
+			firstPanel = panel;
+			panel.handleInput("s");
+			const success = stripAnsi(panel.render(60).join("\n"));
+			assert.match(success, /Snapshot saved; live routing unchanged\./);
+			rmSync(storePath);
+			mkdirSync(storePath);
+			panel.handleInput("s");
+			panel.handleInput("\x1b");
+		} else {
+			panel.handleInput("\x1b");
+		}
+	});
+	await fixture.run("gentle:profiles");
+	assert.ok(firstPanel);
+	const constrained = stripAnsi(firstPanel!.render(60).join("\n"));
+	assert.match(constrained, /Snapshot failed; live routing unchanged\./);
+});
+
+test("the profiles command seeds and shows the routing the runtime uses when models.json is sparse", async (t) => {
+	const { fixture } = profilesStoreFixture(t);
+	// No models.json at all, but routing is materialized where the runtime
+	// reads it: subagents.json for worker, frontmatter only for helper.
+	writeMarkdown(join(fixture.root, ".pi", "agents", "helper.md"), "---\nname: helper\ndescription: Helper\nmodel: openai/beta\n---\nbody\n");
+	writeFileSync(join(fixture.root, ".pi", "subagents.json"), `${JSON.stringify({ model_profiles: { worker: { model: "openai/alpha", effort: "high" } } }, null, 2)}\n`);
+	let rendered: string | undefined;
+	fixture.onInput((panel) => {
+		rendered = stripAnsi(renderComponent(panel));
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+
+	const store = JSON.parse(readFileSync(join(fixture.configHome, "profiles.json"), "utf8"));
+	assert.equal(store.active, "current", "materialized routing counts as existing routing");
+	assert.deepEqual(store.profiles.current, {
+		worker: { model: "openai/alpha", thinking: "high" },
+		helper: { model: "openai/beta" },
+	});
+	assert.ok(rendered);
+	assert.match(rendered, /Current routing \(effective\)/);
+	assert.match(rendered, /worker\s+openai\/alpha\s+high/);
+	assert.match(rendered, /helper\s+openai\/beta/);
+	assert.doesNotMatch(rendered, /No routing entries/);
+});
+
+for (const reader of ["readEffectiveModelConfig", "readEffectiveModelConfigAsync"] as const) {
+	test(`${reader} retains frontmatter model with a profile-only effort override`, async (t) => {
+		const fixture = routingConsumerFixture(t, ["worker"]);
+		writeMarkdown(join(fixture.root, ".pi", "agents", "worker.md"), "---\nname: worker\ndescription: Worker\nmodel: openai-codex/gpt-5.6-terra\nthinking: high\n---\nbody\n");
+		writeFileSync(join(fixture.root, ".pi", "subagents.json"), `${JSON.stringify({
+			model_profiles: { worker: { effort: "low" } },
+		})}\n`);
+
+		const effective = await __testing[reader](fixture.root);
+		assert.deepEqual(JSON.parse(JSON.stringify(effective.worker)), {
+			model: "openai-codex/gpt-5.6-terra",
+			thinking: "low",
+		});
+	});
+}
+
+test("effective routing prefers models.json over the materialized stores", (t) => {
+	const fixture = routingConsumerFixture(t, ["worker", "helper"]);
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	writeFileSync(join(fixture.root, ".pi", "subagents.json"), `${JSON.stringify({
+		model_profiles: { worker: { model: "openai/beta", effort: "high" }, helper: { model: "openai/beta" } },
+	}, null, 2)}\n`);
+	const effective = JSON.parse(JSON.stringify(__testing.readEffectiveModelConfig(fixture.root)));
+	assert.deepEqual(effective, {
+		worker: { model: "openai/alpha" },
+		helper: { model: "openai/beta" },
+	});
+	assert.equal(existsSync(join(fixture.root, ".pi", "gentle-ai", "models.json")), false, "reading never writes");
 });
 
 test("the profiles panel fills the terminal, lists routing per agent, and scrolls", async (t) => {
@@ -1902,7 +2348,7 @@ test("the profiles panel fills the terminal, lists routing per agent, and scroll
 	// Routing is listed one agent per line, aligned in columns, never collapsed
 	// into "N agents → model: a, b, …" summaries.
 	assert.match(text, /Profile routing/);
-	assert.match(text, /Current routing \(models\.json\)/);
+	assert.match(text, /Current routing \(effective\)/);
 	assert.match(text, /orchestrator\s+nan\/glm5\.3 · high/);
 	assert.match(text, /worker\s+openai\/alpha\s+high/);
 	assert.match(text, /sdd-design\s+nan\/glm5\.3\s+high/);
@@ -1945,4 +2391,384 @@ test("j and k scroll the detail pane one line at a time, like the agents view", 
 	assert.notEqual(firstAgentRow(afterJ), firstAgentRow(before), "j must scroll the detail down by one line");
 	panel!.handleInput("k");
 	assert.equal(firstAgentRow(body()), firstAgentRow(before), "k must scroll the detail back up");
+});
+
+// The pin is the per-repository layer of the profiles command: `p` writes the
+// clone-scoped pin inside the Git common directory, `P` writes the committable
+// per-worktree declaration. Neither writes routing.
+test("p pins the selected profile for the clone without touching the global routing", async (t) => {
+	const { fixture, storePath, localPinPath, repoPinPath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, "team");
+	const storeBefore = readFileSync(storePath, "utf8");
+	let firstPanel: RoutingConsumerPanel | undefined;
+	let reopenedPanel: RoutingConsumerPanel | undefined;
+	fixture.onInput((panel) => {
+		if (firstPanel === undefined) {
+			firstPanel = panel;
+			panel.handleInput("p");
+		} else {
+			reopenedPanel = panel;
+			panel.handleInput("\x1b");
+		}
+	});
+	await fixture.run("gentle:profiles");
+
+	assert.equal(
+		readFileSync(localPinPath, "utf8"),
+		`${JSON.stringify({ kind: PROFILE_PIN_KIND, version: PROFILE_PIN_VERSION, profile: "team" }, null, 2)}\n`,
+	);
+	assert.equal(existsSync(repoPinPath), false, "p writes the clone-scoped layer only");
+	assert.equal(readFileSync(storePath, "utf8"), storeBefore, "a pin stores a name, never routing");
+	assert.match(fixture.notifications.at(-1)?.message ?? "", /pinned profile "team" for this clone in /);
+	assert.ok(firstPanel);
+	// The panel reports the layer that would win, next to the orchestrator lines it
+	// deliberately does not move.
+	assert.ok(reopenedPanel);
+	assert.match(stripAnsi(renderComponent(reopenedPanel)), /pin\s+local: team/);
+	// Rendering an existing panel must not resolve Git or read the pin again.
+	setProfilePinWorktreeResolverForTesting(() => { throw new Error("unexpected pin read during render"); });
+	assert.doesNotMatch(stripAnsi(renderComponent(firstPanel!)), /pin\s+local: team/);
+	assert.match(stripAnsi(renderComponent(reopenedPanel)), /pin\s+local: team/);
+});
+
+test("the profile pin scope note sanitizes its worktree-derived path", (t) => {
+	const { fixture, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, "team");
+	const commonDir = join(fixture.root, "git-\x1b]52;c;payload\x07-common");
+	const localPath = join(commonDir, "gentle-ai", "profile-pin.json");
+	writeProfilePinSync(localPath, "team");
+	setProfilePinWorktreeResolverForTesting(() => ({ root: fixture.root, commonDir }));
+
+	const note = __testing.profilePinScopeNote(fixture.root);
+	assert.ok(note);
+	assert.doesNotMatch(note, /[\x00-\x1f\x7f-\x9f]/);
+	assert.doesNotMatch(note, /payload/);
+	assert.match(note, /profile-pin\.json/);
+});
+
+test("P declares the profile in the worktree so the routing can be committed", async (t) => {
+	const { fixture, localPinPath, repoPinPath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, "team");
+	let firstPanel: RoutingConsumerPanel | undefined;
+	fixture.onInput((panel) => {
+		if (firstPanel === undefined) {
+			firstPanel = panel;
+			panel.handleInput("P");
+			panel.handleInput("\x1b");
+		} else {
+			panel.handleInput("\x1b");
+		}
+	});
+	await fixture.run("gentle:profiles");
+
+	assert.equal(
+		readFileSync(repoPinPath, "utf8"),
+		`${JSON.stringify({ kind: PROFILE_PIN_KIND, version: PROFILE_PIN_VERSION, profile: "team" }, null, 2)}\n`,
+	);
+	assert.equal(existsSync(localPinPath), false, "P writes the worktree declaration only");
+	assert.match(fixture.notifications.at(-1)?.message ?? "", /declared profile "team" for this worktree in /);
+});
+
+test("a stale pin is named as missing instead of silently changing nothing", async (t) => {
+	const { fixture, localPinPath, writeStore, writePin } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, "team");
+	writePin(localPinPath, "deleted-profile");
+	let rendered: string | undefined;
+	fixture.onInput((panel) => {
+		if (rendered === undefined) rendered = stripAnsi(renderComponent(panel));
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.match(rendered ?? "", /pin\s+local: deleted-profile \(missing from this store\)/);
+});
+
+test("pinning outside a Git worktree warns and writes nothing", async (t) => {
+	const { fixture, localPinPath, repoPinPath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, "team");
+	// The fixture installs a sandbox identity; this session has no worktree at all.
+	setProfilePinWorktreeResolverForTesting(() => undefined);
+	let visits = 0;
+	fixture.onInput((panel) => {
+		assert.ok(++visits <= 2, "outside-worktree fixture repeatedly reopens and pins the panel");
+		// A completed panel ignores Escape; close the next visit instead.
+		panel.handleInput(visits === 1 ? "p" : "\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.equal(existsSync(localPinPath), false);
+	assert.equal(existsSync(repoPinPath), false);
+	assert.match(fixture.notifications.at(-1)?.message ?? "", /not inside a Git worktree/);
+});
+
+test("pressing p again on the pinned profile removes the clone pin", async (t) => {
+	const { fixture, localPinPath, writeStore, writePin } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, "team");
+	writePin(localPinPath, "team");
+	let firstPanel: RoutingConsumerPanel | undefined;
+	fixture.onInput((panel) => {
+		if (firstPanel === undefined) {
+			firstPanel = panel;
+			panel.handleInput("p");
+			panel.handleInput("\x1b");
+		} else {
+			panel.handleInput("\x1b");
+		}
+	});
+	await fixture.run("gentle:profiles");
+	assert.equal(existsSync(localPinPath), false, "a second p removes the layer instead of rewriting it");
+	assert.match(fixture.notifications.at(-1)?.message ?? "", /removed the local pin for this clone/);
+});
+
+test("the profile list marks the layer that wins with (pinned)", async (t) => {
+	const { fixture, localPinPath, writeStore, writePin } = profilesStoreFixture(t);
+	writeStore({
+		team: { worker: { model: "openai/alpha" } },
+		other: { worker: { model: "openai/beta" } },
+	}, "team");
+	writePin(localPinPath, "other");
+	let rendered: string | undefined;
+	fixture.onInput((panel) => {
+		if (rendered === undefined) rendered = stripAnsi(renderComponent(panel));
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.match(rendered ?? "", /other \(pinned\)/);
+	assert.doesNotMatch(rendered ?? "", /team \(pinned\)/);
+});
+
+test("an invalid pin file is surfaced by the panel instead of reading as no pin", async (t) => {
+	const { fixture, localPinPath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, "team");
+	mkdirSync(dirname(localPinPath), { recursive: true });
+	writeFileSync(localPinPath, "{ not json\n");
+	let rendered: string | undefined;
+	fixture.onInput((panel) => {
+		if (rendered === undefined) rendered = stripAnsi(renderComponent(panel));
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.match(rendered ?? "", /invalid pin file/);
+	assert.doesNotMatch(rendered ?? "", /\(missing from this store\)/);
+	assert.equal(readFileSync(localPinPath, "utf8"), "{ not json\n", "reading never rewrites a broken pin");
+});
+
+test("applying a profile in a pinned repository re-pins the clone and writes no global routing", async (t) => {
+	const { fixture, settingsPath, localPinPath, repoPinPath, writeStore, writeSettings, writePin } = profilesStoreFixture(t);
+	writeSettings();
+	const settingsBefore = readFileSync(settingsPath, "utf8");
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/sentinel" } }, null, 2)}\n`);
+	const modelsBefore = readFileSync(fixture.globalPath, "utf8");
+	// "team" is listed first and is selected, so Enter applies it while "pinned" is the
+	// profile this repository currently resolves.
+	writeStore({
+		team: { worker: { model: "openai/alpha" } },
+		pinned: { worker: { model: "openai/beta" } },
+	}, "pinned");
+	writePin(localPinPath, "pinned");
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(
+		readFileSync(localPinPath, "utf8"),
+		`${JSON.stringify({ kind: PROFILE_PIN_KIND, version: PROFILE_PIN_VERSION, profile: "team" }, null, 2)}\n`,
+		"the clone is re-pinned to the applied profile",
+	);
+	assert.equal(existsSync(repoPinPath), false, "a committed declaration is never written by an apply");
+	assert.equal(readFileSync(fixture.globalPath, "utf8"), modelsBefore, "no global routing was written");
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore, "no orchestrator was written");
+	assert.equal(existsSync(join(fixture.root, ".pi", "subagents.json")), false, "no materialized routing was written");
+	assert.match(fixture.notifications.at(-1)?.message ?? "", /repo-scoped/);
+});
+
+test("deleting a profile is refused when a non-winning pin layer names it", async (t) => {
+	const { fixture, localPinPath, repoPinPath, writeStore, writePin } = profilesStoreFixture(t);
+	writeStore({
+		team: { worker: { model: "openai/alpha" } },
+		other: { worker: { model: "openai/beta" } },
+	}, "team");
+	// The local pin wins with "other"; the declaration names "team", a lower layer that
+	// does not win but still names a live profile for this repository.
+	writePin(localPinPath, "other");
+	writePin(repoPinPath, "team");
+	let firstPanel: RoutingConsumerPanel | undefined;
+	fixture.onInput((panel) => {
+		if (firstPanel === undefined) {
+			firstPanel = panel;
+			panel.handleInput("x");
+			panel.handleInput("\x1b");
+		} else {
+			panel.handleInput("\x1b");
+		}
+	});
+	await fixture.run("gentle:profiles");
+	assert.equal(existsSync(repoPinPath), true, "the declaration survives the refused delete");
+	assert.match(fixture.notifications.at(-1)?.message ?? "", /is pinned for this repository/);
+	const store = JSON.parse(readFileSync(join(fixture.configHome, "profiles.json"), "utf8"));
+	assert.ok(store.profiles.team, "the profile is not deleted");
+	assert.ok(store.profiles.other, "the other profile is untouched");
+});
+
+test("a rename follows the clone pin and leaves the committed declaration naming the old profile", () => {
+	const base = mkdtempSync(join(tmpdir(), "gentle-pi-pin-rename-"));
+	try {
+		const renameRoot = join(base, "worktree");
+		const commonDir = join(base, "git-common");
+		mkdirSync(renameRoot, { recursive: true });
+		setProfilePinWorktreeResolverForTesting(() => ({ root: renameRoot, commonDir }));
+		const localPath = join(commonDir, "gentle-ai", "profile-pin.json");
+		const repoPath = join(renameRoot, ".pi", "gentle-ai", "profile.json");
+		writeProfilePinSync(localPath, "old");
+		writeProfilePinSync(repoPath, "old");
+		const follow = __testing.followRenamedPin(renameRoot, "old", "new");
+		assert.deepEqual(follow.followed, [localPath]);
+		assert.deepEqual(follow.stillDeclared, [repoPath]);
+		assert.equal(JSON.parse(readFileSync(localPath, "utf8")).profile, "new");
+		assert.equal(JSON.parse(readFileSync(repoPath, "utf8")).profile, "old", "the tracked declaration is never rewritten");
+	} finally {
+		setProfilePinWorktreeResolverForTesting();
+		rmSync(base, { recursive: true, force: true });
+	}
+});
+
+// getPiModelOptions guard branches (gentle-pi regression coverage)
+
+function makeContext(registry?: ExtensionContext["modelRegistry"]): ExtensionContext {
+	return {
+		cwd: process.cwd(),
+		hasUI: true,
+		modelRegistry: registry,
+		ui: { notify() {} },
+	} as unknown as ExtensionContext;
+}
+
+test("getPiModelOptions returns MODEL_CONTROL_OPTIONS when modelRegistry is absent", async () => {
+	const options = await __testing.getPiModelOptions(makeContext());
+	assert.deepEqual(options, ["Keep current", "Inherit active/default model", "Custom model id"]);
+});
+
+test("getPiModelOptions returns MODEL_CONTROL_OPTIONS when getAvailable throws", async () => {
+	const registry = {
+		getAvailable: async () => { throw new Error("registry unavailable"); },
+	} as unknown as ExtensionContext["modelRegistry"];
+	const options = await __testing.getPiModelOptions(makeContext(registry));
+	assert.deepEqual(options, ["Keep current", "Inherit active/default model", "Custom model id"]);
+});
+
+test("getPiModelOptions returns MODEL_CONTROL_OPTIONS when getAvailable returns non-array", async () => {
+	const registry = {
+		getAvailable: async () => ({ provider: "openai", id: "gpt-5" }),
+	} as unknown as ExtensionContext["modelRegistry"];
+	const options = await __testing.getPiModelOptions(makeContext(registry));
+	assert.deepEqual(options, ["Keep current", "Inherit active/default model", "Custom model id"]);
+});
+
+test("getPiModelOptions merges MODEL_CONTROL_OPTIONS with normalized sorted model list", async () => {
+	const registry = {
+		getAvailable: async () => [
+			{ provider: "openai", id: "gpt-5.5" },
+			{ provider: "anthropic", id: "opus-4" },
+			{ provider: "openai", id: "gpt-5" },
+		],
+	} as unknown as ExtensionContext["modelRegistry"];
+	const options = await __testing.getPiModelOptions(makeContext(registry));
+
+	assert.equal(options[0], "Keep current");
+	assert.equal(options[1], "Inherit active/default model");
+	assert.equal(options[2], "Custom model id");
+
+	const modelPart = options.slice(3);
+	assert.deepEqual(
+		modelPart,
+		[
+			"anthropic/opus-4",
+			"openai/gpt-5",
+			"openai/gpt-5.5",
+		],
+	);
+});
+
+test("getPiModelOptions drops models that normalize to undefined", async () => {
+	const registry = {
+		getAvailable: async () => [
+			{ provider: "openai", id: "gpt-5" },
+			{ provider: "anthropic", id: "claude 4" }, // space fails SAFE_MODEL_ID_PATTERN
+			{ provider: "o|penai", id: "gpt-5" },       // pipe fails SAFE_MODEL_ID_PATTERN
+		],
+	} as unknown as ExtensionContext["modelRegistry"];
+	const options = await __testing.getPiModelOptions(makeContext(registry));
+
+	const modelPart = options.slice(3);
+	assert.deepEqual(
+		modelPart,
+		[
+			"openai/gpt-5",
+		],
+	);
+});
+
+// switchLiveOrchestrator regression coverage (gentle-pi)
+
+test("switchLiveOrchestrator returns fallback note when modelRegistry is absent", async () => {
+	const live = {
+		setModel: async () => true,
+		setThinkingLevel: () => {},
+	} as unknown as LiveSession;
+	const ctx = {
+		cwd: process.cwd(),
+		hasUI: true,
+		ui: { notify() {} },
+	} as unknown as ExtensionContext;
+	const entry: AgentRoutingEntry = {
+		model: "openai/gpt-5",
+	};
+	const result = await __testing.switchLiveOrchestrator(ctx, live, entry);
+	assert.equal(
+		result,
+		"\nModel registry unavailable; this session keeps its current model.",
+	);
+});
+
+test("switchLiveOrchestrator returns fallback note when model not found in catalog", async () => {
+	const registry = {
+		find: () => undefined,
+	} as unknown as ExtensionContext["modelRegistry"];
+	const live = {
+		setModel: async () => true,
+		setThinkingLevel: () => {},
+	} as unknown as LiveSession;
+	const ctx = {
+		cwd: process.cwd(),
+		hasUI: true,
+		modelRegistry: registry,
+		ui: { notify() {} },
+	} as unknown as ExtensionContext;
+	const entry: AgentRoutingEntry = {
+		model: "openai/gpt-99",
+	};
+	const result = await __testing.switchLiveOrchestrator(ctx, live, entry);
+	assert.equal(
+		result,
+		"\nopenai/gpt-99 is not in the model catalog; this session keeps its current model.",
+	);
+});
+
+test("switchLiveOrchestrator returns note when setModel fails", async () => {
+	const registry = {
+		find: () => ({ provider: "openai", id: "gpt-5" }),
+	} as unknown as ExtensionContext["modelRegistry"];
+	const live = {
+		setModel: async () => false,
+		setThinkingLevel: () => {},
+	} as unknown as LiveSession;
+	const ctx = {
+		cwd: process.cwd(),
+		hasUI: true,
+		modelRegistry: registry,
+		ui: { notify() {} },
+	} as unknown as ExtensionContext;
+	const entry: AgentRoutingEntry = {
+		model: "openai/gpt-5",
+	};
+	const result = await __testing.switchLiveOrchestrator(ctx, live, entry);
+	assert.equal(result, "\nno authentication is configured for openai; this session keeps its current model.");
 });

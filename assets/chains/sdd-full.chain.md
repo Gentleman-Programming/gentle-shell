@@ -9,7 +9,7 @@ Run only after the interactive parent has resolved SDD preflight and injected it
 
 ## Interactive mode guard
 
-This chain is a continuous lifecycle pipeline. Use it only in auto mode or explicit full-lifecycle approval. In interactive mode the parent/orchestrator must stop at each phase boundary, present the current artifact, and ask the user before continuing. Approval to start SDD is not approval of the generated proposal, specs, design, tasks, apply, verify, sync, or archive phases.
+This chain is a continuous lifecycle pipeline. Use it only in auto mode or explicit full-lifecycle approval. In interactive mode the parent/orchestrator must stop at each phase boundary, present the current artifact, and ask the user before continuing. Approval to start SDD is not approval of the generated proposal, specs, design, tasks, apply or archive phases.
 
 ## sdd-init
 
@@ -71,31 +71,13 @@ output: apply-progress.md
 outputMode: file-only
 progress: true
 
-Implement only approved implementation-owned tasks for {task}; enforce strict TDD when active and stop before writing if workload decisions are unresolved. Update OpenSpec tasks and apply-progress with evidence. When implementation completes, continue directly to independent verification. The SDD route is apply -> verify -> sync -> archive; no RDD authority, receipt, or delivery gate is required between phases.
-
-## sdd-verify
-
-reads: proposal.md+spec.md+design.md+tasks.md+apply-progress.md
-output: verify-report.md
-outputMode: file-only
-progress: true
-
-Verify {task} against specs, design, tasks, implementation, apply-progress, strict TDD evidence, assertion quality, and review workload boundaries.
-
-## sdd-sync
-
-reads: proposal.md+spec.md+design.md+tasks.md+apply-progress.md+verify-report.md
-output: sync-report.md
-outputMode: file-only
-progress: true
-
-Sync verified file-backed delta specs for {task} into `openspec/specs/` without archiving. In Engram-only mode, report that canonical sync is not applicable.
+Implement only approved implementation-owned tasks for {task}; enforce strict TDD when active and stop before writing if workload decisions are unresolved. Update OpenSpec tasks and apply-progress with evidence. When implementation completes, request fresh native status. The classical route is apply -> archive; verification remains explicitly optional, and archive composes applicable delta specs. If the installed provider still requires verify, return that native prerequisite to the parent without skipping or inventing it. No post-SDD RDD authority, receipt, or delivery gate is required.
 
 ## sdd-archive
 
-reads: verify-report.md+sync-report.md
+reads: proposal.md+spec.md+design.md+tasks.md+apply-progress.md
 output: archive-report.md
 outputMode: file-only
 progress: true
 
-Archive {task} only when the verification report passes and file-backed sync is complete or not applicable; otherwise report that archive is blocked and preserve active artifacts.
+Archive {task} only when fresh native status admits archive and persisted implementation tasks are complete. Compose applicable file-backed delta specs, preserve collision/destructive-write consent and archive history, then persist the closure report. Read optional verification evidence when present; do not require it or a separate sync report. If native selects another action, return it to the parent and preserve active artifacts.

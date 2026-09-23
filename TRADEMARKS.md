@@ -1,10 +1,10 @@
 # Trademark Policy
 
-The gentle-pi name and logo identify the official project and its maintainers. This policy explains their permitted use; it does not change the MIT license for the software.
+The gentle-shell and gentle-pi names and associated logos identify the official project and its maintainers. This policy explains their permitted use; it does not change the MIT license for the software.
 
 ## Covered marks
 
-**Alan Buscaglia** owns the **gentle-pi** trademark when it is used as a project or package identifier, together with the associated gentle-pi logo.
+**Alan Buscaglia** owns the **gentle-shell** and **gentle-pi** trademarks when they are used as project or package identifiers, together with their associated logos.
 
 This policy does not claim ownership of any third-party **Pi** names or marks.
 
@@ -16,11 +16,11 @@ The MIT copyright notice remains separate from trademark ownership. In particula
 
 ## Permitted references
 
-You may make truthful, nominative references to gentle-pi, link to the official project, and make factual statements that a product is based on or compatible with gentle-pi. These references must not be misleading or imply a relationship that does not exist.
+You may make truthful, nominative references to gentle-shell and gentle-pi, link to the official project, and make factual statements that a product is based on or compatible with gentle-shell or gentle-pi. These references must not be misleading or imply a relationship that does not exist.
 
 ## Forks and modified distributions
 
-Modified distributions and forks must use distinct primary names and branding. They may truthfully state that they are based on or compatible with gentle-pi, provided that the statement does not imply that the distribution is official, sponsored, endorsed, certified, or partnered.
+Modified distributions and forks must use distinct primary names and branding. They may truthfully state that they are based on or compatible with gentle-shell or gentle-pi, provided that the statement does not imply that the distribution is official, sponsored, endorsed, certified, or partnered.
 
 ## Permission required
 
@@ -31,7 +31,7 @@ Prior written permission from Alan Buscaglia is required to:
 
 ## Logo and brand assets
 
-The official logo and associated brand assets identify the official gentle-pi project. Do not use them as your own primary branding, modify them in a confusing way, or present them in a way that suggests an unapproved relationship. This policy addresses trademark and brand use only; it does not make a claim about the copyright provenance of individual assets.
+The official logos and associated brand assets identify the official gentle-shell and gentle-pi project. Do not use them as your own primary branding, modify them in a confusing way, or present them in a way that suggests an unapproved relationship. This policy addresses trademark and brand use only; it does not make a claim about the copyright provenance of individual assets.
 
 ## Sponsors and partners
 

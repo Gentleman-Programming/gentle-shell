@@ -62,6 +62,12 @@ test("before_agent_start injects the mirrored review execution contract for the 
 	const { beforeAgentStart } = harness({} as NativeReviewCli);
 	const result = await beforeAgentStart(primaryEvent, ctx());
 	const expected = mirroredPiOrchestrationText();
+	assert.match(result.systemPrompt, /Substantial authorized work: use ODD/);
+	assert.match(result.systemPrompt, /Use configured TDD mode, source, and exact runner/);
+	assert.match(result.systemPrompt, /test presence does not enable it/);
+	assert.doesNotMatch(result.systemPrompt, /If tests exist, use strict TDD/);
+	assert.match(result.systemPrompt, /ODD \(Default Workflow, harness section above\) is mandatory on every request/);
+	assert.doesNotMatch(result.systemPrompt, /Prefer SDD\/OpenSpec artifacts/);
 	assert.match(result.systemPrompt, /## Gentle AI review execution contract \(mirrored provider bundle 1\.2\.0\)/);
 	assert.ok(result.systemPrompt.includes(expected), "the mirrored orchestration/pi.md text must appear verbatim");
 	assert.match(result.systemPrompt, /call `gentle_review` with {"operation":"inspect"}/);
@@ -97,6 +103,7 @@ test("before_agent_start does not inject the review execution contract for gentl
 	const { beforeAgentStart } = harness({} as NativeReviewCli);
 	const result = await beforeAgentStart({ agentName: "gentle-ai-worker", systemPrompt: "base" }, ctx());
 	assert.equal(result.systemPrompt, "base");
+	assert.doesNotMatch(result.systemPrompt, /Substantial authorized work: use ODD/);
 	assert.doesNotMatch(result.systemPrompt, /Gentle AI review execution contract/);
 });
 
@@ -104,12 +111,14 @@ test("before_agent_start does not inject the review execution contract for jd-fi
 	const { beforeAgentStart } = harness({} as NativeReviewCli);
 	const result = await beforeAgentStart({ agentName: "jd-fix-agent", systemPrompt: "base" }, ctx());
 	assert.equal(result.systemPrompt, "base");
+	assert.doesNotMatch(result.systemPrompt, /Substantial authorized work: use ODD/);
 	assert.doesNotMatch(result.systemPrompt, /Gentle AI review execution contract/);
 });
 
 test("before_agent_start does not inject the review execution contract for an SDD executor session", async () => {
 	const { beforeAgentStart } = harness({} as NativeReviewCli);
 	const result = await beforeAgentStart({ systemPrompt: "SDD apply executor body" }, ctx());
+	assert.doesNotMatch(result.systemPrompt, /Substantial authorized work: use ODD/);
 	assert.doesNotMatch(result.systemPrompt, /Gentle AI review execution contract/);
 });
 

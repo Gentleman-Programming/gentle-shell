@@ -133,7 +133,9 @@ test("the Todo header is a fullscreen left-click control while non-click pointer
 	assert.match(stripAnsi(component.render(70)[0]!), /Todos ▸ Expand/);
 });
 
-test("the Todo header remains a static visible control without hover handling", async () => {
+// H1 (odd/tasks/usage-click-and-changes-attribution.md): the header control
+// now paints the same shared hover role every other clickable surface uses.
+test("the Todo header paints the shared hover role while hovered, and clears it off the header row or on leave", async () => {
 	const { pi, tools, fire } = fakePi();
 	gentleTodo(pi, {});
 	const { ctx, widgetComponent } = fakeContext();
@@ -141,10 +143,21 @@ test("the Todo header remains a static visible control without hover handling", 
 	await tools.get("todo")!.execute("c1", { action: "write", tasks: [{ title: "A" }] }, undefined, undefined, ctx);
 	await fire("tool_execution_end", ctx, { toolName: "todo" });
 	const component = widgetComponent()!;
-	const move = { type: "move" as const, button: "none" as const, x: 1, y: 0, screenX: 1, screenY: 0, width: 70, height: 5, shift: false, alt: false, ctrl: false };
+	const move = (y: number) => ({ type: "move" as const, button: "none" as const, x: 1, y, screenX: 1, screenY: y, width: 70, height: 5, shift: false, alt: false, ctrl: false });
 	assert.match(stripAnsi(component.render(70)[0]!), /Todos ▾ Collapse/);
-	assert.equal(component.handleMouse?.(move), undefined);
-	assert.match(stripAnsi(component.render(70)[0]!), /Todos ▾ Collapse/);
+
+	const entered = component.handleMouse?.(move(0));
+	assert.deepEqual(entered, { handled: true, render: true });
+	assert.match(stripAnsi(component.render(70)[0]!), /Todos ▾ Collapse/, "the collapse label is unchanged; only its role changes (not observable through plainTheme here)");
+
+	// Moving to another row of the card (still inside the region, but off the
+	// clickable header) clears the hover.
+	const movedOff = component.handleMouse?.(move(1));
+	assert.deepEqual(movedOff, { handled: true, render: true });
+
+	// Re-entering, then a second move at the same row is a no-op (already hovered).
+	component.handleMouse?.(move(0));
+	assert.deepEqual(component.handleMouse?.(move(0)), { handled: true });
 });
 
 test("every turn carries the open tasks in the system prompt and the card goes stale after two silent turns", async () => {

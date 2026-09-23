@@ -30,7 +30,7 @@ for (const [index, path] of paths.entries()) {
 			"stop for ambiguous change selection, unresolved session preflight, or unsafe action context",
 			"prove planned writes are within the authoritative workspace or allowed edit roots",
 			"workspace-planning without allowed edit roots remains read-only",
-			"Planning does not bypass the init guard, pre-proposal gate, or phase approval requirements",
+			"Planning does not bypass the init guard, optional research guidance, or phase approval requirements",
 			"never infer a route from prose",
 			"Keep genuine blockers in `blockedReasons` and non-blocking diagnostics in `notes`, never in `nextRecommended`",
 			"report them without discarding them to enable a route",

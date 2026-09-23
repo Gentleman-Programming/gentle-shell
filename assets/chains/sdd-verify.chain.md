@@ -31,22 +31,13 @@ output: verify-report.md
 outputMode: file-only
 progress: true
 
-Run focused and full verification for {task} using the apply-progress and project artifacts. Include review/judgment blockers. Start `verify-report.md` with the mandatory fenced `gentle-ai.verify-result/v1` YAML envelope as the first non-empty content, and run `gentle-ai sdd-verify-validate` on the exact report bytes before persisting; on denial or unavailable validator, persist nothing.
-
-## sdd-sync
-
-reads: init.md+apply-progress.md+verify-report.md
-output: sync-report.md
-outputMode: file-only
-progress: true
-
-Sync verified file-backed delta specs for {task} into `openspec/specs/` without archiving. In Engram-only mode, report that canonical sync is not applicable.
+Run focused and full verification for {task} using the apply-progress and project artifacts. Include review/judgment blockers. Persist a practical verification report with actual commands, outcomes, coverage and remaining blockers; do not require a retired verification-attestation command for classical providers. If the installed legacy provider still emits additional requirements, return and follow its exact instructions without overriding readiness or inventing a compatibility procedure.
 
 ## sdd-archive
 
-reads: verify-report.md+sync-report.md
+reads: init.md+apply-progress.md+verify-report.md
 output: archive-report.md
 outputMode: file-only
 progress: true
 
-Archive {task} only when verification succeeds and file-backed sync is complete or not applicable. If verification or sync fails, leave artifacts active and report the blocker.
+When native status admits archive and verification has no unresolved blockers, compose applicable delta specs inside archive and close {task}. Preserve task completion, collision, destructive-change consent and archive-history guards. This explicitly selected verification chain does not make verification mandatory in the full lifecycle.

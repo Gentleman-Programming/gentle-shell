@@ -55,8 +55,8 @@ function modeResult(effective: "on" | "off", source: (typeof NATIVE_REVIEW_MODE_
 		operation: NATIVE_REVIEW_MODE_OPERATION.STATUS,
 		scope: "global",
 		status: {
-			global: effective,
-			cloneLocal: "",
+			global: source === NATIVE_REVIEW_MODE_SOURCE.GLOBAL ? effective : "",
+			cloneLocal: source === NATIVE_REVIEW_MODE_SOURCE.CLONE_LOCAL ? effective : "",
 			effective,
 			source,
 		},
@@ -97,6 +97,17 @@ test("renderRddStatusLine renders the effective mode and deciding source", () =>
 	);
 });
 
+test("synthetic default-ON status renders and is injected without a Shell default override", async () => {
+	clearRddStatusMemoForTesting();
+	const result = modeResult("on", NATIVE_REVIEW_MODE_SOURCE.DEFAULT);
+	assert.deepEqual(result.status, { global: "", cloneLocal: "", effective: "on", source: "default" });
+	const expected = "Receipt-driven development: on (decided by default)";
+	assert.equal(renderRddStatusLine(result.status), expected);
+	const line = await resolveRddStatusLine(fakeReviewMode(result), "/repo-synthetic-default-on");
+	assert.equal(line, expected);
+	assert.ok(getOrchestratorPrompt(process.cwd(), undefined, line).includes(expected));
+});
+
 test("renderRddStatusLine fails closed to unknown for a malformed or partial status object", () => {
 	// A bad upstream decode, a future field rename, or a hand-built fixture
 	// must never render an unrecognized value verbatim -- the render boundary
@@ -122,8 +133,8 @@ test("resolveRddModeStatus reads the on status from a stubbed native reviewMode 
 	clearRddStatusMemoForTesting();
 	const status = await resolveRddModeStatus(fakeReviewMode(modeResult("on", NATIVE_REVIEW_MODE_SOURCE.CLONE_LOCAL)), "/repo-on");
 	assert.deepEqual(status, {
-		global: "on",
-		cloneLocal: "",
+		global: "",
+		cloneLocal: "on",
 		effective: "on",
 		source: "clone_local",
 	});
@@ -212,6 +223,12 @@ test("resolveRddStatusLine renders on, off, and unavailable from the stubbed nat
 		await resolveRddStatusLine(fakeReviewMode(modeResult("off", NATIVE_REVIEW_MODE_SOURCE.DEFAULT)), "/repo-line-off"),
 		"Receipt-driven development: off (decided by default)",
 	);
+	for (const source of [NATIVE_REVIEW_MODE_SOURCE.GLOBAL, NATIVE_REVIEW_MODE_SOURCE.CLONE_LOCAL]) {
+		assert.equal(
+			await resolveRddStatusLine(fakeReviewMode(modeResult("off", source)), `/repo-line-off-${source}`),
+			`Receipt-driven development: off (decided by ${source})`,
+		);
+	}
 	assert.equal(
 		await resolveRddStatusLine(undefined, "/repo-line-unknown"),
 		"Receipt-driven development: unknown (native status unavailable)",

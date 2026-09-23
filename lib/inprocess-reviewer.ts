@@ -104,14 +104,36 @@ export interface InProcessReviewerDeps {
 export const MAX_REVIEWER_COMPLETION_ATTEMPTS = 2;
 export const REVIEWER_RETRY_BACKOFF_MS = 1_000;
 
-function isTransientReviewerError(errorMessage: string): boolean {
+/**
+ * Classifies whether a reviewer completion failure is transient and eligible
+ * for bounded retry with backoff.
+ *
+ * Network drops and transient gateway statuses (502, 503, 504, 429) are
+ * retryable. Deterministic errors — notably SSE JSON parse failures from gateway
+ * truncations (e.g. NaN emitting Python dict reprs when reasoning exhausts the
+ * character ceiling, see issue #1307) or client request validation errors — are
+ * deliberately not retried.
+ */
+export function isTransientReviewerError(error: unknown): boolean {
+	if (error === undefined || error === null) return false;
+	const message = error instanceof Error ? error.message : String(error);
+	const status = typeof (error as { status?: unknown })?.status === "number"
+		? (error as { status: number }).status
+		: undefined;
+
+	if (status !== undefined) {
+		return status === 429 || status === 502 || status === 503 || status === 504;
+	}
+
 	return (
-		/Expected property name|Unexpected token|in JSON at position|JSON\.parse/i.test(errorMessage) ||
-		/ECONNRESET|ETIMEDOUT|ECONNREFUSED|fetch failed|socket hang up|premature close/i.test(errorMessage) ||
-		/\b(502|503|504|429)\b/.test(errorMessage)
+		/ECONNRESET|ETIMEDOUT|ECONNREFUSED|fetch failed|socket hang up|premature close/i.test(message) ||
+		/\b(502|503|504|429)\b/.test(message)
 	);
 }
 
+/**
+ * Default abort-aware delay function used for backoff between retry attempts.
+ */
 const defaultSleep = async (ms: number, signal?: AbortSignal): Promise<void> => {
 	if (signal?.aborted) return;
 	await new Promise<void>((resolve) => {
@@ -204,8 +226,9 @@ export function openCodeSessionAttributionHeaders(model: Model<Api>, sessionId: 
 /**
  * Runs one reviewer completion in-process: resolve the model, authenticate,
  * map the routing thinking label, and complete exactly one frozen prompt as
- * a single user message. Never retries, never falls back to another model,
- * never reads process.env — every seam is injected through `deps`.
+ * a single user message. Retries at most once with backoff for transient
+ * transport errors, never falls back to another model, never reads process.env —
+ * every seam is injected through `deps`.
  */
 export async function runInProcessReviewer(request: InProcessReviewerRequest, deps: InProcessReviewerDeps): Promise<InProcessReviewerOutcome> {
 	const parsed = parseSelection(request.selection);
@@ -300,29 +323,41 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 		...(reasoning.reasoning === undefined ? {} : { reasoning: reasoning.reasoning }),
 	};
 
+	let assistant: AssistantMessage | undefined;
+	let lastRefusal: InProcessReviewerOutcome | undefined;
+
 	// An abort is classified by which signal actually fired, never by the
 	// error's shape or the message's text, and the same classification serves
 	// both settlement paths: a provider may reject on abort, or — the pi-ai
 	// provider convention — resolve an AssistantMessage with `stopReason:
 	// "aborted"` carrying whatever text streamed before the cut. Either way a
 	// fired signal is a timeout or a caller abort, never empty or usable output.
+	// When aborting after a prior attempt failed, the prior refusal's message
+	// is retained as evidence.
 	const abortRefusal = (): InProcessReviewerOutcome | undefined => {
+		const evidence = lastRefusal?.kind === "refused" ? { priorFailure: lastRefusal.message } : undefined;
 		if (timeoutSignal.aborted) {
-			return refuse(INPROCESS_REVIEWER_FAILURE.TIMED_OUT, `Reviewer completion for ${request.routingKey} exceeded its ${request.timeoutMs}ms bound.`);
+			return refuse(
+				INPROCESS_REVIEWER_FAILURE.TIMED_OUT,
+				`Reviewer completion for ${request.routingKey} exceeded its ${request.timeoutMs}ms bound.`,
+				evidence,
+			);
 		}
 		if (request.signal?.aborted === true) {
-			return refuse(INPROCESS_REVIEWER_FAILURE.ABORTED, `Reviewer completion for ${request.routingKey} was aborted by the caller.`);
+			return refuse(
+				INPROCESS_REVIEWER_FAILURE.ABORTED,
+				`Reviewer completion for ${request.routingKey} was aborted by the caller.`,
+				evidence,
+			);
 		}
 		return undefined;
 	};
-
-	let assistant: AssistantMessage | undefined;
-	let lastRefusal: InProcessReviewerOutcome | undefined;
 
 	for (let attempt = 1; attempt <= MAX_REVIEWER_COMPLETION_ATTEMPTS; attempt++) {
 		const abortBeforeAttempt = abortRefusal();
 		if (abortBeforeAttempt !== undefined) return abortBeforeAttempt;
 
+		let attemptFailed = false;
 		let attemptError: unknown;
 		try {
 			// `SimpleStreamOptions` is identical on both paths; only the return shape
@@ -332,19 +367,20 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 				? await deps.complete(model, context, options)
 				: await provider.streamSimple(model, context, options).result();
 		} catch (error) {
+			attemptFailed = true;
 			attemptError = error;
 		}
 
 		const abortAfterAttempt = abortRefusal();
 		if (abortAfterAttempt !== undefined) return abortAfterAttempt;
 
-		if (attemptError !== undefined) {
+		if (attemptFailed) {
 			const errorExcerpt = sanitizeErrorExcerpt(attemptError);
 			lastRefusal = refuse(
 				INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED,
 				`Reviewer completion failed for ${request.routingKey}: ${errorExcerpt}`,
 			);
-			if (attempt < MAX_REVIEWER_COMPLETION_ATTEMPTS && isTransientReviewerError(String(attemptError))) {
+			if (attempt < MAX_REVIEWER_COMPLETION_ATTEMPTS && isTransientReviewerError(attemptError)) {
 				await (deps.sleep ?? defaultSleep)(REVIEWER_RETRY_BACKOFF_MS, combinedSignal);
 				continue;
 			}

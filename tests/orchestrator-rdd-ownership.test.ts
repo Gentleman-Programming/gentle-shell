@@ -96,12 +96,12 @@ test("always-on parent prompt requires a narrow writer edit surface before launc
 	assert.match(core, /do not ask the human to author paths or globs/i);
 });
 
-test("review integration documents the opaque Pi adapter and Go-owned authority boundary", () => {
+test("review integration documents the in-process reviewer completion and Go-owned authority boundary", () => {
 	const docs = read("docs/review-integration.md");
 	for (const marker of [
-		"Buffer → Buffer/error",
+		"no child process",
 		"exact Go-issued materialize/submission tokens",
-		"typed Pi transport refusal fails closed",
+		"typed reviewer refusal fails closed",
 		"Go owns worktree, lineage, candidate freeze, lens selection, correction, validator, approval burn, and review semantics",
 		"Delivery commands remain ordinary repository-policy operations.",
 		"package has no durable receipt or policy authority",

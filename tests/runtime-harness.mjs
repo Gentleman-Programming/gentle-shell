@@ -11,8 +11,10 @@ import { matchesKey } from "@earendil-works/pi-tui";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { domainHashV1 } from "../lib/review-canonical.ts";
+import { canonicalHash } from "../lib/review-transaction.ts";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+const { createGentleAiExtension } = await import(pathToFileURL(join(ROOT, "extensions/gentle-ai.ts")).href);
 const EXTENSIONS = [
 	"extensions/gentle-ai.ts",
 	"extensions/quiet-tools.ts",
@@ -311,7 +313,6 @@ async function run() {
 			},
 		};
 		const lastEventPi = createPi();
-		const { createGentleAiExtension } = await import(pathToFileURL(join(ROOT, "extensions/gentle-ai.ts")).href);
 		createGentleAiExtension({ nativeReviewCli })(lastEventPi.pi);
 		const controller = lastEventPi.tools.get("gentle_review");
 		const capture = lastEventPi.tools.get("gentle_review_capture");
@@ -492,11 +493,19 @@ async function run() {
 		assert.match(applyPromptResult.systemPrompt, /### apply instructions/);
 		const statusCtx = createCtx(promptCwd, true);
 		await commands.get("gentle-sdd-status").handler("status-demo --json", statusCtx);
-		assert.match(statusCtx.ui.notifications.at(-1).message, /"schemaName": "gentle-pi\.sdd-status"/);
+		assert.match(statusCtx.ui.notifications.at(-1).message, /"schemaName": "gentle-ai\.sdd-status"/);
 		const continueCtx = createCtx(promptCwd, true);
+		let markerConfirmations = 0;
+		continueCtx.ui.confirm = async (_title, message) => {
+			assert.ok(message.includes(join(promptCwd, "openspec/changes/status-demo/.gentle-ai-instance")));
+			assert.match(message, /no source roots and no persistent authority/);
+			markerConfirmations += 1;
+			return true;
+		};
 		await commands.get("gentle-sdd-continue").handler("status-demo", continueCtx);
-		assert.match(continueCtx.ui.notifications.at(-1).message, /Native SDD Dispatcher/);
-		assert.match(continueCtx.ui.notifications.at(-1).message, /nextPhase: sdd-apply/);
+		assert.equal(markerConfirmations, 1);
+		assert.match(continueCtx.ui.notifications.at(-1).message, /Native SDD Status Engine/);
+		assert.match(continueCtx.ui.notifications.at(-1).message, /"nextRecommended": "apply"/);
 		const { execFileSync } = await import("node:child_process");
 		execFileSync("git", ["init"], { cwd: promptCwd, stdio: "ignore" });
 		const recoveryRequiredDirectory = join(promptCwd, ".git", "gentle-ai", "reviews", "control", "recovery-required-v1");
@@ -508,14 +517,24 @@ async function run() {
 		const blockedContinueCtx = createCtx(promptCwd, true);
 		await commands.get("gentle-sdd-continue").handler("status-demo", blockedContinueCtx);
 		assert.doesNotMatch(blockedContinueCtx.ui.notifications.at(-1).message, /resolve-review:/);
-		assert.match(blockedContinueCtx.ui.notifications.at(-1).message, /nextPhase: sdd-apply/);
+		assert.match(blockedContinueCtx.ui.notifications.at(-1).message, /"nextRecommended": "apply"/);
 	} finally {
 		await rm(promptCwd, { recursive: true, force: true });
 	}
 
 	const toolCwd = await tempWorkspace();
 	try {
+		execFileSync("git", ["init"], { cwd: toolCwd, stdio: "ignore" });
 		const toolHook = hooks.get("tool_call")[0];
+		const toolResultHook = hooks.get("tool_result")[0];
+		const promptHook = hooks.get("before_agent_start")[0];
+		const oddCtx = createCtx(toolCwd, false, "odd-runtime-gate");
+		await promptHook({ systemPrompt: "primary" }, oddCtx);
+		const firstOddPath = join(toolCwd, "first.ts");
+		assert.equal(await toolHook({ toolName: "write", input: { path: firstOddPath } }, oddCtx), undefined);
+		await toolResultHook({ toolName: "write", toolCallId: "odd-first", input: { path: firstOddPath }, isError: false }, oddCtx);
+		const secondOdd = await toolHook({ toolName: "edit", input: { path: join(toolCwd, "second.ts") } }, oddCtx);
+		assert.equal(secondOdd, undefined, "write history alone must not refuse a second direct file");
 		const ghPrCwd = await tempWorkspace();
 		try {
 			execFileSync("git", ["init"], { cwd: ghPrCwd, stdio: "ignore" });
@@ -585,6 +604,124 @@ async function run() {
 			),
 			undefined,
 			"a writer may dispatch when context carries narrow task-scoped repository-relative paths",
+		);
+
+		const interactiveSddDispatch = {
+			agent: "sdd-remediate",
+			task: "Correct the bound failed verification evidence.",
+			context: "Retain the parent-supplied remediation scope.",
+			mode: "task",
+		};
+		assert.equal(
+			await toolHook({ toolName: "subagent_run", input: interactiveSddDispatch }, createCtx(toolCwd, true, "interactive-sdd-parent")),
+			undefined,
+			"an interactive parent may dispatch an SDD child only after preflight resolves",
+		);
+		assert.match(
+			interactiveSddDispatch.context,
+			/^## SDD Session Preflight\nThese SDD preferences are explicit current-session choices\./,
+			"the parent-confirmed rendered preflight must be transported through the RPC child's context",
+		);
+		const rpcChildCwd = await tempWorkspace();
+		try {
+			const rpcChild = createPi();
+			createGentleAiExtension({ processEnv: { GENTLE_PI_AGENTS_CHILD: "1" } })(rpcChild.pi);
+			const rpcChildCtx = createCtx(rpcChildCwd, false, "delegated-rpc-sdd-child");
+			rpcChildCtx.mode = "rpc";
+			const rpcChildPrompt = await rpcChild.hooks.get("before_agent_start")[0](
+				{ agentName: "sdd-remediate", systemPrompt: "You are the SDD remediate executor for Gentle AI." },
+				rpcChildCtx,
+			);
+			assert.doesNotMatch(rpcChildPrompt.systemPrompt, /## SDD Session Preflight/);
+			assert.equal(
+				existsSync(join(rpcChildCwd, ".pi", "gentle-ai", "sdd-preflight.json")),
+				false,
+				"a delegated RPC child must not silently originate or persist defaults",
+			);
+		} finally {
+			await rm(rpcChildCwd, { recursive: true, force: true });
+		}
+
+		const canonicalFrozenFindingRow = '{"id":"JD-A-001","lens":"judgment-day","location":"extensions/gentle-ai.ts:1","severity":"CRITICAL","status_at_freeze":"open","evidence_class":"deterministic","evidence_claim":"The frozen finding has concrete user impact."}';
+		const canonicalFrozenFindingRows = [JSON.parse(canonicalFrozenFindingRow)];
+		const canonicalFrozenLedgerHash = canonicalHash(canonicalFrozenFindingRows);
+		const canonicalJdFixTask = [
+			"Apply the controller-authorized fix.",
+			"",
+			"## Judgment Day activation",
+			"User explicitly requested Judgment Day.",
+			"",
+			"## Exact authorized severe IDs",
+			"- `JD-A-001`",
+			"",
+			"## Judgment Day correction batch",
+			"Round: 1 of 2.",
+			`Frozen ledger SHA-256: \`${canonicalFrozenLedgerHash}\``,
+			"",
+			"## Exact frozen finding rows",
+			canonicalFrozenFindingRow,
+			"",
+			"## Allowed edit surfaces",
+			"extensions/gentle-ai.ts",
+			"tests/runtime-harness.mjs",
+		].join("\n");
+		const orderedFrozenFindingRows = [
+			...canonicalFrozenFindingRows,
+			{ ...canonicalFrozenFindingRows[0], id: "JD-B-002", location: "tests/runtime-harness.mjs:1" },
+		];
+		const reversedFrozenFindingRows = [...orderedFrozenFindingRows].reverse();
+		const rowOrderMismatchJdFixTask = canonicalJdFixTask
+			.replace("- `JD-A-001`", "- `JD-A-001`\n- `JD-B-002`")
+			.replace(canonicalFrozenLedgerHash, canonicalHash(reversedFrozenFindingRows))
+			.replace(canonicalFrozenFindingRow, reversedFrozenFindingRows.map((row) => JSON.stringify(row)).join("\n"));
+		const incorrectFrozenLedgerHash = `${canonicalFrozenLedgerHash.slice(0, -1)}${canonicalFrozenLedgerHash.endsWith("0") ? "1" : "0"}`;
+		for (const [label, input] of [
+			["missing activation", { agent: "jd-fix-agent", task: "## Allowed edit surfaces\nextensions/gentle-ai.ts", mode: "task" }],
+			["duplicate activation", { agent: "jd-fix-agent", task: `${canonicalJdFixTask}\n\n## Judgment Day activation\nUser explicitly requested Judgment Day.`, mode: "task" }],
+			["missing severe IDs", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("## Exact authorized severe IDs\n- `JD-A-001`\n", ""), mode: "task" }],
+			["duplicate severe ID bindings", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("- `JD-A-001`", "- `JD-A-001`\n- `JD-A-001`"), mode: "task" }],
+			["duplicate severe ID sections", { agent: "jd-fix-agent", task: canonicalJdFixTask, context: "## Exact authorized severe IDs\n- `JD-B-002`", mode: "task" }],
+			["malformed activation", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("User explicitly requested Judgment Day.", "Judgment Day is explicitly activated for this dispatch."), mode: "task" }],
+			["extra activation line", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("User explicitly requested Judgment Day.", "User explicitly requested Judgment Day.\nUnexpected activation detail."), mode: "task" }],
+			["malformed severe ID", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("- `JD-A-001`", "JD-A-001"), mode: "task" }],
+			["empty severe IDs", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("- `JD-A-001`", ""), mode: "task" }],
+			["missing correction batch", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace(`## Judgment Day correction batch\nRound: 1 of 2.\nFrozen ledger SHA-256: \`${canonicalFrozenLedgerHash}\`\n`, ""), mode: "task" }],
+			["duplicate correction batch", { agent: "jd-fix-agent", task: `${canonicalJdFixTask}\n## Judgment Day correction batch\nRound: 2 of 2.\nFrozen ledger SHA-256: \`bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\``, mode: "task" }],
+			["out-of-order correction batch", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace(`## Judgment Day correction batch\nRound: 1 of 2.\nFrozen ledger SHA-256: \`${canonicalFrozenLedgerHash}\`\n\n## Exact frozen finding rows\n${canonicalFrozenFindingRow}`, `## Exact frozen finding rows\n${canonicalFrozenFindingRow}\n\n## Judgment Day correction batch\nRound: 1 of 2.\nFrozen ledger SHA-256: \`${canonicalFrozenLedgerHash}\``), mode: "task" }],
+			["invalid correction round", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("Round: 1 of 2.", "Round: 3 of 2."), mode: "task" }],
+			["uppercase frozen ledger hash", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace(canonicalFrozenLedgerHash, canonicalFrozenLedgerHash.toUpperCase()), mode: "task" }],
+			["incorrect frozen ledger hash", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace(canonicalFrozenLedgerHash, incorrectFrozenLedgerHash), mode: "task" }],
+			["extra correction batch line", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("Round: 1 of 2.", "Round: 1 of 2.\nUnexpected line"), mode: "task" }],
+			["missing frozen rows", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace(`## Exact frozen finding rows\n${canonicalFrozenFindingRow}\n`, ""), mode: "task" }],
+			["malformed frozen row", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace(canonicalFrozenFindingRow, "{"), mode: "task" }],
+			["duplicate frozen row", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace(canonicalFrozenFindingRow, `${canonicalFrozenFindingRow}\n${canonicalFrozenFindingRow}`), mode: "task" }],
+			["mismatched frozen row ID", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace(canonicalFrozenFindingRow, canonicalFrozenFindingRow.replace("JD-A-001", "JD-B-002")), mode: "task" }],
+			["frozen row order mismatch", { agent: "jd-fix-agent", task: rowOrderMismatchJdFixTask, mode: "task" }],
+			["extra frozen row field", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace(canonicalFrozenFindingRow, canonicalFrozenFindingRow.replace("}", ",\"extra\":true}")), mode: "task" }],
+			["non-Judgment-Day frozen row", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("\"lens\":\"judgment-day\"", "\"lens\":\"review-risk\""), mode: "task" }],
+			["non-open frozen row", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("\"status_at_freeze\":\"open\"", "\"status_at_freeze\":\"closed\""), mode: "task" }],
+			["non-severe frozen row", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("\"severity\":\"CRITICAL\"", "\"severity\":\"WARNING\""), mode: "task" }],
+			["empty frozen evidence", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("\"evidence_claim\":\"The frozen finding has concrete user impact.\"", "\"evidence_claim\":\"\""), mode: "task" }],
+			["missing edit surface", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("## Allowed edit surfaces\nextensions/gentle-ai.ts\ntests/runtime-harness.mjs", ""), mode: "task" }],
+			["invalid edit surface", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("## Allowed edit surfaces\nextensions/gentle-ai.ts", "## Allowed edit surfaces\n."), mode: "task" }],
+			["mixed", { agent: ["jd-fix-agent", "gentle-ai-worker"], task: canonicalJdFixTask, mode: "task" }],
+			["agent array", { agent: ["jd-fix-agent"], task: canonicalJdFixTask, mode: "task" }],
+			["agents array", { agents: ["jd-fix-agent"], task: canonicalJdFixTask, mode: "task" }],
+			["duplicate agent binding", { agent: "jd-fix-agent", agents: "jd-fix-agent", task: canonicalJdFixTask, mode: "task" }],
+		]) {
+			const original = structuredClone(input);
+			const result = await toolHook({ toolName: "subagent_run", input }, createCtx(toolCwd));
+			assert.equal(result?.block, true, `${label} jd-fix-agent dispatch must be blocked`);
+			assert.match(result?.reason ?? "", /Judgment Day fix dispatch/i);
+			assert.deepEqual(input, original, `${label} jd-fix-agent rejection must not mutate input`);
+		}
+		assert.equal(
+			await toolHook(
+				{ toolName: "subagent_run", input: { agent: "jd-fix-agent", task: canonicalJdFixTask, mode: "task" } },
+				createCtx(toolCwd),
+			),
+			undefined,
+			"a canonical explicit Judgment Day fix dispatch with narrow edit surfaces may run",
 		);
 		for (const [label, input] of [
 			[
@@ -1123,24 +1260,26 @@ async function run() {
 			await inputHook({ text: "vamos con sdd", source: "interactive" }, ctx),
 			{ action: "continue" },
 		);
-		assert.equal(existsSync(join(lazySddCwd, ".pi", "agents", "sdd-apply.md")), false);
-		assert.equal(existsSync(join(lazySddCwd, ".pi", "chains", "sdd-full.chain.md")), false);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-status.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-sync.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "gentle-ai", "support", "sdd-status-contract.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "chains", "sdd-full.chain.md")), true);
-		assert.equal(ctx.ui.selections.length, 1, "first interactive SDD trigger confirms session suggestions");
-		assert.match(ctx.ui.notifications.at(-1).message, /Preference source: explicit session choice/);
 		assert.deepEqual(
 			await inputHook({ text: "please use sdd for this change", source: "interactive" }, ctx),
 			{ action: "continue" },
 		);
-		assert.equal(ctx.ui.selections.length, 1, "natural SDD triggers reuse confirmed session choices");
+		assert.equal(existsSync(join(lazySddCwd, ".pi", "agents", "sdd-apply.md")), false);
+		assert.equal(existsSync(join(lazySddCwd, ".pi", "chains", "sdd-full.chain.md")), false);
+		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), false);
+		assert.equal(ctx.ui.selections.length, 0, "natural-language SDD text has no input-hook side effect");
+
 		assert.deepEqual(
 			await inputHook({ text: "/sdd", source: "interactive" }, ctx),
 			{ action: "continue" },
 		);
+		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
+		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-status.md")), true);
+		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-sync.md")), false);
+		assert.equal(existsSync(join(globalAgentHome, "gentle-ai", "support", "sdd-status-contract.md")), true);
+		assert.equal(existsSync(join(globalAgentHome, "chains", "sdd-full.chain.md")), true);
+		assert.equal(ctx.ui.selections.length, 1, "first slash SDD trigger confirms session suggestions");
+		assert.match(ctx.ui.notifications.at(-1).message, /Preference source: explicit session choice/);
 		assert.deepEqual(
 			await inputHook({ text: "/sdd plan", source: "interactive" }, ctx),
 			{ action: "continue" },
@@ -1159,7 +1298,7 @@ async function run() {
 		assert.equal(existsSync(join(lazySddCwd, ".pi", "chains", "sdd-full.chain.md")), false);
 		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
 		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-status.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-sync.md")), true);
+		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-sync.md")), false);
 		assert.equal(existsSync(join(globalAgentHome, "gentle-ai", "support", "sdd-status-contract.md")), true);
 		assert.equal(existsSync(join(globalAgentHome, "chains", "sdd-full.chain.md")), true);
 		const globalSddApply = await readFile(
@@ -1666,7 +1805,7 @@ async function run() {
 		await writeFile(join(staleAssetsCwd, ".pi", "gentle-ai", "support", "sdd-status-contract.md"), "stale status contract\n");
 		const ctx = createCtx(staleAssetsCwd, true);
 		await commands.get("gentle:status").handler("", ctx);
-		assert.match(ctx.ui.notifications.at(-1).message, /Active SDD agent overrides: 6 file\(s\)/);
+		assert.match(ctx.ui.notifications.at(-1).message, /Active SDD agent overrides: 5 file\(s\)/);
 		assert.match(ctx.ui.notifications.at(-1).message, /active non-builtin SDD agents shadow package assets/);
 		await commands.get("gentle:doctor").handler("", ctx);
 		assert.match(ctx.ui.notifications.at(-1).message, /el Gentleman doctor/);
@@ -1696,7 +1835,7 @@ async function run() {
 		assert.equal(existsSync(join(sddCwd, ".pi", "chains", "sdd-full.chain.md")), false);
 		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
 		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-status.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-sync.md")), true);
+		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-sync.md")), false);
 		assert.equal(existsSync(join(globalAgentHome, "gentle-ai", "support", "sdd-status-contract.md")), true);
 		assert.equal(existsSync(join(globalAgentHome, "chains", "sdd-full.chain.md")), true);
 		assert.equal(ctx.ui.selections.length, 1, "sdd-init confirms session preflight before project initialization");

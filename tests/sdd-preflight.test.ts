@@ -22,6 +22,9 @@ import {
 	installPackageAssets,
 	installSddAssets,
 	isSddPreflightTrigger,
+	isParentConfirmedSddPreflightContext,
+	renderSddPreflightPrompt,
+	SHIPPED_SDD_AGENT_NAMES,
 	updatePackageManagedSddAgentOwnership,
 	readSddPreflightFromDisk,
 	sddPreflightDiskPath,
@@ -50,7 +53,7 @@ function writeRawPreflight(cwd: string, chainedPrStrategy: string, prompted = tr
 }
 test("production callers distinguish first-session confirmation from explicit field editing", () => {
 	const root = join(import.meta.dirname, ".."), gentleAi = readFileSync(join(root, "extensions", "gentle-ai.ts"), "utf8"), sddInit = readFileSync(join(root, "extensions", "sdd-init.ts"), "utf8");
-	assert.match(gentleAi, /function runSddPreflight\(\s*ctx: ExtensionContext,\s*promptFields: readonly SddPreflightField\[\] = \[\]\s*\)/s); assert.match(gentleAi, /if \(isSddAgent && !getSddPreflightPreferences\(ctx\)\) \{\s*await runSddPreflight\(ctx\);/s); assert.match(gentleAi, /applyModelConfig: async \(\) => applySavedModelConfig\(ctx\)\s*\},\s*\{\s*promptFields\s*\}\s*\);/s); assert.ok(gentleAi.includes('await runSddPreflight(ctx, args.trim() === "--edit" ? SDD_PREFLIGHT_FIELDS : []);')); assert.match(sddInit, /applyModelConfig: \(\) => applySavedModelConfig\(ctx\)\s*\},\s*\{\s*promptFields: \[\]\s*\}\s*\);/s);
+	assert.match(gentleAi, /function runSddPreflight\(\s*ctx: ExtensionContext,\s*promptFields: readonly SddPreflightField\[\] = \[\]\s*\)/s); assert.match(gentleAi, /if \(isSddAgent && !getSddPreflightPreferences\(ctx\) && ctx\.mode !== "rpc"\) \{\s*await runSddPreflight\(ctx\);/s); assert.match(gentleAi, /applyModelConfig: async \(\) => applySavedModelConfig\(ctx\)\s*\},\s*\{\s*promptFields\s*\}\s*\);/s); assert.ok(gentleAi.includes('await runSddPreflight(ctx, args.trim() === "--edit" ? SDD_PREFLIGHT_FIELDS : []);')); assert.match(sddInit, /applyModelConfig: \(\) => applySavedModelConfig\(ctx\)\s*\},\s*\{\s*promptFields: \[\]\s*\}\s*\);/s);
 });
 test("capability-constrained artifact selector elision", async () => {
 	const calls: string[] = [], prefs = await collectSddPreflightPreferences(preflightContext(await workspace(), true, calls), false, { promptFields: ["artifactStore"] });
@@ -238,10 +241,16 @@ test("installer preserves foreign, malformed, and unsafe lock paths", async () =
 	}
 });
 
-test("RPC children retain headless defaults despite supporting UI dialogs", async () => {
+test("RPC children cannot promote or persist headless defaults", async () => {
+	const cwd = await workspace();
 	const calls: string[] = [];
-	const ctx = { ...preflightContext(await workspace(), true, calls), mode: "rpc" as const };
+	const ctx = { ...preflightContext(cwd, true, calls), mode: "rpc" as const };
 	assert.deepEqual(await collectSddPreflightPreferences(ctx, false), DEFAULT_SDD_PREFLIGHT);
+	await assert.rejects(
+		ensureSddPreflight(ctx, { pi: { getActiveTools: () => [] } as never }),
+		/RPC child cannot originate or persist defaults/i,
+	);
+	assert.equal(existsSync(sddPreflightDiskPath(cwd)), false);
 	assert.deepEqual(calls, []);
 });
 test("explicit field editing cannot open RPC or no-UI dialogs", async () => {
@@ -482,6 +491,44 @@ test("a persisted canonical 'hybrid' artifact store loads unchanged", async () =
 
 	const loaded = readSddPreflightFromDisk(cwd, true);
 	assert.equal(loaded?.artifactStore, "hybrid");
+});
+
+test("the shared shipped SDD inventory includes every executor, including remediation", () => {
+	assert.deepEqual(SHIPPED_SDD_AGENT_NAMES, [
+		"sdd-init", "sdd-onboard", "sdd-explore", "sdd-research", "sdd-proposal", "sdd-spec", "sdd-design",
+		"sdd-tasks", "sdd-status", "sdd-apply", "sdd-verify", "sdd-archive", "sdd-remediate",
+	]);
+});
+
+test("only a structurally valid parent-rendered preflight block can reach an SDD child", () => {
+	const block = renderSddPreflightPrompt({ ...DEFAULT_SDD_PREFLIGHT, prompted: true });
+	assert.equal(isParentConfirmedSddPreflightContext(block), true);
+	assert.equal(isParentConfirmedSddPreflightContext(block.replace("Review budget: 400", "Review budget: 0")), false);
+	assert.equal(isParentConfirmedSddPreflightContext("## SDD Session Preflight\ncaller-authored defaults"), false);
+});
+
+test("natural-language SDD text never triggers input preflight", () => {
+	// Natural-language intent belongs to the parent/orchestrator. The input hook
+	// is syntax-only; execution gates enforce preflight when an SDD action is
+	// actually attempted.
+	for (const text of [
+		"quiero hacer un proyecto con SDD",
+		"I want to build this with SDD",
+		"por favor usemos SDD para este cambio",
+		"do SDD for this change",
+		"haz SDD para este cambio",
+		"continue the SDD change",
+		"Should we use SDD?",
+		"no quiero usar SDD por ahora",
+		"I use SDD sometimes",
+		"necesito reportar un bug del preflight de SDD",
+		"I need to report a bug in the SDD preflight",
+		"quiero comparar SDD con ODD",
+		"I want to review the SDD proposal",
+		"necesito una explicación de SDD",
+	]) {
+		assert.equal(isSddPreflightTrigger(text), false, text);
+	}
 });
 
 test("slash SDD preflight trigger accepts the gentle-sdd command prefix", () => {

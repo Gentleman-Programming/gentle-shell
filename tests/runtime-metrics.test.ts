@@ -16,31 +16,32 @@ function response(responseId = "local-response"): FinalResponse {
 	};
 }
 
-test("selected provider is independent from response provider without relabeling", async () => {
-	const { lookupPiCatalogName } = await import("../lib/runtime-metrics-pi-identity.ts");
-	const { OPENAI_CODEX_MODELS } = await import("@earendil-works/pi-ai/providers/openai-codex.models");
-	const model = Object.values(OPENAI_CODEX_MODELS)[0];
-	await lookupPiCatalogName({ provider: model.provider, modelId: model.id });
+test("selected provider is independent from response provider without relabeling", () => {
 	const metrics = new RuntimeMetrics();
-	assert.equal(recordRaw(metrics, { ...response(), selectedProvider: model.provider,
-		selectedModelId: model.id, provider: "anthropic" }), "recorded");
+	assert.equal(recordRaw(metrics, { ...response(), selectedProvider: "openai-codex",
+		selectedModelId: "gpt-5.6-terra", provider: "anthropic" }), "recorded");
 	const [row] = metrics.snapshot();
-	assert.equal(row.selectedModelId, model.id);
-	assert.equal(row.selectedProvider, model.provider);
+	assert.equal(row.selectedModelId, "gpt-5.6-terra");
+	assert.equal(row.selectedProvider, "openai-codex");
 	assert.equal(row.provider, "anthropic");
-	assert.equal(recordRaw(metrics, { ...response("private"), selectedProvider: "private-provider",
-		selectedModelId: model.id }), "recorded");
-	assert.equal(metrics.snapshot()[1].selectedProvider, "custom");
+	// The provider dimension stays independent of a specific id's privacy outcome
+	// at record time; the pair is only coupled to a schema-conformant custom/custom
+	// model object later, at native encode time (see runtime-metrics-native.test.ts).
+	assert.equal(recordRaw(metrics, { ...response("private"), selectedProvider: "openai-codex",
+		selectedModelId: "private-internal-finetune" }), "recorded");
+	assert.equal(metrics.snapshot()[1].selectedProvider, "openai-codex");
 	assert.equal(metrics.snapshot()[1].selectedModelId, "custom");
 });
 
-test("mirrored registry identities survive an unavailable Pi catalog", () => {
-	const metrics = new RuntimeMetrics({ classifyModel: () => ({ classification: "unknown", modelId: "unknown" }) });
-	assert.equal(metrics.record({ ...response(), selectedProvider: "openai-codex", selectedModelId: "gpt-5.6-terra",
-		responseModelId: "gpt-5.6-sol" }), "recorded");
+test("open-weight models on arbitrary providers are reported by name, not squashed to a closed enum", () => {
+	const metrics = new RuntimeMetrics();
+	assert.equal(recordRaw(metrics, { ...response(), provider: "nan", selectedProvider: "nan",
+		selectedModelId: "deepseek-v4-flash", responseModelId: "glm5.3-flash" }), "recorded");
 	const [row] = metrics.snapshot();
-	assert.equal(row.selectedModelId, "gpt-5.6-terra");
-	assert.equal(row.responseModelId, "gpt-5.6-sol");
+	assert.equal(row.provider, "nan");
+	assert.equal(row.selectedProvider, "nan");
+	assert.equal(row.selectedModelId, "deepseek-v4-flash");
+	assert.equal(row.responseModelId, "glm5.3-flash");
 });
 
 // Deliberately bypass static types to exercise the runtime boundary.
@@ -96,7 +97,9 @@ test("effort selections and absence states remain distinct", () => {
 test("only closed dimensions survive; no prompt-based executor inference", () => {
 	const metrics = new RuntimeMetrics();
 	assert.equal(recordRaw(metrics, {
-		...response(), provider: "private-provider", modelFamily: "private-model-id",
+		// Free text with spaces/case never matches the schema provider pattern,
+		// unlike a genuine open-weight provider slug (see the dedicated test above).
+		...response(), provider: "Private Provider Free Text", modelFamily: "private-model-id",
 		executor: "SDD apply executor", systemPrompt: "reviewer", errorMessage: "private failure",
 	}), "recorded");
 	const [row] = metrics.snapshot();

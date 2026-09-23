@@ -1,5 +1,5 @@
 {
-  "schema_sha256": "26be905d39fe8274e049e1270553695b7540a3b24571d42eb7d96c5a7deb48b5",
+  "schema_sha256": "eb0f2993d9271f55cb42eca343e6fbb601a733fb90bd40daeebc92ee60ae1ba9",
   "batches": [
     "{\"schema\":\"gentle-ai.telemetry-runtime-aggregate/v1\",\"registry\":1,\"host\":\"pi\",\"rows\":[{\"model\":{\"provider\":\"openai\",\"id\":\"gpt-5.4\"},\"model_evidence\":\"response\",\"agent_kind\":\"built_in\",\"agent_class\":\"worker\",\"selected_effort\":\"high\",\"effective_effort\":\"low\",\"launches\":null,\"responses\":1,\"input_tokens\":{\"reported\":1,\"unavailable\":0,\"unsupported\":0,\"sum\":7},\"output_tokens\":{\"reported\":1,\"unavailable\":0,\"unsupported\":0,\"sum\":7},\"cache_read_tokens\":{\"reported\":1,\"unavailable\":0,\"unsupported\":0,\"sum\":7},\"cache_creation_tokens\":{\"reported\":1,\"unavailable\":0,\"unsupported\":0,\"sum\":7},\"reasoning_tokens\":{\"reported\":1,\"unavailable\":0,\"unsupported\":0,\"sum\":7},\"total_tokens\":{\"reported\":1,\"unavailable\":0,\"unsupported\":0,\"sum\":7},\"error_category\":\"none\",\"duration\":{\"kind\":\"unavailable\",\"measured_count\":0,\"sum_ms\":null}}]}"
   ]

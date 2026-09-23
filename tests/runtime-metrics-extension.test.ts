@@ -2,14 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import runtimeMetrics from "../extensions/runtime-metrics.ts";
 import { parseAgentClass, type RuntimeMetricBucket } from "../lib/runtime-metrics.ts";
-import { createPiCatalogNameLookup, type PiCatalogName } from "../lib/runtime-metrics-pi-identity.ts";
+import { encodeNativeRuntimeEvent } from "../lib/runtime-metrics-native.ts";
 import { CHILD_METRICS_EVENT, childEvent } from "../lib/runtime-metrics-children.ts";
 import { normalizeRpcEvent, TASK_EVENT } from "../lib/agents-protocol.ts";
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
-type CatalogLookup = NonNullable<NonNullable<Parameters<typeof runtimeMetrics>[2]>["lookup"]>;
-function harness(env: NodeJS.ProcessEnv = {}, lookup?: CatalogLookup,
-	classify?: (input: unknown) => PiCatalogName, mode: "tui" | "print" = "tui", shutdownWaitMs = 1500) {
+function harness(env: NodeJS.ProcessEnv = {}, mode: "tui" | "print" = "tui", shutdownWaitMs = 1500, model: unknown = { provider: "openai", id: "gpt-4o" }) {
 	const handlers = new Map<string, Function>();
 	const listeners = new Map<string, Function>();
 	let session = "first";
@@ -17,13 +15,13 @@ function harness(env: NodeJS.ProcessEnv = {}, lookup?: CatalogLookup,
 	let signal!: AbortSignal;
 	const sent: RuntimeMetricBucket[][] = [];
 	const launches: unknown[] = [];
-	const ctx: any = { cwd: "/fixture", mode, model: { provider: "openai", id: "gpt-4o" },
+	const ctx: any = { cwd: "/fixture", mode, model,
 		sessionManager: { getSessionId: () => session, getEntries: () => assert.fail("no reconstruction") } };
 	const pi: any = { on: (name: string, handler: Function) => handlers.set(name, handler),
 		getThinkingLevel: () => "high", registerCommand() {},
 		appendEntry: () => assert.fail("no metrics persistence"),
 		events: { on: (name: string, handler: Function) => { listeners.set(name, handler); return () => listeners.delete(name); } } };
-	runtimeMetrics(pi, env, { lookup, classify, now: () => 0, shutdownWaitMs, send: (rows, _cwd, deps) => {
+	runtimeMetrics(pi, env, { now: () => 0, shutdownWaitMs, send: (rows, _cwd, deps) => {
 		sent.push(structuredClone(rows)); launches.push(structuredClone(deps?.launches)); signal = deps!.signal!;
 		return new Promise(resolve => { finish = () => resolve("discarded"); });
 	} });
@@ -38,30 +36,41 @@ const final = (input = 7) => ({ role: "assistant", provider: "openai", model: "g
 	providerThinkingLevel: "low", stopReason: "stop", usage: { input, output: 3, cacheRead: 0 },
 	content: [{ text: "private response" }], errorMessage: "private error", path: "/private" });
 
-test("message classification retries a failed catalog load without awaiting it", async () => {
-	let calls = 0;
-	const publicName = Object.freeze({ classification: "catalog_public", modelId: "gpt-4o" }) satisfies PiCatalogName;
-	const catalog = new Map([[JSON.stringify(["openai", "gpt-4o"]), publicName]]);
-	const catalogLookup = createPiCatalogNameLookup(async () => {
-		calls++;
-		if (calls === 1) throw new Error("transient catalog failure");
-		return catalog;
-	});
-	const h = harness({}, catalogLookup.lookup, catalogLookup.classify);
-	h.emit("session_start");
-	await tick();
-	assert.equal(calls, 1);
-	assert.equal(h.emit("message_end", { message: final() }), undefined);
-	assert.equal(calls, 2);
+test("a generic open-weight selection reaches the wire by name; no catalog probe or gate", async () => {
+	const h = harness({}, "tui", 1500, { provider: "nan", id: "deepseek-v4-flash" });
+	await h.emit("session_start");
+	h.emit("turn_start"); h.emit("before_provider_request");
+	h.emit("message_end", { message: { role: "assistant", provider: "nan", model: "deepseek-v4-flash",
+		providerThinkingLevel: "low", stopReason: "stop", usage: { input: 3, output: 2 } } });
 	await tick();
 	assert.equal(h.sent.length, 1);
-	assert.equal(h.sent[0][0].observedModelId, "unknown", "the racing row remains fail-closed");
-	await h.finish();
-	h.emit("message_end", { message: final(8) });
+	assert.equal(h.sent[0][0].selectedProvider, "nan");
+	assert.equal(h.sent[0][0].selectedModelId, "deepseek-v4-flash");
+	const encoded = encodeNativeRuntimeEvent(h.sent[0]);
+	assert.ok(encoded);
+	const row = JSON.parse(encoded).rows[0];
+	assert.deepEqual(row.model, { provider: "nan", id: "deepseek-v4-flash" });
+	assert.equal(row.model_evidence, "selected");
+	await h.finish(); h.emit("session_shutdown");
+});
+
+test("an ambiguous turn with no captured selection still reports the observed model, as selected evidence", async () => {
+	const h = harness({}, "tui", 1500, { provider: "nan", id: "deepseek-v4-flash" });
+	await h.emit("session_start");
+	// No turn_start/before_provider_request: the turn is ambiguous, so no
+	// selection was captured for this response.
+	h.emit("message_end", { message: { role: "assistant", provider: "nan", model: "glm5.3",
+		providerThinkingLevel: "low", stopReason: "stop", usage: { input: 3, output: 2 } } });
 	await tick();
-	assert.equal(h.sent[1][0].observedModelId, "gpt-4o", "a later row uses the recovered catalog");
-	await h.finish();
-	h.emit("session_shutdown");
+	assert.equal(h.sent.length, 1);
+	assert.equal(h.sent[0][0].selectedModelId, "unknown");
+	assert.equal(h.sent[0][0].observedModelId, "glm5.3");
+	const encoded = encodeNativeRuntimeEvent(h.sent[0]);
+	assert.ok(encoded);
+	const row = JSON.parse(encoded).rows[0];
+	assert.deepEqual(row.model, { provider: "nan", id: "glm5.3" });
+	assert.equal(row.model_evidence, "selected");
+	await h.finish(); h.emit("session_shutdown");
 });
 
 test("final callback returns before blocked transport; busy and duplicate messages drop", async () => {
@@ -97,7 +106,7 @@ test("replacement before launch cancels stale work; shutdown does not await a bl
 });
 
 test("print shutdown joins an accepted orchestrator delivery before disposing", async () => {
-	const h = harness({}, undefined, undefined, "print", 50); await h.emit("session_start");
+	const h = harness({}, "print", 50); await h.emit("session_start");
 	h.emit("message_end", { message: final() }); await tick();
 	let stopped = false;
 	const shutdown = h.emit("session_shutdown").then(() => { stopped = true; });
@@ -109,7 +118,7 @@ test("print shutdown joins an accepted orchestrator delivery before disposing", 
 });
 
 test("print shutdown joins an accepted child launch and response delivery", async () => {
-	const h = harness({}, undefined, undefined, "print", 50); await h.emit("session_start");
+	const h = harness({}, "print", 50); await h.emit("session_start");
 	const observation = normalizeRpcEvent({ type: "message_end", message: final() }, { observeResponses: true })
 		.find(event => event.type === TASK_EVENT.RESPONSE_OBSERVATION);
 	assert.ok(observation?.type === TASK_EVENT.RESPONSE_OBSERVATION);
@@ -127,7 +136,7 @@ test("print shutdown joins an accepted child launch and response delivery", asyn
 });
 
 test("print shutdown aborts a delivery after the bounded join deadline", async () => {
-	const h = harness({}, undefined, undefined, "print", 5); await h.emit("session_start");
+	const h = harness({}, "print", 5); await h.emit("session_start");
 	h.emit("message_end", { message: final() }); await tick();
 	await h.emit("session_shutdown");
 	assert.equal(h.signal().aborted, true);
@@ -135,7 +144,7 @@ test("print shutdown aborts a delivery after the bounded join deadline", async (
 });
 
 test("interactive shutdown never joins a blocked delivery", async () => {
-	const h = harness({}, undefined, undefined, "tui", 50); await h.emit("session_start");
+	const h = harness({}, "tui", 50); await h.emit("session_start");
 	h.emit("message_end", { message: final() }); await tick();
 	assert.equal(h.emit("session_shutdown"), undefined);
 	assert.equal(h.signal().aborted, true);

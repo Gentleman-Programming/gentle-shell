@@ -231,6 +231,42 @@ test("completed titles strike only title cells across wrapped lines, never paddi
 	}
 });
 
+test("renderTodoCard paints the sidebar rail and the bottom widget with the same rose INFO frame", () => {
+	const taggedTheme = {
+		fg(color: string, text: string) {
+			return `<${color}>${text}</${color}>`;
+		},
+		strikethrough(text: string) {
+			return text;
+		},
+	};
+	const sidebar = renderTodoCard(seeded(), taggedTheme, 60, { scrollable: true, collapsed: false, staleTurns: 0 });
+	assert.match(sidebar[0], /<border>╭<\/border>/);
+	assert.match(sidebar[0], /<accent>❀ Todos/);
+
+	const bottom = renderTodoCard(seeded(), taggedTheme, 60, { collapsed: false, staleTurns: 0 });
+	assert.match(bottom[0], /<border>╭<\/border>/);
+	assert.match(bottom[0], /<accent>❀ Todos/);
+});
+
+// H1 (odd/tasks/usage-click-and-changes-attribution.md): the same shared
+// hover role every other clickable surface uses.
+test("renderTodoCard paints its clickable header control in the shared hover role when hovered", () => {
+	const taggedTheme = {
+		fg(color: string, text: string) {
+			return `<${color}>${text}</${color}>`;
+		},
+		strikethrough(text: string) {
+			return text;
+		},
+	};
+	const idle = renderTodoCard(seeded(), taggedTheme, 70, { collapsed: false, staleTurns: 0 });
+	assert.match(idle[0], /<accent>▾ Collapse<\/accent>/, "idle keeps its ordinary accent role");
+	const hovered = renderTodoCard(seeded(), taggedTheme, 70, { collapsed: false, staleTurns: 0, hovered: true });
+	assert.match(hovered[0], /<warning>▾ Collapse<\/warning>/, "hovering paints the shared hover role");
+	assert.doesNotMatch(hovered[0], /<accent>▾ Collapse/);
+});
+
 test("renderTodoCard keeps stale indicators and collapse hints in scrollable lists", () => {
 	const tasks = Array.from({ length: 40 }, (_, index) => ({ title: `Task ${index + 1}`, status: index < 25 ? "done" : "pending" }));
 	const state = applyTodo(emptyTodo(), { action: "write", tasks }, 1).state;

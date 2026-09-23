@@ -34,13 +34,15 @@
     "effort": {"enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max", "not_selected", "unknown", "custom", "unavailable", "unsupported"]},
     "model": {
       "type": "object", "additionalProperties": false, "required": ["provider", "id"],
-      "properties": {"provider": {"type": "string"}, "id": {"type": "string"}},
-      "oneOf": [
-        {"properties": {"provider": {"const": "anthropic"}, "id": {"enum": ["claude-opus-5", "claude-haiku-4-5", "claude-haiku-4-5-20251001", "claude-sonnet-5"]}}},
-        {"properties": {"provider": {"enum": ["openai", "openai-codex"]}, "id": {"enum": ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.3-codex-spark", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.2", "gpt-5.3-codex", "gpt-5.6"]}}},
-        {"properties": {"provider": {"const": "opencode"}, "id": {"const": "custom"}}},
+      "properties": {
+        "provider": {"type": "string", "maxLength": 32},
+        "id": {"type": "string", "maxLength": 64}
+      },
+      "anyOf": [
+        {"properties": {"provider": {"pattern": "^[a-z0-9][a-z0-9-]{0,31}$"}, "id": {"pattern": "^(claude|gpt|o[1-9]|codex|gemini|gemma|deepseek|glm|qwen|qwq|kimi|moonshot|llama|codellama|mistral|mixtral|codestral|devstral|magistral|ministral|minimax|grok|phi|nemotron|jamba|hunyuan|doubao|ernie|mimo|granite|olmo|smollm|starcoder|titan)[a-z0-9]*([-_.:][a-z0-9]+){0,8}$"}}},
         {"properties": {"provider": {"const": "unknown"}, "id": {"const": "unknown"}}},
-        {"properties": {"provider": {"const": "custom"}, "id": {"const": "custom"}}}
+        {"properties": {"provider": {"const": "custom"}, "id": {"const": "custom"}}},
+        {"properties": {"provider": {"const": "opencode"}, "id": {"const": "custom"}}}
       ]
     },
     "row": {

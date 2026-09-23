@@ -440,6 +440,67 @@ test("capabilities/v2.5 negotiates the v2.6.0 advertisement and status/v7 decode
 	assert.throws(() => decodeReviewStatusV3(v6WithDigest), /eligible_untracked_inventory/);
 });
 
+test("capabilities/v2.6 negotiates the v3.4.0 advertisement on the same v2.5 requirement floor", () => {
+	// gentle-ai v3.4.0 advertises capabilities/v2.6: the v2.5 surface plus
+	// status/v8 (status/v6 and status/v7 stay advertised for compatibility).
+	// The `review assess` review_due/review_due_reason/next_transition
+	// additions are a separate schema (gentle-ai.review-assessment/v1),
+	// unrelated to this negotiated capabilities surface.
+	const v26 = clone(fixture(DEV_FIXTURES, "capabilities-v2.2.captured.json") as JsonObject);
+	v26.schema = "gentle-ai.review-integration.capabilities/v2.6";
+	(v26.protocol as JsonObject).minor = 6;
+	const features = v26.features as JsonObject;
+	features.mandatory = (features.mandatory as JsonObject[]).filter((feature) =>
+		!["exact_receipt_replay", "five_delivery_gates", "sdd_receipt_binding"].includes(feature.name as string));
+	v26.schemas = [
+		...(v26.schemas as string[]).map((schema) => schema
+			.replace("capabilities/v2.2", "capabilities/v2.6")
+			.replace("start/v3", "start/v4")
+			.replace("status/v5", "status/v6")),
+		"gentle-ai.review-intended-untracked-selection/v1",
+		"gentle-ai.review-integration.status/v7",
+		"gentle-ai.review-integration.status/v8",
+	];
+	const decoded = decodeReviewCapabilitiesV2(v26, CAPTURED_DIGEST);
+	assert.equal(decoded.schemas.has("gentle-ai.review-integration.status/v6"), true);
+	// The negotiated set is the v2.5 requirement floor unchanged; status/v7
+	// and status/v8 are additive and never required, so an advertisement
+	// without either still negotiates.
+	const withoutV7V8 = clone(v26);
+	withoutV7V8.schemas = (withoutV7V8.schemas as string[]).filter((schema) => !["gentle-ai.review-integration.status/v7", "gentle-ai.review-integration.status/v8"].includes(schema as string));
+	assert.equal(decodeReviewCapabilitiesV2(withoutV7V8, CAPTURED_DIGEST).schemas.has("gentle-ai.review-integration.status/v6"), true);
+
+	// status/v6 stays required: v7/v8 are additive extensions, not a replacement.
+	const missingStatusV6 = clone(v26);
+	missingStatusV6.schemas = (missingStatusV6.schemas as string[]).filter((schema) => schema !== "gentle-ai.review-integration.status/v6");
+	assert.throws(() => decodeReviewCapabilitiesV2(missingStatusV6, CAPTURED_DIGEST), /status\/v6/);
+});
+
+// status/v8 (gentle-ai main, PR #4765; the current released contract) only
+// extended the reviewer-result transition for OpenCode provider tasks -- no
+// new top-level key -- so it decodes on the exact v7 surface: same optional
+// eligible_untracked_inventory digest, same rejection of a v6 envelope
+// carrying it. status/v9 (the sibling gentle-ai branch's contract, ahead of
+// the released v8) adds nothing new at the top level either; its one
+// addition -- the host-mediated role submission -- lives in
+// next_transition.collect.inputs and is covered by
+// tests/review-integration-v2.test.ts's "v9 host-mediated" tests.
+test("status/v8 and status/v9 decode with their exact identity on the v7 surface", () => {
+	const v8 = initialIntendedUntrackedStatusV6();
+	v8.schema = "gentle-ai.review-integration.status/v8";
+	v8.eligible_untracked_inventory = sha("e");
+	const decodedV8 = decodeReviewStatusV3(v8);
+	assert.equal(decodedV8.raw.schema, "gentle-ai.review-integration.status/v8");
+	assert.equal(decodedV8.eligibleUntrackedInventory, sha("e"));
+
+	const v9 = initialIntendedUntrackedStatusV6();
+	v9.schema = "gentle-ai.review-integration.status/v9";
+	v9.eligible_untracked_inventory = sha("e");
+	const decodedV9 = decodeReviewStatusV3(v9);
+	assert.equal(decodedV9.raw.schema, "gentle-ai.review-integration.status/v9");
+	assert.equal(decodedV9.eligibleUntrackedInventory, sha("e"));
+});
+
 test("status/v6 decodes and enforces the intended-untracked selection submission", () => {
 	const decoded = decodeReviewStatusV3(initialIntendedUntrackedStatusV6());
 	const input = decoded.nextTransition?.collect?.inputs[0];
@@ -697,5 +758,49 @@ test("review-acknowledged/v1 is disjoint from every prior captured identity in b
 	];
 	for (const [name, decoder] of priorDecoders) {
 		assert.throws(() => decoder(clone(acknowledged)), `${name} must reject the acknowledged envelope`);
+	}
+});
+
+// Producer-shaped projection: gentle-ai d521b5e, target_status.go and
+// last-event-closure.schema.json#/properties/escalation (not a live capture).
+function escalatedStatusV7(): JsonObject {
+	const body = currentStatusFixture("status-v5-capture-result-submission.captured.json");
+	body.schema = "gentle-ai.review-integration.status/v7";
+	(body.authority as JsonObject).state = "escalated";
+	body.action = "stop";
+	body.replayability = "manual_action_required";
+	body.next_transition = { kind: "stop", reason_code: "escalated" };
+	delete body.forecast;
+	body.escalation = { cause: "unknown_causality", finding_ids: ["R1"] };
+	return body;
+}
+
+test("v7 escalation is typed metadata and preserves native stop authority", () => {
+	const body = escalatedStatusV7();
+	const decoded = decodeReviewStatusV3(body);
+	assert.deepEqual(decoded.escalation, { cause: "unknown_causality", findingIds: ["R1"] });
+	delete body.escalation;
+	const older = decodeReviewStatusV3(body);
+	assert.deepEqual({ ...decoded, escalation: undefined, raw: undefined }, { ...older, escalation: undefined, raw: undefined });
+	assert.equal(decoded.action, "stop");
+	assert.equal(decoded.authority?.state, "escalated");
+	assert.deepEqual(decoded.nextTransition, { kind: "stop", reasonCode: "escalated" });
+});
+
+test("v7 escalation strictly decodes all causes and optional refuter evidence", () => {
+	for (const cause of ["unknown_causality", "insufficient_evidence", "missing_refuter_outcome", "targeted_validator_rejected", "correction_budget_exceeded", "unresolved_severe_findings"]) {
+		const body = escalatedStatusV7();
+		const rows = ["corroborated", "refuted", "inconclusive"].map((outcome) => ({ finding_id: "R2", outcome, proof: "observed evidence" }));
+		body.escalation = { cause, finding_ids: [], refuter_outcomes: rows };
+		assert.deepEqual(decodeReviewStatusV3(body).escalation, { cause, findingIds: [], refuterOutcomes: rows.map(({ finding_id, ...row }) => ({ findingId: finding_id, ...row })) });
+	}
+	for (const escalation of [null, undefined, [], {}, { cause: "future", finding_ids: [] }, { cause: "unknown_causality" }, { cause: "unknown_causality", finding_ids: [""] }, { cause: "unknown_causality", finding_ids: "R1" }, { cause: "unknown_causality", finding_ids: [], extra: true }]) {
+		assert.throws(() => decodeReviewStatusV3({ ...escalatedStatusV7(), escalation }), /status\.escalation/);
+	}
+	for (const refuter_outcomes of [null, undefined, {}, [null], [{}], [{ finding_id: "R1", outcome: "future", proof: "proof" }], [{ finding_id: "", outcome: "refuted", proof: "proof" }], [{ finding_id: "R1", outcome: "refuted", proof: "" }], [{ finding_id: "R1", outcome: "refuted", proof: "proof", extra: true }]]) {
+		assert.throws(() => decodeReviewStatusV3({ ...escalatedStatusV7(), escalation: { cause: "missing_refuter_outcome", finding_ids: ["R1"], refuter_outcomes } }), /refuter_outcomes/);
+	}
+	for (const version of [3, 5, 6]) {
+		assert.throws(() => decodeReviewStatusV3({ ...escalatedStatusV7(), schema: `gentle-ai.review-integration.status/v${version}` }), /not allowed/);
 	}
 });

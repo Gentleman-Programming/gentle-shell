@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test, { after } from "node:test";
 import {
 	AGENT_MODE,
+	THINKING_LEVEL,
 	agentDirectories,
 	discoverAgents,
 	loadAgentsConfig,
@@ -13,7 +14,9 @@ import {
 	parseFrontmatter,
 	parseModelRef,
 	resolveAgentProfile,
+	withPinnedModelProfiles,
 } from "../lib/agents-config.ts";
+import { THINKING_LEVELS } from "../lib/model-routing-authority.ts";
 
 // Gentle Agents configuration: markdown agent definitions (the same files
 // gentle-ai installs) and subagents.json, both parsed without touching pi.
@@ -77,6 +80,66 @@ test("parseAgentDefinition rejects unknown thinking levels, modes, and empty bod
 	assert.match((parseAgentDefinition("---\nname: a\n---\n   \n", "/a.md", "global") as { error: string }).error, /no instructions/);
 });
 
+test("runtime thinking levels stay aligned with model routing authority", () => {
+	assert.deepEqual(Object.values(THINKING_LEVEL), THINKING_LEVELS);
+	assert.equal(THINKING_LEVEL.MAX, "max");
+});
+
+test("parseAgentDefinition accepts max through every thinking alias", () => {
+	for (const field of ["thinking", "effort", "thinking_level"]) {
+		const agent = parseAgentDefinition(`---\nname: worker\n${field}: max\n---\nbody`, "/worker.md", "global");
+		assert.ok(!("error" in agent), `${field} must accept max`);
+		assert.equal(agent.thinking, "max");
+	}
+});
+
+test("discoverAgents retains max definitions instead of falling back to medium", () => {
+	const home = join(root, "max-home");
+	const cwd = join(root, "max-project");
+	const agentHome = join(home, ".pi", "agent");
+	for (const dir of ["agents", "subagents"]) mkdirSync(join(agentHome, dir), { recursive: true });
+	writeFileSync(join(agentHome, "agents", "worker.md"), "---\nname: worker\nthinking: medium\n---\nlegacy worker");
+	writeFileSync(join(agentHome, "subagents", "worker.md"), "---\nname: worker\nthinking: max\n---\nselected worker");
+	writeFileSync(join(agentHome, "subagents.json"), JSON.stringify({ model_profiles: { worker: { model: "openai-codex/gpt-5.6-luna", effort: "max" } } }));
+	const { agents, errors } = discoverAgents({ cwd, home });
+	assert.deepEqual(errors, []);
+	assert.equal(agents.length, 1);
+	assert.equal(agents[0].thinking, "max");
+	assert.equal(agents[0].instructions, "selected worker");
+	const resolved = resolveAgentProfile(agents[0], loadAgentsConfig({ cwd, home }));
+	assert.equal(resolved.model?.id, "gpt-5.6-luna");
+	assert.equal(resolved.thinking, "max");
+	assert.equal(resolved.source.thinking, "profile");
+});
+
+test("max defaults and model profiles preserve routing precedence", () => {
+	const bare = parseAgentDefinition("---\nname: worker\n---\nbody", "/worker.md", "global");
+	const medium = parseAgentDefinition("---\nname: worker\nthinking: medium\n---\nbody", "/worker.md", "global");
+	assert.ok(!("error" in bare));
+	assert.ok(!("error" in medium));
+	for (const field of ["default_effort", "default_thinking_level", "default_thinking"]) {
+		const config = parseAgentsConfig({ [field]: "max" }, undefined);
+		assert.equal(config.defaultThinking, "max");
+		assert.equal(resolveAgentProfile(bare, config).thinking, "max");
+		assert.equal(resolveAgentProfile(bare, config).source.thinking, "default");
+		assert.equal(resolveAgentProfile(medium, config).thinking, "medium");
+	}
+	for (const field of ["effort", "thinking"]) {
+		const global = { model_profiles: { worker: { [field]: "max" } } };
+		const config = parseAgentsConfig(global, { model_profiles: { worker: { model: "openai-codex/gpt-5.6-luna" } } });
+		assert.equal(config.modelProfiles.worker.thinking, "max");
+		assert.equal(resolveAgentProfile(medium, config).thinking, "max");
+		assert.equal(resolveAgentProfile(medium, config).source.thinking, "profile");
+	}
+	const override = parseAgentsConfig(
+		{ model_profiles: { worker: { model: "openai-codex/gpt-5.6-luna", effort: "high" } } },
+		{ model_profiles: { worker: { effort: "max" } } },
+	);
+	assert.equal(override.modelProfiles.worker.thinking, "max");
+	assert.equal(resolveAgentProfile(medium, override).thinking, "max");
+	assert.equal(resolveAgentProfile(medium, override).model?.id, "gpt-5.6-luna");
+});
+
 test("discoverAgents merges the four directories with project over global and subagents over agents", () => {
 	const home = join(root, "home");
 	const cwd = join(root, "project");
@@ -131,6 +194,21 @@ test("parseAgentsConfig applies defaults, validates values, and silently ignores
 	assert.equal(parseAgentsConfig({ default_mode: "background" }, undefined).defaultMode, AGENT_MODE.BACKGROUND);
 });
 
+test("parseAgentsConfig resolves the tool-call stall ceiling above the idle silence budget", () => {
+	const defaults = parseAgentsConfig(undefined, undefined);
+	assert.equal(defaults.stallTimeoutMs, 4 * 60_000);
+	assert.equal(defaults.toolStallTimeoutMs, 30 * 60_000);
+	const explicit = parseAgentsConfig({ stall_timeout_ms: 12_000, tool_stall_timeout_ms: 20 * 60_000 }, undefined);
+	assert.equal(explicit.stallTimeoutMs, 12_000);
+	assert.equal(explicit.toolStallTimeoutMs, 20 * 60_000);
+	const projectWins = parseAgentsConfig({ tool_stall_timeout_ms: 20 * 60_000 }, { tool_stall_timeout_ms: 15 * 60_000 });
+	assert.equal(projectWins.toolStallTimeoutMs, 15 * 60_000);
+	for (const invalid of ["forever", 0, -1, 12.5, null]) {
+		assert.equal(parseAgentsConfig({ tool_stall_timeout_ms: invalid }, undefined).toolStallTimeoutMs, 30 * 60_000, `invalid tool_stall_timeout_ms ${String(invalid)} must fall back to the default`);
+	}
+	assert.equal(parseAgentsConfig({ stall_timeout_ms: 45 * 60_000, tool_stall_timeout_ms: 1_000 }, undefined).toolStallTimeoutMs, 45 * 60_000, "the tool ceiling must never fall below the idle budget");
+});
+
 test("resolveAgentProfile prefers the profile, then the definition, then the defaults", () => {
 	const config = parseAgentsConfig({ default_model: "openai-codex/gpt-6-astra", default_effort: "medium", model_profiles: { "gentle-ai-explore": { effort: "high" } } }, undefined);
 	const explore = parseAgentDefinition(EXPLORER, "/x/explore.md", "global");
@@ -140,4 +218,32 @@ test("resolveAgentProfile prefers the profile, then the definition, then the def
 	assert.ok(!("error" in bare));
 	assert.deepEqual(resolveAgentProfile(bare, config), { model: { provider: "openai-codex", id: "gpt-6-astra" }, thinking: "medium", source: { model: "default", thinking: "default" } });
 	assert.deepEqual(resolveAgentProfile(bare, parseAgentsConfig(undefined, undefined)).source, { model: "unresolved", thinking: "unresolved" });
+});
+
+test("a pinned profile replaces subagent routing and leaves every other default alone", () => {
+	const global = parseAgentsConfig(
+		{
+			default_model: "openai-codex/gpt-6-astra",
+			default_effort: "medium",
+			default_mode: "background",
+			max_concurrency: 3,
+			model_profiles: { explore: { model: "openai-codex/gpt-5.6-terra", effort: "low" } },
+		},
+		{ model_profiles: { worker: { model: "anthropic/claude-sonnet-5" } } },
+	);
+	const pinned = withPinnedModelProfiles(global, { worker: { model: "openai/alpha", thinking: "minimal" } });
+	assert.deepEqual(pinned.modelProfiles, {
+		worker: { model: { provider: "openai", id: "alpha" }, thinking: "minimal" },
+	});
+	// Materialized global routing must not survive into a pinned repository: that
+	// leak is exactly the conflict a per-repository pin exists to remove.
+	assert.equal("explore" in pinned.modelProfiles, false);
+	// A pin redirects subagent routing only; the orchestrator routing and every
+	// operational default stay global.
+	assert.deepEqual({ ...pinned, modelProfiles: global.modelProfiles }, global);
+	// No pin, and no pin-shaped input, mean today's routing by identity.
+	assert.equal(withPinnedModelProfiles(global, undefined), global);
+	// A pinned profile that mentions no role still replaces the routing, so a
+	// repository can pin "everything inherits" without touching the global store.
+	assert.deepEqual(withPinnedModelProfiles(global, {}).modelProfiles, {});
 });

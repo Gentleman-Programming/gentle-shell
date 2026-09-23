@@ -1,6 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { EFFORTS, ORCHESTRATOR_AGENT_CLASS, RuntimeMetrics, UNKNOWN_AGENT_CLASS, type FinalResponse, type TokenMeasurement } from "../lib/runtime-metrics.ts";
-import { classifyPiCatalogName, lookupPiCatalogName } from "../lib/runtime-metrics-pi-identity.ts";
 import { CHILD_METRICS_EVENT, CHILD_METRICS_REVOKED, snapshotChildEvent, type ChildLaunchBucket } from "../lib/runtime-metrics-children.ts";
 import { RuntimeMetricsAttempt } from "../lib/runtime-metrics-delivery.ts";
 import { sendNativeRuntimeEvent, type NativeRuntimeTransportDeps } from "../lib/runtime-metrics-native.ts";
@@ -12,10 +11,8 @@ import { runtimeMetricsEnvAllows } from "../lib/runtime-metrics-policy.ts";
  * Pi hooks lack request correlation: latency and SDK-zero presence are unknown.
  */
 export default function runtimeMetrics(pi: ExtensionAPI, env = process.env,
-	{ lookup = lookupPiCatalogName, classify = classifyPiCatalogName, native, send = sendNativeRuntimeEvent,
-		now = () => performance.now(), shutdownWaitMs = 1500 }:
-	{ lookup?: typeof lookupPiCatalogName; classify?: typeof classifyPiCatalogName; native?: NativeRuntimeTransportDeps;
-		send?: typeof sendNativeRuntimeEvent; now?: () => number; shutdownWaitMs?: number } = {}): void {
+	{ native, send = sendNativeRuntimeEvent, now = () => performance.now(), shutdownWaitMs = 1500 }:
+	{ native?: NativeRuntimeTransportDeps; send?: typeof sendNativeRuntimeEvent; now?: () => number; shutdownWaitMs?: number } = {}): void {
 	const allows = () => env.GENTLE_PI_AGENTS_CHILD !== "1" && runtimeMetricsEnvAllows(env);
 	if (!allows()) return;
 	type Selection = Pick<FinalResponse, "selectedModelId" | "selectedProvider" | "effort">;
@@ -24,7 +21,7 @@ export default function runtimeMetrics(pi: ExtensionAPI, env = process.env,
 	let requestSeen = false;
 	let ambiguous = false;
 	let live: { id: string; started: number; ctx: ExtensionContext; attempt: RuntimeMetricsAttempt;
-		seen: WeakSet<object>; children: Set<string>; catalog: boolean } | undefined;
+		seen: WeakSet<object>; children: Set<string> } | undefined;
 	const missing = { state: "unavailable" } as const;
 	function invalidate() { selection = undefined; ambiguous = true; }
 	function dispose() { live?.attempt.dispose(); live = undefined; active = false; invalidate(); }
@@ -32,15 +29,10 @@ export default function runtimeMetrics(pi: ExtensionAPI, env = process.env,
 		if (!allows() || live?.id !== ctx.sessionManager.getSessionId()) dispose();
 		return live;
 	}
-	function refreshCatalog(owner: NonNullable<typeof live>, input: { provider: unknown; modelId: unknown }) {
-		void lookup(input).then(result => {
-			if (live === owner && result.classification === "catalog_public") owner.catalog = true;
-		}, () => { /* A later classification callback may retry the bounded load. */ });
-	}
 	function submit(owner: NonNullable<typeof live>, responses: FinalResponse[], launches?: ChildLaunchBucket[]) {
 		if (!responses.length || live !== owner || !current(owner.ctx)) return;
 		// Ephemeral event-local accounting only; source IDs never enter these rows.
-		const metrics = new RuntimeMetrics({ classifyModel: classify });
+		const metrics = new RuntimeMetrics();
 		for (const [index, row] of responses.entries()) metrics.record({ ...row, responseId: String(index) });
 		const rows = metrics.snapshot();
 		if (!rows.length) return;
@@ -71,10 +63,8 @@ export default function runtimeMetrics(pi: ExtensionAPI, env = process.env,
 	pi.on("session_start", (_event, ctx) => {
 		dispose();
 		if (!allows()) return;
-		const owner = { id: ctx.sessionManager.getSessionId(), started: now(), ctx,
-			attempt: new RuntimeMetricsAttempt(), seen: new WeakSet<object>(), children: new Set<string>(), catalog: false };
-		live = owner;
-		refreshCatalog(owner, { provider: "openai", modelId: "gpt-4o" });
+		live = { id: ctx.sessionManager.getSessionId(), started: now(), ctx,
+			attempt: new RuntimeMetricsAttempt(), seen: new WeakSet<object>(), children: new Set<string>() };
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
 		const teardown = () => { dispose(); offChild(); offRevoke(); };
@@ -95,8 +85,10 @@ export default function runtimeMetrics(pi: ExtensionAPI, env = process.env,
 		if (!active || ambiguous) return;
 		let effort: FinalResponse["effort"] = "unavailable";
 		try { const value = pi.getThinkingLevel(); if (EFFORTS.includes(value)) effort = value; } catch { /* No evidence. */ }
-		selection = { selectedProvider: owner.catalog ? ctx.model?.provider as FinalResponse["provider"] ?? "unknown" : "unknown",
-			selectedModelId: owner.catalog && typeof ctx.model?.id === "string" && ctx.model.id.length <= 128 ? ctx.model.id : undefined, effort };
+		// No catalog gate: the selection is taken as-is (bounded to 128 chars) and
+		// the schema-driven normalizer decides what actually leaves the machine.
+		selection = { selectedProvider: typeof ctx.model?.provider === "string" && ctx.model.provider.length <= 128 ? ctx.model.provider : undefined,
+			selectedModelId: typeof ctx.model?.id === "string" && ctx.model.id.length <= 128 ? ctx.model.id : undefined, effort };
 	});
 	function token(value: unknown): TokenMeasurement {
 		return typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value <= 1_000_000_000
@@ -109,7 +101,6 @@ export default function runtimeMetrics(pi: ExtensionAPI, env = process.env,
 			if (!owner || message.role !== "assistant" || message.stopReason === "pending" || message.stopReason === "deferred"
 				|| owner.seen.has(message)) return;
 			owner.seen.add(message);
-			refreshCatalog(owner, { provider: "openai", modelId: "gpt-4o" });
 			const selected = active && !ambiguous ? selection : undefined;
 			submit(owner, [{ kind: "final_assistant_response", responseId: "0",
 				selectedProvider: selected?.selectedProvider ?? "unknown", selectedModelId: selected?.selectedModelId,

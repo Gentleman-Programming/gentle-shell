@@ -1,6 +1,6 @@
 {
   "note": "Recorded TypeScript diagnostics. Regenerate with `node scripts/check-types.mjs --update` after fixing or deliberately accepting diagnostics. This file may only shrink without a review decision.",
-  "total": 205,
+  "total": 200,
   "byFileAndCode": {
     "extensions/codegraph-tools.ts TS2339": 1,
     "extensions/codegraph-tools.ts TS2345": 1,
@@ -36,8 +36,6 @@
     "tests/agents-runner-process.test.ts TS2322": 1,
     "tests/devbinary/native-review-parity.devtest.ts TS2339": 1,
     "tests/devbinary/pi-host-relay.devtest.ts TS2339": 3,
-    "tests/gentle-agents.test.ts TS2339": 1,
-    "tests/gentle-agents.test.ts TS2352": 2,
     "tests/gentle-ai-binary.test.ts TS2339": 2,
     "tests/gentle-ai-installer.test.ts TS2339": 7,
     "tests/gentle-ai-installer.test.ts TS2556": 1,
@@ -87,8 +85,6 @@
     "tests/runtime-metrics-extension.test.ts TS2345": 1,
     "tests/sdd-preflight.test.ts TS2352": 1,
     "tests/sdd-preflight.test.ts TS2554": 2,
-    "tests/sdd-research-capabilities.test.ts TS2339": 1,
-    "tests/sdd-research-capabilities.test.ts TS2698": 1,
     "tests/sdd-research-live.test.ts TS2322": 1,
     "tests/shell-sidebar-layout.test.ts TS2339": 1,
     "tests/shell-sidebar-layout.test.ts TS2345": 1,

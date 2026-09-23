@@ -1,3 +1,5 @@
+import { isAbsolute, resolve, dirname, basename } from "node:path";
+import { realpathSync, lstatSync } from "node:fs";
 import type { AgentDefinition } from "./agents-config.ts";
 
 // Exact registered Pi names, not provider display namespaces. MCP's generic
@@ -5,9 +7,15 @@ import type { AgentDefinition } from "./agents-config.ts";
 // active gateway does not prove which remote methods it can safely expose.
 export const RESEARCH_TOOLS = ["fetch_content", "web_search", "source_check", "get_search_content"] as const;
 export const RESEARCH_CHILD_TOOLS_ENV = "GENTLE_PI_RESEARCH_TOOLS";
+export const RESEARCH_SELECTION_ENV = "GENTLE_PI_RESEARCH_SELECTION";
+export interface ResearchGrant {
+	tools: string[];
+	extensions: Record<string, string>;
+}
+export type ResearchSelection = Partial<Record<keyof ResearchCapabilities, ResearchGrant>>;
 type Inventory = {
 	getActiveTools?: () => string[];
-	getAllTools?: () => Array<{ name: string; sourceInfo?: { source?: string } }>;
+	getAllTools?: () => Array<{ name: string; sourceInfo?: { source?: string; path?: string } }>;
 };
 type Capability = { status: "available" | "blocked"; tools: string[]; reason: string };
 export type ResearchCapabilities = Record<"documentation" | "open-web", Capability>;
@@ -25,14 +33,14 @@ export function resolveResearchCapabilities(pi: Inventory, restriction?: readonl
 	const capability = (required: string[], guidance: string): Capability => {
 		const missing = required.filter(name => !tools.includes(name as typeof RESEARCH_TOOLS[number]));
 		return {
-			status: missing.length === 0 ? "available" : "blocked",
+			status: required.some(name => tools.includes(name as typeof RESEARCH_TOOLS[number])) ? "available" : "blocked",
 			tools: required.filter(name => tools.includes(name as typeof RESEARCH_TOOLS[number])),
 			reason: `${missing.length === 0 ? "" : `Missing active, approved, child-reachable tools: ${missing.join(", ")}. `}${guidance}`,
 		};
 	};
 	return {
 		documentation: capability(["fetch_content"], "Fetch official documentation URLs; validate publisher and version before citing."),
-		"open-web": capability(["web_search", "source_check", "fetch_content", "get_search_content"], "All four tools are required. Search, check sources and retrieve original content; inventory and search snippets alone are not evidence."),
+		"open-web": capability(["web_search", "source_check", "fetch_content", "get_search_content"], "Use the available authorized tools for the requested questions; search snippets alone are not validated evidence."),
 	};
 }
 
@@ -41,16 +49,46 @@ export function renderResearchCapabilities(capabilities: ResearchCapabilities): 
 		"## SDD Research Capabilities",
 		"Package-approved mapping intersected with active runtime tools and explicit agent restrictions:",
 		...Object.entries(capabilities).map(([kind, value]) => `- ${kind}: ${value.status}; tools=${JSON.stringify(value.tools)}. ${value.reason}`),
-		"Availability is not evidence or proposal admission. Run selected supported classes, record tool calls, source URLs, retrieval time, publisher/version, excerpts and claim-to-source IDs. Child-local inventory must confirm availability before evidence collection.",
-		"Missing required tools block only the affected class. Any selected unavailable or partial class keeps proposal_ready=false. Preserve explicit source restrictions; never recommend skipping selected research because of a blanket denial.",
+		"Availability is not evidence. Use actual authorized tools, cite retrieved sources with publisher/version/date, and distinguish supported findings from unanswered questions.",
+		"Unavailable tools limit the answers, not proposal readiness. Preserve explicit source restrictions, report useful partial findings and unavailable sources honestly, and never claim online access from inventory alone.",
 		"Generic MCP and dynamic namespace gateways are not approved evidence routes. Never infer remote method access from gateway names, tool descriptions, bash, persistence tools, or remembered facts.",
 	].join("\n");
 }
 
-export function researchAgent(agent: AgentDefinition, pi: Inventory): { agent: AgentDefinition; capabilities: ResearchCapabilities } {
+export function researchAgent(agent: AgentDefinition, pi: Inventory, selection?: unknown) {
 	const capabilities = resolveResearchCapabilities(pi, agent.tools);
-	const available = new Set(Object.values(capabilities).flatMap(value => value.tools));
-	const local = new Set(["read", "grep", "find", "edit", "write", "mem_search", "mem_get_observation", "mem_save"]);
-	const tools = agent.tools.filter(name => local.has(name) || available.has(name));
-	return { agent: { ...agent, tools, instructions: `${agent.instructions}\n\n${renderResearchCapabilities(capabilities)}` }, capabilities };
+	const extensionPaths = new Set<string>();
+	const requested = selection && typeof selection === "object" && !Array.isArray(selection)
+		? selection as Record<string, unknown> : {};
+	let registered: ReturnType<NonNullable<Inventory["getAllTools"]>> = [];
+	try { registered = pi.getAllTools?.() ?? []; } catch { /* No provenance, no route. */ }
+	for (const [kind, capability] of Object.entries(capabilities)) {
+		const value = requested[kind];
+		const grant = value && typeof value === "object" ? value as Partial<ResearchGrant> : {};
+		const supported: readonly string[] = kind === "documentation" ? ["fetch_content"] : RESEARCH_TOOLS;
+		const exact = Object.keys(requested).every(key => Object.hasOwn(capabilities, key)) &&
+			Array.isArray(grant.tools) && grant.tools.length > 0 && new Set(grant.tools).size === grant.tools.length &&
+			grant.tools.every(name => supported.includes(name)) && grant.extensions &&
+			Object.keys(grant.extensions).length === grant.tools.length;
+		capability.tools = exact ? grant.tools!.filter(name => {
+			const path = registered.find(tool => tool.name === name)?.sourceInfo?.path;
+			return capability.tools.includes(name) && typeof path === "string" && isAbsolute(path) && path === grant.extensions![name];
+		}) : [];
+		capability.status = capability.tools.length ? "available" : "blocked";
+		capability.reason = `Only individually selected tools with matching active extension provenance are usable. ${capability.reason}`;
+		for (const name of capability.tools) extensionPaths.add(grant.extensions![name]);
+	}
+	const available = new Set(Object.values(capabilities).filter(value => value.status === "available").flatMap(value => value.tools));
+	const tools = agent.tools.filter(name => available.has(name));
+	return { agent: { ...agent, tools, instructions: `${agent.instructions}\n\n${renderResearchCapabilities(capabilities)}` }, capabilities, extensionPaths: [...extensionPaths] };
+}
+
+// Resolve existing ancestors for real remediation permission checks, including missing leaves.
+export function canonicalArtifactPath(path: string): string {
+	try { lstatSync(path); }
+	catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT" || dirname(path) === path) throw error;
+		return resolve(canonicalArtifactPath(dirname(path)), basename(path));
+	}
+	return realpathSync(path);
 }

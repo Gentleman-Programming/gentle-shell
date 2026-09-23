@@ -75,18 +75,84 @@ test("encoder filters custom identities and never promotes SDK model to response
 	row.agentClass = "private-agent" as any; row.effort = "private-effort" as any;
 	row.error = "authentication";
 	const encoded = JSON.parse(native.encodeNativeRuntimeEvent([row])!);
-	assert.deepEqual(encoded.rows[0].model, { provider: "custom", id: "custom" });
+	// "private-model" never normalizes to a public id, so it never claims
+	// response evidence; the row falls through to the still-public selection
+	// (source()'s default selectedModelId "gpt-5.4") instead of leaking it or
+	// collapsing a perfectly good selected identity to custom/custom.
+	assert.deepEqual(encoded.rows[0].model, { provider: "openai", id: "gpt-5.4" });
+	assert.equal(encoded.rows[0].model_evidence, "selected");
 	assert.equal(encoded.rows[0].agent_class, "unknown");
 	assert.equal(encoded.rows[0].selected_effort, "unavailable");
 	assert.equal(encoded.rows[0].error_category, "auth");
 	assert.ok(!JSON.stringify(encoded).includes("private"));
-	row.responseModelId = "unknown";
-	const selected = JSON.parse(native.encodeNativeRuntimeEvent([row])!);
-	assert.equal(selected.rows[0].model_evidence, "selected");
-	assert.deepEqual(selected.rows[0].model, { provider: "openai", id: "gpt-5.4" });
 	row.selectedModelId = "unknown";
-	const unknown = JSON.parse(native.encodeNativeRuntimeEvent([row])!);
-	assert.equal(unknown.rows[0].model_evidence, "unknown");
+	const observedFallback = JSON.parse(native.encodeNativeRuntimeEvent([row])!);
+	// With no public selected model either, it falls through once more, but
+	// source()'s default observedModelId ("private-alias") is not public either.
+	assert.equal(observedFallback.rows[0].model_evidence, "unknown");
+	assert.deepEqual(observedFallback.rows[0].model, { provider: "unknown", id: "unknown" });
+});
+
+test("a public observed model is a fallback evidence tier, behind response and selected", () => {
+	const row = source();
+	row.responseModelId = "unknown"; row.selectedModelId = "unknown"; row.observedModelId = "glm5.3-flash"; row.provider = "nan";
+	const encoded = JSON.parse(native.encodeNativeRuntimeEvent([row])!);
+	assert.deepEqual(encoded.rows[0].model, { provider: "nan", id: "glm5.3-flash" });
+	assert.equal(encoded.rows[0].model_evidence, "selected", "the transport has no separate observed evidence category");
+	// A public response model still wins over a public observed model.
+	const withResponse = source();
+	withResponse.selectedModelId = "unknown"; withResponse.observedModelId = "glm5.3-flash"; withResponse.provider = "nan";
+	const encodedResponse = JSON.parse(native.encodeNativeRuntimeEvent([withResponse])!);
+	assert.equal(encodedResponse.rows[0].model_evidence, "response");
+	// A public selected model still wins over a public observed model.
+	const withSelected = source();
+	withSelected.responseModelId = "unknown"; withSelected.observedModelId = "glm5.3-flash"; withSelected.provider = "nan";
+	const encodedSelected = JSON.parse(native.encodeNativeRuntimeEvent([withSelected])!);
+	assert.equal(encodedSelected.rows[0].model_evidence, "selected");
+	assert.deepEqual(encodedSelected.rows[0].model, { provider: withSelected.selectedProvider, id: withSelected.selectedModelId });
+	// A non-public observed model still falls through to unknown/unknown.
+	const noEvidence = source();
+	noEvidence.responseModelId = "unknown"; noEvidence.selectedModelId = "unknown"; noEvidence.observedModelId = "private-alias";
+	const encodedUnknown = JSON.parse(native.encodeNativeRuntimeEvent([noEvidence])!);
+	assert.deepEqual(encodedUnknown.rows[0].model, { provider: "unknown", id: "unknown" });
+	assert.equal(encodedUnknown.rows[0].model_evidence, "unknown");
+});
+
+test("every encoded model satisfies the schema's anyOf, by pattern or by sentinel", () => {
+	const idRule = schema.$defs.model.anyOf[0].properties.id as { pattern: string };
+	const providerRule = schema.$defs.model.anyOf[0].properties.provider as { pattern: string };
+	const idPattern = new RegExp(idRule.pattern);
+	const providerPattern = new RegExp(providerRule.pattern);
+	const sentinels = schema.$defs.model.anyOf.slice(1) as Array<{ properties: { provider: { const: string }; id: { const: string } } }>;
+	function matchesSchema(model: { provider: string; id: string }): boolean {
+		if (providerPattern.test(model.provider) && idPattern.test(model.id)) return true;
+		return sentinels.some(({ properties }) => properties.provider.const === model.provider && properties.id.const === model.id);
+	}
+	// Response/selected/observed rows only ever win evidence with an id that is
+	// already public, so their encoded model is either the public-pattern
+	// branch or the terminal unknown/unknown sentinel. The custom/custom and
+	// opencode/custom sentinels are reachable only through a launch row, which
+	// (already upstream-classified, always "selected" evidence) is paired
+	// through the same normalizer unconditionally.
+	const rows: RuntimeMetricBucket[] = [
+		source(),
+		{ ...source(), provider: "nan", selectedProvider: "nan", selectedModelId: "deepseek-v4-flash", responseModelId: "unknown" },
+		{ ...source(), responseModelId: "unknown", selectedModelId: "unknown", observedModelId: "unknown" },
+	];
+	const launches = [
+		{ evidence: "launch_configuration" as const, agentClass: parseAgentClass("worker")!, selectedProvider: "opencode", selectedModelId: "custom", selectedEffort: "high" as const, launches: 1 },
+		{ evidence: "launch_configuration" as const, agentClass: parseAgentClass("worker")!, selectedProvider: "custom", selectedModelId: "custom", selectedEffort: "high" as const, launches: 1 },
+		{ evidence: "launch_configuration" as const, agentClass: parseAgentClass("worker")!, selectedProvider: "unknown", selectedModelId: "unknown", selectedEffort: "high" as const, launches: 1 },
+	];
+	const payload = native.encodeNativeRuntimeEvent(rows, launches);
+	assert.ok(payload);
+	const decoded = JSON.parse(payload).rows as Array<{ model: { provider: string; id: string } }>;
+	assert.equal(decoded.length, rows.length + launches.length);
+	for (const row of decoded) assert.ok(matchesSchema(row.model), `model ${JSON.stringify(row.model)} must satisfy $defs.model.anyOf`);
+	assert.deepEqual(decoded.map(row => row.model), [
+		{ provider: "openai", id: "gpt-5.4" }, { provider: "nan", id: "deepseek-v4-flash" }, { provider: "unknown", id: "unknown" },
+		{ provider: "opencode", id: "custom" }, { provider: "custom", id: "custom" }, { provider: "unknown", id: "unknown" },
+	]);
 });
 
 function fixture() {

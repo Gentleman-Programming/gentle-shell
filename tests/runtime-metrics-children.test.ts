@@ -4,16 +4,15 @@ import { readFileSync, readdirSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { runInNewContext } from "node:vm";
 import { parseAgentClass } from "../lib/runtime-metrics.ts";
-import { parseAgentDefinition } from "../lib/agents-config.ts";
+import { parseAgentDefinition, type AgentDefinition } from "../lib/agents-config.ts";
 import { normalizeRpcEvent, TASK_EVENT } from "../lib/agents-protocol.ts";
-import { lookupPiCatalogName } from "../lib/runtime-metrics-pi-identity.ts";
 import { ChildComposition, childEvent, classifyBuiltinAgent, launchSelection } from "../lib/runtime-metrics-children.ts";
 import { encodeNativeRuntimeEvent } from "../lib/runtime-metrics-native.ts";
 
-await lookupPiCatalogName({ provider: "openai", modelId: "gpt-4o" });
 const asset = new URL("../assets/agents/gentle-ai-worker.md", import.meta.url);
 const definition = parseAgentDefinition(readFileSync(asset, "utf8"), asset.pathname, "global");
 assert.ok("instructions" in definition);
+const workerDefinition = definition as AgentDefinition;
 const response = (model = "gpt-4o", native = "low") => {
 	const events = normalizeRpcEvent({ type: "message_end", message: { role: "assistant", provider: "openai",
 		model, responseModel: model, providerThinkingLevel: native, stopReason: "stop", usage: { input: 3, output: 2, reasoning: 1 } } }, { observeResponses: true });
@@ -21,7 +20,7 @@ const response = (model = "gpt-4o", native = "low") => {
 	assert.ok(event?.type === TASK_EVENT.RESPONSE_OBSERVATION);
 	return event.observation;
 };
-const launch = () => launchSelection(definition, { provider: "openai", id: "gpt-4o" }, "high");
+const launch = () => launchSelection(workerDefinition, { provider: "openai", id: "gpt-4o" }, "high");
 const event = (taskId = "local-task") => childEvent("local-session", taskId, launch(), "completed", {
 	coverage: "final_assistant_messages_only", agentSettled: true, responses: [response(), response("gpt-4o-mini", "high")], droppedResponses: 2,
 });
@@ -38,6 +37,13 @@ test("installed package definitions retain classification after the actual routi
 		const className = file === "sdd-proposal" ? "sdd-propose"
 			: file.startsWith("gentle-ai-") ? file.slice("gentle-ai-".length) : file;
 		const kind = parseAgentClass(className);
+		if (file === "sdd-remediate") {
+			assert.equal(kind, undefined, "remediation stays dark in the existing telemetry taxonomy");
+			const definition = parseAgentDefinition(readFileSync(new URL(`../assets/agents/${file}.md`, import.meta.url), "utf8"), file, "global");
+			assert.ok("instructions" in definition);
+			assert.equal(classifyBuiltinAgent(definition), "unknown");
+			continue;
+		}
 		assert.ok(kind, `${file}: telemetry class`);
 		const asset = new URL(`../assets/agents/${file}.md`, import.meta.url);
 		const content = readFileSync(asset, "utf8");
@@ -83,12 +89,12 @@ test("schema-approved packaged names survive customization without exposing priv
 	assert.ok("instructions" in packaged);
 	assert.equal(classifyBuiltinAgent({ ...packaged, instructions: "customized instructions" }), "sdd-apply");
 
-	assert.equal(classifyBuiltinAgent(definition), "worker");
+	assert.equal(classifyBuiltinAgent(workerDefinition), "worker");
 	// This is a packaged frontmatter name, but it is absent from the telemetry
 	// enum. Its exact fingerprint retains the compatibility mapping only.
-	assert.equal(classifyBuiltinAgent({ ...definition, instructions: "private override" }), "unknown");
-	assert.equal(classifyBuiltinAgent({ ...definition, tools: ["private tool"] }), "unknown");
-	assert.equal(classifyBuiltinAgent({ ...definition, name: "private-agent" }), "unknown");
+	assert.equal(classifyBuiltinAgent({ ...workerDefinition, instructions: "private override" }), "unknown");
+	assert.equal(classifyBuiltinAgent({ ...workerDefinition, tools: ["private tool"] }), "unknown");
+	assert.equal(classifyBuiltinAgent({ ...workerDefinition, name: "private-agent" }), "unknown");
 });
 
 test("launch distribution and each observed combination remain independent and privacy-filtered", () => {
@@ -115,7 +121,10 @@ test("launch distribution and each observed combination remain independent and p
 	assert.equal(view.settled, 1);
 	assert.equal(view.statuses.completed, 1);
 	assert.ok(!JSON.stringify(view).includes("local-"));
-	const privateLaunch = launchSelection({ ...definition, instructions: "private" }, { provider: "private", id: "private-model" }, "private-effort");
+	// "Private Vendor Co" fails the schema provider pattern (space, uppercase),
+	// unlike a genuine lowercase slug such as "private" that would now legitimately
+	// pass through as an open-weight provider name.
+	const privateLaunch = launchSelection({ ...workerDefinition, instructions: "private" }, { provider: "Private Vendor Co", id: "private-model" }, "private-effort");
 	const filtered = childEvent("local-session", "other", privateLaunch, "failed", {
 		coverage: "final_assistant_messages_only", agentSettled: false, responses: [response("private-model", "private-native")], droppedResponses: 0,
 	});

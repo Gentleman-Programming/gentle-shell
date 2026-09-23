@@ -2,50 +2,43 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const routingPaths = [
-	"assets/sdd-orchestrator-workflow.md",
+const guidancePaths = [
 	"assets/support/sdd-status-contract.md",
+	"assets/sdd-orchestrator-workflow.md",
+	"assets/agents/sdd-status.md",
+	"assets/agents/sdd-verify.md",
+	"assets/agents/sdd-archive.md",
 ];
-const routingDocuments = routingPaths.map((path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8"));
 
-function executionRoutingContract(document: string): string {
-	const section = document.match(/## Bounded Execution Routing\n([\s\S]*?)(?=\n## |$)/);
-	assert.ok(section, "explicit bounded execution routing contract is required");
-	return section[1].trim();
-}
-
-for (const [index, path] of routingPaths.entries()) {
-	test(`${path}: native and local execution tokens map to executable Pi phases`, () => {
-		const contract = executionRoutingContract(routingDocuments[index]);
-		for (const [token, phase] of [
-			["apply", "sdd-apply"],
-			["sdd-apply", "sdd-apply"],
-			["verify", "sdd-verify"],
-			["sdd-verify", "sdd-verify"],
-			["archive", "sdd-archive"],
-			["sdd-archive", "sdd-archive"],
-			["sdd-sync", "sdd-sync"],
-		]) {
-			assert.ok(contract.includes(`| \`${token}\` | \`${phase}\` |`));
-		}
-	});
-
-	test(`${path}: execution aliases preserve dependency and blocker gates`, () => {
-		const contract = executionRoutingContract(routingDocuments[index]);
-		for (const guard of [
-			"For non-planning phases, stop when that phase's dependency is `blocked`",
-			"When `nextRecommended` is `blocked` or `resolve-blockers`, report `blockedReasons` and stop",
-			"Unknown tokens, including native `remediate`, do not authorize a launch until Pi has an explicit typed remediation transport and executor contract",
-			"Non-empty `blockedReasons` forbid apply, sync, and archive work",
-			"`notes` is separate from `blockedReasons` and never gates",
-			"does not bypass preflight, selection, action-context, or runtime-attempt authority",
-			"store carve-out remains separate and does not bypass those gates",
-		]) {
-			assert.ok(contract.includes(guard), `missing guard: ${guard}`);
-		}
+for (const path of guidancePaths) {
+	test(`${path}: native v2 status remains read-only and authoritative`, () => {
+		const guidance = readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+		assert.match(guidance, /native.*(?:status|v2)|gentle-ai\.sdd-status/i);
+		assert.match(guidance, /read-only/i);
+		assert.doesNotMatch(guidance, /resolve-via-engram/i);
+		assert.doesNotMatch(guidance, /local SDD status engine|manual (?:fallback )?status|reconstruct(?:ing)? (?:native )?status/i);
 	});
 }
 
-test("workflow and support contract agree on bounded execution routing", () => {
-	assert.equal(executionRoutingContract(routingDocuments[0]), executionRoutingContract(routingDocuments[1]));
+test("workflow preserves explicit continuation and native-only classical completion", () => {
+	const workflow = readFileSync(new URL("../assets/sdd-orchestrator-workflow.md", import.meta.url), "utf8");
+	assert.match(workflow, /only.*sdd-continue|sdd-continue.*only/i);
+	assert.doesNotMatch(workflow, /manual sdd-sync|local resolver/i);
+	assert.match(workflow, /verification is optional/);
+	assert.doesNotMatch(workflow, /sdd-(?:apply|verify|archive).*local|local.*sdd-(?:apply|verify|archive)/i);
+});
+
+test("archive owns composition without mandatory verification or a standalone sync receipt", () => {
+	const archive = readFileSync(new URL("../assets/agents/sdd-archive.md", import.meta.url), "utf8");
+	const full = readFileSync(new URL("../assets/chains/sdd-full.chain.md", import.meta.url), "utf8");
+	assert.doesNotMatch(full, /^## sdd-(verify|sync)$/m);
+	assert.match(full, /apply -> archive/);
+	assert.match(archive, /missing optional report is not a blocker/);
+	assert.match(archive, /no separate sync phase or successful sync-report artifact is required/);
+	for (const guard of ["Final Task Completion Gate", "allowed edit roots", "resolved symlink targets", "existing archive destination",
+		"ADDED Requirements", "MODIFIED Requirements", "REMOVED Requirements", "RENAMED Requirements",
+		"explicit composition/archive order", "explicit approval for the destructive sync", "dependsOn", "rules.sync",
+		"archive-report", "observation-ID traceability", "Preserve every canonical requirement not mentioned by the delta"]) {
+		assert.ok(archive.includes(guard), `archive retains ${guard}`);
+	}
 });

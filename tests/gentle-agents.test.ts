@@ -1,29 +1,39 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { createRequire, syncBuiltinESMExports } from "node:module";
-import { join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { pendingReviewMutation, REVIEW_REMINDER_RECEIPT } from "../lib/review-reminder-receipt.ts";
-import { SESSION_WORKTREE_ENTRY, SESSION_WORKTREE_CHANGED } from "../lib/session-worktree-registry.ts";
-import test, { after, mock } from "node:test";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import gentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, answerThroughUi, completionText, legacySubagentsInstalled, type AgentsDeps } from "../extensions/gentle-agents.ts";
+import { SESSION_WORKTREE_ENTRY, SESSION_WORKTREE_CHANGED, resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
+import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
+import { SessionChanges, type SessionChangeEvidence } from "../lib/session-changes.ts";
+import test, { after, afterEach, mock } from "node:test";
+import type { TestContext } from "node:test";
+import { generateUnifiedPatch, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { sidebarState } from "../lib/shell-sidebar.ts";
+import gentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, answerThroughUi, completionText, createDefaultSessionTransport, legacySubagentsInstalled, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
+import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry } from "../lib/agents-session-transport.ts";
+import { WindowsActiveSessionClient, WindowsActiveSessionListener } from "../lib/windows-session-transport.ts";
 import { historyDir, loadHistory, saveTask } from "../lib/agents-history.ts";
 import { STALE_COMPLETION_MS } from "../lib/agents-completion-delivery.ts";
-import { emptyThread, TASK_EVENT, TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
+import { applyTaskEvent, emptyThread, TASK_EVENT, TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
 import { NativePointerScope } from "../lib/native-pointer-region.ts";
 import { PresenceCursor, PresencePublisher, listPresence, readActivity } from "../lib/orchestrator-presence.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
 import { AgentRunner } from "../lib/agents-runner.ts";
+import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 import { CHILD_METRICS_EVENT } from "../lib/runtime-metrics-children.ts";
+import { renderSddPreflightPrompt } from "../lib/sdd-preflight.ts";
 
 // Gentle Agents extension: the subagent_* tools drive isolated pi children,
 // the card above the editor follows the store, and dialogs reach the host UI.
 
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 interface Registered {
+	parameters: { properties: Record<string, unknown> };
 	renderShell?: string;
 	name: string;
 	execute(id: string, params: unknown, signal: AbortSignal | undefined, onUpdate: undefined, ctx: ExtensionContext): Promise<{ content: Array<{ text: string }>; details: Record<string, unknown> }>;
@@ -32,6 +42,29 @@ interface Registered {
 
 const plainTheme = { fg: (_color: string, text: string) => text };
 const fakeTui = { requestRender() {} };
+const PARENT_CONFIRMED_SDD_CONTEXT = renderSddPreflightPrompt({
+	executionMode: "auto",
+	artifactStore: "openspec",
+	chainedPrStrategy: "ask-on-risk",
+	reviewBudgetLines: 400,
+	engramAvailable: false,
+	prompted: true,
+});
+
+const inertSessionTransport: SessionTransportFactory = {
+	createRegistry: async () => ({ list: async () => [], listActivations: async () => [] }),
+	createListener: (registry) => ({ registry, start: async () => {}, close: async () => {} }),
+	createClient: () => ({ close() {}, sendNotification: async () => { throw new Error("inert session transport must not send notifications"); } }),
+};
+
+function containsResolvedPath(
+	candidate: string,
+	path: string,
+	paths: Pick<typeof win32, "isAbsolute" | "relative" | "sep"> = { isAbsolute, relative, sep },
+): boolean {
+	const fromCandidate = paths.relative(candidate, path);
+	return fromCandidate === "" || (!paths.isAbsolute(fromCandidate) && fromCandidate !== ".." && !fromCandidate.startsWith(`..${paths.sep}`));
+}
 
 type Overlay = {
 	render(width: number): string[];
@@ -49,8 +82,27 @@ function mouse(
 ): TuiMouseEvent {
 	return { type, button, x, y, screenX: x, screenY: y, width, height, shift: false, alt: false, ctrl: false };
 }
-const root = mkdtempSync(join(tmpdir(), "gentle-agents-ext-"));
-after(() => rmSync(root, { recursive: true, force: true }));
+const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-agents-ext-")));
+const activeSessionTeardowns = new Set<() => Promise<void>>();
+const stopActiveSessions = () => Promise.all([...activeSessionTeardowns].map((shutdown) => shutdown()));
+afterEach(stopActiveSessions);
+// subagent_run's default mode now reads the background-subagents policy
+// in-process (gentle-pi#background-subagents-default-mode), which falls
+// back to the real ~/.pi/gentle-ai/background-subagents.json when
+// GENTLE_PI_CONFIG_HOME is unset. Point it at an empty scratch directory so
+// this file's expectations never depend on the developer's own global
+// policy file (a real "on" file on the runner's machine would otherwise
+// flip every unrelated fixture's default mode to background).
+const previousGentlePiConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+process.env.GENTLE_PI_CONFIG_HOME = join(root, "gentle-ai-config-home");
+after(async () => {
+	try { await stopActiveSessions(); }
+	finally {
+		if (previousGentlePiConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previousGentlePiConfigHome;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
 const home = join(root, "home");
 const cwd = join(root, "project");
 const nonGitCwd = join(root, "non-git-project");
@@ -88,8 +140,26 @@ function fakePi() {
 		registerShortcut: (key: string, registration: { description: string; handler(ctx: ExtensionContext): Promise<void> }) => shortcuts.set(key, registration),
 		registerCommand: (name: string, registration: { handler(args: string, ctx: ExtensionContext): Promise<void> }) => commands.set(name, registration),
 	} as unknown as ExtensionAPI;
+	let activeSession: ExtensionContext | undefined;
+	const teardown = async () => {
+		const ctx = activeSession;
+		if (ctx === undefined) return;
+		await fire("session_shutdown", ctx, { reason: "quit" });
+	};
 	const fire = async (event: string, ctx: ExtensionContext, payload: unknown = {}) => {
-		for (const handler of handlers.get(event) ?? []) await handler(payload, ctx);
+		const results: unknown[] = [];
+		try {
+			for (const handler of handlers.get(event) ?? []) results.push(await handler(payload, ctx));
+			return results;
+		} finally {
+			if (event === "session_start") {
+				activeSession = ctx;
+				activeSessionTeardowns.add(teardown);
+			} else if (event === "session_shutdown" && activeSession === ctx) {
+				activeSession = undefined;
+				activeSessionTeardowns.delete(teardown);
+			}
+		}
 	};
 	return { pi, tools, shortcuts, commands, fire, sent, renderers, entryRenderers, entries, events, listeners };
 }
@@ -101,6 +171,7 @@ function fakeContext(tui: { requestRender(): void } = fakeTui, confirmResult: (t
 	const customCompletions: unknown[] = [];
 	const customOptions: unknown[] = [];
 	const ctx = {
+		cwd,
 		hasUI: true,
 		mode: "tui",
 		sessionManager: { getSessionId: () => "s1", getCwd: () => cwd, getEntries: () => [] },
@@ -163,15 +234,294 @@ function deps(): { deps: Partial<AgentsDeps>; children: FakeChild[]; spawned: st
 			home,
 			resolveWorktree: (path, base) => ({ root: resolve(base, path), commonDir: "/fixture/common" }),
 			env: { PATH: "/bin" },
+			sessionTransport: inertSessionTransport,
 		},
 	};
 }
 
+test("cache warming follows actual Gentle Agents ownership and completion lifecycle", async (t) => {
+	const h = fakePi();
+	const runtime = deps();
+	let store: TaskStore | undefined;
+	const list = TaskStore.prototype.list;
+	t.mock.method(TaskStore.prototype, "list", function (this: TaskStore, ...args: Parameters<TaskStore["list"]>) {
+		store = this;
+		return list.apply(this, args);
+	});
+	const scheduled = t.mock.fn(() => () => {});
+	runtime.deps.schedule = scheduled;
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	let sessionId = "warming-parent";
+	ctx.sessionManager.getSessionId = () => sessionId;
+	await h.fire("session_start", ctx);
+	const candidate = { type: "cache_warming_decision", warmCost: 0.01, missCost: 0.1, continuationProbability: 0.15, action: "stop" };
+	const run = t.mock.method(AgentRunner.prototype, "run");
+	const status = t.mock.method(h.tools.get("subagent_status")!, "execute");
+	const result = t.mock.method(h.tools.get("subagent_result")!, "execute");
+	const decide = async (expected: unknown) => {
+		const before = [runtime.spawned.length, run.mock.callCount(), scheduled.mock.callCount(), status.mock.callCount(), result.mock.callCount()];
+		const sent = [...h.sent], entries = [...h.entries];
+		const childTraffic = runtime.children.map(child => JSON.stringify([child.written, child.sent, child.killed]));
+		const timeout = t.mock.method(globalThis, "setTimeout");
+		const interval = t.mock.method(globalThis, "setInterval");
+		try {
+			assert.deepEqual(await h.fire("cache_warming_decision", ctx, candidate), [expected]);
+			assert.equal(timeout.mock.callCount(), 0);
+			assert.equal(interval.mock.callCount(), 0);
+		} finally { timeout.mock.restore(); interval.mock.restore(); }
+		assert.deepEqual([runtime.spawned.length, run.mock.callCount(), scheduled.mock.callCount(), status.mock.callCount(), result.mock.callCount()], before);
+		assert.deepEqual(h.sent, sent, "no maintenance or duplicate completion message");
+		assert.deepEqual(h.entries, entries, "no maintenance context entry");
+		assert.deepEqual(runtime.children.map(child => JSON.stringify([child.written, child.sent, child.killed])), childTraffic, "no child inspection, steering, or cancellation");
+	};
+	await decide(undefined);
+	const launch = await h.tools.get("subagent_run")!.execute("warming-launch", { agent: "explore", task: "Map warming", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	const taskId = (launch.details.gentleAgents as { taskId: string }).taskId;
+	assert.equal(runtime.children.length, 1);
+	await decide({ action: "warm" });
+	// The same live owned child is foreign when the active session changes.
+	sessionId = "other-parent";
+	await decide(undefined);
+	sessionId = "warming-parent";
+	await decide({ action: "warm" });
+	runtime.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "mapped" }] }] });
+	await tick();
+	await decide({ action: "warm" });
+	assert.equal(h.sent.length, 0, "agent_end is not settlement");
+	runtime.children[0].emit({ type: "agent_settled" });
+	await tick();
+	await decide(undefined);
+	assert.equal(h.sent.length, 1);
+	assert.equal(h.sent[0].message.customType, "gentle-agents.result");
+	assert.match(JSON.stringify(h.sent[0].message), new RegExp(taskId));
+	assert.equal(h.sent[0].options.triggerTurn, true);
+	assert.equal(run.mock.callCount(), 1, "warming never launches equivalent work");
+	// Seed the actual history-restore path with a stale live-looking record:
+	// sharing the parent ID and running status must not confer ownership.
+	assert.equal(store!.restore({ ...store!.get(taskId)!, id: "warming-restored", status: TASK_STATUS.RUNNING }, emptyThread()), true);
+	await decide(undefined);
+	await h.fire("session_shutdown", ctx);
+	await decide(undefined);
+});
+
+const PRINT_BACKGROUND_ERROR = "Background subagents are unavailable in print mode: pi -p exits before a parent session can receive results. Use task mode, RPC mode, or interactive Pi.";
+
+for (const continuation of [false, true]) {
+	test(`print mode rejects background ${continuation ? "continuation" : "launch"} before allocating a task`, async (t) => {
+		const h = fakePi();
+		const runtime = deps();
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		Object.assign(ctx, { mode: "print", hasUI: false });
+		await h.fire("session_start", ctx);
+		let taskId: string | undefined;
+		if (continuation) {
+			const pending = h.tools.get("subagent_run")!.execute("seed", { agent: "explore", task: "Map", mode: "task" }, undefined, undefined, ctx);
+			await tick();
+			runtime.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "mapped" }] }] });
+			runtime.children[0].emit({ type: "agent_settled" });
+			const result = await pending;
+			taskId = (result.details.gentleAgents as { taskId: string }).taskId;
+		}
+		const run = t.mock.method(AgentRunner.prototype, "run");
+		const spawnedBefore = runtime.spawned.length;
+		const entriesBefore = [...h.entries];
+		const historyBefore = await loadHistory(home);
+		const listBefore = await h.tools.get("subagent_list_tasks")!.execute("before", {}, undefined, undefined, ctx);
+		const tool = h.tools.get(continuation ? "subagent_continue" : "subagent_run")!;
+		await assert.rejects(tool.execute("denied", continuation
+			? { task_id: taskId, prompt: "Follow up", mode: "background" }
+			: { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx), { message: PRINT_BACKGROUND_ERROR });
+		await tick();
+		assert.equal(run.mock.callCount(), 0, "rejection must precede runner task ID allocation");
+		assert.equal(runtime.spawned.length, spawnedBefore, "no child spawned");
+		assert.deepEqual(await h.tools.get("subagent_list_tasks")!.execute("after", {}, undefined, undefined, ctx), listBefore, "no new task record");
+		assert.deepEqual(await loadHistory(home), historyBefore, "no history write");
+		assert.deepEqual(h.entries, entriesBefore, "no worktree registration");
+	});
+}
+
+for (const mode of ["print", "tui", "rpc"] as const) {
+	test(`${mode} preserves ${mode === "print" ? "bounded task" : "background"} execution`, async () => {
+		const h = fakePi();
+		const runtime = deps();
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		Object.assign(ctx, { mode, hasUI: mode === "tui" });
+		await h.fire("session_start", ctx);
+		let resolved = false;
+		const pending = h.tools.get("subagent_run")!.execute("control", { agent: "explore", task: "Map", mode: mode === "print" ? "task" : "background" }, undefined, undefined, ctx).then(result => { resolved = true; return result; });
+		await tick();
+		assert.equal(runtime.spawned.length, 1);
+		assert.equal(resolved, mode !== "print", "only task mode waits for completion");
+		runtime.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "mapped" }] }] });
+		runtime.children[0].emit({ type: "agent_settled" });
+		const result = await pending;
+		if (mode === "print") assert.match(result.content[0].text, /mapped/);
+		const taskId = (result.details.gentleAgents as { taskId: string }).taskId;
+		assert.ok(taskId);
+		if (mode !== "print") {
+			await tick();
+			assert.match((await h.tools.get("subagent_status")!.execute("status", { task_id: taskId }, undefined, undefined, ctx)).content[0].text, /completed · background/);
+			assert.equal(h.sent.length, 1, "settlement delivers exactly one completion");
+			assert.equal(h.sent[0].message.customType, "gentle-agents.result");
+			assert.equal(h.sent[0].message.content, `Subagent explore (task ${taskId}, "Map") finished.\n\nmapped`);
+			assert.equal(h.sent[0].message.display, true);
+			assert.deepEqual(h.sent[0].options, { deliverAs: "steer", triggerTurn: true });
+			await h.fire("turn_end", ctx);
+			await h.fire("turn_end", ctx);
+			await tick();
+			assert.equal(h.sent.length, 1, "later turns must not redeliver the completion");
+			assert.equal((await h.tools.get("subagent_result")!.execute("result", { task_id: taskId }, undefined, undefined, ctx)).content[0].text, "mapped");
+		}
+	});
+}
+
+/** Controllable fake for `AgentsDeps.schedule`: records every scheduled callback instead of running it, so a test can fire the RPC publisher's coalescing window deterministically. */
+function fakeScheduler() {
+	const pending: Array<{ id: number; fn: () => void }> = [];
+	let nextId = 0;
+	return {
+		schedule: (fn: () => void, _ms: number) => {
+			const id = nextId++;
+			pending.push({ id, fn });
+			return () => {
+				const index = pending.findIndex((entry) => entry.id === id);
+				if (index !== -1) pending.splice(index, 1);
+			};
+		},
+		flushAll: () => {
+			const due = pending.splice(0, pending.length);
+			for (const entry of due) entry.fn();
+		},
+	};
+}
+
+for (const scenario of [
+	{ label: "an interactive RPC host", mode: "rpc", env: { PATH: "/bin", GENTLE_SHELL_INTERACTIVE_HOST: "1" }, expectPublish: true },
+	{ label: "plain RPC without the interactive-host variable", mode: "rpc", env: { PATH: "/bin" }, expectPublish: false },
+	{ label: "TUI", mode: "tui", env: { PATH: "/bin" }, expectPublish: false },
+] as const) {
+	test(`gentle-agents publishes the live activity payload through setWidget only on ${scenario.label}`, async (t) => {
+		const h = fakePi();
+		const runtime = deps();
+		const scheduler = fakeScheduler();
+		runtime.deps.schedule = scheduler.schedule;
+		runtime.deps.env = scenario.env;
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		Object.assign(ctx, { mode: scenario.mode, hasUI: scenario.mode === "tui" || scenario.mode === "rpc" });
+		const setWidget = t.mock.method(ctx.ui, "setWidget");
+
+		await h.fire("session_start", ctx);
+		scheduler.flushAll(); // consume the publisher's own start-time frame, if any
+		setWidget.mock.resetCalls();
+
+		await h.tools.get("subagent_run")!.execute("control", { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
+		scheduler.flushAll();
+
+		// The TUI card's own setWidget call always carries a component-factory
+		// function, never an array; only the RPC publisher pushes an array.
+		const activityCalls = setWidget.mock.calls.filter((call) => call.arguments[0] === "gentle-agents" && Array.isArray(call.arguments[1]));
+		if (!scenario.expectPublish) {
+			assert.deepEqual(activityCalls, [], "no array-shaped setWidget push outside an interactive RPC host");
+			return;
+		}
+		assert.equal(activityCalls.length, 1, "one push per coalescing window");
+		// The fake `ui.setWidget` types `content` as the TUI-only component factory;
+		// the RPC publisher instead calls it with a plain `string[]` (real pi's
+		// RPC-mode contract), which needs an unknown-mediated cast here.
+		const [key, lines] = activityCalls[0]!.arguments as unknown as [string, string[]];
+		assert.equal(key, "gentle-agents");
+		assert.equal(lines.length, 1);
+		const activity = JSON.parse(lines[0]!) as { schema: string; tasks: Array<{ summary: { id: string } }> };
+		assert.equal(activity.schema, "gentle-agents.activity/v1");
+		assert.ok(activity.tasks.some((task) => typeof task.summary.id === "string" && task.summary.id.length > 0), "the newly launched task must be in the payload");
+	});
+}
+
+test("gentle-agents notifies once, deduplicated, when the RPC activity publisher's setWidget throws", async (t) => {
+	const h = fakePi();
+	const runtime = deps();
+	const scheduler = fakeScheduler();
+	runtime.deps.schedule = scheduler.schedule;
+	runtime.deps.env = { PATH: "/bin", GENTLE_SHELL_INTERACTIVE_HOST: "1" };
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	Object.assign(ctx, { mode: "rpc", hasUI: true });
+	const notify = t.mock.method(ctx.ui, "notify");
+	// Only the publisher's array-shaped push fails; the TUI card's own
+	// component-factory push (`showWidget`) must stay untouched.
+	ctx.ui.setWidget = ((_key: string, content: unknown) => {
+		if (Array.isArray(content)) throw new Error("boom");
+	}) as typeof ctx.ui.setWidget;
+
+	await h.fire("session_start", ctx);
+	scheduler.flushAll(); // the publisher's own start-time frame fails: one notify
+
+	await h.tools.get("subagent_run")!.execute("control", { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
+	scheduler.flushAll(); // a second flush with the same recurring failure must not notify again
+
+	assert.equal(notify.mock.callCount(), 1, "the same recurring setWidget failure is deduplicated to one notify per session");
+	assert.match(String(notify.mock.calls[0]?.arguments[0]), /boom/);
+	assert.equal(notify.mock.calls[0]?.arguments[1], "warning");
+});
+
+// Regression for the desktop app's Helpers tab showing helpers from every
+// session: a resumed session's own finished tasks restore from disk into
+// the shared `TaskStore` (see "resuming a session restores its own
+// finished tasks as history, never another session's" above for the
+// overlay-render side of this), and the RPC activity publisher created on
+// `session_start` must scope its `setWidget` payload to the same session,
+// never surfacing another session's restored task.
+test("gentle-agents' RPC activity payload excludes a restored task from another session", async (t) => {
+	const h = fakePi();
+	const runtime = deps();
+	const scheduler = fakeScheduler();
+	runtime.deps.schedule = scheduler.schedule;
+	runtime.deps.env = { PATH: "/bin", GENTLE_SHELL_INTERACTIVE_HOST: "1" };
+	const historyHome = join(root, "rpc-restore-history-home");
+	const own: TaskRecord = { id: "own-1", agent: "explore-a", mode: "background", prompt: "p", label: "p", cwd, parentSessionId: "resumed-session", status: TASK_STATUS.COMPLETED, createdAt: 1, startedAt: 1, endedAt: 100, model: "m", thinking: undefined, sessionPath: null, error: null, result: "done", lastStep: "responded", lastActivityAt: 100, turns: 1, toolCalls: 0, tokens: 0, cost: 0 };
+	const other: TaskRecord = { ...own, id: "not-mine", agent: "explore-other", parentSessionId: "other-session" };
+	await saveTask(historyDir(historyHome), own, emptyThread());
+	await saveTask(historyDir(historyHome), other, emptyThread());
+	runtime.deps.home = historyHome;
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	Object.assign(ctx, { mode: "rpc", hasUI: true });
+	ctx.sessionManager.getSessionId = () => "resumed-session";
+	const setWidget = t.mock.method(ctx.ui, "setWidget");
+
+	await h.fire("session_start", ctx, { reason: "resume" });
+
+	// The disk history read behind restoreSessionHistory is fire-and-forget
+	// real async I/O, unrelated to the fake coalescing scheduler; poll both
+	// until the resumed session's own restored task reaches a flushed frame.
+	let activity: { tasks: Array<{ summary: { id: string } }> } | undefined;
+	for (let attempt = 0; attempt < 40 && !activity; attempt += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		scheduler.flushAll();
+		const activityCalls = setWidget.mock.calls.filter((call) => call.arguments[0] === "gentle-agents" && Array.isArray(call.arguments[1]));
+		if (activityCalls.length === 0) continue;
+		const [, lines] = activityCalls.at(-1)!.arguments as unknown as [string, string[]];
+		const parsed = JSON.parse(lines[0]!) as { tasks: Array<{ summary: { id: string } }> };
+		if (parsed.tasks.some((entry) => entry.summary.id === "own-1")) activity = parsed;
+	}
+
+	assert.ok(activity, "the RPC activity payload must eventually include the resumed session's own restored task");
+	assert.ok(!activity!.tasks.some((entry) => entry.summary.id === "not-mine"), "another session's restored task must never appear in the RPC activity payload");
+	await h.fire("session_shutdown", ctx);
+});
+
 test("all nine subagent registrations own their transcript shell", () => {
 	const { pi, tools } = fakePi();
 	gentleAgents(pi, {}, deps().deps);
-	assert.equal(tools.size, 9);
-	for (const tool of tools.values()) assert.equal(tool.renderShell, "self", tool.name);
+	const subagentTools = [...tools.values()].filter((tool) => tool.name.startsWith("subagent_"));
+	assert.equal(subagentTools.length, 9);
+	assert.equal(tools.has("subagent_reconcile"), false);
+	for (const tool of subagentTools) assert.equal(tool.renderShell, "self", tool.name);
 });
 
 test("host query delivery exposes correlation and accepts one current-session reply", async () => {
@@ -306,6 +656,374 @@ test("foreground handoff survives settlement before its original await resumes",
 });
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
+type LifecycleOutcome = { status: "fulfilled" } | { status: "rejected"; error: unknown };
+type LifecycleState = { status: "pending" | "fulfilled" | "rejected"; outcome?: LifecycleOutcome };
+const observeLifecycle = <T>(promise: Promise<T>, state: LifecycleState): Promise<LifecycleOutcome> => promise.then(() => { const outcome = { status: "fulfilled" as const }; state.status = outcome.status; state.outcome = outcome; return outcome; }, (error) => { const outcome = { status: "rejected" as const, error }; state.status = outcome.status; state.outcome = outcome; return outcome; });
+const boundedLifecycle = async <T>(promise: Promise<T>, label: string) => {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try { return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), 2000); })]); }
+	finally { if (timer) clearTimeout(timer); }
+};
+
+const drainLifecycle = async (label: string, promise: Promise<LifecycleOutcome>) => {
+	try { return { label, outcome: await boundedLifecycle(promise, label) }; }
+	catch (error) { return { label, error }; }
+};
+
+// The disk history read behind restoreSessionHistory is fire-and-forget from
+// session_start, so nothing signals when it lands. Poll the overlay's own
+// render output (backed by the live, shared TaskStore) on setImmediate ticks
+// instead of sleeping a fixed guess: fast when the restore already landed,
+// bounded at 2s so a genuine regression still fails instead of hanging.
+async function waitForOverlayMatch(render: () => string, pattern: RegExp, timeoutMs = 2000): Promise<string> {
+	const deadline = Date.now() + timeoutMs;
+	let rendered = render();
+	while (!pattern.test(rendered) && Date.now() < deadline) {
+		await tick();
+		rendered = render();
+	}
+	return rendered;
+}
+
+test("overlapping session transport startups preserve ownership and shutdown waits for every pending operation", async (t: TestContext) => {
+	const h = fakePi();
+	const runtime = deps();
+	let sessionId = "old";
+	const registryGates: Array<() => void> = [];
+	const listenerStarts: string[] = [], listenerCloses: string[] = [], clientCloses: string[] = [], registryCloseCalls: string[] = [], registryCloseEffects: string[] = [];
+	const registries = new Map<string, { closed: boolean; close(): Promise<void> }>();
+	const transport: SessionTransportFactory = {
+		createRegistry: async () => {
+			const id = sessionId;
+			await new Promise<void>((resolve) => registryGates.push(resolve));
+			const registry = { sessionId: id, closed: false, list: async () => [], listActivations: async () => [], close: async () => { registryCloseCalls.push(id); if (!registry.closed) { registry.closed = true; registryCloseEffects.push(id); } } };
+			registries.set(id, registry);
+			return registry;
+		},
+		createListener: (registry, id) => ({ registry, closesRegistry: true, start: async () => { listenerStarts.push(id); }, close: async () => { listenerCloses.push(id); await registry.close?.(); } }),
+		createClient: (_registry, id) => ({ close: () => { clientCloses.push(id); }, sendNotification: async () => ({ id: "unused", accepted: true }) }),
+	};
+	runtime.deps.sessionTransport = transport;
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	(ctx.sessionManager as { getSessionId(): string }).getSessionId = () => sessionId;
+	const launched: Array<{ state: LifecycleState; outcome: Promise<LifecycleOutcome> }> = [];
+	const launch = <T>(promise: Promise<T>) => { const state: LifecycleState = { status: "pending" }; const outcome = observeLifecycle(promise, state); launched.push({ state, outcome }); return { state, outcome }; };
+	let shutdownRecord: ReturnType<typeof launch> | undefined;
+	let primary: unknown;
+	try {
+		const first = h.fire("session_start", ctx, { reason: "startup" });
+		launch(first);
+		await tick();
+		sessionId = "new";
+		const second = h.fire("session_start", ctx, { reason: "new" });
+		const secondRecord = launch(second);
+		await tick();
+		assert.equal(registryGates.length, 2, "both starts must own pending registry creation");
+		registryGates[1]!();
+		await eventually(() => listenerStarts.includes("new"), "current startup must publish after its registry is ready");
+		const shutdown = h.fire("session_shutdown", ctx, { reason: "quit" });
+		shutdownRecord = launch(shutdown);
+		await tick();
+		assert.equal(secondRecord.state.status, "fulfilled", "the current startup settles before shutdown begins");
+		assert.equal(shutdownRecord?.state.status, "pending", "shutdown must wait for the older pending startup, not only the current startup");
+		registryGates[0]!();
+		assert.equal(registries.has("old"), false, "the released old registry gate has not yet completed acquisition");
+		assert.equal(registries.get("old")?.closed, undefined, "the retained old registry cannot be closed before acquisition completes");
+		await eventually(() => launched.every(({ state }) => state.status !== "pending"), "all launched lifecycle operations must settle after gate release");
+		const outcomes = await Promise.all(launched.map(({ outcome }) => outcome));
+		assert.ok(outcomes.every((outcome) => outcome.status === "fulfilled"), "all launched lifecycle operations must fulfill");
+		assert.deepEqual(listenerStarts, ["new"], "the stale startup must never publish");
+		assert.deepEqual(clientCloses, ["new"], "the current client closes exactly once");
+		assert.deepEqual(listenerCloses, ["new"], "the current listener closes exactly once");
+		assert.deepEqual(registryCloseCalls.sort(), ["new", "old"], "each owned registry close is invoked exactly once");
+		assert.deepEqual(registryCloseEffects.sort(), ["new", "old"], "each owned registry closes exactly once");
+		assert.equal(registries.get("old")?.closed, true);
+		assert.equal(registries.get("new")?.closed, true);
+	} catch (error) {
+		primary = error;
+	} finally {
+		for (const release of registryGates) release();
+		if (shutdownRecord === undefined) shutdownRecord = launch(h.fire("session_shutdown", ctx, { reason: "cleanup" }));
+		if (launched.length > 0) {
+			try {
+				await eventually(() => launched.every(({ state }) => state.status !== "pending"), "all launched lifecycle operations must settle during cleanup");
+				const outcomes = await Promise.all(launched.map(({ outcome }) => outcome));
+				const cleanupFailure = outcomes.find((outcome) => outcome.status === "rejected");
+				if (cleanupFailure?.status === "rejected") {
+					if (primary === undefined) primary = cleanupFailure.error;
+					else t.diagnostic(`Lifecycle cleanup secondary failure: ${cleanupFailure.error instanceof Error ? cleanupFailure.error.message : String(cleanupFailure.error)}`);
+				}
+			} catch (error) {
+				if (primary === undefined) primary = error;
+				else t.diagnostic(`Lifecycle cleanup secondary failure: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
+	}
+	if (primary !== undefined) throw primary;
+});
+
+test("session_start does not block a subsequently registered handler on registry creation", async (t: TestContext) => {
+	const h = fakePi();
+	const runtime = deps();
+	let registryEntered = false;
+	let listenerCreated = false;
+	let clientCreated = false;
+	let listenerClosed = 0;
+	let clientClosed = 0;
+	let releaseRegistry!: () => void;
+	const registryGate = new Promise<void>((resolve) => { releaseRegistry = resolve; });
+	const transport: SessionTransportFactory = {
+		createRegistry: async () => {
+			registryEntered = true;
+			await registryGate;
+			return { list: async () => [], listActivations: async () => [] };
+		},
+		createListener: (registry) => { listenerCreated = true; return { registry, start: async () => {}, close: async () => { listenerClosed++; } }; },
+		createClient: () => { clientCreated = true; return { close() { clientClosed++; }, sendNotification: async () => ({ id: "unused", accepted: true }) }; },
+	};
+	runtime.deps.sessionTransport = transport;
+	gentleAgents(h.pi, {}, runtime.deps);
+	let laterFinished = false;
+	h.pi.on("session_start", async () => { laterFinished = true; });
+	const { ctx } = fakeContext();
+	let outcome: Promise<LifecycleOutcome> | undefined;
+	let lifecycleState: LifecycleState | undefined;
+	let primary: unknown;
+	try {
+		const started = h.fire("session_start", ctx, { reason: "startup" });
+		lifecycleState = { status: "pending" };
+		outcome = observeLifecycle(started, lifecycleState);
+		await eventually(() => registryEntered, "registry gate must be entered before the bounded handler assertion");
+		await eventually(() => laterFinished, "a subsequently registered session_start handler must finish while registry creation is gated");
+		releaseRegistry();
+		assert.ok(outcome);
+		assert.equal((await outcome).status, "fulfilled");
+	} catch (error) {
+		primary = error;
+	} finally {
+		releaseRegistry();
+		try {
+			if (outcome !== undefined) {
+				await eventually(() => listenerCreated && clientCreated, "registry-gated startup must acquire owned resources before cleanup shutdown");
+				const shutdownState: LifecycleState = { status: "pending" };
+				const shutdownOutcome = observeLifecycle(h.fire("session_shutdown", ctx, { reason: "cleanup" }), shutdownState);
+				await eventually(() => lifecycleState?.status !== "pending" && shutdownState.status !== "pending", "registry-gated startup cleanup must settle all launched operations");
+				const cleanupOutcomes = await Promise.all([outcome, shutdownOutcome]);
+				assert.equal(listenerClosed, 1, "cleanup closes the owned listener");
+				assert.equal(clientClosed, 1, "cleanup closes the owned client");
+				const cleanupFailure = cleanupOutcomes.find((value) => value.status === "rejected");
+				if (cleanupFailure?.status === "rejected") {
+					if (primary === undefined) primary = cleanupFailure.error;
+					else t.diagnostic(`Registry-gate cleanup secondary failure: ${cleanupFailure.error instanceof Error ? cleanupFailure.error.message : String(cleanupFailure.error)}`);
+				}
+			}
+		} catch (error) {
+			if (primary === undefined) primary = error;
+			else t.diagnostic(`Registry-gate cleanup secondary failure: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+	if (primary !== undefined) throw primary;
+});
+
+test("session_start does not block a subsequently registered handler on listener publication", async (t: TestContext) => {
+	const h = fakePi();
+	const runtime = deps();
+	let listenerEntered = false;
+	let listenerClosed = 0;
+	let clientClosed = 0;
+	let releaseListener!: () => void;
+	const listenerGate = new Promise<void>((resolve) => { releaseListener = resolve; });
+	const registry = { list: async () => [], listActivations: async () => [] };
+	const transport: SessionTransportFactory = {
+		createRegistry: async () => registry,
+		createListener: (ownedRegistry) => ({
+			registry: ownedRegistry,
+			start: async () => { listenerEntered = true; await listenerGate; },
+			close: async () => { listenerClosed++; },
+		}),
+		createClient: () => ({ close() { clientClosed++; }, sendNotification: async () => ({ id: "unused", accepted: true }) }),
+	};
+	runtime.deps.sessionTransport = transport;
+	gentleAgents(h.pi, {}, runtime.deps);
+	let laterFinished = false;
+	h.pi.on("session_start", async () => { laterFinished = true; });
+	const { ctx } = fakeContext();
+	let outcome: Promise<LifecycleOutcome> | undefined;
+	let lifecycleState: LifecycleState | undefined;
+	let primary: unknown;
+	try {
+		const started = h.fire("session_start", ctx, { reason: "startup" });
+		lifecycleState = { status: "pending" };
+		outcome = observeLifecycle(started, lifecycleState);
+		await eventually(() => listenerEntered, "listener gate must be entered after registry creation");
+		await eventually(() => laterFinished, "a subsequently registered session_start handler must finish while listener publication is gated");
+		releaseListener();
+		assert.ok(outcome);
+		assert.equal((await outcome).status, "fulfilled");
+	} catch (error) {
+		primary = error;
+	} finally {
+		releaseListener();
+		try {
+			if (outcome !== undefined) {
+				const shutdownState: LifecycleState = { status: "pending" };
+				const shutdownOutcome = observeLifecycle(h.fire("session_shutdown", ctx, { reason: "cleanup" }), shutdownState);
+				await eventually(() => lifecycleState?.status !== "pending" && shutdownState.status !== "pending", "listener-gated startup cleanup must settle all launched operations");
+				const cleanupOutcomes = await Promise.all([outcome, shutdownOutcome]);
+				assert.equal(listenerClosed, 1, "cleanup closes the owned listener");
+				assert.equal(clientClosed, 1, "cleanup closes the owned client");
+				const cleanupFailure = cleanupOutcomes.find((value) => value.status === "rejected");
+				if (cleanupFailure?.status === "rejected") {
+					if (primary === undefined) primary = cleanupFailure.error;
+					else t.diagnostic(`Listener-gate cleanup secondary failure: ${cleanupFailure.error instanceof Error ? cleanupFailure.error.message : String(cleanupFailure.error)}`);
+				}
+			}
+		} catch (error) {
+			if (primary === undefined) primary = error;
+			else t.diagnostic(`Listener-gate cleanup secondary failure: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+	if (primary !== undefined) throw primary;
+});
+
+test("replacement closes a gated stale listener once and leaves the successor owned until shutdown", async (t: TestContext) => {
+	const h = fakePi();
+	const runtime = deps();
+	let sessionId = "alpha";
+	let releaseAlpha!: () => void;
+	const alphaGate = new Promise<void>((resolve) => { releaseAlpha = resolve; });
+	let alphaEntered = false, betaStarted = false, betaClientCreated = false;
+	let alphaCallback: ((notification: { id: string; senderSessionId: string; message: string }) => Promise<void>) | undefined;
+	let alphaCloses = 0, betaCloses = 0, alphaClientCloses = 0, betaClientCloses = 0;
+	const registryCloseCalls: string[] = [], registryCloseEffects: string[] = [];
+	const transport: SessionTransportFactory = {
+		createRegistry: async () => {
+			const id = sessionId;
+			const ownedRegistry = { list: async () => [], listActivations: async () => [], closed: false, close: async () => { registryCloseCalls.push(id); if (!ownedRegistry.closed) { ownedRegistry.closed = true; registryCloseEffects.push(id); } } };
+			return ownedRegistry;
+		},
+		createListener: (ownedRegistry, id, callback) => {
+			if (id === "alpha") alphaCallback = callback;
+			return { registry: ownedRegistry, closesRegistry: true, start: async () => { if (id === "alpha") { alphaEntered = true; await alphaGate; } else betaStarted = true; }, close: async () => { if (id === "alpha") alphaCloses++; else betaCloses++; await ownedRegistry.close?.(); } };
+		},
+		createClient: (_registry, id) => { if (id === "beta") betaClientCreated = true; return { close: () => { if (id === "alpha") alphaClientCloses++; else betaClientCloses++; }, sendNotification: async () => ({ id: "unused", accepted: true }) }; },
+	};
+	runtime.deps.sessionTransport = transport;
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	(ctx.sessionManager as { getSessionId(): string }).getSessionId = () => sessionId;
+	let primary: unknown;
+	let alphaOutcome: Promise<LifecycleOutcome> | undefined;
+	let betaOutcome: Promise<LifecycleOutcome> | undefined;
+	let shutdownOutcome: Promise<LifecycleOutcome> | undefined;
+	let shutdownState: LifecycleState | undefined;
+	try {
+		alphaOutcome = observeLifecycle(h.fire("session_start", ctx, { reason: "alpha" }), { status: "pending" });
+		await eventually(() => alphaEntered, "replacement test must enter the alpha listener gate");
+		sessionId = "beta";
+		betaOutcome = observeLifecycle(h.fire("session_start", ctx, { reason: "beta" }), { status: "pending" });
+		assert.ok(betaOutcome);
+		assert.equal((await boundedLifecycle(betaOutcome, "successor startup")).status, "fulfilled");
+		await eventually(() => betaClientCreated && betaStarted, "replacement must acquire and publish the successor before ownership assertions");
+		assert.equal(betaClientCloses, 0, "replacement must not close the successor client");
+		assert.equal(betaCloses, 0, "replacement must not close the successor listener");
+		assert.ok(alphaCallback, "the gated listener registered its callback before start");
+		await boundedLifecycle(assert.rejects(alphaCallback!({ id: "late", senderSessionId: "peer", message: "late" }), /stale session transport/), "stale callback rejection");
+		shutdownState = { status: "pending" };
+		shutdownOutcome = observeLifecycle(h.fire("session_shutdown", ctx, { reason: "quit" }), shutdownState);
+		await boundedLifecycle(tick(), "replacement shutdown scheduling");
+		assert.equal(shutdownState.status, "pending", "shutdown waits while the replaced listener startup remains gated");
+		releaseAlpha();
+		assert.ok(alphaOutcome);
+		assert.equal((await boundedLifecycle(alphaOutcome, "stale alpha startup")).status, "fulfilled");
+		assert.equal(alphaClientCloses, 1, "stale alpha client closes once after its gate releases");
+		assert.equal(alphaCloses, 1, "stale alpha listener closes once after its gate releases");
+		assert.ok(shutdownOutcome);
+		assert.equal((await boundedLifecycle(shutdownOutcome, "successor shutdown")).status, "fulfilled");
+		assert.equal(betaClientCloses, 1, "shutdown closes the successor client once");
+		assert.equal(betaCloses, 1, "shutdown closes the successor listener once");
+		assert.deepEqual(registryCloseCalls.sort(), ["alpha", "beta"], "each owned registry close is invoked once");
+		assert.deepEqual(registryCloseEffects.sort(), ["alpha", "beta"], "each owned registry closes once");
+	} catch (error) {
+		primary = error;
+	} finally {
+		releaseAlpha();
+		try {
+			if (shutdownOutcome === undefined) shutdownOutcome = observeLifecycle(h.fire("session_shutdown", ctx, { reason: "cleanup" }), { status: "pending" });
+			const cleanup = await Promise.all([
+				...(alphaOutcome === undefined ? [] : [drainLifecycle("alpha cleanup", alphaOutcome)]),
+				...(betaOutcome === undefined ? [] : [drainLifecycle("beta cleanup", betaOutcome)]),
+				...(shutdownOutcome === undefined ? [] : [drainLifecycle("shutdown cleanup", shutdownOutcome)]),
+			]);
+			for (const result of cleanup) {
+				if ("error" in result) {
+					if (primary === undefined) primary = result.error;
+					else t.diagnostic(`${result.label} secondary failure: ${result.error instanceof Error ? result.error.message : String(result.error)}`);
+				} else if (result.outcome.status === "rejected") {
+					if (primary === undefined) primary = result.outcome.error;
+					else t.diagnostic(`${result.label} secondary rejection: ${result.outcome.error instanceof Error ? result.outcome.error.message : String(result.outcome.error)}`);
+				}
+			}
+		} catch (error) {
+			if (primary === undefined) primary = error;
+			else t.diagnostic(`replacement cleanup secondary failure: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+	if (primary !== undefined) throw primary;
+});
+
+test("startup cleanup contains client-close failure and still closes the remaining owned resources", async (t: TestContext) => {
+	const h = fakePi();
+	const runtime = deps();
+	const startupError = new Error("listener unavailable");
+	const clientError = new Error("client close failed");
+	let listenerCloses = 0, registryCloses = 0, clientCloseAttempts = 0;
+	const registry = { list: async () => [], listActivations: async () => [], close: async () => { registryCloses++; } };
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: () => ({ registry, start: async () => { throw startupError; }, close: async () => { listenerCloses++; } }),
+		createClient: () => ({ close: () => { clientCloseAttempts++; throw clientError; }, sendNotification: async () => ({ id: "unused", accepted: true }) }),
+	};
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	const outcome = observeLifecycle(h.fire("session_start", ctx, { reason: "startup" }), { status: "pending" });
+	let shutdownOutcome: Promise<LifecycleOutcome> | undefined;
+	let primary: unknown;
+	try {
+		assert.equal((await boundedLifecycle(outcome, "startup failure settlement")).status, "fulfilled", "startup failure remains contained");
+		await eventually(() => clientCloseAttempts === 1 && listenerCloses === 1 && registryCloses === 1, "startup cleanup attempts all owned resources before counter assertions");
+		assert.equal(clientCloseAttempts, 1, "startup cleanup attempts the owned client once");
+		assert.equal(listenerCloses, 1, "startup cleanup attempts the owned listener once");
+		assert.equal(registryCloses, 1, "startup cleanup attempts the owned registry once");
+		shutdownOutcome = observeLifecycle(h.fire("session_shutdown", ctx, { reason: "verified-cleanup" }), { status: "pending" });
+		assert.equal((await boundedLifecycle(shutdownOutcome, "verified startup shutdown")).status, "fulfilled");
+	} catch (error) {
+		primary = error;
+	} finally {
+		try {
+			if (shutdownOutcome === undefined) shutdownOutcome = observeLifecycle(h.fire("session_shutdown", ctx, { reason: "cleanup" }), { status: "pending" });
+			assert.ok(shutdownOutcome);
+			const cleanup = await Promise.all([
+				drainLifecycle("startup cleanup", outcome),
+				drainLifecycle("startup shutdown", shutdownOutcome),
+			]);
+			for (const result of cleanup) {
+				if ("error" in result) {
+					if (primary === undefined) primary = result.error;
+					else t.diagnostic(`${result.label} secondary failure: ${result.error instanceof Error ? result.error.message : String(result.error)}`);
+				} else if (result.outcome.status === "rejected") {
+					if (primary === undefined) primary = result.outcome.error;
+					else t.diagnostic(`${result.label} secondary rejection: ${result.outcome.error instanceof Error ? result.outcome.error.message : String(result.outcome.error)}`);
+				}
+			}
+		} catch (error) {
+			if (primary === undefined) primary = error;
+			else t.diagnostic(`startup cleanup secondary failure: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+	if (primary !== undefined) throw primary;
+});
 
 test("child parent-message tooling admits notifications and the active parent preserves raw model text", async () => {
 	const child = fakePi();
@@ -357,11 +1075,6 @@ for (const boundary of ["allowed", "env", "session", "replacement", "bus-throws"
 		});
 		const h = fakePi();
 		const runtime = deps();
-		let catalogAttempts = 0;
-		if (boundary === "allowed") runtime.deps.lookupPiCatalogName = () => {
-			catalogAttempts++;
-			return new Promise(() => {});
-		};
 		const context = fakeContext();
 		const spawn = runtime.deps.spawn!;
 		runtime.deps.spawn = (...args) => {
@@ -396,7 +1109,6 @@ for (const boundary of ["allowed", "env", "session", "replacement", "bus-throws"
 		const result = h.tools.get("subagent_run")!.execute("call", { agent: "gentle-ai-worker", task: "private task", mode: "task" }, undefined, undefined, context.ctx);
 		await tick();
 		assert.equal(runtime.children.length, 1);
-		if (boundary === "allowed") assert.equal(catalogAttempts, 1, "child launch does not await catalog loading");
 		const child = runtime.children[0];
 		const launchedCalls = calls;
 		for (let i = 0; i < 10; i++) child.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "private streamed text" } });
@@ -733,32 +1445,81 @@ test("live-only directory traverses presence overflow, excludes expired and othe
 	await panel.opened;
 });
 
-test("research launch passes only active approved external tools to child argv", async () => {
+test("research launch transports selected grants and only matching existing extensions", async () => {
 	const fixtureHome = join(root, "research-home");
 	mkdirSync(join(fixtureHome, ".pi", "agent", "agents"), { recursive: true });
 	writeFileSync(join(fixtureHome, ".pi", "agent", "agents", "sdd-research.md"), "---\nname: sdd-research\ntools: [read, write, fetch_content, web_search, source_check, mcp, bash]\n---\nCollect research.");
 	const fake = fakePi(), runtime = deps(), { ctx } = fakeContext();
 	fake.pi.getActiveTools = () => ["fetch_content", "web_search", "mcp", "bash"];
-	fake.pi.getAllTools = () => fake.pi.getActiveTools().map(name => ({ name })) as never;
-	gentleAgents(fake.pi, {}, { ...runtime.deps, home: fixtureHome });
-	await fake.tools.get("subagent_run")!.execute("research", { agent: "sdd-research", task: "Research docs", mode: "background" }, undefined, undefined, ctx);
+	fake.pi.getAllTools = () => fake.pi.getActiveTools().map(name => ({ name, sourceInfo: { source: "extension", path: "/installed/web.ts" } })) as never;
+	const selection = { documentation: { tools: ["fetch_content"], extensions: { fetch_content: "/installed/web.ts" } } };
+	let childEnv: NodeJS.ProcessEnv = {};
+	gentleAgents(fake.pi, {}, { ...runtime.deps, home: fixtureHome, spawn: (command, args, options) => {
+		childEnv = options.env!;
+		return runtime.deps.spawn!(command, args, options);
+	} });
+	const result = await fake.tools.get("subagent_run")!.execute("research", { agent: "sdd-research", task: "Research docs", context: PARENT_CONFIRMED_SDD_CONTEXT, mode: "background", research_selection: selection }, undefined, undefined, ctx);
 	await tick();
 	const argv = runtime.spawned[0];
-	assert.equal(argv[argv.indexOf("--tools") + 1], "read,write,fetch_content,web_search,subagent_parent_message");
+	assert.equal(argv[argv.indexOf("--tools") + 1], "fetch_content,subagent_parent_message");
+	assert.equal(argv[argv.indexOf("--extension") + 1], "/installed/web.ts");
+	assert.deepEqual(JSON.parse(childEnv.GENTLE_PI_RESEARCH_SELECTION!), selection);
+	assert.equal(fake.tools.get("subagent_continue")!.parameters.properties.research_artifact, undefined);
+	assert.ok(fake.tools.get("subagent_continue")!.parameters.properties.research_selection, "fresh selection must be expressible on continuation");
+	assert.ok(JSON.parse(childEnv.GENTLE_PI_RESEARCH_TOOLS!).includes("subagent_parent_message"));
 	assert.match(argv[argv.indexOf("--append-system-prompt") + 1], /documentation: available/);
 	assert.match(argv[argv.indexOf("--append-system-prompt") + 1], /open-web: blocked/, "two reachable tools cannot admit open-web");
+	runtime.children[0].emit({ type: "agent_settled" });
+	await tick();
+	const taskId = (result.details.gentleAgents as { taskId: string }).taskId;
+	await fake.tools.get("subagent_continue")!.execute("resume", { task_id: taskId, prompt: "Inspect", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.equal(runtime.spawned.length, 2);
+	assert.ok(!runtime.spawned[1].includes("--extension"), "no inherited research selection");
+	assert.equal(runtime.spawned[1][runtime.spawned[1].indexOf("--tools") + 1], "subagent_parent_message");
+	assert.equal(JSON.parse(childEnv.GENTLE_PI_RESEARCH_SELECTION!), null);
+	fake.pi.getActiveTools = () => ["web_search"];
+	runtime.children[1].emit({ type: "agent_settled" });
+	await tick();
+	const denied = await fake.tools.get("subagent_continue")!.execute("missing-tool", { task_id: taskId, prompt: "Retry same scope", mode: "background", research_selection: selection }, undefined, undefined, ctx);
+	await tick();
+	assert.ok(!runtime.spawned[2].includes("--extension"));
+	runtime.children[2].emit({ type: "agent_settled" });
+	await tick();
+	fake.pi.getActiveTools = () => ["fetch_content", "web_search"];
+	await fake.tools.get("subagent_continue")!.execute("corrected", { task_id: (denied.details.gentleAgents as { taskId: string }).taskId, prompt: "Retry same scope", mode: "background", research_selection: selection }, undefined, undefined, ctx);
+	await tick();
+	assert.equal(runtime.spawned[3][runtime.spawned[3].indexOf("--extension") + 1], "/installed/web.ts");
 	await fake.fire("session_shutdown", ctx);
 });
 
-test("research child inventory requires every canonical open-web tool", () => {
+test("research registered continuation needs no prior artifact identity", async () => {
+	const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+	const home = join(root, "optional-research-home");
+	mkdirSync(join(home, ".pi/agent/agents"), { recursive: true });
+	writeFileSync(join(home, ".pi/agent/agents/sdd-research.md"), "---\nname: sdd-research\ntools: [read]\n---\nExplore a question.");
+	gentleAgents(h.pi, {}, { ...runtime.deps, home });
+	await h.fire("session_start", ctx);
+	const first = await h.tools.get("subagent_run")!.execute("first", { agent: "sdd-research", task: "Inspect a question", context: PARENT_CONFIRMED_SDD_CONTEXT, mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	runtime.children[0].emit({ type: "agent_settled" });
+	await tick();
+	const taskId = (first.details.gentleAgents as { taskId: string }).taskId;
+	const next = await h.tools.get("subagent_continue")!.execute("next", { task_id: taskId, prompt: "Investigate the remaining question", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.equal(runtime.spawned.length, 2, JSON.stringify(next));
+	await h.fire("session_shutdown", ctx);
+});
+
+test("research child inventory exposes remaining authorized tools", () => {
 	const required = ["web_search", "source_check", "fetch_content", "get_search_content"];
 	for (const missing of [undefined, ...required]) {
 		const hooks = new Map<string, (event: any) => any>();
 		const active = required.filter(name => name !== missing);
-		const pi = { on: (name: string, handler: (event: any) => any) => hooks.set(name, handler), getActiveTools: () => active, getAllTools: () => required.map(name => ({ name })) } as never;
-		gentleAgents(pi, { GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_RESEARCH_TOOLS: JSON.stringify(required) });
+		const pi = { on: (name: string, handler: (event: any) => any) => hooks.set(name, handler), getActiveTools: () => active, getAllTools: () => required.map(name => ({ name, sourceInfo: { source: "extension", path: "/installed/web.ts" } })) } as never;
+		gentleAgents(pi, { GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_RESEARCH_TOOLS: JSON.stringify(required), GENTLE_PI_RESEARCH_SELECTION: JSON.stringify({ documentation: { tools: ["fetch_content"], extensions: { fetch_content: "/installed/web.ts" } }, "open-web": { tools: required, extensions: Object.fromEntries(required.map(name => [name, "/installed/web.ts"])) } }) });
 		const prompt = hooks.get("before_agent_start")!({ systemPrompt: "research" }).systemPrompt;
-		assert.match(prompt, new RegExp(`open-web: ${missing === undefined ? "available" : "blocked"}`));
+		assert.match(prompt, /open-web: available/);
 		assert.match(prompt, new RegExp(`documentation: ${missing === "fetch_content" ? "blocked" : "available"}`));
 		assert.match(prompt, /Availability is not evidence/);
 	}
@@ -771,7 +1532,7 @@ test("research child rechecks local inventory and blocks gateway calls", async (
 	assert.match(hooks.get("before_agent_start")!({ systemPrompt: "research" }).systemPrompt, /documentation: blocked/);
 	assert.equal(hooks.get("tool_call")!({ toolName: "mcp" }).block, true);
 	assert.equal(hooks.get("tool_call")!({ toolName: "fetch_content" }).block, true);
-	assert.equal(hooks.get("tool_call")!({ toolName: "read" }), undefined);
+	assert.equal(hooks.get("tool_call")!({ toolName: "read" }).block, true, "missing path context cannot authorize a read");
 });
 
 async function shutdownAndRestoreNativeSpawn(
@@ -787,6 +1548,185 @@ async function shutdownAndRestoreNativeSpawn(
 	}
 }
 
+for (const matching of [true, false]) {
+ test("owned child diff relay validates the exact file independently of review bookkeeping: "+matching, async () => {
+  const h=fakePi(), d=deps(), {ctx}=fakeContext();
+  const target=realpathSync(cwd);
+  (ctx as any).cwd=target;
+  ctx.sessionManager.getCwd=()=>target;
+  ctx.sessionManager.getEntries=(()=>h.entries) as any;
+  ctx.sessionManager.getBranch=(()=>h.entries) as any;
+  d.deps.resolveWorktree=(path,base)=>{
+   const full=resolve(base,path);
+   return full===target||full.startsWith(target+"/")?{root:target,commonDir:"/fixture/common"}:undefined;
+  };
+  const spawn=d.deps.spawn!;
+  d.deps.spawn=(...args)=>{
+   const child=spawn(...args),on=child.on.bind(child);
+   child.on=((event,listener)=>{if(event==="spawn")queueMicrotask(listener);return on(event,listener);}) as any;
+   return child;
+  };
+  gentleAgents(h.pi,{},d.deps);
+  await h.fire("session_start",ctx);
+  await h.tools.get("subagent_run")!.execute("diff",{agent:"explore",task:"Write",mode:"background",workspace_root:target},undefined,undefined,ctx);
+  await tick();
+  writeFileSync(join(target,"session-diff-test.ts"),"agent\n");
+  const evidence={id:"write",root:target,path:matching?"session-diff-test.ts":"different.ts",before:{kind:"text",text:"original\n"},after:{kind:"text",text:"agent\n"}};
+  d.children[0].emit({type:"tool_execution_start",toolCallId:"write",toolName:"write",args:{path:"session-diff-test.ts"}});
+  d.children[0].emit({type:"tool_execution_end",toolCallId:"write",isError:false,result:{content:[],details:{gentleSessionChange:evidence}}});
+  const relays=h.events.filter(event=>event.name==="gentle-pi:child-session-change");
+  assert.equal(relays.length,matching?1:0);
+  if(matching) assert.match((relays[0].data as any).evidence.id,/:write$/);
+  assert.equal(h.entries.filter(entry=>entry.customType===REVIEW_REMINDER_RECEIPT).length,1);
+  await h.fire("session_shutdown",ctx); await tick();
+ });
+}
+
+// Runs the CHILD half of installSessionChangeCapture against a real repo, the
+// same way an actual subagent process would: a tool_call/tool_result pair
+// with GENTLE_PI_AGENTS_CHILD set, using the real git-backed resolver rather
+// than a stub. Returns exactly the evidence object the child would put in
+// its tool result's details.gentleSessionChange.
+async function childSessionChangeEvidence(root: string, relPath: string, toolCallId: string, content: string): Promise<SessionChangeEvidence> {
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	const childPi = {
+		on: (key: string, fn: (event: unknown, ctx: unknown) => unknown) => handlers.set(key, fn),
+		appendEntry: () => {},
+		events: { on: () => () => {}, emit: () => {} },
+	} as unknown as ExtensionAPI;
+	const childCtx = { cwd: root, sessionManager: { getSessionId: () => "child-session", getEntries: () => [] } } as unknown as ExtensionContext;
+	installSessionChangeCapture(childPi, { GENTLE_PI_AGENTS_CHILD: "1" }, resolveSessionWorktree);
+	await handlers.get("session_start")?.({}, childCtx);
+	const event = { toolCallId, toolName: "write", input: { path: relPath, content } };
+	await handlers.get("tool_call")?.(event, childCtx);
+	writeFileSync(join(root, relPath), content);
+	const result = (await handlers.get("tool_result")?.({ ...event, isError: false }, childCtx)) as { details: { gentleSessionChange: SessionChangeEvidence } } | undefined;
+	assert.ok(result?.details.gentleSessionChange, "the child must attach session-change evidence to its tool result");
+	return result.details.gentleSessionChange;
+}
+
+async function childSessionEditEvidence(root: string, relPath: string, toolCallId: string, before: string, after: string): Promise<SessionChangeEvidence> {
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	const childPi = {
+		on: (key: string, fn: (event: unknown, ctx: unknown) => unknown) => handlers.set(key, fn),
+		appendEntry: () => {},
+		events: { on: () => () => {}, emit: () => {} },
+	} as unknown as ExtensionAPI;
+	const childCtx = { cwd: root, sessionManager: { getSessionId: () => "child-session", getEntries: () => [] } } as unknown as ExtensionContext;
+	installSessionChangeCapture(childPi, { GENTLE_PI_AGENTS_CHILD: "1" }, resolveSessionWorktree);
+	await handlers.get("session_start")?.({}, childCtx);
+	writeFileSync(join(root, relPath), before);
+	const event = { toolCallId, toolName: "edit", input: { path: relPath, oldText: before, newText: after } };
+	await handlers.get("tool_call")?.(event, childCtx);
+	writeFileSync(join(root, relPath), after);
+	const details = { patch: generateUnifiedPatch(relPath, before, after) };
+	const result = (await handlers.get("tool_result")?.({ ...event, isError: false, details }, childCtx)) as { details: { gentleSessionChange: SessionChangeEvidence } } | undefined;
+	assert.ok(result?.details.gentleSessionChange, "successful child edit must carry captured evidence");
+	return result.details.gentleSessionChange;
+}
+
+// C1 investigation (odd/tasks/usage-click-and-changes-attribution.md): tried
+// to reproduce the live session's "16 subagent_run calls, zero relayed"
+// evidence end to end — real repo, real git-backed resolver on both the
+// child and parent sides (not the trivial path-echoing stub the other
+// fixtures in this file use), a real child tool_call/tool_result pair
+// producing the session-change evidence, and the real onSuccessfulMutation
+// guard chain in extensions/gentle-agents.ts, round-tripped through actual
+// JSON serialization the same way agents-fake-child.ts's emit() does for
+// every other test here. With every guard input constructed faithfully, the
+// relay fires correctly: parentSessionId/ownedTaskIds, root === childRoot,
+// worktrees.roots().includes(root), tool.evidence.root === root, and the
+// realpath comparison all pass.
+//
+// The one drop this file could reproduce was a test-harness gap, not a
+// product bug: SessionWorktreeRegistry.start() is never called for this
+// extension's own registry (registryFor() in extensions/gentle-agents.ts),
+// so worktrees.roots() is empty until some subagent's onLaunch callback
+// registers a root on the real child process's "spawn" event. In production
+// that event always fires before any tool call can complete, so the root is
+// registered well before any mutation; the fake child here only reproduces
+// that if the test explicitly wires "spawn" (as this test does). Making
+// registryFor() call start() eagerly was tried and reverted: it makes the
+// parent's own cwd a registered root at session start regardless of whether
+// any subagent ever actually launches into it, which breaks two existing,
+// deliberate invariants — "child mutation attribution through registered
+// subagent_run: unregistered" (a queued-but-never-spawned task must not be
+// attributed) and "queueing and returning a child handle do not register
+// roots" / "delayed child spawn retains the originating session..." (merely
+// constructing the registry must not append an entry). Deciding whether the
+// session's own root should be trusted before any subagent proves it by
+// actually spawning is a product/security question, not a guard bug fix, so
+// it was left to the parent instead of guessed at here.
+test("C1 investigation: the relay mechanism is correct when every guard input is real", async () => {
+	// A real repository, spawned through the real (unstubbed) git-backed
+	// resolver on both the child and parent sides — the same resolver the
+	// live session used — rather than the trivial path-echoing stub the other
+	// fixtures in this file use.
+	const repoRoot = mkdtempSync(join(tmpdir(), "gentle-agents-c1-"));
+	// Isolate every git spawn below from the developer's own environment: no
+	// global/system config, no ambient $HOME gitconfig, no signing prompt, and
+	// no hooks -- only the identity this fixture supplies explicitly.
+	const gitHome = mkdtempSync(join(tmpdir(), "gentle-agents-c1-git-home-"));
+	const gitHooksDir = mkdtempSync(join(tmpdir(), "gentle-agents-c1-git-hooks-"));
+	const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", HOME: gitHome };
+	const gitIdentity = ["-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "-c", `core.hooksPath=${gitHooksDir}`];
+	const runGit = (args: string[]) => execFileSync("git", [...gitIdentity, ...args], { env: gitEnv });
+	try {
+		runGit(["init", "--quiet", "-b", "main", repoRoot]);
+		writeFileSync(join(repoRoot, "README.md"), "seed\n");
+		runGit(["-C", repoRoot, "add", "README.md"]);
+		runGit(["-C", repoRoot, "commit", "--quiet", "-m", "seed"]);
+
+		const h = fakePi();
+		const d = deps();
+		const { ctx } = fakeContext();
+		ctx.sessionManager.getCwd = () => repoRoot;
+		ctx.sessionManager.getEntries = (() => h.entries) as typeof ctx.sessionManager.getEntries;
+		ctx.sessionManager.getBranch = (() => h.entries) as typeof ctx.sessionManager.getBranch;
+		d.deps.resolveWorktree = resolveSessionWorktree;
+		// Mirror a real child process: the OS "spawn" event fires as soon as the
+		// process starts, which is what triggers onLaunch -> registry.register.
+		const spawn = d.deps.spawn!;
+		d.deps.spawn = (...args) => {
+			const child = spawn(...args);
+			const on = child.on.bind(child);
+			child.on = ((event: string, listener: () => void) => {
+				if (event === "spawn") queueMicrotask(listener);
+				return on(event as "spawn", listener);
+			}) as typeof child.on;
+			return child;
+		};
+		gentleAgents(h.pi, {}, d.deps);
+		await h.fire("session_start", ctx);
+
+		const launched = await h.tools.get("subagent_run")!.execute("mutation", { agent: "explore", task: "Write a file", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		const gentleAgentsDetails = launched.details.gentleAgents as { taskId: string; cwd: string };
+		const taskId = gentleAgentsDetails.taskId;
+		// The task's cwd is whatever buildRequest resolved from the real
+		// resolver: confirming this here pins down which value onSuccessfulMutation
+		// will later compare against the freshly-resolved root.
+		const childCwd = gentleAgentsDetails.cwd;
+
+		const evidence = await childSessionChangeEvidence(childCwd, "notes.md", "write", "agent output\n");
+
+		d.children[0].emit({ type: "tool_execution_start", toolCallId: "write", toolName: "write", args: { path: "notes.md" } });
+		d.children[0].emit({ type: "tool_execution_end", toolCallId: "write", isError: false, result: { content: [], details: { gentleSessionChange: evidence } } });
+		await tick();
+
+		const relays = h.events.filter((event) => event.name === "gentle-pi:child-session-change");
+		assert.equal(relays.length, 1, `expected the child mutation to relay; evidence=${JSON.stringify(evidence)} childCwd=${childCwd}`);
+		assert.equal((relays[0].data as { evidence: { id: string } }).evidence.id, `${taskId}:write`);
+
+		await h.fire("session_shutdown", ctx);
+		await tick();
+	} finally {
+		rmSync(repoRoot, { recursive: true, force: true });
+		rmSync(gitHome, { recursive: true, force: true });
+		rmSync(gitHooksDir, { recursive: true, force: true });
+	}
+});
+
 for (const scenario of ["own", "other-root", "escaped", "sibling", "session-switch", "shutdown", "unregistered"] as const) {
 	test(`child mutation attribution through registered subagent_run: ${scenario}`, async () => {
 		const h = fakePi();
@@ -798,9 +1738,13 @@ for (const scenario of ["own", "other-root", "escaped", "sibling", "session-swit
 		ctx.sessionManager.getSessionId = () => sessionId;
 		ctx.sessionManager.getEntries = (() => h.entries) as typeof ctx.sessionManager.getEntries;
 		ctx.sessionManager.getBranch = (() => h.entries) as typeof ctx.sessionManager.getBranch;
+		// The cheap session/ownership guards run before any worktree resolution:
+		// a mutation from a switched-away session must never reach git.
+		let resolutions = 0;
 		d.deps.resolveWorktree = (path, base) => {
+			resolutions++;
 			const absolute = resolve(base, path);
-			const worktree = [cwd, sibling].find((candidate) => absolute === candidate || absolute.startsWith(`${candidate}/`));
+			const worktree = [cwd, sibling].find((candidate) => containsResolvedPath(candidate, absolute));
 			return worktree ? { root: worktree, commonDir: "/fixture/common" } : undefined;
 		};
 		const spawn = d.deps.spawn!;
@@ -832,45 +1776,295 @@ for (const scenario of ["own", "other-root", "escaped", "sibling", "session-swit
 	});
 }
 
+// C1 diagnostics (odd/tasks/usage-click-and-changes-attribution.md): the
+// guard chain's posture is unchanged (spawn-gated registration stays, a
+// parent decision) -- these only verify each drop explains itself once, in
+// the task's own thread, naming the exact guard that fired.
+async function openTaskThread(commands: ReturnType<typeof fakePi>["commands"], ctx: ExtensionContext, overlays: Overlay[]): Promise<string> {
+	const opened = commands.get("gentle:agents")!.handler("", ctx);
+	for (let attempt = 0; attempt < 40 && overlays.length === 0; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+	const overlay = overlays[0];
+	const text = overlay ? stripAnsi(overlay.render(100).join("\n")) : "";
+	overlay?.handleInput("\x1b");
+	await opened;
+	overlays.length = 0;
+	return text;
+}
+
+for (const [scenario, guard] of [
+	["escaped", "root-unresolved"],
+	["sibling", "root-mismatch"],
+	["session-switch", "parent-session-mismatch"],
+	["unregistered", "root-not-registered"],
+] as const) {
+	test(`a dropped mutation explains itself in the task thread: ${scenario} -> ${guard}`, async () => {
+		const h = fakePi();
+		const d = deps();
+		const { ctx, overlays } = fakeContext();
+		let sessionId = "s1";
+		const sibling = join(root, `sibling-${scenario}`);
+		ctx.sessionManager.getSessionId = () => sessionId;
+		ctx.sessionManager.getEntries = (() => h.entries) as typeof ctx.sessionManager.getEntries;
+		ctx.sessionManager.getBranch = (() => h.entries) as typeof ctx.sessionManager.getBranch;
+		// The cheap session/ownership guards run before any worktree resolution:
+		// a mutation from a switched-away session must never reach git.
+		let resolutions = 0;
+		d.deps.resolveWorktree = (path, base) => {
+			resolutions++;
+			const absolute = resolve(base, path);
+			const worktree = [cwd, sibling].find((candidate) => containsResolvedPath(candidate, absolute));
+			return worktree ? { root: worktree, commonDir: "/fixture/common" } : undefined;
+		};
+		const spawn = d.deps.spawn!;
+		d.deps.spawn = (...args) => {
+			const child = spawn(...args);
+			const on = child.on.bind(child);
+			child.on = ((event: string, listener: () => void) => {
+				if (event === "spawn" && scenario !== "unregistered") queueMicrotask(listener);
+				return on(event as "spawn", listener);
+			}) as typeof child.on;
+			return child;
+		};
+		gentleAgents(h.pi, {}, d.deps);
+		await h.fire("session_start", ctx);
+		await h.tools.get("subagent_run")!.execute("mutation", { agent: "explore", task: "Write", mode: "background", workspace_root: cwd }, undefined, undefined, ctx);
+		await tick();
+		if (scenario === "session-switch") sessionId = "s2";
+		const path = scenario === "escaped" ? "../../outside.ts" : scenario === "sibling" ? join(sibling, "file.ts") : "file.ts";
+		resolutions = 0; // spawn-time registration may resolve; only the mutation matters here
+		d.children[0].emit({ type: "tool_execution_start", toolCallId: "write", toolName: "write", args: { path } });
+		d.children[0].emit({ type: "tool_execution_end", toolCallId: "write", isError: false, result: { content: [] } });
+		await tick();
+		if (scenario === "session-switch") assert.equal(resolutions, 0, "session mismatch is decided before resolving any worktree");
+		if (scenario === "session-switch") sessionId = "s1"; // back to the task's own session to inspect its thread
+		const rendered = await openTaskThread(h.commands, ctx, overlays);
+		assert.match(rendered, new RegExp(`changes not attributed: ${guard}\\b`), `expected the ${guard} guard to explain itself`);
+		// The same drop repeated for the same task must not add a second note.
+		d.children[0].emit({ type: "tool_execution_start", toolCallId: "write2", toolName: "write", args: { path } });
+		d.children[0].emit({ type: "tool_execution_end", toolCallId: "write2", isError: false, result: { content: [] } });
+		await tick();
+		const renderedAgain = await openTaskThread(h.commands, ctx, overlays);
+		assert.equal((renderedAgain.match(new RegExp(`changes not attributed: ${guard}`, "g")) ?? []).length, 1, "one note per (task, guard), not one per file");
+		await h.fire("session_shutdown", ctx);
+		await tick();
+	});
+}
+
+test("a mutation dropped for lacking any session-change evidence explains itself once", async () => {
+	const h = fakePi();
+	const d = deps();
+	const { ctx, overlays } = fakeContext();
+	ctx.sessionManager.getEntries = (() => h.entries) as typeof ctx.sessionManager.getEntries;
+	ctx.sessionManager.getBranch = (() => h.entries) as typeof ctx.sessionManager.getBranch;
+	d.deps.resolveWorktree = (path, base) => {
+		const full = resolve(base, path);
+		return full === cwd || full.startsWith(cwd + "/") ? { root: cwd, commonDir: "/fixture/common" } : undefined;
+	};
+	const spawn = d.deps.spawn!;
+	d.deps.spawn = (...args) => {
+		const child = spawn(...args);
+		const on = child.on.bind(child);
+		child.on = ((event: string, listener: () => void) => { if (event === "spawn") queueMicrotask(listener); return on(event as "spawn", listener); }) as typeof child.on;
+		return child;
+	};
+	gentleAgents(h.pi, {}, d.deps);
+	await h.fire("session_start", ctx);
+	await h.tools.get("subagent_run")!.execute("mutation", { agent: "explore", task: "Write", mode: "background", workspace_root: cwd }, undefined, undefined, ctx);
+	await tick();
+	// No details.gentleSessionChange at all -- the evidence never surfaced.
+	d.children[0].emit({ type: "tool_execution_start", toolCallId: "write", toolName: "write", args: { path: "file.ts" } });
+	d.children[0].emit({ type: "tool_execution_end", toolCallId: "write", isError: false, result: { content: [] } });
+	await tick();
+	const rendered = await openTaskThread(h.commands, ctx, overlays);
+	assert.match(rendered, /changes not attributed: evidence-missing\b/);
+	await h.fire("session_shutdown", ctx);
+	await tick();
+});
+
+test("a mutation dropped for evidence pointing at a different worktree root explains itself once", async () => {
+	const h = fakePi();
+	const d = deps();
+	const { ctx, overlays } = fakeContext();
+	const target = realpathSync(cwd);
+	(ctx as unknown as { cwd: string }).cwd = target;
+	ctx.sessionManager.getCwd = () => target;
+	ctx.sessionManager.getEntries = (() => h.entries) as typeof ctx.sessionManager.getEntries;
+	ctx.sessionManager.getBranch = (() => h.entries) as typeof ctx.sessionManager.getBranch;
+	d.deps.resolveWorktree = (path, base) => {
+		const full = resolve(base, path);
+		return full === target || full.startsWith(target + "/") ? { root: target, commonDir: "/fixture/common" } : undefined;
+	};
+	const spawn = d.deps.spawn!;
+	d.deps.spawn = (...args) => {
+		const child = spawn(...args);
+		const on = child.on.bind(child);
+		child.on = ((event: string, listener: () => void) => { if (event === "spawn") queueMicrotask(listener); return on(event as "spawn", listener); }) as typeof child.on;
+		return child;
+	};
+	gentleAgents(h.pi, {}, d.deps);
+	await h.fire("session_start", ctx);
+	await h.tools.get("subagent_run")!.execute("mutation", { agent: "explore", task: "Write", mode: "background", workspace_root: target }, undefined, undefined, ctx);
+	await tick();
+	writeFileSync(join(target, "evidence-root-mismatch-test.ts"), "agent\n");
+	// The evidence names a different root than the one the mutation actually
+	// resolved into -- distinct from having no evidence at all.
+	const evidence = { id: "write", root: join(target, "elsewhere"), path: "evidence-root-mismatch-test.ts", before: { kind: "text", text: "original\n" }, after: { kind: "text", text: "agent\n" } };
+	d.children[0].emit({ type: "tool_execution_start", toolCallId: "write", toolName: "write", args: { path: "evidence-root-mismatch-test.ts" } });
+	d.children[0].emit({ type: "tool_execution_end", toolCallId: "write", isError: false, result: { content: [], details: { gentleSessionChange: evidence } } });
+	await tick();
+	const rendered = await openTaskThread(h.commands, ctx, overlays);
+	assert.match(rendered, /changes not attributed: evidence-root-mismatch\b/);
+	await h.fire("session_shutdown", ctx);
+	await tick();
+});
+
+test("a mutation dropped for an unreadable evidence target explains itself once", async () => {
+	const h = fakePi();
+	const d = deps();
+	const { ctx, overlays } = fakeContext();
+	const target = realpathSync(cwd);
+	(ctx as unknown as { cwd: string }).cwd = target;
+	ctx.sessionManager.getCwd = () => target;
+	ctx.sessionManager.getEntries = (() => h.entries) as typeof ctx.sessionManager.getEntries;
+	ctx.sessionManager.getBranch = (() => h.entries) as typeof ctx.sessionManager.getBranch;
+	d.deps.resolveWorktree = (path, base) => {
+		const full = resolve(base, path);
+		return full === target || full.startsWith(target + "/") ? { root: target, commonDir: "/fixture/common" } : undefined;
+	};
+	const spawn = d.deps.spawn!;
+	d.deps.spawn = (...args) => {
+		const child = spawn(...args);
+		const on = child.on.bind(child);
+		child.on = ((event: string, listener: () => void) => { if (event === "spawn") queueMicrotask(listener); return on(event as "spawn", listener); }) as typeof child.on;
+		return child;
+	};
+	gentleAgents(h.pi, {}, d.deps);
+	await h.fire("session_start", ctx);
+	await h.tools.get("subagent_run")!.execute("mutation", { agent: "explore", task: "Write", mode: "background", workspace_root: target }, undefined, undefined, ctx);
+	await tick();
+	// The tool's own path never lands on disk -- realpathSync must throw
+	// rather than report a plain mismatch.
+	const evidence = { id: "write", root: target, path: "missing-target-test.ts", before: { kind: "text", text: "original\n" }, after: { kind: "text", text: "agent\n" } };
+	d.children[0].emit({ type: "tool_execution_start", toolCallId: "write", toolName: "write", args: { path: "missing-target-test.ts" } });
+	d.children[0].emit({ type: "tool_execution_end", toolCallId: "write", isError: false, result: { content: [], details: { gentleSessionChange: evidence } } });
+	await tick();
+	const rendered = await openTaskThread(h.commands, ctx, overlays);
+	assert.match(rendered, /changes not attributed: evidence-path-unreadable\b/);
+	await h.fire("session_shutdown", ctx);
+	await tick();
+});
+
+test("a mutation dropped for mismatched session-change evidence explains itself once", async () => {
+	const h = fakePi();
+	const d = deps();
+	const { ctx, overlays } = fakeContext();
+	const target = realpathSync(cwd);
+	(ctx as unknown as { cwd: string }).cwd = target;
+	ctx.sessionManager.getCwd = () => target;
+	ctx.sessionManager.getEntries = (() => h.entries) as typeof ctx.sessionManager.getEntries;
+	ctx.sessionManager.getBranch = (() => h.entries) as typeof ctx.sessionManager.getBranch;
+	d.deps.resolveWorktree = (path, base) => {
+		const full = resolve(base, path);
+		return full === target || full.startsWith(target + "/") ? { root: target, commonDir: "/fixture/common" } : undefined;
+	};
+	const spawn = d.deps.spawn!;
+	d.deps.spawn = (...args) => {
+		const child = spawn(...args);
+		const on = child.on.bind(child);
+		child.on = ((event: string, listener: () => void) => { if (event === "spawn") queueMicrotask(listener); return on(event as "spawn", listener); }) as typeof child.on;
+		return child;
+	};
+	gentleAgents(h.pi, {}, d.deps);
+	await h.fire("session_start", ctx);
+	await h.tools.get("subagent_run")!.execute("mutation", { agent: "explore", task: "Write", mode: "background", workspace_root: target }, undefined, undefined, ctx);
+	await tick();
+	writeFileSync(join(target, "evidence-mismatch-test.ts"), "agent\n");
+	const evidence = { id: "write", root: target, path: "different-file.ts", before: { kind: "text", text: "original\n" }, after: { kind: "text", text: "agent\n" } };
+	d.children[0].emit({ type: "tool_execution_start", toolCallId: "write", toolName: "write", args: { path: "evidence-mismatch-test.ts" } });
+	d.children[0].emit({ type: "tool_execution_end", toolCallId: "write", isError: false, result: { content: [], details: { gentleSessionChange: evidence } } });
+	await tick();
+	const rendered = await openTaskThread(h.commands, ctx, overlays);
+	assert.match(rendered, /changes not attributed: evidence-path-mismatch\b/);
+	await h.fire("session_shutdown", ctx);
+	await tick();
+});
+
+test("a successfully attributed mutation adds no drop note", async () => {
+	const h = fakePi();
+	const d = deps();
+	const { ctx, overlays } = fakeContext();
+	const target = realpathSync(cwd);
+	(ctx as unknown as { cwd: string }).cwd = target;
+	ctx.sessionManager.getCwd = () => target;
+	ctx.sessionManager.getEntries = (() => h.entries) as typeof ctx.sessionManager.getEntries;
+	ctx.sessionManager.getBranch = (() => h.entries) as typeof ctx.sessionManager.getBranch;
+	d.deps.resolveWorktree = (path, base) => {
+		const full = resolve(base, path);
+		return full === target || full.startsWith(target + "/") ? { root: target, commonDir: "/fixture/common" } : undefined;
+	};
+	const spawn = d.deps.spawn!;
+	d.deps.spawn = (...args) => {
+		const child = spawn(...args);
+		const on = child.on.bind(child);
+		child.on = ((event: string, listener: () => void) => { if (event === "spawn") queueMicrotask(listener); return on(event as "spawn", listener); }) as typeof child.on;
+		return child;
+	};
+	gentleAgents(h.pi, {}, d.deps);
+	await h.fire("session_start", ctx);
+	await h.tools.get("subagent_run")!.execute("mutation", { agent: "explore", task: "Write", mode: "background", workspace_root: target }, undefined, undefined, ctx);
+	await tick();
+	writeFileSync(join(target, "happy-path-test.ts"), "agent\n");
+	const evidence = { id: "write", root: target, path: "happy-path-test.ts", before: { kind: "text", text: "original\n" }, after: { kind: "text", text: "agent\n" } };
+	d.children[0].emit({ type: "tool_execution_start", toolCallId: "write", toolName: "write", args: { path: "happy-path-test.ts" } });
+	d.children[0].emit({ type: "tool_execution_end", toolCallId: "write", isError: false, result: { content: [], details: { gentleSessionChange: evidence } } });
+	await tick();
+	const rendered = await openTaskThread(h.commands, ctx, overlays);
+	assert.doesNotMatch(rendered, /changes not attributed/);
+	await h.fire("session_shutdown", ctx);
+	await tick();
+});
+
+test("worktree attribution containment respects Windows path boundaries", () => {
+	const candidate = win32.resolve("C:\\fixture", "project");
+	assert.equal(containsResolvedPath(candidate, win32.resolve(candidate), win32), true, "the worktree root itself is contained");
+	assert.equal(containsResolvedPath(candidate, win32.resolve(candidate, "nested", "file.ts"), win32), true, "Windows descendants are contained");
+	assert.equal(containsResolvedPath(candidate, win32.resolve(candidate, ".."), win32), false, "the parent is excluded");
+	assert.equal(containsResolvedPath(candidate, win32.resolve("C:\\fixture", "project-sibling", "file.ts"), win32), false, "a sibling prefix is excluded");
+});
+
 test("default Node spawn adapter distinguishes IPC-only and permission-capable canonical Git children", async () => {
 	const childProcess = createRequire(import.meta.url)("node:child_process") as typeof import("node:child_process");
 	const originalSpawn = childProcess.spawn;
-	const captured: Array<{ command: string; args: readonly string[]; options: Record<string, unknown> }> = [];
+	type CapturedSpawnOptions = { cwd: string; env: NodeJS.ProcessEnv; shell?: boolean; windowsHide?: boolean; detached?: boolean; stdio?: string[] };
+	const captured: Array<{ command: string; args: readonly string[]; options: CapturedSpawnOptions }> = [];
 	const children: FakeChild[] = [];
 	const shutdown: Array<() => Promise<void>> = [];
-	const canonicalGitCwd = join(root, "canonical-git-project");
-	const gitBin = join(root, "canonical-git-bin");
-	mkdirSync(join(canonicalGitCwd, ".git"), { recursive: true });
-	mkdirSync(gitBin, { recursive: true });
-	const gitFixture = join(gitBin, "git");
-	writeFileSync(gitFixture, `#!/bin/sh\nif [ "$1" = "-C" ] && [ "$2" = "${canonicalGitCwd}" ] && [ "$3" = "rev-parse" ] && [ "$4" = "--git-common-dir" ]; then\n  printf '.git\\n'\n  exit 0\nfi\nexit 1\n`);
-	chmodSync(gitFixture, 0o755);
-	const withCanonicalGitFixture = <T>(action: () => T): T => {
-		const previousPath = process.env.PATH;
-		process.env.PATH = gitBin;
-		try {
-			return action();
-		} finally {
-			if (previousPath === undefined) delete process.env.PATH;
-			else process.env.PATH = previousPath;
-		}
-	};
+	const canonicalGitFixture = mkdtempSync(join(tmpdir(), "gentle-agents-canonical-git-"));
+	const canonicalGitCwd = join(canonicalGitFixture, "project");
+	const gitTemplate = join(canonicalGitFixture, "template");
+	try {
+		mkdirSync(gitTemplate);
+		execFileSync("git", ["init", "--quiet", `--template=${gitTemplate}`, canonicalGitCwd]);
+	} catch (error) {
+		rmSync(canonicalGitFixture, { recursive: true, force: true });
+		throw error;
+	}
 	childProcess.spawn = ((command: string, args: readonly string[], options: Record<string, unknown>) => {
-		captured.push({ command, args, options });
+		captured.push({ command, args, options: options as unknown as CapturedSpawnOptions });
 		const child = fakeChild();
 		children.push(child);
 		return child.child;
-	}) as typeof childProcess.spawn;
+	}) as unknown as typeof childProcess.spawn;
 	syncBuiltinESMExports();
 	try {
 		const launch = async (mode: "task" | "background", env: NodeJS.ProcessEnv, sessionCwd = nonGitCwd) => {
 			const h = fakePi();
-			gentleAgents(h.pi, env, { home, agentHome: join(home, ".pi", "agent"), env, pi: { command: "/fixture/pi", args: ["--host-flag"] }, resolveWorktree: () => undefined });
+			gentleAgents(h.pi, env, { home, agentHome: join(home, ".pi", "agent"), env, pi: { command: "/fixture/pi", args: ["--host-flag"] }, resolveWorktree: () => undefined, sessionTransport: inertSessionTransport });
 			const { ctx } = fakeContext();
 			(ctx.sessionManager as unknown as { getCwd(): string }).getCwd = () => sessionCwd;
 			await h.fire("session_start", ctx);
-			shutdown.push(() => h.fire("session_shutdown", ctx));
-			return { h, ctx, result: withCanonicalGitFixture(() => h.tools.get("subagent_run")!.execute(`spawn-${mode}`, { agent: "explore", task: `Capture ${mode}`, mode }, undefined, undefined, ctx)) };
+			shutdown.push(async () => { await h.fire("session_shutdown", ctx); });
+			return { h, ctx, result: h.tools.get("subagent_run")!.execute(`spawn-${mode}`, { agent: "explore", task: `Capture ${mode}`, mode }, undefined, undefined, ctx) };
 		};
 		const task = await launch("task", { PATH: "/bin", FIXTURE: "task" });
 		await tick();
@@ -888,6 +2082,7 @@ test("default Node spawn adapter distinguishes IPC-only and permission-capable c
 
 		const args = ["--host-flag", "--mode", "rpc", "--session-dir", join(home, ".pi", "agent", "gentle-agents", "sessions"), "--model", "openai-codex/gpt-5.6-terra:low", "--tools", "read,grep,subagent_parent_message", "--append-system-prompt", "You map things."];
 		assert.equal(captured.length, 3, "the extension reaches Node's spawn boundary for IPC-only and permission-channel launches");
+		const permissionChannelStdio = process.platform === "win32" ? "overlapped" : "pipe";
 		for (const [index, fixture] of ["task", "background", "permission"].entries()) {
 			const permissionChannel = index === 2;
 			const ownedIpc = captured[index]?.options.env.GENTLE_PI_AGENTS_OWNED_IPC;
@@ -899,13 +2094,17 @@ test("default Node spawn adapter distinguishes IPC-only and permission-capable c
 			assert.equal(captured[index]?.options.shell, undefined, "the adapter does not invoke a shell");
 			assert.equal(captured[index]?.options.windowsHide, true, "the adapter always hides a Windows console");
 			assert.equal(captured[index]?.options.detached, process.platform !== "win32", "the adapter forwards the runner's platform selection");
-			assert.deepEqual(captured[index]?.options.stdio, permissionChannel ? ["pipe", "pipe", "pipe", "pipe", "ipc"] : ["pipe", "pipe", "pipe", "ipc"], permissionChannel ? "canonical repository children retain an fd3 permission channel and receive messaging IPC at fd4" : "IPC-only children have no inherited permission fd");
+			assert.deepEqual(captured[index]?.options.stdio, permissionChannel ? ["pipe", "pipe", "pipe", permissionChannelStdio, "ipc"] : ["pipe", "pipe", "pipe", "ipc"], permissionChannel ? "canonical repository children retain an fd3 permission channel and receive messaging IPC at fd4" : "IPC-only children have no inherited permission fd");
 		}
 		await Promise.all(shutdown.map((close) => close()));
 		assert.deepEqual(children[1]?.killed, ["SIGTERM"], "session shutdown cleans up an active background child");
 		shutdown.length = 0;
 	} finally {
-		await shutdownAndRestoreNativeSpawn(childProcess, originalSpawn, () => Promise.all(shutdown.map((close) => close())));
+		try {
+			await shutdownAndRestoreNativeSpawn(childProcess, originalSpawn, () => Promise.all(shutdown.map((close) => close())));
+		} finally {
+			rmSync(canonicalGitFixture, { recursive: true, force: true });
+		}
 	}
 });
 
@@ -917,7 +2116,7 @@ test("native spawn interception restores CommonJS and ESM exports after rejected
 		assert.equal((await import("node:child_process")).spawn, originalSpawn, "ESM spawn is restored");
 	};
 	const installMock = () => {
-		childProcess.spawn = (() => fakeChild().child) as typeof childProcess.spawn;
+		childProcess.spawn = (() => fakeChild().child) as unknown as typeof childProcess.spawn;
 		syncBuiltinESMExports();
 	};
 	const start = async (rejectShutdown: boolean) => {
@@ -930,7 +2129,7 @@ test("native spawn interception restores CommonJS and ESM exports after rejected
 				return undefined;
 			};
 		}
-		gentleAgents(h.pi, {}, { home, agentHome: join(home, ".pi", "agent"), env: { PATH: "/bin" }, pi: { command: "/fixture/pi", args: [] }, resolveWorktree: () => undefined });
+		gentleAgents(h.pi, {}, { home, agentHome: join(home, ".pi", "agent"), env: { PATH: "/bin" }, pi: { command: "/fixture/pi", args: [] }, resolveWorktree: () => undefined, sessionTransport: inertSessionTransport });
 		const { ctx } = fakeContext();
 		await h.fire("session_start", ctx);
 		await h.tools.get("subagent_run")!.execute("cleanup", { agent: "explore", task: "Keep cleanup live", mode: "background" }, undefined, undefined, ctx);
@@ -972,6 +2171,346 @@ test("native spawn interception restores CommonJS and ESM exports after rejected
 			syncBuiltinESMExports();
 		}
 	}
+});
+
+test("foreign clone tool requires consent before queueing and never enters parent Changes", async (t) => {
+	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "foreign-target-")));
+	const parent = join(fixture, "parent"), foreign = join(fixture, "foreign");
+	const template = join(fixture, "template");
+	mkdirSync(template);
+	try {
+		for (const path of [parent, foreign]) execFileSync("git", ["init", "--quiet", `--template=${template}`, path]);
+		const configHome = join(fixture, "config");
+		mkdirSync(configHome);
+		writeFileSync(join(configHome, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, profiles: { pinned: { explore: { model: "openai/foreign-model", thinking: "minimal" } } } }));
+		mkdirSync(join(foreign, ".git", "gentle-ai"));
+		writeFileSync(join(foreign, ".git", "gentle-ai", "profile-pin.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile: "pinned" }));
+		const h = fakePi(), runtime = deps();
+		runtime.deps.env = { PATH: "/bin", GENTLE_PI_CONFIG_HOME: configHome };
+		runtime.deps.resolveWorktree = resolveSessionWorktree;
+		const spawned: string[] = [];
+		const spawnEnvs: Array<Record<string, string | undefined>> = [];
+		const spawn = runtime.deps.spawn!;
+		runtime.deps.spawn = (command, args, options) => { spawned.push(options.cwd); spawnEnvs.push(options.env); return spawn(command, args, options); };
+		const runnerRun = t.mock.method(AgentRunner.prototype, "run");
+		gentleAgents(h.pi, {}, runtime.deps);
+		let resolveConsent!: (answer: boolean) => void;
+		let prompts = 0;
+		const { ctx } = fakeContext(fakeTui, () => { prompts++; return new Promise<boolean>(resolve => { resolveConsent = resolve; }); });
+		ctx.sessionManager.getCwd = () => parent;
+		await h.fire("session_start", ctx);
+		const run = h.tools.get("subagent_run")!;
+		assert.match(JSON.stringify(run.parameters.properties.repository_root), /interactive session-scoped consent/i);
+		await assert.rejects(run.execute("wrong-selector", { agent: "explore", task: "Map", workspace_root: foreign, mode: "background" }, undefined, undefined, ctx), /same Git clone/);
+		await assert.rejects(run.execute("both", { agent: "explore", task: "Map", workspace_root: parent, repository_root: foreign, mode: "background" }, undefined, undefined, ctx), /mutually exclusive/);
+		await assert.rejects(run.execute("both-malformed", { agent: "explore", task: "Map", workspace_root: parent, repository_root: 123, mode: "background" }, undefined, undefined, ctx), /mutually exclusive/);
+		const pending = run.execute("foreign", { agent: "explore", task: "Map", repository_root: foreign, mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(prompts, 1);
+		assert.deepEqual(spawned, []);
+		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
+		resolveConsent(true);
+		const result = await pending;
+		await tick();
+		assert.deepEqual(spawned, [foreign]);
+		assert.equal((runnerRun.mock.calls[0]?.arguments[0] as { authorizeParentStandingReviewPermission?: unknown }).authorizeParentStandingReviewPermission, undefined, "foreign child must not receive parent review permission channel");
+		assert.equal(runtime.spawned[0]?.[runtime.spawned[0]!.indexOf("--model") + 1], "openai/foreign-model:minimal");
+		assert.equal((result.details.gentleAgents as { cwd: string }).cwd, foreign);
+		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
+		const reused = await run.execute("reuse", { agent: "explore", task: "Map again", repository_root: foreign, mode: "background" }, undefined, undefined, ctx);
+		assert.equal(prompts, 1);
+		assert.equal((reused.details.gentleAgents as { cwd: string }).cwd, foreign);
+		// Git's ambient routing must not turn an explicit foreign destination into the parent's repository.
+		const oldGitDir = process.env.GIT_DIR;
+		const oldGitWorkTree = process.env.GIT_WORK_TREE;
+		try {
+			process.env.GIT_DIR = join(parent, ".git");
+			process.env.GIT_WORK_TREE = parent;
+			runtime.deps.env!.GIT_DIR = join(parent, ".git");
+			runtime.deps.env!.GIT_WORK_TREE = parent;
+			const injected = await run.execute("injected-git", { agent: "explore", task: "Map with ambient Git routing", repository_root: foreign, mode: "background" }, undefined, undefined, ctx);
+			assert.equal((injected.details.gentleAgents as { cwd: string }).cwd, foreign);
+			assert.equal(prompts, 1);
+			// Drain the active child so the queued injected launch reaches the actual OS spawn.
+			runtime.children[0].emit({ type: "agent_end", messages: [] });
+			runtime.children[0].emit({ type: "agent_settled" });
+			runtime.children[0].exit(0);
+			await tick();
+			assert.equal(spawned.at(-1), foreign);
+			assert.equal(spawnEnvs.at(-1)?.GIT_DIR, undefined);
+			assert.equal(spawnEnvs.at(-1)?.GIT_WORK_TREE, undefined);
+		} finally {
+			delete runtime.deps.env!.GIT_DIR;
+			delete runtime.deps.env!.GIT_WORK_TREE;
+			if (oldGitDir === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = oldGitDir;
+			if (oldGitWorkTree === undefined) delete process.env.GIT_WORK_TREE; else process.env.GIT_WORK_TREE = oldGitWorkTree;
+		}
+		const queued = await run.execute("queued", { agent: "explore", task: "Third map", repository_root: foreign, mode: "background" }, undefined, undefined, ctx);
+		assert.equal((queued.details.gentleAgents as { cwd: string }).cwd, foreign);
+		assert.equal(runtime.children.length, 3, "later launches wait in the runner queue");
+		await run.execute("same-clone", { agent: "explore", task: "Map parent", workspace_root: parent, mode: "background" }, undefined, undefined, ctx);
+		assert.equal(typeof (runnerRun.mock.calls.at(-1)?.arguments[0] as { authorizeParentStandingReviewPermission?: unknown }).authorizeParentStandingReviewPermission, "function", "same-clone child retains parent review permission channel");
+		const { ctx: successor } = fakeContext();
+		successor.sessionManager.getCwd = () => parent;
+		await h.fire("session_start", successor);
+		assert.notEqual(successor.sessionManager, ctx.sessionManager);
+		assert.equal(successor.sessionManager.getSessionId(), ctx.sessionManager.getSessionId(), "replacement retains the same session ID");
+		runtime.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] });
+		runtime.children[0].emit({ type: "agent_settled" });
+		runtime.children[0].exit(0);
+		await tick();
+		assert.equal(runtime.children.length, 3, "stale queued foreign task must fail before OS spawn");
+		await h.fire("session_shutdown", successor);
+	} finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+test("foreign child Changes require successful target-bound tool evidence, never model claims or sibling writes", async () => {
+	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "foreign-changes-")));
+	const parent = join(fixture, "parent"), foreign = join(fixture, "foreign"), sibling = join(fixture, "sibling"), template = join(fixture, "template");
+	mkdirSync(template);
+	try {
+		for (const path of [parent, foreign, sibling]) execFileSync("git", ["init", "--quiet", `--template=${template}`, path]);
+		const h = fakePi(), runtime = deps();
+		runtime.deps.resolveWorktree = resolveSessionWorktree;
+		const spawn = runtime.deps.spawn!;
+		let proveSpawn: (() => void) | undefined;
+		runtime.deps.spawn = (...args) => {
+			const child = spawn(...args);
+			const on = child.on.bind(child);
+			child.on = ((event: string, listener: () => void) => {
+				if (event === "spawn") proveSpawn = listener;
+				return on(event as "spawn", listener);
+			}) as typeof child.on;
+			return child;
+		};
+		installSessionChangeCapture(h.pi, {}, resolveSessionWorktree);
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		ctx.sessionManager.getCwd = () => parent;
+		ctx.sessionManager.getEntries = (() => h.entries) as typeof ctx.sessionManager.getEntries;
+		ctx.sessionManager.getBranch = (() => h.entries) as typeof ctx.sessionManager.getBranch;
+		await h.fire("session_start", ctx);
+		const launched = await h.tools.get("subagent_run")!.execute("foreign-evidence", { agent: "explore", task: "Write", repository_root: foreign, mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		const taskId = (launched.details.gentleAgents as { taskId: string }).taskId;
+		const child = runtime.children[0];
+		const send = async (id: string, root: string, path: string, error = false, forgedRoot?: string) => {
+			const captured = await childSessionChangeEvidence(root, path, id, "agent output\n");
+			const evidence = forgedRoot ? { ...captured, root: forgedRoot } : captured;
+			child.emit({ type: "tool_execution_start", toolCallId: id, toolName: "write", args: { path } });
+			child.emit({ type: "tool_execution_end", toolCallId: id, isError: error, result: { content: [], details: { gentleSessionChange: evidence } } });
+			await tick();
+		};
+		child.emit({ type: "message_update", text: `I edited ${join(foreign, "claimed.md")}` });
+		await send("unspawned", foreign, "unspawned.md");
+		assert.equal(h.entries.some(entry => entry.customType === "gentle-pi.session-change/v1"), false, "unproven spawn cannot attribute a mutation");
+		assert.ok(proveSpawn);
+		proveSpawn();
+		await tick();
+		await send("sibling", sibling, "sibling.md");
+		await send("forged", foreign, "forged.md", false, parent);
+		await send("failed", foreign, "failed.md", true);
+		assert.equal(h.entries.some(entry => entry.customType === "gentle-pi.session-change/v1"), false);
+		await send("accepted", foreign, "accepted.md");
+		const spacedEvidence = await childSessionChangeEvidence(foreign, "space name.md", "unicode-space", "agent output\n");
+		child.emit({ type: "tool_execution_start", toolCallId: "unicode-space", toolName: "write", args: { path: "space\u00a0name.md" } });
+		child.emit({ type: "tool_execution_end", toolCallId: "unicode-space", isError: false, result: { content: [], details: { gentleSessionChange: spacedEvidence } } });
+		await tick();
+		const editEvidence = await childSessionEditEvidence(foreign, "edited.md", "edit-accepted", "original\n", "changed\n");
+		child.emit({ type: "tool_execution_start", toolCallId: "edit-accepted", toolName: "edit", args: { path: "edited.md" } });
+		child.emit({ type: "tool_execution_end", toolCallId: "edit-accepted", isError: false, result: { content: [], details: { gentleSessionChange: editEvidence } } });
+		await tick();
+		const changes = new SessionChanges(ctx.sessionManager.getSessionId()!, h.entries);
+		assert.deepEqual(changes.worktrees.map(tree => tree.root), [foreign]);
+		assert.deepEqual(changes.model.files.map(file => file.path).sort(), ["accepted.md", "edited.md", "space name.md"]);
+		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
+		assert.equal(h.events.some(event => event.name === "gentle-pi:child-session-change"), false);
+		assert.equal(h.entries.filter(entry => entry.customType === "gentle-pi.session-change/v1").length, 3);
+		assert.equal(changes.worktrees[0]?.model.files.find(file => file.path === "accepted.md")?.status, "added");
+		assert.equal(changes.worktrees[0]?.model.files.find(file => file.path === "edited.md")?.status, "modified");
+		mkdirSync(join(foreign, "nested"));
+		const rebound = await childSessionChangeEvidence(foreign, "nested/rebound.md", "rebound", "not attributed\n");
+		child.emit({ type: "tool_execution_start", toolCallId: "rebound", toolName: "write", args: { path: "nested/rebound.md" } });
+		execFileSync("git", ["init", "--quiet", `--template=${template}`, join(foreign, "nested")]);
+		child.emit({ type: "tool_execution_end", toolCallId: "rebound", isError: false, result: { content: [], details: { gentleSessionChange: rebound } } });
+		await tick();
+		assert.equal(h.entries.filter(entry => entry.customType === "gentle-pi.session-change/v1").length, 3, "new nested Git identity must not inherit foreign target attribution");
+		const stale = await childSessionChangeEvidence(foreign, "stale.md", "stale", "not attributed\n");
+		child.emit({ type: "tool_execution_start", toolCallId: "stale", toolName: "write", args: { path: "stale.md" } });
+		const { ctx: successor } = fakeContext();
+		successor.sessionManager.getCwd = () => parent;
+		await h.fire("session_start", successor);
+		child.emit({ type: "tool_execution_end", toolCallId: "stale", isError: false, result: { content: [], details: { gentleSessionChange: stale } } });
+		await tick();
+		assert.equal(h.entries.filter(entry => entry.customType === "gentle-pi.session-change/v1").length, 3, "session replacement during a tool cannot attribute its result");
+		assert.equal(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY).length, 0);
+		await h.fire("session_shutdown", successor);
+	} finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+test("foreign task mode waits for the child and continuation reuses its live grant", async () => {
+	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "foreign-task-")));
+	const parent = join(fixture, "parent"), foreign = join(fixture, "foreign"), template = join(fixture, "template");
+	mkdirSync(template);
+	try {
+		for (const path of [parent, foreign]) execFileSync("git", ["init", "--quiet", `--template=${template}`, path]);
+		const h = fakePi(), runtime = deps();
+		runtime.deps.resolveWorktree = resolveSessionWorktree;
+		const spawn = runtime.deps.spawn!;
+		runtime.deps.spawn = (...args) => {
+			const child = spawn(...args);
+			const on = child.on.bind(child);
+			child.on = ((event: string, listener: () => void) => {
+				if (event === "spawn") queueMicrotask(listener);
+				return on(event as "spawn", listener);
+			}) as typeof child.on;
+			return child;
+		};
+		gentleAgents(h.pi, {}, runtime.deps);
+		let prompts = 0;
+		const { ctx } = fakeContext(fakeTui, async () => { prompts++; return true; });
+		ctx.sessionManager.getCwd = () => parent;
+		await h.fire("session_start", ctx);
+		let finished = false;
+		const pending = h.tools.get("subagent_run")!.execute("task", { agent: "explore", task: "Map", repository_root: foreign, mode: "task" }, undefined, undefined, ctx).then(result => { finished = true; return result; });
+		await tick();
+		assert.equal(finished, false, "task mode waits for settlement");
+		assert.equal(runtime.children.length, 1);
+		assert.equal(prompts, 1);
+		runtime.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "mapped" }] }] });
+		runtime.children[0].emit({ type: "agent_settled" });
+		runtime.children[0].exit(0);
+		const first = await pending;
+		assert.equal((first.details.gentleAgents as { cwd: string }).cwd, foreign);
+		const taskId = (first.details.gentleAgents as { taskId: string }).taskId;
+		const continued = h.tools.get("subagent_continue")!.execute("follow-up", { task_id: taskId, prompt: "Follow up", mode: "task" }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(runtime.children.length, 2);
+		assert.equal(prompts, 1, "continuation cannot prompt for a second grant");
+		runtime.children[1].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "continued" }] }] });
+		runtime.children[1].emit({ type: "agent_settled" });
+		runtime.children[1].exit(0);
+		assert.equal(((await continued).details.gentleAgents as { cwd: string }).cwd, foreign);
+		assert.equal(runtime.spawned.length, 2);
+		await h.fire("session_shutdown", ctx);
+	} finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+test("aborting during foreign consent cannot grant or queue a background child", async () => {
+	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "foreign-abort-")));
+	const parent = join(fixture, "parent"), foreign = join(fixture, "foreign"), template = join(fixture, "template");
+	mkdirSync(template);
+	try {
+		for (const path of [parent, foreign]) execFileSync("git", ["init", "--quiet", `--template=${template}`, path]);
+		const h = fakePi(), runtime = deps();
+		runtime.deps.resolveWorktree = resolveSessionWorktree;
+		gentleAgents(h.pi, {}, runtime.deps);
+		let confirm!: (answer: boolean) => void;
+		const { ctx } = fakeContext(fakeTui, () => new Promise(resolve => { confirm = resolve; }));
+		ctx.sessionManager.getCwd = () => parent;
+		await h.fire("session_start", ctx);
+		const abort = new AbortController();
+		const pending = h.tools.get("subagent_run")!.execute("abort", { agent: "explore", task: "Map", repository_root: foreign, mode: "background" }, abort.signal, undefined, ctx);
+		await tick();
+		abort.abort("interrupted");
+		confirm(true);
+		await assert.rejects(pending, /abort|cancel/i);
+		assert.equal(runtime.children.length, 0);
+		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
+		await h.fire("session_shutdown", ctx);
+	} finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+test("an interactive non-Git umbrella can target an independent repository without registering it", async () => {
+	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "foreign-umbrella-")));
+	const umbrella = join(fixture, "umbrella"), foreign = join(fixture, "foreign"), template = join(fixture, "template");
+	mkdirSync(umbrella); mkdirSync(template);
+	try {
+		execFileSync("git", ["init", "--quiet", `--template=${template}`, foreign]);
+		const h = fakePi(), runtime = deps();
+		runtime.deps.resolveWorktree = resolveSessionWorktree;
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		ctx.sessionManager.getCwd = () => umbrella;
+		await h.fire("session_start", ctx);
+		const run = h.tools.get("subagent_run")!;
+		const launched = await run.execute("umbrella", { agent: "explore", task: "Map", repository_root: foreign, mode: "background" }, undefined, undefined, ctx);
+		assert.equal((launched.details.gentleAgents as { cwd: string }).cwd, foreign);
+		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
+		await h.fire("session_shutdown", ctx);
+	} finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+test("foreign selector rejects RPC even with UI and rejects SDD/remediation before consent", async () => {
+	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "foreign-callers-")));
+	const parent = join(fixture, "parent"), foreign = join(fixture, "foreign"), template = join(fixture, "template");
+	mkdirSync(template);
+	try {
+		for (const path of [parent, foreign]) execFileSync("git", ["init", "--quiet", `--template=${template}`, path]);
+		const h = fakePi(), runtime = deps();
+		runtime.deps.resolveWorktree = resolveSessionWorktree;
+		const agentHome = join(fixture, "agent-home");
+		mkdirSync(join(agentHome, ".pi", "agent", "agents"), { recursive: true });
+		writeFileSync(join(agentHome, ".pi", "agent", "agents", "explore.md"), "---\ndescription: explore\ntools: [read]\n---\nExplore");
+		writeFileSync(join(agentHome, ".pi", "agent", "agents", "sdd-apply.md"), "---\ndescription: apply\ntools: [read]\n---\nApply");
+		writeFileSync(join(agentHome, ".pi", "agent", "agents", "sdd-research.md"), "---\ndescription: research\ntools: [read]\n---\nResearch");
+		runtime.deps.home = agentHome;
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx, dialogs } = fakeContext();
+		ctx.sessionManager.getCwd = () => parent;
+		await h.fire("session_start", ctx);
+		ctx.mode = "rpc";
+		const run = h.tools.get("subagent_run")!;
+		const base = { agent: "explore", task: "Map", repository_root: foreign, mode: "background" };
+		await assert.rejects(run.execute("rpc", base, undefined, undefined, ctx), /interactive parent session/);
+		ctx.mode = "print";
+		await assert.rejects(run.execute("print", { ...base, mode: "task" }, undefined, undefined, ctx), /interactive parent session/);
+		ctx.mode = "tui";
+		await assert.rejects(run.execute("remediate", { ...base, remediation: {} }, undefined, undefined, ctx), /interactive parent session/);
+		await assert.rejects(run.execute("foreign-sdd", { ...base, agent: "sdd-apply", context: PARENT_CONFIRMED_SDD_CONTEXT, sdd_change: { changeName: "alpha", workspaceRoot: foreign, phase: "apply" } }, undefined, undefined, ctx), /interactive parent session/);
+		await assert.rejects(run.execute("foreign-sdd-no-change", { ...base, agent: "sdd-research", context: PARENT_CONFIRMED_SDD_CONTEXT }, undefined, undefined, ctx), /interactive parent session/);
+		assert.equal(existsSync(join(agentHome, ".pi", "agent", "sessions")), false, "foreign SDD rejection must precede child session directory creation");
+		const childHost = fakePi();
+		gentleAgents(childHost.pi, { GENTLE_PI_AGENTS_CHILD: "1" }, runtime.deps);
+		assert.equal(childHost.tools.has("subagent_run"), false, "child-originated foreign launches have no delegation tool");
+		assert.equal(dialogs.length, 0);
+		assert.equal(runtime.children.length, 0);
+		await h.fire("session_shutdown", ctx);
+	} finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+test("foreign clone rejects aliases, absent UI, decline and changed session before any child starts", async () => {
+	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "foreign-denials-")));
+	const parent = join(fixture, "parent"), foreign = join(fixture, "foreign"), template = join(fixture, "template");
+	mkdirSync(template);
+	try {
+		for (const path of [parent, foreign]) execFileSync("git", ["init", "--quiet", `--template=${template}`, path]);
+		const h = fakePi(), runtime = deps();
+		runtime.deps.resolveWorktree = resolveSessionWorktree;
+		gentleAgents(h.pi, {}, runtime.deps);
+		let decision!: (answer: boolean) => void;
+		const { ctx, dialogs } = fakeContext(fakeTui, () => new Promise(resolve => { decision = resolve; }));
+		ctx.sessionManager.getCwd = () => parent;
+		let id = "original";
+		ctx.sessionManager.getSessionId = () => id;
+		await h.fire("session_start", ctx);
+		const run = h.tools.get("subagent_run")!;
+		const args = (path: string) => ({ agent: "explore", task: "Map", repository_root: path, mode: "background" });
+		await assert.rejects(run.execute("alias", args(`${foreign}/.`), undefined, undefined, ctx), /canonical independent Git repository/);
+		ctx.hasUI = false;
+		await assert.rejects(run.execute("no-ui", args(foreign), undefined, undefined, ctx), /interactive/);
+		ctx.hasUI = true;
+		const declined = run.execute("decline", args(foreign), undefined, undefined, ctx);
+		await tick(); decision(false);
+		await assert.rejects(declined, /interactive/);
+		const drift = run.execute("drift", args(foreign), undefined, undefined, ctx);
+		await tick(); id = "replacement"; decision(true);
+		await assert.rejects(drift, /identity changed/);
+		assert.equal(runtime.spawned.length, 0);
+		assert.equal(dialogs.filter(dialog => dialog.startsWith("confirm:")).length, 2);
+		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
+		await h.fire("session_shutdown", ctx);
+	} finally { rmSync(fixture, { recursive: true, force: true }); }
 });
 
 test("explicit child roots launch and continue in the actual cwd, persist without shell, and reject other clones", async () => {
@@ -1035,7 +2574,7 @@ test("SDD phase continuation requires a fresh selection and launches only that s
 	const { ctx } = fakeContext();
 	await h.fire("session_start", ctx);
 	const run = await h.tools.get("subagent_run")!.execute("run", {
-		agent: "sdd-apply", task: "Apply alpha", mode: "background",
+		agent: "sdd-apply", task: "Apply alpha", context: PARENT_CONFIRMED_SDD_CONTEXT, mode: "background",
 		sdd_change: { changeName: "alpha", workspaceRoot: cwd, phase: "apply" },
 	}, undefined, undefined, ctx);
 	await tick();
@@ -1049,7 +2588,7 @@ test("SDD phase continuation requires a fresh selection and launches only that s
 	assert.match(missing.content[0].text, /requires a fresh sdd_change/i);
 	assert.equal(runtime.spawned.length, 1);
 	await h.tools.get("subagent_continue")!.execute("continue", {
-		task_id: taskId, prompt: "Apply beta", mode: "background",
+		task_id: taskId, prompt: "Apply beta", context: PARENT_CONFIRMED_SDD_CONTEXT, mode: "background",
 		sdd_change: { changeName: "beta", workspaceRoot: cwd, phase: "apply" },
 	}, undefined, undefined, ctx);
 	await tick();
@@ -1110,16 +2649,16 @@ test("delayed child spawn retains the originating session and cannot append into
 
 test("agentRuntimePaths isolates sessions and transcripts by profile and retains the explicit-home fallback", () => {
 	assert.deepEqual(agentRuntimePaths("/home/x", "/profiles/pi-principal/agent"), {
-		sessions: "/profiles/pi-principal/agent/gentle-agents/sessions",
-		transcripts: "/profiles/pi-principal/agent/gentle-agents/transcripts",
+		sessions: join("/profiles/pi-principal/agent", "gentle-agents", "sessions"),
+		transcripts: join("/profiles/pi-principal/agent", "gentle-agents", "transcripts"),
 	});
 	assert.deepEqual(agentRuntimePaths("/home/x", "/profiles/pi-lab/agent"), {
-		sessions: "/profiles/pi-lab/agent/gentle-agents/sessions",
-		transcripts: "/profiles/pi-lab/agent/gentle-agents/transcripts",
+		sessions: join("/profiles/pi-lab/agent", "gentle-agents", "sessions"),
+		transcripts: join("/profiles/pi-lab/agent", "gentle-agents", "transcripts"),
 	});
 	assert.deepEqual(agentRuntimePaths("/home/x"), {
-		sessions: "/home/x/.pi/agent/gentle-agents/sessions",
-		transcripts: "/home/x/.pi/agent/gentle-agents/transcripts",
+		sessions: join("/home/x", ".pi", "agent", "gentle-agents", "sessions"),
+		transcripts: join("/home/x", ".pi", "agent", "gentle-agents", "transcripts"),
 	});
 });
 
@@ -1178,6 +2717,108 @@ for (const [key, tilde] of [["GENTLE_PI_AGENT_HOME", false], ["PI_CODING_AGENT_D
 	});
 }
 
+// A per-repository profile pin is resolved at launch against the global profiles
+// store. The fixture writes both layers into a sandbox instead of a real clone and
+// binds them to the launch through the worktree resolver the launch already uses,
+// so these tests never depend on the ambient Git state.
+function pinFixture(name: string) {
+	const base = join(root, `pin-${name}`);
+	const worktreeRoot = join(base, "worktree");
+	const commonDir = join(base, "git-common");
+	const configHome = join(base, "config");
+	for (const dir of [worktreeRoot, commonDir, configHome]) mkdirSync(dir, { recursive: true });
+	const writePinText = (path: string, profile: string) => {
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, `${JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile }, null, 2)}\n`);
+	};
+	const localPinPath = join(commonDir, "gentle-ai", "profile-pin.json");
+	const declarationPath = join(worktreeRoot, ".pi", "gentle-ai", "profile.json");
+	return {
+		root: worktreeRoot,
+		commonDir,
+		configHome,
+		localPinPath,
+		declarationPath,
+		writePin: (profile: string) => writePinText(localPinPath, profile),
+		writeDeclaration: (profile: string) => writePinText(declarationPath, profile),
+		writeStore: (profiles: Record<string, unknown>) => {
+			writeFileSync(join(configHome, "profiles.json"), `${JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, profiles }, null, 2)}\n`);
+		},
+	};
+}
+
+// The model the child was actually spawned with, resolved for the repository the
+// pin fixture binds to the launch.
+async function launchPinned(base: ReturnType<typeof pinFixture>): Promise<string> {
+	const harness = deps();
+	harness.deps.resolveWorktree = () => ({ root: base.root, commonDir: base.commonDir });
+	harness.deps.env = { PATH: "/bin", GENTLE_PI_CONFIG_HOME: base.configHome };
+	const { pi, tools, fire } = fakePi();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	try {
+		await tools.get("subagent_run")!.execute("pin", { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		const args = harness.spawned[0];
+		return args[args.indexOf("--model") + 1];
+	} finally {
+		await fire("session_shutdown", ctx);
+		await tick();
+	}
+}
+
+test("a local pin routes the repository's subagent launches through the pinned profile", async () => {
+	const base = pinFixture("local");
+	base.writeStore({
+		pinned: {
+			// The reserved orchestrator key travels inside the profile but is never
+			// subagent routing.
+			orchestrator: { model: "nan/glm5.3", thinking: "max" },
+			explore: { model: "openai/alpha", thinking: "minimal" },
+		},
+	});
+	base.writePin("pinned");
+	assert.equal(await launchPinned(base), "openai/alpha:minimal");
+});
+
+test("a pinned profile replaces global subagent routing instead of merging it", async () => {
+	const base = pinFixture("replace");
+	// The global subagents.json routes explore at a lower effort and the pinned
+	// profile does not mention explore at all: wholesale replacement returns it to
+	// its definition routing instead of inheriting the global profile.
+	base.writeStore({ pinned: { helper: { model: "openai/beta" } } });
+	base.writePin("pinned");
+	assert.equal(await launchPinned(base), "openai-codex/gpt-5.6-terra:high");
+});
+
+test("a committed repository declaration pins the worktree when no local pin exists", async () => {
+	const base = pinFixture("declaration");
+	base.writeStore({ declared: { explore: { model: "openai/alpha" } } });
+	base.writeDeclaration("declared");
+	assert.equal(await launchPinned(base), "openai/alpha:high");
+});
+
+test("a local pin takes precedence over the worktree's repository declaration", async () => {
+	const base = pinFixture("precedence");
+	base.writeStore({
+		declared: { explore: { model: "openai/alpha" } },
+		local: { explore: { model: "openai/beta" } },
+	});
+	base.writeDeclaration("declared");
+	base.writePin("local");
+	assert.equal(await launchPinned(base), "openai/beta:high");
+});
+
+test("a stale or unreadable pin degrades to the global routing instead of failing the launch", async () => {
+	const base = pinFixture("stale");
+	base.writeStore({ other: { explore: { model: "openai/alpha" } } });
+	base.writePin("deleted-profile");
+	assert.equal(await launchPinned(base), "openai-codex/gpt-5.6-terra:low");
+	writeFileSync(base.localPinPath, "{ not json\n");
+	assert.equal(await launchPinned(base), "openai-codex/gpt-5.6-terra:low");
+});
+
 test("agentsEnabled and agentsCollapseKey read their flags and stay off inside a child", () => {
 	assert.equal(agentsEnabled({}), true);
 	assert.equal(agentsEnabled({ GENTLE_PI_AGENTS: "off" }), false);
@@ -1216,7 +2857,7 @@ test("subagent_list_agents and subagent_run in task mode launch a child with the
 	gentleAgents(pi, {}, harness.deps);
 	const { ctx, widget } = fakeContext();
 	await fire("session_start", ctx);
-	assert.deepEqual([...tools.keys()].sort(), ["subagent_cancel", "subagent_continue", "subagent_list_agents", "subagent_list_tasks", "subagent_reply", "subagent_result", "subagent_run", "subagent_send_message", "subagent_status"]);
+	assert.deepEqual([...tools.keys()].sort(), ["orchestrator_list", "orchestrator_send_message", "orchestrator_session_id", "subagent_cancel", "subagent_continue", "subagent_list_agents", "subagent_list_tasks", "subagent_reply", "subagent_result", "subagent_run", "subagent_send_message", "subagent_status"]);
 	const listed = await tools.get("subagent_list_agents")!.execute("c0", {}, undefined, undefined, ctx);
 	assert.match(listed.content[0].text, /- explore \(global\): maps things/);
 
@@ -1246,6 +2887,32 @@ test("subagent_list_agents and subagent_run in task mode launch a child with the
 	await tick();
 	assert.deepEqual(harness.children[1].killed, ["SIGTERM"], "closing pi stops the running children");
 	assert.match(tools.get("subagent_run")!.renderCall({ agent: "explore" }, plainTheme).render(60).join(""), /❀ agent run · explore/);
+});
+
+test("the Agents widget never registers a sidebar rail part and stays visible even while the fullscreen sidebar owns the host", async () => {
+	const { pi, tools, fire } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, harness.deps);
+	// A terminal-bearing host is what makes sidebarPart do anything at all
+	// (a host with no .terminal is already a passthrough); this is the host
+	// shape the fullscreen layout actually uses.
+	const terminalTui = { requestRender() {}, terminal: { columns: 160, rows: 40 } };
+	const { ctx, widget } = fakeContext(terminalTui);
+	await fire("session_start", ctx);
+	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Map lib/", label: "map lib modules", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+
+	// The factory only runs (and only then could register a rail part) once
+	// something actually renders the widget, exactly like the real host.
+	assert.match(widget()![1]!, /explore  map lib modules/);
+	const state = sidebarState(terminalTui as unknown as TUI);
+	assert.equal(state.parts.has("agents"), false, "Agents never claims a rail slot; the above-editor widget is its only surface");
+
+	// Simulate the fullscreen sidebar actively owning the host, the same
+	// condition sidebarPart used to suppress a registered bottom widget under.
+	state.active = true;
+	state.ownsHost = () => true;
+	assert.match(widget()![1]!, /explore  map lib modules/, "the widget keeps rendering regardless of sidebar ownership");
 });
 
 test("background runs return at once; status, result, send_message, cancel, and continue follow the task", async () => {
@@ -1503,7 +3170,7 @@ test("AgentsView production footer uses rendered bounds and invalidates them bef
 	}
 });
 
-test("finished tasks remain available through resolveTask but never reappear in the live-only overlay", async () => {
+test("a task that finishes live stays visible as history, in both scopes, and its result also resolves after a restart", async () => {
 	const { pi, tools, fire, commands, shortcuts } = fakePi();
 	const harness = deps();
 	gentleAgents(pi, {}, harness.deps);
@@ -1523,21 +3190,25 @@ test("finished tasks remain available through resolveTask but never reappear in 
 	}
 	assert.ok(stored.some((entry) => entry.task.id === id && entry.task.result === "Kept."), "the finished task is on disk");
 
+	// A completely different session still resolves it by id on demand, with
+	// nothing restored in advance.
 	const fresh = fakePi();
 	gentleAgents(fresh.pi, {}, deps().deps);
 	const again = fakeContext();
 	await fresh.fire("session_start", again.ctx);
 	assert.equal((await fresh.tools.get("subagent_result")!.execute("c2", { task_id: id }, undefined, undefined, again.ctx)).content[0].text, "Kept.");
 
+	// Back in the session where it actually finished, it stays listed as
+	// history -- in the current-session view and under "all sessions" too.
 	assert.ok(commands.has("gentle:agents") && shortcuts.has("alt+a"));
 	const opened = commands.get("gentle:agents")!.handler("", ctx);
 	for (let attempt = 0; attempt < 40 && overlays.length === 0; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 25));
 	const overlay = overlays[0];
 	assert.ok(overlay, "the overlay component was created");
-	assert.doesNotMatch(overlay.render(80).map(stripAnsi).join("\n"), /finished|Subagent explore|Current orchestrator/);
+	assert.match(overlay.render(80).map(stripAnsi).join("\n"), /finished|Subagent explore/, "the task that finished in this session stays visible as history");
 	overlay.handleInput("a");
 	overlay.handleInput("\x1b[C");
-	assert.doesNotMatch(overlay.render(80).map(stripAnsi).join("\n"), /✓ Subagent explore/, "all sessions is not a historical-task browser");
+	assert.match(overlay.render(80).map(stripAnsi).join("\n"), /Subagent explore/, "the current session's own history shows under all sessions too");
 	overlay.handleInput("\x1b");
 	await opened;
 });
@@ -1652,6 +3323,104 @@ test("restored task history cannot enter the live panel or execute stop even wit
 	await opened;
 });
 
+// A1 (odd/tasks/usage-click-and-changes-attribution.md): resuming a session
+// brings its own finished subagents back as visible history, never another
+// session's, and a brand-new session starts with none restored.
+test("resuming a session restores its own finished tasks as history, never another session's", async () => {
+	const { pi, fire, commands } = fakePi();
+	const harness = deps();
+	const historyHome = join(root, "resume-history-home");
+	const base: TaskRecord = { id: "own-1", agent: "explore-a", mode: "background", prompt: "p", label: "p", cwd, parentSessionId: "resumed-session", status: TASK_STATUS.COMPLETED, createdAt: 1, startedAt: 1, endedAt: 100, model: "m", thinking: undefined, sessionPath: null, error: null, result: "done", lastStep: "responded", lastActivityAt: 100, turns: 1, toolCalls: 0, tokens: 0, cost: 0 };
+	const own1 = base;
+	const own2: TaskRecord = { ...base, id: "own-2", agent: "explore-b", status: TASK_STATUS.FAILED, endedAt: 200, error: "boom", result: null };
+	const other: TaskRecord = { ...base, id: "not-mine", agent: "explore-other", parentSessionId: "other-session" };
+	await saveTask(historyDir(historyHome), own1, emptyThread());
+	await saveTask(historyDir(historyHome), own2, emptyThread());
+	await saveTask(historyDir(historyHome), other, emptyThread());
+	harness.deps.home = historyHome;
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx, overlays } = fakeContext();
+	ctx.sessionManager.getSessionId = () => "resumed-session";
+	await fire("session_start", ctx, { reason: "resume" });
+	const opened = commands.get("gentle:agents")!.handler("", ctx);
+	for (let attempt = 0; attempt < 40 && overlays.length === 0; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+	// The disk history read behind restoreSessionHistory is fire-and-forget,
+	// so poll the overlay's own render output instead of sleeping a guess.
+	const rendered = await waitForOverlayMatch(() => stripAnsi(overlays[0]!.render(100).join("\n")), /Subagent explore-a/);
+	assert.match(rendered, /Subagent explore-a/, "the resumed session's own finished task is restored");
+	assert.match(rendered, /Subagent explore-b/, "a second finished task of the same session is restored too");
+	assert.doesNotMatch(rendered, /explore-other/, "another session's finished task never restores here");
+	overlays[0]!.handleInput("\x1b");
+	await opened;
+	await fire("session_shutdown", ctx);
+
+	const { pi: freshPi, fire: freshFire, commands: freshCommands } = fakePi();
+	gentleAgents(freshPi, {}, harness.deps);
+	const { ctx: freshCtx, overlays: freshOverlays } = fakeContext();
+	freshCtx.sessionManager.getSessionId = () => "brand-new-session";
+	await freshFire("session_start", freshCtx, { reason: "new" });
+	await tick();
+	const freshOpened = freshCommands.get("gentle:agents")!.handler("", freshCtx);
+	for (let attempt = 0; attempt < 40 && freshOverlays.length === 0; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+	assert.doesNotMatch(stripAnsi(freshOverlays[0]!.render(100).join("\n")), /explore/, "a brand-new session restores nothing");
+	freshOverlays[0]!.handleInput("\x1b");
+	await freshOpened;
+	await freshFire("session_shutdown", freshCtx);
+});
+
+// A1 follow-up: Pi reports "startup" (not "resume") when the CLI is launched
+// directly into an existing session file (--continue / --resume picker,
+// agent-session.js:152) -- "resume" is only the in-session /resume switch.
+// A startup into a session that already has entries must restore its history
+// too; a "startup" with no entries (nothing pre-existing to restore) must not.
+test("starting up into an existing session also restores its own finished history; a startup with no prior entries does not", async () => {
+	const historyHome = join(root, "startup-history-home");
+	const finished: TaskRecord = { id: "startup-1", agent: "explore-startup", mode: "background", prompt: "p", label: "p", cwd, parentSessionId: "startup-session", status: TASK_STATUS.COMPLETED, createdAt: 1, startedAt: 1, endedAt: 100, model: "m", thinking: undefined, sessionPath: null, error: null, result: "done", lastStep: "responded", lastActivityAt: 100, turns: 1, toolCalls: 0, tokens: 0, cost: 0 };
+	await saveTask(historyDir(historyHome), finished, emptyThread());
+
+	{
+		// Startup into a session file that already has entries: restores.
+		const { pi, fire, commands } = fakePi();
+		const harness = deps();
+		harness.deps.home = historyHome;
+		gentleAgents(pi, {}, harness.deps);
+		const { ctx, overlays } = fakeContext();
+		ctx.sessionManager.getSessionId = () => "startup-session";
+		ctx.sessionManager.getEntries = (() => [{ type: "message" }]) as typeof ctx.sessionManager.getEntries;
+		await fire("session_start", ctx, { reason: "startup" });
+		const opened = commands.get("gentle:agents")!.handler("", ctx);
+		for (let attempt = 0; attempt < 40 && overlays.length === 0; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+		// The disk history read behind restoreSessionHistory is fire-and-forget,
+		// so poll the overlay's own render output instead of sleeping a guess.
+		const rendered = await waitForOverlayMatch(() => stripAnsi(overlays[0]!.render(100).join("\n")), /Subagent explore-startup/);
+		assert.match(rendered, /Subagent explore-startup/, "startup into an existing session restores its own finished history");
+		overlays[0]!.handleInput("\x1b");
+		await opened;
+		await fire("session_shutdown", ctx);
+	}
+	{
+		// Startup reported for a session with no prior entries: nothing to
+		// restore, even though the reason is "startup" and the id matches.
+		const { pi, fire, commands } = fakePi();
+		const harness = deps();
+		harness.deps.home = historyHome;
+		gentleAgents(pi, {}, harness.deps);
+		const { ctx, overlays } = fakeContext();
+		ctx.sessionManager.getSessionId = () => "startup-session";
+		await fire("session_start", ctx, { reason: "startup" });
+		// getEntries defaults to [] here, so preexisting is false and
+		// restoreSessionHistory never runs -- nothing to wait for beyond
+		// letting the already-fired session_start handler settle.
+		await tick();
+		const opened = commands.get("gentle:agents")!.handler("", ctx);
+		for (let attempt = 0; attempt < 40 && overlays.length === 0; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+		assert.doesNotMatch(stripAnsi(overlays[0]!.render(100).join("\n")), /explore-startup/, "a startup report with no prior entries restores nothing");
+		overlays[0]!.handleInput("\x1b");
+		await opened;
+		await fire("session_shutdown", ctx);
+	}
+});
+
 test("Alt+S confirms a snapshot of active subagents and suppresses their follow-up delivery", async () => {
 	const { pi, tools, fire, shortcuts, sent } = fakePi();
 	const harness = deps();
@@ -1743,6 +3512,153 @@ test("the production overlay reads terminal rows at render time without a minimu
 	assert.equal(overlay.render(80).length, 1, "tiny terminals retain bounded controls rather than forced chrome");
 	overlay.handleInput("\x1b");
 	await opened;
+});
+
+
+test("default session transport selects Windows or POSIX classes without mutating the process platform", () => {
+	const registry = {} as never;
+	const onNotification = async () => {};
+	const windows = createDefaultSessionTransport("win32");
+	assert.ok(windows.createListener(registry, "s1", onNotification) instanceof WindowsActiveSessionListener);
+	assert.ok(windows.createClient(registry, "s1") instanceof WindowsActiveSessionClient);
+	const posix = createDefaultSessionTransport("linux");
+	assert.ok(posix.createListener(registry, "s1", onNotification) instanceof ActiveSessionListener);
+	assert.ok(posix.createClient(registry, "s1") instanceof ActiveSessionClient);
+	assert.equal(posix.createRegistry, createDefaultSessionTransport("darwin").createRegistry);
+	assert.equal(windows.createRegistry, createDefaultSessionTransport("win32").createRegistry);
+	assert.notEqual(windows.createRegistry, posix.createRegistry);
+});
+
+test("session transport startup failure cleans the constructed Windows-capable transport and stays unavailable", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	let registryCloses = 0;
+	let listenerCloses = 0;
+	let clientCloses = 0;
+	const registry = {
+		list: async () => [],
+		listActivations: async () => [],
+		close: async () => { registryCloses += 1; },
+	};
+	const transport: SessionTransportFactory = {
+		createRegistry: async () => registry,
+		createListener: () => ({
+			registry,
+			start: async () => { throw new Error("unavailable"); },
+			close: async () => { listenerCloses += 1; },
+		}),
+		createClient: () => ({
+			close: () => { clientCloses += 1; },
+			sendNotification: async () => ({ id: "unused", accepted: true }),
+		}),
+	};
+	runtime.deps.sessionTransport = transport;
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+	await eventually(() => clientCloses === 1 && listenerCloses === 1 && registryCloses === 1, "startup failure cleanup completes");
+	assert.equal(clientCloses, 1);
+	assert.equal(listenerCloses, 1);
+	assert.equal(registryCloses, 1);
+	assert.match((await h.tools.get("orchestrator_session_id")!.execute("id", {}, undefined, undefined, ctx)).content[0].text, /not ready/);
+});
+
+test("session transport adds host tools, forwards notifications, and closes on shutdown", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	let callback: ((notification: { id: string; senderSessionId: string; message: string }) => Promise<void>) | undefined;
+	let listenerStarts = 0;
+	let listenerCloses = 0;
+	let clientCloses = 0;
+	const registry = { list: async () => [{ sessionId: "peer", reachability: "unknown" }], listActivations: async () => [] };
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: (_registry, _sessionId, received) => {
+			callback = received;
+			return { registry, start: async () => { listenerStarts += 1; }, close: async () => { listenerCloses += 1; } };
+		},
+		createClient: () => ({ close: () => { clientCloses += 1; } }),
+	} as never;
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+	await eventually(() => listenerStarts === 1, "session transport listener starts");
+	assert.equal(listenerStarts, 1);
+	assert.ok(h.tools.has("orchestrator_session_id"));
+	assert.ok(h.tools.has("orchestrator_list"));
+	assert.ok(h.tools.has("orchestrator_send_message"));
+	assert.match((await h.tools.get("orchestrator_list")!.execute("list", {}, undefined, undefined, ctx)).content[0].text, /peer/);
+	assert.ok(callback, "listener receives the inbound callback");
+	await callback!({ id: "message-1", senderSessionId: "peer", message: "\u001b[31mraw model content" });
+	assert.equal(h.sent.at(-1)?.message.customType, "gentle-agents.orchestrator-message");
+	assert.match(String(h.sent.at(-1)?.message.content), /\u001b\[31mraw model content/);
+	assert.deepEqual(h.sent.at(-1)?.options, { deliverAs: "followUp", triggerTurn: true });
+	await h.fire("session_shutdown", ctx);
+	assert.equal(clientCloses, 1);
+	assert.equal(listenerCloses, 1);
+});
+
+test("session transport accepts a notification while listener publication is still starting", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	let callback: ((notification: { id: string; senderSessionId: string; message: string }) => Promise<void>) | undefined;
+	const registry = { list: async () => [], listActivations: async () => [] };
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: (_registry, _sessionId, received) => {
+			callback = received;
+			return { registry, start: async () => { await callback!({ id: "published", senderSessionId: "peer", message: "during publication" }); }, close: async () => {} };
+		},
+		createClient: () => ({ close: () => {} }),
+	} as never;
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+	await eventually(() => h.sent.at(-1)?.message.customType === "gentle-agents.orchestrator-message", "publication callback completes");
+	assert.equal(h.sent.at(-1)?.message.customType, "gentle-agents.orchestrator-message");
+	assert.match(String(h.sent.at(-1)?.message.content), /during publication/);
+});
+
+test("session transport selects a peer for outbound delivery and rejects stale callbacks after replacement", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	const callbacks: Array<(notification: { id: string; senderSessionId: string; message: string }) => Promise<void>> = [];
+	const sent: Array<{ recipient: string; message: string; expectedActivation?: unknown }> = [];
+	let closed = 0;
+	const records = [
+		{ version: 1, sessionId: "alpha", endpoint: "/alpha.sock", createdAt: 1 },
+		{ version: 1, sessionId: "beta", endpoint: "/beta.sock", createdAt: 2 },
+	];
+	const registry = { list: async () => [], listActivations: async () => records };
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: (_registry, _sessionId, received) => {
+			callbacks.push(received);
+			return { registry, start: async () => {}, close: async () => { closed += 1; } };
+		},
+		createClient: () => ({
+			close: () => { closed += 1; },
+			sendNotification: async (recipient: string, message: string, options: { expectedActivation?: unknown }) => {
+				sent.push({ recipient, message, expectedActivation: options.expectedActivation });
+				return { id: "accepted-1", accepted: true };
+			},
+		}),
+	} as never;
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx, dialogs } = fakeContext();
+	await h.fire("session_start", ctx);
+	await eventually(() => callbacks.length === 1, "initial transport callback registration");
+	const result = await h.tools.get("orchestrator_send_message")!.execute("send", { message: "hello peer" }, undefined, undefined, ctx);
+	assert.deepEqual(dialogs, ["select:Select recipient orchestrator:Orchestrator alpha|Orchestrator beta"]);
+	assert.deepEqual(sent, [{ recipient: "alpha", message: "hello peer", expectedActivation: records[0] }]);
+	assert.match(result.content[0].text, /accepted for delivery; it is not a delivery or read receipt/);
+	const original = callbacks[0]!;
+	(ctx.sessionManager as unknown as { getSessionId(): string }).getSessionId = () => "s2";
+	await h.fire("session_start", ctx);
+	await eventually(() => closed === 2, "replacement closes the old client and listener");
+	assert.equal(closed, 2, "replacement closes the old client and listener before activating its successor");
+	await assert.rejects(original({ id: "late", senderSessionId: "alpha", message: "late callback" }), /stale session transport/);
+	await h.fire("session_shutdown", ctx);
 });
 
 // Issue #867: a completion settling while the parent agent run is active must
@@ -1885,4 +3801,88 @@ test("aborting the caller's signal cancels the subagent, records it, and says wh
 		"a warning names the abort and the cancellation",
 	);
 	assert.equal(harness.children[0].killed.length > 0, true, "the runner terminated the child");
+
+});
+
+test("selected child routes recheck provenance and deny research local tools", () => {
+ const names = ["fetch_content", "web_search", "read", "write", "mem_save", "subagent_parent_message"];
+ const selection = { documentation: { tools: ["fetch_content"], extensions: { fetch_content: "/installed/web.ts" } } };
+ const path = join(root, "openspec/changes/demo/research.md");
+ const scope = { store: "both", worktree: root, changeName: "demo", retainedIntent: "docs", locators: [{ artifact: "research", path, revision: 1, digest: "a".repeat(64), engram: { id: 1, project: "pi", topic_key: "sdd/demo/research", revision_count: 1 } }] };
+ for (const mismatch of ["none", "path", "sdk", "inactive", "unregistered", "restriction"]) {
+  const hooks = new Map<string, (event: { toolName?: string; systemPrompt?: string; input?: object }, ctx?: { cwd: string }) => { block?: boolean; systemPrompt?: string } | undefined>();
+  const active = names.filter(name => mismatch !== "inactive" || name !== "fetch_content");
+  const registered = names.filter(name => mismatch !== "unregistered" || name !== "fetch_content");
+  const pi = { on: (name: string, hook: typeof hooks extends Map<string, infer H> ? H : never) => hooks.set(name, hook), getActiveTools: () => active,
+   getAllTools: () => registered.map(name => ({ name, sourceInfo: { source: mismatch === "sdk" && name === "fetch_content" ? "sdk" : "extension", path: mismatch === "path" ? "/other.ts" : "/installed/web.ts" } })) };
+  gentleAgents(pi as never, { GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_RESEARCH_TOOLS: JSON.stringify(names.filter(name => mismatch !== "restriction" || name !== "fetch_content")), GENTLE_PI_RESEARCH_SELECTION: JSON.stringify(selection), GENTLE_PI_RESEARCH_ARTIFACT: JSON.stringify(scope) });
+  const call = hooks.get("tool_call")!;
+  assert.equal(call({ toolName: "fetch_content" })?.block, mismatch === "none" ? undefined : true, mismatch);
+  assert.equal(call({ toolName: "web_search" })?.block, true, "available but unselected");
+  for (const toolName of names.slice(2)) assert.equal(call({ toolName, input: toolName === "mem_save" ? { project: "pi", topic_key: "sdd/demo/research", content: '{"revision":2}' } : { path, content: '{"revision":2}' } }, { cwd: root })?.block, toolName === "subagent_parent_message" ? undefined : true, toolName);
+ }
+});
+
+for (const condition of ["granted", "declined", "native-denied", "asset-drift"] as const) test(`managed dispatch needs real consent but no attempt command (${condition})`, async () => {
+	const consent = condition === "granted";
+	const h = fakePi(), runtime = deps(), fixtureHome = join(root, `no-attempt-${condition}`);
+	mkdirSync(join(fixtureHome, ".pi/agent/agents"), { recursive: true });
+	writeFileSync(join(fixtureHome, ".pi/agent/agents/sdd-remediate.md"), readFileSync("assets/agents/sdd-remediate.md"));
+	const spawn = runtime.deps.spawn;
+	runtime.deps.spawn = (...args) => { const child = spawn(...args); child.pid = 123; return child; };
+	runtime.deps.process = { platform: "win32", kill() {} };
+	if (condition === "asset-drift") writeFileSync(join(fixtureHome, ".pi/agent/agents/sdd-remediate.md"), "---\nname: sdd-remediate\ntools: [bash]\n---\nUnowned instructions.");
+	const revision = `sha256:${"a".repeat(64)}`;
+	let attempts = 0, confirmations = 0;
+	const obsolete = async () => { attempts++; throw new Error("Unknown command: sdd-attempt acquire/settle"); };
+	const nativeSdd = {
+		sddStatus: async () => ({ schemaName: "gentle-ai.sdd-status", schemaVersion: 2, changeName: "alpha", artifactStore: "openspec", planningHome: { mode: "repo-local", path: join(cwd, "openspec") }, changeRoot: join(cwd, "openspec/changes/alpha"), actionContext: { mode: "repo-local", workspaceRoot: cwd, allowedEditRoots: [cwd] }, dependencies: Object.fromEntries(["proposal", "specs", "design", "tasks", "apply", "verify", "archive"].map(key => [key, "ready"])), phaseInstructions: { apply: [], verify: [], remediate: ["Correct evidence"], archive: [] }, blockedReasons: condition === "native-denied" ? ["edit_authority_missing"] : [], nextRecommended: "remediate", remediationState: { required: true, complete: false, failedEvidenceRevision: revision } }),
+		sddAttemptAcquire: obsolete, sddAttemptSettle: obsolete,
+	} as unknown as NativeReviewCli;
+	gentleAgents(h.pi, {}, { ...runtime.deps, home: fixtureHome, nativeSdd });
+	const { ctx } = fakeContext(fakeTui, async () => { confirmations++; return consent; });
+	await h.fire("session_start", ctx);
+	const launch = h.tools.get("subagent_run")!.execute("run", { agent: "sdd-remediate", task: "Correct alpha", context: PARENT_CONFIRMED_SDD_CONTEXT, mode: "background", sdd_change: { changeName: "alpha", workspaceRoot: cwd, phase: "remediate", failedEvidenceRevision: revision }, remediation: { plan: { cwd, commands: ["pnpm test"], runtimeHarness: { naReason: "Not applicable because this fixture tests registered dispatch only." }, rollback: { boundary: "Remove isolated fixture", command: "git diff --check" } } } }, undefined, undefined, ctx);
+	let result: Awaited<typeof launch> | undefined;
+	if (consent) result = await launch;
+	else await assert.rejects(launch, condition === "native-denied" ? /Stale remediation selection/ : condition === "asset-drift" ? /Unsupported remediation actor content/ : /fresh human authorization/);
+	await tick();
+	assert.equal(confirmations, ["native-denied", "asset-drift"].includes(condition) ? 0 : 1);
+	assert.equal(runtime.spawned.length, consent ? 1 : 0);
+	assert.equal(attempts, 0);
+	assert.equal(h.tools.has("subagent_reconcile"), false);
+	if (consent) {
+		assert.ok(runtime.children[0].written.some((command) => command.type === "prompt"), "the registered actor receives its prompt");
+		const repeat = h.tools.get("subagent_run")!.execute("repeat", { agent: "sdd-remediate", task: "Correct alpha again", context: PARENT_CONFIRMED_SDD_CONTEXT, mode: "background", sdd_change: { changeName: "alpha", workspaceRoot: cwd, phase: "remediate", failedEvidenceRevision: revision }, remediation: { plan: { cwd, commands: ["pnpm test"], runtimeHarness: { naReason: "Not applicable because this fixture tests registered dispatch only." }, rollback: { boundary: "Remove isolated fixture", command: "git diff --check" } } } }, undefined, undefined, ctx);
+		await assert.rejects(repeat, /Remediation already queued or running/);
+		assert.equal(confirmations, 2, "independent human consent does not permit overlapping managed actors");
+		assert.equal(runtime.spawned.length, 1);
+
+		runtime.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Work stopped; no verification success is claimed." }], stopReason: "stop" }] });
+		runtime.children[0].emit({ type: "agent_settled" });
+		await tick();
+		const id = (result!.details.gentleAgents as { taskId: string }).taskId;
+		const status = await h.tools.get("subagent_status")!.execute("status", { task_id: id }, undefined, undefined, ctx);
+		assert.equal((status.details.gentleAgents as { status: string }).status, "completed", "ordinary task completion is not native verification approval");
+	}
+	await h.fire("session_shutdown", ctx);
+	assert.equal(attempts, 0, "terminal cleanup must not invoke settlement");
+});
+
+
+test("registered task actor receives ordinary checkbox and configured TDD guidance", async () => {
+ const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+ const home = join(root, "task-truth-home");
+ mkdirSync(join(home, ".pi/agent/agents"), { recursive: true });
+ writeFileSync(join(home, ".pi/agent/agents/sdd-tasks.md"), readFileSync("assets/agents/sdd-tasks.md"));
+ gentleAgents(h.pi, {}, { ...runtime.deps, home });
+ await h.fire("session_start", ctx);
+ await h.tools.get("subagent_run")!.execute("tasks", { agent: "sdd-tasks", task: "Plan ordinary tasks", context: PARENT_CONFIRMED_SDD_CONTEXT, mode: "background" }, undefined, undefined, ctx);
+ await tick();
+ assert.equal(runtime.spawned.length, 1);
+ const args = runtime.spawned[0], instructions = args[args.indexOf("--append-system-prompt") + 1];
+ assert.match(instructions, /Only when configured strict TDD is active/);
+ assert.match(instructions, /- \[ \] 1\. Implement and verify the behavior\./);
+ assert.doesNotMatch(instructions, /<!-- sdd-owner:/);
+ await h.fire("session_shutdown", ctx);
 });

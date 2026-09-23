@@ -2,6 +2,7 @@ import {
 	Container,
 	Input,
 	isKeyRelease,
+	Key,
 	matchesKey,
 	Text,
 	visibleWidth,
@@ -49,6 +50,7 @@ export interface QuestionnaireViewOptions {
 	theme: QuestionnaireTheme;
 	keybindings?: KeybindingsManager;
 	onComplete?: (result: QuestionnaireResult) => void;
+	rows?: number | (() => number);
 }
 
 interface QuestionState {
@@ -140,6 +142,7 @@ export class QuestionnaireView extends Container implements Focusable {
 	private readonly theme: QuestionnaireTheme;
 	private readonly keybindings: KeybindingsManager | undefined;
 	private readonly onComplete: ((result: QuestionnaireResult) => void) | undefined;
+	private readonly rows: () => number;
 	private readonly states: QuestionState[];
 	private readonly editor: CustomTextEditor;
 	private focusedQuestion = 0;
@@ -148,6 +151,8 @@ export class QuestionnaireView extends Container implements Focusable {
 	private result: QuestionnaireResult | undefined;
 	private lineOwners: Array<LineOwner | undefined> = [];
 	private _focused = false;
+	private previewScroll = 0;
+	private previewScrollable = false;
 
 	constructor(options: QuestionnaireViewOptions) {
 		super();
@@ -155,6 +160,8 @@ export class QuestionnaireView extends Container implements Focusable {
 		this.theme = options.theme;
 		this.keybindings = options.keybindings;
 		this.onComplete = options.onComplete;
+		const rowsOption = options.rows;
+		this.rows = typeof rowsOption === "function" ? rowsOption : typeof rowsOption === "number" ? () => rowsOption : () => 24;
 		this.states = options.questions.map(() => ({
 			cursor: 0,
 			toggled: new Set<number>(),
@@ -223,6 +230,16 @@ export class QuestionnaireView extends Container implements Focusable {
 			return;
 		}
 
+		if (matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("j"))) {
+			this.scrollPreview(this.previewPageSize());
+			return;
+		}
+
+		if (matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("k"))) {
+			this.scrollPreview(-this.previewPageSize());
+			return;
+		}
+
 		if (this.matches(data, "tui.select.up")) {
 			this.moveCursor(-1);
 			return;
@@ -249,6 +266,14 @@ export class QuestionnaireView extends Container implements Focusable {
 	override handleMouse(event: TuiMouseEvent) {
 		if (this.completed) return undefined;
 		if (this.editingQuestion !== undefined) return this.editor.handleMouse(event);
+
+		if (event.type === "wheel") {
+			const delta = event.wheelDelta ?? 0;
+			if (delta !== 0 && this.previewScrollable) {
+				this.scrollPreview(delta > 0 ? 1 : -1);
+				return { handled: true as const, render: true, target: this.mouseTarget(event) };
+			}
+		}
 
 		const owner = this.lineOwners[event.y];
 		if (!owner || owner.rowIndex < 0 || event.button !== "left") return undefined;
@@ -294,15 +319,37 @@ export class QuestionnaireView extends Container implements Focusable {
 		push(this.renderTabs());
 		push("");
 
+		const terminalRows = this.terminalRows();
+		const maxBodyRows = Math.max(6, terminalRows - 6);
+
 		const preview = this.currentPreview();
 		if (preview !== undefined && viewport >= MIN_PREVIEW_WIDTH) {
 			const leftWidth = Math.max(1, Math.floor(viewport * PREVIEW_SPLIT));
 			const rightWidth = Math.max(1, viewport - leftWidth - PREVIEW_GAP.length);
 			const left = this.renderBody(leftWidth, false);
 			const right = this.wrap(this.theme.fg("dim", preview), rightWidth);
-			const rows = Math.max(left.lines.length, right.length);
+
+			const targetRows = Math.max(left.lines.length, Math.min(right.length, maxBodyRows));
+			const isScrollable = right.length > targetRows;
+			this.previewScrollable = isScrollable;
+
+			let visibleRight: string[];
+			if (isScrollable) {
+				const contentRows = Math.max(1, targetRows - 1);
+				const maxScroll = Math.max(0, right.length - contentRows);
+				this.previewScroll = Math.max(0, Math.min(maxScroll, this.previewScroll));
+				visibleRight = right.slice(this.previewScroll, this.previewScroll + contentRows);
+				const start = this.previewScroll + 1;
+				const end = Math.min(right.length, this.previewScroll + contentRows);
+				visibleRight.push(this.theme.fg("dim", `[${start}–${end} of ${right.length}]`));
+			} else {
+				this.previewScroll = 0;
+				visibleRight = right;
+			}
+
+			const rows = Math.max(left.lines.length, visibleRight.length);
 			for (let index = 0; index < rows; index++) {
-				lines.push(`${padTo(left.lines[index] ?? "", leftWidth)}${PREVIEW_GAP}${right[index] ?? ""}`);
+				lines.push(`${padTo(left.lines[index] ?? "", leftWidth)}${PREVIEW_GAP}${visibleRight[index] ?? ""}`);
 				owners.push(left.owners[index]);
 			}
 		}
@@ -366,6 +413,9 @@ export class QuestionnaireView extends Container implements Focusable {
 		}
 
 		const customIndex = question.options.length;
+		const terminalRows = this.terminalRows();
+		const maxInlinePreviewRows = Math.max(4, Math.min(10, Math.floor(terminalRows * 0.4)));
+
 		for (const [optionIndex, option] of question.options.entries()) {
 			const owner: LineOwner = { questionIndex: this.focusedQuestion, rowIndex: optionIndex };
 			const cursor = state.cursor === optionIndex ? this.accent("❯ ") : "  ";
@@ -373,8 +423,23 @@ export class QuestionnaireView extends Container implements Focusable {
 			push(`${cursor}${marker}${option.label}`, owner);
 			push(`    ${this.theme.fg("dim", option.description)}`, owner);
 			if (inlinePreview && state.cursor === optionIndex && option.preview !== undefined) {
-				for (const line of this.wrap(this.theme.fg("dim", option.preview), Math.max(1, width - 4))) {
-					push(`    ${line}`, owner);
+				const wrapped = this.wrap(this.theme.fg("dim", option.preview), Math.max(1, width - 4));
+				if (wrapped.length > maxInlinePreviewRows) {
+					this.previewScrollable = true;
+					const contentRows = Math.max(1, maxInlinePreviewRows - 1);
+					const maxScroll = Math.max(0, wrapped.length - contentRows);
+					this.previewScroll = Math.max(0, Math.min(maxScroll, this.previewScroll));
+					const slice = wrapped.slice(this.previewScroll, this.previewScroll + contentRows);
+					for (const line of slice) push(`    ${line}`, owner);
+					const start = this.previewScroll + 1;
+					const end = Math.min(wrapped.length, this.previewScroll + contentRows);
+					push(`    ${this.theme.fg("dim", `[${start}–${end} of ${wrapped.length}]`)}`, owner);
+				} else {
+					this.previewScroll = 0;
+					this.previewScrollable = false;
+					for (const line of wrapped) {
+						push(`    ${line}`, owner);
+					}
 				}
 			}
 		}
@@ -392,8 +457,26 @@ export class QuestionnaireView extends Container implements Focusable {
 		const question = this.questions[this.focusedQuestion];
 		const parts = ["↑↓ move"];
 		if (question?.multiSelect) parts.push("space toggle");
+		if (this.previewScrollable) parts.push("pgup/pgdn scroll");
 		parts.push("enter select", "tab switch", "esc cancel");
 		return this.theme.fg("dim", parts.join(" · "));
+	}
+
+	private terminalRows(): number {
+		const count = this.rows();
+		return typeof count === "number" && Number.isFinite(count) && count > 0 ? Math.floor(count) : 24;
+	}
+
+	private previewPageSize(): number {
+		const available = Math.max(4, this.terminalRows() - 8);
+		return Math.max(1, available);
+	}
+
+	private scrollPreview(delta: number): void {
+		const preview = this.currentPreview();
+		if (!preview) return;
+		this.previewScroll += delta;
+		this.invalidate();
 	}
 
 	private wrap(text: string, width: number): string[] {
@@ -418,6 +501,7 @@ export class QuestionnaireView extends Container implements Focusable {
 		const total = this.questions.length;
 		if (total === 0) return;
 		this.focusedQuestion = (this.focusedQuestion + delta + total) % total;
+		this.previewScroll = 0;
 		this.invalidate();
 	}
 
@@ -426,8 +510,12 @@ export class QuestionnaireView extends Container implements Focusable {
 		const state = this.states[this.focusedQuestion];
 		if (!question || !state) return;
 		const total = question.options.length + 1;
-		state.cursor = Math.max(0, Math.min(total - 1, state.cursor + delta));
-		this.invalidate();
+		const next = Math.max(0, Math.min(total - 1, state.cursor + delta));
+		if (next !== state.cursor) {
+			state.cursor = next;
+			this.previewScroll = 0;
+			this.invalidate();
+		}
 	}
 
 	private toggleCursor(): void {
@@ -450,6 +538,7 @@ export class QuestionnaireView extends Container implements Focusable {
 		const changed = this.focusedQuestion !== questionIndex || state.cursor !== rowIndex;
 		this.focusedQuestion = questionIndex;
 		state.cursor = Math.max(0, Math.min(question.options.length, rowIndex));
+		if (changed) this.previewScroll = 0;
 		this.invalidate();
 		return changed;
 	}
@@ -552,7 +641,10 @@ export class QuestionnaireView extends Container implements Focusable {
 		// Advance to the first unanswered question so a commit is visible and the
 		// tab strip keeps moving; committed answers stay reachable with Tab.
 		const next = this.states.findIndex((state) => state.answer === undefined);
-		if (next !== -1 && next !== questionIndex) this.focusedQuestion = next;
+		if (next !== -1 && next !== questionIndex) {
+			this.focusedQuestion = next;
+			this.previewScroll = 0;
+		}
 		this.invalidate();
 	}
 

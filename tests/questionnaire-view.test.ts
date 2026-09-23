@@ -336,6 +336,67 @@ test("height stays bounded as the question count grows", () => {
 	assert.match(rendered, /❯ A/);
 });
 
+test("long option preview height is bounded to terminal rows in side-by-side mode (#1340)", () => {
+	const longPreview = Array.from({ length: 65 }, (_, i) => `Preview line ${i + 1}`).join("\n");
+	const { view } = viewWithResult(single(longPreview));
+	const renderedLines = view.render(100);
+	assert.ok(
+		renderedLines.length <= 24,
+		`rendered height must be bounded to terminal rows (was ${renderedLines.length} lines, expected <= 24)`,
+	);
+	const text = renderedLines.join("\n");
+	assert.match(text, /Preview line 1/);
+	assert.match(text, /\[1–/);
+});
+
+test("scrolling with pageDown/pageUp moves the visible preview slice (#1340)", () => {
+	const longPreview = Array.from({ length: 65 }, (_, i) => `Preview line ${i + 1}`).join("\n");
+	const { view } = viewWithResult(single(longPreview));
+	assert.match(render(view, 100), /Preview line 1/);
+
+	// Page down scrolls the preview window
+	view.handleInput("\x1b[6~"); // PageDown
+	const pageDownText = render(view, 100);
+	assert.doesNotMatch(pageDownText, /Preview line 1\b/);
+	assert.match(pageDownText, /Preview line/);
+
+	// Page up scrolls back
+	view.handleInput("\x1b[5~"); // PageUp
+	const pageUpText = render(view, 100);
+	assert.match(pageUpText, /Preview line 1\b/);
+
+	// Ctrl+j and Ctrl+k also scroll
+	view.handleInput("\x0a"); // ctrl+j
+	const ctrlJText = render(view, 100);
+	assert.doesNotMatch(ctrlJText, /Preview line 1\b/);
+
+	view.handleInput("\x0b"); // ctrl+k
+	const ctrlKText = render(view, 100);
+	assert.match(ctrlKText, /Preview line 1\b/);
+
+	// Mouse wheel scrolls preview
+	view.render(100);
+	view.handleMouse({ type: "wheel", button: "none", wheelDelta: 1, x: 50, y: 5, screenX: 50, screenY: 5, width: 100, height: 24, shift: false, alt: false, ctrl: false });
+	const wheelDownText = render(view, 100);
+	assert.doesNotMatch(wheelDownText, /Preview line 1\b/);
+
+	// Moving cursor to next option and back resets scroll position
+	view.handleInput(KEY.down[0]); // to Beta
+	view.handleInput(KEY.up[0]);   // back to Alpha
+	const resetText = render(view, 100);
+	assert.match(resetText, /Preview line 1\b/);
+});
+
+test("long option preview height is bounded to terminal rows in inline mode (#1340)", () => {
+	const longPreview = Array.from({ length: 65 }, (_, i) => `Preview line ${i + 1}`).join("\n");
+	const { view } = viewWithResult(single(longPreview));
+	const renderedLines = view.render(60);
+	assert.ok(
+		renderedLines.length <= 24,
+		`inline rendered height must be bounded to terminal rows (was ${renderedLines.length} lines, expected <= 24)`,
+	);
+});
+
 test("Escape cancels the questionnaire with a cancelled result", () => {
 	const { view, completed } = viewWithResult(single());
 	view.handleInput(KEY.escape);

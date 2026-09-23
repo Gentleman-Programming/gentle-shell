@@ -64,8 +64,8 @@ import {
 const SHORTCUT = "ctrl+shift+r";
 const MAX_VISIBLE = 10;
 const PREVIEW_ROWS = 10;
-// Lazy windowing (design §D3; user-tuned 2026-09-08). PRELOAD_BUFFER=2
-// fires growth as the cursor enters the final 2 loaded rows; BATCH_SIZE=10
+// Lazy windowing (design §D3; user-tuned 2026-09-08). PRELOAD_BUFFER=3
+// fires growth as the cursor enters the final 3 loaded rows; BATCH_SIZE=10
 // loads exactly one viewport per growth; INITIAL_BATCH=10 paints one
 // viewport at open. PRELOAD_BUFFER <= MAX_VISIBLE keeps a jump within one
 // viewport covered by the catch-up loop; review all three together.
@@ -130,7 +130,10 @@ function sanitizeForDisplay(text: string): string {
     } else if (cp >= 0x80 && cp < 0xa0) {
       out += `\\x${cp.toString(16).padStart(2, "0")}`;
     } else {
-      out += text[i];
+      // Astral code points (> 0xFFFF) span a surrogate pair; append the
+      // full code point, not just the high surrogate at text[i], so emoji
+      // and other non-BMP characters survive sanitization intact.
+      out += cp > 0xffff ? String.fromCodePoint(cp) : text[i];
     }
     if (cp > 0xffff) i++; // skip low surrogate of astral pair
   }
@@ -193,7 +196,10 @@ class FixedRowText {
       : truncateToWidth(this.text, width, "…");
     // Pad to full terminal width so the overlay fully overwrites
     // whatever is beneath it and leaves no ghost characters on dismiss.
-    return [rendered + " ".repeat(Math.max(0, width - rendered.length))];
+    // Measure the VISIBLE width: SGR escape sequences (colored rows from
+    // rebuildListWithWidth) occupy no terminal cells.
+    const visible = rendered.replace(/\x1b\[[0-9;]*m/g, "");
+    return [rendered + " ".repeat(Math.max(0, width - visible.length))];
   }
 }
 
@@ -1082,6 +1088,18 @@ function recordsFromEntries(
 
 export default function promptHistoryExtension(pi: ExtensionAPI) {
   // One writer per extension load; see getWriter() for the init order.
+  // Warm migrate/registry/seed OFF the first-prompt path: the scheduled
+  // init runs once, immediately after load. A prompt arriving earlier
+  // falls back to the synchronous lazy init in getWriter(), whose
+  // writerState guard makes whichever runs second a no-op — bootstrap
+  // work is never duplicated.
+  setImmediate(() => {
+    try {
+      getWriter();
+    } catch {
+      // init is best-effort; the lazy path retries on the next prompt
+    }
+  });
 
   // Persist every delivered user prompt (write-through, append-only JSONL).
   // The local ExtensionAPI stub types handler args as unknown; narrow here.

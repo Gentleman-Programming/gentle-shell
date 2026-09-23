@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -94,6 +95,41 @@ test("hash collision re-keys the existing occupant; the new cwd keeps the short 
   assert.equal(raw[longKeys[0]], "/some/other/project");
   assert.equal(lookupCwd(root, hash), cwd);
   assert.equal(lookupCwd(root, longKeys[0]), "/some/other/project");
+});
+
+test("a re-keyed cwd keeps its long key on later calls (stable collision mappings)", () => {
+  // projectHashLong is private: derive the documented 24-char key here —
+  // the literals never exist, so canonicalization falls back to the raw
+  // string on every platform.
+  const longKey = (cwd: string) =>
+    createHash("sha256").update(cwd).digest("hex").slice(0, 24);
+  const readRegistryFile = (dir: string): Record<string, string> =>
+    JSON.parse(fs.readFileSync(registryPath(dir), "utf8"));
+  const root = makeRoot();
+  const a = "/pi-history-test/registry-collide-a";
+  const b = "/pi-history-test/registry-collide-b";
+  // Simulate the collision: b's short hash is pre-mapped to a different
+  // cwd, so entering b re-keys that occupant to a 24-char key.
+  const shortHash = projectHash(b);
+  fs.mkdirSync(root, { recursive: true });
+  fs.writeFileSync(
+    registryPath(root),
+    JSON.stringify({ [shortHash]: a }),
+    "utf8",
+  );
+  ensureRegistryEntry(root, b); // collision: a re-keyed to 24 chars
+  const before = readRegistryFile(root);
+  // Re-entering the re-keyed cwd must return its EXISTING long key and
+  // leave the other occupant's short-hash mapping untouched.
+  const again = ensureRegistryEntry(root, a);
+  assert.equal(again.created, false);
+  assert.equal(again.hash, longKey(a));
+  const after = readRegistryFile(root);
+  assert.deepEqual(after, before);
+  // And re-entering the short-hash holder keeps the short key.
+  const holder = ensureRegistryEntry(root, b);
+  assert.equal(holder.hash, projectHash(b));
+  assert.deepEqual(readRegistryFile(root), before);
 });
 
 test("wrong-shaped registry (array / scalar / null) fails open and is rebuilt on the next entry", () => {

@@ -115,6 +115,11 @@ export function ensureRegistryEntry(
   const hash = projectHash(cwd);
   const data = readRegistry(root);
   if (data[hash] === cwd) return { hash, created: false };
+  // An earlier collision may have re-keyed THIS cwd to a long key.
+  // Return the existing mapping unchanged so collision assignments stay
+  // stable across calls instead of flipping the other occupant's key.
+  const existingKey = Object.keys(data).find((k) => data[k] === cwd);
+  if (existingKey !== undefined) return { hash: existingKey, created: false };
   if (data[hash] !== undefined) {
     // Collision: re-key the EXISTING occupant at 24 hash chars so both
     // identities coexist; the incoming cwd keeps the short hash — the
@@ -520,9 +525,10 @@ function writeSeedFileAtomic(seed: string, collected: StoreEntry[]): number {
  * One-time migration from the v1 stores into the v2 global seed:
  * - `~/.pi/agent/editor-history.jsonl` (v1 single-file store)
  * - `~/.pi/agent/editor-history.json` (pre-v1 array, newest-first)
- * Content lands in `pi-history/history-global.jsonl` chronologically; each
- * source is renamed `.imported`, never deleted. Gated: an existing global
- * seed means migration already ran.
+ * Content lands in `pi-history/history-global.jsonl` chronologically; only
+ * after the seed write succeeds is each source renamed `.imported`, never
+ * deleted — a failed write leaves sources untouched for a later retry.
+ * Gated: an existing global seed means migration already ran.
  */
 export function migrateLegacyStores(
   root: string,
@@ -537,15 +543,8 @@ export function migrateLegacyStores(
   const legacyArray = path.join(agentDir, "editor-history.json");
   if (fs.existsSync(legacyArray)) {
     const texts = loadSharedHistory(legacyArray);
-    if (texts.length > 0) {
-      for (let i = texts.length - 1; i >= 0; i--) {
-        collected.push({ v: 1, text: texts[i] });
-      }
-    }
-    try {
-      fs.renameSync(legacyArray, `${legacyArray}.imported`);
-    } catch {
-      // The seed write below is the source of truth; rename failure is benign.
+    for (let i = texts.length - 1; i >= 0; i--) {
+      collected.push({ v: 1, text: texts[i] });
     }
   }
 
@@ -553,16 +552,21 @@ export function migrateLegacyStores(
   const v1File = path.join(agentDir, "editor-history.jsonl");
   if (fs.existsSync(v1File)) {
     collected.push(...readValidLines(v1File));
-    try {
-      fs.renameSync(v1File, `${v1File}.imported`);
-    } catch {
-      // benign
-    }
   }
 
   if (collected.length === 0) return { migrated: 0, ran: false };
 
   const migrated = writeSeedFileAtomic(seed, collected);
+
+  // The seed write is the source of truth: rename sources only once it
+  // succeeded, so a failure can never strand entries in .imported files.
+  for (const src of [legacyArray, v1File]) {
+    try {
+      if (fs.existsSync(src)) fs.renameSync(src, `${src}.imported`);
+    } catch {
+      // benign: the seed gate prevents duplicate import on the next run
+    }
+  }
   return { migrated, ran: true };
 }
 
@@ -769,7 +773,7 @@ export function gcProjectDir(
 
 /**
  * Merge all but the newest GC_KEEP_NEWEST files into one
- * `compact-<ts>.jsonl` (chronological within the merged content). One
+ * `compact-<pid>-<ts>.jsonl` (chronological within the merged content). One
  * atomic write; the originals are removed only after the compact file
  * lands. Readers see either the old set or the compacted set.
  */
@@ -800,7 +804,7 @@ function compactFiles(filesMtimeDesc: string[], keepNewest: number): GcResult {
   if (mergedLines.length === 0) return { compacted: false, merged: 0 };
 
   const dir = path.dirname(toMerge[0]);
-  const compact = path.join(dir, `compact-${Date.now()}.jsonl`);
+  const compact = path.join(dir, `compact-${process.pid}-${Date.now()}.jsonl`);
   const tmp = `${compact}.tmp-${process.pid}-${Date.now()}`;
   fs.writeFileSync(tmp, `${mergedLines.join("\n")}\n`, "utf8");
   fs.renameSync(tmp, compact);

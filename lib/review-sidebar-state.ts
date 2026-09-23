@@ -162,8 +162,9 @@ export function createReviewSidebarPublisher(pi: ExtensionAPI) {
 								closure.lineage_id === prior?.lineage && closure.target_identity === prior?.target);
 							const sameCapture = boundCapture && closureMatches &&
 								(lineage === undefined || lineage === prior!.lineage) && (target === undefined || target === prior!.target);
-							if (definition.name === "gentle_review_capture" && sameCapture && isNonterminalReviewerCapture(data) &&
-								data.lineage_id === prior!.lineage && (data.target_identity === undefined || data.target_identity === prior!.target)) {
+							const nonterminalSingle = definition.name === "gentle_review_capture" && sameCapture && isNonterminalReviewerCapture(data) &&
+								data.lineage_id === prior!.lineage && (data.target_identity === undefined || data.target_identity === prior!.target);
+							if (nonterminalSingle) {
 								snapshot.state = "in_review";
 								snapshot.scope = prior!.scope;
 							}
@@ -172,7 +173,8 @@ export function createReviewSidebarPublisher(pi: ExtensionAPI) {
 								prior !== undefined && input.lineageId === prior.lineage && lineage === prior.lineage && target === prior.target;
 							if (healthy && (sameCapture || sameAcknowledgement)) {
 								if (snapshot.scope === REVIEW_SCOPE_UNAVAILABLE) snapshot.scope = prior!.scope;
-								scope = { ...prior!, scope: snapshot.scope, bindings: snapshot.state === "forecast" ? prior!.bindings : [] };
+								scope = { ...prior!, scope: snapshot.scope, bindings: snapshot.state === "forecast" ? prior!.bindings :
+									nonterminalSingle ? prior!.bindings.filter((binding) => binding !== input.collectBinding) : [] };
 							}
 							// A fresh native projection replaces correlation, even for the same lineage.
 							if (healthy && native.applicability === "current_target" && snapshot.scope !== REVIEW_SCOPE_UNAVAILABLE && typeof lineage === "string" && lineage && typeof target === "string" && target && native.projection) {

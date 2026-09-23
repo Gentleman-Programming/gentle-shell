@@ -198,6 +198,21 @@ for (const name of ["gentle_review_capture", "gentle_review_capture_group"]) {
 	});
 }
 
+test("separate issued captures retain only remaining binding until terminal closure", async () => {
+	const h = publisherFixture();
+	await h.seed();
+	for (const binding of ["first", "second"]) {
+		await h.run("gentle_review_capture", { lineageId: "lineage", collectBinding: binding }, h.captured);
+		assert.deepEqual(h.snapshot(), { state: "in_review", scope: "app.ts" });
+	}
+	await h.run("gentle_review_capture", { lineageId: "lineage", collectBinding: "first" }, h.captured);
+	assert.deepEqual(h.snapshot(), { state: "unknown", scope: "Candidate scope unavailable" });
+	await h.seed();
+	await h.run("gentle_review_capture_group", { lineageId: "lineage", collectBindings: ["first", "second"] }, { ...h.closure, tool: "gentle_review_capture_group" });
+	await h.run("gentle_review_capture", { lineageId: "lineage", collectBinding: "second" }, h.captured);
+	assert.deepEqual(h.snapshot(), { state: "unknown", scope: "Candidate scope unavailable" });
+});
+
 test("terminal closure requires its own matching identity despite matching wrapper", async () => {
 	const h = publisherFixture();
 	const params = { lineageId: "lineage", collectBinding: "first" };

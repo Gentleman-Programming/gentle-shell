@@ -9275,14 +9275,14 @@ function createGentleAiExtensionForTesting(
 	// consent, or chooses a partial candidate. Durable own-mutation receipts
 	// gate STATUS and consume only the generation captured before that await.
 	pi.on("agent_end", async (_event, ctx) => {
-		if (nativeReviewCli?.reviewMode === undefined || nativeReviewCli.targetStatus === undefined) return;
-		if (ctx.hasUI !== true || !reminderSessionActive) return;
 		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
 		const subagentDepth = processAgentEndSubagentDepth.get(sessionKey) ?? 0;
 		if (subagentDepth > 0) {
 			processAgentEndSubagentDepth.set(sessionKey, subagentDepth - 1);
 			return;
 		}
+		if (nativeReviewCli?.reviewMode === undefined || nativeReviewCli.targetStatus === undefined) return;
+		if (ctx.hasUI !== true || !reminderSessionActive) return;
 		const root = resolveSessionWorktree(ctx.cwd, ctx.cwd)?.root;
 		if (!root) return;
 		let mutation: string | undefined;

@@ -393,6 +393,21 @@ test("wiring stays quiet inside named-agent loops and resumes for the primary lo
 	assert.equal(sent[0]!.message.content, READ_FILES_MESSAGE);
 });
 
+test("wiring resumes parent reminders after a headless subagent agent_end", async () => {
+	const { handlers, sent } = wiringHarness();
+	const ctx = wiringCtx("wiring-agent-end-depth", "/repo");
+	await handlers.get("before_agent_start")!({ agentName: "worker", systemPrompt: "child" }, ctx);
+	assert.equal(await successfulResult(handlers, ctx, "read", { path: "src/a.ts" }), undefined);
+	assert.equal(await successfulResult(handlers, ctx, "read", { path: "src/b.ts" }), undefined);
+	assert.deepEqual(sent, [], "a named subagent loop must not receive parent reminders");
+	await handlers.get("agent_end")!({}, ctx);
+	assert.equal(await successfulResult(handlers, ctx, "read", { path: "src/a.ts" }), undefined);
+	assert.equal(await successfulResult(handlers, ctx, "read", { path: "src/b.ts" }), undefined);
+	assert.equal(await successfulResult(handlers, ctx, "read", { path: "src/c.ts" }), undefined);
+	assert.equal(sent.length, 1);
+	assert.equal(sent[0]!.message.content, READ_FILES_MESSAGE);
+});
+
 test("malformed inputs never throw and still feed the long-session total", () => {
 	const tracker = new OrchestratorDelegationReminders();
 	const seen: Array<string | undefined> = [];

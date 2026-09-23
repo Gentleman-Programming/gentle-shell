@@ -1467,8 +1467,10 @@ test("research launch transports selected grants and only matching existing exte
 	assert.equal(fake.tools.get("subagent_continue")!.parameters.properties.research_artifact, undefined);
 	assert.ok(fake.tools.get("subagent_continue")!.parameters.properties.research_selection, "fresh selection must be expressible on continuation");
 	assert.ok(JSON.parse(childEnv.GENTLE_PI_RESEARCH_TOOLS!).includes("subagent_parent_message"));
-	assert.match(argv[argv.indexOf("--append-system-prompt") + 1], /documentation: available/);
-	assert.match(argv[argv.indexOf("--append-system-prompt") + 1], /open-web: blocked/, "two reachable tools cannot admit open-web");
+	const promptArgValue = argv[argv.indexOf("--append-system-prompt") + 1];
+	const promptText = existsSync(promptArgValue) ? readFileSync(promptArgValue, "utf8") : promptArgValue;
+	assert.match(promptText, /documentation: available/);
+	assert.match(promptText, /open-web: blocked/, "two reachable tools cannot admit open-web");
 	runtime.children[0].emit({ type: "agent_settled" });
 	await tick();
 	const taskId = (result.details.gentleAgents as { taskId: string }).taskId;
@@ -3880,7 +3882,9 @@ test("registered task actor receives ordinary checkbox and configured TDD guidan
  await h.tools.get("subagent_run")!.execute("tasks", { agent: "sdd-tasks", task: "Plan ordinary tasks", context: PARENT_CONFIRMED_SDD_CONTEXT, mode: "background" }, undefined, undefined, ctx);
  await tick();
  assert.equal(runtime.spawned.length, 1);
- const args = runtime.spawned[0], instructions = args[args.indexOf("--append-system-prompt") + 1];
+ const args = runtime.spawned[0];
+ const rawInstructions = args[args.indexOf("--append-system-prompt") + 1];
+ const instructions = existsSync(rawInstructions) ? readFileSync(rawInstructions, "utf8") : rawInstructions;
  assert.match(instructions, /Only when configured strict TDD is active/);
  assert.match(instructions, /- \[ \] 1\. Implement and verify the behavior\./);
  assert.doesNotMatch(instructions, /<!-- sdd-owner:/);

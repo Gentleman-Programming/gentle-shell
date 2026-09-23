@@ -4229,6 +4229,13 @@ async function runProfilesPanelAction(
 			}
 			const normalized = normalizeModelConfig(file.profiles[result.name]) ?? {};
 			const orchestratorEntry = readProfileOrchestrator(normalized);
+			if (Object.keys(normalized).length === 0) {
+				const approved = await ctx.ui.confirm(
+					"Apply empty profile?",
+					`Profile "${result.name}" has no routing entries. Applying it will replace global routing in ${sanitizeTerminalText(modelConfigPath(ctx.cwd))} with an empty configuration and return every agent to inherit its default model. Continue?`,
+				);
+				if (!approved) return file;
+			}
 			// Applying spans three files — the store, models.json, and Pi's global
 			// settings.json — and there is no cross-file rename, so order the writes to
 			// keep the store truthful and compensate on failure: claim the profile in

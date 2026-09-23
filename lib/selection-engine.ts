@@ -1,4 +1,4 @@
-import { decodePrintableKey } from "@earendil-works/pi-tui/dist/keys.js";
+import { decodePrintableKey } from "./pi-tui-keys.ts";
 import { isKeyRelease, matchesKey, truncateToWidth, visibleWidth, type EditorComponent } from "@earendil-works/pi-tui";
 
 /**

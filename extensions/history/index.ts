@@ -87,8 +87,11 @@ const LIST_WHEEL_Y_LAST = 14;
 const PREVIEW_WHEEL_Y_FIRST = 17;
 const PREVIEW_WHEEL_Y_LAST = 26;
 
+// Legacy agent dir: pre-v1 editor-history files live directly here and are
+// migrated into the store root by migrateLegacyStores().
+const AGENT_DIR = join(homedir(), ".pi", "agent");
 // v2 multi-concurrency store root (design: tmp/multi-concurrency-design.md).
-const PI_HISTORY_ROOT = join(homedir(), ".pi", "agent", "history");
+const PI_HISTORY_ROOT = join(AGENT_DIR, "history");
 const CURRENT_CWD = process.cwd();
 // Instance identity: one exclusive capture file per pi process.
 const INSTANCE_ID = randomUUID();
@@ -954,6 +957,9 @@ function getWriter(): SessionWriterState {
  * dirs + the legacy global seed). Both filter tombstoned prompts.
  */
 function drainForScope(scope: HistoryScope): string[] {
+  // Defense in depth: a drain must never trigger init writes while the user
+  // has capture disabled (the selector gate below is the first line).
+  if (!captureEnabled()) return [];
   getWriter(); // ensure init ran
   return scope === "project"
     ? drainProject(PI_HISTORY_ROOT, CURRENT_CWD, 1000, PI_HISTORY_NAV_STATE_DIR)
@@ -963,6 +969,16 @@ function drainForScope(scope: HistoryScope): string[] {
 async function openHistorySelector(
   ctx: Pick<ExtensionCommandContext, "ui">,
 ): Promise<void> {
+  // Gate: with capture off the selector must not run legacy migration, seed
+  // bootstrap, or any store/registry write as a side effect of opening it.
+  if (!captureEnabled()) {
+    ctx.ui.notify(
+      "Prompt history capture is off — set GENTLE_PI_HISTORY_CAPTURE=1 to enable it.",
+      "warning",
+    );
+    return;
+  }
+
   // Store-only drain (user-directed): both scopes read the store files
   // symmetrically — no live transcript merge (the one-time seed bootstrap
   // covers pre-store history).

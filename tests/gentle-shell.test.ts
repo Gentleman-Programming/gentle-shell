@@ -6,8 +6,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
 import type { TUI, TuiMouseEvent } from "@earendil-works/pi-tui";
-import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, type GentlePromptEditor } from "../extensions/gentle-shell.ts";
-import { USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA } from "../lib/shell-usage.ts";
+import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchClaudeBridgeUsage, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, subscribeClaudeBridgeUsage, usageShortcut, type GentlePromptEditor } from "../extensions/gentle-shell.ts";
+import { PROVIDER_USAGE_BUS_SYMBOL, USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA, type ProviderUsage } from "../lib/shell-usage.ts";
 import { CHANGE_STATUS } from "../lib/shell-changes.ts";
 import { sidebarState, type SidebarRail } from "../lib/shell-sidebar.ts";
 import type { ShellBarTheme } from "../lib/shell-bar.ts";
@@ -1634,6 +1634,124 @@ test("fetchNanUsage degrades to no snapshot without ever throwing", async () => 
 		throw new TypeError("redirect mode is not supported");
 	}) as unknown as typeof fetch;
 	assert.equal(await fetchNanUsage("sk-nan-secret", refused, 0), undefined, "a refused redirect degrades silently");
+});
+
+// claude-bridge reads globalThis[pi.provider-usage.bus.v1] instead of making a
+// request: fetchClaudeBridgeUsage calls the bridge's own adapter.refresh(),
+// and subscribeClaudeBridgeUsage listens for the snapshot events the bridge
+// publishes on every turn. A fake bus exercises both without touching the
+// real global object.
+
+const CLAUDE_BUS_SNAPSHOT = {
+	version: 1,
+	provider: "claude",
+	windows: [
+		{ id: "five_hour", label: "5h", usedPercent: 62, windowMinutes: 300, resetsAt: 1_788_620_161, scope: { kind: "account" } },
+		{ id: "seven_day", label: "7d", usedPercent: 31, windowMinutes: 10_080, resetsAt: 1_789_206_961, scope: { kind: "account" } },
+	],
+};
+
+function fakeClaudeBus(refreshResult: unknown, options: { refreshError?: boolean; withAdapter?: boolean } = {}) {
+	let listener: ((event: unknown) => void) | undefined;
+	let unsubscribed = false;
+	const adapter = {
+		id: "schuettc.pi-claude-bridge",
+		usageProvider: "claude",
+		modelProviders: ["claude-bridge"],
+		refresh: async () => {
+			if (options.refreshError) throw new Error("bridge refresh failed");
+			return refreshResult;
+		},
+	};
+	const bus = {
+		version: 1,
+		register() { return () => {}; },
+		adapters() { return options.withAdapter === false ? [] : [adapter]; },
+		subscribe(fn: (event: unknown) => void) {
+			listener = fn;
+			return () => { unsubscribed = true; };
+		},
+		publish() { return 0; },
+	};
+	return {
+		globalObject: { [PROVIDER_USAGE_BUS_SYMBOL]: bus },
+		emit: (event: unknown) => listener?.(event),
+		isUnsubscribed: () => unsubscribed,
+	};
+}
+
+test("fetchClaudeBridgeUsage reads the bus adapter's refresh() instead of making a network request", async () => {
+	const bus = fakeClaudeBus(CLAUDE_BUS_SNAPSHOT);
+	const usage = await fetchClaudeBridgeUsage(1_788_600_000_000, bus.globalObject);
+	assert.equal(usage?.provider, "claude-bridge");
+	assert.equal(usage?.limits[0]?.name, "claude");
+	assert.equal(usage?.limits[0]?.windows[0]?.usedPercent, 62);
+});
+
+test("fetchClaudeBridgeUsage degrades to no snapshot without ever throwing", async () => {
+	assert.equal(await fetchClaudeBridgeUsage(0, {}), undefined, "no bridge extension loaded, no bus");
+	assert.equal(await fetchClaudeBridgeUsage(0, fakeClaudeBus(CLAUDE_BUS_SNAPSHOT, { refreshError: true }).globalObject), undefined, "a rejecting refresh degrades silently");
+	assert.equal(await fetchClaudeBridgeUsage(0, fakeClaudeBus({ version: 1, provider: "claude", windows: [] }).globalObject), undefined, "an empty snapshot is not a snapshot");
+	assert.equal(await fetchClaudeBridgeUsage(0, fakeClaudeBus("not a snapshot").globalObject), undefined);
+	assert.equal(await fetchClaudeBridgeUsage(0, fakeClaudeBus(CLAUDE_BUS_SNAPSHOT, { withAdapter: false }).globalObject), undefined, "no claude adapter registered on the bus");
+});
+
+test("subscribeClaudeBridgeUsage forwards a valid snapshot event and ignores everything else", () => {
+	const bus = fakeClaudeBus(undefined);
+	const seen: ProviderUsage[] = [];
+	const unsubscribe = subscribeClaudeBridgeUsage(() => 1_788_600_000_000, (usage) => seen.push(usage), bus.globalObject);
+	bus.emit({ version: 1, type: "snapshot", snapshot: CLAUDE_BUS_SNAPSHOT });
+	assert.equal(seen.length, 1);
+	assert.equal(seen[0].provider, "claude-bridge");
+	bus.emit({ version: 1, type: "snapshot", snapshot: { version: 1, provider: "claude", windows: [] } });
+	bus.emit("not an event");
+	bus.emit(null);
+	assert.equal(seen.length, 1, "a malformed or empty event must not add a second call");
+	unsubscribe();
+	assert.equal(bus.isUnsubscribed(), true);
+});
+
+test("subscribeClaudeBridgeUsage degrades to a no-op unsubscribe when the bus is absent", () => {
+	assert.doesNotThrow(() => {
+		subscribeClaudeBridgeUsage(() => 0, () => { throw new Error("must not be called"); }, {})();
+	});
+});
+
+test("gentleShell fetches claude-bridge usage from the bus on session start and shows it in the bar", async () => {
+	const { pi, handlers } = fakePi();
+	const bus = fakeClaudeBus(CLAUDE_BUS_SNAPSHOT);
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { now: () => 1_788_600_000_000, globalObject: bus.globalObject });
+	const { ctx, ui } = fakeContext({});
+	(ctx as unknown as { model: { provider: string } }).model.provider = "claude-bridge";
+	await fire(handlers, "session_start", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.match(renderFooter(ui), /claude 5h ▰+▱+ 62%/);
+});
+
+test("a live claude-bridge bus event refreshes the store without waiting for the fetch window", async () => {
+	const { pi, handlers } = fakePi();
+	const bus = fakeClaudeBus(undefined);
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { now: () => 1_788_600_000_000, globalObject: bus.globalObject });
+	const { ctx, ui } = fakeContext({});
+	(ctx as unknown as { model: { provider: string } }).model.provider = "claude-bridge";
+	await fire(handlers, "session_start", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.doesNotMatch(renderFooter(ui), /claude 5h/, "the forced session_start fetch resolved no snapshot");
+	bus.emit({ version: 1, type: "snapshot", snapshot: CLAUDE_BUS_SNAPSHOT });
+	assert.match(renderFooter(ui), /claude 5h ▰+▱+ 62%/, "the live subscription updates the store immediately");
+});
+
+test("gentleShell unsubscribes the claude-bridge bus listener on session_shutdown", async () => {
+	const { pi, handlers } = fakePi();
+	const bus = fakeClaudeBus(undefined);
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { now: () => 1_788_600_000_000, globalObject: bus.globalObject });
+	const { ctx } = fakeContext({});
+	(ctx as unknown as { model: { provider: string } }).model.provider = "claude-bridge";
+	await fire(handlers, "session_start", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(bus.isUnsubscribed(), false);
+	await fire(handlers, "session_shutdown", ctx);
+	assert.equal(bus.isUnsubscribed(), true);
 });
 
 test("gentleShell fetches NaN quota on session start and shows it in the bar", async () => {

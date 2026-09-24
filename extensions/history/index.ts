@@ -933,6 +933,7 @@ export function captureEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return value === "1" || value === "true" || value === "on";
 }
 
+
 export default function promptHistoryExtension(
   pi: ExtensionAPI,
   deps: HistoryDeps = {},

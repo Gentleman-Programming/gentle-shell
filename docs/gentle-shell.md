@@ -86,7 +86,7 @@ The separate `session_worktree_register` tool still registers canonical same-clo
 
 ### Browse captured diffs
 
-`/gentle:changes` or `alt+g` opens the two-pane viewer. Worktrees are accordion groups on the left; selecting a file displays its captured diff on the right.
+`/gentle:changes` or `alt+g` opens the two-pane viewer. Worktrees are accordion groups on the left; selecting a file displays its captured diff on the right. The right pane keeps hunk headers and added/removed lines only, so the preview matches the +N / −M counts instead of painting unchanged unified-diff context.
 
 - `j`/`k` or arrows navigate. On a group, Enter, Space or Right expands it; Left returns to its parent or collapses it. `ctrl+j/k` or Page Up/Down scroll the diff; Escape or `q` closes.
 - Fullscreen left-click selects files; mouse wheels scroll the file list and diff independently. Hovering an unselected row (worktree or file, in either pane's list) paints it in the same shared hover role every clickable surface in the shell uses; it never opens or selects the file, and never overrides the already-selected row's own role.

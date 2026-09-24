@@ -234,7 +234,7 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 			current.clearOnNextTurn = false;
 			show(current);
 		}
-		const block = todoPromptBlock(current.state, staleTurns(current.state, current.turn));
+		const block = todoPromptBlock(current.state);
 		if (!block) return undefined;
 		return { systemPrompt: `${event.systemPrompt}\n\n${block}` };
 	});

@@ -174,14 +174,28 @@ test("every turn carries the open tasks in the system prompt and the card goes s
 	assert.match(withTasks.systemPrompt, /1\. \[pending\] Fix the bug/);
 	assert.doesNotMatch(widget()![0], /stale/);
 
-	const stale = (await fire("before_agent_start", ctx, { systemPrompt: "base" })) as { systemPrompt: string };
-	assert.match(stale.systemPrompt, /stale: 2 turns without an update/);
+	// Turn 2: list is untouched. The UI card reflects staleness, but the system prompt MUST remain
+	// byte-exact identical to preserve provider prompt prefix caching (#1367).
+	const staleTurn2 = (await fire("before_agent_start", ctx, { systemPrompt: "base" })) as { systemPrompt: string };
+	assert.equal(staleTurn2.systemPrompt, withTasks.systemPrompt, "prompt prefix must stay byte-identical on turn 2");
+	assert.doesNotMatch(staleTurn2.systemPrompt, /stale/);
 	assert.match(widget()![0], /ctrl\+shift\+t collapse/);
 	assert.match(widget()![1], /stale · 2 turns/);
 
+	// Turn 3: list still untouched. UI advances to 3 turns, but prompt stays frozen.
+	const staleTurn3 = (await fire("before_agent_start", ctx, { systemPrompt: "base" })) as { systemPrompt: string };
+	assert.equal(staleTurn3.systemPrompt, withTasks.systemPrompt, "prompt prefix must stay byte-identical on turn 3");
+	assert.doesNotMatch(staleTurn3.systemPrompt, /stale/);
+	assert.match(widget()![1], /stale · 3 turns/);
+
+	// Legitimate task mutation: when tasks actually change, the prompt updates to reflect the new state.
 	await tools.get("todo")!.execute("c2", { action: "update", id: 1, status: "in_progress", note: "on it" }, undefined, undefined, ctx);
 	await fire("tool_execution_end", ctx, { toolName: "todo" });
 	assert.doesNotMatch(widget()![0], /stale/);
+
+	const updated = (await fire("before_agent_start", ctx, { systemPrompt: "base" })) as { systemPrompt: string };
+	assert.notEqual(updated.systemPrompt, withTasks.systemPrompt, "prompt must update when tasks actually change");
+	assert.match(updated.systemPrompt, /1\. \[in_progress\] Fix the bug — on it/);
 });
 
 test("a finished list stays for its turn and clears at the next, and the collapse key folds the card", async () => {

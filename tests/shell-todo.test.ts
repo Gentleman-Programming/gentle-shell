@@ -124,7 +124,11 @@ test("todoPromptBlock lists open work with the rules, and stays silent when ther
 	assert.match(block, /2\. \[in_progress\] Fix quiet tools conflict — fixing conflict/);
 	assert.match(block, /3\. \[pending\] Show git bash tails/);
 	assert.doesNotMatch(block, /stale/);
-	assert.match(todoPromptBlock(seeded(), 2) ?? "", /stale: 2 turns without an update/);
+	// Prompt cache stability: todoPromptBlock must not inject volatile stale turn counters
+	assert.equal(todoPromptBlock(seeded(), 0), todoPromptBlock(seeded(), 2));
+	assert.equal(todoPromptBlock(seeded(), 0), todoPromptBlock(seeded(), 10));
+	assert.equal(todoPromptBlock(seeded()), todoPromptBlock(seeded(), 0));
+	assert.doesNotMatch(todoPromptBlock(seeded(), 2) ?? "", /stale/);
 	assert.equal(todoPromptBlock(emptyTodo(), 0), undefined);
 	const allDone = applyTodo(seeded(), { action: "write", tasks: [{ title: "A", status: "done" }] }, 1).state;
 	assert.equal(todoPromptBlock(allDone, 0), undefined);

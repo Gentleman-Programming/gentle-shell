@@ -15,41 +15,28 @@ function routingContract(document: string): string {
 }
 
 for (const [index, path] of paths.entries()) {
-	test(`${path}: missing apply artifacts do not block bounded planning routes`, () => {
+	test(`${path}: native planning tokens are the only automatic routes`, () => {
 		const contract = routingContract(documents[index]);
-		for (const [token, phase] of [
-			["sdd-propose", "sdd-proposal"],
-			["sdd-spec", "sdd-spec"],
-			["sdd-design", "sdd-design"],
-			["sdd-tasks", "sdd-tasks"],
-		]) {
+		for (const [token, phase] of [["propose", "sdd-proposal"], ["spec", "sdd-spec"], ["design", "sdd-design"], ["tasks", "sdd-tasks"]]) {
 			assert.ok(contract.includes(`| \`${token}\` | \`${phase}\` |`));
 		}
-		assert.match(contract, /missing planning artifacts leave `dependencies\.apply: blocked`/);
-		assert.match(contract, /do not require apply readiness to produce those artifacts/);
+		assert.match(contract, /only automatic planning routes/i);
+		assert.doesNotMatch(contract, /^\| `sdd-(?:propose|spec|design|tasks)`/m);
 	});
 
-	test(`${path}: planning does not weaken stop conditions or diagnostic ownership`, () => {
+	test(`${path}: planning preserves native blocker and edit-root guards`, () => {
 		const contract = routingContract(documents[index]);
 		for (const guard of [
 			"stop for ambiguous change selection, unresolved session preflight, or unsafe action context",
 			"prove planned writes are within the authoritative workspace or allowed edit roots",
 			"workspace-planning without allowed edit roots remains read-only",
-			"Planning does not bypass the init guard, pre-proposal gate, or phase approval requirements",
-			"For non-planning phases, stop when that phase's dependency is `blocked`",
-			"When `nextRecommended` is `blocked` or `resolve-blockers`, report `blockedReasons` and stop",
-			"Unknown tokens do not authorize a launch",
-			"Non-empty `blockedReasons` forbid apply, sync, and archive work",
-			"`sdd-verify` may run only when `nextRecommended` is `sdd-verify` and its dependency permits it",
+			"Planning does not bypass the init guard, optional research guidance, or phase approval requirements",
 			"never infer a route from prose",
-			"Keep human diagnostics in `blockedReasons`, not in `nextRecommended`",
+			"Keep genuine blockers in `blockedReasons` and non-blocking diagnostics in `notes`, never in `nextRecommended`",
 			"report them without discarding them to enable a route",
-			"store carve-out remains separate; it does not bypass preflight, selection, or action-context safety",
 		]) {
 			assert.ok(contract.includes(guard), `missing guard: ${guard}`);
 		}
-		assert.doesNotMatch(documents[index], /Do not launch a phase when native status marks that dependency `blocked`/);
-		assert.doesNotMatch(documents[index], /stop unless `nextRecommended` is `verify`/);
 	});
 }
 

@@ -156,6 +156,45 @@ test("strictly decodes the real zero-lens closed START and every last-event clos
 	}
 });
 
+test("approved closure preserves complete admitted reviewer results before acknowledgement", () => {
+	const approved = closure("review/capture-result", "review-results");
+	approved.reviewer_results = [{
+		lens: "review-reliability",
+		findings: [{
+			id: "R3-W01",
+			lens: "reliability",
+			location: "lib/session.ts:4",
+			severity: "SUGGESTION",
+			claim: "the complete explanatory narrative remains available",
+			proof_refs: ["the changed line was inspected"],
+			evidence_class: "insufficient",
+			causal_disposition: "pre-existing",
+		}],
+		evidence: ["inspected the complete frozen candidate"],
+		result_hash: SHA,
+	}];
+	const decoded = decodeReviewLastEventClosureV1(approved);
+	assert.deepEqual(decoded.reviewerResults, [{
+		lens: "review-reliability",
+		findings: [{
+			id: "R3-W01",
+			lens: "reliability",
+			location: "lib/session.ts:4",
+			severity: "SUGGESTION",
+			claim: "the complete explanatory narrative remains available",
+			proofRefs: ["the changed line was inspected"],
+			evidenceClass: "insufficient",
+			causalDisposition: "pre-existing",
+		}],
+		evidence: ["inspected the complete frozen candidate"],
+		resultHash: SHA,
+	}]);
+
+	const correctionPlan = closure("review.capture-correction-plan", "review-results");
+	correctionPlan.reviewer_results = approved.reviewer_results;
+	assert.throws(() => decodeReviewLastEventClosureV1(correctionPlan), /reviewer_results requires approved state/);
+});
+
 test("retired legacy client no longer exposes a FINALIZE route", () => {
 	assert.equal("NativeReviewCliV214" in nativeReviewCliModule, false);
 	assert.equal("NativeReviewCliV213" in nativeReviewCliModule, false);

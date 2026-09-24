@@ -219,6 +219,8 @@ test("bundled Gentleman-Cute Pi theme defines complete brand and restrained colo
 	assertResolvedThemeColor(theme, "error", "#FF718F");
 	assertResolvedThemeColor(theme, "muted", "#A78E9B");
 	assertResolvedThemeColor(theme, "dim", "#76616B");
+	assert.equal(colors.thinkingText, "softRose");
+	assertResolvedThemeColor(theme, "thinkingText", "#D7A0B8");
 	assertResolvedThemeColor(theme, "toolPendingBg", "#100A0F");
 	assertResolvedThemeColor(theme, "toolSuccessBg", "#151316");
 	assertResolvedThemeColor(theme, "toolErrorBg", "#261019");

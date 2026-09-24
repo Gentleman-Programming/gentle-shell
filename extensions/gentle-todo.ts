@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Text, type TUI } from "@earendil-works/pi-tui";
+import { Text, type Component, type TUI } from "@earendil-works/pi-tui";
+import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 import { sidebarPart } from "../lib/shell-sidebar.ts";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import {
@@ -96,6 +97,58 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		return current;
 	};
 
+	const toggle = (current: TodoSession) => {
+		current.collapsed = !current.collapsed;
+		if (current.tui) invalidateSidebar(current.tui);
+		current.host?.requestRender();
+	};
+
+	const todoCard = (current: TodoSession, theme: Parameters<typeof renderTodoCard>[1], scrollable: boolean, spacer: boolean): Component & { dispose(): void } => {
+		let hovered = false;
+		const card: Component = {
+			render(width: number) {
+				const lines = renderTodoCard(current.state, theme, width, {
+					collapsed: current.collapsed,
+					staleTurns: staleTurns(current.state, current.turn),
+					collapseKey,
+					hovered,
+					...(scrollable ? { scrollable: true } : {}),
+				});
+				return spacer && lines.length > 0 ? [...lines, ""] : lines;
+			},
+			invalidate() {
+				hovered = false;
+			},
+		};
+		const region = new NativePointerRegion(card, {
+			onHover(event) {
+				// The region spans the whole card, but only the header row (y===0)
+				// is the clickable control, so a move elsewhere in the card clears
+				// hover exactly like leaving the region entirely would.
+				const next = event.y === 0;
+				if (next === hovered) return { handled: true };
+				hovered = next;
+				return { handled: true, render: true };
+			},
+			onLeave() {
+				if (!hovered) return;
+				hovered = false;
+				current.host?.requestRender();
+			},
+			onClick(event) {
+				if (event.button !== "left" || event.y !== 0) return undefined;
+				toggle(current);
+				return { handled: true, render: true };
+			},
+		});
+		return {
+			render: (width) => region.render(width),
+			handleMouse: (event) => region.handleMouse(event),
+			invalidate: () => region.invalidate(),
+			dispose: () => region.dispose(),
+		};
+	};
+
 	const show = (current: TodoSession) => {
 		if (current.tui) invalidateSidebar(current.tui);
 		if (!current.ui) return;
@@ -107,16 +160,7 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		current.ui.setWidget(WIDGET_KEY, (tui, theme) => {
 			snapshot.host = tui;
 			snapshot.tui = tui;
-			return sidebarPart(tui, "todo", {
-				render(width: number) {
-					const lines = renderTodoCard(snapshot.state, theme, width, { collapsed: snapshot.collapsed, staleTurns: staleTurns(snapshot.state, snapshot.turn), collapseKey });
-					return lines.length === 0 ? [] : [...lines, ""];
-				},
-				invalidate() {},
-			}, {
-				render: (width) => renderTodoCard(snapshot.state, theme, width, { collapsed: snapshot.collapsed, staleTurns: staleTurns(snapshot.state, snapshot.turn), collapseKey, scrollable: true }),
-				invalidate() {},
-			});
+			return sidebarPart(tui, "todo", todoCard(snapshot, theme, false, true), todoCard(snapshot, theme, true, false));
 		});
 	};
 
@@ -161,10 +205,7 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		pi.registerShortcut(collapseKey as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Collapse or expand the todo list",
 			handler: async (ctx) => {
-				const current = session(ctx);
-				current.collapsed = !current.collapsed;
-				if (current.tui) invalidateSidebar(current.tui);
-				current.host?.requestRender();
+				toggle(session(ctx));
 			},
 		});
 	}

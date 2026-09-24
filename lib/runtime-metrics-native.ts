@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from "node:child_process";
 import { resolveGentleAiBinary } from "./gentle-ai-binary.ts";
 import { runtimeMetricsEnvAllows } from "./runtime-metrics-policy.ts";
-import type { RuntimeMetricBucket } from "./runtime-metrics.ts";
+import { isPublicRuntimeModelId, normalizeRuntimeModel, type RuntimeMetricBucket } from "./runtime-metrics.ts";
 import type { ChildLaunchBucket } from "./runtime-metrics-children.ts";
 
 import schema from "../contracts/telemetry/runtime-aggregate-v1.schema.json" with { type: "json" };
@@ -10,11 +10,11 @@ export type NativeRuntimeResult = "stored" | "duplicate" | "discarded" | "disabl
 export const NATIVE_SEND_ACK_SCHEMA = "gentle-ai.telemetry-runtime-send/v1";
 const MAX_METRIC = schema.$defs.count.maximum;
 const count = (value: number) => Number.isSafeInteger(value) && value >= 0 && value <= MAX_METRIC;
+// Re-derives through the same schema-driven normalizer used at record time so
+// an already-classified (provider, id) pair is re-validated against the
+// transport's anyOf shape before it ever leaves the machine.
 function publicModel(provider: string, id: string) {
-	const matches = (rule: { const?: string; enum?: string[] }, value: string) => rule.const === value || rule.enum?.includes(value);
-	if (schema.$defs.model.oneOf.some(({ properties }) => matches(properties.provider, provider) && matches(properties.id, id))) return { provider, id };
-	const kind = !id || id === "unknown" ? "unknown" : "custom";
-	return { provider: kind, id: kind };
+	return normalizeRuntimeModel(provider, id);
 }
 
 /** Closed field projection of one event, not a session snapshot. Oversized or
@@ -34,14 +34,22 @@ export function encodeNativeRuntimeEvent(source: readonly RuntimeMetricBucket[],
 			};
 			const agentClass = schema.$defs.row.properties.agent_class.enum.includes(row.agentClass) ? row.agentClass : "unknown";
 			const effort = (value: string) => schema.$defs.effort.enum.includes(value) ? value : "unavailable";
-			const response = typeof row.responseModelId === "string" && row.responseModelId !== "unknown" && row.responseModelId !== "";
-			const selected = typeof row.selectedModelId === "string" && row.selectedModelId !== "unknown" && row.selectedModelId !== "";
+			// Evidence order: an actually-dispatched response model wins; otherwise
+			// the caller's own selection; otherwise the SDK-observed model the
+			// selection never captured (still labeled "selected" evidence, since
+			// the transport has no separate "observed" category). Never response
+			// evidence unless the response model itself normalizes to a public id.
+			const response = isPublicRuntimeModelId(row.responseModelId);
+			const selected = !response && isPublicRuntimeModelId(row.selectedModelId);
+			const observed = !response && !selected && isPublicRuntimeModelId(row.observedModelId);
 			const model = response ? publicModel(row.provider, row.responseModelId)
-				: selected ? publicModel(row.selectedProvider, row.selectedModelId) : { provider: "unknown", id: "unknown" };
+				: selected ? publicModel(row.selectedProvider, row.selectedModelId)
+				: observed ? publicModel(row.provider, row.observedModelId)
+				: { provider: "unknown", id: "unknown" };
 			const time = row.fullResponseMs;
 			if (!count(time.measured) || !Number.isFinite(time.sum) || time.sum < 0 || time.sum > MAX_METRIC
 				|| (!time.measured && time.sum !== 0)) throw new Error("Invalid duration");
-			return { model, model_evidence: response ? "response" : selected ? "selected" : "unknown",
+			return { model, model_evidence: response ? "response" : (selected || observed) ? "selected" : "unknown",
 				agent_kind: agentClass === "orchestrator" || agentClass === "unknown" ? agentClass : "built_in", agent_class: agentClass,
 				selected_effort: effort(row.effort), effective_effort: effort(row.providerThinkingLevel),
 				launches: null, responses: row.responses,

@@ -62,6 +62,11 @@ export class NativeChoiceList<T extends NativeChoiceItem> extends Container {
 		this.refreshRows();
 	}
 
+	/** Refresh rendered rows after callers update the existing item records. */
+	refreshItems(): void {
+		this.refreshRows();
+	}
+
 	clearHover(): boolean {
 		if (!this.hovered) return false;
 		this.hovered = undefined;

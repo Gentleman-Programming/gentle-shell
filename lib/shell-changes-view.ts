@@ -1,7 +1,8 @@
-import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Key, matchesKey, truncateToWidth, visibleWidth, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { basename } from "node:path";
 import { CHANGE_STATUS, changesSummary, type ChangedFile, type ChangesModel, type WorktreeChanges } from "./shell-changes.ts";
+import { paintHoverable } from "./shell-hover.ts";
 
 // Gentle Shell changes overlay: a framed two-pane view with the working
 // tree's changed files on the left and the selected file's diff on the right.
@@ -13,7 +14,7 @@ export interface ChangesViewTheme {
 
 export interface ChangesViewDeps {
 	theme: ChangesViewTheme;
-	rows: number;
+	rows: number | (() => number);
 	loadDiff(file: ChangedFile): Promise<string>;
 	onOpen(file: ChangedFile): void;
 	onClose(): void;
@@ -74,11 +75,12 @@ const FILE_STATUS = {
 } as const;
 
 function fileCounts(file: ChangedFile, theme: ChangesViewTheme): string {
+	if (file.countsUnavailable) return theme.fg("dim", "counts unavailable");
 	return `${theme.fg(ROLE.ADDED, `+${file.added}`)} ${theme.fg(ROLE.REMOVED, `-${file.deleted}`)}`;
 }
 
-function fileLabel(file: ChangedFile, theme: ChangesViewTheme, role: string): string {
-	return `${theme.fg(role, `${FILE_STATUS[file.status]} ${displayText(file.path)}`)}  ${fileCounts(file, theme)}`;
+function fileLabel(file: ChangedFile, theme: ChangesViewTheme, hovered: boolean, idleRole: string): string {
+	return `${paintHoverable(theme, `${FILE_STATUS[file.status]} ${displayText(file.path)}`, hovered, idleRole)}  ${fileCounts(file, theme)}`;
 }
 
 function fit(text: string, width: number): string {
@@ -104,17 +106,34 @@ function renderPanes(width: number, rows: number, theme: ChangesViewTheme, title
 	return [top, ...body, keysLine, bottom].map((line) => truncateToWidth(line, width));
 }
 
+interface PointerLayout {
+	width: number;
+	height: number;
+	bodyRows: number;
+	listStart: number;
+	listEnd: number;
+	diffStart: number;
+	diffEnd: number;
+}
+
+function pointerLayout(width: number, bodyRows: number): PointerLayout {
+	const inner = Math.max(8, width - 2);
+	const listWidth = Math.min(LIST_MAX_WIDTH, Math.floor(inner * LIST_RATIO));
+	const diffWidth = inner - listWidth - 4;
+	return { width, height: bodyRows + CHROME_ROWS, bodyRows, listStart: 2, listEnd: 2 + listWidth, diffStart: 5 + listWidth, diffEnd: 5 + listWidth + diffWidth };
+}
+
 function displayText(text: string): string {
 	return sanitizeTerminalText(text).replace(/[\t\n]/g, " ");
 }
 
 function fingerprint(file: ChangedFile): string {
-	return `${file.status}:${file.added}:${file.deleted}`;
+	return `${file.status}:${file.added}:${file.deleted}:${file.diffRevision ?? ""}:${file.countsUnavailable ?? ""}`;
 }
 
 export interface WorktreeChangesViewDeps {
 	theme: ChangesViewTheme;
-	rows: number;
+	rows: number | (() => number);
 	loadDiff(root: string, file: ChangedFile): Promise<string>;
 	onOpen(root: string, file: ChangedFile): void;
 	onClose(): void;
@@ -137,6 +156,10 @@ export class WorktreeChangesView {
 	private readonly deps: WorktreeChangesViewDeps;
 	private selected = 0;
 	private listOffset = 0;
+	private pointerLayout: PointerLayout | undefined;
+	private disposed = false;
+	private leftPressActive = false;
+	private hoveredIndex: number | undefined;
 	private readonly expanded = new Set<string>();
 	private readonly previews = new Map<string, { fingerprint: string; view: ChangesView }>();
 
@@ -146,21 +169,23 @@ export class WorktreeChangesView {
 	}
 
 	private visibleRows(): WorktreeRow[] {
-		return this.trees.flatMap((tree) => [
-			{ tree },
-			...(this.expanded.has(tree.root) ? tree.model.files.map((file) => ({ tree, file })) : []),
-		]);
+		return this.trees.flatMap((tree) => [{ tree }, ...(this.expanded.has(tree.root) ? tree.model.files.map((file) => ({ tree, file })) : [])]);
 	}
 
 	update(trees: WorktreeChanges[]): void {
+		this.leftPressActive = false;
+		this.hoveredIndex = undefined;
+		if (this.disposed) return;
+		this.pointerLayout = undefined;
 		const before = this.visibleRows()[this.selected];
 		this.trees = trees;
-		for (const root of this.expanded) {
-			if (!trees.some((tree) => tree.root === root)) this.expanded.delete(root);
-		}
+		for (const root of this.expanded) if (!trees.some((tree) => tree.root === root)) this.expanded.delete(root);
 		const files = new Map(trees.flatMap((tree) => tree.model.files.map((file) => [rowKey({ tree, file }), fingerprint(file)])));
 		for (const [key, preview] of this.previews) {
-			if (files.get(key) !== preview.fingerprint) this.previews.delete(key);
+			if (files.get(key) !== preview.fingerprint) {
+				preview.view.dispose();
+				this.previews.delete(key);
+			}
 		}
 		const rows = this.visibleRows();
 		let index = before ? rows.findIndex((row) => rowKey(row) === rowKey(before)) : -1;
@@ -171,17 +196,11 @@ export class WorktreeChangesView {
 	}
 
 	handleInput(data: string): void {
-		if (data === "r") {
-			this.deps.onRefresh();
-			return;
-		}
-		if (matchesKey(data, Key.escape) || data === "q") {
-			this.deps.onClose();
-			return;
-		}
+		if (this.disposed) return;
+		if (data === "r") return this.deps.onRefresh();
+		if (matchesKey(data, Key.escape) || data === "q") return this.deps.onClose();
 		const rows = this.visibleRows();
 		const row = rows[this.selected];
-		// Check LF/ctrl+j before Enter, just like the standalone file view.
 		if (matchesKey(data, Key.pageDown) || matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("j")) || matchesKey(data, Key.ctrl("k"))) {
 			if (row?.file) this.previews.get(rowKey(row))?.view.handleInput(data);
 			return;
@@ -194,41 +213,120 @@ export class WorktreeChangesView {
 		} else if (row && !row.file && (matchesKey(data, Key.enter) || data === " " || matchesKey(data, Key.right))) {
 			if (this.expanded.has(row.tree.root)) this.expanded.delete(row.tree.root);
 			else this.expanded.add(row.tree.root);
-		} else if (row?.file && (data === "o" || matchesKey(data, Key.enter))) {
-			this.deps.onOpen(row.tree.root, row.file);
-		}
+		} else if (row?.file && (data === "o" || matchesKey(data, Key.enter))) this.deps.onOpen(row.tree.root, row.file);
+		this.ensureSelectedVisible();
 		this.ensurePreview();
 		this.deps.requestRender();
+	}
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (this.disposed) return { handled: true, render: false };
+		if (event.type === "release") {
+			if (this.leftPressActive && (event.button === "left" || event.button === "none")) {
+				this.leftPressActive = false;
+				return { handled: true, render: false };
+			}
+			return undefined;
+		}
+		if (event.type === "press" && event.button !== "left") return undefined;
+		const layout = this.pointerLayout;
+		if (!layout || event.width !== layout.width || event.height !== layout.height) return { handled: true, render: false };
+		const inBody = event.y >= 1 && event.y <= layout.bodyRows;
+		const inFiles = inBody && event.x >= layout.listStart && event.x < layout.listEnd;
+		const inDiff = inBody && event.x >= layout.diffStart && event.x < layout.diffEnd;
+		if (event.type === "wheel") {
+			if (inFiles) return { handled: true, render: this.scrollList(event.wheelDelta ?? 0, layout.bodyRows) };
+			if (inDiff) {
+				const row = this.visibleRows()[this.selected];
+				return { handled: true, render: row?.file ? Boolean(this.previews.get(rowKey(row))?.view.scrollDiffBy(event.wheelDelta ?? 0, layout.bodyRows)) : false };
+			}
+			return undefined;
+		}
+		if (event.type === "move" && event.button === "none") return this.hoverRow(inFiles ? this.listOffset + event.y - 1 : undefined);
+		if (!inFiles) return undefined;
+		if (event.type === "press") {
+			if (event.button !== "left") return undefined;
+			this.leftPressActive = true;
+			return { handled: true, capture: true, render: false };
+		}
+		if (event.type !== "click" || event.button !== "left") return undefined;
+		const index = this.listOffset + event.y - 1;
+		if (index < 0 || index >= this.visibleRows().length) return { handled: true, render: false };
+		const changed = index !== this.selected;
+		this.selected = index;
+		this.ensurePreview();
+		this.deps.requestRender();
+		return { handled: true, render: changed };
+	}
+
+	// Row hover: the shared hover role paints an unselected row while the
+	// pointer is over it, never overriding the already-selected row's role.
+	private hoverRow(index: number | undefined): TuiMouseEventResult | undefined {
+		const next = index !== undefined && index >= 0 && index < this.visibleRows().length ? index : undefined;
+		if (next === this.hoveredIndex) return next === undefined ? undefined : { handled: true };
+		this.hoveredIndex = next;
+		return { handled: true, render: true };
 	}
 
 	render(width: number): string[] {
 		const theme = this.deps.theme;
 		const rows = this.visibleRows();
+		const height = this.bodyRows();
+		this.listOffset = Math.max(0, Math.min(this.listOffset, Math.max(0, rows.length - height)));
 		const selected = rows[this.selected];
-		const height = Math.max(MIN_BODY_ROWS, this.deps.rows - CHROME_ROWS);
-		this.listOffset = Math.max(0, Math.min(this.listOffset, this.selected, rows.length - height));
-		if (this.selected >= this.listOffset + height) this.listOffset = this.selected - height + 1;
-		const preview = selected?.file ? this.previews.get(rowKey(selected))?.view.previewLines() ?? [] : [
-			selected ? displayText(selected.tree.root) : "No dirty worktrees.",
-			selected ? changesSummary(selected.tree.model) : "",
-			selected ? "Expand a group and select a file." : "",
-		];
+		const preview = selected?.file ? this.previews.get(rowKey(selected))?.view.previewLines() ?? [] : [selected ? displayText(selected.tree.root) : "No dirty worktrees.", selected ? changesSummary(selected.tree.model) : "", selected ? "Expand a group and select a file." : ""];
 		const leftLine = (index: number) => {
 			const row = rows[index + this.listOffset];
 			if (!row) return "";
 			const active = index + this.listOffset === this.selected;
+			// Selection always outranks hover; the shared hover painter only
+			// applies once selection is ruled out.
+			const hovered = !active && index + this.listOffset === this.hoveredIndex;
+			const idleRole = active ? ROLE.SELECTED : ROLE.PATH_IDLE;
 			const marker = active ? theme.fg(ROLE.SELECTED, "▸") : " ";
 			const text = row.file
-				? `  ${fileLabel(row.file, theme, active ? ROLE.SELECTED : ROLE.PATH_IDLE)}`
-				: theme.fg(active ? ROLE.SELECTED : ROLE.PATH_IDLE, `${this.expanded.has(row.tree.root) ? "▾" : "▸"} ${displayText(row.tree.branch ?? "detached")} · ${displayText(basename(row.tree.root))}`);
+				? `  ${fileLabel(row.file, theme, hovered, idleRole)}`
+				: paintHoverable(theme, `${this.expanded.has(row.tree.root) ? "▾" : "▸"} ${displayText(row.tree.branch ?? "detached")} · ${displayText(basename(row.tree.root))}`, hovered, idleRole);
 			return `${marker} ${text}`;
 		};
 		const keys = theme.fg(ROLE.KEY_TEXT, "j/k select   enter toggle/open   ← parent/fold   ctrl+j/k scroll   r refresh   esc close");
+		this.pointerLayout = pointerLayout(width, height);
 		return renderPanes(width, height, theme, `✎ Changes · ${this.trees.length} worktrees`, leftLine, preview, keys);
 	}
 
 	invalidate(): void {
+		this.leftPressActive = false;
+		this.hoveredIndex = undefined;
+		this.pointerLayout = undefined;
 		for (const preview of this.previews.values()) preview.view.invalidate();
+	}
+
+	dispose(): void {
+		this.disposed = true;
+		this.leftPressActive = false;
+		this.hoveredIndex = undefined;
+		this.pointerLayout = undefined;
+		for (const preview of this.previews.values()) preview.view.dispose();
+		this.previews.clear();
+	}
+
+	private bodyRows(): number {
+		const rows = typeof this.deps.rows === "function" ? this.deps.rows() : this.deps.rows;
+		return Math.max(MIN_BODY_ROWS, rows - CHROME_ROWS);
+	}
+
+	private scrollList(delta: number, rows: number): boolean {
+		const next = Math.max(0, Math.min(Math.max(0, this.visibleRows().length - rows), this.listOffset + Math.trunc(delta)));
+		if (next === this.listOffset) return false;
+		this.listOffset = next;
+		return true;
+	}
+
+	private ensureSelectedVisible(): void {
+		const height = this.bodyRows();
+		if (this.selected < this.listOffset) this.listOffset = this.selected;
+		else if (this.selected >= this.listOffset + height) this.listOffset = this.selected - height + 1;
+		this.listOffset = Math.max(0, Math.min(this.listOffset, Math.max(0, this.visibleRows().length - height)));
 	}
 
 	private ensurePreview(): void {
@@ -239,6 +337,7 @@ export class WorktreeChangesView {
 			fingerprint: fingerprint(file),
 			view: new ChangesView({ files: [file], added: file.added, deleted: file.deleted }, {
 				...this.deps,
+				rows: () => typeof this.deps.rows === "function" ? this.deps.rows() : this.deps.rows,
 				loadDiff: (target) => this.deps.loadDiff(tree.root, target),
 				onOpen: (target) => this.deps.onOpen(tree.root, target),
 			}),
@@ -250,7 +349,12 @@ export class ChangesView {
 	private model: ChangesModel;
 	private readonly deps: ChangesViewDeps;
 	private selected = 0;
-	private scroll = 0;
+	private fileScroll = 0;
+	private diffScroll = 0;
+	private pointerLayout: PointerLayout | undefined;
+	private disposed = false;
+	private leftPressActive = false;
+	private hoveredIndex: number | undefined;
 	private readonly diffs = new Map<string, string[]>();
 
 	constructor(model: ChangesModel, deps: ChangesViewDeps) {
@@ -262,6 +366,10 @@ export class ChangesView {
 	// Replace the model while open: keep the selection by path and drop cached
 	// diffs for files whose counts moved so they reload.
 	update(model: ChangesModel): void {
+		this.leftPressActive = false;
+		this.hoveredIndex = undefined;
+		if (this.disposed) return;
+		this.pointerLayout = undefined;
 		const selectedPath = this.model.files[this.selected]?.path;
 		const before = new Map(this.model.files.map((file) => [file.path, fingerprint(file)]));
 		for (const file of model.files) {
@@ -272,12 +380,23 @@ export class ChangesView {
 		}
 		this.model = model;
 		const index = model.files.findIndex((file) => file.path === selectedPath);
-		this.selected = index === -1 ? Math.max(0, Math.min(this.selected, model.files.length - 1)) : index;
+		const selectionChanged = index === -1;
+		this.selected = selectionChanged ? Math.max(0, Math.min(this.selected, model.files.length - 1)) : index;
+		this.fileScroll = this.clampFileScroll(this.fileScroll, this.bodyRows());
+		if (selectionChanged) this.ensureSelectedVisible();
 		this.loadSelected();
 		this.deps.requestRender();
 	}
 
+	dispose(): void {
+		this.disposed = true;
+		this.leftPressActive = false;
+		this.hoveredIndex = undefined;
+		this.pointerLayout = undefined;
+	}
+
 	handleInput(data: string): void {
+		if (this.disposed) return;
 		if (matchesKey(data, Key.escape) || data === "q") {
 			this.deps.onClose();
 			return;
@@ -294,28 +413,84 @@ export class ChangesView {
 		}
 	}
 
-	render(width: number): string[] {
-		const theme = this.deps.theme;
-		const keys = KEYS.map(([key, label]) => `${theme.fg(ROLE.KEY, key)} ${theme.fg(ROLE.KEY_TEXT, key === "esc" ? (this.deps.backLabel ?? label) : label)}`).join("   ");
-		return renderPanes(width, this.bodyRows(), theme, `✎ Changes · ${changesSummary(this.model)}`, (row) => this.fileLine(row), this.previewLines(), keys);
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (this.disposed) return { handled: true, render: false };
+		if (event.type === "release") {
+			if (this.leftPressActive && (event.button === "left" || event.button === "none")) {
+				this.leftPressActive = false;
+				return { handled: true, render: false };
+			}
+			return undefined;
+		}
+		if (event.type === "press" && event.button !== "left") return undefined;
+		const layout = this.pointerLayout;
+		if (!layout || event.width !== layout.width || event.height !== layout.height) return { handled: true, render: false };
+		const inBody = event.y >= 1 && event.y <= layout.bodyRows;
+		const inFiles = inBody && event.x >= layout.listStart && event.x < layout.listEnd;
+		const inDiff = inBody && event.x >= layout.diffStart && event.x < layout.diffEnd;
+		if (event.type === "wheel") {
+			if (inFiles) return { handled: true, render: this.scrollFiles(event.wheelDelta ?? 0, layout.bodyRows) };
+			if (inDiff) return { handled: true, render: this.scrollDiff(event.wheelDelta ?? 0, layout.bodyRows) };
+			return undefined;
+		}
+		if (event.type === "move" && event.button === "none") return this.hoverRow(inFiles ? this.fileScroll + event.y - 1 : undefined);
+		if (!inFiles) return undefined;
+		if (event.type === "press") {
+			if (event.button !== "left") return undefined;
+			this.leftPressActive = true;
+			return { handled: true, capture: true, render: false };
+		}
+		if (event.type !== "click" || event.button !== "left") return undefined;
+		const index = this.fileScroll + event.y - 1;
+		if (index < 0 || index >= this.model.files.length) return { handled: true, render: false };
+		const changed = index !== this.selected;
+		this.select(index);
+		return { handled: true, render: changed };
 	}
 
-	invalidate(): void {}
+	// Row hover: the shared hover role paints an unselected file row while the
+	// pointer is over it, never overriding the already-selected row's role.
+	private hoverRow(index: number | undefined): TuiMouseEventResult | undefined {
+		const next = index !== undefined && index >= 0 && index < this.model.files.length ? index : undefined;
+		if (next === this.hoveredIndex) return next === undefined ? undefined : { handled: true };
+		this.hoveredIndex = next;
+		return { handled: true, render: true };
+	}
+
+	render(width: number): string[] {
+		const theme = this.deps.theme;
+		const rows = this.bodyRows();
+		this.fileScroll = this.clampFileScroll(this.fileScroll, rows);
+		const keys = KEYS.map(([key, label]) => `${theme.fg(ROLE.KEY, key)} ${theme.fg(ROLE.KEY_TEXT, key === "esc" ? (this.deps.backLabel ?? label) : label)}`).join("   ");
+		this.pointerLayout = pointerLayout(width, rows);
+		return renderPanes(width, rows, theme, `✎ Changes · ${changesSummary(this.model)}`, (row) => this.fileLine(row), this.visibleDiff(rows), keys);
+	}
+
+	invalidate(): void {
+		this.leftPressActive = false;
+		this.hoveredIndex = undefined;
+		this.pointerLayout = undefined;
+	}
 
 	previewLines(): string[] {
 		return this.visibleDiff(this.bodyRows());
 	}
 
 	private bodyRows(): number {
-		return Math.max(MIN_BODY_ROWS, this.deps.rows - CHROME_ROWS);
+		const rows = typeof this.deps.rows === "function" ? this.deps.rows() : this.deps.rows;
+		return Math.max(MIN_BODY_ROWS, rows - CHROME_ROWS);
 	}
 
 	private fileLine(row: number): string {
-		const file = this.model.files[row];
+		const index = this.fileScroll + row;
+		const file = this.model.files[index];
 		if (!file) return "";
 		const theme = this.deps.theme;
-		const marker = row === this.selected ? theme.fg(ROLE.SELECTED, "▸") : " ";
-		return `${marker} ${fileLabel(file, theme, row === this.selected ? ROLE.PATH : ROLE.PATH_IDLE)}`;
+		const selected = index === this.selected;
+		const marker = selected ? theme.fg(ROLE.SELECTED, "▸") : " ";
+		const hovered = !selected && index === this.hoveredIndex;
+		const idleRole = selected ? ROLE.PATH : ROLE.PATH_IDLE;
+		return `${marker} ${fileLabel(file, theme, hovered, idleRole)}`;
 	}
 
 	private visibleDiff(rows: number): string[] {
@@ -324,23 +499,55 @@ export class ChangesView {
 		const lines = this.diffs.get(file.path);
 		if (!lines) return [];
 		if (lines.length === 0) return [this.deps.theme.fg(ROLE.EMPTY, EMPTY_DIFF)];
-		const maxScroll = Math.max(0, lines.length - rows);
-		this.scroll = Math.min(this.scroll, maxScroll);
-		return lines.slice(this.scroll, this.scroll + rows);
+		this.diffScroll = Math.min(this.diffScroll, Math.max(0, lines.length - rows));
+		return lines.slice(this.diffScroll, this.diffScroll + rows);
 	}
 
 	private select(index: number): void {
 		const next = Math.max(0, Math.min(this.model.files.length - 1, index));
 		if (next === this.selected) return;
 		this.selected = next;
-		this.scroll = 0;
+		this.diffScroll = 0;
+		this.ensureSelectedVisible();
 		this.loadSelected();
 		this.deps.requestRender();
 	}
 
 	private scrollBy(delta: number): void {
-		this.scroll = Math.max(0, this.scroll + delta);
+		this.scrollDiffBy(delta, this.bodyRows());
 		this.deps.requestRender();
+	}
+
+	scrollDiffBy(delta: number, rows = this.bodyRows()): boolean {
+		return this.scrollDiff(delta, rows);
+	}
+
+	private scrollFiles(delta: number, rows: number): boolean {
+		const next = this.clampFileScroll(this.fileScroll + Math.trunc(delta), rows);
+		if (next === this.fileScroll) return false;
+		this.fileScroll = next;
+		return true;
+	}
+
+	private scrollDiff(delta: number, rows: number): boolean {
+		const file = this.model.files[this.selected];
+		const lines = file ? this.diffs.get(file.path) : undefined;
+		if (!lines) return false;
+		const next = Math.max(0, Math.min(Math.max(0, lines.length - rows), this.diffScroll + Math.trunc(delta)));
+		if (next === this.diffScroll) return false;
+		this.diffScroll = next;
+		return true;
+	}
+
+	private clampFileScroll(scroll: number, rows: number): number {
+		return Math.max(0, Math.min(Math.max(0, this.model.files.length - rows), scroll));
+	}
+
+	private ensureSelectedVisible(): void {
+		const rows = this.bodyRows();
+		if (this.selected < this.fileScroll) this.fileScroll = this.selected;
+		else if (this.selected >= this.fileScroll + rows) this.fileScroll = this.selected - rows + 1;
+		this.fileScroll = this.clampFileScroll(this.fileScroll, rows);
 	}
 
 	private loadSelected(): void {
@@ -348,10 +555,12 @@ export class ChangesView {
 		if (!file || this.diffs.has(file.path)) return;
 		void this.deps.loadDiff(file).then(
 			(text) => {
+				if (this.disposed) return;
 				this.diffs.set(file.path, colorDiff(text, this.deps.theme));
 				this.deps.requestRender();
 			},
 			() => {
+				if (this.disposed) return;
 				this.diffs.set(file.path, []);
 				this.deps.requestRender();
 			},

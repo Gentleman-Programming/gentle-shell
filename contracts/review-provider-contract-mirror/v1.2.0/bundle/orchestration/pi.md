@@ -40,13 +40,18 @@ A `stop` ends its transition, never approves delivery. `D` means the human disab
 
 | Reason codes | Continuation |
 | --- | --- |
-| `captured_artifacts_unverifiable`, `captured_result_selection_unavailable`, `missing_authority_binding`, `corrupted_or_unverifiable_authority`, `manual_intervention_required`, `native_stop_required` | Terminal: the maintainer inspects authority/lineage, or `D`. |
+| `captured_artifacts_unverifiable`, `captured_result_selection_unavailable`, `captured_verification_evidence_invalid`, `final_verification_retry_unavailable`, `missing_authority_binding`, `corrupted_or_unverifiable_authority`, `manual_intervention_required`, `native_stop_required` | Terminal: the maintainer inspects authority/lineage, or `D`. |
 | `empty_base_diff_bootstrap_required` | Terminal: authorized empty-root bootstrap for a new target, or `D`. |
 | `lens_context_budget_exceeded` | Terminal: reduce the candidate scope and start a new transaction, or `D`. |
+| `managed_assets_outdated` | Run the `gentle-ai sync` command from the stop's `continuation`, then `S`. |
 | `staged_workspace_overlay_recovery_unavailable` | Call facade `recover` with the retained `lineageId`, or start a fresh transaction; otherwise `D`. |
 | `corrected_candidate_unavailable` | Change the correction candidate, then `S`; do not reuse the pre-correction target. |
+| `correction_repository_verification_failed` | Change the correction candidate within the same open budget, then `S`. |
+| `original_finalize_request_required` | Run the exact original-finalize replay bound to the stop. |
+| `staged_delivery_candidate_required` | Stage every reviewed path exactly as reviewed, then `S`. |
 | `recovery_scope_unchanged` | Change the target identity, then retry the facade `recover` route the stop returned. |
-| `rdd_disabled` | `--scope clone` only clears a clone-local off; the human runs `gentle-ai review mode enable --scope global`, then `S`. |
+| `unchanged_or_unverified_authority` | Change the candidate content, then start a new transaction, or `D`. |
+| `rdd_disabled` | Run the exact source-scoped `gentle-ai review mode enable` command rendered by bound facade STATUS, then `S`. |
 
 ## Delivery follows ordinary repository policy
 

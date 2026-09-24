@@ -281,8 +281,8 @@ function isNormativeLine(line: string): boolean {
 }
 
 const fixtureLines = readFileSync(FIXTURE_PATH, "utf8").split("\n");
-// Fixture lines 187 and 191 predate the root-relative lazy-asset contract and
-// canonical-authority resolution. Keep their coverage by asserting the
+// Fixture line 36 is superseded by ODD (#1035); 187 and 191 predate
+// root-relative lazy assets and canonical-authority resolution. Keep coverage by asserting the
 // intentionally updated production wording instead of weakening the range.
 const CURRENT_SDD_WORKFLOW_PATH = "`sdd-orchestrator-workflow.md`";
 const CURRENT_HARD_PREFLIGHT_INVARIANT = "Hard preflight invariant: `openspec/config.yaml`, existing SDD changes, installed `.pi`/global SDD assets, or a todo named \"preflight\" are not session preflight. Do not mark SDD preflight complete, start `sdd-init`, launch SDD subagents/chains, or move to explore/proposal/spec/design/tasks until this session has an injected `## SDD Session Preflight` block or a canonical-authority resolution. Defaults and capability constraints may resolve fields without confirmation prompts; preserve unresolved-choice and safety gates.";
@@ -320,11 +320,26 @@ for (const range of DISPOSITION_MAP) {
 				if (raw === undefined || !isNormativeLine(raw)) continue;
 				const trimmed = raw.trim();
 				const expected =
+					ln === 36 ? "- Substantial authorized work: use ODD; track feature progress automatically." :
+					// #1051 keeps the selected store when memory is unavailable.
+					ln === 221 ? "do not switch the selected store" :
+					// Research returns findings; other phases keep direct backend ownership.
+					ln === 205 ? trimmed.replace("Each SDD phase", "Except for output-only `sdd-research`, each SDD phase") :
+					ln === 185 ? trimmed.replace("apply/verify/sync/archive", "apply/verify/archive") :
 					ln === 187
 						? CURRENT_SDD_WORKFLOW_PATH
 						: ln === 191
 							? CURRENT_HARD_PREFLIGHT_INVARIANT
 							: trimmed;
+				// #1051 retires the standalone sync row and its artifact key, not
+				// the surrounding memory/recovery contract or historical fixture.
+				if (ln === 216 || ln === 220) {
+					assert.ok(!targetContent.includes(trimmed), `retired sync contract remains at fixture:${ln}`);
+					assert.match(targetContent, /sdd\/<change>\/archive-report/);
+					assert.match(targetContent, /sdd\/<change>\/verify-report/);
+					assert.doesNotMatch(targetContent, /sdd\/<change>\/sync-report|\| `sdd-sync`/);
+					continue;
+				}
 				if (SUPERSEDED_LIFECYCLE_REVIEW_LINES.has(ln)) {
 					assert.ok(
 						!targetContent.includes(trimmed),

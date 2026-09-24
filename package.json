@@ -1,9 +1,12 @@
 {
 	"name": "gentle-pi",
-	"version": "2.5.0",
+	"version": "3.7.0",
 	"description": "Turn Pi into el Gentleman: a senior-architect development harness with SDD/OpenSpec, subagents, strict TDD evidence, review guardrails, and skill discovery.",
 	"license": "MIT",
 	"type": "module",
+	"bin": {
+		"gentle-shell": "bin/gentle-shell.mjs"
+	},
 	"keywords": [
 		"pi-package",
 		"pi",
@@ -20,10 +23,11 @@
 	],
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/Gentleman-Programming/gentle-pi.git"
+		"url": "git+https://github.com/Gentleman-Programming/gentle-shell.git"
 	},
 	"files": [
 		"assets/",
+		"bin/",
 		"contracts/",
 		"docs/",
 		"extensions/",
@@ -38,8 +42,9 @@
 	],
 	"scripts": {
 		"check:provider-contract": "node scripts/check-provider-contract.mjs",
+		"mirror:odd-routing": "node scripts/mirror-odd-routing.mjs",
 		"postinstall": "node scripts/install-gentle-ai.mjs",
-		"test": "node --experimental-strip-types --test tests/*.test.ts && pnpm run check:provider-contract && pnpm run test:harness",
+		"test": "node scripts/run-test-suite.mjs",
 		"test:harness": "node --experimental-strip-types tests/runtime-harness.mjs",
 		"test:dev-binary": "node --experimental-strip-types --test tests/devbinary/*.devtest.ts",
 		"test:cross-lane": "node tests/crosslane/cross-lane.mjs",
@@ -48,7 +53,8 @@
 		"check:runtime-modules": "node scripts/build-runtime-modules.mjs --check",
 		"test:packed-package": "node scripts/test-packed-runner.mjs",
 		"prepack": "pnpm test && pnpm run check:runtime-modules && node scripts/verify-package-files.mjs",
-		"prepublishOnly": "pnpm test && pnpm run check:runtime-modules && node scripts/verify-package-files.mjs && pnpm run test:packed-package"
+		"prepublishOnly": "pnpm test && pnpm run check:runtime-modules && node scripts/verify-package-files.mjs && pnpm run test:packed-package",
+		"typecheck": "node scripts/check-types.mjs"
 	},
 	"pi": {
 		"image": "https://cdn.jsdelivr.net/npm/gentle-pi/assets/gentle-logo-only.png",
@@ -67,7 +73,7 @@
 	},
 	"dependencies": {
 		"@earendil-works/pi-tui": "0.85.1",
-		"@heyhuynhgiabuu/pi-pretty": "0.6.14"
+		"@heyhuynhgiabuu/pi-pretty": "0.6.27"
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-coding-agent": ">=0.85.1",
@@ -79,7 +85,9 @@
 		}
 	},
 	"devDependencies": {
-		"@earendil-works/pi-coding-agent": "0.85.1"
+		"@earendil-works/pi-coding-agent": "0.85.1",
+		"@types/node": "^24.13.3",
+		"typescript": "^5.9.3"
 	},
 	"packageManager": "pnpm@11.1.1"
 }

@@ -182,11 +182,196 @@ test("2.7.0 repeats 2.6.0 because the negotiated lane Pi consumes is unchanged",
 	assert.deepEqual(contract, NATIVE_CLI_CONTRACTS["2.6.0"] as Record<string, boolean>);
 });
 
+test("2.8.0 repeats 2.7.0 because the negotiated lane Pi consumes is unchanged", () => {
+	// Ground-truthed against the published v2.8.0 linux/amd64 binary from its
+	// signed release archive: capabilities/v2.5 still advertises protocol minor
+	// 5 with status/v7, consent/v3, and start/v4 schemas. riskEvidence and hint
+	// remain dark because neither is proven to reach Pi's negotiated START path.
+	const contract = NATIVE_CLI_CONTRACTS["2.8.0"] as Record<string, boolean>;
+	assert.equal(contract.riskEvidence, false);
+	assert.equal(contract.hint, false);
+	assert.deepEqual(contract, NATIVE_CLI_CONTRACTS["2.7.0"] as Record<string, boolean>);
+});
+
+test("2.8.1 repeats 2.8.0 because the negotiated lane Pi consumes is unchanged", () => {
+	// v2.8.1 only changed runtime telemetry model attribution (gentle-ai#4536);
+	// the closed fields Pi consumes did not change between 2.8.0 and 2.8.1, so
+	// this row repeats 2.8.0. riskEvidence and hint remain dark because neither
+	// is proven to reach Pi's negotiated START path.
+	const contract = NATIVE_CLI_CONTRACTS["2.8.1"] as Record<string, boolean>;
+	assert.equal(contract.riskEvidence, false);
+	assert.equal(contract.hint, false);
+	assert.deepEqual(contract, NATIVE_CLI_CONTRACTS["2.8.0"] as Record<string, boolean>);
+});
+
+test("2.8.2 repeats 2.8.1 because the negotiated lane Pi consumes is unchanged", () => {
+	// v2.8.2 only shipped OpenCode SDD preflight plugin fixes, community-tools
+	// RTK acquisition, and Claude Code Stop telemetry (no review/SDD contract
+	// changes); the closed fields Pi consumes did not change between 2.8.1 and
+	// 2.8.2, so this row repeats 2.8.1. riskEvidence and hint remain dark
+	// because neither is proven to reach Pi's negotiated START path.
+	const contract = NATIVE_CLI_CONTRACTS["2.8.2"] as Record<string, boolean>;
+	assert.equal(contract.riskEvidence, false);
+	assert.equal(contract.hint, false);
+	assert.deepEqual(contract, NATIVE_CLI_CONTRACTS["2.8.1"] as Record<string, boolean>);
+});
+
+test("2.9.0 repeats 2.8.2 because the negotiated lane Pi consumes is unchanged", () => {
+	// v2.9.0 shipped RTK opt-in Community Tool integration (#4560,
+	// installer/sync/TUI only), SDD attempt-ledger fixes (#4564, #4567,
+	// #4569), sync telemetry-runtime symlinked root (#4565), OpenCode
+	// reviewer Task wrapper decoding (#4545), and Engram protocol asset
+	// wording (#4179). Diffing contracts/review-integration/v2 and
+	// contracts/review-provider-contract between the v2.8.2 and v2.9.0 tags
+	// in the gentle-ai source tree showed zero byte changes, so this row
+	// repeats 2.8.2. riskEvidence and hint remain dark because neither is
+	// proven to reach Pi's negotiated START path.
+	const contract = NATIVE_CLI_CONTRACTS["2.9.0"] as Record<string, boolean>;
+	assert.equal(contract.riskEvidence, false);
+	assert.equal(contract.hint, false);
+	assert.deepEqual(contract, NATIVE_CLI_CONTRACTS["2.8.2"] as Record<string, boolean>);
+});
+
+test("2.9.1 repeats 2.9.0 because the negotiated lane Pi consumes is unchanged", () => {
+	// v2.9.1 shipped restoring compatible OpenCode review consent (#4584) and
+	// deriving Claude Code SDD dispatch authority from the session transcript
+	// (#4575, #4551). Diffing contracts/review-integration/v2 and
+	// contracts/review-provider-contract between the v2.9.0 and v2.9.1 tags
+	// in the gentle-ai source tree showed zero byte changes, so this row
+	// repeats 2.9.0. riskEvidence and hint remain dark because neither is
+	// proven to reach Pi's negotiated START path.
+	const contract = NATIVE_CLI_CONTRACTS["2.9.1"] as Record<string, boolean>;
+	assert.equal(contract.riskEvidence, false);
+	assert.equal(contract.hint, false);
+	assert.deepEqual(contract, NATIVE_CLI_CONTRACTS["2.9.0"] as Record<string, boolean>);
+});
+
+test("3.0.0 repeats 2.9.1 because the negotiated lane Pi consumes is unchanged", () => {
+	// v3.0.0 shipped ODD as the orchestrator's mandatory default protocol and
+	// integrated the simplified SDD workflow into it (gentle-ai #4642, #4644),
+	// with the provider contract byte-frozen at 1.2.0. Diffing
+	// contracts/review-integration/v2 and contracts/review-provider-contract
+	// between the v2.9.1 and v3.0.0 tags in the gentle-ai source tree showed
+	// zero byte changes, so this row repeats 2.9.1. riskEvidence and hint
+	// remain dark because neither is proven to reach Pi's negotiated START
+	// path.
+	const contract = NATIVE_CLI_CONTRACTS["3.0.0"] as Record<string, boolean>;
+	assert.equal(contract.riskEvidence, false);
+	assert.equal(contract.hint, false);
+	assert.deepEqual(contract, NATIVE_CLI_CONTRACTS["2.9.1"] as Record<string, boolean>);
+});
+
+test("3.0.1 repeats 3.0.0 because the negotiated lane Pi consumes is unchanged", () => {
+	// v3.0.1 moved the Go module path to
+	// github.com/gentleman-programming/gentle-ai/v3 with no contract change
+	// (gentle-ai #4683). Diffing contracts/review-integration/v2 and
+	// contracts/review-provider-contract between the v3.0.0 and v3.0.1 tags
+	// in the gentle-ai source tree showed zero byte changes, so this row
+	// repeats 3.0.0. riskEvidence and hint remain dark because neither is
+	// proven to reach Pi's negotiated START path.
+	const contract = NATIVE_CLI_CONTRACTS["3.0.1"] as Record<string, boolean>;
+	assert.equal(contract.riskEvidence, false);
+	assert.equal(contract.hint, false);
+	assert.deepEqual(contract, NATIVE_CLI_CONTRACTS["3.0.0"] as Record<string, boolean>);
+});
+
+test("3.1.0 repeats 3.0.1 because the negotiated lane Pi consumes is unchanged", () => {
+	// v3.1.0 changed the ODD orchestrator contract only (gentle-ai #4714).
+	// Diffing contracts/review-integration/v2 and
+	// contracts/review-provider-contract between the v3.0.2 and v3.1.0 tags
+	// in the gentle-ai source tree showed zero byte changes (provider contract
+	// stays 1.2.0), so this row repeats 3.0.1. riskEvidence and hint remain
+	// dark because neither is proven to reach Pi's negotiated START path.
+	const contract = NATIVE_CLI_CONTRACTS["3.1.0"] as Record<string, boolean>;
+	assert.equal(contract.riskEvidence, false);
+	assert.equal(contract.hint, false);
+	assert.deepEqual(contract, NATIVE_CLI_CONTRACTS["3.0.1"] as Record<string, boolean>);
+});
+
+test("3.2.1 repeats 3.1.0 because the negotiated lane Pi consumes is unchanged", () => {
+	// v3.2.1 changed the ODD orchestrator contract only (gentle-ai #4714
+	// follow-up). Diffing contracts/review-integration/v2 and
+	// contracts/review-provider-contract between the v3.1.0 and v3.2.1 tags
+	// in the gentle-ai source tree showed zero byte changes (provider contract
+	// stays 1.2.0), so this row repeats 3.1.0. riskEvidence and hint remain
+	// dark because neither is proven to reach Pi's negotiated START path.
+	const contract = NATIVE_CLI_CONTRACTS["3.2.1"] as Record<string, boolean>;
+	assert.equal(contract.riskEvidence, false);
+	assert.equal(contract.hint, false);
+	assert.deepEqual(contract, NATIVE_CLI_CONTRACTS["3.1.0"] as Record<string, boolean>);
+});
+
+test("3.4.0 repeats 3.2.1 because the negotiated lane Pi consumes is unchanged", () => {
+	// v3.4.0 (gentle-pi never pinned the intervening v3.3.0 tag, so it gets no
+	// row) added capabilities/v2.6, status/v8-v9, and the `review assess`
+	// review_due/review_due_reason/next_transition fields. Diffing
+	// contracts/review-integration/v2 and contracts/review-provider-contract
+	// between the v3.2.1 and v3.4.0 tags in the gentle-ai source tree showed
+	// the provider contract stays byte-identical at 1.2.0, and every
+	// review-integration/v2 change is an additive superset that
+	// decodeReviewStatusV3 and the capabilities negotiator already accept
+	// without touching the closed START/STATUS fields this row negotiates, so
+	// this row repeats 3.2.1. riskEvidence and hint remain dark because
+	// neither is proven to reach Pi's negotiated START path.
+	const contract = NATIVE_CLI_CONTRACTS["3.4.0"] as Record<string, boolean>;
+	assert.equal(contract.riskEvidence, false);
+	assert.equal(contract.hint, false);
+	assert.deepEqual(contract, NATIVE_CLI_CONTRACTS["3.2.1"] as Record<string, boolean>);
+});
+
+test("3.5.0 repeats 3.4.0 because the negotiated lane Pi consumes is unchanged", () => {
+	// Published v3.4.0 and v3.5.0 provider bundles are byte-identical at
+	// contract 1.2.0, both with archive SHA-256:
+	// 547b68e172cc87aa297309d61624e5fc2c24d407a494b53eeb5a2b053904352c.
+	// Both binaries advertise capabilities/v2.6; only build-identity fields
+	// differ. No review-integration schema changed between the tags. The v2
+	// preflight failure identity fix changes no closed START/STATUS field
+	// this row negotiates, so it repeats 3.4.0. riskEvidence and hint remain
+	// dark because neither is proven to reach Pi's negotiated START path.
+	const contract = NATIVE_CLI_CONTRACTS["3.5.0"] as Record<string, boolean>;
+	assert.equal(contract.riskEvidence, false);
+	assert.equal(contract.hint, false);
+	assert.deepEqual(contract, NATIVE_CLI_CONTRACTS["3.4.0"] as Record<string, boolean>);
+});
+
+test("3.6.0 repeats 3.5.0 because the negotiated lane Pi consumes is unchanged", () => {
+	// Published v3.5.0 and v3.6.0 provider bundles are byte-identical at
+	// contract 1.2.0, both with archive SHA-256:
+	// 547b68e172cc87aa297309d61624e5fc2c24d407a494b53eeb5a2b053904352c.
+	// Both binaries advertise capabilities/v2.6; only build-identity fields
+	// differ. No review-integration schema changed between the tags, so this
+	// row repeats 3.5.0. riskEvidence and hint remain dark because neither is
+	// proven to reach Pi's negotiated START path.
+	const contract = NATIVE_CLI_CONTRACTS["3.6.0"] as Record<string, boolean>;
+	assert.equal(contract.riskEvidence, false);
+	assert.equal(contract.hint, false);
+	assert.deepEqual(contract, NATIVE_CLI_CONTRACTS["3.5.0"] as Record<string, boolean>);
+});
+
+test("3.6.1 explicitly repeats 3.6.0 because the negotiated provider lane is unchanged", () => {
+	// Published v3.6.0 and v3.6.1 provider-contract archives have identical
+	// SHA-256: 547b68e172cc87aa297309d61624e5fc2c24d407a494b53eeb5a2b053904352c.
+	// The published v3.6.1 binary advertises capabilities/v2.6; upstream's
+	// tag comparison changes no review-integration schema or capability source.
+	// Neither riskEvidence nor hint is proven in Pi's negotiated START path.
+	const contract = NATIVE_CLI_CONTRACTS["3.6.1"] as Record<string, boolean>;
+	assert.ok(contract, "the pinned version must have an explicit capability row");
+	assert.equal(contract.riskEvidence, false);
+	assert.equal(contract.hint, false);
+	assert.deepEqual(contract, NATIVE_CLI_CONTRACTS["3.6.0"] as Record<string, boolean>);
+});
+
+test("3.7.0 explicitly repeats 3.6.1 because provider contract 1.2.0 is unchanged", () => {
+	const contract = NATIVE_CLI_CONTRACTS["3.7.0"] as Record<string, boolean>;
+	assert.ok(contract);
+	assert.deepEqual(contract, NATIVE_CLI_CONTRACTS["3.6.1"] as Record<string, boolean>);
+});
+
 test("no shipped version key was added beyond the pin bump", () => {
 	// Rows are promises to consumers, so a new key only ever appears in a
 	// dedicated commit alongside a pin bump, never as a side effect. v2.2.4 and
 	// v2.3.0 shipped upstream while Pi stayed on 2.2.3 and were never pinned,
 	// so they get no row: a row asserts ground truth measured against a binary
 	// Pi actually ran, and the table only has to be ascending, not gapless.
-	assert.deepEqual(Object.keys(NATIVE_CLI_CONTRACTS), [...DARK_VERSIONS, "2.2.0", "2.2.1", "2.2.2", "2.2.3", "2.4.0", "2.5.0-rc.3", "2.5.0", "2.6.0", "2.7.0"]);
+	assert.deepEqual(Object.keys(NATIVE_CLI_CONTRACTS), [...DARK_VERSIONS, "2.2.0", "2.2.1", "2.2.2", "2.2.3", "2.4.0", "2.5.0-rc.3", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.8.1", "2.8.2", "2.9.0", "2.9.1", "3.0.0", "3.0.1", "3.1.0", "3.2.1", "3.4.0", "3.5.0", "3.6.0", "3.6.1", "3.7.0"]);
 });

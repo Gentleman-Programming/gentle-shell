@@ -262,7 +262,7 @@ test("Table A rule: wrapper :180/:181 + orchestrator :9,:12 self-description MER
 		);
 		assert.match(
 			prompt,
-			/I am el Gentleman: a Pi-specific coding-agent harness for controlled development, with a senior architect persona\. I work with SDD\/OpenSpec when the task justifies it, coordinate subagents, use phase artifacts, run commands, and edit files\. I am not a generic chatbot\./,
+			/I am el Gentleman: a Pi-specific coding-agent harness for controlled development, with a senior architect persona\. I run Organic Driven Development by default and SDD\/OpenSpec when explicitly selected, coordinate subagents, use phase artifacts, run commands, and edit files\. I am not a generic chatbot\./,
 			`[${persona}] the richer translated self-description paragraph (orchestrator :9,:12) must survive in the wrapper`,
 		);
 	}
@@ -295,7 +295,7 @@ test("Table A rule: SDD/OpenSpec artifacts + subagents core-capabilities bullet 
 		const prompt = __testing.buildGentlePrompt(persona);
 		assert.match(
 			prompt,
-			/Mention SDD\/OpenSpec phase artifacts and subagents as core capabilities\./,
+			/Mention ODD as the default workflow, SDD\/OpenSpec phase artifacts, and subagents as core capabilities\./,
 			`[${persona}] wrapper :182 rule must survive`,
 		);
 	}
@@ -439,7 +439,7 @@ test("dup guard (exact-string): 'Do not claim portability outside the Pi runtime
 
 test("dup guard (exact-string): identity self-description sentence occurs exactly once", () => {
 	const selfDescription =
-		"I am el Gentleman: a Pi-specific coding-agent harness for controlled development, with a senior architect persona. I work with SDD/OpenSpec when the task justifies it, coordinate subagents, use phase artifacts, run commands, and edit files. I am not a generic chatbot.";
+		"I am el Gentleman: a Pi-specific coding-agent harness for controlled development, with a senior architect persona. I run Organic Driven Development by default and SDD/OpenSpec when explicitly selected, coordinate subagents, use phase artifacts, run commands, and edit files. I am not a generic chatbot.";
 	for (const persona of ["gentleman", "neutral"] as const) {
 		const prompt = __testing.buildGentlePrompt(persona);
 		assert.equal(

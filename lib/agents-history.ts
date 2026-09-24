@@ -74,7 +74,8 @@ export async function loadHistory(dir: string): Promise<StoredTask[]> {
 // Keep the newest `maxTasks` files; the rest go. Returns how many were removed.
 export async function pruneHistory(dir: string, maxTasks: number): Promise<number> {
 	const stored = await loadHistory(dir);
-	const extra = stored.slice(Math.max(0, maxTasks));
+	// Preserve historical remediation payloads without interpreting or replaying their retired ledger.
+	const extra = stored.filter(({ task }) => task.sddRemediation === undefined).slice(Math.max(0, maxTasks));
 	await Promise.all(extra.map((entry) => rm(fileFor(dir, entry.task.id), { force: true })));
 	return extra.length;
 }

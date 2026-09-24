@@ -46,7 +46,7 @@ LABEL_ARGS+=(--label "$LABEL") # Repeat only for each permitted discovered label
    gh issue list --repo "$TARGET" --state all --search "$QUERY" --limit 1000
    ```
 
-   If results are saturated or completeness is uncertain, narrow the read-only search or stop. Comment on a confirmed duplicate instead of creating one. Before commenting on a confirmed duplicate, perform the same privacy scan/redaction on the exact comment body as for publication.
+   The agent must complete the duplicate search proactively and retain evidence of its result. If results are saturated or completeness is uncertain, narrow the read-only search or stop. Comment on a confirmed duplicate instead of creating one. Before commenting on a confirmed duplicate, perform the same privacy scan/redaction on the exact comment body as for publication.
 2. Select one repository-provided form only when its declared purpose matches. If multiple forms match and policy does not distinguish them, stop and request that decision.
 3. For a YAML form, read its schema and establish controls in declared order. Support only `input`, `textarea`, `dropdown`, and `checkboxes`. Markdown controls are non-answer guidance: honor their visible instructions when collecting and materializing adjacent answers, but do not render them as response sections. Fail closed before mutation on malformed, unsupported, missing, or ambiguous required structure or answers. A malformed schema, or missing or ambiguous required answers, fail closed: do not open a browser or mutate. A browser handoff is available only when the user explicitly requests browser completion or a syntactically valid selected form cannot safely/faithfully be represented by the automated path; otherwise report why automation is unsafe and stop.
 
@@ -54,7 +54,7 @@ LABEL_ARGS+=(--label "$LABEL") # Repeat only for each permitted discovered label
 | --- | --- |
 | `input` / `textarea` | Preserve the visible label. Require an answer when `validations.required` is true; otherwise render `_No response_`. |
 | `dropdown` | Preserve visible labels and options. Require exact selected option text; single-select has one selection, and multi-select preserves selections in declared options order. A required dropdown needs at least one valid selection; an optional dropdown with no selection renders `_No response_`. |
-| `checkboxes` | Preserve the visible label and every option as `- [x]` or `- [ ]` in declared order. Enforce individually required checkboxes and require explicit first-person affirmation for first-person option text. |
+| `checkboxes` | Preserve the visible label and every option as `- [x]` or `- [ ]` in declared order. Enforce individually required checkboxes. For agent-verifiable operational options, proactively complete the action and mark it only with retained evidence; the agent may explicitly attest only its own evidence-backed work and must not attribute its actions to the user. Personal facts, consent, legal declarations, and other first-person user assertions require explicit user affirmation; require explicit first-person affirmation for such user declarations. Do not blanket-check checkboxes: a request to publish does not affirm any checkbox. |
 
 For each answer, render `### <visible label>` followed by its materialized value. For `textarea.attributes.render`, fence the answer with the declared language and a fence long enough for its content. Never invent answers, selections, confirmations, or labels.
 
@@ -62,7 +62,7 @@ A Markdown template may be completed only from known evidence into the same priv
 
 ## Review And Publication
 
-Before the single create attempt, review the target, title, selected form or permitted fallback, exact body, and permitted labels. Perform a privacy scan immediately before publication: replace private project names, usernames, hostnames, home paths, credentials, and private network addresses with useful placeholders without removing reproduction structure.
+Before the single create attempt, review the target, title, selected form or permitted fallback, exact body, and permitted labels. The agent must complete the privacy scan/redaction of the exact body immediately before publication and retain evidence of it: replace private project names, usernames, hostnames, home paths, credentials, and private network addresses with useful placeholders without removing reproduction structure.
 
 Create one owner-only temporary directory outside the repository for both private files; restrict it to the current user and clean up both files on every exit/outcome:
 

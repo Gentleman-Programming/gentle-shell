@@ -6,7 +6,18 @@ const STATE = Symbol.for("gentle-pi.experimental-sidebar.state");
 export interface SidebarState {
 	active: boolean;
 	ownsHost?: () => boolean;
-	parts: Map<string, Component>;
+	parts: Map<string, SidebarRail>;
+}
+
+/** A rail slot in the fullscreen sidebar. */
+export interface SidebarRail extends Component {
+	/**
+	 * Cheap digest of the live state this rail paints. The fullscreen layout memo
+	 * re-renders a part only when its digest changes, so a rail that reads session
+	 * data (model, thinking level, context, cost, extension statuses) must declare
+	 * one; explicit invalidateSidebar() stays for discrete state changes.
+	 */
+	digest?(): string;
 }
 export function sidebarState(tui: TUI): SidebarState {
 	const terminal = tui.terminal as unknown as Record<symbol, SidebarState>;
@@ -14,7 +25,7 @@ export function sidebarState(tui: TUI): SidebarState {
 }
 
 /** Keep the original bottom component mounted, suppressing only its paint. */
-export function sidebarPart<T extends Component & { dispose?(): void }>(tui: TUI, key: string, bottom: T, rail: Component = bottom): T {
+export function sidebarPart<T extends Component & { dispose?(): void }>(tui: TUI, key: string, bottom: T, rail: SidebarRail = bottom): T {
 	// Minimal extension hosts cannot share terminal-owned layout state.
 	if (!tui.terminal) return bottom;
 	const state = sidebarState(tui);
@@ -26,5 +37,21 @@ export function sidebarPart<T extends Component & { dispose?(): void }>(tui: TUI
 			if (state.parts.get(key) === rail) state.parts.delete(key);
 			bottom.dispose?.();
 		},
+	};
+}
+
+/**
+ * Register the fullscreen header rail: the one row above the hstack that
+ * carries the brand, session identity, and the per-frame counters. There is
+ * no narrow-mode bottom counterpart — the compact bar already carries this
+ * data when the sidebar is inactive — so this only ever writes the "header"
+ * slot in sidebarState(tui).parts, and returns its own disposer.
+ */
+export function sidebarHeader(tui: TUI, rail: SidebarRail): () => void {
+	if (!tui.terminal) return () => {};
+	const state = sidebarState(tui);
+	state.parts.set("header", rail);
+	return () => {
+		if (state.parts.get("header") === rail) state.parts.delete("header");
 	};
 }

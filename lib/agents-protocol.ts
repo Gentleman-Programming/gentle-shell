@@ -109,6 +109,10 @@ export interface TaskThread {
 }
 
 export interface TaskRecord {
+	/** Retained legacy payload, never interpreted or replayed as launch authority. */
+	sddRemediation?: unknown;
+	/** Exact runtime-generated SDD preflight block retained only for continuation transport. */
+	sddPreflightContext?: string;
 	id: string;
 	agent: string;
 	mode: string;

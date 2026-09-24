@@ -9,6 +9,7 @@ import {
 	NativeReviewCliV216,
 	type ExecFileAdapter,
 	type NativeReviewCli,
+	type NativeReviewAssessRequest,
 } from "../lib/native-review-cli.ts";
 import {
 	decodeReviewAssessmentV1,
@@ -572,6 +573,109 @@ function queuedAdapter(results: readonly QueuedResult[]): { adapter: ExecFileAda
 function nativeClient(adapter: ExecFileAdapter): NativeReviewCliV216 {
 	return new NativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai", 30_000, 1024 * 1024);
 }
+
+test("gentle_review assess: stderr-only refusal preserves safe actionable diagnostics and fails closed", async () => {
+	const queue = queuedAdapter([{ stdout: "", stderr: "untracked scope declaration required; use --untracked-scope=exclude or select; token=hidden-secret", exitCode: 1 }]);
+	const client = nativeClient(queue.adapter);
+	const tool = reviewControllerTool({ assess: client.assess.bind(client) });
+	const result = await tool.execute("refusal", { operation: "assess" }, undefined, undefined, ctx);
+	const details = result.details as { risk: string; reasons: { code: string; detail: string }[]; plan: { independentVerifier: boolean } };
+	assert.equal(details.risk, "unassessable");
+	assert.equal(details.plan.independentVerifier, true);
+	assert.equal(details.reasons[0].code, NATIVE_REVIEW_ERROR_CODE.EMPTY_OUTPUT);
+	assert.match(details.reasons[0].detail, /untracked scope declaration required/);
+	assert.match(details.reasons[0].detail, /--untracked-scope=exclude/);
+	assert.doesNotMatch(JSON.stringify(result), /hidden-secret/);
+});
+
+test("gentle_review assess: diagnostic projection is bounded and redacts paths and environment assignments", async () => {
+	const queue = queuedAdapter([{ stdout: "", stderr: "untracked declaration required /private/project/file C:\\private\\project\\file PRIVATE_PROJECT=hidden-project token=hidden-token " + "x".repeat(6000), exitCode: 1 }]);
+	const client = nativeClient(queue.adapter);
+	const tool = reviewControllerTool({ assess: client.assess.bind(client) });
+	const result = await tool.execute("private-refusal", { operation: "assess" }, undefined, undefined, ctx);
+	const serialized = JSON.stringify(result);
+	const detail = (result.details as { reasons: { detail: string }[] }).reasons[0].detail;
+	assert.match(detail, /untracked declaration required/);
+	assert.ok(detail.length < 4300);
+	assert.doesNotMatch(serialized, /hidden-project|hidden-token|private.project|\/package\//);
+});
+
+for (const [shape, sensitive] of [
+	["lowercase environment", "private_project=hidden-project"],
+	["quoted environment", 'private_project="hidden project value"'],
+	["credential argument", "--password hidden-credential"],
+	["quoted credential argument", '--api-key "hidden credential value"'],
+	["POSIX path with spaces", "/private/hidden project/hidden file.ts"],
+	["quoted POSIX path", '"/private/hidden project/hidden file.ts"'],
+	["Windows path with spaces", String.raw`C:\private\hidden project\hidden file.ts`],
+	["quoted Windows path", String.raw`"C:\private\hidden project\hidden file.ts"`],
+]) {
+	test(`assess diagnostic redacts ${shape} without losing provider guidance`, async () => {
+		const queue = queuedAdapter([{ stdout: "", stderr: `${sensitive}\nuntracked scope declaration required; use --untracked-scope=exclude or select`, exitCode: 1 }]);
+		const client = nativeClient(queue.adapter);
+		const result = await reviewControllerTool({ assess: client.assess.bind(client) }).execute("private-shape", { operation: "assess" }, undefined, undefined, ctx);
+		const details = result.details as { risk: string; reasons: { code: string; detail: string }[] };
+		assert.equal(details.risk, "unassessable");
+		assert.equal(details.reasons[0].code, NATIVE_REVIEW_ERROR_CODE.EMPTY_OUTPUT);
+		assert.doesNotMatch(JSON.stringify(result), /hidden|private_project| project|file\.ts|\/private\//);
+		assert.match(details.reasons[0].detail, /untracked scope declaration required; use --untracked-scope=exclude or select/);
+		assert.ok(details.reasons[0].detail.length < 4300);
+	});
+}
+
+for (const selection of [
+	{ untrackedScope: "exclude", expectedUntrackedInventory: "inventory-v1" },
+	{ untrackedScope: "select", expectedUntrackedInventory: "inventory-v1", intendedUntracked: ["new/file.ts", "notes.md"] },
+] as const) {
+	test(`native and facade assess forward explicit ${selection.untrackedScope} without choosing scope`, async () => {
+		const queue = queuedAdapter([{ stdout: JSON.stringify(validEnvelope()) }, { stdout: JSON.stringify(validEnvelope()) }]);
+		const client = nativeClient(queue.adapter);
+		await client.assess({ cwd: process.cwd(), ...selection });
+		const tool = reviewControllerTool({ assess: client.assess.bind(client) });
+		const result = await tool.execute("selected", { operation: "assess", input: JSON.stringify({ ...selection, baseRef: "origin/main", committedOnly: true }) }, undefined, undefined, ctx);
+		assert.equal((result.details as { risk: string }).risk, "medium");
+		const flags = [`--untracked-scope=${selection.untrackedScope}`, "--expected-untracked-inventory=inventory-v1", ...(selection.untrackedScope === "select" ? selection.intendedUntracked.map((path) => `--intended-untracked=${path}`) : [])];
+		assert.deepEqual(queue.calls[0].arguments, ["review", "assess", "--cwd", process.cwd(), ...flags, "--json"]);
+		assert.deepEqual(queue.calls[1].arguments, ["review", "assess", "--cwd", process.cwd(), "--base-ref", "origin/main", "--committed-only", ...flags, "--json"]);
+	});
+}
+
+test("native and facade assess reject invalid declarations before launching", async () => {
+	const invalid = [
+		{ untrackedScope: "exclude" },
+		{ expectedUntrackedInventory: "inventory" },
+		{ intendedUntracked: ["file.ts"] },
+		{ untrackedScope: "all", expectedUntrackedInventory: "inventory" },
+		{ untrackedScope: "exclude", expectedUntrackedInventory: "inventory", intendedUntracked: ["file.ts"] },
+		{ untrackedScope: "select", expectedUntrackedInventory: "inventory" },
+		{ untrackedScope: "select", expectedUntrackedInventory: "inventory", intendedUntracked: [] },
+		...[null, 42, "", " inventory", "inventory\n", "inv\u0000entory"].map((expectedUntrackedInventory) => ({ untrackedScope: "exclude", expectedUntrackedInventory })),
+		...["/absolute", "C:\\absolute", "dir\\file", ".", "..", "../file", "dir/../file", "dir/./file", "dir//file", "dir/", " file", "file\n"].map((path) => ({ untrackedScope: "select", expectedUntrackedInventory: "inventory", intendedUntracked: [path] })),
+		{ untrackedScope: "select", expectedUntrackedInventory: "inventory", intendedUntracked: ["file", "file"] },
+		{ untrackedScope: "select", expectedUntrackedInventory: "inventory", intendedUntracked: "file" },
+	];
+	for (const selection of invalid) {
+		const queue = queuedAdapter([]);
+		const client = nativeClient(queue.adapter);
+		await assert.rejects(() => client.assess({ cwd: process.cwd(), ...selection } as NativeReviewAssessRequest), TypeError);
+		const tool = reviewControllerTool({ assess: client.assess.bind(client) });
+		await assert.rejects(() => tool.execute("invalid", { operation: "assess", input: JSON.stringify(selection) }, undefined, undefined, ctx));
+		assert.equal(queue.calls.length, 0);
+	}
+});
+
+test("facade assess leaves absent declarations to native and preserves stale-inventory refusal", async () => {
+	for (const selection of [{}, { untrackedScope: "exclude", expectedUntrackedInventory: "stale-inventory" }]) {
+		const queue = queuedAdapter([{ stdout: "", stderr: "untracked inventory changed; inspect and declare the current inventory", exitCode: 1 }]);
+		const client = nativeClient(queue.adapter);
+		const tool = reviewControllerTool({ assess: client.assess.bind(client) });
+		const result = await tool.execute("stale", { operation: "assess", input: JSON.stringify(selection) }, undefined, undefined, ctx);
+		const details = result.details as { risk: string; reasons: { detail: string }[] };
+		assert.equal(details.risk, "unassessable");
+		assert.match(details.reasons[0].detail, /inventory changed/);
+		if (!("untrackedScope" in selection)) assert.deepEqual(queue.calls[0].arguments, ["review", "assess", "--cwd", process.cwd(), "--json"]);
+	}
+});
 
 test("native assess: decodes a well-formed envelope and sends the exact plain-versioned argv", async () => {
 	const queue = queuedAdapter([{ stdout: JSON.stringify({ schema: REVIEW_ASSESSMENT_SCHEMA, risk: "medium", reasons: [], changed_paths: 1, changed_lines: 2, candidate: { kind: "current-changes" } }) }]);

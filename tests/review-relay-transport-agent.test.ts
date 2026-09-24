@@ -5,9 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { __testing } from "../extensions/gentle-ai.ts";
+import { REVIEW_HOST_RELAY_FAILURE, ReviewHostRelayError } from "../lib/review-host-relay.ts";
 import { NativeReviewIntegrationError, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
-import type { ReviewCollectInputV3, ReviewStatusV3 } from "../lib/review-integration-v2.ts";
+import type { ReviewArtifactSubjectV2, ReviewCollectInputV3, ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import type { ReviewHostRelayRequest } from "../lib/review-host-relay.ts";
 
 // Third field failure on the recovered-lineage defect (2026-08-16, gentle-pi
@@ -148,10 +149,11 @@ function transportAwareNative(options: { refusalCode?: string } = {}): {
 	return { native, agents };
 }
 
-async function runCapture(cwd: string, native: NativeReviewCli, lineageId: string, input: Record<string, unknown> = { reviewerRunAcknowledged: true }): Promise<Record<string, unknown>> {
+async function runCapture(cwd: string, native: NativeReviewCli, lineageId: string, input: Record<string, unknown> = { reviewerRunAcknowledged: true }, reviewerSessionId?: string): Promise<Record<string, unknown>> {
 	return await __testing.executeReviewCaptureOperation(
 		{ lineageId, collectBinding: JSON.stringify(collectInput(lineageId, true)), ...input },
 		cwd, native, undefined, new CandidateViewRegistry(),
+		undefined, undefined, undefined, reviewerSessionId,
 	) as Record<string, unknown>;
 }
 
@@ -184,6 +186,192 @@ test("the negotiated status asks for the pi agent so the provider offers its mat
 	const hostRelay = result.host_relay as { transport: string } | undefined;
 	assert.ok(hostRelay !== undefined, "the envelope reports the one relay capture");
 	assert.equal(hostRelay.transport, "pi_host_relay");
+});
+
+// gentle-pi#311 P2 (superseding gentle-shell#1136 / #1158): the lens's
+// user-owned completion selection (agent model routing config) rides the
+// relay request alongside the live model registry; there is no extension
+// allowlist and no ambient default model to fall back to.
+test("capture forwards the lens's user-owned selection and thinking level to the relay request", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const configHome = mkdtempSync(join(tmpdir(), "gentle-pi-relay-config-"));
+	const cwd = repository(t);
+	t.after(() => rmSync(configHome, { recursive: true, force: true }));
+	writeFileSync(join(configHome, "models.json"), JSON.stringify({ "review-reliability": { model: "minimax/MiniMax-M3", thinking: "high" } }), "utf8");
+	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = configHome;
+	t.after(() => {
+		if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+	});
+	const { native } = transportAwareNative();
+	const relayed: ReviewHostRelayRequest[] = [];
+	__testing.setReviewHostRelayRunnerForTesting(async (request: ReviewHostRelayRequest) => {
+		relayed.push(request);
+		return { promptByteLength: 128, resultByteLength: 64, submission: '{"admission_decision":"completed"}' };
+	});
+
+	await runCapture(cwd, native, "selection-lineage");
+	assert.equal(relayed.length, 1);
+	assert.equal(relayed[0]!.selection, "minimax/MiniMax-M3", "the lens's routing entry must name the completion's selection");
+	assert.equal(relayed[0]!.thinking, "high");
+	assert.equal(relayed[0]!.routingKey, "review-reliability");
+});
+
+// The live session id threads from the extension context through both
+// request builders, so an OpenCode-routed reviewer model carries its
+// attribution headers (a side-call bypasses pi's main agent loop, where pi
+// adds them itself). A absent session id adds nothing and is never an error.
+test("capture threads the caller's live session id into the relay request", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const cwd = repository(t);
+	const { native } = transportAwareNative();
+	const relayed: ReviewHostRelayRequest[] = [];
+	__testing.setReviewHostRelayRunnerForTesting(async (request: ReviewHostRelayRequest) => {
+		relayed.push(request);
+		return { promptByteLength: 128, resultByteLength: 64, submission: '{"admission_decision":"completed"}' };
+	});
+
+	await runCapture(cwd, native, "session-lineage", { reviewerRunAcknowledged: true }, "ses-live-1");
+	assert.equal(relayed.length, 1);
+	assert.equal(relayed[0]!.reviewerSessionId, "ses-live-1");
+});
+
+test("capture with no live session id adds no reviewer session id to the relay request", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const cwd = repository(t);
+	const { native } = transportAwareNative();
+	const relayed: ReviewHostRelayRequest[] = [];
+	__testing.setReviewHostRelayRunnerForTesting(async (request: ReviewHostRelayRequest) => {
+		relayed.push(request);
+		return { promptByteLength: 128, resultByteLength: 64, submission: '{"admission_decision":"completed"}' };
+	});
+
+	await runCapture(cwd, native, "no-session-lineage");
+	assert.equal(relayed.length, 1);
+	assert.equal(relayed[0]!.reviewerSessionId, undefined);
+});
+
+function groupInput(lineageId: string, lens: string, order: number): ReviewCollectInputV3 {
+	const subjectHash = `sha256:${String(order + 1).repeat(64)}`;
+	const base = collectInput(lineageId, true);
+	const arguments_ = base.arguments.map((argument) => {
+		if (argument.name === "lens") return { ...argument, value: lens, token: `--lens=${lens}` };
+		if (argument.name === "order") return { ...argument, value: String(order), token: `--order=${order}` };
+		if (argument.name === "subject-hash") return { ...argument, value: subjectHash, token: `--subject-hash=${subjectHash}` };
+		return argument;
+	});
+	return { ...base, arguments: arguments_, artifactSubject: { ...base.artifactSubject, subjectHash, lens: lens as ReviewArtifactSubjectV2["lens"], selectedOrder: order } };
+}
+
+function groupStatus(lineageId: string, inputs: readonly ReviewCollectInputV3[]): ReviewStatusV3 {
+	const status = recoveredStatus(lineageId, false) as ReviewStatusV3 & { repositoryContext?: Record<string, unknown>; nextTransition?: { kind: string; reasonCode: string; collect: { inputs: ReviewCollectInputV3[] } } };
+	// The reviewer group binds one repository context per slot; reuse the same
+	// opaque handle shape the finalizeStatus fixtures in the routing tests use.
+	status.repositoryContext = { capability: "review.opaque_repository_context", handle: `rctx1_${"e".repeat(64)}`, revision: SHA, targetIdentity: SHA };
+	status.nextTransition = { kind: "collect", reasonCode: "reviewer_results_required", collect: { inputs: [...inputs] } };
+	return status;
+}
+
+function queueNative(statuses: readonly ReviewStatusV3[]): { native: NativeReviewCli; agents: Array<string | undefined> } {
+	const agents: Array<string | undefined> = [];
+	const queue = [...statuses];
+	const native = {
+		targetStatus: async (request: { agent?: string }) => {
+			agents.push(request.agent);
+			const next = queue.shift();
+			if (next === undefined) throw new Error("status queue exhausted");
+			return next;
+		},
+	} as unknown as NativeReviewCli;
+	return { native, agents };
+}
+
+function prepared(request: ReviewHostRelayRequest) {
+	return { request, promptByteLength: 64, resultByteLength: 32 };
+}
+
+test("capture group threads the caller's live session id into every relay request", async (t) => {
+	t.after(() => __testing.setReviewHostRelayGroupRunnersForTesting());
+	const cwd = repository(t);
+	const lineageId = "group-session-lineage";
+	const inputs = [groupInput(lineageId, "review-risk", 0), groupInput(lineageId, "review-resilience", 1)];
+	// The final reconciliation STATUS must no longer offer the submitted
+	// reviewer suffix; a STATUS without a collect transition reconciles the
+	// drained group instead of replaying the submitted set.
+	const finalStatus = groupStatus(lineageId, []) as ReviewStatusV3 & { nextTransition?: { kind: string; reasonCode: string; collect: { inputs: ReviewCollectInputV3[] } } };
+	delete finalStatus.nextTransition;
+	const { native } = queueNative([groupStatus(lineageId, inputs), groupStatus(lineageId, inputs), groupStatus(lineageId, inputs.slice(1)), finalStatus]);
+	const relayed: ReviewHostRelayRequest[] = [];
+	__testing.setReviewHostRelayGroupRunnersForTesting(
+		async (requests: readonly ReviewHostRelayRequest[]) => {
+			relayed.push(...requests);
+			return requests.map(prepared);
+		},
+		async (result: { promptByteLength: number; resultByteLength: number }) => ({ promptByteLength: result.promptByteLength, resultByteLength: result.resultByteLength, submission: "{}" }),
+	);
+
+	const result = await __testing.executeReviewCaptureGroupOperation(
+		{ lineageId, collectBindings: inputs.map((input) => JSON.stringify(input)), reviewerRunAcknowledged: true },
+		cwd, native, undefined, new CandidateViewRegistry(),
+		undefined, undefined, undefined, "ses-live-1",
+	) as Record<string, unknown>;
+
+	assert.equal(relayed.length, 2);
+	assert.ok(relayed.every((request) => request.reviewerSessionId === "ses-live-1"), "every grouped reviewer request must carry the live session id");
+	assert.equal(result.outcome, "native-reviewer-group-status-reconciled");
+});
+
+// gentle-pi#311 P2 decision (flagged for confirmation): the in-process path
+// has no ambient default model. A routing entry with no configured model used
+// to launch the child selection-free (inheriting pi's own default); the real
+// relay now refuses it typed instead, since there is no child to inherit a
+// default from (lib/review-host-relay.ts's own tests exercise that refusal
+// through the real, unfaked runner). This extension layer only forwards
+// whatever the routing config yields — it never validates the selection
+// itself — so with the runner faked here the request still reaches it, and
+// its `selection` field is simply absent.
+test("capture forwards no selection when the lens has no configured model, leaving the missing-model refusal to the relay", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const configHome = mkdtempSync(join(tmpdir(), "gentle-pi-relay-config-empty-"));
+	const cwd = repository(t);
+	t.after(() => rmSync(configHome, { recursive: true, force: true }));
+	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = configHome;
+	t.after(() => {
+		if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+	});
+	const { native } = transportAwareNative();
+	const relayed: ReviewHostRelayRequest[] = [];
+	__testing.setReviewHostRelayRunnerForTesting(async (request: ReviewHostRelayRequest) => {
+		relayed.push(request);
+		return { promptByteLength: 128, resultByteLength: 64, submission: '{"admission_decision":"completed"}' };
+	});
+
+	await runCapture(cwd, native, "default-lineage");
+	assert.equal(relayed.length, 1);
+	assert.equal(relayed[0]!.selection, undefined);
+	assert.equal(relayed[0]!.routingKey, "review-reliability");
+});
+
+test("a relayed empty-output failure carries the child's own evidence in the failure report", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const cwd = repository(t);
+	const { native } = transportAwareNative();
+	__testing.setReviewHostRelayRunnerForTesting(async () => {
+		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_EMPTY_OUTPUT, "pi", "pi subprocess produced no assistant text (stdout kind: no-assistant-text; a tool call was attempted)", {
+			reviewerEvidence: { stdoutKind: "no-assistant-text", reviewerModel: "nan/deepseek-v4-flash", toolCallAttempted: true },
+		});
+	});
+
+	const result = await runCapture(cwd, native, "evidence-lineage");
+	assert.equal(result.outcome, "pi-host-relay-transport-failure");
+	const failure = result.failure as { reviewer?: { stdoutKind?: string; reviewerModel?: string; toolCallAttempted?: boolean } } | undefined;
+	assert.ok(failure !== undefined, "the envelope carries the failure report");
+	assert.equal(failure.reviewer?.stdoutKind, "no-assistant-text");
+	assert.equal(failure.reviewer?.reviewerModel, "nan/deepseek-v4-flash");
+	assert.equal(failure.reviewer?.toolCallAttempted, true);
 });
 
 test("capture forecasts the reviewer model run once and spends nothing until it is acknowledged", async (t) => {

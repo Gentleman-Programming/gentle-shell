@@ -35,6 +35,28 @@ test("fails closed before publication for invalid required Issue Form data", () 
 	assert.match(skill, /Never invent answers, selections, confirmations, or labels/i);
 });
 
+function assertCheckboxAttestationContract(candidate: string) {
+	assert.match(candidate, /agent must complete.*duplicate search.*retain evidence/i);
+	assert.match(candidate, /agent must complete.*privacy scan\/redaction.*exact body.*retain evidence/i);
+	assert.match(candidate, /may explicitly attest.*own evidence-backed work.*must not attribute.*user/i);
+	assert.match(candidate, /personal facts, consent, legal declarations.*explicit user affirmation/i);
+	assert.match(candidate, /Do not blanket.*check(?:box|boxes)/i);
+	assert.match(candidate, /request to publish.*does not.*affirm/i);
+}
+
+test("attests only agent-verifiable checkbox work and preserves human declarations", () => {
+	assertCheckboxAttestationContract(skill);
+
+	const missingEvidence = skill.replace(/retain evidence/gi, "skip evidence");
+	assert.throws(() => assertCheckboxAttestationContract(missingEvidence));
+
+	const userOnlyDeclaration = skill.replace(
+		/personal facts, consent, legal declarations.*explicit user affirmation/i,
+		"personal facts, consent, legal declarations may be inferred from a request to publish",
+	);
+	assert.throws(() => assertCheckboxAttestationContract(userOnlyDeclaration));
+});
+
 test("publishes reviewed Issue Form bodies through a private body file", () => {
 	assert.match(skill, /private `BODY_FILE`/);
 	assert.match(skill, /gh issue create --repo "\$TARGET" --title "\$TITLE" --body-file "\$BODY_FILE"/);

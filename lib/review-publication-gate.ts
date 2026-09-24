@@ -136,6 +136,7 @@ function runGateGit(cwd: string, args: readonly string[]): string {
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
 		env: reviewGitEnvironment(),
+		windowsHide: true,
 	});
 	if (result.error || result.status !== 0) throw publicationError(`Git publication identity could not be resolved: ${args.join(" ")}`);
 	return result.stdout.trim();
@@ -150,6 +151,7 @@ function listConfiguredRemotes(cwd: string): string[] {
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
 		env: reviewGitEnvironment(),
+		windowsHide: true,
 	});
 	if (result.error || result.status !== 0) throw publicationError("Configured Git remotes could not be listed");
 	return result.stdout.split(/\r?\n/).filter(Boolean);
@@ -160,6 +162,7 @@ function configuredRemoteValues(cwd: string, key: string): string[] {
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
 		env: publicationProbeGitEnvironment(),
+		windowsHide: true,
 	});
 	if (result.error || (result.status !== 0 && result.status !== 1)) {
 		throw publicationError(`Configured Git remote value "${key}" could not be resolved`);
@@ -178,6 +181,7 @@ export function resolveConfiguredPushDestinationV1(cwd: string, remote: string):
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
 		env: publicationProbeGitEnvironment(),
+		windowsHide: true,
 	});
 	if (result.error || result.status !== 0) throw publicationError(`Configured remote "${remote}" push destination could not be resolved`);
 	const urls = result.stdout.split(/\r?\n/).filter(Boolean);
@@ -205,6 +209,7 @@ export function resolvePushRemoteRefV1(
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
 		env: publicationProbeGitEnvironment(),
+		windowsHide: true,
 	});
 	if (result.error || result.status !== 0) throw publicationError(`${label} could not be resolved`);
 	if (result.stdout.length === 0) return { destination, object_id: null };
@@ -232,6 +237,7 @@ export function resolvePushDestinationRefV1(
 		cwd,
 		stdio: "ignore",
 		env: reviewGitEnvironment(),
+		windowsHide: true,
 	});
 	if (formatCheck.error || formatCheck.status !== 0) throw publicationError(`${label} is malformed`);
 	const destination = resolveConfiguredPushDestinationV1(cwd, remote);
@@ -240,6 +246,7 @@ export function resolvePushDestinationRefV1(
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
 		env: publicationProbeGitEnvironment(),
+		windowsHide: true,
 	});
 	if (result.error || result.status !== 0) throw publicationError(`${label} could not be resolved`);
 	const rows = result.stdout.split(/\r?\n/).filter(Boolean);
@@ -271,6 +278,7 @@ export function pushRemoteAdvertisesObjectV1(
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
 		env: publicationProbeGitEnvironment(),
+		windowsHide: true,
 	});
 	if (result.error || result.status !== 0) throw publicationError("Push parent advertisement could not be resolved");
 	const rows = result.stdout.split(/\r?\n/).filter(Boolean);
@@ -357,7 +365,7 @@ function defaultGhCommandRunner(
 	args: readonly string[],
 	options: { cwd: string; env: NodeJS.ProcessEnv },
 ): { status: number | null; stdout: string; error?: Error } {
-	const result = spawnSync("gh", args, { ...options, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+	const result = spawnSync("gh", args, { ...options, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
 	return { status: result.status, stdout: result.stdout ?? "", error: result.error };
 }
 
@@ -423,6 +431,7 @@ function resolveConfiguredRemoteUrl(cwd: string, remote: string): string {
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
 		env: reviewGitEnvironment(),
+		windowsHide: true,
 	});
 	if (result.error || result.status !== 0) throw publicationError(`Configured remote "${remote}" URL could not be resolved`);
 	const url = result.stdout.trim();
@@ -437,6 +446,7 @@ function resolveRemoteGateRef(cwd: string, remote: string, ref: string, label: s
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
 		env: reviewGitEnvironment(),
+		windowsHide: true,
 	});
 	if (result.error || result.status !== 0) throw publicationError(`${label} could not be resolved`);
 	const matches = result.stdout.split(/\r?\n/).filter(Boolean).flatMap((line) => {

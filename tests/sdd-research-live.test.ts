@@ -129,7 +129,8 @@ export default function liveProbe(pi: ExtensionAPI): void {
 				record({ event: "prerequisite_failed", reason: "inherited model is unavailable in the isolated profile" });
 				ctx.shutdown(); return;
 			}
-			const mapped = researchAgent({ name: "runtime-research-probe", description: "Public-only generic capability probe", tools, instructions: question } as never, pi);
+			const selection = { "open-web": { tools, extensions: Object.fromEntries(tools.map(name => [name, process.env.GENTLE_PI_LIVE_RESEARCH_WEB_EXTENSION!])) } };
+			const mapped = researchAgent({ name: "runtime-research-probe", description: "Public-only generic capability probe", tools, instructions: question } as never, pi, selection);
 			if (mapped.capabilities["open-web"].status !== "available") {
 				record({ event: "prerequisite_failed", reason: "four active approved installed web tools required" });
 				ctx.shutdown(); return;
@@ -148,7 +149,7 @@ export default function liveProbe(pi: ExtensionAPI): void {
 			}, { askUser: async () => ({ cancelled: true }) });
 			const timer = setTimeout(() => runner.cancelAll(), 145_000);
 			try {
-				const task = runner.run({ agent: mapped.agent, prompt: question, label: "Public Node.js docs probe", context: undefined, mode: "task", cwd: ctx.cwd, parentSessionId: ctx.sessionManager.getSessionId(), model: undefined, thinking: undefined, sessionDir: join(ctx.cwd, "sessions"), resumeSessionPath: undefined, env: { ...process.env, GENTLE_PI_LIVE_RESEARCH_ROLE: "child", [RESEARCH_CHILD_TOOLS_ENV]: JSON.stringify(mapped.agent.tools) } });
+				const task = runner.run({ agent: mapped.agent, prompt: question, label: "Public Node.js docs probe", context: undefined, mode: "task", cwd: ctx.cwd, parentSessionId: ctx.sessionManager.getSessionId(), model: undefined, thinking: undefined, sessionDir: join(ctx.cwd, "sessions"), resumeSessionPath: undefined, env: { ...process.env, GENTLE_PI_LIVE_RESEARCH_ROLE: "child", [RESEARCH_CHILD_TOOLS_ENV]: JSON.stringify(mapped.agent.tools), GENTLE_PI_RESEARCH_SELECTION: JSON.stringify(selection) } });
 				const outcome = await runner.waitFor(task.id);
 				record({ event: "runner_result", status: outcome.status });
 			} finally { clearTimeout(timer); runner.cancelAll(); ctx.shutdown(); }

@@ -1,10 +1,11 @@
-import { classifyPiCatalogName } from "./runtime-metrics-pi-identity.ts";
+import { readFileSync } from "node:fs";
+
+const runtimeSchema = JSON.parse(readFileSync(new URL("../contracts/telemetry/runtime-aggregate-v1.schema.json", import.meta.url), "utf8"));
 
 // Pure local accounting, not a telemetry transport or Pi event adapter.
 // Callers supply finalized assistant responses and authoritative classifications.
 // Never infer executor, usage availability, or measured timings from SDK defaults.
 const EXECUTORS = ["orchestrator", "worker", "reviewer", "unknown"] as const;
-const PROVIDERS = ["anthropic", "openai", "openai-codex", "google", "google-vertex", "amazon-bedrock", "openrouter", "custom", "unknown"] as const;
 // Stable families, not model IDs/versions: new models need no catalog update.
 // Callers map known native metadata to families; private aliases stay custom.
 const FAMILIES = ["claude", "gpt", "o-series", "gemini", "llama", "qwen", "deepseek", "kimi", "custom", "unknown"] as const;
@@ -13,11 +14,120 @@ const FAMILIES = ["claude", "gpt", "o-series", "gemini", "llama", "qwen", "deeps
 export const EFFORTS = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "not_selected", "unsupported", "unavailable"] as const;
 const ERRORS = ["none", "aborted", "rate_limit", "authentication", "network", "provider", "unknown"] as const;
 const TOKEN_FIELDS = ["input", "output", "cacheRead", "cacheWrite", "reasoning", "totalTokens"] as const;
-export const AGENT_CLASSES = ["orchestrator", "worker", "explore", "verify", "unknown",
-	"sdd-apply", "sdd-archive", "sdd-design", "sdd-explore", "sdd-init", "sdd-onboard", "sdd-proposal",
-	"sdd-research", "sdd-spec", "sdd-status", "sdd-sync", "sdd-tasks", "sdd-verify",
-	"review-readability", "review-reliability", "review-resilience", "review-risk", "jd-fix-agent", "jd-judge-a", "jd-judge-b"] as const;
-export type AgentClass = typeof AGENT_CLASSES[number];
+declare const agentClassBrand: unique symbol;
+export type AgentClass = string & { readonly [agentClassBrand]: "AgentClass" };
+
+function agentClasses(): readonly AgentClass[] {
+	const values: unknown = runtimeSchema?.$defs?.row?.properties?.agent_class?.enum;
+	if (!Array.isArray(values) || !values.length || values.some(value => typeof value !== "string")) {
+		throw new Error("Invalid runtime telemetry agent_class schema");
+	}
+	return Object.freeze([...values]) as readonly AgentClass[];
+}
+
+// The mirrored transport contract is the runtime source of truth. Keeping this
+// data-driven lets packaged agent updates follow the closed enum without a
+// second name registry drifting in TypeScript.
+export const AGENT_CLASSES = agentClasses();
+export function parseAgentClass(value: unknown): AgentClass | undefined {
+	return typeof value === "string" && (AGENT_CLASSES as readonly string[]).includes(value) ? value as AgentClass : undefined;
+}
+function requiredAgentClass(value: string): AgentClass {
+	const parsed = parseAgentClass(value);
+	if (!parsed) throw new Error(`Runtime telemetry schema is missing required agent_class ${value}`);
+	return parsed;
+}
+export const UNKNOWN_AGENT_CLASS = requiredAgentClass("unknown");
+export const ORCHESTRATOR_AGENT_CLASS = requiredAgentClass("orchestrator");
+
+interface ModelFieldRule { pattern: RegExp; maxLength: number }
+
+function modelFieldRule(field: "provider" | "id"): ModelFieldRule {
+	// The length cap lives on $defs.model.properties.<field>; the shape pattern
+	// lives only on the first (public-pattern) branch of $defs.model.anyOf, next
+	// to the unknown/custom/opencode sentinel branches. Both are mirrored,
+	// byte-for-byte, from the Gentle AI transport schema.
+	const property: unknown = runtimeSchema?.$defs?.model?.properties?.[field];
+	if (!object(property) || typeof property.maxLength !== "number") {
+		throw new Error(`Invalid runtime telemetry model ${field} schema`);
+	}
+	const branches: unknown = runtimeSchema?.$defs?.model?.anyOf;
+	const patternProperty = Array.isArray(branches) && object(branches[0]) && object(branches[0].properties)
+		? branches[0].properties[field] : undefined;
+	if (!object(patternProperty) || typeof patternProperty.pattern !== "string") {
+		throw new Error(`Invalid runtime telemetry model ${field} schema`);
+	}
+	return { pattern: new RegExp(patternProperty.pattern), maxLength: property.maxLength };
+}
+
+// Schema-driven, not a hardcoded TypeScript regex: the mirrored transport
+// contract owns the open family-pattern rules for provider/id shape. A
+// companion Gentle AI change keeps the Go side on the same patterns.
+const MODEL_PROVIDER_RULE = modelFieldRule("provider");
+const MODEL_ID_RULE = modelFieldRule("id");
+
+/** Provider-only normalization, independent of any specific model id: trims,
+ * lowercases, and keeps the slug only when it matches the schema provider
+ * pattern within its maxLength. Non-string/empty input is "unknown"; a
+ * non-conforming non-empty string is "custom". Shared by the standalone
+ * provider dimension and by normalizeRuntimeModel's own provider handling.
+ */
+export function normalizeRuntimeProvider(value: unknown): string {
+	if (typeof value !== "string") return "unknown";
+	const trimmed = value.trim();
+	if (!trimmed) return "unknown";
+	const lower = trimmed.toLowerCase();
+	return lower.length <= MODEL_PROVIDER_RULE.maxLength && MODEL_PROVIDER_RULE.pattern.test(lower) ? lower : "custom";
+}
+
+/** Generic, schema-driven family-pattern normalizer for a (provider, id)
+ * selection or response pair (gentle-pi#968 / gentle-ai#4536). Open-weight
+ * models on arbitrary providers are reported by name; private aliases and
+ * fine-tunes stay custom. Rules, identical to the mirrored Go/schema side:
+ *  - a non-string or empty provider or id fails closed to unknown/unknown;
+ *  - id: trim, keep the LAST "/"-separated segment, lowercase; public only
+ *    when it matches the schema id pattern within its maxLength, otherwise
+ *    "custom";
+ *  - provider: trim, lowercase; kept when it matches the schema provider
+ *    pattern, otherwise "custom";
+ *  - when the id is not public the provider becomes "custom" too, except
+ *    "opencode", which stays opencode/custom;
+ *  - the literal unknown/unknown and custom/custom pairs pass through.
+ */
+export function normalizeRuntimeModel(provider: unknown, id: unknown): { provider: string; id: string } {
+	if (typeof provider !== "string" || typeof id !== "string") return { provider: "unknown", id: "unknown" };
+	const providerTrimmed = provider.trim();
+	const idTrimmed = id.trim();
+	if (!providerTrimmed || !idTrimmed) return { provider: "unknown", id: "unknown" };
+	const providerLower = providerTrimmed.toLowerCase();
+	const idSegment = idTrimmed.split("/").pop() ?? "";
+	const idLower = idSegment.toLowerCase();
+	if (providerLower === "unknown" && idLower === "unknown") return { provider: "unknown", id: "unknown" };
+	if (providerLower === "custom" && idLower === "custom") return { provider: "custom", id: "custom" };
+	const idPublic = idLower.length <= MODEL_ID_RULE.maxLength && MODEL_ID_RULE.pattern.test(idLower);
+	const id_ = idPublic ? idLower : "custom";
+	let providerResult = normalizeRuntimeProvider(providerTrimmed);
+	if (!idPublic) providerResult = providerResult === "opencode" ? "opencode" : "custom";
+	return { provider: providerResult, id: id_ };
+}
+
+/** Thin wrapper over normalizeRuntimeModel for callers that only track the
+ * id dimension (the provider is used only to decide the closed unknown/empty
+ * fast path; a valid non-empty provider string never changes the id result).
+ */
+export function classifyRuntimeModelId(provider: unknown, modelId: unknown): string {
+	return normalizeRuntimeModel(provider, modelId).id;
+}
+
+/** True only for an id already in its normalized public form: it matches the
+ * schema id pattern within its maxLength (which, by construction, also
+ * excludes the "unknown"/"custom" sentinels, since neither matches any
+ * recognized family prefix). Used to pick the strongest available evidence
+ * tier among already-classified id dimensions (response/selected/observed).
+ */
+export function isPublicRuntimeModelId(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0 && value.length <= MODEL_ID_RULE.maxLength && MODEL_ID_RULE.pattern.test(value);
+}
 
 type Missing = { state: "unavailable" | "unsupported" };
 export type TokenMeasurement = Missing | { state: "reported"; value: number };
@@ -27,20 +137,23 @@ export interface FinalResponse {
 	/** Local dedupe only: 1..128 UTF-16 code units; never exported. */
 	responseId: string;
 	/** Caller-observed selected SDK model ID, never dispatched/response identity.
-	 * Catalog must be loaded before accounting; only public catalog names survive.
+	 * Normalized through normalizeRuntimeModel at record time; only an id
+	 * matching the schema family pattern survives as a public name.
 	 */
 	selectedModelId?: string;
 	/** Selection namespace, independent from observed response provider.
 	 * Omission preserves legacy same-provider callers; adapters must pass it explicitly.
 	 */
-	selectedProvider?: typeof PROVIDERS[number];
+	selectedProvider?: string;
 	agentClass?: AgentClass;
-	/** Public catalog names from SDK response metadata, never endpoint proof. */
+	/** SDK-observed model id from response metadata, never endpoint proof.
+	 * Normalized like selectedModelId; only a schema family match survives.
+	 */
 	observedModelId?: string;
 	responseModelId?: string;
 	providerThinkingLevel?: typeof EFFORTS[number];
 	executor: typeof EXECUTORS[number];
-	provider: typeof PROVIDERS[number];
+	provider: string;
 	modelFamily: typeof FAMILIES[number];
 	effort: typeof EFFORTS[number];
 	error: typeof ERRORS[number];
@@ -154,14 +267,14 @@ export class RuntimeMetrics {
 		const selectedProvider = response.selectedProvider ?? response.provider;
 		const dimensions = {
 			hostAgent: "pi" as const,
-			agentClass: category(AGENT_CLASSES, response.agentClass, "unknown"),
-			observedModelId: classifyPiCatalogName({ provider: response.provider, modelId: response.observedModelId }).modelId,
-			responseModelId: classifyPiCatalogName({ provider: response.provider, modelId: response.responseModelId }).modelId,
+			agentClass: category(AGENT_CLASSES, response.agentClass, UNKNOWN_AGENT_CLASS),
+			observedModelId: classifyRuntimeModelId(response.provider, response.observedModelId),
+			responseModelId: classifyRuntimeModelId(response.provider, response.responseModelId),
 			providerThinkingLevel: category(EFFORTS, response.providerThinkingLevel, "unavailable"),
-			selectedModelId: classifyPiCatalogName({ provider: selectedProvider, modelId: response.selectedModelId }).modelId,
-			selectedProvider: category(PROVIDERS, selectedProvider, typeof selectedProvider === "string" && selectedProvider ? "custom" : "unknown"),
+			selectedModelId: classifyRuntimeModelId(selectedProvider, response.selectedModelId),
+			selectedProvider: normalizeRuntimeProvider(selectedProvider),
 			executor: category(EXECUTORS, response.executor, "unknown"),
-			provider: category(PROVIDERS, response.provider, typeof response.provider === "string" && response.provider ? "custom" : "unknown"),
+			provider: normalizeRuntimeProvider(response.provider),
 			modelFamily: category(FAMILIES, response.modelFamily, typeof response.modelFamily === "string" && response.modelFamily ? "custom" : "unknown"),
 			effort: response.effort,
 			error: response.error,

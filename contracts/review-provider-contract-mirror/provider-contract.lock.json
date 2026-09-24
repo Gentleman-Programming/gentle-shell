@@ -3,23 +3,24 @@
   "acquisition": "field-test-local",
   "contract_semver": "1.2.0",
   "source": {
-    "kind": "tree"
+    "kind": "archive",
+    "archive_sha256": "b0b9be7569e4544d37cbbfa17c5def56fdb66ae670584eb74f9d0ffc200e03c4"
   },
-  "tree_sha256": "9cc05e9f0cbfd22734f1a112dc6120230b22de5318401db19652b4287b7382b8",
+  "tree_sha256": "832f62d461249576f9b7e864c2d5adbb6e38a36f8a7103a28a9f2ca81f41de41",
   "entries": {
     "README.md": "18baab5ee79aefd0bc62a28da0dadcf2162544f57a940c5b859cd6bc4932a085",
-    "manifest.json": "042a8925ac71929c33de2cad630bac26192ff61e255145649b3c34ba4048e923",
-    "orchestration/pi.md": "69c51944081ccff09d1cee5e24eb3a14b7b911a2e734cef8f8ea94a15b9f9d4c",
-    "schemas/lens.schema.json": "ffef79cfb763333282285ff5c795a32b5a88d840b4a8d125ce012188b04cffe1",
+    "manifest.json": "097a41ecbcf96e5f3432f3f38164ccaf440f33de82c1aa8ae956b2ba263d4d18",
+    "orchestration/pi.md": "679133e54b7fe8661050cdde51aed44ddf8e66e478c7a1b5176fe3278714a2f6",
+    "schemas/lens.schema.json": "9b8a2354a570888486015434501b66b51441a3baf5bf858635e4fff56b2e8298",
     "schemas/refuter.schema.json": "36f8267c6c3f04600b8f1cb77df70d90858611af822cc81922efd6b3502fb646",
-    "schemas/targeted-validator.schema.json": "6a8d7b331ec6f000366017e39e0476511c3b032649c42abfe865c1e9c956510e",
+    "schemas/targeted-validator.schema.json": "40e397195bdfbc6782fc3090f20c5be082e4d14d2855314f99ecb8506133eddc",
     "vectors/lens.json": "7ef0b08404645eeb5dba92aba5f8e4780667b6ec775f43ed8547ff9f2a7148c8",
     "vectors/refuter.json": "f42d71906e49c4191660b2da7e70f01f1778b23d32089005bd2d7ae9cbb73039",
     "vectors/targeted-validator.json": "7b5a5165e3a913863fb98d2ba5387811860c21333b5c37e6ed3b4e0d121cf2fa"
   },
   "generated": {
-    "generated/provider-capabilities.baseline.json": "0c3847e7449f095a44b92653effb68b8c8e09b8f1593b4fc6365f7a78ae99767",
-    "generated/provider-roles.baseline.json": "7a1c5ef7688f7dadef0b2c1f2a50af0a8d1fd1d58cce089ababd6e5bb7ccaefc"
+    "generated/provider-capabilities.baseline.json": "186d847f8df77024d8a2df03e2d4d664bc1951f5abc89b6b36ffe8422366234b",
+    "generated/provider-roles.baseline.json": "fd29e157884e7437c4a7f9b1e26a6f777f8d9918d8733ccd8542af12807be6b3"
   },
   "runtimes": [
     "claude-code",

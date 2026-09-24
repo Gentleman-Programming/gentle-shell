@@ -22,7 +22,7 @@ Rules:
 
 ## Review ledger contract
 
-Judgment Day starts only when explicitly requested and replaces ordinary review for that lineage.
+Judgment Day is independent: it neither enables nor replaces ordinary review; a separately requested ordinary review remains independent.
 
 Judgment Day starts with exactly two blind judges and zero refuters.
 

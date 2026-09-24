@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="1230" viewBox="0 0 960 1230" role="img" aria-labelledby="sdd-title sdd-desc">
+  <title id="sdd-title">Optional specification-driven development path</title>
+  <desc id="sdd-desc">An optional sequence from exploration through research, proposal, specification, design, tasks, apply, verify, sync, and archive. Research can be bypassed and TDD applies under implementation when enabled.</desc>
+  <defs>
+    <linearGradient id="sdd-bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#100c15"/><stop offset="1" stop-color="#241020"/></linearGradient>
+    <marker id="sdd-arrow" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" viewBox="0 0 10 10" refX="10" refY="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#f095c8"/></marker>
+  </defs>
+  <rect width="960" height="1230" rx="20" fill="url(#sdd-bg)"/>
+  <text x="60" y="65" fill="#fff7f1" font-family="Arial, Helvetica, sans-serif" font-size="44" font-weight="700">Optional SDD path.</text>
+  <g fill="#1b1420" stroke="#d7a0b8" stroke-width="2"><rect x="60" y="170" width="360" height="132" rx="16"/><rect x="540" y="170" width="360" height="132" rx="16"/><rect x="540" y="390" width="360" height="132" rx="16"/><rect x="60" y="390" width="360" height="132" rx="16"/><rect x="60" y="610" width="360" height="132" rx="16"/><rect x="540" y="610" width="360" height="132" rx="16"/><rect x="540" y="830" width="360" height="132" rx="16"/><rect x="60" y="830" width="360" height="132" rx="16"/><rect x="60" y="1050" width="360" height="132" rx="16"/><rect x="540" y="1050" width="360" height="132" rx="16"/></g>
+  <g fill="none" stroke="#f095c8" stroke-width="3" stroke-linecap="round" marker-end="url(#sdd-arrow)"><path d="M420 236H540"/><path d="M720 302V390"/><path d="M540 456H420"/><path d="M240 522V610"/><path d="M420 676H540"/><path d="M720 742V830"/><path d="M540 896H420"/><path d="M240 962V1050"/><path d="M420 1116H540"/><path d="M240 302V365H480V426H540"/></g>
+  <g fill="#fff7f1" font-family="Arial, Helvetica, sans-serif" font-size="36" font-weight="700" text-anchor="middle"><text x="240" y="248">Explore</text><text x="720" y="228">Research</text><text x="720" y="468">Proposal</text><text x="240" y="468">Spec</text><text x="240" y="688">Design</text><text x="720" y="688">Tasks</text><text x="720" y="908">Apply</text><text x="240" y="908">Verify</text><text x="240" y="1128">Sync</text><text x="720" y="1128">Archive</text></g>
+  <g fill="#d7a0b8" font-family="Arial, Helvetica, sans-serif" font-size="32" text-anchor="middle"><text x="720" y="274">Optional</text><text x="480" y="345">Skip research</text><text x="720" y="948">TDD if enabled</text></g>
+</svg>

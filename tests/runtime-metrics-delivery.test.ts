@@ -58,3 +58,28 @@ test("shutdown aborts immediately but cannot overlap an unsettled process", asyn
 	assert.equal(replacement.offer(async () => {}), true);
 	await tick(); replacement.dispose();
 });
+
+test("bounded shutdown join waits for the accepted attempt without replaying busy work", async () => {
+	const owner = new delivery.RuntimeMetricsAttempt();
+	let calls = 0;
+	let finish!: () => void;
+	owner.offer(() => { calls++; return new Promise<void>(resolve => { finish = resolve; }); });
+	assert.equal(owner.offer(async () => { calls++; }), false);
+	await tick();
+	let joined = false;
+	const joining = owner.waitForSettled(50).then(() => { joined = true; });
+	await tick();
+	assert.equal(joined, false);
+	finish();
+	await joining;
+	assert.equal(calls, 1, "joining never queues or retries discarded work");
+	owner.dispose();
+});
+
+test("bounded shutdown join returns after its deadline", async () => {
+	const owner = new delivery.RuntimeMetricsAttempt();
+	owner.offer(() => new Promise<void>(() => {}));
+	await tick();
+	await owner.waitForSettled(5);
+	owner.dispose();
+});

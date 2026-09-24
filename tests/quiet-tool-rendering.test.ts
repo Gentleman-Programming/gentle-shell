@@ -71,6 +71,7 @@ function createPi(options: { throwOnToolConflict?: boolean } = {}) {
 	const hooks = new Map<string, any[]>();
 	return {
 		tools,
+		hooks,
 		pi: {
 			registerTool(tool: any) {
 				if (options.throwOnToolConflict && tools.has(tool.name)) {
@@ -232,9 +233,35 @@ test("pi-pretty suppresses overlapping tools before quiet tools register", async
 	);
 });
 
+test("pi-pretty preserves byte-exact model-visible read results when quiet tools suppress its renderer", async () => {
+	await withEnvAsync(
+		{ GENTLE_PI_QUIET_TOOLS: undefined, PRETTY_DISABLE_TOOLS: undefined },
+		async () => {
+			const { pi, hooks } = createPi();
+			await piPretty(pi as any, fakePiPrettyDeps as any);
+
+			const original = "[alpha]\ntarget=old\n\n[beta]\ntarget=old\n";
+			let event: any = {
+				toolName: "read",
+				content: [{ type: "text", text: original }],
+			};
+			for (const handler of hooks.get("tool_result") ?? []) {
+				const replacement = await handler(event, {});
+				if (replacement) event = { ...event, ...replacement };
+			}
+
+			assert.equal(event.content[0]?.text, original);
+		},
+	);
+});
+
 test("pi-pretty suppression is skipped when quiet tools are disabled", async () => {
 	await withEnvAsync(
-		{ GENTLE_PI_QUIET_TOOLS: "0", PRETTY_DISABLE_TOOLS: undefined },
+		{
+			GENTLE_PI_QUIET_TOOLS: "0",
+			PRETTY_DISABLE_TOOLS: undefined,
+			PRETTY_ENABLE_TOOLS: "ls",
+		},
 		async () => {
 			const { pi, tools } = createPi();
 
@@ -426,8 +453,8 @@ test("quiet tool rendering identifies only routine Gentle AI SDD and RDD command
 	assert.equal(gentleAiRoutineCommand({ command: "./.gentle-ai/v2.2.0/gentle-ai sdd-status rose --json" }), "sdd-status");
 	assert.equal(gentleAiRoutineCommand({ command: ".\\.gentle-ai\\v2.2.0\\gentle-ai.exe review status --next-transition" }), "review");
 	assert.equal(gentleAiRoutineCommand({ command: "C:\\package\\.gentle-ai\\v2.2.0\\gentle-ai.exe sdd-continue rose" }), "sdd-continue");
-	assert.equal(gentleAiRoutineCommand({ command: "gentle-ai sdd-attempt acquire --change fix-rose" }), "sdd-attempt");
-	assert.equal(gentleAiRoutineCommand({ command: "gentle-ai sdd-attempt settle --change fix-rose" }), "sdd-attempt");
+	assert.equal(gentleAiRoutineCommand({ command: "gentle-ai sdd-attempt acquire --change fix-rose" }), undefined);
+	assert.equal(gentleAiRoutineCommand({ command: "gentle-ai sdd-attempt settle --change fix-rose" }), undefined);
 	assert.equal(gentleAiRoutineCommand({ command: "gentle-ai review status --next-transition" }), "review");
 	assert.equal(gentleAiRoutineCommand({ command: "gentle-ai version" }), undefined);
 	assert.equal(gentleAiRoutineCommand({ command: "gentle-ai sdd-attempt inspect" }), undefined);
@@ -591,8 +618,8 @@ test("quiet tool rendering displays only finite safe Gentle AI operation paths",
 	const cases = [
 		["gentle-ai sdd-status change-123 --cwd /repo/private", "sdd status"],
 		["gentle-ai sdd-continue change-123 --json", "sdd continue"],
-		["gentle-ai sdd-attempt acquire --change change-123", "sdd attempt acquire"],
-		["gentle-ai sdd-attempt settle --change change-123 --actor maintainer", "sdd attempt settle"],
+		["gentle-ai sdd-attempt acquire --change change-123", "sdd attempt"],
+		["gentle-ai sdd-attempt settle --change change-123 --actor maintainer", "sdd attempt"],
 		["gentle-ai review capabilities --cwd /repo/private", "review capabilities"],
 		["gentle-ai review start --target sha256:secret --path src/private.ts", "review start"],
 		["gentle-ai review finalize --lineage lineage-secret --payload '{\"secret\":true}'", "review finalize"],

@@ -11,7 +11,7 @@ You are one of two blind Judgment Day judges. Stay read-only and work independen
 ## Skills to load before work
 {matching SKILL.md paths}
 
-Judgment Day starts only when explicitly requested and replaces ordinary review for that lineage.
+Judgment Day is independent: it neither enables nor replaces ordinary review; a separately requested ordinary review remains independent.
 
 Judgment Day starts with exactly two blind judges and zero refuters.
 
@@ -55,10 +55,21 @@ Do not put `summary`, `skill_resolution`, prose, or orchestration metadata insid
 ## Fix Agent Prompt
 
 ```markdown
-You are a surgical Judgment Day fix agent.
+You are a surgical Judgment Day fix agent. This standalone dispatch requires no graph-v1 or native review lineage.
 
+Use this exact runtime-accepted dispatch shape. The `## Judgment Day activation` section contains only `User explicitly requested Judgment Day.`. The parent replaces the example ID, frozen ledger hash, row data, and surface with controller-authorized values. The correction batch contains only one round (`1 of 2` or `2 of 2`) and one lowercase SHA-256. The exact frozen finding rows are one JSON object per line, use only the canonical row fields, and exactly match the authorized IDs.
+
+## Judgment Day activation
+User explicitly requested Judgment Day.
 ## Exact authorized severe IDs
-{frozen IDs and exact rows}
+- `JD-A-001`
+## Judgment Day correction batch
+Round: 1 of 2.
+Frozen ledger SHA-256: `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`
+## Exact frozen finding rows
+{"id":"JD-A-001","lens":"judgment-day","location":"path/to/authorized-file.ts:1","severity":"CRITICAL","status_at_freeze":"open","evidence_class":"deterministic","evidence_claim":"Concrete user-impact claim supported by the frozen location."}
+## Allowed edit surfaces
+path/to/authorized-file.ts
 
 ## Skills to load before work
 {matching SKILL.md paths}

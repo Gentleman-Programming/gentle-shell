@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { TuiAltScreen, visibleWidth, type Terminal, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { CHANGE_STATUS, changesModel, type ChangedFile } from "../lib/shell-changes.ts";
 import { WorktreeChangesView, ChangesView, colorDiff, type ChangesViewDeps } from "../lib/shell-changes-view.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
@@ -54,6 +54,38 @@ async function settle(): Promise<void> {
 	await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+function mouse(type: TuiMouseEvent["type"], x: number, y: number, wheelDelta?: number, height = 12): TuiMouseEvent {
+	return { type, button: type === "wheel" ? "none" : "left", x, y, screenX: x, screenY: y, width: 80, height, shift: false, alt: false, ctrl: false, wheelDelta };
+}
+
+function mouseButton(type: TuiMouseEvent["type"], button: TuiMouseEvent["button"], x: number, y: number, height: number): TuiMouseEvent {
+	return { type, button, x, y, screenX: x, screenY: y, width: 80, height, shift: false, alt: false, ctrl: false };
+}
+
+// H1 (odd/tasks/usage-click-and-changes-attribution.md): the same shared
+// hover role every other clickable surface uses, and it never overrides the
+// already-selected row's own role.
+test("WorktreeChangesView paints the shared hover role over an unselected row, never the selected one", async () => {
+	const trees = ["/main", "/linked"].map((root) => ({ root, branch: root === "/main" ? "main" : undefined, model: changesModel([file("same.ts", 1, 0)]) }));
+	const component = new WorktreeChangesView(trees, {
+		theme: taggedTheme, rows: 10,
+		loadDiff: async () => "",
+		onOpen: () => {},
+		onClose: () => {}, requestRender() {}, onRefresh() {},
+	});
+	component.render(80);
+	// Row y=1 is the selected group header (/main, index 0); row y=2 is /linked's header.
+	const hoverOther = component.handleMouse(mouseButton("move", "none", 3, 2, 10));
+	assert.deepEqual(hoverOther, { handled: true, render: true });
+	assert.match(component.render(80)[2]!, /<warning>[^<]*detached/, "hovering the unselected row paints the shared hover role");
+	assert.doesNotMatch(component.render(80)[1]!, /<warning>/, "the selected row keeps its own role");
+
+	const hoverSelected = component.handleMouse(mouseButton("move", "none", 3, 1, 10));
+	assert.deepEqual(hoverSelected, { handled: true, render: true });
+	assert.doesNotMatch(component.render(80)[1]!, /<warning>/, "hovering the selected row still never paints the hover role");
+	assert.doesNotMatch(component.render(80)[2]!, /<warning>/, "leaving the other row clears its hover");
+});
+
 test("worktree accordion keeps groups and nested files beside a framed lazy diff", async () => {
 	const trees = ["/main", "/linked"].map((root) => ({ root, branch: root === "/main" ? "main" : undefined, model: changesModel([file("same.ts", 1, 0)]) }));
 	const loaded: string[] = [];
@@ -97,6 +129,195 @@ test("worktree accordion keeps groups and nested files beside a framed lazy diff
 	assert.match(component.render(100).join("\n"), /main · main/);
 	component.handleInput("\x1b");
 	assert.equal(closed, 1);
+});
+
+test("worktree accordion selects a clicked file without opening its editor", () => {
+	const opened: string[] = [];
+	const component = new WorktreeChangesView([{ root: "/main", branch: "main", model: changesModel([file("a.ts", 1, 0), file("b.ts", 1, 0)]) }], {
+		theme: plainTheme, rows: 8, loadDiff: async () => "+preview",
+		onOpen: (_root, target) => { opened.push(target.path); }, onClose() {}, onRefresh() {}, requestRender() {},
+	});
+	component.handleInput("\r");
+	component.render(80);
+	const result = component.handleMouse({ type: "click", button: "left", x: 3, y: 3, screenX: 3, screenY: 3, width: 80, height: 8, shift: false, alt: false, ctrl: false });
+	assert.deepEqual(result, { handled: true, render: true });
+	assert.match(component.render(80)[3], /▸   M b\.ts/);
+	assert.deepEqual(opened, []);
+});
+
+test("worktree accordion receives native fullscreen press and release as a file click", async () => {
+	let onInput: ((data: string) => void) | undefined;
+	const terminal: Terminal = {
+		start(input) { onInput = input; }, stop() {}, async drainInput() {}, write() {}, get columns() { return 80; }, get rows() { return 8; }, get kittyProtocolActive() { return false; }, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {},
+	};
+	const opened: string[] = [];
+	const component = new WorktreeChangesView([{ root: "/main", branch: "main", model: changesModel([file("a.ts", 1, 0), file("b.ts", 1, 0)]) }], {
+		theme: plainTheme, rows: 8, loadDiff: async () => "+preview",
+		onOpen: (_root, target) => { opened.push(target.path); }, onClose() {}, onRefresh() {}, requestRender() {},
+	});
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
+	tui.setLayoutRoot(component);
+	tui.start();
+	component.handleInput("\r");
+	tui.renderNow(true);
+	try {
+		onInput?.("\x1b[<0;4;4M");
+		onInput?.("\x1b[<0;4;4m");
+		assert.match(component.render(80)[3], /▸   M b\.ts/);
+		assert.deepEqual(opened, []);
+	} finally {
+		tui.stop();
+	}
+});
+
+test("worktree pointer regions scroll independently and expire on refresh or dispose", async () => {
+	const files = Array.from({ length: 8 }, (_, index) => file(`file-${index}.ts`, 1, 0));
+	const long = Array.from({ length: 20 }, (_, index) => `+line ${index}`).join("\n");
+	const trees = [{ root: "/main", branch: "main", model: changesModel(files) }];
+	const component = new WorktreeChangesView(trees, {
+		theme: plainTheme, rows: 8, loadDiff: async () => `@@ -0,0 +1,20 @@\n${long}`,
+		onOpen() {}, onClose() {}, onRefresh() {}, requestRender() {},
+	});
+	component.handleInput("\r");
+	component.handleInput("j");
+	await settle();
+	component.render(80);
+	assert.deepEqual(component.handleMouse(mouse("move", 3, 2, undefined, 8)), undefined, "hover must not select");
+	assert.deepEqual(component.handleMouse(mouse("wheel", 3, 1, 2, 8)), { handled: true, render: true });
+	assert.match(component.render(80)[1], /M file-1\.ts/);
+	component.update(trees);
+	assert.deepEqual(component.handleMouse(mouse("wheel", 3, 1, 1, 8)), { handled: true, render: false }, "refresh invalidates stale pointer geometry");
+	assert.match(component.render(80)[1], /M file-1\.ts/, "unchanged polling keeps the manual list viewport");
+	assert.deepEqual(component.handleMouse(mouse("wheel", 50, 1, 2, 8)), { handled: true, render: true });
+	assert.doesNotMatch(component.render(80)[1], /@@/);
+	component.dispose();
+	assert.deepEqual(component.handleMouse(mouse("click", 3, 1, undefined, 8)), { handled: true, render: false });
+});
+
+test("file-list pointer capture is limited to an active left gesture in both views", () => {
+	const { view: standalone } = view();
+	const accordion = new WorktreeChangesView([{ root: "/main", branch: "main", model: changesModel([file("a.ts", 1, 0)]) }], {
+		theme: plainTheme, rows: 8, loadDiff: async () => "+preview", onOpen() {}, onClose() {}, onRefresh() {}, requestRender() {},
+	});
+	accordion.handleInput("\r");
+	standalone.render(80);
+	accordion.render(80);
+	for (const [component, y, height] of [[standalone, 1, 12], [accordion, 2, 8]] as const) {
+		for (const button of ["right", "middle"] as const) {
+			assert.equal(component.handleMouse(mouseButton("press", button, 3, y, height)), undefined, `${button} press must reach pi-tui fallback`);
+			assert.equal(component.handleMouse(mouseButton("release", button, 3, y, height)), undefined, `${button} release must reach pi-tui fallback`);
+		}
+		assert.deepEqual(component.handleMouse(mouseButton("press", "left", 3, y, height)), { handled: true, capture: true, render: false });
+		assert.deepEqual(component.handleMouse(mouseButton("release", "none", 3, y, height)), { handled: true, render: false });
+	}
+	standalone.handleMouse(mouseButton("press", "left", 3, 1, 12));
+	standalone.update(changesModel([file("a.ts", 1, 0)]));
+	standalone.render(80);
+	assert.equal(standalone.handleMouse(mouseButton("release", "none", 3, 1, 12)), undefined, "update clears a captured left gesture");
+	accordion.handleMouse(mouseButton("press", "left", 3, 2, 8));
+	accordion.invalidate();
+	accordion.render(80);
+	assert.equal(accordion.handleMouse(mouseButton("release", "none", 3, 2, 8)), undefined, "invalidate clears a captured left gesture");
+});
+
+test("an outside release clears an active left gesture in both views", () => {
+	const { view: standalone } = view();
+	const accordion = new WorktreeChangesView([{ root: "/main", branch: "main", model: changesModel([file("a.ts", 1, 0)]) }], {
+		theme: plainTheme, rows: 8, loadDiff: async () => "+preview", onOpen() {}, onClose() {}, onRefresh() {}, requestRender() {},
+	});
+	accordion.handleInput("\r");
+	standalone.render(80);
+	accordion.render(80);
+	for (const [component, y, height] of [[standalone, 1, 12], [accordion, 2, 8]] as const) {
+		assert.deepEqual(component.handleMouse(mouseButton("press", "left", 3, y, height)), { handled: true, capture: true, render: false });
+		assert.deepEqual(component.handleMouse(mouseButton("release", "none", 50, y, height)), { handled: true, render: false }, "captured release outside the file pane clears state");
+		assert.equal(component.handleMouse(mouseButton("release", "none", 3, y, height)), undefined, "a later unrelated release must not consume stale state");
+	}
+});
+
+test("a stale-layout release clears an active left gesture in both views", () => {
+	let standaloneRows = 12;
+	let accordionRows = 8;
+	const { view: standalone } = view({ rows: () => standaloneRows });
+	const accordion = new WorktreeChangesView([{ root: "/main", branch: "main", model: changesModel([file("a.ts", 1, 0)]) }], {
+		theme: plainTheme, rows: () => accordionRows, loadDiff: async () => "+preview", onOpen() {}, onClose() {}, onRefresh() {}, requestRender() {},
+	});
+	accordion.handleInput("\r");
+	standalone.render(80);
+	accordion.render(80);
+	for (const [component, y, beforeHeight, afterHeight, resize] of [
+		[standalone, 1, 12, 8, () => { standaloneRows = 8; }],
+		[accordion, 2, 8, 6, () => { accordionRows = 6; }],
+	] as const) {
+		assert.deepEqual(component.handleMouse(mouseButton("press", "left", 3, y, beforeHeight)), { handled: true, capture: true, render: false });
+		resize();
+		for (const button of ["right", "middle"] as const) assert.equal(component.handleMouse(mouseButton("release", button, 3, y, afterHeight)), undefined, `${button} release must still reach pi-tui with stale geometry`);
+		assert.deepEqual(component.handleMouse(mouseButton("release", "none", 3, y, afterHeight)), { handled: true, render: false }, "the captured release is accepted despite stale geometry");
+		component.render(80);
+		assert.equal(component.handleMouse(mouseButton("release", "none", 3, y, afterHeight)), undefined, "a later unrelated release must not consume stale state");
+	}
+});
+
+test("non-left gestures pass through with current, stale, and missing layouts in both views", () => {
+	let standaloneRows = 12;
+	let accordionRows = 8;
+	const { view: standalone } = view({ rows: () => standaloneRows });
+	const accordion = new WorktreeChangesView([{ root: "/main", branch: "main", model: changesModel([file("a.ts", 1, 0)]) }], {
+		theme: plainTheme, rows: () => accordionRows, loadDiff: async () => "+preview", onOpen() {}, onClose() {}, onRefresh() {}, requestRender() {},
+	});
+	accordion.handleInput("\r");
+	standalone.render(80);
+	accordion.render(80);
+	for (const [component, y, currentHeight, staleHeight, resize] of [
+		[standalone, 1, 12, 8, () => { standaloneRows = 8; }],
+		[accordion, 2, 8, 6, () => { accordionRows = 6; }],
+	] as const) {
+		resize();
+		assert.deepEqual(component.handleMouse(mouseButton("press", "left", 3, y, staleHeight)), { handled: true, render: false }, "stale geometry does not capture a left press");
+		for (const button of ["right", "middle"] as const) {
+			assert.equal(component.handleMouse(mouseButton("press", button, 3, y, staleHeight)), undefined, `${button} press must reach pi-tui with stale geometry`);
+			assert.equal(component.handleMouse(mouseButton("release", button, 3, y, staleHeight)), undefined, `${button} release must reach pi-tui with stale geometry`);
+		}
+		component.render(80);
+		assert.deepEqual(component.handleMouse(mouseButton("press", "left", 3, y, staleHeight)), { handled: true, capture: true, render: false }, "current geometry captures a left press");
+		assert.deepEqual(component.handleMouse(mouseButton("release", "none", 3, y, staleHeight)), { handled: true, render: false }, "current geometry clears the active left release");
+		for (const button of ["right", "middle"] as const) {
+			assert.equal(component.handleMouse(mouseButton("press", button, 3, y, staleHeight)), undefined, `${button} press must reach pi-tui with current geometry`);
+			assert.equal(component.handleMouse(mouseButton("release", button, 3, y, staleHeight)), undefined, `${button} release must reach pi-tui with current geometry`);
+		}
+		component.invalidate();
+		assert.deepEqual(component.handleMouse(mouseButton("press", "left", 3, y, currentHeight)), { handled: true, render: false }, "missing geometry does not capture a left press");
+		for (const button of ["right", "middle"] as const) {
+			assert.equal(component.handleMouse(mouseButton("press", button, 3, y, currentHeight)), undefined, `${button} press must reach pi-tui without geometry`);
+			assert.equal(component.handleMouse(mouseButton("release", button, 3, y, currentHeight)), undefined, `${button} release must reach pi-tui without geometry`);
+		}
+	}
+});
+
+test("right press reaches the native Windows paste fallback when eligible", () => {
+	let onInput: ((data: string) => void) | undefined;
+	let pasted = 0;
+	const terminal: Terminal = {
+		start(input) { onInput = input; }, stop() {}, async drainInput() {}, write() {}, get columns() { return 80; }, get rows() { return 12; }, get kittyProtocolActive() { return false; }, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {},
+	};
+	const { view: component } = view();
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true, onRightClickPaste: () => { pasted++; } });
+	const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+	const termProgram = process.env.TERM_PROGRAM;
+	Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+	delete process.env.TERM_PROGRAM;
+	tui.setLayoutRoot(component);
+	tui.start();
+	tui.renderNow(true);
+	try {
+		onInput?.("\x1b[<2;4;2M");
+		assert.equal(pasted, 1);
+	} finally {
+		tui.stop();
+		Object.defineProperty(process, "platform", platform);
+		if (termProgram === undefined) delete process.env.TERM_PROGRAM;
+		else process.env.TERM_PROGRAM = termProgram;
+	}
 });
 
 test("worktree list keeps selection visible, preserves root across reorder and refreshes from either level", async () => {
@@ -304,6 +525,111 @@ test("ChangesView opens the selected file and closes on escape or q", async () =
 	component.handleInput("\x1b");
 	component.handleInput("q");
 	assert.equal(events.filter((event) => event === "close").length, 2);
+});
+
+// H1 (odd/tasks/usage-click-and-changes-attribution.md): the same shared
+// hover role every other clickable surface uses, and it never overrides the
+// already-selected row's own role.
+test("ChangesView paints the shared hover role over an unselected file row, never the selected one", async () => {
+	const { view: component } = view({ theme: taggedTheme });
+	await settle();
+	component.render(80);
+	// Row y=1 is the selected file (lib/a.ts, index 0); row y=2 is lib/b.ts.
+	const hoverOther = component.handleMouse(mouseButton("move", "none", 3, 2, 12));
+	assert.deepEqual(hoverOther, { handled: true, render: true });
+	assert.match(component.render(80)[2]!, /<warning>[^<]*lib\/b\.ts/, "the hovered, unselected row paints the shared hover role");
+	assert.doesNotMatch(component.render(80)[1]!, /<warning>/, "the selected row keeps its own role instead");
+
+	const hoverSelected = component.handleMouse(mouseButton("move", "none", 3, 1, 12));
+	assert.deepEqual(hoverSelected, { handled: true, render: true });
+	assert.doesNotMatch(component.render(80)[1]!, /<warning>/, "hovering the selected row still never paints the hover role");
+	assert.doesNotMatch(component.render(80)[2]!, /<warning>/, "leaving lib/b.ts clears its hover paint");
+
+	const left = component.handleMouse(mouseButton("move", "none", 60, 1, 12)); // outside the list pane entirely
+	assert.deepEqual(left, { handled: true, render: true });
+	assert.doesNotMatch(component.render(80).join("\n"), /<warning>/, "moving off the list clears any hover");
+});
+
+test("ChangesView click selects a file without opening it", async () => {
+	const { view: component, events } = view();
+	await settle();
+	component.render(80);
+	component.handleMouse(mouse("press", 3, 2));
+	component.handleMouse(mouse("release", 3, 2));
+	component.handleMouse(mouse("click", 3, 2));
+	await settle();
+	assert.match(stripAnsi(component.render(80)[2]), /^│ ▸ A lib\/b\.ts/);
+	assert.deepEqual(events.filter((event) => event.startsWith("open:")), []);
+});
+
+test("ChangesView receives native fullscreen press and release as a click", async () => {
+	let onInput: ((data: string) => void) | undefined;
+	const terminal: Terminal = {
+		start(input) { onInput = input; }, stop() {}, async drainInput() {}, write() {}, get columns() { return 80; }, get rows() { return 12; }, get kittyProtocolActive() { return false; }, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {},
+	};
+	const { view: component, events } = view();
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
+	tui.setLayoutRoot(component);
+	tui.start();
+	tui.renderNow(true);
+	try {
+		onInput?.("\x1b[<0;4;3M");
+		onInput?.("\x1b[<0;4;3m");
+		assert.match(stripAnsi(component.render(80)[2]), /^│ ▸ A lib\/b\.ts/);
+		assert.deepEqual(events.filter((event) => event.startsWith("open:")), []);
+	} finally {
+		tui.stop();
+	}
+});
+
+test("ChangesView rebuilds pointer geometry when its overlay height changes", async () => {
+	let rows = 12;
+	const { view: component } = view({ rows: () => rows });
+	await settle();
+	component.render(80);
+	rows = 8;
+	assert.deepEqual(component.handleMouse(mouse("click", 3, 2, undefined, 8)), { handled: true, render: false });
+	component.render(80);
+	assert.deepEqual(component.handleMouse(mouse("click", 3, 2, undefined, 8)), { handled: true, render: true });
+	assert.match(stripAnsi(component.render(80)[2]), /^│ ▸ A lib\/b\.ts/);
+});
+
+test("ChangesView scrolls the file list and diff independently, ignores hover, and clears stale pointer layouts", async () => {
+	const files = Array.from({ length: 8 }, (_, index) => file(`lib/${index}.ts`, 1, 0));
+	const long = Array.from({ length: 20 }, (_, index) => `+line ${index}`).join("\n");
+	const { view: component, events } = view({ rows: 8, async loadDiff() { return `@@ -0,0 +1,20 @@\n${long}`; } }, files);
+	await settle();
+	component.render(80);
+	component.handleMouse(mouse("move", 3, 2, undefined, 8));
+	assert.match(stripAnsi(component.render(80)[1]), /^│ ▸ M lib\/0\.ts/);
+	assert.deepEqual(events.filter((event) => event.startsWith("open:")), []);
+
+	assert.deepEqual(component.handleMouse(mouse("wheel", 3, 1, 2, 8)), { handled: true, render: true });
+	assert.match(stripAnsi(component.render(80)[1]), /^│   M lib\/2\.ts/);
+	component.update(changesModel(files));
+	assert.match(stripAnsi(component.render(80)[1]), /^│   M lib\/2\.ts/, "an unchanged live refresh preserves the independently scrolled file viewport");
+	assert.deepEqual(component.handleMouse(mouse("wheel", 50, 1, 2, 8)), { handled: true, render: true });
+	assert.doesNotMatch(stripAnsi(component.render(80)[1]), /@@/);
+	assert.deepEqual(component.handleMouse(mouse("wheel", 50, 1, -100, 8)), { handled: true, render: true });
+	assert.deepEqual(component.handleMouse(mouse("wheel", 50, 1, -1, 8)), { handled: true, render: false });
+
+	component.update(changesModel([file("lib/new.ts", 1, 0)]));
+	assert.deepEqual(component.handleMouse(mouse("click", 3, 1, undefined, 8)), { handled: true, render: false });
+	component.render(80);
+	component.dispose();
+	assert.deepEqual(component.handleMouse(mouse("click", 3, 1, undefined, 8)), { handled: true, render: false });
+});
+
+test("ChangesView keeps keyboard selection visible after file-list scrolling", async () => {
+	const files = Array.from({ length: 8 }, (_, index) => file(`lib/${index}.ts`, 1, 0));
+	const { view: component } = view({ rows: 8 }, files);
+	await settle();
+	component.render(80);
+	component.handleMouse(mouse("wheel", 3, 1, 2, 8));
+	component.handleInput("j");
+	assert.match(stripAnsi(component.render(80)[1]), /^│ ▸ M lib\/1\.ts/);
+	component.update(changesModel(files.slice(0, 3)));
+	assert.match(stripAnsi(component.render(80)[1]), /^│   M lib\/0\.ts/);
 });
 
 test("ChangesView.update keeps the selected file, reloads moved diffs, and survives an empty tree", async () => {

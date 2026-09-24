@@ -163,15 +163,15 @@ test("activating a visible child preserves the manual list offset through Back a
 	}
 });
 
-test("resizing a narrow child list to desktop keeps Fullscreen local and completion returns to the list", () => {
+test("a task finishing while its details are open in narrow mode keeps its thread visible instead of kicking back to the list", () => {
 	const { store, view, events } = harness(8);
 	store.add(task("a"));
 	view.render(40);
 	clickLabel(view, "Fullscreen", 80);
 	assert.deepEqual(events, []);
 	store.update("a", { status: TASK_STATUS.COMPLETED, endedAt: 5000 });
-	assert.equal(view.selectedTask(), undefined);
-	assert.doesNotMatch(view.render(80).join("\n"), /Back|Subagent explore/);
+	assert.equal(view.selectedTask()?.id, "a", "the finished task stays selected as history instead of disappearing");
+	assert.match(view.render(80).join("\n"), /Back|Subagent explore/, "narrow details mode stays open on the now-finished task");
 	assert.deepEqual(events, []);
 	view.dispose();
 });
@@ -254,11 +254,12 @@ test("AgentsView renders the frame with the task list and the selected thread's 
 	for (const line of lines) assert.equal(visibleWidth(line), 90, `"${stripAnsi(line)}" is not 90 wide`);
 	const plain = lines.map(stripAnsi);
 	assert.equal(plain.length, 8);
-	assert.match(plain[0], /^╭─ ❀ Agents · this session · 1 active ─+ \[F Fullscreen\] \[× Close\]╮$/);
+	assert.match(plain[0], /^╭─ ❀ Agents · this session · 1 active · 1 finished ─+ \[F Fullscreen\] \[× Close\]╮$/);
 	assert.match(plain[1], /▸ └ ◐ Subagent explore.*explore · running · gpt-5\.6-terra · 34k · \$0\.27 · 1m00s/);
 	assert.match(plain[2], /line 3/, "the thread window follows the tail");
 	assert.match(plain[3], /line 4/);
-	assert.doesNotMatch(plain.join("\n"), /Subagent worker|orchestrator/i);
+	assert.match(plain.join("\n"), /Subagent worker/, "the session's own finished task now stays listed as history");
+	assert.doesNotMatch(plain.join("\n"), /orchestrator/i);
 	assert.match(plain[4], /line 5/);
 	assert.match(plain[6], /\[ Follow \].*\[ Open session \].*\[Stop\]/);
 	assert.match(plain[7], /^╰─+╯$/);
@@ -306,7 +307,7 @@ test("AgentsView subscribes only to the selected task and survives an empty stor
 	assert.equal(renders(), before + 1, "disposed views stay quiet");
 });
 
-test("live-only current panel exposes active children directly at desktop and narrow widths", () => {
+test("current panel exposes active children directly at desktop and narrow widths, and keeps its own finished history", () => {
 	for (const width of [40, 80]) {
 		const { store, view, events } = harness(12, "s");
 		try {
@@ -318,8 +319,12 @@ test("live-only current panel exposes active children directly at desktop and na
 			}
 			store.add(task("foreign", { agent: "foreign", parentSessionId: "other" }));
 			const frame = view.render(width).map(stripAnsi).join("\n");
-			assert.doesNotMatch(frame, /orchestrator|history_|foreign|finished/i);
+			assert.doesNotMatch(frame, /orchestrator|foreign/i);
 			for (const status of ["running", "queued", "waiting"]) assert.match(frame, new RegExp(`Subagent ${status}`));
+			// The narrow list column truncates each "history_<status>" label to a
+			// common "history_…" prefix, so count occurrences instead of matching
+			// each one by its full name.
+			assert.equal((frame.match(/Subagent history_/g) ?? []).length, 4, "all four finished tasks of this session stay listed as history");
 			assert.match(stripAnsi(view.render(width)[1]), /Subagent queued/, "equal creation times sort by ID, with no parent wrapper");
 			assert.equal(view.selectedTask()?.id, "running", "adding earlier-sorted children preserves the existing selection");
 			view.handleInput("k");
@@ -332,22 +337,27 @@ test("live-only current panel exposes active children directly at desktop and na
 			view.handleInput("s");
 			assert.deepEqual(events, [`cancel:${selected.id}`]);
 			store.update(selected.id, { status: TASK_STATUS.COMPLETED, endedAt: 61_000 });
-			assert.notEqual(view.selectedTask()?.id, selected.id, "completion removes the selected live row immediately");
+			assert.equal(view.selectedTask()?.id, selected.id, "completion keeps the task selected, now as finished history");
 		} finally {
 			view.dispose();
 		}
 	}
 });
 
-test("live-only current panel never promotes retained foreign or unknown tasks into open sessions", () => {
+test("current panel never promotes retained foreign or unknown tasks into open sessions, but keeps its own finished history", () => {
 	const { store, view } = harness(12, "s");
 	try {
 		store.add(task("foreign", { agent: "foreign", parentSessionId: "closed" }));
 		store.add(task("unknown", { agent: "unknown", parentSessionId: "" }));
 		store.add(task("finished", { agent: "finished", status: TASK_STATUS.COMPLETED, endedAt: 61_000 }));
-		assert.equal(view.selectedTask(), undefined);
+		assert.equal(view.selectedTask()?.id, "finished", "the session's own finished task is selectable even with nothing active");
 		view.handleInput("a");
-		assert.doesNotMatch(view.render(80).map(stripAnsi).join("\n"), /Subagent (foreign|unknown|finished)|Orchestrator closed|Unknown session/);
+		// The "Current orchestrator" heading starts collapsed here: it has no
+		// active task to auto-expand it, only finished history.
+		view.handleInput("\x1b[C");
+		const rendered = view.render(80).map(stripAnsi).join("\n");
+		assert.doesNotMatch(rendered, /Subagent (foreign|unknown)|Orchestrator closed|Unknown session/);
+		assert.match(rendered, /Subagent finished/, "the session's own finished task shows under all sessions too, once its heading is expanded");
 		assert.equal(store.list().length, 3, "panel filtering never deletes retained history");
 	} finally {
 		view.dispose();
@@ -553,7 +563,7 @@ test("AgentsView scrolls the task list so the selection stays visible when there
 	assert.match(listed()[2], /Subagent agent3/);
 });
 
-test("AgentsView scopes to live children and toggles only the open-session directory", () => {
+test("AgentsView scopes to this session's own children (active and finished) and toggles only the open-session directory", () => {
 	const { store, view } = harness(12, "s");
 	store.add(task("mine", { agent: "mine" }));
 	store.add(task("theirs", { agent: "theirs", parentSessionId: "other", createdAt: 900, lastActivityAt: 900 }));
@@ -561,19 +571,19 @@ test("AgentsView scopes to live children and toggles only the open-session direc
 	store.add(task("stale", { agent: "stale", status: TASK_STATUS.COMPLETED, endedAt: 61_000 - 16 * 60_000, createdAt: 800, lastActivityAt: 800 }));
 	const names = () => view.render(80).map(stripAnsi).filter((line) => /[◐✓] Subagent /.test(line)).map((line) => line.match(/[◐✓] Subagent (\w+)/)?.[1]);
 	let plain = view.render(80).map(stripAnsi);
-	assert.match(plain[0], /^╭─ ❀ Agents · this session · 1 active ─+ \[F Fullscreen\] \[× Close\]╮$/);
-	assert.deepEqual(names(), ["mine"], "all terminal tasks and foreign retained tasks stay out");
+	assert.match(plain[0], /^╭─ ❀ Agents · this session · 1 active · 2 finished ─+ \[F Fullscreen\] \[× Close\]╮$/);
+	assert.deepEqual(names(), ["mine", "fresh", "stale"], "the session's own history stays, newest ended first, after the active child; the foreign task stays out");
 	assert.match(plain.at(-2) ?? "", /\[Scope\]/);
 	view.handleInput("a");
 	plain = view.render(80).map(stripAnsi);
-	assert.match(plain[0], /^╭─ ❀ Agents · all sessions · 1 active ─+ \[F Fullscreen\] \[× Close\]╮$/);
-	assert.deepEqual(names(), ["mine"], "retained foreign tasks cannot manufacture open orchestrators");
+	assert.match(plain[0], /^╭─ ❀ Agents · all sessions · 1 active · 2 finished ─+ \[F Fullscreen\] \[× Close\]╮$/);
+	assert.deepEqual(names(), ["mine", "fresh", "stale"], "retained foreign tasks cannot manufacture open orchestrators");
 	assert.match(plain.at(-2) ?? "", /\[Scope\]/);
 	view.handleInput("j");
-	assert.equal(view.selectedTask()?.id, "mine", "navigation stops at the only live child");
+	assert.equal(view.selectedTask()?.id, "fresh", "navigation moves to the session's own next-newest history entry");
 	view.handleInput("a");
 	assert.equal(view.selectedTask()?.id, "mine", "a new scope reads from the top");
-	assert.deepEqual(names(), ["mine"]);
+	assert.deepEqual(names(), ["mine", "fresh", "stale"]);
 });
 
 test("AgentsView footer buttons follow, open only a session-backed selection, and clear stale geometry", () => {

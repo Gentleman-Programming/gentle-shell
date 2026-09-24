@@ -3,6 +3,10 @@ name: sdd-plan
 description: Plan an SDD change through proposal, spec, design, and tasks; safe for auto mode or explicit all-planning approval.
 ---
 
+## Parent preflight transport guard
+
+Run only after the interactive parent has resolved SDD preflight and injected its exact rendered `## SDD Session Preflight` block into every child context. A chain and its RPC children must consume that transport, never infer, confirm, originate, or persist defaults. Missing or malformed transport blocks the chain before its first phase.
+
 ## Interactive mode guard
 
 This chain is a continuous planning pipeline. Use it only in auto mode or explicit all-planning approval. In interactive mode the parent/orchestrator must stop after sdd-proposal, present the proposal, and ask the user before continuing to sdd-spec, sdd-design, and sdd-tasks.

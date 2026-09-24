@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { THINKING_LEVELS as ROUTING_THINKING_LEVELS, type ThinkingLevel as RoutingThinkingLevel } from "./model-routing-authority.ts";
+import { THINKING_LEVELS as ROUTING_THINKING_LEVELS, type AgentModelConfig, type ThinkingLevel as RoutingThinkingLevel } from "./model-routing-authority.ts";
 
 // Gentle Agents configuration. Agent definitions are markdown files with YAML
 // frontmatter (the format gentle-ai installs) and runtime settings come from
@@ -302,6 +302,21 @@ function readJson(path: string): RawConfig {
 
 export function loadAgentsConfig(roots: DiscoveryRoots): AgentsConfig {
 	return parseAgentsConfig(readJson(join(profileRoot(roots), "subagents.json")), readJson(join(roots.cwd, ".pi", "subagents.json")));
+}
+
+export function withPinnedModelProfiles(
+	config: AgentsConfig,
+	pinned: AgentModelConfig | undefined,
+): AgentsConfig {
+	// No pin, and no pin-shaped input, both mean today's routing: a repository that
+	// never opted in must not observe any difference.
+	if (pinned === undefined) return config;
+	// The profile replaces subagent routing wholesale. Merging would let routing
+	// materialised in `subagents.json` by a previous global profile leak into a
+	// repository that pinned a different one, which is the exact conflict a pin
+	// exists to remove. Only `modelProfiles` moves: the orchestrator routing and
+	// every operational default stay global.
+	return { ...config, modelProfiles: parseProfiles(pinned) };
 }
 
 function pick<T>(candidates: Array<[T | undefined, ProfileSource]>): [T | undefined, ProfileSource] {

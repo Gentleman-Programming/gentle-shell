@@ -70,6 +70,7 @@ export class SessionChanges {
 	private readonly seen = new Set<string>();
 	private readonly files = new Map<string, Map<string, FileState>>();
 	private bytes = 0;
+	private announced = false;
 	notice: string | undefined;
 	readonly sessionId: string;
 	private cached: WorktreeChanges[] | undefined;
@@ -130,7 +131,13 @@ export class SessionChanges {
 	}
 	get model() {
 		const trees = this.worktrees;
-		return changesModel(trees.flatMap(tree => tree.model.files.map(file => ({ ...file, path: trees.length === 1 ? file.path : tree.root + "/" + file.path }))));
+		return { ...changesModel(trees.flatMap(tree => tree.model.files.map(file => ({ ...file, path: trees.length === 1 ? file.path : tree.root + "/" + file.path })))), ...(this.notice ? { notice: this.notice } : {}) };
+	}
+	/** Return the capture-limit notice once, for a single user notification. The `notice` field stays set. */
+	takeNotice(): string | undefined {
+		if (!this.notice || this.announced) return undefined;
+		this.announced = true;
+		return this.notice;
 	}
 	async refresh() { return this.model; }
 	loadDiff(root: string, file: ChangedFile): string {

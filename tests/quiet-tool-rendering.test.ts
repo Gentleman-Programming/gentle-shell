@@ -71,6 +71,7 @@ function createPi(options: { throwOnToolConflict?: boolean } = {}) {
 	const hooks = new Map<string, any[]>();
 	return {
 		tools,
+		hooks,
 		pi: {
 			registerTool(tool: any) {
 				if (options.throwOnToolConflict && tools.has(tool.name)) {
@@ -232,9 +233,35 @@ test("pi-pretty suppresses overlapping tools before quiet tools register", async
 	);
 });
 
+test("pi-pretty preserves byte-exact model-visible read results when quiet tools suppress its renderer", async () => {
+	await withEnvAsync(
+		{ GENTLE_PI_QUIET_TOOLS: undefined, PRETTY_DISABLE_TOOLS: undefined },
+		async () => {
+			const { pi, hooks } = createPi();
+			await piPretty(pi as any, fakePiPrettyDeps as any);
+
+			const original = "[alpha]\ntarget=old\n\n[beta]\ntarget=old\n";
+			let event: any = {
+				toolName: "read",
+				content: [{ type: "text", text: original }],
+			};
+			for (const handler of hooks.get("tool_result") ?? []) {
+				const replacement = await handler(event, {});
+				if (replacement) event = { ...event, ...replacement };
+			}
+
+			assert.equal(event.content[0]?.text, original);
+		},
+	);
+});
+
 test("pi-pretty suppression is skipped when quiet tools are disabled", async () => {
 	await withEnvAsync(
-		{ GENTLE_PI_QUIET_TOOLS: "0", PRETTY_DISABLE_TOOLS: undefined },
+		{
+			GENTLE_PI_QUIET_TOOLS: "0",
+			PRETTY_DISABLE_TOOLS: undefined,
+			PRETTY_ENABLE_TOOLS: "ls",
+		},
 		async () => {
 			const { pi, tools } = createPi();
 

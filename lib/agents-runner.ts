@@ -2,6 +2,7 @@ import { isSessionChangeEvidence, type SessionChangeEvidence } from "./session-c
 import type { Duplex, Readable, Writable } from "node:stream";
 import { stripVTControlCharacters } from "node:util";
 import { RESEARCH_SELECTION_ENV } from "./sdd-research-capabilities.ts";
+import { withoutInteractiveHost } from "./rpc-host.ts";
 import { AGENT_MODE, formatModelRef, type AgentDefinition, type AgentMode, type ModelRef } from "./agents-config.ts";
 import { CHILD_QUERY_MAX_INFLIGHT, CHILD_QUERY_TIMEOUT_MS, parseChildFrame, validChildMessage, validChildQueryId } from "./agents-messaging.ts";
 import { ParentStandingReviewPermissionBroker } from "./review-session-standing-permission-ipc.ts";
@@ -14,6 +15,7 @@ import { isFinished, normalizeRpcEvent, TASK_EVENT, TASK_STATUS, taskLabel, type
 
 export interface ChildLike {
 	pid: number | undefined;
+	connected?: boolean;
 	stdin: Writable;
 	stdout: Readable;
 	stderr: Readable | null | undefined;
@@ -31,7 +33,7 @@ export interface SpawnOptions {
 	cwd: string;
 	env: NodeJS.ProcessEnv;
 	detached?: boolean;
-	stdio?: Array<"pipe" | "ignore" | "inherit" | "ipc">;
+	stdio?: Array<"pipe" | "ignore" | "inherit" | "ipc" | "overlapped">;
 }
 
 export type Spawn = (command: string, args: string[], options: SpawnOptions) => ChildLike;
@@ -164,6 +166,9 @@ export interface TaskRequest {
 	// Untrusted narrowing intent; paths come only from matching host provenance.
 	researchSelection?: unknown;
 	extensionPaths?: string[];
+	// Synchronous admission recheck at dequeue, before any OS spawn. Throws fail
+	// only this task; unlike onLaunch, it must never persist Changes evidence.
+	beforeSpawn?: () => void;
 	// Captures the originating session; invoked only after successful OS spawn.
 	onLaunch?: () => void;
 	/** Default off. Parent owns policy before opting into bounded local buffering,
@@ -208,6 +213,7 @@ interface PendingReply {
 
 interface LiveTask {
 	child: ChildLike;
+	sawRunEvent: boolean;
 	observations?: ChildObservationBuffer;
 	observationGuard?: () => boolean;
 	observationPreparation?: () => boolean;
@@ -494,15 +500,26 @@ export class AgentRunner {
 	// A child that cannot start (missing pi, bad cwd) fails only its task:
 	// spawn exceptions and process errors settle without uncaught host errors.
 	private launch(id: string, request: TaskRequest): void {
+		try { request.beforeSpawn?.(); }
+		catch (error) {
+			this.store.update(id, { status: TASK_STATUS.RUNNING, startedAt: this.deps.now(), lastStep: "starting" });
+			this.finish(id, TASK_STATUS.FAILED, `could not start pi: ${error instanceof Error ? error.message : String(error)}`);
+			return;
+		}
 		const detached = this.processControl.platform !== "win32";
 		const hasParentPermissionChannel = request.authorizeParentStandingReviewPermission !== undefined;
-		const env = {
+		const permissionChannelStdio = this.processControl.platform === "win32" ? "overlapped" : "pipe";
+		// Subagent children are always headless: strip the desktop app's
+		// interactive-host signal even if it leaked into `request.env`, so a
+		// child spawned from an interactive RPC host never mistakes itself for
+		// one (`lib/rpc-host.ts`).
+		const env = withoutInteractiveHost({
 			...request.env,
 			...(request.extensionPaths ? { [RESEARCH_SELECTION_ENV]: JSON.stringify(request.researchSelection ?? null) } : {}),
 			[CHILD_MARKER]: "1",
 			[IPC_MARKER]: `${this.deps.now()}-${Math.random().toString(36).slice(2)}`,
 			...(hasParentPermissionChannel ? { GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3" } : {}),
-		};
+		});
 		delete env[REMEDIATION_PLAN_ENV];
 		if (request.sddRemediation) env[REMEDIATION_PLAN_ENV] = JSON.stringify({ plan: request.sddRemediation.plan, scope: request.sddRemediation.scope, selection: request.sddChange });
 		let child: ChildLike;
@@ -511,7 +528,7 @@ export class AgentRunner {
 				cwd: request.cwd,
 				env,
 				detached,
-				stdio: hasParentPermissionChannel ? ["pipe", "pipe", "pipe", "pipe", "ipc"] : ["pipe", "pipe", "pipe", "ipc"],
+				stdio: hasParentPermissionChannel ? ["pipe", "pipe", "pipe", permissionChannelStdio, "ipc"] : ["pipe", "pipe", "pipe", "ipc"],
 			});
 		} catch (error) {
 			this.store.update(id, { status: TASK_STATUS.RUNNING, startedAt: this.deps.now(), lastStep: "starting" });
@@ -519,7 +536,7 @@ export class AgentRunner {
 			return;
 		}
 		const processGroup = detached && typeof child.pid === "number" && child.pid > 0 ? child.pid : undefined;
-		const live: LiveTask = { child, mutationStarts: new Map(), inFlightTools: new Map(), pending: new Map(), queries: new Map(), replies: new Map(), cancelStall: () => {}, cancelGrace: () => {}, processGroup, terminal: undefined, childExit: undefined, cleanupDeadlineAt: undefined, quarantined: false, nextId: 0, ipcClosed: false, acknowledgedIpcIds: new Set(), acknowledgedIpcOrder: [], stderrTail: "" };
+		const live: LiveTask = { child, sawRunEvent: false, mutationStarts: new Map(), inFlightTools: new Map(), pending: new Map(), queries: new Map(), replies: new Map(), cancelStall: () => {}, cancelGrace: () => {}, processGroup, terminal: undefined, childExit: undefined, cleanupDeadlineAt: undefined, quarantined: false, nextId: 0, ipcClosed: false, acknowledgedIpcIds: new Set(), acknowledgedIpcOrder: [], stderrTail: "" };
 		if (request.prepareResponseObservations) {
 			let ready = false;
 			live.observationPreparation = () => ready;
@@ -613,7 +630,10 @@ export class AgentRunner {
 		live.cancelStall = this.deps.schedule(() => {
 			const lastStep = this.store.get(id)?.lastStep ?? "starting";
 			const minutes = Math.round(budget / 60_000);
-			if (tool === undefined) this.requestStop(id, TASK_STATUS.TIMED_OUT, `stalled for ${minutes} min after: ${lastStep}${this.stderrSuffix(live)}`);
+			if (tool === undefined) {
+				const boundary = lastStep === "prompt accepted" && !live.sawRunEvent ? `; no first run event received for model: ${this.store.get(id)?.model}` : "";
+				this.requestStop(id, TASK_STATUS.TIMED_OUT, `stalled for ${minutes} min after: ${lastStep}${boundary}${this.stderrSuffix(live)}`);
+			}
 			else this.requestStop(id, TASK_STATUS.TIMED_OUT, `stalled for ${minutes} min with tool "${tool}" still running after: ${lastStep}${this.stderrSuffix(live)}`);
 		}, budget);
 	}
@@ -723,8 +743,10 @@ export class AgentRunner {
 		for (const pending of live.replies.values()) pending.resolve(false);
 		live.replies.clear();
 		live.child.channel?.unref?.();
-		try { live.child.disconnect?.(); }
-		catch { /* Channel may already be disconnected. */ }
+		if (live.child.connected !== false) {
+			try { live.child.disconnect?.(); }
+			catch { /* Channel may already be disconnected. */ }
+		}
 	}
 
 	private write(live: LiveTask, payload: Record<string, unknown>): void {
@@ -778,6 +800,7 @@ export class AgentRunner {
 				}
 				continue; // Separate from store persistence, UI totals and notifications.
 			}
+			live.sawRunEvent = true;
 			this.store.apply(id, event, this.deps.now());
 			if (event.type === TASK_EVENT.TOOL_START && event.callId) {
 				live.inFlightTools.set(event.callId, event.name);

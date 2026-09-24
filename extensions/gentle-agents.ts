@@ -1,10 +1,14 @@
 import { fileURLToPath } from "node:url";
+import { agentsViewKey, agentsCollapseKey, agentsStopKey } from "../lib/agents-keys.ts";
 import { extractParentConfirmedSddPreflightContext, getPackageAssetOwner, isParentConfirmedSddPreflightContext, SHIPPED_SDD_AGENT_NAMES } from "../lib/sdd-preflight.ts";
 import { NativeReviewCliV216, createNodeExecFileAdapter, decodeNativeSddStatusV2, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { spawn } from "node:child_process";
 import { recordReviewMutation } from "../lib/review-reminder-receipt.ts";
 import { SESSION_CHANGE_RELAY } from "../lib/session-changes.ts";
+import { publishForeignSessionChange } from "../lib/session-change-capture.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, type WorktreeResolver } from "../lib/session-worktree-registry.ts";
+import { ForeignTargetGrants } from "../lib/foreign-target-grants.ts";
+import { MESSAGING_REASON_MAX_UTF8_BYTES, MESSAGING_REASON_MIN_CHARACTERS, normalizeMessagingReason, SessionMessagingGrants } from "../lib/session-messaging-grants.ts";
 import { existsSync, mkdirSync, readFileSync, lstatSync, realpathSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -12,23 +16,30 @@ import os from "node:os";
 import { join, resolve, isAbsolute, sep } from "node:path";
 import { createBashToolDefinition, createLocalBashOperations, type BashOperations, keyHint, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, type TUI } from "@earendil-works/pi-tui";
-import { sidebarPart } from "../lib/shell-sidebar.ts";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import { createCompletionQueue } from "../lib/agents-completion-delivery.ts";
-import { AGENT_MODE, discoverAgents, parseAgentDefinition, loadAgentsConfig, resolveAgentProfile, type AgentDefinition, type AgentMode } from "../lib/agents-config.ts";
-import { isFinished, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
+import { AGENT_MODE, discoverAgents, parseAgentDefinition, loadAgentsConfig, resolveAgentProfile, withPinnedModelProfiles, type AgentDefinition, type AgentMode } from "../lib/agents-config.ts";
+import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-policy.ts";
+import { installBackgroundCacheWarming } from "../lib/background-cache-warming.ts";
+import { isFinished, TASK_EVENT, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
 import { AgentRunner, piCommand, abortReasonText, plannedCommands, type RemediationPlan, type RemediationScope, REMEDIATION_PLAN_ENV, parseRemediationPlan, type AskAnswer, type RunnerDeps, type SddChangeSelection, type TaskRequest } from "../lib/agents-runner.ts";
 import { ChildMessenger, type IpcEndpoint } from "../lib/agents-messaging.ts";
+import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
+import { WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessionPresenceRegistry, type WindowsSessionRegistryPhaseObserver } from "../lib/windows-session-transport.ts";
 import { hasReviewSessionPermission, resolveCanonicalGitRepositoryIdentitySync, type ReviewSessionManager } from "../lib/review-session-standing-permission.ts";
+import { inheritedUnsafeGitEnvironmentKeys } from "../lib/review-repository.ts";
 import { historyDir, loadHistory, loadStoredTask, pruneHistory, saveTask } from "../lib/agents-history.ts";
 import { sessionToMarkdown } from "../lib/agents-transcript.ts";
 import { AgentsView } from "../lib/agents-view.ts";
 import { PresencePublisher } from "../lib/orchestrator-presence.ts";
+import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/agents-rpc-publisher.ts";
+import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { AGENTS_GLYPH, renderAgentsCard, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
 import { CARD_TONE, renderCard } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
-import { resolveGentlePiAgentHome } from "../lib/agent-home.ts";
+import { resolveGentlePiAgentHome, gentlePiConfigHome } from "../lib/agent-home.ts";
+import { resolveProfilePin } from "../lib/agent-profile-pin.ts";
 import { canonicalArtifactPath, researchAgent, renderResearchCapabilities, RESEARCH_CHILD_TOOLS_ENV, RESEARCH_SELECTION_ENV } from "../lib/sdd-research-capabilities.ts";
 import { CHILD_METRICS_EVENT, CHILD_METRICS_REVOKED, childEvent, launchSelection, type LaunchSelection } from "../lib/runtime-metrics-children.ts";
 import { runtimeMetricsEnvAllows, type RuntimeMetricsPolicyDeps } from "../lib/runtime-metrics-policy.ts";
@@ -42,10 +53,8 @@ export const AGENTS_WIDGET_KEY = "gentle-agents";
 export const AGENTS_COMMAND_NAME = "gentle:agents";
 export const AGENTS_RESULT_TYPE = "gentle-agents.result";
 export const AGENTS_MESSAGE_TYPE = "gentle-agents.message";
+export const AGENTS_ORCHESTRATOR_MESSAGE_TYPE = "gentle-agents.orchestrator-message";
 export const AGENTS_STALE_RESULT_TYPE = "gentle-agents.stale-result";
-const COLLAPSE_KEY_DEFAULT = "ctrl+shift+a";
-const VIEW_KEY_DEFAULT = "alt+a";
-const STOP_KEY_DEFAULT = "alt+s";
 const RENDER_COALESCE_MS = 400;
 const CLOCK_TICK_MS = 1000;
 const TOOL_PREFIX = "subagent_";
@@ -169,11 +178,36 @@ export function remediationBash(cwd: string, operations: BashOperations = create
 	};
 }
 
+export interface SessionTransportRegistry {
+	list(excludeSessionId?: string): Promise<readonly SessionPresenceCandidate[]>;
+	listActivations(excludeSessionId?: string): Promise<readonly PresenceRecord[]>;
+	close?(): Promise<void>;
+}
+
+export interface SessionTransportListener {
+	readonly registry: SessionTransportRegistry;
+	readonly closesRegistry?: boolean;
+	start(): Promise<void>;
+	close(): Promise<void>;
+}
+
+export interface SessionTransportClient {
+	close(): void;
+	sendNotification(recipientSessionId: string, message: string, options?: { id?: string; expectedActivation?: PresenceRecord; beforeConnect?: () => boolean | Promise<boolean>; signal?: AbortSignal }): Promise<SentNotification>;
+}
+
+export interface SessionTransportFactory {
+	createRegistry(agentHome: string, observeWindowsPhase?: WindowsSessionRegistryPhaseObserver): Promise<SessionTransportRegistry>;
+	createListener(registry: SessionTransportRegistry, sessionId: string, onNotification: (notification: ReceivedNotification) => Promise<void>): SessionTransportListener;
+	createClient(registry: SessionTransportRegistry, sessionId: string): SessionTransportClient;
+}
+
 export interface AgentsDeps extends RunnerDeps {
 	nativeSdd?: NativeReviewCli;
 	home: string;
 	agentHome?: string;
 	childIpc?: IpcEndpoint;
+	sessionTransport?: SessionTransportFactory;
 	env: NodeJS.ProcessEnv;
 	resolveWorktree: WorktreeResolver;
 	runtimeMetricsPolicy?: RuntimeMetricsPolicyDeps;
@@ -231,23 +265,7 @@ function legacySubagentsInstalledAt(agentHome: string): boolean {
 	}
 }
 
-export function agentsViewKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env.GENTLE_PI_AGENTS_VIEW_KEY?.trim();
-	if (value === undefined) return VIEW_KEY_DEFAULT;
-	return value === "" || value.toLowerCase() === "off" ? undefined : value;
-}
-
-export function agentsCollapseKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env.GENTLE_PI_AGENTS_KEY?.trim();
-	if (value === undefined) return COLLAPSE_KEY_DEFAULT;
-	return value === "" || value.toLowerCase() === "off" ? undefined : value;
-}
-
-export function agentsStopKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env.GENTLE_PI_AGENTS_STOP_KEY?.trim();
-	if (value === undefined) return STOP_KEY_DEFAULT;
-	return value === "" || value.toLowerCase() === "off" ? undefined : value;
-}
+export { agentsViewKey, agentsCollapseKey, agentsStopKey };
 
 function sanitizeTerminalText(value: string): string {
 	return value.replace(/[\x00-\x08\x0B-\x1F\x7F-\x9F]/g, (control) => `\\x${control.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
@@ -285,6 +303,22 @@ function registerChildMessaging(pi: ExtensionAPI, ipc: IpcEndpoint): void {
 	});
 }
 
+const posixSessionTransport: SessionTransportFactory = {
+	createRegistry(agentHome) { return SessionPresenceRegistry.create(agentHome); },
+	createListener(registry: SessionPresenceRegistry, sessionId, onNotification) { return Object.assign(new ActiveSessionListener(registry, sessionId, onNotification), { closesRegistry: false }); },
+	createClient(registry: SessionPresenceRegistry, sessionId) { return new ActiveSessionClient(registry, sessionId); },
+};
+
+const windowsSessionTransport: SessionTransportFactory = {
+	createRegistry(agentHome, observeWindowsPhase) { return WindowsSessionPresenceRegistry.create(agentHome, observeWindowsPhase); },
+	createListener(registry: WindowsSessionPresenceRegistry, sessionId, onNotification) { return Object.assign(new WindowsActiveSessionListener(registry, sessionId, onNotification), { closesRegistry: true }); },
+	createClient(registry: WindowsSessionPresenceRegistry, sessionId) { return new WindowsActiveSessionClient(registry, sessionId); },
+};
+
+export function createDefaultSessionTransport(platform: NodeJS.Platform = process.platform): SessionTransportFactory {
+	return platform === "win32" ? windowsSessionTransport : posixSessionTransport;
+}
+
 function text(value: string, details: Record<string, unknown> = {}, terminate = false): ToolText {
 	return { content: [{ type: "text", text: value }], details, ...(terminate ? { terminate: true } : {}) };
 }
@@ -312,6 +346,22 @@ function expandHint(expanded: boolean): string {
 	} catch {
 		return expanded ? "collapse" : "expand";
 	}
+}
+
+// The default mode for a subagent_run request that named neither an explicit
+// mode nor an agent-defined one. Background is a runtime default only when
+// the background-subagents policy is on AND the parent can receive results:
+// print mode exits before a parent session exists to deliver them to (see
+// the `ctx.mode === "print"` guard in `launch` below), so it must keep the
+// configured default (normally task) even when the policy is on.
+export function resolveDefaultSubagentMode(input: {
+	configuredDefault: AgentMode;
+	policy: "on" | "off";
+	parentMode: string | undefined;
+}): AgentMode {
+	return input.policy === "on" && input.parentMode !== "print"
+		? AGENT_MODE.BACKGROUND
+		: input.configuredDefault;
 }
 
 // What the model reads when a background task ends: the outcome first, then
@@ -414,6 +464,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		: environmentHome && (selectedHome.startsWith("~/") || (process.platform === "win32" && selectedHome.startsWith("~\\"))) ? join(deps.home, selectedHome.slice(2)) : selectedHome;
 	// Freeze the host's root before a child uses a different session cwd.
 	const agentHome = resolve(expandedHome);
+	const sessionTransport = deps.sessionTransport ?? createDefaultSessionTransport();
 	if (legacySubagentsInstalledAt(agentHome)) {
 		pi.on("session_start", (_event, ctx) => {
 			if (ctx.hasUI) ctx.ui.notify(`${AGENTS_GLYPH} Gentle Agents is waiting: remove the old package first with "pi remove npm:${LEGACY_SUBAGENTS_PACKAGE}"`, "warning");
@@ -431,6 +482,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	let sidebarTui: TUI | undefined;
 	let sessions: ExtensionContext["sessionManager"] | undefined;
 	let presence: PresencePublisher | undefined;
+	let rpcActivityPublisher: RpcActivityPublisher | undefined;
+	// Messages already surfaced to the user this session through the RPC
+	// activity publisher's `onError`, so a recurring push failure (the
+	// coalescing window retries every burst) notifies at most once per
+	// session instead of flooding the UI. Reset on every `session_start`.
+	let notifiedRpcActivityErrors: Set<string> | undefined;
 	const overlays = new Set<AgentsView>();
 	const publishActivity = () => {
 		if (!sessions) return;
@@ -443,6 +500,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		} catch { presence?.dispose(); presence = undefined; }
 	};
 	let worktrees: SessionWorktreeRegistry | undefined;
+	const foreignGrants = new ForeignTargetGrants();
+	const messagingGrants = new SessionMessagingGrants();
+	const foreignTasks = new Map<string, { root: string; commonDir: string; manager: ExtensionContext["sessionManager"] }>();
+	const foreignRequests = new WeakMap<TaskRequest, { root: string; commonDir: string; manager: ExtensionContext["sessionManager"] }>();
 	const registryFor = (ctx: ExtensionContext) => {
 		if (!worktrees || worktrees.sessionId !== ctx.sessionManager.getSessionId()) {
 			worktrees?.close();
@@ -454,6 +515,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	let renderQueued = false;
 	let cancelClock: (() => void) | undefined;
 	const ownedTaskIds = new Set<string>();
+	// One diagnostic note per (task, guard): a dropped mutation says why once,
+	// not once per file, so a chatty child cannot flood its own thread.
+	const droppedAttributionGuards = new Set<string>();
 	const stoppingTaskIds = new Set<string>();
 	const yieldedTaskIds = new Set<string>();
 	const metricsNow = deps.metricsNow ?? (() => performance.now());
@@ -482,7 +546,99 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// started before /new or /resume stays in the store and comes back with
 	// its session. Before the first session_start there is nothing to scope by.
 	const activeSessionId = (): string | undefined => (sessions === undefined ? undefined : sessions.getSessionId() ?? "");
+	// Pi 0.86.1 adds this event; the package's pinned 0.85.1 types predate it.
+	installBackgroundCacheWarming(pi as unknown as Parameters<typeof installBackgroundCacheWarming>[0], () => ({
+		sessionId: activeSessionId(),
+		ownedTaskIds,
+		tasks: store.list(activeSessionId()),
+	}));
 	const visibleTasks = (): TaskRecord[] => store.list(activeSessionId());
+	type SessionTransport = { generation: number; sessionId: string; sessionManager: ExtensionContext["sessionManager"]; client: SessionTransportClient; listener: SessionTransportListener; registry: SessionTransportRegistry; close(): Promise<void> };
+	let transportGeneration = 0;
+	let activeSessionTransport: SessionTransport | undefined;
+	const pendingTransportStartups = new Set<Promise<void>>();
+	const validTransportSessionId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value);
+	const closeSessionTransport = async (transport: SessionTransport | undefined) => {
+		if (!transport) return;
+		await transport.close();
+	};
+	const trackTransportOperation = (operation: Promise<void>) => {
+		pendingTransportStartups.add(operation);
+		operation.then(() => { pendingTransportStartups.delete(operation); }, () => { pendingTransportStartups.delete(operation); });
+		return operation;
+	};
+	const startSessionTransport = (ctx: ExtensionContext) => {
+		const previous = activeSessionTransport;
+		const generation = ++transportGeneration;
+		const sessionManager = ctx.sessionManager;
+		activeSessionTransport = undefined;
+		const operation = (async () => {
+			let registry: SessionTransportRegistry | undefined;
+			let listener: SessionTransportListener | undefined;
+			let client: SessionTransportClient | undefined;
+			let closePromise: Promise<void> | undefined;
+			const closeStartupTransport = () => {
+				if (closePromise) return closePromise;
+				closePromise = Promise.resolve().then(async () => {
+					await Promise.allSettled([
+						(async () => { try { client?.close(); } catch {} })(),
+						(async () => { try { await listener?.close(); } catch {} })(),
+						(async () => { try { if (registry && (!listener || !listener.closesRegistry)) await registry.close?.(); } catch {} })(),
+					]);
+				});
+				return closePromise;
+			};
+			try {
+				if (previous) trackTransportOperation(closeSessionTransport(previous));
+				const sessionId = sessionManager.getSessionId();
+				if (!validTransportSessionId(sessionId) || sessions !== sessionManager || generation !== transportGeneration) return;
+				registry = await sessionTransport.createRegistry(agentHome);
+				if (sessions !== sessionManager || generation !== transportGeneration) {
+					await closeStartupTransport();
+					return;
+				}
+				listener = sessionTransport.createListener(registry, sessionId, async (notification) => {
+					const active = activeSessionTransport;
+					if (!active || active.generation !== generation || active.sessionManager !== sessionManager || active.sessionId !== sessionId || sessions !== sessionManager || activeSessionId() !== sessionId) throw new Error("stale session transport");
+					pi.sendMessage({ customType: AGENTS_ORCHESTRATOR_MESSAGE_TYPE, content: `Session message from ${notification.senderSessionId} (correlation ${notification.id}): ${notification.message}`, display: true, details: { gentleAgents: { senderSessionId: notification.senderSessionId, recipientSessionId: sessionId, correlationId: notification.id, direction: "incoming" } } }, { deliverAs: "followUp", triggerTurn: true });
+				});
+				client = sessionTransport.createClient(registry, sessionId);
+				if (sessions !== sessionManager || generation !== transportGeneration || activeSessionId() !== sessionId) {
+					await closeStartupTransport();
+					return;
+				}
+				const transport = { generation, sessionId, sessionManager, client, listener, registry, close: closeStartupTransport };
+				// The listener deliberately accepts while publishing. Bind its callback
+				// first so a peer accepted in that interval remains current-session work.
+				activeSessionTransport = transport;
+				await listener.start();
+				if (sessions !== sessionManager || generation !== transportGeneration || activeSessionId() !== sessionId) {
+					if (activeSessionTransport === transport) activeSessionTransport = undefined;
+					await closeStartupTransport();
+					return;
+				}
+			} catch {
+				if (activeSessionTransport?.generation === generation) activeSessionTransport = undefined;
+				await closeStartupTransport();
+			}
+		})();
+		trackTransportOperation(operation);
+		return operation;
+	};
+	const shutdownSessionTransport = async () => {
+		const active = activeSessionTransport;
+		activeSessionTransport = undefined;
+		transportGeneration++;
+		if (active) await closeSessionTransport(active);
+		while (pendingTransportStartups.size > 0) {
+			await Promise.allSettled([...pendingTransportStartups]);
+		}
+	};
+	const activeTransportFor = (ctx: ExtensionContext) => {
+		const active = activeSessionTransport;
+		const sessionId = ctx.sessionManager.getSessionId();
+		return active && active.generation === transportGeneration && active.sessionManager === ctx.sessionManager && active.sessionId === sessionId && sessions === ctx.sessionManager ? active : undefined;
+	};
 
 	const requestRender = () => {
 		if (renderQueued) return;
@@ -613,18 +769,53 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			}
 		},
 		onSuccessfulMutation: (task, tool) => {
-			if (!sessions || !worktrees || task.parentSessionId !== activeSessionId() || !ownedTaskIds.has(task.id)) return;
-			const root = deps.resolveWorktree(tool.path, task.cwd)?.root;
-			const childRoot = deps.resolveWorktree(task.cwd, task.cwd)?.root;
-			if (!root || root !== childRoot || !worktrees.roots().includes(root)) return;
-			if (tool.evidence?.root === root) {
+			// Same-clone registry attribution remains unchanged. A foreign task
+			// uses a separately bound, live-grant path only for successful tool evidence.
+			let root: string | undefined;
+			let childRoot: string | undefined;
+			const noteDrop = (guard: string) => {
+				const key = `${task.id}:${guard}`;
+				if (droppedAttributionGuards.has(key)) return;
+				droppedAttributionGuards.add(key);
+				try { store.apply(task.id, { type: TASK_EVENT.NOTE, text: `changes not attributed: ${guard} (root=${root ?? "unknown"}, child=${childRoot ?? "unknown"})` }, deps.now()); }
+				catch { /* A note is best-effort explanation; it must never block the guard it is explaining. */ }
+			};
+			if (!sessions || !worktrees) return noteDrop("session-inactive");
+			if (task.parentSessionId !== activeSessionId()) return noteDrop("parent-session-mismatch");
+			if (!ownedTaskIds.has(task.id)) return noteDrop("not-owned");
+			root = deps.resolveWorktree(tool.path, task.cwd)?.root;
+			childRoot = deps.resolveWorktree(task.cwd, task.cwd)?.root;
+			if (!root) return noteDrop("root-unresolved");
+			if (root !== childRoot) return noteDrop("root-mismatch");
+			const foreignTask = foreignTasks.get(task.id);
+			if (foreignTask) {
+				if (sessions !== foreignTask.manager || root !== foreignTask.root || tool.evidence?.root !== root) return noteDrop("foreign-identity-mismatch");
+				const identity = resolveSessionWorktree(root, root);
+				if (!identity || identity.commonDir !== foreignTask.commonDir) return noteDrop("foreign-identity-drift");
+				try { foreignGrants.assertCurrent({ sessionManager: sessions }, identity); }
+				catch { return noteDrop("foreign-grant-lost"); }
+			} else if (!worktrees.roots().includes(root)) return noteDrop("root-not-registered");
+			if (!tool.evidence) {
+				noteDrop("evidence-missing");
+			} else if (tool.evidence.root !== root) {
+				noteDrop("evidence-root-mismatch");
+			} else {
+				let path = tool.path.replace(/^@/, "").replace(/[\u00a0\u2000-\u200a\u202f\u205f\u3000]/g, " ");
+				if (path === "~" || path.startsWith("~/")) path = os.homedir() + path.slice(1);
+				let resolvedPath: string | undefined;
 				try {
-					let path = tool.path.replace(/^@/, "");
-					if (path === "~" || path.startsWith("~/")) path = os.homedir() + path.slice(1);
-					if (realpathSync(resolve(task.cwd, path)) === resolve(root, tool.evidence.path)) pi.events.emit(SESSION_CHANGE_RELAY, { sessionId: task.parentSessionId, evidence: { ...tool.evidence, id: `${task.id}:${tool.toolCallId}` } });
-				} catch { /* Missing or mismatched targets cannot supply session diffs. */ }
+					resolvedPath = realpathSync(resolve(task.cwd, path));
+				} catch {
+					noteDrop("evidence-path-unreadable");
+				}
+				if (resolvedPath === resolve(root, tool.evidence.path)) {
+					const evidence = { ...tool.evidence, id: `${task.id}:${tool.toolCallId}` };
+					if (foreignTask) publishForeignSessionChange(pi, task.parentSessionId, evidence);
+					else pi.events.emit(SESSION_CHANGE_RELAY, { sessionId: task.parentSessionId, evidence });
+				}
+				else if (resolvedPath !== undefined) noteDrop("evidence-path-mismatch");
 			}
-			recordReviewMutation(pi, sessions, root, { source: "subagent", taskId: task.id, toolName: tool.toolName, toolCallId: tool.toolCallId });
+			if (!foreignTask) recordReviewMutation(pi, sessions, root, { source: "subagent", taskId: task.id, toolName: tool.toolName, toolCallId: tool.toolCallId });
 		},
 		onFinish: (task, observations) => {
 			// Completion is the only forwarding opportunity. No pending event, policy
@@ -655,6 +846,14 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const taskId = typeof details?.taskId === "string" ? details.taskId : "unknown";
 		const agent = typeof details?.agent === "string" ? details.agent : "Subagent";
 		const heading = `${sanitizeTerminalText(agent)} message · Task ${sanitizeTerminalText(taskId)}`;
+		const body = sanitizeTerminalText(messageText(message.content));
+		return new Text(`${theme.fg("customMessageLabel", heading)}\n${theme.fg("customMessageText", body)}`, options.outputPad, 0);
+	});
+
+	pi.registerMessageRenderer(AGENTS_ORCHESTRATOR_MESSAGE_TYPE, (message, options, theme) => {
+		const details = (message.details as { gentleAgents?: { senderSessionId?: unknown } } | undefined)?.gentleAgents;
+		const sender = typeof details?.senderSessionId === "string" ? details.senderSessionId : "unknown";
+		const heading = `⇄ Orchestrator message · Received · From ${sanitizeTerminalText(sender)}`;
 		const body = sanitizeTerminalText(messageText(message.content));
 		return new Text(`${theme.fg("customMessageLabel", heading)}\n${theme.fg("customMessageText", body)}`, options.outputPad, 0);
 	});
@@ -756,6 +955,33 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		return stored?.task;
 	};
 
+	// Restores this exact session's own finished subagents as visible history
+	// on an explicit resume, or on startup into a session that already has
+	// entries -- never on new, fork, or reload (see the session_start handler's
+	// preexisting check below, which is the actual gate). Marked in
+	// restoredTaskIds like any other disk restoration, so it stays
+	// non-cancellable (ownedTaskIds never gained the id either way) and is
+	// skipped if the id is somehow already live.
+	const restoreSessionHistory = async (ctx: ExtensionContext, sessionId: string): Promise<void> => {
+		let history: Awaited<ReturnType<typeof loadHistory>>;
+		try {
+			history = await loadHistory(tasksDir);
+		} catch {
+			return;
+		}
+		// The session may have moved on while disk was read; a stale restore
+		// must never land in the wrong session's store.
+		if (ctx.sessionManager.getSessionId() !== sessionId) return;
+		// Fire-and-forget from session_start: a throwing summary subscriber must
+		// never surface as an unhandled rejection. History is best-effort.
+		try {
+			for (const { task, thread } of history) {
+				if (task.parentSessionId !== sessionId) continue;
+				if (store.restore(task, thread)) restoredTaskIds.add(task.id);
+			}
+		} catch { /* Partial history is acceptable; the live session keeps running. */ }
+	};
+
 	const openOverlay = async (ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
 		if (ctx.mode !== "tui") {
@@ -835,43 +1061,88 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		ui = ctx.hasUI ? ctx.ui : undefined;
 		sessions = ctx.sessionManager;
 		tickClock();
+		// Agents is not a rail part: the fullscreen sidebar only suppresses
+		// bottom components registered through sidebarPart, and this widget is
+		// the only Agents surface in every mode, so it stays a plain component.
 		ui?.setWidget(AGENTS_WIDGET_KEY, (tui, theme) => {
 			host = tui;
 			sidebarTui = tui;
-			return sidebarPart(tui, "agents", {
+			return {
 				render(width: number) {
 					const lines = renderAgentsCard(visibleTasks(), theme, width, deps.now(), { collapsed, collapseKey, maxRows: widgetRows(tui.terminal?.rows), viewKey });
 					return lines.length === 0 ? [] : [...lines, ""];
 				},
 				invalidate() {},
-			}, {
-				render: (width) => renderAgentsCard(visibleTasks(), theme, width, deps.now(), { collapsed, collapseKey, viewKey }),
-				invalidate() {},
-			});
+			};
 		});
 	};
 
 	const roots = (ctx: ExtensionContext) => ({ cwd: ctx.sessionManager.getCwd(), home: deps.home, agentHome });
 
-	const buildRequest = (ctx: ExtensionContext, agent: AgentDefinition, prompt: string, label: string | undefined, context: string | undefined, mode: AgentMode, resume?: string, workspaceRoot?: string, sddChange?: SddChangeSelection, researchSelection?: unknown, remediationIntent?: unknown): TaskRequest => {
+	const buildRequest = async (ctx: ExtensionContext, agent: AgentDefinition, prompt: string, label: string | undefined, context: string | undefined, mode: AgentMode, resume?: string, workspaceRoot?: string, sddChange?: SddChangeSelection, researchSelection?: unknown, remediationIntent?: unknown, signal?: AbortSignal, repositoryRoot?: string): Promise<TaskRequest> => {
+		if (signal?.aborted) throw new Error("Subagent launch aborted before authorization.");
 		const registry = registryFor(ctx);
 		const parentCwd = ctx.sessionManager.getCwd();
 		// An explicit target is validated before any queue or session-dir writes.
 		const parentIdentity = deps.resolveWorktree(parentCwd, parentCwd);
-		const selectedRoot = workspaceRoot ?? sddChange?.workspaceRoot;
+		if (repositoryRoot !== undefined && workspaceRoot !== undefined) throw new Error("repository_root and workspace_root are mutually exclusive.");
+		if (repositoryRoot !== undefined && (SHIPPED_SDD_AGENT_NAME_SET.has(agent.name) || sddChange || remediationIntent || deps.env.GENTLE_PI_AGENTS_CHILD === "1" || ctx.mode !== "tui" || !ctx.hasUI)) throw new Error("Foreign repository launch requires an interactive parent session without SDD or remediation.");
+		const selectedRoot = repositoryRoot ?? workspaceRoot ?? sddChange?.workspaceRoot;
 		// Preserve ordinary non-Git continuation, without admitting any new root.
-		const sameNonGitContinuation = resume !== undefined && selectedRoot === parentCwd && !parentIdentity;
-		const target = selectedRoot !== undefined && !sameNonGitContinuation ? registry.validate(selectedRoot) : parentIdentity?.root;
+		const sameNonGitContinuation = resume !== undefined && repositoryRoot === undefined && selectedRoot === parentCwd && !parentIdentity;
+		let foreign = false;
+		let foreignIdentity: { root: string; commonDir: string } | undefined;
+		let foreignParent: { root: string; commonDir: string } | undefined;
+		let target: string | undefined;
+		if (selectedRoot !== undefined && !sameNonGitContinuation) {
+			if (repositoryRoot === undefined) target = registry.validate(selectedRoot);
+			else {
+				// Only an explicitly selected canonical foreign Git root can escape the
+				// same-clone registry. Never use a caller-injected resolver for this identity.
+				const identity = resolveSessionWorktree(selectedRoot, parentCwd);
+				const canonicalParent = resolveSessionWorktree(parentCwd, parentCwd);
+				if (!identity || (canonicalParent && identity.commonDir === canonicalParent.commonDir) || selectedRoot !== identity.root || !isAbsolute(selectedRoot) || realpathSync(selectedRoot) !== selectedRoot || sddChange || remediationIntent) throw new Error("repository_root must select a canonical independent Git repository.");
+				await foreignGrants.authorize(ctx, identity, { continuation: resume !== undefined, signal });
+				foreignIdentity = identity;
+				foreignParent = canonicalParent;
+				target = identity.root;
+				foreign = true;
+			}
+		} else target = parentIdentity?.root;
 		if (sddChange && target !== sddChange.workspaceRoot && target !== resolve(sddChange.workspaceRoot)) {
 			throw new Error("sdd_change workspaceRoot must resolve to the selected child worktree.");
 		}
 		const launchSddChange = sddChange === undefined || target === undefined
 			? undefined
 			: { ...sddChange, workspaceRoot: target };
-		const config = loadAgentsConfig(roots(ctx));
+		// A per-repository profile pin replaces subagent routing for this launch without
+		// materialising anything: the global stores stay untouched, so two repositories
+		// worked in parallel stop fighting over one global routing. The child's own
+		// worktree is the repository in question, and the local pin sits in the shared
+		// Git common directory, so it survives every worktree of the clone. When the
+		// launch stays in the session's own worktree the identity already resolved above
+		// is reused instead of asking Git a second time. The orchestrator is out of
+		// scope: only `modelProfiles` is replaced.
+		const pinIdentity: WorktreeResolver = foreign ? resolveSessionWorktree : target !== undefined && parentIdentity !== undefined && target === parentIdentity.root
+			? () => parentIdentity
+			: deps.resolveWorktree;
+		const config = withPinnedModelProfiles(
+			loadAgentsConfig(roots(ctx)),
+			resolveProfilePin({
+				cwd: target ?? parentCwd,
+				configHome: gentlePiConfigHome(deps.env),
+				resolveWorktree: pinIdentity,
+			})?.modelProfiles,
+		);
 		const profile = resolveAgentProfile(agent, config);
 		const research = agent.name === "sdd-research" ? researchAgent(agent, pi, researchSelection) : undefined;
 		const sessionDir = agentRuntimePaths(deps.home, agentHome).sessions;
+		if (foreign && target) {
+			const identity = resolveSessionWorktree(target, parentCwd);
+			if (!identity || identity.root !== target || identity.commonDir !== foreignIdentity?.commonDir) throw new Error("Foreign clone identity changed before launch.");
+			foreignGrants.assertCurrent(ctx, identity);
+		}
+		if (signal?.aborted) throw new Error("Subagent launch aborted before queueing.");
 		mkdirSync(sessionDir, { recursive: true });
 		const parentSessionManager = ctx.sessionManager as unknown as ReviewSessionManager;
 		const parentSessionId = ctx.sessionManager.getSessionId() ?? "";
@@ -880,7 +1151,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const sddPreflightContext = SHIPPED_SDD_AGENT_NAME_SET.has(agent.name)
 			? extractParentConfirmedSddPreflightContext(context)
 			: undefined;
-		return {
+		const childEnv = { ...deps.env };
+		if (foreign) for (const key of inheritedUnsafeGitEnvironmentKeys(childEnv)) delete childEnv[key];
+		const request: TaskRequest = {
 			agent: research?.agent ?? agent,
 			remediationIntent,
 			prompt,
@@ -890,16 +1163,23 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			mode,
 			cwd: target ?? parentWorktreeRoot,
 			parentSessionId,
-			...(target === undefined ? {} : { onLaunch: () => { registry.register(target, "subagent:spawn"); } }),
+			...(foreign && target ? { beforeSpawn: () => {
+				if (signal?.aborted || sessions !== ctx.sessionManager || ctx.sessionManager.getSessionId() !== registry.sessionId || ctx.sessionManager.getCwd() !== parentCwd) throw new Error("Foreign clone session or tool call changed before spawn.");
+				const identity = resolveSessionWorktree(target, parentCwd);
+				const parent = resolveSessionWorktree(parentCwd, parentCwd);
+				if (!identity || identity.root !== target || identity.commonDir !== foreignIdentity?.commonDir || parent?.root !== foreignParent?.root || parent?.commonDir !== foreignParent?.commonDir) throw new Error("Foreign clone identity changed before spawn.");
+				foreignGrants.assertCurrent(ctx, identity);
+			} } : {}),
+			...(target === undefined || foreign ? {} : { onLaunch: () => { registry.register(target, "subagent:spawn"); } }),
 			model: profile.model,
 			thinking: profile.thinking,
 			extensions: config.extensions,
 			sessionDir,
 			resumeSessionPath: resume,
-			env: research ? { ...deps.env, [RESEARCH_CHILD_TOOLS_ENV]: JSON.stringify([...research.agent.tools, "subagent_parent_message"]) } : deps.env,
+			env: research ? { ...childEnv, [RESEARCH_CHILD_TOOLS_ENV]: JSON.stringify([...research.agent.tools, "subagent_parent_message"]) } : childEnv,
 			...(research ? { researchSelection, extensionPaths: research.extensionPaths } : {}),
 			...(launchSddChange === undefined ? {} : { sddChange: launchSddChange }),
-			...(parentRepositoryIdentity === undefined ? {} : {
+			...(foreign || parentRepositoryIdentity === undefined ? {} : {
 				authorizeParentStandingReviewPermission: (repositoryIdentity: string) => {
 					try {
 						return repositoryIdentity === parentRepositoryIdentity &&
@@ -917,9 +1197,14 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				},
 			}),
 		};
+		if (foreign && target && foreignIdentity) foreignRequests.set(request, { root: target, commonDir: foreignIdentity.commonDir, manager: ctx.sessionManager });
+		return request;
 	};
 
 	const launch = async (ctx: ExtensionContext, request: TaskRequest, signal?: AbortSignal): Promise<ToolText> => {
+		if (ctx.mode === "print" && request.mode === AGENT_MODE.BACKGROUND) {
+			throw new Error("Background subagents are unavailable in print mode: pi -p exits before a parent session can receive results. Use task mode, RPC mode, or interactive Pi.");
+		}
 		// This is the process-spawn boundary. A child receives its task context only
 		// after its RPC process starts, so validate the single parent transport here
 		// rather than letting a child invent/persist preferences during startup.
@@ -940,8 +1225,16 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			current: () => owner === metricsOwner && request.parentSessionId === activeSessionId() && runtimeMetricsEnvAllows(deps.env),
 			valid: () => !metrics.finished && metrics.current() };
 		const observe = runtimeMetricsEnvAllows(deps.env) && metricTasks.size < 256;
+		let launched = false;
+		let launchedTaskId: string | undefined;
 		const task = runner.run({ ...request, collectResponseObservations: false,
-			onLaunch: () => { metrics.launched = true; request.onLaunch?.(); },
+			onLaunch: () => {
+				metrics.launched = true;
+				request.onLaunch?.();
+				launched = true;
+				const foreign = foreignRequests.get(request);
+				if (foreign && launchedTaskId) foreignTasks.set(launchedTaskId, foreign);
+			},
 			...(observe ? { canCollectResponseObservations: metrics.valid, prepareResponseObservations: async () => {
 				if (metrics.finished || owner !== metricsOwner || request.parentSessionId !== activeSessionId() || !runtimeMetricsEnvAllows(deps.env)) return false;
 				if (!metrics.valid()) return false;
@@ -951,9 +1244,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			} } : {}),
 		});
 		if (observe) metricTasks.set(task.id, metrics);
+		launchedTaskId = task.id;
+		const foreignRequest = foreignRequests.get(request);
+		if (launched && foreignRequest) foreignTasks.set(task.id, foreignRequest);
 		ownedTaskIds.add(task.id);
 		store.subscribe(task.id, () => { publishActivity(); requestRender(); });
-		if (request.mode === AGENT_MODE.BACKGROUND) return text(`Started ${task.agent} in the background as task ${task.id}. Use subagent_status or subagent_result with that id.`, taskDetails(task));
+		if (request.mode === AGENT_MODE.BACKGROUND) return text(`Started ${task.agent} in the background as task ${task.id}. Retain that id; completion is pushed automatically. Never sleep or periodically poll subagent_status/subagent_result for completion or cache maintenance. Inspect status only at a real orchestration decision boundary; never relaunch equivalent queued/running work.`, taskDetails(task));
 		// A tool call aborted by the host (a human interrupting the turn, a timeout)
 		// would otherwise leave the child running and end the call with no result and
 		// no recorded reason. Cancel through the runner so the lifecycle runs and the
@@ -1003,6 +1299,101 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		});
 	};
 
+	pi.registerTool({
+		name: "orchestrator_session_id",
+		label: "Orchestrator session ID",
+		description: "Return this host session's active ID.",
+		parameters: { type: "object", additionalProperties: false, properties: {} } as never,
+		async execute(_id, _params, _signal, _onUpdate, ctx) {
+			const transport = activeTransportFor(ctx);
+			return transport ? text(`Active session ID: ${transport.sessionId}`, { gentleAgents: { senderSessionId: transport.sessionId } }) : text("Error: session messaging is not ready.", { error: "not ready" });
+		},
+	});
+	pi.registerTool({
+		name: "orchestrator_list",
+		label: "List orchestrators",
+		description: "List other sessions advertised by the trusted local profile. Advertised reachability is unknown and does not prove a session is live.",
+		parameters: { type: "object", additionalProperties: false, properties: {} } as never,
+		async execute(_id, _params, _signal, _onUpdate, ctx) {
+			const transport = activeTransportFor(ctx);
+			if (!transport) return text("Error: session discovery is not ready.", { error: "not ready" });
+			try {
+				const peers = await transport.listener.registry.list(transport.sessionId);
+				if (activeTransportFor(ctx) !== transport) return text("Error: session discovery became unavailable before results were confirmed.", { error: "stale" });
+				return peers.length === 0 ? text("No other sessions are currently advertised. Advertisements have unknown reachability and do not guarantee a live session.") : text(`Advertised sessions (reachability is unknown):\n${peers.map((peer) => `- ${peer.sessionId}`).join("\n")}`, { gentleAgents: { candidates: peers } });
+			} catch {
+				return text("Error: session discovery is unavailable.", { error: "unavailable" });
+			}
+		},
+	});
+	pi.registerTool({
+		name: "orchestrator_send_message",
+		label: "Send orchestrator message",
+		description: "Send a notification to another active session in this trusted local profile. If recipient_session_id is omitted, the sole peer is selected or the user selects one. Acceptance means enqueued, not read or completed.",
+		parameters: {
+			type: "object",
+			additionalProperties: false,
+			required: ["message", "reason"],
+			properties: {
+				recipient_session_id: { type: "string" },
+				message: { type: "string" },
+				reason: { type: "string", minLength: MESSAGING_REASON_MIN_CHARACTERS, maxLength: MESSAGING_REASON_MAX_UTF8_BYTES, description: "Required concrete caller-supplied reason: at least 8 characters after trimming and at most 512 UTF-8 bytes." },
+			},
+		} as never,
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			const transport = activeTransportFor(ctx);
+			const input = params as { recipient_session_id?: unknown; message?: unknown; reason?: unknown };
+			if (!transport) return text("Error: session messaging is not ready.", { error: "not ready" });
+			const message = input.message;
+			if (typeof message !== "string" || Buffer.byteLength(message, "utf8") > 8192) return text("Error: recipient session ID or message is invalid.", { error: "invalid input" });
+			let reason: string;
+			try { reason = normalizeMessagingReason(input.reason); }
+			catch { return text("Error: recipient session ID or message is invalid; a concrete reason of at least 8 trimmed characters and at most 512 UTF-8 bytes is required.", { error: "invalid input" }); }
+			let recipient: string | undefined;
+			let activation: PresenceRecord | undefined;
+			if (input.recipient_session_id !== undefined) {
+				if (!validTransportSessionId(input.recipient_session_id)) return text("Error: recipient session ID or message is invalid.", { error: "invalid input" });
+				recipient = input.recipient_session_id;
+			}
+			if (recipient === undefined) {
+				try {
+					const candidates = (await transport.listener.registry.listActivations(transport.sessionId)).filter((candidate) => candidate.sessionId !== transport.sessionId);
+					if (activeTransportFor(ctx) !== transport || signal?.aborted) return text("Message selection was cancelled.", { error: "cancelled" });
+					if (candidates.length === 0) return text("No other sessions are currently advertised; message delivery is unavailable.", { error: "unavailable" });
+					if (candidates.length === 1) {
+						recipient = candidates[0].sessionId;
+						activation = candidates[0];
+					} else if (!ctx.hasUI) return text("Several recipient orchestrators are available. Ask the user to choose a recipient label; do not ask for a session ID.", { gentleAgents: { candidates: candidates.map((candidate) => ({ label: `Orchestrator ${candidate.sessionId}`, sessionId: candidate.sessionId })) } });
+					else {
+						const labels = candidates.map((candidate) => `Orchestrator ${candidate.sessionId}`);
+						const selected = await ctx.ui.select("Select recipient orchestrator", labels, { signal });
+						if (selected === undefined || activeTransportFor(ctx) !== transport || signal?.aborted) return text("Message selection was cancelled.", { error: "cancelled" });
+						const index = labels.indexOf(selected);
+						if (index < 0) return text("Message selection was cancelled.", { error: "cancelled" });
+						recipient = candidates[index].sessionId;
+						activation = candidates[index];
+					}
+				} catch {
+					return text("Error: session discovery is unavailable.", { error: "unavailable" });
+				}
+			}
+			if (recipient === undefined || !validTransportSessionId(recipient)) return text("Error: recipient session ID or message is invalid.", { error: "invalid input" });
+			if (recipient === transport.sessionId) return text("Error: cannot send a message to the active session.", { error: "self" });
+			try {
+				await messagingGrants.authorize(ctx, recipient, { message, reason, signal });
+			} catch (error) {
+				if (signal?.aborted) return text("Cross-orchestrator communication was cancelled.", { error: "cancelled" });
+				return text(`Error: ${error instanceof Error ? error.message : String(error)}`, { error: "denied" });
+			}
+			try {
+				const accepted = await transport.client.sendNotification(recipient, message, { signal, expectedActivation: activation, beforeConnect: () => activeTransportFor(ctx) === transport });
+				return activeTransportFor(ctx) === transport ? text(`Message ${accepted.id} from ${transport.sessionId} to ${recipient} accepted for delivery; it is not a delivery or read receipt.`, { gentleAgents: { messageId: accepted.id, senderSessionId: transport.sessionId, recipientSessionId: recipient, state: "accepted" } }) : text("Error: session messaging is not ready.", { error: "stale" });
+			} catch {
+				return text("Error: session message was not accepted.", { error: "not accepted" });
+			}
+		},
+	});
+
 	tool("list_agents", "List the subagents defined for this project and user, with their descriptions.", { properties: {} }, async (_params, ctx) => {
 		const { agents, errors } = discoverAgents(roots(ctx));
 		const lines = agents.map((agent) => `- ${agent.name} (${agent.scope}): ${agent.description || "no description"}`);
@@ -1020,21 +1411,28 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				task: { type: "string", description: "What the subagent must do, self-contained." },
 				label: { type: "string", description: "Three to six words naming the work, shown on the agents card, e.g. 'map footer data sources'." },
 				context: { type: "string", description: "Optional extra context appended to the task." },
-				workspace_root: { type: "string", description: "Optional worktree in the same Git clone. Validated before queueing; the child runs at its canonical root and registers it on actual launch." },
+				workspace_root: { type: "string", description: "Optional canonical main or linked Git worktree within the parent's same clone only; mutually exclusive with repository_root." },
+				repository_root: { type: "string", description: "Optional canonical independent Git repository; requires direct interactive session-scoped consent before queueing; mutually exclusive with workspace_root." },
 				research_selection: RESEARCH_SELECTION_SCHEMA,
 				remediation: REMEDIATION_SCHEMA, sdd_change: { type: "object", additionalProperties: false, required: ["changeName", "workspaceRoot", "phase"], properties: { changeName: { type: "string" }, workspaceRoot: { type: "string" }, failedEvidenceRevision: { type: "string" }, phase: { type: "string", enum: ["apply", "verify", "archive", "remediate"] } }, description: "Launch-local selected SDD identity, accepted only by matching SDD phase agents." },
 				mode: { type: "string", enum: ["task", "background"], description: "task waits for the result (default); background returns immediately." },
 			},
 		},
 		async (params, ctx, signal) => {
+			if (Object.hasOwn(params, "repository_root") && Object.hasOwn(params, "workspace_root")) throw new Error("repository_root and workspace_root are mutually exclusive.");
+			if ((Object.hasOwn(params, "repository_root") && typeof params.repository_root !== "string") || (Object.hasOwn(params, "workspace_root") && typeof params.workspace_root !== "string")) throw new Error("Root selectors must be strings.");
 			const { agents } = discoverAgents(roots(ctx));
 			const agent = agents.find((candidate) => candidate.name === params.agent);
 			if (!agent) return text(`Error: no subagent named "${String(params.agent)}". Known: ${agents.map((candidate) => candidate.name).join(", ") || "none"}`, { error: "unknown agent" });
-			const mode = (params.mode as AgentMode | undefined) ?? agent.mode ?? loadAgentsConfig(roots(ctx)).defaultMode;
+			const mode = (params.mode as AgentMode | undefined) ?? agent.mode ?? resolveDefaultSubagentMode({
+				configuredDefault: loadAgentsConfig(roots(ctx)).defaultMode,
+				policy: resolveBackgroundSubagentsPolicy(ctx.cwd).policy,
+				parentMode: ctx.mode,
+			});
 			let sddChange: SddChangeSelection | undefined;
 			try { sddChange = parseSddChange(params.sdd_change, agent.name); }
 			catch (error) { return text(`Error: ${error instanceof Error ? error.message : String(error)}`, { error: "invalid sdd_change" }); }
-			return launch(ctx, buildRequest(ctx, agent, String(params.task ?? ""), typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, undefined, typeof params.workspace_root === "string" ? params.workspace_root : undefined, sddChange, params.research_selection, params.remediation), signal);
+			return launch(ctx, await buildRequest(ctx, agent, String(params.task ?? ""), typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, undefined, typeof params.workspace_root === "string" ? params.workspace_root : undefined, sddChange, params.research_selection, params.remediation, signal, typeof params.repository_root === "string" ? params.repository_root : undefined), signal);
 		},
 	);
 
@@ -1091,7 +1489,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			catch (error) { return text(`Error: ${error instanceof Error ? error.message : String(error)}`, { error: "invalid sdd_change" }); }
 			if (sddPhaseForAgent(agent.name) && !sddChange) return text("Error: continuing an SDD phase agent requires a fresh sdd_change selection.", { error: "missing sdd_change" });
 
-			return launch(ctx, buildRequest(ctx, agent, String(params.prompt ?? ""), typeof params.label === "string" ? params.label : undefined, previous.sddPreflightContext, mode, previous.sessionPath, sddChange?.workspaceRoot ?? previous.cwd, sddChange, params.research_selection, params.remediation), signal);
+			const foreignContinuation = foreignTasks.has(previous.id);
+			return launch(ctx, await buildRequest(ctx, agent, String(params.prompt ?? ""), typeof params.label === "string" ? params.label : undefined, previous.sddPreflightContext, mode, previous.sessionPath, foreignContinuation ? undefined : sddChange?.workspaceRoot ?? previous.cwd, sddChange, params.research_selection, params.remediation, signal, foreignContinuation ? previous.cwd : undefined), signal);
 		},
 	);
 
@@ -1123,24 +1522,62 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		});
 	}
 
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		// A resumed, reloaded, or replaced session starts with an empty completion
 		// queue so nothing pending from another session can replay here.
 		completions.dropAll();
 		presence?.dispose();
 		registryFor(ctx);
 		showWidget(ctx);
+		// An explicit in-session /resume always brings this session's own
+		// finished subagents back from disk. Pi also reports "startup" (not
+		// "resume") when the CLI is launched directly into an existing session
+		// file, e.g. --continue or the --resume picker (agent-session.js:152
+		// defaults to "startup"); that case restores too, but only when the
+		// session actually has prior entries -- a brand-new session can also be
+		// announced as "startup", and a fresh session has none. "new", "fork",
+		// and "reload" never restore here, matching the existing on-demand
+		// resolveTask path for anything else.
+		const sessionId = ctx.sessionManager.getSessionId();
+		const preexisting = event.reason === "resume" || (event.reason === "startup" && ctx.sessionManager.getEntries().length > 0);
+		if (preexisting && sessionId) void restoreSessionHistory(ctx, sessionId);
 		try {
 			presence = PresencePublisher.start({ profile: agentHome, sessionId: activeSessionId() ?? "",
 				label: ctx.sessionManager.getSessionName?.() || ctx.sessionManager.getCwd().split(/[\\/]/).pop() || "Orchestrator", activity: [] });
 			publishActivity();
 		} catch { presence = undefined; }
+		void startSessionTransport(ctx);
+		// The desktop app's own pi process: publish live subagent state through
+		// setWidget's RPC-mode string[] path. Plain headless RPC (no variable) and
+		// TUI are untouched -- the TUI card above the editor is showWidget's own
+		// factory push, ignored by pi's RPC transport since it is not an array.
+		rpcActivityPublisher?.stop();
+		rpcActivityPublisher = undefined;
+		notifiedRpcActivityErrors = new Set();
+		if (ctx.hasUI && isInteractiveRpcHost(ctx.mode, deps.env)) {
+			rpcActivityPublisher = createRpcActivityPublisher({
+				store,
+				ui: { setWidget: (key, lines) => ctx.ui.setWidget(key, lines) },
+				now: deps.now,
+				schedule: deps.schedule,
+				parentSessionId: activeSessionId(),
+				onError: (error) => {
+					const message = `Gentle Agents activity push failed: ${error instanceof Error ? error.message : String(error)}`;
+					if (notifiedRpcActivityErrors?.has(message)) return;
+					notifiedRpcActivityErrors?.add(message);
+					ctx.ui.notify(message, "warning");
+				},
+			});
+			rpcActivityPublisher.start();
+		}
 	});
-	pi.on("session_shutdown", () => {
+	pi.on("session_shutdown", async () => {
 		completions.dropAll();
 		activeAgentRuns = 0;
 		presence?.dispose();
 		presence = undefined;
+		rpcActivityPublisher?.stop();
+		rpcActivityPublisher = undefined;
 		cancelClock?.();
 		for (const view of overlays) { view.handleInput("q"); view.dispose(); }
 		overlays.clear();
@@ -1148,6 +1585,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		sidebarTui = undefined;
 		worktrees?.close();
 		worktrees = undefined;
+		const stopped = shutdownSessionTransport();
 		runner.cancelAll("cancelled: parent session shut down");
+		await stopped;
 	});
 }

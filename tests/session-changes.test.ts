@@ -101,3 +101,14 @@ test("capture capacity is explicit instead of growing without limit", () => {
 	assert.equal(changes.model.files.length,256);
 	assert.match(changes.notice!,/limit reached/);
 });
+
+test("capture-limit notice is delivered once but stays on the model", () => {
+	const changes = new SessionChanges("session");
+	for(let i=0;i<257;i++) changes.record(evidence(String(i),"/repo",String(i)+".ts"));
+	assert.match(changes.takeNotice()!,/limit reached/);
+	assert.equal(changes.takeNotice(),undefined);
+	assert.match(changes.notice!,/limit reached/);
+	assert.match(changes.model.notice!,/limit reached/);
+	assert.equal(new SessionChanges("s").takeNotice(),undefined);
+	assert.equal(new SessionChanges("s").model.notice,undefined);
+});

@@ -14,6 +14,7 @@ import {
 	parseFrontmatter,
 	parseModelRef,
 	resolveAgentProfile,
+	withPinnedModelProfiles,
 } from "../lib/agents-config.ts";
 import { THINKING_LEVELS } from "../lib/model-routing-authority.ts";
 
@@ -225,4 +226,32 @@ test("resolveAgentProfile prefers the profile, then the definition, then the def
 	assert.ok(!("error" in bare));
 	assert.deepEqual(resolveAgentProfile(bare, config), { model: { provider: "openai-codex", id: "gpt-6-astra" }, thinking: "medium", source: { model: "default", thinking: "default" } });
 	assert.deepEqual(resolveAgentProfile(bare, parseAgentsConfig(undefined, undefined)).source, { model: "unresolved", thinking: "unresolved" });
+});
+
+test("a pinned profile replaces subagent routing and leaves every other default alone", () => {
+	const global = parseAgentsConfig(
+		{
+			default_model: "openai-codex/gpt-6-astra",
+			default_effort: "medium",
+			default_mode: "background",
+			max_concurrency: 3,
+			model_profiles: { explore: { model: "openai-codex/gpt-5.6-terra", effort: "low" } },
+		},
+		{ model_profiles: { worker: { model: "anthropic/claude-sonnet-5" } } },
+	);
+	const pinned = withPinnedModelProfiles(global, { worker: { model: "openai/alpha", thinking: "minimal" } });
+	assert.deepEqual(pinned.modelProfiles, {
+		worker: { model: { provider: "openai", id: "alpha" }, thinking: "minimal" },
+	});
+	// Materialized global routing must not survive into a pinned repository: that
+	// leak is exactly the conflict a per-repository pin exists to remove.
+	assert.equal("explore" in pinned.modelProfiles, false);
+	// A pin redirects subagent routing only; the orchestrator routing and every
+	// operational default stay global.
+	assert.deepEqual({ ...pinned, modelProfiles: global.modelProfiles }, global);
+	// No pin, and no pin-shaped input, mean today's routing by identity.
+	assert.equal(withPinnedModelProfiles(global, undefined), global);
+	// A pinned profile that mentions no role still replaces the routing, so a
+	// repository can pin "everything inherits" without touching the global store.
+	assert.deepEqual(withPinnedModelProfiles(global, {}).modelProfiles, {});
 });

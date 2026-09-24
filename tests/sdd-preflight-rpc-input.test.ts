@@ -8,17 +8,12 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { isSddPreflightTrigger, sddPreflightDiskPath } from "../lib/sdd-preflight.ts";
 
-// gentle-pi#1001: the natural-language SDD `input` hook called the parent-only
-// preflight resolver for every matching prompt, RPC children included.
-// `ensureSddPreflight` rejects RPC by design, the hook caught that rejection and
-// answered `handled`, and Pi's `AgentSession.prompt()` accepts handled input and
-// returns before `before_agent_start` and the model loop. A delegated child
-// therefore ACKed a prompt it never ran: no agent_start, zero turns, zero tool
-// calls, and a stall that only surfaced as the runner's inactivity timeout.
-//
-// An RPC child consumes the parent-rendered preflight block transported in its
-// task context. It must never originate preflight, and the interceptor must
-// never consume a delegated prompt on its behalf.
+// The `input` hook is syntax-only: slash SDD commands may originate preflight
+// in an interactive parent, while ordinary natural-language text always reaches
+// the model. Natural-language SDD selection belongs to the parent/orchestrator;
+// dispatch and before_agent_start gates enforce preflight at the action boundary.
+// RPC children consume the parent-rendered preflight block transported in task
+// context and never originate preflight.
 
 type InputResult = { action: "continue" | "handled" };
 type InputHandler = (event: { text?: unknown }, ctx: ExtensionContext) => Promise<InputResult>;
@@ -52,13 +47,11 @@ function ctx(overrides: Record<string, unknown>): ExtensionContext {
 	} as unknown as ExtensionContext;
 }
 
-test("the delegated task text reaches the preflight interceptor", () => {
-	// Guards the premise of the tests below: if the classifier stops matching
-	// this text they would pass for the wrong reason.
-	assert.equal(isSddPreflightTrigger(DELEGATED_SDD_TASK), true);
+test("natural-language SDD task text bypasses the input preflight interceptor", () => {
+	assert.equal(isSddPreflightTrigger(DELEGATED_SDD_TASK), false);
 });
 
-test("an RPC child's matching prompt is not consumed by the preflight interceptor", async () => {
+test("an RPC child's natural-language SDD prompt is not consumed by the input hook", async () => {
 	const input = inputHook();
 	const cwd = await mkdtemp(join(tmpdir(), "gentle-pi-rpc-input-"));
 	const notifications: string[] = [];
@@ -95,27 +88,34 @@ test("an RPC child's ordinary prompt still continues", async () => {
 	}
 });
 
-test("an interactive parent still resolves preflight for a matching prompt", async () => {
+test("an interactive parent's natural-language SDD request has no input-hook side effect", async () => {
 	const input = inputHook();
-	const cwd = await mkdtemp(join(tmpdir(), "gentle-pi-parent-input-"));
+	const cwd = await mkdtemp(join(tmpdir(), "gentle-pi-parent-natural-input-"));
+	try {
+		const result = await input(
+			{ text: DELEGATED_SDD_TASK },
+			ctx({ cwd, hasUI: false, sessionManager: { getSessionId: () => "sdd-preflight-natural-parent" } }),
+		);
+		assert.deepEqual(result, { action: "continue" });
+		assert.equal(existsSync(sddPreflightDiskPath(cwd)), false, "text alone must not persist preflight");
+	} finally {
+		await rm(cwd, { recursive: true, force: true });
+	}
+});
+
+test("an interactive parent still resolves preflight for an explicit slash SDD command", async () => {
+	const input = inputHook();
+	const cwd = await mkdtemp(join(tmpdir(), "gentle-pi-parent-slash-input-"));
 	const agentHome = await mkdtemp(join(tmpdir(), "gentle-pi-parent-agent-home-"));
 	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
 	process.env.GENTLE_PI_AGENT_HOME = agentHome;
 	try {
 		const result = await input(
-			{ text: DELEGATED_SDD_TASK },
-			ctx({
-				cwd,
-				hasUI: false,
-				sessionManager: { getSessionId: () => "sdd-preflight-interactive-parent" },
-			}),
+			{ text: "/sdd-new feature" },
+			ctx({ cwd, hasUI: false, sessionManager: { getSessionId: () => "sdd-preflight-slash-parent" } }),
 		);
 		assert.deepEqual(result, { action: "continue" });
-		assert.equal(
-			existsSync(sddPreflightDiskPath(cwd)),
-			true,
-			"the parent remains the only actor that resolves and persists preflight",
-		);
+		assert.equal(existsSync(sddPreflightDiskPath(cwd)), true, "slash SDD commands still resolve preflight");
 	} finally {
 		if (previousAgentHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
 		else process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;

@@ -24,7 +24,7 @@ function peer(id: string, overrides: Partial<ActivityInput["task"]> = {}, thread
 	};
 }
 
-function gateHarness(t: TestContext, profile: string) {
+function gateHarness(t: TestContext, profile: string, clock: { value: number } = { value: 61_000 }) {
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 	const polls = t.mock.method(PresenceCursor.prototype, "next");
 	const store = new TaskStore();
@@ -34,7 +34,7 @@ function gateHarness(t: TestContext, profile: string) {
 		rows: 8,
 		store,
 		sessionId: "s",
-		now: () => 61_000,
+		now: () => clock.value,
 		onCancel() {},
 		onOpen() {},
 		onClose() {},
@@ -43,7 +43,7 @@ function gateHarness(t: TestContext, profile: string) {
 		},
 		presence: { profile },
 	});
-	return { store, view, renders: () => renders, polls: () => polls.mock.callCount() };
+	return { store, view, renders: () => renders, polls: () => polls.mock.callCount(), clock };
 }
 
 // Settle the pending poll's zero-delay hops without reaching its 1 s re-arm.
@@ -153,6 +153,61 @@ test("local task changes render once and the next poll stays silent", (t) => {
 	assert.equal(renders(), 3, "the re-anchored gate keeps the next poll silent");
 	nextPoll(t);
 	assert.equal(renders(), 3, "an unchanged store stays silent too");
+	view.dispose();
+});
+
+test("a clock-only displayed-second change renders and an unchanged displayed second stays silent", (t) => {
+	const profile = tempProfile(t);
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer-a", label: "Peer A", activity: [peer("p1")] });
+	t.after(() => publisher.dispose());
+	const { view, renders, clock } = gateHarness(t, profile);
+	settle(t);
+	assert.equal(renders(), 1);
+	clock.value = 61_500;
+	nextPoll(t);
+	assert.equal(renders(), 1, "a clock advance inside the same displayed second stays silent");
+	clock.value = 62_000;
+	nextPoll(t);
+	assert.equal(renders(), 2, "the next displayed second of an active peer task renders on the poll");
+	clock.value = 62_500;
+	nextPoll(t);
+	assert.equal(renders(), 2, "the re-anchored gate stays silent inside the new displayed second");
+	view.dispose();
+});
+
+test("a clock-only displayed-second change on a local active task renders too", (t) => {
+	const profile = tempProfile(t);
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer-a", label: "Peer A", activity: [peer("p1")] });
+	t.after(() => publisher.dispose());
+	const { store, view, renders, clock } = gateHarness(t, profile);
+	settle(t);
+	assert.equal(renders(), 1);
+	store.add(localTask("mine"));
+	assert.equal(renders(), 2, "the store change itself renders immediately");
+	clock.value = 61_500;
+	nextPoll(t);
+	assert.equal(renders(), 2, "a clock advance inside the same displayed second stays silent");
+	clock.value = 62_000;
+	nextPoll(t);
+	assert.equal(renders(), 3, "the next displayed second of an active local task renders on the poll");
+	view.dispose();
+});
+
+test("a completed task's displayed elapsed stays frozen as the clock advances", (t) => {
+	const profile = tempProfile(t);
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer-a", label: "Peer A", activity: [peer("p1", { status: "completed", endedAt: 50_000 })] });
+	t.after(() => publisher.dispose());
+	const { store, view, renders, clock } = gateHarness(t, profile);
+	store.add(localTask("done", { status: TASK_STATUS.COMPLETED, endedAt: 55_000 }));
+	settle(t);
+	assert.equal(renders(), 2, "the local add and the first poll render once each");
+	clock.value = 62_000;
+	nextPoll(t);
+	clock.value = 63_000;
+	nextPoll(t);
+	clock.value = 180_000;
+	nextPoll(t);
+	assert.equal(renders(), 2, "clock-only changes never render a completed task's frozen elapsed");
 	view.dispose();
 });
 

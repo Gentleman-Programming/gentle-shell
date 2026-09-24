@@ -143,9 +143,20 @@ function field(text: string): string {
 
 // One task's contribution to the presence signature: every display-relevant
 // field this view renders or sorts by (taskLine, taskHeader, the thread pane
-// header and error fallback, group headings, Stop/Open gating, ordering).
-function taskSignature(task: TaskRecord): string {
-	return `|${field(task.id)}${field(task.status)}${field(task.agent)}${field(task.model)}${field(task.label)}${field(String(task.createdAt))}${field(String(task.startedAt))}${field(String(task.endedAt))}${field(String(task.lastActivityAt))}${field(task.lastStep)}${field(String(task.tokens))}${field(String(task.cost))}${field(task.error ?? "")}${field(task.sessionPath ?? "")}`;
+// header and error fallback, group headings, Stop/Open gating, ordering,
+// displayed elapsed).
+function taskSignature(task: TaskRecord, now: number): string {
+	return `|${field(task.id)}${field(task.status)}${field(task.agent)}${field(task.model)}${field(task.label)}${field(String(task.createdAt))}${field(String(task.startedAt))}${field(String(task.endedAt))}${field(String(task.lastActivityAt))}${field(task.lastStep)}${field(String(task.tokens))}${field(String(task.cost))}${field(task.error ?? "")}${field(task.sessionPath ?? "")}${displayedElapsed(task, now)}`;
+}
+
+// The displayed elapsed (task rows and the thread pane header both render
+// formatElapsed((endedAt ?? now) - startedAt)) is clock state: the formatted
+// value only changes when the displayed second ticks, so sampling it renders
+// visible clock changes while same-displayed-value polls stay quiet. Finished
+// tasks drop out of the signature's filters and their elapsed is frozen at
+// endedAt, so the clock never advances a completed task's contribution.
+function displayedElapsed(task: TaskRecord, now: number): string {
+	return field(task.startedAt === null ? "" : formatElapsed((task.endedAt ?? now) - task.startedAt));
 }
 
 // FNV-1a over a string's complete content: any content change, including a
@@ -285,6 +296,10 @@ export class AgentsView {
 	// - local tasks, filtered exactly like refreshTasks() (parentSessionId,
 	//   unfinished, isLocalTask): taskSignature() per task, in store.list()
 	//   order, so store ordering changes are covered too;
+	// - the displayed elapsed of every covered task, sampled from deps.now()
+	//   so clock-only displayed-second changes render while polls inside the
+	//   same displayed second stay quiet (finished tasks are excluded above
+	//   and their elapsed is frozen);
 	// - peer groups: group id, display label (including its unavailable
 	//   suffix), task count, and taskSignature() per task in poll order;
 	// - remote threads: task id, dropped count, item count, and per item the
@@ -299,13 +314,14 @@ export class AgentsView {
 	//   toolCalls, result) stay out so streaming locals and quiet peers
 	//   remain quiet.
 	private presenceSignature(groups: SessionGroup[], threads: Map<string, TaskThread>): string {
+		const now = this.deps.now();
 		const local = this.deps.store.list().filter((task) => task.parentSessionId === this.deps.sessionId
 			&& !isFinished(task.status) && (this.deps.isLocalTask?.(task) ?? true));
 		let signature = "";
-		for (const task of local) signature += taskSignature(task);
+		for (const task of local) signature += taskSignature(task, now);
 		for (const group of groups) {
 			signature += `|group${field(group.id)}${field(group.label ?? "")}${field(String(group.tasks.length))}`;
-			for (const task of group.tasks) signature += taskSignature(task);
+			for (const task of group.tasks) signature += taskSignature(task, now);
 		}
 		for (const [id, thread] of threads) {
 			signature += `|thread${field(id)}${field(String(thread.dropped))}${field(String(thread.items.length))}`;

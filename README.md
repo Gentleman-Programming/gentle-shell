@@ -280,7 +280,6 @@ Start with the product-facing destination, then move into the operational refere
 | [Telemetry](docs/telemetry.md) | Approved fields and source limitations. |
 | [Delegated verification](docs/delegated-verification.md) | Practical verification guidance. |
 | [Skill style guide](docs/skill-style-guide.md) | The package skill contract. |
-| [Prompt history](docs/prompt-history.md) | Opt-in capture switch, storage layout, readers, and disable/removal semantics. |
 
 <p align="right"><a href="#top">Back to top ↑</a></p>
 

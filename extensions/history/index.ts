@@ -6,6 +6,12 @@
 // and slice-4 init sequence (legacy migration + seed bootstrap run once
 // inside getWriter). Deletion (slice 5) and GC/compaction (slice 6) arrive
 // in later slices.
+//
+// Capture is OPT-IN while the deletion/privacy behavior is unshipped:
+// nothing is recorded unless GENTLE_PI_HISTORY_CAPTURE=1|true|on. With the
+// switch off the handler is a no-op — no registry entry, no files, and
+// prompts are never written. Unsetting the switch only stops NEW captures;
+// files already written stay on disk (docs/prompt-history.md).
 
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -931,14 +937,74 @@ function recordsFromEntries(
   return buildPromptRecords(dedupePromptEntries(entries));
 }
 
-export default function promptHistoryExtension(pi: ExtensionAPI) {
-  // One writer per extension load; see getWriter() for the init order.
-  // Warm migrate/registry/seed OFF the first-prompt path: the scheduled
-  // init runs once, immediately after load. A prompt arriving earlier
-  // falls back to the synchronous lazy init in getWriter(), whose
-  // writerState guard makes whichever runs second a no-op — bootstrap
-  // work is never duplicated.
+
+export interface HistoryDeps {
+  env?: NodeJS.ProcessEnv;
+  root?: string;
+  cwd?: string;
+  instanceId?: string;
+  now?: () => number;
+}
+
+/**
+ * Strict opt-in: capture stays off unless GENTLE_PI_HISTORY_CAPTURE is
+ * explicitly 1, true, or on (case-insensitive). The same switch is the
+ * disable path — unsetting it stops new captures; files already on disk
+ * are left untouched until the deletion tooling lands.
+ */
+export function captureEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.GENTLE_PI_HISTORY_CAPTURE?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "on";
+}
+
+export default function promptHistoryExtension(
+  pi: ExtensionAPI,
+  deps: HistoryDeps = {},
+): void {
+  const env = deps.env ?? process.env;
+  const root = deps.root ?? PI_HISTORY_ROOT;
+  const cwd = deps.cwd ?? CURRENT_CWD;
+  const instanceId = deps.instanceId ?? INSTANCE_ID;
+  const now = deps.now ?? Date.now;
+  let writerState: SessionWriterState | null = null;
+
+  /**
+   * One-time init per extension load: migrate legacy stores, register the
+   * project, bootstrap the seed, then open this instance's exclusive file.
+   */
+  const getWriter = (): SessionWriterState => {
+    if (!writerState) {
+      try {
+        migrateLegacyStores(root, AGENT_DIR);
+      } catch {
+        // migration is best-effort; the gate keeps it one-shot
+      }
+      try {
+        ensureRegistryEntry(root, cwd);
+      } catch {
+        // registry is advisory
+      }
+      try {
+        bootstrapProjectSeed(
+          root,
+          cwd,
+          SESSIONS_ROOT,
+          500,
+          PI_HISTORY_NAV_STATE_DIR,
+        );
+      } catch {
+        // bootstrap is a rebuildable cache
+      }
+      writerState = openSessionWriter(root, cwd, instanceId);
+    }
+    return writerState;
+  };
+
+  // Warm migrate/registry/seed OFF the first-prompt path, but only for
+  // opted-in sessions: with capture disabled nothing may be written —
+  // no registry entry, no seed files, no store (docs/prompt-history.md).
   setImmediate(() => {
+    if (!captureEnabled(env)) return;
     try {
       getWriter();
     } catch {
@@ -946,12 +1012,14 @@ export default function promptHistoryExtension(pi: ExtensionAPI) {
     }
   });
 
-  // Persist every delivered user prompt (write-through, append-only JSONL).
-  // The local ExtensionAPI stub types handler args as unknown; narrow here.
+  // Persist every delivered user prompt (write-through, append-only JSONL),
+  // but only for opted-in sessions — see captureEnabled(). The local
+  // ExtensionAPI stub types handler args as unknown; narrow here.
   pi.on("before_agent_start", (...args: unknown[]) => {
+    if (!captureEnabled(env)) return;
     try {
       const event = args[0] as { prompt?: string } | undefined;
-      appendSessionCapture(getWriter(), event?.prompt ?? "", Date.now());
+      appendSessionCapture(getWriter(), event?.prompt ?? "", now());
     } catch {
       // A capture failure must never break the agent loop or unregister
       // the handler - swallow and keep the next prompt capturable.

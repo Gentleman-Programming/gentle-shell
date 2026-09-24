@@ -4229,7 +4229,8 @@ async function runProfilesPanelAction(
 			}
 			const normalized = normalizeModelConfig(file.profiles[result.name]) ?? {};
 			const orchestratorEntry = readProfileOrchestrator(normalized);
-			if (Object.keys(normalized).length === 0) {
+			const hasAgentRoutes = Object.keys(normalized).some((name) => !isProfileOrchestratorKey(name));
+			if (!hasAgentRoutes) {
 				const approved = await ctx.ui.confirm(
 					"Apply empty profile?",
 					`Profile "${result.name}" has no routing entries. Applying it will replace global routing in ${sanitizeTerminalText(modelConfigPath(ctx.cwd))} with an empty configuration and return every agent to inherit its default model. Continue?`,

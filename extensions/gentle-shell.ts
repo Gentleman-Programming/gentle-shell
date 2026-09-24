@@ -766,13 +766,22 @@ export async function fetchNanUsage(apiKey: string | undefined, fetchFn: typeof 
 const CLAUDE_BRIDGE_ADAPTER_TIMEOUT_MS = 2000;
 
 interface ClaudeBridgeAdapter {
+	id: string;
 	refresh(options: { timeoutMs: number }): Promise<unknown>;
 }
 
-// The one adapter the bridge registers for the "claude" usage provider. The
-// bus can in principle carry adapters for other usage providers (codex is a
-// possibility upstream), so this picks the one gentle-shell means by
-// claude-bridge instead of assuming the array holds exactly one entry.
+// The model provider id @schuettc/pi-claude-bridge registers itself under.
+// Other extensions can register their own adapter for the "claude" usage
+// provider (a different bridge, a test double, anything claiming the same
+// usageProvider), so selection keys on this instead of on being first in the
+// bus's adapter array or on usageProvider alone.
+const CLAUDE_BRIDGE_MODEL_PROVIDER = "claude-bridge";
+
+// The one adapter gentle-shell means by claude-bridge: identified by carrying
+// "claude-bridge" in its modelProviders, not by being the first entry whose
+// usageProvider is "claude". The bus can carry adapters for usage providers
+// gentle-shell has never heard of, any of which could claim that same
+// usageProvider for reasons that have nothing to do with this bridge.
 function claudeBridgeAdapter(bus: unknown): ClaudeBridgeAdapter | undefined {
 	if (!bus || typeof (bus as Record<string, unknown>).adapters !== "function") return undefined;
 	let adapters: unknown;
@@ -782,10 +791,11 @@ function claudeBridgeAdapter(bus: unknown): ClaudeBridgeAdapter | undefined {
 		return undefined;
 	}
 	if (!Array.isArray(adapters)) return undefined;
-	return adapters.find(
-		(entry): entry is ClaudeBridgeAdapter =>
-			Boolean(entry) && typeof entry === "object" && (entry as Record<string, unknown>).usageProvider === "claude" && typeof (entry as Record<string, unknown>).refresh === "function",
-	);
+	return adapters.find((entry): entry is ClaudeBridgeAdapter => {
+		if (!entry || typeof entry !== "object") return false;
+		const record = entry as Record<string, unknown>;
+		return typeof record.id === "string" && record.id.length > 0 && typeof record.refresh === "function" && Array.isArray(record.modelProviders) && record.modelProviders.includes(CLAUDE_BRIDGE_MODEL_PROVIDER);
+	});
 }
 
 // Claude Code streams rate_limit_event over the session it already has; the
@@ -813,11 +823,23 @@ export async function fetchClaudeBridgeUsage(now: number, globalObject: object =
 // harmless no-op unsubscribe instead of failing session start.
 export function subscribeClaudeBridgeUsage(now: () => number, onSnapshot: (usage: ProviderUsage) => void, globalObject: object = globalThis): () => void {
 	const bus = readProviderUsageBus(globalObject);
-	if (!bus) return () => {};
+	// Resolved once at subscribe time, not per event: the bridge's adapter id
+	// is what scopes every later event to this exact adapter, so a snapshot
+	// published by some other "claude" adapter that later joins the bus is
+	// never mistaken for the bridge's.
+	const adapter = claudeBridgeAdapter(bus);
+	if (!bus || !adapter) return () => {};
 	try {
 		const unsubscribe = (bus as { subscribe(listener: (event: unknown) => void): unknown }).subscribe((event) => {
 			if (!event || typeof event !== "object") return;
-			const parsed = parseProviderUsageBusSnapshot((event as Record<string, unknown>).snapshot, now());
+			const snapshot = (event as Record<string, unknown>).snapshot;
+			if (!snapshot || typeof snapshot !== "object") return;
+			// An event without a matching adapterId is either from a foreign
+			// adapter or from a bridge build old enough not to stamp one; either
+			// way it is not attributable to this adapter, so it is dropped
+			// instead of trusted.
+			if ((snapshot as Record<string, unknown>).adapterId !== adapter.id) return;
+			const parsed = parseProviderUsageBusSnapshot(snapshot, now());
 			if (parsed && parsed.limits.length > 0) onSnapshot(parsed);
 		});
 		return typeof unsubscribe === "function" ? (unsubscribe as () => void) : () => {};

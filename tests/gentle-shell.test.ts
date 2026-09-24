@@ -1645,6 +1645,7 @@ test("fetchNanUsage degrades to no snapshot without ever throwing", async () => 
 const CLAUDE_BUS_SNAPSHOT = {
 	version: 1,
 	provider: "claude",
+	adapterId: "schuettc.pi-claude-bridge",
 	windows: [
 		{ id: "five_hour", label: "5h", usedPercent: 62, windowMinutes: 300, resetsAt: 1_788_620_161, scope: { kind: "account" } },
 		{ id: "seven_day", label: "7d", usedPercent: 31, windowMinutes: 10_080, resetsAt: 1_789_206_961, scope: { kind: "account" } },
@@ -1714,6 +1715,77 @@ test("subscribeClaudeBridgeUsage forwards a valid snapshot event and ignores eve
 test("subscribeClaudeBridgeUsage degrades to a no-op unsubscribe when the bus is absent", () => {
 	assert.doesNotThrow(() => {
 		subscribeClaudeBridgeUsage(() => 0, () => { throw new Error("must not be called"); }, {})();
+	});
+});
+
+// The bus can carry adapters for usage providers gentle-shell has never heard
+// of, and any of them could claim usageProvider "claude" for a reason that
+// has nothing to do with the bridge. Selection has to key on modelProviders
+// naming "claude-bridge", never on being first in the array.
+function fakeMultiAdapterBus(adapters: Array<Record<string, unknown>>) {
+	let listener: ((event: unknown) => void) | undefined;
+	const bus = {
+		version: 1,
+		register() { return () => {}; },
+		adapters() { return adapters; },
+		subscribe(fn: (event: unknown) => void) {
+			listener = fn;
+			return () => {};
+		},
+		publish() { return 0; },
+	};
+	return { globalObject: { [PROVIDER_USAGE_BUS_SYMBOL]: bus }, emit: (event: unknown) => listener?.(event) };
+}
+
+test("fetchClaudeBridgeUsage selects the adapter by modelProviders, not the first usageProvider match", async () => {
+	const foreign = {
+		id: "foreign.claude-adapter",
+		usageProvider: "claude",
+		modelProviders: ["some-other-provider"],
+		refresh: async () => {
+			throw new Error("the foreign adapter must never be refreshed");
+		},
+	};
+	const bridge = {
+		id: "schuettc.pi-claude-bridge",
+		usageProvider: "claude",
+		modelProviders: ["claude-bridge"],
+		refresh: async () => CLAUDE_BUS_SNAPSHOT,
+	};
+	const bus = fakeMultiAdapterBus([foreign, bridge]);
+	const usage = await fetchClaudeBridgeUsage(1_788_600_000_000, bus.globalObject);
+	assert.equal(usage?.provider, "claude-bridge");
+	assert.equal(usage?.limits[0]?.windows[0]?.usedPercent, 62);
+});
+
+test("subscribeClaudeBridgeUsage scopes live events to the resolved bridge adapter id", () => {
+	const foreign = {
+		id: "foreign.claude-adapter",
+		usageProvider: "claude",
+		modelProviders: ["some-other-provider"],
+		refresh: async () => undefined,
+	};
+	const bridge = {
+		id: "schuettc.pi-claude-bridge",
+		usageProvider: "claude",
+		modelProviders: ["claude-bridge"],
+		refresh: async () => undefined,
+	};
+	const bus = fakeMultiAdapterBus([foreign, bridge]);
+	const seen: ProviderUsage[] = [];
+	subscribeClaudeBridgeUsage(() => 1_788_600_000_000, (usage) => seen.push(usage), bus.globalObject);
+	bus.emit({ version: 1, type: "snapshot", snapshot: { ...CLAUDE_BUS_SNAPSHOT, adapterId: "foreign.claude-adapter" } });
+	assert.equal(seen.length, 0, "an event from a foreign adapter id must not reach the store");
+	bus.emit({ version: 1, type: "snapshot", snapshot: { ...CLAUDE_BUS_SNAPSHOT, adapterId: "schuettc.pi-claude-bridge" } });
+	assert.equal(seen.length, 1, "an event from the resolved bridge adapter id must reach the store");
+	bus.emit({ version: 1, type: "snapshot", snapshot: { ...CLAUDE_BUS_SNAPSHOT, adapterId: undefined } });
+	assert.equal(seen.length, 1, "a snapshot with no adapterId must be ignored");
+});
+
+test("subscribeClaudeBridgeUsage degrades to a no-op unsubscribe when no matching adapter is on the bus", () => {
+	const bus = fakeClaudeBus(undefined, { withAdapter: false });
+	assert.doesNotThrow(() => {
+		subscribeClaudeBridgeUsage(() => 0, () => { throw new Error("must not be called"); }, bus.globalObject)();
 	});
 });
 

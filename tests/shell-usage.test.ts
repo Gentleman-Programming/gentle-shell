@@ -345,6 +345,28 @@ test("claude-bridge is a supported usage provider whose pending note names the m
 	]);
 });
 
+test("renderUsagePanel lists the claude-bridge account windows and the family/oauth windows as their own rows, with resets", () => {
+	const usage: ProviderUsage = {
+		provider: CLAUDE_BRIDGE_PROVIDER,
+		plan: undefined,
+		fetchedAt: NOW,
+		limits: [
+			{ name: "claude", limitReached: false, windows: [
+				{ label: "5h", usedPercent: 62, windowSeconds: 18_000, resetAt: 1_788_620_161_000 },
+				{ label: "week", usedPercent: 31, windowSeconds: 604_800, resetAt: 1_789_206_961_000 },
+			] },
+			{ name: "opus", limitReached: false, windows: [{ label: "week", usedPercent: 45, windowSeconds: 604_800, resetAt: 1_789_206_961_000 }] },
+			{ name: "oauth apps", limitReached: false, windows: [{ label: "week", usedPercent: 5, windowSeconds: 604_800, resetAt: 1_789_206_961_000 }] },
+		],
+	};
+	const lines = renderUsagePanel([usage], plainTheme, 100, NOW, { provider: CLAUDE_BRIDGE_PROVIDER }).map((line) => line.trimEnd());
+	assert.match(lines[0], /^✿ claude-bridge · updated/);
+	assert.match(lines[1], /claude 5h .*62% · resets in/);
+	assert.match(lines[2], /claude week .*31% · resets in/);
+	assert.match(lines[3], /opus week .*45% · resets in/);
+	assert.match(lines[4], /oauth apps week .*5% · resets in/);
+});
+
 // A generic hook: any extension can register a usage source for its own
 // provider at runtime, without gentle-shell knowing anything about it.
 

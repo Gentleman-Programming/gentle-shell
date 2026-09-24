@@ -35,6 +35,8 @@ Out:
 ## Progress
 - 2026-09-23: Wrote 4 strict regression tests in `tests/review-controller-native-routing.test.ts` asserting additive `next_action` on approved last-event closure envelopes and approved STATUS mappings, verifying preservation of untouched raw acknowledgement continuation, and verifying `workspaceRoot` propagation when distinct from process cwd. Tests initially failed with `undefined`.
 - 2026-09-23: Implemented additive `next_action` in `mapLastEventClosure` and `mapNativeTargetStatus` in `extensions/gentle-ai.ts`, dynamically including `workspaceRoot` when provided and distinct from process cwd. Also updated `next_action` in `acknowledge-approved` input refusal to supply the exact self-healing command.
+- 2026-09-24: Addressed review feedback from danielgap and CodeRabbit: ensured invalid-input refusal compares workspaceRoot against the implicit resolved root and added strict regression tests in `tests/review-controller-native-routing.test.ts` for self-healing next_action on canonical lineages (with and without workspaceRoot) and fallback slug on invalid/non-canonical lineages; passed workspaceRoot across mapNativeTargetStatus and staleConsentBindingOutcome call sites.
+- 2026-09-24: Verified suites: `tests/review-controller-native-routing.test.ts` (78/78 passed), `npm run typecheck` (0 regressions, 195 baseline diagnostics).
 - 2026-09-23: Verified suites: `tests/review-controller-native-routing.test.ts` (77/77 passed), `npm run typecheck` (0 regressions, 195 baseline diagnostics), and `npm run check:provider-contract` (passed).
 
 ## Verification

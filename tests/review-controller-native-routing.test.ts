@@ -147,6 +147,45 @@ test("STATUS on approved target preserves workspaceRoot in next_action when dist
 	assert.equal(result.next_action, `gentle_review {"operation":"acknowledge-approved","lineageId":"${lineageId}","workspaceRoot":${JSON.stringify(worktreeRoot)}}`);
 });
 
+test("invalid acknowledgement input returns self-healing next_action for canonical lineage and fallback slug otherwise", async (t) => {
+	const lineageId = "canonical-lineage-ack";
+	const native = { targetStatus: async () => approvedAcknowledgementStatus(lineageId) } as unknown as NativeReviewCli;
+
+	// 1. Controller-only input with canonical lineage (no workspaceRoot)
+	const rejectedWithInput = await __testing.executeReviewControllerOperation(
+		{ operation: "acknowledge-approved", lineageId, input: "{}" },
+		process.cwd(),
+		native,
+	);
+	assert.equal(rejectedWithInput.outcome, "native-approved-acknowledgement-input-invalid");
+	assert.equal(rejectedWithInput.reason, "controller-only-input");
+	assert.equal(rejectedWithInput.field, "input");
+	assert.equal(rejectedWithInput.next_action, `gentle_review {"operation":"acknowledge-approved","lineageId":"${lineageId}"}`);
+
+	// 2. Controller-only input with canonical lineage and distinct workspaceRoot
+	const worktreeRoot = repository(t);
+	const rejectedWithWorktree = await __testing.executeReviewControllerOperation(
+		{ operation: "acknowledge-approved", lineageId, input: "{}", workspaceRoot: worktreeRoot },
+		process.cwd(),
+		native,
+	);
+	assert.equal(rejectedWithWorktree.outcome, "native-approved-acknowledgement-input-invalid");
+	assert.equal(
+		rejectedWithWorktree.next_action,
+		`gentle_review {"operation":"acknowledge-approved","lineageId":"${lineageId}","workspaceRoot":${JSON.stringify(worktreeRoot)}}`,
+	);
+
+	// 3. Non-canonical / invalid lineage returns fallback slug
+	const rejectedNonCanonical = await __testing.executeReviewControllerOperation(
+		{ operation: "acknowledge-approved", lineageId: "invalid lineage with newline\n", input: "{}" },
+		process.cwd(),
+		native,
+	);
+	assert.equal(rejectedNonCanonical.outcome, "native-approved-acknowledgement-input-invalid");
+	assert.equal(rejectedNonCanonical.reason, "controller-only-input");
+	assert.equal(rejectedNonCanonical.next_action, "resubmit-the-exact-lineage-without-controller-only-input");
+});
+
 test("public acknowledgement relays one current provider vector and never replays after authority burn", async () => {
 	const lineageId = "acknowledge-approved";
 	const requests: Array<Record<string, unknown>> = [];

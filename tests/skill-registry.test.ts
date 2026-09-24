@@ -114,34 +114,73 @@ test("uniqueExistingDirs normalizes duplicates and ignores missing roots", async
 	);
 });
 
-test("findSkillFiles scans one skill directory level only", async () => {
+test("findSkillFiles scans flat skills and category-nested skills without descending further", async () => {
 	const root = join(tmpdir(), `gentle-pi-shallow-${Date.now()}`);
 	const skillPath = join(root, "docs", "SKILL.md");
 	const nestedSkillPath = join(root, "fixtures", "nested", "SKILL.md");
+	const deeperSkillPath = join(root, "fixtures", "nested", "deeper", "SKILL.md");
 	mkdirSync(dirname(skillPath), { recursive: true });
 	mkdirSync(dirname(nestedSkillPath), { recursive: true });
+	mkdirSync(dirname(deeperSkillPath), { recursive: true });
 	writeFileSync(skillPath, "---\nname: docs\ndescription: Docs.\n---\n");
 	writeFileSync(nestedSkillPath, "---\nname: nested\ndescription: Nested fixture.\n---\n");
+	writeFileSync(deeperSkillPath, "---\nname: deeper\ndescription: Deeper fixture.\n---\n");
 
-	assert.deepEqual(await __testing.findSkillFiles(root), [skillPath]);
+	assert.deepEqual(await __testing.findSkillFiles(root), [skillPath, nestedSkillPath]);
 });
 
-test("findSkillFiles follows symlinked skill directories", async (t) => {
+test("findSkillFiles keeps direct skills ahead of alphabetically earlier nested collisions", async () => {
+	const cwd = join(tmpdir(), `gentle-pi-precedence-${Date.now()}`);
+	const directSkillPath = join(cwd, "skills", "zeta", "SKILL.md");
+	const nestedSkillPath = join(cwd, "skills", "alpha", "duplicate", "SKILL.md");
+	mkdirSync(dirname(directSkillPath), { recursive: true });
+	mkdirSync(dirname(nestedSkillPath), { recursive: true });
+	writeFileSync(directSkillPath, "---\nname: duplicate\ndescription: Direct skill.\n---\n");
+	writeFileSync(nestedSkillPath, "---\nname: duplicate\ndescription: Nested skill.\n---\n");
+
+	await __testing.regenerateRegistry(cwd, true);
+	const registry = readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8");
+	assert.match(registry, new RegExp(directSkillPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+	assert.doesNotMatch(registry, new RegExp(nestedSkillPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("findSkillFiles does not descend into excluded categories", async () => {
+	const root = join(tmpdir(), `gentle-pi-excluded-category-${Date.now()}`);
+	for (const category of ["_shared", "skill-registry", "sdd-fixtures"]) {
+		const nestedSkillPath = join(root, category, "hidden", "SKILL.md");
+		mkdirSync(dirname(nestedSkillPath), { recursive: true });
+		writeFileSync(nestedSkillPath, "---\nname: hidden\ndescription: Hidden skill.\n---\n");
+	}
+
+	assert.deepEqual(await __testing.findSkillFiles(root), []);
+});
+
+test("findSkillFiles follows direct symlinked skills but not symlinked categories", async (t) => {
 	const root = join(tmpdir(), `gentle-pi-symlink-root-${Date.now()}`);
 	const realSkillDir = join(tmpdir(), `gentle-pi-symlink-target-${Date.now()}`);
+	const categoryTarget = join(tmpdir(), `gentle-pi-symlink-category-${Date.now()}`);
 	const linkedSkillDir = join(root, "linked");
 	const skillPath = join(linkedSkillDir, "SKILL.md");
 	mkdirSync(root, { recursive: true });
 	mkdirSync(realSkillDir, { recursive: true });
+	mkdirSync(join(categoryTarget, "nested"), { recursive: true });
 	writeFileSync(join(realSkillDir, "SKILL.md"), "---\nname: linked\ndescription: Linked skill.\n---\n");
+	writeFileSync(join(categoryTarget, "nested", "SKILL.md"), "---\nname: nested\ndescription: Nested skill.\n---\n");
 	try {
 		symlinkSync(realSkillDir, linkedSkillDir, "dir");
+		symlinkSync(categoryTarget, join(root, "category"), "dir");
 	} catch (error) {
 		t.skip(`symlink creation unavailable: ${error instanceof Error ? error.message : String(error)}`);
 		return;
 	}
 
 	assert.deepEqual(await __testing.findSkillFiles(root), [skillPath]);
+});
+
+test("only missing skill-file errors allow category scanning", () => {
+	assert.equal(__testing.isMissingSkillFileError({ code: "ENOENT" }), true);
+	assert.equal(__testing.isMissingSkillFileError({ code: "ENOTDIR" }), true);
+	assert.equal(__testing.isMissingSkillFileError({ code: "EACCES" }), false);
 });
 
 test("skill registry watchers close on shutdown", async () => {

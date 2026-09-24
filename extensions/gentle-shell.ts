@@ -31,6 +31,7 @@ import { installSidebar, invalidateSidebar } from "../lib/shell-sidebar-layout.t
 import { SessionChanges, SESSION_CHANGE_EVENT } from "../lib/session-changes.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
 import { SelectionEngine } from "../lib/selection-engine.ts";
+import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
 
 // Gentle Shell: the visual layer gentle-pi puts on top of pi. It installs the
 // status bar, the petal prompt, the working-tree changes widget and overlay,
@@ -628,14 +629,15 @@ async function showChangesOverlay(ctx: ExtensionContext, deps: OverlayDeps): Pro
 	try {
 		const chosen = await ctx.ui.custom<{ root: string; file: ChangedFile } | null>(
 			(tui, theme, _keybindings, done) => {
+				const close = withOverlayRepaint(tui, done);
 				host = tui;
 				view = new WorktreeChangesView(worktrees(), {
 					theme,
 					rows: () => Math.max(OVERLAY_MIN_ROWS, Math.floor(tui.terminal.rows * OVERLAY_HEIGHT_RATIO)),
 					loadDiff: (root, file) => Promise.resolve(deps.loadDiff(root, file)),
-					onOpen: (root, file) => done({ root, file }),
+					onOpen: (root, file) => close({ root, file }),
 					onRefresh: () => void refresh(),
-					onClose: () => done(null),
+					onClose: () => close(null),
 					requestRender: () => tui.requestRender(),
 				});
 				return view;
@@ -668,7 +670,7 @@ async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext, env: 
 		return;
 	}
 	const result = await ctx.ui.custom<CommandPaletteResult>(
-		(tui, theme, _keybindings, done) => new CommandPalette(groups, done, theme, () => Math.max(0, tui.terminal.rows)),
+		(tui, theme, _keybindings, done) => new CommandPalette(groups, withOverlayRepaint(tui, done), theme, () => Math.max(0, tui.terminal.rows)),
 		{ overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "85%" } },
 	);
 	if (result?.type === "run") pi.sendUserMessage(`/${result.name}`, { expandPromptTemplates: true });
@@ -861,7 +863,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					active: () => (ctx.model ? { provider: ctx.model.provider } : undefined),
 					registry: () => usageSources,
 					onRefresh: () => refreshUsage(ctx, true),
-					onClose: () => done(null),
+					onClose: () => withOverlayRepaint(tui, done)(null),
 					requestRender: () => tui.requestRender(),
 				}),
 			{ overlay: true, overlayOptions: { width: "70%", minWidth: 60, anchor: "center" } },

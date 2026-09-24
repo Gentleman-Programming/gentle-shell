@@ -63,7 +63,7 @@ Out:
 - [x] T5 Port the three test files onto the upstream test base.
 - [x] T6 Move the usage documentation to `docs/gentle-shell.md`.
 - [x] T7 Focused tests + `pnpm run typecheck` green on the merged tree.
-- [ ] T8 Independent verification of the merged result.
+- [x] T8 Independent verification of the merged result.
 
 ## What the merge changed, and why
 
@@ -109,13 +109,58 @@ re-implementation of the same behavior on the new structure, not a text merge.
 - Dry-run and real merge: 17 conflict hunks across all 7 files.
 - Focused: `tests/shell-usage.test.ts` + `tests/shell-bar.test.ts` — 73/73 pass.
 - Focused: `tests/gentle-shell.test.ts` — 108/108 pass.
-- Full unit stage — 3442 tests, 3394 pass, 47 skipped, **1 fail**
-  (`tests/review-host-relay-routing.test.ts:282`). Reproduced identically on a
-  pristine `origin/main` worktree: **pre-existing, base-only, unrelated to this
-  merge**.
+- Focused after verification: the three files together — **181/181 pass, 0 fail**.
+- Full unit stage: **3442 tests, 3404 pass, 38 skipped, 0 fail**.
+  The first run of that stage reported 1 fail (`tests/review-host-relay-routing.test.ts:282`,
+  "a missing review-refuter routing model is refused typed") and 47 skipped. That run
+  predated `node scripts/install-gentle-ai.mjs`, so the package-local Gentle AI v3.7.0
+  binary was absent and the test's native path degraded instead of refusing typed. The
+  same failure reproduced on a pristine `origin/main` worktree under those identical
+  conditions, which is why it was first recorded as base-only. Once the binary existed,
+  the failure disappeared and ~9 previously skipped tests ran and passed. The stage is
+  therefore **green on the merged tree**, and the earlier single failure was an
+  environment condition, not a merge defect.
 - `pnpm run check:provider-contract` — pass.
-- `pnpm run test:harness` — pass (needed the package-local Gentle AI v3.7.0
-  binary, absent in this clone until `node scripts/install-gentle-ai.mjs` ran).
+- `pnpm run test:harness` — pass (needs the same package-local binary).
 - `node scripts/check-types.mjs` — no regressions; 195 recorded diagnostics
   against a 200 baseline (4 file/code pairs improved; baseline left untouched).
+
+## Independent verification (gentle-ai-verify, read-only)
+
+| Claim | Verdict |
+| --- | --- |
+| No Git conflict markers anywhere in the tree | confirmed |
+| No upstream loss; README.md, `lib/shell-bar.ts`, `tests/shell-bar.test.ts` byte-identical to `origin/main`; no file deletions | confirmed |
+| Every hunk in `lib/shell-usage.ts` / `extensions/gentle-shell.ts` / `docs/gentle-shell.md` is an OpenCode Go addition; all 8 removed lines are in-place rewrites | confirmed |
+| `fetchNanUsage` and the NaN refresh rung survive intact | confirmed |
+| Focused behavior: 181/181 pass, OpenCode Go reaches the bar, Codex/Claude/NaN still covered | confirmed |
+| Type gate: 195 diagnostics, no regressions | confirmed |
+| Full stage: 0 failures | confirmed (the task file's earlier "1 pre-existing failure" record was refuted in the favorable direction — see the evidence note above) |
+
+No silent upstream behavior change was found in the reviewed delta, and the worktree
+stayed clean through every verification command.
+
+## Native review record
+
+After the merge commit, the RDD preflight opened ordinary review lineage
+`review-d76a21152ef02d15` over this candidate (high tier, 6 changed files, 278 authored
+lines, correction budget 139). Four lenses ran through the Pi host relay
+(`review-risk`, `review-resilience`, `review-readability`, `review-reliability`;
+4/4 prepared, 4/4 submitted) and the lineage ended **approved** with no corrections
+opened. The five recorded findings are advisory only:
+
+- `R2-opencode-go-url-placement` (SUGGESTION) — `extensions/gentle-shell.ts:764`
+- `R2-provider-dispatch-duplication` (WARNING) — `extensions/gentle-shell.ts:820-821`
+- `R2-rolling-window-magic-number` (SUGGESTION) — `lib/shell-usage.ts:319`
+- `R3-001` (SUGGESTION) — `tests/shell-usage.test.ts:582-597`
+- `R4-opencode-go-fetch-no-timeout` (WARNING) — `extensions/gentle-shell.ts:769-773`
+
+The approval was acknowledged and its authority burned. Every finding is separate
+later work; none reopens this review or blocks this candidate.
+
+## Known stale documentation (pre-existing on `origin/main`, not from this merge)
+
+`docs/gentle-shell.md` contradicts itself: line 34 says the Status card no longer carries
+usage, while line 136 still says "The sidebar's Usage group prints those same rows". That
+drift exists verbatim in `origin/main` and is a candidate follow-up.
 

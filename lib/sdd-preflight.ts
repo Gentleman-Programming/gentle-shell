@@ -884,23 +884,39 @@ export function sddPreflightSessionKey(ctx: ExtensionContext): string {
  * earlier naming scheme this used to be written against.
  */
 export function isEngramSaveToolName(name: string): boolean {
-	return /^(?:.*[._])?mem_save$/.test(name);
+	return engramToolPrefix(name) !== null;
 }
+
+/** The adapter prefix in front of `mem_save` in `name` (empty in `none` mode), or null. */
+function engramToolPrefix(name: string): string | null {
+	const match = /^(.*[._])?mem_save$/.exec(name);
+	return match ? (match[1] ?? "") : null;
+}
+
+/** Engram's own tools that the SDD artifact store writes and reads back with. */
+const ENGRAM_SDD_TOOLS = ["mem_save", "mem_search", "mem_get_observation"] as const;
 
 export function hasWritableEngramTool(pi: ExtensionAPI): boolean {
 	try {
 		const getActiveTools = (pi as unknown as { getActiveTools?: () => unknown[] })
 			.getActiveTools;
 		if (typeof getActiveTools !== "function") return false;
-		const tools = getActiveTools.call(pi);
-		return tools.some((tool) => {
-			const name =
+		const names = new Set<string>(
+			getActiveTools.call(pi).map((tool) =>
 				typeof tool === "string"
 					? tool
 					: isRecord(tool) && typeof tool.name === "string"
 						? tool.name
-						: "";
-			return isEngramSaveToolName(name);
+						: "",
+			),
+		);
+		// The prefix is the MCP server's configured name, so any server can
+		// register a `*_mem_save`. Engram is the one whose save tool comes with
+		// the tools the SDD store reads its artifacts back with, under the same
+		// prefix.
+		return [...names].some((name) => {
+			const prefix = engramToolPrefix(name);
+			return prefix !== null && ENGRAM_SDD_TOOLS.every((tool) => names.has(`${prefix}${tool}`));
 		});
 	} catch {
 		return false;

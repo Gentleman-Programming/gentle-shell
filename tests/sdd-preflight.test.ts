@@ -71,7 +71,7 @@ test("disk preferences are suggestions and resolved choices are reused only in s
 	writeSddPreflightToDisk(cwd, SAMPLE_PREFS);
 	const ctx = preflightContext(cwd, true, calls, { "Confirm SDD session preflight": "Confirm" });
 	assert.equal(getSddPreflightPreferences(ctx), undefined);
-	const callbacks = { pi: { getActiveTools: () => ["mem_save"] } as never, installAssets: () => ({ agents: 0, chains: 0, support: 0, skipped: 0 }) };
+	const callbacks = { pi: { getActiveTools: () => ["mem_save", "mem_search", "mem_get_observation"] } as never, installAssets: () => ({ agents: 0, chains: 0, support: 0, skipped: 0 }) };
 	await ensureSddPreflight(ctx, callbacks);
 	await ensureSddPreflight(ctx, callbacks);
 	assert.equal(calls.length, 1);
@@ -564,13 +564,33 @@ test("a name that merely contains mem_save is not the engram save tool (#1044)",
 	}
 });
 
+test("another server's mem_save is not taken for Engram (#1044)", () => {
+	// The adapter prefix is the server's configured name, so a name alone
+	// cannot say which server registered it. Engram is recognised by its save
+	// tool together with the ones the SDD store reads artifacts back with.
+	const withTools = (tools: string[]) =>
+		hasWritableEngramTool({ getActiveTools: () => tools } as never);
+
+	assert.equal(withTools(["read", "other_mem_save"]), false);
+	assert.equal(withTools(["other_mem_save", "engram_mem_search", "engram_mem_get_observation"]), false);
+	assert.equal(withTools(["engram_mem_save", "engram_mem_search"]), false);
+	// Under a server name of the user's choosing, the whole set is there.
+	assert.equal(withTools(["memory_mem_save", "memory_mem_search", "memory_mem_get_observation"]), true);
+});
+
 test("hasWritableEngramTool reads the active registry and tolerates its absence (#1044)", () => {
 	const withTools = (tools: unknown[]) =>
 		hasWritableEngramTool({ getActiveTools: () => tools } as never);
 
+	const engram = (prefix: string) =>
+		["mem_save", "mem_search", "mem_get_observation"].map((tool) => `${prefix}${tool}`);
+
 	// Both shapes the registry hands back: bare strings and `{ name }` records.
-	assert.equal(withTools(["read", "engram_mem_save"]), true);
-	assert.equal(withTools([{ name: "engram_mem_save" }]), true);
+	assert.equal(withTools(["read", ...engram("engram_")]), true);
+	assert.equal(withTools(engram("engram_").map((name) => ({ name }))), true);
+	for (const prefix of ["", "engram_", "mcp__engram_", "engram."]) {
+		assert.equal(withTools(engram(prefix)), true, JSON.stringify(prefix));
+	}
 	assert.equal(withTools(["read", "mem_search"]), false);
 
 	// A host without the accessor, and one whose accessor throws, both answer

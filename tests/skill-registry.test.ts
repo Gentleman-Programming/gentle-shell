@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { execSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -315,4 +316,43 @@ test("non-forced regeneration invalidates cache when skill bytes change but path
 	const secondRegistry = readFileSync(registryPath, "utf8");
 	assert.match(secondRegistry, /Variant two\. Body B\./);
 	assert.doesNotMatch(secondRegistry, /Variant one\. Body A\./);
+});
+
+test("ensureAtlIgnored creates .atl/.gitignore with * and leaves root .gitignore untouched (#1387)", async (t) => {
+	const cwd = mkdtempSync(join(tmpdir(), `gentle-pi-git-atl-${Date.now()}-`));
+	t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+	// Initialize real git repo with a commit
+	execSync("git init", { cwd, stdio: "ignore" });
+	writeFileSync(join(cwd, "README.md"), "# Test\n");
+	execSync("git add README.md && git commit -m \"initial\"", { cwd, stdio: "ignore" });
+
+	const rootGitignore = join(cwd, ".gitignore");
+	const atlGitignore = join(cwd, ".atl", ".gitignore");
+
+	// Run ensureAtlIgnored
+	await __testing.ensureAtlIgnored(cwd);
+
+	// Root .gitignore must NOT be created
+	assert.equal(existsSync(rootGitignore), false, "root .gitignore must not be created");
+
+	// .atl/.gitignore must exist with * rule
+	assert.equal(existsSync(atlGitignore), true, ".atl/.gitignore must exist");
+	assert.equal(readFileSync(atlGitignore, "utf8").trim(), "*");
+
+	// Write generated registry file inside .atl
+	writeFileSync(join(cwd, ".atl", "skill-registry.md"), "## Skills\n");
+
+	// Verify that git status reports no untracked files
+	const status = execSync("git status --porcelain", { cwd, encoding: "utf8" });
+	assert.equal(status.trim(), "", ".atl/ files must not appear in git status");
+
+	// Idempotency: calling ensureAtlIgnored again does not duplicate or alter the rule
+	await __testing.ensureAtlIgnored(cwd);
+	assert.equal(readFileSync(atlGitignore, "utf8").trim(), "*");
+
+	// Existing root .gitignore is preserved unmodified
+	writeFileSync(rootGitignore, "node_modules/\n");
+	await __testing.ensureAtlIgnored(cwd);
+	assert.equal(readFileSync(rootGitignore, "utf8"), "node_modules/\n", "existing root .gitignore must remain untouched");
 });

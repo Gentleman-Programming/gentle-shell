@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { __testing } from "../extensions/gentle-ai.ts";
 
-const { classifyGuardedCommand } = __testing;
+const { classifyGuardedCommand, evaluateGuardedCommand, guardedCommandPreview, guardedCommandTitle } = __testing;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -127,6 +127,121 @@ test("classifyGuardedCommand: git push plain allowed when autonomousMode=true an
 		guardedCommands: { gitPush: "allow" },
 	});
 	assert.equal(result, "allow");
+});
+
+test("classifyGuardedCommand: configured push allow is remote-agnostic and unchanged", () => {
+	const config = { autonomousMode: true, guardedCommands: { gitPush: "allow" as const } };
+	for (const command of [
+		"git push origin feature/test",
+		"git push upstream feature/test",
+		"git push fork feature/test",
+		"git push",
+		"git push feature/test && git status",
+		"echo done || git push origin feature/test",
+	]) {
+		assert.equal(classifyGuardedCommand(command, config), "allow", command);
+	}
+	assert.equal(
+		classifyGuardedCommand("git push origin feature/test", { autonomousMode: true, guardedCommands: { gitPush: "block" } }),
+		"block",
+	);
+	for (const command of [
+		"git push -f origin feature/test",
+		"git push --force origin main",
+		"git push --force-with-lease origin feature/test",
+	]) {
+		assert.equal(classifyGuardedCommand(command, config), "block", command);
+	}
+});
+
+// ---------------------------------------------------------------------------
+// Guarded command preview — presentation-only centering
+// ---------------------------------------------------------------------------
+
+test("guardedCommandPreview: long late matched action stays visible in preview", () => {
+	const prefix = "noise ".repeat(80);
+	const command = `${prefix}git push origin feature/test`;
+	// Contract: the caller owns the trigger index. confirmCommand hands over
+	// evaluation.triggerIndex, so the preview always centers on the matched
+	// action supplied by the evaluator.
+	const triggerIndex = command.indexOf("git push");
+	const preview = guardedCommandPreview(command, triggerIndex);
+	assert.match(preview, /git push origin feature\/test/);
+	assert.ok(preview.startsWith("…"), "preview elides leading context near a late match");
+});
+
+test("guardedCommandPreview: late non-push action visible, elided, and width-bounded", () => {
+	const prefix = "noise ".repeat(80);
+	const command = `${prefix}npm publish --tag beta`;
+	const triggerIndex = command.indexOf("npm publish");
+	const preview = guardedCommandPreview(command, triggerIndex);
+	assert.match(preview, /npm publish --tag beta/);
+	assert.ok(preview.startsWith("…"), "preview elides leading context near a late match");
+	// Bounded visible width: 1 leading ellipsis + up to 179 content chars (budget 180).
+	assert.ok(preview.length <= 180, `preview exceeds bounded width: ${preview.length}`);
+});
+
+// ---------------------------------------------------------------------------
+// Guarded command title — presentation-only, action-specific
+// ---------------------------------------------------------------------------
+
+test("guardedCommandTitle: exact action-specific titles per guarded key", () => {
+	assert.equal(guardedCommandTitle("gitPush"), "Allow guarded git push?");
+	assert.equal(guardedCommandTitle("gitRebase"), "Allow guarded git rebase?");
+	assert.equal(
+		guardedCommandTitle("gitBranchDeleteForce"),
+		"Allow guarded forced git branch deletion?",
+	);
+	assert.equal(guardedCommandTitle("npmPublish"), "Allow guarded npm publish?");
+	assert.equal(guardedCommandTitle("piRemove"), "Allow guarded pi remove?");
+});
+
+test("guardedCommandTitle: unkeyed guarded command falls back to generic title", () => {
+	assert.equal(guardedCommandTitle(undefined), "Allow guarded command?");
+});
+
+test("evaluateGuardedCommand: collects guarded matches in command order and applies full-command precedence", () => {
+	const command = "npm publish && git push origin main && git rebase main";
+	const evaluation = evaluateGuardedCommand(command, {
+		autonomousMode: true,
+		guardedCommands: { gitPush: "allow", gitRebase: "confirm", npmPublish: "block" },
+	});
+	assert.deepEqual(evaluation.matches.map((match) => [match.key, match.action]), [
+		["npmPublish", "block"],
+		["gitPush", "allow"],
+		["gitRebase", "confirm"],
+	]);
+	assert.deepEqual(evaluation.matches.map((match) => command.slice(match.triggerIndex).split(/\s/, 1)[0]), ["publish", "push", "rebase"]);
+	assert.equal(evaluation.action, "block");
+
+	assert.equal(evaluateGuardedCommand("git rebase main && git push --force origin main", {
+		autonomousMode: true,
+		guardedCommands: { gitRebase: "allow", gitPush: "allow" },
+	}).action, "block", "a later hard deny overrides an earlier allowed action");
+});
+
+test("evaluateGuardedCommand: git -C stores the push token offset for bounded previews", () => {
+	const command = `git -C /${"very-long-path/".repeat(30)} push origin main`;
+	const evaluation = evaluateGuardedCommand(command, { autonomousMode: false, guardedCommands: {} });
+	assert.equal(command.slice(evaluation.triggerIndex, evaluation.triggerIndex + 4), "push");
+	assert.match(guardedCommandPreview(command, evaluation.triggerIndex), /push origin main/);
+});
+
+test("evaluateGuardedCommand: git -C path containing push still offsets the push action", () => {
+	const command = `git -C /${"push-path/".repeat(30)} push origin main`;
+	const evaluation = evaluateGuardedCommand(command, { autonomousMode: false, guardedCommands: {} });
+	assert.equal(evaluation.triggerIndex, command.lastIndexOf("push"));
+	assert.match(guardedCommandPreview(command, evaluation.triggerIndex), /push origin main/);
+});
+
+test("evaluateGuardedCommand: repeated forced branch deletions remain separate matches", () => {
+	const command = "git branch --delete --force old && git branch --delete --force older";
+	const evaluation = evaluateGuardedCommand(command, { autonomousMode: false, guardedCommands: {} });
+	assert.deepEqual(evaluation.matches.map((match) => match.key), ["gitBranchDeleteForce", "gitBranchDeleteForce"]);
+	assert.equal(
+		guardedCommandTitle(evaluation.key, evaluation.matches),
+		"Allow guarded actions: forced git branch deletion; forced git branch deletion?",
+	);
 });
 
 test("classifyGuardedCommand: git push plain still confirm when autonomousMode=false even with gitPush=allow in config", () => {

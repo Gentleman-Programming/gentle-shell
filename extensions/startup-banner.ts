@@ -2,12 +2,11 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import * as os from "node:os";
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
+import { execFile } from "node:child_process";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
 
-const execAsync = promisify(exec);
 const PI_AGENT_DIR = join(os.homedir(), ".pi", "agent");
 const PI_NPM_DIR = join(PI_AGENT_DIR, "npm", "node_modules");
 
@@ -31,14 +30,14 @@ const BANNER_PALETTES: Record<BannerColor, { rose: [number, number, number]; lab
 };
 
 const TEXT_LOGO = [
-  "                  ▄▄▄▀▀▀▀▀██                                ▄▄▀▄▄           ▄▄█▀▀▀██   ▀▀█▄    ▄▄▄",
-  "              ▄▄█▀▀▒▒▒▒▒▄▄█▀▒                   ▄██     ▄▄█▀█▄█▀▒▒      ▄█▀▀ ▒▒▒▄█▀▀▒   ▄██▒ ▄█▀▒▒▒",
-  "          ▄▄██▀▒▒▒▒▒▄▄▄▀▀▒▒▒▒        ▄▄▄  ▀▀▀▀██▀▀▀▀▀███▀█▄▀▀▒▒▒▒      ██▒▒▒▒▄▄█▀▒▒▒▒▄▄█▀▀▄██▀▒▒▒",
-  "        ▄██▀▒▒▒▒     ▒▒▄▄█ ▄▄▄▀██ ▄▄▄▀▀▀▄  ▄██▀▒▒▒▒▄██▀▀▀▒▄▄███         ▒▒ ▄███▄▄▄█▀▀▀▒▒▄██▀▒▒▒",
-  "       ██▀▒▒▒     ▄▄▄███▀▄██▀▀▀▄▄██▀▀▄█▀▄▄██▀▒▒▒▄▄██▀▒▒▄██▀▀▀▄▄▀▀▀▀▀▀▀▀▀ ▄█▀▀▒▒▒▒▒▒▒▒▒▄██▒▒▒▒",
-  "       ▀█▄▄▄▄▄▀▀▀█▄▄███▄▒▀▀▀▀▀▀▒▀▀▒▒▀▀▀▀▒██▄▄▀▀▀ ▀█▄▀▀▀ ▀▀▀▀▀▒▒▒▒▒▒▒▒▒▒▄██▀▒▒▒       ███▒▒",
-  "        ▒▄▄▄█▀▀▀█▄█▀▀▒▒▒▒ ▒▒▒▒▒▒ ▒▒  ▒▒▒▒ ▒▒▒▒▒▒▒ ▒▒▒▒▒▒ ▒▒▒▒▒        ▀▀▀▒▒▒          ▒▒▒",
-  "     ▄▄▀▀ ▒▒▒▒▄██▀▒▒▒▒                                                 ▒▒▒",
+  "                  ▄▄▄▀▀▀▀▀██                                ▄▄▀▄▄          ▄▄█▀▀▀██   ▄▄▀██               ▄▄▀▄▄   ▄▄▀▄▄",
+  "              ▄▄█▀▀▒▒▒▒▒▄▄█▀▒                   ▄██     ▄▄█▀█▄█▀▒▒       ▄█▀▀▒▒▒▄█▀▒ ▄██▄█▀▒           ▄▄█▀█▄█▀▄▄█▀█▄█▀▒",
+  "          ▄▄██▀▒▒▒▒▒▄▄▄▀▀▒▒▒▒        ▄▄▄  ▀▀▀▀██▀▀▀▀▀███▀█▄▀▀▒▒▒▒      ██▄▄▒▒▒▒▒▒▒ ▄██▀▀▒▒▒          ▄██▀█▄▀▀▄██▀█▄▀▀▒▒▒",
+  "        ▄██▀▒▒▒▒     ▒▒▄▄█ ▄▄▄▀██ ▄▄▄▀▀▀▄  ▄██▀▒▒▒▒▄██▀▀▀▒▄▄███         ▀▀▀██▄▄  ▄██▀▒▄▄▀██   ▄▄▀▀██ ██▀▀▀▒▒▒██▀▀▀▒▒▒",
+  "       ██▀▒▒▒     ▄▄▄███▀▄██▀▀▀▄▄██▀▀▄█▀▄▄██▀▒▒▒▄▄██▀▒▒▄██▀▀▀▄▄      ▄▄     ▀██▄▄██▀▄██▀██▒  ▄██▄▄▀▒ █▀▒▒▒   █▀▒▒▒",
+  "       ▀█▄▄▄▄▄▀▀▀█▄▄███▄▒▀▀▀▀▀▀▒▀▀▒▒▀▀▀▀▒██▄▄▀▀▀ ▀█▄▀▀▀ ▀▀▀▀▀▒▒      ▀█▄▄▄▄█▀▀▒▒▀▀▒▒▀▀▒ ██▄▄▀▀█▄▄▄▄▀▀█▄▄▀▀▀▄▄▀█▄▄▀▀▀",
+  "        ▒▄▄▄█▀▀▀█▄█▀▀▒▒▒▒ ▒▒▒▒▒▒ ▒▒  ▒▒▒▒ ▒▒▒▒▒▒▒ ▒▒▒▒▒▒ ▒▒▒▒▒        ▒▀▀▀▀▒▒▒▒  ▒▒▒▒▒▒ ▒▒▒▒▒ ▒▒▒▒▒▒  ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒",
+  "     ▄▄▀▀ ▒▒▒▒▄██▀▒▒▒▒",
   "   ▄█ ▒▒▒▄▄██▀▀▒▒▒▒",
   "    ▀▀▀▀▀▀▒▒▒▒▒▒",
   "     ▒▒▒▒▒▒",
@@ -185,7 +184,8 @@ function buildLetterSpans(bounds: Span, weights: number[]): Span[] {
 }
 
 const LOGO_BOUNDS = computeLogoBounds(TEXT_LOGO);
-const LETTER_WEIGHTS = [14, 10, 11, 10, 9, 11, 6, 13, 12]; // G E N T L E - P I
+// Variable-width script regions, including the gap before Shell and shadows.
+const LETTER_WEIGHTS = [22, 9, 8, 9, 8, 9, 10, 13, 8, 8, 13]; // G E N T L E S H E L L
 const LETTER_SPANS = buildLetterSpans(LOGO_BOUNDS, LETTER_WEIGHTS);
 
 function letterIndexAtX(x: number): number {
@@ -491,10 +491,10 @@ function currentIntroMode(): IntroMode {
   return pickIntroMode(rows, cols);
 }
 
-async function countSddAgents(): Promise<number> {
+async function countBackgroundAgents(): Promise<number> {
   try {
     const entries = await readdir(join(PI_AGENT_DIR, "agents"), { withFileTypes: true });
-    return entries.filter((entry) => entry.isFile() && /^sdd-.*\.md$/.test(entry.name)).length;
+    return entries.filter((entry) => entry.isFile() && entry.name.endsWith(".md") && !/^sdd-/.test(entry.name)).length;
   } catch {
     return 0;
   }
@@ -525,6 +525,23 @@ async function countPackageExtensions(packages: unknown[]): Promise<number> {
     }
   }
   return count;
+}
+
+export function readGitBranch(cwd: string, run: typeof execFile = execFile): Promise<string> {
+  return new Promise((resolve) => {
+    run("git", ["-C", cwd, "branch", "--show-current"], {
+      encoding: "utf8",
+      shell: false,
+      windowsHide: true,
+    }, (error, stdout) => {
+      if (error) {
+        resolve("Not a git repo");
+        return;
+      }
+      const branch = String(stdout).trim();
+      resolve(branch ? `On branch ${branch}` : "Detached HEAD");
+    });
+  });
 }
 
 export default function (pi: ExtensionAPI) {
@@ -622,7 +639,7 @@ export default function (pi: ExtensionAPI) {
     let mcpServersCount = 0;
     let extensionsCount = 0;
     let packagesCount = 0;
-    let sddAgentsCount = 0;
+    let backgroundAgentsCount = 0;
 
     const allCommands = pi.getCommands();
     const skills = allCommands.filter((c) => c.source === "skill");
@@ -632,12 +649,8 @@ export default function (pi: ExtensionAPI) {
     );
 
     setTimeout(() => {
-      execAsync(`git -C "${ctx.cwd}" branch --show-current`)
-        .then(({ stdout }) => {
-          const b = stdout.trim();
-          gitBranch = b ? `On branch ${b}` : "Detached HEAD";
-        })
-        .catch(() => {})
+      readGitBranch(ctx.cwd)
+        .then((branch) => { gitBranch = branch; })
         .finally(() => refreshStats());
     }, 100);
 
@@ -660,7 +673,7 @@ export default function (pi: ExtensionAPI) {
     setTimeout(() => {
       (async () => {
         try {
-          sddAgentsCount = await countSddAgents();
+          backgroundAgentsCount = await countBackgroundAgents();
           const raw = await readFile(
             join(PI_AGENT_DIR, "settings.json"),
             "utf8",
@@ -679,6 +692,7 @@ export default function (pi: ExtensionAPI) {
 
     let tick = 0;
     let refreshStats = () => {};
+    let headerCache: { key: string; out: string[] } | null = null;
     const state = {
       timer: null as NodeJS.Timeout | null,
       mode: currentIntroMode() as IntroMode,
@@ -706,18 +720,27 @@ export default function (pi: ExtensionAPI) {
     setTimeout(() => {
       ctx.ui.setHeader((tui, theme) => {
         if (state.timer) clearInterval(state.timer);
+        headerCache = null;
 
         refreshStats = () => tui.requestRender();
+        // Capture once: a command changes the live prompt, not this intro.
+        const animationPolicy = resolveAnimationPolicy().policy;
         const animStart = Date.now();
-        state.timer = setInterval(() => {
-          tick++;
-          const finished = allStrokesReady() && tick > WRITING_END_TICK + 22;
-          if (finished || Date.now() - animStart > 5000) {
-            clearInterval(state.timer!);
-            state.timer = null;
-          }
-          try { tui.requestRender(); } catch { cleanup(); }
-        }, 25);
+        if (animationPolicy === "potato") {
+          tick = Number.MAX_SAFE_INTEGER;
+          state.timer = null;
+        } else {
+          const performance = animationPolicy === "performance";
+          state.timer = setInterval(() => {
+            tick += performance ? 10 : 1;
+            const finished = allStrokesReady() && tick > WRITING_END_TICK + 22;
+            if (finished || Date.now() - animStart > 5000) {
+              clearInterval(state.timer!);
+              state.timer = null;
+            }
+            try { tui.requestRender(); } catch { cleanup(); }
+          }, performance ? 250 : 25);
+        }
 
         // Grace period: pi-tui emite resizes transitorios mientras compone su layout inicial.
         const bootStart = Date.now();
@@ -741,8 +764,11 @@ export default function (pi: ExtensionAPI) {
         process.stdout.on("resize", resizeHandler);
 
         return {
+          /** Renders the persistent header grid; memoized per width, tick, mode and stats so static passes reuse the built lines. */
           render(width: number): string[] {
             if (state.mode === "skip") return [];
+            const headerKey = `${width}|${tick}|${state.mode}|${gitBranch}|${mcpServersCount}|${extensionsCount}|${packagesCount}|${backgroundAgentsCount}|${ctx.cwd}|${skills.length}|${customTools.length}`;
+            if (headerCache?.key === headerKey) return headerCache.out;
 
             const flashStartTick = 10;
             const roseOpacity = Math.min(1, tick / 10);
@@ -850,7 +876,7 @@ export default function (pi: ExtensionAPI) {
                 ["GIT:", gitBranch],
                 ["PATH:", ctx.cwd],
                 ["MCP:", `${mcpServersCount} server(s)`],
-                ["AGENTS:", `${sddAgentsCount} phases`],
+                ["AGENTS:", `${backgroundAgentsCount} agents`],
                 ["PLUGINS:", `${packagesCount} package(s)`],
                 ["SKILLS:", `${skills.length} loaded`],
                 ["EXTENSIONS:", `${extensionsCount} active`],
@@ -883,7 +909,7 @@ export default function (pi: ExtensionAPI) {
                 );
                 addWideRow(
                   "AGENTS:",
-                  `${sddAgentsCount} phases`,
+                  `${backgroundAgentsCount} agents`,
                   "EXTENSIONS:",
                   `${extensionsCount} active`,
                 );
@@ -899,7 +925,7 @@ export default function (pi: ExtensionAPI) {
                 addNarrowRow("PATH:", ctx.cwd);
                 addNarrowRow("MCP:", `${mcpServersCount} server(s)`);
                 addNarrowRow("PLUGINS:", `${packagesCount} package(s)`);
-                addNarrowRow("AGENTS:", `${sddAgentsCount} phases`);
+                addNarrowRow("AGENTS:", `${backgroundAgentsCount} agents`);
                 addNarrowRow("SKILLS:", `${skills.length} loaded`);
                 addNarrowRow("EXTENSIONS:", `${extensionsCount} active`);
                 addNarrowRow("VER:", `v${VERSION}`);
@@ -1038,9 +1064,11 @@ export default function (pi: ExtensionAPI) {
               out.push(truncateToWidth(line, Math.max(1, width), ""));
             }
 
+            headerCache = { key: headerKey, out };
             return out;
           },
-          invalidate() {
+          invalidate() { headerCache = null; },
+          dispose() {
             cleanup();
           },
         };

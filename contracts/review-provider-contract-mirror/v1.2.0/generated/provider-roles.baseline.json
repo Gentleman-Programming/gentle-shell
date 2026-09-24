@@ -10,7 +10,7 @@
         "gentle-ai.provider-transport/v1"
       ],
       "schema_path": "schemas/lens.schema.json",
-      "schema_sha256": "ffef79cfb763333282285ff5c795a32b5a88d840b4a8d125ce012188b04cffe1",
+      "schema_sha256": "9b8a2354a570888486015434501b66b51441a3baf5bf858635e4fff56b2e8298",
       "vector_path": "vectors/lens.json",
       "vector_sha256": "7ef0b08404645eeb5dba92aba5f8e4780667b6ec775f43ed8547ff9f2a7148c8"
     },
@@ -34,7 +34,7 @@
         "gentle-ai.provider-transport/v1"
       ],
       "schema_path": "schemas/targeted-validator.schema.json",
-      "schema_sha256": "6a8d7b331ec6f000366017e39e0476511c3b032649c42abfe865c1e9c956510e",
+      "schema_sha256": "40e397195bdfbc6782fc3090f20c5be082e4d14d2855314f99ecb8506133eddc",
       "vector_path": "vectors/targeted-validator.json",
       "vector_sha256": "7b5a5165e3a913863fb98d2ba5387811860c21333b5c37e6ed3b4e0d121cf2fa"
     }

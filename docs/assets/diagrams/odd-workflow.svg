@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="760" viewBox="0 0 960 760" role="img" aria-labelledby="odd-title odd-desc">
+  <title id="odd-title">Organic Driven Development workflow</title>
+  <desc id="odd-desc">One feature moves through the seven ODD protocol steps. Authorize, explore, resolve uncertainty, then classify: small understood work stays light with no durable artifacts, while substantial work is tracked in one feature document before the first write. Both paths implement task by task and close with verified proof. The same feature document carries progress across sessions so work resumes instead of restarting.</desc>
+  <defs>
+    <linearGradient id="odd-bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#100c15"/><stop offset="1" stop-color="#21101f"/></linearGradient>
+    <marker id="odd-arrow" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" viewBox="0 0 10 10" refX="10" refY="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#f095c8"/></marker>
+  </defs>
+  <rect width="960" height="760" rx="20" fill="url(#odd-bg)"/>
+  <text x="40" y="65" fill="#fff7f1" font-family="Arial, Helvetica, sans-serif" font-size="44" font-weight="700">Explore, track, implement.</text>
+  <text x="40" y="120" fill="#d7a0b8" font-family="Arial, Helvetica, sans-serif" font-size="44" font-weight="700">Resume without ceremony.</text>
+  <g fill="#1c1420" stroke="#d7a0b8" stroke-width="2">
+    <rect x="40" y="170" width="196" height="120" rx="16"/>
+    <rect x="268" y="170" width="196" height="120" rx="16"/>
+    <rect x="496" y="170" width="196" height="120" rx="16"/>
+    <rect x="724" y="170" width="196" height="120" rx="16"/>
+    <rect x="724" y="330" width="196" height="120" rx="16" fill="#2a1426" stroke="#f095c8" stroke-width="3"/>
+    <rect x="610" y="490" width="196" height="120" rx="16"/>
+    <rect x="268" y="490" width="196" height="120" rx="16"/>
+  </g>
+  <rect x="496" y="330" width="196" height="120" rx="16" fill="#18121b" stroke="#d7a0b8" stroke-width="2" stroke-dasharray="6 6"/>
+  <g fill="none" stroke="#f095c8" stroke-width="3" stroke-linecap="round" marker-end="url(#odd-arrow)">
+    <path d="M236 230H268"/>
+    <path d="M464 230H496"/>
+    <path d="M692 230H724"/>
+    <path d="M822 290V330"/>
+    <path d="M822 290V310H594V330"/>
+    <path d="M708 470V490"/>
+    <path d="M610 550H464"/>
+  </g>
+  <g fill="none" stroke="#f095c8" stroke-width="3" stroke-linecap="round">
+    <path d="M594 450V470H708"/>
+    <path d="M822 450V470H708"/>
+  </g>
+  <g font-family="Arial, Helvetica, sans-serif" font-size="20" fill="#d7a0b8" opacity="0.85">
+    <text x="56" y="198">01</text>
+    <text x="284" y="198">02</text>
+    <text x="512" y="198">03</text>
+    <text x="740" y="198">04</text>
+    <text x="740" y="358">05</text>
+    <text x="626" y="518">06</text>
+    <text x="284" y="518">07</text>
+  </g>
+  <g font-family="Arial, Helvetica, sans-serif" text-anchor="middle">
+    <g fill="#fff7f1" font-size="30" font-weight="700">
+      <text x="138" y="222">Authorize</text>
+      <text x="366" y="222">Explore</text>
+      <text x="594" y="222">Resolve</text>
+      <text x="822" y="222">Classify</text>
+      <text x="822" y="382">Track</text>
+      <text x="594" y="382">Stay light</text>
+      <text x="708" y="542">Implement</text>
+      <text x="366" y="542">Close</text>
+    </g>
+    <g fill="#d7a0b8" font-size="22">
+      <text x="138" y="262">read-only</text>
+      <text x="366" y="262">code and needs</text>
+      <text x="594" y="262">uncertainty</text>
+      <text x="822" y="262">substantial?</text>
+      <text x="822" y="422">one document</text>
+      <text x="594" y="422">small work</text>
+      <text x="708" y="582">task by task</text>
+      <text x="366" y="582">verified proof</text>
+    </g>
+  </g>
+  <g font-family="Arial, Helvetica, sans-serif" font-size="22" fill="#d7a0b8">
+    <text x="708" y="302" text-anchor="middle">small</text>
+    <text x="838" y="316" text-anchor="start">substantial</text>
+  </g>
+  <rect x="40" y="650" width="880" height="90" rx="16" fill="#18121b" stroke="#d7a0b8" stroke-width="2" stroke-dasharray="8 7"/>
+  <g font-family="Arial, Helvetica, sans-serif" text-anchor="middle">
+    <text x="480" y="686" fill="#fff7f1" font-size="34" font-weight="700">Resume where you stopped</text>
+    <text x="480" y="722" fill="#d7a0b8" font-size="26">One feature document, mirrored in Engram across sessions.</text>
+  </g>
+</svg>

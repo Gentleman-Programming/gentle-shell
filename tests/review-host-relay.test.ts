@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createNodeExecFileAdapter } from "../lib/native-review-cli.ts";
+import { INPROCESS_REVIEWER_FAILURE, type InProcessReviewerOutcome, type InProcessReviewerRequest, type InProcessReviewerDeps, runInProcessReviewer } from "../lib/inprocess-reviewer.ts";
 import {
 	REVIEW_HOST_RELAY_FAILURE,
-	REVIEW_HOST_RELAY_PI_ARGV,
 	REVIEW_HOST_RELAY_PI_TIMEOUT_ENV,
 	REVIEW_HOST_RELAY_PI_TIMEOUT_FLOOR_MS,
 	REVIEW_HOST_RELAY_PI_TIMEOUT_MAX_MS,
@@ -18,6 +18,8 @@ import {
 	resolveReviewHostRelayPiTimeoutMs,
 	resolveReviewHostRelaySubmission,
 	reviewHostRelaySlots,
+	reviewHostRelayUnachievableDetail,
+	reviewHostRelayUnachievableReason,
 	prepareReviewHostRelaySlot,
 	runReviewHostRelayReviewerGroup,
 	runReviewHostRelaySlot,
@@ -25,14 +27,26 @@ import {
 	type ReviewHostRelayPreparedResult,
 	type ReviewHostRelayRequest,
 } from "../lib/review-host-relay.ts";
+import * as reviewHostRelayModule from "../lib/review-host-relay.ts";
 import { GENTLE_PI_REVIEW_RELAY_CONTRACT, GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV } from "../lib/review-relay-contract.ts";
 import { decodeReviewNextTransitionV3, type ReviewCaptureSubmissionV1, type ReviewCollectInputV3 } from "../lib/review-integration-v2.ts";
 
+// gentle-pi#311 P2: the reviewer transport this file exercises no longer
+// spawns a pi child. `runReviewHostRelaySlot`/`prepareReviewHostRelaySlot`
+// take an injectable `runReviewer` (defaulting to the real
+// `runInProcessReviewer`), so every test below fakes that seam instead of a
+// fake `pi` executable on disk. `lib/inprocess-reviewer.ts`'s own tests own
+// the completion's internal behavior (model resolution, auth, thinking
+// mapping, text extraction); this file owns the relay's mapping of that
+// completion's outcome onto a typed `ReviewHostRelayError`, plus everything
+// unrelated to the reviewer transport (materialize, submission, admission,
+// slot detection) which stayed exactly as it was.
+
 // ---------------------------------------------------------------------------
-// Fake binaries. Following the repo's fake-executable idiom (shell/git
-// wrappers in related review tests), these are
-// shebang scripts written into a scratch directory; node scripts are used so
-// binary-unsafe bytes survive verbatim.
+// Fake gentle-ai binary. Following the repo's fake-executable idiom (shell/git
+// wrappers in related review tests), this is a shebang script written into a
+// scratch directory; a node script is used so binary-unsafe bytes survive
+// verbatim.
 // ---------------------------------------------------------------------------
 
 const FAKE_GENTLE_AI = `#!/usr/bin/env node
@@ -92,52 +106,10 @@ process.stderr.write("unexpected fake gentle-ai invocation\\n");
 process.exit(9);
 `;
 
-const FAKE_PI = `#!/usr/bin/env node
-const fs = require("node:fs");
-const path = require("node:path");
-const argv = process.argv.slice(2);
-if (process.env.RELAY_FAKE_PI_LOG) fs.appendFileSync(process.env.RELAY_FAKE_PI_LOG, JSON.stringify({ argv, cwd: process.cwd(), entries: fs.readdirSync(process.cwd()), contract: process.env.${GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV} ?? null }) + "\\n");
-const chunks = [];
-process.stdin.on("data", (chunk) => chunks.push(chunk));
-process.stdin.on("end", () => {
-	const stdin = Buffer.concat(chunks);
-	if (process.env.RELAY_FAKE_PI_STDIN_CAPTURE) fs.writeFileSync(process.env.RELAY_FAKE_PI_STDIN_CAPTURE, stdin);
-	const finish = () => {
-		const mode = process.env.RELAY_FAKE_PI_MODE || "ok";
-		if (process.env.RELAY_FAKE_PI_BREAK_CLEANUP === "true") fs.chmodSync(path.dirname(process.cwd()), 0o500);
-		if (mode === "ok") { process.stdout.write(Buffer.from(process.env.RELAY_FAKE_PI_OUTPUT_B64 || "", "base64")); process.exit(0); }
-		if (mode === "empty") process.exit(0);
-		if (mode === "hang") { setTimeout(() => process.exit(0), 10_000); return; }
-		process.stderr.write("pi exploded\\n");
-		process.exit(4);
-	};
-	const barrierDirectory = process.env.RELAY_FAKE_PI_BARRIER_DIR;
-	if (barrierDirectory === undefined) { finish(); return; }
-	fs.mkdirSync(barrierDirectory, { recursive: true });
-	fs.writeFileSync(path.join(barrierDirectory, String(process.pid)), "started");
-	const expected = Number(process.env.RELAY_FAKE_PI_BARRIER_COUNT || "4");
-	const deadline = Date.now() + 1_000;
-	const releaseFile = process.env.RELAY_FAKE_PI_RELEASE_FILE;
-	const waitForGroup = () => {
-		if (fs.readdirSync(barrierDirectory).length < expected) {
-			if (Date.now() >= deadline) { process.stderr.write("reviewer barrier timed out\\n"); process.exit(5); return; }
-			setTimeout(waitForGroup, 10);
-			return;
-		}
-		if (releaseFile !== undefined && !fs.existsSync(releaseFile)) { setTimeout(waitForGroup, 10); return; }
-		finish();
-	};
-	waitForGroup();
-});
-`;
-
 interface RelayHarness {
 	directory: string;
 	gentleAi: string;
-	pi: string;
 	logPath: string;
-	piLogPath: string;
-	stdinCapturePath: string;
 	submitCapturePath: string;
 	targetCwd: string;
 	environment: NodeJS.ProcessEnv;
@@ -147,32 +119,25 @@ function harness(t: test.TestContext, overrides: Record<string, string> = {}): R
 	const directory = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-relay-harness-")));
 	t.after(() => rmSync(directory, { recursive: true, force: true }));
 	const gentleAi = join(directory, "gentle-ai");
-	const pi = join(directory, "pi");
 	writeFileSync(gentleAi, FAKE_GENTLE_AI);
 	chmodSync(gentleAi, 0o755);
-	writeFileSync(pi, FAKE_PI);
-	chmodSync(pi, 0o755);
 	const logPath = join(directory, "gentle-ai.log");
-	const piLogPath = join(directory, "pi.log");
-	const stdinCapturePath = join(directory, "pi-stdin.bin");
 	const submitCapturePath = join(directory, "submitted.bin");
 	const targetCwd = join(directory, "target-worktree");
 	mkdirSync(targetCwd);
 	const environment: NodeJS.ProcessEnv = {
 		...process.env,
 		RELAY_FAKE_LOG: logPath,
-		RELAY_FAKE_PI_LOG: piLogPath,
-		RELAY_FAKE_PI_STDIN_CAPTURE: stdinCapturePath,
 		RELAY_FAKE_SUBMIT_CAPTURE: submitCapturePath,
 		...overrides,
 	};
 	// The relay itself must add the handshake; the base environment never
 	// carries it, so the fake-binary log proves the injection.
 	delete environment[GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV];
-	return { directory, gentleAi, pi, logPath, piLogPath, stdinCapturePath, submitCapturePath, targetCwd, environment };
+	return { directory, gentleAi, logPath, submitCapturePath, targetCwd, environment };
 }
 
-function readLog(path: string): Array<{ argv: string[]; contract: string | null; cwd?: string; entries?: string[] }> {
+function readLog(path: string): Array<{ argv: string[]; contract: string | null; cwd?: string }> {
 	if (!existsSync(path)) return [];
 	return readFileSync(path, "utf8").split("\n").filter((line) => line.length > 0).map((line) => JSON.parse(line));
 }
@@ -205,34 +170,61 @@ const SUBMISSION: ReviewCaptureSubmissionV1 = Object.freeze({
 	values: Object.freeze([{ slot: "reviewer_result", domain: "artifact_path_or_stdin", substitutionLocation: BINDING_TOKENS.length }]),
 });
 
-// Prompt and result bytes deliberately include binary-unsafe content: NUL,
-// control bytes, quotes, backslashes, CRLF, multi-byte UTF-8, and bytes that
-// are not valid UTF-8 at all. The relay must move them verbatim.
+// Prompt bytes deliberately include binary-unsafe content: NUL, control
+// bytes, quotes, backslashes, CRLF, multi-byte UTF-8, and bytes that are not
+// valid UTF-8 at all. The relay must materialize them verbatim into the
+// completion request.
 const PROMPT_BYTES = Buffer.concat([
 	Buffer.from('GENTLE_AI_REVIEW_BINDING {"lineage":"review-1d5aadacc600e167"}\n"quotes" \\backslash\r\n\u00e9\u{1F3A9}\n', "utf8"),
 	Buffer.from([0x00, 0x01, 0x07, 0xff, 0xfe, 0x00]),
 ]);
-const PI_OUTPUT_BYTES = Buffer.concat([
-	Buffer.from(`{"subject_hash":"sha256:${"a".repeat(64)}","findings":[]}\n`, "utf8"),
-	Buffer.from([0x00, 0xf0, 0x9f, 0x8e, 0xa9, 0xff, 0x0d, 0x0a]),
-]);
+// The reviewer's completion text — what used to be the pi event stream's
+// extracted assistant text is now simply the in-process outcome's `text`.
+const REVIEWER_TEXT = `{"subject_hash":"sha256:${"a".repeat(64)}","findings":[]}\n🎉\r\n`;
 
-function relayRequest(fixture: RelayHarness, overrides: Record<string, unknown> = {}) {
+function relayRequest(fixture: RelayHarness, overrides: Record<string, unknown> = {}): ReviewHostRelayRequest {
 	return {
 		captureArgumentTokens: CAPTURE_TOKENS,
 		submission: SUBMISSION,
 		gentleAiExecutable: fixture.gentleAi,
-		piExecutable: fixture.pi,
 		targetCwd: fixture.targetCwd,
+		reviewerRegistry: {
+			find: () => ({ id: "gpt-5", name: "GPT-5", api: "openai-responses", provider: "openai", baseUrl: "https://example.invalid", reasoning: true, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100_000, maxTokens: 8192 }) as never,
+			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key" }),
+		},
+		selection: "openai/gpt-5",
+		routingKey: "review-reliability",
 		environment: {
 			...fixture.environment,
 			RELAY_FAKE_PROMPT_B64: PROMPT_BYTES.toString("base64"),
-			RELAY_FAKE_PI_OUTPUT_B64: PI_OUTPUT_BYTES.toString("base64"),
 		},
 		gentleAiTimeoutMs: 30_000,
 		piTimeoutMs: 30_000,
 		...overrides,
-	};
+	} as ReviewHostRelayRequest;
+}
+
+/** A `runReviewer` fake resolving with canned completion text, capturing every call. */
+function textReviewer(text: string, reviewerModel = "openai/gpt-5") {
+	const calls: InProcessReviewerRequest[] = [];
+	const runReviewer = (async (request: InProcessReviewerRequest, _deps: InProcessReviewerDeps): Promise<InProcessReviewerOutcome> => {
+		calls.push(request);
+		return { kind: "text", text, reviewerModel };
+	}) as typeof runInProcessReviewer;
+	return { runReviewer, calls };
+}
+
+/** A `runReviewer` fake resolving with a canned typed refusal. */
+function refusingReviewer(code: (typeof INPROCESS_REVIEWER_FAILURE)[keyof typeof INPROCESS_REVIEWER_FAILURE], message: string, evidence?: Record<string, unknown>, delayMs = 0): typeof runInProcessReviewer {
+	return (async () => {
+		if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+		return { kind: "refused", code, message, ...(evidence === undefined ? {} : { evidence }) };
+	}) as typeof runInProcessReviewer;
+}
+
+/** Runs one relay slot with a safe-by-default fake reviewer; no test may reach the real network unless it explicitly overrides this. */
+function runRelay(fixture: RelayHarness, overrides: Record<string, unknown> = {}, runReviewer: typeof runInProcessReviewer = textReviewer(REVIEWER_TEXT).runReviewer): Promise<{ promptByteLength: number; resultByteLength: number; submission: string }> {
+	return runReviewHostRelaySlot(relayRequest(fixture, overrides), runReviewer);
 }
 
 function reviewerGroupRequests(fixture: RelayHarness): ReviewHostRelayRequest[] {
@@ -240,14 +232,13 @@ function reviewerGroupRequests(fixture: RelayHarness): ReviewHostRelayRequest[] 
 		captureArgumentTokens: CAPTURE_TOKENS.map((token) => token === "--lens=review-reliability"
 			? `--lens=${lens}`
 			: token === "--order=0" ? `--order=${order}` : token),
+		routingKey: lens,
 		environment: {
 			...fixture.environment,
 			RELAY_FAKE_PROMPT_B64: PROMPT_BYTES.toString("base64"),
-			RELAY_FAKE_PI_OUTPUT_B64: PI_OUTPUT_BYTES.toString("base64"),
 		},
 	}));
 }
-
 
 async function rejectsWithRelayError(promise: Promise<unknown>, kind: string, stage: string): Promise<ReviewHostRelayError> {
 	let caught: ReviewHostRelayError | undefined;
@@ -287,28 +278,36 @@ test("relay contract constants are the compiled gentle-ai handshake values", () 
 	assert.equal(GENTLE_PI_REVIEW_RELAY_CONTRACT, "gentle-pi.review-relay/v1");
 });
 
+test("no pi child launcher is exported: the lens path completes in-process", () => {
+	const relayExports = reviewHostRelayModule as unknown as Record<string, unknown>;
+	assert.equal("REVIEW_HOST_RELAY_PI_ARGV" in relayExports, false, "the pinned pi argv export must be gone");
+	assert.equal("resolveReviewHostRelayExtensionPaths" in relayExports, false, "the extension allowlist reader must be gone");
+});
+
 // ---------------------------------------------------------------------------
 // Happy path
 // ---------------------------------------------------------------------------
 
-test("relay happy path moves prompt and result bytes verbatim through a fresh empty scratch pi subprocess", async (t) => {
+test("relay happy path moves prompt bytes verbatim into the completion and submits its text through the exact provider submission token", async (t) => {
 	const fixture = harness(t);
-	const result = await runReviewHostRelaySlot(relayRequest(fixture));
+	const { runReviewer, calls } = textReviewer(REVIEWER_TEXT);
+	const result = await runRelay(fixture, {}, runReviewer);
 
 	assert.equal(result.promptByteLength, PROMPT_BYTES.length);
-	assert.equal(result.resultByteLength, PI_OUTPUT_BYTES.length);
+	assert.equal(result.resultByteLength, Buffer.byteLength(REVIEWER_TEXT));
 	assert.equal(JSON.parse(result.submission).admission_decision, "completed");
 
-	// Prompt bytes reached pi stdin verbatim.
-	assert.deepEqual(readFileSync(fixture.stdinCapturePath), PROMPT_BYTES);
-	// Submission --input file bytes are EXACTLY the pi stdout bytes.
-	assert.deepEqual(readFileSync(fixture.submitCapturePath), PI_OUTPUT_BYTES);
+	// Prompt bytes reached the completion request verbatim.
+	assert.equal(calls.length, 1);
+	assert.ok(calls[0]!.prompt.equals(PROMPT_BYTES));
+	// Submission --input file bytes are EXACTLY the reviewer's completion text.
+	assert.deepEqual(readFileSync(fixture.submitCapturePath), Buffer.from(REVIEWER_TEXT, "utf8"));
 
 	const gentleAiCalls = readLog(fixture.logPath);
 	assert.equal(gentleAiCalls.length, 2);
 	// (a) exact provider tokens, verbatim, in provider order.
 	assert.deepEqual(gentleAiCalls[0]!.argv, ["review", "capture-result", ...CAPTURE_TOKENS]);
-	// (d) the provider-owned submission form, verbatim: its exact operation
+	// (b) the provider-owned submission form, verbatim: its exact operation
 	// and argument tokens with only the artifact path substituted into the
 	// declared {{value}} slot. No agent/materialize, nothing synthesized.
 	assert.deepEqual(gentleAiCalls[1]!.argv.slice(0, 2 + BINDING_TOKENS.length), ["review", SUBMISSION.operationToken, ...BINDING_TOKENS]);
@@ -322,81 +321,74 @@ test("relay happy path moves prompt and result bytes verbatim through a fresh em
 	// environment carried none.
 	assert.deepEqual(gentleAiCalls.map((call) => call.contract), [GENTLE_PI_REVIEW_RELAY_CONTRACT, GENTLE_PI_REVIEW_RELAY_CONTRACT]);
 	assert.deepEqual(gentleAiCalls.map((call) => call.cwd), [fixture.targetCwd, fixture.targetCwd]);
-
-	const piCalls = readLog(fixture.piLogPath);
-	assert.equal(piCalls.length, 1);
-	// The pi environment stays untouched: no relay handshake is injected.
-	assert.equal(piCalls[0]!.contract, null);
-	// Fresh EMPTY scratch cwd, removed after the run.
-	assert.deepEqual(piCalls[0]!.entries, []);
-	assert.notEqual(piCalls[0]!.cwd, process.cwd());
-	assert.equal(existsSync(piCalls[0]!.cwd!), false);
 });
 
-test("the pi lockdown argv is pinned exactly with no model or provider selection", async (t) => {
+// gentle-pi#311 P3: a v9 provider role slot (refuter, targeted validator)
+// reaches this same relay through the exact same request shape a lens
+// materialize slot uses — the only difference is the operation name the
+// provider's own submission descriptor names. The materialize invocation
+// must follow that name, never a hardcoded "capture-result".
+test("the materialize invocation follows the provider's own submission operation, not a hardcoded capture-result", async (t) => {
 	const fixture = harness(t);
-	await runReviewHostRelaySlot(relayRequest(fixture));
-	const piCalls = readLog(fixture.piLogPath);
-	const expected = [
-		"--print",
-		"--mode", "text",
-		"--no-session",
-		"--no-tools",
-		"--no-extensions",
-		"--no-skills",
-		"--no-prompt-templates",
-		"--no-themes",
-		"--no-context-files",
-		"--no-approve",
+	const bindingTokens = [
+		"--lineage=review-1d5aadacc600e167",
+		`--expected-revision=sha256:${"c".repeat(64)}`,
+		`--target=sha256:${"d".repeat(64)}`,
+		`--repository-context=rctx1_${"e".repeat(64)}`,
 	];
-	assert.deepEqual([...REVIEW_HOST_RELAY_PI_ARGV], expected);
-	assert.deepEqual(piCalls[0]!.argv, expected);
-	assert.equal(piCalls[0]!.argv.some((token) => token.startsWith("--model") || token.startsWith("--provider") || token.startsWith("--profile")), false);
+	const refuterCaptureTokens = [...bindingTokens, "--agent=pi", "--materialize=true"];
+	const refuterSubmission: ReviewCaptureSubmissionV1 = {
+		operationToken: "capture-refuter",
+		argumentTokens: [...bindingTokens, "--agent=pi", "--input={{value}}"],
+		values: [{ slot: "provider_refuter", domain: "artifact_path_or_stdin", substitutionLocation: bindingTokens.length + 1 }],
+	};
+	const { runReviewer, calls } = textReviewer(REVIEWER_TEXT);
+	const result = await runRelay(fixture, { captureArgumentTokens: refuterCaptureTokens, submission: refuterSubmission, routingKey: "review-refuter" }, runReviewer);
+
+	assert.equal(JSON.parse(result.submission).admission_decision, "completed");
+	assert.equal(calls.length, 1);
+	const gentleAiCalls = readLog(fixture.logPath);
+	assert.equal(gentleAiCalls.length, 2);
+	assert.deepEqual(gentleAiCalls[0]!.argv, ["review", "capture-refuter", ...refuterCaptureTokens]);
+	assert.deepEqual(gentleAiCalls[1]!.argv.slice(0, 2 + bindingTokens.length), ["review", "capture-refuter", ...bindingTokens]);
+	assert.equal(gentleAiCalls[1]!.argv[2 + bindingTokens.length], "--agent=pi");
+	const submitted = gentleAiCalls[1]!.argv.at(-1)!;
+	assert.match(submitted, /^--input=\S+$/);
 });
 
 test("preparation snapshots mutable submission tokens and values before materialization", async (t) => {
 	const fixture = harness(t);
-	const barrierDirectory = join(fixture.directory, "submission-snapshot-barrier");
-	const releaseFile = join(fixture.directory, "submission-snapshot-release");
 	const submissionTokens = [...SUBMISSION.argumentTokens];
 	const submissionValues = SUBMISSION.values.map((value) => ({ ...value }));
 	const submission: ReviewCaptureSubmissionV1 = { ...SUBMISSION, argumentTokens: submissionTokens, values: submissionValues };
-	const prepared = prepareReviewHostRelaySlot(relayRequest(fixture, {
-		submission,
-		environment: {
-			...fixture.environment,
-			RELAY_FAKE_PROMPT_B64: PROMPT_BYTES.toString("base64"),
-			RELAY_FAKE_PI_OUTPUT_B64: PI_OUTPUT_BYTES.toString("base64"),
-			RELAY_FAKE_PI_BARRIER_DIR: barrierDirectory,
-			RELAY_FAKE_PI_BARRIER_COUNT: "1",
-			RELAY_FAKE_PI_RELEASE_FILE: releaseFile,
-		},
-	}));
-	await waitFor(() => readLog(fixture.piLogPath).length === 1, "reviewer did not reach the snapshot barrier");
+	let releaseCompletion: (() => void) | undefined;
+	const gate = new Promise<void>((resolve) => { releaseCompletion = resolve; });
+	let reached = false;
+	const runReviewer = (async () => {
+		reached = true;
+		await gate;
+		return { kind: "text", text: REVIEWER_TEXT, reviewerModel: "openai/gpt-5" } as InProcessReviewerOutcome;
+	}) as typeof runInProcessReviewer;
+	const prepared = prepareReviewHostRelaySlot(relayRequest(fixture, { submission }), runReviewer);
+	await waitFor(() => reached, "the completion was never reached");
 	submissionTokens[submissionTokens.length - 1] = "--input=mutated";
 	submissionValues[0]!.slot = "mutated";
-	writeFileSync(releaseFile, "release");
+	releaseCompletion!();
 
 	const result = await prepared;
 	assert.deepEqual(result.request.submission, SUBMISSION);
 	await submitReviewHostRelayPreparedResult(result);
-	assert.deepEqual(readFileSync(fixture.submitCapturePath), PI_OUTPUT_BYTES);
+	assert.deepEqual(readFileSync(fixture.submitCapturePath), Buffer.from(REVIEWER_TEXT, "utf8"));
 });
 
 test("preparation keeps reviewer bytes private through deferred submission", async (t) => {
 	const fixture = harness(t);
-	const reviewerBytes = Buffer.from(PI_OUTPUT_BYTES);
-	const prepared = await prepareReviewHostRelaySlot(relayRequest(fixture), async () => ({
-		stdout: reviewerBytes,
-		promptByteLength: PROMPT_BYTES.length,
-		stdoutByteLength: reviewerBytes.length,
-	}));
-	reviewerBytes.fill(0);
+	const prepared = await prepareReviewHostRelaySlot(relayRequest(fixture), textReviewer(REVIEWER_TEXT).runReviewer);
 	const mutablePrepared = prepared as unknown as { resultBytes?: Buffer };
 	mutablePrepared.resultBytes?.fill(0);
 	assert.throws(() => { mutablePrepared.resultBytes = Buffer.from("fabricated"); }, TypeError);
 	await submitReviewHostRelayPreparedResult(prepared);
-	assert.deepEqual(readFileSync(fixture.submitCapturePath), PI_OUTPUT_BYTES);
+	assert.deepEqual(readFileSync(fixture.submitCapturePath), Buffer.from(REVIEWER_TEXT, "utf8"));
 
 	const fabricated = { ...prepared, resultBytes: Buffer.from("fabricated") } as unknown as ReviewHostRelayPreparedResult;
 	await assert.rejects(submitReviewHostRelayPreparedResult(fabricated), /recognized prepared result/);
@@ -406,7 +398,7 @@ test("preparation keeps reviewer bytes private through deferred submission", asy
 test("the supplied AbortSignal stays live through deferred submission", async (t) => {
 	const fixture = harness(t, { RELAY_FAKE_SUBMIT_DELAY_MS: "1000" });
 	const controller = new AbortController();
-	const prepared = await prepareReviewHostRelaySlot(relayRequest(fixture, { signal: controller.signal }));
+	const prepared = await prepareReviewHostRelaySlot(relayRequest(fixture, { signal: controller.signal }), textReviewer(REVIEWER_TEXT).runReviewer);
 	const submission = submitReviewHostRelayPreparedResult(prepared);
 	await waitFor(() => readLog(fixture.logPath).length === 2, "submission did not start");
 	controller.abort();
@@ -415,21 +407,22 @@ test("the supplied AbortSignal stays live through deferred submission", async (t
 
 test("four reviewers cross a shared barrier before any result submission can begin", async (t) => {
 	const fixture = harness(t);
-	const barrierDirectory = join(fixture.directory, "reviewer-barrier");
-	const requests = reviewerGroupRequests(fixture).map((request) => ({
-		...request,
-		environment: {
-			...request.environment,
-			RELAY_FAKE_PI_BARRIER_DIR: barrierDirectory,
-			RELAY_FAKE_PI_BARRIER_COUNT: String(REVIEWER_GROUP_LENSES.length),
-		},
-	}));
+	const requests = reviewerGroupRequests(fixture);
+	let started = 0;
+	const releases: Array<() => void> = [];
+	const runReviewer = (async () => {
+		started += 1;
+		await new Promise<void>((resolve) => releases.push(resolve));
+		return { kind: "text", text: REVIEWER_TEXT, reviewerModel: "openai/gpt-5" } as InProcessReviewerOutcome;
+	}) as typeof runInProcessReviewer;
 
-	const prepared = await runReviewHostRelayReviewerGroup(requests);
+	const group = runReviewHostRelayReviewerGroup(requests, (request) => prepareReviewHostRelaySlot(request, runReviewer));
+	await waitFor(() => started === REVIEWER_GROUP_LENSES.length, "every reviewer must start before any completes");
+	for (const release of releases) release();
+	const prepared = await group;
 
 	assert.equal(prepared.length, REVIEWER_GROUP_LENSES.length);
-	assert.ok(prepared.every((result) => result.resultByteLength === PI_OUTPUT_BYTES.length));
-	assert.equal(readLog(fixture.piLogPath).length, REVIEWER_GROUP_LENSES.length);
+	assert.ok(prepared.every((result) => result.resultByteLength === Buffer.byteLength(REVIEWER_TEXT)));
 	assert.equal(readLog(fixture.logPath).length, REVIEWER_GROUP_LENSES.length, "preparation materializes only; it does not submit");
 });
 
@@ -497,50 +490,133 @@ test("partial reviewer failures wait for a later pending transport and report th
 // Fail-closed legs — a typed transport error and NO submission.
 // ---------------------------------------------------------------------------
 
-test("materialize nonzero exit fails closed with a typed error and never launches pi or submits", async (t) => {
+test("materialize nonzero exit fails closed with a typed error and never runs the completion or submits", async (t) => {
 	const fixture = harness(t, { RELAY_FAKE_MATERIALIZE_MODE: "fail" });
-	const error = await rejectsWithRelayError(runReviewHostRelaySlot(relayRequest(fixture)), REVIEW_HOST_RELAY_FAILURE.MATERIALIZE_FAILED, "materialize");
+	const { runReviewer, calls } = textReviewer(REVIEWER_TEXT);
+	const error = await rejectsWithRelayError(runRelay(fixture, {}, runReviewer), REVIEW_HOST_RELAY_FAILURE.MATERIALIZE_FAILED, "materialize");
 	assert.equal(error.exitCode, 3);
 	assert.equal(error.mutationOutcome, "none");
 	assert.equal(readLog(fixture.logPath).length, 1);
-	assert.equal(readLog(fixture.piLogPath).length, 0);
+	assert.equal(calls.length, 0, "no completion may run after a materialize failure");
 	assert.equal(existsSync(fixture.submitCapturePath), false);
 });
 
-test("an empty materialized prompt fails closed before pi launches", async (t) => {
+test("an empty materialized prompt fails closed before the completion runs", async (t) => {
 	const fixture = harness(t, { RELAY_FAKE_MATERIALIZE_MODE: "empty" });
-	await rejectsWithRelayError(runReviewHostRelaySlot(relayRequest(fixture)), REVIEW_HOST_RELAY_FAILURE.EMPTY_PROMPT, "materialize");
-	assert.equal(readLog(fixture.piLogPath).length, 0);
+	const { runReviewer, calls } = textReviewer(REVIEWER_TEXT);
+	await rejectsWithRelayError(runRelay(fixture, {}, runReviewer), REVIEW_HOST_RELAY_FAILURE.EMPTY_PROMPT, "materialize");
+	assert.equal(calls.length, 0);
 	assert.equal(existsSync(fixture.submitCapturePath), false);
 });
 
-test("pi nonzero exit fails closed with a typed error and no submission", async (t) => {
-	const fixture = harness(t, { RELAY_FAKE_PI_MODE: "fail" });
-	const error = await rejectsWithRelayError(runReviewHostRelaySlot(relayRequest(fixture)), REVIEW_HOST_RELAY_FAILURE.PI_FAILED, "pi");
-	assert.equal(error.exitCode, 4);
-	assert.equal(error.mutationOutcome, "none");
-	assert.equal(readLog(fixture.logPath).length, 1, "no submission invocation after pi failure");
-	assert.equal(existsSync(fixture.submitCapturePath), false);
+// ---------------------------------------------------------------------------
+// Every in-process reviewer refusal code maps to its typed relay code.
+// ---------------------------------------------------------------------------
+
+test("every in-process reviewer refusal maps to its typed relay failure code, carrying evidence when the outcome had any", async (t) => {
+	const cases: Array<{ code: (typeof INPROCESS_REVIEWER_FAILURE)[keyof typeof INPROCESS_REVIEWER_FAILURE]; kind: string; evidence?: Record<string, unknown> }> = [
+		{ code: INPROCESS_REVIEWER_FAILURE.SELECTION_INVALID, kind: REVIEW_HOST_RELAY_FAILURE.REVIEWER_CONFIG_INVALID },
+		{ code: INPROCESS_REVIEWER_FAILURE.MODEL_NOT_FOUND, kind: REVIEW_HOST_RELAY_FAILURE.REVIEWER_MODEL_NOT_FOUND },
+		{ code: INPROCESS_REVIEWER_FAILURE.AUTH_UNAVAILABLE, kind: REVIEW_HOST_RELAY_FAILURE.REVIEWER_AUTH_UNAVAILABLE },
+		{ code: INPROCESS_REVIEWER_FAILURE.THINKING_INVALID, kind: REVIEW_HOST_RELAY_FAILURE.REVIEWER_THINKING_INVALID },
+		{ code: INPROCESS_REVIEWER_FAILURE.TOOL_CALL_ATTEMPTED, kind: REVIEW_HOST_RELAY_FAILURE.REVIEWER_TOOL_CALL },
+		{ code: INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT, kind: REVIEW_HOST_RELAY_FAILURE.REVIEWER_EMPTY_OUTPUT, evidence: { stopReason: "stop" } },
+		{ code: INPROCESS_REVIEWER_FAILURE.OUTPUT_TOO_LARGE, kind: REVIEW_HOST_RELAY_FAILURE.REVIEWER_OUTPUT_TOO_LARGE },
+		{ code: INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED, kind: REVIEW_HOST_RELAY_FAILURE.PI_FAILED },
+	];
+	for (const { code, kind, evidence } of cases) {
+		const fixture = harness(t);
+		const message = `refused: ${code}`;
+		const error = await rejectsWithRelayError(runRelay(fixture, {}, refusingReviewer(code, message, evidence)), kind, "pi");
+		assert.equal(error.message, message);
+		assert.equal(error.mutationOutcome, "none");
+		assert.equal(existsSync(fixture.submitCapturePath), false, `${code} must never reach submission`);
+		if (evidence !== undefined) assert.deepEqual(error.reviewerEvidence, evidence, `${code} must carry its outcome evidence`);
+	}
 });
 
-test("empty pi stdout fails closed with a typed error and no submission", async (t) => {
-	const fixture = harness(t, { RELAY_FAKE_PI_MODE: "empty" });
-	await rejectsWithRelayError(runReviewHostRelaySlot(relayRequest(fixture)), REVIEW_HOST_RELAY_FAILURE.PI_EMPTY_OUTPUT, "pi");
-	assert.equal(readLog(fixture.logPath).length, 1);
+test("a reviewer run that only attempted a tool call fails typed and never submits", async (t) => {
+	const fixture = harness(t);
+	const error = await rejectsWithRelayError(
+		runRelay(fixture, {}, refusingReviewer(INPROCESS_REVIEWER_FAILURE.TOOL_CALL_ATTEMPTED, "Reviewer attempted a tool call for review-reliability; the in-process reviewer completion must answer in text only.")),
+		REVIEW_HOST_RELAY_FAILURE.REVIEWER_TOOL_CALL,
+		"pi",
+	);
 	assert.equal(existsSync(fixture.submitCapturePath), false);
+	assert.match(error.message, /tool call/);
 });
 
-test("pi timeout fails closed with a typed error and no submission", async (t) => {
-	const fixture = harness(t, { RELAY_FAKE_PI_MODE: "hang" });
-	const error = await rejectsWithRelayError(runReviewHostRelaySlot(relayRequest(fixture, { piTimeoutMs: 300 })), REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT, "pi");
-	assert.equal(error.timedOut, true);
-	assert.equal(readLog(fixture.logPath).length, 1);
+test("the relay forwards the caller-owned selection and thinking level to the completion request", async (t) => {
+	const fixture = harness(t);
+	const { runReviewer, calls } = textReviewer(REVIEWER_TEXT);
+	await runRelay(fixture, { selection: "minimax/MiniMax-M3", thinking: "high", routingKey: "review-risk" }, runReviewer);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0]!.selection, "minimax/MiniMax-M3");
+	assert.equal(calls[0]!.thinking, "high");
+	assert.equal(calls[0]!.routingKey, "review-risk");
+});
+
+// The in-process reviewer completion is an extension side-call that bypasses
+// pi's main agent loop, so the relay must forward the caller's live session id
+// into the completion request; the completion itself turns it into the
+// OpenCode attribution headers (lib/inprocess-reviewer.ts). A absent session
+// id forwards nothing and is never an error.
+test("the relay forwards the caller's reviewer session id into the completion request", async (t) => {
+	const fixture = harness(t);
+	const { runReviewer, calls } = textReviewer(REVIEWER_TEXT);
+	await runRelay(fixture, { reviewerSessionId: "ses-live-1" }, runReviewer);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0]!.sessionId, "ses-live-1");
+});
+
+test("a relay request with no reviewer session id adds no session id to the completion request", async (t) => {
+	const fixture = harness(t);
+	const { runReviewer, calls } = textReviewer(REVIEWER_TEXT);
+	await runRelay(fixture, {}, runReviewer);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0]!.sessionId, undefined);
+});
+
+test("a missing model registry is refused typed before materialize ever runs", async (t) => {
+	const fixture = harness(t);
+	const { runReviewer, calls } = textReviewer(REVIEWER_TEXT);
+	const error = await rejectsWithRelayError(runRelay(fixture, { reviewerRegistry: undefined }, runReviewer), REVIEW_HOST_RELAY_FAILURE.REVIEWER_CONFIG_INVALID, "pi");
+	assert.equal(calls.length, 0, "no completion may run on a broken configuration");
+	assert.equal(readLog(fixture.logPath).length, 0, "no materialization may run without a model registry");
+	assert.match(error.message, /model registry/);
+});
+
+test("a routing entry with no configured model is refused typed, naming the routing key, before materialize ever runs", async (t) => {
+	const fixture = harness(t);
+	const { runReviewer, calls } = textReviewer(REVIEWER_TEXT);
+	const error = await rejectsWithRelayError(runRelay(fixture, { selection: undefined, routingKey: "review-risk" }, runReviewer), REVIEW_HOST_RELAY_FAILURE.REVIEWER_CONFIG_INVALID, "pi");
+	assert.equal(calls.length, 0);
+	assert.equal(readLog(fixture.logPath).length, 0, "no materialization may run without a configured model");
+	assert.match(error.message, /review-risk/);
+});
+
+test("a tool call's cancelled signal maps to REVIEWER_ABORTED and forwards the caller's own signal to the completion", async (t) => {
+	const fixture = harness(t);
+	const controller = new AbortController();
+	let receivedSignal: AbortSignal | undefined;
+	// The signal aborts once the completion actually starts (materialize must
+	// already have succeeded with a live signal); this proves the same signal
+	// object reaches the completion request, not just that an early abort
+	// short-circuits materialize too.
+	const runReviewer = (async (request: InProcessReviewerRequest) => {
+		receivedSignal = request.signal;
+		controller.abort();
+		return { kind: "refused", code: INPROCESS_REVIEWER_FAILURE.ABORTED, message: "Reviewer completion for review-reliability was aborted by the caller." } as InProcessReviewerOutcome;
+	}) as typeof runInProcessReviewer;
+	const error = await rejectsWithRelayError(runRelay(fixture, { signal: controller.signal }, runReviewer), REVIEW_HOST_RELAY_FAILURE.REVIEWER_ABORTED, "pi");
+	assert.equal(receivedSignal, controller.signal, "the relay must forward the tool call's own signal into the completion request");
+	assert.match(error.message, /aborted/);
 	assert.equal(existsSync(fixture.submitCapturePath), false);
 });
 
 // ---------------------------------------------------------------------------
 // gentle-pi#367 — the reviewer bound is reachable from production, and a
-// reviewer killed by it says so with both measurements.
+// timed-out completion says so with both measurements.
 // ---------------------------------------------------------------------------
 
 test("the reviewer bound scales with materialized prompt bytes instead of one fixed number", () => {
@@ -574,50 +650,26 @@ test("the reviewer bound honours the environment override and ignores malformed 
 	}
 });
 
-test("the production relay path resolves the reviewer bound from the environment, with no injected timeout", async (t) => {
-	// The regression: piTimeoutMs was reachable only through the test seam, so
-	// production always ran against the fixed 600s bound. This request injects
-	// no timeout at all — the override must reach the real spawn.
-	const fixture = harness(t, { RELAY_FAKE_PI_MODE: "hang", [REVIEW_HOST_RELAY_PI_TIMEOUT_ENV]: "300" });
+test("the production relay path resolves the reviewer bound from the environment and forwards it to the completion, with no injected timeout", async (t) => {
+	// The regression this guards: piTimeoutMs was reachable only through the
+	// test seam, so production always ran against a fixed bound. This request
+	// injects no timeout at all — the override must reach the completion.
+	const fixture = harness(t, { [REVIEW_HOST_RELAY_PI_TIMEOUT_ENV]: "300000" });
+	const { runReviewer, calls } = textReviewer(REVIEWER_TEXT);
+	await runRelay(fixture, { piTimeoutMs: undefined }, runReviewer);
+	assert.equal(calls[0]!.timeoutMs, 300_000);
+});
+
+test("a timed-out reviewer completion reports elapsed, limit, and what to change instead of an opaque transport failure", async (t) => {
+	const fixture = harness(t);
 	const error = await rejectsWithRelayError(
-		runReviewHostRelaySlot(relayRequest(fixture, { piTimeoutMs: undefined })),
+		runRelay(fixture, { piTimeoutMs: 300 }, refusingReviewer(INPROCESS_REVIEWER_FAILURE.TIMED_OUT, "Reviewer completion for review-reliability exceeded its 300ms bound.", undefined, 20)),
 		REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT,
 		"pi",
 	);
 	assert.equal(error.timeoutMs, 300);
+	assert.ok(error.elapsedMs !== null && error.elapsedMs >= 15, `elapsed ${error.elapsedMs} must record the real wall time`);
 	assert.equal(error.timedOut, true);
-	assert.equal(readLog(fixture.logPath).length, 1, "no submission after a reviewer timeout");
-	assert.equal(existsSync(fixture.submitCapturePath), false);
-});
-
-test("a relay Pi timeout keeps its typed mapping and timing evidence when opaque scratch cleanup also fails", async (t) => {
-	const fixture = harness(t, { RELAY_FAKE_PI_MODE: "hang", RELAY_FAKE_PI_BREAK_CLEANUP: "true" });
-	const scratchParent = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-relay-pi-primary-failure-")));
-	const originalTmpdir = process.env.TMPDIR;
-	process.env.TMPDIR = scratchParent;
-	try {
-		const error = await rejectsWithRelayError(
-			runReviewHostRelaySlot(relayRequest(fixture, { piTimeoutMs: 300 })),
-			REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT,
-			"pi",
-		);
-		assert.equal(error.timedOut, true);
-		assert.equal(error.timeoutMs, 300);
-		assert.ok(error.elapsedMs !== null && error.elapsedMs >= 250);
-	} finally {
-		if (originalTmpdir === undefined) delete process.env.TMPDIR;
-		else process.env.TMPDIR = originalTmpdir;
-		chmodSync(scratchParent, 0o700);
-		rmSync(scratchParent, { recursive: true, force: true });
-	}
-});
-
-test("a killed reviewer reports elapsed, limit, and what to change instead of an opaque transport failure", async (t) => {
-	const fixture = harness(t, { RELAY_FAKE_PI_MODE: "hang" });
-	const error = await rejectsWithRelayError(runReviewHostRelaySlot(relayRequest(fixture, { piTimeoutMs: 300 })), REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT, "pi");
-	assert.equal(error.timeoutMs, 300);
-	assert.ok(error.elapsedMs !== null && error.elapsedMs >= 250, `elapsed ${error.elapsedMs} must record the real wall time`);
-	assert.ok(error.elapsedMs! < 10_000, "the reviewer was killed at the bound, not left to finish");
 	assert.match(error.message, /exceeded the relay bound/);
 	assert.match(error.message, new RegExp(String(error.elapsedMs)));
 	assert.match(error.message, /limit for a \d+-byte materialized prompt/);
@@ -625,18 +677,21 @@ test("a killed reviewer reports elapsed, limit, and what to change instead of an
 	assert.equal(error.mutationOutcome, "none");
 });
 
-test("a crashed reviewer stays distinguishable from a killed one and still carries its measurements", async (t) => {
-	const fixture = harness(t, { RELAY_FAKE_PI_MODE: "fail" });
-	const error = await rejectsWithRelayError(runReviewHostRelaySlot(relayRequest(fixture, { piTimeoutMs: 30_000 })), REVIEW_HOST_RELAY_FAILURE.PI_FAILED, "pi");
+test("a provider-failed completion stays distinguishable from a timed-out one and still carries its measurements", async (t) => {
+	const fixture = harness(t);
+	const error = await rejectsWithRelayError(
+		runRelay(fixture, { piTimeoutMs: 30_000 }, refusingReviewer(INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED, "Reviewer completion failed for review-reliability: upstream 500")),
+		REVIEW_HOST_RELAY_FAILURE.PI_FAILED,
+		"pi",
+	);
 	assert.equal(error.timedOut, false);
-	assert.equal(error.exitCode, 4);
 	assert.equal(error.timeoutMs, 30_000);
 	assert.ok(error.elapsedMs !== null && error.elapsedMs >= 0);
 });
 
 test("submission refusal is a typed error whose outcome is unknown pending STATUS", async (t) => {
 	const fixture = harness(t, { RELAY_FAKE_SUBMIT_MODE: "refuse" });
-	const error = await rejectsWithRelayError(runReviewHostRelaySlot(relayRequest(fixture)), REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED, "submit");
+	const error = await rejectsWithRelayError(runRelay(fixture), REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED, "submit");
 	assert.equal(error.mutationOutcome, "unknown");
 	assert.match(error.stderr, /capture binding does not match/);
 	assert.equal(readLog(fixture.logPath).length, 2);
@@ -646,20 +701,14 @@ test("submission refusal is a typed error whose outcome is unknown pending STATU
 // typed [invalid_request] refusal and states that the lens slot was not
 // consumed. That is a proven non-mutation, not an unknown outcome, and the
 // refusal text is the only thing that tells the host what to change.
-function admittingRequest(fixture: RelayHarness, reviewerOutput: Buffer) {
-	return relayRequest(fixture, {
-		environment: {
-			...fixture.environment,
-			RELAY_FAKE_PROMPT_B64: PROMPT_BYTES.toString("base64"),
-			RELAY_FAKE_PI_OUTPUT_B64: reviewerOutput.toString("base64"),
-		},
-	});
+function admittingRequest(fixture: RelayHarness): ReviewHostRelayRequest {
+	return relayRequest(fixture);
 }
 
 test("a reviewer printing garbage is refused at admission as a proven non-mutation carrying Go's refusal", async (t) => {
 	const fixture = harness(t, { RELAY_FAKE_SUBMIT_MODE: "admit", RELAY_FAKE_EXPECTED_SUBJECT: `sha256:${"a".repeat(64)}` });
 	const error = await rejectsWithRelayError(
-		runReviewHostRelaySlot(admittingRequest(fixture, Buffer.from("not json at all", "utf8"))),
+		runReviewHostRelaySlot(admittingRequest(fixture), textReviewer("not json at all").runReviewer),
 		REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED,
 		"submit",
 	);
@@ -674,9 +723,9 @@ test("a reviewer printing garbage is refused at admission as a proven non-mutati
 
 test("a reviewer echoing a different subject is refused at admission as a proven non-mutation carrying Go's continuation", async (t) => {
 	const fixture = harness(t, { RELAY_FAKE_SUBMIT_MODE: "admit", RELAY_FAKE_EXPECTED_SUBJECT: `sha256:${"a".repeat(64)}` });
-	const wrongSubject = Buffer.from(JSON.stringify({ subject_hash: `sha256:${"0".repeat(64)}`, inspection: { status: "completed", paths: [] }, findings: [], evidence: ["x"] }), "utf8");
+	const wrongSubject = JSON.stringify({ subject_hash: `sha256:${"0".repeat(64)}`, inspection: { status: "completed", paths: [] }, findings: [], evidence: ["x"] });
 	const error = await rejectsWithRelayError(
-		runReviewHostRelaySlot(admittingRequest(fixture, wrongSubject)),
+		runReviewHostRelaySlot(admittingRequest(fixture), textReviewer(wrongSubject).runReviewer),
 		REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED,
 		"submit",
 	);
@@ -691,7 +740,8 @@ test("a reviewer echoing a different subject is refused at admission as a proven
 
 test("a submission the fake admits with the expected subject still completes", async (t) => {
 	const fixture = harness(t, { RELAY_FAKE_SUBMIT_MODE: "admit", RELAY_FAKE_EXPECTED_SUBJECT: `sha256:${"a".repeat(64)}` });
-	const result = await runReviewHostRelaySlot(admittingRequest(fixture, Buffer.from(JSON.stringify({ subject_hash: `sha256:${"a".repeat(64)}`, inspection: { status: "completed", paths: [] }, findings: [], evidence: ["x"] }), "utf8")));
+	const expected = JSON.stringify({ subject_hash: `sha256:${"a".repeat(64)}`, inspection: { status: "completed", paths: [] }, findings: [], evidence: ["x"] });
+	const result = await runReviewHostRelaySlot(admittingRequest(fixture), textReviewer(expected).runReviewer);
 	assert.equal(JSON.parse(result.submission).admission_decision, "completed");
 });
 
@@ -702,7 +752,7 @@ test("submission refusal preserves its primary evidence when result staging clea
 	process.env.TMPDIR = scratchParent;
 	try {
 		const error = await rejectsWithRelayError(
-			runReviewHostRelaySlot(relayRequest(fixture)),
+			runRelay(fixture),
 			REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED,
 			"submit",
 		);
@@ -720,12 +770,10 @@ test("submission refusal preserves its primary evidence when result staging clea
 	}
 });
 
-test("relay scratch and staging directories are removed after failures too", async (t) => {
-	const fixture = harness(t, { RELAY_FAKE_PI_MODE: "fail" });
-	await rejectsWithRelayError(runReviewHostRelaySlot(relayRequest(fixture)), REVIEW_HOST_RELAY_FAILURE.PI_FAILED, "pi");
-	const piCalls = readLog(fixture.piLogPath);
-	assert.equal(piCalls.length, 1);
-	assert.equal(existsSync(piCalls[0]!.cwd!), false);
+test("relay staging directories are removed after a submission failure too", async (t) => {
+	const fixture = harness(t, { RELAY_FAKE_SUBMIT_MODE: "refuse" });
+	await rejectsWithRelayError(runRelay(fixture), REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED, "submit");
+	assert.equal(readLog(fixture.logPath).length, 2);
 });
 
 test("a result staging cleanup failure remains a typed submit failure", async (t) => {
@@ -735,7 +783,7 @@ test("a result staging cleanup failure remains a typed submit failure", async (t
 	process.env.TMPDIR = scratchParent;
 	try {
 		const error = await rejectsWithRelayError(
-			runReviewHostRelaySlot(relayRequest(fixture)),
+			runRelay(fixture),
 			REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED,
 			"submit",
 		);
@@ -755,20 +803,22 @@ test("a result staging cleanup failure remains a typed submit failure", async (t
 
 test("an old binary's unknown-flag refusal classifies as relay-unavailable with the exact report", async (t) => {
 	const fixture = harness(t, { RELAY_FAKE_MATERIALIZE_MODE: "unknown-flag" });
-	const error = await rejectsWithRelayError(runReviewHostRelaySlot(relayRequest(fixture)), REVIEW_HOST_RELAY_FAILURE.RELAY_UNAVAILABLE, "materialize");
+	const { runReviewer, calls } = textReviewer(REVIEWER_TEXT);
+	const error = await rejectsWithRelayError(runRelay(fixture, {}, runReviewer), REVIEW_HOST_RELAY_FAILURE.RELAY_UNAVAILABLE, "materialize");
 	assert.equal(error.message, REVIEW_HOST_RELAY_UNAVAILABLE_MESSAGE);
 	assert.match(error.stderr, /flag provided but not defined: -materialize/);
-	assert.equal(readLog(fixture.piLogPath).length, 0);
+	assert.equal(calls.length, 0);
 	assert.equal(existsSync(fixture.submitCapturePath), false);
 });
 
 test("a handshake refusal surfaces the provider refusal verbatim", async (t) => {
 	const refusal = "review capture-result --agent pi: the active runtime is not eligible for immutable receipt review; supported immutable review runtimes: claude-code, codex, opencode";
 	const fixture = harness(t, { RELAY_FAKE_MATERIALIZE_MODE: "handshake", RELAY_FAKE_HANDSHAKE_STDERR: refusal });
-	const error = await rejectsWithRelayError(runReviewHostRelaySlot(relayRequest(fixture)), REVIEW_HOST_RELAY_FAILURE.HANDSHAKE_REFUSED, "materialize");
+	const { runReviewer, calls } = textReviewer(REVIEWER_TEXT);
+	const error = await rejectsWithRelayError(runRelay(fixture, {}, runReviewer), REVIEW_HOST_RELAY_FAILURE.HANDSHAKE_REFUSED, "materialize");
 	assert.equal(error.message, refusal);
 	assert.equal(error.stderr, refusal);
-	assert.equal(readLog(fixture.piLogPath).length, 0);
+	assert.equal(calls.length, 0);
 });
 
 test("refusal classification distinguishes unknown-flag, handshake, and other", () => {
@@ -777,6 +827,50 @@ test("refusal classification distinguishes unknown-flag, handshake, and other", 
 	assert.equal(classifyReviewHostRelayRefusal("the active runtime is not eligible for immutable receipt review"), "handshake");
 	assert.equal(classifyReviewHostRelayRefusal("declare GENTLE_PI_REVIEW_RELAY_CONTRACT=gentle-pi.review-relay/v1"), "handshake");
 	assert.equal(classifyReviewHostRelayRefusal("some unrelated explosion"), "other");
+});
+
+// gentle-pi#638: only a reviewer killed by the scaled relay bound is proven
+// deterministic for this exact slot. Generic admission refusals are repairable
+// by a fresh reviewer and retain the ordinary exact-reoffer behavior.
+test("the unachievable predicate names only deterministic slot failures", () => {
+	const killed = new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT, "pi", "the reviewer completion exceeded the relay bound", { timedOut: true, elapsedMs: 2_256_004, timeoutMs: 2_256_000 });
+	assert.equal(reviewHostRelayUnachievableReason(killed), "relay_transport_bound_exceeded");
+	assert.equal(reviewHostRelayUnachievableDetail(killed), "killed after 2256004ms against a 2256000ms relay bound");
+
+	for (const refusal of ["reviewer payload contains no complete JSON object", "reviewer artifact admission binding_mismatch"]) {
+		const admitted = new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED, "submit", `${refusal} [invalid_request]`, { exitCode: 1, mutationOutcome: "none" });
+		assert.equal(reviewHostRelayUnachievableReason(admitted), undefined, `${refusal} is repairable by a fresh reviewer`);
+		assert.equal(reviewHostRelayUnachievableDetail(admitted), undefined);
+	}
+
+	const unknownOutcome = new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED, "submit", "gentle-ai capture submission exceeded its bound", { timedOut: true });
+	assert.equal(reviewHostRelayUnachievableReason(unknownOutcome), undefined, "an unknown mutation outcome is never deterministic");
+	assert.equal(reviewHostRelayUnachievableDetail(unknownOutcome), undefined);
+
+	for (const kind of [
+		REVIEW_HOST_RELAY_FAILURE.PI_FAILED,
+		REVIEW_HOST_RELAY_FAILURE.PI_LAUNCH_FAILED,
+		REVIEW_HOST_RELAY_FAILURE.PI_EMPTY_OUTPUT,
+		REVIEW_HOST_RELAY_FAILURE.REVIEWER_MODEL_NOT_FOUND,
+		REVIEW_HOST_RELAY_FAILURE.REVIEWER_AUTH_UNAVAILABLE,
+		REVIEW_HOST_RELAY_FAILURE.REVIEWER_THINKING_INVALID,
+		REVIEW_HOST_RELAY_FAILURE.REVIEWER_TOOL_CALL,
+		REVIEW_HOST_RELAY_FAILURE.REVIEWER_EMPTY_OUTPUT,
+		REVIEW_HOST_RELAY_FAILURE.REVIEWER_OUTPUT_TOO_LARGE,
+		REVIEW_HOST_RELAY_FAILURE.REVIEWER_ABORTED,
+		REVIEW_HOST_RELAY_FAILURE.REVIEWER_CONFIG_INVALID,
+		REVIEW_HOST_RELAY_FAILURE.MATERIALIZE_FAILED,
+		REVIEW_HOST_RELAY_FAILURE.EMPTY_PROMPT,
+		REVIEW_HOST_RELAY_FAILURE.RELAY_UNAVAILABLE,
+		REVIEW_HOST_RELAY_FAILURE.HANDSHAKE_REFUSED,
+		REVIEW_HOST_RELAY_FAILURE.SUBMISSION_CONTRACT_MISMATCH,
+	]) {
+		assert.equal(reviewHostRelayUnachievableReason(new ReviewHostRelayError(kind, "pi", "transient")), undefined, `${kind} stays transient`);
+	}
+
+	const unmeasured = new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT, "pi", "killed at the bound");
+	assert.equal(reviewHostRelayUnachievableReason(unmeasured), "relay_transport_bound_exceeded");
+	assert.equal(reviewHostRelayUnachievableDetail(unmeasured), undefined, "no measurements means no detail, never a fabricated one");
 });
 
 // ---------------------------------------------------------------------------
@@ -844,37 +938,39 @@ test("relay input validation rejects empty or malformed inputs before any proces
 
 test("a materialize slot without a provider submission fails closed before any process launches", async (t) => {
 	const fixture = harness(t);
+	const { runReviewer, calls } = textReviewer(REVIEWER_TEXT);
 	const error = await rejectsWithRelayError(
-		runReviewHostRelaySlot(relayRequest(fixture, { submission: undefined })),
+		runRelay(fixture, { submission: undefined }, runReviewer),
 		REVIEW_HOST_RELAY_FAILURE.SUBMISSION_CONTRACT_MISMATCH,
 		"binding",
 	);
 	assert.equal(error.message, REVIEW_HOST_RELAY_SUBMISSION_MISSING_MESSAGE);
 	assert.equal(error.mutationOutcome, "none");
 	assert.equal(readLog(fixture.logPath).length, 0, "no gentle-ai invocation was launched");
-	assert.equal(readLog(fixture.piLogPath).length, 0, "no pi subprocess was launched");
+	assert.equal(calls.length, 0, "no completion was run");
 	assert.equal(existsSync(fixture.submitCapturePath), false);
 });
 
 test("a submission form the relay cannot bind is a typed contract mismatch, never a repaired invocation", async (t) => {
 	const fixture = harness(t);
+	const { runReviewer, calls } = textReviewer(REVIEWER_TEXT);
 	const twoValues: ReviewCaptureSubmissionV1 = {
 		...SUBMISSION,
 		values: [...SUBMISSION.values, { slot: "extra", domain: "artifact_path_or_stdin", substitutionLocation: 0 }],
 	};
-	await rejectsWithRelayError(runReviewHostRelaySlot(relayRequest(fixture, { submission: twoValues })), REVIEW_HOST_RELAY_FAILURE.SUBMISSION_CONTRACT_MISMATCH, "binding");
+	await rejectsWithRelayError(runRelay(fixture, { submission: twoValues }, runReviewer), REVIEW_HOST_RELAY_FAILURE.SUBMISSION_CONTRACT_MISMATCH, "binding");
 	const noSlot: ReviewCaptureSubmissionV1 = {
 		...SUBMISSION,
 		argumentTokens: [...BINDING_TOKENS, "--input=/etc/somewhere"],
 	};
-	await rejectsWithRelayError(runReviewHostRelaySlot(relayRequest(fixture, { submission: noSlot })), REVIEW_HOST_RELAY_FAILURE.SUBMISSION_CONTRACT_MISMATCH, "binding");
+	await rejectsWithRelayError(runRelay(fixture, { submission: noSlot }, runReviewer), REVIEW_HOST_RELAY_FAILURE.SUBMISSION_CONTRACT_MISMATCH, "binding");
 	const outOfBounds: ReviewCaptureSubmissionV1 = {
 		...SUBMISSION,
 		values: [{ slot: "reviewer_result", domain: "artifact_path_or_stdin", substitutionLocation: SUBMISSION.argumentTokens.length }],
 	};
-	await rejectsWithRelayError(runReviewHostRelaySlot(relayRequest(fixture, { submission: outOfBounds })), REVIEW_HOST_RELAY_FAILURE.SUBMISSION_CONTRACT_MISMATCH, "binding");
+	await rejectsWithRelayError(runRelay(fixture, { submission: outOfBounds }, runReviewer), REVIEW_HOST_RELAY_FAILURE.SUBMISSION_CONTRACT_MISMATCH, "binding");
 	assert.equal(readLog(fixture.logPath).length, 0);
-	assert.equal(readLog(fixture.piLogPath).length, 0);
+	assert.equal(calls.length, 0);
 });
 
 test("resolveReviewHostRelaySubmission returns the provider binding untouched", () => {

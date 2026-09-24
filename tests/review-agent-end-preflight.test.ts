@@ -280,6 +280,8 @@ test("agent_end nudges exactly once when RDD is on and STATUS offers review.star
 	assert.equal(entry?.message.customType, "gentle-pi.review-preflight");
 	const content = String(entry?.message.content);
 	assert.match(content, /gentle_review/);
+	assert.match(content, /first determine whether the user explicitly left this exact target unreviewed\. if yes, do not invoke review; report that disposition and continue\. only otherwise, call the gentle_review tool with \{"operation":"inspect"\}/i);
+	assert.doesNotMatch(content, /run the review preflight before reporting completion\. if the user explicitly left/i);
 	assert.ok(content.includes(targetIdentity), "message must name the target identity");
 	assert.equal(entry?.options.triggerTurn, true);
 	assert.equal(statusRequests[0]?.agent, "pi");
@@ -358,6 +360,27 @@ test("agent_end pairs a named agent's start with its own end, then still nudges 
 
 	await agentEnd!(agentEndEvent, session);
 	assert.equal(sent.length, 1, "the primary loop's end still nudges once the subagent's end is paired off");
+});
+
+test("gentle-ai-worker agent_end never queries native review", async () => {
+	const statusRequests: unknown[] = [];
+	const native = {
+		reviewMode: onMode("on"),
+		targetStatus: async (request: unknown) => {
+			statusRequests.push(request);
+			throw new Error("a bounded worker must not own native review");
+		},
+	} as unknown as NativeReviewCli;
+	const { handlers, sent } = harness(native);
+	const beforeAgentStart = handlers.get("before_agent_start");
+	const agentEnd = handlers.get("agent_end");
+	const session = ctx("agent-end-generic-worker");
+	assert.equal(typeof beforeAgentStart, "function");
+	await beforeAgentStart!({ agentName: "gentle-ai-worker", systemPrompt: "" }, session);
+	await directWrite(handlers, session);
+	await agentEnd!(agentEndEvent, session);
+	assert.deepEqual(statusRequests, []);
+	assert.deepEqual(sent, []);
 });
 
 test("agent_end resets the subagent depth when a fresh primary loop starts", async () => {

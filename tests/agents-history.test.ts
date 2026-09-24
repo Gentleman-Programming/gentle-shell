@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -51,4 +51,14 @@ test("TaskStore.restore adds a stored task without clobbering a live one", () =>
 	assert.equal(store.thread("r1").items.length, 1);
 	assert.equal(store.restore({ ...task("r1", 1000), result: "other" }, emptyThread()), false);
 	assert.equal(store.get("r1")?.result, "ok");
+});
+
+test("retired remediation payloads remain readable and are never automatically pruned or replayed", async () => {
+	const legacyDir = join(root, "legacy-remediation");
+	const legacy = { ...task("legacy", 1), sddRemediation: { acquire: { requestId: "old" }, token: "historical", settlement: { state: "complete" } } };
+	await saveTask(legacyDir, legacy, emptyThread());
+	const before = readFileSync(join(legacyDir, "legacy.json"), "utf8");
+	assert.equal(await pruneHistory(legacyDir, 0), 0);
+	assert.deepEqual((await loadStoredTask(legacyDir, "legacy"))?.task, JSON.parse(before).task);
+	assert.equal(readFileSync(join(legacyDir, "legacy.json"), "utf8"), before);
 });

@@ -7,12 +7,16 @@ import {
 	decodeReviewConsentV3,
 } from "../lib/review-integration-v2.ts";
 import {
+	NATIVE_REVIEW_OPERATION,
 	NATIVE_REVIEW_DEFAULT_MAX_BUFFER_BYTES,
 	NATIVE_REVIEW_ERROR_CODE,
 	NativeReviewCliError,
 	NativeReviewCliV216,
+	NativeReviewIntegrationError,
 	createNodeExecFileAdapter,
+	isNativeReviewUnachievableVerbRefused,
 	type ExecFileAdapter,
+	type NativeTargetStatusRequest,
 } from "../lib/native-review-cli.ts";
 
 const fixture = (name: string): Record<string, unknown> => JSON.parse(
@@ -133,6 +137,125 @@ test("provider-owned refuter and targeted-validator vectors accept only their ma
 	);
 });
 
+// gentle-pi#638: the host relay's deterministic-failure exit declares the
+// bound slot unachievable through the native verb instead of leaving the
+// operator to re-spend an identical reviewer run. The invocation names the
+// slot's frozen binding fields (--lineage/--target/--expected-revision/
+// --request-hash), the machine-readable --reason, an optional bounded
+// --detail, and the opaque --repository-context the slot carried; Go
+// verifies all of them against the frozen authority before recording
+// anything (internal/cli/review_capture_unachievable.go).
+const UNACHIEVABLE_TARGET = `sha256:${"1".repeat(64)}`;
+const UNACHIEVABLE_REVISION = `sha256:${"3".repeat(64)}`;
+const UNACHIEVABLE_REQUEST_HASH = `sha256:${"0".repeat(64)}`;
+const UNACHIEVABLE_ARTIFACT = { schema: "gentle-ai.review-capture-unachievable/v1", lineage_id: "relay-lineage", target_identity: UNACHIEVABLE_TARGET, lens: "review-reliability", selected_order: 0, reason: "relay_transport_bound_exceeded", recorded: true };
+function unachievableRequest(cwd = "/repo") {
+	return { cwd, lineageId: "relay-lineage", targetIdentity: UNACHIEVABLE_TARGET, expectedRevision: UNACHIEVABLE_REVISION, requestHash: UNACHIEVABLE_REQUEST_HASH, reason: "relay_transport_bound_exceeded" };
+}
+
+test("capture-unachievable declares the exact slot binding and decodes its recorded artifact", async () => {
+	const queue = queuedAdapter([{ stdout: JSON.stringify(UNACHIEVABLE_ARTIFACT) }]);
+	const result = await client(queue.adapter).captureUnachievableLens({ ...unachievableRequest(), detail: "killed after 2256004ms against a 2256000ms relay bound", repositoryContext: "rctx1_" + "e".repeat(64) });
+	assert.deepEqual(result, { schema: "gentle-ai.review-capture-unachievable/v1", lineageId: "relay-lineage", targetIdentity: UNACHIEVABLE_TARGET, lens: "review-reliability", selectedOrder: 0, reason: "relay_transport_bound_exceeded", recorded: true });
+	// gentle-pi#822: --repository-context is authoritative and mutually exclusive with a path, so a declaration carrying one names no --cwd; the process still runs from request.cwd.
+	assert.deepEqual(queue.calls[0]?.arguments, ["review", "capture-unachievable", "--lineage", "relay-lineage", "--target", UNACHIEVABLE_TARGET, "--expected-revision", UNACHIEVABLE_REVISION, "--request-hash", UNACHIEVABLE_REQUEST_HASH, "--reason", "relay_transport_bound_exceeded", "--detail", "killed after 2256004ms against a 2256000ms relay bound", "--repository-context", "rctx1_" + "e".repeat(64)]);
+	assert.equal(queue.calls[0]?.cwd, "/repo", "the process working directory stays request.cwd even when --cwd is not passed as an argument");
+	assert.equal(queue.calls[0]?.timeoutMs, undefined, "the mutating declaration runs without the read-only negotiation timeout");
+
+	// the optional detail and repository context are genuinely optional
+	const bare = queuedAdapter([{ stdout: JSON.stringify(UNACHIEVABLE_ARTIFACT) }]);
+	await client(bare.adapter).captureUnachievableLens(unachievableRequest());
+	assert.deepEqual(bare.calls[0]?.arguments, ["review", "capture-unachievable", "--lineage", "relay-lineage", "--target", UNACHIEVABLE_TARGET, "--expected-revision", UNACHIEVABLE_REVISION, "--request-hash", UNACHIEVABLE_REQUEST_HASH, "--reason", "relay_transport_bound_exceeded", "--cwd", "/repo"]);
+	assert.equal(bare.calls[0]?.cwd, "/repo");
+});
+
+test("capture-unachievable measures detail in UTF-8 bytes, not UTF-16 code units", async () => {
+	const atLimit = queuedAdapter([{ stdout: JSON.stringify(UNACHIEVABLE_ARTIFACT) }]);
+	await client(atLimit.adapter).captureUnachievableLens({ ...unachievableRequest(), detail: "é".repeat(256) });
+	assert.equal(atLimit.calls.length, 1, "256 two-byte characters are exactly the 512-byte limit and must pass");
+
+	const oneCharBeyond = queuedAdapter([]);
+	await assert.rejects(() => client(oneCharBeyond.adapter).captureUnachievableLens({ ...unachievableRequest(), detail: "é".repeat(257) }), TypeError);
+	assert.equal(oneCharBeyond.calls.length, 0, "257 two-byte characters are 514 bytes and are refused before any process launches");
+
+	const shortButHeavy = queuedAdapter([]);
+	await assert.rejects(() => client(shortButHeavy.adapter).captureUnachievableLens({ ...unachievableRequest(), detail: "é".repeat(300) }), TypeError);
+	assert.equal(shortButHeavy.calls.length, 0, "300 code units pass a .length check but encode to 600 bytes and must throw");
+});
+
+test("capture-unachievable validates its request and artifact shape before and after the invocation", async () => {
+	for (const request of [
+		{ ...unachievableRequest(), lineageId: "" },
+		{ ...unachievableRequest(), targetIdentity: "not-a-sha" },
+		{ ...unachievableRequest(), expectedRevision: " " },
+		{ ...unachievableRequest(), requestHash: "sha256:short" },
+		{ ...unachievableRequest(), reason: "" },
+		{ ...unachievableRequest(), detail: "x".repeat(513) },
+		{ ...unachievableRequest(), repositoryContext: "no\u0000context" },
+	]) {
+		const queue = queuedAdapter([]);
+		await assert.rejects(() => client(queue.adapter).captureUnachievableLens(request), TypeError);
+		assert.equal(queue.calls.length, 0, "a malformed declaration is refused before any process launches");
+	}
+
+	for (const artifact of [
+		{ ...UNACHIEVABLE_ARTIFACT, schema: "gentle-ai.review-capture-unachievable/v2" },
+		{ ...UNACHIEVABLE_ARTIFACT, recorded: false },
+		{ ...UNACHIEVABLE_ARTIFACT, selected_order: -1 },
+	]) {
+		const queue = queuedAdapter([{ stdout: JSON.stringify(artifact) }]);
+		await assert.rejects(() => client(queue.adapter).captureUnachievableLens(unachievableRequest()));
+		assert.equal(queue.calls.length, 1);
+	}
+});
+
+test("an older binary's unknown-verb refusal classifies as a capability signal, not a capture failure", async () => {
+	const queue = queuedAdapter([{ stdout: "", stderr: 'Error: unknown review command "capture-unachievable"\n', exitCode: 1 }]);
+	const error = await client(queue.adapter).captureUnachievableLens(unachievableRequest()).then(() => undefined, (caught: unknown) => caught);
+	assert.ok(error instanceof NativeReviewCliError, "an empty-stdout refusal rejects with the typed CLI error carrying stderr diagnostics");
+	assert.equal(isNativeReviewUnachievableVerbRefused(error), true);
+
+	// Every other stderr — a typed binding-mismatch refusal, a timeout, or a
+	// clean run — is a real outcome, never a capability signal.
+	assert.equal(isNativeReviewUnachievableVerbRefused(new Error('unknown review command "capture-unachievable"')), false, "only the captured native stderr classifies");
+	const typedRefusal = new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.NON_ZERO, "review/capture-unachievable", true, true, "native capture-unachievable refused", { operation: "review/capture-unachievable", error_code: NATIVE_REVIEW_ERROR_CODE.NON_ZERO, exit_code: 1, timed_out: false, output_limit_exceeded: false, stderr: "Error: review capture-unachievable binding does not match the current reviewing authority [invalid_request]" });
+	assert.equal(isNativeReviewUnachievableVerbRefused(typedRefusal), false);
+});
+
+test("nonzero targeted-validator capture preserves its dot-form typed failure", async () => {
+	const failure = {
+		schema: "gentle-ai.review-integration.failure/v2",
+		contract: "gentle-ai.review-integration/v2",
+		operation: "review.capture-validation",
+		phase: "native_running",
+		code: "targeted_validation_failed",
+		message: "the targeted validator rejected the candidate",
+		mutation_outcome: "unknown",
+		authority_applicability: "current_target",
+		retry_safe: false,
+		replayability: "status_required",
+		required_inputs: [],
+		next_action: "review.status",
+	};
+	const queue = queuedAdapter([{ stdout: JSON.stringify(failure), exitCode: 1 }]);
+	await assert.rejects(
+		() => client(queue.adapter).captureProviderRole({
+			captureOperation: "review.capture-validation",
+			argumentTokens: ["--repository-context=rctx1_" + "a".repeat(64), "--agent=pi", "--execute=true"],
+			cwd: "/repo",
+		}),
+		(error: unknown) => {
+			if (!(error instanceof NativeReviewIntegrationError)) return false;
+			assert.equal(error.failureEnvelope.operation, "review.capture-validation");
+			assert.equal(error.mutationOutcome, "unknown");
+			assert.equal(error.nextAction, "review.status");
+			assert.deepEqual(error.failureEnvelope.raw, failure);
+			return true;
+		},
+	);
+	assert.deepEqual(queue.calls[0]?.arguments, ["review", "capture-validation", "--repository-context=rctx1_" + "a".repeat(64), "--agent=pi", "--execute=true"]);
+});
+
 test("malformed closure output remains a typed schema failure and never authorizes a retry", async () => {
 	const queue = queuedAdapter([{ stdout: JSON.stringify({ schema: "gentle-ai.review-last-event-closure/v1", operation: "review/capture-result" }) }]);
 	await assert.rejects(
@@ -247,7 +370,8 @@ test("negotiated STATUS rejects malformed committed selectors before launching a
 		{ cwd: "/repo", baseRef: "refs/heads/main", committedOnly: "true" },
 	]) {
 		const queue = queuedAdapter([]);
-		await assert.rejects(() => client(queue.adapter).targetStatus(request), TypeError);
+		// gentle-pi#822: these fixtures are intentionally mistyped (a numeric baseRef, a string committedOnly) — the repo's `as unknown as` idiom keeps the invalid shapes reaching the validator instead of widening the request type.
+		await assert.rejects(() => client(queue.adapter).targetStatus(request as unknown as NativeTargetStatusRequest), TypeError);
 		assert.equal(queue.calls.length, 0);
 	}
 });
@@ -568,8 +692,11 @@ test("capture-result receives the controller AbortSignal without an automatic mu
 	assert.equal(receivedTimeout, undefined);
 });
 
-test("native review client leaves SDD status resolution to the local SDD engine", () => {
-	assert.equal("sddStatus" in client(queuedAdapter([]).adapter), false);
+test("native review transport has no SDD operations or methods", () => {
+	assert.equal(Object.values(NATIVE_REVIEW_OPERATION).some((operation) => operation.startsWith("sdd-")), false);
+	const transport = client(queuedAdapter([]).adapter) as unknown as Record<string, unknown>;
+	assert.equal("sddStatus" in transport, false);
+	assert.equal("sddContinue" in transport, false);
 });
 
 test("read-only authority inventory rejects a repository identity mismatch after decoding", async () => {

@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   publish:
-    if: github.repository == 'Gentleman-Programming/gentle-pi'
+    if: github.repository == 'Gentleman-Programming/gentle-shell'
     environment: npm
     runs-on: ubuntu-latest
     permissions:
@@ -67,14 +67,14 @@ jobs:
 
           const expectedRepository = {
             type: "git",
-            url: "git+https://github.com/Gentleman-Programming/gentle-pi.git",
+            url: "git+https://github.com/Gentleman-Programming/gentle-shell.git",
           };
           if (
             packageJson.repository?.type !== expectedRepository.type ||
             packageJson.repository?.url !== expectedRepository.url
           ) {
             throw new Error(
-              "package.json.repository must exactly match Gentleman-Programming/gentle-pi.",
+              "package.json.repository must exactly match Gentleman-Programming/gentle-shell.",
             );
           }
           NODE

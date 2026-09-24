@@ -28,24 +28,46 @@ for (const [name, packagePath] of [
 	["npm", ["npm", "node_modules", "gentle-pi"]],
 	["Pi Git", ["git", "github.com", "Gentleman-Programming", "gentle-pi"]],
 ] as const) {
-	test(`recognized global ${name} installation persists fullscreen and preserves other settings`, async (t) => {
+	test(`recognized global ${name} installation persists fullscreen when tuiMode is unset`, async (t) => {
 		const f = fixture(t, packagePath);
-		writeFileSync(f.settings, JSON.stringify({ tuiMode: "regular", theme: "rose", nested: { enabled: false } }));
+		writeFileSync(f.settings, JSON.stringify({ theme: "rose", nested: { enabled: false } }));
 		assert.deepEqual(await installTuiModeSetting(f.options), { changed: true, recognized: true });
 		assert.deepEqual(JSON.parse(readFileSync(f.settings, "utf8")), { tuiMode: "fullscreen", theme: "rose", nested: { enabled: false } });
 	});
+	test(`recognized global ${name} installation preserves an explicit regular choice`, async (t) => {
+		const f = fixture(t, packagePath);
+		const text = JSON.stringify({ tuiMode: "regular", theme: "rose", nested: { enabled: false } });
+		writeFileSync(f.settings, text);
+		assert.deepEqual(await installTuiModeSetting(f.options), { changed: false, recognized: true });
+		assert.equal(readFileSync(f.settings, "utf8"), text);
+	});
 }
 
-for (const initial of [undefined, '{ "tuiMode": "regular", "packages": ["npm:example"] }']) {
-	test(`creates or resets fullscreen: ${initial ?? "missing"}`, async (t) => {
+test("creates fullscreen when tuiMode is missing", async (t) => {
+	const f = fixture(t);
+	assert.equal((await installTuiModeSetting(f.options)).changed, true);
+	assert.equal(JSON.parse(readFileSync(f.settings, "utf8")).tuiMode, "fullscreen");
+});
+
+test("explicit regular is preserved across reruns", async (t) => {
+	const f = fixture(t);
+	writeFileSync(f.settings, '{ "tuiMode": "regular", "packages": ["npm:example"] }');
+	assert.equal((await installTuiModeSetting(f.options)).changed, false);
+	writeFileSync(f.settings, '{ "tuiMode": "regular", "theme": "custom" }');
+	const before = lstatSync(f.settings);
+	await installTuiModeSetting(f.options);
+	assert.equal(lstatSync(f.settings).ino, before.ino);
+	const value = JSON.parse(readFileSync(f.settings, "utf8"));
+	assert.equal(value.theme, "custom");
+	assert.equal(value.tuiMode, "regular");
+});
+
+for (const invalid of [null, "", "fulscreen", 42]) {
+	test(`unrecognized tuiMode keeps the self-heal default: ${JSON.stringify(invalid)}`, async (t) => {
 		const f = fixture(t);
-		if (initial) writeFileSync(f.settings, initial);
+		writeFileSync(f.settings, JSON.stringify({ tuiMode: invalid, theme: "rose" }));
 		assert.equal((await installTuiModeSetting(f.options)).changed, true);
-		assert.equal(JSON.parse(readFileSync(f.settings, "utf8")).tuiMode, "fullscreen");
-		writeFileSync(f.settings, '{ "tuiMode": "regular", "theme": "custom" }');
-		await installTuiModeSetting(f.options);
-		assert.equal(JSON.parse(readFileSync(f.settings, "utf8")).theme, "custom");
-		assert.equal(JSON.parse(readFileSync(f.settings, "utf8")).tuiMode, "fullscreen");
+		assert.deepEqual(JSON.parse(readFileSync(f.settings, "utf8")), { tuiMode: "fullscreen", theme: "rose" });
 	});
 }
 
@@ -194,18 +216,21 @@ test("Pi proper-lockfile contention is bounded and never steals the lock", async
 	assert.equal(JSON.parse(readFileSync(f.settings, "utf8")).theme, "kept");
 });
 
-test("Pi's later packages-only save retains persisted fullscreen", async (t) => {
+test("Pi's later packages-only save retains the persisted tui mode", async (t) => {
 	const f = fixture(t);
-	writeFileSync(f.settings, '{"tuiMode":"regular"}');
+	writeFileSync(f.settings, '{"theme":"kept"}');
 	const { SettingsManager } = await import("@earendil-works/pi-coding-agent");
 	const manager = SettingsManager.create(f.root, f.home);
 	await installTuiModeSetting(f.options);
 	manager.setPackages(["npm:gentle-pi"]);
 	await manager.flush();
 	assert.deepEqual(manager.drainErrors(), []);
-	assert.deepEqual(JSON.parse(readFileSync(f.settings, "utf8")), { tuiMode: "fullscreen", packages: ["npm:gentle-pi"] });
+	assert.deepEqual(JSON.parse(readFileSync(f.settings, "utf8")), { tuiMode: "fullscreen", theme: "kept", packages: ["npm:gentle-pi"] });
 	manager.setTuiMode("regular");
 	await manager.flush();
+	assert.equal(JSON.parse(readFileSync(f.settings, "utf8")).tuiMode, "regular");
+	// A later recognized postinstall (package update) preserves the explicit choice.
+	await installTuiModeSetting(f.options);
 	assert.equal(JSON.parse(readFileSync(f.settings, "utf8")).tuiMode, "regular");
 });
 

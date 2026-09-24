@@ -3,15 +3,20 @@ import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
 	accountIdFromToken,
+	CLAUDE_BRIDGE_BUS_ABSENT_NOTE,
+	CLAUDE_BRIDGE_PROVIDER,
 	formatReset,
 	parseAnthropicHeaders,
 	parseCodexHeaders,
 	parseNanQuota,
 	parseProviderUsage,
+	parseProviderUsageBusSnapshot,
 	parseUsageHeaders,
 	parseCodexUsage,
 	parseUsageSource,
 	providerNote,
+	PROVIDER_USAGE_BUS_SYMBOL,
+	readProviderUsageBus,
 	renderUsageBar,
 	renderUsagePanel,
 	SUPPORTED_USAGE_PROVIDERS,
@@ -246,6 +251,98 @@ test("nan is a supported usage provider with its own pending note", () => {
 	assert.ok(SUPPORTED_USAGE_PROVIDERS.includes("nan"));
 	assert.equal(providerNote("nan"), "no usage yet · r to fetch");
 	assert.deepEqual(renderUsagePanel([], plainTheme, 100, NOW, { provider: "nan" }), ["✿ nan · no usage yet · r to fetch"]);
+});
+
+// The claude-bridge provider reads globalThis[pi.provider-usage.bus.v1], the
+// structural contract @schuettc/pi-claude-bridge publishes. Nothing here
+// imports that package: every field is read defensively, exactly like the
+// NaN quota payload above.
+
+function claudeBusWindow(id: string, usedPercent: number, extra: Record<string, unknown> = {}) {
+	return { id, label: "7d", usedPercent, windowMinutes: 300, resetsAt: 1_788_620_161, scope: { kind: "account" }, ...extra };
+}
+
+const CLAUDE_BUS_SNAPSHOT = {
+	version: 1,
+	provider: "claude",
+	providerLabel: "Claude",
+	source: "claude-code-sdk-rate-limit-event",
+	capturedAt: NOW,
+	complete: true,
+	adapterId: "schuettc.pi-claude-bridge",
+	windows: [
+		claudeBusWindow("five_hour", 62, { windowMinutes: 300 }),
+		claudeBusWindow("seven_day", 31, { windowMinutes: 10_080 }),
+		claudeBusWindow("seven_day_opus", 45, { windowMinutes: 10_080, scope: { kind: "model", modelIds: ["claude-opus-5-5"], label: "Opus" } }),
+		claudeBusWindow("seven_day_sonnet", 20, { windowMinutes: 10_080, scope: { kind: "model", modelIds: ["claude-sonnet-5"], label: "Sonnet" } }),
+		claudeBusWindow("seven_day_oauth_apps", 5, { label: "7d OAuth apps", windowMinutes: 10_080 }),
+	],
+};
+
+test("parseProviderUsageBusSnapshot maps the account windows to the main limit and the family/oauth windows to their own", () => {
+	const usage = parseProviderUsageBusSnapshot(CLAUDE_BUS_SNAPSHOT, NOW);
+	assert.equal(usage?.provider, CLAUDE_BRIDGE_PROVIDER);
+	assert.equal(usage?.plan, undefined);
+	assert.equal(usage?.fetchedAt, NOW);
+	assert.deepEqual(usage?.limits.map((limit) => limit.name), ["claude", "opus", "sonnet", "oauth apps"]);
+	const [claude, opus, sonnet, oauthApps] = usage?.limits ?? [];
+	assert.deepEqual(claude?.windows.map((window) => window.label), ["5h", "week"]);
+	assert.equal(claude?.windows[0].usedPercent, 62);
+	assert.equal(claude?.windows[0].windowSeconds, 18_000);
+	assert.equal(claude?.windows[0].resetAt, 1_788_620_161_000);
+	assert.equal(claude?.windows[1].usedPercent, 31);
+	assert.equal(claude?.windows[1].windowSeconds, 604_800);
+	assert.equal(opus?.windows[0].usedPercent, 45);
+	assert.equal(opus?.windows[0].label, "week");
+	assert.equal(sonnet?.windows[0].usedPercent, 20);
+	assert.equal(oauthApps?.windows[0].usedPercent, 5);
+});
+
+test("parseProviderUsageBusSnapshot keeps whatever windows are usable and drops the rest, never throwing", () => {
+	const partial = parseProviderUsageBusSnapshot(
+		{
+			version: 1,
+			provider: "claude",
+			windows: [
+				claudeBusWindow("five_hour", 10, { windowMinutes: 300 }),
+				{ id: "seven_day", windowMinutes: 10_080, scope: { kind: "account" } }, // no usedPercent: unusable
+				{ id: "seven_day_opus", usedPercent: 5, scope: { kind: "model", modelIds: ["x"], label: "Opus" } }, // no windowMinutes: unusable
+				"not an object",
+				null,
+				42,
+			],
+		},
+		NOW,
+	);
+	assert.deepEqual(partial?.limits.map((limit) => limit.name), ["claude"]);
+	assert.deepEqual(partial?.limits[0]?.windows.map((window) => window.usedPercent), [10]);
+});
+
+test("parseProviderUsageBusSnapshot degrades to undefined for a malformed snapshot and to an empty one for no windows", () => {
+	assert.equal(parseProviderUsageBusSnapshot(undefined, NOW), undefined);
+	assert.equal(parseProviderUsageBusSnapshot("not a snapshot", NOW), undefined);
+	assert.equal(parseProviderUsageBusSnapshot({ version: 2, provider: "claude", windows: [] }, NOW), undefined, "an unsupported bus version must not be read");
+	assert.equal(parseProviderUsageBusSnapshot({ version: 1, provider: "codex", windows: [] }, NOW), undefined, "a snapshot for another usage provider is not ours to read");
+	assert.equal(parseProviderUsageBusSnapshot({ version: 1, provider: "claude", windows: "nope" }, NOW), undefined);
+	assert.deepEqual(parseProviderUsageBusSnapshot({ version: 1, provider: "claude", windows: [] }, NOW)?.limits, []);
+});
+
+test("readProviderUsageBus resolves a well-shaped bus at the well-known symbol and nothing else", () => {
+	const bus = { register() {}, adapters() { return []; }, subscribe() { return () => {}; }, publish() { return 0; } };
+	assert.equal(readProviderUsageBus({ [PROVIDER_USAGE_BUS_SYMBOL]: bus } as never), bus);
+	assert.equal(readProviderUsageBus({} as never), undefined, "no bridge extension loaded, no bus published");
+	assert.equal(readProviderUsageBus({ [PROVIDER_USAGE_BUS_SYMBOL]: "not a bus" } as never), undefined);
+	assert.equal(readProviderUsageBus({ [PROVIDER_USAGE_BUS_SYMBOL]: { adapters() { return []; } } } as never), undefined, "a bus missing subscribe() is not usable");
+});
+
+test("claude-bridge is a supported usage provider whose pending note names the missing bus, not the generic unsupported note", () => {
+	assert.ok(SUPPORTED_USAGE_PROVIDERS.includes(CLAUDE_BRIDGE_PROVIDER));
+	const withBus = { [PROVIDER_USAGE_BUS_SYMBOL]: { register() {}, adapters() { return []; }, subscribe() { return () => {}; }, publish() { return 0; } } };
+	assert.equal(providerNote(CLAUDE_BRIDGE_PROVIDER, undefined, withBus as never), "no usage yet · r to fetch");
+	assert.equal(providerNote(CLAUDE_BRIDGE_PROVIDER, undefined, {} as never), CLAUDE_BRIDGE_BUS_ABSENT_NOTE);
+	assert.deepEqual(renderUsagePanel([], plainTheme, 100, NOW, { provider: CLAUDE_BRIDGE_PROVIDER }, undefined, {} as never), [
+		`✿ claude-bridge · ${CLAUDE_BRIDGE_BUS_ABSENT_NOTE}`,
+	]);
 });
 
 // A generic hook: any extension can register a usage source for its own

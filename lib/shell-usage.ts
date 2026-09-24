@@ -80,6 +80,18 @@ interface RawNanQuota {
 export const CODEX_PROVIDER = "openai-codex";
 export const ANTHROPIC_PROVIDER = "anthropic";
 export const NAN_PROVIDER = "nan";
+export const CLAUDE_BRIDGE_PROVIDER = "claude-bridge";
+// The structural provider-usage-bus contract published by
+// @schuettc/pi-claude-bridge (and consumable by any other bridge that
+// implements it). gentle-shell never imports that package: it resolves this
+// well-known symbol off the global object at runtime and validates every
+// field it reads, exactly like the NaN quota payload below.
+export const PROVIDER_USAGE_BUS_SYMBOL = Symbol.for("pi.provider-usage.bus.v1");
+// The account-scope windows the bus reports become one "claude" limit; every
+// other window (a model family, OAuth apps, or anything a future bridge
+// build adds) becomes its own limit, one window each.
+const CLAUDE_BRIDGE_MAIN_WINDOW_ORDER = ["five_hour", "seven_day"];
+const CLAUDE_BRIDGE_MAIN_LIMIT_NAME = "claude";
 const ANTHROPIC_MAIN_LIMIT = "claude";
 const ANTHROPIC_PREFIX = "anthropic-ratelimit-unified-";
 const ANTHROPIC_WINDOWS: ReadonlyArray<[key: string, seconds: number]> = [
@@ -116,14 +128,20 @@ const ROLE = {
 	SEPARATOR: "muted",
 } as const;
 export const USAGE_EMPTY_MESSAGE = "No subscription usage yet. Usage arrives with the next response, or press r to fetch it.";
-export const SUPPORTED_USAGE_PROVIDERS: readonly string[] = [CODEX_PROVIDER, ANTHROPIC_PROVIDER, NAN_PROVIDER];
+export const SUPPORTED_USAGE_PROVIDERS: readonly string[] = [CODEX_PROVIDER, ANTHROPIC_PROVIDER, NAN_PROVIDER, CLAUDE_BRIDGE_PROVIDER];
 const DEFAULT_PENDING_NOTE = "no usage yet · r to fetch";
 const PENDING_NOTE: Record<string, string> = {
 	[CODEX_PROVIDER]: DEFAULT_PENDING_NOTE,
 	[NAN_PROVIDER]: DEFAULT_PENDING_NOTE,
+	[CLAUDE_BRIDGE_PROVIDER]: DEFAULT_PENDING_NOTE,
 	[ANTHROPIC_PROVIDER]: "usage arrives with the first response",
 };
 const UNSUPPORTED_NOTE = "no subscription usage for this provider";
+// Shown for claude-bridge instead of the pending note above when no bridge
+// extension has published the usage bus at all: a session without that
+// extension loaded is a different situation than one that has it but has not
+// fetched yet, and the reader should not have to guess which one this is.
+export const CLAUDE_BRIDGE_BUS_ABSENT_NOTE = "claude-bridge · usage bus not published by this bridge build";
 const ACTIVE_MARK = "✿";
 
 export interface ActiveProvider {
@@ -188,7 +206,23 @@ export class UsageSourceRegistry {
 	}
 }
 
-export function providerNote(provider: string, registry?: UsageSourceRegistry): string {
+// A bus-shaped object at the well-known symbol: register/adapters/subscribe/
+// publish must all be functions, or nothing here trusts it. `globalObject`
+// defaults to the real global so production code never has to pass it, and
+// tests can inject a fake one instead of touching globalThis.
+export function readProviderUsageBus(globalObject: object = globalThis): unknown {
+	const bus = (globalObject as Record<symbol, unknown>)[PROVIDER_USAGE_BUS_SYMBOL];
+	if (!bus || typeof bus !== "object") return undefined;
+	const candidate = bus as Record<string, unknown>;
+	if (typeof candidate.register !== "function") return undefined;
+	if (typeof candidate.adapters !== "function") return undefined;
+	if (typeof candidate.subscribe !== "function") return undefined;
+	if (typeof candidate.publish !== "function") return undefined;
+	return bus;
+}
+
+export function providerNote(provider: string, registry?: UsageSourceRegistry, globalObject: object = globalThis): string {
+	if (provider === CLAUDE_BRIDGE_PROVIDER) return readProviderUsageBus(globalObject) ? DEFAULT_PENDING_NOTE : CLAUDE_BRIDGE_BUS_ABSENT_NOTE;
 	return PENDING_NOTE[provider] ?? registry?.note(provider) ?? UNSUPPORTED_NOTE;
 }
 
@@ -322,6 +356,73 @@ export function parseAnthropicHeaders(headers: Record<string, string>, now: numb
 
 export function parseUsageHeaders(headers: Record<string, string>, now: number): ProviderUsage | undefined {
 	return parseCodexHeaders(headers, now) ?? parseAnthropicHeaders(headers, now);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// One window off the bus: id, a finite usedPercent, and a finite positive
+// windowMinutes are the minimum a window needs to become a meter row.
+// resetsAt is epoch seconds when present, null otherwise (a window can be
+// live without a known reset). Everything else about the raw entry -- label
+// text, state, scope shape beyond what naming needs -- is read defensively
+// and never required, so a bridge build that adds fields or omits optional
+// ones still degrades to "skip this window", never to a thrown error.
+function parseBusWindow(value: unknown): { id: string; scopeLabel: string | undefined; window: UsageWindow } | undefined {
+	if (!isRecord(value)) return undefined;
+	if (typeof value.id !== "string" || value.id.length === 0) return undefined;
+	if (typeof value.usedPercent !== "number" || !Number.isFinite(value.usedPercent)) return undefined;
+	if (typeof value.windowMinutes !== "number" || !Number.isFinite(value.windowMinutes) || value.windowMinutes <= 0) return undefined;
+	const windowSeconds = Math.round(value.windowMinutes * MINUTE);
+	const resetAt = typeof value.resetsAt === "number" && Number.isFinite(value.resetsAt) && value.resetsAt >= 0 ? Math.round(value.resetsAt * 1000) : null;
+	const scope = value.scope;
+	const scopeLabel = isRecord(scope) && scope.kind === "model" && typeof scope.label === "string" && scope.label.length > 0 ? scope.label : undefined;
+	return { id: value.id, scopeLabel, window: { label: windowLabel(windowSeconds), usedPercent: value.usedPercent, windowSeconds, resetAt } };
+}
+
+// A window outside the account main pair names its own limit: a model
+// family's scope label when the bus carries one (Opus, Sonnet), or the id
+// itself with its "seven_day_" prefix stripped and underscores turned to
+// spaces otherwise (seven_day_oauth_apps -> "oauth apps"). This is a
+// best-effort name for a window this build does not specifically know about
+// yet, not a hardcoded list: a future bridge window still gets a readable
+// row instead of being dropped.
+function claudeBridgeLimitName(id: string, scopeLabel: string | undefined): string {
+	if (scopeLabel) return scopeLabel.toLowerCase();
+	return id.replace(/^seven_day_/, "").replaceAll("_", " ");
+}
+
+// Maps globalThis[pi.provider-usage.bus.v1]'s "claude" snapshot to a
+// ProviderUsage: the five_hour and seven_day account windows become the main
+// "claude" limit, and every other window (a model family, OAuth apps, or
+// anything a later bridge build adds) becomes its own single-window limit.
+// The snapshot crosses an extension boundary, so the top-level shape is
+// checked before anything else is read, and a shape mismatch returns
+// undefined rather than throwing; a well-shaped snapshot with no usable
+// windows still returns a ProviderUsage with an empty limits array, the same
+// "nothing to show yet" shape parseNanQuota returns for an empty quota.
+export function parseProviderUsageBusSnapshot(value: unknown, now: number): ProviderUsage | undefined {
+	if (!isRecord(value)) return undefined;
+	if (value.version !== 1) return undefined;
+	if (value.provider !== "claude") return undefined;
+	if (!Array.isArray(value.windows)) return undefined;
+	const mainWindows: Array<{ id: string; window: UsageWindow }> = [];
+	const additional: UsageLimit[] = [];
+	for (const raw of value.windows) {
+		const parsed = parseBusWindow(raw);
+		if (!parsed) continue;
+		if (CLAUDE_BRIDGE_MAIN_WINDOW_ORDER.includes(parsed.id)) {
+			mainWindows.push({ id: parsed.id, window: parsed.window });
+		} else {
+			additional.push({ name: claudeBridgeLimitName(parsed.id, parsed.scopeLabel), windows: [parsed.window], limitReached: false });
+		}
+	}
+	mainWindows.sort((a, b) => CLAUDE_BRIDGE_MAIN_WINDOW_ORDER.indexOf(a.id) - CLAUDE_BRIDGE_MAIN_WINDOW_ORDER.indexOf(b.id));
+	const limits: UsageLimit[] = [];
+	if (mainWindows.length > 0) limits.push({ name: CLAUDE_BRIDGE_MAIN_LIMIT_NAME, windows: mainWindows.map((entry) => entry.window), limitReached: false });
+	limits.push(...additional);
+	return { provider: CLAUDE_BRIDGE_PROVIDER, plan: undefined, limits, fetchedAt: now };
 }
 
 // NaN Cloud reports one allowance per model for the billing period, plus the
@@ -529,13 +630,13 @@ function updatedAgo(fetchedAt: number, now: number): string {
 
 // The active provider comes first, marked with the petal, and explains
 // itself when it has no data yet. Other providers seen this session follow.
-export function renderUsagePanel(usages: ProviderUsage[], theme: UsageTheme, width: number, now: number, active?: ActiveProvider, registry?: UsageSourceRegistry): string[] {
+export function renderUsagePanel(usages: ProviderUsage[], theme: UsageTheme, width: number, now: number, active?: ActiveProvider, registry?: UsageSourceRegistry, globalObject: object = globalThis): string[] {
 	const activeUsage = active ? usages.find((usage) => usage.provider === active.provider) : undefined;
 	const others = usages.filter((usage) => usage !== activeUsage);
 	if (!active && usages.length === 0) return [truncateToWidth(USAGE_EMPTY_MESSAGE, width, "…")];
 	const lines: string[] = [];
 	if (active && !activeUsage) {
-		lines.push(`${theme.fg(ROLE.LIMIT, ACTIVE_MARK)} ${theme.fg(ROLE.PROVIDER, active.provider)} ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.RESET, providerNote(active.provider, registry))}`);
+		lines.push(`${theme.fg(ROLE.LIMIT, ACTIVE_MARK)} ${theme.fg(ROLE.PROVIDER, active.provider)} ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.RESET, providerNote(active.provider, registry, globalObject))}`);
 	}
 	for (const usage of [...(activeUsage ? [activeUsage] : []), ...others]) {
 		const mark = usage === activeUsage ? `${theme.fg(ROLE.LIMIT, ACTIVE_MARK)} ` : "";

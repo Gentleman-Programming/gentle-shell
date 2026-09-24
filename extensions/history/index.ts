@@ -91,7 +91,6 @@ const HEADER_INLINE_MIN_GAP = 4;
 
 // v2 multi-concurrency store root (design: tmp/multi-concurrency-design.md).
 const PI_HISTORY_ROOT = join(homedir(), ".pi", "agent", "history");
-const AGENT_DIR = join(homedir(), ".pi", "agent");
 const CURRENT_CWD = process.cwd();
 // Instance identity: one exclusive capture file per pi process.
 const INSTANCE_ID = randomUUID();

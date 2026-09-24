@@ -53,6 +53,7 @@ function captureHandlerWith(env: NodeJS.ProcessEnv, root: string) {
   });
   return registered[0][1] as (event: unknown) => void;
 }
+
 test("no file is created until the first capture", () => {
   const root = makeRoot();
   const state = openWriterForTest(root, "sess-1");
@@ -133,6 +134,47 @@ test("the extension entry wires capture first, then the selector surface", () =>
   // The capture handler is callable but is NEVER invoked here: a real
   // invocation would run getWriter() against ~/.pi/agent/history.
   assert.equal(typeof registered[0][1], "function");
+});
+
+test("captureEnabled is a strict opt-in", () => {
+  assert.equal(captureEnabled({}), false);
+  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: "0" }), false);
+  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: "false" }), false);
+  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: "off" }), false);
+  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: "yes" }), false);
+  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: " 1 " }), true);
+  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: "TRUE" }), true);
+  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: "On" }), true);
+});
+
+test("the capture handler is a no-op unless the user opts in", () => {
+  const root = makeRoot();
+  const handler = captureHandlerWith({}, root);
+  handler({ prompt: "sensitive prompt" });
+  handler({ prompt: "another one" });
+  // Nothing at all: no capture file, no project dir, no registry entry.
+  assert.deepEqual(fs.readdirSync(root), []);
+});
+
+test("an opted-in session captures delivered prompts", () => {
+  const root = makeRoot();
+  const handler = captureHandlerWith({ GENTLE_PI_HISTORY_CAPTURE: "1" }, root);
+  handler({ prompt: "hello store" });
+  assert.deepEqual(fileTexts(sessionFilePath(root, CWD, "inst-entry")), [
+    "hello store",
+  ]);
+});
+
+test("disabling capture stops new lines and leaves existing files alone", () => {
+  const root = makeRoot();
+  const env: NodeJS.ProcessEnv = { GENTLE_PI_HISTORY_CAPTURE: "true" };
+  const handler = captureHandlerWith(env, root);
+  handler({ prompt: "kept" });
+  const file = sessionFilePath(root, CWD, "inst-entry");
+  assert.equal(fs.existsSync(file), true);
+  delete env.GENTLE_PI_HISTORY_CAPTURE;
+  handler({ prompt: "never written" });
+  assert.deepEqual(fileTexts(file), ["kept"]);
 });
 
 test("captureEnabled is a strict opt-in", () => {

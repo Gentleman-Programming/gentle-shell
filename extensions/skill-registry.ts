@@ -318,7 +318,12 @@ async function ensureAtlIgnored(cwd: string): Promise<void> {
 	const gitignorePath = join(cwd, ".gitignore");
 	let existing = "";
 	if (await pathExists(gitignorePath)) {
-		existing = await readFile(gitignorePath, "utf8");
+		try {
+			existing = await readFile(gitignorePath, "utf8");
+		} catch {
+			// Permission denied on external storage - skip silently
+			return;
+		}
 	}
 	const hasAtlIgnore = existing
 		.split("\n")
@@ -327,7 +332,11 @@ async function ensureAtlIgnored(cwd: string): Promise<void> {
 	if (hasAtlIgnore) return;
 	const prefix = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
 	const header = existing.includes("# Local Pi runtime state") ? "" : "# Local Pi runtime state\n";
-	await writeFile(gitignorePath, `${existing}${prefix}${header}${ATL_IGNORE_ENTRY}\n`);
+	try {
+		await writeFile(gitignorePath, `${existing}${prefix}${header}${ATL_IGNORE_ENTRY}\n`);
+	} catch {
+		// Permission denied on external storage - skip silently
+	}
 }
 
 function isGeneratedLegacyProjectRegistry(source: string): boolean {
@@ -409,9 +418,13 @@ async function regenerateRegistry(
 		return rel.startsWith("..") ? d : rel || ".";
 	});
 	const md = renderRegistry(cwd, sources, deduped);
-	await mkdir(join(cwd, ".atl"), { recursive: true });
-	await writeFile(registryPath, md);
-	await writeFile(cachePath, JSON.stringify({ fingerprint: fp }, null, 2));
+	try {
+		await mkdir(join(cwd, ".atl"), { recursive: true });
+		await writeFile(registryPath, md);
+		await writeFile(cachePath, JSON.stringify({ fingerprint: fp }, null, 2));
+	} catch {
+		// Permission denied on external storage - skip silently
+	}
 	return {
 		regenerated: true,
 		skillCount: deduped.length,

@@ -162,6 +162,52 @@ test("renderShellBar meters the model the session is using inside a multi-model 
 	assert.match(other, /deepseek-v4-flash ▰▱▱▱▱▱▱▱ 18%$/);
 });
 
+// claude-bridge carries no raw allowance numbers (no used/budget on its
+// windows), so it takes the same ungrouped path Codex and Anthropic already
+// take: the bar meters the first limit's first window, exactly like Codex
+// above, and this must hold regardless of how many additional per-family
+// limits the panel later lists.
+test("renderShellBar shows claude-bridge's 5h percentage the same way it shows Codex's", () => {
+	const usage = {
+		provider: "claude-bridge",
+		plan: undefined,
+		fetchedAt: 0,
+		limits: [
+			{ name: "claude", limitReached: false, windows: [
+				{ label: "5h", usedPercent: 62, windowSeconds: 18_000, resetAt: null },
+				{ label: "week", usedPercent: 31, windowSeconds: 604_800, resetAt: null },
+			] },
+			{ name: "opus", limitReached: false, windows: [{ label: "week", usedPercent: 45, windowSeconds: 604_800, resetAt: null }] },
+		],
+	};
+	const [line] = renderShellBar(model({ usage }), plainTheme, 200);
+	assert.match(line, /\$9\.49 sub ⟡ claude 5h ▰▰▰▰▰▱▱▱ 62% · week 31%$/);
+	assert.doesNotMatch(line, /opus/, "the bar shows only the main account limit, not the per-family ones");
+});
+
+// Adding claude-bridge must never change what Codex, Anthropic, or NaN
+// render: they take the same code paths before and after this provider
+// exists, verified here with the same fixtures the tests above use.
+test("adding claude-bridge leaves Codex, Anthropic, and NaN bar output unchanged", () => {
+	const codexUsage = {
+		provider: "openai-codex",
+		plan: "pro",
+		fetchedAt: 0,
+		limits: [{ name: "codex", limitReached: false, windows: [
+			{ label: "5h", usedPercent: 62, windowSeconds: 18_000, resetAt: null },
+			{ label: "week", usedPercent: 31, windowSeconds: 604_800, resetAt: null },
+		] }],
+	};
+	assert.match(renderShellBar(model({ usage: codexUsage }), plainTheme, 200)[0], /\$9\.49 sub ⟡ codex 5h ▰▰▰▰▰▱▱▱ 62% · week 31%$/);
+	const nanUsage = {
+		provider: "nan",
+		plan: undefined,
+		fetchedAt: 0,
+		limits: [{ name: "glm5.3-flash", limitReached: false, windows: [{ label: "", usedPercent: 10, windowSeconds: 0, resetAt: null, used: 200_000_000, budget: 2_000_000_000 }] }],
+	};
+	assert.match(renderShellBar(model({ modelId: "glm5.3-flash", usage: nanUsage }), plainTheme, 200)[0], /glm5\.3-flash ▰▱▱▱▱▱▱▱ 10%$/);
+});
+
 test("renderShellBar keeps its own zero-window contract independent of the sidebar", () => {
 	const usage = {
 		provider: "openai-codex",

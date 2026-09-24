@@ -24,7 +24,7 @@ import {
 	type DoubleEscCancelPolicy,
 	type DoubleEscCancelResolution,
 } from "../lib/double-esc-cancel-policy.ts";
-import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseProviderUsage, parseUsageHeaders, parseUsageSource, UsageSourceRegistry, UsageStore, USAGE_SOURCE_EVENT, type ProviderUsage, type UsageSource } from "../lib/shell-usage.ts";
+import { accountIdFromToken, CLAUDE_BRIDGE_PROVIDER, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseProviderUsage, parseProviderUsageBusSnapshot, parseUsageHeaders, parseUsageSource, readProviderUsageBus, UsageSourceRegistry, UsageStore, USAGE_SOURCE_EVENT, type ProviderUsage, type UsageSource } from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarHeader, sidebarPart } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
@@ -69,6 +69,11 @@ export interface ShellDeps {
 	devBinary(): DevBinaryNotice | undefined;
 	resolveWorktree: WorktreeResolver;
 	gitRunner(cwd: string): GitRunner;
+	// The object the claude-bridge provider-usage bus is read from. Defaults to
+	// the real global so production code never has to pass it; tests inject a
+	// fake one carrying a fake bus at PROVIDER_USAGE_BUS_SYMBOL instead of
+	// touching globalThis.
+	globalObject: object;
 }
 
 // The rail digest runs every frame. Cache parsing by file identity and metadata,
@@ -106,7 +111,7 @@ function ambientDevBinary(): DevBinaryNotice | undefined {
 	}
 }
 
-const defaultShellDeps: Omit<ShellDeps, "activeProfile"> = { fetch: (...args) => globalThis.fetch(...args), now: () => Date.now(), devBinary: ambientDevBinary, resolveWorktree: resolveSessionWorktree, gitRunner: shellGitRunner };
+const defaultShellDeps: Omit<ShellDeps, "activeProfile"> = { fetch: (...args) => globalThis.fetch(...args), now: () => Date.now(), devBinary: ambientDevBinary, resolveWorktree: resolveSessionWorktree, gitRunner: shellGitRunner, globalObject: globalThis };
 
 interface AssistantUsageEntry {
 	type: string;
@@ -758,6 +763,91 @@ export async function fetchNanUsage(apiKey: string | undefined, fetchFn: typeof 
 	}
 }
 
+const CLAUDE_BRIDGE_ADAPTER_TIMEOUT_MS = 2000;
+
+interface ClaudeBridgeAdapter {
+	id: string;
+	refresh(options: { timeoutMs: number }): Promise<unknown>;
+}
+
+// The model provider id @schuettc/pi-claude-bridge registers itself under.
+// Other extensions can register their own adapter for the "claude" usage
+// provider (a different bridge, a test double, anything claiming the same
+// usageProvider), so selection keys on this instead of on being first in the
+// bus's adapter array or on usageProvider alone.
+const CLAUDE_BRIDGE_MODEL_PROVIDER = "claude-bridge";
+
+// The one adapter gentle-shell means by claude-bridge: identified by carrying
+// "claude-bridge" in its modelProviders, not by being the first entry whose
+// usageProvider is "claude". The bus can carry adapters for usage providers
+// gentle-shell has never heard of, any of which could claim that same
+// usageProvider for reasons that have nothing to do with this bridge.
+function claudeBridgeAdapter(bus: unknown): ClaudeBridgeAdapter | undefined {
+	if (!bus || typeof (bus as Record<string, unknown>).adapters !== "function") return undefined;
+	let adapters: unknown;
+	try {
+		adapters = (bus as { adapters(): unknown }).adapters();
+	} catch {
+		return undefined;
+	}
+	if (!Array.isArray(adapters)) return undefined;
+	return adapters.find((entry): entry is ClaudeBridgeAdapter => {
+		if (!entry || typeof entry !== "object") return false;
+		const record = entry as Record<string, unknown>;
+		return typeof record.id === "string" && record.id.length > 0 && typeof record.refresh === "function" && Array.isArray(record.modelProviders) && record.modelProviders.includes(CLAUDE_BRIDGE_MODEL_PROVIDER);
+	});
+}
+
+// Claude Code streams rate_limit_event over the session it already has; the
+// bridge normalizes those events and its adapter's refresh() resolves from
+// that local state, not a new network request. Reading the bus is therefore
+// the whole fetch: gentle-shell issues no request of its own for this
+// provider, unlike Codex and NaN above.
+export async function fetchClaudeBridgeUsage(now: number, globalObject: object = globalThis): Promise<ProviderUsage | undefined> {
+	const adapter = claudeBridgeAdapter(readProviderUsageBus(globalObject));
+	if (!adapter) return undefined;
+	try {
+		const snapshot = await adapter.refresh({ timeoutMs: CLAUDE_BRIDGE_ADAPTER_TIMEOUT_MS });
+		const parsed = parseProviderUsageBusSnapshot(snapshot, now);
+		return parsed && parsed.limits.length > 0 ? parsed : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+// The bridge publishes a fresh snapshot on every turn, so a live subscription
+// updates the store immediately instead of waiting for the 5-minute rule or
+// the next `r`. Subscribed once per session (see session_start below) and
+// torn down on session_shutdown like every other session-scoped listener
+// here; a bus that never appears, or one whose subscribe() throws, yields a
+// harmless no-op unsubscribe instead of failing session start.
+export function subscribeClaudeBridgeUsage(now: () => number, onSnapshot: (usage: ProviderUsage) => void, globalObject: object = globalThis): () => void {
+	const bus = readProviderUsageBus(globalObject);
+	// Resolved once at subscribe time, not per event: the bridge's adapter id
+	// is what scopes every later event to this exact adapter, so a snapshot
+	// published by some other "claude" adapter that later joins the bus is
+	// never mistaken for the bridge's.
+	const adapter = claudeBridgeAdapter(bus);
+	if (!bus || !adapter) return () => {};
+	try {
+		const unsubscribe = (bus as { subscribe(listener: (event: unknown) => void): unknown }).subscribe((event) => {
+			if (!event || typeof event !== "object") return;
+			const snapshot = (event as Record<string, unknown>).snapshot;
+			if (!snapshot || typeof snapshot !== "object") return;
+			// An event without a matching adapterId is either from a foreign
+			// adapter or from a bridge build old enough not to stamp one; either
+			// way it is not attributable to this adapter, so it is dropped
+			// instead of trusted.
+			if ((snapshot as Record<string, unknown>).adapterId !== adapter.id) return;
+			const parsed = parseProviderUsageBusSnapshot(snapshot, now());
+			if (parsed && parsed.limits.length > 0) onSnapshot(parsed);
+		});
+		return typeof unsubscribe === "function" ? (unsubscribe as () => void) : () => {};
+	} catch {
+		return () => {};
+	}
+}
+
 // A registered source is foreign code running inside a fire-and-forget
 // refresh: it must degrade exactly like the built-in fetchers above, never
 // throw past this call, and never leave an unhandled rejection behind.
@@ -787,7 +877,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		const provider = ctx.model?.provider;
 		if (!provider) return;
 		const source = usageSources.get(provider);
-		if (!source && provider !== CODEX_PROVIDER && provider !== NAN_PROVIDER) return;
+		if (!source && provider !== CODEX_PROVIDER && provider !== NAN_PROVIDER && provider !== CLAUDE_BRIDGE_PROVIDER) return;
 		const now = deps.now();
 		if (!force && now - (usageFetchedAt.get(provider) ?? 0) < USAGE_REFRESH_MS) return;
 		usageFetchedAt.set(provider, now);
@@ -796,7 +886,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			? await fetchFromSource(source, apiKey, deps.fetch, deps.now())
 			: provider === NAN_PROVIDER
 				? await fetchNanUsage(apiKey, deps.fetch, deps.now())
-				: await fetchCodexUsage(apiKey, deps.fetch, deps.now());
+				: provider === CLAUDE_BRIDGE_PROVIDER
+					? await fetchClaudeBridgeUsage(deps.now(), deps.globalObject)
+					: await fetchCodexUsage(apiKey, deps.fetch, deps.now());
 		if (!fetched) return;
 		// A registered source can be replaced while its own fetch is still in
 		// flight; the identity captured above is this call's source, so a stale
@@ -882,6 +974,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let changes: SessionChanges | undefined;
 	let registry: SessionWorktreeRegistry | undefined;
 	let currentContext: ExtensionContext | undefined;
+	let claudeBridgeUnsubscribe: (() => void) | undefined;
 	let shown = "";
 	const applyChanges = (ctx: ExtensionContext, model: ChangesModel) => {
 		const fingerprint = changesFingerprint(model);
@@ -921,6 +1014,16 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		changes = undefined;
 		registry = new SessionWorktreeRegistry(pi, ctx.sessionManager, ctx.cwd, deps.resolveWorktree);
 		registry.start();
+		// Re-subscribed every session_start: a reload replaces this closure's
+		// usage store and render host, so the previous session's listener (if
+		// the bridge is slow to be swapped out under a reload) must not go on
+		// writing into a session that already ended.
+		claudeBridgeUnsubscribe?.();
+		claudeBridgeUnsubscribe = subscribeClaudeBridgeUsage(deps.now, (fetched) => {
+			usage.record(fetched);
+			renderHost?.invalidateSidebar?.();
+			renderHost?.requestRender();
+		}, deps.globalObject);
 		if (!ctx.hasUI) return;
 		changes = new SessionChanges(ctx.sessionManager.getSessionId(), ctx.sessionManager.getEntries());
 		const tracker = changes;
@@ -996,6 +1099,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		registry = undefined;
 		changes = undefined;
 		currentContext = undefined;
+		claudeBridgeUnsubscribe?.();
+		claudeBridgeUnsubscribe = undefined;
 		unsubscribeWorktrees();
 	});
 	const openChanges = async (ctx: ExtensionContext) => {

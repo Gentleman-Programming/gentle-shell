@@ -6,7 +6,9 @@ import { join } from "node:path";
 import test from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
 import type { TUI, TuiMouseEvent } from "@earendil-works/pi-tui";
-import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, type GentlePromptEditor } from "../extensions/gentle-shell.ts";
+import installGentleShell, { buildShellBarModel, createEffectiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, type GentlePromptEditor } from "../extensions/gentle-shell.ts";
+import { clearProfilePinSync, localProfilePinPath, repoProfileDeclarationPath, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
+import type { WorktreeIdentity } from "../lib/session-worktree-registry.ts";
 import { USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA } from "../lib/shell-usage.ts";
 import { CHANGE_STATUS } from "../lib/shell-changes.ts";
 import { sidebarState, type SidebarRail } from "../lib/shell-sidebar.ts";
@@ -367,33 +369,81 @@ test("profile reader follows store changes and rejects missing or invalid active
 	const root = mkdtempSync(join(tmpdir(), "shell-profile-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const path = join(root, "profiles.json");
-	const read = createActiveProfileReader({ GENTLE_PI_CONFIG_HOME: root });
+	const read = createEffectiveProfileReader({ GENTLE_PI_CONFIG_HOME: root });
 	const save = (active: string | undefined) => writeFileSync(path, JSON.stringify({
 		kind: "gentle-pi.agent_model_profiles", version: 1, active, profiles: { team: {}, other: {} },
 	}));
-	assert.equal(read(), undefined);
+	assert.equal(read(root), undefined);
 	save("team");
-	assert.equal(read(), "team");
-	assert.equal(read(), "team");
+	assert.equal(read(root), "team");
+	assert.equal(read(root), "team");
 	save("other");
-	assert.equal(read(), "other");
+	assert.equal(read(root), "other");
 	const replacement = join(root, "replacement.json");
 	writeFileSync(replacement, JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, active: "team", profiles: { team: {} } }));
 	renameSync(replacement, path);
-	assert.equal(read(), "team", "atomic replacement refreshes the cached profile");
-	const isolated = createActiveProfileReader({ GENTLE_PI_CONFIG_HOME: join(root, "other-home") });
-	assert.equal(isolated(), undefined);
-	assert.equal(read(), "team", "another shell's config home does not alter this cache");
+	assert.equal(read(root), "team", "atomic replacement refreshes the cached profile");
+	const isolated = createEffectiveProfileReader({ GENTLE_PI_CONFIG_HOME: join(root, "other-home") });
+	assert.equal(isolated(root), undefined);
+	assert.equal(read(root), "team", "another shell's config home does not alter this cache");
 	save("missing");
-	assert.equal(read(), undefined);
+	assert.equal(read(root), undefined);
 	save(undefined);
-	assert.equal(read(), undefined);
+	assert.equal(read(root), undefined);
 	writeFileSync(path, "{broken");
-	assert.equal(read(), undefined);
+	assert.equal(read(root), undefined);
 	save("team");
-	assert.equal(read(), "team");
+	assert.equal(read(root), "team");
 	rmSync(path);
-	assert.equal(read(), undefined);
+	assert.equal(read(root), undefined);
+});
+
+test("effective profile reader reports the winning pin source and resolves Git only on changes", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "shell-effective-profile-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const storePath = join(root, "profiles.json");
+	const save = (active: string | undefined) => writeFileSync(storePath, JSON.stringify({
+		kind: "gentle-pi.agent_model_profiles", version: 1, active, profiles: { team: {}, other: {} },
+	}));
+	save("team");
+	let resolutions = 0;
+	const identity: WorktreeIdentity = { root, commonDir: root };
+	const resolveWorktree = () => {
+		resolutions += 1;
+		return identity;
+	};
+	const read = createEffectiveProfileReader({ GENTLE_PI_CONFIG_HOME: root }, resolveWorktree);
+
+	assert.equal(read(root), "team", "without pins the global active profile has no suffix");
+	assert.equal(read(root), "team");
+	assert.equal(resolutions, 1, "repeated reads stay on the fingerprint cache");
+
+	writeProfilePinSync(localProfilePinPath(root), "other");
+	assert.equal(read(root), "other (local)", "a valid clone-local pin overrides the global profile");
+	assert.equal(read(root), "other (local)");
+
+	clearProfilePinSync(localProfilePinPath(root));
+	writeProfilePinSync(repoProfileDeclarationPath(root), "other");
+	assert.equal(read(root), "other (repo)", "the repository declaration wins without a usable local pin");
+
+	writeProfilePinSync(localProfilePinPath(root), "team");
+	assert.equal(read(root), "team (local)", "restoring the local pin takes precedence again");
+
+	clearProfilePinSync(localProfilePinPath(root));
+	clearProfilePinSync(repoProfileDeclarationPath(root));
+	assert.equal(read(root), "team", "removing both pin layers falls back to the global profile");
+
+	writeFileSync(localProfilePinPath(root), "{broken");
+	assert.equal(read(root), "team", "an invalid pin layer falls through to the global profile");
+	rmSync(localProfilePinPath(root));
+
+	writeProfilePinSync(localProfilePinPath(root), "team");
+	assert.equal(read(root), "team (local)");
+	save("other");
+	assert.equal(read(root), "team (local)", "a pinned profile survives a global active change");
+	clearProfilePinSync(localProfilePinPath(root));
+	assert.equal(read(root), "other", "unpinned, the display follows the global active profile");
+	assert.equal(resolutions, 9, "each display change resolves once; unchanged frames never do");
 });
 
 test("gentleShell stays out of the way without a UI or when disabled", () => {

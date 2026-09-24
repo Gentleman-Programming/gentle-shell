@@ -3,6 +3,7 @@ import type { EditorTheme, TUI } from "@earendil-works/pi-tui";
 import { execFile, spawnSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { profilesFilePath, readProfilesFileResult } from "../lib/agent-profiles.ts";
+import { readProfilePinStatus, resolveProfilePin } from "../lib/agent-profile-pin.ts";
 import * as os from "node:os";
 import { join } from "node:path";
 import { buildShellHeaderModel, renderShellBar, renderShellHeaderBar, renderShellHeaderRule, renderShellSidebarBar, shellEnabled, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
@@ -63,7 +64,10 @@ interface BuildOptions {
 export type DevBinaryNotice = { state: "active"; path: string; sha256: string } | { state: "invalid"; reason: string };
 
 export interface ShellDeps {
-	activeProfile(): string | undefined;
+	// Resolved with the same precedence launch routing uses: a valid clone-local
+	// pin renders `name (local)`, a repository declaration `name (repo)`, and the
+	// global active profile stays unsuffixed.
+	activeProfile(cwd: string): string | undefined;
 	fetch: typeof fetch;
 	now(): number;
 	devBinary(): DevBinaryNotice | undefined;
@@ -71,28 +75,72 @@ export interface ShellDeps {
 	gitRunner(cwd: string): GitRunner;
 }
 
-// The rail digest runs every frame. Cache parsing by file identity and metadata,
-// not just mtime: profile writes replace the store atomically. Keep the cache
-// local to this shell instance and recheck on the next frame after panel edits.
-export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env): () => string | undefined {
-	const path = profilesFilePath(env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai"));
-	let fingerprint: string | undefined;
-	let name: string | undefined;
-	return () => {
+// The fullscreen Status card and header must show the profile launch routing
+// actually uses: clone-local pin → repository declaration → global active, with
+// the winning source visible as `(local)` or `(repo)`. The rail digest runs
+// every frame, so resolve the pin paths once per cwd and afterwards only stat
+// known files: Git resolution happens on cwd changes and fingerprint misses,
+// never per frame. Keep the cache local to this shell instance and recheck on
+// the next frame after panel edits. Cache the cache misses too: an absent pin
+// file fingerprints as "missing", so creating one refreshes without Git work.
+export function createEffectiveProfileReader(
+	env: NodeJS.ProcessEnv = process.env,
+	resolveWorktree: WorktreeResolver = resolveSessionWorktree,
+): (cwd: string) => string | undefined {
+	const configHome = env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai");
+	const storePath = profilesFilePath(configHome);
+	let storeFingerprint: string | undefined;
+	let cache: {
+		cwd: string;
+		localPath?: string;
+		repoPath?: string;
+		localFingerprint?: string;
+		repoFingerprint?: string;
+		display: string | undefined;
+	} | undefined;
+	const fingerprint = (path: string): string => {
 		try {
 			const stat = statSync(path, { bigint: true });
-			const next = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
-			if (next !== fingerprint) {
-				const result = readProfilesFileResult(path);
-				name = result.status === "valid" ? result.file.active : undefined;
-				fingerprint = next;
-			}
-			return name;
+			return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
 		} catch {
-			fingerprint = undefined;
-			name = undefined;
-			return undefined;
+			return "missing";
 		}
+	};
+	return (cwd: string) => {
+		const storeFp = fingerprint(storePath);
+		const localPath = cache?.cwd === cwd ? cache.localPath : undefined;
+		const repoPath = cache?.cwd === cwd ? cache.repoPath : undefined;
+		const localFp = localPath ? fingerprint(localPath) : undefined;
+		const repoFp = repoPath ? fingerprint(repoPath) : undefined;
+		if (
+			cache &&
+			cache.cwd === cwd &&
+			storeFp === storeFingerprint &&
+			localFp === cache.localFingerprint &&
+			repoFp === cache.repoFingerprint
+		) {
+			return cache.display;
+		}
+		let display: string | undefined;
+		const store = readProfilesFileResult(storePath);
+		if (store.status === "valid") display = store.file.active;
+		// The launch resolver is the single authority: its winning layer and its
+		// source are what the display reports, never a parallel precedence rule.
+		// One worktree resolution per refresh: read the status once and hand it to
+		// the launch resolver, which stays the single precedence authority.
+		const status = readProfilePinStatus(cwd, resolveWorktree);
+		const resolution = status ? resolveProfilePin({ cwd, configHome, resolveWorktree, status }) : undefined;
+		if (resolution) display = `${resolution.profile} (${resolution.source})`;
+		storeFingerprint = storeFp;
+		cache = {
+			cwd,
+			localPath: status?.localPath,
+			repoPath: status?.repoPath,
+			localFingerprint: status?.localPath ? fingerprint(status.localPath) : undefined,
+			repoFingerprint: status?.repoPath ? fingerprint(status.repoPath) : undefined,
+			display,
+		};
+		return display;
 	};
 }
 
@@ -773,7 +821,11 @@ async function fetchFromSource(source: UsageSource, apiKey: string | undefined, 
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	installSessionChangeCapture(pi, env, overrides.resolveWorktree ?? resolveSessionWorktree);
 	if (!shellEnabled(env)) return;
-	const deps: ShellDeps = { ...defaultShellDeps, activeProfile: createActiveProfileReader(env), ...overrides };
+	const deps: ShellDeps = {
+		...defaultShellDeps,
+		activeProfile: createEffectiveProfileReader(env, overrides.resolveWorktree ?? defaultShellDeps.resolveWorktree),
+		...overrides,
+	};
 	const usage = new UsageStore();
 	// Providers gentle-shell has never heard of get a usage source too, when
 	// the extension that owns them registers one on pi.events; see the
@@ -932,7 +984,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// statuses. The digest is what keeps the fullscreen memo honest, and it
 			// rebuilds the model exactly as the narrow bottom bar does every frame.
 			const footerModel = (): ShellBarModel => ({
-				...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: usage.get(ctx.model?.provider ?? ""), profile: deps.activeProfile() }),
+				...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: usage.get(ctx.model?.provider ?? ""), profile: deps.activeProfile(ctx.cwd) }),
 				changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted, notice: tracker.model.notice },
 			});
 			const part = sidebarPart(tui, "footer", bottom, {

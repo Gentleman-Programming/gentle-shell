@@ -297,6 +297,8 @@ export interface ProfilePinResolveOptions {
 	cwd: string;
 	configHome: string;
 	resolveWorktree?: WorktreeResolver;
+	/** Reuse an already-read pin status instead of resolving the worktree again. */
+	status?: ProfilePinStatus;
 }
 
 /**
@@ -312,7 +314,7 @@ export interface ProfilePinResolveOptions {
 export function resolveProfilePin(
 	options: ProfilePinResolveOptions,
 ): ProfilePinResolution | undefined {
-	const status = readProfilePinStatus(options.cwd, options.resolveWorktree);
+	const status = options.status ?? readProfilePinStatus(options.cwd, options.resolveWorktree);
 	if (!status) return undefined;
 	if (status.local.status === "missing" && status.repo.status === "missing") return undefined;
 	const store = readProfilesFileResult(profilesFilePath(options.configHome));

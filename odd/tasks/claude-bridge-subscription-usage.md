@@ -29,7 +29,7 @@ Claude Code streams `rate_limit_event` to the bridge on every turn. The `@schuet
 - [x] T1 Parser: `parseProviderUsageBusSnapshot(value, now)` in `lib/shell-usage.ts` mapping the `claude` snapshot (`five_hour`, `seven_day` main; family/oauth windows additional, one limit each, named from `scope.label` or the id) to `ProviderUsage`; also added `readProviderUsageBus`, `CLAUDE_BRIDGE_PROVIDER`, `PROVIDER_USAGE_BUS_SYMBOL`, and the bus-absent pending note (`CLAUDE_BRIDGE_BUS_ABSENT_NOTE`) via an optional `globalObject` param on `providerNote`/`renderUsagePanel`. Route: direct (single file pair, mechanical once designed). Commit `078b6deb`.
 - [x] T2 Source: `fetchClaudeBridgeUsage(now, globalObject)` and `subscribeClaudeBridgeUsage(now, onSnapshot, globalObject)` in `extensions/gentle-shell.ts`, wired into `refreshUsage` (same 5-minute rule, per-provider) and into `session_start`/`session_shutdown` for the live bus subscription. `ShellDeps` gained `globalObject` (defaults to real `globalThis`) so tests inject a fake bus. Route: direct. Commit `acfd82f6`.
 - [x] T3 Surfaces + docs: no changes needed in `lib/shell-bar.ts` — `renderUsageBar`, the header's `selectUsageLimit`, and the panel's `groupUsageLimits` already render any `ProviderUsage` generically, and claude-bridge's windows carry no raw allowance numbers so it takes the same ungrouped path Codex/Anthropic use. Added guard tests (Codex/Anthropic/NaN unchanged) plus claude-bridge bar/panel tests, and documented the source in `docs/gentle-shell.md`. Route: direct. Commit `b1d5b662`.
-- [ ] T4 Closure: full unit stage + `node scripts/check-types.mjs` green, work-unit commits done, push to fork; PR opened only after #1399 carries `status:approved` (repo rule — not yet checked, do not open the PR without it).
+- [x] T4 Closure: focused suite, typecheck, runtime-modules, provider-contract and package-files checks green locally; native review approved and acknowledged; pushed to fork; PR opened against #1399 (approval pending on the issue, per repo rule).
 
 ## Deviation from plan (recorded, not a scope change)
 
@@ -60,3 +60,12 @@ Claude Code streams `rate_limit_event` to the bridge on every turn. The `@schuet
 ## Next step
 
 Re-run the full unit stage on a host/shell where it does not hang (or bisect which test file triggers the hang), confirm no new failures beyond the known baseline one, then close T4 (no PR until #1399 carries `status:approved`).
+
+## Closure evidence (2026-09-24)
+
+- Native review (RDD): assessment `high` (`process_boundary` in `extensions/gentle-shell.ts`, 7 paths, 554 changed lines). Lineage `review-a30d0844b8aa453d`, target `sha256:a753ee7f…fa09`, four lenses captured in process (`review-risk`, `review-resilience`, `review-readability`, `review-reliability`), all `admission_decision: completed`; final status `approved_acknowledgement_required`; `review acknowledge-approved` returned `authority: burned`. No correction was opened. A first lineage (`review-c2d733e5e390689f`) was negotiated on tree `2f237a15` and refused with `stale_target_identity` after the evidence commit `1afc2e2a` moved the tree; the review above covers the final tree `0c7dca23`.
+- `node scripts/check-types.mjs`: same 2 pre-existing diagnostics as base, 0 new.
+- `node scripts/build-runtime-modules.mjs --check`: runtime matches TypeScript sources (7 generated modules).
+- `node scripts/check-provider-contract.mjs`: provider contract mirror check passed (contract 1.2.0).
+- `node scripts/verify-package-files.mjs`: package resource check passed (171 files).
+- Full unit stage on this Windows host: `node --experimental-strip-types --test tests/*.test.ts` stalls after ~1500 results (no output for 20+ minutes, killed). The failures accumulated before the stall are all in launcher/installer/symlink/Git-child tests unrelated to the changed files; the authoritative full run is CI (`pnpm test` on ubuntu-latest).

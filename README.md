@@ -880,6 +880,7 @@ To opt out:
 | `docs/skill-style-guide.md`    | Normative style guide used by the packaged skill creation/improvement skills.                              |
 | `docs/native-authority-architecture.md` | Post-U8 ownership boundary, reproducible slimming metrics, Windows evidence, exact #191 seam, and the `review-integration/v1`→`v2` migration status, including the "compact-v2" naming disambiguation.     |
 | `docs/review-integration.md`   | Negotiated provider/consumer contract and the current Gentle Pi adoption boundary.                         |
+| `docs/prompt-history.md`       | Prompt-history slice 1: opt-in capture switch, storage layout, readers, and disable/removal semantics.      |
 
 ## Development
 

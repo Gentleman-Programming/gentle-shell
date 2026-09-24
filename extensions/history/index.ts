@@ -12,7 +12,7 @@ import { homedir } from "node:os";
 import {
   DynamicBorder,
   type ExtensionAPI,
-  type ShortcutContext,
+  type ExtensionCommandContext,
   type Theme,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -880,7 +880,7 @@ function createPromptHistorySelectorFactory(
 }
 
 async function runPromptHistorySelection(
-  ctx: ShortcutContext,
+  ctx: Pick<ExtensionCommandContext, "ui">,
   records: PromptRecord[],
 ): Promise<PromptRecord | null> {
   const historyGlobals: PiHistoryGlobals = globalThis as Record<
@@ -956,7 +956,7 @@ function drainForScope(scope: HistoryScope): string[] {
 }
 
 async function openHistorySelector(
-  ctx: Pick<ShortcutContext, "ui">,
+  ctx: Pick<ExtensionCommandContext, "ui">,
 ): Promise<void> {
   // Store-only drain (user-directed): both scopes read the store files
   // symmetrically — no live transcript merge (the one-time seed bootstrap

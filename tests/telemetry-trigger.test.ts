@@ -73,7 +73,7 @@ test("shouldTriggerTelemetry: pure predicate table", () => {
 	}
 });
 
-test("spawnTelemetryTrigger: launches the expected argv, detached and stdio-ignored", () => {
+test("spawnTelemetryTrigger: launches the expected argv, detached, hidden, and stdio-ignored", () => {
 	const fake = fakeSpawn();
 	const result = spawnTelemetryTrigger({
 		executable: "/opt/gentle-ai/gentle-ai",
@@ -88,6 +88,7 @@ test("spawnTelemetryTrigger: launches the expected argv, detached and stdio-igno
 	assert.deepEqual(call.args, ["telemetry", "trigger", "--json"]);
 	assert.equal(call.options.cwd, "/work/project");
 	assert.equal(call.options.detached, true);
+	assert.equal(call.options.windowsHide, true);
 	assert.equal(call.options.stdio, "ignore");
 });
 
@@ -212,10 +213,11 @@ test("activation: spawns the telemetry trigger exactly once for a primary sessio
 	assert.deepEqual(call.args, ["telemetry", "trigger", "--json"]);
 	assert.equal(call.options.cwd, "/work/project");
 	assert.equal(call.options.detached, true);
+	assert.equal(call.options.windowsHide, true);
 	assert.equal(call.options.stdio, "ignore");
 });
 
-test("activation: never spawns for a named or SDD agent event", async (t) => {
+test("activation: never spawns for named agents, even with legacy prompt text", async (t) => {
 	t.after(() => __testing.resetTelemetryTriggerGuardForTesting());
 	__testing.resetTelemetryTriggerGuardForTesting();
 	const fake = fakeSpawn();
@@ -228,9 +230,9 @@ test("activation: never spawns for a named or SDD agent event", async (t) => {
 	const ctx = fakeContext("/work/project", notifications);
 
 	await beforeAgentStart!({ agentName: "review-risk", systemPrompt: "" }, ctx);
-	await beforeAgentStart!({ systemPrompt: "SDD apply executor" }, ctx);
+	await beforeAgentStart!({ agentName: "gentle-ai-worker", systemPrompt: "SDD apply executor" }, ctx);
 
-	assert.equal(fake.calls.length, 0, "named/SDD agents must never trigger the nudge");
+	assert.equal(fake.calls.length, 0, "named agents must never trigger the nudge");
 });
 
 test("activation: a missing binary or spawn error never affects activation", async (t) => {

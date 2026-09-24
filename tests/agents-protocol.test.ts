@@ -67,6 +67,51 @@ test("normalizeRpcEvent maps pi RPC events to task deltas and ignores the rest",
 	assert.deepEqual(normalizeRpcEvent("garbage"), []);
 });
 
+test("response observations are opt-in, finalized, field-specific and content-free", () => {
+	const message = { role: "assistant", provider: "openai", model: "gpt-4o", responseModel: "gpt-4o-2024-08-06",
+		providerThinkingLevel: "high", stopReason: "stop", content: [{ type: "text", text: "private response" }],
+		errorMessage: "private error", responseId: "private id", modelVersion: "invented",
+		usage: { input: 12, output: 4, cacheRead: 0, cacheWrite: -1, totalTokens: 16, reasoning: 2 } };
+	const raw = { type: "message_end", message };
+	assert.deepEqual(normalizeRpcEvent(raw), [{ type: TASK_EVENT.USAGE, tokens: 16, cost: 0 }]);
+	const events = normalizeRpcEvent(raw, { observeResponses: true });
+	assert.equal(events.length, 2);
+	const observation = events.find((event) => event.type === "response_observation")?.observation;
+	assert.ok(observation);
+	assert.deepEqual(observation.provider, { state: "observed", value: "openai" });
+	assert.deepEqual(observation.model, { state: "observed", value: "gpt-4o" });
+	assert.deepEqual(observation.responseModel, { state: "observed", value: message.responseModel });
+	assert.deepEqual(observation.providerThinkingLevel, { state: "observed", value: "high" });
+	assert.deepEqual(observation.selected, { provider: { state: "unavailable" }, model: { state: "unavailable" }, effort: { state: "unavailable" } });
+	assert.deepEqual(observation.tokens, { input: { state: "reported", value: 12 }, output: { state: "reported", value: 4 },
+		cacheRead: { state: "unavailable" }, cacheWrite: { state: "unavailable" }, totalTokens: { state: "reported", value: 16 },
+		reasoning: { state: "reported", value: 2 } });
+	assert.doesNotMatch(JSON.stringify(observation), /private|invented|modelVersion|content|responseId/);
+	for (const stopReason of ["stop", "length", "toolUse", "error", "aborted"]) {
+		const [event] = normalizeRpcEvent({ type: "message_end", message: { role: "assistant", stopReason } }, { observeResponses: true });
+		assert.ok(event?.type === "response_observation", "missing usage still exposes a response");
+		assert.equal(event.observation.stopReason, stopReason);
+	}
+	for (const stopReason of ["pending", "deferred", undefined, "private error"]) {
+		assert.deepEqual(normalizeRpcEvent({ type: "message_end", message: { role: "assistant", stopReason } }, { observeResponses: true }), []);
+	}
+	for (const type of ["message_start", "message_update", "turn_end", "agent_end"]) {
+		assert.ok(!normalizeRpcEvent({ type, message, messages: [message] }, { observeResponses: true }).some((event) => event.type === "response_observation"));
+	}
+	assert.deepEqual(normalizeRpcEvent({ type: "message_end", message: { ...message, role: "toolResult" } }, { observeResponses: true }), []);
+});
+
+test("response observations reject malformed counters and unbounded metadata without coercion", () => {
+	for (const value of [0, -1, 1.5, NaN, Infinity, "12", null, undefined, 1_000_000_001]) {
+		const [event] = normalizeRpcEvent({ type: "message_end", message: { role: "assistant", stopReason: "error",
+			provider: "x".repeat(33), model: "x".repeat(129), responseModel: "private\ntext", providerThinkingLevel: {},
+			usage: { input: value, output: value, cacheRead: value, cacheWrite: value, totalTokens: value, reasoning: value } } }, { observeResponses: true }).filter((event) => event.type === "response_observation");
+		assert.ok(event);
+		for (const field of Object.values(event.observation.tokens)) assert.deepEqual(field, { state: "unavailable" });
+		for (const field of ["provider", "model", "responseModel", "providerThinkingLevel"] as const) assert.deepEqual(event.observation[field], { state: "unavailable" });
+	}
+});
+
 test("taskLabel prefers an explicit label and otherwise takes the prompt's first sentence", () => {
 	assert.equal(taskLabel("Map the repo. Then report.", "  map  the repo "), "map the repo");
 	assert.equal(taskLabel("Repeat a fresh read-only exploration of lib. Own runtime architecture: extensions, hooks."), "Repeat a fresh read-only exploration of lib");

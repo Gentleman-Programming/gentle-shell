@@ -935,12 +935,12 @@ export function reviewStoreRootForRepository(cwd: string): string {
 	const repositoryRoot = execFileSync(
 		"git",
 		["rev-parse", "--show-toplevel"],
-		{ cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+		{ cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
 	).trim();
 	const gitPath = execFileSync(
 		"git",
 		["rev-parse", "--git-path", "gentle-ai/reviews"],
-		{ cwd: repositoryRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+		{ cwd: repositoryRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
 	).trim();
 	return isAbsolute(gitPath) ? gitPath : resolve(repositoryRoot, gitPath);
 }
@@ -950,6 +950,7 @@ function repositoryRootForGate(cwd: string): string {
 		cwd,
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
+		windowsHide: true,
 	}).trim();
 }
 
@@ -1528,6 +1529,7 @@ function runGateGit(cwd: string, args: readonly string[]): string {
 		cwd,
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
+		windowsHide: true,
 	}).trim();
 }
 

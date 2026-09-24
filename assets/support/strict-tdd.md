@@ -1,4 +1,4 @@
-# Strict TDD Module — Apply Phase
+# Strict TDD Module — ODD Implementation
 
 > **This module is loaded ONLY when Strict TDD Mode is enabled AND a test runner is available.**
 > If you are reading this, the orchestrator already verified both conditions. Follow every instruction.
@@ -28,16 +28,15 @@ FOR EACH TASK:
 │
 ├── 1. UNDERSTAND
 │   ├── Read the task description
-│   ├── Read relevant spec scenarios (these ARE your acceptance criteria)
-│   ├── Read the design decisions (these CONSTRAIN your approach)
+│   ├── Read the ODD task acceptance criteria
+│   ├── Read the recorded constraints and decisions
 │   ├── Read existing code and test patterns (match the style)
 │   └── Determine test layer (see "Choosing Test Layer" below)
 │
 ├── 2. RED — Write a failing test FIRST
 │   ├── Write test(s) that describe the expected behavior from the spec
 │   ├── Prefer pure functions where possible (no side effects = easy to test)
-│   ├── The test MUST reference production code that does NOT exist yet
-│   │   (this guarantees failure — no need to execute to confirm)
+│   ├── Run the focused test and capture the observed failure before implementation
 │   ├── If the production code/function already exists:
 │   │   └── Write a test for the NEW behavior that is NOT yet implemented
 │   └── GATE: Do NOT proceed to GREEN until the test is written
@@ -82,13 +81,13 @@ FOR EACH TASK:
 │   │   └── ❌ Failed → REVERT that refactoring step, try smaller
 │   └── GATE: Tests green after EVERY refactoring change
 │
-├── 6. Mark task complete [x]
+├── 6. Report observed evidence to the parent; only the parent closes the ODD task
 └── 7. Note any deviations or issues discovered
 ```
 
 ## Choosing Test Layer
 
-Based on the testing capabilities cached in Engram (`sdd/{project}/testing-capabilities`), choose the appropriate test layer for each task:
+Use the parent-provided testing capabilities and configured TDD source and runner to choose the appropriate test layer for each task:
 
 ```
 Determine test layer by WHAT the task does:
@@ -115,13 +114,10 @@ Determine test layer by WHAT the task does:
 
 ## Test Execution
 
-Detect the test runner from the cached testing capabilities:
+Use the retained configured TDD source and runner forwarded by the parent. If either is missing or conflicting, stop and ask the parent to resolve it; do not infer activation from test presence.
 
 ```
-Read test command from:
-├── Cached capabilities → test_runner.command (fastest — already detected)
-├── openspec/config.yaml → rules.apply.test_command (override)
-└── Fallback: detect from package.json/pyproject.toml/go.mod
+Read the exact focused test command from the parent-provided verification contract.
 
 When executing tests during TDD:
 ├── Run ONLY the relevant test file, not the entire suite
@@ -130,7 +126,7 @@ When executing tests during TDD:
 │   ├── Go: go test ./{package}/... -run {TestName}
 │   └── Adapt to the runner's CLI
 ├── This keeps the cycle FAST
-└── Full suite runs happen in sdd-verify, not here
+└── Broad suites run only when explicitly authorized by the parent
 ```
 
 ## Pure Function Preference
@@ -197,7 +193,7 @@ When Strict TDD Mode is active, your return summary MUST include this section:
 
 **Column definitions**:
 - **Safety Net**: Pre-existing tests run before modifying files. "N/A (new)" for new files.
-- **RED**: Test written first, referencing code that doesn't exist yet. Always "✅ Written".
+- **RED**: Test written first and observed failing for the intended behavior; report the actual failure.
 - **GREEN**: Tests executed and passing after minimal implementation. Must show execution result.
 - **TRIANGULATE**: Additional test cases added to force real logic. "➖ Single" if spec has only one scenario.
 - **REFACTOR**: Code improved with tests still passing. "➖ None needed" if code was already clean.
@@ -357,7 +353,7 @@ expect(screen.getByRole("button")).toBeDisabled();
 - NEVER write trivial assertions (see Banned Assertion Patterns above) — they are WORSE than no test
 - ALWAYS verify that every assertion CALLS production code and asserts a SPECIFIC expected value
 - ALWAYS run the Safety Net before modifying existing files — protect what already works
-- ALWAYS report the TDD Cycle Evidence table — the verify phase will check it
+- ALWAYS report the TDD Cycle Evidence table to the parent
 - If a test runner execution fails for infrastructure reasons (not test failures), report as "Blocked" and continue to next task
 - Prefer pure functions — but don't force it where it doesn't fit (e.g., React components with state)
 - For refactoring tasks, ALWAYS write approval tests before touching code

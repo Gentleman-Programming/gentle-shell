@@ -10,6 +10,16 @@ export const REVIEW_SESSION_PERMISSION_REGISTRY_SYMBOL = Symbol.for(REVIEW_SESSI
 
 const execFileAsync = promisify(execFile);
 
+export interface GitCommandOptions {
+	encoding: "utf8";
+	timeout: number;
+	maxBuffer: number;
+	windowsHide?: boolean;
+}
+
+export type GitAsyncRunner = (command: string, args: readonly string[], options: GitCommandOptions) => Promise<{ stdout: string }>;
+export type GitSyncRunner = (command: string, args: readonly string[], options: GitCommandOptions) => string;
+
 export interface ReviewSessionManager {
 	getSessionId(): unknown;
 }
@@ -78,12 +88,16 @@ function validAbsoluteGitPath(value: string): boolean {
 	return isAbsolute(value) && value.length > 0 && !value.includes("\n") && !value.includes("\r");
 }
 
-export async function resolveCanonicalGitWorktreeRoot(cwd: string): Promise<string | undefined> {
+export async function resolveCanonicalGitWorktreeRoot(
+	cwd: string,
+	run: GitAsyncRunner = execFileAsync as unknown as GitAsyncRunner,
+): Promise<string | undefined> {
 	try {
-		const result = await execFileAsync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], {
+		const result = await run("git", ["-C", cwd, "rev-parse", "--show-toplevel"], {
 			encoding: "utf8",
 			timeout: 5_000,
 			maxBuffer: 64 * 1024,
+			windowsHide: true,
 		});
 		const output = result.stdout.trim();
 		if (!validAbsoluteGitPath(output)) return undefined;
@@ -94,12 +108,16 @@ export async function resolveCanonicalGitWorktreeRoot(cwd: string): Promise<stri
 }
 
 /** Resolves a non-secret, clone-stable identity from Git's canonical common dir. */
-export async function resolveCanonicalGitRepositoryIdentity(cwd: string): Promise<string | undefined> {
+export async function resolveCanonicalGitRepositoryIdentity(
+	cwd: string,
+	run: GitAsyncRunner = execFileAsync as unknown as GitAsyncRunner,
+): Promise<string | undefined> {
 	try {
-		const result = await execFileAsync("git", ["-C", cwd, "rev-parse", "--git-common-dir"], {
+		const result = await run("git", ["-C", cwd, "rev-parse", "--git-common-dir"], {
 			encoding: "utf8",
 			timeout: 5_000,
 			maxBuffer: 64 * 1024,
+			windowsHide: true,
 		});
 		const output = result.stdout.trim();
 		if (output.length === 0 || output.includes("\n") || output.includes("\r")) return undefined;
@@ -110,9 +128,12 @@ export async function resolveCanonicalGitRepositoryIdentity(cwd: string): Promis
 }
 
 /** The parent AgentRunner binds a child task to this same digest at spawn time. */
-export function resolveCanonicalGitRepositoryIdentitySync(cwd: string): string | undefined {
+export function resolveCanonicalGitRepositoryIdentitySync(
+	cwd: string,
+	run: GitSyncRunner = execFileSync as unknown as GitSyncRunner,
+): string | undefined {
 	try {
-		const output = execFileSync("git", ["-C", cwd, "rev-parse", "--git-common-dir"], { encoding: "utf8", timeout: 5_000, maxBuffer: 64 * 1024 }).trim();
+		const output = run("git", ["-C", cwd, "rev-parse", "--git-common-dir"], { encoding: "utf8", timeout: 5_000, maxBuffer: 64 * 1024, windowsHide: true }).trim();
 		if (output.length === 0 || output.includes("\n") || output.includes("\r")) return undefined;
 		return canonicalRepositoryIdentity(realpathSync(resolve(cwd, output)));
 	} catch {

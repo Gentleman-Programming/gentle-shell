@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { Component } from "@earendil-works/pi-tui";
 import gentleTodo, { todoCollapseKey, todoEnabled } from "../extensions/gentle-todo.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
@@ -25,7 +26,6 @@ const plainTheme = {
 	},
 };
 const fakeTui = { requestRender() {} };
-
 function fakePi() {
 	const handlers = new Map<string, Handler[]>();
 	const tools = new Map<string, Registered>();
@@ -50,22 +50,23 @@ function fakePi() {
 }
 
 function fakeContext(branch: unknown[] = [], hasUI = true) {
-	const widgets = new Map<string, (tui: unknown, theme: unknown) => { render(width: number): string[] }>();
+	const widgets = new Map<string, (tui: unknown, theme: unknown) => Component>();
 	const ctx = {
 		hasUI,
 		sessionManager: { getSessionId: () => "s1", getBranch: () => branch },
 		ui: {
-			setWidget(key: string, content: ((tui: unknown, theme: unknown) => { render(width: number): string[] }) | undefined) {
+			setWidget(key: string, content: ((tui: unknown, theme: unknown) => Component) | undefined) {
 				if (content === undefined) widgets.delete(key);
 				else widgets.set(key, content);
 			},
 		},
 	} as unknown as ExtensionContext;
-	const widget = () => {
+	const widgetComponent = () => {
 		const factory = widgets.get("gentle-todo");
-		return factory ? factory(fakeTui, plainTheme).render(70).map(stripAnsi) : undefined;
+		return factory?.(fakeTui, plainTheme);
 	};
-	return { ctx, widgets, widget };
+	const widget = () => widgetComponent()?.render(70).map(stripAnsi);
+	return { ctx, widgets, widget, widgetComponent };
 }
 
 test("todoEnabled and todoCollapseKey read their environment flags", () => {
@@ -99,7 +100,7 @@ test("the todo tool writes the list, shows the card after the call, and carries 
 	assert.equal((result.details.gentleTodo as { tasks: unknown[] }).tasks.length, 2);
 	await fire("tool_execution_end", ctx, { toolName: "todo" });
 	const lines = widget()!;
-	assert.match(lines[0], /^╭─ ❀ Todos · 0 of 2 ─+ ctrl\+shift\+t collapse ╮$/);
+	assert.match(lines[0], /^╭─ ❀ Todos ▾ Collapse · 0 of 2 ─+ ctrl\+shift\+t collapse ╮$/);
 	assert.match(lines[1], /◐ Write the parser · parsing/);
 	assert.match(lines[2], /○ Add tests/);
 	assert.equal(lines[lines.length - 1], "", "a blank line keeps the card off the prompt");
@@ -109,6 +110,54 @@ test("the todo tool writes the list, shows the card after the call, and carries 
 	assert.equal(bad.details.error, "no task #9");
 	assert.match(tool.renderCall({ action: "write" }, plainTheme).render(40).join(""), /❀ todo · write/);
 	assert.equal(tool.renderResult({ content: [{ type: "text", text: "a\nb" }] }, { expanded: false }, plainTheme).render(40).join("|").trimEnd(), "a");
+});
+
+test("the Todo header is a fullscreen left-click control while non-click pointer events stay inert", async () => {
+	const { pi, tools, fire } = fakePi();
+	gentleTodo(pi, {});
+	const { ctx, widgetComponent } = fakeContext();
+	await fire("session_start", ctx);
+	await tools.get("todo")!.execute("c1", { action: "write", tasks: [{ title: "A", status: "in_progress" }, { title: "B" }] }, undefined, undefined, ctx);
+	await fire("tool_execution_end", ctx, { toolName: "todo" });
+
+	const component = widgetComponent()!;
+	assert.match(stripAnsi(component.render(70)[0]!), /Todos ▾ Collapse/);
+	const event = (type: "press" | "click", button: "left" | "right", y = 0) => ({
+		type, button, x: 1, y, screenX: 1, screenY: y, width: 70, height: 5, shift: false, alt: false, ctrl: false,
+	});
+	assert.equal(component.handleMouse?.(event("press", "left")), undefined);
+	assert.equal(component.handleMouse?.(event("click", "right")), undefined);
+	assert.equal(component.handleMouse?.(event("click", "left", 1)), undefined);
+	assert.match(stripAnsi(component.render(70)[0]!), /Todos ▾ Collapse/, "only a left click on the header toggles");
+	assert.equal(component.handleMouse?.(event("click", "left"))?.handled, true);
+	assert.match(stripAnsi(component.render(70)[0]!), /Todos ▸ Expand/);
+});
+
+// H1 (odd/tasks/usage-click-and-changes-attribution.md): the header control
+// now paints the same shared hover role every other clickable surface uses.
+test("the Todo header paints the shared hover role while hovered, and clears it off the header row or on leave", async () => {
+	const { pi, tools, fire } = fakePi();
+	gentleTodo(pi, {});
+	const { ctx, widgetComponent } = fakeContext();
+	await fire("session_start", ctx);
+	await tools.get("todo")!.execute("c1", { action: "write", tasks: [{ title: "A" }] }, undefined, undefined, ctx);
+	await fire("tool_execution_end", ctx, { toolName: "todo" });
+	const component = widgetComponent()!;
+	const move = (y: number) => ({ type: "move" as const, button: "none" as const, x: 1, y, screenX: 1, screenY: y, width: 70, height: 5, shift: false, alt: false, ctrl: false });
+	assert.match(stripAnsi(component.render(70)[0]!), /Todos ▾ Collapse/);
+
+	const entered = component.handleMouse?.(move(0));
+	assert.deepEqual(entered, { handled: true, render: true });
+	assert.match(stripAnsi(component.render(70)[0]!), /Todos ▾ Collapse/, "the collapse label is unchanged; only its role changes (not observable through plainTheme here)");
+
+	// Moving to another row of the card (still inside the region, but off the
+	// clickable header) clears the hover.
+	const movedOff = component.handleMouse?.(move(1));
+	assert.deepEqual(movedOff, { handled: true, render: true });
+
+	// Re-entering, then a second move at the same row is a no-op (already hovered).
+	component.handleMouse?.(move(0));
+	assert.deepEqual(component.handleMouse?.(move(0)), { handled: true });
 });
 
 test("every turn carries the open tasks in the system prompt and the card goes stale after two silent turns", async () => {
@@ -151,7 +200,7 @@ test("a finished list stays for its turn and clears at the next, and the collaps
 	await tools.get("todo")!.execute("c2", { action: "write", tasks: [{ id: 1, title: "A", status: "done" }, { id: 2, title: "B", status: "done" }] }, undefined, undefined, ctx);
 	await fire("tool_execution_end", ctx, { toolName: "todo" });
 	await fire("agent_end", ctx);
-	assert.match(widget()![0], /Todos · 2 of 2/, "the finished list is still visible at the end of its turn");
+	assert.match(widget()![0], /Todos ▾ Collapse · 2 of 2/, "the finished list is still visible at the end of its turn");
 	const next = await fire("before_agent_start", ctx, { systemPrompt: "base" });
 	assert.equal(next, undefined, "nothing open, nothing to add to the prompt");
 	assert.equal(widget(), undefined, "the card clears at the next turn");
@@ -168,7 +217,7 @@ test("session_start replays the list from the branch, rpiv-todo results included
 	const { ctx, widget } = fakeContext(branch);
 	await fire("session_start", ctx);
 	const lines = widget()!;
-	assert.match(lines[0], /Todos · 0 of 1/);
+	assert.match(lines[0], /Todos ▾ Collapse · 0 of 1/);
 	assert.match(lines[1], /◐ Old task · still going/);
 	const headless = fakeContext(branch, false);
 	await fire("session_start", headless.ctx);

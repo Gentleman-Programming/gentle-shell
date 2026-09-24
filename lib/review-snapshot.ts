@@ -171,6 +171,7 @@ function runGit(
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
 		env,
+		windowsHide: true,
 	}).trim();
 }
 

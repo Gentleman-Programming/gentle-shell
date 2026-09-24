@@ -125,6 +125,24 @@ const unreachableComplete: typeof completeSimple = (async () => {
 	throw new Error("complete must not be called for this refusal");
 }) as typeof completeSimple;
 
+/**
+ * A `getProvider` fake standing in for pi's composed provider: it records
+ * every dispatch and returns a stream whose `result()` settles the
+ * completion, which is exactly the shape pi-ai's own compat layer consumes.
+ * The registry it is spread onto keeps `fakeRegistry`'s default shape, so the
+ * no-`getProvider` seam the other tests use stays untouched.
+ */
+function capturingProvider(assistant: AssistantMessage) {
+	const calls: Array<{ provider: string; model: Model<Api>; context: Context; options: SimpleStreamOptions | undefined }> = [];
+	const getProvider = (provider: string) => ({
+		streamSimple: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => {
+			calls.push({ provider, model, context, options });
+			return { result: async () => assistant };
+		},
+	});
+	return { getProvider, calls };
+}
+
 function expectRefused(outcome: InProcessReviewerOutcome): Extract<InProcessReviewerOutcome, { kind: "refused" }> {
 	assert.equal(outcome.kind, "refused", outcome.kind === "text" ? `expected a refusal, got text: ${outcome.text}` : undefined);
 	return outcome as Extract<InProcessReviewerOutcome, { kind: "refused" }>;
@@ -457,4 +475,165 @@ test("concatenates only text parts, ignoring thinking parts, in order", async ()
 	const text = expectText(outcome);
 	assert.equal(text.text, "Part A Part B");
 	assert.equal(text.reviewerModel, "openai/gpt-5");
+});
+
+// ---------------------------------------------------------------------------
+// Composed-provider routing (gentle-shell#1304)
+//
+// pi-ai's `completeSimple` resolves against pi-ai's own builtin-only
+// `apiProviderRegistry`, so an extension-registered provider is unreachable
+// through it ("No API provider registered for api: <api>"). A registry that
+// exposes `getProvider` carries pi's composed provider, which does honor
+// extensions, and must be used instead of `deps.complete`.
+// ---------------------------------------------------------------------------
+
+test("dispatches through the composed provider's streamSimple when the registry exposes getProvider", async () => {
+	const extensionModel = fakeModel({ provider: "claude-bridge", id: "claude-opus-5", api: "claude-bridge", baseUrl: "https://bridge.invalid" });
+	const { getProvider, calls } = capturingProvider(assistantText("bridged review"));
+	const outcome = await runInProcessReviewer(baseRequest({ selection: "claude-bridge/claude-opus-5" }), {
+		// `unreachableComplete` is the canary: reaching pi-ai's compat path at
+		// all is the defect, so any call to it fails this test.
+		registry: { ...fakeRegistry([extensionModel]), getProvider },
+		complete: unreachableComplete,
+	});
+	const text = expectText(outcome);
+	assert.equal(text.text, "bridged review");
+	assert.equal(text.reviewerModel, "claude-bridge/claude-opus-5");
+	assert.equal(calls.length, 1, "the composed provider must receive exactly one dispatch");
+	assert.equal(calls[0]!.provider, "claude-bridge", "the provider is resolved by the model's own provider id");
+	assert.equal(calls[0]!.model.api, "claude-bridge", "the extension api must reach the composed provider unchanged");
+});
+
+test("forwards the same context and options to the composed provider as to deps.complete", async () => {
+	const { getProvider, calls } = capturingProvider(assistantText("ok"));
+	const prompt = Buffer.from("frozen prompt bytes", "utf8");
+	const outcome = await runInProcessReviewer(baseRequest({ prompt, thinking: "high" }), {
+		registry: { ...fakeRegistry([fakeModel()]), getProvider },
+		complete: unreachableComplete,
+		now: () => 12_345,
+	});
+	expectText(outcome);
+	assert.deepEqual(calls[0]!.context, {
+		messages: [{ role: "user", content: [{ type: "text", text: "frozen prompt bytes" }], timestamp: 12_345 }],
+	});
+	assert.equal(calls[0]!.options?.apiKey, "test-key", "registry-resolved credentials still travel on options");
+	assert.equal(calls[0]!.options?.reasoning, "high");
+});
+
+test("refuses instead of falling back when getProvider returns undefined for a model find() resolved", async () => {
+	const outcome = await runInProcessReviewer(baseRequest(), {
+		registry: { ...fakeRegistry([fakeModel()]), getProvider: () => undefined },
+		complete: unreachableComplete,
+	});
+	const refused = expectRefused(outcome);
+	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.MODEL_NOT_FOUND);
+	assert.match(refused.message, /review-risk/);
+	assert.deepEqual(refused.evidence, { provider: "openai", api: "openai-responses" }, "the evidence separates this cause from a plain unresolved selection");
+});
+
+// ---------------------------------------------------------------------------
+// Env-API-key contract when the registry resolves no apiKey (gentle-shell#1304,
+// IRP-4)
+//
+// pi-ai's compat layer wraps every dispatch in `withEnvApiKey`
+// (@earendil-works/pi-ai/dist/compat.js:145-152, called at :190 and :193),
+// which injects an API key read from the ambient environment whenever
+// `options.apiKey` is absent or blank. pi's composed provider does no such
+// thing: it forwards `options` verbatim. `ModelRegistry.getApiKeyAndHeaders`
+// can legitimately resolve `{ ok: true, headers }` with no `apiKey` — a
+// header-authenticated provider, for instance — so these tests pin what this
+// module itself guarantees in that case, independently of which side settles
+// the completion.
+//
+// The delta is not a regression. pi's own auth resolvers already read the same
+// environment, through the same variable names, before this module dispatches:
+// `getApiKeyAndHeaders` -> `ModelRuntime.getAuth` -> `Models.getAuth` ->
+// `resolveProviderAuth` (dist/auth/resolve.js:51-54, the ambient branch) ->
+// the provider's `ApiKeyAuth.resolve`, which reads `ctx.env(...)`
+// (dist/auth/helpers.js:21-26) off `defaultProviderAuthContext`, whose `env`
+// is `process.env` (dist/auth/context.js:19-24). So any key `withEnvApiKey`
+// would have injected is one the registry has already returned as `apiKey`.
+// What this module must never do is invent one itself: its header promises it
+// "never reads process.env", and that promise is what these tests hold.
+// ---------------------------------------------------------------------------
+
+/** A registry auth resolution that succeeds with headers only — no `apiKey`. */
+const HEADER_ONLY_AUTH_HEADERS = { Authorization: "Bearer resolved-by-the-registry" } as const;
+const headerOnlyAuth = async () => ({ ok: true, headers: { ...HEADER_ONLY_AUTH_HEADERS } }) as const;
+
+/**
+ * Runs `body` with a synthetic value on the environment variable pi-ai's
+ * compat layer would read for the default fake model's provider
+ * (`openai` -> `OPENAI_API_KEY`, dist/env-api-keys.js:77), restoring the
+ * previous value afterwards. The value is a fixed placeholder, never a
+ * credential: the assertions only check that it does NOT appear on the
+ * forwarded options.
+ */
+async function withAmbientProviderApiKey<T>(body: () => Promise<T>): Promise<T> {
+	const name = "OPENAI_API_KEY";
+	const previous = process.env[name];
+	process.env[name] = "ambient-placeholder-the-module-must-never-read";
+	try {
+		return await body();
+	} finally {
+		if (previous === undefined) delete process.env[name];
+		else process.env[name] = previous;
+	}
+}
+
+test("forwards no apiKey to the composed provider when the registry resolves auth without one", async () => {
+	const { getProvider, calls } = capturingProvider(assistantText("ok"));
+	const outcome = await withAmbientProviderApiKey(() =>
+		runInProcessReviewer(baseRequest(), {
+			registry: { ...fakeRegistry([fakeModel()], headerOnlyAuth), getProvider },
+			complete: unreachableComplete,
+		}),
+	);
+	expectText(outcome);
+	assert.equal(calls.length, 1, "the composed provider must receive exactly one dispatch");
+	const options = calls[0]!.options;
+	assert.notEqual(options, undefined, "options must reach the composed provider");
+	assert.equal("apiKey" in options!, false, "the module must not invent an apiKey the registry did not resolve, nor read one from the ambient environment");
+	assert.deepEqual(options!.headers, { ...HEADER_ONLY_AUTH_HEADERS }, "the registry's own auth headers are the credential on this path");
+});
+
+test("forwards no apiKey to deps.complete when the registry resolves auth without one", async () => {
+	const { complete, calls } = capturingComplete(assistantText("ok"));
+	const outcome = await withAmbientProviderApiKey(() =>
+		runInProcessReviewer(baseRequest(), {
+			registry: fakeRegistry([fakeModel()], headerOnlyAuth),
+			complete,
+		}),
+	);
+	expectText(outcome);
+	assert.equal(calls.length, 1, "the fallback path must receive exactly one dispatch");
+	const options = calls[0]!.options;
+	assert.notEqual(options, undefined, "options must reach deps.complete");
+	assert.equal("apiKey" in options!, false, "the fallback path must not invent an apiKey either; compat's own withEnvApiKey is pi-ai's business, not this module's");
+	assert.deepEqual(options!.headers, { ...HEADER_ONLY_AUTH_HEADERS }, "the registry's own auth headers are the credential on this path too");
+});
+
+test("the no-apiKey options shape is identical on the composed-provider and deps.complete paths", async () => {
+	const { getProvider, calls: providerCalls } = capturingProvider(assistantText("ok"));
+	const { complete, calls: completeCalls } = capturingComplete(assistantText("ok"));
+	await withAmbientProviderApiKey(async () => {
+		expectText(
+			await runInProcessReviewer(baseRequest(), {
+				registry: { ...fakeRegistry([fakeModel()], headerOnlyAuth), getProvider },
+				complete: unreachableComplete,
+			}),
+		);
+		expectText(
+			await runInProcessReviewer(baseRequest(), {
+				registry: fakeRegistry([fakeModel()], headerOnlyAuth),
+				complete,
+			}),
+		);
+	});
+	// Option *keys* rather than values: the two runs carry different
+	// AbortSignal instances by construction, so only the shape is comparable.
+	const providerKeys = Object.keys(providerCalls[0]!.options ?? {}).sort();
+	const completeKeys = Object.keys(completeCalls[0]!.options ?? {}).sort();
+	assert.deepEqual(providerKeys, completeKeys, "routing through the composed provider must not change which credential fields this module forwards");
+	assert.equal(providerKeys.includes("apiKey"), false, "neither path may carry an apiKey the registry did not resolve");
 });

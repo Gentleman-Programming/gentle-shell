@@ -1,14 +1,15 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
-import { type QuestionParams, QuestionParamsSchema } from "../lib/questionnaire/schema.ts";
+import { type QuestionData, type QuestionParams, QuestionParamsSchema } from "../lib/questionnaire/schema.ts";
 import {
 	QuestionnaireView,
 	type AnswerRow,
 	type QuestionnaireResult,
 } from "../lib/questionnaire/questionnaire-view.ts";
 import { validateQuestionnaire, type QuestionnaireError } from "../lib/questionnaire/validate.ts";
+import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 
 const QUESTION_TOOL_NAME = "ask_user_question";
 const ASK_USER_QUESTION_BLOCKED_EVENT = "gentle-pi:ask-user-question:blocked";
@@ -49,6 +50,124 @@ function unavailableResult(): QuestionnaireToolResult {
 		content: [{ type: "text", text: "Error: ask_user_question is unavailable outside the interactive TUI" }],
 		details: { errorKind: "unavailable_outside_tui" },
 	};
+}
+
+/** Same cancellation shape the TUI questionnaire returns for its Escape key. */
+function cancelledResult(): QuestionnaireToolResult {
+	return {
+		content: [{ type: "text", text: "User cancelled the questionnaire" }],
+		details: { cancelled: true },
+	};
+}
+
+/** Label for the trailing "finish this question" entry in a multiSelect round. */
+const MULTI_SELECT_DONE_LABEL = "Done";
+
+/** One toggle round's select prompt: `[x] label` / `[ ] label` plus Done. */
+function multiSelectRoundOptions(question: QuestionData, toggled: readonly boolean[]): string[] {
+	return [
+		...question.options.map((choiceOption, index) => `${toggled[index] ? "[x]" : "[ ]"} ${choiceOption.label}`),
+		MULTI_SELECT_DONE_LABEL,
+	];
+}
+
+/**
+ * Floor for the toggle-round safety cap so a misbehaving or chatty host
+ * cannot spin this loop forever, and every question -- however few options
+ * it has -- still gets room to toggle, untoggle, and retoggle before Done.
+ */
+const MULTI_SELECT_ROUND_CAP_FLOOR = 32;
+
+/**
+ * Hard bound on toggle rounds for one question: every option must be
+ * toggleable at least once, plus one round for the explicit Done and one
+ * spare round for a single correction (an un-toggle), so the cap scales
+ * with the option count (`options.length + 2`), floored at
+ * `MULTI_SELECT_ROUND_CAP_FLOOR` for small questions.
+ */
+function multiSelectRoundCap(optionsLength: number): number {
+	return Math.max(MULTI_SELECT_ROUND_CAP_FLOOR, optionsLength + 2);
+}
+
+/** Committed multiSelect answer from the current toggle state (explicit Done, or every option toggled on). */
+function finishMultiSelect(question: QuestionData, toggled: readonly boolean[]): AnswerRow {
+	return {
+		questionIndex: -1, // overwritten by the caller with the question's position
+		question: question.question,
+		kind: "multi",
+		answer: null,
+		selected: question.options.filter((_choiceOption, index) => toggled[index]).map((choiceOption) => choiceOption.label),
+	};
+}
+
+/**
+ * Resolves one multiSelect question by looping `ctx.ui.select` over toggle
+ * rounds, bounded by `multiSelectRoundCap`. Returns `undefined` on
+ * cancellation, when the cap is hit without an explicit Done, and when the
+ * host returns an answer that matches none of the current round's options:
+ * a partial toggle state must never commit silently in either case.
+ */
+export async function askMultiSelect(
+	ctx: Pick<ExtensionContext, "ui">,
+	question: QuestionData,
+): Promise<AnswerRow | undefined> {
+	const toggled = question.options.map(() => false);
+	const roundCap = multiSelectRoundCap(question.options.length);
+	for (let round = 0; round < roundCap; round++) {
+		const roundOptions = multiSelectRoundOptions(question, toggled);
+		const picked = await ctx.ui.select(`${question.header}: ${question.question}`, roundOptions);
+		if (picked === undefined) return undefined;
+		const pickedIndex = roundOptions.indexOf(picked);
+		if (pickedIndex === question.options.length) return finishMultiSelect(question, toggled); // explicit Done
+		if (pickedIndex === -1) return undefined; // unrecognised answer: never commit a partial state
+		toggled[pickedIndex] = !toggled[pickedIndex];
+		if (toggled.every(Boolean)) return finishMultiSelect(question, toggled);
+	}
+	// The safety cap was spent without an explicit Done: refuse to commit a
+	// partial selection silently and cancel instead.
+	return undefined;
+}
+
+/** Resolves one single-select question through `ctx.ui.select`. Returns `undefined` on cancellation. */
+async function askSingleSelect(
+	ctx: Pick<ExtensionContext, "ui">,
+	question: QuestionData,
+): Promise<AnswerRow | undefined> {
+	const labels = question.options.map((choiceOption) => choiceOption.label);
+	const picked = await ctx.ui.select(`${question.header}: ${question.question}`, labels);
+	if (picked === undefined) return undefined;
+	const chosen = question.options.find((choiceOption) => choiceOption.label === picked);
+	return {
+		questionIndex: -1, // overwritten by the caller with the question's position
+		question: question.question,
+		kind: "option",
+		answer: picked,
+		...(chosen?.preview !== undefined ? { preview: chosen.preview } : {}),
+	};
+}
+
+/**
+ * Interactive-RPC-host fallback for the TUI questionnaire: one
+ * `ctx.ui.select` dialog per question (looped for multiSelect), keeping the
+ * exact TUI result shapes. A cancel on any question cancels the whole
+ * questionnaire, matching the TUI Escape key. There is no schema-declared
+ * free-text option (`lib/questionnaire/schema.ts` has none), so the
+ * always-available "Type something." row has no RPC-dialog equivalent here.
+ */
+async function askThroughDialogs(
+	ctx: Pick<ExtensionContext, "ui">,
+	params: QuestionParams,
+): Promise<QuestionnaireToolResult> {
+	const answers: AnswerRow[] = [];
+	for (let questionIndex = 0; questionIndex < params.questions.length; questionIndex++) {
+		const question = params.questions[questionIndex]!;
+		const answer = question.multiSelect
+			? await askMultiSelect(ctx, question)
+			: await askSingleSelect(ctx, question);
+		if (answer === undefined) return cancelledResult();
+		answers.push({ ...answer, questionIndex });
+	}
+	return { content: [{ type: "text", text: answersText(answers) }], details: { answers } };
 }
 
 /**
@@ -145,7 +264,16 @@ export default function askUserQuestion(pi: ExtensionAPI): void {
 		): Promise<QuestionnaireToolResult> {
 			const error = validateQuestionnaire(params);
 			if (error) return invalidQuestionnaireResult(error);
-			if (ctx.mode !== "tui") return unavailableResult();
+			if (ctx.mode !== "tui") {
+				if (!isInteractiveRpcHost(ctx.mode, process.env)) return unavailableResult();
+				try {
+					pi.events.emit(ASK_USER_QUESTION_BLOCKED_EVENT, { active: true });
+					return await askThroughDialogs(ctx, params);
+				}
+				finally {
+					pi.events.emit(ASK_USER_QUESTION_BLOCKED_EVENT, { active: false });
+				}
+			}
 
 			let selection: QuestionnaireResult | undefined;
 			try {

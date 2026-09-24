@@ -534,8 +534,7 @@ async function run() {
 		assert.equal(await toolHook({ toolName: "write", input: { path: firstOddPath } }, oddCtx), undefined);
 		await toolResultHook({ toolName: "write", toolCallId: "odd-first", input: { path: firstOddPath }, isError: false }, oddCtx);
 		const secondOdd = await toolHook({ toolName: "edit", input: { path: join(toolCwd, "second.ts") } }, oddCtx);
-		assert.equal(secondOdd?.block, true, "the real primary hook must stop a second distinct direct file");
-		assert.match(secondOdd?.reason ?? "", /subagent_run/);
+		assert.equal(secondOdd, undefined, "write history alone must not refuse a second direct file");
 		const ghPrCwd = await tempWorkspace();
 		try {
 			execFileSync("git", ["init"], { cwd: ghPrCwd, stdio: "ignore" });

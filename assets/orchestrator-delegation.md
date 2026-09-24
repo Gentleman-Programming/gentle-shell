@@ -91,6 +91,8 @@ Return concise findings, recommendation, tradeoffs, open questions, and implemen
 
 Use at most one scoped independent read-only assumption challenge for a high-consequence unproven premise, even in a small security-critical change. Name the premise, evidence, and consequence; do not start a debate loop. Deterministic failures need fixes, not model debate. The native RDD refuter owns native review claims; never duplicate or bypass it with this challenge.
 
+Before building, validate any consequential premise whose failure would invalidate the approach. Reuse relevant findings from sibling investigations instead of repeating the same exploration; verify only what is stale or materially different. During iteration, run focused checks for the behavior being changed, then run the applicable full suite at closure. This sequencing guides effort rather than imposing a token counter or skipping required checks.
+
 #### Checks and candidate consent
 
 Resolve effective TDD on/off from existing project/session configuration or explicit user choice; retain its source and exact test runner. Record resolved mode, source, and runner in the feature document when present. Tests or frameworks being present does not enable TDD. Forward mode, source, and runner on every implementation delegation; refresh on resume. When enabled, require observed RED before implementation, GREEN, then REFACTOR; never invent evidence. When disabled, run ordinary functional checks, not no checks. If mode is unknown/conflicting or the runner is missing, disclose and resolve only the ambiguity affecting the next action; never invent precedence or a command, and never invoke sdd-init to determine ODD TDD.

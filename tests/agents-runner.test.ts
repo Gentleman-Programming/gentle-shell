@@ -5,6 +5,7 @@ import { AGENT_MODE, parseAgentsConfig, resolveAgentProfile, type AgentDefinitio
 import { TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
 import { AgentRunner, childArguments, JsonLines, piCommand, abortReasonText, type ChildLike, type RunnerDeps, type RunnerHooks, type TaskRequest } from "../lib/agents-runner.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
+import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
 
 // Gentle Agents runner: every subagent is a child `pi --mode rpc` process.
 // The host only parses JSON lines, applies deltas to the store, answers
@@ -398,6 +399,28 @@ for (const ending of ["cancel", "failure", "hook-error", "hook-async-error"] as 
 		assert.equal(mutations.length, 2, "terminal cleanup rejects late events without retracting successful writes");
 	});
 }
+
+test("a queued pre-spawn denial fails only its task and keeps the runner queue moving", async () => {
+	const h = harness({ maxConcurrency: 1 });
+	const first = h.runner.run(request());
+	let allowed = true;
+	let registered = false;
+	const denied = h.runner.run(request({ beforeSpawn: () => { if (!allowed) throw new Error("grant expired"); }, onLaunch: () => { registered = true; } }));
+	const next = h.runner.run(request());
+	await tick();
+	assert.equal(h.children.length, 1);
+	allowed = false;
+	h.children[0].emit({ type: "agent_end", messages: [] });
+	h.children[0].emit({ type: "agent_settled" });
+	h.children[0].exit(0);
+	await tick();
+	assert.equal(h.store.get(denied.id)?.status, TASK_STATUS.FAILED);
+	assert.match(h.store.get(denied.id)?.error ?? "", /grant expired/);
+	assert.equal(registered, false);
+	assert.equal(h.children.length, 2, "a later valid task still starts");
+	assert.equal(h.store.get(next.id)?.status, TASK_STATUS.RUNNING);
+	assert.ok(h.store.get(first.id));
+});
 
 test("launch registration waits for actual spawn, including queued launches, and ignores failed spawns", async () => {
 	const launches: string[] = [];
@@ -804,6 +827,15 @@ for (const [platform, detached] of [["win32", false], ["linux", true]] as const)
 	child.emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "platform checked" }], stopReason: "stop" }] });
 	child.emit({ type: "agent_settled" });
 	assert.equal((await runner.waitFor(task.id)).status, TASK_STATUS.COMPLETED);
+});
+
+test("AgentRunner strips the interactive-host signal from every spawned child env", async () => {
+	const { runner, spawnOptions } = harness();
+	runner.run(request({ env: { PATH: "/fixture", [INTERACTIVE_HOST_ENV]: "1" } }));
+	await tick();
+
+	assert.equal(spawnOptions[0]?.env[INTERACTIVE_HOST_ENV], undefined, "subagent children never see the interactive-host signal");
+	assert.equal(spawnOptions[0]?.env.PATH, "/fixture", "unrelated inherited env is preserved");
 });
 
 function ipcCleanupHarness(connected: boolean | undefined) {

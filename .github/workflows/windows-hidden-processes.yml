@@ -3,14 +3,16 @@ name: Windows Hidden Internal Processes
 on:
   push:
     branches:
-      - fix/windows-hidden-internal-processes
+      - main
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
 
 jobs:
   test:
-    if: github.repository == 'decode2/gentle-pi'
     strategy:
       fail-fast: false
       matrix:

@@ -15,13 +15,15 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { PROFILES_KIND, PROFILES_VERSION } from "../lib/agent-profiles.ts";
+import type { AgentRoutingEntry } from "../lib/model-routing-authority.ts";
+type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel">;
 import { PROFILE_PIN_KIND, PROFILE_PIN_VERSION, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
 import { NATIVE_REVIEW_ERROR_CODE, NativeReviewCliError, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { CandidateViewError, type CandidateViewRegistry } from "../lib/review-candidate-view.ts";
 import { installPackageAssets } from "../lib/sdd-preflight.ts";
 import type { ReviewCollectInputV3, ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
-import { cardBody, cardHint, cardTitle, cardTone } from "./gentle-card-text.ts";
+import { cardBody, cardTitle, cardTone } from "./gentle-card-text.ts";
 
 initTheme("dark");
 
@@ -274,7 +276,7 @@ test("registered Gentle Review tools preserve result envelopes and redact collap
 	const scope = tools.get("gentle_review_scope");
 	const manifest = { version: 1, scopeByMode: { "100644": ["src/file.ts"] }, gitlinks: {} };
 	const bytes = Buffer.from(JSON.stringify(manifest), "utf8");
-	const encoded = gzipSync(bytes, { mtime: 0 }).toString("base64url");
+	const encoded = gzipSync(bytes).toString("base64url");
 	const sha256 = createHash("sha256").update(bytes).digest("hex");
 
 	const result = await scope.execute(
@@ -2626,4 +2628,147 @@ test("a rename follows the clone pin and leaves the committed declaration naming
 		setProfilePinWorktreeResolverForTesting();
 		rmSync(base, { recursive: true, force: true });
 	}
+});
+
+// getPiModelOptions guard branches (gentle-pi regression coverage)
+
+function makeContext(registry?: ExtensionContext["modelRegistry"]): ExtensionContext {
+	return {
+		cwd: process.cwd(),
+		hasUI: true,
+		modelRegistry: registry,
+		ui: { notify() {} },
+	} as unknown as ExtensionContext;
+}
+
+test("getPiModelOptions returns MODEL_CONTROL_OPTIONS when modelRegistry is absent", async () => {
+	const options = await __testing.getPiModelOptions(makeContext());
+	assert.deepEqual(options, ["Keep current", "Inherit active/default model", "Custom model id"]);
+});
+
+test("getPiModelOptions returns MODEL_CONTROL_OPTIONS when getAvailable throws", async () => {
+	const registry = {
+		getAvailable: async () => { throw new Error("registry unavailable"); },
+	} as unknown as ExtensionContext["modelRegistry"];
+	const options = await __testing.getPiModelOptions(makeContext(registry));
+	assert.deepEqual(options, ["Keep current", "Inherit active/default model", "Custom model id"]);
+});
+
+test("getPiModelOptions returns MODEL_CONTROL_OPTIONS when getAvailable returns non-array", async () => {
+	const registry = {
+		getAvailable: async () => ({ provider: "openai", id: "gpt-5" }),
+	} as unknown as ExtensionContext["modelRegistry"];
+	const options = await __testing.getPiModelOptions(makeContext(registry));
+	assert.deepEqual(options, ["Keep current", "Inherit active/default model", "Custom model id"]);
+});
+
+test("getPiModelOptions merges MODEL_CONTROL_OPTIONS with normalized sorted model list", async () => {
+	const registry = {
+		getAvailable: async () => [
+			{ provider: "openai", id: "gpt-5.5" },
+			{ provider: "anthropic", id: "opus-4" },
+			{ provider: "openai", id: "gpt-5" },
+		],
+	} as unknown as ExtensionContext["modelRegistry"];
+	const options = await __testing.getPiModelOptions(makeContext(registry));
+
+	assert.equal(options[0], "Keep current");
+	assert.equal(options[1], "Inherit active/default model");
+	assert.equal(options[2], "Custom model id");
+
+	const modelPart = options.slice(3);
+	assert.deepEqual(
+		modelPart,
+		[
+			"anthropic/opus-4",
+			"openai/gpt-5",
+			"openai/gpt-5.5",
+		],
+	);
+});
+
+test("getPiModelOptions drops models that normalize to undefined", async () => {
+	const registry = {
+		getAvailable: async () => [
+			{ provider: "openai", id: "gpt-5" },
+			{ provider: "anthropic", id: "claude 4" }, // space fails SAFE_MODEL_ID_PATTERN
+			{ provider: "o|penai", id: "gpt-5" },       // pipe fails SAFE_MODEL_ID_PATTERN
+		],
+	} as unknown as ExtensionContext["modelRegistry"];
+	const options = await __testing.getPiModelOptions(makeContext(registry));
+
+	const modelPart = options.slice(3);
+	assert.deepEqual(
+		modelPart,
+		[
+			"openai/gpt-5",
+		],
+	);
+});
+
+// switchLiveOrchestrator regression coverage (gentle-pi)
+
+test("switchLiveOrchestrator returns fallback note when modelRegistry is absent", async () => {
+	const live = {
+		setModel: async () => true,
+		setThinkingLevel: () => {},
+	} as unknown as LiveSession;
+	const ctx = {
+		cwd: process.cwd(),
+		hasUI: true,
+		ui: { notify() {} },
+	} as unknown as ExtensionContext;
+	const entry: AgentRoutingEntry = {
+		model: "openai/gpt-5",
+	};
+	const result = await __testing.switchLiveOrchestrator(ctx, live, entry);
+	assert.equal(
+		result,
+		"\nModel registry unavailable; this session keeps its current model.",
+	);
+});
+
+test("switchLiveOrchestrator returns fallback note when model not found in catalog", async () => {
+	const registry = {
+		find: () => undefined,
+	} as unknown as ExtensionContext["modelRegistry"];
+	const live = {
+		setModel: async () => true,
+		setThinkingLevel: () => {},
+	} as unknown as LiveSession;
+	const ctx = {
+		cwd: process.cwd(),
+		hasUI: true,
+		modelRegistry: registry,
+		ui: { notify() {} },
+	} as unknown as ExtensionContext;
+	const entry: AgentRoutingEntry = {
+		model: "openai/gpt-99",
+	};
+	const result = await __testing.switchLiveOrchestrator(ctx, live, entry);
+	assert.equal(
+		result,
+		"\nopenai/gpt-99 is not in the model catalog; this session keeps its current model.",
+	);
+});
+
+test("switchLiveOrchestrator returns note when setModel fails", async () => {
+	const registry = {
+		find: () => ({ provider: "openai", id: "gpt-5" }),
+	} as unknown as ExtensionContext["modelRegistry"];
+	const live = {
+		setModel: async () => false,
+		setThinkingLevel: () => {},
+	} as unknown as LiveSession;
+	const ctx = {
+		cwd: process.cwd(),
+		hasUI: true,
+		modelRegistry: registry,
+		ui: { notify() {} },
+	} as unknown as ExtensionContext;
+	const entry: AgentRoutingEntry = {
+		model: "openai/gpt-5",
+	};
+	const result = await __testing.switchLiveOrchestrator(ctx, live, entry);
+	assert.equal(result, "\nno authentication is configured for openai; this session keeps its current model.");
 });

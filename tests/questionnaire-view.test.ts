@@ -387,6 +387,50 @@ test("scrolling with pageDown/pageUp moves the visible preview slice (#1340)", (
 	assert.match(resetText, /Preview line 1\b/);
 });
 
+test("selecting an option without preview clears scrollability and mouse wheel handling (#1340)", () => {
+	const longPreview = Array.from({ length: 65 }, (_, i) => `Preview line ${i + 1}`).join("\n");
+	const { view } = viewWithResult(single(longPreview));
+
+	// Focused on Alpha (has preview): scrollable hint and wheel handling active
+	const alphaLines = view.render(100);
+	assert.match(alphaLines.join("\n"), /pgup\/pgdn scroll/);
+	const alphaWheel = view.handleMouse({
+		type: "wheel",
+		button: "none",
+		wheelDelta: 1,
+		x: 50,
+		y: 5,
+		screenX: 50,
+		screenY: 5,
+		width: 100,
+		height: 24,
+		shift: false,
+		alt: false,
+		ctrl: false,
+	});
+	assert.equal(alphaWheel?.handled, true);
+
+	// Move cursor to Beta (no preview)
+	view.handleInput(KEY.down[0]);
+	const betaLines = view.render(100);
+	assert.doesNotMatch(betaLines.join("\n"), /pgup\/pgdn scroll/);
+	const betaWheel = view.handleMouse({
+		type: "wheel",
+		button: "none",
+		wheelDelta: 1,
+		x: 50,
+		y: 5,
+		screenX: 50,
+		screenY: 5,
+		width: 100,
+		height: 24,
+		shift: false,
+		alt: false,
+		ctrl: false,
+	});
+	assert.equal(betaWheel, undefined);
+});
+
 test("long option preview height is bounded to terminal rows in inline mode (#1340)", () => {
 	const longPreview = Array.from({ length: 65 }, (_, i) => `Preview line ${i + 1}`).join("\n");
 	const { view } = viewWithResult(single(longPreview));
@@ -394,6 +438,51 @@ test("long option preview height is bounded to terminal rows in inline mode (#13
 	assert.ok(
 		renderedLines.length <= 24,
 		`inline rendered height must be bounded to terminal rows (was ${renderedLines.length} lines, expected <= 24)`,
+	);
+});
+
+test("inline preview height stays bounded within terminal rows when options wrap (#1340)", () => {
+	const longPreview = Array.from({ length: 65 }, (_, i) => `Preview line ${i + 1}`).join("\n");
+	const wrappedOptions = [
+		option("Option A", "This is a detailed description that wraps across multiple lines in narrow viewports", longPreview),
+		option("Option B", "Another long description that wraps across multiple lines when rendered inline"),
+		option("Option C", "Yet another detailed description for the third option taking multiple lines"),
+		option("Option D", "Fourth option with a description that also wraps across lines in the terminal"),
+	];
+	const { view } = viewWithResult([question("Which configuration should be used for this environment?", wrappedOptions)]);
+	const renderedLines = view.render(60);
+	assert.ok(
+		renderedLines.length <= 24,
+		`inline rendered height must be <= 24 terminal rows (was ${renderedLines.length} lines, expected <= 24)`,
+	);
+});
+
+test("pageDown in inline mode advances by visible preview rows without skipping lines (#1340)", () => {
+	const longPreview = Array.from({ length: 65 }, (_, i) => `Preview line ${i + 1}`).join("\n");
+	const { view } = viewWithResult(single(longPreview));
+
+	// Initial render in inline mode (width = 60)
+	const initialLines = view.render(60);
+	const initialText = initialLines.join("\n");
+	assert.match(initialText, /Preview line 1\b/);
+
+	// Find the last visible preview content line in initial slice
+	let lastVisibleLineNum = 1;
+	for (let i = 1; i <= 65; i++) {
+		if (new RegExp(`Preview line ${i}\\b`).test(initialText)) {
+			lastVisibleLineNum = i;
+		}
+	}
+	assert.ok(lastVisibleLineNum < 65, "initial preview should be sliced");
+
+	// Page down should show the next line without skipping
+	view.handleInput("\x1b[6~"); // PageDown
+	const pageDownText = view.render(60).join("\n");
+	const nextExpectedLine = `Preview line ${lastVisibleLineNum + 1}\\b`;
+	assert.match(
+		pageDownText,
+		new RegExp(nextExpectedLine),
+		`PageDown must show next line (${nextExpectedLine}) without skipping lines`,
 	);
 });
 

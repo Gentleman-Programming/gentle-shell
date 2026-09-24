@@ -153,6 +153,7 @@ export class QuestionnaireView extends Container implements Focusable {
 	private _focused = false;
 	private previewScroll = 0;
 	private previewScrollable = false;
+	private visiblePreviewRows = 0;
 
 	constructor(options: QuestionnaireViewOptions) {
 		super();
@@ -322,6 +323,8 @@ export class QuestionnaireView extends Container implements Focusable {
 		const terminalRows = this.terminalRows();
 		const maxBodyRows = Math.max(6, terminalRows - 6);
 
+		this.previewScrollable = false;
+		this.visiblePreviewRows = 0;
 		const preview = this.currentPreview();
 		if (preview !== undefined && viewport >= MIN_PREVIEW_WIDTH) {
 			const leftWidth = Math.max(1, Math.floor(viewport * PREVIEW_SPLIT));
@@ -329,13 +332,14 @@ export class QuestionnaireView extends Container implements Focusable {
 			const left = this.renderBody(leftWidth, false);
 			const right = this.wrap(this.theme.fg("dim", preview), rightWidth);
 
-			const targetRows = Math.max(left.lines.length, Math.min(right.length, maxBodyRows));
+			const targetRows = Math.min(maxBodyRows, Math.max(left.lines.length, right.length));
 			const isScrollable = right.length > targetRows;
 			this.previewScrollable = isScrollable;
 
 			let visibleRight: string[];
 			if (isScrollable) {
 				const contentRows = Math.max(1, targetRows - 1);
+				this.visiblePreviewRows = contentRows;
 				const maxScroll = Math.max(0, right.length - contentRows);
 				this.previewScroll = Math.max(0, Math.min(maxScroll, this.previewScroll));
 				visibleRight = right.slice(this.previewScroll, this.previewScroll + contentRows);
@@ -344,6 +348,7 @@ export class QuestionnaireView extends Container implements Focusable {
 				visibleRight.push(this.theme.fg("dim", `[${start}–${end} of ${right.length}]`));
 			} else {
 				this.previewScroll = 0;
+				this.visiblePreviewRows = 0;
 				visibleRight = right;
 			}
 
@@ -414,7 +419,19 @@ export class QuestionnaireView extends Container implements Focusable {
 
 		const customIndex = question.options.length;
 		const terminalRows = this.terminalRows();
-		const maxInlinePreviewRows = Math.max(4, Math.min(10, Math.floor(terminalRows * 0.4)));
+		let maxInlinePreviewRows = Math.max(4, Math.min(10, Math.floor(terminalRows * 0.4)));
+		if (inlinePreview) {
+			const chromeRows = this.wrap(this.renderTabs(), width).length + 2 + this.wrap(this.hint(), width).length;
+			let baseBodyRows = this.wrap(this.accent(question.question), width).length + 1;
+			for (const [optionIndex, option] of question.options.entries()) {
+				const cursor = state.cursor === optionIndex ? this.accent("❯ ") : "  ";
+				const marker = question.multiSelect ? `${state.toggled.has(optionIndex) ? "[x]" : "[ ]"} ` : "";
+				baseBodyRows += this.wrap(`${cursor}${marker}${option.label}`, width).length;
+				baseBodyRows += this.wrap(`    ${this.theme.fg("dim", option.description)}`, width).length;
+			}
+			const availableRows = Math.max(4, terminalRows - chromeRows - baseBodyRows);
+			maxInlinePreviewRows = Math.min(maxInlinePreviewRows, availableRows);
+		}
 
 		for (const [optionIndex, option] of question.options.entries()) {
 			const owner: LineOwner = { questionIndex: this.focusedQuestion, rowIndex: optionIndex };
@@ -427,6 +444,7 @@ export class QuestionnaireView extends Container implements Focusable {
 				if (wrapped.length > maxInlinePreviewRows) {
 					this.previewScrollable = true;
 					const contentRows = Math.max(1, maxInlinePreviewRows - 1);
+					this.visiblePreviewRows = contentRows;
 					const maxScroll = Math.max(0, wrapped.length - contentRows);
 					this.previewScroll = Math.max(0, Math.min(maxScroll, this.previewScroll));
 					const slice = wrapped.slice(this.previewScroll, this.previewScroll + contentRows);
@@ -437,6 +455,7 @@ export class QuestionnaireView extends Container implements Focusable {
 				} else {
 					this.previewScroll = 0;
 					this.previewScrollable = false;
+					this.visiblePreviewRows = 0;
 					for (const line of wrapped) {
 						push(`    ${line}`, owner);
 					}
@@ -468,6 +487,9 @@ export class QuestionnaireView extends Container implements Focusable {
 	}
 
 	private previewPageSize(): number {
+		if (this.visiblePreviewRows > 0) {
+			return this.visiblePreviewRows;
+		}
 		const available = Math.max(4, this.terminalRows() - 8);
 		return Math.max(1, available);
 	}

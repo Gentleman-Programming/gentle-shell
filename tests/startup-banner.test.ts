@@ -314,6 +314,25 @@ test("MCP stat sees a project layer, and lets it disable a globally enabled serv
 	assert.equal(await countEnabledMcpServers("/repo", read), 1);
 });
 
+test("MCP stat keeps a disabled flag that a higher layer does not override", async () => {
+	// The adapter merges a server's fields across layers, so a higher layer that
+	// redefines the server without `disabled` leaves it off. Replacing the entry
+	// counted a server the session does not load.
+	const read = mcpLayers("/repo", {
+		sharedGlobal: { mcpServers: { shared: { command: "a", disabled: true } } },
+		project: { mcpServers: { shared: { command: "b" } } },
+	});
+	assert.equal(await countEnabledMcpServers("/repo", read), 0);
+});
+
+test("MCP stat lets a higher layer turn a server back on with disabled: false", async () => {
+	const read = mcpLayers("/repo", {
+		sharedGlobal: { mcpServers: { shared: { command: "a", disabled: true } } },
+		project: { mcpServers: { shared: { disabled: false } } },
+	});
+	assert.equal(await countEnabledMcpServers("/repo", read), 1);
+});
+
 test("MCP stat reads the shared layers the session merges, not only the Pi-owned two", async () => {
 	// One server per shared layer, none of them in a Pi-owned file. Reading only
 	// `~/.pi/agent/mcp.json` and `<cwd>/.pi/mcp.json` reported none of them.

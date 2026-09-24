@@ -537,9 +537,11 @@ interface McpConfigFile {
 }
 
 /** MCP config layers, lowest precedence first, as `getConfigSources` in
- *  pi-mcp-adapter orders them (verified against 2.34.0). A later layer replaces
- *  the earlier entry for a server of the same name, which is how `/mcp disable`
- *  turns a globally configured server off for one project.
+ *  pi-mcp-adapter orders them (verified against 2.34.0). A later layer's fields
+ *  apply over the earlier entry for a server of the same name (`mergeServerMaps`
+ *  spreads one over the other). That is how `/mcp disable` turns a globally
+ *  configured server off for one project, and why a `disabled: true` set lower
+ *  down stays in force until a higher layer says `disabled: false`.
  *
  *  Reading only the two Pi-owned files missed a server defined in a shared
  *  layer entirely, and let an omitted higher-precedence `disabled` entry keep a
@@ -594,7 +596,7 @@ export async function countEnabledMcpServers(
     if (!isMcpServerEntry(entries)) continue;
     for (const [name, entry] of Object.entries(entries)) {
       if (!isMcpServerEntry(entry)) continue;
-      servers.set(name, entry);
+      servers.set(name, { ...servers.get(name), ...entry });
     }
   }
   let enabled = 0;

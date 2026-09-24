@@ -1,9 +1,60 @@
 import { closeSync, constants, fchmodSync, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
+
+// The two directory layouts Pi's own package manager creates when it installs
+// a package into an agent home: the npm-backed `npm/node_modules/<package>`
+// (user scope `<agent dir>/npm/node_modules/gentle-pi`, project scope
+// `.pi/npm/node_modules/gentle-pi`) and the git-backed
+// `git/github.com/Gentleman-Programming/<package>` layout. A path is checked
+// for these sequences anywhere in its segments, not anchored to a specific
+// resolved agent home — unlike installTuiModeSetting's own ownership check.
+const PI_MANAGED_SEGMENT_SEQUENCES = [
+	["npm", "node_modules"],
+	["git", "github.com", "Gentleman-Programming"],
+];
+
+// Gentle Shell's default theme (themes/Gentleman-Cute.json, "name":
+// "Gentleman-Cute"): applied by withIsolatedHomeDefaults below whenever a
+// home's settings do not already declare one, never overriding a user's own
+// choice.
+export const DEFAULT_THEME_NAME = "Gentleman-Cute";
+
+// Pure merge: returns `value` with fullscreen tuiMode always applied, and —
+// only when `value` does not already declare a "theme" key — the default
+// theme above added too. No filesystem access, so it is unit-testable
+// without a tempdir; installIsolatedTuiModeSetting below is the only caller,
+// applying this to a freshly bootstrapped home's settings.
+export function withIsolatedHomeDefaults(value) {
+	const next = { ...value, tuiMode: "fullscreen" };
+	if (!("theme" in value)) next.theme = DEFAULT_THEME_NAME;
+	return next;
+}
+
+function containsSequence(segments, sequence) {
+	for (let start = 0; start + sequence.length <= segments.length; start += 1) {
+		if (sequence.every((part, offset) => segments[start + offset] === part)) return true;
+	}
+	return false;
+}
+
+/** Gates the POSTINSTALL entry point only (scripts/install-gentle-ai.mjs), not
+ * installTuiModeSetting or installIsolatedTuiModeSetting: true when
+ * `packageDir` (the directory of the gentle-pi package actually running,
+ * typically derived from that script's own import.meta.url) sits under one of
+ * the directory layouts above. A plain `npm install -g gentle-pi`, a
+ * development git checkout, an `npx` cache directory, or a pnpm store never
+ * match, so the postinstall entry skips writing the user's global Pi settings
+ * for those instead of relying solely on installTuiModeSetting's own,
+ * differently-scoped ownership check.
+ */
+export function isPiManagedInstall(packageDir) {
+	const segments = resolve(packageDir).split(sep);
+	return PI_MANAGED_SEGMENT_SEQUENCES.some((sequence) => containsSequence(segments, sequence));
+}
 
 function inspect(path) {
 	try { return lstatSync(path); }
@@ -14,8 +65,8 @@ function sameFile(left, right) {
 	return left && right && left.dev === right.dev && left.ino === right.ino;
 }
 
-function assertDirectories(home, packageRoot) {
-	for (const path of [home, join(home, "npm"), join(home, "npm", "node_modules"), packageRoot]) {
+function assertDirectories(paths) {
+	for (const path of paths) {
 		const stat = inspect(path);
 		if (!stat?.isDirectory() || stat.isSymbolicLink() || realpathSync(path) !== path) {
 			throw new Error(`Unsafe fullscreen settings installation path: ${path}`);
@@ -53,7 +104,7 @@ async function acquireLock(path) {
 	}
 }
 
-/** Only a physically owned global Pi npm install may mutate Pi settings.
+/** Only physically owned global Pi npm or exact Git installs may mutate Pi settings.
  * Atomic rename protects readers from partial JSON, not arbitrary writers or
  * malicious same-user ancestor swaps. No lifecycle cwd or store symlink grants ownership.
  */
@@ -64,18 +115,28 @@ export async function installTuiModeSetting(options = {}) {
 	let home;
 	try { home = realpathSync(requestedHome); }
 	catch (error) { if (error.code === "ENOENT") return { changed: false, recognized: false }; throw error; }
-	const expected = join(home, "npm", "node_modules", "gentle-pi");
+	const installations = [
+		{
+			packageRoot: join(home, "npm", "node_modules", "gentle-pi"),
+			paths: [home, join(home, "npm"), join(home, "npm", "node_modules"), join(home, "npm", "node_modules", "gentle-pi")],
+		},
+		{
+			packageRoot: join(home, "git", "github.com", "Gentleman-Programming", "gentle-pi"),
+			paths: [home, join(home, "git"), join(home, "git", "github.com"), join(home, "git", "github.com", "Gentleman-Programming"), join(home, "git", "github.com", "Gentleman-Programming", "gentle-pi")],
+		},
+	];
 	// Canonical agent-home aliases (including macOS /var) are supported.
-	// pnpm's physical store and npm link targets are not owned global installs.
-	if (realpathSync(packageRoot) !== expected) return { changed: false, recognized: false };
-	assertDirectories(home, expected);
+	// pnpm's physical store, npm links, and Git aliases are not owned global installs.
+	const installation = installations.find(({ packageRoot: expected }) => realpathSync(packageRoot) === expected);
+	if (!installation) return { changed: false, recognized: false };
+	assertDirectories(installation.paths);
 	const settingsPath = join(home, "settings.json");
 	const lockPath = `${settingsPath}.lock`;
 	const lock = await acquireLock(lockPath);
 	const started = Date.now();
 	let staging;
 	try {
-		assertDirectories(home, expected);
+		assertDirectories(installation.paths);
 		const original = readSettings(settingsPath);
 		if (original.value.tuiMode === "fullscreen") return { changed: false, recognized: true };
 		staging = join(home, `.settings-fullscreen-${randomUUID()}.tmp`);
@@ -85,7 +146,7 @@ export async function installTuiModeSetting(options = {}) {
 			writeFileSync(fd, `${JSON.stringify({ ...original.value, tuiMode: "fullscreen" }, null, 2)}\n`, "utf8");
 			fsyncSync(fd);
 		} finally { closeSync(fd); }
-		assertDirectories(home, expected);
+		assertDirectories(installation.paths);
 		const latest = readSettings(settingsPath);
 		if (latest.text !== original.text || (original.stat ? !sameFile(original.stat, latest.stat) : latest.stat !== undefined)) {
 			throw new Error("settings.json changed concurrently; retry installation");
@@ -96,6 +157,51 @@ export async function installTuiModeSetting(options = {}) {
 		return { changed: true, recognized: true };
 	} finally {
 		// Only clean our own artifacts while the original parent remains canonical.
+		if (realpathSync(home) === home) {
+			if (staging) unlinkSync(staging);
+			if (sameFile(lock, inspect(lockPath))) rmdirSync(lockPath);
+		}
+	}
+}
+
+/** Writes tuiMode: "fullscreen" and — when the home has no theme of its own
+ * yet — the default Gentle Shell theme (withIsolatedHomeDefaults,
+ * DEFAULT_THEME_NAME above) into a directory gentle-shell's own isolated-home
+ * bootstrap (T2) just created and owns. Unlike installTuiModeSetting, there is no
+ * "physically installed under this home's npm/node_modules" ownership check to
+ * satisfy: the caller already knows it created `dir` moments ago as gentle-shell's
+ * dedicated agent home, so the only safety property that still matters is the one
+ * every writer here needs — atomic, non-symlink, cooperative-lock-respecting.
+ */
+export async function installIsolatedTuiModeSetting(dir) {
+	const home = realpathSync(resolve(dir));
+	assertDirectories([home]);
+	const settingsPath = join(home, "settings.json");
+	const lockPath = `${settingsPath}.lock`;
+	const lock = await acquireLock(lockPath);
+	const started = Date.now();
+	let staging;
+	try {
+		assertDirectories([home]);
+		const original = readSettings(settingsPath);
+		if (original.value.tuiMode === "fullscreen") return { changed: false, recognized: true };
+		staging = join(home, `.settings-fullscreen-${randomUUID()}.tmp`);
+		const fd = openSync(staging, "wx", original.stat ? original.stat.mode & 0o777 : 0o600);
+		try {
+			if (original.stat) fchmodSync(fd, original.stat.mode & 0o777);
+			writeFileSync(fd, `${JSON.stringify(withIsolatedHomeDefaults(original.value), null, 2)}\n`, "utf8");
+			fsyncSync(fd);
+		} finally { closeSync(fd); }
+		assertDirectories([home]);
+		const latest = readSettings(settingsPath);
+		if (latest.text !== original.text || (original.stat ? !sameFile(original.stat, latest.stat) : latest.stat !== undefined)) {
+			throw new Error("settings.json changed concurrently; retry installation");
+		}
+		if (!sameFile(lock, inspect(lockPath)) || Date.now() - started >= 5000) throw new Error("Fullscreen settings lock ownership expired; retry installation");
+		renameSync(staging, settingsPath);
+		staging = undefined;
+		return { changed: true, recognized: true };
+	} finally {
 		if (realpathSync(home) === home) {
 			if (staging) unlinkSync(staging);
 			if (sameFile(lock, inspect(lockPath))) rmdirSync(lockPath);

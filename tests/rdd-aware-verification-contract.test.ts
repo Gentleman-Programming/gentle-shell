@@ -130,10 +130,11 @@ test("delegation overlay keeps the required headings", () => {
 		"### Delegation Rules",
 		"#### Background Subagent Policy",
 		"#### Allowed edit surfaces (MANDATORY)",
-		"### 3. SDD (optional)",
+		"### 2. Simple Delegation",
 	]) {
 		assert.ok(delegation.includes(heading), `delegation overlay lost required heading: ${heading}`);
 	}
+	assert.doesNotMatch(delegation, /### 3\. SDD \(optional\)/);
 });
 
 test("worker asset declares the Verification section after Test discipline", () => {
@@ -197,6 +198,16 @@ test("worker asset never claims completion while a required verification command
 		worker,
 		/never report `status: completed` while a required command under `## Verification` is failing, unless that exact failure is named under `## Known environmental failures`\./i,
 	);
+});
+
+test("worker keeps candidate review disposition and lifecycle parent-owned", () => {
+	for (const clause of [
+		"The primary parent owns candidate review disposition and lifecycle, including preflight and any explicit candidate-level opt-out.",
+		"Never search for, request, or invoke review tools, including `gentle_review`.",
+		"Missing review tools never block this worker's implementation or verification handoff.",
+	]) {
+		assert.ok(worker.includes(clause), `worker asset is missing: ${clause}`);
+	}
 });
 
 test("worker asset keeps the existing Return contract fields", () => {

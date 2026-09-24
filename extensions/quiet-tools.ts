@@ -167,7 +167,7 @@ function isGitCommand(args: Record<string, unknown> | undefined): boolean {
 	return /^(?:env\s+\S+=\S+\s+|command\s+|\w+=\S+\s+)*git(?:\s|$)/.test(command);
 }
 
-export type GentleAiRoutineCommand = "sdd-status" | "sdd-continue" | "sdd-attempt" | "review";
+export type GentleAiRoutineCommand = "review";
 
 const GENTLE_AI_EXECUTABLE = String.raw`(?:gentle-ai(?:\.exe)?|(?:\.{1,2}[\\/]|(?:[A-Za-z]:)?(?:[\\/][^\\/\r\n]+)*[\\/])\.gentle-ai[\\/]v\d+\.\d+\.\d+[\\/]gentle-ai(?:\.exe)?)`;
 const GENTLE_AI_COMMAND_ARGUMENTS = new RegExp(`^${GENTLE_AI_EXECUTABLE}$`);
@@ -238,8 +238,6 @@ function shellTokens(command: string): ShellTokenization {
 function isAssignment(token: string): boolean {
 	return /^[A-Za-z_][A-Za-z0-9_]*=/.test(token);
 }
-const SDD_ATTEMPT_VERBS = new Set(["acquire", "settle", "grant"]);
-
 const REVIEW_DIRECT_OPERATIONS = new Set([
 	"capabilities",
 	"start",
@@ -304,22 +302,6 @@ function displayToken(token: string): string {
 	return token.replace(/-/g, " ");
 }
 
-function authorizationRootCount(tokens: string[]): number {
-	let count = 0;
-	for (let index = 0; index < tokens.length; index += 1) {
-		const token = tokens[index]!;
-		if (token === "--authorization-root") {
-			const value = tokens[index + 1];
-			if (value !== undefined && !value.startsWith("-")) count += 1;
-			continue;
-		}
-		if (token.startsWith("--authorization-root=") && token.slice("--authorization-root=".length).length > 0) {
-			count += 1;
-		}
-	}
-	return count;
-}
-
 function validateGate(tokens: string[]): string | undefined {
 	const gateFlag = tokens.findIndex((token) => token === "--gate" || token.startsWith("--gate="));
 	if (gateFlag < 0) return undefined;
@@ -332,7 +314,7 @@ function validateGate(tokens: string[]): string | undefined {
 /**
  * Matches only supported routine Gentle AI CLI calls, including bounded
  * package-local paths, not arbitrary shell output that merely mentions
- * gentle-ai. These commands otherwise emit machine-readable SDD/RDD data.
+ * gentle-ai. Review commands otherwise emit machine-readable RDD data.
  */
 export function isGentleAiDirectCommand(args: Record<string, unknown> | undefined, commandArguments = GENTLE_AI_COMMAND_ARGUMENTS): boolean {
 	return gentleAiCommandTokens(args, commandArguments) !== undefined;
@@ -341,25 +323,12 @@ export function isGentleAiDirectCommand(args: Record<string, unknown> | undefine
 export function gentleAiRoutineCommand(args: Record<string, unknown> | undefined, commandArguments = GENTLE_AI_COMMAND_ARGUMENTS): GentleAiRoutineCommand | undefined {
 	const tokens = gentleAiCommandTokens(args, commandArguments);
 	if (!tokens) return undefined;
-	if (tokens[0] === "sdd-status") return "sdd-status";
-	if (tokens[0] === "sdd-continue") return "sdd-continue";
-	if (tokens[0] === "sdd-attempt" && SDD_ATTEMPT_VERBS.has(tokens[1] ?? "")) return "sdd-attempt";
 	if (tokens[0] === "review") return "review";
 	return undefined;
 }
 
-function gentleAiOperationPathFrom(tokens: string[]): string {
-	if (tokens[0] === "sdd-status") return "sdd status";
-	if (tokens[0] === "sdd-continue") return "sdd continue";
-	if (tokens[0] === "sdd-attempt") {
-		const verb = tokens[1] ?? "";
-		if (!SDD_ATTEMPT_VERBS.has(verb)) return "sdd attempt";
-		if (verb !== "grant") return `sdd attempt ${verb}`;
-		const rootCount = authorizationRootCount(tokens);
-		return rootCount > 0
-			? `sdd attempt grant · ${rootCount} root${rootCount === 1 ? "" : "s"}`
-			: "sdd attempt grant";
-	}
+function gentleAiOperationPathFrom(tokens: string[]): string | undefined {
+	if (tokens[0]?.startsWith("sdd-")) return undefined;
 	if (tokens[0] === "version") return "version";
 	if (tokens[0] !== "review") return "command";
 
@@ -384,11 +353,6 @@ function gentleAiOperationPathFrom(tokens: string[]): string {
 export function gentleAiOperationPath(args: Record<string, unknown> | undefined, commandArguments = GENTLE_AI_COMMAND_ARGUMENTS): string | undefined {
 	const tokens = gentleAiCommandTokens(args, commandArguments);
 	return tokens ? gentleAiOperationPathFrom(tokens) : undefined;
-}
-
-export function isGentleAiGrantCommand(args: Record<string, unknown> | undefined, commandArguments = GENTLE_AI_COMMAND_ARGUMENTS): boolean {
-	const tokens = gentleAiCommandTokens(args, commandArguments);
-	return tokens?.[0] === "sdd-attempt" && tokens[1] === "grant";
 }
 
 interface ToolResultFormatOptions {
@@ -536,18 +500,39 @@ interface BoundedRowSection {
 	tail?: boolean;
 }
 
+// Cache the rendered preview slice per stable tool-result object: pi re-renders
+// every visible card each frame, so re-tokenizing the full output text per pass is
+// pure waste. Only the returned preview slice is retained, never the full wrapped
+// text, so an arbitrarily large output cannot pin every wrapped line for the
+// result object's lifetime.
+const boundedRowsLineCache = new WeakMap<object, Array<{ text: string; width: number; rows: number; tail: boolean; lines: string[] } | undefined>>();
+
 class BoundedRows implements Component {
 	private readonly sections: readonly BoundedRowSection[];
+	private readonly cacheKey: object | undefined;
 
-	constructor(sections: readonly BoundedRowSection[]) {
+	constructor(sections: readonly BoundedRowSection[], cacheKey?: object) {
 		this.sections = sections;
+		this.cacheKey = cacheKey;
 	}
 
+	/** Renders each section through the wrapped-line cache, sliced to the section row budget; cache hits skip re-tokenizing and re-wrapping the section text. */
 	render(width: number): string[] {
-		return this.sections.flatMap(({ text, rows, tail = false }) => {
+		const cache = this.cacheKey ? boundedRowsLineCache.get(this.cacheKey) : undefined;
+		return this.sections.flatMap(({ text, rows, tail = false }, index) => {
 			if (rows <= 0) return [];
+			const hit = cache?.[index];
+			if (hit && hit.text === text && hit.width === width && hit.rows === rows && hit.tail === tail) {
+				return [...hit.lines];
+			}
 			const rendered = new Text(text, 0, 0).render(width);
-			return tail ? rendered.slice(-rows) : rendered.slice(0, rows);
+			const sliced = tail ? rendered.slice(-rows) : rendered.slice(0, rows);
+			if (this.cacheKey) {
+				const slot = boundedRowsLineCache.get(this.cacheKey) ?? [];
+				slot[index] = { text, width, rows, tail, lines: sliced };
+				boundedRowsLineCache.set(this.cacheKey, slot);
+			}
+			return [...sliced];
 		});
 	}
 
@@ -642,8 +627,10 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 			}
 			return new Text(formatToolCall(toolName, callArgs, theme), 0, 0);
 		},
+		/** Builds the card component for this render pass; collapsed cards delegate to the wrapped-line cache keyed by the tool result object. */
 		renderResult(result, options, theme, context) {
 			const renderContext = context as ToolRenderContextLike | undefined;
+			const cacheKey = typeof result === "object" && result !== null ? result : undefined;
 			const safeResult = sanitizedResult(result);
 			const text = safeText(extractTextContent(safeResult));
 			const isError = renderContext?.isError ?? options.isError ?? false;
@@ -662,7 +649,7 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 				return new BoundedRows([
 					{ text: theme.fg("warning", partialLabel(toolName, text)), rows: 1 },
 					...(visible ? [{ text: theme.fg("muted", visible), rows: PREVIEW_LINE_LIMIT, tail: true }] : []),
-				]);
+				], cacheKey);
 			}
 			if (options.expanded && toolName === "read" && hasImageContent(safeResult) && officialRenderResult) {
 				return officialRenderResult(
@@ -687,7 +674,7 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 				return new BoundedRows([
 					{ text: theme.fg(color, output.replace(/^\n/, "")), rows: PREVIEW_LINE_LIMIT, tail },
 					...(hint ? [{ text: theme.fg(color, hint.slice(1)), rows: 1 }] : []),
-				]);
+				], cacheKey);
 			}
 			return new Text(hint ? theme.fg(color, hint.slice(1)) : "", 0, 0);
 		},

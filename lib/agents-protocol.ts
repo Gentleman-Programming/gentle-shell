@@ -32,6 +32,7 @@ export const TASK_EVENT = {
 	ASK: "ask",
 	NOTE: "note",
 	USAGE: "usage",
+	RESPONSE_OBSERVATION: "response_observation",
 } as const;
 
 export type TaskEventType = (typeof TASK_EVENT)[keyof typeof TASK_EVENT];
@@ -69,7 +70,24 @@ export interface AskEvent { type: typeof TASK_EVENT.ASK; request: AskRequest }
 export interface NoteEvent { type: typeof TASK_EVENT.NOTE; text: string }
 export interface UsageEvent { type: typeof TASK_EVENT.USAGE; tokens: number; cost: number }
 
-export type TaskEvent = TextEvent | ThinkingEvent | ToolStartEvent | ToolUpdateEvent | ToolEndEvent | TurnEndEvent | AgentEndEvent | AgentSettledEvent | ErrorEvent | AskEvent | NoteEvent | UsageEvent;
+export type ChildUnavailable = Readonly<{ state: "unavailable" }>;
+export type ChildMetadata = Readonly<{ state: "observed"; value: string }> | ChildUnavailable;
+export type ChildTokenMeasurement = Readonly<{ state: "reported"; value: number }> | ChildUnavailable;
+export interface ChildResponseObservation {
+	/** SDK message metadata, not authenticated route or selected-model evidence. */
+	readonly provider: ChildMetadata;
+	readonly model: ChildMetadata;
+	readonly responseModel: ChildMetadata;
+	/** Exact provider-native effort when supplied, NOT Pi's selected effort. */
+	readonly providerThinkingLevel: ChildMetadata;
+	readonly selected: Readonly<{ provider: ChildUnavailable; model: ChildUnavailable; effort: ChildUnavailable }>;
+	readonly stopReason: "stop" | "length" | "toolUse" | "error" | "aborted";
+	/** Reasoning is a subset of output, not an additional token total. */
+	readonly tokens: Readonly<Record<"input" | "output" | "cacheRead" | "cacheWrite" | "totalTokens" | "reasoning", ChildTokenMeasurement>>;
+}
+export interface ResponseObservationEvent { type: typeof TASK_EVENT.RESPONSE_OBSERVATION; observation: ChildResponseObservation }
+
+export type TaskEvent = ResponseObservationEvent | TextEvent | ThinkingEvent | ToolStartEvent | ToolUpdateEvent | ToolEndEvent | TurnEndEvent | AgentEndEvent | AgentSettledEvent | ErrorEvent | AskEvent | NoteEvent | UsageEvent;
 
 export interface TextItem { kind: typeof THREAD_ITEM.TEXT; text: string }
 export interface ThinkingItem { kind: typeof THREAD_ITEM.THINKING; text: string }
@@ -91,6 +109,10 @@ export interface TaskThread {
 }
 
 export interface TaskRecord {
+	/** Retained legacy payload, never interpreted or replayed as launch authority. */
+	sddRemediation?: unknown;
+	/** Exact runtime-generated SDD preflight block retained only for continuation transport. */
+	sddPreflightContext?: string;
 	id: string;
 	agent: string;
 	mode: string;
@@ -174,9 +196,39 @@ function askRequest(raw: Raw): AskRequest {
 	return { id: String(raw.id ?? ""), method: String(raw.method ?? ""), title };
 }
 
+const CHILD_UNAVAILABLE: ChildUnavailable = Object.freeze({ state: "unavailable" });
+const CHILD_SELECTION = Object.freeze({ provider: CHILD_UNAVAILABLE, model: CHILD_UNAVAILABLE, effort: CHILD_UNAVAILABLE });
+
+function childMetadata(value: unknown, max: number): ChildMetadata {
+	// Retain bounded identifier fields only; do not truncate into another identity.
+	return typeof value === "string" && value.length <= max && /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(value)
+		? Object.freeze({ state: "observed", value }) : CHILD_UNAVAILABLE;
+}
+
+function childTokens(value: unknown): ChildTokenMeasurement {
+	// SDK default zeros are not provider-presence evidence (same as primary adapter).
+	return typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value <= 1_000_000_000
+		? Object.freeze({ state: "reported", value }) : CHILD_UNAVAILABLE;
+}
+
+function childResponse(message: Raw): ChildResponseObservation | undefined {
+	const reason = message.stopReason;
+	if (reason !== "stop" && reason !== "length" && reason !== "toolUse" && reason !== "error" && reason !== "aborted") return undefined;
+	const usage = message.usage as Raw | undefined;
+	return Object.freeze({
+		provider: childMetadata(message.provider, 32), model: childMetadata(message.model, 128),
+		responseModel: childMetadata(message.responseModel, 128), providerThinkingLevel: childMetadata(message.providerThinkingLevel, 32),
+		// RPC has no per-request selected state; get_state observes launch only.
+		selected: CHILD_SELECTION, stopReason: reason,
+		tokens: Object.freeze({ input: childTokens(usage?.input), output: childTokens(usage?.output),
+			cacheRead: childTokens(usage?.cacheRead), cacheWrite: childTokens(usage?.cacheWrite),
+			totalTokens: childTokens(usage?.totalTokens), reasoning: childTokens(usage?.reasoning) }),
+	});
+}
+
 // One RPC line in, zero or more deltas out. Streaming deltas carry only the
 // chunk; whole-message payloads that pi repeats on every update are ignored.
-export function normalizeRpcEvent(raw: unknown): TaskEvent[] {
+export function normalizeRpcEvent(raw: unknown, options: { observeResponses?: boolean } = {}): TaskEvent[] {
 	if (!raw || typeof raw !== "object") return [];
 	const event = raw as Raw;
 	switch (event.type) {
@@ -200,9 +252,16 @@ export function normalizeRpcEvent(raw: unknown): TaskEvent[] {
 		case "message_end": {
 			const message = event.message as Raw | undefined;
 			const usage = message?.role === "assistant" ? (message.usage as Raw | undefined) : undefined;
-			if (!usage) return [];
-			const cost = usage.cost as Raw | undefined;
-			return [{ type: TASK_EVENT.USAGE, tokens: Number(usage.totalTokens ?? 0) || 0, cost: Number(cost?.total ?? 0) || 0 }];
+			const events: TaskEvent[] = [];
+			if (usage) {
+				const cost = usage.cost as Raw | undefined;
+				events.push({ type: TASK_EVENT.USAGE, tokens: Number(usage.totalTokens ?? 0) || 0, cost: Number(cost?.total ?? 0) || 0 });
+			}
+			if (options.observeResponses === true && message?.role === "assistant") {
+				const observation = childResponse(message);
+				if (observation) events.push({ type: TASK_EVENT.RESPONSE_OBSERVATION, observation });
+			}
+			return events;
 		}
 		case "turn_end":
 			return [{ type: TASK_EVENT.TURN_END }];

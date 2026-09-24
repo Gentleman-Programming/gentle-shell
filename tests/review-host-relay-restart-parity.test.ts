@@ -72,6 +72,21 @@ function relayCollectInput(lineageId, lens, order) {
 			{ name: "agent", value: "pi", token: "--agent=pi" },
 			{ name: "materialize", value: "true", token: "--materialize=true" },
 		],
+		// gentle-pi#638: the artifact subject is what makes the slot declarable —
+		// its subject_hash is the --request-hash the capture-unachievable verb
+		// binds to. A slot without one cannot be declared, only retried.
+		artifactSubject: {
+			schema: "gentle-ai.review-artifact-subject/v2",
+			subjectHash: `sha256:${String(order).repeat(64)}`,
+			lineageId,
+			authorityRevision: SHA,
+			targetIdentity: SHA,
+			baseTree: TREE,
+			candidateTree: TREE,
+			changedPathManifestSha256: SHA,
+			lens,
+			selectedOrder: order,
+		},
 		submission: providerSubmission(lineageId, lens, order),
 	};
 }
@@ -146,6 +161,7 @@ const { ReviewHostRelayError, REVIEW_HOST_RELAY_FAILURE } = await import(${JSON.
 const statusQueue = JSON.parse(await readFile(statusFile, "utf8"));
 const relayRequests = [];
 const statusCalls = [];
+const unachievableCalls = [];
 let captureCalls = 0;
 
 __testing.setReviewHostRelayRunnerForTesting(async (request) => {
@@ -155,6 +171,9 @@ __testing.setReviewHostRelayRunnerForTesting(async (request) => {
 	});
 	if (mode === "capture-fail") {
 		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_FAILED, "pi", "pi subprocess failed", { exitCode: 4 });
+	}
+	if (mode === "capture-timeout") {
+		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT, "pi", "pi reviewer subprocess exceeded the relay bound", { exitCode: null, timedOut: true, elapsedMs: 2256004, timeoutMs: 2256000 });
 	}
 	if (mode === "capture-ambiguous") {
 		throw Object.assign(new Error("capture response lost"), { mutationOutcome: "unknown", nextAction: "review.status" });
@@ -171,6 +190,27 @@ const nativeReviewCli = {
 		const next = statusQueue.shift();
 		if (next === undefined) throw new Error("status queue exhausted");
 		return next;
+	},
+	captureUnachievableLens: async (request) => {
+		unachievableCalls.push({
+			cwd: request.cwd,
+			lineageId: request.lineageId,
+			targetIdentity: request.targetIdentity,
+			expectedRevision: request.expectedRevision,
+			requestHash: request.requestHash,
+			reason: request.reason,
+			...(request.detail === undefined ? {} : { detail: request.detail }),
+			...(request.repositoryContext === undefined ? {} : { repositoryContext: request.repositoryContext }),
+		});
+		return {
+			schema: "gentle-ai.review-capture-unachievable/v1",
+			lineageId: request.lineageId,
+			targetIdentity: request.targetIdentity,
+			lens: ${JSON.stringify(LENS)},
+			selectedOrder: ${JSON.stringify(ORDER)},
+			reason: request.reason,
+			recorded: true,
+		};
 	},
 };
 
@@ -199,7 +239,7 @@ try {
 	error = caught instanceof Error ? { name: caught.name, message: caught.message } : String(caught);
 }
 
-await writeFile(outFile, JSON.stringify({ result, inspectResult, captureBinding, error, relayRequests, statusCalls, captureCalls }, null, 2));
+await writeFile(outFile, JSON.stringify({ result, inspectResult, captureBinding, error, relayRequests, statusCalls, captureCalls, unachievableCalls }, null, 2));
 `;
 }
 
@@ -224,6 +264,107 @@ function inspectCollectBinding(inspectResult) {
 
 const PENDING = collectStatus(LINEAGE, [relayCollectInput(LINEAGE, LENS, ORDER)]);
 const CONVERGED = collectStatus(LINEAGE, []);
+
+// gentle-pi#638: the typed stop the provider renders once the slot is declared
+// unachievable — no collect inputs, one withdraw binding per declared slot.
+// Built in the same plain-object style as collectStatus: typed fields for the
+// controller, raw fields for the envelope passthrough.
+function unachievableStopStatus(lineageId, lens, order) {
+	const subjectHash = `sha256:${String(order).repeat(64)}`;
+	const repositoryContext = `rctx1_${"e".repeat(64)}`;
+	const withdrawArguments = [
+		{ name: "lineage", value: lineageId, token: `--lineage=${lineageId}` },
+		{ name: "expected-revision", value: SHA, token: `--expected-revision=${SHA}` },
+		{ name: "target", value: SHA, token: `--target=${SHA}` },
+		{ name: "repository-context", value: repositoryContext, token: `--repository-context=${repositoryContext}` },
+		{ name: "request-hash", value: subjectHash, token: `--request-hash=${subjectHash}` },
+		{ name: "withdraw", value: "true", token: "--withdraw=true" },
+	];
+	const withdrawCommand = `gentle-ai review capture-unachievable --lineage=${lineageId} --expected-revision=${SHA} --target=${SHA} --repository-context=${repositoryContext} --request-hash=${subjectHash} --withdraw=true`;
+	return {
+		...collectStatus(lineageId, []),
+		nextTransition: {
+			kind: "stop",
+			reasonCode: "unachievable_lens_slot",
+			unachievableLensSlots: [
+				{
+					lens,
+					selectedOrder: order,
+					subjectHash,
+					reason: "relay_transport_bound_exceeded",
+					withdraw: {
+						operation: "review.capture-unachievable",
+						command: withdrawCommand,
+						arguments: withdrawArguments,
+						binding: { targetIdentity: SHA, lineageId, revision: SHA },
+					},
+				},
+			],
+		},
+		raw: {
+			schema: "gentle-ai.review-integration.status/v5",
+			action: "stop",
+			lineage_id: lineageId,
+			target_identity: SHA,
+			next_transition: {
+				kind: "stop",
+				reason_code: "unachievable_lens_slot",
+				unachievable_lens_slots: [
+					{
+						lens,
+						selected_order: order,
+						subject_hash: subjectHash,
+						reason: "relay_transport_bound_exceeded",
+						withdraw: {
+							operation: "review.capture-unachievable",
+							command: withdrawCommand,
+							arguments: withdrawArguments,
+							binding: { lineage_id: lineageId, revision: SHA, target_identity: SHA, repository_context: repositoryContext },
+						},
+					},
+				],
+			},
+		},
+	};
+}
+const UNACHIEVABLE_STOP = unachievableStopStatus(LINEAGE, LENS, ORDER);
+
+// gentle-pi#638: the declared slot must not survive the restart as a reoffer.
+// Process A declares after the deterministic bound kill; fresh Process B sees
+// the provider's typed stop with the withdraw hint instead of the public
+// collectBinding it would have seen before the declaration.
+test("an unachievable declaration survives the controller restart as a typed stop, not a reoffer", async (t) => {
+	const cwd = repository(t);
+
+	// Process A: the deterministic relay bound kills the reviewer; the capture
+	// path declares the slot unachievable and renders the provider's stop. The
+	// worker always runs INSPECT first, so the queue carries the pending collect
+	// twice (inspect + capture selection) before the post-declaration stop.
+	const declared = runWorker(t, cwd, [PENDING, PENDING, UNACHIEVABLE_STOP], "capture-timeout");
+	assert.equal(declared.error, undefined, `declared run threw: ${JSON.stringify(declared.error)}`);
+	assert.equal(declared.captureCalls, 1, "Process A invokes one capture");
+	assert.equal(declared.relayRequests.length, 1, "Process A launches one relay transport");
+	assert.equal(declared.unachievableCalls.length, 1, "the declaration is recorded exactly once");
+	assert.deepEqual(declared.unachievableCalls, [{ cwd, lineageId: LINEAGE, targetIdentity: SHA, expectedRevision: SHA, requestHash: `sha256:${String(ORDER).repeat(64)}`, reason: "relay_transport_bound_exceeded", detail: "killed after 2256004ms against a 2256000ms relay bound", repositoryContext: `rctx1_${"e".repeat(64)}` }]);
+	assert.equal(declared.statusCalls.length, 3, "inspect and selection STATUS plus exactly one bound re-query");
+	assert.equal(declared.result.tool, "gentle_review_capture");
+	assert.equal(declared.result.status, "blocked");
+	assert.equal(declared.result.outcome, "unachievable-lens-slot-declared");
+	assert.equal(declared.result.mutation_performed, true);
+	assert.match(String(declared.result.next_action), /withdraw/);
+
+	// Process B (fresh): the provider's STATUS no longer reoffers the binding;
+	// INSPECT renders the typed stop whose hint is the withdraw command.
+	const inspect = runWorker(t, cwd, [UNACHIEVABLE_STOP], "inspect");
+	assert.equal(inspect.error, undefined, `inspect run threw: ${JSON.stringify(inspect.error)}`);
+	assert.equal(inspect.captureCalls, 0, "no capture runs without a reoffered binding");
+	assert.equal(inspect.relayRequests.length, 0, "INSPECT never launches the relay");
+	assert.equal(inspect.unachievableCalls.length, 0, "INSPECT never declares");
+	assert.equal(inspectCollectBinding(inspect.result), undefined, "the declared slot is not reoffered after restart");
+	assert.equal(inspect.result.status, "blocked");
+	assert.match(String(inspect.result.hint), /capture-unachievable/);
+	assert.match(String(inspect.result.hint), /--withdraw=true/);
+});
 
 test("a fresh controller process reoffers the exact public binding before one capture closes", async (t) => {
 	const cwd = repository(t);

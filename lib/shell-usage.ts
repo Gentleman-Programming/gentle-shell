@@ -407,6 +407,12 @@ export function parseProviderUsageBusSnapshot(value: unknown, now: number): Prov
 	if (value.version !== 1) return undefined;
 	if (value.provider !== "claude") return undefined;
 	if (!Array.isArray(value.windows)) return undefined;
+	// capturedAt is the bridge's own epoch-ms timestamp for this snapshot (see
+	// @schuettc/pi-claude-bridge's usage-bus.ts, which stamps it with
+	// Date.now()). Using it instead of the caller's now keeps a live bus
+	// event's freshness intact even when a slower forced refresh's parse call
+	// passes a later now for the very same or an older snapshot.
+	const fetchedAt = typeof value.capturedAt === "number" && Number.isFinite(value.capturedAt) && value.capturedAt > 0 ? value.capturedAt : now;
 	const mainWindows: Array<{ id: string; window: UsageWindow }> = [];
 	const additional: UsageLimit[] = [];
 	for (const raw of value.windows) {
@@ -422,7 +428,7 @@ export function parseProviderUsageBusSnapshot(value: unknown, now: number): Prov
 	const limits: UsageLimit[] = [];
 	if (mainWindows.length > 0) limits.push({ name: CLAUDE_BRIDGE_MAIN_LIMIT_NAME, windows: mainWindows.map((entry) => entry.window), limitReached: false });
 	limits.push(...additional);
-	return { provider: CLAUDE_BRIDGE_PROVIDER, plan: undefined, limits, fetchedAt: now };
+	return { provider: CLAUDE_BRIDGE_PROVIDER, plan: undefined, limits, fetchedAt };
 }
 
 // NaN Cloud reports one allowance per model for the billing period, plus the
@@ -664,6 +670,15 @@ export class UsageStore {
 	private readonly usages = new Map<string, ProviderUsage>();
 
 	record(usage: ProviderUsage): void {
+		// A forced refresh can resolve after a live event already recorded a
+		// newer snapshot for the same provider (fetchClaudeBridgeUsage awaits
+		// adapter.refresh() while subscribeClaudeBridgeUsage keeps listening);
+		// dropping a strictly older entry keeps that later refresh from
+		// clobbering it. Codex, Anthropic and NaN always stamp fetchedAt with
+		// now at record time, so their forced refresh is always newer and this
+		// check never rejects their update.
+		const existing = this.usages.get(usage.provider);
+		if (existing && usage.fetchedAt < existing.fetchedAt) return;
 		this.usages.set(usage.provider, usage);
 	}
 

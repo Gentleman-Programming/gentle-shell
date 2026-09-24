@@ -318,6 +318,19 @@ test("parseProviderUsageBusSnapshot keeps whatever windows are usable and drops 
 	assert.deepEqual(partial?.limits[0]?.windows.map((window) => window.usedPercent), [10]);
 });
 
+test("parseProviderUsageBusSnapshot stamps fetchedAt from the snapshot's own capturedAt, falling back to now", () => {
+	const older = NOW - 60_000;
+	const withCapturedAt = parseProviderUsageBusSnapshot({ ...CLAUDE_BUS_SNAPSHOT, capturedAt: older }, NOW);
+	assert.equal(withCapturedAt?.fetchedAt, older, "a live event's own capture time survives even though a later refresh call passes a newer now");
+
+	const { capturedAt: _drop, ...noCapturedAt } = CLAUDE_BUS_SNAPSHOT;
+	assert.equal(parseProviderUsageBusSnapshot(noCapturedAt, NOW)?.fetchedAt, NOW, "missing capturedAt falls back to now");
+	assert.equal(parseProviderUsageBusSnapshot({ ...CLAUDE_BUS_SNAPSHOT, capturedAt: 0 }, NOW)?.fetchedAt, NOW, "a non-positive capturedAt falls back to now");
+	assert.equal(parseProviderUsageBusSnapshot({ ...CLAUDE_BUS_SNAPSHOT, capturedAt: -5 }, NOW)?.fetchedAt, NOW, "a negative capturedAt falls back to now");
+	assert.equal(parseProviderUsageBusSnapshot({ ...CLAUDE_BUS_SNAPSHOT, capturedAt: Number.NaN }, NOW)?.fetchedAt, NOW, "a non-finite capturedAt falls back to now");
+	assert.equal(parseProviderUsageBusSnapshot({ ...CLAUDE_BUS_SNAPSHOT, capturedAt: "1788600000000" }, NOW)?.fetchedAt, NOW, "a non-number capturedAt falls back to now");
+});
+
 test("parseProviderUsageBusSnapshot degrades to undefined for a malformed snapshot and to an empty one for no windows", () => {
 	assert.equal(parseProviderUsageBusSnapshot(undefined, NOW), undefined);
 	assert.equal(parseProviderUsageBusSnapshot("not a snapshot", NOW), undefined);
@@ -665,6 +678,26 @@ test("UsageStore keeps the latest snapshot per provider and lists them in order"
 	store.record(second);
 	assert.equal(store.get("openai-codex"), second);
 	assert.deepEqual(store.all().map((usage) => usage.provider), ["openai-codex", "anthropic"]);
+});
+
+test("UsageStore ignores a stale record and keeps equal or newer for the same provider", () => {
+	// A forced refresh can resolve after a live bus event already recorded a
+	// newer snapshot for the same provider; the late refresh result must not
+	// overwrite the fresher one.
+	const store = new UsageStore();
+	const live: ProviderUsage = { provider: "claude-bridge", plan: undefined, limits: [], fetchedAt: 100 };
+	store.record(live);
+	const staleRefresh: ProviderUsage = { provider: "claude-bridge", plan: undefined, limits: [], fetchedAt: 50 };
+	store.record(staleRefresh);
+	assert.equal(store.get("claude-bridge"), live, "an older fetchedAt must not replace a newer stored entry");
+
+	const equalRefresh: ProviderUsage = { provider: "claude-bridge", plan: undefined, limits: [], fetchedAt: 100 };
+	store.record(equalRefresh);
+	assert.equal(store.get("claude-bridge"), equalRefresh, "an equal fetchedAt still replaces, as before");
+
+	const newerRefresh: ProviderUsage = { provider: "claude-bridge", plan: undefined, limits: [], fetchedAt: 150 };
+	store.record(newerRefresh);
+	assert.equal(store.get("claude-bridge"), newerRefresh, "a newer fetchedAt replaces, as before");
 });
 
 test("parseAnthropicHeaders turns the unified utilization fractions into 5h and weekly windows", () => {

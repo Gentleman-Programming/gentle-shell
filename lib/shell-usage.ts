@@ -117,9 +117,10 @@ const ROLE = {
 } as const;
 export const USAGE_EMPTY_MESSAGE = "No subscription usage yet. Usage arrives with the next response, or press r to fetch it.";
 export const SUPPORTED_USAGE_PROVIDERS: readonly string[] = [CODEX_PROVIDER, ANTHROPIC_PROVIDER, NAN_PROVIDER];
+const DEFAULT_PENDING_NOTE = "no usage yet · r to fetch";
 const PENDING_NOTE: Record<string, string> = {
-	[CODEX_PROVIDER]: "no usage yet · r to fetch",
-	[NAN_PROVIDER]: "no usage yet · r to fetch",
+	[CODEX_PROVIDER]: DEFAULT_PENDING_NOTE,
+	[NAN_PROVIDER]: DEFAULT_PENDING_NOTE,
 	[ANTHROPIC_PROVIDER]: "usage arrives with the first response",
 };
 const UNSUPPORTED_NOTE = "no subscription usage for this provider";
@@ -129,8 +130,121 @@ export interface ActiveProvider {
 	provider: string;
 }
 
-export function providerNote(provider: string): string {
-	return PENDING_NOTE[provider] ?? UNSUPPORTED_NOTE;
+// A generic hook so an extension holding its own provider (its own API token,
+// its own usage endpoint) can plug a usage source into the shell without the
+// shell ever knowing that provider's name. Emitted on `pi.events` as payload
+// under `USAGE_SOURCE_EVENT`; gentle-shell validates the shape below and
+// ignores anything else, so a malformed or foreign event never reaches a
+// fetch call. Re-registration for the same provider replaces the previous
+// source, so a second `session_start` emitting the same payload is a no-op
+// in effect, not an accumulation.
+export const USAGE_SOURCE_EVENT = "gentle-pi:usage-source/v1";
+export const USAGE_SOURCE_SCHEMA = "gentle-pi.usage-source/v1";
+const USAGE_SOURCE_PROVIDER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+export interface UsageSource {
+	schema: typeof USAGE_SOURCE_SCHEMA;
+	provider: string;
+	pendingNote?: string;
+	fetch(apiKey: string | undefined, fetchFn: typeof fetch, now: number): Promise<ProviderUsage | undefined>;
+}
+
+// Pure and defensive: the payload crosses an event bus from another
+// extension, so nothing here is trusted until every field is checked. Any
+// mismatch returns undefined rather than throwing, exactly like the other
+// payload parsers in this file.
+export function parseUsageSource(value: unknown): UsageSource | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const raw = value as Record<string, unknown>;
+	if (raw.schema !== USAGE_SOURCE_SCHEMA) return undefined;
+	if (typeof raw.provider !== "string" || !USAGE_SOURCE_PROVIDER_PATTERN.test(raw.provider)) return undefined;
+	if (typeof raw.fetch !== "function") return undefined;
+	if (raw.pendingNote !== undefined && typeof raw.pendingNote !== "string") return undefined;
+	const source: UsageSource = { schema: USAGE_SOURCE_SCHEMA, provider: raw.provider, fetch: raw.fetch as UsageSource["fetch"] };
+	if (typeof raw.pendingNote === "string") source.pendingNote = raw.pendingNote;
+	return source;
+}
+
+// One source per provider, most recent registration wins. Nothing here fetches
+// or touches the network; it only remembers who to ask.
+export class UsageSourceRegistry {
+	private readonly sources = new Map<string, UsageSource>();
+
+	register(source: UsageSource): void {
+		this.sources.set(source.provider, source);
+	}
+
+	get(provider: string): UsageSource | undefined {
+		return this.sources.get(provider);
+	}
+
+	has(provider: string): boolean {
+		return this.sources.has(provider);
+	}
+
+	note(provider: string): string | undefined {
+		const source = this.sources.get(provider);
+		return source ? (source.pendingNote ?? DEFAULT_PENDING_NOTE) : undefined;
+	}
+}
+
+export function providerNote(provider: string, registry?: UsageSourceRegistry): string {
+	return PENDING_NOTE[provider] ?? registry?.note(provider) ?? UNSUPPORTED_NOTE;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value);
+}
+
+function parseSourceUsageWindow(value: unknown): UsageWindow | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const raw = value as Record<string, unknown>;
+	if (typeof raw.label !== "string") return undefined;
+	if (!isFiniteNumber(raw.usedPercent)) return undefined;
+	if (!isFiniteNumber(raw.windowSeconds)) return undefined;
+	if (raw.resetAt !== null && !isFiniteNumber(raw.resetAt)) return undefined;
+	if (raw.used !== undefined && !isFiniteNumber(raw.used)) return undefined;
+	if (raw.budget !== undefined && !isFiniteNumber(raw.budget)) return undefined;
+	const window: UsageWindow = { label: raw.label, usedPercent: raw.usedPercent, windowSeconds: raw.windowSeconds, resetAt: raw.resetAt as number | null };
+	if (raw.used !== undefined) window.used = raw.used as number;
+	if (raw.budget !== undefined) window.budget = raw.budget as number;
+	return window;
+}
+
+function parseSourceUsageLimit(value: unknown): UsageLimit | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const raw = value as Record<string, unknown>;
+	if (typeof raw.name !== "string") return undefined;
+	if (typeof raw.limitReached !== "boolean") return undefined;
+	if (!Array.isArray(raw.windows)) return undefined;
+	const windows: UsageWindow[] = [];
+	for (const entry of raw.windows) {
+		const window = parseSourceUsageWindow(entry);
+		if (!window) return undefined;
+		windows.push(window);
+	}
+	return { name: raw.name, limitReached: raw.limitReached, windows };
+}
+
+// A registered source's resolved value crosses the same trust boundary a
+// parsed HTTP payload does: it is foreign code's own object, so it is
+// validated field by field and never recorded by reference. Every accepted
+// shape is rebuilt from scratch, so a source mutating its own object after
+// returning it can never reach a snapshot gentle-shell already recorded.
+export function parseProviderUsage(value: unknown, expectedProvider: string): ProviderUsage | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const raw = value as Record<string, unknown>;
+	if (raw.provider !== expectedProvider) return undefined;
+	if (raw.plan !== undefined && typeof raw.plan !== "string") return undefined;
+	if (!isFiniteNumber(raw.fetchedAt)) return undefined;
+	if (!Array.isArray(raw.limits)) return undefined;
+	const limits: UsageLimit[] = [];
+	for (const entry of raw.limits) {
+		const limit = parseSourceUsageLimit(entry);
+		if (!limit) return undefined;
+		limits.push(limit);
+	}
+	return { provider: raw.provider, plan: typeof raw.plan === "string" ? raw.plan : undefined, limits, fetchedAt: raw.fetchedAt };
 }
 
 export function windowLabel(seconds: number): string {
@@ -415,13 +529,13 @@ function updatedAgo(fetchedAt: number, now: number): string {
 
 // The active provider comes first, marked with the petal, and explains
 // itself when it has no data yet. Other providers seen this session follow.
-export function renderUsagePanel(usages: ProviderUsage[], theme: UsageTheme, width: number, now: number, active?: ActiveProvider): string[] {
+export function renderUsagePanel(usages: ProviderUsage[], theme: UsageTheme, width: number, now: number, active?: ActiveProvider, registry?: UsageSourceRegistry): string[] {
 	const activeUsage = active ? usages.find((usage) => usage.provider === active.provider) : undefined;
 	const others = usages.filter((usage) => usage !== activeUsage);
 	if (!active && usages.length === 0) return [truncateToWidth(USAGE_EMPTY_MESSAGE, width, "…")];
 	const lines: string[] = [];
 	if (active && !activeUsage) {
-		lines.push(`${theme.fg(ROLE.LIMIT, ACTIVE_MARK)} ${theme.fg(ROLE.PROVIDER, active.provider)} ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.RESET, providerNote(active.provider))}`);
+		lines.push(`${theme.fg(ROLE.LIMIT, ACTIVE_MARK)} ${theme.fg(ROLE.PROVIDER, active.provider)} ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.RESET, providerNote(active.provider, registry))}`);
 	}
 	for (const usage of [...(activeUsage ? [activeUsage] : []), ...others]) {
 		const mark = usage === activeUsage ? `${theme.fg(ROLE.LIMIT, ACTIVE_MARK)} ` : "";

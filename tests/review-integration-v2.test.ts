@@ -14,6 +14,7 @@ import {
 	decodeReviewProjectionV1,
 	decodeReviewRepairV2,
 	decodeReviewStartV3,
+	decodeReviewStartV4,
 	decodeReviewStatusV3,
 } from "../lib/review-integration-v2.ts";
 
@@ -347,6 +348,35 @@ test("capabilities gates and projections still enforce the required floor", () =
 	const missingProjection = clone(source);
 	missingProjection.projections = (missingProjection.projections as string[]).filter((projection) => projection !== "workspace");
 	assert.throws(() => decode(missingProjection), /projections/);
+});
+
+test("START/v4 preserves provider-generated manifest evidence while retaining exact omitempty validation", () => {
+	const source = fixture<JsonObject>("start.fixture.json");
+	source.schema = "gentle-ai.review-integration.start/v4";
+	source.action = "closed";
+	source.lenses_required = false;
+	source.state = "approved";
+	source.selected_lenses = [];
+	delete source.repository_context;
+	const entry = (source.changed_path_manifest as JsonObject[])[0];
+	entry.generated = true;
+
+	const decoded = decodeReviewStartV4(source);
+	assert.equal(decoded.changedPathManifest?.[0]?.generated, true);
+
+	const omitted = clone(source);
+	delete (omitted.changed_path_manifest as JsonObject[])[0].generated;
+	assert.doesNotThrow(() => decodeReviewStartV4(omitted));
+
+	for (const generated of [false, "true"] as const) {
+		const invalid = clone(source);
+		((invalid.changed_path_manifest as JsonObject[])[0]).generated = generated;
+		assert.throws(() => decodeReviewStartV4(invalid), /generated/);
+	}
+
+	const unknown = clone(source);
+	((unknown.changed_path_manifest as JsonObject[])[0]).unrelated = true;
+	assert.throws(() => decodeReviewStartV4(unknown), /not allowed/);
 });
 
 test("START independently binds base/candidate tree and the target-mode overlay pair", () => {

@@ -7,15 +7,20 @@ import {
 	parseAnthropicHeaders,
 	parseCodexHeaders,
 	parseNanQuota,
+	parseProviderUsage,
 	parseUsageHeaders,
 	parseCodexUsage,
+	parseUsageSource,
 	providerNote,
 	renderUsageBar,
 	renderUsagePanel,
 	SUPPORTED_USAGE_PROVIDERS,
+	UsageSourceRegistry,
+	USAGE_SOURCE_SCHEMA,
 	UsageStore,
 	windowLabel,
 	type ProviderUsage,
+	type UsageSource,
 	type UsageWindow,
 } from "../lib/shell-usage.ts";
 
@@ -241,6 +246,130 @@ test("nan is a supported usage provider with its own pending note", () => {
 	assert.ok(SUPPORTED_USAGE_PROVIDERS.includes("nan"));
 	assert.equal(providerNote("nan"), "no usage yet · r to fetch");
 	assert.deepEqual(renderUsagePanel([], plainTheme, 100, NOW, { provider: "nan" }), ["✿ nan · no usage yet · r to fetch"]);
+});
+
+// A generic hook: any extension can register a usage source for its own
+// provider at runtime, without gentle-shell knowing anything about it.
+
+test("parseUsageSource validates the registration payload and ignores anything malformed", () => {
+	const fetchFn = async () => undefined;
+	const valid = parseUsageSource({ schema: USAGE_SOURCE_SCHEMA, provider: "acme-cloud", fetch: fetchFn });
+	assert.equal(valid?.schema, USAGE_SOURCE_SCHEMA);
+	assert.equal(valid?.provider, "acme-cloud");
+	assert.equal(valid?.fetch, fetchFn);
+	assert.equal(valid?.pendingNote, undefined);
+
+	const withNote = parseUsageSource({ schema: USAGE_SOURCE_SCHEMA, provider: "acme-cloud", pendingNote: "warming up", fetch: fetchFn });
+	assert.equal(withNote?.pendingNote, "warming up");
+
+	assert.equal(parseUsageSource({ schema: "gentle-pi.usage-source/v0", provider: "acme-cloud", fetch: fetchFn }), undefined, "wrong schema");
+	assert.equal(parseUsageSource({ schema: USAGE_SOURCE_SCHEMA, provider: "", fetch: fetchFn }), undefined, "empty provider");
+	assert.equal(parseUsageSource({ schema: USAGE_SOURCE_SCHEMA, provider: "acme cloud", fetch: fetchFn }), undefined, "unsafe provider id");
+	assert.equal(parseUsageSource({ schema: USAGE_SOURCE_SCHEMA, provider: "acme-cloud", fetch: "nope" }), undefined, "fetch not a function");
+	assert.equal(parseUsageSource({ schema: USAGE_SOURCE_SCHEMA, provider: "acme-cloud", pendingNote: 7, fetch: fetchFn }), undefined, "pendingNote must be a string when present");
+	assert.equal(parseUsageSource(null), undefined);
+	assert.equal(parseUsageSource(undefined), undefined);
+	assert.equal(parseUsageSource("acme-cloud"), undefined);
+	assert.equal(parseUsageSource({}), undefined);
+});
+
+test("UsageSourceRegistry replaces a provider's source on re-registration", () => {
+	const registry = new UsageSourceRegistry();
+	assert.equal(registry.has("acme-cloud"), false);
+	assert.equal(registry.get("acme-cloud"), undefined);
+	assert.equal(registry.note("acme-cloud"), undefined);
+
+	const first: UsageSource = { schema: USAGE_SOURCE_SCHEMA, provider: "acme-cloud", fetch: async () => undefined };
+	registry.register(first);
+	assert.equal(registry.has("acme-cloud"), true);
+	assert.equal(registry.get("acme-cloud"), first);
+	assert.equal(registry.note("acme-cloud"), "no usage yet · r to fetch", "default note when the source sets none");
+
+	const second: UsageSource = { schema: USAGE_SOURCE_SCHEMA, provider: "acme-cloud", pendingNote: "still warming up", fetch: async () => undefined };
+	registry.register(second);
+	assert.equal(registry.get("acme-cloud"), second, "re-registration replaces, never accumulates");
+	assert.equal(registry.note("acme-cloud"), "still warming up");
+});
+
+test("a registered provider is supported without touching the built-in note map", () => {
+	const registry = new UsageSourceRegistry();
+	assert.equal(providerNote("acme-cloud"), "no subscription usage for this provider");
+	assert.equal(providerNote("acme-cloud", registry), "no subscription usage for this provider", "an empty registry changes nothing");
+	registry.register({ schema: USAGE_SOURCE_SCHEMA, provider: "acme-cloud", fetch: async () => undefined });
+	assert.equal(providerNote("acme-cloud", registry), "no usage yet · r to fetch");
+	assert.equal(providerNote("nan", registry), "no usage yet · r to fetch", "the static built-ins are unaffected");
+	assert.deepEqual(renderUsagePanel([], plainTheme, 100, NOW, { provider: "acme-cloud" }, registry), ["✿ acme-cloud · no usage yet · r to fetch"]);
+});
+
+// A registered source's resolved value crosses the same trust boundary a
+// parsed HTTP payload does. parseProviderUsage validates it exactly like
+// one, and the object gentle-shell records is always freshly built, never
+// the caller's own reference.
+
+const VALID_SOURCE_USAGE = {
+	provider: "acme-cloud",
+	plan: "Acme · 42 credits",
+	fetchedAt: 100,
+	limits: [
+		{
+			name: "acme-cloud",
+			limitReached: false,
+			windows: [
+				{ label: "week", usedPercent: 40, windowSeconds: 604_800, resetAt: null },
+				{ label: "day", usedPercent: 12, windowSeconds: 86_400, resetAt: 200, used: 5, budget: 40 },
+			],
+		},
+	],
+};
+
+test("parseProviderUsage accepts a matching shape and copies it defensively", () => {
+	const source = structuredClone(VALID_SOURCE_USAGE);
+	const parsed = parseProviderUsage(source, "acme-cloud");
+	assert.deepEqual(parsed, source);
+	assert.notEqual(parsed, source, "the recorded object must never be the caller's own reference");
+	assert.notEqual(parsed?.limits, source.limits);
+	assert.notEqual(parsed?.limits[0], source.limits[0]);
+	assert.notEqual(parsed?.limits[0].windows, source.limits[0].windows);
+	assert.notEqual(parsed?.limits[0].windows[0], source.limits[0].windows[0]);
+
+	// Mutating the caller's own object after the fact must never reach the copy.
+	source.limits[0].windows[0].usedPercent = 999;
+	assert.equal(parsed?.limits[0].windows[0].usedPercent, 40);
+});
+
+test("parseProviderUsage rejects a resolution for a different provider", () => {
+	assert.equal(parseProviderUsage(structuredClone(VALID_SOURCE_USAGE), "other-provider"), undefined);
+});
+
+test("parseProviderUsage rejects a missing or malformed limits array", () => {
+	assert.equal(parseProviderUsage({ provider: "acme-cloud", plan: undefined, fetchedAt: 0 }, "acme-cloud"), undefined, "limits missing entirely");
+	assert.equal(parseProviderUsage({ provider: "acme-cloud", plan: undefined, fetchedAt: 0, limits: "nope" }, "acme-cloud"), undefined, "limits not an array");
+	assert.equal(
+		parseProviderUsage({ provider: "acme-cloud", plan: undefined, fetchedAt: 0, limits: [{ name: "x", limitReached: "nope", windows: [] }] }, "acme-cloud"),
+		undefined,
+		"limitReached must be a boolean",
+	);
+});
+
+test("parseProviderUsage rejects a non-numeric usedPercent inside a window", () => {
+	const usage = structuredClone(VALID_SOURCE_USAGE);
+	(usage.limits[0].windows[0] as unknown as { usedPercent: unknown }).usedPercent = "40";
+	assert.equal(parseProviderUsage(usage, "acme-cloud"), undefined);
+});
+
+test("parseProviderUsage rejects a limit whose windows is not an array", () => {
+	const usage = structuredClone(VALID_SOURCE_USAGE);
+	(usage.limits[0] as unknown as { windows: unknown }).windows = "nope";
+	assert.equal(parseProviderUsage(usage, "acme-cloud"), undefined);
+});
+
+test("parseProviderUsage rejects malformed inputs outright", () => {
+	assert.equal(parseProviderUsage(undefined, "acme-cloud"), undefined);
+	assert.equal(parseProviderUsage(null, "acme-cloud"), undefined);
+	assert.equal(parseProviderUsage("acme-cloud", "acme-cloud"), undefined);
+	assert.equal(parseProviderUsage({ provider: "acme-cloud", plan: 7, fetchedAt: 0, limits: [] }, "acme-cloud"), undefined, "plan must be a string when present");
+	assert.equal(parseProviderUsage({ provider: "acme-cloud", plan: undefined, fetchedAt: Number.POSITIVE_INFINITY, limits: [] }, "acme-cloud"), undefined, "fetchedAt must be finite");
+	assert.deepEqual(parseProviderUsage({ provider: "acme-cloud", plan: undefined, fetchedAt: 0, limits: [] }, "acme-cloud"), { provider: "acme-cloud", plan: undefined, fetchedAt: 0, limits: [] });
 });
 
 test("renderUsagePanel lists each NaN model allowance with its reset on the same row", () => {

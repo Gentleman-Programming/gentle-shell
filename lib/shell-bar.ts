@@ -3,6 +3,7 @@ import { GAUGE_CELLS, gaugeTone, paintGauge, renderGauge, type GaugeTone } from 
 import { renderUsageBar, selectUsageLimit, type ProviderUsage, type UsageWindow } from "./shell-usage.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { CARD_TONE, cardInnerWidth, renderCard } from "./shell-card.ts";
+import { REVIEW_SIDEBAR_LABELS, type ReviewSidebarSnapshot } from "./review-sidebar-state.ts";
 
 export { gaugeTone, renderGauge, type GaugeTone };
 
@@ -11,6 +12,7 @@ export { gaugeTone, renderGauge, type GaugeTone };
 // verified without a live TUI.
 
 export interface ShellBarModel {
+	review?: ReviewSidebarSnapshot;
 	profile?: string;
 	changes?: { files: number; added: number; deleted: number; notice?: string };
 	cwd: string;
@@ -210,6 +212,10 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 				label("/gentle:changes"),
 			],
 		},
+		...(model.review ? [{
+			title: "🌹 RDD",
+			lines: [value(REVIEW_SIDEBAR_LABELS[model.review.state]), label(sanitizeStatus(model.review.scope))],
+		}] : []),
 		{ title: "Integrations", lines: model.statuses.length
 			? model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)))
 			: [label("No status reported")] },

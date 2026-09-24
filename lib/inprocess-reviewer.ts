@@ -9,7 +9,11 @@
 // the caller's "provider/id" selection through pi's live model registry,
 // authenticates through the registry's own resolver, and completes exactly
 // one frozen prompt as a single user message — no systemPrompt, no tools, no
-// session, no extension hooks.
+// session, and none of pi's tool/skill/prompt extension hooks. Extension
+// *providers* are the opposite: they are explicitly in scope. Reading the
+// earlier "no extension hooks" wording as "no extension providers" is what
+// produced gentle-shell#1304, where every extension-registered model was
+// unreachable, so the distinction is stated here rather than implied.
 //
 // Every I/O seam is injected (`registry`, `complete`, `now`), so this module
 // runs under tests with no network and no pi process. gentle-pi#311 P2 wires
@@ -22,11 +26,24 @@ import { SAFE_MODEL_ID_PATTERN } from "./model-routing-authority.ts";
 
 // ---------------------------------------------------------------------------
 // Registry seam — a structural subset of pi's live ModelRegistry
-// (@earendil-works/pi-coding-agent core/model-registry.ts). Only `find` and
-// `getApiKeyAndHeaders` are needed here; the real registry's resolved auth
-// carries extra optional fields (`baseUrl`, `env`) that this narrower shape
-// simply ignores.
+// (@earendil-works/pi-coding-agent core/model-registry.ts). `find` and
+// `getApiKeyAndHeaders` are required. `getProvider` is optional and selects
+// the dispatch path: when present, the completion goes through the composed
+// provider it returns (which is what reaches extension-registered providers);
+// when absent, it falls back to `deps.complete`, so a test double with no
+// composition layer still satisfies the seam. The real registry's resolved
+// auth carries extra optional fields (`baseUrl`, `env`) that this narrower
+// shape simply ignores.
 // ---------------------------------------------------------------------------
+
+/**
+ * The single method this module needs from a resolved provider. pi's
+ * `Provider.streamSimple` returns an `AssistantMessageEventStream`; only its
+ * `result()` is consumed here, so the seam asks for nothing more.
+ */
+export interface InProcessReviewerProvider {
+	streamSimple(model: Model<Api>, context: Context, options?: SimpleStreamOptions): { result(): Promise<AssistantMessage> };
+}
 
 export interface InProcessReviewerRegistry {
 	find(provider: string, modelId: string): Model<Api> | undefined;
@@ -34,6 +51,7 @@ export interface InProcessReviewerRegistry {
 		| { readonly ok: true; readonly apiKey?: string; readonly headers?: ProviderHeaders }
 		| { readonly ok: false; readonly error: string }
 	>;
+	getProvider?(provider: string): InProcessReviewerProvider | undefined;
 }
 
 export const INPROCESS_REVIEWER_FAILURE = {
@@ -59,6 +77,13 @@ export interface InProcessReviewerRequest {
 	readonly prompt: Buffer;
 	readonly timeoutMs: number;
 	readonly signal?: AbortSignal;
+	/**
+	 * The live pi session id, threaded from the extension context. Pi's main
+	 * agent loop adds OpenCode attribution headers itself; this side-call must
+	 * carry them itself instead. Absent (or empty) means no attribution header,
+	 * never an invented one and never an error.
+	 */
+	readonly sessionId?: string;
 	/** e.g. "review-risk" — only used to name the routing config key in refusal messages. */
 	readonly routingKey: string;
 }
@@ -127,6 +152,30 @@ function isTextContent(part: { type?: unknown }): part is TextContent {
 }
 
 /**
+ * Mirrors pi's main-loop OpenCode attribution condition exactly
+ * (core/provider-attribution.js#getSessionHeaders): the model's provider is
+ * `opencode` or `opencode-go`, or its baseUrl host is `opencode.ai`. Returns
+ * the `{ x-opencode-session, x-opencode-client }` attribution pair, or
+ * undefined when the model is not OpenCode-routed or there is no live session
+ * id — a missing session id is never an error and never invents a header.
+ * The URL parse is guarded: an unparseable baseUrl follows the provider
+ * condition alone.
+ */
+export function openCodeSessionAttributionHeaders(model: Model<Api>, sessionId: string | undefined): ProviderHeaders | undefined {
+	const isOpenCode = model.provider === "opencode"
+		|| model.provider === "opencode-go"
+		|| (() => {
+			try {
+				return new URL(String(model.baseUrl ?? "")).hostname === "opencode.ai";
+			} catch {
+				return false;
+			}
+		})();
+	if (!isOpenCode || typeof sessionId !== "string" || sessionId.length === 0) return undefined;
+	return { "x-opencode-session": sessionId, "x-opencode-client": "pi" };
+}
+
+/**
  * Runs one reviewer completion in-process: resolve the model, authenticate,
  * map the routing thinking label, and complete exactly one frozen prompt as
  * a single user message. Never retries, never falls back to another model,
@@ -149,6 +198,33 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 		);
 	}
 
+	// pi's composed provider is the only layer that honors extension-registered
+	// providers (core/provider-composer.ts: `extension.streamSimple` when
+	// `model.api === extension.api`). pi-ai's `completeSimple` resolves against
+	// its own builtin-only registry and throws for any extension api, so a seam
+	// that carries `getProvider` is always preferred; a seam without it at all
+	// (a test double with no composition layer) still uses `deps.complete`.
+	// A registry that has `getProvider` yet owns no provider for a model its
+	// own `find` just resolved is incoherent: refuse, never route past it.
+	//
+	// The lookup deliberately uses `parsed.provider` — the key `find` was
+	// called with — and not `model.provider`, which is a field of the object
+	// `find` returned. In pi's registry both reads hit one provider map
+	// (core/model-runtime.ts `getProvider`/`getModel` -> pi-ai models.ts, where
+	// `getModels(provider)` returns [] for an unknown id), so a resolved model
+	// always has a provider under its own key and this branch is unreachable by
+	// construction. Keying on the returned field instead would make that
+	// guarantee depend on every provider's `getModels()` echoing its own id,
+	// which a native or OAuth-modified extension provider is free not to do.
+	const provider = deps.registry.getProvider?.(parsed.provider);
+	if (deps.registry.getProvider !== undefined && provider === undefined) {
+		return refuse(
+			INPROCESS_REVIEWER_FAILURE.MODEL_NOT_FOUND,
+			`The model registry resolved ${JSON.stringify(request.selection)} for ${request.routingKey} but owns no provider for ${JSON.stringify(parsed.provider)}; reassign ${request.routingKey} to a model whose provider the interactive pi can actually dispatch.`,
+			{ provider: parsed.provider, api: model.api },
+		);
+	}
+
 	const auth = await deps.registry.getApiKeyAndHeaders(model);
 	// Negation narrowing (`!auth.ok`) does not eliminate the `ok: true` arm of
 	// this discriminated union under this project's `strict: false` tsconfig;
@@ -167,6 +243,12 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 			`Unknown thinking level ${JSON.stringify(request.thinking)} for ${request.routingKey}; use one of off, minimal, low, medium, high, xhigh, max.`,
 		);
 	}
+
+	// Extension side-calls bypass pi's main agent loop, which is where OpenCode
+	// attribution headers are otherwise added, so this completion carries them
+	// itself — as a default beneath the registry's own auth headers, the same
+	// merge order pi's core uses for explicit header sources.
+	const attributionHeaders = openCodeSessionAttributionHeaders(model, request.sessionId);
 
 	// The caller's own signal (if any) and a floor timeout race together:
 	// whichever fires first aborts the completion. The catch branch below
@@ -188,7 +270,7 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 		signal: combinedSignal,
 		timeoutMs: request.timeoutMs,
 		...(auth.apiKey === undefined ? {} : { apiKey: auth.apiKey }),
-		...(auth.headers === undefined ? {} : { headers: auth.headers }),
+		...(auth.headers === undefined && attributionHeaders === undefined ? {} : { headers: attributionHeaders === undefined ? auth.headers : { ...attributionHeaders, ...auth.headers } }),
 		...(reasoning.reasoning === undefined ? {} : { reasoning: reasoning.reasoning }),
 	};
 
@@ -208,9 +290,12 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 		return undefined;
 	};
 
+	// `SimpleStreamOptions` is identical on both paths; only the return shape
+	// differs (an event stream versus a promise), hence `.result()` — which is
+	// exactly what pi-ai's own compat layer does with the same stream.
 	let assistant: AssistantMessage;
 	try {
-		assistant = await deps.complete(model, context, options);
+		assistant = provider === undefined ? await deps.complete(model, context, options) : await provider.streamSimple(model, context, options).result();
 	} catch (error) {
 		return abortRefusal() ?? refuse(INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED, `Reviewer completion failed for ${request.routingKey}: ${sanitizeErrorExcerpt(error)}`);
 	}

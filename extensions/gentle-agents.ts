@@ -5,7 +5,10 @@ import { NativeReviewCliV216, createNodeExecFileAdapter, decodeNativeSddStatusV2
 import { spawn } from "node:child_process";
 import { recordReviewMutation } from "../lib/review-reminder-receipt.ts";
 import { SESSION_CHANGE_RELAY } from "../lib/session-changes.ts";
+import { publishForeignSessionChange } from "../lib/session-change-capture.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, type WorktreeResolver } from "../lib/session-worktree-registry.ts";
+import { ForeignTargetGrants } from "../lib/foreign-target-grants.ts";
+import { MESSAGING_REASON_MAX_UTF8_BYTES, MESSAGING_REASON_MIN_CHARACTERS, normalizeMessagingReason, SessionMessagingGrants } from "../lib/session-messaging-grants.ts";
 import { existsSync, mkdirSync, readFileSync, lstatSync, realpathSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -24,10 +27,13 @@ import { ChildMessenger, type IpcEndpoint } from "../lib/agents-messaging.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessionPresenceRegistry, type WindowsSessionRegistryPhaseObserver } from "../lib/windows-session-transport.ts";
 import { hasReviewSessionPermission, resolveCanonicalGitRepositoryIdentitySync, type ReviewSessionManager } from "../lib/review-session-standing-permission.ts";
+import { inheritedUnsafeGitEnvironmentKeys } from "../lib/review-repository.ts";
 import { historyDir, loadHistory, loadStoredTask, pruneHistory, saveTask } from "../lib/agents-history.ts";
 import { sessionToMarkdown } from "../lib/agents-transcript.ts";
 import { AgentsView } from "../lib/agents-view.ts";
 import { PresencePublisher } from "../lib/orchestrator-presence.ts";
+import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/agents-rpc-publisher.ts";
+import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { AGENTS_GLYPH, renderAgentsCard, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
 import { CARD_TONE, renderCard } from "../lib/shell-card.ts";
@@ -476,6 +482,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	let sidebarTui: TUI | undefined;
 	let sessions: ExtensionContext["sessionManager"] | undefined;
 	let presence: PresencePublisher | undefined;
+	let rpcActivityPublisher: RpcActivityPublisher | undefined;
+	// Messages already surfaced to the user this session through the RPC
+	// activity publisher's `onError`, so a recurring push failure (the
+	// coalescing window retries every burst) notifies at most once per
+	// session instead of flooding the UI. Reset on every `session_start`.
+	let notifiedRpcActivityErrors: Set<string> | undefined;
 	const overlays = new Set<AgentsView>();
 	const publishActivity = () => {
 		if (!sessions) return;
@@ -488,6 +500,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		} catch { presence?.dispose(); presence = undefined; }
 	};
 	let worktrees: SessionWorktreeRegistry | undefined;
+	const foreignGrants = new ForeignTargetGrants();
+	const messagingGrants = new SessionMessagingGrants();
+	const foreignTasks = new Map<string, { root: string; commonDir: string; manager: ExtensionContext["sessionManager"] }>();
+	const foreignRequests = new WeakMap<TaskRequest, { root: string; commonDir: string; manager: ExtensionContext["sessionManager"] }>();
 	const registryFor = (ctx: ExtensionContext) => {
 		if (!worktrees || worktrees.sessionId !== ctx.sessionManager.getSessionId()) {
 			worktrees?.close();
@@ -753,11 +769,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			}
 		},
 		onSuccessfulMutation: (task, tool) => {
-			// Guard chain and posture are unchanged: only owned tasks of the
-			// active parent, inside registered roots, ever relay. The notes only
-			// explain a drop -- they never widen or narrow what gets attributed.
-			// The cheap session/ownership guards decide before any worktree
-			// resolution, so a foreign or stale mutation never reaches git.
+			// Same-clone registry attribution remains unchanged. A foreign task
+			// uses a separately bound, live-grant path only for successful tool evidence.
 			let root: string | undefined;
 			let childRoot: string | undefined;
 			const noteDrop = (guard: string) => {
@@ -774,13 +787,20 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			childRoot = deps.resolveWorktree(task.cwd, task.cwd)?.root;
 			if (!root) return noteDrop("root-unresolved");
 			if (root !== childRoot) return noteDrop("root-mismatch");
-			if (!worktrees.roots().includes(root)) return noteDrop("root-not-registered");
+			const foreignTask = foreignTasks.get(task.id);
+			if (foreignTask) {
+				if (sessions !== foreignTask.manager || root !== foreignTask.root || tool.evidence?.root !== root) return noteDrop("foreign-identity-mismatch");
+				const identity = resolveSessionWorktree(root, root);
+				if (!identity || identity.commonDir !== foreignTask.commonDir) return noteDrop("foreign-identity-drift");
+				try { foreignGrants.assertCurrent({ sessionManager: sessions }, identity); }
+				catch { return noteDrop("foreign-grant-lost"); }
+			} else if (!worktrees.roots().includes(root)) return noteDrop("root-not-registered");
 			if (!tool.evidence) {
 				noteDrop("evidence-missing");
 			} else if (tool.evidence.root !== root) {
 				noteDrop("evidence-root-mismatch");
 			} else {
-				let path = tool.path.replace(/^@/, "");
+				let path = tool.path.replace(/^@/, "").replace(/[\u00a0\u2000-\u200a\u202f\u205f\u3000]/g, " ");
 				if (path === "~" || path.startsWith("~/")) path = os.homedir() + path.slice(1);
 				let resolvedPath: string | undefined;
 				try {
@@ -788,10 +808,14 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				} catch {
 					noteDrop("evidence-path-unreadable");
 				}
-				if (resolvedPath === resolve(root, tool.evidence.path)) pi.events.emit(SESSION_CHANGE_RELAY, { sessionId: task.parentSessionId, evidence: { ...tool.evidence, id: `${task.id}:${tool.toolCallId}` } });
+				if (resolvedPath === resolve(root, tool.evidence.path)) {
+					const evidence = { ...tool.evidence, id: `${task.id}:${tool.toolCallId}` };
+					if (foreignTask) publishForeignSessionChange(pi, task.parentSessionId, evidence);
+					else pi.events.emit(SESSION_CHANGE_RELAY, { sessionId: task.parentSessionId, evidence });
+				}
 				else if (resolvedPath !== undefined) noteDrop("evidence-path-mismatch");
 			}
-			recordReviewMutation(pi, sessions, root, { source: "subagent", taskId: task.id, toolName: tool.toolName, toolCallId: tool.toolCallId });
+			if (!foreignTask) recordReviewMutation(pi, sessions, root, { source: "subagent", taskId: task.id, toolName: tool.toolName, toolCallId: tool.toolCallId });
 		},
 		onFinish: (task, observations) => {
 			// Completion is the only forwarding opportunity. No pending event, policy
@@ -1055,15 +1079,36 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 
 	const roots = (ctx: ExtensionContext) => ({ cwd: ctx.sessionManager.getCwd(), home: deps.home, agentHome });
 
-	const buildRequest = (ctx: ExtensionContext, agent: AgentDefinition, prompt: string, label: string | undefined, context: string | undefined, mode: AgentMode, resume?: string, workspaceRoot?: string, sddChange?: SddChangeSelection, researchSelection?: unknown, remediationIntent?: unknown): TaskRequest => {
+	const buildRequest = async (ctx: ExtensionContext, agent: AgentDefinition, prompt: string, label: string | undefined, context: string | undefined, mode: AgentMode, resume?: string, workspaceRoot?: string, sddChange?: SddChangeSelection, researchSelection?: unknown, remediationIntent?: unknown, signal?: AbortSignal, repositoryRoot?: string): Promise<TaskRequest> => {
+		if (signal?.aborted) throw new Error("Subagent launch aborted before authorization.");
 		const registry = registryFor(ctx);
 		const parentCwd = ctx.sessionManager.getCwd();
 		// An explicit target is validated before any queue or session-dir writes.
 		const parentIdentity = deps.resolveWorktree(parentCwd, parentCwd);
-		const selectedRoot = workspaceRoot ?? sddChange?.workspaceRoot;
+		if (repositoryRoot !== undefined && workspaceRoot !== undefined) throw new Error("repository_root and workspace_root are mutually exclusive.");
+		if (repositoryRoot !== undefined && (SHIPPED_SDD_AGENT_NAME_SET.has(agent.name) || sddChange || remediationIntent || deps.env.GENTLE_PI_AGENTS_CHILD === "1" || ctx.mode !== "tui" || !ctx.hasUI)) throw new Error("Foreign repository launch requires an interactive parent session without SDD or remediation.");
+		const selectedRoot = repositoryRoot ?? workspaceRoot ?? sddChange?.workspaceRoot;
 		// Preserve ordinary non-Git continuation, without admitting any new root.
-		const sameNonGitContinuation = resume !== undefined && selectedRoot === parentCwd && !parentIdentity;
-		const target = selectedRoot !== undefined && !sameNonGitContinuation ? registry.validate(selectedRoot) : parentIdentity?.root;
+		const sameNonGitContinuation = resume !== undefined && repositoryRoot === undefined && selectedRoot === parentCwd && !parentIdentity;
+		let foreign = false;
+		let foreignIdentity: { root: string; commonDir: string } | undefined;
+		let foreignParent: { root: string; commonDir: string } | undefined;
+		let target: string | undefined;
+		if (selectedRoot !== undefined && !sameNonGitContinuation) {
+			if (repositoryRoot === undefined) target = registry.validate(selectedRoot);
+			else {
+				// Only an explicitly selected canonical foreign Git root can escape the
+				// same-clone registry. Never use a caller-injected resolver for this identity.
+				const identity = resolveSessionWorktree(selectedRoot, parentCwd);
+				const canonicalParent = resolveSessionWorktree(parentCwd, parentCwd);
+				if (!identity || (canonicalParent && identity.commonDir === canonicalParent.commonDir) || selectedRoot !== identity.root || !isAbsolute(selectedRoot) || realpathSync(selectedRoot) !== selectedRoot || sddChange || remediationIntent) throw new Error("repository_root must select a canonical independent Git repository.");
+				await foreignGrants.authorize(ctx, identity, { continuation: resume !== undefined, signal });
+				foreignIdentity = identity;
+				foreignParent = canonicalParent;
+				target = identity.root;
+				foreign = true;
+			}
+		} else target = parentIdentity?.root;
 		if (sddChange && target !== sddChange.workspaceRoot && target !== resolve(sddChange.workspaceRoot)) {
 			throw new Error("sdd_change workspaceRoot must resolve to the selected child worktree.");
 		}
@@ -1078,7 +1123,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// launch stays in the session's own worktree the identity already resolved above
 		// is reused instead of asking Git a second time. The orchestrator is out of
 		// scope: only `modelProfiles` is replaced.
-		const pinIdentity: WorktreeResolver = target !== undefined && parentIdentity !== undefined && target === parentIdentity.root
+		const pinIdentity: WorktreeResolver = foreign ? resolveSessionWorktree : target !== undefined && parentIdentity !== undefined && target === parentIdentity.root
 			? () => parentIdentity
 			: deps.resolveWorktree;
 		const config = withPinnedModelProfiles(
@@ -1092,6 +1137,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const profile = resolveAgentProfile(agent, config);
 		const research = agent.name === "sdd-research" ? researchAgent(agent, pi, researchSelection) : undefined;
 		const sessionDir = agentRuntimePaths(deps.home, agentHome).sessions;
+		if (foreign && target) {
+			const identity = resolveSessionWorktree(target, parentCwd);
+			if (!identity || identity.root !== target || identity.commonDir !== foreignIdentity?.commonDir) throw new Error("Foreign clone identity changed before launch.");
+			foreignGrants.assertCurrent(ctx, identity);
+		}
+		if (signal?.aborted) throw new Error("Subagent launch aborted before queueing.");
 		mkdirSync(sessionDir, { recursive: true });
 		const parentSessionManager = ctx.sessionManager as unknown as ReviewSessionManager;
 		const parentSessionId = ctx.sessionManager.getSessionId() ?? "";
@@ -1100,7 +1151,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const sddPreflightContext = SHIPPED_SDD_AGENT_NAME_SET.has(agent.name)
 			? extractParentConfirmedSddPreflightContext(context)
 			: undefined;
-		return {
+		const childEnv = { ...deps.env };
+		if (foreign) for (const key of inheritedUnsafeGitEnvironmentKeys(childEnv)) delete childEnv[key];
+		const request: TaskRequest = {
 			agent: research?.agent ?? agent,
 			remediationIntent,
 			prompt,
@@ -1110,15 +1163,22 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			mode,
 			cwd: target ?? parentWorktreeRoot,
 			parentSessionId,
-			...(target === undefined ? {} : { onLaunch: () => { registry.register(target, "subagent:spawn"); } }),
+			...(foreign && target ? { beforeSpawn: () => {
+				if (signal?.aborted || sessions !== ctx.sessionManager || ctx.sessionManager.getSessionId() !== registry.sessionId || ctx.sessionManager.getCwd() !== parentCwd) throw new Error("Foreign clone session or tool call changed before spawn.");
+				const identity = resolveSessionWorktree(target, parentCwd);
+				const parent = resolveSessionWorktree(parentCwd, parentCwd);
+				if (!identity || identity.root !== target || identity.commonDir !== foreignIdentity?.commonDir || parent?.root !== foreignParent?.root || parent?.commonDir !== foreignParent?.commonDir) throw new Error("Foreign clone identity changed before spawn.");
+				foreignGrants.assertCurrent(ctx, identity);
+			} } : {}),
+			...(target === undefined || foreign ? {} : { onLaunch: () => { registry.register(target, "subagent:spawn"); } }),
 			model: profile.model,
 			thinking: profile.thinking,
 			sessionDir,
 			resumeSessionPath: resume,
-			env: research ? { ...deps.env, [RESEARCH_CHILD_TOOLS_ENV]: JSON.stringify([...research.agent.tools, "subagent_parent_message"]) } : deps.env,
+			env: research ? { ...childEnv, [RESEARCH_CHILD_TOOLS_ENV]: JSON.stringify([...research.agent.tools, "subagent_parent_message"]) } : childEnv,
 			...(research ? { researchSelection, extensionPaths: research.extensionPaths } : {}),
 			...(launchSddChange === undefined ? {} : { sddChange: launchSddChange }),
-			...(parentRepositoryIdentity === undefined ? {} : {
+			...(foreign || parentRepositoryIdentity === undefined ? {} : {
 				authorizeParentStandingReviewPermission: (repositoryIdentity: string) => {
 					try {
 						return repositoryIdentity === parentRepositoryIdentity &&
@@ -1136,6 +1196,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				},
 			}),
 		};
+		if (foreign && target && foreignIdentity) foreignRequests.set(request, { root: target, commonDir: foreignIdentity.commonDir, manager: ctx.sessionManager });
+		return request;
 	};
 
 	const launch = async (ctx: ExtensionContext, request: TaskRequest, signal?: AbortSignal): Promise<ToolText> => {
@@ -1162,8 +1224,16 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			current: () => owner === metricsOwner && request.parentSessionId === activeSessionId() && runtimeMetricsEnvAllows(deps.env),
 			valid: () => !metrics.finished && metrics.current() };
 		const observe = runtimeMetricsEnvAllows(deps.env) && metricTasks.size < 256;
+		let launched = false;
+		let launchedTaskId: string | undefined;
 		const task = runner.run({ ...request, collectResponseObservations: false,
-			onLaunch: () => { metrics.launched = true; request.onLaunch?.(); },
+			onLaunch: () => {
+				metrics.launched = true;
+				request.onLaunch?.();
+				launched = true;
+				const foreign = foreignRequests.get(request);
+				if (foreign && launchedTaskId) foreignTasks.set(launchedTaskId, foreign);
+			},
 			...(observe ? { canCollectResponseObservations: metrics.valid, prepareResponseObservations: async () => {
 				if (metrics.finished || owner !== metricsOwner || request.parentSessionId !== activeSessionId() || !runtimeMetricsEnvAllows(deps.env)) return false;
 				if (!metrics.valid()) return false;
@@ -1173,6 +1243,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			} } : {}),
 		});
 		if (observe) metricTasks.set(task.id, metrics);
+		launchedTaskId = task.id;
+		const foreignRequest = foreignRequests.get(request);
+		if (launched && foreignRequest) foreignTasks.set(task.id, foreignRequest);
 		ownedTaskIds.add(task.id);
 		store.subscribe(task.id, () => { publishActivity(); requestRender(); });
 		if (request.mode === AGENT_MODE.BACKGROUND) return text(`Started ${task.agent} in the background as task ${task.id}. Retain that id; completion is pushed automatically. Never sleep or periodically poll subagent_status/subagent_result for completion or cache maintenance. Inspect status only at a real orchestration decision boundary; never relaunch equivalent queued/running work.`, taskDetails(task));
@@ -1256,12 +1329,25 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		name: "orchestrator_send_message",
 		label: "Send orchestrator message",
 		description: "Send a notification to another active session in this trusted local profile. If recipient_session_id is omitted, the sole peer is selected or the user selects one. Acceptance means enqueued, not read or completed.",
-		parameters: { type: "object", additionalProperties: false, required: ["message"], properties: { recipient_session_id: { type: "string" }, message: { type: "string" } } } as never,
+		parameters: {
+			type: "object",
+			additionalProperties: false,
+			required: ["message", "reason"],
+			properties: {
+				recipient_session_id: { type: "string" },
+				message: { type: "string" },
+				reason: { type: "string", minLength: MESSAGING_REASON_MIN_CHARACTERS, maxLength: MESSAGING_REASON_MAX_UTF8_BYTES, description: "Required concrete caller-supplied reason: at least 8 characters after trimming and at most 512 UTF-8 bytes." },
+			},
+		} as never,
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const transport = activeTransportFor(ctx);
-			const input = params as { recipient_session_id?: unknown; message?: unknown };
+			const input = params as { recipient_session_id?: unknown; message?: unknown; reason?: unknown };
 			if (!transport) return text("Error: session messaging is not ready.", { error: "not ready" });
-			if (typeof input.message !== "string" || Buffer.byteLength(input.message, "utf8") > 8192) return text("Error: recipient session ID or message is invalid.", { error: "invalid input" });
+			const message = input.message;
+			if (typeof message !== "string" || Buffer.byteLength(message, "utf8") > 8192) return text("Error: recipient session ID or message is invalid.", { error: "invalid input" });
+			let reason: string;
+			try { reason = normalizeMessagingReason(input.reason); }
+			catch { return text("Error: recipient session ID or message is invalid; a concrete reason of at least 8 trimmed characters and at most 512 UTF-8 bytes is required.", { error: "invalid input" }); }
 			let recipient: string | undefined;
 			let activation: PresenceRecord | undefined;
 			if (input.recipient_session_id !== undefined) {
@@ -1293,7 +1379,13 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			if (recipient === undefined || !validTransportSessionId(recipient)) return text("Error: recipient session ID or message is invalid.", { error: "invalid input" });
 			if (recipient === transport.sessionId) return text("Error: cannot send a message to the active session.", { error: "self" });
 			try {
-				const accepted = await transport.client.sendNotification(recipient, input.message, { signal, expectedActivation: activation, beforeConnect: () => activeTransportFor(ctx) === transport });
+				await messagingGrants.authorize(ctx, recipient, { message, reason, signal });
+			} catch (error) {
+				if (signal?.aborted) return text("Cross-orchestrator communication was cancelled.", { error: "cancelled" });
+				return text(`Error: ${error instanceof Error ? error.message : String(error)}`, { error: "denied" });
+			}
+			try {
+				const accepted = await transport.client.sendNotification(recipient, message, { signal, expectedActivation: activation, beforeConnect: () => activeTransportFor(ctx) === transport });
 				return activeTransportFor(ctx) === transport ? text(`Message ${accepted.id} from ${transport.sessionId} to ${recipient} accepted for delivery; it is not a delivery or read receipt.`, { gentleAgents: { messageId: accepted.id, senderSessionId: transport.sessionId, recipientSessionId: recipient, state: "accepted" } }) : text("Error: session messaging is not ready.", { error: "stale" });
 			} catch {
 				return text("Error: session message was not accepted.", { error: "not accepted" });
@@ -1318,13 +1410,16 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				task: { type: "string", description: "What the subagent must do, self-contained." },
 				label: { type: "string", description: "Three to six words naming the work, shown on the agents card, e.g. 'map footer data sources'." },
 				context: { type: "string", description: "Optional extra context appended to the task." },
-				workspace_root: { type: "string", description: "Optional worktree in the same Git clone. Validated before queueing; the child runs at its canonical root and registers it on actual launch." },
+				workspace_root: { type: "string", description: "Optional canonical main or linked Git worktree within the parent's same clone only; mutually exclusive with repository_root." },
+				repository_root: { type: "string", description: "Optional canonical independent Git repository; requires direct interactive session-scoped consent before queueing; mutually exclusive with workspace_root." },
 				research_selection: RESEARCH_SELECTION_SCHEMA,
 				remediation: REMEDIATION_SCHEMA, sdd_change: { type: "object", additionalProperties: false, required: ["changeName", "workspaceRoot", "phase"], properties: { changeName: { type: "string" }, workspaceRoot: { type: "string" }, failedEvidenceRevision: { type: "string" }, phase: { type: "string", enum: ["apply", "verify", "archive", "remediate"] } }, description: "Launch-local selected SDD identity, accepted only by matching SDD phase agents." },
 				mode: { type: "string", enum: ["task", "background"], description: "task waits for the result (default); background returns immediately." },
 			},
 		},
 		async (params, ctx, signal) => {
+			if (Object.hasOwn(params, "repository_root") && Object.hasOwn(params, "workspace_root")) throw new Error("repository_root and workspace_root are mutually exclusive.");
+			if ((Object.hasOwn(params, "repository_root") && typeof params.repository_root !== "string") || (Object.hasOwn(params, "workspace_root") && typeof params.workspace_root !== "string")) throw new Error("Root selectors must be strings.");
 			const { agents } = discoverAgents(roots(ctx));
 			const agent = agents.find((candidate) => candidate.name === params.agent);
 			if (!agent) return text(`Error: no subagent named "${String(params.agent)}". Known: ${agents.map((candidate) => candidate.name).join(", ") || "none"}`, { error: "unknown agent" });
@@ -1336,7 +1431,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			let sddChange: SddChangeSelection | undefined;
 			try { sddChange = parseSddChange(params.sdd_change, agent.name); }
 			catch (error) { return text(`Error: ${error instanceof Error ? error.message : String(error)}`, { error: "invalid sdd_change" }); }
-			return launch(ctx, buildRequest(ctx, agent, String(params.task ?? ""), typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, undefined, typeof params.workspace_root === "string" ? params.workspace_root : undefined, sddChange, params.research_selection, params.remediation), signal);
+			return launch(ctx, await buildRequest(ctx, agent, String(params.task ?? ""), typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, undefined, typeof params.workspace_root === "string" ? params.workspace_root : undefined, sddChange, params.research_selection, params.remediation, signal, typeof params.repository_root === "string" ? params.repository_root : undefined), signal);
 		},
 	);
 
@@ -1393,7 +1488,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			catch (error) { return text(`Error: ${error instanceof Error ? error.message : String(error)}`, { error: "invalid sdd_change" }); }
 			if (sddPhaseForAgent(agent.name) && !sddChange) return text("Error: continuing an SDD phase agent requires a fresh sdd_change selection.", { error: "missing sdd_change" });
 
-			return launch(ctx, buildRequest(ctx, agent, String(params.prompt ?? ""), typeof params.label === "string" ? params.label : undefined, previous.sddPreflightContext, mode, previous.sessionPath, sddChange?.workspaceRoot ?? previous.cwd, sddChange, params.research_selection, params.remediation), signal);
+			const foreignContinuation = foreignTasks.has(previous.id);
+			return launch(ctx, await buildRequest(ctx, agent, String(params.prompt ?? ""), typeof params.label === "string" ? params.label : undefined, previous.sddPreflightContext, mode, previous.sessionPath, foreignContinuation ? undefined : sddChange?.workspaceRoot ?? previous.cwd, sddChange, params.research_selection, params.remediation, signal, foreignContinuation ? previous.cwd : undefined), signal);
 		},
 	);
 
@@ -1450,12 +1546,37 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			publishActivity();
 		} catch { presence = undefined; }
 		void startSessionTransport(ctx);
+		// The desktop app's own pi process: publish live subagent state through
+		// setWidget's RPC-mode string[] path. Plain headless RPC (no variable) and
+		// TUI are untouched -- the TUI card above the editor is showWidget's own
+		// factory push, ignored by pi's RPC transport since it is not an array.
+		rpcActivityPublisher?.stop();
+		rpcActivityPublisher = undefined;
+		notifiedRpcActivityErrors = new Set();
+		if (ctx.hasUI && isInteractiveRpcHost(ctx.mode, deps.env)) {
+			rpcActivityPublisher = createRpcActivityPublisher({
+				store,
+				ui: { setWidget: (key, lines) => ctx.ui.setWidget(key, lines) },
+				now: deps.now,
+				schedule: deps.schedule,
+				parentSessionId: activeSessionId(),
+				onError: (error) => {
+					const message = `Gentle Agents activity push failed: ${error instanceof Error ? error.message : String(error)}`;
+					if (notifiedRpcActivityErrors?.has(message)) return;
+					notifiedRpcActivityErrors?.add(message);
+					ctx.ui.notify(message, "warning");
+				},
+			});
+			rpcActivityPublisher.start();
+		}
 	});
 	pi.on("session_shutdown", async () => {
 		completions.dropAll();
 		activeAgentRuns = 0;
 		presence?.dispose();
 		presence = undefined;
+		rpcActivityPublisher?.stop();
+		rpcActivityPublisher = undefined;
 		cancelClock?.();
 		for (const view of overlays) { view.handleInput("q"); view.dispose(); }
 		overlays.clear();

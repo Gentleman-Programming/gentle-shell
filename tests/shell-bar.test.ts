@@ -55,6 +55,28 @@ function model(overrides: Partial<ShellBarModel> = {}): ShellBarModel {
 	};
 }
 
+test("Status title stays plain without an active review", () => {
+	const lines = renderShellSidebarBar(model(), plainTheme, 60);
+	assert.match(lines[0], /^╭─ ✿ Status ─+╮$/);
+	assert.doesNotMatch(lines.slice(1).join("\n"), /🌹 RDD/);
+});
+
+test("Status title stays plain above the review lifecycle block", () => {
+	const lines = renderShellSidebarBar(model({ review: { state: "reviewing", scope: "first.ts +2" } }), plainTheme, 60);
+	assert.match(lines[0], /^╭─ ✿ Status ─+╮$/);
+	assert.match(lines.slice(1).join("\n"), /🌹 RDD[\s\S]*Reviewing[\s\S]*first\.ts \+2/);
+});
+
+test("Status and review lifecycle block respect terminal width", () => {
+	for (const width of [8, 12, 16, 20, 32, 60]) {
+		for (const review of [undefined, { state: "reviewing" as const, scope: "first.ts +2" }]) {
+			const lines = renderShellSidebarBar(model({ review }), plainTheme, width);
+			for (const line of lines) assert.ok(visibleWidth(line) <= width, `${width}: ${line}`);
+			if (width >= 20) assert.match(lines[0], /^╭─ ✿ Status ─+╮$/);
+		}
+	}
+});
+
 test("renderGauge fills cells proportionally to the percentage", () => {
 	assert.equal(renderGauge(45, 8), "▰▰▰▰▱▱▱▱");
 	assert.equal(renderGauge(0, 8), "▱▱▱▱▱▱▱▱");

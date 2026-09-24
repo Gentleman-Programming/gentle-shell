@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import askUserQuestion from "../extensions/ask-user-question.ts";
+import askUserQuestion, { askMultiSelect } from "../extensions/ask-user-question.ts";
 
 /** Plain theme fake: identity styling keeps rendered assertions readable. */
 interface Theme {
@@ -107,6 +107,38 @@ function run(tool: RegisteredTool, params: unknown, ctx: unknown): Promise<ToolR
 	return tool.execute("call", params, new AbortController().signal, undefined, ctx);
 }
 
+const INTERACTIVE_HOST_ENV = "GENTLE_SHELL_INTERACTIVE_HOST";
+
+/** Fake interactive-RPC-host ctx: scripted `select` answers, one per call. */
+function rpcHostContext(selectAnswers: readonly (string | undefined)[]) {
+	const selectCalls: Array<{ title: string; options: string[] }> = [];
+	let index = 0;
+	return {
+		ctx: {
+			mode: "rpc",
+			hasUI: true,
+			ui: {
+				select: async (title: string, options: string[]) => {
+					selectCalls.push({ title, options });
+					const answer = selectAnswers[index];
+					index += 1;
+					return answer;
+				},
+			},
+		},
+		selectCalls,
+	};
+}
+
+function withInteractiveHostEnv(t: { after(fn: () => void): void }): void {
+	const previous = process.env[INTERACTIVE_HOST_ENV];
+	process.env[INTERACTIVE_HOST_ENV] = "1";
+	t.after(() => {
+		if (previous === undefined) delete process.env[INTERACTIVE_HOST_ENV];
+		else process.env[INTERACTIVE_HOST_ENV] = previous;
+	});
+}
+
 const option = (label: string, description = `${label} description`, preview?: string) =>
 	preview === undefined ? { label, description } : { label, description, preview };
 
@@ -183,6 +215,200 @@ test("ask_user_question stays unavailable outside the interactive TUI", async ()
 	assert.equal(result.details.errorKind, "unavailable_outside_tui");
 	assert.equal(customCalls, 0);
 	assert.deepEqual(emitted, []);
+});
+
+test("ask_user_question stays unavailable on a plain rpc host without the interactive-host variable", async (t) => {
+	const { tool, emitted } = registerQuestionTool();
+	let selectCalls = 0;
+	const ctx = {
+		mode: "rpc",
+		hasUI: true,
+		ui: { select: async () => { selectCalls++; return undefined; } },
+	};
+	t.after(() => { delete process.env[INTERACTIVE_HOST_ENV]; });
+	delete process.env[INTERACTIVE_HOST_ENV];
+
+	const result = await run(tool, { questions: single() }, ctx);
+
+	assert.match(result.content[0]?.text ?? "", /unavailable outside the interactive TUI/);
+	assert.equal(result.details.errorKind, "unavailable_outside_tui");
+	assert.equal(selectCalls, 0);
+	assert.deepEqual(emitted, []);
+});
+
+test("ask_user_question resolves a single-select answer through RPC dialogs on an interactive host", async (t) => {
+	withInteractiveHostEnv(t);
+	const { tool, emitted } = registerQuestionTool();
+	const { ctx, selectCalls } = rpcHostContext(["Alpha"]);
+
+	const result = await run(tool, { questions: single() }, ctx);
+
+	assert.equal(selectCalls.length, 1);
+	assert.equal(selectCalls[0]?.title, "Proceed: Proceed?");
+	assert.deepEqual(selectCalls[0]?.options, ["Alpha", "Beta"]);
+	assert.equal(result.content[0]?.text, "1. Proceed? — Alpha");
+	assert.deepEqual(result.details.answers, [
+		{ questionIndex: 0, question: "Proceed?", kind: "option", answer: "Alpha" },
+	]);
+	assert.deepEqual(emitted, [
+		{ channel: "gentle-pi:ask-user-question:blocked", data: { active: true } },
+		{ channel: "gentle-pi:ask-user-question:blocked", data: { active: false } },
+	]);
+});
+
+test("ask_user_question echoes an option preview through RPC dialogs", async (t) => {
+	withInteractiveHostEnv(t);
+	const { tool } = registerQuestionTool();
+	const questions = [
+		{ question: "Proceed?", header: "Proceed", options: [option("Alpha", "First choice", "Preview A"), option("Beta")] },
+	];
+	const { ctx } = rpcHostContext(["Alpha"]);
+
+	const result = await run(tool, { questions }, ctx);
+
+	assert.equal(result.content[0]?.text, "1. Proceed? — Alpha\n   selected preview: Preview A");
+	assert.deepEqual(result.details.answers, [
+		{ questionIndex: 0, question: "Proceed?", kind: "option", answer: "Alpha", preview: "Preview A" },
+	]);
+});
+
+test("ask_user_question loops select with a trailing Done entry for a multiSelect question on an interactive host", async (t) => {
+	withInteractiveHostEnv(t);
+	const { tool } = registerQuestionTool();
+	const questions = [
+		{ question: "Pick?", header: "Pick", options: [option("One"), option("Two")], multiSelect: true },
+	];
+	const { ctx, selectCalls } = rpcHostContext(["[ ] One", "Done"]);
+
+	const result = await run(tool, { questions }, ctx);
+
+	assert.deepEqual(selectCalls[0]?.options, ["[ ] One", "[ ] Two", "Done"]);
+	assert.deepEqual(selectCalls[1]?.options, ["[x] One", "[ ] Two", "Done"]);
+	assert.equal(result.content[0]?.text, "1. Pick? — selected: One");
+	assert.deepEqual(result.details.answers, [
+		{ questionIndex: 0, question: "Pick?", kind: "multi", answer: null, selected: ["One"] },
+	]);
+});
+
+test("ask_user_question multiSelect finishes once every option is toggled without needing Done", async (t) => {
+	withInteractiveHostEnv(t);
+	const { tool } = registerQuestionTool();
+	const questions = [
+		{ question: "Pick?", header: "Pick", options: [option("One"), option("Two")], multiSelect: true },
+	];
+	const { ctx, selectCalls } = rpcHostContext(["[ ] One", "[ ] Two"]);
+
+	const result = await run(tool, { questions }, ctx);
+
+	assert.equal(selectCalls.length, 2, "bounded by the safety cap, but finished early once fully toggled");
+	assert.deepEqual(result.details.answers, [
+		{ questionIndex: 0, question: "Pick?", kind: "multi", answer: null, selected: ["One", "Two"] },
+	]);
+});
+
+test("ask_user_question multiSelect toggle/untoggle/toggle sequence still selects correctly after Done", async (t) => {
+	withInteractiveHostEnv(t);
+	const { tool } = registerQuestionTool();
+	const questions = [
+		{ question: "Pick?", header: "Pick", options: [option("One"), option("Two")], multiSelect: true },
+	];
+	// Toggle One on, then off, then on again, then explicit Done: four rounds,
+	// one more than the old options.length + 1 = 3 round bound, so an
+	// un-toggle must never count against the loop's budget.
+	const { ctx, selectCalls } = rpcHostContext(["[ ] One", "[x] One", "[ ] One", "Done"]);
+
+	const result = await run(tool, { questions }, ctx);
+
+	assert.equal(selectCalls.length, 4);
+	assert.deepEqual(result.details.answers, [
+		{ questionIndex: 0, question: "Pick?", kind: "multi", answer: null, selected: ["One"] },
+	]);
+});
+
+test("ask_user_question multiSelect cancels once the safety cap is hit without Done", async (t) => {
+	withInteractiveHostEnv(t);
+	const { tool } = registerQuestionTool();
+	const questions = [
+		{ question: "Pick?", header: "Pick", options: [option("One"), option("Two")], multiSelect: true },
+	];
+	// Toggle only "One" back and forth forever: "Two" never toggles, so the
+	// loop never auto-finishes, and Done is never picked. It must hit the
+	// hard safety cap and refuse to commit whatever was toggled at that point.
+	const selectAnswers = Array.from({ length: 32 }, (_, round) => (round % 2 === 0 ? "[ ] One" : "[x] One"));
+	const { ctx, selectCalls } = rpcHostContext(selectAnswers);
+
+	const result = await run(tool, { questions }, ctx);
+
+	assert.equal(selectCalls.length, 32, "every round of the safety cap must be spent before giving up");
+	assert.equal(result.content[0]?.text, "User cancelled the questionnaire");
+	assert.deepEqual(result.details, { cancelled: true });
+});
+
+test("askMultiSelect scales its round cap so a 40-option question can toggle every option and still reach Done", async () => {
+	// The shipped `ask_user_question` tool schema caps authored options at 4
+	// (`lib/questionnaire/schema.ts`'s `MAX_OPTIONS`), so this exercises
+	// `askMultiSelect` directly rather than through the schema-validated tool,
+	// the same way a future caller with more options would.
+	const labels = Array.from({ length: 40 }, (_, index) => `Option ${index + 1}`);
+	const question = { question: "Pick?", header: "Pick", options: labels.map((label) => option(label)), multiSelect: true };
+	// Toggle the first 39 options on, one per round, then an explicit Done:
+	// 40 rounds total, past the old flat 32-round cap but inside the new
+	// `Math.max(32, options.length + 2)` = 42 bound.
+	const toggleAnswers = labels.slice(0, 39).map((label) => `[ ] ${label}`);
+	const { ctx, selectCalls } = rpcHostContext([...toggleAnswers, "Done"]);
+
+	const answer = await askMultiSelect(ctx as never, question as never);
+
+	assert.equal(selectCalls.length, 40, "every toggle plus the explicit Done fits inside the scaled cap");
+	assert.deepEqual(answer, { questionIndex: -1, question: "Pick?", kind: "multi", answer: null, selected: labels.slice(0, 39) });
+});
+
+test("ask_user_question multiSelect cancels on an unrecognised host answer instead of committing a partial state", async (t) => {
+	withInteractiveHostEnv(t);
+	const { tool } = registerQuestionTool();
+	const questions = [
+		{ question: "Pick?", header: "Pick", options: [option("One"), option("Two")], multiSelect: true },
+	];
+	// "One" gets toggled on first, then the host answers with something that
+	// matches none of the current round's options: the loop must cancel the
+	// whole questionnaire, never commit the partial "One" toggle.
+	const { ctx, selectCalls } = rpcHostContext(["[ ] One", "not a real option"]);
+
+	const result = await run(tool, { questions }, ctx);
+
+	assert.equal(selectCalls.length, 2);
+	assert.equal(result.content[0]?.text, "User cancelled the questionnaire");
+	assert.deepEqual(result.details, { cancelled: true });
+});
+
+test("ask_user_question cancels through RPC dialogs like the TUI path when select returns undefined", async (t) => {
+	withInteractiveHostEnv(t);
+	const { tool, emitted } = registerQuestionTool();
+	const { ctx } = rpcHostContext([undefined]);
+
+	const result = await run(tool, { questions: single() }, ctx);
+
+	assert.equal(result.content[0]?.text, "User cancelled the questionnaire");
+	assert.deepEqual(result.details, { cancelled: true });
+	assert.deepEqual(emitted, [
+		{ channel: "gentle-pi:ask-user-question:blocked", data: { active: true } },
+		{ channel: "gentle-pi:ask-user-question:blocked", data: { active: false } },
+	]);
+});
+
+test("ask_user_question cancels a questionnaire through RPC dialogs on a later question", async (t) => {
+	withInteractiveHostEnv(t);
+	const { tool } = registerQuestionTool();
+	const questions = [
+		{ question: "First?", header: "First", options: [option("Alpha"), option("Beta")] },
+		{ question: "Second?", header: "Second", options: [option("Gamma"), option("Delta")] },
+	];
+	const { ctx, selectCalls } = rpcHostContext(["Alpha", undefined]);
+
+	const result = await run(tool, { questions }, ctx);
+
+	assert.equal(selectCalls.length, 2, "the first question is answered before the cancel is observed");
+	assert.deepEqual(result.details, { cancelled: true });
 });
 
 test("ask_user_question commits a single-select answer end-to-end", async () => {

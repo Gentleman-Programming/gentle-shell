@@ -7,6 +7,12 @@ import { resolveSessionWorktree, type WorktreeResolver } from "./session-worktre
 import { SessionChanges, readChangeSnapshot, sameSnapshot, textSnapshot, isSessionChangeEvidence,
 	SESSION_CHANGE_ENTRY, SESSION_CHANGE_EVENT, SESSION_CHANGE_RELAY, type SessionChangeEvidence, type ChangeSnapshot } from "./session-changes.ts";
 
+const foreignPublishers = new WeakMap<ExtensionAPI, (sessionId: string, evidence: SessionChangeEvidence) => void>();
+/** Internal authenticated handoff from a successful child tool callback, never a model message or public event. */
+export function publishForeignSessionChange(pi: ExtensionAPI, sessionId: string, evidence: SessionChangeEvidence): void {
+	foreignPublishers.get(pi)?.(sessionId, evidence);
+}
+
 interface Pending { sessionId: string; inputPath: string; path: string; root: string; relativePath: string; before: ChangeSnapshot; toolName: string; evidence?: SessionChangeEvidence }
 const normalized = (text: string) => text.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
 const unknown = (): ChangeSnapshot => ({ kind: "unavailable", reason: "Tool snapshots could not be verified; diff unavailable." });
@@ -23,6 +29,9 @@ export function installSessionChangeCapture(pi: ExtensionAPI, env: NodeJS.Proces
 		const notice = store.takeNotice();
 		pi.events.emit(SESSION_CHANGE_EVENT, { sessionId: store.sessionId, ...(notice ? { notice } : {}) });
 	};
+	foreignPublishers.set(pi, (sessionId, evidence) => {
+		if (!child && current?.sessionManager.getSessionId() === sessionId && isSessionChangeEvidence(evidence)) publish(evidence);
+	});
 	pi.on("session_start", (_event, ctx) => {
 		pending.clear(); current = ctx;
 		store = new SessionChanges(ctx.sessionManager.getSessionId(), ctx.sessionManager.getEntries());
@@ -84,5 +93,5 @@ export function installSessionChangeCapture(pi: ExtensionAPI, env: NodeJS.Proces
 			try { publish(item.evidence); } catch { /* Preserve the tool's outcome. */ }
 		}
 	});
-	pi.on("session_shutdown", () => { pending.clear(); current = undefined; store = undefined; off(); });
+	pi.on("session_shutdown", () => { pending.clear(); current = undefined; store = undefined; foreignPublishers.delete(pi); off(); });
 }

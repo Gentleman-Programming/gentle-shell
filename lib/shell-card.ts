@@ -32,8 +32,18 @@ export interface CardRenderOptions {
 }
 
 export const CARD_GLYPH = "✿";
-const TONE_ROLE: Record<CardTone, string> = {
-	[CARD_TONE.INFO]: "customMessageLabel",
+// Frame and title paint with the same role for every tone except INFO, whose
+// rounded frame stays in the theme's plain border role while its title
+// carries the accent role — the rose look every informational card (sidebar,
+// review preflight, a quiet Agents widget, ...) uses.
+const FRAME_ROLE: Record<CardTone, string> = {
+	[CARD_TONE.INFO]: "border",
+	[CARD_TONE.SUCCESS]: "success",
+	[CARD_TONE.WARNING]: "warning",
+	[CARD_TONE.ERROR]: "error",
+};
+const TITLE_ROLE: Record<CardTone, string> = {
+	[CARD_TONE.INFO]: "accent",
 	[CARD_TONE.SUCCESS]: "success",
 	[CARD_TONE.WARNING]: "warning",
 	[CARD_TONE.ERROR]: "error",
@@ -51,8 +61,8 @@ function rule(length: number): string {
 function titleText(card: Card, theme: CardTheme): { styled: string; width: number } {
 	const head = `${card.glyph ?? CARD_GLYPH} ${card.title}`;
 	const styled = card.subtitle
-		? `${theme.fg(TONE_ROLE[card.tone], head)} ${theme.fg(SUBTITLE_ROLE, SEPARATOR)} ${theme.fg(SUBTITLE_ROLE, card.subtitle)}`
-		: theme.fg(TONE_ROLE[card.tone], head);
+		? `${theme.fg(TITLE_ROLE[card.tone], head)} ${theme.fg(SUBTITLE_ROLE, SEPARATOR)} ${theme.fg(SUBTITLE_ROLE, card.subtitle)}`
+		: theme.fg(TITLE_ROLE[card.tone], head);
 	return { styled, width: visibleWidth(head) + (card.subtitle ? visibleWidth(card.subtitle) + 3 : 0) };
 }
 
@@ -61,14 +71,14 @@ function bodyLines(card: Card, innerWidth: number): string[] {
 }
 
 function frame(theme: CardTheme, tone: CardTone, text: string): string {
-	return theme.fg(TONE_ROLE[tone], text);
+	return theme.fg(FRAME_ROLE[tone], text);
 }
 
 export function cardTop(card: Card, theme: CardTheme, width: number, hint?: string): string {
 	const targetWidth = Math.max(0, Math.floor(width));
 	if (targetWidth === 0) return "";
 	if (targetWidth < 5) {
-		const left = theme.fg(TONE_ROLE[card.tone], "╭");
+		const left = theme.fg(FRAME_ROLE[card.tone], "╭");
 		if (targetWidth === 1) return left;
 		return left + frame(theme, card.tone, `${rule(targetWidth - 2)}╮`);
 	}
@@ -82,13 +92,13 @@ export function cardTop(card: Card, theme: CardTheme, width: number, hint?: stri
 	const styledTitleWidth = title.width <= titleWidth ? title.width : visibleWidth(styledTitle);
 	const fill = rule(targetWidth - styledTitleWidth - 5 - hintWidth);
 	const tail = shownHint ? ` ${theme.fg(HINT_ROLE, shownHint)} ` : "";
-	return theme.fg(TONE_ROLE[card.tone], "╭") + frame(theme, card.tone, "─ ") + styledTitle + frame(theme, card.tone, ` ${fill}`) + tail + frame(theme, card.tone, "╮");
+	return theme.fg(FRAME_ROLE[card.tone], "╭") + frame(theme, card.tone, "─ ") + styledTitle + frame(theme, card.tone, ` ${fill}`) + tail + frame(theme, card.tone, "╮");
 }
 
 export function cardLine(text: string, tone: CardTone, theme: CardTheme, width: number): string {
 	const targetWidth = Math.max(0, Math.floor(width));
 	if (targetWidth === 0) return "";
-	const left = theme.fg(TONE_ROLE[tone], "│");
+	const left = theme.fg(FRAME_ROLE[tone], "│");
 	if (targetWidth === 1) return left;
 	if (targetWidth === 2) return left + frame(theme, tone, "│");
 	if (targetWidth === 3) return `${left} ${frame(theme, tone, "│")}`;
@@ -102,7 +112,7 @@ export function cardLine(text: string, tone: CardTone, theme: CardTheme, width: 
 export function cardBottom(tone: CardTone, theme: CardTheme, width: number): string {
 	const targetWidth = Math.max(0, Math.floor(width));
 	if (targetWidth === 0) return "";
-	const left = theme.fg(TONE_ROLE[tone], "╰");
+	const left = theme.fg(FRAME_ROLE[tone], "╰");
 	if (targetWidth === 1) return left;
 	return left + frame(theme, tone, `${rule(targetWidth - 2)}╯`);
 }

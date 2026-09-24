@@ -201,7 +201,7 @@ export interface NativeReviewModeRequest {
 // explicit `committedOnly` acknowledgement, exactly like Native START's
 // baseRef/committedOnly pairing, because both select a committed range
 // instead of the ambient working tree.
-export interface NativeReviewAssessRequest {
+export interface NativeReviewAssessRequest extends NativeUntrackedSelection {
 	cwd: string;
 	baseRef?: string;
 	committedOnly?: boolean;
@@ -705,7 +705,11 @@ function isNativeUntrackedPath(value: unknown): value is string {
 		&& value.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
 }
 
-function nativeUntrackedSelection(request: NativeUntrackedSelectionRequest): NativeUntrackedSelection {
+export function nativeUntrackedSelection(request: {
+	untrackedScope?: unknown;
+	expectedUntrackedInventory?: unknown;
+	intendedUntracked?: unknown;
+}): NativeUntrackedSelection {
 	const { untrackedScope, expectedUntrackedInventory, intendedUntracked } = request;
 	const declared = untrackedScope !== undefined || expectedUntrackedInventory !== undefined || intendedUntracked !== undefined;
 	if (!declared) return {};
@@ -716,16 +720,19 @@ function nativeUntrackedSelection(request: NativeUntrackedSelectionRequest): Nat
 	) {
 		throw new TypeError("Native untracked selection must declare one scope, one inventory digest, and unique repository-relative paths");
 	}
-	if (untrackedScope === NATIVE_UNTRACKED_SCOPE.EXCLUDE && (intendedUntracked?.length ?? 0) > 0) {
+	// The guard above establishes the array and element types for both typed
+	// native requests and untyped facade input.
+	const paths = intendedUntracked as readonly string[] | undefined;
+	if (untrackedScope === NATIVE_UNTRACKED_SCOPE.EXCLUDE && (paths?.length ?? 0) > 0) {
 		throw new TypeError("Native exclude untracked selection cannot include paths");
 	}
-	if (untrackedScope === NATIVE_UNTRACKED_SCOPE.SELECT && (intendedUntracked?.length ?? 0) === 0) {
+	if (untrackedScope === NATIVE_UNTRACKED_SCOPE.SELECT && (paths?.length ?? 0) === 0) {
 		throw new TypeError("Native select untracked selection requires at least one path");
 	}
 	return {
 		untrackedScope,
 		expectedUntrackedInventory,
-		intendedUntracked: intendedUntracked === undefined ? undefined : [...intendedUntracked],
+		intendedUntracked: paths === undefined ? undefined : [...paths],
 	};
 }
 
@@ -986,6 +993,61 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// and hint remain dark because neither is proven to reach the negotiated
 	// START path Pi consumes.
 	"3.0.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v3.1.0 changed the ODD orchestrator contract only (gentle-ai #4714).
+	// Ground-truthed by diffing contracts/review-integration/v2 and
+	// contracts/review-provider-contract between the v3.0.2 and v3.1.0 tags
+	// in the gentle-ai source tree: zero bytes changed (provider contract
+	// stays 1.2.0). Neither change touches the closed START/STATUS fields
+	// this row negotiates, so it repeats 3.0.1 exactly. riskEvidence and hint
+	// remain dark because neither is proven to reach the negotiated START
+	// path Pi consumes.
+	"3.1.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v3.2.1 changed the ODD orchestrator contract only (gentle-ai #4714
+	// follow-up). Ground-truthed by diffing contracts/review-integration/v2 and
+	// contracts/review-provider-contract between the v3.1.0 and v3.2.1 tags
+	// in the gentle-ai source tree: zero bytes changed (provider contract
+	// stays 1.2.0). Neither change touches the closed START/STATUS fields
+	// this row negotiates, so it repeats 3.1.0 exactly. riskEvidence and hint
+	// remain dark because neither is proven to reach the negotiated START
+	// path Pi consumes.
+	"3.2.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v3.4.0 (gentle-pi never pinned the intervening v3.3.0 tag, so it gets no
+	// row here) added capabilities/v2.6 and status/v8-v9, and extended
+	// `review assess` with review_due/review_due_reason/next_transition
+	// (gentle-ai #4714 follow-up). Ground-truthed by diffing
+	// contracts/review-integration/v2 and contracts/review-provider-contract
+	// between the v3.2.1 and v3.4.0 tags in the gentle-ai source tree: the
+	// provider contract stays byte-identical at 1.2.0, and every
+	// review-integration/v2 change is an additive superset (new optional
+	// schema/fields) that decodeReviewStatusV3 and the capabilities
+	// negotiator already accept without touching the closed START/STATUS
+	// fields this row negotiates, so it repeats 3.2.1 exactly. riskEvidence
+	// and hint remain dark because neither is proven to reach the negotiated
+	// START path Pi consumes.
+	"3.4.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v3.5.0 repeats 3.4.0: the published provider contract bundle is
+	// byte-identical at 1.2.0, both binaries advertise capabilities/v2.6
+	// with only build-identity differences, and no review-integration schema
+	// changed. The v2 preflight failure identity fix does not change the
+	// closed START/STATUS fields this row negotiates. riskEvidence and hint
+	// remain dark; neither is proven to reach Pi's negotiated START path.
+	"3.5.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v3.6.0 repeats 3.5.0: the published provider contract bundle is
+	// byte-identical at 1.2.0, both binaries advertise capabilities/v2.6
+	// with only build-identity differences, and no review-integration schema
+	// changed between the v3.5.0 and v3.6.0 tags. riskEvidence and hint
+	// remain dark; neither is proven to reach Pi's negotiated START path.
+	"3.6.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v3.6.1 repeats 3.6.0: published provider-contract archives are byte-identical
+	// (SHA-256 547b68e172cc87aa297309d61624e5fc2c24d407a494b53eeb5a2b053904352c).
+	// The published v3.6.1 binary advertises capabilities/v2.6, and the tag diff
+	// changes no review-integration schema or capability source. riskEvidence and
+	// hint remain dark because neither is proven in Pi's negotiated START path.
+	"3.6.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v3.7.0 repeats 3.6.1: the published provider-contract tar remains SHA-256
+	// 547b68e172cc87aa297309d61624e5fc2c24d407a494b53eeb5a2b053904352c
+	// at contract 1.2.0. No new negotiated capability is asserted.
+	"3.7.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 });
 
 export interface NativeReviewProcessDiagnostics {
@@ -1070,8 +1132,19 @@ function decodeSelectedLenses(value: unknown, riskLevel: string, lensesRequired:
 function enumString(value: unknown, allowed: readonly string[]): string { const parsed = stringValue(value); if (!allowed.includes(parsed)) throw new Error("unsupported enum"); return parsed; }
 const NATIVE_DIAGNOSTIC_TEXT_LIMIT = 4_096;
 
-function sanitizeNativeDiagnosticText(value: string, limit = NATIVE_DIAGNOSTIC_TEXT_LIMIT): string {
-	const normalized = value
+function sanitizeNativeDiagnosticText(value: string, limit = NATIVE_DIAGNOSTIC_TEXT_LIMIT, operation?: NativeReviewOperation): string {
+	// ASSESS diagnostics are projected into a public verification plan. Retain
+	// native guidance, not local paths or environment assignment values.
+	const input = operation === NATIVE_REVIEW_OPERATION.ASSESS
+		? value
+			.replace(/(?<![\w-])[a-z_][a-z0-9_]*=(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s]+)/gi, "[REDACTED ENV]")
+			.replace(/--(?:password|token|secret|authorization|cookie|private[_-]key|access[_-]token|[a-z0-9_-]+[_-]token|api[_-]?key)[ \t]+(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s]+)/gi, "[REDACTED CREDENTIAL]")
+			// Quoted paths have a clear boundary. For an unquoted path, the
+			// remaining line is ambiguous (spaces may belong to the filename).
+			// Redact that suffix rather than leak trailing path components.
+			.replace(/"(?:[A-Za-z]:[\\/]|\/)[^"\r\n]*"|'(?:[A-Za-z]:[\\/]|\/)[^'\r\n]*'|(?:[A-Za-z]:[\\/]|\/)[^\r\n]*/g, "[REDACTED PATH]")
+		: value;
+	const normalized = input
 		.replace(/\x1b](?:[^\x07\x1b]|\x1b(?!\\))*?(?:\x07|\x1b\\)/g, "[REDACTED CONTROL]")
 		.replace(/\x1b[PX^_][\s\S]*?\x1b\\/g, "[REDACTED CONTROL]")
 		.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "[REDACTED CONTROL]")
@@ -1105,7 +1178,7 @@ export function sanitizeForeignNativeReviewDiagnostics(value: unknown): NativeRe
 			timed_out: booleanValue(raw.timed_out),
 			output_limit_exceeded: booleanValue(raw.output_limit_exceeded),
 			...(maxBufferBytes === undefined ? {} : { max_buffer_bytes: maxBufferBytes, configuration_hint: configurationHint! }),
-			...(raw.stderr === undefined ? {} : { stderr: sanitizeNativeDiagnosticText(stringValue(raw.stderr)) }),
+			...(raw.stderr === undefined ? {} : { stderr: sanitizeNativeDiagnosticText(stringValue(raw.stderr), NATIVE_DIAGNOSTIC_TEXT_LIMIT, operation) }),
 		};
 	} catch { return undefined; }
 }
@@ -1122,7 +1195,7 @@ function nativeProcessDiagnostics(operation: NativeReviewOperation, code: Native
 		...(code === NATIVE_REVIEW_ERROR_CODE.OUTPUT_LIMIT && maxBufferBytes !== undefined
 			? { max_buffer_bytes: maxBufferBytes, configuration_hint: NATIVE_REVIEW_MAX_BUFFER_CONFIGURATION_HINT }
 			: {}),
-		...(result?.stderr.trim() ? { stderr: sanitizeNativeDiagnosticText(result.stderr) } : {}),
+		...(result?.stderr.trim() ? { stderr: sanitizeNativeDiagnosticText(result.stderr, NATIVE_DIAGNOSTIC_TEXT_LIMIT, operation) } : {}),
 	};
 }
 
@@ -2503,6 +2576,7 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 	// rejects -- callers (the `gentle_review` tool's `assess` operation) fail
 	// closed to `high`.
 	async assess(request: NativeReviewAssessRequest): Promise<ReviewAssessmentV1> {
+		const selection = nativeUntrackedSelection(request);
 		if (request.baseRef !== undefined && !isCanonicalProcessString(request.baseRef)) throw new TypeError("Native ASSESS baseRef must be a non-empty, trimmed, NUL-free string");
 		if (request.baseRef !== undefined && request.committedOnly !== true) throw new TypeError("Native ASSESS baseRef requires explicit committedOnly acknowledgement");
 		if (request.baseRef === undefined && request.committedOnly !== undefined) throw new TypeError("Native ASSESS committedOnly requires an explicit baseRef");
@@ -2510,7 +2584,7 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		const execution = await this.invoke(
 			NATIVE_REVIEW_OPERATION.ASSESS,
 			cwd,
-			["review", "assess", "--cwd", cwd, ...(request.baseRef === undefined ? [] : ["--base-ref", request.baseRef, "--committed-only"]), "--json"],
+			["review", "assess", "--cwd", cwd, ...(request.baseRef === undefined ? [] : ["--base-ref", request.baseRef, "--committed-only"]), ...nativeUntrackedSelectionArguments(selection), "--json"],
 			false,
 			request.signal,
 			this.executablePath(NATIVE_REVIEW_OPERATION.ASSESS, false),

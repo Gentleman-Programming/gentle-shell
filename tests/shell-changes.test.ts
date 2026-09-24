@@ -10,6 +10,9 @@ import {
 	CHANGE_STATUS,
 	ChangesTracker,
 	WorktreeChangesTracker,
+	RootBranchLabels,
+	UNKNOWN_BRANCH,
+	foreignRootBranch,
 	parseWorktrees,
 	changesSummary,
 	emptyChanges,
@@ -19,6 +22,7 @@ import {
 	changesModel,
 	snapshotChanges,
 	type ChangedFile,
+	type GitResult,
 } from "../lib/shell-changes.ts";
 
 // The changes view shows the working tree against HEAD, new files included,
@@ -70,6 +74,16 @@ test("parsePorcelain reads NUL-separated status entries including renames and un
 			["lib/d.ts", CHANGE_STATUS.MODIFIED],
 		],
 	);
+});
+
+test("parsePorcelain drops embedded-repository markers, never a real file", () => {
+	// Git reports a nested .git directory (an embedded/foreign repository, the
+	// live evidence's ~/work/NaN-builders inside ~/work) as one directory-shaped
+	// "?? path/" line, never expanded into files, even with --untracked-files=all.
+	// Treating that line as a changed file creates a phantom entry for whatever
+	// ancestor repository happens to contain the nested one.
+	const raw = ["?? NaN-builders/", "?? notes.md", " M lib/a.ts"].join("\0") + "\0";
+	assert.deepEqual([...parsePorcelain(raw).entries()], [["notes.md", CHANGE_STATUS.UNTRACKED], ["lib/a.ts", CHANGE_STATUS.MODIFIED]]);
 });
 
 test("snapshotChanges merges status with counts and keeps untracked files without counts", () => {
@@ -265,6 +279,114 @@ test("worktree porcelain preserves unusual directory names and detached fallback
 	assert.deepEqual(parseWorktrees("worktree /a\nbranch strange\0HEAD abc\0detached\0\0"), [{ root: "/a\nbranch strange" }]);
 });
 
+// A GitRunner that cannot even ask (root removed, git missing, the runner
+// itself rejecting) must reject foreignRootBranch too -- never resolve to the
+// same undefined a genuinely detached HEAD produces. Swallowing the two into
+// one shape is exactly the bug: the caller has no way left to tell "asked and
+// there is no branch" from "could not ask at all".
+test("foreignRootBranch propagates a GitRunner failure instead of reporting detached", async () => {
+	const failing = async (): Promise<GitResult> => { throw new Error("git unavailable"); };
+	await assert.rejects(() => foreignRootBranch(failing), /git unavailable/);
+});
+
+test("foreignRootBranch still reports a genuine detached HEAD as undefined, not a failure", async () => {
+	const detached = async (args: string[]): Promise<GitResult> => (args[0] === "symbolic-ref" ? { stdout: "", code: 1 } : { stdout: "deadbeef\n", code: 0 });
+	assert.equal(await foreignRootBranch(detached), undefined);
+});
+
+// C3 (odd/tasks/usage-click-and-changes-attribution.md): a root registered by
+// the session but absent from a single `git worktree list` scan -- because it
+// belongs to a different Git clone entirely, e.g. an inner repository nested
+// inside an outer one -- must not default to "detached". It must be asked
+// directly, and "no commits yet" must read differently from a real branch.
+test("a root missing from worktree list resolves its own branch instead of defaulting to detached", async (t) => {
+	const scenarios: Array<{ name: string; symbolic: { stdout: string; code: number }; verify: { stdout: string; code: number }; expected: string | undefined }> = [
+		{ name: "a normal branch on a foreign clone", symbolic: { stdout: "feature\n", code: 0 }, verify: { stdout: "deadbeef\n", code: 0 }, expected: "feature" },
+		{ name: "an unborn branch (no commits yet)", symbolic: { stdout: "main\n", code: 0 }, verify: { stdout: "", code: 1 }, expected: "no commits yet" },
+		{ name: "a genuinely detached HEAD", symbolic: { stdout: "", code: 1 }, verify: { stdout: "deadbeef\n", code: 0 }, expected: undefined },
+	];
+	for (const scenario of scenarios) {
+		await t.test(scenario.name, async () => {
+			const calls: string[][] = [];
+			const tracker = new WorktreeChangesTracker(
+				async () => ({ stdout: "", code: 0 }), // /foreign never appears in this clone's own worktree list
+				() => async (args) => {
+					calls.push(args);
+					if (args[0] === "status") return { stdout: "?? changed.ts\0", code: 0 };
+					if (args[0] === "symbolic-ref") return scenario.symbolic;
+					if (args[0] === "rev-parse") return scenario.verify;
+					return { stdout: "", code: 0 };
+				},
+				undefined,
+				() => ["/foreign"],
+			);
+			await tracker.start();
+			assert.deepEqual(tracker.worktrees.map((tree) => [tree.root, tree.branch]), [["/foreign", scenario.expected]]);
+			assert.ok(calls.some((args) => args[0] === "symbolic-ref"), "a root absent from worktree list must be asked directly");
+		});
+	}
+});
+
+// The direct per-root ask (for a root missing from worktree list) can fail on
+// its own -- root gone, git unavailable -- independently of the change scan
+// that already found real files. That failure must label the root
+// UNKNOWN_BRANCH, distinct from "detached", and must never drop the
+// already-captured changes.
+test("a root missing from worktree list keeps its changes and reads UNKNOWN_BRANCH when the direct ask fails", async () => {
+	const tracker = new WorktreeChangesTracker(
+		async () => ({ stdout: "", code: 0 }),
+		() => async (args) => {
+			if (args[0] === "status") return { stdout: "?? changed.ts\0", code: 0 };
+			if (args[0] === "diff") return { stdout: "", code: 0 };
+			throw new Error("git unavailable"); // symbolic-ref / rev-parse: the direct branch ask
+		},
+		undefined,
+		() => ["/foreign"],
+	);
+	await tracker.start();
+	assert.deepEqual(tracker.worktrees.map((tree) => [tree.root, tree.branch]), [["/foreign", UNKNOWN_BRANCH]]);
+	assert.equal(tracker.worktrees[0]!.model.files.length, 1, "a failed branch lookup must not drop the root's real changes");
+});
+
+// A root already described by the same clone's own worktree list is trusted
+// as-is: a real "detached" marker there is already 100% accurate, so no
+// redundant per-root call is needed (and none happens).
+test("a root already described by worktree list is trusted without a redundant lookup", async () => {
+	const calls: string[][] = [];
+	const tracker = new WorktreeChangesTracker(
+		async () => ({ stdout: "worktree /known\0detached\0\0", code: 0 }),
+		() => async (args) => {
+			calls.push(args);
+			return { stdout: args[0] === "status" ? "?? changed.ts\0" : "", code: 0 };
+		},
+		undefined,
+		() => ["/known"],
+	);
+	await tracker.start();
+	assert.deepEqual(tracker.worktrees.map((tree) => [tree.root, tree.branch]), [["/known", undefined]]);
+	assert.ok(!calls.some((args) => args[0] === "symbolic-ref"), "a known worktree-list entry must not trigger a fallback call");
+});
+
+// The live evidence: an outer repo (~/work, no commits) whose ONLY change is
+// the embedded inner repository (~/work/NaN-builders) itself must never show
+// up as a phantom tree once the embedded-repo marker is filtered out of its
+// own file list -- it never had a real file to show in the first place.
+test("an outer ancestor whose only change is the embedded inner repository is never a phantom tree", async () => {
+	const tracker = new WorktreeChangesTracker(
+		async () => ({ stdout: "", code: 0 }), // neither root belongs to the other's clone
+		(root) => async (args) => {
+			if (args[0] !== "status") return { stdout: "", code: 0 };
+			// The outer root's only "change" is the nested repo directory marker;
+			// the inner root has a real file of its own.
+			return { stdout: root === "/outer" ? "?? NaN-builders/\0" : "?? jpg-png-converter.md\0", code: 0 };
+		},
+		undefined,
+		() => ["/outer", "/outer/NaN-builders"],
+	);
+	await tracker.start();
+	assert.deepEqual(tracker.worktrees.map((tree) => tree.root), ["/outer/NaN-builders"]);
+});
+
 test("registered roots remain scannable during metadata discovery failure", async () => {
 	let code = 128;
 	const tracker = new WorktreeChangesTracker(async () => ({ stdout: "worktree /repo\0\0", code }), () => async (args) => ({ stdout: args[0] === "status" ? "?? new.ts\0" : "", code: 0 }), undefined, () => ["/repo"]);
@@ -355,4 +477,59 @@ test("ChangesTracker counts the lines of untracked files, which git numstat leav
 	assert.deepEqual(model.files, [file("empty.md", 0, 0, CHANGE_STATUS.UNTRACKED), file("notes.md", 3, 0, CHANGE_STATUS.UNTRACKED)]);
 	assert.equal(model.added, 3);
 	assert.deepEqual(counted, ["notes.md", "empty.md"]);
+});
+
+// The session-evidence tracker behind /gentle:changes knows roots, never
+// branches. The overlay decorates its trees with each root's own HEAD state,
+// resolved once per root and reported back so the view can repaint; until git
+// answers the tree shows no branch (the view's "detached" fallback), and a
+// genuinely detached HEAD stays that way.
+test("RootBranchLabels decorates session trees with each root's branch once git answers", async () => {
+	const calls = new Map<string, string[][]>();
+	const answers: Record<string, { symbolic: { stdout: string; code: number }; verify: { stdout: string; code: number } }> = {
+		"/repo": { symbolic: { stdout: "feature\n", code: 0 }, verify: { stdout: "deadbeef\n", code: 0 } },
+		"/fresh": { symbolic: { stdout: "main\n", code: 0 }, verify: { stdout: "", code: 1 } },
+		"/pinned": { symbolic: { stdout: "", code: 1 }, verify: { stdout: "deadbeef\n", code: 0 } },
+	};
+	let changed = 0;
+	const labels = new RootBranchLabels((root) => async (args) => {
+		calls.set(root, [...(calls.get(root) ?? []), args]);
+		await new Promise((resolve) => setImmediate(resolve));
+		return args[0] === "symbolic-ref" ? answers[root]!.symbolic : answers[root]!.verify;
+	}, () => changed++);
+	const trees = Object.keys(answers).map((root) => ({ root, model: changesModel([]) }));
+	const first = labels.decorate(trees);
+	assert.deepEqual(first.map((tree) => tree.branch), [undefined, undefined, undefined], "nothing is labelled before git answers");
+	await labels.settled();
+	assert.equal(changed, 3, "each resolved root asks the view to repaint once");
+	const second = labels.decorate(trees);
+	assert.deepEqual(second.map((tree) => tree.branch), ["feature", "no commits yet", undefined]);
+	labels.decorate(trees);
+	await labels.settled();
+	assert.deepEqual([...calls.values()].map((list) => list.length), [2, 2, 1], "one resolution per root, never per decorate call");
+	assert.equal(changed, 3);
+});
+
+// A root that could not even be asked (removed, git unavailable, the runner
+// itself rejecting) must read UNKNOWN_BRANCH -- never the same undefined a
+// genuine detached HEAD produces, and never silently stay unlabelled forever.
+test("RootBranchLabels labels a root UNKNOWN_BRANCH when it could not be asked, distinct from a real detached HEAD", async () => {
+	let changed = 0;
+	const labels = new RootBranchLabels((root) => async () => {
+		await new Promise((resolve) => setImmediate(resolve));
+		if (root === "/gone") throw new Error("root removed");
+		return { stdout: "", code: 1 };
+	}, () => changed++);
+	const trees = [
+		{ root: "/gone", model: changesModel([]) },
+		{ root: "/detached", model: changesModel([]) },
+	];
+	labels.decorate(trees);
+	await labels.settled();
+	assert.deepEqual(
+		labels.decorate(trees).map((tree) => tree.branch),
+		[UNKNOWN_BRANCH, undefined],
+		"a failed ask reads UNKNOWN_BRANCH; a real detached HEAD still reads undefined (the view's detached fallback)",
+	);
+	assert.equal(changed, 2, "a failed ask still resolves and asks the view to repaint, instead of hanging forever");
 });

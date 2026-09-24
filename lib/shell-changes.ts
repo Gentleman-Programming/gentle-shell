@@ -90,8 +90,13 @@ export function parsePorcelain(text: string): Map<string, ChangeStatus> {
 		const record = records[index];
 		const code = record.slice(0, 2);
 		const path = record.slice(3);
-		const status = STATUS_BY_CODE[code[0]] ?? STATUS_BY_CODE[code[1]] ?? CHANGE_STATUS.MODIFIED;
-		statuses.set(path, status);
+		// A trailing "/" is Git's own marker for an embedded repository (a
+		// nested .git directory, e.g. an inner repo inside an outer one) or an
+		// excluded directory -- never an individual file. Even with
+		// --untracked-files=all, Git reports these as one directory-shaped line
+		// instead of expanding into files, so keeping it would show a phantom
+		// changed "file" on whatever ancestor repository contains the nested one.
+		if (!path.endsWith("/")) statuses.set(path, STATUS_BY_CODE[code[0]] ?? STATUS_BY_CODE[code[1]] ?? CHANGE_STATUS.MODIFIED);
 		if (code[0] === "R" || code[0] === "C") index += 1;
 	}
 	return statuses;
@@ -163,6 +168,77 @@ export function parseWorktrees(text: string): Array<{ root: string; branch?: str
 	});
 }
 
+// A root the view shows as-is when its own HEAD could not be determined at
+// all -- distinct from "detached", which means git answered and there really
+// is no branch. Exported so callers and tests share one literal.
+export const UNKNOWN_BRANCH = "unknown";
+
+// Resolve a foreign clone's own HEAD directly instead of assuming "detached":
+// a real branch name, "no commits yet" for an unborn branch (a branch ref
+// that exists but has no commit), or undefined for a genuine detached HEAD
+// (the caller falls back to "detached" in that case). A GitRunner that
+// cannot even ask -- it rejects, e.g. because the root was removed or git
+// itself is unavailable -- rejects here too, on purpose: that is a real
+// failure to distinguish from git successfully reporting "no branch", and
+// callers must not fold the two into the same undefined result.
+export async function foreignRootBranch(git: GitRunner): Promise<string | undefined> {
+	const symbolic = await git(["symbolic-ref", "--quiet", "--short", "HEAD"]);
+	const branch = symbolic.code === 0 ? symbolic.stdout.trim() : "";
+	if (!branch) return undefined;
+	const verified = await git(["rev-parse", "--verify", "-q", "HEAD"]);
+	return verified.code === 0 ? branch : "no commits yet";
+}
+
+// The session-evidence tracker behind /gentle:changes records roots, never
+// branches, so the overlay would label every tree "detached". This resolves
+// each root's own HEAD state once (branch, "no commits yet", undefined for a
+// real detached HEAD, or UNKNOWN_BRANCH when the root could not even be
+// asked), decorates the trees from the cache, and tells the caller when a
+// fresh answer arrived so the view can repaint. Git is touched only while the
+// overlay is open, never at startup or on evidence refresh.
+export class RootBranchLabels {
+	private readonly labels = new Map<string, string | undefined>();
+	private readonly pending = new Map<string, Promise<void>>();
+	private readonly gitForRoot: (root: string) => GitRunner;
+	private readonly onChange: () => void;
+	constructor(gitForRoot: (root: string) => GitRunner, onChange: () => void = () => {}) {
+		this.gitForRoot = gitForRoot;
+		this.onChange = onChange;
+	}
+
+	decorate(trees: readonly WorktreeChanges[]): WorktreeChanges[] {
+		return trees.map((tree) => {
+			if (tree.branch !== undefined) return tree;
+			if (!this.labels.has(tree.root)) this.resolve(tree.root);
+			const branch = this.labels.get(tree.root);
+			return branch === undefined ? tree : { ...tree, branch };
+		});
+	}
+
+	/** Every in-flight resolution has finished. */
+	async settled(): Promise<void> {
+		while (this.pending.size) await Promise.all(this.pending.values());
+	}
+
+	private resolve(root: string): void {
+		if (this.pending.has(root)) return;
+		// A rejection here means the root could not even be asked -- distinct
+		// from foreignRootBranch resolving to undefined, which means git
+		// answered and there really is no branch (a real detached HEAD).
+		const task = foreignRootBranch(this.gitForRoot(root))
+			.then(
+				(branch) => branch,
+				() => UNKNOWN_BRANCH,
+			)
+			.then((branch) => {
+				this.labels.set(root, branch);
+				this.pending.delete(root);
+				this.onChange();
+			});
+		this.pending.set(root, task);
+	}
+}
+
 export class WorktreeChangesTracker {
 	worktrees: WorktreeChanges[] = [];
 	private inFlight: Promise<ChangesModel> | undefined;
@@ -208,11 +284,22 @@ export class WorktreeChangesTracker {
 		// Discovery labels registered roots; it never grants visibility to siblings.
 		const roots = new Set(this.registeredRoots());
 		for (const root of roots) {
-			const tree = metadata.get(root) ?? { root };
+			const known = metadata.get(root);
 			try {
-				const tracker = new ChangesTracker(this.gitForRoot(tree.root), this.linesForRoot(tree.root));
+				const tracker = new ChangesTracker(this.gitForRoot(root), this.linesForRoot(root));
 				await tracker.start();
-				if (tracker.model.files.length) trees.push({ ...tree, model: tracker.model });
+				if (!tracker.model.files.length) continue;
+				// A root missing from this discovery scan belongs to a different Git
+				// clone entirely (e.g. an inner repository nested inside an outer
+				// one) -- worktree list can never describe a foreign clone, so ask
+				// it directly instead of defaulting to "detached". A root the scan
+				// DID describe is trusted as-is: its own "detached" marker (or lack
+				// of a branch) is already accurate for that clone. The direct ask
+				// can fail on its own (root gone, git unavailable) without the
+				// change scan above failing -- that must label the root
+				// UNKNOWN_BRANCH, not drop real, already-captured changes.
+				const branch = known ? known.branch : await foreignRootBranch(this.gitForRoot(root)).catch(() => UNKNOWN_BRANCH);
+				trees.push({ root, ...(branch ? { branch } : {}), model: tracker.model });
 			} catch {
 				// Linked roots can disappear between discovery and status.
 			}

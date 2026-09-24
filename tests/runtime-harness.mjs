@@ -524,7 +524,17 @@ async function run() {
 
 	const toolCwd = await tempWorkspace();
 	try {
+		execFileSync("git", ["init"], { cwd: toolCwd, stdio: "ignore" });
 		const toolHook = hooks.get("tool_call")[0];
+		const toolResultHook = hooks.get("tool_result")[0];
+		const promptHook = hooks.get("before_agent_start")[0];
+		const oddCtx = createCtx(toolCwd, false, "odd-runtime-gate");
+		await promptHook({ systemPrompt: "primary" }, oddCtx);
+		const firstOddPath = join(toolCwd, "first.ts");
+		assert.equal(await toolHook({ toolName: "write", input: { path: firstOddPath } }, oddCtx), undefined);
+		await toolResultHook({ toolName: "write", toolCallId: "odd-first", input: { path: firstOddPath }, isError: false }, oddCtx);
+		const secondOdd = await toolHook({ toolName: "edit", input: { path: join(toolCwd, "second.ts") } }, oddCtx);
+		assert.equal(secondOdd, undefined, "write history alone must not refuse a second direct file");
 		const ghPrCwd = await tempWorkspace();
 		try {
 			execFileSync("git", ["init"], { cwd: ghPrCwd, stdio: "ignore" });

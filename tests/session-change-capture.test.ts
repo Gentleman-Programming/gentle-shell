@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtemp, writeFile, rm, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
+import { installSessionChangeCapture, publishForeignSessionChange } from "../lib/session-change-capture.ts";
 import { SessionChanges, SESSION_CHANGE_ENTRY, SESSION_CHANGE_EVENT } from "../lib/session-changes.ts";
 
 async function fixture(run: (f: any) => Promise<void>, child = false) {
@@ -20,6 +20,17 @@ async function fixture(run: (f: any) => Promise<void>, child = false) {
 	try { await fire("session_start"); await run({root, entries, ctx, fire, pi, switchSession: () => id = "other"}); }
 	finally { await rm(root, {recursive:true,force:true}); }
 }
+
+test("foreign tool evidence uses a separate target-bound publisher, not the same-clone relay", async () => fixture(async ({ root, entries, pi, switchSession }) => {
+	const foreign = join(root, "independent");
+	const evidence = { id: "task:write", root: foreign, path: "file.txt", before: { kind: "absent" }, after: { kind: "text", text: "child output\n" } };
+	publishForeignSessionChange(pi as never, "session", evidence as never);
+	assert.equal(new SessionChanges("session", entries).worktrees[0]?.root, foreign);
+	assert.equal(entries.length, 1);
+	switchSession();
+	publishForeignSessionChange(pi as never, "session", { ...evidence, id: "second" } as never);
+	assert.equal(entries.length, 1);
+}));
 
 test("capture reads no inventory at startup and ignores read-only tools", async () => fixture(async ({fire, entries}) => {
 	await fire("tool_call", {toolCallId:"r",toolName:"read",input:{path:"missing"}});

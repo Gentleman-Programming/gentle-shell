@@ -535,18 +535,39 @@ interface BoundedRowSection {
 	tail?: boolean;
 }
 
+// Cache the rendered preview slice per stable tool-result object: pi re-renders
+// every visible card each frame, so re-tokenizing the full output text per pass is
+// pure waste. Only the returned preview slice is retained, never the full wrapped
+// text, so an arbitrarily large output cannot pin every wrapped line for the
+// result object's lifetime.
+const boundedRowsLineCache = new WeakMap<object, Array<{ text: string; width: number; rows: number; tail: boolean; lines: string[] } | undefined>>();
+
 class BoundedRows implements Component {
 	private readonly sections: readonly BoundedRowSection[];
+	private readonly cacheKey: object | undefined;
 
-	constructor(sections: readonly BoundedRowSection[]) {
+	constructor(sections: readonly BoundedRowSection[], cacheKey?: object) {
 		this.sections = sections;
+		this.cacheKey = cacheKey;
 	}
 
+	/** Renders each section through the wrapped-line cache, sliced to the section row budget; cache hits skip re-tokenizing and re-wrapping the section text. */
 	render(width: number): string[] {
-		return this.sections.flatMap(({ text, rows, tail = false }) => {
+		const cache = this.cacheKey ? boundedRowsLineCache.get(this.cacheKey) : undefined;
+		return this.sections.flatMap(({ text, rows, tail = false }, index) => {
 			if (rows <= 0) return [];
+			const hit = cache?.[index];
+			if (hit && hit.text === text && hit.width === width && hit.rows === rows && hit.tail === tail) {
+				return [...hit.lines];
+			}
 			const rendered = new Text(text, 0, 0).render(width);
-			return tail ? rendered.slice(-rows) : rendered.slice(0, rows);
+			const sliced = tail ? rendered.slice(-rows) : rendered.slice(0, rows);
+			if (this.cacheKey) {
+				const slot = boundedRowsLineCache.get(this.cacheKey) ?? [];
+				slot[index] = { text, width, rows, tail, lines: sliced };
+				boundedRowsLineCache.set(this.cacheKey, slot);
+			}
+			return [...sliced];
 		});
 	}
 
@@ -641,8 +662,10 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 			}
 			return new Text(formatToolCall(toolName, callArgs, theme), 0, 0);
 		},
+		/** Builds the card component for this render pass; collapsed cards delegate to the wrapped-line cache keyed by the tool result object. */
 		renderResult(result, options, theme, context) {
 			const renderContext = context as ToolRenderContextLike | undefined;
+			const cacheKey = typeof result === "object" && result !== null ? result : undefined;
 			const safeResult = sanitizedResult(result);
 			const text = safeText(extractTextContent(safeResult));
 			const isError = renderContext?.isError ?? options.isError ?? false;
@@ -661,7 +684,7 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 				return new BoundedRows([
 					{ text: theme.fg("warning", partialLabel(toolName, text)), rows: 1 },
 					...(visible ? [{ text: theme.fg("muted", visible), rows: PREVIEW_LINE_LIMIT, tail: true }] : []),
-				]);
+				], cacheKey);
 			}
 			if (options.expanded && toolName === "read" && hasImageContent(safeResult) && officialRenderResult) {
 				return officialRenderResult(
@@ -686,7 +709,7 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 				return new BoundedRows([
 					{ text: theme.fg(color, output.replace(/^\n/, "")), rows: PREVIEW_LINE_LIMIT, tail },
 					...(hint ? [{ text: theme.fg(color, hint.slice(1)), rows: 1 }] : []),
-				]);
+				], cacheKey);
 			}
 			return new Text(hint ? theme.fg(color, hint.slice(1)) : "", 0, 0);
 		},

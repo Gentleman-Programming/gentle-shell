@@ -5,8 +5,8 @@ import { statSync } from "node:fs";
 import { profilesFilePath, readProfilesFileResult } from "../lib/agent-profiles.ts";
 import * as os from "node:os";
 import { join } from "node:path";
-import { renderShellBar, renderShellSidebarBar, shellEnabled, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
-import { CHANGE_STATUS, renderChangesWidget, type ChangedFile, type ChangesModel, type GitRunner, type WorktreeChanges } from "../lib/shell-changes.ts";
+import { buildShellHeaderModel, renderShellBar, renderShellHeaderBar, renderShellHeaderRule, renderShellSidebarBar, shellEnabled, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
+import { CHANGE_STATUS, RootBranchLabels, renderChangesWidget, type ChangedFile, type ChangesModel, type GitRunner, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver } from "../lib/session-worktree-registry.ts";
 import { CARD_TONE, renderCard, type Card, type CardTheme } from "../lib/shell-card.ts";
@@ -14,10 +14,19 @@ import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/c
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { agentsViewKey } from "../lib/agents-keys.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
-import { framePromptLines, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
-import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, parseCodexUsage, parseUsageHeaders, UsageStore, type ProviderUsage } from "../lib/shell-usage.ts";
+import { DOUBLE_ESC_CANCEL_HINT, framePromptLines, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
+import { gentlePiConfigHome } from "../lib/agent-home.ts";
+import { resolveAnimationPolicy, writeAnimationPolicy, type AnimationPolicy } from "../lib/animation-policy.ts";
+import {
+	DOUBLE_ESC_CANCEL_WINDOW_MS,
+	resolveDoubleEscCancelPolicy,
+	writeDoubleEscCancelPolicy,
+	type DoubleEscCancelPolicy,
+	type DoubleEscCancelResolution,
+} from "../lib/double-esc-cancel-policy.ts";
+import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseProviderUsage, parseUsageHeaders, parseUsageSource, UsageSourceRegistry, UsageStore, USAGE_SOURCE_EVENT, type ProviderUsage, type UsageSource } from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
-import { sidebarPart } from "../lib/shell-sidebar.ts";
+import { sidebarHeader, sidebarPart } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import { SessionChanges, SESSION_CHANGE_EVENT } from "../lib/session-changes.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
@@ -181,32 +190,200 @@ interface PromptEditorDeps {
 	bold: (text: string) => string;
 	requestRender(): void;
 	pending(): boolean;
+	now(): number;
+	/** Read fresh on every keypress: the command handler updates this in-memory, the editor never re-reads the file. */
+	doubleEscCancelEnabled(): boolean;
+	/** Hand off text reconstructed from Pi's Esc-abort restore so it is sent as the next turn instead of sitting in the editor. */
+	dispatchQueuedText(text: string): void;
 }
 
 const PROMPT_FRAME_ROLE = "border";
+// Matches Pi's own idle double-Esc window (empty editor -> /tree or /fork);
+// this is the same muscle memory applied to clearing a non-empty draft.
+const IDLE_ESC_CLEAR_WINDOW_MS = 500;
+
+/**
+ * Pi's own Esc-abort handler (`restoreQueuedMessagesToEditor({ abort: true
+ * })`) rebuilds the editor text as
+ * `[queuedText, currentText].filter((t) => t.trim()).join("\n\n")`, where
+ * `currentText` is the draft captured just before the abort. Reverse that
+ * join to recover the queued text alone, so the draft can be restored by
+ * itself and the queued text dispatched as the next turn. `draft` is empty
+ * (including whitespace-only) whenever `.trim() === ""`, matching the
+ * `filter` predicate above exactly.
+ *
+ * Returns `""` only for the genuine no-queue case (`combined === draft`, or
+ * both empty). Returns `undefined` when `combined` does not match Pi's join
+ * shape at all — a future Pi change, or anything else that touched the
+ * editor during the abort. That distinction matters to the caller: an empty
+ * queue means "nothing to restore," while an unrecognized shape means "do
+ * not touch what Pi already wrote," so a mismatch is never silently treated
+ * as an empty queue.
+ */
+export function extractQueuedText(combined: string, draft: string): string | undefined {
+	if (combined === draft) return "";
+	if (draft.trim() === "") return combined;
+	const suffix = `\n\n${draft}`;
+	return combined.endsWith(suffix) ? combined.slice(0, combined.length - suffix.length) : undefined;
+}
 
 export class GentlePromptEditor extends CustomEditor {
 	private promptState: PromptState = PROMPT_STATE.IDLE;
 	private tick = 0;
+	private animationPolicy: AnimationPolicy = "quality";
 	private pulse: NodeJS.Timeout | undefined;
 	private readonly deps: PromptEditorDeps;
+	// CustomEditor keeps its own `keybindings` private, so this class holds
+	// its own reference to run the same app.interrupt match before deciding
+	// whether to swallow the keystroke.
+	private readonly keybindingsManager: KeybindingsManager;
+	private pendingEscapeCancelDeadline: number | undefined;
+	private pendingIdleClearDeadline: number | undefined;
+	// Snapshot of the draft at the first Esc; the second Esc only clears when
+	// the text is still exactly this, so an edit in between never gets
+	// silently discarded (issue #1218 review).
+	private pendingIdleClearText: string | undefined;
 
 	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, deps: PromptEditorDeps) {
 		super(tui, theme, keybindings);
 		this.deps = deps;
+		this.keybindingsManager = keybindings;
+	}
+
+	setAnimationPolicy(policy: AnimationPolicy): void {
+		if (this.animationPolicy === policy) return;
+		this.animationPolicy = policy;
+		this.stopPulse();
+		if (this.promptState === PROMPT_STATE.WORKING) this.startPulse();
+		this.deps.requestRender();
+	}
+
+	private startPulse(): void {
+		if (this.animationPolicy === "potato") return;
+		this.pulse = setInterval(() => {
+			this.tick += 1;
+			this.deps.requestRender();
+		}, this.animationPolicy === "performance" ? 1000 : SHELL_PULSE_MS);
+		this.pulse.unref();
 	}
 
 	setWorking(working: boolean): void {
 		this.promptState = working ? PROMPT_STATE.WORKING : PROMPT_STATE.IDLE;
 		this.stopPulse();
-		if (working) {
-			this.pulse = setInterval(() => {
-				this.tick += 1;
-				this.deps.requestRender();
-			}, SHELL_PULSE_MS);
-			this.pulse.unref();
+		if (!working) {
+			this.pendingEscapeCancelDeadline = undefined;
+		} else {
+			this.pendingIdleClearDeadline = undefined;
+			this.pendingIdleClearText = undefined;
+			this.startPulse();
 		}
 		this.deps.requestRender();
+	}
+
+	/**
+	 * Swallow the first Esc while working (issue #1163), opt-in via
+	 * doubleEscCancelEnabled(). `pi.registerShortcut("escape")` is not viable
+	 * here: Pi reserves app.interrupt and skips colliding extension
+	 * shortcuts, so this has to sit in front of CustomEditor's own
+	 * handleInput instead. The Esc that actually aborts the turn (the single
+	 * Esc when double-esc-cancel is off, or the confirming second Esc when
+	 * it is on) always goes through abortAndDispatchQueued so the queued
+	 * text Pi would otherwise dump back into the editor is sent as the next
+	 * turn instead (issue #1218). Idle double-Esc (tree/fork), bash-mode
+	 * Esc, and autocomplete cancel are all decided by CustomEditor/onEscape
+	 * and never reach this branch.
+	 */
+	override handleInput(data: string): void {
+		// Any keystroke that is not the confirming Esc ends the pending idle
+		// clear, even one that leaves the text identical (type, then delete).
+		if (this.pendingIdleClearDeadline !== undefined && !this.keybindingsManager.matches(data, "app.interrupt")) {
+			this.pendingIdleClearDeadline = undefined;
+			this.pendingIdleClearText = undefined;
+		}
+		if (
+			this.promptState === PROMPT_STATE.WORKING &&
+			!this.isShowingAutocomplete() &&
+			this.keybindingsManager.matches(data, "app.interrupt")
+		) {
+			if (!this.deps.doubleEscCancelEnabled()) {
+				this.abortAndDispatchQueued(data);
+				return;
+			}
+			if (this.isPendingEscapeCancel()) {
+				this.pendingEscapeCancelDeadline = undefined;
+				this.abortAndDispatchQueued(data);
+				return;
+			}
+			// Pi's own idle double-Esc (empty editor -> /tree or /fork) uses a
+			// 500ms window; canceling a running turn is a heavier, harder-to-undo
+			// action, so this confirmation deliberately gets double that time.
+			this.pendingEscapeCancelDeadline = this.deps.now() + DOUBLE_ESC_CANCEL_WINDOW_MS;
+			this.deps.requestRender();
+			return;
+		}
+		// Idle with a non-empty draft: Pi's own idle double-Esc only acts on an
+		// empty editor (tree/fork), so a draft's first Esc would otherwise do
+		// nothing. Mirror the same swallow-then-confirm shape as the
+		// working-cancel gate above, on the same 500ms window as Pi's own idle
+		// double-Esc (issue #1218). Bash-mode drafts ("!...", the same rule
+		// Pi's own interactive-mode uses to detect bash mode) are Pi's own
+		// bash-mode Esc territory and must never reach this gate.
+		if (
+			this.promptState === PROMPT_STATE.IDLE &&
+			!this.isShowingAutocomplete() &&
+			this.keybindingsManager.matches(data, "app.interrupt")
+		) {
+			const text = this.getText();
+			if (text.trim() !== "" && !text.trimStart().startsWith("!")) {
+				// The second Esc only clears when the text is still exactly what
+				// it was at the first Esc; an edit in between starts a fresh
+				// first press on the new text instead of silently discarding it.
+				if (this.isPendingIdleClear() && this.pendingIdleClearText === text) {
+					this.pendingIdleClearDeadline = undefined;
+					this.pendingIdleClearText = undefined;
+					this.addToHistory(text);
+					this.setText("");
+					this.deps.requestRender();
+					return;
+				}
+				this.pendingIdleClearDeadline = this.deps.now() + IDLE_ESC_CLEAR_WINDOW_MS;
+				this.pendingIdleClearText = text;
+				this.deps.requestRender();
+				return;
+			}
+		}
+		super.handleInput(data);
+	}
+
+	/**
+	 * Runs the Esc that actually aborts the turn. Pi's own onEscape (invoked
+	 * synchronously by `super.handleInput`) restores `queuedText + draft`
+	 * into the editor and aborts; snapshot the draft first, reconstruct the
+	 * queued text from what comes back, restore the draft alone, and hand
+	 * the queued text to the dispatcher so it is sent once the aborted run
+	 * settles (see the `agent_settled` handler in `gentleShell`). Images
+	 * inside queued messages are already dropped by Pi's own restore, before
+	 * this code ever sees the text.
+	 *
+	 * `extractQueuedText` returning `undefined` means the restored text does
+	 * not match Pi's own join shape; Pi's own text wins and is left exactly
+	 * as it is, nothing is dispatched. An empty string means a genuine empty
+	 * queue: there is nothing to restore, so `setText` is not called at all
+	 * on the common no-queue path. Only a recognized, non-empty queue
+	 * restores the draft and dispatches.
+	 */
+	private abortAndDispatchQueued(data: string): void {
+		const draft = this.getText();
+		super.handleInput(data);
+		const queued = extractQueuedText(this.getText(), draft);
+		// undefined: unrecognized shape, Pi's own text stays untouched.
+		if (queued === undefined) return;
+		// "": nothing was queued, and the editor already holds the draft, so no
+		// redundant write. Anything else was recognized: the draft comes back
+		// alone, and only real text (not whitespace) is worth a turn.
+		if (queued !== "") this.setText(draft);
+		if (queued.trim() === "") return;
+		this.deps.dispatchQueuedText(queued);
 	}
 
 	render(width: number): string[] {
@@ -221,11 +398,28 @@ export class GentlePromptEditor extends CustomEditor {
 			borderColor: (text) => this.deps.fg(PROMPT_FRAME_ROLE, text),
 			fg: this.deps.fg,
 			bold: this.deps.bold,
+			escHint: this.promptState === PROMPT_STATE.WORKING && this.isPendingEscapeCancel()
+				? DOUBLE_ESC_CANCEL_HINT
+				: this.promptState === PROMPT_STATE.IDLE && this.isPendingIdleClear()
+					? IDLE_ESC_CLEAR_HINT
+					: undefined,
 		});
 	}
 
 	dispose(): void {
 		this.stopPulse();
+	}
+
+	private isPendingEscapeCancel(): boolean {
+		return this.pendingEscapeCancelDeadline !== undefined && this.deps.now() < this.pendingEscapeCancelDeadline;
+	}
+
+	private isPendingIdleClear(): boolean {
+		return (
+			this.pendingIdleClearDeadline !== undefined &&
+			this.deps.now() < this.pendingIdleClearDeadline &&
+			this.pendingIdleClearText === this.getText()
+		);
 	}
 
 	private stopPulse(): void {
@@ -239,7 +433,11 @@ export class GentlePromptEditor extends CustomEditor {
 const PROMPT_OWNER = Symbol.for("gentle-pi.prompt-owner");
 type PromptFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorComponent"]>> & { [PROMPT_OWNER]?: boolean };
 
-function installPrompt(ctx: ExtensionContext, onCreated: (prompt: GentlePromptEditor) => void): boolean {
+function installPrompt(
+	ctx: ExtensionContext,
+	onCreated: (prompt: GentlePromptEditor) => void,
+	promptDeps: { now: () => number; doubleEscCancelEnabled: () => boolean; dispatchQueuedText: (text: string) => void },
+): boolean {
 	const previous = ctx.ui.getEditorComponent() as PromptFactory | undefined;
 	if (previous && !previous[PROMPT_OWNER]) return false;
 	const factory: PromptFactory = (tui, theme, keybindings) => {
@@ -248,6 +446,9 @@ function installPrompt(ctx: ExtensionContext, onCreated: (prompt: GentlePromptEd
 			bold: (text) => ctx.ui.theme.bold(text),
 			requestRender: () => tui.requestRender(),
 			pending: () => ctx.hasPendingMessages(),
+			now: promptDeps.now,
+			doubleEscCancelEnabled: promptDeps.doubleEscCancelEnabled,
+			dispatchQueuedText: promptDeps.dispatchQueuedText,
 		});
 		onCreated(prompt);
 		return prompt;
@@ -255,6 +456,45 @@ function installPrompt(ctx: ExtensionContext, onCreated: (prompt: GentlePromptEd
 	factory[PROMPT_OWNER] = true;
 	ctx.ui.setEditorComponent(factory);
 	return true;
+}
+
+const DOUBLE_ESC_CANCEL_COMMAND_NAME = "gentle:double-esc-cancel";
+
+function describeDoubleEscCancelSource(resolution: DoubleEscCancelResolution): string {
+	switch (resolution.source) {
+		case "global_file":
+			return `global file ${resolution.globalFile}`;
+		case "environment":
+			return "GENTLE_PI_DOUBLE_ESC_CANCEL";
+		default:
+			return "built-in default";
+	}
+}
+
+/**
+ * Report the effective policy, the source that decided it, and (when this
+ * invocation just wrote one) the policy it wrote. Unlike background-subagents
+ * there is no project-file layer to outrank the write, so a write always
+ * takes effect immediately.
+ */
+function renderDoubleEscCancelReport(
+	resolution: DoubleEscCancelResolution,
+	wrote?: DoubleEscCancelPolicy,
+): { message: string; type: "info" | "warning" } {
+	const lines = [`double-esc-cancel: ${resolution.policy} (decided by ${describeDoubleEscCancelSource(resolution)})`];
+	if (wrote !== undefined) lines.push(`Wrote ${wrote} to the global file ${resolution.globalFile}.`);
+	if (resolution.malformed) {
+		lines.push(`${resolution.globalFile} is present but malformed, so the policy fails closed to off and the environment variable is not consulted.`);
+	}
+	if (resolution.envValue !== undefined && resolution.source !== "environment") {
+		lines.push(
+			resolution.envValue === "on" || resolution.envValue === "off"
+				? `GENTLE_PI_DOUBLE_ESC_CANCEL=${resolution.envValue} is set, but the global file exists and decides; the env var applies only when no file exists.`
+				: `GENTLE_PI_DOUBLE_ESC_CANCEL="${resolution.envValue}" is not a recognized value ("on" or "off"), so it is ignored.`,
+		);
+	}
+	lines.push("Resolution order (first hit wins): global file, GENTLE_PI_DOUBLE_ESC_CANCEL, built-in default off.");
+	return { message: lines.join("\n"), type: resolution.malformed ? "warning" : "info" };
 }
 
 const CHANGES_WIDGET_KEY = "gentle-shell-changes";
@@ -318,6 +558,12 @@ export function changesShortcut(env: NodeJS.ProcessEnv = process.env): string | 
 	return value === "" || value.toLowerCase() === "off" ? undefined : value;
 }
 
+export function usageShortcut(env: NodeJS.ProcessEnv = process.env): string | undefined {
+	const value = env.GENTLE_PI_SHELL_USAGE_KEY?.trim();
+	if (value === undefined) return USAGE_SHORTCUT_DEFAULT;
+	return value === "" || value.toLowerCase() === "off" ? undefined : value;
+}
+
 function positiveMs(value: string | undefined, fallback: number): number {
 	const parsed = Number.parseInt(value ?? "", 10);
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -337,15 +583,24 @@ interface OverlayDeps {
 	refresh(): Promise<ChangesModel>;
 	apply(ctx: ExtensionContext, model: ChangesModel): void;
 	pollMs: number;
+	gitForRoot(root: string): GitRunner;
 }
 
-// Refresh only the captured session model. Never read live files or Git here.
+// Refresh only the captured session model. Never read live files here; the
+// only Git the overlay touches is each root's HEAD, to label its tree.
 async function showChangesOverlay(ctx: ExtensionContext, deps: OverlayDeps): Promise<void> {
 	let host: ExternalEditorHost | undefined;
 	let view: WorktreeChangesView | undefined;
+	// Session evidence knows roots, not branches; label them while the overlay
+	// is open and repaint when Git answers.
+	const labels = new RootBranchLabels(deps.gitForRoot, () => {
+		view?.update(labels.decorate(deps.worktrees()));
+		host?.requestRender();
+	});
+	const worktrees = () => labels.decorate(deps.worktrees());
 	const refresh = async () => {
 		const latest = await deps.refresh();
-		view?.update(deps.worktrees());
+		view?.update(worktrees());
 		deps.apply(ctx, latest);
 	};
 	const poll = setInterval(() => void refresh(), deps.pollMs);
@@ -354,7 +609,7 @@ async function showChangesOverlay(ctx: ExtensionContext, deps: OverlayDeps): Pro
 		const chosen = await ctx.ui.custom<{ root: string; file: ChangedFile } | null>(
 			(tui, theme, _keybindings, done) => {
 				host = tui;
-				view = new WorktreeChangesView(deps.worktrees(), {
+				view = new WorktreeChangesView(worktrees(), {
 					theme,
 					rows: () => Math.max(OVERLAY_MIN_ROWS, Math.floor(tui.terminal.rows * OVERLAY_HEIGHT_RATIO)),
 					loadDiff: (root, file) => Promise.resolve(deps.loadDiff(root, file)),
@@ -417,6 +672,7 @@ function showChanges(ctx: ExtensionContext, model: ChangesModel): void {
 }
 
 const USAGE_COMMAND_NAME = "gentle:usage";
+const USAGE_SHORTCUT_DEFAULT = "alt+u";
 const REVIEW_PREFLIGHT_TYPE = "gentle-pi.review-preflight";
 const DEV_BINARY_WIDGET_KEY = "gentle-shell-dev-binary";
 const SHA_PREFIX_LENGTH = 16;
@@ -482,26 +738,87 @@ export async function fetchCodexUsage(token: string | undefined, fetchFn: typeof
 	}
 }
 
+// The NaN Cloud quota endpoint is the one the official dashboard reads with the
+// same API key pi already holds. The key travels in the header only: the request
+// refuses redirects so it cannot be replayed to another origin, asks for no
+// stored copy, and nothing here logs, renders, or persists it.
+export async function fetchNanUsage(apiKey: string | undefined, fetchFn: typeof fetch, now: number): Promise<ProviderUsage | undefined> {
+	if (!apiKey) return undefined;
+	try {
+		const response = await fetchFn(NAN_QUOTA_URL, {
+			redirect: "error",
+			cache: "no-store",
+			headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json", "User-Agent": "gentle-pi" },
+		});
+		if (!response.ok) return undefined;
+		const parsed = parseNanQuota(await response.json(), now);
+		return parsed.limits.length > 0 ? parsed : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+// A registered source is foreign code running inside a fire-and-forget
+// refresh: it must degrade exactly like the built-in fetchers above, never
+// throw past this call, and never leave an unhandled rejection behind.
+async function fetchFromSource(source: UsageSource, apiKey: string | undefined, fetchFn: typeof fetch, now: number): Promise<ProviderUsage | undefined> {
+	try {
+		const result = await source.fetch(apiKey, fetchFn, now);
+		return result === undefined ? undefined : parseProviderUsage(result, source.provider);
+	} catch {
+		return undefined;
+	}
+}
+
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	installSessionChangeCapture(pi, env, overrides.resolveWorktree ?? resolveSessionWorktree);
 	if (!shellEnabled(env)) return;
 	const deps: ShellDeps = { ...defaultShellDeps, activeProfile: createActiveProfileReader(env), ...overrides };
 	const usage = new UsageStore();
+	// Providers gentle-shell has never heard of get a usage source too, when
+	// the extension that owns them registers one on pi.events; see the
+	// USAGE_SOURCE_EVENT subscription below.
+	const usageSources = new UsageSourceRegistry();
 	let renderHost: ShellRenderHost | undefined;
-	let usageFetchedAt = 0;
+	// The 5-minute rule is per provider: one provider's fetch cannot leave the
+	// next one waiting for an interval it never used.
+	const usageFetchedAt = new Map<string, number>();
 	const refreshUsage = async (ctx: ExtensionContext, force: boolean) => {
 		const provider = ctx.model?.provider;
-		if (provider !== CODEX_PROVIDER) return;
+		if (!provider) return;
+		const source = usageSources.get(provider);
+		if (!source && provider !== CODEX_PROVIDER && provider !== NAN_PROVIDER) return;
 		const now = deps.now();
-		if (!force && now - usageFetchedAt < USAGE_REFRESH_MS) return;
-		usageFetchedAt = now;
-		const token = await ctx.modelRegistry.getApiKeyForProvider(CODEX_PROVIDER).catch(() => undefined);
-		const fetched = await fetchCodexUsage(token, deps.fetch, deps.now());
+		if (!force && now - (usageFetchedAt.get(provider) ?? 0) < USAGE_REFRESH_MS) return;
+		usageFetchedAt.set(provider, now);
+		const apiKey = await ctx.modelRegistry.getApiKeyForProvider(provider).catch(() => undefined);
+		const fetched = source
+			? await fetchFromSource(source, apiKey, deps.fetch, deps.now())
+			: provider === NAN_PROVIDER
+				? await fetchNanUsage(apiKey, deps.fetch, deps.now())
+				: await fetchCodexUsage(apiKey, deps.fetch, deps.now());
 		if (!fetched) return;
+		// A registered source can be replaced while its own fetch is still in
+		// flight; the identity captured above is this call's source, so a stale
+		// answer that outlives its replacement is discarded instead of
+		// overwriting whatever the replacement already recorded.
+		if (source && usageSources.get(provider) !== source) return;
 		usage.record(fetched);
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
 	};
+	// Subscribed once, for the life of the extension: a registration can
+	// arrive before the first session_start (the owning extension's factory
+	// runs first) or after it (its own session_start fires later, or it
+	// registers lazily). Either order is fine: a registration for the
+	// currently active provider forces exactly one refresh, so the panel
+	// never waits for the 5-minute window or the next turn to notice it.
+	pi.events.on(USAGE_SOURCE_EVENT, (payload) => {
+		const source = parseUsageSource(payload);
+		if (!source) return;
+		usageSources.register(source);
+		if (currentContext?.model?.provider === source.provider) void refreshUsage(currentContext, true);
+	});
 	pi.on("after_provider_response", (event) => {
 		const parsed = parseUsageHeaders(event.headers, deps.now());
 		if (!parsed) return;
@@ -514,25 +831,54 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		const hint = keyHint("app.tools.expand", options.expanded ? "collapse" : "expand");
 		return cardComponent({ title: "Gentle AI", subtitle: "review preflight", body, tone: CARD_TONE.INFO }, theme, { expanded: options.expanded, hint });
 	});
+	const openUsage = async (ctx: ExtensionContext) => {
+		await refreshUsage(ctx, true);
+		await ctx.ui.custom<null>(
+			(tui, theme, _keybindings, done) =>
+				new UsageView(usage, {
+					theme,
+					now: () => deps.now(),
+					active: () => (ctx.model ? { provider: ctx.model.provider } : undefined),
+					registry: () => usageSources,
+					onRefresh: () => refreshUsage(ctx, true),
+					onClose: () => done(null),
+					requestRender: () => tui.requestRender(),
+				}),
+			{ overlay: true, overlayOptions: { width: "70%", minWidth: 60, anchor: "center" } },
+		);
+	};
 	pi.registerCommand(USAGE_COMMAND_NAME, {
 		description: "Show subscription usage windows for the connected providers. Press r to refetch.",
-		handler: async (_args, ctx) => {
-			await refreshUsage(ctx, true);
-			await ctx.ui.custom<null>(
-				(tui, theme, _keybindings, done) =>
-					new UsageView(usage, {
-						theme,
-						now: () => deps.now(),
-						active: () => (ctx.model ? { provider: ctx.model.provider } : undefined),
-						onRefresh: () => refreshUsage(ctx, true),
-						onClose: () => done(null),
-						requestRender: () => tui.requestRender(),
-					}),
-				{ overlay: true, overlayOptions: { width: "70%", minWidth: 60, anchor: "center" } },
-			);
-		},
+		handler: async (_args, ctx) => openUsage(ctx),
 	});
+	const usageShortcutKey = usageShortcut(env);
+	if (usageShortcutKey) {
+		pi.registerShortcut(usageShortcutKey as Parameters<ExtensionAPI["registerShortcut"]>[0], {
+			description: "Show subscription usage windows for the connected providers",
+			handler: async (ctx) => openUsage(ctx),
+		});
+	}
 	let prompt: GentlePromptEditor | undefined;
+	// Set by abortAndDispatchQueued via dispatchQueuedText when an Esc aborts
+	// a turn with a non-empty queue; sent exactly once, from agent_settled,
+	// once the aborted run has fully settled (issue #1218). Several aborts
+	// before that settle append in order, joined the way Pi joins its own
+	// queue, so nothing is overwritten. It belongs to the current session and
+	// is dropped on session_shutdown.
+	let pendingQueuedText: string | undefined;
+	// Resolved once at startup and cached in memory so the editor never
+	// re-reads the file per keypress. The /gentle:double-esc-cancel command
+	// below is the only place that touches the file, and every invocation
+	// re-syncs this cache from disk first, so status, the no-argument toggle
+	// direction, and the Esc gate always describe the same effective policy
+	// even when another session or a hand edit changed the file mid-session.
+	const doubleEscCancelConfigHome = gentlePiConfigHome(env);
+	const animationOptions = { gentlePiConfigHome: doubleEscCancelConfigHome };
+	let animationPolicy = resolveAnimationPolicy(animationOptions).policy;
+	let doubleEscCancelPolicy: DoubleEscCancelPolicy = resolveDoubleEscCancelPolicy({
+		env,
+		gentlePiConfigHome: doubleEscCancelConfigHome,
+	}).policy;
 	let changes: SessionChanges | undefined;
 	let registry: SessionWorktreeRegistry | undefined;
 	let currentContext: ExtensionContext | undefined;
@@ -594,14 +940,36 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				render: (width) => renderShellSidebarBar(footerModel(), theme, width),
 				invalidate() {},
 			});
+			// The header row carries everything that ticks every frame (model,
+			// effort, context, cost, usage) plus session identity; it never sees
+			// extension statuses or the working/thinking state.
+			const headerBar = (width: number) => renderShellHeaderBar(buildShellHeaderModel(footerModel()), theme, width, usageShortcutKey);
+			const disposeHeader = sidebarHeader(tui, {
+				digest: () => JSON.stringify(buildShellHeaderModel(footerModel())),
+				render: (width) => [headerBar(width).text, renderShellHeaderRule(theme, width)],
+				invalidate() {},
+				handleMouse(event) {
+					if (event.type !== "click" || event.button !== "left") return undefined;
+					if (event.y !== 0) return undefined; // the rule row under the status line is decorative, never clickable
+					const { usageSpan } = headerBar(event.width);
+					if (!usageSpan || event.x < usageSpan.start || event.x >= usageSpan.end) return undefined;
+					void openUsage(ctx);
+					return { handled: true, render: true };
+				},
+			});
 			const uninstall = installSidebar(tui, theme);
-			return { ...part, dispose() { uninstall(); part.dispose(); } };
+			return { ...part, dispose() { disposeHeader(); uninstall(); part.dispose(); } };
 		});
 		void refreshUsage(ctx, true);
-		const ownsPrompt = installPrompt(ctx, (created) => {
-			prompt?.dispose();
-			prompt = created;
-		});
+		const ownsPrompt = installPrompt(
+			ctx,
+			(created) => {
+				prompt?.dispose();
+				prompt = created;
+				prompt.setAnimationPolicy(animationPolicy);
+			},
+			{ now: () => deps.now(), doubleEscCancelEnabled: () => doubleEscCancelPolicy === "on", dispatchQueuedText: (text) => { pendingQueuedText = pendingQueuedText === undefined ? text : `${pendingQueuedText}\n\n${text}`; } },
+		);
 		// Hide native feedback only when our petal replaces it. Native transcript
 		// thinking blocks remain Pi-owned; this changes only the supported loader UI.
 		if (ownsPrompt) ctx.ui.setWorkingVisible(false);
@@ -617,6 +985,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		applyChanges(ctx, tracker.model);
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
+		pendingQueuedText = undefined;
 		prompt?.dispose();
 		prompt = undefined;
 		if ((ctx.ui.getEditorComponent() as PromptFactory | undefined)?.[PROMPT_OWNER]) {
@@ -637,7 +1006,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			ctx.ui.notify("No captured agent changes. Only successful write/edit operations from this session and its subagents are shown; shell changes are not attributed.", "info");
 			return;
 		}
-		await showChangesOverlay(ctx, { loadDiff: (root, file) => tracker.loadDiff(root, file), worktrees: () => tracker.worktrees, refresh: () => tracker.refresh(), apply: applyChanges, pollMs: changesPollMs(env) });
+		await showChangesOverlay(ctx, { loadDiff: (root, file) => tracker.loadDiff(root, file), worktrees: () => tracker.worktrees, refresh: () => tracker.refresh(), apply: applyChanges, pollMs: changesPollMs(env), gitForRoot: (root) => deps.gitRunner(root) });
 	};
 	pi.registerCommand(CHANGES_COMMAND_NAME, {
 		description: "Browse captured write/edit changes from this agent session and its subagents, excluding preexisting and external edits. Shell changes are not attributed. Press o to open $EDITOR.",
@@ -661,13 +1030,103 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			handler: async (ctx) => showCommandPalette(pi, ctx, env),
 		});
 	}
+	pi.registerCommand("gentle:animations", {
+		description: "Show or set global animations; no argument opens a selectable menu (quality|performance|potato, plus status).",
+		// No argument opens a selectable menu when an interactive UI is present;
+		// headless callers and fakes without ui.select keep the status fallback.
+		handler: async (args, ctx) => {
+			let action = args.trim() || "status";
+			if (args.trim().length === 0 && ctx.hasUI && typeof ctx.ui.select === "function") {
+				const selected = await ctx.ui.select(
+					`Gentle animations (current: ${animationPolicy})`,
+					["quality", "performance", "potato", "status"],
+				);
+				if (selected === undefined) return;
+				action = selected;
+			}
+			if (action !== "status" && action !== "quality" && action !== "performance" && action !== "potato") {
+				ctx.ui.notify("Use /gentle:animations status|quality|performance|potato.", "warning");
+				return;
+			}
+			try {
+				if (action !== "status") writeAnimationPolicy(action, animationOptions);
+				const result = resolveAnimationPolicy(animationOptions);
+				animationPolicy = result.policy;
+				prompt?.setAnimationPolicy(animationPolicy);
+				const source = result.source === "default" ? "built-in default" : `global file ${result.globalFile}`;
+				ctx.ui.notify(`animations: ${result.policy} (decided by ${source})${result.malformed ? "; malformed or unreadable file, falling back to quality" : ""}. Prompt applies now; startup banner applies at next creation.`, result.malformed ? "warning" : "info");
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+			}
+		},
+	});
+	// User-owned, like gentle:background-subagents and gentle:review-mode: the
+	// only writer is this handler, reached only by explicit invocation. Unlike
+	// those two, no argument toggles the effective policy instead of merely
+	// reporting it (see odd/tasks/double-esc-cancel.md).
+	pi.registerCommand(DOUBLE_ESC_CANCEL_COMMAND_NAME, {
+		description: "Show or set the double-esc-cancel preference (status|enable|disable); no argument toggles it. User-initiated only.",
+		handler: async (args, ctx) => {
+			const trimmed = args.trim();
+			if (trimmed !== "" && trimmed !== "status" && trimmed !== "enable" && trimmed !== "disable") {
+				ctx.ui.notify(`Unknown /${DOUBLE_ESC_CANCEL_COMMAND_NAME} sub-action "${trimmed}". Use status, enable, or disable.`, "warning");
+				return;
+			}
+			try {
+				const before = resolveDoubleEscCancelPolicy({ env, gentlePiConfigHome: doubleEscCancelConfigHome });
+				doubleEscCancelPolicy = before.policy;
+				const subAction = trimmed === "" ? (before.policy === "on" ? "disable" : "enable") : trimmed;
+				if (subAction === "status") {
+					const report = renderDoubleEscCancelReport(before);
+					ctx.ui.notify(report.message, report.type);
+					return;
+				}
+				const wrote: DoubleEscCancelPolicy = subAction === "enable" ? "on" : "off";
+				writeDoubleEscCancelPolicy(wrote, { gentlePiConfigHome: doubleEscCancelConfigHome });
+				const after = resolveDoubleEscCancelPolicy({ env, gentlePiConfigHome: doubleEscCancelConfigHome });
+				// Cache what the file actually resolves to, not what was written: a
+				// competing writer or a read failure would otherwise leave the gate
+				// and the report disagreeing.
+				doubleEscCancelPolicy = after.policy;
+				const report = renderDoubleEscCancelReport(after, wrote);
+				ctx.ui.notify(report.message, report.type);
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+			}
+		},
+	});
 	pi.on("agent_start", (_event, ctx) => {
+		// A turn can start any other way (the user sending the draft, an
+		// extension, a shortcut) before the aborted run's own agent_settled
+		// below has delivered the pending text. Nothing is sent from here: Pi
+		// is mid-turn, so the text simply waits and goes out, once, when that
+		// turn settles. It is never dropped.
 		prompt?.setWorking(true);
 		// The dev-binary card is a startup notice: it leaves with the first prompt.
 		if (ctx.hasUI) ctx.ui.setWidget(DEV_BINARY_WIDGET_KEY, undefined);
 	});
-	pi.on("agent_settled", () => {
+	pi.on("agent_settled", (_event, ctx) => {
+		// Pi clears its own run-active flag before emitting agent_settled, so
+		// this is normally idle; if a run is somehow still in flight the prompt
+		// stays working and the pending text waits for the next settle.
+		if (!ctx.isIdle()) return;
 		prompt?.setWorking(false);
+		if (pendingQueuedText === undefined) return;
+		const queued = pendingQueuedText;
+		pendingQueuedText = undefined;
+		try {
+			pi.sendUserMessage(queued);
+		} catch (error) {
+			// Never drop the user's words: put them back in front of the draft,
+			// exactly the shape Pi's own restore would have left, and say why.
+			if (prompt) {
+				const current = prompt.getText();
+				prompt.setText([queued, current].filter((text) => text.trim() !== "").join("\n\n"));
+			} else {
+				pendingQueuedText = queued;
+			}
+			if (ctx.hasUI) ctx.ui.notify(`Could not send the queued message after cancel; it is back in the editor: ${error instanceof Error ? error.message : String(error)}`, "error");
+		}
 	});
 	pi.on("agent_end", async (_event, ctx) => {
 		await refreshChanges(ctx);

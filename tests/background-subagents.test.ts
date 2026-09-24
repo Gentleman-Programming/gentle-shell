@@ -530,6 +530,28 @@ function notifyContext(
 	} as unknown as ExtensionContext;
 }
 
+/**
+ * The same minimal context as `notifyContext`, but interactive: `hasUI` is true
+ * and `ui.select` answers the command's no-argument menu. `notifyContext` stays
+ * `hasUI: false` so every existing sub-action test keeps the non-menu path.
+ */
+function selectingContext(
+	cwd: string,
+	notices: Array<{ message: string; type?: string }>,
+	select: (title: string, options: string[]) => Promise<string | undefined>,
+): ExtensionContext {
+	return {
+		cwd,
+		hasUI: true,
+		ui: {
+			notify: (message: string, type?: string) => {
+				notices.push({ message, type });
+			},
+			select,
+		},
+	} as unknown as ExtensionContext;
+}
+
 /** Point the command's global config home at a scratch dir, never at ~/.pi. */
 function scopedEnv(t: TestContext, values: Record<string, string | undefined>): void {
 	const previous = new Map<string, string | undefined>();
@@ -588,6 +610,52 @@ test("no argument reports the effective policy, the deciding default, and the ca
 			"Resolution order (first hit wins): project file, global file, GENTLE_PI_BACKGROUND_SUBAGENTS, built-in default off.",
 		].join("\n"),
 	);
+});
+
+test("no argument opens a selectable menu and applies the chosen sub-action", async (t) => {
+	const cwd = makeScratch("gp-bg-cmd-select-");
+	const configHome = join(makeScratch("gp-bg-home-"), "gentle-ai");
+	const globalFile = join(configHome, "background-subagents.json");
+	scopedEnv(t, {
+		GENTLE_PI_CONFIG_HOME: configHome,
+		GENTLE_PI_BACKGROUND_SUBAGENTS: undefined,
+	});
+	const command = registeredCommands().get("gentle:background-subagents");
+	assert.ok(command, "gentle:background-subagents must be registered");
+
+	// A dismissed menu (undefined selection) reports nothing and writes nothing.
+	// It runs first so the untouched config home can prove the no-write: a second
+	// scopedEnv save point in one test would restore out of order at teardown.
+	const dismissed: Array<{ message: string; type?: string }> = [];
+	await command!.handler("", selectingContext(cwd, dismissed, async () => undefined));
+	assert.equal(dismissed.length, 0, "a dismissed menu reports nothing");
+	assert.equal(existsSync(globalFile), false, "a dismissed menu writes no file");
+
+	// Choosing "enable" writes the global file and reports exactly once, in the
+	// same shape the direct `enable` sub-action already reports.
+	const notices: Array<{ message: string; type?: string }> = [];
+	await command!.handler(
+		"",
+		selectingContext(cwd, notices, async (title, options) => {
+			assert.equal(title, "Background subagents policy");
+			assert.deepEqual(options, ["status", "enable", "disable"]);
+			return "enable";
+		}),
+	);
+	assert.equal(notices.length, 1, "one invocation reports exactly once");
+	assert.equal(notices[0]!.type, "info");
+	assert.equal(
+		notices[0]!.message,
+		[
+			`background subagents: on (decided by global file ${globalFile}; capability: absent)`,
+			`Wrote on to the global file ${globalFile}.`,
+			"Resolution order (first hit wins): project file, global file, GENTLE_PI_BACKGROUND_SUBAGENTS, built-in default off.",
+		].join("\n"),
+	);
+	assert.deepEqual(JSON.parse(readFileSync(globalFile, "utf8")), {
+		schema: "gentle-pi.background-subagents/v1",
+		policy: "on",
+	});
 });
 
 test("status names the project file that decided and the global file it shadows", async (t) => {

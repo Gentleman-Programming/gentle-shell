@@ -5,6 +5,7 @@ import * as os from "node:os";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
 
 const PI_AGENT_DIR = join(os.homedir(), ".pi", "agent");
 const PI_NPM_DIR = join(PI_AGENT_DIR, "npm", "node_modules");
@@ -29,14 +30,14 @@ const BANNER_PALETTES: Record<BannerColor, { rose: [number, number, number]; lab
 };
 
 const TEXT_LOGO = [
-  "                  ▄▄▄▀▀▀▀▀██                                ▄▄▀▄▄           ▄▄█▀▀▀██   ▀▀█▄    ▄▄▄",
-  "              ▄▄█▀▀▒▒▒▒▒▄▄█▀▒                   ▄██     ▄▄█▀█▄█▀▒▒      ▄█▀▀ ▒▒▒▄█▀▀▒   ▄██▒ ▄█▀▒▒▒",
-  "          ▄▄██▀▒▒▒▒▒▄▄▄▀▀▒▒▒▒        ▄▄▄  ▀▀▀▀██▀▀▀▀▀███▀█▄▀▀▒▒▒▒      ██▒▒▒▒▄▄█▀▒▒▒▒▄▄█▀▀▄██▀▒▒▒",
-  "        ▄██▀▒▒▒▒     ▒▒▄▄█ ▄▄▄▀██ ▄▄▄▀▀▀▄  ▄██▀▒▒▒▒▄██▀▀▀▒▄▄███         ▒▒ ▄███▄▄▄█▀▀▀▒▒▄██▀▒▒▒",
-  "       ██▀▒▒▒     ▄▄▄███▀▄██▀▀▀▄▄██▀▀▄█▀▄▄██▀▒▒▒▄▄██▀▒▒▄██▀▀▀▄▄▀▀▀▀▀▀▀▀▀ ▄█▀▀▒▒▒▒▒▒▒▒▒▄██▒▒▒▒",
-  "       ▀█▄▄▄▄▄▀▀▀█▄▄███▄▒▀▀▀▀▀▀▒▀▀▒▒▀▀▀▀▒██▄▄▀▀▀ ▀█▄▀▀▀ ▀▀▀▀▀▒▒▒▒▒▒▒▒▒▒▄██▀▒▒▒       ███▒▒",
-  "        ▒▄▄▄█▀▀▀█▄█▀▀▒▒▒▒ ▒▒▒▒▒▒ ▒▒  ▒▒▒▒ ▒▒▒▒▒▒▒ ▒▒▒▒▒▒ ▒▒▒▒▒        ▀▀▀▒▒▒          ▒▒▒",
-  "     ▄▄▀▀ ▒▒▒▒▄██▀▒▒▒▒                                                 ▒▒▒",
+  "                  ▄▄▄▀▀▀▀▀██                                ▄▄▀▄▄          ▄▄█▀▀▀██   ▄▄▀██               ▄▄▀▄▄   ▄▄▀▄▄",
+  "              ▄▄█▀▀▒▒▒▒▒▄▄█▀▒                   ▄██     ▄▄█▀█▄█▀▒▒       ▄█▀▀▒▒▒▄█▀▒ ▄██▄█▀▒           ▄▄█▀█▄█▀▄▄█▀█▄█▀▒",
+  "          ▄▄██▀▒▒▒▒▒▄▄▄▀▀▒▒▒▒        ▄▄▄  ▀▀▀▀██▀▀▀▀▀███▀█▄▀▀▒▒▒▒      ██▄▄▒▒▒▒▒▒▒ ▄██▀▀▒▒▒          ▄██▀█▄▀▀▄██▀█▄▀▀▒▒▒",
+  "        ▄██▀▒▒▒▒     ▒▒▄▄█ ▄▄▄▀██ ▄▄▄▀▀▀▄  ▄██▀▒▒▒▒▄██▀▀▀▒▄▄███         ▀▀▀██▄▄  ▄██▀▒▄▄▀██   ▄▄▀▀██ ██▀▀▀▒▒▒██▀▀▀▒▒▒",
+  "       ██▀▒▒▒     ▄▄▄███▀▄██▀▀▀▄▄██▀▀▄█▀▄▄██▀▒▒▒▄▄██▀▒▒▄██▀▀▀▄▄      ▄▄     ▀██▄▄██▀▄██▀██▒  ▄██▄▄▀▒ █▀▒▒▒   █▀▒▒▒",
+  "       ▀█▄▄▄▄▄▀▀▀█▄▄███▄▒▀▀▀▀▀▀▒▀▀▒▒▀▀▀▀▒██▄▄▀▀▀ ▀█▄▀▀▀ ▀▀▀▀▀▒▒      ▀█▄▄▄▄█▀▀▒▒▀▀▒▒▀▀▒ ██▄▄▀▀█▄▄▄▄▀▀█▄▄▀▀▀▄▄▀█▄▄▀▀▀",
+  "        ▒▄▄▄█▀▀▀█▄█▀▀▒▒▒▒ ▒▒▒▒▒▒ ▒▒  ▒▒▒▒ ▒▒▒▒▒▒▒ ▒▒▒▒▒▒ ▒▒▒▒▒        ▒▀▀▀▀▒▒▒▒  ▒▒▒▒▒▒ ▒▒▒▒▒ ▒▒▒▒▒▒  ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒",
+  "     ▄▄▀▀ ▒▒▒▒▄██▀▒▒▒▒",
   "   ▄█ ▒▒▒▄▄██▀▀▒▒▒▒",
   "    ▀▀▀▀▀▀▒▒▒▒▒▒",
   "     ▒▒▒▒▒▒",
@@ -183,7 +184,8 @@ function buildLetterSpans(bounds: Span, weights: number[]): Span[] {
 }
 
 const LOGO_BOUNDS = computeLogoBounds(TEXT_LOGO);
-const LETTER_WEIGHTS = [14, 10, 11, 10, 9, 11, 6, 13, 12]; // G E N T L E - P I
+// Variable-width script regions, including the gap before Shell and shadows.
+const LETTER_WEIGHTS = [22, 9, 8, 9, 8, 9, 10, 13, 8, 8, 13]; // G E N T L E S H E L L
 const LETTER_SPANS = buildLetterSpans(LOGO_BOUNDS, LETTER_WEIGHTS);
 
 function letterIndexAtX(x: number): number {
@@ -690,6 +692,7 @@ export default function (pi: ExtensionAPI) {
 
     let tick = 0;
     let refreshStats = () => {};
+    let headerCache: { key: string; out: string[] } | null = null;
     const state = {
       timer: null as NodeJS.Timeout | null,
       mode: currentIntroMode() as IntroMode,
@@ -717,18 +720,27 @@ export default function (pi: ExtensionAPI) {
     setTimeout(() => {
       ctx.ui.setHeader((tui, theme) => {
         if (state.timer) clearInterval(state.timer);
+        headerCache = null;
 
         refreshStats = () => tui.requestRender();
+        // Capture once: a command changes the live prompt, not this intro.
+        const animationPolicy = resolveAnimationPolicy().policy;
         const animStart = Date.now();
-        state.timer = setInterval(() => {
-          tick++;
-          const finished = allStrokesReady() && tick > WRITING_END_TICK + 22;
-          if (finished || Date.now() - animStart > 5000) {
-            clearInterval(state.timer!);
-            state.timer = null;
-          }
-          try { tui.requestRender(); } catch { cleanup(); }
-        }, 25);
+        if (animationPolicy === "potato") {
+          tick = Number.MAX_SAFE_INTEGER;
+          state.timer = null;
+        } else {
+          const performance = animationPolicy === "performance";
+          state.timer = setInterval(() => {
+            tick += performance ? 10 : 1;
+            const finished = allStrokesReady() && tick > WRITING_END_TICK + 22;
+            if (finished || Date.now() - animStart > 5000) {
+              clearInterval(state.timer!);
+              state.timer = null;
+            }
+            try { tui.requestRender(); } catch { cleanup(); }
+          }, performance ? 250 : 25);
+        }
 
         // Grace period: pi-tui emite resizes transitorios mientras compone su layout inicial.
         const bootStart = Date.now();
@@ -752,8 +764,11 @@ export default function (pi: ExtensionAPI) {
         process.stdout.on("resize", resizeHandler);
 
         return {
+          /** Renders the persistent header grid; memoized per width, tick, mode and stats so static passes reuse the built lines. */
           render(width: number): string[] {
             if (state.mode === "skip") return [];
+            const headerKey = `${width}|${tick}|${state.mode}|${gitBranch}|${mcpServersCount}|${extensionsCount}|${packagesCount}|${sddAgentsCount}|${ctx.cwd}|${skills.length}|${customTools.length}`;
+            if (headerCache?.key === headerKey) return headerCache.out;
 
             const flashStartTick = 10;
             const roseOpacity = Math.min(1, tick / 10);
@@ -1049,9 +1064,10 @@ export default function (pi: ExtensionAPI) {
               out.push(truncateToWidth(line, Math.max(1, width), ""));
             }
 
+            headerCache = { key: headerKey, out };
             return out;
           },
-          invalidate() {},
+          invalidate() { headerCache = null; },
           dispose() {
             cleanup();
           },

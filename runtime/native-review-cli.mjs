@@ -69,7 +69,6 @@ export const NATIVE_REVIEW_OPERATION = {
 	CAPTURE_UNACHIEVABLE: "review/capture-unachievable",
 	ACKNOWLEDGE_APPROVED: "review/acknowledge-approved",
 	SDD_STATUS: "sdd-status",
-	SDD_ATTEMPT: "sdd-attempt",
 	SDD_CONTINUE: "sdd-continue",
 }         ;
 
@@ -116,39 +115,6 @@ export const NATIVE_REVIEW_ERROR_CODE = {
 
 
 	                                                       
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-export const SDD_ATTEMPT_OUTCOME = { PASSED: "passed", FAILED: "failed", INTERRUPTED: "interrupted" }         ;
-
-
 
 
 
@@ -740,7 +706,11 @@ function isNativeUntrackedPath(value         )                  {
 		&& value.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
 }
 
-function nativeUntrackedSelection(request                                 )                           {
+export function nativeUntrackedSelection(request
+
+
+
+ )                           {
 	const { untrackedScope, expectedUntrackedInventory, intendedUntracked } = request;
 	const declared = untrackedScope !== undefined || expectedUntrackedInventory !== undefined || intendedUntracked !== undefined;
 	if (!declared) return {};
@@ -751,16 +721,19 @@ function nativeUntrackedSelection(request                                 )     
 	) {
 		throw new TypeError("Native untracked selection must declare one scope, one inventory digest, and unique repository-relative paths");
 	}
-	if (untrackedScope === NATIVE_UNTRACKED_SCOPE.EXCLUDE && (intendedUntracked?.length ?? 0) > 0) {
+	// The guard above establishes the array and element types for both typed
+	// native requests and untyped facade input.
+	const paths = intendedUntracked                                 ;
+	if (untrackedScope === NATIVE_UNTRACKED_SCOPE.EXCLUDE && (paths?.length ?? 0) > 0) {
 		throw new TypeError("Native exclude untracked selection cannot include paths");
 	}
-	if (untrackedScope === NATIVE_UNTRACKED_SCOPE.SELECT && (intendedUntracked?.length ?? 0) === 0) {
+	if (untrackedScope === NATIVE_UNTRACKED_SCOPE.SELECT && (paths?.length ?? 0) === 0) {
 		throw new TypeError("Native select untracked selection requires at least one path");
 	}
 	return {
 		untrackedScope,
 		expectedUntrackedInventory,
-		intendedUntracked: intendedUntracked === undefined ? undefined : [...intendedUntracked],
+		intendedUntracked: paths === undefined ? undefined : [...paths],
 	};
 }
 
@@ -994,6 +967,88 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// remain dark because neither is proven to reach the negotiated START
 	// path Pi consumes.
 	"2.9.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v2.9.1 shipped restoring compatible OpenCode review consent (#4584) and
+	// deriving Claude Code SDD dispatch authority from the session transcript
+	// (#4575, #4551). Ground-truthed by diffing contracts/review-integration/v2
+	// and contracts/review-provider-contract between the v2.9.0 and v2.9.1 tags
+	// in the gentle-ai source tree: zero bytes changed. Neither change touches
+	// the closed START/STATUS fields this row negotiates, so it repeats 2.9.0
+	// exactly. riskEvidence and hint remain dark because neither is proven to
+	// reach the negotiated START path Pi consumes.
+	"2.9.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v3.0.0 shipped ODD as the orchestrator's mandatory default protocol and
+	// integrated the simplified SDD workflow into it (gentle-ai #4642, #4644),
+	// with the provider contract byte-frozen at 1.2.0. Ground-truthed by
+	// diffing contracts/review-integration/v2 and
+	// contracts/review-provider-contract between the v2.9.1 and v3.0.0 tags
+	// in the gentle-ai source tree: zero bytes changed. Neither change touches
+	// the closed START/STATUS fields this row negotiates, so it repeats 2.9.1
+	// exactly. riskEvidence and hint remain dark because neither is proven to
+	// reach the negotiated START path Pi consumes.
+	"3.0.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v3.0.1 moved the Go module path to github.com/gentleman-programming/gentle-ai/v3
+	// with no contract change (gentle-ai #4683). Ground-truthed by diffing
+	// contracts/review-integration/v2 and contracts/review-provider-contract
+	// between the v3.0.0 and v3.0.1 tags in the gentle-ai source tree: zero
+	// bytes changed. This row repeats 3.0.0 (and 2.9.1) exactly. riskEvidence
+	// and hint remain dark because neither is proven to reach the negotiated
+	// START path Pi consumes.
+	"3.0.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v3.1.0 changed the ODD orchestrator contract only (gentle-ai #4714).
+	// Ground-truthed by diffing contracts/review-integration/v2 and
+	// contracts/review-provider-contract between the v3.0.2 and v3.1.0 tags
+	// in the gentle-ai source tree: zero bytes changed (provider contract
+	// stays 1.2.0). Neither change touches the closed START/STATUS fields
+	// this row negotiates, so it repeats 3.0.1 exactly. riskEvidence and hint
+	// remain dark because neither is proven to reach the negotiated START
+	// path Pi consumes.
+	"3.1.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v3.2.1 changed the ODD orchestrator contract only (gentle-ai #4714
+	// follow-up). Ground-truthed by diffing contracts/review-integration/v2 and
+	// contracts/review-provider-contract between the v3.1.0 and v3.2.1 tags
+	// in the gentle-ai source tree: zero bytes changed (provider contract
+	// stays 1.2.0). Neither change touches the closed START/STATUS fields
+	// this row negotiates, so it repeats 3.1.0 exactly. riskEvidence and hint
+	// remain dark because neither is proven to reach the negotiated START
+	// path Pi consumes.
+	"3.2.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v3.4.0 (gentle-pi never pinned the intervening v3.3.0 tag, so it gets no
+	// row here) added capabilities/v2.6 and status/v8-v9, and extended
+	// `review assess` with review_due/review_due_reason/next_transition
+	// (gentle-ai #4714 follow-up). Ground-truthed by diffing
+	// contracts/review-integration/v2 and contracts/review-provider-contract
+	// between the v3.2.1 and v3.4.0 tags in the gentle-ai source tree: the
+	// provider contract stays byte-identical at 1.2.0, and every
+	// review-integration/v2 change is an additive superset (new optional
+	// schema/fields) that decodeReviewStatusV3 and the capabilities
+	// negotiator already accept without touching the closed START/STATUS
+	// fields this row negotiates, so it repeats 3.2.1 exactly. riskEvidence
+	// and hint remain dark because neither is proven to reach the negotiated
+	// START path Pi consumes.
+	"3.4.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v3.5.0 repeats 3.4.0: the published provider contract bundle is
+	// byte-identical at 1.2.0, both binaries advertise capabilities/v2.6
+	// with only build-identity differences, and no review-integration schema
+	// changed. The v2 preflight failure identity fix does not change the
+	// closed START/STATUS fields this row negotiates. riskEvidence and hint
+	// remain dark; neither is proven to reach Pi's negotiated START path.
+	"3.5.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v3.6.0 repeats 3.5.0: the published provider contract bundle is
+	// byte-identical at 1.2.0, both binaries advertise capabilities/v2.6
+	// with only build-identity differences, and no review-integration schema
+	// changed between the v3.5.0 and v3.6.0 tags. riskEvidence and hint
+	// remain dark; neither is proven to reach Pi's negotiated START path.
+	"3.6.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v3.6.1 repeats 3.6.0: published provider-contract archives are byte-identical
+	// (SHA-256 547b68e172cc87aa297309d61624e5fc2c24d407a494b53eeb5a2b053904352c).
+	// The published v3.6.1 binary advertises capabilities/v2.6, and the tag diff
+	// changes no review-integration schema or capability source. riskEvidence and
+	// hint remain dark because neither is proven in Pi's negotiated START path.
+	"3.6.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v3.7.0 repeats 3.6.1: the published provider-contract tar remains SHA-256
+	// 547b68e172cc87aa297309d61624e5fc2c24d407a494b53eeb5a2b053904352c
+	// at contract 1.2.0. No new negotiated capability is asserted.
+	"3.7.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 });
 
 
@@ -1025,7 +1080,7 @@ export class NativeReviewCliError extends Error {
 		this.launchAttempted = launchAttempted;
 		this.mutating = mutating;
 		this.mutationOutcome = launchAttempted && mutating ? "unknown" : "none";
-		this.nextAction = this.mutationOutcome === "unknown" && operation !== NATIVE_REVIEW_OPERATION.SDD_ATTEMPT ? "review.status" : undefined;
+		this.nextAction = this.mutationOutcome === "unknown" ? "review.status" : undefined;
 		this.diagnostics = diagnostics ?? { operation, error_code: code, timed_out: false, output_limit_exceeded: false };
 		this.auditRecord = auditRecord;
 	}
@@ -1078,8 +1133,19 @@ function decodeSelectedLenses(value         , riskLevel        , lensesRequired 
 function enumString(value         , allowed                   )         { const parsed = stringValue(value); if (!allowed.includes(parsed)) throw new Error("unsupported enum"); return parsed; }
 const NATIVE_DIAGNOSTIC_TEXT_LIMIT = 4_096;
 
-function sanitizeNativeDiagnosticText(value        , limit = NATIVE_DIAGNOSTIC_TEXT_LIMIT)         {
-	const normalized = value
+function sanitizeNativeDiagnosticText(value        , limit = NATIVE_DIAGNOSTIC_TEXT_LIMIT, operation                        )         {
+	// ASSESS diagnostics are projected into a public verification plan. Retain
+	// native guidance, not local paths or environment assignment values.
+	const input = operation === NATIVE_REVIEW_OPERATION.ASSESS
+		? value
+			.replace(/(?<![\w-])[a-z_][a-z0-9_]*=(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s]+)/gi, "[REDACTED ENV]")
+			.replace(/--(?:password|token|secret|authorization|cookie|private[_-]key|access[_-]token|[a-z0-9_-]+[_-]token|api[_-]?key)[ \t]+(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s]+)/gi, "[REDACTED CREDENTIAL]")
+			// Quoted paths have a clear boundary. For an unquoted path, the
+			// remaining line is ambiguous (spaces may belong to the filename).
+			// Redact that suffix rather than leak trailing path components.
+			.replace(/"(?:[A-Za-z]:[\\/]|\/)[^"\r\n]*"|'(?:[A-Za-z]:[\\/]|\/)[^'\r\n]*'|(?:[A-Za-z]:[\\/]|\/)[^\r\n]*/g, "[REDACTED PATH]")
+		: value;
+	const normalized = input
 		.replace(/\x1b](?:[^\x07\x1b]|\x1b(?!\\))*?(?:\x07|\x1b\\)/g, "[REDACTED CONTROL]")
 		.replace(/\x1b[PX^_][\s\S]*?\x1b\\/g, "[REDACTED CONTROL]")
 		.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "[REDACTED CONTROL]")
@@ -1113,7 +1179,7 @@ export function sanitizeForeignNativeReviewDiagnostics(value         )          
 			timed_out: booleanValue(raw.timed_out),
 			output_limit_exceeded: booleanValue(raw.output_limit_exceeded),
 			...(maxBufferBytes === undefined ? {} : { max_buffer_bytes: maxBufferBytes, configuration_hint: configurationHint  }),
-			...(raw.stderr === undefined ? {} : { stderr: sanitizeNativeDiagnosticText(stringValue(raw.stderr)) }),
+			...(raw.stderr === undefined ? {} : { stderr: sanitizeNativeDiagnosticText(stringValue(raw.stderr), NATIVE_DIAGNOSTIC_TEXT_LIMIT, operation) }),
 		};
 	} catch { return undefined; }
 }
@@ -1130,7 +1196,7 @@ function nativeProcessDiagnostics(operation                       , code        
 		...(code === NATIVE_REVIEW_ERROR_CODE.OUTPUT_LIMIT && maxBufferBytes !== undefined
 			? { max_buffer_bytes: maxBufferBytes, configuration_hint: NATIVE_REVIEW_MAX_BUFFER_CONFIGURATION_HINT }
 			: {}),
-		...(result?.stderr.trim() ? { stderr: sanitizeNativeDiagnosticText(result.stderr) } : {}),
+		...(result?.stderr.trim() ? { stderr: sanitizeNativeDiagnosticText(result.stderr, NATIVE_DIAGNOSTIC_TEXT_LIMIT, operation) } : {}),
 	};
 }
 
@@ -1451,7 +1517,7 @@ function nativeError(code                       , operation                     
 
 
 const NATIVE_SDD_DEPENDENCIES = ["proposal", "specs", "design", "tasks", "apply", "verify", "archive"]         ;
-const NATIVE_SDD_INSTRUCTION_PHASES = ["apply", "verify", "remediate", "archive"]         ;
+const NATIVE_SDD_INSTRUCTION_PHASES = ["apply", "verify", "archive"]         ;
 const NATIVE_SDD_NEXT_RECOMMENDATIONS = ["apply", "verify", "remediate", "archive", "archived", "resolve-blockers", "sdd-new", "select-change", "propose", "spec", "design", "tasks"]         ;
 const NATIVE_SDD_DEPENDENCY_STATES = ["blocked", "ready", "all_done"]         ;
 
@@ -1479,7 +1545,13 @@ export function decodeNativeSddStatusV2(value         , request                 
 	if (status.phaseInstructions !== undefined) {
 		const instructions = object(status.phaseInstructions);
 		for (const phase of NATIVE_SDD_INSTRUCTION_PHASES) stringArray(instructions[phase]);
-		if (Object.keys(instructions).length !== NATIVE_SDD_INSTRUCTION_PHASES.length) throw new Error("native SDD instructions have an unsupported shape");
+		// Classical SDD no longer emits a remediation phase. Keep the published
+		// producer's optional legacy instructions intact without inventing them
+		// for a newer producer or accepting unknown phase keys.
+		const hasRemediation = Object.hasOwn(instructions, "remediate");
+		if (hasRemediation) stringArray(instructions.remediate);
+		if (Object.keys(instructions).length !== NATIVE_SDD_INSTRUCTION_PHASES.length + Number(hasRemediation)) throw new Error("native SDD instructions have an unsupported shape");
+		if (status.nextRecommended === "remediate" && !hasRemediation) throw new Error("native SDD remediation instructions are missing");
 	}
 	if (status.nextRecommended === "remediate" || status.remediationState !== undefined) {
 		const remediation = object(status.remediationState);
@@ -2128,65 +2200,6 @@ export class NativeReviewCliV216                            {
 		return this.invoke(operation, cwd, arguments_, mutating, signal, this.executablePath(operation, mutating), toleratedStderr);
 	}
 
-	async sddAttemptAcquire(request                         )                                  {
-		return this.sddAttempt("acquire", request);
-	}
-
-	async sddAttemptSettle(request                        )                                  {
-		return this.sddAttempt("settle", request);
-	}
-
-	        async sddAttempt(verb                      , request                                                  )                                  {
-		const args = ["sdd-attempt", verb, "--cwd", request.workspaceRoot, "--change", request.changeName, "--request-id", request.requestId];
-		if (!isAbsolute(request.workspaceRoot) || !isCanonicalProcessString(request.workspaceRoot) || !isCanonicalProcessString(request.changeName) || !/^[a-z0-9][a-z0-9._-]{0,127}$/.test(request.requestId)) throw new TypeError("Invalid SDD attempt identity");
-		const text = (flag        , value        , max        ) => {
-			if (!isCanonicalProcessString(value) || /[\r\n]/.test(value) || Buffer.byteLength(value) > max) throw new TypeError(`Invalid ${flag}`);
-			args.push(flag, value);
-		};
-		const revision = (flag        , value                    ) => {
-			if (value === undefined) return;
-			if (!/^sha256:[0-9a-f]{64}$/.test(value)) throw new TypeError(`Invalid ${flag}`);
-			args.push(flag, value);
-		};
-		if (verb === "acquire") {
-			const acquire = request                           ;
-			text("--work-unit", acquire.workUnit, 160);
-			text("--evidence-goal", acquire.evidenceGoal, 240);
-			for (const [flag, value, max] of [["--max-attempts", acquire.maxAttempts, 100], ["--max-changed-lines", acquire.maxChangedLines, 1_000_000]]         ) {
-				if (value === undefined) continue;
-				if (!Number.isInteger(value) || value < 1 || value > max) throw new TypeError(`Invalid ${flag}`);
-				args.push(flag, String(value));
-			}
-			if (acquire.expectedRevision === "") args.push("--expected-revision", "");
-			else revision("--expected-revision", acquire.expectedRevision);
-			if (acquire.token !== undefined) text("--token", acquire.token, 500);
-		} else {
-			const settle = request                          ;
-			text("--token", settle.token, 500);
-			if (!Object.values(SDD_ATTEMPT_OUTCOME).includes(settle.outcome)) throw new TypeError("Invalid outcome");
-			args.push("--outcome", settle.outcome);
-			if (settle.outcome === "interrupted" ? settle.evidenceRevision !== undefined || settle.remediationEvidence !== undefined : !settle.evidenceRevision && !(settle.outcome === "passed" && settle.remediationEvidence)) throw new TypeError("Invalid terminal evidence");
-			revision("--evidence-revision", settle.evidenceRevision);
-			text("--diagnosis", settle.diagnosis, 500);
-			if (!["reused", "invalidated"].includes(settle.harnessDisposition)) throw new TypeError("Invalid harness disposition");
-			args.push("--harness-disposition", settle.harnessDisposition);
-			text("--cleanup-evidence", settle.cleanupEvidence, 500);
-			text("--process-evidence", settle.processEvidence, 500);
-			if (settle.remediationEvidence !== undefined) args.push("--remediation-evidence", settle.remediationEvidence);
-		}
-		revision("--remediates-evidence-revision", request.remediatesEvidenceRevision);
-		args.push(...nativeUntrackedSelectionArguments(nativeUntrackedSelection(request)));
-		const operation = NATIVE_REVIEW_OPERATION.SDD_ATTEMPT;
-		const { body } = await this.negotiated(operation, request.workspaceRoot, args, true);
-		return decode(operation, true, () => {
-			const result = body                                     ;
-			if (!result || !["proceed", "blocked", "complete"].includes(result.state)) throw new TypeError("Invalid compact state");
-			if (verb === "acquire" && result.state === "proceed" && !isCanonicalProcessString(result.token)) throw new TypeError("Missing compact token");
-			if (result.reason !== undefined && typeof result.reason !== "string") throw new TypeError("Invalid compact reason");
-			return { state: result.state, ...(result.token === undefined ? {} : { token: result.token }), ...(result.reason === undefined ? {} : { reason: result.reason }) };
-		});
-	}
-
 	async sddStatus(request                        )                             {
 		return this.sddProjection(request, false);
 	}
@@ -2564,6 +2577,7 @@ export class NativeReviewCliV216                            {
 	// rejects -- callers (the `gentle_review` tool's `assess` operation) fail
 	// closed to `high`.
 	async assess(request                           )                              {
+		const selection = nativeUntrackedSelection(request);
 		if (request.baseRef !== undefined && !isCanonicalProcessString(request.baseRef)) throw new TypeError("Native ASSESS baseRef must be a non-empty, trimmed, NUL-free string");
 		if (request.baseRef !== undefined && request.committedOnly !== true) throw new TypeError("Native ASSESS baseRef requires explicit committedOnly acknowledgement");
 		if (request.baseRef === undefined && request.committedOnly !== undefined) throw new TypeError("Native ASSESS committedOnly requires an explicit baseRef");
@@ -2571,7 +2585,7 @@ export class NativeReviewCliV216                            {
 		const execution = await this.invoke(
 			NATIVE_REVIEW_OPERATION.ASSESS,
 			cwd,
-			["review", "assess", "--cwd", cwd, ...(request.baseRef === undefined ? [] : ["--base-ref", request.baseRef, "--committed-only"]), "--json"],
+			["review", "assess", "--cwd", cwd, ...(request.baseRef === undefined ? [] : ["--base-ref", request.baseRef, "--committed-only"]), ...nativeUntrackedSelectionArguments(selection), "--json"],
 			false,
 			request.signal,
 			this.executablePath(NATIVE_REVIEW_OPERATION.ASSESS, false),

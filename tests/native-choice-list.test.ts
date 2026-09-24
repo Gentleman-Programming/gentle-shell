@@ -85,6 +85,19 @@ test("native choice list presents one hovered wrapped option without changing se
 	assert.doesNotMatch(list.render(56).join("\n"), new RegExp(hoverBackground.replace(/[\[\]]/g, "\\$&")));
 });
 
+test("native choice list refreshes existing item content without changing selection", () => {
+	const items = [
+		{ id: "first", label: "First", description: "Initial detail." },
+		{ id: "second", label: "Second", description: "Second detail." },
+	];
+	const list = new NativeChoiceList(items, theme);
+	list.setSelectedIndex(1);
+	items[1]!.description = "Updated detail.";
+	list.refreshItems();
+	assert.equal(list.getSelectedItem()?.id, "second");
+	assert.match(stripTerminalSequences(list.render(40).join("\n")), /Updated detail\./);
+});
+
 test("native choice list ignores Kitty key releases", () => {
 	const list = new NativeChoiceList(
 		[{ id: "first", label: "First" }, { id: "second", label: "Second" }],

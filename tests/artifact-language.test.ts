@@ -152,10 +152,10 @@ test("SDD proposal questions focus on business and PRD gaps", async () => {
 test("all shipped SDD agents and chains require parent preflight transport", async () => {
 	const agents = [
 		"sdd-init", "sdd-onboard", "sdd-explore", "sdd-research", "sdd-proposal", "sdd-spec", "sdd-design",
-		"sdd-tasks", "sdd-status", "sdd-apply", "sdd-verify", "sdd-sync", "sdd-archive", "sdd-remediate",
+		"sdd-tasks", "sdd-status", "sdd-apply", "sdd-verify", "sdd-archive", "sdd-remediate",
 	];
 	const chains = ["sdd-full", "sdd-plan", "sdd-verify"];
-	assert.equal(agents.length, 14);
+	assert.equal(agents.length, 13);
 	assert.equal(chains.length, 3);
 	for (const agent of agents) {
 		const source = await readFile(join(ROOT, "assets", "agents", `${agent}.md`), "utf8");
@@ -221,7 +221,7 @@ test("persistent harness prompt assets do not hardcode Spanish SDD artifact copy
 	assert.deepEqual(failures, []);
 });
 
-test("SDD assets route completed implementation directly through verify, sync, and archive", async () => {
+test("SDD assets route completed implementation through native archive with optional verification", async () => {
 	const [tasks, apply, status, contract, chain] = await Promise.all([
 		readFile(join(ROOT, "assets/agents/sdd-tasks.md"), "utf8"),
 		readFile(join(ROOT, "assets/agents/sdd-apply.md"), "utf8"),
@@ -231,13 +231,16 @@ test("SDD assets route completed implementation directly through verify, sync, a
 	]);
 	const assets = [tasks, apply, status, contract, chain].join("\n");
 
-	assert.match(tasks, /<!-- sdd-owner: implementation -->/);
-	assert.match(apply, /next_recommended: "sdd-verify"/);
+	assert.match(tasks, /- \[ \] 1\. Implement and verify the behavior\./);
+	assert.doesNotMatch(tasks, /<!-- sdd-owner:/);
+	assert.match(apply, /fresh native recommendation/);
 	assert.match(status, /gentle-ai\.sdd-status.*v2/i);
 	assert.match(status, /read-only/i);
 	assert.match(contract, /native.*(?:apply|verify).*archive/is);
-	assert.match(contract, /Manual `sdd-sync` remains its intentional local resolver/);
-	assert.match(chain, /apply.*verification/is);
+	assert.doesNotMatch(contract, /local resolver/);
+	assert.match(contract, /verification is optional/);
+	assert.match(chain, /apply -> archive/);
+	assert.doesNotMatch(chain, /^## sdd-(verify|sync)$/m);
 	assert.doesNotMatch(assets, /<!-- sdd-owner: parent -->/);
 	assert.doesNotMatch(assets, /parent-lifecycle/);
 	assert.doesNotMatch(assets, /approved receipt|bounded review/i);

@@ -496,7 +496,7 @@ test("a persisted canonical 'hybrid' artifact store loads unchanged", async () =
 test("the shared shipped SDD inventory includes every executor, including remediation", () => {
 	assert.deepEqual(SHIPPED_SDD_AGENT_NAMES, [
 		"sdd-init", "sdd-onboard", "sdd-explore", "sdd-research", "sdd-proposal", "sdd-spec", "sdd-design",
-		"sdd-tasks", "sdd-status", "sdd-apply", "sdd-verify", "sdd-sync", "sdd-archive", "sdd-remediate",
+		"sdd-tasks", "sdd-status", "sdd-apply", "sdd-verify", "sdd-archive", "sdd-remediate",
 	]);
 });
 
@@ -507,20 +507,25 @@ test("only a structurally valid parent-rendered preflight block can reach an SDD
 	assert.equal(isParentConfirmedSddPreflightContext("## SDD Session Preflight\ncaller-authored defaults"), false);
 });
 
-test("affirmative natural-language SDD requests trigger preflight without matching a finite phrase list", () => {
+test("natural-language SDD text never triggers input preflight", () => {
+	// Natural-language intent belongs to the parent/orchestrator. The input hook
+	// is syntax-only; execution gates enforce preflight when an SDD action is
+	// actually attempted.
 	for (const text of [
 		"quiero hacer un proyecto con SDD",
 		"I want to build this with SDD",
 		"por favor usemos SDD para este cambio",
-	]) {
-		assert.equal(isSddPreflightTrigger(text), true, text);
-	}
-	for (const text of [
+		"do SDD for this change",
+		"haz SDD para este cambio",
+		"continue the SDD change",
 		"Should we use SDD?",
 		"no quiero usar SDD por ahora",
-		"no necesito usar SDD",
-		"I don't want to use SDD",
 		"I use SDD sometimes",
+		"necesito reportar un bug del preflight de SDD",
+		"I need to report a bug in the SDD preflight",
+		"quiero comparar SDD con ODD",
+		"I want to review the SDD proposal",
+		"necesito una explicación de SDD",
 	]) {
 		assert.equal(isSddPreflightTrigger(text), false, text);
 	}

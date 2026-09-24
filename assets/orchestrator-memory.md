@@ -14,7 +14,7 @@ On resume, use `mem_context`, then project/feature-scoped `mem_search`, and `mem
 
 Before implementation or resume, the parent reads both the actual file and full observation, reconciles them, and passes the locator and relevant context; workers read the document before edits. Small work without a document still receives its authorized scope and checks.
 
-The existing `todo` tool is an optional session/UI projection, not a third authority. Rebuild it from reconciled feature progress when useful; its replay or completed-list clearing must not delete or replace the durable file or Engram copy. Small/read-only work does not acquire an ODD artifact merely because the UI displays tasks.
+The existing `todo` tool is the required session/UI projection for substantial ODD, not a third authority. After reconciling and writing the durable file and Engram copy, create or rebuild the visible `todo` list from the same feature tasks before the first source write; after every task transition and material plan change, update both durable copies and the visible projection in the same turn; its replay or completed-list clearing must not delete or replace the durable file or Engram copy. If the projection is unavailable, record that limitation without pretending it is synchronized. Small/read-only work does not acquire an ODD artifact or todo list merely because the UI can display tasks.
 
 ### SDD phases
 

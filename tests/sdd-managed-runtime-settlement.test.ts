@@ -75,9 +75,9 @@ test("remediation actor preserves separately authorized memory artifact tools", 
 
 test("R1 confirms exact canonical paths and commands; data, denial and symlinks grant nothing", async t => {
 	const { confirmRemediationScope, remediationToolAllowed } = await import("../extensions/gentle-agents.ts");
-	const { mkdtempSync, writeFileSync, symlinkSync, rmSync } = await import("node:fs");
+	const { mkdtempSync, realpathSync, writeFileSync, symlinkSync, rmSync } = await import("node:fs");
 	const { tmpdir } = await import("node:os"); const { join } = await import("node:path");
-	const cwd = mkdtempSync(join(tmpdir(), "remediation-scope-")); t.after(() => rmSync(cwd, { recursive: true, force: true }));
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "remediation-scope-"))); t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	const target = join(cwd, "allowed.ts"); writeFileSync(target, "original"); symlinkSync(target, join(cwd, "alias.ts"));
 	const candidate = { ...plan, cwd, editPaths: [target] }, native = { mode: "repo-local", workspaceRoot: cwd, allowedEditRoots: [cwd] };
 	let shown = "", confirmations = 0;

@@ -128,6 +128,26 @@ test("framePromptLines keeps the editor scroll indicators inside the frame", () 
 	for (const line of lines) assert.equal(visibleWidth(line), width);
 });
 
+test("framePromptLines shows an explicit escHint on the bottom rule, overriding the editor's own scroll indicator", () => {
+	const width = 40;
+	const inner = width - 2;
+	const bottom = `─── ↓ 3 more ${"─".repeat(inner - 13)}`;
+	const lines = framePromptLines(
+		["─".repeat(inner), ` x${" ".repeat(inner - 2)}`, bottom],
+		width,
+		options({ fg: (_c, t) => t, escHint: "esc again to cancel" }),
+	);
+	assert.match(stripAnsi(lines[2]), /^╰─ esc again to cancel ─+╯$/);
+});
+
+test("framePromptLines falls back to the scroll indicator when no escHint is set", () => {
+	const width = 40;
+	const inner = width - 2;
+	const bottom = `─── ↓ 3 more ${"─".repeat(inner - 13)}`;
+	const lines = framePromptLines(["─".repeat(inner), ` x${" ".repeat(inner - 2)}`, bottom], width, options({ fg: (_c, t) => t }));
+	assert.match(stripAnsi(lines[2]), /^╰─ ↓ 3 more ─+╯$/);
+});
+
 test("withPromptHint places a dim hint after the cursor on an empty editor line", () => {
 	const inner = 38;
 	const line = ` ${CURSOR}${" ".repeat(inner - 2)}`;

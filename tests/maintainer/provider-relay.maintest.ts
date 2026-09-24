@@ -56,11 +56,12 @@ const VALIDATOR_TOKENS = Object.freeze([`--lineage=${ROLE_LINEAGE}`, `--expected
 const VALIDATION_REQUEST = Object.freeze({ schema: "gentle-ai.review-targeted-validation-request/v1", requestHash: ROLE_REQUEST_HASH });
 const ROLE_ARTIFACT = Object.freeze({ schema: "gentle-ai.review-provider-role-capture/v1", lineage_id: ROLE_LINEAGE, target_identity: ROLE_TARGET, role: "refuter", captured: true });
 
+const REVIEWER_SELECTION = "test-provider/test-model";
 function descriptor(overrides = {}) {
 	return {
 		schema: DESCRIPTOR_SCHEMA,
 		gentleAiExecutable: PLACEHOLDER_BINARY,
-		piExecutable: "pi",
+		reviewerSelection: REVIEWER_SELECTION,
 		cases: [{ name: "baseline-negative-control", kind: "relay-unavailable", captureArgumentTokens: [...CAPTURE_TOKENS], submission: structuredClone(SUBMISSION) }],
 		...overrides,
 	};
@@ -121,7 +122,7 @@ function roleDescriptor(kind: "provider-role-refuter" | "provider-role-validator
 	const tokens = kind === "provider-role-refuter" ? REFUTER_TOKENS : VALIDATOR_TOKENS;
 	const entry: Record<string, unknown> = { name: `${kind}-case`, kind, argumentTokens: [...tokens] };
 	if (kind === "provider-role-validator") entry.validationRequest = structuredClone(VALIDATION_REQUEST);
-	return { schema: DESCRIPTOR_SCHEMA, gentleAiExecutable: PLACEHOLDER_BINARY, piExecutable: "pi", cases: [entry], ...overrides };
+	return { schema: DESCRIPTOR_SCHEMA, gentleAiExecutable: PLACEHOLDER_BINARY, reviewerSelection: REVIEWER_SELECTION, cases: [entry], ...overrides };
 }
 const ROLE_STUB_BINARY = sandboxPath("gentle-ai-role-stub");
 writeFileSync(ROLE_STUB_BINARY, "stub");
@@ -355,7 +356,6 @@ function capableStubHarness(t: test.TestContext) {
 	t.after(() => rmSync(directory, { recursive: true, force: true }));
 	const materializeLog = join(directory, "materialized");
 	const submitLog = join(directory, "submitted");
-	const piLog = join(directory, "pi-launched");
 	const gentleAi = join(directory, "gentle-ai");
 	// Deliberately CAPABLE: it honours --materialize=true and would accept a
 	// submission, exactly like a binary a maintainer mis-declared as incapable.
@@ -375,152 +375,114 @@ process.exit(0);
 `,
 	);
 	chmodSync(gentleAi, 0o755);
-	const pi = join(directory, "pi");
-	writeFileSync(
-		pi,
-		`#!/usr/bin/env node
-const fs = require("node:fs");
-fs.writeFileSync(${JSON.stringify(piLog)}, "launched");
-const chunks = [];
-process.stdin.on("data", (chunk) => chunks.push(chunk));
-process.stdin.on("end", () => { process.stdout.write("pi-result-bytes"); process.exit(0); });
-`,
-	);
-	chmodSync(pi, 0o755);
-	return { gentleAi, pi, materializeLog, submitLog, piLog };
+	return { gentleAi, materializeLog, submitLog };
 }
-test("a relay-unavailable case against a CAPABLE binary fails closed at pi: zero pi launch, zero submission", async (t) => {
+// gentle-pi#311 P4: lens captures no longer spawn a pi child, so the
+// mis-declared-capable negative control no longer needs an "unlaunchable pi"
+// fixture -- it must instead fail closed at the reviewer-registry stage
+// (`unresolvableReviewerRegistry`, provider-relay-matrix.mjs), before any
+// completion or submission.
+test("a relay-unavailable case against a CAPABLE binary fails closed at the reviewer stage: zero completion, zero submission", async (t) => {
 	const stub = capableStubHarness(t);
-	const [verdict] = await runMatrix(validateDescriptor({ ...descriptor(), gentleAiExecutable: stub.gentleAi, piExecutable: stub.pi }));
+	const [verdict] = await runMatrix(validateDescriptor({ ...descriptor(), gentleAiExecutable: stub.gentleAi }));
 	// The declared binary really is capable, so the negative control cannot
 	// pass — but it must fail WITHOUT mutating anything.
 	assert.equal(verdict!.verdict, "fail");
-	assert.match(verdict!.reason, /kind=pi-launch-failed stage=pi mutationOutcome=none/);
-	// The load-bearing assertions: the real pi never ran and the real
-	// submission never fired.
-	assert.equal(existsSync(stub.piLog), false, "pi must never launch for a relay-unavailable case");
+	assert.match(verdict!.reason, /kind=reviewer-model-not-found stage=pi mutationOutcome=none/);
+	// The load-bearing assertion: the real submission never fired.
 	assert.equal(existsSync(stub.submitLog), false, "a relay-unavailable case must never reach submit");
 	// Materialize still happens: it is the honest capability probe, and it is
 	// read-only (mutationOutcome stays "none" before submit).
 	assert.equal(existsSync(stub.materializeLog), true);
 });
 // ---------------------------------------------------------------------------
-// Resolve-once (POSIX subprocess proof) — a bare Pi declaration is resolved
-// exactly once at the precheck and never re-resolved between precheck and
-// launch. Deterministic local stub scenario: the first PATH candidate is
-// resolved at precheck, a capable gentle-ai removes it during materialization,
-// and a second same-name PATH candidate remains. The fixed code must attempt
-// only the first concrete path (now gone) and fail closed — never fall through
-// to launch the second. This is a POSIX shebang/executable fixture: it spawns
-// real subprocesses with `shell:false`, which cannot execute `.bat`/`.cmd`
-// launchers on Windows. Windows native launcher execution is #311 P8 evidence,
-// not silently claimed here.
+// gentle-pi#311 P4: the two "resolve-once" tests this section held (a POSIX
+// subprocess proof and a platform-neutral boundary proof) verified that a
+// bare `pi` PATH declaration was resolved exactly once and never re-resolved
+// between precheck and launch (issue #324). Lens captures now run in-process
+// through an injected reviewer registry — there is no executable to resolve
+// or re-resolve, so that TOCTOU class no longer exists for this transport and
+// the coverage was removed rather than kept as dead assertions. The armed
+// positive-lens journey's new wiring (the in-process reviewer registry built
+// from `descriptor.reviewerSelection`) is covered below instead.
 // ---------------------------------------------------------------------------
-test("a bare Pi declaration is resolved once: the relay never falls through to a second PATH candidate after materialization removes the first", { skip: process.platform === "win32" && "POSIX shebang/executable subprocess fixture; Windows .cmd launcher execution (shell:false) is #311 P8 evidence, not claimed here" }, async (t) => {
-	const root = mkdtempSync(join(tmpdir(), "gentle-pi-maintainer-resolve-once-"));
-	chmodSync(root, 0o700);
-	t.after(() => rmSync(root, { recursive: true, force: true }));
-	const dirA = join(root, "path-a");
-	const dirB = join(root, "path-b");
-	mkdirSync(dirA, { recursive: true });
-	mkdirSync(dirB, { recursive: true });
-	chmodSync(dirA, 0o700);
-	chmodSync(dirB, 0o700);
-	const firstPiLog = join(root, "pi-first-launched");
-	const secondPiLog = join(root, "pi-second-launched");
-	const firstPi = join(dirA, "pi");
-	const secondPi = join(dirB, "pi");
-	// First PATH candidate: the one the precheck resolves.
-	writeFileSync(firstPi, `#!/usr/bin/env node\nrequire("node:fs").writeFileSync(${JSON.stringify(firstPiLog)}, "launched");\nprocess.exit(0);\n`);
-	chmodSync(firstPi, 0o755);
-	// Second PATH candidate: must NEVER launch under the fix.
-	writeFileSync(secondPi, `#!/usr/bin/env node\nrequire("node:fs").writeFileSync(${JSON.stringify(secondPiLog)}, "launched");\nprocess.exit(0);\n`);
-	chmodSync(secondPi, 0o755);
-	// A capable gentle-ai that removes the FIRST pi candidate during
-	// materialization, simulating a provider that cleans up its own runtime
-	// while a same-name second candidate remains on PATH.
-	const gentleAi = join(root, "gentle-ai");
-	writeFileSync(gentleAi, `#!/usr/bin/env node\nconst fs = require("node:fs");\nconst argv = process.argv.slice(2);\nif (argv.includes("--materialize=true")) {\n\ttry { fs.rmSync(${JSON.stringify(firstPi)}, { force: true }); } catch {}\n\tprocess.stdout.write("prompt-bytes");\n\tprocess.exit(0);\n}\nprocess.stdout.write(JSON.stringify({ schema: "gentle-ai.review-result-artifact/v2", admission_decision: "completed" }));\nprocess.exit(0);\n`);
+test("armed positive-lens: runMatrix completes end-to-end through the in-process reviewer registry against a stub gentle-ai binary", async (t) => {
+	const directory = mkdtempSync(join(tmpdir(), "gentle-pi-maintainer-armed-positive-"));
+	chmodSync(directory, 0o700);
+	t.after(() => rmSync(directory, { recursive: true, force: true }));
+	const materializeLog = join(directory, "materialized");
+	const submitLog = join(directory, "submitted");
+	const gentleAi = join(directory, "gentle-ai");
+	// A capable gentle-ai: materialize returns a frozen prompt carrying the
+	// real GENTLE_AI_REVIEW_BINDING and GENTLE_AI_REVIEW_CONTEXT lines
+	// (exactly what Go embeds in production) so the armed in-process reviewer
+	// can echo the subject_hash and the changed-path manifest the submission
+	// expects. Submit does NOT accept unconditionally: it reads the --input
+	// payload and refuses any result missing a field Go admission requires
+	// (subject_hash, inspection.status, inspection.paths, findings,
+	// evidence), so a faux reviewer that drifts from the reviewer contract
+	// fails here instead of only against the real binary.
+	const subjectHash = `sha256:${"a".repeat(64)}`;
+	const manifestPaths = ["lib/review-host-relay.ts", "docs/review-integration.md"];
+	const bindingLine = `GENTLE_AI_REVIEW_BINDING {"subject_hash":"${subjectHash}"}`;
+	const contextLine = `GENTLE_AI_REVIEW_CONTEXT ${JSON.stringify({ changed_path_manifest: manifestPaths.map((path) => ({ path, status: "modified" })) })}`;
+	writeFileSync(
+		gentleAi,
+		`#!/usr/bin/env node
+const fs = require("node:fs");
+const argv = process.argv.slice(2);
+if (argv.includes("--materialize=true")) {
+	fs.writeFileSync(${JSON.stringify(materializeLog)}, JSON.stringify(argv));
+	process.stdout.write(${JSON.stringify(`${bindingLine}\n${contextLine}\nreview this diff\n`)});
+	process.exit(0);
+}
+const inputToken = argv.find((token) => token.startsWith("--input="));
+const payload = JSON.parse(fs.readFileSync(inputToken.slice("--input=".length), "utf8"));
+fs.writeFileSync(${JSON.stringify(submitLog)}, JSON.stringify({ argv, payload }));
+const missing = [];
+if (payload.subject_hash !== ${JSON.stringify(subjectHash)}) missing.push("subject_hash");
+if (payload.inspection?.status !== "completed") missing.push("inspection.status");
+if (!Array.isArray(payload.inspection?.paths) || payload.inspection.paths.length === 0) missing.push("inspection.paths");
+if (!Array.isArray(payload.findings)) missing.push("findings");
+if (!Array.isArray(payload.evidence)) missing.push("evidence");
+if (missing.length > 0) {
+	process.stderr.write("reviewer result is missing required fields: " + missing.join(", "));
+	process.exit(1);
+}
+process.stdout.write(JSON.stringify({ schema: "gentle-ai.review-result-artifact/v2", admission_decision: "completed" }));
+process.exit(0);
+`,
+	);
 	chmodSync(gentleAi, 0o755);
-	const savedPath = process.env.PATH;
-	process.env.PATH = [dirA, dirB, savedPath].join(delimiter);
-	t.after(() => { process.env.PATH = savedPath; });
 	const [verdict] = await runMatrix(validateDescriptor({
 		...descriptor(),
 		gentleAiExecutable: gentleAi,
-		piExecutable: "pi",
-		cases: [{ name: "resolve-once", kind: "positive-lens", captureArgumentTokens: [...CAPTURE_TOKENS], submission: structuredClone(SUBMISSION) }],
+		cases: [{ name: "armed-positive-lens", kind: "positive-lens", captureArgumentTokens: [...CAPTURE_TOKENS], submission: structuredClone(SUBMISSION) }],
 	}), { armPositive: true });
-	// The first pi was removed during materialization, so the relay must
-	// fail closed at pi-launch — never fall through to the second candidate.
-	assert.equal(verdict!.verdict, "fail");
-	assert.match(verdict!.reason, /pi-launch-failed/);
-	// The load-bearing assertion: the second PATH candidate never launched.
-	assert.equal(existsSync(secondPiLog), false, "the relay must never fall through to a second PATH candidate; the bare declaration is resolved once at precheck");
-	assert.equal(existsSync(firstPiLog), false, "the first candidate was removed during materialization and must not launch");
+	assert.equal(verdict!.verdict, "pass", JSON.stringify(verdict));
+	assert.ok(verdict!.promptByteLength! > 0);
+	assert.ok(verdict!.resultByteLength! > 0);
+	assert.equal(existsSync(materializeLog), true);
+	assert.equal(existsSync(submitLog), true, "an armed, successful positive-lens case must reach submit");
+	// The submitted payload must carry every field Go admission requires and
+	// inspect exactly the frozen manifest, so the faux reviewer can never
+	// drift from the reviewer contract unnoticed.
+	const submitted = JSON.parse(readFileSync(submitLog, "utf8")) as { payload: Record<string, unknown> };
+	assert.equal(submitted.payload["subject_hash"], subjectHash);
+	assert.deepEqual(submitted.payload["inspection"], { status: "completed", paths: manifestPaths });
+	assert.deepEqual(submitted.payload["findings"], []);
+	assert.ok(Array.isArray(submitted.payload["evidence"]) && (submitted.payload["evidence"] as unknown[]).length > 0);
 });
-// ---------------------------------------------------------------------------
-// Resolve-once (platform-neutral boundary proof) — runs on Windows AND POSIX.
-// Proves runMatrix passes the first resolved concrete Pi path into the relay
-// boundary, not the bare declaration and not a second PATH candidate. Uses the
-// smallest dependency-injection seam in the existing options object: an
-// optional `relay` function defaulting to the real relay. The injected fake
-// records request.piExecutable and never executes a real subprocess, so no
-// shebang/chmod/.cmd execution is involved. No real model or network.
-// ---------------------------------------------------------------------------
-test("platform-neutral: runMatrix passes the first resolved concrete Pi path into the relay boundary (no second resolution)", async (t) => {
-	// Keep the fixture on the same Windows volume as process.cwd() so the
-	// first PATH component genuinely exercises relative-path normalization.
-	const root = mkdtempSync(join(process.cwd(), ".gentle-pi-maintainer-portable-"));
-	chmodSync(root, 0o700);
-	t.after(() => rmSync(root, { recursive: true, force: true }));
-	const dirA = join(root, "path-a");
-	const dirB = join(root, "path-b");
-	mkdirSync(dirA, { recursive: true });
-	mkdirSync(dirB, { recursive: true });
-	chmodSync(dirA, 0o700);
-	chmodSync(dirB, 0o700);
-	const firstPi = join(dirA, "pi");
-	const secondPi = join(dirB, "pi");
-	// Ordinary files (no shebang/chmod needed): the injected relay never
-	// executes them. Only the precheck's existsSync/statSync touches them.
-	writeFileSync(firstPi, "first");
-	writeFileSync(secondPi, "second");
-	const gentleAi = join(root, "gentle-ai");
-	writeFileSync(gentleAi, "gentle-ai");
-	// First PATH component is RELATIVE to process.cwd(): a relative component
-	// must still normalize to the same absolute firstPi the precheck resolved.
-	const dirARelative = relative(process.cwd(), dirA);
-	assert.equal(isAbsolute(dirARelative), false, "fixture must keep the first PATH component relative");
-	const savedPath = process.env.PATH;
-	process.env.PATH = [dirARelative, dirB, savedPath].join(delimiter);
-	t.after(() => { process.env.PATH = savedPath; });
-	let receivedPiExecutable: string | undefined;
+test("armed positive-lens: a malformed reviewerSelection blocks with a clear reason, never a synthesized model", async (t) => {
+	const stub = capableStubHarness(t);
 	const [verdict] = await runMatrix(validateDescriptor({
-		...descriptor(),
-		gentleAiExecutable: gentleAi,
-		piExecutable: "pi",
-		cases: [{ name: "portable-resolve-once", kind: "positive-lens", captureArgumentTokens: [...CAPTURE_TOKENS], submission: structuredClone(SUBMISSION) }],
-	}), {
-		armPositive: true,
-		relay: async (request) => {
-			receivedPiExecutable = request.piExecutable;
-			// Simulate materialization removing the first candidate; the
-			// path was captured at precheck and must not be re-resolved.
-			rmSync(firstPi, { force: true });
-			return { promptByteLength: 1, resultByteLength: 1, submission: "{}" };
-		},
-	});
-	// The relay received the EXACT first concrete resolved path — equality to
-	// the absolute fixture proves normalization held under a relative PATH.
-	assert.equal(receivedPiExecutable, firstPi);
-	assert.notEqual(receivedPiExecutable, secondPi);
-	assert.notEqual(receivedPiExecutable, "pi");
-	assert.equal(verdict!.verdict, "pass");
-	// The first candidate was removed during the relay call; the second is
-	// untouched, proving no fallthrough resolution occurred.
-	assert.equal(existsSync(firstPi), false);
-	assert.equal(existsSync(secondPi), true);
+		...descriptor({ reviewerSelection: "not-a-provider-slash-id" }),
+		gentleAiExecutable: stub.gentleAi,
+		cases: [{ name: "malformed-reviewer-selection", kind: "positive-lens", captureArgumentTokens: [...CAPTURE_TOKENS], submission: structuredClone(SUBMISSION) }],
+	}), { armPositive: true });
+	assert.equal(verdict!.verdict, "fail");
+	assert.match(verdict!.reason, /reviewerSelection/);
+	assert.equal(existsSync(stub.submitLog), false, "a malformed reviewer selection must never reach submit");
 });
 
 // ---------------------------------------------------------------------------
@@ -549,7 +511,7 @@ test("negative control: the real relay returns a typed relay-unavailable error b
 	// pi launch; RELAY_UNAVAILABLE at materialize proves Pi never launched.
 	let caught: unknown;
 	try {
-		await runReviewHostRelaySlot({ captureArgumentTokens: [...CAPTURE_TOKENS], submission: structuredClone(SUBMISSION), gentleAiExecutable: baselineBinary!, piExecutable: "pi" });
+		await runReviewHostRelaySlot({ captureArgumentTokens: [...CAPTURE_TOKENS], submission: structuredClone(SUBMISSION), gentleAiExecutable: baselineBinary! });
 	} catch (error) {
 		caught = error;
 	}
@@ -568,16 +530,18 @@ test("negative control: an armed positive-lens against the baseline blocks becau
 });
 // ---------------------------------------------------------------------------
 // Honest positive arming/skip — the organic journey needs a real capable
-// binary, a real pi, and a real review session (lifecycle machinery beyond
-// this work unit). The runner blocks the positive leg before materialize
-// unless armed. These tests run WITHOUT the arm (the verifier arms it).
+// binary and a real review session (lifecycle machinery beyond this work
+// unit); the reviewer leg itself runs through the in-process registry built
+// from `descriptor.reviewerSelection` (gentle-pi#311 P4), never a real pi
+// child. The runner blocks the positive leg before materialize unless armed.
+// These tests run WITHOUT the arm (the verifier arms it).
 // ---------------------------------------------------------------------------
 const capableArmed = typeof capableBinary === "string" && capableBinary.length > 0 && capableBinary.startsWith("/") && existsSync(capableBinary);
 const capableReason = () => `${CAPABLE_ENV} is unset or not an existing absolute path; supply a capable gentle-ai binary (local build of origin/main with the pi host-relay surface), or set ${REQUIRE_ENV}=1 to fail instead of skip.`;
 if (!capableArmed && armed) throw new Error(capableReason());
 if (!capableArmed) console.log(`tests/maintainer/provider-relay.maintest.ts: ${capableReason()}`);
-function positiveDescriptor(gentleAi = capableBinary, pi = "pi") {
-	return validateDescriptor({ ...descriptor(), gentleAiExecutable: gentleAi!, piExecutable: pi, cases: [{ name: "positive-lens-relay", kind: "positive-lens", captureArgumentTokens: [...CAPTURE_TOKENS], submission: structuredClone(SUBMISSION) }] });
+function positiveDescriptor(gentleAi = capableBinary) {
+	return validateDescriptor({ ...descriptor(), gentleAiExecutable: gentleAi!, cases: [{ name: "positive-lens-relay", kind: "positive-lens", captureArgumentTokens: [...CAPTURE_TOKENS], submission: structuredClone(SUBMISSION) }] });
 }
 test("positive arming/skip: an unarmed positive leg blocks loudly and never fakes green", { skip: !capableArmed }, async () => {
 	const [verdict] = await runMatrix(positiveDescriptor());
@@ -587,12 +551,6 @@ test("positive arming/skip: an unarmed positive leg blocks loudly and never fake
 	assert.equal(verdict!.command, POSITIVE_JOURNEY_COMMAND);
 	assert.notEqual(verdict!.verdict, "pass");
 	assert.notEqual(verdict!.verdict, "fail");
-});
-test("positive arming/skip: a missing pi blocks at the pi pre-arm before materialize", { skip: !capableArmed }, async () => {
-	const [verdict] = await runMatrix(positiveDescriptor(capableBinary, sandboxPath("not-a-real-pi")));
-	assert.equal(verdict!.verdict, "blocked");
-	assert.match(verdict!.reason, /piExecutable/);
-	assert.equal(verdict!.command, POSITIVE_JOURNEY_COMMAND);
 });
 test("positive arming/skip: the exact next evidence command is surfaced for the separate verifier", { skip: !capableArmed }, async () => {
 	const [verdict] = await runMatrix(positiveDescriptor());

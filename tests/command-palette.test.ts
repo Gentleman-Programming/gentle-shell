@@ -32,6 +32,14 @@ function createPalette(groups: readonly CommandPaletteGroup[], theme?: CommandPa
 	return { palette, results };
 }
 
+test("animations is discoverable under Configuration with its live description", () => {
+	const groups = buildCommandPaletteGroups([{ name: "gentle:animations", description: "status|quality|performance|potato" }], {});
+	assert.equal(groups[0]?.title, "Configuration");
+	assert.equal(groups[0]?.items[0]?.command, "gentle:animations");
+	assert.match(groups[0]?.items[0]?.label ?? "", /[Aa]nimation/);
+	assert.equal(groups[0]?.items[0]?.description, "status|quality|performance|potato");
+});
+
 // --- rankPaletteGroups -------------------------------------------------------
 
 test("rankPaletteGroups ranks label-prefix, label-contains, label-subsequence, command-contains, then description-contains", () => {
@@ -336,6 +344,8 @@ test("COMMAND_PALETTE_CATALOG matches the curated command set, in order", () => 
 		"gentle:persona",
 		"gentle:review-mode",
 		"gentle:background-subagents",
+		"gentle:double-esc-cancel",
+		"gentle:animations",
 		"gentle:telemetry",
 		"gentle:banner",
 		"gentle:banner-color",

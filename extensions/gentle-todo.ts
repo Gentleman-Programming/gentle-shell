@@ -104,19 +104,37 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 	};
 
 	const todoCard = (current: TodoSession, theme: Parameters<typeof renderTodoCard>[1], scrollable: boolean, spacer: boolean): Component & { dispose(): void } => {
+		let hovered = false;
 		const card: Component = {
 			render(width: number) {
 				const lines = renderTodoCard(current.state, theme, width, {
 					collapsed: current.collapsed,
 					staleTurns: staleTurns(current.state, current.turn),
 					collapseKey,
+					hovered,
 					...(scrollable ? { scrollable: true } : {}),
 				});
 				return spacer && lines.length > 0 ? [...lines, ""] : lines;
 			},
-			invalidate() {},
+			invalidate() {
+				hovered = false;
+			},
 		};
 		const region = new NativePointerRegion(card, {
+			onHover(event) {
+				// The region spans the whole card, but only the header row (y===0)
+				// is the clickable control, so a move elsewhere in the card clears
+				// hover exactly like leaving the region entirely would.
+				const next = event.y === 0;
+				if (next === hovered) return { handled: true };
+				hovered = next;
+				return { handled: true, render: true };
+			},
+			onLeave() {
+				if (!hovered) return;
+				hovered = false;
+				current.host?.requestRender();
+			},
 			onClick(event) {
 				if (event.button !== "left" || event.y !== 0) return undefined;
 				toggle(current);

@@ -7,12 +7,10 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import {
 	existsSync,
 	lstatSync,
-	mkdtempSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
 	realpathSync,
-	rmSync,
 	writeFileSync,
 } from "node:fs";
 import {
@@ -22,7 +20,7 @@ import {
 	readdir,
 	writeFile,
 } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -34,6 +32,15 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Key, isKeyRelease, matchesKey, truncateToWidth, type KeybindingsManager, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { resolveGentlePiAgentHome, gentlePiConfigHome } from "../lib/agent-home.ts";
+import {
+	BACKGROUND_SUBAGENTS_FILE,
+	BACKGROUND_SUBAGENTS_SCHEMA,
+	loadBackgroundSubagentsPolicy,
+	parseBackgroundSubagentsPolicyFile,
+	resolveBackgroundSubagentsPolicy,
+	type BackgroundSubagentsPolicy,
+	type BackgroundSubagentsResolution,
+} from "../lib/background-subagents-policy.ts";
 import {
 	ensureSddPreflight,
 	getSddPreflightPreferences,
@@ -107,6 +114,7 @@ import {
 	readOrchestratorSettings,
 	restoreOrchestratorSettings,
 	type OrchestratorSettingsReadResult,
+	parseOrchestratorModelRef,
 } from "../lib/profiles-orchestrator.ts";
 import { measureAgentsViewLayout, type AgentsViewLayout } from "../lib/agents-view-layout.ts";
 import { NativeChoiceList } from "../lib/native-choice-list.ts";
@@ -123,6 +131,7 @@ import {
 	REVIEW_HOST_RELAY_SUBMISSION_MISSING_MESSAGE,
 	REVIEW_HOST_RELAY_UNAVAILABLE_MESSAGE,
 	ReviewHostRelayError,
+	reviewHostMediatedRoleSlots,
 	reviewHostRelaySlots,
 	reviewHostRelayUnachievableDetail,
 	reviewHostRelayUnachievableReason,
@@ -137,6 +146,7 @@ import {
 	type ReviewHostRelaySlot,
 	type ReviewProviderRoleVectorSlot,
 } from "../lib/review-host-relay.ts";
+import type { InProcessReviewerRegistry } from "../lib/inprocess-reviewer.ts";
 import {
 	JOURNAL_STATUS,
 	REVIEW_OPERATION,
@@ -158,7 +168,7 @@ import {
 } from "../lib/review-snapshot.ts";
 import { renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
 import { sanitizeTerminalText, stripAnsi } from "../lib/terminal-theme.ts";
-import { CandidateViewError, CandidateViewRegistry, injectReviewCandidateView, readCandidateContextManifestPage, resolveCanonicalCandidateBase, type CandidateView } from "../lib/review-candidate-view.ts";
+import { BASE_REF_ACCEPTED_FORMS, CandidateViewError, CandidateViewRegistry, injectReviewCandidateView, readCandidateContextManifestPage, resolveCanonicalCandidateBase, type CandidateView } from "../lib/review-candidate-view.ts";
 import {
 	GentleAiDevBinaryOverrideError,
 	GENTLE_AI_INSTALL_RECOVERY_COMMAND,
@@ -184,8 +194,9 @@ import {
 	nativeReviewLegacyQuarantineAuthorization,
 	nativeReviewReconcileAuthorization,
 	nativeReviewRecoverAuthorization,
-	normalizeNativeReviewCwd,
+
 	NativeReviewCliError,
+	nativeUntrackedSelection,
 	NativeReviewConsentBindingError,
 	NativeReviewConsentRequiredError,
 	NativeReviewIntegrationError,
@@ -349,9 +360,16 @@ function localAgentOverrideCount(cwd: string, owner: PackageAssetOwner): number 
 
 // ---------------------------------------------------------------------------
 // Background subagents policy — project > global > env > default off
+//
+// The pure resolver (parseBackgroundSubagentsPolicyFile,
+// resolveBackgroundSubagentsPolicy, loadBackgroundSubagentsPolicy, and their
+// types/constants) lives in lib/background-subagents-policy.ts so the
+// runtime side (extensions/gentle-agents.ts) can read the effective policy
+// without importing the pi extension surface. Everything below this point
+// (capability probing, report rendering, the global-file writer) stays here
+// because it is specific to this extension's UI-facing surface.
 // ---------------------------------------------------------------------------
 
-type BackgroundSubagentsPolicy = "on" | "off";
 type BackgroundSubagentsCapability = "ready" | "absent";
 
 interface BackgroundSubagentsRendering {
@@ -359,141 +377,10 @@ interface BackgroundSubagentsRendering {
 	capability: BackgroundSubagentsCapability;
 }
 
-/** Which of the four sources decided the effective policy. */
-type BackgroundSubagentsSource =
-	| "project_file"
-	| "global_file"
-	| "environment"
-	| "default";
-
-interface BackgroundSubagentsResolution {
-	policy: BackgroundSubagentsPolicy;
-	source: BackgroundSubagentsSource;
-	/** The deciding file was present but failed the strict decode. */
-	malformed: boolean;
-	projectFile: string;
-	globalFile: string;
-	projectFileExists: boolean;
-	globalFileExists: boolean;
-	/** The raw env value, reported even when it is unrecognized and inert. */
-	envValue: string | undefined;
-}
-
-interface LoadBackgroundSubagentsOptions {
-	/** Override the config home directory (used in tests to avoid touching ~/.pi). */
-	gentlePiConfigHome?: string;
-	/** Override the environment lookup (used in tests). */
-	env?: Record<string, string | undefined>;
-}
-
-const BACKGROUND_SUBAGENTS_SCHEMA = "gentle-pi.background-subagents/v1";
-const BACKGROUND_SUBAGENTS_FILE = "background-subagents.json";
-
 const DEFAULT_BACKGROUND_SUBAGENTS_RENDERING: BackgroundSubagentsRendering = {
 	policy: "off",
 	capability: "absent",
 };
-
-/**
- * Strict decode of {"schema":"gentle-pi.background-subagents/v1","policy":"on"|"off"}.
- * Any malformed shape (bad JSON, wrong schema, unknown keys, invalid policy)
- * returns undefined so the caller fails closed to "off".
- */
-function parseBackgroundSubagentsPolicyFile(
-	raw: string,
-): BackgroundSubagentsPolicy | undefined {
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(raw);
-	} catch {
-		return undefined;
-	}
-	if (!isRecord(parsed)) return undefined;
-	if (parsed.schema !== BACKGROUND_SUBAGENTS_SCHEMA) return undefined;
-	if (parsed.policy !== "on" && parsed.policy !== "off") return undefined;
-	if (Object.keys(parsed).length !== 2) return undefined;
-	return parsed.policy;
-}
-
-/**
- * Resolve the background-subagents policy AND the source that decided it.
- *
- * Resolution order (first hit wins, mirroring loadRuntimeGuardrailsConfig):
- *   1. Project file `${cwd}/.pi/gentle-ai/background-subagents.json`
- *   2. Global file `${configHome}/background-subagents.json`
- *      (configHome honors GENTLE_PI_CONFIG_HOME, default ~/.pi/gentle-ai)
- *   3. Env var GENTLE_PI_BACKGROUND_SUBAGENTS ("on" | "off")
- *   4. Default "off"
- *
- * A present-but-malformed file fails closed to "off" instead of falling
- * through to a lower-priority source, and it stays attributed to that file:
- * "off decided by a broken project file" and "off by default" are different
- * situations, and only the first one is a mistake to fix.
- *
- * Four sources with first-hit-wins is exactly the shape that makes an edit
- * look like it did nothing, so the deciding source is part of the result
- * rather than something a caller has to re-derive.
- */
-function resolveBackgroundSubagentsPolicy(
-	cwd: string,
-	options: LoadBackgroundSubagentsOptions = {},
-): BackgroundSubagentsResolution {
-	const env = options.env ?? process.env;
-	const envValue = env.GENTLE_PI_BACKGROUND_SUBAGENTS;
-	let projectFile = "";
-	let globalFile = "";
-	try {
-		const configHome = options.gentlePiConfigHome ?? gentleAiConfigHome();
-		projectFile = join(cwd, ".pi", "gentle-ai", BACKGROUND_SUBAGENTS_FILE);
-		globalFile = join(configHome, BACKGROUND_SUBAGENTS_FILE);
-		const projectFileExists = existsSync(projectFile);
-		const globalFileExists = existsSync(globalFile);
-		const locations = { projectFile, globalFile, projectFileExists, globalFileExists, envValue };
-		for (const [source, path, present] of [
-			["project_file", projectFile, projectFileExists],
-			["global_file", globalFile, globalFileExists],
-		] as const) {
-			if (!present) continue;
-			let decoded: BackgroundSubagentsPolicy | undefined;
-			try {
-				decoded = parseBackgroundSubagentsPolicyFile(readFileSync(path, "utf8"));
-			} catch {
-				// Unreadable is indistinguishable from unusable at this layer, and
-				// both must fail closed on the file that claimed the decision.
-				decoded = undefined;
-			}
-			return decoded === undefined
-				? { policy: "off", source, malformed: true, ...locations }
-				: { policy: decoded, source, malformed: false, ...locations };
-		}
-		if (envValue === "on" || envValue === "off") {
-			return { policy: envValue, source: "environment", malformed: false, ...locations };
-		}
-		return { policy: "off", source: "default", malformed: false, ...locations };
-	} catch {
-		return {
-			policy: "off",
-			source: "default",
-			malformed: false,
-			projectFile,
-			globalFile,
-			projectFileExists: false,
-			globalFileExists: false,
-			envValue,
-		};
-	}
-}
-
-/**
- * The effective policy alone, for callers that do not report a source.
- * It delegates so the loader and the resolver can never disagree.
- */
-function loadBackgroundSubagentsPolicy(
-	cwd: string,
-	options: LoadBackgroundSubagentsOptions = {},
-): BackgroundSubagentsPolicy {
-	return resolveBackgroundSubagentsPolicy(cwd, options).policy;
-}
 
 /** Write the global policy file, creating the config home when needed. */
 function writeGlobalBackgroundSubagentsPolicy(
@@ -1134,18 +1021,26 @@ async function resolveReviewAssessmentPlan(
 
 	let assessment: ReviewAssessmentV1 | undefined;
 	let unassessableDetail: string | undefined;
+	let unassessableCode = "native-assess-unavailable";
 	if (nativeReviewCli?.assess === undefined) {
 		unassessableDetail = "native review assess is unavailable: the installed gentle-ai binary does not expose the assess command.";
 	} else {
 		try {
 			const request: NativeReviewAssessRequest = {
 				cwd,
+				...nativeUntrackedSelection(input),
 				...(input.baseRef === undefined ? {} : { baseRef: input.baseRef, committedOnly: true as const }),
 				...(signal === undefined ? {} : { signal }),
 			};
 			assessment = await nativeReviewCli.assess(request);
 		} catch (error) {
-			unassessableDetail = `native review assess failed: ${error instanceof Error ? error.message : String(error)}`;
+			const nativeError = asNativeReviewCliError(error);
+			unassessableCode = nativeError?.code ?? unassessableCode;
+			// Only the sanitized process surface may supply native evidence.
+			// Arbitrary thrown messages can contain argv or environment values.
+			unassessableDetail = nativeError?.diagnostics.stderr
+				? `native review assess failed: ${nativeError.diagnostics.stderr}`
+				: "native review assess failed; no sanitized stderr diagnostic is available.";
 		}
 	}
 
@@ -1161,7 +1056,7 @@ async function resolveReviewAssessmentPlan(
 	return {
 		schema: "gentle-pi.review-assessment-plan/v1",
 		risk,
-		reasons: assessment?.reasons ?? (unassessableDetail === undefined ? [] : [{ code: "native-assess-unavailable", path: "", detail: unassessableDetail }]),
+		reasons: assessment?.reasons ?? (unassessableDetail === undefined ? [] : [{ code: unassessableCode, path: "", detail: unassessableDetail }]),
 		changedPaths: assessment?.changedPaths ?? 0,
 		changedLines: assessment?.changedLines ?? 0,
 		candidate: assessment === undefined ? null : { kind: assessment.candidate.kind, baseRef: assessment.candidate.baseRef },
@@ -1388,14 +1283,14 @@ Organic Driven Development (ODD) is the predefined workflow of this orchestrator
 2. **Explore.** Explore existing code and requirements first, proportionately to the request, before proposing or writing anything.
 3. **Resolve uncertainty.** Recommend optional research only for a named uncertainty; ask one focused user question only for a real unresolved product decision, then stop and wait; use at most one scoped read-only assumption challenge for a high-consequence unproven premise.
 4. **Classify.** The work is substantial when exploration yields two or more meaningful implementation steps, or progress worth recovering after an interruption. Small, understood work stays small and creates no durable task artifacts.
-5. **Track before the first write.** For substantial authorized implementation, create \`odd/tasks/<feature-name>.md\` and its Engram mirror \`odd/<feature-name>/tasks\` automatically, before the first source write, without asking permission for tasks or storage. Tell the user in one line which feature document was created and how many tasks it holds.
-6. **Implement task by task.** Route each task through the orchestrator's Work Routing Ladder, with the configured TDD mode and applicable checks. Check an item off only after its outcome and checks were observed; update the file and the mirror after each task.
-7. **Close.** Report the verified outcome, every failed, skipped, or pending check, and the next step. Native review applies only at the deliverable boundary and only under the user-owned RDD switch.
+5. **Track before the first write.** For substantial authorized implementation, create \`odd/tasks/<feature-name>.md\` and its Engram mirror \`odd/<feature-name>/tasks\` automatically, then create or rebuild the visible \`todo\` list from the reconciled feature tasks, all before the first source write and without asking permission for tasks or storage. Tell the user in one line which feature document was created and how many tasks it holds.
+6. **Implement task by task.** Route each task through the orchestrator's Work Routing Ladder, honoring its mandatory delegation triggers, with the configured TDD mode and applicable checks. These triggers are mandatory, not advisory: executing past a fired trigger inline is a routing defect even if the work succeeds. Check an item off only after its outcome and checks were observed; update the file, mirror, and visible \`todo\` projection after every task transition and material plan change. Every task closes with at least one work-unit commit on the feature branch, branch first when on the default branch, with tests and docs alongside the behavior, using a Conventional Commit message; record the commit identity in the feature document as evidence. Work-unit commits on the feature branch are part of authorized substantial ODD implementation; push, pull request creation, and merge remain the user's decisions.
+7. **Close.** Report the verified outcome, every failed, skipped, or pending check, and the next step. The native review candidate is a work-unit commit or a PR slice, never a TODO checkbox and never the accumulated feature branch; native review runs only under the user-owned RDD switch.
 Resume an interrupted feature with \`mem_context\`, then project- and feature-scoped \`mem_search\`, then \`mem_get_observation\` for the full document, then the task file itself; reconcile before continuing the next unfinished task. Detail for steps 3–7: \`orchestrator-delegation.md\` and \`orchestrator-memory.md\`.
 
 Harness principles:
 - el Gentleman is not prompt engineering. It is runtime discipline around powerful agents.
-- Organic Driven Development (ODD) is the predefined workflow for every request: authorize, explore, resolve uncertainty, classify, track substantial work before the first write, implement task by task with proportionate checks, close. SDD is explicitly selected.
+- Organic Driven Development (ODD) is the predefined workflow for every request: authorize, explore, resolve uncertainty, classify, track substantial work before the first write, implement task by task with proportionate checks, close each task with a work-unit commit, and close. SDD is explicitly selected.
 - Clarify scope, constraints, acceptance criteria, and non-goals before implementation.
 - Use subagents when available for exploration, planning, implementation, and review, while keeping one parent session responsible for orchestration.
 - Keep writes single-threaded unless the user explicitly approves parallel write isolation.
@@ -2541,24 +2436,6 @@ function builtinAgentDirs(cwd: string): string[] {
 	];
 }
 
-function listBuiltinAgentNames(cwd: string): Set<string> {
-	return new Set(
-		builtinAgentDirs(cwd).flatMap((dir) =>
-			listAgentsFromDir(dir, "builtin").map((agent) => agent.name),
-		),
-	);
-}
-
-async function listBuiltinAgentNamesAsync(cwd: string): Promise<Set<string>> {
-	const names = new Set<string>();
-	for (const dir of builtinAgentDirs(cwd)) {
-		for (const agent of await listAgentsFromDirAsync(dir, "builtin")) {
-			names.add(agent.name);
-		}
-	}
-	return names;
-}
-
 function listDiscoverableAgents(cwd: string): AgentEntry[] {
 	const builtinDirs = builtinAgentDirs(cwd);
 	const agents = [
@@ -2939,7 +2816,20 @@ function describeModelConfig(cwd: string, config: AgentModelConfig): string[] {
 }
 
 async function getPiModelOptions(ctx: ExtensionContext): Promise<string[]> {
-	const models = await ctx.modelRegistry.getAvailable();
+	const registry = ctx.modelRegistry;
+	if (!registry) {
+		return [...MODEL_CONTROL_OPTIONS];
+	}
+	let raw: unknown;
+	try {
+		raw = await registry.getAvailable();
+	} catch {
+		return [...MODEL_CONTROL_OPTIONS];
+	}
+	if (!Array.isArray(raw)) {
+		return [...MODEL_CONTROL_OPTIONS];
+	}
+	const models = raw as { provider: string; id: string }[];
 	const modelIds = models
 		.map((model) => normalizeModelId(`${model.provider}/${model.id}`))
 		.filter((model): model is string => model !== undefined)
@@ -4251,6 +4141,46 @@ function reportProfilesDrops(ctx: ExtensionContext, path: string, drops: Profile
 	}
 }
 
+/** Pi's own live-session controls: the ExtensionAPI's setModel/setThinkingLevel. */
+type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel">;
+
+/**
+ * Switch the running session to the profile's orchestrator. `settings.json`
+ * is the default for new sessions only; Pi's `setModel`/`setThinkingLevel`
+ * are what move the live one. Failures never undo the persisted default: the
+ * profile is applied for the next session either way, and the note says what
+ * this session did. Nothing here may throw — settings.json is already written
+ * and the apply must finish reporting.
+ */
+async function switchLiveOrchestrator(ctx: ExtensionContext, live: LiveSession, entry: AgentRoutingEntry): Promise<string> {
+	const reference = parseOrchestratorModelRef(entry.model);
+	if (reference === undefined) return "";
+	const label = `${reference.provider}/${reference.model}`;
+	const registry = ctx.modelRegistry;
+	if (!registry) {
+		if (ctx.hasUI && ctx.ui.notify) {
+			ctx.ui.notify("Model registry unavailable; this session keeps its current model.", "warning");
+		}
+		return `\nModel registry unavailable; this session keeps its current model.`;
+	}
+	const model = registry.find(reference.provider, reference.model);
+	if (model === undefined) return `\n${label} is not in the model catalog; this session keeps its current model.`;
+	let switched = false;
+	try {
+		switched = await live.setModel(model);
+	} catch (error) {
+		return `\nThis session could not switch to ${label}: ${sanitizeTerminalText(error instanceof Error ? error.message : String(error))}.`;
+	}
+	if (!switched) return `\nno authentication is configured for ${reference.provider}; this session keeps its current model.`;
+	if (entry.thinking === undefined) return `\nThis session now runs on ${label}.`;
+	try {
+		live.setThinkingLevel(entry.thinking);
+	} catch (error) {
+		return `\nThis session now runs on ${label}, but its thinking level could not be set to ${entry.thinking}: ${sanitizeTerminalText(error instanceof Error ? error.message : String(error))}.`;
+	}
+	return `\nThis session now runs on ${label} · ${entry.thinking}.`;
+}
+
 function profileSnapshotFrom(
 	current: AgentModelConfig,
 	settings: OrchestratorSettingsReadResult,
@@ -4264,6 +4194,7 @@ function profileSnapshotFrom(
 
 async function runProfilesPanelAction(
 	ctx: ExtensionContext,
+	live: LiveSession,
 	path: string,
 	file: AgentProfilesFile,
 	result: Exclude<ProfilesPanelResult, { type: "close" }>,
@@ -4405,6 +4336,10 @@ async function runProfilesPanelAction(
 					orchestratorRollback = () => restoreOrchestratorSettings(settingsPath, previous);
 					orchestratorNote = `\nOrchestrator set to ${formatOrchestratorSelection(orchestratorEntry)} in ${sanitizeTerminalText(settingsPath)}.`;
 				}
+				// settings.json only governs future sessions. The session the user is
+				// sitting in keeps its model until told otherwise, which made a profile
+				// look applied while the orchestrator kept answering with the old one.
+				orchestratorNote += await switchLiveOrchestrator(ctx, live, orchestratorEntry);
 			}
 			// A pin that does not resolve changes nothing at launch, so the global apply
 			// above is what governs this repository. Saying so keeps a broken pin from
@@ -4651,7 +4586,7 @@ async function runProfilesPanelAction(
 	}
 }
 
-async function handleProfilesCommand(ctx: ExtensionContext): Promise<void> {
+async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): Promise<void> {
 	const path = profilesFilePath(gentleAiConfigHome());
 	const read = readProfilesFileResult(path);
 	if (read.status === "invalid") {
@@ -4701,7 +4636,7 @@ async function handleProfilesCommand(ctx: ExtensionContext): Promise<void> {
 	);
 	while (result.type !== "close") {
 		selectedName = "name" in result ? result.name : undefined;
-		file = await runProfilesPanelAction(ctx, path, file, result);
+		file = await runProfilesPanelAction(ctx, live, path, file, result);
 		result = await showProfilesPanel(
 			ctx,
 			file,
@@ -4805,7 +4740,7 @@ const REVIEW_CONTROLLER_PARAMETERS = {
 		},
 		input: {
 			type: "string",
-			description: "A JSON-serialized object string, not a nested object. New native ordinary START uses {\"mode\":\"ordinary\"}; answer-consent uses exactly {\"consentBinding\":\"<opaque id>\",\"answer\":\"granted|declined\"}. Ordinary provider capture belongs only to gentle_review_capture. An explicit baseRef requires committedOnly: true and requests a committed range, while repository-local policyPath remains optional. ASSESS accepts an optional object with baseRef, committedOnly, writerModelId, writerEffort, and nativeReviewOutcome (gentle-pi#662/#668); omitting writerModelId and writerEffort assesses the ambient working tree and fails closed to a small writer profile (never large) because the writer's actual profile is unknown to this call. nativeReviewOutcome (one of closed, declined, unavailable, unknown) tells ASSESS whether the native review actually closed for this candidate: when Receipt-driven development reads on but the review was declined for this candidate, is unavailable, or its outcome is unknown, ASSESS falls back to the exact risk-gated plan it returns when RDD is off, re-enabling the separate verifier -- a decline is candidate-scoped and never lowers the bar below the RDD-off path. Omitting it lets ASSESS try to derive declined/unavailable from what this process itself recorded for this exact candidate (never a different one, and never from repository state alone), failing closed to unknown when it cannot; `closed` is never derived -- pass it explicitly, and only right after acknowledging the approved review for this same candidate. The returned outcome_source (explicit|derived|unknown) says which of these produced the value. Legacy controller input remains separate.",
+			description: "A JSON-serialized object string, not a nested object. New native ordinary START uses {\"mode\":\"ordinary\"}; answer-consent uses exactly {\"consentBinding\":\"<opaque id>\",\"answer\":\"granted|declined\"}. Ordinary provider capture belongs only to gentle_review_capture. An explicit baseRef requires committedOnly: true and requests a committed range, while repository-local policyPath remains optional. baseRef must be HEAD, a full 40- or 64-character commit id, or a ref name; abbreviated commit ids are rejected as base-ref-unresolvable. ASSESS accepts an optional object with baseRef, committedOnly, writerModelId, writerEffort, and nativeReviewOutcome (gentle-pi#662/#668); omitting writerModelId and writerEffort assesses the ambient working tree and fails closed to a small writer profile (never large) because the writer's actual profile is unknown to this call. nativeReviewOutcome (one of closed, declined, unavailable, unknown) tells ASSESS whether the native review actually closed for this candidate: when Receipt-driven development reads on but the review was declined for this candidate, is unavailable, or its outcome is unknown, ASSESS falls back to the exact risk-gated plan it returns when RDD is off, re-enabling the separate verifier -- a decline is candidate-scoped and never lowers the bar below the RDD-off path. Omitting it lets ASSESS try to derive declined/unavailable from what this process itself recorded for this exact candidate (never a different one, and never from repository state alone), failing closed to unknown when it cannot; `closed` is never derived -- pass it explicitly, and only right after acknowledging the approved review for this same candidate. The returned outcome_source (explicit|derived|unknown) says which of these produced the value. Legacy controller input remains separate.",
 		},
 		outputPath: { type: "string", description: "Retired with legacy bundle export; ignored. Export returns legacy-operation-retired." },
 		inputPath: { type: "string", description: "Repository-local JSON input file for the separate legacy controller flow (alternative to input). Legacy bundle import is retired." },
@@ -4899,7 +4834,7 @@ interface ReviewScopeParameters {
 // as `gentle_review` operation `assess` (not a dedicated tool), taking its
 // optional fields through the controller's existing generic `input` JSON
 // string, exactly like START's `{"mode":...,"baseRef":...}`.
-interface ReviewAssessInput {
+interface ReviewAssessInput extends Pick<NativeReviewAssessRequest, "untrackedScope" | "expectedUntrackedInventory" | "intendedUntracked"> {
 	baseRef?: string;
 	committedOnly?: boolean;
 	writerModelId?: string;
@@ -4918,7 +4853,7 @@ function isNativeReviewOutcome(value: unknown): value is NativeReviewOutcome {
 function parseReviewAssessInput(operation: ReviewControllerOperation, raw: string | undefined): ReviewAssessInput {
 	if (raw === undefined) return {};
 	const value = parseControllerJson(raw, operation);
-	const allowed = new Set(["baseRef", "committedOnly", "writerModelId", "writerEffort", "nativeReviewOutcome"]);
+	const allowed = new Set(["baseRef", "committedOnly", "writerModelId", "writerEffort", "nativeReviewOutcome", "untrackedScope", "expectedUntrackedInventory", "intendedUntracked"]);
 	const unexpected = Object.keys(value).find((key) => !allowed.has(key));
 	if (unexpected !== undefined) throw new Error(`Review controller ${operation} input does not accept ${unexpected}`);
 	const { baseRef, committedOnly, writerModelId, writerEffort, nativeReviewOutcome } = value;
@@ -4932,6 +4867,7 @@ function parseReviewAssessInput(operation: ReviewControllerOperation, raw: strin
 	return {
 		...(baseRef === undefined ? {} : { baseRef: baseRef as string }),
 		...(committedOnly === undefined ? {} : { committedOnly: committedOnly as boolean }),
+		...nativeUntrackedSelection(value),
 		...(writerModelId === undefined ? {} : { writerModelId: writerModelId as string }),
 		...(writerEffort === undefined ? {} : { writerEffort: writerEffort as string }),
 		...(nativeReviewOutcome === undefined ? {} : { nativeReviewOutcome: nativeReviewOutcome as NativeReviewOutcome }),
@@ -5206,14 +5142,6 @@ function parseStartInput(value: Record<string, unknown>): ReviewControllerStartI
 
 function isReviewTransition(value: string): value is ReviewTransition {
 	return Object.values(REVIEW_TRANSITION).some((transition) => transition === value);
-}
-
-function isGraphV1JudgmentDayLineage(cwd: string, lineageId: string): boolean {
-	try {
-		return ReviewTransactionStore.forRepository(cwd).read(lineageId).mode === REVIEW_MODE.JUDGMENT_DAY;
-	} catch {
-		return false;
-	}
 }
 
 interface NativeStartPreAuthorityRejection {
@@ -5840,6 +5768,12 @@ function validateNativeStartUntrackedSelection(value: Record<string, unknown>): 
 	};
 }
 
+const BASE_REF_REJECTION_REASONS = new Set(["base-ref-unresolvable", "base-ref-ambiguous", "base-ref-moved", "base-ref-invalid"]);
+
+function baseRefRejectionHint(reason: string): { hint?: string } {
+	return BASE_REF_REJECTION_REASONS.has(reason) ? { hint: BASE_REF_ACCEPTED_FORMS } : {};
+}
+
 function nativeStartRejection(reason: string, field?: string): Record<string, unknown> {
 	return {
 		operation: REVIEW_CONTROLLER_OPERATION.START,
@@ -5861,6 +5795,7 @@ function nativeStartRejection(reason: string, field?: string): Record<string, un
 									: "native-start-policy-path-invalid",
 		reason,
 		...(field === undefined ? {} : { field }),
+		...baseRefRejectionHint(reason),
 		...nativeStartPreAuthorityRejection(),
 	};
 }
@@ -5872,6 +5807,20 @@ function nativeStatusInputRejection(reason: string, field?: string): Record<stri
 		outcome: "native-status-input-invalid",
 		reason,
 		...(field === undefined ? {} : { field }),
+		...baseRefRejectionHint(reason),
+		mutation_performed: false,
+		mutation_outcome: "none",
+	};
+}
+
+function nativeInspectInputRejection(reason: string, field?: string): Record<string, unknown> {
+	return {
+		operation: REVIEW_CONTROLLER_OPERATION.INSPECT,
+		status: "blocked",
+		outcome: "native-inspect-input-invalid",
+		reason,
+		...(field === undefined ? {} : { field }),
+		...baseRefRejectionHint(reason),
 		mutation_performed: false,
 		mutation_outcome: "none",
 	};
@@ -6682,6 +6631,27 @@ function reviewHostRelayFailureReport(error: ReviewHostRelayError): Record<strin
 		// refusal reason lives (gentle-pi#524); dropping it hid every admission
 		// refusal behind "submission-refused".
 		...(error.stderr.length === 0 ? {} : { stderr: error.stderr }),
+		// gentle-shell#1156: what the reviewer child's own event stream revealed.
+		...(error.reviewerEvidence === undefined ? {} : { reviewer: error.reviewerEvidence }),
+	};
+}
+
+// gentle-pi#311 P2 (superseding gentle-shell#1136 / #1158): the lens's
+// completion selection comes from its entry in the agent model routing
+// config, keyed by its routing key (`review-<lens>`). There is no extension
+// allowlist and no ambient default model: the in-process completion resolves
+// its provider through the live model registry the caller supplies, or it is
+// refused before materialize ever runs (validateReviewerSelectionConfiguration
+// in lib/review-host-relay.ts).
+function reviewHostRelaySelection(lens: string | undefined, config: AgentModelConfig): { selection?: string; thinking?: string; routingKey: string } {
+	const routingKey = lens === undefined || lens.length === 0 ? "review capture" : lens.startsWith("review-") ? lens : `review-${lens}`;
+	const entry = config[routingKey];
+	const model = typeof entry === "object" && entry !== null && typeof (entry as AgentRoutingEntry).model === "string" && (entry as AgentRoutingEntry).model!.length > 0 ? (entry as AgentRoutingEntry).model : undefined;
+	const thinking = typeof entry === "object" && entry !== null && typeof (entry as AgentRoutingEntry).thinking === "string" ? (entry as AgentRoutingEntry).thinking : undefined;
+	return {
+		...(model === undefined ? {} : { selection: model }),
+		...(thinking === undefined ? {} : { thinking }),
+		routingKey,
 	};
 }
 
@@ -6784,6 +6754,12 @@ async function executeReviewHostRelayCapture(
 	selections: Map<string, RetainedNativeStatusSelection>,
 	route: RetainedNativeCaptureRoute | undefined,
 	signal?: AbortSignal,
+	modelRegistry?: InProcessReviewerRegistry,
+	// The caller's live session id: forwarded into the relay request so an
+	// OpenCode-routed reviewer completion carries its x-opencode-session
+	// attribution header. Appended last so every existing positional call site
+	// keeps compiling unchanged.
+	reviewerSessionId?: string,
 ): Promise<Record<string, unknown>> {
 	try {
 		if (slot.submission === undefined) {
@@ -6793,12 +6769,24 @@ async function executeReviewHostRelayCapture(
 				REVIEW_HOST_RELAY_SUBMISSION_MISSING_MESSAGE,
 			);
 		}
-		const result = await activeReviewHostRelayRunner({
-			captureArgumentTokens: slot.captureArgumentTokens,
-			targetCwd: cwd,
-			submission: slot.submission,
-			...(signal === undefined ? {} : { signal }),
-		});
+		const result = await activeReviewHostRelayRunner((() => {
+			// gentle-pi#311 P2 / P3: the lens's (or, for a v9 host-mediated role
+			// slot, the fixed review-refuter/review-validator routing key's)
+			// user-owned completion selection rides the request alongside the
+			// live model registry; the relay validates and refuses a missing
+			// registry or a routing entry with no configured model typed before
+			// anything launches, never a fallback to a child.
+			const launch = reviewHostRelaySelection(slot.routingKey ?? slot.lens, readModelConfig(cwd));
+			return {
+				captureArgumentTokens: slot.captureArgumentTokens,
+				targetCwd: cwd,
+				submission: slot.submission,
+				...launch,
+				...(modelRegistry === undefined ? {} : { reviewerRegistry: modelRegistry }),
+				...(reviewerSessionId === undefined ? {} : { reviewerSessionId }),
+				...(signal === undefined ? {} : { signal }),
+			};
+		})());
 		const closure = decodeRelayLastEventClosure(result.submission);
 		if (closure !== undefined) return mapAndClearLastEventClosure(closure, binding, selections, cwd);
 		return {
@@ -6811,6 +6799,7 @@ async function executeReviewHostRelayCapture(
 				...(slot.lens === undefined ? {} : { lens: slot.lens }),
 				...(slot.order === undefined ? {} : { order: slot.order }),
 				...(slot.subjectHash === undefined ? {} : { subject_hash: slot.subjectHash }),
+				...(slot.routingKey === undefined ? {} : { role: slot.name }),
 				prompt_bytes: result.promptByteLength,
 				result_bytes: result.resultByteLength,
 				submission: result.submission,
@@ -7392,6 +7381,16 @@ async function executeReviewCaptureOperation(
 	candidateViews: CandidateViewRegistry | null = new CandidateViewRegistry(),
 	retainedUntrackedSelections: Map<string, RetainedNativeStatusSelection> = new Map(),
 	requireRegisteredRoute = false,
+	// gentle-pi#311 P2: the live model registry a lens materialize capture
+	// resolves its in-process completion through. Appended last (rather than
+	// inserted) so every existing positional call site — none of which pass an
+	// eighth argument — keeps compiling unchanged.
+	modelRegistry?: InProcessReviewerRegistry,
+	// The caller's live session id, threaded into every relay request this
+	// capture launches so an OpenCode-routed reviewer model carries its
+	// x-opencode-session attribution header. Appended last for the same
+	// positional-call-site reason as modelRegistry above.
+	reviewerSessionId?: string,
 ): Promise<Record<string, unknown>> {
 	const parameters = parseReviewCaptureParameters(parametersValue);
 	if (nativeReviewCli === null || nativeReviewCli.targetStatus === undefined) {
@@ -7451,7 +7450,33 @@ async function executeReviewCaptureOperation(
 				mutation_outcome: "none",
 			};
 		}
-		return withCorrectionTarget(await executeReviewHostRelayCapture(hostRelaySlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal));
+		return withCorrectionTarget(await executeReviewHostRelayCapture(hostRelaySlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId));
+	}
+
+	// gentle-pi#311 P3: gentle-ai's v9 contract renders the refuter and
+	// targeted-validator role captures host-mediated, exactly like the lens
+	// slot above — same relay machinery, only its fixed review-refuter /
+	// review-validator routing key (carried on the slot) and its own schema
+	// differ. An older gentle-ai's self-contained --execute=true vector still
+	// falls through to reviewProviderRoleVectorSlots below unchanged.
+	const hostMediatedRoleSlots = reviewHostMediatedRoleSlots([selected.input]);
+	if (hostMediatedRoleSlots.length === 1) {
+		if (parameters.correctionLines !== undefined) return captureBindingRejected("correctionLines is valid only for a correction-plan capture");
+		if (parameters.reviewerRunAcknowledged !== true) {
+			return {
+				tool: "gentle_review_capture",
+				status: "blocked",
+				outcome: "reviewer-model-run-forecast",
+				cost_forecast: {
+					transport: "pi_host_relay",
+					model_runs: 1,
+					roles: [hostMediatedRoleSlots[0]!.routingKey],
+				},
+				mutation_performed: false,
+				mutation_outcome: "none",
+			};
+		}
+		return withCorrectionTarget(await executeReviewHostRelayCapture(hostMediatedRoleSlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId));
 	}
 
 	if (selected.input.captureOperation === "review.capture-correction-plan") {
@@ -7530,6 +7555,12 @@ async function executeReviewCaptureGroupOperation(
 	candidateViews: CandidateViewRegistry | null = new CandidateViewRegistry(),
 	retainedUntrackedSelections: Map<string, RetainedNativeStatusSelection> = new Map(),
 	requireRegisteredRoute = false,
+	// gentle-pi#311 P2: see executeReviewCaptureOperation's matching parameter.
+	modelRegistry?: InProcessReviewerRegistry,
+	// The caller's live session id, set on every grouped relay request so an
+	// OpenCode-routed reviewer model carries its x-opencode-session attribution
+	// header. Appended last for the same positional-call-site reason as above.
+	reviewerSessionId?: string,
 ): Promise<Record<string, unknown>> {
 	const parameters = parseReviewCaptureGroupParameters(parametersValue);
 	if (nativeReviewCli === null || nativeReviewCli.targetStatus === undefined) return { ...captureGroupRejected("native target STATUS is unavailable"), outcome: "native-status-unsupported" };
@@ -7570,6 +7601,9 @@ async function executeReviewCaptureGroupOperation(
 		captureArgumentTokens: slot.captureArgumentTokens,
 		targetCwd: cwd,
 		submission: slot.submission!,
+		...reviewHostRelaySelection(slot.lens, readModelConfig(cwd)),
+		...(modelRegistry === undefined ? {} : { reviewerRegistry: modelRegistry }),
+		...(reviewerSessionId === undefined ? {} : { reviewerSessionId }),
 		...(signal === undefined ? {} : { signal }),
 	}));
 	let prepared: readonly ReviewHostRelayPreparedResult[];
@@ -7692,6 +7726,30 @@ async function executeReviewControllerOperation(
 		parameters.operation === REVIEW_CONTROLLER_OPERATION.INSPECT &&
 		nativeReviewCli !== null
 	) {
+		const rawInspect = parameters.input === undefined
+			? undefined
+			: parseControllerJson(parameters.input, REVIEW_CONTROLLER_OPERATION.INSPECT);
+		const unknownField = rawInspect === undefined
+			? undefined
+			: Object.keys(rawInspect).find((field) => !["baseRef", "committedOnly"].includes(field));
+		if (unknownField !== undefined) return nativeInspectInputRejection("unknown-field", unknownField);
+		const baseRef = rawInspect?.baseRef;
+		if (baseRef !== undefined && !isCanonicalProcessString(baseRef)) return nativeInspectInputRejection("base-ref-invalid");
+		if (baseRef !== undefined && rawInspect?.committedOnly !== true) return nativeInspectInputRejection("committed-only-required");
+		if (rawInspect !== undefined && baseRef === undefined) return nativeInspectInputRejection("committed-only-invalid");
+		let canonicalBaseRef: string | undefined;
+		if (typeof baseRef === "string") {
+			try {
+				canonicalBaseRef = resolveCanonicalCandidateBase(defaultCwd, baseRef).commit;
+			} catch (error) {
+				if (error instanceof CandidateViewError && error.diagnostics !== undefined) return nativeOperationFailure(parameters.operation, Object.assign(error, { candidateViewPreNative: true }));
+				if (error instanceof CandidateViewError && (error.reason === "base-ref-ambiguous" || error.reason === "base-ref-unresolvable" || error.reason === "base-ref-moved")) return nativeInspectInputRejection(error.reason);
+				return nativeInspectInputRejection("base-ref-unresolvable");
+			}
+		}
+		const inspectSelector = canonicalBaseRef === undefined
+			? {}
+			: { baseRef: canonicalBaseRef, committedOnly: true as const };
 		// A new inspect supersedes every pre-lineage selection before its first
 		// STATUS attempt. A failed or changed-candidate inspect cannot leave an
 		// older selection available for a later START.
@@ -7702,6 +7760,7 @@ async function executeReviewControllerOperation(
 					nativeReviewCli,
 					{
 						cwd: defaultCwd,
+						...inspectSelector,
 						...(signal === undefined ? {} : { signal }),
 					},
 					retainedUntrackedSelections,
@@ -7777,6 +7836,7 @@ async function executeReviewControllerOperation(
 					nativeReviewCli,
 					{
 						cwd: defaultCwd,
+						...inspectSelector,
 						untrackedScope: parameters.untrackedScope,
 						expectedUntrackedInventory: inventory,
 						intendedUntracked: selected.intendedUntracked,
@@ -8274,11 +8334,13 @@ async function executeReviewControllerOperation(
 				// native START are resolved, and re-derive the target for that range,
 				// so all three agree on one base-diff identity. Adopting the offer
 				// later left the workspace target and the base-diff candidate view
-				// disagreeing, and START failed with identity-mismatch. Both an
-				// explicit caller baseRef and any START with an untracked selection in
-				// play keep today's single-STATUS flow; only an adopted offer pays the
-				// second read-only STATUS.
-				if (canonicalBaseRef === undefined && untrackedSelection.untrackedScope === undefined && untrackedSubmission === undefined) {
+				// disagreeing, and START failed with identity-mismatch. An explicit
+				// caller baseRef still wins (it already is the adopted range), but an
+				// in-play untracked selection now also pays this second read-only
+				// STATUS: the renegotiated target is a base-diff projection, so the
+				// candidate view must be materialized WITH the offered base instead of
+				// the base-less view that tripped candidate-target-projection-drift.
+				if (canonicalBaseRef === undefined) {
 					const offeredBaseRef = offeredCommittedRangeBaseRef(target);
 					if (offeredBaseRef !== undefined) {
 						const renegotiated = await negotiatedStatusForHostTransport(nativeReviewCli, {
@@ -8286,6 +8348,8 @@ async function executeReviewControllerOperation(
 							...(parameters.lineageId === undefined ? {} : { lineageId: parameters.lineageId }),
 							baseRef: offeredBaseRef,
 							committedOnly: true,
+							...(untrackedSelection.untrackedScope === undefined ? {} : untrackedSelection),
+							...(untrackedSubmission === undefined ? {} : { intendedUntrackedSelection: untrackedSubmission }),
 							...(signal === undefined ? {} : { signal }),
 						}, retainedUntrackedSelections, defaultCwd);
 						if (renegotiated.transport !== undefined) return hostTransportUnavailable(parameters.operation, renegotiated.transport);
@@ -8332,11 +8396,7 @@ async function executeReviewControllerOperation(
 			let nativeStartAttempted = false;
 			try {
 				const candidateRequest = { contributorRoot: defaultCwd, replayKey, ...(canonicalBaseRef === undefined ? {} : { baseRef: canonicalBaseRef, committedOnly: true }) };
-				candidateView = candidateViews?.createOrReuse({ ...candidateRequest, ...(candidateIntendedUntracked.length === 0 ? {} : { intendedUntracked: candidateIntendedUntracked }) });
-				if (candidateView !== undefined && candidateIntendedUntracked.length === 0 && candidateView.candidateTree !== target.projection.currentCandidateTree) {
-					candidateView.cleanup();
-					candidateView = candidateViews?.createOrReuse({ ...candidateRequest, intendedUntracked: [] });
-				}
+				candidateView = candidateViews?.createOrReuse({ ...candidateRequest, intendedUntracked: candidateIntendedUntracked });
 				if (candidateView !== undefined) assertNativeStartCandidateBinding(candidateView, target);
 				let result: NativeStartResult;
 				try {
@@ -8595,6 +8655,8 @@ export const __testing = {
 	loadRuntimeGuardrailsConfig,
 	buildGentlePrompt,
 	nativeStatusUnsupported,
+	nativeStartRejection,
+	nativeStatusInputRejection,
 	executeReviewControllerOperation,
 	executeReviewCaptureOperation,
 	executeReviewCaptureGroupOperation,
@@ -8628,6 +8690,9 @@ export const __testing = {
 	readSddChangeFlag,
 	resetTelemetryTriggerGuardForTesting,
 	createGentleAiExtension: createGentleAiExtensionForTesting,
+	getPiModelOptions,
+	MODEL_CONTROL_OPTIONS,
+	switchLiveOrchestrator,
 };
 
 export interface GentleAiRuntimeDependencies {
@@ -8809,6 +8874,11 @@ function createGentleAiExtensionForTesting(
 				candidateViews,
 				((sessionKey: PendingReviewConsentSessionKey) => processRetainedNativeStatusSelections.get(sessionKey) ?? processRetainedNativeStatusSelections.set(sessionKey, new Map()).get(sessionKey)!)(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey)),
 				true,
+				ctx.modelRegistry,
+				// The live session id rides into the reviewer side-call so an
+				// OpenCode-routed completion carries its attribution headers
+				// (pi adds those inside the main agent loop; this is not that loop).
+				reviewSessionManagerAndId(ctx)?.sessionId,
 			);
 			return { content: [{ type: "text", text: JSON.stringify(details) }], details };
 		},
@@ -8822,7 +8892,7 @@ function createGentleAiExtensionForTesting(
 		promptSnippet: "Use one exact current STATUS collectBinding for one ordinary native capture; call fresh STATUS before every additional capture.",
 		promptGuidelines: [
 			"Pass only lineageId, the JSON-serialized exact collectBinding from current STATUS, and the route-specific optional acknowledgement or correctionLines value. Never compose provider argument tokens, prompts, results, verdicts, or lens arrays.",
-			"A materialize reviewer slot first forecasts one model run; re-submit that same exact binding with reviewerRunAcknowledged: true to authorize one host relay. Correction-plan slots require correctionLines inside the provider-issued bounds, counted in diff lines (one replaced source line is one deletion plus one addition) — a different unit from the frozen logical correction budget. Refuter and validation vectors execute exactly once as provider-rendered.",
+			"A materialize reviewer slot first forecasts one model run; re-submit that same exact binding with reviewerRunAcknowledged: true to authorize one host relay. Correction-plan slots require correctionLines inside the provider-issued bounds, counted in diff lines (one replaced source line is one deletion plus one addition) — a different unit from the frozen logical correction budget. A refuter or targeted-validator slot forecasts and runs the same way when the provider renders it host-mediated; an older provider's self-contained refuter/validation vector still executes exactly once as provider-rendered.",
 			"A native terminal closure or nonterminal capture returns directly. Do not expect automatic STATUS, FINALIZE, receipt, delivery, or another capture; call fresh STATUS before any next capture.",
 		],
 		parameters: REVIEW_CAPTURE_PARAMETERS,
@@ -8847,6 +8917,11 @@ function createGentleAiExtensionForTesting(
 				candidateViews,
 				((sessionKey: PendingReviewConsentSessionKey) => processRetainedNativeStatusSelections.get(sessionKey) ?? processRetainedNativeStatusSelections.set(sessionKey, new Map()).get(sessionKey)!)(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey)),
 				true,
+				ctx.modelRegistry,
+				// The live session id rides into the reviewer side-call so an
+				// OpenCode-routed completion carries its attribution headers
+				// (pi adds those inside the main agent loop; this is not that loop).
+				reviewSessionManagerAndId(ctx)?.sessionId,
 			);
 			return {
 				content: [{ type: "text", text: JSON.stringify(details) }],
@@ -9405,7 +9480,7 @@ function createGentleAiExtensionForTesting(
 	pi.registerCommand("gentle:profiles", {
 		description: "Create, switch, and manage global agent-model profiles for el Gentleman.",
 		handler: async (_args, ctx) => {
-			await handleProfilesCommand(ctx);
+			await handleProfilesCommand(ctx, pi);
 		},
 	});
 
@@ -9634,9 +9709,16 @@ function createGentleAiExtensionForTesting(
 	// background subagents may be launched at all, so nothing in Pi may write
 	// it. The only writer is this handler, reached only by explicit invocation.
 	pi.registerCommand("gentle:background-subagents", {
-		description: "Show or set the managed background-subagents policy (status|enable|disable). Every sub-action is user-initiated only; Pi automation never toggles it.",
+		description: "Show or set the managed background-subagents policy; no argument opens a selectable menu (status|enable|disable). Every sub-action is user-initiated only; Pi automation never toggles it.",
+		// No argument opens a selectable menu when an interactive UI is present;
+		// headless callers and fakes without ui.select keep the status fallback.
 		handler: async (args, ctx) => {
-			const subAction = args.trim().length === 0 ? "status" : args.trim();
+			let subAction = args.trim().length === 0 ? "status" : args.trim();
+			if (args.trim().length === 0 && ctx.hasUI && typeof ctx.ui.select === "function") {
+				const selected = await ctx.ui.select("Background subagents policy", ["status", "enable", "disable"]);
+				if (selected === undefined) return;
+				subAction = selected;
+			}
 			if (subAction !== "status" && subAction !== "enable" && subAction !== "disable") {
 				ctx.ui.notify(`Unknown /gentle:background-subagents sub-action "${subAction}". Use status, enable, or disable.`, "warning");
 				return;

@@ -365,40 +365,65 @@ test("clicking the header's usage segment opens the usage panel; other header cl
 	}
 });
 
-test("profile reader follows store changes and rejects missing or invalid active markers", (t) => {
+test("profile reader follows store changes and rejects missing or invalid active markers", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "shell-profile-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const path = join(root, "profiles.json");
-	const read = createEffectiveProfileReader({ GENTLE_PI_CONFIG_HOME: root });
+	const profileReader = createEffectiveProfileReader({ GENTLE_PI_CONFIG_HOME: root });
+	const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+	const waitForProbe = async () => {
+		await tick();
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	};
 	const save = (active: string | undefined) => writeFileSync(path, JSON.stringify({
 		kind: "gentle-pi.agent_model_profiles", version: 1, active, profiles: { team: {}, other: {} },
 	}));
-	assert.equal(read(root), undefined);
+	assert.equal(profileReader.read(root), undefined);
+	await waitForProbe();
+	assert.equal(profileReader.read(root), undefined);
 	save("team");
-	assert.equal(read(root), "team");
-	assert.equal(read(root), "team");
+	assert.equal(profileReader.read(root), undefined);
+	await waitForProbe();
+	assert.equal(profileReader.read(root), "team");
+	assert.equal(profileReader.read(root), "team");
 	save("other");
-	assert.equal(read(root), "other");
+	assert.equal(profileReader.read(root), "team");
+	await waitForProbe();
+	assert.equal(profileReader.read(root), "other");
 	const replacement = join(root, "replacement.json");
 	writeFileSync(replacement, JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, active: "team", profiles: { team: {} } }));
 	renameSync(replacement, path);
-	assert.equal(read(root), "team", "atomic replacement refreshes the cached profile");
+	assert.equal(profileReader.read(root), "other");
+	await waitForProbe();
+	assert.equal(profileReader.read(root), "team", "atomic replacement refreshes the cached profile");
 	const isolated = createEffectiveProfileReader({ GENTLE_PI_CONFIG_HOME: join(root, "other-home") });
-	assert.equal(isolated(root), undefined);
-	assert.equal(read(root), "team", "another shell's config home does not alter this cache");
+	assert.equal(isolated.read(root), undefined);
+	await waitForProbe();
+	assert.equal(isolated.read(root), undefined);
+	assert.equal(profileReader.read(root), "team", "another shell's config home does not alter this cache");
 	save("missing");
-	assert.equal(read(root), undefined);
+	assert.equal(profileReader.read(root), "team");
+	await waitForProbe();
+	assert.equal(profileReader.read(root), undefined);
 	save(undefined);
-	assert.equal(read(root), undefined);
+	assert.equal(profileReader.read(root), undefined);
+	await waitForProbe();
+	assert.equal(profileReader.read(root), undefined);
 	writeFileSync(path, "{broken");
-	assert.equal(read(root), undefined);
+	assert.equal(profileReader.read(root), undefined);
+	await waitForProbe();
+	assert.equal(profileReader.read(root), undefined);
 	save("team");
-	assert.equal(read(root), "team");
+	assert.equal(profileReader.read(root), undefined);
+	await waitForProbe();
+	assert.equal(profileReader.read(root), "team");
 	rmSync(path);
-	assert.equal(read(root), undefined);
+	assert.equal(profileReader.read(root), "team");
+	await waitForProbe();
+	assert.equal(profileReader.read(root), undefined);
 });
 
-test("effective profile reader reports the winning pin source and resolves Git only on changes", (t) => {
+test("effective profile reader reports the winning pin source and resolves Git only on changes", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "shell-effective-profile-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const storePath = join(root, "profiles.json");
@@ -412,83 +437,118 @@ test("effective profile reader reports the winning pin source and resolves Git o
 		resolutions += 1;
 		return identity;
 	};
-	const read = createEffectiveProfileReader({ GENTLE_PI_CONFIG_HOME: root }, resolveWorktree);
+	const profileReader = createEffectiveProfileReader({ GENTLE_PI_CONFIG_HOME: root }, resolveWorktree);
+	const read = profileReader.read;
+	const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+	const waitForProbe = async () => {
+		await tick();
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	};
 
+	assert.equal(read(root), undefined, "a fresh reader returns no display until its first probe");
+	await waitForProbe();
 	assert.equal(read(root), "team", "without pins the global active profile has no suffix");
 	assert.equal(read(root), "team");
 	assert.equal(resolutions, 1, "repeated reads stay on the fingerprint cache");
 
 	writeProfilePinSync(localProfilePinPath(root), "other");
+	assert.equal(read(root), "team");
+	await waitForProbe();
 	assert.equal(read(root), "other (local)", "a valid clone-local pin overrides the global profile");
 	assert.equal(read(root), "other (local)");
 
 	clearProfilePinSync(localProfilePinPath(root));
 	writeProfilePinSync(repoProfileDeclarationPath(root), "other");
+	assert.equal(read(root), "other (local)");
+	await waitForProbe();
 	assert.equal(read(root), "other (repo)", "the repository declaration wins without a usable local pin");
 
 	writeProfilePinSync(localProfilePinPath(root), "team");
+	assert.equal(read(root), "other (repo)");
+	await waitForProbe();
 	assert.equal(read(root), "team (local)", "restoring the local pin takes precedence again");
 
 	clearProfilePinSync(localProfilePinPath(root));
 	clearProfilePinSync(repoProfileDeclarationPath(root));
+	assert.equal(read(root), "team (local)");
+	await waitForProbe();
 	assert.equal(read(root), "team", "removing both pin layers falls back to the global profile");
 
 	writeFileSync(localProfilePinPath(root), "{broken");
+	assert.equal(read(root), "team");
+	await waitForProbe();
 	assert.equal(read(root), "team", "an invalid pin layer falls through to the global profile");
 	rmSync(localProfilePinPath(root));
-
 	writeProfilePinSync(localProfilePinPath(root), "team");
+	assert.equal(read(root), "team");
+	await waitForProbe();
 	assert.equal(read(root), "team (local)");
 	save("other");
+	assert.equal(read(root), "team (local)");
+	await waitForProbe();
 	assert.equal(read(root), "team (local)", "a pinned profile survives a global active change");
 	clearProfilePinSync(localProfilePinPath(root));
+	assert.equal(read(root), "team (local)");
+	await waitForProbe();
 	assert.equal(read(root), "other", "unpinned, the display follows the global active profile");
-	assert.equal(resolutions, 9, "each display change resolves once; unchanged frames never do");
+	assert.equal(resolutions, 9, "each probe resolves once; unchanged reads never do");
 });
 
-test("effective profile reader re-probes identity so a late worktree becomes visible (QA M1)", (t) => {
+test("effective profile reader re-probes identity so a late worktree becomes visible (QA M1)", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "shell-m1-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const storePath = join(root, "profiles.json");
 	writeFileSync(storePath, JSON.stringify({
 		kind: "gentle-pi.agent_model_profiles", version: 1, active: "team", profiles: { team: {}, other: {} },
 	}));
-	let clock = 0;
+	const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+	const waitForProbe = async () => {
+		await tick();
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	};
 	let identity: WorktreeIdentity | undefined;
 	const resolveWorktree = () => identity;
-	const read = createEffectiveProfileReader({ GENTLE_PI_CONFIG_HOME: root }, resolveWorktree, () => clock);
+	const profileReader = createEffectiveProfileReader({ GENTLE_PI_CONFIG_HOME: root }, resolveWorktree);
 
-	assert.equal(read(root), "team", "without an identity the global profile shows");
+	assert.equal(profileReader.read(root), undefined);
+	await waitForProbe();
+	assert.equal(profileReader.read(root), "team", "without an identity the global profile shows");
 	writeProfilePinSync(localProfilePinPath(root), "other");
 	identity = { root, commonDir: root };
-	assert.equal(read(root), "team", "within the re-probe window the latch holds");
-	clock += 2000;
-	assert.equal(read(root), "other (local)", "after the re-probe window the late identity and its pin are visible");
+	assert.equal(profileReader.read(root), "team", "the stale global display holds until the probe");
+	profileReader.probe();
+	assert.equal(profileReader.read(root), "other (local)", "the interval probe makes the late identity and its pin visible");
 });
 
-test("effective profile reader re-probes identity so a worktree switch is visible (QA M2)", (t) => {
+test("effective profile reader re-probes identity so a worktree switch is visible (QA M2)", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "shell-m2-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const storePath = join(root, "profiles.json");
 	writeFileSync(storePath, JSON.stringify({
 		kind: "gentle-pi.agent_model_profiles", version: 1, active: "team", profiles: { team: {}, alpha: {}, bravo: {} },
 	}));
-	let clock = 0;
+	const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+	const waitForProbe = async () => {
+		await tick();
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	};
 	const alpha = join(root, "alpha");
 	const bravo = join(root, "bravo");
 	let identity: WorktreeIdentity = { root: alpha, commonDir: alpha };
 	const resolveWorktree = () => identity;
-	const read = createEffectiveProfileReader({ GENTLE_PI_CONFIG_HOME: root }, resolveWorktree, () => clock);
+	const profileReader = createEffectiveProfileReader({ GENTLE_PI_CONFIG_HOME: root }, resolveWorktree);
 
 	mkdirSync(join(alpha, "gentle-ai"), { recursive: true });
 	writeProfilePinSync(localProfilePinPath(alpha), "alpha");
-	assert.equal(read(root), "alpha (local)");
+	assert.equal(profileReader.read(root), undefined);
+	await waitForProbe();
+	assert.equal(profileReader.read(root), "alpha (local)");
 	identity = { root: bravo, commonDir: bravo };
 	mkdirSync(join(bravo, "gentle-ai"), { recursive: true });
 	writeProfilePinSync(localProfilePinPath(bravo), "bravo");
-	assert.equal(read(root), "alpha (local)", "within the re-probe window the stale display holds");
-	clock += 2000;
-	assert.equal(read(root), "bravo (local)", "after the re-probe window the switched worktree is displayed");
+	assert.equal(profileReader.read(root), "alpha (local)", "the stale worktree display holds until the probe");
+	profileReader.probe();
+	assert.equal(profileReader.read(root), "bravo (local)", "the interval probe makes the switched worktree visible");
 });
 
 test("gentleShell stays out of the way without a UI or when disabled", () => {
@@ -502,6 +562,47 @@ test("gentleShell stays out of the way without a UI or when disabled", () => {
 	const { ctx, ui } = fakeContext({ hasUI: false });
 	for (const handler of headless.handlers.get("session_start") ?? []) handler({}, ctx);
 	assert.equal(ui.footerFactory, undefined);
+});
+
+test("profile re-probe interval follows the UI session lifecycle", (t) => {
+	const timers: Array<{ unref(): void }> = [];
+	const cleared: unknown[] = [];
+	let unrefs = 0;
+	t.mock.method(globalThis, "setInterval", (_callback: () => void, delay: number) => {
+		assert.equal(delay, 1000);
+		const timer = { unref() { unrefs++; } };
+		timers.push(timer);
+		return timer;
+	});
+	t.mock.method(globalThis, "clearInterval", (timer: unknown) => {
+		cleared.push(timer);
+	});
+
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	assert.equal(timers.length, 0, "extension construction must not install a session timer");
+
+	const headless = fakeContext({ hasUI: false });
+	for (const handler of handlers.get("session_start") ?? []) handler({}, headless.ctx);
+	assert.equal(timers.length, 0, "headless sessions must not install the timer");
+
+	const first = fakeContext();
+	for (const handler of handlers.get("session_start") ?? []) handler({}, first.ctx);
+	assert.equal(timers.length, 1);
+	assert.equal(unrefs, 1);
+
+	const second = fakeContext();
+	for (const handler of handlers.get("session_start") ?? []) handler({}, second.ctx);
+	assert.equal(timers.length, 2, "a new UI session gets its own timer");
+	assert.deepEqual(cleared, [timers[0]], "starting a session clears the previous timer first");
+	assert.equal(unrefs, 2);
+
+	for (const handler of handlers.get("session_shutdown") ?? []) handler({}, second.ctx);
+	assert.deepEqual(cleared, [timers[0], timers[1]], "session shutdown clears the active timer");
+
+	const headlessAfterShutdown = fakeContext({ hasUI: false });
+	for (const handler of handlers.get("session_start") ?? []) handler({}, headlessAfterShutdown.ctx);
+	assert.equal(timers.length, 2, "a headless session after shutdown still has no timer");
 });
 
 const fakeTui = { terminal: { rows: 40, columns: 120 }, requestRender() {} };
@@ -592,27 +693,35 @@ test("animations command reports without writing and switches the live pulse", a
 	assert.match(ui.notices.at(-1)!, /animations: quality/);
 	assert.equal(existsSync(join(configHome, "animations.json")), false);
 	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
-	assert.deepEqual(delays, [80]);
+	assert.deepEqual(delays, [1000, 80]);
 	await command.handler("performance", ctx);
-	assert.deepEqual(delays, [80, 1000]);
-	assert.equal(active, 1);
+	assert.deepEqual(delays, [1000, 80, 1000]);
+	assert.equal(active, 2);
 	await command.handler("potato", ctx);
-	assert.equal(active, 0);
+	assert.equal(active, 1);
 	assert.match(stripAnsi(editor.render(60)[0]), /working/);
 	assert.equal(JSON.parse(readFileSync(join(configHome, "animations.json"), "utf8")).policy, "potato");
 	await command.handler("invalid", ctx);
 	assert.equal(JSON.parse(readFileSync(join(configHome, "animations.json"), "utf8")).policy, "potato");
 	await command.handler("quality", ctx);
-	assert.deepEqual(delays, [80, 1000, 80]);
+	assert.deepEqual(delays, [1000, 80, 1000, 80]);
 	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
-	assert.equal(active, 0);
+	assert.equal(active, 1);
 	editor.dispose();
 });
 
 test("potato repaints start/settle and shows queued state on the host's next render without intervals", async (t) => {
 	const configHome = scopedDoubleEscCancelConfigHome(t);
 	writeFileSync(join(configHome, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"potato"}');
-	const intervals = t.mock.method(globalThis, "setInterval", () => { throw new Error("potato must not animate"); });
+	let activeProfileTimers = 0;
+	const intervals = t.mock.method(globalThis, "setInterval", (_callback: () => void, delay: number) => {
+		if (delay === 1000) {
+			activeProfileTimers++;
+			return { unref() {} };
+		}
+		throw new Error("potato must not animate");
+	});
+	t.mock.method(globalThis, "clearInterval", () => { activeProfileTimers--; });
 	const renders = t.mock.method(fakeTui, "requestRender", () => {});
 	const { pi, handlers, commands } = fakePi();
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome });
@@ -640,7 +749,8 @@ test("potato repaints start/settle and shows queued state on the host's next ren
 	await commands.get("gentle:animations")!.handler("status", ctx);
 	assert.match(ui.notices.at(-1)!, /animations: potato/);
 	for (const handler of handlers.get("session_shutdown") ?? []) handler({}, ctx);
-	assert.equal(intervals.mock.callCount(), 0);
+	assert.equal(intervals.mock.callCount(), 1, "the UI session installed one profile re-probe interval");
+	assert.equal(activeProfileTimers, 0, "session shutdown clears the profile re-probe interval");
 });
 
 test("animations status attributes malformed files and reports a failed write", async (t) => {
@@ -703,14 +813,14 @@ test("prompt uses the compact banner cadence and releases its unref timer at set
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome });
 	const { ctx, ui } = fakeContext();
 	const editor = installedPrompt(ctx, ui, handlers);
-	assert.equal(active, 0);
+	assert.equal(active, 1, "the unref'd profile re-probe interval stays installed");
 	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
-	assert.deepEqual(delays, [80]);
-	assert.equal(unrefs, 1);
+	assert.deepEqual(delays, [1000, 80]);
+	assert.equal(unrefs, 2);
 	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
-	assert.equal(active, 0);
+	assert.equal(active, 1);
 	editor.dispose();
-	assert.equal(active, 0);
+	assert.equal(active, 1);
 });
 
 // ---------------------------------------------------------------------------

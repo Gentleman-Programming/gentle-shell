@@ -75,39 +75,36 @@ export interface ShellDeps {
 	gitRunner(cwd: string): GitRunner;
 }
 
-// The fullscreen Status card and header must show the profile launch routing
-// actually uses: clone-local pin → repository declaration → global active, with
-// the winning source visible as `(local)` or `(repo)`. The rail digest runs
-// every frame, so resolve the pin paths once per cwd and afterwards only stat
-// known files: Git resolution happens on cwd changes and fingerprint misses,
-// never per frame. Keep the cache local to this shell instance and recheck on
-// the next frame after panel edits. Cache the cache misses too: an absent pin
-// file fingerprints as "missing", so creating one refreshes without Git work.
-// Fingerprints cannot see a worktree identity appearing, disappearing, or
-// changing under the same cwd, so the identity resolution re-runs at most once
-// per second per shell.
+/**
+ * The fullscreen Status card and header must show the profile launch routing
+ * actually uses: clone-local pin → repository declaration → global active, with
+ * the winning source visible as `(local)` or `(repo)`. `read` is used by the
+ * digest/render path and is stats-only: it checks the global store and cached
+ * pin-layer paths, never resolves Git, and never reads profile contents. A
+ * cache miss schedules one coalesced immediate `probe`, so the display may lag
+ * one frame. The synchronous `probe` runs from the unref'd interval and those
+ * immediate probes after cache misses.
+ */
 export function createEffectiveProfileReader(
 	env: NodeJS.ProcessEnv = process.env,
 	resolveWorktree: WorktreeResolver = resolveSessionWorktree,
-	now: () => number = Date.now,
-): (cwd: string) => string | undefined {
+): {
+	read(cwd: string): string | undefined;
+	probe(): void;
+} {
 	const configHome = env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai");
 	const storePath = profilesFilePath(configHome);
-	let storeFingerprint: string | undefined;
 	let cache: {
 		cwd: string;
+		storeFingerprint: string;
 		localPath?: string;
 		repoPath?: string;
 		localFingerprint?: string;
 		repoFingerprint?: string;
-		reprobeAt: number;
 		display: string | undefined;
 	} | undefined;
-	// A worktree identity can appear, disappear, or change without the session
-	// cwd or any tracked file changing (git init mid-session, worktree switch).
-	// Fingerprints cannot see that, so re-run the identity resolution at most
-	// once per second per shell, never per frame.
-	const REPROBE_MS = 1000;
+	let lastSeenCwd: string | undefined;
+	let probeQueued = false;
 	const fingerprint = (path: string): string => {
 		try {
 			const stat = statSync(path, { bigint: true });
@@ -116,44 +113,59 @@ export function createEffectiveProfileReader(
 			return "missing";
 		}
 	};
-	return (cwd: string) => {
-		const storeFp = fingerprint(storePath);
-		const localPath = cache?.cwd === cwd ? cache.localPath : undefined;
-		const repoPath = cache?.cwd === cwd ? cache.repoPath : undefined;
-		const localFp = localPath ? fingerprint(localPath) : undefined;
-		const repoFp = repoPath ? fingerprint(repoPath) : undefined;
-		if (
-			cache &&
-			cache.cwd === cwd &&
-			storeFp === storeFingerprint &&
-			localFp === cache.localFingerprint &&
-			repoFp === cache.repoFingerprint &&
-			now() < cache.reprobeAt
-		) {
-			return cache.display;
-		}
-		let display: string | undefined;
+	const probe = (): void => {
+		const cwd = lastSeenCwd;
+		if (cwd === undefined) return;
 		const store = readProfilesFileResult(storePath);
+		let display: string | undefined;
 		if (store.status === "valid") display = store.file.active;
 		// The launch resolver is the single authority: its winning layer and its
 		// source are what the display reports, never a parallel precedence rule.
-		// One worktree resolution per refresh: read the status once and hand it to
+		// One worktree resolution per probe: read the status once and hand it to
 		// the launch resolver, which stays the single precedence authority.
 		const status = readProfilePinStatus(cwd, resolveWorktree);
 		const resolution = status ? resolveProfilePin({ cwd, configHome, resolveWorktree, status }) : undefined;
 		if (resolution) display = `${resolution.profile} (${resolution.source})`;
-		storeFingerprint = storeFp;
 		cache = {
 			cwd,
+			storeFingerprint: fingerprint(storePath),
 			localPath: status?.localPath,
 			repoPath: status?.repoPath,
 			localFingerprint: status?.localPath ? fingerprint(status.localPath) : undefined,
 			repoFingerprint: status?.repoPath ? fingerprint(status.repoPath) : undefined,
-			reprobeAt: now() + REPROBE_MS,
 			display,
 		};
-		return display;
 	};
+	const runProbe = (): void => {
+		probeQueued = false;
+		probe();
+	};
+	const scheduleProbe = (): void => {
+		if (probeQueued) return;
+		probeQueued = true;
+		const t = setTimeout(runProbe, 0);
+		t.unref?.();
+	};
+	const read = (cwd: string): string | undefined => {
+		lastSeenCwd = cwd;
+		const storeFingerprint = fingerprint(storePath);
+		const localPath = cache?.cwd === cwd ? cache.localPath : undefined;
+		const repoPath = cache?.cwd === cwd ? cache.repoPath : undefined;
+		const localFingerprint = localPath ? fingerprint(localPath) : undefined;
+		const repoFingerprint = repoPath ? fingerprint(repoPath) : undefined;
+		if (
+			cache &&
+			cache.cwd === cwd &&
+			storeFingerprint === cache.storeFingerprint &&
+			localFingerprint === cache.localFingerprint &&
+			repoFingerprint === cache.repoFingerprint
+		) {
+			return cache.display;
+		}
+		scheduleProbe();
+		return cache?.display;
+	};
+	return { read, probe };
 }
 
 function ambientDevBinary(): DevBinaryNotice | undefined {
@@ -833,11 +845,9 @@ async function fetchFromSource(source: UsageSource, apiKey: string | undefined, 
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	installSessionChangeCapture(pi, env, overrides.resolveWorktree ?? resolveSessionWorktree);
 	if (!shellEnabled(env)) return;
-	const deps: ShellDeps = {
-		...defaultShellDeps,
-		activeProfile: createEffectiveProfileReader(env, overrides.resolveWorktree ?? defaultShellDeps.resolveWorktree, overrides.now ?? defaultShellDeps.now),
-		...overrides,
-	};
+	const profileReader = createEffectiveProfileReader(env, overrides.resolveWorktree ?? defaultShellDeps.resolveWorktree);
+	const deps: ShellDeps = { ...defaultShellDeps, activeProfile: profileReader.read, ...overrides };
+	let reprobeTimer: ReturnType<typeof setInterval> | undefined;
 	const usage = new UsageStore();
 	// Providers gentle-shell has never heard of get a usage source too, when
 	// the extension that owns them registers one on pi.events; see the
@@ -980,12 +990,18 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		},
 	});
 	pi.on("session_start", async (_event, ctx) => {
+		if (reprobeTimer !== undefined) {
+			clearInterval(reprobeTimer);
+			reprobeTimer = undefined;
+		}
 		registry?.close();
 		currentContext = ctx;
 		changes = undefined;
 		registry = new SessionWorktreeRegistry(pi, ctx.sessionManager, ctx.cwd, deps.resolveWorktree);
 		registry.start();
 		if (!ctx.hasUI) return;
+		reprobeTimer = setInterval(() => profileReader.probe(), 1000);
+		reprobeTimer.unref?.();
 		changes = new SessionChanges(ctx.sessionManager.getSessionId(), ctx.sessionManager.getEntries());
 		const tracker = changes;
 		ctx.ui.setFooter((tui, theme, footerData) => {
@@ -1049,6 +1065,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		applyChanges(ctx, tracker.model);
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
+		if (reprobeTimer !== undefined) {
+			clearInterval(reprobeTimer);
+			reprobeTimer = undefined;
+		}
 		pendingQueuedText = undefined;
 		prompt?.dispose();
 		prompt = undefined;

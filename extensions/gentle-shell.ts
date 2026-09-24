@@ -83,9 +83,13 @@ export interface ShellDeps {
 // never per frame. Keep the cache local to this shell instance and recheck on
 // the next frame after panel edits. Cache the cache misses too: an absent pin
 // file fingerprints as "missing", so creating one refreshes without Git work.
+// Fingerprints cannot see a worktree identity appearing, disappearing, or
+// changing under the same cwd, so the identity resolution re-runs at most once
+// per second per shell.
 export function createEffectiveProfileReader(
 	env: NodeJS.ProcessEnv = process.env,
 	resolveWorktree: WorktreeResolver = resolveSessionWorktree,
+	now: () => number = Date.now,
 ): (cwd: string) => string | undefined {
 	const configHome = env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai");
 	const storePath = profilesFilePath(configHome);
@@ -96,8 +100,14 @@ export function createEffectiveProfileReader(
 		repoPath?: string;
 		localFingerprint?: string;
 		repoFingerprint?: string;
+		reprobeAt: number;
 		display: string | undefined;
 	} | undefined;
+	// A worktree identity can appear, disappear, or change without the session
+	// cwd or any tracked file changing (git init mid-session, worktree switch).
+	// Fingerprints cannot see that, so re-run the identity resolution at most
+	// once per second per shell, never per frame.
+	const REPROBE_MS = 1000;
 	const fingerprint = (path: string): string => {
 		try {
 			const stat = statSync(path, { bigint: true });
@@ -117,7 +127,8 @@ export function createEffectiveProfileReader(
 			cache.cwd === cwd &&
 			storeFp === storeFingerprint &&
 			localFp === cache.localFingerprint &&
-			repoFp === cache.repoFingerprint
+			repoFp === cache.repoFingerprint &&
+			now() < cache.reprobeAt
 		) {
 			return cache.display;
 		}
@@ -138,6 +149,7 @@ export function createEffectiveProfileReader(
 			repoPath: status?.repoPath,
 			localFingerprint: status?.localPath ? fingerprint(status.localPath) : undefined,
 			repoFingerprint: status?.repoPath ? fingerprint(status.repoPath) : undefined,
+			reprobeAt: now() + REPROBE_MS,
 			display,
 		};
 		return display;
@@ -823,7 +835,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	if (!shellEnabled(env)) return;
 	const deps: ShellDeps = {
 		...defaultShellDeps,
-		activeProfile: createEffectiveProfileReader(env, overrides.resolveWorktree ?? defaultShellDeps.resolveWorktree),
+		activeProfile: createEffectiveProfileReader(env, overrides.resolveWorktree ?? defaultShellDeps.resolveWorktree, overrides.now ?? defaultShellDeps.now),
 		...overrides,
 	};
 	const usage = new UsageStore();

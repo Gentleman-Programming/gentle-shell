@@ -446,6 +446,51 @@ test("effective profile reader reports the winning pin source and resolves Git o
 	assert.equal(resolutions, 9, "each display change resolves once; unchanged frames never do");
 });
 
+test("effective profile reader re-probes identity so a late worktree becomes visible (QA M1)", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "shell-m1-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const storePath = join(root, "profiles.json");
+	writeFileSync(storePath, JSON.stringify({
+		kind: "gentle-pi.agent_model_profiles", version: 1, active: "team", profiles: { team: {}, other: {} },
+	}));
+	let clock = 0;
+	let identity: WorktreeIdentity | undefined;
+	const resolveWorktree = () => identity;
+	const read = createEffectiveProfileReader({ GENTLE_PI_CONFIG_HOME: root }, resolveWorktree, () => clock);
+
+	assert.equal(read(root), "team", "without an identity the global profile shows");
+	writeProfilePinSync(localProfilePinPath(root), "other");
+	identity = { root, commonDir: root };
+	assert.equal(read(root), "team", "within the re-probe window the latch holds");
+	clock += 2000;
+	assert.equal(read(root), "other (local)", "after the re-probe window the late identity and its pin are visible");
+});
+
+test("effective profile reader re-probes identity so a worktree switch is visible (QA M2)", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "shell-m2-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const storePath = join(root, "profiles.json");
+	writeFileSync(storePath, JSON.stringify({
+		kind: "gentle-pi.agent_model_profiles", version: 1, active: "team", profiles: { team: {}, alpha: {}, bravo: {} },
+	}));
+	let clock = 0;
+	const alpha = join(root, "alpha");
+	const bravo = join(root, "bravo");
+	let identity: WorktreeIdentity = { root: alpha, commonDir: alpha };
+	const resolveWorktree = () => identity;
+	const read = createEffectiveProfileReader({ GENTLE_PI_CONFIG_HOME: root }, resolveWorktree, () => clock);
+
+	mkdirSync(join(alpha, "gentle-ai"), { recursive: true });
+	writeProfilePinSync(localProfilePinPath(alpha), "alpha");
+	assert.equal(read(root), "alpha (local)");
+	identity = { root: bravo, commonDir: bravo };
+	mkdirSync(join(bravo, "gentle-ai"), { recursive: true });
+	writeProfilePinSync(localProfilePinPath(bravo), "bravo");
+	assert.equal(read(root), "alpha (local)", "within the re-probe window the stale display holds");
+	clock += 2000;
+	assert.equal(read(root), "bravo (local)", "after the re-probe window the switched worktree is displayed");
+});
+
 test("gentleShell stays out of the way without a UI or when disabled", () => {
 	const disabled = fakePi();
 	gentleShell(disabled.pi, { GENTLE_PI_SHELL: "0" });

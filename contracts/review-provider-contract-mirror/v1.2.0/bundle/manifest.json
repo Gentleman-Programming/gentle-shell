@@ -22,7 +22,7 @@
       ],
       "schema": {
         "path": "schemas/lens.schema.json",
-        "sha256": "ffef79cfb763333282285ff5c795a32b5a88d840b4a8d125ce012188b04cffe1"
+        "sha256": "9b8a2354a570888486015434501b66b51441a3baf5bf858635e4fff56b2e8298"
       },
       "vector": {
         "path": "vectors/lens.json",
@@ -54,7 +54,7 @@
       ],
       "schema": {
         "path": "schemas/targeted-validator.schema.json",
-        "sha256": "6a8d7b331ec6f000366017e39e0476511c3b032649c42abfe865c1e9c956510e"
+        "sha256": "40e397195bdfbc6782fc3090f20c5be082e4d14d2855314f99ecb8506133eddc"
       },
       "vector": {
         "path": "vectors/targeted-validator.json",
@@ -67,7 +67,7 @@
       "runtime": "pi",
       "file": {
         "path": "orchestration/pi.md",
-        "sha256": "69c51944081ccff09d1cee5e24eb3a14b7b911a2e734cef8f8ea94a15b9f9d4c"
+        "sha256": "679133e54b7fe8661050cdde51aed44ddf8e66e478c7a1b5176fe3278714a2f6"
       }
     }
   ]

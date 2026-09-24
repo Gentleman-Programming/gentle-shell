@@ -9,6 +9,12 @@ import {
 	REVIEW_SESSION_PERMISSION_REGISTRY_SYMBOL,
 	captureReviewSessionIdentity,
 	grantReviewSessionPermission,
+	resolveCanonicalGitRepositoryIdentity,
+	resolveCanonicalGitRepositoryIdentitySync,
+	resolveCanonicalGitWorktreeRoot,
+	type GitAsyncRunner,
+	type GitCommandOptions,
+	type GitSyncRunner,
 	hasReviewSessionPermission,
 	reviewSessionPermissionEpoch,
 	revokeReviewSessionPermission,
@@ -68,6 +74,30 @@ test("standing permission is process-memory-only and bound to one live manager, 
 
 	assert.equal(revokeReviewSessionPermission(identity), true);
 	assert.equal(hasReviewSessionPermission(sibling), false);
+});
+
+test("review session Git identity lookups hide every Windows child process", async (t) => {
+	const root = repository(t);
+	const asyncCalls: Array<{ command: string; args: readonly string[]; options: GitCommandOptions }> = [];
+	const runAsync: GitAsyncRunner = async (command, args, options) => {
+		asyncCalls.push({ command, args, options });
+		return { stdout: `${args.at(-1) === "--show-toplevel" ? root : ".git"}\n` };
+	};
+	const syncCalls: Array<{ command: string; args: readonly string[]; options: GitCommandOptions }> = [];
+	const runSync: GitSyncRunner = (command, args, options) => {
+		syncCalls.push({ command, args, options });
+		return ".git\n";
+	};
+
+	assert.equal(await resolveCanonicalGitWorktreeRoot(root, runAsync), root);
+	assert.match(await resolveCanonicalGitRepositoryIdentity(root, runAsync) ?? "", /^sha256:/);
+	assert.match(resolveCanonicalGitRepositoryIdentitySync(root, runSync) ?? "", /^sha256:/);
+	assert.deepEqual(asyncCalls.map((call) => call.args.at(-1)), ["--show-toplevel", "--git-common-dir"]);
+	assert.deepEqual(syncCalls.map((call) => call.args.at(-1)), ["--git-common-dir"]);
+	for (const call of [...asyncCalls, ...syncCalls]) {
+		assert.equal(call.command, "git");
+		assert.equal(call.options.windowsHide, true);
+	}
 });
 
 test("headless, child, empty-session, and non-Git contexts cannot offer or consume standing permission", async (t) => {

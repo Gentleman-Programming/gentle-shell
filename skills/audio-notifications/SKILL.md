@@ -34,30 +34,30 @@ Do not load this skill for purely silent inline operations, interactive conversa
 
 | Situation | Action |
 |---|---|
-| User runs long terminal command and wants notification on completion | Prepend wrapper: `skills/audio-notifications/assets/avisame.sh <command...>` |
-| Subagent or pipeline starts a batch of work | Emit `avisame.sh --start "Batch started"` |
-| Task or test run succeeds | Emit `avisame.sh --success "Tests passed"` (or let wrapper handle exit 0) |
-| Task or verification fails | Emit `avisame.sh --error "Task failed"` (or let wrapper handle non-zero exit) |
-| Entire multi-step batch or SDD phase finishes | Emit `avisame.sh --fanfare "All tasks complete"` |
+| User runs long terminal command and wants notification on completion | Prepend wrapper: `skills/audio-notifications/assets/notify.sh <command...>` |
+| Subagent or pipeline starts a batch of work | Emit `notify.sh --start "Batch started"` |
+| Task or test run succeeds | Emit `notify.sh --success "Tests passed"` (or let wrapper handle exit 0) |
+| Task or verification fails | Emit `notify.sh --error "Task failed"` (or let wrapper handle non-zero exit) |
+| Entire multi-step batch or SDD phase finishes | Emit `notify.sh --fanfare "All tasks complete"` |
 
 ## Execution Steps
 
 1. Detect the operating system (`uname -s` or `$OSTYPE`).
 2. To wrap long-running commands, execute via the bundled asset:
    ```bash
-   ./skills/audio-notifications/assets/avisame.sh npm test
-   ./skills/audio-notifications/assets/avisame.sh terraform apply -auto-approve
+   ./skills/audio-notifications/assets/notify.sh npm test
+   ./skills/audio-notifications/assets/notify.sh terraform apply -auto-approve
    ```
 3. To signal discrete lifecycle events directly:
    ```bash
    # Start signal
-   ./skills/audio-notifications/assets/avisame.sh --start "Deploying service"
+   ./skills/audio-notifications/assets/notify.sh --start "Deploying service"
    # Success signal
-   ./skills/audio-notifications/assets/avisame.sh --success "Service deployed"
+   ./skills/audio-notifications/assets/notify.sh --success "Service deployed"
    # Error signal
-   ./skills/audio-notifications/assets/avisame.sh --error "Deployment failed"
+   ./skills/audio-notifications/assets/notify.sh --error "Deployment failed"
    # Fanfare signal
-   ./skills/audio-notifications/assets/avisame.sh --fanfare "Pipeline finished"
+   ./skills/audio-notifications/assets/notify.sh --fanfare "Pipeline finished"
    ```
 
 ## Output Contract
@@ -68,5 +68,5 @@ Do not load this skill for purely silent inline operations, interactive conversa
 
 ## References
 
-- CLI wrapper script: `skills/audio-notifications/assets/avisame.sh`
+- CLI wrapper script: `skills/audio-notifications/assets/notify.sh`
 - Issue Gentleman-Programming/gentle-shell#1165 (blocked-on-human desktop notifications)

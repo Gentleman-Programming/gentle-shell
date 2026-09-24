@@ -8,7 +8,7 @@ import { __testing } from "../extensions/skill-registry.ts";
 const repoRoot = join(import.meta.dirname, "..");
 const skillDir = join(repoRoot, "skills", "audio-notifications");
 const skillPath = join(skillDir, "SKILL.md");
-const scriptPath = join(skillDir, "assets", "avisame.sh");
+const scriptPath = join(skillDir, "assets", "notify.sh");
 
 test("gentle-ai-audio-notifications SKILL.md structure and frontmatter validity", () => {
 	assert.ok(existsSync(skillPath), "SKILL.md must exist");
@@ -31,15 +31,15 @@ test("gentle-ai-audio-notifications SKILL.md structure and frontmatter validity"
 	assert.match(content, /## References/);
 });
 
-test("avisame.sh wrapper script exists and is executable", () => {
-	assert.ok(existsSync(scriptPath), "avisame.sh must exist");
+test("notify.sh wrapper script exists and is executable", () => {
+	assert.ok(existsSync(scriptPath), "notify.sh must exist");
 	if (process.platform !== "win32") {
 		const stat = statSync(scriptPath);
-		assert.ok((stat.mode & 0o111) !== 0, "avisame.sh must have executable bit set");
+		assert.ok((stat.mode & 0o111) !== 0, "notify.sh must have executable bit set");
 	}
 });
 
-test("avisame.sh wraps commands, preserves stdout/stderr and exit codes", () => {
+test("notify.sh wraps commands, preserves stdout/stderr and exit codes", () => {
 	// Success wrapping
 	const successRun = spawnSync(scriptPath, ["bash", "-c", "echo 'stdout line'; echo 'stderr line' >&2; exit 0"], {
 		encoding: "utf8",
@@ -56,7 +56,7 @@ test("avisame.sh wraps commands, preserves stdout/stderr and exit codes", () => 
 	assert.match(errorRun.stdout, /failing/);
 });
 
-test("avisame.sh semantic event flags behave correctly", () => {
+test("notify.sh semantic event flags behave correctly", () => {
 	// --start
 	const startRun = spawnSync(scriptPath, ["--start", "Starting build"], { encoding: "utf8" });
 	assert.equal(startRun.status, 0);

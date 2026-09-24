@@ -202,6 +202,16 @@ test("animation modes retain banner lifetime policy, final artwork and approxima
 			}
 			header!.dispose();
 		}
+
+		// Slow device: 5s wall-clock cap hits before animation reaches natural finish.
+		save("quality");
+		await start!({}, ctx); boot!();
+		for (let i = 0; i < 15; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+		clock += 5100;
+		pulse!();
+		assert.equal(active, false, "clears interval on 5s timeout");
+		assert.equal(stripAnsi(header!.render(200).join("\n")), staticArt, "fast-forwards to complete static artwork on 5s timeout without frozen letters or sparkle");
+		header!.dispose();
 	} finally { shutdown!(); }
 });
 
@@ -244,6 +254,8 @@ for (const showRose of [false, true]) for (const showTextLogo of [false, true]) 
 				if (width >= 160) {
 					assert.equal(/[\u2800-\u28ff]/.test(text), showRose);
 					assert.equal(/[▒▄▀█]/.test(text), showTextLogo);
+				} else if (width === 80 && showTextLogo) {
+					assert.match(text, /✿ Gentle Shell ✿/, "narrow terminal shows graceful fallback branding");
 				}
 				assert.match(lines.join("\n"), /\x1b\[38;2;85;170;205m/, "startup labels use the saved cyan palette");
 			}
@@ -260,7 +272,11 @@ for (const showRose of [false, true]) for (const showTextLogo of [false, true]) 
 			t.mock.timers.tick(150);
 			const minimal = stripAnsi(header!.render(80).join("\n"));
 			assert.doesNotMatch(minimal, /[\u2800-\u28ff]/);
-			assert.equal(/[▒▄▀█]/.test(minimal), showTextLogo);
+			assert.equal(/✿ Gentle Shell ✿/.test(minimal), showTextLogo);
+			if (showTextLogo) {
+				const wideMinimal = stripAnsi(header!.render(160).join("\n"));
+				assert.equal(/[▒▄▀█]/.test(wideMinimal), true);
+			}
 			assert.deepEqual(writes, [], "Pi owns stdout during startup and resize");
 		} finally {
 			shutdown!();

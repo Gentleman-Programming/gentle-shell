@@ -61,6 +61,7 @@ function createPi() {
 	const tools = new Map();
 	const eventHandlers = new Map();
 	const emittedEvents = [];
+	const sentMessages = [];
 	const flagValues = new Map([["no-skill-registry", true]]);
 	const events = {
 		emit(channel, data) {
@@ -119,9 +120,12 @@ function createPi() {
 				{ name: "mem_save" },
 			];
 		},
+		sendMessage(message, options = {}) {
+			sentMessages.push({ message, options });
+		},
 	};
 
-	return { pi, hooks, commands, flags, tools, emittedEvents };
+	return { pi, hooks, commands, flags, tools, emittedEvents, sentMessages };
 }
 
 function createUi() {
@@ -219,7 +223,7 @@ async function run() {
 	process.env.GENTLE_PI_TEST_ASSETS_DIR = ambientTestAssetsDir;
 	const globalModelsPath = join(globalConfigHome, "models.json");
 	const globalSubagentsPath = join(globalAgentHome, "subagents.json");
-	const { pi, hooks, commands, flags, tools, emittedEvents } = createPi();
+	const { pi, hooks, commands, flags, tools, emittedEvents, sentMessages } = createPi();
 	await loadExtensions(pi);
 
 	// gentle-pi#404: a collect binding that returns the native last-event
@@ -471,6 +475,31 @@ async function run() {
 		await toolResultHook({ toolName: "write", toolCallId: "odd-first", input: { path: firstOddPath }, isError: false }, oddCtx);
 		const secondOdd = await toolHook({ toolName: "edit", input: { path: join(toolCwd, "second.ts") } }, oddCtx);
 		assert.equal(secondOdd, undefined, "write history alone must not refuse a second direct file");
+		// ODR-1: post-tool delegation reminders steer the active turn without
+		// blocking or rewriting results, and reset on successful delegation.
+		const odrCtx = createCtx(toolCwd, false, "odr-reminders");
+		await promptHook({ systemPrompt: "primary" }, odrCtx);
+		const odrRead = async (path) => toolResultHook(
+			{ toolName: "read", toolCallId: `odr-${path}`, input: { path }, isError: false },
+			odrCtx,
+		);
+		assert.equal(await toolHook({ toolName: "read", input: { path: "src/odr-a.ts" } }, odrCtx), undefined);
+		assert.equal(await odrRead("src/odr-a.ts"), undefined);
+		assert.equal(await odrRead("src/odr-b.ts"), undefined);
+		assert.equal(await odrRead("src/odr-c.ts"), undefined);
+		const odrReminders = sentMessages.filter(({ message }) => message.customType === "gentle-pi.delegation-reminder");
+		assert.equal(odrReminders.length, 1);
+		assert.equal(odrReminders[0].message.display, false);
+		assert.equal(odrReminders[0].message.content, "Delegation: 3 files read. If you need to map more, delegate exploration.");
+		assert.deepEqual(odrReminders[0].options, { deliverAs: "steer", triggerTurn: true });
+		assert.equal(await odrRead("src/odr-d.ts"), undefined);
+		assert.equal(sentMessages.filter(({ message }) => message.customType === "gentle-pi.delegation-reminder").length, 1, "a fired signal stays quiet for the rest of the interval");
+		await toolResultHook({ toolName: "subagent_run", toolCallId: "odr-delegated", input: {}, isError: false }, odrCtx);
+		assert.equal(await odrRead("src/odr-e.ts"), undefined);
+		assert.equal(await odrRead("src/odr-f.ts"), undefined);
+		assert.equal(sentMessages.filter(({ message }) => message.customType === "gentle-pi.delegation-reminder").length, 1, "a successful delegation resets the interval silently");
+		assert.equal(await odrRead("src/odr-g.ts"), undefined);
+		assert.equal(sentMessages.filter(({ message }) => message.customType === "gentle-pi.delegation-reminder").length, 2, "the next interval reminds again at three files");
 		const ghPrCwd = await tempWorkspace();
 		try {
 			execFileSync("git", ["init"], { cwd: ghPrCwd, stdio: "ignore" });

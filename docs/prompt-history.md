@@ -21,6 +21,19 @@ GENTLE_PI_HISTORY_CAPTURE=1 pi
 - With capture off the extension is inert: no registry entry, no files, and
   prompts are never written.
 
+## Legacy migration and seeding are opt-in
+
+Importing past prompts is part of capture: opening the history selector while
+capture is enabled also migrates legacy editor-history stores and runs the
+one-time seed bootstrap from past session transcripts. With capture off, the
+selector warns and returns before any of that — no migration, no seed, no
+store files.
+
+An import creates **new searchable copies** under `~/.pi/agent/history`. The
+source transcripts stay untouched and read-only. Turning capture off again
+does not remove copies that were already imported: delete them manually as
+described in "What disabling capture does" below.
+
 ## Where the files live
 
 Everything sits under `~/.pi/agent/history/`:

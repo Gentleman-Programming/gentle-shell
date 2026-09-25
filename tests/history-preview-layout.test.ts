@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fileURLToPath } from "node:url";
 import fs from "node:fs";
-import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const sourcePath = fileURLToPath(new URL("../extensions/history/index.ts", import.meta.url));
+const sourcePath = fileURLToPath(
+  new URL("../extensions/history/index.ts", import.meta.url),
+);
 const source = fs.readFileSync(sourcePath, "utf8");
 
 test("preview rows are bottom-padded so the panel shrinks from the bottom", () => {

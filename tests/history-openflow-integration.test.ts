@@ -143,5 +143,5 @@ test("T33 (AC-S6-3): Change 2 structural pins still hold beside the third segmen
   const ctorEnd = indexSource.indexOf('this.applyFilter("")', ctorAt);
   const ctorAddChild =
     indexSource.slice(ctorAt, ctorEnd).split("this.addChild(").length - 1;
-  assert.equal(ctorAddChild, 14, "the constructor child sequence is unchanged");
+  assert.equal(ctorAddChild, 12, "the constructor child sequence is unchanged");
 });

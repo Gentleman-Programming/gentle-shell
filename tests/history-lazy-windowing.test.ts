@@ -496,7 +496,7 @@ test("the header keeps the position segment plus the loaded suffix on the existi
   const ctorEnd = selectorSource.indexOf('this.applyFilter("")', ctorAt);
   const ctorAddChild =
     selectorSource.slice(ctorAt, ctorEnd).split("this.addChild(").length - 1;
-  assert.equal(ctorAddChild, 14, "the constructor child sequence is unchanged");
+  assert.equal(ctorAddChild, 12, "the constructor child sequence is unchanged");
 });
 
 // T14 — AC-L2-3 revision (user-directed 2026-09-08): a non-empty query

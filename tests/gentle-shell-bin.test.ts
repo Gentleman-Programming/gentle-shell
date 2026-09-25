@@ -569,6 +569,18 @@ test("--version prints three lines", (t) => {
 	assert.match(lines[2], /^home isolated /);
 });
 
+test("bin/gentle-shell.mjs resolves bundled pi runtime when GENTLE_SHELL_PI is unset and PATH is empty (#1398)", (t) => {
+	const f = fixture(t);
+	const { GENTLE_SHELL_PI, ...envWithoutPi } = f.env;
+	const result = run({ ...envWithoutPi, PATH: "" }, ["--version"]);
+	assert.equal(result.status, 0, `launch should succeed using bundled pi runtime: ${result.stderr}`);
+	const lines = result.stdout.trim().split("\n");
+	assert.equal(lines.length, 3);
+	assert.match(lines[0], /^gentle-shell /);
+	assert.match(lines[1], /^pi 0\./);
+	assert.match(lines[2], /^home isolated /);
+});
+
 // --- setup subcommand ------------------------------------------------------
 
 test("gentle-shell setup provisions the resolved home through the pinned gentle-ai binary", (t) => {

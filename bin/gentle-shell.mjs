@@ -76,6 +76,14 @@ function readJsonIfExists(path) {
 // not be installed at all, so a resolution failure here is expected, not an error.
 function resolveBundledCli() {
 	try {
+		const entryUrl = import.meta.resolve("@earendil-works/pi-coding-agent");
+		const entryPath = fileURLToPath(entryUrl);
+		const cliPath = join(dirname(entryPath), "bundle", "cli.js");
+		if (existsSync(cliPath)) return cliPath;
+	} catch {
+		// fall through to legacy require.resolve
+	}
+	try {
 		const require = createRequire(import.meta.url);
 		const pkgJsonPath = require.resolve("@earendil-works/pi-coding-agent/package.json");
 		const cliPath = join(dirname(pkgJsonPath), "dist", "bundle", "cli.js");

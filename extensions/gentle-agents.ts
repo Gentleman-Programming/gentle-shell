@@ -1009,6 +1009,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			...(target === undefined || foreign ? {} : { onLaunch: () => { registry.register(target, "subagent:spawn"); } }),
 			model: profile.model,
 			thinking: profile.thinking,
+			extensions: config.extensions,
 			sessionDir,
 			resumeSessionPath: resume,
 			env: childEnv,

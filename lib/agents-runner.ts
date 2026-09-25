@@ -122,6 +122,10 @@ export interface TaskRequest {
 	env: NodeJS.ProcessEnv;
 	// Untrusted narrowing intent; paths come only from matching host provenance.
 	extensionPaths?: string[];
+	// Replacement selection for the child's Pi extensions: undefined preserves
+	// ambient discovery, an empty array launches with only --no-extensions, and
+	// entries are extension paths passed in order.
+	extensions?: string[];
 	// Synchronous admission recheck at dequeue, before any OS spawn. Throws fail
 	// only this task; unlike onLaunch, it must never persist Changes evidence.
 	beforeSpawn?: () => void;
@@ -237,6 +241,10 @@ const hostProcess: ProcessControl = { platform: process.platform, kill: (pid, si
 
 export function childArguments(request: TaskRequest): string[] {
 	const args = ["--mode", "rpc", "--session-dir", request.sessionDir];
+	if (request.extensions !== undefined) {
+		args.push("--no-extensions");
+		for (const extension of request.extensions) if (extension.length > 0) args.push("--extension", extension);
+	}
 	for (const path of request.extensionPaths ?? []) args.push("--extension", path);
 	if (request.resumeSessionPath) args.push("--session", request.resumeSessionPath);
 	if (request.model) args.push("--model", request.thinking ? `${formatModelRef(request.model)}:${request.thinking}` : formatModelRef(request.model));
@@ -344,7 +352,10 @@ export class AgentRunner {
 
 	run(request: TaskRequest): TaskRecord {
 		const task = this.createTask(request);
-		this.queue.push({ task, request });
+		// A caller can retain and mutate its request after dispatch. Preserve only
+		// the extension selection captured at construction for this child launch.
+		const launchRequest = request.extensions === undefined ? request : { ...request, extensions: [...request.extensions] };
+		this.queue.push({ task, request: launchRequest });
 		queueMicrotask(() => this.pump());
 		return task;
 	}

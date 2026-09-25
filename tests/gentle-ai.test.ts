@@ -395,6 +395,8 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 		{ provider: "openai", id: "beta" },
 		{ provider: "nan", id: "glm5.3" },
 	];
+	let onConfirm: (title: string, message: string) => Promise<boolean> = async () => true;
+	const confirmCalls: Array<[string, string]> = [];
 	const ctx = {
 		cwd: root,
 		hasUI: true,
@@ -403,6 +405,10 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 			find: (provider: string, id: string) => registryModels.find((model) => model.provider === provider && model.id === id),
 		},
 		ui: {
+			confirm: async (title: string, message: string) => {
+				confirmCalls.push([title, message]);
+				return onConfirm(title, message);
+			},
 			notify(message: string, severity: string) { notifications.push({ message, severity }); },
 			custom: async (factory: (tui: unknown, theme: Theme, keybindings: unknown, done: (result: unknown) => void) => RoutingConsumerPanel) => {
 				let result: unknown;
@@ -425,6 +431,8 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 		liveSwitches,
 		refuseSetModel() { setModelResult = false; },
 		rejectThinkingLevel() { thinkingRejects = true; },
+		confirmCalls,
+		onConfirm(handler: (title: string, message: string) => Promise<boolean>) { onConfirm = handler; },
 		onPanel(action: typeof onPanel) { onPanel = action; },
 		onInput(action: (panel: RoutingConsumerPanel) => void) { onInput = action; },
 		run: (name: string) => commands.get(name)!.handler("", ctx),
@@ -2028,6 +2036,113 @@ test("a profile store entry with only the orchestrator key counts zero roles", a
 	const applied = fixture.notifications.at(-1)?.message ?? "";
 	assert.match(applied, /0 agents updated/);
 	assert.match(applied, /Orchestrator set to nan\/glm5\.3 · high/);
+});
+
+test("applying an empty profile asks for confirmation and aborts when declined", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	writeStore({
+		empty: {},
+		team: { worker: { model: "openai/alpha" } },
+	}, "team");
+
+	fixture.onConfirm(async () => false);
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 1, "confirm dialog must be displayed when applying an empty profile");
+	const [title, message] = fixture.confirmCalls[0];
+	assert.equal(title, "Apply empty profile?");
+	assert.match(message, /has no routing entries/);
+	assert.match(message, /replace global routing/);
+
+	const models = JSON.parse(readFileSync(fixture.globalPath, "utf8"));
+	assert.deepEqual(models, { worker: { model: "openai/alpha" } }, "global routing must NOT be wiped when declined");
+
+	const store = JSON.parse(readFileSync(storePath, "utf8"));
+	assert.equal(store.active, "team", "active profile must not change when declined");
+});
+
+test("applying an empty profile with explicit confirmation replaces global routing with empty config", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	writeStore({
+		empty: {},
+		team: { worker: { model: "openai/alpha" } },
+	}, "team");
+
+	fixture.onConfirm(async () => true);
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 1, "confirm dialog must be displayed when applying an empty profile");
+	const models = JSON.parse(readFileSync(fixture.globalPath, "utf8"));
+	assert.deepEqual(models, {}, "global routing must be replaced with empty config when confirmed");
+
+	const store = JSON.parse(readFileSync(storePath, "utf8"));
+	assert.equal(store.active, "empty", "active profile must be set to empty when confirmed");
+});
+
+test("applying an orchestrator-only profile asks for confirmation and aborts when declined", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	writeStore({
+		orchOnly: { orchestrator: { model: "nan/glm5.3", thinking: "high" } },
+		team: { worker: { model: "openai/alpha" } },
+	}, "team");
+
+	fixture.onConfirm(async () => false);
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 1, "confirm dialog must be displayed when applying an orchestrator-only profile");
+	const [title, message] = fixture.confirmCalls[0];
+	assert.equal(title, "Apply empty profile?");
+	assert.match(message, /has no routing entries/);
+	assert.match(message, /replace global routing/);
+
+	const models = JSON.parse(readFileSync(fixture.globalPath, "utf8"));
+	assert.deepEqual(models, { worker: { model: "openai/alpha" } }, "global routing must NOT be wiped when declined");
+
+	const store = JSON.parse(readFileSync(storePath, "utf8"));
+	assert.equal(store.active, "team", "active profile must not change when declined");
+});
+
+test("applying an orchestrator-only profile with explicit confirmation updates orchestrator and active profile", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings, settingsPath } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	writeStore({
+		orchOnly: { orchestrator: { model: "nan/glm5.3", thinking: "high" } },
+		team: { worker: { model: "openai/alpha" } },
+	}, "team");
+
+	fixture.onConfirm(async () => true);
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 1, "confirm dialog must be displayed when applying an orchestrator-only profile");
+	const models = JSON.parse(readFileSync(fixture.globalPath, "utf8"));
+	assert.deepEqual(models, { orchestrator: { model: "nan/glm5.3", thinking: "high" } }, "global routing must hold only orchestrator");
+
+	const store = JSON.parse(readFileSync(storePath, "utf8"));
+	assert.equal(store.active, "orchOnly", "active profile must be set to orchOnly when confirmed");
+
+	const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+	assert.equal(settings.defaultProvider, "nan");
+	assert.equal(settings.defaultModel, "glm5.3");
+	assert.equal(settings.defaultThinkingLevel, "high");
 });
 
 test("applying a profile replaces materialized routing for agents the profile omits", async (t) => {

@@ -167,7 +167,7 @@ function isGitCommand(args: Record<string, unknown> | undefined): boolean {
 	return /^(?:env\s+\S+=\S+\s+|command\s+|\w+=\S+\s+)*git(?:\s|$)/.test(command);
 }
 
-export type GentleAiRoutineCommand = "sdd-status" | "sdd-continue" | "sdd-attempt" | "review";
+export type GentleAiRoutineCommand = "review";
 
 const GENTLE_AI_EXECUTABLE = String.raw`(?:gentle-ai(?:\.exe)?|(?:\.{1,2}[\\/]|(?:[A-Za-z]:)?(?:[\\/][^\\/\r\n]+)*[\\/])\.gentle-ai[\\/]v\d+\.\d+\.\d+[\\/]gentle-ai(?:\.exe)?)`;
 const GENTLE_AI_COMMAND_ARGUMENTS = new RegExp(`^${GENTLE_AI_EXECUTABLE}$`);
@@ -238,8 +238,6 @@ function shellTokens(command: string): ShellTokenization {
 function isAssignment(token: string): boolean {
 	return /^[A-Za-z_][A-Za-z0-9_]*=/.test(token);
 }
-const SDD_ATTEMPT_VERBS = new Set(["grant"]);
-
 const REVIEW_DIRECT_OPERATIONS = new Set([
 	"capabilities",
 	"start",
@@ -304,22 +302,6 @@ function displayToken(token: string): string {
 	return token.replace(/-/g, " ");
 }
 
-function authorizationRootCount(tokens: string[]): number {
-	let count = 0;
-	for (let index = 0; index < tokens.length; index += 1) {
-		const token = tokens[index]!;
-		if (token === "--authorization-root") {
-			const value = tokens[index + 1];
-			if (value !== undefined && !value.startsWith("-")) count += 1;
-			continue;
-		}
-		if (token.startsWith("--authorization-root=") && token.slice("--authorization-root=".length).length > 0) {
-			count += 1;
-		}
-	}
-	return count;
-}
-
 function validateGate(tokens: string[]): string | undefined {
 	const gateFlag = tokens.findIndex((token) => token === "--gate" || token.startsWith("--gate="));
 	if (gateFlag < 0) return undefined;
@@ -332,7 +314,7 @@ function validateGate(tokens: string[]): string | undefined {
 /**
  * Matches only supported routine Gentle AI CLI calls, including bounded
  * package-local paths, not arbitrary shell output that merely mentions
- * gentle-ai. These commands otherwise emit machine-readable SDD/RDD data.
+ * gentle-ai. Review commands otherwise emit machine-readable RDD data.
  */
 export function isGentleAiDirectCommand(args: Record<string, unknown> | undefined, commandArguments = GENTLE_AI_COMMAND_ARGUMENTS): boolean {
 	return gentleAiCommandTokens(args, commandArguments) !== undefined;
@@ -341,24 +323,12 @@ export function isGentleAiDirectCommand(args: Record<string, unknown> | undefine
 export function gentleAiRoutineCommand(args: Record<string, unknown> | undefined, commandArguments = GENTLE_AI_COMMAND_ARGUMENTS): GentleAiRoutineCommand | undefined {
 	const tokens = gentleAiCommandTokens(args, commandArguments);
 	if (!tokens) return undefined;
-	if (tokens[0] === "sdd-status") return "sdd-status";
-	if (tokens[0] === "sdd-continue") return "sdd-continue";
-	if (tokens[0] === "sdd-attempt" && SDD_ATTEMPT_VERBS.has(tokens[1] ?? "")) return "sdd-attempt";
 	if (tokens[0] === "review") return "review";
 	return undefined;
 }
 
-function gentleAiOperationPathFrom(tokens: string[]): string {
-	if (tokens[0] === "sdd-status") return "sdd status";
-	if (tokens[0] === "sdd-continue") return "sdd continue";
-	if (tokens[0] === "sdd-attempt") {
-		const verb = tokens[1] ?? "";
-		if (!SDD_ATTEMPT_VERBS.has(verb)) return "sdd attempt";
-		const rootCount = authorizationRootCount(tokens);
-		return rootCount > 0
-			? `sdd attempt grant · ${rootCount} root${rootCount === 1 ? "" : "s"}`
-			: "sdd attempt grant";
-	}
+function gentleAiOperationPathFrom(tokens: string[]): string | undefined {
+	if (tokens[0]?.startsWith("sdd-")) return undefined;
 	if (tokens[0] === "version") return "version";
 	if (tokens[0] !== "review") return "command";
 
@@ -383,11 +353,6 @@ function gentleAiOperationPathFrom(tokens: string[]): string {
 export function gentleAiOperationPath(args: Record<string, unknown> | undefined, commandArguments = GENTLE_AI_COMMAND_ARGUMENTS): string | undefined {
 	const tokens = gentleAiCommandTokens(args, commandArguments);
 	return tokens ? gentleAiOperationPathFrom(tokens) : undefined;
-}
-
-export function isGentleAiGrantCommand(args: Record<string, unknown> | undefined, commandArguments = GENTLE_AI_COMMAND_ARGUMENTS): boolean {
-	const tokens = gentleAiCommandTokens(args, commandArguments);
-	return tokens?.[0] === "sdd-attempt" && tokens[1] === "grant";
 }
 
 interface ToolResultFormatOptions {

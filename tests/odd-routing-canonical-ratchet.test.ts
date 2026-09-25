@@ -120,10 +120,10 @@ const ANCHORS: readonly RoutingAnchor[] = [
 		],
 	},
 	{
-		label: "triggers never select SDD",
+		label: "triggers select only the ODD topology",
 		canonical: "These triggers never select SDD and never create SDD artifacts",
 		mirrors: [
-			{ surface: DELEGATION, includes: "These triggers never select SDD and never create SDD artifacts" },
+			{ surface: DELEGATION, includes: "These triggers only choose between direct inline and delegated direct inside ODD" },
 		],
 	},
 	{

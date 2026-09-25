@@ -130,10 +130,11 @@ test("delegation overlay keeps the required headings", () => {
 		"### Delegation Rules",
 		"#### Background Subagent Policy",
 		"#### Allowed edit surfaces (MANDATORY)",
-		"### 3. SDD (optional)",
+		"### 2. Simple Delegation",
 	]) {
 		assert.ok(delegation.includes(heading), `delegation overlay lost required heading: ${heading}`);
 	}
+	assert.doesNotMatch(delegation, /### 3\. SDD \(optional\)/);
 });
 
 test("worker asset declares the Verification section after Test discipline", () => {

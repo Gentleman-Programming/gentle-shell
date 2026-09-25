@@ -446,13 +446,31 @@ test("quiet Bash normalizes compact JSON for bounded previews while keeping expa
 	assert.equal(expanded, `\n${compactJson}`);
 });
 
-test("quiet tool rendering identifies only routine Gentle AI SDD and RDD commands", () => {
-	assert.equal(gentleAiRoutineCommand({ command: "gentle-ai sdd-status fix-rose --json" }), "sdd-status");
-	assert.equal(gentleAiRoutineCommand({ command: "env FOO=bar gentle-ai sdd-continue fix-rose" }), "sdd-continue");
+test("retired SDD commands use generic bash rendering while review remains private", () => {
+	const { pi, tools } = createPi();
+	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
+	const bash = tools.get("bash");
+	for (const command of [
+		"gentle-ai sdd-status rose --json",
+		"env FOO=bar gentle-ai sdd-continue rose",
+		"gentle-ai sdd-attempt grant --authorization-root /root",
+		"./.gentle-ai/v2.2.0/gentle-ai sdd-status rose --json",
+		"C:\\package\\.gentle-ai\\v2.2.0\\gentle-ai.exe sdd-continue rose",
+	]) {
+		assert.equal(gentleAiRoutineCommand({ command }), undefined, command);
+		const call = renderToString(bash.renderCall({ command }, passthroughTheme, { args: { command } }));
+		assert.equal(call, `$ ${command}`);
+		const result = renderToString(bash.renderResult(textResult("ordinary output"), { expanded: false, isPartial: false }, passthroughTheme, { args: { command } }));
+		assert.match(result, /ordinary output/);
+	}
+	const review = "gentle-ai review status --next-transition";
+	assert.equal(gentleAiRoutineCommand({ command: review }), "review");
+	assert.equal(cardTitle(renderToString(bash.renderCall({ command: review }, passthroughTheme, { args: { command: review } }))), "🌹︎ Gentle AI · running · review status");
+});
+
+test("quiet tool rendering identifies only routine Gentle AI review commands", () => {
 	assert.equal(gentleAiRoutineCommand({ command: "/package/.gentle-ai/v2.2.0/gentle-ai review status --next-transition" }), "review");
-	assert.equal(gentleAiRoutineCommand({ command: "./.gentle-ai/v2.2.0/gentle-ai sdd-status rose --json" }), "sdd-status");
 	assert.equal(gentleAiRoutineCommand({ command: ".\\.gentle-ai\\v2.2.0\\gentle-ai.exe review status --next-transition" }), "review");
-	assert.equal(gentleAiRoutineCommand({ command: "C:\\package\\.gentle-ai\\v2.2.0\\gentle-ai.exe sdd-continue rose" }), "sdd-continue");
 	assert.equal(gentleAiRoutineCommand({ command: "gentle-ai sdd-attempt acquire --change fix-rose" }), undefined);
 	assert.equal(gentleAiRoutineCommand({ command: "gentle-ai sdd-attempt settle --change fix-rose" }), undefined);
 	assert.equal(gentleAiRoutineCommand({ command: "gentle-ai review status --next-transition" }), "review");
@@ -616,10 +634,6 @@ test("quiet tool rendering displays only finite safe Gentle AI operation paths",
 	const tool = tools.get("bash");
 	const rose = "🌹︎";
 	const cases = [
-		["gentle-ai sdd-status change-123 --cwd /repo/private", "sdd status"],
-		["gentle-ai sdd-continue change-123 --json", "sdd continue"],
-		["gentle-ai sdd-attempt acquire --change change-123", "sdd attempt"],
-		["gentle-ai sdd-attempt settle --change change-123 --actor maintainer", "sdd attempt"],
 		["gentle-ai review capabilities --cwd /repo/private", "review capabilities"],
 		["gentle-ai review start --target sha256:secret --path src/private.ts", "review start"],
 		["gentle-ai review finalize --lineage lineage-secret --payload '{\"secret\":true}'", "review finalize"],
@@ -686,7 +700,6 @@ test("quiet tool rendering covers version and future standalone Gentle AI comman
 	const cases = [
 		["gentle-ai version", "version"],
 		["gentle-ai future-command --authorization-root /repo/private", "command"],
-		["gentle-ai sdd-attempt future-verb --change secret-change", "sdd attempt"],
 		["gentle-ai review future-operation --path /repo/private", "review"],
 		["/package/.gentle-ai/v2.2.0/gentle-ai version", "version"],
 		["C:\\package\\.gentle-ai\\v2.2.0\\gentle-ai.exe future-command --root C:\\private", "command"],
@@ -697,7 +710,7 @@ test("quiet tool rendering covers version and future standalone Gentle AI comman
 			tool.renderCall({ command }, passthroughTheme, routineRenderContext({ args: { command } })),
 		);
 		assert.equal(cardTitle(rendered), `🌹︎ Gentle AI · running · ${path}`, command);
-		assert.doesNotMatch(rendered, /authorization-root|secret-change|private|C:\\\\private/);
+		assert.doesNotMatch(rendered, /authorization-root|private|C:\\\\private/);
 	}
 });
 
@@ -747,7 +760,6 @@ test("quiet tool rendering recognizes only the exact resolved dev binary", () =>
 		[`'${devPath}' review status --lineage secret`, "review status"],
 		[`"${devPath}" version`, "version"],
 		[`env FOO='a b' ${devPath} review capabilities`, "review capabilities"],
-		[`command -- "${devPath}" sdd-status hidden`, "sdd status"],
 	] as const;
 	for (const [command, operationPath] of cases) {
 		const call = renderToString(tool.renderCall({ command }, statusTheme, routineRenderContext({ args: { command } })));
@@ -849,61 +861,6 @@ test("quiet tool rendering hides the routine partial result because the header o
 	);
 	assert.match(partialExpandedFailure, /review status failed: authority unavailable/);
 	assert.doesNotMatch(cardBody(partialExpandedFailure), /\x1b\[/);
-});
-
-test("quiet tool rendering collapses grant calls to action and authorization-root cardinality", () => {
-	const { pi, tools } = createPi();
-	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
-	const tool = tools.get("bash");
-	const command = "gentle-ai sdd-attempt grant --authorization-root /repo/root --authorization-root /other/root --change secret-change\x1b[31m";
-
-	const initial = tool.renderCall(
-		{ command },
-		statusTheme,
-		routineRenderContext({ args: { command } }),
-	);
-	const running = tool.renderCall(
-		{ command },
-		statusTheme,
-		routineRenderContext({ args: { command }, executionStarted: true, lastComponent: initial }),
-	);
-	const completed = tool.renderCall(
-		{ command },
-		statusTheme,
-		routineRenderContext({ args: { command }, executionStarted: true, isPartial: false, lastComponent: running }),
-	);
-	const failed = tool.renderCall(
-		{ command },
-		statusTheme,
-		routineRenderContext({ args: { command }, executionStarted: true, isPartial: false, isError: true, lastComponent: completed }),
-	);
-
-	assert.strictEqual(initial, running);
-	assert.strictEqual(running, completed);
-	assert.strictEqual(completed, failed);
-	const rendered = renderToString(failed);
-	assert.equal(cardTitle(rendered), "🌹︎ Gentle AI · failed · sdd attempt grant · 2 roots"); assert.equal(cardTone(rendered), "error");
-	assert.doesNotMatch(rendered.split(keyHint("app.tools.expand", "to expand")).join(""), /authorization-root|secret-change|repo\/root|other\/root|audit:|\x1b\[/);
-});
-
-test("quiet tool rendering counts grant authorization roots without rendering values", () => {
-	const { pi, tools } = createPi();
-	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
-	const tool = tools.get("bash");
-	const cases = [
-		["gentle-ai sdd-attempt grant --change change", "sdd attempt grant"],
-		["gentle-ai sdd-attempt grant --authorization-root /repo/root", "sdd attempt grant · 1 root"],
-		["gentle-ai sdd-attempt grant --authorization-root=/repo/root", "sdd attempt grant · 1 root"],
-		["gentle-ai sdd-attempt grant --authorization-root --change change", "sdd attempt grant"],
-		["gentle-ai sdd-attempt grant --authorization-root /one --authorization-root=/two --authorization-root /three", "sdd attempt grant · 3 roots"],
-		["gentle-ai sdd-attempt grant --authorization-root= --authorization-root /one", "sdd attempt grant · 1 root"],
-	] as const;
-
-	for (const [command, expected] of cases) {
-		const rendered = renderToString(tool.renderCall({ command }, passthroughTheme, { args: { command } }));
-		assert.equal(cardTitle(rendered), `🌹︎ Gentle AI · running · ${expected}`, command);
-		assert.doesNotMatch(rendered, /authorization-root|\/repo\/root|\/one|\/two|\/three|change/);
-	}
 });
 
 test("quiet tool rendering hides invocation secrets from collapsed Gentle AI calls and results", () => {

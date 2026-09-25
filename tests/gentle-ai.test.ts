@@ -20,7 +20,7 @@ type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel">;
 import { PROFILE_PIN_KIND, PROFILE_PIN_VERSION, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
 import { NATIVE_REVIEW_ERROR_CODE, NativeReviewCliError, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { CandidateViewError, type CandidateViewRegistry } from "../lib/review-candidate-view.ts";
-import { installPackageAssets } from "../lib/sdd-preflight.ts";
+import { installPackageAssets } from "../lib/agent-assets.ts";
 import type { ReviewCollectInputV3, ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { cardBody, cardTitle, cardTone } from "./gentle-card-text.ts";
@@ -757,8 +757,8 @@ test("managed routing timeout leaves its profile, agent, and manifest unchanged"
 	});
 
 	process.env.GENTLE_PI_AGENT_HOME = agentHome;
-	installPackageAssets(root, false, ["sdd"]);
-	const agentPath = join(agentHome, "agents", "sdd-apply.md");
+	installPackageAssets(root, false, ["delegation"]);
+	const agentPath = join(agentHome, "agents", "gentle-ai-worker.md");
 	const manifestPath = join(agentHome, "gentle-ai", "managed-assets.json");
 	const profilePath = join(agentHome, "subagents.json");
 	const profileBefore = "{\n  \"unrelated\": true\n}\n";
@@ -771,7 +771,7 @@ test("managed routing timeout leaves its profile, agent, and manifest unchanged"
 	);
 
 	assert.throws(
-		() => applyModelConfig(root, { "sdd-apply": { model: "test/managed", thinking: "high" } }),
+		() => applyModelConfig(root, { "gentle-ai-worker": { model: "test/managed", thinking: "high" } }),
 		/Timed out acquiring managed-assets lock file/i,
 	);
 	assert.equal(readFileSync(profilePath, "utf8"), profileBefore);
@@ -803,8 +803,8 @@ test("a later alias keeps managed-root precedence and manifest ownership", (t) =
 	process.env.GENTLE_PI_AGENT_HOME = agentHome;
 	process.env.HOME = home;
 	process.env.USERPROFILE = home;
-	installPackageAssets(cwd, false, ["sdd"]);
-	writeMarkdown(join(intervening, "sdd-apply.md"), "---\nname: sdd-apply\n---\nintervening override\n");
+	installPackageAssets(cwd, false, ["delegation"]);
+	writeMarkdown(join(intervening, "gentle-ai-worker.md"), "---\nname: gentle-ai-worker\n---\nintervening override\n");
 	mkdirSync(home, { recursive: true });
 	try {
 		symlinkSync(managed, alias, process.platform === "win32" ? "junction" : "dir");
@@ -813,13 +813,13 @@ test("a later alias keeps managed-root precedence and manifest ownership", (t) =
 		return;
 	}
 
-	const selected = __testing.listDiscoverableAgents(cwd).find((agent) => agent.name === "sdd-apply");
-	assert.equal(selected?.filePath, join(managed, "sdd-apply.md"));
-	applyModelConfig(cwd, { "sdd-apply": { model: "test/managed", thinking: "high" } });
+	const selected = __testing.listDiscoverableAgents(cwd).find((agent) => agent.name === "gentle-ai-worker");
+	assert.equal(selected?.filePath, join(managed, "gentle-ai-worker.md"));
+	applyModelConfig(cwd, { "gentle-ai-worker": { model: "test/managed", thinking: "high" } });
 	const manifest = JSON.parse(readFileSync(join(agentHome, "gentle-ai", "managed-assets.json"), "utf8")) as { assets: Record<string, string> };
-	const routed = readFileSync(join(managed, "sdd-apply.md"), "utf8");
+	const routed = readFileSync(join(managed, "gentle-ai-worker.md"), "utf8");
 	assert.match(routed, /^model: test\/managed$/m);
-	assert.equal(manifest.assets["agents/sdd-apply.md"], createHash("sha256").update(routed).digest("hex"));
+	assert.equal(manifest.assets["agents/gentle-ai-worker.md"], createHash("sha256").update(routed).digest("hex"));
 });
 
 test("runtime guidance keeps review policy out of the static orchestrator and technical reference", () => {
@@ -1077,7 +1077,21 @@ test("ordinary START reports candidate-owner preparation failure as pre-native n
 	});
 });
 
-test("agent model discovery prioritizes SDD and Judgment Day agents", (t) => {
+test("retired SDD startup flag is not registered or imported", () => {
+	const flags: string[] = [];
+	const pi = {
+		on() {},
+		registerCommand() {},
+		registerTool() {},
+		registerFlag(name: string) { flags.push(name); },
+	} as unknown as ExtensionAPI;
+	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	assert.ok(!flags.includes("gentle-sdd-change"));
+	const source = readFileSync(new URL("../extensions/gentle-ai.ts", import.meta.url), "utf8");
+	assert.doesNotMatch(source, /from ["']\.\.\/lib\/sdd-preflight\.ts["']/);
+});
+
+test("agent model discovery prioritizes Judgment Day agents", (t) => {
 	const root = mkdtempSync(join(tmpdir(), "gentle-pi-model-agents-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	writeMarkdown(join(root, "zeta.md"), "name: zeta\n");
@@ -1094,12 +1108,12 @@ test("agent model discovery prioritizes SDD and Judgment Day agents", (t) => {
 	assert.deepEqual(
 		ordered.map((agent) => agent.name),
 		[
-			"sdd-init",
-			"sdd-apply",
 			"jd-judge-a",
 			"jd-judge-b",
 			"jd-fix-agent",
 			"alpha",
+			"sdd-apply",
+			"sdd-init",
 			"zeta",
 		],
 	);

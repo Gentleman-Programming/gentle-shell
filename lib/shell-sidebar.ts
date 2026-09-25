@@ -3,8 +3,11 @@ import type { Component, TUI } from "@earendil-works/pi-tui";
 // Store on the terminal, not a module singleton: extension loaders may isolate
 // modules, while Pi keeps this terminal across regular/fullscreen transitions.
 const STATE = Symbol.for("gentle-pi.experimental-sidebar.state");
+/** In-process notification after a visual preference is persisted. */
+export const VISUAL_SETTINGS_CHANGED = "gentle-pi.visual-settings-changed";
 export interface SidebarState {
 	active: boolean;
+	visibility?: { todo?: boolean };
 	ownsHost?: () => boolean;
 	parts: Map<string, SidebarRail>;
 }
@@ -32,7 +35,7 @@ export function sidebarPart<T extends Component & { dispose?(): void }>(tui: TUI
 	state.parts.set(key, rail);
 	return {
 		...bottom,
-		render: (width: number) => state.active && state.ownsHost?.() ? [] : bottom.render(width),
+		render: (width: number) => (key === "todo" && state.visibility?.todo === false) || (state.active && state.ownsHost?.()) ? [] : bottom.render(width),
 		dispose() {
 			if (state.parts.get(key) === rail) state.parts.delete(key);
 			bottom.dispose?.();

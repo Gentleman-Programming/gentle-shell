@@ -449,12 +449,6 @@ test("forwarded args reach pi after the injected extension flags, in order", (t)
 	assert.deepEqual(payload.args, [
 		"-e",
 		packageRoot,
-		"--theme",
-		join(packageRoot, "themes"),
-		"--skill",
-		join(packageRoot, "skills"),
-		"--prompt-template",
-		join(packageRoot, "prompts"),
 		"--mode",
 		"rpc",
 		"-p",
@@ -511,12 +505,6 @@ test("an isolated home whose settings.json does not declare gentle-pi keeps the 
 	assert.deepEqual(payload.args, [
 		"-e",
 		packageRoot,
-		"--theme",
-		join(packageRoot, "themes"),
-		"--skill",
-		join(packageRoot, "skills"),
-		"--prompt-template",
-		join(packageRoot, "prompts"),
 		"--mode",
 		"rpc",
 	]);
@@ -538,12 +526,6 @@ test("an isolated home whose settings.json declares a path-based gentle-pi takes
 		"--no-extensions",
 		"-e",
 		packageRoot,
-		"--theme",
-		join(packageRoot, "themes"),
-		"--skill",
-		join(packageRoot, "skills"),
-		"--prompt-template",
-		join(packageRoot, "prompts"),
 		"--mode",
 		"rpc",
 	]);
@@ -904,12 +886,6 @@ test("a later normal launch injects the launcher's own package root once gentle-
 	assert.deepEqual(payload.args, [
 		"-e",
 		packageRoot,
-		"--theme",
-		join(packageRoot, "themes"),
-		"--skill",
-		join(packageRoot, "skills"),
-		"--prompt-template",
-		join(packageRoot, "prompts"),
 		"--mode",
 		"rpc",
 	]);
@@ -1493,7 +1469,8 @@ test("a --home equal to pi's own default agent home is never auto-provisioned, e
 	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
 	const counterPath = join(f.root, "gentle-ai-runs.log");
 	writeGentleAiScriptCountingRuns(gentleAiScript, counterPath);
-	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+	// Exercise the default Pi home, not an ambient PI_CODING_AGENT_DIR override.
+	const env = enableAutoProvision({ ...f.env, PI_CODING_AGENT_DIR: undefined, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
 
 	const result = run(env, ["--home", defaultPiHome, "--mode", "rpc"]);
 	assert.equal(result.status, 0, result.stderr);
@@ -1963,12 +1940,6 @@ test("--link takes over a path-declared conflicting gentle-pi: --no-extensions, 
 		join(piAgentDir, "npm", "node_modules", "some-other"),
 		"-e",
 		packageRoot,
-		"--theme",
-		join(packageRoot, "themes"),
-		"--skill",
-		join(packageRoot, "skills"),
-		"--prompt-template",
-		join(packageRoot, "prompts"),
 		"--mode",
 		"rpc",
 	]);
@@ -2019,7 +1990,7 @@ test("--link does not take over a git-sourced other package: it is skipped with 
 	assert.match(result.stderr, /skipping git-sourced package/);
 
 	const payload = JSON.parse(result.stdout);
-	assert.deepEqual(payload.args, ["--no-extensions", "-e", packageRoot, "--theme", join(packageRoot, "themes"), "--skill", join(packageRoot, "skills"), "--prompt-template", join(packageRoot, "prompts")]);
+	assert.deepEqual(payload.args, ["--no-extensions", "-e", packageRoot]);
 });
 
 test("--package-root forces a takeover even when settings already declare a matching npm:gentle-pi", (t) => {
@@ -2039,17 +2010,7 @@ test("--package-root forces a takeover even when settings already declare a matc
 	assert.match(result.stderr, /taking over gentle-pi from npm:gentle-pi/);
 
 	const payload = JSON.parse(result.stdout);
-	assert.deepEqual(payload.args, [
-		"--no-extensions",
-		"-e",
-		forcedRoot,
-		"--theme",
-		join(forcedRoot, "themes"),
-		"--skill",
-		join(forcedRoot, "skills"),
-		"--prompt-template",
-		join(forcedRoot, "prompts"),
-	]);
+	assert.deepEqual(payload.args, ["--no-extensions", "-e", forcedRoot]);
 	assert.equal(readFileSync(settingsPath, "utf8"), settingsText);
 });
 
@@ -2079,12 +2040,6 @@ test("--package-root forces a takeover even with no gentle-pi declaration at all
 		join(piAgentDir, "npm", "node_modules", "some-other"),
 		"-e",
 		forcedRoot,
-		"--theme",
-		join(forcedRoot, "themes"),
-		"--skill",
-		join(forcedRoot, "skills"),
-		"--prompt-template",
-		join(forcedRoot, "prompts"),
 	]);
 	assert.equal(readFileSync(settingsPath, "utf8"), settingsText);
 });
@@ -2117,12 +2072,6 @@ test("--link take-over with --package-root injects exactly one -e when a setting
 		"--no-extensions",
 		"-e",
 		realOtherDir,
-		"--theme",
-		join(realOtherDir, "themes"),
-		"--skill",
-		join(realOtherDir, "skills"),
-		"--prompt-template",
-		join(realOtherDir, "prompts"),
 	]);
 });
 
@@ -2189,12 +2138,6 @@ test("--link take-over re-injects loose extension files, one -e per discovered f
 		join(resolvedLooseProjectExtensions, "project-ext.mjs"),
 		"-e",
 		packageRoot,
-		"--theme",
-		join(packageRoot, "themes"),
-		"--skill",
-		join(packageRoot, "skills"),
-		"--prompt-template",
-		join(packageRoot, "prompts"),
 		"--mode",
 		"rpc",
 	]);
@@ -2234,12 +2177,6 @@ test("--link take-over injects a root-level index.ts as its own loose file entry
 		join(looseAgentExtensions, "index.ts"),
 		"-e",
 		packageRoot,
-		"--theme",
-		join(packageRoot, "themes"),
-		"--skill",
-		join(packageRoot, "skills"),
-		"--prompt-template",
-		join(packageRoot, "prompts"),
 	]);
 });
 
@@ -2270,12 +2207,6 @@ test("--link take-over injects a subdirectory's own index.ts entry point even wh
 		join(subDir, "index.ts"),
 		"-e",
 		packageRoot,
-		"--theme",
-		join(packageRoot, "themes"),
-		"--skill",
-		join(packageRoot, "skills"),
-		"--prompt-template",
-		join(packageRoot, "prompts"),
 	]);
 });
 
@@ -2295,7 +2226,7 @@ test("--link take-over omits -e flags for loose extension dirs that do not exist
 	assert.equal(result.status, 0, result.stderr);
 
 	const payload = JSON.parse(result.stdout);
-	assert.deepEqual(payload.args, ["--no-extensions", "-e", packageRoot, "--theme", join(packageRoot, "themes"), "--skill", join(packageRoot, "skills"), "--prompt-template", join(packageRoot, "prompts")]);
+	assert.deepEqual(payload.args, ["--no-extensions", "-e", packageRoot]);
 });
 
 // --- R3-001/R4-takeover-injects-unverified-package-dirs -------------------
@@ -2342,12 +2273,6 @@ test("--link take-over skips a declared package directory that is not installed,
 		installedOtherDir,
 		"-e",
 		packageRoot,
-		"--theme",
-		join(packageRoot, "themes"),
-		"--skill",
-		join(packageRoot, "skills"),
-		"--prompt-template",
-		join(packageRoot, "prompts"),
 		"--mode",
 		"rpc",
 	]);
@@ -2380,12 +2305,6 @@ test("--link take-over injects the launcher's own package root once when --packa
 		"--no-extensions",
 		"-e",
 		forcedRoot,
-		"--theme",
-		join(forcedRoot, "themes"),
-		"--skill",
-		join(forcedRoot, "skills"),
-		"--prompt-template",
-		join(forcedRoot, "prompts"),
 	]);
 });
 
@@ -2402,12 +2321,6 @@ test("--isolated --package-root produces the plain injection (no --no-extensions
 	assert.deepEqual(payload.args, [
 		"-e",
 		forcedRoot,
-		"--theme",
-		join(forcedRoot, "themes"),
-		"--skill",
-		join(forcedRoot, "skills"),
-		"--prompt-template",
-		join(forcedRoot, "prompts"),
 		"--mode",
 		"rpc",
 	]);
@@ -2453,7 +2366,7 @@ test("--link take-over warns once when a loose extensions directory cannot be re
 	assert.match(result.stderr, /extensions/);
 
 	const payload = JSON.parse(result.stdout);
-	assert.deepEqual(payload.args, ["--no-extensions", "-e", packageRoot, "--theme", join(packageRoot, "themes"), "--skill", join(packageRoot, "skills"), "--prompt-template", join(packageRoot, "prompts")]);
+	assert.deepEqual(payload.args, ["--no-extensions", "-e", packageRoot]);
 });
 
 // --- R3-004: loose-extensions manifest branch coverage ----------------------
@@ -2485,12 +2398,6 @@ test("--link take-over falls through to per-file discovery when a loose dir's pa
 		join(looseAgentExtensions, "a.ts"),
 		"-e",
 		packageRoot,
-		"--theme",
-		join(packageRoot, "themes"),
-		"--skill",
-		join(packageRoot, "skills"),
-		"--prompt-template",
-		join(packageRoot, "prompts"),
 	]);
 });
 
@@ -2521,12 +2428,6 @@ test("--link take-over treats a malformed package.json as no manifest and falls 
 		join(looseAgentExtensions, "a.ts"),
 		"-e",
 		packageRoot,
-		"--theme",
-		join(packageRoot, "themes"),
-		"--skill",
-		join(packageRoot, "skills"),
-		"--prompt-template",
-		join(packageRoot, "prompts"),
 	]);
 });
 
@@ -2567,5 +2468,5 @@ test("--link take-over treats a file named `extensions` as not a loose extension
 	assert.equal(result.status, 0, result.stderr);
 
 	const payload = JSON.parse(result.stdout);
-	assert.deepEqual(payload.args, ["--no-extensions", "-e", packageRoot, "--theme", join(packageRoot, "themes"), "--skill", join(packageRoot, "skills"), "--prompt-template", join(packageRoot, "prompts")]);
+	assert.deepEqual(payload.args, ["--no-extensions", "-e", packageRoot]);
 });

@@ -182,10 +182,12 @@ type SelectorNotify = (
 
 /** Single rendered row; always occupies exactly one terminal row. */
 class FixedRowText {
-  constructor(
-    private text: string = "",
-    private readonly centered = false,
-  ) {}
+  private text: string = "";
+  private readonly centered: boolean;
+  constructor(text: string = "", centered = false) {
+    this.text = text;
+    this.centered = centered;
+  }
 
   /** Replace the row content in place; padding contract comes from render(). */
   setText(next: string): void {
@@ -283,6 +285,7 @@ class PromptHistorySelector extends Container implements Focusable {
    * and every other key is swallowed. Nothing is deleted on the arming
    * press.
    */
+  private readonly onNotify?: SelectorNotify;
   private confirmArmed = false;
 
   /** Dispatch table: first match wins, fallthrough last. */
@@ -349,7 +352,7 @@ class PromptHistorySelector extends Container implements Focusable {
     records: PromptRecord[],
     onSelect: (record: PromptRecord) => void,
     onCancel: () => void,
-    private readonly onNotify?: SelectorNotify,
+    onNotify?: SelectorNotify,
   ) {
     super();
 
@@ -359,6 +362,7 @@ class PromptHistorySelector extends Container implements Focusable {
     this.loadedCount = initialLoadedCount(records.length, INITIAL_BATCH);
     this.onSelect = onSelect;
     this.onCancel = onCancel;
+    this.onNotify = onNotify;
 
     // ── Search panel (top) ──
     this.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));

@@ -19,7 +19,6 @@ const EXTENSIONS = [
 	"extensions/gentle-ai.ts",
 	"extensions/quiet-tools.ts",
 	"extensions/skill-registry.ts",
-	"extensions/sdd-init.ts",
 	"extensions/startup-banner.ts",
 ];
 
@@ -33,30 +32,16 @@ const EXPECTED_BANNER_COMMANDS = [
 const EXPECTED_COMMANDS = [
 	"gentle:install-delegation",
 	"gentle:install-review",
-	"gentle:install-sdd",
-	"gentle:sdd-preflight",
-	"gentle-sdd-status",
-	"gentle-sdd-continue",
 	"gentle:models",
 	"gentle:persona",
 	"gentle:status",
 	"gentle:doctor",
-	"gentle-sdd-init",
 	"skill-registry:refresh",
 	...EXPECTED_BANNER_COMMANDS,
 ];
 
 const FORBIDDEN_COMPAT_COMMANDS = [
 	"gentle:install-assets",
-	// The SDD entry points carry the gentle- prefix so they read identically in
-	// Claude Code and Pi. The bare names are retired without an alias.
-	"sdd-init",
-	"sdd-continue",
-	"sdd-status",
-	"gentle-ai:install-sdd",
-	"gentle-ai:sdd-preflight",
-	"gentle-ai:sdd-status",
-	"gentle-ai:sdd-continue",
 	"gentle-ai:models",
 	"gentleman:models",
 	"gentle-ai:persona",
@@ -356,10 +341,19 @@ async function run() {
 	for (const name of FORBIDDEN_COMPAT_COMMANDS) {
 		assert.equal(commands.has(name), false, `compat command should not be registered: ${name}`);
 	}
+	// Retired SDD command entry points must not register, regardless of unrelated prompt text.
+	for (const name of [
+		"gentle:install-sdd", "gentle:sdd-preflight", "gentle-sdd-status",
+		"gentle-sdd-continue", "gentle-sdd-init", "sdd-init", "sdd-continue",
+		"sdd-status", "gentle-ai:install-sdd", "gentle-ai:sdd-preflight",
+		"gentle-ai:sdd-status", "gentle-ai:sdd-continue",
+	]) {
+		assert.equal(commands.has(name), false, `retired SDD command registered: ${name}`);
+	}
 	assert.ok(flags.has("no-skill-registry"), "missing no-skill-registry flag");
 	assert.ok(hooks.has("session_start"), "missing session_start hook");
 	assert.ok(hooks.has("session_shutdown"), "missing session_shutdown hook");
-	assert.ok(hooks.has("input"), "missing input hook");
+	assert.equal(hooks.has("input"), false, "retired SDD slash input must not be intercepted");
 	assert.ok(hooks.has("before_agent_start"), "missing before_agent_start hook");
 	assert.ok(hooks.has("tool_call"), "missing tool_call hook");
 	for (const toolName of ["read", "bash", "grep", "find", "ls", "edit", "write"]) {
@@ -403,28 +397,23 @@ async function run() {
 		const promptResult = await promptHook({ systemPrompt: "base" }, createCtx(promptCwd));
 		assert.match(promptResult.systemPrompt, /base/);
 		assert.match(promptResult.systemPrompt, /el Gentleman/);
+		assert.match(promptResult.systemPrompt, /Organic Driven Development/);
+		assert.doesNotMatch(promptResult.systemPrompt, /## SDD Research Capabilities/);
+		assert.match(promptResult.systemPrompt, /review execution contract/);
+		assert.doesNotMatch(await readFile(join(ROOT, "extensions", "gentle-ai.ts"), "utf8"), /readCommandSddStatus/);
 		assert.match(promptResult.systemPrompt + delegationDetail, /do not pass the `model` parameter by default/);
-		assert.match(
-			promptResult.systemPrompt + delegationDetail,
-			/SDD model assignment tables apply only to SDD\/Judgment-Day phase agents/,
-		);
 		assert.doesNotMatch(promptResult.systemPrompt, /Every Agent tool call MUST include `model`/);
-		assert.doesNotMatch(promptResult.systemPrompt, /default\s*\|\s*sonnet\s*\|\s*Non-SDD general delegation/);
-		assert.match(promptResult.systemPrompt, /openspec\/config\.yaml.*not session preflight/s);
-		assert.match(promptResult.systemPrompt, /Do not mark SDD preflight complete/);
 		assert.ok(
 			promptResult.systemPrompt.includes(
 				`Package assets root: \`${join(ROOT, "assets")}\`. Lazy asset paths below are relative to this root.`,
 			),
 			"parent prompt must declare the one absolute root for relative lazy asset paths",
 		);
-		assert.match(promptResult.systemPrompt, /`sdd-orchestrator-workflow\.md`/);
 		assert.doesNotMatch(
 			promptResult.systemPrompt,
 			new RegExp(ambientTestAssetsDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
 			"normal runtime must ignore ambient GENTLE_PI_TEST_ASSETS_DIR",
 		);
-		assert.doesNotMatch(promptResult.systemPrompt, /\{\{GENTLE_PI_SDD_WORKFLOW_PATH\}\}/);
 		delete process.env.GENTLE_PI_TEST_ASSETS_DIR;
 		await rm(ambientTestAssetsDir, { recursive: true, force: true });
 		await writeFile(
@@ -443,11 +432,6 @@ async function run() {
 			createCtx(promptCwd),
 		);
 		assert.equal(subagentPromptResult.systemPrompt, "worker base");
-		assert.equal(
-			existsSync(join(promptCwd, ".pi", "agents", "sdd-apply.md")),
-			false,
-			"normal agent startup must not run SDD preflight",
-		);
 		await mkdir(join(promptCwd, ".pi", "gentle-ai"), { recursive: true });
 		await writeFile(
 			join(promptCwd, ".pi", "gentle-ai", "persona.json"),
@@ -470,54 +454,6 @@ async function run() {
 			'{\n  "mode": "neutral"\n}\n',
 		);
 		assert.match(personaCtx.ui.notifications.at(-1).message, /Global config:/);
-		const onboardCtx = createCtx(promptCwd, true, "sdd-onboard-session");
-		onboardCtx.ui.select = async (_label, options) => options[0];
-		const onboardPromptResult = await promptHook(
-			{ agentName: "sdd-onboard", systemPrompt: "onboard base" },
-			onboardCtx,
-		);
-		assert.match(onboardPromptResult.systemPrompt, /onboard base/);
-		assert.match(onboardPromptResult.systemPrompt, /## SDD Session Preflight/);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-onboard.md")), true);
-		await mkdir(join(promptCwd, "openspec", "changes", "status-demo", "specs", "demo"), { recursive: true });
-		await writeFile(join(promptCwd, "openspec", "changes", "status-demo", "proposal.md"), "# Proposal\n");
-		await writeFile(join(promptCwd, "openspec", "changes", "status-demo", "specs", "demo", "spec.md"), "# Spec\n");
-		await writeFile(join(promptCwd, "openspec", "changes", "status-demo", "design.md"), "# Design\n");
-		await writeFile(join(promptCwd, "openspec", "changes", "status-demo", "tasks.md"), "# Tasks\n\n- [ ] 1.1 Implement demo\n");
-		const applyPromptResult = await promptHook(
-			{ agentName: "sdd-apply", systemPrompt: "apply base" },
-			createCtx(promptCwd, true, "sdd-apply-session"),
-		);
-		assert.match(applyPromptResult.systemPrompt, /## Native SDD Status Engine/);
-		assert.match(applyPromptResult.systemPrompt, /"changeName": "status-demo"/);
-		assert.match(applyPromptResult.systemPrompt, /### apply instructions/);
-		const statusCtx = createCtx(promptCwd, true);
-		await commands.get("gentle-sdd-status").handler("status-demo --json", statusCtx);
-		assert.match(statusCtx.ui.notifications.at(-1).message, /"schemaName": "gentle-ai\.sdd-status"/);
-		const continueCtx = createCtx(promptCwd, true);
-		let markerConfirmations = 0;
-		continueCtx.ui.confirm = async (_title, message) => {
-			assert.ok(message.includes(join(promptCwd, "openspec/changes/status-demo/.gentle-ai-instance")));
-			assert.match(message, /no source roots and no persistent authority/);
-			markerConfirmations += 1;
-			return true;
-		};
-		await commands.get("gentle-sdd-continue").handler("status-demo", continueCtx);
-		assert.equal(markerConfirmations, 1);
-		assert.match(continueCtx.ui.notifications.at(-1).message, /Native SDD Status Engine/);
-		assert.match(continueCtx.ui.notifications.at(-1).message, /"nextRecommended": "apply"/);
-		const { execFileSync } = await import("node:child_process");
-		execFileSync("git", ["init"], { cwd: promptCwd, stdio: "ignore" });
-		const recoveryRequiredDirectory = join(promptCwd, ".git", "gentle-ai", "reviews", "control", "recovery-required-v1");
-		await mkdir(recoveryRequiredDirectory, { recursive: true });
-		await writeFile(
-			join(recoveryRequiredDirectory, `${domainHashV1("openspec-change-name", "status-demo")}.json`),
-			'{"schema":"gentle-ai.recovery-required/v1","change_name":"status-demo"}',
-		);
-		const blockedContinueCtx = createCtx(promptCwd, true);
-		await commands.get("gentle-sdd-continue").handler("status-demo", blockedContinueCtx);
-		assert.doesNotMatch(blockedContinueCtx.ui.notifications.at(-1).message, /resolve-review:/);
-		assert.match(blockedContinueCtx.ui.notifications.at(-1).message, /"nextRecommended": "apply"/);
 	} finally {
 		await rm(promptCwd, { recursive: true, force: true });
 	}
@@ -605,42 +541,6 @@ async function run() {
 			undefined,
 			"a writer may dispatch when context carries narrow task-scoped repository-relative paths",
 		);
-
-		const interactiveSddDispatch = {
-			agent: "sdd-remediate",
-			task: "Correct the bound failed verification evidence.",
-			context: "Retain the parent-supplied remediation scope.",
-			mode: "task",
-		};
-		assert.equal(
-			await toolHook({ toolName: "subagent_run", input: interactiveSddDispatch }, createCtx(toolCwd, true, "interactive-sdd-parent")),
-			undefined,
-			"an interactive parent may dispatch an SDD child only after preflight resolves",
-		);
-		assert.match(
-			interactiveSddDispatch.context,
-			/^## SDD Session Preflight\nThese SDD preferences are explicit current-session choices\./,
-			"the parent-confirmed rendered preflight must be transported through the RPC child's context",
-		);
-		const rpcChildCwd = await tempWorkspace();
-		try {
-			const rpcChild = createPi();
-			createGentleAiExtension({ processEnv: { GENTLE_PI_AGENTS_CHILD: "1" } })(rpcChild.pi);
-			const rpcChildCtx = createCtx(rpcChildCwd, false, "delegated-rpc-sdd-child");
-			rpcChildCtx.mode = "rpc";
-			const rpcChildPrompt = await rpcChild.hooks.get("before_agent_start")[0](
-				{ agentName: "sdd-remediate", systemPrompt: "You are the SDD remediate executor for Gentle AI." },
-				rpcChildCtx,
-			);
-			assert.doesNotMatch(rpcChildPrompt.systemPrompt, /## SDD Session Preflight/);
-			assert.equal(
-				existsSync(join(rpcChildCwd, ".pi", "gentle-ai", "sdd-preflight.json")),
-				false,
-				"a delegated RPC child must not silently originate or persist defaults",
-			);
-		} finally {
-			await rm(rpcChildCwd, { recursive: true, force: true });
-		}
 
 		const canonicalFrozenFindingRow = '{"id":"JD-A-001","lens":"judgment-day","location":"extensions/gentle-ai.ts:1","severity":"CRITICAL","status_at_freeze":"open","evidence_class":"deterministic","evidence_claim":"The frozen finding has concrete user impact."}';
 		const canonicalFrozenFindingRows = [JSON.parse(canonicalFrozenFindingRow)];
@@ -1030,24 +930,9 @@ async function run() {
 		for (const handler of hooks.get("session_start")) {
 			await handler({ reason: "startup" }, createCtx(noUiCwd, false));
 		}
-		assert.equal(
-			existsSync(join(noUiCwd, ".pi", "agents", "sdd-apply.md")),
-			false,
-			"session_start must not install project-local SDD agents",
-		);
-		assert.equal(
-			existsSync(join(noUiCwd, ".pi", "chains", "sdd-full.chain.md")),
-			false,
-			"session_start must not install project-local SDD chains",
-		);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), false);
-		assert.equal(existsSync(join(globalAgentHome, "chains", "sdd-full.chain.md")), false);
-		assert.equal(existsSync(join(globalAgentHome, "gentle-ai", "support")), false);
 		for (const diagnostic of ["gentle:status", "gentle:doctor"]) {
 			const ctx = createCtx(noUiCwd, true);
 			await commands.get(diagnostic).handler("", ctx);
-			assert.match(ctx.ui.notifications.at(-1).message, /Global SDD assets: on demand/);
-			assert.doesNotMatch(ctx.ui.notifications.at(-1).message, /install-sdd --force/);
 		}
 		// gentle-pi#311 P5: the Pi-authored adversarial role agents are retired;
 		// installation must not (re)create them.
@@ -1071,19 +956,10 @@ async function run() {
 		);
 		assert.match(installedRiskSource, /exactly once against the supplied `initial_review_tree`/);
 		assert.match(installedRiskSource, /cannot authorize transitions, fixes, receipts, gates, or delivery/);
-		await commands.get("gentle:sdd-preflight").handler("", createCtx(noUiCwd, false, "startup-sdd-install"));
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "chains", "sdd-full.chain.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "gentle-ai", "support", "sdd-status-contract.md")), true);
 		const managedAssetsManifestPath = join(globalAgentHome, "gentle-ai", "managed-assets.json");
 		const managedAssetsManifest = JSON.parse(
 			await readFile(managedAssetsManifestPath, "utf8"),
 		);
-		const previousManagedApply = "stale global apply\n";
-		const previousManagedChain = "stale global chain\n";
-		const previousManagedSupport = "stale global status contract\n";
-		await writeFile(join(globalAgentHome, "agents", "sdd-apply.md"), previousManagedApply);
-		managedAssetsManifest.assets["agents/sdd-apply.md"] = sha256(previousManagedApply);
 		const samePathUserRefuter = [
 			"---",
 			"name: review-refuter",
@@ -1106,59 +982,24 @@ async function run() {
 		await mkdir(join(globalAgentHome, "subagents"), { recursive: true });
 		const userRefuterOverride = join(globalAgentHome, "subagents", "review-refuter.md");
 		await writeFile(userRefuterOverride, "user refuter override must stay\n");
-		await writeFile(join(globalAgentHome, "chains", "sdd-full.chain.md"), previousManagedChain);
-		managedAssetsManifest.assets["chains/sdd-full.chain.md"] = sha256(previousManagedChain);
-		await writeFile(join(globalAgentHome, "gentle-ai", "support", "sdd-status-contract.md"), previousManagedSupport);
-		managedAssetsManifest.assets["gentle-ai/support/sdd-status-contract.md"] = sha256(previousManagedSupport);
 		await writeFile(
 			managedAssetsManifestPath,
 			JSON.stringify(managedAssetsManifest, null, 2),
 		);
-		await mkdir(join(noUiCwd, ".pi", "agents"), { recursive: true });
-		await writeFile(join(noUiCwd, ".pi", "agents", "sdd-apply.md"), "project override must stay\n");
 		const projectRefuterOverride = join(noUiCwd, ".pi", "agents", "review-refuter.md");
+		await mkdir(dirname(projectRefuterOverride), { recursive: true });
 		await writeFile(projectRefuterOverride, "project refuter override must stay\n");
 		for (const handler of hooks.get("session_start")) {
 			await handler({ reason: "startup" }, createCtx(noUiCwd, false));
 		}
-		for (const [key, stale] of [
-			["agents/sdd-apply.md", previousManagedApply],
-			["chains/sdd-full.chain.md", previousManagedChain],
-			["gentle-ai/support/sdd-status-contract.md", previousManagedSupport],
-		]) {
-			assert.equal(await readFile(join(globalAgentHome, key), "utf8"), stale,
-				"startup must preserve existing SDD package content without explicit routing");
-		}
 		assert.equal(existsSync(retiredManagedValidatorPath), false, "review retirement still runs at startup");
 		const driftCtx = createCtx(noUiCwd, true);
 		await commands.get("gentle:status").handler("", driftCtx);
-		assert.match(driftCtx.ui.notifications.at(-1).message, /Global SDD assets stale: 3 file\(s\).*install-sdd --force/);
 		assert.doesNotMatch(driftCtx.ui.notifications.at(-1).message, /install-(delegation|review) --force/);
-		await commands.get("gentle:sdd-preflight").handler("", createCtx(noUiCwd, false, "startup-sdd-refresh"));
-		assert.notEqual(
-			await readFile(join(globalAgentHome, "agents", "sdd-apply.md"), "utf8"),
-			"stale global apply\n",
-			"SDD preflight must refresh stale global SDD agents",
-		);
 		assert.equal(
 			await readFile(installedRefuterPath, "utf8"),
 			samePathUserRefuter,
 			"session refresh must preserve a same-path user-authored agent byte-for-byte",
-		);
-		assert.notEqual(
-			await readFile(join(globalAgentHome, "chains", "sdd-full.chain.md"), "utf8"),
-			"stale global chain\n",
-			"SDD preflight must refresh stale global SDD chains",
-		);
-		assert.notEqual(
-			await readFile(join(globalAgentHome, "gentle-ai", "support", "sdd-status-contract.md"), "utf8"),
-			"stale global status contract\n",
-			"SDD preflight must refresh stale global SDD support files",
-		);
-		assert.equal(
-			await readFile(join(noUiCwd, ".pi", "agents", "sdd-apply.md"), "utf8"),
-			"project override must stay\n",
-			"session_start must not overwrite project-local SDD overrides",
 		);
 		assert.equal(
 			await readFile(projectRefuterOverride, "utf8"),
@@ -1193,423 +1034,10 @@ async function run() {
 		await rm(noUiCwd, { recursive: true, force: true });
 	}
 
-	const lazySddCwd = await tempWorkspace();
-	const lazyAgentHome = join(lazySddCwd, "agent-home");
-	process.env.GENTLE_PI_AGENT_HOME = lazyAgentHome;
-	try {
-		// This scenario must not inherit SDD definitions from earlier startup tests.
-		const globalAgentHome = lazyAgentHome;
-		await writeFile(
-			globalModelsPath,
-			JSON.stringify({ "sdd-apply": { model: "openai/gpt-5", thinking: "high" } }, null, 2),
-		);
-		const ctx = createCtx(lazySddCwd, true);
-		const inputHook = hooks.get("input")[0];
-		assert.deepEqual(
-			await inputHook({ text: "hola, solo mirando", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.deepEqual(
-			await inputHook({ text: "what is SDD?", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.deepEqual(
-			await inputHook({ text: "what can I do with SDD?", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.deepEqual(
-			await inputHook({ text: "how do I use SDD?", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.deepEqual(
-			await inputHook({ text: "Can I use SDD?", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.deepEqual(
-			await inputHook({ text: "don't use sdd for this", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.deepEqual(
-			await inputHook({ text: "sin usar SDD por ahora", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.deepEqual(
-			await inputHook({ text: "let's not use SDD for this", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.deepEqual(
-			await inputHook({ text: "never use SDD here", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.deepEqual(
-			await inputHook({ text: "no quiero usar SDD por ahora", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.deepEqual(
-			await inputHook({ text: "I use SDD sometimes", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.deepEqual(
-			await inputHook({ text: "I'm using SDD in another repo", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.equal(existsSync(join(lazySddCwd, ".pi", "agents", "sdd-apply.md")), false);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), false);
-
-		assert.deepEqual(
-			await inputHook({ text: "vamos con sdd", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.deepEqual(
-			await inputHook({ text: "please use sdd for this change", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.equal(existsSync(join(lazySddCwd, ".pi", "agents", "sdd-apply.md")), false);
-		assert.equal(existsSync(join(lazySddCwd, ".pi", "chains", "sdd-full.chain.md")), false);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), false);
-		assert.equal(ctx.ui.selections.length, 0, "natural-language SDD text has no input-hook side effect");
-
-		assert.deepEqual(
-			await inputHook({ text: "/sdd", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-status.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-sync.md")), false);
-		assert.equal(existsSync(join(globalAgentHome, "gentle-ai", "support", "sdd-status-contract.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "chains", "sdd-full.chain.md")), true);
-		assert.equal(ctx.ui.selections.length, 1, "first slash SDD trigger confirms session suggestions");
-		assert.match(ctx.ui.notifications.at(-1).message, /Preference source: explicit session choice/);
-		assert.deepEqual(
-			await inputHook({ text: "/sdd plan", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.deepEqual(
-			await inputHook({ text: "/sdd:plan", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.equal(ctx.ui.selections.length, 1, "slash SDD triggers reuse confirmed session choices");
-
-		assert.deepEqual(
-			await inputHook({ text: "/sdd-plan this change", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.equal(existsSync(join(lazySddCwd, ".pi", "agents", "sdd-apply.md")), false);
-		assert.equal(existsSync(join(lazySddCwd, ".pi", "chains", "sdd-full.chain.md")), false);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-status.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-sync.md")), false);
-		assert.equal(existsSync(join(globalAgentHome, "gentle-ai", "support", "sdd-status-contract.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "chains", "sdd-full.chain.md")), true);
-		const globalSddApply = await readFile(
-			join(globalAgentHome, "agents", "sdd-apply.md"),
-			"utf8",
-		);
-		assert.match(globalSddApply, /model: openai\/gpt-5/);
-		assert.match(globalSddApply, /thinking: high/);
-		const lazySettingsPath = join(lazySddCwd, ".pi", "settings.json");
-		if (existsSync(lazySettingsPath)) {
-			const lazySettings = JSON.parse(await readFile(lazySettingsPath, "utf8"));
-			assert.equal(
-				lazySettings.subagents?.agentOverrides?.["sdd-apply"],
-				undefined,
-				"global SDD model routing must be materialized in agent frontmatter, not project settings overrides",
-			);
-		}
-		assert.equal(ctx.ui.selections.length, 1, "automatic SDD routing reuses session confirmation");
-		assert.match(ctx.ui.notifications.at(-1).message, /Preference source: explicit session choice/);
-		await commands.get("gentle:status").handler("", ctx);
-		assert.match(ctx.ui.notifications.at(-1).message, /Global SDD assets stale: 0 file\(s\)/);
-		assert.doesNotMatch(ctx.ui.notifications.at(-1).message, /install-sdd --force/);
-
-		await inputHook({ text: "/sdd-plan another change", source: "interactive" }, ctx);
-		assert.equal(ctx.ui.selections.length, 1, "resolved preflight must not prompt again in this session");
-		const promptHook = hooks.get("before_agent_start")[0];
-		const promptResult = await promptHook({ systemPrompt: "base" }, ctx);
-		assert.match(promptResult.systemPrompt, /SDD Session Preflight/);
-		assert.match(promptResult.systemPrompt, /Execution mode: auto/);
-		const workerPromptResult = await promptHook(
-			{ agentName: "worker", systemPrompt: "worker base" },
-			ctx,
-		);
-		assert.equal(
-			workerPromptResult.systemPrompt,
-			"worker base",
-			"non-SDD subagents must not receive parent harness or SDD preflight prompts",
-		);
-	} finally {
-		process.env.GENTLE_PI_AGENT_HOME = globalAgentHome;
-		await rm(lazySddCwd, { recursive: true, force: true });
-		await rm(globalModelsPath, { force: true });
-	}
-
-	for (const [index, text] of ["/sdd", "/sdd plan", "/sdd:plan", "/sdd-plan this change", "/gentle-sdd-continue", "/gentle-sdd-status fix-rose --json", "/gentle-sdd-init"].entries()) {
-		const slashSddCwd = await tempWorkspace();
-		try {
-			const ctx = createCtx(slashSddCwd, true, `slash-sdd-session-${index}`);
-			const inputHook = hooks.get("input")[0];
-			assert.deepEqual(await inputHook({ text, source: "interactive" }, ctx), {
-				action: "continue",
-			});
-			assert.equal(existsSync(join(slashSddCwd, ".pi", "agents", "sdd-apply.md")), false);
-			assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
-			assert.equal(ctx.ui.selections.length, 1, `${text} must confirm the fresh interactive session`);
-		} finally {
-			await rm(slashSddCwd, { recursive: true, force: true });
-		}
-	}
-
-	const commandPreflightCwd = await tempWorkspace();
-	try {
-		const command = commands.get("gentle:sdd-preflight");
-		const interactive = createCtx(commandPreflightCwd, true, "explicit-command-regression");
-		await command.handler("", interactive);
-		const first = interactive.ui.selections.length;
-		await command.handler("", interactive);
-		const reused = interactive.ui.selections.length;
-		const select = interactive.ui.select;
-		interactive.ui.select = async (label, options) => {
-			const value = await select(label, options);
-			return label === "SDD execution mode" ? "interactive" : value;
-		};
-		interactive.ui.input = async () => "650";
-		await command.handler("--edit", interactive);
-		const edited = interactive.ui.selections.length;
-		await command.handler("", interactive);
-		assert.equal(interactive.ui.selections.length, edited, "edited choices also reuse without prompting");
-		const saved = JSON.parse(await readFile(join(commandPreflightCwd, ".pi", "gentle-ai", "sdd-preflight.json"), "utf8"));
-		assert.equal(saved.executionMode, "interactive");
-		assert.equal(saved.reviewBudgetLines, 650);
-		const rpc = createCtx(commandPreflightCwd, true, "explicit-command-rpc-regression");
-		rpc.mode = "rpc";
-		let rpcInputs = 0;
-		rpc.ui.input = async (_label, placeholder) => { rpcInputs += 1; return placeholder; };
-		await command.handler("", rpc);
-		await command.handler("--edit", rpc);
-		const noUi = createCtx(commandPreflightCwd, false, "explicit-command-no-ui-regression");
-		let noUiInputs = 0;
-		noUi.ui.input = async (_label, placeholder) => { noUiInputs += 1; return placeholder; };
-		await command.handler("", noUi);
-		await command.handler("--edit", noUi);
-		assert.deepEqual({ first, reused, edited, rpc: rpc.ui.selections.length, noUi: noUi.ui.selections.length },
-			{ first: 1, reused: 1, edited: 3, rpc: 0, noUi: 0 },
-			"explicit command confirms once, reuses unless --edit, and never prompts headless callers");
-		assert.deepEqual({ rpcInputs, noUiInputs }, { rpcInputs: 0, noUiInputs: 0 });
-	} finally {
-		await rm(commandPreflightCwd, { recursive: true, force: true });
-	}
-
-	const commandSddCwd = await tempWorkspace();
-	try {
-		const ctx = createCtx(commandSddCwd, true, "command-session");
-		await commands.get("gentle:sdd-preflight").handler("--edit", ctx);
-		assert.equal(existsSync(join(commandSddCwd, ".pi", "agents", "sdd-apply.md")), false);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
-		assert.equal(ctx.ui.selections.length, 2, "explicit preflight prompts intentional choice fields");
-		assert.equal(ctx.ui.selections.some(({ label }) => label === "SDD artifact store"), false, "one-option artifact store must be elided");
-		assert.match(ctx.ui.notifications.at(-1).message, /Preference source: explicit session choice/);
-		await commands.get("gentle:sdd-preflight").handler("--edit", ctx);
-		assert.equal(ctx.ui.selections.length, 4, "--edit remains an intentional re-prompt");
-	} finally {
-		await rm(commandSddCwd, { recursive: true, force: true });
-	}
-
-	const sddAgentGuardCwd = await tempWorkspace();
-	try {
-		const ctx = createCtx(sddAgentGuardCwd, true, "sdd-agent-guard-session");
-		const promptHook = hooks.get("before_agent_start")[0];
-		const promptResult = await promptHook(
-			{
-				systemPrompt: "You are the SDD proposal executor for Gentle AI.",
-			},
-			ctx,
-		);
-		assert.equal(existsSync(join(sddAgentGuardCwd, ".pi", "agents", "sdd-apply.md")), false);
-		assert.equal(existsSync(join(sddAgentGuardCwd, ".pi", "chains", "sdd-full.chain.md")), false);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "chains", "sdd-full.chain.md")), true);
-		assert.equal(ctx.ui.selections.length, 1, "fresh interactive SDD-agent startup requires confirmation");
-		assert.match(promptResult.systemPrompt, /SDD Session Preflight/);
-		assert.doesNotMatch(
-			promptResult.systemPrompt,
-			/el Gentleman Identity and Harness/,
-			"SDD executor startup must not receive the parent orchestrator prompt",
-		);
-		assert.doesNotMatch(
-			promptResult.systemPrompt,
-			/Work Routing Ladder/,
-			"SDD executor startup must not receive parent routing instructions",
-		);
-		assert.match(ctx.ui.notifications.at(-1).message, /SDD preflight complete/);
-
-		const reusedPromptResult = await promptHook(
-			{
-				agentName: "sdd-tasks",
-				systemPrompt: "You are the SDD tasks executor for Gentle AI.",
-			},
-			ctx,
-		);
-		assert.equal(ctx.ui.selections.length, 1, "SDD-agent startup reuses confirmed session preferences");
-		assert.doesNotMatch(
-			reusedPromptResult.systemPrompt,
-			/el Gentleman Identity and Harness/,
-			"named SDD executor startup must not receive the parent orchestrator prompt",
-		);
-	} finally {
-		await rm(sddAgentGuardCwd, { recursive: true, force: true });
-	}
-
-	const unresolvedSddCwd = await tempWorkspace();
-	try {
-		const ctx = createCtx(unresolvedSddCwd, true, "unresolved-preflight-session");
-		ctx.ui.select = async () => undefined;
-		assert.deepEqual(await hooks.get("input")[0]({ text: "/sdd", source: "interactive" }, ctx), { action: "handled" });
-		const result = await hooks.get("before_agent_start")[0]({ agentName: "sdd-explore", systemPrompt: "SDD executor" }, ctx);
-		assert.match(result.systemPrompt, /SDD preflight unresolved/);
-		assert.match(result.systemPrompt, /STOP: Do not initialize/);
-		assert.doesNotMatch(result.systemPrompt, /## SDD Session Preflight/);
-		assert.equal(existsSync(join(unresolvedSddCwd, "openspec", "config.yaml")), false);
-		assert.equal(existsSync(join(unresolvedSddCwd, ".pi", "gentle-ai", "sdd-preflight.json")), false);
-	} finally {
-		await rm(unresolvedSddCwd, { recursive: true, force: true });
-	}
-
-	const noUiSddAgentCwd = await tempWorkspace();
-	try {
-		const ctx = createCtx(noUiSddAgentCwd, false, "no-ui-sdd-agent-session");
-		const promptHook = hooks.get("before_agent_start")[0];
-		const promptResult = await promptHook(
-			{
-				agentName: "sdd-proposal",
-				systemPrompt: "You are the SDD proposal executor for Gentle AI.",
-			},
-			ctx,
-		);
-		assert.match(promptResult.systemPrompt, /SDD Session Preflight/);
-		assert.match(promptResult.systemPrompt, /canonical defaults or persisted choices/);
-		assert.equal(ctx.ui.selections.length, 0);
-		assert.equal(existsSync(join(noUiSddAgentCwd, ".pi", "agents", "sdd-apply.md")), false);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
-	} finally {
-		await rm(noUiSddAgentCwd, { recursive: true, force: true });
-	}
-
-	const invalidPreflightCwd = await tempWorkspace();
-	try {
-		await writeFile(globalModelsPath, "{ invalid json");
-		const ctx = createCtx(invalidPreflightCwd, true, "invalid-preflight-session");
-		await commands.get("gentle:sdd-preflight").handler("", ctx);
-		assert.equal(ctx.ui.notifications.at(-1).level, "warning");
-		assert.match(ctx.ui.notifications.at(-1).message, /Model routing skipped:/);
-		assert.match(ctx.ui.notifications.at(-1).message, /invalid JSON or not an object/);
-	} finally {
-		await rm(invalidPreflightCwd, { recursive: true, force: true });
-		await rm(globalModelsPath, { force: true });
-	}
-
-	const engramSddCwd = await tempWorkspace();
-	try {
-		pi.setActiveTools(["read", "bash", "edit", "write", "mem_save"]);
-		const ctx = createCtx(engramSddCwd, true, "engram-session");
-		await commands.get("gentle:sdd-preflight").handler("--edit", ctx);
-		assert.deepEqual(ctx.ui.selections[1].options, ["openspec", "engram", "hybrid"]);
-	} finally {
-		pi.setActiveTools(["read", "bash", "edit", "write"]);
-		await rm(engramSddCwd, { recursive: true, force: true });
-	}
-
-	// Issue #64: selecting engram as the artifact store must not cause
-	// /gentle-sdd-init to create openspec/ or openspec/config.yaml.
-	const engramSddInitCwd = await tempWorkspace();
-	try {
-		pi.setActiveTools(["read", "bash", "edit", "write", "mem_save"]);
-		const ctx = createCtx(engramSddInitCwd, true, "engram-sdd-init-session");
-		ctx.ui.select = async (label, options) => {
-			if (label === "SDD artifact store") return "engram";
-			return options[0];
-		};
-		await commands.get("gentle:sdd-preflight").handler("--edit", ctx);
-		await commands.get("gentle-sdd-init").handler("", ctx);
-		assert.equal(
-			existsSync(join(engramSddInitCwd, "openspec")),
-			false,
-			"/gentle-sdd-init must not create openspec/ when artifactStore is engram",
-		);
-		assert.equal(
-			existsSync(join(engramSddInitCwd, "openspec", "config.yaml")),
-			false,
-			"/gentle-sdd-init must not write openspec/config.yaml when artifactStore is engram",
-		);
-		assert.doesNotMatch(
-			ctx.ui.notifications.at(-1).message,
-			/Wrote openspec\/config\.yaml/,
-			"/gentle-sdd-init must not announce openspec/config.yaml when artifactStore is engram",
-		);
-		assert.match(
-			ctx.ui.notifications.at(-1).message,
-			/SDD initialized for engram:/,
-		);
-		assert.equal(ctx.ui.notifications.at(-1).level, "info");
-	} finally {
-		pi.setActiveTools(["read", "bash", "edit", "write"]);
-		await rm(engramSddInitCwd, { recursive: true, force: true });
-	}
-
-	// Issue #64 counterpart: the engram skip must stay narrow. Selecting both
-	// still has to create the full openspec/ scaffold and write config.yaml,
-	// so an over-broad skip is caught here instead of in the field.
-	const bothSddInitCwd = await tempWorkspace();
-	try {
-		pi.setActiveTools(["read", "bash", "edit", "write", "mem_save"]);
-		const ctx = createCtx(bothSddInitCwd, true, "both-sdd-init-session");
-		ctx.ui.select = async (label, options) => {
-			if (label === "SDD artifact store") return "hybrid";
-			return options[0];
-		};
-		await commands.get("gentle:sdd-preflight").handler("--edit", ctx);
-		await commands.get("gentle-sdd-init").handler("", ctx);
-		assert.equal(
-			existsSync(join(bothSddInitCwd, "openspec", "specs")),
-			true,
-			"/gentle-sdd-init must create openspec/specs when artifactStore is both",
-		);
-		assert.equal(
-			existsSync(join(bothSddInitCwd, "openspec", "changes", "archive")),
-			true,
-			"/gentle-sdd-init must create openspec/changes/archive when artifactStore is both",
-		);
-		assert.equal(
-			existsSync(join(bothSddInitCwd, "openspec", "config.yaml")),
-			true,
-			"/gentle-sdd-init must write openspec/config.yaml when artifactStore is both",
-		);
-		assert.match(
-			ctx.ui.notifications.at(-1).message,
-			/Wrote openspec\/config\.yaml/,
-			"/gentle-sdd-init must announce openspec/config.yaml when artifactStore is both",
-		);
-		assert.equal(ctx.ui.notifications.at(-1).level, "info");
-	} finally {
-		pi.setActiveTools(["read", "bash", "edit", "write"]);
-		await rm(bothSddInitCwd, { recursive: true, force: true });
-	}
-
-	const directEngramToolCwd = await tempWorkspace();
-	try {
-		pi.setActiveTools(["read", "bash", "edit", "write", "engram_mem_save"]);
-		const ctx = createCtx(directEngramToolCwd, true, "direct-engram-session");
-		await commands.get("gentle:sdd-preflight").handler("", ctx);
-		assert.equal(ctx.ui.selections.some(({ label }) => label === "SDD artifact store"), false, "unrecognized Engram capability must elide the artifact selector");
-	} finally {
-		pi.setActiveTools(["read", "bash", "edit", "write"]);
-		await rm(directEngramToolCwd, { recursive: true, force: true });
-	}
-
-	for (const owner of ["sdd", "delegation", "review"]) {
+	for (const owner of ["delegation", "review"]) {
 		const fixture = await tempWorkspace();
 		const agentHome = join(fixture, "agent-home");
 		const representatives = {
-			sdd: "sdd-apply.md",
 			delegation: "gentle-ai-worker.md",
 			review: "review-risk.md",
 		};
@@ -1658,7 +1086,7 @@ async function run() {
 			assert.equal(existsSync(join(agentHome, "subagents.json")), false,
 				"owner installers must not apply model routing");
 			await commands.get("gentle:status").handler("", ctx);
-			const label = owner === "sdd" ? "SDD" : owner;
+			const label = owner;
 			assert.ok(ctx.ui.notifications.at(-1).message.includes(`Global ${label} user overrides: 1 file(s)`));
 		} finally {
 			process.env.GENTLE_PI_CONFIG_HOME = globalConfigHome;
@@ -1671,94 +1099,32 @@ async function run() {
 	try {
 		process.env.GENTLE_PI_AGENT_HOME = join(repairFixture, "agent-home");
 		const ctx = createCtx(repairFixture, true);
-		await commands.get("gentle:install-sdd").handler("", ctx);
 		for (const diagnostic of ["gentle:status", "gentle:doctor"]) {
 			await commands.get(diagnostic).handler("", ctx);
 			const message = ctx.ui.notifications.at(-1).message;
-			assert.match(message, /\/gentle:install-delegation --force/,
+			assert.match(message, /Global delegation assets stale: [1-9]\d* file\(s\).*\/gentle:install-delegation --force/,
 				`${diagnostic} must provide a repair for missing delegation assets`);
-			assert.match(message, /\/gentle:install-review --force/,
+			assert.match(message, /Global review assets stale: [1-9]\d* file\(s\).*\/gentle:install-review --force/,
 				`${diagnostic} must provide a repair for missing review assets`);
 			assert.doesNotMatch(message, /install-sdd --force/);
 		}
+		await commands.get("gentle:install-delegation").handler("", ctx);
+		await commands.get("gentle:install-review").handler("", ctx);
 		const manifest = JSON.parse(await readFile(join(process.env.GENTLE_PI_AGENT_HOME, "gentle-ai", "managed-assets.json"), "utf8"));
 		for (const key of Object.keys(manifest.assets)) {
 			await rm(join(process.env.GENTLE_PI_AGENT_HOME, key));
 		}
 		for (const diagnostic of ["gentle:status", "gentle:doctor"]) {
 			await commands.get(diagnostic).handler("", ctx);
-			assert.match(ctx.ui.notifications.at(-1).message, /Global SDD assets stale: [1-9]\d* file\(s\).*install-sdd --force/);
-			assert.doesNotMatch(ctx.ui.notifications.at(-1).message, /on demand/,
-				"managed installation evidence must survive missing SDD files");
+			const message = ctx.ui.notifications.at(-1).message;
+			assert.match(message, /Global delegation assets stale: [1-9]\d* file\(s\).*\/gentle:install-delegation --force/);
+			assert.match(message, /Global review assets stale: [1-9]\d* file\(s\).*\/gentle:install-review --force/);
+			assert.doesNotMatch(message, /install-sdd --force|on demand/,
+				"managed installation evidence must survive missing delegation and review files");
 		}
 	} finally {
 		process.env.GENTLE_PI_AGENT_HOME = globalAgentHome;
 		await rm(repairFixture, { recursive: true, force: true });
-	}
-
-	for (const trigger of ["gentle:sdd-preflight", "gentle-sdd-init"]) {
-		const fixture = await tempWorkspace();
-		const agentHome = join(fixture, "agent-home");
-		try {
-			process.env.GENTLE_PI_AGENT_HOME = agentHome;
-			const command = commands.get(trigger);
-			await command.handler("", createCtx(fixture, true, `${trigger}-install`));
-			assert.equal(existsSync(join(agentHome, "agents", "gentle-ai-worker.md")), false,
-				`${trigger} must not install delegation assets`);
-			assert.equal(existsSync(join(agentHome, "agents", "review-risk.md")), false,
-				`${trigger} must not install review assets`);
-			const manifestPath = join(agentHome, "gentle-ai", "managed-assets.json");
-			const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-			const managedKeys = [
-				"agents/sdd-apply.md",
-				"chains/sdd-full.chain.md",
-				"gentle-ai/support/sdd-status-contract.md",
-			];
-			const originals = new Map();
-			for (const key of managedKeys) {
-				originals.set(key, await readFile(join(agentHome, key), "utf8"));
-			}
-			const untouchedKeys = ["agents/gentle-ai-worker.md", "agents/review-risk.md"];
-			for (const key of [...managedKeys, ...untouchedKeys]) {
-				await writeFile(join(agentHome, key), `stale ${key}\n`);
-				manifest.assets[key] = sha256(`stale ${key}\n`);
-			}
-			await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
-			const userPath = join(agentHome, "agents", "sdd-spec.md");
-			const userEdit = `${await readFile(userPath, "utf8")}\nUser-owned instructions.\n`;
-			await writeFile(userPath, userEdit);
-			const projectOverride = join(fixture, ".pi", "agents", "sdd-apply.md");
-			await mkdir(dirname(projectOverride), { recursive: true });
-			await writeFile(projectOverride, "Project override must survive.\n");
-			await command.handler("", createCtx(fixture, true, `${trigger}-refresh`));
-			for (const key of managedKeys) {
-				assert.equal(await readFile(join(agentHome, key), "utf8"), originals.get(key),
-					`${trigger} must refresh managed ${key} on demand`);
-			}
-			const refreshed = JSON.parse(await readFile(manifestPath, "utf8"));
-			for (const key of untouchedKeys) {
-				assert.equal(await readFile(join(agentHome, key), "utf8"), `stale ${key}\n`);
-				assert.equal(refreshed.assets[key], manifest.assets[key]);
-			}
-			assert.equal(await readFile(userPath, "utf8"), userEdit);
-			assert.equal(await readFile(projectOverride, "utf8"), "Project override must survive.\n");
-		} finally {
-			process.env.GENTLE_PI_AGENT_HOME = globalAgentHome;
-			await rm(fixture, { recursive: true, force: true });
-		}
-	}
-
-	const installCwd = await tempWorkspace();
-	try {
-		const ctx = createCtx(installCwd, true);
-		await commands.get("gentle:install-sdd").handler("", ctx);
-		assert.match(ctx.ui.notifications.at(-1).message, /Global Gentle AI SDD assets installed/);
-		assert.equal(existsSync(join(installCwd, ".pi", "agents", "sdd-apply.md")), false);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-status.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "gentle-ai", "support", "sdd-status-contract.md")), true);
-	} finally {
-		await rm(installCwd, { recursive: true, force: true });
 	}
 
 	const staleAssetsCwd = await tempWorkspace();
@@ -1766,58 +1132,27 @@ async function run() {
 	const previousHome = process.env.HOME;
 	const previousUserProfile = process.env.USERPROFILE;
 	try {
-		const diagnosticsAgentHome = join(staleAssetsCwd, "agent-home");
-		const diagnosticsHome = staleAssetsCwd;
-		process.env.GENTLE_PI_AGENT_HOME = diagnosticsAgentHome;
-		process.env.HOME = diagnosticsHome;
-		process.env.USERPROFILE = diagnosticsHome;
-		for (const [dir, name] of [
-			[join(diagnosticsAgentHome, "subagents"), "sdd-apply.md"],
-			[join(diagnosticsHome, ".agents"), "sdd-archive.md"],
-			[join(staleAssetsCwd, ".agents"), "sdd-design.md"],
-			[join(staleAssetsCwd, ".pi", "agents"), "sdd-spec.md"],
-			[join(staleAssetsCwd, ".pi", "subagents"), "sdd-sync.md"],
-		]) {
-			await mkdir(dir, { recursive: true });
-			await writeFile(
-				join(dir, name),
-				`---\nname: ${name.replace(/\.md$/, "")}\n---\nintentional SDD override\n`,
-			);
-		}
-		await mkdir(join(diagnosticsAgentHome, "subagents", "nested"), { recursive: true });
-		await mkdir(join(diagnosticsAgentHome, "agents", "nested"), { recursive: true });
-		await mkdir(join(staleAssetsCwd, ".agents", "skills", "ignored"), { recursive: true });
-		await writeFile(
-			join(diagnosticsAgentHome, "subagents", "nested", "renamed-agent.md"),
-			"---\nname: sdd-apply\n---\nintentional nested SDD override\n",
-		);
-		await writeFile(
-			join(diagnosticsAgentHome, "agents", "nested", "managed-copy.md"),
-			"---\nname: sdd-apply\n---\npackage-managed root is excluded\n",
-		);
-		await writeFile(
-			join(staleAssetsCwd, ".agents", "skills", "ignored", "SKILL.md"),
-			"---\nname: sdd-apply\n---\nskills are not agent definitions\n",
-		);
-		await mkdir(join(staleAssetsCwd, ".pi", "chains"), { recursive: true });
-		await mkdir(join(staleAssetsCwd, ".pi", "gentle-ai", "support"), { recursive: true });
-		await writeFile(join(staleAssetsCwd, ".pi", "chains", "sdd-full.chain.md"), "stale chain\n");
-		await writeFile(join(staleAssetsCwd, ".pi", "gentle-ai", "support", "sdd-status-contract.md"), "stale status contract\n");
+		process.env.GENTLE_PI_AGENT_HOME = join(staleAssetsCwd, "agent-home");
+		process.env.HOME = staleAssetsCwd;
+		process.env.USERPROFILE = staleAssetsCwd;
 		const ctx = createCtx(staleAssetsCwd, true);
-		await commands.get("gentle:status").handler("", ctx);
-		assert.match(ctx.ui.notifications.at(-1).message, /Active SDD agent overrides: 5 file\(s\)/);
-		assert.match(ctx.ui.notifications.at(-1).message, /active non-builtin SDD agents shadow package assets/);
 		await commands.get("gentle:doctor").handler("", ctx);
 		assert.match(ctx.ui.notifications.at(-1).message, /el Gentleman doctor/);
 		assert.match(ctx.ui.notifications.at(-1).message, /Sensitive-path guard active/);
+		for (const diagnostic of ["gentle:status", "gentle:doctor"]) {
+			await commands.get(diagnostic).handler("", ctx);
+			const message = ctx.ui.notifications.at(-1).message;
+			assert.match(message, /Organic Driven Development \(ODD\): active/);
+			assert.doesNotMatch(message, /OpenSpec|openspec\/config\.yaml|SDD/);
+		}
 		pi.setActiveTools([{ name: "engram.mem_save" }]);
 		await commands.get("gentle:doctor").handler("", ctx);
 		assert.match(ctx.ui.notifications.at(-1).message, /Engram memory tools active/);
 		pi.setActiveTools([{ name: "engram_mem_save" }]);
 		await commands.get("gentle:doctor").handler("", ctx);
 		assert.match(ctx.ui.notifications.at(-1).message, /Engram memory tools not active in this session/);
-		pi.setActiveTools(["read", "bash", "edit", "write"]);
 	} finally {
+		pi.setActiveTools(["read", "bash", "edit", "write"]);
 		if (previousAgentHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
 		else process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
 		if (previousHome === undefined) delete process.env.HOME;
@@ -1825,59 +1160,6 @@ async function run() {
 		if (previousUserProfile === undefined) delete process.env.USERPROFILE;
 		else process.env.USERPROFILE = previousUserProfile;
 		await rm(staleAssetsCwd, { recursive: true, force: true });
-	}
-
-	const sddCwd = await tempWorkspace();
-	try {
-		const ctx = createCtx(sddCwd, true);
-		await commands.get("gentle-sdd-init").handler("", ctx);
-		assert.equal(existsSync(join(sddCwd, ".pi", "agents", "sdd-apply.md")), false);
-		assert.equal(existsSync(join(sddCwd, ".pi", "chains", "sdd-full.chain.md")), false);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-status.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-sync.md")), false);
-		assert.equal(existsSync(join(globalAgentHome, "gentle-ai", "support", "sdd-status-contract.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "chains", "sdd-full.chain.md")), true);
-		assert.equal(ctx.ui.selections.length, 1, "sdd-init confirms session preflight before project initialization");
-		assert.match(ctx.ui.notifications[1].message, /SDD preflight complete/);
-		assert.match(ctx.ui.notifications.at(-1).message, /Wrote openspec\/config\.yaml/);
-		const initializedConfig = await readFile(join(sddCwd, "openspec", "config.yaml"), "utf8");
-		const explore = await hooks.get("before_agent_start")[0]({ agentName: "sdd-explore", systemPrompt: "You are the SDD explore executor for Gentle AI." }, ctx);
-		assert.match(explore.systemPrompt, /explicit current-session choices/);
-		assert.equal(ctx.ui.selections.length, 1, "confirmation -> sdd-init -> explore must reuse the resolved preflight");
-		const nextSession = createCtx(sddCwd, true, "cold-start-with-saved-preferences");
-		await hooks.get("input")[0]({ text: "/sdd", source: "interactive" }, nextSession);
-		assert.equal(nextSession.ui.selections.length, 1, "saved preferences still require confirmation in a new session");
-		assert.equal(await readFile(join(sddCwd, "openspec", "config.yaml"), "utf8"), initializedConfig, "new session confirmation must not reset project initialization");
-
-		await commands.get("gentle:sdd-preflight").handler("--edit", ctx);
-		assert.equal(ctx.ui.selections.length, 3, "--edit permits changes after confirmed sdd-init");
-	} finally {
-		await rm(sddCwd, { recursive: true, force: true });
-	}
-
-	const invalidSddInitCwd = await tempWorkspace();
-	try {
-		await mkdir(join(invalidSddInitCwd, ".pi", "agents"), { recursive: true });
-		await writeFile(
-			join(invalidSddInitCwd, ".pi", "agents", "sdd-apply.md"),
-			`---\nname: sdd-apply\ndescription: Apply phase\nmodel: keep/provider-model\n---\n\nbody\n`,
-		);
-		await writeFile(globalModelsPath, "{ invalid json");
-		const ctx = createCtx(invalidSddInitCwd, true, "invalid-sdd-init-session");
-		await commands.get("gentle-sdd-init").handler("", ctx);
-		assert.equal(ctx.ui.notifications[1].level, "warning");
-		assert.match(ctx.ui.notifications[1].message, /Model routing skipped:/);
-		assert.match(ctx.ui.notifications[1].message, /models\.json/);
-		assert.match(ctx.ui.notifications.at(-1).message, /Wrote openspec\/config\.yaml/);
-		const preservedAgent = await readFile(
-			join(invalidSddInitCwd, ".pi", "agents", "sdd-apply.md"),
-			"utf8",
-		);
-		assert.match(preservedAgent, /model: keep\/provider-model/);
-	} finally {
-		await rm(invalidSddInitCwd, { recursive: true, force: true });
-		await rm(globalModelsPath, { force: true });
 	}
 
 	const legacyModelsCwd = await tempWorkspace();

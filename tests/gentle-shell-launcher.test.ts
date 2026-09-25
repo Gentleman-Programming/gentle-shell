@@ -1103,6 +1103,22 @@ test("otherPackageInjections defaults to including every declared package when i
 
 // --- buildPiInvocation -------------------------------------------------------
 
+test("package injection relies on Pi's -e resource discovery in isolated and takeover modes", () => {
+	for (const takeOver of [false, true]) {
+		const built = buildPiInvocation({
+			runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
+			home: { mode: "isolated", dir: "/gentle-shell/agent", source: "default" },
+			packageRoot: "/pkg",
+			declaration: undefined,
+			takeOver,
+			otherPackagePaths: [],
+			passthrough: [],
+			baseEnv: {},
+		});
+		assert.deepEqual(built.args, takeOver ? ["--no-extensions", "-e", "/pkg"] : ["-e", "/pkg"]);
+	}
+});
+
 const linkHome: ResolvedHome = { mode: "link", dir: "/pi/agent", source: "flag" };
 const isolatedHomeResolved: ResolvedHome = { mode: "isolated", dir: "/gentle-shell/agent", source: "default" };
 
@@ -1149,12 +1165,6 @@ test("buildPiInvocation adds the gentle-pi injection flags when there is no decl
 	assert.deepEqual(built.args, [
 		"-e",
 		"/pkg",
-		"--theme",
-		join("/pkg", "themes"),
-		"--skill",
-		join("/pkg", "skills"),
-		"--prompt-template",
-		join("/pkg", "prompts"),
 		"--mode",
 		"rpc",
 	]);
@@ -1244,12 +1254,6 @@ test("buildPiInvocation takes over a conflicting path declaration: --no-extensio
 		join("/agent", "npm", "node_modules", "some-other"),
 		"-e",
 		"/pkg",
-		"--theme",
-		join("/pkg", "themes"),
-		"--skill",
-		join("/pkg", "skills"),
-		"--prompt-template",
-		join("/pkg", "prompts"),
 		"--mode",
 		"rpc",
 	]);
@@ -1270,12 +1274,6 @@ test("buildPiInvocation takes over with --package-root even for a matching npm d
 		"--no-extensions",
 		"-e",
 		"/forced/root",
-		"--theme",
-		join("/forced/root", "themes"),
-		"--skill",
-		join("/forced/root", "skills"),
-		"--prompt-template",
-		join("/forced/root", "prompts"),
 	]);
 });
 
@@ -1296,12 +1294,6 @@ test("buildPiInvocation takes over with --package-root even when there is no dec
 		join("/agent", "npm", "node_modules", "some-other"),
 		"-e",
 		"/forced/root",
-		"--theme",
-		join("/forced/root", "themes"),
-		"--skill",
-		join("/forced/root", "skills"),
-		"--prompt-template",
-		join("/forced/root", "prompts"),
 	]);
 });
 
@@ -1327,12 +1319,6 @@ test("buildPiInvocation injects loose extension entries during a takeover, after
 		join("/project", ".pi", "extensions", "b.js"),
 		"-e",
 		"/pkg",
-		"--theme",
-		join("/pkg", "themes"),
-		"--skill",
-		join("/pkg", "skills"),
-		"--prompt-template",
-		join("/pkg", "prompts"),
 		"--mode",
 		"rpc",
 	]);
@@ -1349,7 +1335,7 @@ test("buildPiInvocation omits loose extension entry flags when the list is empty
 		passthrough: [],
 		baseEnv: {},
 	});
-	assert.deepEqual(withoutField.args, ["--no-extensions", "-e", "/pkg", "--theme", join("/pkg", "themes"), "--skill", join("/pkg", "skills"), "--prompt-template", join("/pkg", "prompts")]);
+	assert.deepEqual(withoutField.args, ["--no-extensions", "-e", "/pkg"]);
 
 	const withEmptyField = buildPiInvocation({
 		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
@@ -1392,12 +1378,6 @@ test("buildPiInvocation dedupes loose extension entries against other-package pa
 		"/agent/extensions/a.ts",
 		"-e",
 		"/pkg",
-		"--theme",
-		join("/pkg", "themes"),
-		"--skill",
-		join("/pkg", "skills"),
-		"--prompt-template",
-		join("/pkg", "prompts"),
 	]);
 });
 
@@ -1424,12 +1404,6 @@ test("buildPiInvocation dedupes the launcher's own package root against an other
 		join("/agent", "npm", "node_modules", "some-other"),
 		"-e",
 		"/pkg",
-		"--theme",
-		join("/pkg", "themes"),
-		"--skill",
-		join("/pkg", "skills"),
-		"--prompt-template",
-		join("/pkg", "prompts"),
 	]);
 });
 

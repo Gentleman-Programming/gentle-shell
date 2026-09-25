@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { existsSync, readFileSync } from "node:fs";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { CommandPalette, commandsKey, rankPaletteGroups, type CommandPaletteGroup, type CommandPaletteItem, type CommandPaletteResult, type CommandPaletteTheme } from "../lib/command-palette.ts";
 import { buildCommandPaletteGroups, COMMAND_PALETTE_CATALOG } from "../lib/command-palette-catalog.ts";
@@ -31,6 +32,26 @@ function createPalette(groups: readonly CommandPaletteGroup[], theme?: CommandPa
 	const palette = new CommandPalette(groups, (result) => results.push(result), theme, rows);
 	return { palette, results };
 }
+
+test("Vim palette help names the opt-in editor and Pi slash handoff without promising full parity", () => {
+	const groups = buildCommandPaletteGroups([{ name: "gentle:vim", description: "Show or set global Vim prompt editing (status|enable|disable); no argument opens a menu." }], {});
+	assert.equal(groups[0]?.title, "Configuration");
+	const vim = groups[0]?.items[0];
+	assert.equal(vim?.command, "gentle:vim");
+	assert.match(vim?.label ?? "", /Vim.*opt-in/i);
+	assert.match(vim?.label ?? "", /Pi.*slash/i);
+	assert.equal(vim?.description, "Show or set global Vim prompt editing (status|enable|disable); no argument opens a menu.");
+	assert.equal(rankPaletteGroups(groups, "vim")[0]?.items[0]?.command, "gentle:vim");
+});
+
+test("Vim reference distinguishes supported commands, scope and slash divergence", () => {
+	const reference = readFileSync(new URL("../docs/readme-reference.md", import.meta.url), "utf8");
+	const section = reference.split("### Vim prompt editing\n")[1]?.split("\n### ")[0] ?? "";
+	for (const term of ["`/gentle:vim enable`", "`/gentle:vim disable`", "`status`", "VISUAL", "`Ctrl+[`", "`gg/G`", "`f/F/t/T`", "`d/c/y`", "`u`", "`.`", "Pi", "first line", "reverse prompt-history search", "0.85.1", "paste marker"]) {
+		assert.ok(section.includes(term), `Vim reference missing ${term}`);
+	}
+	assert.doesNotMatch(section, /full Claude (?:Code )?parity/i);
+});
 
 test("animations is discoverable under Configuration with its live description", () => {
 	const groups = buildCommandPaletteGroups([{ name: "gentle:animations", description: "status|quality|performance|potato" }], {});
@@ -335,7 +356,7 @@ test("commandsKey is disabled by an empty value or off (case-insensitive)", () =
 test("COMMAND_PALETTE_CATALOG matches the curated command set, in order", () => {
 	assert.deepEqual(
 		COMMAND_PALETTE_CATALOG.map((group) => group.title),
-		["Configuration", "Session", "Diagnostics", "SDD", "Skills"],
+		["Configuration", "Session", "Diagnostics", "Skills"],
 	);
 	const byTitle = (title: string) => COMMAND_PALETTE_CATALOG.find((group) => group.title === title)?.items.map((item) => item.command);
 	assert.deepEqual(byTitle("Configuration"), [
@@ -345,7 +366,9 @@ test("COMMAND_PALETTE_CATALOG matches the curated command set, in order", () => 
 		"gentle:review-mode",
 		"gentle:background-subagents",
 		"gentle:double-esc-cancel",
+		"gentle:customize",
 		"gentle:animations",
+		"gentle:vim",
 		"gentle:telemetry",
 		"gentle:banner",
 		"gentle:banner-color",
@@ -355,8 +378,21 @@ test("COMMAND_PALETTE_CATALOG matches the curated command set, in order", () => 
 	]);
 	assert.deepEqual(byTitle("Session"), ["gentle:changes", "gentle:agents", "gentle:usage", "gentle:review-session-permission"]);
 	assert.deepEqual(byTitle("Diagnostics"), ["gentle:status", "gentle:doctor"]);
-	assert.deepEqual(byTitle("SDD"), ["gentle:sdd-preflight", "gentle-sdd-status", "gentle-sdd-continue", "gentle-sdd-init"]);
+	assert.equal(byTitle("SDD"), undefined);
 	assert.deepEqual(byTitle("Skills"), ["skill-registry:refresh"]);
+});
+
+test("retired SDD commands are absent from the palette and extension registrations", () => {
+	const retired = ["gentle:sdd-preflight", "gentle-sdd-status", "gentle-sdd-continue", "gentle-sdd-init", "gentle:install-sdd"];
+	const catalogCommands = COMMAND_PALETTE_CATALOG.flatMap((group) => group.items.map((item) => item.command));
+	assert.equal(existsSync(new URL("../extensions/sdd-init.ts", import.meta.url)), false, "retired init extension must stay absent");
+	const source = readFileSync(new URL("../extensions/gentle-ai.ts", import.meta.url), "utf8");
+	for (const command of retired) {
+		assert.ok(!catalogCommands.includes(command), `${command} must not appear in the palette`);
+		assert.ok(!source.includes(`registerCommand("${command}"`), `${command} must not be registered`);
+	}
+	assert.match(source, /for \(const owner of \["delegation", "review"\] as const\) \{\s*const label = owner;\s*pi\.registerCommand\(`gentle:install-\$\{owner\}`/);
+	assert.ok(catalogCommands.includes("gentle:review-mode"));
 });
 
 test("buildCommandPaletteGroups keeps only registered commands, attaches descriptions and shortcuts, drops empty groups, preserves catalog order", () => {

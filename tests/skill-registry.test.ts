@@ -325,7 +325,7 @@ test("ensureAtlIgnored creates .atl/.gitignore with * and leaves root .gitignore
 	// Initialize real git repo with a commit
 	execSync("git init", { cwd, stdio: "ignore" });
 	writeFileSync(join(cwd, "README.md"), "# Test\n");
-	execSync("git add README.md && git commit -m \"initial\"", { cwd, stdio: "ignore" });
+	execSync("git add README.md && git -c user.name='Test' -c user.email='test@example.com' commit -m \"initial\"", { cwd, stdio: "ignore" });
 
 	const rootGitignore = join(cwd, ".gitignore");
 	const atlGitignore = join(cwd, ".atl", ".gitignore");
@@ -355,4 +355,13 @@ test("ensureAtlIgnored creates .atl/.gitignore with * and leaves root .gitignore
 	writeFileSync(rootGitignore, "node_modules/\n");
 	await __testing.ensureAtlIgnored(cwd);
 	assert.equal(readFileSync(rootGitignore, "utf8"), "node_modules/\n", "existing root .gitignore must remain untouched");
+
+	// If .atl/.gitignore already has intermediate rules ending with a negation, ensure * is appended
+	writeFileSync(atlGitignore, "*\n!*.md\n");
+	await __testing.ensureAtlIgnored(cwd);
+	const updatedRules = readFileSync(atlGitignore, "utf8")
+		.split("\n")
+		.map((l) => l.trim())
+		.filter((l) => l !== "" && !l.startsWith("#"));
+	assert.equal(updatedRules.at(-1), "*", "final active ignore rule must be *");
 });

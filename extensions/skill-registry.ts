@@ -318,7 +318,11 @@ async function ensureAtlIgnored(cwd: string): Promise<void> {
 	const gitignorePath = join(atlDir, ".gitignore");
 	if (await pathExists(gitignorePath)) {
 		const existing = await readFile(gitignorePath, "utf8");
-		if (existing.split("\n").map((line) => line.trim()).includes("*")) {
+		const ignoreRules = existing
+			.split("\n")
+			.map((line) => line.trim())
+			.filter((line) => line !== "" && !line.startsWith("#"));
+		if (ignoreRules.at(-1) === "*") {
 			return;
 		}
 		const prefix = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";

@@ -30,3 +30,4 @@ Starting Pi with the skill registry enabled appended `.atl/` to the project's ro
 - [x] **T1 — Write failing test in `tests/skill-registry.test.ts`.**
 - [x] **T2 — Update `ensureAtlIgnored` in `extensions/skill-registry.ts`.**
 - [x] **T3 — Full verification and typecheck.**
+- [x] **T4 — Review hardening from CodeRabbit feedback.** Guarantee * is final active rule in .atl/.gitignore and scope git identity in tests.

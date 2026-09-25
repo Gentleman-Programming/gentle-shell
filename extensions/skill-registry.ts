@@ -239,7 +239,10 @@ function dedupeBySkillName(entries: SkillEntry[], cwd: string): SkillEntry[] {
 	}
 	const out: SkillEntry[] = [];
 	for (const [, list] of buckets) {
-		const projectScoped = list.find((e) => comparablePath(e.path).startsWith(projectPrefix));
+		const projectScoped = list.find((e) =>
+			e.scope?.startsWith("project") ||
+			(e.scope === undefined && comparablePath(e.path).startsWith(projectPrefix)),
+		);
 		out.push(projectScoped ?? list[0]);
 	}
 	return out.sort((a, b) => a.name.localeCompare(b.name));

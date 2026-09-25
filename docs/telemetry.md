@@ -60,7 +60,7 @@ row with zero response-token coverage, never substituted for per-response eviden
 
 ## What Gentle Pi does
 
-On activation of a primary session (never for a named agent or an SDD phase executor), Gentle Pi resolves the package-local `gentle-ai` binary (honoring a registered dev-binary override, same as every other native call) and spawns:
+On activation of a primary session (not a named-agent session), Gentle Pi resolves the package-local `gentle-ai` binary (honoring a registered dev-binary override, same as every other native call) and spawns:
 
 ```text
 gentle-ai telemetry trigger --json

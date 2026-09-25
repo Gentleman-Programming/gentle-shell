@@ -217,6 +217,7 @@ test("parseAgentsConfig preserves extensions' absent, isolated, and ordered stat
 	assert.deepEqual(parseAgentsConfig(undefined, { extensions: ["", "/project"] }).extensions, ["/project"]);
 });
 
+
 test("resolveAgentProfile prefers the profile, then the definition, then the defaults", () => {
 	const config = parseAgentsConfig({ default_model: "openai-codex/gpt-6-astra", default_effort: "medium", model_profiles: { "gentle-ai-explore": { effort: "high" } } }, undefined);
 	const explore = parseAgentDefinition(EXPLORER, "/x/explore.md", "global");

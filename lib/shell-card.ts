@@ -109,12 +109,16 @@ export function cardLine(text: string, tone: CardTone, theme: CardTheme, width: 
 	return `${left} ${clipped}${padding} ${frame(theme, tone, "│")}`;
 }
 
-export function cardBottom(tone: CardTone, theme: CardTheme, width: number): string {
+export function cardBottom(tone: CardTone, theme: CardTheme, width: number, content?: string): string {
 	const targetWidth = Math.max(0, Math.floor(width));
 	if (targetWidth === 0) return "";
 	const left = theme.fg(FRAME_ROLE[tone], "╰");
 	if (targetWidth === 1) return left;
-	return left + frame(theme, tone, `${rule(targetWidth - 2)}╯`);
+	if (content === undefined || visibleWidth(content) === 0) return left + frame(theme, tone, `${rule(targetWidth - 2)}╯`);
+	const contentWidth = visibleWidth(content) + 2;
+	// Responsive: the duration rides the closing rule only when it fits with a minimum fill.
+	if (targetWidth - 2 - contentWidth < 3) return left + frame(theme, tone, `${rule(targetWidth - 2)}╯`);
+	return left + frame(theme, tone, `${rule(targetWidth - 2 - contentWidth)} `) + theme.fg(HINT_ROLE, content) + frame(theme, tone, ` ╯`);
 }
 
 export function cardInnerWidth(width: number): number {

@@ -20,22 +20,25 @@ Use this skill when:
 
 1. **Every PR MUST link an approved issue** — no exceptions
 2. **Every PR MUST have exactly one `type:*` label**
-3. **Automated checks must pass** before merge is possible
+3. **REQUIRED CI must pass according to target policy** before merge; CodeRabbit is optional unless required by that policy
 4. **Blank PRs without issue linkage will be blocked** by GitHub Actions
 
 ---
 
+## Target and Authorization
+
+- Inspect `origin` locally (`git remote get-url origin`) and establish one unambiguous target host and `owner/repo`. Do not infer the target from the cwd or assume `main`. Stop if ambiguous.
+- Obtain explicit remote destination, operation and credential/session authorization before any target-host reads, including `gh auth status` or repository metadata. Do not inspect or reuse an ambient SSH agent. Permission for a read does not authorize a write; confirm each remote operation is within the grant.
+- Once authorized, reuse fresh target-bound issue, default branch, type labels and checks evidence from this session instead of repeating discovery. Refresh stale or mismatched evidence; do not substitute another host's data. Resolve the base from the authorized target's default branch or a human-selected base.
+- Do not automatically commit, push, open a PR or merge. Prepare and report a candidate; perform each action only with its own authorization. Local preparation is not permission for remote delivery.
+
 ## Workflow
 
-```
-1. Verify issue has `status:approved` label
-2. Create branch: type/description (see Branch Naming below)
-3. Implement changes with conventional commits
-4. Run shellcheck on modified scripts
-5. Open PR using the template
-6. Add exactly one type:* label
-7. Wait for automated checks to pass
-```
+1. Identify the authorized target and verify that the linked issue is approved; choose with the human whether the reference closes it or is nonclosing.
+2. Select the base from target metadata and prepare a `type/description` branch only when requested.
+3. Implement in work units with conventional commits when authorized; follow the merged ODD applicable test-first policy, run applicable tests, shellcheck on modified scripts, and test changed skills in at least one agent when relevant. The per-task advisory 400 authored-line heuristic is not an automatic split or a reason to omit tests or docs.
+4. Prepare the PR body from the target template and evidence. On separate authorization, open the PR and add exactly one `type:*` label.
+5. Check target-policy required CI and report pending/failing checks rather than declaring merge-ready.
 
 ---
 
@@ -67,16 +70,11 @@ Branch names MUST match this regex:
 
 ## PR Body Format
 
-The PR template is at `.github/PULL_REQUEST_TEMPLATE.md`. Every PR body MUST contain:
+Use the authorized target's `.github/PULL_REQUEST_TEMPLATE.md`. Fill it from observed evidence, retaining its required sections.
 
 ### 1. Linked Issue (REQUIRED)
 
-```markdown
-Closes #<issue-number>
-```
-
-Valid keywords: `Closes #N`, `Fixes #N`, `Resolves #N` (case insensitive).
-The linked issue MUST have the `status:approved` label.
+Use the human-selected closing (`Closes #N`, `Fixes #N`, or `Resolves #N`) or nonclosing `Refs #N` reference. Do not turn `Refs` into an automatic close. The linked issue MUST have the `status:approved` label; reuse fresh target-bound verification.
 
 ### 2. PR Type (REQUIRED)
 
@@ -105,33 +103,20 @@ Check exactly ONE in the template and add the matching label:
 
 ### 5. Test Plan
 
-```markdown
-- [x] Scripts run without errors: `shellcheck scripts/*.sh`
-- [x] Manually tested the affected functionality
-- [x] Skills load correctly in target agent
-```
+Record actual commands and outcomes, including shellcheck on modified scripts, manual testing of affected functionality, and whether changed skills load in at least one agent. Mark inapplicable checks as such; do not invent successful runs.
 
 ### 6. Contributor Checklist
 
-All boxes must be checked:
-- Linked an approved issue
-- Added exactly one `type:*` label
-- Ran shellcheck on modified scripts
-- Skills tested in at least one agent
-- Docs updated if behavior changed
-- Conventional commit format
-- No `Co-Authored-By` trailers
+Do not mark an unverified `[x]` checkbox. Check each item only after evidence supports it; leave pending items unchecked, including approved issue, exactly one `type:*` label, applicable shellcheck, skills tested in at least one agent, docs updated if behavior changed, conventional commit format, and no `Co-Authored-By` trailers. If a template demands every box checked, resolve outstanding items before submission rather than falsely attesting.
 
 ---
 
-## Automated Checks (all must pass)
+## Labels and Automated Checks
 
-| Check | Job name | What it verifies |
-|-------|----------|-----------------|
-| PR Validation | `Check Issue Reference` | Body contains `Closes/Fixes/Resolves #N` |
-| PR Validation | `Check Issue Has status:approved` | Linked issue has `status:approved` |
-| PR Validation | `Check PR Has type:* Label` | PR has exactly one `type:*` label |
-| CI | `Shellcheck` | Shell scripts pass `shellcheck` |
+- Apply exactly one `type:*` label from the authorized target's available labels. A commit-type mapping below is a suggestion, not proof of label availability or permission.
+- Protected labels require an exact direct instruction naming the label and an actor with MAINTAIN/ADMIN permission. Do not infer authorization from a general request to prepare or open a PR.
+- For a PR above the advisory 400 authored-line review budget, record the human-selected `size:exception` rationale if that route was selected; no separate instructor proof is required. Apply the protected label only under the same direct-instruction and actor rule. Do not code-golf or omit tests to meet the budget.
+- REQUIRED CI is determined by target policy, not a fixed list of job names. Check issue-reference validation (including target-supported `Refs`), issue approval, exactly one type label and shellcheck where the target requires them. CodeRabbit is optional unless required by target policy. Report required pending or failing checks; never merge on an unverified green claim.
 
 ---
 
@@ -170,7 +155,7 @@ Type-to-label mapping:
 Examples:
 ```
 feat(scripts): add Codex support to setup.sh
-fix(skills): correct topic key format in sdd-apply
+fix(skills): correct branch name guidance
 docs(readme): update multi-model configuration guide
 refactor(skills): extract shared persistence logic
 chore(ci): add shellcheck to PR validation workflow
@@ -186,17 +171,4 @@ feat!: redesign skill loading system
 
 ## Commands
 
-```bash
-# Create branch
-git checkout -b feat/my-feature main
-
-# Run shellcheck before pushing
-shellcheck scripts/*.sh
-
-# Push and create PR
-git push -u origin feat/my-feature
-gh pr create --title "feat(scope): description" --body "Closes #N"
-
-# Add type label to PR
-gh pr edit <pr-number> --add-label "type:feature"
-```
+Local target inspection may use `git remote get-url origin`. After explicit target-host read authorization, verify target metadata and the default branch with target-bound `gh` calls; never use implicit cwd targeting. Run applicable local checks before proposing delivery. Only with separate authorization for the verified destination, operation and credential/session may you push, create or edit a PR. Pass the verified `--repo` and `--base` explicitly, and use the human-selected issue-reference form in the body. Do not execute a command block as an automatic workflow.

@@ -18,11 +18,9 @@ async function proveLazyDiscovery(): Promise<void> {
 	writeFileSync(shim, `
 import { createGentleAiExtension } from ${source("gentle-ai")};
 import gentleAgents from ${source("gentle-agents")};
-import sddInit from ${source("sdd-init")};
 export default function (pi) {
   createGentleAiExtension({ nativeReviewCli: null, candidateViews: null, processEnv: {} })(pi);
   gentleAgents(pi);
-  sddInit(pi);
 }
 `);
 	const modelRuntime = await ModelRuntime.create({
@@ -61,19 +59,10 @@ export default function (pi) {
 		assert.match(before, /- review-risk \(global\)/);
 		assert.doesNotMatch(before, /- sdd-/, "fresh startup must not install SDD definitions");
 		assert.equal(existsSync(join(agentDir, "chains", "sdd-full.chain.md")), false);
-		assert.equal(existsSync(join(agentDir, "gentle-ai", "support")), false);
-		await session.prompt("/gentle:install-sdd");
-		assert.strictEqual(runtime.session, session);
-		const after = await names();
-		for (const name of ["gentle-ai-explore", "review-risk", "sdd-init", "sdd-apply"]) {
-			assert.ok(after.includes(`- ${name} (global)`), `same-session discovery must include ${name}`);
-		}
-		for (const file of ["sdd-status-contract.md", "strict-tdd.md", "strict-tdd-verify.md"]) {
-			assert.ok(existsSync(join(agentDir, "gentle-ai", "support", file)), `missing support: ${file}`);
-		}
-		assert.ok(existsSync(join(agentDir, "chains", "sdd-full.chain.md")));
-		assert.equal(session.messages.length, 0, "slash activation must not start a model turn");
-		console.log("SDK discovery: delegation/review only -> /gentle:install-sdd -> same-session sdd-init/sdd-apply and support");
+		assert.equal(existsSync(join(agentDir, "gentle-ai", "support", "strict-tdd.md")), true);
+		assert.equal(existsSync(join(agentDir, "gentle-ai", "support", "strict-tdd-verify.md")), true);
+		assert.equal(session.messages.length, 0, "asset startup must not start a model turn");
+		console.log("SDK discovery: delegation/review only");
 	} finally {
 		await runtime.dispose();
 	}
@@ -82,7 +71,7 @@ export default function (pi) {
 if (process.env.GENTLE_PI_ASSET_PROOF_CHILD === "1") {
 	await proveLazyDiscovery();
 } else {
-	test("actual SDK discovers SDD only after explicit activation in the same session", () => {
+	test("actual SDK discovers delegation and review assets without SDD activation", () => {
 		const root = mkdtempSync(join(tmpdir(), "gentle-pi-assets-sdk-"));
 		try {
 			const home = join(root, "home");

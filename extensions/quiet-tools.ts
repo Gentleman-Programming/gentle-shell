@@ -13,6 +13,7 @@ import { Text, type Component } from "@earendil-works/pi-tui";
 import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import { resolveGentleAiDevBinaryOverride, type GentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
+import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
 import { quietToolsEnabled } from "../lib/quiet-tools-config.ts";
 import { getGentleAiRenderState, renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
 import { sanitizeTerminalText } from "../lib/terminal-theme.ts";
@@ -167,7 +168,7 @@ function isGitCommand(args: Record<string, unknown> | undefined): boolean {
 	return /^(?:env\s+\S+=\S+\s+|command\s+|\w+=\S+\s+)*git(?:\s|$)/.test(command);
 }
 
-export type GentleAiRoutineCommand = "sdd-status" | "sdd-continue" | "sdd-attempt" | "review";
+export type GentleAiRoutineCommand = "review";
 
 const GENTLE_AI_EXECUTABLE = String.raw`(?:gentle-ai(?:\.exe)?|(?:\.{1,2}[\\/]|(?:[A-Za-z]:)?(?:[\\/][^\\/\r\n]+)*[\\/])\.gentle-ai[\\/]v\d+\.\d+\.\d+[\\/]gentle-ai(?:\.exe)?)`;
 const GENTLE_AI_COMMAND_ARGUMENTS = new RegExp(`^${GENTLE_AI_EXECUTABLE}$`);
@@ -238,8 +239,6 @@ function shellTokens(command: string): ShellTokenization {
 function isAssignment(token: string): boolean {
 	return /^[A-Za-z_][A-Za-z0-9_]*=/.test(token);
 }
-const SDD_ATTEMPT_VERBS = new Set(["grant"]);
-
 const REVIEW_DIRECT_OPERATIONS = new Set([
 	"capabilities",
 	"start",
@@ -304,22 +303,6 @@ function displayToken(token: string): string {
 	return token.replace(/-/g, " ");
 }
 
-function authorizationRootCount(tokens: string[]): number {
-	let count = 0;
-	for (let index = 0; index < tokens.length; index += 1) {
-		const token = tokens[index]!;
-		if (token === "--authorization-root") {
-			const value = tokens[index + 1];
-			if (value !== undefined && !value.startsWith("-")) count += 1;
-			continue;
-		}
-		if (token.startsWith("--authorization-root=") && token.slice("--authorization-root=".length).length > 0) {
-			count += 1;
-		}
-	}
-	return count;
-}
-
 function validateGate(tokens: string[]): string | undefined {
 	const gateFlag = tokens.findIndex((token) => token === "--gate" || token.startsWith("--gate="));
 	if (gateFlag < 0) return undefined;
@@ -332,7 +315,7 @@ function validateGate(tokens: string[]): string | undefined {
 /**
  * Matches only supported routine Gentle AI CLI calls, including bounded
  * package-local paths, not arbitrary shell output that merely mentions
- * gentle-ai. These commands otherwise emit machine-readable SDD/RDD data.
+ * gentle-ai. Review commands otherwise emit machine-readable RDD data.
  */
 export function isGentleAiDirectCommand(args: Record<string, unknown> | undefined, commandArguments = GENTLE_AI_COMMAND_ARGUMENTS): boolean {
 	return gentleAiCommandTokens(args, commandArguments) !== undefined;
@@ -341,24 +324,12 @@ export function isGentleAiDirectCommand(args: Record<string, unknown> | undefine
 export function gentleAiRoutineCommand(args: Record<string, unknown> | undefined, commandArguments = GENTLE_AI_COMMAND_ARGUMENTS): GentleAiRoutineCommand | undefined {
 	const tokens = gentleAiCommandTokens(args, commandArguments);
 	if (!tokens) return undefined;
-	if (tokens[0] === "sdd-status") return "sdd-status";
-	if (tokens[0] === "sdd-continue") return "sdd-continue";
-	if (tokens[0] === "sdd-attempt" && SDD_ATTEMPT_VERBS.has(tokens[1] ?? "")) return "sdd-attempt";
 	if (tokens[0] === "review") return "review";
 	return undefined;
 }
 
-function gentleAiOperationPathFrom(tokens: string[]): string {
-	if (tokens[0] === "sdd-status") return "sdd status";
-	if (tokens[0] === "sdd-continue") return "sdd continue";
-	if (tokens[0] === "sdd-attempt") {
-		const verb = tokens[1] ?? "";
-		if (!SDD_ATTEMPT_VERBS.has(verb)) return "sdd attempt";
-		const rootCount = authorizationRootCount(tokens);
-		return rootCount > 0
-			? `sdd attempt grant · ${rootCount} root${rootCount === 1 ? "" : "s"}`
-			: "sdd attempt grant";
-	}
+function gentleAiOperationPathFrom(tokens: string[]): string | undefined {
+	if (tokens[0]?.startsWith("sdd-")) return undefined;
 	if (tokens[0] === "version") return "version";
 	if (tokens[0] !== "review") return "command";
 
@@ -383,11 +354,6 @@ function gentleAiOperationPathFrom(tokens: string[]): string {
 export function gentleAiOperationPath(args: Record<string, unknown> | undefined, commandArguments = GENTLE_AI_COMMAND_ARGUMENTS): string | undefined {
 	const tokens = gentleAiCommandTokens(args, commandArguments);
 	return tokens ? gentleAiOperationPathFrom(tokens) : undefined;
-}
-
-export function isGentleAiGrantCommand(args: Record<string, unknown> | undefined, commandArguments = GENTLE_AI_COMMAND_ARGUMENTS): boolean {
-	const tokens = gentleAiCommandTokens(args, commandArguments);
-	return tokens?.[0] === "sdd-attempt" && tokens[1] === "grant";
 }
 
 interface ToolResultFormatOptions {
@@ -639,9 +605,13 @@ function gentleAiRenderTransition(
 	return { directResult: false };
 }
 
-function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArguments: () => RegExp): void {
+function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArguments: () => RegExp, timing: () => GentleAiElapsedTimingLedger | undefined): void {
 	const registrationTool = getBuiltInTools(process.cwd())[toolName];
 	const officialRenderResult = registrationTool.renderResult;
+	const withElapsedTiming = (context: GentleAiRenderContext): GentleAiRenderContext => {
+		const ledger = timing();
+		return ledger ? { ...context, elapsedTiming: ledger } : context;
+	};
 
 	pi.registerTool({
 		...registrationTool,
@@ -658,7 +628,7 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 				: undefined;
 			if (operationPath) {
 				const detail = renderContext.expanded === true && typeof callArgs.command === "string" ? `$ ${callArgs.command}` : undefined;
-				return renderGentleAiLifecycleCall(operationPath, theme, renderContext as GentleAiRenderContext, detail);
+				return renderGentleAiLifecycleCall(operationPath, theme, withElapsedTiming(renderContext as GentleAiRenderContext), detail);
 			}
 			return new Text(formatToolCall(toolName, callArgs, theme), 0, 0);
 		},
@@ -676,7 +646,7 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 				{ result: true, isPartial: options.isPartial },
 			).directResult;
 			if (directResult) {
-				return renderGentleAiResult(safeResult, { expanded: options.expanded, isPartial: options.isPartial, isError }, theme, renderContext as GentleAiRenderContext | undefined);
+				return renderGentleAiResult(safeResult, { expanded: options.expanded, isPartial: options.isPartial, isError }, theme, renderContext ? withElapsedTiming(renderContext as GentleAiRenderContext) : undefined);
 			}
 			if (options.isPartial) {
 				if (options.expanded) return new Text(`${theme.fg("warning", partialLabel(toolName, text))}\n${theme.fg("muted", text)}`, 0, 0);
@@ -718,7 +688,25 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 
 export default function quietTools(pi: ExtensionAPI, resolveOverride: GentleAiDevBinaryOverrideResolver = () => resolveGentleAiDevBinaryOverride()): void {
 	if (!quietToolsEnabled()) return;
+	let elapsedTiming: GentleAiElapsedTimingLedger | undefined;
+	pi.on("session_start", (_event, ctx) => {
+		elapsedTiming = new GentleAiElapsedTimingLedger(ctx.sessionManager, pi);
+	});
+	// Only bash calls that render as gentle-ai cards carry a durable duration;
+	// every other quiet tool keeps its plain renderer and writes no entries.
+	const recordGentleTiming = (event: { toolCallId: string; toolName: string; args?: unknown }, endedAt?: number): void => {
+		const ledger = elapsedTiming;
+		if (!ledger || event.toolName !== "bash" || !isGentleAiDirectCommand(event.args as Record<string, unknown> | undefined, createGentleAiCommandArguments(resolveQuietToolsDevBinaryPath(resolveOverride)))) return;
+		try {
+			if (endedAt === undefined) ledger.recordStart(event.toolCallId, Date.now());
+			else ledger.recordEnd(event.toolCallId, endedAt);
+		} catch { /* Timing persistence is best-effort and never breaks the tool event. */ }
+	};
+	pi.on("tool_execution_start", (event) => recordGentleTiming(event));
+	pi.on("tool_execution_end", (event) => recordGentleTiming(event, Date.now()));
+	const withElapsedTiming = (context: GentleAiRenderContext): GentleAiRenderContext =>
+		elapsedTiming ? { ...context, elapsedTiming } : context;
 	for (const toolName of Object.keys(TOOL_CREATORS) as QuietToolName[]) {
-		registerQuietTool(pi, toolName, () => createGentleAiCommandArguments(resolveQuietToolsDevBinaryPath(resolveOverride)));
+		registerQuietTool(pi, toolName, () => createGentleAiCommandArguments(resolveQuietToolsDevBinaryPath(resolveOverride)), () => elapsedTiming);
 	}
 }

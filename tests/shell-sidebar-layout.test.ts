@@ -82,6 +82,103 @@ test("only fullscreen at 140 columns activates; shrinking restores bottom paint"
 	}
 });
 
+test("bottom paint follows placement and resize before the next layout pass", (t) => {
+	const f = fixture("fullscreen", 140);
+	let placement: "auto" | "right" | "bottom" | "hidden" = "auto";
+	t.after(installSidebar(f.tui, theme, () => placement));
+	assert.equal(f.root[NODE]().type, "hstack");
+	assert.deepEqual(f.bottom.render(80), []);
+
+	// A preference notification can request paint before the host measures its root.
+	placement = "bottom";
+	assert.deepEqual(f.bottom.render(80), ["Status"]);
+	assert.equal(f.root[NODE]().type, "vstack");
+	placement = "right";
+	assert.equal(f.root[NODE]().type, "hstack");
+	f.host.terminal.columns = 139;
+	assert.deepEqual(f.bottom.render(80), ["Status"]);
+	assert.equal(f.root[NODE]().type, "vstack");
+	placement = "hidden";
+	f.host.terminal.columns = 180;
+	assert.deepEqual(f.bottom.render(80), ["Status"]);
+	assert.equal(f.root[NODE]().type, "vstack");
+	placement = "auto";
+	assert.equal(f.root[NODE]().type, "hstack");
+	assert.deepEqual(f.bottom.render(80), []);
+});
+
+test("status placement preserves bottom paint when hidden and resizes responsively", (t) => {
+	const f = fixture("fullscreen", 140);
+	let placement: "auto" | "right" | "bottom" | "hidden" = "auto";
+	t.after(installSidebar(f.tui, theme, () => placement));
+	assert.equal(f.root[NODE]().type, "hstack");
+	placement = "hidden";
+	assert.equal(f.root[NODE]().type, "vstack");
+	assert.deepEqual(f.bottom.render(80), ["Status"]);
+	placement = "right";
+	assert.equal(f.root[NODE]().type, "hstack");
+	f.host.terminal.columns = 139;
+	assert.equal(f.root[NODE]().type, "vstack");
+	placement = "bottom";
+	f.host.terminal.columns = 180;
+	assert.equal(f.root[NODE]().type, "vstack");
+});
+
+test("top header remains above native layout at narrow widths and wide bottom/hidden without a rail", (t) => {
+	for (const width of [100, 60, 180]) {
+		for (const placement of width === 180 ? ["bottom", "hidden"] as const : ["auto"] as const) {
+			const f = fixture("fullscreen", width);
+			sidebarHeader(f.tui, { render: (available: number) => [`HEADER ${available}`, `RULE ${available}`], invalidate() {} });
+			const dispose = installSidebar(f.tui, theme, () => placement);
+			t.after(dispose);
+			const node = f.root[NODE]() as unknown as { type: string; entries: { component: Component & { [NODE]?(): unknown } }[] };
+			assert.equal(node.type, "vstack", `${width}/${placement} keeps the top header`);
+			assert.deepEqual(node.entries[0]?.component.render(width), [`HEADER ${width}`, `RULE ${width}`]);
+			assert.deepEqual(node.entries[1]?.component[NODE]?.(), f.original(), "native layout remains underneath");
+			assert.deepEqual(f.bottom.render(width), ["Status"], "bottom Status survives without a rail");
+			assert.equal(sidebarState(f.tui).active, false);
+		}
+	}
+});
+
+test("below-input header never duplicates into the top row, even when the rail is inactive", (t) => {
+	for (const [width, placement] of [[60, "auto"], [100, "auto"], [180, "bottom"], [180, "hidden"]] as const) {
+		const f = fixture("fullscreen", width);
+		sidebarHeader(f.tui, { render: () => ["HEADER"], invalidate() {} });
+		t.after(installSidebar(f.tui, theme, () => placement, () => "below-input"));
+		assert.deepEqual(f.root[NODE](), f.original());
+		assert.deepEqual(f.bottom.render(width), ["Status"]);
+	}
+});
+
+test("below-input header removes only the rail's top row", (t) => {
+	const f = fixture();
+	let header: "top" | "below-input" = "top";
+	sidebarHeader(f.tui, { render: () => ["header"], invalidate() {} });
+	t.after(installSidebar(f.tui, theme, () => "auto", () => header));
+	assert.equal(f.root[NODE]().type, "vstack");
+	header = "below-input";
+	assert.equal(f.root[NODE]().type, "hstack");
+	assert.deepEqual(f.bottom.render(80), []);
+	header = "top";
+	assert.equal(f.root[NODE]().type, "vstack");
+});
+
+test("TODO visibility hides both rail and bottom without mutating the registered part", (t) => {
+	const f = fixture();
+	const todo = sidebarPart(f.tui, "todo", { render: (_width: number) => ["todo"], invalidate() {} });
+	t.after(installSidebar(f.tui, theme));
+	assert.match(rail(f).render(50).join("\n"), /todo/);
+	sidebarState(f.tui).visibility = { todo: false };
+	invalidateSidebar(f.tui);
+	assert.doesNotMatch(rail(f).render(50).join("\n"), /todo/);
+	f.host.terminal.columns = 100;
+	assert.equal(f.root[NODE]().type, "vstack");
+	assert.deepEqual(todo.render(100), []);
+	sidebarState(f.tui).visibility = { todo: true };
+	assert.deepEqual(todo.render(100), ["todo"]);
+});
+
 test("rail orders unified Status, agents, TODO without standalone changes", (t) => {
 	const f = fixture();
 	for (const key of ["todo", "agents", "changes"]) {
@@ -464,6 +561,31 @@ test("fullscreen native transcript renders once without changing bytes, geometry
 	}
 });
 
+test("native fullscreen header survives narrow and bottom transitions without replacing transcript scroll", (t) => {
+	const f = nativeSidebarFixture();
+	let placement: "right" | "bottom" | "hidden" = "right";
+	let headerPlacement: "top" | "below-input" = "top";
+	// Reinstall with live preferences so the transition uses the same native root.
+	f.dispose();
+	sidebarHeader(f.host as unknown as TUI, { render: (width: number) => [`HEADER ${width}`], invalidate() {} });
+	const dispose = installSidebar(f.host as unknown as TUI, theme, () => placement, () => headerPlacement);
+	t.after(dispose);
+	for (const [width, status] of [[100, "right"], [60, "right"], [180, "bottom"], [180, "hidden"], [180, "right"]] as const) {
+		placement = status;
+		const { frame, transcriptRenders } = f.frame(width);
+		assert.equal(transcriptRenders, 1, "native transcript paints only once");
+		assert.equal(frame.primaryScrollView, f.primary);
+		assert.match(frame.lines[0] ?? "", new RegExp(`HEADER ${status === "right" && width >= 140 ? width - 2 : width}`));
+		assert.ok(frame.lines.some((line) => line.includes("Editor")), "native editor survives");
+		assert.equal(frame.root.children.some((box) => box.component instanceof ScrollView && box.component !== f.primary), false, "no extra root scroll view");
+	}
+	headerPlacement = "below-input";
+	placement = "bottom";
+	const below = f.frame(100).frame;
+	assert.doesNotMatch(below.lines.join("\n"), /HEADER/, "below-input owns its own widget, never the top row");
+	assert.equal(below.primaryScrollView, f.primary);
+});
+
 test("native transcript and sidebar keep separate scroll routing across resize, breakpoint and mode transitions", (t) => {
 	const fixture = nativeSidebarFixture();
 	t.after(fixture.dispose);
@@ -626,15 +748,15 @@ test("the header leaf carries the rule row: a two-line header renders both lines
 	assert.deepEqual(header.render(0), ["HEADER 138", "RULE 138"], "both the status line and the rule row reach the layout, rendered at the terminal width minus the rail's right inset");
 });
 
-test("below the sidebar breakpoint a rule-like header paints no rule row", (t) => {
+test("below the sidebar breakpoint a rule-like header paints above native layout without a rail", (t) => {
 	const f = fixture("fullscreen", 139);
 	sidebarHeader(f.tui, { render: (width: number) => [`HEADER ${width}`, `RULE ${width}`], invalidate() {} });
 	t.after(installSidebar(f.tui, theme));
 
-	// Below SIDEBAR_BREAKPOINT prepare() declines, so the replacement hands
-	// back the native root's own layout node: neither the header wrapper nor
-	// a rule row ever paints.
-	assert.deepEqual(f.root[NODE](), f.original(), "below the breakpoint the rule is removed with the whole sidebar");
+	const node = f.root[NODE]() as unknown as { type: string; entries: { component: Component }[] };
+	assert.equal(node.type, "vstack");
+	assert.deepEqual(node.entries[0]?.component.render(139), ["HEADER 139", "RULE 139"]);
+	assert.deepEqual(f.bottom.render(139), ["Status"]);
 });
 
 test("without a registered header the rail keeps the banner and the plain hstack", (t) => {

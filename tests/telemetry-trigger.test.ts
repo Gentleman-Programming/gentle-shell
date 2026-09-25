@@ -217,7 +217,7 @@ test("activation: spawns the telemetry trigger exactly once for a primary sessio
 	assert.equal(call.options.stdio, "ignore");
 });
 
-test("activation: never spawns for a named or SDD agent event", async (t) => {
+test("activation: never spawns for named agents, even with legacy prompt text", async (t) => {
 	t.after(() => __testing.resetTelemetryTriggerGuardForTesting());
 	__testing.resetTelemetryTriggerGuardForTesting();
 	const fake = fakeSpawn();
@@ -230,9 +230,9 @@ test("activation: never spawns for a named or SDD agent event", async (t) => {
 	const ctx = fakeContext("/work/project", notifications);
 
 	await beforeAgentStart!({ agentName: "review-risk", systemPrompt: "" }, ctx);
-	await beforeAgentStart!({ systemPrompt: "SDD apply executor" }, ctx);
+	await beforeAgentStart!({ agentName: "gentle-ai-worker", systemPrompt: "SDD apply executor" }, ctx);
 
-	assert.equal(fake.calls.length, 0, "named/SDD agents must never trigger the nudge");
+	assert.equal(fake.calls.length, 0, "named agents must never trigger the nudge");
 });
 
 test("activation: a missing binary or spawn error never affects activation", async (t) => {

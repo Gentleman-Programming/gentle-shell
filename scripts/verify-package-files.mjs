@@ -13,7 +13,6 @@ const requiredPaths = [
   "assets/orchestrator-delegation.md",
   "assets/orchestrator-memory.md",
   "assets/orchestrator-skills.md",
-  "assets/sdd-orchestrator-workflow.md",
   "assets/agents/gentle-ai-explore.md",
   "assets/agents/gentle-ai-verify.md",
   "assets/agents/gentle-ai-worker.md",
@@ -24,27 +23,10 @@ const requiredPaths = [
   "assets/agents/review-reliability.md",
   "assets/agents/review-resilience.md",
   "assets/agents/review-risk.md",
-  "assets/agents/sdd-apply.md",
-  "assets/agents/sdd-archive.md",
-  "assets/agents/sdd-design.md",
-  "assets/agents/sdd-explore.md",
-  "assets/agents/sdd-init.md",
-  "assets/agents/sdd-onboard.md",
-  "assets/agents/sdd-proposal.md",
-  "assets/agents/sdd-remediate.md",
-  "assets/agents/sdd-research.md",
-  "assets/agents/sdd-spec.md",
-  "assets/agents/sdd-status.md",
-  "assets/agents/sdd-tasks.md",
-  "assets/agents/sdd-verify.md",
   "assets/chains/4r-review.chain.md",
-  "assets/chains/sdd-full.chain.md",
-  "assets/chains/sdd-plan.chain.md",
-  "assets/chains/sdd-verify.chain.md",
   "assets/migrations/managed-assets-v0.10.7.json",
   "assets/migrations/managed-assets-v0.13.json",
   "assets/migrations/managed-assets-v0.14.json",
-  "assets/support/sdd-status-contract.md",
   "assets/support/strict-tdd.md",
   "assets/support/strict-tdd-verify.md",
   "docs/delegated-verification.md",
@@ -52,7 +34,6 @@ const requiredPaths = [
   "docs/skill-style-guide.md",
   "docs/review-integration.md",
   "extensions/gentle-ai.ts",
-  "extensions/sdd-init.ts",
   "extensions/skill-registry.ts",
   "lib/gentle-ai-binary.ts",
   "lib/gentle-shell-launcher.ts",
@@ -61,7 +42,7 @@ const requiredPaths = [
   "lib/review-host-relay.ts",
   "lib/review-integration-v2.ts",
   "lib/review-relay-contract.ts",
-  "lib/sdd-preflight.ts",
+  "lib/agent-assets.ts",
   "lib/telemetry-trigger.ts",
 	"runtime/gentle-ai-binary.mjs",
 	"runtime/gentle-shell-launcher.mjs",
@@ -298,6 +279,11 @@ export function reconcileGeneratedRuntimeSources(packageRoot, sources, paths) {
 }
 
 async function main() {
+  if (existsSync(join(root, "extensions/sdd-init.ts"))) {
+    console.error("gentle-pi package must not restore the retired SDD init extension");
+    process.exit(1);
+  }
+
   const missing = requiredPaths.filter((relativePath) => {
     const absolutePath = join(root, relativePath);
     return !existsSync(absolutePath) || !statSync(absolutePath).isFile();
@@ -342,7 +328,7 @@ async function main() {
   });
 
   if (driftedContracts.length > 0) {
-    console.error("gentle-pi packaged review-integration/v1 and review-integration/v2 contract bytes drifted from the pinned v3.6.1 runtime's vendored Gentle AI contract artifacts:");
+    console.error("gentle-pi packaged review-integration/v1 and review-integration/v2 contract bytes drifted from the pinned v3.7.0 runtime's vendored Gentle AI contract artifacts:");
     for (const drift of driftedContracts) console.error(`- ${drift.relativePath}: expected ${drift.expected}, got ${drift.actual}`);
     process.exit(1);
   }
@@ -387,7 +373,7 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`gentle-pi package resource check passed (${requiredPaths.length} files; ${Object.keys(contractHashes).length} exact byte-pinned contract artifacts for the v3.6.1 runtime).`);
+  console.log(`gentle-pi package resource check passed (${requiredPaths.length} files; ${Object.keys(contractHashes).length} exact byte-pinned contract artifacts for the v3.7.0 runtime).`);
 }
 
 const isMainModule = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;

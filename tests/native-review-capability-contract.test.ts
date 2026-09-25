@@ -361,11 +361,17 @@ test("3.6.1 explicitly repeats 3.6.0 because the negotiated provider lane is unc
 	assert.deepEqual(contract, NATIVE_CLI_CONTRACTS["3.6.0"] as Record<string, boolean>);
 });
 
+test("3.7.0 explicitly repeats 3.6.1 because provider contract 1.2.0 is unchanged", () => {
+	const contract = NATIVE_CLI_CONTRACTS["3.7.0"] as Record<string, boolean>;
+	assert.ok(contract);
+	assert.deepEqual(contract, NATIVE_CLI_CONTRACTS["3.6.1"] as Record<string, boolean>);
+});
+
 test("no shipped version key was added beyond the pin bump", () => {
 	// Rows are promises to consumers, so a new key only ever appears in a
 	// dedicated commit alongside a pin bump, never as a side effect. v2.2.4 and
 	// v2.3.0 shipped upstream while Pi stayed on 2.2.3 and were never pinned,
 	// so they get no row: a row asserts ground truth measured against a binary
 	// Pi actually ran, and the table only has to be ascending, not gapless.
-	assert.deepEqual(Object.keys(NATIVE_CLI_CONTRACTS), [...DARK_VERSIONS, "2.2.0", "2.2.1", "2.2.2", "2.2.3", "2.4.0", "2.5.0-rc.3", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.8.1", "2.8.2", "2.9.0", "2.9.1", "3.0.0", "3.0.1", "3.1.0", "3.2.1", "3.4.0", "3.5.0", "3.6.0", "3.6.1"]);
+	assert.deepEqual(Object.keys(NATIVE_CLI_CONTRACTS), [...DARK_VERSIONS, "2.2.0", "2.2.1", "2.2.2", "2.2.3", "2.4.0", "2.5.0-rc.3", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.8.1", "2.8.2", "2.9.0", "2.9.1", "3.0.0", "3.0.1", "3.1.0", "3.2.1", "3.4.0", "3.5.0", "3.6.0", "3.6.1", "3.7.0"]);
 });

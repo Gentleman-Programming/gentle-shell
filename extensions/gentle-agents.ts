@@ -1,27 +1,27 @@
-import { fileURLToPath } from "node:url";
 import { agentsViewKey, agentsCollapseKey, agentsStopKey } from "../lib/agents-keys.ts";
-import { extractParentConfirmedSddPreflightContext, getPackageAssetOwner, isParentConfirmedSddPreflightContext, SHIPPED_SDD_AGENT_NAMES } from "../lib/sdd-preflight.ts";
-import { NativeReviewCliV216, createNodeExecFileAdapter, decodeNativeSddStatusV2, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { spawn } from "node:child_process";
 import { recordReviewMutation } from "../lib/review-reminder-receipt.ts";
 import { SESSION_CHANGE_RELAY } from "../lib/session-changes.ts";
 import { publishForeignSessionChange } from "../lib/session-change-capture.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, type WorktreeResolver } from "../lib/session-worktree-registry.ts";
 import { ForeignTargetGrants } from "../lib/foreign-target-grants.ts";
-import { existsSync, mkdirSync, readFileSync, lstatSync, realpathSync } from "node:fs";
+import { MESSAGING_REASON_MAX_UTF8_BYTES, MESSAGING_REASON_MIN_CHARACTERS, normalizeMessagingReason, SessionMessagingGrants } from "../lib/session-messaging-grants.ts";
+import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
-import { join, resolve, isAbsolute, sep } from "node:path";
-import { createBashToolDefinition, createLocalBashOperations, type BashOperations, keyHint, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { join, resolve, isAbsolute } from "node:path";
+import { keyHint, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, type TUI } from "@earendil-works/pi-tui";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
+import { VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
+import { resolveVisualSettings } from "../lib/visual-customization-policy.ts";
 import { createCompletionQueue } from "../lib/agents-completion-delivery.ts";
-import { AGENT_MODE, discoverAgents, parseAgentDefinition, loadAgentsConfig, resolveAgentProfile, withPinnedModelProfiles, type AgentDefinition, type AgentMode } from "../lib/agents-config.ts";
+import { AGENT_MODE, discoverAgents, loadAgentsConfig, resolveAgentProfile, withPinnedModelProfiles, type AgentDefinition, type AgentMode } from "../lib/agents-config.ts";
 import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-policy.ts";
 import { installBackgroundCacheWarming } from "../lib/background-cache-warming.ts";
 import { isFinished, TASK_EVENT, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
-import { AgentRunner, piCommand, abortReasonText, plannedCommands, type RemediationPlan, type RemediationScope, REMEDIATION_PLAN_ENV, parseRemediationPlan, type AskAnswer, type RunnerDeps, type SddChangeSelection, type TaskRequest } from "../lib/agents-runner.ts";
+import { AgentRunner, piCommand, abortReasonText, type AskAnswer, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
 import { ChildMessenger, type IpcEndpoint } from "../lib/agents-messaging.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessionPresenceRegistry, type WindowsSessionRegistryPhaseObserver } from "../lib/windows-session-transport.ts";
@@ -39,7 +39,6 @@ import { CARD_TONE, renderCard } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
 import { resolveGentlePiAgentHome, gentlePiConfigHome } from "../lib/agent-home.ts";
 import { resolveProfilePin } from "../lib/agent-profile-pin.ts";
-import { canonicalArtifactPath, researchAgent, renderResearchCapabilities, RESEARCH_CHILD_TOOLS_ENV, RESEARCH_SELECTION_ENV } from "../lib/sdd-research-capabilities.ts";
 import { CHILD_METRICS_EVENT, CHILD_METRICS_REVOKED, childEvent, launchSelection, type LaunchSelection } from "../lib/runtime-metrics-children.ts";
 import { runtimeMetricsEnvAllows, type RuntimeMetricsPolicyDeps } from "../lib/runtime-metrics-policy.ts";
 
@@ -57,125 +56,8 @@ export const AGENTS_STALE_RESULT_TYPE = "gentle-agents.stale-result";
 const RENDER_COALESCE_MS = 400;
 const CLOCK_TICK_MS = 1000;
 const TOOL_PREFIX = "subagent_";
-const SHIPPED_SDD_AGENT_NAME_SET = new Set(SHIPPED_SDD_AGENT_NAMES);
 
-const SDD_PHASE_BY_AGENT = {
-	"sdd-apply": "apply",
-	"sdd-remediate": "remediate",
-	"sdd-verify": "verify",
-	"sdd-archive": "archive",
-} as const;
-
-function sddPhaseForAgent(name: string): SddChangeSelection["phase"] | undefined {
-	return Object.hasOwn(SDD_PHASE_BY_AGENT, name) ? SDD_PHASE_BY_AGENT[name as keyof typeof SDD_PHASE_BY_AGENT] : undefined;
-}
-
-function parseSddChange(value: unknown, agentName: string): SddChangeSelection | undefined {
-	if (value === undefined) return undefined;
-	const expectedPhase = sddPhaseForAgent(agentName);
-	if (!expectedPhase) throw new Error("sdd_change is allowed only for SDD apply, verify, or archive agents.");
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("sdd_change must be an object with changeName, workspaceRoot, and phase.");
-	const selection = value as Record<string, unknown>;
-	const keys = Object.keys(selection).sort();
-	if (keys.join(",") !== (expectedPhase === "remediate" ? "changeName,failedEvidenceRevision,phase,workspaceRoot" : "changeName,phase,workspaceRoot") ||
-		typeof selection.changeName !== "string" || selection.changeName.length === 0 ||
-		typeof selection.workspaceRoot !== "string" || selection.workspaceRoot.length === 0 ||
-		selection.phase !== expectedPhase) {
-		throw new Error("sdd_change must contain only a non-empty changeName, workspaceRoot, and the agent's matching phase.");
-	}
-	if (expectedPhase === "remediate" && (typeof selection.failedEvidenceRevision !== "string" || !/^sha256:[0-9a-f]{64}$/.test(selection.failedEvidenceRevision))) throw new Error("Invalid remediation revision");
-	return { changeName: selection.changeName, workspaceRoot: selection.workspaceRoot, phase: expectedPhase, ...(expectedPhase === "remediate" ? { failedEvidenceRevision: selection.failedEvidenceRevision as string } : {}) };
-}
-
-const REMEDIATION_SCHEMA = {
-	type: "object", additionalProperties: false, required: ["plan"],
-	properties: {
-		plan: { type: "object", additionalProperties: false, required: ["cwd", "commands", "runtimeHarness", "rollback"], properties: {
-			editPaths: { type: "array", maxItems: 32, items: { type: "string" }, description: "Exact canonical files requested for this launch; no entry means no edit/write authority." }, cwd: { type: "string" }, commands: { type: "array", minItems: 1, maxItems: 16, items: { type: "string" } },
-			runtimeHarness: { type: "object", additionalProperties: false, description: "Exactly one concrete command or prior concrete naReason containing because.", properties: { command: { type: "string" }, naReason: { type: "string" } } },
-			rollback: { type: "object", additionalProperties: false, required: ["boundary", "command"], properties: { boundary: { type: "string" }, command: { type: "string" } } },
-		} },
-
-	},
-};
-
-export async function confirmRemediationScope(plan: RemediationPlan, action: Record<string, unknown>, context?: Pick<ExtensionContext, "hasUI" | "ui">): Promise<RemediationScope> {
-	const cwd = plan.cwd, roots = action.allowedEditRoots;
-	if (realpathSync(cwd) !== cwd || action.workspaceRoot !== cwd || !Array.isArray(roots) || !roots.every(root => typeof root === "string" && isAbsolute(root) && canonicalArtifactPath(root) === root)) throw new Error("Remediation native scope mismatch");
-	const inside = (path: string, root: string) => path === root || path.startsWith(`${root}${sep}`);
-	const editPaths = plan.editPaths ?? [];
-	if (!Array.isArray(editPaths) || editPaths.length > 32 || new Set(editPaths).size !== editPaths.length) throw new Error("Ambiguous remediation paths");
-	for (const path of editPaths) {
-		if (typeof path !== "string" || !isAbsolute(path) || resolve(path) !== path || /[*?\[\]{}]/.test(path) || canonicalArtifactPath(path) !== path || !inside(path, cwd) || !roots.some(root => inside(path, root))) throw new Error("Remediation path outside canonical native scope");
-		if (existsSync(path) && !lstatSync(path).isFile()) throw new Error("Remediation requires exact file paths, not directories");
-	}
-	const scope: RemediationScope = { cwd, editPaths: [...editPaths], commands: plannedCommands(plan), allowedEditRoots: [...roots] };
-	if (!context?.hasUI || !context.ui?.confirm || await context.ui.confirm("Authorize one remediation launch", `Canonical worktree: ${cwd}\nNative allowed roots: ${JSON.stringify(roots)}\nExact edit/write files: ${JSON.stringify(editPaths)}\nExact invocations (not a shell sandbox):\n${scope.commands.map((command, slot) => `${slot}: cwd=${JSON.stringify(cwd)} command=${JSON.stringify(command)}`).join("\n")}`) !== true) throw new Error("Remediation requires fresh human authorization; no actor started");
-	if (realpathSync(cwd) !== cwd || editPaths.some(path => canonicalArtifactPath(path) !== path)) throw new Error("Remediation scope changed during authorization");
-	return scope;
-}
-export function remediationToolAllowed(scope: RemediationScope | undefined, cwd: string, tool: string, input: Record<string, unknown>): boolean {
-	try {
-		if (!scope || scope.cwd !== cwd || canonicalArtifactPath(cwd) !== cwd) return false;
-		if (tool === "bash") return typeof input.command === "string" && scope.commands.includes(input.command);
-		if (["edit", "write"].includes(tool)) {
-			if (typeof input.path !== "string") return false;
-			const path = resolve(cwd, input.path);
-			return scope.editPaths.includes(path) && canonicalArtifactPath(path) === path && scope.allowedEditRoots.some(root => path === root || path.startsWith(`${root}${sep}`));
-		}
-		if (["read", "grep", "find"].includes(tool)) {
-			if (input.path === undefined) return true;
-			if (typeof input.path !== "string" || !input.path || isAbsolute(input.path)) return false;
-			const path = resolve(cwd, input.path);
-			return canonicalArtifactPath(path) === path && (path === cwd || path.startsWith(`${cwd}${sep}`));
-		}
-		return tool === "subagent_parent_message";
-	} catch { return false; }
-}
-
-export async function admitManagedRemediation(request: TaskRequest, input: unknown, native: NativeReviewCli, context?: Pick<ExtensionContext, "hasUI" | "ui">): Promise<Partial<TaskRequest>> {
-	const selected = request.sddChange;
-	const asset = fileURLToPath(new URL("../assets/agents/sdd-remediate.md", import.meta.url));
-	if (request.agent.name !== "sdd-remediate" || selected?.phase !== "remediate" || selected.workspaceRoot !== request.cwd || !native.sddStatus || getPackageAssetOwner("agents/sdd-remediate.md") !== "sdd" || !existsSync(request.agent.filePath) ) throw new Error("Unsupported managed remediation owner/asset or native capability; install matching package assets before retrying");
-	const owned = parseAgentDefinition(readFileSync(asset, "utf8"), asset, "global");
-	const installed = parseAgentDefinition(readFileSync(request.agent.filePath, "utf8"), request.agent.filePath, request.agent.scope);
-	if (!("instructions" in owned) || !("instructions" in installed) || [request.agent, installed].some(agent => agent.instructions !== owned.instructions || JSON.stringify(agent.tools) !== JSON.stringify(owned.tools))) throw new Error("Unsupported remediation actor content; install matching managed assets");
-	const value = input as { plan?: unknown };
-	const plan = parseRemediationPlan(value?.plan, request.cwd);
-	const status = decodeNativeSddStatusV2(await native.sddStatus({ workspaceRoot: request.cwd, changeName: selected.changeName }), selected);
-	// Legacy remediation status carries the verification failure being repaired;
-	// that is not permission to bypass a missing native edit grant.
-	if (status.blockedReasons.some(reason => reason.includes("edit_authority_missing")) || status.nextRecommended !== "remediate" || !status.phaseInstructions?.remediate || status.remediationState?.failedEvidenceRevision !== selected.failedEvidenceRevision) throw new Error("Stale remediation selection; refresh native status");
-	const scope = await confirmRemediationScope(plan, status.actionContext, context);
-	return { sddRemediation: { scope, failedEvidenceRevision: selected.failedEvidenceRevision!, plan } };
-}
-
-// Installed only for the admitted remediation child. Stock shell execution,
-// cancellation, truncation and rendering remain owned by the SDK definition.
-export function remediationBash(cwd: string, operations: BashOperations = createLocalBashOperations(), scope?: RemediationScope) {
-	const captured = new Map<string, { toolCallId: string; command: string; cwd: string; exitCode: number | null }>();
-	const remaining = [...(scope?.commands ?? [])], used = new Set<string>();
-	const stock = createBashToolDefinition(cwd);
-	return {
-		definition: { ...stock, async execute(...input: Parameters<typeof stock.execute>) {
-			const [id, args, signal, onUpdate, ctx] = input;
-			const slot = remaining.indexOf(args.command);
-			if (!remediationToolAllowed(scope, ctx?.cwd ?? cwd, "bash", args) || slot < 0 || used.has(id)) throw new Error("Bash invocation is outside this launch human authorization");
-			remaining.splice(slot, 1); used.add(id);
-			const definition = createBashToolDefinition(cwd, { operations: { exec: async (command, directory, options) => {
-				const result = await operations.exec(command, directory, options);
-				if (captured.size < 32) captured.set(id, { toolCallId: id, command, cwd: directory, exitCode: result.exitCode });
-				return result;
-			} } });
-			return definition.execute(id, args, signal, onUpdate, ctx);
-		} },
-		result(event: { toolCallId: string; details?: unknown }) {
-			const observation = captured.get(event.toolCallId);
-			captured.delete(event.toolCallId);
-			return observation ? { details: { ...(event.details as object ?? {}), remediationCommand: observation } } : undefined;
-		},
-	};
-}
+const retiredSddAgent = (name: string): boolean => /^sdd(?:-|$)/.test(name);
 
 export interface SessionTransportRegistry {
 	list(excludeSessionId?: string): Promise<readonly SessionPresenceCandidate[]>;
@@ -202,7 +84,6 @@ export interface SessionTransportFactory {
 }
 
 export interface AgentsDeps extends RunnerDeps {
-	nativeSdd?: NativeReviewCli;
 	home: string;
 	agentHome?: string;
 	childIpc?: IpcEndpoint;
@@ -396,60 +277,13 @@ export async function answerThroughUi(ui: ExtensionContext["ui"] | undefined, as
 	}
 }
 
-const RESEARCH_SELECTION_SCHEMA = {
-	type: "object",
-	additionalProperties: false,
-	description: "Untrusted narrowing intent for sdd-research; exact tools and existing sourceInfo.path per tool. Never grants permissions or installs extensions.",
-	properties: Object.fromEntries(["documentation", "open-web"].map(kind => [kind, {
-		type: "object", additionalProperties: false, required: ["tools", "extensions"],
-		properties: {
-			tools: { type: "array", items: { type: "string" } },
-			extensions: { type: "object", additionalProperties: { type: "string" } },
-		},
-	}])),
-};
-
 export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<AgentsDeps> = {}): void {
-	if (env.GENTLE_PI_AGENTS_CHILD === "1" && env[RESEARCH_CHILD_TOOLS_ENV] !== undefined) {
-		let allowed: string[] = [];
-		try {
-			const parsed: unknown = JSON.parse(env[RESEARCH_CHILD_TOOLS_ENV]!);
-			if (Array.isArray(parsed) && parsed.every(value => typeof value === "string")) allowed = parsed;
-		} catch { /* Invalid launch restrictions deny every tool. */ }
-		let selection: unknown;
-		try { selection = JSON.parse(env[RESEARCH_SELECTION_ENV] ?? "null"); } catch { /* Missing selection grants no research. */ }
-		const current = () => researchAgent({ tools: allowed, instructions: "" } as AgentDefinition, pi, selection);
-		pi.on("before_agent_start", event => ({
-			systemPrompt: `${event.systemPrompt}\n\n${renderResearchCapabilities(current().capabilities)}\n\nResearch is output-only. Use parent-supplied local context; do not read or mutate repository or Engram artifacts. Return useful partial findings and unavailable sources honestly. The parent owns authorized persistence and actual readback.`,
-		}));
-		pi.on("tool_call", event => {
-			const registered = pi.getAllTools().some(tool => tool.name === event.toolName && tool.sourceInfo?.source !== "sdk");
-			const selected = current().agent.tools.includes(event.toolName) || event.toolName === "subagent_parent_message";
-			if (!registered || !selected || !allowed.includes(event.toolName) || !pi.getActiveTools().includes(event.toolName)) {
-				return { block: true, reason: "Tool is outside the output-only research child's active launch allowlist." };
-			}
-		});
-	}
 	const childIpc = ownedChildIpc(env, overrides.childIpc ?? (process.send ? process as unknown as IpcEndpoint : undefined));
 	if (env.GENTLE_PI_AGENTS_CHILD === "1") {
-		if (env[REMEDIATION_PLAN_ENV] !== undefined) {
-			let granted: RemediationScope | undefined;
-			pi.on("tool_call", (event, current) => remediationToolAllowed(granted, current.cwd, event.toolName, event.input) ? undefined : { block: true, reason: "Outside exact remediation human authorization" });
-			pi.on("session_start", (_event, ctx) => {
-				granted = undefined;
-				try {
-					const retained = JSON.parse(env[REMEDIATION_PLAN_ENV]!);
-					// SDK flags are owner-local; the runner transports the same selected context.
-					const selection = Object.hasOwn(retained, "selection") ? retained.selection : JSON.parse(String(pi.getFlag("gentle-sdd-change")));
-					parseSddChange(selection, "sdd-remediate");
-					const plan = parseRemediationPlan(retained.plan, ctx.cwd);
-					if (selection.workspaceRoot !== ctx.cwd || JSON.stringify(plannedCommands(plan)) !== JSON.stringify(retained.scope?.commands) || JSON.stringify(plan.editPaths ?? []) !== JSON.stringify(retained.scope?.editPaths)) throw new Error("Remediation grant/plan mismatch");
-					const shell = remediationBash(ctx.cwd, undefined, retained.scope);
-					pi.registerTool(shell.definition);
-					pi.on("tool_result", event => event.toolName === "bash" ? shell.result(event) : undefined);
-					granted = retained.scope;
-				} catch { /* No valid host grant: deny every tool, even if Pi continues initialization. */ }
-			});
+		// A stale managed-SDD child must never inherit unrestricted ordinary tools.
+		if (env.GENTLE_PI_RESEARCH_TOOLS !== undefined || env.GENTLE_PI_RESEARCH_SELECTION !== undefined || env.GENTLE_PI_RESEARCH_ARTIFACT !== undefined || env.GENTLE_PI_SDD_REMEDIATION_PLAN !== undefined) {
+			pi.on("tool_call", () => ({ block: true, reason: "Retired SDD child launch is not supported." }));
+			return;
 		}
 		if (childIpc) registerChildMessaging(pi, childIpc);
 		return;
@@ -479,6 +313,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	let ui: ExtensionContext["ui"] | undefined;
 	let host: { requestRender(): void } | undefined;
 	let sidebarTui: TUI | undefined;
+	const visualHome = gentlePiConfigHome(env);
+	let agentsVisible = resolveVisualSettings({ gentlePiConfigHome: visualHome }).settings.visibility.agents;
+	let stopVisualUpdates: (() => void) | undefined;
 	let sessions: ExtensionContext["sessionManager"] | undefined;
 	let presence: PresencePublisher | undefined;
 	let rpcActivityPublisher: RpcActivityPublisher | undefined;
@@ -500,6 +337,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	};
 	let worktrees: SessionWorktreeRegistry | undefined;
 	const foreignGrants = new ForeignTargetGrants();
+	const messagingGrants = new SessionMessagingGrants();
 	const foreignTasks = new Map<string, { root: string; commonDir: string; manager: ExtensionContext["sessionManager"] }>();
 	const foreignRequests = new WeakMap<TaskRequest, { root: string; commonDir: string; manager: ExtensionContext["sessionManager"] }>();
 	const registryFor = (ctx: ExtensionContext) => {
@@ -1058,6 +896,14 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	const showWidget = (ctx: ExtensionContext) => {
 		ui = ctx.hasUI ? ctx.ui : undefined;
 		sessions = ctx.sessionManager;
+		agentsVisible = resolveVisualSettings({ gentlePiConfigHome: visualHome }).settings.visibility.agents;
+		stopVisualUpdates?.();
+		stopVisualUpdates = pi.events.on(VISUAL_SETTINGS_CHANGED, (event) => {
+			if ((event as { configHome?: unknown } | undefined)?.configHome !== visualHome) return;
+			agentsVisible = resolveVisualSettings({ gentlePiConfigHome: visualHome }).settings.visibility.agents;
+			if (sidebarTui) invalidateSidebar(sidebarTui);
+			host?.requestRender();
+		});
 		tickClock();
 		// Agents is not a rail part: the fullscreen sidebar only suppresses
 		// bottom components registered through sidebarPart, and this widget is
@@ -1067,6 +913,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			sidebarTui = tui;
 			return {
 				render(width: number) {
+					if (!agentsVisible) return [];
 					const lines = renderAgentsCard(visibleTasks(), theme, width, deps.now(), { collapsed, collapseKey, maxRows: widgetRows(tui.terminal?.rows), viewKey });
 					return lines.length === 0 ? [] : [...lines, ""];
 				},
@@ -1077,15 +924,16 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 
 	const roots = (ctx: ExtensionContext) => ({ cwd: ctx.sessionManager.getCwd(), home: deps.home, agentHome });
 
-	const buildRequest = async (ctx: ExtensionContext, agent: AgentDefinition, prompt: string, label: string | undefined, context: string | undefined, mode: AgentMode, resume?: string, workspaceRoot?: string, sddChange?: SddChangeSelection, researchSelection?: unknown, remediationIntent?: unknown, signal?: AbortSignal, repositoryRoot?: string): Promise<TaskRequest> => {
+	const buildRequest = async (ctx: ExtensionContext, agent: AgentDefinition, prompt: string, label: string | undefined, context: string | undefined, mode: AgentMode, resume?: string, workspaceRoot?: string, signal?: AbortSignal, repositoryRoot?: string): Promise<TaskRequest> => {
+		if (retiredSddAgent(agent.name)) throw new Error("Retired SDD agents cannot be dispatched.");
 		if (signal?.aborted) throw new Error("Subagent launch aborted before authorization.");
 		const registry = registryFor(ctx);
 		const parentCwd = ctx.sessionManager.getCwd();
 		// An explicit target is validated before any queue or session-dir writes.
 		const parentIdentity = deps.resolveWorktree(parentCwd, parentCwd);
 		if (repositoryRoot !== undefined && workspaceRoot !== undefined) throw new Error("repository_root and workspace_root are mutually exclusive.");
-		if (repositoryRoot !== undefined && (SHIPPED_SDD_AGENT_NAME_SET.has(agent.name) || sddChange || remediationIntent || deps.env.GENTLE_PI_AGENTS_CHILD === "1" || ctx.mode !== "tui" || !ctx.hasUI)) throw new Error("Foreign repository launch requires an interactive parent session without SDD or remediation.");
-		const selectedRoot = repositoryRoot ?? workspaceRoot ?? sddChange?.workspaceRoot;
+		if (repositoryRoot !== undefined && (deps.env.GENTLE_PI_AGENTS_CHILD === "1" || ctx.mode !== "tui" || !ctx.hasUI)) throw new Error("Foreign repository launch requires an interactive parent session.");
+		const selectedRoot = repositoryRoot ?? workspaceRoot;
 		// Preserve ordinary non-Git continuation, without admitting any new root.
 		const sameNonGitContinuation = resume !== undefined && repositoryRoot === undefined && selectedRoot === parentCwd && !parentIdentity;
 		let foreign = false;
@@ -1099,7 +947,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				// same-clone registry. Never use a caller-injected resolver for this identity.
 				const identity = resolveSessionWorktree(selectedRoot, parentCwd);
 				const canonicalParent = resolveSessionWorktree(parentCwd, parentCwd);
-				if (!identity || (canonicalParent && identity.commonDir === canonicalParent.commonDir) || selectedRoot !== identity.root || !isAbsolute(selectedRoot) || realpathSync(selectedRoot) !== selectedRoot || sddChange || remediationIntent) throw new Error("repository_root must select a canonical independent Git repository.");
+				if (!identity || (canonicalParent && identity.commonDir === canonicalParent.commonDir) || selectedRoot !== identity.root || !isAbsolute(selectedRoot) || realpathSync(selectedRoot) !== selectedRoot) throw new Error("repository_root must select a canonical independent Git repository.");
 				await foreignGrants.authorize(ctx, identity, { continuation: resume !== undefined, signal });
 				foreignIdentity = identity;
 				foreignParent = canonicalParent;
@@ -1107,12 +955,6 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				foreign = true;
 			}
 		} else target = parentIdentity?.root;
-		if (sddChange && target !== sddChange.workspaceRoot && target !== resolve(sddChange.workspaceRoot)) {
-			throw new Error("sdd_change workspaceRoot must resolve to the selected child worktree.");
-		}
-		const launchSddChange = sddChange === undefined || target === undefined
-			? undefined
-			: { ...sddChange, workspaceRoot: target };
 		// A per-repository profile pin replaces subagent routing for this launch without
 		// materialising anything: the global stores stay untouched, so two repositories
 		// worked in parallel stop fighting over one global routing. The child's own
@@ -1133,7 +975,6 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			})?.modelProfiles,
 		);
 		const profile = resolveAgentProfile(agent, config);
-		const research = agent.name === "sdd-research" ? researchAgent(agent, pi, researchSelection) : undefined;
 		const sessionDir = agentRuntimePaths(deps.home, agentHome).sessions;
 		if (foreign && target) {
 			const identity = resolveSessionWorktree(target, parentCwd);
@@ -1146,18 +987,13 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const parentSessionId = ctx.sessionManager.getSessionId() ?? "";
 		const parentWorktreeRoot = ctx.sessionManager.getCwd();
 		const parentRepositoryIdentity = resolveCanonicalGitRepositoryIdentitySync(parentWorktreeRoot);
-		const sddPreflightContext = SHIPPED_SDD_AGENT_NAME_SET.has(agent.name)
-			? extractParentConfirmedSddPreflightContext(context)
-			: undefined;
 		const childEnv = { ...deps.env };
 		if (foreign) for (const key of inheritedUnsafeGitEnvironmentKeys(childEnv)) delete childEnv[key];
 		const request: TaskRequest = {
-			agent: research?.agent ?? agent,
-			remediationIntent,
+			agent,
 			prompt,
 			label,
 			context,
-			...(sddPreflightContext === undefined ? {} : { sddPreflightContext }),
 			mode,
 			cwd: target ?? parentWorktreeRoot,
 			parentSessionId,
@@ -1173,9 +1009,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			thinking: profile.thinking,
 			sessionDir,
 			resumeSessionPath: resume,
-			env: research ? { ...childEnv, [RESEARCH_CHILD_TOOLS_ENV]: JSON.stringify([...research.agent.tools, "subagent_parent_message"]) } : childEnv,
-			...(research ? { researchSelection, extensionPaths: research.extensionPaths } : {}),
-			...(launchSddChange === undefined ? {} : { sddChange: launchSddChange }),
+			env: childEnv,
 			...(foreign || parentRepositoryIdentity === undefined ? {} : {
 				authorizeParentStandingReviewPermission: (repositoryIdentity: string) => {
 					try {
@@ -1202,17 +1036,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (ctx.mode === "print" && request.mode === AGENT_MODE.BACKGROUND) {
 			throw new Error("Background subagents are unavailable in print mode: pi -p exits before a parent session can receive results. Use task mode, RPC mode, or interactive Pi.");
 		}
-		// This is the process-spawn boundary. A child receives its task context only
-		// after its RPC process starts, so validate the single parent transport here
-		// rather than letting a child invent/persist preferences during startup.
-		if (SHIPPED_SDD_AGENT_NAME_SET.has(request.agent.name) && !isParentConfirmedSddPreflightContext(request.context)) {
-			throw new Error("SDD child dispatch refused: parent-confirmed SDD preflight context is missing or malformed.");
-		}
-		if (request.agent.name === "sdd-remediate") {
-			const native = deps.nativeSdd ?? new NativeReviewCliV216(createNodeExecFileAdapter());
-			Object.assign(request, await admitManagedRemediation(request, request.remediationIntent, native, ctx));
-			if (activeSessionId() !== request.parentSessionId) throw new Error("Parent session changed; request fresh authorization before dispatch");
-		}
+		if (retiredSddAgent(request.agent.name)) throw new Error("Retired SDD agents cannot be dispatched.");
 
 		// Bounded live observation only. Native send owns the fresh policy decision;
 		// child execution never starts a telemetry policy process or renewal timer.
@@ -1327,12 +1151,25 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		name: "orchestrator_send_message",
 		label: "Send orchestrator message",
 		description: "Send a notification to another active session in this trusted local profile. If recipient_session_id is omitted, the sole peer is selected or the user selects one. Acceptance means enqueued, not read or completed.",
-		parameters: { type: "object", additionalProperties: false, required: ["message"], properties: { recipient_session_id: { type: "string" }, message: { type: "string" } } } as never,
+		parameters: {
+			type: "object",
+			additionalProperties: false,
+			required: ["message", "reason"],
+			properties: {
+				recipient_session_id: { type: "string" },
+				message: { type: "string" },
+				reason: { type: "string", minLength: MESSAGING_REASON_MIN_CHARACTERS, maxLength: MESSAGING_REASON_MAX_UTF8_BYTES, description: "Required concrete caller-supplied reason: at least 8 characters after trimming and at most 512 UTF-8 bytes." },
+			},
+		} as never,
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const transport = activeTransportFor(ctx);
-			const input = params as { recipient_session_id?: unknown; message?: unknown };
+			const input = params as { recipient_session_id?: unknown; message?: unknown; reason?: unknown };
 			if (!transport) return text("Error: session messaging is not ready.", { error: "not ready" });
-			if (typeof input.message !== "string" || Buffer.byteLength(input.message, "utf8") > 8192) return text("Error: recipient session ID or message is invalid.", { error: "invalid input" });
+			const message = input.message;
+			if (typeof message !== "string" || Buffer.byteLength(message, "utf8") > 8192) return text("Error: recipient session ID or message is invalid.", { error: "invalid input" });
+			let reason: string;
+			try { reason = normalizeMessagingReason(input.reason); }
+			catch { return text("Error: recipient session ID or message is invalid; a concrete reason of at least 8 trimmed characters and at most 512 UTF-8 bytes is required.", { error: "invalid input" }); }
 			let recipient: string | undefined;
 			let activation: PresenceRecord | undefined;
 			if (input.recipient_session_id !== undefined) {
@@ -1364,7 +1201,13 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			if (recipient === undefined || !validTransportSessionId(recipient)) return text("Error: recipient session ID or message is invalid.", { error: "invalid input" });
 			if (recipient === transport.sessionId) return text("Error: cannot send a message to the active session.", { error: "self" });
 			try {
-				const accepted = await transport.client.sendNotification(recipient, input.message, { signal, expectedActivation: activation, beforeConnect: () => activeTransportFor(ctx) === transport });
+				await messagingGrants.authorize(ctx, recipient, { message, reason, signal });
+			} catch (error) {
+				if (signal?.aborted) return text("Cross-orchestrator communication was cancelled.", { error: "cancelled" });
+				return text(`Error: ${error instanceof Error ? error.message : String(error)}`, { error: "denied" });
+			}
+			try {
+				const accepted = await transport.client.sendNotification(recipient, message, { signal, expectedActivation: activation, beforeConnect: () => activeTransportFor(ctx) === transport });
 				return activeTransportFor(ctx) === transport ? text(`Message ${accepted.id} from ${transport.sessionId} to ${recipient} accepted for delivery; it is not a delivery or read receipt.`, { gentleAgents: { messageId: accepted.id, senderSessionId: transport.sessionId, recipientSessionId: recipient, state: "accepted" } }) : text("Error: session messaging is not ready.", { error: "stale" });
 			} catch {
 				return text("Error: session message was not accepted.", { error: "not accepted" });
@@ -1391,14 +1234,13 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				context: { type: "string", description: "Optional extra context appended to the task." },
 				workspace_root: { type: "string", description: "Optional canonical main or linked Git worktree within the parent's same clone only; mutually exclusive with repository_root." },
 				repository_root: { type: "string", description: "Optional canonical independent Git repository; requires direct interactive session-scoped consent before queueing; mutually exclusive with workspace_root." },
-				research_selection: RESEARCH_SELECTION_SCHEMA,
-				remediation: REMEDIATION_SCHEMA, sdd_change: { type: "object", additionalProperties: false, required: ["changeName", "workspaceRoot", "phase"], properties: { changeName: { type: "string" }, workspaceRoot: { type: "string" }, failedEvidenceRevision: { type: "string" }, phase: { type: "string", enum: ["apply", "verify", "archive", "remediate"] } }, description: "Launch-local selected SDD identity, accepted only by matching SDD phase agents." },
 				mode: { type: "string", enum: ["task", "background"], description: "task waits for the result (default); background returns immediately." },
 			},
 		},
 		async (params, ctx, signal) => {
 			if (Object.hasOwn(params, "repository_root") && Object.hasOwn(params, "workspace_root")) throw new Error("repository_root and workspace_root are mutually exclusive.");
 			if ((Object.hasOwn(params, "repository_root") && typeof params.repository_root !== "string") || (Object.hasOwn(params, "workspace_root") && typeof params.workspace_root !== "string")) throw new Error("Root selectors must be strings.");
+			if (Object.hasOwn(params, "sdd_change") || Object.hasOwn(params, "remediation") || Object.hasOwn(params, "research_selection") || retiredSddAgent(String(params.agent))) return text("Error: retired SDD delegation is not supported.", { error: "retired SDD delegation" });
 			const { agents } = discoverAgents(roots(ctx));
 			const agent = agents.find((candidate) => candidate.name === params.agent);
 			if (!agent) return text(`Error: no subagent named "${String(params.agent)}". Known: ${agents.map((candidate) => candidate.name).join(", ") || "none"}`, { error: "unknown agent" });
@@ -1407,10 +1249,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				policy: resolveBackgroundSubagentsPolicy(ctx.cwd).policy,
 				parentMode: ctx.mode,
 			});
-			let sddChange: SddChangeSelection | undefined;
-			try { sddChange = parseSddChange(params.sdd_change, agent.name); }
-			catch (error) { return text(`Error: ${error instanceof Error ? error.message : String(error)}`, { error: "invalid sdd_change" }); }
-			return launch(ctx, await buildRequest(ctx, agent, String(params.task ?? ""), typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, undefined, typeof params.workspace_root === "string" ? params.workspace_root : undefined, sddChange, params.research_selection, params.remediation, signal, typeof params.repository_root === "string" ? params.repository_root : undefined), signal);
+			return launch(ctx, await buildRequest(ctx, agent, String(params.task ?? ""), typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, undefined, typeof params.workspace_root === "string" ? params.workspace_root : undefined, signal, typeof params.repository_root === "string" ? params.repository_root : undefined), signal);
 		},
 	);
 
@@ -1451,10 +1290,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	tool(
 		"continue",
 		"Resume a finished subagent task in its own session with a follow-up prompt.",
-		{ required: ["task_id", "prompt"], properties: { research_selection: RESEARCH_SELECTION_SCHEMA, task_id: { type: "string" }, prompt: { type: "string" }, label: { type: "string", description: "Three to six words naming the follow-up." }, remediation: REMEDIATION_SCHEMA, sdd_change: { type: "object", additionalProperties: false, required: ["changeName", "workspaceRoot", "phase"], properties: { changeName: { type: "string" }, workspaceRoot: { type: "string" }, failedEvidenceRevision: { type: "string" }, phase: { type: "string", enum: ["apply", "verify", "archive", "remediate"] } }, description: "Fresh launch-local selected SDD identity, required when continuing an SDD phase agent." }, mode: { type: "string", enum: ["task", "background"] } } },
+		{ required: ["task_id", "prompt"], properties: { task_id: { type: "string" }, prompt: { type: "string" }, label: { type: "string", description: "Three to six words naming the follow-up." }, mode: { type: "string", enum: ["task", "background"] } } },
 		async (params, ctx, signal) => {
+			if (Object.hasOwn(params, "sdd_change") || Object.hasOwn(params, "remediation") || Object.hasOwn(params, "research_selection")) return text("Error: retired SDD delegation is not supported.", { error: "retired SDD delegation" });
 			const previous = await resolveTask(String(params.task_id));
 			if (!previous) return text(`Error: no task ${String(params.task_id)}`, { error: "unknown task" });
+			if (retiredSddAgent(previous.agent)) return text("Error: retired SDD agents cannot be continued.", { error: "retired SDD delegation" });
 			if (!isFinished(previous.status) || !previous.sessionPath) return text(`Error: task ${previous.id} cannot be continued yet (${previous.status}).`, { error: "not continuable" });
 			// Continuing acts on the previous result, so any pending completion for
 			// it is already consumed by the parent.
@@ -1462,13 +1303,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			const agent = discoverAgents(roots(ctx)).agents.find((candidate) => candidate.name === previous.agent);
 			if (!agent) return text(`Error: subagent "${previous.agent}" is no longer defined.`, { error: "unknown agent" });
 			const mode = (params.mode as AgentMode | undefined) ?? (previous.mode as AgentMode);
-			let sddChange: SddChangeSelection | undefined;
-			try { sddChange = parseSddChange(params.sdd_change, agent.name); }
-			catch (error) { return text(`Error: ${error instanceof Error ? error.message : String(error)}`, { error: "invalid sdd_change" }); }
-			if (sddPhaseForAgent(agent.name) && !sddChange) return text("Error: continuing an SDD phase agent requires a fresh sdd_change selection.", { error: "missing sdd_change" });
-
 			const foreignContinuation = foreignTasks.has(previous.id);
-			return launch(ctx, await buildRequest(ctx, agent, String(params.prompt ?? ""), typeof params.label === "string" ? params.label : undefined, previous.sddPreflightContext, mode, previous.sessionPath, foreignContinuation ? undefined : sddChange?.workspaceRoot ?? previous.cwd, sddChange, params.research_selection, params.remediation, signal, foreignContinuation ? previous.cwd : undefined), signal);
+			return launch(ctx, await buildRequest(ctx, agent, String(params.prompt ?? ""), typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, previous.sessionPath, foreignContinuation ? undefined : previous.cwd, signal, foreignContinuation ? previous.cwd : undefined), signal);
 		},
 	);
 
@@ -1560,6 +1396,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		for (const view of overlays) { view.handleInput("q"); view.dispose(); }
 		overlays.clear();
 		sessions = undefined;
+		stopVisualUpdates?.();
+		stopVisualUpdates = undefined;
 		sidebarTui = undefined;
 		worktrees?.close();
 		worktrees = undefined;

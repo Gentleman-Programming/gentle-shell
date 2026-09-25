@@ -1,7 +1,6 @@
 import { isSessionChangeEvidence, type SessionChangeEvidence } from "./session-changes.ts";
 import type { Duplex, Readable, Writable } from "node:stream";
 import { stripVTControlCharacters } from "node:util";
-import { RESEARCH_SELECTION_ENV } from "./sdd-research-capabilities.ts";
 import { withoutInteractiveHost } from "./rpc-host.ts";
 import { AGENT_MODE, formatModelRef, type AgentDefinition, type AgentMode, type ModelRef } from "./agents-config.ts";
 import { CHILD_QUERY_MAX_INFLIGHT, CHILD_QUERY_TIMEOUT_MS, parseChildFrame, validChildMessage, validChildQueryId } from "./agents-messaging.ts";
@@ -108,47 +107,7 @@ export interface RunnerHooks {
 	onSuccessfulMutation?(task: TaskRecord, tool: { toolName: "write" | "edit"; toolCallId: string; path: string; evidence?: SessionChangeEvidence }): void | Promise<void>;
 }
 
-export interface RemediationHarnessPlan { command?: string; naReason?: string }
-export interface RemediationRollbackPlan { boundary: string; command: string }
-export interface RemediationScope { cwd: string; editPaths: string[]; commands: string[]; allowedEditRoots: string[] }
-export interface RemediationPlan {
-	editPaths?: string[];
-	cwd: string;
-	commands: string[];
-	runtimeHarness: RemediationHarnessPlan;
-	rollback: RemediationRollbackPlan;
-}
-const concrete = (value: unknown): value is string => typeof value === "string" && value.trim() === value && value.length > 3 && value.length <= 4096 && !/[\0\r\n]/.test(value);
-export function parseRemediationPlan(value: unknown, cwd: string): RemediationPlan {
-	const plan = value as RemediationPlan;
-	if (!plan || plan.cwd !== cwd || !Array.isArray(plan.commands) || plan.commands.length < 1 || plan.commands.length > 16 || !plan.commands.every(concrete) ||
-		!concrete(plan.rollback?.boundary) || !concrete(plan.rollback?.command) || !plan.runtimeHarness ||
-		!(concrete(plan.runtimeHarness.command) && plan.runtimeHarness.naReason === undefined || plan.runtimeHarness.command === undefined && concrete(plan.runtimeHarness.naReason) && plan.runtimeHarness.naReason.length >= 20 && /because/i.test(plan.runtimeHarness.naReason))) throw new TypeError("Invalid remediation evidence plan");
-	return structuredClone(plan);
-}
-export const plannedCommands = (plan: RemediationPlan) => [...plan.commands, ...(plan.runtimeHarness.command ? [plan.runtimeHarness.command] : []), plan.rollback.command];
-// Launch-local scope only; task history is not an attempt authority.
-export interface RemediationContext {
-	failedEvidenceRevision: string;
-	plan: RemediationPlan;
-	scope: RemediationScope;
-}
-
-export interface SddChangeSelection {
-	changeName: string;
-	workspaceRoot: string;
-	phase: "apply" | "verify" | "archive" | "remediate";
-	failedEvidenceRevision?: string;
-}
-
-export const SDD_CHANGE_FLAG = "--gentle-sdd-change";
-
-export const REMEDIATION_PLAN_ENV = "GENTLE_PI_SDD_REMEDIATION_PLAN";
-
 export interface TaskRequest {
-	remediationIntent?: unknown;
-	sddRemediation?: RemediationContext;
-	sddPreflightContext?: string;
 	agent: AgentDefinition;
 	prompt: string;
 	label: string | undefined;
@@ -161,10 +120,7 @@ export interface TaskRequest {
 	sessionDir: string;
 	resumeSessionPath: string | undefined;
 	env: NodeJS.ProcessEnv;
-	// A launch-local SDD identity. It is never prompt text or shared state.
-	sddChange?: SddChangeSelection;
 	// Untrusted narrowing intent; paths come only from matching host provenance.
-	researchSelection?: unknown;
 	extensionPaths?: string[];
 	// Synchronous admission recheck at dequeue, before any OS spawn. Throws fail
 	// only this task; unlike onLaunch, it must never persist Changes evidence.
@@ -282,11 +238,10 @@ const hostProcess: ProcessControl = { platform: process.platform, kill: (pid, si
 export function childArguments(request: TaskRequest): string[] {
 	const args = ["--mode", "rpc", "--session-dir", request.sessionDir];
 	for (const path of request.extensionPaths ?? []) args.push("--extension", path);
-	if (request.sddChange) args.push(SDD_CHANGE_FLAG, JSON.stringify(request.sddChange));
 	if (request.resumeSessionPath) args.push("--session", request.resumeSessionPath);
 	if (request.model) args.push("--model", request.thinking ? `${formatModelRef(request.model)}:${request.thinking}` : formatModelRef(request.model));
 	else if (request.thinking) args.push("--thinking", request.thinking);
-	const tools = request.agent.tools.length > 0 || request.agent.name === "sdd-research" ? [...new Set([...request.agent.tools, PARENT_NOTIFICATION_TOOL])] : DEFAULT_TOOLS;
+	const tools = request.agent.tools.length > 0 ? [...new Set([...request.agent.tools, PARENT_NOTIFICATION_TOOL])] : DEFAULT_TOOLS;
 	if (tools.length > 0) args.push("--tools", tools.join(","));
 	if (request.agent.instructions.length > 0) args.push("--append-system-prompt", request.agent.instructions);
 	return args;
@@ -332,8 +287,7 @@ export class JsonLines {
 }
 
 export function promptText(request: TaskRequest): string {
-	const prompt = request.context ? `${request.prompt}\n\n## Context\n${request.context}` : request.prompt;
-	return request.sddRemediation ? `${prompt}\n\n## Human-authorized remediation plan\nExecute only these exact commands in the selected cwd; report actual results without claiming native verification.\n${JSON.stringify(request.sddRemediation.plan)}\nFailed evidence: ${request.sddRemediation.failedEvidenceRevision}` : prompt;
+	return request.context ? `${request.prompt}\n\n## Context\n${request.context}` : request.prompt;
 }
 
 export class AgentRunner {
@@ -363,7 +317,6 @@ export class AgentRunner {
 		const task: TaskRecord = {
 			id: `${now.toString(36)}-${this.counter.toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
 			agent: request.agent.name,
-			...(request.sddPreflightContext ? { sddPreflightContext: request.sddPreflightContext } : {}),
 			mode: request.mode,
 			prompt: request.prompt,
 			label: taskLabel(request.prompt, request.label),
@@ -390,23 +343,8 @@ export class AgentRunner {
 	}
 
 	run(request: TaskRequest): TaskRecord {
-		// Admission already confirmed the canonical cwd and human edit scope.
-		// Check this runner's queue/live slots before scheduling any launch: history
-		// is not a lock, and quarantined children still own their live slot.
-		if (request.sddRemediation) {
-			const active = [...this.queue.map(entry => entry.task), ...[...this.live.keys()].map(id => this.store.get(id))];
-			if (active.some(task => task?.agent === "sdd-remediate" && task.cwd === request.cwd)) {
-				throw new Error("Remediation already queued or running in this worktree; wait for confirmed cleanup or cancel the active task before requesting fresh authorization");
-			}
-		}
 		const task = this.createTask(request);
-		// A caller can retain and mutate its request after dispatch. Preserve only
-		// the identity selected at construction for this child launch.
-		const launchRequest = {
-			...request,
-			sddChange: request.sddChange && { ...request.sddChange },
-		};
-		this.queue.push({ task, request: launchRequest });
+		this.queue.push({ task, request });
 		queueMicrotask(() => this.pump());
 		return task;
 	}
@@ -507,13 +445,13 @@ export class AgentRunner {
 		// one (`lib/rpc-host.ts`).
 		const env = withoutInteractiveHost({
 			...request.env,
-			...(request.extensionPaths ? { [RESEARCH_SELECTION_ENV]: JSON.stringify(request.researchSelection ?? null) } : {}),
 			[CHILD_MARKER]: "1",
 			[IPC_MARKER]: `${this.deps.now()}-${Math.random().toString(36).slice(2)}`,
 			...(hasParentPermissionChannel ? { GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3" } : {}),
 		});
-		delete env[REMEDIATION_PLAN_ENV];
-		if (request.sddRemediation) env[REMEDIATION_PLAN_ENV] = JSON.stringify({ plan: request.sddRemediation.plan, scope: request.sddRemediation.scope, selection: request.sddChange });
+		// Do not forward stale legacy child selection or authorization.
+		delete env.GENTLE_PI_SDD_REMEDIATION_PLAN;
+		delete env.GENTLE_PI_RESEARCH_SELECTION;
 		let child: ChildLike;
 		try {
 			child = this.deps.spawn(this.deps.pi.command, [...this.deps.pi.args, ...childArguments(request)], {
@@ -571,10 +509,6 @@ export class AgentRunner {
 			live.stderrTail = tail.length > STDERR_TAIL_MAX ? tail.slice(-STDERR_TAIL_MAX) : tail;
 		});
 		child.on("exit", (code) => this.exited(id, code));
-		if (request.sddRemediation && child.pid === undefined) {
-			this.childError(id, new Error("remediation child has no process ID"));
-			return;
-		}
 		void this.send(id, { type: "get_state" }).then((response) => {
 			const data = response.data as { sessionFile?: unknown; model?: { provider?: unknown; id?: unknown } | null; thinkingLevel?: unknown } | undefined;
 			if (response.success !== true || live.terminal || this.live.get(id) !== live || !data) return;

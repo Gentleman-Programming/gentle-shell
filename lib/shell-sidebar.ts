@@ -35,6 +35,7 @@ export function sidebarPart<T extends Component & { dispose?(): void }>(tui: TUI
 	state.parts.set(key, rail);
 	return {
 		...bottom,
+		handleMouse: (event) => bottom.handleMouse?.(event),
 		render: (width: number) => (key === "todo" && state.visibility?.todo === false) || (state.active && state.ownsHost?.()) ? [] : bottom.render(width),
 		dispose() {
 			if (state.parts.get(key) === rail) state.parts.delete(key);

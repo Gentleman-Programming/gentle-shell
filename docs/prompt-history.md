@@ -21,6 +21,19 @@ GENTLE_PI_HISTORY_CAPTURE=1 pi
 - With capture off the extension is inert: no registry entry, no files, and
   prompts are never written.
 
+## Legacy migration and seeding are opt-in
+
+Importing past prompts is part of capture: opening the history selector while
+capture is enabled also migrates legacy editor-history stores and runs the
+one-time seed bootstrap from past session transcripts. With capture off, the
+selector warns and returns before any of that — no migration, no seed, no
+store files.
+
+An import creates **new searchable copies** under `~/.pi/agent/history`. The
+source transcripts stay untouched and read-only. Turning capture off again
+does not remove copies that were already imported: delete them manually as
+described in "What disabling capture does" below.
+
 ## Where the files live
 
 Everything sits under `~/.pi/agent/history/`:
@@ -59,3 +72,33 @@ is not running):
 rm -rf ~/.pi/agent/history            # whole store
 rm -rf ~/.pi/agent/history/projects/<hash>   # one project (see registry.json)
 ```
+
+## Delete vs hide
+
+The selector's delete key (`ctrl+shift+backspace`) is a two-step
+confirmation: the first press **arms** the delete for the selected row and
+shows what it will do in the footer (the row highlights); the second press
+executes it. Any other key or cancel disarms without deleting.
+
+What a delete does depends on where the prompt came from:
+
+- **Editor-stored prompts** (captured into the store's `.jsonl` files) are
+  deleted physically: every copy is removed from the store in one atomic
+  rewrite per affected file.
+- **Session-derived prompts** (seeded from past transcripts) can only be
+  hidden: session transcripts are immutable, so the delete writes a
+  **tombstone** (`hidden.json`) that keeps the prompt out of the list. The
+  original stays in the transcript file.
+
+Both flows therefore end with a tombstone — otherwise the next merge would
+re-supply the prompt from transcripts. Write failures surface an error
+toast and never lie about state: a failed store delete removes nothing and
+aborts ("Store delete failed; nothing was removed."), while a failed
+tombstone write after a store delete leaves the store row removed but the
+prompt may reappear from session transcripts.
+
+The tombstone file fails closed: if `hidden.json` exists but cannot be
+trusted (unreadable, corrupt, wrong shape), history is blocked with a
+recovery warning instead of resurfacing hidden prompts, and deletes refuse
+to silently rewrite it. Recovery is explicit — restore the file or delete
+it yourself (hidden prompts may then reappear).

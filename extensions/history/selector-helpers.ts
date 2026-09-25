@@ -256,6 +256,60 @@ export function deletionActionsFor(source: PromptSource): {
   return { deleteFromEditorStore: false, writeTombstone: true };
 }
 
+/**
+ * One transition of the two-step delete confirmation (PR #1393 review):
+ * the first delete-key press ARMS the delete for the selected row and
+ * executes nothing; the SECOND press executes; any other key disarms. The
+ * selector's deleteCurrent and handleInput both route through this pure
+ * step so the arm/execute/disarm machine has exactly one definition.
+ */
+export interface DeleteConfirmStep {
+  /** The armed state AFTER this transition. */
+  armed: boolean;
+  /** True only on the second delete-key press — the executing press. */
+  execute: boolean;
+}
+
+export function deleteConfirmNext(
+  armed: boolean,
+  isDeleteKey: boolean,
+): DeleteConfirmStep {
+  if (!isDeleteKey) return { armed: false, execute: false };
+  if (armed) return { armed: false, execute: true };
+  return { armed: true, execute: false };
+}
+
+/**
+ * Scope-aware confirmation copy shown in the footer while a delete is
+ * armed (PR #1393): the two provenances have different semantics and the
+ * copy must say which one is about to run, in one line. Editor-stored
+ * prompts are removed from the store physically AND hidden from history;
+ * session-derived prompts can only be hidden (transcripts are immutable),
+ * so the original stays in the session transcript.
+ */
+export function deleteConfirmFooterText(source: PromptSource): string {
+  if (source === "editor") {
+    return "Delete stored prompt? Removes every copy from the store and hides it from history. Session transcripts keep the original.";
+  }
+  return "Hide from history? The original stays in the session transcript; a tombstone keeps it out of this list.";
+}
+
+/**
+ * Toast copy when the store delete THROWS (PR #1393): the flow aborts
+ * before any tombstone write, so nothing was removed — the store keeps the
+ * prompt and no tombstone is written.
+ */
+export const STORE_DELETE_FAILED_TEXT =
+  "Store delete failed; nothing was removed.";
+
+/**
+ * Toast copy when the tombstone write fails on the EDITOR path (PR
+ * #1393): the store row was already removed, so only the hide failed —
+ * the prompt may reappear from session transcripts.
+ */
+export const EDITOR_HIDE_FAILED_TEXT =
+  "Deleted from the store, but hiding failed — the prompt may reappear from session transcripts.";
+
 export function getVisiblePromptRecords(
   records: PromptRecord[],
   selectedIndex: number,

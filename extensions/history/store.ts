@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { loadHiddenPrompts } from "./hide-prompts.ts";
+import { readHiddenPrompts } from "./hide-prompts.ts";
 import { loadSharedHistory } from "./load-shared-history.ts";
 import {
   type ExtractedPrompt,
@@ -351,41 +351,74 @@ function sortFilesForDrain(files: string[]): string[] {
 }
 
 /**
+ * Result of a scope drain: `ok` with the drained prompts, or `blocked`
+ * when the tombstone file is untrusted (fail-closed READ half). The
+ * blocked shape carries NO prompts field, so a caller cannot accidentally
+ * render prompts that may include hidden ones.
+ */
+export type DrainResult =
+  | { status: "ok"; prompts: string[] }
+  | { status: "blocked"; message: string };
+
+/**
+ * Shared drain tail: without a `stateDir` the raw drain semantics hold (no
+ * filter). With one, the tombstone filter applies and fails CLOSED: an
+ * untrusted hidden.json (unreadable, corrupt, wrong shape) blocks the
+ * whole drain with the recovery message instead of resurfacing hidden
+ * prompts; a missing file is the safe empty tombstone set and drains
+ * normally.
+ */
+function drainWithHidden(
+  files: string[],
+  limit: number,
+  stateDir?: string,
+): DrainResult {
+  if (!stateDir) return { status: "ok", prompts: drainFiles(files, limit) };
+  const read = readHiddenPrompts(stateDir);
+  if (read.status === "untrusted") {
+    return { status: "blocked", message: read.message };
+  }
+  return { status: "ok", prompts: drainFiles(files, limit, read.keys) };
+}
+
+/**
  * Drain the PROJECT scope: all .jsonl files in the project dir (seed.jsonl
  * included), mtime-newest-first, deduped, capped at `limit` (default 1000).
+ * With a `stateDir`, the tombstone filter applies and fails closed: an
+ * untrusted hidden.json blocks the drain (see DrainResult).
  */
 export function drainProject(
   root: string,
   cwd: string,
   limit: number = 1000,
   stateDir?: string,
-): string[] {
-  return drainFiles(
+): DrainResult {
+  return drainWithHidden(
     sortFilesForDrain(
       listProjectFiles(path.join(root, "projects", projectHash(cwd))),
     ),
     limit,
-    stateDir ? loadHiddenPrompts(stateDir) : new Set<string>(),
+    stateDir,
   );
 }
 
 /**
- * Drain the GLOBAL scope: the legacy global seed (newest single source)
- * plus every project dir's files, mtime-newest-first, deduped, capped.
+ * Drain the GLOBAL scope: every project dir's files, mtime-newest-first,
+ * deduped, capped — with the legacy global seed appended LAST (deliberate:
+ * it is the least specific, migrated source, so per-project entries win
+ * recency and keep-first dedup favors them). With a `stateDir`, the
+ * tombstone filter applies and fails closed: an untrusted hidden.json
+ * blocks the drain (see DrainResult).
  */
 export function drainGlobal(
   root: string,
   limit: number = 1000,
   stateDir?: string,
-): string[] {
-  const globalSeed = globalSeedPath(root);
+): DrainResult {
   const sorted = sortFilesForDrain(listAllProjectFiles(root));
+  const globalSeed = globalSeedPath(root);
   if (fs.existsSync(globalSeed)) sorted.push(globalSeed); // legacy last
-  return drainFiles(
-    sorted,
-    limit,
-    stateDir ? loadHiddenPrompts(stateDir) : new Set<string>(),
-  );
+  return drainWithHidden(sorted, limit, stateDir);
 }
 
 /**
@@ -707,7 +740,17 @@ export function bootstrapProjectSeed(
     return { seeded: 0, ran: false };
   }
   // Tombstones (user deletions) suppress transcript prompts from seeding.
-  const hidden = stateDir ? loadHiddenPrompts(stateDir) : new Set<string>();
+  // Tombstones (user deletions) suppress transcript prompts from seeding.
+  // Fail closed (spec C4): an untrusted hidden.json leaves the tombstone
+  // set unknown, and a wrongly seeded prompt would be permanent (the seed
+  // is written once, never regenerated) — skip the bootstrap instead; a
+  // later open retries once the file is trusted again or deleted.
+  let hidden = new Set<string>();
+  if (stateDir !== undefined) {
+    const read = readHiddenPrompts(stateDir);
+    if (read.status === "untrusted") return { seeded: 0, ran: false };
+    hidden = read.keys;
+  }
   const files = listProjectTranscripts(sessionsRoot, cwd);
   const collected = collectTranscriptPrompts(files, {
     hidden,

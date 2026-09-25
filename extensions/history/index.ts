@@ -31,8 +31,11 @@ import {
   buildPromptRecords,
   clampPreviewOffset,
   clampSelectedIndex,
+  deleteConfirmFooterText,
+  deleteConfirmNext,
   dedupePromptEntries,
   deletionActionsFor,
+  EDITOR_HIDE_FAILED_TEXT,
   editorOverlayMargin,
   filterPrompts,
   getVisiblePromptRecords,
@@ -50,6 +53,7 @@ import {
   planHeaderLayout,
   scopeRadioText,
   shouldGrowWindow,
+  STORE_DELETE_FAILED_TEXT,
   withExpandedHistoryGlobals,
 } from "./selector-helpers.ts";
 import {
@@ -63,6 +67,7 @@ import {
   gcProjectDir,
   migrateLegacyStores,
   openSessionWriter,
+  type DrainResult,
   type SessionWriterState,
 } from "./store.ts";
 
@@ -89,8 +94,16 @@ const PREVIEW_WHEEL_Y_LAST = 26;
 /** Minimum columns between the counts text and a right-flushed radio before shrinking deletes the spacer and stacks the header (user-directed). */
 const HEADER_INLINE_MIN_GAP = 4;
 
+// Default selector footer line (PR #1393): shown whenever a delete is not
+// armed; the armed state swaps it for the scope-aware confirmation copy.
+const SELECTOR_FOOTER_HELP =
+  "↑↓ move • PgUp/PgDn page • tab scope • enter select and quit • ctrl+shift+↑/↓ preview • ctrl+shift+backspace delete • esc cancel";
+
+// Legacy agent dir: pre-v1 editor-history files live directly here and are
+// migrated into the store root by migrateLegacyStores().
+const AGENT_DIR = join(homedir(), ".pi", "agent");
 // v2 multi-concurrency store root (design: tmp/multi-concurrency-design.md).
-const PI_HISTORY_ROOT = join(homedir(), ".pi", "agent", "history");
+const PI_HISTORY_ROOT = join(AGENT_DIR, "history");
 const CURRENT_CWD = process.cwd();
 // Instance identity: one exclusive capture file per pi process.
 const INSTANCE_ID = randomUUID();
@@ -268,6 +281,7 @@ class PromptHistorySelector extends Container implements Focusable {
   /** Current responsive header mode; drives the list wheel region. */
   private headerMode: HeaderLayoutMode = "inline";
   private readonly previewLabelRow: FixedRowText;
+  private readonly footerRow: FixedRowText;
   private records: PromptRecord[];
   private readonly theme: Theme;
   private readonly tui: TUI;
@@ -285,6 +299,12 @@ class PromptHistorySelector extends Container implements Focusable {
   private wrappedPreviewLines: string[] = [];
   /** Scroll offset into wrappedPreviewLines for the preview viewport. */
   private previewScrollOffset = 0;
+  /**
+   * Two-step delete confirmation (PR #1393): armed by the first
+   * ctrl+shift+backspace press; the second press executes, and any other
+   * key or cancel disarms. Nothing is deleted on the arming press.
+   */
+  private confirmArmed = false;
 
   /** Dispatch table: first match wins, fallthrough last. */
   private readonly dispatch: readonly DispatchEntry[] = [
@@ -395,15 +415,11 @@ class PromptHistorySelector extends Container implements Focusable {
     this.addChild(this.previewContainer);
 
     this.addChild(new DynamicBorder((s: string) => theme.fg("dim", s)));
-    this.addChild(
-      new FixedRowText(
-        theme.fg(
-          "dim",
-          "↑↓ move • PgUp/PgDn page • tab scope • enter select and quit • ctrl+shift+↑/↓ preview • ctrl+shift+backspace delete • esc cancel",
-        ),
-        true /* centered */,
-      ),
+    this.footerRow = new FixedRowText(
+      theme.fg("dim", SELECTOR_FOOTER_HELP),
+      true /* centered */,
     );
+    this.addChild(this.footerRow);
     this.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
 
     this.applyFilter("");
@@ -538,7 +554,13 @@ class PromptHistorySelector extends Container implements Focusable {
 
     for (const { record, isSelected } of visible) {
       const prefix = isSelected ? "→ " : "  ";
-      const color = isSelected ? "accent" : "text";
+      // Armed delete (PR #1393): the armed row repaints in the error color
+      // while the confirmation is pending, then reverts on disarm.
+      const color = isSelected
+        ? this.confirmArmed
+          ? "error"
+          : "accent"
+        : "text";
       const compacted = sanitizeForDisplay(record.text)
         .replace(/\s+/g, " ")
         .trim();
@@ -633,8 +655,16 @@ class PromptHistorySelector extends Container implements Focusable {
    * rebuild the merged records, reset the window. Tab's only role.
    */
   private toggleScope(): void {
+    const previous = this.scope;
     this.scope = this.scope === "project" ? "global" : "project";
     const entries = drainForScope(this.scope);
+    if (!Array.isArray(entries)) {
+      // Fail-closed drain (spec C4): stay on the working scope and surface
+      // the recovery warning instead of a blocked (entry-less) list.
+      this.scope = previous;
+      this.onNotify?.(entries.message, "error");
+      return;
+    }
     this.records = recordsFromEntries(entries);
     this.loadedCount = initialLoadedCount(this.records.length, INITIAL_BATCH);
     this.applyFilter(this.searchInput.getValue());
@@ -645,30 +675,54 @@ class PromptHistorySelector extends Container implements Focusable {
     const selected = this.filteredRecords[this.selectedIndex];
     if (!selected) return;
 
+    // Two-step confirm (PR #1393 review): the first ctrl+shift+backspace
+    // press ARMS the delete for the selected row — a scope-aware
+    // confirmation line in the footer plus an error-colored highlight —
+    // and executes NOTHING; the SECOND press runs the flow below. Any
+    // other key or cancel disarms (handleInput / handleMouse).
+    const step = deleteConfirmNext(this.confirmArmed, true);
+    this.confirmArmed = step.armed;
+    this.refreshDeleteFooter();
+    if (!step.execute) {
+      this.rebuildList(); // repaint the armed-row highlight
+      return;
+    }
+    this.rebuildList(); // drop the highlight before the flow mutates rows
+
     // C4 delete flows (design §F): the record's provenance decides the
     // actions via the pure planner; module constants are used directly.
     const actions = deletionActionsFor(selected.source ?? "editor");
 
     if (actions.deleteFromEditorStore) {
       // Store path: physically remove EVERY copy from the JSONL store
-      // (memory + file in one atomic rewrite).
-      const { removed } =
-        this.scope === "global"
-          ? deleteFromGlobal(PI_HISTORY_ROOT, selected.text)
-          : deleteFromProject(PI_HISTORY_ROOT, CURRENT_CWD, selected.text);
+      // (memory + file in one atomic rewrite). A thrown store failure is
+      // contained here (PR #1393): toast + abort — nothing was removed and
+      // no tombstone is written, so the delete never lies about state.
+      let removed: number;
+      try {
+        ({ removed } =
+          this.scope === "global"
+            ? deleteFromGlobal(PI_HISTORY_ROOT, selected.text)
+            : deleteFromProject(PI_HISTORY_ROOT, CURRENT_CWD, selected.text));
+      } catch {
+        this.onNotify?.(STORE_DELETE_FAILED_TEXT, "error");
+        return;
+      }
       if (removed === 0) return;
     }
 
     // Tombstone ALWAYS: the session transcripts are immutable and would
     // re-supply the deleted prompt on the next merge (hide-file suppresses
     // the twin). Only the session path aborts on a hide error — the store
-    // row is already gone on the editor path, so the splice proceeds.
+    // row is already gone on the editor path, so the splice proceeds; its
+    // toast says exactly that (PR #1393).
     const hide = hidePrompt(PI_HISTORY_NAV_STATE_DIR, selected.text);
     if (hide.status === "error") {
-      this.onNotify?.(hide.message, "error");
       if (!actions.deleteFromEditorStore) {
+        this.onNotify?.(hide.message, "error");
         return;
       }
+      this.onNotify?.(EDITOR_HIDE_FAILED_TEXT, "error");
     }
     // Remove from the master records array so a subsequent filter doesn't
     // bring it back.
@@ -686,6 +740,26 @@ class PromptHistorySelector extends Container implements Focusable {
 
     // Re-apply current filter (rebuilds filteredRecords, list, preview).
     this.applyFilter(this.searchInput.getValue());
+  }
+
+  /** Footer line: scope-aware confirm copy while armed, help otherwise. */
+  private refreshDeleteFooter(): void {
+    if (!this.confirmArmed) {
+      this.footerRow.setText(this.theme.fg("dim", SELECTOR_FOOTER_HELP));
+      return;
+    }
+    const selected = this.filteredRecords[this.selectedIndex];
+    const source = selected?.source ?? "editor";
+    this.footerRow.setText(
+      this.theme.fg("warning", deleteConfirmFooterText(source)),
+    );
+  }
+
+  /** Leave the armed state: restore the help footer and the plain row. */
+  private disarmDeleteConfirm(): void {
+    this.confirmArmed = false;
+    this.refreshDeleteFooter();
+    this.rebuildList();
   }
 
   /**
@@ -826,6 +900,11 @@ class PromptHistorySelector extends Container implements Focusable {
 
   handleInput(data: string): void {
     const kb = getKeybindings();
+    // Any key other than the delete combo disarms a pending confirmation
+    // (PR #1393) BEFORE its own action runs — esc, arrows, typing, tab.
+    if (this.confirmArmed && !matchesKey(data, "ctrl+shift+backspace")) {
+      this.disarmDeleteConfirm();
+    }
     let handled = false;
     for (const { match, handler } of this.dispatch) {
       if (match(data, kb)) {
@@ -851,6 +930,9 @@ class PromptHistorySelector extends Container implements Focusable {
     event: TuiMouseEvent,
   ): ReturnType<Container["handleMouse"]> {
     if (event.type !== "wheel") return undefined;
+    // A wheel scroll can move the selection off the armed row — disarm so
+    // the next delete press re-arms for the NEW row first (PR #1393).
+    if (this.confirmArmed) this.disarmDeleteConfirm();
     const delta = event.wheelDelta ?? 0;
     if (event.y >= this.listWheelFirstRow && event.y <= LIST_WHEEL_Y_LAST) {
       const steps = Math.min(Math.abs(delta), this.filteredRecords.length);
@@ -1047,25 +1129,53 @@ function getWriter(): SessionWriterState {
 }
 
 /**
- * Scope drain for the selector: project scope drains this project's store
- * files (transcript prompts enter once via bootstrapProjectSeed); global
- * scope is the cross-project view (all project dirs + the legacy global
- * seed).
+ * A selector scope drain: the drained prompts, or the fail-closed blocked
+ * shape (spec C4) carrying the recovery message and NO prompts.
  */
-function drainForScope(scope: HistoryScope): string[] {
+type ScopeDrain = string[] | Extract<DrainResult, { status: "blocked" }>;
+
+/**
+ * Scope drain for the selector: project scope drains the project's store
+ * files; global scope is the store-only cross-project view (all project
+ * dirs + the legacy global seed). Both filter tombstoned prompts and fail
+ * closed (spec C4): an untrusted hidden.json returns the blocked
+ * DrainResult with the recovery message instead of any prompts.
+ */
+function drainForScope(scope: HistoryScope): ScopeDrain {
+  // Defense in depth: a drain must never trigger init writes while the user
+  // has capture disabled (the selector gate below is the first line).
+  if (!captureEnabled()) return [];
   getWriter(); // ensure init ran
-  return scope === "project"
-    ? drainProject(PI_HISTORY_ROOT, CURRENT_CWD, 1000, PI_HISTORY_NAV_STATE_DIR)
-    : drainGlobal(PI_HISTORY_ROOT, 1000, PI_HISTORY_NAV_STATE_DIR);
+  const drain =
+    scope === "project"
+      ? drainProject(PI_HISTORY_ROOT, CURRENT_CWD, 1000, PI_HISTORY_NAV_STATE_DIR)
+      : drainGlobal(PI_HISTORY_ROOT, 1000, PI_HISTORY_NAV_STATE_DIR);
+  return drain.status === "ok" ? drain.prompts : drain;
 }
 
 async function openHistorySelector(
   ctx: Pick<ExtensionCommandContext, "ui">,
 ): Promise<void> {
+  // Gate: with capture off the selector must not run legacy migration, seed
+  // bootstrap, or any store/registry write as a side effect of opening it.
+  if (!captureEnabled()) {
+    ctx.ui.notify(
+      "Prompt history capture is off — set GENTLE_PI_HISTORY_CAPTURE=1 to enable it.",
+      "warning",
+    );
+    return;
+  }
+
   // Store-only drain (user-directed): both scopes read the store files
   // symmetrically — no live transcript merge (the one-time seed bootstrap
   // covers pre-store history).
   const entries = drainForScope("project");
+  if (!Array.isArray(entries)) {
+    // Fail-closed drain (spec C4): the tombstone file is untrusted, so NO
+    // entries are shown — surface the recovery warning instead.
+    ctx.ui.notify(entries.message, "error");
+    return;
+  }
   // Always open the selector (user-directed): an empty store still shows
   // the overlay with its "No matching prompts" empty state instead of a
   // warning notify.

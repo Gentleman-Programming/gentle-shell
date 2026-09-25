@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import startup, { readGitBranch } from "../extensions/startup-banner.ts";
+import startup, { isPiCliSubcommandInvocation, readGitBranch } from "../extensions/startup-banner.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { stripAnsi } from "../lib/terminal-theme.ts";
@@ -277,3 +277,14 @@ for (const showRose of [false, true]) for (const showTextLogo of [false, true]) 
 		}
 	});
 }
+
+test("launcher-injected extension directories do not suppress the startup banner", () => {
+	// Gentle Shell launches `pi -e <package-root-dir>`; a directory path is not a subcommand.
+	assert.equal(isPiCliSubcommandInvocation(["node", "pi", "-e", "/opt/gentle-pi"]), false);
+	assert.equal(isPiCliSubcommandInvocation(["node", "pi", "--no-extensions", "-e", "/a", "-e", "/b/ext.mjs"]), false);
+	assert.equal(isPiCliSubcommandInvocation(["node", "pi"]), false);
+	assert.equal(isPiCliSubcommandInvocation(["node", "pi", "-e", "/opt/gentle-pi", "install"]), false);
+	for (const sub of ["install", "remove", "uninstall", "update", "list", "config", "auth"]) {
+		assert.equal(isPiCliSubcommandInvocation(["node", "pi", sub, "npm:x"]), true, sub);
+	}
+});

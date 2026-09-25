@@ -6,6 +6,7 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
+import { PI_SUBCOMMANDS } from "../lib/gentle-shell-launcher.ts";
 
 const PI_AGENT_DIR = join(os.homedir(), ".pi", "agent");
 const PI_NPM_DIR = join(PI_AGENT_DIR, "npm", "node_modules");
@@ -565,6 +566,14 @@ export function readGitBranch(cwd: string, run: typeof execFile = execFile): Pro
   });
 }
 
+// Pi dispatches its subcommands purely on the first argument, so only that
+// token decides. Flag values such as the package directory the Gentle Shell
+// launcher injects with `-e <dir>` must not be mistaken for a subcommand.
+export function isPiCliSubcommandInvocation(argv: readonly string[]): boolean {
+  const first = argv[2];
+  return first !== undefined && (PI_SUBCOMMANDS as readonly string[]).includes(first);
+}
+
 export default function (pi: ExtensionAPI) {
   let disposeHeader = () => {};
   pi.on("session_shutdown", () => disposeHeader());
@@ -640,11 +649,8 @@ export default function (pi: ExtensionAPI) {
     disposeHeader();
     if (!ctx.hasUI) return;
 
-    // Si se está ejecutando un comando de CLI como "pi update" o "pi install", no mostramos la intro animada.
-    const isCLICommand =
-      process.argv.length > 2 &&
-      !process.argv.every((arg) => arg.startsWith("-") || arg.endsWith(".ts"));
-    if (isCLICommand) return;
+    // CLI subcommands such as `pi update` or `pi install` skip the animated intro.
+    if (isPiCliSubcommandInvocation(process.argv)) return;
 
     if (currentIntroMode() === "skip") return;
 

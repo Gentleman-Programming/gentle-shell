@@ -170,10 +170,19 @@ function parseMode(value: unknown): AgentMode | undefined | string {
 	return AGENT_MODES.includes(normalized) ? (normalized as AgentMode) : `mode "${value}" is not one of ${AGENT_MODES.join(", ")}`;
 }
 
-function parseTools(value: FrontmatterValue | undefined): string[] {
+// YAML scalars that spell a boolean or null rather than a tool name. The
+// frontmatter parser keeps them as strings, so without this check
+// `tools: false` became a subagent allowlist containing a tool named "false".
+const NON_LIST_TOOL_SCALARS = new Set(["true", "false", "yes", "no", "on", "off", "null", "none", "~"]);
+
+function parseTools(value: FrontmatterValue | undefined): string[] | string {
 	if (value === undefined) return [];
 	const items = Array.isArray(value) ? value : value.split(",");
-	return items.map((item) => item.trim()).filter((item) => item.length > 0);
+	const tools = items.map((item) => item.trim()).filter((item) => item.length > 0);
+	if (!Array.isArray(value) && tools.length === 1 && NON_LIST_TOOL_SCALARS.has(tools[0].toLowerCase())) {
+		return `tools "${value}" is not a tool list; use "tools: []" or omit the key for no tools`;
+	}
+	return tools;
 }
 
 function scalar(value: FrontmatterValue | undefined): string | undefined {
@@ -186,6 +195,8 @@ export function parseAgentDefinition(text: string, filePath: string, scope: Agen
 	if (thinking !== undefined && !THINKING_LEVELS.includes(thinking)) return { filePath, error: thinking };
 	const mode = parseMode(scalar(data.subagent_mode) ?? scalar(data.mode));
 	if (mode !== undefined && !AGENT_MODES.includes(mode)) return { filePath, error: mode };
+	const tools = parseTools(data.tools);
+	if (typeof tools === "string") return { filePath, error: tools };
 	if (body.length === 0) return { filePath, error: "no instructions after the frontmatter" };
 	const name = scalar(data.name)?.trim() || basename(filePath).replace(/\.md$/i, "");
 	return {
@@ -197,7 +208,7 @@ export function parseAgentDefinition(text: string, filePath: string, scope: Agen
 		model: parseModelRef(data.model),
 		thinking: thinking as ThinkingLevel | undefined,
 		mode: mode as AgentMode | undefined,
-		tools: parseTools(data.tools),
+		tools,
 	};
 }
 

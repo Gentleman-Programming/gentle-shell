@@ -88,9 +88,11 @@ export interface ShellDeps {
 export function createEffectiveProfileReader(
 	env: NodeJS.ProcessEnv = process.env,
 	resolveWorktree: WorktreeResolver = resolveSessionWorktree,
+	onDisplayChange?: () => void,
 ): {
 	read(cwd: string): string | undefined;
 	probe(): void;
+	dispose(): void;
 } {
 	const configHome = env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai");
 	const storePath = profilesFilePath(configHome);
@@ -104,7 +106,7 @@ export function createEffectiveProfileReader(
 		display: string | undefined;
 	} | undefined;
 	let lastSeenCwd: string | undefined;
-	let probeQueued = false;
+	let probeTimer: ReturnType<typeof setTimeout> | undefined;
 	const fingerprint = (path: string): string => {
 		try {
 			const stat = statSync(path, { bigint: true });
@@ -116,6 +118,8 @@ export function createEffectiveProfileReader(
 	const probe = (): void => {
 		const cwd = lastSeenCwd;
 		if (cwd === undefined) return;
+		const previousCwd = cache?.cwd;
+		const previousDisplay = cache?.display;
 		const store = readProfilesFileResult(storePath);
 		let display: string | undefined;
 		if (store.status === "valid") display = store.file.active;
@@ -135,16 +139,22 @@ export function createEffectiveProfileReader(
 			repoFingerprint: status?.repoPath ? fingerprint(status.repoPath) : undefined,
 			display,
 		};
+		if (previousCwd !== cwd || previousDisplay !== display) onDisplayChange?.();
 	};
 	const runProbe = (): void => {
-		probeQueued = false;
+		probeTimer = undefined;
 		probe();
 	};
 	const scheduleProbe = (): void => {
-		if (probeQueued) return;
-		probeQueued = true;
-		const t = setTimeout(runProbe, 0);
-		t.unref?.();
+		if (probeTimer !== undefined) return;
+		probeTimer = setTimeout(runProbe, 0);
+		probeTimer.unref?.();
+	};
+	const dispose = (): void => {
+		if (probeTimer !== undefined) clearTimeout(probeTimer);
+		probeTimer = undefined;
+		lastSeenCwd = undefined;
+		cache = undefined;
 	};
 	const read = (cwd: string): string | undefined => {
 		lastSeenCwd = cwd;
@@ -165,7 +175,7 @@ export function createEffectiveProfileReader(
 		scheduleProbe();
 		return cache?.display;
 	};
-	return { read, probe };
+	return { read, probe, dispose };
 }
 
 function ambientDevBinary(): DevBinaryNotice | undefined {
@@ -845,7 +855,15 @@ async function fetchFromSource(source: UsageSource, apiKey: string | undefined, 
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	installSessionChangeCapture(pi, env, overrides.resolveWorktree ?? resolveSessionWorktree);
 	if (!shellEnabled(env)) return;
-	const profileReader = createEffectiveProfileReader(env, overrides.resolveWorktree ?? defaultShellDeps.resolveWorktree);
+	let renderHost: ShellRenderHost | undefined;
+	const profileReader = createEffectiveProfileReader(
+		env,
+		overrides.resolveWorktree ?? defaultShellDeps.resolveWorktree,
+		() => {
+			renderHost?.invalidateSidebar?.();
+			renderHost?.requestRender();
+		},
+	);
 	const deps: ShellDeps = { ...defaultShellDeps, activeProfile: profileReader.read, ...overrides };
 	let reprobeTimer: ReturnType<typeof setInterval> | undefined;
 	const usage = new UsageStore();
@@ -853,7 +871,6 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	// the extension that owns them registers one on pi.events; see the
 	// USAGE_SOURCE_EVENT subscription below.
 	const usageSources = new UsageSourceRegistry();
-	let renderHost: ShellRenderHost | undefined;
 	// The 5-minute rule is per provider: one provider's fetch cannot leave the
 	// next one waiting for an interval it never used.
 	const usageFetchedAt = new Map<string, number>();
@@ -994,6 +1011,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			clearInterval(reprobeTimer);
 			reprobeTimer = undefined;
 		}
+		profileReader.dispose();
 		registry?.close();
 		currentContext = ctx;
 		changes = undefined;
@@ -1069,6 +1087,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			clearInterval(reprobeTimer);
 			reprobeTimer = undefined;
 		}
+		profileReader.dispose();
 		pendingQueuedText = undefined;
 		prompt?.dispose();
 		prompt = undefined;

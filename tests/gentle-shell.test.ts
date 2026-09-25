@@ -494,6 +494,90 @@ test("effective profile reader reports the winning pin source and resolves Git o
 	assert.equal(resolutions, 9, "each probe resolves once; unchanged reads never do");
 });
 
+test("effective profile reader notifies only after a changed display probe", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "shell-profile-display-change-"));
+	const storePath = join(root, "profiles.json");
+	writeFileSync(storePath, JSON.stringify({
+		kind: "gentle-pi.agent_model_profiles", version: 1, active: "team", profiles: { team: {}, other: {} },
+	}));
+	const identity: WorktreeIdentity = { root, commonDir: root };
+	let resolutions = 0;
+	let inRead = false;
+	let callbackInsideRead = false;
+	let notifications = 0;
+	const profileReader = createEffectiveProfileReader(
+		{ GENTLE_PI_CONFIG_HOME: root },
+		() => {
+			resolutions += 1;
+			return identity;
+		},
+		() => {
+			notifications += 1;
+			callbackInsideRead ||= inRead;
+		},
+	);
+	t.after(() => {
+		profileReader.dispose();
+		rmSync(root, { recursive: true, force: true });
+	});
+	const waitForProbe = async () => {
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	};
+
+	inRead = true;
+	assert.equal(profileReader.read(root), undefined, "the first read returns before the async probe");
+	inRead = false;
+	assert.equal(notifications, 0, "read must not notify synchronously");
+	await waitForProbe();
+	assert.equal(profileReader.read(root), "team");
+	assert.equal(notifications, 1, "the first probe notifies");
+	assert.equal(callbackInsideRead, false, "the callback runs after read returns");
+
+	profileReader.probe();
+	assert.equal(notifications, 1, "an unchanged periodic probe does not notify");
+
+	writeProfilePinSync(localProfilePinPath(root), "team");
+	assert.equal(profileReader.read(root), "team");
+	await waitForProbe();
+	assert.equal(profileReader.read(root), "team (local)");
+	assert.equal(notifications, 2, "a source suffix change notifies even for the same profile");
+
+	clearProfilePinSync(localProfilePinPath(root));
+	writeProfilePinSync(repoProfileDeclarationPath(root), "team");
+	assert.equal(profileReader.read(root), "team (local)");
+	await waitForProbe();
+	assert.equal(profileReader.read(root), "team (repo)");
+	assert.equal(notifications, 3, "local-to-repo source changes notify");
+	assert.ok(resolutions >= 3, "each changed display came from a probe");
+});
+
+test("effective profile reader dispose cancels a pending probe and permits a fresh one", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "shell-profile-dispose-"));
+	writeFileSync(join(root, "profiles.json"), JSON.stringify({
+		kind: "gentle-pi.agent_model_profiles", version: 1, active: "team", profiles: { team: {} },
+	}));
+	let resolutions = 0;
+	const profileReader = createEffectiveProfileReader({ GENTLE_PI_CONFIG_HOME: root }, () => {
+		resolutions += 1;
+		return { root, commonDir: root };
+	});
+	t.after(() => {
+		profileReader.dispose();
+		rmSync(root, { recursive: true, force: true });
+	});
+
+	assert.equal(profileReader.read(root), undefined);
+	profileReader.dispose();
+	await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	assert.equal(resolutions, 0, "dispose cancels the queued probe");
+
+	assert.equal(profileReader.read(root), undefined, "a later read can schedule a fresh probe");
+	await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	assert.equal(resolutions, 1);
+	assert.equal(profileReader.read(root), "team");
+});
+
 test("effective profile reader re-probes identity so a late worktree becomes visible (QA M1)", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "shell-m1-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -567,8 +651,11 @@ test("gentleShell stays out of the way without a UI or when disabled", () => {
 test("profile re-probe interval follows the UI session lifecycle", (t) => {
 	const timers: Array<{ unref(): void }> = [];
 	const cleared: unknown[] = [];
+	const probeTimers: Array<{ unref(): void }> = [];
+	const clearedProbeTimers: unknown[] = [];
 	let unrefs = 0;
 	t.mock.method(globalThis, "setInterval", (_callback: () => void, delay: number) => {
+		if (delay === 100) return { unref() {} };
 		assert.equal(delay, 1000);
 		const timer = { unref() { unrefs++; } };
 		timers.push(timer);
@@ -576,6 +663,15 @@ test("profile re-probe interval follows the UI session lifecycle", (t) => {
 	});
 	t.mock.method(globalThis, "clearInterval", (timer: unknown) => {
 		cleared.push(timer);
+	});
+	t.mock.method(globalThis, "setTimeout", (_callback: () => void, delay: number) => {
+		assert.equal(delay, 0);
+		const timer = { unref() {} };
+		probeTimers.push(timer);
+		return timer;
+	});
+	t.mock.method(globalThis, "clearTimeout", (timer: unknown) => {
+		if (timer !== undefined) clearedProbeTimers.push(timer);
 	});
 
 	const { pi, handlers } = fakePi();
@@ -586,19 +682,34 @@ test("profile re-probe interval follows the UI session lifecycle", (t) => {
 	for (const handler of handlers.get("session_start") ?? []) handler({}, headless.ctx);
 	assert.equal(timers.length, 0, "headless sessions must not install the timer");
 
+	const primeProfileTimer = (ui: FakeUi) => {
+		const tui = { terminal: { rows: 40, columns: 120 }, requestRender() {} };
+		const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => unknown;
+		assert.equal(typeof factory, "function");
+		factory(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+		const rail = sidebarState(tui as unknown as TUI).parts.get("footer") as SidebarRail;
+		rail.digest?.();
+	};
+
 	const first = fakeContext();
 	for (const handler of handlers.get("session_start") ?? []) handler({}, first.ctx);
 	assert.equal(timers.length, 1);
 	assert.equal(unrefs, 1);
+	primeProfileTimer(first.ui);
+	assert.equal(probeTimers.length, 1, "the footer's first profile read queues one probe");
 
 	const second = fakeContext();
 	for (const handler of handlers.get("session_start") ?? []) handler({}, second.ctx);
 	assert.equal(timers.length, 2, "a new UI session gets its own timer");
 	assert.deepEqual(cleared, [timers[0]], "starting a session clears the previous timer first");
+	assert.deepEqual(clearedProbeTimers, [probeTimers[0]], "starting a session disposes the previous profile probe");
 	assert.equal(unrefs, 2);
+	primeProfileTimer(second.ui);
+	assert.equal(probeTimers.length, 2, "the new session can queue a fresh profile probe");
 
 	for (const handler of handlers.get("session_shutdown") ?? []) handler({}, second.ctx);
 	assert.deepEqual(cleared, [timers[0], timers[1]], "session shutdown clears the active timer");
+	assert.deepEqual(clearedProbeTimers, [probeTimers[0], probeTimers[1]], "session shutdown disposes the pending profile probe");
 
 	const headlessAfterShutdown = fakeContext({ hasUI: false });
 	for (const handler of handlers.get("session_start") ?? []) handler({}, headlessAfterShutdown.ctx);

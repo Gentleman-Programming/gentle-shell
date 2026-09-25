@@ -17,6 +17,7 @@ import {
 	decodeReviewStartV4,
 	decodeReviewStatusV3,
 } from "../lib/review-integration-v2.ts";
+import { NativeReviewCliV216, type ExecFileAdapter } from "../lib/native-review-cli.ts";
 
 const DEV_FIXTURES = join(process.cwd(), "tests", "fixtures", "devbinary");
 const V2_FIXTURES = join(process.cwd(), "contracts", "review-integration", "v2", "fixtures");
@@ -553,6 +554,205 @@ test("status/v6 decodes and enforces the intended-untracked selection submission
 		const body = initialIntendedUntrackedStatusV6();
 		collectInput(body)[field] = value;
 		assert.throws(() => decodeReviewStatusV3(body), /intended_untracked_selection binding/, field);
+	}
+});
+
+function queuedTargetStatusAdapter(): { adapter: ExecFileAdapter; calls: string[][] } {
+	const calls: string[][] = [];
+	return {
+		calls,
+		adapter: async (request) => {
+			calls.push([...request.arguments]);
+			return { stdout: JSON.stringify(currentStatusFixture("status-v5.captured.json")), stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
+		},
+	};
+}
+
+function targetStatusClient(adapter: ExecFileAdapter): NativeReviewCliV216 {
+	return new NativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai", 30_000, 1024 * 1024);
+}
+
+const SUBMITTED_PROVIDER_TOKENS = ["--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", "--intended-untracked-selection={{value}}"];
+
+test("targetStatus appends the forwarded base-ref/committed-only pair after intended-untracked submission tokens", async () => {
+	const queue = queuedTargetStatusAdapter();
+	await targetStatusClient(queue.adapter).targetStatus({
+		cwd: "/repo",
+		baseRef: "deadbeef",
+		committedOnly: true,
+		intendedUntrackedSelection: { argumentTokens: SUBMITTED_PROVIDER_TOKENS, value: '{"selection":true}' },
+	});
+	assert.deepEqual(queue.calls[0], [
+		"review", "status", "--cwd", "/repo",
+		"--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", '--intended-untracked-selection={"selection":true}',
+		"--base-ref", "deadbeef", "--committed-only",
+	]);
+});
+
+test("targetStatus leaves the intended-untracked submission argv unchanged when no baseRef is forwarded", async () => {
+	const queue = queuedTargetStatusAdapter();
+	await targetStatusClient(queue.adapter).targetStatus({
+		cwd: "/repo",
+		intendedUntrackedSelection: { argumentTokens: SUBMITTED_PROVIDER_TOKENS, value: '{"selection":true}' },
+	});
+	assert.deepEqual(queue.calls[0], [
+		"review", "status", "--cwd", "/repo",
+		"--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", '--intended-untracked-selection={"selection":true}',
+	]);
+});
+
+test("targetStatus rejects a forwarded baseRef that conflicts with a base-ref the submission already carries", async () => {
+	const queue = queuedTargetStatusAdapter();
+	const tokensWithBaseRef = [...SUBMITTED_PROVIDER_TOKENS, "--base-ref=cafebabe"];
+	await assert.rejects(
+		() => targetStatusClient(queue.adapter).targetStatus({
+			cwd: "/repo", baseRef: "deadbeef", committedOnly: true,
+			intendedUntrackedSelection: { argumentTokens: tokensWithBaseRef, value: '{"selection":true}' },
+		}),
+		TypeError,
+	);
+	assert.equal(queue.calls.length, 0);
+
+	// Same value on both sides is not a conflict, but the submission still lacks
+	// --committed-only: T3 appends it so the selector stays complete.
+	const sameValueQueue = queuedTargetStatusAdapter();
+	await targetStatusClient(sameValueQueue.adapter).targetStatus({
+		cwd: "/repo", baseRef: "cafebabe", committedOnly: true,
+		intendedUntrackedSelection: { argumentTokens: tokensWithBaseRef, value: '{"selection":true}' },
+	});
+	assert.deepEqual(sameValueQueue.calls[0], [
+		"review", "status", "--cwd", "/repo",
+		"--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", '--intended-untracked-selection={"selection":true}',
+		"--base-ref=cafebabe",
+		"--committed-only",
+	]);
+});
+
+test("targetStatus appends --committed-only when the submission's same base-ref is missing it, and skips it when already present", async () => {
+	const missingQueue = queuedTargetStatusAdapter();
+	const tokensWithBaseRefOnly = [...SUBMITTED_PROVIDER_TOKENS, "--base-ref", "cafebabe"];
+	await targetStatusClient(missingQueue.adapter).targetStatus({
+		cwd: "/repo", baseRef: "cafebabe", committedOnly: true,
+		intendedUntrackedSelection: { argumentTokens: tokensWithBaseRefOnly, value: '{"selection":true}' },
+	});
+	assert.deepEqual(missingQueue.calls[0], [
+		"review", "status", "--cwd", "/repo",
+		"--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", '--intended-untracked-selection={"selection":true}',
+		"--base-ref", "cafebabe",
+		"--committed-only",
+	]);
+
+	const presentQueue = queuedTargetStatusAdapter();
+	const tokensWithBoth = [...SUBMITTED_PROVIDER_TOKENS, "--base-ref=cafebabe", "--committed-only=true"];
+	await targetStatusClient(presentQueue.adapter).targetStatus({
+		cwd: "/repo", baseRef: "cafebabe", committedOnly: true,
+		intendedUntrackedSelection: { argumentTokens: tokensWithBoth, value: '{"selection":true}' },
+	});
+	assert.deepEqual(presentQueue.calls[0], [
+		"review", "status", "--cwd", "/repo",
+		"--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", '--intended-untracked-selection={"selection":true}',
+		"--base-ref=cafebabe", "--committed-only=true",
+	]);
+
+	const committedOnlyQueue = queuedTargetStatusAdapter();
+	const tokensWithCommittedOnly = [...SUBMITTED_PROVIDER_TOKENS, "--committed-only"];
+	await targetStatusClient(committedOnlyQueue.adapter).targetStatus({
+		cwd: "/repo", baseRef: "cafebabe", committedOnly: true,
+		intendedUntrackedSelection: { argumentTokens: tokensWithCommittedOnly, value: '{"selection":true}' },
+	});
+	assert.deepEqual(committedOnlyQueue.calls[0], [
+		"review", "status", "--cwd", "/repo",
+		"--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", '--intended-untracked-selection={"selection":true}',
+		"--committed-only",
+		"--base-ref", "cafebabe",
+	]);
+});
+
+test("targetStatus forwards --lineage on the submitted branch, skips a matching value, and rejects a conflicting one", async () => {
+	const forwardedQueue = queuedTargetStatusAdapter();
+	await targetStatusClient(forwardedQueue.adapter).targetStatus({
+		cwd: "/repo", lineageId: "review-abc123",
+		intendedUntrackedSelection: { argumentTokens: SUBMITTED_PROVIDER_TOKENS, value: '{"selection":true}' },
+	});
+	assert.deepEqual(forwardedQueue.calls[0], [
+		"review", "status", "--cwd", "/repo",
+		"--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", '--intended-untracked-selection={"selection":true}',
+		"--lineage", "review-abc123",
+	]);
+
+	const sameValueQueue = queuedTargetStatusAdapter();
+	const tokensWithLineage = [...SUBMITTED_PROVIDER_TOKENS, "--lineage=review-abc123"];
+	await targetStatusClient(sameValueQueue.adapter).targetStatus({
+		cwd: "/repo", lineageId: "review-abc123",
+		intendedUntrackedSelection: { argumentTokens: tokensWithLineage, value: '{"selection":true}' },
+	});
+	assert.deepEqual(sameValueQueue.calls[0], [
+		"review", "status", "--cwd", "/repo",
+		"--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", '--intended-untracked-selection={"selection":true}',
+		"--lineage=review-abc123",
+	]);
+
+	const conflictQueue = queuedTargetStatusAdapter();
+	await assert.rejects(
+		() => targetStatusClient(conflictQueue.adapter).targetStatus({
+			cwd: "/repo", lineageId: "review-other",
+			intendedUntrackedSelection: { argumentTokens: tokensWithLineage, value: '{"selection":true}' },
+		}),
+		TypeError,
+	);
+	assert.equal(conflictQueue.calls.length, 0);
+});
+
+test("targetStatus forwards base-ref and lineage together on the submitted branch, base-ref first", async () => {
+	const queue = queuedTargetStatusAdapter();
+	await targetStatusClient(queue.adapter).targetStatus({
+		cwd: "/repo", baseRef: "deadbeef", committedOnly: true, lineageId: "review-abc123",
+		intendedUntrackedSelection: { argumentTokens: SUBMITTED_PROVIDER_TOKENS, value: '{"selection":true}' },
+	});
+	assert.deepEqual(queue.calls[0], [
+		"review", "status", "--cwd", "/repo",
+		"--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", '--intended-untracked-selection={"selection":true}',
+		"--base-ref", "deadbeef", "--committed-only",
+		"--lineage", "review-abc123",
+	]);
+});
+
+test("targetStatus rejects a dangling or empty --base-ref/--lineage in the submitted tokens", async () => {
+	for (const tokens of [
+		[...SUBMITTED_PROVIDER_TOKENS, "--base-ref"],
+		[...SUBMITTED_PROVIDER_TOKENS, "--base-ref="],
+		[...SUBMITTED_PROVIDER_TOKENS, "--lineage"],
+		[...SUBMITTED_PROVIDER_TOKENS, "--lineage="],
+	]) {
+		const queue = queuedTargetStatusAdapter();
+		await assert.rejects(
+			() => targetStatusClient(queue.adapter).targetStatus({
+				cwd: "/repo",
+				intendedUntrackedSelection: { argumentTokens: tokens, value: '{"selection":true}' },
+			}),
+			TypeError,
+			JSON.stringify(tokens),
+		);
+		assert.equal(queue.calls.length, 0, JSON.stringify(tokens));
+	}
+});
+
+test("targetStatus rejects ambiguous or malformed provider selectors before executing STATUS", async () => {
+	for (const tokens of [
+		[...SUBMITTED_PROVIDER_TOKENS, "--committed-only=false"],
+		[...SUBMITTED_PROVIDER_TOKENS, "--committed-only=garbage"],
+		[...SUBMITTED_PROVIDER_TOKENS, "--committed-only=true", "--committed-only=true"],
+		[...SUBMITTED_PROVIDER_TOKENS, "--committed-only", "--committed-only=true"],
+		[...SUBMITTED_PROVIDER_TOKENS, "--base-ref=deadbeef", "--base-ref", "deadbeef"],
+		[...SUBMITTED_PROVIDER_TOKENS, "--lineage=review-a", "--lineage", "review-a"],
+		[...SUBMITTED_PROVIDER_TOKENS, "--base-ref", "--lineage=review-a"],
+		[...SUBMITTED_PROVIDER_TOKENS, "--lineage", "--base-ref=deadbeef"],
+	]) {
+		const queue = queuedTargetStatusAdapter();
+		await assert.rejects(() => targetStatusClient(queue.adapter).targetStatus({
+			cwd: "/repo", intendedUntrackedSelection: { argumentTokens: tokens, value: '{"selection":true}' },
+		}), TypeError, JSON.stringify(tokens));
+		assert.equal(queue.calls.length, 0, JSON.stringify(tokens));
 	}
 });
 

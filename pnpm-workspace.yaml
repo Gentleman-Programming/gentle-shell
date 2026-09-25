@@ -5,15 +5,15 @@ nodeLinker: hoisted
 # Supply-chain defense — most malicious packages are caught within a few days.
 minimumReleaseAge: 4320
 
-# PR #634: approved Pi 0.85.1 upgrade; frozen installs also verify release age.
+# Approved Pi 0.87.1 upgrade; frozen installs also verify release age.
 # Keep the exception version-specific, including Pi's required aligned packages.
 minimumReleaseAgeExclude:
-  - '@earendil-works/pi-coding-agent@0.85.1'
-  - '@earendil-works/chord@0.85.1'
-  - '@earendil-works/pi-agent-core@0.85.1'
-  - '@earendil-works/pi-ai@0.85.1'
-  - '@earendil-works/pi-tui@0.85.1'
-  - '@earendil-works/pi-telemetry@0.85.1'
+  - '@earendil-works/pi-coding-agent@0.87.1'
+  - '@earendil-works/chord@0.87.1'
+  - '@earendil-works/pi-agent-core@0.87.1'
+  - '@earendil-works/pi-ai@0.87.1'
+  - '@earendil-works/pi-tui@0.87.1'
+  - '@earendil-works/pi-telemetry@0.87.1'
 
 # Refuse to install a package whose maintainer trust level has decreased
 # (e.g. previously verified publisher loses verification).

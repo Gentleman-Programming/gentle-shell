@@ -1,6 +1,5 @@
 import { consumeReviewMutation, pendingReviewMutation, recordReviewMutation } from "../lib/review-reminder-receipt.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
-import { resolveResearchCapabilities, renderResearchCapabilities } from "../lib/sdd-research-capabilities.ts";
 import { declareReviewRelayHandshake } from "../lib/review-relay-contract.ts";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
@@ -41,23 +40,7 @@ import {
 	type BackgroundSubagentsPolicy,
 	type BackgroundSubagentsResolution,
 } from "../lib/background-subagents-policy.ts";
-import {
-	ensureSddPreflight,
-	getSddPreflightPreferences,
-	installPackageAssets,
-	getPackageAssetOwner,
-	hasPackageAssetOwnerInstallation,
-	type PackageAssetOwner,
-	isPackageManagedSddAsset,
-	isSddPreflightTrigger,
-	renderSddPreflightPrompt,
-	isParentConfirmedSddPreflightContext,
-	SHIPPED_SDD_AGENT_NAMES,
-	SDD_PREFLIGHT_FIELDS,
-	type SddPreflightField,
-	type SddPreflightPreferences,
-	updatePackageManagedSddAgentOwnership,
-} from "../lib/sdd-preflight.ts";
+import { installPackageAssets, getPackageAssetOwner, hasPackageAssetOwnerInstallation, type PackageAssetOwner, isPackageManagedSddAsset, updatePackageManagedSddAgentOwnership } from "../lib/agent-assets.ts";
 import {
 	THINKING_LEVELS,
 	normalizeModelConfig,
@@ -120,11 +103,6 @@ import { measureAgentsViewLayout, type AgentsViewLayout } from "../lib/agents-vi
 import { NativeChoiceList } from "../lib/native-choice-list.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import {
-	parseSddStatusCommandArgs,
-	renderNativeSddPhasePrompt,
-	type SddPhase,
-} from "../lib/sdd-status.ts";
-import {
 	REVIEW_HOST_RELAY_FAILURE,
 	REVIEW_HOST_RELAY_PI_TIMEOUT_ENV,
 	REVIEW_HOST_RELAY_PI_TIMEOUT_MAX_MS,
@@ -166,6 +144,7 @@ import {
 	type ReviewMode,
 	type ReviewProjectionV1,
 } from "../lib/review-snapshot.ts";
+import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
 import { renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
 import { sanitizeTerminalText, stripAnsi } from "../lib/terminal-theme.ts";
 import { BASE_REF_ACCEPTED_FORMS, CandidateViewError, CandidateViewRegistry, injectReviewCandidateView, readCandidateContextManifestPage, resolveCanonicalCandidateBase, type CandidateView } from "../lib/review-candidate-view.ts";
@@ -186,7 +165,6 @@ import {
 import {
 	createNativeReviewCli,
 	createNodeExecFileAdapter,
-	decodeNativeSddStatusV2,
 	isCanonicalProcessString,
 	isNativeReviewUnachievableVerbRefused,
 	nativeReviewAbandonAuthorization,
@@ -209,7 +187,6 @@ import {
 	NATIVE_REVIEW_RECONCILE_ANOMALIES,
 	sanitizeForeignNativeReviewDiagnostics,
 	type NativeReviewCli,
-	type NativeSddStatusV2,
 	type NativeIntendedUntrackedSelectionSubmission,
 	type NativeReviewAcknowledgeApprovedOutcome,
 	type NativeReviewAcknowledgeApprovedRequest,
@@ -316,15 +293,12 @@ function packageAssetAudit(owner: PackageAssetOwner): { stale: number; overrides
 }
 
 function packageAssetDiagnosticLines(cwd: string): string[] {
-	return (["delegation", "review", "sdd"] as const).flatMap((owner) => {
-		const label = owner === "sdd" ? "SDD" : owner;
-		const onDemand = owner === "sdd" && !hasPackageAssetOwnerInstallation(owner);
+	return (["delegation", "review"] as const).flatMap((owner) => {
+		const label = owner;
 		const { stale, overrides } = packageAssetAudit(owner);
 		const local = localAgentOverrideCount(cwd, owner);
-		const lines = [onDemand
-			? `info: Global ${label} assets: on demand (not installed)`
-			: `${stale > 0 ? "warn" : "pass"}: Global ${label} assets stale: ${stale} file(s)`];
-		if (!onDemand && stale > 0) {
+		const lines = [`${stale > 0 ? "warn" : "pass"}: Global ${label} assets stale: ${stale} file(s)`];
+		if (stale > 0) {
 			lines[0] += ` — run /gentle:install-${owner} --force to refresh managed assets`;
 		}
 		if (overrides > 0) {
@@ -576,15 +550,6 @@ function hasTaskScopedAllowedEditSurfaces(...values: unknown[]): boolean {
 	}
 
 	return hasSection;
-}
-
-function sddDispatchAgentName(input: unknown): string | undefined {
-	if (!isRecord(input)) return undefined;
-	if (typeof input.agent === "string" && SDD_AGENT_NAME_SET.has(input.agent)) return input.agent;
-	if (Array.isArray(input.agent) && input.agent.some((agent) => typeof agent === "string" && SDD_AGENT_NAME_SET.has(agent))) {
-		return "invalid";
-	}
-	return undefined;
 }
 
 function rejectUnscopedBoundedWriterDispatch(input: unknown): { block: true; reason: string } | undefined {
@@ -883,7 +848,7 @@ function renderRddStatusLine(
 		: "Receipt-driven development: unknown (native status unavailable)";
 }
 
-// The primary-session prompt awaits this on every non-SDD, non-named agent
+// The primary-session prompt awaits this on every non-named agent
 // start, so an unbounded native read would stall session start behind a
 // hung `gentle-ai` child (gentle-pi#661 native-review escalation). The
 // production call site (before_agent_start) passes
@@ -1267,9 +1232,9 @@ Current persona mode: ${persona}
 You are el Gentleman: a Pi-specific coding-agent harness for controlled development work.
 
 Identity contract:
-- When the user asks who or what you are, answer as el Gentleman, not as a generic assistant, and never introduce yourself as only "your assistant" or "the default assistant". Convey this meaning, translated into the user's language: "I am el Gentleman: a Pi-specific coding-agent harness for controlled development, with a senior architect persona. I run Organic Driven Development by default and SDD/OpenSpec when explicitly selected, coordinate subagents, use phase artifacts, run commands, and edit files. I am not a generic chatbot."
+- When the user asks who or what you are, answer as el Gentleman, not as a generic assistant, and never introduce yourself as only "your assistant" or "the default assistant". Convey this meaning, translated into the user's language: "I am el Gentleman: a Pi-specific coding-agent harness for controlled development, with a senior architect persona. I run Organic Driven Development, coordinate subagents, track substantial work, run commands, and edit files. I am not a generic chatbot."
 - Follow the currently selected persona mode.
-- Mention ODD as the default workflow, SDD/OpenSpec phase artifacts, and subagents as core capabilities.
+- Mention ODD as the development workflow and subagents as a core capability.
 - Mention memory only when memory packages or callable memory tools are actually active; never invent persistent memory.
 - Do not claim portability outside the Pi runtime.
 
@@ -1278,23 +1243,23 @@ ${personaPrompt}
 ${languageBoundary}
 
 Default workflow: Organic Driven Development (MANDATORY)
-Organic Driven Development (ODD) is the predefined workflow of this orchestrator. Every request enters it, without the user asking for a workflow, a plan, or task tracking. SDD is a branch inside ODD, entered only by an explicit request or an accepted proposal. Never describe this workflow only when asked about it: run it. Run these steps in this order on every request:
+Organic Driven Development (ODD) is the predefined workflow of this orchestrator. Every request enters it, without the user asking for a workflow, a plan, or task tracking. Never describe this workflow only when asked about it: run it. Run these steps in this order on every request:
 1. **Authorize.** Investigation, explanation, review, comparison, and proposal-only requests stay read-only: no writer, apply, or implementation artifacts. Ambiguous or conditional change intent gets one clarification; stop and wait.
 2. **Explore.** Explore existing code and requirements first, proportionately to the request, before proposing or writing anything.
 3. **Resolve uncertainty.** Recommend optional research only for a named uncertainty; ask one focused user question only for a real unresolved product decision, then stop and wait; use at most one scoped read-only assumption challenge for a high-consequence unproven premise.
 4. **Classify.** The work is substantial when exploration yields two or more meaningful implementation steps, or progress worth recovering after an interruption. Small, understood work stays small and creates no durable task artifacts.
 5. **Track before the first write.** For substantial authorized implementation, create \`odd/tasks/<feature-name>.md\` and its Engram mirror \`odd/<feature-name>/tasks\` automatically, then create or rebuild the visible \`todo\` list from the reconciled feature tasks, all before the first source write and without asking permission for tasks or storage. Tell the user in one line which feature document was created and how many tasks it holds.
-6. **Implement task by task.** Route each task through the orchestrator's Work Routing Ladder, honoring its mandatory delegation triggers, with the configured TDD mode and applicable checks. These triggers are mandatory, not advisory: executing past a fired trigger inline is a routing defect even if the work succeeds. Check an item off only after its outcome and checks were observed; update the file, mirror, and visible \`todo\` projection after every task transition and material plan change. Every task closes with at least one work-unit commit on the feature branch, branch first when on the default branch, with tests and docs alongside the behavior, using a Conventional Commit message; record the commit identity in the feature document as evidence. Work-unit commits on the feature branch are part of authorized substantial ODD implementation; push, pull request creation, and merge remain the user's decisions.
+6. **Implement task by task.** Route each task through the orchestrator's Work Routing Ladder, honoring its mandatory delegation triggers, with applicable test-first development and checks. These triggers are mandatory, not advisory: executing past a fired trigger inline is a routing defect even if the work succeeds. Check an item off only after its outcome and checks were observed; update the file, mirror, and visible \`todo\` projection after every task transition and material plan change. Every task closes with at least one work-unit commit on the feature branch, branch first when on the default branch, with tests and docs alongside the behavior, using a Conventional Commit message; record the commit identity in the feature document as evidence. Work-unit commits on the feature branch are part of authorized substantial ODD implementation; push, pull request creation, and merge remain the user's decisions.
 7. **Close.** Report the verified outcome, every failed, skipped, or pending check, and the next step. The native review candidate is a work-unit commit or a PR slice, never a TODO checkbox and never the accumulated feature branch; native review runs only under the user-owned RDD switch.
 Resume an interrupted feature with \`mem_context\`, then project- and feature-scoped \`mem_search\`, then \`mem_get_observation\` for the full document, then the task file itself; reconcile before continuing the next unfinished task. Detail for steps 3–7: \`orchestrator-delegation.md\` and \`orchestrator-memory.md\`.
 
 Harness principles:
 - el Gentleman is not prompt engineering. It is runtime discipline around powerful agents.
-- Organic Driven Development (ODD) is the predefined workflow for every request: authorize, explore, resolve uncertainty, classify, track substantial work before the first write, implement task by task with proportionate checks, close each task with a work-unit commit, and close. SDD is explicitly selected.
+- Organic Driven Development (ODD) is the predefined workflow for every request: authorize, explore, resolve uncertainty, classify, track substantial work before the first write, implement task by task with proportionate checks, close each task with a work-unit commit, and close.
 - Clarify scope, constraints, acceptance criteria, and non-goals before implementation.
 - Use subagents when available for exploration, planning, implementation, and review, while keeping one parent session responsible for orchestration.
 - Keep writes single-threaded unless the user explicitly approves parallel write isolation.
-- Use configured TDD mode, source, and exact runner; test presence does not enable it. Follow orchestrator-delegation.md for ODD forwarding and evidence.
+- For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks. Test presence alone does not establish applicability; no chat or TUI toggle activates it. For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, explain why and run proportionate ordinary functional or structural verification. Never invent lifecycle evidence or skip checks. Follow orchestrator-delegation.md for ODD forwarding and evidence.
 - Protect the human reviewer: avoid oversized changes, surface review workload risk, and ask before turning one task into a large multi-area change.
 - Never claim persistent memory is available because of this package. Memory is provided by separate packages or MCP tools when installed and callable.
 
@@ -1589,20 +1554,13 @@ const SENSITIVE_PATH_PATTERNS: RegExp[] = [
 	/\.(?:pem|key|p12|pfx)$/,
 ];
 
-const SDD_AGENT_NAME_SET = new Set<string>(SHIPPED_SDD_AGENT_NAMES);
-const SDD_CHANGE_FLAG = "gentle-sdd-change";
-const SDD_CHANGE_KEYS = ["changeName", "phase", "workspaceRoot"] as const;
-
 const JUDGMENT_DAY_AGENT_NAMES = [
 	"jd-judge-a",
 	"jd-judge-b",
 	"jd-fix-agent",
 ] as const;
 
-const CORE_MODEL_AGENT_NAMES = [
-	...SHIPPED_SDD_AGENT_NAMES,
-	...JUDGMENT_DAY_AGENT_NAMES,
-] as const;
+const CORE_MODEL_AGENT_NAMES = JUDGMENT_DAY_AGENT_NAMES;
 const CORE_MODEL_AGENT_NAME_SET = new Set<string>(CORE_MODEL_AGENT_NAMES);
 
 type AgentSource = "project" | "user" | "builtin";
@@ -1643,17 +1601,6 @@ function readStringPath(value: unknown, path: string[]): string | undefined {
 	return typeof current === "string" ? current : undefined;
 }
 
-function isSddAgentStartEvent(event: unknown): boolean {
-	const candidates = readAgentStartNames(event);
-	if (candidates.some((value) => SDD_AGENT_NAME_SET.has(value)) || sddPhaseFromAgentStartEvent(event) !== undefined) return true;
-
-	const systemPrompt = readStringPath(event, ["systemPrompt"]) ?? "";
-	return SHIPPED_SDD_AGENT_NAMES.some((name) => {
-		const phase = name.replace(/^sdd-/, "");
-		return new RegExp(`\\bSDD ${phase} executor\\b`, "i").test(systemPrompt);
-	});
-}
-
 function readAgentStartNames(event: unknown): string[] {
 	return [
 		readStringPath(event, ["agentName"]),
@@ -1669,102 +1616,6 @@ function readAgentStartNames(event: unknown): string[] {
 
 function isNamedAgentStartEvent(event: unknown): boolean {
 	return readAgentStartNames(event).length > 0;
-}
-
-function sddPhaseFromAgentStartEvent(event: unknown): SddPhase | "remediate" | undefined {
-	const phases = ["apply", "verify", "archive", "remediate"] as const;
-	const names = readAgentStartNames(event);
-	const systemPrompt = readStringPath(event, ["systemPrompt"]) ?? "";
-	const promptPhases = phases.filter((phase) => new RegExp(`\\bSDD ${phase} executor\\b`, "i").test(systemPrompt));
-	if (promptPhases.length > 1) return undefined;
-	if (names.length === 0) return promptPhases[0];
-	return phases.find((phase) => names.every((name) => name === `sdd-${phase}`) &&
-		(promptPhases.length === 0 || promptPhases[0] === phase));
-}
-
-function resolveSddChangeSelection(serialized: unknown, cwd: string, agentName: string): { changeName: string; workspaceRoot: string; phase: SddPhase | "remediate"; failedEvidenceRevision?: string } {
-	if (typeof serialized !== "string") throw new Error("SDD selection must be a JSON string.");
-	let value: unknown;
-	try {
-		value = JSON.parse(serialized);
-	} catch {
-		throw new Error("SDD selection is malformed.");
-	}
-	if (!isRecord(value) || Object.keys(value).sort().join(",") !== (value.phase === "remediate" ? "changeName,failedEvidenceRevision,phase,workspaceRoot" : SDD_CHANGE_KEYS.join(","))) {
-		throw new Error("SDD selection must contain only changeName, workspaceRoot, and phase.");
-	}
-	const { changeName, workspaceRoot, phase } = value;
-	if (typeof changeName !== "string" || changeName.length === 0 ||
-		typeof workspaceRoot !== "string" || workspaceRoot.length === 0 ||
-		(phase !== "apply" && phase !== "verify" && phase !== "archive" && phase !== "remediate")) {
-		throw new Error("SDD selection has an invalid identity.");
-	}
-	if (agentName !== `sdd-${phase}`) throw new Error("SDD selection phase does not match the child agent.");
-	let canonicalCwd: string;
-	let canonicalSelectionRoot: string;
-	try {
-		canonicalCwd = realpathSync(cwd);
-		canonicalSelectionRoot = realpathSync(workspaceRoot);
-	} catch {
-		throw new Error("SDD selection workspaceRoot cannot be resolved.");
-	}
-	if (canonicalCwd !== canonicalSelectionRoot || workspaceRoot !== canonicalSelectionRoot) {
-		throw new Error("SDD selection workspaceRoot does not match the canonical child root.");
-	}
-	if (phase === "remediate" && (typeof value.failedEvidenceRevision !== "string" || !/^sha256:[0-9a-f]{64}$/.test(value.failedEvidenceRevision))) throw new Error("Invalid remediation revision");
-	return { changeName, workspaceRoot: canonicalCwd, phase, ...(phase === "remediate" ? { failedEvidenceRevision: value.failedEvidenceRevision as string } : {}) };
-}
-
-function assertNativeSddPhaseReady(status: NativeSddStatusV2, phase: SddPhase | "remediate"): void {
-	if (!status.phaseInstructions || !(phase in status.phaseInstructions)) {
-		throw new Error(`Native SDD status cannot represent phase ${phase}.`);
-	}
-	if (phase === "remediate") {
-		if (status.nextRecommended !== phase) throw new Error("Native SDD status does not select remediation.");
-		return;
-	}
-	// Optional verification may be explicitly selected when native recommends
-	// apply or archive. Preserve that recommendation; never advance an older provider.
-	const optionalVerify = phase === "verify" && (status.nextRecommended === "archive" || status.nextRecommended === "apply") && status.blockedReasons.length === 0;
-	if ((!optionalVerify && status.nextRecommended !== phase) || status.dependencies[phase] !== "ready" ||
-		(status.blockedReasons.length > 0 && phase !== "verify")) {
-		// A native-selected verify can refresh the evidence named by a blocker.
-		// Apply/archive never inherit that exception (gentle-pi#972).
-		throw new Error(`SDD selection native status blocks phase ${phase}; it cannot execute.`);
-	}
-}
-
-async function resolveSelectedNativeSddChangeStartup(
-	serialized: unknown,
-	cwd: string,
-	agentName: string,
-	native: Pick<NativeReviewCli, "sddStatus"> | null | undefined,
-): Promise<{ selection: { changeName: string; workspaceRoot: string; phase: SddPhase | "remediate"; failedEvidenceRevision?: string }; status: NativeSddStatusV2 }> {
-	const selection = resolveSddChangeSelection(serialized, cwd, agentName);
-	if (native?.sddStatus === undefined) throw new Error("SDD selection native status is unavailable.");
-	let status: NativeSddStatusV2;
-	try {
-		status = decodeNativeSddStatusV2(
-			await native.sddStatus({ changeName: selection.changeName, workspaceRoot: selection.workspaceRoot }),
-			{ changeName: selection.changeName, workspaceRoot: selection.workspaceRoot },
-		);
-	} catch (error) {
-		throw new Error(`SDD selection native status is blocked: ${error instanceof Error ? error.message : String(error)}`);
-	}
-	assertNativeSddPhaseReady(status, selection.phase);
-	if (selection.phase === "remediate" && status.remediationState?.failedEvidenceRevision !== selection.failedEvidenceRevision) {
-		throw new Error("Stale remediation selection");
-	}
-	return { selection, status };
-}
-
-function readSddChangeFlag(pi: ExtensionAPI): unknown {
-	try {
-		const value = (pi as unknown as { getFlag?: (name: string) => unknown }).getFlag?.(SDD_CHANGE_FLAG);
-		return value === false ? undefined : value;
-	} catch {
-		return null;
-	}
 }
 
 function normalizePolicyPath(value: string): string {
@@ -5731,11 +5582,20 @@ interface RetainedNativeUntrackedSelection {
 interface RetainedPreLineageNativeUntrackedSelection extends RetainedNativeUntrackedSelection {
 	readonly targetIdentity: string;
 	readonly candidateTree: string;
+	// gentle-pi#1192: only set when the inspect that produced this entry was a
+	// committed-range inspect, so a later plain START can replay the same
+	// selector instead of silently falling back to the workspace-diff range.
+	readonly baseRef?: string;
+	readonly committedOnly?: true;
 }
 
 interface RetainedNativeCaptureRoute { readonly workspaceRoot: string; readonly lineageId: string; readonly baseRef?: string; readonly committedOnly?: true; }
 
-type RetainedNativeStatusSelection = RetainedNativeUntrackedSelection | RetainedNativeCaptureRoute;
+// An inspect that stops before submission has no resolved untracked selection
+// yet. Keep only its selector, bound to the exact provider collect input.
+interface RetainedNativeUntrackedStopSelector { readonly selectionBinding: string; readonly targetIdentity: string; readonly baseRef: string; readonly committedOnly: true; }
+
+type RetainedNativeStatusSelection = RetainedNativeUntrackedSelection | RetainedNativeCaptureRoute | RetainedNativeUntrackedStopSelector;
 
 const MAX_RETAINED_NATIVE_STATUS_SELECTIONS = 64;
 class NativeCaptureRouteRegistrationError extends Error {}
@@ -5946,7 +5806,7 @@ export class PendingReviewConsentRegistry {
 const processPendingReviewConsentRegistry = new PendingReviewConsentRegistry();
 const processRetainedNativeStatusSelections = new Map<PendingReviewConsentSessionKey, Map<string, RetainedNativeStatusSelection>>();
 
-// gentle-pi#556 / gentle-ai#4051: nesting depth of named-agent (SDD phase
+// gentle-pi#556 / gentle-ai#4051: nesting depth of named-agent (
 // executor or other subagent) starts vs. ends for a session. Starts and
 // ends are paired so a subagent's own loop end never leaves the primary
 // loop's `agent_end` preflight suppressed for the rest of the session: a
@@ -6486,7 +6346,7 @@ function retainNativeUntrackedSelection(selections: Map<string, RetainedNativeSt
 
 function readRetainedNativeUntrackedSelection(selections: Map<string, RetainedNativeStatusSelection>, workspaceRoot: string, lineageId: string): NativeStartUntrackedSelection {
 	const selection = selections.get(reviewLifecycleStorageKey(workspaceRoot, lineageId));
-	return selection === undefined || "baseRef" in selection
+	return selection === undefined || "baseRef" in selection || "selectionBinding" in selection
 		? {}
 		: {
 			untrackedScope: selection.untrackedScope,
@@ -6512,8 +6372,12 @@ function readRetainedPreLineageNativeUntrackedSelection(
 	workspaceRoot: string,
 ): RetainedPreLineageNativeUntrackedSelection | undefined {
 	const selection = selections.get(reviewLifecycleStorageKey(workspaceRoot, ""));
+	// gentle-pi#1192: this entry may now carry its own optional baseRef, so the
+	// discriminant against RetainedNativeCaptureRoute (a distinct key namespace
+	// that always carries workspaceRoot/lineageId) can no longer be "no baseRef".
 	return selection !== undefined &&
-		!("baseRef" in selection) &&
+		!isRetainedNativeCaptureRoute(selection) &&
+		!("selectionBinding" in selection) &&
 		typeof (selection as Partial<RetainedPreLineageNativeUntrackedSelection>).targetIdentity === "string" &&
 		typeof (selection as Partial<RetainedPreLineageNativeUntrackedSelection>).candidateTree === "string"
 		? selection as RetainedPreLineageNativeUntrackedSelection
@@ -7779,6 +7643,9 @@ async function executeReviewControllerOperation(
 					undefined,
 				);
 				if (parameters.untrackedScope === undefined) {
+					if (canonicalBaseRef !== undefined && typeof plainMapped.selectionBinding === "string") {
+						retainNativeStatusSelection(retainedUntrackedSelections, reviewLifecycleStorageKey(defaultCwd, ""), Object.freeze({ selectionBinding: plainMapped.selectionBinding, targetIdentity: status.targetIdentity, baseRef: canonicalBaseRef, committedOnly: true as const }));
+					}
 					// gentle-pi#706: the stop alone never tells the caller what to do next.
 					return {
 						...plainMapped,
@@ -7865,6 +7732,10 @@ async function executeReviewControllerOperation(
 							intendedUntracked: Object.freeze([...selected.intendedUntracked!]),
 							submission,
 							...candidateIdentity,
+							// gentle-pi#1192: remember the committed-range selector this
+							// inspect used, so a later plain START replays it instead of
+							// recomputing an unrelated workspace-diff candidate.
+							...(canonicalBaseRef === undefined ? {} : { baseRef: canonicalBaseRef, committedOnly: true as const }),
 						}),
 					);
 				}
@@ -8234,9 +8105,13 @@ async function executeReviewControllerOperation(
 	if (parameters.operation === REVIEW_CONTROLLER_OPERATION.SELECT_INTENDED_UNTRACKED) {
 		if (nativeReviewCli?.targetStatus === undefined || nativeReviewCli.start === undefined) return nativeStatusUnsupported(parameters.operation);
 		const canonicalBinding = parseCanonicalReviewCaptureBinding(parameters.selectionBinding!);
+		const retainedStop = retainedUntrackedSelections.get(reviewLifecycleStorageKey(defaultCwd, ""));
+		const stopSelector = retainedStop !== undefined && "selectionBinding" in retainedStop ? retainedStop : undefined;
+		if (stopSelector !== undefined && stopSelector.selectionBinding !== canonicalBinding) return { operation: parameters.operation, status: "blocked", outcome: "intended-untracked-selection-binding-rejected", mutation_performed: false, mutation_outcome: "none" };
+		const committedSelector = stopSelector === undefined ? {} : { baseRef: stopSelector.baseRef, committedOnly: true as const };
 		let status: ReviewStatusV3;
 		try {
-			const negotiated = await negotiatedStatusForHostTransport(nativeReviewCli, { cwd: defaultCwd, ...(signal === undefined ? {} : { signal }) }, retainedUntrackedSelections, defaultCwd);
+			const negotiated = await negotiatedStatusForHostTransport(nativeReviewCli, { cwd: defaultCwd, ...committedSelector, ...(signal === undefined ? {} : { signal }) }, retainedUntrackedSelections, defaultCwd);
 			if (negotiated.transport !== undefined) return hostTransportUnavailable(parameters.operation, negotiated.transport);
 			status = negotiated.status!;
 		} catch (error) { return nativeStatusFailed(parameters.operation, error); }
@@ -8245,10 +8120,10 @@ async function executeReviewControllerOperation(
 		try { eligible = JSON.parse(eligibleJson ?? ""); } catch { eligible = undefined; }
 		const scope = parameters.intendedUntracked!.length === 0 ? NATIVE_START_UNTRACKED_SCOPE.EXCLUDE : NATIVE_START_UNTRACKED_SCOPE.SELECT;
 		const selected = validateNativeStartUntrackedSelection({ untrackedScope: scope, expectedUntrackedInventory: inventory, intendedUntracked: parameters.intendedUntracked });
-		const rejected = input === undefined || canonicalReviewCaptureBinding(input) !== canonicalBinding || exactCollectArgument(input, "target_identity") !== status.targetIdentity || exactCollectArgument(input, "projection") !== status.projection.projection || exactCollectArgument(input, "base_tree") !== status.projection.baseTree || exactCollectArgument(input, "candidate_tree") !== status.projection.currentCandidateTree || !Array.isArray(eligible) || selected.reason !== undefined || selected.intendedUntracked!.some((path) => !eligible.includes(path));
+		const rejected = (stopSelector !== undefined && stopSelector.targetIdentity !== status.targetIdentity) || input === undefined || canonicalReviewCaptureBinding(input) !== canonicalBinding || exactCollectArgument(input, "target_identity") !== status.targetIdentity || exactCollectArgument(input, "projection") !== status.projection.projection || exactCollectArgument(input, "base_tree") !== status.projection.baseTree || exactCollectArgument(input, "candidate_tree") !== status.projection.currentCandidateTree || !Array.isArray(eligible) || selected.reason !== undefined || selected.intendedUntracked!.some((path) => !eligible.includes(path));
 		if (rejected) return { operation: parameters.operation, status: "blocked", outcome: "intended-untracked-selection-binding-rejected", mutation_performed: false, mutation_outcome: "none" };
 		const submission = { argumentTokens: input.submission!.argumentTokens, value: JSON.stringify({ schema: "gentle-ai.review-intended-untracked-selection/v1", untracked_scope: scope, expected_untracked_inventory: inventory, intended_untracked: selected.intendedUntracked }) };
-		const result = await executeReviewControllerOperation({ operation: REVIEW_CONTROLLER_OPERATION.START, ...(parameters.workspaceRoot === undefined ? {} : { workspaceRoot: parameters.workspaceRoot }), input: JSON.stringify({ mode: REVIEW_MODE.ORDINARY, untrackedScope: scope, expectedUntrackedInventory: inventory, intendedUntracked: selected.intendedUntracked }) }, sessionCwd, nativeReviewCli, signal, candidateViews, context, retainedUntrackedSelections, pendingReviewConsentRegistry, pendingReviewConsentFallbackKey, reviewConsentNow, reviewConsentScheduleTimer, submission);
+		const result = await executeReviewControllerOperation({ operation: REVIEW_CONTROLLER_OPERATION.START, ...(parameters.workspaceRoot === undefined ? {} : { workspaceRoot: parameters.workspaceRoot }), input: JSON.stringify({ mode: REVIEW_MODE.ORDINARY, ...committedSelector, untrackedScope: scope, expectedUntrackedInventory: inventory, intendedUntracked: selected.intendedUntracked }) }, sessionCwd, nativeReviewCli, signal, candidateViews, context, retainedUntrackedSelections, pendingReviewConsentRegistry, pendingReviewConsentFallbackKey, reviewConsentNow, reviewConsentScheduleTimer, submission);
 		return { ...result, operation: parameters.operation };
 	}
 	if (parameters.operation === REVIEW_CONTROLLER_OPERATION.START) {
@@ -8277,7 +8152,7 @@ async function executeReviewControllerOperation(
 			// gentle-pi#706: a plain START adopts the selection an inspect
 			// untrackedScope round trip retained pre-lineage; explicit input or a
 			// carried submission always wins over the retained entry.
-			const retainedPreLineageSelection =
+			const rawRetainedPreLineageSelection =
 				explicitUntrackedSelection.untrackedScope === undefined &&
 				intendedUntrackedSelection === undefined
 					? readRetainedPreLineageNativeUntrackedSelection(
@@ -8285,6 +8160,31 @@ async function executeReviewControllerOperation(
 							defaultCwd,
 						)
 					: undefined;
+			let canonicalBaseRef: string | undefined;
+			if (baseRef !== undefined) {
+				try {
+					canonicalBaseRef = resolveCanonicalCandidateBase(defaultCwd, baseRef).commit;
+				} catch (error) {
+					if (error instanceof CandidateViewError && error.diagnostics !== undefined) return nativeOperationFailure(parameters.operation, Object.assign(error, { candidateViewPreNative: true }));
+					if (error instanceof CandidateViewError && (error.reason === "base-ref-ambiguous" || error.reason === "base-ref-unresolvable" || error.reason === "base-ref-moved")) return nativeStartRejection(error.reason);
+					return nativeStartRejection("base-ref-unresolvable");
+				}
+			}
+			// gentle-pi#1192: an explicit baseRef always wins over a conflicting
+			// retained one (same precedent as explicit untrackedScope/submission
+			// above); drop the retained entry from *this* START rather than reject
+			// outright, so a differently-scoped explicit START still proceeds. Any
+			// STATUS/START this call still runs against the "" key clears it below
+			// on success regardless (gentle-pi#706), same as any other START.
+			const retainedBaseRefConflicts =
+				canonicalBaseRef !== undefined &&
+				rawRetainedPreLineageSelection?.baseRef !== undefined &&
+				rawRetainedPreLineageSelection.baseRef !== canonicalBaseRef;
+			const retainedPreLineageSelection = retainedBaseRefConflicts ? undefined : rawRetainedPreLineageSelection;
+			// A plain START (no explicit baseRef) adopts the retained committed-range
+			// selector verbatim; it was already canonicalized when the inspect stored
+			// it, so no second resolveCanonicalCandidateBase round trip is needed.
+			if (canonicalBaseRef === undefined && retainedPreLineageSelection?.baseRef !== undefined) canonicalBaseRef = retainedPreLineageSelection.baseRef;
 			const untrackedSelection: NativeStartUntrackedSelection =
 				retainedPreLineageSelection === undefined
 					? explicitUntrackedSelection
@@ -8296,19 +8196,20 @@ async function executeReviewControllerOperation(
 						};
 			const untrackedSubmission =
 				intendedUntrackedSelection ?? retainedPreLineageSelection?.submission;
-			const retainedUntrackedSelection =
-				retainedPreLineageSelection ??
-				cloneRetainedNativeUntrackedSelection(explicitUntrackedSelection);
-			let canonicalBaseRef: string | undefined;
-			if (baseRef !== undefined) {
-				try {
-					canonicalBaseRef = resolveCanonicalCandidateBase(defaultCwd, baseRef).commit;
-				} catch (error) {
-					if (error instanceof CandidateViewError && error.diagnostics !== undefined) return nativeOperationFailure(parameters.operation, Object.assign(error, { candidateViewPreNative: true }));
-					if (error instanceof CandidateViewError && (error.reason === "base-ref-ambiguous" || error.reason === "base-ref-unresolvable" || error.reason === "base-ref-moved")) return nativeStartRejection(error.reason);
-					return nativeStartRejection("base-ref-unresolvable");
-				}
-			}
+			// The stored value must stay a plain RetainedNativeUntrackedSelection
+			// (no baseRef/targetIdentity/candidateTree): it is re-keyed under the
+			// lineage-scoped entry below, and readRetainedNativeUntrackedSelection
+			// discriminates that entry from a RetainedNativeCaptureRoute by the
+			// absence of a baseRef field.
+			const retainedUntrackedSelection: RetainedNativeUntrackedSelection | undefined =
+				retainedPreLineageSelection === undefined
+					? cloneRetainedNativeUntrackedSelection(explicitUntrackedSelection)
+					: Object.freeze({
+							untrackedScope: retainedPreLineageSelection.untrackedScope,
+							expectedUntrackedInventory: retainedPreLineageSelection.expectedUntrackedInventory,
+							intendedUntracked: retainedPreLineageSelection.intendedUntracked,
+							...(retainedPreLineageSelection.submission === undefined ? {} : { submission: retainedPreLineageSelection.submission }),
+						});
 			try {
 				const gated = await resolveReviewModeGate(nativeReviewCli, parameters.operation, defaultCwd, signal);
 				if (gated !== undefined) return gated;
@@ -8686,8 +8587,6 @@ export const __testing = {
 	readNativeReviewOutcome,
 	recordNativeReviewOutcome,
 	clearNativeReviewOutcomeMemoForTesting,
-	resolveSelectedNativeSddChangeStartup,
-	readSddChangeFlag,
 	resetTelemetryTriggerGuardForTesting,
 	createGentleAiExtension: createGentleAiExtensionForTesting,
 	getPiModelOptions,
@@ -8743,11 +8642,6 @@ function createGentleAiExtensionForTesting(
 	const resolveTelemetryTriggerBinary = dependencies.resolveTelemetryTriggerBinary ?? resolveGentleAiBinary;
 	const telemetryExecFileAdapter = dependencies.telemetryExecFileAdapter ?? createNodeExecFileAdapter();
 	return function gentleAi(pi: ExtensionAPI): void {
-		const flags = pi as unknown as { registerFlag?: (name: string, definition: { description: string; type: "string"; default?: string }) => void };
-		flags.registerFlag?.(SDD_CHANGE_FLAG, {
-			description: "Internal launch-local selected SDD change identity for package-owned child agents.",
-			type: "string",
-		});
 	declareReviewRelayHandshake(dependencies.processEnv ?? process.env);
 	const pendingReviewConsentFallbackKey = Symbol("pending-review-consent-fallback");
 	const candidateViews = dependencies.candidateViews === undefined ? new CandidateViewRegistry() : dependencies.candidateViews;
@@ -8801,6 +8695,21 @@ function createGentleAiExtensionForTesting(
 		processAgentEndSubagentDepth.delete(sessionKey);
 	});
 
+	const GENTLE_TIMED_TOOLS = new Set(["gentle_review_scope", "gentle_review_capture_group", "gentle_review_capture", "gentle_review"]);
+	let elapsedTiming: GentleAiElapsedTimingLedger | undefined;
+	const recordReviewTiming = (event: { toolCallId: string; toolName: string }, endedAt?: number): void => {
+		const ledger = elapsedTiming;
+		if (!ledger || !GENTLE_TIMED_TOOLS.has(event.toolName)) return;
+		try {
+			if (endedAt === undefined) ledger.recordStart(event.toolCallId, Date.now());
+			else ledger.recordEnd(event.toolCallId, endedAt);
+		} catch { /* Timing persistence is best-effort and never breaks the tool event. */ }
+	};
+	pi.on("tool_execution_start", (event) => recordReviewTiming(event));
+	pi.on("tool_execution_end", (event) => recordReviewTiming(event, Date.now()));
+	const timingContext = (context: GentleAiRenderContext | undefined): GentleAiRenderContext | undefined =>
+		elapsedTiming && context ? { ...context, elapsedTiming } : context;
+
 	pi.registerTool({
 		name: "gentle_review_scope",
 		renderShell: "self",
@@ -8812,11 +8721,11 @@ function createGentleAiExtensionForTesting(
 			return renderGentleAiLifecycleCall(
 				"review scope",
 				theme,
-				context as GentleAiRenderContext | undefined,
+				timingContext(context as GentleAiRenderContext | undefined),
 			);
 		},
 		renderResult(result, options, theme, context) {
-			return renderGentleAiResult(result, options, theme, context as GentleAiRenderContext | undefined);
+			return renderGentleAiResult(result, options, theme, timingContext(context as GentleAiRenderContext | undefined));
 		},
 		async execute(_toolCallId, parameters) {
 			const input = parameters as ReviewScopeParameters;
@@ -8859,10 +8768,10 @@ function createGentleAiExtensionForTesting(
 		renderCall(args, theme, context) {
 			const bindings = (args as { collectBindings?: unknown }).collectBindings;
 			const lenses = Array.isArray(bindings) ? bindings.map(collectBindingLens) : [];
-			return renderGentleAiLifecycleCall(withLenses("review capture group", lenses), theme, context as GentleAiRenderContext | undefined);
+			return renderGentleAiLifecycleCall(withLenses("review capture group", lenses), theme, timingContext(context as GentleAiRenderContext | undefined));
 		},
 		renderResult(result, options, theme, context) {
-			return renderGentleAiResult(result, options, theme, context as GentleAiRenderContext | undefined);
+			return renderGentleAiResult(result, options, theme, timingContext(context as GentleAiRenderContext | undefined));
 		},
 		async execute(_toolCallId, parameters, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new Error("Review capture group was cancelled");
@@ -8901,11 +8810,11 @@ function createGentleAiExtensionForTesting(
 			return renderGentleAiLifecycleCall(
 				withLenses("review capture", [collectBindingLens((args as { collectBinding?: unknown }).collectBinding)]),
 				theme,
-				context as GentleAiRenderContext | undefined,
+				timingContext(context as GentleAiRenderContext | undefined),
 			);
 		},
 		renderResult(result, options, theme, context) {
-			return renderGentleAiResult(result, options, theme, context as GentleAiRenderContext | undefined);
+			return renderGentleAiResult(result, options, theme, timingContext(context as GentleAiRenderContext | undefined));
 		},
 		async execute(_toolCallId, parameters, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new Error("Review capture was cancelled");
@@ -8954,11 +8863,11 @@ function createGentleAiExtensionForTesting(
 			return renderGentleAiLifecycleCall(
 				reviewToolOperationPath(args),
 				theme,
-				context as GentleAiRenderContext | undefined,
+				timingContext(context as GentleAiRenderContext | undefined),
 			);
 		},
 		renderResult(result, options, theme, context) {
-			return renderGentleAiResult(result, options, theme, context as GentleAiRenderContext | undefined);
+			return renderGentleAiResult(result, options, theme, timingContext(context as GentleAiRenderContext | undefined));
 		},
 		async execute(_toolCallId, parameters, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new Error("Review controller operation was cancelled");
@@ -9078,11 +8987,8 @@ function createGentleAiExtensionForTesting(
 		},
 	});
 
-	function runSddPreflight(ctx: ExtensionContext, promptFields: readonly SddPreflightField[] = []): Promise<SddPreflightPreferences> {
-		return ensureSddPreflight(ctx, { pi, installAssets: (cwd) => installPackageAssets(cwd, true, ["sdd"]), applyModelConfig: async () => applySavedModelConfig(ctx) }, { promptFields });
-	}
-
 	pi.on("session_start", async (event, ctx) => {
+		elapsedTiming = new GentleAiElapsedTimingLedger(ctx.sessionManager, pi);
 		reminderSessionActive = true;
 		reminderEpoch += 1;
 		try { candidateViews?.sweepOrphans(ctx.cwd); } catch { /* Ownership sweeping must not block startup. */ }
@@ -9135,42 +9041,21 @@ function createGentleAiExtensionForTesting(
 		}
 	});
 
-	pi.on("input", async (event, ctx) => {
-		if (typeof event.text !== "string" || !isSddPreflightTrigger(event.text)) {
-			return { action: "continue" };
-		}
-		// An RPC child consumes the parent-rendered preflight block transported in
-		// its task context; it never originates preflight. Re-entering the
-		// parent-only resolver here would reject, and consuming the rejection
-		// would swallow the delegated prompt before the agent ever starts.
-		if (ctx.mode === "rpc") return { action: "continue" };
-		try { await runSddPreflight(ctx); }
-		catch (error) {
-			if (ctx.hasUI) ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
-			return { action: "handled" };
-		}
-		return { action: "continue" };
-	});
-
-	let nativeSddStartupBlock: string | undefined;
 	pi.on("before_agent_start", async (event, ctx) => {
-		nativeSddStartupBlock = undefined;
-		const retiredSync = readAgentStartNames(event).includes("sdd-sync") || /\bSDD sync executor\b/i.test(event.systemPrompt ?? "");
-		const isSddAgent = retiredSync || isSddAgentStartEvent(event);
 		const isNamedAgent = isNamedAgentStartEvent(event);
 		const subagentDepthKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
-		if (isSddAgent || isNamedAgent) {
+		if (isNamedAgent) {
 			processAgentEndSubagentDepth.set(subagentDepthKey, (processAgentEndSubagentDepth.get(subagentDepthKey) ?? 0) + 1);
 		} else {
 			processAgentEndSubagentDepth.set(subagentDepthKey, 0);
 		}
 		// gentle-pi#677: nudge gentle-ai's own telemetry trigger for a primary
-		// session only, reusing the exact isNamedAgent/isSddAgent predicate that
+		// session only, reusing the exact isNamedAgent predicate that
 		// decides the orchestrator prompt below. At most one attempt per
 		// process regardless of how many primary-session before_agent_start
 		// events this process observes; a missing/old binary or a spawn error
 		// must never affect activation, so every failure is swallowed silently.
-		if (!isNamedAgent && !isSddAgent && !processTelemetryTriggerAttempted) {
+		if (!isNamedAgent && !processTelemetryTriggerAttempted) {
 			processTelemetryTriggerAttempted = true;
 			try {
 				const executable = resolveTelemetryTriggerBinary();
@@ -9184,60 +9069,14 @@ function createGentleAiExtensionForTesting(
 				// Best-effort only; never surfaced and never affects activation.
 			}
 		}
-		try {
-			if (isSddAgent && !getSddPreflightPreferences(ctx) && ctx.mode !== "rpc") {
-				await runSddPreflight(ctx);
-			}
-		} catch (error) {
-			// Pi logs thrown before_agent_start errors and continues. Return an
-			// unresolved gate instead of silently losing the preflight instructions.
-			return { systemPrompt: `${event.systemPrompt}\n\nSDD preflight unresolved: ${error instanceof Error ? error.message : String(error)}\nSTOP: Do not initialize the project, launch phases, write artifacts, or infer consent. Request session preflight confirmation before continuing.` };
-		}
-		const prefs = getSddPreflightPreferences(ctx);
-		// RPC children never resolve or persist defaults. The parent dispatch gate
-		// transports the rendered block in the existing task context, and Gentle
-		// Agents refuses a missing/malformed payload before spawning the child.
-		const sddPrompt =
-			prefs && (!isNamedAgent || isSddAgent)
-				? `\n\n${renderSddPreflightPrompt(prefs)}`
-				: "";
-		const phase = isSddAgent ? sddPhaseFromAgentStartEvent(event) : undefined;
-		const launchSddChange = readSddChangeFlag(pi);
-		if (retiredSync) nativeSddStartupBlock = "Standalone sync is retired. Return to the parent for native archive selection; archive composes applicable specs.";
-		else if (launchSddChange !== undefined && !phase) nativeSddStartupBlock = "Receiving agent has no recognized SDD phase";
-		const nativeStatusPrompt = phase
-			? await (async () => {
-				try {
-					if (launchSddChange === undefined) {
-						const { status } = await readCommandSddStatus("", ctx);
-						if (status.changeName === null) throw new Error(`Native SDD discovery cannot run ${phase}.`);
-						assertNativeSddPhaseReady(status, phase);
-						return `\n\n${renderNativeSddPhasePrompt(status, phase)}`;
-					}
-					const agentName = `sdd-${phase}`;
-					const startup = await resolveSelectedNativeSddChangeStartup(
-						launchSddChange,
-						ctx.cwd,
-						agentName,
-						nativeReviewCli,
-					);
-					return `\n\n${renderNativeSddPhasePrompt(startup.status, phase)}`;
-				} catch (error) {
-					nativeSddStartupBlock = error instanceof Error ? error.message : String(error);
-					return `\n\n## Native SDD Status Engine\nSDD selection blocked: ${nativeSddStartupBlock}\nDo not run phase work; return this blocker to the parent.`;
-				}
-			})()
-			: nativeSddStartupBlock === undefined
-				? ""
-				: `\n\n## Native SDD Status Engine\nSDD selection blocked: ${nativeSddStartupBlock}\nDo not run phase work; return this blocker to the parent.`;
 		// gentle-pi#661: the RDD status line (and the rest of the gentle prompt)
 		// is built only for the primary session, mirrored on the
-		// reviewContractPrompt condition below -- named/SDD agents never reach
+		// reviewContractPrompt condition below -- named agents never reach
 		// this branch, so no line is resolved or computed for them.
 		// resolveRddStatusLine never throws and never hangs past
 		// RDD_STATUS_TIMEOUT_MS: an absent/timed-out/aborted/failing native
 		// binary renders the fail-closed "unknown" line instead.
-		const gentlePrompt = isNamedAgent || isSddAgent
+		const gentlePrompt = isNamedAgent
 			? ""
 			: `\n\n${buildGentlePrompt(
 					readPersonaMode(ctx.cwd),
@@ -9249,14 +9088,14 @@ function createGentleAiExtensionForTesting(
 		// contract bundle's review execution contract for the primary session
 		// only, and only when a native review CLI is actually present.
 		const reviewContractPrompt =
-			!isNamedAgent && !isSddAgent && nativeReviewCli !== null
+			!isNamedAgent && nativeReviewCli !== null
 				? (() => {
 					const fragment = loadReviewContractPromptFragment(ctx);
 					return fragment === null ? "" : `\n\n${fragment}`;
 				})()
 				: "";
 		return {
-			systemPrompt: `${event.systemPrompt}${gentlePrompt}${sddPrompt}${nativeStatusPrompt}${reviewContractPrompt}${!isNamedAgent && !isSddAgent ? `\n\n${renderResearchCapabilities(resolveResearchCapabilities(pi))}` : ""}`,
+			systemPrompt: `${event.systemPrompt}${gentlePrompt}${reviewContractPrompt}`,
 		};
 	});
 
@@ -9309,55 +9148,12 @@ function createGentleAiExtensionForTesting(
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
-		if (nativeSddStartupBlock && event.toolName !== "subagent_parent_message") return { block: true, reason: `SDD selection blocked: ${nativeSddStartupBlock}` };
 		const sensitivePathDenied = evaluateSensitivePathTool(
 			event.toolName,
 			event.input,
 		);
 		if (sensitivePathDenied) return sensitivePathDenied;
 		if (event.toolName === "subagent_run") {
-			const sddAgent = sddDispatchAgentName(event.input);
-			if (sddAgent === "invalid") {
-				return { block: true, reason: "SDD dispatch requires exactly one shipped SDD agent name." };
-			}
-			if (sddAgent !== undefined) {
-				// An RPC child is a delegated actor, never an authority originator. It
-				// must receive the already-confirmed block from its interactive parent.
-				if (ctx.mode === "rpc") {
-					return { block: true, reason: "SDD dispatch refused: an RPC child cannot originate or persist SDD preflight defaults." };
-				}
-				try {
-					const prefs = getSddPreflightPreferences(ctx) ?? await runSddPreflight(ctx);
-					const rendered = renderSddPreflightPrompt(prefs);
-					if (!prefs.prompted && ctx.hasUI) {
-						return { block: true, reason: "SDD dispatch refused: interactive parent preflight lacks current-session confirmation." };
-					}
-					if (!isRecord(event.input)) {
-						return { block: true, reason: "SDD dispatch refused: child input is malformed." };
-					}
-					if (event.input.context !== undefined && typeof event.input.context !== "string") {
-						return { block: true, reason: "SDD dispatch refused: child context must be text." };
-					}
-					// The existing context payload is the sole parent-to-child transport.
-					// Refuse a caller-authored lookalike so the child receives one exact,
-					// parent-rendered authority block rather than an ambiguous mixture.
-					const context = typeof event.input.context === "string" ? event.input.context.trim() : "";
-					if (/^## SDD Session Preflight[ \t]*$/m.test(context)) {
-						return { block: true, reason: "SDD dispatch refused: child context already contains an untrusted preflight block." };
-					}
-					event.input.context = context.length === 0
-						? rendered
-						: `${rendered}\n\n${context}`;
-					if (!isParentConfirmedSddPreflightContext(event.input.context)) {
-						return { block: true, reason: "SDD dispatch refused: rendered preflight transport is malformed." };
-					}
-				} catch (error) {
-					return {
-						block: true,
-						reason: `SDD dispatch refused before child launch: ${error instanceof Error ? error.message : String(error)}`,
-					};
-				}
-			}
 			const judgmentDayFixDenied = rejectInvalidJudgmentDayFixDispatch(event.input);
 			if (judgmentDayFixDenied) return judgmentDayFixDenied;
 			const writerScopeDenied = rejectUnscopedBoundedWriterDispatch(event.input);
@@ -9379,8 +9175,8 @@ function createGentleAiExtensionForTesting(
 		return await confirmCommand(event.input.command, ctx, pi.events, herdrLifecycle);
 	});
 
-	for (const owner of ["delegation", "review", "sdd"] as const) {
-		const label = owner === "sdd" ? "SDD" : owner;
+	for (const owner of ["delegation", "review"] as const) {
+		const label = owner;
 		pi.registerCommand(`gentle:install-${owner}`, {
 			description: `Repair or refresh only global Gentle AI ${label} assets.`,
 			handler: async (args, ctx) => {
@@ -9393,82 +9189,6 @@ function createGentleAiExtensionForTesting(
 			},
 		});
 	}
-
-	pi.registerCommand("gentle:sdd-preflight", {
-		description:
-			"Run or reuse session SDD preflight; use --edit to change preferences.",
-		handler: async (args, ctx) => {
-			if (args.trim() !== "" && args.trim() !== "--edit") {
-				ctx.ui.notify("Usage: /gentle:sdd-preflight [--edit]", "warning");
-				return;
-			}
-			try {
-				await runSddPreflight(ctx, args.trim() === "--edit" ? SDD_PREFLIGHT_FIELDS : []);
-			} catch (error) {
-				ctx.ui?.notify(error instanceof Error ? error.message : String(error), "warning");
-			}
-		},
-	});
-
-	const readCommandSddStatus = async (args: string, ctx: ExtensionContext) => {
-		const parsed = parseSddStatusCommandArgs(args);
-		const request = { changeName: parsed.changeName, workspaceRoot: realpathSync(ctx.cwd) };
-		if (!nativeReviewCli?.sddStatus) throw new Error("Native SDD status capability unavailable; no local fallback.");
-		const status = decodeNativeSddStatusV2(await nativeReviewCli.sddStatus(request), request);
-		return { parsed, request, status };
-	};
-	const showCommandSddStatus = (status: NativeSddStatusV2, json: boolean, ctx: ExtensionContext) => {
-		ctx.ui?.notify(json ? JSON.stringify(status, null, 2) : renderNativeSddPhasePrompt(status), "info");
-	};
-	const handleSddStatusCommand = async (args: string, ctx: ExtensionContext) => {
-		const { parsed, status } = await readCommandSddStatus(args, ctx);
-		showCommandSddStatus(status, parsed.json, ctx);
-	};
-
-	pi.registerCommand("gentle-sdd-status", {
-		description: "Show deterministic SDD change status and instructions.",
-		handler: async (args, ctx) => {
-			await handleSddStatusCommand(args, ctx);
-		},
-	});
-
-	const handleSddContinueCommand = async (args: string, ctx: ExtensionContext) => {
-		const { parsed, request, status } = await readCommandSddStatus(args, ctx);
-		const planning = status.planningHome;
-		const changeRoot = status.changeRoot;
-		// Native context is an upper bound, never the human's per-call grant.
-		if (status.changeName === null || !ctx.hasUI || typeof ctx.ui?.confirm !== "function" || !nativeReviewCli?.sddContinue) {
-			showCommandSddStatus(status, parsed.json, ctx);
-			return;
-		}
-		if (typeof planning !== "object" || planning === null || !("path" in planning) || typeof planning.path !== "string" || typeof changeRoot !== "string") throw new Error("Native SDD continuation lacks an exact planning path.");
-		if (!["openspec", "both"].includes(String(status.artifactStore)) || !["repo-local", "workspace-planning"].includes(String(status.actionContext.mode))) throw new Error("Native SDD continuation has unsupported planning context.");
-		const marker = join(changeRoot, ".gentle-ai-instance");
-		const checkMarker = () => {
-			try {
-				if (!lstatSync(marker).isFile() || realpathSync(marker) !== marker) throw new Error("Native SDD marker is not a canonical regular file.");
-			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-			}
-		};
-		checkMarker();
-		if (realpathSync(changeRoot) !== changeRoot || realpathSync(planning.path) !== planning.path || changeRoot !== join(planning.path, "changes", status.changeName) || !isStrictDescendantPath(request.workspaceRoot, marker)) throw new Error("Native SDD continuation workspace or planning path mismatch.");
-		if (await ctx.ui.confirm("Prepare SDD marker?", `Authorize only continuation-time preparation of ${marker}? This grants no source roots and no persistent authority.`) !== true) {
-			showCommandSddStatus(status, parsed.json, ctx);
-			return;
-		}
-		if (realpathSync(ctx.cwd) !== request.workspaceRoot || realpathSync(changeRoot) !== changeRoot) throw new Error("Native SDD continuation workspace changed during confirmation.");
-		checkMarker();
-		const selected = { ...request, changeName: status.changeName };
-		showCommandSddStatus(decodeNativeSddStatusV2(await nativeReviewCli.sddContinue(selected), selected), parsed.json, ctx);
-	};
-
-	pi.registerCommand("gentle-sdd-continue", {
-		description: "Resolve SDD status and route the next phase deterministically.",
-		handler: async (args, ctx) => {
-			await handleSddContinueCommand(args, ctx);
-		},
-	});
 
 	pi.registerCommand("gentle:models", {
 		description: "Configure global per-agent models for el Gentleman.",
@@ -9555,9 +9275,6 @@ function createGentleAiExtensionForTesting(
 		description: "Run read-only Gentle AI diagnostics for this Pi workspace.",
 		handler: async (_args, ctx) => {
 			const assetLines = packageAssetDiagnosticLines(ctx.cwd);
-			const openspecConfigured = existsSync(
-				join(ctx.cwd, "openspec", "config.yaml"),
-			);
 			const skillRegistryPresent = existsSync(
 				join(ctx.cwd, ".atl", "skill-registry.md"),
 			);
@@ -9567,7 +9284,7 @@ function createGentleAiExtensionForTesting(
 			const lines = [
 				"el Gentleman doctor",
 				...assetLines,
-				`${openspecConfigured ? "pass" : "warn"}: OpenSpec config ${openspecConfigured ? "present" : "missing"}`,
+				"pass: Organic Driven Development (ODD): active",
 				`${skillRegistryPresent ? "pass" : "warn"}: Skill registry ${skillRegistryPresent ? "present" : "missing"}`,
 				`${modelConfig.status === "invalid" ? "fail" : "pass"}: Global model config ${modelConfig.status}`,
 				"pass: Sensitive-path guard active for read/write/edit tools",
@@ -9740,9 +9457,6 @@ function createGentleAiExtensionForTesting(
 		description: "Show Gentle AI package status for this project.",
 		handler: async (_args, ctx) => {
 			const assetLines = packageAssetDiagnosticLines(ctx.cwd);
-			const openspecConfigured = existsSync(
-				join(ctx.cwd, "openspec", "config.yaml"),
-			);
 			const savedConfig = await readModelRoutingAuthorityAsync(
 				modelConfigPath(ctx.cwd),
 				legacyProjectModelConfigPath(ctx.cwd),
@@ -9754,7 +9468,7 @@ function createGentleAiExtensionForTesting(
 					...(devBinary.state === "inactive" ? [] : [devBinary.line]),
 					`Persona: ${readPersonaMode(ctx.cwd)}`,
 					...assetLines,
-					`OpenSpec config: ${openspecConfigured ? "present" : "missing"}`,
+					"Organic Driven Development (ODD): active",
 					`Global model config: ${existsSync(modelConfigPath(ctx.cwd)) ? "present" : "missing"}`,
 					`Saved model routing: ${savedConfig.status}${savedConfig.status === "invalid" ? ` (${savedConfig.path})` : ""}`,
 					...(savedConfig.status === "invalid" ? [] : describeModelConfig(ctx.cwd, savedConfig.status === "valid" ? savedConfig.config : {})),

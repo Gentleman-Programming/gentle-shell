@@ -210,6 +210,12 @@ for (const showRose of [false, true]) for (const showTextLogo of [false, true]) 
 	test(`startup art respects rose=${showRose}, logo=${showTextLogo} and cyan palette`, async (t) => {
 		t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
 		t.mock.method(fs, "readFile", async () => JSON.stringify({ showRose, showTextLogo, color: "cyan" }));
+		t.mock.method(fs, "readdir", async () => [
+			{ name: "sdd-apply.md", isFile: () => true },
+			{ name: "sdd-status.md", isFile: () => true },
+			{ name: "gentle-ai-worker.md", isFile: () => true },
+			{ name: "notes.txt", isFile: () => true },
+		] as any);
 		syncBuiltinESMExports();
 		t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
 		const argv = process.argv;
@@ -233,7 +239,8 @@ for (const showRose of [false, true]) for (const showTextLogo of [false, true]) 
 		await start!({}, { hasUI: true, cwd: "/fixture", ui: { setHeader: (factory: Function) => {
 			header = factory({ requestRender() {} }, { fg: (_role: string, text: string) => text });
 		} } });
-		t.mock.timers.tick(50);
+		t.mock.timers.tick(200);
+		for (let i = 0; i < 5; i++) await Promise.resolve();
 		try {
 			for (const width of [40, 80, 160, 200]) {
 				const lines = header!.render(width);
@@ -241,6 +248,8 @@ for (const showRose of [false, true]) for (const showTextLogo of [false, true]) 
 				const text = stripAnsi(lines.join("\n"));
 				assert.match(text, /GIT:/);
 				assert.match(text, /PATH:/);
+				assert.doesNotMatch(text, /phases\b/i, "historical SDD files never appear as active phases");
+				assert.match(text, /AGENTS:\s+1 agents/, "only the installed background agent is counted");
 				if (width >= 160) {
 					assert.equal(/[\u2800-\u28ff]/.test(text), showRose);
 					assert.equal(/[▒▄▀█]/.test(text), showTextLogo);

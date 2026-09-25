@@ -5432,7 +5432,7 @@ function withoutRawCollectInputs(raw: Record<string, unknown>): Record<string, u
 	return { ...raw, next_transition: transition };
 }
 
-function mapNativeTargetStatus(operation: ReviewControllerOperation, status: ReviewStatusV3, requestedLineageId?: string): Record<string, unknown> {
+function mapNativeTargetStatus(operation: ReviewControllerOperation, status: ReviewStatusV3, requestedLineageId?: string, workspaceRoot?: string): Record<string, unknown> {
 	if (
 		status.nextTransition?.kind === "collect" &&
 		(operation === REVIEW_CONTROLLER_OPERATION.START || operation === REVIEW_CONTROLLER_OPERATION.INSPECT || operation === REVIEW_CONTROLLER_OPERATION.STATUS)
@@ -5481,6 +5481,22 @@ function mapNativeTargetStatus(operation: ReviewControllerOperation, status: Rev
 			result: status.raw,
 			...(requestedLineageId === undefined ? {} : { requested_lineage_id: requestedLineageId }),
 			...(withdrawSlot === undefined ? {} : { hint: `run ${withdrawSlot.withdraw.command}` }),
+		};
+	}
+	if (
+		status.nextTransition?.kind === "execute" &&
+		status.nextTransition.execute.operation === "review.acknowledge-approved"
+	) {
+		const lineageId = status.authority?.lineageId ?? requestedLineageId;
+		const nextAction = lineageId === undefined
+			? undefined
+			: `gentle_review {"operation":"acknowledge-approved","lineageId":"${lineageId}"${workspaceRoot && workspaceRoot !== process.cwd() ? `,"workspaceRoot":${JSON.stringify(workspaceRoot)}` : ""}}`;
+		return {
+			operation,
+			status: "blocked",
+			result: status.raw,
+			...(requestedLineageId === undefined ? {} : { requested_lineage_id: requestedLineageId }),
+			...(nextAction === undefined ? {} : { next_action: nextAction }),
 		};
 	}
 	return {
@@ -5968,8 +5984,8 @@ function staleConsentBindingDiagnostics(binding: string, disposition: PendingRev
 	return { code: STALE_CONSENT_BINDING_DIAGNOSTIC_CODE.UNKNOWN, message: `consent binding ${binding} is not held by this Pi session. ${exit}` };
 }
 
-function staleConsentBindingOutcome(operation: ReviewControllerOperation, binding: string, diagnostics: ReturnType<typeof staleConsentBindingDiagnostics>, status: ReviewStatusV3): Record<string, unknown> {
-	const mapped = mapNativeTargetStatus(operation, status);
+function staleConsentBindingOutcome(operation: ReviewControllerOperation, binding: string, diagnostics: ReturnType<typeof staleConsentBindingDiagnostics>, status: ReviewStatusV3, workspaceRoot?: string): Record<string, unknown> {
+	const mapped = mapNativeTargetStatus(operation, status, undefined, workspaceRoot);
 	return {
 		...mapped,
 		status: "blocked",
@@ -6522,11 +6538,15 @@ function reviewHostRelaySelection(lens: string | undefined, config: AgentModelCo
 function mapLastEventClosure(
 	closure: ReviewLastEventClosureV1,
 	binding: ReviewLastEventClosureBinding,
+	workspaceRoot?: string,
 ): Record<string, unknown> {
 	if (closure.lineageId !== binding.lineageId) throw new CandidateViewError("last-event closure returned a different lineage", "last-event-closure-binding-drift");
 	if (binding.targetIdentity !== undefined && closure.targetIdentity !== undefined && closure.targetIdentity !== binding.targetIdentity) {
 		throw new CandidateViewError("last-event closure returned a different target", "last-event-closure-binding-drift");
 	}
+	const nextAction = closure.acknowledgement !== undefined
+		? `gentle_review {"operation":"acknowledge-approved","lineageId":"${closure.lineageId}"${workspaceRoot && workspaceRoot !== process.cwd() ? `,"workspaceRoot":${JSON.stringify(workspaceRoot)}` : ""}}`
+		: undefined;
 	return {
 		tool: "gentle_review_capture",
 		status: "closed",
@@ -6551,10 +6571,12 @@ function mapLastEventClosure(
 			// host is approved and cannot end it here, and silence would read as
 			// nothing left to do.
 			...(closure.acknowledgementUndecodable === undefined ? {} : { acknowledgement_undecodable: true }),
+			...(nextAction === undefined ? {} : { next_action: nextAction }),
 		},
 		lineage_id: closure.lineageId,
 		state: closure.state,
 		store_revision: closure.storeRevision,
+		...(nextAction === undefined ? {} : { next_action: nextAction }),
 	};
 }
 
@@ -6564,7 +6586,7 @@ function mapAndClearLastEventClosure(
 	selections: Map<string, RetainedNativeStatusSelection>,
 	workspaceRoot: string,
 ): Record<string, unknown> {
-	const mapped = mapLastEventClosure(closure, binding);
+	const mapped = mapLastEventClosure(closure, binding, workspaceRoot);
 	clearRetainedNativeStatusSelectionsOnTerminal(selections, workspaceRoot, closure.lineageId, closure.state);
 	return mapped;
 }
@@ -7641,6 +7663,7 @@ async function executeReviewControllerOperation(
 					parameters.operation,
 					status,
 					undefined,
+					includeWorkspaceRoot ? defaultCwd : undefined,
 				);
 				if (parameters.untrackedScope === undefined) {
 					if (canonicalBaseRef !== undefined && typeof plainMapped.selectionBinding === "string") {
@@ -7743,6 +7766,7 @@ async function executeReviewControllerOperation(
 					parameters.operation,
 					resolvedStatus,
 					undefined,
+					includeWorkspaceRoot ? defaultCwd : undefined,
 				);
 				return {
 					...resolvedMapped,
@@ -7877,8 +7901,8 @@ async function executeReviewControllerOperation(
 			return nativeStatusFailed(parameters.operation, error);
 		}
 		clearRetainedNativeStatusSelectionsOnTerminal(retainedUntrackedSelections, defaultCwd, status.authority?.lineageId, status.authority?.state); retainNativeCaptureRoutes(retainedUntrackedSelections, defaultCwd, status, frozenTarget?.committedOnly === true ? frozenTarget.baseCommit : undefined);
-		if (status.authority?.version === "compact-v2") return { operation: parameters.operation, repaired: false, compact_authority: "immutable-untouched", status: mapNativeTargetStatus(parameters.operation, status, parameters.lineageId) };
-		if (status.authority?.version !== "legacy-v1") return mapNativeTargetStatus(parameters.operation, status, parameters.lineageId);
+		if (status.authority?.version === "compact-v2") return { operation: parameters.operation, repaired: false, compact_authority: "immutable-untouched", status: mapNativeTargetStatus(parameters.operation, status, parameters.lineageId, includeWorkspaceRoot ? defaultCwd : undefined) };
+		if (status.authority?.version !== "legacy-v1") return mapNativeTargetStatus(parameters.operation, status, parameters.lineageId, includeWorkspaceRoot ? defaultCwd : undefined);
 		const store = ReviewTransactionStore.forRepository(defaultCwd);
 		store.repairCurrentAuthority();
 		return { operation: parameters.operation, repaired: true };
@@ -7887,6 +7911,11 @@ async function executeReviewControllerOperation(
 		const controllerOnlyInput = ["changeName", "idempotencyKey", "transition", "input", "outputPath", "inputPath", "operationId", "lineageIds", "acknowledgeUntrustedBundleSource"]
 			.find((key) => parameters[key as keyof ReviewControllerParameters] !== undefined);
 		if (controllerOnlyInput !== undefined || !isCanonicalProcessString(parameters.lineageId)) {
+			const implicitRoot = resolveReviewControllerWorkspaceRoot(undefined, sessionCwd, candidateViews, parameters.lineageId);
+			const needsExplicitWorkspaceRoot = parameters.workspaceRoot !== undefined && parameters.workspaceRoot !== implicitRoot;
+			const nextAction = isCanonicalProcessString(parameters.lineageId)
+				? `gentle_review {"operation":"acknowledge-approved","lineageId":"${parameters.lineageId}"${needsExplicitWorkspaceRoot ? `,"workspaceRoot":${JSON.stringify(parameters.workspaceRoot)}` : ""}}`
+				: "resubmit-the-exact-lineage-without-controller-only-input";
 			return {
 				operation: parameters.operation,
 				status: "blocked",
@@ -7895,7 +7924,7 @@ async function executeReviewControllerOperation(
 				...(controllerOnlyInput === undefined ? {} : { field: controllerOnlyInput }),
 				mutation_performed: false,
 				mutation_outcome: "none",
-				next_action: "resubmit-the-exact-lineage-without-controller-only-input",
+				next_action: nextAction,
 			};
 		}
 		const acknowledgementCli = nativeReviewCli as NativeReviewAcknowledgementCli | null;
@@ -8023,7 +8052,7 @@ async function executeReviewControllerOperation(
 					...(signal === undefined ? {} : { signal }),
 				}, retainedUntrackedSelections, defaultCwd);
 				if (negotiated.transport !== undefined) return hostTransportUnavailable(parameters.operation, negotiated.transport);
-				return staleConsentBindingOutcome(parameters.operation, input.consentBinding, stale, negotiated.status!);
+				return staleConsentBindingOutcome(parameters.operation, input.consentBinding, stale, negotiated.status!, includeWorkspaceRoot ? defaultCwd : undefined);
 			} catch (error) {
 				return nativeStatusFailed(parameters.operation, error);
 			}
@@ -8045,7 +8074,7 @@ async function executeReviewControllerOperation(
 					...(signal === undefined ? {} : { signal }),
 				}, retainedUntrackedSelections, defaultCwd);
 				if (negotiated.transport !== undefined) return hostTransportUnavailable(parameters.operation, negotiated.transport);
-				return staleConsentBindingOutcome(parameters.operation, input.consentBinding, stale, negotiated.status!);
+				return staleConsentBindingOutcome(parameters.operation, input.consentBinding, stale, negotiated.status!, includeWorkspaceRoot ? defaultCwd : undefined);
 			} catch (error) {
 				return nativeStatusFailed(parameters.operation, error);
 			}
@@ -8272,7 +8301,7 @@ async function executeReviewControllerOperation(
 						next_action: "inspect-and-resolve-the-current-intended-untracked-selection",
 					};
 				}
-				if (target.nextTransition?.kind === "collect" || target.applicability !== "unrelated" || target.action !== "start") return mapNativeTargetStatus(parameters.operation, target, parameters.lineageId);
+				if (target.nextTransition?.kind === "collect" || target.applicability !== "unrelated" || target.action !== "start") return mapNativeTargetStatus(parameters.operation, target, parameters.lineageId, includeWorkspaceRoot ? defaultCwd : undefined);
 			} catch (error) {
 				return nativeOperationFailure(parameters.operation, error);
 			}
@@ -8528,7 +8557,7 @@ async function executeReviewControllerOperation(
 				) retainNativeUntrackedSelection(retainedUntrackedSelections, defaultCwd, parameters.lineageId, retainedUntrackedSelection);
 				clearRetainedNativeStatusSelectionsOnTerminal(retainedUntrackedSelections, defaultCwd, status.authority?.lineageId, status.authority?.state);
 				hydrateDispatchBindingFromStatus(candidateViews, defaultCwd, status);
-				return { ...mapNativeTargetStatus(parameters.operation, status, parameters.lineageId), ...(includeWorkspaceRoot ? { workspace_root: defaultCwd } : {}) };
+				return { ...mapNativeTargetStatus(parameters.operation, status, parameters.lineageId, includeWorkspaceRoot ? defaultCwd : undefined), ...(includeWorkspaceRoot ? { workspace_root: defaultCwd } : {}) };
 			} catch (error) {
 				return nativeOperationFailure(parameters.operation, error);
 			}

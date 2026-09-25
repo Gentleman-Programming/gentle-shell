@@ -1,10 +1,39 @@
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { writeFile as writeFileAsync } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { __testing } from "../extensions/skill-registry.ts";
+import createSkillRegistryExtension, { __testing } from "../extensions/skill-registry.ts";
+
+function storageError(code: "EACCES" | "EPERM" | "EROFS" | "EIO", message: string): NodeJS.ErrnoException {
+	return Object.assign(new Error(message), { code });
+}
+
+function skillFixture(name: string): string {
+	const cwd = join(tmpdir(), `gentle-pi-registry-${name}-${Date.now()}`);
+	const skillPath = join(cwd, "skills", "docs", "SKILL.md");
+	mkdirSync(dirname(skillPath), { recursive: true });
+	writeFileSync(skillPath, "---\nname: docs\ndescription: Documentation.\n---\n");
+	return cwd;
+}
+
+function extensionHarness() {
+	const events = new Map<string, (event: unknown, ctx: any) => unknown>();
+	const commands = new Map<string, { handler: (args: unknown, ctx: any) => unknown }>();
+	createSkillRegistryExtension({
+		getFlag: () => false,
+		on(name: string, handler: (event: unknown, ctx: any) => unknown) {
+			events.set(name, handler);
+		},
+		registerFlag() {},
+		registerCommand(name: string, command: { handler: (args: unknown, ctx: any) => unknown }) {
+			commands.set(name, command);
+		},
+	} as any);
+	return { events, commands };
+}
 
 test("project skill dirs include supported workspace roots", () => {
 	const cwd = "/repo";
@@ -315,4 +344,173 @@ test("non-forced regeneration invalidates cache when skill bytes change but path
 	const secondRegistry = readFileSync(registryPath, "utf8");
 	assert.match(secondRegistry, /Variant two\. Body B\./);
 	assert.doesNotMatch(secondRegistry, /Variant one\. Body A\./);
+});
+
+test("registry and cache storage restrictions never report successful regeneration", async (t) => {
+	const cwd = skillFixture("restricted-writes");
+	const atlDirectory = join(cwd, ".atl");
+	const registryPath = join(cwd, ".atl", "skill-registry.md");
+	const cachePath = join(cwd, ".atl", ".skill-registry.cache.json");
+	t.after(() => __testing.resetStorage());
+
+	__testing.setStorage({
+		mkdir: async () => { throw storageError("EACCES", "directory denied"); },
+	});
+	const directoryFailure = await __testing.regenerateRegistry(cwd, true);
+	assert.equal(directoryFailure.regenerated, false);
+	assert.equal(directoryFailure.failure?.stage, "atl-directory");
+	assert.equal(directoryFailure.failure?.path, atlDirectory);
+
+	__testing.setStorage({
+		writeFile: async (path, data) => {
+			if (path === registryPath) throw storageError("EACCES", "registry denied");
+			return writeFileAsync(path, data);
+		},
+	});
+	const registryFailure = await __testing.regenerateRegistry(cwd, true);
+	assert.equal(registryFailure.regenerated, false);
+	assert.equal(registryFailure.failure?.stage, "registry");
+	assert.equal(registryFailure.failure?.path, registryPath);
+	assert.equal(registryFailure.failure?.code, "EACCES");
+	assert.match(registryFailure.failure?.diagnostic ?? "", /registry denied/);
+
+	__testing.setStorage({
+		writeFile: async (path, data) => {
+			if (path === cachePath) throw storageError("EROFS", "cache read-only");
+			return writeFileAsync(path, data);
+		},
+	});
+	const cacheFailure = await __testing.regenerateRegistry(cwd, true);
+	assert.equal(cacheFailure.regenerated, false);
+	assert.equal(cacheFailure.failure?.stage, "cache");
+	assert.equal(cacheFailure.failure?.path, cachePath);
+	assert.equal(cacheFailure.failure?.code, "EROFS");
+	assert.match(cacheFailure.failure?.diagnostic ?? "", /cache read-only/);
+});
+
+test("gitignore storage restriction is distinct and does not block registry regeneration at startup", async (t) => {
+	const cwd = skillFixture("gitignore-restriction");
+	const gitignorePath = join(cwd, ".gitignore");
+	const notifications: Array<{ message: string; level: string }> = [];
+	t.after(() => {
+		__testing.resetStorage();
+		__testing.closeSkillRegistryWatchers();
+	});
+	__testing.setStorage({
+		writeFile: async (path, data) => {
+			if (path === gitignorePath) throw storageError("EPERM", "gitignore denied");
+			return writeFileAsync(path, data);
+		},
+	});
+
+	const { events } = extensionHarness();
+	const startup = events.get("session_start");
+	assert.ok(startup);
+	await assert.doesNotReject(() => startup({}, {
+		cwd,
+		hasUI: true,
+		ui: { notify(message: string, level: string) { notifications.push({ message, level }); } },
+	}));
+
+	assert.ok(readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8"));
+	assert.ok((notifications.find(({ level }) => level === "warning")?.message ?? "").includes(gitignorePath));
+	assert.match(notifications.find(({ level }) => level === "warning")?.message ?? "", /add \.atl\/ to \.gitignore manually/i);
+	assert.match(notifications.find(({ level }) => level === "info")?.message ?? "", /refreshed/);
+});
+
+test("unexpected registry write failures preserve their original diagnostic", async (t) => {
+	const cwd = skillFixture("unexpected-write");
+	const registryPath = join(cwd, ".atl", "skill-registry.md");
+	t.after(() => __testing.resetStorage());
+	__testing.setStorage({
+		writeFile: async (path, data) => {
+			if (path === registryPath) throw storageError("EIO", "disk disconnected");
+			return writeFileAsync(path, data);
+		},
+	});
+
+	await assert.rejects(__testing.regenerateRegistry(cwd, true), (error: NodeJS.ErrnoException) => {
+		assert.equal(error.code, "EIO");
+		assert.match(error.message, /disk disconnected/);
+		return true;
+	});
+});
+
+test("a later writable forced refresh recovers after a storage restriction", async (t) => {
+	const cwd = skillFixture("recovery");
+	const registryPath = join(cwd, ".atl", "skill-registry.md");
+	t.after(() => __testing.resetStorage());
+	__testing.setStorage({
+		writeFile: async (path, data) => {
+			if (path === registryPath) throw storageError("EACCES", "registry denied");
+			return writeFileAsync(path, data);
+		},
+	});
+	assert.equal((await __testing.regenerateRegistry(cwd, true)).regenerated, false);
+
+	__testing.resetStorage();
+	const recovered = await __testing.regenerateRegistry(cwd, true);
+	assert.equal(recovered.regenerated, true);
+	assert.equal(recovered.reason, "forced");
+});
+
+test("manual refresh reports unavailable storage with the affected path and next action", async (t) => {
+	const cwd = skillFixture("manual-notification");
+	const cachePath = join(cwd, ".atl", ".skill-registry.cache.json");
+	const notifications: Array<{ message: string; level: string }> = [];
+	t.after(() => __testing.resetStorage());
+	__testing.setStorage({
+		writeFile: async (path, data) => {
+			if (path === cachePath) throw storageError("EROFS", "cache read-only");
+			return writeFileAsync(path, data);
+		},
+	});
+
+	const { commands } = extensionHarness();
+	const refresh = commands.get("skill-registry:refresh");
+	assert.ok(refresh);
+	await refresh.handler({}, {
+		cwd,
+		ui: { notify(message: string, level: string) { notifications.push({ message, level }); } },
+	});
+
+	assert.equal(notifications.length, 1);
+	assert.equal(notifications[0]?.level, "warning");
+	assert.match(notifications[0]?.message ?? "", /unavailable/i);
+	assert.match(notifications[0]?.message ?? "", new RegExp(cachePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+	assert.match(notifications[0]?.message ?? "", /repair permissions/i);
+});
+
+test("unexpected startup and delayed recovery failures propagate while watcher reports the original diagnostic", async (t) => {
+	const cwd = skillFixture("async-unexpected");
+	const legacyPath = join(cwd, ".pi", "extensions", "skill-registry.ts");
+	const registryPath = join(cwd, ".atl", "skill-registry.md");
+	mkdirSync(dirname(legacyPath), { recursive: true });
+	writeFileSync(legacyPath, "Auto-generated by .pi/extensions/skill-registry.ts\nconst REGISTRY_REL_PATH = \".atl/skill-registry.md\"\nfunction projectSkillDirs(cwd: string): string[]\nfunction regenerateRegistry(cwd: string, force: boolean)\n");
+	let registryWrites = 0;
+	t.after(() => __testing.resetStorage());
+	__testing.setStorage({
+		writeFile: async (path, data) => {
+			if (path === registryPath && ++registryWrites === 2) throw storageError("EIO", "async disk fault");
+			return writeFileAsync(path, data);
+		},
+	});
+
+	const { events } = extensionHarness();
+	const startup = events.get("session_start");
+	assert.ok(startup);
+	await assert.rejects(() => startup({}, { cwd, hasUI: false }), /async disk fault/);
+	const notifications: Array<{ message: string; level: string }> = [];
+	__testing.setStorage({
+		writeFile: async (path, data) => {
+			if (path === registryPath) throw storageError("EIO", "async disk fault");
+			return writeFileAsync(path, data);
+		},
+	});
+	writeFileSync(join(cwd, "skills", "docs", "SKILL.md"), "---\nname: docs\ndescription: Changed documentation.\n---\n");
+	await __testing.refreshRegistryFromWatcher(cwd, (message, level) => {
+		notifications.push({ message, level });
+	});
+	assert.match(notifications[0]?.message ?? "", /async disk fault/);
+	assert.equal(notifications[0]?.level, "warning");
 });

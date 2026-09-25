@@ -10,7 +10,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, join, normalize, relative, sep } from "node:path";
+import { basename, join, normalize, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -312,22 +312,79 @@ interface RegenResult {
 	regenerated: boolean;
 	skillCount: number;
 	reason: string;
+	failure?: StorageFailure;
 }
 
-async function ensureAtlIgnored(cwd: string): Promise<void> {
+type StorageFailureStage = "gitignore" | "atl-directory" | "registry" | "cache";
+
+interface StorageFailure {
+	stage: StorageFailureStage;
+	path: string;
+	code: "EACCES" | "EPERM" | "EROFS";
+	diagnostic: string;
+	nextAction: string;
+}
+
+interface RegistryStorage {
+	mkdir(path: string, options: { recursive: true }): Promise<string | undefined>;
+	writeFile(path: string, data: string): Promise<void>;
+}
+
+const defaultRegistryStorage: RegistryStorage = { mkdir, writeFile };
+let registryStorage = defaultRegistryStorage;
+const STORAGE_RESTRICTION_CODES = new Set(["EACCES", "EPERM", "EROFS"]);
+
+function errorDiagnostic(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+function storageFailure(
+	stage: StorageFailureStage,
+	path: string,
+	error: unknown,
+): StorageFailure | undefined {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	if (!STORAGE_RESTRICTION_CODES.has(code ?? "")) return undefined;
+	return {
+		stage,
+		path: resolve(path),
+		code: code as StorageFailure["code"],
+		diagnostic: errorDiagnostic(error),
+		nextAction: stage === "gitignore"
+			? "Add .atl/ to .gitignore manually, then repair permissions for automatic updates."
+			: "Repair permissions or use a writable project directory, then run /skill-registry:refresh.",
+	};
+}
+
+function unavailableResult(failure: StorageFailure, skillCount = 0): RegenResult {
+	return { regenerated: false, skillCount, reason: "storage-restricted", failure };
+}
+
+function storageFailureMessage(failure: StorageFailure): string {
+	return `Skill registry unavailable: ${failure.stage} storage at ${failure.path} failed (${failure.code}): ${failure.diagnostic}. Next: ${failure.nextAction}`;
+}
+
+async function ensureAtlIgnored(cwd: string): Promise<StorageFailure | undefined> {
 	const gitignorePath = join(cwd, ".gitignore");
-	let existing = "";
-	if (await pathExists(gitignorePath)) {
-		existing = await readFile(gitignorePath, "utf8");
+	try {
+		let existing = "";
+		if (await pathExists(gitignorePath)) {
+			existing = await readFile(gitignorePath, "utf8");
+		}
+		const hasAtlIgnore = existing
+			.split("\n")
+			.map((line) => line.trim())
+			.some((line) => line === ".atl" || line === ATL_IGNORE_ENTRY);
+		if (hasAtlIgnore) return undefined;
+		const prefix = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
+		const header = existing.includes("# Local Pi runtime state") ? "" : "# Local Pi runtime state\n";
+		await registryStorage.writeFile(gitignorePath, `${existing}${prefix}${header}${ATL_IGNORE_ENTRY}\n`);
+		return undefined;
+	} catch (error) {
+		const failure = storageFailure("gitignore", gitignorePath, error);
+		if (failure) return failure;
+		throw error;
 	}
-	const hasAtlIgnore = existing
-		.split("\n")
-		.map((line) => line.trim())
-		.some((line) => line === ".atl" || line === ATL_IGNORE_ENTRY);
-	if (hasAtlIgnore) return;
-	const prefix = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
-	const header = existing.includes("# Local Pi runtime state") ? "" : "# Local Pi runtime state\n";
-	await writeFile(gitignorePath, `${existing}${prefix}${header}${ATL_IGNORE_ENTRY}\n`);
 }
 
 function isGeneratedLegacyProjectRegistry(source: string): boolean {
@@ -409,9 +466,27 @@ async function regenerateRegistry(
 		return rel.startsWith("..") ? d : rel || ".";
 	});
 	const md = renderRegistry(cwd, sources, deduped);
-	await mkdir(join(cwd, ".atl"), { recursive: true });
-	await writeFile(registryPath, md);
-	await writeFile(cachePath, JSON.stringify({ fingerprint: fp }, null, 2));
+	try {
+		await registryStorage.mkdir(join(cwd, ".atl"), { recursive: true });
+	} catch (error) {
+		const failure = storageFailure("atl-directory", join(cwd, ".atl"), error);
+		if (failure) return unavailableResult(failure);
+		throw error;
+	}
+	try {
+		await registryStorage.writeFile(registryPath, md);
+	} catch (error) {
+		const failure = storageFailure("registry", registryPath, error);
+		if (failure) return unavailableResult(failure, deduped.length);
+		throw error;
+	}
+	try {
+		await registryStorage.writeFile(cachePath, JSON.stringify({ fingerprint: fp }, null, 2));
+	} catch (error) {
+		const failure = storageFailure("cache", cachePath, error);
+		if (failure) return unavailableResult(failure, deduped.length);
+		throw error;
+	}
 	return {
 		regenerated: true,
 		skillCount: deduped.length,
@@ -487,9 +562,25 @@ function closeSkillRegistryWatchers(): void {
 	watchedCwds.clear();
 }
 
+async function refreshRegistryFromWatcher(
+	cwd: string,
+	notify: (message: string, level: "info" | "warning") => void,
+): Promise<void> {
+	try {
+		const result = await regenerateRegistry(cwd, false);
+		if (result.regenerated) {
+			notify(`Skill registry refreshed (${result.skillCount} skills)`, "info");
+		} else if (result.failure) {
+			notify(storageFailureMessage(result.failure), "warning");
+		}
+	} catch (error) {
+		notify(`Skill registry refresh failed: ${errorDiagnostic(error)}`, "warning");
+	}
+}
+
 async function startSkillRegistryWatcher(
 	cwd: string,
-	notify: (message: string) => void,
+	notify: (message: string, level: "info" | "warning") => void,
 ): Promise<void> {
 	if (watchedCwds.has(cwd)) return;
 	watchedCwds.add(cwd);
@@ -501,24 +592,15 @@ async function startSkillRegistryWatcher(
 	const refresh = () => {
 		if (timer) clearTimeout(timer);
 		timer = setTimeout(() => {
-			void (async () => {
-				try {
-					const result = await regenerateRegistry(cwd, false);
-					if (result.regenerated) {
-						notify(`Skill registry refreshed (${result.skillCount} skills)`);
-					}
-				} catch {
-					// Keep the watcher best-effort; session_start/manual refresh surfaces detailed failures.
-				}
-			})();
+			void refreshRegistryFromWatcher(cwd, notify);
 		}, WATCH_DEBOUNCE_MS);
 	};
 	for (const dir of dirs) {
 		try {
 			const watcher = watch(dir, { recursive: true }, refresh);
 			activeWatchers.add(watcher);
-		} catch {
-			// Some filesystems do not support recursive watches; session_start/manual refresh still work.
+		} catch (error) {
+			notify(`Skill registry watch unavailable: ${errorDiagnostic(error)}`, "warning");
 		}
 	}
 }
@@ -534,8 +616,15 @@ export const __testing = {
 	parseFrontmatter,
 	renderRegistry,
 	regenerateRegistry,
+	setStorage(overrides: Partial<RegistryStorage>) {
+		registryStorage = { ...defaultRegistryStorage, ...overrides };
+	},
+	resetStorage() {
+		registryStorage = defaultRegistryStorage;
+	},
 	shouldSkipSkillRegistryStartup,
 	shouldSkipDuplicateExtensionLoad,
+	refreshRegistryFromWatcher,
 	startSkillRegistryWatcher,
 	closeSkillRegistryWatchers,
 	activeWatcherCount() {
@@ -559,9 +648,15 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		if (shouldSkipSkillRegistryStartup(pi)) return;
 		try {
-			await ensureAtlIgnored(ctx.cwd);
+			const gitignoreFailure = await ensureAtlIgnored(ctx.cwd);
 			const quarantinedLegacy = await quarantineLegacyProjectRegistry(ctx.cwd);
 			const result = await regenerateRegistry(ctx.cwd, quarantinedLegacy);
+			if (gitignoreFailure && ctx.hasUI) {
+				ctx.ui.notify(storageFailureMessage(gitignoreFailure), "warning");
+			}
+			if (result.failure && ctx.hasUI) {
+				ctx.ui.notify(storageFailureMessage(result.failure), "warning");
+			}
 			if (result.regenerated && ctx.hasUI) {
 				ctx.ui.notify(
 					`Skill registry refreshed (${result.skillCount} skills)`,
@@ -575,20 +670,22 @@ export default function (pi: ExtensionAPI) {
 				);
 			}
 			if (ctx.hasUI) {
-				await startSkillRegistryWatcher(ctx.cwd, (message) => {
-					ctx.ui.notify(message, "info");
+				await startSkillRegistryWatcher(ctx.cwd, (message, level) => {
+					ctx.ui.notify(message, level);
 				});
 			}
 			if (quarantinedLegacy) {
-				setTimeout(() => {
-					void (async () => {
-						try {
-							await regenerateRegistry(ctx.cwd, true);
-						} catch {
-							// Best-effort same-session self-heal in case the stale extension already ran.
-						}
-					})();
-				}, WATCH_DEBOUNCE_MS);
+				if (!ctx.hasUI) {
+					await regenerateRegistry(ctx.cwd, true);
+				} else {
+					setTimeout(() => {
+						void regenerateRegistry(ctx.cwd, true)
+							.then((recovery) => {
+								if (recovery.failure) ctx.ui.notify(storageFailureMessage(recovery.failure), "warning");
+							})
+							.catch((error) => ctx.ui.notify(`Skill registry refresh failed: ${errorDiagnostic(error)}`, "warning"));
+					}, WATCH_DEBOUNCE_MS);
+				}
 			}
 		} catch (error) {
 			if (ctx.hasUI) {
@@ -598,6 +695,8 @@ export default function (pi: ExtensionAPI) {
 					`Skill registry refresh failed: ${message}`,
 					"warning",
 				);
+			} else {
+				throw error;
 			}
 		}
 	});
@@ -606,12 +705,19 @@ export default function (pi: ExtensionAPI) {
 		description: "Regenerate .atl/skill-registry.md from local skill sources.",
 		handler: async (_args, ctx) => {
 			try {
-				await ensureAtlIgnored(ctx.cwd);
+				const gitignoreFailure = await ensureAtlIgnored(ctx.cwd);
 				const result = await regenerateRegistry(ctx.cwd, true);
-				ctx.ui.notify(
-					`Skill registry: ${result.skillCount} skill(s) written to ${REGISTRY_REL_PATH}`,
-					"info",
-				);
+				if (gitignoreFailure) {
+					ctx.ui.notify(storageFailureMessage(gitignoreFailure), "warning");
+				}
+				if (result.failure) {
+					ctx.ui.notify(storageFailureMessage(result.failure), "warning");
+				} else {
+					ctx.ui.notify(
+						`Skill registry: ${result.skillCount} skill(s) written to ${REGISTRY_REL_PATH}`,
+						"info",
+					);
+				}
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				ctx.ui.notify(`Skill registry refresh failed: ${message}`, "warning");

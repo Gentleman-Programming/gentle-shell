@@ -227,7 +227,7 @@ send_popup() {
     if [ -n "$POWERSHELL_BIN" ]; then
         GENTLE_NOTIFY_TITLE="$title" \
         GENTLE_NOTIFY_MSG="$msg" \
-        WSLENV="${WSLENV:+${WSLENV}:}GENTLE_NOTIFY_TITLE/u:GENTLE_NOTIFY_MSG/u" \
+        WSLENV="${WSLENV:+${WSLENV}:}GENTLE_NOTIFY_TITLE/w:GENTLE_NOTIFY_MSG/w" \
         "$POWERSHELL_BIN" -NoProfile -NonInteractive -Command "
             [reflection.assembly]::loadwithpartialname('System.Windows.Forms') | Out-Null
             \$notify = New-Object System.Windows.Forms.NotifyIcon

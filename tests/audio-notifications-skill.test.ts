@@ -94,3 +94,12 @@ test("notify.sh semantic event flags behave correctly", { skip: isWindows && !ha
 	assert.equal(titleMissingRun.status, 2);
 	assert.match(titleMissingRun.stderr, /requires a value/);
 });
+
+test("notify.sh exports WSLENV with /w flag for Win32 PowerShell bridging", () => {
+	const scriptContent = readFileSync(scriptPath, "utf8");
+	assert.match(
+		scriptContent,
+		/WSLENV=.*GENTLE_NOTIFY_TITLE\/w:GENTLE_NOTIFY_MSG\/w/,
+		"WSLENV must use /w flag to forward notification env variables from WSL to Win32 PowerShell",
+	);
+});

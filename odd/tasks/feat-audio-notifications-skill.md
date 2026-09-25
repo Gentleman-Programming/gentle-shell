@@ -31,3 +31,4 @@ Long-running commands, infrastructure provisioning, test suites, and subagent ru
 - [x] **T3 — Add test coverage and register collision prefix.** Update `tests/skill-collision-prefixes.test.ts` and test `notify.sh`.
 - [x] **T4 — Full verification and typecheck.**
 - [x] **T5 — Review hardening from CodeRabbit feedback.** Sanitize terminal OSC escapes, harden AppleScript/PowerShell arguments against injection, guard --title against empty loops, remove invalid command fallback, and fix Windows bash test execution.
+- [x] **T6 — Fix WSLENV transfer direction.** Use `/w` flag instead of `/u` for PowerShell bridging from WSL to Windows.

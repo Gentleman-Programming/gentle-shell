@@ -29,6 +29,7 @@ import {
   ensureRegistryEntry,
   migrateLegacyStores,
   openSessionWriter,
+  type DrainResult,
   type SessionWriterState,
 } from "./store.ts";
 import { randomUUID } from "node:crypto";
@@ -548,8 +549,16 @@ class PromptHistorySelector extends Container implements Focusable {
    * rebuild the merged records, reset the window. Tab's only role.
    */
   private toggleScope(): void {
+    const previous = this.scope;
     this.scope = this.scope === "project" ? "global" : "project";
     const entries = drainForScope(this.scope);
+    if (!Array.isArray(entries)) {
+      // Fail-closed drain (spec C4): stay on the working scope and surface
+      // the recovery warning instead of a blocked (entry-less) list.
+      this.scope = previous;
+      this.onNotify?.(entries.message, "error");
+      return;
+    }
     this.records = recordsFromEntries(entries);
     this.loadedCount = initialLoadedCount(this.records.length, INITIAL_BATCH);
     this.applyFilter(this.searchInput.getValue());
@@ -895,18 +904,28 @@ function getWriter(): SessionWriterState {
 }
 
 /**
+ * A selector scope drain: the drained prompts, or the fail-closed blocked
+ * shape (spec C4) carrying the recovery message and NO prompts.
+ */
+type ScopeDrain = string[] | Extract<DrainResult, { status: "blocked" }>;
+
+/**
  * Scope drain for the selector: project scope drains the project's store
  * files; global scope is the store-only cross-project view (all project
- * dirs + the legacy global seed). Both filter tombstoned prompts.
+ * dirs + the legacy global seed). Both filter tombstoned prompts and fail
+ * closed (spec C4): an untrusted hidden.json returns the blocked
+ * DrainResult with the recovery message instead of any prompts.
  */
-function drainForScope(scope: HistoryScope): string[] {
+function drainForScope(scope: HistoryScope): ScopeDrain {
   // Defense in depth: a drain must never trigger init writes while the user
   // has capture disabled (the selector gate below is the first line).
   if (!captureEnabled()) return [];
   getWriter(); // ensure init ran
-  return scope === "project"
-    ? drainProject(PI_HISTORY_ROOT, CURRENT_CWD, 1000, PI_HISTORY_NAV_STATE_DIR)
-    : drainGlobal(PI_HISTORY_ROOT, 1000, PI_HISTORY_NAV_STATE_DIR);
+  const drain =
+    scope === "project"
+      ? drainProject(PI_HISTORY_ROOT, CURRENT_CWD, 1000, PI_HISTORY_NAV_STATE_DIR)
+      : drainGlobal(PI_HISTORY_ROOT, 1000, PI_HISTORY_NAV_STATE_DIR);
+  return drain.status === "ok" ? drain.prompts : drain;
 }
 
 async function openHistorySelector(
@@ -926,6 +945,12 @@ async function openHistorySelector(
   // symmetrically — no live transcript merge (the one-time seed bootstrap
   // covers pre-store history).
   const entries = drainForScope("project");
+  if (!Array.isArray(entries)) {
+    // Fail-closed drain (spec C4): the tombstone file is untrusted, so NO
+    // entries are shown — surface the recovery warning instead.
+    ctx.ui.notify(entries.message, "error");
+    return;
+  }
   if (entries.length === 0) {
     ctx.ui.notify("No prompt history available.", "warning");
     return;

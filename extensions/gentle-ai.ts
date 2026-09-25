@@ -5627,6 +5627,49 @@ function validateNativeStartUntrackedSelection(value: Record<string, unknown>): 
 	};
 }
 
+// gentle-pi#941: the pre-lineage selection had eight ways to be refused and one
+// opaque outcome for all of them, so a caller holding provider-issued bytes
+// could not tell a moved status from an ineligible path -- and the only route
+// left was to send the same call again. START rejections have carried
+// `reason`/`field` since they were introduced (nativeStartRejection above);
+// name the failing check here the same way. The checks keep their original
+// order, so which one is reported is the first that fails, exactly as the
+// short-circuiting condition decided before.
+const INTENDED_UNTRACKED_BINDING_FIELDS = ["target_identity", "projection", "base_tree", "candidate_tree"] as const;
+
+function intendedUntrackedSelectionRejection(
+	input: ReviewCollectInputV3 | undefined,
+	canonicalBinding: string,
+	status: ReviewStatusV3,
+	eligible: unknown,
+	selected: NativeStartUntrackedSelection,
+): { readonly reason: string; readonly field?: string } | undefined {
+	if (input === undefined) return { reason: "selection-input-absent" };
+	if (canonicalReviewCaptureBinding(input) !== canonicalBinding) return { reason: "binding-mismatch" };
+	const bound: Record<(typeof INTENDED_UNTRACKED_BINDING_FIELDS)[number], string> = {
+		target_identity: status.targetIdentity,
+		projection: status.projection.projection,
+		base_tree: status.projection.baseTree,
+		candidate_tree: status.projection.currentCandidateTree,
+	};
+	// A field that no longer matches the live status means the binding was
+	// issued against a different target, projection or tree -- the selection is
+	// stale rather than wrong, and a fresh inspect is the forward route.
+	for (const field of INTENDED_UNTRACKED_BINDING_FIELDS) {
+		if (exactCollectArgument(input, field) !== bound[field]) return { reason: "status-field-mismatch", field };
+	}
+	// The eligible list is the provider's own `eligible_paths_json`; unreadable
+	// here means it was absent, duplicated, or not valid JSON in the status.
+	if (!Array.isArray(eligible)) return { reason: "eligible-paths-unreadable" };
+	if (selected.reason !== undefined) return { reason: selected.reason };
+	// Echoes back a path the caller itself submitted -- no information the
+	// caller did not already have, and with a large inventory it is the only
+	// way to tell which entry of a long selection was refused.
+	const ineligible = selected.intendedUntracked!.find((path) => !eligible.includes(path));
+	if (ineligible !== undefined) return { reason: "path-not-eligible", field: ineligible };
+	return undefined;
+}
+
 const BASE_REF_REJECTION_REASONS = new Set(["base-ref-unresolvable", "base-ref-ambiguous", "base-ref-moved", "base-ref-invalid"]);
 
 function baseRefRejectionHint(reason: string): { hint?: string } {
@@ -8106,7 +8149,7 @@ async function executeReviewControllerOperation(
 		const canonicalBinding = parseCanonicalReviewCaptureBinding(parameters.selectionBinding!);
 		const retainedStop = retainedUntrackedSelections.get(reviewLifecycleStorageKey(defaultCwd, ""));
 		const stopSelector = retainedStop !== undefined && "selectionBinding" in retainedStop ? retainedStop : undefined;
-		if (stopSelector !== undefined && stopSelector.selectionBinding !== canonicalBinding) return { operation: parameters.operation, status: "blocked", outcome: "intended-untracked-selection-binding-rejected", mutation_performed: false, mutation_outcome: "none" };
+		if (stopSelector !== undefined && stopSelector.selectionBinding !== canonicalBinding) return { operation: parameters.operation, status: "blocked", outcome: "intended-untracked-selection-binding-rejected", reason: "binding-mismatch", mutation_performed: false, mutation_outcome: "none" };
 		const committedSelector = stopSelector === undefined ? {} : { baseRef: stopSelector.baseRef, committedOnly: true as const };
 		let status: ReviewStatusV3;
 		try {
@@ -8119,8 +8162,12 @@ async function executeReviewControllerOperation(
 		try { eligible = JSON.parse(eligibleJson ?? ""); } catch { eligible = undefined; }
 		const scope = parameters.intendedUntracked!.length === 0 ? NATIVE_START_UNTRACKED_SCOPE.EXCLUDE : NATIVE_START_UNTRACKED_SCOPE.SELECT;
 		const selected = validateNativeStartUntrackedSelection({ untrackedScope: scope, expectedUntrackedInventory: inventory, intendedUntracked: parameters.intendedUntracked });
-		const rejected = (stopSelector !== undefined && stopSelector.targetIdentity !== status.targetIdentity) || input === undefined || canonicalReviewCaptureBinding(input) !== canonicalBinding || exactCollectArgument(input, "target_identity") !== status.targetIdentity || exactCollectArgument(input, "projection") !== status.projection.projection || exactCollectArgument(input, "base_tree") !== status.projection.baseTree || exactCollectArgument(input, "candidate_tree") !== status.projection.currentCandidateTree || !Array.isArray(eligible) || selected.reason !== undefined || selected.intendedUntracked!.some((path) => !eligible.includes(path));
-		if (rejected) return { operation: parameters.operation, status: "blocked", outcome: "intended-untracked-selection-binding-rejected", mutation_performed: false, mutation_outcome: "none" };
+		// A committed selector retained at STOP was issued for one target, so a live
+		// status on another means the target moved under it, the same stale case.
+		const rejected = stopSelector !== undefined && stopSelector.targetIdentity !== status.targetIdentity
+			? { reason: "status-field-mismatch", field: "target_identity" }
+			: intendedUntrackedSelectionRejection(input, canonicalBinding, status, eligible, selected);
+		if (rejected !== undefined) return { operation: parameters.operation, status: "blocked", outcome: "intended-untracked-selection-binding-rejected", reason: rejected.reason, ...(rejected.field === undefined ? {} : { field: rejected.field }), mutation_performed: false, mutation_outcome: "none" };
 		const submission = { argumentTokens: input.submission!.argumentTokens, value: JSON.stringify({ schema: "gentle-ai.review-intended-untracked-selection/v1", untracked_scope: scope, expected_untracked_inventory: inventory, intended_untracked: selected.intendedUntracked }) };
 		const result = await executeReviewControllerOperation({ operation: REVIEW_CONTROLLER_OPERATION.START, ...(parameters.workspaceRoot === undefined ? {} : { workspaceRoot: parameters.workspaceRoot }), input: JSON.stringify({ mode: REVIEW_MODE.ORDINARY, ...committedSelector, untrackedScope: scope, expectedUntrackedInventory: inventory, intendedUntracked: selected.intendedUntracked }) }, sessionCwd, nativeReviewCli, signal, candidateViews, context, retainedUntrackedSelections, pendingReviewConsentRegistry, pendingReviewConsentFallbackKey, reviewConsentNow, reviewConsentScheduleTimer, submission);
 		return { ...result, operation: parameters.operation };

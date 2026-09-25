@@ -496,6 +496,39 @@ test("mergeResolvedWithLoose keeps project-over-user name precedence", () => {
 	assert.equal(resolvedWins[0].path, resolvedProjectPath, "resolved project path beats loose user path");
 });
 
+test("mergeResolvedWithLoose does not promote resolved user scope inside cwd", () => {
+	const cwd = join(tmpdir(), `gentle-pi-resolved-user-cwd-${Date.now()}`);
+	const resolvedPath = join(cwd, ".pi", "agent", "skills", "dup", "SKILL.md");
+	const loosePath = join(cwd, "skills", "dup", "SKILL.md");
+	const resolved = __testing.toResolvedEntry({
+		name: "dup", description: "Pi user skill", filePath: resolvedPath,
+		sourceInfo: { scope: "user" },
+	}, cwd);
+	assert.ok(resolved);
+	assert.equal(resolved.scope, "user");
+	const merged = __testing.mergeResolvedWithLoose(
+		[resolved], [{ name: "dup", path: loosePath, description: "Loose project skill" }], cwd,
+	);
+	assert.equal(merged.length, 1);
+	assert.equal(merged[0].path, loosePath, "loose project beats Pi-resolved user even inside cwd");
+});
+
+test("mergeResolvedWithLoose honors resolved project scope outside cwd", () => {
+	const cwd = join(tmpdir(), `gentle-pi-linked-workspace-${Date.now()}`);
+	const linkedPath = join(tmpdir(), `gentle-pi-linked-source-${Date.now()}`, "skills", "dup", "SKILL.md");
+	const loosePath = join(cwd, "skills", "dup", "SKILL.md");
+	const resolved = __testing.toResolvedEntry({
+		name: "dup", description: "Pi project skill", filePath: linkedPath,
+		sourceInfo: { scope: "project" },
+	}, cwd);
+	assert.ok(resolved);
+	const merged = __testing.mergeResolvedWithLoose(
+		[resolved], [{ name: "dup", path: loosePath, description: "Loose cwd skill" }], cwd,
+	);
+	assert.equal(merged.length, 1);
+	assert.deepEqual(merged[0], resolved);
+});
+
 test("mergeResolvedWithLoose with empty resolved matches the loose-only result", () => {
 	const cwd = join(tmpdir(), `gentle-pi-merge-empty-${Date.now()}`);
 	const loose = [

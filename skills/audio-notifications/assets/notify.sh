@@ -180,6 +180,13 @@ send_popup() {
 
     [ -n "$CUSTOM_TITLE" ] && title="$CUSTOM_TITLE"
 
+    local terminal_title="${title//$'\e'/}"
+    terminal_title="${terminal_title//$'\a'/}"
+    terminal_title="${terminal_title//$'\x9c'/}"
+    local terminal_msg="${msg//$'\e'/}"
+    terminal_msg="${terminal_msg//$'\a'/}"
+    terminal_msg="${terminal_msg//$'\x9c'/}"
+
     # Terminal OSC escape sequence passthrough:
     # Works across Ghostty, WezTerm, Kitty, Foot, iTerm2, Windows Terminal, and through SSH/Tmux/Zellij
     local tty_out=""
@@ -192,21 +199,20 @@ send_popup() {
     if [ -n "$tty_out" ]; then
         if [ -n "${TMUX:-}" ]; then
             # Tmux DCS passthrough for terminal notification
-            printf "\033Ptmux;\033\033]777;notify;%s;%s\033\033\\\033\\" "$title" "$msg" > "$tty_out" 2>/dev/null || true
-            tmux display-message "$title: $msg" 2>/dev/null &
+            printf "\033Ptmux;\033\033]777;notify;%s;%s\033\033\\\033\\" "$terminal_title" "$terminal_msg" > "$tty_out" 2>/dev/null || true
+            tmux display-message "$terminal_title: $terminal_msg" 2>/dev/null &
         else
-            printf "\033]777;notify;%s;%s\033\\" "$title" "$msg" > "$tty_out" 2>/dev/null || true
-            printf "\033]9;%s: %s\033\\" "$title" "$msg" > "$tty_out" 2>/dev/null || true
+            printf "\033]777;notify;%s;%s\033\\" "$terminal_title" "$terminal_msg" > "$tty_out" 2>/dev/null || true
+            printf "\033]9;%s: %s\033\\" "$terminal_title" "$terminal_msg" > "$tty_out" 2>/dev/null || true
         fi
     fi
 
     # Native Desktop Notifications
     if [ "$IS_DARWIN" -eq 1 ]; then
         if command -v osascript >/dev/null 2>&1; then
-            local clean_msg clean_title
-            clean_msg=$(printf '%s' "$msg" | sed 's/"/\\"/g')
-            clean_title=$(printf '%s' "$title" | sed 's/"/\\"/g')
-            osascript -e "display notification \"$clean_msg\" with title \"$clean_title\"" >/dev/null 2>&1 &
+            osascript -e 'on run argv' \
+                -e 'display notification (item 1 of argv) with title (item 2 of argv)' \
+                -e 'end run' -- "$msg" "$title" >/dev/null 2>&1 &
         fi
         return 0
     fi
@@ -219,12 +225,15 @@ send_popup() {
     fi
 
     if [ -n "$POWERSHELL_BIN" ]; then
+        GENTLE_NOTIFY_TITLE="$title" \
+        GENTLE_NOTIFY_MSG="$msg" \
+        WSLENV="${WSLENV:+${WSLENV}:}GENTLE_NOTIFY_TITLE/u:GENTLE_NOTIFY_MSG/u" \
         "$POWERSHELL_BIN" -NoProfile -NonInteractive -Command "
             [reflection.assembly]::loadwithpartialname('System.Windows.Forms') | Out-Null
             \$notify = New-Object System.Windows.Forms.NotifyIcon
             \$notify.Icon = [System.Drawing.SystemIcons]::Information
-            \$notify.BalloonTipTitle = '$title'
-            \$notify.BalloonTipText = '$msg'
+            \$notify.BalloonTipTitle = \$env:GENTLE_NOTIFY_TITLE
+            \$notify.BalloonTipText = \$env:GENTLE_NOTIFY_MSG
             \$notify.Visible = \$True
             \$notify.ShowBalloonTip(3000)
         " >/dev/null 2>&1 &
@@ -244,7 +253,11 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         -t|--title)
-            CUSTOM_TITLE="${2:-}"
+            if [ $# -lt 2 ]; then
+                echo "notify.sh: $1 requires a value" >&2
+                exit 2
+            fi
+            CUSTOM_TITLE="$2"
             shift 2
             ;;
         --error)
@@ -292,10 +305,6 @@ if [ $# -eq 0 ]; then
     play_sound "success"
     send_popup "normal" "✅ Complete" "Command finished successfully."
     exit 0
-elif [ $# -eq 1 ] && ! command -v "$1" >/dev/null 2>&1 && [ ! -x "$1" ]; then
-    play_sound "success"
-    send_popup "normal" "✅ Notice" "$1"
-    exit 0
 fi
 
 # --- Command Wrapper Mode ---
@@ -310,10 +319,10 @@ fi
 
 if [ "$EXIT_CODE" -eq 0 ]; then
     play_sound "success"
-    send_popup "normal" "✅ Completed ($DURATION)" "$SHORT_CMD\n(Exit 0)"
+    send_popup "normal" "✅ Completed ($DURATION)" "$SHORT_CMD (exit 0)"
 else
     play_sound "error"
-    send_popup "critical" "🚨 Failed ($DURATION)" "$SHORT_CMD\n(Exit $EXIT_CODE)"
+    send_popup "critical" "🚨 Failed ($DURATION)" "$SHORT_CMD (exit $EXIT_CODE)"
 fi
 
 exit "$EXIT_CODE"

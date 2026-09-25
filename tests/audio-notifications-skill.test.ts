@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execSync, spawnSync } from "node:child_process";
+import { execSync, spawnSync, type SpawnSyncOptionsWithStringEncoding } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,6 +9,20 @@ const repoRoot = join(import.meta.dirname, "..");
 const skillDir = join(repoRoot, "skills", "audio-notifications");
 const skillPath = join(skillDir, "SKILL.md");
 const scriptPath = join(skillDir, "assets", "notify.sh");
+
+const isWindows = process.platform === "win32";
+const hasBash = !isWindows || spawnSync("bash", ["-c", "exit 0"]).status === 0;
+
+/**
+ * Executes notify.sh with given arguments, invoking bash on Windows platforms.
+ */
+function runNotify(args: string[], options: Omit<SpawnSyncOptionsWithStringEncoding, "encoding"> = {}) {
+	const opts: SpawnSyncOptionsWithStringEncoding = { ...options, encoding: "utf8" };
+	if (isWindows) {
+		return spawnSync("bash", [scriptPath, ...args], opts);
+	}
+	return spawnSync(scriptPath, args, opts);
+}
 
 test("gentle-ai-audio-notifications SKILL.md structure and frontmatter validity", () => {
 	assert.ok(existsSync(skillPath), "SKILL.md must exist");
@@ -39,43 +53,44 @@ test("notify.sh wrapper script exists and is executable", () => {
 	}
 });
 
-test("notify.sh wraps commands, preserves stdout/stderr and exit codes", () => {
+test("notify.sh wraps commands, preserves stdout/stderr and exit codes", { skip: isWindows && !hasBash ? "bash unavailable on Windows" : false }, () => {
 	// Success wrapping
-	const successRun = spawnSync(scriptPath, ["bash", "-c", "echo 'stdout line'; echo 'stderr line' >&2; exit 0"], {
-		encoding: "utf8",
-	});
+	const successRun = runNotify(["bash", "-c", "echo 'stdout line'; echo 'stderr line' >&2; exit 0"]);
 	assert.equal(successRun.status, 0);
 	assert.match(successRun.stdout, /stdout line/);
 	assert.match(successRun.stderr, /stderr line/);
 
 	// Error wrapping with arbitrary exit code
-	const errorRun = spawnSync(scriptPath, ["bash", "-c", "echo 'failing'; exit 42"], {
-		encoding: "utf8",
-	});
+	const errorRun = runNotify(["bash", "-c", "echo 'failing'; exit 42"]);
 	assert.equal(errorRun.status, 42);
 	assert.match(errorRun.stdout, /failing/);
+
+	// Preserves non-zero exit when wrapped command is not found
+	const missingCmdRun = runNotify(["__nonexistent_binary_xyz_12345__"]);
+	assert.notEqual(missingCmdRun.status, 0);
 });
 
-test("notify.sh semantic event flags behave correctly", () => {
+test("notify.sh semantic event flags behave correctly", { skip: isWindows && !hasBash ? "bash unavailable on Windows" : false }, () => {
 	// --start
-	const startRun = spawnSync(scriptPath, ["--start", "Starting build"], { encoding: "utf8" });
+	const startRun = runNotify(["--start", "Starting build"]);
 	assert.equal(startRun.status, 0);
 
 	// --success
-	const successRun = spawnSync(scriptPath, ["--success", "Build succeeded"], { encoding: "utf8" });
+	const successRun = runNotify(["--success", "Build succeeded"]);
 	assert.equal(successRun.status, 0);
 
 	// --fanfare / --batch-done
-	const fanfareRun = spawnSync(scriptPath, ["--fanfare", "Batch finished"], { encoding: "utf8" });
+	const fanfareRun = runNotify(["--fanfare", "Batch finished"]);
 	assert.equal(fanfareRun.status, 0);
-	const batchDoneRun = spawnSync(scriptPath, ["--batch-done", "All tasks done"], { encoding: "utf8" });
+	const batchDoneRun = runNotify(["--batch-done", "All tasks done"]);
 	assert.equal(batchDoneRun.status, 0);
 
 	// --error exits 1
-	const errorRun = spawnSync(scriptPath, ["--error", "Build failed"], { encoding: "utf8" });
+	const errorRun = runNotify(["--error", "Build failed"]);
 	assert.equal(errorRun.status, 1);
 
-	// Single message argument fallback
-	const messageRun = spawnSync(scriptPath, ["Simple reminder"], { encoding: "utf8" });
-	assert.equal(messageRun.status, 0);
+	// --title without value fails fast instead of looping
+	const titleMissingRun = runNotify(["--title"]);
+	assert.equal(titleMissingRun.status, 2);
+	assert.match(titleMissingRun.stderr, /requires a value/);
 });

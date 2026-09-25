@@ -30,3 +30,4 @@ Long-running commands, infrastructure provisioning, test suites, and subagent ru
 - [x] **T2 — Create `skills/audio-notifications/SKILL.md`.** Author standard skill following activation contract, decision gates, and earcon mappings.
 - [x] **T3 — Add test coverage and register collision prefix.** Update `tests/skill-collision-prefixes.test.ts` and test `notify.sh`.
 - [x] **T4 — Full verification and typecheck.**
+- [x] **T5 — Review hardening from CodeRabbit feedback.** Sanitize terminal OSC escapes, harden AppleScript/PowerShell arguments against injection, guard --title against empty loops, remove invalid command fallback, and fix Windows bash test execution.

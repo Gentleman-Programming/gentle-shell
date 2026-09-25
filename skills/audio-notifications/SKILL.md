@@ -34,7 +34,7 @@ Do not load this skill for purely silent inline operations, interactive conversa
 
 | Situation | Action |
 |---|---|
-| User runs long terminal command and wants notification on completion | Prepend wrapper: `skills/audio-notifications/assets/notify.sh <command...>` |
+| User runs long terminal command and wants notification on completion | Prepend wrapper: `<skill-dir>/assets/notify.sh <command...>` |
 | Subagent or pipeline starts a batch of work | Emit `notify.sh --start "Batch started"` |
 | Task or test run succeeds | Emit `notify.sh --success "Tests passed"` (or let wrapper handle exit 0) |
 | Task or verification fails | Emit `notify.sh --error "Task failed"` (or let wrapper handle non-zero exit) |
@@ -43,21 +43,22 @@ Do not load this skill for purely silent inline operations, interactive conversa
 ## Execution Steps
 
 1. Detect the operating system (`uname -s` or `$OSTYPE`).
-2. To wrap long-running commands, execute via the bundled asset:
+2. Resolve `notify.sh` relative to the loaded skill's directory (`<skill-dir>/assets/notify.sh`).
+3. To wrap long-running commands, execute via the bundled asset:
    ```bash
-   ./skills/audio-notifications/assets/notify.sh npm test
-   ./skills/audio-notifications/assets/notify.sh terraform apply -auto-approve
+   <skill-dir>/assets/notify.sh npm test
+   <skill-dir>/assets/notify.sh terraform apply
    ```
-3. To signal discrete lifecycle events directly:
+4. To signal discrete lifecycle events directly:
    ```bash
    # Start signal
-   ./skills/audio-notifications/assets/notify.sh --start "Deploying service"
+   <skill-dir>/assets/notify.sh --start "Deploying service"
    # Success signal
-   ./skills/audio-notifications/assets/notify.sh --success "Service deployed"
+   <skill-dir>/assets/notify.sh --success "Service deployed"
    # Error signal
-   ./skills/audio-notifications/assets/notify.sh --error "Deployment failed"
+   <skill-dir>/assets/notify.sh --error "Deployment failed"
    # Fanfare signal
-   ./skills/audio-notifications/assets/notify.sh --fanfare "Pipeline finished"
+   <skill-dir>/assets/notify.sh --fanfare "Pipeline finished"
    ```
 
 ## Output Contract

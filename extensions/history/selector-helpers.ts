@@ -240,11 +240,13 @@ export function loadedCountAfterDelete(
  * Pure delete-flow planner (spec C4, design §F): maps a record's provenance
  * to the two delete actions. "editor" deletes from the editor store on disk
  * AND writes the tombstone (twin suppression — the session copy of the same
- * text would otherwise resurface next open); "session" writes the tombstone
- * only (session transcripts are NEVER written). Takes source as a plain
- * parameter (no member reads — the T23 provenance pin keeps overlay
- * consumers source-agnostic outside deleteCurrent); the only consumer is
- * deleteCurrent in history/index.ts.
+ * text would otherwise resurface next open); "session" plans NOTHING —
+ * session-derived rows are read-only (slice-05 D1): transcripts are
+ * immutable and owned by Pi core, so the extension never deletes from or
+ * writes to them, and deleteCurrent guards the source before the flow.
+ * Takes source as a plain parameter (no member reads — the T23 provenance
+ * pin keeps overlay consumers source-agnostic outside deleteCurrent); the
+ * only consumer is the delete flow in history/index.ts.
  */
 export function deletionActionsFor(
   source: PromptSource,
@@ -252,45 +254,58 @@ export function deletionActionsFor(
   if (source === "editor") {
     return { deleteFromEditorStore: true, writeTombstone: true };
   }
-  return { deleteFromEditorStore: false, writeTombstone: true };
+  return { deleteFromEditorStore: false, writeTombstone: false };
 }
 
 /**
- * One transition of the two-step delete confirmation (PR #1393 review):
- * the first delete-key press ARMS the delete for the selected row and
- * executes nothing; the SECOND press executes; any other key disarms. The
- * selector's deleteCurrent and handleInput both route through this pure
- * step so the arm/execute/disarm machine has exactly one definition.
+ * One transition of the modal delete confirmation (PR #1393 follow-up,
+ * slice-05 D3). Disarmed, only the delete combo matters: it ARMS the
+ * confirm and executes nothing. While armed the confirm is MODAL: `y`/`Y`
+ * executes, `n`/`N`/Esc cancels, and every other key — including a second
+ * press of the combo — is swallowed with the confirm still armed (nothing
+ * reaches the dispatch table or the search input). The TUI keybinding
+ * matches (ctrl+shift+backspace, escape) are computed by the caller via
+ * matchesKey and passed as plain booleans so this router stays pure and
+ * testable without the TUI; the y/n semantics read the raw data here.
+ * ONE definition: the selector's handleInput routes every armed-state key
+ * through this function.
  */
 export interface DeleteConfirmStep {
   /** The armed state AFTER this transition. */
   armed: boolean;
-  /** True only on the second delete-key press — the executing press. */
+  /** True only when `y`/`Y` confirms the armed delete — run the flow. */
   execute: boolean;
+  /** True when `n`/`N`/Esc cancels — disarm and resume normal input. */
+  cancel: boolean;
 }
 
-export function deleteConfirmNext(
+export function deleteConfirmStep(
   armed: boolean,
   isDeleteKey: boolean,
+  isEscapeKey: boolean,
+  data: string,
 ): DeleteConfirmStep {
-  if (!isDeleteKey) return { armed: false, execute: false };
-  if (armed) return { armed: false, execute: true };
-  return { armed: true, execute: false };
+  if (!armed) {
+    return isDeleteKey
+      ? { armed: true, execute: false, cancel: false }
+      : { armed: false, execute: false, cancel: false };
+  }
+  if (data === "y" || data === "Y") {
+    return { armed: false, execute: true, cancel: false };
+  }
+  if (data === "n" || data === "N" || isEscapeKey) {
+    return { armed: false, execute: false, cancel: true };
+  }
+  return { armed: true, execute: false, cancel: false };
 }
 
 /**
- * Scope-aware confirmation copy shown in the footer while a delete is
- * armed (PR #1393): the two provenances have different semantics and the
- * copy must say which one is about to run, in one line. Editor-stored
- * prompts are removed from the store physically AND hidden from history;
- * session-derived prompts can only be hidden (transcripts are immutable),
- * so the original stays in the session transcript.
+ * Confirmation copy shown in the footer while a delete is armed (PR
+ * #1393): one line, one variant — a y/n question carrying the standing
+ * guarantee that the session log keeps the original either way.
  */
-export function deleteConfirmFooterText(source: PromptSource): string {
-  if (source === "editor") {
-    return "Delete stored prompt? Removes every copy from the store and hides it from history. Session transcripts keep the original.";
-  }
-  return "Hide from history? The original stays in the session transcript; a tombstone keeps it out of this list.";
+export function deleteConfirmFooterText(): string {
+  return "Delete this prompt from history (y/n)? Prompt stays in session log";
 }
 
 /**

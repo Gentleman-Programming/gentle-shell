@@ -147,13 +147,13 @@ test("the extension entry registers exactly the slice-3 wiring surface", () => {
 
 test("captureEnabled is a strict opt-in", () => {
   assert.equal(captureEnabled({}), false);
-  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: "0" }), false);
-  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: "false" }), false);
-  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: "off" }), false);
-  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: "yes" }), false);
-  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: " 1 " }), true);
-  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: "TRUE" }), true);
-  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: "On" }), true);
+  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_ENABLE: "0" }), false);
+  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_ENABLE: "false" }), false);
+  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_ENABLE: "off" }), false);
+  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_ENABLE: "yes" }), false);
+  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_ENABLE: " 1 " }), true);
+  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_ENABLE: "TRUE" }), true);
+  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_ENABLE: "On" }), true);
 });
 
 test("the capture handler is a no-op unless the user opts in", () => {
@@ -167,7 +167,7 @@ test("the capture handler is a no-op unless the user opts in", () => {
 
 test("an opted-in session captures delivered prompts", () => {
   const root = makeRoot();
-  const handler = captureHandlerWith({ GENTLE_PI_HISTORY_CAPTURE: "1" }, root);
+  const handler = captureHandlerWith({ GENTLE_PI_HISTORY_ENABLE: "1" }, root);
   handler({ prompt: "hello store" });
   assert.deepEqual(fileTexts(sessionFilePath(root, CWD, "inst-entry")), [
     "hello store",
@@ -176,12 +176,12 @@ test("an opted-in session captures delivered prompts", () => {
 
 test("disabling capture stops new lines and leaves existing files alone", () => {
   const root = makeRoot();
-  const env: NodeJS.ProcessEnv = { GENTLE_PI_HISTORY_CAPTURE: "true" };
+  const env: NodeJS.ProcessEnv = { GENTLE_PI_HISTORY_ENABLE: "true" };
   const handler = captureHandlerWith(env, root);
   handler({ prompt: "kept" });
   const file = sessionFilePath(root, CWD, "inst-entry");
   assert.equal(fs.existsSync(file), true);
-  delete env.GENTLE_PI_HISTORY_CAPTURE;
+  delete env.GENTLE_PI_HISTORY_ENABLE;
   handler({ prompt: "never written" });
   assert.deepEqual(fileTexts(file), ["kept"]);
 });

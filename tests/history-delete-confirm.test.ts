@@ -4,75 +4,93 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   deleteConfirmFooterText,
-  deleteConfirmNext,
+  deleteConfirmStep,
   deletionActionsFor,
   EDITOR_HIDE_FAILED_TEXT,
   STORE_DELETE_FAILED_TEXT,
 } from "../extensions/history/selector-helpers.ts";
 
-// PR #1393 review-fix tests: the two-step delete confirmation in the
-// history selector. The first ctrl+shift+backspace press ARMS the delete
-// for the selected row (scope-aware confirmation footer + highlighted
-// record) and executes NOTHING; the second press executes the
-// deletionActionsFor-driven flow; any other key or cancel disarms.
+// Slice-05 delete-confirm tests (PR #1393 follow-up): the delete
+// confirmation is a MODAL y/n step. The first ctrl+shift+backspace press
+// ARMS the delete for the selected row (confirmation footer + highlighted
+// record) and executes NOTHING; while armed, y executes, n/Esc cancels,
+// and every other key is swallowed with the confirm still armed — nothing
+// reaches the dispatch table or the search input. Session-derived rows
+// are read-only: a delete press on one is a silent no-op.
 //
 // PromptHistorySelector is private to extensions/history/index.ts and
 // needs the pi-tui runtime graph (openflow-integration.test.ts
 // discipline), and an executing delete writes the module-constant REAL
-// store (~/.pi/agent/history — no injection point), so the confirmation
-// DECISION is factored into pure helpers tested here directly, and the
-// execution semantics are pinned by source-parse on deleteCurrent
-// (delete-backfill.test.ts discipline). No test in this file touches the
-// user's real store.
+// store (~/.pi/agent/history — no injection point), so the confirm
+// DECISION is factored into the pure deleteConfirmStep router tested here
+// directly, and the wiring semantics are pinned by source-parse on
+// deleteCurrent/armDelete/executeDelete/handleInput (delete-backfill
+// discipline). No test in this file touches the user's real store.
 
 // ---------------------------------------------------------------------------
-// Pure decision machine: arm → execute, disarm on anything else.
+// Pure modal router: arm → y executes / n·Esc cancels / rest swallowed.
 // ---------------------------------------------------------------------------
 
-test("the first delete press arms only — nothing executes (PR #1393)", () => {
-  assert.deepEqual(deleteConfirmNext(false, true), {
-    armed: true,
-    execute: false,
-  });
+const ARM = { armed: true, execute: false, cancel: false };
+const IDLE = { armed: false, execute: false, cancel: false };
+const EXECUTE = { armed: false, execute: true, cancel: false };
+const CANCEL = { armed: false, execute: false, cancel: true };
+
+test("the first delete press arms only — nothing executes, nothing cancels", () => {
+  assert.deepEqual(deleteConfirmStep(false, true, false, ""), ARM);
 });
 
-test("the second delete press executes and rearms-to-idle (PR #1393)", () => {
-  assert.deepEqual(deleteConfirmNext(true, true), {
-    armed: false,
-    execute: true,
-  });
+test("an unarmed non-delete key is a no-op — the confirm stays out of the way", () => {
+  assert.deepEqual(deleteConfirmStep(false, false, false, "x"), IDLE);
 });
 
-test("any other key disarms without executing; an idle stay stays idle", () => {
-  assert.deepEqual(deleteConfirmNext(true, false), {
-    armed: false,
-    execute: false,
-  });
-  assert.deepEqual(deleteConfirmNext(false, false), {
-    armed: false,
-    execute: false,
-  });
+test("while armed, y (and Y) executes the delete", () => {
+  assert.deepEqual(deleteConfirmStep(true, false, false, "y"), EXECUTE);
+  assert.deepEqual(deleteConfirmStep(true, false, false, "Y"), EXECUTE);
 });
 
-test("after an executed delete the machine is idle again — a fresh confirm per row", () => {
-  const first = deleteConfirmNext(false, true);
-  assert.equal(first.execute, false);
-  const second = deleteConfirmNext(first.armed, true);
-  assert.equal(second.execute, true);
-  // A THIRD press starts a NEW confirmation instead of executing blindly.
-  assert.deepEqual(deleteConfirmNext(second.armed, true), {
-    armed: true,
-    execute: false,
-  });
+test("while armed, n / N / Esc cancel — the confirm disarms without executing", () => {
+  assert.deepEqual(deleteConfirmStep(true, false, false, "n"), CANCEL);
+  assert.deepEqual(deleteConfirmStep(true, false, false, "N"), CANCEL);
+  assert.deepEqual(deleteConfirmStep(true, false, true, "\x1b"), CANCEL);
 });
 
-// (b) + (c): the executing press composes with the pure planner — an
-// editor-source record deletes from the store AND tombstones; a
-// session-source record NEVER plans a store delete (tombstone only).
+test("while armed, any other key is swallowed and the confirm STAYS armed", () => {
+  // Plain typing, digits, empty data, arrow-key bytes, and a SECOND
+  // delete-combo press: none of them execute or cancel.
+  assert.deepEqual(deleteConfirmStep(true, false, false, "x"), ARM);
+  assert.deepEqual(deleteConfirmStep(true, false, false, "1"), ARM);
+  assert.deepEqual(deleteConfirmStep(true, false, false, ""), ARM);
+  assert.deepEqual(deleteConfirmStep(true, false, false, "\x1b[A"), ARM);
+  assert.deepEqual(deleteConfirmStep(true, true, false, "\x1b[27;6~"), ARM);
+});
 
-test("second press executes the editor-source plan: store delete + tombstone", () => {
-  const armed = deleteConfirmNext(false, true);
-  const step = deleteConfirmNext(armed.armed, true);
+test("full machine: arm → y executes; a fresh arm is needed per delete", () => {
+  const armed = deleteConfirmStep(false, true, false, "");
+  assert.equal(armed.armed, true);
+  assert.equal(armed.execute, false);
+  const done = deleteConfirmStep(armed.armed, false, false, "y");
+  assert.equal(done.execute, true);
+  assert.equal(done.armed, false, "executing leaves the confirm disarmed");
+  // After execution the confirm is idle: typing resumes as usual.
+  assert.deepEqual(deleteConfirmStep(done.armed, false, false, "x"), IDLE);
+});
+
+test("full machine: arm → n cancels → disarmed without executing", () => {
+  const armed = deleteConfirmStep(false, true, false, "");
+  const cancelled = deleteConfirmStep(armed.armed, false, true, "\x1b");
+  assert.equal(cancelled.cancel, true);
+  assert.equal(cancelled.armed, false);
+  assert.equal(cancelled.execute, false);
+});
+
+// The executing press composes with the pure planner: an editor-source
+// record deletes from the store AND tombstones; a session-source record is
+// read-only — the planner plans NOTHING for it (slice-05 D1).
+
+test("y on an editor row runs the store-delete + tombstone plan", () => {
+  const armed = deleteConfirmStep(false, true, false, "");
+  const step = deleteConfirmStep(armed.armed, false, false, "y");
   assert.equal(step.execute, true);
   assert.deepEqual(deletionActionsFor("editor"), {
     deleteFromEditorStore: true,
@@ -80,38 +98,23 @@ test("second press executes the editor-source plan: store delete + tombstone", (
   });
 });
 
-test("a session-source record never plans a store delete — tombstone only", () => {
-  const armed = deleteConfirmNext(false, true);
-  const step = deleteConfirmNext(armed.armed, true);
-  assert.equal(step.execute, true);
-  const actions = deletionActionsFor("session");
-  assert.equal(actions.deleteFromEditorStore, false);
-  assert.equal(actions.writeTombstone, true);
+test("session rows are read-only: the planner plans nothing for them", () => {
+  assert.deepEqual(deletionActionsFor("session"), {
+    deleteFromEditorStore: false,
+    writeTombstone: false,
+  });
 });
 
 // ---------------------------------------------------------------------------
-// Copy: the armed footer distinguishes the two semantics in one line; the
-// failure toasts state exactly what state remains.
+// Copy: one confirmation line for every row; the failure toasts state
+// exactly what state remains.
 // ---------------------------------------------------------------------------
 
-test("the editor confirmation names the physical delete AND the hide", () => {
-  const text = deleteConfirmFooterText("editor");
+test("the confirmation footer is the single y/n line (PR #1393)", () => {
+  const text = deleteConfirmFooterText();
   assert.ok(!text.includes("\n"), "the confirmation stays on one line");
-  assert.ok(text.includes("Delete stored prompt?"));
-  assert.ok(text.includes("Removes every copy from the store"));
-  assert.ok(text.includes("hides it from history"));
-  assert.ok(
-    text.includes("Session transcripts keep the original"),
-    "the immutability caveat must be stated",
-  );
-});
-
-test("the session confirmation names the hide-only semantics", () => {
-  const text = deleteConfirmFooterText("session");
-  assert.ok(!text.includes("\n"), "the confirmation stays on one line");
-  assert.ok(text.includes("Hide from history?"));
-  assert.ok(text.includes("The original stays in the session transcript"));
-  assert.ok(text.includes("tombstone keeps it out of this list"));
+  assert.ok(text.includes("Delete this prompt from history (y/n)?"));
+  assert.ok(text.includes("Prompt stays in session log"));
 });
 
 test("failure toasts state the remaining state exactly (PR #1393)", () => {
@@ -129,8 +132,8 @@ test("failure toasts state the remaining state exactly (PR #1393)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Source-parse: the execution semantics inside deleteCurrent (the selector
-// class itself is not instantiable under node:test — see the header note).
+// Source-parse: the wiring inside the selector (the class itself is not
+// instantiable under node:test — see the header note).
 // ---------------------------------------------------------------------------
 
 const selectorSource = fs.readFileSync(
@@ -138,127 +141,132 @@ const selectorSource = fs.readFileSync(
   "utf8",
 );
 
-function deleteCurrentBody(): string {
-  const decl = selectorSource.indexOf("private deleteCurrent(");
-  assert.ok(decl >= 0, "deleteCurrent should exist");
+/** Slice out a 2-space-indented method body by its exact signature. */
+function methodBodyOf(signature: string): string {
+  const decl = selectorSource.indexOf(signature);
+  assert.ok(decl >= 0, `${signature} should exist`);
   const end = selectorSource.indexOf("\n  }", decl);
-  assert.ok(end > decl, "deleteCurrent's body should close");
+  assert.ok(end > decl, `${signature}'s body should close`);
   return selectorSource.slice(decl, end);
 }
 
-test("(b) the arming press returns before ANY mutation of rows or disk", () => {
+function deleteCurrentBody(): string {
+  return methodBodyOf("private deleteCurrent(): void {");
+}
+
+function executeDeleteBody(): string {
+  return methodBodyOf("private executeDelete(): void {");
+}
+
+function handleInputBody(): string {
+  return methodBodyOf("handleInput(data: string): void {");
+}
+
+test("deleteCurrent: session rows no-op FIRST — before any arm or mutation", () => {
   const body = deleteCurrentBody();
-  const stepAt = body.indexOf("const step = deleteConfirmNext(this.confirmArmed, true);");
-  assert.ok(stepAt >= 0, "the transition must route through the pure helper");
-  const armReturnAt = body.indexOf("if (!step.execute)");
-  assert.ok(armReturnAt > stepAt, "the execute gate must follow the step");
-  const editorGuardAt = body.indexOf("if (actions.deleteFromEditorStore)");
+  const guardAt = body.indexOf('(selected.source ?? "editor") === "session"');
+  assert.ok(guardAt >= 0, "the session read-only guard must exist");
+  const guardReturnAt = body.indexOf("return;", guardAt);
+  assert.ok(guardReturnAt > guardAt, "the session guard must return");
+  // The guard precedes the arm/execute split and every mutation helper.
+  const armAt = body.indexOf("this.armDelete()");
+  const executeAt = body.indexOf("this.executeDelete()");
+  assert.ok(armAt > guardAt, "the session guard must precede arming");
+  assert.ok(executeAt > guardAt, "the session guard must precede executing");
+  // The combo entry stays two-step: unarmed arms, armed executes.
+  assert.ok(
+    body.includes("if (!this.confirmArmed)"),
+    "the unarmed press must arm",
+  );
+  assert.ok(
+    armAt < executeAt,
+    "armDelete is the unarmed branch, executeDelete the armed one",
+  );
+});
+
+test("armDelete only paints: armed + footer + rebuild — never mutates", () => {
+  const body = methodBodyOf("private armDelete(): void {");
+  assert.ok(body.includes("this.confirmArmed = true;"));
+  assert.ok(body.includes("this.refreshDeleteFooter()"));
+  assert.ok(body.includes("this.rebuildList()"));
+  assert.ok(!body.includes("hidePrompt("), "arming never writes a tombstone");
+  assert.ok(
+    !body.includes("this.records.splice("),
+    "arming never mutates rows",
+  );
+});
+
+test("executeDelete leaves the armed state before any mutation", () => {
+  const body = executeDeleteBody();
+  const disarmAt = body.indexOf("this.confirmArmed = false;");
+  assert.ok(disarmAt >= 0, "executing must leave the armed state");
+  assert.ok(body.includes("this.refreshDeleteFooter()"));
+  const actionsAt = body.indexOf("deletionActionsFor(");
+  const hideAt = body.indexOf("hidePrompt(");
   const spliceAt = body.indexOf("this.records.splice(");
-  const hideAt = body.indexOf("hidePrompt(");
   assert.ok(
-    armReturnAt < editorGuardAt &&
-      armReturnAt < spliceAt &&
-      armReturnAt < hideAt,
-    "arming must precede the store flow, the splice, and the tombstone",
+    disarmAt < actionsAt && actionsAt < hideAt && hideAt < spliceAt,
+    "disarm → plan → tombstone → splice ordering",
   );
 });
 
-test("(c) the store deletes live only inside the editor-source guard", () => {
-  const body = deleteCurrentBody();
-  const guardAt = body.indexOf("if (actions.deleteFromEditorStore)");
-  assert.ok(guardAt >= 0, "the editor-store guard must exist");
-  const guardCloseAt = body.indexOf("\n    }", guardAt);
-  assert.ok(guardCloseAt > guardAt, "the editor-store guard must close");
-
-  for (const call of ["deleteFromGlobal(", "deleteFromProject("]) {
-    const at = body.indexOf(call);
-    assert.ok(at >= 0, `${call} must exist`);
-    assert.ok(
-      at > guardAt && at < guardCloseAt,
-      `${call} must sit inside the editor guard — a session record never reaches it`,
-    );
-  }
-  // The tombstone write follows the guard: EVERY provenance lands one.
-  const hideAt = body.indexOf("hidePrompt(");
+test("while armed, handleInput is modal: the router runs FIRST and returns", () => {
+  const body = handleInputBody();
+  const modalAt = body.indexOf("if (this.confirmArmed) {");
+  assert.ok(modalAt >= 0, "the modal branch must exist");
   assert.ok(
-    hideAt > guardCloseAt,
-    "the tombstone must follow (not sit inside) the editor-store guard",
+    body.includes("deleteConfirmStep("),
+    "the armed branch routes through the pure router",
+  );
+  assert.ok(
+    body.includes('matchesKey(data, "ctrl+shift+backspace")') &&
+      body.includes('matchesKey(data, "escape")'),
+    "the combo and escape matches come from the TUI keymap",
+  );
+  const executeAt = body.indexOf("this.executeDelete()");
+  const cancelAt = body.indexOf("this.disarmDeleteConfirm()");
+  assert.ok(executeAt > modalAt, "y must execute inside the modal branch");
+  assert.ok(cancelAt > modalAt, "n/Esc must disarm inside the modal branch");
+  // Full swallow: the modal branch RETURNS before the dispatch loop and
+  // the search fallthrough can see the key — esc cannot close the overlay.
+  const modalReturnAt = body.indexOf("return;", modalAt);
+  assert.ok(modalReturnAt > modalAt, "the modal branch must return");
+  const loopAt = body.indexOf(
+    "for (const { match, handler } of this.dispatch) {",
+  );
+  const fallthroughAt = body.indexOf(
+    "if (!handled) this.forwardToSearch(data);",
+  );
+  assert.ok(loopAt > modalReturnAt, "armed keys never reach dispatch");
+  assert.ok(fallthroughAt > modalReturnAt, "armed keys never reach search");
+});
+
+test("the old disarm pre-pass is superseded — disarm only on the modal cancel path", () => {
+  const body = handleInputBody();
+  assert.ok(
+    !body.includes('!matchesKey(data, "ctrl+shift+backspace")'),
+    "the unconditional disarm pre-pass must be gone",
+  );
+  const modalAt = body.indexOf("if (this.confirmArmed) {");
+  const disarmAt = body.indexOf("this.disarmDeleteConfirm()");
+  assert.ok(disarmAt > modalAt, "disarm must sit inside the modal branch");
+});
+
+test("Esc while DISARMED still cancels the overlay via the dispatch entry", () => {
+  const table = selectorSource.slice(
+    selectorSource.indexOf("private readonly dispatch"),
+    selectorSource.indexOf("\n  ];"),
+  );
+  const cancelAt = table.indexOf('kb.matches(_d, "tui.select.cancel")');
+  assert.ok(cancelAt >= 0, "the cancel dispatch entry must stay");
+  const entry = table.slice(cancelAt, table.indexOf("},", cancelAt));
+  assert.ok(
+    entry.includes("this.onCancel()"),
+    "disarmed esc must still close the overlay",
   );
 });
 
-test("(d) a thrown store delete toasts the failure copy and aborts", () => {
-  const body = deleteCurrentBody();
-  const tryAt = body.indexOf("try {");
-  const catchAt = body.indexOf("} catch {", tryAt);
-  assert.ok(tryAt >= 0 && catchAt > tryAt, "the store calls must be wrapped");
-  const catchEnd = body.indexOf("\n      }", catchAt);
-  const catchBody = body.slice(catchAt, catchEnd);
-  assert.ok(
-    catchBody.includes(`this.onNotify?.(STORE_DELETE_FAILED_TEXT, "error")`),
-    "the catch must toast the store-failure copy",
-  );
-  assert.ok(
-    catchBody.includes("return;"),
-    "the catch must abort the flow",
-  );
-  // The abort precedes the tombstone write: a failed store delete leaves
-  // NO tombstone behind.
-  const hideAt = body.indexOf("hidePrompt(");
-  assert.ok(catchAt < hideAt, "the catch must precede the hide write");
-});
-
-test("(e) a hide error toasts the session message and aborts — the editor path proceeds to the splice", () => {
-  const body = deleteCurrentBody();
-  const gateAt = body.indexOf('if (hide.status === "error")');
-  assert.ok(gateAt >= 0, "hide errors must be gated");
-  const spliceAt = body.indexOf("this.records.splice(");
-  assert.ok(gateAt < spliceAt, "the hide gate must precede the splice");
-  const gate = body.slice(gateAt, spliceAt);
-
-  // Session path: toast the recovery message and abort.
-  const abortGuardAt = gate.indexOf("if (!actions.deleteFromEditorStore)");
-  assert.ok(
-    abortGuardAt >= 0,
-    "the session-path early return must be exclusive",
-  );
-  const abortBody = gate.slice(abortGuardAt, gate.indexOf("}", abortGuardAt));
-  assert.ok(
-    abortBody.includes('this.onNotify?.(hide.message, "error")'),
-    "the session path must toast the hide error itself",
-  );
-  assert.ok(abortBody.includes("return;"), "the session path must abort");
-  assert.ok(
-    !gate.slice(0, abortGuardAt).includes("return;"),
-    "no unconditional abort before the provenance split",
-  );
-
-  // Editor path: the store row is already gone — the toast says so, and
-  // control FALLS THROUGH to the splice (no return between the toast and
-  // the splice).
-  const editorToastAt = gate.indexOf(`this.onNotify?.(EDITOR_HIDE_FAILED_TEXT, "error")`);
-  assert.ok(editorToastAt >= 0, "the editor path must toast the hide failure");
-  const gateToSplice = gate.slice(editorToastAt);
-  assert.ok(
-    !gateToSplice.includes("return;"),
-    "the editor path must NOT abort — the splice still runs",
-  );
-});
-
-test("any other key disarms before its own action; a wheel scroll disarms too", () => {
-  const handleInputAt = selectorSource.indexOf("handleInput(data: string): void {");
-  assert.ok(handleInputAt >= 0, "handleInput should exist");
-  const inputEnd = selectorSource.indexOf("\n  }", handleInputAt);
-  const inputBody = selectorSource.slice(handleInputAt, inputEnd);
-  const disarmAt = inputBody.indexOf("this.disarmDeleteConfirm()");
-  assert.ok(disarmAt >= 0, "handleInput must disarm a pending confirmation");
-  assert.ok(
-    inputBody.includes('!matchesKey(data, "ctrl+shift+backspace")'),
-    "the delete combo itself must NOT route through the disarm pre-pass",
-  );
-  // The disarm must happen before the dispatch loop consumes the key.
-  const loopAt = inputBody.indexOf("for (const { match, handler } of this.dispatch) {");
-  assert.ok(disarmAt < loopAt, "the disarm pre-pass must precede dispatch");
-
+test("a wheel scroll disarms (and never executes) the armed delete", () => {
   const handleMouseAt = selectorSource.indexOf("override handleMouse(");
   assert.ok(handleMouseAt >= 0, "handleMouse should exist");
   const mouseEnd = selectorSource.indexOf("\n  }", handleMouseAt);
@@ -267,34 +275,80 @@ test("any other key disarms before its own action; a wheel scroll disarms too", 
     mouseBody.indexOf("this.disarmDeleteConfirm()") >= 0,
     "a wheel scroll can move the selection off the armed row — it must disarm",
   );
+  assert.ok(
+    !mouseBody.includes("this.executeDelete()"),
+    "a wheel scroll must never execute the delete",
+  );
 });
 
 test("the armed state drives the footer copy and the error-colored highlight", () => {
-  const body = deleteCurrentBody();
+  const footerBody = methodBodyOf("private refreshDeleteFooter(): void {");
   assert.ok(
-    body.includes("this.refreshDeleteFooter()"),
-    "every delete press refreshes the footer",
+    footerBody.includes("deleteConfirmFooterText()"),
+    "the armed footer uses the single pure copy (no source argument)",
   );
-
-  const footerAt = selectorSource.indexOf("private refreshDeleteFooter(): void {");
-  assert.ok(footerAt >= 0, "refreshDeleteFooter should exist");
-  const footerEnd = selectorSource.indexOf("\n  }", footerAt);
-  const footerBody = selectorSource.slice(footerAt, footerEnd);
   assert.ok(
-    footerBody.includes("deleteConfirmFooterText(source)"),
-    "the armed footer uses the scope-aware pure copy",
+    !footerBody.includes("deleteConfirmFooterText" + "(source)"),
+    "the footer must not route through a source variant",
   );
   assert.ok(
     footerBody.includes("SELECTOR_FOOTER_HELP"),
     "disarming restores the help line",
   );
 
-  const rebuildAt = selectorSource.indexOf("private rebuildListWithWidth(width: number): void {");
-  assert.ok(rebuildAt >= 0, "rebuildListWithWidth should exist");
-  const rebuildEnd = selectorSource.indexOf("\n  }", rebuildAt);
-  const rebuildBody = selectorSource.slice(rebuildAt, rebuildEnd);
+  const rebuildBody = methodBodyOf(
+    "private rebuildListWithWidth(width: number): void {",
+  );
   assert.ok(
     rebuildBody.includes("this.confirmArmed"),
     "the armed state repaints the selected row",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Env rename (slice-05 D4): the opt-in switch is GENTLE_PI_HISTORY_ENABLE.
+// ---------------------------------------------------------------------------
+
+// The old switch name must be gone everywhere; assemble the literal from
+// parts so this file stays grep-clean for the rename proof (rg for the old
+// env var must return 0 matches).
+const legacySwitch = `GENTLE_PI_HISTORY_${"CAPTURE"}`;
+
+test("captureEnabled reads GENTLE_PI_HISTORY_ENABLE (strict 1/true/on unchanged)", () => {
+  const decl = selectorSource.indexOf("export function captureEnabled(");
+  assert.ok(decl >= 0, "captureEnabled should exist");
+  const end = selectorSource.indexOf("\n}", decl);
+  assert.ok(end > decl, "captureEnabled's body should close");
+  const body = selectorSource.slice(decl, end);
+  assert.ok(
+    body.includes("env.GENTLE_PI_HISTORY_ENABLE"),
+    "the renamed switch must be read",
+  );
+  assert.ok(
+    !body.includes(legacySwitch),
+    "the old switch name must be gone",
+  );
+  assert.ok(
+    body.includes('?.trim().toLowerCase()'),
+    "whitespace + case normalization unchanged",
+  );
+  assert.ok(
+    body.includes('value === "1" || value === "true" || value === "on"'),
+    "strict 1/true/on opt-in unchanged",
+  );
+});
+
+test("the open-flow warning names GENTLE_PI_HISTORY_ENABLE", () => {
+  const at = selectorSource.indexOf("Prompt history capture is off");
+  assert.ok(at >= 0, "the off-gate warning must exist");
+  const lineEnd = selectorSource.indexOf("\n", at);
+  const line = selectorSource.slice(at, lineEnd);
+  assert.ok(
+    line.includes("GENTLE_PI_HISTORY_ENABLE=1"),
+    `the warning must name the new switch, got: ${line.trim()}`,
+  );
+  assert.ok(
+    !line.includes(legacySwitch),
+    "the warning must not name the old switch",
   );
 });

@@ -7,11 +7,11 @@
 // inside getWriter). Deletion (slice 5) is wired here; GC/compaction
 // (slice 6) arrives in a later slice.
 //
-// Capture is OPT-IN while the deletion/privacy behavior is unshipped:
-// nothing is recorded unless GENTLE_PI_HISTORY_CAPTURE=1|true|on. With the
-// switch off the handler is a no-op — no registry entry, no files, and
-// prompts are never written. Unsetting the switch only stops NEW captures;
-// files already written stay on disk (docs/prompt-history.md).
+// Capture is OPT-IN: nothing is recorded unless
+// GENTLE_PI_HISTORY_ENABLE=1|true|on. With the switch off the handler is a
+// no-op — no registry entry, no files, and prompts are never written.
+// Unsetting the switch only stops NEW captures; files already written stay
+// on disk (docs/prompt-history.md).
 
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -43,7 +43,7 @@ import {
   clampPreviewOffset,
   clampSelectedIndex,
   deleteConfirmFooterText,
-  deleteConfirmNext,
+  deleteConfirmStep,
   deletionActionsFor,
   dedupePromptEntries,
   EDITOR_HIDE_FAILED_TEXT,
@@ -93,7 +93,7 @@ const PREVIEW_WHEEL_Y_FIRST = 17;
 const PREVIEW_WHEEL_Y_LAST = 26;
 
 // Default selector footer line (PR #1393): shown whenever a delete is not
-// armed; the armed state swaps it for the scope-aware confirmation copy.
+// armed; the armed state swaps it for the confirmation copy.
 const SELECTOR_FOOTER_HELP =
   "↑↓ move • PgUp/PgDn page • tab scope • enter select and quit • ctrl+shift+↑/↓ preview • ctrl+shift+backspace delete • esc cancel";
 
@@ -281,9 +281,10 @@ class PromptHistorySelector extends Container implements Focusable {
   /** Scroll offset into wrappedPreviewLines for the preview viewport. */
   private previewScrollOffset = 0;
   /**
-   * Two-step delete confirmation (PR #1393): armed by the first
-   * ctrl+shift+backspace press; the second press executes, and any other
-   * key or cancel disarms. Nothing is deleted on the arming press.
+   * Modal delete confirmation (PR #1393 follow-up): armed by the first
+   * ctrl+shift+backspace press; while armed, y executes, n/Esc cancels,
+   * and every other key is swallowed. Nothing is deleted on the arming
+   * press.
    */
   private confirmArmed = false;
 
@@ -591,24 +592,44 @@ class PromptHistorySelector extends Container implements Focusable {
     this.applyFilter(this.searchInput.getValue());
   }
 
-  /** Delete the currently selected prompt from disk and refresh the list. */
+  /**
+   * Delete-combo entry (slice-05 D3): the FIRST press arms the modal
+   * confirm for the selected row; while armed, the modal router in
+   * handleInput calls executeDelete() on `y`. Session-derived rows are
+   * read-only (slice-05 D1): a delete press on one is a silent no-op.
+   */
   private deleteCurrent(): void {
     const selected = this.filteredRecords[this.selectedIndex];
     if (!selected) return;
 
-    // Two-step confirm (PR #1393 review): the first ctrl+shift+backspace
-    // press ARMS the delete for the selected row — a scope-aware
-    // confirmation line in the footer plus an error-colored highlight —
-    // and executes NOTHING; the SECOND press runs the flow below. Any
-    // other key or cancel disarms (handleInput / handleMouse).
-    const step = deleteConfirmNext(this.confirmArmed, true);
-    this.confirmArmed = step.armed;
-    this.refreshDeleteFooter();
-    if (!step.execute) {
-      this.rebuildList(); // repaint the armed-row highlight
+    // Session rows are read-only: session transcripts are immutable and
+    // owned by Pi core — the extension never deletes from or writes to
+    // them. Silent no-op: no arm, no footer change, no tombstone.
+    if ((selected.source ?? "editor") === "session") return;
+
+    if (!this.confirmArmed) {
+      this.armDelete();
       return;
     }
+    this.executeDelete();
+  }
+
+  /** Arm the confirm: footer copy + error-colored row, nothing executes. */
+  private armDelete(): void {
+    this.confirmArmed = true;
+    this.refreshDeleteFooter();
+    this.rebuildList(); // repaint the armed-row highlight
+  }
+
+  /** The executing half of the delete: leave the armed state, then mutate. */
+  private executeDelete(): void {
+    // Leave the armed state first: help footer back, highlight dropped.
+    this.confirmArmed = false;
+    this.refreshDeleteFooter();
     this.rebuildList(); // drop the highlight before the flow mutates rows
+
+    const selected = this.filteredRecords[this.selectedIndex];
+    if (!selected) return;
 
     // C4 delete flows (design §F): the record's provenance decides the
     // actions via the pure planner; module constants are used directly.
@@ -663,16 +684,14 @@ class PromptHistorySelector extends Container implements Focusable {
     this.applyFilter(this.searchInput.getValue());
   }
 
-  /** Footer line: scope-aware confirm copy while armed, help otherwise. */
+  /** Footer line: confirm copy while armed, help otherwise. */
   private refreshDeleteFooter(): void {
     if (!this.confirmArmed) {
       this.footerRow.setText(this.theme.fg("dim", SELECTOR_FOOTER_HELP));
       return;
     }
-    const selected = this.filteredRecords[this.selectedIndex];
-    const source = selected?.source ?? "editor";
     this.footerRow.setText(
-      this.theme.fg("warning", deleteConfirmFooterText(source)),
+      this.theme.fg("warning", deleteConfirmFooterText()),
     );
   }
 
@@ -825,12 +844,24 @@ class PromptHistorySelector extends Container implements Focusable {
   }
 
   handleInput(data: string): void {
-    const kb = getKeybindings();
-    // Any key other than the delete combo disarms a pending confirmation
-    // (PR #1393) BEFORE its own action runs — esc, arrows, typing, tab.
-    if (this.confirmArmed && !matchesKey(data, "ctrl+shift+backspace")) {
-      this.disarmDeleteConfirm();
+    // Modal armed confirm (slice-05 D3): while a delete is armed the pure
+    // router consumes EVERY key — y executes, n/Esc cancels (esc must NOT
+    // close the overlay here), anything else stays armed and is swallowed
+    // — so no key reaches the dispatch table or the search input. When not
+    // armed, behavior is unchanged.
+    if (this.confirmArmed) {
+      const step = deleteConfirmStep(
+        this.confirmArmed,
+        matchesKey(data, "ctrl+shift+backspace"),
+        matchesKey(data, "escape"),
+        data,
+      );
+      if (step.execute) this.executeDelete();
+      else if (step.cancel) this.disarmDeleteConfirm();
+      this.tui.requestRender();
+      return;
     }
+    const kb = getKeybindings();
     let handled = false;
     for (const { match, handler } of this.dispatch) {
       if (match(data, kb)) {
@@ -1062,7 +1093,7 @@ async function openHistorySelector(
   // bootstrap, or any store/registry write as a side effect of opening it.
   if (!captureEnabled()) {
     ctx.ui.notify(
-      "Prompt history capture is off — set GENTLE_PI_HISTORY_CAPTURE=1 to enable it.",
+      "Prompt history capture is off — set GENTLE_PI_HISTORY_ENABLE=1 to enable it.",
       "warning",
     );
     return;
@@ -1114,13 +1145,13 @@ export interface HistoryDeps {
 }
 
 /**
- * Strict opt-in: capture stays off unless GENTLE_PI_HISTORY_CAPTURE is
+ * Strict opt-in: capture stays off unless GENTLE_PI_HISTORY_ENABLE is
  * explicitly 1, true, or on (case-insensitive). The same switch is the
  * disable path — unsetting it stops new captures; files already on disk
- * are left untouched until the deletion tooling lands.
+ * are left untouched (deletes run from the selector while capture is on).
  */
 export function captureEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const value = env.GENTLE_PI_HISTORY_CAPTURE?.trim().toLowerCase();
+  const value = env.GENTLE_PI_HISTORY_ENABLE?.trim().toLowerCase();
   return value === "1" || value === "true" || value === "on";
 }
 

@@ -47,14 +47,14 @@ test("loadedCountAfterDelete bottoms out at 0 on the terminal delete (AC-L4-3)",
 
 // T11 — defensive degenerate row: an empty window stays 0 even when counts
 // disagree: (0, 5) decrements to −1, −1 < 5, so min(−1 + 1, 5) = 0.
-// Unreachable via deleteCurrent (a delete implies a selected row inside the
+// Unreachable via executeDelete (a delete implies a selected row inside the
 // loaded prefix) — pinned as C4's defensive bound.
 
 test("loadedCountAfterDelete is defensive for an empty window (AC-L4-1)", () => {
   assert.equal(loadedCountAfterDelete(0, 5), 0);
 });
 
-// T11 — AC-L4-1 + AC-L4-4 (source-parse): ordering shape inside deleteCurrent
+// T11 — AC-L4-1 + AC-L4-4 (source-parse): ordering shape inside executeDelete
 // — the bookkeeping call sits strictly between the existing splice and the
 // trailing applyFilter, INSIDE the existing `if (idx !== -1)` guarded block,
 // and the non-`deleted` early return still precedes every mutation
@@ -65,11 +65,11 @@ const selectorSource = fs.readFileSync(
   "utf8",
 );
 
-test("deleteCurrent splices, backfills, then re-filters — inside the guarded block (AC-L4-1, AC-L4-4)", () => {
-  const decl = selectorSource.indexOf("private deleteCurrent(");
-  assert.ok(decl >= 0, "deleteCurrent should exist");
+test("executeDelete splices, backfills, then re-filters — inside the guarded block (AC-L4-1, AC-L4-4)", () => {
+  const decl = selectorSource.indexOf("private executeDelete(): void {");
+  assert.ok(decl >= 0, "executeDelete should exist");
   const end = selectorSource.indexOf("\n  }", decl);
-  assert.ok(end > decl, "deleteCurrent's body should close");
+  assert.ok(end > decl, "executeDelete's body should close");
   const body = selectorSource.slice(decl, end);
 
   const earlyReturnAt = body.indexOf("if (removed === 0) return;");
@@ -114,19 +114,21 @@ test("deleteCurrent splices, backfills, then re-filters — inside the guarded b
   );
 });
 
-// Slice 5 scenario pins (porting contract): the tombstone-always rule and
-// the partial-failure toast path. The dev suite pins the planner + these
-// deleteCurrent branch shapes in hide-prompts.test.ts (T27/T28); this file
+// Slice 5 scenario pins (porting contract): the editor-path tombstone rule
+// and the partial-failure toast path. The dev suite pins the planner +
+// these delete-flow branch shapes in delete-confirm.test.ts; this file
 // carries the delete-flow source-parse half so the slice-5 branch stays
-// pinned inside the delete slice's own tests.
+// pinned inside the delete slice's own tests. The mutation flow lives in
+// executeDelete() (slice-05 D3 split), so the parse targets that method.
 
-test("deletionActionsFor always plans a tombstone — session provenance deletes nothing from disk", () => {
-  // Session/seed-born records: tombstone ONLY (transcripts and the seed are
-  // never rewritten by a delete) — the tombstone is what keeps the deleted
-  // prompt from resurfacing on the next drain.
+test("deletionActionsFor plans a store delete + tombstone for editor rows and NOTHING for session rows", () => {
+  // Session/seed-born records are READ-ONLY (slice-05 D1): no store delete
+  // and no tombstone — deleteCurrent guards the source before the flow, so
+  // a transcript-born prompt is never written or deleted by this
+  // extension.
   assert.deepEqual(deletionActionsFor("session"), {
     deleteFromEditorStore: false,
-    writeTombstone: true,
+    writeTombstone: false,
   });
   // Editor records: disk delete AND tombstone (twin suppression).
   assert.deepEqual(deletionActionsFor("editor"), {
@@ -134,15 +136,15 @@ test("deletionActionsFor always plans a tombstone — session provenance deletes
     writeTombstone: true,
   });
 
-  const decl = selectorSource.indexOf("private deleteCurrent(");
-  assert.ok(decl >= 0, "deleteCurrent should exist");
+  const decl = selectorSource.indexOf("private executeDelete(): void {");
+  assert.ok(decl >= 0, "executeDelete should exist");
   const end = selectorSource.indexOf("\n  }", decl);
-  assert.ok(end > decl, "deleteCurrent's body should close");
+  assert.ok(end > decl, "executeDelete's body should close");
   const body = selectorSource.slice(decl, end);
 
-  // Branch shape: the tombstone write sits OUTSIDE the editor-store guard —
-  // every provenance lands a tombstone, so an entry that came from the
-  // seed or a transcript cannot resurface after its delete.
+  // Branch shape: the tombstone write follows (never sits inside) the
+  // editor-store guard — the executing path is editor-only, and its hide
+  // suppresses the session twin that would re-supply the prompt.
   const editorGuardAt = body.indexOf("if (actions.deleteFromEditorStore)");
   assert.ok(editorGuardAt >= 0, "the editor-store guard must exist");
   const guardCloseAt = body.indexOf("\n    }", editorGuardAt);
@@ -156,10 +158,10 @@ test("deletionActionsFor always plans a tombstone — session provenance deletes
 });
 
 test("a failed hide toasts and only the session path aborts — the editor path still splices", () => {
-  const decl = selectorSource.indexOf("private deleteCurrent(");
-  assert.ok(decl >= 0, "deleteCurrent should exist");
+  const decl = selectorSource.indexOf("private executeDelete(): void {");
+  assert.ok(decl >= 0, "executeDelete should exist");
   const end = selectorSource.indexOf("\n  }", decl);
-  assert.ok(end > decl, "deleteCurrent's body should close");
+  assert.ok(end > decl, "executeDelete's body should close");
   const body = selectorSource.slice(decl, end);
 
   const gateAt = body.indexOf('if (hide.status === "error")');

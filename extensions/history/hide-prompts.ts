@@ -10,6 +10,14 @@ import { promptDedupKey } from "./selector-helpers.ts";
 const HIDE_FILE_NAME = "hidden.json";
 
 /**
+ * Retention cap for hidden.json (slice-05 D5): the tombstone file is a
+ * rebuildable derived cache, not a retention guarantee, so it holds at
+ * most this many keys in recency order; hiding past the cap drops the
+ * OLDEST keys from the front.
+ */
+export const HIDE_FILE_MAX_ENTRIES = 1000;
+
+/**
  * Shared recovery warning for a file that exists but cannot be trusted
  * (spec C4, fail-closed READ half): toast-suitable, names hidden.json, and
  * gives the user the explicit restore-or-delete choice.
@@ -50,6 +58,8 @@ export type HiddenRead =
  * safe empty case and reads `trusted` with no keys. A valid array is
  * trusted; junk items inside it are ignored, never trusted. Keys are
  * `promptDedupKey` strings written by `hidePrompt`; the call never throws.
+ * A valid array's stored order is preserved (the recency order — oldest
+ * first — that `hidePrompt` maintains and caps).
  */
 export function readHiddenPrompts(stateDir: string): HiddenRead {
   let raw: string;
@@ -91,13 +101,20 @@ export function readHiddenPrompts(stateDir: string): HiddenRead {
  * Write the tombstone key for `text` into `stateDir/hidden.json` — the
  * WRITE half of the hide-file contract (spec C4). The key is the shared
  * `promptDedupKey` (byte-match normative with the merge filter — never a
- * re-implementation); the set compacts on write and persists as a SORTED
- * array via the shared atomic tmp+rename writer. An untrusted existing file
- * is never silently reset (a clean rewrite would clear the blocked state
- * one hide later): hidePrompt refuses with the recovery warning until the
- * user restores or deletes the file. A missing file is the clean baseline;
- * any write failure returns an error object for the delete-flow toast; the
- * call never throws.
+ * re-implementation). The file array is RECENCY-ordered — oldest key
+ * first, newest key appended last — and re-hiding an existing key
+ * refreshes it to the end (delete + add, since Set.add on a present
+ * member keeps its old position). The file is capped at
+ * `HIDE_FILE_MAX_ENTRIES` (1000): after the append, keys drop from the
+ * FRONT until the file fits, so hidden.json stays a bounded cache — a
+ * dropped (oldest) prompt may reappear in the list and can be deleted
+ * again. Keys persist in that insertion order — NO sort — via the shared
+ * atomic tmp+rename writer. An untrusted existing file is never silently
+ * reset (a clean rewrite would clear the blocked state one hide later):
+ * hidePrompt refuses with the recovery warning until the user restores or
+ * deletes the file. A missing file is the clean baseline; any write
+ * failure returns an error object for the delete-flow toast; the call
+ * never throws.
  */
 export function hidePrompt(stateDir: string, text: string): HideResult {
   const read = readHiddenPrompts(stateDir);
@@ -105,10 +122,19 @@ export function hidePrompt(stateDir: string, text: string): HideResult {
     // Refuse without writing: never reset the untrusted state silently.
     return { status: "error", message: read.message };
   }
-  read.keys.add(promptDedupKey(text));
+  // Recency order (slice-05 D5): the set iterates in stored file order
+  // (oldest first); delete+add refreshes a re-hidden key to the END.
+  const key = promptDedupKey(text);
+  read.keys.delete(key);
+  read.keys.add(key);
+  // Cap: drop the OLDEST keys from the front once over the limit.
+  const ordered = [...read.keys];
+  if (ordered.length > HIDE_FILE_MAX_ENTRIES) {
+    ordered.splice(0, ordered.length - HIDE_FILE_MAX_ENTRIES);
+  }
   const written = writeJsonAtomic(
     path.join(stateDir, HIDE_FILE_NAME),
-    [...read.keys].sort(),
+    ordered,
   );
   return written
     ? { status: "written" }

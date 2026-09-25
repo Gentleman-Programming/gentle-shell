@@ -8,7 +8,7 @@ import promptHistoryExtension from "../extensions/history/index.ts";
 // The module-level selector gate reads process.env directly (that path has
 // no deps.env injection); keep the suite hermetic regardless of the ambient
 // shell so the off-path assertions cannot be flipped by the environment.
-delete process.env.GENTLE_PI_HISTORY_CAPTURE;
+delete process.env.GENTLE_PI_HISTORY_ENABLE;
 
 function makeRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-off-"));
@@ -86,7 +86,7 @@ test("with capture disabled, the history command imports nothing and warns", asy
   assert.equal(notifyCalls.length, 1);
   assert.equal(notifyCalls[0][1], "warning");
   assert.ok(
-    notifyCalls[0][0].includes("GENTLE_PI_HISTORY_CAPTURE"),
+    notifyCalls[0][0].includes("GENTLE_PI_HISTORY_ENABLE"),
     `the warning must name the switch, got: ${notifyCalls[0][0]}`,
   );
   // The gate must fire before the drain: no migration, no seed, no store.

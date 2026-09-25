@@ -128,9 +128,62 @@ function fit(text: string, width: number): string {
 	return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
 }
 
+// Deep equality over presence thread items: validated JSON payloads, so only
+// plain objects, arrays, strings, booleans, and null appear. Used to keep the
+// prior item object (and its WeakMap render cache entry) when polled content
+// is render-equivalent at the same position.
+function sameItemValue(a: unknown, b: unknown): boolean {
+	if (a === b) return true;
+	if (typeof a !== "object" || typeof b !== "object" || !a || !b) return false;
+	const left = a as Record<string, unknown>;
+	const right = b as Record<string, unknown>;
+	const keys = Object.keys(left);
+	if (keys.length !== Object.keys(right).length) return false;
+	return keys.every((key) => Object.hasOwn(right, key) && sameItemValue(left[key], right[key]));
+}
+
 export function taskHeader(task: TaskRecord, now: number): string {
 	const parts = [task.agent, task.status, task.model, task.tokens > 0 ? formatTokens(task.tokens) : "", task.cost > 0 ? `$${task.cost.toFixed(2)}` : "", task.startedAt === null ? "" : formatElapsed((task.endedAt ?? now) - task.startedAt)];
 	return parts.filter((part) => part.length > 0).join(" · ");
+}
+
+// Length-prefixed field encoding for the presence signature: raw `:` joins
+// let different field splits collide (peer task ids are `peer:<group>:<id>`
+// by construction, and agent/label are free text). `<len>:<text>` is
+// self-delimiting, so two signatures are equal only if every field is equal.
+function field(text: string): string {
+	return `${text.length}:${text}`;
+}
+
+// One task's contribution to the presence signature: every display-relevant
+// field this view renders or sorts by (taskLine, taskHeader, the thread pane
+// header and error fallback, group headings, Stop/Open gating, ordering,
+// displayed elapsed).
+function taskSignature(task: TaskRecord, now: number): string {
+	return `|${field(task.id)}${field(task.status)}${field(task.agent)}${field(task.model)}${field(task.label)}${field(String(task.createdAt))}${field(String(task.startedAt))}${field(String(task.endedAt))}${field(String(task.lastActivityAt))}${field(task.lastStep)}${field(String(task.tokens))}${field(String(task.cost))}${field(task.error ?? "")}${field(task.sessionPath ?? "")}${displayedElapsed(task, now)}`;
+}
+
+// The displayed elapsed (task rows and the thread pane header both render
+// formatElapsed((endedAt ?? now) - startedAt)) is clock state: the formatted
+// value only changes when the displayed second ticks, so sampling it renders
+// visible clock changes while same-displayed-value polls stay quiet. Finished
+// tasks drop out of the signature's filters and their elapsed is frozen at
+// endedAt, so the clock never advances a completed task's contribution.
+function displayedElapsed(task: TaskRecord, now: number): string {
+	return field(task.startedAt === null ? "" : formatElapsed((task.endedAt ?? now) - task.startedAt));
+}
+
+// FNV-1a over a string's complete content: any content change, including a
+// same-length rewrite anywhere in the item, invalidates the poll gate. Hashing
+// only a retained tail would stay blind to same-length edits before it.
+// Zero-padded to a fixed width so signature fields keep deterministic
+// boundaries; the full text is never serialized into the signature, keeping
+// the gate allocation-light. A 32-bit collision costs at most one missed
+// poll cycle, so lengths are kept as a second axis.
+function contentHash(text: string): string {
+	let hash = 0x811c9dc5;
+	for (let index = 0; index < text.length; index += 1) hash = Math.imul(hash ^ text.charCodeAt(index), 0x01000193);
+	return (hash >>> 0).toString(36).padStart(7, "0");
 }
 
 export class AgentsView {
@@ -173,6 +226,7 @@ export class AgentsView {
 	private remoteThreads = new Map<string, TaskThread>();
 	private presenceCursor?: PresenceCursor;
 	private presenceTimer?: ReturnType<typeof setTimeout>;
+	private lastPresenceSignature?: string;
 
 	// One directory page or one pinned activity per turn; yield between reads.
 	// Keep the previous directory until a traversal completes, avoiding page flicker.
@@ -197,8 +251,17 @@ export class AgentsView {
 							const task: TaskRecord = { ...summary, id: `peer:${id}:${summary.id}`, parentSessionId: id,
 								status: summary.status as TaskRecord["status"], mode: "background", prompt: "", cwd: "",
 								thinking: undefined, sessionPath: null, error: null, result: null, lastStep: "", turns: 0, toolCalls: 0, tokens: 0, cost: 0 };
+							const prior = this.remoteThreads.get(task.id);
 							threads.set(task.id, { ...emptyThread(), ...thread,
-								items: thread.items.map((item) => item.kind === "tool" ? { ...item, args: {} } : item) as ThreadItem[] });
+								items: thread.items.map((item, index) => {
+									// Sanitize before equality: presence tool items carry no invocation
+									// args, so compare against the stored sanitized form.
+									const sanitized = item.kind === "tool" ? { ...item, args: {} } : item;
+									const previous = prior?.items[index];
+									// Reuse the prior object when content is render-equivalent so the
+									// WeakMap render cache hits; any delta keeps a fresh identity.
+									return previous !== undefined && sameItemValue(previous, sanitized) ? previous : sanitized;
+								}) as ThreadItem[] });
 							return task;
 						});
 						groups.push({ id, sessionId: id, label: `${header.label}${unavailable ? " · unavailable" : ""}`, tasks });
@@ -209,11 +272,17 @@ export class AgentsView {
 					pending = page.entries.filter((entry) => entry.recent);
 					overflow = page.overflow;
 				} else {
-					this.peers = groups;
-					this.remoteThreads = threads;
-					this.refreshTasks();
-					this.clearFooterLayout();
-					this.deps.requestRender();
+					// Render only when the poll changed something the UI shows;
+					// a quiet peer re-arms the timer without a layout pass.
+					const signature = this.presenceSignature(groups, threads);
+					if (signature !== this.lastPresenceSignature) {
+						this.lastPresenceSignature = signature;
+						this.peers = groups;
+						this.remoteThreads = threads;
+						this.refreshTasks();
+						this.clearFooterLayout();
+						this.deps.requestRender();
+					}
 					this.stopPresenceRefresh();
 					this.presenceTimer = setTimeout(() => this.refreshPresence(), 1000);
 					this.presenceTimer.unref();
@@ -222,6 +291,9 @@ export class AgentsView {
 			} catch {
 				this.peers = [];
 				this.remoteThreads.clear();
+				// The error path always re-renders; anchor the next comparison
+				// to the emptied state the UI now shows.
+				this.lastPresenceSignature = this.presenceSignature([], new Map<string, TaskThread>());
 				this.refreshTasks();
 				this.clearFooterLayout();
 				this.deps.requestRender();
@@ -240,6 +312,49 @@ export class AgentsView {
 		clearTimeout(this.presenceTimer);
 		this.presenceCursor?.close();
 		this.presenceCursor = undefined;
+	}
+
+	// Cheap change signature over everything a presence poll feeds into the
+	// UI, so a quiet peer can skip the state swap and layout pass. Covered:
+	// - local tasks, filtered exactly like refreshTasks() (parentSessionId,
+	//   unfinished, isLocalTask): taskSignature() per task, in store.list()
+	//   order, so store ordering changes are covered too;
+	// - the displayed elapsed of every covered task, sampled from deps.now()
+	//   so clock-only displayed-second changes render while polls inside the
+	//   same displayed second stay quiet (finished tasks are excluded above
+	//   and their elapsed is frozen);
+	// - peer groups: group id, display label (including its unavailable
+	//   suffix), task count, and taskSignature() per task in poll order;
+	// - remote threads: task id, dropped count, item count, and per item the
+	//   kind plus cheap shape fields (tool name, running, isError) and a
+	//   length plus FNV-1a hash of the item's COMPLETE text or tool output.
+	//   Full-content hashing is what closes the keepTail blind spot: capped
+	//   streaming lets a peer rewrite item content in place, including at the
+	//   same length anywhere in the item, and a tail-only hash would miss
+	//   same-length edits before the tail. Fields are length-prefixed so
+	//   delimiter-bearing content cannot collide across field boundaries.
+	//   Fields not rendered from this state (thread version, turns,
+	//   toolCalls, result) stay out so streaming locals and quiet peers
+	//   remain quiet.
+	private presenceSignature(groups: SessionGroup[], threads: Map<string, TaskThread>): string {
+		const now = this.deps.now();
+		const local = this.deps.store.list().filter((task) => task.parentSessionId === this.deps.sessionId
+			&& !isFinished(task.status) && (this.deps.isLocalTask?.(task) ?? true));
+		let signature = "";
+		for (const task of local) signature += taskSignature(task, now);
+		for (const group of groups) {
+			signature += `|group${field(group.id)}${field(group.label ?? "")}${field(String(group.tasks.length))}`;
+			for (const task of group.tasks) signature += taskSignature(task, now);
+		}
+		for (const [id, thread] of threads) {
+			signature += `|thread${field(id)}${field(String(thread.dropped))}${field(String(thread.items.length))}`;
+			for (const item of thread.items) {
+				signature += `,${item.kind}`;
+				if (item.kind === "tool") signature += `${field(item.name)}${item.running ? 1 : 0}${item.isError ? 1 : 0}${field(String(item.output.length))}:${contentHash(item.output)}`;
+				else signature += `${field(String(item.text.length))}:${contentHash(item.text)}`;
+			}
+		}
+		return signature;
 	}
 
 	constructor(deps: AgentsViewDeps) {
@@ -272,11 +387,7 @@ export class AgentsView {
 			onClick: (event) => this.clickMode(event),
 		});
 		this.refreshTasks();
-		this.unsubscribeSummary = deps.store.subscribeSummary(() => {
-			this.clearFooterLayout();
-			this.refreshTasks();
-			this.deps.requestRender();
-		});
+		this.unsubscribeSummary = deps.store.subscribeSummary(() => this.renderLocalChange());
 		this.subscribeSelected();
 		this.refreshPresence();
 	}
@@ -640,6 +751,18 @@ export class AgentsView {
 		this.deps.requestRender();
 	}
 
+	// Store-driven renders change the local snapshot the presence signature
+	// covers; re-anchor the gate to what the UI now shows so the next poll
+	// stays silent when remote presence is unchanged. Without the re-anchor,
+	// every store change would render twice: once here and once on the next
+	// poll, whose signature is computed from the already-updated store.
+	private renderLocalChange(): void {
+		this.clearFooterLayout();
+		this.refreshTasks();
+		this.lastPresenceSignature = this.presenceSignature(this.peers, this.remoteThreads);
+		this.deps.requestRender();
+	}
+
 	private subscribeSelected(): void {
 		const task = this.selectedTask();
 		if (task?.id === this.subscribedTaskId) return;
@@ -647,11 +770,7 @@ export class AgentsView {
 		this.unsubscribeTask = undefined;
 		this.subscribedTaskId = task?.id;
 		if (!task || this.remoteThreads.has(task.id)) return;
-		this.unsubscribeTask = this.deps.store.subscribe(task.id, () => {
-			this.clearFooterLayout();
-			this.refreshTasks();
-			this.deps.requestRender();
-		});
+		this.unsubscribeTask = this.deps.store.subscribe(task.id, () => this.renderLocalChange());
 	}
 
 	private taskLine(row: number): string {

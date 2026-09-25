@@ -119,7 +119,7 @@ export function pageSelectedIndex(
  * The literal is the single-backslash applied-patch form; the raw patch
  * file stores \\s+ only because its code sits inside a template literal.
  * Shared by contract (spec C4): hide-prompts tombstone keys and the
- * merge-history session-half tombstone filter MUST byte-match this key.
+ * store seeding tombstone filter MUST byte-match this key.
  */
 export function promptDedupKey(entry: string): string {
   return entry.replace(/\s+/g, " ").trim().slice(0, 120).toLowerCase();
@@ -247,10 +247,25 @@ export function loadedCountAfterDelete(
  * Takes source as a plain parameter (no member reads — the T23 provenance
  * pin keeps overlay consumers source-agnostic outside deleteCurrent); the
  * only consumer is the delete flow in history/index.ts.
+ * text would otherwise resurface next open); "session" plans NOTHING —
+ * session-derived rows are read-only (slice-05 D1): transcripts are
+ * immutable and owned by Pi core, so the extension never deletes from or
+ * writes to them, and deleteCurrent guards the source before the flow.
+ * Takes source as a plain parameter (no member reads — the T23 provenance
+ * pin keeps overlay consumers source-agnostic outside deleteCurrent); the
+ * only consumer is the delete flow in history/index.ts.
+=======
+ * text would otherwise resurface next open); "session" writes the tombstone
+ * only (session transcripts are NEVER written). Takes source as a plain
+ * parameter (no member reads — the T23 provenance pin keeps overlay
+ * consumers source-agnostic outside deleteCurrent); the only consumer is
+ * deleteCurrent in src/index.ts.
+>>>>>>> a225102f
  */
-export function deletionActionsFor(
-  source: PromptSource,
-): { deleteFromEditorStore: boolean; writeTombstone: boolean } {
+export function deletionActionsFor(source: PromptSource): {
+  deleteFromEditorStore: boolean;
+  writeTombstone: boolean;
+} {
   if (source === "editor") {
     return { deleteFromEditorStore: true, writeTombstone: true };
   }

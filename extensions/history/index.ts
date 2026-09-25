@@ -4,8 +4,8 @@
 // Prompt-history extension entry (slice 3): the selector TUI, overlay glue,
 // and the shortcut/command wiring over the slice-1 writer, slice-2 drains,
 // and slice-4 init sequence (legacy migration + seed bootstrap run once
-// inside getWriter). Deletion (slice 5) is wired here; GC/compaction
-// (slice 6) arrives in a later slice.
+// inside getWriter). Deletion (slice 5) and GC/compaction (slice 6) are
+// wired here.
 //
 // Capture is OPT-IN: nothing is recorded unless
 // GENTLE_PI_HISTORY_ENABLE=1|true|on. With the switch off the handler is a
@@ -13,14 +13,52 @@
 // Unsetting the switch only stops NEW captures; files already written stay
 // on disk (docs/prompt-history.md).
 
-import { join } from "node:path";
 import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   DynamicBorder,
   type ExtensionAPI,
   type ExtensionCommandContext,
   type Theme,
 } from "@earendil-works/pi-coding-agent";
+import {
+  Container,
+  type Focusable,
+  getKeybindings,
+  Input,
+  matchesKey,
+  stripTerminalSequences,
+  Text,
+  type TUI,
+  type TuiMouseEvent,
+  truncateToWidth,
+} from "@earendil-works/pi-tui";
+import { hidePrompt } from "./hide-prompts.ts";
+import {
+  buildPromptRecords,
+  clampPreviewOffset,
+  clampSelectedIndex,
+  deleteConfirmFooterText,
+  deleteConfirmStep,
+  dedupePromptEntries,
+  deletionActionsFor,
+  EDITOR_HIDE_FAILED_TEXT,
+  filterPrompts,
+  getVisiblePromptRecords,
+  initialLoadedCount,
+  loadedCountAfterDelete,
+  loadedCountForQuery,
+  loadedCountForTarget,
+  moveSelectedIndex,
+  nextLoadedCount,
+  type PiHistoryGlobals,
+  type PromptEntry,
+  type PromptRecord,
+  pageSelectedIndex,
+  shouldGrowWindow,
+  STORE_DELETE_FAILED_TEXT,
+  withExpandedHistoryGlobals,
+} from "./selector-helpers.ts";
 import {
   appendSessionCapture,
   bootstrapProjectSeed,
@@ -29,49 +67,13 @@ import {
   drainGlobal,
   drainProject,
   ensureRegistryEntry,
+  gcProjectDir,
   migrateLegacyStores,
   openSessionWriter,
   type DrainResult,
   type SessionWriterState,
 } from "./store.ts";
 import { randomUUID } from "node:crypto";
-import { hidePrompt } from "./hide-prompts.ts";
-import {
-  buildPromptRecords,
-  filterPrompts,
-  type PromptEntry,
-  clampPreviewOffset,
-  clampSelectedIndex,
-  deleteConfirmFooterText,
-  deleteConfirmStep,
-  deletionActionsFor,
-  dedupePromptEntries,
-  EDITOR_HIDE_FAILED_TEXT,
-  getVisiblePromptRecords,
-  initialLoadedCount,
-  loadedCountAfterDelete,
-  loadedCountForQuery,
-  loadedCountForTarget,
-  moveSelectedIndex,
-  nextLoadedCount,
-  pageSelectedIndex,
-  shouldGrowWindow,
-  STORE_DELETE_FAILED_TEXT,
-  withExpandedHistoryGlobals,
-  type PiHistoryGlobals,
-  type PromptRecord,
-} from "./selector-helpers.ts";
-import {
-  Container,
-  type Focusable,
-  getKeybindings,
-  Input,
-  matchesKey,
-  Text,
-  type TUI,
-  type TuiMouseEvent,
-  truncateToWidth,
-} from "@earendil-works/pi-tui";
 
 const SHORTCUT = "ctrl+shift+r";
 const MAX_VISIBLE = 10;
@@ -106,17 +108,13 @@ const CURRENT_CWD = process.cwd();
 // Instance identity: one exclusive capture file per pi process.
 const INSTANCE_ID = randomUUID();
 
+// State dir for the session index and the tombstone file (spec C2/C4,
+// design §D5). Derived state only — deleting the directory restores cold
+// start and unhides every prompt; transcripts and the editor store are
+// never written here.
 // Tombstone state dir: the store root itself (user-directed FINAL):
 // ~/.pi/agent/history/hidden.json — one directory for everything.
-// Derived state only — deleting the directory restores cold start and
-// unhides every prompt; transcripts and the editor store are never written
-// here.
-const PI_HISTORY_NAV_STATE_DIR = join(
-  homedir(),
-  ".pi",
-  "agent",
-  "history",
-);
+const PI_HISTORY_NAV_STATE_DIR = join(homedir(), ".pi", "agent", "history");
 
 // Sessions root for the one-level transcript scan (spec C1, design §D5):
 // ~/.pi/agent/sessions/. Read-only by invariant — transcripts are never
@@ -138,15 +136,16 @@ const ENTRY_PREFIX_WIDTH = 2;
 function sanitizeForDisplay(text: string): string {
   let out = "";
   for (let i = 0; i < text.length; i++) {
-    const cp = text.codePointAt(i)!;
+    const cp = text.codePointAt(i);
+    if (cp === undefined) break;
     if (cp === 0x0a) {
       out += "\n";
     } else if (cp === 0x09) {
       out += "\t";
     } else if (cp < 0x20 || cp === 0x7f) {
-      out += "\\x" + cp.toString(16).padStart(2, "0");
+      out += `\\x${cp.toString(16).padStart(2, "0")}`;
     } else if (cp >= 0x80 && cp < 0xa0) {
-      out += "\\x" + cp.toString(16).padStart(2, "0");
+      out += `\\x${cp.toString(16).padStart(2, "0")}`;
     } else {
       // Astral code points (> 0xFFFF) span a surrogate pair; append the
       // full code point, not just the high surrogate at text[i], so emoji
@@ -176,17 +175,17 @@ interface DispatchEntry {
 }
 
 /** Notification sink for selector feedback; an absent callback drops notifications. */
-type SelectorNotify = (message: string, level: "error" | "warning" | "info") => void;
+type SelectorNotify = (
+  message: string,
+  level: "error" | "warning" | "info",
+) => void;
 
 /** Single rendered row; always occupies exactly one terminal row. */
 class FixedRowText {
-  private text: string;
-  private readonly centered: boolean;
-
-  constructor(text: string = "", centered = false) {
-    this.text = text;
-    this.centered = centered;
-  }
+  constructor(
+    private text: string = "",
+    private readonly centered = false,
+  ) {}
 
   /** Replace the row content in place; padding contract comes from render(). */
   setText(next: string): void {
@@ -207,7 +206,7 @@ class FixedRowText {
           // Truncate first so an overlong help row can never exceed width,
           // then center the truncated copy (design §C hardening).
           const truncated = truncateToWidth(this.text, width, "…");
-          const visible = truncated.replace(/\x1b\[[0-9;]*m/g, "");
+          const visible = stripTerminalSequences(truncated);
           const pad = Math.max(0, Math.floor((width - visible.length) / 2));
           return " ".repeat(pad) + truncated;
         })()
@@ -266,8 +265,6 @@ class PromptHistorySelector extends Container implements Focusable {
   private readonly tui: TUI;
   private readonly onSelect: (record: PromptRecord) => void;
   private readonly onCancel: () => void;
-  /** Notification sink for selector feedback (wired by the factory). */
-  private readonly onNotify?: SelectorNotify;
   private filteredRecords: PromptRecord[] = [];
   private selectedIndex = 0;
   /** Number of records loaded (newest-first) from the top of `records`. */
@@ -352,16 +349,16 @@ class PromptHistorySelector extends Container implements Focusable {
     records: PromptRecord[],
     onSelect: (record: PromptRecord) => void,
     onCancel: () => void,
-    onNotify?: SelectorNotify,
+    private readonly onNotify?: SelectorNotify,
   ) {
     super();
+
     this.tui = tui;
     this.theme = theme;
     this.records = records;
     this.loadedCount = initialLoadedCount(records.length, INITIAL_BATCH);
     this.onSelect = onSelect;
     this.onCancel = onCancel;
-    this.onNotify = onNotify;
 
     // ── Search panel (top) ──
     this.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
@@ -702,14 +699,12 @@ class PromptHistorySelector extends Container implements Focusable {
     this.rebuildList();
   }
 
-  // -- Navigation ---------------------------------------------------------
-
-  private moveUp(): void {
-    this.selectedIndex = moveSelectedIndex(
-      this.selectedIndex,
-      this.filteredRecords.length,
-      -1,
-    );
+  /**
+   * Lazy-load growth shared by moveUp/moveDown (design §D1): when the cursor
+   * sits in the final PRELOAD_BUFFER rows of the loaded window, grow via
+   * nextLoadedCount and re-apply the filter so fresh rows become visible.
+   */
+  private growLoadedWindowIfNeeded(): void {
     if (
       shouldGrowWindow(
         this.selectedIndex,
@@ -725,6 +720,17 @@ class PromptHistorySelector extends Container implements Focusable {
       );
       this.applyFilter(this.searchInput.getValue());
     }
+  }
+
+  // -- Navigation ---------------------------------------------------------
+
+  private moveUp(): void {
+    this.selectedIndex = moveSelectedIndex(
+      this.selectedIndex,
+      this.filteredRecords.length,
+      -1,
+    );
+    this.growLoadedWindowIfNeeded();
     this.previewScrollOffset = 0;
     this.rebuildList();
     this.rebuildPreview();
@@ -735,21 +741,7 @@ class PromptHistorySelector extends Container implements Focusable {
     // sits in the final PRELOAD_BUFFER rows of the loaded window, so the
     // modulo below moves into freshly loaded rows — a wrap to index 0 is
     // reachable only on the exhausted set.
-    if (
-      shouldGrowWindow(
-        this.selectedIndex,
-        this.loadedCount,
-        this.records.length,
-        PRELOAD_BUFFER,
-      )
-    ) {
-      this.loadedCount = nextLoadedCount(
-        this.loadedCount,
-        this.records.length,
-        BATCH_SIZE,
-      );
-      this.applyFilter(this.searchInput.getValue());
-    }
+    this.growLoadedWindowIfNeeded();
     this.selectedIndex = moveSelectedIndex(
       this.selectedIndex,
       this.filteredRecords.length,
@@ -953,7 +945,7 @@ class PromptHistorySelector extends Container implements Focusable {
 }
 
 // ---------------------------------------------------------------------------
-// Overlay glue
+// Extension entry point
 // ---------------------------------------------------------------------------
 
 type SelectorDone = (result: PromptRecord | null) => void;
@@ -1086,6 +1078,7 @@ function drainForScope(scope: HistoryScope): ScopeDrain {
   return drain.status === "ok" ? drain.prompts : drain;
 }
 
+/** Shared entry point for the ctrl+shift+r shortcut and the /history command. */
 async function openHistorySelector(
   ctx: Pick<ExtensionCommandContext, "ui">,
 ): Promise<void> {
@@ -1109,11 +1102,9 @@ async function openHistorySelector(
     ctx.ui.notify(entries.message, "error");
     return;
   }
-  if (entries.length === 0) {
-    ctx.ui.notify("No prompt history available.", "warning");
-    return;
-  }
-
+  // Always open the selector (user-directed): an empty store still shows
+  // the overlay with its "No matching prompts" empty state instead of a
+  // warning notify.
   const records = recordsFromEntries(entries);
   const selected = await runPromptHistorySelection(ctx, records);
   if (selected) {
@@ -1221,6 +1212,15 @@ export default function promptHistoryExtension(
     } catch {
       // A capture failure must never break the agent loop or unregister
       // the handler - swallow and keep the next prompt capturable.
+    }
+  });
+
+  // Backup pass: enforce the 1000-line limit on graceful shutdown.
+  pi.on("session_shutdown", () => {
+    try {
+      gcProjectDir(root, cwd);
+    } catch {
+      // GC is best-effort
     }
   });
 

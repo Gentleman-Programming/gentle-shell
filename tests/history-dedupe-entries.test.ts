@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
+import fs from "node:fs";
+import path from "node:path";
 import { dedupePromptEntries } from "../extensions/history/selector-helpers.ts";
 
 // AC-L5-1..AC-L5-5 — read-time dedup pass (spec C3, design §D5).
@@ -14,11 +17,6 @@ import { dedupePromptEntries } from "../extensions/history/selector-helpers.ts";
 // `/\s+/g`. An implementation copying the double-backslash form would build
 // a regex matching a literal backslash: whitespace variants would stop
 // collapsing (T1 fails) and empty-key entries would leak through (T2 fails).
-//
-// The dev suite's T3 source-parse pins (dedupePromptEntries wired between
-// drainForScope and buildPromptRecords inside openHistorySelector) cover the
-// slice-3 selector wiring in extensions/history/index.ts and port with that
-// slice — index.ts stays at its slice-1 surface here.
 
 // T1 — AC-L5-1: keep-first over newest-first input order (file order).
 
@@ -120,4 +118,62 @@ test("no snapshot cap: every unique entry is kept past MAX_RESULTS (AC-L5-5)", (
   assert.equal(deduped.length, 1200);
   assert.equal(deduped[0], entries[0]);
   assert.equal(deduped[1199], entries[1199]);
+});
+
+// T3 — AC-L5-4 (source-parse, command-registration.test.ts pattern): never
+// import src/index.ts — it pulls the pi-tui runtime graph (design §D3).
+
+const sourcePath = fileURLToPath(new URL("../extensions/history/index.ts", import.meta.url));
+const source = fs.readFileSync(sourcePath, "utf8");
+
+test("dedupePromptEntries is wired between the store drain and buildPromptRecords in openHistorySelector (AC-L5-4)", () => {
+  const loadIdx = source.indexOf('drainForScope("project")');
+  assert.ok(
+    loadIdx >= 0,
+    "store drain call should exist in openHistorySelector",
+  );
+
+  const dedupeCallIdx = source.indexOf("dedupePromptEntries(", loadIdx);
+  assert.ok(
+    dedupeCallIdx > loadIdx,
+    "dedup invocation must come after the store drain call",
+  );
+
+  const buildIdx = source.indexOf("buildPromptRecords(");
+  assert.ok(
+    buildIdx > loadIdx,
+    "buildPromptRecords call should follow the loadSharedHistory call",
+  );
+  assert.ok(
+    source
+      .slice(buildIdx, buildIdx + "buildPromptRecords(".length + 40)
+      .includes("dedupePromptEntries(entries)"),
+    "records must be built from dedupePromptEntries(entries) — the read-time dedup runs between load and build (design §B1)",
+  );
+});
+
+test("the three command-registration pins still hold beside the dedup wiring (AC-L5-4)", () => {
+  const definitions =
+    source.split("async function openHistorySelector(").length - 1;
+  assert.strictEqual(
+    definitions,
+    1,
+    "openHistorySelector should be defined exactly once",
+  );
+
+  const calls = source.split("openHistorySelector(ctx)").length - 1;
+  assert.strictEqual(
+    calls,
+    2,
+    "the dedup wiring must add no openHistorySelector(ctx) occurrence",
+  );
+
+  const start = source.indexOf("async function openHistorySelector(");
+  const end = source.indexOf("export default function", start);
+  assert.notStrictEqual(end, -1, "extension entry point should follow");
+  const body = source.slice(start, end);
+  assert.ok(
+    !body.includes('"No prompt history available."'),
+    "the warning is removed; the selector always opens",
+  );
 });

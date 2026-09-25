@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import { fileURLToPath } from "node:url";
+import fs from "node:fs";
+import path from "node:path";
 import {
   buildPromptRecords,
   filterPrompts,
@@ -16,14 +17,14 @@ import {
 // Unit 2a — L1+L2 windowing helpers (spec C1/C2, design §D3/§D4).
 //
 // The ratified constant VALUES (design R3) are pinned here as test literals
-// while the named constants themselves land in extensions/history/index.ts:
+// while the named constants themselves land in src/index.ts in Unit 2b:
 //
 //   INITIAL_BATCH = 10 · BATCH_SIZE = 10 · PRELOAD_BUFFER = 3 (trigger at 8th; milestones 10/20/30)
 //
 // Every helper is a parameterized pure function over UNFILTERED counts only:
 // `filteredRecords.length` appears in no trigger or growth expression (the
 // §8a regression pin, AC-L2-2). All behaviors below use the helpers exactly
-// as the §B2 wiring does in the selector — grow-before-move, one batch per
+// as the §B2 wiring will in Unit 2b — grow-before-move, one batch per
 // threshold crossing, derived exhaustion (no stored flag).
 
 // T4 — AC-L1-1: initial window clamp, min(INITIAL_BATCH, records.length).
@@ -142,9 +143,7 @@ test("the selector stores no exhausted/isLoaded flag — exhaustion is derivatio
 
 test("trigger arithmetic is unfiltered-only: exact C2 predicate, no filteredRecords in growth helpers (AC-L2-2)", () => {
   const helpersSource = fs.readFileSync(
-    fileURLToPath(
-      new URL("../extensions/history/selector-helpers.ts", import.meta.url),
-    ),
+    fileURLToPath(new URL("../extensions/history/selector-helpers.ts", import.meta.url)),
     "utf8",
   );
   const bodyOf = (name: string): string => {
@@ -296,43 +295,42 @@ test("nextLoadedCount steps min(L + max(1, batchSize), R) including the degenera
 // ---------------------------------------------------------------------------
 // Unit 2b — §B2 wiring pins (T9) + headerRow-only constraint (T10).
 //
-// Source-parse tests over extensions/history/index.ts. The body extractor
-// mirrors dispatch.test.ts's methodBody(): slice from the method declaration
-// to the first "\n  }" — which is exactly why every nested if added by the
-// §B2 wiring must close at 4-space indent (a 4-space closer cannot match the
+// Source-parse tests over src/index.ts. The body extractor mirrors
+// dispatch.test.ts's methodBody(): slice from the method declaration to the
+// first "\n  }" — which is exactly why every nested if added by the §B2
+// wiring must close at 4-space indent (a 4-space closer cannot match the
 // first-close slice, so the method close is still found).
-//
-// Slice-3 adaptation note: upstream wires the growth trigger INLINE in
-// moveUp/moveDown (no shared growLoadedWindowIfNeeded helper — that shape is
-// dev-repo drift). The pins below assert the same AC contracts against the
-// inline form.
 
 function methodBodyOf(name: string): string {
   const decl = selectorSource.indexOf(`private ${name}(`);
-  assert.ok(decl >= 0, `private ${name}() should exist in extensions/history/index.ts`);
+  assert.ok(decl >= 0, `private ${name}() should exist in src/index.ts`);
   const end = selectorSource.indexOf("\n  }", decl);
   assert.ok(end > decl, `private ${name}() body should close`);
   return selectorSource.slice(decl, end);
 }
 
 // T9 — AC-L1-4: batch append points — growth wiring in the three downward
-// paths ONLY (moveUp carries the older-direction growth check); every other
-// upward site and applyFilter stay pure.
+// paths ONLY; every upward site and applyFilter stay pure.
 
 test("growth wiring appears in moveDown, moveUp, pageListDown, jumpToLast (AC-L1-4)", () => {
   const down = methodBodyOf("moveDown");
   assert.ok(
-    down.includes("shouldGrowWindow("),
-    "moveDown must evaluate the C2 trigger",
-  );
-  assert.ok(
-    down.includes("nextLoadedCount("),
-    "moveDown must grow via nextLoadedCount",
+    down.includes("this.growLoadedWindowIfNeeded()"),
+    "moveDown must route through the shared growth helper",
   );
   const up = methodBodyOf("moveUp");
   assert.ok(
-    up.includes("shouldGrowWindow(") && up.includes("nextLoadedCount("),
-    "moveUp must carry the older-direction growth check",
+    up.includes("this.growLoadedWindowIfNeeded()"),
+    "moveUp must route through the shared growth helper (older-direction growth)",
+  );
+  const grow = methodBodyOf("growLoadedWindowIfNeeded");
+  assert.ok(
+    grow.includes("shouldGrowWindow("),
+    "the growth helper must evaluate the C2 trigger",
+  );
+  assert.ok(
+    grow.includes("nextLoadedCount("),
+    "the growth helper must grow via nextLoadedCount",
   );
   const pageDown = methodBodyOf("pageListDown");
   assert.ok(
@@ -364,8 +362,8 @@ test("growth wiring appears in moveDown, moveUp, pageListDown, jumpToLast (AC-L1
 
 test("growth runs BEFORE the index computation in every downward path (AC-L1-7, AC-L1-5, AC-L1-6)", () => {
   const down = methodBodyOf("moveDown");
-  const growAt = down.indexOf("shouldGrowWindow(");
-  assert.notEqual(growAt, -1, "moveDown must evaluate the C2 trigger");
+  const growAt = down.indexOf("this.growLoadedWindowIfNeeded()");
+  assert.notEqual(growAt, -1, "moveDown must route through the growth helper");
   assert.ok(
     growAt < down.indexOf("moveSelectedIndex("),
     "moveDown must grow before the modulo — wrap-to-0 only on the exhausted set",
@@ -394,19 +392,26 @@ test("growth arithmetic names only this.loadedCount and this.records.length (AC-
   const down = methodBodyOf("moveDown");
   const downGrow = down.slice(0, down.indexOf("moveSelectedIndex("));
   assert.ok(
-    downGrow.includes("shouldGrowWindow(") &&
-      downGrow.includes("nextLoadedCount("),
-    "moveDown's growth region must run the trigger + one batch before the modulo",
+    downGrow.includes("this.growLoadedWindowIfNeeded()"),
+    "moveDown's growth region must run the shared helper before the modulo",
   );
   assert.ok(
     !downGrow.includes("filteredRecords"),
     "moveDown's pre-modulo region must read UNFILTERED counts only",
   );
+  const grow = methodBodyOf("growLoadedWindowIfNeeded");
+  assert.ok(
+    grow.includes("this.loadedCount") && grow.includes("this.records.length"),
+    "the growth helper must pass the unfiltered counts",
+  );
+  assert.ok(
+    !grow.includes("filteredRecords"),
+    "the growth helper must read UNFILTERED counts only",
+  );
   const page = methodBodyOf("pageListDown");
   const pageGrow = page.slice(0, page.indexOf("pageSelectedIndex("));
   assert.ok(
-    pageGrow.includes("loadedCountForTarget(") &&
-      pageGrow.includes("this.loadedCount") &&
+    pageGrow.includes("this.loadedCount") &&
       pageGrow.includes("this.records.length"),
     "pageListDown's catch-up must pass the unfiltered counts",
   );

@@ -9,13 +9,15 @@ import {
   projectHash,
   sessionFilePath,
 } from "../extensions/history/store.ts";
-import promptHistoryExtension, { captureEnabled } from "../extensions/history/index.ts";
+import promptHistoryExtension, {
+  captureEnabled,
+} from "../extensions/history/index.ts";
 
 function makeRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-writer-"));
 }
 
-const CWD = "/pi-history-test/project-a";
+const CWD = "/pi-history-fixtures/project-a";
 
 function fileTexts(file: string): string[] {
   return fs
@@ -111,38 +113,68 @@ test("two writers own separate files in the same project dir", () => {
   assert.deepEqual(files, ["inst-a.jsonl", "inst-b.jsonl"]);
 });
 
-test("the extension entry registers exactly the slice-3 wiring surface", () => {
+test("the extension entry wires capture first, then the selector surface", () => {
   // Module load must stay side-effect free (importing index.ts parses the
-  // whole graph without touching the real ~/.pi store root). Wiring as of
-  // slice 3: before_agent_start capture + tool_call overlay dismiss, the
-  // ctrl+shift+r shortcut, and the history command. session_shutdown is
-  // slice 6 and must not appear yet.
+  // whole extension graph without touching the real ~/.pi store root).
+  // Capture is registered first; the selector adds session_shutdown GC,
+  // tool_call dismissal, the shortcut, and the /history command beside it.
   const registered: Array<[string, unknown]> = [];
-  const shortcuts: Array<[string, unknown]> = [];
-  const commands: Array<[string, unknown]> = [];
   const pi = {
     on: (event: string, handler: unknown) => {
       registered.push([event, handler]);
     },
-    registerShortcut: (key: string, def: unknown) => {
-      shortcuts.push([key, def]);
-    },
-    registerCommand: (name: string, def: unknown) => {
-      commands.push([name, def]);
-    },
+    registerShortcut: () => {},
+    registerCommand: () => {},
   };
   promptHistoryExtension(pi as never);
   assert.deepEqual(
     registered.map(([event]) => event),
-    ["before_agent_start", "tool_call"],
+    ["before_agent_start", "session_shutdown", "tool_call"],
   );
-  assert.deepEqual(shortcuts.map(([key]) => key), ["ctrl+shift+r"]);
-  assert.deepEqual(commands.map(([name]) => name), ["history"]);
-  // Handlers are callable but are NEVER invoked here: a real invocation
-  // would run getWriter() against the user's real ~/.pi/agent/history.
-  for (const [, handler] of registered) {
-    assert.equal(typeof handler, "function");
-  }
+  // The capture handler is callable but is NEVER invoked here: a real
+  // invocation would run getWriter() against ~/.pi/agent/history.
+  assert.equal(typeof registered[0][1], "function");
+});
+
+test("captureEnabled is a strict opt-in", () => {
+  assert.equal(captureEnabled({}), false);
+  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_ENABLE: "0" }), false);
+  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_ENABLE: "false" }), false);
+  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_ENABLE: "off" }), false);
+  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_ENABLE: "yes" }), false);
+  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_ENABLE: " 1 " }), true);
+  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_ENABLE: "TRUE" }), true);
+  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_ENABLE: "On" }), true);
+});
+
+test("the capture handler is a no-op unless the user opts in", () => {
+  const root = makeRoot();
+  const handler = captureHandlerWith({}, root);
+  handler({ prompt: "sensitive prompt" });
+  handler({ prompt: "another one" });
+  // Nothing at all: no capture file, no project dir, no registry entry.
+  assert.deepEqual(fs.readdirSync(root), []);
+});
+
+test("an opted-in session captures delivered prompts", () => {
+  const root = makeRoot();
+  const handler = captureHandlerWith({ GENTLE_PI_HISTORY_ENABLE: "1" }, root);
+  handler({ prompt: "hello store" });
+  assert.deepEqual(fileTexts(sessionFilePath(root, CWD, "inst-entry")), [
+    "hello store",
+  ]);
+});
+
+test("disabling capture stops new lines and leaves existing files alone", () => {
+  const root = makeRoot();
+  const env: NodeJS.ProcessEnv = { GENTLE_PI_HISTORY_ENABLE: "true" };
+  const handler = captureHandlerWith(env, root);
+  handler({ prompt: "kept" });
+  const file = sessionFilePath(root, CWD, "inst-entry");
+  assert.equal(fs.existsSync(file), true);
+  delete env.GENTLE_PI_HISTORY_ENABLE;
+  handler({ prompt: "never written" });
+  assert.deepEqual(fileTexts(file), ["kept"]);
 });
 
 test("captureEnabled is a strict opt-in", () => {

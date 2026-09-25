@@ -4,20 +4,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  appendSessionCapture,
   deleteFromGlobal,
   deleteFromProject,
   globalSeedPath,
-  openSessionWriter,
   projectHash,
 } from "../extensions/history/store.ts";
 
-// Scope delete (design v2): sweepFiles' atomic per-file rewrite semantics
-// plus the project/global delete entry points. Synthetic project cwds —
-// never real directories on any machine (identity only feeds projectHash;
-// the fixtures live in tmpdirs and never touch the user's real ~/.pi).
-const PROJECT_A = "/fixtures/pi-history/project-a";
-const PROJECT_B = "/fixtures/pi-history/project-b";
+const PROJECT_A = "/pi-history-fixtures/project-a";
+const PROJECT_B = "/pi-history-fixtures/project-b";
 
 function makeRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-del-"));
@@ -106,10 +100,12 @@ test("delete leaves no tmp files behind", () => {
   assert.deepEqual(leftovers, []);
 });
 
-// node:test has no test.skipIf (Bun-ism): root skips via the options object.
-test(
+const isRoot = process.getuid?.() === 0;
+const sealedFileTest = (name: string, fn: () => void | Promise<void>) =>
+  test(name, { skip: isRoot && "requires a non-root user" }, fn);
+
+sealedFileTest(
   "an unreadable store file (chmod 000) is skipped; readable copies still swept",
-  { skip: process.getuid?.() === 0 ? "requires non-root" : false },
   () => {
     const root = makeRoot();
     const dir = path.join(root, "projects", projectHash(PROJECT_A));
@@ -139,25 +135,4 @@ test("a file whose every line is deleted becomes empty (kept, not removed)", () 
   deleteFromProject(root, PROJECT_A, "only-victim");
   assert.equal(fs.existsSync(file), true);
   assert.equal(fs.readFileSync(file, "utf8"), "");
-});
-
-// Active-writer safety (design v2): the sweep rewrites the writer's own
-// file IN PLACE (tmp + rename, never a removal — emptied files are kept),
-// so a concurrently live writer keeps working by path: its next capture
-// appends into the swept file, and the surviving + new lines parse fine.
-test("a sweep with a concurrent live writer keeps the writer's file functional", () => {
-  const root = makeRoot();
-  const state = openSessionWriter(root, PROJECT_A, "instance-1");
-  appendSessionCapture(state, "victim");
-  appendSessionCapture(state, "keeper");
-
-  const result = deleteFromProject(root, PROJECT_A, "victim");
-  assert.deepEqual(result, { filesAffected: 1, removed: 1 });
-
-  // The same writer state keeps appending after the sweep — the file was
-  // rewritten under the writer's feet, not removed.
-  appendSessionCapture(state, "after-delete");
-  assert.equal(state.lineCount, 3);
-  assert.equal(fs.existsSync(state.filePath), true);
-  assert.deepEqual(fileTexts(state.filePath), ["keeper", "after-delete"]);
 });

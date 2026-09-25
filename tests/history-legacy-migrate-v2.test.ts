@@ -4,6 +4,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { globalSeedPath, migrateLegacyStores } from "../extensions/history/store.ts";
+// node:test has no test.skipIf (Bun-ism): emulate via the options object.
+const skipIf =
+  (condition: unknown) =>
+  (name: string, fn: () => unknown) =>
+    test(
+      name,
+      { skip: condition ? "requires non-root" : false },
+      fn as () => void | Promise<void>,
+    );
+
 
 function makeDirs(): { root: string; agentDir: string } {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-mig-"));
@@ -110,23 +120,8 @@ test("malformed v1 jsonl lines are skipped, not fatal", () => {
   assert.deepEqual(fileTexts(globalSeedPath(root)), ["good"]);
 });
 
-// node:test has no test.skipIf (Bun-ism): root skips via the options
-// object — chmod 000 is invisible to the superuser.
-const sealedLegacyTest = (name: string, fn: () => void) =>
-  test(
-    name,
-    { skip: process.getuid?.() === 0 ? "requires non-root" : false },
-    fn,
-  );
-
 // chmod-based failure injection is also invisible to the superuser.
-const seedFailureTest = (name: string, fn: () => void) =>
-  test(
-    name,
-    { skip: process.getuid?.() === 0 ? "requires non-root" : false },
-    fn,
-  );
-
+const seedFailureTest = skipIf(process.getuid?.() === 0);
 seedFailureTest(
   "a failed seed write leaves legacy sources untouched for retry",
   () => {
@@ -158,6 +153,7 @@ seedFailureTest(
   },
 );
 
+const sealedLegacyTest = skipIf(process.getuid?.() === 0);
 sealedLegacyTest(
   "an unreadable legacy file is skipped; the readable file still migrates",
   () => {

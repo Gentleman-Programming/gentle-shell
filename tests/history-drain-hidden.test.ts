@@ -11,11 +11,7 @@ import {
   type DrainResult,
 } from "../extensions/history/store.ts";
 
-// Portable project identity: a never-existing literal. projectHash falls
-// back to hashing the raw string when realpath fails, so the identity is
-// deterministic on every machine (no machine-specific absolute paths).
-
-const CWD = "/pi-history-test/drain-hidden-project";
+const CWD = "/pi-history-fixtures/project-a";
 
 function write(file: string, texts: string[], ts = 100): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });

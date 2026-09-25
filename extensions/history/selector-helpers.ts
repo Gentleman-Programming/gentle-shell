@@ -25,13 +25,11 @@ export interface PromptEntry {
   ts?: number;
 }
 
-/** Half-open window of list rows currently rendered (spec: centered cursor). */
 export interface VisibleRange {
   start: number;
   end: number;
 }
 
-/** One rendered list row: the record, its master index, and cursor state. */
 export interface VisiblePromptRecord {
   index: number;
   record: PromptRecord;
@@ -79,6 +77,41 @@ export function clampPreviewOffset(
   return Math.max(0, Math.min(offset, Math.max(0, totalLines - viewportRows)));
 }
 
+export function computeVisibleRange(
+  selectedIndex: number,
+  total: number,
+  maxVisible: number,
+): VisibleRange {
+  if (total <= 0 || maxVisible <= 0) return { start: 0, end: 0 };
+  if (total <= maxVisible) return { start: 0, end: total };
+
+  const half = Math.floor(maxVisible / 2);
+  const start = Math.max(0, Math.min(selectedIndex - half, total - maxVisible));
+
+  return {
+    start,
+    end: Math.min(start + maxVisible, total),
+  };
+}
+
+export function moveSelectedIndex(
+  selectedIndex: number,
+  total: number,
+  delta: number,
+): number {
+  if (total === 0) return 0;
+  return (selectedIndex + delta + total) % total;
+}
+
+export function pageSelectedIndex(
+  selectedIndex: number,
+  total: number,
+  pageSize: number,
+): number {
+  if (total === 0) return 0;
+  return clampSelectedIndex(selectedIndex + pageSize, total);
+}
+
 /**
  * Normalization key for read-time dedup (spec C3): byte-matches the
  * APPLIED patch key in nav/patches/editor.cjs (:480-:586) — whitespace
@@ -119,73 +152,6 @@ export function dedupePromptEntries<T extends string | PromptEntry>(
   }
   return deduped;
 }
-
-// ---------------------------------------------------------------------------
-// Selector navigation & windowing (open-flow surface; search/paging helpers
-// join in later stages)
-// ---------------------------------------------------------------------------
-
-/** Wrapped cursor move: (+/-delta) with modulo wrap over the total. */
-export function moveSelectedIndex(
-  selectedIndex: number,
-  total: number,
-  delta: number,
-): number {
-  if (total === 0) return 0;
-  return (selectedIndex + delta + total) % total;
-}
-
-export function pageSelectedIndex(
-  selectedIndex: number,
-  total: number,
-  pageSize: number,
-): number {
-  if (total === 0) return 0;
-  return clampSelectedIndex(selectedIndex + pageSize, total);
-}
-
-/**
- * Centered visible window (a22588fc shape): keep the cursor near the middle
- * once the list outgrows maxVisible; small lists render in full.
- */
-export function computeVisibleRange(
-  selectedIndex: number,
-  total: number,
-  maxVisible: number,
-): VisibleRange {
-  if (total <= 0 || maxVisible <= 0) return { start: 0, end: 0 };
-  if (total <= maxVisible) return { start: 0, end: total };
-
-  const half = Math.floor(maxVisible / 2);
-  const start = Math.max(0, Math.min(selectedIndex - half, total - maxVisible));
-
-  return {
-    start,
-    end: Math.min(start + maxVisible, total),
-  };
-}
-
-/** The rows to render for the current cursor: sliced, indexed, cursor-flagged. */
-export function getVisiblePromptRecords(
-  records: PromptRecord[],
-  selectedIndex: number,
-  maxVisible: number,
-): VisiblePromptRecord[] {
-  const { start, end } = computeVisibleRange(
-    selectedIndex,
-    records.length,
-    maxVisible,
-  );
-  return records.slice(start, end).map((record, offset) => ({
-    index: start + offset,
-    record,
-    isSelected: start + offset === selectedIndex,
-  }));
-}
-
-// ---------------------------------------------------------------------------
-// Lazy windowing (spec C1/C2, design §D3/§D4) and search visibility
-// ---------------------------------------------------------------------------
 
 /**
  * First-paint window size (spec C1, AC-L1-1): min(initialBatch, total),
@@ -250,6 +216,129 @@ export function loadedCountForTarget(
 }
 
 /**
+ * Delete backfill (spec C4's two steps verbatim, AC-L4-1..3): decrement the
+ * window against the splice-shrunk snapshot; while unloaded rows remain,
+ * backfill one row (clamped) so the next unloaded record slides into the
+ * deleted slot and the visible list length stays stable; at exhaustion the
+ * decrement is the genuine shrink. Written stepwise — NOT the algebraic
+ * min(L, T') shortcut — so the unit tests pin the contract, not an
+ * equivalence. Callers guarantee the deleted row sits inside the loaded
+ * prefix (idx < loadedCount by construction).
+ */
+export function loadedCountAfterDelete(
+  loadedCount: number,
+  totalCountAfterSplice: number,
+): number {
+  const decrement = loadedCount - 1;
+  if (decrement < totalCountAfterSplice) {
+    return Math.min(decrement + 1, totalCountAfterSplice);
+  }
+  return decrement;
+}
+
+/**
+ * Pure delete-flow planner (spec C4, design §F): maps a record's provenance
+ * to the two delete actions. "editor" deletes from the editor store on disk
+ * AND writes the tombstone (twin suppression — the session copy of the same
+ * text would otherwise resurface next open); "session" writes the tombstone
+ * only (session transcripts are NEVER written). Takes source as a plain
+ * parameter (no member reads — the T23 provenance pin keeps overlay
+ * consumers source-agnostic outside deleteCurrent); the only consumer is
+ * deleteCurrent in history/index.ts.
+ */
+export function deletionActionsFor(
+  source: PromptSource,
+): { deleteFromEditorStore: boolean; writeTombstone: boolean } {
+  if (source === "editor") {
+    return { deleteFromEditorStore: true, writeTombstone: true };
+  }
+  return { deleteFromEditorStore: false, writeTombstone: true };
+}
+
+/**
+ * One transition of the two-step delete confirmation (PR #1393 review):
+ * the first delete-key press ARMS the delete for the selected row and
+ * executes nothing; the SECOND press executes; any other key disarms. The
+ * selector's deleteCurrent and handleInput both route through this pure
+ * step so the arm/execute/disarm machine has exactly one definition.
+ */
+export interface DeleteConfirmStep {
+  /** The armed state AFTER this transition. */
+  armed: boolean;
+  /** True only on the second delete-key press — the executing press. */
+  execute: boolean;
+}
+
+export function deleteConfirmNext(
+  armed: boolean,
+  isDeleteKey: boolean,
+): DeleteConfirmStep {
+  if (!isDeleteKey) return { armed: false, execute: false };
+  if (armed) return { armed: false, execute: true };
+  return { armed: true, execute: false };
+}
+
+/**
+ * Scope-aware confirmation copy shown in the footer while a delete is
+ * armed (PR #1393): the two provenances have different semantics and the
+ * copy must say which one is about to run, in one line. Editor-stored
+ * prompts are removed from the store physically AND hidden from history;
+ * session-derived prompts can only be hidden (transcripts are immutable),
+ * so the original stays in the session transcript.
+ */
+export function deleteConfirmFooterText(source: PromptSource): string {
+  if (source === "editor") {
+    return "Delete stored prompt? Removes every copy from the store and hides it from history. Session transcripts keep the original.";
+  }
+  return "Hide from history? The original stays in the session transcript; a tombstone keeps it out of this list.";
+}
+
+/**
+ * Toast copy when the store delete THROWS (PR #1393): the flow aborts
+ * before any tombstone write, so nothing was removed — the store keeps the
+ * prompt and no tombstone is written.
+ */
+export const STORE_DELETE_FAILED_TEXT =
+  "Store delete failed; nothing was removed.";
+
+/**
+ * Toast copy when the tombstone write fails on the EDITOR path (PR
+ * #1393): the store row was already removed, so only the hide failed —
+ * the prompt may reappear from session transcripts.
+ */
+export const EDITOR_HIDE_FAILED_TEXT =
+  "Deleted from the store, but hiding failed — the prompt may reappear from session transcripts.";
+
+export function getVisiblePromptRecords(
+  records: PromptRecord[],
+  selectedIndex: number,
+  maxVisible: number,
+): VisiblePromptRecord[] {
+  const { start, end } = computeVisibleRange(
+    selectedIndex,
+    records.length,
+    maxVisible,
+  );
+  return records.slice(start, end).map((record, offset) => ({
+    index: start + offset,
+    record,
+    isSelected: start + offset === selectedIndex,
+  }));
+}
+
+export async function withExpandedHistoryGlobals<T>(
+  globals: PiHistoryGlobals,
+  run: () => Promise<T>,
+): Promise<T> {
+  globals.__piHistoryExpand?.();
+  try {
+    return await run();
+  } finally {
+    globals.__piHistoryTrim?.();
+  }
+}
+
+/**
  * Full-snapshot visibility for non-empty queries (AC-L2-3r, user-directed
  * 2026-09-08): searching must see the whole deduped snapshot, not just the
  * loaded prefix. One-shot and idempotent — returns the total, never an
@@ -279,16 +368,4 @@ export function filterPrompts(
   });
 
   return filtered.slice(0, MAX_RESULTS);
-}
-
-export async function withExpandedHistoryGlobals<T>(
-  globals: PiHistoryGlobals,
-  run: () => Promise<T>,
-): Promise<T> {
-  globals.__piHistoryExpand?.();
-  try {
-    return await run();
-  } finally {
-    globals.__piHistoryTrim?.();
-  }
 }

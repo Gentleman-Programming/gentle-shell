@@ -1,30 +1,66 @@
 // SPDX-FileCopyrightText: 2026 ExoPro. Inspired by @jasonish/pi-prompt-history
 // SPDX-License-Identifier: MIT
 
-// Prompt-history extension entry (slice 3, stage 3): the selector open flow
-// over the slice-1 writer and slice-2 drains, with the search input
-// (filterPrompts + forwardToSearch fallthrough), the lazy loaded window
-// (initial batch, prefetch growth, PgUp/PgDn, Home/End), the header loaded
-// segment, the project<->global scope toggle under the expanded-globals
-// contract, and the preview panel + wheel handling over the fixed 30-row
-// overlay geometry. Deletion (slice 5) and GC (slice 6) arrive later.
+// Prompt-history extension entry (slice 3): the selector TUI, overlay glue,
+// and the shortcut/command wiring over the slice-1 writer, slice-2 drains,
+// and slice-4 init sequence (legacy migration + seed bootstrap run once
+// inside getWriter). Deletion (slice 5) is wired here; GC/compaction
+// (slice 6) arrives in a later slice.
 //
 // Capture is OPT-IN while the deletion/privacy behavior is unshipped:
-// nothing is recorded unless GENTLE_PI_HISTORY_CAPTURE=1|true|on. The
-// selector honors the same gate: with the switch off, opening the selector
-// is a no-op — no registry entry, no writer init, no store reads.
-// Unsetting the switch only stops NEW captures; files already written stay
-// on disk (docs/prompt-history.md).
+// nothing is recorded unless GENTLE_PI_HISTORY_CAPTURE=1|true|on. With the
+// switch off the handler is a no-op — no registry entry, no files, and
+// prompts are never written. Unsetting the switch only stops NEW captures;
+// files already written stay on disk (docs/prompt-history.md).
 
-import { randomUUID } from "node:crypto";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import {
   DynamicBorder,
   type ExtensionAPI,
   type ExtensionCommandContext,
   type Theme,
 } from "@earendil-works/pi-coding-agent";
+import {
+  appendSessionCapture,
+  bootstrapProjectSeed,
+  deleteFromGlobal,
+  deleteFromProject,
+  drainGlobal,
+  drainProject,
+  ensureRegistryEntry,
+  migrateLegacyStores,
+  openSessionWriter,
+  type DrainResult,
+  type SessionWriterState,
+} from "./store.ts";
+import { randomUUID } from "node:crypto";
+import { hidePrompt } from "./hide-prompts.ts";
+import {
+  buildPromptRecords,
+  filterPrompts,
+  type PromptEntry,
+  clampPreviewOffset,
+  clampSelectedIndex,
+  deleteConfirmFooterText,
+  deleteConfirmNext,
+  deletionActionsFor,
+  dedupePromptEntries,
+  EDITOR_HIDE_FAILED_TEXT,
+  getVisiblePromptRecords,
+  initialLoadedCount,
+  loadedCountAfterDelete,
+  loadedCountForQuery,
+  loadedCountForTarget,
+  moveSelectedIndex,
+  nextLoadedCount,
+  pageSelectedIndex,
+  shouldGrowWindow,
+  STORE_DELETE_FAILED_TEXT,
+  withExpandedHistoryGlobals,
+  type PiHistoryGlobals,
+  type PromptRecord,
+} from "./selector-helpers.ts";
 import {
   Container,
   type Focusable,
@@ -36,36 +72,6 @@ import {
   type TuiMouseEvent,
   truncateToWidth,
 } from "@earendil-works/pi-tui";
-import {
-  appendSessionCapture,
-  bootstrapProjectSeed,
-  type DrainResult,
-  drainGlobal,
-  drainProject,
-  ensureRegistryEntry,
-  migrateLegacyStores,
-  openSessionWriter,
-  type SessionWriterState,
-} from "./store.ts";
-import {
-  buildPromptRecords,
-  clampPreviewOffset,
-  clampSelectedIndex,
-  dedupePromptEntries,
-  filterPrompts,
-  getVisiblePromptRecords,
-  initialLoadedCount,
-  loadedCountForQuery,
-  loadedCountForTarget,
-  moveSelectedIndex,
-  nextLoadedCount,
-  pageSelectedIndex,
-  shouldGrowWindow,
-  withExpandedHistoryGlobals,
-  type PiHistoryGlobals,
-  type PromptEntry,
-  type PromptRecord,
-} from "./selector-helpers.ts";
 
 const SHORTCUT = "ctrl+shift+r";
 const MAX_VISIBLE = 10;
@@ -85,35 +91,43 @@ const LIST_WHEEL_Y_FIRST = 5;
 const LIST_WHEEL_Y_LAST = 14;
 const PREVIEW_WHEEL_Y_FIRST = 17;
 const PREVIEW_WHEEL_Y_LAST = 26;
+
+// Default selector footer line (PR #1393): shown whenever a delete is not
+// armed; the armed state swaps it for the scope-aware confirmation copy.
+const SELECTOR_FOOTER_HELP =
+  "↑↓ move • PgUp/PgDn page • tab scope • enter select and quit • ctrl+shift+↑/↓ preview • ctrl+shift+backspace delete • esc cancel";
+
+// Legacy agent dir: pre-v1 editor-history files live directly here and are
+// migrated into the store root by migrateLegacyStores().
+const AGENT_DIR = join(homedir(), ".pi", "agent");
+// v2 multi-concurrency store root (design: tmp/multi-concurrency-design.md).
+const PI_HISTORY_ROOT = join(AGENT_DIR, "history");
+const CURRENT_CWD = process.cwd();
+// Instance identity: one exclusive capture file per pi process.
+const INSTANCE_ID = randomUUID();
+
+// Tombstone state dir: the store root itself (user-directed FINAL):
+// ~/.pi/agent/history/hidden.json — one directory for everything.
+// Derived state only — deleting the directory restores cold start and
+// unhides every prompt; transcripts and the editor store are never written
+// here.
+const PI_HISTORY_NAV_STATE_DIR = join(
+  homedir(),
+  ".pi",
+  "agent",
+  "history",
+);
+
+// Sessions root for the one-level transcript scan (spec C1, design §D5):
+// ~/.pi/agent/sessions/. Read-only by invariant — transcripts are never
+// written by this extension.
+const SESSIONS_ROOT = join(homedir(), ".pi", "agent", "sessions");
+
 /** Width of the "→ " / "  " prefix on each entry line. */
 const ENTRY_PREFIX_WIDTH = 2;
 
-// v2 multi-concurrency store root (design: tmp/multi-concurrency-design.md).
-const AGENT_DIR = join(homedir(), ".pi", "agent");
-const PI_HISTORY_ROOT = join(AGENT_DIR, "history");
-const SESSIONS_ROOT = join(homedir(), ".pi", "agent", "sessions");
-
-export interface HistoryDeps {
-  env?: NodeJS.ProcessEnv;
-  root?: string;
-  cwd?: string;
-  instanceId?: string;
-  now?: () => number;
-}
-
-/**
- * Strict opt-in: capture stays off unless GENTLE_PI_HISTORY_CAPTURE is
- * explicitly 1, true, or on (case-insensitive). The same switch is the
- * disable path — unsetting it stops new captures; files already on disk
- * are left untouched until the deletion tooling lands.
- */
-export function captureEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const value = env.GENTLE_PI_HISTORY_CAPTURE?.trim().toLowerCase();
-  return value === "1" || value === "true" || value === "on";
-}
-
 // ---------------------------------------------------------------------------
-// Sanitization (a22588fc)
+// Sanitization
 // ---------------------------------------------------------------------------
 
 /**
@@ -145,7 +159,7 @@ function sanitizeForDisplay(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// TUI Selector (stage 3: search + lazy list + scope toggle + preview + wheel)
+// Types
 // ---------------------------------------------------------------------------
 
 /** Keybinding lookup returned by getKeybindings(). */
@@ -162,10 +176,7 @@ interface DispatchEntry {
 }
 
 /** Notification sink for selector feedback; an absent callback drops notifications. */
-type SelectorNotify = (
-  message: string,
-  level: "error" | "warning" | "info",
-) => void;
+type SelectorNotify = (message: string, level: "error" | "warning" | "info") => void;
 
 /** Single rendered row; always occupies exactly one terminal row. */
 class FixedRowText {
@@ -203,8 +214,8 @@ class FixedRowText {
       : truncateToWidth(this.text, width, "…");
     // Pad to full terminal width so the overlay fully overwrites
     // whatever is beneath it and leaves no ghost characters on dismiss.
-    // Measure the VISIBLE width: SGR escape sequences (colored rows)
-    // occupy no terminal cells.
+    // Measure the VISIBLE width: SGR escape sequences (colored rows from
+    // rebuildListWithWidth) occupy no terminal cells.
     const visible = rendered.replace(/\x1b\[[0-9;]*m/g, "");
     return [rendered + " ".repeat(Math.max(0, width - visible.length))];
   }
@@ -239,12 +250,17 @@ function wordWrapText(text: string, maxWidth: number): string[] {
   return result.length > 0 ? result : [""];
 }
 
+// ---------------------------------------------------------------------------
+// TUI Selector
+// ---------------------------------------------------------------------------
+
 class PromptHistorySelector extends Container implements Focusable {
   private readonly searchInput: Input;
   private readonly previewContainer: Container;
   private readonly listContainer: Container;
   private readonly headerRow: FixedRowText;
   private readonly previewLabelRow: FixedRowText;
+  private readonly footerRow: FixedRowText;
   private records: PromptRecord[];
   private readonly theme: Theme;
   private readonly tui: TUI;
@@ -252,27 +268,26 @@ class PromptHistorySelector extends Container implements Focusable {
   private readonly onCancel: () => void;
   /** Notification sink for selector feedback (wired by the factory). */
   private readonly onNotify?: SelectorNotify;
-  /**
-   * Scope drain injectable (slice-02 DrainResult contract): the open flow
-   * hands the selector its drainForScope so tab can re-drain the other
-   * scope without the selector touching store paths itself.
-   */
-  private readonly drainScope: (scope: HistoryScope) => DrainResult;
   private filteredRecords: PromptRecord[] = [];
   private selectedIndex = 0;
   /** Number of records loaded (newest-first) from the top of `records`. */
   private loadedCount = 0;
   /** Active scope (design v2): project (default) or global. */
-  private scope: HistoryScope = "project";
+  private scope: "project" | "global" = "project";
   /** Last render width, used for entry truncation. */
   private lastWidth = 800;
   /** Word-wrapped lines of the currently selected prompt. */
   private wrappedPreviewLines: string[] = [];
   /** Scroll offset into wrappedPreviewLines for the preview viewport. */
   private previewScrollOffset = 0;
+  /**
+   * Two-step delete confirmation (PR #1393): armed by the first
+   * ctrl+shift+backspace press; the second press executes, and any other
+   * key or cancel disarms. Nothing is deleted on the arming press.
+   */
+  private confirmArmed = false;
 
-  /** Dispatch table: first match wins, fallthrough last. The
-   *  ctrl+shift+backspace delete entry joins with deletion (slice 5). */
+  /** Dispatch table: first match wins, fallthrough last. */
   private readonly dispatch: readonly DispatchEntry[] = [
     {
       match: (_d, kb) => kb.matches(_d, "tui.select.up"),
@@ -308,6 +323,10 @@ class PromptHistorySelector extends Container implements Focusable {
       handler: () => this.jumpToLast(),
     },
     {
+      match: (d, _kb) => matchesKey(d, "ctrl+shift+backspace"),
+      handler: () => this.deleteCurrent(),
+    },
+    {
       match: (d, _kb) => matchesKey(d, "ctrl+shift+up"),
       handler: () => this.previewPageUp(),
     },
@@ -333,7 +352,6 @@ class PromptHistorySelector extends Container implements Focusable {
     onSelect: (record: PromptRecord) => void,
     onCancel: () => void,
     onNotify?: SelectorNotify,
-    drainScope?: (scope: HistoryScope) => DrainResult,
   ) {
     super();
     this.tui = tui;
@@ -343,10 +361,6 @@ class PromptHistorySelector extends Container implements Focusable {
     this.onSelect = onSelect;
     this.onCancel = onCancel;
     this.onNotify = onNotify;
-    // Default injectable: an empty drain so a bare constructor (tests,
-    // tooling) never touches the store; the open flow always passes the
-    // real fail-closed drainForScope.
-    this.drainScope = drainScope ?? (() => ({ status: "ok", prompts: [] }));
 
     // ── Search panel (top) ──
     this.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
@@ -356,10 +370,7 @@ class PromptHistorySelector extends Container implements Focusable {
     this.addChild(this.headerRow);
     this.addChild(
       new Text(
-        theme.fg(
-          "dim",
-          "Type to filter (multi-word AND substring, case-insensitive)",
-        ),
+        theme.fg("dim", "Type to filter (multi-word AND substring, case-insensitive)"),
         0,
         0,
       ),
@@ -383,15 +394,11 @@ class PromptHistorySelector extends Container implements Focusable {
     this.addChild(this.previewContainer);
 
     this.addChild(new DynamicBorder((s: string) => theme.fg("dim", s)));
-    this.addChild(
-      new FixedRowText(
-        theme.fg(
-          "dim",
-          "↑↓ move • PgUp/PgDn page • tab scope • enter select and quit • esc cancel",
-        ),
-        true /* centered */,
-      ),
+    this.footerRow = new FixedRowText(
+      theme.fg("dim", SELECTOR_FOOTER_HELP),
+      true /* centered */,
     );
+    this.addChild(this.footerRow);
     this.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
 
     this.applyFilter("");
@@ -475,7 +482,13 @@ class PromptHistorySelector extends Container implements Focusable {
 
     for (const { record, isSelected } of visible) {
       const prefix = isSelected ? "→ " : "  ";
-      const color = isSelected ? "accent" : "text";
+      // Armed delete (PR #1393): the armed row repaints in the error color
+      // while the confirmation is pending, then reverts on disarm.
+      const color = isSelected
+        ? this.confirmArmed
+          ? "error"
+          : "accent"
+        : "text";
       const compacted = sanitizeForDisplay(record.text)
         .replace(/\s+/g, " ")
         .trim();
@@ -560,22 +573,114 @@ class PromptHistorySelector extends Container implements Focusable {
 
   /**
    * Toggle project <-> global (design v2): re-drain the other scope,
-   * rebuild the records, reset the window. Tab's only role. Fail-closed
-   * (slice-02 contract): a blocked drain keeps the working scope and
-   * surfaces the recovery warning instead of a blocked (entry-less) list.
+   * rebuild the merged records, reset the window. Tab's only role.
    */
   private toggleScope(): void {
     const previous = this.scope;
     this.scope = this.scope === "project" ? "global" : "project";
-    const drained = this.drainScope(this.scope);
-    if (drained.status === "blocked") {
+    const entries = drainForScope(this.scope);
+    if (!Array.isArray(entries)) {
+      // Fail-closed drain (spec C4): stay on the working scope and surface
+      // the recovery warning instead of a blocked (entry-less) list.
       this.scope = previous;
-      this.onNotify?.(drained.message, "error");
+      this.onNotify?.(entries.message, "error");
       return;
     }
-    this.records = recordsFromEntries(drained.prompts);
+    this.records = recordsFromEntries(entries);
     this.loadedCount = initialLoadedCount(this.records.length, INITIAL_BATCH);
     this.applyFilter(this.searchInput.getValue());
+  }
+
+  /** Delete the currently selected prompt from disk and refresh the list. */
+  private deleteCurrent(): void {
+    const selected = this.filteredRecords[this.selectedIndex];
+    if (!selected) return;
+
+    // Two-step confirm (PR #1393 review): the first ctrl+shift+backspace
+    // press ARMS the delete for the selected row — a scope-aware
+    // confirmation line in the footer plus an error-colored highlight —
+    // and executes NOTHING; the SECOND press runs the flow below. Any
+    // other key or cancel disarms (handleInput / handleMouse).
+    const step = deleteConfirmNext(this.confirmArmed, true);
+    this.confirmArmed = step.armed;
+    this.refreshDeleteFooter();
+    if (!step.execute) {
+      this.rebuildList(); // repaint the armed-row highlight
+      return;
+    }
+    this.rebuildList(); // drop the highlight before the flow mutates rows
+
+    // C4 delete flows (design §F): the record's provenance decides the
+    // actions via the pure planner; module constants are used directly.
+    const actions = deletionActionsFor(selected.source ?? "editor");
+
+    if (actions.deleteFromEditorStore) {
+      // Store path: physically remove EVERY copy from the JSONL store
+      // (memory + file in one atomic rewrite). A thrown store failure is
+      // contained here (PR #1393): toast + abort — nothing was removed and
+      // no tombstone is written, so the delete never lies about state.
+      let removed: number;
+      try {
+        ({ removed } =
+          this.scope === "global"
+            ? deleteFromGlobal(PI_HISTORY_ROOT, selected.text)
+            : deleteFromProject(PI_HISTORY_ROOT, CURRENT_CWD, selected.text));
+      } catch {
+        this.onNotify?.(STORE_DELETE_FAILED_TEXT, "error");
+        return;
+      }
+      if (removed === 0) return;
+    }
+
+    // Tombstone ALWAYS: the session transcripts are immutable and would
+    // re-supply the deleted prompt on the next merge (hide-file suppresses
+    // the twin). Only the session path aborts on a hide error — the store
+    // row is already gone on the editor path, so the splice proceeds; its
+    // toast says exactly that (PR #1393).
+    const hide = hidePrompt(PI_HISTORY_NAV_STATE_DIR, selected.text);
+    if (hide.status === "error") {
+      if (!actions.deleteFromEditorStore) {
+        this.onNotify?.(hide.message, "error");
+        return;
+      }
+      this.onNotify?.(EDITOR_HIDE_FAILED_TEXT, "error");
+    }
+    // Remove from the master records array so a subsequent filter doesn't
+    // bring it back.
+    const idx = this.records.indexOf(selected);
+    if (idx !== -1) {
+      this.records.splice(idx, 1);
+      // C4 delete backfill (design §B3): shrink the window with the splice,
+      // then pull the next unloaded row while any remain — genuine shrink
+      // only at exhaustion.
+      this.loadedCount = loadedCountAfterDelete(
+        this.loadedCount,
+        this.records.length,
+      );
+    }
+
+    // Re-apply current filter (rebuilds filteredRecords, list, preview).
+    this.applyFilter(this.searchInput.getValue());
+  }
+
+  /** Footer line: scope-aware confirm copy while armed, help otherwise. */
+  private refreshDeleteFooter(): void {
+    if (!this.confirmArmed) {
+      this.footerRow.setText(this.theme.fg("dim", SELECTOR_FOOTER_HELP));
+      return;
+    }
+    const selected = this.filteredRecords[this.selectedIndex];
+    const source = selected?.source ?? "editor";
+    this.footerRow.setText(
+      this.theme.fg("warning", deleteConfirmFooterText(source)),
+    );
+  }
+
+  /** Leave the armed state: restore the help footer and the plain row. */
+  private disarmDeleteConfirm(): void {
+    this.confirmArmed = false;
+    this.refreshDeleteFooter();
+    this.rebuildList();
   }
 
   // -- Navigation ---------------------------------------------------------
@@ -721,6 +826,11 @@ class PromptHistorySelector extends Container implements Focusable {
 
   handleInput(data: string): void {
     const kb = getKeybindings();
+    // Any key other than the delete combo disarms a pending confirmation
+    // (PR #1393) BEFORE its own action runs — esc, arrows, typing, tab.
+    if (this.confirmArmed && !matchesKey(data, "ctrl+shift+backspace")) {
+      this.disarmDeleteConfirm();
+    }
     let handled = false;
     for (const { match, handler } of this.dispatch) {
       if (match(data, kb)) {
@@ -746,6 +856,9 @@ class PromptHistorySelector extends Container implements Focusable {
     event: TuiMouseEvent,
   ): ReturnType<Container["handleMouse"]> {
     if (event.type !== "wheel") return undefined;
+    // A wheel scroll can move the selection off the armed row — disarm so
+    // the next delete press re-arms for the NEW row first (PR #1393).
+    if (this.confirmArmed) this.disarmDeleteConfirm();
     const delta = event.wheelDelta ?? 0;
     if (event.y >= LIST_WHEEL_Y_FIRST && event.y <= LIST_WHEEL_Y_LAST) {
       const steps = Math.min(Math.abs(delta), this.filteredRecords.length);
@@ -825,16 +938,12 @@ function castSelectorArgs(tui: unknown, theme: unknown): [TUI, Theme] {
   return [tui as TUI, theme as Theme];
 }
 
-/** TUI handle captured when the selector overlay mounts. */
-let selectorTui: { requestRender(): void } | null = null;
-
 /** Stored close callback for the currently-open overlay. Null when closed. */
 let activeOverlayClose: (() => void) | null = null;
 
 function createPromptHistorySelectorFactory(
   records: PromptRecord[],
   onNotify?: SelectorNotify,
-  drainScope?: (scope: HistoryScope) => DrainResult,
 ): SelectorFactory {
   return (tui, theme, _keybindings, done) => {
     selectorTui = tui as { requestRender(): void };
@@ -845,22 +954,21 @@ function createPromptHistorySelectorFactory(
     // Expose close so the tool_call handler can dismiss the overlay.
     activeOverlayClose = () => finish(null);
     const [typedTui, typedTheme] = castSelectorArgs(tui, theme);
-    return new PromptHistorySelector(
+    const selector = new PromptHistorySelector(
       typedTui,
       typedTheme,
       records,
       (record) => finish(record),
       () => finish(null),
       onNotify,
-      drainScope,
     );
+    return selector;
   };
 }
 
 async function runPromptHistorySelection(
   ctx: Pick<ExtensionCommandContext, "ui">,
   records: PromptRecord[],
-  drainScope?: (scope: HistoryScope) => DrainResult,
 ): Promise<PromptRecord | null> {
   const historyGlobals: PiHistoryGlobals = globalThis as Record<
     string,
@@ -868,10 +976,8 @@ async function runPromptHistorySelection(
   >;
   return withExpandedHistoryGlobals(historyGlobals, async () =>
     ctx.ui.custom<PromptRecord | null>(
-      createPromptHistorySelectorFactory(
-        records,
-        (message, level) => ctx.ui.notify(message, level),
-        drainScope,
+      createPromptHistorySelectorFactory(records, (message, level) =>
+        ctx.ui.notify(message, level),
       ),
       {
         overlay: true,
@@ -881,87 +987,141 @@ async function runPromptHistorySelection(
   );
 }
 
-/** Build selector records from drain entries (shared by both scopes). */
+// ---------------------------------------------------------------------------
+// Multi-concurrency store (v2): per-session writes, scope drains
+// ---------------------------------------------------------------------------
+
+type HistoryScope = "project" | "global";
+
+/** TUI handle captured when the selector overlay mounts. */
+let selectorTui: { requestRender(): void } | null = null;
+
+let writerState: SessionWriterState | null = null;
+
+/**
+ * One-time init per extension load: migrate legacy stores, register the
+ * project, bootstrap the seed, then open this instance's exclusive file.
+ */
+function getWriter(): SessionWriterState {
+  if (!writerState) {
+    try {
+      migrateLegacyStores(PI_HISTORY_ROOT, AGENT_DIR);
+    } catch {
+      // migration is best-effort; the gate keeps it one-shot
+    }
+    try {
+      ensureRegistryEntry(PI_HISTORY_ROOT, CURRENT_CWD);
+    } catch {
+      // registry is advisory
+    }
+    try {
+      bootstrapProjectSeed(
+        PI_HISTORY_ROOT,
+        CURRENT_CWD,
+        SESSIONS_ROOT,
+        500,
+        PI_HISTORY_NAV_STATE_DIR,
+      );
+    } catch {
+      // bootstrap is a rebuildable cache
+    }
+    writerState = openSessionWriter(PI_HISTORY_ROOT, CURRENT_CWD, INSTANCE_ID);
+  }
+  return writerState;
+}
+
+/**
+ * A selector scope drain: the drained prompts, or the fail-closed blocked
+ * shape (spec C4) carrying the recovery message and NO prompts.
+ */
+type ScopeDrain = string[] | Extract<DrainResult, { status: "blocked" }>;
+
+/**
+ * Scope drain for the selector: project scope drains the project's store
+ * files; global scope is the store-only cross-project view (all project
+ * dirs + the legacy global seed). Both filter tombstoned prompts and fail
+ * closed (spec C4): an untrusted hidden.json returns the blocked
+ * DrainResult with the recovery message instead of any prompts.
+ */
+function drainForScope(scope: HistoryScope): ScopeDrain {
+  // Defense in depth: a drain must never trigger init writes while the user
+  // has capture disabled (the selector gate below is the first line).
+  if (!captureEnabled()) return [];
+  getWriter(); // ensure init ran
+  const drain =
+    scope === "project"
+      ? drainProject(PI_HISTORY_ROOT, CURRENT_CWD, 1000, PI_HISTORY_NAV_STATE_DIR)
+      : drainGlobal(PI_HISTORY_ROOT, 1000, PI_HISTORY_NAV_STATE_DIR);
+  return drain.status === "ok" ? drain.prompts : drain;
+}
+
+async function openHistorySelector(
+  ctx: Pick<ExtensionCommandContext, "ui">,
+): Promise<void> {
+  // Gate: with capture off the selector must not run legacy migration, seed
+  // bootstrap, or any store/registry write as a side effect of opening it.
+  if (!captureEnabled()) {
+    ctx.ui.notify(
+      "Prompt history capture is off — set GENTLE_PI_HISTORY_CAPTURE=1 to enable it.",
+      "warning",
+    );
+    return;
+  }
+
+  // Store-only drain (user-directed): both scopes read the store files
+  // symmetrically — no live transcript merge (the one-time seed bootstrap
+  // covers pre-store history).
+  const entries = drainForScope("project");
+  if (!Array.isArray(entries)) {
+    // Fail-closed drain (spec C4): the tombstone file is untrusted, so NO
+    // entries are shown — surface the recovery warning instead.
+    ctx.ui.notify(entries.message, "error");
+    return;
+  }
+  if (entries.length === 0) {
+    ctx.ui.notify("No prompt history available.", "warning");
+    return;
+  }
+
+  const records = recordsFromEntries(entries);
+  const selected = await runPromptHistorySelection(ctx, records);
+  if (selected) {
+    // pasteToEditor routes through the editor's input pipeline
+    // (bracketed paste), so the text renders immediately. Plain
+    // setText left the editor stale until the next keypress after
+    // overlay close.
+    ctx.ui.pasteToEditor(selected.text);
+    // The overlay teardown can race the paste render: force one more
+    // frame on the next tick so the editor box shows the text at once.
+    setTimeout(() => selectorTui?.requestRender(), 0);
+  }
+}
+
+/** Build selector records from merged/drain entries (shared by both scopes). */
 function recordsFromEntries(
   entries: Array<string | PromptEntry>,
 ): PromptRecord[] {
   return buildPromptRecords(dedupePromptEntries(entries));
 }
 
-// ---------------------------------------------------------------------------
-// Open flow: capture gate → fail-closed drain → records → overlay
-// ---------------------------------------------------------------------------
 
-type HistoryScope = "project" | "global";
+export interface HistoryDeps {
+  env?: NodeJS.ProcessEnv;
+  root?: string;
+  cwd?: string;
+  instanceId?: string;
+  now?: () => number;
+}
 
 /**
- * Per-load open flow over the slice-1 deps (env/root/cwd): the selector is
- * a pure store reader, so it never initializes the capture writer — the
- * capture gate in openHistorySelector runs before any store access and a
- * capture-off session performs no registry/writer side effects on the
- * open path.
+ * Strict opt-in: capture stays off unless GENTLE_PI_HISTORY_CAPTURE is
+ * explicitly 1, true, or on (case-insensitive). The same switch is the
+ * disable path — unsetting it stops new captures; files already on disk
+ * are left untouched until the deletion tooling lands.
  */
-function createOpenFlow(env: NodeJS.ProcessEnv, root: string, cwd: string) {
-  /**
-   * Scope drain for the selector: project scope drains the project's store
-   * files; global scope is the store-only cross-project view (all project
-   * dirs + the legacy global seed). Both apply the fail-closed tombstone
-   * filter — the state dir is the store root itself (hidden.json contract).
-   * The DrainResult is returned verbatim: `blocked` must stop the open flow
-   * before any records build, and the selector's scope toggle surfaces it.
-   */
-  function drainForScope(scope: HistoryScope): DrainResult {
-    return scope === "project"
-      ? drainProject(root, cwd, 1000, root)
-      : drainGlobal(root, 1000, root);
-  }
-
-  async function openHistorySelector(
-    ctx: Pick<ExtensionCommandContext, "ui">,
-  ): Promise<void> {
-    // Capture gate (#1390) FIRST: with capture off the selector is a no-op —
-    // no registry writes, no writer init, no store reads, no overlay.
-    if (!captureEnabled(env)) {
-      ctx.ui.notify(
-        "Prompt history is disabled (GENTLE_PI_HISTORY_CAPTURE is not set).",
-        "warning",
-      );
-      return;
-    }
-
-    // Store-only drain (user-directed): the selector reads the store files —
-    // no live transcript merge. `blocked` (untrusted hidden.json) fails
-    // CLOSED: surface the recovery message and stop before building records.
-    const drained = drainForScope("project");
-    if (drained.status === "blocked") {
-      ctx.ui.notify(drained.message, "error");
-      return;
-    }
-    const entries = drained.prompts;
-    if (entries.length === 0) {
-      // a22588fc empty-store policy: no history warns and skips the overlay.
-      // A later slice changes this, not this one.
-      ctx.ui.notify("No prompt history available.", "warning");
-      return;
-    }
-
-    const records = recordsFromEntries(entries);
-    const selected = await runPromptHistorySelection(
-      ctx,
-      records,
-      drainForScope,
-    );
-    if (selected) {
-      // pasteToEditor routes through the editor's input pipeline (bracketed
-      // paste), so the text renders immediately (a22588fc).
-      ctx.ui.pasteToEditor(selected.text);
-      // The overlay teardown can race the paste render: force one more
-      // frame on the next tick so the editor box shows the text at once.
-      setTimeout(() => selectorTui?.requestRender(), 0);
-    }
-  }
-
-  return { openHistorySelector };
+export function captureEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.GENTLE_PI_HISTORY_CAPTURE?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "on";
 }
 
 export default function promptHistoryExtension(
@@ -970,8 +1130,8 @@ export default function promptHistoryExtension(
 ): void {
   const env = deps.env ?? process.env;
   const root = deps.root ?? PI_HISTORY_ROOT;
-  const cwd = deps.cwd ?? process.cwd();
-  const instanceId = deps.instanceId ?? randomUUID();
+  const cwd = deps.cwd ?? CURRENT_CWD;
+  const instanceId = deps.instanceId ?? INSTANCE_ID;
   const now = deps.now ?? Date.now;
   let writerState: SessionWriterState | null = null;
 
@@ -982,7 +1142,7 @@ export default function promptHistoryExtension(
   const getWriter = (): SessionWriterState => {
     if (!writerState) {
       try {
-        migrateLegacyStores(PI_HISTORY_ROOT, AGENT_DIR);
+        migrateLegacyStores(root, AGENT_DIR);
       } catch {
         // migration is best-effort; the gate keeps it one-shot
       }
@@ -997,6 +1157,7 @@ export default function promptHistoryExtension(
           cwd,
           SESSIONS_ROOT,
           500,
+          PI_HISTORY_NAV_STATE_DIR,
         );
       } catch {
         // bootstrap is a rebuildable cache
@@ -1005,6 +1166,18 @@ export default function promptHistoryExtension(
     }
     return writerState;
   };
+
+  // Warm migrate/registry/seed OFF the first-prompt path, but only for
+  // opted-in sessions: with capture disabled nothing may be written —
+  // no registry entry, no seed files, no store (docs/prompt-history.md).
+  setImmediate(() => {
+    if (!captureEnabled(env)) return;
+    try {
+      getWriter();
+    } catch {
+      // init is best-effort; the lazy path retries on the next prompt
+    }
+  });
 
   // Persist every delivered user prompt (write-through, append-only JSONL),
   // but only for opted-in sessions — see captureEnabled(). The local
@@ -1025,9 +1198,6 @@ export default function promptHistoryExtension(
   pi.on("tool_call", () => {
     activeOverlayClose?.();
   });
-
-  // Selector open flow (slice 3, stage 3): both entry points share it.
-  const { openHistorySelector } = createOpenFlow(env, root, cwd);
 
   pi.registerShortcut(SHORTCUT, {
     description: "Search prompt history",

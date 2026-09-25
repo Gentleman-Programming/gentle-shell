@@ -34,7 +34,7 @@ const selectorSource = fs.readFileSync(
 
 // T13 — AC-L6-1: wheel-only override + no extra dispatch entry.
 
-test("handleMouse override is wheel-only and the dispatch table keeps 11 entries (AC-L6-1)", () => {
+test("handleMouse override is wheel-only and the dispatch table keeps 12 entries (AC-L6-1)", () => {
   const decl = selectorSource.indexOf("override handleMouse(");
   assert.ok(decl >= 0, "PromptHistorySelector should override handleMouse");
   const end = selectorSource.indexOf("\n  }", decl);
@@ -60,8 +60,8 @@ test("handleMouse override is wheel-only and the dispatch table keeps 11 entries
   const entries = table.split("match:").length - 1;
   assert.equal(
     entries,
-    11,
-    "wheel is not a keybinding: exactly the 11 §B2 dispatch entries, no extra",
+    12,
+    "wheel is not a keybinding: exactly 12 dispatch entries, no 13th",
   );
 });
 

@@ -72,3 +72,33 @@ is not running):
 rm -rf ~/.pi/agent/history            # whole store
 rm -rf ~/.pi/agent/history/projects/<hash>   # one project (see registry.json)
 ```
+
+## Delete vs hide
+
+The selector's delete key (`ctrl+shift+backspace`) is a two-step
+confirmation: the first press **arms** the delete for the selected row and
+shows what it will do in the footer (the row highlights); the second press
+executes it. Any other key or cancel disarms without deleting.
+
+What a delete does depends on where the prompt came from:
+
+- **Editor-stored prompts** (captured into the store's `.jsonl` files) are
+  deleted physically: every copy is removed from the store in one atomic
+  rewrite per affected file.
+- **Session-derived prompts** (seeded from past transcripts) can only be
+  hidden: session transcripts are immutable, so the delete writes a
+  **tombstone** (`hidden.json`) that keeps the prompt out of the list. The
+  original stays in the transcript file.
+
+Both flows therefore end with a tombstone — otherwise the next merge would
+re-supply the prompt from transcripts. Write failures surface an error
+toast and never lie about state: a failed store delete removes nothing and
+aborts ("Store delete failed; nothing was removed."), while a failed
+tombstone write after a store delete leaves the store row removed but the
+prompt may reappear from session transcripts.
+
+The tombstone file fails closed: if `hidden.json` exists but cannot be
+trusted (unreadable, corrupt, wrong shape), history is blocked with a
+recovery warning instead of resurfacing hidden prompts, and deletes refuse
+to silently rewrite it. Recovery is explicit — restore the file or delete
+it yourself (hidden prompts may then reappear).

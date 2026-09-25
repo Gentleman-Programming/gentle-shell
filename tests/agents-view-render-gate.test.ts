@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
-import { TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
+import { TASK_STATUS, TaskStore, type TaskRecord, type TaskThread } from "../lib/agents-protocol.ts";
 import { AgentsView } from "../lib/agents-view.ts";
 import { PresenceCursor, PresencePublisher, type ActivityInput } from "../lib/orchestrator-presence.ts";
 
@@ -267,5 +267,30 @@ test("presence read failures still render and recover on the next successful pol
 	assert.equal(renders(), 3, "recovery renders the found peers");
 	nextPoll(t);
 	assert.equal(renders(), 3, "the recovered quiet state stops rendering again");
+	view.dispose();
+});
+
+test("an elapsed-only change renders again and keeps unchanged thread items cached", (t) => {
+	const profile = tempProfile(t);
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer-a", label: "Peer A", activity: [peer("p1", {}, { version: 1, dropped: 0, items: [{ kind: "text", text: "hello" }, { kind: "text", text: "world" }] })] });
+	t.after(() => publisher.dispose());
+	const clock = { value: 61_000 };
+	const { view, renders } = gateHarness(t, profile, clock);
+	settle(t);
+	assert.equal(renders(), 1, "the first poll renders once");
+	const threads = () => (view as unknown as { remoteThreads: Map<string, TaskThread> }).remoteThreads;
+	const appliedOnce = threads();
+	const first = [...appliedOnce.values()][0]!;
+	nextPoll(t);
+	assert.equal(renders(), 1, "a quiet poll inside the same displayed second stays silent");
+	clock.value += 1_000;
+	nextPoll(t);
+	assert.equal(renders(), 2, "a displayed-elapsed tick requests a render");
+	const second = threads();
+	assert.notEqual(second, appliedOnce, "the elapsed poll applies a fresh threads map");
+	const secondThread = [...second.values()][0]!;
+	assert.equal(secondThread.items.length, first.items.length, "the peer thread keeps both items");
+	assert.equal(secondThread.items[0], first.items[0], "the unchanged first item reuses its cached identity across the elapsed render");
+	assert.equal(secondThread.items[1], first.items[1], "the unchanged second item reuses its cached identity across the elapsed render");
 	view.dispose();
 });

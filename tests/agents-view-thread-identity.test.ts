@@ -59,13 +59,13 @@ function taskKey(session: FixtureSession, summaryId: string): string {
 	return `peer:${sessionHash}:${session.incarnation}:${summaryId}`;
 }
 
-function harness(profile: string): { view: AgentsView; remoteThreads(): Map<string, TaskThread> } {
+function harness(profile: string, clock: { value: number } = { value: 61_000 }): { view: AgentsView; remoteThreads(): Map<string, TaskThread> } {
 	const view = new AgentsView({
 		theme: { fg: (_color, text) => text },
 		rows: 10,
 		store: new TaskStore(),
 		sessionId: "local",
-		now: () => 61_000,
+		now: () => clock.value,
 		onCancel: () => {},
 		onOpen: () => {},
 		onClose: () => {},
@@ -109,13 +109,17 @@ test("unchanged remote thread items keep object identity across presence polls",
 	await withPresenceFixture(async (profile) => {
 		const session = { sessionId: "peer session", incarnation: randomUUID() };
 		publish(profile, session, [{ summary: summary("t1"), thread: { version: 1, dropped: 0, items: sampleItems() } }]);
-		const h = harness(profile);
+		const clock = { value: 61_000 };
+		const h = harness(profile, clock);
 		try {
 			const first = await until(() => h.remoteThreads().get(taskKey(session, "t1")), "the first presence poll");
 			const firstItems = [...first.items];
 			const appliedOnce = h.remoteThreads();
 			// Same files on disk: the second poll still re-parses them, which is
 			// exactly the unchanged-content case that must reuse prior identities.
+			// The render gate suppresses unchanged polls, so advance the displayed
+			// clock to apply the next poll without touching any content.
+			clock.value += 60_000;
 			const second = await nextApplication(h, appliedOnce, taskKey(session, "t1"));
 			assert.notEqual(second, first, "the thread container is still rebuilt per poll");
 			assert.equal(second.items.length, firstItems.length);
@@ -152,11 +156,13 @@ test("tool items compare after args sanitization, so unchanged tools are reused 
 	await withPresenceFixture(async (profile) => {
 		const session = { sessionId: "peer session", incarnation: randomUUID() };
 		publish(profile, session, [{ summary: summary("t1"), thread: { version: 1, dropped: 0, items: [sampleItems()[1]] } }]);
-		const h = harness(profile);
+		const clock = { value: 61_000 };
+		const h = harness(profile, clock);
 		try {
 			const first = await until(() => h.remoteThreads().get(taskKey(session, "t1")), "the first presence poll");
 			const appliedOnce = h.remoteThreads();
 			publish(profile, session, [{ summary: summary("t1"), thread: { version: 1, dropped: 0, items: [sampleItems()[1]] } }]);
+			clock.value += 60_000;
 			const second = await nextApplication(h, appliedOnce, taskKey(session, "t1"));
 			assert.equal(second.items[0], first.items[0], "an unchanged tool item must reuse the prior sanitized object");
 			assert.deepEqual((second.items[0] as { args?: unknown }).args, {}, "the stored tool item keeps the sanitized args record");

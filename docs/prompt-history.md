@@ -102,3 +102,15 @@ trusted (unreadable, corrupt, wrong shape), history is blocked with a
 recovery warning instead of resurfacing hidden prompts, and deletes refuse
 to silently rewrite it. Recovery is explicit — restore the file or delete
 it yourself (hidden prompts may then reappear).
+
+## Compaction is not a retention limit
+
+When a project's store grows past the GC thresholds, compaction merges the
+small capture files into fewer, larger ones and drops the oldest entries to
+bound the file count and line count. This is housekeeping for performance:
+it consolidates history but does not remove prompts from the resulting
+store, and it is not a data-retention or automatic-deletion policy.
+
+Prompts leave the store only through the delete flow above (or by removing
+the files manually). Compaction honors tombstones and never resurrects a
+deleted prompt: deleted content stays deleted across compactions.

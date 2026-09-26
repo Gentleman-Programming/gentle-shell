@@ -29,7 +29,7 @@ importers:
         version: 24.13.3
       pi-subagents:
         specifier: 0.37.1
-        version: 0.37.1(@earendil-works/pi-agent-core@0.85.1(ws@8.21.3))(@earendil-works/pi-ai@0.85.1(ws@8.21.3))(@earendil-works/pi-coding-agent@0.85.1(ws@8.21.3))(@earendil-works/pi-tui@0.85.1)
+        version: 0.37.1(@earendil-works/pi-agent-core@0.87.1(ws@8.21.3))(@earendil-works/pi-ai@0.87.1(ws@8.21.3))(@earendil-works/pi-coding-agent@0.87.1(ws@8.21.3))(@earendil-works/pi-tui@0.87.1)
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -1918,16 +1918,16 @@ snapshots:
 
   path-key@3.1.1: {}
 
-  pi-subagents@0.37.1(@earendil-works/pi-agent-core@0.85.1(ws@8.21.3))(@earendil-works/pi-ai@0.85.1(ws@8.21.3))(@earendil-works/pi-coding-agent@0.85.1(ws@8.21.3))(@earendil-works/pi-tui@0.85.1):
+  pi-subagents@0.37.1(@earendil-works/pi-agent-core@0.87.1(ws@8.21.3))(@earendil-works/pi-ai@0.87.1(ws@8.21.3))(@earendil-works/pi-coding-agent@0.87.1(ws@8.21.3))(@earendil-works/pi-tui@0.87.1):
     dependencies:
       jiti: 2.7.0
       typebox: 1.1.38
       yaml: 2.8.3
     optionalDependencies:
-      '@earendil-works/pi-agent-core': 0.85.1(ws@8.21.3)
-      '@earendil-works/pi-ai': 0.85.1(ws@8.21.3)
-      '@earendil-works/pi-coding-agent': 0.85.1(ws@8.21.3)
-      '@earendil-works/pi-tui': 0.85.1
+      '@earendil-works/pi-agent-core': 0.87.1(ws@8.21.3)
+      '@earendil-works/pi-ai': 0.87.1(ws@8.21.3)
+      '@earendil-works/pi-coding-agent': 0.87.1(ws@8.21.3)
+      '@earendil-works/pi-tui': 0.87.1
 
   proper-lockfile@4.1.2:
     dependencies:

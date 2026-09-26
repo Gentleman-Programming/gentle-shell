@@ -20,7 +20,7 @@ type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel">;
 import { PROFILE_PIN_KIND, PROFILE_PIN_VERSION, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
 import { NATIVE_REVIEW_ERROR_CODE, NativeReviewCliError, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { CandidateViewError, type CandidateViewRegistry } from "../lib/review-candidate-view.ts";
-import { installPackageAssets } from "../lib/sdd-preflight.ts";
+import { installPackageAssets } from "../lib/agent-assets.ts";
 import type { ReviewCollectInputV3, ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { cardBody, cardTitle, cardTone } from "./gentle-card-text.ts";
@@ -228,9 +228,13 @@ test("registered Gentle Review tools render reusable rose lifecycle call rows", 
 		],
 	] as const;
 
+	// This exhaustiveness check is scoped to the gentle_review* lifecycle
+	// family this test names, not every gentle_-prefixed tool: gentle_odd_phase
+	// is a plain status-report tool with no pending/running/failed rose
+	// lifecycle card of its own (see extensions/gentle-ai.ts).
 	assert.deepEqual(
 		[...new Set(cases.map(([name]) => name))].sort(),
-		[...tools.keys()].filter((name) => name.startsWith("gentle_")).sort(),
+		[...tools.keys()].filter((name) => name.startsWith("gentle_review")).sort(),
 	);
 
 	for (const [name, args, operationPath] of cases) {
@@ -757,8 +761,8 @@ test("managed routing timeout leaves its profile, agent, and manifest unchanged"
 	});
 
 	process.env.GENTLE_PI_AGENT_HOME = agentHome;
-	installPackageAssets(root, false, ["sdd"]);
-	const agentPath = join(agentHome, "agents", "sdd-apply.md");
+	installPackageAssets(root, false, ["delegation"]);
+	const agentPath = join(agentHome, "agents", "gentle-ai-worker.md");
 	const manifestPath = join(agentHome, "gentle-ai", "managed-assets.json");
 	const profilePath = join(agentHome, "subagents.json");
 	const profileBefore = "{\n  \"unrelated\": true\n}\n";
@@ -771,7 +775,7 @@ test("managed routing timeout leaves its profile, agent, and manifest unchanged"
 	);
 
 	assert.throws(
-		() => applyModelConfig(root, { "sdd-apply": { model: "test/managed", thinking: "high" } }),
+		() => applyModelConfig(root, { "gentle-ai-worker": { model: "test/managed", thinking: "high" } }),
 		/Timed out acquiring managed-assets lock file/i,
 	);
 	assert.equal(readFileSync(profilePath, "utf8"), profileBefore);
@@ -803,8 +807,8 @@ test("a later alias keeps managed-root precedence and manifest ownership", (t) =
 	process.env.GENTLE_PI_AGENT_HOME = agentHome;
 	process.env.HOME = home;
 	process.env.USERPROFILE = home;
-	installPackageAssets(cwd, false, ["sdd"]);
-	writeMarkdown(join(intervening, "sdd-apply.md"), "---\nname: sdd-apply\n---\nintervening override\n");
+	installPackageAssets(cwd, false, ["delegation"]);
+	writeMarkdown(join(intervening, "gentle-ai-worker.md"), "---\nname: gentle-ai-worker\n---\nintervening override\n");
 	mkdirSync(home, { recursive: true });
 	try {
 		symlinkSync(managed, alias, process.platform === "win32" ? "junction" : "dir");
@@ -813,13 +817,13 @@ test("a later alias keeps managed-root precedence and manifest ownership", (t) =
 		return;
 	}
 
-	const selected = __testing.listDiscoverableAgents(cwd).find((agent) => agent.name === "sdd-apply");
-	assert.equal(selected?.filePath, join(managed, "sdd-apply.md"));
-	applyModelConfig(cwd, { "sdd-apply": { model: "test/managed", thinking: "high" } });
+	const selected = __testing.listDiscoverableAgents(cwd).find((agent) => agent.name === "gentle-ai-worker");
+	assert.equal(selected?.filePath, join(managed, "gentle-ai-worker.md"));
+	applyModelConfig(cwd, { "gentle-ai-worker": { model: "test/managed", thinking: "high" } });
 	const manifest = JSON.parse(readFileSync(join(agentHome, "gentle-ai", "managed-assets.json"), "utf8")) as { assets: Record<string, string> };
-	const routed = readFileSync(join(managed, "sdd-apply.md"), "utf8");
+	const routed = readFileSync(join(managed, "gentle-ai-worker.md"), "utf8");
 	assert.match(routed, /^model: test\/managed$/m);
-	assert.equal(manifest.assets["agents/sdd-apply.md"], createHash("sha256").update(routed).digest("hex"));
+	assert.equal(manifest.assets["agents/gentle-ai-worker.md"], createHash("sha256").update(routed).digest("hex"));
 });
 
 test("runtime guidance keeps review policy out of the static orchestrator and technical reference", () => {
@@ -1077,7 +1081,21 @@ test("ordinary START reports candidate-owner preparation failure as pre-native n
 	});
 });
 
-test("agent model discovery prioritizes SDD and Judgment Day agents", (t) => {
+test("retired SDD startup flag is not registered or imported", () => {
+	const flags: string[] = [];
+	const pi = {
+		on() {},
+		registerCommand() {},
+		registerTool() {},
+		registerFlag(name: string) { flags.push(name); },
+	} as unknown as ExtensionAPI;
+	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	assert.ok(!flags.includes("gentle-sdd-change"));
+	const source = readFileSync(new URL("../extensions/gentle-ai.ts", import.meta.url), "utf8");
+	assert.doesNotMatch(source, /from ["']\.\.\/lib\/sdd-preflight\.ts["']/);
+});
+
+test("agent model discovery prioritizes Judgment Day agents", (t) => {
 	const root = mkdtempSync(join(tmpdir(), "gentle-pi-model-agents-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	writeMarkdown(join(root, "zeta.md"), "name: zeta\n");
@@ -1094,12 +1112,12 @@ test("agent model discovery prioritizes SDD and Judgment Day agents", (t) => {
 	assert.deepEqual(
 		ordered.map((agent) => agent.name),
 		[
-			"sdd-init",
-			"sdd-apply",
 			"jd-judge-a",
 			"jd-judge-b",
 			"jd-fix-agent",
 			"alpha",
+			"sdd-apply",
+			"sdd-init",
 			"zeta",
 		],
 	);
@@ -1193,6 +1211,34 @@ test("model panel render does not auto-apply the Gentle theme and sanitizes agen
 	assert.match(plain, /Assign Models and Effort to Agents/);
 	assert.match(plain, /safe-agent\s+model=inherit, effort=inherit/);
 	assert.doesNotMatch(plain, /\[31m/);
+});
+
+test("model panel fills the terminal height like the profiles panel", () => {
+	const lines = __testing.renderSddModelPanel({}, ["openai/gpt-5.5"], ["safe-agent"], 72, undefined, 40);
+	assert.equal(lines.length, 40);
+	const plain = lines.map(stripAnsi);
+	assert.match(plain[0] ?? "", /^╭─+╮$/);
+	assert.match(plain[39] ?? "", /^╰─+╯$/);
+	for (const line of plain) assert.equal(line.length, 72);
+});
+
+test("model panel lists grow with the terminal height instead of a fixed window", () => {
+	const agents = Array.from({ length: 40 }, (_, i) => `agent-${String(i).padStart(2, "0")}`);
+	const models = Array.from({ length: 60 }, (_, i) => `provider/model-${String(i).padStart(2, "0")}`);
+	const agentLines = __testing
+		.renderSddModelPanel({}, models, agents, 100, undefined, 40)
+		.map(stripAnsi);
+	assert.equal(agentLines.length, 40);
+	// 40 rows minus 15 rows of chrome: every remaining row lists an agent or "Set all".
+	assert.equal(agentLines.filter((line) => /(agent-\d\d|Set all agents)\s+model=/.test(line)).length, 25);
+	assert.ok(agentLines.some((line) => /x export/.test(line)));
+
+	const pickerLines = __testing
+		.renderSddModelPanel({}, models, agents, 100, undefined, 40, ["\r"])
+		.map(stripAnsi);
+	assert.equal(pickerLines.length, 40);
+	// 40 rows minus 8 rows of chrome.
+	assert.equal(pickerLines.filter((line) => /provider\/model-\d\d/.test(line)).length, 32);
 });
 
 test("model panel render uses the Pi-provided current theme when supplied", () => {

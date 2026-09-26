@@ -33,6 +33,26 @@ function createPalette(groups: readonly CommandPaletteGroup[], theme?: CommandPa
 	return { palette, results };
 }
 
+test("Vim palette help names the opt-in editor and Pi slash handoff without promising full parity", () => {
+	const groups = buildCommandPaletteGroups([{ name: "gentle:vim", description: "Show or set global Vim prompt editing (status|enable|disable); no argument opens a menu." }], {});
+	assert.equal(groups[0]?.title, "Configuration");
+	const vim = groups[0]?.items[0];
+	assert.equal(vim?.command, "gentle:vim");
+	assert.match(vim?.label ?? "", /Vim.*opt-in/i);
+	assert.match(vim?.label ?? "", /Pi.*slash/i);
+	assert.equal(vim?.description, "Show or set global Vim prompt editing (status|enable|disable); no argument opens a menu.");
+	assert.equal(rankPaletteGroups(groups, "vim")[0]?.items[0]?.command, "gentle:vim");
+});
+
+test("Vim reference distinguishes supported commands, scope and slash divergence", () => {
+	const reference = readFileSync(new URL("../docs/readme-reference.md", import.meta.url), "utf8");
+	const section = reference.split("### Vim prompt editing\n")[1]?.split("\n### ")[0] ?? "";
+	for (const term of ["`/gentle:vim enable`", "`/gentle:vim disable`", "`status`", "VISUAL", "`Ctrl+[`", "`gg/G`", "`f/F/t/T`", "`d/c/y`", "`u`", "`.`", "Pi", "first line", "reverse prompt-history search", "0.85.1", "paste marker"]) {
+		assert.ok(section.includes(term), `Vim reference missing ${term}`);
+	}
+	assert.doesNotMatch(section, /full Claude (?:Code )?parity/i);
+});
+
 test("animations is discoverable under Configuration with its live description", () => {
 	const groups = buildCommandPaletteGroups([{ name: "gentle:animations", description: "status|quality|performance|potato" }], {});
 	assert.equal(groups[0]?.title, "Configuration");
@@ -346,7 +366,9 @@ test("COMMAND_PALETTE_CATALOG matches the curated command set, in order", () => 
 		"gentle:review-mode",
 		"gentle:background-subagents",
 		"gentle:double-esc-cancel",
+		"gentle:customize",
 		"gentle:animations",
+		"gentle:vim",
 		"gentle:telemetry",
 		"gentle:banner",
 		"gentle:banner-color",

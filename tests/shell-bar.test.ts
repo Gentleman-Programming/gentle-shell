@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import { DEFAULT_VISUAL_SETTINGS } from "../lib/visual-customization-policy.ts";
 import {
 	buildShellHeaderModel,
 	formatCost,
@@ -54,6 +55,14 @@ function model(overrides: Partial<ShellBarModel> = {}): ShellBarModel {
 		...overrides,
 	};
 }
+
+test("visual visibility hides only selected optional status segments", () => {
+	const settings = { ...DEFAULT_VISUAL_SETTINGS, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility, changes: false, modelDetails: false, usageCost: false } };
+	const data = model({ changes: { files: 2, added: 1, deleted: 1 } });
+	assert.doesNotMatch(renderShellBar(data, plainTheme, 160, settings).join(""), /gpt-5\.5|ctx|\$9\.49/);
+	assert.doesNotMatch(renderShellSidebarBar(data, plainTheme, 50, settings).join(""), /Changes|2 files/);
+	assert.doesNotMatch(renderShellHeaderBar(buildShellHeaderModel(data), plainTheme, 160, undefined, settings).text, /gpt-5\.5|ctx|\$9\.49|usage/);
+});
 
 test("Status title stays plain without an active review", () => {
 	const lines = renderShellSidebarBar(model(), plainTheme, 60);

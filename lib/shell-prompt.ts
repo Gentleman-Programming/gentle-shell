@@ -55,6 +55,12 @@ export interface PromptFrameOptions {
 	 * its own.
 	 */
 	escHint?: string;
+	/**
+	 * Overrides the generic "working…" label while state is WORKING with an
+	 * explicit, orchestrator-reported ODD phase label (e.g. "exploring…").
+	 * Ignored outside the WORKING state; undefined falls back to "working…".
+	 */
+	workingLabel?: string;
 }
 
 // A terminal cell cannot grow, so the petal earns presence with weight and
@@ -93,8 +99,13 @@ function rule(length: number): string {
 	return "─".repeat(Math.max(0, length));
 }
 
+function stateLabel(options: PromptFrameOptions): string | undefined {
+	if (options.state === PROMPT_STATE.WORKING) return options.workingLabel ?? STATE_LABEL[PROMPT_STATE.WORKING];
+	return STATE_LABEL[options.state];
+}
+
 function topRule(width: number, options: PromptFrameOptions, indicator: string | undefined): string {
-	const label = indicator ?? STATE_LABEL[options.state];
+	const label = indicator ?? stateLabel(options);
 	const scanning = options.state === PROMPT_STATE.WORKING;
 	const glyph = petalGlyph(options.state, options.tick);
 	const petal = options.fg(petalTone(options.state, options.tick), options.bold ? options.bold(glyph) : glyph);

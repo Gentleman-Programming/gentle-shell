@@ -184,24 +184,26 @@ test("one feature document carries intent, accepted rationale and worker context
 	]);
 });
 
-test("ODD forwards configured TDD without equating test presence with enablement", () => {
-	containsAll(delegation, [
-		"Resolve effective TDD on/off from existing project/session configuration or explicit user choice",
-		"retain its source and exact test runner",
-		"Record resolved mode, source, and runner in the feature document when present",
-		"Tests or frameworks being present does not enable TDD",
-		"Forward mode, source, and runner on every implementation delegation; refresh on resume",
-		"When enabled, require observed RED before implementation, GREEN, then REFACTOR",
-		"When disabled, run ordinary functional checks, not no checks",
-		"If mode is unknown/conflicting or the runner is missing",
-		"resolve only the ambiguity affecting the next action",
-		"never invent precedence or a command, and never infer TDD from test presence",
-	]);
-	containsAll(read("assets/agents/gentle-ai-worker.md"), [
-		"Consume the parent's effective TDD mode, configuration/choice source, and exact runner",
-		"Missing or conflicting mode/source/runner is not disabled TDD",
-	]);
-	assert.doesNotMatch(wrapper, /If tests exist, use strict TDD/);
+test("ODD defaults to applicable test-first without chat or TUI activation", () => {
+	const worker = read("assets/agents/gentle-ai-worker.md");
+	const verify = read("assets/agents/gentle-ai-verify.md");
+	const support = read("assets/support/strict-tdd.md") + read("assets/support/strict-tdd-verify.md");
+	const skill = read("skills/gentle-ai/SKILL.md");
+	for (const text of [core, delegation, worker, verify, support, skill, wrapper]) {
+		containsAll(text, ["applicable", "RED", "GREEN"]);
+		assert.doesNotMatch(text, /(?:configured TDD mode|Strict TDD Mode is enabled|explicit user choice|test presence does not enable it|tests existing does not activate it)/i);
+	}
+	for (const [actor, text] of [["core", core], ["delegation", delegation], ["extension", wrapper], ["skill", skill]] as const) {
+		assert.match(text, /behavior changes with applicable runnable deterministic tests and a clear expected outcome/i, `${actor} must require applicability, not test presence`);
+		assert.match(text, /passive documentation/i, `${actor} must handle passive docs`);
+		assert.match(text, /unavailable runner/i, `${actor} must handle unavailable runners`);
+		assert.match(text, /ordinary functional or structural verification/i, `${actor} must specify fallback checks`);
+	}
+	containsAll(delegation, ["by default", "Forward this policy"]);
+	containsAll(worker, ["before implementation", "ordinary functional or structural verification", "no meaningful RED"]);
+	containsAll(verify, ["observed RED", "observed GREEN", "exception"]);
+	assert.doesNotMatch(skill, /SDD|OpenSpec/i, "the ODD-only skill must not prime SDD");
+	assert.doesNotMatch(core + delegation + worker + support + skill + wrapper, /If tests exist, use strict TDD/i);
 });
 
 test("mandatory delegation triggers are behavioral in the lazy canonical port and the always-on ODD step", () => {

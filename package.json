@@ -72,7 +72,8 @@
 		]
 	},
 	"dependencies": {
-		"@earendil-works/pi-tui": "0.85.1",
+		"@earendil-works/pi-ai": "0.87.1",
+		"@earendil-works/pi-tui": "0.87.1",
 		"@heyhuynhgiabuu/pi-pretty": "0.6.27"
 	},
 	"peerDependencies": {
@@ -85,7 +86,7 @@
 		}
 	},
 	"devDependencies": {
-		"@earendil-works/pi-coding-agent": "0.85.1",
+		"@earendil-works/pi-coding-agent": "0.87.1",
 		"@types/node": "^24.13.3",
 		"typescript": "^5.9.3"
 	},

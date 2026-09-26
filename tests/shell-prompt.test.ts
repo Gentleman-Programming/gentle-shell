@@ -87,6 +87,40 @@ test("framePromptLines paints the frame with the editor border color and the pet
 	assert.match(lines[2], /^\[b\]╰─+╯\[\/b\]$/);
 });
 
+test("framePromptLines renders an explicit ODD phase workingLabel instead of the generic working label", () => {
+	const plain = (_color: string, text: string) => text;
+	const phased = framePromptLines(editorLines(40), 40, options({ state: PROMPT_STATE.WORKING, tick: 3, fg: plain, workingLabel: "exploring…" }));
+	assert.match(stripAnsi(phased[0]), /^╭─ ✾ exploring… ─+╮$/);
+	assert.equal(visibleWidth(phased[0]), 40);
+});
+
+test("framePromptLines falls back to the generic working label when no phase was reported", () => {
+	const plain = (_color: string, text: string) => text;
+	const fallback = framePromptLines(editorLines(40), 40, options({ state: PROMPT_STATE.WORKING, tick: 3, fg: plain, workingLabel: undefined }));
+	assert.match(stripAnsi(fallback[0]), /^╭─ ✾ working… ─+╮$/);
+});
+
+test("framePromptLines ignores workingLabel outside the working state", () => {
+	const plain = (_color: string, text: string) => text;
+	const idle = framePromptLines(editorLines(40), 40, options({ state: PROMPT_STATE.IDLE, fg: plain, workingLabel: "exploring…" }));
+	assert.equal(stripAnsi(idle[0]).includes("exploring"), false);
+	const queued = framePromptLines(editorLines(40), 40, options({ state: PROMPT_STATE.QUEUED, fg: plain, workingLabel: "exploring…" }));
+	assert.match(stripAnsi(queued[0]), /^╭─ ✿ queued ─+╮$/);
+});
+
+test("framePromptLines stays width-safe at narrow widths with the longest ODD phase label", () => {
+	const plain = (_color: string, text: string) => text;
+	// "implementing…" is the longest ODD_PHASES label (lib/odd-phase.ts).
+	const longestLabel = "implementing…";
+	for (const width of [1, 4, 8, 10, 14, 20, 40]) {
+		const lines = framePromptLines(editorLines(Math.max(4, width)), width, options({ state: PROMPT_STATE.WORKING, tick: 3, fg: plain, workingLabel: longestLabel }));
+		for (const line of lines) assert.ok(visibleWidth(line) <= width, `width ${width}: "${line}" exceeds the frame width`);
+	}
+	// At a comfortable width the full label still renders, unclipped.
+	const comfortable = framePromptLines(editorLines(40), 40, options({ state: PROMPT_STATE.WORKING, tick: 3, fg: plain, workingLabel: longestLabel }));
+	assert.match(stripAnsi(comfortable[0]), /implementing…/);
+});
+
 test("petalTone rests bright, walks the rose ramp while working, and turns to warning when queued", () => {
 	assert.equal(petalTone(PROMPT_STATE.IDLE, 2), "borderAccent");
 	assert.deepEqual([0, 1, 2, 3, 4].map((tick) => petalTone(PROMPT_STATE.WORKING, tick)), ["mdQuoteBorder", "thinkingHigh", "accent", "borderAccent", "accent"]);

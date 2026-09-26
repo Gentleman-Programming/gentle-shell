@@ -72,6 +72,7 @@ export interface AskAnswer {
 export interface TaskQuery {
 	taskId: string;
 	requestId: string;
+	message: string;
 }
 
 export const MAX_CHILD_RESPONSE_OBSERVATIONS = 128;
@@ -103,6 +104,7 @@ export interface RunnerHooks {
 	// Accepts a child notification only while the originating parent session is active.
 	onNotification?(task: TaskRecord, message: string): boolean | void;
 	onQuery?(task: TaskRecord, requestId: string, message: string): boolean | void;
+	onQuerySettled?(taskId: string, requestId: string, outcome: "replied" | "expired"): void;
 	// Parent-only observation of a paired successful filesystem tool, not prose.
 	onSuccessfulMutation?(task: TaskRecord, tool: { toolName: "write" | "edit"; toolCallId: string; path: string; evidence?: SessionChangeEvidence }): void | Promise<void>;
 }
@@ -383,6 +385,7 @@ export class AgentRunner {
 		if (live.queries.get(requestId) === query) {
 			query.cancel();
 			live.queries.delete(requestId);
+			this.hooks.onQuerySettled?.(id, requestId, "replied");
 		}
 		return accepted;
 	}
@@ -602,12 +605,12 @@ export class AgentRunner {
 		try {
 			if (live.queries.has(parsed.frame.id)) rejectQuery("duplicate query request");
 			if (live.queries.size >= CHILD_QUERY_MAX_INFLIGHT) rejectQuery("too many pending parent queries");
-			query = { replying: false, cancel: this.deps.schedule(() => this.expireQuery(live, parsed.frame!.id), CHILD_QUERY_TIMEOUT_MS) };
+			query = { replying: false, cancel: this.deps.schedule(() => this.expireQuery(id, live, parsed.frame!.id), CHILD_QUERY_TIMEOUT_MS) };
 			live.queries.set(parsed.frame.id, query);
 			if (!this.hooks.onQuery) rejectQuery("task parent cannot accept queries");
 			if (this.hooks.onQuery(task, parsed.frame.id, parsed.frame.message) === false) rejectQuery("task parent is not the active host session");
 			if (task.mode === AGENT_MODE.TASK && !this.firstQueries.has(id)) {
-				const first = { taskId: id, requestId: parsed.frame.id };
+				const first = { taskId: id, requestId: parsed.frame.id, message: parsed.frame.message };
 				this.firstQueries.set(id, first);
 				for (const resolve of this.queryWaiters.get(id) ?? []) resolve(first);
 				this.queryWaiters.delete(id);
@@ -621,10 +624,11 @@ export class AgentRunner {
 		}
 	}
 
-	private expireQuery(live: LiveTask, id: string): void {
+	private expireQuery(taskId: string, live: LiveTask, id: string): void {
 		const query = live.queries.get(id);
 		if (!query) return;
 		live.queries.delete(id);
+		this.hooks.onQuerySettled?.(taskId, id, "expired");
 		if (query.replying) this.settleReply(live, id, false);
 		else this.sendQueryError(live, id, "parent query timed out");
 	}

@@ -9,7 +9,11 @@ import {
   seedFilePath,
 } from "../extensions/history/store.ts";
 
-const CWD = "/pi-history-fixtures/project-a";
+// Fake project cwd (never created on disk): projectHash falls back to
+// raw-string hashing for nonexistent paths, and the transcript dirName
+// encoding derives from the same string.
+const CWD = "/pi-history-test/seed-project";
+const DIR = "--pi-history-test-seed-project--";
 
 function makeDirs(): { root: string; sessionsRoot: string } {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-seed-"));
@@ -74,7 +78,7 @@ test("no sessions and no project dir: bootstrap seeds nothing", () => {
 
 test("empty project dir bootstraps from the project's transcripts", () => {
   const { root, sessionsRoot } = makeDirs();
-  writeSession(sessionsRoot, `--pi-history-fixtures-project-a--`, "s1.jsonl", [
+  writeSession(sessionsRoot, DIR, "s1.jsonl", [
     "real prompt",
     "/compact",
     "   ",
@@ -88,9 +92,7 @@ test("empty project dir bootstraps from the project's transcripts", () => {
 
 test("only the project's own session dir is scanned", () => {
   const { root, sessionsRoot } = makeDirs();
-  writeSession(sessionsRoot, `--pi-history-fixtures-project-a--`, "s1.jsonl", [
-    "mine",
-  ]);
+  writeSession(sessionsRoot, DIR, "s1.jsonl", ["mine"]);
   writeSession(sessionsRoot, "--Other--", "s2.jsonl", ["not mine"]);
   bootstrapProjectSeed(root, CWD, sessionsRoot, 500);
   assert.deepEqual(seedTexts(root), ["mine"]);
@@ -100,12 +102,7 @@ test("caps at the target keeping the newest", () => {
   const { root, sessionsRoot } = makeDirs();
   const texts: string[] = [];
   for (let i = 1; i <= 600; i++) texts.push(`p${i}`);
-  writeSession(
-    sessionsRoot,
-    `--pi-history-fixtures-project-a--`,
-    "big.jsonl",
-    texts,
-  );
+  writeSession(sessionsRoot, DIR, "big.jsonl", texts);
   const result = bootstrapProjectSeed(root, CWD, sessionsRoot, 500);
   assert.deepEqual(result, { seeded: 500, ran: true });
   const all = seedTexts(root);
@@ -126,12 +123,7 @@ test("project dir already populated above target: no scan, seed untouched", () =
     ).join("\n")}\n`,
     "utf8",
   );
-  const marker = writeSession(
-    sessionsRoot,
-    `--pi-history-fixtures-project-a--`,
-    "s.jsonl",
-    ["marker"],
-  );
+  const marker = writeSession(sessionsRoot, DIR, "s.jsonl", ["marker"]);
   fs.utimesSync(
     marker,
     new Date(Date.now() + 5000),
@@ -143,9 +135,14 @@ test("project dir already populated above target: no scan, seed untouched", () =
   assert.equal(fs.readFileSync(existing, "utf8").includes("marker"), false);
 });
 
-const isRoot = process.getuid?.() === 0;
-const sealedStoreTest = (name: string, fn: () => void | Promise<void>) =>
-  test(name, { skip: isRoot && "requires a non-root user" }, fn);
+// node:test has no test.skipIf (Bun-ism): root skips via the options
+// object — chmod 000 is invisible to the superuser.
+const sealedStoreTest = (name: string, fn: () => void) =>
+  test(
+    name,
+    { skip: process.getuid?.() === 0 ? "requires non-root" : false },
+    fn,
+  );
 sealedStoreTest(
   "an unreadable existing store file is skipped during counting; seeding still runs from transcripts",
   () => {
@@ -159,12 +156,7 @@ sealedStoreTest(
       "utf8",
     );
     fs.chmodSync(sealed, 0o000);
-    writeSession(
-      sessionsRoot,
-      `--pi-history-fixtures-project-a--`,
-      "s1.jsonl",
-      ["from transcript"],
-    );
+    writeSession(sessionsRoot, DIR, "s1.jsonl", ["from transcript"]);
     try {
       // The unreadable file contributes zero to existingCount, so the count
       // stays under target and the transcript scan still runs. No throw.

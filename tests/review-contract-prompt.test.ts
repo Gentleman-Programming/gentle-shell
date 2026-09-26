@@ -63,8 +63,10 @@ test("before_agent_start injects the mirrored review execution contract for the 
 	const result = await beforeAgentStart(primaryEvent, ctx());
 	const expected = mirroredPiOrchestrationText();
 	assert.match(result.systemPrompt, /Substantial authorized work: use ODD/);
-	assert.match(result.systemPrompt, /Use configured TDD mode, source, and exact runner/);
-	assert.match(result.systemPrompt, /test presence does not enable it/);
+	assert.match(result.systemPrompt, /For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks/);
+	assert.match(result.systemPrompt, /Test presence alone does not establish applicability; no chat or TUI toggle activates it/);
+	assert.match(result.systemPrompt, /no meaningful RED, explain why and run proportionate ordinary functional or structural verification/);
+	assert.match(result.systemPrompt, /Never invent lifecycle evidence or skip checks/);
 	assert.doesNotMatch(result.systemPrompt, /If tests exist, use strict TDD/);
 	assert.match(result.systemPrompt, /ODD \(Default Workflow, harness section above\) is mandatory on every request/);
 	assert.doesNotMatch(result.systemPrompt, /Prefer SDD\/OpenSpec artifacts/);

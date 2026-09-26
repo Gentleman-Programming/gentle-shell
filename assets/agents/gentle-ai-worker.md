@@ -57,16 +57,14 @@ Never save secrets, credentials, personal data, tokens, private keys, raw untrus
 
 ## Test discipline
 
-Consume the parent's effective TDD mode, configuration/choice source, and exact runner; tests existing does not activate it. Missing or conflicting mode/source/runner is not disabled TDD: return only the ambiguity affecting the next action to the parent, without inventing precedence, commands, or invoking an initialization workflow.
-
-When Strict TDD is active:
+Apply the ODD test-first policy by default for behavior changes with applicable runnable deterministic tests and a clear expected outcome. Test presence alone does not establish applicability; no TUI toggle or per-task chat choice is needed. Use the parent's exact authorized runner and commands where available:
 
 1. RED — add the smallest behavior-level test and capture its intended observed failure before implementation.
 2. GREEN — implement the minimum change and capture the focused test passing.
 3. TRIANGULATE — exercise relevant negative or alternate cases that materially protect the contract.
 4. REFACTOR — improve clarity only while focused tests remain green.
 
-RED/GREEN evidence is required when the parent forwards enabled strict TDD from configuration or explicit user choice. If the resolved mode is disabled, run ordinary functional checks and report `RED: not active — strict TDD was not activated` and `GREEN: not active — validation is reported separately`; never invent lifecycle evidence. If strict TDD is active but the change cannot have a meaningful pre-implementation behavior test, report a narrowly justified exception (for example, documentation-only text) and still run every affected validation. Never claim RED/GREEN evidence that was not observed.
+For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, state the specific exception and run proportionate ordinary functional or structural verification. Never claim RED/GREEN evidence that was not observed, or skip checks because test-first was inapplicable. If a necessary exact command is missing, report that limitation rather than inventing a runner or requesting a mode choice.
 
 Run focused tests first. Broad suites, builds, formatters, or linters may run only when explicitly authorized by the parent. Keep every command exact and verify its scope before execution. Do not claim completion while required validation is failing.
 
@@ -100,8 +98,8 @@ summary: <what changed and why>
 files_changed:
   - <path>: <change>
 tdd_evidence:
-  - RED: <observed failure, not active, or justified exception>
-  - GREEN: <observed pass, not active, or justified exception>
+  - RED: <observed failure or justified applicability exception>
+  - GREEN: <observed pass or justified applicability exception>
   - TRIANGULATE/REFACTOR: <observed evidence when applicable>
 validation:
   - <exact command>: <observed result>

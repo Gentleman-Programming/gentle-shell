@@ -119,7 +119,7 @@ export function pageSelectedIndex(
  * The literal is the single-backslash applied-patch form; the raw patch
  * file stores \\s+ only because its code sits inside a template literal.
  * Shared by contract (spec C4): hide-prompts tombstone keys and the
- * store seeding tombstone filter MUST byte-match this key.
+ * merge-history session-half tombstone filter MUST byte-match this key.
  */
 export function promptDedupKey(entry: string): string {
   return entry.replace(/\s+/g, " ").trim().slice(0, 120).toLowerCase();
@@ -247,25 +247,10 @@ export function loadedCountAfterDelete(
  * Takes source as a plain parameter (no member reads — the T23 provenance
  * pin keeps overlay consumers source-agnostic outside deleteCurrent); the
  * only consumer is the delete flow in history/index.ts.
- * text would otherwise resurface next open); "session" plans NOTHING —
- * session-derived rows are read-only (slice-05 D1): transcripts are
- * immutable and owned by Pi core, so the extension never deletes from or
- * writes to them, and deleteCurrent guards the source before the flow.
- * Takes source as a plain parameter (no member reads — the T23 provenance
- * pin keeps overlay consumers source-agnostic outside deleteCurrent); the
- * only consumer is the delete flow in history/index.ts.
-=======
- * text would otherwise resurface next open); "session" writes the tombstone
- * only (session transcripts are NEVER written). Takes source as a plain
- * parameter (no member reads — the T23 provenance pin keeps overlay
- * consumers source-agnostic outside deleteCurrent); the only consumer is
- * deleteCurrent in src/index.ts.
->>>>>>> a225102f
  */
-export function deletionActionsFor(source: PromptSource): {
-  deleteFromEditorStore: boolean;
-  writeTombstone: boolean;
-} {
+export function deletionActionsFor(
+  source: PromptSource,
+): { deleteFromEditorStore: boolean; writeTombstone: boolean } {
   if (source === "editor") {
     return { deleteFromEditorStore: true, writeTombstone: true };
   }
@@ -338,6 +323,35 @@ export const STORE_DELETE_FAILED_TEXT =
  */
 export const EDITOR_HIDE_FAILED_TEXT =
   "Deleted from the store, but hiding failed — the prompt may reappear from session transcripts.";
+
+/**
+ * Toast copy when some store files could not be read or rewritten: copies
+ * may remain on disk, and only the tombstone keeps them out of the list.
+ */
+export const STORE_DELETE_PARTIAL_TEXT =
+  "Some history files could not be rewritten; the prompt is hidden, but copies may remain on disk.";
+
+/** The counts a scope delete reports (structural twin of store's SweepResult). */
+export interface StoreSweepCounts {
+  filesAffected: number;
+  removed: number;
+  failed: number;
+}
+
+/**
+ * What the delete flow does after the store sweep: proceed to the
+ * tombstone when anything was removed OR any file failed (a failed file
+ * may still hold a copy the tombstone must hide), surfacing an error
+ * notice for failures; stop quietly when there was nothing to delete.
+ */
+export function storeDeleteFollowUp(
+  counts: StoreSweepCounts,
+): { proceed: boolean; notice?: string } {
+  if (counts.failed > 0) {
+    return { proceed: true, notice: STORE_DELETE_PARTIAL_TEXT };
+  }
+  return { proceed: counts.removed > 0 };
+}
 
 export function getVisiblePromptRecords(
   records: PromptRecord[],

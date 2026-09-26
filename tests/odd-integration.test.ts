@@ -24,21 +24,24 @@ test("optional research stays output-only and delegates to a general worker", ()
 	assert.match(delegation, /If tools are unavailable, disclose limitations without inventing access or evidence/);
 });
 
-test("configured strict TDD source and exact runner flow through the wrapper, support, worker and verifier", () => {
+test("applicability, fallback and honest evidence flow through ODD actors", () => {
 	const wrapper = read("extensions/gentle-ai.ts");
 	const delegation = read("assets/orchestrator-delegation.md");
 	const support = read("assets/support/strict-tdd.md");
 	const worker = read("assets/agents/gentle-ai-worker.md");
 	const verifier = read("assets/agents/gentle-ai-verify.md");
-	assert.match(wrapper, /Use configured TDD mode, source, and exact runner; test presence does not enable it/);
-	assert.match(delegation, /Resolve effective TDD on\/off from existing project\/session configuration or explicit user choice; retain its source and exact test runner/);
-	assert.match(delegation, /Forward mode, source, and runner on every implementation delegation/);
-	assert.match(support, /retained configured TDD source and runner forwarded by the parent/);
-	assert.match(support, /If either is missing or conflicting, stop and ask the parent to resolve it/);
-	assert.match(worker, /Consume the parent's effective TDD mode, configuration\/choice source, and exact runner/);
+	assert.match(wrapper, /behavior changes with applicable runnable deterministic tests and a clear expected outcome/);
+	assert.match(delegation, /Test or framework presence alone does not establish applicability/);
+	for (const [actor, text] of [["implementation support", support], ["worker", worker], ["verifier", verifier]] as const) {
+		assert.match(text, /behavior changes with applicable runnable deterministic tests and a clear expected outcome/i, `${actor} must assess behavior-level applicability`);
+		assert.match(text, /passive documentation/i, `${actor} must handle passive docs`);
+		assert.match(text, /unavailable runner/i, `${actor} must handle an unavailable runner`);
+		assert.match(text, /ordinary functional or structural verification/i, `${actor} must verify fallbacks`);
+	}
+	assert.match(support, /no meaningful RED/);
 	assert.match(worker, /RED — add the smallest behavior-level test and capture its intended observed failure/);
 	assert.match(verifier, /execute only exact test, build, or lint commands explicitly authorized by the parent/);
-	assert.doesNotMatch(wrapper + delegation + support + worker + verifier, /If tests exist(?:, use strict TDD| or strict TDD)/);
+	assert.match(verifier, /Do not infer RED from a test file existing/);
 });
 
 test("retired SDD routes and assets are absent while ODD entry and generic workers remain", () => {

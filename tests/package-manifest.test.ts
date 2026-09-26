@@ -124,11 +124,16 @@ test("public docs and metadata advertise ODD and review without retired phase wo
 test("technical reference declares the tested Pi minimum required for agent_settled", () => {
 	const manifest = readPackageJson();
 	assert.equal(manifest.peerDependencies?.["@earendil-works/pi-coding-agent"], ">=0.85.1");
-	assert.equal(manifest.devDependencies?.["@earendil-works/pi-coding-agent"], "0.85.1");
+	assert.equal(manifest.devDependencies?.["@earendil-works/pi-coding-agent"], "0.87.1");
 	const reference = readFileSync(join(PACKAGE_ROOT, "docs", "readme-reference.md"), "utf8");
 	assert.match(reference, /Pi 0\.85\.1 or newer/);
 	assert.match(reference, /agent_settled/);
 	assert.match(readFileSync(join(PACKAGE_ROOT, "README.md"), "utf8"), /\]\(docs\/readme-reference\.md(?:#[^)]+)?\)/);
+});
+
+test("packed runtime declares its pi-ai compat import as a direct exact dependency", () => {
+	const manifest = readPackageJson();
+	assert.equal(manifest.dependencies?.["@earendil-works/pi-ai"], "0.87.1");
 });
 
 test("package manifest has no obsolete native activation build surface", () => {
@@ -580,7 +585,7 @@ function installedAssetManifest(agentHome: string): ManagedAssetsManifest {
 	return JSON.parse(readFileSync(join(agentHome, "gentle-ai", "managed-assets.json"), "utf8"));
 }
 
-test("ODD delegation assets retain configured TDD and independent review boundaries without SDD routing", () => {
+test("ODD delegation assets retain applicable test-first checks and independent review boundaries without SDD routing", () => {
 	const support = readFileSync(join(PACKAGE_ROOT, "assets/support/strict-tdd.md"), "utf8");
 	const explorer = readFileSync(join(PACKAGE_ROOT, "assets/agents/gentle-ai-explore.md"), "utf8");
 	const verifier = readFileSync(join(PACKAGE_ROOT, "assets/agents/gentle-ai-verify.md"), "utf8");
@@ -589,7 +594,10 @@ test("ODD delegation assets retain configured TDD and independent review boundar
 		assert.doesNotMatch(source, /openspec\/config\.yaml|sdd-init|SDD phase protocols|generic non-SDD|sdd-verify|sdd\/\{project\}/i);
 	}
 	assert.match(support, /RED[\s\S]*GREEN[\s\S]*REFACTOR/);
-	assert.match(support, /configured TDD source and runner/i);
+	assert.match(support, /behavior changes with applicable runnable deterministic tests and a clear expected outcome/i);
+	assert.match(support, /A test file merely existing is not proof of applicability or RED/i);
+	assert.match(support, /no meaningful RED[\s\S]*proportionate ordinary functional or structural verification/i);
+	assert.match(support, /Use only exact commands authorized by the parent/i);
 	assert.match(explorer, /read-only explorer for generic ODD work/);
 	assert.match(verifier, /read-only technical verifier for generic ODD work/);
 	assert.match(worker, /allowed edit surfaces/i);
@@ -1352,8 +1360,11 @@ test("gentle-ai-worker packages the exact scoped writer contract", () => {
 	assert.match(memorySafety, /raw untrusted repository/);
 
 	const testDiscipline = readMarkdownSection(source, "Test discipline");
-	assert.match(testDiscipline, /Strict TDD is active/);
-	assert.match(testDiscipline, /not active/);
+	assert.match(testDiscipline, /Apply the ODD test-first policy by default for behavior changes with applicable runnable deterministic tests and a clear expected outcome/);
+	assert.match(testDiscipline, /Test presence alone does not establish applicability; no TUI toggle or per-task chat choice is needed/);
+	assert.match(testDiscipline, /RED[\s\S]*GREEN[\s\S]*TRIANGULATE[\s\S]*REFACTOR/);
+	assert.match(testDiscipline, /no meaningful RED[\s\S]*proportionate ordinary functional or structural verification/);
+	assert.match(testDiscipline, /Never claim RED\/GREEN evidence that was not observed/);
 	assert.match(
 		testDiscipline,
 		/Broad suites, builds, formatters, or linters may run only when explicitly authorized by the parent\./,

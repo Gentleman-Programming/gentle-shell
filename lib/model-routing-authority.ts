@@ -63,7 +63,11 @@ export function normalizeRoutingEntry(value: unknown): AgentRoutingEntry | undef
 	}
 	if (!isRecord(value)) return undefined;
 	const model = normalizeModelId(value.model);
-	const thinking = isThinkingLevel(value.thinking) ? value.thinking : undefined;
+	const thinking = isThinkingLevel(value.thinking)
+		? value.thinking
+		: isThinkingLevel(value.effort)
+			? value.effort
+			: undefined;
 	if (!model && !thinking) {
 		return Object.keys(value).length === 0 ? {} : undefined;
 	}

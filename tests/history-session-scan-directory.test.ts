@@ -4,16 +4,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { listSessionFiles } from "../extensions/history/session-scan.ts";
-// node:test has no test.skipIf (Bun-ism): emulate via the options object.
-const skipIf =
-  (condition: unknown) =>
-  (name: string, fn: () => unknown) =>
-    test(
-      name,
-      { skip: condition ? "requires non-root" : false },
-      fn as () => void | Promise<void>,
-    );
-
 
 /**
  * WU1b-carried T7 (AC-S1-7): the one-level directory exclusion matrix. The
@@ -67,7 +57,14 @@ test("one-level scan rule: only top-level jsonl of cwd dirs; nested payloads, su
   }
 });
 
-const sealedDirTest = skipIf(process.getuid?.() === 0);
+// node:test has no test.skipIf (Bun-ism): root skips via the options
+// object — chmod 000 is invisible to the superuser.
+const sealedDirTest = (name: string, fn: () => void) =>
+  test(
+    name,
+    { skip: process.getuid?.() === 0 ? "requires non-root" : false },
+    fn,
+  );
 sealedDirTest(
   "an unreadable child dir (chmod 000) is skipped; sibling dirs still list",
   () => {

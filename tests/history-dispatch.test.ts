@@ -1,21 +1,22 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { fileURLToPath } from "node:url";
 import fs from "node:fs";
-import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 /**
  * Dispatch table structural tests — source-parsed (AC-P2-1.3, AC-P2-2.1,
  * AC-P2-4.1), following the preview-layout.test.ts pattern.
  *
- * PromptHistorySelector is private to src/index.ts and needs the
- * pi-tui runtime (Container, Input, TUI, Theme), so these tests read the
+ * PromptHistorySelector is private to extensions/history/index.ts and needs
+ * the pi-tui runtime (Container, Input, TUI, Theme), so these tests read the
  * source file and pin the normative §B2 shape instead of importing it:
  * exactly 12 explicit entries in a fixed order, then the implicit
  * forwardToSearch fallthrough inside handleInput.
  */
 
-const sourcePath = fileURLToPath(new URL("../extensions/history/index.ts", import.meta.url));
+const sourcePath = fileURLToPath(
+  new URL("../extensions/history/index.ts", import.meta.url),
+);
 const source = fs.readFileSync(sourcePath, "utf8");
 
 const DISPATCH_DECL = "private readonly dispatch: readonly DispatchEntry[] = [";
@@ -58,7 +59,7 @@ function dispatchTable(): string {
   assert.notStrictEqual(
     start,
     -1,
-    "dispatch table declaration should exist in src/index.ts",
+    "dispatch table declaration should exist in extensions/history/index.ts",
   );
   const end = source.indexOf(TABLE_CLOSE, start);
   assert.notStrictEqual(end, -1, "dispatch table closing should exist");

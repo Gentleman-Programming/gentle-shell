@@ -8,6 +8,8 @@ import {
   deletionActionsFor,
   EDITOR_HIDE_FAILED_TEXT,
   STORE_DELETE_FAILED_TEXT,
+  STORE_DELETE_PARTIAL_TEXT,
+  storeDeleteFollowUp,
 } from "../extensions/history/selector-helpers.ts";
 
 // Slice-05 delete-confirm tests (PR #1393 follow-up): the delete
@@ -20,10 +22,8 @@ import {
 //
 // PromptHistorySelector is private to extensions/history/index.ts and
 // needs the pi-tui runtime graph (openflow-integration.test.ts
-// discipline), and an executing delete writes the module-constant REAL
-// store (~/.pi/agent/history — no injection point), so the confirm
-// DECISION is factored into the pure deleteConfirmStep router tested here
-// directly, and the wiring semantics are pinned by source-parse on
+// discipline), so the confirm DECISION is factored into the pure
+// deleteConfirmStep router tested here directly, and the wiring semantics are pinned by source-parse on
 // deleteCurrent/armDelete/executeDelete/handleInput (delete-backfill
 // discipline). No test in this file touches the user's real store.
 
@@ -306,28 +306,25 @@ test("the armed state drives the footer copy and the error-colored highlight", (
 });
 
 // ---------------------------------------------------------------------------
-// Env rename (slice-05 D4): the opt-in switch is GENTLE_PI_HISTORY_ENABLE.
+// Capture gate: the opt-in switch stays GENTLE_PI_HISTORY_CAPTURE (#1390).
 // ---------------------------------------------------------------------------
 
-// The old switch name must be gone everywhere; assemble the literal from
-// parts so this file stays grep-clean for the rename proof (rg for the old
-// env var must return 0 matches).
-const legacySwitch = `GENTLE_PI_HISTORY_${"CAPTURE"}`;
+// The contributor branch briefly renamed the switch; the rename must not
+// ship. Assemble the rejected literal from parts so this file stays
+// grep-clean for it.
+const renamedSwitch = `GENTLE_PI_HISTORY_${"ENABLE"}`;
 
-test("captureEnabled reads GENTLE_PI_HISTORY_ENABLE (strict 1/true/on unchanged)", () => {
+test("captureEnabled reads GENTLE_PI_HISTORY_CAPTURE (strict 1/true/on unchanged)", () => {
   const decl = selectorSource.indexOf("export function captureEnabled(");
   assert.ok(decl >= 0, "captureEnabled should exist");
   const end = selectorSource.indexOf("\n}", decl);
   assert.ok(end > decl, "captureEnabled's body should close");
   const body = selectorSource.slice(decl, end);
   assert.ok(
-    body.includes("env.GENTLE_PI_HISTORY_ENABLE"),
-    "the renamed switch must be read",
+    body.includes("env.GENTLE_PI_HISTORY_CAPTURE"),
+    "the shipped switch must be read",
   );
-  assert.ok(
-    !body.includes(legacySwitch),
-    "the old switch name must be gone",
-  );
+  assert.ok(!body.includes(renamedSwitch), "the rename must not ship");
   assert.ok(
     body.includes('?.trim().toLowerCase()'),
     "whitespace + case normalization unchanged",
@@ -338,17 +335,52 @@ test("captureEnabled reads GENTLE_PI_HISTORY_ENABLE (strict 1/true/on unchanged)
   );
 });
 
-test("the open-flow warning names GENTLE_PI_HISTORY_ENABLE", () => {
-  const at = selectorSource.indexOf("Prompt history capture is off");
-  assert.ok(at >= 0, "the off-gate warning must exist");
-  const lineEnd = selectorSource.indexOf("\n", at);
-  const line = selectorSource.slice(at, lineEnd);
-  assert.ok(
-    line.includes("GENTLE_PI_HISTORY_ENABLE=1"),
-    `the warning must name the new switch, got: ${line.trim()}`,
+test("the history extension never mentions the renamed switch", () => {
+  assert.equal(selectorSource.includes(renamedSwitch), false);
+});
+
+// ---------------------------------------------------------------------------
+// Partial sweep failures (PR #1393 adaptation): a store file that could not
+// be read or rewritten may still hold a copy, so the delete must say so —
+// and still write the tombstone that hides the remaining copies.
+// ---------------------------------------------------------------------------
+
+test("storeDeleteFollowUp: a clean sweep proceeds without a notice", () => {
+  assert.deepEqual(
+    storeDeleteFollowUp({ filesAffected: 1, removed: 2, failed: 0 }),
+    { proceed: true },
   );
-  assert.ok(
-    !line.includes(legacySwitch),
-    "the warning must not name the old switch",
+});
+
+test("storeDeleteFollowUp: nothing removed and nothing failed stops quietly", () => {
+  assert.deepEqual(
+    storeDeleteFollowUp({ filesAffected: 0, removed: 0, failed: 0 }),
+    { proceed: false },
+  );
+});
+
+test("storeDeleteFollowUp: any failed file proceeds to hide AND surfaces an error", () => {
+  for (const removed of [0, 3]) {
+    assert.deepEqual(
+      storeDeleteFollowUp({ filesAffected: removed > 0 ? 1 : 0, removed, failed: 1 }),
+      { proceed: true, notice: STORE_DELETE_PARTIAL_TEXT },
+    );
+  }
+  assert.ok(STORE_DELETE_PARTIAL_TEXT.includes("could not"));
+  assert.ok(STORE_DELETE_PARTIAL_TEXT.includes("hidden"));
+});
+
+test("executeDelete routes the sweep result through storeDeleteFollowUp before hiding", () => {
+  const body = executeDeleteBody();
+  const followAt = body.indexOf("storeDeleteFollowUp(");
+  const noticeAt = body.indexOf('this.onNotify?.(followUp.notice, "error")');
+  const hideAt = body.indexOf("hidePrompt(");
+  assert.ok(followAt >= 0, "the sweep result must be interpreted");
+  assert.ok(noticeAt > followAt, "a partial failure must surface as an error");
+  assert.ok(hideAt > noticeAt, "the tombstone still follows a partial failure");
+  assert.equal(
+    body.includes("if (removed === 0) return;"),
+    false,
+    "a zero-removal partial failure must not skip the tombstone",
   );
 });

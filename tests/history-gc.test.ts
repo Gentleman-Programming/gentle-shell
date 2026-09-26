@@ -3,17 +3,23 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { gcProjectDir, projectHash } from "../extensions/history/store.ts";
+import { hidePrompt } from "../extensions/history/hide-prompts.ts";
+import {
+  drainProject,
+  gcProjectDir,
+  globalSeedPath,
+  projectHash,
+  seedFilePath,
+} from "../extensions/history/store.ts";
 
 // GC/compaction (slice 6): threshold no-op below the limits, keep-newest
 // semantics, and the failure paths — the compact file lands atomically
 // before any original is removed, cleanup failures are tolerated, unreadable
 // files are skipped, and an append landing mid-compaction is never lost.
 // All fixtures live under os.tmpdir(): the user's real ~/.pi store root is
-// never touched. (Ported from the dev repo's test/history/gc.test.ts.
-// compactProjectDir stays exported for upstream parity but carries no
-// callers here — gcProjectDir with explicit thresholds is the wired and
-// tested entry point.)
+// never touched. (Ported from the dev repo's test/history/gc.test.ts;
+// gcProjectDir with explicit thresholds is the wired and tested entry
+// point.)
 
 const CWD = "/pi-history-fixtures/project-gc";
 
@@ -64,6 +70,36 @@ function compactTexts(dir: string): string[] {
     .trim()
     .split("\n")
     .map((l) => (JSON.parse(l) as { text: string }).text);
+}
+
+/** Write explicit entries (text + optional ts) with a fixed mtime. */
+function writeEntries(
+  dir: string,
+  name: string,
+  entries: Array<{ text: string; ts?: number }>,
+  mtimeMs: number,
+): string {
+  const file = path.join(dir, name);
+  fs.writeFileSync(
+    file,
+    `${entries.map((e) => JSON.stringify({ v: 1, ...e })).join("\n")}\n`,
+    "utf8",
+  );
+  fs.utimesSync(file, new Date(mtimeMs), new Date(mtimeMs));
+  return file;
+}
+
+/** Every entry text across the dir's .jsonl files (order unspecified). */
+function dirTexts(dir: string): string[] {
+  const out: string[] = [];
+  for (const f of fs.readdirSync(dir)) {
+    if (!f.endsWith(".jsonl")) continue;
+    for (const line of fs.readFileSync(path.join(dir, f), "utf8").split("\n")) {
+      if (line.trim().length === 0) continue;
+      out.push((JSON.parse(line) as { text: string }).text);
+    }
+  }
+  return out;
 }
 
 /**
@@ -182,15 +218,15 @@ test("compaction keeps the newest 10 files, merges the rest", () => {
 
 // node:test has no test.skipIf (Bun-ism): root skips via the options object.
 test(
-  "an unreadable file (chmod 000) is skipped; GC still compacts the readable tail",
+  "an unreadable file (chmod 000) is left in place; GC still compacts the readable tail",
   { skip: process.getuid?.() === 0 ? "requires non-root" : false },
   () => {
     const root = makeRoot();
     const dir = projectRoot(root);
     fs.mkdirSync(dir, { recursive: true });
-    // 3 files, keepNewest 1 -> the two oldest merge; the sealed one sits in
-    // the merged tail so its bytes hit the unreadable-skip branch (both the
-    // line-counting pass and the merge pass skip it).
+    // 3 files, keepNewest 1 -> the two oldest are merge candidates; the
+    // sealed one cannot be read, so it must be neither merged nor removed:
+    // removing bytes that were never copied would lose them.
     writeFile(dir, "readable-old.jsonl", 5, 1000);
     const sealed = writeFile(dir, "sealed-old.jsonl", 5, 2000);
     writeFile(dir, "newest.jsonl", 5, 3000);
@@ -201,10 +237,7 @@ test(
         lineThreshold: 100000,
         keepNewest: 1,
       });
-      // The merged count covers the whole tail, sealed file included.
-      assert.deepEqual(result, { compacted: true, merged: 2 });
-      // Only the readable tail file's entries compacted; the sealed bytes
-      // were skipped, never fatal. (writeFile names entries `${name}-${i}`.)
+      assert.deepEqual(result, { compacted: true, merged: 1 });
       assert.deepEqual(compactTexts(dir), [
         "readable-old.jsonl-0",
         "readable-old.jsonl-1",
@@ -212,19 +245,15 @@ test(
         "readable-old.jsonl-3",
         "readable-old.jsonl-4",
       ]);
-      // Cleanup semantics: the tail originals (sealed one included) are
-      // removed after the compact file lands — unlink needs no read access.
-      assert.equal(fs.existsSync(sealed), false);
+      assert.equal(fs.existsSync(sealed), true);
       assert.equal(fs.readdirSync(dir).includes("newest.jsonl"), true);
     } finally {
-      // The compaction removes the sealed original; restore only if it
-      // survived an early failure so cleanup never leaves a 000 file.
-      try {
-        fs.chmodSync(sealed, 0o644);
-      } catch {
-        // already removed by the compaction
-      }
+      fs.chmodSync(sealed, 0o644);
     }
+    assert.equal(
+      fs.readFileSync(sealed, "utf8").trim().split("\n").length,
+      5,
+    );
   },
 );
 
@@ -358,4 +387,292 @@ test("an append landing during compaction is never lost (active writer)", () => 
   assert.ok(!mergedTexts.some((t) => t.startsWith("t04.")));
   // Whole-dir accounting: 13 x 5 original lines + 1 mid-GC append.
   assert.equal(totalLines(dir), 66);
+});
+
+// ---------------------------------------------------------------------------
+// Adaptation hardening (PR #1394 on main): seed gate, live writers,
+// chronology, tombstones, and failure tolerance.
+// ---------------------------------------------------------------------------
+
+test("compaction never selects seed.jsonl nor touches the global seed", () => {
+  const root = makeRoot();
+  const dir = projectRoot(root);
+  fs.mkdirSync(dir, { recursive: true });
+  // The seed is the OLDEST file, so a plain oldest-tail pick would merge it
+  // and drop the bootstrap gate (an existing seed is never regenerated).
+  const seed = seedFilePath(root, CWD);
+  writeEntries(dir, "seed.jsonl", [{ text: "seeded", ts: 10 }], 500);
+  const seedBytes = fs.readFileSync(seed, "utf8");
+  const globalSeed = globalSeedPath(root);
+  fs.writeFileSync(globalSeed, `${JSON.stringify({ v: 1, text: "g" })}\n`);
+  const globalBytes = fs.readFileSync(globalSeed, "utf8");
+  for (let i = 1; i <= 4; i++) {
+    writeFile(dir, `s${i}.jsonl`, 2, i * 1000);
+  }
+  const result = gcProjectDir(root, CWD, {
+    fileThreshold: 2,
+    lineThreshold: 100000,
+    keepNewest: 1,
+  });
+  assert.deepEqual(result, { compacted: true, merged: 3 });
+  assert.equal(fs.readFileSync(seed, "utf8"), seedBytes);
+  assert.equal(fs.readFileSync(globalSeed, "utf8"), globalBytes);
+  assert.ok(!compactTexts(dir).includes("seeded"));
+});
+
+test("the current instance's own session file is never merged", () => {
+  const root = makeRoot();
+  const dir = projectRoot(root);
+  fs.mkdirSync(dir, { recursive: true });
+  // A long-lived instance whose file is the oldest in the dir.
+  const own = writeFile(dir, "own-instance.jsonl", 3, 500);
+  for (let i = 1; i <= 4; i++) {
+    writeFile(dir, `o${i}.jsonl`, 2, i * 1000);
+  }
+  const result = gcProjectDir(root, CWD, {
+    fileThreshold: 2,
+    lineThreshold: 100000,
+    keepNewest: 1,
+    keepFiles: [own],
+  });
+  assert.deepEqual(result, { compacted: true, merged: 3 });
+  assert.equal(fs.existsSync(own), true);
+  assert.ok(!compactTexts(dir).some((t) => t.startsWith("own-instance")));
+});
+
+test("an append by path to a merged file between read and removal is kept", () => {
+  const root = makeRoot();
+  const dir = projectRoot(root);
+  fs.mkdirSync(dir, { recursive: true });
+  // An idle-but-live instance: old mtime, so its file is in the merge tail.
+  const idle = writeFile(dir, "idle.jsonl", 2, 1000);
+  for (let i = 2; i <= 4; i++) {
+    writeFile(dir, `p${i}.jsonl`, 2, i * 1000);
+  }
+  let appended = false;
+  withRmSyncPatched(
+    (file, rmSync) => {
+      if (!appended) {
+        appended = true;
+        // The live writer appends by path, exactly as appendSessionCapture.
+        fs.appendFileSync(
+          idle,
+          `${JSON.stringify({ v: 1, text: "late-by-path" })}\n`,
+        );
+      }
+      rmSync(file);
+    },
+    () => {
+      const result = gcProjectDir(root, CWD, {
+        fileThreshold: 2,
+        lineThreshold: 100000,
+        keepNewest: 1,
+      });
+      assert.equal(result.compacted, true);
+    },
+  );
+  assert.equal(appended, true);
+  const texts = dirTexts(dir);
+  assert.ok(texts.includes("late-by-path"), "the late append survived");
+  assert.ok(texts.includes("idle.jsonl-0"));
+  assert.ok(texts.includes("idle.jsonl-1"));
+});
+
+test("a write through a descriptor opened before the claim is carried over", () => {
+  const root = makeRoot();
+  const dir = projectRoot(root);
+  fs.mkdirSync(dir, { recursive: true });
+  const idle = writeFile(dir, "idle.jsonl", 2, 1000);
+  for (let i = 2; i <= 4; i++) {
+    writeFile(dir, `q${i}.jsonl`, 2, i * 1000);
+  }
+  // A writer that opened the file before GC started writes after GC read it.
+  const fd = fs.openSync(idle, "a");
+  let written = false;
+  try {
+    withRmSyncPatched(
+      (file, rmSync) => {
+        if (!written) {
+          written = true;
+          fs.writeSync(
+            fd,
+            `${JSON.stringify({ v: 1, text: "late-by-fd" })}\n`,
+          );
+        }
+        rmSync(file);
+      },
+      () => {
+        gcProjectDir(root, CWD, {
+          fileThreshold: 2,
+          lineThreshold: 100000,
+          keepNewest: 1,
+        });
+      },
+    );
+  } finally {
+    fs.closeSync(fd);
+  }
+  assert.equal(written, true);
+  const texts = dirTexts(dir);
+  assert.ok(texts.includes("late-by-fd"), "the in-flight write survived");
+  assert.equal(texts.filter((t) => t.startsWith("idle.jsonl-")).length, 2);
+});
+
+test("merged output is chronological by entry ts, not by mutable mtime", () => {
+  const root = makeRoot();
+  const dir = projectRoot(root);
+  fs.mkdirSync(dir, { recursive: true });
+  // "old" holds the oldest prompts but was rewritten recently (a delete
+  // sweep bumps mtime); "mid" is genuinely newer by ts.
+  writeEntries(
+    dir,
+    "old.jsonl",
+    [
+      { text: "old-1", ts: 1000 },
+      { text: "old-2", ts: 1001 },
+    ],
+    90_000,
+  );
+  writeEntries(
+    dir,
+    "mid.jsonl",
+    [
+      { text: "mid-1", ts: 2000 },
+      { text: "mid-2", ts: 2001 },
+    ],
+    2000,
+  );
+  writeEntries(dir, "new.jsonl", [{ text: "new-1", ts: 3000 }], 3000);
+  const result = gcProjectDir(root, CWD, {
+    fileThreshold: 2,
+    lineThreshold: 100000,
+    keepNewest: 1,
+  });
+  assert.deepEqual(result, { compacted: true, merged: 2 });
+  assert.deepEqual(compactTexts(dir), ["old-1", "old-2", "mid-1", "mid-2"]);
+  assert.equal(fs.readdirSync(dir).includes("new.jsonl"), true);
+  // The drain still reads newest-first after compaction.
+  const drained = drainProject(root, CWD, 1000, root);
+  assert.equal(drained.status, "ok");
+  if (drained.status === "ok") {
+    assert.deepEqual(drained.prompts, [
+      "new-1",
+      "mid-2",
+      "mid-1",
+      "old-2",
+      "old-1",
+    ]);
+  }
+});
+
+test("compaction drops tombstoned prompts instead of copying them", () => {
+  const root = makeRoot();
+  const dir = projectRoot(root);
+  fs.mkdirSync(dir, { recursive: true });
+  writeEntries(
+    dir,
+    "a.jsonl",
+    [{ text: "keep me" }, { text: "secret   token" }],
+    1000,
+  );
+  writeEntries(dir, "b.jsonl", [{ text: "legacy hidden" }], 2000);
+  writeEntries(dir, "c.jsonl", [{ text: "newest" }], 3000);
+  assert.equal(hidePrompt(root, "secret token").status, "written");
+  // A legacy plaintext (prefix-format) tombstone stays honored too.
+  const hidden = JSON.parse(
+    fs.readFileSync(path.join(root, "hidden.json"), "utf8"),
+  ) as string[];
+  fs.writeFileSync(
+    path.join(root, "hidden.json"),
+    JSON.stringify([...hidden, "legacy hidden"]),
+  );
+  const result = gcProjectDir(root, CWD, {
+    fileThreshold: 2,
+    lineThreshold: 100000,
+    keepNewest: 1,
+  });
+  assert.equal(result.compacted, true);
+  const texts = dirTexts(dir);
+  assert.ok(texts.includes("keep me"));
+  assert.ok(!texts.includes("secret   token"));
+  assert.ok(!texts.includes("legacy hidden"));
+});
+
+test("an untrusted hidden.json blocks compaction (fail closed)", () => {
+  const root = makeRoot();
+  const dir = projectRoot(root);
+  fs.mkdirSync(dir, { recursive: true });
+  for (let i = 1; i <= 4; i++) {
+    writeFile(dir, `u${i}.jsonl`, 2, i * 1000);
+  }
+  fs.writeFileSync(path.join(root, "hidden.json"), "{corrupt", "utf8");
+  const before = fs.readdirSync(dir).sort();
+  const result = gcProjectDir(root, CWD, {
+    fileThreshold: 2,
+    lineThreshold: 100000,
+    keepNewest: 1,
+  });
+  assert.deepEqual(result, { compacted: false, merged: 0 });
+  assert.deepEqual(fs.readdirSync(dir).sort(), before);
+});
+
+test("a failed compact write is tolerated and loses nothing", () => {
+  const root = makeRoot();
+  const dir = projectRoot(root);
+  fs.mkdirSync(dir, { recursive: true });
+  for (let i = 1; i <= 4; i++) {
+    writeFile(dir, `w${i}.jsonl`, 3, i * 1000);
+  }
+  type RenameSync = (from: string, to: string) => void;
+  const target = fs as unknown as { renameSync: RenameSync };
+  const realRename = fs.renameSync.bind(fs) as RenameSync;
+  target.renameSync = (from: string, to: string) => {
+    if (path.basename(to).startsWith("compact-")) {
+      throw new Error("simulated ENOSPC");
+    }
+    realRename(from, to);
+  };
+  let result: ReturnType<typeof gcProjectDir>;
+  try {
+    result = gcProjectDir(root, CWD, {
+      fileThreshold: 2,
+      lineThreshold: 100000,
+      keepNewest: 1,
+    });
+  } finally {
+    target.renameSync = realRename;
+  }
+  assert.deepEqual(result, { compacted: false, merged: 0 });
+  assert.equal(dirTexts(dir).length, 12);
+  assert.deepEqual(
+    fs.readdirSync(dir).filter((f) => f.includes(".tmp-")),
+    [],
+  );
+});
+
+test("a torn last line in a merged file is carried over, not dropped", () => {
+  const root = makeRoot();
+  const dir = projectRoot(root);
+  fs.mkdirSync(dir, { recursive: true });
+  // A writer died mid-append: the final line has no newline yet.
+  const torn = path.join(dir, "torn.jsonl");
+  fs.writeFileSync(
+    torn,
+    `${JSON.stringify({ v: 1, text: "whole" })}\n${JSON.stringify({ v: 1, text: "torn" })}`,
+  );
+  fs.utimesSync(torn, new Date(1000), new Date(1000));
+  writeFile(dir, "r2.jsonl", 2, 2000);
+  writeFile(dir, "r3.jsonl", 2, 3000);
+  const result = gcProjectDir(root, CWD, {
+    fileThreshold: 2,
+    lineThreshold: 100000,
+    keepNewest: 1,
+  });
+  assert.deepEqual(result, { compacted: true, merged: 2 });
+  assert.equal(fs.existsSync(torn), false);
+  // Every compact line parses, and the torn entry survived.
+  const texts = compactTexts(dir);
+  assert.ok(texts.includes("whole"));
+  assert.ok(texts.includes("torn"));
+  assert.ok(texts.includes("r2.jsonl-1"));
 });

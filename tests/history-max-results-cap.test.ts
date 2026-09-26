@@ -1,15 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { filterPrompts } from "../extensions/history/selector-helpers.ts";
 
 /**
  * WU5 tests (AC-S5-1, AC-S5-2): the MAX_RESULTS raise 1000 → 10000 is an
  * OUTPUT cap only — filterPrompts caps both of its slice sites; the load
- * path never snapshots. Pure .mjs import (no pi-tui graph) plus a
- * source-parse pin on the load path (command-registration pattern).
+ * path never snapshots. Pure import (no pi-tui graph) plus a source-parse
+ * pin on the selector-helpers slice sites.
+ *
+ * The dev suite's openHistorySelector body pin (no slice() on the load
+ * path) covers the slice-3 selector wiring in extensions/history/index.ts
+ * and ports with that slice — index.ts stays at its slice-1 surface here.
  */
 
 interface CapRecord {
@@ -51,36 +55,19 @@ test("T29 (AC-S5-1): filtered-query slice caps at the raised 10000", () => {
   assert.ok(result.every((r) => r.searchText.includes("match")));
 });
 
-// T30 — AC-S5-2: output-cap-only semantics (source-parse). The load path in
-// openHistorySelector carries NO slicing call — a snapshot cap would have to
-// slice there — and selector-helpers.ts reads the constant at exactly the two
-// sanctioned filterPrompts slice sites. Expected GREEN already BEFORE the
-// WU5 wiring (the load path carries no cap today); it must STAY green after.
+// T30 — AC-S5-2: output-cap-only semantics (source-parse). Selector-helpers
+// reads the constant at exactly the two sanctioned filterPrompts slice
+// sites — no other cap exists in the helper module.
 
-const indexSource = fs.readFileSync(
-  fileURLToPath(new URL("../extensions/history/index.ts", import.meta.url)),
-  "utf8",
-);
-const pureSource = fs.readFileSync(
-  fileURLToPath(new URL("../extensions/history/selector-helpers.ts", import.meta.url)),
+const helperSource = fs.readFileSync(
+  fileURLToPath(
+    new URL("../extensions/history/selector-helpers.ts", import.meta.url),
+  ),
   "utf8",
 );
 
-function openHistorySelectorBody(): string {
-  const start = indexSource.indexOf("async function openHistorySelector(");
-  assert.ok(start >= 0, "openHistorySelector should exist");
-  const end = indexSource.indexOf("export default function", start);
-  assert.ok(end > start, "extension entry point should follow");
-  return indexSource.slice(start, end);
-}
-
-test("T30 (AC-S5-2): the load path carries no slicing call — output cap only", () => {
-  const body = openHistorySelectorBody();
-  assert.ok(
-    !body.includes("slice("),
-    "no snapshot cap in the load path: openHistorySelector must not slice records",
-  );
-  const sliceSites = pureSource.split("slice(0, MAX_RESULTS)").length - 1;
+test("T30 (AC-S5-2): filterPrompts hosts exactly the two sanctioned cap slice sites", () => {
+  const sliceSites = helperSource.split("slice(0, MAX_RESULTS)").length - 1;
   assert.equal(
     sliceSites,
     2,

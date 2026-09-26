@@ -5,8 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import { bootstrapProjectSeed, seedFilePath } from "../extensions/history/store.ts";
 
-const CWD = "/pi-history-fixtures/project-a";
-const DIR = `--pi-history-fixtures-project-a--`;
+// Fake project cwd (never created on disk): projectHash falls back to
+// raw-string hashing for nonexistent paths, and the transcript dirName
+// encoding derives from the same string.
+const CWD = "/pi-history-test/seed-regen-project";
+const DIR = "--pi-history-test-seed-regen-project--";
 
 function setup() {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "seed2-"));
@@ -61,6 +64,49 @@ test("an existing seed is never regenerated (deleted prompts stay gone)", () => 
     .split("\n")
     .map((l) => (JSON.parse(l) as { text: string }).text);
   assert.deepEqual(texts, ["keep"]);
+});
+
+test("untrusted tombstones defer seed until repaired, then suppress deleted prompts", () => {
+  const { root, sessionsRoot, stateDir } = setup();
+  writeSession(sessionsRoot, ["visible", "hidden-prompt"]);
+  fs.mkdirSync(stateDir, { recursive: true });
+  const hiddenFile = path.join(stateDir, "hidden.json");
+  fs.writeFileSync(hiddenFile, "{broken");
+  assert.deepEqual(bootstrapProjectSeed(root, CWD, sessionsRoot, 500, stateDir), {
+    seeded: 0, ran: false,
+  });
+  assert.equal(fs.existsSync(seedFilePath(root, CWD)), false);
+  fs.writeFileSync(hiddenFile, JSON.stringify(["hidden-prompt"]));
+  assert.deepEqual(bootstrapProjectSeed(root, CWD, sessionsRoot, 500, stateDir), {
+    seeded: 1, ran: true,
+  });
+  assert.deepEqual(
+    fs.readFileSync(seedFilePath(root, CWD), "utf8").trim().split("\n")
+      .map((line) => (JSON.parse(line) as { text: string }).text),
+    ["visible"],
+  );
+});
+
+test("a failed seed rename leaves no gate and retries with all prompts", () => {
+  const { root, sessionsRoot, stateDir } = setup();
+  writeSession(sessionsRoot, ["visible", "hidden-prompt"]);
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(path.join(stateDir, "hidden.json"), JSON.stringify(["hidden-prompt"]));
+  const seed = seedFilePath(root, CWD);
+  const original = fs.renameSync;
+  fs.renameSync = ((from: fs.PathLike, to: fs.PathLike) => {
+    if (to === seed) throw new Error("injected seed rename failure");
+    return original(from, to);
+  }) as typeof fs.renameSync;
+  try {
+    assert.throws(() => bootstrapProjectSeed(root, CWD, sessionsRoot, 500, stateDir), /injected/);
+    assert.equal(fs.existsSync(seed), false);
+  } finally {
+    fs.renameSync = original;
+  }
+  assert.deepEqual(bootstrapProjectSeed(root, CWD, sessionsRoot, 500, stateDir), {
+    seeded: 1, ran: true,
+  });
 });
 
 test("tombstoned prompts are not seeded from transcripts", () => {

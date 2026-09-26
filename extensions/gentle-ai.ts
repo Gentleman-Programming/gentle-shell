@@ -3493,6 +3493,16 @@ type ProfilesPanelResult =
 
 type ProfilesSnapshotHandler = (name: string) => AgentProfilesFile;
 
+/**
+ * What a panel action hands the reopened panel: a one-line status for the footer,
+ * because notifications stay hidden behind the fullscreen overlay until it closes,
+ * and the profile to select when the action created or renamed one.
+ */
+interface ProfilesPanelReport {
+	status?: string;
+	selectedName?: string;
+}
+
 const PROFILES_PANEL_MIN_BODY_ROWS = 6;
 
 type ProfilesPanelPointerLayout = AgentsViewLayout & { listTop: number };
@@ -3671,8 +3681,10 @@ class ProfilesPanel implements OverlayComponent {
 		saveSnapshot: ProfilesSnapshotHandler,
 		requestRender: () => void,
 		pinStatus: () => ProfilePinStatus | undefined,
+		feedback?: string,
 	) {
 		this.file = file;
+		this.feedback = feedback;
 		this.currentConfig = currentConfig;
 		this.done = done;
 		this.saveSnapshot = saveSnapshot;
@@ -3967,6 +3979,7 @@ async function showProfilesPanel(
 	currentConfig: AgentModelConfig,
 	selectedName: string | undefined,
 	saveSnapshot: ProfilesSnapshotHandler,
+	status?: string,
 ): Promise<ProfilesPanelResult> {
 	// Both orchestrator and pin state are snapshots for this panel visit.
 	// Actions (including p/P) reopen the panel and read fresh state.
@@ -3985,6 +3998,7 @@ async function showProfilesPanel(
 				saveSnapshot,
 				() => tui.requestRender(),
 				() => readProfilePinStatus(ctx.cwd),
+				status,
 			);
 			const container = createNativeFullscreenInteraction({
 				keyboardTarget: panel,
@@ -4087,6 +4101,7 @@ async function runProfilesPanelAction(
 	path: string,
 	file: AgentProfilesFile,
 	result: Exclude<ProfilesPanelResult, { type: "close" }>,
+	report: ProfilesPanelReport = {},
 ): Promise<AgentProfilesFile> {
 	switch (result.type) {
 		case "apply": {
@@ -4248,14 +4263,25 @@ async function runProfilesPanelAction(
 			return claimed;
 		}
 		case "create": {
-			const name = await ctx.ui.input("New profile name", "e.g. deep-work");
-			if (name === undefined) return file;
+			const answer = await ctx.ui.input("New profile name", "e.g. deep-work");
+			if (answer === undefined) {
+				report.status = "Create cancelled.";
+				return file;
+			}
+			const name = answer.trim();
+			if (name === "") {
+				report.status = "No profile created: no name entered.";
+				return file;
+			}
 			try {
-				const next = createProfile(file, name.trim(), {});
+				const next = createProfile(file, name, {});
 				writeProfilesFileSync(path, next);
+				report.status = `Profile "${name}" created.`;
+				report.selectedName = name;
 				return next;
 			} catch (error) {
-				ctx.ui.notify(`Profile not created: ${profilesErrorMessage(error)}`, "warning");
+				report.status = `Profile not created: ${profilesErrorMessage(error)}`;
+				ctx.ui.notify(report.status, "warning");
 				return file;
 			}
 		}
@@ -4282,36 +4308,57 @@ async function runProfilesPanelAction(
 			}
 		}
 		case "duplicate": {
-			const name = await ctx.ui.input(`Duplicate profile "${result.name}" as`, `${result.name}-copy`);
-			if (name === undefined) return file;
+			// The Pi host starts the field empty and ignores the placeholder, so the title
+			// names the suggestion and Enter on an untouched field accepts it.
+			const suggested = `${result.name}-copy`;
+			const answer = await ctx.ui.input(`Duplicate profile "${result.name}" as (empty = ${suggested})`, suggested);
+			if (answer === undefined) {
+				report.status = "Duplicate cancelled.";
+				return file;
+			}
+			const name = answer.trim() || suggested;
 			try {
-				const next = duplicateProfile(file, result.name, name.trim());
+				const next = duplicateProfile(file, result.name, name);
 				writeProfilesFileSync(path, next);
+				report.status = `Profile "${result.name}" duplicated as "${name}".`;
+				report.selectedName = name;
 				return next;
 			} catch (error) {
-				ctx.ui.notify(`Profile not duplicated: ${profilesErrorMessage(error)}`, "warning");
+				report.status = `Profile not duplicated: ${profilesErrorMessage(error)}`;
+				ctx.ui.notify(report.status, "warning");
 				return file;
 			}
 		}
 		case "rename": {
-			const name = await ctx.ui.input(`Rename profile "${result.name}" to`, result.name);
-			if (name === undefined) return file;
+			const answer = await ctx.ui.input(`Rename profile "${result.name}" to (empty = keep ${result.name})`, result.name);
+			if (answer === undefined) {
+				report.status = "Rename cancelled.";
+				return file;
+			}
+			const name = answer.trim();
+			if (name === "") {
+				report.status = `Profile "${result.name}" unchanged: no new name entered.`;
+				return file;
+			}
 			try {
-				const next = renameProfile(file, result.name, name.trim());
+				const next = renameProfile(file, result.name, name);
 				writeProfilesFileSync(path, next);
 				// A pin stores a name, so a rename that did not follow it would leave every
 				// pinned repository with a name the store no longer defines, which silently
 				// returns those repositories to the global routing.
-				const follow = followRenamedPin(ctx.cwd, result.name, name.trim());
+				const follow = followRenamedPin(ctx.cwd, result.name, name);
 				ctx.ui.notify(
-					`el Gentleman renamed profile "${result.name}" to "${name.trim()}".` +
+					`el Gentleman renamed profile "${result.name}" to "${name}".` +
 						(follow.followed.length > 0 ? `\nUpdated the clone pin: ${follow.followed.map((entry) => sanitizeTerminalText(entry)).join(", ")}.` : "") +
-						(follow.stillDeclared.length > 0 ? `\nThe committed repository declaration ${follow.stillDeclared.map((entry) => sanitizeTerminalText(entry)).join(", ")} still names "${result.name}"; press P on "${name.trim()}" to republish it.` : ""),
+						(follow.stillDeclared.length > 0 ? `\nThe committed repository declaration ${follow.stillDeclared.map((entry) => sanitizeTerminalText(entry)).join(", ")} still names "${result.name}"; press P on "${name}" to republish it.` : ""),
 					"info",
 				);
+				report.status = `Profile "${result.name}" renamed to "${name}".`;
+				report.selectedName = name;
 				return next;
 			} catch (error) {
-				ctx.ui.notify(`Profile not renamed: ${profilesErrorMessage(error)}`, "warning");
+				report.status = `Profile not renamed: ${profilesErrorMessage(error)}`;
+				ctx.ui.notify(report.status, "warning");
 				return file;
 			}
 		}
@@ -4524,14 +4571,16 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): 
 		saveSnapshot,
 	);
 	while (result.type !== "close") {
-		selectedName = "name" in result ? result.name : undefined;
-		file = await runProfilesPanelAction(ctx, live, path, file, result);
+		const report: ProfilesPanelReport = {};
+		file = await runProfilesPanelAction(ctx, live, path, file, result, report);
+		selectedName = report.selectedName ?? ("name" in result ? result.name : undefined);
 		result = await showProfilesPanel(
 			ctx,
 			file,
 			await readEffectiveModelConfigAsync(ctx.cwd),
 			selectedName,
 			saveSnapshot,
+			report.status,
 		);
 	}
 }

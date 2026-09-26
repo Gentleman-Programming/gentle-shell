@@ -1,6 +1,6 @@
 # Orchestrator — Memory Detail (lazy-loaded)
 
-Bind this to the parent Pi session only, on organic progress/recovery or SDD phase memory reads/writes. Not always-on; loaded on demand from `assets/orchestrator.md`'s `## Memory Contract` pointer.
+Bind this to the parent Pi session only, on organic progress/recovery. Not always-on; loaded on demand from `assets/orchestrator.md`'s `## Memory Contract` pointer.
 
 ### Organic feature continuity
 
@@ -15,27 +15,6 @@ On resume, use `mem_context`, then project/feature-scoped `mem_search`, and `mem
 Before implementation or resume, the parent reads both the actual file and full observation, reconciles them, and passes the locator and relevant context; workers read the document before edits. Small work without a document still receives its authorized scope and checks.
 
 The existing `todo` tool is the required session/UI projection for substantial ODD, not a third authority. After reconciling and writing the durable file and Engram copy, create or rebuild the visible `todo` list from the same feature tasks before the first source write; after every task transition and material plan change, update both durable copies and the visible projection in the same turn; its replay or completed-list clearing must not delete or replace the durable file or Engram copy. If the projection is unavailable, record that limitation without pretending it is synchronized. Small/read-only work does not acquire an ODD artifact or todo list merely because the UI can display tasks.
-
-### SDD phases
-
-Except for output-only `sdd-research`, each SDD phase subagent reads its own required inputs directly from the active backend; the parent passes artifact references (topic keys or file paths), NOT the content itself. Phase subagents persist their artifact before returning.
-
-| Phase          | Reads                                                   | Writes           |
-| -------------- | ------------------------------------------------------- | ---------------- |
-| `sdd-explore`  | nothing                                                 | `explore`        |
-| `sdd-research` | parent-supplied context (when available)                 | inline findings; parent may persist |
-| `sdd-proposal` | exploration (optional)                                  | `proposal`       |
-| `sdd-spec`     | proposal (required)                                     | `spec`           |
-| `sdd-design`   | proposal (required)                                     | `design`         |
-| `sdd-tasks`    | spec + design (required)                                | `tasks`          |
-| `sdd-apply`    | tasks + spec + design + `apply-progress` (if it exists) | `apply-progress` |
-| `sdd-verify`   | spec + tasks + `apply-progress`                         | `verify-report`  |
-| `sdd-archive`  | all artifacts                                           | `archive-report` |
-| `sdd-status`   | change artifacts (read-only)                            | nothing          |
-
-- SDD artifact keys: in memory/hybrid mode, phase artifacts use stable topic keys such as `sdd/<change>/proposal`, `sdd/<change>/spec`, `sdd/<change>/design`, `sdd/<change>/tasks`, `sdd/<change>/apply-progress`, `sdd/<change>/verify-report`, `sdd/<change>/archive-report`.
-- Research is output-only. The parent may persist useful findings at `sdd/<change>/research` or `openspec/changes/<change>/research.md` through actual authorized tools and read back claimed output. Historical pre-proposal records remain readable but are not prerequisites or readiness authority.
-- If memory tools are unavailable, do not pretend persistence exists and do not switch the selected store. Return useful artifacts inline with the persistence limitation; write OpenSpec files only when that backend was already selected and authorized. In hybrid mode, report each backend's actual outcome rather than presenting a one-sided write as complete persistence.
 
 Memory lifecycle rule (when Engram exposes lifecycle metadata/tooling):
 

@@ -83,7 +83,6 @@ function addWorktree(t: test.TestContext, cwd: string, branch: string): string {
 function fakeNative(overrides: Partial<NativeReviewCli> = {}): NativeReviewCli {
 	return {
 		start: async () => ({ lineageId: "native-lineage", state: "reviewing", riskLevel: "medium", selectedLenses: ["review-reliability"], changedFiles: 2, changedLines: 7, correctionBudget: 4, action: "created", lensesRequired: true }),
-		sddStatus: async () => ({ ready: false }),
 		reviewStatus: async () => ({ schema: "gentle-ai.review-authority-status/v1", repository: "/repo", complete: true, authoritative: true, status: "clean", entries: [], locks: [], diagnostics: [], raw: { schema: "gentle-ai.review-authority-status/v1", operation: "review/status", repository: "/repo", complete: true, authoritative: true, status: "clean", entries: [], locks: [], diagnostics: [] } }),
 		targetStatus: async (request) => request.lineageId === undefined
 			? candidateStartTargetStatus(request)

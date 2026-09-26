@@ -41,7 +41,7 @@ Route ODD work through the smallest safe harness:
 1. **Inline Direct** — small, mechanical, parent has context (typo, one-file edit, read-only check of 1-3 known files, bash for state); stop when it is no longer small.
 2. **Simple Delegation** — exploration → `gentle-ai-explore`; bounded implementation → `gentle-ai-worker`; command-running verification → `gentle-ai-verify`. Try its package role; if missing/unusable, use native `Agent` under the same read-only mapping/verification constraints and report fallback.
 
-ODD (Default Workflow, harness section above) is mandatory on every request; detail: `orchestrator-delegation.md`, `orchestrator-memory.md`.
+ODD (Default Workflow, harness section above) is mandatory on every request; detail: `orchestrator-delegation.md`, `orchestrator-memory.md`. For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observed RED, GREEN, then refactor with checks. For passive documentation, non-testable changes, an unavailable runner or no meaningful RED, state why and run proportionate ordinary functional or structural verification instead. Test presence alone is not applicability; no chat or TUI toggle activates this policy.
 
 ## Delegation Rules
 

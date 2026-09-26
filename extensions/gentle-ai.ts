@@ -1,4 +1,5 @@
 import { consumeReviewMutation, pendingReviewMutation, recordReviewMutation } from "../lib/review-reminder-receipt.ts";
+import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { declareReviewRelayHandshake } from "../lib/review-relay-contract.ts";
 import { execFileSync } from "node:child_process";
@@ -29,7 +30,7 @@ import type {
 	ThemeColor,
 	ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
-import { Key, isKeyRelease, matchesKey, truncateToWidth, type KeybindingsManager, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { Key, Text, isKeyRelease, matchesKey, truncateToWidth, type KeybindingsManager, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { resolveGentlePiAgentHome, gentlePiConfigHome } from "../lib/agent-home.ts";
 import {
 	BACKGROUND_SUBAGENTS_FILE,
@@ -144,6 +145,7 @@ import {
 	type ReviewMode,
 	type ReviewProjectionV1,
 } from "../lib/review-snapshot.ts";
+import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
 import { renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
 import { sanitizeTerminalText, stripAnsi } from "../lib/terminal-theme.ts";
 import { BASE_REF_ACCEPTED_FORMS, CandidateViewError, CandidateViewRegistry, injectReviewCandidateView, readCandidateContextManifestPage, resolveCanonicalCandidateBase, type CandidateView } from "../lib/review-candidate-view.ts";
@@ -1248,7 +1250,7 @@ Organic Driven Development (ODD) is the predefined workflow of this orchestrator
 3. **Resolve uncertainty.** Recommend optional research only for a named uncertainty; ask one focused user question only for a real unresolved product decision, then stop and wait; use at most one scoped read-only assumption challenge for a high-consequence unproven premise.
 4. **Classify.** The work is substantial when exploration yields two or more meaningful implementation steps, or progress worth recovering after an interruption. Small, understood work stays small and creates no durable task artifacts.
 5. **Track before the first write.** For substantial authorized implementation, create \`odd/tasks/<feature-name>.md\` and its Engram mirror \`odd/<feature-name>/tasks\` automatically, then create or rebuild the visible \`todo\` list from the reconciled feature tasks, all before the first source write and without asking permission for tasks or storage. Tell the user in one line which feature document was created and how many tasks it holds.
-6. **Implement task by task.** Route each task through the orchestrator's Work Routing Ladder, honoring its mandatory delegation triggers, with the configured TDD mode and applicable checks. These triggers are mandatory, not advisory: executing past a fired trigger inline is a routing defect even if the work succeeds. Check an item off only after its outcome and checks were observed; update the file, mirror, and visible \`todo\` projection after every task transition and material plan change. Every task closes with at least one work-unit commit on the feature branch, branch first when on the default branch, with tests and docs alongside the behavior, using a Conventional Commit message; record the commit identity in the feature document as evidence. Work-unit commits on the feature branch are part of authorized substantial ODD implementation; push, pull request creation, and merge remain the user's decisions.
+6. **Implement task by task.** Route each task through the orchestrator's Work Routing Ladder, honoring its mandatory delegation triggers, with applicable test-first development and checks. These triggers are mandatory, not advisory: executing past a fired trigger inline is a routing defect even if the work succeeds. Check an item off only after its outcome and checks were observed; update the file, mirror, and visible \`todo\` projection after every task transition and material plan change. Every task closes with at least one work-unit commit on the feature branch, branch first when on the default branch, with tests and docs alongside the behavior, using a Conventional Commit message; record the commit identity in the feature document as evidence. Work-unit commits on the feature branch are part of authorized substantial ODD implementation; push, pull request creation, and merge remain the user's decisions.
 7. **Close.** Report the verified outcome, every failed, skipped, or pending check, and the next step. The native review candidate is a work-unit commit or a PR slice, never a TODO checkbox and never the accumulated feature branch; native review runs only under the user-owned RDD switch.
 Resume an interrupted feature with \`mem_context\`, then project- and feature-scoped \`mem_search\`, then \`mem_get_observation\` for the full document, then the task file itself; reconcile before continuing the next unfinished task. Detail for steps 3–7: \`orchestrator-delegation.md\` and \`orchestrator-memory.md\`.
 
@@ -1258,7 +1260,7 @@ Harness principles:
 - Clarify scope, constraints, acceptance criteria, and non-goals before implementation.
 - Use subagents when available for exploration, planning, implementation, and review, while keeping one parent session responsible for orchestration.
 - Keep writes single-threaded unless the user explicitly approves parallel write isolation.
-- Use configured TDD mode, source, and exact runner; test presence does not enable it. Follow orchestrator-delegation.md for ODD forwarding and evidence.
+- For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks. Test presence alone does not establish applicability; no chat or TUI toggle activates it. For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, explain why and run proportionate ordinary functional or structural verification. Never invent lifecycle evidence or skip checks. Follow orchestrator-delegation.md for ODD forwarding and evidence.
 - Protect the human reviewer: avoid oversized changes, surface review workload risk, and ask before turning one task into a large multi-area change.
 - Never claim persistent memory is available because of this package. Memory is provided by separate packages or MCP tools when installed and callable.
 
@@ -1588,7 +1590,11 @@ const MODEL_PANEL_MAX_RENDER_ROWS = 20;
 // Rows the agent list does not own: two borders, title, current-profile line,
 // blank, "Current assignments:", blank, both scroll indicators, blank, Continue,
 // Back, blank, and the two footer rows.
-const AGENT_LIST_MAX_VISIBLE_ROWS = MODEL_PANEL_MAX_RENDER_ROWS - 15;
+const AGENT_LIST_CHROME_ROWS = 15;
+const AGENT_LIST_MAX_VISIBLE_ROWS = MODEL_PANEL_MAX_RENDER_ROWS - AGENT_LIST_CHROME_ROWS;
+// Rows the model list does not own: two borders, title, blank, search, blank,
+// blank, and the footer row.
+const MODEL_LIST_CHROME_ROWS = 8;
 const MODEL_LIST_MAX_VISIBLE_ROWS = 12;
 
 function readStringPath(value: unknown, path: string[]): string | undefined {
@@ -2739,6 +2745,8 @@ class SddModelPanel implements OverlayComponent {
 	private readonly theme: Theme | undefined;
 	// The profile `u` writes to, named up front so the key never targets a surprise.
 	private readonly profileLabel: string;
+	// Terminal rows, so the card fills the fullscreen overlay like `/gentle:profiles`.
+	private readonly terminalRows: (() => number) | undefined;
 
 	constructor(
 		initialConfig: AgentModelConfig,
@@ -2747,6 +2755,7 @@ class SddModelPanel implements OverlayComponent {
 		done: (result: ModelPanelResult) => void,
 		theme?: Theme,
 		profileLabel = "none",
+		terminalRows?: () => number,
 	) {
 		this.draft = cloneModelConfig(initialConfig);
 		this.rows = [SET_ALL_AGENTS, ...agents];
@@ -2754,6 +2763,7 @@ class SddModelPanel implements OverlayComponent {
 		this.done = done;
 		this.theme = theme;
 		this.profileLabel = profileLabel;
+		this.terminalRows = terminalRows;
 	}
 
 	invalidate(): void {}
@@ -2781,10 +2791,22 @@ class SddModelPanel implements OverlayComponent {
 		return this.renderCard(lines, width);
 	}
 
-	private renderCard(lines: string[], width: number): string[] {
+	// In the fullscreen overlay a list owns every row its chrome leaves free;
+	// without a terminal height it keeps the fixed window.
+	private visibleListRows(fixedRows: number, chromeRows: number): number {
+		if (!this.terminalRows) return fixedRows;
+		return Math.max(1, Math.floor(this.terminalRows()) - chromeRows);
+	}
+
+	private renderCard(body: string[], width: number): string[] {
+		let lines = body;
 		const innerWidth = Math.max(1, width - 4);
 		const horizontal = "─".repeat(innerWidth + 2);
 		const border = (text: string) => this.renderText(text, "border");
+		const bodyRows = this.terminalRows ? Math.floor(this.terminalRows()) - 2 : 0;
+		if (lines.length < bodyRows) {
+			lines = [...lines, ...Array<string>(bodyRows - lines.length).fill("")];
+		}
 		return [
 			border(`╭${horizontal}╮`),
 			...lines.map(
@@ -3016,7 +3038,10 @@ class SddModelPanel implements OverlayComponent {
 		lines.push("");
 		lines.push(line("Current assignments:", "muted"));
 		lines.push("");
-		const visibleRows = Math.min(AGENT_LIST_MAX_VISIBLE_ROWS, this.rows.length);
+		const visibleRows = Math.min(
+			this.visibleListRows(AGENT_LIST_MAX_VISIBLE_ROWS, AGENT_LIST_CHROME_ROWS),
+			this.rows.length,
+		);
 		const listCursor = Math.min(this.cursor, this.rows.length - 1);
 		const start = Math.max(
 			0,
@@ -3082,14 +3107,15 @@ class SddModelPanel implements OverlayComponent {
 			`${this.renderText("◎", "accent")} ${this.renderText(this.query || "search...", "muted")}`,
 		);
 		lines.push("");
+		const visibleRows = this.visibleListRows(MODEL_LIST_MAX_VISIBLE_ROWS, MODEL_LIST_CHROME_ROWS);
 		const start = Math.max(
 			0,
 			Math.min(
-				this.modelCursor - Math.floor(MODEL_LIST_MAX_VISIBLE_ROWS / 2),
-				Math.max(0, options.length - MODEL_LIST_MAX_VISIBLE_ROWS),
+				this.modelCursor - Math.floor(visibleRows / 2),
+				Math.max(0, options.length - visibleRows),
 			),
 		);
-		const end = Math.min(options.length, start + MODEL_LIST_MAX_VISIBLE_ROWS);
+		const end = Math.min(options.length, start + visibleRows);
 		for (let i = start; i < end; i++) {
 			const focused = i === this.modelCursor;
 			lines.push(
@@ -3197,10 +3223,20 @@ function renderSddModelPanelForTesting(
 	agents: string[],
 	width: number,
 	theme?: Theme,
+	terminalRows?: number,
+	inputs: string[] = [],
 ): string[] {
-	return new SddModelPanel(initialConfig, modelOptions, agents, () => {}, theme).render(
-		width,
+	const panel = new SddModelPanel(
+		initialConfig,
+		modelOptions,
+		agents,
+		() => {},
+		theme,
+		undefined,
+		terminalRows === undefined ? undefined : () => terminalRows,
 	);
+	for (const data of inputs) panel.handleInput(data);
+	return panel.render(width);
 }
 
 async function showSddModelPanel(
@@ -3211,15 +3247,18 @@ async function showSddModelPanel(
 	const modelOptions = await getPiModelOptions(ctx);
 	const agents = modelAssignmentNames(ctx.cwd);
 	return ctx.ui.custom<ModelPanelResult>(
-		(_tui, theme, _keybindings, done) =>
-			new SddModelPanel(config, modelOptions, agents, done, theme, profileLabel),
+		(tui, theme, _keybindings, done) =>
+			new SddModelPanel(config, modelOptions, agents, done, theme, profileLabel, () =>
+				Math.max(0, tui.terminal.rows),
+			),
 		{
 			overlay: true,
+			// Same fullscreen dimensions as the `/gentle:profiles` panel.
 			overlayOptions: {
 				anchor: "center",
-				width: "70%",
-				minWidth: 72,
-				maxHeight: "85%",
+				width: "100%",
+				maxHeight: "100%",
+				margin: 0,
 			},
 		},
 	);
@@ -5581,11 +5620,20 @@ interface RetainedNativeUntrackedSelection {
 interface RetainedPreLineageNativeUntrackedSelection extends RetainedNativeUntrackedSelection {
 	readonly targetIdentity: string;
 	readonly candidateTree: string;
+	// gentle-pi#1192: only set when the inspect that produced this entry was a
+	// committed-range inspect, so a later plain START can replay the same
+	// selector instead of silently falling back to the workspace-diff range.
+	readonly baseRef?: string;
+	readonly committedOnly?: true;
 }
 
 interface RetainedNativeCaptureRoute { readonly workspaceRoot: string; readonly lineageId: string; readonly baseRef?: string; readonly committedOnly?: true; }
 
-type RetainedNativeStatusSelection = RetainedNativeUntrackedSelection | RetainedNativeCaptureRoute;
+// An inspect that stops before submission has no resolved untracked selection
+// yet. Keep only its selector, bound to the exact provider collect input.
+interface RetainedNativeUntrackedStopSelector { readonly selectionBinding: string; readonly targetIdentity: string; readonly baseRef: string; readonly committedOnly: true; }
+
+type RetainedNativeStatusSelection = RetainedNativeUntrackedSelection | RetainedNativeCaptureRoute | RetainedNativeUntrackedStopSelector;
 
 const MAX_RETAINED_NATIVE_STATUS_SELECTIONS = 64;
 class NativeCaptureRouteRegistrationError extends Error {}
@@ -6336,7 +6384,7 @@ function retainNativeUntrackedSelection(selections: Map<string, RetainedNativeSt
 
 function readRetainedNativeUntrackedSelection(selections: Map<string, RetainedNativeStatusSelection>, workspaceRoot: string, lineageId: string): NativeStartUntrackedSelection {
 	const selection = selections.get(reviewLifecycleStorageKey(workspaceRoot, lineageId));
-	return selection === undefined || "baseRef" in selection
+	return selection === undefined || "baseRef" in selection || "selectionBinding" in selection
 		? {}
 		: {
 			untrackedScope: selection.untrackedScope,
@@ -6362,8 +6410,12 @@ function readRetainedPreLineageNativeUntrackedSelection(
 	workspaceRoot: string,
 ): RetainedPreLineageNativeUntrackedSelection | undefined {
 	const selection = selections.get(reviewLifecycleStorageKey(workspaceRoot, ""));
+	// gentle-pi#1192: this entry may now carry its own optional baseRef, so the
+	// discriminant against RetainedNativeCaptureRoute (a distinct key namespace
+	// that always carries workspaceRoot/lineageId) can no longer be "no baseRef".
 	return selection !== undefined &&
-		!("baseRef" in selection) &&
+		!isRetainedNativeCaptureRoute(selection) &&
+		!("selectionBinding" in selection) &&
 		typeof (selection as Partial<RetainedPreLineageNativeUntrackedSelection>).targetIdentity === "string" &&
 		typeof (selection as Partial<RetainedPreLineageNativeUntrackedSelection>).candidateTree === "string"
 		? selection as RetainedPreLineageNativeUntrackedSelection
@@ -7629,6 +7681,9 @@ async function executeReviewControllerOperation(
 					undefined,
 				);
 				if (parameters.untrackedScope === undefined) {
+					if (canonicalBaseRef !== undefined && typeof plainMapped.selectionBinding === "string") {
+						retainNativeStatusSelection(retainedUntrackedSelections, reviewLifecycleStorageKey(defaultCwd, ""), Object.freeze({ selectionBinding: plainMapped.selectionBinding, targetIdentity: status.targetIdentity, baseRef: canonicalBaseRef, committedOnly: true as const }));
+					}
 					// gentle-pi#706: the stop alone never tells the caller what to do next.
 					return {
 						...plainMapped,
@@ -7715,6 +7770,10 @@ async function executeReviewControllerOperation(
 							intendedUntracked: Object.freeze([...selected.intendedUntracked!]),
 							submission,
 							...candidateIdentity,
+							// gentle-pi#1192: remember the committed-range selector this
+							// inspect used, so a later plain START replays it instead of
+							// recomputing an unrelated workspace-diff candidate.
+							...(canonicalBaseRef === undefined ? {} : { baseRef: canonicalBaseRef, committedOnly: true as const }),
 						}),
 					);
 				}
@@ -8084,9 +8143,13 @@ async function executeReviewControllerOperation(
 	if (parameters.operation === REVIEW_CONTROLLER_OPERATION.SELECT_INTENDED_UNTRACKED) {
 		if (nativeReviewCli?.targetStatus === undefined || nativeReviewCli.start === undefined) return nativeStatusUnsupported(parameters.operation);
 		const canonicalBinding = parseCanonicalReviewCaptureBinding(parameters.selectionBinding!);
+		const retainedStop = retainedUntrackedSelections.get(reviewLifecycleStorageKey(defaultCwd, ""));
+		const stopSelector = retainedStop !== undefined && "selectionBinding" in retainedStop ? retainedStop : undefined;
+		if (stopSelector !== undefined && stopSelector.selectionBinding !== canonicalBinding) return { operation: parameters.operation, status: "blocked", outcome: "intended-untracked-selection-binding-rejected", mutation_performed: false, mutation_outcome: "none" };
+		const committedSelector = stopSelector === undefined ? {} : { baseRef: stopSelector.baseRef, committedOnly: true as const };
 		let status: ReviewStatusV3;
 		try {
-			const negotiated = await negotiatedStatusForHostTransport(nativeReviewCli, { cwd: defaultCwd, ...(signal === undefined ? {} : { signal }) }, retainedUntrackedSelections, defaultCwd);
+			const negotiated = await negotiatedStatusForHostTransport(nativeReviewCli, { cwd: defaultCwd, ...committedSelector, ...(signal === undefined ? {} : { signal }) }, retainedUntrackedSelections, defaultCwd);
 			if (negotiated.transport !== undefined) return hostTransportUnavailable(parameters.operation, negotiated.transport);
 			status = negotiated.status!;
 		} catch (error) { return nativeStatusFailed(parameters.operation, error); }
@@ -8095,10 +8158,10 @@ async function executeReviewControllerOperation(
 		try { eligible = JSON.parse(eligibleJson ?? ""); } catch { eligible = undefined; }
 		const scope = parameters.intendedUntracked!.length === 0 ? NATIVE_START_UNTRACKED_SCOPE.EXCLUDE : NATIVE_START_UNTRACKED_SCOPE.SELECT;
 		const selected = validateNativeStartUntrackedSelection({ untrackedScope: scope, expectedUntrackedInventory: inventory, intendedUntracked: parameters.intendedUntracked });
-		const rejected = input === undefined || canonicalReviewCaptureBinding(input) !== canonicalBinding || exactCollectArgument(input, "target_identity") !== status.targetIdentity || exactCollectArgument(input, "projection") !== status.projection.projection || exactCollectArgument(input, "base_tree") !== status.projection.baseTree || exactCollectArgument(input, "candidate_tree") !== status.projection.currentCandidateTree || !Array.isArray(eligible) || selected.reason !== undefined || selected.intendedUntracked!.some((path) => !eligible.includes(path));
+		const rejected = (stopSelector !== undefined && stopSelector.targetIdentity !== status.targetIdentity) || input === undefined || canonicalReviewCaptureBinding(input) !== canonicalBinding || exactCollectArgument(input, "target_identity") !== status.targetIdentity || exactCollectArgument(input, "projection") !== status.projection.projection || exactCollectArgument(input, "base_tree") !== status.projection.baseTree || exactCollectArgument(input, "candidate_tree") !== status.projection.currentCandidateTree || !Array.isArray(eligible) || selected.reason !== undefined || selected.intendedUntracked!.some((path) => !eligible.includes(path));
 		if (rejected) return { operation: parameters.operation, status: "blocked", outcome: "intended-untracked-selection-binding-rejected", mutation_performed: false, mutation_outcome: "none" };
 		const submission = { argumentTokens: input.submission!.argumentTokens, value: JSON.stringify({ schema: "gentle-ai.review-intended-untracked-selection/v1", untracked_scope: scope, expected_untracked_inventory: inventory, intended_untracked: selected.intendedUntracked }) };
-		const result = await executeReviewControllerOperation({ operation: REVIEW_CONTROLLER_OPERATION.START, ...(parameters.workspaceRoot === undefined ? {} : { workspaceRoot: parameters.workspaceRoot }), input: JSON.stringify({ mode: REVIEW_MODE.ORDINARY, untrackedScope: scope, expectedUntrackedInventory: inventory, intendedUntracked: selected.intendedUntracked }) }, sessionCwd, nativeReviewCli, signal, candidateViews, context, retainedUntrackedSelections, pendingReviewConsentRegistry, pendingReviewConsentFallbackKey, reviewConsentNow, reviewConsentScheduleTimer, submission);
+		const result = await executeReviewControllerOperation({ operation: REVIEW_CONTROLLER_OPERATION.START, ...(parameters.workspaceRoot === undefined ? {} : { workspaceRoot: parameters.workspaceRoot }), input: JSON.stringify({ mode: REVIEW_MODE.ORDINARY, ...committedSelector, untrackedScope: scope, expectedUntrackedInventory: inventory, intendedUntracked: selected.intendedUntracked }) }, sessionCwd, nativeReviewCli, signal, candidateViews, context, retainedUntrackedSelections, pendingReviewConsentRegistry, pendingReviewConsentFallbackKey, reviewConsentNow, reviewConsentScheduleTimer, submission);
 		return { ...result, operation: parameters.operation };
 	}
 	if (parameters.operation === REVIEW_CONTROLLER_OPERATION.START) {
@@ -8127,7 +8190,7 @@ async function executeReviewControllerOperation(
 			// gentle-pi#706: a plain START adopts the selection an inspect
 			// untrackedScope round trip retained pre-lineage; explicit input or a
 			// carried submission always wins over the retained entry.
-			const retainedPreLineageSelection =
+			const rawRetainedPreLineageSelection =
 				explicitUntrackedSelection.untrackedScope === undefined &&
 				intendedUntrackedSelection === undefined
 					? readRetainedPreLineageNativeUntrackedSelection(
@@ -8135,6 +8198,31 @@ async function executeReviewControllerOperation(
 							defaultCwd,
 						)
 					: undefined;
+			let canonicalBaseRef: string | undefined;
+			if (baseRef !== undefined) {
+				try {
+					canonicalBaseRef = resolveCanonicalCandidateBase(defaultCwd, baseRef).commit;
+				} catch (error) {
+					if (error instanceof CandidateViewError && error.diagnostics !== undefined) return nativeOperationFailure(parameters.operation, Object.assign(error, { candidateViewPreNative: true }));
+					if (error instanceof CandidateViewError && (error.reason === "base-ref-ambiguous" || error.reason === "base-ref-unresolvable" || error.reason === "base-ref-moved")) return nativeStartRejection(error.reason);
+					return nativeStartRejection("base-ref-unresolvable");
+				}
+			}
+			// gentle-pi#1192: an explicit baseRef always wins over a conflicting
+			// retained one (same precedent as explicit untrackedScope/submission
+			// above); drop the retained entry from *this* START rather than reject
+			// outright, so a differently-scoped explicit START still proceeds. Any
+			// STATUS/START this call still runs against the "" key clears it below
+			// on success regardless (gentle-pi#706), same as any other START.
+			const retainedBaseRefConflicts =
+				canonicalBaseRef !== undefined &&
+				rawRetainedPreLineageSelection?.baseRef !== undefined &&
+				rawRetainedPreLineageSelection.baseRef !== canonicalBaseRef;
+			const retainedPreLineageSelection = retainedBaseRefConflicts ? undefined : rawRetainedPreLineageSelection;
+			// A plain START (no explicit baseRef) adopts the retained committed-range
+			// selector verbatim; it was already canonicalized when the inspect stored
+			// it, so no second resolveCanonicalCandidateBase round trip is needed.
+			if (canonicalBaseRef === undefined && retainedPreLineageSelection?.baseRef !== undefined) canonicalBaseRef = retainedPreLineageSelection.baseRef;
 			const untrackedSelection: NativeStartUntrackedSelection =
 				retainedPreLineageSelection === undefined
 					? explicitUntrackedSelection
@@ -8146,19 +8234,20 @@ async function executeReviewControllerOperation(
 						};
 			const untrackedSubmission =
 				intendedUntrackedSelection ?? retainedPreLineageSelection?.submission;
-			const retainedUntrackedSelection =
-				retainedPreLineageSelection ??
-				cloneRetainedNativeUntrackedSelection(explicitUntrackedSelection);
-			let canonicalBaseRef: string | undefined;
-			if (baseRef !== undefined) {
-				try {
-					canonicalBaseRef = resolveCanonicalCandidateBase(defaultCwd, baseRef).commit;
-				} catch (error) {
-					if (error instanceof CandidateViewError && error.diagnostics !== undefined) return nativeOperationFailure(parameters.operation, Object.assign(error, { candidateViewPreNative: true }));
-					if (error instanceof CandidateViewError && (error.reason === "base-ref-ambiguous" || error.reason === "base-ref-unresolvable" || error.reason === "base-ref-moved")) return nativeStartRejection(error.reason);
-					return nativeStartRejection("base-ref-unresolvable");
-				}
-			}
+			// The stored value must stay a plain RetainedNativeUntrackedSelection
+			// (no baseRef/targetIdentity/candidateTree): it is re-keyed under the
+			// lineage-scoped entry below, and readRetainedNativeUntrackedSelection
+			// discriminates that entry from a RetainedNativeCaptureRoute by the
+			// absence of a baseRef field.
+			const retainedUntrackedSelection: RetainedNativeUntrackedSelection | undefined =
+				retainedPreLineageSelection === undefined
+					? cloneRetainedNativeUntrackedSelection(explicitUntrackedSelection)
+					: Object.freeze({
+							untrackedScope: retainedPreLineageSelection.untrackedScope,
+							expectedUntrackedInventory: retainedPreLineageSelection.expectedUntrackedInventory,
+							intendedUntracked: retainedPreLineageSelection.intendedUntracked,
+							...(retainedPreLineageSelection.submission === undefined ? {} : { submission: retainedPreLineageSelection.submission }),
+						});
 			try {
 				const gated = await resolveReviewModeGate(nativeReviewCli, parameters.operation, defaultCwd, signal);
 				if (gated !== undefined) return gated;
@@ -8644,6 +8733,81 @@ function createGentleAiExtensionForTesting(
 		processAgentEndSubagentDepth.delete(sessionKey);
 	});
 
+	// gentle-pi ODD input phase labels: a small, explicit, bounded ODD phase
+	// signal for the Gentle prompt's working label. There is no Pi runtime
+	// event for ODD phases, so this is reported by the orchestrator only, at
+	// ODD protocol transitions -- never inferred from tool use or prose. It is
+	// session-scoped in lib/odd-phase.ts: a background/child agent runs as its
+	// own OS process with its own module state, so it can never see or
+	// override the primary session's reported phase.
+	const hiddenOddPhaseToolComponent = { render: (_width: number): string[] => [], invalidate() {} };
+	pi.registerTool({
+		name: "gentle_odd_phase",
+		renderShell: "self",
+		label: "Gentle ODD Phase",
+		description: "Report the primary session's current ODD phase for the Gentle prompt's working label. Best-effort UI only; never a source of truth for orchestration logic.",
+		promptSnippet: "Report authorizing/exploring/researching/deciding/planning/implementing/checking/closing only at real ODD phase transitions of the primary turn; never poll or report per tool call.",
+		promptGuidelines: [
+			`phase must be exactly one of ${ODD_PHASES.join(", ")}, or "clear" to leave the current phase before its turn ends. Call this only when the ODD phase actually changes for the primary session's active turn, not on every tool call or thought.`,
+			"Never call this from a subagent or background/child task; it reports only the primary orchestrator's own phase, and a child's session id can never override the parent's label.",
+		],
+		parameters: {
+			type: "object",
+			additionalProperties: false,
+			required: ["phase"],
+			properties: {
+				phase: { type: "string", enum: [...ODD_PHASES, "clear"], description: "The reported ODD phase, or 'clear' to leave the current phase." },
+			},
+		} as const,
+		executionMode: "parallel",
+		// The prompt editor owns the success indicator. An empty self-rendered
+		// call avoids Pi's default transcript card while preserving error output.
+		renderCall() {
+			return hiddenOddPhaseToolComponent;
+		},
+		renderResult(result, _options, theme, context) {
+			if (!context.isError) return hiddenOddPhaseToolComponent;
+			const message = result.content.filter((item) => item.type === "text").map((item) => item.text).join("\n");
+			return new Text(theme.fg("error", sanitizeTerminalText(message || "ODD phase report failed.")), 0, 0);
+		},
+		async execute(_toolCallId, parameters, _signal, _onUpdate, ctx) {
+			const phase = (parameters as { phase?: unknown }).phase;
+			const sessionId = ctx.sessionManager.getSessionId();
+			// Pi's own contract (docs/extensions.md, Signaling errors): throw to
+			// mark a tool execution as failed (sets isError: true on the result);
+			// returning a value -- including an isError property on it -- never
+			// sets that flag.
+			if (!sessionId) throw new Error("No active session to report an ODD phase for; nothing changed.");
+			// An invalid token never resets state: only the explicit "clear" token
+			// leaves the current phase. This keeps a malformed report from wiping
+			// out an otherwise-accurate label for the rest of the turn.
+			if (phase === "clear") {
+				oddPhaseRegistry.clear(sessionId);
+				return { content: [{ type: "text", text: "ODD phase cleared." }], details: { phase: undefined } };
+			}
+			if (!isOddPhase(phase)) {
+				throw new Error(`Invalid ODD phase; use one of ${ODD_PHASES.join(", ")}, or "clear". The previously reported phase, if any, is unchanged.`);
+			}
+			const reported = oddPhaseRegistry.report(sessionId, phase);
+			return { content: [{ type: "text", text: `ODD phase reported: ${reported}` }], details: { phase: reported } };
+		},
+	});
+
+	const GENTLE_TIMED_TOOLS = new Set(["gentle_review_scope", "gentle_review_capture_group", "gentle_review_capture", "gentle_review"]);
+	let elapsedTiming: GentleAiElapsedTimingLedger | undefined;
+	const recordReviewTiming = (event: { toolCallId: string; toolName: string }, endedAt?: number): void => {
+		const ledger = elapsedTiming;
+		if (!ledger || !GENTLE_TIMED_TOOLS.has(event.toolName)) return;
+		try {
+			if (endedAt === undefined) ledger.recordStart(event.toolCallId, Date.now());
+			else ledger.recordEnd(event.toolCallId, endedAt);
+		} catch { /* Timing persistence is best-effort and never breaks the tool event. */ }
+	};
+	pi.on("tool_execution_start", (event) => recordReviewTiming(event));
+	pi.on("tool_execution_end", (event) => recordReviewTiming(event, Date.now()));
+	const timingContext = (context: GentleAiRenderContext | undefined): GentleAiRenderContext | undefined =>
+		elapsedTiming && context ? { ...context, elapsedTiming } : context;
+
 	pi.registerTool({
 		name: "gentle_review_scope",
 		renderShell: "self",
@@ -8655,11 +8819,11 @@ function createGentleAiExtensionForTesting(
 			return renderGentleAiLifecycleCall(
 				"review scope",
 				theme,
-				context as GentleAiRenderContext | undefined,
+				timingContext(context as GentleAiRenderContext | undefined),
 			);
 		},
 		renderResult(result, options, theme, context) {
-			return renderGentleAiResult(result, options, theme, context as GentleAiRenderContext | undefined);
+			return renderGentleAiResult(result, options, theme, timingContext(context as GentleAiRenderContext | undefined));
 		},
 		async execute(_toolCallId, parameters) {
 			const input = parameters as ReviewScopeParameters;
@@ -8702,10 +8866,10 @@ function createGentleAiExtensionForTesting(
 		renderCall(args, theme, context) {
 			const bindings = (args as { collectBindings?: unknown }).collectBindings;
 			const lenses = Array.isArray(bindings) ? bindings.map(collectBindingLens) : [];
-			return renderGentleAiLifecycleCall(withLenses("review capture group", lenses), theme, context as GentleAiRenderContext | undefined);
+			return renderGentleAiLifecycleCall(withLenses("review capture group", lenses), theme, timingContext(context as GentleAiRenderContext | undefined));
 		},
 		renderResult(result, options, theme, context) {
-			return renderGentleAiResult(result, options, theme, context as GentleAiRenderContext | undefined);
+			return renderGentleAiResult(result, options, theme, timingContext(context as GentleAiRenderContext | undefined));
 		},
 		async execute(_toolCallId, parameters, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new Error("Review capture group was cancelled");
@@ -8744,11 +8908,11 @@ function createGentleAiExtensionForTesting(
 			return renderGentleAiLifecycleCall(
 				withLenses("review capture", [collectBindingLens((args as { collectBinding?: unknown }).collectBinding)]),
 				theme,
-				context as GentleAiRenderContext | undefined,
+				timingContext(context as GentleAiRenderContext | undefined),
 			);
 		},
 		renderResult(result, options, theme, context) {
-			return renderGentleAiResult(result, options, theme, context as GentleAiRenderContext | undefined);
+			return renderGentleAiResult(result, options, theme, timingContext(context as GentleAiRenderContext | undefined));
 		},
 		async execute(_toolCallId, parameters, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new Error("Review capture was cancelled");
@@ -8797,11 +8961,11 @@ function createGentleAiExtensionForTesting(
 			return renderGentleAiLifecycleCall(
 				reviewToolOperationPath(args),
 				theme,
-				context as GentleAiRenderContext | undefined,
+				timingContext(context as GentleAiRenderContext | undefined),
 			);
 		},
 		renderResult(result, options, theme, context) {
-			return renderGentleAiResult(result, options, theme, context as GentleAiRenderContext | undefined);
+			return renderGentleAiResult(result, options, theme, timingContext(context as GentleAiRenderContext | undefined));
 		},
 		async execute(_toolCallId, parameters, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new Error("Review controller operation was cancelled");
@@ -8922,6 +9086,7 @@ function createGentleAiExtensionForTesting(
 	});
 
 	pi.on("session_start", async (event, ctx) => {
+		elapsedTiming = new GentleAiElapsedTimingLedger(ctx.sessionManager, pi);
 		reminderSessionActive = true;
 		reminderEpoch += 1;
 		try { candidateViews?.sweepOrphans(ctx.cwd); } catch { /* Ownership sweeping must not block startup. */ }

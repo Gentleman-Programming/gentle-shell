@@ -13,6 +13,7 @@ import { Text, type Component } from "@earendil-works/pi-tui";
 import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import { resolveGentleAiDevBinaryOverride, type GentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
+import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
 import { quietToolsEnabled } from "../lib/quiet-tools-config.ts";
 import { getGentleAiRenderState, renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
 import { sanitizeTerminalText } from "../lib/terminal-theme.ts";
@@ -604,9 +605,13 @@ function gentleAiRenderTransition(
 	return { directResult: false };
 }
 
-function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArguments: () => RegExp): void {
+function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArguments: () => RegExp, timing: () => GentleAiElapsedTimingLedger | undefined): void {
 	const registrationTool = getBuiltInTools(process.cwd())[toolName];
 	const officialRenderResult = registrationTool.renderResult;
+	const withElapsedTiming = (context: GentleAiRenderContext): GentleAiRenderContext => {
+		const ledger = timing();
+		return ledger ? { ...context, elapsedTiming: ledger } : context;
+	};
 
 	pi.registerTool({
 		...registrationTool,
@@ -623,7 +628,7 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 				: undefined;
 			if (operationPath) {
 				const detail = renderContext.expanded === true && typeof callArgs.command === "string" ? `$ ${callArgs.command}` : undefined;
-				return renderGentleAiLifecycleCall(operationPath, theme, renderContext as GentleAiRenderContext, detail);
+				return renderGentleAiLifecycleCall(operationPath, theme, withElapsedTiming(renderContext as GentleAiRenderContext), detail);
 			}
 			return new Text(formatToolCall(toolName, callArgs, theme), 0, 0);
 		},
@@ -641,7 +646,7 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 				{ result: true, isPartial: options.isPartial },
 			).directResult;
 			if (directResult) {
-				return renderGentleAiResult(safeResult, { expanded: options.expanded, isPartial: options.isPartial, isError }, theme, renderContext as GentleAiRenderContext | undefined);
+				return renderGentleAiResult(safeResult, { expanded: options.expanded, isPartial: options.isPartial, isError }, theme, renderContext ? withElapsedTiming(renderContext as GentleAiRenderContext) : undefined);
 			}
 			if (options.isPartial) {
 				if (options.expanded) return new Text(`${theme.fg("warning", partialLabel(toolName, text))}\n${theme.fg("muted", text)}`, 0, 0);
@@ -683,7 +688,25 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 
 export default function quietTools(pi: ExtensionAPI, resolveOverride: GentleAiDevBinaryOverrideResolver = () => resolveGentleAiDevBinaryOverride()): void {
 	if (!quietToolsEnabled()) return;
+	let elapsedTiming: GentleAiElapsedTimingLedger | undefined;
+	pi.on("session_start", (_event, ctx) => {
+		elapsedTiming = new GentleAiElapsedTimingLedger(ctx.sessionManager, pi);
+	});
+	// Only bash calls that render as gentle-ai cards carry a durable duration;
+	// every other quiet tool keeps its plain renderer and writes no entries.
+	const recordGentleTiming = (event: { toolCallId: string; toolName: string; args?: unknown }, endedAt?: number): void => {
+		const ledger = elapsedTiming;
+		if (!ledger || event.toolName !== "bash" || !isGentleAiDirectCommand(event.args as Record<string, unknown> | undefined, createGentleAiCommandArguments(resolveQuietToolsDevBinaryPath(resolveOverride)))) return;
+		try {
+			if (endedAt === undefined) ledger.recordStart(event.toolCallId, Date.now());
+			else ledger.recordEnd(event.toolCallId, endedAt);
+		} catch { /* Timing persistence is best-effort and never breaks the tool event. */ }
+	};
+	pi.on("tool_execution_start", (event) => recordGentleTiming(event));
+	pi.on("tool_execution_end", (event) => recordGentleTiming(event, Date.now()));
+	const withElapsedTiming = (context: GentleAiRenderContext): GentleAiRenderContext =>
+		elapsedTiming ? { ...context, elapsedTiming } : context;
 	for (const toolName of Object.keys(TOOL_CREATORS) as QuietToolName[]) {
-		registerQuietTool(pi, toolName, () => createGentleAiCommandArguments(resolveQuietToolsDevBinaryPath(resolveOverride)));
+		registerQuietTool(pi, toolName, () => createGentleAiCommandArguments(resolveQuietToolsDevBinaryPath(resolveOverride)), () => elapsedTiming);
 	}
 }

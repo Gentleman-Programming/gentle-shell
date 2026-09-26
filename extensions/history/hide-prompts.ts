@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 ExoPro. Inspired by @jasonish/pi-prompt-history
 // SPDX-License-Identifier: MIT
 
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { writeJsonAtomic } from "./atomic-write.ts";
@@ -8,6 +9,42 @@ import { promptDedupKey } from "./selector-helpers.ts";
 
 /** Name of the tombstone file inside the injected state dir (spec C4). */
 const HIDE_FILE_NAME = "hidden.json";
+
+/** Marks tombstone entries written in the exact (hashed) key format. */
+const TOMBSTONE_KEY_PREFIX = "sha256:";
+
+/**
+ * UI-level prompt identity: whitespace-collapsed, trimmed, case-insensitive,
+ * never truncated. The store's scope deletes sweep by this same identity,
+ * so a tombstone hides exactly the copies a delete removes.
+ */
+export function promptIdentity(text: string): string {
+  return text.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/**
+ * Tombstone key for `text`: a SHA-256 of its full prompt identity. Exact —
+ * two prompts that merely share a prefix get different keys — and hashed,
+ * so hidden.json never holds the text of a deleted prompt.
+ */
+export function tombstoneKey(text: string): string {
+  return (
+    TOMBSTONE_KEY_PREFIX +
+    createHash("sha256").update(promptIdentity(text)).digest("hex")
+  );
+}
+
+/**
+ * Whether `text` is hidden by the tombstone set `keys`. Hashed keys match
+ * the exact prompt identity. Plaintext entries from the earlier prefix
+ * format (`promptDedupKey`: the first 120 normalized characters) stay
+ * honored as written, so upgrading never resurfaces a hidden prompt; only
+ * new deletions use the exact format.
+ */
+export function isPromptHidden(keys: ReadonlySet<string>, text: string): boolean {
+  if (keys.size === 0) return false;
+  return keys.has(tombstoneKey(text)) || keys.has(promptDedupKey(text));
+}
 
 /**
  * Retention cap for hidden.json (slice-05 D5): the tombstone file is a
@@ -56,8 +93,9 @@ export type HiddenRead =
  * with the recovery warning so callers block the drain; it never degrades
  * to an empty trusted set. A MISSING file — before any deletion — is the
  * safe empty case and reads `trusted` with no keys. A valid array is
- * trusted; junk items inside it are ignored, never trusted. Keys are
- * `promptDedupKey` strings written by `hidePrompt`; the call never throws.
+ * trusted; junk items inside it are ignored, never trusted. Keys are the
+ * `tombstoneKey` hashes written by `hidePrompt`, or plaintext entries from
+ * the earlier prefix format (see `isPromptHidden`); the call never throws.
  * A valid array's stored order is preserved (the recency order — oldest
  * first — that `hidePrompt` maintains and caps).
  */
@@ -100,8 +138,8 @@ export function readHiddenPrompts(stateDir: string): HiddenRead {
 /**
  * Write the tombstone key for `text` into `stateDir/hidden.json` — the
  * WRITE half of the hide-file contract (spec C4). The key is the shared
- * `promptDedupKey` (byte-match normative with the merge filter — never a
- * re-implementation). The file array is RECENCY-ordered — oldest key
+ * `tombstoneKey` (byte-match normative with the drain and seed filters via
+ * `isPromptHidden` — never a re-implementation). The file array is RECENCY-ordered — oldest key
  * first, newest key appended last — and re-hiding an existing key
  * refreshes it to the end (delete + add, since Set.add on a present
  * member keeps its old position). The file is capped at
@@ -124,7 +162,7 @@ export function hidePrompt(stateDir: string, text: string): HideResult {
   }
   // Recency order (slice-05 D5): the set iterates in stored file order
   // (oldest first); delete+add refreshes a re-hidden key to the END.
-  const key = promptDedupKey(text);
+  const key = tombstoneKey(text);
   read.keys.delete(key);
   read.keys.add(key);
   // Cap: drop the OLDEST keys from the front once over the limit.

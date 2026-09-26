@@ -6,22 +6,23 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
+import { PI_SUBCOMMANDS } from "../lib/gentle-shell-launcher.ts";
 
 const PI_AGENT_DIR = join(os.homedir(), ".pi", "agent");
 const PI_NPM_DIR = join(PI_AGENT_DIR, "npm", "node_modules");
 
-type BannerColor = "pink" | "cyan" | "yellow" | "green";
-interface BannerConfig {
+export type BannerColor = "pink" | "cyan" | "yellow" | "green";
+export interface BannerConfig {
   showRose: boolean;
   showTextLogo: boolean;
   color: BannerColor;
 }
-const DEFAULT_BANNER_CONFIG: BannerConfig = {
+export const DEFAULT_BANNER_CONFIG: BannerConfig = {
   showRose: true,
   showTextLogo: true,
   color: "pink",
 };
-const BANNER_COLORS: BannerColor[] = ["pink", "cyan", "yellow", "green"];
+export const BANNER_COLORS: BannerColor[] = ["pink", "cyan", "yellow", "green"];
 const BANNER_PALETTES: Record<BannerColor, { rose: [number, number, number]; label: [number, number, number]; value: [number, number, number]; logoFresh: [number, number, number]; logoDim: [number, number, number] }> = {
   pink: { rose: [255, 118, 195], label: [200, 100, 160], value: [255, 140, 210], logoFresh: [255, 138, 206], logoDim: [95, 30, 60] },
   cyan: { rose: [95, 210, 255], label: [85, 170, 205], value: [130, 225, 255], logoFresh: [105, 220, 255], logoDim: [25, 80, 100] },
@@ -71,8 +72,8 @@ function gentleAiConfigHome(): string {
   return process.env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai");
 }
 
-function bannerConfigPath(): string {
-  return join(gentleAiConfigHome(), "banner.json");
+function bannerConfigPath(configHome = gentleAiConfigHome()): string {
+  return join(configHome, "banner.json");
 }
 
 function normalizeBannerConfig(value: unknown): BannerConfig {
@@ -85,16 +86,37 @@ function normalizeBannerConfig(value: unknown): BannerConfig {
   };
 }
 
-async function readBannerConfig(): Promise<BannerConfig> {
+// Modal mutations must not turn an unreadable or malformed existing file into defaults.
+// Legacy banner commands retain their original tolerant read behavior below.
+export async function readBannerConfigForEdit(configHome = gentleAiConfigHome()): Promise<BannerConfig> {
+  const path = bannerConfigPath(configHome);
+  let raw: string;
   try {
-    return normalizeBannerConfig(JSON.parse(await readFile(bannerConfigPath(), "utf8")));
+    raw = await readFile(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ...DEFAULT_BANNER_CONFIG };
+    throw new Error(`Cannot edit unreadable banner file: ${path}`, { cause: error });
+  }
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch { throw new Error(`Cannot edit malformed banner file: ${path}`); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`Cannot edit malformed banner file: ${path}`);
+  const config = value as Record<string, unknown>;
+  if (typeof config.showRose !== "boolean" || typeof config.showTextLogo !== "boolean" || !BANNER_COLORS.includes(config.color as BannerColor)) {
+    throw new Error(`Cannot edit malformed banner file: ${path}`);
+  }
+  return { showRose: config.showRose, showTextLogo: config.showTextLogo, color: config.color as BannerColor };
+}
+
+export async function readBannerConfig(configHome = gentleAiConfigHome()): Promise<BannerConfig> {
+  try {
+    return normalizeBannerConfig(JSON.parse(await readFile(bannerConfigPath(configHome), "utf8")));
   } catch {
     return { ...DEFAULT_BANNER_CONFIG };
   }
 }
 
-async function writeBannerConfig(config: BannerConfig): Promise<void> {
-  const path = bannerConfigPath();
+export async function writeBannerConfig(config: BannerConfig, configHome = gentleAiConfigHome()): Promise<void> {
+  const path = bannerConfigPath(configHome);
   await mkdir(join(path, ".."), { recursive: true });
   await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 }
@@ -544,6 +566,14 @@ export function readGitBranch(cwd: string, run: typeof execFile = execFile): Pro
   });
 }
 
+// Pi dispatches its subcommands purely on the first argument, so only that
+// token decides. Flag values such as the package directory the Gentle Shell
+// launcher injects with `-e <dir>` must not be mistaken for a subcommand.
+export function isPiCliSubcommandInvocation(argv: readonly string[]): boolean {
+  const first = argv[2];
+  return first !== undefined && (PI_SUBCOMMANDS as readonly string[]).includes(first);
+}
+
 export default function (pi: ExtensionAPI) {
   let disposeHeader = () => {};
   pi.on("session_shutdown", () => disposeHeader());
@@ -619,11 +649,8 @@ export default function (pi: ExtensionAPI) {
     disposeHeader();
     if (!ctx.hasUI) return;
 
-    // Si se está ejecutando un comando de CLI como "pi update" o "pi install", no mostramos la intro animada.
-    const isCLICommand =
-      process.argv.length > 2 &&
-      !process.argv.every((arg) => arg.startsWith("-") || arg.endsWith(".ts"));
-    if (isCLICommand) return;
+    // CLI subcommands such as `pi update` or `pi install` skip the animated intro.
+    if (isPiCliSubcommandInvocation(process.argv)) return;
 
     if (currentIntroMode() === "skip") return;
 

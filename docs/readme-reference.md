@@ -161,7 +161,7 @@ This checkout declares `gentle-pi` `3.7.0` with a package-local Gentle AI `v3.7.
 
 ### Pi compatibility
 
-The current package requires Pi 0.85.1 or newer (development tests pin 0.85.1). Use the latest Pi release; gentle-pi does not update your installed Pi automatically. Children, including any `GENTLE_PI_AGENTS_PI` override, must emit `agent_settled`: `agent_end` records a run's output but is not completion because retries or queued continuations may follow.
+The current package requires Pi 0.85.1 or newer (development tests pin 0.87.1). Use the latest Pi release; gentle-pi does not update your installed Pi automatically. Children, including any `GENTLE_PI_AGENTS_PI` override, must emit `agent_settled`: `agent_end` records a run's output but is not completion because retries or queued continuations may follow.
 
 The [`v2.6.0` release](https://github.com/Gentleman-Programming/gentle-shell/releases/tag/v2.6.0) added persistent registered worktrees and grouped `/gentle:changes` views; fuller workspace interaction details are in the [Gentle Shell reference](gentle-shell.md). It also adds named atomic `/gentle:profiles`, native review intended-untracked selection and provider continuations, and opt-in custom ask responses. Pi recognizes its global Git-managed package path; subsystems install with explicit recovery guidance when npm lifecycle work was skipped. Windows keeps child consoles hidden and fixes ownership mode; Gentle Todo keeps the next pending task visible when collapsed.
 
@@ -809,6 +809,12 @@ Both use the same shape, and both are a separate artifact from `profiles.json`:
 }
 ```
 
+The fullscreen shell header and Status → Project → Profile show the effective profile for the session
+repository: `name (local)` for a clone-local pin, `name (repo)` for a repository declaration, or the
+global active name without a suffix. Invalid or stale pins fall through to the next valid layer.
+Changes made inside or outside the profiles panel appear within about two seconds while the UI
+session is active; the indicator is omitted if no valid profile remains.
+
 For a given working directory the winner is the local pin, then the repository declaration, then no pin. With no pin at all the repository keeps the behavior described above and follows the globally active profile. `p` and `P` are toggles: pressing one on the profile that already holds that layer removes it, and either key pressed outside a Git worktree writes nothing and says so.
 
 In a pinned repository the pinned profile governs subagent launches: the agents it names take its model and effort, and the agents it omits return to inherit (their own definition, then the default model). The globally active profile and writes made through `/gentle:models` do not reach those launches, which `/gentle:models` reports when it runs inside a pinned repository. `enter` follows the same boundary: inside a pinned repository it re-pins that repository instead of writing the global routing, so the panel's main key can never move another repository's routing. The panel states which layer won, names the file that holds it, and marks the profile with `(pinned)`.
@@ -843,7 +849,8 @@ One limitation is worth stating. When a pinned profile omits an agent, that agen
 | `/gentle:persona`                | Switches global persona mode, with project override support.        |
 | `/gentle:background-subagents`   | Shows or sets the managed background-subagents policy (`status\|enable\|disable`), naming the source that decided it. |
 | `/gentle:double-esc-cancel`      | Shows or sets the double-esc-cancel preference (`status\|enable\|disable`); no argument toggles it. |
-| `/gentle:animations`            | Shows or sets global animations (`status\|quality\|performance\|potato`); no argument reports status. |
+| `/gentle:animations`            | Shows or sets global animations (`status\|quality\|performance\|potato`); no argument opens a selector. |
+| `/gentle:vim`                   | Shows or sets opt-in prompt Vim mode (`status\|enable\|disable`); no argument opens a selector. |
 | `/gentle:telemetry`              | Shows or changes the local Gentle AI telemetry trigger (`status\|enable\|disable\|preview`).  |
 | `/gentle:review-mode`            | Shows or sets the receipt-driven development mode (`status\|enable\|disable`); user-initiated only, Pi automation never toggles it. |
 | `/gentle:banner`                 | Configures startup banner rose, text logo, and color preset.        |
@@ -939,6 +946,24 @@ Use `/gentle:animations performance` to reduce redraw frequency, or `/gentle:ani
 The selection is global: `<configHome>/animations.json`, where `configHome` honors `GENTLE_PI_CONFIG_HOME` and defaults to `~/.pi/gentle-ai`. The strict file shape is `{"schema":"gentle-pi.animations/v1","policy":"quality"}`. There is no project or environment mode override. Missing files use `quality`; malformed or unreadable files also fall back to `quality`, with an attributable warning in status, and are not silently rewritten.
 
 A successful command applies to the live prompt immediately, including while working. Starting and settling still request immediate renders. Pi owns enqueue repaint scheduling; Gentle shows the current queued state on the next host render without requiring an animation tick. A running startup banner retains its creation-time policy; the new selection applies at the next banner creation. Operational polling, refresh/debounce timers, Pi core animations, and install-time `tuiMode` are unchanged.
+
+### Vim prompt editing
+
+`/gentle:vim enable` opts only the Gentle-owned prompt into modal editing; `/gentle:vim disable` restores ordinary Pi editing. `/gentle:vim status` reads the persisted preference and deciding source without writing, and reports the effective mode of the current Gentle prompt separately. With no argument, an interactive selector offers enable, disable, and status; headless use reports status. The global `<configHome>/vim.json` (default config home `~/.pi/gentle-ai`, overridable with `GENTLE_PI_CONFIG_HOME`) uses the strict shape `{"schema":"gentle-pi.vim/v1","policy":"on"}` or `off`. Missing means off; malformed or unreadable files warn and fall back to off without being rewritten. Enable/disable persist globally; compatible owned prompts apply the preference immediately. On compatibility rejection the on preference remains saved, but the active prompt stays in ordinary editing and the command never claims it applies now. Without an active Gentle prompt, the command reports that the preference will be tried at next prompt creation. A foreign editor is never replaced.
+
+The frame labels INSERT, NORMAL, VISUAL (characterwise), or VISUAL LINE (linewise); narrow frames may omit the hint. INSERT uses Pi's normal input. Escape first leaves INSERT for NORMAL **without** aborting a running turn or clearing a draft. Escape in VISUAL or with a pending command cancels that selection/command first; a later Escape in plain NORMAL follows Gentle's existing working-cancel/queue or idle-draft clear behavior (including the configured double-Escape confirmation). Autocomplete and `!` bash drafts retain Pi's input/Escape handling. `Ctrl+[` acts as Escape only where Pi delivers it as Escape.
+
+| Mode | Supported keys in this prompt |
+| --- | --- |
+| NORMAL → INSERT | `i/I/a/A` insert at cursor/first nonblank/after cursor/end; `o/O` open a line below/above. |
+| NORMAL navigation | Counts where accepted; `h/j/k/l`, Space, `w/e/b`, `0/^/$`, `gg/G`, and same-line `f/F/t/T` with `;/,` repeat. Motions use grapheme boundaries on Unicode and multiline drafts; they do not search prompt history. |
+| NORMAL editing | `x`, `s/S`, `J`, `p/P`, `d/c/y` with repeat for whole lines, word/line/find motions, and supported text objects (`iw/aw`, `iW/aW`, paired quotes/backticks/brackets); `>>/<<` and supported motion-based `>/<` indent/dedent lines. A yank fills this prompt's register. |
+| VISUAL | `v` selects characters, `V` selects lines; motions and `o` adjust the range. `d/x`, `c/s`, `y`, `p`, `>/<`, `J`, `~/u/U`, and `r` act on the selection; `i/a` with word/WORD or quote/bracket selects a text object in characterwise VISUAL. No blockwise visual selection. |
+| Undo/repeat | NORMAL `u` undoes prompt editor changes; `.` repeats supported completed NORMAL edits and insert/change sessions at the current cursor (counts supported). Each supported insert session or repeat is grouped as one undo unit. VISUAL `u` lowercases the selection instead of undoing. VISUAL edits are not dot-repeatable. |
+
+**Deliberate `/` divergence from Claude Code:** NORMAL `/` hands off to **Pi's native slash commands and skills**, enters INSERT, and inserts `/` at the existing cursor. Pi offers slash completion only at the start of the first line; elsewhere it inserts a literal slash without moving or replacing the draft. There is **no reverse prompt-history search**. Pi's explicit history shortcuts still work, transferring to INSERT first. Unknown NORMAL printable input, encoded text and bracketed paste do not silently insert; application shortcuts can transfer to INSERT before acting.
+
+This is a bounded command subset, not full Claude Code/Vim parity. The private editor adapter supports only the proven Pi coding-agent/TUI `0.85.1` and `0.87.1` package pairs: version metadata must come from a canonical candidate host package root whose actual `CustomEditor` and `Editor` classes match the loaded classes, never from the extension's local metadata or CLI path alone. Unknown versions, mismatched prototypes, or invalid layouts fail closed: a single compatibility warning is shown and the prompt continues with ordinary editing instead of silently entering inert NORMAL mode. Operations that would cross a registered collapsed paste marker, or encounter duplicate occurrences of a registered marker ID, are rejected without editing it. Visual highlighting relies on Pi's render layout and may be omitted if its geometry cannot be validated. No live-terminal proof of every layout or complete parity is claimed.
 
 Startup banner settings remain global in `banner.json` under `GENTLE_PI_CONFIG_HOME` (default `~/.pi/gentle-ai`). Existing `showRose` and `showTextLogo` opt-outs independently control the main startup artwork; both default to enabled. Changes apply on the next session or `/reload`. Color presets are `pink` (default), `cyan`, `yellow`, and `green`. The static sidebar heading is independent of these preferences and follows the active theme.
 

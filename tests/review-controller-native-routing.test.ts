@@ -1160,6 +1160,60 @@ for (const statusSchema of ["gentle-ai.review-integration.status/v6", "gentle-ai
 	assert.equal(requests.every((request) => !("lineageId" in request)), true);
 });
 
+test("committed-range inspect stop carries its binding selector into selection STATUS and START, rejecting a mismatched binding", async (t) => {
+	const { cwd, eligible, selection } = untrackedStopFixture(t);
+	const baseRef = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+	const initialTarget = startStatus(cwd, baseRef), target = startStatus(cwd, baseRef, [eligible]);
+	const boundSelection = { ...selection, arguments: selection.arguments.map((arg) => arg.name === "base_tree" ? { ...arg, value: initialTarget.projection.baseTree } : arg.name === "candidate_tree" ? { ...arg, value: initialTarget.projection.currentCandidateTree } : arg) };
+	const initial = { ...initialTarget, nextTransition: { kind: "collect", reasonCode: "intended_untracked_selection_required", collect: { inputs: [boundSelection] } }, raw: { schema: "gentle-ai.review-integration.status/v7" } } as ReviewStatusV3;
+	const requests: Array<Record<string, unknown>> = [], starts: Array<Record<string, unknown>> = [], retained = new Map();
+	const native = {
+		targetStatus: async (request: Record<string, unknown>) => { requests.push(request); return "intendedUntrackedSelection" in request ? target : initial; },
+		start: async (request: Record<string, unknown>) => { starts.push(request); return { lineageId: "review-selected", state: "reviewing", riskLevel: "low", selectedLenses: [], changedFiles: 1, changedLines: 1, correctionBudget: 1, action: "created", lensesRequired: false, riskReasons: [], raw: {} }; },
+	} as unknown as NativeReviewCli;
+	const inspected = await __testing.executeReviewControllerOperation({ operation: "inspect", input: JSON.stringify({ baseRef: "HEAD", committedOnly: true }) }, cwd, native, undefined, undefined, undefined, retained);
+	assert.equal(typeof inspected.selectionBinding, "string");
+	assert.equal(retained.has(`${cwd}\u0000`), true, "plain inspect stop retains its selector");
+	const mismatch = await __testing.executeReviewControllerOperation({ operation: "select-intended-untracked", selectionBinding: (inspected.selectionBinding as string).replace(eligible, "other.md"), intendedUntracked: [eligible] }, cwd, native, undefined, undefined, undefined, retained);
+	assert.equal(mismatch.outcome, "intended-untracked-selection-binding-rejected");
+	assert.equal(requests.length, 1, "mismatched binding must not request another STATUS");
+	assert.equal(starts.length, 0);
+	const selected = await __testing.executeReviewControllerOperation({ operation: "select-intended-untracked", selectionBinding: inspected.selectionBinding, intendedUntracked: [eligible] }, cwd, native, undefined, undefined, undefined, retained);
+	assert.equal(selected.operation, "select-intended-untracked");
+	assert.equal(starts.length, 1, JSON.stringify(selected));
+	assert.equal(requests.length, 3);
+	for (const request of requests) { assert.equal(request.baseRef, baseRef); assert.equal(request.committedOnly, true); }
+	assert.equal(starts[0]!.baseRef, baseRef);
+	assert.equal(starts[0]!.committedOnly, true);
+});
+
+test("committed-range selection rejects target-identity drift before START", async (t) => {
+	const { cwd, eligible, selection } = untrackedStopFixture(t);
+	const baseRef = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+	const initialTarget = startStatus(cwd, baseRef);
+	const boundSelection = { ...selection, arguments: selection.arguments.map((arg) => arg.name === "base_tree" ? { ...arg, value: initialTarget.projection.baseTree } : arg.name === "candidate_tree" ? { ...arg, value: initialTarget.projection.currentCandidateTree } : arg) };
+	const initial = { ...initialTarget, nextTransition: { kind: "collect", reasonCode: "intended_untracked_selection_required", collect: { inputs: [boundSelection] } }, raw: { schema: "gentle-ai.review-integration.status/v7" } } as ReviewStatusV3;
+	const changed = { ...initial, targetIdentity: `sha256:${"d".repeat(64)}` } as ReviewStatusV3;
+	const requests: Array<Record<string, unknown>> = [];
+	let starts = 0;
+	const retained = new Map();
+	const native = {
+		targetStatus: async (request: Record<string, unknown>) => { requests.push(request); return requests.length === 1 ? initial : changed; },
+		start: async () => { starts++; throw new Error("START must not run for a changed target"); },
+	} as unknown as NativeReviewCli;
+	const inspected = await __testing.executeReviewControllerOperation({ operation: "inspect", input: JSON.stringify({ baseRef: "HEAD", committedOnly: true }) }, cwd, native, undefined, undefined, undefined, retained);
+	assert.equal(typeof inspected.selectionBinding, "string");
+	const rejected = await __testing.executeReviewControllerOperation({ operation: "select-intended-untracked", selectionBinding: inspected.selectionBinding, intendedUntracked: [eligible] }, cwd, native, undefined, undefined, undefined, retained);
+	assert.equal(rejected.status, "blocked");
+	assert.equal(rejected.outcome, "intended-untracked-selection-binding-rejected");
+	assert.equal(rejected.mutation_performed, false);
+	assert.equal(rejected.mutation_outcome, "none");
+	assert.equal(requests.length, 2);
+	assert.equal(requests[1]!.baseRef, baseRef);
+	assert.equal(requests[1]!.committedOnly, true);
+	assert.equal(starts, 0);
+});
+
 // gentle-pi#706: inspect names the exact continuation for the intended-untracked
 // stop and can resolve it in one call through top-level untrackedScope.
 function untrackedStopFixture(
@@ -1561,6 +1615,175 @@ test("a fresh unsuccessful inspect invalidates its prior pre-lineage selection",
 		assert.equal(failed.outcome, "native-status-unavailable");
 		assert.equal(retained.has(`${cwd}\u0000`), false);
 	});
+
+// gentle-pi#1192: a committed-range inspect's retained pre-lineage selection
+// must remember its own baseRef/committedOnly too, so a later plain START
+// replays the same committed range instead of falling back to the
+// workspace-diff one.
+test("inspect with a committed-range selector retains baseRef/committedOnly, and a plain START adopts it", async (t) => {
+	const cwd = repository(t), eligible = "selected.md";
+	writeFileSync(join(cwd, eligible), "selected\n");
+	const baseRef = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+	// The inspect handler carries its committed-range selector through both the
+	// pre-resolution and resolution STATUS calls, so a faithful fixture for
+	// this scenario must project the committed range on both, not the
+	// workspace-diff range untrackedStopFixture builds.
+	const initialTarget = startStatus(cwd, baseRef),
+		target = startStatus(cwd, baseRef, [eligible]);
+	const selection: ReviewCollectInputV3 = {
+		name: "intended_untracked_selection",
+		schema: "gentle-ai.review-intended-untracked-selection/v1",
+		captureOperation: "external.select_intended_untracked",
+		arguments: [
+			{ name: "target_identity", value: SHA },
+			{ name: "projection", value: "workspace" },
+			{ name: "base_tree", value: initialTarget.projection.baseTree },
+			{ name: "candidate_tree", value: initialTarget.projection.currentCandidateTree },
+			{ name: "eligible_paths_json", value: JSON.stringify([eligible]) },
+			{ name: "expected_untracked_inventory", value: SHA },
+		],
+		submission: {
+			operationToken: "status",
+			argumentTokens: [
+				"--contract=gentle-ai.review-integration/v2",
+				"--next-transition=true",
+				"--agent=pi",
+				"--projection=workspace",
+				"--intended-untracked-selection={{value}}",
+			],
+			values: [
+				{
+					slot: "intended_untracked_selection",
+					domain: "schema_bound_json",
+					schema: "gentle-ai.review-intended-untracked-selection/v1",
+					substitutionLocation: 4,
+				},
+			],
+		},
+	};
+	const initial = {
+		...initialTarget,
+		nextTransition: {
+			kind: "collect",
+			reasonCode: "intended_untracked_selection_required",
+			collect: { inputs: [selection] },
+		},
+		raw: { schema: "gentle-ai.review-integration.status/v7" },
+	} as ReviewStatusV3;
+	const requests: Array<Record<string, unknown>> = [],
+		starts: Array<Record<string, unknown>> = [],
+		retained = new Map();
+	const native = {
+		targetStatus: async (request: Record<string, unknown>) => {
+			requests.push(request);
+			return "intendedUntrackedSelection" in request ? target : initial;
+		},
+		start: async (request: Record<string, unknown>) => {
+			starts.push(request);
+			return {
+				lineageId: "review-started", state: "reviewing", riskLevel: "low", selectedLenses: [],
+				changedFiles: 1, changedLines: 1, correctionBudget: 1, action: "created", lensesRequired: false,
+				riskReasons: [], raw: {},
+			};
+		},
+	} as unknown as NativeReviewCli;
+	const resolved = await __testing.executeReviewControllerOperation(
+		{
+			operation: "inspect",
+			input: JSON.stringify({ baseRef: "HEAD", committedOnly: true }),
+			untrackedScope: "select",
+			intendedUntracked: [eligible],
+		},
+		cwd, native, undefined, undefined, undefined, retained,
+	);
+	assert.equal(resolved.status, "ready");
+	const retainedEntry = retained.get(`${cwd}\u0000`) as { baseRef?: string; committedOnly?: true } | undefined;
+	assert.notEqual(retainedEntry, undefined);
+	assert.equal(retainedEntry!.baseRef, baseRef);
+	assert.equal(retainedEntry!.committedOnly, true);
+
+	const started = await __testing.executeReviewControllerOperation(
+		{ operation: "start", input: JSON.stringify({ mode: "ordinary" }) },
+		cwd, native, undefined, undefined, undefined, retained,
+	);
+	assert.equal(started.operation, "start");
+	assert.equal((started.result as { lineage_id?: string }).lineage_id, "review-started");
+	assert.equal(requests.length, 3);
+	const startStatusRequest = requests[2]!;
+	assert.equal(startStatusRequest.baseRef, baseRef);
+	assert.equal(startStatusRequest.committedOnly, true);
+	assert.equal(startStatusRequest.untrackedScope, "select");
+	assert.deepEqual(startStatusRequest.intendedUntrackedSelection, {
+		argumentTokens: selection.submission!.argumentTokens,
+		value: JSON.stringify({
+			schema: "gentle-ai.review-intended-untracked-selection/v1",
+			untracked_scope: "select",
+			expected_untracked_inventory: SHA,
+			intended_untracked: [eligible],
+		}),
+	});
+	assert.equal(starts.length, 1);
+	assert.equal(starts[0]!.baseRef, baseRef);
+	assert.equal(starts[0]!.committedOnly, true);
+	assert.equal(starts[0]!.untrackedScope, "select");
+	assert.equal(retained.has(`${cwd}\u0000`), false);
+	const lineageEntry = retained.get(`${cwd}\u0000review-started`) as { untrackedScope: string; baseRef?: string } | undefined;
+	assert.notEqual(lineageEntry, undefined);
+	assert.equal(lineageEntry!.untrackedScope, "select");
+	// The lineage-scoped entry must stay a plain untracked selection: a
+	// leftover baseRef field would make readRetainedNativeUntrackedSelection
+	// mistake it for a RetainedNativeCaptureRoute.
+	assert.equal("baseRef" in lineageEntry!, false);
+});
+
+test("an explicit baseRef that conflicts with a retained committed-range selector is not adopted", async (t) => {
+	const { cwd, eligible, initial, target } = untrackedStopFixture(t);
+	const headRef = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+	writeFileSync(join(cwd, "tracked.txt"), "second\n");
+	execFileSync("git", ["add", "tracked.txt"], { cwd, stdio: "ignore" });
+	execFileSync("git", ["-c", "user.name=Routing Test", "-c", "user.email=routing@example.invalid", "commit", "-m", "second"], { cwd, stdio: "ignore" });
+	const otherRef = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+	const readyTarget = startStatus(cwd, otherRef);
+	const starts: Array<Record<string, unknown>> = [],
+		retained = new Map();
+	const native = {
+		targetStatus: async (request: Record<string, unknown>) =>
+			request.baseRef === otherRef ? readyTarget : ("intendedUntrackedSelection" in request ? target : initial),
+		start: async (request: Record<string, unknown>) => {
+			starts.push(request);
+			return {
+				lineageId: "review-started", state: "reviewing", riskLevel: "low", selectedLenses: [],
+				changedFiles: 1, changedLines: 1, correctionBudget: 1, action: "created", lensesRequired: false,
+				riskReasons: [], raw: {},
+			};
+		},
+	} as unknown as NativeReviewCli;
+	await __testing.executeReviewControllerOperation(
+		{
+			operation: "inspect",
+			input: JSON.stringify({ baseRef: headRef, committedOnly: true }),
+			untrackedScope: "select",
+			intendedUntracked: [eligible],
+		},
+		cwd, native, undefined, undefined, undefined, retained,
+	);
+	const retainedEntry = retained.get(`${cwd}\u0000`) as { baseRef?: string } | undefined;
+	assert.equal(retainedEntry?.baseRef, headRef);
+
+	const started = await __testing.executeReviewControllerOperation(
+		{ operation: "start", input: JSON.stringify({ mode: "ordinary", baseRef: otherRef, committedOnly: true }) },
+		cwd, native, undefined, undefined, undefined, retained,
+	);
+	assert.equal(started.operation, "start");
+	assert.equal(starts.length, 1);
+	assert.equal(starts[0]!.baseRef, otherRef);
+	// The conflicting explicit START never adopts the retained scope/inventory.
+	assert.equal("untrackedScope" in starts[0]!, false);
+	// A successful START always clears the pre-lineage "" entry (gentle-pi#706),
+	// whether or not it consumed it: a new lineage invalidates any stale
+	// pre-lineage selection regardless of this START's own adoption choice.
+	assert.equal(retained.has(`${cwd}\u0000`), false);
+});
 
 test("START rejects a retained pre-lineage selection when fresh STATUS identifies a changed candidate", async (t) => {
 		const { cwd, eligible, initial, target } = untrackedStopFixture(t);

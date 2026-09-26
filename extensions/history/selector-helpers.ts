@@ -324,6 +324,35 @@ export const STORE_DELETE_FAILED_TEXT =
 export const EDITOR_HIDE_FAILED_TEXT =
   "Deleted from the store, but hiding failed — the prompt may reappear from session transcripts.";
 
+/**
+ * Toast copy when some store files could not be read or rewritten: copies
+ * may remain on disk, and only the tombstone keeps them out of the list.
+ */
+export const STORE_DELETE_PARTIAL_TEXT =
+  "Some history files could not be rewritten; the prompt is hidden, but copies may remain on disk.";
+
+/** The counts a scope delete reports (structural twin of store's SweepResult). */
+export interface StoreSweepCounts {
+  filesAffected: number;
+  removed: number;
+  failed: number;
+}
+
+/**
+ * What the delete flow does after the store sweep: proceed to the
+ * tombstone when anything was removed OR any file failed (a failed file
+ * may still hold a copy the tombstone must hide), surfacing an error
+ * notice for failures; stop quietly when there was nothing to delete.
+ */
+export function storeDeleteFollowUp(
+  counts: StoreSweepCounts,
+): { proceed: boolean; notice?: string } {
+  if (counts.failed > 0) {
+    return { proceed: true, notice: STORE_DELETE_PARTIAL_TEXT };
+  }
+  return { proceed: counts.removed > 0 };
+}
+
 export function getVisiblePromptRecords(
   records: PromptRecord[],
   selectedIndex: number,

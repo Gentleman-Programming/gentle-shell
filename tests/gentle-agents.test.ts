@@ -1041,7 +1041,7 @@ test("child parent-message tooling admits notifications and the active parent pr
 	await tick();
 	assert.equal(parent.sent[0]?.message.content, "raw\u001B[2J text");
 	assert.equal(parent.sent[0]?.message.display, false, "ordinary child notifications remain model-visible but do not render in the transcript");
-	assert.deepEqual(parent.sent[0]?.options, { deliverAs: "followUp", triggerTurn: true });
+	assert.deepEqual(parent.sent[0]?.options, { deliverAs: "steer", triggerTurn: true });
 	const rendered = parent.renderers.get("gentle-agents.message")!(parent.sent[0]?.message, { expanded: true }, plainTheme).render(80).join("\n");
 	assert.match(rendered, /raw\\x1B\[2J text/);
 	(ctx.sessionManager as unknown as { getSessionId(): string }).getSessionId = () => "s2";
@@ -1093,8 +1093,8 @@ for (const boundary of ["allowed", "env", "session", "replacement", "bus-throws"
 		writeFileSync(join(profile, "subagents.json"), JSON.stringify({ model_profiles: { "gentle-ai-worker": { model: "openai/gpt-4o", effort: "high" } } }));
 		gentleAgents(h.pi, env, { ...runtime.deps, env, agentHome: profile, runtimeMetricsPolicy: policy, metricsNow: () => clock, metricsSchedule });
 		const listenerCounts = () => [...h.listeners].map(([name, set]) => [name, set.size]);
-		const initialListeners = listenerCounts();
 		await h.fire("session_start", context.ctx);
+		const initialListeners = listenerCounts();
 		const result = h.tools.get("subagent_run")!.execute("call", { agent: "gentle-ai-worker", task: "private task", mode: "task" }, undefined, undefined, context.ctx);
 		await tick();
 		assert.equal(runtime.children.length, 1);
@@ -1129,7 +1129,7 @@ for (const boundary of ["allowed", "env", "session", "replacement", "bus-throws"
 				Object.assign(fresh.pi, { events: h.pi.events });
 				gentleAgents(fresh.pi, env, { ...runtime.deps, env, runtimeMetricsPolicy: policy, metricsSchedule });
 				await fresh.fire("session_start", context.ctx);
-				assert.deepEqual(listenerCounts(), initialListeners, "fresh instance installs one subscription set");
+				assert.deepEqual(listenerCounts(), initialListeners, "fresh instance installs one subscription set, including visual preference updates");
 				await fresh.fire("session_shutdown", context.ctx);
 				assert.ok([...h.listeners.values()].every(set => set.size === 0));
 				assert.equal(renewalTimers.size, 0);
@@ -2779,7 +2779,7 @@ test("subagent_list_agents and subagent_run in task mode launch a child with the
 	harness.children[0].emit({ type: "tool_execution_start", toolCallId: "c", toolName: "grep", args: {} });
 	harness.children[0].emit({ type: "message_end", message: { role: "assistant", usage: { totalTokens: 12_000, cost: { total: 0.09 } } } });
 	await tick();
-	assert.match(widget()![1], /◐  explore  map lib modules +gpt-5\.6-terra · low · 12k · \$0\.09 · \d+s │$/);
+	assert.match(widget()![1], /◐  explore  map lib modules +gpt-5\.6-terra · low · 12k · \$0\.090 · \d+s │$/);
 	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "lib has three agent files." }] }] });
 	harness.children[0].emit({ type: "agent_settled" });
 	const result = await running;
@@ -3927,3 +3927,158 @@ test("aborting the caller's signal cancels the subagent, records it, and says wh
 	);
 	assert.equal(harness.children[0].killed.length > 0, true, "the runner terminated the child");
 });
+
+test("issue #1162: notifications from a child that settles during parent turn are dropped and never re-enter conversation", async () => {
+	const { pi, tools, fire, sent } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+
+	const started = await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Worker task", mode: "background" }, undefined, undefined, ctx);
+	const id = (started.details.gentleAgents as { taskId: string }).taskId;
+	await tick();
+
+	await fire("agent_start", ctx);
+
+	harness.children[0].message({ id: "n1", kind: "notification", message: "Step 1 progress" });
+	await tick();
+
+	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Finished successfully." }] }] });
+	harness.children[0].emit({ type: "agent_settled" });
+	await tick();
+
+	assert.equal(sent.length, 0, "nothing sent mid-turn while active parent agent runs");
+
+	await fire("turn_end", ctx);
+
+	const results = sent.filter((entry) => entry.message.customType === "gentle-agents.result");
+	const notifications = sent.filter((entry) => entry.message.customType === "gentle-agents.message");
+	assert.equal(results.length, 1, "completion is delivered");
+	assert.equal(notifications.length, 0, "stale notification from settled task is dropped");
+	assert.deepEqual(results[0]!.options, { deliverAs: "steer", triggerTurn: true });
+
+	await fire("turn_end", ctx);
+	await fire("agent_end", ctx);
+	assert.equal(sent.filter((entry) => entry.message.customType === "gentle-agents.message").length, 0, "notification never replays");
+	await fire("session_shutdown", ctx);
+});
+
+test("issue #1162: a live notification on a running child is delivered promptly at turn_end via steer", async () => {
+	const { pi, tools, fire, sent } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+
+	const started = await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Long runner", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+
+	await fire("agent_start", ctx);
+	harness.children[0].message({ id: "n1", kind: "notification", message: "Live status update" });
+	await tick();
+
+	await fire("turn_end", ctx);
+
+	const notifications = sent.filter((entry) => entry.message.customType === "gentle-agents.message");
+	assert.equal(notifications.length, 1, "live notification is delivered at turn_end");
+	assert.equal(notifications[0]!.message.content, "Live status update");
+	assert.deepEqual(notifications[0]!.options, { deliverAs: "steer", triggerTurn: true });
+
+	await fire("session_shutdown", ctx);
+});
+
+test("issue #1162: an answered subagent query is dropped and never replays after task completion", async () => {
+	const { pi, tools, fire, sent } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+
+	const started = await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Interactive worker", mode: "background" }, undefined, undefined, ctx);
+	const id = (started.details.gentleAgents as { taskId: string }).taskId;
+	await tick();
+
+	await fire("agent_start", ctx);
+	harness.children[0].message({ id: "q1", kind: "query", message: "Confirm deletion?" });
+	await tick();
+
+	const replyResult = await tools.get("subagent_reply")!.execute("r1", { task_id: id, request_id: "q1", message: "yes proceed" }, undefined, undefined, ctx);
+	assert.match(replyResult.content[0].text, /accepted/);
+
+	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Done after reply." }] }] });
+	harness.children[0].emit({ type: "agent_settled" });
+	await tick();
+
+	await fire("turn_end", ctx);
+
+	const queries = sent.filter((entry) => entry.message.customType === "gentle-agents.message" && (entry.message.details as { gentleAgents?: { kind?: string } })?.gentleAgents?.kind === "query");
+	assert.equal(queries.length, 0, "answered query is never delivered to the model");
+
+	const results = sent.filter((entry) => entry.message.customType === "gentle-agents.result");
+	assert.equal(results.length, 1, "completion is delivered");
+
+	await fire("session_shutdown", ctx);
+});
+
+test("issue #1162: a rejected query reply preserves the live query for delivery at turn boundary", async () => {
+	const { pi, tools, fire, sent } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+
+	const started = await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Interactive worker", mode: "background" }, undefined, undefined, ctx);
+	const id = (started.details.gentleAgents as { taskId: string }).taskId;
+	await tick();
+
+	await fire("agent_start", ctx);
+	harness.children[0].message({ id: "q1", kind: "query", message: "Confirm deletion?" });
+	await tick();
+
+	const wrongSessionCtx = {
+		...ctx,
+		sessionManager: {
+			...ctx.sessionManager,
+			getSessionId: () => "wrong-session",
+		},
+	};
+	const rejectedResult = await tools.get("subagent_reply")!.execute("r1", { task_id: id, request_id: "q1", message: "unauthorized" }, undefined, undefined, wrongSessionCtx as typeof ctx);
+	assert.match(rejectedResult.content[0].text, /unavailable/);
+
+	await fire("turn_end", ctx);
+
+	const queries = sent.filter((entry) => entry.message.customType === "gentle-agents.message" && (entry.message.details as { gentleAgents?: { kind?: string } })?.gentleAgents?.kind === "query");
+	assert.equal(queries.length, 1, "query is delivered to the parent session at turn_end");
+	assert.match(String(queries[0].message.content), /Confirm deletion\?/);
+
+	await fire("session_shutdown", ctx);
+});
+
+test("issue #1162: task-mode subagent_run includes question directly in waiting result and avoids duplicate delivery", async () => {
+	const { pi, tools, fire, sent } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+
+	await fire("agent_start", ctx);
+	const pending = tools.get("subagent_run")!.execute("foreground", { agent: "explore", task: "Ask question directly" }, undefined, undefined, ctx);
+	await tick();
+
+	harness.children[0].message({ id: "q1", kind: "query", message: "Which directory should I inspect?" });
+	const yielded = await pending;
+
+	assert.equal((yielded as { terminate?: boolean }).terminate, true);
+	assert.match(yielded.content[0].text, /Subagent explore is waiting for your reply to request q1/);
+	assert.match(yielded.content[0].text, /Question:\nWhich directory should I inspect\?/);
+	assert.equal((yielded.details as { gentleAgents?: { question?: string } })?.gentleAgents?.question, "Which directory should I inspect?");
+
+	await fire("turn_end", ctx);
+
+	const queries = sent.filter((entry) => entry.message.customType === "gentle-agents.message");
+	assert.equal(queries.length, 0, "directly handed-off query is not sent as duplicate message");
+
+	await fire("session_shutdown", ctx);
+});
+

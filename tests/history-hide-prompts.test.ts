@@ -6,8 +6,8 @@ import path from "node:path";
 import {
   hidePrompt,
   readHiddenPrompts,
+  tombstoneKey,
 } from "../extensions/history/hide-prompts.ts";
-import { promptDedupKey } from "../extensions/history/selector-helpers.ts";
 
 // Unit WU4 — tombstone write half + read half (spec C4, design §D6; slice-05
 // D5 recency cap). fs-only coverage. The READ half FAILS CLOSED for history:
@@ -54,10 +54,10 @@ function trustedKeys(stateDir: string): Set<string> {
 }
 
 // T24 — AC-S4-1: hide-key fidelity. Tombstone keys must byte-match the
-// Change 2 dedup key for the same text — same imported helper, never a
-// re-implementation: the stored file content is compared against
-// promptDedupKey's own output with strict equality.
-test("T24 (AC-S4-1): hide keys byte-match promptDedupKey across whitespace, case, and >120-char groups", () => {
+// shared tombstoneKey helper for the same text — never a re-implementation:
+// the stored file content is compared against tombstoneKey's own output
+// with strict equality.
+test("T24 (AC-S4-1): hide keys byte-match tombstoneKey across whitespace, case, and >120-char groups", () => {
   const stateDir = makeStateDir("t24");
   // Three normalization groups: internal whitespace runs (space + tab),
   // letter case, and a text longer than the 120-char key prefix.
@@ -73,7 +73,7 @@ test("T24 (AC-S4-1): hide keys byte-match promptDedupKey across whitespace, case
   assert.ok(Array.isArray(stored), "hidden.json must hold a JSON array");
   // Byte-match: the file holds EXACTLY the shared helper's output, in
   // insertion (recency) order — the write half never sorts.
-  assert.deepEqual(stored, texts.map((text) => promptDedupKey(text)));
+  assert.deepEqual(stored, texts.map((text) => tombstoneKey(text)));
   // The read half agrees.
   const keys = trustedKeys(stateDir);
   assert.equal(keys.size, stored.length);
@@ -94,10 +94,10 @@ test("T25 (AC-S4-2): duplicate hides compact to one key; a missing file reads tr
   assert.deepEqual(hidePrompt(stateDir, "Same   Text"), { status: "written" });
   assert.deepEqual(hidePrompt(stateDir, "same text"), { status: "written" });
   const stored = readHideFile(stateDir);
-  assert.deepEqual(stored, [promptDedupKey("same text")]);
+  assert.deepEqual(stored, [tombstoneKey("same text")]);
   const keys = trustedKeys(stateDir);
   assert.equal(keys.size, 1);
-  assert.ok(keys.has(promptDedupKey("same text")));
+  assert.ok(keys.has(tombstoneKey("same text")));
 });
 
 // D5 — recency order: re-hiding an existing key REFRESHES it to the end
@@ -105,7 +105,7 @@ test("T25 (AC-S4-2): duplicate hides compact to one key; a missing file reads tr
 // write half never sorts.
 test("re-hiding an existing key refreshes it to the end (recency order, no sort)", () => {
   const stateDir = makeStateDir("recency");
-  const keysOf = (texts: string[]) => texts.map((text) => promptDedupKey(text));
+  const keysOf = (texts: string[]) => texts.map((text) => tombstoneKey(text));
   for (const text of ["alpha prompt", "beta prompt", "gamma prompt"]) {
     assert.deepEqual(hidePrompt(stateDir, text), { status: "written" });
   }
@@ -142,8 +142,8 @@ test("the 1001st distinct prompt drops the oldest key — the file keeps exactly
   // Exactly at the cap: 1000 keys, oldest first, newest last.
   const atCap = readHideFile(stateDir);
   assert.equal(atCap.length, 1000);
-  assert.equal(atCap[0], promptDedupKey(oldest));
-  assert.equal(atCap[atCap.length - 1], promptDedupKey("prompt number 999"));
+  assert.equal(atCap[0], tombstoneKey(oldest));
+  assert.equal(atCap[atCap.length - 1], tombstoneKey("prompt number 999"));
   // The 1001st distinct prompt: the front (oldest) drops, the newest lands.
   assert.deepEqual(hidePrompt(stateDir, "prompt number 1000"), {
     status: "written",
@@ -151,13 +151,13 @@ test("the 1001st distinct prompt drops the oldest key — the file keeps exactly
   const after = readHideFile(stateDir);
   assert.equal(after.length, 1000, "the cap holds the file at exactly 1000");
   assert.equal(
-    after.includes(promptDedupKey(oldest)),
+    after.includes(tombstoneKey(oldest)),
     false,
     "the oldest key must be dropped from the front",
   );
   assert.equal(
     after[after.length - 1],
-    promptDedupKey("prompt number 1000"),
+    tombstoneKey("prompt number 1000"),
     "the newest key must sit at the end",
   );
   // The read half agrees with the capped file.
@@ -190,7 +190,7 @@ test("T26 (AC-S4-5): corrupt hidden.json reads untrusted; hide refuses without r
   assert.deepEqual(hidePrompt(stateDir, "beta prompt"), { status: "written" });
   const keys = trustedKeys(stateDir);
   assert.equal(keys.size, 1);
-  assert.ok(keys.has(promptDedupKey("beta prompt")));
+  assert.ok(keys.has(tombstoneKey("beta prompt")));
 });
 
 // Wrong-shaped file: valid JSON that is not an array fails closed too (both

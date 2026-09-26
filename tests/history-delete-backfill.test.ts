@@ -72,7 +72,9 @@ test("executeDelete splices, backfills, then re-filters — inside the guarded b
   assert.ok(end > decl, "executeDelete's body should close");
   const body = selectorSource.slice(decl, end);
 
-  const earlyReturnAt = body.indexOf("if (removed === 0) return;");
+  // The early return now follows the sweep follow-up: nothing removed and
+  // nothing failed stops before any mutation (a failed file still hides).
+  const earlyReturnAt = body.indexOf("if (!followUp.proceed) return;");
   const spliceAt = body.indexOf("this.records.splice(");
   const backfillAt = body.indexOf("loadedCountAfterDelete(");
   const refilterAt = body.lastIndexOf("this.applyFilter(");

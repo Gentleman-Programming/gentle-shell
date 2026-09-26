@@ -243,6 +243,19 @@ test("compact abbreviates the radio only when the full radio cannot fit", async 
   assert.equal(lines[3]!.trimEnd(), ` ${SCOPE_RADIO_COMPACT_PROJECT}`);
 });
 
+test("the full radio shows exactly when its row, leading space included, fits", async () => {
+  // Stacked and compact rows print the radio after one leading space, so
+  // the full radio needs RADIO + 1 columns (review advisory A5).
+  const fits = await renderAt(RADIO + 1);
+  assert.equal(fits[3], ` ${SCOPE_RADIO_FULL_PROJECT}`);
+  const tight = await renderAt(RADIO);
+  assert.equal(tight[3]!.trimEnd(), ` ${SCOPE_RADIO_COMPACT_PROJECT}`);
+  assert.ok(
+    tight.slice(1, 4).every((line) => !line.includes("…")),
+    "no header row is truncated at the boundary width",
+  );
+});
+
 test("the list wheel band follows the header mode", async () => {
   // Inline: row 5 is the first list row — wheel down selects p13.
   assert.equal(await wheelAt(5, INLINE_WIDTH), "p13");

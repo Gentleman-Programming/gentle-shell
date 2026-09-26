@@ -553,8 +553,12 @@ class PromptHistorySelector extends Container implements Focusable {
     const radioFull = scopeRadioText(this.scope, false);
     // Radio label compaction is fit-driven too: abbreviate only when the
     // full radio cannot fit the row it would occupy (user-directed paste).
+    // Stacked and compact rows print it after one leading space; inline
+    // mode always fits it by construction.
     const radioText =
-      width >= radioFull.length ? radioFull : scopeRadioText(this.scope, true);
+      width >= radioFull.length + 1
+        ? radioFull
+        : scopeRadioText(this.scope, true);
     const mode = planHeaderLayout(
       width,
       leftWidth,

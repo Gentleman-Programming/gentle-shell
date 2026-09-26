@@ -401,12 +401,35 @@ export function drainProject(
 }
 
 /**
+ * Carry siblings a failed sweep carry-over wrote next to the global seed
+ * (`history-global.jsonl.carry-*.jsonl`, see carryIntoRewrite). They live
+ * in the store root, outside every project dir, so the global drain and
+ * delete list them explicitly.
+ */
+function listGlobalSeedCarries(root: string): string[] {
+  const prefix = `${path.basename(globalSeedPath(root))}.carry-`;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries
+    .filter(
+      (e) =>
+        e.isFile() && e.name.startsWith(prefix) && e.name.endsWith(".jsonl"),
+    )
+    .map((e) => path.join(root, e.name));
+}
+
+/**
  * Drain the GLOBAL scope: every project dir's files, mtime-newest-first,
  * deduped, capped — with the legacy global seed appended LAST (deliberate:
  * it is the least specific, migrated source, so per-project entries win
- * recency and keep-first dedup favors them). With a `stateDir`, the
- * tombstone filter applies and fails closed: an untrusted hidden.json
- * blocks the drain (see DrainResult).
+ * recency and keep-first dedup favors them). The seed's carry siblings hold
+ * bytes appended to it after a sweep's read, so they drain right before
+ * it. With a `stateDir`, the tombstone filter applies and fails closed: an
+ * untrusted hidden.json blocks the drain (see DrainResult).
  */
 export function drainGlobal(
   root: string,
@@ -431,6 +454,7 @@ export function drainGlobal(
     );
   }
   const sorted = sortFilesForDrain(files);
+  sorted.push(...sortFilesForDrain(listGlobalSeedCarries(root)));
   if (fs.existsSync(globalSeed)) sorted.push(globalSeed); // legacy last
   return drainWithHidden(sorted, limit, stateDir);
 }
@@ -523,7 +547,10 @@ function sweepFile(file: string, key: string): number {
 
 /**
  * Append raced bytes to the rewritten file; if that fails, keep them in a
- * sibling store file (read like any other) so they are never lost. A torn
+ * sibling store file (read like any other) so they are never lost. A failed
+ * append may have written part of the bytes: that fragment is trimmed back
+ * to the last newline first, so the owner's next append cannot merge with
+ * it into one corrupt line (the sibling holds every carried byte). A torn
  * last line is completed so the sibling stays parseable. Throws only when
  * both writes fail.
  */
@@ -531,12 +558,32 @@ function carryIntoRewrite(file: string, carried: Buffer): void {
   try {
     fs.appendFileSync(file, carried);
   } catch {
+    trimTornTail(file);
     const text = carried.toString("utf8");
     fs.writeFileSync(
       `${file}.carry-${process.pid}-${Date.now()}.jsonl`,
       text.endsWith("\n") ? text : `${text}\n`,
       { flag: "wx" },
     );
+  }
+}
+
+/**
+ * Truncate `file` after its last newline, dropping a newline-less fragment
+ * left by a partially written append. Bytes before the last newline are
+ * complete lines and are never touched. Best effort: never throws.
+ */
+function trimTornTail(file: string): void {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(file, "r+");
+    const bytes = readFrom(fd, 0);
+    const complete = bytes.lastIndexOf(NEWLINE) + 1;
+    if (complete < bytes.length) fs.ftruncateSync(fd, complete);
+  } catch {
+    // the carry sibling still keeps every raced byte
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
   }
 }
 
@@ -578,11 +625,15 @@ export function deleteFromProject(
   );
 }
 
-/** Delete every copy of a prompt from the GLOBAL scope (all projects + seed). */
+/**
+ * Delete every copy of a prompt from the GLOBAL scope (all projects, the
+ * seed, and the seed's carry siblings).
+ */
 export function deleteFromGlobal(root: string, text: string): SweepResult {
   const files: string[] = [];
   const globalSeed = globalSeedPath(root);
   if (fs.existsSync(globalSeed)) files.push(globalSeed);
+  files.push(...listGlobalSeedCarries(root));
   let projectDirs: fs.Dirent[];
   try {
     projectDirs = fs.readdirSync(path.join(root, "projects"), {

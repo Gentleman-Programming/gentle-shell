@@ -7,11 +7,14 @@ import {
   appendSessionCapture,
   deleteFromGlobal,
   deleteFromProject,
+  drainGlobal,
   drainProject,
   globalSeedPath,
   openSessionWriter,
+  parseStoreLine,
   projectHash,
 } from "../extensions/history/store.ts";
+import { hidePrompt } from "../extensions/history/hide-prompts.ts";
 
 // Scope delete (design v2): sweepFiles' atomic per-file rewrite semantics
 // plus the project/global delete entry points. Synthetic project cwds —
@@ -294,4 +297,115 @@ test("raced lines survive a failed carry-over append in a sibling store file", (
     fs.readdirSync(dir).filter((f) => f.includes(".tmp-")),
     [],
   );
+});
+
+/** Fail the sweep's Buffer carry-over append to `target`; `partial` bytes land first. */
+function withFailedCarry(target: string, partial: number, run: () => void): void {
+  const realAppend = fs.appendFileSync;
+  let failed = false;
+  fs.appendFileSync = ((
+    file: fs.PathOrFileDescriptor,
+    data: string | Uint8Array,
+    options?: fs.WriteFileOptions,
+  ) => {
+    if (String(file) === target && Buffer.isBuffer(data)) {
+      failed = true;
+      if (partial > 0) realAppend(file, data.subarray(0, partial));
+      throw Object.assign(new Error("simulated ENOSPC"), { code: "ENOSPC" });
+    }
+    return realAppend(file, data, options);
+  }) as typeof fs.appendFileSync;
+  try {
+    run();
+  } finally {
+    fs.appendFileSync = realAppend;
+  }
+  assert.ok(failed, "the simulated carry-over failure must fire");
+}
+
+// Review advisory A1 (#1477): a failed carry-over on the GLOBAL seed writes
+// `history-global.jsonl.carry-*.jsonl` next to it, outside every project
+// dir. The global drain and delete must reach it like any store file.
+test("the global scope drains and deletes the global seed's carry sibling", () => {
+  const root = makeRoot();
+  const stateDir = makeRoot();
+  const seed = globalSeedPath(root);
+  writeLines(seed, ["victim", "legacy-keep"]);
+  const dir = path.join(root, "projects", projectHash(PROJECT_A));
+  writeLines(path.join(dir, "s.jsonl"), ["project-newest"]);
+  withFailedCarry(seed, 0, () => {
+    withAppendBeforeRename(
+      seed,
+      `${JSON.stringify({ v: 1, text: "hidden raced" })}\n` +
+        `${JSON.stringify({ v: 1, text: "raced in" })}\n`,
+      () => {
+        const result = deleteFromGlobal(root, "victim");
+        assert.deepEqual(result, { filesAffected: 1, removed: 1, failed: 0 });
+      },
+    );
+  });
+  const carries = fs
+    .readdirSync(root)
+    .filter((f) => f.startsWith("history-global.jsonl.carry-"));
+  assert.equal(carries.length, 1, "the raced lines live in one carry sibling");
+  assert.equal(hidePrompt(stateDir, "hidden raced").status, "written");
+
+  // Tombstones apply; the carry holds bytes newer than the seed, so it
+  // drains right before it, after every project file (legacy last).
+  const drained = drainGlobal(root, 1000, stateDir);
+  assert.equal(drained.status, "ok");
+  if (drained.status === "ok") {
+    assert.deepEqual(drained.prompts, [
+      "project-newest",
+      "raced in",
+      "legacy-keep",
+    ]);
+  }
+
+  const result = deleteFromGlobal(root, "raced in");
+  assert.deepEqual(result, { filesAffected: 1, removed: 1, failed: 0 });
+  const after = drainGlobal(root, 1000, stateDir);
+  assert.equal(after.status, "ok");
+  if (after.status === "ok") {
+    assert.deepEqual(after.prompts, ["project-newest", "legacy-keep"]);
+  }
+});
+
+// Review advisory A3 (#1477): a carry-over append that fails after writing
+// part of its bytes must not leave a newline-less fragment in the rewritten
+// file, where the owner's next append would merge into one corrupt line.
+test("a partially written carry-over leaves no fragment for the next append", () => {
+  const root = makeRoot();
+  const state = openSessionWriter(root, PROJECT_A, "other-instance");
+  appendSessionCapture(state, "victim");
+  appendSessionCapture(state, "keeper");
+  withFailedCarry(state.filePath, 7, () => {
+    withAppendBeforeRename(
+      state.filePath,
+      `${JSON.stringify({ v: 1, text: "raced in" })}\n`,
+      () => {
+        const result = deleteFromProject(root, PROJECT_A, "victim");
+        assert.deepEqual(result, { filesAffected: 1, removed: 1, failed: 0 });
+      },
+    );
+  });
+  appendSessionCapture(state, "after-carry");
+  const lines = fs
+    .readFileSync(state.filePath, "utf8")
+    .split("\n")
+    .filter((l) => l.length > 0);
+  assert.deepEqual(
+    lines.map((l) => parseStoreLine(l)?.text ?? null),
+    ["keeper", "after-carry"],
+    "every line of the rewritten file parses",
+  );
+  const drained = drainProject(root, PROJECT_A);
+  assert.equal(drained.status, "ok");
+  if (drained.status === "ok") {
+    assert.deepEqual([...drained.prompts].sort(), [
+      "after-carry",
+      "keeper",
+      "raced in",
+    ]);
+  }
 });

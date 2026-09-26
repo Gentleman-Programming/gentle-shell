@@ -21,7 +21,7 @@ const EXCLUDE_NAMES = new Set(["_shared", "skill-registry"]);
 const EXCLUDE_PREFIXES = ["sdd-"];
 const ATL_IGNORE_ENTRY = ".atl/";
 const WATCH_DEBOUNCE_MS = 500;
-const REGISTRY_SCHEMA_VERSION = 7;
+const REGISTRY_SCHEMA_VERSION = 9;
 const NO_SKILL_REGISTRY_FLAG = "no-skill-registry";
 const NO_SKILL_REGISTRY_ENV = "GENTLE_PI_NO_SKILL_REGISTRY";
 const LEGACY_PROJECT_REGISTRY_REL_PATH = ".pi/extensions/skill-registry.ts";
@@ -49,6 +49,23 @@ interface SkillEntry {
 	path: string;
 	description: string;
 	scope?: string;
+}
+
+// Structural mirror of pi's runtime-resolved skill record. Kept local on
+// purpose: this seam must not import pi internals.
+export interface ResolvedSkill {
+	name: string;
+	description: string;
+	filePath: string;
+	baseDir?: string;
+	disableModelInvocation?: boolean;
+	sourceInfo?: {
+		path?: string;
+		source?: string;
+		scope?: "user" | "project" | "temporary";
+		origin?: "package" | "top-level";
+		baseDir?: string;
+	};
 }
 
 function userSkillDirs(): string[] {
@@ -222,10 +239,88 @@ function dedupeBySkillName(entries: SkillEntry[], cwd: string): SkillEntry[] {
 	}
 	const out: SkillEntry[] = [];
 	for (const [, list] of buckets) {
-		const projectScoped = list.find((e) => comparablePath(e.path).startsWith(projectPrefix));
+		const projectScoped = list.find((e) =>
+			e.scope?.startsWith("project") ||
+			(e.scope === undefined && comparablePath(e.path).startsWith(projectPrefix)),
+		);
 		out.push(projectScoped ?? list[0]);
 	}
 	return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function resolvedScopeLabel(skill: ResolvedSkill): string {
+	const scope = skill.sourceInfo?.scope === "project" ? "project" : "user";
+	return skill.sourceInfo?.origin === "package" ? `${scope} · package` : scope;
+}
+
+// Runtime capture state: pi-resolved skills from the latest before_agent_start
+// event, trimmed to only the fields the registry seam consumes. Never retain
+// the full runtime event objects.
+let lastResolvedSkills: ResolvedSkill[] = [];
+
+function trimResolvedSkill(skill: ResolvedSkill): ResolvedSkill {
+	const trimmed: ResolvedSkill = {
+		name: skill.name,
+		description: skill.description,
+		filePath: skill.filePath,
+	};
+	if (skill.disableModelInvocation === true) trimmed.disableModelInvocation = true;
+	if (skill.sourceInfo) {
+		trimmed.sourceInfo = {
+			scope: skill.sourceInfo.scope,
+			origin: skill.sourceInfo.origin,
+		};
+	}
+	return trimmed;
+}
+
+function isResolvedSourceInfo(value: unknown): value is NonNullable<ResolvedSkill["sourceInfo"]> {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const sourceInfo = value as NonNullable<ResolvedSkill["sourceInfo"]>;
+	return (
+		(sourceInfo.scope === undefined ||
+			sourceInfo.scope === "user" ||
+			sourceInfo.scope === "project" ||
+			sourceInfo.scope === "temporary") &&
+		(sourceInfo.origin === undefined || sourceInfo.origin === "package" || sourceInfo.origin === "top-level")
+	);
+}
+
+function isResolvedSkill(value: unknown): value is ResolvedSkill {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const skill = value as Partial<ResolvedSkill>;
+	return (
+		typeof skill.name === "string" &&
+		typeof skill.description === "string" &&
+		typeof skill.filePath === "string" &&
+		(skill.disableModelInvocation === undefined || typeof skill.disableModelInvocation === "boolean") &&
+		(skill.sourceInfo === undefined || isResolvedSourceInfo(skill.sourceInfo))
+	);
+}
+
+async function applyResolvedSkillsUpdate(cwd: string, skills: ResolvedSkill[]): Promise<RegenResult> {
+	lastResolvedSkills = skills.map(trimResolvedSkill);
+	return regenerateRegistry(cwd, false, lastResolvedSkills);
+}
+
+function toResolvedEntry(skill: ResolvedSkill, cwd: string): SkillEntry | undefined {
+	// cwd is reserved: pi-resolved paths are already absolute, but the seam stays
+	// symmetric with the loose scan for future scoping needs.
+	void cwd;
+	if (skill.disableModelInvocation === true) return undefined;
+	if (isExcluded(skill.name)) return undefined;
+	return {
+		name: skill.name,
+		path: skill.filePath,
+		description: normalizeSkillDescription(skill.description),
+		scope: resolvedScopeLabel(skill),
+	};
+}
+
+function mergeResolvedWithLoose(resolved: SkillEntry[], loose: SkillEntry[], cwd: string): SkillEntry[] {
+	const resolvedPaths = new Set(resolved.map((entry) => comparablePath(entry.path)));
+	const filteredLoose = loose.filter((entry) => !resolvedPaths.has(comparablePath(entry.path)));
+	return dedupeBySkillName([...resolved, ...filteredLoose], cwd);
 }
 
 function scopeForPath(cwd: string, path: string): string {
@@ -248,8 +343,19 @@ function isCacheFile(value: unknown): value is { fingerprint: string } {
 	);
 }
 
-async function fingerprint(files: string[]): Promise<string> {
-	const lines: string[] = [`schema:${REGISTRY_SCHEMA_VERSION}`];
+async function fingerprint(files: string[], resolved: ResolvedSkill[] = []): Promise<string> {
+	const resolvedLines = resolved.map((skill) =>
+		JSON.stringify([
+			"resolved",
+			skill.name,
+			normalizeSkillDescription(skill.description),
+			skill.filePath,
+			skill.disableModelInvocation === true,
+			skill.sourceInfo?.scope ?? "",
+			skill.sourceInfo?.origin ?? "",
+		]),
+	);
+	const fileLines: string[] = [];
 	for (const file of files) {
 		try {
 			const info = await stat(file);
@@ -257,19 +363,20 @@ async function fingerprint(files: string[]): Promise<string> {
 			try {
 				contentHash = createHash("sha1").update(await readFile(file)).digest("hex");
 			} catch {
-				lines.push(`${file}:unreadable`);
+				fileLines.push(`${file}:unreadable`);
 				continue;
 			}
-			lines.push(`${file}:${info.mtimeMs}:${info.size}:${contentHash}`);
+			fileLines.push(`${file}:${info.mtimeMs}:${info.size}:${contentHash}`);
 		} catch {
-			lines.push(`${file}:missing`);
+			fileLines.push(`${file}:missing`);
 		}
 	}
-	lines.sort();
-	return createHash("sha1").update(lines.join("\n")).digest("hex");
+	return createHash("sha1")
+		.update([`schema:${REGISTRY_SCHEMA_VERSION}`, ...resolvedLines, ...fileLines.sort()].join("\n"))
+		.digest("hex");
 }
 
-function renderRegistry(cwd: string, sources: string[], entries: SkillEntry[]): string {
+function renderRegistry(cwd: string, sources: string[], entries: SkillEntry[], resolvedCount = 0): string {
 	const projectName = basename(cwd);
 	const today = new Date().toISOString().slice(0, 10);
 	const lines: string[] = [];
@@ -281,6 +388,9 @@ function renderRegistry(cwd: string, sources: string[], entries: SkillEntry[]): 
 	lines.push("");
 	lines.push("## Sources scanned");
 	lines.push("");
+	if (resolvedCount > 0) {
+		lines.push(`- Pi-resolved runtime authority (before_agent_start.systemPromptOptions.skills): ${resolvedCount} skill(s)`);
+	}
 	for (const src of sources) {
 		lines.push(`- ${src}`);
 	}
@@ -374,6 +484,7 @@ async function quarantineLegacyProjectRegistry(cwd: string): Promise<boolean> {
 async function regenerateRegistry(
 	cwd: string,
 	force: boolean,
+	resolved: ResolvedSkill[] = [],
 ): Promise<RegenResult> {
 	const existingDirs = await uniqueExistingDirs([
 		...projectSkillDirs(cwd),
@@ -385,7 +496,7 @@ async function regenerateRegistry(
 	}
 	const cachePath = join(cwd, CACHE_REL_PATH);
 	const registryPath = join(cwd, REGISTRY_REL_PATH);
-	const fp = await fingerprint(files);
+	const fp = await fingerprint(files, resolved);
 	let cached: string | undefined;
 	if (await pathExists(cachePath)) {
 		try {
@@ -403,12 +514,17 @@ async function regenerateRegistry(
 		const entry = await loadSkill(file);
 		if (entry) entries.push(entry);
 	}
-	const deduped = dedupeBySkillName(entries, cwd);
+	const resolvedEntries: SkillEntry[] = [];
+	for (const skill of resolved) {
+		const entry = toResolvedEntry(skill, cwd);
+		if (entry) resolvedEntries.push(entry);
+	}
+	const deduped = mergeResolvedWithLoose(resolvedEntries, entries, cwd);
 	const sources = existingDirs.map((d) => {
 		const rel = relative(cwd, d);
 		return rel.startsWith("..") ? d : rel || ".";
 	});
-	const md = renderRegistry(cwd, sources, deduped);
+	const md = renderRegistry(cwd, sources, deduped, resolvedEntries.length);
 	await mkdir(join(cwd, ".atl"), { recursive: true });
 	await writeFile(registryPath, md);
 	await writeFile(cachePath, JSON.stringify({ fingerprint: fp }, null, 2));
@@ -503,7 +619,7 @@ async function startSkillRegistryWatcher(
 		timer = setTimeout(() => {
 			void (async () => {
 				try {
-					const result = await regenerateRegistry(cwd, false);
+					const result = await regenerateRegistry(cwd, false, lastResolvedSkills);
 					if (result.regenerated) {
 						notify(`Skill registry refreshed (${result.skillCount} skills)`);
 					}
@@ -529,11 +645,14 @@ export const __testing = {
 	findSkillFiles,
 	uniqueExistingDirs,
 	dedupeBySkillName,
+	toResolvedEntry,
+	mergeResolvedWithLoose,
 	scopeForPath,
 	normalizeSkillDescription,
 	parseFrontmatter,
 	renderRegistry,
 	regenerateRegistry,
+	applyResolvedSkillsUpdate,
 	shouldSkipSkillRegistryStartup,
 	shouldSkipDuplicateExtensionLoad,
 	startSkillRegistryWatcher,
@@ -548,6 +667,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", () => {
 		closeSkillRegistryWatchers();
+		lastResolvedSkills = [];
 	});
 
 	pi.registerFlag(NO_SKILL_REGISTRY_FLAG, {
@@ -602,12 +722,29 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
+	pi.on("before_agent_start", async (event, ctx) => {
+		if (shouldSkipSkillRegistryStartup(pi)) return;
+		const skills = event.systemPromptOptions?.skills;
+		if (!Array.isArray(skills) || !skills.every(isResolvedSkill)) return;
+		try {
+			const result = await applyResolvedSkillsUpdate(ctx.cwd, skills);
+			if (result.regenerated && ctx.hasUI) {
+				ctx.ui.notify(
+					`Skill registry refreshed (${result.skillCount} skills)`,
+					"info",
+				);
+			}
+		} catch {
+			// Keep the runtime capture best-effort; a failed refresh must never break the agent turn.
+		}
+	});
+
 	pi.registerCommand("skill-registry:refresh", {
 		description: "Regenerate .atl/skill-registry.md from local skill sources.",
 		handler: async (_args, ctx) => {
 			try {
 				await ensureAtlIgnored(ctx.cwd);
-				const result = await regenerateRegistry(ctx.cwd, true);
+				const result = await regenerateRegistry(ctx.cwd, true, lastResolvedSkills);
 				ctx.ui.notify(
 					`Skill registry: ${result.skillCount} skill(s) written to ${REGISTRY_REL_PATH}`,
 					"info",

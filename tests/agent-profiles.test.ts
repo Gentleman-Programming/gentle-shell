@@ -437,6 +437,24 @@ test("normalizeProfilesFile drops an active marker that points nowhere", () => {
 	assert.equal(normalized?.drops.droppedProfiles.length, 0);
 });
 
+test("normalizeProfilesFile accepts effort as alias for thinking in profile entries (#1403)", () => {
+	const normalized = normalizeProfilesFile(
+		JSON.parse(
+			profilesText({
+				hybrid: {
+					"example-agent": { model: "anthropic/claude-sonnet-4", effort: "medium" },
+					"worker": { effort: "high" },
+				},
+			}),
+		),
+	);
+	assert.deepEqual(normalized?.file.profiles.hybrid, {
+		"example-agent": { model: "anthropic/claude-sonnet-4", thinking: "medium" },
+		"worker": { model: undefined, thinking: "high" },
+	});
+	assert.equal(normalized?.drops.droppedAgents.length, 0);
+});
+
 test("bootstrapProfilesFile seeds a current profile, active only when routing is non-empty", () => {
 	const empty = bootstrapProfilesFile({});
 	assert.deepEqual(empty, {

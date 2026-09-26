@@ -13,7 +13,6 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { readHiddenPrompts } from "./hide-prompts.ts";
-import { loadSharedHistory } from "./load-shared-history.ts";
 import {
   extractPromptsFromFile,
   listSessionFiles,
@@ -452,17 +451,15 @@ export interface MigrationResult {
 }
 
 function readValidLines(file: string): StoreEntry[] {
-  try {
-    const raw = fs.readFileSync(file, "utf8");
-    const entries: StoreEntry[] = [];
-    for (const lineText of raw.split("\n")) {
-      const parsed = parseStoreLine(lineText);
-      if (parsed) entries.push(parsed);
-    }
-    return entries;
-  } catch {
-    return [];
+  // A read failure must abort the entire migration: archiving a source
+  // whose prompts were not imported would make the loss permanent.
+  const raw = fs.readFileSync(file, "utf8");
+  const entries: StoreEntry[] = [];
+  for (const lineText of raw.split("\n")) {
+    const parsed = parseStoreLine(lineText);
+    if (parsed) entries.push(parsed);
   }
+  return entries;
 }
 
 /**
@@ -486,9 +483,16 @@ export function migrateLegacyStores(
   // Pre-v1 array (newest-first) → reverse to chronological.
   const legacyArray = path.join(agentDir, "editor-history.json");
   if (fs.existsSync(legacyArray)) {
-    const texts = loadSharedHistory(legacyArray);
-    for (let i = texts.length - 1; i >= 0; i--) {
-      collected.push({ v: 1, text: texts[i] });
+    // Unlike the tolerant UI reader, migration must not archive a source
+    // whose bytes could not be read or parsed. Read exactly once.
+    const values: unknown = JSON.parse(fs.readFileSync(legacyArray, "utf8"));
+    if (!Array.isArray(values)) throw new Error("Invalid legacy history array");
+    for (let i = values.length - 1; i >= 0; i--) {
+      const item: unknown = values[i];
+      const text = typeof item === "string" ? item :
+        item && typeof item === "object" && "text" in item &&
+        typeof item.text === "string" ? item.text : null;
+      if (text && text.length > 0) collected.push({ v: 1, text });
     }
   }
 

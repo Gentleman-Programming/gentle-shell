@@ -97,6 +97,43 @@ test("existing global seed gates the migration (idempotent)", () => {
   assert.equal(fs.existsSync(v1), true);
 });
 
+test("unreadable legacy source leaves both sources for a complete retry", () => {
+  const { root, agentDir } = makeDirs();
+  const array = path.join(agentDir, "editor-history.json");
+  const v1 = path.join(agentDir, "editor-history.jsonl");
+  fs.writeFileSync(array, JSON.stringify(["array prompt"]));
+  fs.writeFileSync(v1, `${JSON.stringify({ text: "v1 prompt" })}\n`);
+  const original = fs.readFileSync;
+  fs.readFileSync = ((file: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+    if (file === v1) throw new Error("injected read failure");
+    return (original as (...args: unknown[]) => unknown)(file, ...args);
+  }) as typeof fs.readFileSync;
+  try {
+    assert.throws(() => migrateLegacyStores(root, agentDir), /injected read failure/);
+    assert.equal(fs.existsSync(globalSeedPath(root)), false);
+    assert.equal(fs.existsSync(array), true);
+    assert.equal(fs.existsSync(v1), true);
+  } finally {
+    fs.readFileSync = original;
+  }
+  assert.deepEqual(migrateLegacyStores(root, agentDir), { migrated: 2, ran: true });
+  assert.deepEqual(fileTexts(globalSeedPath(root)), ["array prompt", "v1 prompt"]);
+});
+
+test("malformed legacy array cannot archive a readable v1 source", () => {
+  const { root, agentDir } = makeDirs();
+  const array = path.join(agentDir, "editor-history.json");
+  const v1 = path.join(agentDir, "editor-history.jsonl");
+  fs.writeFileSync(array, "{torn");
+  fs.writeFileSync(v1, `${JSON.stringify({ text: "survives" })}\n`);
+  assert.throws(() => migrateLegacyStores(root, agentDir), SyntaxError);
+  assert.equal(fs.existsSync(globalSeedPath(root)), false);
+  assert.equal(fs.existsSync(v1), true);
+  fs.writeFileSync(array, JSON.stringify(["repaired"]));
+  assert.deepEqual(migrateLegacyStores(root, agentDir), { migrated: 2, ran: true });
+  assert.deepEqual(fileTexts(globalSeedPath(root)), ["repaired", "survives"]);
+});
+
 test("malformed v1 jsonl lines are skipped, not fatal", () => {
   const { root, agentDir } = makeDirs();
   const v1 = path.join(agentDir, "editor-history.jsonl");
@@ -159,7 +196,7 @@ seedFailureTest(
 );
 
 sealedLegacyTest(
-  "an unreadable legacy file is skipped; the readable file still migrates",
+  "an unreadable legacy file defers migration without archiving either source",
   () => {
     const { root, agentDir } = makeDirs();
     const readable = path.join(agentDir, "editor-history.json");
@@ -172,20 +209,12 @@ sealedLegacyTest(
     );
     fs.chmodSync(sealed, 0o000);
     try {
-      // The sealed file's bytes are unreadable: its prompts contribute
-      // nothing to the seed; the readable array still migrates. No throw.
-      const result = migrateLegacyStores(root, agentDir);
-      assert.deepEqual(result, { migrated: 1, ran: true });
-      assert.deepEqual(fileTexts(globalSeedPath(root)), ["from-array"]);
+      assert.throws(() => migrateLegacyStores(root, agentDir));
+      assert.equal(fs.existsSync(globalSeedPath(root)), false);
+      assert.equal(fs.existsSync(readable), true);
+      assert.equal(fs.existsSync(sealed), true);
     } finally {
-      // The migration archives the unreadable file as `.imported` (rename
-      // needs no read permission — content skipped, file still moved aside);
-      // restore only when the original path survived an early failure.
-      try {
-        fs.chmodSync(sealed, 0o644);
-      } catch {
-        // already renamed to `.imported` by the migration
-      }
+      fs.chmodSync(sealed, 0o644);
     }
   },
 );

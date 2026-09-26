@@ -99,6 +99,8 @@ export interface HistoryDeps {
   cwd?: string;
   instanceId?: string;
   now?: () => number;
+  agentDir?: string;
+  sessionsRoot?: string;
 }
 
 /**
@@ -973,6 +975,8 @@ export default function promptHistoryExtension(
   const cwd = deps.cwd ?? process.cwd();
   const instanceId = deps.instanceId ?? randomUUID();
   const now = deps.now ?? Date.now;
+  const agentDir = deps.agentDir ?? AGENT_DIR;
+  const sessionsRoot = deps.sessionsRoot ?? SESSIONS_ROOT;
   let writerState: SessionWriterState | null = null;
 
   /**
@@ -982,7 +986,7 @@ export default function promptHistoryExtension(
   const getWriter = (): SessionWriterState => {
     if (!writerState) {
       try {
-        migrateLegacyStores(PI_HISTORY_ROOT, AGENT_DIR);
+        migrateLegacyStores(root, agentDir);
       } catch {
         // migration is best-effort; the gate keeps it one-shot
       }
@@ -995,8 +999,9 @@ export default function promptHistoryExtension(
         bootstrapProjectSeed(
           root,
           cwd,
-          SESSIONS_ROOT,
+          sessionsRoot,
           500,
+          root,
         );
       } catch {
         // bootstrap is a rebuildable cache

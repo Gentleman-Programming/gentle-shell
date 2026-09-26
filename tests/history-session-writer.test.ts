@@ -7,6 +7,7 @@ import {
   appendSessionCapture,
   openSessionWriter,
   projectHash,
+  seedFilePath,
   sessionFilePath,
 } from "../extensions/history/store.ts";
 import promptHistoryExtension, { captureEnabled } from "../extensions/history/index.ts";
@@ -48,6 +49,8 @@ function captureHandlerWith(env: NodeJS.ProcessEnv, root: string) {
     cwd: CWD,
     instanceId: "inst-entry",
     now: () => 1700000000000,
+    agentDir: path.join(root, "agent"),
+    sessionsRoot: path.join(root, "sessions"),
   });
   return registered[0][1] as (event: unknown) => void;
 }
@@ -172,6 +175,30 @@ test("an opted-in session captures delivered prompts", () => {
   assert.deepEqual(fileTexts(sessionFilePath(root, CWD, "inst-entry")), [
     "hello store",
   ]);
+});
+
+test("opted-in capture imports into its own root and defers seed on untrusted tombstones", () => {
+  const root = makeRoot();
+  const sessions = path.join(root, "sessions", "--pi-history-test-project-a--");
+  fs.mkdirSync(sessions, { recursive: true });
+  fs.writeFileSync(path.join(sessions, "s.jsonl"), [
+    JSON.stringify({ type: "session", version: 3 }),
+    JSON.stringify({ type: "message", message: { role: "user", content: "transcript prompt" } }),
+  ].join("\n") + "\n");
+  const agentDir = path.join(root, "agent");
+  fs.mkdirSync(agentDir);
+  fs.writeFileSync(path.join(agentDir, "editor-history.jsonl"),
+    JSON.stringify({ v: 1, text: "legacy prompt" }) + "\n");
+  fs.writeFileSync(path.join(root, "hidden.json"), "{invalid");
+  const handler = captureHandlerWith({ GENTLE_PI_HISTORY_CAPTURE: "1" }, root);
+  handler({ prompt: "current prompt" });
+  assert.deepEqual(fileTexts(path.join(root, "history-global.jsonl")), ["legacy prompt"]);
+  assert.equal(fs.existsSync(seedFilePath(root, CWD)), false);
+  assert.deepEqual(fileTexts(sessionFilePath(root, CWD, "inst-entry")), ["current prompt"]);
+  fs.writeFileSync(path.join(root, "hidden.json"), JSON.stringify(["transcript prompt"]));
+  // A new instance retries bootstrap after tombstones become trusted.
+  captureHandlerWith({ GENTLE_PI_HISTORY_CAPTURE: "1" }, root)({ prompt: "next prompt" });
+  assert.equal(fs.existsSync(seedFilePath(root, CWD)), false);
 });
 
 test("disabling capture stops new lines and leaves existing files alone", () => {

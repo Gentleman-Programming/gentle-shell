@@ -3,7 +3,7 @@ import { execFileSync, execFile } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
 import { CURSOR_MARKER, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
@@ -27,7 +27,18 @@ import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 initTheme("dark");
 
 const resolveWorktree = (path: string) => ({ root: path.startsWith("/repo") || path === "." ? "/repo" : path, commonDir: "/clone/git" });
-const gentleShell: typeof installGentleShell = (pi, env, deps) => installGentleShell(pi, env, { resolveWorktree, gitRunner: (cwd) => async (args) => pi.exec("git", ["-C", cwd, ...args], { timeout: 5000 }), ...deps });
+// Without GENTLE_PI_CONFIG_HOME the extension reads ~/.pi/gentle-ai, so a
+// developer's persisted preferences (for example /gentle:vim on) would leak into
+// tests. Each instance gets a fresh empty config home unless the test owns one.
+const isolatedConfigHomes: string[] = [];
+after(() => { for (const home of isolatedConfigHomes) rmSync(home, { recursive: true, force: true }); });
+function isolatedEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+	if (env.GENTLE_PI_CONFIG_HOME !== undefined) return env;
+	const home = mkdtempSync(join(tmpdir(), "gentle-shell-config-"));
+	isolatedConfigHomes.push(home);
+	return { ...env, GENTLE_PI_CONFIG_HOME: home };
+}
+const gentleShell: typeof installGentleShell = (pi, env, deps) => installGentleShell(pi, isolatedEnv(env), { resolveWorktree, gitRunner: (cwd) => async (args) => pi.exec("git", ["-C", cwd, ...args], { timeout: 5000 }), ...deps });
 
 const plainTheme = {
 	fg(_color: string, value: string) {
@@ -3849,7 +3860,7 @@ test("registered canonical root governs real Git discovery, status and diff desp
 	const discovery = await run(["worktree", "list", "--porcelain", "-z"]);
 	assert.match(discovery.stdout, new RegExp(`worktree ${selected}`));
 	assert.ok(!discovery.stdout.includes(foreign));
-	installGentleShell(h.pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { devBinary: () => undefined, gitRunner: (cwd) => shellGitRunner(cwd, poisoned) });
+	installGentleShell(h.pi, isolatedEnv({ GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }), { devBinary: () => undefined, gitRunner: (cwd) => shellGitRunner(cwd, poisoned) });
 	await fire(h.handlers, "session_start", ctx);
 	t.after(() => fire(h.handlers, "session_shutdown", ctx));
 	assert.equal(ui.widgets.has("gentle-shell-changes"), false, "preexisting dirty files are not agent changes");

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -76,7 +76,9 @@ function harness(profile: string): { view: AgentsView; remoteThreads(): Map<stri
 }
 
 async function withPresenceFixture(run: (profile: string) => Promise<void>): Promise<void> {
-	const profile = mkdtempSync(join(tmpdir(), "agents-view-identity-"));
+	// Presence rejects symlinked profile ancestors, and macOS tmpdir() lives under
+	// the /var -> /private/var symlink, so the fixture must use the canonical path.
+	const profile = mkdtempSync(join(realpathSync(tmpdir()), "agents-view-identity-"));
 	try {
 		await run(profile);
 	} finally {

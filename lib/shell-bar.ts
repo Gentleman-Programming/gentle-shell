@@ -110,7 +110,7 @@ export function formatTokens(count: number): string {
 	return `${Math.round(count / 1_000_000)}M`;
 }
 
-export function formatCost(total: number, subscription: boolean): string {
+export function formatCost(total: number, subscription = false): string {
 	const amount = total >= 1 ? total.toFixed(2) : total.toFixed(3);
 	return subscription ? `$${amount} sub` : `$${amount}`;
 }

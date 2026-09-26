@@ -5,7 +5,7 @@ import { emptyThread, isFinished, TASK_STATUS, type TaskRecord, type TaskStore, 
 import { renderThreadItem, type AgentsThreadTheme } from "./agents-thread-view.ts";
 import { formatElapsed } from "./agents-widget.ts";
 import { createNativePointerScope, type NativePointerRegion } from "./native-pointer-region.ts";
-import { formatTokens } from "./shell-bar.ts";
+import { formatCost, formatTokens } from "./shell-bar.ts";
 import { PresenceCursor, readActivity, type Header, type Target } from "./orchestrator-presence.ts";
 
 // Gentle Agents overlay: tasks on the left, the selected task's thread on
@@ -129,7 +129,7 @@ function fit(text: string, width: number): string {
 }
 
 export function taskHeader(task: TaskRecord, now: number): string {
-	const parts = [task.agent, task.status, task.model, task.tokens > 0 ? formatTokens(task.tokens) : "", task.cost > 0 ? `$${task.cost.toFixed(2)}` : "", task.startedAt === null ? "" : formatElapsed((task.endedAt ?? now) - task.startedAt)];
+	const parts = [task.agent, task.status, task.model, task.tokens > 0 ? formatTokens(task.tokens) : "", task.cost > 0 ? formatCost(task.cost) : "", task.startedAt === null ? "" : formatElapsed((task.endedAt ?? now) - task.startedAt)];
 	return parts.filter((part) => part.length > 0).join(" · ");
 }
 

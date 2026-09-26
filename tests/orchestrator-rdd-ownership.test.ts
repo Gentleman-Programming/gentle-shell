@@ -72,18 +72,18 @@ test("rendered parent prompt keeps the RDD boundary while omitting lifecycle mir
 	assert.ok(Buffer.byteLength(rendered, "utf8") <= 8192, "the rendered parent prompt must stay below the reduced 8 KiB budget");
 });
 
-test("static prompts retain normal SDD and delegated-work guidance", () => {
-	for (const heading of ["## SDD Workflow (lazy-loaded)", "## Memory Contract"]) {
+test("static prompts retain ODD and delegated-work guidance without SDD", () => {
+	for (const heading of ["## Memory Contract", "## Work Routing Ladder"]) {
 		assert.ok(core.includes(heading), `core lost ${heading}`);
 	}
 	for (const heading of [
 		"### Delegation Rules",
 		"#### Background Subagent Policy",
 		"#### Allowed edit surfaces (MANDATORY)",
-		"### 3. SDD (optional)",
 	]) {
 		assert.ok(delegation.includes(heading), `delegation lost ${heading}`);
 	}
+	assert.doesNotMatch(staticPrompts, /SDD|sdd-|OpenSpec|openspec/i);
 });
 
 test("always-on parent prompt requires a narrow writer edit surface before launch", () => {

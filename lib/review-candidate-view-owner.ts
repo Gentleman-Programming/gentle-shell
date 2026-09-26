@@ -27,10 +27,24 @@ const WINDOWS_SYSTEM = "S-1-5-18";
 const WINDOWS_ADMINISTRATORS = "S-1-5-32-544";
 const WINDOWS_SYSTEM_DIRECTORY = "\\\\?\\GLOBALROOT\\SystemRoot\\System32";
 
-// Cold Windows runners occasionally exceed the bounded 5-second probe timeout
-// on first process start (whoami/PowerShell/icacls). One bounded retry of an
-// idempotent system probe recovers that transient; authority validation is
-// never retried or weakened because it happens after the probe returns.
+// Cold or contended Windows hosts can take several seconds to start a process
+// (whoami/PowerShell/icacls), and owner preparation runs many probes in
+// sequence. Each probe gets a bounded, configurable timeout, plus one bounded
+// retry of the idempotent system probe; authority validation is never retried
+// or weakened because it happens after the probe returns.
+const WINDOWS_SYSTEM_PROBE_TIMEOUT_MS = 15_000;
+const WINDOWS_SYSTEM_PROBE_TIMEOUT_MAX_MS = 120_000;
+const WINDOWS_SYSTEM_PROBE_TIMEOUT_ENV = "GENTLE_PI_CANDIDATE_WINDOWS_PROBE_TIMEOUT_MS";
+
+export function resolveWindowsSystemProbeTimeoutMs(environment: NodeJS.ProcessEnv = process.env): number {
+	const value = environment[WINDOWS_SYSTEM_PROBE_TIMEOUT_ENV];
+	if (value === undefined || !/^[1-9]\d*$/.test(value)) return WINDOWS_SYSTEM_PROBE_TIMEOUT_MS;
+	const parsed = Number(value);
+	return Number.isSafeInteger(parsed) && parsed <= WINDOWS_SYSTEM_PROBE_TIMEOUT_MAX_MS
+		? parsed
+		: WINDOWS_SYSTEM_PROBE_TIMEOUT_MS;
+}
+
 const TRANSIENT_WINDOWS_PROBE_CODES = new Set(["ETIMEDOUT", "EAGAIN", "EBUSY"]);
 
 export function withWindowsSystemProbeRetry<T>(probe: () => T): T {
@@ -51,7 +65,7 @@ function windowsSystemExecutable(name: "whoami.exe" | "icacls.exe" | "WindowsPow
 }
 
 function windowsUserSid(): string {
-	const output = withWindowsSystemProbeRetry(() => execFileSync(windowsSystemExecutable("whoami.exe"), ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", timeout: 5000, maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"], windowsHide: true }));
+	const output = withWindowsSystemProbeRetry(() => execFileSync(windowsSystemExecutable("whoami.exe"), ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", timeout: resolveWindowsSystemProbeTimeoutMs(), maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"], windowsHide: true }));
 	const matches = output.match(/S-\d+(?:-\d+)+/gi) ?? [];
 	if (matches.length !== 1) throw new Error("Windows user SID is unavailable");
 	return matches[0]!.toUpperCase();
@@ -60,7 +74,7 @@ function windowsUserSid(): string {
 function windowsLocalAdministratorSid(): string {
 	const script = "$ErrorActionPreference='Stop';$descriptor=New-Object System.Security.AccessControl.RawSecurityDescriptor 'D:(A;;FA;;;LA)';$descriptor.DiscretionaryAcl[0].SecurityIdentifier.Value";
 	const systemRoot = dirname(dirname(windowsSystemExecutable("whoami.exe")));
-	const output = withWindowsSystemProbeRetry(() => execFileSync(windowsSystemExecutable("WindowsPowerShell\\v1.0\\powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", timeout: 5000, maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: { ...process.env, SystemRoot: systemRoot } }));
+	const output = withWindowsSystemProbeRetry(() => execFileSync(windowsSystemExecutable("WindowsPowerShell\\v1.0\\powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", timeout: resolveWindowsSystemProbeTimeoutMs(), maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: { ...process.env, SystemRoot: systemRoot } }));
 	const matches = output.match(/S-\d+(?:-\d+)+/gi) ?? [];
 	if (matches.length !== 1 || !isWindowsSid(matches[0]!)) throw new Error("Windows local Administrator SID is unavailable");
 	return matches[0]!.toUpperCase();
@@ -70,7 +84,7 @@ function windowsDacl(path: string): string {
 	const archive = `.gentle-ai-acl-${randomUUID()}.txt`;
 	const archivePath = join(dirname(path), archive);
 	try {
-		withWindowsSystemProbeRetry(() => execFileSync(windowsSystemExecutable("icacls.exe"), [path, "/save", archive, "/c"], { cwd: dirname(path), encoding: "utf8", timeout: 5000, maxBuffer: 16384, stdio: ["ignore", "pipe", "pipe"], windowsHide: true }));
+		withWindowsSystemProbeRetry(() => execFileSync(windowsSystemExecutable("icacls.exe"), [path, "/save", archive, "/c"], { cwd: dirname(path), encoding: "utf8", timeout: resolveWindowsSystemProbeTimeoutMs(), maxBuffer: 16384, stdio: ["ignore", "pipe", "pipe"], windowsHide: true }));
 		const sddl = readFileSync(archivePath, "utf16le").match(/D:[^\r\n]+/)?.[0];
 		if (sddl === undefined) throw new Error("Windows DACL is unavailable");
 		return sddl;
@@ -166,7 +180,7 @@ function windowsOwnerSid(path: string, kind: WindowsObjectKind): string {
 	const systemRoot = dirname(dirname(windowsSystemExecutable("whoami.exe")));
 	let output: string;
 	try {
-		output = withWindowsSystemProbeRetry(() => execFileSync(windowsSystemExecutable("WindowsPowerShell\\v1.0\\powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", timeout: 5000, maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: { ...process.env, SystemRoot: systemRoot, GENTLE_PI_CANDIDATE_OWNER_PATH: path } }));
+		output = withWindowsSystemProbeRetry(() => execFileSync(windowsSystemExecutable("WindowsPowerShell\\v1.0\\powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", timeout: resolveWindowsSystemProbeTimeoutMs(), maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: { ...process.env, SystemRoot: systemRoot, GENTLE_PI_CANDIDATE_OWNER_PATH: path } }));
 	} catch {
 		throw new WindowsOwnerValidationError();
 	}
@@ -190,7 +204,7 @@ function enforcePrivateWindowsDacl(path: string, identity: WindowsAclIdentity = 
 	const sddl = `D:P(A;OICI;FA;;;${user})(A;OICI;FA;;;${WINDOWS_SYSTEM})(A;OICI;FA;;;${WINDOWS_ADMINISTRATORS})`;
 	const script = "$ErrorActionPreference='Stop';$acl=New-Object System.Security.AccessControl.DirectorySecurity;$acl.SetSecurityDescriptorSddlForm($env:GENTLE_PI_CANDIDATE_ACL_SDDL,[System.Security.AccessControl.AccessControlSections]::Access);[System.IO.Directory]::SetAccessControl($env:GENTLE_PI_CANDIDATE_ACL_PATH,$acl)";
 	const systemRoot = dirname(dirname(windowsSystemExecutable("whoami.exe")));
-	withWindowsSystemProbeRetry(() => execFileSync(windowsSystemExecutable("WindowsPowerShell\\v1.0\\powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", timeout: 5000, maxBuffer: 16384, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: { ...process.env, SystemRoot: systemRoot, GENTLE_PI_CANDIDATE_ACL_PATH: path, GENTLE_PI_CANDIDATE_ACL_SDDL: sddl } }));
+	withWindowsSystemProbeRetry(() => execFileSync(windowsSystemExecutable("WindowsPowerShell\\v1.0\\powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", timeout: resolveWindowsSystemProbeTimeoutMs(), maxBuffer: 16384, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: { ...process.env, SystemRoot: systemRoot, GENTLE_PI_CANDIDATE_ACL_PATH: path, GENTLE_PI_CANDIDATE_ACL_SDDL: sddl } }));
 	assertPrivateWindowsDacl(path, "directory", true, identity);
 }
 

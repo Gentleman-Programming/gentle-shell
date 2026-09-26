@@ -9,11 +9,12 @@
 // modal delete (store sweep + exact tombstone), and the slice-6
 // session_shutdown GC/compaction.
 //
-// Capture is OPT-IN: nothing is recorded unless
-// GENTLE_PI_HISTORY_CAPTURE=1|true|on. The selector honors the same gate:
-// with the switch off, opening the selector is a no-op — no registry entry,
-// no writer init, no store reads, no deletes. Unsetting the switch only
-// stops NEW captures; files already written stay on disk
+// Capture is OPT-IN: nothing is recorded unless an explicit
+// GENTLE_PI_HISTORY_CAPTURE=1|true|on, or (with no explicit env value) the
+// persisted Gentle → Customize preference, turns it on. The selector honors
+// the same gate: with capture off, opening the selector is a no-op — no
+// registry entry, no writer init, no store reads, no deletes. Turning
+// capture off only stops NEW captures; files already written stay on disk
 // (docs/prompt-history.md).
 
 import { randomUUID } from "node:crypto";
@@ -37,6 +38,11 @@ import {
   type TuiMouseEvent,
   truncateToWidth,
 } from "@earendil-works/pi-tui";
+import { gentlePiConfigHome } from "../../lib/agent-home.ts";
+import {
+  historyCaptureEnabled,
+  historyCaptureEnvOverride,
+} from "../../lib/history-capture-policy.ts";
 import { hidePrompt } from "./hide-prompts.ts";
 import {
   appendSessionCapture,
@@ -120,6 +126,8 @@ const SESSIONS_ROOT = join(AGENT_DIR, "sessions");
 
 export interface HistoryDeps {
   env?: NodeJS.ProcessEnv;
+  /** Gentle config home holding the Customize preference (default: from env). */
+  gentlePiConfigHome?: string;
   root?: string;
   cwd?: string;
   instanceId?: string;
@@ -129,14 +137,25 @@ export interface HistoryDeps {
 }
 
 /**
- * Strict opt-in: capture stays off unless GENTLE_PI_HISTORY_CAPTURE is
- * explicitly 1, true, or on (case-insensitive). The same switch is the
- * disable path — unsetting it stops new captures; files already on disk
- * are left untouched (deletes run from the selector while capture is on).
+ * Strict opt-in: an explicit GENTLE_PI_HISTORY_CAPTURE value (1|true|on or
+ * 0|false|off, case-insensitive) wins; otherwise the persisted Customize
+ * preference under the Gentle config home decides; a missing, malformed or
+ * unreadable preference is off. Read per call so a Customize toggle applies
+ * without restart. Turning capture off stops new captures; files already on
+ * disk are left untouched (deletes run from the selector while capture is on).
  */
-export function captureEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const value = env.GENTLE_PI_HISTORY_CAPTURE?.trim().toLowerCase();
-  return value === "1" || value === "true" || value === "on";
+export function captureEnabled(
+  env: NodeJS.ProcessEnv = process.env,
+  configHome: string = gentlePiConfigHome(env),
+): boolean {
+  return historyCaptureEnabled({ env, gentlePiConfigHome: configHome });
+}
+
+/** Why capture is off, naming the control that actually decides it. */
+function captureDisabledMessage(env: NodeJS.ProcessEnv): string {
+  return historyCaptureEnvOverride(env) === "off"
+    ? "Prompt history is disabled by GENTLE_PI_HISTORY_CAPTURE, which overrides the Gentle → Customize → History preference."
+    : "Prompt history is disabled. Turn on \"Prompt history capture\" in Gentle → Customize → History, or set GENTLE_PI_HISTORY_CAPTURE=1.";
 }
 
 // ---------------------------------------------------------------------------
@@ -1083,7 +1102,12 @@ type HistoryScope = "project" | "global";
  * runs before any store access and a capture-off session performs no
  * registry/writer/delete side effects on the open path.
  */
-function createOpenFlow(env: NodeJS.ProcessEnv, root: string, cwd: string) {
+function createOpenFlow(
+  env: NodeJS.ProcessEnv,
+  configHome: string,
+  root: string,
+  cwd: string,
+) {
   /**
    * Scope drain for the selector: project scope drains the project's store
    * files; global scope is the store-only cross-project view (all project
@@ -1105,11 +1129,8 @@ function createOpenFlow(env: NodeJS.ProcessEnv, root: string, cwd: string) {
   ): Promise<void> {
     // Capture gate (#1390) FIRST: with capture off the selector is a no-op —
     // no registry writes, no writer init, no store reads, no overlay.
-    if (!captureEnabled(env)) {
-      ctx.ui.notify(
-        "Prompt history is disabled (GENTLE_PI_HISTORY_CAPTURE is not set).",
-        "warning",
-      );
+    if (!captureEnabled(env, configHome)) {
+      ctx.ui.notify(captureDisabledMessage(env), "warning");
       return;
     }
 
@@ -1149,6 +1170,9 @@ export default function promptHistoryExtension(
   deps: HistoryDeps = {},
 ): void {
   const env = deps.env ?? process.env;
+  const configHome = deps.gentlePiConfigHome ?? gentlePiConfigHome(env);
+  // Per-prompt gate: re-read so a Customize toggle applies live.
+  const capturing = () => captureEnabled(env, configHome);
   const root = deps.root ?? PI_HISTORY_ROOT;
   const cwd = deps.cwd ?? process.cwd();
   const instanceId = deps.instanceId ?? randomUUID();
@@ -1193,7 +1217,7 @@ export default function promptHistoryExtension(
   // opted-in sessions: with capture disabled nothing may be written —
   // no registry entry, no seed files, no store (docs/prompt-history.md).
   setImmediate(() => {
-    if (!captureEnabled(env)) return;
+    if (!capturing()) return;
     try {
       getWriter();
     } catch {
@@ -1205,7 +1229,7 @@ export default function promptHistoryExtension(
   // but only for opted-in sessions — see captureEnabled(). The local
   // ExtensionAPI stub types handler args as unknown; narrow here.
   pi.on("before_agent_start", (...args: unknown[]) => {
-    if (!captureEnabled(env)) return;
+    if (!capturing()) return;
     try {
       const event = args[0] as { prompt?: string } | undefined;
       appendSessionCapture(getWriter(), event?.prompt ?? "", now());
@@ -1219,7 +1243,7 @@ export default function promptHistoryExtension(
   // only for opted-in sessions: with capture off the store is never
   // rewritten. This instance's own capture file is never a merge candidate.
   pi.on("session_shutdown", () => {
-    if (!captureEnabled(env)) return;
+    if (!capturing()) return;
     try {
       gcProjectDir(root, cwd, {
         keepFiles: [sessionFilePath(root, cwd, instanceId)],
@@ -1236,7 +1260,7 @@ export default function promptHistoryExtension(
   });
 
   // Selector open flow (slice 3, stage 3): both entry points share it.
-  const { openHistorySelector } = createOpenFlow(env, root, cwd);
+  const { openHistorySelector } = createOpenFlow(env, configHome, root, cwd);
 
   pi.registerShortcut(SHORTCUT, {
     description: "Search prompt history",

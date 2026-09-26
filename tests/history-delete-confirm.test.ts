@@ -314,25 +314,20 @@ test("the armed state drives the footer copy and the error-colored highlight", (
 // grep-clean for it.
 const renamedSwitch = `GENTLE_PI_HISTORY_${"ENABLE"}`;
 
-test("captureEnabled reads GENTLE_PI_HISTORY_CAPTURE (strict 1/true/on unchanged)", () => {
+test("captureEnabled delegates to the shared env-then-Customize gate", () => {
   const decl = selectorSource.indexOf("export function captureEnabled(");
   assert.ok(decl >= 0, "captureEnabled should exist");
   const end = selectorSource.indexOf("\n}", decl);
   assert.ok(end > decl, "captureEnabled's body should close");
   const body = selectorSource.slice(decl, end);
+  // The strict 1/true/on (and explicit 0/false/off) parsing lives in
+  // lib/history-capture-policy.ts; tests/history-capture-policy.test.ts and
+  // the session-writer suite pin the behavior.
   assert.ok(
-    body.includes("env.GENTLE_PI_HISTORY_CAPTURE"),
-    "the shipped switch must be read",
+    body.includes("historyCaptureEnabled({ env, gentlePiConfigHome: configHome })"),
+    "the extension must use the shared gate with its injected config home",
   );
   assert.ok(!body.includes(renamedSwitch), "the rename must not ship");
-  assert.ok(
-    body.includes('?.trim().toLowerCase()'),
-    "whitespace + case normalization unchanged",
-  );
-  assert.ok(
-    body.includes('value === "1" || value === "true" || value === "on"'),
-    "strict 1/true/on opt-in unchanged",
-  );
 });
 
 test("the history extension never mentions the renamed switch", () => {

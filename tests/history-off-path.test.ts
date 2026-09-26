@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import promptHistoryExtension from "../extensions/history/index.ts";
+import { writeHistoryCapturePolicy } from "../lib/history-capture-policy.ts";
 
 // The module-level selector gate reads process.env directly (that path has
 // no deps.env injection); keep the suite hermetic regardless of the ambient
@@ -24,7 +25,11 @@ interface Harness {
  * Load the extension against a temp root and capture the registered
  * shortcut + history command handlers from the fake pi.
  */
-function loadWithCommand(env: NodeJS.ProcessEnv, root: string): Harness {
+function loadWithCommand(
+  env: NodeJS.ProcessEnv,
+  root: string,
+  configHome: string = fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-off-config-")),
+): Harness {
   const shortcuts: Array<[string, { handler: unknown }]> = [];
   const commands: Array<[string, { handler: unknown }]> = [];
   const pi = {
@@ -45,6 +50,8 @@ function loadWithCommand(env: NodeJS.ProcessEnv, root: string): Harness {
     // Keep any opted-in warm-up away from the real ~/.pi/agent.
     agentDir: path.join(root, "agent"),
     sessionsRoot: path.join(root, "sessions"),
+    // An empty config home by default: the Customize preference is unset (off).
+    gentlePiConfigHome: configHome,
   });
   const command = commands.find(([name]) => name === "history");
   assert.ok(command, "the history command must be registered");
@@ -88,6 +95,10 @@ test("with capture disabled, the history command imports nothing and warns", asy
     notifyCalls[0][0].includes("GENTLE_PI_HISTORY_CAPTURE"),
     `the warning must name the switch, got: ${notifyCalls[0][0]}`,
   );
+  assert.ok(
+    notifyCalls[0][0].includes("Gentle → Customize"),
+    `the warning must name the Customize control, got: ${notifyCalls[0][0]}`,
+  );
   // The gate must fire before the drain: no migration, no seed, no store.
   assert.deepEqual(fs.readdirSync(root), []);
 });
@@ -100,5 +111,31 @@ test("with capture enabled, opening the selector reads without initializing the 
   const notifyCalls: Array<[string, string]> = [];
   await commandHandler([], fakeCtx(notifyCalls));
   assert.deepEqual(notifyCalls, [["No prompt history available.", "warning"]]);
+  assert.deepEqual(fs.readdirSync(root), []);
+});
+
+test("the Customize preference opens the selector without the env switch", async () => {
+  const root = makeRoot();
+  const configHome = fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-off-config-"));
+  const { commandHandler } = loadWithCommand({}, root, configHome);
+  const notifyCalls: Array<[string, string]> = [];
+  await commandHandler([], fakeCtx(notifyCalls));
+  assert.equal(notifyCalls[0][1], "warning");
+  assert.match(notifyCalls[0][0], /disabled/);
+  // The same loaded extension honors a later toggle without restart.
+  writeHistoryCapturePolicy("on", { gentlePiConfigHome: configHome });
+  await commandHandler([], fakeCtx(notifyCalls));
+  assert.deepEqual(notifyCalls[1], ["No prompt history available.", "warning"]);
+});
+
+test("an explicit env off names the override instead of the Customize fix", async () => {
+  const root = makeRoot();
+  const configHome = fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-off-config-"));
+  writeHistoryCapturePolicy("on", { gentlePiConfigHome: configHome });
+  const { commandHandler } = loadWithCommand({ GENTLE_PI_HISTORY_CAPTURE: "false" }, root, configHome);
+  const notifyCalls: Array<[string, string]> = [];
+  await commandHandler([], fakeCtx(notifyCalls));
+  assert.equal(notifyCalls.length, 1);
+  assert.match(notifyCalls[0][0], /disabled by GENTLE_PI_HISTORY_CAPTURE, which overrides the Gentle → Customize → History preference/);
   assert.deepEqual(fs.readdirSync(root), []);
 });

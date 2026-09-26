@@ -11,12 +11,18 @@ import {
   sessionFilePath,
 } from "../extensions/history/store.ts";
 import promptHistoryExtension, { captureEnabled } from "../extensions/history/index.ts";
+import { writeHistoryCapturePolicy } from "../lib/history-capture-policy.ts";
 
 function makeRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-writer-"));
 }
 
 const CWD = "/pi-history-test/project-a";
+
+/** An empty Gentle config home: the Customize preference is unset. */
+function makeConfigHome(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-config-"));
+}
 
 function fileTexts(file: string): string[] {
   return fs
@@ -34,6 +40,7 @@ function openWriterForTest(root: string, instanceId: string) {
 function handlersWith(
   env: NodeJS.ProcessEnv,
   root: string,
+  configHome: string = makeConfigHome(),
 ): Map<string, (event: unknown) => void> {
   const registered: Array<[string, unknown]> = [];
   const pi = {
@@ -54,6 +61,8 @@ function handlersWith(
     now: () => 1700000000000,
     agentDir: path.join(root, "agent"),
     sessionsRoot: path.join(root, "sessions"),
+    // Never read a developer's real Customize preference.
+    gentlePiConfigHome: configHome,
   });
   return new Map(
     registered.map(([event, handler]) => [
@@ -64,8 +73,12 @@ function handlersWith(
 }
 
 /** Load the extension against a temp root and return the capture handler. */
-function captureHandlerWith(env: NodeJS.ProcessEnv, root: string) {
-  const handler = handlersWith(env, root).get("before_agent_start");
+function captureHandlerWith(
+  env: NodeJS.ProcessEnv,
+  root: string,
+  configHome?: string,
+) {
+  const handler = handlersWith(env, root, configHome).get("before_agent_start");
   assert.ok(handler, "the capture handler is registered");
   return handler;
 }
@@ -160,7 +173,12 @@ test("the extension entry registers exactly the slice-6 wiring surface", () => {
       commands.push([name, def]);
     },
   };
-  promptHistoryExtension(pi as never);
+  // Capture off (explicit env, empty config home) keeps the warm-up from
+  // touching the real store root while the defaults are exercised.
+  promptHistoryExtension(pi as never, {
+    env: { GENTLE_PI_HISTORY_CAPTURE: "off" },
+    gentlePiConfigHome: makeConfigHome(),
+  });
   assert.deepEqual(
     registered.map(([event]) => event),
     ["before_agent_start", "session_shutdown", "tool_call"],
@@ -175,7 +193,7 @@ test("the extension entry registers exactly the slice-6 wiring surface", () => {
 });
 
 test("captureEnabled is a strict opt-in", () => {
-  assert.equal(captureEnabled({}), false);
+  assert.equal(captureEnabled({}, makeConfigHome()), false);
   assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: "0" }), false);
   assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: "false" }), false);
   assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: "off" }), false);
@@ -239,6 +257,61 @@ test("disabling capture stops new lines and leaves existing files alone", () => 
   delete env.GENTLE_PI_HISTORY_CAPTURE;
   handler({ prompt: "never written" });
   assert.deepEqual(fileTexts(file), ["kept"]);
+});
+
+test("the Customize preference enables capture without the env switch and toggles live", () => {
+  const root = makeRoot();
+  const configHome = makeConfigHome();
+  const handler = captureHandlerWith({}, root, configHome);
+  handler({ prompt: "before opt-in" });
+  assert.deepEqual(fs.readdirSync(root), []);
+  writeHistoryCapturePolicy("on", { gentlePiConfigHome: configHome });
+  handler({ prompt: "captured" });
+  const file = sessionFilePath(root, CWD, "inst-entry");
+  assert.deepEqual(fileTexts(file), ["captured"]);
+  // Turning the preference off stops new lines and keeps stored history.
+  writeHistoryCapturePolicy("off", { gentlePiConfigHome: configHome });
+  handler({ prompt: "never written" });
+  assert.deepEqual(fileTexts(file), ["captured"]);
+});
+
+test("an explicit env value overrides the Customize preference", () => {
+  const root = makeRoot();
+  const configHome = makeConfigHome();
+  writeHistoryCapturePolicy("on", { gentlePiConfigHome: configHome });
+  captureHandlerWith({ GENTLE_PI_HISTORY_CAPTURE: "0" }, root, configHome)({ prompt: "forced off" });
+  assert.deepEqual(fs.readdirSync(root), []);
+  writeHistoryCapturePolicy("off", { gentlePiConfigHome: configHome });
+  captureHandlerWith({ GENTLE_PI_HISTORY_CAPTURE: "On" }, root, configHome)({ prompt: "forced on" });
+  assert.deepEqual(fileTexts(sessionFilePath(root, CWD, "inst-entry")), ["forced on"]);
+});
+
+test("a malformed Customize preference fails closed", () => {
+  const root = makeRoot();
+  const configHome = makeConfigHome();
+  fs.writeFileSync(path.join(configHome, "history-capture.json"), '{"policy":"on"}');
+  captureHandlerWith({}, root, configHome)({ prompt: "not captured" });
+  assert.deepEqual(fs.readdirSync(root), []);
+  assert.equal(captureEnabled({}, configHome), false);
+});
+
+test("the extension resolves the preference under GENTLE_PI_CONFIG_HOME by default", () => {
+  const root = makeRoot();
+  const configHome = makeConfigHome();
+  writeHistoryCapturePolicy("on", { gentlePiConfigHome: configHome });
+  const registered: Array<[string, unknown]> = [];
+  promptHistoryExtension({ on: (event: string, handler: unknown) => registered.push([event, handler]), registerShortcut: () => {}, registerCommand: () => {} } as never, {
+    env: { GENTLE_PI_CONFIG_HOME: configHome },
+    root,
+    cwd: CWD,
+    instanceId: "inst-entry",
+    now: () => 1700000000000,
+    agentDir: path.join(root, "agent"),
+    sessionsRoot: path.join(root, "sessions"),
+  });
+  const capture = registered.find(([event]) => event === "before_agent_start")![1] as (event: unknown) => void;
+  capture({ prompt: "from config home" });
+  assert.deepEqual(fileTexts(sessionFilePath(root, CWD, "inst-entry")), ["from config home"]);
 });
 
 test("session_shutdown GC is a no-op while capture is off", () => {

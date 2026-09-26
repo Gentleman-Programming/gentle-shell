@@ -17,6 +17,7 @@ import { stripAnsi } from "../lib/terminal-theme.ts";
 import { resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy } from "../lib/vim-policy.ts";
+import { resolveHistoryCapturePolicy, writeHistoryCapturePolicy } from "../lib/history-capture-policy.ts";
 import { readBannerConfig } from "../extensions/startup-banner.ts";
 import { listVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
@@ -2533,7 +2534,7 @@ function scopedDoubleEscCancelConfigHome(t: { after(callback: () => void): void 
 function findCustomizeRow(ui: FakeUi, label: string, width = 90): boolean {
 	const view = ui.overlayView!;
 	view.handleInput("\x1b[D");
-	for (let category = 0; category < 8; category++) {
+	for (let category = 0; category < 9; category++) {
 		view.handleInput("\x1b[C");
 		for (let index = 0; index < 35; index++) {
 			if (view.render(width).some((line) => line.includes(`▸ ${label}`))) return true;
@@ -2571,6 +2572,68 @@ test("customize Editor rows preview global preference without applying until Ent
 	ui.overlayView!.handleInput(" ");
 	await new Promise<void>((resolve) => setImmediate(resolve));
 	assert.equal(resolveVimPolicy({ gentlePiConfigHome: home }).policy, "off");
+	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("customize History rows persist prompt history capture and keep stored history", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	assert.ok(findCustomizeRow(ui, "Prompt history capture: enable"));
+	assert.match(ui.overlayView!.render(90).join("\n"), /History · 1\/2/);
+	assert.match(ui.overlayView!.render(90).join("\n"), /Preview · Prompt history capture[\s\S]*preference: off · effective: off/i);
+	assert.equal(existsSync(join(home, "history-capture.json")), false, "highlighting never applies");
+	await customizeAction(ui, "Prompt history capture: enable");
+	await new Promise<void>(resolve => setImmediate(resolve));
+	assert.equal(resolveHistoryCapturePolicy({ gentlePiConfigHome: home }).policy, "on");
+	assert.match(ui.notices.at(-1)!, /Prompt history capture: on\. Applies from the next prompt/i);
+	assert.ok(findCustomizeRow(ui, "Prompt history capture: enable (current)"));
+	assert.match(ui.overlayView!.render(90).join("\n"), /preference: on · effective: on/i);
+	await customizeAction(ui, "Prompt history capture: disable");
+	await new Promise<void>(resolve => setImmediate(resolve));
+	assert.equal(resolveHistoryCapturePolicy({ gentlePiConfigHome: home }).policy, "off");
+	assert.match(ui.notices.at(-1)!, /stored history is kept/i);
+	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("customize History rows show when GENTLE_PI_HISTORY_CAPTURE overrides the saved preference", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	writeHistoryCapturePolicy("on", { gentlePiConfigHome: home });
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_HISTORY_CAPTURE: " Off " });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	assert.ok(findCustomizeRow(ui, "Prompt history capture: enable (current) · env override"));
+	assert.match(ui.overlayView!.render(90).join("\n"), /preference: on · effective: off · GENTLE_PI_HISTORY_CAPTURE overrides/i);
+	await customizeAction(ui, "Prompt history capture: disable");
+	await new Promise<void>(resolve => setImmediate(resolve));
+	// The choice is still saved for when the env stops forcing a value.
+	assert.equal(resolveHistoryCapturePolicy({ gentlePiConfigHome: home }).policy, "off");
+	await customizeAction(ui, "Prompt history capture: enable");
+	await new Promise<void>(resolve => setImmediate(resolve));
+	assert.equal(resolveHistoryCapturePolicy({ gentlePiConfigHome: home }).policy, "on");
+	assert.match(ui.notices.at(-1)!, /GENTLE_PI_HISTORY_CAPTURE=off overrides it; capture stays off/i);
+	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("customize History rows refuse to overwrite a malformed preference and report it", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	writeFileSync(join(home, "history-capture.json"), "{");
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	assert.ok(findCustomizeRow(ui, "Prompt history capture: enable"));
+	assert.match(ui.overlayView!.render(90).join("\n"), /preference: off · effective: off · malformed or unreadable file/i);
+	ui.overlayView!.handleInput("\r");
+	for (let attempt = 0; attempt < 100 && !ui.notices.some(n => /malformed or unreadable history capture/i.test(n)); attempt++) await new Promise<void>((resolve) => setTimeout(resolve, 5));
+	assert.ok(ui.notices.some(n => /Cannot update malformed or unreadable history capture preference/i.test(n)), ui.notices.join("\n"));
+	assert.equal(readFileSync(join(home, "history-capture.json"), "utf8"), "{");
 	ui.overlayView!.handleInput("\x1b"); await pending;
 });
 

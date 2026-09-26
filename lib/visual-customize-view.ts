@@ -29,7 +29,7 @@ function dropLastGrapheme(text: string): string {
 	return segments.length ? text.slice(0, segments[segments.length - 1]!.index) : text;
 }
 
-export type CustomizeCategory = "Animations" | "Banner" | "Themes" | "Editor" | "Layout" | "Sections" | "Profiles" | "Reset";
+export type CustomizeCategory = "Animations" | "Banner" | "Themes" | "Editor" | "History" | "Layout" | "Sections" | "Profiles" | "Reset";
 
 export interface CustomizeRow {
 	category?: CustomizeCategory;

@@ -1,9 +1,8 @@
 # Prompt history
 
-Slice 1 of the prompt-history extension (#819 split) ships the storage layer only:
-a per-instance JSONL capture store, project identity, and the read/write
-primitives later slices build on. The selector UI, deletion/scope drains, and GC
-arrive in later slices of the chain.
+Prompt history stores captured prompts per pi instance and can import older
+history and project session transcripts. Deletion and compaction arrive in
+later slices of the chain.
 
 ## Capture is opt-in
 
@@ -21,6 +20,20 @@ GENTLE_PI_HISTORY_CAPTURE=1 pi
 - With capture off the extension is inert: no registry entry, no files, and
   prompts are never written.
 
+## Legacy migration and seeding are opt-in
+
+Importing past prompts is part of capture: the first delivered prompt in an
+opted-in session attempts legacy migration and one-time bootstrap from project
+session transcripts. The selector reads the store but does not initiate import.
+With capture off, both capture and the selector leave the store untouched.
+Failed migration reads can be retried on a later session; untrusted deletion
+records defer transcript bootstrap until they can be read safely.
+
+An import creates **new searchable copies** under `~/.pi/agent/history`. The
+source transcripts stay untouched and read-only. Turning capture off again
+does not remove copies that were already imported: delete them manually as
+described in "What disabling capture does" below.
+
 ## Where the files live
 
 Everything sits under `~/.pi/agent/history/`:
@@ -29,6 +42,8 @@ Everything sits under `~/.pi/agent/history/`:
   labels.
 - `projects/<hash>/<instance>.jsonl` — one append-only capture file per pi
   process.
+- `projects/<hash>/seed.jsonl` — one-time transcript import for this project.
+- `history-global.jsonl` — imported legacy editor-history prompts.
 
 `<hash>` is the first 16 hex chars of the SHA-256 of the canonicalized project
 cwd; `<instance>` is a per-process UUID. Each line is one delivered prompt:
@@ -37,8 +52,9 @@ cwd; `<instance>` is a per-process UUID. Each line is one delivered prompt:
 {"v":1,"text":"the prompt as delivered","ts":1700000000000}
 ```
 
-UI command-like prompts (`/name ...`) and empty lines are never stored. Later
-slices add the rebuildable `seed.jsonl`, scope drains/deletes, and GC.
+UI command-like prompts (`/name ...`) and empty lines are never captured.
+Imported copies remain on disk when capture is turned off; the seed is not
+regenerated if it already exists, to avoid resurrecting deleted prompts.
 
 ## Who can read them
 

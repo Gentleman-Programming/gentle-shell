@@ -38,10 +38,12 @@ import {
 } from "@earendil-works/pi-tui";
 import {
   appendSessionCapture,
+  bootstrapProjectSeed,
   type DrainResult,
   drainGlobal,
   drainProject,
   ensureRegistryEntry,
+  migrateLegacyStores,
   openSessionWriter,
   type SessionWriterState,
 } from "./store.ts";
@@ -87,7 +89,9 @@ const PREVIEW_WHEEL_Y_LAST = 26;
 const ENTRY_PREFIX_WIDTH = 2;
 
 // v2 multi-concurrency store root (design: tmp/multi-concurrency-design.md).
-const PI_HISTORY_ROOT = join(homedir(), ".pi", "agent", "history");
+const AGENT_DIR = join(homedir(), ".pi", "agent");
+const PI_HISTORY_ROOT = join(AGENT_DIR, "history");
+const SESSIONS_ROOT = join(homedir(), ".pi", "agent", "sessions");
 
 export interface HistoryDeps {
   env?: NodeJS.ProcessEnv;
@@ -95,6 +99,8 @@ export interface HistoryDeps {
   cwd?: string;
   instanceId?: string;
   now?: () => number;
+  agentDir?: string;
+  sessionsRoot?: string;
 }
 
 /**
@@ -969,19 +975,36 @@ export default function promptHistoryExtension(
   const cwd = deps.cwd ?? process.cwd();
   const instanceId = deps.instanceId ?? randomUUID();
   const now = deps.now ?? Date.now;
+  const agentDir = deps.agentDir ?? AGENT_DIR;
+  const sessionsRoot = deps.sessionsRoot ?? SESSIONS_ROOT;
   let writerState: SessionWriterState | null = null;
 
   /**
-   * One-time init per extension load: register the project in the advisory
-   * registry, then open this instance's exclusive capture file. Legacy
-   * migration and seed bootstrap join this init order in a later slice.
+   * One-time init per extension load: migrate legacy stores, register the
+   * project, bootstrap the seed, then open this instance's exclusive file.
    */
   const getWriter = (): SessionWriterState => {
     if (!writerState) {
       try {
+        migrateLegacyStores(root, agentDir);
+      } catch {
+        // migration is best-effort; the gate keeps it one-shot
+      }
+      try {
         ensureRegistryEntry(root, cwd);
       } catch {
         // registry is advisory
+      }
+      try {
+        bootstrapProjectSeed(
+          root,
+          cwd,
+          sessionsRoot,
+          500,
+          root,
+        );
+      } catch {
+        // bootstrap is a rebuildable cache
       }
       writerState = openSessionWriter(root, cwd, instanceId);
     }

@@ -7,6 +7,7 @@ import {
   appendSessionCapture,
   openSessionWriter,
   projectHash,
+  seedFilePath,
   sessionFilePath,
 } from "../extensions/history/store.ts";
 import promptHistoryExtension, { captureEnabled } from "../extensions/history/index.ts";
@@ -36,7 +37,9 @@ function captureHandlerWith(env: NodeJS.ProcessEnv, root: string) {
     on: (event: string, handler: unknown) => {
       registered.push([event, handler]);
     },
-    // Slice-3 stage-1 surface: registration-time no-ops for this harness.
+    // Slice-3+ wiring surface: the factory also registers the shortcut,
+    // command, and tool_call dismissal; the capture handler stays the
+    // first registration, so these no-ops only absorb the extra wiring.
     registerShortcut: () => {},
     registerCommand: () => {},
   };
@@ -46,6 +49,8 @@ function captureHandlerWith(env: NodeJS.ProcessEnv, root: string) {
     cwd: CWD,
     instanceId: "inst-entry",
     now: () => 1700000000000,
+    agentDir: path.join(root, "agent"),
+    sessionsRoot: path.join(root, "sessions"),
   });
   return registered[0][1] as (event: unknown) => void;
 }
@@ -109,30 +114,38 @@ test("two writers own separate files in the same project dir", () => {
   assert.deepEqual(files, ["inst-a.jsonl", "inst-b.jsonl"]);
 });
 
-test("the extension entry registers the capture handler and the overlay dismiss", () => {
+test("the extension entry registers exactly the slice-3 wiring surface", () => {
   // Module load must stay side-effect free (importing index.ts parses the
-  // whole slice-1 graph without touching the real ~/.pi store root). The
-  // pi.on surface is exactly two handlers: before_agent_start (slice-1
-  // capture) and tool_call (slice-3 stage-3 overlay dismissal).
-  // (Shortcut/command registration is slice-3 wiring and is not a pi.on
-  // event; the fake below stubs it as no-ops.)
+  // whole graph without touching the real ~/.pi store root). Wiring as of
+  // slice 3: before_agent_start capture + tool_call overlay dismiss, the
+  // ctrl+shift+r shortcut, and the history command. session_shutdown is
+  // slice 6 and must not appear yet.
   const registered: Array<[string, unknown]> = [];
+  const shortcuts: Array<[string, unknown]> = [];
+  const commands: Array<[string, unknown]> = [];
   const pi = {
     on: (event: string, handler: unknown) => {
       registered.push([event, handler]);
     },
-    registerShortcut: () => {},
-    registerCommand: () => {},
+    registerShortcut: (key: string, def: unknown) => {
+      shortcuts.push([key, def]);
+    },
+    registerCommand: (name: string, def: unknown) => {
+      commands.push([name, def]);
+    },
   };
   promptHistoryExtension(pi as never);
   assert.deepEqual(
     registered.map(([event]) => event),
     ["before_agent_start", "tool_call"],
   );
-  // The capture handler is callable but is NEVER invoked here: a real
-  // invocation would run getWriter() against the user's real
-  // ~/.pi/agent/history.
-  assert.equal(typeof registered[0][1], "function");
+  assert.deepEqual(shortcuts.map(([key]) => key), ["ctrl+shift+r"]);
+  assert.deepEqual(commands.map(([name]) => name), ["history"]);
+  // Handlers are callable but are NEVER invoked here: a real invocation
+  // would run getWriter() against the user's real ~/.pi/agent/history.
+  for (const [, handler] of registered) {
+    assert.equal(typeof handler, "function");
+  }
 });
 
 test("captureEnabled is a strict opt-in", () => {
@@ -162,6 +175,30 @@ test("an opted-in session captures delivered prompts", () => {
   assert.deepEqual(fileTexts(sessionFilePath(root, CWD, "inst-entry")), [
     "hello store",
   ]);
+});
+
+test("opted-in capture imports into its own root and defers seed on untrusted tombstones", () => {
+  const root = makeRoot();
+  const sessions = path.join(root, "sessions", "--pi-history-test-project-a--");
+  fs.mkdirSync(sessions, { recursive: true });
+  fs.writeFileSync(path.join(sessions, "s.jsonl"), [
+    JSON.stringify({ type: "session", version: 3 }),
+    JSON.stringify({ type: "message", message: { role: "user", content: "transcript prompt" } }),
+  ].join("\n") + "\n");
+  const agentDir = path.join(root, "agent");
+  fs.mkdirSync(agentDir);
+  fs.writeFileSync(path.join(agentDir, "editor-history.jsonl"),
+    JSON.stringify({ v: 1, text: "legacy prompt" }) + "\n");
+  fs.writeFileSync(path.join(root, "hidden.json"), "{invalid");
+  const handler = captureHandlerWith({ GENTLE_PI_HISTORY_CAPTURE: "1" }, root);
+  handler({ prompt: "current prompt" });
+  assert.deepEqual(fileTexts(path.join(root, "history-global.jsonl")), ["legacy prompt"]);
+  assert.equal(fs.existsSync(seedFilePath(root, CWD)), false);
+  assert.deepEqual(fileTexts(sessionFilePath(root, CWD, "inst-entry")), ["current prompt"]);
+  fs.writeFileSync(path.join(root, "hidden.json"), JSON.stringify(["transcript prompt"]));
+  // A new instance retries bootstrap after tombstones become trusted.
+  captureHandlerWith({ GENTLE_PI_HISTORY_CAPTURE: "1" }, root)({ prompt: "next prompt" });
+  assert.equal(fs.existsSync(seedFilePath(root, CWD)), false);
 });
 
 test("disabling capture stops new lines and leaves existing files alone", () => {

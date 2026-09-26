@@ -31,6 +31,11 @@ import { VimNormalEngine } from "../lib/vim-normal-engine.ts";
 import { VimOperatorEngine, type OperatorResult } from "../lib/vim-operator-engine.ts";
 import { VimVisualEngine } from "../lib/vim-visual-engine.ts";
 
+// Canonical entrypoint and index patterns across POSIX and Windows separators.
+// Exported for cross-platform unit testing of candidate path resolution.
+export const VIM_CLI_ENTRY_PATTERN = /(?:^|[\\/])dist[\\/]bundle[\\/]cli\.js$/;
+export const VIM_AGENT_INDEX_PATTERN = /(?:^|[\\/])dist[\\/]index\.js$/;
+
 // Candidate paths provide only package roots, never version authority. Both
 // constructors must come from that same canonical agent/TUI pair before its
 // metadata can admit private editing (jiti may alias imports to host modules).
@@ -44,9 +49,9 @@ export function resolveVimRuntime(entry = process.argv[1], customClass: typeof C
 	try {
 		if (entry) {
 			const cli = realpathSync(entry);
-			if (cli.endsWith("/dist/bundle/cli.js")) {
+			if (VIM_CLI_ENTRY_PATTERN.test(cli)) {
 				const root = resolve(dirname(cli), "../..");
-				const bundlePath = resolve(root, "dist/bundle/index.js");
+				const bundlePath = resolve(root, "dist", "bundle", "index.js");
 				if (realpathSync(bundlePath) === bundlePath) {
 					const requireFromBundle = createRequire(bundlePath);
 					const bundled = requireFromBundle(bundlePath) as { CustomEditor?: typeof CustomEditor; VERSION?: string };
@@ -65,17 +70,17 @@ export function resolveVimRuntime(entry = process.argv[1], customClass: typeof C
 	try {
 		if (entry) {
 			const cli = realpathSync(entry);
-			if (cli.endsWith("/dist/bundle/cli.js")) candidates.push(resolve(dirname(cli), "../.."));
+			if (VIM_CLI_ENTRY_PATTERN.test(cli)) candidates.push(resolve(dirname(cli), "../.."));
 		}
 	} catch { /* The CLI is only a candidate, not proof. */ }
 	try {
 		const localIndex = realpathSync(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent")));
-		if (localIndex.endsWith("/dist/index.js")) candidates.push(resolve(dirname(localIndex), ".."));
+		if (VIM_AGENT_INDEX_PATTERN.test(localIndex)) candidates.push(resolve(dirname(localIndex), ".."));
 	} catch { /* No local candidate; do not trust extension-relative metadata. */ }
 	for (const root of new Set(candidates)) {
 		try {
-			const agentIndex = realpathSync(resolve(root, "dist/index.js"));
-			if (agentIndex !== resolve(root, "dist/index.js")) continue;
+			const agentIndex = realpathSync(resolve(root, "dist", "index.js"));
+			if (agentIndex !== resolve(root, "dist", "index.js")) continue;
 			const requireFromRuntime = createRequire(agentIndex);
 			const agent = requireFromRuntime(agentIndex) as { CustomEditor?: typeof CustomEditor };
 			const agentMetadata = requireFromRuntime(resolve(root, "package.json")) as { version?: string; name?: string };

@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { CURSOR_MARKER, Editor, visibleWidth } from "@earendil-works/pi-tui";
 import { createVimEditorAdapter } from "../lib/vim-editor-adapter.ts";
-import { resolveVimRuntime } from "../extensions/gentle-shell.ts";
+import { resolveVimRuntime, VIM_AGENT_INDEX_PATTERN, VIM_CLI_ENTRY_PATTERN } from "../extensions/gentle-shell.ts";
 import { VimOperatorEngine } from "../lib/vim-operator-engine.ts";
 import { VimVisualEngine } from "../lib/vim-visual-engine.ts";
 
@@ -230,6 +230,32 @@ test("installed Pi 0.87.1 local pair proves version, constructor identity, editi
 test("resolveVimRuntime's default entry resolves the declared local 0.87.1 install without any PATH Pi", () => {
   assert.deepEqual(resolveVimRuntime(), { version: "0.87.1", editorClass: Editor });
   assert.deepEqual(resolveVimRuntime("/nonexistent/cli.js"), { version: "0.87.1", editorClass: Editor });
+  assert.deepEqual(resolveVimRuntime("C:\\nonexistent\\cli.js"), { version: "0.87.1", editorClass: Editor });
+});
+
+test("resolveVimRuntime path patterns admit Windows and POSIX separators and reject impostors", () => {
+  assert.equal(VIM_CLI_ENTRY_PATTERN.test("/opt/pi/dist/bundle/cli.js"), true);
+  assert.equal(VIM_CLI_ENTRY_PATTERN.test("C:\\pi\\dist\\bundle\\cli.js"), true);
+  assert.equal(VIM_CLI_ENTRY_PATTERN.test("dist/bundle/cli.js"), true);
+  assert.equal(VIM_CLI_ENTRY_PATTERN.test("dist\\bundle\\cli.js"), true);
+  assert.equal(VIM_CLI_ENTRY_PATTERN.test("/opt/pi/other-dist/bundle/cli.js"), false);
+  assert.equal(VIM_CLI_ENTRY_PATTERN.test("C:\\pi\\other-dist\\bundle\\cli.js"), false);
+  assert.equal(VIM_CLI_ENTRY_PATTERN.test("/opt/pi/dist/bundle/cli.js.map"), false);
+
+  assert.equal(VIM_AGENT_INDEX_PATTERN.test("/node_modules/@earendil-works/pi-coding-agent/dist/index.js"), true);
+  assert.equal(VIM_AGENT_INDEX_PATTERN.test("C:\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\index.js"), true);
+  assert.equal(VIM_AGENT_INDEX_PATTERN.test("dist/index.js"), true);
+  assert.equal(VIM_AGENT_INDEX_PATTERN.test("dist\\index.js"), true);
+  assert.equal(VIM_AGENT_INDEX_PATTERN.test("/node_modules/@earendil-works/pi-coding-agent/notdist/index.js"), false);
+  assert.equal(VIM_AGENT_INDEX_PATTERN.test("C:\\node_modules\\@earendil-works\\pi-coding-agent\\notdist\\index.js"), false);
+  assert.equal(VIM_AGENT_INDEX_PATTERN.test("/dist/index.js.map"), false);
+});
+
+test("resolveVimRuntime resolves local bundle cli entrypoint when provided", () => {
+  const localCli = resolve("node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js");
+  if (existsSync(localCli)) {
+    assert.deepEqual(resolveVimRuntime(localCli), { version: "0.87.1", editorClass: Editor });
+  }
 });
 
 test("installed Pi 0.87.1 pair proves version, constructor identity, editing, paste, selection, wrap and autocomplete", { skip: skip0871 }, () => {

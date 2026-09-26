@@ -2568,20 +2568,68 @@ test("below-input header remains a fullscreen widget without the rail and follow
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
 	const { ctx, ui, overlayReady } = fakeContext();
 	await fire(handlers, "session_start", ctx);
-	const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 100 }, requestRender() {} };
+	const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 180 }, requestRender() {} };
 	const footer = (ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void })(tui, plainTheme, {
 		getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {},
 	});
 	try {
 		const widget = ui.widgets.get("gentle-shell-below-input-header") as (tui: unknown, theme: ShellBarTheme) => { render(width: number): string[] };
-		assert.deepEqual(widget(tui, plainTheme).render(100), []);
+		assert.deepEqual(widget(tui, plainTheme).render(180), []);
 		const pending = commands.get("gentle:customize")!.handler("", ctx);
 		await overlayReady;
 		await customizeAction(ui, "Header placement: below-input");
-		assert.match(widget(tui, plainTheme).render(100).join("\n"), /Gentle Shell/);
-		assert.equal(widget(tui, plainTheme).render(100).length, 2);
+		assert.match(widget(tui, plainTheme).render(180).join("\n"), /Gentle Shell/);
+		assert.equal(widget(tui, plainTheme).render(180).length, 2);
 		tui.mode = "regular";
-		assert.deepEqual(widget(tui, plainTheme).render(100), []);
+		assert.deepEqual(widget(tui, plainTheme).render(180), []);
+		ui.overlayView!.handleInput("\x1b");
+		await pending;
+	} finally { footer.dispose(); }
+});
+
+test("narrow fullscreen with a below-input header shows only the bottom bar, carrying the header's data and extension statuses", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 100 }, requestRender() {} };
+	const footer = (ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { render(width: number): string[]; dispose(): void })(tui, plainTheme, {
+		getGitBranch: () => "main", getExtensionStatuses: () => new Map([["mcp", "MCP: 2 servers"]]), getAvailableProviderCount: () => 1, onBranchChange: () => () => {},
+	});
+	try {
+		const widget = ui.widgets.get("gentle-shell-below-input-header") as (tui: unknown, theme: ShellBarTheme) => { render(width: number): string[] };
+		const topBottom = footer.render(100);
+		assert.equal(topBottom.length, 1, "top placement keeps the compact bar contract");
+		assert.match(topBottom[0]!, /gentle shell/);
+		const pending = commands.get("gentle:customize")!.handler("", ctx);
+		await overlayReady;
+		await customizeAction(ui, "Header placement: below-input");
+		assert.deepEqual(widget(tui, plainTheme).render(100), [], "no second status row below the input at narrow width");
+		const narrow = footer.render(100);
+		assert.equal(narrow.length, 2);
+		assert.match(narrow[0]!, /Gentle Shell/, "bottom-only bar reuses the header row");
+		assert.match(narrow[0]!, /ctx .* 45%/);
+		assert.match(narrow[0]!, /\$0\.000 sub/);
+		assert.match(narrow[0]!, /usage/);
+		assert.match(narrow[1]!, /MCP: 2 servers/, "extension statuses survive on their own line");
+		assert.ok(narrow.every((line) => visibleWidth(line) <= 100));
+		for (const width of [60, 80]) {
+			tui.terminal.columns = width;
+			const mobile = footer.render(width);
+			assert.match(mobile[0]!, /ctx/, `${width} keeps context before location`);
+			assert.ok(mobile.every((line) => visibleWidth(line) <= width));
+		}
+		tui.terminal.columns = 180;
+		assert.equal(widget(tui, plainTheme).render(180).length, 2, "wide keeps the below-input header");
+		assert.match(footer.render(180).join("\n"), /gentle shell/, "wide keeps the compact bottom bar");
+		tui.terminal.columns = 100;
+		await customizeAction(ui, "Status placement: hidden");
+		assert.deepEqual(footer.render(100), [], "hidden never paints a bottom bar");
+		assert.equal(widget(tui, plainTheme).render(100).length, 2, "with no bottom bar the below-input header stays");
+		tui.mode = "regular";
+		await customizeAction(ui, "Status placement: bottom");
+		assert.equal(footer.render(100).length, 1, "regular mode keeps the compact bar");
 		ui.overlayView!.handleInput("\x1b");
 		await pending;
 	} finally { footer.dispose(); }

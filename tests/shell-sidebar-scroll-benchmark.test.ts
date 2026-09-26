@@ -116,6 +116,23 @@ function measure(fixture: Fixture, invalidate = false, anchors?: number[]) {
 	};
 }
 
+// At narrow widths the top header is the only status row: against the control
+// that still docks "Status card", every frame keeps the same header and
+// transcript bytes, the same spacer and editor bytes, and gives the reclaimed
+// footer row to one more transcript row.
+const DOCK_ROWS = 4; // spacer + three editor rows
+function assertNarrowOwnsStatus(narrow: string[][], control: string[][], label: string) {
+	assert.equal(narrow.length, control.length, `${label} samples the same frames`);
+	for (const [frame, screen] of narrow.entries()) {
+		const reference = control[frame]!;
+		assert.equal(screen.length, reference.length, `${label} keeps terminal height`);
+		assert.equal(strip(reference.at(-1)!), "Status card", `${label} control docks Status`);
+		assert.deepEqual(screen.slice(-DOCK_ROWS), reference.slice(-DOCK_ROWS - 1, -1), `${label} keeps spacer and editor bytes`);
+		const body = reference.length - DOCK_ROWS - 1;
+		assert.deepEqual(screen.slice(0, body), reference.slice(0, body), `${label} keeps header and transcript bytes`);
+	}
+}
+
 function transcriptRows(screen: string[]) {
 	return screen.flatMap((line) => [...line.matchAll(/ROW-\d{5} settled transcript/g)].map(([match]) => match));
 }
@@ -125,7 +142,10 @@ test("characterize settled native fullscreen scroll frames with and without the 
 		const fixtures = [createFixture(140, rowCount, true), createFixture(140, rowCount, false), createFixture(100, rowCount, true), createFixture(100, rowCount, false)];
 		try {
 			const desktop = measure(fixtures[0]!);
-			const results = [desktop, measure(fixtures[1]!, false, desktop.positions), ...fixtures.slice(2).map((fixture) => measure(fixture))];
+			// The narrow sidebar reclaims the footer row, so its taller viewport has a
+			// different maxTop; the narrow control samples its exact anchors.
+			const narrow = measure(fixtures[2]!);
+			const results = [desktop, measure(fixtures[1]!, false, desktop.positions), narrow, measure(fixtures[3]!, false, narrow.positions)];
 			for (let i = 0; i < fixtures.length; i++) {
 				const fixture = fixtures[i]!;
 				const result = results[i]!;
@@ -144,12 +164,17 @@ test("characterize settled native fullscreen scroll frames with and without the 
 					} else {
 						if (fixture.columns === 100) assert.equal(screen[0], "HEADER 100", "narrow fallback retains the full-width header");
 						else assert.ok(!screen.some((line) => line.startsWith("HEADER ")), "desktop sidebar-off control has no header");
-						assert.equal(screen.at(-1), "Status card", "footer stays in the native dock");
+						if (fixture.sidebar) {
+							assert.equal(screen.at(-1), "╰──────────╯", "the narrow top header owns Status and reclaims the footer row");
+							assert.ok(!screen.some((line) => line.includes("Status card")), "no second status row at narrow width");
+						} else {
+							assert.equal(screen.at(-1), "Status card", "footer stays in the native dock");
+						}
 					}
 				}
 			}
-			// Narrow installation must be a byte-for-byte no-op at identical width.
-			assert.deepEqual(results[2]!.rawScreens, results[3]!.rawScreens);
+			// Narrow installation only swaps the footer row for one more transcript row.
+			assertNarrowOwnsStatus(results[2]!.rawScreens, results[3]!.rawScreens, "narrow fallback");
 			// Desktop compositions have different geometry, but share the exact
 			// transcript rows at matching scroll anchors wherever both are visible.
 			assert.deepEqual(results[0]!.positions, results[1]!.positions);
@@ -183,7 +208,8 @@ test("wrapped ANSI and native Markdown distinguish width composition from settle
 			const fixtures = [desktop, control, narrow, narrowControl];
 			try {
 				const desktopHit = measure(desktop);
-				const hits = [desktopHit, measure(control, false, desktopHit.positions), measure(narrow), measure(narrowControl)];
+				const narrowHit = measure(narrow);
+				const hits = [desktopHit, measure(control, false, desktopHit.positions), narrowHit, measure(narrowControl, false, narrowHit.positions)];
 				const misses = fixtures.map((fixture, index) => measure(fixture, true, hits[index]!.positions));
 				assert.equal(width, 87, "desktop transcript geometry stays fixed");
 				assert.equal(hits[0]!.contentWidth, hits[1]!.contentWidth);
@@ -203,8 +229,8 @@ test("wrapped ANSI and native Markdown distinguish width composition from settle
 						assert.equal(miss.renderCalls.widthBuild, 15);
 					}
 				}
-				assert.deepEqual(hits[2]!.rawScreens, hits[3]!.rawScreens, "narrow fallback is byte-identical at equal geometry");
-				assert.deepEqual(misses[2]!.rawScreens, misses[3]!.rawScreens, "invalidated narrow fallback remains byte-identical");
+				assertNarrowOwnsStatus(hits[2]!.rawScreens, hits[3]!.rawScreens, "narrow fallback");
+				assertNarrowOwnsStatus(misses[2]!.rawScreens, misses[3]!.rawScreens, "invalidated narrow fallback");
 				// Desktop header and dock are distinct; compare only the actual
 				// transcript viewport at equal width and scroll position.
 				assert.deepEqual(hits[0]!.positions, hits[1]!.positions);

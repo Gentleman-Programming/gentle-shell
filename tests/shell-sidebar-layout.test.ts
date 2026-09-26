@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { CURSOR_MARKER, ScrollView, VStack, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { getScrollViewsAt, renderLayoutFrame, type LayoutBox } from "@earendil-works/pi-tui/dist/layout.js";
-import { installSidebar, invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
+import { installSidebar, invalidateSidebar, narrowStatusOwner } from "../lib/shell-sidebar-layout.ts";
 import { sidebarHeader, sidebarPart, sidebarState } from "../lib/shell-sidebar.ts";
 import { renderShellSidebarBar } from "../lib/shell-bar.ts";
 import { renderTodoCard, type TodoState } from "../lib/shell-todo.ts";
@@ -124,6 +124,46 @@ test("hidden status suppresses bottom paint and placement resizes responsively",
 	assert.equal(f.root[NODE]().type, "vstack");
 });
 
+test("narrow status owner prefers a configured top header, otherwise the bottom bar, and leaves wide/regular untouched", () => {
+	for (const statusPlacement of ["auto", "right", "bottom", "hidden"] as const) {
+		for (const columns of [40, 100, 139]) {
+			assert.equal(narrowStatusOwner({ mode: "fullscreen", columns, statusPlacement, headerPlacement: "top" }), "header", `${columns}/${statusPlacement}/top`);
+			assert.equal(narrowStatusOwner({ mode: "fullscreen", columns, statusPlacement, headerPlacement: "below-input" }), statusPlacement === "hidden" ? "header" : "bottom", `${columns}/${statusPlacement}/below-input`);
+		}
+		for (const headerPlacement of ["top", "below-input"] as const) {
+			assert.equal(narrowStatusOwner({ mode: "fullscreen", columns: 140, statusPlacement, headerPlacement }), undefined, "wide keeps its layout");
+			assert.equal(narrowStatusOwner({ mode: "regular", columns: 60, statusPlacement, headerPlacement }), undefined, "regular mode has no top header");
+		}
+	}
+});
+
+test("narrow top header owns Status only while it actually paints, and resize restores the bottom bar before the next layout pass", (t) => {
+	const f = fixture("fullscreen", 100);
+	let label = "HEADER";
+	sidebarHeader(f.tui, { render: () => [label], invalidate() {} });
+	let headerPlacement: "top" | "below-input" = "top";
+	t.after(installSidebar(f.tui, theme, () => "bottom", () => headerPlacement));
+	f.root[NODE]();
+	assert.deepEqual(f.bottom.render(100), [], "top header alone at narrow width");
+	headerPlacement = "below-input";
+	assert.deepEqual(f.bottom.render(100), ["Status"], "below-input leaves the bottom bar as the only status row");
+	headerPlacement = "top";
+	f.host.terminal.columns = 180;
+	assert.deepEqual(f.bottom.render(180), ["Status"], "wide bottom placement keeps both bars");
+	f.host.terminal.columns = 100;
+	label = "";
+	f.root[NODE]();
+	assert.deepEqual(f.bottom.render(100), ["Status"], "a blank header never swallows the bottom bar");
+});
+
+test("regular mode keeps the bottom bar even with a top header configured", (t) => {
+	const f = fixture("regular", 80);
+	sidebarHeader(f.tui, { render: () => ["HEADER"], invalidate() {} });
+	t.after(installSidebar(f.tui, theme, () => "auto", () => "top"));
+	f.root[NODE]();
+	assert.deepEqual(f.bottom.render(80), ["Status"]);
+});
+
 test("top header remains above native layout at narrow widths and wide bottom/hidden without a rail", (t) => {
 	for (const width of [100, 60, 180]) {
 		for (const placement of width === 180 ? ["bottom", "hidden"] as const : ["auto"] as const) {
@@ -135,7 +175,7 @@ test("top header remains above native layout at narrow widths and wide bottom/hi
 			assert.equal(node.type, "vstack", `${width}/${placement} keeps the top header`);
 			assert.deepEqual(node.entries[0]?.component.render(width), [`HEADER ${width}`, `RULE ${width}`]);
 			assert.deepEqual(node.entries[1]?.component[NODE]?.(), f.original(), "native layout remains underneath");
-			assert.deepEqual(f.bottom.render(width), placement === "hidden" ? [] : ["Status"], "bottom Status survives without a rail unless hidden");
+			assert.deepEqual(f.bottom.render(width), placement === "bottom" ? ["Status"] : [], "wide bottom keeps Status; narrow top header and hidden paint no bottom bar");
 			assert.equal(sidebarState(f.tui).active, false);
 		}
 	}
@@ -206,7 +246,13 @@ test("hidden status reclaims the reserved footer row in narrow and wide fullscre
 			assert.doesNotMatch(lines.join("\n"), /Status/);
 			placement = "bottom";
 			lines = f.frame();
-			assert.match(lines[lines.length - 1] ?? "", /Status/, `${width}/${withHeader} bottom still paints its footer row`);
+			if (withHeader && width < 140) {
+				// The narrow top header owns Status, so its reserved row is reclaimed too.
+				assert.match(lines[lines.length - 1] ?? "", /Editor/, `${width} narrow top header leaves no blank footer row`);
+				assert.doesNotMatch(lines.join("\n"), /Status/);
+			} else {
+				assert.match(lines[lines.length - 1] ?? "", /Status/, `${width}/${withHeader} bottom still paints its footer row`);
+			}
 		}
 	}
 });
@@ -816,7 +862,7 @@ test("below the sidebar breakpoint a rule-like header paints above native layout
 	const node = f.root[NODE]() as unknown as { type: string; entries: { component: Component }[] };
 	assert.equal(node.type, "vstack");
 	assert.deepEqual(node.entries[0]?.component.render(139), ["HEADER 139", "RULE 139"]);
-	assert.deepEqual(f.bottom.render(139), ["Status"]);
+	assert.deepEqual(f.bottom.render(139), [], "the narrow top header is the only status row");
 });
 
 test("without a registered header the rail keeps the banner and the plain hstack", (t) => {

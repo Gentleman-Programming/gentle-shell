@@ -322,6 +322,17 @@ export function renderShellHeaderBar(model: ShellHeaderModel, theme: ShellBarThe
 	return { text: visibleWidth(brand) <= targetWidth ? brand : "" };
 }
 
+// The bottom bar when it is the only status row of a narrow fullscreen
+// terminal (the header sits below the input and steps aside). It reuses the
+// header row's own cascade, so context, cost and usage outlive the location
+// on small screens, and keeps extension statuses on a second line instead of
+// dropping them the way the header deliberately does.
+export function renderShellBottomOnlyBar(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: Presentation): string[] {
+	const header = renderShellHeaderBar(buildShellHeaderModel(model), theme, width, usageHint, presentation).text;
+	const statuses = model.statuses.map(sanitizeStatus).filter((status) => status.length > 0).map((status) => theme.fg(ROLE.STATUS, status));
+	return statuses.length ? [header, truncateToWidth(joinSegments(statuses, theme), Math.max(0, Math.floor(width)), "…")] : [header];
+}
+
 // The rule row painted directly under the header bar: one full-width horizontal
 // line in the same theme role as the editor frame (PROMPT_FRAME_ROLE in
 // extensions/gentle-shell.ts), so the status row and the prompt read as one

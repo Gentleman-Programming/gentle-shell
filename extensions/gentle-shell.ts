@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { profilesFilePath, readProfilesFileResult } from "../lib/agent-profiles.ts";
 import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { buildShellHeaderModel, renderShellBar, renderShellHeaderBar, renderShellHeaderRule, renderShellSidebarBar, shellEnabled, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
+import { buildShellHeaderModel, renderShellBar, renderShellBottomOnlyBar, renderShellHeaderBar, renderShellHeaderRule, renderShellSidebarBar, shellEnabled, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
 import { CHANGE_STATUS, RootBranchLabels, renderChangesWidget, type ChangedFile, type ChangesModel, type GitRunner, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver } from "../lib/session-worktree-registry.ts";
@@ -101,7 +101,7 @@ import {
 import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseProviderUsage, parseUsageHeaders, parseUsageSource, UsageSourceRegistry, UsageStore, USAGE_SOURCE_EVENT, type ProviderUsage, type UsageSource } from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarHeader, sidebarPart, sidebarState, VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
-import { installSidebar, invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
+import { installSidebar, invalidateSidebar, narrowStatusOwner, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
 import { SessionChanges, SESSION_CHANGE_EVENT } from "../lib/session-changes.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
@@ -1539,7 +1539,12 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: usage.get(ctx.model?.provider ?? ""), profile: deps.activeProfile() }),
 				changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted, notice: tracker.model.notice },
 			});
-			const part = sidebarPart(tui, "footer", bottom, {
+			// At narrow fullscreen widths only one status row paints: a top header
+			// suppresses the bottom bar in the layout, and otherwise the bottom bar
+			// takes over the header's data while the below-input header steps aside.
+			const statusOwner = () => narrowStatusOwner({ mode: (tui as TUI & { mode?: string }).mode, columns: tui.terminal?.columns ?? 0, statusPlacement: visualSettings.statusPlacement, headerPlacement: visualSettings.headerPlacement });
+			const bottomBar = { ...bottom, render: (width: number) => statusOwner() === STATUS_OWNER.BOTTOM ? renderShellBottomOnlyBar(footerModel(), theme, width, usageShortcutKey, visualSettings) : bottom.render(width) };
+			const part = sidebarPart(tui, "footer", bottomBar, {
 				digest: () => JSON.stringify([footerModel(), visualSettings]),
 				render: (width) => renderShellSidebarBar(footerModel(), theme, width, visualSettings),
 				invalidate() {},
@@ -1563,7 +1568,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			});
 			const uninstall = installSidebar(tui, theme, () => visualSettings.statusPlacement, () => visualSettings.headerPlacement, () => visualSettings.density);
 			// The public widget slot follows the editor even when the rail is absent.
-			const belowHeader = () => visualSettings.headerPlacement === "below-input" && (tui as TUI & { mode?: string }).mode === "fullscreen";
+			const belowHeader = () => visualSettings.headerPlacement === "below-input" && (tui as TUI & { mode?: string }).mode === "fullscreen" && statusOwner() !== STATUS_OWNER.BOTTOM;
 			ctx.ui.setWidget(HEADER_WIDGET_KEY, () => ({
 				render(width: number) { return belowHeader() ? [headerBar(width).text, renderShellHeaderRule(theme, width)] : []; },
 				invalidate() {},

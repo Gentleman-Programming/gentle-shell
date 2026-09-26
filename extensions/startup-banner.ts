@@ -817,7 +817,6 @@ export default function (pi: ExtensionAPI) {
           render: (width: number) => region.render(width),
           handleMouse: (event) => region.handleMouse?.(event),
           invalidate: () => region.invalidate(),
-          dispose: () => region.dispose(),
           digest: () => `${preflightCollapsed}`,
         };
         return sidebarPart(tui, "preflight", region, railComp);

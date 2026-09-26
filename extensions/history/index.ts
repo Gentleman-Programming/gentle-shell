@@ -42,6 +42,7 @@ import { gentlePiConfigHome } from "../../lib/agent-home.ts";
 import {
   historyCaptureEnabled,
   historyCaptureEnvOverride,
+  resolveHistoryCapturePolicy,
 } from "../../lib/history-capture-policy.ts";
 import { hidePrompt } from "./hide-prompts.ts";
 import {
@@ -68,7 +69,6 @@ import {
   deleteConfirmFooterText,
   deleteConfirmStep,
   deletionActionsFor,
-  EDITOR_HIDE_FAILED_TEXT,
   filterPrompts,
   getVisiblePromptRecords,
   initialLoadedCount,
@@ -81,6 +81,7 @@ import {
   shouldGrowWindow,
   STORE_DELETE_FAILED_TEXT,
   storeDeleteFollowUp,
+  storeDeleteNotice,
   withExpandedHistoryGlobals,
   type PiHistoryGlobals,
   type PromptEntry,
@@ -151,11 +152,23 @@ export function captureEnabled(
   return historyCaptureEnabled({ env, gentlePiConfigHome: configHome });
 }
 
-/** Why capture is off, naming the control that actually decides it. */
-function captureDisabledMessage(env: NodeJS.ProcessEnv): string {
-  return historyCaptureEnvOverride(env) === "off"
-    ? "Prompt history is disabled by GENTLE_PI_HISTORY_CAPTURE, which overrides the Gentle → Customize → History preference."
-    : "Prompt history is disabled. Turn on \"Prompt history capture\" in Gentle → Customize → History, or set GENTLE_PI_HISTORY_CAPTURE=1.";
+/**
+ * Why capture is off, naming the control that actually decides it. A
+ * malformed or unreadable preference is reported as such: Customize refuses
+ * to rewrite it, so "turn it on in Customize" would not help.
+ */
+function captureDisabledMessage(
+  env: NodeJS.ProcessEnv,
+  configHome: string,
+): string {
+  if (historyCaptureEnvOverride(env) === "off") {
+    return "Prompt history is disabled by GENTLE_PI_HISTORY_CAPTURE, which overrides the Gentle → Customize → History preference.";
+  }
+  const preference = resolveHistoryCapturePolicy({ gentlePiConfigHome: configHome });
+  if (preference.malformed) {
+    return `Prompt history is disabled because the Gentle → Customize → History preference is invalid or unreadable: ${preference.globalFile}. Fix or remove that file, or set GENTLE_PI_HISTORY_CAPTURE=1.`;
+  }
+  return "Prompt history is disabled. Turn on \"Prompt history capture\" in Gentle → Customize → History, or set GENTLE_PI_HISTORY_CAPTURE=1.";
 }
 
 // ---------------------------------------------------------------------------
@@ -362,12 +375,14 @@ class PromptHistorySelector extends Container implements Focusable {
       match: (_d, kb) => kb.matches(_d, "tui.select.cancel"),
       handler: () => this.onCancel(),
     },
+    // Home/End jump the list only while the search box is empty; with any
+    // text they fall through to the search input and move its caret.
     {
-      match: (d, _kb) => matchesKey(d, "home"),
+      match: (d, _kb) => matchesKey(d, "home") && this.listOwnsHomeEnd(),
       handler: () => this.jumpToFirst(),
     },
     {
-      match: (d, _kb) => matchesKey(d, "end"),
+      match: (d, _kb) => matchesKey(d, "end") && this.listOwnsHomeEnd(),
       handler: () => this.jumpToLast(),
     },
     {
@@ -688,12 +703,12 @@ class PromptHistorySelector extends Container implements Focusable {
     // actions via the pure planner over the injected store root/cwd.
     const actions = deletionActionsFor(selected.source ?? "editor");
 
+    let sweep: SweepResult | null = null;
     if (actions.deleteFromEditorStore) {
       // Store path: physically remove EVERY copy from the JSONL store, one
       // atomic rewrite per file. A thrown store failure is contained here
       // (PR #1393): toast + abort — nothing was removed and no tombstone is
       // written, so the delete never lies about state.
-      let sweep: SweepResult;
       try {
         sweep =
           this.scope === "global"
@@ -704,9 +719,9 @@ class PromptHistorySelector extends Container implements Focusable {
         return;
       }
       // Files that could not be read or rewritten may still hold a copy:
-      // say so, and still write the tombstone that hides them.
+      // still write the tombstone that hides them; the notice waits for
+      // the hide result below.
       const followUp = storeDeleteFollowUp(sweep);
-      if (followUp.notice) this.onNotify?.(followUp.notice, "error");
       if (!followUp.proceed) return;
     }
 
@@ -721,7 +736,12 @@ class PromptHistorySelector extends Container implements Focusable {
         this.onNotify?.(hide.message, "error");
         return;
       }
-      this.onNotify?.(EDITOR_HIDE_FAILED_TEXT, "error");
+    }
+    // One notice for the editor path, stating both halves: a partial sweep
+    // only says "hidden" when the tombstone was actually written.
+    if (sweep) {
+      const notice = storeDeleteNotice(sweep, hide.status === "error");
+      if (notice) this.onNotify?.(notice, "error");
     }
     // Remove from the master records array so a subsequent filter doesn't
     // bring it back.
@@ -868,6 +888,15 @@ class PromptHistorySelector extends Container implements Focusable {
       PREVIEW_ROWS,
     );
     this.rebuildPreview();
+  }
+
+  /**
+   * An empty search box has no caret to move, so Home/End keep their list
+   * jumps; any text (whitespace included) routes them to the caret, and End
+   * then never loads the whole list.
+   */
+  private listOwnsHomeEnd(): boolean {
+    return this.searchInput.getValue().length === 0;
   }
 
   private jumpToFirst(): void {
@@ -1130,7 +1159,7 @@ function createOpenFlow(
     // Capture gate (#1390) FIRST: with capture off the selector is a no-op —
     // no registry writes, no writer init, no store reads, no overlay.
     if (!captureEnabled(env, configHome)) {
-      ctx.ui.notify(captureDisabledMessage(env), "warning");
+      ctx.ui.notify(captureDisabledMessage(env, configHome), "warning");
       return;
     }
 

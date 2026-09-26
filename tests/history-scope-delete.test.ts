@@ -7,6 +7,7 @@ import {
   appendSessionCapture,
   deleteFromGlobal,
   deleteFromProject,
+  drainProject,
   globalSeedPath,
   openSessionWriter,
   projectHash,
@@ -244,4 +245,53 @@ test("a failed rewrite is counted, keeps the original, and leaves no tmp file", 
   assert.deepEqual(fileTexts(healthy), ["healthy-keep"]);
   const leftovers = fs.readdirSync(dir).filter((f) => f.includes(".tmp-"));
   assert.deepEqual(leftovers, []);
+});
+
+// A failed carry-over append (#1393 advisory): the rewrite already replaced
+// the file, so the raced lines exist only in the kept descriptor. They must
+// land in a sibling store file instead of vanishing with the old inode.
+test("raced lines survive a failed carry-over append in a sibling store file", () => {
+  const root = makeRoot();
+  const state = openSessionWriter(root, PROJECT_A, "other-instance");
+  appendSessionCapture(state, "victim");
+  appendSessionCapture(state, "keeper");
+  const realAppend = fs.appendFileSync;
+  let carryFailed = false;
+  fs.appendFileSync = ((
+    file: fs.PathOrFileDescriptor,
+    data: string | Uint8Array,
+    options?: fs.WriteFileOptions,
+  ) => {
+    // The sweep carries a Buffer; the simulated instance appends a string.
+    if (String(file) === state.filePath && Buffer.isBuffer(data)) {
+      carryFailed = true;
+      throw Object.assign(new Error("simulated EIO"), { code: "EIO" });
+    }
+    return realAppend(file, data, options);
+  }) as typeof fs.appendFileSync;
+  let result;
+  try {
+    withAppendBeforeRename(
+      state.filePath,
+      `${JSON.stringify({ v: 1, text: "raced in" })}\n`,
+      () => {
+        result = deleteFromProject(root, PROJECT_A, "victim");
+      },
+    );
+  } finally {
+    fs.appendFileSync = realAppend;
+  }
+  assert.equal(carryFailed, true);
+  assert.deepEqual(result, { filesAffected: 1, removed: 1, failed: 0 });
+  assert.deepEqual(fileTexts(state.filePath), ["keeper"]);
+  const drained = drainProject(root, PROJECT_A);
+  assert.equal(drained.status, "ok");
+  if (drained.status === "ok") {
+    assert.deepEqual([...drained.prompts].sort(), ["keeper", "raced in"]);
+  }
+  const dir = path.dirname(state.filePath);
+  assert.deepEqual(
+    fs.readdirSync(dir).filter((f) => f.includes(".tmp-")),
+    [],
+  );
 });

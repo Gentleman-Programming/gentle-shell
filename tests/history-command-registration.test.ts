@@ -93,7 +93,7 @@ test("the capture gate precedes every store touch in the open flow (#1390)", () 
     "the drain must run only after the capture gate passes",
   );
   assert.ok(
-    body.includes("captureDisabledMessage(env)"),
+    body.includes("captureDisabledMessage(env, configHome)"),
     "the disabled warning explains which control decides",
   );
   const message = source.slice(

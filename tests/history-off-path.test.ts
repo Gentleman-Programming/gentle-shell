@@ -139,3 +139,32 @@ test("an explicit env off names the override instead of the Customize fix", asyn
   assert.match(notifyCalls[0][0], /disabled by GENTLE_PI_HISTORY_CAPTURE, which overrides the Gentle → Customize → History preference/);
   assert.deepEqual(fs.readdirSync(root), []);
 });
+
+test("a malformed Customize preference is reported as invalid, not just off", async () => {
+  const root = makeRoot();
+  const configHome = fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-off-config-"));
+  const preference = path.join(configHome, "history-capture.json");
+  fs.writeFileSync(preference, "{not json", "utf8");
+  const { commandHandler } = loadWithCommand({}, root, configHome);
+  const notifyCalls: Array<[string, string]> = [];
+  await commandHandler([], fakeCtx(notifyCalls));
+  assert.equal(notifyCalls.length, 1);
+  assert.equal(notifyCalls[0][1], "warning");
+  assert.match(notifyCalls[0][0], /Gentle → Customize → History preference is invalid or unreadable/);
+  assert.ok(notifyCalls[0][0].includes(preference), `the warning must name the file, got: ${notifyCalls[0][0]}`);
+  assert.ok(notifyCalls[0][0].includes("GENTLE_PI_HISTORY_CAPTURE=1"));
+  // Reporting never repairs: the malformed file and the store stay untouched.
+  assert.equal(fs.readFileSync(preference, "utf8"), "{not json");
+  assert.deepEqual(fs.readdirSync(root), []);
+});
+
+test("an env value that defers to a malformed preference still reports it", async () => {
+  const root = makeRoot();
+  const configHome = fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-off-config-"));
+  fs.writeFileSync(path.join(configHome, "history-capture.json"), "[]", "utf8");
+  const { commandHandler } = loadWithCommand({ GENTLE_PI_HISTORY_CAPTURE: "maybe" }, root, configHome);
+  const notifyCalls: Array<[string, string]> = [];
+  await commandHandler([], fakeCtx(notifyCalls));
+  assert.equal(notifyCalls.length, 1);
+  assert.match(notifyCalls[0][0], /preference is invalid or unreadable/);
+});

@@ -331,6 +331,13 @@ export const EDITOR_HIDE_FAILED_TEXT =
 export const STORE_DELETE_PARTIAL_TEXT =
   "Some history files could not be rewritten; the prompt is hidden, but copies may remain on disk.";
 
+/**
+ * Toast copy when some store files could not be rewritten AND the tombstone
+ * write failed: nothing hides the copies that may remain on disk.
+ */
+export const STORE_DELETE_PARTIAL_HIDE_FAILED_TEXT =
+  "Some history files could not be rewritten and hiding failed — the prompt may reappear from those files or from session transcripts.";
+
 /** The counts a scope delete reports (structural twin of store's SweepResult). */
 export interface StoreSweepCounts {
   filesAffected: number;
@@ -351,6 +358,23 @@ export function storeDeleteFollowUp(
     return { proceed: true, notice: STORE_DELETE_PARTIAL_TEXT };
   }
   return { proceed: counts.removed > 0 };
+}
+
+/**
+ * The one error notice of an editor-path delete, chosen AFTER the tombstone
+ * write so it never claims the prompt is hidden when hiding failed. No
+ * notice for a clean sweep with a written tombstone.
+ */
+export function storeDeleteNotice(
+  counts: StoreSweepCounts,
+  hideFailed: boolean,
+): string | undefined {
+  if (counts.failed > 0) {
+    return hideFailed
+      ? STORE_DELETE_PARTIAL_HIDE_FAILED_TEXT
+      : STORE_DELETE_PARTIAL_TEXT;
+  }
+  return hideFailed ? EDITOR_HIDE_FAILED_TEXT : undefined;
 }
 
 export function getVisiblePromptRecords(

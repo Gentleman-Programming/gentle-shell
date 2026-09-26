@@ -44,7 +44,9 @@ Env values are trimmed and case-insensitive. While the variable forces a
 value, the Customize rows show `env override` and the preview says the
 variable overrides the preference; a selection is still saved and takes effect
 once the variable stops forcing a value. A malformed preference file is
-reported and never rewritten by Customize: fix or remove it by hand.
+reported and never rewritten by Customize: fix or remove it by hand. The
+history selector names that file and says the preference is invalid or
+unreadable, instead of asking you to turn capture on in Customize.
 
 - The check runs per prompt: changing the preference or the variable stops or
   starts new captures immediately.
@@ -60,7 +62,10 @@ after the extension loads, or at its first delivered prompt if that comes
 first. The selector reads the store but does not initiate import.
 With capture off, both capture and the selector leave the store untouched.
 Failed migration reads can be retried on a later session; untrusted deletion
-records defer transcript bootstrap until they can be read safely.
+records defer transcript bootstrap until they can be read safely. Migration
+holds the `history-global.jsonl.migration-lock` directory while it runs; if a
+pi process dies in that window, the lock stays and migration is skipped until
+you remove that directory by hand.
 
 An import creates **new searchable copies** under `~/.pi/agent/history`. The
 source transcripts stay untouched and read-only. Turning capture off again
@@ -113,6 +118,18 @@ rm -rf ~/.pi/agent/history            # whole store
 rm -rf ~/.pi/agent/history/projects/<hash>   # one project (see registry.json)
 ```
 
+## Selector keys
+
+`Home` and `End` depend on the search box:
+
+- **Search box empty:** they move the list selection. `Home` selects the
+  newest prompt; `End` loads every remaining prompt and selects the oldest.
+- **Any text in the search box** (whitespace included): they move the search
+  caret to the start or end of the query, like the other editing keys. They
+  never move the list, and `End` does not load the remaining prompts.
+
+As with other editing keys, the list selection returns to the first match.
+
 ## Delete
 
 The selector's delete key (`ctrl+shift+backspace`) is a two-step y/n
@@ -135,7 +152,8 @@ prompt is affected — prompts that merely share a beginning stay.
    `history-global.jsonl`. Each affected file is rewritten atomically (temp
    file + rename). Files are never removed, even when they end up empty.
    Lines that another pi instance appends while a file is being rewritten
-   are carried over into the new file.
+   are carried over into the new file; if that append fails, they are kept
+   in a sibling `<name>.carry-<pid>-<ts>.jsonl` store file instead.
 2. **A tombstone is written** to `hidden.json`, so the prompt stays hidden
    everywhere the selector reads, and a later transcript bootstrap does not
    import it again. The session transcripts themselves are never modified.
@@ -175,6 +193,13 @@ Failures surface an error notification and never report a clean delete:
 - If the tombstone write fails after store copies were removed, the prompt
   may reappear from session transcripts ("Deleted from the store, but
   hiding failed — the prompt may reappear from session transcripts.").
+- If both happen — some files cannot be rewritten and the tombstone write
+  fails — a single notice says so and never claims the prompt is hidden
+  ("Some history files could not be rewritten and hiding failed — the
+  prompt may reappear from those files or from session transcripts.").
+
+The notice is chosen after the tombstone write, so it always describes the
+final state.
 
 `hidden.json` fails closed: if it exists but cannot be trusted (unreadable,
 corrupt, or not an array), history is blocked with a recovery warning
@@ -200,6 +225,10 @@ in total. Then:
   `compact-<pid>-<ts>.jsonl`, which is written completely (temp file + rename)
   before any merged file is removed. Earlier compact files are merged again
   like any other file.
+- Compaction runs only when at least **two** files can be merged. Merging a
+  single file cannot reduce the file count, so a directory that stays above
+  a threshold after compaction (for example, because compaction never
+  lowers the entry count) is not rewritten again at every shutdown.
 - Never merged: `seed.jsonl` (while it exists, the transcript import does not
   run again) and the capture file of the session that is shutting down.
   `history-global.jsonl` sits outside the project directories and is never
@@ -211,9 +240,11 @@ in total. Then:
 
 Other pi instances may still be appending to the files being merged. Each
 file is renamed to a claim name before it is read (`<name>.gc-<pid>-<ts>.jsonl`),
-so a later append by path starts a fresh file under the original name, and
-bytes written to the claimed file after it was read are moved into the
-compact file once the claim is removed.
+so a later append by path starts a fresh file under the original name.
+Complete lines written to the claimed file after it was read are appended to
+the compact file **before** the claim is removed; if that append fails, the
+claim stays on disk with every byte. The claim is read once more after its
+removal for a write that landed in between.
 
 Failures never lose prompts: a file that cannot be read is left untouched,
 and if the compact file cannot be written, the claimed files stay on disk and

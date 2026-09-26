@@ -100,21 +100,21 @@ test("bottom paint follows placement and resize before the next layout pass", (t
 	assert.equal(f.root[NODE]().type, "vstack");
 	placement = "hidden";
 	f.host.terminal.columns = 180;
-	assert.deepEqual(f.bottom.render(80), ["Status"]);
+	assert.deepEqual(f.bottom.render(80), []);
 	assert.equal(f.root[NODE]().type, "vstack");
 	placement = "auto";
 	assert.equal(f.root[NODE]().type, "hstack");
 	assert.deepEqual(f.bottom.render(80), []);
 });
 
-test("status placement preserves bottom paint when hidden and resizes responsively", (t) => {
+test("hidden status suppresses bottom paint and placement resizes responsively", (t) => {
 	const f = fixture("fullscreen", 140);
 	let placement: "auto" | "right" | "bottom" | "hidden" = "auto";
 	t.after(installSidebar(f.tui, theme, () => placement));
 	assert.equal(f.root[NODE]().type, "hstack");
 	placement = "hidden";
 	assert.equal(f.root[NODE]().type, "vstack");
-	assert.deepEqual(f.bottom.render(80), ["Status"]);
+	assert.deepEqual(f.bottom.render(80), []);
 	placement = "right";
 	assert.equal(f.root[NODE]().type, "hstack");
 	f.host.terminal.columns = 139;
@@ -135,7 +135,7 @@ test("top header remains above native layout at narrow widths and wide bottom/hi
 			assert.equal(node.type, "vstack", `${width}/${placement} keeps the top header`);
 			assert.deepEqual(node.entries[0]?.component.render(width), [`HEADER ${width}`, `RULE ${width}`]);
 			assert.deepEqual(node.entries[1]?.component[NODE]?.(), f.original(), "native layout remains underneath");
-			assert.deepEqual(f.bottom.render(width), ["Status"], "bottom Status survives without a rail");
+			assert.deepEqual(f.bottom.render(width), placement === "hidden" ? [] : ["Status"], "bottom Status survives without a rail unless hidden");
 			assert.equal(sidebarState(f.tui).active, false);
 		}
 	}
@@ -147,7 +147,67 @@ test("below-input header never duplicates into the top row, even when the rail i
 		sidebarHeader(f.tui, { render: () => ["HEADER"], invalidate() {} });
 		t.after(installSidebar(f.tui, theme, () => placement, () => "below-input"));
 		assert.deepEqual(f.root[NODE](), f.original());
-		assert.deepEqual(f.bottom.render(width), ["Status"]);
+		assert.deepEqual(f.bottom.render(width), placement === "hidden" ? [] : ["Status"]);
+	}
+});
+
+test("hidden status suppresses bottom paint in regular, narrow and wide fullscreen while other placements paint", (t) => {
+	for (const [mode, width] of [["regular", 180], ["regular", 60], ["fullscreen", 60], ["fullscreen", 100], ["fullscreen", 180]] as const) {
+		const f = fixture(mode, width);
+		let placement: "auto" | "right" | "bottom" | "hidden" = "hidden";
+		t.after(installSidebar(f.tui, theme, () => placement));
+		f.root[NODE]();
+		assert.deepEqual(f.bottom.render(width), [], `${mode}/${width} hidden paints no bottom Status`);
+		assert.equal(sidebarState(f.tui).active, false);
+		for (const other of ["auto", "right", "bottom"] as const) {
+			placement = other;
+			f.root[NODE]();
+			const railOwns = mode === "fullscreen" && width >= 140 && other !== "bottom";
+			assert.deepEqual(f.bottom.render(width), railOwns ? [] : ["Status"], `${mode}/${width}/${other}`);
+		}
+		placement = "hidden";
+		assert.deepEqual(f.bottom.render(width), [], "switching back to hidden applies before the next layout pass");
+	}
+});
+
+test("hidden status leaves other bottom parts painting and restores Status on cleanup", () => {
+	const f = fixture("regular", 100);
+	const todo = sidebarPart(f.tui, "todo", { render: (_width: number) => ["todo"], invalidate() {} });
+	const dispose = installSidebar(f.tui, theme, () => "hidden");
+	assert.deepEqual(f.bottom.render(100), []);
+	assert.deepEqual(todo.render(100), ["todo"]);
+	dispose();
+	assert.deepEqual(f.bottom.render(100), ["Status"]);
+});
+
+// A native-shaped dock: the footer is the last dock entry with a reserved row.
+function dockedFooterFixture(width: number) {
+	const transcript = { render: () => Array.from({ length: 50 }, (_, index) => `Entry ${index}`), invalidate() {} };
+	const primary = new ScrollView(transcript, { primary: true, follow: "end" });
+	const host = { mode: "fullscreen", terminal: { columns: width }, layoutRoot: undefined as unknown, requestRender() {} };
+	const tui = host as unknown as TUI;
+	const footer = sidebarPart(tui, "footer", { render: () => ["Status"], invalidate() {} });
+	const editor = { render: () => [`Editor${CURSOR_MARKER}`], invalidate() {} };
+	const dock = new VStack([{ component: editor }, { component: footer, minSize: 1 }]);
+	const root = new VStack([{ component: primary, basis: 0, grow: 1, shrink: 1, minSize: 1 }, { component: dock }]);
+	host.layoutRoot = root;
+	return { host, tui, root, frame: () => renderLayoutFrame(root, host.terminal.columns, 12, () => {}).lines };
+}
+
+test("hidden status reclaims the reserved footer row in narrow and wide fullscreen", (t) => {
+	for (const width of [60, 100, 180]) {
+		for (const withHeader of [false, true]) {
+			const f = dockedFooterFixture(width);
+			if (withHeader) sidebarHeader(f.tui, { render: (available: number) => [`HEADER ${available}`], invalidate() {} });
+			let placement: "auto" | "bottom" | "hidden" = "hidden";
+			t.after(installSidebar(f.tui, theme, () => placement));
+			let lines = f.frame();
+			assert.match(lines[lines.length - 1] ?? "", /Editor/, `${width}/${withHeader} hidden leaves no blank footer row`);
+			assert.doesNotMatch(lines.join("\n"), /Status/);
+			placement = "bottom";
+			lines = f.frame();
+			assert.match(lines[lines.length - 1] ?? "", /Status/, `${width}/${withHeader} bottom still paints its footer row`);
+		}
 	}
 });
 

@@ -91,6 +91,9 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	// revision counter, exactly like the whole-rail memo already did.
 	const sectionCache = new Map<string, SectionCacheEntry>();
 	state.active = false;
+	// Hidden removes Status everywhere, including regular mode where the rail
+	// never mounts, so it is published independently of the fullscreen layout.
+	state.statusHidden = () => !stopped && placement() === "hidden";
 	state.ownsHost = () => !stopped && host.mode === "fullscreen" && tui.terminal.columns >= SIDEBAR_BREAKPOINT && (placement() === "auto" || placement() === "right") && !!host.layoutRoot && roots.has(host.layoutRoot);
 	const rail: Component = {
 		render: () => railLines,
@@ -281,7 +284,10 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 				}
 				return { ...node, entries: entries.map((entry, index) => index === entries.length - 1 ? { ...entry, component: wrapped! } : entry) };
 			};
-			const nativeHost = { render: () => [], invalidate() {}, [NODE]: () => original.call(root) };
+			// Without a rail the native layout stays in place; a hidden Status only
+			// frees the footer's reserved dock row, exactly as the rail does.
+			const nativeLayout = () => placement() === "hidden" ? reclaimFooterRow(original.call(root)) : original.call(root);
+			const nativeHost = { render: () => [], invalidate() {}, [NODE]: nativeLayout };
 			const left = { render: () => [], invalidate() {}, [NODE]: () => reclaimFooterRow(original.call(root)) };
 			// Stable component wrapping the [left, scroll] hstack behind its own
 			// NODE, exactly like `left` wraps the native transcript: the header
@@ -297,7 +303,8 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			};
 			const replacement = () => {
 				if (!prepare(tui.terminal.columns, root)) {
-					if (!headerLines.length || failed || stopped || host.mode !== "fullscreen") return original.call(root);
+					if (failed || stopped || host.mode !== "fullscreen") return original.call(root);
+					if (!headerLines.length) return nativeLayout();
 					return { type: "vstack", gap: 0, align: "stretch", entries: [
 						{ component: header, basis: "auto", grow: 0, shrink: 0, minSize: 1 },
 						{ component: nativeHost, basis: 0, grow: 1, shrink: 1, minSize: 1 },

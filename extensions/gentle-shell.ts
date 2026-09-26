@@ -1740,7 +1740,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const pending = "Preference saved and applied.";
 			const layoutPreview = (settings: ReturnType<typeof visual>) => ({
 				title: `Layout · ${settings.density} (schematic)`,
-				sample: `${settings.headerPlacement === "top" ? "[Header] → [Input]" : "[Input] → [Header]"}  ${settings.statusPlacement === "auto" ? "[responsive status]" : settings.statusPlacement === "right" ? "[Right rail, wide]" : settings.statusPlacement === "hidden" ? "[Bottom status; no rail]" : "[Bottom status]"}`,
+				sample: `${settings.headerPlacement === "top" ? "[Header] → [Input]" : "[Input] → [Header]"}  ${settings.statusPlacement === "auto" ? "[responsive status]" : settings.statusPlacement === "right" ? "[Right rail, wide]" : settings.statusPlacement === "hidden" ? "[No status bar or rail]" : "[Bottom status]"}`,
 			});
 			category = "Editor";
 			for (const [label, policy] of [["enable", "on"], ["disable", "off"]] as const) rows.push({

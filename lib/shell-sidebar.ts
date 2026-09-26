@@ -9,6 +9,8 @@ export interface SidebarState {
 	active: boolean;
 	visibility?: { todo?: boolean };
 	ownsHost?: () => boolean;
+	/** True while Status placement is "hidden": the bottom Status bar paints nothing at any width or mode. */
+	statusHidden?: () => boolean;
 	parts: Map<string, SidebarRail>;
 }
 
@@ -35,7 +37,7 @@ export function sidebarPart<T extends Component & { dispose?(): void }>(tui: TUI
 	state.parts.set(key, rail);
 	return {
 		...bottom,
-		render: (width: number) => (key === "todo" && state.visibility?.todo === false) || (state.active && state.ownsHost?.()) ? [] : bottom.render(width),
+		render: (width: number) => (key === "todo" && state.visibility?.todo === false) || (key === "footer" && state.statusHidden?.()) || (state.active && state.ownsHost?.()) ? [] : bottom.render(width),
 		dispose() {
 			if (state.parts.get(key) === rail) state.parts.delete(key);
 			bottom.dispose?.();

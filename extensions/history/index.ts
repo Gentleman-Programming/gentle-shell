@@ -33,7 +33,6 @@ import {
   Input,
   matchesKey,
   stripTerminalSequences,
-  Text,
   type TUI,
   type TuiMouseEvent,
   truncateToWidth,
@@ -69,8 +68,10 @@ import {
   deleteConfirmFooterText,
   deleteConfirmStep,
   deletionActionsFor,
+  editorOverlayMargin,
   filterPrompts,
   getVisiblePromptRecords,
+  type HeaderLayoutMode,
   initialLoadedCount,
   loadedCountAfterDelete,
   loadedCountForQuery,
@@ -78,6 +79,8 @@ import {
   moveSelectedIndex,
   nextLoadedCount,
   pageSelectedIndex,
+  planHeaderLayout,
+  scopeRadioText,
   shouldGrowWindow,
   STORE_DELETE_FAILED_TEXT,
   storeDeleteFollowUp,
@@ -100,12 +103,16 @@ const INITIAL_BATCH = 10;
 const BATCH_SIZE = 10;
 const PRELOAD_BUFFER = 3;
 // Wheel regions over the fixed 30-row overlay geometry (design §D6): the
-// list container renders at rows 5-14 and the preview container at rows
-// 17-26; every other row is a consumed no-op.
+// preview container always renders at rows 17-26. The list region is
+// mode-dependent (see listWheelFirstRow): the responsive header reclaims
+// rows without changing the 30-row total, and only the compact mode both
+// shifts the list start (border at row 5) and paints one list row fewer.
 const LIST_WHEEL_Y_FIRST = 5;
 const LIST_WHEEL_Y_LAST = 14;
 const PREVIEW_WHEEL_Y_FIRST = 17;
 const PREVIEW_WHEEL_Y_LAST = 26;
+/** Minimum columns between the counts text and a right-flushed radio before shrinking deletes the spacer and stacks the header (user-directed). */
+const HEADER_INLINE_MIN_GAP = 4;
 
 // Default selector footer line (PR #1393): shown whenever a delete is not
 // armed; the armed state swaps it for the confirmation copy.
@@ -279,6 +286,22 @@ class FixedRowText {
   }
 }
 
+/** A row that renders as ZERO lines when its text is empty, letting the fixed 30-row overlay reclaim the row instead of pushing content out the bottom. */
+class OptionalRow {
+  private text = "";
+
+  setText(next: string): void {
+    this.text = next;
+  }
+
+  invalidate(): void {}
+
+  render(width: number): string[] {
+    if (this.text.length === 0) return [];
+    return [truncateToWidth(this.text, width, "…")];
+  }
+}
+
 /** Word-wrap plain text so each line fits within maxWidth characters. */
 function wordWrapText(text: string, maxWidth: number): string[] {
   if (maxWidth <= 0) return [text || " "];
@@ -317,6 +340,12 @@ class PromptHistorySelector extends Container implements Focusable {
   private readonly previewContainer: Container;
   private readonly listContainer: Container;
   private readonly headerRow: FixedRowText;
+  private readonly headerLine2: OptionalRow;
+  private readonly headerLine3: OptionalRow;
+  private readonly hintRow: OptionalRow;
+  private readonly hintText: string;
+  /** Current responsive header mode; drives the list wheel region. */
+  private headerMode: HeaderLayoutMode = "inline";
   private readonly previewLabelRow: FixedRowText;
   private readonly footerRow: FixedRowText;
   private records: PromptRecord[];
@@ -433,13 +462,15 @@ class PromptHistorySelector extends Container implements Focusable {
       theme.fg("accent", theme.bold(" History Search ")),
     );
     this.addChild(this.headerRow);
-    this.addChild(
-      new Text(
-        theme.fg("dim", "Type to filter (multi-word AND substring, case-insensitive)"),
-        0,
-        0,
-      ),
-    );
+    this.headerLine2 = new OptionalRow();
+    this.headerLine3 = new OptionalRow();
+    this.addChild(this.headerLine2);
+    this.addChild(this.headerLine3);
+    this.hintText =
+      "Type to filter (multi-word AND substring, case-insensitive)";
+    this.hintRow = new OptionalRow();
+    this.hintRow.setText(this.theme.fg("dim", this.hintText));
+    this.addChild(this.hintRow);
     this.searchInput = new Input();
     this.searchInput.onSubmit = () => this.selectCurrent();
     this.searchInput.onEscape = () => this.onCancel();
@@ -497,33 +528,78 @@ class PromptHistorySelector extends Container implements Focusable {
     this.rebuildListWithWidth(this.lastWidth);
   }
 
-  /** Rebuild list rows: header counter + entries. Always MAX_VISIBLE rows. */
+  /** Styled title + position + loaded-counts prefix shared by the inline and stacked header layouts. */
+  private headerCountsText(
+    titleText: string,
+    positionText: string,
+    loadedText: string,
+  ): string {
+    return (
+      this.theme.fg("accent", this.theme.bold(titleText)) +
+      this.theme.fg("dim", positionText) +
+      this.theme.fg("dim", loadedText)
+    );
+  }
+
+  /** Rebuild list rows: header counter + entries. Always MAX_VISIBLE rows (MAX_VISIBLE - 1 in compact mode). */
   private rebuildListWithWidth(width: number): void {
     const count = this.filteredRecords.length;
     const position = count === 0 ? 0 : this.selectedIndex + 1;
-    this.headerRow.setText(
-      this.theme.fg("accent", this.theme.bold(" History Search ")) +
-        this.theme.fg("dim", ` · ${position} of ${count} `) +
+    const titleText = " History Search ";
+    const positionText = ` · ${position} of ${count} `;
+    const loadedText = ` · loaded ${this.loadedCount} of ${this.records.length} `;
+    const leftWidth =
+      titleText.length + positionText.length + loadedText.length;
+    const radioFull = scopeRadioText(this.scope, false);
+    // Radio label compaction is fit-driven too: abbreviate only when the
+    // full radio cannot fit the row it would occupy (user-directed paste).
+    const radioText =
+      width >= radioFull.length ? radioFull : scopeRadioText(this.scope, true);
+    const mode = planHeaderLayout(
+      width,
+      leftWidth,
+      radioFull.length,
+      HEADER_INLINE_MIN_GAP,
+    );
+    this.headerMode = mode;
+    if (mode === "inline") {
+      this.headerRow.setText(
+        this.headerCountsText(titleText, positionText, loadedText) +
+          // Right-aligned scope radio: pad from plain-text lengths so the
+          // radio ends flush at the header's last column at any width.
+          " ".repeat(Math.max(1, width - leftWidth - radioText.length)) +
+          this.theme.fg("dim", radioText),
+      );
+      this.headerLine2.setText("");
+      this.headerLine3.setText("");
+    } else if (mode === "stacked") {
+      // Tablet: the spacer is deleted — the radio wraps to its own row
+      // under the full counts line (user-directed paste, leading space).
+      this.headerRow.setText(
+        this.headerCountsText(titleText, positionText, loadedText),
+      );
+      this.headerLine2.setText(` ${this.theme.fg("dim", radioText)}`);
+      this.headerLine3.setText("");
+    } else {
+      // Compact (mobile): three rows — counts split off, radio abbreviated
+      // (user-directed paste).
+      this.headerRow.setText(
+        this.theme.fg("accent", this.theme.bold(titleText)) +
+          this.theme.fg("dim", ` · ${position} of ${count}`),
+      );
+      // Leading space aligns both rows with the title's own left padding
+      // space (user-directed compact paste).
+      this.headerLine2.setText(
         this.theme.fg(
           "dim",
-          ` · loaded ${this.loadedCount} of ${this.records.length} `,
-        ) +
-        // Right-aligned scope radio: pad from plain-text lengths so the
-        // radio ends flush at the header's last column at any width.
-        (() => {
-          const scopeRadio =
-            this.scope === "project"
-              ? "◉ Current project | ○ All projects"
-              : "○ Current project | ◉ All projects";
-          const leftWidth =
-            " History Search ".length +
-            ` · ${position} of ${count} `.length +
-            ` · loaded ${this.loadedCount} of ${this.records.length} `.length;
-          return (
-            " ".repeat(Math.max(1, width - leftWidth - scopeRadio.length)) +
-            this.theme.fg("dim", scopeRadio)
-          );
-        })(),
+          ` loaded ${this.loadedCount} of ${this.records.length}`,
+        ),
+      );
+      this.headerLine3.setText(` ${this.theme.fg("dim", radioText)}`);
+    }
+    // Stacked modes reclaim the hint row so the overlay stays 30 rows.
+    this.hintRow.setText(
+      mode === "inline" ? this.theme.fg("dim", this.hintText) : "",
     );
     this.listContainer.clear();
 
@@ -531,18 +607,24 @@ class PromptHistorySelector extends Container implements Focusable {
       this.listContainer.addChild(
         new FixedRowText(this.theme.fg("warning", "No matching prompts")),
       );
-      for (let i = 1; i < MAX_VISIBLE; i++) {
+      // Compact still paints one list row fewer in the empty state, or the
+      // 3-row header would push the fixed 30-row overlay to 31 rows.
+      const listRows = mode === "compact" ? MAX_VISIBLE - 1 : MAX_VISIBLE;
+      for (let i = 1; i < listRows; i++) {
         this.listContainer.addChild(new FixedRowText());
       }
       return;
     }
 
+    // Compact paints one list row fewer (reclaimed by the 3-row header);
+    // the preview block keeps PREVIEW_ROWS so the 30-row total holds.
+    const listRows = mode === "compact" ? MAX_VISIBLE - 1 : MAX_VISIBLE;
     const entryMax = Math.floor(width * 0.95) - ENTRY_PREFIX_WIDTH;
 
     const visible = getVisiblePromptRecords(
       this.filteredRecords,
       this.selectedIndex,
-      MAX_VISIBLE,
+      listRows,
     );
 
     for (const { record, isSelected } of visible) {
@@ -562,9 +644,16 @@ class PromptHistorySelector extends Container implements Focusable {
       this.listContainer.addChild(new FixedRowText(line));
     }
 
-    for (let i = visible.length; i < MAX_VISIBLE; i++) {
+    for (let i = visible.length; i < listRows; i++) {
       this.listContainer.addChild(new FixedRowText());
     }
+  }
+
+  /** List wheel region start: compact shifts the list down one row. */
+  private get listWheelFirstRow(): number {
+    return this.headerMode === "compact"
+      ? LIST_WHEEL_Y_FIRST + 1
+      : LIST_WHEEL_Y_FIRST;
   }
 
   /**
@@ -977,7 +1066,7 @@ class PromptHistorySelector extends Container implements Focusable {
     // the next delete press re-arms for the NEW row first (PR #1393).
     if (this.confirmArmed) this.disarmDeleteConfirm();
     const delta = event.wheelDelta ?? 0;
-    if (event.y >= LIST_WHEEL_Y_FIRST && event.y <= LIST_WHEEL_Y_LAST) {
+    if (event.y >= this.listWheelFirstRow && event.y <= LIST_WHEEL_Y_LAST) {
       const steps = Math.min(Math.abs(delta), this.filteredRecords.length);
       for (let i = 0; i < steps; i++) {
         if (delta > 0) this.moveDown();
@@ -1055,8 +1144,8 @@ function castSelectorArgs(tui: unknown, theme: unknown): [TUI, Theme] {
   return [tui as TUI, theme as Theme];
 }
 
-/** TUI handle captured when the selector overlay mounts. */
-let selectorTui: { requestRender(): void } | null = null;
+/** TUI handle captured when the selector overlay mounts. `terminal` feeds the sidebar overlay margin. */
+let selectorTui: { requestRender(): void; terminal?: unknown } | null = null;
 
 /** Stored close callback for the currently-open overlay. Null when closed. */
 let activeOverlayClose: (() => void) | null = null;
@@ -1067,7 +1156,7 @@ function createPromptHistorySelectorFactory(
   store?: SelectorStore,
 ): SelectorFactory {
   return (tui, theme, _keybindings, done) => {
-    selectorTui = tui as { requestRender(): void };
+    selectorTui = tui as { requestRender(): void; terminal?: unknown };
     const finish = (result: PromptRecord | null) => {
       activeOverlayClose = null;
       done(result);
@@ -1105,7 +1194,30 @@ async function runPromptHistorySelection(
       ),
       {
         overlay: true,
-        overlayOptions: { anchor: "bottom-center", width: "100%", offsetY: 5 },
+        // pi-tui keeps the options object from showOverlay time, but calls
+        // visible() on EVERY render pass before resolving the overlay layout
+        // (compositeOverlays filters visible entries first), and re-reads
+        // margin per layout resolution — the getter below therefore stays
+        // live: resizing across the sidebar breakpoint re-seats the picker
+        // while it stays open. While the gentle-shell fullscreen sidebar
+        // paints, the margin confines width "100%" (and the bottom-center
+        // anchor) to the editor column, less 1 column of padding; 0 keeps
+        // the native full-window behavior.
+        overlayOptions: () => {
+          let rightMargin = editorOverlayMargin(selectorTui?.terminal);
+          return {
+            anchor: "bottom-center" as const,
+            width: "100%" as const,
+            offsetY: 5,
+            get margin() {
+              return rightMargin > 0 ? { right: rightMargin } : undefined;
+            },
+            visible: () => {
+              rightMargin = editorOverlayMargin(selectorTui?.terminal);
+              return true;
+            },
+          };
+        },
       },
     ),
   );

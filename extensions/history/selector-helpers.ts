@@ -437,3 +437,102 @@ export function filterPrompts(
 
   return filtered.slice(0, MAX_RESULTS);
 }
+
+/**
+ * Cross-extension fullscreen-sidebar state contract (gentle-shell): stored on
+ * the shared ProcessTerminal under a global-registry symbol so any extension
+ * can read it without importing gentle-shell. Shape per lib/shell-sidebar.ts:
+ * `{ active: boolean; ownsHost?: () => boolean; railColumns?: number; ... }`.
+ */
+const SIDEBAR_STATE_SYMBOL = Symbol.for("gentle-pi.experimental-sidebar.state");
+
+/**
+ * Visual breathing room between the picker and the sidebar rail, added on top
+ * of the rail reservation (user-directed: 1 column, 2026-09-21).
+ */
+export const SIDEBAR_OVERLAY_PADDING = 1;
+
+interface SidebarStateShape {
+  active?: unknown;
+  ownsHost?: () => unknown;
+  railColumns?: unknown;
+}
+
+/**
+ * Overlay right margin for the current terminal: the rail reservation the
+ * gentle-shell sidebar publishes (`railColumns`: rail width plus gap) plus
+ * padding while the rail is painting, else 0 (native full-window overlay).
+ * pi-tui resolves overlay width "100%" and the bottom-center anchor inside
+ * `[0, columns - margin)`, which is then exactly the editor column. Reads the
+ * terminal-owned state contract defensively — any absent, malformed, or
+ * non-owning state degrades to 0 so the picker keeps opening. Purity note:
+ * this returns the CURRENT margin per call; live refresh while an overlay
+ * stays open is the caller's job (the picker wires visible() plus a getter
+ * margin — pi-tui re-reads both every render).
+ */
+export function editorOverlayMargin(terminal: unknown): number {
+  if (typeof terminal !== "object" || terminal === null) return 0;
+  const state = (terminal as Record<symbol, unknown>)[SIDEBAR_STATE_SYMBOL] as
+    | SidebarStateShape
+    | undefined;
+  if (typeof state !== "object" || state === null) return 0;
+  if (state.active !== true || typeof state.ownsHost !== "function") return 0;
+  const railColumns = state.railColumns;
+  if (
+    typeof railColumns !== "number" ||
+    !Number.isInteger(railColumns) ||
+    railColumns <= 0
+  ) {
+    return 0;
+  }
+  try {
+    return state.ownsHost() === true
+      ? railColumns + SIDEBAR_OVERLAY_PADDING
+      : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Responsive picker-header mode at the current render width. */
+export type HeaderLayoutMode = "inline" | "stacked" | "compact";
+
+/**
+ * Fit-driven header plan (user-directed responsive header): "inline" keeps
+ * title + counts + right-flushed radio on one row; "stacked" (tablet) deletes
+ * the spacer — the radio wraps to its own row under the full counts line;
+ * "compact" (mobile) further splits the counts off and abbreviates the radio.
+ * Thresholds derive from the ACTUAL text widths, so any count size flips the
+ * mode at the exact column where the previous layout stops fitting.
+ */
+export function planHeaderLayout(
+  width: number,
+  leftWidth: number,
+  radioWidth: number,
+  minGap: number,
+): HeaderLayoutMode {
+  if (width >= leftWidth + minGap + radioWidth) return "inline";
+  if (width >= leftWidth) return "stacked";
+  return "compact";
+}
+
+/** Full scope radio: both scope labels spelled out. */
+export const SCOPE_RADIO_FULL_PROJECT = "◉ Current project | ○ All projects";
+export const SCOPE_RADIO_FULL_GLOBAL = "○ Current project | ◉ All projects";
+/** Abbreviated radio: the ACTIVE scope keeps its full label, the other shortens. */
+export const SCOPE_RADIO_COMPACT_PROJECT = "◉ Current project | ○ All";
+export const SCOPE_RADIO_COMPACT_GLOBAL = "○ Current | ◉ All projects";
+
+/**
+ * Scope radio text for the current width: abbreviated only when the full
+ * radio cannot fit the row it would occupy (compact widths).
+ */
+export function scopeRadioText(
+  scope: "project" | "global",
+  compact: boolean,
+): string {
+  if (scope === "project") {
+    return compact ? SCOPE_RADIO_COMPACT_PROJECT : SCOPE_RADIO_FULL_PROJECT;
+  }
+  return compact ? SCOPE_RADIO_COMPACT_GLOBAL : SCOPE_RADIO_FULL_GLOBAL;
+}

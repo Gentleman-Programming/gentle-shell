@@ -409,6 +409,9 @@ async function warmupLetterStrokes(): Promise<void> {
   }
 }
 
+/**
+ * Renders a single calligraphy logo line cell-by-cell with ink, pen-tip, glint, or sparkle styling.
+ */
 function buildPenLogoLine(
   line: string,
   rowIdx: number,
@@ -572,9 +575,13 @@ export function readGitBranch(cwd: string, run: typeof execFile = execFile): Pro
   });
 }
 
-// Pi dispatches its subcommands purely on the first argument, so only that
-// token decides. Flag values such as the package directory the Gentle Shell
-// launcher injects with `-e <dir>` must not be mistaken for a subcommand.
+/**
+ * Determines whether the CLI arguments invoke a native Pi subcommand.
+ *
+ * Pi dispatches subcommands purely on the first argument token (`argv[2]`).
+ * Flag values such as `-e <dir>` injected by the Gentle Shell launcher
+ * must not be mistaken for subcommands.
+ */
 export function isPiCliSubcommandInvocation(argv: readonly string[]): boolean {
   const first = argv[2];
   return first !== undefined && (PI_SUBCOMMANDS as readonly string[]).includes(first);
@@ -582,11 +589,22 @@ export function isPiCliSubcommandInvocation(argv: readonly string[]): boolean {
 
 export const PREFLIGHT_WIDGET_KEY = "gentle:preflight";
 
+/**
+ * Registers the startup banner extension with Pi.
+ *
+ * Configures the animated central calligraphy banner and the ephemeral
+ * Preflight sidebar rail widget displaying environment runtime metadata.
+ */
 export default function (pi: ExtensionAPI) {
   let disposeHeader = () => {};
   let dismissHeader = () => {};
+  let dismissed = false;
+  const dismiss = () => {
+    dismissed = true;
+    dismissHeader();
+  };
   pi.on("session_shutdown", () => disposeHeader());
-  pi.on("before_agent_start", () => dismissHeader());
+  pi.on("before_agent_start", () => dismiss());
   const notifyBannerConfig = (ctx: any, config: BannerConfig) => {
     ctx.ui.notify(
       [
@@ -730,7 +748,6 @@ export default function (pi: ExtensionAPI) {
     let tick = 0;
     let refreshStats = () => {};
     let headerCache: { key: string; out: string[] } | null = null;
-    let dismissed = false;
     let tuiRef: { requestRender(): void } | null = null;
     let preflightMounted = false;
     const state = {
@@ -787,6 +804,7 @@ export default function (pi: ExtensionAPI) {
       if (dismissed || !ctx.ui?.setWidget) return;
       preflightMounted = true;
       ctx.ui.setWidget(PREFLIGHT_WIDGET_KEY, (tui, theme) => {
+        if (dismissed) return undefined as any;
         const cardComponent: Component = {
           render: (width: number) => renderPreflight(theme, width),
           invalidate() { preflightHovered = false; },
@@ -817,7 +835,8 @@ export default function (pi: ExtensionAPI) {
           render: (width: number) => region.render(width),
           handleMouse: (event) => region.handleMouse?.(event),
           invalidate: () => region.invalidate(),
-          digest: () => `${preflightCollapsed}`,
+          digest: () =>
+            `${preflightCollapsed}|${gitBranch}|${mcpServersCount}|${backgroundAgentsCount}|${packagesCount}|${extensionsCount}|${skills.length}|${customTools.length}`,
         };
         return sidebarPart(tui, "preflight", region, railComp);
       });
@@ -825,7 +844,6 @@ export default function (pi: ExtensionAPI) {
     mountPreflight();
 
     dismissHeader = () => {
-      if (dismissed) return;
       dismissed = true;
       cleanup();
       headerCache = { key: "dismissed", out: [] };
@@ -856,7 +874,9 @@ export default function (pi: ExtensionAPI) {
 
     disposeHeader = cleanup;
     setTimeout(() => {
+      if (dismissed) return;
       ctx.ui.setHeader((tui, theme) => {
+        if (dismissed) return { render: () => [], invalidate() {}, dispose() {} };
         if (state.timer) clearInterval(state.timer);
         headerCache = null;
         tuiRef = tui;

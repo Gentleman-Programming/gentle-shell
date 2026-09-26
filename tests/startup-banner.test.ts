@@ -361,10 +361,11 @@ test("ephemeral Preflight card starts collapsed, expands on click, and unmounts 
 	const state = sidebarState(tuiMock as any);
 	const railComp = state.parts.get("preflight");
 	assert.ok(railComp !== undefined, "rail component registered in sidebar parts");
-	assert.equal(railComp.digest!(), "true", "rail component starts collapsed digest");
+	assert.match(railComp.digest!(), /^true\|/, "rail component starts collapsed digest with async stats");
+	assert.match(railComp.digest!(), /\|1\|/, "rail digest includes background agent count");
 	assert.equal(railComp.render(50).length, 3, "rail component starts at 3 lines");
 	railComp.handleMouse!({ button: "left", y: 1, x: 5, type: "click" } as any);
-	assert.equal(railComp.digest!(), "false", "rail component toggles digest to false on expand");
+	assert.match(railComp.digest!(), /^false\|/, "rail component toggles digest to false on expand");
 	assert.ok(railComp.render(50).length > 5, "rail component expands on click");
 
 	// 5. Test stacked calligraphy logo at narrow transcript width (width = 100)
@@ -379,6 +380,31 @@ test("ephemeral Preflight card starts collapsed, expands on click, and unmounts 
 	assert.deepEqual(header!.render(200), [], "central banner unmounts when work starts");
 	assert.equal(widgets.get(PREFLIGHT_WIDGET_KEY), undefined, "Preflight widget unmounts when work starts");
 	shutdown!();
+});
+
+test("early before_agent_start suppresses preflight mounting and central banner", async () => {
+	let start: Function;
+	let beforeAgentStart: Function;
+	const widgets = new Map<string, Function | undefined>();
+	startup({ on: (name: string, fn: Function) => {
+		if (name === "session_start") start = fn;
+		if (name === "before_agent_start") beforeAgentStart = fn;
+	}, registerCommand() {}, getCommands: () => [], getAllTools: () => [] } as unknown as ExtensionAPI);
+
+	// Agent starts before session_start hook completes
+	await beforeAgentStart!({}, {});
+	await start!({}, {
+		hasUI: true,
+		cwd: "/fixture",
+		ui: {
+			setHeader: () => {},
+			setWidget: (key: string, factory: Function | undefined) => {
+				widgets.set(key, factory);
+			},
+		},
+	});
+
+	assert.equal(widgets.get(PREFLIGHT_WIDGET_KEY), undefined, "preflight widget never mounts if agent started early");
 });
 
 test("launcher-injected extension directories do not suppress the startup banner", () => {

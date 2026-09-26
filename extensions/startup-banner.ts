@@ -1,12 +1,16 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { VERSION } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import * as os from "node:os";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
 import { PI_SUBCOMMANDS } from "../lib/gentle-shell-launcher.ts";
+import { CARD_TONE, renderCard, type CardTheme } from "../lib/shell-card.ts";
+import { sidebarPart, type SidebarRail } from "../lib/shell-sidebar.ts";
+import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
+import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 
 const PI_AGENT_DIR = join(os.homedir(), ".pi", "agent");
 const PI_NPM_DIR = join(PI_AGENT_DIR, "npm", "node_modules");
@@ -405,16 +409,21 @@ async function warmupLetterStrokes(): Promise<void> {
   }
 }
 
+/**
+ * Renders a single calligraphy logo line cell-by-cell with ink, pen-tip, glint, or sparkle styling.
+ */
 function buildPenLogoLine(
   line: string,
   rowIdx: number,
   _totalRows: number,
   tick: number,
+  colOffset = 0,
 ): LayoutCell[] {
   const out: LayoutCell[] = [];
 
-  for (let x = 0; x < line.length; x++) {
-    const ch = line[x] ?? " ";
+  for (let i = 0; i < line.length; i++) {
+    const x = i + colOffset;
+    const ch = line[i] ?? " ";
     if (ch === " ") {
       out.push({ char: " ", type: "none" });
       continue;
@@ -566,17 +575,36 @@ export function readGitBranch(cwd: string, run: typeof execFile = execFile): Pro
   });
 }
 
-// Pi dispatches its subcommands purely on the first argument, so only that
-// token decides. Flag values such as the package directory the Gentle Shell
-// launcher injects with `-e <dir>` must not be mistaken for a subcommand.
+/**
+ * Determines whether the CLI arguments invoke a native Pi subcommand.
+ *
+ * Pi dispatches subcommands purely on the first argument token (`argv[2]`).
+ * Flag values such as `-e <dir>` injected by the Gentle Shell launcher
+ * must not be mistaken for subcommands.
+ */
 export function isPiCliSubcommandInvocation(argv: readonly string[]): boolean {
   const first = argv[2];
   return first !== undefined && (PI_SUBCOMMANDS as readonly string[]).includes(first);
 }
 
+export const PREFLIGHT_WIDGET_KEY = "gentle:preflight";
+
+/**
+ * Registers the startup banner extension with Pi.
+ *
+ * Configures the animated central calligraphy banner and the ephemeral
+ * Preflight sidebar rail widget displaying environment runtime metadata.
+ */
 export default function (pi: ExtensionAPI) {
   let disposeHeader = () => {};
+  let dismissHeader = () => {};
+  let dismissed = false;
+  const dismiss = () => {
+    dismissed = true;
+    dismissHeader();
+  };
   pi.on("session_shutdown", () => disposeHeader());
+  pi.on("before_agent_start", () => dismiss());
   const notifyBannerConfig = (ctx: any, config: BannerConfig) => {
     ctx.ui.notify(
       [
@@ -720,11 +748,109 @@ export default function (pi: ExtensionAPI) {
     let tick = 0;
     let refreshStats = () => {};
     let headerCache: { key: string; out: string[] } | null = null;
+    let tuiRef: { requestRender(): void } | null = null;
+    let preflightMounted = false;
     const state = {
       timer: null as NodeJS.Timeout | null,
       mode: currentIntroMode() as IntroMode,
       resizeHandler: null as (() => void) | null,
       resizeDebounceTimer: null as NodeJS.Timeout | null,
+    };
+
+    let preflightCollapsed = true;
+    let preflightHovered = false;
+
+    const renderPreflight = (theme: CardTheme, width: number) => {
+      if (dismissed) return [];
+      const label = (text: string) => theme.fg("muted", text);
+      const value = (text: string) => theme.fg("text", text);
+      const branchValue = gitBranch.startsWith("On branch ")
+        ? gitBranch.slice("On branch ".length)
+        : gitBranch;
+      const branchLabel = gitBranch !== "Not a git repo" ? branchValue : "";
+      const compactSummary = [
+        branchLabel,
+        `v${VERSION}`,
+        `${mcpServersCount} mcp`,
+        `${backgroundAgentsCount} ${backgroundAgentsCount === 1 ? "agent" : "agents"}`,
+        `${skills.length} ${skills.length === 1 ? "skill" : "skills"}`,
+      ].filter((s) => s.length > 0).join(` ${theme.fg("dim", "•")} `);
+
+      const pad = 12;
+      const groups: Array<{ l: string; v: string }> = [
+        { l: "Git", v: branchValue },
+        { l: "Path", v: ctx.cwd },
+        { l: "Version", v: `v${VERSION}` },
+        { l: "MCP", v: `${mcpServersCount} server(s)` },
+        { l: "Agents", v: `${backgroundAgentsCount} agents` },
+        { l: "Plugins", v: `${packagesCount} package(s)` },
+        { l: "Skills", v: `${skills.length} loaded` },
+        { l: "Extensions", v: `${extensionsCount} active` },
+        { l: "Tools", v: `${customTools.length} custom` },
+      ];
+      const detailLines = groups.map((g) => `${label(g.l.padEnd(pad))} ${value(g.v)}`);
+      const body = preflightCollapsed ? [compactSummary] : detailLines;
+      const hint = preflightCollapsed ? "click to expand" : "click to collapse";
+
+      return renderCard(
+        { title: "Preflight", body, tone: CARD_TONE.INFO },
+        theme,
+        width,
+        { expanded: !preflightCollapsed, hint },
+      );
+    };
+
+    const mountPreflight = () => {
+      if (dismissed || !ctx.ui?.setWidget) return;
+      preflightMounted = true;
+      ctx.ui.setWidget(PREFLIGHT_WIDGET_KEY, (tui, theme) => {
+        if (dismissed) return undefined as any;
+        const cardComponent: Component = {
+          render: (width: number) => renderPreflight(theme, width),
+          invalidate() { preflightHovered = false; },
+        };
+        const region = new NativePointerRegion(cardComponent, {
+          onHover(event) {
+            const next = event.y === 0;
+            if (next === preflightHovered) return { handled: true };
+            preflightHovered = next;
+            return { handled: true, render: true };
+          },
+          onLeave() {
+            if (!preflightHovered) return;
+            preflightHovered = false;
+            if (tui) invalidateSidebar(tui);
+            try { tui.requestRender(); } catch {}
+          },
+          onClick(event) {
+            if (event.button !== "left") return undefined;
+            if (!preflightCollapsed && event.y !== 0) return undefined;
+            preflightCollapsed = !preflightCollapsed;
+            if (tui) invalidateSidebar(tui);
+            try { tui.requestRender(); } catch {}
+            return { handled: true, render: true };
+          },
+        });
+        const railComp: SidebarRail = {
+          render: (width: number) => region.render(width),
+          handleMouse: (event) => region.handleMouse?.(event),
+          invalidate: () => region.invalidate(),
+          digest: () =>
+            `${preflightCollapsed}|${gitBranch}|${mcpServersCount}|${backgroundAgentsCount}|${packagesCount}|${extensionsCount}|${skills.length}|${customTools.length}`,
+        };
+        return sidebarPart(tui, "preflight", region, railComp);
+      });
+    };
+    mountPreflight();
+
+    dismissHeader = () => {
+      dismissed = true;
+      cleanup();
+      headerCache = { key: "dismissed", out: [] };
+      if (preflightMounted && ctx.ui?.setWidget) {
+        ctx.ui.setWidget(PREFLIGHT_WIDGET_KEY, undefined);
+      }
+      try { tuiRef?.requestRender(); } catch {}
     };
 
     const cleanup = () => {
@@ -741,15 +867,23 @@ export default function (pi: ExtensionAPI) {
         clearTimeout(state.resizeDebounceTimer);
         state.resizeDebounceTimer = null;
       }
+      if (preflightMounted && ctx.ui?.setWidget) {
+        ctx.ui.setWidget(PREFLIGHT_WIDGET_KEY, undefined);
+      }
     };
 
     disposeHeader = cleanup;
     setTimeout(() => {
+      if (dismissed) return;
       ctx.ui.setHeader((tui, theme) => {
+        if (dismissed) return { render: () => [], invalidate() {}, dispose() {} };
         if (state.timer) clearInterval(state.timer);
         headerCache = null;
+        tuiRef = tui;
 
-        refreshStats = () => tui.requestRender();
+        refreshStats = () => {
+          try { tui.requestRender(); } catch { cleanup(); }
+        };
         // Capture once: a command changes the live prompt, not this intro.
         const animationPolicy = resolveAnimationPolicy().policy;
         const animStart = Date.now();
@@ -793,8 +927,8 @@ export default function (pi: ExtensionAPI) {
         return {
           /** Renders the persistent header grid; memoized per width, tick, mode and stats so static passes reuse the built lines. */
           render(width: number): string[] {
-            if (state.mode === "skip") return [];
-            const headerKey = `${width}|${tick}|${state.mode}|${gitBranch}|${mcpServersCount}|${extensionsCount}|${packagesCount}|${backgroundAgentsCount}|${ctx.cwd}|${skills.length}|${customTools.length}`;
+            if (dismissed || state.mode === "skip") return [];
+            const headerKey = `${width}|${tick}|${state.mode}|${bannerConfig.color}|${bannerConfig.showRose}|${bannerConfig.showTextLogo}`;
             if (headerCache?.key === headerKey) return headerCache.out;
 
             const flashStartTick = 10;
@@ -808,21 +942,44 @@ export default function (pi: ExtensionAPI) {
             const sideBySideMinWidth = roseBase.width + 3 + logoBase.width + 4;
             const horizontal =
               state.mode === "full" && bannerConfig.showRose && bannerConfig.showTextLogo && width >= sideBySideMinWidth;
-            const wideStatsMinWidth = 122;
-            const wideStats = width >= wideStatsMinWidth;
 
             const b = new LayoutBuilder();
             b.addRow();
             b.center(width);
 
+            const GENTLE_SPLIT_COL = 68;
+
             if (state.mode === "minimal") {
-              if (bannerConfig.showTextLogo) for (let logoI = 0; logoI < logoBase.lines.length; logoI++) {
-                const logoLine = logoBase.lines[logoI];
-                b.addRow();
-                b.lines[b.lines.length - 1].push(
-                  ...buildPenLogoLine(logoLine, logoI, logoBase.lines.length, tick),
-                );
-                b.center(width);
+              if (bannerConfig.showTextLogo) {
+                if (width >= logoBase.width + 2) {
+                  for (let logoI = 0; logoI < logoBase.lines.length; logoI++) {
+                    const logoLine = logoBase.lines[logoI];
+                    b.addRow();
+                    b.lines[b.lines.length - 1].push(
+                      ...buildPenLogoLine(logoLine, logoI, logoBase.lines.length, tick),
+                    );
+                    b.center(width);
+                  }
+                } else if (width >= GENTLE_SPLIT_COL + 2) {
+                  for (let logoI = 0; logoI < logoBase.lines.length; logoI++) {
+                    const logoLine = logoBase.lines[logoI].slice(0, GENTLE_SPLIT_COL);
+                    if (logoLine.trim().length === 0) continue;
+                    b.addRow();
+                    b.lines[b.lines.length - 1].push(
+                      ...buildPenLogoLine(logoLine, logoI, logoBase.lines.length, tick),
+                    );
+                    b.center(width);
+                  }
+                  for (let logoI = 0; logoI < Math.min(7, logoBase.lines.length); logoI++) {
+                    const logoLine = logoBase.lines[logoI].slice(GENTLE_SPLIT_COL);
+                    if (logoLine.trim().length === 0) continue;
+                    b.addRow();
+                    b.lines[b.lines.length - 1].push(
+                      ...buildPenLogoLine(logoLine, logoI, logoBase.lines.length, tick, GENTLE_SPLIT_COL),
+                    );
+                    b.center(width);
+                  }
+                }
               }
             } else if (horizontal) {
               const rowCount = Math.max(roseBase.lines.length, logoBase.lines.length);
@@ -849,6 +1006,7 @@ export default function (pi: ExtensionAPI) {
               }
             } else {
               const showBanner = bannerConfig.showTextLogo && width >= logoBase.width + 2;
+              const showStackedBanner = !showBanner && bannerConfig.showTextLogo && width >= GENTLE_SPLIT_COL + 2;
               const showRose = bannerConfig.showRose && width >= roseBase.width + 2;
               if (showBanner) {
                 for (let logoI = 0; logoI < logoBase.lines.length; logoI++) {
@@ -856,6 +1014,29 @@ export default function (pi: ExtensionAPI) {
                   b.addRow();
                   b.lines[b.lines.length - 1].push(
                     ...buildPenLogoLine(logoLine, logoI, logoBase.lines.length, tick),
+                  );
+                  b.center(width);
+                }
+                if (showRose) {
+                  b.addRow();
+                  b.center(width);
+                }
+              } else if (showStackedBanner) {
+                for (let logoI = 0; logoI < logoBase.lines.length; logoI++) {
+                  const logoLine = logoBase.lines[logoI].slice(0, GENTLE_SPLIT_COL);
+                  if (logoLine.trim().length === 0) continue;
+                  b.addRow();
+                  b.lines[b.lines.length - 1].push(
+                    ...buildPenLogoLine(logoLine, logoI, logoBase.lines.length, tick),
+                  );
+                  b.center(width);
+                }
+                for (let logoI = 0; logoI < Math.min(7, logoBase.lines.length); logoI++) {
+                  const logoLine = logoBase.lines[logoI].slice(GENTLE_SPLIT_COL);
+                  if (logoLine.trim().length === 0) continue;
+                  b.addRow();
+                  b.lines[b.lines.length - 1].push(
+                    ...buildPenLogoLine(logoLine, logoI, logoBase.lines.length, tick, GENTLE_SPLIT_COL),
                   );
                   b.center(width);
                 }
@@ -873,95 +1054,8 @@ export default function (pi: ExtensionAPI) {
               }
             }
 
-            if (state.mode === "full" || (!bannerConfig.showRose && !bannerConfig.showTextLogo)) {
-              b.addRow();
-              b.center(width);
-
-              const fit = (v: unknown, w: number) =>
-                String(v ?? "")
-                  .replace(/\s+/g, " ")
-                  .trim()
-                  .slice(0, w)
-                  .padEnd(w);
-              const addWideRow = (
-                l1: string,
-                v1: string,
-                l2: string,
-                v2: string,
-              ) => {
-                b.addRow();
-                b.add("label", fit(l1, 10));
-                b.add("none", " ");
-                b.add("value", fit(v1, 48));
-                b.add("none", "   ");
-                b.add("label", fit(l2, 12));
-                b.add("none", " ");
-                b.add("value", fit(v2, 46));
-                b.center(width);
-              };
-              const narrowRows: Array<[string, string]> = [
-                ["GIT:", gitBranch],
-                ["PATH:", ctx.cwd],
-                ["MCP:", `${mcpServersCount} server(s)`],
-                ["AGENTS:", `${backgroundAgentsCount} agents`],
-                ["PLUGINS:", `${packagesCount} package(s)`],
-                ["SKILLS:", `${skills.length} loaded`],
-                ["EXTENSIONS:", `${extensionsCount} active`],
-                ["VER:", `v${VERSION}`],
-                ["TOOLS:", `${customTools.length} custom`],
-              ];
-              const narrowLabelW = Math.max(...narrowRows.map(([l]) => l.length));
-              const narrowValueW = Math.max(
-                0,
-                Math.min(
-                  Math.max(...narrowRows.map(([, v]) => v.length)),
-                  Math.max(8, width - narrowLabelW - 4),
-                ),
-              );
-              const addNarrowRow = (label: string, value: string) => {
-                b.addRow();
-                b.add("label", label.padEnd(narrowLabelW));
-                b.add("none", "  ");
-                b.add("value", fit(value, narrowValueW));
-                b.center(width);
-              };
-
-              if (wideStats) {
-                addWideRow("GIT:", gitBranch, "PATH:", ctx.cwd);
-                addWideRow(
-                  "MCP:",
-                  `${mcpServersCount} server(s)`,
-                  "PLUGINS:",
-                  `${packagesCount} package(s)`,
-                );
-                addWideRow(
-                  "AGENTS:",
-                  `${backgroundAgentsCount} agents`,
-                  "EXTENSIONS:",
-                  `${extensionsCount} active`,
-                );
-                addWideRow(
-                  "SKILLS:",
-                  `${skills.length} loaded`,
-                  "TOOLS:",
-                  `${customTools.length} custom`,
-                );
-                addWideRow("VER:", `v${VERSION}`, "", "");
-              } else {
-                addNarrowRow("GIT:", gitBranch);
-                addNarrowRow("PATH:", ctx.cwd);
-                addNarrowRow("MCP:", `${mcpServersCount} server(s)`);
-                addNarrowRow("PLUGINS:", `${packagesCount} package(s)`);
-                addNarrowRow("AGENTS:", `${backgroundAgentsCount} agents`);
-                addNarrowRow("SKILLS:", `${skills.length} loaded`);
-                addNarrowRow("EXTENSIONS:", `${extensionsCount} active`);
-                addNarrowRow("VER:", `v${VERSION}`);
-                addNarrowRow("TOOLS:", `${customTools.length} custom`);
-              }
-
-              b.addRow();
-              b.center(width);
-            }
+            b.addRow();
+            b.center(width);
 
             const out: string[] = [];
             const layout = b.lines;

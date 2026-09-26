@@ -5,7 +5,8 @@ import fs from "node:fs/promises";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import startup, { isPiCliSubcommandInvocation, readGitBranch } from "../extensions/startup-banner.ts";
+import startup, { isPiCliSubcommandInvocation, PREFLIGHT_WIDGET_KEY, readGitBranch } from "../extensions/startup-banner.ts";
+import { sidebarState } from "../lib/shell-sidebar.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { stripAnsi } from "../lib/terminal-theme.ts";
@@ -246,15 +247,15 @@ for (const showRose of [false, true]) for (const showTextLogo of [false, true]) 
 				const lines = header!.render(width);
 				assert.ok(lines.every((line) => visibleWidth(line) <= width));
 				const text = stripAnsi(lines.join("\n"));
-				assert.match(text, /GIT:/);
-				assert.match(text, /PATH:/);
-				assert.doesNotMatch(text, /phases\b/i, "historical SDD files never appear as active phases");
-				assert.match(text, /AGENTS:\s+1 agents/, "only the installed background agent is counted");
+				assert.doesNotMatch(text, /GIT:/, "stats table moved from central banner to Preflight card");
+				assert.doesNotMatch(text, /PATH:/, "stats table moved from central banner to Preflight card");
 				if (width >= 160) {
 					assert.equal(/[\u2800-\u28ff]/.test(text), showRose);
 					assert.equal(/[▒▄▀█]/.test(text), showTextLogo);
+					if (showRose || showTextLogo) {
+						assert.match(lines.join("\n"), /\x1b\[38;2;/, "startup art uses the saved palette");
+					}
 				}
-				assert.match(lines.join("\n"), /\x1b\[38;2;85;170;205m/, "startup labels use the saved cyan palette");
 			}
 			// Cancel pending context reads before advancing the resize clock.
 			t.mock.timers.reset();
@@ -277,6 +278,134 @@ for (const showRose of [false, true]) for (const showTextLogo of [false, true]) 
 		}
 	});
 }
+
+test("ephemeral Preflight card starts collapsed, expands on click, and unmounts on before_agent_start", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+	t.mock.method(fs, "readFile", async () => JSON.stringify({ showRose: true, showTextLogo: true, color: "pink" }));
+	t.mock.method(fs, "readdir", async () => [
+		{ name: "sdd-apply.md", isFile: () => true },
+		{ name: "gentle-ai-worker.md", isFile: () => true },
+	] as any);
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const argv = process.argv;
+	process.argv = ["node"];
+	t.after(() => { process.argv = argv; });
+	for (const [key, value] of [["rows", 40], ["columns", 160]] as const) {
+		const descriptor = Object.getOwnPropertyDescriptor(process.stdout, key);
+		Object.defineProperty(process.stdout, key, { configurable: true, writable: true, value });
+		t.after(() => descriptor ? Object.defineProperty(process.stdout, key, descriptor) : Reflect.deleteProperty(process.stdout, key));
+	}
+	let start: Function;
+	let beforeAgentStart: Function;
+	let shutdown: Function;
+	let header: { render(width: number): string[]; invalidate(): void; dispose(): void };
+	let renderRequests = 0;
+	const widgets = new Map<string, Function | undefined>();
+	startup({ on: (name: string, fn: Function) => {
+		if (name === "session_start") start = fn;
+		if (name === "before_agent_start") beforeAgentStart = fn;
+		if (name === "session_shutdown") shutdown = fn;
+	}, registerCommand() {}, getCommands: () => [], getAllTools: () => [] } as unknown as ExtensionAPI);
+	await start!({}, {
+		hasUI: true,
+		cwd: "/fixture",
+		ui: {
+			setHeader: (factory: Function) => {
+				header = factory({ requestRender() { renderRequests++; } }, { fg: (_role: string, text: string) => text });
+			},
+			setWidget: (key: string, factory: Function | undefined) => {
+				widgets.set(key, factory);
+			},
+		},
+	});
+	t.mock.timers.tick(200);
+	for (let i = 0; i < 5; i++) await Promise.resolve();
+
+	assert.ok(header!.render(200).length > 0, "central banner renders pure artwork");
+	const preflightFactory = widgets.get(PREFLIGHT_WIDGET_KEY);
+	assert.ok(preflightFactory !== undefined, "Preflight widget registered on startup");
+
+	const part = preflightFactory!(
+		{ terminal: { columns: 160 }, requestRender() { renderRequests++; } },
+		{ fg: (_role: string, text: string) => text },
+	);
+
+	// 1. Collapsed state by default: 3 lines (top, single compact line, bottom)
+	const collapsedLines = part.render(60);
+	assert.equal(collapsedLines.length, 3, "collapsed card takes exactly 3 lines");
+	const collapsedText = stripAnsi(collapsedLines.join("\n"));
+	assert.match(collapsedText, /Preflight/, "card title is Preflight");
+	assert.match(collapsedText, /click to expand/, "hint indicates it can be expanded");
+	assert.match(collapsedText, /•/, "collapsed body shows the compact single line with bullets");
+	assert.doesNotMatch(collapsedText, /Path\s+\/fixture/, "details hidden while collapsed");
+
+	// 2. Expand on click
+	part.handleMouse({ button: "left", y: 0, x: 5, type: "click" });
+	const expandedLines = part.render(60);
+	assert.ok(expandedLines.length > 5, "expanded card shows multi-line details");
+	const expandedText = stripAnsi(expandedLines.join("\n"));
+	assert.match(expandedText, /click to collapse/, "hint updates to collapse");
+	assert.match(expandedText, /Git\s+Not a git repo/);
+	assert.match(expandedText, /Path\s+\/fixture/);
+	assert.match(expandedText, /Agents\s+1 agents/);
+	assert.doesNotMatch(expandedText, /phases\b/i, "historical SDD files excluded");
+
+	// 3. Collapse back on click
+	part.handleMouse({ button: "left", y: 0, x: 5, type: "click" });
+	assert.equal(part.render(60).length, 3, "clicking header toggles back to collapsed");
+
+	// 4. Test rail component in sidebar rail: click expands and toggles digest
+	const tuiMock = { terminal: { columns: 160 }, requestRender() { renderRequests++; } };
+	preflightFactory!(tuiMock, { fg: (_role: string, text: string) => text });
+	const state = sidebarState(tuiMock as any);
+	const railComp = state.parts.get("preflight");
+	assert.ok(railComp !== undefined, "rail component registered in sidebar parts");
+	assert.match(railComp.digest!(), /^true\|/, "rail component starts collapsed digest with async stats");
+	assert.match(railComp.digest!(), /\|1\|/, "rail digest includes background agent count");
+	assert.equal(railComp.render(50).length, 3, "rail component starts at 3 lines");
+	railComp.handleMouse!({ button: "left", y: 1, x: 5, type: "click" } as any);
+	assert.match(railComp.digest!(), /^false\|/, "rail component toggles digest to false on expand");
+	assert.ok(railComp.render(50).length > 5, "rail component expands on click");
+
+	// 5. Test stacked calligraphy logo at narrow transcript width (width = 100)
+	t.mock.timers.tick(3000);
+	const stackedLines = header!.render(100);
+	const stackedText = stripAnsi(stackedLines.join("\n"));
+	assert.match(stackedText, /[▄▀█]/, "calligraphy script logo renders stacked at width 100");
+	assert.match(stackedText, /[\u2800-\u28ff]/, "rose renders alongside stacked calligraphy logo");
+
+	// 6. When work starts: ephemeral preflight widget and central banner unmount
+	await beforeAgentStart!({}, {});
+	assert.deepEqual(header!.render(200), [], "central banner unmounts when work starts");
+	assert.equal(widgets.get(PREFLIGHT_WIDGET_KEY), undefined, "Preflight widget unmounts when work starts");
+	shutdown!();
+});
+
+test("early before_agent_start suppresses preflight mounting and central banner", async () => {
+	let start: Function;
+	let beforeAgentStart: Function;
+	const widgets = new Map<string, Function | undefined>();
+	startup({ on: (name: string, fn: Function) => {
+		if (name === "session_start") start = fn;
+		if (name === "before_agent_start") beforeAgentStart = fn;
+	}, registerCommand() {}, getCommands: () => [], getAllTools: () => [] } as unknown as ExtensionAPI);
+
+	// Agent starts before session_start hook completes
+	await beforeAgentStart!({}, {});
+	await start!({}, {
+		hasUI: true,
+		cwd: "/fixture",
+		ui: {
+			setHeader: () => {},
+			setWidget: (key: string, factory: Function | undefined) => {
+				widgets.set(key, factory);
+			},
+		},
+	});
+
+	assert.equal(widgets.get(PREFLIGHT_WIDGET_KEY), undefined, "preflight widget never mounts if agent started early");
+});
 
 test("launcher-injected extension directories do not suppress the startup banner", () => {
 	// Gentle Shell launches `pi -e <package-root-dir>`; a directory path is not a subcommand.

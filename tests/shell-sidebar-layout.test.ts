@@ -188,6 +188,15 @@ test("rail orders unified Status, agents, TODO without standalone changes", (t) 
 	assert.deepEqual(rail(f).render(50).map((line) => line.trim()), ["✿ Gentle Shell ✿", "", "Status", "", "agents", "", "todo"]);
 });
 
+test("rail orders Preflight between Status and agents when registered", (t) => {
+	const f = fixture();
+	for (const key of ["todo", "agents", "preflight"]) {
+		sidebarPart(f.tui, key, { render: () => [key, ""], invalidate() {} });
+	}
+	t.after(installSidebar(f.tui, theme));
+	assert.deepEqual(rail(f).render(50).map((line) => line.trim()), ["✿ Gentle Shell ✿", "", "Status", "", "preflight", "", "agents", "", "todo"]);
+});
+
 test("branding belongs to scroll content before Status, never transcript or narrow bottom", (t) => {
 	const f = fixture();
 	t.after(installSidebar(f.tui, theme));

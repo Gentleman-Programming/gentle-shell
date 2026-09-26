@@ -5038,12 +5038,16 @@ function parseReviewBudget(value: unknown, label: string): ReviewBudgetV1 {
 	return value as unknown as ReviewBudgetV1;
 }
 
-function parseStartInput(value: Record<string, unknown>): ReviewControllerStartInput {
-	if (value.mode !== REVIEW_MODE.ORDINARY && value.mode !== REVIEW_MODE.JUDGMENT_DAY) {
+function assertSupportedReviewStartMode(mode: unknown): asserts mode is ReviewMode {
+	if (mode !== REVIEW_MODE.ORDINARY && mode !== REVIEW_MODE.JUDGMENT_DAY) {
 		throw new Error(
 			'Review controller START supports only "ordinary" or "judgment-day" mode; use "ordinary" unless Judgment Day was explicitly selected. Pass input as a JSON string encoding the START object. START failed before authority access, so no lineage was created; do not call STATUS or ADVANCE for this attempted lineage.',
 		);
 	}
+}
+
+function parseStartInput(value: Record<string, unknown>): ReviewControllerStartInput {
+	assertSupportedReviewStartMode(value.mode);
 	if (!isRecord(value.projection) || typeof value.projection.kind !== "string") {
 		throw new Error("Review controller start requires a projection");
 	}
@@ -8218,6 +8222,7 @@ async function executeReviewControllerOperation(
 			requiredControllerString(parameters, "input"),
 			REVIEW_CONTROLLER_OPERATION.START,
 		);
+		assertSupportedReviewStartMode(rawStart.mode);
 		if (rawStart.mode === REVIEW_MODE.ORDINARY) {
 			if ("policyHash" in rawStart) return nativeStartRejection("legacy-policy-hash-unsupported");
 			const unknownField = Object.keys(rawStart).find((field) => !["mode", "baseRef", "committedOnly", "policyPath", "focus", "untrackedScope", "expectedUntrackedInventory", "intendedUntracked"].includes(field));
@@ -8487,9 +8492,6 @@ async function executeReviewControllerOperation(
 					projection: "workspace",
 				}, retainedUntrackedSelections);
 			}
-		}
-		if (rawStart.mode === REVIEW_MODE.ORDINARY) {
-			return nativeStatusUnsupported(parameters.operation);
 		}
 		const idempotencyKey = requiredControllerString(parameters, "idempotencyKey");
 		if (typeof parameters.lineageId !== "string" || parameters.lineageId.trim().length === 0) {

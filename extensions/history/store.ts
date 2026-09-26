@@ -5,8 +5,8 @@
 // and identity, the advisory registry, entry primitives, the per-instance
 // session writer, the scope drain/reader/query section (ordering, dedup,
 // tombstone filter, project/global drains), legacy migration, and the
-// project seed bootstrap, and scope deletes (slice 5). GC/compaction
-// arrives in a later slice. Formerly store-paths.ts + registry.ts + multi-store.ts (+ v1
+// project seed bootstrap, scope deletes (slice 5), and GC/compaction
+// (slice 6). Formerly store-paths.ts + registry.ts + multi-store.ts (+ v1
 // primitives).
 
 import { createHash } from "node:crypto";
@@ -196,8 +196,7 @@ export function parseStoreLine(raw: string): StoreEntry | null {
 }
 
 // ===========================================================================
-// Instance writer (formerly multi-store.ts; GC/compaction arrives in a
-// later slice)
+// Instance writer (formerly multi-store.ts)
 // ===========================================================================
 
 /** Mutable state of ONE pi instance's exclusive capture file. */
@@ -798,4 +797,222 @@ export function bootstrapProjectSeed(
   );
   fs.renameSync(tmp, seed);
   return { seeded: collected.length, ran: true };
+}
+
+// ---------------------------------------------------------------------------
+// GC / compaction (design v2, slice 6)
+// ---------------------------------------------------------------------------
+
+/** Compact when a project dir holds MORE than this many store files... */
+const GC_FILE_THRESHOLD = 50;
+/** ...or MORE than this many valid entries across them. */
+const GC_LINE_THRESHOLD = 5000;
+/** The newest files (by fileSortKey) are never merged. */
+const GC_KEEP_NEWEST = 10;
+
+export interface GcResult {
+  compacted: boolean;
+  /** Store files merged into the compact file. */
+  merged: number;
+}
+
+export interface GcOptions {
+  fileThreshold?: number;
+  lineThreshold?: number;
+  keepNewest?: number;
+  /**
+   * Files that are never merge candidates — the calling instance's own
+   * capture file, which it may still append to.
+   */
+  keepFiles?: readonly string[];
+  /** Tombstone state dir (hidden.json); defaults to the store root. */
+  stateDir?: string;
+}
+
+/**
+ * Threshold check + compaction entry point (wired at session_shutdown).
+ * Compaction consolidates files: it merges the oldest store files of ONE
+ * project into a single `compact-<pid>-<ts>.jsonl` and removes the merged
+ * originals. It is not a retention limit — every visible prompt is copied;
+ * only tombstoned prompts (already deleted by the user) are dropped.
+ *
+ * Never merged: `seed.jsonl` (its presence is the bootstrap gate, so
+ * removing it would re-seed deleted prompts from transcripts), the files
+ * in `keepFiles`, and the newest `keepNewest` files. The global seed lives
+ * outside the project dir and is never touched. An untrusted hidden.json
+ * skips compaction (fail closed), and any failure leaves every original
+ * readable: GC never throws.
+ */
+export function gcProjectDir(
+  root: string,
+  cwd: string,
+  opts: GcOptions = {},
+): GcResult {
+  const none: GcResult = { compacted: false, merged: 0 };
+  try {
+    const dir = path.join(root, "projects", projectHash(cwd));
+    const files = listProjectFiles(dir).map((file) => ({
+      file,
+      entries: readFileEntries(file),
+    }));
+    if (files.length === 0) return none;
+    const totalEntries = files.reduce((sum, f) => sum + f.entries.length, 0);
+    if (
+      files.length <= (opts.fileThreshold ?? GC_FILE_THRESHOLD) &&
+      totalEntries <= (opts.lineThreshold ?? GC_LINE_THRESHOLD)
+    ) {
+      return none;
+    }
+    const hidden = readHiddenPrompts(opts.stateDir ?? root);
+    if (hidden.status === "untrusted") return none;
+
+    const excluded = new Set(
+      [seedFilePath(root, cwd), ...(opts.keepFiles ?? [])].map((file) =>
+        path.resolve(file),
+      ),
+    );
+    // Newest first by the stable ts-based key (mtime is bumped by delete
+    // rewrites); ties break by name so the pick is deterministic.
+    const candidates = files
+      .filter((f) => !excluded.has(path.resolve(f.file)))
+      .map((f) => ({ file: f.file, key: fileSortKey(f.file, f.entries) }))
+      .sort((a, b) => b.key - a.key || a.file.localeCompare(b.file));
+    const tail = candidates
+      .slice(opts.keepNewest ?? GC_KEEP_NEWEST)
+      .reverse() // oldest first: the merged output is chronological
+      .map((c) => c.file);
+    if (tail.length === 0) return none;
+    return compactFiles(dir, tail, hidden.keys);
+  } catch {
+    return none;
+  }
+}
+
+/** One merge candidate after its claim: the open descriptor + read cursor. */
+interface ClaimedFile {
+  claim: string;
+  fd: number;
+  /** Bytes consumed so far (complete lines only). */
+  consumed: number;
+}
+
+/**
+ * Keep every non-empty line except tombstoned entries; malformed lines are
+ * kept verbatim, as the delete sweep does. Each kept line ends in "\n".
+ */
+function keepVisibleLines(text: string, hidden: ReadonlySet<string>): string {
+  let out = "";
+  for (const lineText of text.split("\n")) {
+    if (lineText.length === 0) continue;
+    const parsed = parseStoreLine(lineText);
+    if (parsed && isPromptHidden(hidden, parsed.text)) continue;
+    out += `${lineText}\n`;
+  }
+  return out;
+}
+
+/**
+ * Claim a merge candidate: open it FIRST (an unreadable file is skipped
+ * untouched), then rename it to a claim name that still ends in `.jsonl`,
+ * so drains keep reading it until the compact file lands. After the
+ * rename, a live writer appending by path creates a fresh file under the
+ * original name; a write through a descriptor opened before the rename
+ * lands in the claimed inode, which the kept descriptor still reads.
+ */
+function claimFile(file: string): ClaimedFile | null {
+  let fd: number;
+  try {
+    fd = fs.openSync(file, "r");
+  } catch {
+    return null;
+  }
+  const claim = `${file}.gc-${process.pid}-${Date.now()}.jsonl`;
+  try {
+    fs.renameSync(file, claim);
+  } catch {
+    fs.closeSync(fd);
+    return null;
+  }
+  return { claim, fd, consumed: 0 };
+}
+
+/**
+ * Merge the claimed tail (oldest first) into one compact file, written
+ * atomically (tmp + rename) BEFORE any claim is removed. A failure before
+ * the compact file lands leaves every claim in place (still a readable
+ * store file); a claim that cannot be removed survives as a harmless
+ * duplicate (drains dedupe by identity). After each removal the claim's
+ * descriptor is drained once more and any late bytes are appended to the
+ * compact file (or written back under the claim name if that fails).
+ */
+function compactFiles(
+  dir: string,
+  tail: readonly string[],
+  hidden: ReadonlySet<string>,
+): GcResult {
+  const claimed = tail
+    .map(claimFile)
+    .filter((c): c is ClaimedFile => c !== null);
+  if (claimed.length === 0) return { compacted: false, merged: 0 };
+  const compact = path.join(dir, `compact-${process.pid}-${Date.now()}.jsonl`);
+  const tmp = `${compact}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    let merged = "";
+    for (const c of claimed) {
+      const snapshot = readFrom(c.fd, 0);
+      c.consumed = snapshot.lastIndexOf(NEWLINE) + 1;
+      merged += keepVisibleLines(
+        snapshot.subarray(0, c.consumed).toString("utf8"),
+        hidden,
+      );
+    }
+    fs.writeFileSync(tmp, merged, "utf8");
+    fs.renameSync(tmp, compact);
+  } catch {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      // the tmp name never matches a *.jsonl store file
+    }
+    for (const c of claimed) fs.closeSync(c.fd);
+    return { compacted: false, merged: 0 };
+  }
+  for (const c of claimed) {
+    try {
+      fs.rmSync(c.claim);
+    } catch {
+      // the claim keeps every byte; it is merged again by a later GC
+      fs.closeSync(c.fd);
+      continue;
+    }
+    carryOver(c, compact, hidden);
+  }
+  return { compacted: true, merged: claimed.length };
+}
+
+/** Move bytes that reached a removed claim after it was read. */
+function carryOver(
+  c: ClaimedFile,
+  compact: string,
+  hidden: ReadonlySet<string>,
+): void {
+  let late: Buffer = Buffer.alloc(0);
+  try {
+    late = readFrom(c.fd, c.consumed);
+    if (late.length === 0) return;
+    // A torn last line is completed so the next append stays parseable.
+    const text = late.toString("utf8");
+    fs.appendFileSync(
+      compact,
+      keepVisibleLines(text.endsWith("\n") ? text : `${text}\n`, hidden),
+    );
+  } catch {
+    try {
+      if (late.length > 0) fs.writeFileSync(c.claim, late, { flag: "wx" });
+    } catch {
+      // nothing else can hold these bytes; the claim name is taken
+    }
+  } finally {
+    fs.closeSync(c.fd);
+  }
 }

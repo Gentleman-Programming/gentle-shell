@@ -5,9 +5,9 @@
 // writer and slice-2 drains, with the search input (filterPrompts +
 // forwardToSearch fallthrough), the lazy loaded window, the project<->global
 // scope toggle, the preview panel + wheel handling, the slice-4 import
-// (legacy migration + seed bootstrap inside getWriter), and the slice-5
-// modal delete (store sweep + exact tombstone). GC/compaction arrives in a
-// later slice.
+// (legacy migration + seed bootstrap inside getWriter), the slice-5
+// modal delete (store sweep + exact tombstone), and the slice-6
+// session_shutdown GC/compaction.
 //
 // Capture is OPT-IN: nothing is recorded unless
 // GENTLE_PI_HISTORY_CAPTURE=1|true|on. The selector honors the same gate:
@@ -31,6 +31,7 @@ import {
   getKeybindings,
   Input,
   matchesKey,
+  stripTerminalSequences,
   Text,
   type TUI,
   type TuiMouseEvent,
@@ -46,9 +47,11 @@ import {
   drainGlobal,
   drainProject,
   ensureRegistryEntry,
+  gcProjectDir,
   migrateLegacyStores,
   openSessionWriter,
   type SessionWriterState,
+  sessionFilePath,
   type SweepResult,
 } from "./store.ts";
 import {
@@ -148,7 +151,8 @@ export function captureEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 function sanitizeForDisplay(text: string): string {
   let out = "";
   for (let i = 0; i < text.length; i++) {
-    const cp = text.codePointAt(i)!;
+    const cp = text.codePointAt(i);
+    if (cp === undefined) break;
     if (cp === 0x0a) {
       out += "\n";
     } else if (cp === 0x09) {
@@ -229,7 +233,7 @@ class FixedRowText {
           // Truncate first so an overlong help row can never exceed width,
           // then center the truncated copy (design §C hardening).
           const truncated = truncateToWidth(this.text, width, "…");
-          const visible = truncated.replace(/\x1b\[[0-9;]*m/g, "");
+          const visible = stripTerminalSequences(truncated);
           const pad = Math.max(0, Math.floor((width - visible.length) / 2));
           return " ".repeat(pad) + truncated;
         })()
@@ -1208,6 +1212,20 @@ export default function promptHistoryExtension(
     } catch {
       // A capture failure must never break the agent loop or unregister
       // the handler - swallow and keep the next prompt capturable.
+    }
+  });
+
+  // Consolidate this project's store files on graceful shutdown (slice 6),
+  // only for opted-in sessions: with capture off the store is never
+  // rewritten. This instance's own capture file is never a merge candidate.
+  pi.on("session_shutdown", () => {
+    if (!captureEnabled(env)) return;
+    try {
+      gcProjectDir(root, cwd, {
+        keepFiles: [sessionFilePath(root, cwd, instanceId)],
+      });
+    } catch {
+      // GC is best-effort and never blocks shutdown
     }
   });
 

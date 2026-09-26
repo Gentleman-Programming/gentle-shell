@@ -30,8 +30,11 @@ function openWriterForTest(root: string, instanceId: string) {
   return openSessionWriter(root, CWD, instanceId);
 }
 
-/** Load the extension against a temp root and return the capture handler. */
-function captureHandlerWith(env: NodeJS.ProcessEnv, root: string) {
+/** Load the extension against a temp root and return its event handlers. */
+function handlersWith(
+  env: NodeJS.ProcessEnv,
+  root: string,
+): Map<string, (event: unknown) => void> {
   const registered: Array<[string, unknown]> = [];
   const pi = {
     on: (event: string, handler: unknown) => {
@@ -52,7 +55,31 @@ function captureHandlerWith(env: NodeJS.ProcessEnv, root: string) {
     agentDir: path.join(root, "agent"),
     sessionsRoot: path.join(root, "sessions"),
   });
-  return registered[0][1] as (event: unknown) => void;
+  return new Map(
+    registered.map(([event, handler]) => [
+      event,
+      handler as (event: unknown) => void,
+    ]),
+  );
+}
+
+/** Load the extension against a temp root and return the capture handler. */
+function captureHandlerWith(env: NodeJS.ProcessEnv, root: string) {
+  const handler = handlersWith(env, root).get("before_agent_start");
+  assert.ok(handler, "the capture handler is registered");
+  return handler;
+}
+
+/** Fill the project dir past the default GC file threshold (50 files). */
+function fillProjectDir(root: string, files: number): string {
+  const dir = path.join(root, "projects", projectHash(CWD));
+  fs.mkdirSync(dir, { recursive: true });
+  for (let i = 1; i <= files; i++) {
+    const file = path.join(dir, `peer-${String(i).padStart(3, "0")}.jsonl`);
+    fs.writeFileSync(file, `${JSON.stringify({ v: 1, text: `peer ${i}` })}\n`);
+    fs.utimesSync(file, new Date(i * 1000), new Date(i * 1000));
+  }
+  return dir;
 }
 
 test("no file is created until the first capture", () => {
@@ -114,12 +141,11 @@ test("two writers own separate files in the same project dir", () => {
   assert.deepEqual(files, ["inst-a.jsonl", "inst-b.jsonl"]);
 });
 
-test("the extension entry registers exactly the slice-3 wiring surface", () => {
+test("the extension entry registers exactly the slice-6 wiring surface", () => {
   // Module load must stay side-effect free (importing index.ts parses the
   // whole graph without touching the real ~/.pi store root). Wiring as of
-  // slice 3: before_agent_start capture + tool_call overlay dismiss, the
-  // ctrl+shift+r shortcut, and the history command. session_shutdown is
-  // slice 6 and must not appear yet.
+  // slice 6: before_agent_start capture, session_shutdown GC, tool_call
+  // overlay dismiss, the ctrl+shift+r shortcut, and the history command.
   const registered: Array<[string, unknown]> = [];
   const shortcuts: Array<[string, unknown]> = [];
   const commands: Array<[string, unknown]> = [];
@@ -137,7 +163,7 @@ test("the extension entry registers exactly the slice-3 wiring surface", () => {
   promptHistoryExtension(pi as never);
   assert.deepEqual(
     registered.map(([event]) => event),
-    ["before_agent_start", "tool_call"],
+    ["before_agent_start", "session_shutdown", "tool_call"],
   );
   assert.deepEqual(shortcuts.map(([key]) => key), ["ctrl+shift+r"]);
   assert.deepEqual(commands.map(([name]) => name), ["history"]);
@@ -213,4 +239,36 @@ test("disabling capture stops new lines and leaves existing files alone", () => 
   delete env.GENTLE_PI_HISTORY_CAPTURE;
   handler({ prompt: "never written" });
   assert.deepEqual(fileTexts(file), ["kept"]);
+});
+
+test("session_shutdown GC is a no-op while capture is off", () => {
+  const root = makeRoot();
+  const dir = fillProjectDir(root, 60);
+  const before = fs.readdirSync(dir).sort();
+  const shutdown = handlersWith({}, root).get("session_shutdown");
+  assert.ok(shutdown, "the shutdown handler is registered");
+  shutdown({});
+  assert.deepEqual(fs.readdirSync(dir).sort(), before);
+  assert.deepEqual(fs.readdirSync(root).sort(), ["projects"]);
+});
+
+test("session_shutdown GC compacts the injected root and keeps its own file", () => {
+  const root = makeRoot();
+  const dir = fillProjectDir(root, 60);
+  // This instance's own capture file is the oldest one in the dir.
+  const own = sessionFilePath(root, CWD, "inst-entry");
+  fs.writeFileSync(own, `${JSON.stringify({ v: 1, text: "own" })}\n`);
+  fs.utimesSync(own, new Date(1), new Date(1));
+  const shutdown = handlersWith({ GENTLE_PI_HISTORY_CAPTURE: "1" }, root).get(
+    "session_shutdown",
+  );
+  assert.ok(shutdown, "the shutdown handler is registered");
+  shutdown({});
+  const names = fs.readdirSync(dir);
+  // Default policy: the newest 10 peers stay, the other 50 merge into one
+  // compact file, and the own file is never a merge candidate.
+  assert.equal(names.filter((n) => n.startsWith("compact-")).length, 1);
+  assert.equal(names.filter((n) => n.startsWith("peer-")).length, 10);
+  assert.equal(fs.existsSync(own), true);
+  assert.deepEqual(fileTexts(own), ["own"]);
 });

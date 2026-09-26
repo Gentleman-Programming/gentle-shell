@@ -2,7 +2,8 @@
 
 Prompt history stores captured prompts per pi instance, can import older
 history and project session transcripts, and lets you delete prompts from the
-history selector. Compaction arrives in a later slice of the chain.
+history selector. Opted-in sessions consolidate a project's files at shutdown
+(see "Compaction" below).
 
 ## Capture is opt-in
 
@@ -45,6 +46,8 @@ Everything sits under `~/.pi/agent/history/`:
 - `projects/<hash>/<instance>.jsonl` — one append-only capture file per pi
   process.
 - `projects/<hash>/seed.jsonl` — one-time transcript import for this project.
+- `projects/<hash>/compact-<pid>-<ts>.jsonl` — older capture files merged by
+  compaction.
 - `history-global.jsonl` — imported legacy editor-history prompts.
 - `hidden.json` — deletion records (tombstones); see "Delete" below.
 
@@ -147,3 +150,45 @@ corrupt, or not an array), history is blocked with a recovery warning
 instead of resurfacing hidden prompts, transcript bootstrap waits, and
 deletes refuse to rewrite it. Recovery is explicit — restore the file or
 delete it yourself (hidden prompts may then reappear).
+
+## Compaction
+
+Compaction keeps the number of files per project small. It is housekeeping,
+**not a retention limit**: it consolidates files and never drops a visible
+prompt because of its age or of any count.
+
+It runs when an opted-in pi session shuts down, for the current project only.
+With capture off, shutdown does nothing to the store. The project is compacted
+when its directory holds **more than 50 files** or **more than 5000 entries**
+in total. Then:
+
+- The **10 newest files** stay as they are. "Newest" is the most recent entry
+  timestamp in a file (the file's modification time when it has none), so a
+  file rewritten by a delete does not jump ahead.
+- Every older file is merged, oldest first, into one new
+  `compact-<pid>-<ts>.jsonl`, which is written completely (temp file + rename)
+  before any merged file is removed. Earlier compact files are merged again
+  like any other file.
+- Never merged: `seed.jsonl` (while it exists, the transcript import does not
+  run again) and the capture file of the session that is shutting down.
+  `history-global.jsonl` sits outside the project directories and is never
+  touched.
+- Prompts with a tombstone in `hidden.json` are not copied into the compact
+  file, so they cannot reappear from it later, even after their tombstone
+  leaves the 1000-entry cache. If `hidden.json` cannot be trusted, compaction
+  is skipped.
+
+Other pi instances may still be appending to the files being merged. Each
+file is renamed to a claim name before it is read (`<name>.gc-<pid>-<ts>.jsonl`),
+so a later append by path starts a fresh file under the original name, and
+bytes written to the claimed file after it was read are moved into the
+compact file once the claim is removed.
+
+Failures never lose prompts: a file that cannot be read is left untouched,
+and if the compact file cannot be written, the claimed files stay on disk and
+are still read like any other store file. A claimed file that cannot be
+removed stays too; its prompts appear once, because the selector drops
+duplicates.
+
+Prompts leave the store only through the delete flow above, or when you remove
+files manually.

@@ -273,3 +273,54 @@ test("the picker margin stays live while the overlay is open", async () => {
   assert.equal(options.visible?.(140, 50), true);
   assert.deepEqual(options.margin, { right: 54 });
 });
+
+// Review advisory A4 (#1480): the live margin must follow the REAL installed
+// sidebar after the overlay opened, not only a hand-built state object.
+test("the open picker's margin follows the real sidebar across the breakpoint and teardown", async (t) => {
+  const { host, tui, root } = sidebarHost(139);
+  let uninstall = installSidebar(tui, shellTheme);
+  t.after(() => uninstall());
+  root[NODE]();
+  const options = await captureOverlayOptions(host.terminal);
+  assert.equal(options.margin, undefined, "opened below the breakpoint: no rail");
+
+  // Widening across the breakpoint paints the rail while the picker is open.
+  host.terminal.columns = 140;
+  root[NODE]();
+  assert.equal(options.visible?.(140, 50), true);
+  assert.deepEqual(options.margin, {
+    right: SIDEBAR_RAIL_COLUMNS + SIDEBAR_OVERLAY_PADDING,
+  });
+
+  // Narrowing below it removes the rail again.
+  host.terminal.columns = 139;
+  root[NODE]();
+  assert.equal(options.visible?.(139, 50), true);
+  assert.equal(options.margin, undefined);
+
+  // Back at the breakpoint, then the sidebar is torn down: the rail
+  // disappears and the picker returns to the full window.
+  host.terminal.columns = 140;
+  root[NODE]();
+  assert.equal(options.visible?.(140, 50), true);
+  assert.deepEqual(options.margin, {
+    right: SIDEBAR_RAIL_COLUMNS + SIDEBAR_OVERLAY_PADDING,
+  });
+  uninstall();
+  uninstall = () => {};
+  assert.equal(options.visible?.(140, 50), true);
+  assert.equal(options.margin, undefined);
+});
+
+test("the margin getter reports the value refreshed by the last visible() pass", async () => {
+  const state = { ...OWNING };
+  const options = await captureOverlayOptions(terminalWithState(state));
+  assert.deepEqual(options.margin, { right: 54 });
+  // pi-tui re-reads margin several times per layout; between visible()
+  // passes every read agrees, and the next pass picks up the change.
+  state.active = false;
+  assert.deepEqual(options.margin, { right: 54 });
+  assert.equal(options.visible?.(139, 50), true);
+  assert.equal(options.margin, undefined);
+  assert.equal(options.margin, undefined);
+});

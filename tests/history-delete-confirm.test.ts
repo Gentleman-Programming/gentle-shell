@@ -1,7 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { hidePrompt } from "../extensions/history/hide-prompts.ts";
 import {
   deleteConfirmFooterText,
   deleteConfirmStep,
@@ -405,4 +408,53 @@ test("storeDeleteNotice states exactly what remains after the sweep and the hide
   assert.ok(STORE_DELETE_PARTIAL_HIDE_FAILED_TEXT.includes("could not be rewritten"));
   assert.ok(STORE_DELETE_PARTIAL_HIDE_FAILED_TEXT.includes("hiding failed"));
   assert.ok(STORE_DELETE_PARTIAL_HIDE_FAILED_TEXT.includes("may reappear"));
+});
+
+// Review advisory A2 (#1477): the non-store (session-derived) delete path
+// must never claim a prompt is hidden when the tombstone write failed.
+// Evidence that it does not: that branch surfaces hidePrompt's own error
+// message and returns before the row leaves the list, and every error
+// message hidePrompt returns says the hide did NOT happen. The branch is
+// also unreachable from the UI: deleteCurrent drops session rows before
+// arming, and the armed confirm is modal.
+test("a failed hide on the non-store path reports the hide error and keeps the row", () => {
+  const body = executeDeleteBody();
+  const branchAt = body.indexOf('if (hide.status === "error") {');
+  const noticeAt = body.indexOf("if (sweep) {");
+  assert.ok(branchAt >= 0 && noticeAt > branchAt);
+  const branch = body.slice(branchAt, noticeAt);
+  const nonStoreAt = branch.indexOf("if (!actions.deleteFromEditorStore) {");
+  assert.ok(nonStoreAt >= 0, "the non-store path handles its own hide failure");
+  const notifyAt = branch.indexOf('this.onNotify?.(hide.message, "error");');
+  const returnAt = branch.indexOf("return;", notifyAt);
+  assert.ok(notifyAt > nonStoreAt, "it surfaces hidePrompt's own message");
+  assert.ok(returnAt > notifyAt, "and aborts before the splice");
+  assert.ok(body.indexOf("this.records.splice(") > branchAt + returnAt);
+
+  const messages: string[] = [];
+  const unwritable = fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-a2-"));
+  const realRename = fs.renameSync;
+  fs.renameSync = ((from: fs.PathLike, to: fs.PathLike) => {
+    if (String(to) === path.join(unwritable, "hidden.json")) {
+      throw Object.assign(new Error("simulated EACCES"), { code: "EACCES" });
+    }
+    return realRename(from, to);
+  }) as typeof fs.renameSync;
+  try {
+    const failed = hidePrompt(unwritable, "secret");
+    assert.equal(failed.status, "error");
+    if (failed.status === "error") messages.push(failed.message);
+  } finally {
+    fs.renameSync = realRename;
+  }
+  const corrupt = fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-a2-"));
+  fs.writeFileSync(path.join(corrupt, "hidden.json"), "{not json", "utf8");
+  const refused = hidePrompt(corrupt, "secret");
+  assert.equal(refused.status, "error");
+  if (refused.status === "error") messages.push(refused.message);
+
+  for (const message of messages) {
+    assert.doesNotMatch(message, /\b(is|was) hidden\b/i, message);
+    assert.match(message, /may (then )?reappear/, message);
+  }
 });

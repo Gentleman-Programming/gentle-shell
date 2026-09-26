@@ -174,7 +174,10 @@ prompt is affected — prompts that merely share a beginning stay.
    file + rename). Files are never removed, even when they end up empty.
    Lines that another pi instance appends while a file is being rewritten
    are carried over into the new file; if that append fails, they are kept
-   in a sibling `<name>.carry-<pid>-<ts>.jsonl` store file instead.
+   in a sibling `<name>.carry-<pid>-<ts>.jsonl` store file instead. Carry
+   files belong to the same scope as the file they came from (a
+   `history-global.jsonl.carry-*.jsonl` file is part of the global scope),
+   so the selector reads them and later deletes sweep them.
 2. **A tombstone is written** to `hidden.json`, so the prompt stays hidden
    everywhere the selector reads, and a later transcript bootstrap does not
    import it again. The session transcripts themselves are never modified.

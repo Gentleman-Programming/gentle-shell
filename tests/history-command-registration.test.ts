@@ -85,7 +85,7 @@ test("the SHORTCUT constant pins ctrl+shift+r", () => {
 
 test("the capture gate precedes every store touch in the open flow (#1390)", () => {
   const body = openFlowBody();
-  const gateAt = body.indexOf("if (!captureEnabled(env))");
+  const gateAt = body.indexOf("if (!captureEnabled(env, configHome))");
   const drainAt = body.indexOf('drainForScope("project")');
   assert.ok(gateAt >= 0, "the open flow must check captureEnabled first");
   assert.ok(
@@ -93,8 +93,17 @@ test("the capture gate precedes every store touch in the open flow (#1390)", () 
     "the drain must run only after the capture gate passes",
   );
   assert.ok(
-    body.includes("GENTLE_PI_HISTORY_CAPTURE"),
-    "the disabled warning names the capture switch",
+    body.includes("captureDisabledMessage(env)"),
+    "the disabled warning explains which control decides",
+  );
+  const message = source.slice(
+    source.indexOf("function captureDisabledMessage("),
+    source.indexOf("\n}", source.indexOf("function captureDisabledMessage(")),
+  );
+  assert.ok(
+    message.includes("GENTLE_PI_HISTORY_CAPTURE") &&
+      message.includes("Gentle → Customize → History"),
+    "the disabled warning names both the env switch and the Customize control",
   );
   // No writer init on the open path: the selector never touches the
   // registry or the capture writer — getWriter stays capture-side.

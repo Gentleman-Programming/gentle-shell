@@ -8,19 +8,49 @@ history selector. Opted-in sessions consolidate a project's files at shutdown
 ## Capture is opt-in
 
 Recording is **off by default**. Delivered prompts can contain secrets, so
-nothing is stored unless you explicitly opt in:
+nothing is stored unless you explicitly opt in.
+
+### Turn capture on or off
+
+1. Run `/gentle:customize` and open the **History** category.
+2. Select **Prompt history capture: enable** (or **disable**) and press Enter
+   or Space. Highlighting a row only previews the saved preference and the
+   effective state.
+3. The change applies from the next prompt; no pi restart is needed.
+
+The preference is saved globally in `<configHome>/history-capture.json`
+(default config home `~/.pi/gentle-ai`, overridable with
+`GENTLE_PI_CONFIG_HOME`) with the strict shape
+`{"schema":"gentle-pi.history-capture/v1","policy":"on"}` or `off`. It is
+written atomically and is not part of visual profiles or visual reset.
+
+For a single session or a script, the environment variable still works:
 
 ```bash
 GENTLE_PI_HISTORY_CAPTURE=1 pi
 ```
 
-- Enabled by `1`, `true`, or `on` (case-insensitive). Unset, empty, or any other
-  value means **off** — the same switch is the disable path.
-- The check runs per prompt: unsetting the switch (or setting it to `0`) stops
-  new captures immediately, no pi restart needed.
+### Which setting wins
+
+| Situation | Capture |
+|-----------|---------|
+| `GENTLE_PI_HISTORY_CAPTURE` is `1`, `true`, or `on` | on, whatever Customize says |
+| `GENTLE_PI_HISTORY_CAPTURE` is `0`, `false`, or `off` | off, whatever Customize says |
+| Variable unset, empty, or any other value | the Customize preference |
+| No preference saved | off |
+| Preference file malformed or unreadable | off (fail closed) |
+
+Env values are trimmed and case-insensitive. While the variable forces a
+value, the Customize rows show `env override` and the preview says the
+variable overrides the preference; a selection is still saved and takes effect
+once the variable stops forcing a value. A malformed preference file is
+reported and never rewritten by Customize: fix or remove it by hand.
+
+- The check runs per prompt: changing the preference or the variable stops or
+  starts new captures immediately.
 - With capture off the extension is inert: no registry entry, no files, and
-  prompts are never written. The history selector only warns; it reads,
-  imports, and deletes nothing.
+  prompts are never written. The history selector only warns and names the
+  control that decides; it reads, imports, and deletes nothing.
 
 ## Legacy migration and seeding are opt-in
 
@@ -72,7 +102,8 @@ Treat the store as sensitive: it holds your prompts verbatim.
 
 ## What disabling capture does
 
-Turning the switch off only stops **new** captures. Nothing is deleted: files
+Turning capture off — in Customize or with the variable — only stops **new**
+captures. Nothing is deleted: files
 already written — and the registry entry — stay on disk until you remove them.
 Individual prompts can be deleted from the history selector while capture is
 on (see "Delete" below); the store directory itself is removed by hand:

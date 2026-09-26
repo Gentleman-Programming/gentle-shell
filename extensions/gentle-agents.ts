@@ -1156,12 +1156,21 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			description,
 			parameters: { type: "object", additionalProperties: false, ...parameters } as never,
 			renderCall(args, theme) {
+				// The result title belongs with the result body so a running poll
+				// can hide both without changing the tool call or its model output.
+				if (name === "result") return { render: () => [], invalidate() {} };
 				const params = args as { agent?: string; task_id?: string };
 				return new Text(theme.fg("toolTitle", `${AGENTS_GLYPH} agent ${name.replace(/_/g, " ")}${params.agent ? ` · ${params.agent}` : params.task_id ? ` · ${params.task_id}` : ""}`), 0, 0);
 			},
 			renderResult(result, options, theme) {
+				const task = (result.details as { gentleAgents?: { status?: string; taskId?: string } } | undefined)?.gentleAgents;
+				if (name === "result" && task?.status === TASK_STATUS.RUNNING) {
+					return { render: () => [], invalidate() {} };
+				}
 				const body = result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
-				return new Text(options.expanded ? body : theme.fg("muted", body.split("\n")[0] ?? ""), 0, 0);
+				const visibleBody = options.expanded ? body : theme.fg("muted", body.split("\n")[0] ?? "");
+				const title = `${AGENTS_GLYPH} agent result${task?.taskId ? ` · ${sanitizeTerminalText(task.taskId)}` : ""}`;
+				return new Text(name === "result" ? `${theme.fg("toolTitle", title)}\n${visibleBody}` : visibleBody, 0, 0);
 			},
 			async execute(_id, params, signal, _onUpdate, ctx) {
 				return execute(params as Record<string, unknown>, ctx, signal);

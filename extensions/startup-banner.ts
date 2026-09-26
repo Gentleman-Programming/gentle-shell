@@ -744,11 +744,10 @@ export default function (pi: ExtensionAPI) {
       if (dismissed) return [];
       const label = (text: string) => theme.fg("label", text);
       const value = (text: string) => theme.fg("value", text);
-      const branchLabel = gitBranch.startsWith("On branch ")
+      const branchValue = gitBranch.startsWith("On branch ")
         ? gitBranch.slice("On branch ".length)
-        : gitBranch !== "Not a git repo"
-          ? gitBranch
-          : "";
+        : gitBranch;
+      const branchLabel = gitBranch !== "Not a git repo" ? branchValue : "";
       const compactSummary = [
         branchLabel,
         `v${VERSION}`,
@@ -759,7 +758,7 @@ export default function (pi: ExtensionAPI) {
 
       const pad = 12;
       const groups: Array<{ l: string; v: string }> = [
-        { l: "Git", v: gitBranch },
+        { l: "Git", v: branchValue },
         { l: "Path", v: ctx.cwd },
         { l: "Version", v: `v${VERSION}` },
         { l: "MCP", v: `${mcpServersCount} server(s)` },

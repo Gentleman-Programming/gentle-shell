@@ -30,7 +30,8 @@ import test, { after } from "node:test";
 const REPO_ROOT = join(import.meta.dirname, "..");
 const REAL_ASSETS_DIR = join(REPO_ROOT, "assets");
 const FIXTURE_PATH = join(import.meta.dirname, "fixtures", "orchestrator.pre-diet.md");
-const BUDGET_BYTES = 8192;
+// Canonical always-on budget; re-measured at the controlled 128-char assets-root worst case after main's SDD/openspec removal shrank the core (prior pin 8320 pre-dated that drift).
+const BUDGET_BYTES = 7131;
 const MIN_CONTROLLED_LONG_ASSETS_ROOT_CHARS = 93;
 
 const LAZY_ASSET_NAMES = [
@@ -122,7 +123,7 @@ function measureOrchestratorPromptBytes(assetsDir: string): number {
 // measuring a shorter render again.
 const RDD_WORST_CASE_LINE = "Receipt-driven development: unknown (native status unavailable)";
 
-test("getOrchestratorPrompt return value stays within the canonical 8,192 B budget at a short assets root", () => {
+test(`getOrchestratorPrompt return value stays within the canonical ${BUDGET_BYTES} B budget at a short assets root`, () => {
 	const rendered = __testing.renderOrchestratorPrompt(representativeProductionAssetsDir);
 	assert.ok(
 		rendered.includes(RDD_WORST_CASE_LINE),

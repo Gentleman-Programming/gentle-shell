@@ -104,6 +104,8 @@ jobs:
 
       - name: Run Windows candidate view regression
         shell: pwsh
+        env:
+          GENTLE_PI_CANDIDATE_GIT_TIMEOUT_MS: "60000"
         run: |
           $output = & pnpm exec node --experimental-strip-types --test --test-reporter=tap --test-name-pattern "candidate owner|candidate contributor root|candidate executable-mode validation|candidate registry forwards explicit Windows mode validation" tests/review-candidate-view.test.ts 2>&1
           $status = $LASTEXITCODE

@@ -742,8 +742,8 @@ export default function (pi: ExtensionAPI) {
 
     const renderPreflight = (theme: CardTheme, width: number) => {
       if (dismissed) return [];
-      const label = (text: string) => theme.fg("label", text);
-      const value = (text: string) => theme.fg("value", text);
+      const label = (text: string) => theme.fg("muted", text);
+      const value = (text: string) => theme.fg("text", text);
       const branchValue = gitBranch.startsWith("On branch ")
         ? gitBranch.slice("On branch ".length)
         : gitBranch;
@@ -754,7 +754,7 @@ export default function (pi: ExtensionAPI) {
         `${mcpServersCount} mcp`,
         `${backgroundAgentsCount} ${backgroundAgentsCount === 1 ? "agent" : "agents"}`,
         `${skills.length} ${skills.length === 1 ? "skill" : "skills"}`,
-      ].filter((s) => s.length > 0).join("  •  ");
+      ].filter((s) => s.length > 0).join(` ${theme.fg("dim", "•")} `);
 
       const pad = 12;
       const groups: Array<{ l: string; v: string }> = [

@@ -44,8 +44,84 @@ test("v1 jsonl migrates into the global seed chronologically", () => {
   const result = migrateLegacyStores(root, agentDir);
   assert.deepEqual(result, { migrated: 2, ran: true });
   assert.deepEqual(fileTexts(globalSeedPath(root)), ["old", "new"]);
-  assert.equal(fs.existsSync(v1), false);
-  assert.equal(fs.existsSync(`${v1}.imported`), true);
+  assert.equal(fs.existsSync(v1), true);
+  assert.equal(fs.existsSync(`${v1}.imported`), false);
+});
+
+test("competing migration cannot publish a partial seed over a complete one", () => {
+  const { root, agentDir } = makeDirs();
+  const array = path.join(agentDir, "editor-history.json");
+  const v1 = path.join(agentDir, "editor-history.jsonl");
+  fs.writeFileSync(array, JSON.stringify(["array prompt"]));
+  fs.writeFileSync(v1, `${JSON.stringify({ text: "v1 prompt" })}\n`);
+  const original = fs.readFileSync;
+  let competing: ReturnType<typeof migrateLegacyStores> | undefined;
+  fs.readFileSync = ((file: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+    if (file === v1 && !competing) {
+      // The first migration has already read the array; the competing one
+      // must not publish a seed while that snapshot is incomplete.
+      competing = { migrated: -1, ran: true };
+      competing = migrateLegacyStores(root, agentDir);
+    }
+    return (original as (...args: unknown[]) => unknown)(file, ...args);
+  }) as typeof fs.readFileSync;
+  try {
+    migrateLegacyStores(root, agentDir);
+  } finally {
+    fs.readFileSync = original;
+  }
+  assert.deepEqual(competing, { migrated: 0, ran: false });
+  assert.deepEqual(fileTexts(globalSeedPath(root)), ["array prompt", "v1 prompt"]);
+});
+
+test("an ownerless crash lock fails closed without changing sources or seed", () => {
+  const { root, agentDir } = makeDirs();
+  const array = path.join(agentDir, "editor-history.json");
+  const v1 = path.join(agentDir, "editor-history.jsonl");
+  const seed = globalSeedPath(root);
+  const arrayBytes = JSON.stringify(["array prompt"]);
+  const v1Bytes = `${JSON.stringify({ text: "after crash" })}\n`;
+  const seedBytes = `${JSON.stringify({ text: "already seeded" })}\n`;
+  fs.writeFileSync(array, arrayBytes);
+  fs.writeFileSync(v1, v1Bytes);
+  fs.mkdirSync(root, { recursive: true });
+  fs.writeFileSync(seed, seedBytes);
+  // A process can die immediately after mkdir, before recording ownership.
+  // An ownerless lock needs manual recovery; do not claim automatic import.
+  const lock = `${seed}.migration-lock`;
+  fs.mkdirSync(lock);
+  assert.deepEqual(migrateLegacyStores(root, agentDir), { migrated: 0, ran: false });
+  assert.equal(fs.readFileSync(array, "utf8"), arrayBytes);
+  assert.equal(fs.readFileSync(v1, "utf8"), v1Bytes);
+  assert.equal(fs.existsSync(`${array}.imported`), false);
+  assert.equal(fs.existsSync(`${v1}.imported`), false);
+  assert.equal(fs.readFileSync(seed, "utf8"), seedBytes);
+  assert.equal(fs.existsSync(lock), true);
+});
+
+test("a live legacy writer remains reachable for prompts appended after migration", () => {
+  const { root, agentDir } = makeDirs();
+  const v1 = path.join(agentDir, "editor-history.jsonl");
+  fs.writeFileSync(v1, `${JSON.stringify({ text: "before" })}\n`);
+  const fd = fs.openSync(v1, "a");
+  try {
+    migrateLegacyStores(root, agentDir);
+    fs.writeSync(fd, `${JSON.stringify({ text: "after" })}\n`);
+    assert.deepEqual(migrateLegacyStores(root, agentDir), { migrated: 1, ran: true });
+    assert.deepEqual(fileTexts(globalSeedPath(root)), ["before", "after"]);
+  } finally {
+    fs.closeSync(fd);
+  }
+});
+
+test("prompts appended to an already archived live v1 file are recovered", () => {
+  const { root, agentDir } = makeDirs();
+  const archived = path.join(agentDir, "editor-history.jsonl.imported");
+  fs.writeFileSync(archived, `${JSON.stringify({ text: "archived" })}\n`);
+  migrateLegacyStores(root, agentDir);
+  fs.appendFileSync(archived, `${JSON.stringify({ text: "late" })}\n`);
+  assert.deepEqual(migrateLegacyStores(root, agentDir), { migrated: 1, ran: true });
+  assert.deepEqual(fileTexts(globalSeedPath(root)), ["archived", "late"]);
 });
 
 test("legacy array file also migrates (newest-first reversed)", () => {
@@ -74,10 +150,10 @@ test("both legacy files: v1 jsonl content appends after array content", () => {
     "from-jsonl",
   ]);
   assert.equal(fs.existsSync(`${legacy}.imported`), true);
-  assert.equal(fs.existsSync(`${v1}.imported`), true);
+  assert.equal(fs.existsSync(v1), true);
 });
 
-test("existing global seed gates the migration (idempotent)", () => {
+test("existing global seed is preserved while new v1 prompts are imported", () => {
   const { root, agentDir } = makeDirs();
   fs.mkdirSync(path.dirname(globalSeedPath(root)), { recursive: true });
   fs.writeFileSync(
@@ -92,8 +168,9 @@ test("existing global seed gates the migration (idempotent)", () => {
     "utf8",
   );
   const result = migrateLegacyStores(root, agentDir);
-  assert.deepEqual(result, { migrated: 0, ran: false });
-  assert.deepEqual(fileTexts(globalSeedPath(root)), ["already-here"]);
+  assert.deepEqual(result, { migrated: 1, ran: true });
+  assert.deepEqual(fileTexts(globalSeedPath(root)), ["already-here", "would-migrate"]);
+  assert.deepEqual(migrateLegacyStores(root, agentDir), { migrated: 0, ran: false });
   assert.equal(fs.existsSync(v1), true);
 });
 
@@ -190,7 +267,7 @@ seedFailureTest(
     // Retry after the failure clears: full migration, then rename.
     const result = migrateLegacyStores(root, agentDir);
     assert.deepEqual(result, { migrated: 1, ran: true });
-    assert.equal(fs.existsSync(`${v1}.imported`), true);
+    assert.equal(fs.existsSync(v1), true);
     assert.deepEqual(fileTexts(globalSeedPath(root)), ["survives-retry"]);
   },
 );

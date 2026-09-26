@@ -467,18 +467,45 @@ function readValidLines(file: string): StoreEntry[] {
  * - `~/.pi/agent/editor-history.jsonl` (v1 single-file store)
  * - `~/.pi/agent/editor-history.json` (pre-v1 array, newest-first)
  * Content lands in `pi-history/history-global.jsonl` chronologically; only
- * after the seed write succeeds is each source renamed `.imported`, never
- * deleted — a failed write leaves sources untouched for a later retry.
- * Gated: an existing global seed means migration already ran.
+ * after the seed write succeeds is the array source renamed `.imported`.
+ * Keep the v1 JSONL path live: older processes may still append to it, and
+ * later opens import new prompts without replacing the complete seed.
  */
 export function migrateLegacyStores(
   root: string,
   agentDir: string,
 ): MigrationResult {
   const seed = globalSeedPath(root);
-  if (fs.existsSync(seed)) return { migrated: 0, ran: false };
+  fs.mkdirSync(root, { recursive: true });
+  const lock = `${seed}.migration-lock`;
+  try {
+    fs.mkdirSync(lock);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      return { migrated: 0, ran: false };
+    }
+    throw error;
+  }
+  try {
+    return migrateLegacyStoresLocked(seed, agentDir);
+  } finally {
+    fs.rmdirSync(lock);
+  }
+}
 
+function migrateLegacyStoresLocked(seed: string, agentDir: string): MigrationResult {
+  // Re-read under the exclusive lock: another process may have published a
+  // complete seed while this one waited. Never replace a published seed.
+  const existing = fs.existsSync(seed) ? readValidLines(seed) : [];
+  const known = new Set(existing.map((entry) => promptKey(entry.text)));
   const collected: StoreEntry[] = [];
+  const collect = (entry: StoreEntry) => {
+    const key = promptKey(entry.text);
+    if (!known.has(key)) {
+      known.add(key);
+      collected.push(entry);
+    }
+  };
 
   // Pre-v1 array (newest-first) → reverse to chronological.
   const legacyArray = path.join(agentDir, "editor-history.json");
@@ -492,35 +519,35 @@ export function migrateLegacyStores(
       const text = typeof item === "string" ? item :
         item && typeof item === "object" && "text" in item &&
         typeof item.text === "string" ? item.text : null;
-      if (text && text.length > 0) collected.push({ v: 1, text });
+      if (text && text.length > 0) collect({ v: 1, text });
     }
   }
 
   // v1 single-file store — already chronological.
   const v1File = path.join(agentDir, "editor-history.jsonl");
-  if (fs.existsSync(v1File)) {
-    collected.push(...readValidLines(v1File));
+  for (const source of [`${v1File}.imported`, v1File]) {
+    // Older migrations may have renamed a file still open for appends.
+    if (fs.existsSync(source)) {
+      for (const entry of readValidLines(source)) collect(entry);
+    }
   }
 
   if (collected.length === 0) return { migrated: 0, ran: false };
 
-  fs.mkdirSync(path.dirname(seed), { recursive: true });
   const tmp = `${seed}.tmp-${process.pid}-${Date.now()}`;
   fs.writeFileSync(
     tmp,
-    collected.map((e) => JSON.stringify(e)).join("\n") + "\n",
+    [...existing, ...collected].map((e) => JSON.stringify(e)).join("\n") + "\n",
     "utf8",
   );
   fs.renameSync(tmp, seed);
 
-  // The seed write is the source of truth: rename sources only once it
-  // succeeded, so a failure can never strand entries in .imported files.
-  for (const src of [legacyArray, v1File]) {
-    try {
-      if (fs.existsSync(src)) fs.renameSync(src, `${src}.imported`);
-    } catch {
-      // benign: the seed gate prevents duplicate import on the next run
-    }
+  // Array sources are immutable; the v1 JSONL path remains live for writers
+  // opened by older processes, and is checked again on later migrations.
+  try {
+    if (fs.existsSync(legacyArray)) fs.renameSync(legacyArray, `${legacyArray}.imported`);
+  } catch {
+    // A failed archive is harmless: already seeded entries are deduplicated.
   }
   return { migrated: collected.length, ran: true };
 }

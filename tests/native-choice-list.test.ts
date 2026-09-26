@@ -177,6 +177,56 @@ test("root observer clears hover and disabled controls ignore every input", () =
 	);
 });
 
+for (const twoStep of [false, true]) {
+	test(`native choice completed clicks use ${twoStep ? "two-step" : "default single-click"} confirmation`, () => {
+		const list = new NativeChoiceList([
+			{ id: "first", label: "First" }, { id: "second", label: "Second" },
+		], theme, undefined, { confirmOnSecondClick: twoStep });
+		const selected: string[] = [];
+		list.onSelect = (item) => selected.push(item.id);
+		const root = createNativeFullscreenInteraction({ keyboardTarget: list, requestRender() {} });
+		root.addChild(new Text("Header", 0, 0));
+		root.addChild(list);
+		const lines = root.render(40);
+		const send = (type: TuiMouseEvent["type"], label: string) => {
+			const row = lines.findIndex((line) => stripTerminalSequences(line).includes(label));
+			assert.ok(row >= 0);
+			root.handleMouse(event(type, "left", row, 40, lines.length));
+		};
+		const click = (label: string) => {
+			send("press", label);
+			send("release", label);
+			send("click", label);
+		};
+		send("press", "First");
+		send("release", "First");
+		assert.deepEqual(selected, [], "press and release do not confirm or arm a completed click");
+		click("First");
+		assert.deepEqual(selected, twoStep ? [] : ["first"], "initial highlighted row still needs a first click");
+		click("Second");
+		assert.equal(list.getSelectedItem()?.id, "second");
+		assert.equal(selected.length, twoStep ? 0 : 2, "switching rows selects only in two-step mode");
+		click("First");
+		assert.equal(selected.length, twoStep ? 0 : 3, "returning to a prior row does not confirm");
+		root.render(40);
+		click("First");
+		assert.equal(selected.at(-1), "first", "same-row confirmation survives a render without a timer");
+		selected.length = 0;
+		click("Second");
+		root.handleInput("\r");
+		assert.equal(selected.at(-1), "second", "Enter confirms pointer selection");
+		selected.length = 0;
+		root.handleInput("\u001b[A");
+		root.handleInput("\u001b[B");
+		click("Second");
+		assert.deepEqual(selected, twoStep ? [] : ["second"], "keyboard navigation clears pointer confirmation");
+		let cancelled = false;
+		list.onCancel = () => { cancelled = true; };
+		root.handleInput("\u001b");
+		assert.equal(cancelled, true);
+	});
+}
+
 test("empty native choice lists do not activate phantom selections", () => {
 	const list = new NativeChoiceList([], theme);
 	let selected = 0;

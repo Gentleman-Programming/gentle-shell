@@ -95,7 +95,11 @@ function signalAwaitingComplete(): typeof completeSimple {
 				reject(new Error("aborted"));
 				return;
 			}
-			signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+			const keepAlive = setInterval(() => {}, 10_000);
+			signal.addEventListener("abort", () => {
+				clearInterval(keepAlive);
+				reject(new Error("aborted"));
+			}, { once: true });
 		});
 	}) as typeof completeSimple;
 }
@@ -109,8 +113,15 @@ function signalResolvingAbortedComplete(partialText = "partial revi"): typeof co
 	return (async (_model, _context, options) => {
 		return await new Promise<AssistantMessage>((resolve) => {
 			const signal = options?.signal;
-			const settle = () => resolve(assistantText(partialText, { stopReason: "aborted" }));
-			if (signal === undefined) return;
+			const keepAlive = setInterval(() => {}, 10_000);
+			const settle = () => {
+				clearInterval(keepAlive);
+				resolve(assistantText(partialText, { stopReason: "aborted" }));
+			};
+			if (signal === undefined) {
+				clearInterval(keepAlive);
+				return;
+			}
 			if (signal.aborted) {
 				settle();
 				return;
@@ -636,4 +647,228 @@ test("the no-apiKey options shape is identical on the composed-provider and deps
 	const completeKeys = Object.keys(completeCalls[0]!.options ?? {}).sort();
 	assert.deepEqual(providerKeys, completeKeys, "routing through the composed provider must not change which credential fields this module forwards");
 	assert.equal(providerKeys.includes("apiKey"), false, "neither path may carry an apiKey the registry did not resolve");
+});
+
+// ---------------------------------------------------------------------------
+// Transient transport error retries (issue #1307)
+// ---------------------------------------------------------------------------
+
+test("retries on transient network error (ECONNRESET) and succeeds on subsequent attempt", async () => {
+	let attempt = 0;
+	const sleepCalls: number[] = [];
+	const outcome = await runInProcessReviewer(baseRequest(), {
+		registry: fakeRegistry([fakeModel()]),
+		complete: (async () => {
+			attempt += 1;
+			if (attempt === 1) {
+				throw new Error("fetch failed: ECONNRESET");
+			}
+			return assistantText("Valid reviewer findings");
+		}) as typeof completeSimple,
+		sleep: async (ms) => {
+			sleepCalls.push(ms);
+		},
+	});
+	const text = expectText(outcome);
+	assert.equal(text.text, "Valid reviewer findings");
+	assert.equal(attempt, 2, "must have retried once after transient error");
+	assert.equal(sleepCalls.length, 1, "must have called sleep between attempts");
+});
+
+test("retries on transient stopReason 503 error and succeeds on subsequent attempt", async () => {
+	let attempt = 0;
+	const sleepCalls: number[] = [];
+	const outcome = await runInProcessReviewer(baseRequest(), {
+		registry: fakeRegistry([fakeModel()]),
+		complete: (async () => {
+			attempt += 1;
+			if (attempt === 1) {
+				return assistantText("", {
+					stopReason: "error",
+					errorMessage: "503 Service Unavailable",
+				});
+			}
+			return assistantText("Valid reviewer findings on attempt 2");
+		}) as typeof completeSimple,
+		sleep: async (ms) => {
+			sleepCalls.push(ms);
+		},
+	});
+	const text = expectText(outcome);
+	assert.equal(text.text, "Valid reviewer findings on attempt 2");
+	assert.equal(attempt, 2);
+	assert.equal(sleepCalls.length, 1);
+});
+
+test("retries when thrown error has transient numeric status property (502) and succeeds", async () => {
+	let attempt = 0;
+	const outcome = await runInProcessReviewer(baseRequest(), {
+		registry: fakeRegistry([fakeModel()]),
+		complete: (async () => {
+			attempt += 1;
+			if (attempt === 1) {
+				const error = new Error("Bad Gateway") as Error & { status: number };
+				error.status = 502;
+				throw error;
+			}
+			return assistantText("Valid reviewer findings");
+		}) as typeof completeSimple,
+		sleep: async () => {},
+	});
+	const text = expectText(outcome);
+	assert.equal(text.text, "Valid reviewer findings");
+	assert.equal(attempt, 2);
+});
+
+test("does not retry 4xx client errors even if message contains retryable status numbers", async () => {
+	let attempt = 0;
+	const outcome = await runInProcessReviewer(baseRequest(), {
+		registry: fakeRegistry([fakeModel()]),
+		complete: (async () => {
+			attempt += 1;
+			const error = new Error("Validation error: field 502 is invalid") as Error & { status: number };
+			error.status = 400;
+			throw error;
+		}) as typeof completeSimple,
+		sleep: async () => {},
+	});
+	const refused = expectRefused(outcome);
+	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED);
+	assert.equal(attempt, 1, "must not retry non-retryable status even if message matches status pattern");
+});
+
+test("does not retry deterministic JSON parse error (issue #1307)", async () => {
+	let attempt = 0;
+	const sleepCalls: number[] = [];
+	const outcome = await runInProcessReviewer(baseRequest(), {
+		registry: fakeRegistry([fakeModel()]),
+		complete: (async () => {
+			attempt += 1;
+			throw new Error("Expected property name or '}' in JSON at position 1 (line 1 column 2)");
+		}) as typeof completeSimple,
+		sleep: async (ms) => {
+			sleepCalls.push(ms);
+		},
+	});
+	const refused = expectRefused(outcome);
+	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED);
+	assert.match(refused.message, /Expected property name/);
+	assert.equal(attempt, 1, "must not retry deterministic JSON parse / truncation errors");
+	assert.equal(sleepCalls.length, 0, "must not sleep when not retrying");
+});
+
+test("refuses with PROVIDER_FAILED when complete rejects with undefined", async () => {
+	let attempt = 0;
+	const outcome = await runInProcessReviewer(baseRequest(), {
+		registry: fakeRegistry([fakeModel()]),
+		complete: (async () => {
+			attempt += 1;
+			return Promise.reject(undefined);
+		}) as typeof completeSimple,
+		sleep: async () => {},
+	});
+	const refused = expectRefused(outcome);
+	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED);
+	assert.equal(attempt, 1);
+});
+
+test("preserves prior failure evidence when aborted during backoff sleep", async () => {
+	const controller = new AbortController();
+	let attempt = 0;
+	const outcome = await runInProcessReviewer({ ...baseRequest(), signal: controller.signal }, {
+		registry: fakeRegistry([fakeModel()]),
+		complete: (async () => {
+			attempt += 1;
+			throw new Error("fetch failed: ECONNRESET");
+		}) as typeof completeSimple,
+		sleep: async (_ms, signal) => {
+			controller.abort();
+			assert.equal(signal?.aborted, true);
+		},
+	});
+	const refused = expectRefused(outcome);
+	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.ABORTED);
+	assert.equal(attempt, 1);
+	assert.match(String(refused.evidence?.priorFailure), /ECONNRESET/);
+});
+
+test("preserves prior failure evidence when timeout fires during backoff sleep", async () => {
+	let attempt = 0;
+	const outcome = await runInProcessReviewer({ ...baseRequest(), timeoutMs: 20 }, {
+		registry: fakeRegistry([fakeModel()]),
+		complete: (async () => {
+			attempt += 1;
+			throw new Error("fetch failed: ETIMEDOUT");
+		}) as typeof completeSimple,
+		sleep: async () => {
+			// Simulate waiting past timeoutMs
+			await new Promise((resolve) => setTimeout(resolve, 30));
+		},
+	});
+	const refused = expectRefused(outcome);
+	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.TIMED_OUT);
+	assert.equal(attempt, 1);
+	assert.match(String(refused.evidence?.priorFailure), /ETIMEDOUT/);
+});
+
+test("refuses with PROVIDER_FAILED after exhausting attempts for persistent transient error", async () => {
+	let attempt = 0;
+	const outcome = await runInProcessReviewer(baseRequest(), {
+		registry: fakeRegistry([fakeModel()]),
+		complete: (async () => {
+			attempt += 1;
+			throw new Error("fetch failed: ETIMEDOUT");
+		}) as typeof completeSimple,
+		sleep: async () => {},
+	});
+	const refused = expectRefused(outcome);
+	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED);
+	assert.match(refused.message, /ETIMEDOUT/);
+	assert.equal(attempt, 2, "must have stopped after 2 attempts");
+});
+
+test("does not retry on non-transient error", async () => {
+	let attempt = 0;
+	const sleepCalls: number[] = [];
+	const outcome = await runInProcessReviewer(baseRequest(), {
+		registry: fakeRegistry([fakeModel()]),
+		complete: (async () => {
+			attempt += 1;
+			throw new Error("Invalid request parameter: temperature must be between 0 and 2");
+		}) as typeof completeSimple,
+		sleep: async (ms) => {
+			sleepCalls.push(ms);
+		},
+	});
+	const refused = expectRefused(outcome);
+	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED);
+	assert.equal(attempt, 1, "must not retry non-transient error");
+	assert.equal(sleepCalls.length, 0, "must not sleep when not retrying");
+});
+
+test("retries on transient streamSimple failure through composed provider and succeeds", async () => {
+	let attempt = 0;
+	const sleepCalls: number[] = [];
+	const getProvider = () => ({
+		streamSimple: () => ({
+			result: async () => {
+				attempt += 1;
+				if (attempt === 1) {
+					throw new Error("socket hang up");
+				}
+				return assistantText("Valid findings from composed provider");
+			},
+		}),
+	});
+	const outcome = await runInProcessReviewer(baseRequest(), {
+		registry: { ...fakeRegistry([fakeModel()]), getProvider },
+		complete: unreachableComplete,
+		sleep: async (ms) => {
+			sleepCalls.push(ms);
+		},
+	});
+	const text = expectText(outcome);
+	assert.equal(text.text, "Valid findings from composed provider");
+	assert.equal(attempt, 2, "must have retried once through composed provider");
+	assert.equal(sleepCalls.length, 1);
 });

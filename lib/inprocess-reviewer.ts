@@ -97,7 +97,55 @@ export interface InProcessReviewerDeps {
 	readonly complete: typeof completeSimple;
 	/** Test seam for the single user message's timestamp; defaults to Date.now. */
 	readonly now?: () => number;
+	/** Test seam for backoff delay between retry attempts; defaults to setTimeout. */
+	readonly sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
+
+export const MAX_REVIEWER_COMPLETION_ATTEMPTS = 2;
+export const REVIEWER_RETRY_BACKOFF_MS = 1_000;
+
+/**
+ * Classifies whether a reviewer completion failure is transient and eligible
+ * for bounded retry with backoff.
+ *
+ * Network drops and transient gateway statuses (502, 503, 504, 429) are
+ * retryable. Deterministic errors — notably SSE JSON parse failures from gateway
+ * truncations (e.g. NaN emitting Python dict reprs when reasoning exhausts the
+ * character ceiling, see issue #1307) or client request validation errors — are
+ * deliberately not retried.
+ */
+export function isTransientReviewerError(error: unknown): boolean {
+	if (error === undefined || error === null) return false;
+	const message = error instanceof Error ? error.message : String(error);
+	const status = typeof (error as { status?: unknown })?.status === "number"
+		? (error as { status: number }).status
+		: undefined;
+
+	if (status !== undefined) {
+		return status === 429 || status === 502 || status === 503 || status === 504;
+	}
+
+	return (
+		/ECONNRESET|ETIMEDOUT|ECONNREFUSED|fetch failed|socket hang up|premature close/i.test(message) ||
+		/\b(502|503|504|429)\b/.test(message)
+	);
+}
+
+/**
+ * Default abort-aware delay function used for backoff between retry attempts.
+ */
+const defaultSleep = async (ms: number, signal?: AbortSignal): Promise<void> => {
+	if (signal?.aborted) return;
+	await new Promise<void>((resolve) => {
+		const timer = setTimeout(resolve, ms);
+		if (signal) {
+			signal.addEventListener("abort", () => {
+				clearTimeout(timer);
+				resolve();
+			}, { once: true });
+		}
+	});
+};
 
 // No existing bound covers the reviewer's completion text: the child this
 // module replaced returned its extracted text unbounded. 4 MiB matches this
@@ -178,8 +226,9 @@ export function openCodeSessionAttributionHeaders(model: Model<Api>, sessionId: 
 /**
  * Runs one reviewer completion in-process: resolve the model, authenticate,
  * map the routing thinking label, and complete exactly one frozen prompt as
- * a single user message. Never retries, never falls back to another model,
- * never reads process.env — every seam is injected through `deps`.
+ * a single user message. Retries at most once with backoff for transient
+ * transport errors, never falls back to another model, never reads process.env —
+ * every seam is injected through `deps`.
  */
 export async function runInProcessReviewer(request: InProcessReviewerRequest, deps: InProcessReviewerDeps): Promise<InProcessReviewerOutcome> {
 	const parsed = parseSelection(request.selection);
@@ -274,48 +323,97 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 		...(reasoning.reasoning === undefined ? {} : { reasoning: reasoning.reasoning }),
 	};
 
+	let assistant: AssistantMessage | undefined;
+	let lastRefusal: InProcessReviewerOutcome | undefined;
+
 	// An abort is classified by which signal actually fired, never by the
 	// error's shape or the message's text, and the same classification serves
 	// both settlement paths: a provider may reject on abort, or — the pi-ai
 	// provider convention — resolve an AssistantMessage with `stopReason:
 	// "aborted"` carrying whatever text streamed before the cut. Either way a
 	// fired signal is a timeout or a caller abort, never empty or usable output.
+	// When aborting after a prior attempt failed, the prior refusal's message
+	// is retained as evidence.
 	const abortRefusal = (): InProcessReviewerOutcome | undefined => {
+		const evidence = lastRefusal?.kind === "refused" ? { priorFailure: lastRefusal.message } : undefined;
 		if (timeoutSignal.aborted) {
-			return refuse(INPROCESS_REVIEWER_FAILURE.TIMED_OUT, `Reviewer completion for ${request.routingKey} exceeded its ${request.timeoutMs}ms bound.`);
+			return refuse(
+				INPROCESS_REVIEWER_FAILURE.TIMED_OUT,
+				`Reviewer completion for ${request.routingKey} exceeded its ${request.timeoutMs}ms bound.`,
+				evidence,
+			);
 		}
 		if (request.signal?.aborted === true) {
-			return refuse(INPROCESS_REVIEWER_FAILURE.ABORTED, `Reviewer completion for ${request.routingKey} was aborted by the caller.`);
+			return refuse(
+				INPROCESS_REVIEWER_FAILURE.ABORTED,
+				`Reviewer completion for ${request.routingKey} was aborted by the caller.`,
+				evidence,
+			);
 		}
 		return undefined;
 	};
 
-	// `SimpleStreamOptions` is identical on both paths; only the return shape
-	// differs (an event stream versus a promise), hence `.result()` — which is
-	// exactly what pi-ai's own compat layer does with the same stream.
-	let assistant: AssistantMessage;
-	try {
-		assistant = provider === undefined ? await deps.complete(model, context, options) : await provider.streamSimple(model, context, options).result();
-	} catch (error) {
-		return abortRefusal() ?? refuse(INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED, `Reviewer completion failed for ${request.routingKey}: ${sanitizeErrorExcerpt(error)}`);
+	for (let attempt = 1; attempt <= MAX_REVIEWER_COMPLETION_ATTEMPTS; attempt++) {
+		const abortBeforeAttempt = abortRefusal();
+		if (abortBeforeAttempt !== undefined) return abortBeforeAttempt;
+
+		let attemptFailed = false;
+		let attemptError: unknown;
+		try {
+			// `SimpleStreamOptions` is identical on both paths; only the return shape
+			// differs (an event stream versus a promise), hence `.result()` — which is
+			// exactly what pi-ai's own compat layer does with the same stream.
+			assistant = provider === undefined
+				? await deps.complete(model, context, options)
+				: await provider.streamSimple(model, context, options).result();
+		} catch (error) {
+			attemptFailed = true;
+			attemptError = error;
+		}
+
+		const abortAfterAttempt = abortRefusal();
+		if (abortAfterAttempt !== undefined) return abortAfterAttempt;
+
+		if (attemptFailed) {
+			const errorExcerpt = sanitizeErrorExcerpt(attemptError);
+			lastRefusal = refuse(
+				INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED,
+				`Reviewer completion failed for ${request.routingKey}: ${errorExcerpt}`,
+			);
+			if (attempt < MAX_REVIEWER_COMPLETION_ATTEMPTS && isTransientReviewerError(attemptError)) {
+				await (deps.sleep ?? defaultSleep)(REVIEWER_RETRY_BACKOFF_MS, combinedSignal);
+				continue;
+			}
+			return lastRefusal;
+		}
+
+		if (assistant!.stopReason === "aborted") {
+			// No signal of ours fired, so the provider cut the completion on its
+			// own: that is a provider failure, and its partial text is not a review.
+			return refuse(
+				INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED,
+				`Reviewer completion failed for ${request.routingKey}: the provider reported an aborted completion (${assistant!.errorMessage ?? "no provider message"}).`,
+			);
+		}
+
+		if (assistant!.stopReason === "error") {
+			const errorMessage = assistant!.errorMessage ?? "unknown provider error";
+			lastRefusal = refuse(
+				INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED,
+				`Reviewer completion failed for ${request.routingKey}: ${errorMessage}`,
+			);
+			if (attempt < MAX_REVIEWER_COMPLETION_ATTEMPTS && isTransientReviewerError(errorMessage)) {
+				await (deps.sleep ?? defaultSleep)(REVIEWER_RETRY_BACKOFF_MS, combinedSignal);
+				continue;
+			}
+			return lastRefusal;
+		}
+
+		break;
 	}
 
-	const resolvedAbort = abortRefusal();
-	if (resolvedAbort !== undefined) return resolvedAbort;
-	if (assistant.stopReason === "aborted") {
-		// No signal of ours fired, so the provider cut the completion on its
-		// own: that is a provider failure, and its partial text is not a review.
-		return refuse(
-			INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED,
-			`Reviewer completion failed for ${request.routingKey}: the provider reported an aborted completion (${assistant.errorMessage ?? "no provider message"}).`,
-		);
-	}
-
-	if (assistant.stopReason === "error") {
-		return refuse(
-			INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED,
-			`Reviewer completion failed for ${request.routingKey}: ${assistant.errorMessage ?? "unknown provider error"}`,
-		);
+	if (assistant === undefined) {
+		return lastRefusal ?? refuse(INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED, `Reviewer completion failed for ${request.routingKey}: unknown provider error`);
 	}
 	if (assistant.content.some((part) => part.type === "toolCall")) {
 		return refuse(

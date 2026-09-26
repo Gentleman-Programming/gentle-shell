@@ -1296,7 +1296,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			},
 		},
 		async (params, ctx, signal) => {
-			if (Object.hasOwn(params, "repository_root") && Object.hasOwn(params, "workspace_root")) throw new Error("repository_root and workspace_root are mutually exclusive.");
+			// An empty selector names no destination: only real roots are mutually
+			// exclusive, so a blank string must not masquerade as a second target.
+			const hasWorkspaceRoot = Object.hasOwn(params, "workspace_root") && params.workspace_root !== "";
+			const hasRepositoryRoot = Object.hasOwn(params, "repository_root") && params.repository_root !== "";
+			if (hasRepositoryRoot && hasWorkspaceRoot) throw new Error("repository_root and workspace_root are mutually exclusive.");
 			if ((Object.hasOwn(params, "repository_root") && typeof params.repository_root !== "string") || (Object.hasOwn(params, "workspace_root") && typeof params.workspace_root !== "string")) throw new Error("Root selectors must be strings.");
 			if (Object.hasOwn(params, "sdd_change") || Object.hasOwn(params, "remediation") || Object.hasOwn(params, "research_selection") || retiredSddAgent(String(params.agent))) return text("Error: retired SDD delegation is not supported.", { error: "retired SDD delegation" });
 			const { agents } = discoverAgents(roots(ctx));
@@ -1307,7 +1311,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				policy: resolveBackgroundSubagentsPolicy(ctx.cwd).policy,
 				parentMode: ctx.mode,
 			});
-			return launch(ctx, await buildRequest(ctx, agent, String(params.task ?? ""), typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, undefined, typeof params.workspace_root === "string" ? params.workspace_root : undefined, signal, typeof params.repository_root === "string" ? params.repository_root : undefined), signal);
+			const workspaceRoot = typeof params.workspace_root === "string" && params.workspace_root !== "" ? params.workspace_root : undefined;
+			const repositoryRoot = typeof params.repository_root === "string" && params.repository_root !== "" ? params.repository_root : undefined;
+			return launch(ctx, await buildRequest(ctx, agent, String(params.task ?? ""), typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, undefined, workspaceRoot, signal, repositoryRoot), signal);
 		},
 	);
 

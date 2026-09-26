@@ -2114,6 +2114,11 @@ test("foreign clone tool requires consent before queueing and never enters paren
 		await assert.rejects(run.execute("wrong-selector", { agent: "explore", task: "Map", workspace_root: foreign, mode: "background" }, undefined, undefined, ctx), /same Git clone/);
 		await assert.rejects(run.execute("both", { agent: "explore", task: "Map", workspace_root: parent, repository_root: foreign, mode: "background" }, undefined, undefined, ctx), /mutually exclusive/);
 		await assert.rejects(run.execute("both-malformed", { agent: "explore", task: "Map", workspace_root: parent, repository_root: 123, mode: "background" }, undefined, undefined, ctx), /mutually exclusive/);
+		// Blank selectors name no destination, so they must not read as a second target.
+		const blank = await run.execute("blank-roots", { agent: "__absent__", task: "Map", workspace_root: "", repository_root: "", mode: "background" }, undefined, undefined, ctx);
+		assert.match(JSON.stringify(blank), /no subagent named/, "blank selectors pass the exclusivity guard and reach agent lookup");
+		assert.deepEqual(spawned, [], "a blank selector must not spawn a child");
+		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), [], "a blank selector must not register a worktree");
 		const pending = run.execute("foreign", { agent: "explore", task: "Map", repository_root: foreign, mode: "background" }, undefined, undefined, ctx);
 		await tick();
 		assert.equal(prompts, 1);

@@ -9,6 +9,13 @@ export interface SidebarState {
 	active: boolean;
 	visibility?: { todo?: boolean };
 	ownsHost?: () => boolean;
+	/**
+	 * Columns the fullscreen rail reserves at the right edge (rail plus gap)
+	 * while `active && ownsHost()`. Overlays read it to stay inside the editor
+	 * column (the prompt-history picker's right margin) without importing
+	 * gentle-shell.
+	 */
+	railColumns?: number;
 	/** True while Status placement is "hidden": the bottom Status bar paints nothing at any width or mode. */
 	statusHidden?: () => boolean;
 	/** True while a painting top header is the only status row of a narrow fullscreen terminal: the bottom Status bar steps aside. */

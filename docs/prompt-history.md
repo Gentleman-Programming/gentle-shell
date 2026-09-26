@@ -130,6 +130,27 @@ rm -rf ~/.pi/agent/history/projects/<hash>   # one project (see registry.json)
 
 As with other editing keys, the list selection returns to the first match.
 
+## Selector layout
+
+The selector is always 30 rows tall. Its header adapts to the width:
+
+- **Wide:** title, position, loaded count, and the scope radio
+  (`◉ Current project | ○ All projects`) share one row, with the filter hint
+  below.
+- **Medium:** the radio moves to its own row under the counts, taking the
+  hint's row.
+- **Narrow:** the title and position, the loaded count, and the radio each
+  take a row, and the list shows 9 prompts instead of 10. If the full radio
+  does not fit, the inactive scope is shortened
+  (`◉ Current project | ○ All`).
+
+In fullscreen, when the Gentle sidebar is showing (140 columns or wider,
+Status placement `auto` or `right`), the selector stays in the editor column,
+one column short of the sidebar gap, instead of covering the sidebar. The
+sidebar publishes its width through the terminal-owned sidebar state
+(`railColumns` in `lib/shell-sidebar.ts`). The selector checks it on every
+render, so resizing across the breakpoint moves an open selector.
+
 ## Delete
 
 The selector's delete key (`ctrl+shift+backspace`) is a two-step y/n

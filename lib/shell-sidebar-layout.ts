@@ -13,6 +13,8 @@ const RAIL_PADDING = 1;
 // the card instead of touching the terminal edge.
 const HEADER_RIGHT_INSET = RAIL_PADDING + 1;
 const GAP = 3;
+/** Right-edge columns the painting rail takes from the editor column; published as `railColumns`. */
+export const SIDEBAR_RAIL_COLUMNS = RAIL_WIDTH + GAP;
 // Experimental Pi 0.85.1 internals. Only the fullscreen layout tree is adapted;
 // regular mode keeps native scrollback and the original bottom components.
 const NODE = Symbol.for("@earendil-works/pi-tui/layout-node");
@@ -120,6 +122,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	const headerOwnsStatus = () => !stopped && !failed && headerLines.length > 0 && headerPlacement() === "top" &&
 		narrowStatusOwner({ mode: host.mode, columns: tui.terminal.columns, statusPlacement: placement(), headerPlacement: headerPlacement() }) === STATUS_OWNER.HEADER;
 	state.headerOwnsStatus = headerOwnsStatus;
+	state.railColumns = SIDEBAR_RAIL_COLUMNS;
 	state.ownsHost = () => !stopped && host.mode === "fullscreen" && tui.terminal.columns >= SIDEBAR_BREAKPOINT && (placement() === "auto" || placement() === "right") && !!host.layoutRoot && roots.has(host.layoutRoot);
 	const rail: Component = {
 		render: () => railLines,

@@ -142,7 +142,7 @@ test("region constants 5-14 / 17-26 route the y comparisons (AC-L6-3)", () => {
   const body = selectorSource.slice(decl, end);
 
   assert.ok(
-    body.includes("event.y >= LIST_WHEEL_Y_FIRST") &&
+    body.includes("event.y >= this.listWheelFirstRow") &&
       body.includes("event.y <= LIST_WHEEL_Y_LAST"),
     "the list branch must compare y against the list band",
   );
@@ -169,7 +169,7 @@ test("list wheel routes sign-clamped steps through moveDown/moveUp (AC-L6-4)", (
     "delta must default an absent wheelDelta to 0",
   );
 
-  const listStart = body.indexOf("if (event.y >= LIST_WHEEL_Y_FIRST");
+  const listStart = body.indexOf("if (event.y >= this.listWheelFirstRow");
   const listEnd = body.indexOf("} else if (", listStart);
   assert.ok(
     listStart >= 0 && listEnd > listStart,

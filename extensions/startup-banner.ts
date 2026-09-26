@@ -8,7 +8,8 @@ import { join } from "node:path";
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
 import { PI_SUBCOMMANDS } from "../lib/gentle-shell-launcher.ts";
 import { CARD_TONE, renderCard, type CardTheme } from "../lib/shell-card.ts";
-import { sidebarPart } from "../lib/shell-sidebar.ts";
+import { sidebarPart, type SidebarRail } from "../lib/shell-sidebar.ts";
+import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 
 const PI_AGENT_DIR = join(os.homedir(), ".pi", "agent");
@@ -413,11 +414,13 @@ function buildPenLogoLine(
   rowIdx: number,
   _totalRows: number,
   tick: number,
+  colOffset = 0,
 ): LayoutCell[] {
   const out: LayoutCell[] = [];
 
-  for (let x = 0; x < line.length; x++) {
-    const ch = line[x] ?? " ";
+  for (let i = 0; i < line.length; i++) {
+    const x = i + colOffset;
+    const ch = line[i] ?? " ";
     if (ch === " ") {
       out.push({ char: " ", type: "none" });
       continue;
@@ -798,16 +801,26 @@ export default function (pi: ExtensionAPI) {
           onLeave() {
             if (!preflightHovered) return;
             preflightHovered = false;
+            if (tui) invalidateSidebar(tui);
             try { tui.requestRender(); } catch {}
           },
           onClick(event) {
-            if (event.button !== "left" || event.y !== 0) return undefined;
+            if (event.button !== "left") return undefined;
+            if (!preflightCollapsed && event.y !== 0) return undefined;
             preflightCollapsed = !preflightCollapsed;
+            if (tui) invalidateSidebar(tui);
             try { tui.requestRender(); } catch {}
             return { handled: true, render: true };
           },
         });
-        return sidebarPart(tui, "preflight", region, region);
+        const railComp: SidebarRail = {
+          render: (width: number) => region.render(width),
+          handleMouse: (event) => region.handleMouse?.(event),
+          invalidate: () => region.invalidate(),
+          dispose: () => region.dispose(),
+          digest: () => `${preflightCollapsed}`,
+        };
+        return sidebarPart(tui, "preflight", region, railComp);
       });
     };
     mountPreflight();
@@ -915,14 +928,39 @@ export default function (pi: ExtensionAPI) {
             b.addRow();
             b.center(width);
 
+            const GENTLE_SPLIT_COL = 68;
+
             if (state.mode === "minimal") {
-              if (bannerConfig.showTextLogo) for (let logoI = 0; logoI < logoBase.lines.length; logoI++) {
-                const logoLine = logoBase.lines[logoI];
-                b.addRow();
-                b.lines[b.lines.length - 1].push(
-                  ...buildPenLogoLine(logoLine, logoI, logoBase.lines.length, tick),
-                );
-                b.center(width);
+              if (bannerConfig.showTextLogo) {
+                if (width >= logoBase.width + 2) {
+                  for (let logoI = 0; logoI < logoBase.lines.length; logoI++) {
+                    const logoLine = logoBase.lines[logoI];
+                    b.addRow();
+                    b.lines[b.lines.length - 1].push(
+                      ...buildPenLogoLine(logoLine, logoI, logoBase.lines.length, tick),
+                    );
+                    b.center(width);
+                  }
+                } else if (width >= GENTLE_SPLIT_COL + 2) {
+                  for (let logoI = 0; logoI < logoBase.lines.length; logoI++) {
+                    const logoLine = logoBase.lines[logoI].slice(0, GENTLE_SPLIT_COL);
+                    if (logoLine.trim().length === 0) continue;
+                    b.addRow();
+                    b.lines[b.lines.length - 1].push(
+                      ...buildPenLogoLine(logoLine, logoI, logoBase.lines.length, tick),
+                    );
+                    b.center(width);
+                  }
+                  for (let logoI = 0; logoI < Math.min(7, logoBase.lines.length); logoI++) {
+                    const logoLine = logoBase.lines[logoI].slice(GENTLE_SPLIT_COL);
+                    if (logoLine.trim().length === 0) continue;
+                    b.addRow();
+                    b.lines[b.lines.length - 1].push(
+                      ...buildPenLogoLine(logoLine, logoI, logoBase.lines.length, tick, GENTLE_SPLIT_COL),
+                    );
+                    b.center(width);
+                  }
+                }
               }
             } else if (horizontal) {
               const rowCount = Math.max(roseBase.lines.length, logoBase.lines.length);
@@ -949,6 +987,7 @@ export default function (pi: ExtensionAPI) {
               }
             } else {
               const showBanner = bannerConfig.showTextLogo && width >= logoBase.width + 2;
+              const showStackedBanner = !showBanner && bannerConfig.showTextLogo && width >= GENTLE_SPLIT_COL + 2;
               const showRose = bannerConfig.showRose && width >= roseBase.width + 2;
               if (showBanner) {
                 for (let logoI = 0; logoI < logoBase.lines.length; logoI++) {
@@ -956,6 +995,29 @@ export default function (pi: ExtensionAPI) {
                   b.addRow();
                   b.lines[b.lines.length - 1].push(
                     ...buildPenLogoLine(logoLine, logoI, logoBase.lines.length, tick),
+                  );
+                  b.center(width);
+                }
+                if (showRose) {
+                  b.addRow();
+                  b.center(width);
+                }
+              } else if (showStackedBanner) {
+                for (let logoI = 0; logoI < logoBase.lines.length; logoI++) {
+                  const logoLine = logoBase.lines[logoI].slice(0, GENTLE_SPLIT_COL);
+                  if (logoLine.trim().length === 0) continue;
+                  b.addRow();
+                  b.lines[b.lines.length - 1].push(
+                    ...buildPenLogoLine(logoLine, logoI, logoBase.lines.length, tick),
+                  );
+                  b.center(width);
+                }
+                for (let logoI = 0; logoI < Math.min(7, logoBase.lines.length); logoI++) {
+                  const logoLine = logoBase.lines[logoI].slice(GENTLE_SPLIT_COL);
+                  if (logoLine.trim().length === 0) continue;
+                  b.addRow();
+                  b.lines[b.lines.length - 1].push(
+                    ...buildPenLogoLine(logoLine, logoI, logoBase.lines.length, tick, GENTLE_SPLIT_COL),
                   );
                   b.center(width);
                 }

@@ -6,6 +6,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import startup, { isPiCliSubcommandInvocation, PREFLIGHT_WIDGET_KEY, readGitBranch } from "../extensions/startup-banner.ts";
+import { sidebarState } from "../lib/shell-sidebar.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { stripAnsi } from "../lib/terminal-theme.ts";
@@ -354,7 +355,26 @@ test("ephemeral Preflight card starts collapsed, expands on click, and unmounts 
 	part.handleMouse({ button: "left", y: 0, x: 5, type: "click" });
 	assert.equal(part.render(60).length, 3, "clicking header toggles back to collapsed");
 
-	// 4. When work starts: ephemeral preflight widget and central banner unmount
+	// 4. Test rail component in sidebar rail: click expands and toggles digest
+	const tuiMock = { terminal: { columns: 160 }, requestRender() { renderRequests++; } };
+	preflightFactory!(tuiMock, { fg: (_role: string, text: string) => text });
+	const state = sidebarState(tuiMock as any);
+	const railComp = state.parts.get("preflight");
+	assert.ok(railComp !== undefined, "rail component registered in sidebar parts");
+	assert.equal(railComp.digest!(), "true", "rail component starts collapsed digest");
+	assert.equal(railComp.render(50).length, 3, "rail component starts at 3 lines");
+	railComp.handleMouse!({ button: "left", y: 1, x: 5, type: "click" } as any);
+	assert.equal(railComp.digest!(), "false", "rail component toggles digest to false on expand");
+	assert.ok(railComp.render(50).length > 5, "rail component expands on click");
+
+	// 5. Test stacked calligraphy logo at narrow transcript width (width = 100)
+	t.mock.timers.tick(3000);
+	const stackedLines = header!.render(100);
+	const stackedText = stripAnsi(stackedLines.join("\n"));
+	assert.match(stackedText, /[▄▀█]/, "calligraphy script logo renders stacked at width 100");
+	assert.match(stackedText, /[\u2800-\u28ff]/, "rose renders alongside stacked calligraphy logo");
+
+	// 6. When work starts: ephemeral preflight widget and central banner unmount
 	await beforeAgentStart!({}, {});
 	assert.deepEqual(header!.render(200), [], "central banner unmounts when work starts");
 	assert.equal(widgets.get(PREFLIGHT_WIDGET_KEY), undefined, "Preflight widget unmounts when work starts");

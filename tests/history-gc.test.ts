@@ -676,3 +676,157 @@ test("a torn last line in a merged file is carried over, not dropped", () => {
   assert.ok(texts.includes("torn"));
   assert.ok(texts.includes("r2.jsonl-1"));
 });
+
+// Carry-over ordering (#1394 advisory "carryover-after-unlink"): bytes that
+// reach a claim after its merge read are copied into the compact file
+// BEFORE the claim is removed, so a failed copy leaves the claim — and every
+// byte in it — on disk instead of depending on a post-removal fallback.
+
+/**
+ * Replace fs.renameSync for the duration of fn; `after` runs right after a
+ * rename whose destination is a compact-*.jsonl file lands.
+ */
+function withAfterCompactRename(after: () => void, fn: () => void): void {
+  type RenameSync = (from: string, to: string) => void;
+  const target = fs as unknown as { renameSync: RenameSync };
+  const realRename = fs.renameSync.bind(fs) as RenameSync;
+  target.renameSync = (from: string, to: string) => {
+    realRename(from, to);
+    if (path.basename(to).startsWith("compact-")) after();
+  };
+  try {
+    fn();
+  } finally {
+    target.renameSync = realRename;
+  }
+}
+
+test("late bytes reach the compact file before their claim is removed", () => {
+  const root = makeRoot();
+  const dir = projectRoot(root);
+  fs.mkdirSync(dir, { recursive: true });
+  const idle = writeFile(dir, "idle.jsonl", 2, 1000);
+  for (let i = 2; i <= 4; i++) {
+    writeFile(dir, `k${i}.jsonl`, 2, i * 1000);
+  }
+  // A writer that opened the file before the claim writes after the merge.
+  const fd = fs.openSync(idle, "a");
+  let lateInCompactAtRemoval: boolean | null = null;
+  try {
+    withAfterCompactRename(
+      () => {
+        fs.writeSync(fd, `${JSON.stringify({ v: 1, text: "late-by-fd" })}\n`);
+      },
+      () => {
+        withRmSyncPatched(
+          (file, rmSync) => {
+            if (path.basename(file).startsWith("idle.jsonl.gc-")) {
+              lateInCompactAtRemoval = compactTexts(dir).includes("late-by-fd");
+            }
+            rmSync(file);
+          },
+          () => {
+            const result = gcProjectDir(root, CWD, {
+              fileThreshold: 2,
+              lineThreshold: 100000,
+              keepNewest: 1,
+            });
+            assert.deepEqual(result, { compacted: true, merged: 3 });
+          },
+        );
+      },
+    );
+  } finally {
+    fs.closeSync(fd);
+  }
+  assert.equal(lateInCompactAtRemoval, true);
+  assert.equal(dirTexts(dir).filter((t) => t === "late-by-fd").length, 1);
+});
+
+test("a failed carry-over keeps the whole claim on disk", () => {
+  const root = makeRoot();
+  const dir = projectRoot(root);
+  fs.mkdirSync(dir, { recursive: true });
+  const idle = writeFile(dir, "idle.jsonl", 2, 1000);
+  for (let i = 2; i <= 4; i++) {
+    writeFile(dir, `m${i}.jsonl`, 2, i * 1000);
+  }
+  const fd = fs.openSync(idle, "a");
+  type AppendFileSync = (file: string, data: string | Buffer) => void;
+  const target = fs as unknown as { appendFileSync: AppendFileSync };
+  const realAppend = fs.appendFileSync.bind(fs) as AppendFileSync;
+  target.appendFileSync = (file: string, data: string | Buffer) => {
+    if (path.basename(String(file)).startsWith("compact-")) {
+      throw Object.assign(new Error("simulated ENOSPC"), { code: "ENOSPC" });
+    }
+    realAppend(file, data);
+  };
+  try {
+    withAfterCompactRename(
+      () => {
+        fs.writeSync(fd, `${JSON.stringify({ v: 1, text: "late-by-fd" })}\n`);
+      },
+      () => {
+        gcProjectDir(root, CWD, {
+          fileThreshold: 2,
+          lineThreshold: 100000,
+          keepNewest: 1,
+        });
+      },
+    );
+  } finally {
+    target.appendFileSync = realAppend;
+    fs.closeSync(fd);
+  }
+  // The claim survives intact: its merged lines AND the late line.
+  const claim = fs
+    .readdirSync(dir)
+    .find((f) => f.startsWith("idle.jsonl.gc-"));
+  assert.ok(claim, "the claim must stay on disk when its carry-over fails");
+  const claimTexts = fs
+    .readFileSync(path.join(dir, claim), "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => (JSON.parse(l) as { text: string }).text);
+  assert.deepEqual(claimTexts, ["idle.jsonl-0", "idle.jsonl-1", "late-by-fd"]);
+});
+
+// Idempotence (#1394 advisory "line-threshold-perpetual"): merging a single
+// file cannot reduce the file count, so GC must not rewrite it — otherwise
+// every shutdown above a threshold rewrites the compact file again.
+
+test("a second GC over an already compacted dir rewrites nothing", () => {
+  const root = makeRoot();
+  const dir = projectRoot(root);
+  fs.mkdirSync(dir, { recursive: true });
+  for (let i = 1; i <= 12; i++) {
+    writeFile(dir, `n${String(i).padStart(2, "0")}.jsonl`, 5, i * 1000);
+  }
+  const opts = { fileThreshold: 10, lineThreshold: 100000, keepNewest: 10 };
+  assert.deepEqual(gcProjectDir(root, CWD, opts), { compacted: true, merged: 2 });
+  // 10 newest + 1 compact = 11 files: still above the file threshold.
+  const before = fs.readdirSync(dir).sort();
+  assert.equal(before.length, 11);
+  const compactBefore = compactTexts(dir);
+  assert.deepEqual(gcProjectDir(root, CWD, opts), { compacted: false, merged: 0 });
+  assert.deepEqual(fs.readdirSync(dir).sort(), before);
+  assert.deepEqual(compactTexts(dir), compactBefore);
+});
+
+test("the line threshold with a single merge candidate rewrites nothing", () => {
+  const root = makeRoot();
+  const dir = projectRoot(root);
+  fs.mkdirSync(dir, { recursive: true });
+  // 3 files x 4000 lines = 12000 > 10000, but keepNewest 2 leaves one file.
+  for (let i = 1; i <= 3; i++) {
+    writeFile(dir, `l${i}.jsonl`, 4000, i * 1000);
+  }
+  const before = fs.readdirSync(dir).sort();
+  const result = gcProjectDir(root, CWD, {
+    fileThreshold: 10,
+    lineThreshold: 10000,
+    keepNewest: 2,
+  });
+  assert.deepEqual(result, { compacted: false, merged: 0 });
+  assert.deepEqual(fs.readdirSync(dir).sort(), before);
+});

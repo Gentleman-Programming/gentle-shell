@@ -474,8 +474,11 @@ function readFrom(fd: number, position: number): Buffer {
  * the descriptor kept open on the replaced inode supplies everything
  * appended after the read — including a torn last line — which is carried
  * over verbatim into the new file after the rename. Kept lines are copied
- * byte-for-byte. On failure the tmp file is removed, the original stays in
- * place unless the rename already happened, and the error is rethrown.
+ * byte-for-byte. If that carry-over append fails, the raced bytes are
+ * written to a sibling `<file>.carry-<pid>-<ts>.jsonl` store file instead
+ * of vanishing with the replaced inode. On failure the tmp file is removed,
+ * the original stays in place unless the rename already happened, and the
+ * error is rethrown.
  */
 function sweepFile(file: string, key: string): number {
   const fd = fs.openSync(file, "r");
@@ -502,7 +505,7 @@ function sweepFile(file: string, key: string): number {
     tmp = null;
     // Lines another instance appended to the replaced inode since the read.
     const carried = readFrom(fd, complete);
-    if (carried.length > 0) fs.appendFileSync(file, carried);
+    if (carried.length > 0) carryIntoRewrite(file, carried);
     return removed;
   } catch (error) {
     if (tmp !== null) {
@@ -515,6 +518,25 @@ function sweepFile(file: string, key: string): number {
     throw error;
   } finally {
     fs.closeSync(fd);
+  }
+}
+
+/**
+ * Append raced bytes to the rewritten file; if that fails, keep them in a
+ * sibling store file (read like any other) so they are never lost. A torn
+ * last line is completed so the sibling stays parseable. Throws only when
+ * both writes fail.
+ */
+function carryIntoRewrite(file: string, carried: Buffer): void {
+  try {
+    fs.appendFileSync(file, carried);
+  } catch {
+    const text = carried.toString("utf8");
+    fs.writeFileSync(
+      `${file}.carry-${process.pid}-${Date.now()}.jsonl`,
+      text.endsWith("\n") ? text : `${text}\n`,
+      { flag: "wx" },
+    );
   }
 }
 
@@ -834,7 +856,9 @@ export interface GcOptions {
  * Compaction consolidates files: it merges the oldest store files of ONE
  * project into a single `compact-<pid>-<ts>.jsonl` and removes the merged
  * originals. It is not a retention limit — every visible prompt is copied;
- * only tombstoned prompts (already deleted by the user) are dropped.
+ * only tombstoned prompts (already deleted by the user) are dropped. It
+ * runs only when at least two files can be merged, so a repeated GC over
+ * an already compacted dir rewrites nothing.
  *
  * Never merged: `seed.jsonl` (its presence is the bootstrap gate, so
  * removing it would re-seed deleted prompts from transcripts), the files
@@ -881,7 +905,10 @@ export function gcProjectDir(
       .slice(opts.keepNewest ?? GC_KEEP_NEWEST)
       .reverse() // oldest first: the merged output is chronological
       .map((c) => c.file);
-    if (tail.length === 0) return none;
+    // Merging a single file cannot reduce the file count: rewriting it
+    // would repeat on every shutdown while a threshold stays exceeded
+    // (compaction never lowers the entry count), so GC stays idempotent.
+    if (tail.length < 2) return none;
     return compactFiles(dir, tail, hidden.keys);
   } catch {
     return none;
@@ -941,9 +968,11 @@ function claimFile(file: string): ClaimedFile | null {
  * atomically (tmp + rename) BEFORE any claim is removed. A failure before
  * the compact file lands leaves every claim in place (still a readable
  * store file); a claim that cannot be removed survives as a harmless
- * duplicate (drains dedupe by identity). After each removal the claim's
- * descriptor is drained once more and any late bytes are appended to the
- * compact file (or written back under the claim name if that fails).
+ * duplicate (drains dedupe by identity). Complete lines that reached a
+ * claim after its read are appended to the compact file BEFORE the claim
+ * is removed — if that fails, the claim stays with every byte. After the
+ * removal the descriptor is drained once more for a write that landed in
+ * between (written back under the claim name if its append fails).
  */
 function compactFiles(
   dir: string,
@@ -979,6 +1008,7 @@ function compactFiles(
   }
   for (const c of claimed) {
     try {
+      carryCompleteLines(c, compact, hidden);
       fs.rmSync(c.claim);
     } catch {
       // the claim keeps every byte; it is merged again by a later GC
@@ -990,7 +1020,27 @@ function compactFiles(
   return { compacted: true, merged: claimed.length };
 }
 
-/** Move bytes that reached a removed claim after it was read. */
+/**
+ * Append the complete lines that reached a still-present claim after it
+ * was read, advancing its cursor; a torn last line waits for the final
+ * drain. Throws when the append fails, so the caller keeps the claim.
+ */
+function carryCompleteLines(
+  c: ClaimedFile,
+  compact: string,
+  hidden: ReadonlySet<string>,
+): void {
+  const late = readFrom(c.fd, c.consumed);
+  const complete = late.lastIndexOf(NEWLINE) + 1;
+  if (complete === 0) return;
+  fs.appendFileSync(
+    compact,
+    keepVisibleLines(late.subarray(0, complete).toString("utf8"), hidden),
+  );
+  c.consumed += complete;
+}
+
+/** Move bytes that reached a claim between its last carry and its removal. */
 function carryOver(
   c: ClaimedFile,
   compact: string,

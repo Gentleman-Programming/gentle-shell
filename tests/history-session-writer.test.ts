@@ -193,16 +193,20 @@ test("the extension entry registers exactly the slice-6 wiring surface", () => {
 });
 
 test("captureEnabled is a strict opt-in", () => {
-  assert.equal(captureEnabled({}, makeConfigHome()), false);
-  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: "0" }), false);
-  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: "false" }), false);
-  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: "off" }), false);
-  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: "yes" }), false);
-  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: " 1 " }), true);
-  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: "TRUE" }), true);
-  assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: "On" }), true);
+  // Every call gets an empty config home: an env value that defers to the
+  // preference must never read the developer's real Customize setting.
+  const configHome = makeConfigHome();
+  const enabled = (env: NodeJS.ProcessEnv) => captureEnabled(env, configHome);
+  assert.equal(enabled({}), false);
+  assert.equal(enabled({ GENTLE_PI_HISTORY_CAPTURE: "0" }), false);
+  assert.equal(enabled({ GENTLE_PI_HISTORY_CAPTURE: "false" }), false);
+  assert.equal(enabled({ GENTLE_PI_HISTORY_CAPTURE: "off" }), false);
+  assert.equal(enabled({ GENTLE_PI_HISTORY_CAPTURE: "yes" }), false);
+  assert.equal(enabled({ GENTLE_PI_HISTORY_CAPTURE: " 1 " }), true);
+  assert.equal(enabled({ GENTLE_PI_HISTORY_CAPTURE: "TRUE" }), true);
+  assert.equal(enabled({ GENTLE_PI_HISTORY_CAPTURE: "On" }), true);
   // The unshipped rename from the contributor branch is not a switch.
-  assert.equal(captureEnabled({ [`GENTLE_PI_HISTORY_${"ENABLE"}`]: "1" }), false);
+  assert.equal(enabled({ [`GENTLE_PI_HISTORY_${"ENABLE"}`]: "1" }), false);
 });
 
 test("the capture handler is a no-op unless the user opts in", () => {

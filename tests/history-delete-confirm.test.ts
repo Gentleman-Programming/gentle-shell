@@ -8,8 +8,10 @@ import {
   deletionActionsFor,
   EDITOR_HIDE_FAILED_TEXT,
   STORE_DELETE_FAILED_TEXT,
+  STORE_DELETE_PARTIAL_HIDE_FAILED_TEXT,
   STORE_DELETE_PARTIAL_TEXT,
   storeDeleteFollowUp,
+  storeDeleteNotice,
 } from "../extensions/history/selector-helpers.ts";
 
 // Slice-05 delete-confirm tests (PR #1393 follow-up): the delete
@@ -365,17 +367,42 @@ test("storeDeleteFollowUp: any failed file proceeds to hide AND surfaces an erro
   assert.ok(STORE_DELETE_PARTIAL_TEXT.includes("hidden"));
 });
 
-test("executeDelete routes the sweep result through storeDeleteFollowUp before hiding", () => {
+test("executeDelete reports a partial sweep only after the hide result is known", () => {
   const body = executeDeleteBody();
   const followAt = body.indexOf("storeDeleteFollowUp(");
-  const noticeAt = body.indexOf('this.onNotify?.(followUp.notice, "error")');
   const hideAt = body.indexOf("hidePrompt(");
+  const noticeAt = body.indexOf("storeDeleteNotice(");
+  const spliceAt = body.indexOf("this.records.splice(");
   assert.ok(followAt >= 0, "the sweep result must be interpreted");
-  assert.ok(noticeAt > followAt, "a partial failure must surface as an error");
-  assert.ok(hideAt > noticeAt, "the tombstone still follows a partial failure");
+  assert.ok(hideAt > followAt, "the tombstone still follows a partial failure");
+  assert.equal(
+    body.includes("followUp.notice"),
+    false,
+    "the partial notice must not claim the prompt is hidden before hidePrompt runs",
+  );
+  assert.ok(noticeAt > hideAt, "the store notice is chosen from the hide result");
+  assert.ok(
+    body.includes('this.onNotify?.(notice, "error")'),
+    "the chosen notice surfaces as an error",
+  );
+  assert.ok(noticeAt < spliceAt, "the notice is decided before the row leaves the list");
   assert.equal(
     body.includes("if (removed === 0) return;"),
     false,
     "a zero-removal partial failure must not skip the tombstone",
   );
+});
+
+test("storeDeleteNotice states exactly what remains after the sweep and the hide", () => {
+  const clean = { filesAffected: 1, removed: 1, failed: 0 };
+  const partial = { filesAffected: 1, removed: 1, failed: 1 };
+  assert.equal(storeDeleteNotice(clean, false), undefined);
+  assert.equal(storeDeleteNotice(clean, true), EDITOR_HIDE_FAILED_TEXT);
+  assert.equal(storeDeleteNotice(partial, false), STORE_DELETE_PARTIAL_TEXT);
+  // Both halves failed: one notice, and it never claims the prompt is hidden.
+  assert.equal(storeDeleteNotice(partial, true), STORE_DELETE_PARTIAL_HIDE_FAILED_TEXT);
+  assert.equal(STORE_DELETE_PARTIAL_HIDE_FAILED_TEXT.includes("is hidden"), false);
+  assert.ok(STORE_DELETE_PARTIAL_HIDE_FAILED_TEXT.includes("could not be rewritten"));
+  assert.ok(STORE_DELETE_PARTIAL_HIDE_FAILED_TEXT.includes("hiding failed"));
+  assert.ok(STORE_DELETE_PARTIAL_HIDE_FAILED_TEXT.includes("may reappear"));
 });

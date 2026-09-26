@@ -42,6 +42,9 @@ function loadWithCommand(env: NodeJS.ProcessEnv, root: string): Harness {
     cwd: CWD,
     instanceId: "inst-off",
     now: () => 1700000000000,
+    // Keep any opted-in warm-up away from the real ~/.pi/agent.
+    agentDir: path.join(root, "agent"),
+    sessionsRoot: path.join(root, "sessions"),
   });
   const command = commands.find(([name]) => name === "history");
   assert.ok(command, "the history command must be registered");
@@ -61,12 +64,8 @@ function fakeCtx(notifyCalls: Array<[string, string]>) {
   };
 }
 
-// NOTE: there is deliberately no enabled-path smoke test here. The selector
-// drain is a module-level path hard-wired to PI_HISTORY_ROOT
-// (~/.pi/agent/history) with no injection point, and bun's os.homedir()
-// ignores runtime HOME overrides — invoking the command with capture on
-// would migrate/seed/write the real user store. The enabled direction stays
-// covered by the deps-injected tests in history-session-writer.test.ts.
+// The open flow reads the injected deps (env/root/cwd), never the module
+// defaults, so the enabled direction is testable against a temp root too.
 
 test("with capture disabled, extension load writes nothing", async () => {
   const root = makeRoot();
@@ -90,5 +89,16 @@ test("with capture disabled, the history command imports nothing and warns", asy
     `the warning must name the switch, got: ${notifyCalls[0][0]}`,
   );
   // The gate must fire before the drain: no migration, no seed, no store.
+  assert.deepEqual(fs.readdirSync(root), []);
+});
+
+test("with capture enabled, opening the selector reads without initializing the store", async () => {
+  const root = makeRoot();
+  const { commandHandler } = loadWithCommand({ GENTLE_PI_HISTORY_CAPTURE: "1" }, root);
+  // Open before the opted-in warm-up tick: the open flow alone must not
+  // migrate, register, seed, or create a capture file.
+  const notifyCalls: Array<[string, string]> = [];
+  await commandHandler([], fakeCtx(notifyCalls));
+  assert.deepEqual(notifyCalls, [["No prompt history available.", "warning"]]);
   assert.deepEqual(fs.readdirSync(root), []);
 });

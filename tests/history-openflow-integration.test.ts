@@ -115,3 +115,59 @@ test("the selection result pastes into the editor via pasteToEditor", () => {
     "the selected prompt enters the editor through the paste pipeline (a22588fc)",
   );
 });
+
+/** Method body slice (lazy-windowing.test.ts pattern; first "\n  }" close). */
+function methodBodyOf(name: string): string {
+  const decl = indexSource.indexOf(`private ${name}(`);
+  assert.ok(decl >= 0, `private ${name}() should exist in extensions/history/index.ts`);
+  const end = indexSource.indexOf("\n  }", decl);
+  assert.ok(end > decl, `private ${name}() body should close`);
+  return indexSource.slice(decl, end);
+}
+
+// ---------------------------------------------------------------------------
+// T33 — AC-S6-3: merged header totals + third transient dim indexing segment.
+// ---------------------------------------------------------------------------
+
+test("T33 (AC-S6-3): header totals derive from filteredRecords — derivation untouched", () => {
+  const body = methodBodyOf("rebuildListWithWidth");
+  assert.ok(
+    body.includes("const count = this.filteredRecords.length;"),
+    "N derives from filteredRecords (merged by construction)",
+  );
+});
+
+test("T33 (AC-S6-3): loaded segment present, indexing segment removed", () => {
+  const body = methodBodyOf("rebuildListWithWidth");
+  const setTextAt = body.indexOf("headerRow.setText(");
+  assert.ok(setTextAt >= 0, "the header must keep the existing setText call");
+  const setTextRegion = body.slice(
+    setTextAt,
+    body.indexOf("this.listContainer.clear()"),
+  );
+  assert.ok(
+    setTextRegion.includes("loaded ") &&
+      setTextRegion.includes("this.loadedCount"),
+    "the loaded segment stays (user-restored)",
+  );
+  assert.ok(
+    !setTextRegion.includes("indexing "),
+    "the indexing segment stays removed",
+  );
+});
+
+test("T33 (AC-S6-3): Change 2 structural pins still hold beside the third segment", () => {
+  assert.ok(
+    indexSource.includes("private static readonly OVERLAY_LINES = 30;"),
+    "OVERLAY_LINES = 30 intact",
+  );
+  const body = methodBodyOf("rebuildListWithWidth");
+  const addChildCount = body.split("addChild(").length - 1;
+  assert.equal(addChildCount, 4, "no new addChild in rebuildListWithWidth");
+  const classAt = indexSource.indexOf("class PromptHistorySelector");
+  const ctorAt = indexSource.indexOf("constructor(", classAt);
+  const ctorEnd = indexSource.indexOf('this.applyFilter("")', ctorAt);
+  const ctorAddChild =
+    indexSource.slice(ctorAt, ctorEnd).split("this.addChild(").length - 1;
+  assert.equal(ctorAddChild, 12, "the constructor child sequence is unchanged");
+});

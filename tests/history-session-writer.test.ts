@@ -157,6 +157,8 @@ test("captureEnabled is a strict opt-in", () => {
   assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: " 1 " }), true);
   assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: "TRUE" }), true);
   assert.equal(captureEnabled({ GENTLE_PI_HISTORY_CAPTURE: "On" }), true);
+  // The unshipped rename from the contributor branch is not a switch.
+  assert.equal(captureEnabled({ [`GENTLE_PI_HISTORY_${"ENABLE"}`]: "1" }), false);
 });
 
 test("the capture handler is a no-op unless the user opts in", () => {

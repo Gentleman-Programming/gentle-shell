@@ -37,7 +37,9 @@ An older provider that has not advertised the v9 role contract still renders eac
 
 ## Dynamic contract delivery
 
-Package static assets intentionally omit lifecycle instructions, candidate routing, recovery procedures, receipt semantics, and any delivery-gate or delivery-authorization behavior. Since Gentle AI stopped generating Pi APPEND_SYSTEM composition, Gentle Pi mirrors the provider contract bundle's `orchestration/pi.md` review execution contract locally (`contracts/review-provider-contract-mirror/`) and injects that verified, mirrored text into the primary session's system prompt at session start. Gentle AI writes nothing into the Pi system prompt; the host follows only that mirrored contract. When the mirrored contract is absent or unreadable, Gentle Pi does not invent a fallback; delivery remains ordinary repository policy.
+Package static assets intentionally omit lifecycle instructions, candidate routing, recovery procedures, receipt semantics, and any delivery-gate or delivery-authorization behavior. Since Gentle AI stopped generating Pi APPEND_SYSTEM composition, Gentle Pi mirrors the provider contract bundle's `orchestration/pi.md` review execution contract locally (`contracts/review-provider-contract-mirror/`) and injects that verified, mirrored text into the primary session on every turn. Gentle AI writes nothing into the Pi system prompt; the host follows only that mirrored contract. When the mirrored contract is absent or unreadable, Gentle Pi does not invent a fallback; delivery remains ordinary repository policy.
+
+The injection lands in `before_agent_start`'s structured `systemPromptOptions.appendSystemPrompt`, not in a handler-returned replacement `systemPrompt` (gentle-shell#1485). Provider bridges such as `pi-claude-bridge` forward only the structured `systemPromptOptions` parts of that event after their own preset, silently dropping a returned `systemPrompt`; appending to `appendSystemPrompt` is the route every provider, including bridges, actually receives.
 
 ## Integration constraints
 

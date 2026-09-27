@@ -48,6 +48,7 @@ const requiredPaths = [
   "lib/telemetry-trigger.ts",
 	"runtime/gentle-ai-binary.mjs",
 	"runtime/gentle-shell-launcher.mjs",
+	"runtime/gentle-shell-resume-hint.mjs",
 	"runtime/native-review-cli.mjs",
 	"runtime/review-integration-v2.mjs",
 	"runtime/review-risk-assessment.mjs",

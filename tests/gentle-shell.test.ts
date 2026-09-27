@@ -16,6 +16,7 @@ import type { ShellBarTheme } from "../lib/shell-bar.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { decodeReviewStatusV3 } from "../lib/review-integration-v2.ts";
+import { REVIEW_SIDEBAR_EVENT } from "../lib/review-sidebar-state.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 import { resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
@@ -288,7 +289,7 @@ test("gentleShell installs the footer on session_start when a UI exists", () => 
 	assert.match(lines[0], /main ⟡ gpt-5\.5 · medium/);
 });
 
-test("review publisher rejects stale completion after session_start and accepts the new session", async () => {
+async function reviewSidebarHarness() {
 	const { pi, handlers, tools } = fakePi();
 	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { activeProfile: () => undefined });
 	const { ctx, ui } = fakeContext();
@@ -299,21 +300,23 @@ test("review publisher rejects stale completion after session_start and accepts 
 	raw.action = "stop";
 	raw.projection.paths = ["src/fresh.ts"];
 	const status = decodeReviewStatusV3(raw);
-	let finishStart!: (result: typeof status) => void;
-	let finishTree!: (result: typeof status) => void;
-	let calls = 0;
+	// Each hold() parks the next native status call until the returned release runs.
+	const held: Array<(release: (result: typeof status) => void) => void> = [];
 	const native = { targetStatus: async () => {
-		calls += 1;
-		if (calls === 1) return new Promise<typeof status>((resolve) => { finishStart = resolve; });
-		if (calls === 3) return new Promise<typeof status>((resolve) => { finishTree = resolve; });
-		return status;
+		const park = held.shift();
+		return park ? new Promise<typeof status>((resolve) => park(resolve)) : status;
 	} } as unknown as NativeReviewCli;
+	const hold = () => {
+		let release!: () => void;
+		held.push((resolve) => { release = () => resolve(status); });
+		return () => release();
+	};
 	const published: unknown[] = [];
 	const bus = pi.events;
 	const observedPi = { ...pi, events: {
 		...bus,
 		emit(name: string, value: unknown) {
-			if (name === "gentle-ai:review-sidebar") published.push(value);
+			if (name === REVIEW_SIDEBAR_EVENT) published.push(value);
 			bus.emit(name, value);
 		},
 	} } as ExtensionAPI;
@@ -324,55 +327,97 @@ test("review publisher rejects stale completion after session_start and accepts 
 			producerHooks.set(name, [...(producerHooks.get(name) ?? []), handler]);
 		},
 	} as ExtensionAPI);
-	const startProducer = async () => {
-		for (const hook of producerHooks.get("session_start") ?? []) await hook({}, ctx);
+	const produce = async (name: string, event: unknown = {}) => {
+		for (const hook of producerHooks.get(name) ?? []) await hook(event, ctx);
 	};
 	await fire(handlers, "session_start", ctx);
-	await startProducer();
+	await produce("session_start");
 	const tui = { terminal: { rows: 40, columns: 160 }, requestRender() {} };
 	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { dispose(): void };
 	const component = factory(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
 	const rail = sidebarState(tui as unknown as TUI).parts.get("footer") as SidebarRail;
-	const text = () => rail.render(60).join("\n");
-	const run = () => tools.get("gentle_review")!.execute("reset-test", { operation: "status", lineageId: status.authority!.lineageId }, undefined, undefined, ctx);
+	return {
+		pi,
+		rail,
+		published,
+		hold,
+		text: () => rail.render(60).join("\n"),
+		sessionId: () => sessionId,
+		run: () => tools.get("gentle_review")!.execute("reset-test", { operation: "status", lineageId: status.authority!.lineageId }, undefined, undefined, ctx),
+		async startSession(next: string) {
+			sessionId = next;
+			await fire(handlers, "session_start", ctx);
+			await produce("session_start");
+		},
+		async navigateTree() {
+			await fire(handlers, "session_tree", ctx);
+			await produce("session_tree");
+		},
+		shutdownShell: () => fire(handlers, "session_shutdown", ctx),
+		async dispose() {
+			await produce("session_shutdown", { reason: "quit" });
+			await fire(handlers, "session_shutdown", ctx);
+			component.dispose();
+		},
+	};
+}
+
+test("review sidebar ignores a stale completion after session_start and accepts the new session", async () => {
+	const harness = await reviewSidebarHarness();
 	try {
-		const pending = run();
-		assert.match(text(), /Checking/);
-		sessionId = "next-session";
-		await fire(handlers, "session_start", ctx);
-		await startProducer();
-		assert.doesNotMatch(text(), /RDD/);
-		const beforeStaleStart = published.length;
-		finishStart(status);
+		const release = harness.hold();
+		const pending = harness.run();
+		assert.match(harness.text(), /Checking/);
+		await harness.startSession("next-session");
+		assert.doesNotMatch(harness.text(), /RDD/);
+		const before = harness.published.length;
+		release();
 		await pending;
-		assert.equal(published.length, beforeStaleStart, "producer must not publish the old session completion");
-		assert.doesNotMatch(text(), /RDD/, "old completion must not repaint the new session");
-		await run();
-		assert.match(text(), /fresh\.ts/);
-		const pendingTree = run();
-		assert.match(text(), /Checking/);
-		await fire(handlers, "session_tree", ctx);
-		for (const hook of producerHooks.get("session_tree") ?? []) await hook({}, ctx);
-		assert.doesNotMatch(text(), /RDD/, "tree navigation clears the visible snapshot");
-		const beforeStaleTree = published.length;
-		finishTree(status);
-		await pendingTree;
-		assert.equal(published.length, beforeStaleTree, "producer must not publish the old tree completion with the same session ID");
-		assert.doesNotMatch(text(), /RDD/);
-		await run();
-		assert.match(text(), /fresh\.ts/, "a fresh tree-bound result is accepted");
-		assert.equal(calls, 4);
-		const previous = rail.digest?.();
-		pi.events.emit("gentle-ai:review-sidebar", { sessionId: "foreign", snapshot: { state: "closed", scope: "foreign.ts" } });
-		assert.equal(rail.digest?.(), previous, "foreign events cannot replace the current snapshot");
-		await fire(handlers, "session_shutdown", ctx);
-		assert.doesNotMatch(text(), /RDD/);
-		pi.events.emit("gentle-ai:review-sidebar", { sessionId, snapshot: { state: "closed", scope: "late.ts" } });
-		assert.doesNotMatch(text(), /RDD/, "shutdown unsubscribes the consumer");
+		assert.equal(harness.published.length, before, "producer must not publish the old session completion");
+		assert.doesNotMatch(harness.text(), /RDD/, "old completion must not repaint the new session");
+		await harness.run();
+		assert.match(harness.text(), /fresh\.ts/, "a fresh result in the new session is accepted");
 	} finally {
-		for (const hook of producerHooks.get("session_shutdown") ?? []) await hook({ reason: "quit" }, ctx);
-		await fire(handlers, "session_shutdown", ctx);
-		component.dispose();
+		await harness.dispose();
+	}
+});
+
+test("review sidebar ignores a stale completion after same-session tree navigation", async () => {
+	const harness = await reviewSidebarHarness();
+	try {
+		await harness.run();
+		assert.match(harness.text(), /fresh\.ts/);
+		const release = harness.hold();
+		const pending = harness.run();
+		assert.match(harness.text(), /Checking/);
+		await harness.navigateTree();
+		assert.doesNotMatch(harness.text(), /RDD/, "tree navigation clears the visible snapshot");
+		const before = harness.published.length;
+		release();
+		await pending;
+		assert.equal(harness.published.length, before, "producer must not publish the old tree completion with the same session ID");
+		assert.doesNotMatch(harness.text(), /RDD/);
+		await harness.run();
+		assert.match(harness.text(), /fresh\.ts/, "a fresh tree-bound result is accepted");
+	} finally {
+		await harness.dispose();
+	}
+});
+
+test("review sidebar rejects foreign-session events and unsubscribes on shutdown", async () => {
+	const harness = await reviewSidebarHarness();
+	try {
+		await harness.run();
+		assert.match(harness.text(), /fresh\.ts/);
+		const previous = harness.rail.digest?.();
+		harness.pi.events.emit(REVIEW_SIDEBAR_EVENT, { sessionId: "foreign", snapshot: { state: "closed", scope: "foreign.ts" } });
+		assert.equal(harness.rail.digest?.(), previous, "foreign events cannot replace the current snapshot");
+		await harness.shutdownShell();
+		assert.doesNotMatch(harness.text(), /RDD/);
+		harness.pi.events.emit(REVIEW_SIDEBAR_EVENT, { sessionId: harness.sessionId(), snapshot: { state: "closed", scope: "late.ts" } });
+		assert.doesNotMatch(harness.text(), /RDD/, "shutdown unsubscribes the consumer");
+	} finally {
+		await harness.dispose();
 	}
 });
 

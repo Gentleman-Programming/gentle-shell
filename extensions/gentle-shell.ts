@@ -1710,6 +1710,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			review = undefined;
 			redrawReview();
 		}
+		// Pi rebuilds the extension runtime after every shutdown (reload, replacement,
+		// fork, quit), so the factory-level subscription never needs to be restored.
 		unsubscribeReview();
 		stopProfilePoll();
 		oddPhaseRegistry.clear(ctx.sessionManager.getSessionId());

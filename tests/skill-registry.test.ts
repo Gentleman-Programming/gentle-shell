@@ -606,6 +606,78 @@ test("regenerateRegistry merges pi-resolved skills with the loose scan", async (
 	);
 });
 
+test("regenerateRegistry carries a skill resolved from a non-default PI_CODING_AGENT_DIR", async () => {
+	// Acceptance case from gentle-shell#369 (2026-09-27): with
+	// PI_CODING_AGENT_DIR set to a non-default directory, Pi resolves user
+	// skills from <agent-dir>/skills, which no loose scan root reaches. The
+	// runtime mirror must be the only route into the registry.
+	const cwd = join(tmpdir(), `gentle-pi-agentdir-cwd-${Date.now()}`);
+	const isolatedHome = join(tmpdir(), `gentle-pi-agentdir-home-${Date.now()}`);
+	const agentDir = join(tmpdir(), `gentle-pi-agentdir-root-${Date.now()}`);
+	const skillPath = join(agentDir, "skills", "codegraph", "SKILL.md");
+	mkdirSync(dirname(skillPath), { recursive: true });
+	writeFileSync(skillPath, "---\nname: codegraph\ndescription: Trigger: agent-dir skill.\n---\n");
+
+	const resolved: ResolvedSkill[] = [
+		{
+			name: "codegraph",
+			description: "Trigger: agent-dir skill.",
+			filePath: skillPath,
+			sourceInfo: { scope: "user" },
+		},
+	];
+
+	const previousHome = process.env.HOME;
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.HOME = isolatedHome;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const result = await __testing.regenerateRegistry(cwd, false, resolved);
+		assert.equal(result.regenerated, true, "agent-dir resolved skill must trigger regeneration");
+		const registry = readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8");
+		assert.match(
+			registry,
+			new RegExp(escapeRegExp(skillPath)),
+			"the agent-dir skill reaches the registry through the runtime mirror",
+		);
+		assert.match(
+			registry,
+			/Pi-resolved runtime authority \(before_agent_start\.systemPromptOptions\.skills\): 1 skill\(s\)/,
+		);
+
+		// Counter-proof: with no resolved set, the isolated agent dir is
+		// unreachable — no loose root scans it. If the skill still appeared, a
+		// hardcoded agent-dir loose root would have been reintroduced.
+		const bareCwd = join(tmpdir(), `gentle-pi-agentdir-bare-${Date.now()}`);
+		const decoyPath = join(bareCwd, "skills", "decoy", "SKILL.md");
+		mkdirSync(dirname(decoyPath), { recursive: true });
+		writeFileSync(decoyPath, "---\nname: decoy\ndescription: Trigger: decoy.\n---\n");
+		await __testing.regenerateRegistry(bareCwd, false, []);
+		const bareRegistry = readFileSync(join(bareCwd, ".atl", "skill-registry.md"), "utf8");
+		assert.match(
+			bareRegistry,
+			new RegExp(escapeRegExp(decoyPath)),
+			"decoy loose skill proves the registry was written",
+		);
+		assert.doesNotMatch(
+			bareRegistry,
+			new RegExp(escapeRegExp(skillPath)),
+			"no loose scan root may reach a non-default agent dir",
+		);
+	} finally {
+		if (previousHome === undefined) {
+			delete process.env.HOME;
+		} else {
+			process.env.HOME = previousHome;
+		}
+		if (previousAgentDir === undefined) {
+			delete process.env.PI_CODING_AGENT_DIR;
+		} else {
+			process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		}
+	}
+});
+
 test("renderRegistry emits the pi-resolved authority bullet only when resolved entries exist", () => {
 	const cwd = join(tmpdir(), `gentle-pi-render-resolved-${Date.now()}`);
 	const entry = { name: "docs", path: join(cwd, "skills", "docs", "SKILL.md"), description: "Docs." };

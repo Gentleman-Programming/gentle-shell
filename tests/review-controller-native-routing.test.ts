@@ -1736,6 +1736,131 @@ test("inspect with a committed-range selector retains baseRef/committedOnly, and
 	assert.equal("baseRef" in lineageEntry!, false);
 });
 
+// gentle-pi#review-ready-inspect-selector: a plain inspect that resolves ready
+// without ever needing an untrackedScope decision must still retain its own
+// committed-range selector, so the following plain START replays the exact
+// inspected range instead of adopting the native default base-ref (#874).
+test("a plain ready inspect retains its committed selector, and a plain START adopts it", async (t) => {
+	const cwd = repository(t);
+	const baseRef = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+	const target = startStatus(cwd, baseRef);
+	const requests: Array<Record<string, unknown>> = [],
+		starts: Array<Record<string, unknown>> = [],
+		retained = new Map();
+	const native = {
+		targetStatus: async (request: Record<string, unknown>) => { requests.push(request); return target; },
+		start: async (request: Record<string, unknown>) => {
+			starts.push(request);
+			return {
+				lineageId: "ready-started", state: "reviewing", riskLevel: "low", selectedLenses: [],
+				changedFiles: 1, changedLines: 1, correctionBudget: 1, action: "created", lensesRequired: false,
+				riskReasons: [], raw: {},
+			};
+		},
+	} as unknown as NativeReviewCli;
+	const inspected = await __testing.executeReviewControllerOperation(
+		{ operation: "inspect", input: JSON.stringify({ baseRef: "HEAD", committedOnly: true }) },
+		cwd, native, undefined, undefined, undefined, retained,
+	);
+	assert.equal(inspected.status, "ready");
+	const retainedEntry = retained.get(`${cwd}\u0000`) as { baseRef?: string; committedOnly?: true } | undefined;
+	assert.notEqual(retainedEntry, undefined);
+	assert.equal(retainedEntry!.baseRef, baseRef);
+	assert.equal(retainedEntry!.committedOnly, true);
+
+	const started = await __testing.executeReviewControllerOperation(
+		{ operation: "start", input: JSON.stringify({ mode: "ordinary" }) },
+		cwd, native, undefined, undefined, undefined, retained,
+	);
+	assert.equal(started.operation, "start");
+	assert.equal((started.result as { lineage_id?: string }).lineage_id, "ready-started");
+	assert.equal(requests.length, 2);
+	const startStatusRequest = requests[1]!;
+	assert.equal(startStatusRequest.baseRef, baseRef);
+	assert.equal(startStatusRequest.committedOnly, true);
+	assert.equal(starts.length, 1);
+	assert.equal(starts[0]!.baseRef, baseRef);
+	assert.equal(starts[0]!.committedOnly, true);
+	assert.equal(retained.has(`${cwd}\u0000`), false);
+});
+
+test("a later ready inspect with a different baseRef replaces the earlier retained selector", async (t) => {
+	const cwd = repository(t);
+	const baseRef1 = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+	const target1 = startStatus(cwd, baseRef1);
+	execFileSync("git", ["add", "tracked.txt"], { cwd, stdio: "ignore" });
+	execFileSync("git", ["-c", "user.name=Routing Test", "-c", "user.email=routing@example.invalid", "commit", "-m", "second"], { cwd, stdio: "ignore" });
+	const baseRef2 = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+	const target2 = startStatus(cwd, baseRef2);
+	const starts: Array<Record<string, unknown>> = [],
+		retained = new Map();
+	const native = {
+		targetStatus: async (request: Record<string, unknown>) => (request.baseRef === baseRef2 ? target2 : target1),
+		start: async (request: Record<string, unknown>) => {
+			starts.push(request);
+			return {
+				lineageId: "second-started", state: "reviewing", riskLevel: "low", selectedLenses: [],
+				changedFiles: 1, changedLines: 1, correctionBudget: 1, action: "created", lensesRequired: false,
+				riskReasons: [], raw: {},
+			};
+		},
+	} as unknown as NativeReviewCli;
+	await __testing.executeReviewControllerOperation(
+		{ operation: "inspect", input: JSON.stringify({ baseRef: baseRef1, committedOnly: true }) },
+		cwd, native, undefined, undefined, undefined, retained,
+	);
+	await __testing.executeReviewControllerOperation(
+		{ operation: "inspect", input: JSON.stringify({ baseRef: baseRef2, committedOnly: true }) },
+		cwd, native, undefined, undefined, undefined, retained,
+	);
+	const retainedEntry = retained.get(`${cwd}\u0000`) as { baseRef?: string } | undefined;
+	assert.equal(retainedEntry?.baseRef, baseRef2);
+
+	const started = await __testing.executeReviewControllerOperation(
+		{ operation: "start", input: JSON.stringify({ mode: "ordinary" }) },
+		cwd, native, undefined, undefined, undefined, retained,
+	);
+	assert.equal((started.result as { lineage_id?: string }).lineage_id, "second-started");
+	assert.equal(starts.length, 1);
+	assert.equal(starts[0]!.baseRef, baseRef2);
+});
+
+test("START rejects a ready-inspect retained selector when fresh STATUS identifies a changed candidate", async (t) => {
+	const cwd = repository(t);
+	const baseRef = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+	const candidateA = startStatus(cwd, baseRef);
+	const candidateB = {
+		...candidateA,
+		targetIdentity: "target-b",
+		projection: { ...candidateA.projection, currentCandidateTree: "candidate-b" },
+	} as ReviewStatusV3;
+	const retained = new Map();
+	let statusCalls = 0;
+	let starts = 0;
+	const native = {
+		targetStatus: async () => { statusCalls += 1; return statusCalls === 1 ? candidateA : candidateB; },
+		start: async () => {
+			starts += 1;
+			return {
+				lineageId: "unexpected", state: "reviewing", riskLevel: "low", selectedLenses: [],
+				changedFiles: 1, changedLines: 1, correctionBudget: 1, action: "created", lensesRequired: false,
+				riskReasons: [], raw: {},
+			};
+		},
+	} as unknown as NativeReviewCli;
+	await __testing.executeReviewControllerOperation(
+		{ operation: "inspect", input: JSON.stringify({ baseRef: "HEAD", committedOnly: true }) },
+		cwd, native, undefined, null, undefined, retained,
+	);
+	const rejected = await __testing.executeReviewControllerOperation(
+		{ operation: "start", input: JSON.stringify({ mode: "ordinary" }) },
+		cwd, native, undefined, null, undefined, retained,
+	);
+	assert.equal(rejected.outcome, "native-start-retained-selection-candidate-mismatch");
+	assert.equal(starts, 0);
+	assert.equal(retained.has(`${cwd}\u0000`), false);
+});
+
 test("an explicit baseRef that conflicts with a retained committed-range selector is not adopted", async (t) => {
 	const { cwd, eligible, initial, target } = untrackedStopFixture(t);
 	const headRef = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();

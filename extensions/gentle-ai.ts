@@ -5668,7 +5668,15 @@ interface RetainedNativeUntrackedSelection {
 	readonly submission?: NativeIntendedUntrackedSelectionSubmission;
 }
 
-interface RetainedPreLineageNativeUntrackedSelection extends RetainedNativeUntrackedSelection {
+// The untracked-selection fields are optional here, unlike the lineage-scoped
+// RetainedNativeUntrackedSelection above: a plain inspect that resolves ready
+// without ever needing an untrackedScope decision still retains its own
+// committed-range selector alone, bound only to targetIdentity/candidateTree.
+interface RetainedPreLineageNativeUntrackedSelection {
+	readonly untrackedScope?: NativeStartUntrackedScope;
+	readonly expectedUntrackedInventory?: string;
+	readonly intendedUntracked?: readonly string[];
+	readonly submission?: NativeIntendedUntrackedSelectionSubmission;
 	readonly targetIdentity: string;
 	readonly candidateTree: string;
 	// gentle-pi#1192: only set when the inspect that produced this entry was a
@@ -5684,7 +5692,7 @@ interface RetainedNativeCaptureRoute { readonly workspaceRoot: string; readonly 
 // yet. Keep only its selector, bound to the exact provider collect input.
 interface RetainedNativeUntrackedStopSelector { readonly selectionBinding: string; readonly targetIdentity: string; readonly baseRef: string; readonly committedOnly: true; }
 
-type RetainedNativeStatusSelection = RetainedNativeUntrackedSelection | RetainedNativeCaptureRoute | RetainedNativeUntrackedStopSelector;
+type RetainedNativeStatusSelection = RetainedNativeUntrackedSelection | RetainedPreLineageNativeUntrackedSelection | RetainedNativeCaptureRoute | RetainedNativeUntrackedStopSelector;
 
 const MAX_RETAINED_NATIVE_STATUS_SELECTIONS = 64;
 class NativeCaptureRouteRegistrationError extends Error {}
@@ -7737,6 +7745,15 @@ async function executeReviewControllerOperation(
 				if (parameters.untrackedScope === undefined) {
 					if (canonicalBaseRef !== undefined && typeof plainMapped.selectionBinding === "string") {
 						retainNativeStatusSelection(retainedUntrackedSelections, reviewLifecycleStorageKey(defaultCwd, ""), Object.freeze({ selectionBinding: plainMapped.selectionBinding, targetIdentity: status.targetIdentity, baseRef: canonicalBaseRef, committedOnly: true as const }));
+					} else if (canonicalBaseRef !== undefined && plainMapped.status === "ready") {
+						// A plain inspect that resolves ready with no untracked decision still
+						// retains its own committed-range selector, so the following plain
+						// START replays this exact inspected range instead of adopting the
+						// native default base-ref (gentle-pi#874).
+						const readyCandidateIdentity = nativePreLineageCandidateIdentity(status);
+						if (readyCandidateIdentity !== undefined) {
+							retainNativeStatusSelection(retainedUntrackedSelections, reviewLifecycleStorageKey(defaultCwd, ""), Object.freeze({ ...readyCandidateIdentity, baseRef: canonicalBaseRef, committedOnly: true as const }));
+						}
 					}
 					// gentle-pi#706: the stop alone never tells the caller what to do next.
 					return {
@@ -8277,24 +8294,29 @@ async function executeReviewControllerOperation(
 			// selector verbatim; it was already canonicalized when the inspect stored
 			// it, so no second resolveCanonicalCandidateBase round trip is needed.
 			if (canonicalBaseRef === undefined && retainedPreLineageSelection?.baseRef !== undefined) canonicalBaseRef = retainedPreLineageSelection.baseRef;
+			// A retained pre-lineage entry may carry only a committed-range selector
+			// with no untracked decision at all (a plain inspect that resolved ready
+			// without ever needing untrackedScope); only adopt its untracked fields
+			// when it actually recorded one.
 			const untrackedSelection: NativeStartUntrackedSelection =
-				retainedPreLineageSelection === undefined
+				retainedPreLineageSelection === undefined || retainedPreLineageSelection.untrackedScope === undefined
 					? explicitUntrackedSelection
 					: {
 							untrackedScope: retainedPreLineageSelection.untrackedScope,
 							expectedUntrackedInventory:
-								retainedPreLineageSelection.expectedUntrackedInventory,
-							intendedUntracked: [...retainedPreLineageSelection.intendedUntracked],
+								retainedPreLineageSelection.expectedUntrackedInventory!,
+							intendedUntracked: [...retainedPreLineageSelection.intendedUntracked!],
 						};
 			const untrackedSubmission =
-				intendedUntrackedSelection ?? retainedPreLineageSelection?.submission;
+				intendedUntrackedSelection ??
+				(retainedPreLineageSelection?.untrackedScope === undefined ? undefined : retainedPreLineageSelection.submission);
 			// The stored value must stay a plain RetainedNativeUntrackedSelection
 			// (no baseRef/targetIdentity/candidateTree): it is re-keyed under the
 			// lineage-scoped entry below, and readRetainedNativeUntrackedSelection
 			// discriminates that entry from a RetainedNativeCaptureRoute by the
 			// absence of a baseRef field.
 			const retainedUntrackedSelection: RetainedNativeUntrackedSelection | undefined =
-				retainedPreLineageSelection === undefined
+				retainedPreLineageSelection === undefined || retainedPreLineageSelection.untrackedScope === undefined
 					? cloneRetainedNativeUntrackedSelection(explicitUntrackedSelection)
 					: Object.freeze({
 							untrackedScope: retainedPreLineageSelection.untrackedScope,

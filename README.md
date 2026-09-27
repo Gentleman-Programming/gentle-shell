@@ -34,6 +34,13 @@
 
 <p align="center"><sub>One workspace. A coding agent you direct. A workflow you can inspect.</sub></p>
 
+<p align="center">
+  🎬 <strong>Watch the Gentle-AI demo:</strong>
+  <a href="https://drive.google.com/file/d/14VaUY04LzX6qZBVuuPwjzr1RWRyrZjkf/view?usp=drive_link"><strong>English</strong></a>
+  &nbsp;·&nbsp;
+  <a href="https://drive.google.com/file/d/1Qp3fXX1joynPpwORZMuu6ygm1hnONPKY/view?usp=drive_link"><strong>English with subtitles</strong></a>
+</p>
+
 <p align="center"><strong>BUILT FOR PI</strong> &nbsp;·&nbsp; Coding-agent workspace &nbsp;·&nbsp; Focused agents &nbsp;·&nbsp; ODD</p>
 
 <p align="center">

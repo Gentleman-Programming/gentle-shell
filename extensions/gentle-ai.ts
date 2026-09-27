@@ -1,3 +1,4 @@
+import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import { consumeReviewMutation, pendingReviewMutation, recordReviewMutation } from "../lib/review-reminder-receipt.ts";
 import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
@@ -9244,9 +9245,11 @@ function createGentleAiExtensionForTesting(
 					return fragment === null ? "" : `\n\n${fragment}`;
 				})()
 				: "";
-		return {
-			systemPrompt: `${event.systemPrompt}${gentlePrompt}${reviewContractPrompt}`,
-		};
+		// gentle-shell#1485: pi-claude-bridge drops a handler-returned systemPrompt
+		// and forwards only systemPromptOptions, so the harness is delivered
+		// through the mutable appendSystemPrompt section instead of a replacement.
+		appendSystemPromptOnce(event.systemPromptOptions, `${gentlePrompt}${reviewContractPrompt}`);
+		return undefined;
 	});
 
 	// gentle-pi#556 / gentle-ai#4051: with RDD enabled, the agent could finish

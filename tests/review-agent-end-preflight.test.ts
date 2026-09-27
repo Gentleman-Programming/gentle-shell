@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -66,7 +66,7 @@ function ctx(sessionId: string, hasUI = true, cwd = process.cwd()): ExtensionCon
 	} as unknown as ExtensionContext;
 }
 
-async function withSessionStartEnv<T>(callback: (cwd: string) => Promise<T>): Promise<T> {
+async function withSessionStartEnv<T>(callback: (cwd: string) => Promise<T>, initializeGit = true): Promise<T> {
 	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
 	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
 	process.env.GENTLE_PI_AGENT_HOME = await mkdtemp(join(tmpdir(), "gentle-pi-session-baseline-agent-home-"));
@@ -76,7 +76,7 @@ async function withSessionStartEnv<T>(callback: (cwd: string) => Promise<T>): Pr
 	process.env.GENTLE_PI_CONFIG_HOME = await mkdtemp(join(tmpdir(), "gentle-pi-session-baseline-config-home-"));
 	try {
 		const cwd = await mkdtemp(join(tmpdir(), "gentle-pi-session-baseline-cwd-"));
-		childProcess.execFileSync("git", ["init", "--quiet", cwd]);
+		if (initializeGit) childProcess.execFileSync("git", ["init", "--quiet", cwd]);
 		await mkdir(join(cwd, "src"));
 		await writeFile(join(cwd, "src/example.ts"), "export const value = 1;");
 		return await callback(cwd);
@@ -241,6 +241,22 @@ for (const scenario of ["same", "changed", "sibling-root", "nested-root", "faile
 		if (changedTarget) assert.ok(String(reminders[0]?.message.content).includes(nextTarget));
 	});
 }
+
+test("passive session events outside Git never invoke native review or initialize Git", async () => {
+	await withSessionStartEnv(async (cwd) => {
+		const calls: string[] = [];
+		const native = {
+			reviewMode: async () => { calls.push("reviewMode"); return onMode("on")!({} as never); },
+			targetStatus: async () => { calls.push("targetStatus"); return executeStartStatus("outside-git"); },
+		} as unknown as NativeReviewCli;
+		const { handlers } = harness(native);
+		const session = ctx("outside-git", true, cwd);
+		await handlers.get("session_start")!({ type: "session_start" }, session);
+		await handlers.get("agent_end")!(agentEndEvent, session);
+		assert.deepEqual(calls, [], "passive events must not query native review outside Git");
+		assert.equal(existsSync(join(cwd, ".git")), false, "passive events must not initialize Git");
+	}, false);
+});
 
 test("agent_end performs no STATUS call and sends nothing when RDD is off", async () => {
 	const statusRequests: unknown[] = [];

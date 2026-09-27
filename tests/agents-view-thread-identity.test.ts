@@ -76,6 +76,8 @@ function harness(profile: string, clock: { value: number } = { value: 61_000 }):
 }
 
 async function withPresenceFixture(run: (profile: string) => Promise<void>): Promise<void> {
+	// Presence rejects symlinked profile ancestors, and macOS tmpdir() lives under
+	// the /var -> /private/var symlink, so the fixture must use the canonical path.
 	const profile = mkdtempSync(join(realpathSync(tmpdir()), "agents-view-identity-"));
 	try {
 		await run(profile);

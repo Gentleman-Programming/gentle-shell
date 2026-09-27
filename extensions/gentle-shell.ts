@@ -4,12 +4,13 @@ import { execFile, spawnSync } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { profilesFilePath, readProfilesFileResult } from "../lib/agent-profiles.ts";
+import { resolveProfilePin } from "../lib/agent-profile-pin.ts";
 import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { buildShellHeaderModel, renderShellBar, renderShellHeaderBar, renderShellHeaderRule, renderShellSidebarBar, shellEnabled, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
+import { buildShellHeaderModel, renderShellBar, renderShellBottomOnlyBar, renderShellHeaderBar, renderShellHeaderRule, renderShellSidebarBar, shellEnabled, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
 import { CHANGE_STATUS, RootBranchLabels, renderChangesWidget, type ChangedFile, type ChangesModel, type GitRunner, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
-import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver } from "../lib/session-worktree-registry.ts";
+import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver, type WorktreeIdentity } from "../lib/session-worktree-registry.ts";
 import { CARD_TONE, renderCard, type Card, type CardTheme } from "../lib/shell-card.ts";
 import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/command-palette.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
@@ -21,14 +22,21 @@ import { BANNER_COLORS, DEFAULT_BANNER_CONFIG, readBannerConfig, readBannerConfi
 import { agentsViewKey } from "../lib/agents-keys.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { DOUBLE_ESC_CANCEL_HINT, framePromptLines, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
+import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { resolveAnimationPolicy, writeAnimationPolicy, type AnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy, type VimPolicy } from "../lib/vim-policy.ts";
+import { resolveHistoryCapture, writeHistoryCapturePolicy } from "../lib/history-capture-policy.ts";
 import { createRequire } from "node:module";
 import { createVimEditorAdapter } from "../lib/vim-editor-adapter.ts";
 import { VimNormalEngine } from "../lib/vim-normal-engine.ts";
 import { VimOperatorEngine, type OperatorResult } from "../lib/vim-operator-engine.ts";
 import { VimVisualEngine } from "../lib/vim-visual-engine.ts";
+
+// Canonical entrypoint and index patterns across POSIX and Windows separators.
+// Exported for cross-platform unit testing of candidate path resolution.
+export const VIM_CLI_ENTRY_PATTERN = /(?:^|[\\/])dist[\\/]bundle[\\/]cli\.js$/;
+export const VIM_AGENT_INDEX_PATTERN = /(?:^|[\\/])dist[\\/]index\.js$/;
 
 // Candidate paths provide only package roots, never version authority. Both
 // constructors must come from that same canonical agent/TUI pair before its
@@ -43,9 +51,9 @@ export function resolveVimRuntime(entry = process.argv[1], customClass: typeof C
 	try {
 		if (entry) {
 			const cli = realpathSync(entry);
-			if (cli.endsWith("/dist/bundle/cli.js")) {
+			if (VIM_CLI_ENTRY_PATTERN.test(cli)) {
 				const root = resolve(dirname(cli), "../..");
-				const bundlePath = resolve(root, "dist/bundle/index.js");
+				const bundlePath = resolve(root, "dist", "bundle", "index.js");
 				if (realpathSync(bundlePath) === bundlePath) {
 					const requireFromBundle = createRequire(bundlePath);
 					const bundled = requireFromBundle(bundlePath) as { CustomEditor?: typeof CustomEditor; VERSION?: string };
@@ -64,17 +72,17 @@ export function resolveVimRuntime(entry = process.argv[1], customClass: typeof C
 	try {
 		if (entry) {
 			const cli = realpathSync(entry);
-			if (cli.endsWith("/dist/bundle/cli.js")) candidates.push(resolve(dirname(cli), "../.."));
+			if (VIM_CLI_ENTRY_PATTERN.test(cli)) candidates.push(resolve(dirname(cli), "../.."));
 		}
 	} catch { /* The CLI is only a candidate, not proof. */ }
 	try {
 		const localIndex = realpathSync(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent")));
-		if (localIndex.endsWith("/dist/index.js")) candidates.push(resolve(dirname(localIndex), ".."));
+		if (VIM_AGENT_INDEX_PATTERN.test(localIndex)) candidates.push(resolve(dirname(localIndex), ".."));
 	} catch { /* No local candidate; do not trust extension-relative metadata. */ }
 	for (const root of new Set(candidates)) {
 		try {
-			const agentIndex = realpathSync(resolve(root, "dist/index.js"));
-			if (agentIndex !== resolve(root, "dist/index.js")) continue;
+			const agentIndex = realpathSync(resolve(root, "dist", "index.js"));
+			if (agentIndex !== resolve(root, "dist", "index.js")) continue;
 			const requireFromRuntime = createRequire(agentIndex);
 			const agent = requireFromRuntime(agentIndex) as { CustomEditor?: typeof CustomEditor };
 			const agentMetadata = requireFromRuntime(resolve(root, "package.json")) as { version?: string; name?: string };
@@ -100,9 +108,10 @@ import {
 import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseProviderUsage, parseUsageHeaders, parseUsageSource, UsageSourceRegistry, UsageStore, USAGE_SOURCE_EVENT, type ProviderUsage, type UsageSource } from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarHeader, sidebarPart, sidebarState, VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
-import { installSidebar, invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
+import { installSidebar, invalidateSidebar, narrowStatusOwner, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
 import { SessionChanges, SESSION_CHANGE_EVENT } from "../lib/session-changes.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
+import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
 
 // Gentle Shell: the visual layer gentle-pi puts on top of pi. It installs the
 // status bar, the petal prompt, the working-tree changes widget and overlay,
@@ -145,14 +154,23 @@ export interface ShellDeps {
 	vimRuntimeVersion?(): string | undefined;
 }
 
-// The rail digest runs every frame. Cache parsing by file identity and metadata,
-// not just mtime: profile writes replace the store atomically. Keep the cache
-// local to this shell instance and recheck on the next frame after panel edits.
-export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env): () => string | undefined {
+export type ActiveProfileReader = (() => string | undefined) & {
+	bind(cwd: string, resolveWorktree: WorktreeResolver): boolean;
+	refresh(): boolean;
+	reset(): void;
+};
+
+// Unbound reads retain the global file-identity cache, including atomic replacements.
+// Bound reads are snapshots: no filesystem or Git work is done during a frame.
+export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env): ActiveProfileReader {
 	const path = profilesFilePath(env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai"));
 	let fingerprint: string | undefined;
 	let name: string | undefined;
-	return () => {
+	let bound = false;
+	let cwd: string | undefined;
+	let identity: WorktreeIdentity | undefined;
+	let effective: string | undefined;
+	const global = () => {
 		try {
 			const stat = statSync(path, { bigint: true });
 			const next = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
@@ -168,6 +186,28 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 			return undefined;
 		}
 	};
+	const reader = (() => bound ? effective : global()) as ActiveProfileReader;
+	reader.refresh = () => {
+		if (!bound) return false;
+		const pin = identity && cwd ? resolveProfilePin({
+			cwd,
+			configHome: env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai"),
+			resolveWorktree: () => identity!,
+		}) : undefined;
+		const next = pin ? `${pin.profile} (${pin.source})` : global();
+		const changed = next !== effective;
+		effective = next;
+		return changed;
+	};
+	reader.bind = (nextCwd, resolveWorktree) => {
+		reader.reset();
+		cwd = nextCwd;
+		try { identity = resolveWorktree(nextCwd, nextCwd); } catch { identity = undefined; }
+		bound = true;
+		return reader.refresh();
+	};
+	reader.reset = () => { bound = false; cwd = undefined; identity = undefined; effective = undefined; };
+	return reader;
 }
 
 function ambientDevBinary(): DevBinaryNotice | undefined {
@@ -274,6 +314,12 @@ interface PromptEditorDeps {
 	tuiVersion?: () => string | undefined;
 	/** Report a single warning if this editor cannot safely provide modal editing. */
 	notifyCompatibility?: (message: string) => void;
+	/**
+	 * Read fresh on every render while WORKING: the explicit, orchestrator-reported
+	 * ODD phase label for the current session, or undefined to fall back to the
+	 * generic "working…" label. Never applied to IDLE or QUEUED.
+	 */
+	workingLabel?: () => string | undefined;
 }
 
 const PROMPT_FRAME_ROLE = "border";
@@ -947,6 +993,7 @@ export class GentlePromptEditor extends CustomEditor {
 			borderColor: (text) => this.deps.fg(PROMPT_FRAME_ROLE, text),
 			fg: this.deps.fg,
 			bold: this.deps.bold,
+			workingLabel: this.promptState === PROMPT_STATE.WORKING ? this.deps.workingLabel?.() : undefined,
 			escHint: [
 				this.vimPolicy === "on" ? (this.vimVisual.active ? (this.vimVisual.kind === "line" ? "VISUAL LINE" : "VISUAL") : this.vimNormal ? "NORMAL" : "INSERT") : undefined,
 				this.promptState === PROMPT_STATE.WORKING && this.isPendingEscapeCancel()
@@ -1014,7 +1061,14 @@ function installPrompt(
 			dispatchQueuedText: promptDeps.dispatchQueuedText,
 			notifyCompatibility: (message) => ctx.ui.notify(message, "warning"),
 			tuiVersion: promptDeps.vimRuntimeVersion,
+			workingLabel: () => oddPhaseRegistry.label(ctx.sessionManager.getSessionId()),
 		});
+		// Pi's own docs require an explicit requestRender() after a state change
+		// (docs/tui.md: "Call tui.requestRender() after state changes"); no host
+		// re-render is implicitly guaranteed, and the WORKING pulse loop does not
+		// run at all under the "potato" animation policy. Register this session's
+		// redraw so a phase reported by the tool is visible immediately.
+		oddPhaseRegistry.setRenderRequest(ctx.sessionManager.getSessionId(), () => tui.requestRender());
 		onCreated(prompt);
 		return prompt;
 	};
@@ -1174,14 +1228,15 @@ async function showChangesOverlay(ctx: ExtensionContext, deps: OverlayDeps): Pro
 	try {
 		const chosen = await ctx.ui.custom<{ root: string; file: ChangedFile } | null>(
 			(tui, theme, _keybindings, done) => {
+				const close = withOverlayRepaint(tui, done);
 				host = tui;
 				view = new WorktreeChangesView(worktrees(), {
 					theme,
 					rows: () => Math.max(OVERLAY_MIN_ROWS, Math.floor(tui.terminal.rows * OVERLAY_HEIGHT_RATIO)),
 					loadDiff: (root, file) => Promise.resolve(deps.loadDiff(root, file)),
-					onOpen: (root, file) => done({ root, file }),
+					onOpen: (root, file) => close({ root, file }),
 					onRefresh: () => void refresh(),
-					onClose: () => done(null),
+					onClose: () => close(null),
 					requestRender: () => tui.requestRender(),
 				});
 				return view;
@@ -1214,7 +1269,7 @@ async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext, env: 
 		return;
 	}
 	const result = await ctx.ui.custom<CommandPaletteResult>(
-		(tui, theme, _keybindings, done) => new CommandPalette(groups, done, theme, () => Math.max(0, tui.terminal.rows)),
+		(tui, theme, _keybindings, done) => new CommandPalette(groups, withOverlayRepaint(tui, done), theme, () => Math.max(0, tui.terminal.rows)),
 		{ overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "85%" } },
 	);
 	if (result?.type === "run") pi.sendUserMessage(`/${result.name}`, { expandPromptTemplates: true });
@@ -1339,7 +1394,14 @@ async function fetchFromSource(source: UsageSource, apiKey: string | undefined, 
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	installSessionChangeCapture(pi, env, overrides.resolveWorktree ?? resolveSessionWorktree);
 	if (!shellEnabled(env)) return;
-	const deps: ShellDeps = { ...defaultShellDeps, activeProfile: createActiveProfileReader(env), ...overrides };
+	const profileReader = createActiveProfileReader(env);
+	const deps: ShellDeps = { ...defaultShellDeps, activeProfile: profileReader, ...overrides };
+	let profilePoll: ReturnType<typeof setInterval> | undefined;
+	const stopProfilePoll = () => {
+		if (profilePoll) clearInterval(profilePoll);
+		profilePoll = undefined;
+		profileReader.reset();
+	};
 	const usage = new UsageStore();
 	// Providers gentle-shell has never heard of get a usage source too, when
 	// the extension that owns them registers one on pi.events; see the
@@ -1407,7 +1469,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					active: () => (ctx.model ? { provider: ctx.model.provider } : undefined),
 					registry: () => usageSources,
 					onRefresh: () => refreshUsage(ctx, true),
-					onClose: () => done(null),
+					onClose: () => withOverlayRepaint(tui, done)(null),
 					requestRender: () => tui.requestRender(),
 				}),
 			{ overlay: true, overlayOptions: { width: "70%", minWidth: 60, anchor: "center" } },
@@ -1500,6 +1562,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		},
 	});
 	pi.on("session_start", async (_event, ctx) => {
+		stopProfilePoll();
 		registry?.close();
 		currentContext = ctx;
 		changes = undefined;
@@ -1507,6 +1570,17 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		registry.start();
 		if (!ctx.hasUI) return;
 		visualSettings = resolveVisualSettings(animationOptions).settings;
+		if (!overrides.activeProfile) {
+			profileReader.bind(ctx.cwd, deps.resolveWorktree);
+			const sessionId = ctx.sessionManager.getSessionId();
+			profilePoll = setInterval(() => {
+				if (currentContext !== ctx || ctx.sessionManager.getSessionId() !== sessionId) return;
+				if (!profileReader.refresh()) return;
+				renderHost?.invalidateSidebar?.();
+				renderHost?.requestRender();
+			}, 2_000);
+			profilePoll.unref?.();
+		}
 		changes = new SessionChanges(ctx.sessionManager.getSessionId(), ctx.sessionManager.getEntries());
 		const tracker = changes;
 		ctx.ui.setFooter((tui, theme, footerData) => {
@@ -1522,7 +1596,12 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: usage.get(ctx.model?.provider ?? ""), profile: deps.activeProfile() }),
 				changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted, notice: tracker.model.notice },
 			});
-			const part = sidebarPart(tui, "footer", bottom, {
+			// At narrow fullscreen widths only one status row paints: a top header
+			// suppresses the bottom bar in the layout, and otherwise the bottom bar
+			// takes over the header's data while the below-input header steps aside.
+			const statusOwner = () => narrowStatusOwner({ mode: (tui as TUI & { mode?: string }).mode, columns: tui.terminal?.columns ?? 0, statusPlacement: visualSettings.statusPlacement, headerPlacement: visualSettings.headerPlacement });
+			const bottomBar = { ...bottom, render: (width: number) => statusOwner() === STATUS_OWNER.BOTTOM ? renderShellBottomOnlyBar(footerModel(), theme, width, usageShortcutKey, visualSettings) : bottom.render(width) };
+			const part = sidebarPart(tui, "footer", bottomBar, {
 				digest: () => JSON.stringify([footerModel(), visualSettings]),
 				render: (width) => renderShellSidebarBar(footerModel(), theme, width, visualSettings),
 				invalidate() {},
@@ -1546,7 +1625,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			});
 			const uninstall = installSidebar(tui, theme, () => visualSettings.statusPlacement, () => visualSettings.headerPlacement, () => visualSettings.density);
 			// The public widget slot follows the editor even when the rail is absent.
-			const belowHeader = () => visualSettings.headerPlacement === "below-input" && (tui as TUI & { mode?: string }).mode === "fullscreen";
+			const belowHeader = () => visualSettings.headerPlacement === "below-input" && (tui as TUI & { mode?: string }).mode === "fullscreen" && statusOwner() !== STATUS_OWNER.BOTTOM;
 			ctx.ui.setWidget(HEADER_WIDGET_KEY, () => ({
 				render(width: number) { return belowHeader() ? [headerBar(width).text, renderShellHeaderRule(theme, width)] : []; },
 				invalidate() {},
@@ -1586,6 +1665,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		applyChanges(ctx, tracker.model);
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
+		stopProfilePoll();
+		oddPhaseRegistry.clear(ctx.sessionManager.getSessionId());
+		oddPhaseRegistry.clearRenderRequest(ctx.sessionManager.getSessionId());
 		pendingQueuedText = undefined;
 		prompt?.dispose();
 		prompt = undefined;
@@ -1632,7 +1714,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		});
 	}
 	pi.registerCommand("gentle:customize", {
-		description: "Configure animations, banner, themes, layout and global Vim prompt editing.",
+		description: "Configure animations, banner, themes, layout, global Vim prompt editing and prompt history capture.",
 		handler: async (_args, ctx) => {
 			if (ctx.mode !== "tui" || !ctx.hasUI) {
 				if (ctx.hasUI) ctx.ui.notify("Visual customization requires an interactive terminal.", "warning");
@@ -1721,7 +1803,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const pending = "Preference saved and applied.";
 			const layoutPreview = (settings: ReturnType<typeof visual>) => ({
 				title: `Layout · ${settings.density} (schematic)`,
-				sample: `${settings.headerPlacement === "top" ? "[Header] → [Input]" : "[Input] → [Header]"}  ${settings.statusPlacement === "auto" ? "[responsive status]" : settings.statusPlacement === "right" ? "[Right rail, wide]" : settings.statusPlacement === "hidden" ? "[Bottom status; no rail]" : "[Bottom status]"}`,
+				sample: `${settings.headerPlacement === "top" ? "[Header] → [Input]" : "[Input] → [Header]"}  ${settings.statusPlacement === "auto" ? "[responsive status]" : settings.statusPlacement === "right" ? "[Right rail, wide]" : settings.statusPlacement === "hidden" ? "[No status bar or rail]" : "[Bottom status]"}`,
 			});
 			category = "Editor";
 			for (const [label, policy] of [["enable", "on"], ["disable", "off"]] as const) rows.push({
@@ -1740,6 +1822,31 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					vimPolicy = result.policy;
 					prompt?.setVimPolicy(vimPolicy);
 					reportVim(ctx, result);
+				},
+			});
+			category = "History";
+			// The prompt-history extension re-reads this preference per prompt, so a
+			// change applies without restart. An explicit GENTLE_PI_HISTORY_CAPTURE
+			// value wins; the rows say so instead of silently ignoring the choice.
+			const historyCapture = () => resolveHistoryCapture({ env, gentlePiConfigHome: doubleEscCancelConfigHome });
+			for (const [label, policy] of [["enable", "on"], ["disable", "off"]] as const) rows.push({
+				category,
+				label: () => {
+					const result = historyCapture();
+					return `Prompt history capture: ${label}${result.preference === policy && !result.malformed ? " (current)" : ""}${result.envOverride ? " · env override" : ""}`;
+				},
+				preview: () => {
+					const result = historyCapture();
+					const effective = result.enabled ? "on" : "off";
+					return { title: "Prompt history capture · Customize preference", sample: `preference: ${result.preference} · effective: ${effective}${result.malformed ? " · malformed or unreadable file" : ""}${result.envOverride ? " · GENTLE_PI_HISTORY_CAPTURE overrides this preference" : ""}` };
+				},
+				action: () => {
+					const current = historyCapture();
+					if (current.malformed) throw new Error(`Cannot update malformed or unreadable history capture preference: ${current.globalFile}`);
+					writeHistoryCapturePolicy(policy, { gentlePiConfigHome: doubleEscCancelConfigHome });
+					const result = historyCapture();
+					if (result.envOverride) ctx.ui.notify(`Prompt history capture preference saved: ${result.preference}. GENTLE_PI_HISTORY_CAPTURE=${result.envOverride} overrides it; capture stays ${result.envOverride}.`, "warning");
+					else ctx.ui.notify(result.enabled ? "Prompt history capture: on. Applies from the next prompt; stored history is kept." : "Prompt history capture: off. New prompts are not recorded; stored history is kept.", "info");
 				},
 			});
 			category = "Layout";
@@ -1932,6 +2039,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// below has delivered the pending text. Nothing is sent from here: Pi
 		// is mid-turn, so the text simply waits and goes out, once, when that
 		// turn settles. It is never dropped.
+		// A new turn always starts unlabeled: any ODD phase reported for the
+		// previous turn must never leak into this one. The orchestrator
+		// reports the new turn's phase explicitly once it knows it.
+		oddPhaseRegistry.clear(ctx.sessionManager.getSessionId());
 		prompt?.setWorking(true);
 		// The dev-binary card is a startup notice: it leaves with the first prompt.
 		if (ctx.hasUI) ctx.ui.setWidget(DEV_BINARY_WIDGET_KEY, undefined);
@@ -1941,6 +2052,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// this is normally idle; if a run is somehow still in flight the prompt
 		// stays working and the pending text waits for the next settle.
 		if (!ctx.isIdle()) return;
+		// Covers both a normal finish and an aborted turn settling idle: the
+		// input falls back to the generic "working…" label until the next
+		// turn's own agent_start clears it again (belt-and-suspenders with the
+		// clear above).
+		oddPhaseRegistry.clear(ctx.sessionManager.getSessionId());
 		prompt?.setWorking(false);
 		if (pendingQueuedText === undefined) return;
 		const queued = pendingQueuedText;

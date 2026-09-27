@@ -1522,7 +1522,7 @@ async function run() {
 			{ provider: "evil\u001b]52;c;Zm9v\u0007", id: "model" },
 		];
 		ctx.ui.custom = (factory) => {
-			const panel = factory(null, null, null, () => undefined);
+			const panel = factory({ terminal: { rows: 24 } }, null, null, () => undefined);
 			const initialLines = panel.render(120);
 			const plainInitialLines = initialLines.map(stripAnsi);
 			assert.ok(
@@ -1530,8 +1530,8 @@ async function run() {
 				"model panel should render inside a bordered card",
 			);
 			assert.ok(
-				initialLines.length <= 20,
-				"long model agent list should fit within a 24-row terminal 85% overlay budget",
+				initialLines.length === 24,
+				"model panel should fill the 24-row terminal like /gentle:profiles",
 			);
 			assert.ok(
 				plainInitialLines.some((line) => /↓ \d+ more agent\(s\)/.test(line)),
@@ -1555,8 +1555,8 @@ async function run() {
 			const scrolledLines = panel.render(120);
 			const plainScrolledLines = scrolledLines.map(stripAnsi);
 			assert.ok(
-				scrolledLines.length <= 20,
-				"scrolled model agent list should stay within the overlay height budget",
+				scrolledLines.length === 24,
+				"scrolled model agent list should keep filling the terminal",
 			);
 			assert.ok(
 				plainScrolledLines.some((line) => /↑ \d+ more agent\(s\)/.test(line)),
@@ -1566,8 +1566,8 @@ async function run() {
 			const bottomLines = panel.render(120);
 			const plainBottomLines = bottomLines.map(stripAnsi);
 			assert.ok(
-				bottomLines.length <= 20,
-				"bottom model agent list should stay within the overlay height budget",
+				bottomLines.length === 24,
+				"bottom model agent list should keep filling the terminal",
 			);
 			assert.ok(
 				plainBottomLines.some((line) => line.includes("▸ ← Back")),

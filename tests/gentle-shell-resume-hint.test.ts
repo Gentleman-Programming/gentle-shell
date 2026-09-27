@@ -1,0 +1,160 @@
+import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import test from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { getAgentDir, SessionManager } from "@earendil-works/pi-coding-agent";
+import {
+	RESUME_HANDOFF_ENV,
+	gentleShellResumeCommand,
+	parseResumeHandoff,
+	piDefaultSessionDir,
+	planResumeHint,
+	resumeHandoffFromSession,
+	serializeResumeHandoff,
+} from "../lib/gentle-shell-resume-hint.ts";
+
+const ID = "01a0e0a0-6d7b-7314-89c1-537d47bbf4f3";
+const AGENT_DIR = resolve("/home/u/.gentle-shell/agent");
+const CWD = resolve("/home/u/project");
+const DEFAULT_DIR = join(AGENT_DIR, "sessions", `--${CWD.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`);
+
+test("handoff env name is stable", () => {
+	assert.equal(RESUME_HANDOFF_ENV, "GENTLE_SHELL_RESUME_HANDOFF");
+});
+
+test("piDefaultSessionDir mirrors pi's encoded per-cwd session dir", () => {
+	assert.equal(piDefaultSessionDir(CWD, AGENT_DIR), DEFAULT_DIR);
+	if (process.platform !== "win32") assert.equal(piDefaultSessionDir("/home/u/project", "/a"), "/a/sessions/--home-u-project--");
+});
+
+test("piDefaultSessionDir matches pi's own SessionManager", () => {
+	const agentDir = mkdtempSync(join(tmpdir(), "resume-hint-agent-"));
+	const previous = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const byDefault = SessionManager.create(CWD);
+		assert.equal(byDefault.usesDefaultSessionDir(), true);
+		assert.equal(byDefault.getSessionDir(), piDefaultSessionDir(CWD, getAgentDir()));
+		const custom = SessionManager.create(CWD, join(agentDir, "elsewhere"));
+		assert.equal(custom.usesDefaultSessionDir(), false);
+		assert.notEqual(custom.getSessionDir(), piDefaultSessionDir(CWD, getAgentDir()));
+	} finally {
+		if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previous;
+		rmSync(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("resumeHandoffFromSession omits the session dir when it is pi's default", () => {
+	const handoff = resumeHandoffFromSession({
+		sessionId: ID,
+		sessionDir: DEFAULT_DIR,
+		sessionFile: join(DEFAULT_DIR, "x.jsonl"),
+		cwd: CWD,
+		agentDir: AGENT_DIR,
+		fileExists: () => true,
+	});
+	assert.deepEqual(handoff, { sessionId: ID });
+});
+
+test("resumeHandoffFromSession keeps a custom session dir", () => {
+	const handoff = resumeHandoffFromSession({
+		sessionId: ID,
+		sessionDir: "/tmp/my sessions",
+		sessionFile: "/tmp/my sessions/x.jsonl",
+		cwd: CWD,
+		agentDir: AGENT_DIR,
+		fileExists: () => true,
+	});
+	assert.deepEqual(handoff, { sessionId: ID, sessionDir: "/tmp/my sessions" });
+});
+
+test("resumeHandoffFromSession returns undefined when pi would not print a hint", () => {
+	const base = { sessionId: ID, sessionDir: DEFAULT_DIR, cwd: CWD, agentDir: AGENT_DIR };
+	assert.equal(resumeHandoffFromSession({ ...base, sessionFile: undefined, fileExists: () => true }), undefined);
+	assert.equal(resumeHandoffFromSession({ ...base, sessionFile: join(DEFAULT_DIR, "x.jsonl"), fileExists: () => false }), undefined);
+});
+
+test("handoff round-trips and rejects malformed input", () => {
+	const handoff = { sessionId: ID, sessionDir: "/tmp/s" };
+	assert.deepEqual(parseResumeHandoff(serializeResumeHandoff(handoff)), handoff);
+	assert.deepEqual(parseResumeHandoff(serializeResumeHandoff({ sessionId: ID })), { sessionId: ID });
+	for (const text of ["", "not json", "null", "[]", '{"sessionId":""}', '{"sessionId":1}', '{"sessionId":"a","sessionDir":3}', '{"sessionId":"a","sessionDir":""}']) {
+		assert.equal(parseResumeHandoff(text), undefined, text);
+	}
+});
+
+test("handoff rejects values that could inject terminal control sequences", () => {
+	const reject = (value: object) => assert.equal(parseResumeHandoff(JSON.stringify(value)), undefined, JSON.stringify(value));
+	// Session ids follow pi's assertValidSessionId charset.
+	reject({ sessionId: "abc\u001b[2J" });
+	reject({ sessionId: "abc def" });
+	reject({ sessionId: "-abc" });
+	reject({ sessionId: "abc$(id)" });
+	reject({ sessionId: ID, sessionDir: "/tmp/\u001b]0;pwned\u0007" });
+	reject({ sessionId: ID, sessionDir: "/tmp/a\u009bb" });
+	assert.deepEqual(parseResumeHandoff(JSON.stringify({ sessionId: "a.b_c-1" })), { sessionId: "a.b_c-1" });
+});
+
+test("gentleShellResumeCommand keeps home selectors and a custom session dir", () => {
+	assert.equal(gentleShellResumeCommand({ sessionId: ID }, []), `gentle-shell --session ${ID}`);
+	assert.equal(gentleShellResumeCommand({ sessionId: ID }, ["--link"]), `gentle-shell --link --session ${ID}`);
+	assert.equal(
+		gentleShellResumeCommand({ sessionId: ID, sessionDir: "/tmp/my sessions" }, ["--home", "/x y"]),
+		`gentle-shell --home '/x y' --session-dir '/tmp/my sessions' --session ${ID}`,
+	);
+});
+
+test("the gentle-shell command matches pi's real exit hint with the binary swapped", async () => {
+	// formatResumeCommand is not in pi's exports map; load the module file.
+	const piDist = dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent")));
+	const modulePath = join(piDist, "modes", "interactive", "interactive-mode.js");
+	const { formatResumeCommand } = await import(pathToFileURL(modulePath).href);
+	// The appended line is only needed while pi prints this hint.
+	assert.ok(readFileSync(modulePath, "utf8").includes('chalk.dim("To resume this session:")'), "pi's hint label changed");
+
+	const agentDir = mkdtempSync(join(tmpdir(), "resume-hint-agent-"));
+	const previousDir = process.env.PI_CODING_AGENT_DIR;
+	const previousTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+	try {
+		for (const sessionDir of [undefined, join(agentDir, "my sessions")]) {
+			const manager = SessionManager.create(CWD, sessionDir);
+			manager.appendMessage({ role: "user", content: "hi", timestamp: Date.now() } as never);
+			manager.appendMessage({ role: "assistant", content: [{ type: "text", text: "ok" }], timestamp: Date.now() } as never);
+			const handoff = resumeHandoffFromSession({
+				sessionId: manager.getSessionId(),
+				sessionDir: manager.getSessionDir(),
+				sessionFile: manager.getSessionFile(),
+				cwd: manager.getCwd(),
+				agentDir: getAgentDir(),
+				fileExists: existsSync,
+			});
+			assert.ok(handoff);
+			const piCommand: string = formatResumeCommand(manager);
+			assert.ok(piCommand.startsWith("pi "), piCommand);
+			assert.equal(gentleShellResumeCommand(handoff, []), `gentle-shell ${piCommand.slice("pi ".length)}`);
+		}
+	} finally {
+		if (previousTTY) Object.defineProperty(process.stdout, "isTTY", previousTTY);
+		else delete (process.stdout as { isTTY?: boolean }).isTTY;
+		if (previousDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousDir;
+		rmSync(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("planResumeHint prints the gentle-shell line with pi's dim label style", () => {
+	const hint = planResumeHint({ handoff: { sessionId: ID }, homeFlags: ["--link"], stdoutIsTTY: true, terminalHungUp: false });
+	assert.equal(hint, `\u001b[2mTo resume in gentle-shell:\u001b[22m gentle-shell --link --session ${ID}\n`);
+});
+
+test("planResumeHint prints nothing without a handoff, a TTY, or after a hang-up", () => {
+	const base = { handoff: { sessionId: ID } as { sessionId: string } | undefined, homeFlags: [], stdoutIsTTY: true, terminalHungUp: false };
+	assert.equal(planResumeHint({ ...base, handoff: undefined }), undefined);
+	assert.equal(planResumeHint({ ...base, stdoutIsTTY: false }), undefined);
+	assert.equal(planResumeHint({ ...base, terminalHungUp: true }), undefined);
+});

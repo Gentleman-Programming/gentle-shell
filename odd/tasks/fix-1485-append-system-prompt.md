@@ -65,11 +65,11 @@ Pi documents this route (`docs/extensions.md:101`: "Prefer changing prompt secti
 - `node --experimental-strip-types tests/runtime-harness.mjs`: exit 0 (writer and parent).
 - Focused files (helper, route, review contract prompt, todo, telemetry): 42 pass, 0 fail (parent re-run).
 - `node scripts/check-provider-contract.mjs`: pass. `node scripts/check-types.mjs`: no regressions.
-- Live, `gentle-shell -p --no-session --model claude-bridge/claude-opus-5-5`, asked whether the instructions contain "Default workflow: Organic Driven Development": this branch answered yes; the installed package answered no.
+- Live, `gentle-shell -p --no-session --model claude-bridge/claude-opus-5-5`, asked whether the instructions contain "Default workflow: Organic Driven Development": this branch answered yes; the installed package answered no. With `openai-codex/gpt-5.5` on this branch, the phrase is present exactly once.
 
 ## Review
 
-- `cedc69e08..c1589327c`: medium, 398 lines, `under_budget`.
+- `cedc69e08..c85dc1362`: medium, 483 lines; lineage `review-c6da780bb242bf6e`, one lens (reliability), approved and acknowledged. Advisory findings: non-bridge acceptance not proven live (addressed afterwards by the Codex probe), tautological ordering assertion and overclaiming route test, silent no-op when `systemPromptOptions` is missing, substring dedupe, weak todo idempotency assertion.
 
 ## Follow-ups
 
@@ -78,4 +78,4 @@ Pi documents this route (`docs/extensions.md:101`: "Prefer changing prompt secti
 
 ## Next step
 
-Review the slice, then push and open the pull request with `Closes #1485`.
+Pull request with `Closes #1485`; merge is the user's decision.

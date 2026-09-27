@@ -598,12 +598,19 @@ export const PREFLIGHT_WIDGET_KEY = "gentle:preflight";
 export default function (pi: ExtensionAPI) {
   let disposeHeader = () => {};
   let dismissHeader = () => {};
+  let activeSessionId: string | undefined;
+  let activeSessionStarted = false;
   let dismissed = false;
   const dismiss = () => {
     dismissed = true;
     dismissHeader();
   };
-  pi.on("session_shutdown", () => disposeHeader());
+  pi.on("session_shutdown", () => {
+    disposeHeader();
+    dismissed = false;
+    activeSessionStarted = false;
+    activeSessionId = undefined;
+  });
   pi.on("before_agent_start", () => dismiss());
   const notifyBannerConfig = (ctx: any, config: BannerConfig) => {
     ctx.ui.notify(
@@ -675,6 +682,12 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     disposeHeader();
+    const sessionId = (ctx as any)?.sessionManager?.getSessionId?.();
+    if (activeSessionStarted || (sessionId !== undefined && sessionId !== activeSessionId)) {
+      dismissed = false;
+    }
+    activeSessionId = sessionId;
+    activeSessionStarted = true;
     if (!ctx.hasUI) return;
 
     // CLI subcommands such as `pi update` or `pi install` skip the animated intro.
@@ -746,7 +759,12 @@ export default function (pi: ExtensionAPI) {
     }, 200);
 
     let tick = 0;
-    let refreshStats = () => {};
+    let tuiWidgetRef: any = null;
+    let refreshStats = () => {
+      if (tuiWidgetRef) invalidateSidebar(tuiWidgetRef);
+      try { tuiWidgetRef?.requestRender(); } catch {}
+      try { tuiRef?.requestRender(); } catch {}
+    };
     let headerCache: { key: string; out: string[] } | null = null;
     let tuiRef: { requestRender(): void } | null = null;
     let preflightMounted = false;
@@ -805,6 +823,7 @@ export default function (pi: ExtensionAPI) {
       preflightMounted = true;
       ctx.ui.setWidget(PREFLIGHT_WIDGET_KEY, (tui, theme) => {
         if (dismissed) return undefined as any;
+        tuiWidgetRef = tui;
         const cardComponent: Component = {
           render: (width: number) => renderPreflight(theme, width),
           invalidate() { preflightHovered = false; },
@@ -855,6 +874,8 @@ export default function (pi: ExtensionAPI) {
 
     const cleanup = () => {
       refreshStats = () => {};
+      tuiWidgetRef = null;
+      tuiRef = null;
       if (state.timer) {
         clearInterval(state.timer);
         state.timer = null;
@@ -882,6 +903,8 @@ export default function (pi: ExtensionAPI) {
         tuiRef = tui;
 
         refreshStats = () => {
+          if (tuiWidgetRef) invalidateSidebar(tuiWidgetRef);
+          try { tuiWidgetRef?.requestRender(); } catch {}
           try { tui.requestRender(); } catch { cleanup(); }
         };
         // Capture once: a command changes the live prompt, not this intro.

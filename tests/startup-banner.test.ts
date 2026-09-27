@@ -407,6 +407,45 @@ test("early before_agent_start suppresses preflight mounting and central banner"
 	assert.equal(widgets.get(PREFLIGHT_WIDGET_KEY), undefined, "preflight widget never mounts if agent started early");
 });
 
+test("switching sessions resets dismissed state so later session mounts Preflight", async (t) => {
+	for (const [key, value] of [["rows", 40], ["columns", 160]] as const) {
+		const descriptor = Object.getOwnPropertyDescriptor(process.stdout, key);
+		Object.defineProperty(process.stdout, key, { configurable: true, writable: true, value });
+		t.after(() => descriptor ? Object.defineProperty(process.stdout, key, descriptor) : Reflect.deleteProperty(process.stdout, key));
+	}
+
+	let start: Function;
+	let beforeAgentStart: Function;
+	const widgets = new Map<string, Function | undefined>();
+	startup({ on: (name: string, fn: Function) => {
+		if (name === "session_start") start = fn;
+		if (name === "before_agent_start") beforeAgentStart = fn;
+	}, registerCommand() {}, getCommands: () => [], getAllTools: () => [] } as unknown as ExtensionAPI);
+
+	const mockCtx = {
+		hasUI: true,
+		cwd: "/fixture",
+		ui: {
+			setHeader: () => {},
+			setWidget: (key: string, factory: Function | undefined) => {
+				widgets.set(key, factory);
+			},
+		},
+	};
+
+	// Session 1 starts and mounts
+	await start!({}, mockCtx);
+	assert.ok(widgets.get(PREFLIGHT_WIDGET_KEY) !== undefined, "mounted in session 1");
+
+	// Agent starts -> dismissed
+	await beforeAgentStart!({}, {});
+	assert.equal(widgets.get(PREFLIGHT_WIDGET_KEY), undefined, "unmounted on agent start");
+
+	// Session 2 starts -> resets dismissal and mounts
+	await start!({}, mockCtx);
+	assert.ok(widgets.get(PREFLIGHT_WIDGET_KEY) !== undefined, "mounted in session 2");
+});
+
 test("launcher-injected extension directories do not suppress the startup banner", () => {
 	// Gentle Shell launches `pi -e <package-root-dir>`; a directory path is not a subcommand.
 	assert.equal(isPiCliSubcommandInvocation(["node", "pi", "-e", "/opt/gentle-pi"]), false);

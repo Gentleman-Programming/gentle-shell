@@ -73,8 +73,8 @@ Pi documents this route (`docs/extensions.md:101`: "Prefer changing prompt secti
 
 ## Follow-ups
 
-- The `gentle_odd_phase` reporting instruction lives in `assets/orchestrator-delegation.md`, which the injected harness references but does not inline, so no provider receives it unless the model reads the asset. Pre-existing and provider-independent; separate change.
-- Superseded `feat/bridge-instructions` branch: kept unpublished; can be deleted.
+- Done in this PR (commit `1a5cbc094`, user-approved scope addition): the `gentle_odd_phase` reporting instruction lived only in `assets/orchestrator-delegation.md`; one "Phase reporting" line now follows step 7 in the harness, covered by `tests/odd-routing-contract.test.ts` (RED then GREEN). Live under `claude-bridge`, the model now states when to call `gentle_odd_phase`.
+- Superseded `feat/bridge-instructions` branch: deleted (never published).
 
 ## Next step
 

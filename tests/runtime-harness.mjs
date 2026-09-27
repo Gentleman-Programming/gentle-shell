@@ -394,23 +394,29 @@ async function run() {
 	const promptCwd = await tempWorkspace();
 	try {
 		const promptHook = hooks.get("before_agent_start")[0];
-		const promptResult = await promptHook({ systemPrompt: "base" }, createCtx(promptCwd));
-		assert.match(promptResult.systemPrompt, /base/);
-		assert.match(promptResult.systemPrompt, /el Gentleman/);
-		assert.match(promptResult.systemPrompt, /Organic Driven Development/);
-		assert.doesNotMatch(promptResult.systemPrompt, /## SDD Research Capabilities/);
-		assert.match(promptResult.systemPrompt, /review execution contract/);
+		// gentle-shell#1485: pi-claude-bridge drops a handler-returned systemPrompt
+		// and forwards only structured systemPromptOptions, so the harness must
+		// land in appendSystemPrompt and the hook must never return a replacement.
+		const promptEvent = { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" } };
+		const promptResult = await promptHook(promptEvent, createCtx(promptCwd));
+		assert.equal(promptResult, undefined, "before_agent_start must not return a replacement systemPrompt");
+		assert.equal(promptEvent.systemPrompt, "base", "the original systemPrompt field must be left untouched");
+		const promptAppended = promptEvent.systemPromptOptions.appendSystemPrompt;
+		assert.match(promptAppended, /el Gentleman/);
+		assert.match(promptAppended, /Organic Driven Development/);
+		assert.doesNotMatch(promptAppended, /## SDD Research Capabilities/);
+		assert.match(promptAppended, /review execution contract/);
 		assert.doesNotMatch(await readFile(join(ROOT, "extensions", "gentle-ai.ts"), "utf8"), /readCommandSddStatus/);
-		assert.match(promptResult.systemPrompt + delegationDetail, /do not pass the `model` parameter by default/);
-		assert.doesNotMatch(promptResult.systemPrompt, /Every Agent tool call MUST include `model`/);
+		assert.match(promptAppended + delegationDetail, /do not pass the `model` parameter by default/);
+		assert.doesNotMatch(promptAppended, /Every Agent tool call MUST include `model`/);
 		assert.ok(
-			promptResult.systemPrompt.includes(
+			promptAppended.includes(
 				`Package assets root: \`${join(ROOT, "assets")}\`. Lazy asset paths below are relative to this root.`,
 			),
 			"parent prompt must declare the one absolute root for relative lazy asset paths",
 		);
 		assert.doesNotMatch(
-			promptResult.systemPrompt,
+			promptAppended,
 			new RegExp(ambientTestAssetsDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
 			"normal runtime must ignore ambient GENTLE_PI_TEST_ASSETS_DIR",
 		);
@@ -420,26 +426,30 @@ async function run() {
 			join(globalConfigHome, "persona.json"),
 			'{"mode":"neutral"}\n',
 		);
-		const neutralPromptResult = await promptHook({ systemPrompt: "base" }, createCtx(promptCwd));
-		assert.match(neutralPromptResult.systemPrompt, /Do not use slang or regional expressions/);
+		const neutralPromptEvent = { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" } };
+		const neutralPromptResult = await promptHook(neutralPromptEvent, createCtx(promptCwd));
+		assert.equal(neutralPromptResult, undefined, "before_agent_start must not return a replacement systemPrompt");
+		const neutralAppended = neutralPromptEvent.systemPromptOptions.appendSystemPrompt;
+		assert.match(neutralAppended, /Do not use slang or regional expressions/);
 		assert.doesNotMatch(
-			neutralPromptResult.systemPrompt,
+			neutralAppended,
 			/When the user writes Spanish, answer in natural Rioplatense Spanish with voseo/,
 			"neutral persona prompt must not include unconditional voseo instructions after reload",
 		);
-		const subagentPromptResult = await promptHook(
-			{ agentName: "worker", systemPrompt: "worker base" },
-			createCtx(promptCwd),
-		);
-		assert.equal(subagentPromptResult.systemPrompt, "worker base");
+		const subagentEvent = { agentName: "worker", systemPrompt: "worker base", systemPromptOptions: { appendSystemPrompt: "" } };
+		const subagentPromptResult = await promptHook(subagentEvent, createCtx(promptCwd));
+		assert.equal(subagentPromptResult, undefined, "before_agent_start must not return a replacement systemPrompt");
+		assert.equal(subagentEvent.systemPromptOptions.appendSystemPrompt, "", "a named agent gets nothing appended");
 		await mkdir(join(promptCwd, ".pi", "gentle-ai"), { recursive: true });
 		await writeFile(
 			join(promptCwd, ".pi", "gentle-ai", "persona.json"),
 			'{"mode":"gentleman"}\n',
 		);
-		const localOverridePromptResult = await promptHook({ systemPrompt: "base" }, createCtx(promptCwd));
+		const localOverrideEvent = { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" } };
+		const localOverridePromptResult = await promptHook(localOverrideEvent, createCtx(promptCwd));
+		assert.equal(localOverridePromptResult, undefined, "before_agent_start must not return a replacement systemPrompt");
 		assert.match(
-			localOverridePromptResult.systemPrompt,
+			localOverrideEvent.systemPromptOptions.appendSystemPrompt,
 			/When the user writes Spanish, answer in natural Rioplatense Spanish with voseo/,
 		);
 		const personaCtx = createCtx(promptCwd, true);

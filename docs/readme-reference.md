@@ -809,6 +809,12 @@ Both use the same shape, and both are a separate artifact from `profiles.json`:
 }
 ```
 
+The fullscreen shell header and Status → Project → Profile show the effective profile for the session
+repository: `name (local)` for a clone-local pin, `name (repo)` for a repository declaration, or the
+global active name without a suffix. Invalid or stale pins fall through to the next valid layer.
+Changes made inside or outside the profiles panel appear within about two seconds while the UI
+session is active; the indicator is omitted if no valid profile remains.
+
 For a given working directory the winner is the local pin, then the repository declaration, then no pin. With no pin at all the repository keeps the behavior described above and follows the globally active profile. `p` and `P` are toggles: pressing one on the profile that already holds that layer removes it, and either key pressed outside a Git worktree writes nothing and says so.
 
 In a pinned repository the pinned profile governs subagent launches: the agents it names take its model and effort, and the agents it omits return to inherit (their own definition, then the default model). The globally active profile and writes made through `/gentle:models` do not reach those launches, which `/gentle:models` reports when it runs inside a pinned repository. `enter` follows the same boundary: inside a pinned repository it re-pins that repository instead of writing the global routing, so the panel's main key can never move another repository's routing. The panel states which layer won, names the file that holds it, and marks the profile with `(pinned)`.

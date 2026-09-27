@@ -247,10 +247,13 @@ test("activation: a missing binary or spawn error never affects activation", asy
 	const notifications: Array<{ message: string; severity: string }> = [];
 	const ctx = fakeContext("/work/project", notifications);
 
-	// Must resolve cleanly and produce the ordinary orchestrator prompt fields,
-	// never throw or notify about the missing binary.
-	const outcome = await beforeAgentStart!({ systemPrompt: "base" }, ctx);
-	assert.equal(typeof outcome, "object");
+	// Must resolve cleanly and produce the ordinary orchestrator prompt fields
+	// in appendSystemPrompt (never a returned systemPrompt), and never throw
+	// or notify about the missing binary.
+	const event = { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" } };
+	const outcome = await beforeAgentStart!(event, ctx);
+	assert.equal(outcome, undefined, "the handler must not return a replacement systemPrompt");
+	assert.match(event.systemPromptOptions.appendSystemPrompt, /el Gentleman/);
 	assert.equal(notifications.length, 0);
 });
 

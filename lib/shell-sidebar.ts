@@ -9,6 +9,17 @@ export interface SidebarState {
 	active: boolean;
 	visibility?: { todo?: boolean };
 	ownsHost?: () => boolean;
+	/**
+	 * Columns the fullscreen rail reserves at the right edge (rail plus gap)
+	 * while `active && ownsHost()`. Overlays read it to stay inside the editor
+	 * column (the prompt-history picker's right margin) without importing
+	 * gentle-shell.
+	 */
+	railColumns?: number;
+	/** True while Status placement is "hidden": the bottom Status bar paints nothing at any width or mode. */
+	statusHidden?: () => boolean;
+	/** True while a painting top header is the only status row of a narrow fullscreen terminal: the bottom Status bar steps aside. */
+	headerOwnsStatus?: () => boolean;
 	parts: Map<string, SidebarRail>;
 }
 
@@ -35,7 +46,7 @@ export function sidebarPart<T extends Component & { dispose?(): void }>(tui: TUI
 	state.parts.set(key, rail);
 	return {
 		...bottom,
-		render: (width: number) => (key === "todo" && state.visibility?.todo === false) || (state.active && state.ownsHost?.()) ? [] : bottom.render(width),
+		render: (width: number) => (key === "todo" && state.visibility?.todo === false) || (key === "footer" && (state.statusHidden?.() || state.headerOwnsStatus?.())) || (state.active && state.ownsHost?.()) ? [] : bottom.render(width),
 		dispose() {
 			if (state.parts.get(key) === rail) state.parts.delete(key);
 			bottom.dispose?.();

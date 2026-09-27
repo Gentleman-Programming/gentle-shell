@@ -3,7 +3,7 @@ import { execFileSync, execFile } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
 import { CURSOR_MARKER, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
@@ -17,6 +17,7 @@ import { stripAnsi } from "../lib/terminal-theme.ts";
 import { resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy } from "../lib/vim-policy.ts";
+import { resolveHistoryCapturePolicy, writeHistoryCapturePolicy } from "../lib/history-capture-policy.ts";
 import { readBannerConfig } from "../extensions/startup-banner.ts";
 import { listVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
@@ -27,7 +28,18 @@ import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 initTheme("dark");
 
 const resolveWorktree = (path: string) => ({ root: path.startsWith("/repo") || path === "." ? "/repo" : path, commonDir: "/clone/git" });
-const gentleShell: typeof installGentleShell = (pi, env, deps) => installGentleShell(pi, env, { resolveWorktree, gitRunner: (cwd) => async (args) => pi.exec("git", ["-C", cwd, ...args], { timeout: 5000 }), ...deps });
+// Without GENTLE_PI_CONFIG_HOME the extension reads ~/.pi/gentle-ai, so a
+// developer's persisted preferences (for example /gentle:vim on) would leak into
+// tests. Each instance gets a fresh empty config home unless the test owns one.
+const isolatedConfigHomes: string[] = [];
+after(() => { for (const home of isolatedConfigHomes) rmSync(home, { recursive: true, force: true }); });
+function isolatedEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+	if (env.GENTLE_PI_CONFIG_HOME !== undefined) return env;
+	const home = mkdtempSync(join(tmpdir(), "gentle-shell-config-"));
+	isolatedConfigHomes.push(home);
+	return { ...env, GENTLE_PI_CONFIG_HOME: home };
+}
+const gentleShell: typeof installGentleShell = (pi, env, deps) => installGentleShell(pi, isolatedEnv(env), { resolveWorktree, gitRunner: (cwd) => async (args) => pi.exec("git", ["-C", cwd, ...args], { timeout: 5000 }), ...deps });
 
 const plainTheme = {
 	fg(_color: string, value: string) {
@@ -408,6 +420,109 @@ test("profile reader follows store changes and rejects missing or invalid active
 	assert.equal(read(), "team");
 	rmSync(path);
 	assert.equal(read(), undefined);
+});
+
+test("bound profile reader follows pin precedence and keeps frames free of resolution", (t) => {
+	const home = mkdtempSync(join(tmpdir(), "shell-effective-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	const repo = join(home, "repo");
+	const commonDir = join(home, "git");
+	const local = join(commonDir, "gentle-ai", "profile-pin.json");
+	const shared = join(repo, ".pi", "gentle-ai", "profile.json");
+	mkdirSync(join(commonDir, "gentle-ai"), { recursive: true });
+	mkdirSync(join(repo, ".pi", "gentle-ai"), { recursive: true });
+	writeFileSync(join(home, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, active: "team", profiles: { team: {}, other: {} } }));
+	const pin = (path: string, profile: string) => writeFileSync(path, JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile }));
+	const read = createActiveProfileReader({ GENTLE_PI_CONFIG_HOME: home });
+	let resolutions = 0;
+	const resolver = () => { resolutions++; return { root: repo, commonDir }; };
+	assert.equal(read(), "team");
+	read.bind(repo, resolver);
+	assert.equal(read(), "team");
+	pin(shared, "other");
+	assert.equal(read(), "team", "edits wait for a refresh");
+	assert.equal(read.refresh(), true);
+	assert.equal(read(), "other (repo)");
+	pin(local, "other");
+	assert.equal(read.refresh(), true, "same name with a different source changes the display");
+	assert.equal(read(), "other (local)");
+	for (let i = 0; i < 20; i++) assert.equal(read(), "other (local)");
+	assert.equal(resolutions, 1, "bound frames and polls reuse the worktree identity");
+	pin(local, "stale");
+	assert.equal(read.refresh(), true);
+	assert.equal(read(), "other (repo)");
+	writeFileSync(shared, "invalid");
+	assert.equal(read.refresh(), true);
+	assert.equal(read(), "team");
+	read.reset();
+	assert.equal(read(), "team");
+	assert.equal(read.refresh(), false);
+});
+
+test("profile polling refreshes both fullscreen surfaces only on change and stops across sessions", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "shell-poll-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	const repo = join(home, "repo");
+	const commonDir = join(home, "git");
+	const local = join(commonDir, "gentle-ai", "profile-pin.json");
+	mkdirSync(join(commonDir, "gentle-ai"), { recursive: true });
+	mkdirSync(repo);
+	writeFileSync(join(home, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, active: "team", profiles: { team: {}, other: {} } }));
+	const intervals: Array<{ tick: () => void; delay: number; stopped: boolean }> = [];
+	t.mock.method(globalThis, "setInterval", (tick: () => void, delay: number) => {
+		const timer = { tick, delay, stopped: false };
+		intervals.push(timer);
+		return { unref() {}, timer };
+	});
+	t.mock.method(globalThis, "clearInterval", (handle: { timer: (typeof intervals)[number] }) => { handle.timer.stopped = true; });
+	const { pi, handlers } = fakePi();
+	let resolutions = 0;
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
+		resolveWorktree: () => { resolutions++; return { root: repo, commonDir }; },
+	});
+	const first = fakeContext();
+	await fire(handlers, "session_start", first.ctx);
+	const tui = { terminal: { rows: 40, columns: 160 }, requestRender: t.mock.fn() };
+	const footerData = { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} };
+	const factory = first.ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void };
+	const component = factory(tui, plainTheme, footerData);
+	const state = sidebarState(tui as unknown as TUI);
+	const status = () => (state.parts.get("footer") as SidebarRail).render(60).join("\n");
+	const header = () => (state.parts.get("header") as SidebarRail).render(160).join("\n");
+	try {
+		const timer = intervals.find((entry) => entry.delay === 2000);
+		assert.ok(timer, "UI session installs the 2000ms profile refresh");
+		assert.match(status(), /Profile.*team/);
+		assert.match(header(), /team/);
+		const before = tui.requestRender.mock.callCount();
+		timer.tick();
+		assert.equal(tui.requestRender.mock.callCount(), before, "unchanged poll does not render");
+		writeFileSync(local, JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile: "other" }));
+		assert.match(status(), /Profile.*team/, "external edits do not read during render");
+		timer.tick();
+		assert.equal(tui.requestRender.mock.callCount(), before + 1);
+		assert.match(status(), /Profile.*other \(local\)/);
+		assert.match(header(), /other \(local\)/);
+		timer.tick();
+		assert.equal(tui.requestRender.mock.callCount(), before + 1);
+		const afterBind = resolutions;
+		status(); header(); timer.tick();
+		assert.equal(resolutions, afterBind, "poll and render reuse the session Git identity");
+		const second = fakeContext();
+		await fire(handlers, "session_start", second.ctx);
+		assert.equal(timer.stopped, true);
+		const replacement = intervals.filter((entry) => entry.delay === 2000).at(-1)!;
+		assert.notEqual(replacement, timer);
+		writeFileSync(local, "invalid");
+		timer.tick();
+		assert.equal(tui.requestRender.mock.callCount(), before + 1, "old session cannot repaint");
+		await fire(handlers, "session_shutdown", second.ctx);
+		assert.equal(replacement.stopped, true);
+		replacement.tick();
+		assert.equal(tui.requestRender.mock.callCount(), before + 1);
+	} finally {
+		component.dispose();
+	}
 });
 
 test("gentleShell stays out of the way without a UI or when disabled", () => {
@@ -1065,7 +1180,7 @@ test("GentlePromptEditor visual selection uses adapter inside the fixed-width fr
 	editor.handleInput("v");
 	editor.handleInput("l");
 	const lines = editor.render(30);
-	assert.ok(lines.some((line) => /\x1b\[7mc/.test(line)), "selection must cover c, not merely the software cursor");
+	assert.deepEqual(reverseColumns(lines[1]!), [3, 4], "c is selected; d alone is Pi's software cursor");
 	assert.ok(lines.every((line) => [...stripAnsi(line)].length === 30), "frame retains requested width");
 	editor.dispose();
 });
@@ -1805,6 +1920,95 @@ test("vim bracketed paste frames split across editor events never run NORMAL com
 	} finally { editor.dispose(); }
 });
 
+test("bracketed paste replaces native selection atomically while Vim VISUAL overflow leaves its range intact", () => {
+	const payload = "z".repeat(1024 * 1024 + 1);
+	const deps = {
+		fg: (_color: string, text: string) => text, bold: (text: string) => text, requestRender() {}, pending: () => false,
+		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => "0.87.1",
+	};
+	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, deps);
+	try {
+		for (const replacement of ["new", payload]) {
+			editor.setText("hello");
+			editor.handleInput("\x1b[1;2H");
+			editor.handleInput("\x1b[200~");
+			editor.handleInput(replacement);
+			editor.handleInput("\x1b[201~");
+			assert.equal(editor.getExpandedText(), replacement, "paste replaces the selected draft");
+			(editor as unknown as { undo(): void }).undo();
+			assert.equal(editor.getText(), "hello", "one undo restores the selection's original text");
+		}
+		editor.setVimPolicy("on");
+		editor.setText("hello");
+		editor.handleInput("\x1b");
+		editor.handleInput("v");
+		editor.handleInput("h");
+		const before = editor.render(30)[1]!;
+		editor.handleInput("\x1b[200~");
+		editor.handleInput(payload);
+		editor.handleInput("\x1b[201~");
+		assert.equal(editor.getText(), "hello", "Vim overflow is discarded, not interpreted as commands");
+		assert.deepEqual(reverseColumns(editor.render(30)[1]!), reverseColumns(before), "visual selection remains active");
+	} finally { editor.dispose(); }
+});
+
+test("incomplete bracketed paste buffered up to exactly the 16 MiB bound still completes with one-step undo", () => {
+	const BOUND = 16 * 1024 * 1024;
+	const deps = {
+		fg: (_color: string, text: string) => text, bold: (text: string) => text, requestRender() {}, pending: () => false,
+		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => "0.87.1",
+	};
+	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, deps);
+	try {
+		editor.setText("hello");
+		editor.handleInput("\x1b[1;2H");
+		editor.handleInput("\x1b[200~");
+		const payload = "z".repeat(BOUND - "\x1b[200~".length);
+		editor.handleInput(payload);
+		editor.handleInput("\x1b[201~");
+		assert.equal(editor.getExpandedText(), payload, "a frame buffered up to exactly the bound still completes");
+		(editor as unknown as { undo(): void }).undo();
+		assert.equal(editor.getText(), "hello", "one undo restores the selection's original text");
+	} finally { editor.dispose(); }
+});
+
+test("a complete bracketed paste larger than the 16 MiB incomplete-frame bound, delivered as one chunk, is never capped", () => {
+	const BOUND = 16 * 1024 * 1024;
+	const deps = {
+		fg: (_color: string, text: string) => text, bold: (text: string) => text, requestRender() {}, pending: () => false,
+		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => "0.87.1",
+	};
+	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, deps);
+	try {
+		editor.setText("hello");
+		editor.handleInput("\x1b[1;2H");
+		const payload = "z".repeat(BOUND + 1024);
+		editor.handleInput(`\x1b[200~${payload}\x1b[201~`);
+		assert.equal(editor.getExpandedText(), payload, "a complete frame larger than the incomplete-frame bound is never capped");
+		(editor as unknown as { undo(): void }).undo();
+		assert.equal(editor.getText(), "hello");
+	} finally { editor.dispose(); }
+});
+
+test("an incomplete bracketed paste that crosses the 16 MiB bound without a terminator is abandoned, never forwarded to native", () => {
+	const BOUND = 16 * 1024 * 1024;
+	const deps = {
+		fg: (_color: string, text: string) => text, bold: (text: string) => text, requestRender() {}, pending: () => false,
+		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => "0.87.1",
+	};
+	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, deps);
+	try {
+		editor.setText("hello");
+		editor.handleInput("\x1b[1;2H");
+		editor.handleInput("\x1b[200~");
+		const payload = "z".repeat(BOUND - "\x1b[200~".length + 1);
+		editor.handleInput(payload);
+		assert.equal(editor.getText(), "hello", "no partial paste bytes are ever forwarded to the native editor");
+		editor.handleInput("x");
+		assert.equal(editor.getText(), "x", "input after abandonment behaves like a fresh keystroke over the still-active selection");
+	} finally { editor.dispose(); }
+});
+
 test("vim paste overflow and policy cancellation discard partial frames without leaking modal commands", () => {
 	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, {
 		fg: (_color, text) => text, bold: (text) => text, requestRender() {}, pending: () => false,
@@ -2257,27 +2461,32 @@ test("animations command reports without writing and switches the live pulse", a
 	assert.match(ui.notices.at(-1)!, /animations: quality/);
 	assert.equal(existsSync(join(configHome, "animations.json")), false);
 	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
-	assert.deepEqual(delays, [80]);
+	assert.deepEqual(delays, [2000, 80]);
 	await command.handler("performance", ctx);
-	assert.deepEqual(delays, [80, 1000]);
-	assert.equal(active, 1);
+	assert.deepEqual(delays, [2000, 80, 1000]);
+	assert.equal(active, 2);
 	await command.handler("potato", ctx);
-	assert.equal(active, 0);
+	assert.equal(active, 1);
 	assert.match(stripAnsi(editor.render(60)[0]), /working/);
 	assert.equal(JSON.parse(readFileSync(join(configHome, "animations.json"), "utf8")).policy, "potato");
 	await command.handler("invalid", ctx);
 	assert.equal(JSON.parse(readFileSync(join(configHome, "animations.json"), "utf8")).policy, "potato");
 	await command.handler("quality", ctx);
-	assert.deepEqual(delays, [80, 1000, 80]);
+	assert.deepEqual(delays, [2000, 80, 1000, 80]);
 	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
-	assert.equal(active, 0);
+	assert.equal(active, 1);
 	editor.dispose();
+	await fire(handlers, "session_shutdown", ctx);
+	assert.equal(active, 0);
 });
 
 test("potato repaints start/settle and shows queued state on the host's next render without intervals", async (t) => {
 	const configHome = scopedDoubleEscCancelConfigHome(t);
 	writeFileSync(join(configHome, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"potato"}');
-	const intervals = t.mock.method(globalThis, "setInterval", () => { throw new Error("potato must not animate"); });
+	const intervals = t.mock.method(globalThis, "setInterval", (_callback: () => void, delay: number) => {
+		assert.equal(delay, 2000, "potato must not animate");
+		return { unref() {} };
+	});
 	const renders = t.mock.method(fakeTui, "requestRender", () => {});
 	const { pi, handlers, commands } = fakePi();
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome });
@@ -2305,7 +2514,7 @@ test("potato repaints start/settle and shows queued state on the host's next ren
 	await commands.get("gentle:animations")!.handler("status", ctx);
 	assert.match(ui.notices.at(-1)!, /animations: potato/);
 	for (const handler of handlers.get("session_shutdown") ?? []) handler({}, ctx);
-	assert.equal(intervals.mock.callCount(), 0);
+	assert.equal(intervals.mock.callCount(), 1);
 });
 
 test("animations status attributes malformed files and reports a failed write", async (t) => {
@@ -2352,7 +2561,7 @@ test("animations with no argument opens a selectable menu and applies the chosen
 	assert.equal(existsSync(join(dismissHome, "animations.json")), false);
 });
 
-test("prompt uses the compact banner cadence and releases its unref timer at settlement", (t) => {
+test("prompt uses the compact banner cadence and releases its unref timer at settlement", async (t) => {
 	const configHome = scopedDoubleEscCancelConfigHome(t);
 	writeFileSync(join(configHome, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"quality"}');
 	const delays: number[] = [];
@@ -2368,13 +2577,14 @@ test("prompt uses the compact banner cadence and releases its unref timer at set
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome });
 	const { ctx, ui } = fakeContext();
 	const editor = installedPrompt(ctx, ui, handlers);
-	assert.equal(active, 0);
+	assert.equal(active, 1);
 	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
-	assert.deepEqual(delays, [80]);
-	assert.equal(unrefs, 1);
+	assert.deepEqual(delays, [2000, 80]);
+	assert.equal(unrefs, 2);
 	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
-	assert.equal(active, 0);
+	assert.equal(active, 1);
 	editor.dispose();
+	await fire(handlers, "session_shutdown", ctx);
 	assert.equal(active, 0);
 });
 
@@ -2413,7 +2623,7 @@ function scopedDoubleEscCancelConfigHome(t: { after(callback: () => void): void 
 function findCustomizeRow(ui: FakeUi, label: string, width = 90): boolean {
 	const view = ui.overlayView!;
 	view.handleInput("\x1b[D");
-	for (let category = 0; category < 8; category++) {
+	for (let category = 0; category < 9; category++) {
 		view.handleInput("\x1b[C");
 		for (let index = 0; index < 35; index++) {
 			if (view.render(width).some((line) => line.includes(`▸ ${label}`))) return true;
@@ -2451,6 +2661,68 @@ test("customize Editor rows preview global preference without applying until Ent
 	ui.overlayView!.handleInput(" ");
 	await new Promise<void>((resolve) => setImmediate(resolve));
 	assert.equal(resolveVimPolicy({ gentlePiConfigHome: home }).policy, "off");
+	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("customize History rows persist prompt history capture and keep stored history", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	assert.ok(findCustomizeRow(ui, "Prompt history capture: enable"));
+	assert.match(ui.overlayView!.render(90).join("\n"), /History · 1\/2/);
+	assert.match(ui.overlayView!.render(90).join("\n"), /Preview · Prompt history capture[\s\S]*preference: off · effective: off/i);
+	assert.equal(existsSync(join(home, "history-capture.json")), false, "highlighting never applies");
+	await customizeAction(ui, "Prompt history capture: enable");
+	await new Promise<void>(resolve => setImmediate(resolve));
+	assert.equal(resolveHistoryCapturePolicy({ gentlePiConfigHome: home }).policy, "on");
+	assert.match(ui.notices.at(-1)!, /Prompt history capture: on\. Applies from the next prompt/i);
+	assert.ok(findCustomizeRow(ui, "Prompt history capture: enable (current)"));
+	assert.match(ui.overlayView!.render(90).join("\n"), /preference: on · effective: on/i);
+	await customizeAction(ui, "Prompt history capture: disable");
+	await new Promise<void>(resolve => setImmediate(resolve));
+	assert.equal(resolveHistoryCapturePolicy({ gentlePiConfigHome: home }).policy, "off");
+	assert.match(ui.notices.at(-1)!, /stored history is kept/i);
+	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("customize History rows show when GENTLE_PI_HISTORY_CAPTURE overrides the saved preference", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	writeHistoryCapturePolicy("on", { gentlePiConfigHome: home });
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_HISTORY_CAPTURE: " Off " });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	assert.ok(findCustomizeRow(ui, "Prompt history capture: enable (current) · env override"));
+	assert.match(ui.overlayView!.render(90).join("\n"), /preference: on · effective: off · GENTLE_PI_HISTORY_CAPTURE overrides/i);
+	await customizeAction(ui, "Prompt history capture: disable");
+	await new Promise<void>(resolve => setImmediate(resolve));
+	// The choice is still saved for when the env stops forcing a value.
+	assert.equal(resolveHistoryCapturePolicy({ gentlePiConfigHome: home }).policy, "off");
+	await customizeAction(ui, "Prompt history capture: enable");
+	await new Promise<void>(resolve => setImmediate(resolve));
+	assert.equal(resolveHistoryCapturePolicy({ gentlePiConfigHome: home }).policy, "on");
+	assert.match(ui.notices.at(-1)!, /GENTLE_PI_HISTORY_CAPTURE=off overrides it; capture stays off/i);
+	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("customize History rows refuse to overwrite a malformed preference and report it", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	writeFileSync(join(home, "history-capture.json"), "{");
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	assert.ok(findCustomizeRow(ui, "Prompt history capture: enable"));
+	assert.match(ui.overlayView!.render(90).join("\n"), /preference: off · effective: off · malformed or unreadable file/i);
+	ui.overlayView!.handleInput("\r");
+	for (let attempt = 0; attempt < 100 && !ui.notices.some(n => /malformed or unreadable history capture/i.test(n)); attempt++) await new Promise<void>((resolve) => setTimeout(resolve, 5));
+	assert.ok(ui.notices.some(n => /Cannot update malformed or unreadable history capture preference/i.test(n)), ui.notices.join("\n"));
+	assert.equal(readFileSync(join(home, "history-capture.json"), "utf8"), "{");
 	ui.overlayView!.handleInput("\x1b"); await pending;
 });
 
@@ -2568,20 +2840,68 @@ test("below-input header remains a fullscreen widget without the rail and follow
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
 	const { ctx, ui, overlayReady } = fakeContext();
 	await fire(handlers, "session_start", ctx);
-	const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 100 }, requestRender() {} };
+	const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 180 }, requestRender() {} };
 	const footer = (ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void })(tui, plainTheme, {
 		getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {},
 	});
 	try {
 		const widget = ui.widgets.get("gentle-shell-below-input-header") as (tui: unknown, theme: ShellBarTheme) => { render(width: number): string[] };
-		assert.deepEqual(widget(tui, plainTheme).render(100), []);
+		assert.deepEqual(widget(tui, plainTheme).render(180), []);
 		const pending = commands.get("gentle:customize")!.handler("", ctx);
 		await overlayReady;
 		await customizeAction(ui, "Header placement: below-input");
-		assert.match(widget(tui, plainTheme).render(100).join("\n"), /Gentle Shell/);
-		assert.equal(widget(tui, plainTheme).render(100).length, 2);
+		assert.match(widget(tui, plainTheme).render(180).join("\n"), /Gentle Shell/);
+		assert.equal(widget(tui, plainTheme).render(180).length, 2);
 		tui.mode = "regular";
-		assert.deepEqual(widget(tui, plainTheme).render(100), []);
+		assert.deepEqual(widget(tui, plainTheme).render(180), []);
+		ui.overlayView!.handleInput("\x1b");
+		await pending;
+	} finally { footer.dispose(); }
+});
+
+test("narrow fullscreen with a below-input header shows only the bottom bar, carrying the header's data and extension statuses", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 100 }, requestRender() {} };
+	const footer = (ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { render(width: number): string[]; dispose(): void })(tui, plainTheme, {
+		getGitBranch: () => "main", getExtensionStatuses: () => new Map([["mcp", "MCP: 2 servers"]]), getAvailableProviderCount: () => 1, onBranchChange: () => () => {},
+	});
+	try {
+		const widget = ui.widgets.get("gentle-shell-below-input-header") as (tui: unknown, theme: ShellBarTheme) => { render(width: number): string[] };
+		const topBottom = footer.render(100);
+		assert.equal(topBottom.length, 1, "top placement keeps the compact bar contract");
+		assert.match(topBottom[0]!, /gentle shell/);
+		const pending = commands.get("gentle:customize")!.handler("", ctx);
+		await overlayReady;
+		await customizeAction(ui, "Header placement: below-input");
+		assert.deepEqual(widget(tui, plainTheme).render(100), [], "no second status row below the input at narrow width");
+		const narrow = footer.render(100);
+		assert.equal(narrow.length, 2);
+		assert.match(narrow[0]!, /Gentle Shell/, "bottom-only bar reuses the header row");
+		assert.match(narrow[0]!, /ctx .* 45%/);
+		assert.match(narrow[0]!, /\$0\.000 sub/);
+		assert.match(narrow[0]!, /usage/);
+		assert.match(narrow[1]!, /MCP: 2 servers/, "extension statuses survive on their own line");
+		assert.ok(narrow.every((line) => visibleWidth(line) <= 100));
+		for (const width of [60, 80]) {
+			tui.terminal.columns = width;
+			const mobile = footer.render(width);
+			assert.match(mobile[0]!, /ctx/, `${width} keeps context before location`);
+			assert.ok(mobile.every((line) => visibleWidth(line) <= width));
+		}
+		tui.terminal.columns = 180;
+		assert.equal(widget(tui, plainTheme).render(180).length, 2, "wide keeps the below-input header");
+		assert.match(footer.render(180).join("\n"), /gentle shell/, "wide keeps the compact bottom bar");
+		tui.terminal.columns = 100;
+		await customizeAction(ui, "Status placement: hidden");
+		assert.deepEqual(footer.render(100), [], "hidden never paints a bottom bar");
+		assert.equal(widget(tui, plainTheme).render(100).length, 2, "with no bottom bar the below-input header stays");
+		tui.mode = "regular";
+		await customizeAction(ui, "Status placement: bottom");
+		assert.equal(footer.render(100).length, 1, "regular mode keeps the compact bar");
 		ui.overlayView!.handleInput("\x1b");
 		await pending;
 	} finally { footer.dispose(); }
@@ -3367,6 +3687,29 @@ test("idle draft: typing and deleting between two Esc presses still invalidates 
 	editor.dispose();
 });
 
+test("idle draft: selection-only input and same-character replacement cancel pending clear", (t) => {
+	let now = 1_000_000;
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) }, { now: () => now });
+	const { ctx, ui } = fakeContext();
+	const preciseEscape = { matches: (data: string, keybinding: string) => keybinding === "app.interrupt" && data === "\x1b" };
+	const editor = installedPrompt(ctx, ui, handlers, preciseEscape);
+	try {
+		for (const inputs of [["\x1b[1;2H"], ["\x1b[1;2H", "x"]]) {
+			editor.setText("x");
+			editor.handleInput("\x1b");
+			for (const input of inputs) editor.handleInput(input);
+			assert.equal(editor.getText(), "x", "selection or same-character replacement leaves the draft unchanged");
+			assert.doesNotMatch(stripAnsi(editor.render(60).join("\n")), /esc again to clear/);
+			now += 400;
+			editor.handleInput("\x1b");
+			assert.equal(editor.getText(), "x", "intervening input must make this a fresh first Esc");
+			assert.match(stripAnsi(editor.render(60).join("\n")), /esc again to clear/);
+			now += 501;
+		}
+	} finally { editor.dispose(); }
+});
+
 test("idle draft: a bash-mode draft's Esc bypasses the idle-clear gate entirely", (t) => {
 	const { pi, handlers } = fakePi();
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: scopedDoubleEscCancelConfigHome(t) });
@@ -3692,7 +4035,7 @@ test("registered canonical root governs real Git discovery, status and diff desp
 	const discovery = await run(["worktree", "list", "--porcelain", "-z"]);
 	assert.match(discovery.stdout, new RegExp(`worktree ${selected}`));
 	assert.ok(!discovery.stdout.includes(foreign));
-	installGentleShell(h.pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { devBinary: () => undefined, gitRunner: (cwd) => shellGitRunner(cwd, poisoned) });
+	installGentleShell(h.pi, isolatedEnv({ GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }), { devBinary: () => undefined, gitRunner: (cwd) => shellGitRunner(cwd, poisoned) });
 	await fire(h.handlers, "session_start", ctx);
 	t.after(() => fire(h.handlers, "session_shutdown", ctx));
 	assert.equal(ui.widgets.has("gentle-shell-changes"), false, "preexisting dirty files are not agent changes");

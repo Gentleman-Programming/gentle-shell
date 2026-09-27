@@ -29,7 +29,7 @@ Pi documents this route (`docs/extensions.md:101`: "Prefer changing prompt secti
 
 - [x] T1 gentle-ai harness through `appendSystemPrompt`, with tests. Route: delegated (writer; 4+ files to understand). Shared idempotent helper `lib/append-system-prompt.ts`. `tests/telemetry-trigger.test.ts` and `tests/runtime-harness.mjs` asserted the removed return shape and were updated to the new contract (scope extended by the parent; required consequence, not new behavior). Commit `13d6a3d24`.
 - [x] T2 gentle-todo block through `appendSystemPrompt`, with tests, plus a cross-extension ordering test. Route: delegated (same writer). Commit `c1589327c`.
-- [x] T3 Docs (`docs/review-integration.md`). Route: delegated (same writer). Commit: the docs commit that carries this document update.
+- [x] T3 Docs (`docs/gentle-shell.md`; `docs/review-integration.md` is a byte-pinned contract artifact and was restored after CI `verify` caught the drift). Route: delegated (same writer). Commit: the docs commit that carries this document update.
 - [x] T4 Live verification under `claude-bridge`. Route: inline (parent). See evidence.
 
 ## Acceptance criteria

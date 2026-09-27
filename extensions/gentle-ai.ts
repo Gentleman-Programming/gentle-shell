@@ -1,5 +1,6 @@
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import { consumeReviewMutation, pendingReviewMutation, recordReviewMutation } from "../lib/review-reminder-receipt.ts";
+import { createReviewSidebarPublisher } from "../lib/review-sidebar-state.ts";
 import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { declareReviewRelayHandshake } from "../lib/review-relay-contract.ts";
@@ -8768,9 +8769,12 @@ function createGentleAiExtensionForTesting(
 		return revoked;
 	};
 
+	const reviewSidebar = createReviewSidebarPublisher(pi);
+	pi.on("session_tree", (_event, ctx) => reviewSidebar.reset(ctx));
 	let reminderSessionActive = true;
 	let reminderEpoch = 0;
 	pi.on("session_shutdown", (event, context) => {
+		reviewSidebar.reset();
 		reminderSessionActive = false;
 		reminderEpoch += 1;
 		// Pi tears down this registry on reload as well as session replacement/quit.
@@ -8905,7 +8909,7 @@ function createGentleAiExtensionForTesting(
 		return named.length === 0 ? operation : `${operation} · ${named.join(" · ")}`;
 	};
 
-	pi.registerTool({
+	pi.registerTool(reviewSidebar.tool({
 		name: "gentle_review_capture_group",
 		renderShell: "self",
 		label: "Gentle Review Capture Group",
@@ -8943,9 +8947,9 @@ function createGentleAiExtensionForTesting(
 			);
 			return { content: [{ type: "text", text: JSON.stringify(details) }], details };
 		},
-	});
+	}));
 
-	pi.registerTool({
+	pi.registerTool(reviewSidebar.tool({
 		name: "gentle_review_capture",
 		renderShell: "self",
 		label: "Gentle Review Capture",
@@ -8989,9 +8993,9 @@ function createGentleAiExtensionForTesting(
 				details,
 			};
 		},
-	});
+	}));
 
-	pi.registerTool({
+	pi.registerTool(reviewSidebar.tool({
 		name: "gentle_review",
 		renderShell: "self",
 		label: "Gentle Review Controller",
@@ -9137,9 +9141,10 @@ function createGentleAiExtensionForTesting(
 				details,
 			};
 		},
-	});
+	}));
 
 	pi.on("session_start", async (event, ctx) => {
+		reviewSidebar.reset(ctx);
 		elapsedTiming = new GentleAiElapsedTimingLedger(ctx.sessionManager, pi);
 		reminderSessionActive = true;
 		reminderEpoch += 1;

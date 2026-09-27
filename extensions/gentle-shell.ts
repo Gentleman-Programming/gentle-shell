@@ -110,6 +110,7 @@ import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarHeader, sidebarPart, sidebarState, VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar, narrowStatusOwner, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
 import { SessionChanges, SESSION_CHANGE_EVENT } from "../lib/session-changes.ts";
+import { REVIEW_SIDEBAR_EVENT, isReviewSidebarSnapshot, type ReviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
 import { SelectionEngine } from "../lib/selection-engine.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
@@ -1547,6 +1548,22 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let changes: SessionChanges | undefined;
 	let registry: SessionWorktreeRegistry | undefined;
 	let currentContext: ExtensionContext | undefined;
+	let review: ReviewSidebarSnapshot | undefined;
+	const redrawReview = () => {
+		renderHost?.invalidateSidebar?.();
+		renderHost?.requestRender();
+	};
+	const unsubscribeReview = pi.events.on(REVIEW_SIDEBAR_EVENT, (value) => {
+		const event = value as { sessionId?: unknown; snapshot?: unknown } | undefined;
+		if (!currentContext || event?.sessionId !== currentContext.sessionManager.getSessionId()) return;
+		if (!isReviewSidebarSnapshot(event.snapshot)) return;
+		review = { state: event.snapshot.state, scope: event.snapshot.scope };
+		redrawReview();
+	});
+	pi.on("session_tree", () => {
+		review = undefined;
+		redrawReview();
+	});
 	let shown = "";
 	const applyChanges = (ctx: ExtensionContext, model: ChangesModel) => {
 		const fingerprint = changesFingerprint(model);
@@ -1581,6 +1598,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		},
 	});
 	pi.on("session_start", async (_event, ctx) => {
+		if (review) {
+			review = undefined;
+			redrawReview();
+		}
 		stopProfilePoll();
 		registry?.close();
 		currentContext = ctx;
@@ -1614,6 +1635,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const footerModel = (): ShellBarModel => ({
 				...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: usage.get(ctx.model?.provider ?? ""), profile: deps.activeProfile() }),
 				changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted, notice: tracker.model.notice },
+				review,
 			});
 			// At narrow fullscreen widths only one status row paints: a top header
 			// suppresses the bottom bar in the layout, and otherwise the bottom bar
@@ -1684,6 +1706,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		applyChanges(ctx, tracker.model);
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
+		if (review) {
+			review = undefined;
+			redrawReview();
+		}
+		unsubscribeReview();
 		stopProfilePoll();
 		oddPhaseRegistry.clear(ctx.sessionManager.getSessionId());
 		oddPhaseRegistry.clearRenderRequest(ctx.sessionManager.getSessionId());

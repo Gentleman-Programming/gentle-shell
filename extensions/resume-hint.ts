@@ -1,6 +1,11 @@
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { existsSync, writeFileSync } from "node:fs";
-import { RESUME_HANDOFF_ENV, resumeHandoffFromSession, serializeResumeHandoff } from "../lib/gentle-shell-resume-hint.ts";
+import {
+	isResumeHandoffPath,
+	RESUME_HANDOFF_ENV,
+	resumeHandoffFromSession,
+	serializeResumeHandoff,
+} from "../lib/gentle-shell-resume-hint.ts";
 
 // Hands the quitting session to bin/gentle-shell.mjs, which prints a
 // gentle-shell resume command below pi's "pi --session <id>" exit hint (see
@@ -18,7 +23,7 @@ function claimHandoffPath(env: NodeJS.ProcessEnv): string | undefined {
 	// Claim the handoff for this process only: subagents and tool shells
 	// inherit process.env, and their own shutdowns must not overwrite it.
 	delete env[RESUME_HANDOFF_ENV];
-	if (holder[STATE_KEY] === undefined && path) holder[STATE_KEY] = path;
+	if (holder[STATE_KEY] === undefined && path && isResumeHandoffPath(path)) holder[STATE_KEY] = path;
 	return holder[STATE_KEY];
 }
 
@@ -39,12 +44,15 @@ export default function resumeHint(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 			sessionDir: sessionManager.getSessionDir(),
 			sessionFile: sessionManager.getSessionFile(),
 			cwd: sessionManager.getCwd(),
+			launchCwd: process.cwd(),
 			agentDir: getAgentDir(),
 			fileExists: existsSync,
 		});
 		if (!handoff) return;
 		try {
-			writeFileSync(handoffPath, serializeResumeHandoff(handoff), "utf8");
+			// "wx": create only. The launcher's private dir starts empty, so an
+			// existing file (or a planted symlink) means it is not ours to write.
+			writeFileSync(handoffPath, serializeResumeHandoff(handoff), { encoding: "utf8", flag: "wx" });
 		} catch {
 			// Best effort: without a handoff the launcher prints nothing extra.
 		}

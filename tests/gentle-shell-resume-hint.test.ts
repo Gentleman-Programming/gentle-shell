@@ -8,6 +8,7 @@ import { getAgentDir, SessionManager } from "@earendil-works/pi-coding-agent";
 import {
 	RESUME_HANDOFF_ENV,
 	gentleShellResumeCommand,
+	isResumeHandoffPath,
 	parseResumeHandoff,
 	piDefaultSessionDir,
 	planResumeHint,
@@ -53,6 +54,7 @@ test("resumeHandoffFromSession omits the session dir when it is pi's default", (
 		sessionDir: DEFAULT_DIR,
 		sessionFile: join(DEFAULT_DIR, "x.jsonl"),
 		cwd: CWD,
+		launchCwd: CWD,
 		agentDir: AGENT_DIR,
 		fileExists: () => true,
 	});
@@ -65,14 +67,30 @@ test("resumeHandoffFromSession keeps a custom session dir", () => {
 		sessionDir: "/tmp/my sessions",
 		sessionFile: "/tmp/my sessions/x.jsonl",
 		cwd: CWD,
+		launchCwd: CWD,
 		agentDir: AGENT_DIR,
 		fileExists: () => true,
 	});
 	assert.deepEqual(handoff, { sessionId: ID, sessionDir: "/tmp/my sessions" });
 });
 
+test("resumeHandoffFromSession carries the session file for a session from another project", () => {
+	const other = resolve("/home/u/other");
+	const handoff = resumeHandoffFromSession({
+		sessionId: ID,
+		sessionDir: DEFAULT_DIR,
+		sessionFile: join(DEFAULT_DIR, "x.jsonl"),
+		cwd: CWD,
+		launchCwd: other,
+		agentDir: AGENT_DIR,
+		fileExists: () => true,
+	});
+	assert.deepEqual(handoff, { sessionId: ID, sessionFile: join(DEFAULT_DIR, "x.jsonl") });
+	assert.equal(gentleShellResumeCommand(handoff!, ["--link"]), `gentle-shell --link --session ${join(DEFAULT_DIR, "x.jsonl")}`);
+});
+
 test("resumeHandoffFromSession returns undefined when pi would not print a hint", () => {
-	const base = { sessionId: ID, sessionDir: DEFAULT_DIR, cwd: CWD, agentDir: AGENT_DIR };
+	const base = { sessionId: ID, sessionDir: DEFAULT_DIR, cwd: CWD, launchCwd: CWD, agentDir: AGENT_DIR };
 	assert.equal(resumeHandoffFromSession({ ...base, sessionFile: undefined, fileExists: () => true }), undefined);
 	assert.equal(resumeHandoffFromSession({ ...base, sessionFile: join(DEFAULT_DIR, "x.jsonl"), fileExists: () => false }), undefined);
 });
@@ -84,6 +102,29 @@ test("handoff round-trips and rejects malformed input", () => {
 	for (const text of ["", "not json", "null", "[]", '{"sessionId":""}', '{"sessionId":1}', '{"sessionId":"a","sessionDir":3}', '{"sessionId":"a","sessionDir":""}']) {
 		assert.equal(parseResumeHandoff(text), undefined, text);
 	}
+});
+
+test("handoff accepts only an absolute, control-free session file on its own", () => {
+	const file = resolve("/tmp/s/x.jsonl");
+	assert.deepEqual(parseResumeHandoff(JSON.stringify({ sessionId: ID, sessionFile: file })), { sessionId: ID, sessionFile: file });
+	for (const value of [
+		{ sessionId: ID, sessionFile: "relative/x.jsonl" },
+		{ sessionId: ID, sessionFile: resolve("/tmp/s/x.txt") },
+		{ sessionId: ID, sessionFile: resolve("/tmp/s/\u001b[2J.jsonl") },
+		{ sessionId: ID, sessionFile: 3 },
+		{ sessionId: ID, sessionFile: file, sessionDir: "/tmp/s" },
+	]) {
+		assert.equal(parseResumeHandoff(JSON.stringify(value)), undefined, JSON.stringify(value));
+	}
+});
+
+test("isResumeHandoffPath accepts only the launcher's private handoff shape", () => {
+	const tmp = tmpdir();
+	assert.equal(isResumeHandoffPath(join(tmp, "gentle-shell-resume-Ab12Cd", "handoff.json")), true);
+	assert.equal(isResumeHandoffPath(join(tmp, "gentle-shell-resume-Ab12Cd", "other.json")), false);
+	assert.equal(isResumeHandoffPath(join(tmp, "elsewhere", "handoff.json")), false);
+	assert.equal(isResumeHandoffPath(join(resolve("/home/u"), ".bashrc")), false);
+	assert.equal(isResumeHandoffPath("gentle-shell-resume-Ab12Cd/handoff.json"), false);
 });
 
 test("handoff rejects values that could inject terminal control sequences", () => {
@@ -130,6 +171,7 @@ test("the gentle-shell command matches pi's real exit hint with the binary swapp
 				sessionDir: manager.getSessionDir(),
 				sessionFile: manager.getSessionFile(),
 				cwd: manager.getCwd(),
+				launchCwd: manager.getCwd(),
 				agentDir: getAgentDir(),
 				fileExists: existsSync,
 			});
@@ -141,6 +183,36 @@ test("the gentle-shell command matches pi's real exit hint with the binary swapp
 	} finally {
 		if (previousTTY) Object.defineProperty(process.stdout, "isTTY", previousTTY);
 		else delete (process.stdout as { isTTY?: boolean }).isTTY;
+		if (previousDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousDir;
+		rmSync(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("a cross-project session file reopens the original session in pi", () => {
+	const agentDir = mkdtempSync(join(tmpdir(), "resume-hint-agent-"));
+	const previousDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const manager = SessionManager.create(CWD);
+		manager.appendMessage({ role: "user", content: "hi", timestamp: Date.now() } as never);
+		manager.appendMessage({ role: "assistant", content: [{ type: "text", text: "ok" }], timestamp: Date.now() } as never);
+		const handoff = resumeHandoffFromSession({
+			sessionId: manager.getSessionId(),
+			sessionDir: manager.getSessionDir(),
+			sessionFile: manager.getSessionFile(),
+			cwd: manager.getCwd(),
+			launchCwd: resolve("/home/u/other"),
+			agentDir: getAgentDir(),
+			fileExists: existsSync,
+		});
+		assert.ok(handoff?.sessionFile);
+		// pi's --session takes any value with a path separator as a file path.
+		assert.ok(/[/\\]/.test(handoff.sessionFile));
+		const reopened = SessionManager.open(handoff.sessionFile);
+		assert.equal(reopened.getSessionId(), manager.getSessionId());
+		assert.equal(reopened.getCwd(), manager.getCwd());
+	} finally {
 		if (previousDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousDir;
 		rmSync(agentDir, { recursive: true, force: true });

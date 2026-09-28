@@ -237,16 +237,23 @@ async function proveInlineSkillContractGap(): Promise<void> {
 		})(capturePi as never);
 		const promptHandler = captureHooks.get("before_agent_start")?.[0];
 		assert.ok(promptHandler, "the gentle-ai extension must register a before_agent_start handler");
-		const handlerResult = (await promptHandler(
-				{ systemPrompt: "PROBE-BASE" },
-				{ cwd, hasUI: false, sessionManager: { getSessionId: () => "inline-skill-probe" } },
-			)) as { systemPrompt: string };
-		const prompt = handlerResult.systemPrompt;
+		// gentle-shell#1485: pi-claude-bridge forwards only the structured
+		// systemPromptOptions and drops a handler-returned replacement prompt,
+		// so the production handler now composes through the mutable
+		// appendSystemPrompt section and returns undefined. The probe passes the
+		// structured options and reconstructs the delivered prompt as the base
+		// prompt plus the appended block, exactly what the harness would send.
+		const systemPromptOptions = { appendSystemPrompt: "" };
+		await promptHandler(
+			{ systemPrompt: "PROBE-BASE", systemPromptOptions },
+			{ cwd, hasUI: false, sessionManager: { getSessionId: () => "inline-skill-probe" } },
+		);
+		const prompt = `PROBE-BASE\n\n${systemPromptOptions.appendSystemPrompt}`;
 
-		// Fidelity pins: the handler result really went through the production
-		// composition pipeline (base prompt carried through, assets-root
+		// Fidelity pins: the captured composition really went through the
+		// production pipeline (base prompt carried through, assets-root
 		// substitution, background/RDD status block with the fail-closed line).
-		assert.ok(prompt.startsWith("PROBE-BASE"), "the handler must compose over the base system prompt");
+		assert.ok(prompt.startsWith("PROBE-BASE"), "the probe must compose over the base system prompt");
 		assert.match(
 			prompt,
 			/Receipt-driven development: unknown \(native status unavailable\)/,

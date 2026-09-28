@@ -3,7 +3,7 @@ import { constants as fsConstants, closeSync, fstatSync, lstatSync, mkdirSync, o
 import { join } from "node:path";
 import { gentlePiConfigHome } from "./agent-home.ts";
 import { ANIMATION_POLICY, type AnimationPolicy } from "./animation-policy.ts";
-import { isVisualSettings, type VisualSettings } from "./visual-customization-policy.ts";
+import { isVisualSettings, normalizeVisualSettings, type VisualSettings } from "./visual-customization-policy.ts";
 import type { BannerConfig } from "../extensions/startup-banner.ts";
 
 export const VISUAL_PROFILES_SCHEMA = "gentle-pi.visual-profiles/v1";
@@ -83,13 +83,18 @@ export function parseVisualProfilesFile(raw: string): VisualProfile[] | undefine
 			return undefined;
 		}
 		const names = new Set<string>();
-		for (const profile of value.profiles) {
+		const profiles: VisualProfile[] = [];
+		for (const stored of value.profiles) {
+			// Legacy visual settings are normalized before the strict profile check.
+			const visual = record(stored) ? normalizeVisualSettings(stored.visual) : undefined;
+			const profile = visual && { ...stored, visual };
 			if (!valid(profile) || names.has(profile.name)) {
 				return undefined;
 			}
 			names.add(profile.name);
+			profiles.push(profile);
 		}
-		return value.profiles as VisualProfile[];
+		return profiles;
 	} catch {
 		return undefined;
 	}

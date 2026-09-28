@@ -1,4 +1,7 @@
+import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import { consumeReviewMutation, pendingReviewMutation, recordReviewMutation } from "../lib/review-reminder-receipt.ts";
+import { createReviewSidebarPublisher } from "../lib/review-sidebar-state.ts";
+import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { declareReviewRelayHandshake } from "../lib/review-relay-contract.ts";
 import { execFileSync } from "node:child_process";
@@ -29,7 +32,7 @@ import type {
 	ThemeColor,
 	ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
-import { Key, isKeyRelease, matchesKey, truncateToWidth, type KeybindingsManager, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { Key, Text, isKeyRelease, matchesKey, truncateToWidth, type KeybindingsManager, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { resolveGentlePiAgentHome, gentlePiConfigHome } from "../lib/agent-home.ts";
 import {
 	BACKGROUND_SUBAGENTS_FILE,
@@ -144,9 +147,10 @@ import {
 	type ReviewMode,
 	type ReviewProjectionV1,
 } from "../lib/review-snapshot.ts";
+import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
 import { renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
 import { sanitizeTerminalText, stripAnsi } from "../lib/terminal-theme.ts";
-import { BASE_REF_ACCEPTED_FORMS, CandidateViewError, CandidateViewRegistry, injectReviewCandidateView, readCandidateContextManifestPage, resolveCanonicalCandidateBase, type CandidateView } from "../lib/review-candidate-view.ts";
+import { BASE_REF_ACCEPTED_FORMS, CandidateViewError, CandidateViewRegistry, injectReviewCandidateView, readCandidateContextManifestPage, resolveCanonicalCandidateBase, isProviderCandidateBaseTree, type CandidateView } from "../lib/review-candidate-view.ts";
 import {
 	GentleAiDevBinaryOverrideError,
 	GENTLE_AI_INSTALL_RECOVERY_COMMAND,
@@ -1250,6 +1254,7 @@ Organic Driven Development (ODD) is the predefined workflow of this orchestrator
 5. **Track before the first write.** For substantial authorized implementation, create \`odd/tasks/<feature-name>.md\` and its Engram mirror \`odd/<feature-name>/tasks\` automatically, then create or rebuild the visible \`todo\` list from the reconciled feature tasks, all before the first source write and without asking permission for tasks or storage. Tell the user in one line which feature document was created and how many tasks it holds.
 6. **Implement task by task.** Route each task through the orchestrator's Work Routing Ladder, honoring its mandatory delegation triggers, with applicable test-first development and checks. These triggers are mandatory, not advisory: executing past a fired trigger inline is a routing defect even if the work succeeds. Check an item off only after its outcome and checks were observed; update the file, mirror, and visible \`todo\` projection after every task transition and material plan change. Every task closes with at least one work-unit commit on the feature branch, branch first when on the default branch, with tests and docs alongside the behavior, using a Conventional Commit message; record the commit identity in the feature document as evidence. Work-unit commits on the feature branch are part of authorized substantial ODD implementation; push, pull request creation, and merge remain the user's decisions.
 7. **Close.** Report the verified outcome, every failed, skipped, or pending check, and the next step. The native review candidate is a work-unit commit or a PR slice, never a TODO checkbox and never the accumulated feature branch; native review runs only under the user-owned RDD switch.
+Phase reporting: the Gentle Shell prompt label is inferred automatically from the primary session's tool activity (reads show \`exploring\`, edits \`implementing\`, test runs \`checking\`, user questions \`deciding\`). When the \`gentle_odd_phase\` tool is available, use it to refine that label with phases tools cannot show (\`authorizing\`, \`researching\`, \`deciding\`, \`closing\`): call \`gentle_odd_phase\` only when the primary session's ODD phase actually changes, never per tool call or on a fixed cadence, and never from a subagent. It drives the Gentle Shell prompt label only.
 Resume an interrupted feature with \`mem_context\`, then project- and feature-scoped \`mem_search\`, then \`mem_get_observation\` for the full document, then the task file itself; reconcile before continuing the next unfinished task. Detail for steps 3–7: \`orchestrator-delegation.md\` and \`orchestrator-memory.md\`.
 
 Harness principles:
@@ -1588,7 +1593,11 @@ const MODEL_PANEL_MAX_RENDER_ROWS = 20;
 // Rows the agent list does not own: two borders, title, current-profile line,
 // blank, "Current assignments:", blank, both scroll indicators, blank, Continue,
 // Back, blank, and the two footer rows.
-const AGENT_LIST_MAX_VISIBLE_ROWS = MODEL_PANEL_MAX_RENDER_ROWS - 15;
+const AGENT_LIST_CHROME_ROWS = 15;
+const AGENT_LIST_MAX_VISIBLE_ROWS = MODEL_PANEL_MAX_RENDER_ROWS - AGENT_LIST_CHROME_ROWS;
+// Rows the model list does not own: two borders, title, blank, search, blank,
+// blank, and the footer row.
+const MODEL_LIST_CHROME_ROWS = 8;
 const MODEL_LIST_MAX_VISIBLE_ROWS = 12;
 
 function readStringPath(value: unknown, path: string[]): string | undefined {
@@ -2695,8 +2704,8 @@ interface OverlayComponent {
 
 type ModelPanelResult =
 	| { type: "save"; config: AgentModelConfig }
-	// `save`, then snapshot the saved routing into the current profile: the step
-	// `/gentle:profiles` performs with `s`, reachable without leaving this panel.
+	// `save`, then snapshot saved agent routing and the live orchestrator into
+	// the current profile without changing the global orchestrator defaults.
 	| { type: "save-profile"; config: AgentModelConfig }
 	| { type: "custom"; agent: string | "all"; config: AgentModelConfig }
 	| { type: "export"; config: AgentModelConfig }
@@ -2739,6 +2748,8 @@ class SddModelPanel implements OverlayComponent {
 	private readonly theme: Theme | undefined;
 	// The profile `u` writes to, named up front so the key never targets a surprise.
 	private readonly profileLabel: string;
+	// Terminal rows, so the card fills the fullscreen overlay like `/gentle:profiles`.
+	private readonly terminalRows: (() => number) | undefined;
 
 	constructor(
 		initialConfig: AgentModelConfig,
@@ -2747,6 +2758,7 @@ class SddModelPanel implements OverlayComponent {
 		done: (result: ModelPanelResult) => void,
 		theme?: Theme,
 		profileLabel = "none",
+		terminalRows?: () => number,
 	) {
 		this.draft = cloneModelConfig(initialConfig);
 		this.rows = [SET_ALL_AGENTS, ...agents];
@@ -2754,6 +2766,7 @@ class SddModelPanel implements OverlayComponent {
 		this.done = done;
 		this.theme = theme;
 		this.profileLabel = profileLabel;
+		this.terminalRows = terminalRows;
 	}
 
 	invalidate(): void {}
@@ -2781,10 +2794,22 @@ class SddModelPanel implements OverlayComponent {
 		return this.renderCard(lines, width);
 	}
 
-	private renderCard(lines: string[], width: number): string[] {
+	// In the fullscreen overlay a list owns every row its chrome leaves free;
+	// without a terminal height it keeps the fixed window.
+	private visibleListRows(fixedRows: number, chromeRows: number): number {
+		if (!this.terminalRows) return fixedRows;
+		return Math.max(1, Math.floor(this.terminalRows()) - chromeRows);
+	}
+
+	private renderCard(body: string[], width: number): string[] {
+		let lines = body;
 		const innerWidth = Math.max(1, width - 4);
 		const horizontal = "─".repeat(innerWidth + 2);
 		const border = (text: string) => this.renderText(text, "border");
+		const bodyRows = this.terminalRows ? Math.floor(this.terminalRows()) - 2 : 0;
+		if (lines.length < bodyRows) {
+			lines = [...lines, ...Array<string>(bodyRows - lines.length).fill("")];
+		}
 		return [
 			border(`╭${horizontal}╮`),
 			...lines.map(
@@ -3016,7 +3041,10 @@ class SddModelPanel implements OverlayComponent {
 		lines.push("");
 		lines.push(line("Current assignments:", "muted"));
 		lines.push("");
-		const visibleRows = Math.min(AGENT_LIST_MAX_VISIBLE_ROWS, this.rows.length);
+		const visibleRows = Math.min(
+			this.visibleListRows(AGENT_LIST_MAX_VISIBLE_ROWS, AGENT_LIST_CHROME_ROWS),
+			this.rows.length,
+		);
 		const listCursor = Math.min(this.cursor, this.rows.length - 1);
 		const start = Math.max(
 			0,
@@ -3062,7 +3090,7 @@ class SddModelPanel implements OverlayComponent {
 		);
 		lines.push(
 			line(
-				`x export • r restore • ctrl+s save • u update profile "${this.profileLabel}" • esc back`,
+				`x export • r restore • ctrl+s save • u capture session in "${this.profileLabel}" • esc back`,
 				"muted",
 			),
 		);
@@ -3082,14 +3110,15 @@ class SddModelPanel implements OverlayComponent {
 			`${this.renderText("◎", "accent")} ${this.renderText(this.query || "search...", "muted")}`,
 		);
 		lines.push("");
+		const visibleRows = this.visibleListRows(MODEL_LIST_MAX_VISIBLE_ROWS, MODEL_LIST_CHROME_ROWS);
 		const start = Math.max(
 			0,
 			Math.min(
-				this.modelCursor - Math.floor(MODEL_LIST_MAX_VISIBLE_ROWS / 2),
-				Math.max(0, options.length - MODEL_LIST_MAX_VISIBLE_ROWS),
+				this.modelCursor - Math.floor(visibleRows / 2),
+				Math.max(0, options.length - visibleRows),
 			),
 		);
-		const end = Math.min(options.length, start + MODEL_LIST_MAX_VISIBLE_ROWS);
+		const end = Math.min(options.length, start + visibleRows);
 		for (let i = start; i < end; i++) {
 			const focused = i === this.modelCursor;
 			lines.push(
@@ -3197,10 +3226,20 @@ function renderSddModelPanelForTesting(
 	agents: string[],
 	width: number,
 	theme?: Theme,
+	terminalRows?: number,
+	inputs: string[] = [],
 ): string[] {
-	return new SddModelPanel(initialConfig, modelOptions, agents, () => {}, theme).render(
-		width,
+	const panel = new SddModelPanel(
+		initialConfig,
+		modelOptions,
+		agents,
+		() => {},
+		theme,
+		undefined,
+		terminalRows === undefined ? undefined : () => terminalRows,
 	);
+	for (const data of inputs) panel.handleInput(data);
+	return panel.render(width);
 }
 
 async function showSddModelPanel(
@@ -3211,21 +3250,24 @@ async function showSddModelPanel(
 	const modelOptions = await getPiModelOptions(ctx);
 	const agents = modelAssignmentNames(ctx.cwd);
 	return ctx.ui.custom<ModelPanelResult>(
-		(_tui, theme, _keybindings, done) =>
-			new SddModelPanel(config, modelOptions, agents, done, theme, profileLabel),
+		(tui, theme, _keybindings, done) =>
+			new SddModelPanel(config, modelOptions, agents, done, theme, profileLabel, () =>
+				Math.max(0, tui.terminal.rows),
+			),
 		{
 			overlay: true,
+			// Same fullscreen dimensions as the `/gentle:profiles` panel.
 			overlayOptions: {
 				anchor: "center",
-				width: "70%",
-				minWidth: 72,
-				maxHeight: "85%",
+				width: "100%",
+				maxHeight: "100%",
+				margin: 0,
 			},
 		},
 	);
 }
 
-async function handleModelsCommand(ctx: ExtensionContext): Promise<void> {
+async function handleModelsCommand(ctx: ExtensionContext, pi: ExtensionAPI): Promise<void> {
 	migrateLegacyProjectModelOverrides(ctx.cwd);
 	// A pinned repository resolves its subagent routing from the profile at launch,
 	// so global routing written here will not reach its subagents. Saying it before
@@ -3347,7 +3389,7 @@ async function handleModelsCommand(ctx: ExtensionContext): Promise<void> {
 		].join("\n"),
 		"info",
 	);
-	if (result.type === "save-profile") updateCurrentProfileFromSavedRouting(ctx);
+	if (result.type === "save-profile") updateCurrentProfileFromSavedRouting(ctx, pi);
 }
 
 /** The profile `u` in `/gentle:models` writes to, and why it is that one. */
@@ -3378,13 +3420,12 @@ function describeCurrentProfileTarget(target: CurrentProfileTarget | undefined):
 }
 
 /**
- * The second half of `u`: the same snapshot `/gentle:profiles` takes with `s`,
- * aimed at the current profile. The snapshot reads the global routing the save
- * just materialized, never the pin, so a pinned repository does not copy its
- * pinned profile onto itself. The global save has already been reported, so every
+ * The second half of `u` captures saved global agent routing (never the pin)
+ * and the live session orchestrator. Without a live model it falls back to
+ * persisted settings. The global save has already been reported, so every
  * outcome here speaks only about the profile.
  */
-function updateCurrentProfileFromSavedRouting(ctx: ExtensionContext): void {
+function updateCurrentProfileFromSavedRouting(ctx: ExtensionContext, pi: ExtensionAPI): void {
 	const path = profilesFilePath(gentleAiConfigHome());
 	const read = readProfilesFileResult(path);
 	if (read.status === "invalid") {
@@ -3398,6 +3439,12 @@ function updateCurrentProfileFromSavedRouting(ctx: ExtensionContext): void {
 		readGlobalEffectiveModelConfig(ctx.cwd),
 		readOrchestratorSettings(orchestratorSettingsPath()),
 	);
+	if (ctx.model) {
+		snapshot[PROFILE_ORCHESTRATOR_KEY] = {
+			model: `${ctx.model.provider}/${ctx.model.id}`,
+			thinking: pi.getThinkingLevel(),
+		};
+	}
 	if (read.status === "missing") {
 		// The same seed `/gentle:profiles` performs on its first open, so pressing
 		// `u` before ever opening that panel lands on the same "current" profile.
@@ -3453,6 +3500,16 @@ type ProfilesPanelResult =
 	| { type: "close" };
 
 type ProfilesSnapshotHandler = (name: string) => AgentProfilesFile;
+
+/**
+ * What a panel action hands the reopened panel: a one-line status for the footer,
+ * because notifications stay hidden behind the fullscreen overlay until it closes,
+ * and the profile to select when the action created or renamed one.
+ */
+interface ProfilesPanelReport {
+	status?: string;
+	selectedName?: string;
+}
 
 const PROFILES_PANEL_MIN_BODY_ROWS = 6;
 
@@ -3632,8 +3689,10 @@ class ProfilesPanel implements OverlayComponent {
 		saveSnapshot: ProfilesSnapshotHandler,
 		requestRender: () => void,
 		pinStatus: () => ProfilePinStatus | undefined,
+		feedback?: string,
 	) {
 		this.file = file;
+		this.feedback = feedback;
 		this.currentConfig = currentConfig;
 		this.done = done;
 		this.saveSnapshot = saveSnapshot;
@@ -3928,6 +3987,7 @@ async function showProfilesPanel(
 	currentConfig: AgentModelConfig,
 	selectedName: string | undefined,
 	saveSnapshot: ProfilesSnapshotHandler,
+	status?: string,
 ): Promise<ProfilesPanelResult> {
 	// Both orchestrator and pin state are snapshots for this panel visit.
 	// Actions (including p/P) reopen the panel and read fresh state.
@@ -3946,6 +4006,7 @@ async function showProfilesPanel(
 				saveSnapshot,
 				() => tui.requestRender(),
 				() => readProfilePinStatus(ctx.cwd),
+				status,
 			);
 			const container = createNativeFullscreenInteraction({
 				keyboardTarget: panel,
@@ -4048,6 +4109,7 @@ async function runProfilesPanelAction(
 	path: string,
 	file: AgentProfilesFile,
 	result: Exclude<ProfilesPanelResult, { type: "close" }>,
+	report: ProfilesPanelReport = {},
 ): Promise<AgentProfilesFile> {
 	switch (result.type) {
 		case "apply": {
@@ -4209,14 +4271,25 @@ async function runProfilesPanelAction(
 			return claimed;
 		}
 		case "create": {
-			const name = await ctx.ui.input("New profile name", "e.g. deep-work");
-			if (name === undefined) return file;
+			const answer = await ctx.ui.input("New profile name", "e.g. deep-work");
+			if (answer === undefined) {
+				report.status = "Create cancelled.";
+				return file;
+			}
+			const name = answer.trim();
+			if (name === "") {
+				report.status = "No profile created: no name entered.";
+				return file;
+			}
 			try {
-				const next = createProfile(file, name.trim(), {});
+				const next = createProfile(file, name, {});
 				writeProfilesFileSync(path, next);
+				report.status = `Profile "${name}" created.`;
+				report.selectedName = name;
 				return next;
 			} catch (error) {
-				ctx.ui.notify(`Profile not created: ${profilesErrorMessage(error)}`, "warning");
+				report.status = `Profile not created: ${profilesErrorMessage(error)}`;
+				ctx.ui.notify(report.status, "warning");
 				return file;
 			}
 		}
@@ -4243,36 +4316,57 @@ async function runProfilesPanelAction(
 			}
 		}
 		case "duplicate": {
-			const name = await ctx.ui.input(`Duplicate profile "${result.name}" as`, `${result.name}-copy`);
-			if (name === undefined) return file;
+			// The Pi host starts the field empty and ignores the placeholder, so the title
+			// names the suggestion and Enter on an untouched field accepts it.
+			const suggested = `${result.name}-copy`;
+			const answer = await ctx.ui.input(`Duplicate profile "${result.name}" as (empty = ${suggested})`, suggested);
+			if (answer === undefined) {
+				report.status = "Duplicate cancelled.";
+				return file;
+			}
+			const name = answer.trim() || suggested;
 			try {
-				const next = duplicateProfile(file, result.name, name.trim());
+				const next = duplicateProfile(file, result.name, name);
 				writeProfilesFileSync(path, next);
+				report.status = `Profile "${result.name}" duplicated as "${name}".`;
+				report.selectedName = name;
 				return next;
 			} catch (error) {
-				ctx.ui.notify(`Profile not duplicated: ${profilesErrorMessage(error)}`, "warning");
+				report.status = `Profile not duplicated: ${profilesErrorMessage(error)}`;
+				ctx.ui.notify(report.status, "warning");
 				return file;
 			}
 		}
 		case "rename": {
-			const name = await ctx.ui.input(`Rename profile "${result.name}" to`, result.name);
-			if (name === undefined) return file;
+			const answer = await ctx.ui.input(`Rename profile "${result.name}" to (empty = keep ${result.name})`, result.name);
+			if (answer === undefined) {
+				report.status = "Rename cancelled.";
+				return file;
+			}
+			const name = answer.trim();
+			if (name === "") {
+				report.status = `Profile "${result.name}" unchanged: no new name entered.`;
+				return file;
+			}
 			try {
-				const next = renameProfile(file, result.name, name.trim());
+				const next = renameProfile(file, result.name, name);
 				writeProfilesFileSync(path, next);
 				// A pin stores a name, so a rename that did not follow it would leave every
 				// pinned repository with a name the store no longer defines, which silently
 				// returns those repositories to the global routing.
-				const follow = followRenamedPin(ctx.cwd, result.name, name.trim());
+				const follow = followRenamedPin(ctx.cwd, result.name, name);
 				ctx.ui.notify(
-					`el Gentleman renamed profile "${result.name}" to "${name.trim()}".` +
+					`el Gentleman renamed profile "${result.name}" to "${name}".` +
 						(follow.followed.length > 0 ? `\nUpdated the clone pin: ${follow.followed.map((entry) => sanitizeTerminalText(entry)).join(", ")}.` : "") +
-						(follow.stillDeclared.length > 0 ? `\nThe committed repository declaration ${follow.stillDeclared.map((entry) => sanitizeTerminalText(entry)).join(", ")} still names "${result.name}"; press P on "${name.trim()}" to republish it.` : ""),
+						(follow.stillDeclared.length > 0 ? `\nThe committed repository declaration ${follow.stillDeclared.map((entry) => sanitizeTerminalText(entry)).join(", ")} still names "${result.name}"; press P on "${name}" to republish it.` : ""),
 					"info",
 				);
+				report.status = `Profile "${result.name}" renamed to "${name}".`;
+				report.selectedName = name;
 				return next;
 			} catch (error) {
-				ctx.ui.notify(`Profile not renamed: ${profilesErrorMessage(error)}`, "warning");
+				report.status = `Profile not renamed: ${profilesErrorMessage(error)}`;
+				ctx.ui.notify(report.status, "warning");
 				return file;
 			}
 		}
@@ -4485,14 +4579,16 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): 
 		saveSnapshot,
 	);
 	while (result.type !== "close") {
-		selectedName = "name" in result ? result.name : undefined;
-		file = await runProfilesPanelAction(ctx, live, path, file, result);
+		const report: ProfilesPanelReport = {};
+		file = await runProfilesPanelAction(ctx, live, path, file, result, report);
+		selectedName = report.selectedName ?? ("name" in result ? result.name : undefined);
 		result = await showProfilesPanel(
 			ctx,
 			file,
 			await readEffectiveModelConfigAsync(ctx.cwd),
 			selectedName,
 			saveSnapshot,
+			report.status,
 		);
 	}
 }
@@ -4904,6 +5000,11 @@ function parseControllerJson(input: string, operation: ReviewControllerOperation
 	}
 	if (!isRecord(value)) throw new Error(`Review controller ${operation} input must be a JSON object`);
 	return value;
+}
+
+// Explicit cancellation uses the AbortError convention so observers can tell it from failure.
+function reviewCancellation(message: string): Error {
+	return Object.assign(new Error(message), { name: "AbortError" });
 }
 
 async function authorizeDestructiveReviewOperation(
@@ -5578,7 +5679,15 @@ interface RetainedNativeUntrackedSelection {
 	readonly submission?: NativeIntendedUntrackedSelectionSubmission;
 }
 
-interface RetainedPreLineageNativeUntrackedSelection extends RetainedNativeUntrackedSelection {
+// The untracked-selection fields are optional here, unlike the lineage-scoped
+// RetainedNativeUntrackedSelection above: a plain inspect that resolves ready
+// without ever needing an untrackedScope decision still retains its own
+// committed-range selector alone, bound only to targetIdentity/candidateTree.
+interface RetainedPreLineageNativeUntrackedSelection {
+	readonly untrackedScope?: NativeStartUntrackedScope;
+	readonly expectedUntrackedInventory?: string;
+	readonly intendedUntracked?: readonly string[];
+	readonly submission?: NativeIntendedUntrackedSelectionSubmission;
 	readonly targetIdentity: string;
 	readonly candidateTree: string;
 	// gentle-pi#1192: only set when the inspect that produced this entry was a
@@ -5594,7 +5703,7 @@ interface RetainedNativeCaptureRoute { readonly workspaceRoot: string; readonly 
 // yet. Keep only its selector, bound to the exact provider collect input.
 interface RetainedNativeUntrackedStopSelector { readonly selectionBinding: string; readonly targetIdentity: string; readonly baseRef: string; readonly committedOnly: true; }
 
-type RetainedNativeStatusSelection = RetainedNativeUntrackedSelection | RetainedNativeCaptureRoute | RetainedNativeUntrackedStopSelector;
+type RetainedNativeStatusSelection = RetainedNativeUntrackedSelection | RetainedPreLineageNativeUntrackedSelection | RetainedNativeCaptureRoute | RetainedNativeUntrackedStopSelector;
 
 const MAX_RETAINED_NATIVE_STATUS_SELECTIONS = 64;
 class NativeCaptureRouteRegistrationError extends Error {}
@@ -5649,7 +5758,7 @@ function nativeStartRejection(reason: string, field?: string): Record<string, un
 							? "native-start-committed-only-required"
 							: reason === "committed-only-invalid"
 								? "native-start-committed-only-invalid"
-								: reason === "unknown-field" || reason === "focus-invalid" || reason === "untracked-selection-invalid"
+								: reason === "unknown-field" || reason === "focus-invalid" || reason === "untracked-selection-invalid" || reason === "provider-base-offer-invalid" || reason === "provider-base-tree-mismatch"
 									? "native-start-input-invalid"
 									: "native-start-policy-path-invalid",
 		reason,
@@ -6011,18 +6120,26 @@ function consentBindingRepositoryMismatchOutcome(operation: ReviewControllerOper
 // wants, so a plain START can adopt the route the provider just rendered
 // instead of making the caller hand-copy `base-ref` into its input. Only the
 // provider's own offered argument is read -- never a guess, a persisted value,
-// or a stale transition -- and anything that is not a full commit id paired
-// with committed-only is refused, so every other STATUS keeps today's
-// behaviour byte-for-byte.
+// or a stale transition. Full object ids paired with committed-only may name
+// commits or trees; only provider trees enter the separate frozen tree-base
+// path. Caller-supplied tree selectors remain invalid.
+// The worktree anchor is always a commit, but a provider-offered range can
+// have a tree selector. Transport and lineage replay must use the latter.
+function nativeCommittedRangeSelector(target: { baseCommit: string; providerBaseTree?: string }): string {
+	return target.providerBaseTree ?? target.baseCommit;
+}
+
 const OFFERED_COMMITTED_RANGE_BASE_REF = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 
 function offeredCommittedRangeBaseRef(target: ReviewStatusV3): string | undefined {
 	const execute = target.nextTransition?.kind === "execute" ? target.nextTransition.execute : undefined;
 	if (execute?.operation !== "review.start") return undefined;
-	if (execute.arguments.some((argument) => argument.name === "workspace-overlay")) return undefined;
-	const baseRef = execute.arguments.find((argument) => argument.name === "base-ref")?.value;
-	if (baseRef === undefined || !OFFERED_COMMITTED_RANGE_BASE_REF.test(baseRef)) return undefined;
-	if (execute.arguments.find((argument) => argument.name === "committed-only")?.value !== "true") return undefined;
+	const selectors = execute.arguments.filter((argument) => argument.name === "base-ref" || argument.name === "committed-only");
+	if (selectors.length !== 2 || new Set(selectors.map((argument) => argument.name)).size !== 2) return undefined;
+	if (selectors.some((argument) => argument.token !== undefined && argument.token !== `--${argument.name}=${argument.value}`)) return undefined;
+	const baseRef = selectors.find((argument) => argument.name === "base-ref")!.value;
+	if (!OFFERED_COMMITTED_RANGE_BASE_REF.test(baseRef)) return undefined;
+	if (selectors.find((argument) => argument.name === "committed-only")!.value !== "true") return undefined;
 	return baseRef;
 }
 
@@ -7007,6 +7124,9 @@ async function resolveNegotiatedReviewStatusForSession(
 ): Promise<ReviewStatusV3 | undefined> {
 	if (nativeReviewCli?.reviewMode === undefined || nativeReviewCli.targetStatus === undefined) return undefined;
 	if (ctx.hasUI !== true) return undefined;
+	// Passive status negotiation cannot bootstrap a repository. Explicit review
+	// controller requests retain their separate workspace validation path.
+	if (resolveSessionWorktree(ctx.cwd, ctx.cwd) === undefined) return undefined;
 	let modeEffective: "on" | "off";
 	try {
 		const mode = await nativeReviewCli.reviewMode({ cwd: ctx.cwd, operation: NATIVE_REVIEW_MODE_OPERATION.STATUS });
@@ -7518,6 +7638,9 @@ function hydrateDispatchBindingFromStatus(candidateViews: CandidateViewRegistry 
 	const lenses = pendingReviewerLenses(status);
 	if (lenses.length === 0) return undefined;
 	try {
+		// STATUS proves the current target, not the historical START offer.
+		// Resolve an existing commit-backed range by its reachable frozen tree;
+		// never pass descriptor.baseTree as a provider-owned tree selector.
 		candidateViews.restoreCurrentForDispatchFromNative(lineageId, contributorRoot, status.projection, lenses);
 		return { hydrated: true, lineage_id: lineageId, lenses };
 	} catch (error) {
@@ -7644,6 +7767,15 @@ async function executeReviewControllerOperation(
 				if (parameters.untrackedScope === undefined) {
 					if (canonicalBaseRef !== undefined && typeof plainMapped.selectionBinding === "string") {
 						retainNativeStatusSelection(retainedUntrackedSelections, reviewLifecycleStorageKey(defaultCwd, ""), Object.freeze({ selectionBinding: plainMapped.selectionBinding, targetIdentity: status.targetIdentity, baseRef: canonicalBaseRef, committedOnly: true as const }));
+					} else if (canonicalBaseRef !== undefined && plainMapped.status === "ready") {
+						// A plain inspect that resolves ready with no untracked decision still
+						// retains its own committed-range selector, so the following plain
+						// START replays this exact inspected range instead of adopting the
+						// native default base-ref (gentle-pi#874).
+						const readyCandidateIdentity = nativePreLineageCandidateIdentity(status);
+						if (readyCandidateIdentity !== undefined) {
+							retainNativeStatusSelection(retainedUntrackedSelections, reviewLifecycleStorageKey(defaultCwd, ""), Object.freeze({ ...readyCandidateIdentity, baseRef: canonicalBaseRef, committedOnly: true as const }));
+						}
 					}
 					// gentle-pi#706: the stop alone never tells the caller what to do next.
 					return {
@@ -7797,7 +7929,7 @@ async function executeReviewControllerOperation(
 		const statusRequest = {
 			cwd: defaultCwd,
 			lineageId: String(input.predecessorLineage),
-			...(frozenTarget?.committedOnly === true ? { baseRef: frozenTarget.baseCommit, committedOnly: true } : {}),
+			...(frozenTarget?.committedOnly === true ? { baseRef: nativeCommittedRangeSelector(frozenTarget), committedOnly: true } : {}),
 			...(signal === undefined ? {} : { signal }),
 		};
 		let status: ReviewStatusV3;
@@ -7871,11 +8003,11 @@ async function executeReviewControllerOperation(
 		const frozenTarget = parameters.lineageId === undefined || !candidateViews?.hasProjection(parameters.lineageId, defaultCwd) ? undefined : candidateViews.resolveProjection(parameters.lineageId, defaultCwd);
 		let status: ReviewStatusV3;
 		try {
-			status = await nativeReviewCli.targetStatus({ cwd: defaultCwd, ...(parameters.lineageId === undefined ? {} : { lineageId: parameters.lineageId }), ...(frozenTarget?.committedOnly === true ? { baseRef: frozenTarget.baseCommit, committedOnly: true } : {}), ...(signal === undefined ? {} : { signal }) });
+			status = await nativeReviewCli.targetStatus({ cwd: defaultCwd, ...(parameters.lineageId === undefined ? {} : { lineageId: parameters.lineageId }), ...(frozenTarget?.committedOnly === true ? { baseRef: nativeCommittedRangeSelector(frozenTarget), committedOnly: true } : {}), ...(signal === undefined ? {} : { signal }) });
 		} catch (error) {
 			return nativeStatusFailed(parameters.operation, error);
 		}
-		clearRetainedNativeStatusSelectionsOnTerminal(retainedUntrackedSelections, defaultCwd, status.authority?.lineageId, status.authority?.state); retainNativeCaptureRoutes(retainedUntrackedSelections, defaultCwd, status, frozenTarget?.committedOnly === true ? frozenTarget.baseCommit : undefined);
+		clearRetainedNativeStatusSelectionsOnTerminal(retainedUntrackedSelections, defaultCwd, status.authority?.lineageId, status.authority?.state); retainNativeCaptureRoutes(retainedUntrackedSelections, defaultCwd, status, frozenTarget?.committedOnly === true ? nativeCommittedRangeSelector(frozenTarget) : undefined);
 		if (status.authority?.version === "compact-v2") return { operation: parameters.operation, repaired: false, compact_authority: "immutable-untouched", status: mapNativeTargetStatus(parameters.operation, status, parameters.lineageId) };
 		if (status.authority?.version !== "legacy-v1") return mapNativeTargetStatus(parameters.operation, status, parameters.lineageId);
 		const store = ReviewTransactionStore.forRepository(defaultCwd);
@@ -7915,7 +8047,7 @@ async function executeReviewControllerOperation(
 		const target = {
 			cwd: defaultCwd,
 			lineageId: parameters.lineageId,
-			...(frozenTarget?.committedOnly === true ? { baseRef: frozenTarget.baseCommit, committedOnly: true } : {}),
+			...(frozenTarget?.committedOnly === true ? { baseRef: nativeCommittedRangeSelector(frozenTarget), committedOnly: true } : {}),
 			...readRetainedNativeUntrackedSelection(retainedUntrackedSelections, defaultCwd, parameters.lineageId),
 			...(signal === undefined ? {} : { signal }),
 		};
@@ -8095,7 +8227,7 @@ async function executeReviewControllerOperation(
 			if (value.mutationOutcome === "none") pending.cleanupCandidate();
 			return await reconcileNativeMutationFailure(parameters.operation, error, nativeReviewCli, {
 				cwd: pending.authorityCwd,
-				...(pending.candidateView.committedOnly ? { baseRef: pending.candidateView.baseCommit, committedOnly: true } : {}),
+				...(pending.candidateView.committedOnly ? { baseRef: nativeCommittedRangeSelector(pending.candidateView), committedOnly: true } : {}),
 				projection: "workspace",
 			}, retainedUntrackedSelections);
 		}
@@ -8160,6 +8292,7 @@ async function executeReviewControllerOperation(
 						)
 					: undefined;
 			let canonicalBaseRef: string | undefined;
+			let providerBaseTree: string | undefined;
 			if (baseRef !== undefined) {
 				try {
 					canonicalBaseRef = resolveCanonicalCandidateBase(defaultCwd, baseRef).commit;
@@ -8184,24 +8317,29 @@ async function executeReviewControllerOperation(
 			// selector verbatim; it was already canonicalized when the inspect stored
 			// it, so no second resolveCanonicalCandidateBase round trip is needed.
 			if (canonicalBaseRef === undefined && retainedPreLineageSelection?.baseRef !== undefined) canonicalBaseRef = retainedPreLineageSelection.baseRef;
+			// A retained pre-lineage entry may carry only a committed-range selector
+			// with no untracked decision at all (a plain inspect that resolved ready
+			// without ever needing untrackedScope); only adopt its untracked fields
+			// when it actually recorded one.
 			const untrackedSelection: NativeStartUntrackedSelection =
-				retainedPreLineageSelection === undefined
+				retainedPreLineageSelection === undefined || retainedPreLineageSelection.untrackedScope === undefined
 					? explicitUntrackedSelection
 					: {
 							untrackedScope: retainedPreLineageSelection.untrackedScope,
 							expectedUntrackedInventory:
-								retainedPreLineageSelection.expectedUntrackedInventory,
-							intendedUntracked: [...retainedPreLineageSelection.intendedUntracked],
+								retainedPreLineageSelection.expectedUntrackedInventory!,
+							intendedUntracked: [...retainedPreLineageSelection.intendedUntracked!],
 						};
 			const untrackedSubmission =
-				intendedUntrackedSelection ?? retainedPreLineageSelection?.submission;
+				intendedUntrackedSelection ??
+				(retainedPreLineageSelection?.untrackedScope === undefined ? undefined : retainedPreLineageSelection.submission);
 			// The stored value must stay a plain RetainedNativeUntrackedSelection
 			// (no baseRef/targetIdentity/candidateTree): it is re-keyed under the
 			// lineage-scoped entry below, and readRetainedNativeUntrackedSelection
 			// discriminates that entry from a RetainedNativeCaptureRoute by the
 			// absence of a baseRef field.
 			const retainedUntrackedSelection: RetainedNativeUntrackedSelection | undefined =
-				retainedPreLineageSelection === undefined
+				retainedPreLineageSelection === undefined || retainedPreLineageSelection.untrackedScope === undefined
 					? cloneRetainedNativeUntrackedSelection(explicitUntrackedSelection)
 					: Object.freeze({
 							untrackedScope: retainedPreLineageSelection.untrackedScope,
@@ -8230,7 +8368,7 @@ async function executeReviewControllerOperation(
 				target = negotiated.status!;
 				// gentle-pi#874: the STATUS this START already fetched can itself
 				// offer the committed-range START for an empty workspace candidate.
-				// Adopt its own base commit *here*, before the candidate view and the
+				// Adopt its own base selector *here*, before the candidate view and the
 				// native START are resolved, and re-derive the target for that range,
 				// so all three agree on one base-diff identity. Adopting the offer
 				// later left the workspace target and the base-diff candidate view
@@ -8242,6 +8380,7 @@ async function executeReviewControllerOperation(
 				// the base-less view that tripped candidate-target-projection-drift.
 				if (canonicalBaseRef === undefined) {
 					const offeredBaseRef = offeredCommittedRangeBaseRef(target);
+					if (offeredBaseRef === undefined && target.nextTransition?.kind === "execute" && target.nextTransition.execute.operation === "review.start" && target.nextTransition.execute.arguments.some((argument) => argument.name === "base-ref")) return nativeStartRejection("provider-base-offer-invalid");
 					if (offeredBaseRef !== undefined) {
 						const renegotiated = await negotiatedStatusForHostTransport(nativeReviewCli, {
 							cwd: defaultCwd,
@@ -8253,7 +8392,12 @@ async function executeReviewControllerOperation(
 							...(signal === undefined ? {} : { signal }),
 						}, retainedUntrackedSelections, defaultCwd);
 						if (renegotiated.transport !== undefined) return hostTransportUnavailable(parameters.operation, renegotiated.transport);
-						canonicalBaseRef = offeredBaseRef;
+						if (isProviderCandidateBaseTree(defaultCwd, offeredBaseRef)) {
+							if (renegotiated.status!.projection.baseTree !== offeredBaseRef) return nativeStartRejection("provider-base-tree-mismatch");
+							providerBaseTree = offeredBaseRef;
+						} else {
+							canonicalBaseRef = offeredBaseRef;
+						}
 						target = renegotiated.status!;
 					}
 				}
@@ -8284,7 +8428,7 @@ async function executeReviewControllerOperation(
 			// recovery. Folding in currentCandidateTree makes a content change
 			// mint a fresh replay key -- and therefore a fresh candidate view --
 			// instead of reusing the stale one.
-			const replayKey = JSON.stringify({ cwd: defaultCwd, lineageId: parameters.lineageId ?? null, input: parameters.input ?? null, inputPath: parameters.inputPath ?? null, candidateTree: target.projection.currentCandidateTree });
+			const replayKey = JSON.stringify({ cwd: defaultCwd, lineageId: parameters.lineageId ?? null, input: parameters.input ?? null, inputPath: parameters.inputPath ?? null, candidateTree: target.projection.currentCandidateTree, providerBaseTree: providerBaseTree ?? null });
 			// Synchronously drop any binding whose TTL has already elapsed
 			// before reusing its retained candidate view, so a fresh-candidate
 			// retry cannot reuse a view tied to an expired binding and trip
@@ -8295,7 +8439,7 @@ async function executeReviewControllerOperation(
 			let candidateView: ReturnType<CandidateViewRegistry["create"]> | undefined;
 			let nativeStartAttempted = false;
 			try {
-				const candidateRequest = { contributorRoot: defaultCwd, replayKey, ...(canonicalBaseRef === undefined ? {} : { baseRef: canonicalBaseRef, committedOnly: true }) };
+				const candidateRequest = { contributorRoot: defaultCwd, replayKey, ...(canonicalBaseRef === undefined ? {} : { baseRef: canonicalBaseRef, committedOnly: true }), ...(providerBaseTree === undefined ? {} : { providerBaseTree, committedOnly: true }) };
 				candidateView = candidateViews?.createOrReuse({ ...candidateRequest, intendedUntracked: candidateIntendedUntracked });
 				if (candidateView !== undefined) assertNativeStartCandidateBinding(candidateView, target);
 				let result: NativeStartResult;
@@ -8306,6 +8450,7 @@ async function executeReviewControllerOperation(
 						...(canonicalBaseRef === undefined
 							? {}
 							: { baseRef: candidateView?.baseCommit ?? canonicalBaseRef, committedOnly: true }),
+						...(providerBaseTree === undefined ? {} : { baseRef: providerBaseTree, committedOnly: true }),
 						targetIdentity: target.targetIdentity,
 						projection: target.projection.projection,
 						...(untrackedSelection.untrackedScope === undefined ? {} : untrackedSelection),
@@ -8395,6 +8540,7 @@ async function executeReviewControllerOperation(
 					cwd: defaultCwd,
 					...(parameters.lineageId === undefined ? {} : { lineageId: parameters.lineageId }),
 					...(canonicalBaseRef === undefined ? {} : { baseRef: candidateView?.baseCommit ?? canonicalBaseRef, committedOnly: true }),
+					...(providerBaseTree === undefined ? {} : { baseRef: providerBaseTree, committedOnly: true }),
 					...(untrackedSelection.untrackedScope === undefined ? {} : untrackedSelection),
 					projection: "workspace",
 				}, retainedUntrackedSelections);
@@ -8502,7 +8648,7 @@ async function executeReviewControllerOperation(
 		const retainedCommittedTarget = rawStatus === undefined && parameters.lineageId !== undefined && candidateViews?.hasProjection(parameters.lineageId, defaultCwd)
 			? candidateViews.resolveProjection(parameters.lineageId, defaultCwd)
 			: undefined;
-		const effectiveBaseRef = baseRef ?? (retainedCommittedTarget?.committedOnly === true ? retainedCommittedTarget.baseCommit : undefined);
+		const effectiveBaseRef = baseRef ?? (retainedCommittedTarget?.committedOnly === true ? nativeCommittedRangeSelector(retainedCommittedTarget) : undefined);
 		if (nativeReviewCli?.targetStatus !== undefined) {
 			try {
 				const negotiated = await negotiatedStatusForHostTransport(nativeReviewCli, {
@@ -8675,9 +8821,12 @@ function createGentleAiExtensionForTesting(
 		return revoked;
 	};
 
+	const reviewSidebar = createReviewSidebarPublisher(pi);
+	pi.on("session_tree", (_event, ctx) => reviewSidebar.reset(ctx));
 	let reminderSessionActive = true;
 	let reminderEpoch = 0;
 	pi.on("session_shutdown", (event, context) => {
+		reviewSidebar.reset();
 		reminderSessionActive = false;
 		reminderEpoch += 1;
 		// Pi tears down this registry on reload as well as session replacement/quit.
@@ -8694,6 +8843,83 @@ function createGentleAiExtensionForTesting(
 		processAgentEndSubagentDepth.delete(sessionKey);
 	});
 
+	// gentle-pi ODD input phase labels: the explicit half of the bounded ODD
+	// phase signal for the Gentle prompt's working label. Gentle Shell infers
+	// the phase from the primary session's tool activity
+	// (lib/odd-phase-inference.ts); this tool lets the orchestrator refine it
+	// at ODD protocol transitions tools cannot show, and its report is
+	// "explicit" so a following read-only tool call never downgrades it. Never
+	// inferred from prose. It is session-scoped in lib/odd-phase.ts: a
+	// background/child agent runs as its own OS process with its own module
+	// state, so it can never see or override the primary session's phase.
+	const hiddenOddPhaseToolComponent = { render: (_width: number): string[] => [], invalidate() {} };
+	pi.registerTool({
+		name: "gentle_odd_phase",
+		renderShell: "self",
+		label: "Gentle ODD Phase",
+		description: "Refine the primary session's current ODD phase for the Gentle prompt's working label, which is otherwise inferred automatically from tool activity. Best-effort UI only; never a source of truth for orchestration logic.",
+		promptSnippet: "Refine the automatically inferred working label with authorizing/exploring/researching/deciding/planning/implementing/checking/closing only at real ODD phase transitions of the primary turn; never poll or report per tool call.",
+		promptGuidelines: [
+			`phase must be exactly one of ${ODD_PHASES.join(", ")}, or "clear" to leave the current phase before its turn ends. Call this only when the ODD phase actually changes for the primary session's active turn, not on every tool call or thought.`,
+			"Never call this from a subagent or background/child task; it reports only the primary orchestrator's own phase, and a child's session id can never override the parent's label.",
+		],
+		parameters: {
+			type: "object",
+			additionalProperties: false,
+			required: ["phase"],
+			properties: {
+				phase: { type: "string", enum: [...ODD_PHASES, "clear"], description: "The reported ODD phase, or 'clear' to leave the current phase." },
+			},
+		} as const,
+		executionMode: "parallel",
+		// The prompt editor owns the success indicator. An empty self-rendered
+		// call avoids Pi's default transcript card while preserving error output.
+		renderCall() {
+			return hiddenOddPhaseToolComponent;
+		},
+		renderResult(result, _options, theme, context) {
+			if (!context.isError) return hiddenOddPhaseToolComponent;
+			const message = result.content.filter((item) => item.type === "text").map((item) => item.text).join("\n");
+			return new Text(theme.fg("error", sanitizeTerminalText(message || "ODD phase report failed.")), 0, 0);
+		},
+		async execute(_toolCallId, parameters, _signal, _onUpdate, ctx) {
+			const phase = (parameters as { phase?: unknown }).phase;
+			const sessionId = ctx.sessionManager.getSessionId();
+			// Pi's own contract (docs/extensions.md, Signaling errors): throw to
+			// mark a tool execution as failed (sets isError: true on the result);
+			// returning a value -- including an isError property on it -- never
+			// sets that flag.
+			if (!sessionId) throw new Error("No active session to report an ODD phase for; nothing changed.");
+			// An invalid token never resets state: only the explicit "clear" token
+			// leaves the current phase. This keeps a malformed report from wiping
+			// out an otherwise-accurate label for the rest of the turn.
+			if (phase === "clear") {
+				oddPhaseRegistry.clear(sessionId);
+				return { content: [{ type: "text", text: "ODD phase cleared." }], details: { phase: undefined } };
+			}
+			if (!isOddPhase(phase)) {
+				throw new Error(`Invalid ODD phase; use one of ${ODD_PHASES.join(", ")}, or "clear". The previously reported phase, if any, is unchanged.`);
+			}
+			const reported = oddPhaseRegistry.report(sessionId, phase, "explicit");
+			return { content: [{ type: "text", text: `ODD phase reported: ${reported}` }], details: { phase: reported } };
+		},
+	});
+
+	const GENTLE_TIMED_TOOLS = new Set(["gentle_review_scope", "gentle_review_capture_group", "gentle_review_capture", "gentle_review"]);
+	let elapsedTiming: GentleAiElapsedTimingLedger | undefined;
+	const recordReviewTiming = (event: { toolCallId: string; toolName: string }, endedAt?: number): void => {
+		const ledger = elapsedTiming;
+		if (!ledger || !GENTLE_TIMED_TOOLS.has(event.toolName)) return;
+		try {
+			if (endedAt === undefined) ledger.recordStart(event.toolCallId, Date.now());
+			else ledger.recordEnd(event.toolCallId, endedAt);
+		} catch { /* Timing persistence is best-effort and never breaks the tool event. */ }
+	};
+	pi.on("tool_execution_start", (event) => recordReviewTiming(event));
+	pi.on("tool_execution_end", (event) => recordReviewTiming(event, Date.now()));
+	const timingContext = (context: GentleAiRenderContext | undefined): GentleAiRenderContext | undefined =>
+		elapsedTiming && context ? { ...context, elapsedTiming } : context;
+
 	pi.registerTool({
 		name: "gentle_review_scope",
 		renderShell: "self",
@@ -8705,11 +8931,11 @@ function createGentleAiExtensionForTesting(
 			return renderGentleAiLifecycleCall(
 				"review scope",
 				theme,
-				context as GentleAiRenderContext | undefined,
+				timingContext(context as GentleAiRenderContext | undefined),
 			);
 		},
 		renderResult(result, options, theme, context) {
-			return renderGentleAiResult(result, options, theme, context as GentleAiRenderContext | undefined);
+			return renderGentleAiResult(result, options, theme, timingContext(context as GentleAiRenderContext | undefined));
 		},
 		async execute(_toolCallId, parameters) {
 			const input = parameters as ReviewScopeParameters;
@@ -8737,7 +8963,7 @@ function createGentleAiExtensionForTesting(
 		return named.length === 0 ? operation : `${operation} · ${named.join(" · ")}`;
 	};
 
-	pi.registerTool({
+	pi.registerTool(reviewSidebar.tool({
 		name: "gentle_review_capture_group",
 		renderShell: "self",
 		label: "Gentle Review Capture Group",
@@ -8752,13 +8978,13 @@ function createGentleAiExtensionForTesting(
 		renderCall(args, theme, context) {
 			const bindings = (args as { collectBindings?: unknown }).collectBindings;
 			const lenses = Array.isArray(bindings) ? bindings.map(collectBindingLens) : [];
-			return renderGentleAiLifecycleCall(withLenses("review capture group", lenses), theme, context as GentleAiRenderContext | undefined);
+			return renderGentleAiLifecycleCall(withLenses("review capture group", lenses), theme, timingContext(context as GentleAiRenderContext | undefined));
 		},
 		renderResult(result, options, theme, context) {
-			return renderGentleAiResult(result, options, theme, context as GentleAiRenderContext | undefined);
+			return renderGentleAiResult(result, options, theme, timingContext(context as GentleAiRenderContext | undefined));
 		},
 		async execute(_toolCallId, parameters, signal, _onUpdate, ctx) {
-			if (signal?.aborted) throw new Error("Review capture group was cancelled");
+			if (signal?.aborted) throw reviewCancellation("Review capture group was cancelled");
 			const details = await executeReviewCaptureGroupOperation(
 				parameters,
 				ctx.cwd,
@@ -8775,9 +9001,9 @@ function createGentleAiExtensionForTesting(
 			);
 			return { content: [{ type: "text", text: JSON.stringify(details) }], details };
 		},
-	});
+	}));
 
-	pi.registerTool({
+	pi.registerTool(reviewSidebar.tool({
 		name: "gentle_review_capture",
 		renderShell: "self",
 		label: "Gentle Review Capture",
@@ -8794,14 +9020,14 @@ function createGentleAiExtensionForTesting(
 			return renderGentleAiLifecycleCall(
 				withLenses("review capture", [collectBindingLens((args as { collectBinding?: unknown }).collectBinding)]),
 				theme,
-				context as GentleAiRenderContext | undefined,
+				timingContext(context as GentleAiRenderContext | undefined),
 			);
 		},
 		renderResult(result, options, theme, context) {
-			return renderGentleAiResult(result, options, theme, context as GentleAiRenderContext | undefined);
+			return renderGentleAiResult(result, options, theme, timingContext(context as GentleAiRenderContext | undefined));
 		},
 		async execute(_toolCallId, parameters, signal, _onUpdate, ctx) {
-			if (signal?.aborted) throw new Error("Review capture was cancelled");
+			if (signal?.aborted) throw reviewCancellation("Review capture was cancelled");
 			const details = await executeReviewCaptureOperation(
 				parameters,
 				ctx.cwd,
@@ -8821,9 +9047,9 @@ function createGentleAiExtensionForTesting(
 				details,
 			};
 		},
-	});
+	}));
 
-	pi.registerTool({
+	pi.registerTool(reviewSidebar.tool({
 		name: "gentle_review",
 		renderShell: "self",
 		label: "Gentle Review Controller",
@@ -8847,14 +9073,14 @@ function createGentleAiExtensionForTesting(
 			return renderGentleAiLifecycleCall(
 				reviewToolOperationPath(args),
 				theme,
-				context as GentleAiRenderContext | undefined,
+				timingContext(context as GentleAiRenderContext | undefined),
 			);
 		},
 		renderResult(result, options, theme, context) {
-			return renderGentleAiResult(result, options, theme, context as GentleAiRenderContext | undefined);
+			return renderGentleAiResult(result, options, theme, timingContext(context as GentleAiRenderContext | undefined));
 		},
 		async execute(_toolCallId, parameters, signal, _onUpdate, ctx) {
-			if (signal?.aborted) throw new Error("Review controller operation was cancelled");
+			if (signal?.aborted) throw reviewCancellation("Review controller operation was cancelled");
 			await authorizeDestructiveReviewOperation(parameters, ctx);
 			const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
 			const retainedSelections = processRetainedNativeStatusSelections.get(sessionKey)
@@ -8969,9 +9195,11 @@ function createGentleAiExtensionForTesting(
 				details,
 			};
 		},
-	});
+	}));
 
 	pi.on("session_start", async (event, ctx) => {
+		reviewSidebar.reset(ctx);
+		elapsedTiming = new GentleAiElapsedTimingLedger(ctx.sessionManager, pi);
 		reminderSessionActive = true;
 		reminderEpoch += 1;
 		try { candidateViews?.sweepOrphans(ctx.cwd); } catch { /* Ownership sweeping must not block startup. */ }
@@ -9077,9 +9305,11 @@ function createGentleAiExtensionForTesting(
 					return fragment === null ? "" : `\n\n${fragment}`;
 				})()
 				: "";
-		return {
-			systemPrompt: `${event.systemPrompt}${gentlePrompt}${reviewContractPrompt}`,
-		};
+		// gentle-shell#1485: pi-claude-bridge drops a handler-returned systemPrompt
+		// and forwards only systemPromptOptions, so the harness is delivered
+		// through the mutable appendSystemPrompt section instead of a replacement.
+		appendSystemPromptOnce(event.systemPromptOptions, `${gentlePrompt}${reviewContractPrompt}`);
+		return undefined;
 	});
 
 	// gentle-pi#556 / gentle-ai#4051: with RDD enabled, the agent could finish
@@ -9176,7 +9406,7 @@ function createGentleAiExtensionForTesting(
 	pi.registerCommand("gentle:models", {
 		description: "Configure global per-agent models for el Gentleman.",
 		handler: async (_args, ctx) => {
-			await handleModelsCommand(ctx);
+			await handleModelsCommand(ctx, pi);
 		},
 	});
 

@@ -470,6 +470,30 @@ test("colorDiff drops git headers and colors hunks, additions, and removals by r
 	]);
 });
 
+test("colorDiff sanitizes control characters, strips carriage returns, and expands tabs", () => {
+	const raw = [
+		"diff --git a/file.ts b/file.ts\r",
+		"index 1..2 100644\r",
+		"--- a/file.ts\r",
+		"+++ b/file.ts\r",
+		"@@ -1,3 +1,3 @@\r",
+		" \tconst before = 1;\r",
+		"-\tconst removed = 2;\x1b[31minjected\x1b[0m\r",
+		"+\t\tconst added = 3;\x07\r",
+	].join("\n");
+	const lines = colorDiff(raw, taggedTheme);
+	assert.deepEqual(lines, [
+		"<customMessageLabel>@@ -1,3 +1,3 @@</customMessageLabel>",
+		"<toolDiffContext>   const before = 1;</toolDiffContext>",
+		"<toolDiffRemoved>-  const removed = 2;injected</toolDiffRemoved>",
+		"<toolDiffAdded>+    const added = 3;</toolDiffAdded>",
+	]);
+	for (const line of lines) {
+		assert.ok(!line.includes("\t"), "tabs must be expanded to spaces");
+		assert.ok(!line.includes("\r"), "carriage returns must be stripped");
+	}
+});
+
 test("ChangesView renders a framed two-pane layout at the requested size", async () => {
 	const { view: component } = view();
 	await settle();
@@ -482,6 +506,34 @@ test("ChangesView renders a framed two-pane layout at the requested size", async
 	assert.match(plain[2], /^│   A lib\/b\.ts +\+10 -0 +│  const a = 1; +│$/);
 	assert.match(plain[11], /^╰─+╯$/);
 	assert.match(plain[10], /j\/k file .* o open in editor .* esc close/);
+});
+
+test("ChangesView renders tabbed CRLF modified diffs with aligned frame columns", async () => {
+	const tabbedDiff = [
+		"diff --git a/lib/a.ts b/lib/a.ts\r",
+		"index 1..2 100644\r",
+		"--- a/lib/a.ts\r",
+		"+++ b/lib/a.ts\r",
+		"@@ -1,2 +1,3 @@\r",
+		" \tconst a = 1;\r",
+		"-\tconst b = 2;\r",
+		"+\tconst b = 3;\r",
+		"+\t\tconst c = 4;\r",
+	].join("\n");
+	const { view: component } = view({
+		loadDiff: async () => tabbedDiff,
+	});
+	await settle();
+	const lines = component.render(80);
+	assert.equal(lines.length, 12);
+	for (const line of lines) {
+		assert.equal(visibleWidth(line), 80, `"${stripAnsi(line)}" is not 80 wide`);
+		assert.ok(!line.includes("\r"), "carriage return must not leak into rendered line");
+		assert.ok(!line.includes("\t"), "raw tab must not leak into rendered line");
+	}
+	const plain = lines.map(stripAnsi);
+	assert.match(plain[1], /^│ ▸ M lib\/a\.ts +\+2 -1 +│ @@ -1,2 \+1,3 @@ +│$/);
+	assert.match(plain[2], /^│   A lib\/b\.ts +\+10 -0 +│ +const a = 1; +│$/);
 });
 
 test("ChangesView loads the selected diff lazily and moves with j/k and arrows", async () => {

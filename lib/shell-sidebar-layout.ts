@@ -13,6 +13,8 @@ const RAIL_PADDING = 1;
 // the card instead of touching the terminal edge.
 const HEADER_RIGHT_INSET = RAIL_PADDING + 1;
 const GAP = 3;
+/** Right-edge columns the painting rail takes from the editor column; published as `railColumns`. */
+export const SIDEBAR_RAIL_COLUMNS = RAIL_WIDTH + GAP;
 // Experimental Pi 0.85.1 internals. Only the fullscreen layout tree is adapted;
 // regular mode keeps native scrollback and the original bottom components.
 const NODE = Symbol.for("@earendil-works/pi-tui/layout-node");
@@ -70,6 +72,26 @@ function railDigest(rail: SidebarRail): string | undefined {
 	}
 }
 
+export const STATUS_OWNER = { HEADER: "header", BOTTOM: "bottom" } as const;
+export type StatusOwner = (typeof STATUS_OWNER)[keyof typeof STATUS_OWNER];
+export interface StatusOwnerInput {
+	mode: string | undefined;
+	columns: number;
+	statusPlacement: StatusPlacement;
+	headerPlacement: HeaderPlacement;
+}
+
+/**
+ * Which single status row owns a narrow fullscreen terminal, so the header and
+ * the bottom bar never both paint there. A configured top header wins;
+ * otherwise the bottom bar does, unless Status is hidden and the below-input
+ * header is all that is left. Wide and regular layouts keep their own rules.
+ */
+export function narrowStatusOwner(input: StatusOwnerInput): StatusOwner | undefined {
+	if (input.mode !== "fullscreen" || input.columns >= SIDEBAR_BREAKPOINT) return undefined;
+	return input.headerPlacement === "top" || input.statusPlacement === "hidden" ? STATUS_OWNER.HEADER : STATUS_OWNER.BOTTOM;
+}
+
 /** Installs the fullscreen rail: wraps the host layout root with the [rail, transcript] hstack and returns a disposer restoring the original layout. */
 export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => StatusPlacement = () => "auto", headerPlacement: () => HeaderPlacement = () => "top", density: () => Density = () => "comfortable"): () => void {
 	if (!tui.terminal) return () => {};
@@ -91,6 +113,16 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	// revision counter, exactly like the whole-rail memo already did.
 	const sectionCache = new Map<string, SectionCacheEntry>();
 	state.active = false;
+	// Hidden removes Status everywhere, including regular mode where the rail
+	// never mounts, so it is published independently of the fullscreen layout.
+	state.statusHidden = () => !stopped && placement() === "hidden";
+	// A narrow top header is the only status row there. Whether it paints comes
+	// from the last layout pass (a blank or failed header never swallows the
+	// bottom bar); the geometry is read live so a resize applies before the next pass.
+	const headerOwnsStatus = () => !stopped && !failed && headerLines.length > 0 && headerPlacement() === "top" &&
+		narrowStatusOwner({ mode: host.mode, columns: tui.terminal.columns, statusPlacement: placement(), headerPlacement: headerPlacement() }) === STATUS_OWNER.HEADER;
+	state.headerOwnsStatus = headerOwnsStatus;
+	state.railColumns = SIDEBAR_RAIL_COLUMNS;
 	state.ownsHost = () => !stopped && host.mode === "fullscreen" && tui.terminal.columns >= SIDEBAR_BREAKPOINT && (placement() === "auto" || placement() === "right") && !!host.layoutRoot && roots.has(host.layoutRoot);
 	const rail: Component = {
 		render: () => railLines,
@@ -281,7 +313,11 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 				}
 				return { ...node, entries: entries.map((entry, index) => index === entries.length - 1 ? { ...entry, component: wrapped! } : entry) };
 			};
-			const nativeHost = { render: () => [], invalidate() {}, [NODE]: () => original.call(root) };
+			// Without a rail the native layout stays in place; a hidden Status, or a
+			// narrow top header owning it, only frees the footer's reserved dock row,
+			// exactly as the rail does.
+			const nativeLayout = () => placement() === "hidden" || headerOwnsStatus() ? reclaimFooterRow(original.call(root)) : original.call(root);
+			const nativeHost = { render: () => [], invalidate() {}, [NODE]: nativeLayout };
 			const left = { render: () => [], invalidate() {}, [NODE]: () => reclaimFooterRow(original.call(root)) };
 			// Stable component wrapping the [left, scroll] hstack behind its own
 			// NODE, exactly like `left` wraps the native transcript: the header
@@ -297,7 +333,8 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			};
 			const replacement = () => {
 				if (!prepare(tui.terminal.columns, root)) {
-					if (!headerLines.length || failed || stopped || host.mode !== "fullscreen") return original.call(root);
+					if (failed || stopped || host.mode !== "fullscreen") return original.call(root);
+					if (!headerLines.length) return nativeLayout();
 					return { type: "vstack", gap: 0, align: "stretch", entries: [
 						{ component: header, basis: "auto", grow: 0, shrink: 0, minSize: 1 },
 						{ component: nativeHost, basis: 0, grow: 1, shrink: 1, minSize: 1 },

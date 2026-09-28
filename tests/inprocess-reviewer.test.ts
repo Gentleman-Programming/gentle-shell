@@ -88,15 +88,20 @@ function capturingComplete(assistant: AssistantMessage) {
  */
 function signalAwaitingComplete(): typeof completeSimple {
 	return (async (_model: Model<Api>, _context: Context, options?: SimpleStreamOptions) => {
-		return await new Promise<AssistantMessage>((_resolve, reject) => {
-			const signal = options?.signal;
-			if (signal === undefined) return;
-			if (signal.aborted) {
-				reject(new Error("aborted"));
-				return;
-			}
-			signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
-		});
+		const keepalive = setTimeout(() => {}, 60_000);
+		try {
+			return await new Promise<AssistantMessage>((_resolve, reject) => {
+				const signal = options?.signal;
+				if (signal === undefined) return;
+				if (signal.aborted) {
+					reject(new Error("aborted"));
+					return;
+				}
+				signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+			});
+		} finally {
+			clearTimeout(keepalive);
+		}
 	}) as typeof completeSimple;
 }
 
@@ -107,16 +112,21 @@ function signalAwaitingComplete(): typeof completeSimple {
  */
 function signalResolvingAbortedComplete(partialText = "partial revi"): typeof completeSimple {
 	return (async (_model, _context, options) => {
-		return await new Promise<AssistantMessage>((resolve) => {
-			const signal = options?.signal;
-			const settle = () => resolve(assistantText(partialText, { stopReason: "aborted" }));
-			if (signal === undefined) return;
-			if (signal.aborted) {
-				settle();
-				return;
-			}
-			signal.addEventListener("abort", settle, { once: true });
-		});
+		const keepalive = setTimeout(() => {}, 60_000);
+		try {
+			return await new Promise<AssistantMessage>((resolve) => {
+				const signal = options?.signal;
+				const settle = () => resolve(assistantText(partialText, { stopReason: "aborted" }));
+				if (signal === undefined) return;
+				if (signal.aborted) {
+					settle();
+					return;
+				}
+				signal.addEventListener("abort", settle, { once: true });
+			});
+		} finally {
+			clearTimeout(keepalive);
+		}
 	}) as typeof completeSimple;
 }
 

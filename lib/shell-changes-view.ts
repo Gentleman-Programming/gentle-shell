@@ -61,7 +61,6 @@ export function colorDiff(text: string, theme: ChangesViewTheme): string[] {
 		if (line.startsWith("@@")) lines.push(theme.fg(ROLE.HUNK, line));
 		else if (line.startsWith("+")) lines.push(theme.fg("toolDiffAdded", line));
 		else if (line.startsWith("-")) lines.push(theme.fg("toolDiffRemoved", line));
-		else lines.push(theme.fg("toolDiffContext", line));
 	}
 	return lines;
 }

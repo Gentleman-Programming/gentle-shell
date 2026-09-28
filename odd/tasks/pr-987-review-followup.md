@@ -20,12 +20,13 @@ Finish the review-requested changes on `feat/provider-aware-model-presets` for P
 Strategy: single existing PR; estimated authored follow-up under 400 lines, excluding integration of upstream history. Branch: `feat/provider-aware-model-presets`. No remote delivery authorized.
 
 ## Tasks
-- [~] T1 — Correct profile routing timing reference. Route: inline, one mechanical documentation edit. Check: review actual application flow and documentation diff; passive doc edit has no meaningful RED.
-- [ ] T2 — Integrate current main, resolve extension conflict and verify merged routing. Route: delegated writer for conflict resolution plus delegated command verification; trigger: merge of substantial upstream and non-trivial test/source interaction. Check focused model routing tests, typecheck, runtime harness, conflict-marker scan and diff. Record exact command outcomes and work-unit commit.
+- [x] T1 — Correct profile routing timing reference. Route: inline, one mechanical documentation edit. Check: review actual application flow and documentation diff; passive doc edit has no meaningful RED.
+- [~] T2 — Integrate current main, resolve extension conflict and verify merged routing. Route: delegated writer for conflict resolution plus delegated command verification; trigger: merge of substantial upstream and non-trivial test/source interaction. Check focused model routing tests, typecheck, runtime harness, conflict-marker scan and diff. Record exact command outcomes and work-unit commit.
 
 ## Progress
 - Explored PR #987, review comments, current source and merge-tree; branch is clean at original PR head.
-- Initial read-only mapping found all four maintainer routing fixes present. Documentation timing finding remains valid. Merge-tree predicts one conflict in `extensions/gentle-ai.ts`.
+- Initial read-only mapping found all four maintainer routing fixes present. Merge-tree predicts one conflict in `extensions/gentle-ai.ts`.
+- T1 done: corrected immediate application vs next-launch consumption in `docs/readme-reference.md`; `git diff --check` passed; docs-only change has no meaningful RED, runnable test or runtime harness. Work-unit commit `fe5aad43` (`docs(models): correct profile routing activation timing`). Rollback boundary: the documentation sentence and initial task document; no routing behavior changed.
 
 ## Next step
-Correct documentation and commit that isolated work unit, then reconcile `main` and verify.
+Merge `main`, preserve both sides of the extension conflict, run focused/full applicable checks, and commit the integration work unit.

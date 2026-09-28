@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test, { after } from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
 import { CURSOR_MARKER, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
+import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, fetchOpenCodeGoUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA } from "../lib/shell-usage.ts";
 import { createVimEditorAdapter } from "../lib/vim-editor-adapter.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
@@ -252,6 +252,14 @@ test("buildShellBarModel reads session, model, and footer data", () => {
 	assert.equal(built.costTotal, 0.75);
 	assert.equal(built.subscription, true);
 	assert.deepEqual(built.statuses, ["MCP: 3 servers enabled"]);
+});
+
+test("buildShellBarModel treats OpenCode Go API-key usage as subscription-backed", () => {
+	const { pi } = fakePi();
+	const { ctx } = fakeContext({ oauth: false });
+	(ctx as unknown as { model: { provider: string } }).model.provider = "opencode-go";
+	const footerData = { getGitBranch: () => null, getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} };
+	assert.equal(buildShellBarModel(pi, ctx, footerData).subscription, true);
 });
 
 test("buildShellBarModel shortens the home directory and hides effort for non-reasoning models", () => {
@@ -4308,6 +4316,39 @@ test("fetchCodexUsage sends the token and account id and parses the payload", as
 	assert.equal(await fetchCodexUsage(undefined, plain.fetchFn, 0), undefined);
 });
 
+const OPENCODE_GO_PAYLOAD = {
+	usage: {
+		rolling: { percent: 20, resetsAt: "2026-09-01T12:00:00.000Z" },
+		weekly: { percent: 45, resetsAt: "2026-09-07T12:00:00.000Z" },
+	},
+};
+
+test("fetchOpenCodeGoUsage sends the key to the fixed usage origin and never follows a redirect", async () => {
+	const { fetchFn, calls } = fakeFetch(OPENCODE_GO_PAYLOAD);
+	const usage = await fetchOpenCodeGoUsage("go-key", fetchFn, 0);
+	assert.equal(usage?.provider, "opencode-go");
+	assert.deepEqual(usage?.limits[0].windows.map((window) => window.label), ["5h", "week"]);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].url, "https://opencode.ai/zen/go/v1/usage");
+	assert.equal(calls[0].headers.Authorization, "Bearer go-key");
+	assert.equal(calls[0].init.redirect, "error", "a redirect would forward the bearer to another origin");
+	assert.equal(calls[0].init.cache, "no-store");
+	assert.equal(JSON.stringify(usage).includes("go-key"), false);
+});
+
+test("fetchOpenCodeGoUsage degrades to no snapshot without ever throwing", async () => {
+	const noKey = fakeFetch(OPENCODE_GO_PAYLOAD);
+	assert.equal(await fetchOpenCodeGoUsage(undefined, noKey.fetchFn, 0), undefined);
+	assert.equal(await fetchOpenCodeGoUsage("", noKey.fetchFn, 0), undefined);
+	assert.equal(noKey.calls.length, 0, "no key, no request");
+	assert.equal(await fetchOpenCodeGoUsage("go-key", fakeFetch(OPENCODE_GO_PAYLOAD, false).fetchFn, 0), undefined, "a non-OK response is not a snapshot");
+	assert.equal(await fetchOpenCodeGoUsage("go-key", fakeFetch({ usage: {} }).fetchFn, 0), undefined, "a payload without the required rolling window is not a snapshot");
+	const refused = (async () => {
+		throw new TypeError("redirect mode is not supported");
+	}) as unknown as typeof fetch;
+	assert.equal(await fetchOpenCodeGoUsage("go-key", refused, 0), undefined, "a refused redirect degrades silently");
+});
+
 const NAN_QUOTA_PAYLOAD = {
 	periodEnd: "2026-10-01T00:00:00.000Z",
 	models: [
@@ -4394,6 +4435,23 @@ test("a failed NaN refresh keeps the last valid snapshot", async () => {
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	assert.equal(calls.length, 2, "the refresh window elapsed, so the retry was attempted");
 	assert.match(renderFooter(ui), /nan total ▰+▱+/, "a failed refresh cannot erase the last valid snapshot");
+});
+
+test("gentleShell fetches OpenCode Go usage on session start and shows it in the bar", async () => {
+	const { pi, handlers } = fakePi();
+	const { fetchFn, calls } = fakeFetch(OPENCODE_GO_PAYLOAD);
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => 1_788_600_000_000 });
+	const { ctx, ui } = fakeContext({ token: "go-key" });
+	(ctx as unknown as { model: { provider: string } }).model.provider = "opencode-go";
+	await fire(handlers, "session_start", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].url, "https://opencode.ai/zen/go/v1/usage");
+	assert.match(renderFooter(ui), /\$0\.000 sub ⟡ opencode go 5h ▰+▱+ 20% · week 45%/);
+
+	await fire(handlers, "agent_end", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(calls.length, 1, "agent_end must not refetch within the refresh window");
 });
 
 test("gentleShell fetches Codex usage on session start and shows it in the bar", async () => {

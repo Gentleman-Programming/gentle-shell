@@ -107,7 +107,7 @@ import {
 	type DoubleEscCancelPolicy,
 	type DoubleEscCancelResolution,
 } from "../lib/double-esc-cancel-policy.ts";
-import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseProviderUsage, parseUsageHeaders, parseUsageSource, UsageSourceRegistry, UsageStore, USAGE_SOURCE_EVENT, type ProviderUsage, type UsageSource } from "../lib/shell-usage.ts";
+import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, OPENCODE_GO_PROVIDER, parseCodexUsage, parseNanQuota, parseOpenCodeGoUsage, parseProviderUsage, parseUsageHeaders, parseUsageSource, UsageSourceRegistry, UsageStore, USAGE_SOURCE_EVENT, type ProviderUsage, type UsageSource } from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarHeader, sidebarPart, sidebarState, VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar, narrowStatusOwner, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
@@ -273,7 +273,7 @@ export function buildShellBarModel(
 		contextPercent: usage?.percent ?? null,
 		contextWindow: usage?.contextWindow ?? model?.contextWindow ?? 0,
 		costTotal: sessionCost(ctx),
-		subscription: model ? ctx.modelRegistry.isUsingOAuth(model) : false,
+		subscription: model ? ctx.modelRegistry.isUsingOAuth(model) || model.provider === OPENCODE_GO_PROVIDER : false,
 		usage: options.usage,
 		statuses,
 	};
@@ -1401,6 +1401,26 @@ export async function fetchNanUsage(apiKey: string | undefined, fetchFn: typeof 
 	}
 }
 
+// OpenCode Go publishes subscription windows behind the API key pi already
+// holds; the same hardening as NaN applies, because the bearer is a secret
+// and the origin is fixed.
+export const OPENCODE_GO_USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
+
+export async function fetchOpenCodeGoUsage(apiKey: string | undefined, fetchFn: typeof fetch, now: number): Promise<ProviderUsage | undefined> {
+	if (!apiKey) return undefined;
+	try {
+		const response = await fetchFn(OPENCODE_GO_USAGE_URL, {
+			redirect: "error",
+			cache: "no-store",
+			headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json", "User-Agent": "gentle-pi" },
+		});
+		if (!response.ok) return undefined;
+		return parseOpenCodeGoUsage(await response.json(), now);
+	} catch {
+		return undefined;
+	}
+}
+
 // A registered source is foreign code running inside a fire-and-forget
 // refresh: it must degrade exactly like the built-in fetchers above, never
 // throw past this call, and never leave an unhandled rejection behind.
@@ -1437,7 +1457,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		const provider = ctx.model?.provider;
 		if (!provider) return;
 		const source = usageSources.get(provider);
-		if (!source && provider !== CODEX_PROVIDER && provider !== NAN_PROVIDER) return;
+		if (!source && provider !== CODEX_PROVIDER && provider !== NAN_PROVIDER && provider !== OPENCODE_GO_PROVIDER) return;
 		const now = deps.now();
 		if (!force && now - (usageFetchedAt.get(provider) ?? 0) < USAGE_REFRESH_MS) return;
 		usageFetchedAt.set(provider, now);
@@ -1446,7 +1466,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			? await fetchFromSource(source, apiKey, deps.fetch, deps.now())
 			: provider === NAN_PROVIDER
 				? await fetchNanUsage(apiKey, deps.fetch, deps.now())
-				: await fetchCodexUsage(apiKey, deps.fetch, deps.now());
+				: provider === OPENCODE_GO_PROVIDER
+					? await fetchOpenCodeGoUsage(apiKey, deps.fetch, deps.now())
+					: await fetchCodexUsage(apiKey, deps.fetch, deps.now());
 		if (!fetched) return;
 		// A registered source can be replaced while its own fetch is still in
 		// flight; the identity captured above is this call's source, so a stale

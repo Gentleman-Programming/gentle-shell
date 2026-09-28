@@ -17,6 +17,7 @@ import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import { VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
 import { resolveVisualSettings } from "../lib/visual-customization-policy.ts";
 import { createCompletionQueue } from "../lib/agents-completion-delivery.ts";
+import { createAgentMessageQueue, type PendingAgentMessage } from "../lib/agents-message-delivery.ts";
 import { AGENT_MODE, discoverAgents, loadAgentsConfig, resolveAgentProfile, withPinnedModelProfiles, type AgentDefinition, type AgentMode } from "../lib/agents-config.ts";
 import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-policy.ts";
 import { installBackgroundCacheWarming } from "../lib/background-cache-warming.ts";
@@ -527,7 +528,13 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// flushed at the next turn boundary, and a stale one never re-enters the
 	// conversation.
 	const completions = createCompletionQueue<TaskRecord>();
+	const messages = createAgentMessageQueue();
 	let activeAgentRuns = 0;
+
+	const isTaskLive = (id: string): boolean => {
+		const task = store.get(id);
+		return Boolean(task && ownedTaskIds.has(task.id) && !isFinished(task.status));
+	};
 
 	const deliver = (task: TaskRecord) => {
 		// Ownership is consulted at delivery time, matching onNotification and
@@ -551,6 +558,25 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		pi.appendEntry(AGENTS_STALE_RESULT_TYPE, { taskId: task.id, agent: task.agent, label: task.label, status: task.status, ageSeconds });
 	};
 
+	const deliverMessage = (msg: PendingAgentMessage) => {
+		if (activeSessionId() !== msg.parentSessionId) return;
+		pi.sendMessage(
+			{ customType: AGENTS_MESSAGE_TYPE, content: msg.content, display: msg.display, details: msg.details },
+			{ deliverAs: "steer", triggerTurn: true },
+		);
+	};
+
+	const flushMessages = (rethrow = false) => {
+		for (const msg of messages.takeDeliverable(deps.now(), activeSessionId() ?? "", isTaskLive)) {
+			try {
+				deliverMessage(msg);
+			} catch (error) {
+				if (rethrow) throw error;
+				/* Best-effort delivery: at most once, even if forwarding fails. */
+			}
+		}
+	};
+
 	const flushCompletions = () => {
 		for (const { task, settledAt, stale } of completions.takeDeliverable(deps.now())) {
 			try {
@@ -560,13 +586,19 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		}
 	};
 
+	const flushAll = () => {
+		flushMessages();
+		flushCompletions();
+	};
+
 	// A completion settles into our queue. An idle parent flushes right away so
 	// the wake-up behavior is unchanged; a busy parent flushes at the next turn
 	// boundary, and the steer mode injects it before that turn's next LLM call
 	// instead of parking it behind the whole run.
 	const settleCompletion = (task: TaskRecord) => {
+		messages.invalidateTask(task.id);
 		completions.enqueue(task, deps.now());
-		if (activeAgentRuns === 0) flushCompletions();
+		if (activeAgentRuns === 0) flushAll();
 	};
 
 	// `agent_start`/`agent_end` bracket a parent agent run; `turn_end` fires at
@@ -581,29 +613,36 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.on("agent_start", () => { activeAgentRuns += 1; });
 	pi.on("agent_end", () => {
 		activeAgentRuns = Math.max(0, activeAgentRuns - 1);
-		flushCompletions();
+		flushAll();
 	});
-	pi.on("agent_settled", () => flushCompletions());
-	pi.on("turn_end", () => flushCompletions());
+	pi.on("agent_settled", () => flushAll());
+	pi.on("turn_end", () => flushAll());
 
 	const runner = new AgentRunner(store, loadAgentsConfig({ cwd: process.cwd(), home: deps.home, agentHome }), deps, {
 		askUser: (_taskId, ask, raw) => answerThroughUi(ui, ask, raw),
 		onNotification: (task, message) => {
-			if (activeSessionId() !== task.parentSessionId) return false;
-			pi.sendMessage({ customType: AGENTS_MESSAGE_TYPE, content: message, display: false, details: { gentleAgents: { taskId: task.id, agent: task.agent, parentSessionId: task.parentSessionId, kind: "notification" } } }, { deliverAs: "followUp", triggerTurn: true });
+			if (activeSessionId() !== task.parentSessionId || isFinished(task.status)) return false;
+			messages.enqueueNotification(task, message, deps.now());
+			if (activeAgentRuns === 0) flushMessages();
 			return true;
 		},
 		onQuery: (task, requestId, message) => {
-			if (activeSessionId() !== task.parentSessionId) return false;
+			if (activeSessionId() !== task.parentSessionId || isFinished(task.status)) return false;
 			const hadYield = yieldedTaskIds.has(task.id);
 			if (task.mode === AGENT_MODE.TASK) yieldedTaskIds.add(task.id);
 			try {
-				pi.sendMessage({ customType: AGENTS_MESSAGE_TYPE, content: `Subagent ${task.agent} asks:\nTask ID: ${task.id}\nRequest ID: ${requestId}\nQuestion: ${message}`, display: true, details: { gentleAgents: { taskId: task.id, agent: task.agent, parentSessionId: task.parentSessionId, requestId, kind: "query" } } }, { deliverAs: "followUp", triggerTurn: true });
+				messages.enqueueQuery(task, requestId, message, deps.now());
+				if (activeAgentRuns === 0) flushMessages(true);
 				return true;
 			} catch (error) {
+				messages.expireQuery(task.id, requestId);
 				if (task.mode === AGENT_MODE.TASK && !hadYield) yieldedTaskIds.delete(task.id);
 				throw error;
 			}
+		},
+		onQuerySettled: (taskId, requestId, outcome) => {
+			if (outcome === "replied") messages.consumeQuery(taskId, requestId);
+			else messages.expireQuery(taskId, requestId);
 		},
 		onSuccessfulMutation: (task, tool) => {
 			// Same-clone registry attribution remains unchanged. A foreign task
@@ -670,6 +709,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			} catch { /* Metrics must never interrupt task finalization. */ }
 			try {
 				ownedTaskIds.delete(task.id);
+				messages.invalidateTask(task.id);
 				requestRender();
 				persist(task);
 				const yielded = yieldedTaskIds.delete(task.id);
@@ -1092,10 +1132,17 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			const query = await runner.waitForQuery(task.id);
 			if (query) {
 				const live = store.get(task.id) ?? task;
-				return text(`Subagent ${live.agent} is waiting for your reply to request ${query.requestId}.`, { gentleAgents: { taskId: live.id, agent: live.agent, status: live.status, mode: live.mode, requestId: query.requestId } }, true);
+				messages.consumeQuery(task.id, query.requestId);
+				const questionSuffix = query.message ? `\n\nQuestion:\n${query.message}` : "";
+				return text(
+					`Subagent ${live.agent} is waiting for your reply to request ${query.requestId}.${questionSuffix}`,
+					{ gentleAgents: { taskId: live.id, agent: live.agent, status: live.status, mode: live.mode, requestId: query.requestId, ...(query.message ? { question: query.message } : {}) } },
+					true,
+				);
 			}
 			const finished = await runner.waitFor(task.id);
 			completions.consume(finished.id);
+			messages.invalidateTask(finished.id);
 			return text(finishedText(finished), taskDetails(finished));
 		} finally {
 			signal?.removeEventListener("abort", onAbort);
@@ -1110,12 +1157,21 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			description,
 			parameters: { type: "object", additionalProperties: false, ...parameters } as never,
 			renderCall(args, theme) {
+				// The result title belongs with the result body so a running poll
+				// can hide both without changing the tool call or its model output.
+				if (name === "result") return { render: () => [], invalidate() {} };
 				const params = args as { agent?: string; task_id?: string };
 				return new Text(theme.fg("toolTitle", `${AGENTS_GLYPH} agent ${name.replace(/_/g, " ")}${params.agent ? ` · ${params.agent}` : params.task_id ? ` · ${params.task_id}` : ""}`), 0, 0);
 			},
 			renderResult(result, options, theme) {
+				const task = (result.details as { gentleAgents?: { status?: string; taskId?: string } } | undefined)?.gentleAgents;
+				if (name === "result" && task?.status === TASK_STATUS.RUNNING) {
+					return { render: () => [], invalidate() {} };
+				}
 				const body = result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
-				return new Text(options.expanded ? body : theme.fg("muted", body.split("\n")[0] ?? ""), 0, 0);
+				const visibleBody = options.expanded ? body : theme.fg("muted", body.split("\n")[0] ?? "");
+				const title = `${AGENTS_GLYPH} agent result${task?.taskId ? ` · ${sanitizeTerminalText(task.taskId)}` : ""}`;
+				return new Text(name === "result" ? `${theme.fg("toolTitle", title)}\n${visibleBody}` : visibleBody, 0, 0);
 			},
 			async execute(_id, params, signal, _onUpdate, ctx) {
 				return execute(params as Record<string, unknown>, ctx, signal);
@@ -1241,7 +1297,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			},
 		},
 		async (params, ctx, signal) => {
-			if (Object.hasOwn(params, "repository_root") && Object.hasOwn(params, "workspace_root")) throw new Error("repository_root and workspace_root are mutually exclusive.");
+			// An empty selector names no destination: only real roots are mutually
+			// exclusive, so a blank string must not masquerade as a second target.
+			const hasWorkspaceRoot = Object.hasOwn(params, "workspace_root") && params.workspace_root !== "";
+			const hasRepositoryRoot = Object.hasOwn(params, "repository_root") && params.repository_root !== "";
+			if (hasRepositoryRoot && hasWorkspaceRoot) throw new Error("repository_root and workspace_root are mutually exclusive.");
 			if ((Object.hasOwn(params, "repository_root") && typeof params.repository_root !== "string") || (Object.hasOwn(params, "workspace_root") && typeof params.workspace_root !== "string")) throw new Error("Root selectors must be strings.");
 			if (Object.hasOwn(params, "sdd_change") || Object.hasOwn(params, "remediation") || Object.hasOwn(params, "research_selection") || retiredSddAgent(String(params.agent))) return text("Error: retired SDD delegation is not supported.", { error: "retired SDD delegation" });
 			const { agents } = discoverAgents(roots(ctx));
@@ -1252,7 +1312,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				policy: resolveBackgroundSubagentsPolicy(ctx.cwd).policy,
 				parentMode: ctx.mode,
 			});
-			return launch(ctx, await buildRequest(ctx, agent, String(params.task ?? ""), typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, undefined, typeof params.workspace_root === "string" ? params.workspace_root : undefined, signal, typeof params.repository_root === "string" ? params.repository_root : undefined), signal);
+			const workspaceRoot = typeof params.workspace_root === "string" && params.workspace_root !== "" ? params.workspace_root : undefined;
+			const repositoryRoot = typeof params.repository_root === "string" && params.repository_root !== "" ? params.repository_root : undefined;
+			return launch(ctx, await buildRequest(ctx, agent, String(params.task ?? ""), typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, undefined, workspaceRoot, signal, repositoryRoot), signal);
 		},
 	);
 
@@ -1266,7 +1328,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (!task) return text(`Error: no task ${String(params.task_id)}`, { error: "unknown task" });
 		// The parent just pulled a finished result; its pending completion must
 		// never be replayed on top of it.
-		if (isFinished(task.status)) completions.consume(task.id);
+		if (isFinished(task.status)) {
+			completions.consume(task.id);
+			messages.invalidateTask(task.id);
+		}
 		return text(isFinished(task.status) ? finishedText(task) : `Task ${task.id} is still ${task.status} (last: ${task.lastStep}).`, taskDetails(task));
 	});
 
@@ -1276,12 +1341,15 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	});
 
 	tool("reply", "Reply once to a live query from a child of the current parent session.", { required: ["task_id", "request_id", "message"], properties: { task_id: { type: "string" }, request_id: { type: "string" }, message: { type: "string" } } }, async (params, ctx) => {
-		const accepted = await runner.reply(String(params.task_id), String(params.request_id), typeof params.message === "string" ? params.message : "", ctx.sessionManager.getSessionId() ?? "");
+		const taskId = String(params.task_id);
+		const requestId = String(params.request_id);
+		const accepted = await runner.reply(taskId, requestId, typeof params.message === "string" ? params.message : "", ctx.sessionManager.getSessionId() ?? "");
 		return accepted ? text("Reply accepted for delivery.") : text("Error: query is unavailable.", { error: "query unavailable" });
 	});
 
 	tool("cancel",  "Cancel a queued or running subagent task.", { required: ["task_id"], properties: { task_id: { type: "string" } } }, async (params) => {
 		const id = String(params.task_id);
+		messages.invalidateTask(id);
 		return runner.cancel(id, "cancelled by the cancel tool") ? text(`Cancelled task ${id}.`) : text(`Error: task ${id} is not running.`, { error: "not running" });
 	});
 
@@ -1303,6 +1371,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			// Continuing acts on the previous result, so any pending completion for
 			// it is already consumed by the parent.
 			completions.consume(previous.id);
+			messages.invalidateTask(previous.id);
 			const agent = discoverAgents(roots(ctx)).agents.find((candidate) => candidate.name === previous.agent);
 			if (!agent) return text(`Error: subagent "${previous.agent}" is no longer defined.`, { error: "unknown agent" });
 			const mode = (params.mode as AgentMode | undefined) ?? (previous.mode as AgentMode);
@@ -1343,6 +1412,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// A resumed, reloaded, or replaced session starts with an empty completion
 		// queue so nothing pending from another session can replay here.
 		completions.dropAll();
+		messages.dropAll();
 		presence?.dispose();
 		registryFor(ctx);
 		showWidget(ctx);
@@ -1390,6 +1460,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	});
 	pi.on("session_shutdown", async () => {
 		completions.dropAll();
+		messages.dropAll();
 		activeAgentRuns = 0;
 		presence?.dispose();
 		presence = undefined;

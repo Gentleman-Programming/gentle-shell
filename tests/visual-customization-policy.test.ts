@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, parseVisualSettingsFile, resolveVisualSettings, STATUS_PLACEMENT, writeVisualSettings, VISUAL_SCHEMA } from "../lib/visual-customization-policy.ts";
+import { DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, parseVisualSettingsFile, resolveVisualSettings, STATUS_PLACEMENT, VISUAL_SECTION_KEYS, writeVisualSettings, VISUAL_SCHEMA } from "../lib/visual-customization-policy.ts";
 
 test("missing settings use responsive defaults and return independent copies", () => {
 	const home = mkdtempSync(join(tmpdir(), "visual-policy-"));
@@ -13,7 +13,7 @@ test("missing settings use responsive defaults and return independent copies", (
 		assert.equal(DEFAULT_VISUAL_SETTINGS.statusPlacement, "auto");
 		assert.equal(DEFAULT_VISUAL_SETTINGS.headerPlacement, "top");
 		assert.equal(DEFAULT_VISUAL_SETTINGS.density, "comfortable");
-		assert.deepEqual(DEFAULT_VISUAL_SETTINGS.visibility, { changes: true, agents: true, todo: true, usageCost: true, modelDetails: true });
+		assert.deepEqual(DEFAULT_VISUAL_SETTINGS.visibility, { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true });
 		resolved.settings.visibility.agents = false;
 		assert.equal(DEFAULT_VISUAL_SETTINGS.visibility.agents, true);
 		assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).settings.visibility.agents, true);
@@ -26,6 +26,30 @@ test("strict versioned parsing rejects malformed and partial settings", () => {
 	for (const value of ["{", "null", "[]", JSON.stringify({ ...valid, schema: "future" }), JSON.stringify({ ...valid, density: "dense" }), JSON.stringify({ ...valid, visibility: { ...valid.visibility, todo: "yes" } }), JSON.stringify({ ...valid, extra: 1 }), JSON.stringify({ ...valid, visibility: { changes: true } })]) {
 		assert.equal(parseVisualSettingsFile(value), undefined);
 	}
+});
+
+test("Sections rows follow one ordered key list that covers every visibility key", () => {
+	assert.deepEqual(VISUAL_SECTION_KEYS, ["changes", "rdd", "agents", "todo", "usageCost", "modelDetails"]);
+	assert.deepEqual([...VISUAL_SECTION_KEYS].sort(), Object.keys(DEFAULT_VISUAL_SETTINGS.visibility).sort());
+});
+
+test("settings saved before the rdd section existed load as valid with rdd shown", () => {
+	const legacy = { schema: VISUAL_SCHEMA, ...DEFAULT_VISUAL_SETTINGS, visibility: { changes: false, agents: true, todo: false, usageCost: true, modelDetails: false } };
+	const expected = { ...DEFAULT_VISUAL_SETTINGS, visibility: { changes: false, rdd: true, agents: true, todo: false, usageCost: true, modelDetails: false } };
+	assert.deepEqual(parseVisualSettingsFile(JSON.stringify(legacy)), expected);
+	assert.deepEqual(parseVisualSettingsFile(JSON.stringify({ ...legacy, visibility: { ...expected.visibility, rdd: false } })), { ...expected, visibility: { ...expected.visibility, rdd: false } });
+	for (const visibility of [{ ...legacy.visibility, extra: true }, { ...legacy.visibility, rdd: "no" }, { ...legacy.visibility, todo: "yes" }, { agents: true, todo: true, usageCost: true, modelDetails: true, rdd: true }]) {
+		assert.equal(parseVisualSettingsFile(JSON.stringify({ ...legacy, visibility })), undefined);
+	}
+	const home = mkdtempSync(join(tmpdir(), "visual-policy-"));
+	try {
+		writeFileSync(join(home, "visual-customization.json"), JSON.stringify(legacy));
+		const resolved = resolveVisualSettings({ gentlePiConfigHome: home });
+		assert.equal(resolved.malformed, false);
+		assert.deepEqual(resolved.settings, expected);
+		const { rdd: _rdd, ...legacyVisibility } = expected.visibility;
+		assert.throws(() => writeVisualSettings({ ...expected, visibility: legacyVisibility } as typeof expected), /Invalid visual settings/);
+	} finally { rmSync(home, { recursive: true, force: true }); }
 });
 
 test("an unreadable settings path is a read error, not malformed content", () => {

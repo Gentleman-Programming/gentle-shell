@@ -56,7 +56,8 @@ function rule(length: number): string {
 
 export function colorDiff(text: string, theme: ChangesViewTheme): string[] {
 	const lines: string[] = [];
-	for (const line of text.split("\n")) {
+	for (const rawLine of text.split("\n")) {
+		const line = sanitizeTerminalText(rawLine.replace(/\r/g, "")).replace(/\t/g, "  ");
 		if (line === "" || HEADER_PREFIXES.some((prefix) => line.startsWith(prefix))) continue;
 		if (line.startsWith("@@")) lines.push(theme.fg(ROLE.HUNK, line));
 		else if (line.startsWith("+")) lines.push(theme.fg("toolDiffAdded", line));

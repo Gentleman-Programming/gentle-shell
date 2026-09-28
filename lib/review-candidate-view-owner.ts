@@ -259,11 +259,24 @@ export function samePath(path: string, expected: string, platform: NodeJS.Platfo
 	return canonical(path) === canonical(expected);
 }
 
-function directory(path: string, privateMode = false, platform: NodeJS.Platform = process.platform): string {
+export class PosixCandidateOwnerParentPrivacyError extends Error {
+	constructor() {
+		super("Candidate owner parent privacy check failed");
+		this.name = "PosixCandidateOwnerParentPrivacyError";
+	}
+}
+
+function directory(path: string, privateMode = false, platform: NodeJS.Platform = process.platform, classifyParentPrivacy = false): string {
 	const stat = lstatSync(path);
-	const uid = process.getuid?.();
-	if (!stat.isDirectory() || stat.isSymbolicLink() || !samePath(realpathSync(path), path, platform) ||
-		(privateMode && platform !== "win32" && (uid === undefined || stat.uid !== uid || (stat.mode & 0o077) !== 0))) throw new Error("Unsafe candidate owner directory");
+	if (!stat.isDirectory() || stat.isSymbolicLink() || !samePath(realpathSync(path), path, platform)) throw new Error("Unsafe candidate owner directory");
+	if (privateMode && platform !== "win32") {
+		const uid = process.getuid?.();
+		if (uid === undefined) throw new Error("Unsafe candidate owner directory");
+		if (stat.uid !== uid || (stat.mode & 0o077) !== 0) {
+			if (classifyParentPrivacy) throw new PosixCandidateOwnerParentPrivacyError();
+			throw new Error("Unsafe candidate owner directory");
+		}
+	}
 	if (privateMode && platform === "win32") privateWindowsDacl(path, "directory", true);
 	return `${stat.dev}:${stat.ino}`;
 }
@@ -273,9 +286,10 @@ export function assertCandidateOwnerParent(commonDir: string, platform: NodeJS.P
 	const control = join(commonDir, "gentle-ai");
 	directory(control, false, platform);
 	const parent = join(commonDir, "gentle-ai", "candidate-views");
-	directory(parent, false, platform);
-	if (platform === "win32") privateWindowsCandidateOwnerBoundary(commonDir);
-	else directory(parent, true, platform);
+	if (platform === "win32") {
+		directory(parent, false, platform);
+		privateWindowsCandidateOwnerBoundary(commonDir);
+	} else directory(parent, true, platform, true);
 	return parent;
 }
 

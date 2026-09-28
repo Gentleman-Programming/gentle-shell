@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
+import { NATIVE_REVIEW_ERROR_CODE, NativeReviewCliError } from "./native-review-cli.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 
 /** Ephemeral display data only; this event grants no review authority. */
@@ -7,19 +8,19 @@ export const REVIEW_SIDEBAR_EVENT = "gentle-ai:review-sidebar";
 export const REVIEW_SCOPE_UNAVAILABLE = "Candidate scope unavailable";
 
 export const REVIEW_SIDEBAR_LABELS = {
-	reviewing: "Reviewing",
-	in_review: "In review",
-	checking: "Checking review",
-	approved: "Approved · awaiting acknowledgement",
-	closed: "Closed",
-	correction: "Correction required",
-	declined: "Declined",
-	invalidated: "Invalidated",
-	unavailable: "Unavailable",
-	unknown: "Unknown",
-	ready: "Ready for review",
-	consent: "Awaiting consent",
-	forecast: "Awaiting reviewer run",
+	reviewing: "Reviewers running…",
+	in_review: "Review in progress",
+	checking: "Updating…",
+	approved: "Approved · finalizing…",
+	closed: "✓ Approved",
+	correction: "Fixing findings…",
+	declined: "Skipped for this change",
+	invalidated: "Outdated · code changed",
+	unavailable: "Review unavailable",
+	unknown: "Status unknown",
+	ready: "Not reviewed yet",
+	consent: "Needs your consent",
+	forecast: "Preparing reviewers…",
 } as const;
 
 export interface ReviewSidebarSnapshot {
@@ -35,7 +36,8 @@ function candidateScope(paths: unknown): string {
 	const unique = [...new Set(paths as string[])];
 	const first = sanitizeTerminalText(unique[0]!.replaceAll("\\", "/").split("/").pop() ?? "").trim();
 	if (!first || first === "." || first === "..") return REVIEW_SCOPE_UNAVAILABLE;
-	return `${first}${unique.length > 1 ? ` +${unique.length - 1}` : ""}`;
+	const more = unique.length - 1;
+	return more > 0 ? `${first} +${more} ${more === 1 ? "file" : "files"}` : first;
 }
 
 /** Interpret only the facade's explicit evidence, not tool success or opaque bindings. */
@@ -112,6 +114,48 @@ function isNonterminalReviewerCapture(data: Record<string, unknown>): boolean {
 		[relay.lens, relay.order, relay.subject_hash, relay.role].every((value) => value === undefined || (typeof value === "string" && value.length > 0));
 }
 
+// Classify from the thrown error: an abort that races an ordinary failure stays a failure.
+function isCancellation(error: unknown): boolean {
+	return (error instanceof Error && error.name === "AbortError") ||
+		(error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.CANCELLED);
+}
+
+// Resolve completion using only local display correlation; never interpret bindings.
+function resolveCompletion(operation: string, name: string, input: Record<string, unknown>, details: unknown,
+	prior: ReviewScope | undefined, boundCapture: boolean, workspace: string): { snapshot: ReviewSidebarSnapshot; scope?: ReviewScope } {
+	const data = record(details);
+	const native = record(data.result);
+	const closure = record(data.closure);
+	const snapshot = reviewSidebarSnapshot(operation, data);
+	const lineage = record(native.authority).lineage_id ?? native.lineage_id ?? data.lineage_id ?? closure.lineage_id;
+	const target = native.target_identity ?? data.target_identity ?? closure.target_identity;
+	const terminalClosure = data.outcome === "native-last-event-closure";
+	const closureMatches = !terminalClosure || (closure.schema === "gentle-ai.review-last-event-closure/v1" &&
+		closure.lineage_id === prior?.lineage && closure.target_identity === prior?.target);
+	const sameCapture = boundCapture && closureMatches &&
+		(lineage === undefined || lineage === prior!.lineage) && (target === undefined || target === prior!.target);
+	const nonterminalSingle = name === "gentle_review_capture" && sameCapture && isNonterminalReviewerCapture(data) &&
+		data.lineage_id === prior!.lineage && (data.target_identity === undefined || data.target_identity === prior!.target);
+	if (nonterminalSingle) {
+		snapshot.state = "in_review";
+		snapshot.scope = prior!.scope;
+	}
+	const healthy = !["unknown", "unavailable", "invalidated", "declined"].includes(snapshot.state);
+	const sameAcknowledgement = operation === "acknowledge-approved" && snapshot.state === "closed" &&
+		prior !== undefined && input.lineageId === prior.lineage && lineage === prior.lineage && target === prior.target;
+	let nextScope: ReviewScope | undefined;
+	if (healthy && (sameCapture || sameAcknowledgement)) {
+		if (snapshot.scope === REVIEW_SCOPE_UNAVAILABLE) snapshot.scope = prior!.scope;
+		nextScope = { ...prior!, scope: snapshot.scope, bindings: snapshot.state === "forecast" ? prior!.bindings :
+			nonterminalSingle ? prior!.bindings.filter((binding) => binding !== input.collectBinding) : [] };
+	}
+	// A fresh native projection replaces correlation, even for the same lineage.
+	if (healthy && native.applicability === "current_target" && snapshot.scope !== REVIEW_SCOPE_UNAVAILABLE && typeof lineage === "string" && lineage && typeof target === "string" && target && native.projection) {
+		nextScope = { workspace, lineage, target, scope: snapshot.scope, bindings: issuedBindings(data) };
+	}
+	return { snapshot, scope: nextScope };
+}
+
 /** One in-memory snapshot per live runtime; observation cannot affect tool outcomes. */
 export function createReviewSidebarPublisher(pi: ExtensionAPI) {
 	let active = true;
@@ -142,6 +186,8 @@ export function createReviewSidebarPublisher(pi: ExtensionAPI) {
 					const ticket = ++generation;
 					const current = () => active && generation === ticket && sessionId === id && ctx.sessionManager.getSessionId() === id;
 					const workspace = typeof input.workspaceRoot === "string" ? input.workspaceRoot : ctx.cwd;
+					// A raw nested workspaceRoot can differ from canonical ctx.cwd: lose display
+					// correlation rather than canonicalizing paths or inferring authority.
 					const prior = scope?.workspace === workspace ? scope : undefined;
 					const boundCapture = matchesCapture(definition.name, input, prior);
 					// Unbound refreshes and new candidates discard the previous display.
@@ -151,42 +197,15 @@ export function createReviewSidebarPublisher(pi: ExtensionAPI) {
 					try {
 						const result = await run();
 						if (current()) {
-							const data = record(result.details);
-							const native = record(data.result);
-							const closure = record(data.closure);
-							const snapshot = reviewSidebarSnapshot(operation, data);
-							const lineage = record(native.authority).lineage_id ?? native.lineage_id ?? data.lineage_id ?? closure.lineage_id;
-							const target = native.target_identity ?? data.target_identity ?? closure.target_identity;
-							const terminalClosure = data.outcome === "native-last-event-closure";
-							const closureMatches = !terminalClosure || (closure.schema === "gentle-ai.review-last-event-closure/v1" &&
-								closure.lineage_id === prior?.lineage && closure.target_identity === prior?.target);
-							const sameCapture = boundCapture && closureMatches &&
-								(lineage === undefined || lineage === prior!.lineage) && (target === undefined || target === prior!.target);
-							const nonterminalSingle = definition.name === "gentle_review_capture" && sameCapture && isNonterminalReviewerCapture(data) &&
-								data.lineage_id === prior!.lineage && (data.target_identity === undefined || data.target_identity === prior!.target);
-							if (nonterminalSingle) {
-								snapshot.state = "in_review";
-								snapshot.scope = prior!.scope;
-							}
-							const healthy = !["unknown", "unavailable", "invalidated", "declined"].includes(snapshot.state);
-							const sameAcknowledgement = operation === "acknowledge-approved" && snapshot.state === "closed" &&
-								prior !== undefined && input.lineageId === prior.lineage && lineage === prior.lineage && target === prior.target;
-							if (healthy && (sameCapture || sameAcknowledgement)) {
-								if (snapshot.scope === REVIEW_SCOPE_UNAVAILABLE) snapshot.scope = prior!.scope;
-								scope = { ...prior!, scope: snapshot.scope, bindings: snapshot.state === "forecast" ? prior!.bindings :
-									nonterminalSingle ? prior!.bindings.filter((binding) => binding !== input.collectBinding) : [] };
-							}
-							// A fresh native projection replaces correlation, even for the same lineage.
-							if (healthy && native.applicability === "current_target" && snapshot.scope !== REVIEW_SCOPE_UNAVAILABLE && typeof lineage === "string" && lineage && typeof target === "string" && target && native.projection) {
-								scope = { workspace, lineage, target, scope: snapshot.scope, bindings: issuedBindings(data) };
-							}
-							publish(id, snapshot);
+							const resolved = resolveCompletion(operation, definition.name, input, result.details, prior, boundCapture, workspace);
+							scope = resolved.scope;
+							publish(id, resolved.snapshot);
 						}
 						return result;
 					} catch (error) {
 						if (current()) {
 							scope = undefined;
-							publish(id, { state: "unavailable", scope: REVIEW_SCOPE_UNAVAILABLE });
+							publish(id, { state: isCancellation(error) ? "unknown" : "unavailable", scope: REVIEW_SCOPE_UNAVAILABLE });
 						}
 						throw error;
 					}

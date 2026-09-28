@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, type Component, type TUI } from "@earendil-works/pi-tui";
+import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 import { sidebarPart } from "../lib/shell-sidebar.ts";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
@@ -236,7 +237,10 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		}
 		const block = todoPromptBlock(current.state, staleTurns(current.state, current.turn));
 		if (!block) return undefined;
-		return { systemPrompt: `${event.systemPrompt}\n\n${block}` };
+		// gentle-shell#1485: pi-claude-bridge drops a handler-returned
+		// systemPrompt, so the open-tasks block goes through appendSystemPrompt.
+		appendSystemPromptOnce(event.systemPromptOptions, block);
+		return undefined;
 	});
 
 	pi.on("tool_execution_end", (event, ctx) => {

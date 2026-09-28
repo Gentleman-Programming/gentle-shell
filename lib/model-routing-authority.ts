@@ -107,11 +107,21 @@ export function readModelConfigFile(path: string): ModelConfigFileResult {
 
 export async function readModelConfigFileAsync(
 	path: string,
+	options: { rejectDroppedEntries?: boolean } = {},
 ): Promise<ModelConfigFileResult> {
 	if (!(await pathExists(path))) return { status: "missing" };
 	try {
 		const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
 		if (!isRecord(parsed)) return { status: "invalid", path };
+		if (options.rejectDroppedEntries && Object.entries(parsed).some(([, value]) => {
+			if (normalizeRoutingEntry(value) === undefined) return true;
+			if (typeof value === "string") return false;
+			if (!isRecord(value)) return true;
+			return Object.entries(value).some(([key, field]) =>
+				(key !== "model" && key !== "thinking" && key !== "effort") ||
+				(key === "model" && normalizeModelId(field) === undefined) ||
+				((key === "thinking" || key === "effort") && !isThinkingLevel(field)));
+		})) return { status: "invalid", path };
 		return { status: "valid", config: parseModelConfigFileValue(parsed) };
 	} catch {
 		return { status: "invalid", path };
@@ -130,8 +140,9 @@ export function readSavedModelConfig(
 export async function readSavedModelConfigAsync(
 	globalPath: string,
 	projectPath: string,
+	options: { rejectDroppedEntries?: boolean } = {},
 ): Promise<ModelConfigFileResult> {
-	const globalResult = await readModelConfigFileAsync(globalPath);
+	const globalResult = await readModelConfigFileAsync(globalPath, options);
 	if (globalResult.status !== "missing") return globalResult;
-	return readModelConfigFileAsync(projectPath);
+	return readModelConfigFileAsync(projectPath, options);
 }

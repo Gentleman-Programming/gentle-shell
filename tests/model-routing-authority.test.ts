@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -280,4 +280,42 @@ test("saved-routing apply preserves missing config and fails closed on malformed
 	const injected = await applySavedModelConfig(context, applyConfig);
 	assert.equal(injected.invalidPath, undefined);
 	assert.equal(mutatorCalls, 1);
+
+	const replacement = `${projectPath}.replacement`;
+	writeFileSync(projectPath, JSON.stringify({ worker: { model: "invalid-snapshot/model", extra: "unsupported" } }));
+	writeFileSync(replacement, JSON.stringify({ worker: "valid/replacement" }));
+	let replaced = false;
+	let appliedInvalid = false;
+	const raced = await applySavedModelConfig(context, async () => {
+		appliedInvalid = true;
+		return { updated: 1, skipped: 0 };
+	}, { afterRead: () => { renameSync(replacement, projectPath); replaced = true; } });
+	assert.equal(replaced, true, "replacement happens after parsing A and before any later validation");
+	assert.deepEqual(raced, { updated: 0, skipped: 0, invalidPath: projectPath });
+	assert.equal(appliedInvalid, false, "invalid A cannot borrow validation from valid B");
+
+	writeFileSync(projectPath, JSON.stringify({ worker: "valid/original" }));
+	writeFileSync(replacement, JSON.stringify({ worker: null }));
+	let appliedValid: unknown;
+	const validBeforeReplacement = await applySavedModelConfig(context, async (_cwd, config) => {
+		appliedValid = config;
+		return { updated: 1, skipped: 0 };
+	}, { afterRead: () => renameSync(replacement, projectPath) });
+	assert.deepEqual(validBeforeReplacement, { updated: 1, skipped: 0 });
+	assert.deepEqual(appliedValid, { worker: { model: "valid/original" } });
+
+	for (const [raw, expected] of [
+		[{ worker: { effort: "high" } }, { worker: { model: undefined, thinking: "high" } }],
+		[{ worker: { model: "openai/new", effort: "low" } }, { worker: { model: "openai/new", thinking: "low" } }],
+		[{ worker: { thinking: "high", effort: "low" } }, { worker: { model: undefined, thinking: "high" } }],
+	] as const) {
+		writeFileSync(projectPath, JSON.stringify(raw));
+		let applied: unknown;
+		const result = await applySavedModelConfig(context, async (_cwd, config) => {
+			applied = config;
+			return { updated: 1, skipped: 0 };
+		});
+		assert.deepEqual(result, { updated: 1, skipped: 0 });
+		assert.deepEqual(applied, expected);
+	}
 });

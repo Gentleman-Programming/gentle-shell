@@ -15,6 +15,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { PROFILES_KIND, PROFILES_VERSION } from "../lib/agent-profiles.ts";
+import { discoverAgents, loadAgentsConfig, resolveAgentProfile, withPinnedModelProfiles } from "../lib/agents-config.ts";
+import { resolveProfilePin } from "../lib/agent-profile-pin.ts";
 import type { AgentRoutingEntry } from "../lib/model-routing-authority.ts";
 type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel">;
 import { PROFILE_PIN_KIND, PROFILE_PIN_VERSION, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
@@ -2751,6 +2753,59 @@ test("p pins the selected profile for the clone without touching the global rout
 	setProfilePinWorktreeResolverForTesting(() => { throw new Error("unexpected pin read during render"); });
 	assert.doesNotMatch(stripAnsi(renderComponent(firstPanel!)), /pin\s+local: team/);
 	assert.match(stripAnsi(renderComponent(reopenedPanel)), /pin\s+local: team/);
+});
+
+test("session startup preserves pinned omitted-agent definition routing and unpinned reconciliation", async (t) => {
+	const { fixture, repoPinPath, writeStore } = profilesStoreFixture(t);
+	const helperPath = join(fixture.root, ".pi", "agents", "helper.md");
+	const definition = "---\nname: helper\ndescription: Helper\nmodel: definition/helper\nthinking: high\n---\nbody\n";
+	writeMarkdown(helperPath, definition);
+	writeStore({ team: { worker: { model: "pin/worker" } } });
+	writeProfilePinSync(repoPinPath, "team");
+	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>();
+	createGentleAiExtension({ nativeReviewCli: null })({
+		on(name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) { handlers.set(name, handler); },
+		registerCommand() {}, registerTool() {},
+	} as unknown as ExtensionAPI);
+	const start = async () => handlers.get("session_start")!({}, { cwd: fixture.root, hasUI: false } as ExtensionContext);
+	const resolved = (name: string) => {
+		const agent = discoverAgents({ cwd: fixture.root, home: fixture.root, agentHome: fixture.agentHome }).agents.find((item) => item.name === name);
+		assert.ok(agent);
+		return resolveAgentProfile(agent, withPinnedModelProfiles(
+			loadAgentsConfig({ cwd: fixture.root, home: fixture.root, agentHome: fixture.agentHome }),
+			resolveProfilePin({ cwd: fixture.root, configHome: fixture.configHome })?.modelProfiles,
+		));
+	};
+	for (const global of [
+		{},
+		{ worker: { model: "global/worker" } },
+		{ helper: { model: "global/helper", thinking: "low" }, worker: { model: "global/worker" } },
+	]) {
+		writeMarkdown(fixture.globalPath, JSON.stringify(global));
+		await start();
+		assert.equal(readFileSync(helperPath, "utf8"), definition);
+		assert.equal(resolved("helper").model?.id, "helper");
+		assert.equal(resolved("helper").thinking, "high");
+		assert.equal(resolved("helper").source.model, "definition");
+		assert.equal(resolved("helper").source.thinking, "definition");
+		assert.equal(resolved("worker").model?.id, "worker");
+		assert.equal(resolved("worker").source.model, "profile");
+		assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), global);
+	}
+	writeMarkdown(fixture.globalPath, JSON.stringify({ helper: {}, worker: { model: "global/worker" } }));
+	writeProfilePinSync(repoPinPath, "stale");
+	await start();
+	assert.doesNotMatch(readFileSync(helperPath, "utf8"), /model: definition\/helper/);
+	writeMarkdown(helperPath, "---\nname: helper\ndescription: Helper\nmodel: definition/helper\n---\nbody\n");
+	writeFileSync(repoPinPath, "[]");
+	await start();
+	assert.doesNotMatch(readFileSync(helperPath, "utf8"), /model: definition\/helper/);
+	writeMarkdown(helperPath, "---\nname: helper\ndescription: Helper\nmodel: definition/helper\n---\nbody\n");
+	// A missing pin follows the same global reconciliation path.
+	const { unlinkSync } = await import("node:fs");
+	unlinkSync(repoPinPath);
+	await start();
+	assert.doesNotMatch(readFileSync(helperPath, "utf8"), /model: definition\/helper/);
 });
 
 test("the profile pin scope note sanitizes its worktree-derived path", (t) => {

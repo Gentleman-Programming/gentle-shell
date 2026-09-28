@@ -46,7 +46,6 @@ import {
 import { installPackageAssets, getPackageAssetOwner, hasPackageAssetOwnerInstallation, type PackageAssetOwner, isPackageManagedSddAsset, updatePackageManagedSddAgentOwnership } from "../lib/agent-assets.ts";
 import {
 	THINKING_LEVELS,
-	isThinkingLevel,
 	normalizeModelConfig,
 	normalizeModelId,
 	normalizeRoutingEntry,
@@ -2717,42 +2716,21 @@ export async function applyModelConfigAsync(
 	return { updated, skipped };
 }
 
-async function savedModelConfigWithDroppedEntries(
-	cwd: string,
-	config: AgentModelConfig,
-): Promise<string | undefined> {
-	const globalPath = modelConfigPath(cwd);
-	const path = await pathExists(globalPath) ? globalPath : legacyProjectModelConfigPath(cwd);
-	try {
-		const raw: unknown = JSON.parse(await readFile(path, "utf8"));
-		if (!isRecord(raw) || Object.keys(raw).length !== Object.keys(config).length) return path;
-		for (const [name, value] of Object.entries(raw)) {
-			if (!(name in config)) return path;
-			if (typeof value === "string") continue;
-			if (!isRecord(value) || Object.keys(value).some((key) => key !== "model" && key !== "thinking")) return path;
-			if ("model" in value && normalizeModelId(value.model) === undefined) return path;
-			if ("thinking" in value && !isThinkingLevel(value.thinking)) return path;
-		}
-		return undefined;
-	} catch {
-		return path;
-	}
-}
-
 export async function applySavedModelConfig(
 	ctx: ExtensionContext,
 	applyConfig: typeof applyModelConfigAsync = applyModelConfigAsync,
+	options: { afterRead?: () => void } = {},
 ): Promise<{ updated: number; skipped: number; invalidPath?: string }> {
 	const result = await readModelRoutingAuthorityAsync(
 		modelConfigPath(ctx.cwd),
 		legacyProjectModelConfigPath(ctx.cwd),
+		{ rejectDroppedEntries: true },
 	);
+	options.afterRead?.();
 	if (result.status === "invalid") {
 		return { updated: 0, skipped: 0, invalidPath: result.path };
 	}
 	if (result.status === "missing") return { updated: 0, skipped: 0 };
-	const droppedPath = await savedModelConfigWithDroppedEntries(ctx.cwd, result.config);
-	if (droppedPath) return { updated: 0, skipped: 0, invalidPath: droppedPath };
 	return applyConfig(ctx.cwd, result.config);
 }
 
@@ -9336,7 +9314,9 @@ function createGentleAiExtensionForTesting(
 		try {
 			const installResult = installPackageAssets(ctx.cwd, true, ["delegation", "review"]);
 			migrateLegacyProjectModelOverrides(ctx.cwd);
-			const modelResult = await applySavedModelConfig(ctx);
+			const modelResult = resolveProfilePin({ cwd: ctx.cwd, configHome: gentleAiConfigHome() })
+				? { updated: 0, skipped: 0 }
+				: await applySavedModelConfig(ctx);
 			if (ctx.hasUI && modelResult.invalidPath) {
 				ctx.ui.notify(
 					`el Gentleman skipped model config because ${modelResult.invalidPath} is invalid JSON or not an object. Fix or remove the file, then run /gentle:models again.`,

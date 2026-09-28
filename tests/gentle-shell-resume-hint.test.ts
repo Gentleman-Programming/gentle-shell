@@ -201,19 +201,21 @@ test("on win32 the command uses double quotes that cmd.exe and PowerShell honor"
 		gentleShellResumeCommand({ sessionId: ID, sessionFile: "C:\\s\\x.jsonl" }, [], "win32"),
 		"gentle-shell --session C:\\s\\x.jsonl",
 	);
-	// Metacharacters that are only safe inside quotes.
+	// Spaces alone are safe inside double quotes.
 	assert.equal(
-		gentleShellResumeCommand({ sessionId: ID, sessionFile: "C:\\R&D (old)\\x.jsonl" }, [], "win32"),
-		'gentle-shell --session "C:\\R&D (old)\\x.jsonl"',
+		gentleShellResumeCommand({ sessionId: ID, sessionFile: "C:\\My Sessions\\x.jsonl" }, [], "win32"),
+		'gentle-shell --session "C:\\My Sessions\\x.jsonl"',
 	);
 });
 
 test("on win32 no command is produced when a value cannot be quoted safely", () => {
-	for (const home of ["C:\\%USERPROFILE%\\h", "C:\\a!b\\h", "C:\\$env\\h", "C:\\a`b\\h", 'C:\\a"b\\h', "C:\\a b\\"]) {
+	// PowerShell passes a space-free argument to the .cmd shim unquoted, so
+	// cmd.exe operators are refused even though double quotes would cover them.
+	for (const home of ["C:\\%USERPROFILE%\\h", "C:\\a!b\\h", "C:\\$env\\h", "C:\\a`b\\h", 'C:\\a"b\\h', "C:\\a b\\", "C:\\R&D\\h", "C:\\a|b\\h", "C:\\a<b\\h", "C:\\a>b\\h", "C:\\a^b\\h", "C:\\a(b)\\h"]) {
 		assert.equal(gentleShellResumeCommand({ sessionId: ID }, ["--home", home], "win32"), undefined, home);
 	}
 	assert.equal(
-		planResumeHint({ handoff: { sessionId: ID }, homeFlags: ["--home", "C:\\%TEMP%\\h"], stdoutIsTTY: true, terminalHungUp: false, platform: "win32" }),
+		planResumeHint({ handoff: { sessionId: ID }, homeFlags: ["--home", "C:\\%TEMP%\\h"], stdoutIsTTY: true, terminalHungUp: false, platform: "win32", color: true }),
 		undefined,
 	);
 	// The same characters are harmless inside POSIX single quotes elsewhere.
@@ -251,12 +253,17 @@ test("a cross-project session file reopens the original session in pi", () => {
 });
 
 test("planResumeHint prints the gentle-shell line with pi's dim label style", () => {
-	const hint = planResumeHint({ handoff: { sessionId: ID }, homeFlags: ["--link"], stdoutIsTTY: true, terminalHungUp: false, platform: "linux" });
+	const hint = planResumeHint({ handoff: { sessionId: ID }, homeFlags: ["--link"], stdoutIsTTY: true, terminalHungUp: false, platform: "linux", color: true });
 	assert.equal(hint, `\u001b[2mTo resume in gentle-shell:\u001b[22m gentle-shell --link --session ${ID}\n`);
 });
 
+test("planResumeHint drops the ANSI style when stdout has no colors", () => {
+	const hint = planResumeHint({ handoff: { sessionId: ID }, homeFlags: [], stdoutIsTTY: true, terminalHungUp: false, platform: "linux", color: false });
+	assert.equal(hint, `To resume in gentle-shell: gentle-shell --session ${ID}\n`);
+});
+
 test("planResumeHint prints nothing without a handoff, a TTY, or after a hang-up", () => {
-	const base = { handoff: { sessionId: ID } as { sessionId: string } | undefined, homeFlags: [], stdoutIsTTY: true, terminalHungUp: false, platform: "linux" as NodeJS.Platform };
+	const base = { handoff: { sessionId: ID } as { sessionId: string } | undefined, homeFlags: [], stdoutIsTTY: true, terminalHungUp: false, platform: "linux" as NodeJS.Platform, color: true };
 	assert.equal(planResumeHint({ ...base, handoff: undefined }), undefined);
 	assert.equal(planResumeHint({ ...base, stdoutIsTTY: false }), undefined);
 	assert.equal(planResumeHint({ ...base, terminalHungUp: true }), undefined);

@@ -109,8 +109,11 @@ const PLAIN_ARG = /^[A-Za-z0-9_\-.:/\\=]+$/;
 // Characters that stay live inside double quotes: cmd.exe expands %VAR% (and
 // !VAR! under delayed expansion), PowerShell expands $var and `escapes, and
 // an inner " ends the quoted argument in both. A trailing backslash would
-// escape the closing quote under the Windows argv rules.
-const WINDOWS_UNQUOTABLE = /["%!$`]|\\$/;
+// escape the closing quote under the Windows argv rules. cmd.exe operators
+// are refused too: gentle-shell is installed as a .cmd shim, and PowerShell
+// drops the quotes of a space-free argument when it calls one, so cmd.exe
+// would read & | < > ^ ( ) as operators.
+const WINDOWS_UNQUOTABLE = /["%!$`&|<>^()]|\\$/;
 
 // Quotes one argument for the shell the user is likely to paste into:
 // POSIX single quotes elsewhere, double quotes on win32, where cmd.exe and
@@ -156,14 +159,18 @@ export interface ResumeHintInput {
 	// True once the launcher got SIGHUP: the terminal is gone.
 	terminalHungUp: boolean;
 	platform: NodeJS.Platform;
+	// Whether stdout takes ANSI colors (NO_COLOR, FORCE_COLOR=0 and dumb
+	// terminals turn them off, as they do for pi's own dimmed label).
+	color: boolean;
 }
 
 // Returns the line to print after pi exits, or undefined to print nothing.
 // Like pi, it only prints to a TTY, and never after the terminal hung up.
 export function planResumeHint(input: ResumeHintInput): string | undefined {
-	const { handoff, homeFlags, stdoutIsTTY, terminalHungUp, platform } = input;
+	const { handoff, homeFlags, stdoutIsTTY, terminalHungUp, platform, color } = input;
 	if (!handoff || !stdoutIsTTY || terminalHungUp) return undefined;
 	const command = gentleShellResumeCommand(handoff, homeFlags, platform);
 	if (command === undefined) return undefined;
-	return `\u001b[2m${HINT_LABEL}\u001b[22m ${command}\n`;
+	const label = color ? `\u001b[2m${HINT_LABEL}\u001b[22m` : HINT_LABEL;
+	return `${label} ${command}\n`;
 }

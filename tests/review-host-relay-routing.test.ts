@@ -155,6 +155,38 @@ function providerRefuterRequiredStatus(lineageId: string): ReviewStatusV3 {
 	};
 }
 
+// gentle-pi#311 P3: gentle-ai's v9 contract renders the refuter and
+// targeted-validator role captures host-mediated, exactly like a lens
+// materialize slot, instead of the self-contained --execute=true vector
+// `providerRefuterRequiredStatus` above models.
+function roleBindingArguments(lineageId: string, revision = SHA): ReviewCollectInputV3["arguments"] {
+	return [
+		{ name: "lineage", value: lineageId, token: `--lineage=${lineageId}` },
+		{ name: "expected-revision", value: revision, token: `--expected-revision=${revision}` },
+		{ name: "target", value: SHA, token: `--target=${SHA}` },
+		{ name: "repository-context", value: `rctx1_${"e".repeat(64)}`, token: `--repository-context=rctx1_${"e".repeat(64)}` },
+	];
+}
+
+function hostMediatedRefuterCollectInput(lineageId: string, revision = SHA): ReviewCollectInputV3 {
+	const bindingTokens = roleBindingArguments(lineageId, revision).map((argument) => argument.token!);
+	return {
+		name: "provider_refuter",
+		schema: "https://gentle-ai.dev/schema/review/refuter/v1",
+		captureOperation: "review.capture-refuter",
+		arguments: [
+			...roleBindingArguments(lineageId, revision),
+			{ name: "agent", value: "pi", token: "--agent=pi" },
+			{ name: "materialize", value: "true", token: "--materialize=true" },
+		],
+		submission: {
+			operationToken: "capture-refuter",
+			argumentTokens: [...bindingTokens, "--agent=pi", "--input={{value}}"],
+			values: [{ slot: "provider_refuter", domain: "artifact_path_or_stdin", substitutionLocation: bindingTokens.length + 1 }],
+		},
+	};
+}
+
 interface RoutingHarness {
 	statusQueue: ReviewStatusV3[];
 	statusCalls: Array<{ cwd: string; lineageId?: string; agent?: "pi" }>;
@@ -214,6 +246,51 @@ test("one materialize binding routes exactly one provider slot through the host 
 	assert.equal(harness.statusCalls.length, 1, "a nonterminal capture does not auto-follow STATUS");
 	assert.equal(result.status, "captured");
 	assert.equal((result.host_relay as { transport: string }).transport, "pi_host_relay");
+});
+
+// gentle-pi#311 P3: a v9 host-mediated refuter/targeted-validator slot reuses
+// this exact relay machinery — the only role-specific part reachable from
+// here is the fixed routing key it resolves through, since it carries no
+// per-slot lens identity.
+test("a v9 host-mediated refuter slot routes through the host relay with its fixed routing key", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const cwd = repository(t);
+	const lineageId = "relay-role-lineage";
+	const input = hostMediatedRefuterCollectInput(lineageId);
+	const harness = nativeHarness([finalizeStatus(lineageId, [input])]);
+	const relayed: ReviewHostRelayRequest[] = [];
+	__testing.setReviewHostRelayRunnerForTesting(async (request: ReviewHostRelayRequest) => {
+		relayed.push(request);
+		return { promptByteLength: 64, resultByteLength: 32, submission: '{"admission_decision":"completed"}' };
+	});
+
+	const result = await runCapture(cwd, harness, lineageId);
+
+	assert.equal(relayed.length, 1);
+	assert.equal(relayed[0]!.routingKey, "review-refuter");
+	assert.deepEqual(relayed[0]!.captureArgumentTokens, input.arguments.map((argument) => argument.token));
+	assert.deepEqual(relayed[0]!.submission, input.submission);
+	assert.equal(harness.statusCalls.length, 1, "a nonterminal capture does not auto-follow STATUS");
+	assert.equal(result.status, "captured");
+	assert.equal((result.host_relay as { transport: string }).transport, "pi_host_relay");
+});
+
+// The reviewer selection is validated before any process launches (the same
+// discipline a lens slot already has): a routing config with no
+// review-refuter entry is refused typed, naming that exact key, never a
+// mid-relay transport failure.
+test("a missing review-refuter routing model is refused typed, naming the key, before any relay launch", async (t) => {
+	const cwd = repository(t);
+	const lineageId = "relay-role-missing-model";
+	const input = hostMediatedRefuterCollectInput(lineageId);
+	const harness = nativeHarness([finalizeStatus(lineageId, [input])]);
+
+	const result = await runCapture(cwd, harness, lineageId);
+
+	assert.equal(result.status, "blocked");
+	const failure = result.failure as { kind?: string } | undefined;
+	assert.equal(failure?.kind, "reviewer-config-invalid");
+	assert.match(String(result.reason), /review-refuter/);
 });
 
 test("Pi-authored review documents are rejected at the capture input boundary", async (t) => {

@@ -14,6 +14,7 @@ import {
 	parseFrontmatter,
 	parseModelRef,
 	resolveAgentProfile,
+	withPinnedModelProfiles,
 } from "../lib/agents-config.ts";
 import { THINKING_LEVELS } from "../lib/model-routing-authority.ts";
 
@@ -193,6 +194,21 @@ test("parseAgentsConfig applies defaults, validates values, and silently ignores
 	assert.equal(parseAgentsConfig({ default_mode: "background" }, undefined).defaultMode, AGENT_MODE.BACKGROUND);
 });
 
+test("parseAgentsConfig resolves the tool-call stall ceiling above the idle silence budget", () => {
+	const defaults = parseAgentsConfig(undefined, undefined);
+	assert.equal(defaults.stallTimeoutMs, 4 * 60_000);
+	assert.equal(defaults.toolStallTimeoutMs, 30 * 60_000);
+	const explicit = parseAgentsConfig({ stall_timeout_ms: 12_000, tool_stall_timeout_ms: 20 * 60_000 }, undefined);
+	assert.equal(explicit.stallTimeoutMs, 12_000);
+	assert.equal(explicit.toolStallTimeoutMs, 20 * 60_000);
+	const projectWins = parseAgentsConfig({ tool_stall_timeout_ms: 20 * 60_000 }, { tool_stall_timeout_ms: 15 * 60_000 });
+	assert.equal(projectWins.toolStallTimeoutMs, 15 * 60_000);
+	for (const invalid of ["forever", 0, -1, 12.5, null]) {
+		assert.equal(parseAgentsConfig({ tool_stall_timeout_ms: invalid }, undefined).toolStallTimeoutMs, 30 * 60_000, `invalid tool_stall_timeout_ms ${String(invalid)} must fall back to the default`);
+	}
+	assert.equal(parseAgentsConfig({ stall_timeout_ms: 45 * 60_000, tool_stall_timeout_ms: 1_000 }, undefined).toolStallTimeoutMs, 45 * 60_000, "the tool ceiling must never fall below the idle budget");
+});
+
 test("resolveAgentProfile prefers the profile, then the definition, then the defaults", () => {
 	const config = parseAgentsConfig({ default_model: "openai-codex/gpt-6-astra", default_effort: "medium", model_profiles: { "gentle-ai-explore": { effort: "high" } } }, undefined);
 	const explore = parseAgentDefinition(EXPLORER, "/x/explore.md", "global");
@@ -202,4 +218,32 @@ test("resolveAgentProfile prefers the profile, then the definition, then the def
 	assert.ok(!("error" in bare));
 	assert.deepEqual(resolveAgentProfile(bare, config), { model: { provider: "openai-codex", id: "gpt-6-astra" }, thinking: "medium", source: { model: "default", thinking: "default" } });
 	assert.deepEqual(resolveAgentProfile(bare, parseAgentsConfig(undefined, undefined)).source, { model: "unresolved", thinking: "unresolved" });
+});
+
+test("a pinned profile replaces subagent routing and leaves every other default alone", () => {
+	const global = parseAgentsConfig(
+		{
+			default_model: "openai-codex/gpt-6-astra",
+			default_effort: "medium",
+			default_mode: "background",
+			max_concurrency: 3,
+			model_profiles: { explore: { model: "openai-codex/gpt-5.6-terra", effort: "low" } },
+		},
+		{ model_profiles: { worker: { model: "anthropic/claude-sonnet-5" } } },
+	);
+	const pinned = withPinnedModelProfiles(global, { worker: { model: "openai/alpha", thinking: "minimal" } });
+	assert.deepEqual(pinned.modelProfiles, {
+		worker: { model: { provider: "openai", id: "alpha" }, thinking: "minimal" },
+	});
+	// Materialized global routing must not survive into a pinned repository: that
+	// leak is exactly the conflict a per-repository pin exists to remove.
+	assert.equal("explore" in pinned.modelProfiles, false);
+	// A pin redirects subagent routing only; the orchestrator routing and every
+	// operational default stay global.
+	assert.deepEqual({ ...pinned, modelProfiles: global.modelProfiles }, global);
+	// No pin, and no pin-shaped input, mean today's routing by identity.
+	assert.equal(withPinnedModelProfiles(global, undefined), global);
+	// A pinned profile that mentions no role still replaces the routing, so a
+	// repository can pin "everything inherits" without touching the global store.
+	assert.deepEqual(withPinnedModelProfiles(global, {}).modelProfiles, {});
 });

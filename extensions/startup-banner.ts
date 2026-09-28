@@ -5,22 +5,24 @@ import * as os from "node:os";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
+import { PI_SUBCOMMANDS } from "../lib/gentle-shell-launcher.ts";
 
 const PI_AGENT_DIR = join(os.homedir(), ".pi", "agent");
 const PI_NPM_DIR = join(PI_AGENT_DIR, "npm", "node_modules");
 
-type BannerColor = "pink" | "cyan" | "yellow" | "green";
-interface BannerConfig {
+export type BannerColor = "pink" | "cyan" | "yellow" | "green";
+export interface BannerConfig {
   showRose: boolean;
   showTextLogo: boolean;
   color: BannerColor;
 }
-const DEFAULT_BANNER_CONFIG: BannerConfig = {
+export const DEFAULT_BANNER_CONFIG: BannerConfig = {
   showRose: true,
   showTextLogo: true,
   color: "pink",
 };
-const BANNER_COLORS: BannerColor[] = ["pink", "cyan", "yellow", "green"];
+export const BANNER_COLORS: BannerColor[] = ["pink", "cyan", "yellow", "green"];
 const BANNER_PALETTES: Record<BannerColor, { rose: [number, number, number]; label: [number, number, number]; value: [number, number, number]; logoFresh: [number, number, number]; logoDim: [number, number, number] }> = {
   pink: { rose: [255, 118, 195], label: [200, 100, 160], value: [255, 140, 210], logoFresh: [255, 138, 206], logoDim: [95, 30, 60] },
   cyan: { rose: [95, 210, 255], label: [85, 170, 205], value: [130, 225, 255], logoFresh: [105, 220, 255], logoDim: [25, 80, 100] },
@@ -29,14 +31,14 @@ const BANNER_PALETTES: Record<BannerColor, { rose: [number, number, number]; lab
 };
 
 const TEXT_LOGO = [
-  "                  ▄▄▄▀▀▀▀▀██                                ▄▄▀▄▄           ▄▄█▀▀▀██   ▀▀█▄    ▄▄▄",
-  "              ▄▄█▀▀▒▒▒▒▒▄▄█▀▒                   ▄██     ▄▄█▀█▄█▀▒▒      ▄█▀▀ ▒▒▒▄█▀▀▒   ▄██▒ ▄█▀▒▒▒",
-  "          ▄▄██▀▒▒▒▒▒▄▄▄▀▀▒▒▒▒        ▄▄▄  ▀▀▀▀██▀▀▀▀▀███▀█▄▀▀▒▒▒▒      ██▒▒▒▒▄▄█▀▒▒▒▒▄▄█▀▀▄██▀▒▒▒",
-  "        ▄██▀▒▒▒▒     ▒▒▄▄█ ▄▄▄▀██ ▄▄▄▀▀▀▄  ▄██▀▒▒▒▒▄██▀▀▀▒▄▄███         ▒▒ ▄███▄▄▄█▀▀▀▒▒▄██▀▒▒▒",
-  "       ██▀▒▒▒     ▄▄▄███▀▄██▀▀▀▄▄██▀▀▄█▀▄▄██▀▒▒▒▄▄██▀▒▒▄██▀▀▀▄▄▀▀▀▀▀▀▀▀▀ ▄█▀▀▒▒▒▒▒▒▒▒▒▄██▒▒▒▒",
-  "       ▀█▄▄▄▄▄▀▀▀█▄▄███▄▒▀▀▀▀▀▀▒▀▀▒▒▀▀▀▀▒██▄▄▀▀▀ ▀█▄▀▀▀ ▀▀▀▀▀▒▒▒▒▒▒▒▒▒▒▄██▀▒▒▒       ███▒▒",
-  "        ▒▄▄▄█▀▀▀█▄█▀▀▒▒▒▒ ▒▒▒▒▒▒ ▒▒  ▒▒▒▒ ▒▒▒▒▒▒▒ ▒▒▒▒▒▒ ▒▒▒▒▒        ▀▀▀▒▒▒          ▒▒▒",
-  "     ▄▄▀▀ ▒▒▒▒▄██▀▒▒▒▒                                                 ▒▒▒",
+  "                  ▄▄▄▀▀▀▀▀██                                ▄▄▀▄▄          ▄▄█▀▀▀██   ▄▄▀██               ▄▄▀▄▄   ▄▄▀▄▄",
+  "              ▄▄█▀▀▒▒▒▒▒▄▄█▀▒                   ▄██     ▄▄█▀█▄█▀▒▒       ▄█▀▀▒▒▒▄█▀▒ ▄██▄█▀▒           ▄▄█▀█▄█▀▄▄█▀█▄█▀▒",
+  "          ▄▄██▀▒▒▒▒▒▄▄▄▀▀▒▒▒▒        ▄▄▄  ▀▀▀▀██▀▀▀▀▀███▀█▄▀▀▒▒▒▒      ██▄▄▒▒▒▒▒▒▒ ▄██▀▀▒▒▒          ▄██▀█▄▀▀▄██▀█▄▀▀▒▒▒",
+  "        ▄██▀▒▒▒▒     ▒▒▄▄█ ▄▄▄▀██ ▄▄▄▀▀▀▄  ▄██▀▒▒▒▒▄██▀▀▀▒▄▄███         ▀▀▀██▄▄  ▄██▀▒▄▄▀██   ▄▄▀▀██ ██▀▀▀▒▒▒██▀▀▀▒▒▒",
+  "       ██▀▒▒▒     ▄▄▄███▀▄██▀▀▀▄▄██▀▀▄█▀▄▄██▀▒▒▒▄▄██▀▒▒▄██▀▀▀▄▄      ▄▄     ▀██▄▄██▀▄██▀██▒  ▄██▄▄▀▒ █▀▒▒▒   █▀▒▒▒",
+  "       ▀█▄▄▄▄▄▀▀▀█▄▄███▄▒▀▀▀▀▀▀▒▀▀▒▒▀▀▀▀▒██▄▄▀▀▀ ▀█▄▀▀▀ ▀▀▀▀▀▒▒      ▀█▄▄▄▄█▀▀▒▒▀▀▒▒▀▀▒ ██▄▄▀▀█▄▄▄▄▀▀█▄▄▀▀▀▄▄▀█▄▄▀▀▀",
+  "        ▒▄▄▄█▀▀▀█▄█▀▀▒▒▒▒ ▒▒▒▒▒▒ ▒▒  ▒▒▒▒ ▒▒▒▒▒▒▒ ▒▒▒▒▒▒ ▒▒▒▒▒        ▒▀▀▀▀▒▒▒▒  ▒▒▒▒▒▒ ▒▒▒▒▒ ▒▒▒▒▒▒  ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒",
+  "     ▄▄▀▀ ▒▒▒▒▄██▀▒▒▒▒",
   "   ▄█ ▒▒▒▄▄██▀▀▒▒▒▒",
   "    ▀▀▀▀▀▀▒▒▒▒▒▒",
   "     ▒▒▒▒▒▒",
@@ -70,8 +72,8 @@ function gentleAiConfigHome(): string {
   return process.env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai");
 }
 
-function bannerConfigPath(): string {
-  return join(gentleAiConfigHome(), "banner.json");
+function bannerConfigPath(configHome = gentleAiConfigHome()): string {
+  return join(configHome, "banner.json");
 }
 
 function normalizeBannerConfig(value: unknown): BannerConfig {
@@ -84,16 +86,37 @@ function normalizeBannerConfig(value: unknown): BannerConfig {
   };
 }
 
-async function readBannerConfig(): Promise<BannerConfig> {
+// Modal mutations must not turn an unreadable or malformed existing file into defaults.
+// Legacy banner commands retain their original tolerant read behavior below.
+export async function readBannerConfigForEdit(configHome = gentleAiConfigHome()): Promise<BannerConfig> {
+  const path = bannerConfigPath(configHome);
+  let raw: string;
   try {
-    return normalizeBannerConfig(JSON.parse(await readFile(bannerConfigPath(), "utf8")));
+    raw = await readFile(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ...DEFAULT_BANNER_CONFIG };
+    throw new Error(`Cannot edit unreadable banner file: ${path}`, { cause: error });
+  }
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch { throw new Error(`Cannot edit malformed banner file: ${path}`); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`Cannot edit malformed banner file: ${path}`);
+  const config = value as Record<string, unknown>;
+  if (typeof config.showRose !== "boolean" || typeof config.showTextLogo !== "boolean" || !BANNER_COLORS.includes(config.color as BannerColor)) {
+    throw new Error(`Cannot edit malformed banner file: ${path}`);
+  }
+  return { showRose: config.showRose, showTextLogo: config.showTextLogo, color: config.color as BannerColor };
+}
+
+export async function readBannerConfig(configHome = gentleAiConfigHome()): Promise<BannerConfig> {
+  try {
+    return normalizeBannerConfig(JSON.parse(await readFile(bannerConfigPath(configHome), "utf8")));
   } catch {
     return { ...DEFAULT_BANNER_CONFIG };
   }
 }
 
-async function writeBannerConfig(config: BannerConfig): Promise<void> {
-  const path = bannerConfigPath();
+export async function writeBannerConfig(config: BannerConfig, configHome = gentleAiConfigHome()): Promise<void> {
+  const path = bannerConfigPath(configHome);
   await mkdir(join(path, ".."), { recursive: true });
   await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 }
@@ -183,7 +206,8 @@ function buildLetterSpans(bounds: Span, weights: number[]): Span[] {
 }
 
 const LOGO_BOUNDS = computeLogoBounds(TEXT_LOGO);
-const LETTER_WEIGHTS = [14, 10, 11, 10, 9, 11, 6, 13, 12]; // G E N T L E - P I
+// Variable-width script regions, including the gap before Shell and shadows.
+const LETTER_WEIGHTS = [22, 9, 8, 9, 8, 9, 10, 13, 8, 8, 13]; // G E N T L E S H E L L
 const LETTER_SPANS = buildLetterSpans(LOGO_BOUNDS, LETTER_WEIGHTS);
 
 function letterIndexAtX(x: number): number {
@@ -489,10 +513,10 @@ function currentIntroMode(): IntroMode {
   return pickIntroMode(rows, cols);
 }
 
-async function countSddAgents(): Promise<number> {
+async function countBackgroundAgents(): Promise<number> {
   try {
     const entries = await readdir(join(PI_AGENT_DIR, "agents"), { withFileTypes: true });
-    return entries.filter((entry) => entry.isFile() && /^sdd-.*\.md$/.test(entry.name)).length;
+    return entries.filter((entry) => entry.isFile() && entry.name.endsWith(".md") && !/^sdd-/.test(entry.name)).length;
   } catch {
     return 0;
   }
@@ -540,6 +564,14 @@ export function readGitBranch(cwd: string, run: typeof execFile = execFile): Pro
       resolve(branch ? `On branch ${branch}` : "Detached HEAD");
     });
   });
+}
+
+// Pi dispatches its subcommands purely on the first argument, so only that
+// token decides. Flag values such as the package directory the Gentle Shell
+// launcher injects with `-e <dir>` must not be mistaken for a subcommand.
+export function isPiCliSubcommandInvocation(argv: readonly string[]): boolean {
+  const first = argv[2];
+  return first !== undefined && (PI_SUBCOMMANDS as readonly string[]).includes(first);
 }
 
 export default function (pi: ExtensionAPI) {
@@ -617,11 +649,8 @@ export default function (pi: ExtensionAPI) {
     disposeHeader();
     if (!ctx.hasUI) return;
 
-    // Si se está ejecutando un comando de CLI como "pi update" o "pi install", no mostramos la intro animada.
-    const isCLICommand =
-      process.argv.length > 2 &&
-      !process.argv.every((arg) => arg.startsWith("-") || arg.endsWith(".ts"));
-    if (isCLICommand) return;
+    // CLI subcommands such as `pi update` or `pi install` skip the animated intro.
+    if (isPiCliSubcommandInvocation(process.argv)) return;
 
     if (currentIntroMode() === "skip") return;
 
@@ -637,7 +666,7 @@ export default function (pi: ExtensionAPI) {
     let mcpServersCount = 0;
     let extensionsCount = 0;
     let packagesCount = 0;
-    let sddAgentsCount = 0;
+    let backgroundAgentsCount = 0;
 
     const allCommands = pi.getCommands();
     const skills = allCommands.filter((c) => c.source === "skill");
@@ -671,7 +700,7 @@ export default function (pi: ExtensionAPI) {
     setTimeout(() => {
       (async () => {
         try {
-          sddAgentsCount = await countSddAgents();
+          backgroundAgentsCount = await countBackgroundAgents();
           const raw = await readFile(
             join(PI_AGENT_DIR, "settings.json"),
             "utf8",
@@ -690,6 +719,7 @@ export default function (pi: ExtensionAPI) {
 
     let tick = 0;
     let refreshStats = () => {};
+    let headerCache: { key: string; out: string[] } | null = null;
     const state = {
       timer: null as NodeJS.Timeout | null,
       mode: currentIntroMode() as IntroMode,
@@ -717,18 +747,27 @@ export default function (pi: ExtensionAPI) {
     setTimeout(() => {
       ctx.ui.setHeader((tui, theme) => {
         if (state.timer) clearInterval(state.timer);
+        headerCache = null;
 
         refreshStats = () => tui.requestRender();
+        // Capture once: a command changes the live prompt, not this intro.
+        const animationPolicy = resolveAnimationPolicy().policy;
         const animStart = Date.now();
-        state.timer = setInterval(() => {
-          tick++;
-          const finished = allStrokesReady() && tick > WRITING_END_TICK + 22;
-          if (finished || Date.now() - animStart > 5000) {
-            clearInterval(state.timer!);
-            state.timer = null;
-          }
-          try { tui.requestRender(); } catch { cleanup(); }
-        }, 25);
+        if (animationPolicy === "potato") {
+          tick = Number.MAX_SAFE_INTEGER;
+          state.timer = null;
+        } else {
+          const performance = animationPolicy === "performance";
+          state.timer = setInterval(() => {
+            tick += performance ? 10 : 1;
+            const finished = allStrokesReady() && tick > WRITING_END_TICK + 22;
+            if (finished || Date.now() - animStart > 5000) {
+              clearInterval(state.timer!);
+              state.timer = null;
+            }
+            try { tui.requestRender(); } catch { cleanup(); }
+          }, performance ? 250 : 25);
+        }
 
         // Grace period: pi-tui emite resizes transitorios mientras compone su layout inicial.
         const bootStart = Date.now();
@@ -752,8 +791,11 @@ export default function (pi: ExtensionAPI) {
         process.stdout.on("resize", resizeHandler);
 
         return {
+          /** Renders the persistent header grid; memoized per width, tick, mode and stats so static passes reuse the built lines. */
           render(width: number): string[] {
             if (state.mode === "skip") return [];
+            const headerKey = `${width}|${tick}|${state.mode}|${gitBranch}|${mcpServersCount}|${extensionsCount}|${packagesCount}|${backgroundAgentsCount}|${ctx.cwd}|${skills.length}|${customTools.length}`;
+            if (headerCache?.key === headerKey) return headerCache.out;
 
             const flashStartTick = 10;
             const roseOpacity = Math.min(1, tick / 10);
@@ -861,7 +903,7 @@ export default function (pi: ExtensionAPI) {
                 ["GIT:", gitBranch],
                 ["PATH:", ctx.cwd],
                 ["MCP:", `${mcpServersCount} server(s)`],
-                ["AGENTS:", `${sddAgentsCount} phases`],
+                ["AGENTS:", `${backgroundAgentsCount} agents`],
                 ["PLUGINS:", `${packagesCount} package(s)`],
                 ["SKILLS:", `${skills.length} loaded`],
                 ["EXTENSIONS:", `${extensionsCount} active`],
@@ -894,7 +936,7 @@ export default function (pi: ExtensionAPI) {
                 );
                 addWideRow(
                   "AGENTS:",
-                  `${sddAgentsCount} phases`,
+                  `${backgroundAgentsCount} agents`,
                   "EXTENSIONS:",
                   `${extensionsCount} active`,
                 );
@@ -910,7 +952,7 @@ export default function (pi: ExtensionAPI) {
                 addNarrowRow("PATH:", ctx.cwd);
                 addNarrowRow("MCP:", `${mcpServersCount} server(s)`);
                 addNarrowRow("PLUGINS:", `${packagesCount} package(s)`);
-                addNarrowRow("AGENTS:", `${sddAgentsCount} phases`);
+                addNarrowRow("AGENTS:", `${backgroundAgentsCount} agents`);
                 addNarrowRow("SKILLS:", `${skills.length} loaded`);
                 addNarrowRow("EXTENSIONS:", `${extensionsCount} active`);
                 addNarrowRow("VER:", `v${VERSION}`);
@@ -1049,9 +1091,10 @@ export default function (pi: ExtensionAPI) {
               out.push(truncateToWidth(line, Math.max(1, width), ""));
             }
 
+            headerCache = { key: headerKey, out };
             return out;
           },
-          invalidate() {},
+          invalidate() { headerCache = null; },
           dispose() {
             cleanup();
           },

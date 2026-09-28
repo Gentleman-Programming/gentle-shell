@@ -32,6 +32,22 @@ test("model routing authority normalizes and preserves sync/async source status"
 		authority.normalizeRoutingEntry({ model: " anthropic/opus ", thinking: "high" }),
 		{ model: "anthropic/opus", thinking: "high" },
 	);
+	assert.deepEqual(
+		authority.normalizeRoutingEntry({ model: "anthropic/opus", effort: "high" }),
+		{ model: "anthropic/opus", thinking: "high" },
+	);
+	assert.deepEqual(
+		authority.normalizeRoutingEntry({ effort: "medium" }),
+		{ model: undefined, thinking: "medium" },
+	);
+	assert.deepEqual(
+		authority.normalizeRoutingEntry({ model: "anthropic/opus", thinking: "high", effort: "low" }),
+		{ model: "anthropic/opus", thinking: "high" },
+	);
+	assert.deepEqual(
+		authority.normalizeRoutingEntry({ model: "anthropic/opus", effort: "invalid" }),
+		{ model: "anthropic/opus", thinking: undefined },
+	);
 	assert.deepEqual(authority.normalizeRoutingEntry(null), undefined);
 	assert.deepEqual(
 		authority.normalizeModelConfig({

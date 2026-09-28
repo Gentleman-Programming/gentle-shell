@@ -133,3 +133,44 @@ test("only standard path-bearing calls have registration candidates; shell and p
 	for (const name of ["bash", "powershell", "custom", "subagent_run"]) assert.equal(toolWorktreePath(name, { path: "/linked", command: "cd /linked", task: "/linked" }), undefined);
 	assert.equal(toolWorktreePath("read", { path: 42 }), undefined);
 });
+
+// C2 (odd/tasks/usage-click-and-changes-attribution.md): a repo nested inside
+// another repo (the live session's ~/work/NaN-builders inside ~/work) must
+// resolve to the INNER repo, never the outer one, because Git itself walks
+// up from the file's own directory and stops at the first .git it finds.
+function nestedFixture(t: test.TestContext) {
+	const dir = realpathSync(mkdtempSync(join(tmpdir(), "session-worktrees-nested-")));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const outer = join(dir, "work");
+	const inner = join(outer, "NaN-builders");
+	const empty = join(dir, "empty");
+	mkdirSync(empty);
+	const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+	Object.assign(env, { GIT_CONFIG_GLOBAL: join(empty, "config"), GIT_CONFIG_NOSYSTEM: "1", GIT_ATTR_NOSYSTEM: "1" });
+	writeFileSync(join(empty, "config"), "");
+	const git = (cwd: string, args: string[]) => execFileSync("git", ["-C", cwd, "-c", `core.hooksPath=${empty}`, "-c", "commit.gpgsign=false", ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
+	// Outer repo: no commits, matching the live evidence's `~/work` exactly.
+	git(dir, ["init", "--initial-branch=main", `--template=${empty}`, outer]);
+	// Inner repo: its own .git, a real branch and a commit.
+	git(dir, ["init", "--initial-branch=feature", `--template=${empty}`, inner]);
+	git(inner, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "Fixture"]);
+	mkdirSync(join(inner, "odd", "tasks"), { recursive: true });
+	writeFileSync(join(inner, "odd", "tasks", "jpg-png-converter.md"), "converted\n");
+	return { dir, outer, inner };
+}
+
+test("nearest-repository resolution: an inner repo's files never resolve to an outer ancestor repo", (t) => {
+	const f = nestedFixture(t);
+	const forFile = resolveSessionWorktree(join("NaN-builders", "odd", "tasks", "jpg-png-converter.md"), f.outer);
+	assert.equal(forFile?.root, f.inner, "the file's own nearest repository must win, not the outer ~/work repo");
+	// The inner repo's own root and files resolve to itself too, whether
+	// addressed from the outer cwd or the inner cwd directly.
+	const forRoot = resolveSessionWorktree("NaN-builders", f.outer);
+	assert.equal(forRoot?.root, f.inner);
+	const fromInnerCwd = resolveSessionWorktree(join("odd", "tasks", "jpg-png-converter.md"), f.inner);
+	assert.equal(fromInnerCwd?.root, f.inner);
+	// The outer repo is still resolvable for its own files.
+	const outerFile = join(f.outer, "README.md");
+	writeFileSync(outerFile, "outer\n");
+	assert.equal(resolveSessionWorktree("README.md", f.outer)?.root, f.outer);
+});

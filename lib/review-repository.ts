@@ -75,7 +75,7 @@ export function publicationProbeGitEnvironment(): NodeJS.ProcessEnv {
 function gitLines(cwd: string, args: string[]): string[] {
 	let output: string;
 	try {
-		output = execFileSync("git", ["-C", resolve(cwd), ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], shell: false, env: reviewGitEnvironment() });
+		output = execFileSync("git", ["-C", resolve(cwd), ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], shell: false, env: reviewGitEnvironment(), windowsHide: true });
 	} catch (error) {
 		if (error instanceof ReviewRepositoryError) throw error;
 		throw new ReviewRepositoryError("Unable to resolve Git repository authority");

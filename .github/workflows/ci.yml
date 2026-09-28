@@ -47,6 +47,35 @@ jobs:
       - name: Verify packed installation
         run: pnpm run test:packed-package
 
+  session-transport-macos:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 11.1.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          GENTLE_PI_SKIP_GENTLE_AI_INSTALL: "1"
+
+      - name: Run Darwin session transport tests
+        run: pnpm exec node --experimental-strip-types --test tests/agents-session-transport.test.ts tests/agents-session-transport-process.test.ts tests/gentle-agents.test.ts
+
+      - name: Verify generated runtime modules
+        run: pnpm run check:runtime-modules
+
   review-repository-windows:
     runs-on: windows-latest
     steps:

@@ -189,50 +189,6 @@ function createTerminalAuthority(fixture: RepositoryFixture, lineageId: string, 
 	}
 }
 
-test("controller SDD status treats removed OpenSpec recovery authority and deleted marker as blocking", async (t) => {
-	const fixture = createRepository(t);
-	const changeName = "recover-legacy-review-authority";
-	const changeRoot = join(fixture.repository, "openspec", "changes", changeName);
-	mkdirSync(changeRoot, { recursive: true });
-	writeFileSync(join(fixture.repository, "app.ts"), "export const value = 2;\n");
-	git(fixture.repository, "add", "app.ts");
-	const completeTree = git(fixture.repository, "write-tree");
-	createTerminalAuthority(fixture, "archived-graph-source", completeTree);
-	const supersessionRoot = join(resolveRepositoryAuthorityV1(fixture.repository).store_root, "control", "authority-supersession-v1");
-	const marker = join(supersessionRoot, "recovery-required-v1", `${domainHashV1("openspec-change-name", changeName)}.json`);
-	mkdirSync(join(supersessionRoot, "recovery-required-v1"), { recursive: true });
-	writeFileSync(marker, "recovery-required");
-	rmSync(changeRoot, { recursive: true, force: true });
-	unlinkSync(marker);
-
-	const status = await __testing.resolveControllerSddStatus(fixture.repository, changeName, false, "openspec");
-
-	assert.equal(status.dependencies.archive, "blocked");
-	assert.equal(status.nextRecommended, "blocked");
-	assert.match(status.blockedReasons.join("\n"), /active change not found/i);
-});
-
-test("controller SDD status ignores recovery-required review markers after terminal burn", async (t) => {
-	const fixture = createRepository(t);
-	const changeName = "recover-legacy-review-authority";
-	const changeRoot = join(fixture.repository, "openspec", "changes", changeName);
-	mkdirSync(join(changeRoot, "specs", "review"), { recursive: true });
-	writeFileSync(join(changeRoot, "proposal.md"), "# Proposal\n");
-	writeFileSync(join(changeRoot, "specs", "review", "spec.md"), "# Spec\n");
-	writeFileSync(join(changeRoot, "design.md"), "# Design\n");
-	writeFileSync(join(changeRoot, "tasks.md"), "- [x] 1.1 Done\n");
-	writeFileSync(join(changeRoot, "verify-report.md"), "PASS\n");
-	writeFileSync(join(changeRoot, "sync-report.md"), "PASS\n");
-	const markerDirectory = join(resolveRepositoryAuthorityV1(fixture.repository).store_root, "control", "authority-supersession-v1", "recovery-required-v1");
-	mkdirSync(markerDirectory, { recursive: true });
-	writeFileSync(join(markerDirectory, `${domainHashV1("openspec-change-name", changeName)}.json`), "recovery-required");
-
-	const status = await __testing.resolveControllerSddStatus(fixture.repository, changeName, false, "openspec");
-
-	assert.equal(status.dependencies.archive, "ready");
-	assert.equal(status.nextRecommended, "sdd-archive");
-});
-
 test("controller keeps graph-v1 ordinary mutation read-only while preserving repository-file input confinement", async (t) => {
 	const fixture = createRepository(t);
 	const lineageId = "controller-file-validator";

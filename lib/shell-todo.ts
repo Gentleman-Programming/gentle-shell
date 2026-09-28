@@ -1,6 +1,7 @@
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { CARD_TONE, cardInnerWidth, renderCard, type CardTheme } from "./shell-card.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
+import { paintHoverable } from "./shell-hover.ts";
 
 // Gentle Todo: the task list the model keeps while it works. Everything here
 // is pure. The state lives in the session branch (every tool result carries
@@ -77,6 +78,8 @@ export interface TodoRenderOptions {
 	collapsed: boolean;
 	staleTurns: number;
 	collapseKey?: string;
+	/** The pointer is over the clickable collapse/expand control. */
+	hovered?: boolean;
 }
 
 /** Tool results carry the snapshot under this key; the old rpiv-todo shape is read too. */
@@ -288,8 +291,11 @@ export function renderTodoCard(state: TodoState, theme: TodoTheme, width: number
 	const hint = options.collapseKey ? `${options.collapseKey} ${action}` : undefined;
 	const rows = options.collapsed ? [collapsedRow(state, theme, width)] : options.scrollable ? state.tasks.map((task) => taskRow(task, theme, width)) : bodyRows(state, theme, width);
 	const body = stale ? [theme.fg(NOTE_ROLE, `stale · ${options.staleTurns} turns`), ...rows] : rows;
+	// The clickable control paints the shared hover role while hovered --
+	// same treatment every other clickable surface uses -- instead of its
+	// ordinary accent role.
 	return renderCard(
-		{ title: `Todos ${theme.fg("accent", control)}`, subtitle: `${done} of ${total}`, body, tone: stale ? CARD_TONE.WARNING : CARD_TONE.INFO, glyph: TODO_GLYPH },
+		{ title: `Todos ${paintHoverable(theme, control, options.hovered, "accent")}`, subtitle: `${done} of ${total}`, body, tone: stale ? CARD_TONE.WARNING : CARD_TONE.INFO, glyph: TODO_GLYPH },
 		theme,
 		width,
 		{ expanded: true, hint },

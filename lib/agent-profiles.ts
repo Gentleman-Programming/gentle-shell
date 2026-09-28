@@ -406,12 +406,18 @@ export interface ProfileListItem {
 	description: string;
 }
 
-export function buildProfileListItems(file: AgentProfilesFile): ProfileListItem[] {
+export function buildProfileListItems(
+	file: AgentProfilesFile,
+	pinned?: string,
+): ProfileListItem[] {
 	return Object.entries(file.profiles).map(([name, config]) => {
 		const roles = profileRoleEntries(config).length;
+		const active = name === file.active ? `${name} (active)` : name;
 		return {
 			id: name,
-			label: name === file.active ? `${name} (active)` : name,
+			// A pinned profile is the one this repository launches with, which is not the
+			// same thing as the globally active profile, so both are named.
+			label: name === pinned ? `${active} (pinned)` : active,
 			description: `${roles} ${roles === 1 ? "role" : "roles"}`,
 		};
 	});
@@ -506,12 +512,22 @@ export function readProfilesFileResult(path: string): ProfilesFileReadResult {
 }
 
 /**
- * Replace the store through a sibling temp file and a rename. A direct write that
- * is interrupted leaves truncated JSON, which `readProfilesFileResult` must then
- * reject as unreadable, so the destination is only ever swapped for a complete
- * file and the temp file is removed on every failure path.
+ * Replace a JSON store through a sibling temp file and a rename. A direct write
+ * that is interrupted leaves truncated JSON, which the readers must then reject as
+ * unreadable, so the destination is only ever swapped for a complete file and the
+ * temp file is removed on every failure path. Shared by the profiles store and the
+ * per-repository profile pin so both stores keep the same atomicity guarantee.
  */
-export function writeProfilesFileSync(path: string, file: AgentProfilesFile): void {
+export function writeJsonFileAtomicallySync(path: string, text: string): void {
+	// Replacing a file with identical bytes is not a change, so it is skipped instead
+	// of churning the mtime. Pin writes are the reason this matters: re-applying the
+	// profile a repository already pins must not touch the pin file. An unreadable or
+	// missing destination simply falls through to the atomic write below.
+	try {
+		if (readFileSync(path, "utf8") === text) return;
+	} catch {
+		// Fall through: the file is absent or not readable as text.
+	}
 	mkdirSync(dirname(path), { recursive: true });
 	const temporary = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
 	const descriptor = openSync(
@@ -525,7 +541,7 @@ export function writeProfilesFileSync(path: string, file: AgentProfilesFile): vo
 	// path.
 	const failures: unknown[] = [];
 	try {
-		writeFileSync(descriptor, serializeProfilesFile(file));
+		writeFileSync(descriptor, text);
 	} catch (error) {
 		failures.push(error);
 	}
@@ -547,4 +563,8 @@ export function writeProfilesFileSync(path: string, file: AgentProfilesFile): vo
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") failures.push(error);
 	}
 	if (failures.length > 0) throw failures[0];
+}
+
+export function writeProfilesFileSync(path: string, file: AgentProfilesFile): void {
+	writeJsonFileAtomicallySync(path, serializeProfilesFile(file));
 }

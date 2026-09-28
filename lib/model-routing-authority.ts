@@ -25,7 +25,7 @@ export type ModelConfigFileResult =
 	| { status: "invalid"; path: string }
 	| { status: "valid"; config: AgentModelConfig };
 
-const SAFE_MODEL_ID_PATTERN = /^[A-Za-z0-9._~:@/+%-]+$/;
+export const SAFE_MODEL_ID_PATTERN = /^[A-Za-z0-9._~:@/+%-]+$/;
 const SAFE_AGENT_NAME_PATTERN = /^[A-Za-z0-9._:@/+%-]+$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -63,7 +63,11 @@ export function normalizeRoutingEntry(value: unknown): AgentRoutingEntry | undef
 	}
 	if (!isRecord(value)) return undefined;
 	const model = normalizeModelId(value.model);
-	const thinking = isThinkingLevel(value.thinking) ? value.thinking : undefined;
+	const thinking = isThinkingLevel(value.thinking)
+		? value.thinking
+		: isThinkingLevel(value.effort)
+			? value.effort
+			: undefined;
 	if (!model && !thinking) {
 		return Object.keys(value).length === 0 ? {} : undefined;
 	}

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 const helperUrl = new URL("../scripts/install-tui-mode-setting.mjs", import.meta.url);
-const { installTuiModeSetting } = await import(helperUrl.href);
+const { installTuiModeSetting, installIsolatedTuiModeSetting, DEFAULT_THEME_NAME, withIsolatedHomeDefaults } = await import(helperUrl.href);
 
 function fixture(t: { after(fn: () => void): void }, packagePath: readonly string[] = ["npm", "node_modules", "gentle-pi"]) {
 	const root = mkdtempSync(join(tmpdir(), "gentle-tui-test-"));
@@ -268,6 +268,62 @@ for (const fault of ["write", "rename", "concurrent-change"]) {
 		assert.deepEqual(readdirSync(f.home).sort(), ["npm", "settings.json"]);
 	});
 }
+
+// --- installIsolatedTuiModeSetting -------------------------------------------
+// gentle-shell's own isolated-home bootstrap (T2): unlike installTuiModeSetting,
+// there is no "physically installed under this home's npm/node_modules"
+// ownership check to satisfy, because gentle-shell just created `dir` itself
+// moments ago; a plain agent-home-shaped temp directory is enough.
+
+test("installIsolatedTuiModeSetting writes fullscreen and the default Gentleman-Cute theme into a freshly created directory", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "gentle-shell-isolated-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const dir = join(root, "gentle-shell", "agent");
+	mkdirSync(dir, { recursive: true });
+	assert.deepEqual(await installIsolatedTuiModeSetting(dir), { changed: true, recognized: true });
+	assert.deepEqual(JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")), { tuiMode: "fullscreen", theme: "Gentleman-Cute" });
+});
+
+test("installIsolatedTuiModeSetting preserves other settings fields already present, including an existing theme", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "gentle-shell-isolated-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	writeFileSync(join(root, "settings.json"), JSON.stringify({ tuiMode: "regular", theme: "rose" }));
+	assert.deepEqual(await installIsolatedTuiModeSetting(root), { changed: true, recognized: true });
+	assert.deepEqual(JSON.parse(readFileSync(join(root, "settings.json"), "utf8")), { tuiMode: "fullscreen", theme: "rose" });
+});
+
+// --- DEFAULT_THEME_NAME / withIsolatedHomeDefaults (pure, no filesystem) -----
+
+test("DEFAULT_THEME_NAME is Gentleman-Cute", () => {
+	assert.equal(DEFAULT_THEME_NAME, "Gentleman-Cute");
+});
+
+test("withIsolatedHomeDefaults sets fullscreen and the default theme on an empty settings object", () => {
+	assert.deepEqual(withIsolatedHomeDefaults({}), { tuiMode: "fullscreen", theme: "Gentleman-Cute" });
+});
+
+test("withIsolatedHomeDefaults never overwrites an already-declared theme", () => {
+	assert.deepEqual(withIsolatedHomeDefaults({ theme: "kanagawa" }), { tuiMode: "fullscreen", theme: "kanagawa" });
+});
+
+test("withIsolatedHomeDefaults preserves unrelated fields", () => {
+	assert.deepEqual(withIsolatedHomeDefaults({ packages: ["npm:example"] }), { tuiMode: "fullscreen", theme: "Gentleman-Cute", packages: ["npm:example"] });
+});
+
+test("installIsolatedTuiModeSetting is a no-op when already fullscreen", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "gentle-shell-isolated-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	writeFileSync(join(root, "settings.json"), JSON.stringify({ tuiMode: "fullscreen" }));
+	const before = lstatSync(join(root, "settings.json"));
+	assert.deepEqual(await installIsolatedTuiModeSetting(root), { changed: false, recognized: true });
+	assert.equal(lstatSync(join(root, "settings.json")).ino, before.ino);
+});
+
+test("installIsolatedTuiModeSetting rejects a missing directory", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "gentle-shell-isolated-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	await assert.rejects(installIsolatedTuiModeSetting(join(root, "absent")));
+});
 
 type PostinstallRoute = "skip" | "success" | "failure";
 

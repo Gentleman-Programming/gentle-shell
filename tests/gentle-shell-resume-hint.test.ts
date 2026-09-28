@@ -86,7 +86,7 @@ test("resumeHandoffFromSession carries the session file for a session from anoth
 		fileExists: () => true,
 	});
 	assert.deepEqual(handoff, { sessionId: ID, sessionFile: join(DEFAULT_DIR, "x.jsonl") });
-	assert.equal(gentleShellResumeCommand(handoff!, ["--link"]), `gentle-shell --link --session ${join(DEFAULT_DIR, "x.jsonl")}`);
+	assert.equal(gentleShellResumeCommand(handoff!, ["--link"], "linux"), `gentle-shell --link --session ${join(DEFAULT_DIR, "x.jsonl")}`);
 });
 
 test("resumeHandoffFromSession returns undefined when pi would not print a hint", () => {
@@ -140,10 +140,10 @@ test("handoff rejects values that could inject terminal control sequences", () =
 });
 
 test("gentleShellResumeCommand keeps home selectors and a custom session dir", () => {
-	assert.equal(gentleShellResumeCommand({ sessionId: ID }, []), `gentle-shell --session ${ID}`);
-	assert.equal(gentleShellResumeCommand({ sessionId: ID }, ["--link"]), `gentle-shell --link --session ${ID}`);
+	assert.equal(gentleShellResumeCommand({ sessionId: ID }, [], "linux"), `gentle-shell --session ${ID}`);
+	assert.equal(gentleShellResumeCommand({ sessionId: ID }, ["--link"], "linux"), `gentle-shell --link --session ${ID}`);
 	assert.equal(
-		gentleShellResumeCommand({ sessionId: ID, sessionDir: "/tmp/my sessions" }, ["--home", "/x y"]),
+		gentleShellResumeCommand({ sessionId: ID, sessionDir: "/tmp/my sessions" }, ["--home", "/x y"], "linux"),
 		`gentle-shell --home '/x y' --session-dir '/tmp/my sessions' --session ${ID}`,
 	);
 });
@@ -178,7 +178,8 @@ test("the gentle-shell command matches pi's real exit hint with the binary swapp
 			assert.ok(handoff);
 			const piCommand: string = formatResumeCommand(manager);
 			assert.ok(piCommand.startsWith("pi "), piCommand);
-			assert.equal(gentleShellResumeCommand(handoff, []), `gentle-shell ${piCommand.slice("pi ".length)}`);
+			// pi quotes the POSIX way on every platform; compare with the same quoting.
+			assert.equal(gentleShellResumeCommand(handoff, [], "linux"), `gentle-shell ${piCommand.slice("pi ".length)}`);
 		}
 	} finally {
 		if (previousTTY) Object.defineProperty(process.stdout, "isTTY", previousTTY);
@@ -187,6 +188,36 @@ test("the gentle-shell command matches pi's real exit hint with the binary swapp
 		else process.env.PI_CODING_AGENT_DIR = previousDir;
 		rmSync(agentDir, { recursive: true, force: true });
 	}
+});
+
+test("on win32 the command uses double quotes that cmd.exe and PowerShell honor", () => {
+	assert.equal(gentleShellResumeCommand({ sessionId: ID }, ["--link"], "win32"), `gentle-shell --link --session ${ID}`);
+	assert.equal(
+		gentleShellResumeCommand({ sessionId: ID, sessionDir: "C:\\Users\\Name With Space\\sessions" }, ["--home", "C:\\Users\\Name With Space\\home"], "win32"),
+		`gentle-shell --home "C:\\Users\\Name With Space\\home" --session-dir "C:\\Users\\Name With Space\\sessions" --session ${ID}`,
+	);
+	// Plain paths need no quotes at all.
+	assert.equal(
+		gentleShellResumeCommand({ sessionId: ID, sessionFile: "C:\\s\\x.jsonl" }, [], "win32"),
+		"gentle-shell --session C:\\s\\x.jsonl",
+	);
+	// Metacharacters that are only safe inside quotes.
+	assert.equal(
+		gentleShellResumeCommand({ sessionId: ID, sessionFile: "C:\\R&D (old)\\x.jsonl" }, [], "win32"),
+		'gentle-shell --session "C:\\R&D (old)\\x.jsonl"',
+	);
+});
+
+test("on win32 no command is produced when a value cannot be quoted safely", () => {
+	for (const home of ["C:\\%USERPROFILE%\\h", "C:\\a!b\\h", "C:\\$env\\h", "C:\\a`b\\h", 'C:\\a"b\\h', "C:\\a b\\"]) {
+		assert.equal(gentleShellResumeCommand({ sessionId: ID }, ["--home", home], "win32"), undefined, home);
+	}
+	assert.equal(
+		planResumeHint({ handoff: { sessionId: ID }, homeFlags: ["--home", "C:\\%TEMP%\\h"], stdoutIsTTY: true, terminalHungUp: false, platform: "win32" }),
+		undefined,
+	);
+	// The same characters are harmless inside POSIX single quotes elsewhere.
+	assert.equal(gentleShellResumeCommand({ sessionId: ID }, ["--home", "/tmp/$h"], "linux"), `gentle-shell --home '/tmp/$h' --session ${ID}`);
 });
 
 test("a cross-project session file reopens the original session in pi", () => {
@@ -220,12 +251,12 @@ test("a cross-project session file reopens the original session in pi", () => {
 });
 
 test("planResumeHint prints the gentle-shell line with pi's dim label style", () => {
-	const hint = planResumeHint({ handoff: { sessionId: ID }, homeFlags: ["--link"], stdoutIsTTY: true, terminalHungUp: false });
+	const hint = planResumeHint({ handoff: { sessionId: ID }, homeFlags: ["--link"], stdoutIsTTY: true, terminalHungUp: false, platform: "linux" });
 	assert.equal(hint, `\u001b[2mTo resume in gentle-shell:\u001b[22m gentle-shell --link --session ${ID}\n`);
 });
 
 test("planResumeHint prints nothing without a handoff, a TTY, or after a hang-up", () => {
-	const base = { handoff: { sessionId: ID } as { sessionId: string } | undefined, homeFlags: [], stdoutIsTTY: true, terminalHungUp: false };
+	const base = { handoff: { sessionId: ID } as { sessionId: string } | undefined, homeFlags: [], stdoutIsTTY: true, terminalHungUp: false, platform: "linux" as NodeJS.Platform };
 	assert.equal(planResumeHint({ ...base, handoff: undefined }), undefined);
 	assert.equal(planResumeHint({ ...base, stdoutIsTTY: false }), undefined);
 	assert.equal(planResumeHint({ ...base, terminalHungUp: true }), undefined);

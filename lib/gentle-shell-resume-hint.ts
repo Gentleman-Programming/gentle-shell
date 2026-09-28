@@ -104,16 +104,48 @@ export function parseResumeHandoff(text: string): ResumeHandoff | undefined {
 	return { sessionId, sessionDir };
 }
 
-export function gentleShellResumeCommand(handoff: ResumeHandoff, homeFlags: string[]): string {
-	const args = ["gentle-shell", ...homeFlags.map(shellQuote)];
+// Values that need no quoting in any shell a user might paste the hint into.
+const PLAIN_ARG = /^[A-Za-z0-9_\-.:/\\=]+$/;
+// Characters that stay live inside double quotes: cmd.exe expands %VAR% (and
+// !VAR! under delayed expansion), PowerShell expands $var and `escapes, and
+// an inner " ends the quoted argument in both. A trailing backslash would
+// escape the closing quote under the Windows argv rules.
+const WINDOWS_UNQUOTABLE = /["%!$`]|\\$/;
+
+// Quotes one argument for the shell the user is likely to paste into:
+// POSIX single quotes elsewhere, double quotes on win32, where cmd.exe and
+// PowerShell do not treat single quotes as quoting. Returns undefined when
+// the value cannot be quoted safely there.
+function quoteArg(value: string, platform: NodeJS.Platform): string | undefined {
+	if (platform !== "win32") return shellQuote(value);
+	if (PLAIN_ARG.test(value)) return value;
+	if (WINDOWS_UNQUOTABLE.test(value) || CONTROL_CHARS.test(value)) return undefined;
+	return `"${value}"`;
+}
+
+// Returns the gentle-shell command that resumes the handed-off session, or
+// undefined when some argument cannot be quoted safely for the platform's
+// shell (the caller then prints no hint and leaves pi's own line alone).
+export function gentleShellResumeCommand(
+	handoff: ResumeHandoff,
+	homeFlags: string[],
+	platform: NodeJS.Platform,
+): string | undefined {
+	const values = [...homeFlags];
 	// pi treats a --session value containing a path separator as a file path
 	// and opens it directly, whatever the launch directory.
 	if (handoff.sessionFile !== undefined) {
-		args.push("--session", shellQuote(handoff.sessionFile));
-		return args.join(" ");
+		values.push("--session", handoff.sessionFile);
+	} else {
+		if (handoff.sessionDir !== undefined) values.push("--session-dir", handoff.sessionDir);
+		values.push("--session", handoff.sessionId);
 	}
-	if (handoff.sessionDir !== undefined) args.push("--session-dir", shellQuote(handoff.sessionDir));
-	args.push("--session", handoff.sessionId);
+	const args = ["gentle-shell"];
+	for (const value of values) {
+		const quoted = quoteArg(value, platform);
+		if (quoted === undefined) return undefined;
+		args.push(quoted);
+	}
 	return args.join(" ");
 }
 
@@ -123,12 +155,15 @@ export interface ResumeHintInput {
 	stdoutIsTTY: boolean;
 	// True once the launcher got SIGHUP: the terminal is gone.
 	terminalHungUp: boolean;
+	platform: NodeJS.Platform;
 }
 
 // Returns the line to print after pi exits, or undefined to print nothing.
 // Like pi, it only prints to a TTY, and never after the terminal hung up.
 export function planResumeHint(input: ResumeHintInput): string | undefined {
-	const { handoff, homeFlags, stdoutIsTTY, terminalHungUp } = input;
+	const { handoff, homeFlags, stdoutIsTTY, terminalHungUp, platform } = input;
 	if (!handoff || !stdoutIsTTY || terminalHungUp) return undefined;
-	return `\u001b[2m${HINT_LABEL}\u001b[22m ${gentleShellResumeCommand(handoff, homeFlags)}\n`;
+	const command = gentleShellResumeCommand(handoff, homeFlags, platform);
+	if (command === undefined) return undefined;
+	return `\u001b[2m${HINT_LABEL}\u001b[22m ${command}\n`;
 }

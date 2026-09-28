@@ -13,7 +13,6 @@ const requiredPaths = [
   "assets/orchestrator-delegation.md",
   "assets/orchestrator-memory.md",
   "assets/orchestrator-skills.md",
-  "assets/sdd-orchestrator-workflow.md",
   "assets/agents/gentle-ai-explore.md",
   "assets/agents/gentle-ai-verify.md",
   "assets/agents/gentle-ai-worker.md",
@@ -24,27 +23,10 @@ const requiredPaths = [
   "assets/agents/review-reliability.md",
   "assets/agents/review-resilience.md",
   "assets/agents/review-risk.md",
-  "assets/agents/sdd-apply.md",
-  "assets/agents/sdd-archive.md",
-  "assets/agents/sdd-design.md",
-  "assets/agents/sdd-explore.md",
-  "assets/agents/sdd-init.md",
-  "assets/agents/sdd-onboard.md",
-  "assets/agents/sdd-proposal.md",
-  "assets/agents/sdd-remediate.md",
-  "assets/agents/sdd-research.md",
-  "assets/agents/sdd-spec.md",
-  "assets/agents/sdd-status.md",
-  "assets/agents/sdd-tasks.md",
-  "assets/agents/sdd-verify.md",
   "assets/chains/4r-review.chain.md",
-  "assets/chains/sdd-full.chain.md",
-  "assets/chains/sdd-plan.chain.md",
-  "assets/chains/sdd-verify.chain.md",
   "assets/migrations/managed-assets-v0.10.7.json",
   "assets/migrations/managed-assets-v0.13.json",
   "assets/migrations/managed-assets-v0.14.json",
-  "assets/support/sdd-status-contract.md",
   "assets/support/strict-tdd.md",
   "assets/support/strict-tdd-verify.md",
   "docs/delegated-verification.md",
@@ -52,7 +34,6 @@ const requiredPaths = [
   "docs/skill-style-guide.md",
   "docs/review-integration.md",
   "extensions/gentle-ai.ts",
-  "extensions/sdd-init.ts",
   "extensions/skill-registry.ts",
   "lib/gentle-ai-binary.ts",
   "lib/gentle-shell-launcher.ts",
@@ -61,7 +42,7 @@ const requiredPaths = [
   "lib/review-host-relay.ts",
   "lib/review-integration-v2.ts",
   "lib/review-relay-contract.ts",
-  "lib/sdd-preflight.ts",
+  "lib/agent-assets.ts",
   "lib/telemetry-trigger.ts",
 	"runtime/gentle-ai-binary.mjs",
 	"runtime/gentle-shell-launcher.mjs",
@@ -298,6 +279,11 @@ export function reconcileGeneratedRuntimeSources(packageRoot, sources, paths) {
 }
 
 async function main() {
+  if (existsSync(join(root, "extensions/sdd-init.ts"))) {
+    console.error("gentle-pi package must not restore the retired SDD init extension");
+    process.exit(1);
+  }
+
   const missing = requiredPaths.filter((relativePath) => {
     const absolutePath = join(root, relativePath);
     return !existsSync(absolutePath) || !statSync(absolutePath).isFile();

@@ -890,6 +890,17 @@ test("installer rejects an archive without the expected regular executable", asy
 	assert.equal(existsSync(join(packageRoot, ".gentle-ai", "v3.7.0", "gentle-ai")), false);
 });
 
+test("safeRemoveDirectory passes Windows-safe retry options to recursive rm cleanup", async () => {
+	const installerSource = await readFile(new URL("../scripts/gentle-ai-installer.mjs", import.meta.url), "utf8");
+	const match = /async function safeRemoveDirectory\(path\) \{(?<body>[\s\S]*?)\n\}/.exec(installerSource);
+	assert.ok(match?.groups?.body, "safeRemoveDirectory must remain available for scoped cleanup verification");
+	assert.match(
+		match.groups.body,
+		/await rm\(path, \{ recursive: true, force: true, maxRetries: 3, retryDelay: 100 \}\);/,
+		"safeRemoveDirectory cleanup must retry Windows EPERM failures from read-only Go module cache files",
+	);
+});
+
 // #400: a clean Windows source build measured 232 s on a cold module cache,
 // so `go install` cannot share the 120 s bound that fits the `go version`
 // probes. The probes keep their bound; the build gets its own.

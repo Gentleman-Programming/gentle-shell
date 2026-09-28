@@ -67,8 +67,6 @@ export const NATIVE_REVIEW_OPERATION = {
 	CAPTURE_PROVIDER_ROLE: "review/capture-provider-role",
 	CAPTURE_UNACHIEVABLE: "review/capture-unachievable",
 	ACKNOWLEDGE_APPROVED: "review/acknowledge-approved",
-	SDD_STATUS: "sdd-status",
-	SDD_CONTINUE: "sdd-continue",
 } as const;
 export type NativeReviewOperation = (typeof NATIVE_REVIEW_OPERATION)[keyof typeof NATIVE_REVIEW_OPERATION];
 
@@ -121,11 +119,6 @@ export interface NativeReviewCli {
 	// an older binary without the verb, or any other process/decode failure,
 	// rejects the returned promise -- callers fail closed to `high` risk.
 	assess?(request: NativeReviewAssessRequest): Promise<ReviewAssessmentV1>;
-	// Exact native SDD readiness authority for an explicitly selected phase.
-	// This is intentionally separate from review/RDD gates and carries no
-	// delivery or review-transaction authority.
-	sddStatus?(request: NativeSddStatusRequest): Promise<NativeSddStatusV2>;
-	sddContinue?(request: NativeSddStatusRequest): Promise<NativeSddStatusV2>;
 }
 
 export const NATIVE_REVIEW_MODE_OPERATION = {
@@ -161,35 +154,6 @@ export const NATIVE_REVIEW_MODE_SCOPE = {
 	BOTH: "both",
 } as const;
 export type NativeReviewModeScope = (typeof NATIVE_REVIEW_MODE_SCOPE)[keyof typeof NATIVE_REVIEW_MODE_SCOPE];
-
-export interface NativeSddStatusRequest {
-	changeName?: string;
-	workspaceRoot: string;
-	signal?: AbortSignal;
-}
-
-export type NativeSddPhase = "apply" | "verify" | "archive";
-export type NativeSddDependencyState = "blocked" | "ready" | "all_done";
-
-/**
- * The native CLI owns this complete v2 record. The decoder validates the fields
- * Pi relies on and returns the original object without adding, omitting, or
- * reconciling local SDD state.
- */
-export interface NativeSddStatusV2 extends Readonly<Record<string, unknown>> {
-	schemaName: "gentle-ai.sdd-status";
-	schemaVersion: 2;
-	changeName: string | null;
-	artifactStore: "openspec" | "engram" | "hybrid" | "none";
-	planningHome: Readonly<Record<string, unknown>> & { mode: "repo-local"; path: string };
-	changeRoot: string | null;
-	actionContext: Readonly<Record<string, unknown>> & { mode: "repo-local"; workspaceRoot: string; allowedEditRoots: readonly string[] };
-	dependencies: Readonly<Record<(typeof NATIVE_SDD_DEPENDENCIES)[number], NativeSddDependencyState>>;
-	phaseInstructions?: Readonly<Record<(typeof NATIVE_SDD_INSTRUCTION_PHASES)[number], readonly string[]> & { remediate?: readonly string[] }>;
-	blockedReasons: readonly string[];
-	nextRecommended: string;
-	remediationState?: { required: boolean; complete: boolean; failedEvidenceRevision: string };
-}
 
 export interface NativeReviewModeRequest {
 	cwd: string;
@@ -745,6 +709,21 @@ function nativeUntrackedSelectionArguments(selection: NativeUntrackedSelection):
 			? selection.intendedUntracked!.map((path) => `--intended-untracked=${path}`)
 			: []),
 	];
+}
+
+// Fail closed on malformed or duplicate provider selectors before invoking STATUS.
+function providerFlagValue(tokens: readonly string[], flag: string): string | undefined {
+	let found: string | undefined;
+	for (let index = 0; index < tokens.length; index++) {
+		const token = tokens[index]!;
+		if (token !== `--${flag}` && !token.startsWith(`--${flag}=`)) continue;
+		if (found !== undefined) throw new TypeError(`Native intended-untracked selection repeats --${flag}`);
+		const value = token === `--${flag}` ? tokens[index + 1] : token.slice(`--${flag}=`.length);
+		if (value === undefined || value === "" || value.startsWith("--")) throw new TypeError(`Native intended-untracked selection has an invalid --${flag} value`);
+		found = value;
+		if (token === `--${flag}`) index++;
+	}
+	return found;
 }
 
 const NATIVE_RISK_LEVEL = ["low", "medium", "high"] as const;
@@ -1515,52 +1494,6 @@ interface NativeJsonExecution {
 	process: ExecFileResult;
 }
 
-const NATIVE_SDD_DEPENDENCIES = ["proposal", "specs", "design", "tasks", "apply", "verify", "archive"] as const;
-const NATIVE_SDD_INSTRUCTION_PHASES = ["apply", "verify", "archive"] as const;
-const NATIVE_SDD_NEXT_RECOMMENDATIONS = ["apply", "verify", "remediate", "archive", "archived", "resolve-blockers", "sdd-new", "select-change", "propose", "spec", "design", "tasks"] as const;
-const NATIVE_SDD_DEPENDENCY_STATES = ["blocked", "ready", "all_done"] as const;
-
-/** Strictly validates the native v2 contract while preserving its whole record. */
-export function decodeNativeSddStatusV2(value: unknown, request: Pick<NativeSddStatusRequest, "changeName" | "workspaceRoot">): NativeSddStatusV2 {
-	const status = object(value);
-	if (status.schemaName !== "gentle-ai.sdd-status" || status.schemaVersion !== 2) throw new Error("wrong native SDD status schema");
-	if ((request.changeName !== undefined && status.changeName !== request.changeName) || (status.changeName !== null && !isCanonicalProcessString(status.changeName))) throw new Error("native SDD status change identity mismatch");
-	const artifactStore = enumString(status.artifactStore, ["openspec", "engram", "hybrid", "none"]);
-	const planningHome = object(status.planningHome);
-	if (planningHome.mode !== "repo-local" || !isCanonicalProcessString(planningHome.path)) throw new Error("invalid native SDD planning home");
-	const expectedOpenSpecHome = join(request.workspaceRoot, "openspec");
-	if (planningHome.path !== expectedOpenSpecHome && !((artifactStore === "engram" || artifactStore === "hybrid") && planningHome.path === "engram:sdd")) throw new Error("native SDD planning home escaped its workspace");
-	if (status.changeRoot !== null && !isCanonicalProcessString(status.changeRoot)) throw new Error("invalid native SDD change root");
-	const actionContext = object(status.actionContext);
-	if (actionContext.mode !== "repo-local" || actionContext.workspaceRoot !== request.workspaceRoot || !isCanonicalProcessString(actionContext.workspaceRoot)) throw new Error("native SDD status workspace root mismatch");
-	const allowedEditRoots = stringArray(actionContext.allowedEditRoots);
-	if (!allowedEditRoots.includes(request.workspaceRoot) || allowedEditRoots.some((root) => !isAbsolute(root) || root !== join(root))) throw new Error("invalid native SDD allowed edit roots");
-	const dependencies = object(status.dependencies);
-	for (const phase of NATIVE_SDD_DEPENDENCIES) {
-		if (enumString(dependencies[phase], NATIVE_SDD_DEPENDENCY_STATES) !== dependencies[phase]) throw new Error("invalid native SDD dependency");
-	}
-	if (Object.keys(dependencies).length !== NATIVE_SDD_DEPENDENCIES.length) throw new Error("native SDD dependencies have an unsupported shape");
-	if (status.instructions !== undefined) throw new Error("native SDD status uses phaseInstructions, not instructions");
-	if (status.phaseInstructions !== undefined) {
-		const instructions = object(status.phaseInstructions);
-		for (const phase of NATIVE_SDD_INSTRUCTION_PHASES) stringArray(instructions[phase]);
-		// Classical SDD no longer emits a remediation phase. Keep the published
-		// producer's optional legacy instructions intact without inventing them
-		// for a newer producer or accepting unknown phase keys.
-		const hasRemediation = Object.hasOwn(instructions, "remediate");
-		if (hasRemediation) stringArray(instructions.remediate);
-		if (Object.keys(instructions).length !== NATIVE_SDD_INSTRUCTION_PHASES.length + Number(hasRemediation)) throw new Error("native SDD instructions have an unsupported shape");
-		if (status.nextRecommended === "remediate" && !hasRemediation) throw new Error("native SDD remediation instructions are missing");
-	}
-	if (status.nextRecommended === "remediate" || status.remediationState !== undefined) {
-		const remediation = object(status.remediationState);
-		if (typeof remediation.required !== "boolean" || typeof remediation.complete !== "boolean" || typeof remediation.failedEvidenceRevision !== "string" || (remediation.failedEvidenceRevision !== "" && !/^sha256:[0-9a-f]{64}$/.test(remediation.failedEvidenceRevision)) || (status.nextRecommended === "remediate" && (!remediation.required || remediation.complete || !remediation.failedEvidenceRevision))) throw new Error("Invalid native remediation state");
-	}
-	stringArray(status.blockedReasons);
-	enumString(status.nextRecommended, NATIVE_SDD_NEXT_RECOMMENDATIONS);
-	return status as NativeSddStatusV2;
-}
-
 class NativeReviewPlainCli {
 	private readonly adapter: ExecFileAdapter;
 	private readonly executable: string | (() => string);
@@ -2199,30 +2132,6 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		return this.invoke(operation, cwd, arguments_, mutating, signal, this.executablePath(operation, mutating), toleratedStderr);
 	}
 
-	async sddStatus(request: NativeSddStatusRequest): Promise<NativeSddStatusV2> {
-		return this.sddProjection(request, false);
-	}
-
-	async sddContinue(request: NativeSddStatusRequest): Promise<NativeSddStatusV2> {
-		if (!isCanonicalProcessString(request.changeName)) throw new TypeError("Native SDD continuation requires an exact selected change");
-		return this.sddProjection(request, true);
-	}
-
-	private async sddProjection(request: NativeSddStatusRequest, mutating: boolean): Promise<NativeSddStatusV2> {
-		if ((request.changeName !== undefined && !isCanonicalProcessString(request.changeName)) || !isCanonicalProcessString(request.workspaceRoot) || !isAbsolute(request.workspaceRoot)) {
-			throw new TypeError("Native SDD status requires a canonical change and absolute workspace root");
-		}
-		const operation = mutating ? NATIVE_REVIEW_OPERATION.SDD_CONTINUE : NATIVE_REVIEW_OPERATION.SDD_STATUS;
-		const execution = await this.negotiated(
-			operation,
-			request.workspaceRoot,
-			[operation, ...(request.changeName === undefined ? [] : [request.changeName]), "--cwd", request.workspaceRoot, "--json", "--instructions"],
-			mutating,
-			request.signal,
-		);
-		return decode(operation, mutating, () => decodeNativeSddStatusV2(execution.body, request));
-	}
-
 	async start(request: NativeStartRequest): Promise<NativeStartResult> {
 		if (request.baseRef !== undefined && !isCanonicalProcessString(request.baseRef)) throw new TypeError("Native START baseRef must be a non-empty, trimmed, NUL-free string");
 		if (request.baseRef !== undefined && request.committedOnly !== true) throw new TypeError("Native START baseRef requires explicit committedOnly acknowledgement");
@@ -2345,7 +2254,32 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		const selection = nativeUntrackedSelection(request);
 		const submitted = request.intendedUntrackedSelection;
 		if (submitted !== undefined && submitted.argumentTokens.reduce((count, token) => count + token.split("{{value}}").length - 1, 0) !== 1) throw new TypeError("Native intended-untracked selection requires exactly one provider-issued {{value}} token");
-		const statusArguments = submitted === undefined ? [
+		const submittedTokens = submitted === undefined ? undefined : submitted.argumentTokens.map((token) => token.replaceAll("{{value}}", submitted.value));
+		// gentle-ai 3.7.1 submission argument_tokens never carry --base-ref /
+		// --committed-only / --lineage, so a forwarded selector must be appended
+		// after them; only bail if the provider already staked out a conflicting
+		// value for the same flag. providerFlagValue also fails closed on a
+		// dangling `--flag` (last token, no value) or an empty `--flag=`.
+		const submittedBaseRefValue = submittedTokens === undefined ? undefined : providerFlagValue(submittedTokens, "base-ref");
+		if (request.baseRef !== undefined && submittedBaseRefValue !== undefined && submittedBaseRefValue !== request.baseRef) throw new TypeError("Native intended-untracked selection already carries a conflicting base-ref");
+		const submittedLineageValue = submittedTokens === undefined ? undefined : providerFlagValue(submittedTokens, "lineage");
+		if (request.lineageId !== undefined && submittedLineageValue !== undefined && submittedLineageValue !== request.lineageId) throw new TypeError("Native intended-untracked selection already carries a conflicting lineage");
+		let submittedHasCommittedOnly = false;
+		for (const token of submittedTokens ?? []) {
+			if (token !== "--committed-only" && !token.startsWith("--committed-only=")) continue;
+			if (token !== "--committed-only" && token !== "--committed-only=true") throw new TypeError("Native intended-untracked selection has an invalid --committed-only value");
+			if (submittedHasCommittedOnly) throw new TypeError("Native intended-untracked selection repeats --committed-only");
+			submittedHasCommittedOnly = true;
+		}
+		// Append only the half of the base-ref/committed-only pair the provider
+		// did not already carry (a present base-ref already equals
+		// request.baseRef; the throw above ruled out the conflicting case).
+		const forwardedBaseRef = request.baseRef === undefined ? [] : [
+			...(submittedBaseRefValue === undefined ? ["--base-ref", request.baseRef] : []),
+			...(submittedHasCommittedOnly ? [] : ["--committed-only"]),
+		];
+		const forwardedLineage = request.lineageId === undefined || submittedLineageValue !== undefined ? [] : ["--lineage", request.lineageId];
+		const statusArguments = submittedTokens === undefined ? [
 			"review", "status", "--contract", REVIEW_INTEGRATION_CONTRACT, "--cwd", request.cwd,
 			"--projection", request.projection ?? "workspace",
 			...nativeUntrackedSelectionArguments(selection),
@@ -2353,7 +2287,7 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 			...(request.lineageId === undefined ? [] : ["--lineage", request.lineageId]),
 			...(request.agent === undefined ? [] : ["--agent", request.agent]),
 			"--next-transition",
-		] : ["review", "status", "--cwd", request.cwd, ...submitted.argumentTokens.map((token) => token.replaceAll("{{value}}", submitted.value))];
+		] : ["review", "status", "--cwd", request.cwd, ...submittedTokens, ...forwardedBaseRef, ...forwardedLineage];
 		const execution = await this.negotiated(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal);
 		assertSupportedNextTransitionOperation(execution.body);
 		return decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewStatusV3(execution.body));

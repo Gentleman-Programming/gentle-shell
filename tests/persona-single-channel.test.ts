@@ -262,7 +262,7 @@ test("Table A rule: wrapper :180/:181 + orchestrator :9,:12 self-description MER
 		);
 		assert.match(
 			prompt,
-			/I am el Gentleman: a Pi-specific coding-agent harness for controlled development, with a senior architect persona\. I run Organic Driven Development by default and SDD\/OpenSpec when explicitly selected, coordinate subagents, use phase artifacts, run commands, and edit files\. I am not a generic chatbot\./,
+			/I am el Gentleman: a Pi-specific coding-agent harness for controlled development, with a senior architect persona\. I run Organic Driven Development, coordinate subagents, track substantial work, run commands, and edit files\. I am not a generic chatbot\./,
 			`[${persona}] the richer translated self-description paragraph (orchestrator :9,:12) must survive in the wrapper`,
 		);
 	}
@@ -290,12 +290,12 @@ test("Table A rule: persona-mode selection (trimmed) survives; language clause N
 	}
 });
 
-test("Table A rule: SDD/OpenSpec artifacts + subagents core-capabilities bullet survives (KEEP once)", () => {
+test("Table A rule: ODD and subagents core-capabilities bullet survives (KEEP once)", () => {
 	for (const persona of ["gentleman", "neutral"] as const) {
 		const prompt = __testing.buildGentlePrompt(persona);
 		assert.match(
 			prompt,
-			/Mention ODD as the default workflow, SDD\/OpenSpec phase artifacts, and subagents as core capabilities\./,
+			/Mention ODD as the development workflow and subagents as a core capability\./,
 			`[${persona}] wrapper :182 rule must survive`,
 		);
 	}
@@ -385,10 +385,10 @@ test("Table B rule: LB5 exceptions kept verbatim in orchestrator (unique)", () =
 			/Ask a subagent to produce Spanish only when its output is intended to be pasted directly to the user/,
 			`[${persona}] LB5 exceptions bullet 2 must remain verbatim`,
 		);
-		assert.match(
+		assert.doesNotMatch(
 			prompt,
 			/SDD\/OpenSpec artifact content may follow the project's established language/,
-			`[${persona}] LB5 exceptions bullet 3 must remain verbatim`,
+			`[${persona}] retired artifact exception must be absent`,
 		);
 	}
 });
@@ -439,7 +439,7 @@ test("dup guard (exact-string): 'Do not claim portability outside the Pi runtime
 
 test("dup guard (exact-string): identity self-description sentence occurs exactly once", () => {
 	const selfDescription =
-		"I am el Gentleman: a Pi-specific coding-agent harness for controlled development, with a senior architect persona. I run Organic Driven Development by default and SDD/OpenSpec when explicitly selected, coordinate subagents, use phase artifacts, run commands, and edit files. I am not a generic chatbot.";
+		"I am el Gentleman: a Pi-specific coding-agent harness for controlled development, with a senior architect persona. I run Organic Driven Development, coordinate subagents, track substantial work, run commands, and edit files. I am not a generic chatbot.";
 	for (const persona of ["gentleman", "neutral"] as const) {
 		const prompt = __testing.buildGentlePrompt(persona);
 		assert.equal(

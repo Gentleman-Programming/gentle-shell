@@ -1277,7 +1277,7 @@ test("an unprobeable process group quarantines at its deadline and still records
 		pi: { command: "pi", args: [] },
 		process: { platform: "win32", kill: () => {} },
 	}, { askUser: async () => ({ value: "yes" }), onFinish: (task) => { finishes.push(task.id); } });
-	const first = runner.run(managedRequest());
+	const first = runner.run(request());
 	const second = runner.run(request({ prompt: "queued" }));
 	await tick();
 	runner.cancel(first.id);
@@ -1294,10 +1294,11 @@ test("an unprobeable process group quarantines at its deadline and still records
 	assert.equal(finishes.length, 1, "the run is recorded exactly once");
 	assert.equal(store.get(second.id)?.status, TASK_STATUS.QUEUED, "an unconfirmed exit retains its capacity");
 	assert.equal(launches, 1, "no further launch happens while the slot is quarantined");
-	assert.throws(() => runner.run(managedRequest()), /Remediation already queued or running/, "a failed record does not release its quarantined child");
+	const third = runner.run(request({ prompt: "another ordinary task" }));
+	assert.equal(store.get(third.id)?.status, TASK_STATUS.QUEUED);
 	child!.exit(0);
 	await tick();
-	assert.doesNotThrow(() => runner.run(managedRequest()), "confirmed cleanup releases the managed workspace");
+	assert.equal(store.get(second.id)?.status, TASK_STATUS.RUNNING, "confirmed cleanup frees capacity for ordinary work");
 	runner.cancelAll();
 	child!.exit(0);
 });
@@ -1310,97 +1311,32 @@ test("abortReasonText renders an Error, a string, and nothing for unknown reason
 	assert.equal(abortReasonText(42), "");
 });
 
-test("research narrowing transport keeps exact argv paths and replaces inherited selection", async () => {
+test("generic child extension paths do not forward legacy research selection", async () => {
  const h = harness();
- const selection = { documentation: { tools: ["fetch_content"], extensions: { fetch_content: "/installed/docs tools.ts" } } };
- for (const researchSelection of [selection, undefined]) {
-  const launch = request({ researchSelection, extensionPaths: researchSelection ? ["/installed/docs tools.ts"] : [],
-   env: { PATH: "/bin", GENTLE_PI_RESEARCH_SELECTION: "stale broad selection" } });
-  const argv = childArguments(launch);
-  assert.deepEqual(argv.filter((_, i) => argv[i - 1] === "--extension"), launch.extensionPaths);
-  const task = h.runner.run(launch);
-  await tick();
-  assert.deepEqual(JSON.parse(h.spawnOptions.at(-1)!.env.GENTLE_PI_RESEARCH_SELECTION!), researchSelection ?? null);
-  assert.equal(h.spawnOptions.at(-1)!.env.PATH, "/bin");
-  h.runner.cancel(task.id);
-  assert.equal((await h.runner.waitFor(task.id)).status, TASK_STATUS.CANCELLED);
- }
+ const launch = request({ extensionPaths: ["/installed/docs tools.ts"], env: { PATH: "/bin", GENTLE_PI_RESEARCH_SELECTION: "stale" } });
+ const argv = childArguments(launch);
+ assert.deepEqual(argv.filter((_, i) => argv[i - 1] === "--extension"), launch.extensionPaths);
+ const task = h.runner.run(launch);
+ await tick();
+ assert.equal(h.spawnOptions.at(-1)!.env.GENTLE_PI_RESEARCH_SELECTION, undefined);
+ assert.equal(h.spawnOptions.at(-1)!.env.PATH, "/bin");
+ h.runner.cancel(task.id);
+ assert.equal((await h.runner.waitFor(task.id)).status, TASK_STATUS.CANCELLED);
 });
 
-function managedRequest(cwd = "/repo"): TaskRequest {
-	return request({ agent: { ...explorer, name: "sdd-remediate" }, cwd, sddRemediation: {
-		failedEvidenceRevision: "failed-revision",
-		plan: { cwd, commands: ["pnpm test"], runtimeHarness: { naReason: "Not applicable because this tests runner admission." }, rollback: { boundary: "fixture", command: "git diff --check" } },
-		scope: { cwd, editPaths: [], commands: ["pnpm test", "git diff --check"], allowedEditRoots: [cwd] },
-	} });
-}
-
-for (const queued of [true, false]) test(`managed exclusion covers ${queued ? "queued" : "running"} same-workspace actors`, async () => {
-	const h = harness({ pid: 123, process: { platform: "win32", kill() {} } });
-	const first = h.runner.run(managedRequest());
-	if (!queued) await tick();
-	try {
-		assert.throws(() => h.runner.run(managedRequest()), /Remediation already queued or running/);
-		assert.equal(h.store.list().length, 1, "rejection creates no task or queue entry");
-		await tick();
-		assert.equal(h.children.length, 1);
-		assert.equal(h.store.get(first.id)?.status, TASK_STATUS.RUNNING);
-	} finally { h.runner.cancelAll(); await tick(); }
-});
-
-test("managed exclusion does not serialize other workspaces or ordinary tasks", async () => {
-	const h = harness({ maxConcurrency: 3, pid: 123, process: { platform: "win32", kill() {} } });
-	h.runner.run(managedRequest());
-	h.runner.run(managedRequest("/other"));
-	h.runner.run(request());
+test("ordinary tasks never inherit orphaned SDD launch metadata", async () => {
+	const h = harness();
+	const launch = request({ prompt: "Ordinary task", context: "Relevant context", env: { PATH: "/bin", GENTLE_PI_SDD_REMEDIATION_PLAN: "stale" },
+		// Deliberately pass a legacy-shaped payload to prove that no runner path consumes it.
+		...({ sddChange: { changeName: "old", workspaceRoot: "/repo", phase: "apply" }, sddPreflightContext: "stale", sddRemediation: { failedEvidenceRevision: "old", plan: { commands: ["unsafe"] } } } as object),
+	});
+	assert.doesNotMatch(childArguments(launch).join(" "), /gentle-sdd-change/);
+	const task = h.runner.run(launch);
 	await tick();
-	assert.equal(h.children.length, 3);
-	h.runner.cancelAll();
-	await tick();
-});
-
-for (const ending of ["complete", "failure", "cancel", "queued-cancel"] as const) test(`managed exclusion releases after ${ending}`, async () => {
-	const h = harness({ pid: 123, process: { platform: "win32", kill() {} } });
-	const first = h.runner.run(managedRequest());
-	if (ending === "queued-cancel") h.runner.cancel(first.id);
-	else {
-		await tick();
-		if (ending === "complete") {
-			h.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Finished" }], stopReason: "stop" }] });
-			h.children[0].emit({ type: "agent_settled" });
-		} else if (ending === "failure") h.children[0].exit(1);
-		else h.runner.cancel(first.id);
-	}
-	await h.runner.waitFor(first.id);
-	const next = h.runner.run(managedRequest());
-	await tick();
-	assert.equal(h.store.get(next.id)?.status, TASK_STATUS.RUNNING);
-	h.runner.cancelAll();
-	await tick();
-});
-
-test("managed exclusion lasts until child cleanup is confirmed", async () => {
-	const h = harness({ pid: 123, exitOnKill: false, process: { platform: "win32", kill() {} } });
-	const first = h.runner.run(managedRequest());
-	await tick();
-	h.runner.cancel(first.id);
-	try { assert.throws(() => h.runner.run(managedRequest()), /Remediation already queued or running/); }
-	finally { h.children[0].exit(0); }
-	await h.runner.waitFor(first.id);
-	const next = h.runner.run(managedRequest());
-	await tick();
-	assert.equal(h.store.get(next.id)?.status, TASK_STATUS.RUNNING);
-	h.runner.cancelAll();
-	for (const child of h.children) child.exit(0);
-	await tick();
-});
-
-test("managed exclusion releases failed startup and ignores historical-only tasks", async () => {
-	const h = harness({ failStart: true });
-	const first = h.runner.run(managedRequest());
-	assert.equal((await h.runner.waitFor(first.id)).status, TASK_STATUS.FAILED);
-	h.store.add({ ...h.store.get(first.id)!, id: "historical-only", status: TASK_STATUS.RUNNING });
-	const next = h.runner.run(managedRequest());
-	assert.equal((await h.runner.waitFor(next.id)).status, TASK_STATUS.FAILED, "the next actor reaches spawn, not a historical admission lock");
-	assert.match(h.store.get(next.id)?.error ?? "", /fixture spawn failed/);
+	assert.equal(h.store.get(task.id)?.sddPreflightContext, undefined);
+	assert.equal(h.spawnOptions[0].env.GENTLE_PI_SDD_REMEDIATION_PLAN, undefined);
+	assert.equal(h.spawnOptions[0].env.PATH, "/bin");
+	assert.equal(h.children[0].written.find(command => command.type === "prompt")?.message, "Ordinary task\n\n## Context\nRelevant context");
+	h.runner.cancel(task.id);
+	assert.equal((await h.runner.waitFor(task.id)).status, TASK_STATUS.CANCELLED);
 });

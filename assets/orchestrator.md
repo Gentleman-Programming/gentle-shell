@@ -83,4 +83,5 @@ This package injects the mirrored provider-bundle review execution contract into
 - Never commit unless the user explicitly asks.
 - Ask before destructive git operations, publishing, or irreversible file changes.
 - Keep writes single-threaded unless isolated worktrees are explicitly approved.
+- Keep session work inside the project root and registered same-clone worktrees; ask before any read or write outside it, naming the absolute target path. Grants are per-target and per-session, never blanket: in-project scripts naming outside paths are not standing consent.
 - Preserve human control: user decisions beat agent momentum.

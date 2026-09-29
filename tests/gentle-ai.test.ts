@@ -2954,6 +2954,7 @@ test("switchLiveOrchestrator returns note when setModel fails", async () => {
 	assert.equal(result, "\nno authentication is configured for openai; this session keeps its current model.");
 });
 
+/** Reads the fixture's profiles store or fails the test: every panel-action fixture writes a valid store before acting. */
 function readValidProfilesStore(path: string) {
 	const result = readProfilesFileResult(path);
 	if (result.status !== "valid") throw new Error(`profiles store at ${path} is ${result.status}, expected valid`);

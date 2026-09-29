@@ -43,3 +43,6 @@ Security-sensitive changes (authentication, authorization, session management, u
   - Authored work-unit commit `bc69c135` (`feat(odd): package gentle-ai-security subagent with post-worker Sec-TDD workflow`).
   - Pushed branch `feat/sec-tdd-subagent` to `origin`.
   - Opened pull request `Gentleman-Programming/gentle-shell#1537` linking issue #1530.
+  - Resolved CodeRabbit review findings in `assets/orchestrator.md` and `assets/orchestrator-delegation.md`:
+    - Defined clean-audit path (no verified flaw -> report clean result and resume checklist directly without requiring RED tests or worker remediation).
+    - Scoped native `Agent` fallback for security delegation to test-only edit surfaces and command restrictions, reporting delegation unavailable if unenforceable.

@@ -2954,6 +2954,12 @@ test("switchLiveOrchestrator returns note when setModel fails", async () => {
 	assert.equal(result, "\nno authentication is configured for openai; this session keeps its current model.");
 });
 
+function readValidProfilesStore(path: string) {
+	const result = readProfilesFileResult(path);
+	if (result.status !== "valid") throw new Error(`profiles store at ${path} is ${result.status}, expected valid`);
+	return result.file;
+}
+
 test("Enter binds the selected profile to the parent session and writes nothing", async (t) => {
 	const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
 	writeSettings();
@@ -2971,7 +2977,7 @@ test("Enter binds the selected profile to the parent session and writes nothing"
 		sessionManager: { getSessionId: () => "session-panel" },
 	} as unknown as ExtensionContext;
 	const live = { setModel: async () => true, setThinkingLevel() {} };
-	const file = readProfilesFileResult(storePath).file!;
+	const file = readValidProfilesStore(storePath);
 	await __testing.runProfilesPanelAction(ctx, live, storePath, file, { type: "apply", name: "team" }, {});
 	const binding = readSessionProfileBinding("session-panel");
 	assert.equal(binding?.name, "team");
@@ -2994,7 +3000,7 @@ test("a keeps the legacy global apply semantics", async (t) => {
 		sessionManager: { getSessionId: () => "session-panel" },
 	} as unknown as ExtensionContext;
 	const live = { setModel: async () => true, setThinkingLevel() {} };
-	const file = readProfilesFileResult(storePath).file!;
+	const file = readValidProfilesStore(storePath);
 	await __testing.runProfilesPanelAction(ctx, live, storePath, file, { type: "apply-global", name: "team" }, {});
 	assert.equal(JSON.parse(readFileSync(storePath, "utf8")).active, "team", "the global store claims the profile");
 	assert.ok(existsSync(fixture.globalPath), "the global routing is materialized");
@@ -3015,7 +3021,7 @@ test("Enter with a winning pin binds the session and never touches the pin layer
 		sessionManager: { getSessionId: () => "session-panel" },
 	} as unknown as ExtensionContext;
 	const live = { setModel: async () => true, setThinkingLevel() {} };
-	const file = readProfilesFileResult(storePath).file!;
+	const file = readValidProfilesStore(storePath);
 	await __testing.runProfilesPanelAction(ctx, live, storePath, file, { type: "apply", name: "team" }, {});
 	assert.equal(readSessionProfileBinding("session-panel")?.name, "team");
 	assert.equal(readFileSync(localPinPath, "utf8"), pinBefore, "the clone pin is untouched");
@@ -3035,7 +3041,7 @@ test("Enter without a parent session id fails loud and writes nothing", async (t
 		ui: { notify(message: string, severity: string) { notifications.push({ message, severity }); } },
 	} as unknown as ExtensionContext;
 	const live = { setModel: async () => true, setThinkingLevel() {} };
-	const file = readProfilesFileResult(storePath).file!;
+	const file = readValidProfilesStore(storePath);
 	await __testing.runProfilesPanelAction(ctx, live, storePath, file, { type: "apply", name: "team" }, {});
 	assert.equal(readSessionProfileBinding(undefined), undefined);
 	assert.equal(readFileSync(storePath, "utf8"), before);

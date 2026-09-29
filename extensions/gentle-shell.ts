@@ -1682,7 +1682,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let parentCost: SessionCostTotal = EMPTY_SESSION_COST;
 	let parentCostContext: ExtensionContext | undefined;
 	let delegatedCost: SessionCostTotal | undefined;
-	let delegatedSessionId: string | undefined;
+	let pendingDelegatedCost: { parentSessionId: string; nanoUsd: number; complete: boolean; absent: number } | undefined;
 	const refreshParentCost = (ctx: ExtensionContext) => {
 		parentCost = sessionCost(ctx);
 		parentCostContext = ctx;
@@ -1692,12 +1692,18 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		return parentCost;
 	};
 	const costTotals = (ctx: ExtensionContext) => ({ parent: cachedParentCost(ctx), delegated: delegatedCost });
-	const unsubscribeDelegatedCost = pi.events.on(SESSION_DELEGATED_COST_EVENT, (value) => {
-		const payload = decodeDelegatedSessionCost(value);
-		if (!payload || delegatedSessionId === undefined || payload.parentSessionId !== delegatedSessionId) return;
+	const applyDelegatedCost = (payload: { parentSessionId: string; nanoUsd: number; complete: boolean; absent: number }) => {
+		const sessionId = currentContext?.sessionManager.getSessionId();
+		if (sessionId === undefined || payload.parentSessionId !== sessionId) return;
 		delegatedCost = { nanoUsd: payload.nanoUsd, complete: payload.complete, absent: payload.absent };
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
+	};
+	const unsubscribeDelegatedCost = pi.events.on(SESSION_DELEGATED_COST_EVENT, (value) => {
+		const payload = decodeDelegatedSessionCost(value);
+		if (!payload) return;
+		if (currentContext === undefined) { pendingDelegatedCost = payload; return; }
+		applyDelegatedCost(payload);
 	});
 	let review: ReviewSidebarSnapshot | undefined;
 	const redrawReview = () => {
@@ -1763,7 +1769,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		currentContext = ctx;
 		refreshParentCost(ctx);
 		delegatedCost = undefined;
-		delegatedSessionId = ctx.sessionManager.getSessionId();
+		if (pendingDelegatedCost) { applyDelegatedCost(pendingDelegatedCost); pendingDelegatedCost = undefined; }
 		changes = undefined;
 		registry = new SessionWorktreeRegistry(pi, ctx.sessionManager, ctx.cwd, deps.resolveWorktree);
 		registry.start();
@@ -1890,7 +1896,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		parentCost = EMPTY_SESSION_COST;
 		parentCostContext = undefined;
 		delegatedCost = undefined;
-		delegatedSessionId = undefined;
+		pendingDelegatedCost = undefined;
 		unsubscribeWorktrees();
 	});
 	const openChanges = async (ctx: ExtensionContext) => {

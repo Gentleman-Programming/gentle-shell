@@ -420,7 +420,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (parentSessionId === undefined || parentSessionId.length === 0) return;
 		try {
 			const tasks = store.list(parentSessionId);
-			const event = delegatedSessionCostEvent({ parentSessionId, total: delegatedCostFromTasks(tasks), subagents: tasks.length, at: deps.now() });
+			const total = delegatedCostFromTasks(tasks);
+			const event = delegatedSessionCostEvent({ parentSessionId, total, subagents: tasks.length, at: deps.now() });
 			if (event) pi.events.emit(SESSION_DELEGATED_COST_EVENT, event);
 		} catch { /* Statistics must never interrupt the agents flow. */ }
 	};
@@ -1502,6 +1503,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const sessionId = ctx.sessionManager.getSessionId();
 		const preexisting = event.reason === "resume" || (event.reason === "startup" && ctx.sessionManager.getEntries().length > 0);
 		if (preexisting && sessionId) void restoreSessionHistory(ctx, sessionId);
+		// Re-publish after every session_start handler has run, so the shell's
+		// subscriber is registered and has its session before the delegated total
+		// crosses the bus (otherwise a resumed session's restored tasks are lost).
+		deps.schedule(() => publishDelegatedCost(), 0);
 		try {
 			presence = PresencePublisher.start({ profile: agentHome, sessionId: activeSessionId() ?? "",
 				label: ctx.sessionManager.getSessionName?.() || ctx.sessionManager.getCwd().split(/[\\/]/).pop() || "Orchestrator", activity: [] });

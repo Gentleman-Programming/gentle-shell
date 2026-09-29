@@ -45,6 +45,7 @@ Security-sensitive changes (authentication, authorization, session management, u
   - Opened pull request `Gentleman-Programming/gentle-shell#1537` linking issue #1530.
   - Resolved CodeRabbit review findings in `assets/orchestrator.md` and `assets/orchestrator-delegation.md`:
     - Defined clean-audit path (no verified flaw -> report clean result and resume checklist directly without requiring RED tests or worker remediation).
+    - Clarified clean-audit status requirements in orchestrator and delegation rules: clean audit and resumption require `status: completed` with no verified vulnerabilities; `status: partial`, `status: blocked`, and `status: interaction_required` require completing the audit, clearing blockers, or providing needed input first.
     - Scoped native `Agent` fallback for security delegation to test-only edit surfaces and command restrictions, reporting delegation unavailable if unenforceable.
     - Updated sensitive attack surfaces in `assets/orchestrator.md` trigger 6 to include webhook verification, aligning with `orchestrator-delegation.md`.
     - Updated delegation catalog assertions in `tests/package-manifest.test.ts` for `gentle-ai-security.md` (agent count to 4, expected owner assets, all-assets count to 11, and model routing verification for `gentle-ai-security`). Observed all 55/55 tests passing.

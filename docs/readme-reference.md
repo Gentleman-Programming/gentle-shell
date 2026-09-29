@@ -790,7 +790,7 @@ Store shape:
 
 The `profiles` values use the same per-agent shape as `models.json`. Profile names are slugs of 1-64 ASCII characters (letters, numbers, `.`, `_`, `-`, starting with a letter or number); names outside ASCII are rejected, as are the reserved object keys `__proto__`, `constructor`, and `prototype`. A rename or duplicate onto an existing name is refused, renaming the active profile keeps it active, and deleting the active profile is refused. Export and import use a single-profile envelope (`kind: "gentle-pi.agent_model_profile"`, `version: 1`) at `~/.pi/gentle-ai/profiles.export.json`.
 
-The store is replaced atomically through a sibling temp file and a rename, so an interrupted write cannot leave truncated JSON behind. Globally applying a profile writes `profiles.json` first and then materializes routing; if materialization fails, the previous active marker and the previous routing are restored, and anything that could not be restored is named in the warning.
+The store is replaced atomically through a sibling temp file and a rename, so an interrupted write cannot leave truncated JSON behind. Globally applying a profile writes `profiles.json` first and then materializes routing; if materialization fails, the code attempts to restore the previous active marker and routing. This rollback is best effort: if it also fails, the warning lists the portions that were restored, and routing can remain partially materialized.
 
 ### Per-repository pins
 

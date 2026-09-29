@@ -1683,7 +1683,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let parentCostContext: ExtensionContext | undefined;
 	let delegatedCost: SessionCostTotal | undefined;
 	let pendingDelegatedCost: DelegatedSessionCostPayload | undefined;
-	let lastDelegatedAt = -1;
+	let lastDelegatedSeq = -1;
 	/** Recompute the orchestrator's own total from the live session entries (event boundary only, never a render). */
 	const refreshParentCost = (ctx: ExtensionContext) => {
 		parentCost = sessionCost(ctx);
@@ -1696,12 +1696,14 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	};
 	/** The two halves the bar folds: the cached orchestrator total and the last delegated total. */
 	const costTotals = (ctx: ExtensionContext) => ({ parent: cachedParentCost(ctx), delegated: delegatedCost });
-	/** Apply a decoded delegated total for the active session, ignoring a foreign or out-of-order event. */
+	/** Apply a decoded delegated total for the active session, ignoring a foreign or
+	 * out-of-order event. Ordering uses the publisher's monotonic sequence, not the
+	 * wall clock, so a clock adjustment cannot make a newer total look stale. */
 	const applyDelegatedCost = (payload: DelegatedSessionCostPayload) => {
 		const sessionId = currentContext?.sessionManager.getSessionId();
 		if (sessionId === undefined || payload.parentSessionId !== sessionId) return;
-		if (payload.at < lastDelegatedAt) return;
-		lastDelegatedAt = payload.at;
+		if (payload.seq < lastDelegatedSeq) return;
+		lastDelegatedSeq = payload.seq;
 		delegatedCost = { nanoUsd: payload.nanoUsd, complete: payload.complete, absent: payload.absent };
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
@@ -1776,7 +1778,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		currentContext = ctx;
 		refreshParentCost(ctx);
 		delegatedCost = undefined;
-		lastDelegatedAt = -1;
+		lastDelegatedSeq = -1;
 		if (pendingDelegatedCost) { applyDelegatedCost(pendingDelegatedCost); pendingDelegatedCost = undefined; }
 		changes = undefined;
 		registry = new SessionWorktreeRegistry(pi, ctx.sessionManager, ctx.cwd, deps.resolveWorktree);

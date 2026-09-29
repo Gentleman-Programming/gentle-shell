@@ -413,9 +413,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// The shell owns the bar, this extension owns the TaskStore; the delegated
 	// total crosses over the event bus on one versioned topic. Derived from
 	// `store.list`, not from the card's finished-row TTL, so the number never
-	// shrinks a minute after an agent finishes. Diagnostic counts are clamped to
-	// the payload bound because the store retains every finished task. Failures
-	// never reach the session.
+	// shrinks a minute after an agent finishes. A monotonic sequence orders the
+	// events; diagnostic counts are clamped to the payload bound because the
+	// store retains every finished task. Failures never reach the session.
+	let delegatedSequence = 0;
 	const publishDelegatedCost = () => {
 		if (!sessions) return;
 		const parentSessionId = activeSessionId();
@@ -425,6 +426,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			const total = delegatedCostFromTasks(tasks);
 			const event = delegatedSessionCostEvent({
 				parentSessionId,
+				seq: (delegatedSequence += 1),
 				total: { ...total, absent: clampDelegatedCount(total.absent) },
 				subagents: clampDelegatedCount(tasks.length),
 				at: deps.now(),

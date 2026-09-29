@@ -21,17 +21,22 @@ const MAX_COUNT = MAX_DELEGATED_COUNT;
 export interface DelegatedSessionCostPayload {
 	readonly schema: typeof SESSION_DELEGATED_COST_EVENT;
 	readonly parentSessionId: string;
+	/** Monotonic per-publisher sequence; a consumer ignores an older sequence, so a
+	 * backward wall-clock adjustment can never make a newer total look stale. */
+	readonly seq: number;
 	/** Exact integer nano-USD for every subagent of this parent session. */
 	readonly nanoUsd: number;
 	/** False when any subagent reported no cost; drives the bar's `+` marker. */
 	readonly complete: boolean;
 	readonly absent: number;
 	readonly subagents: number;
+	/** Wall-clock timestamp, kept for diagnostics only; never used for ordering. */
 	readonly at: number;
 }
 
 export interface DelegatedSessionCostInput {
 	readonly parentSessionId: string;
+	readonly seq: number;
 	readonly total: SessionCostTotal;
 	readonly subagents: number;
 	readonly at: number;
@@ -48,9 +53,15 @@ function validCount(value: unknown): value is number {
 	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= MAX_COUNT;
 }
 
+/** True when a value is a valid monotonic publication sequence. */
+function validSequence(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
 /** Build the bounded payload, or undefined when any field is out of range. */
 export function delegatedSessionCostEvent(input: DelegatedSessionCostInput): DelegatedSessionCostPayload | undefined {
 	if (typeof input.parentSessionId !== "string" || input.parentSessionId.length === 0 || input.parentSessionId.length > MAX_SESSION_ID) return undefined;
+	if (!validSequence(input.seq)) return undefined;
 	if (!Number.isSafeInteger(input.total.nanoUsd) || input.total.nanoUsd < 0) return undefined;
 	if (!validCount(input.total.absent)) return undefined;
 	if (!validCount(input.subagents)) return undefined;
@@ -58,6 +69,7 @@ export function delegatedSessionCostEvent(input: DelegatedSessionCostInput): Del
 	return {
 		schema: SESSION_DELEGATED_COST_EVENT,
 		parentSessionId: input.parentSessionId,
+		seq: input.seq,
 		nanoUsd: input.total.nanoUsd,
 		complete: input.total.complete,
 		absent: input.total.absent,
@@ -72,6 +84,7 @@ export function decodeDelegatedSessionCost(value: unknown): DelegatedSessionCost
 	const raw = value as Record<string, unknown>;
 	if (raw.schema !== SESSION_DELEGATED_COST_EVENT) return undefined;
 	if (typeof raw.parentSessionId !== "string" || raw.parentSessionId.length === 0 || raw.parentSessionId.length > MAX_SESSION_ID) return undefined;
+	if (!validSequence(raw.seq)) return undefined;
 	if (!Number.isSafeInteger(raw.nanoUsd) || (raw.nanoUsd as number) < 0) return undefined;
 	if (typeof raw.complete !== "boolean") return undefined;
 	if (!validCount(raw.absent) || !validCount(raw.subagents)) return undefined;
@@ -79,6 +92,7 @@ export function decodeDelegatedSessionCost(value: unknown): DelegatedSessionCost
 	return {
 		schema: SESSION_DELEGATED_COST_EVENT,
 		parentSessionId: raw.parentSessionId,
+		seq: raw.seq as number,
 		nanoUsd: raw.nanoUsd as number,
 		complete: raw.complete,
 		absent: raw.absent as number,

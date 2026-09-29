@@ -9,7 +9,7 @@ import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { buildShellHeaderModel, renderShellBar, renderShellBottomOnlyBar, renderShellHeaderBar, renderShellHeaderRule, renderShellSidebarBar, shellEnabled, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
 import { EMPTY_SESSION_COST, mergeSessionCost, sessionCostFromEntries, sessionCostUsd, type SessionCostTotal } from "../lib/session-usage.ts";
-import { decodeDelegatedSessionCost, SESSION_DELEGATED_COST_EVENT } from "../lib/session-delegated-cost.ts";
+import { decodeDelegatedSessionCost, SESSION_DELEGATED_COST_EVENT, type DelegatedSessionCostPayload } from "../lib/session-delegated-cost.ts";
 import { CHANGE_STATUS, RootBranchLabels, renderChangesWidget, type ChangedFile, type ChangesModel, type GitRunner, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver, type WorktreeIdentity } from "../lib/session-worktree-registry.ts";
@@ -1682,19 +1682,26 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let parentCost: SessionCostTotal = EMPTY_SESSION_COST;
 	let parentCostContext: ExtensionContext | undefined;
 	let delegatedCost: SessionCostTotal | undefined;
-	let pendingDelegatedCost: { parentSessionId: string; nanoUsd: number; complete: boolean; absent: number } | undefined;
+	let pendingDelegatedCost: DelegatedSessionCostPayload | undefined;
+	let lastDelegatedAt = -1;
+	/** Recompute the orchestrator's own total from the live session entries (event boundary only, never a render). */
 	const refreshParentCost = (ctx: ExtensionContext) => {
 		parentCost = sessionCost(ctx);
 		parentCostContext = ctx;
 	};
+	/** The cached orchestrator total for this context, refreshed only when the context changes. */
 	const cachedParentCost = (ctx: ExtensionContext): SessionCostTotal => {
 		if (parentCostContext !== ctx) refreshParentCost(ctx);
 		return parentCost;
 	};
+	/** The two halves the bar folds: the cached orchestrator total and the last delegated total. */
 	const costTotals = (ctx: ExtensionContext) => ({ parent: cachedParentCost(ctx), delegated: delegatedCost });
-	const applyDelegatedCost = (payload: { parentSessionId: string; nanoUsd: number; complete: boolean; absent: number }) => {
+	/** Apply a decoded delegated total for the active session, ignoring a foreign or out-of-order event. */
+	const applyDelegatedCost = (payload: DelegatedSessionCostPayload) => {
 		const sessionId = currentContext?.sessionManager.getSessionId();
 		if (sessionId === undefined || payload.parentSessionId !== sessionId) return;
+		if (payload.at < lastDelegatedAt) return;
+		lastDelegatedAt = payload.at;
 		delegatedCost = { nanoUsd: payload.nanoUsd, complete: payload.complete, absent: payload.absent };
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
@@ -1769,6 +1776,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		currentContext = ctx;
 		refreshParentCost(ctx);
 		delegatedCost = undefined;
+		lastDelegatedAt = -1;
 		if (pendingDelegatedCost) { applyDelegatedCost(pendingDelegatedCost); pendingDelegatedCost = undefined; }
 		changes = undefined;
 		registry = new SessionWorktreeRegistry(pi, ctx.sessionManager, ctx.cwd, deps.resolveWorktree);

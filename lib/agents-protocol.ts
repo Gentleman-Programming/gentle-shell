@@ -419,8 +419,9 @@ export function isFinished(status: TaskStatus): boolean {
 	return FINISHED_STATUSES.includes(status);
 }
 
-// What a task event means for the record itself: the step label the widget
-// shows, the counters, and the waiting/running flip around user questions.
+/** What a task event means for the record itself: the step label the widget
+ * shows, the counters, and the waiting/running flip around user questions.
+ * Usage deltas accumulate on the nano-USD grid and track completeness. */
 function recordPatch(task: TaskRecord, event: TaskEvent): Partial<TaskRecord> {
 	const resumed = task.status === TASK_STATUS.WAITING && event.type !== TASK_EVENT.ASK ? { status: TASK_STATUS.RUNNING } : {};
 	switch (event.type) {

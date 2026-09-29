@@ -629,7 +629,7 @@ test("runner delivers each response combination once at finish, never attributin
 		responses.map((response) => [response.provider, response.model, response.providerThinkingLevel].map((value) => ({ state: "observed", value }))));
 	assert.ok(snapshot.responses.every((response) => Object.values(response.selected).every((field) => field.state === "unavailable")));
 	assert.equal(h.store.get(task.id)?.tokens, 30);
-	assert.equal(h.store.get(task.id)?.cost, 0.1 + 0.1 + 0.1);
+	assert.equal(h.store.get(task.id)?.cost, 0.3, "nine-decimal deltas accumulate on the nano-USD grid, not float drift");
 	assert.equal(h.store.get(task.id)?.model, "anthropic/launch");
 	assert.deepEqual(child.written.map((command) => command.type), ["get_state", "prompt"]);
 	assert.doesNotMatch(JSON.stringify(snapshot), /private|launch|s1|modelVersion/);

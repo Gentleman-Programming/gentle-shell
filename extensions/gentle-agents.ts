@@ -44,7 +44,7 @@ import { resolveProfilePin, resolveUnversionedProjectProfile } from "../lib/agen
 import { allowedEditSurfaces, isDevelopmentSurface, isGenericBoundedWriter, prepareBoundSessionRepository, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sessionRepositoryAuthority } from "../lib/bounded-writer-admission.ts";
 import { CHILD_METRICS_EVENT, CHILD_METRICS_REVOKED, childEvent, launchSelection, type LaunchSelection } from "../lib/runtime-metrics-children.ts";
 import { delegatedCostFromTasks } from "../lib/session-usage.ts";
-import { delegatedSessionCostEvent, SESSION_DELEGATED_COST_EVENT } from "../lib/session-delegated-cost.ts";
+import { clampDelegatedCount, delegatedSessionCostEvent, SESSION_DELEGATED_COST_EVENT } from "../lib/session-delegated-cost.ts";
 import { runtimeMetricsEnvAllows, type RuntimeMetricsPolicyDeps } from "../lib/runtime-metrics-policy.ts";
 
 // Gentle Agents: subagents as isolated `pi --mode rpc` children, a task
@@ -413,7 +413,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// The shell owns the bar, this extension owns the TaskStore; the delegated
 	// total crosses over the event bus on one versioned topic. Derived from
 	// `store.list`, not from the card's finished-row TTL, so the number never
-	// shrinks a minute after an agent finishes. Failures never reach the session.
+	// shrinks a minute after an agent finishes. Diagnostic counts are clamped to
+	// the payload bound because the store retains every finished task. Failures
+	// never reach the session.
 	const publishDelegatedCost = () => {
 		if (!sessions) return;
 		const parentSessionId = activeSessionId();
@@ -421,7 +423,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		try {
 			const tasks = store.list(parentSessionId);
 			const total = delegatedCostFromTasks(tasks);
-			const event = delegatedSessionCostEvent({ parentSessionId, total, subagents: tasks.length, at: deps.now() });
+			const event = delegatedSessionCostEvent({
+				parentSessionId,
+				total: { ...total, absent: clampDelegatedCount(total.absent) },
+				subagents: clampDelegatedCount(tasks.length),
+				at: deps.now(),
+			});
 			if (event) pi.events.emit(SESSION_DELEGATED_COST_EVENT, event);
 		} catch { /* Statistics must never interrupt the agents flow. */ }
 	};

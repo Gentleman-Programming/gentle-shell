@@ -12,8 +12,11 @@ import type { SessionCostTotal } from "./session-usage.ts";
 
 export const SESSION_DELEGATED_COST_EVENT = "gentle:session-cost:delegated/v1";
 
+/** Maximum value accepted for a payload's diagnostic count fields. */
+export const MAX_DELEGATED_COUNT = 4096;
+
 const MAX_SESSION_ID = 256;
-const MAX_COUNT = 4096;
+const MAX_COUNT = MAX_DELEGATED_COUNT;
 
 export interface DelegatedSessionCostPayload {
 	readonly schema: typeof SESSION_DELEGATED_COST_EVENT;
@@ -34,6 +37,13 @@ export interface DelegatedSessionCostInput {
 	readonly at: number;
 }
 
+/** Clamp a diagnostic count to the payload bound, so a very long session still
+ * publishes a valid event instead of silently dropping the delegated total. */
+export function clampDelegatedCount(value: number): number {
+	return Math.min(value, MAX_DELEGATED_COUNT);
+}
+
+/** True when a value is a count the payload can carry: a non-negative integer within the bound. */
 function validCount(value: unknown): value is number {
 	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= MAX_COUNT;
 }

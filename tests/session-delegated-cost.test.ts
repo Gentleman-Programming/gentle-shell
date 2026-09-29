@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+	clampDelegatedCount,
 	decodeDelegatedSessionCost,
 	delegatedSessionCostEvent,
+	MAX_DELEGATED_COUNT,
 	SESSION_DELEGATED_COST_EVENT,
 } from "../lib/session-delegated-cost.ts";
 import { ABSENT_COST, reportedCost, type SessionCostTotal } from "../lib/session-usage.ts";
@@ -55,4 +57,23 @@ test("the payload carries provenance, not just a number", () => {
 	assert.equal(zero?.complete, true);
 	assert.equal(reportedCost(0).nanoUsd, 0);
 	assert.deepEqual(ABSENT_COST, { state: "absent" });
+});
+
+test("diagnostic counts are clamped so a session with more than 4096 tasks still publishes", () => {
+	assert.equal(MAX_DELEGATED_COUNT, 4096);
+	assert.equal(clampDelegatedCount(3), 3);
+	assert.equal(clampDelegatedCount(5000), 4096);
+	// The builder keeps rejecting an out-of-range count from any caller.
+	assert.equal(delegatedSessionCostEvent({ parentSessionId: "s1", total: { nanoUsd: 0, complete: true, absent: 5000 }, subagents: 1, at: 1 }), undefined);
+	assert.equal(delegatedSessionCostEvent({ parentSessionId: "s1", total: { nanoUsd: 0, complete: true, absent: 0 }, subagents: 5000, at: 1 }), undefined);
+	// The publisher's clamped shape is accepted and keeps the exact cost.
+	const event = delegatedSessionCostEvent({
+		parentSessionId: "s1",
+		total: { nanoUsd: 196_444_498, complete: false, absent: clampDelegatedCount(5000) },
+		subagents: clampDelegatedCount(5000),
+		at: 1,
+	});
+	assert.equal(event?.subagents, 4096);
+	assert.equal(event?.absent, 4096);
+	assert.equal(event?.nanoUsd, 196_444_498);
 });

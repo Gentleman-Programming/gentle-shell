@@ -564,6 +564,29 @@ test("the delegated-cost topic folds subagent cost into the bar and ignores malf
 	}
 });
 
+test("an out-of-order delegated event does not replace a newer total", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" });
+	const { ctx, ui } = fakeContext({ entries: [assistantEntry({ input: 1000, output: 200, cost: 0.5 })] });
+	await fire(handlers, "session_start", ctx);
+	const liveFooterData = { getGitBranch: () => "main", getExtensionStatuses: () => new Map<string, string>(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} };
+	const tui = { terminal: { rows: 40, columns: 160 }, requestRender() {} };
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { render(width: number): string[]; dispose(): void };
+	const component = factory(tui, plainTheme, liveFooterData);
+	const text = () => component.render(160).join("");
+	const payload = (overrides: Record<string, unknown> = {}) => ({ schema: SESSION_DELEGATED_COST_EVENT, parentSessionId: "shell-session", nanoUsd: 250_000_000, complete: true, absent: 0, subagents: 1, at: 10, ...overrides });
+	try {
+		pi.events.emit(SESSION_DELEGATED_COST_EVENT, payload());
+		assert.match(text(), /\$0\.750/);
+		pi.events.emit(SESSION_DELEGATED_COST_EVENT, payload({ at: 5, nanoUsd: 500_000_000 }));
+		assert.match(text(), /\$0\.750/, "an older event is ignored");
+		pi.events.emit(SESSION_DELEGATED_COST_EVENT, payload({ at: 20, nanoUsd: 500_000_000 }));
+		assert.match(text(), /\$1\.00/, "a newer event applies");
+	} finally {
+		component.dispose();
+	}
+});
+
 test("clicking the header's usage segment opens the usage panel; other header clicks are ignored", async () => {
 	const { pi, handlers } = fakePi();
 	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" });

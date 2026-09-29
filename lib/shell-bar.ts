@@ -113,6 +113,8 @@ export function formatTokens(count: number): string {
 	return `${Math.round(count / 1_000_000)}M`;
 }
 
+/** Shared cost formatter. The `partial` marker is opt-in so the card and view
+ * keep the exact same output; only the bar and header pass it. */
 export function formatCost(total: number, subscription = false, partial = false): string {
 	const amount = total >= 1 ? total.toFixed(2) : total.toFixed(3);
 	return `$${amount}${partial ? "+" : ""}${subscription ? " sub" : ""}`;
@@ -145,6 +147,7 @@ function contextSegment(contextPercent: number | null, theme: ShellBarTheme): st
 	return `${theme.fg(ROLE.LABEL, "ctx")} ${paintGauge(contextPercent, theme)} ${theme.fg(ROLE.VALUE, percentText)}`;
 }
 
+/** The colored cost segment; `partial` paints the trailing `+` marker. */
 function costSegment(costTotal: number, subscription: boolean, partial: boolean, theme: ShellBarTheme): string {
 	return theme.fg(ROLE.VALUE, formatCost(costTotal, subscription, partial));
 }

@@ -145,3 +145,13 @@ test("SessionUsageRecord, TimeSegment and TurnRecord expose the canonical shape"
 	const turn: TurnRecord = { index: 0, start: 1, end: 5, model: record.model, segments: [segment] };
 	assert.equal(turn.segments[0]?.kind, "tool");
 });
+
+test("accumulateTaskCost stays on the nano-USD grid across repeated deltas", () => {
+	let task: { cost: number; costComplete?: boolean } = { cost: 0 };
+	for (const delta of [0.00007485, 0.0002364, 0.000033024]) task = { ...task, ...accumulateTaskCost(task, reportedCost(delta)) };
+	assert.equal(task.cost, 0.000344274, "nine-decimal deltas sum exactly, not with float drift");
+	assert.equal(reportedCost(task.cost).nanoUsd, 344_274);
+	let long: { cost: number; costComplete?: boolean } = { cost: 0 };
+	for (let index = 0; index < 1_000; index++) long = { ...long, ...accumulateTaskCost(long, reportedCost(0.000000001)) };
+	assert.equal(reportedCost(long.cost).nanoUsd, 1_000, "one-nano deltas do not accumulate error");
+});

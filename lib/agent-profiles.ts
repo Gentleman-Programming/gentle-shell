@@ -409,15 +409,23 @@ export interface ProfileListItem {
 export function buildProfileListItems(
 	file: AgentProfilesFile,
 	pinned?: string,
+	sessionBound?: string,
 ): ProfileListItem[] {
 	return Object.entries(file.profiles).map(([name, config]) => {
 		const roles = profileRoleEntries(config).length;
 		const active = name === file.active ? `${name} (active)` : name;
+		// A pinned profile is the one this repository launches with, which is not the
+		// same thing as the globally active profile, so both are named. A session
+		// binding outranks the pin (it is what this session's launches resolve now),
+		// so its marker wins on the same profile.
+		const label = name === sessionBound
+			? `${active} (session)`
+			: name === pinned
+				? `${active} (pinned)`
+				: active;
 		return {
 			id: name,
-			// A pinned profile is the one this repository launches with, which is not the
-			// same thing as the globally active profile, so both are named.
-			label: name === pinned ? `${active} (pinned)` : active,
+			label,
 			description: `${roles} ${roles === 1 ? "role" : "roles"}`,
 		};
 	});

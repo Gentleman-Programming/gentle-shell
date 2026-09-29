@@ -7585,11 +7585,15 @@ async function executeReviewCaptureGroupOperation(
 			mutation_outcome: "none",
 		};
 	}
+	// One routing snapshot for the whole group: the pin-over-global precedence
+	// is identical for every slot, so resolving it once before the map avoids
+	// re-running the pin resolver and config reads per slot.
+	const reviewerRouting = pinnedEffectiveModelConfig(cwd) ?? readModelConfig(cwd);
 	const requests: readonly ReviewHostRelayRequest[] = group.slots.map((slot) => ({
 		captureArgumentTokens: slot.captureArgumentTokens,
 		targetCwd: cwd,
 		submission: slot.submission!,
-		...reviewHostRelaySelection(slot.lens, pinnedEffectiveModelConfig(cwd) ?? readModelConfig(cwd)),
+		...reviewHostRelaySelection(slot.lens, reviewerRouting),
 		...(modelRegistry === undefined ? {} : { reviewerRegistry: modelRegistry }),
 		...(reviewerSessionId === undefined ? {} : { reviewerSessionId }),
 		...(signal === undefined ? {} : { signal }),

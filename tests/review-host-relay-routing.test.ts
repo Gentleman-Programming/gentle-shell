@@ -1035,8 +1035,6 @@ const PINNED_COMPLETE: AgentModelConfig = {
 // three reviewer roles that models.json still configures.
 const PINNED_PARTIAL: AgentModelConfig = { "review-risk": { model: "pinned/risk-model" } };
 
-const REVIEWER_REGISTRY: InProcessReviewerRegistry = { find: () => undefined, getApiKeyAndHeaders: async () => ({ ok: true }) };
-
 function pinFixture(t: test.TestContext): string {
 	const configHome = mkdtempSync(join(tmpdir(), "gentle-pi-relay-pin-config-"));
 	const previous = process.env.GENTLE_PI_CONFIG_HOME;
@@ -1207,11 +1205,22 @@ test("a pinned profile missing a required group role is refused typed before any
 	// so a per-role fallback would launch instead of refusing typed.
 	const inputs = [relayCollectInput(lineageId, "review-resilience", 0)];
 	const harness = nativeHarness([finalizeStatus(lineageId, inputs)]);
+	// Instrument the real model-start/auth boundary without bypassing the live
+	// group runner: a reviewer model can only start after resolving through
+	// registry.find and authenticating through registry.getApiKeyAndHeaders, so
+	// counting those seams proves no model resolution, auth, or completion ran.
+	let modelLookups = 0, authAttempts = 0;
+	const registry: InProcessReviewerRegistry = {
+		find: () => { modelLookups += 1; return undefined; },
+		getApiKeyAndHeaders: async () => { authAttempts += 1; return { ok: true }; },
+	};
 
-	const result = await runCaptureGroup(cwd, harness, lineageId, inputs, true, REVIEWER_REGISTRY);
+	const result = await runCaptureGroup(cwd, harness, lineageId, inputs, true, registry);
 
 	assert.equal(result.outcome, "pi-host-relay-transport-failure");
 	const failure = result.failure as { kind?: string } | undefined;
 	assert.equal(failure?.kind, "reviewer-config-invalid");
 	assert.match(String(result.reason), /no model is configured for review-resilience/, "whole-profile precedence: models.json must not fill the pinned profile's gaps");
+	assert.equal(modelLookups, 0, "the typed refusal fires before any model resolution");
+	assert.equal(authAttempts, 0, "the typed refusal fires before any provider auth");
 });

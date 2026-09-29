@@ -107,6 +107,10 @@ export interface RunnerHooks {
 	onNotification?(task: TaskRecord, message: string): boolean | void;
 	onQuery?(task: TaskRecord, requestId: string, message: string): boolean | void;
 	onQuerySettled?(taskId: string, requestId: string, outcome: "replied" | "expired"): void;
+	/** Called after a child usage delta updates the task's accumulated cost, so a
+	 * parent-owned consumer (for example the delegated-cost publisher) can react
+	 * without the runner knowing anything about statistics. */
+	onUsage?(task: TaskRecord): void;
 	// Parent-only observation of a paired successful filesystem tool, not prose.
 	onSuccessfulMutation?(task: TaskRecord, tool: { toolName: "write" | "edit"; toolCallId: string; path: string; evidence?: SessionChangeEvidence }): void | Promise<void>;
 }
@@ -740,7 +744,8 @@ export class AgentRunner {
 				continue; // Separate from store persistence, UI totals and notifications.
 			}
 			live.sawRunEvent = true;
-			this.store.apply(id, event, this.deps.now());
+			const applied = this.store.apply(id, event, this.deps.now());
+			if (event.type === TASK_EVENT.USAGE && applied) this.hooks.onUsage?.(applied);
 			if (event.type === TASK_EVENT.TOOL_START && event.callId) {
 				live.inFlightTools.set(event.callId, event.name);
 				live.mutationStarts.delete(event.callId);

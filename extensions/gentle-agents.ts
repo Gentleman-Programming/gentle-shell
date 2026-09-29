@@ -43,6 +43,8 @@ import { resolveGentlePiAgentHome, gentlePiConfigHome } from "../lib/agent-home.
 import { resolveProfilePin, resolveUnversionedProjectProfile } from "../lib/agent-profile-pin.ts";
 import { allowedEditSurfaces, isDevelopmentSurface, isGenericBoundedWriter, prepareBoundSessionRepository, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sessionRepositoryAuthority } from "../lib/bounded-writer-admission.ts";
 import { CHILD_METRICS_EVENT, CHILD_METRICS_REVOKED, childEvent, launchSelection, type LaunchSelection } from "../lib/runtime-metrics-children.ts";
+import { delegatedCostFromTasks } from "../lib/session-usage.ts";
+import { delegatedSessionCostEvent, SESSION_DELEGATED_COST_EVENT } from "../lib/session-delegated-cost.ts";
 import { runtimeMetricsEnvAllows, type RuntimeMetricsPolicyDeps } from "../lib/runtime-metrics-policy.ts";
 
 // Gentle Agents: subagents as isolated `pi --mode rpc` children, a task
@@ -408,6 +410,20 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// started before /new or /resume stays in the store and comes back with
 	// its session. Before the first session_start there is nothing to scope by.
 	const activeSessionId = (): string | undefined => (sessions === undefined ? undefined : sessions.getSessionId() ?? "");
+	// The shell owns the bar, this extension owns the TaskStore; the delegated
+	// total crosses over the event bus on one versioned topic. Derived from
+	// `store.list`, not from the card's finished-row TTL, so the number never
+	// shrinks a minute after an agent finishes. Failures never reach the session.
+	const publishDelegatedCost = () => {
+		if (!sessions) return;
+		const parentSessionId = activeSessionId();
+		if (parentSessionId === undefined || parentSessionId.length === 0) return;
+		try {
+			const tasks = store.list(parentSessionId);
+			const event = delegatedSessionCostEvent({ parentSessionId, total: delegatedCostFromTasks(tasks), subagents: tasks.length, at: deps.now() });
+			if (event) pi.events.emit(SESSION_DELEGATED_COST_EVENT, event);
+		} catch { /* Statistics must never interrupt the agents flow. */ }
+	};
 	// Pi 0.86.1 adds this event; the package's pinned 0.85.1 types predate it.
 	installBackgroundCacheWarming(pi as unknown as Parameters<typeof installBackgroundCacheWarming>[0], () => ({
 		sessionId: activeSessionId(),
@@ -668,6 +684,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			if (outcome === "replied") messages.consumeQuery(taskId, requestId);
 			else messages.expireQuery(taskId, requestId);
 		},
+		onUsage: () => publishDelegatedCost(),
 		onSuccessfulMutation: (task, tool) => {
 			// Same-clone registry attribution remains unchanged. A foreign task
 			// uses a separately bound, live-grant path only for successful tool evidence.
@@ -953,6 +970,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// A status change is worth a frame right away; deltas inside a task are
 	// coalesced so a chatty child cannot flood the terminal.
 	store.subscribeSummary(() => {
+		publishDelegatedCost();
 		publishActivity();
 		if (sidebarTui) invalidateSidebar(sidebarTui);
 		host?.requestRender();

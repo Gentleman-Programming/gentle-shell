@@ -8,6 +8,7 @@ const roles: Record<string, string[]> = {
 	"gentle-ai-explore.md": ["read", "grep", "find", "codegraph"],
 	"gentle-ai-worker.md": ["read", "grep", "find", "edit", "write", "bash", "mem_save"],
 	"gentle-ai-verify.md": ["read", "grep", "find", "bash"],
+	"gentle-ai-security.md": ["read", "grep", "find", "edit", "write", "bash", "mem_save"],
 };
 
 function tools(file: string): string[] {
@@ -45,6 +46,14 @@ test("ODD explorer and verifier remain read-only while writer is bounded", () =>
 	const worker = readFileSync(join(agents, "gentle-ai-worker.md"), "utf8");
 	assert.match(worker, /exact allowed edit surfaces/);
 	assert.match(worker, /Work-unit commit decisions and the independent RDD review lifecycle remain parent-owned/);
+});
+
+test("ODD security agent is confined to test files and static rules and hands production fixes to worker", () => {
+	const security = readFileSync(join(agents, "gentle-ai-security.md"), "utf8");
+	assert.match(security, /Sec-TDD/);
+	assert.match(security, /Allowed edit surfaces/i);
+	assert.match(security, /Never edit production code/i);
+	assert.match(security, /worker/i);
 });
 
 test("retired Pi adversarial role agents are not packaged", () => {

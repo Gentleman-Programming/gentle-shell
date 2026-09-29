@@ -178,6 +178,7 @@ The bounded multi-file writer precedence in rule 3 overrides that general runtim
 | unknown / assess failed | treated as high |
 
 The small-model bias raises the tier by one for verification purposes (medium becomes high); an unknown `Receipt-driven development:` line never lowers a tier below `off`. The parent spot check (re-running one reported command before delivery) stays required in every tier. Only truly local read-only checking of 1–3 known files stays inline.
+6. **Security & Sec-TDD rule**: when an implementation task introduces or alters sensitive attack surfaces (authentication, session management, payments, cryptography, untrusted data parsers, or webhook verification), trigger `gentle-ai-security` post-worker. First present an organic confirmation to the user identifying the surface and planned audit. If the user declines or requests leaving the code as is, respect the decision immediately without friction or debate. When approved, `gentle-ai-security` tests vulnerability hypotheses against existing controls and authors negative regression tests (observed RED) confined to test directories (`tests/security/`, `**/*.security.test.*`, `.semgrep/`). The orchestrator documents findings in the active ODD task file, delegates the production code remediation back to `gentle-ai-worker`, observes GREEN, and continues the TODO list.
 
 ### Work Routing Ladder
 

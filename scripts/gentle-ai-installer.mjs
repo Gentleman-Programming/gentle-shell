@@ -584,6 +584,27 @@ async function cleanupStaleStagingBundles(runtimeRoot) {
 	}
 }
 
+// Windows cannot rename a directory while any process holds a short-lived open
+// handle on it or on a file inside it. Real-time scanners and OS components
+// briefly hold freshly built and freshly executed binaries, which made the
+// publish rename fail deterministically (EPERM) on Windows even though the
+// lock clears within a few hundred milliseconds. A short backoff retry clears
+// the transient lock; non-transient errors propagate unchanged so injected
+// failure tests keep their exact semantics.
+const WINDOWS_RENAME_RETRY_LIMIT = 5;
+const WINDOWS_RENAME_RETRY_DELAY_MS = 250;
+
+async function renameWithTransientRetry(renameFile, from, to) {
+	for (let attempt = 1; ; attempt += 1) {
+		try { return await renameFile(from, to); }
+		catch (error) {
+			const transient = process.platform === "win32" && error && typeof error === "object" && ["EPERM", "EBUSY"].includes(error.code);
+			if (!transient || attempt >= WINDOWS_RENAME_RETRY_LIMIT) throw error;
+			await new Promise((resolve) => setTimeout(resolve, WINDOWS_RENAME_RETRY_DELAY_MS * attempt));
+		}
+	}
+}
+
 async function publishBundle(runtimeRoot, stagingDirectory, options) {
 	const versionDirectory = join(runtimeRoot, `v${INSTALLER_VERSION}`), renameFile = options.rename ?? rename;
 	const backupDirectory = join(runtimeRoot, `.v${INSTALLER_VERSION}.backup-${process.pid}-${Date.now()}`);
@@ -595,7 +616,7 @@ async function publishBundle(runtimeRoot, stagingDirectory, options) {
 			await renameFile(versionDirectory, backupDirectory);
 			movedPrior = true;
 		} catch (error) { if (!(error && typeof error === "object" && error.code === "ENOENT")) throw error; }
-		await renameFile(stagingDirectory, versionDirectory);
+		await renameWithTransientRetry(renameFile, stagingDirectory, versionDirectory);
 	} catch (error) {
 		if (movedPrior) {
 			try { await renameFile(backupDirectory, versionDirectory); }

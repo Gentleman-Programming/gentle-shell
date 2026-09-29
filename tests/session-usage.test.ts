@@ -10,6 +10,7 @@ import {
 	EMPTY_SESSION_COST,
 	foldSessionCost,
 	isReported,
+	mergeSessionCost,
 	NANO_USD_SCALE,
 	reportedCost,
 	reportedCostOrAbsent,
@@ -115,8 +116,15 @@ test("accumulateTaskCost sums reported deltas and marks the task partial for goo
 
 test("delegatedCostFromTasks folds subagents and flags any partial one", () => {
 	assert.deepEqual(delegatedCostFromTasks([]), EMPTY_SESSION_COST);
+	assert.deepEqual(delegatedCostFromTasks([{ cost: 0.5 }]), { nanoUsd: 500_000_000, complete: true, absent: 0 });
 	assert.deepEqual(delegatedCostFromTasks([{ cost: 0.5 }, { cost: 0.25 }]), { nanoUsd: 750_000_000, complete: true, absent: 0 });
 	assert.deepEqual(delegatedCostFromTasks([{ cost: 0.5, costComplete: false }, { cost: 0.25 }]), { nanoUsd: 750_000_000, complete: false, absent: 1 });
+});
+
+test("mergeSessionCost adds orchestrator and subagent totals without losing provenance", () => {
+	assert.deepEqual(mergeSessionCost({ nanoUsd: 100_000_000, complete: true, absent: 0 }, { nanoUsd: 250_000_000, complete: true, absent: 0 }), { nanoUsd: 350_000_000, complete: true, absent: 0 });
+	assert.deepEqual(mergeSessionCost({ nanoUsd: 100_000_000, complete: true, absent: 0 }, { nanoUsd: 0, complete: false, absent: 1 }), { nanoUsd: 100_000_000, complete: false, absent: 1 });
+	assert.deepEqual(mergeSessionCost({ nanoUsd: 1, complete: false, absent: 2 }, { nanoUsd: 2, complete: false, absent: 3 }), { nanoUsd: 3, complete: false, absent: 5 });
 });
 
 test("SessionUsageRecord, TimeSegment and TurnRecord expose the canonical shape", () => {

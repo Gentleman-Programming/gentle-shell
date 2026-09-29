@@ -127,6 +127,11 @@ export function sessionCostUsd(total: SessionCostTotal): number {
 	return total.nanoUsd / NANO_USD_SCALE;
 }
 
+/** Combine two partial-aware totals (for example the orchestrator and its subagents) without losing provenance. */
+export function mergeSessionCost(a: SessionCostTotal, b: SessionCostTotal): SessionCostTotal {
+	return { nanoUsd: a.nanoUsd + b.nanoUsd, complete: a.complete && b.complete, absent: a.absent + b.absent };
+}
+
 // ---------------------------------------------------------------------------
 // Exposed ingestion seam (I1/I2).
 //

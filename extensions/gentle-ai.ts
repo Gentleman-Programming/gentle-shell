@@ -5,7 +5,7 @@ import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { declareReviewRelayHandshake } from "../lib/review-relay-contract.ts";
 import { execFileSync } from "node:child_process";
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import {
 	existsSync,
 	lstatSync,
@@ -6455,11 +6455,48 @@ function cloneRetainedNativeUntrackedSelection(selection: NativeStartUntrackedSe
 	});
 }
 
+const routeDiagnosticSecret = randomBytes(32);
+const routeProcessTag = randomBytes(12).toString("hex");
+type RouteEvent = { sequence: number; kind: string; route_tag: string; reason?: string };
+const routeJournals = new WeakMap<Map<string, RetainedNativeStatusSelection>, { scope: string; sequence: number; events: RouteEvent[] }>();
+function routeJournal(selections: Map<string, RetainedNativeStatusSelection>) {
+	let journal = routeJournals.get(selections);
+	if (!journal) { journal = { scope: randomBytes(12).toString("hex"), sequence: 0, events: [] }; routeJournals.set(selections, journal); }
+	return journal;
+}
+function routeTag(binding: string): string { return createHmac("sha256", routeDiagnosticSecret).update(binding).digest("hex").slice(0, 32); }
+function recordRoute(selections: Map<string, RetainedNativeStatusSelection>, key: string, kind: string, reason?: string): RouteEvent {
+	const journal = routeJournal(selections);
+	const event = { sequence: ++journal.sequence, kind, route_tag: routeTag(key.slice("capture\u0000".length)), ...(reason ? { reason } : {}) };
+	journal.events.push(event);
+	if (journal.events.length > 128) journal.events.shift();
+	return event;
+}
+function routeDiagnostic(selections: Map<string, RetainedNativeStatusSelection>, since: number, bindings: readonly string[] = []) {
+	const journal = routeJournal(selections);
+	return { process_tag: routeProcessTag, scope_tag: journal.scope,
+		offered: bindings.map((binding) => ({ route_tag: routeTag(binding), retained: isRetainedNativeCaptureRoute(selections.get(reviewCaptureSelectionStorageKey(binding))) })),
+		events: journal.events.filter((event) => event.sequence > since),
+		truncated: since < (journal.events[0]?.sequence ?? journal.sequence + 1) - 1 };
+}
+function rejectedRouteDiagnostic(selections: Map<string, RetainedNativeStatusSelection>, bindings: readonly string[], reason: string) {
+	const journal = routeJournal(selections);
+	const attempted = bindings.map(routeTag);
+	const previous_event = [...journal.events].reverse().find((entry) => attempted.includes(entry.route_tag));
+	// A rejected group has no identified culprit: tag the ordered group, not its first (possibly valid) member.
+	const eventKey = bindings.length === 1 ? bindings[0]! : JSON.stringify(bindings);
+	const event = recordRoute(selections, reviewCaptureSelectionStorageKey(eventKey), "rejected", reason);
+	return { process_tag: routeProcessTag, scope_tag: journal.scope, attempted, event,
+		history_truncated: (journal.events[0]?.sequence ?? 1) > 1,
+		...(previous_event ? { previous_event } : {}) };
+}
+
 function retainNativeStatusSelection(selections: Map<string, RetainedNativeStatusSelection>, key: string, selection: RetainedNativeStatusSelection): void {
 	if (!selections.has(key)) {
 		while (selections.size >= MAX_RETAINED_NATIVE_STATUS_SELECTIONS) {
 			const oldestKey = selections.keys().next().value;
 			if (oldestKey === undefined) return;
+			if (isRetainedNativeCaptureRoute(selections.get(oldestKey))) recordRoute(selections, oldestKey, "removed", "capacity_eviction");
 			selections.delete(oldestKey);
 		}
 	}
@@ -6526,15 +6563,18 @@ function isRetainedNativeCaptureRoute(selection: RetainedNativeStatusSelection |
 
 function retainNativeCaptureRoutes(selections: Map<string, RetainedNativeStatusSelection>, workspaceRoot: string, status: ReviewStatusV3, baseRef: string | undefined): void {
 	const lineageId = status.authority?.lineageId;
-	if (status.applicability !== "current_target" || !isCanonicalProcessString(lineageId) || isTerminalReviewAuthorityState(status.authority?.state)) return;
+	if (status.applicability !== "current_target" || !isCanonicalProcessString(lineageId) || isTerminalReviewAuthorityState(status.authority?.state)) {
+		if (status.nextTransition?.kind === "collect") for (const input of status.nextTransition.collect?.inputs ?? []) recordRoute(selections, reviewCaptureSelectionStorageKey(canonicalReviewCaptureBinding(input)), "suppressed", isTerminalReviewAuthorityState(status.authority?.state) ? "terminal" : "non_current");
+		return;
+	}
 	const routes = (status.nextTransition?.kind === "collect" ? status.nextTransition.collect?.inputs ?? [] : []).map((input) => ({ key: reviewCaptureSelectionStorageKey(canonicalReviewCaptureBinding(input)), route: Object.freeze({ workspaceRoot, lineageId, ...(baseRef === undefined ? {} : { baseRef, committedOnly: true as const }) }) }));
 	for (const { key, route } of routes) {
 		const existing = selections.get(key);
-		if (isRetainedNativeCaptureRoute(existing) && (existing.workspaceRoot !== route.workspaceRoot || existing.lineageId !== route.lineageId || existing.baseRef !== route.baseRef || existing.committedOnly !== route.committedOnly)) throw new NativeCaptureRouteRegistrationError("Provider collectBinding collides with a different registered route");
+		if (isRetainedNativeCaptureRoute(existing) && (existing.workspaceRoot !== route.workspaceRoot || existing.lineageId !== route.lineageId || existing.baseRef !== route.baseRef || existing.committedOnly !== route.committedOnly)) { recordRoute(selections, key, "collision"); throw new NativeCaptureRouteRegistrationError("Provider collectBinding collides with a different registered route"); }
 	}
 	const current = new Set(routes.map(({ key }) => key));
-	for (const [key, selection] of selections) if (isRetainedNativeCaptureRoute(selection) && selection.workspaceRoot === workspaceRoot && selection.lineageId === lineageId && !current.has(key)) selections.delete(key);
-	for (const { key, route } of routes) if (!selections.has(key)) retainNativeStatusSelection(selections, key, route);
+	for (const [key, selection] of selections) if (isRetainedNativeCaptureRoute(selection) && selection.workspaceRoot === workspaceRoot && selection.lineageId === lineageId && !current.has(key)) { selections.delete(key); recordRoute(selections, key, "removed", routes.length ? "changed_collect_set" : "no_collect_transition"); }
+	for (const { key, route } of routes) if (!selections.has(key)) { retainNativeStatusSelection(selections, key, route); recordRoute(selections, key, "registered"); }
 }
 
 function readRetainedNativeCaptureRoute(selections: Map<string, RetainedNativeStatusSelection>, collectBinding: string): RetainedNativeCaptureRoute | undefined {
@@ -6551,7 +6591,7 @@ function clearRetainedNativeUntrackedSelection(selections: Map<string, RetainedN
 function clearRetainedNativeStatusSelectionsOnTerminal(selections: Map<string, RetainedNativeStatusSelection>, workspaceRoot: string, lineageId: string | undefined, state: string | undefined): void {
 	if (lineageId === undefined || !isTerminalReviewAuthorityState(state)) return;
 	if (state !== "approved") clearRetainedNativeUntrackedSelection(selections, workspaceRoot, lineageId);
-	for (const [key, selection] of selections) if (isRetainedNativeCaptureRoute(selection) && selection.workspaceRoot === workspaceRoot && selection.lineageId === lineageId) selections.delete(key);
+	for (const [key, selection] of selections) if (isRetainedNativeCaptureRoute(selection) && selection.workspaceRoot === workspaceRoot && selection.lineageId === lineageId) { selections.delete(key); recordRoute(selections, key, "removed", "terminal"); }
 }
 
 function syncRetainedNativeStatusSelections(selections: Map<string, RetainedNativeStatusSelection>, workspaceRoot: string, status: ReviewStatusV3, baseRef: string | undefined): void {
@@ -7404,7 +7444,10 @@ async function executeReviewCaptureOperation(
 	const cwd = resolveReviewControllerWorkspaceRoot(parameters.workspaceRoot, sessionCwd, candidateViews, parameters.lineageId);
 	const route = readRetainedNativeCaptureRoute(retainedUntrackedSelections, canonicalBinding);
 	if (requireRegisteredRoute && (route === undefined || route.workspaceRoot !== cwd || route.lineageId !== parameters.lineageId)) {
-		return captureBindingRejected("collectBinding is unknown, expired, or belongs to a different session route");
+		return {
+			...captureBindingRejected("collectBinding is unknown, expired, or belongs to a different session route"),
+			reason_code: route === undefined ? "route_not_retained" : route.workspaceRoot !== cwd ? "route_workspace_mismatch" : "route_lineage_mismatch",
+		};
 	}
 	let status: ReviewStatusV3;
 	try {
@@ -7567,7 +7610,12 @@ async function executeReviewCaptureGroupOperation(
 	const routes = canonicalBindings.map((binding) => readRetainedNativeCaptureRoute(retainedUntrackedSelections, binding));
 	const route = routes[0];
 	if (requireRegisteredRoute && (route === undefined || routes.some((candidate) => candidate === undefined || candidate.workspaceRoot !== cwd || candidate.lineageId !== parameters.lineageId || candidate.baseRef !== route.baseRef))) {
-		return captureGroupRejected("collectBindings are unknown, expired, or belong to different session routes");
+		return {
+			...captureGroupRejected("collectBindings are unknown, expired, or belong to different session routes"),
+			reason_code: routes.some((candidate) => candidate === undefined) ? "route_not_retained"
+				: routes.some((candidate) => candidate!.workspaceRoot !== cwd) ? "route_workspace_mismatch"
+				: routes.some((candidate) => candidate!.lineageId !== parameters.lineageId) ? "route_lineage_mismatch" : "route_selector_mismatch",
+		};
 	}
 	const freshStatus = () => negotiatedStatusForHostTransport(nativeReviewCli, {
 		cwd, lineageId: parameters.lineageId,
@@ -9004,13 +9052,14 @@ function createGentleAiExtensionForTesting(
 		},
 		async execute(_toolCallId, parameters, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw reviewCancellation("Review capture group was cancelled");
-			const details = await executeReviewCaptureGroupOperation(
+			const selections = ((sessionKey: PendingReviewConsentSessionKey) => processRetainedNativeStatusSelections.get(sessionKey) ?? processRetainedNativeStatusSelections.set(sessionKey, new Map()).get(sessionKey)!)(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey));
+			let details = await executeReviewCaptureGroupOperation(
 				parameters,
 				ctx.cwd,
 				nativeReviewCli,
 				signal,
 				candidateViews,
-				((sessionKey: PendingReviewConsentSessionKey) => processRetainedNativeStatusSelections.get(sessionKey) ?? processRetainedNativeStatusSelections.set(sessionKey, new Map()).get(sessionKey)!)(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey)),
+				selections,
 				true,
 				ctx.modelRegistry,
 				// The live session id rides into the reviewer side-call so an
@@ -9018,6 +9067,10 @@ function createGentleAiExtensionForTesting(
 				// (pi adds those inside the main agent loop; this is not that loop).
 				reviewSessionManagerAndId(ctx)?.sessionId,
 			);
+			if (typeof details.reason_code === "string" && details.reason_code.startsWith("route_")) details = {
+				...details,
+				route_diagnostic: rejectedRouteDiagnostic(selections, parameters.collectBindings.map(parseCanonicalReviewCaptureBinding), details.reason_code),
+			};
 			return { content: [{ type: "text", text: JSON.stringify(details) }], details };
 		},
 	}));
@@ -9047,13 +9100,14 @@ function createGentleAiExtensionForTesting(
 		},
 		async execute(_toolCallId, parameters, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw reviewCancellation("Review capture was cancelled");
-			const details = await executeReviewCaptureOperation(
+			const selections = ((sessionKey: PendingReviewConsentSessionKey) => processRetainedNativeStatusSelections.get(sessionKey) ?? processRetainedNativeStatusSelections.set(sessionKey, new Map()).get(sessionKey)!)(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey));
+			let details = await executeReviewCaptureOperation(
 				parameters,
 				ctx.cwd,
 				nativeReviewCli,
 				signal,
 				candidateViews,
-				((sessionKey: PendingReviewConsentSessionKey) => processRetainedNativeStatusSelections.get(sessionKey) ?? processRetainedNativeStatusSelections.set(sessionKey, new Map()).get(sessionKey)!)(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey)),
+				selections,
 				true,
 				ctx.modelRegistry,
 				// The live session id rides into the reviewer side-call so an
@@ -9061,6 +9115,10 @@ function createGentleAiExtensionForTesting(
 				// (pi adds those inside the main agent loop; this is not that loop).
 				reviewSessionManagerAndId(ctx)?.sessionId,
 			);
+			if (typeof details.reason_code === "string" && details.reason_code.startsWith("route_")) details = {
+				...details,
+				route_diagnostic: rejectedRouteDiagnostic(selections, [parseCanonicalReviewCaptureBinding(parameters.collectBinding)], details.reason_code),
+			};
 			return {
 				content: [{ type: "text", text: JSON.stringify(details) }],
 				details,
@@ -9104,6 +9162,7 @@ function createGentleAiExtensionForTesting(
 			const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
 			const retainedSelections = processRetainedNativeStatusSelections.get(sessionKey)
 				?? processRetainedNativeStatusSelections.set(sessionKey, new Map()).get(sessionKey)!;
+			const routeSequence = routeJournal(retainedSelections).sequence;
 			// Snapshot before native awaits: a concurrent own write is a new generation.
 			const acknowledgementEpoch = reminderEpoch;
 			let acknowledgementRoot: string | undefined;
@@ -9208,6 +9267,11 @@ function createGentleAiExtensionForTesting(
 						}
 					}
 				}
+			}
+			if (["status", "inspect", "start"].includes(String(parameters.operation))) {
+				const bindings = Array.isArray(details.collectBindings) ? details.collectBindings.map((entry: { collectBinding: string }) => entry.collectBinding) : [];
+				const diagnostic = routeDiagnostic(retainedSelections, routeSequence, bindings);
+				if (bindings.length || diagnostic.events.length) details = { ...details, route_diagnostic: diagnostic };
 			}
 			return {
 				content: [{ type: "text", text: JSON.stringify(details) }],

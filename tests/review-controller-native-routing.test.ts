@@ -481,6 +481,12 @@ test("interleaved sessions sharing a CLI retain only their own capture routes", 
 	const ownA = await capture.execute("", { lineageId: a, collectBinding: bindingOf(resultA.details as Record<string, unknown>), correctionLines: 1 }, undefined, undefined, contexts[0]!);
 	const ownB = await capture.execute("", { lineageId: b, collectBinding: bindingOf(resultB.details as Record<string, unknown>), correctionLines: 1 }, undefined, undefined, contexts[1]!);
 	const foreign = await capture.execute("", { lineageId: a, collectBinding: bindingOf(resultA.details as Record<string, unknown>), correctionLines: 1 }, undefined, undefined, contexts[1]!);
+	const ownerTrace = (resultA.details as { route_diagnostic: { process_tag: string; scope_tag: string; offered: { route_tag: string }[] } }).route_diagnostic;
+	const foreignTrace = (foreign.details as { route_diagnostic: { process_tag: string; scope_tag: string; attempted: string[] } }).route_diagnostic;
+	assert.equal(ownerTrace.process_tag, foreignTrace.process_tag);
+	assert.notEqual(ownerTrace.scope_tag, foreignTrace.scope_tag, "route maps are bound to different live session keys");
+	assert.equal(ownerTrace.offered[0]!.route_tag, foreignTrace.attempted[0], "binding identity is stable across session scopes in one process");
+	for (const sessionId of [a, b]) assert.equal(JSON.stringify({ ownerTrace, foreignTrace }).includes(sessionId), false);
 	await sessionShutdown({}, contexts[0]!);
 	const cleaned = await capture.execute("", { lineageId: a, collectBinding: bindingOf(resultA.details as Record<string, unknown>), correctionLines: 1 }, undefined, undefined, contexts[0]!);
 	assert.deepEqual({
@@ -673,6 +679,42 @@ test("STATUS preserves retained intended-untracked selection through selectorles
 	await __testing.executeReviewControllerOperation({ operation: "status", lineageId, input: JSON.stringify(override) }, cwd, native, undefined, undefined, undefined, selections);
 	await __testing.executeReviewControllerOperation({ operation: "status", lineageId }, cwd, native, undefined, undefined, undefined, selections);
 	assert.deepEqual(requests.slice(-2), Array.from({ length: 2 }, () => ({ cwd, lineageId, agent: "pi", ...override })));
+});
+
+test("public single and group capture distinguish missing, workspace, and lineage retained routes before native STATUS", async (t) => {
+	const cwd = repository(t), otherWorkspace = repository(t);
+	const lineageId = "route-diagnostic-lineage", input = collectInput(lineageId);
+	const routes = new Map();
+	let statusCalls = 0, captures = 0;
+	const native = {
+		targetStatus: async () => { statusCalls += 1; return status(lineageId, [input]); },
+		captureProviderRole: async () => { captures += 1; throw new Error("capture must not run"); },
+	} as unknown as NativeReviewCli;
+	const registered = await __testing.executeReviewControllerOperation({ operation: "status", lineageId }, cwd, native, undefined, undefined, undefined, routes);
+	const binding = bindingOf(registered);
+	statusCalls = 0;
+	const cases = [
+		{ name: "not retained in session", registry: new Map(), workspaceRoot: cwd, requestedLineage: lineageId, reasonCode: "route_not_retained" },
+		{ name: "wrong workspace", registry: routes, workspaceRoot: otherWorkspace, requestedLineage: lineageId, reasonCode: "route_workspace_mismatch" },
+		{ name: "wrong lineage", registry: routes, workspaceRoot: cwd, requestedLineage: "other-route-lineage", reasonCode: "route_lineage_mismatch" },
+	];
+	for (const { name, registry, workspaceRoot, requestedLineage, reasonCode } of cases) {
+		for (const group of [false, true]) {
+			const result = group
+				? await __testing.executeReviewCaptureGroupOperation({ lineageId: requestedLineage, workspaceRoot, collectBindings: [binding] }, cwd, native, undefined, undefined, registry, true)
+				: await __testing.executeReviewCaptureOperation({ lineageId: requestedLineage, workspaceRoot, collectBinding: binding }, cwd, native, undefined, undefined, registry, true);
+			assert.equal(result.status, "blocked", `${name}: ${group ? "group" : "single"}`);
+			assert.equal(result.outcome, group ? "capture-group-rejected" : "capture-binding-rejected");
+			assert.equal(result.reason_code, reasonCode);
+			assert.equal(result.mutation_performed, false);
+			assert.equal(result.mutation_outcome, "none");
+			assert.equal(String(result.reason_code).includes(workspaceRoot), false);
+			assert.equal(String(result.reason_code).includes(requestedLineage), false);
+			assert.equal(String(result.reason_code).includes(binding), false);
+		}
+	}
+	assert.equal(statusCalls, 0, "route rejection must precede native STATUS");
+	assert.equal(captures, 0, "route rejection must not capture");
 });
 
 test("route retention caps, rejects collisions and invalid selectors, and clears every terminal state", async () => {
@@ -893,11 +935,13 @@ function reviewRuntime(nativeReviewCli: NativeReviewCli, candidateViews: Candida
 	} as unknown as ExtensionAPI);
 	const controller = tools.get("gentle_review");
 	const capture = tools.get("gentle_review_capture");
+	const captureGroup = tools.get("gentle_review_capture_group");
 	assert.ok(controller);
 	assert.ok(capture);
+	assert.ok(captureGroup);
 	assert.ok(toolCall);
 	assert.ok(sessionShutdown);
-	return { controller, capture, toolCall, sessionShutdown };
+	return { controller, capture, captureGroup, toolCall, sessionShutdown };
 }
 
 function reviewContext(cwd: string): ExtensionContext {
@@ -2914,6 +2958,99 @@ function fourLensCollectStatus(): { raw: Record<string, unknown>; lenses: readon
 function occurrences(haystack: string, needle: string): number {
 	return haystack.split(needle).length - 1;
 }
+
+test("public route diagnostics retire collect bindings without exposing authority", async () => {
+	const { raw } = fourLensCollectStatus();
+	const collecting = decodeReviewStatusV3(raw);
+	const lineageId = collecting.authority!.lineageId!;
+	const stopped = decodeReviewStatusV3({ ...raw, next_transition: { kind: "stop", reason_code: "manual_intervention_required" } });
+	let calls = 0;
+	let current = collecting;
+	const native = { targetStatus: async () => { calls++; return current; }, captureResult: async () => { calls++; throw new Error("capture must not run"); } } as unknown as NativeReviewCli;
+	const { controller, capture, captureGroup } = reviewRuntime(native, new CandidateViewRegistry());
+	const ctx = reviewContext(process.cwd());
+	const execute = async (operation: string) => (await controller.execute("route", { operation, lineageId }, undefined, undefined, ctx)).details as Record<string, unknown>;
+	const first = await execute("status");
+	const binding = (first.collectBindings as { collectBinding: string }[])[0]!.collectBinding;
+	const diagnostic = first.route_diagnostic as { process_tag: string; scope_tag: string; offered: { route_tag: string; retained: boolean }[]; events: { sequence: number; kind: string; route_tag: string }[] };
+	assert.equal(typeof diagnostic.process_tag, "string");
+	assert.equal(typeof diagnostic.scope_tag, "string");
+	assert.equal(diagnostic.offered.length, 4);
+	assert.equal(diagnostic.offered[0]!.retained, true);
+	assert.equal(diagnostic.events[0]!.route_tag, diagnostic.offered[0]!.route_tag);
+	current = stopped;
+	const second = await execute("status");
+	const retired = second.route_diagnostic as { process_tag: string; scope_tag: string; events: { route_tag: string; reason?: string }[] };
+	assert.equal(retired.process_tag, diagnostic.process_tag);
+	assert.equal(retired.scope_tag, diagnostic.scope_tag);
+	assert.ok(retired.events.some((event) => event.route_tag === diagnostic.offered[0]!.route_tag && event.reason === "no_collect_transition"));
+	const before = calls;
+	for (const [tool, params] of [
+		[capture, { lineageId, collectBinding: binding }],
+		[captureGroup, { lineageId, collectBindings: (first.collectBindings as { collectBinding: string }[]).map((entry) => entry.collectBinding) }],
+	] as const) {
+		const rejected = (await tool.execute("retired", params, undefined, undefined, ctx)).details as Record<string, unknown>;
+		assert.equal(rejected.reason_code, "route_not_retained");
+		const trace = rejected.route_diagnostic as { attempted: string[]; event: { sequence: number; kind: string; reason: string }; previous_event?: unknown };
+		assert.equal(trace.attempted[0], diagnostic.offered[0]!.route_tag);
+		assert.equal(trace.event.kind, "rejected");
+		assert.equal(trace.event.reason, "route_not_retained");
+		assert.ok(trace.previous_event);
+		for (const secret of [binding, process.cwd(), lineageId, "--lens=review-reliability", "review.capture-result"]) assert.equal(JSON.stringify(trace).includes(secret), false);
+	}
+	const reordered = JSON.stringify(Object.fromEntries(Object.entries(JSON.parse(binding) as Record<string, unknown>).reverse()));
+	const reserialized = (await capture.execute("reordered", { lineageId, collectBinding: reordered }, undefined, undefined, ctx)).details as Record<string, unknown>;
+	assert.equal((reserialized.route_diagnostic as { attempted: string[] }).attempted[0], diagnostic.offered[0]!.route_tag, "trace must identify the canonical lookup key, not caller JSON serialization");
+	assert.equal(calls, before);
+});
+
+test("group rejection reports each binding when an intervening STATUS removes only the second", async () => {
+	const { raw } = fourLensCollectStatus();
+	const collecting = decodeReviewStatusV3(raw);
+	const lineageId = collecting.authority!.lineageId!;
+	const reduced = decodeReviewStatusV3({ ...raw, next_transition: { ...raw.next_transition as Record<string, unknown>, collect: { inputs: [(raw.next_transition as { collect: { inputs: Record<string, unknown>[] } }).collect.inputs[0]] } } });
+	let calls = 0;
+	let current = collecting;
+	const native = { targetStatus: async () => { calls++; return current; }, captureResult: async () => { calls++; throw new Error("capture must not run"); } } as unknown as NativeReviewCli;
+	const { controller, captureGroup } = reviewRuntime(native, new CandidateViewRegistry());
+	const ctx = reviewContext(process.cwd());
+	const execute = async () => (await controller.execute("route", { operation: "status", lineageId }, undefined, undefined, ctx)).details as Record<string, unknown>;
+	const first = await execute();
+	const bindings = (first.collectBindings as { collectBinding: string }[]).slice(0, 2).map((entry) => entry.collectBinding);
+	const offered = (first.route_diagnostic as { offered: { route_tag: string }[] }).offered;
+	assert.notEqual(offered[0]!.route_tag, offered[1]!.route_tag);
+	current = reduced;
+	await execute();
+	const before = calls;
+	const rejected = (await captureGroup.execute("removed", { lineageId, collectBindings: bindings }, undefined, undefined, ctx)).details as Record<string, unknown>;
+	assert.equal(rejected.outcome, "capture-group-rejected");
+	assert.equal(rejected.reason_code, "route_not_retained");
+	const trace = rejected.route_diagnostic as { attempted: string[]; event: { route_tag: string }; previous_event: { kind: string; route_tag: string; reason: string } };
+	assert.deepEqual(trace.attempted, offered.slice(0, 2).map((entry) => entry.route_tag));
+	assert.equal(trace.previous_event.kind, "removed");
+	assert.equal(trace.previous_event.route_tag, offered[1]!.route_tag);
+	assert.equal(trace.previous_event.reason, "changed_collect_set");
+	assert.notEqual(trace.event.route_tag, offered[0]!.route_tag);
+	assert.equal(calls, before, "rejected group capture must not call native STATUS");
+});
+
+test("non-current collect projection suppresses without claiming retained routes were deleted", async () => {
+	const { raw } = fourLensCollectStatus();
+	const collecting = decodeReviewStatusV3(raw);
+	const lineageId = collecting.authority!.lineageId!;
+	let current = collecting;
+	const native = { targetStatus: async () => current } as unknown as NativeReviewCli;
+	const { controller } = reviewRuntime(native, new CandidateViewRegistry());
+	const ctx = reviewContext(process.cwd());
+	const execute = async () => (await controller.execute("route", { operation: "status", lineageId }, undefined, undefined, ctx)).details as Record<string, unknown>;
+	const first = await execute();
+	const tag = (first.route_diagnostic as { offered: { route_tag: string }[] }).offered[0]!.route_tag;
+	current = { ...collecting, applicability: "ambiguous" } as ReviewStatusV3;
+	const second = await execute();
+	const diagnostic = second.route_diagnostic as { offered: { route_tag: string; retained: boolean }[]; events: { kind: string; reason?: string; route_tag: string }[] };
+	assert.ok(diagnostic.events.some((event) => event.kind === "suppressed" && event.reason === "non_current" && event.route_tag === tag));
+	assert.equal(diagnostic.offered[0]!.retained, true, "retained reports map membership, not capture authorization");
+});
 
 test("collect-state public STATUS, INSPECT, and START serialize each provider collect input exactly once", async () => {
 	const { raw, lenses } = fourLensCollectStatus();

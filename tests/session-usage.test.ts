@@ -19,6 +19,7 @@ import {
 	type SessionUsageRecord,
 	type TimeSegment,
 	type TurnRecord,
+	type UsageCostBreakdown,
 } from "../lib/session-usage.ts";
 
 // I1: the canonical SessionUsageRecord and its money primitive. A reported $0
@@ -140,6 +141,19 @@ test("SessionUsageRecord, TimeSegment and TurnRecord expose the canonical shape"
 	};
 	assert.equal(Object.keys(record.tokens).length, 6);
 	assert.equal(record.source, "subagent");
+
+	// I3: the per-component split is additive on the canonical record; each
+	// component keeps its own reported/absent provenance.
+	const breakdown: UsageCostBreakdown = {
+		input: reportedCost(0.00007485),
+		output: reportedCost(0.0002364),
+		cacheRead: reportedCost(0.000033024),
+		cacheWrite: reportedCost(0),
+	};
+	const split: SessionUsageRecord = { ...record, costBreakdown: breakdown };
+	assert.deepEqual(split.costBreakdown, breakdown);
+	assert.deepEqual(split.costBreakdown?.cacheWrite, reportedCost(0));
+	assert.equal(split.costBreakdown?.cacheWrite.state, "reported");
 
 	const segment: TimeSegment = { kind: "tool", start: 1, end: 3, tool: "bash", callId: "c1" };
 	const turn: TurnRecord = { index: 0, start: 1, end: 5, model: record.model, segments: [segment] };

@@ -57,6 +57,19 @@ export interface UsageTokens {
 }
 
 /**
+ * The provider's per-component cost split, each component carrying its own
+ * provenance. A billing report needs input/output/cache separately, and "the
+ * provider reported this component" must stay distinguishable from "the
+ * provider reported nothing" exactly as the total does.
+ */
+export interface UsageCostBreakdown {
+	readonly input: UsageCost;
+	readonly output: UsageCost;
+	readonly cacheRead: UsageCost;
+	readonly cacheWrite: UsageCost;
+}
+
+/**
  * The one canonical shape every statistics issue consumes. Parent and child
  * transcripts share this record shape; `taskId` is present only for a
  * delegated child.
@@ -71,6 +84,8 @@ export interface SessionUsageRecord {
 	readonly effort?: string;
 	readonly tokens: UsageTokens;
 	readonly cost: UsageCost;
+	/** Present when the source carries a per-component split; a transcript does. */
+	readonly costBreakdown?: UsageCostBreakdown;
 }
 
 /**

@@ -9,7 +9,7 @@ metadata:
 
 ## Activation Contract
 
-Load this skill when a planned PR may exceed **400 changed lines**, SDD forecasts `400-line budget risk: High` or `Chained PRs recommended: Yes`, an ODD feature's forecast or running authored changed-line count from work-unit commits exceeds about 400, or the user asks for chained/stacked PRs, review slices, or reviewer-load control.
+Load this skill when a planned PR may exceed **400 changed lines**, an ODD feature's forecast or running authored changed-line count from work-unit commits exceeds about 400, or the user asks for chained/stacked PRs, review slices, or reviewer-load control. The per-task advisory 400 authored-line heuristic does not itself require a PR split.
 
 ## Hard Rules
 
@@ -23,24 +23,27 @@ Load this skill when a planned PR may exceed **400 changed lines**, SDD forecast
 - In Feature Branch Chain, create a draft/no-merge tracker PR; child PR #1 targets the tracker branch, later children target the immediate parent branch.
 - Treat polluted diffs as base bugs: retarget or rebase until only the current work unit appears.
 - Do not mix chain strategies after the user chooses one.
+- Before creating branches or PRs, verify the target repository's default branch; use it as the integration base, not an assumed `main`. `stacked-to-main` is the historical strategy token even when the default branch has another name.
 
 ## Decision Gates
 
 | Condition | Action |
 |---|---|
 | PR ≤400 changed lines and focused | Keep single PR. |
-| PR >400, each slice can land independently | Use Stacked PRs to main. |
-| PR >400, feature must integrate before main | Use Feature Branch Chain with tracker. |
+| PR >400, each slice can land independently | Use Stacked PRs to the verified default branch. |
+| PR >400, feature must integrate before the default branch | Use Feature Branch Chain with tracker. |
 | Generated/vendor/migration diff cannot split cleanly | Ask maintainer for `size:exception`. |
 | No cohesive split fits the budget after one slicing pass | Stop; deliver the best split, report the overage and why it cannot shrink further, and recommend `size:exception`. |
-| SDD provides `delivery_strategy` | Follow it before apply/PR creation. |
-| ODD provides `delivery_strategy` and `chain_strategy` | Follow them before the next work-unit commit or PR creation. |
+| ODD `delivery_strategy` is `ask-on-risk` | When the budget is exceeded, ask for a chain strategy before the next work-unit commit. |
+| ODD `delivery_strategy` is `auto-chain` | Ask for a chain strategy only when missing; otherwise use the cached choice. |
+| ODD `delivery_strategy` is `single-pr` | Require `size:exception` for an over-budget single PR; do not ask for a chain strategy. |
+| ODD `delivery_strategy` is `exception-ok` | Record accepted `size:exception` for an over-budget single PR; do not ask for a chain strategy. |
 
 ## Execution Steps
 
 1. Estimate changed lines and identify independent work units.
-2. Ask for a chain strategy when none is cached and the budget is exceeded.
-3. Create branches/PRs using the chosen strategy only.
+2. Apply the delivery-strategy gate above; ask for a chain strategy only on a chaining path that needs a choice.
+3. Verify the target repository's default branch before creating branches/PRs; use the chosen strategy only.
 4. Add Chain Context to each PR without replacing the repo PR template.
 5. Verify each PR independently: CI/tests/docs/manual checks, rollback scope, and clean diff.
 6. Keep tracker PR draft/no-merge until all child PRs are reviewed and integrated.

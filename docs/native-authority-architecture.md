@@ -8,7 +8,7 @@ U8 closed the U1-U7 slimming work. New ordinary review authority is native; Pi r
 
 | Surface | Owner after #191 |
 | --- | --- |
-| Ordinary START, FINALIZE, target status, validation, SDD binding, recovery, and reconciliation | Package-local Gentle AI v2.4.0 through `gentle-ai.review-integration/v2` (migration complete, see below) |
+| Ordinary START, FINALIZE, target status, validation, recovery, and reconciliation | Package-local Gentle AI v2.4.0 through `gentle-ai.review-integration/v2` (migration complete, see below) |
 | Canonical consumer identities | Permanent Pi module `lib/review-canonical.ts` |
 | Git common-directory and repository identity | Permanent Pi module `lib/review-repository.ts` |
 | Immutable reviewer candidate views | Permanent Pi module `lib/review-candidate-view.ts` |
@@ -26,7 +26,7 @@ This document and `gentle_review`'s recovery/maintenance commands use "compact-v
 
 gentle-ai publishes two negotiated contracts side by side: `gentle-ai.review-integration/v1` (the Base64 candidate-diff transport Pi used to speak) and `gentle-ai.review-integration/v2` (immutable `base_tree`/`candidate_tree`, an ordered `changed_path_manifest`, mandatory `artifact_subjects`, and an evidence-first correction lifecycle). gentle-pi negotiates `/v2` only, with no dual-lane fallback — the pinned binary always answers exactly one exact version, so negotiating a version range would buy nothing and double the decoder surface permanently.
 
-The migration (tracked as the `migrate-review-integration-v2` OpenSpec change) landed in two stages:
+The `review-integration/v2` migration landed in two stages:
 
 - **Stage 1 (authorable without an external dependency):** the `lib/review-integration-v2.ts` decoder module, a pure evidence-first correction-lifecycle module, and a field-wise candidate-view manifest check were authored and unit-tested against the mirrored `contracts/review-integration/v2/` fixtures while `lib/native-review-cli.ts` still negotiated `/v1`.
 - **Stage 2 (gated on the pinned gentle-ai release advertising contract v2, landed against v2.2.2):** one atomic commit flipped the import, added the net-new negotiated `review repair` and `review capture-evidence` call sites, deleted `lib/review-integration-v1.ts` and its generated runtime and tests, and regenerated `runtime/*.mjs`. `contracts/review-integration/v1/**` stays on disk permanently because the `/v2` JSON schemas `$ref` into its fragments.

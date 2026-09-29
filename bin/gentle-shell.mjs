@@ -10,6 +10,7 @@ import {
 	constants as fsConstants,
 	existsSync,
 	mkdirSync,
+	mkdtempSync,
 	openSync,
 	readdirSync,
 	readFileSync,
@@ -20,7 +21,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
-import { constants as osConstants, homedir } from "node:os";
+import { constants as osConstants, homedir, tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve as resolvePath } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -53,6 +54,13 @@ import {
 	restoreJsonField,
 	shellQuote,
 } from "../runtime/gentle-shell-launcher.mjs";
+import {
+	parseResumeHandoff,
+	planResumeHint,
+	RESUME_HANDOFF_DIR_PREFIX,
+	RESUME_HANDOFF_ENV,
+	RESUME_HANDOFF_FILE,
+} from "../runtime/gentle-shell-resume-hint.mjs";
 import { GENTLE_AI_VERSION, gentleAiBinaryPath, PackageLocalGentleAiBinaryMissingError } from "../runtime/gentle-ai-binary.mjs";
 import { DEFAULT_THEME_NAME, installIsolatedTuiModeSetting } from "../scripts/install-tui-mode-setting.mjs";
 
@@ -1233,15 +1241,88 @@ async function main() {
 		baseEnv: process.env,
 	});
 
+	// Only an interactive session ends with pi's exit resume hint, which
+	// gentle-shell completes with its own line; a pi subcommand gets no handoff.
+	const resumeHandoff = args.piSubcommand === undefined ? createResumeHandoff() : undefined;
+	const childEnv = resumeHandoff ? { ...invocation.env, [RESUME_HANDOFF_ENV]: resumeHandoff.path } : invocation.env;
+
 	const launchPlan = planSpawn({ command: invocation.command, args: invocation.args, platform: process.platform });
-	const child = spawn(launchPlan.command, launchPlan.args, { stdio: "inherit", env: invocation.env, shell: launchPlan.shell });
-	for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
-		process.on(signal, () => child.kill(signal));
+	let child;
+	try {
+		child = spawn(launchPlan.command, launchPlan.args, { stdio: "inherit", env: childEnv, shell: launchPlan.shell });
+	} catch (error) {
+		resumeHandoff?.dispose();
+		throw error;
 	}
-	child.on("error", (error) => fail(`Could not start pi: ${error.message}`, 1));
-	child.on("exit", (code, signal) => {
-		process.exit(signal ? signalExitCode(signal) : (code ?? 1));
+	// Only SIGHUP means the terminal is gone. pi may survive a forwarded
+	// SIGINT and keep running, so other signals must not silence the hint.
+	let terminalHungUp = false;
+	for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+		process.on(signal, () => {
+			if (signal === "SIGHUP") terminalHungUp = true;
+			child.kill(signal);
+		});
+	}
+	child.on("error", (error) => {
+		resumeHandoff?.dispose();
+		fail(`Could not start pi: ${error.message}`, 1);
 	});
+	child.on("exit", (code, signal) => {
+		const exitCode = signal ? signalExitCode(signal) : (code ?? 1);
+		if (resumeHandoff) {
+			const hint = planResumeHint({
+				handoff: resumeHandoff.read(),
+				homeFlags: homeSelectorFlags(home),
+				stdoutIsTTY: process.stdout.isTTY === true,
+				terminalHungUp,
+				platform: process.platform,
+				color: process.stdout.hasColors?.() === true,
+			});
+			resumeHandoff.dispose();
+			// TTY writes are asynchronous on Windows: exit only once the
+			// hint is flushed, or it can be lost.
+			if (hint) {
+				// A write error (e.g. EIO on a closed terminal) must not turn
+				// pi's exit into a launcher crash.
+				process.stdout.once("error", () => process.exit(exitCode));
+				process.stdout.write(hint, () => process.exit(exitCode));
+				return;
+			}
+		}
+		process.exit(exitCode);
+	});
+}
+
+// Private temp dir for the resume-hint handoff (lib/gentle-shell-resume-hint.ts).
+// Best effort: if it cannot be created, only pi's own hint is printed.
+function createResumeHandoff() {
+	let dir;
+	try {
+		dir = mkdtempSync(join(tmpdir(), RESUME_HANDOFF_DIR_PREFIX));
+	} catch {
+		return undefined;
+	}
+	const path = join(dir, RESUME_HANDOFF_FILE);
+	return {
+		path,
+		read: () => {
+			try {
+				const text = readJsonIfExists(path);
+				return text === undefined ? undefined : parseResumeHandoff(text);
+			} catch {
+				return undefined;
+			}
+		},
+		// Never throws: it runs inside the exit handler, where an EPERM on
+		// Windows would otherwise replace pi's exit code with a crash.
+		dispose: () => {
+			try {
+				rmSync(dir, { recursive: true, force: true });
+			} catch {
+				// A leftover empty temp dir is harmless.
+			}
+		},
+	};
 }
 
 main().catch((error) => {

@@ -5,9 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { __testing } from "../extensions/gentle-ai.ts";
+import { localProfilePinPath, repoProfileDeclarationPath, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
+import { createProfile, emptyProfilesFile, profilesFilePath, writeProfilesFileSync } from "../lib/agent-profiles.ts";
+import type { AgentModelConfig } from "../lib/model-routing-authority.ts";
+import { GENTLE_AI_DEV_BINARY_ENV, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import type { NativeReviewCli, NativeReviewUnachievableLensCaptureArtifact, NativeReviewUnachievableLensCaptureRequest } from "../lib/native-review-cli.ts";
 import { REVIEW_HOST_RELAY_FAILURE, REVIEW_HOST_RELAY_PI_TIMEOUT_ENV, REVIEW_HOST_RELAY_PI_TIMEOUT_MAX_MS, REVIEW_HOST_RELAY_SUBMISSION_MISSING_MESSAGE, REVIEW_HOST_RELAY_UNAVAILABLE_MESSAGE, ReviewHostRelayError, type ReviewHostRelayRequest } from "../lib/review-host-relay.ts";
 import { decodeReviewNextTransitionV3, decodeReviewStatusV3, type ReviewArtifactSubjectV2, type ReviewCaptureSubmissionV1, type ReviewCollectInputV3, type ReviewStatusV3 } from "../lib/review-integration-v2.ts";
+import type { InProcessReviewerRegistry } from "../lib/inprocess-reviewer.ts";
 
 // One-slot capture routing: the host relay runs only when the selected
 // provider-returned collect input carries the --materialize token. Every
@@ -216,13 +221,14 @@ function nativeHarness(statuses: readonly ReviewStatusV3[], unachievableResponde
 	return harness;
 }
 
-async function runCapture(cwd: string, harness: RoutingHarness, lineageId: string, input: Record<string, unknown> = { reviewerRunAcknowledged: true }): Promise<Record<string, unknown>> {
+async function runCapture(cwd: string, harness: RoutingHarness, lineageId: string, input: Record<string, unknown> = { reviewerRunAcknowledged: true }, modelRegistry?: InProcessReviewerRegistry): Promise<Record<string, unknown>> {
 	const selected = harness.statusQueue[0]?.nextTransition?.collect?.inputs[0];
 	if (selected === undefined) throw new Error("capture test requires one current collect input");
 	return await __testing.executeReviewCaptureOperation(
 		{ lineageId, collectBinding: JSON.stringify(selected), ...input },
 		cwd,
 		harness.native,
+		undefined, undefined, undefined, false, modelRegistry,
 	) as Record<string, unknown>;
 }
 
@@ -315,7 +321,7 @@ test("Pi-authored review documents are rejected at the capture input boundary", 
 
 function groupInputs(lineageId: string, revision = SHA): ReviewCollectInputV3[] { return ["review-risk", "review-resilience", "review-readability", "review-reliability"].map((lens, order) => relayCollectInput(lineageId, lens, order, true, "provider", revision)); }
 
-async function runCaptureGroup(cwd: string, harness: RoutingHarness, lineageId: string, inputs: readonly ReviewCollectInputV3[], reviewerRunAcknowledged = true): Promise<Record<string, unknown>> { return await __testing.executeReviewCaptureGroupOperation({ lineageId, collectBindings: inputs.map((input) => JSON.stringify(input)), reviewerRunAcknowledged }, cwd, harness.native) as Record<string, unknown>; }
+async function runCaptureGroup(cwd: string, harness: RoutingHarness, lineageId: string, inputs: readonly ReviewCollectInputV3[], reviewerRunAcknowledged = true, modelRegistry?: InProcessReviewerRegistry): Promise<Record<string, unknown>> { return await __testing.executeReviewCaptureGroupOperation({ lineageId, collectBindings: inputs.map((input) => JSON.stringify(input)), reviewerRunAcknowledged }, cwd, harness.native, undefined, undefined, undefined, false, modelRegistry) as Record<string, unknown>; }
 
 function prepared(request: ReviewHostRelayRequest) { return { request, promptByteLength: 64, resultByteLength: 32 }; }
 
@@ -1004,4 +1010,217 @@ test("collect inputs without the provider-issued materialize token never reach t
 		// Existing-lane behavior for this synthetic fixture is out of scope.
 	}
 	assert.equal(relayCalls, 0);
+});
+
+// gentle-shell#1544: the relay's reviewer selection must honor the repository
+// profile pin. These tests isolate the global config home via
+// GENTLE_PI_CONFIG_HOME so the pin's precedence over (and independence from)
+// models.json is observable without touching the operator's real
+// configuration; repository(t) supplies the Git identity the pin resolver reads.
+const GLOBAL_MODELS: AgentModelConfig = {
+	"review-risk": { model: "global/risk-model" },
+	"review-resilience": { model: "global/resilience-model" },
+	"review-readability": { model: "global/readability-model" },
+	"review-reliability": { model: "global/reliability-model" },
+};
+
+const PINNED_COMPLETE: AgentModelConfig = {
+	"review-risk": { model: "pinned/risk-model" },
+	"review-resilience": { model: "pinned/resilience-model" },
+	"review-readability": { model: "pinned/readability-model" },
+	"review-reliability": { model: "pinned/reliability-model" },
+};
+
+// A pin is a whole profile, not a per-role patch: this one deliberately omits
+// three reviewer roles that models.json still configures.
+const PINNED_PARTIAL: AgentModelConfig = { "review-risk": { model: "pinned/risk-model" } };
+
+function pinFixture(t: test.TestContext): string {
+	const configHome = mkdtempSync(join(tmpdir(), "gentle-pi-relay-pin-config-"));
+	const previous = process.env.GENTLE_PI_CONFIG_HOME;
+	const previousDevBinary = process.env[GENTLE_AI_DEV_BINARY_ENV];
+	// Redirecting the config home hides the ambient dev-binary registration, and
+	// the pinned runtime refuses a symlinked .gentle-ai directory; resolve the
+	// override while the ambient config home is still visible, then carry it
+	// through the env activation path so the real relay path resolves its
+	// executable the same way it does outside this fixture.
+	const devBinary = resolveGentleAiDevBinaryOverride()?.path;
+	process.env.GENTLE_PI_CONFIG_HOME = configHome;
+	if (devBinary !== undefined) process.env[GENTLE_AI_DEV_BINARY_ENV] = devBinary;
+	t.after(() => {
+		if (previous === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previous;
+		if (previousDevBinary === undefined) delete process.env[GENTLE_AI_DEV_BINARY_ENV];
+		else process.env[GENTLE_AI_DEV_BINARY_ENV] = previousDevBinary;
+		rmSync(configHome, { recursive: true, force: true });
+	});
+	let store = emptyProfilesFile();
+	store = createProfile(store, "pinned-complete", PINNED_COMPLETE);
+	store = createProfile(store, "pinned-partial", PINNED_PARTIAL);
+	writeProfilesFileSync(profilesFilePath(configHome), store);
+	writeFileSync(join(configHome, "models.json"), `${JSON.stringify(GLOBAL_MODELS, null, 2)}\n`);
+	return repository(t);
+}
+
+function pinLocal(cwd: string, profile: string): void {
+	writeProfilePinSync(localProfilePinPath(join(cwd, ".git")), profile);
+}
+
+function pinRepoDeclaration(cwd: string, profile: string): void {
+	writeProfilePinSync(repoProfileDeclarationPath(cwd), profile);
+}
+
+test("a valid local profile pin routes a single capture's reviewer selection through the pinned profile", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const cwd = pinFixture(t);
+	pinLocal(cwd, "pinned-complete");
+	const lineageId = "relay-pin-single";
+	const harness = nativeHarness([finalizeStatus(lineageId, [relayCollectInput(lineageId, "review-risk", 0)])]);
+	const relayed: ReviewHostRelayRequest[] = [];
+	__testing.setReviewHostRelayRunnerForTesting(async (request) => {
+		relayed.push(request);
+		return { promptByteLength: 64, resultByteLength: 32, submission: '{"admission_decision":"completed"}' };
+	});
+
+	const result = await runCapture(cwd, harness, lineageId);
+
+	assert.equal(result.status, "captured");
+	assert.equal(relayed.length, 1);
+	assert.equal(relayed[0]!.routingKey, "review-risk");
+	assert.equal(relayed[0]!.selection, "pinned/risk-model", "the pin re-anchors the reviewer routing away from models.json");
+});
+
+test("a valid profile pin routes every grouped reviewer slot through the pinned profile", async (t) => {
+	t.after(() => __testing.setReviewHostRelayGroupRunnersForTesting());
+	const cwd = pinFixture(t);
+	pinLocal(cwd, "pinned-complete");
+	const lineageId = "relay-pin-group";
+	const inputs = groupInputs(lineageId);
+	// After each submission the authoritative STATUS offers exactly the
+	// unsubmitted suffix, so the loop's per-slot re-queries stay consistent.
+	const harness = nativeHarness([finalizeStatus(lineageId, inputs), finalizeStatus(lineageId, inputs), finalizeStatus(lineageId, inputs.slice(1)), finalizeStatus(lineageId, inputs.slice(2)), finalizeStatus(lineageId, inputs.slice(3))]);
+	const relayed: ReviewHostRelayRequest[] = [];
+	let submissions = 0;
+	__testing.setReviewHostRelayGroupRunnersForTesting(
+		async (requests) => { relayed.push(...requests); return requests.map(prepared); },
+		async (result) => {
+			submissions += 1;
+			return {
+				promptByteLength: result.promptByteLength,
+				resultByteLength: result.resultByteLength,
+				submission: submissions === inputs.length
+					? JSON.stringify({ schema: "gentle-ai.review-last-event-closure/v1", operation: "review/capture-result", lineage_id: lineageId, state: "approved", store_revision: SHA, action: "native last event closed the review" })
+					: "{}",
+			};
+		},
+	);
+
+	const result = await runCaptureGroup(cwd, harness, lineageId, inputs);
+
+	assert.equal(result.status, "closed");
+	assert.deepEqual(relayed.map((request) => [request.routingKey, request.selection]), [
+		["review-risk", "pinned/risk-model"],
+		["review-resilience", "pinned/resilience-model"],
+		["review-readability", "pinned/readability-model"],
+		["review-reliability", "pinned/reliability-model"],
+	]);
+});
+
+test("without a pin the relay keeps the global models.json routing", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const cwd = pinFixture(t);
+	const lineageId = "relay-pin-absent";
+	const harness = nativeHarness([finalizeStatus(lineageId, [relayCollectInput(lineageId, "review-risk", 0)])]);
+	const relayed: ReviewHostRelayRequest[] = [];
+	__testing.setReviewHostRelayRunnerForTesting(async (request) => {
+		relayed.push(request);
+		return { promptByteLength: 64, resultByteLength: 32, submission: '{"admission_decision":"completed"}' };
+	});
+
+	const result = await runCapture(cwd, harness, lineageId);
+
+	assert.equal(result.status, "captured");
+	assert.equal(relayed[0]!.selection, "global/risk-model", "no pin is exactly the pre-pin global behavior");
+});
+
+test("a repository profile declaration routes the relay when no local pin exists", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const cwd = pinFixture(t);
+	pinRepoDeclaration(cwd, "pinned-complete");
+	const lineageId = "relay-pin-repo-declaration";
+	const harness = nativeHarness([finalizeStatus(lineageId, [relayCollectInput(lineageId, "review-risk", 0)])]);
+	const relayed: ReviewHostRelayRequest[] = [];
+	__testing.setReviewHostRelayRunnerForTesting(async (request) => {
+		relayed.push(request);
+		return { promptByteLength: 64, resultByteLength: 32, submission: '{"admission_decision":"completed"}' };
+	});
+
+	const result = await runCapture(cwd, harness, lineageId);
+
+	assert.equal(result.status, "captured");
+	assert.equal(relayed[0]!.selection, "pinned/risk-model", "the committed declaration reaches the reviewer routing through the same resolver");
+});
+
+test("a stale pin naming a dropped profile falls back to the global routing", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const cwd = pinFixture(t);
+	pinLocal(cwd, "ghost-profile");
+	const lineageId = "relay-pin-stale";
+	const harness = nativeHarness([finalizeStatus(lineageId, [relayCollectInput(lineageId, "review-risk", 0)])]);
+	const relayed: ReviewHostRelayRequest[] = [];
+	__testing.setReviewHostRelayRunnerForTesting(async (request) => {
+		relayed.push(request);
+		return { promptByteLength: 64, resultByteLength: 32, submission: '{"admission_decision":"completed"}' };
+	});
+
+	const result = await runCapture(cwd, harness, lineageId);
+
+	assert.equal(result.status, "captured");
+	assert.equal(relayed[0]!.selection, "global/risk-model", "a stale chain degrades to the global routing instead of blocking");
+});
+
+test("a pinned profile missing a single-capture role sends no selection instead of borrowing models.json's role", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const cwd = pinFixture(t);
+	pinLocal(cwd, "pinned-partial");
+	const lineageId = "relay-pin-missing-single";
+	const harness = nativeHarness([finalizeStatus(lineageId, [relayCollectInput(lineageId, "review-reliability", 0)])]);
+	const relayed: ReviewHostRelayRequest[] = [];
+	__testing.setReviewHostRelayRunnerForTesting(async (request) => {
+		relayed.push(request);
+		return { promptByteLength: 64, resultByteLength: 32, submission: '{"admission_decision":"completed"}' };
+	});
+
+	await runCapture(cwd, harness, lineageId);
+
+	assert.equal(relayed.length, 1);
+	assert.equal(relayed[0]!.selection, undefined, "whole-profile precedence: models.json must not fill the pinned profile's gaps");
+});
+
+test("a pinned profile missing a required group role is refused typed before any reviewer launch", async (t) => {
+	const cwd = pinFixture(t);
+	pinLocal(cwd, "pinned-partial");
+	const lineageId = "relay-pin-missing-group";
+	// One group slot whose role the pin omits: models.json still configures it,
+	// so a per-role fallback would launch instead of refusing typed.
+	const inputs = [relayCollectInput(lineageId, "review-resilience", 0)];
+	const harness = nativeHarness([finalizeStatus(lineageId, inputs)]);
+	// Instrument the real model-start/auth boundary without bypassing the live
+	// group runner: a reviewer model can only start after resolving through
+	// registry.find and authenticating through registry.getApiKeyAndHeaders, so
+	// counting those seams proves no model resolution, auth, or completion ran.
+	let modelLookups = 0, authAttempts = 0;
+	const registry: InProcessReviewerRegistry = {
+		find: () => { modelLookups += 1; return undefined; },
+		getApiKeyAndHeaders: async () => { authAttempts += 1; return { ok: true }; },
+	};
+
+	const result = await runCaptureGroup(cwd, harness, lineageId, inputs, true, registry);
+
+	assert.equal(result.outcome, "pi-host-relay-transport-failure");
+	const failure = result.failure as { kind?: string } | undefined;
+	assert.equal(failure?.kind, "reviewer-config-invalid");
+	assert.match(String(result.reason), /no model is configured for review-resilience/, "whole-profile precedence: models.json must not fill the pinned profile's gaps");
+	assert.equal(modelLookups, 0, "the typed refusal fires before any model resolution");
+	assert.equal(authAttempts, 0, "the typed refusal fires before any provider auth");
 });

@@ -402,7 +402,7 @@ async function safeRemoveDirectory(path) {
 	try {
 		const details = await lstat(path);
 		if (!details.isDirectory() || details.isSymbolicLink()) throw new Error("not a real directory");
-		await rm(path, { recursive: true, force: true });
+		await rm(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 	} catch (error) { if (!(error && typeof error === "object" && error.code === "ENOENT")) throw error; }
 }
 

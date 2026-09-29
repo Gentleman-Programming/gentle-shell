@@ -217,7 +217,7 @@ test("activation: spawns the telemetry trigger exactly once for a primary sessio
 	assert.equal(call.options.stdio, "ignore");
 });
 
-test("activation: never spawns for a named or SDD agent event", async (t) => {
+test("activation: never spawns for named agents, even with legacy prompt text", async (t) => {
 	t.after(() => __testing.resetTelemetryTriggerGuardForTesting());
 	__testing.resetTelemetryTriggerGuardForTesting();
 	const fake = fakeSpawn();
@@ -230,9 +230,9 @@ test("activation: never spawns for a named or SDD agent event", async (t) => {
 	const ctx = fakeContext("/work/project", notifications);
 
 	await beforeAgentStart!({ agentName: "review-risk", systemPrompt: "" }, ctx);
-	await beforeAgentStart!({ systemPrompt: "SDD apply executor" }, ctx);
+	await beforeAgentStart!({ agentName: "gentle-ai-worker", systemPrompt: "SDD apply executor" }, ctx);
 
-	assert.equal(fake.calls.length, 0, "named/SDD agents must never trigger the nudge");
+	assert.equal(fake.calls.length, 0, "named agents must never trigger the nudge");
 });
 
 test("activation: a missing binary or spawn error never affects activation", async (t) => {
@@ -247,10 +247,13 @@ test("activation: a missing binary or spawn error never affects activation", asy
 	const notifications: Array<{ message: string; severity: string }> = [];
 	const ctx = fakeContext("/work/project", notifications);
 
-	// Must resolve cleanly and produce the ordinary orchestrator prompt fields,
-	// never throw or notify about the missing binary.
-	const outcome = await beforeAgentStart!({ systemPrompt: "base" }, ctx);
-	assert.equal(typeof outcome, "object");
+	// Must resolve cleanly and produce the ordinary orchestrator prompt fields
+	// in appendSystemPrompt (never a returned systemPrompt), and never throw
+	// or notify about the missing binary.
+	const event = { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" } };
+	const outcome = await beforeAgentStart!(event, ctx);
+	assert.equal(outcome, undefined, "the handler must not return a replacement systemPrompt");
+	assert.match(event.systemPromptOptions.appendSystemPrompt, /el Gentleman/);
 	assert.equal(notifications.length, 0);
 });
 

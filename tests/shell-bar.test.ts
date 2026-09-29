@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import { DEFAULT_VISUAL_SETTINGS } from "../lib/visual-customization-policy.ts";
 import {
 	buildShellHeaderModel,
 	formatCost,
@@ -15,6 +16,7 @@ import {
 	type ShellBarModel,
 	type ShellBarTheme,
 } from "../lib/shell-bar.ts";
+import { REVIEW_SCOPE_UNAVAILABLE } from "../lib/review-sidebar-state.ts";
 
 // The Gentle Shell bar replaces pi's three-line footer with one line of
 // segments. Rendering is pure so it can be verified without a TUI.
@@ -55,6 +57,14 @@ function model(overrides: Partial<ShellBarModel> = {}): ShellBarModel {
 	};
 }
 
+test("visual visibility hides only selected optional status segments", () => {
+	const settings = { ...DEFAULT_VISUAL_SETTINGS, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility, changes: false, modelDetails: false, usageCost: false } };
+	const data = model({ changes: { files: 2, added: 1, deleted: 1 } });
+	assert.doesNotMatch(renderShellBar(data, plainTheme, 160, settings).join(""), /gpt-5\.5|ctx|\$9\.49/);
+	assert.doesNotMatch(renderShellSidebarBar(data, plainTheme, 50, settings).join(""), /Changes|2 files/);
+	assert.doesNotMatch(renderShellHeaderBar(buildShellHeaderModel(data), plainTheme, 160, undefined, settings).text, /gpt-5\.5|ctx|\$9\.49|usage/);
+});
+
 test("Status title stays plain without an active review", () => {
 	const lines = renderShellSidebarBar(model(), plainTheme, 60);
 	assert.match(lines[0], /^╭─ ✿ Status ─+╮$/);
@@ -62,14 +72,31 @@ test("Status title stays plain without an active review", () => {
 });
 
 test("Status title stays plain above the review lifecycle block", () => {
-	const lines = renderShellSidebarBar(model({ review: { state: "reviewing", scope: "first.ts +2" } }), plainTheme, 60);
+	const lines = renderShellSidebarBar(model({ review: { state: "reviewing", scope: "first.ts +2 files" } }), plainTheme, 60);
 	assert.match(lines[0], /^╭─ ✿ Status ─+╮$/);
-	assert.match(lines.slice(1).join("\n"), /🌹 RDD[\s\S]*Reviewing[\s\S]*first\.ts \+2/);
+	assert.match(lines.slice(1).join("\n"), /🌹 RDD[\s\S]*Reviewers running…[\s\S]*first\.ts \+2 files/);
+});
+
+test("review lifecycle block omits the scope line when the candidate scope is unknown", () => {
+	const known = renderShellSidebarBar(model({ review: { state: "checking", scope: "first.ts" } }), plainTheme, 60);
+	const unknown = renderShellSidebarBar(model({ review: { state: "checking", scope: REVIEW_SCOPE_UNAVAILABLE } }), plainTheme, 60);
+	const text = unknown.join("\n");
+	assert.match(text, /🌹 RDD[\s\S]*Updating…/);
+	assert.doesNotMatch(text, /Candidate scope unavailable/);
+	assert.equal(unknown.length, known.length - 1);
+});
+
+test("rdd visibility hides only the review lifecycle block", () => {
+	const data = model({ review: { state: "reviewing", scope: "first.ts +2" }, changes: { files: 2, added: 1, deleted: 1 } });
+	assert.match(renderShellSidebarBar(data, plainTheme, 60, DEFAULT_VISUAL_SETTINGS).join("\n"), /🌹 RDD[\s\S]*Reviewers running…/);
+	const hidden = renderShellSidebarBar(data, plainTheme, 60, { ...DEFAULT_VISUAL_SETTINGS, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility, rdd: false } }).join("\n");
+	assert.doesNotMatch(hidden, /🌹 RDD|Reviewers running|first\.ts \+2 files/);
+	assert.match(hidden, /Changes[\s\S]*2 files/);
 });
 
 test("Status and review lifecycle block respect terminal width", () => {
 	for (const width of [8, 12, 16, 20, 32, 60]) {
-		for (const review of [undefined, { state: "reviewing" as const, scope: "first.ts +2" }]) {
+		for (const review of [undefined, { state: "reviewing" as const, scope: "first.ts +2 files" }, { state: "approved" as const, scope: REVIEW_SCOPE_UNAVAILABLE }]) {
 			const lines = renderShellSidebarBar(model({ review }), plainTheme, width);
 			for (const line of lines) assert.ok(visibleWidth(line) <= width, `${width}: ${line}`);
 			if (width >= 20) assert.match(lines[0], /^╭─ ✿ Status ─+╮$/);

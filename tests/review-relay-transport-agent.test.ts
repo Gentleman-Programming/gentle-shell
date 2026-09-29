@@ -560,7 +560,10 @@ test("capture group surfaces live progress via onUpdate across parallel reviewer
 			onSlotProgress?.(1, { phase: "prepared", lens: "review-resilience" });
 			return requests.map(prepared);
 		},
-		async (result: { promptByteLength: number; resultByteLength: number }) => ({ promptByteLength: result.promptByteLength, resultByteLength: result.resultByteLength, submission: "{}" }),
+		async (result: { promptByteLength: number; resultByteLength: number }, onProgress?: (progress: { phase: "submitting"; lens?: string; role?: string }) => void) => {
+			onProgress?.({ phase: "submitting" });
+			return { promptByteLength: result.promptByteLength, resultByteLength: result.resultByteLength, submission: "{}" };
+		},
 	);
 
 	await __testing.executeReviewCaptureGroupOperation(

@@ -1066,3 +1066,21 @@ test("relay group runner emits indexed progress across parallel reviewers", asyn
 	assert.deepEqual(slot0Phases, ["materializing", "reviewing", "prepared"]);
 	assert.deepEqual(slot1Phases, ["materializing", "reviewing", "prepared"]);
 });
+
+test("relay progress callback emits reviewing progress with initial elapsedMs and periodic updates", async (t) => {
+	const fixture = harness(t);
+	const reviewingEvents: Array<{ phase: string; elapsedMs?: number }> = [];
+	await prepareReviewHostRelaySlot(
+		relayRequest(fixture),
+		textReviewer(REVIEWER_TEXT).runReviewer,
+		(progress) => {
+			if (progress.phase === "reviewing") {
+				reviewingEvents.push({ phase: progress.phase, elapsedMs: progress.elapsedMs });
+			}
+		},
+	);
+	assert.ok(reviewingEvents.length >= 1);
+	assert.equal(reviewingEvents[0]?.phase, "reviewing");
+	assert.equal(reviewingEvents[0]?.elapsedMs, 0);
+});
+

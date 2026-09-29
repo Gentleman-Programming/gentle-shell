@@ -7610,10 +7610,6 @@ async function executeReviewCaptureGroupOperation(
 			: { ...captureGroupRejected(error instanceof Error ? error.message : String(error)), outcome: "pi-host-relay-reviewer-group-failed" };
 	}
 	for (let index = 0; index < prepared.length; index += 1) {
-		if (slotStates[index]) {
-			slotStates[index]!.phase = "submitting";
-			emitGroupProgress();
-		}
 		let current: SelectedReviewCapture | Record<string, unknown>;
 		try {
 			const negotiated = await freshStatus();
@@ -7625,7 +7621,13 @@ async function executeReviewCaptureGroupOperation(
 		}
 		if (!isSelectedReviewCapture(current)) return { ...captureGroupRejected(String(current.reason ?? "current STATUS rejected a reviewer binding")), ...reviewHostRelayGroupProgress(group.slots, prepared, index) };
 		try {
-			const result = await activeReviewHostRelaySubmissionRunner(prepared[index]!);
+			const result = await activeReviewHostRelaySubmissionRunner(prepared[index]!, (progress) => {
+				if (progress.phase === "submitting" && slotStates[index]) {
+					slotStates[index]!.phase = progress.phase;
+					slotStates[index]!.elapsedMs = progress.elapsedMs;
+					emitGroupProgress();
+				}
+			});
 			if (slotStates[index]) {
 				slotStates[index]!.phase = "submitted";
 				emitGroupProgress();

@@ -448,6 +448,12 @@ export type ReviewHostRelayPreparationRunner = (
 ) => Promise<ReviewHostRelayPreparedResult>;
 export type ReviewHostRelaySubmissionRunner = (prepared: ReviewHostRelayPreparedResult, onProgress?: ReviewHostRelayProgressCallback) => Promise<ReviewHostRelayResult>;
 
+/**
+ * Formats a single review relay slot's progress into a concise user-facing string.
+ *
+ * @param progress - Current progress details for the slot.
+ * @returns Human-readable progress description with optional elapsed time.
+ */
 export function formatReviewHostRelaySlotProgress(progress: ReviewHostRelaySlotProgress): string {
 	const label = progress.lens ?? progress.role ?? "reviewer";
 	const elapsed = progress.elapsedMs !== undefined ? ` (${Math.round(progress.elapsedMs / 1000)}s)` : "";
@@ -467,6 +473,12 @@ export function formatReviewHostRelaySlotProgress(progress: ReviewHostRelaySlotP
 	}
 }
 
+/**
+ * Formats progress across multiple review relay slots into a multi-line status summary.
+ *
+ * @param slots - Array of progress objects for each slot in the group.
+ * @returns Formatted summary listing each slot's label and current phase.
+ */
 export function formatReviewHostRelayGroupProgress(
 	slots: readonly { lens?: string; role?: string; phase: ReviewRelaySlotPhase; elapsedMs?: number }[],
 ): string {
@@ -797,7 +809,20 @@ export async function prepareReviewHostRelaySlot(
 		phase: "reviewing",
 		lens,
 		role: preparedRequest.routingKey,
+		elapsedMs: 0,
 	});
+	let progressInterval: ReturnType<typeof setInterval> | undefined;
+	if (onProgress !== undefined) {
+		progressInterval = setInterval(() => {
+			onProgress({
+				phase: "reviewing",
+				lens,
+				role: preparedRequest.routingKey,
+				elapsedMs: Date.now() - startedAt,
+			});
+		}, 1000);
+		try { progressInterval.unref(); } catch {}
+	}
 	let outcome: InProcessReviewerOutcome;
 	try {
 		outcome = await runReviewer(
@@ -819,6 +844,8 @@ export async function prepareReviewHostRelaySlot(
 			`the reviewer completion could not run: ${error instanceof Error ? error.message : String(error)}`,
 			{ elapsedMs: Date.now() - startedAt, timeoutMs: piTimeoutMs },
 		);
+	} finally {
+		if (progressInterval !== undefined) clearInterval(progressInterval);
 	}
 	if (outcome.kind === "refused") {
 		throw relayReviewerRefusalError(outcome, { elapsedMs: Date.now() - startedAt, timeoutMs: piTimeoutMs }, promptBytes.length);

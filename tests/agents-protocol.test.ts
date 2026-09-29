@@ -12,6 +12,7 @@ import {
 	THREAD_ITEM,
 	type TaskRecord,
 } from "../lib/agents-protocol.ts";
+import { ABSENT_COST, reportedCost } from "../lib/session-usage.ts";
 
 // Gentle Agents protocol: the child pi process streams RPC events; the host
 // normalizes them into small typed deltas, applies them to an append-only
@@ -62,7 +63,17 @@ test("normalizeRpcEvent maps pi RPC events to task deltas and ignores the rest",
 	assert.deepEqual(normalizeRpcEvent({ type: "extension_ui_request", id: "u2", method: "setStatus", statusKey: "mcp" }), [], "fire-and-forget UI requests never count as questions");
 	assert.deepEqual(normalizeRpcEvent({ type: "extension_ui_request", id: "u3", method: "notify", message: "hi" }), []);
 	assert.deepEqual(normalizeRpcEvent({ type: "auto_retry_start", attempt: 1, maxAttempts: 3 }), [{ type: TASK_EVENT.NOTE, text: "retrying (1/3)" }]);
-	assert.deepEqual(normalizeRpcEvent({ type: "message_end", message: { role: "assistant", usage: { totalTokens: 9621, cost: { total: 0.0193 } } } }), [{ type: TASK_EVENT.USAGE, tokens: 9621, cost: 0.0193 }]);
+	assert.deepEqual(normalizeRpcEvent({ type: "message_end", message: { role: "assistant", usage: { totalTokens: 9621, cost: { total: 0.0193 } } } }), [{ type: TASK_EVENT.USAGE, tokens: 9621, cost: reportedCost(0.0193) }]);
+	assert.deepEqual(
+		normalizeRpcEvent({ type: "message_end", message: { role: "assistant", usage: { totalTokens: 10, cost: { total: 0 } } } }),
+		[{ type: TASK_EVENT.USAGE, tokens: 10, cost: reportedCost(0) }],
+		"a reported zero stays reported",
+	);
+	assert.deepEqual(
+		normalizeRpcEvent({ type: "message_end", message: { role: "assistant", usage: { totalTokens: 10 } } }),
+		[{ type: TASK_EVENT.USAGE, tokens: 10, cost: ABSENT_COST }],
+		"an absent cost is not coerced to zero",
+	);
 	assert.deepEqual(normalizeRpcEvent({ type: "message_end", message: { role: "user" } }), []);
 	assert.deepEqual(normalizeRpcEvent({ type: "queue_update" }), []);
 	assert.deepEqual(normalizeRpcEvent("garbage"), []);
@@ -113,7 +124,7 @@ test("response observations are opt-in, finalized, field-specific and content-fr
 		errorMessage: "private error", responseId: "private id", modelVersion: "invented",
 		usage: { input: 12, output: 4, cacheRead: 0, cacheWrite: -1, totalTokens: 16, reasoning: 2 } };
 	const raw = { type: "message_end", message };
-	assert.deepEqual(normalizeRpcEvent(raw), [{ type: TASK_EVENT.USAGE, tokens: 16, cost: 0 }]);
+	assert.deepEqual(normalizeRpcEvent(raw), [{ type: TASK_EVENT.USAGE, tokens: 16, cost: ABSENT_COST }]);
 	const events = normalizeRpcEvent(raw, { observeResponses: true });
 	assert.equal(events.length, 2);
 	const observation = events.find((event) => event.type === "response_observation")?.observation;
@@ -228,11 +239,24 @@ test("TaskStore.apply moves the task to waiting on ask, back to running on any l
 	store.apply("a", { type: TASK_EVENT.TURN_END }, 3);
 	store.apply("a", { type: TASK_EVENT.TURN_END }, 4);
 	assert.equal(store.get("a")?.turns, 2);
-	store.apply("a", { type: TASK_EVENT.USAGE, tokens: 100, cost: 0.5 }, 4);
-	store.apply("a", { type: TASK_EVENT.USAGE, tokens: 50, cost: 0.25 }, 4);
+	store.apply("a", { type: TASK_EVENT.USAGE, tokens: 100, cost: reportedCost(0.5) }, 4);
+	store.apply("a", { type: TASK_EVENT.USAGE, tokens: 50, cost: reportedCost(0.25) }, 4);
 	assert.equal(store.get("a")?.tokens, 150);
 	assert.equal(store.get("a")?.cost, 0.75);
+	assert.notEqual(store.get("a")?.costComplete, false, "all components reported stays complete");
 	store.apply("a", { type: TASK_EVENT.AGENT_END, text: "final answer", outcome: "success" }, 5);
 	assert.equal(store.get("a")?.result, "final answer");
 	assert.equal(store.get("a")?.status, TASK_STATUS.RUNNING, "agent_end alone does not finish: the runner decides");
+});
+
+test("an absent usage cost keeps the task sum and marks it partial for good", () => {
+	const store = new TaskStore();
+	store.add(record({ id: "a", status: TASK_STATUS.RUNNING }));
+	store.apply("a", { type: TASK_EVENT.USAGE, tokens: 10, cost: reportedCost(0.5) }, 1);
+	store.apply("a", { type: TASK_EVENT.USAGE, tokens: 5, cost: ABSENT_COST }, 2);
+	assert.equal(store.get("a")?.cost, 0.5, "absence contributes nothing to the known sum");
+	assert.equal(store.get("a")?.costComplete, false);
+	store.apply("a", { type: TASK_EVENT.USAGE, tokens: 5, cost: reportedCost(0.25) }, 3);
+	assert.equal(store.get("a")?.cost, 0.75);
+	assert.equal(store.get("a")?.costComplete, false, "a partial total never becomes complete again");
 });

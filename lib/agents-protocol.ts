@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
+import { accumulateTaskCost, childUsageCost, type UsageCost } from "./session-usage.ts";
 
 // Gentle Agents protocol. A child pi process streams RPC events; the host
 // turns each one into a small typed delta, applies it to an append-only,
@@ -69,7 +70,7 @@ export interface AgentSettledEvent { type: typeof TASK_EVENT.AGENT_SETTLED }
 export interface ErrorEvent { type: typeof TASK_EVENT.ERROR; message: string }
 export interface AskEvent { type: typeof TASK_EVENT.ASK; request: AskRequest }
 export interface NoteEvent { type: typeof TASK_EVENT.NOTE; text: string }
-export interface UsageEvent { type: typeof TASK_EVENT.USAGE; tokens: number; cost: number }
+export interface UsageEvent { type: typeof TASK_EVENT.USAGE; tokens: number; cost: UsageCost }
 
 export type ChildUnavailable = Readonly<{ state: "unavailable" }>;
 export type ChildMetadata = Readonly<{ state: "observed"; value: string }> | ChildUnavailable;
@@ -137,6 +138,8 @@ export interface TaskRecord {
 	toolCalls: number;
 	tokens: number;
 	cost: number;
+	/** False once any usage event reported no cost; absent means complete (legacy records). */
+	costComplete?: boolean;
 }
 
 export interface TaskSummary {
@@ -314,8 +317,7 @@ export function normalizeRpcEvent(raw: unknown, options: { observeResponses?: bo
 			const usage = message?.role === "assistant" ? (message.usage as Raw | undefined) : undefined;
 			const events: TaskEvent[] = [];
 			if (usage) {
-				const cost = usage.cost as Raw | undefined;
-				events.push({ type: TASK_EVENT.USAGE, tokens: Number(usage.totalTokens ?? 0) || 0, cost: Number(cost?.total ?? 0) || 0 });
+				events.push({ type: TASK_EVENT.USAGE, tokens: Number(usage.totalTokens ?? 0) || 0, cost: childUsageCost(usage) });
 			}
 			if (options.observeResponses === true && message?.role === "assistant") {
 				const observation = childResponse(message);
@@ -437,7 +439,7 @@ function recordPatch(task: TaskRecord, event: TaskEvent): Partial<TaskRecord> {
 		case TASK_EVENT.TEXT:
 			return { ...resumed, lastStep: task.lastStep === "queued" || task.lastStep === "starting" ? "writing" : task.lastStep };
 		case TASK_EVENT.USAGE:
-			return { ...resumed, tokens: task.tokens + event.tokens, cost: task.cost + event.cost };
+			return { ...resumed, tokens: task.tokens + event.tokens, ...accumulateTaskCost(task, event.cost) };
 		default:
 			return resumed;
 	}

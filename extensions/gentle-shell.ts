@@ -8,6 +8,7 @@ import { resolveProfilePin } from "../lib/agent-profile-pin.ts";
 import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { buildShellHeaderModel, renderShellBar, renderShellBottomOnlyBar, renderShellHeaderBar, renderShellHeaderRule, renderShellSidebarBar, shellEnabled, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
+import { sessionCostFromEntries, sessionCostUsd, type SessionCostTotal } from "../lib/session-usage.ts";
 import { CHANGE_STATUS, RootBranchLabels, renderChangesWidget, type ChangedFile, type ChangesModel, type GitRunner, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver, type WorktreeIdentity } from "../lib/session-worktree-registry.ts";
@@ -226,28 +227,17 @@ function ambientDevBinary(): DevBinaryNotice | undefined {
 
 const defaultShellDeps: Omit<ShellDeps, "activeProfile"> = { fetch: (input, init) => globalThis.fetch(input, init), now: () => Date.now(), devBinary: ambientDevBinary, resolveWorktree: resolveSessionWorktree, gitRunner: shellGitRunner };
 
-interface AssistantUsageEntry {
-	type: string;
-	message?: {
-		role?: string;
-		usage?: {
-			cost?: { total?: number };
-		};
-	};
-}
-
 function shortenHome(cwd: string, home: string | undefined): string {
 	if (home && cwd.startsWith(home)) return `~${cwd.slice(home.length)}`;
 	return cwd;
 }
 
-function sessionCost(ctx: ExtensionContext): number {
-	let total = 0;
-	for (const entry of ctx.sessionManager.getEntries() as AssistantUsageEntry[]) {
-		if (entry.type !== "message" || entry.message?.role !== "assistant") continue;
-		total += entry.message.usage?.cost?.total ?? 0;
-	}
-	return total;
+// The session's own cost, carrying provenance so an unreported component is
+// never indistinguishable from a reported $0. The fold lives in the pure
+// session-usage module; this stays a thin adapter over the public session
+// manager so a future statistics plugin can apply the same rule.
+export function sessionCost(ctx: ExtensionContext): SessionCostTotal {
+	return sessionCostFromEntries(ctx.sessionManager.getEntries());
 }
 
 export function buildShellBarModel(
@@ -272,7 +262,7 @@ export function buildShellBarModel(
 		effort: model?.reasoning ? pi.getThinkingLevel() : undefined,
 		contextPercent: usage?.percent ?? null,
 		contextWindow: usage?.contextWindow ?? model?.contextWindow ?? 0,
-		costTotal: sessionCost(ctx),
+		costTotal: sessionCostUsd(sessionCost(ctx)),
 		subscription: model ? ctx.modelRegistry.isUsingOAuth(model) : false,
 		usage: options.usage,
 		statuses,

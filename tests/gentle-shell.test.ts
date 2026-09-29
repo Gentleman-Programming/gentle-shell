@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test, { after } from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
 import { CURSOR_MARKER, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
+import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, sessionCost, GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { CODEX_USAGE_URL, NAN_QUOTA_URL, USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA } from "../lib/shell-usage.ts";
 import { createVimEditorAdapter } from "../lib/vim-editor-adapter.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
@@ -252,6 +252,29 @@ test("buildShellBarModel reads session, model, and footer data", () => {
 	assert.equal(built.costTotal, 0.75);
 	assert.equal(built.subscription, true);
 	assert.deepEqual(built.statuses, ["MCP: 3 servers enabled"]);
+});
+
+test("sessionCost reports provenance: a reported zero stays reported, an absent cost stays absent", () => {
+	const { ctx } = fakeContext({
+		entries: [
+			assistantEntry({ input: 1000, output: 200, cost: 0.5 }),
+			{ type: "message", message: { role: "assistant", usage: { cost: { total: 0 } } } },
+			{ type: "message", message: { role: "assistant", usage: {} } },
+			assistantEntry({ input: 500, output: 100, cost: 0.25 }),
+		],
+	});
+	const total = sessionCost(ctx);
+	assert.equal(total.nanoUsd, 750_000_000, "present values sum exactly");
+	assert.equal(total.complete, false);
+	assert.equal(total.absent, 1, "only the truly absent component counts as absent");
+});
+
+test("sessionCost keeps a total complete when every component is reported, including a reported zero", () => {
+	const { ctx } = fakeContext({ entries: [assistantEntry({ input: 1000, output: 200, cost: 0.5 }), { type: "message", message: { role: "assistant", usage: { cost: { total: 0 } } } }] });
+	const total = sessionCost(ctx);
+	assert.equal(total.nanoUsd, 500_000_000);
+	assert.equal(total.complete, true);
+	assert.equal(total.absent, 0);
 });
 
 test("buildShellBarModel shortens the home directory and hides effort for non-reasoning models", () => {

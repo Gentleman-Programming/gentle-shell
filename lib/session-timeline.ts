@@ -295,9 +295,12 @@ export function buildTimeline(events: readonly TimelineEvent[], options: Timelin
 				let previous = event.timestamp;
 				for (const result of results) {
 					const call = event.toolCalls.find((candidate) => candidate.id === result.toolCallId);
+					// A complete whitelisted timing is authoritative; a start-only entry
+					// (the tool never recorded an end) is ignored, never a half override.
 					const override = whitelisted.get(result.toolCallId);
-					const start = override?.startedAt ?? previous;
-					const end = override?.endedAt ?? result.timestamp;
+					const authoritative = override?.endedAt !== undefined ? override : undefined;
+					const start = authoritative?.startedAt ?? previous;
+					const end = authoritative?.endedAt ?? result.timestamp;
 					segments.push({
 						kind: "tool",
 						start,
@@ -307,7 +310,7 @@ export function buildTimeline(events: readonly TimelineEvent[], options: Timelin
 						callId: result.toolCallId,
 						...(call?.command !== undefined ? { command: call.command } : {}),
 						...(parallel ? { parallel: true } : {}),
-						...(override?.endedAt !== undefined ? { whitelisted: true } : {}),
+						...(authoritative ? { whitelisted: true } : {}),
 					});
 					previous = result.timestamp;
 				}

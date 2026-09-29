@@ -161,6 +161,16 @@ test("a whitelisted parent-side timing overrides the derived tool duration and i
 	const derived = buildTimeline(events.slice(0, 2));
 	assert.equal(derived.segments.find((segment) => segment.kind === "tool")!.durationMs, 4000);
 	assert.equal(derived.segments.find((segment) => segment.kind === "tool")!.whitelisted, undefined);
+
+	// A start-only entry (the tool never recorded an end) is ignored, not a half override.
+	const startOnly = buildTimeline([
+		{ kind: "assistant", timestamp: 1000, model: "m", toolCalls: [{ id: "c1", name: "bash", command: "git status" }] },
+		{ kind: "toolResult", timestamp: 5000, toolName: "bash", toolCallId: "c1", isError: false },
+		{ kind: "timing", toolCallId: "c1", startedAt: 2000 },
+	]);
+	const startOnlyTool = startOnly.segments.find((segment) => segment.kind === "tool");
+	assert.equal(startOnlyTool!.durationMs, 4000);
+	assert.equal(startOnlyTool!.whitelisted, undefined);
 });
 
 test("malformed and partial lines are counted without changing the timeline", async () => {

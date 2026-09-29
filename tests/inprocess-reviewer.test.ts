@@ -613,6 +613,53 @@ test("forwards no apiKey to deps.complete when the registry resolves auth withou
 	assert.deepEqual(options!.headers, { ...HEADER_ONLY_AUTH_HEADERS }, "the registry's own auth headers are the credential on this path too");
 });
 
+// Regression for gentle-shell#1375: the registry's auth resolution can carry
+// `env` (e.g. `{ AWS_PROFILE, AWS_REGION }` for amazon-bedrock, sourced from
+// this pi installation's auth.json) alongside or instead of `apiKey`/`headers`.
+// pi-ai's Bedrock adapter resolves the AWS profile and region from
+// `options.env`, not from an ambient `process.env`, so dropping this field
+// silently reroutes the reviewer's credentials to the AWS SDK default
+// credential chain instead of the configured named profile.
+const REGISTRY_ENV = { AWS_PROFILE: "claude", AWS_REGION: "eu-west-1" } as const;
+const envOnlyAuth = async () => ({ ok: true, env: { ...REGISTRY_ENV } }) as const;
+
+test("forwards the registry's env to the composed provider", async () => {
+	const { getProvider, calls } = capturingProvider(assistantText("ok"));
+	const outcome = await runInProcessReviewer(baseRequest(), {
+		registry: { ...fakeRegistry([fakeModel()], envOnlyAuth), getProvider },
+		complete: unreachableComplete,
+	});
+	expectText(outcome);
+	assert.equal(calls.length, 1, "the composed provider must receive exactly one dispatch");
+	const options = calls[0]!.options;
+	assert.notEqual(options, undefined, "options must reach the composed provider");
+	assert.deepEqual(options!.env, { ...REGISTRY_ENV }, "the registry's env must reach the provider so it can resolve AWS_PROFILE/AWS_REGION");
+});
+
+test("forwards the registry's env to deps.complete", async () => {
+	const { complete, calls } = capturingComplete(assistantText("ok"));
+	const outcome = await runInProcessReviewer(baseRequest(), {
+		registry: fakeRegistry([fakeModel()], envOnlyAuth),
+		complete,
+	});
+	expectText(outcome);
+	assert.equal(calls.length, 1, "the fallback path must receive exactly one dispatch");
+	const options = calls[0]!.options;
+	assert.notEqual(options, undefined, "options must reach deps.complete");
+	assert.deepEqual(options!.env, { ...REGISTRY_ENV }, "the registry's env must reach deps.complete too");
+});
+
+test("omits env from the forwarded options when the registry resolves auth without one", async () => {
+	const { complete, calls } = capturingComplete(assistantText("ok"));
+	const outcome = await runInProcessReviewer(baseRequest(), {
+		registry: fakeRegistry([fakeModel()]),
+		complete,
+	});
+	expectText(outcome);
+	const options = calls[0]!.options;
+	assert.equal("env" in options!, false, "the module must not invent an env the registry did not resolve");
+});
+
 test("the no-apiKey options shape is identical on the composed-provider and deps.complete paths", async () => {
 	const { getProvider, calls: providerCalls } = capturingProvider(assistantText("ok"));
 	const { complete, calls: completeCalls } = capturingComplete(assistantText("ok"));

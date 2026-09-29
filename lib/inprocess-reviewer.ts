@@ -20,7 +20,7 @@
 // this into the lens relay (lib/review-host-relay.ts); P3 wires the provider
 // role vectors. This file stays a pure completion, never invoked from here.
 
-import type { Api, AssistantMessage, Context, Model, ProviderHeaders, SimpleStreamOptions, TextContent, ThinkingLevel } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Context, Model, ProviderEnv, ProviderHeaders, SimpleStreamOptions, TextContent, ThinkingLevel } from "@earendil-works/pi-ai";
 import type { completeSimple } from "@earendil-works/pi-ai/compat";
 import { SAFE_MODEL_ID_PATTERN } from "./model-routing-authority.ts";
 
@@ -48,7 +48,7 @@ export interface InProcessReviewerProvider {
 export interface InProcessReviewerRegistry {
 	find(provider: string, modelId: string): Model<Api> | undefined;
 	getApiKeyAndHeaders(model: Model<Api>): Promise<
-		| { readonly ok: true; readonly apiKey?: string; readonly headers?: ProviderHeaders }
+		| { readonly ok: true; readonly apiKey?: string; readonly headers?: ProviderHeaders; readonly env?: ProviderEnv }
 		| { readonly ok: false; readonly error: string }
 	>;
 	getProvider?(provider: string): InProcessReviewerProvider | undefined;
@@ -271,6 +271,13 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 		timeoutMs: request.timeoutMs,
 		...(auth.apiKey === undefined ? {} : { apiKey: auth.apiKey }),
 		...(auth.headers === undefined && attributionHeaders === undefined ? {} : { headers: attributionHeaders === undefined ? auth.headers : { ...attributionHeaders, ...auth.headers } }),
+		// Provider-scoped env (e.g. amazon-bedrock's AWS_PROFILE/AWS_REGION, read
+		// from this pi installation's auth.json) must reach the same provider
+		// dispatch that receives apiKey/headers: pi-ai's Bedrock adapter resolves
+		// the AWS profile and region from `options.env`, never from an ambient
+		// `process.env`. Dropping this field silently reroutes the reviewer's
+		// credentials to the AWS SDK default credential chain (gentle-shell#1375).
+		...(auth.env === undefined ? {} : { env: auth.env }),
 		...(reasoning.reasoning === undefined ? {} : { reasoning: reasoning.reasoning }),
 	};
 

@@ -821,3 +821,33 @@ test("shares concurrent close through delayed final cleanup", async (t) => {
 	await assert.rejects(lstat(endpoint));
 	await rejected(instance.registry.resolve("recipient"), "not_found");
 });
+
+async function createZombieSession(transport: SessionPresenceRegistry, id: string) {
+	const record = await transport.record(id);
+	const script = `const net = require("net"); const server = net.createServer(); server.listen(${JSON.stringify(record.endpoint)}, () => process.kill(process.pid, "SIGKILL"));`;
+	const child = await boundedSubprocess(process.execPath, ["-e", script], 2000);
+	assert.equal(child.signal, "SIGKILL");
+	assert.equal((await lstat(record.endpoint)).isSocket(), true);
+	await transport.publish(record);
+	return record;
+}
+
+test("dead session with a surviving socket file is not advertised as a live peer", async (t) => {
+	const transport = await registry(t);
+	await raw(t, transport, "live");
+	const dead = await createZombieSession(transport, "dead");
+	t.after(() => rm(dead.endpoint, { force: true }));
+	const listed = await transport.list();
+	assert.deepEqual(listed, [{ sessionId: "live", reachability: "unknown" }]);
+});
+
+test("client stale cleanup unlinks both presence record and dead socket endpoint on ECONNREFUSED", async (t) => {
+	const transport = await registry(t);
+	const dead = await createZombieSession(transport, "dead-stale");
+	t.after(() => rm(dead.endpoint, { force: true }));
+	const client = new ActiveSessionClient(transport, "sender");
+	await clientRejected(client.sendNotification("dead-stale", "hello"), "io_error");
+	await rejected(transport.resolve("dead-stale"), "not_found");
+	await assert.rejects(lstat(dead.endpoint));
+});
+

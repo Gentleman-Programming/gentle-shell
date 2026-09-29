@@ -202,12 +202,41 @@ export class SessionPresenceRegistry {
 			const stat = await lstat(file);
 			if (!stat.isSymbolicLink() && stat.dev === result.stat.dev && stat.ino === result.stat.ino) await unlink(file);
 		} catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") boundary(error); }
+		try {
+			const stat = await lstat(record.endpoint);
+			if (!stat.isSymbolicLink() && stat.isSocket() && sameUser(stat)) await unlink(record.endpoint);
+		} catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") boundary(error); }
+	}
+
+	private isListening(endpoint: string): Promise<boolean> {
+		return new Promise<boolean>((resolve) => {
+			let settled = false;
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			const socket = createConnection(endpoint);
+			const finish = (result: boolean) => {
+				if (settled) return;
+				settled = true;
+				if (timer !== undefined) clearTimeout(timer);
+				socket.destroy();
+				resolve(result);
+			};
+			socket.once("connect", () => finish(true));
+			socket.once("error", () => finish(false));
+			timer = setTimeout(() => finish(false), 50);
+			try { timer.unref(); } catch {}
+		});
 	}
 
 	private async advertises(record: PresenceRecord) {
 		try {
 			const stat = await lstat(record.endpoint);
-			return !stat.isSymbolicLink() && stat.isSocket() && sameUser(stat);
+			if (stat.isSymbolicLink() || !stat.isSocket() || !sameUser(stat)) return false;
+			const listening = await this.isListening(record.endpoint);
+			if (!listening) {
+				await this.removeOwn(record).catch(() => {});
+				return false;
+			}
+			return true;
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
 			if (code === "ENOENT" || code === "ELOOP") return false;

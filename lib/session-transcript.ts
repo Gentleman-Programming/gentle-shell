@@ -236,6 +236,33 @@ export function fileStartedAt(file: string): number | undefined {
 // Streaming read: the primary path.
 // ---------------------------------------------------------------------------
 
+/** One raw transcript line, in file order. */
+export interface TranscriptLine {
+	readonly line: number;
+	readonly raw: string;
+}
+
+/**
+ * Yield every line of a transcript as text, lazily, so a consumer that needs
+ * the raw shape (the I5 timeline pairs assistant and toolResult timestamps)
+ * shares one streamed read with the usage reader. The first I/O happens on the
+ * first iteration and no whole file is loaded.
+ */
+export async function* streamTranscriptLines(file: string): AsyncGenerator<TranscriptLine> {
+	const input = createReadStream(file, { encoding: "utf8" });
+	const lines = createInterface({ input, crlfDelay: Infinity });
+	let line = 0;
+	try {
+		for await (const value of lines) {
+			line += 1;
+			yield { line, raw: value };
+		}
+	} finally {
+		lines.close();
+		input.destroy();
+	}
+}
+
 /**
  * Yield one classified item per transcript line, in file order. The generator
  * opens the file lazily on the first iteration and never holds more than one
@@ -249,20 +276,11 @@ export async function* streamTranscript(file: string, options: TranscriptReadOpt
 		transcriptPath: file,
 		...(options.task ? { task: options.task } : {}),
 	};
-	const input = createReadStream(file, { encoding: "utf8" });
-	const lines = createInterface({ input, crlfDelay: Infinity });
-	let line = 0;
-	try {
-		for await (const value of lines) {
-			line += 1;
-			const result = parseTranscriptLine(value, context);
-			if (result.kind === "usage") yield result;
-			else if (result.kind === "malformed") yield { kind: "malformed", line };
-			else yield { kind: "skip", line };
-		}
-	} finally {
-		lines.close();
-		input.destroy();
+	for await (const { line, raw } of streamTranscriptLines(file)) {
+		const result = parseTranscriptLine(raw, context);
+		if (result.kind === "usage") yield result;
+		else if (result.kind === "malformed") yield { kind: "malformed", line };
+		else yield { kind: "skip", line };
 	}
 }
 

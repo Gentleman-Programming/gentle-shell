@@ -160,28 +160,61 @@ test("the Todo header paints the shared hover role while hovered, and clears it 
 	assert.deepEqual(component.handleMouse?.(move(0)), { handled: true });
 });
 
-test("every turn carries the open tasks in the system prompt and the card goes stale after two silent turns", async () => {
+function promptEvent(): { systemPrompt: string; systemPromptOptions: { appendSystemPrompt: string } } {
+	return { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" } };
+}
+
+test("every turn carries the open tasks in appendSystemPrompt (never a returned systemPrompt) and the card goes stale after two silent turns", async () => {
 	const { pi, tools, fire } = fakePi();
 	gentleTodo(pi, {});
 	const { ctx, widget } = fakeContext();
 	await fire("session_start", ctx);
-	await fire("before_agent_start", ctx, { systemPrompt: "base" });
+	await fire("before_agent_start", ctx, promptEvent());
 	await tools.get("todo")!.execute("c1", { action: "write", tasks: [{ title: "Fix the bug" }] }, undefined, undefined, ctx);
 	await fire("tool_execution_end", ctx, { toolName: "todo" });
 
-	const withTasks = (await fire("before_agent_start", ctx, { systemPrompt: "base" })) as { systemPrompt: string };
-	assert.match(withTasks.systemPrompt, /^base\n\n## Todo list/);
-	assert.match(withTasks.systemPrompt, /1\. \[pending\] Fix the bug/);
+	const withTasksEvent = promptEvent();
+	const withTasksResult = await fire("before_agent_start", ctx, withTasksEvent);
+	assert.equal(withTasksResult, undefined, "the handler must not return a replacement systemPrompt");
+	assert.match(withTasksEvent.systemPromptOptions.appendSystemPrompt, /^## Todo list/);
+	assert.match(withTasksEvent.systemPromptOptions.appendSystemPrompt, /1\. \[pending\] Fix the bug/);
 	assert.doesNotMatch(widget()![0], /stale/);
 
-	const stale = (await fire("before_agent_start", ctx, { systemPrompt: "base" })) as { systemPrompt: string };
-	assert.match(stale.systemPrompt, /stale: 2 turns without an update/);
+	const staleEvent = promptEvent();
+	await fire("before_agent_start", ctx, staleEvent);
+	assert.match(staleEvent.systemPromptOptions.appendSystemPrompt, /stale: 2 turns without an update/);
 	assert.match(widget()![0], /ctrl\+shift\+t collapse/);
 	assert.match(widget()![1], /stale · 2 turns/);
 
 	await tools.get("todo")!.execute("c2", { action: "update", id: 1, status: "in_progress", note: "on it" }, undefined, undefined, ctx);
 	await fire("tool_execution_end", ctx, { toolName: "todo" });
 	assert.doesNotMatch(widget()![0], /stale/);
+});
+
+test("before_agent_start is idempotent: a todo block already present in appendSystemPrompt is not duplicated", async () => {
+	const { pi, tools, fire } = fakePi();
+	gentleTodo(pi, {});
+
+	// Capture the exact block a fresh turn produces (no staleness yet).
+	const probe = fakeContext();
+	await fire("session_start", probe.ctx);
+	await tools.get("todo")!.execute("c1", { action: "write", tasks: [{ title: "Fix the bug" }] }, undefined, undefined, probe.ctx);
+	await fire("tool_execution_end", probe.ctx, { toolName: "todo" });
+	const probeEvent = promptEvent();
+	await fire("before_agent_start", probe.ctx, probeEvent);
+	const block = probeEvent.systemPromptOptions.appendSystemPrompt;
+	assert.match(block, /^## Todo list/);
+
+	// A fresh session reaching the identical block, but whose options object
+	// already carries that exact text (e.g. a retried emission), must not
+	// duplicate it.
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	await tools.get("todo")!.execute("c1", { action: "write", tasks: [{ title: "Fix the bug" }] }, undefined, undefined, ctx);
+	await fire("tool_execution_end", ctx, { toolName: "todo" });
+	const seededEvent = { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: block } };
+	await fire("before_agent_start", ctx, seededEvent);
+	assert.equal(seededEvent.systemPromptOptions.appendSystemPrompt, block, "a block already present must not be appended again");
 });
 
 test("a finished list stays for its turn and clears at the next, and the collapse key folds the card", async () => {

@@ -9,14 +9,15 @@ import {
 	createWriteTool,
 	keyHint,
 } from "@earendil-works/pi-coding-agent";
-import { Text, type Component } from "@earendil-works/pi-tui";
+import { Text, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import { resolveGentleAiDevBinaryOverride, type GentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
 import { quietToolsEnabled } from "../lib/quiet-tools-config.ts";
 import { getGentleAiRenderState, renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
-import { sanitizeTerminalText } from "../lib/terminal-theme.ts";
+import { CARD_GLYPH, CARD_TONE, cardBottom, cardInnerWidth, cardLine, type CardTheme } from "../lib/shell-card.ts";
+import { sanitizeTerminalText, stripAnsi } from "../lib/terminal-theme.ts";
 
 type QuietToolName = "read" | "bash" | "grep" | "find" | "ls" | "edit" | "write";
 type ThemeLike = {
@@ -540,6 +541,79 @@ class BoundedRows implements Component {
 	invalidate(): void {}
 }
 
+// Tool card: every quiet tool call is a rounded petal card, like the Gentle AI
+// card, so the call and its output read as one block apart from assistant
+// prose. pi does not paint tool backgrounds for renderShell "self", so the
+// frame tone carries the status the painted Box would otherwise show. The call
+// owns the top rule; the result draws the sides and always closes the frame.
+type ToolTone = typeof CARD_TONE.WARNING | typeof CARD_TONE.SUCCESS | typeof CARD_TONE.ERROR;
+
+function toolTone(pending: boolean, failed: boolean): ToolTone {
+	if (failed) return CARD_TONE.ERROR;
+	return pending ? CARD_TONE.WARNING : CARD_TONE.SUCCESS;
+}
+
+class ToolCardTop implements Component {
+	private readonly header: string;
+	private readonly tone: ToolTone;
+	private readonly theme: CardTheme;
+	private readonly hint: string | undefined;
+
+	constructor(header: string, tone: ToolTone, theme: CardTheme, hint?: string) {
+		this.header = header;
+		this.tone = tone;
+		this.theme = theme;
+		this.hint = hint;
+	}
+
+	/** Renders `╭─ ✿ <call> ── <hint> ╮`, the hint only when it fits beside the call, like the Gentle AI card. A call that does not fit the rule (a long or multi-line command) continues on card rows below it, so every line of the command stays visible. */
+	render(width: number): string[] {
+		const target = Math.max(0, Math.floor(width));
+		if (target === 0) return [];
+		const frame = (text: string) => this.theme.fg(this.tone, text);
+		if (target < 8) return [frame(`╭${"─".repeat(Math.max(0, target - 2))}${target > 1 ? "╮" : ""}`)];
+		// Frame columns: "╭─ " (3), glyph and space (2), a space before the fill, and at least "─╮" (2).
+		const fullHintWidth = this.hint ? visibleWidth(this.hint) + 2 : 0;
+		const hint = this.hint && target - 8 - fullHintWidth >= 12 ? this.hint : undefined;
+		const hintWidth = hint ? fullHintWidth : 0;
+		const room = target - 8 - hintWidth;
+		const [first = "", ...rest] = this.header.split("\n");
+		const [call = "", ...overflow] = first === "" ? [""] : wrapTextWithAnsi(first, room);
+		const fill = "─".repeat(Math.max(1, target - 7 - hintWidth - visibleWidth(call)));
+		const tail = hint ? ` ${this.theme.fg("dim", hint)} ` : "";
+		const top = `${frame("╭─ ")}${this.theme.fg("accent", CARD_GLYPH)} ${call} ${frame(fill)}${tail}${frame("╮")}`;
+		const innerWidth = cardInnerWidth(target);
+		const continuation = [...overflow, ...rest].flatMap((line) => (line === "" ? [""] : wrapTextWithAnsi(line, innerWidth)));
+		return [top, ...continuation.map((line) => cardLine(line, this.tone, this.theme, target))];
+	}
+
+	invalidate(): void {}
+}
+
+class ToolCardBody implements Component {
+	private readonly inner: Component;
+	private readonly tone: ToolTone;
+	private readonly theme: CardTheme;
+
+	constructor(inner: Component, tone: ToolTone, theme: CardTheme) {
+		this.inner = inner;
+		this.tone = tone;
+		this.theme = theme;
+	}
+
+	/** Renders the inner component between the card sides and closes the frame, even when the result has no rows. */
+	render(width: number): string[] {
+		const target = Math.max(0, Math.floor(width));
+		if (target === 0) return [];
+		const body = this.inner.render(cardInnerWidth(target)).map((line) => cardLine(line.trimEnd(), this.tone, this.theme, target));
+		return [...body, cardBottom(this.tone, this.theme, target)];
+	}
+
+	invalidate(): void {
+		this.inner.invalidate?.();
+	}
+}
+
 function shouldRenderPreviewTail(
 	toolName: QuietToolName,
 	text: string,
@@ -560,13 +634,6 @@ function partialLabel(toolName: QuietToolName, text: string): string {
 
 function hasImageContent(result: AgentToolResult<unknown>): boolean {
 	return result.content.some((content) => content.type === "image");
-}
-
-function hasExpandableContent(toolName: QuietToolName, result: AgentToolResult<unknown>, text: string): boolean {
-	if (isEmptyResultMessage(toolName, text)) return false;
-	if (text.length > 0 || hasImageContent(result)) return true;
-	const diff = detailsRecord(result).diff;
-	return toolName === "edit" && typeof diff === "string" && diff.length > 0;
 }
 
 function sanitizedRenderContext(context: ToolRenderContextLike | undefined): ToolRenderContextLike {
@@ -630,7 +697,11 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 				const detail = renderContext.expanded === true && typeof callArgs.command === "string" ? `$ ${callArgs.command}` : undefined;
 				return renderGentleAiLifecycleCall(operationPath, theme, withElapsedTiming(renderContext as GentleAiRenderContext), detail);
 			}
-			return new Text(formatToolCall(toolName, callArgs, theme), 0, 0);
+			const tone = toolTone(renderContext.isPartial !== false, renderContext.isError === true);
+			// Same place and wording as the Gentle AI card: the expand key rides the top rule once the call finished.
+			const finished = renderContext.isPartial === false && (renderContext.executionStarted === true || renderContext.isError === true);
+			const hint = finished ? stripAnsi(keyHint("app.tools.expand", renderContext.expanded === true ? "to collapse" : "to expand")) : undefined;
+			return new ToolCardTop(formatToolCall(toolName, callArgs, theme), tone, theme, hint);
 		},
 		/** Builds the card component for this render pass; collapsed cards delegate to the wrapped-line cache keyed by the tool result object. */
 		renderResult(result, options, theme, context) {
@@ -648,40 +719,39 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 			if (directResult) {
 				return renderGentleAiResult(safeResult, { expanded: options.expanded, isPartial: options.isPartial, isError }, theme, renderContext ? withElapsedTiming(renderContext as GentleAiRenderContext) : undefined);
 			}
+			const resultTone = toolTone(options.isPartial === true, isError);
+			const carded = (component: Component): Component => new ToolCardBody(component, resultTone, theme);
 			if (options.isPartial) {
-				if (options.expanded) return new Text(`${theme.fg("warning", partialLabel(toolName, text))}\n${theme.fg("muted", text)}`, 0, 0);
+				if (options.expanded) return carded(new Text(`${theme.fg("warning", partialLabel(toolName, text))}\n${theme.fg("muted", text)}`, 0, 0));
 				const visible = lastOutputLines(text, PREVIEW_LINE_LIMIT);
-				return new BoundedRows([
+				return carded(new BoundedRows([
 					{ text: theme.fg("warning", partialLabel(toolName, text)), rows: 1 },
 					...(visible ? [{ text: theme.fg("muted", visible), rows: PREVIEW_LINE_LIMIT, tail: true }] : []),
-				], cacheKey);
+				], cacheKey));
 			}
 			if (options.expanded && toolName === "read" && hasImageContent(safeResult) && officialRenderResult) {
-				return officialRenderResult(
+				return carded(officialRenderResult(
 					safeResult,
 					options,
 					theme,
 					sanitizedRenderContext(renderContext) as any,
-				);
+				));
 			}
 			const output = formatToolResultOutput(toolName, safeResult, {
 				expanded: options.expanded,
 				isError,
 				args: renderContext?.args,
 			});
-			const hint = !options.expanded && !directResult && hasExpandableContent(toolName, safeResult, text)
-				? `\n${keyHint("app.tools.expand", "to expand")}`
-				: "";
 			const color = options.expanded ? "toolOutput" : isError ? "error" : "muted";
-			if (options.expanded) return new Text(output ? theme.fg(color, output) : "", 0, 0);
+			if (options.expanded) return carded(new Text(output ? theme.fg(color, output.replace(/^\n/, "")) : "", 0, 0));
 			if (output) {
 				const tail = shouldRenderPreviewTail(toolName, text, isError, renderContext?.args);
-				return new BoundedRows([
+				return carded(new BoundedRows([
 					{ text: theme.fg(color, output.replace(/^\n/, "")), rows: PREVIEW_LINE_LIMIT, tail },
-					...(hint ? [{ text: theme.fg(color, hint.slice(1)), rows: 1 }] : []),
-				], cacheKey);
+				], cacheKey));
 			}
-			return new Text(hint ? theme.fg(color, hint.slice(1)) : "", 0, 0);
+			// The card top rule carries the expand key, so an empty result only closes the frame.
+			return carded(new Text("", 0, 0));
 		},
 	});
 }

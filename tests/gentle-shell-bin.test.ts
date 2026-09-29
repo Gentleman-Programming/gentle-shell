@@ -2470,3 +2470,179 @@ test("--link take-over treats a file named `extensions` as not a loose extension
 	const payload = JSON.parse(result.stdout);
 	assert.deepEqual(payload.args, ["--no-extensions", "-e", packageRoot]);
 });
+
+// --- resume-hint handoff (lib/gentle-shell-resume-hint.ts) ----------------------
+
+// A stand-in pi that writes a resume handoff like extensions/resume-hint.ts
+// does, prints pi's own exit hint, and exits with the given code.
+function writeHandoffPiScript(path: string, exitCode = 0) {
+	writeFileSync(
+		path,
+		[
+			"#!/usr/bin/env node",
+			"const { writeFileSync } = require('node:fs');",
+			"const args = process.argv.slice(2);",
+			"if (args.includes('--version')) { console.log('0.85.1'); process.exit(0); }",
+			"const handoff = process.env.GENTLE_SHELL_RESUME_HANDOFF;",
+			"if (handoff) writeFileSync(handoff, JSON.stringify({ sessionId: 'abc' }));",
+			"if (process.env.PI_STUB_PRINT_ENV) console.log(JSON.stringify({ args, handoff }));",
+			"process.stdout.write('To resume this session: pi --session abc\\n');",
+			`process.exit(${exitCode});`,
+			"",
+		].join("\n"),
+	);
+	chmodSync(path, 0o755);
+}
+
+test("interactive launch hands pi a private resume handoff and cleans it up", (t) => {
+	const f = fixture(t);
+	const piScript = join(f.root, "handoff-pi.cjs");
+	writeHandoffPiScript(piScript);
+	const result = run({ ...f.env, GENTLE_SHELL_PI: piScript, PI_STUB_PRINT_ENV: "1" }, []);
+	assert.equal(result.status, 0, result.stderr);
+	const lines = result.stdout.trim().split("\n");
+	const { handoff } = JSON.parse(lines[0]);
+	assert.equal(typeof handoff, "string");
+	assert.match(handoff, /gentle-shell-resume-/);
+	assert.equal(existsSync(dirname(handoff)), false, "handoff dir must be removed after pi exits");
+	// Not a TTY: like pi's own hint, the gentle-shell line is not printed.
+	assert.deepEqual(lines.slice(1), ["To resume this session: pi --session abc"]);
+});
+
+test("pi subcommands get no resume handoff", (t) => {
+	const f = fixture(t);
+	const piScript = join(f.root, "handoff-pi.cjs");
+	writeHandoffPiScript(piScript);
+	const result = run({ ...f.env, GENTLE_SHELL_PI: piScript, PI_STUB_PRINT_ENV: "1" }, ["list"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(JSON.parse(result.stdout.trim().split("\n")[0]).handoff, undefined);
+});
+
+// The hint is only printed to a real TTY, so drive the launcher through a
+// pseudo-terminal. Python's pty module is the portable POSIX way to get one
+// without a native dependency; skipped where it is unavailable.
+const hasPythonPty = process.platform !== "win32" && spawnSync("python3", ["-c", "import pty"], { stdio: "ignore" }).status === 0;
+const PTY_RUNNER = [
+	"import fcntl, os, pty, struct, subprocess, sys, termios",
+	"m, s = pty.openpty()",
+	"fcntl.ioctl(s, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 120, 0, 0))",
+	"p = subprocess.Popen(sys.argv[1:], stdin=s, stdout=s, stderr=s)",
+	"os.close(s)",
+	"out = b''",
+	// PTY_SIGNAL_AFTER: once this text appears, send PTY_SIGNAL to the launcher.
+	"after = os.environ.get('PTY_SIGNAL_AFTER', '').encode()",
+	"while True:",
+	"    try: d = os.read(m, 4096)",
+	"    except OSError: break",
+	"    if not d: break",
+	"    out += d",
+	"    if after and after in out:",
+	"        after = b''",
+	"        os.kill(p.pid, int(os.environ['PTY_SIGNAL']))",
+	"sys.stdout.write(out.decode())",
+	"sys.exit(p.wait())",
+].join("\n");
+
+function runInPty(env: NodeJS.ProcessEnv, args: string[], expectedStatus = 0): string {
+	// Pin the color environment so the launcher's hasColors() check does not
+	// depend on the machine running the tests; a test can still override it.
+	const { NO_COLOR, FORCE_COLOR, NODE_DISABLE_COLORS, ...rest } = env;
+	const colorEnv = { ...rest, TERM: "xterm-256color", ...(env.PTY_NO_COLOR ? { NO_COLOR: "1" } : {}) };
+	// Bounded so a stand-in pi that never exits fails the test instead of hanging CI.
+	const result = spawnSync("python3", ["-c", PTY_RUNNER, process.execPath, binPath, ...args], { encoding: "utf8", env: colorEnv, timeout: 30_000 });
+	assert.equal(result.error, undefined, String(result.error));
+	assert.equal(result.status, expectedStatus, result.stdout + result.stderr);
+	return result.stdout;
+}
+
+const PI_HINT = "To resume this session: pi --session abc\r\n";
+const GENTLE_HINT = "\u001b[2mTo resume in gentle-shell:\u001b[22m gentle-shell --link --session abc\r\n";
+
+test("on a TTY the launcher appends a gentle-shell resume line below pi's hint", { skip: !hasPythonPty && "needs python3 pty" }, (t) => {
+	const f = fixture(t);
+	const piScript = join(f.root, "tty-pi.cjs");
+	writeHandoffPiScript(piScript);
+	const out = runInPty({ ...f.env, GENTLE_SHELL_PI: piScript }, ["--link"]);
+	assert.ok(out.endsWith(PI_HINT + GENTLE_HINT), JSON.stringify(out));
+});
+
+test("on a TTY the gentle-shell line still follows a non-zero pi exit, keeping the code", { skip: !hasPythonPty && "needs python3 pty" }, (t) => {
+	const f = fixture(t);
+	const piScript = join(f.root, "tty-pi.cjs");
+	writeHandoffPiScript(piScript, 3);
+	const out = runInPty({ ...f.env, GENTLE_SHELL_PI: piScript }, ["--link"], 3);
+	assert.ok(out.endsWith(PI_HINT + GENTLE_HINT), JSON.stringify(out));
+});
+
+// A stand-in pi that writes the handoff and then waits: it quits with its
+// own hint on SIGHUP/SIGTERM, but survives SIGINT (like an interrupted turn)
+// and quits only on the next line of input.
+function writeWaitingPiScript(path: string) {
+	writeFileSync(
+		path,
+		[
+			"#!/usr/bin/env node",
+			"const { writeFileSync } = require('node:fs');",
+			"if (process.argv.includes('--version')) { console.log('0.85.1'); process.exit(0); }",
+			"writeFileSync(process.env.GENTLE_SHELL_RESUME_HANDOFF, JSON.stringify({ sessionId: 'abc' }));",
+			"const quit = () => { process.stdout.write('To resume this session: pi --session abc\\n'); process.exit(0); };",
+			"process.on('SIGHUP', quit);",
+			"process.on('SIGTERM', quit);",
+			"process.on('SIGINT', () => { process.stdout.write('interrupted\\n'); setTimeout(quit, 50); });",
+			"process.stdout.write('ready\\n');",
+			"setInterval(() => {}, 1000);",
+			"",
+		].join("\n"),
+	);
+	chmodSync(path, 0o755);
+}
+
+test("on a TTY the launcher prints nothing extra after the terminal hangs up", { skip: !hasPythonPty && "needs python3 pty" }, (t) => {
+	const f = fixture(t);
+	const piScript = join(f.root, "tty-pi.cjs");
+	writeWaitingPiScript(piScript);
+	const out = runInPty({ ...f.env, GENTLE_SHELL_PI: piScript, PTY_SIGNAL_AFTER: "ready", PTY_SIGNAL: "1" }, ["--link"]);
+	// pi quit cleanly with its own hint; only the gentle-shell line is withheld.
+	assert.ok(out.endsWith(PI_HINT), JSON.stringify(out));
+	assert.equal(out.includes("gentle-shell --"), false, JSON.stringify(out));
+});
+
+test("on a TTY a forwarded SIGINT that pi survives does not silence the gentle-shell line", { skip: !hasPythonPty && "needs python3 pty" }, (t) => {
+	const f = fixture(t);
+	const piScript = join(f.root, "tty-pi.cjs");
+	writeWaitingPiScript(piScript);
+	const out = runInPty({ ...f.env, GENTLE_SHELL_PI: piScript, PTY_SIGNAL_AFTER: "ready", PTY_SIGNAL: "2" }, ["--link"]);
+	assert.ok(out.includes("interrupted"), JSON.stringify(out));
+	assert.ok(out.endsWith(PI_HINT + GENTLE_HINT), JSON.stringify(out));
+});
+
+test("on a TTY a cross-project session resumes by its session file", { skip: !hasPythonPty && "needs python3 pty" }, (t) => {
+	const f = fixture(t);
+	const sessionFile = join(f.root, "other project", "session.jsonl");
+	const piScript = join(f.root, "tty-pi.cjs");
+	writeFileSync(
+		piScript,
+		[
+			"#!/usr/bin/env node",
+			"const { writeFileSync } = require('node:fs');",
+			"if (process.argv.includes('--version')) { console.log('0.85.1'); process.exit(0); }",
+			`writeFileSync(process.env.GENTLE_SHELL_RESUME_HANDOFF, JSON.stringify({ sessionId: 'abc', sessionFile: ${JSON.stringify(sessionFile)} }));`,
+			"process.stdout.write('To resume this session: pi --session abc\\n');",
+			"",
+		].join("\n"),
+	);
+	chmodSync(piScript, 0o755);
+	const out = runInPty({ ...f.env, GENTLE_SHELL_PI: piScript }, ["--link"]);
+	assert.ok(
+		out.endsWith(`${PI_HINT}\u001b[2mTo resume in gentle-shell:\u001b[22m gentle-shell --link --session '${sessionFile}'\r\n`),
+		JSON.stringify(out),
+	);
+});
+
+test("on a TTY without colors the gentle-shell line has no ANSI styling", { skip: !hasPythonPty && "needs python3 pty" }, (t) => {
+	const f = fixture(t);
+	const piScript = join(f.root, "tty-pi.cjs");
+	writeHandoffPiScript(piScript);
+	const out = runInPty({ ...f.env, GENTLE_SHELL_PI: piScript, PTY_NO_COLOR: "1" }, ["--link"]);
+	assert.ok(out.endsWith(`${PI_HINT}To resume in gentle-shell: gentle-shell --link --session abc\r\n`), JSON.stringify(out));
+});

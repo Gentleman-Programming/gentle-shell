@@ -375,11 +375,13 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 	const liveSwitches: Array<{ kind: "model"; provider: string; id: string } | { kind: "thinking"; level: string }> = [];
 	let setModelResult = true;
 	let thinkingRejects = false;
+	let liveThinking = "medium";
 	createGentleAiExtension({ nativeReviewCli: null })({
 		on() {},
 		registerTool() {},
 		registerCommand(name, command) { commands.set(name, command); },
 		setModel: async (model: { provider: string; id: string }) => { liveSwitches.push({ kind: "model", provider: model.provider, id: model.id }); return setModelResult; },
+		getThinkingLevel: () => liveThinking,
 		setThinkingLevel: (level: string) => {
 			if (thinkingRejects) throw new Error(`thinking level ${level} is not supported by this model`);
 			liveSwitches.push({ kind: "thinking", level });
@@ -437,6 +439,10 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 		tui: fixtureTui as { terminal: { rows: number } },
 		panelVisits: () => panelVisits,
 		liveSwitches,
+		setLiveModel(provider: string, id: string, thinking: string) {
+			(ctx as { model?: { provider: string; id: string } }).model = { provider, id };
+			liveThinking = thinking;
+		},
 		refuseSetModel() { setModelResult = false; },
 		rejectThinkingLevel() { thinkingRejects = true; },
 		onPanel(action: typeof onPanel) { onPanel = action; },
@@ -2193,16 +2199,18 @@ function pickWorkerModelThenUpdateProfile(panel: RoutingConsumerPanel): void {
 	panel.handleInput("u");
 }
 
-test("u saves global routing from /gentle:models and updates the active profile", async (t) => {
-	const { fixture, storePath, writeStore, writeSettings } = profilesStoreFixture(t);
+test("u saves global routing and captures live session orchestrator instead of defaults", async (t) => {
+	const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
 	writeSettings();
+	const settingsBefore = readFileSync(settingsPath, "utf8");
+	fixture.setLiveModel("openai", "alpha", "low");
 	writeStore({
 		team: { worker: { model: "openai/beta" } },
 		other: { worker: { model: "openai/beta", thinking: "high" } },
 	}, "team");
 	fixture.onInput((panel) => {
 		assert.match(renderComponent(panel), /Current profile: team/);
-		assert.match(renderComponent(panel), /u update profile/);
+		assert.match(renderComponent(panel), /u capture session in "team"/);
 		pickWorkerModelThenUpdateProfile(panel);
 	});
 	await fixture.run("gentle:models");
@@ -2211,8 +2219,9 @@ test("u saves global routing from /gentle:models and updates the active profile"
 	const store = JSON.parse(readFileSync(storePath, "utf8"));
 	assert.deepEqual(store.profiles.team, {
 		worker: { model: "openai/alpha" },
-		orchestrator: { model: "nan/deepseek-v4-flash", thinking: "high" },
+		orchestrator: { model: "openai/alpha", thinking: "low" },
 	});
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore, "global defaults remain unchanged");
 	assert.deepEqual(store.profiles.other, { worker: { model: "openai/beta", thinking: "high" } });
 	assert.equal(store.active, "team");
 	assert.equal(fixture.panelVisits(), 1, "u finishes the interaction");
@@ -2229,6 +2238,7 @@ test("u saves global routing from /gentle:models and updates the active profile"
 test("u updates the pinned profile instead of the active one inside a pinned repository", async (t) => {
 	const { fixture, storePath, writeStore, writeSettings, writePin, localPinPath } = profilesStoreFixture(t);
 	writeSettings();
+	fixture.setLiveModel("openai", "beta", "medium");
 	writeStore({
 		team: { worker: { model: "openai/beta" } },
 		other: { worker: { model: "openai/beta", thinking: "high" } },
@@ -2244,7 +2254,7 @@ test("u updates the pinned profile instead of the active one inside a pinned rep
 	const store = JSON.parse(readFileSync(storePath, "utf8"));
 	assert.deepEqual(store.profiles.other, {
 		worker: { model: "openai/alpha" },
-		orchestrator: { model: "nan/deepseek-v4-flash", thinking: "high" },
+		orchestrator: { model: "openai/beta", thinking: "medium" },
 	});
 	assert.deepEqual(store.profiles.team, { worker: { model: "openai/beta" } });
 	assert.equal(store.active, "team");

@@ -49,3 +49,6 @@ Security-sensitive changes (authentication, authorization, session management, u
     - Scoped native `Agent` fallback for security delegation to test-only edit surfaces and command restrictions, reporting delegation unavailable if unenforceable.
     - Updated sensitive attack surfaces in `assets/orchestrator.md` trigger 6 to include webhook verification, aligning with `orchestrator-delegation.md`.
     - Updated delegation catalog assertions in `tests/package-manifest.test.ts` for `gentle-ai-security.md` (agent count to 4, expected owner assets, all-assets count to 11, and model routing verification for `gentle-ai-security`). Observed all 55/55 tests passing.
+
+## Follow-up items
+- **Runtime enforcement gate for `gentle-ai-security`**: CodeRabbit noted that Pi's runtime does not enforce file-path or bash restrictions beyond prompt confinement. The orchestrator already documents "report test-authoring delegation unavailable if unenforceable" as the mitigation. A runtime gate analogous to `rejectUnscopedBoundedWriterDispatch` (checking allowed edit surfaces at dispatch time) would be a systematic improvement for all delegation agents, not only `gentle-ai-security`. This belongs to a separate PR/issue once the enforcement mechanism is designed.

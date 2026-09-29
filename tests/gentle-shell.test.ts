@@ -8,6 +8,7 @@ import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandI
 import { CURSOR_MARKER, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, sessionCost, GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { CODEX_USAGE_URL, NAN_QUOTA_URL, USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA } from "../lib/shell-usage.ts";
+import { SESSION_DELEGATED_COST_EVENT } from "../lib/session-delegated-cost.ts";
 import { createVimEditorAdapter } from "../lib/vim-editor-adapter.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { CHANGE_STATUS } from "../lib/shell-changes.ts";
@@ -277,6 +278,21 @@ test("sessionCost keeps a total complete when every component is reported, inclu
 	assert.equal(total.absent, 0);
 });
 
+test("buildShellBarModel folds the delegated total and marks a partial total", () => {
+	const { pi } = fakePi();
+	const { ctx } = fakeContext({ entries: [assistantEntry({ input: 1000, output: 200, cost: 0.5 })] });
+	const footerData = { getGitBranch: () => "main", getExtensionStatuses: () => new Map<string, string>(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} };
+	const none = buildShellBarModel(pi, ctx, footerData, { home: "/home/alan" });
+	assert.equal(none.costTotal, 0.5, "no subagents yields exactly the orchestrator number");
+	assert.equal(none.costPartial, false, "and no marker");
+	const complete = buildShellBarModel(pi, ctx, footerData, { home: "/home/alan", delegatedCost: { nanoUsd: 250_000_000, complete: true, absent: 0 } });
+	assert.equal(complete.costTotal, 0.75, "orchestrator plus every subagent");
+	assert.equal(complete.costPartial, false);
+	const partial = buildShellBarModel(pi, ctx, footerData, { home: "/home/alan", delegatedCost: { nanoUsd: 250_000_000, complete: false, absent: 1 } });
+	assert.equal(partial.costTotal, 0.75);
+	assert.equal(partial.costPartial, true, "any unreported component marks the total partial");
+});
+
 test("buildShellBarModel shortens the home directory and hides effort for non-reasoning models", () => {
 	const { pi } = fakePi();
 	const { ctx } = fakeContext();
@@ -512,9 +528,37 @@ test("the fullscreen header rail carries a live digest so model, context, and co
 
 		const beforeCost = live();
 		entries.push(assistantEntry({ input: 100, output: 20, cost: 0.42 }));
-		assert.notEqual(live(), beforeCost, "session cost must change the header digest");
+		await fire(handlers, "turn_end", ctx);
+		assert.notEqual(live(), beforeCost, "a persisted assistant turn refreshes the cached cost digest");
 		assert.match(text(), /\$0\.420/);
 		assert.equal(live(), live(), "an unchanged digest still reuses the prepared header");
+	} finally {
+		component.dispose();
+	}
+});
+
+test("the delegated-cost topic folds subagent cost into the bar and ignores malformed or foreign payloads", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" });
+	const { ctx, ui } = fakeContext({ entries: [assistantEntry({ input: 1000, output: 200, cost: 0.5 })] });
+	await fire(handlers, "session_start", ctx);
+	const liveFooterData = { getGitBranch: () => "main", getExtensionStatuses: () => new Map<string, string>(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} };
+	const tui = { terminal: { rows: 40, columns: 160 }, requestRender() {} };
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { render(width: number): string[]; dispose(): void };
+	const component = factory(tui, plainTheme, liveFooterData);
+	const text = () => component.render(160).join("");
+	const payload = (overrides: Record<string, unknown> = {}) => ({ schema: SESSION_DELEGATED_COST_EVENT, parentSessionId: "shell-session", nanoUsd: 250_000_000, complete: true, absent: 0, subagents: 1, at: 1, ...overrides });
+	try {
+		assert.match(text(), /\$0\.500/, "with no delegated total the bar shows the orchestrator only");
+		pi.events.emit(SESSION_DELEGATED_COST_EVENT, payload());
+		assert.match(text(), /\$0\.750/, "a valid payload folds the subagent cost in");
+		assert.doesNotMatch(text(), /\$0\.750\+/);
+		pi.events.emit(SESSION_DELEGATED_COST_EVENT, payload({ complete: false, absent: 2 }));
+		assert.match(text(), /\$0\.750\+/, "a partial delegated total paints the marker");
+		pi.events.emit(SESSION_DELEGATED_COST_EVENT, { bad: true });
+		assert.match(text(), /\$0\.750\+/, "a malformed payload is ignored, never throws, and keeps the last known total");
+		pi.events.emit(SESSION_DELEGATED_COST_EVENT, payload({ parentSessionId: "other-session", nanoUsd: 5_000_000_000 }));
+		assert.match(text(), /\$0\.750\+/, "another session's total is ignored");
 	} finally {
 		component.dispose();
 	}

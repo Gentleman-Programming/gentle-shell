@@ -126,6 +126,21 @@ test("formatTokens and formatCost keep the bar compact", () => {
 	assert.equal(formatTokens(13_000_000), "13M");
 	assert.equal(formatCost(9.49, true), "$9.49 sub");
 	assert.equal(formatCost(0.004, false), "$0.004");
+	// The partial marker is opt-in and keeps the subscription suffix.
+	assert.equal(formatCost(0.42, false, false), "$0.420");
+	assert.equal(formatCost(0.42, false, true), "$0.420+");
+	assert.equal(formatCost(0.42, true, true), "$0.420+ sub");
+});
+
+test("only the bar and header paint the partial cost marker", () => {
+	const partial = model({ costTotal: 0.42, costPartial: true, subscription: false });
+	assert.match(renderShellBar(partial, plainTheme, 160).join(""), /\$0\.420\+/);
+	assert.match(renderShellHeaderBar(buildShellHeaderModel(partial), plainTheme, 160).text, /\$0\.420\+/);
+	const complete = model({ costTotal: 0.42, costPartial: false, subscription: false });
+	assert.doesNotMatch(renderShellBar(complete, plainTheme, 160).join(""), /\$0\.420\+/);
+	assert.doesNotMatch(renderShellHeaderBar(buildShellHeaderModel(complete), plainTheme, 160).text, /\$0\.420\+/);
+	// A model with no marker flag keeps today's exact rendering.
+	assert.doesNotMatch(renderShellBar(model({ costTotal: 9.49 }), plainTheme, 160).join(""), /\$9\.49\+/);
 });
 
 test("renderShellBar renders one line with the segments in order", () => {

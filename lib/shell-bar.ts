@@ -27,6 +27,8 @@ export interface ShellBarModel {
 	contextPercent: number | null;
 	contextWindow: number;
 	costTotal: number;
+	/** True when any component of the session total reported no cost; the bar/header append `+`. */
+	costPartial?: boolean;
 	subscription: boolean;
 	usage: ProviderUsage | undefined;
 	statuses: string[];
@@ -46,6 +48,7 @@ export interface ShellHeaderModel {
 	profile?: string;
 	contextPercent: number | null;
 	costTotal: number;
+	costPartial?: boolean;
 	subscription: boolean;
 	// The active provider's subscription usage, shown as its own segment after
 	// cost. Unlike the sidebar's old per-model usage table, this is one
@@ -54,8 +57,8 @@ export interface ShellHeaderModel {
 }
 
 export function buildShellHeaderModel(model: ShellBarModel): ShellHeaderModel {
-	const { cwd, branch, dirty, modelId, effort, profile, contextPercent, costTotal, subscription, usage } = model;
-	return { cwd, branch, dirty, modelId, effort, profile, contextPercent, costTotal, subscription, usage };
+	const { cwd, branch, dirty, modelId, effort, profile, contextPercent, costTotal, costPartial, subscription, usage } = model;
+	return { cwd, branch, dirty, modelId, effort, profile, contextPercent, costTotal, ...(costPartial === undefined ? {} : { costPartial }), subscription, usage };
 }
 
 /** A column span (`[start, end)`, in the rendered line's visible columns) a click must land in to hit the usage segment. */
@@ -110,9 +113,9 @@ export function formatTokens(count: number): string {
 	return `${Math.round(count / 1_000_000)}M`;
 }
 
-export function formatCost(total: number, subscription = false): string {
+export function formatCost(total: number, subscription = false, partial = false): string {
 	const amount = total >= 1 ? total.toFixed(2) : total.toFixed(3);
-	return subscription ? `$${amount} sub` : `$${amount}`;
+	return `$${amount}${partial ? "+" : ""}${subscription ? " sub" : ""}`;
 }
 
 // Extensions may paint their status themselves (pi-mcp-adapter does); the bar
@@ -142,15 +145,15 @@ function contextSegment(contextPercent: number | null, theme: ShellBarTheme): st
 	return `${theme.fg(ROLE.LABEL, "ctx")} ${paintGauge(contextPercent, theme)} ${theme.fg(ROLE.VALUE, percentText)}`;
 }
 
-function costSegment(costTotal: number, subscription: boolean, theme: ShellBarTheme): string {
-	return theme.fg(ROLE.VALUE, formatCost(costTotal, subscription));
+function costSegment(costTotal: number, subscription: boolean, partial: boolean, theme: ShellBarTheme): string {
+	return theme.fg(ROLE.VALUE, formatCost(costTotal, subscription, partial));
 }
 
 function buildSegments(model: ShellBarModel, theme: ShellBarTheme, presentation?: Presentation): string[] {
 	const location = locationSegment(model, theme);
 	const modelSegment = executionSegment(model.modelId, model.effort, theme);
 	const context = contextSegment(model.contextPercent, theme);
-	const cost = costSegment(model.costTotal, model.subscription, theme);
+	const cost = costSegment(model.costTotal, model.subscription, model.costPartial === true, theme);
 	const usage = model.usage ? renderUsageBar(model.usage, theme, model.modelId) : undefined;
 	const statuses = model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)));
 	return [
@@ -293,7 +296,7 @@ function usageSegmentText(windows: UsageWindow[], theme: ShellBarTheme, stage: U
 
 export function renderShellHeaderBar(model: ShellHeaderModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: Presentation): ShellHeaderResult {
 	const targetWidth = Math.max(0, Math.floor(width));
-	const ctxCost = joinSegments([contextSegment(model.contextPercent, theme), costSegment(model.costTotal, model.subscription, theme)], theme);
+	const ctxCost = joinSegments([contextSegment(model.contextPercent, theme), costSegment(model.costTotal, model.subscription, model.costPartial === true, theme)], theme);
 	const windows = model.usage ? (selectUsageLimit(model.usage, model.modelId)?.windows ?? []) : [];
 	const leftStages = headerLeftStages(model, theme, presentation?.visibility.modelDetails !== false)
 		.map((stage) => presentation?.density === "minimal" ? stage.slice(1) : stage);

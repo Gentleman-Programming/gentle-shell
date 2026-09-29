@@ -13,11 +13,14 @@ Fix Issue #1443 in `lib/agents-session-transport.ts` so that dead sessions with 
 ## Scope
 
 - In `lib/agents-session-transport.ts`:
-  - In `advertises(record)`: probe socket connectivity using a bounded, non-blocking connection probe (`connect`). If `ECONNREFUSED` or unreachable, do not advertise (`return false`) and prune stale presence/endpoint.
+  - In `advertises(record)`: probe socket connectivity using a bounded, non-blocking connection probe (`probeSocket`). Distinguish `live` (connected), `refused` (confirmed dead), and `timeout` (inconclusive).
+  - Only `refused` (`ECONNREFUSED` / `ENOENT`) triggers `removeOwn()` cleanup. A `timeout` does not advertise the peer in this cycle but preserves the presence record and socket endpoint.
   - In `removeOwn(record)`: when removing a presence record, also unlink the matching `record.endpoint` socket file if present and owned by the same user, ensuring dead sockets are garbage-collected and not leaked in `paths.sockets`.
+  - Added JSDoc docstrings to all touched methods for 100% coverage.
 - In `tests/agents-session-transport.test.ts`:
   - Add regression tests proving dead sessions with surviving socket files are not advertised.
   - Add regression tests proving client stale cleanup unlinks both the presence record and the dead `.sock` file upon `ECONNREFUSED`.
+  - Add regression test proving that a probe timeout retains the presence record and socket endpoint without destructive cleanup.
 - Run typecheck and focused test suites.
 
 ## Constraints
@@ -30,4 +33,5 @@ Fix Issue #1443 in `lib/agents-session-transport.ts` so that dead sessions with 
 
 - [x] **T1 — Write failing regression tests for dead session socket advertisement and endpoint unlinking (RED).**
 - [x] **T2 — Implement socket liveness probe in `advertises` and endpoint cleanup in `removeOwn` (GREEN).**
-- [x] **T3 — Full verification and typecheck.**
+- [x] **T3 — Refine probe to distinguish `ECONNREFUSED` from timeout and add JSDoc docstrings.**
+- [x] **T4 — Full verification and typecheck.**

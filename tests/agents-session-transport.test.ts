@@ -851,3 +851,17 @@ test("client stale cleanup unlinks both presence record and dead socket endpoint
 	await assert.rejects(lstat(dead.endpoint));
 });
 
+test("live listener that times out during probe retains its presence record and socket endpoint", async (t) => {
+	const transport = await registry(t);
+	const live = await raw(t, transport, "delayed-live");
+	const originalProbe = (transport as unknown as { probeSocket: (endpoint: string) => Promise<"live" | "refused" | "timeout"> }).probeSocket.bind(transport);
+	(transport as unknown as { probeSocket: () => Promise<"live" | "refused" | "timeout"> }).probeSocket = async () => "timeout";
+	const listed = await transport.list();
+	assert.deepEqual(listed, []);
+	assert.deepEqual(await transport.resolve("delayed-live"), live);
+	assert.equal((await lstat(live.endpoint)).isSocket(), true);
+	(transport as unknown as { probeSocket: typeof originalProbe }).probeSocket = originalProbe;
+	assert.deepEqual(await transport.list(), [{ sessionId: "delayed-live", reachability: "unknown" }]);
+});
+
+

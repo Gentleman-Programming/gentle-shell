@@ -3993,6 +3993,7 @@ class ProfilesPanel implements OverlayComponent {
 	}
 }
 
+/** The full-screen profile picker: one visit per action, so every reopen reads fresh store, pin, orchestrator, and session-binding state. */
 async function showProfilesPanel(
 	ctx: ExtensionContext,
 	file: AgentProfilesFile,
@@ -4117,6 +4118,7 @@ function profileSnapshotFrom(
 	return snapshot;
 }
 
+/** Runs one finished panel action against the store and the live session, returning the file the reopened panel should show. */
 async function runProfilesPanelAction(
 	ctx: ExtensionContext,
 	live: LiveSession,
@@ -4568,6 +4570,7 @@ async function runProfilesPanelAction(
 	}
 }
 
+/** `/gentle:profiles`: seed or open the store, then loop the panel over one action at a time until it closes. */
 async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): Promise<void> {
 	const path = profilesFilePath(gentleAiConfigHome());
 	const read = readProfilesFileResult(path);

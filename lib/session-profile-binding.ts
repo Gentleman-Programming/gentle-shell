@@ -18,6 +18,7 @@ export interface SessionProfileBinding {
 
 const bindingsBySession = new Map<string, SessionProfileBinding>();
 
+/** Copy one routing snapshot level deep — the layer a defensive copy needs, so a binding never aliases its source or its readers. */
 function cloneProfiles(profiles: AgentModelConfig): AgentModelConfig {
 	return Object.fromEntries(Object.entries(profiles).map(([agent, entry]) => [agent, { ...entry }]));
 }

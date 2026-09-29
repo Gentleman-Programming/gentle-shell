@@ -406,6 +406,7 @@ export interface ProfileListItem {
 	description: string;
 }
 
+/** One list item per saved profile, named with the markers that explain what a launch would use: the global `(active)` claim, plus `(pinned)` for the pin winner or `(session)` for this session's binding when either applies. */
 export function buildProfileListItems(
 	file: AgentProfilesFile,
 	pinned?: string,

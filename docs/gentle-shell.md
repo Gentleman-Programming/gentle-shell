@@ -15,7 +15,7 @@ The [v2.6.0 release](https://github.com/Gentleman-Programming/gentle-pi/releases
 - The Agents List and Details views preserve the orchestrator/session hierarchy and completion, abort, and lost-exit history. Parent-child queries and notifications have an explicit handoff path, while model, effort, and usage stay observable per task.
 - Named `/gentle:profiles` atomically route the orchestrator separately from packaged and review roles; see the [technical reference](readme-reference.md#agent-model-profiles) for the profile model.
 
-The source checkout prepares `gentle-pi` `3.7.0` with a package-local Gentle AI `v3.7.0` pin; this does not imply that the package release has been published.
+The source checkout prepares `gentle-pi` `3.7.1` with a package-local Gentle AI `v3.7.0` pin; this does not imply that the package release has been published.
 
 ## Shell interactions and runtime behavior
 

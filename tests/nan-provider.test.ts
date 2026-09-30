@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { RefreshModelsContext } from "@earendil-works/pi-ai";
-import type { ProviderConfig } from "@earendil-works/pi-coding-agent";
+import type { ProviderConfig, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import nanProviderExtension from "../extensions/nan-provider.ts";
 import { createNanProviderConfig, NAN_PROVIDER_BASE_URL, NAN_PROVIDER_ID } from "../lib/nan-provider.ts";
+
+// Pi 0.99 made ProviderModelConfig a chat/image/classifier union; the fields these tests
+// assert (reasoning, contextWindow, maxTokens) live on the chat member the nan provider
+// emits, and that member is not re-exported from the package root, so it is extracted.
+type ChatModel = Extract<ProviderModelConfig, { reasoning: boolean }>;
 
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -44,7 +49,7 @@ test("extension registers NaN with Pi's OpenAI-compatible and native API-key con
 });
 
 test("offline baseline is one documented chat model with a configured output cap", () => {
-	const model = createNanProviderConfig().models?.[0];
+	const model = createNanProviderConfig().models?.[0] as ChatModel | undefined;
 	assert.equal(model?.id, "deepseek-v4-flash");
 	assert.equal(model?.api, "openai-completions");
 	assert.equal(model?.reasoning, true);
@@ -75,7 +80,7 @@ test("live discovery uses the key-scoped endpoint and replaces the fallback with
 	assert.deepEqual(models?.map((model) => model.id), ["glm5.3"]);
 	assert.ok(!models?.some((model) => model.id === fallbackId));
 
-	const known = models?.[0];
+	const known = models?.[0] as ChatModel | undefined;
 	assert.equal(known?.api, "openai-completions");
 	assert.equal(known?.reasoning, true);
 	assert.deepEqual(known?.input, ["text"]);
@@ -100,7 +105,7 @@ test("known chat models retain documented capabilities without advertising audio
 	const models = await config.refreshModels?.(refreshContext({ type: "api_key", key: "test-key" }));
 	assert.equal(models?.length, expected.length);
 	for (const [index, [id, contextWindow, input, maxTokens]] of expected.entries()) {
-		const model = models?.[index];
+		const model = models?.[index] as ChatModel | undefined;
 		assert.equal(model?.id, id);
 		assert.equal(model?.reasoning, true);
 		assert.equal(model?.contextWindow, contextWindow);

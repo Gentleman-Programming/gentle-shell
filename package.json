@@ -1,6 +1,6 @@
 {
 	"name": "gentle-pi",
-	"version": "3.7.0",
+	"version": "3.7.1",
 	"description": "Turn Pi into el Gentleman: an ODD development harness with focused subagents, configured TDD evidence, native review, and skill discovery.",
 	"license": "MIT",
 	"type": "module",
@@ -72,12 +72,12 @@
 		]
 	},
 	"dependencies": {
-		"@earendil-works/pi-ai": "0.87.1",
-		"@earendil-works/pi-tui": "0.87.1",
 		"@heyhuynhgiabuu/pi-pretty": "0.6.27"
 	},
 	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
 		"@earendil-works/pi-coding-agent": ">=0.85.1",
+		"@earendil-works/pi-tui": "*",
 		"typebox": "*"
 	},
 	"peerDependenciesMeta": {
@@ -86,7 +86,9 @@
 		}
 	},
 	"devDependencies": {
-		"@earendil-works/pi-coding-agent": "0.87.1",
+		"@earendil-works/pi-ai": "0.99.1",
+		"@earendil-works/pi-coding-agent": "0.99.1",
+		"@earendil-works/pi-tui": "0.99.1",
 		"@types/node": "^24.13.3",
 		"typescript": "^5.9.3"
 	},

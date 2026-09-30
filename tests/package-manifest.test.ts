@@ -123,17 +123,27 @@ test("public docs and metadata advertise ODD and review without retired phase wo
 
 test("technical reference declares the tested Pi minimum required for agent_settled", () => {
 	const manifest = readPackageJson();
+	// The supported floor stays where it is: bumping the tested host must not silently
+	// drop older consumers. What moves is the version the repository actually tests.
 	assert.equal(manifest.peerDependencies?.["@earendil-works/pi-coding-agent"], ">=0.85.1");
-	assert.equal(manifest.devDependencies?.["@earendil-works/pi-coding-agent"], "0.87.1");
+	assert.equal(manifest.devDependencies?.["@earendil-works/pi-coding-agent"], "0.99.1");
 	const reference = readFileSync(join(PACKAGE_ROOT, "docs", "readme-reference.md"), "utf8");
 	assert.match(reference, /Pi 0\.85\.1 or newer/);
+	assert.match(reference, /development tests pin 0\.99\.1/);
 	assert.match(reference, /agent_settled/);
 	assert.match(readFileSync(join(PACKAGE_ROOT, "README.md"), "utf8"), /\]\(docs\/readme-reference\.md(?:#[^)]+)?\)/);
 });
 
-test("packed runtime declares its pi-ai compat import as a direct exact dependency", () => {
+test("host-provided Pi packages are peer dependencies, never packed copies", () => {
 	const manifest = readPackageJson();
-	assert.equal(manifest.dependencies?.["@earendil-works/pi-ai"], "0.87.1");
+	// Pi 0.99 rejects an extension that declares a host-provided package as a direct
+	// dependency: the loader already supplies these modules, so a private copy can only
+	// create a second runtime instance. The tested version belongs in devDependencies.
+	for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-tui"]) {
+		assert.equal(manifest.peerDependencies?.[name], "*", `${name} must be a wildcard peer`);
+		assert.equal(manifest.dependencies?.[name], undefined, `${name} must not be a direct dependency`);
+		assert.equal(manifest.devDependencies?.[name], "0.99.1", `${name} must be tested at the pinned host version`);
+	}
 });
 
 test("package manifest has no obsolete native activation build surface", () => {
@@ -1626,9 +1636,9 @@ test("pi-pretty wrapper uses cached ESM loading for compiled and pnpm symlink in
 	assert.match(wrapper, /quietToolsEnabled/);
 });
 
-test("Gentle Shell v3.7.0 package manifest declares the release version", () => {
+test("Gentle Shell v3.7.1 package manifest declares the release version", () => {
 	const packageJson = readPackageJson();
-	assert.equal(packageJson.version, "3.7.0", "the release manifest must be explicitly pinned to v3.7.0");
+	assert.equal(packageJson.version, "3.7.1", "the release manifest must be explicitly pinned to v3.7.1");
 	assert.equal(packageJson.scripts?.test, "node scripts/run-test-suite.mjs");
 	assert.ok(packageJson.files?.includes("assets/"));
 	assert.ok(packageJson.files?.includes("contracts/"));

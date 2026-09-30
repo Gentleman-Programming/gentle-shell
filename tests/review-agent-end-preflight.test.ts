@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { NATIVE_REVIEW_ERROR_CODE, NativeReviewCliError, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import type { ReviewStatusV3 } from "../lib/review-integration-v2.ts";
@@ -57,13 +57,15 @@ function harness(nativeReviewCli: NativeReviewCli | null, entries: CustomEntry[]
 	return { handlers, sent, tools };
 }
 
-function ctx(sessionId: string, hasUI = true, cwd = process.cwd()): ExtensionContext {
+// Pi 0.99 gives ExtensionToolContext required members on top of ExtensionContext, so the
+// fake host context must be typed as the tool context its consumers require.
+function ctx(sessionId: string, hasUI = true, cwd = process.cwd()): ExtensionToolContext {
 	return {
 		cwd,
 		hasUI,
 		ui: { notify() {} },
 		sessionManager: { getSessionId: () => sessionId },
-	} as unknown as ExtensionContext;
+	} as unknown as ExtensionToolContext;
 }
 
 async function withSessionStartEnv<T>(callback: (cwd: string) => Promise<T>, initializeGit = true): Promise<T> {

@@ -7,7 +7,7 @@ import { createReviewSidebarPublisher, REVIEW_SCOPE_UNAVAILABLE, REVIEW_SIDEBAR_
 import { __testing } from "../extensions/gentle-ai.ts";
 import { NATIVE_REVIEW_ERROR_CODE, NATIVE_REVIEW_OPERATION, NativeReviewCliError, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { decodeReviewStatusV3 } from "../lib/review-integration-v2.ts";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 
 // Display contract only: lifecycle evidence must be normalized by the producer,
 // never inferred from a successful tool execution by the renderer.
@@ -110,7 +110,7 @@ test("RDD completed STATUS evidence does not imply capture execution", () => {
 test("publisher retains scope only for issued capture bindings and matching closure", async () => {
 	const events: Array<{ snapshot: { state: string; scope: string } }> = [];
 	const publisher = createReviewSidebarPublisher({ events: { emit: (_name: string, event: typeof events[number]) => events.push(event) } } as unknown as ExtensionAPI);
-	const ctx = { cwd: "/repo", sessionManager: { getSessionId: () => "session" } } as unknown as ExtensionContext;
+	const ctx = { cwd: "/repo", sessionManager: { getSessionId: () => "session" } } as unknown as ExtensionToolContext;
 	publisher.reset(ctx);
 	const run = (name: string, params: Record<string, unknown>, details: unknown) => publisher.tool({
 		name, label: "Test", description: "Test", parameters: { type: "object" } as never,
@@ -156,7 +156,7 @@ test("real facade STATUS binding retains sidebar scope through capture forecast"
 test("publisher ignores late completions after reset without changing results", async () => {
 	const events: unknown[] = [];
 	const publisher = createReviewSidebarPublisher({ events: { emit: (_name: string, event: unknown) => events.push(event) } } as unknown as ExtensionAPI);
-	const ctx = { cwd: "/repo", sessionManager: { getSessionId: () => "session" } } as unknown as ExtensionContext;
+	const ctx = { cwd: "/repo", sessionManager: { getSessionId: () => "session" } } as unknown as ExtensionToolContext;
 	let finish!: () => void;
 	const pending = new Promise<void>((resolve) => { finish = resolve; });
 	const result = { content: [], details: { status: "blocked" } };
@@ -172,7 +172,7 @@ test("publisher ignores late completions after reset without changing results", 
 function publisherFixture() {
 	const events: Array<{ sessionId: string; snapshot: { state: string; scope: string } }> = [];
 	const publisher = createReviewSidebarPublisher({ events: { emit: (_name: string, event: typeof events[number]) => events.push(event) } } as unknown as ExtensionAPI);
-	const ctx = { cwd: "/repo", sessionManager: { getSessionId: () => "own" } } as unknown as ExtensionContext;
+	const ctx = { cwd: "/repo", sessionManager: { getSessionId: () => "own" } } as unknown as ExtensionToolContext;
 	publisher.reset(ctx);
 	const run = (name: string, params: Record<string, unknown>, details: unknown | Promise<unknown>, context = ctx) => publisher.tool({
 		name, label: "Test", description: "Test", parameters: { type: "object" } as never,
@@ -336,7 +336,7 @@ test("foreign sessions, disabled publisher and event failures never change tool 
 	const h = publisherFixture();
 	await h.seed();
 	const before = h.events.length;
-	const foreign = { cwd: "/repo", sessionManager: { getSessionId: () => "foreign" } } as unknown as ExtensionContext;
+	const foreign = { cwd: "/repo", sessionManager: { getSessionId: () => "foreign" } } as unknown as ExtensionToolContext;
 	const result = await h.run("gentle_review", { operation: "status" }, { status: "blocked" }, foreign);
 	assert.deepEqual(result.details, { status: "blocked" });
 	assert.equal(h.events.length, before);

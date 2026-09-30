@@ -30,7 +30,7 @@ import { resolveAnimationPolicy, writeAnimationPolicy, type AnimationPolicy } fr
 import { resolveVimPolicy, writeVimPolicy, type VimPolicy } from "../lib/vim-policy.ts";
 import { resolveHistoryCapture, writeHistoryCapturePolicy } from "../lib/history-capture-policy.ts";
 import { createRequire } from "node:module";
-import { createVimEditorAdapter } from "../lib/vim-editor-adapter.ts";
+import { createVimEditorAdapter, SUPPORTED_VERSIONS } from "../lib/vim-editor-adapter.ts";
 import { VimNormalEngine } from "../lib/vim-normal-engine.ts";
 import { VimOperatorEngine, type OperatorResult } from "../lib/vim-operator-engine.ts";
 import { VimVisualEngine } from "../lib/vim-visual-engine.ts";
@@ -60,7 +60,7 @@ export function resolveVimRuntime(entry = process.argv[1], customClass: typeof C
 					const requireFromBundle = createRequire(bundlePath);
 					const bundled = requireFromBundle(bundlePath) as { CustomEditor?: typeof CustomEditor; VERSION?: string };
 					const metadata = requireFromBundle(resolve(root, "package.json")) as { name?: string; version?: string };
-					if (metadata.name === "@earendil-works/pi-coding-agent" && metadata.version === "0.87.1" &&
+					if (metadata.name === "@earendil-works/pi-coding-agent" && SUPPORTED_VERSIONS.has(metadata.version ?? "") &&
 						bundled.VERSION === metadata.version && bundled.CustomEditor === customClass &&
 						typeof editorClass === "function" && editorClass.name === "Editor" &&
 						editorPrototype === editorClass.prototype &&
@@ -94,7 +94,7 @@ export function resolveVimRuntime(entry = process.argv[1], customClass: typeof C
 			const tuiMetadata = requireFromRuntime(resolve(tuiRoot, "package.json")) as { version?: string; name?: string };
 			if (agent.CustomEditor === customClass && tui.Editor === editorClass &&
 				agentMetadata.name === "@earendil-works/pi-coding-agent" && tuiMetadata.name === "@earendil-works/pi-tui" &&
-				(agentMetadata.version === "0.85.1" || agentMetadata.version === "0.87.1") &&
+				(SUPPORTED_VERSIONS.has(agentMetadata.version ?? "")) &&
 				agentMetadata.version === tuiMetadata.version) return { version: tuiMetadata.version, editorClass };
 		} catch { /* Unknown package or constructor: ordinary editing stays active. */ }
 	}

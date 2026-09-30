@@ -38,7 +38,17 @@ interface PrivateEditor {
   exitHistoryBrowsing(): void;
 }
 
-const SUPPORTED_VERSIONS = new Set(["0.85.1", "0.87.1"]);
+// Host Pi versions whose private editor layout this adapter has been verified
+// against. This list is the single source of truth for the identity gate below and
+// for resolveVimRuntime() in extensions/gentle-shell.ts, so a newly verified host
+// is admitted in one place and the two checks cannot drift apart.
+//
+// 0.99.1 was admitted after auditing a real 0.99.1 Editor instance against every
+// structural precondition asserted here (state.lines/cursorLine/cursorCol, pastes
+// Map, pasteCounter, undoStack push/pop/stack/length, pushUndoSnapshot, undo,
+// setCursorCol, cancelAutocomplete, exitHistoryBrowsing, layoutText, render,
+// paddingX) and running the vim adapter suites against it.
+export const SUPPORTED_VERSIONS = new Set(["0.85.1", "0.87.1", "0.99.1"]);
 const importedTuiMetadata: unknown = createRequire(import.meta.url)("@earendil-works/pi-tui/package.json");
 const IMPORTED_TUI_VERSION = typeof importedTuiMetadata === "object" && importedTuiMetadata !== null &&
   "version" in importedTuiMetadata ? importedTuiMetadata.version : undefined;
@@ -47,8 +57,9 @@ const IMPORTED_TUI_VERSION = typeof importedTuiMetadata === "object" && imported
 // as the version metadata. An arbitrary object with matching fields is not an editor.
 function hasEditorIdentity(value: unknown, version: string, editorClass: typeof Editor, verifiedVersion?: string): boolean {
   if (!SUPPORTED_VERSIONS.has(version) || typeof value !== "object" || value === null ||
-      (verifiedVersion !== undefined ? version !== verifiedVersion :
-        editorClass === Editor ? version !== IMPORTED_TUI_VERSION : version !== "0.87.1") || !(value instanceof editorClass)) return false;
+      (verifiedVersion !== undefined ? version !== verifiedVersion
+        : editorClass === Editor && version !== IMPORTED_TUI_VERSION) ||
+      !(value instanceof editorClass)) return false;
   let prototype: unknown = Object.getPrototypeOf(value);
   for (let depth = 0; depth < 3; depth++) {
     if (prototype === editorClass.prototype) return true;

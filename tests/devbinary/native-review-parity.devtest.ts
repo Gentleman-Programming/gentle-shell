@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { __testing } from "../../extensions/gentle-ai.ts";
+import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
+import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { __testing, createGentleAiExtension } from "../../extensions/gentle-ai.ts";
+import { resolveSessionWorktree } from "../../lib/session-worktree-registry.ts";
 import { CandidateViewRegistry } from "../../lib/review-candidate-view.ts";
 import {
 	NATIVE_REVIEW_ERROR_CODE,
@@ -137,6 +140,171 @@ function consentAnswerCall(calls: NativeCall[], answer: "granted" | "declined"):
 	assert.equal(matching.length, 1, `${answer} must execute exactly one provider invocation`);
 	return matching[0]!;
 }
+
+// Development-only counterpart of the published-pin SDK proof. A fixture-only
+// provider drives an actual SDK write; no external model, START or download.
+test("dev-binary: SDK non-Git bootstrap entry preserves files and metadata", { skip: !RUNNABLE }, async (t) => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-dev-bootstrap-")));
+	const home = join(root, "home");
+	const agentDir = join(home, "agent");
+	mkdirSync(agentDir, { recursive: true });
+	const previous: Record<string, string | undefined> = {};
+	const environment = {
+		HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"),
+		XDG_DATA_HOME: join(home, ".local", "share"), XDG_CACHE_HOME: join(home, ".cache"),
+		GENTLE_PI_AGENT_HOME: agentDir, PI_CODING_AGENT_DIR: agentDir,
+		GENTLE_PI_CONFIG_HOME: join(home, "pi-config"), PI_OFFLINE: "1",
+		// A poisoned ambient declaration must be replaced by the production
+		// adapter rather than accidentally furnishing the fixture's handshake.
+		GENTLE_PI_REVIEW_RELAY_CONTRACT: "invalid-ambient-relay",
+	};
+	// Disposable Git commands must not follow an ambient repository selector.
+	for (const key of Object.keys(process.env).filter((key) => key.startsWith("GIT_"))) {
+		previous[key] = process.env[key];
+		delete process.env[key];
+	}
+	for (const [key, value] of Object.entries(environment)) {
+		previous[key] = process.env[key];
+		process.env[key] = value;
+	}
+	t.after(() => {
+		for (const [key, value] of Object.entries(previous)) {
+			if (value === undefined) delete process.env[key]; else process.env[key] = value;
+		}
+		rmSync(root, { recursive: true, force: true });
+	});
+	const version = execFileSync(DEV_BINARY!, ["version"], { cwd: root, encoding: "utf8" }).trim();
+	t.diagnostic(`development binary=${DEV_BINARY}; version=${version}; published-pin parity is not established`);
+	const fixture = (name: string) => {
+		const cwd = join(root, name);
+		mkdirSync(cwd, { recursive: true });
+		writeFileSync(join(cwd, "candidate.txt"), "unchanged candidate bytes\n");
+		return cwd;
+	};
+	const modeRoot = fixture("mode-root");
+	git(modeRoot, "init", "--quiet");
+	enableGlobalReview(modeRoot);
+	const modelRuntime = await ModelRuntime.create({
+		authPath: join(agentDir, "empty-auth.json"), modelsPath: null,
+		modelsStorePath: join(agentDir, "models-store.json"), allowModelNetwork: false,
+	});
+	const invocations: Array<{ cwd: string; args: string[] }> = [];
+	const entry = async (cwd: string, operation: "startup" | "source" | "inspect" = "source", workspaceRoot?: string, enabled = true, inspectAfterStartup = false) => {
+		const before = invocations.length;
+		const wasVersioned = resolveSessionWorktree(workspaceRoot ?? cwd, cwd) !== undefined;
+		// A new native client per entry prevents a previous transport refusal
+		// cache from substituting for this scenario's actual invocation.
+		const adapter = createNodeExecFileAdapter();
+		const native = new NativeReviewCliV216(async (request) => {
+			invocations.push({ cwd: request.cwd, args: [...request.arguments] });
+			return adapter(request);
+		}, DEV_BINARY!);
+		const resourceLoader = new DefaultResourceLoader({
+			cwd, agentDir, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+			extensionFactories: [pi => pi.registerProvider("fixture-source", {
+				baseUrl: "http://invalid.invalid", apiKey: "fixture-only", api: "fixture-source" as never,
+				models: [{ id: "write", name: "Offline source writer", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 1024 }],
+				streamSimple(model, context) {
+					const stream = createAssistantMessageEventStream();
+					queueMicrotask(() => {
+						const write = context.messages.at(-1)?.role === "user";
+						const message: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), content: [], stopReason: write ? "toolUse" : "stop", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+						stream.push({ type: "start", partial: message });
+						if (write) {
+							const call = { type: "toolCall" as const, id: "fixture-source-write", name: "write", arguments: { path: "app.ts", content: "export const fixture = true;\n" } };
+							message.content.push(call);
+							stream.push({ type: "toolcall_start", contentIndex: 0, partial: message });
+							stream.push({ type: "toolcall_end", contentIndex: 0, toolCall: call, partial: message });
+						} else message.content.push({ type: "text", text: "source written" });
+						stream.push({ type: "done", reason: write ? "toolUse" : "stop", message });
+						stream.end(message);
+					});
+					return stream;
+				},
+			}), createGentleAiExtension({ nativeReviewCli: native, candidateViews: null, processEnv: {} })],
+		});
+		await resourceLoader.reload();
+		assert.deepEqual(resourceLoader.getExtensions().errors, []);
+		const { session } = await createAgentSession({
+			cwd, agentDir, resourceLoader, modelRuntime, sessionManager: SessionManager.inMemory(cwd), tools: ["write", "gentle_review"],
+			settingsManager: SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false } }),
+		});
+		try {
+			await session.bindExtensions({ mode: "print" });
+			const beforeAction = invocations.slice(before);
+			assert.equal(beforeAction.some(call => call.args[0] === "review" && call.args[1] === "status"), false, "mere binding cannot prepare non-Git");
+			if (operation === "source") {
+				await session.setModel(modelRuntime.getModel("fixture-source", "write")!);
+				session.setActiveToolsByName(["write"]);
+				await session.prompt("Write the authorized fixture source app.ts.");
+				assert.ok(session.messages.some(message => message.role === "toolResult" && message.toolName === "write" && !message.isError), "actual SDK successful write result");
+				assert.equal(readFileSync(join(cwd, "app.ts"), "utf8"), "export const fixture = true;\n");
+			}
+			assert.ok(session.getAllTools().some((tool) => tool.name === "gentle_review"), "actual SDK registers the facade");
+			session.setActiveToolsByName(["gentle_review"]);
+			const tool = session.agent.state.tools.find((tool) => tool.name === "gentle_review");
+			assert.ok(tool, "actual SDK registers the facade");
+			if (operation === "inspect" || inspectAfterStartup) {
+				const result = await tool.execute("bootstrap-inspect", { operation: "inspect", ...(workspaceRoot === undefined ? {} : { workspaceRoot }) });
+				assert.notEqual((result.details as Record<string, unknown>).outcome, "pi-host-relay-transport-unavailable", "entry must negotiate production-compatible transport");
+			}
+			if (operation !== "source") assert.equal(session.messages.length, 0, "passive/review entry does not invoke a model");
+		} finally { await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" }); session.dispose(); }
+		const calls = invocations.slice(before);
+		if (operation !== "startup" && !wasVersioned) assert.ok(calls.some(({ args }) => args[0] === "review" && args[1] === "mode"), "every admitted scenario really queries native mode");
+		const statuses = calls.filter(({ args }) => args[0] === "review" && args[1] === "status");
+		assert.equal(statuses.length > 0, enabled, "each on scenario must really invoke native STATUS; off must not");
+		if (enabled) assert.equal(statuses[0]!.cwd, resolveSessionWorktree(workspaceRoot ?? cwd, cwd)?.root ?? workspaceRoot ?? cwd);
+		if (inspectAfterStartup) assert.equal(statuses.length, 2, "the same SDK session recognizes native bootstrap for subsequent facade inspect, without restart");
+		t.diagnostic(`${operation} target=${workspaceRoot ?? cwd}; mode calls=${calls.length - statuses.length}; STATUS calls=${statuses.length}`);
+	};
+	const pristine = (cwd: string) => {
+		assert.equal(readFileSync(join(cwd, "candidate.txt"), "utf8"), "unchanged candidate bytes\n");
+		assert.equal(git(cwd, "ls-files", "--others", "--exclude-standard"), existsSync(join(cwd, "app.ts")) ? "app.ts\ncandidate.txt" : "candidate.txt");
+		assert.throws(() => git(cwd, "rev-parse", "--verify", "HEAD"), "HEAD stays unborn");
+		assert.equal(git(cwd, "remote"), "");
+		assert.equal(existsSync(join(cwd, ".git", "gentle-ai", "reviews")), false, "entry creates no review lineage");
+	};
+	const startupRoot = fixture("startup");
+	await entry(startupRoot, "startup", undefined, false);
+	assert.equal(existsSync(join(startupRoot, ".git")), false);
+	await entry(startupRoot, "source", undefined, true, true);
+	assert.equal(existsSync(join(startupRoot, ".git")), true);
+	pristine(startupRoot);
+	const metadata = statSync(join(startupRoot, ".git"));
+	await entry(startupRoot, "inspect");
+	assert.equal(statSync(join(startupRoot, ".git")).ino, metadata.ino, "repeat entry reuses metadata");
+	pristine(startupRoot);
+	for (const explicit of [false, true]) {
+		const target = fixture(explicit ? "explicit-inspect" : "default-inspect");
+		await entry(explicit ? modeRoot : target, "inspect", explicit ? target : undefined);
+		assert.equal(existsSync(join(target, ".git")), true);
+		pristine(target);
+	}
+	const nested = join(startupRoot, "nested");
+	mkdirSync(nested);
+	await entry(nested, "inspect");
+	assert.equal(existsSync(join(nested, ".git")), false, "valid parent is reused");
+	const broken = fixture("broken");
+	writeFileSync(join(broken, ".git"), "gitdir: missing-metadata\n");
+	await entry(broken);
+	assert.equal(readFileSync(join(broken, ".git"), "utf8"), "gitdir: missing-metadata\n");
+	const brokenChild = join(broken, "child");
+	mkdirSync(brokenChild);
+	await entry(brokenChild);
+	assert.equal(existsSync(join(brokenChild, ".git")), false, "broken ancestor is not bypassed");
+	assert.equal(readFileSync(join(broken, ".git"), "utf8"), "gitdir: missing-metadata\n");
+	assert.equal(readFileSync(join(broken, "candidate.txt"), "utf8"), "unchanged candidate bytes\n");
+	const disabled = JSON.parse(execFileSync(DEV_BINARY!, ["review", "mode", "disable", "--scope", "global", "--cwd", modeRoot, "--json"], { cwd: modeRoot, encoding: "utf8" }));
+	assert.equal(disabled.status.effective, "off");
+	for (const operation of ["startup", "source", "inspect"] as const) {
+		const off = fixture(`off-${operation}`);
+		await entry(off, operation, undefined, false);
+		assert.equal(existsSync(join(off, ".git")), false);
+		assert.equal(readFileSync(join(off, "candidate.txt"), "utf8"), "unchanged candidate bytes\n");
+	}
+	assert.equal(invocations.some(({ args }) => args[0] === "review" && args[1] === "start"), false, "no START authority is requested");
+});
 
 // ---------------------------------------------------------------------------
 // Kill switch round trip.

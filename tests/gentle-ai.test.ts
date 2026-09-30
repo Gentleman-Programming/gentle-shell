@@ -375,11 +375,13 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 	const liveSwitches: Array<{ kind: "model"; provider: string; id: string } | { kind: "thinking"; level: string }> = [];
 	let setModelResult = true;
 	let thinkingRejects = false;
+	let liveThinking = "medium";
 	createGentleAiExtension({ nativeReviewCli: null })({
 		on() {},
 		registerTool() {},
 		registerCommand(name, command) { commands.set(name, command); },
 		setModel: async (model: { provider: string; id: string }) => { liveSwitches.push({ kind: "model", provider: model.provider, id: model.id }); return setModelResult; },
+		getThinkingLevel: () => liveThinking,
 		setThinkingLevel: (level: string) => {
 			if (thinkingRejects) throw new Error(`thinking level ${level} is not supported by this model`);
 			liveSwitches.push({ kind: "thinking", level });
@@ -393,6 +395,11 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 	const panels: string[] = [];
 	let onPanel = () => ({ type: "cancel", config: {} });
 	let onInput: ((panel: RoutingConsumerPanel) => void) | undefined;
+	// Scripted answers for ctx.ui.input, consumed in order. The Pi host ignores the
+	// placeholder and starts the field empty, so an empty answer is what Enter on an
+	// untouched field returns, and undefined is Esc.
+	const inputAnswers: Array<string | undefined> = [];
+	const inputPrompts: Array<{ title: string; placeholder: string | undefined }> = [];
 	// The orchestrator model is looked up in the registry before switching.
 	const registryModels = [
 		{ provider: "openai", id: "alpha" },
@@ -408,6 +415,11 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 		},
 		ui: {
 			notify(message: string, severity: string) { notifications.push({ message, severity }); },
+			input: async (title: string, placeholder?: string) => {
+				inputPrompts.push({ title, placeholder });
+				assert.ok(inputAnswers.length > 0, `unexpected input prompt: ${title}`);
+				return inputAnswers.shift();
+			},
 			custom: async (factory: (tui: unknown, theme: Theme, keybindings: unknown, done: (result: unknown) => void) => RoutingConsumerPanel) => {
 				let result: unknown;
 				const panel = factory(fixtureTui, { fg: (_color: string, text: string) => text } as unknown as Theme, undefined, (value) => { result = value; });
@@ -427,10 +439,16 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 		tui: fixtureTui as { terminal: { rows: number } },
 		panelVisits: () => panelVisits,
 		liveSwitches,
+		setLiveModel(provider: string, id: string, thinking: string) {
+			(ctx as { model?: { provider: string; id: string } }).model = { provider, id };
+			liveThinking = thinking;
+		},
 		refuseSetModel() { setModelResult = false; },
 		rejectThinkingLevel() { thinkingRejects = true; },
 		onPanel(action: typeof onPanel) { onPanel = action; },
 		onInput(action: (panel: RoutingConsumerPanel) => void) { onInput = action; },
+		answerInputs(...answers: Array<string | undefined>) { inputAnswers.push(...answers); },
+		inputPrompts,
 		run: (name: string) => commands.get(name)!.handler("", ctx),
 	};
 }
@@ -1541,7 +1559,8 @@ test("concurrent guarded confirmations coalesce the Herdr lifecycle per extensio
 });
 
 
-test("RPIV questionnaire blockers emit only a private, balanced Herdr projection", () => {
+for (const channel of ["rpiv:ask-user:blocked", "gentle-pi:ask-user-question:blocked"]) {
+test(`${channel} emits only a private, balanced Herdr projection`, () => {
 	type HerdrBlockedEvent = { active: boolean; label?: string };
 	const eventHandlers = new Map<string, (data: unknown) => void>();
 	const published: Array<{ channel: string; data: unknown }> = [];
@@ -1564,9 +1583,10 @@ test("RPIV questionnaire blockers emit only a private, balanced Herdr projection
 		registerTool() {},
 	} as unknown as ExtensionAPI;
 	createGentleAiExtension({ nativeReviewCli: null })(pi);
-	assert.equal(eventHandlers.size, 2);
+	assert.equal(eventHandlers.size, 3);
 	assert.equal(eventHandlers.has("gentle-pi:ask-user-choice:blocked"), true);
 	assert.equal(eventHandlers.has("rpiv:ask-user:blocked"), true);
+	assert.equal(eventHandlers.has("gentle-pi:ask-user-question:blocked"), true);
 
 	const source = {
 		active: true,
@@ -1576,23 +1596,23 @@ test("RPIV questionnaire blockers emit only a private, balanced Herdr projection
 		command: "private questionnaire command",
 		arbitrary: { nested: "private questionnaire field" },
 	};
-	pi.events.emit("rpiv:ask-user:blocked", source);
-	assert.strictEqual(published[0]?.data, source, "the RPIV event remains the source event");
+	pi.events.emit(channel, source);
+	assert.strictEqual(published[0]?.data, source, "the questionnaire event remains the source event");
 	assert.deepEqual(herdrEvents, [{ active: true, label: "Questionnaire awaiting input" }]);
 	assert.doesNotMatch(JSON.stringify(herdrEvents), /private questionnaire|questionnaire-path/i);
 
-	pi.events.emit("rpiv:ask-user:blocked", { active: true, duplicate: true });
-	pi.events.emit("rpiv:ask-user:blocked", { active: "true" });
-	pi.events.emit("rpiv:ask-user:blocked", { active: null });
-	pi.events.emit("rpiv:ask-user:blocked", []);
-	pi.events.emit("rpiv:ask-user:blocked", null);
+	pi.events.emit(channel, { active: true, duplicate: true });
+	pi.events.emit(channel, { active: "true" });
+	pi.events.emit(channel, { active: null });
+	pi.events.emit(channel, []);
+	pi.events.emit(channel, null);
 	pi.events.emit("rpiv:ask-user:other", { active: false });
 	assert.deepEqual(herdrEvents, [{ active: true, label: "Questionnaire awaiting input" }]);
 
-	pi.events.emit("rpiv:ask-user:blocked", { active: false });
-	pi.events.emit("rpiv:ask-user:blocked", { active: false, duplicate: true });
-	pi.events.emit("rpiv:ask-user:blocked", { active: true });
-	pi.events.emit("rpiv:ask-user:blocked", { active: false });
+	pi.events.emit(channel, { active: false });
+	pi.events.emit(channel, { active: false, duplicate: true });
+	pi.events.emit(channel, { active: true });
+	pi.events.emit(channel, { active: false });
 	assert.deepEqual(herdrEvents, [
 		{ active: true, label: "Questionnaire awaiting input" },
 		{ active: false },
@@ -1601,7 +1621,9 @@ test("RPIV questionnaire blockers emit only a private, balanced Herdr projection
 	]);
 });
 
-test("Herdr coordinates guarded confirmations and RPIV labels without inactive relabel pulses", async () => {
+}
+
+test("Herdr preserves the initial label and balanced edges across overlapping sources", async () => {
 	type ToolCallHandler = (
 		event: { toolName: string; input: unknown },
 		ctx: ExtensionContext,
@@ -1652,14 +1674,34 @@ test("Herdr coordinates guarded confirmations and RPIV labels without inactive r
 	assert.equal(await guardedRequest, undefined);
 	assert.deepEqual(guardedFirst.herdrEvents, [
 		{ active: true, label: "Guarded command confirmation" },
-		{ active: true, label: "Questionnaire awaiting input" },
 	]);
 	guardedFirst.pi.events.emit("rpiv:ask-user:blocked", { active: false });
 	assert.deepEqual(guardedFirst.herdrEvents, [
 		{ active: true, label: "Guarded command confirmation" },
-		{ active: true, label: "Questionnaire awaiting input" },
 		{ active: false },
 	]);
+
+	// Each event channel is independent, even when native and legacy producers overlap.
+	const channels = ["gentle-pi:ask-user-question:blocked", "rpiv:ask-user:blocked", "gentle-pi:ask-user-choice:blocked"];
+	for (const lastChannel of channels) {
+		const overlap = createHarness();
+		for (const channel of channels) overlap.pi.events.emit(channel, { active: true });
+		const request = overlap.toolCall(
+			{ toolName: "bash", input: { command: "git rebase main" } }, overlap.context,
+		);
+		await Promise.resolve();
+		for (const channel of channels.filter((channel) => channel !== lastChannel)) {
+			overlap.pi.events.emit(channel, { active: false });
+			overlap.pi.events.emit(channel, { active: false });
+		}
+		overlap.confirmations[0]!(false);
+		await request;
+		assert.deepEqual(overlap.herdrEvents, [{ active: true, label: "Questionnaire awaiting input" }]);
+		overlap.pi.events.emit(lastChannel, { active: false });
+		assert.deepEqual(overlap.herdrEvents, [
+			{ active: true, label: "Questionnaire awaiting input" }, { active: false },
+		]);
+	}
 
 	const questionnaireFirst = createHarness();
 	questionnaireFirst.pi.events.emit("rpiv:ask-user:blocked", { active: true });
@@ -1673,7 +1715,6 @@ test("Herdr coordinates guarded confirmations and RPIV labels without inactive r
 	await questionnaireRequest;
 	assert.deepEqual(questionnaireFirst.herdrEvents, [
 		{ active: true, label: "Questionnaire awaiting input" },
-		{ active: true, label: "Guarded command confirmation" },
 		{ active: false },
 	]);
 });
@@ -1710,6 +1751,11 @@ test("closed choice blockers retain the visible choice label through guarded-con
 	createGentleAiExtension({ nativeReviewCli: null })(pi);
 	assert.equal(eventHandlers.has("gentle-pi:ask-user-choice:blocked"), true);
 
+	for (const malformed of [null, [], {}, { active: "true" }]) {
+		pi.events.emit("gentle-pi:ask-user-choice:blocked", malformed);
+	}
+	assert.deepEqual(herdrEvents, []);
+	choiceEvents.length = 0;
 	pi.events.emit("gentle-pi:ask-user-choice:blocked", { active: true });
 	assert.deepEqual(choiceEvents, [{ active: true }]);
 	assert.deepEqual(herdrEvents, [{ active: true, label: "Choice awaiting input" }]);
@@ -1732,7 +1778,6 @@ test("closed choice blockers retain the visible choice label through guarded-con
 	assert.deepEqual(choiceEvents, [{ active: true }, { active: false }]);
 	assert.deepEqual(herdrEvents, [
 		{ active: true, label: "Choice awaiting input" },
-		{ active: true, label: "Guarded command confirmation" },
 	]);
 	assert.equal(herdrEvents.some((event) => event.active === false), false);
 
@@ -1740,7 +1785,6 @@ test("closed choice blockers retain the visible choice label through guarded-con
 	assert.equal(await guardedRequest, undefined);
 	assert.deepEqual(herdrEvents, [
 		{ active: true, label: "Choice awaiting input" },
-		{ active: true, label: "Guarded command confirmation" },
 		{ active: false },
 	]);
 });
@@ -2181,16 +2225,18 @@ function pickWorkerModelThenUpdateProfile(panel: RoutingConsumerPanel): void {
 	panel.handleInput("u");
 }
 
-test("u saves global routing from /gentle:models and updates the active profile", async (t) => {
-	const { fixture, storePath, writeStore, writeSettings } = profilesStoreFixture(t);
+test("u saves global routing and captures live session orchestrator instead of defaults", async (t) => {
+	const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
 	writeSettings();
+	const settingsBefore = readFileSync(settingsPath, "utf8");
+	fixture.setLiveModel("openai", "alpha", "low");
 	writeStore({
 		team: { worker: { model: "openai/beta" } },
 		other: { worker: { model: "openai/beta", thinking: "high" } },
 	}, "team");
 	fixture.onInput((panel) => {
 		assert.match(renderComponent(panel), /Current profile: team/);
-		assert.match(renderComponent(panel), /u update profile/);
+		assert.match(renderComponent(panel), /u capture session in "team"/);
 		pickWorkerModelThenUpdateProfile(panel);
 	});
 	await fixture.run("gentle:models");
@@ -2199,8 +2245,9 @@ test("u saves global routing from /gentle:models and updates the active profile"
 	const store = JSON.parse(readFileSync(storePath, "utf8"));
 	assert.deepEqual(store.profiles.team, {
 		worker: { model: "openai/alpha" },
-		orchestrator: { model: "nan/deepseek-v4-flash", thinking: "high" },
+		orchestrator: { model: "openai/alpha", thinking: "low" },
 	});
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore, "global defaults remain unchanged");
 	assert.deepEqual(store.profiles.other, { worker: { model: "openai/beta", thinking: "high" } });
 	assert.equal(store.active, "team");
 	assert.equal(fixture.panelVisits(), 1, "u finishes the interaction");
@@ -2217,6 +2264,7 @@ test("u saves global routing from /gentle:models and updates the active profile"
 test("u updates the pinned profile instead of the active one inside a pinned repository", async (t) => {
 	const { fixture, storePath, writeStore, writeSettings, writePin, localPinPath } = profilesStoreFixture(t);
 	writeSettings();
+	fixture.setLiveModel("openai", "beta", "medium");
 	writeStore({
 		team: { worker: { model: "openai/beta" } },
 		other: { worker: { model: "openai/beta", thinking: "high" } },
@@ -2232,7 +2280,7 @@ test("u updates the pinned profile instead of the active one inside a pinned rep
 	const store = JSON.parse(readFileSync(storePath, "utf8"));
 	assert.deepEqual(store.profiles.other, {
 		worker: { model: "openai/alpha" },
-		orchestrator: { model: "nan/deepseek-v4-flash", thinking: "high" },
+		orchestrator: { model: "openai/beta", thinking: "medium" },
 	});
 	assert.deepEqual(store.profiles.team, { worker: { model: "openai/beta" } });
 	assert.equal(store.active, "team");
@@ -2437,6 +2485,116 @@ test("j and k scroll the detail pane one line at a time, like the agents view", 
 	assert.notEqual(firstAgentRow(afterJ), firstAgentRow(before), "j must scroll the detail down by one line");
 	panel!.handleInput("k");
 	assert.equal(firstAgentRow(body()), firstAgentRow(before), "k must scroll the detail back up");
+});
+
+// The name prompt behind c, d, and r: the Pi host starts the field empty and
+// ignores the placeholder, and every outcome must show in the reopened panel,
+// because the fullscreen overlay hides notifications until it closes.
+async function runProfilesNameAction(
+	fixture: ReturnType<typeof routingConsumerFixture>,
+	keys: string | string[],
+	...answers: Array<string | undefined>
+): Promise<string> {
+	fixture.answerInputs(...answers);
+	let visits = 0;
+	fixture.onInput((panel) => {
+		visits += 1;
+		if (visits > 1) return panel.handleInput("\x1b");
+		for (const key of [keys].flat()) panel.handleInput(key);
+	});
+	await fixture.run("gentle:profiles");
+	assert.equal(fixture.panels.length, 2, "the panel reopens once after the action");
+	return fixture.panels[1];
+}
+
+/** The selected profile, read from the detail pane title of a rendered panel. */
+function selectedProfileTitle(rendered: string): string {
+	return (rendered.split("\n")[1]?.split("│")[2] ?? "").replace("(active)", "").trim();
+}
+
+function profilesPanelFooter(rendered: string): string {
+	return rendered.split("\n").at(-2) ?? "";
+}
+
+test("c creates the named profile, selects it, and reports it in the reopened panel", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, "team");
+	const reopened = await runProfilesNameAction(fixture, "c", " deep-work ");
+
+	const store = JSON.parse(readFileSync(storePath, "utf8"));
+	assert.deepEqual(Object.keys(store.profiles), ["team", "deep-work"]);
+	assert.equal(selectedProfileTitle(reopened), "deep-work");
+	assert.match(profilesPanelFooter(reopened), /Profile "deep-work" created\./);
+});
+
+test("c with an empty name creates nothing and says so in the reopened panel", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, "team");
+	const before = readFileSync(storePath, "utf8");
+	const reopened = await runProfilesNameAction(fixture, "c", "  ");
+
+	assert.equal(readFileSync(storePath, "utf8"), before, "nothing is written");
+	assert.equal(selectedProfileTitle(reopened), "team");
+	assert.match(profilesPanelFooter(reopened), /No profile created: no name entered\./);
+});
+
+test("d with an empty name duplicates to the suggested <name>-copy and selects it", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, "team");
+	const reopened = await runProfilesNameAction(fixture, "d", "");
+
+	// The host never shows the placeholder, so the suggestion lives in the title.
+	assert.match(fixture.inputPrompts[0]?.title ?? "", /Duplicate profile "team" as \(empty = team-copy\)/);
+	const store = JSON.parse(readFileSync(storePath, "utf8"));
+	assert.deepEqual(store.profiles["team-copy"], { worker: { model: "openai/alpha" } });
+	assert.equal(selectedProfileTitle(reopened), "team-copy");
+	assert.match(profilesPanelFooter(reopened), /Profile "team" duplicated as "team-copy"\./);
+});
+
+test("d onto an existing name writes nothing and shows the conflict in the reopened panel", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } }, other: {} }, "team");
+	const before = readFileSync(storePath, "utf8");
+	const reopened = await runProfilesNameAction(fixture, "d", "other");
+
+	assert.equal(readFileSync(storePath, "utf8"), before, "nothing is written");
+	assert.equal(selectedProfileTitle(reopened), "team");
+	assert.match(profilesPanelFooter(reopened), /Profile not duplicated: Profile already exists: other\./);
+});
+
+test("r with an empty name leaves the profile unchanged and says so in the reopened panel", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, "team");
+	const before = readFileSync(storePath, "utf8");
+	const reopened = await runProfilesNameAction(fixture, "r", "");
+
+	assert.match(fixture.inputPrompts[0]?.title ?? "", /Rename profile "team" to \(empty = keep team\)/);
+	assert.equal(readFileSync(storePath, "utf8"), before, "nothing is written");
+	assert.equal(selectedProfileTitle(reopened), "team");
+	assert.match(profilesPanelFooter(reopened), /Profile "team" unchanged: no new name entered\./);
+});
+
+test("r renames the profile, keeps it selected under the new name, and reports it", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } }, other: {} }, "team");
+	// Rename the second row, so the reopened selection cannot land on it by default.
+	const reopened = await runProfilesNameAction(fixture, ["\x1b[B", "r"], "focus");
+
+	const store = JSON.parse(readFileSync(storePath, "utf8"));
+	assert.deepEqual(Object.keys(store.profiles), ["team", "focus"]);
+	assert.equal(store.active, "team");
+	assert.equal(selectedProfileTitle(reopened), "focus");
+	assert.match(profilesPanelFooter(reopened), /Profile "other" renamed to "focus"\./);
+});
+
+test("escape on the name prompt cancels without writing and says so in the reopened panel", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, "team");
+	const before = readFileSync(storePath, "utf8");
+	const reopened = await runProfilesNameAction(fixture, "d", undefined);
+
+	assert.equal(readFileSync(storePath, "utf8"), before, "nothing is written");
+	assert.match(profilesPanelFooter(reopened), /Duplicate cancelled\./);
 });
 
 // The pin is the per-repository layer of the profiles command: `p` writes the

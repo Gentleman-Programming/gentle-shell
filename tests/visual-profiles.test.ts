@@ -50,6 +50,19 @@ test("malformed and unknown-version catalogs fail closed rather than overwrite",
 	assert.equal(parseVisualProfilesFile(JSON.stringify({ schema: VISUAL_PROFILES_SCHEMA, profiles: [{ name: "a", ...values }, { name: "a", ...values }] })), undefined);
 });
 
+test("profiles saved before the rdd section existed load with rdd shown", () => {
+	const home = { gentlePiConfigHome: mkdtempSync(join(tmpdir(), "visual-profiles-test-")) };
+	const { rdd: _rdd, ...legacyVisibility } = { ...DEFAULT_VISUAL_SETTINGS.visibility, agents: false };
+	const legacy = { name: "old", ...values, visual: { ...values.visual, visibility: legacyVisibility } };
+	writeFileSync(join(home.gentlePiConfigHome, "visual-profiles.json"), JSON.stringify({ schema: VISUAL_PROFILES_SCHEMA, profiles: [legacy] }));
+	const result = readVisualProfiles(home);
+	assert.equal(result.malformed, false);
+	assert.deepEqual(result.profiles[0]!.visual.visibility, { ...DEFAULT_VISUAL_SETTINGS.visibility, agents: false, rdd: true });
+	assert.deepEqual(getVisualProfile("old", home)!.visual.visibility.rdd, true);
+	const unknown = { ...legacy, visual: { ...legacy.visual, visibility: { ...legacyVisibility, extra: true } } };
+	assert.equal(parseVisualProfilesFile(JSON.stringify({ schema: VISUAL_PROFILES_SCHEMA, profiles: [unknown] })), undefined);
+});
+
 test("symlinked catalog file is rejected instead of followed, and save/delete leave the symlink target untouched", (t) => {
 	const home = mkdtempSync(join(tmpdir(), "visual-profiles-test-"));
 	const target = join(home, "target.json");

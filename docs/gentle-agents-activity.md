@@ -90,6 +90,30 @@ When the whole-payload bound is still exceeded after the field- and item-level t
 
 An active task's `summary` (running, waiting or queued) is never dropped; only its `thread.items` shrink. Finished tasks can be dropped whole by step 3, oldest first.
 
+## Generation and watchdog progress
+
+While an active assistant message streams a tool-call block, validated fresh,
+nonempty argument deltas renew the runner's idle watchdog independently of
+thread/display events. `summary.lastStep` becomes `generating tool arguments`
+and `lastActivityAt` advances; no partial argument data is stored in the thread,
+diagnostic, or progress tracker. `toolCalls` increments only at execution start.
+Token/cost totals still update only from finalized assistant `message_end` usage,
+not streaming usage; static totals do not establish inactivity.
+
+The tracker admits blocks announced by current RPC identity fields or older Pi
+partial snapshots. It rejects empty/malformed deltas, unannounced or closed
+blocks, stale message starts, and duplicate argument fingerprints. RPC provides
+no delta sequence number, so identical chunks within one block are conservatively
+indistinguishable from replay and do not renew liveness. Only hashes are retained,
+with a 4096-fingerprint bound per assistant message; exhaustion fails closed until
+a newer message starts. Unrelated UI and unrecognized event traffic do not renew
+argument liveness. Existing RPC command-response handling is unchanged.
+
+Idle and in-flight execution watchdog budgets are **renewable silence bounds**,
+not absolute run/generation duration limits. Argument generation uses the idle
+budget, not the longer announced-execution budget. Later silence still times out;
+execution start/end and cancellation retain their existing behavior.
+
 ## Coalescing
 
 `createRpcActivityPublisher` subscribes to `TaskStore#subscribeSummary` (task added, removed, or changed status) and to `TaskStore#subscribe(id)` for every known task, including ones added after `start()`. Changes inside a 150 ms window collapse into exactly one `setWidget("gentle-agents", [line])` call; `stop()` tears down every subscription and publishes one final frame.

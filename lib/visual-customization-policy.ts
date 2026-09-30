@@ -13,6 +13,7 @@ export type Density = (typeof DENSITY)[keyof typeof DENSITY];
 
 export interface VisualVisibility {
 	changes: boolean;
+	rdd: boolean;
 	agents: boolean;
 	todo: boolean;
 	usageCost: boolean;
@@ -28,8 +29,13 @@ export const DEFAULT_VISUAL_SETTINGS: VisualSettings = {
 	statusPlacement: STATUS_PLACEMENT.AUTO,
 	headerPlacement: HEADER_PLACEMENT.TOP,
 	density: DENSITY.COMFORTABLE,
-	visibility: { changes: true, agents: true, todo: true, usageCost: true, modelDetails: true },
+	visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true },
 };
+/** Sections row order; `rdd` follows `changes` as the RDD group follows Changes in the Status card. */
+export const VISUAL_SECTION_KEYS = ["changes", "rdd", "agents", "todo", "usageCost", "modelDetails"] as const satisfies readonly (keyof VisualVisibility)[];
+/** Keys added after v1 shipped: stored settings may omit them together, and they default to shown. */
+const ADDED_SECTION_KEYS: readonly (keyof VisualVisibility)[] = ["rdd"];
+const LEGACY_SECTION_KEYS = VISUAL_SECTION_KEYS.filter((key) => !ADDED_SECTION_KEYS.includes(key));
 interface VisualOptions { gentlePiConfigHome?: string }
 export interface VisualResolution {
 	settings: VisualSettings;
@@ -55,15 +61,24 @@ export function isVisualSettings(value: unknown): value is VisualSettings {
 		&& member(value.headerPlacement, HEADER_PLACEMENT)
 		&& member(value.density, DENSITY)
 		&& record(visibility)
-		&& keysMatch(visibility, ["changes", "agents", "todo", "usageCost", "modelDetails"])
+		&& keysMatch(visibility, VISUAL_SECTION_KEYS)
 		&& Object.values(visibility).every((item) => typeof item === "boolean");
+}
+/** Reader-side validation: accepts the current shape and legacy visibility that predates added sections. Writers stay strict. */
+export function normalizeVisualSettings(value: unknown): VisualSettings | undefined {
+	if (!record(value) || !record(value.visibility)) return undefined;
+	const visibility = value.visibility;
+	const candidate = keysMatch(visibility, LEGACY_SECTION_KEYS)
+		? { ...value, visibility: Object.fromEntries(VISUAL_SECTION_KEYS.map((key) => [key, visibility[key] ?? true])) }
+		: value;
+	return isVisualSettings(candidate) ? candidate : undefined;
 }
 export function parseVisualSettingsFile(raw: string): VisualSettings | undefined {
 	try {
 		const parsed: unknown = JSON.parse(raw);
 		if (!record(parsed) || parsed.schema !== VISUAL_SCHEMA) return undefined;
 		const { schema: _schema, ...settings } = parsed;
-		return isVisualSettings(settings) ? settings : undefined;
+		return normalizeVisualSettings(settings);
 	} catch { return undefined; }
 }
 export function resolveVisualSettings(options: VisualOptions = {}): VisualResolution {

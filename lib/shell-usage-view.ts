@@ -1,5 +1,5 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
-import { renderUsagePanel, type ActiveProvider, type UsageSourceRegistry, type UsageStore, type UsageTheme } from "./shell-usage.ts";
+import { renderUsagePanel, type ActiveProvider, type UsagePanelScope, type UsageSourceRegistry, type UsageStore, type UsageTheme } from "./shell-usage.ts";
 import { paintHoverable } from "./shell-hover.ts";
 
 // Gentle Shell subscriptions overlay: a framed panel over the usage store.
@@ -12,6 +12,10 @@ export interface UsageViewDeps {
 	// Optional: lets the panel resolve the pending note of a provider whose
 	// usage source was registered at runtime instead of built in.
 	registry?(): UsageSourceRegistry | undefined;
+	// Optional: the targeted routing scope. Without it the panel draws every
+	// provider the store holds; with it, exactly the targeted providers, in
+	// scope order, explaining the ones without data.
+	scope?(): UsagePanelScope | undefined;
 	onRefresh(): Promise<void>;
 	onClose(): void;
 	requestRender(): void;
@@ -80,8 +84,9 @@ export class UsageView {
 	// A failing usage fetch is the store's problem to report (its rows already
 	// carry the last error); the panel only clears its "refreshing" state. The
 	// rejection must never leave this method: an unhandled rejection is fatal
-	// to the whole shell on current Node.
-	private refresh(): void {
+	// to the whole shell on current Node. Public so the overlay can dispatch
+	// its opening refresh instead of making the open wait for it.
+	refresh(): void {
 		if (this.refreshing) return;
 		this.refreshing = true;
 		this.deps.requestRender();
@@ -101,7 +106,7 @@ export class UsageView {
 		const inner = width - 2;
 		const title = this.refreshing ? REFRESHING : TITLE;
 		const top = theme.fg(FRAME_ROLE, "╭─ ") + theme.fg(TITLE_ROLE, title) + theme.fg(FRAME_ROLE, ` ${rule(inner - visibleWidth(title) - 3)}╮`);
-		const body = renderUsagePanel(this.store.all(), theme, inner - 2, this.deps.now(), this.deps.active(), this.deps.registry?.()).map(
+		const body = renderUsagePanel(this.store.all(), theme, inner - 2, this.deps.now(), this.deps.active(), this.deps.registry?.(), this.deps.scope?.()).map(
 			(line) => `${theme.fg(FRAME_ROLE, "│")} ${fit(line, inner - 2)} ${theme.fg(FRAME_ROLE, "│")}`,
 		);
 		const hints = KEYS.map(([key, label]) => ({ key, label, text: `${key} ${label}`, action: (key === "r" ? "refresh" : "close") as HintAction }));

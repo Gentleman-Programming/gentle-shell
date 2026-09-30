@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
-import { pendingReviewMutation, REVIEW_REMINDER_RECEIPT } from "../lib/review-reminder-receipt.ts";
+import { pendingReviewMutation, pendingReviewMutationProfiles, REVIEW_REMINDER_RECEIPT } from "../lib/review-reminder-receipt.ts";
 import { SESSION_WORKTREE_ENTRY, SESSION_WORKTREE_CHANGED, resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
 import { SessionChanges, type SessionChangeEvidence } from "../lib/session-changes.ts";
@@ -24,6 +24,7 @@ import { PresenceCursor, PresencePublisher, listPresence, readActivity } from ".
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
 import { AgentRunner } from "../lib/agents-runner.ts";
+import { bindSessionRepositoryPreparation } from "../lib/bounded-writer-admission.ts";
 import { CHILD_METRICS_EVENT } from "../lib/runtime-metrics-children.ts";
 
 // Gentle Agents extension: the subagent_* tools drive isolated pi children,
@@ -36,6 +37,7 @@ interface Registered {
 	name: string;
 	execute(id: string, params: unknown, signal: AbortSignal | undefined, onUpdate: undefined, ctx: ExtensionContext): Promise<{ content: Array<{ text: string }>; details: Record<string, unknown> }>;
 	renderCall(args: unknown, theme: unknown): { render(width: number): string[] };
+	renderResult(result: { content: Array<{ type: string; text: string }>; details: Record<string, unknown> }, options: { expanded: boolean }, theme: unknown): { render(width: number): string[] };
 }
 
 const plainTheme = { fg: (_color: string, text: string) => text };
@@ -1095,7 +1097,7 @@ for (const boundary of ["allowed", "env", "session", "replacement", "bus-throws"
 		const listenerCounts = () => [...h.listeners].map(([name, set]) => [name, set.size]);
 		await h.fire("session_start", context.ctx);
 		const initialListeners = listenerCounts();
-		const result = h.tools.get("subagent_run")!.execute("call", { agent: "gentle-ai-worker", task: "private task", mode: "task" }, undefined, undefined, context.ctx);
+		const result = h.tools.get("subagent_run")!.execute("call", { agent: "gentle-ai-worker", task: "private task\n## Allowed edit surfaces\nsrc/app.ts\n## Return\nReport", mode: "task" }, undefined, undefined, context.ctx);
 		await tick();
 		assert.equal(runtime.children.length, 1);
 		const child = runtime.children[0];
@@ -1685,6 +1687,56 @@ for (const scenario of ["own", "other-root", "escaped", "sibling", "session-swit
 	});
 }
 
+// gentle-pi#1175 (T2): the subagent mutation receipt carries the model and
+// effort the runtime resolved for the task, so ASSESS never re-trusts a model
+// declaration. An inherited (unresolved) model is omitted, never "default".
+for (const scenario of ["resolved", "inherited"] as const) {
+	test(`subagent mutation receipt records the runtime-resolved writer profile: ${scenario}`, async () => {
+		const h = fakePi();
+		const d = deps();
+		const { ctx } = fakeContext();
+		if (scenario === "inherited") {
+			const fixtureHome = realpathSync(mkdtempSync(join(root, "inherited-writer-")));
+			mkdirSync(join(fixtureHome, ".pi", "agent", "agents"), { recursive: true });
+			writeFileSync(join(fixtureHome, ".pi", "agent", "agents", "explore.md"), "---\ndescription: inherits the parent model\ntools: [read]\n---\nYou map things.");
+			d.deps.home = fixtureHome;
+		}
+		ctx.sessionManager.getEntries = (() => h.entries) as typeof ctx.sessionManager.getEntries;
+		ctx.sessionManager.getBranch = (() => h.entries) as typeof ctx.sessionManager.getBranch;
+		d.deps.resolveWorktree = (path, base) => containsResolvedPath(cwd, resolve(base, path)) ? { root: cwd, commonDir: "/fixture/common" } : undefined;
+		const spawn = d.deps.spawn!;
+		d.deps.spawn = (...args) => {
+			const child = spawn(...args);
+			const on = child.on.bind(child);
+			child.on = ((event: string, listener: () => void) => {
+				if (event === "spawn") queueMicrotask(listener);
+				return on(event as "spawn", listener);
+			}) as typeof child.on;
+			return child;
+		};
+		gentleAgents(h.pi, {}, d.deps);
+		await h.fire("session_start", ctx);
+		await h.tools.get("subagent_run")!.execute("mutation", { agent: "explore", task: "Write", mode: "background", workspace_root: cwd }, undefined, undefined, ctx);
+		await tick();
+		d.children[0].emit({ type: "tool_execution_start", toolCallId: "write", toolName: "write", args: { path: "file.ts" } });
+		d.children[0].emit({ type: "tool_execution_end", toolCallId: "write", isError: false, result: { content: [] } });
+		await tick();
+		const receipts = h.entries.filter((entry) => entry.customType === REVIEW_REMINDER_RECEIPT);
+		assert.equal(receipts.length, 1);
+		const data = receipts[0].data as Record<string, unknown>;
+		if (scenario === "resolved") {
+			assert.equal(data.writerModelId, "openai-codex/gpt-5.6-terra");
+			assert.equal(data.writerEffort, "low", "the profile effort override is the runtime-resolved effort");
+		} else {
+			assert.equal(Object.hasOwn(data, "writerModelId"), false, "an inherited model is unknown here and must never be recorded as \"default\"");
+			assert.equal(Object.hasOwn(data, "writerEffort"), false);
+		}
+		assert.deepEqual(pendingReviewMutationProfiles(ctx.sessionManager, cwd), [scenario === "resolved" ? { writerModelId: "openai-codex/gpt-5.6-terra", writerEffort: "low" } : {}]);
+		await h.fire("session_shutdown", ctx);
+		await tick();
+	});
+}
+
 // C1 diagnostics (odd/tasks/usage-click-and-changes-attribution.md): the
 // guard chain's posture is unchanged (spawn-gated registration stays, a
 // parent decision) -- these only verify each drop explains itself once, in
@@ -2113,6 +2165,11 @@ test("foreign clone tool requires consent before queueing and never enters paren
 		await assert.rejects(run.execute("wrong-selector", { agent: "explore", task: "Map", workspace_root: foreign, mode: "background" }, undefined, undefined, ctx), /same Git clone/);
 		await assert.rejects(run.execute("both", { agent: "explore", task: "Map", workspace_root: parent, repository_root: foreign, mode: "background" }, undefined, undefined, ctx), /mutually exclusive/);
 		await assert.rejects(run.execute("both-malformed", { agent: "explore", task: "Map", workspace_root: parent, repository_root: 123, mode: "background" }, undefined, undefined, ctx), /mutually exclusive/);
+		// Blank selectors name no destination, so they must not read as a second target.
+		const blank = await run.execute("blank-roots", { agent: "__absent__", task: "Map", workspace_root: "", repository_root: "", mode: "background" }, undefined, undefined, ctx);
+		assert.match(JSON.stringify(blank), /no subagent named/, "blank selectors pass the exclusivity guard and reach agent lookup");
+		assert.deepEqual(spawned, [], "a blank selector must not spawn a child");
+		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), [], "a blank selector must not register a worktree");
 		const pending = run.execute("foreign", { agent: "explore", task: "Map", repository_root: foreign, mode: "background" }, undefined, undefined, ctx);
 		await tick();
 		assert.equal(prompts, 1);
@@ -2503,6 +2560,141 @@ test("retired SDD agent names and selection are rejected before dispatch", async
 	await h.fire("session_shutdown", ctx);
 });
 
+for (const drift of ["loss", "common-dir", "root"] as const) {
+	test(`established writer authority rejects metadata ${drift} before preparation or queue`, async () => {
+		const fixture = realpathSync(mkdtempSync(join(root, "established-writer-")));
+		const project = join(fixture, "project");
+		const cwd = join(project, "nested");
+		const home = join(fixture, "home");
+		mkdirSync(cwd, { recursive: true });
+		const definitions = join(home, ".pi", "agent", "agents");
+		mkdirSync(definitions, { recursive: true });
+		writeFileSync(join(definitions, "worker.md"), "---\ndescription: fixture\nmodel: offline/good\n---\nFixture");
+		execFileSync("git", ["init", "--quiet", project]);
+		const h = fakePi();
+		const runtime = deps();
+		Object.assign(runtime.deps, { home, resolveWorktree: resolveSessionWorktree });
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		Object.assign(ctx, { cwd, modelRegistry: { find: () => ({ provider: "offline", id: "good" }) } });
+		ctx.sessionManager.getCwd = () => cwd;
+		await h.fire("session_start", ctx);
+		let statusCalls = 0;
+		const unbind = bindSessionRepositoryPreparation(ctx.sessionManager, cwd, async () => { statusCalls++; return true; }, () => true);
+		try {
+			if (drift === "root") execFileSync("git", ["init", "--quiet", cwd]);
+			else {
+				renameSync(join(project, ".git"), join(project, "saved-git"));
+				if (drift === "common-dir") {
+					const alternate = join(fixture, "alternate");
+					mkdirSync(alternate);
+					execFileSync("git", ["init", "--quiet", alternate]);
+					writeFileSync(join(project, ".git"), `gitdir: ${join(alternate, ".git")}\n`);
+				}
+			}
+			await assert.rejects(h.tools.get("subagent_run")!.execute("lost-authority", { agent: "worker", task: "Implement\n## Allowed edit surfaces\nsrc/app.ts", mode: "background" }, undefined, undefined, ctx));
+			assert.equal(statusCalls, 0, "no bootstrap-capable STATUS after established identity drift");
+			assert.equal(runtime.children.length, 0, "no writer queued/spawned after established identity drift");
+		} finally { unbind(); await h.fire("session_shutdown", ctx); }
+	});
+}
+
+for (const scenario of ["implicit-worker", "explicit-worker", "implicit-gentle-ai-worker", "explicit-gentle-ai-worker", "scope", "task", "mode", "model", "profile-model", "profile-valid", "foreign", "nested", "repository", "print", "cancelled", "missing", "off", "shutdown", "replacement", "changed-id", "during-cancel", "docs", "read-only", "review", "jd"] as const) {
+	test(`bounded writer executor admission before bootstrap: ${scenario}`, async t => {
+		const fixture = realpathSync(mkdtempSync(join(root, "writer-admission-")));
+		const project = join(fixture, "project");
+		const fixtureHome = join(fixture, "home");
+		const definitions = join(fixtureHome, ".pi", "agent", "agents");
+		mkdirSync(definitions, { recursive: true });
+		mkdirSync(project);
+		mkdirSync(join(project, "nested"));
+		for (const role of ["worker", "gentle-ai-worker", "explore", "reviewer", "jd-fix-agent"]) writeFileSync(join(definitions, `${role}.md`), `---\ndescription: fixture\nmodel: offline/good\ntools: [read]\n---\nFixture`);
+		const h = fakePi();
+		const runtime = deps();
+		runtime.deps.home = fixtureHome;
+		runtime.deps.resolveWorktree = resolveSessionWorktree;
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		Object.assign(ctx, { cwd: project, modelRegistry: { find: (_provider: string, model: string) => scenario === "model" || model === "bad" ? undefined : { provider: "offline", id: model } } });
+		ctx.sessionManager.getCwd = () => project;
+		ctx.sessionManager.getEntries = () => h.entries as never;
+		await h.fire("session_start", ctx);
+		if (scenario === "profile-model" || scenario === "profile-valid") {
+			mkdirSync(join(project, ".pi", "gentle-ai"), { recursive: true });
+			writeFileSync(join(project, ".pi", "gentle-ai", "profile.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile: "invalid" }));
+			const config = runtime.deps.env!.GENTLE_PI_CONFIG_HOME = join(fixture, "config");
+			mkdirSync(config, { recursive: true });
+			writeFileSync(join(config, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, profiles: { invalid: { worker: { model: scenario === "profile-valid" ? "offline/pinned-good" : "offline/bad" } } } }));
+		}
+		let calls = 0;
+		const abort = new AbortController();
+		const unbind = scenario === "missing" ? () => {} : bindSessionRepositoryPreparation(ctx.sessionManager, project, async (_root, current) => {
+			calls++;
+			if (scenario === "shutdown") await h.fire("session_shutdown", ctx);
+			if (scenario === "replacement") { const next = fakeContext(); next.ctx.sessionManager.getCwd = () => project; await h.fire("session_start", next.ctx); }
+			if (scenario === "changed-id") ctx.sessionManager.getSessionId = () => "changed";
+			if (scenario === "during-cancel") abort.abort();
+			if (!current() || scenario === "off" || ["shutdown", "replacement"].includes(scenario)) return false;
+			execFileSync("git", ["init", "--quiet", project], { env: { PATH: process.env.PATH, HOME: fixtureHome, GIT_CONFIG_NOSYSTEM: "1" }, stdio: "pipe" });
+			return true;
+		}, () => true);
+		t.after(() => { unbind(); });
+		if (scenario === "cancelled") abort.abort();
+		if (scenario === "print") Object.assign(ctx, { mode: "print", hasUI: false });
+		const agent = scenario.includes("gentle-ai-worker") ? "gentle-ai-worker" : scenario === "read-only" ? "explore" : scenario === "review" ? "reviewer" : scenario === "jd" ? "jd-fix-agent" : "worker";
+		const task = `Implement source\n## Allowed edit surfaces\n${scenario === "docs" ? "odd/tasks/feature.md" : "src/app.ts"}\n## Return\nReport`;
+		const params = { agent, task: scenario === "scope" ? "No surface" : scenario === "task" ? 42 : task, mode: scenario === "mode" ? "invalid" : "background", ...(scenario.startsWith("explicit") ? { workspace_root: project } : {}), ...(scenario === "nested" ? { workspace_root: join(project, "nested") } : {}), ...(scenario === "foreign" ? { workspace_root: fixtureHome } : {}), ...(scenario === "repository" ? { repository_root: fixtureHome } : {}) };
+		const accepted = scenario.startsWith("implicit-") || scenario.startsWith("explicit-") || scenario === "profile-valid" || ["docs", "read-only", "review", "jd"].includes(scenario);
+		const result = h.tools.get("subagent_run")!.execute("admission", params, abort.signal, undefined, ctx);
+		if (accepted) await result; else await assert.rejects(result);
+		await tick();
+		const prepared = scenario.startsWith("implicit-") || scenario.startsWith("explicit-") || scenario === "profile-valid";
+		if (scenario === "profile-valid") assert.ok(runtime.spawned[0]?.includes("offline/pinned-good"), "repository declaration retains effective profile through bootstrap");
+		assert.equal(calls, prepared || ["off", "shutdown", "replacement", "changed-id", "during-cancel"].includes(scenario) ? 1 : 0);
+		assert.equal(existsSync(join(project, ".git")), prepared);
+		assert.equal(runtime.children.length, accepted ? 1 : 0, "invalid admission never queues/spawns");
+	});
+}
+
+for (const explicit of [false, true]) {
+	test(`same manager and ID after bootstrap permit ${explicit ? "explicit" : "implicit"} launch registration`, async () => {
+		const h = fakePi();
+		const runtime = deps();
+		let bootstrapped = false;
+		const baseSpawn = runtime.deps.spawn!;
+		runtime.deps.spawn = (command, args, options) => {
+			const child = baseSpawn(command, args, options);
+			const on = child.on.bind(child);
+			child.on = ((event: string, listener: () => void) => {
+				if (event === "spawn") queueMicrotask(listener);
+				else on(event as "exit", listener);
+				return child;
+			}) as typeof child.on;
+			return child;
+		};
+		runtime.deps.resolveWorktree = (path, base) => bootstrapped ? { root: resolve(base, path), commonDir: "/bootstrap/git" } : undefined;
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		const manager = ctx.sessionManager;
+		ctx.sessionManager.getEntries = () => h.entries as never;
+		await h.fire("session_start", ctx);
+		assert.deepEqual(h.entries, []);
+		bootstrapped = true;
+		const result = await h.tools.get("subagent_run")!.execute("bootstrap", { agent: "explore", task: "Map", mode: "background", ...(explicit ? { workspace_root: cwd } : {}) }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(runtime.children.length, 1);
+		assert.equal(ctx.sessionManager, manager);
+		assert.equal(ctx.sessionManager.getSessionId(), "s1");
+		assert.equal(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY).length, 1);
+		runtime.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "mapped" }] }] });
+		runtime.children[0].emit({ type: "agent_settled" });
+		await tick();
+		const taskId = (result.details.gentleAgents as { taskId: string }).taskId;
+		assert.match((await h.tools.get("subagent_status")!.execute("status", { task_id: taskId }, undefined, undefined, ctx)).content[0].text, /completed/);
+		assert.equal(h.entries.some(entry => entry.customType === REVIEW_REMINDER_RECEIPT), false, "spawn registration is not mutation evidence");
+	});
+}
+
 test("ordinary non-Git tasks still continue in their original cwd without registering a worktree", async () => {
 	const h = fakePi();
 	const runtime = deps();
@@ -2524,34 +2716,36 @@ test("ordinary non-Git tasks still continue in their original cwd without regist
 	await tick();
 });
 
-test("delayed child spawn retains the originating session and cannot append into its replacement", async () => {
-	const h = fakePi();
-	const runtime = deps();
-	const spawnEvents: Array<() => void> = [];
-	const baseSpawn = runtime.deps.spawn!;
-	runtime.deps.spawn = (command, args, options) => {
-		const child = baseSpawn(command, args, options);
-		const on = child.on.bind(child);
-		child.on = ((event: string, listener: () => void) => {
-			if (event === "spawn") spawnEvents.push(listener);
-			else on(event as "exit", listener);
+for (const sameId of [false, true]) {
+	test(`delayed child spawn cannot append into a ${sameId ? "same-ID manager" : "new-ID session"} replacement`, async () => {
+		const h = fakePi();
+		const runtime = deps();
+		const spawnEvents: Array<() => void> = [];
+		const baseSpawn = runtime.deps.spawn!;
+		runtime.deps.spawn = (command, args, options) => {
+			const child = baseSpawn(command, args, options);
+			const on = child.on.bind(child);
+			child.on = ((event: string, listener: () => void) => {
+				if (event === "spawn") spawnEvents.push(listener);
+				else on(event as "exit", listener);
+				return child;
+			}) as typeof child.on;
 			return child;
-		}) as typeof child.on;
-		return child;
-	};
-	gentleAgents(h.pi, {}, runtime.deps);
-	const { ctx } = fakeContext();
-	await h.fire("session_start", ctx);
-	await h.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "Map", workspace_root: join(root, "old-root"), mode: "background" }, undefined, undefined, ctx);
-	await tick();
-	const next = fakeContext();
-	(next.ctx.sessionManager as unknown as { getSessionId(): string }).getSessionId = () => "s2";
-	await h.fire("session_start", next.ctx);
-	spawnEvents[0]();
-	await tick();
-	assert.deepEqual(h.entries, [], "captured registry is closed instead of appending to the new bound API");
-	await h.fire("session_shutdown", next.ctx);
-});
+		};
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		await h.fire("session_start", ctx);
+		await h.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "Map", workspace_root: join(root, "old-root"), mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		const next = fakeContext();
+		(next.ctx.sessionManager as unknown as { getSessionId(): string }).getSessionId = () => sameId ? "s1" : "s2";
+		await h.fire("session_start", next.ctx);
+		spawnEvents[0]();
+		await tick();
+		assert.deepEqual(h.entries, [], "captured registry is closed instead of appending to the new bound API");
+		await h.fire("session_shutdown", next.ctx);
+	});
+}
 
 test("agentRuntimePaths isolates sessions and transcripts by profile and retains the explicit-home fallback", () => {
 	assert.deepEqual(agentRuntimePaths("/home/x", "/profiles/pi-principal/agent"), {
@@ -2779,7 +2973,7 @@ test("subagent_list_agents and subagent_run in task mode launch a child with the
 	harness.children[0].emit({ type: "tool_execution_start", toolCallId: "c", toolName: "grep", args: {} });
 	harness.children[0].emit({ type: "message_end", message: { role: "assistant", usage: { totalTokens: 12_000, cost: { total: 0.09 } } } });
 	await tick();
-	assert.match(widget()![1], /◐  explore  map lib modules +gpt-5\.6-terra · low · 12k · \$0\.09 · \d+s │$/);
+	assert.match(widget()![1], /◐  explore  map lib modules +gpt-5\.6-terra · low · 12k · \$0\.090 · \d+s │$/);
 	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "lib has three agent files." }] }] });
 	harness.children[0].emit({ type: "agent_settled" });
 	const result = await running;
@@ -2793,6 +2987,33 @@ test("subagent_list_agents and subagent_run in task mode launch a child with the
 	await tick();
 	assert.deepEqual(harness.children[1].killed, ["SIGTERM"], "closing pi stops the running children");
 	assert.match(tools.get("subagent_run")!.renderCall({ agent: "explore" }, plainTheme).render(60).join(""), /❀ agent run · explore/);
+});
+
+test("running subagent_result polls hide only their tool chrome, not the model result or final completion", async () => {
+	const { pi, tools, fire, sent, renderers } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	const started = await tools.get("subagent_run")!.execute("start", { agent: "explore", task: "Long job", mode: "background" }, undefined, undefined, ctx);
+	const id = (started.details.gentleAgents as { taskId: string }).taskId;
+	await tick();
+	const resultTool = tools.get("subagent_result")!;
+	for (const expanded of [false, true]) {
+		const poll = await resultTool.execute("poll", { task_id: id }, undefined, undefined, ctx);
+		assert.match(poll.content[0].text, /still running/, "poll remains available to the model");
+		assert.deepEqual(resultTool.renderCall({ task_id: id }, plainTheme).render(80), [], "poll title is hidden");
+		assert.deepEqual(resultTool.renderResult(poll as Parameters<Registered["renderResult"]>[0], { expanded }, plainTheme).render(80), [], "poll body is hidden");
+	}
+	assert.match(tools.get("subagent_status")!.renderCall({ task_id: id }, plainTheme).render(80).join(""), /agent status/, "other tools retain their rendering");
+	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "All done." }] }] });
+	harness.children[0].emit({ type: "agent_settled" });
+	await tick();
+	const finished = await resultTool.execute("finished", { task_id: id }, undefined, undefined, ctx);
+	assert.equal(finished.content[0].text, "All done.");
+	assert.match(resultTool.renderResult(finished as Parameters<Registered["renderResult"]>[0], { expanded: true }, plainTheme).render(80).join("\n"), /agent result.*All done\./s, "completed result remains visible");
+	assert.equal(sent.length, 1);
+	assert.match(renderers.get("gentle-agents.result")!(sent[0].message, { expanded: true }, plainTheme).render(80).join("\n"), /Agent result.*All done\./s, "background completion card remains visible");
 });
 
 test("the Agents widget never registers a sidebar rail part and stays visible even while the fullscreen sidebar owns the host", async () => {

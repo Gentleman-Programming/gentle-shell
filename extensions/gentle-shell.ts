@@ -3,33 +3,42 @@ import { Editor, decodeKittyPrintable, isKeyRelease, matchesKey, parseKey, trunc
 import { execFile, spawnSync } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { profilesFilePath, readProfilesFileResult } from "../lib/agent-profiles.ts";
+import { profilesFilePath, profileRoleEntries, readProfilesFileResult } from "../lib/agent-profiles.ts";
+import { resolveProfilePin } from "../lib/agent-profile-pin.ts";
 import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { buildShellHeaderModel, renderShellBar, renderShellHeaderBar, renderShellHeaderRule, renderShellSidebarBar, shellEnabled, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
+import { buildShellHeaderModel, renderShellBar, renderShellBottomOnlyBar, renderShellHeaderBar, renderShellHeaderRule, renderShellSidebarBar, shellEnabled, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
 import { CHANGE_STATUS, RootBranchLabels, renderChangesWidget, type ChangedFile, type ChangesModel, type GitRunner, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
-import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver } from "../lib/session-worktree-registry.ts";
+import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver, type WorktreeIdentity } from "../lib/session-worktree-registry.ts";
 import { CARD_TONE, renderCard, type Card, type CardTheme } from "../lib/shell-card.ts";
 import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/command-palette.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { VisualCustomizeView, type CustomizeCategory, type CustomizeRow, type ProfileActions } from "../lib/visual-customize-view.ts";
 import { deleteVisualProfile, getVisualProfile, listVisualProfiles, resetVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
 import { sourcePalettePreview } from "../lib/theme-customization.ts";
-import { DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, STATUS_PLACEMENT, resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
+import { DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, STATUS_PLACEMENT, VISUAL_SECTION_KEYS, resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
 import { BANNER_COLORS, DEFAULT_BANNER_CONFIG, readBannerConfig, readBannerConfigForEdit, writeBannerConfig } from "./startup-banner.ts";
 import { agentsViewKey } from "../lib/agents-keys.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { DOUBLE_ESC_CANCEL_HINT, framePromptLines, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
+import { inferOddPhase } from "../lib/odd-phase-inference.ts";
+import { isInteractiveMode } from "../lib/rpc-host.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { resolveAnimationPolicy, writeAnimationPolicy, type AnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy, type VimPolicy } from "../lib/vim-policy.ts";
+import { resolveHistoryCapture, writeHistoryCapturePolicy } from "../lib/history-capture-policy.ts";
 import { createRequire } from "node:module";
 import { createVimEditorAdapter } from "../lib/vim-editor-adapter.ts";
 import { VimNormalEngine } from "../lib/vim-normal-engine.ts";
 import { VimOperatorEngine, type OperatorResult } from "../lib/vim-operator-engine.ts";
 import { VimVisualEngine } from "../lib/vim-visual-engine.ts";
+
+// Canonical entrypoint and index patterns across POSIX and Windows separators.
+// Exported for cross-platform unit testing of candidate path resolution.
+export const VIM_CLI_ENTRY_PATTERN = /(?:^|[\\/])dist[\\/]bundle[\\/]cli\.js$/;
+export const VIM_AGENT_INDEX_PATTERN = /(?:^|[\\/])dist[\\/]index\.js$/;
 
 // Candidate paths provide only package roots, never version authority. Both
 // constructors must come from that same canonical agent/TUI pair before its
@@ -39,19 +48,19 @@ export function resolveVimRuntime(entry = process.argv[1], customClass: typeof C
 	const editorPrototype = Object.getPrototypeOf(customClass.prototype) as typeof Editor.prototype | undefined;
 	const editorClass = editorPrototype?.constructor as typeof Editor | undefined;
 	const candidates: string[] = [];
-	// The 0.87.1 CLI uses the bundled virtual module graph. Its public index
+	// The audited 0.99.1 CLI uses the bundled virtual module graph. Its public index
 	// exports the very CustomEditor class supplied to extensions by that graph.
 	try {
 		if (entry) {
 			const cli = realpathSync(entry);
-			if (cli.endsWith("/dist/bundle/cli.js")) {
+			if (VIM_CLI_ENTRY_PATTERN.test(cli)) {
 				const root = resolve(dirname(cli), "../..");
-				const bundlePath = resolve(root, "dist/bundle/index.js");
+				const bundlePath = resolve(root, "dist", "bundle", "index.js");
 				if (realpathSync(bundlePath) === bundlePath) {
 					const requireFromBundle = createRequire(bundlePath);
 					const bundled = requireFromBundle(bundlePath) as { CustomEditor?: typeof CustomEditor; VERSION?: string };
 					const metadata = requireFromBundle(resolve(root, "package.json")) as { name?: string; version?: string };
-					if (metadata.name === "@earendil-works/pi-coding-agent" && metadata.version === "0.87.1" &&
+					if (metadata.name === "@earendil-works/pi-coding-agent" && metadata.version === "0.99.1" &&
 						bundled.VERSION === metadata.version && bundled.CustomEditor === customClass &&
 						typeof editorClass === "function" && editorClass.name === "Editor" &&
 						editorPrototype === editorClass.prototype &&
@@ -65,17 +74,17 @@ export function resolveVimRuntime(entry = process.argv[1], customClass: typeof C
 	try {
 		if (entry) {
 			const cli = realpathSync(entry);
-			if (cli.endsWith("/dist/bundle/cli.js")) candidates.push(resolve(dirname(cli), "../.."));
+			if (VIM_CLI_ENTRY_PATTERN.test(cli)) candidates.push(resolve(dirname(cli), "../.."));
 		}
 	} catch { /* The CLI is only a candidate, not proof. */ }
 	try {
 		const localIndex = realpathSync(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent")));
-		if (localIndex.endsWith("/dist/index.js")) candidates.push(resolve(dirname(localIndex), ".."));
+		if (VIM_AGENT_INDEX_PATTERN.test(localIndex)) candidates.push(resolve(dirname(localIndex), ".."));
 	} catch { /* No local candidate; do not trust extension-relative metadata. */ }
 	for (const root of new Set(candidates)) {
 		try {
-			const agentIndex = realpathSync(resolve(root, "dist/index.js"));
-			if (agentIndex !== resolve(root, "dist/index.js")) continue;
+			const agentIndex = realpathSync(resolve(root, "dist", "index.js"));
+			if (agentIndex !== resolve(root, "dist", "index.js")) continue;
 			const requireFromRuntime = createRequire(agentIndex);
 			const agent = requireFromRuntime(agentIndex) as { CustomEditor?: typeof CustomEditor };
 			const agentMetadata = requireFromRuntime(resolve(root, "package.json")) as { version?: string; name?: string };
@@ -85,7 +94,7 @@ export function resolveVimRuntime(entry = process.argv[1], customClass: typeof C
 			const tuiMetadata = requireFromRuntime(resolve(tuiRoot, "package.json")) as { version?: string; name?: string };
 			if (agent.CustomEditor === customClass && tui.Editor === editorClass &&
 				agentMetadata.name === "@earendil-works/pi-coding-agent" && tuiMetadata.name === "@earendil-works/pi-tui" &&
-				(agentMetadata.version === "0.85.1" || agentMetadata.version === "0.87.1") &&
+				agentMetadata.version === "0.99.1" &&
 				agentMetadata.version === tuiMetadata.version) return { version: tuiMetadata.version, editorClass };
 		} catch { /* Unknown package or constructor: ordinary editing stays active. */ }
 	}
@@ -98,12 +107,14 @@ import {
 	type DoubleEscCancelPolicy,
 	type DoubleEscCancelResolution,
 } from "../lib/double-esc-cancel-policy.ts";
-import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseProviderUsage, parseUsageHeaders, parseUsageSource, UsageSourceRegistry, UsageStore, USAGE_SOURCE_EVENT, type ProviderUsage, type UsageSource } from "../lib/shell-usage.ts";
+import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseProviderUsage, parseUsageHeaders, parseUsageSource, usageScopeProviders, UsageSourceRegistry, UsageStore, USAGE_SOURCE_EVENT, type ProviderUsage, type UsageSource } from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarHeader, sidebarPart, sidebarState, VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
-import { installSidebar, invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
+import { installSidebar, invalidateSidebar, narrowStatusOwner, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
 import { SessionChanges, SESSION_CHANGE_EVENT } from "../lib/session-changes.ts";
+import { REVIEW_SIDEBAR_EVENT, isReviewSidebarSnapshot, type ReviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
+import { SelectionEngine } from "../lib/selection-engine.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
 
 // Gentle Shell: the visual layer gentle-pi puts on top of pi. It installs the
@@ -147,14 +158,23 @@ export interface ShellDeps {
 	vimRuntimeVersion?(): string | undefined;
 }
 
-// The rail digest runs every frame. Cache parsing by file identity and metadata,
-// not just mtime: profile writes replace the store atomically. Keep the cache
-// local to this shell instance and recheck on the next frame after panel edits.
-export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env): () => string | undefined {
+export type ActiveProfileReader = (() => string | undefined) & {
+	bind(cwd: string, resolveWorktree: WorktreeResolver): boolean;
+	refresh(): boolean;
+	reset(): void;
+};
+
+// Unbound reads retain the global file-identity cache, including atomic replacements.
+// Bound reads are snapshots: no filesystem or Git work is done during a frame.
+export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env): ActiveProfileReader {
 	const path = profilesFilePath(env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai"));
 	let fingerprint: string | undefined;
 	let name: string | undefined;
-	return () => {
+	let bound = false;
+	let cwd: string | undefined;
+	let identity: WorktreeIdentity | undefined;
+	let effective: string | undefined;
+	const global = () => {
 		try {
 			const stat = statSync(path, { bigint: true });
 			const next = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
@@ -170,6 +190,28 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 			return undefined;
 		}
 	};
+	const reader = (() => bound ? effective : global()) as ActiveProfileReader;
+	reader.refresh = () => {
+		if (!bound) return false;
+		const pin = identity && cwd ? resolveProfilePin({
+			cwd,
+			configHome: env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai"),
+			resolveWorktree: () => identity!,
+		}) : undefined;
+		const next = pin ? `${pin.profile} (${pin.source})` : global();
+		const changed = next !== effective;
+		effective = next;
+		return changed;
+	};
+	reader.bind = (nextCwd, resolveWorktree) => {
+		reader.reset();
+		cwd = nextCwd;
+		try { identity = resolveWorktree(nextCwd, nextCwd); } catch { identity = undefined; }
+		bound = true;
+		return reader.refresh();
+	};
+	reader.reset = () => { bound = false; cwd = undefined; identity = undefined; effective = undefined; };
+	return reader;
 }
 
 function ambientDevBinary(): DevBinaryNotice | undefined {
@@ -182,7 +224,7 @@ function ambientDevBinary(): DevBinaryNotice | undefined {
 	}
 }
 
-const defaultShellDeps: Omit<ShellDeps, "activeProfile"> = { fetch: (...args) => globalThis.fetch(...args), now: () => Date.now(), devBinary: ambientDevBinary, resolveWorktree: resolveSessionWorktree, gitRunner: shellGitRunner };
+const defaultShellDeps: Omit<ShellDeps, "activeProfile"> = { fetch: (input, init) => globalThis.fetch(input, init), now: () => Date.now(), devBinary: ambientDevBinary, resolveWorktree: resolveSessionWorktree, gitRunner: shellGitRunner };
 
 interface AssistantUsageEntry {
 	type: string;
@@ -338,6 +380,11 @@ export class GentlePromptEditor extends CustomEditor {
 	private visualAnchor: { line: number; col: number } | undefined;
 	private pulse: NodeJS.Timeout | undefined;
 	private readonly deps: PromptEditorDeps;
+	// Native selection engine (shift+home/end, alt+a, replace-on-key): ported
+	// from pi-select-del so the petal prompt owns the feature without factory
+	// composition. Constructed with `this`; the internals probe degrades to
+	// passthrough on pi drift, costing only the selection features.
+	private readonly selectionEngine: SelectionEngine;
 	// CustomEditor keeps its own `keybindings` private, so this class holds
 	// its own reference to run the same app.interrupt match before deciding
 	// whether to swallow the keystroke.
@@ -351,6 +398,7 @@ export class GentlePromptEditor extends CustomEditor {
 
 	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, deps: PromptEditorDeps) {
 		super(tui, theme, keybindings);
+		this.selectionEngine = new SelectionEngine(this);
 		this.deps = deps;
 		this.keybindingsManager = keybindings;
 	}
@@ -480,6 +528,19 @@ export class GentlePromptEditor extends CustomEditor {
 	 * and never reach this branch.
 	 */
 	override handleInput(data: string): void {
+		// Selection and Vim handlers can consume input before the native chain;
+		// any intervening key invalidates an idle Esc confirmation.
+		if (this.pendingIdleClearDeadline !== undefined && !this.keybindingsManager.matches(data, "app.interrupt")) {
+			this.pendingIdleClearDeadline = undefined;
+			this.pendingIdleClearText = undefined;
+		}
+		// Vim owns its modal keys and paste frames. Ordinary editing retains
+		// native selection before the prompt's existing input chain.
+		if (this.vimPolicy === "on") this.handleInputNative(data);
+		else this.selectionEngine.handleInput(data, (d) => this.handleInputNative(d));
+	}
+
+	private handleInputNative(data: string): void {
 		if ((this.vimPolicy === "on" || this.vimRejected) && this.handleVimPasteFrame(data)) return;
 		if (this.vimPolicy === "on" && isKeyRelease(data)) return;
 		if (this.vimPolicy === "on" && this.vimNormal && matchesKey(data, "escape") && this.vimVisual.active) {
@@ -797,12 +858,6 @@ export class GentlePromptEditor extends CustomEditor {
 			// app actions. Never forward an unowned NORMAL byte to insertion.
 			if (this.vimNormal && !this.keybindingsManager.matches(data, "app.interrupt") && !matchesKey(data, "escape")) return;
 		}
-		// Any keystroke that is not the confirming Esc ends the pending idle
-		// clear, even one that leaves the text identical (type, then delete).
-		if (this.pendingIdleClearDeadline !== undefined && !this.keybindingsManager.matches(data, "app.interrupt")) {
-			this.pendingIdleClearDeadline = undefined;
-			this.pendingIdleClearText = undefined;
-		}
 		if (
 			this.promptState === PROMPT_STATE.WORKING &&
 			!this.isShowingAutocomplete() &&
@@ -931,7 +986,8 @@ export class GentlePromptEditor extends CustomEditor {
 	}
 
 	render(width: number): string[] {
-		const lines = super.render(Math.max(1, width - 2));
+		const inner = Math.max(1, width - 2);
+		const lines = super.render(inner);
 		if (this.getText() === "" && lines.length === 3) lines[1] = withPromptHint(lines[1], PROMPT_HINT, this.deps.fg);
 		const state = this.promptState === PROMPT_STATE.WORKING && this.deps.pending() ? PROMPT_STATE.QUEUED : this.promptState;
 		// The frame keeps the theme's border color rather than pi's thinking-level
@@ -946,6 +1002,7 @@ export class GentlePromptEditor extends CustomEditor {
 				if (range) editorLines = adapter.renderSelection(Math.max(1, width - 2), range.start, range.end, lines);
 			} catch { /* Unknown layout: keep the original rendered prompt. */ }
 		}
+		if (this.vimPolicy !== "on") editorLines = this.selectionEngine.decorateRows(editorLines, inner, 0);
 		const visibleCount = (this as unknown as { renderedVisibleLineCount?: number }).renderedVisibleLineCount;
 		const borderEnd = Number.isInteger(visibleCount) && visibleCount! >= 1 && visibleCount! + 2 <= editorLines.length
 			? visibleCount! + 2 : editorLines.length;
@@ -965,6 +1022,9 @@ export class GentlePromptEditor extends CustomEditor {
 						: undefined,
 			].filter(Boolean).join(" · ") || undefined,
 		});
+		if (this.vimPolicy !== "on") {
+			framed[framed.length - 1] = this.selectionEngine.decorateBottomRule(framed[framed.length - 1] ?? "", width, "╯");
+		}
 		// Pi places autocomplete after its bottom border. Keep those rows below
 		// Gentle's frame and preserve their terminal width and row coordinates.
 		for (const line of editorLines.slice(borderEnd)) {
@@ -1154,6 +1214,12 @@ function positiveMs(value: string | undefined, fallback: number): number {
 function changesPollMs(env: NodeJS.ProcessEnv): number {
 	return positiveMs(env.GENTLE_PI_SHELL_CHANGES_POLL_MS, CHANGES_POLL_DEFAULT_MS);
 }
+
+// One bounded window per provider refresh: a credential lookup or fetch that
+// never answers must not hold the other providers — or the panel opening on
+// them — past it. Tunable (tests, slow networks); invalid values fall back.
+const USAGE_FETCH_TIMEOUT_DEFAULT_MS = 10_000;
+const usageFetchTimeoutMs = (env: NodeJS.ProcessEnv): number => positiveMs(env.GENTLE_PI_SHELL_USAGE_TIMEOUT_MS, USAGE_FETCH_TIMEOUT_DEFAULT_MS);
 
 function changesFingerprint(model: ChangesModel): string {
 	return [model.notice ?? "", ...model.files.map((file) => `${file.path}:${file.status}:${file.added}:${file.deleted}:${file.diffRevision ?? ""}:${file.countsUnavailable ?? ""}`)].join("|");
@@ -1356,7 +1422,14 @@ async function fetchFromSource(source: UsageSource, apiKey: string | undefined, 
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	installSessionChangeCapture(pi, env, overrides.resolveWorktree ?? resolveSessionWorktree);
 	if (!shellEnabled(env)) return;
-	const deps: ShellDeps = { ...defaultShellDeps, activeProfile: createActiveProfileReader(env), ...overrides };
+	const profileReader = createActiveProfileReader(env);
+	const deps: ShellDeps = { ...defaultShellDeps, activeProfile: profileReader, ...overrides };
+	let profilePoll: ReturnType<typeof setInterval> | undefined;
+	const stopProfilePoll = () => {
+		if (profilePoll) clearInterval(profilePoll);
+		profilePoll = undefined;
+		profileReader.reset();
+	};
 	const usage = new UsageStore();
 	// Providers gentle-shell has never heard of get a usage source too, when
 	// the extension that owns them registers one on pi.events; see the
@@ -1366,29 +1439,136 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	// The 5-minute rule is per provider: one provider's fetch cannot leave the
 	// next one waiting for an interval it never used.
 	const usageFetchedAt = new Map<string, number>();
-	const refreshUsage = async (ctx: ExtensionContext, force: boolean) => {
-		const provider = ctx.model?.provider;
-		if (!provider) return;
-		const source = usageSources.get(provider);
-		if (!source && provider !== CODEX_PROVIDER && provider !== NAN_PROVIDER) return;
-		const now = deps.now();
-		if (!force && now - (usageFetchedAt.get(provider) ?? 0) < USAGE_REFRESH_MS) return;
-		usageFetchedAt.set(provider, now);
-		const apiKey = await ctx.modelRegistry.getApiKeyForProvider(provider).catch(() => undefined);
-		const fetched = source
-			? await fetchFromSource(source, apiKey, deps.fetch, deps.now())
-			: provider === NAN_PROVIDER
-				? await fetchNanUsage(apiKey, deps.fetch, deps.now())
-				: await fetchCodexUsage(apiKey, deps.fetch, deps.now());
-		if (!fetched) return;
-		// A registered source can be replaced while its own fetch is still in
-		// flight; the identity captured above is this call's source, so a stale
-		// answer that outlives its replacement is discarded instead of
-		// overwriting whatever the replacement already recorded.
-		if (source && usageSources.get(provider) !== source) return;
-		usage.record(fetched);
+	// Actual failures, per provider: a refresh that settled without a snapshot.
+	// In-flight fetches are never in here, so they cannot read as failed; a
+	// successful refresh (or a snapshot otherwise recorded) clears the provider.
+	const usageFailures = new Set<string>();
+	// Monotonic per-provider generation: each dispatched refresh takes the next
+	// number, and only the newest one for a provider may mutate its state. Two
+	// overlapping refreshes of the SAME source (or of builtins) can otherwise
+	// let an older failure settle after a newer success and poison it.
+	const usageGenerations = new Map<string, number>();
+	// One spelling of the config home, so the pin resolver, the global profiles
+	// store and the profile reader cannot drift onto two different stores.
+	const usageConfigHome = gentlePiConfigHome(env);
+	const usageFetchTimeout = usageFetchTimeoutMs(env);
+	// The subagent routing in force for this session: a repository pin first,
+	// then the global active profile. Only the profile's own role entries count;
+	// the reserved orchestrator key is not a route.
+	const activeRoutingModels = (ctx: ExtensionContext): Array<string | undefined> => {
+		const pin = resolveProfilePin({ cwd: ctx.cwd, configHome: usageConfigHome, resolveWorktree: deps.resolveWorktree });
+		const config = pin ? pin.modelProfiles : undefined;
+		if (config) return [...profileRoleEntries(config).map(([, entry]) => entry.model)];
+		const store = readProfilesFileResult(profilesFilePath(usageConfigHome));
+		const active = store.status === "valid" && store.file.active !== undefined ? store.file.profiles[store.file.active] : undefined;
+		return active ? profileRoleEntries(active).map(([, entry]) => entry.model) : [];
+	};
+	// A bare model id names a provider only when exactly one provider in the
+	// registry carries that id; anything else stays untargeted rather than guessed.
+	const bareModelProvider = (ctx: ExtensionContext, modelId: string): string | undefined => {
+		try {
+			const providers = new Set(ctx.modelRegistry.getAll().filter((model) => model.id === modelId).map((model) => model.provider));
+			return providers.size === 1 ? [...providers][0] : undefined;
+		} catch {
+			return undefined;
+		}
+	};
+	const usageScopeFor = (ctx: ExtensionContext): string[] =>
+		usageScopeProviders(ctx.model?.provider, activeRoutingModels(ctx), (modelId) => bareModelProvider(ctx, modelId));
+	let usageScope: string[] = [];
+	// The scope is Git/filesystem work, so it is resolved once per refresh and
+	// per registration — never per panel render, which only reads the cache.
+	const resolveUsageScope = (ctx: ExtensionContext): string[] => {
+		usageScope = usageScopeFor(ctx);
+		return usageScope;
+	};
+	// One notification per settled provider — snapshot or failure — so the
+	// shell and the open overlay repaint immediately instead of waiting for
+	// the whole refresh, whose slowest member is the bounded window itself.
+	const notifyUsageSettled = () => {
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
+	};
+	// One bounded, self-contained refresh per provider. Providers run
+	// concurrently: a stalled credential lookup or fetch for one can never hold
+	// the others — or the overlay opening on them — past its own window.
+	const refreshProvider = async (ctx: ExtensionContext, provider: string, source: UsageSource | undefined, force: boolean, now: number): Promise<boolean> => {
+		if (!source && provider !== CODEX_PROVIDER && provider !== NAN_PROVIDER) return false;
+		if (!force && now - (usageFetchedAt.get(provider) ?? 0) < USAGE_REFRESH_MS) return false;
+		usageFetchedAt.set(provider, now);
+		const generation = (usageGenerations.get(provider) ?? 0) + 1;
+		usageGenerations.set(provider, generation);
+		// The window covers credential resolution and the fetch together. The
+		// abort signal reaches the underlying fetch through the wrapped fetchFn —
+		// built-ins and registered sources alike — so an expired provider is
+		// actually cancelled when its caller honors the signal. The race is the
+		// only path to state mutation: whatever the work resolves after the
+		// window expired is a value nobody reads, so a late answer — success or
+		// failure — cannot mutate anything.
+		const controller = new AbortController();
+		let expire: (() => void) | undefined;
+		const expired = new Promise<"timeout">((resolve) => { expire = () => resolve("timeout"); });
+		const timer = setTimeout(() => {
+			controller.abort();
+			expire?.();
+		}, usageFetchTimeout);
+		// The window's signal composes with whatever the caller already carries —
+		// init.signal, or a Request input's own signal — instead of replacing it:
+		// either side aborting still aborts, exactly like a plain fetch. With no
+		// caller signal the window's signal passes through unchanged.
+		const boundedFetch: typeof fetch = (input, init) => {
+			const callerSignal = init?.signal ?? (typeof Request !== "undefined" && input instanceof Request ? input.signal : undefined);
+			return deps.fetch(input, {
+				...init,
+				signal: callerSignal ? AbortSignal.any([callerSignal, controller.signal]) : controller.signal,
+			});
+		};
+		const work = (async () => {
+			const apiKey = await ctx.modelRegistry.getApiKeyForProvider(provider).catch(() => undefined);
+			// The window may have expired while the credential was resolving: an
+			// aborted provider must not start its fetch at all.
+			if (controller.signal.aborted) return undefined;
+			return source
+				? fetchFromSource(source, apiKey, boundedFetch, deps.now())
+				: provider === NAN_PROVIDER
+					? fetchNanUsage(apiKey, boundedFetch, deps.now())
+					: fetchCodexUsage(apiKey, boundedFetch, deps.now());
+		})();
+		// The race's loser still runs to completion in the background: guard it so
+		// its rejection (a foreign source escaping its own catch) can never
+		// surface as unhandled, and clear the timer so nothing dangles.
+		const guarded = work.catch(() => undefined);
+		const settled = await Promise.race([guarded, expired]);
+		clearTimeout(timer);
+		// Discard before any state mutation: a generation mismatch means a newer
+		// refresh for this provider was dispatched and owns the state, and a
+		// replaced source's answer belongs to neither. A late success must not
+		// overwrite the newer snapshot, and a late failure must not mark the
+		// provider failed after its replacement succeeded.
+		if (usageGenerations.get(provider) !== generation) return false;
+		if (source && usageSources.get(provider) !== source) return false;
+		if (settled === "timeout" || !settled) {
+			usageFailures.add(provider);
+			notifyUsageSettled();
+			return false;
+		}
+		usage.record(settled);
+		usageFailures.delete(provider);
+		notifyUsageSettled();
+		return true;
+	};
+	const refreshUsage = async (ctx: ExtensionContext, force: boolean, only?: string) => {
+		const scope = resolveUsageScope(ctx);
+		const now = deps.now();
+		// Concurrent per provider; each settle notifies the shell (and repaints
+		// the open overlay) on its own, so a fast provider never waits for the
+		// slowest one's window. A discarded late answer notifies nothing: the
+		// refresh that owns the state notifies at its own settle.
+		await Promise.all(
+			scope
+				.filter((provider) => only === undefined || provider === only)
+				.map((provider) => refreshProvider(ctx, provider, usageSources.get(provider), force, now)),
+		);
 	};
 	// Subscribed once, for the life of the extension: a registration can
 	// arrive before the first session_start (the owning extension's factory
@@ -1400,12 +1580,19 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		const source = parseUsageSource(payload);
 		if (!source) return;
 		usageSources.register(source);
-		if (currentContext?.model?.provider === source.provider) void refreshUsage(currentContext, true);
+		if (!currentContext) return;
+		// A registration is interesting when its provider is targeted at all —
+		// the session's own or a subagent route of the active profile — and then
+		// only that provider is forced, never the whole scope.
+		if (resolveUsageScope(currentContext).includes(source.provider)) void refreshUsage(currentContext, true, source.provider);
 	});
 	pi.on("after_provider_response", (event) => {
 		const parsed = parseUsageHeaders(event.headers, deps.now());
 		if (!parsed) return;
 		usage.record(parsed);
+		// A snapshot that arrived with a response is evidence the provider is
+		// answering: a failure some earlier refresh recorded no longer stands.
+		usageFailures.delete(parsed.provider);
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
 	});
@@ -1414,11 +1601,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		const hint = keyHint("app.tools.expand", options.expanded ? "collapse" : "expand");
 		return cardComponent({ title: "Gentle AI", subtitle: "review preflight", body, tone: CARD_TONE.INFO }, theme, { expanded: options.expanded, hint });
 	});
-	const openUsage = async (ctx: ExtensionContext) => {
-		await refreshUsage(ctx, true);
-		await ctx.ui.custom<null>(
-			(tui, theme, _keybindings, done) =>
-				new UsageView(usage, {
+	const openUsage = (ctx: ExtensionContext) =>
+		ctx.ui.custom<null>(
+			(tui, theme, _keybindings, done) => {
+				const view = new UsageView(usage, {
 					theme,
 					now: () => deps.now(),
 					active: () => (ctx.model ? { provider: ctx.model.provider } : undefined),
@@ -1426,10 +1612,16 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					onRefresh: () => refreshUsage(ctx, true),
 					onClose: () => withOverlayRepaint(tui, done)(null),
 					requestRender: () => tui.requestRender(),
-				}),
+					scope: () => ({ providers: usageScope, failed: new Set(usageFailures) }),
+				});
+				// Open promptly: the panel draws whatever the store already holds
+				// while the forced refresh runs underneath it, and repaints when
+				// the refresh settles — answers, failures, or the bounded timeout.
+				view.refresh();
+				return view;
+			},
 			{ overlay: true, overlayOptions: { width: "70%", minWidth: 60, anchor: "center" } },
 		);
-	};
 	pi.registerCommand(USAGE_COMMAND_NAME, {
 		description: "Show subscription usage windows for the connected providers. Press r to refetch.",
 		handler: async (_args, ctx) => openUsage(ctx),
@@ -1483,6 +1675,22 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let changes: SessionChanges | undefined;
 	let registry: SessionWorktreeRegistry | undefined;
 	let currentContext: ExtensionContext | undefined;
+	let review: ReviewSidebarSnapshot | undefined;
+	const redrawReview = () => {
+		renderHost?.invalidateSidebar?.();
+		renderHost?.requestRender();
+	};
+	const unsubscribeReview = pi.events.on(REVIEW_SIDEBAR_EVENT, (value) => {
+		const event = value as { sessionId?: unknown; snapshot?: unknown } | undefined;
+		if (!currentContext || event?.sessionId !== currentContext.sessionManager.getSessionId()) return;
+		if (!isReviewSidebarSnapshot(event.snapshot)) return;
+		review = { state: event.snapshot.state, scope: event.snapshot.scope };
+		redrawReview();
+	});
+	pi.on("session_tree", () => {
+		review = undefined;
+		redrawReview();
+	});
 	let shown = "";
 	const applyChanges = (ctx: ExtensionContext, model: ChangesModel) => {
 		const fingerprint = changesFingerprint(model);
@@ -1517,6 +1725,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		},
 	});
 	pi.on("session_start", async (_event, ctx) => {
+		if (review) {
+			review = undefined;
+			redrawReview();
+		}
+		stopProfilePoll();
 		registry?.close();
 		currentContext = ctx;
 		changes = undefined;
@@ -1524,6 +1737,17 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		registry.start();
 		if (!ctx.hasUI) return;
 		visualSettings = resolveVisualSettings(animationOptions).settings;
+		if (!overrides.activeProfile) {
+			profileReader.bind(ctx.cwd, deps.resolveWorktree);
+			const sessionId = ctx.sessionManager.getSessionId();
+			profilePoll = setInterval(() => {
+				if (currentContext !== ctx || ctx.sessionManager.getSessionId() !== sessionId) return;
+				if (!profileReader.refresh()) return;
+				renderHost?.invalidateSidebar?.();
+				renderHost?.requestRender();
+			}, 2_000);
+			profilePoll.unref?.();
+		}
 		changes = new SessionChanges(ctx.sessionManager.getSessionId(), ctx.sessionManager.getEntries());
 		const tracker = changes;
 		ctx.ui.setFooter((tui, theme, footerData) => {
@@ -1538,8 +1762,14 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const footerModel = (): ShellBarModel => ({
 				...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: usage.get(ctx.model?.provider ?? ""), profile: deps.activeProfile() }),
 				changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted, notice: tracker.model.notice },
+				review,
 			});
-			const part = sidebarPart(tui, "footer", bottom, {
+			// At narrow fullscreen widths only one status row paints: a top header
+			// suppresses the bottom bar in the layout, and otherwise the bottom bar
+			// takes over the header's data while the below-input header steps aside.
+			const statusOwner = () => narrowStatusOwner({ mode: (tui as TUI & { mode?: string }).mode, columns: tui.terminal?.columns ?? 0, statusPlacement: visualSettings.statusPlacement, headerPlacement: visualSettings.headerPlacement });
+			const bottomBar = { ...bottom, render: (width: number) => statusOwner() === STATUS_OWNER.BOTTOM ? renderShellBottomOnlyBar(footerModel(), theme, width, usageShortcutKey, visualSettings) : bottom.render(width) };
+			const part = sidebarPart(tui, "footer", bottomBar, {
 				digest: () => JSON.stringify([footerModel(), visualSettings]),
 				render: (width) => renderShellSidebarBar(footerModel(), theme, width, visualSettings),
 				invalidate() {},
@@ -1563,7 +1793,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			});
 			const uninstall = installSidebar(tui, theme, () => visualSettings.statusPlacement, () => visualSettings.headerPlacement, () => visualSettings.density);
 			// The public widget slot follows the editor even when the rail is absent.
-			const belowHeader = () => visualSettings.headerPlacement === "below-input" && (tui as TUI & { mode?: string }).mode === "fullscreen";
+			const belowHeader = () => visualSettings.headerPlacement === "below-input" && (tui as TUI & { mode?: string }).mode === "fullscreen" && statusOwner() !== STATUS_OWNER.BOTTOM;
 			ctx.ui.setWidget(HEADER_WIDGET_KEY, () => ({
 				render(width: number) { return belowHeader() ? [headerBar(width).text, renderShellHeaderRule(theme, width)] : []; },
 				invalidate() {},
@@ -1603,6 +1833,14 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		applyChanges(ctx, tracker.model);
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
+		if (review) {
+			review = undefined;
+			redrawReview();
+		}
+		// Pi rebuilds the extension runtime after every shutdown (reload, replacement,
+		// fork, quit), so the factory-level subscription never needs to be restored.
+		unsubscribeReview();
+		stopProfilePoll();
 		oddPhaseRegistry.clear(ctx.sessionManager.getSessionId());
 		oddPhaseRegistry.clearRenderRequest(ctx.sessionManager.getSessionId());
 		pendingQueuedText = undefined;
@@ -1651,7 +1889,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		});
 	}
 	pi.registerCommand("gentle:customize", {
-		description: "Configure animations, banner, themes, layout and global Vim prompt editing.",
+		description: "Configure animations, banner, themes, layout, global Vim prompt editing and prompt history capture.",
 		handler: async (_args, ctx) => {
 			if (ctx.mode !== "tui" || !ctx.hasUI) {
 				if (ctx.hasUI) ctx.ui.notify("Visual customization requires an interactive terminal.", "warning");
@@ -1740,7 +1978,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const pending = "Preference saved and applied.";
 			const layoutPreview = (settings: ReturnType<typeof visual>) => ({
 				title: `Layout · ${settings.density} (schematic)`,
-				sample: `${settings.headerPlacement === "top" ? "[Header] → [Input]" : "[Input] → [Header]"}  ${settings.statusPlacement === "auto" ? "[responsive status]" : settings.statusPlacement === "right" ? "[Right rail, wide]" : settings.statusPlacement === "hidden" ? "[Bottom status; no rail]" : "[Bottom status]"}`,
+				sample: `${settings.headerPlacement === "top" ? "[Header] → [Input]" : "[Input] → [Header]"}  ${settings.statusPlacement === "auto" ? "[responsive status]" : settings.statusPlacement === "right" ? "[Right rail, wide]" : settings.statusPlacement === "hidden" ? "[No status bar or rail]" : "[Bottom status]"}`,
 			});
 			category = "Editor";
 			for (const [label, policy] of [["enable", "on"], ["disable", "off"]] as const) rows.push({
@@ -1761,12 +1999,37 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					reportVim(ctx, result);
 				},
 			});
+			category = "History";
+			// The prompt-history extension re-reads this preference per prompt, so a
+			// change applies without restart. An explicit GENTLE_PI_HISTORY_CAPTURE
+			// value wins; the rows say so instead of silently ignoring the choice.
+			const historyCapture = () => resolveHistoryCapture({ env, gentlePiConfigHome: doubleEscCancelConfigHome });
+			for (const [label, policy] of [["enable", "on"], ["disable", "off"]] as const) rows.push({
+				category,
+				label: () => {
+					const result = historyCapture();
+					return `Prompt history capture: ${label}${result.preference === policy && !result.malformed ? " (current)" : ""}${result.envOverride ? " · env override" : ""}`;
+				},
+				preview: () => {
+					const result = historyCapture();
+					const effective = result.enabled ? "on" : "off";
+					return { title: "Prompt history capture · Customize preference", sample: `preference: ${result.preference} · effective: ${effective}${result.malformed ? " · malformed or unreadable file" : ""}${result.envOverride ? " · GENTLE_PI_HISTORY_CAPTURE overrides this preference" : ""}` };
+				},
+				action: () => {
+					const current = historyCapture();
+					if (current.malformed) throw new Error(`Cannot update malformed or unreadable history capture preference: ${current.globalFile}`);
+					writeHistoryCapturePolicy(policy, { gentlePiConfigHome: doubleEscCancelConfigHome });
+					const result = historyCapture();
+					if (result.envOverride) ctx.ui.notify(`Prompt history capture preference saved: ${result.preference}. GENTLE_PI_HISTORY_CAPTURE=${result.envOverride} overrides it; capture stays ${result.envOverride}.`, "warning");
+					else ctx.ui.notify(result.enabled ? "Prompt history capture: on. Applies from the next prompt; stored history is kept." : "Prompt history capture: off. New prompts are not recorded; stored history is kept.", "info");
+				},
+			});
 			category = "Layout";
 			for (const value of Object.values(STATUS_PLACEMENT)) add(() => `Status placement: ${value}${visual().statusPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, statusPlacement: value })), () => layoutPreview({ ...visual(), statusPlacement: value }));
 			for (const value of Object.values(HEADER_PLACEMENT)) add(() => `Header placement: ${value}${visual().headerPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, headerPlacement: value })), () => layoutPreview({ ...visual(), headerPlacement: value }));
 			for (const value of Object.values(DENSITY)) add(() => `Density: ${value}${visual().density === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, density: value })), () => layoutPreview({ ...visual(), density: value }));
 			category = "Sections";
-			for (const key of ["changes", "agents", "todo", "usageCost", "modelDetails"] as const) add(
+			for (const key of VISUAL_SECTION_KEYS) add(
 				() => `Section ${key}: ${visual().visibility[key] ? "shown" : "hidden"}`,
 				pending,
 				() => updateVisual((settings) => ({ ...settings, visibility: { ...settings.visibility, [key]: !settings.visibility[key] } })),
@@ -1952,12 +2215,27 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// is mid-turn, so the text simply waits and goes out, once, when that
 		// turn settles. It is never dropped.
 		// A new turn always starts unlabeled: any ODD phase reported for the
-		// previous turn must never leak into this one. The orchestrator
-		// reports the new turn's phase explicitly once it knows it.
+		// previous turn must never leak into this one. The new turn's tool
+		// activity, or an explicit orchestrator report, labels it again.
 		oddPhaseRegistry.clear(ctx.sessionManager.getSessionId());
 		prompt?.setWorking(true);
 		// The dev-binary card is a startup notice: it leaves with the first prompt.
 		if (ctx.hasUI) ctx.ui.setWidget(DEV_BINARY_WIDGET_KEY, undefined);
+	});
+	pi.on("tool_execution_start", (event, ctx) => {
+		// The working label follows the primary session's own tool activity so
+		// it never depends on the model remembering gentle_odd_phase, which
+		// stays the explicit refinement (its report is already explicit).
+		// Subagents run as headless `pi --mode rpc` children whose env never
+		// carries the interactive-host signal (lib/agents-runner.ts), so they
+		// never infer; their process-local registry could not reach this
+		// label anyway.
+		if (!ctx.hasUI || !isInteractiveMode(ctx.mode) || event.toolName === "gentle_odd_phase") return;
+		const phase = inferOddPhase(event.toolName, event.args);
+		if (phase) {
+			const delegated = event.toolName === "subagent_run" || /^mcp__.+?__subagent_run$/.test(event.toolName);
+			oddPhaseRegistry.infer(ctx.sessionManager.getSessionId(), phase, delegated ? "delegation" : "tool");
+		}
 	});
 	pi.on("agent_settled", (_event, ctx) => {
 		// Pi clears its own run-active flag before emitting agent_settled, so

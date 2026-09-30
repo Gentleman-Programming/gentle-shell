@@ -3,7 +3,7 @@ import { GAUGE_CELLS, gaugeTone, paintGauge, renderGauge, type GaugeTone } from 
 import { renderUsageBar, selectUsageLimit, type ProviderUsage, type UsageWindow } from "./shell-usage.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { CARD_TONE, cardInnerWidth, renderCard } from "./shell-card.ts";
-import { REVIEW_SIDEBAR_LABELS, type ReviewSidebarSnapshot } from "./review-sidebar-state.ts";
+import { REVIEW_SCOPE_UNAVAILABLE, REVIEW_SIDEBAR_LABELS, type ReviewSidebarSnapshot } from "./review-sidebar-state.ts";
 import type { VisualSettings } from "./visual-customization-policy.ts";
 
 type Presentation = Pick<VisualSettings, "density" | "visibility">;
@@ -110,7 +110,7 @@ export function formatTokens(count: number): string {
 	return `${Math.round(count / 1_000_000)}M`;
 }
 
-export function formatCost(total: number, subscription: boolean): string {
+export function formatCost(total: number, subscription = false): string {
 	const amount = total >= 1 ? total.toFixed(2) : total.toFixed(3);
 	return subscription ? `$${amount} sub` : `$${amount}`;
 }
@@ -221,9 +221,13 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 				label("/gentle:changes"),
 			],
 		}]),
-		...(model.review ? [{
+		...(model.review && presentation?.visibility.rdd !== false ? [{
 			title: "🌹 RDD",
-			lines: [value(REVIEW_SIDEBAR_LABELS[model.review.state]), label(sanitizeStatus(model.review.scope))],
+			lines: [
+				value(REVIEW_SIDEBAR_LABELS[model.review.state]),
+				// Unknown scope is an internal sentinel, not something the user acts on.
+				...(model.review.scope !== REVIEW_SCOPE_UNAVAILABLE ? [label(sanitizeStatus(model.review.scope))] : []),
+			],
 		}] : []),
 		{ title: "Integrations", lines: model.statuses.length
 			? model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)))
@@ -320,6 +324,17 @@ export function renderShellHeaderBar(model: ShellHeaderModel, theme: ShellBarThe
 	}
 	const brand = presentation?.density === "minimal" ? "" : theme.fg(ROLE.BRAND, theme.bold(HEADER_BRAND));
 	return { text: visibleWidth(brand) <= targetWidth ? brand : "" };
+}
+
+// The bottom bar when it is the only status row of a narrow fullscreen
+// terminal (the header sits below the input and steps aside). It reuses the
+// header row's own cascade, so context, cost and usage outlive the location
+// on small screens, and keeps extension statuses on a second line instead of
+// dropping them the way the header deliberately does.
+export function renderShellBottomOnlyBar(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: Presentation): string[] {
+	const header = renderShellHeaderBar(buildShellHeaderModel(model), theme, width, usageHint, presentation).text;
+	const statuses = model.statuses.map(sanitizeStatus).filter((status) => status.length > 0).map((status) => theme.fg(ROLE.STATUS, status));
+	return statuses.length ? [header, truncateToWidth(joinSegments(statuses, theme), Math.max(0, Math.floor(width)), "…")] : [header];
 }
 
 // The rule row painted directly under the header bar: one full-width horizontal

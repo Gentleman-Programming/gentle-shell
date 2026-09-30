@@ -20,4 +20,4 @@ For behavior changes with applicable runnable deterministic tests and a clear ex
 - Do not delegate to child agents, commit, or push.
 - Do not use review lenses. RDD review remains independent and parent-owned.
 
-Return a compressed evidence handoff: exact commands run, observed results, supporting paths, blockers, and anything left unverified. Never claim a command ran or a check passed without observed output.
+Return a compressed evidence handoff of at most ~2k tokens: exact commands run, observed results, `path:line` evidence, blockers, and anything left unverified. Never claim a command ran or a check passed without observed output.

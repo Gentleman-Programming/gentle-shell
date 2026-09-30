@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after, before } from "node:test";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
@@ -23,6 +23,36 @@ type MutableEvent = { agentName?: string; systemPrompt: string; systemPromptOpti
 const REPO_ROOT = join(import.meta.dirname, "..");
 const MIRROR_LOCK_PATH = join(REPO_ROOT, "contracts", "review-provider-contract-mirror", "provider-contract.lock.json");
 
+let fixtureRoot: string | undefined;
+let fixtureCwd: string;
+const fixtureEnvironment: NodeJS.ProcessEnv = {};
+const previousEnvironment = new Map<string, string | undefined>();
+before(() => {
+	fixtureRoot = mkdtempSync(join(tmpdir(), "gentle-pi-review-prompt-"));
+	fixtureCwd = join(fixtureRoot, "project");
+	const home = join(fixtureRoot, "home");
+	mkdirSync(fixtureCwd);
+	mkdirSync(home);
+	Object.assign(fixtureEnvironment, {
+		HOME: home, USERPROFILE: home,
+		GENTLE_PI_CONFIG_HOME: join(home, "config"),
+		GENTLE_PI_AGENT_HOME: join(home, "agents"),
+		PI_CODING_AGENT_DIR: join(home, "pi"),
+		XDG_CONFIG_HOME: join(home, "xdg"),
+	});
+	for (const [key, value] of Object.entries(fixtureEnvironment)) {
+		previousEnvironment.set(key, process.env[key]);
+		process.env[key] = value;
+	}
+});
+after(() => {
+	for (const [key, value] of previousEnvironment) {
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
+	if (fixtureRoot !== undefined) rmSync(fixtureRoot, { recursive: true, force: true });
+});
+
 function mirroredPiOrchestrationText(): string {
 	const lock = JSON.parse(readFileSync(MIRROR_LOCK_PATH, "utf8")) as { contract_semver: string };
 	return readFileSync(
@@ -31,7 +61,7 @@ function mirroredPiOrchestrationText(): string {
 	).trim();
 }
 
-function harness(nativeReviewCli: NativeReviewCli | null): { beforeAgentStart: BeforeAgentStartHandler } {
+function harness(nativeReviewCli: NativeReviewCli | null, processEnv?: NodeJS.ProcessEnv): { beforeAgentStart: BeforeAgentStartHandler } {
 	const handlers = new Map<string, BeforeAgentStartHandler>();
 	const pi = {
 		on(name: string, handler: BeforeAgentStartHandler) {
@@ -41,7 +71,12 @@ function harness(nativeReviewCli: NativeReviewCli | null): { beforeAgentStart: B
 		registerCommand() {},
 		registerTool() {},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli })(pi);
+	createGentleAiExtension({
+		nativeReviewCli,
+		processEnv: { ...fixtureEnvironment, GENTLE_PI_AGENTS_CHILD: "0", ...processEnv, GENTLE_AI_TELEMETRY: "0" },
+		resolveTelemetryTriggerBinary: () => join(fixtureCwd, "never-executed"),
+		telemetryTriggerSpawn: () => assert.fail("Review prompt fixtures must not spawn telemetry"),
+	})(pi);
 	const beforeAgentStart = handlers.get("before_agent_start");
 	assert.equal(typeof beforeAgentStart, "function");
 	return { beforeAgentStart: beforeAgentStart as BeforeAgentStartHandler };
@@ -49,7 +84,7 @@ function harness(nativeReviewCli: NativeReviewCli | null): { beforeAgentStart: B
 
 function ctx(overrides: Record<string, unknown> = {}): ExtensionContext {
 	return {
-		cwd: process.cwd(),
+		cwd: fixtureCwd,
 		hasUI: true,
 		ui: { notify() {} },
 		sessionManager: { getSessionId: () => "review-contract-prompt-session" },
@@ -130,6 +165,14 @@ test("before_agent_start does not let legacy prompt text bypass primary ODD and 
 	assert.match(appended, /Substantial authorized work: use ODD/);
 	assert.match(appended, /Gentle AI review execution contract/);
 	assert.doesNotMatch(appended, /### 3\. SDD \(optional\)/);
+});
+
+test("before_agent_start does not inject the review execution contract or gentlePrompt for a child session (GENTLE_PI_AGENTS_CHILD=1)", async () => {
+	const { beforeAgentStart } = harness({} as NativeReviewCli, { GENTLE_PI_AGENTS_CHILD: "1" });
+	const event = primaryEvent({ systemPromptOptions: { appendSystemPrompt: "Worker-specific instructions" } });
+	const result = await beforeAgentStart(event, ctx());
+	assert.equal(result, undefined, "the handler must not return a replacement systemPrompt");
+	assert.equal(event.systemPromptOptions.appendSystemPrompt, "Worker-specific instructions", "child instructions must remain unchanged, without primary harness or review injection");
 });
 
 test("before_agent_start injects nothing when nativeReviewCli is null", async () => {

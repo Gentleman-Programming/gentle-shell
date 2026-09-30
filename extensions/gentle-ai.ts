@@ -1,4 +1,5 @@
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
+import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRepositoryPreparation, captureBoundSessionRepositoryAuthority, prepareBoundSessionRepository, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sourcePathWithinProject } from "../lib/bounded-writer-admission.ts";
 import { consumeReviewMutation, pendingReviewMutation, recordReviewMutation } from "../lib/review-reminder-receipt.ts";
 import { createReviewSidebarPublisher } from "../lib/review-sidebar-state.ts";
 import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
@@ -446,129 +447,11 @@ function renderBackgroundSubagentsReport(
 const SUBAGENTS_PACKAGE_NAMES = ["pi-subagents-j0k3r", "pi-subagents"] as const;
 const SUBAGENT_RUN_TOOL = "subagent_run";
 const JUDGMENT_DAY_FIX_AGENT_NAME = "jd-fix-agent";
-const BOUNDED_WRITER_AGENT_NAMES = ["gentle-ai-worker", "worker", JUDGMENT_DAY_FIX_AGENT_NAME] as const;
 const JUDGMENT_DAY_ACTIVATION_HEADING = "## Judgment Day activation";
 const JUDGMENT_DAY_ACTIVATION_SENTENCE = "User explicitly requested Judgment Day.";
 const JUDGMENT_DAY_AUTHORIZED_SEVERE_IDS_HEADING = "## Exact authorized severe IDs";
 const JUDGMENT_DAY_CORRECTION_BATCH_HEADING = "## Judgment Day correction batch";
 const JUDGMENT_DAY_FROZEN_FINDING_ROWS_HEADING = "## Exact frozen finding rows";
-const ALLOWED_EDIT_SURFACES_HEADING = /^## Allowed edit surfaces[ \t]*$/gim;
-const MARKDOWN_HEADING_LINE = /^ {0,3}#{1,6} /;
-const MARKDOWN_LIST_MARKER = /^(?:[-*+]|\d+[.)]) +/;
-const WRITER_EDIT_SURFACE_REJECTION =
-	"Writer tasks must include the exact Markdown heading `## Allowed edit surfaces` with narrow repository-relative paths or narrow globs, one per line. Every non-empty line belongs to the section until the next canonical Markdown heading and must be a valid surface entry. Paths containing whitespace require whole-entry backticks; begin explanatory prose under the next Markdown heading. The parent must derive or map that canonical block from the delegated task and relaunch the writer; do not accept aliases, and do not ask the human to author paths or globs.";
-
-function isTaskScopedRepositoryRelativePath(value: string, isWholeEntryBackticked: boolean): boolean {
-	const normalized = value.replace(/\\/g, "/");
-	if (
-		normalized.length === 0 ||
-		isAbsolute(value) ||
-		/^(?:[A-Za-z]:|\/|~)/.test(normalized) ||
-		/\p{Cc}|\p{Zl}|\p{Zp}/u.test(normalized) ||
-		(/\p{White_Space}/u.test(normalized) && !isWholeEntryBackticked)
-	) {
-		return false;
-	}
-
-	const withoutCurrentDirectory = normalized.replace(/^(?:\.\/)+/, "");
-	if (
-		withoutCurrentDirectory.length === 0 ||
-		withoutCurrentDirectory === "." ||
-		withoutCurrentDirectory.startsWith("/") ||
-		withoutCurrentDirectory.split("/").some((segment) => segment === "..")
-	) {
-		return false;
-	}
-
-	return !/[?*\[\]{}]/.test(withoutCurrentDirectory.split("/")[0]);
-}
-
-type AllowedEditSurfaceEntry = {
-	source: string;
-	value: string;
-	isWholeEntryBackticked: boolean;
-	isValidMarkdownSyntax: boolean;
-};
-
-/** Reads one entry and records whether backticks delimit the whole path. */
-function readSurfaceEntry(line: string): AllowedEditSurfaceEntry {
-	const withoutListMarker = line.replace(MARKDOWN_LIST_MARKER, "");
-	const backticked = withoutListMarker.match(/^`([^`]+)`$/);
-	return {
-		source: line,
-		value: backticked?.[1] ?? withoutListMarker,
-		isWholeEntryBackticked: backticked !== null,
-		isValidMarkdownSyntax:
-			!/^(?:[-*+]|\d+[.)])$/.test(line) && (!withoutListMarker.includes("`") || backticked !== null),
-	};
-}
-
-/**
- * Reads every non-empty line until the next Markdown heading as an edit surface.
- * A prose line cannot terminate this section: it must fail validation instead.
- */
-function readAllowedEditSurfaceEntries(following: string): AllowedEditSurfaceEntry[] {
-	const lines = following.split(/\r?\n/);
-	const headingIndex = lines.findIndex((line) => MARKDOWN_HEADING_LINE.test(line));
-	return (headingIndex === -1 ? lines : lines.slice(0, headingIndex))
-		.map((line) => line.replace(/ +$/g, ""))
-		.filter((line) => line.length > 0)
-		.map((line) => readSurfaceEntry(line.replace(/^ {0,3}/, "")));
-}
-
-function hasTaskScopedAllowedEditSurfaces(...values: unknown[]): boolean {
-	let expectedEntries: string[] | undefined;
-	let hasSection = false;
-
-	for (const value of values) {
-		if (typeof value !== "string") continue;
-
-		const headings = value.matchAll(ALLOWED_EDIT_SURFACES_HEADING);
-		for (const heading of headings) {
-			const bodyStart = (heading.index ?? 0) + heading[0].length;
-			const entries = readAllowedEditSurfaceEntries(value.slice(bodyStart));
-			if (
-				entries.length === 0 ||
-				!entries.every(
-					(entry) =>
-						entry.isValidMarkdownSyntax &&
-						!/\p{Cc}|\p{Zl}|\p{Zp}/u.test(entry.source) &&
-						isTaskScopedRepositoryRelativePath(entry.value, entry.isWholeEntryBackticked),
-				)
-			) {
-				return false;
-			}
-
-			const uniqueEntries = [...new Set(entries.map((entry) => entry.value))].sort();
-			if (
-				expectedEntries &&
-				(expectedEntries.length !== uniqueEntries.length ||
-					expectedEntries.some((entry, index) => entry !== uniqueEntries[index]))
-			) {
-				return false;
-			}
-			expectedEntries = uniqueEntries;
-			hasSection = true;
-		}
-	}
-
-	return hasSection;
-}
-
-function rejectUnscopedBoundedWriterDispatch(input: unknown): { block: true; reason: string } | undefined {
-	if (
-		!isRecord(input) ||
-		typeof input.agent !== "string" ||
-		!(BOUNDED_WRITER_AGENT_NAMES as readonly string[]).includes(input.agent)
-	) {
-		return undefined;
-	}
-	if (hasTaskScopedAllowedEditSurfaces(input.task, input.context)) {
-		return undefined;
-	}
-	return { block: true, reason: WRITER_EDIT_SURFACE_REJECTION };
-}
-
 function hasJudgmentDayFixAgentReference(input: Record<string, unknown>): boolean {
 	return input.agent === JUDGMENT_DAY_FIX_AGENT_NAME ||
 		(Array.isArray(input.agent) && input.agent.includes(JUDGMENT_DAY_FIX_AGENT_NAME)) ||
@@ -4704,7 +4587,7 @@ const REVIEW_CONTROLLER_PARAMETERS = {
 		lineageIds: { type: "string", description: "Retired with legacy bundle export; ignored. Export returns legacy-operation-retired." },
 		workspaceRoot: {
 			type: "string",
-			description: "Optional explicit user-authorized absolute path inside the Git worktree that owns this review. It must resolve to an existing Git worktree; nested paths are canonicalized to that worktree root. Pi never invents this selector. Absent, the session cwd is used unless one unambiguous lineage binding already identifies its target root.",
+			description: "Optional explicit user-authorized absolute path to an existing directory that owns this review. Nested Git paths are canonicalized to their worktree root. Only inspect or new ordinary START with validated RDD on may ask native Gentle AI to prepare a non-Git directory; Pi never invents this selector. Absent, the session cwd is used unless one unambiguous lineage binding already identifies its target root.",
 		},
 	},
 } as const;
@@ -5174,6 +5057,26 @@ function nativeReviewModeSkipped(operation: ReviewControllerOperation, source: N
 		reason: `receipt-driven development is disabled: ${operation} is skipped because the ${source} mode source keeps it off`,
 		...(continuation === undefined ? {} : { next_action: continuation }),
 		...nativeStartPreAuthorityRejection(),
+	};
+}
+
+// The legacy START compatibility gate is deliberately permissive when mode is
+// unavailable. It is not authorization to enter bootstrap-capable native code.
+async function nativeRepositoryPreparationEnabled(nativeReviewCli: NativeReviewCli | null, cwd: string, signal?: AbortSignal): Promise<boolean> {
+	if (nativeReviewCli?.reviewMode === undefined) return false;
+	try {
+		const mode = await nativeReviewCli.reviewMode({ cwd, operation: NATIVE_REVIEW_MODE_OPERATION.STATUS, ...(signal === undefined ? {} : { signal }) });
+		return mode.operation === NATIVE_REVIEW_MODE_OPERATION.STATUS && isValidRddModeStatus(mode.status) && mode.status.effective === "on";
+	} catch {
+		return false;
+	}
+}
+
+function nativeRepositoryPreparationBlocked(operation: ReviewControllerOperation): Record<string, unknown> {
+	return {
+		operation, status: "blocked", outcome: "native-repository-bootstrap-not-authorized",
+		reason: "A non-Git target requires successfully decoded effective RDD on before native repository preparation. The user owns the RDD switch; Pi does not enable it.",
+		mutation_performed: false, mutation_outcome: "none", lineage_created: false,
 	};
 }
 
@@ -6394,8 +6297,11 @@ async function reconcileNativeMutationFailure(
 }
 
 function reviewWorkspaceGitIdentity(cwd: string): { toplevel: string; commonDir: string } {
+	// Discovery must describe the selected directory, never an ambient Git
+	// override pointing at a different repository or worktree.
+	const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
 	const git = (...arguments_: string[]): string =>
-		execFileSync("git", arguments_, { cwd, encoding: "utf8", windowsHide: true }).trim();
+		execFileSync("git", arguments_, { cwd, env, encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }).trim();
 	const toplevel = realpathSync(git("rev-parse", "--show-toplevel"));
 	const commonDir = realpathSync(resolve(cwd, git("rev-parse", "--git-common-dir")));
 	return { toplevel, commonDir };
@@ -6404,14 +6310,18 @@ function reviewWorkspaceGitIdentity(cwd: string): { toplevel: string; commonDir:
 /**
  * Resolves the explicit user-authorized workspace target. An explicit path may
  * be nested and may belong to a repository unrelated to the Pi session cwd;
- * Git resolves it to its canonical worktree top-level. The session cwd remains
- * the legacy default only when no target was selected or remembered.
+ * Git resolves it to its canonical worktree top-level. Only unbound inspect or
+ * ordinary START may retain an existing unresolved directory for a later strict
+ * effective-on gate; native, not this resolver, owns preparation and safeguards.
+ * The session cwd is the default when no target was selected or remembered.
  */
 function resolveReviewControllerWorkspaceRoot(
 	requested: string | undefined,
 	sessionCwd: string,
 	candidateViews: CandidateViewRegistry | null,
 	lineageId: string | undefined,
+	allowNativePreparation = false,
+	resolution?: { identity?: { toplevel: string; commonDir: string } },
 ): string {
 	const remembered = requested === undefined && lineageId !== undefined
 		? candidateViews?.resolveWorkspaceRoot(lineageId)
@@ -6431,10 +6341,11 @@ function resolveReviewControllerWorkspaceRoot(
 	try {
 		target = reviewWorkspaceGitIdentity(resolved);
 	} catch {
-		if (requested === undefined && remembered === undefined) return sessionCwd;
+		if (allowNativePreparation && lineageId === undefined && safeBootstrapDirectory(resolved) === resolved) return resolved;
 		throw new Error(`Review controller workspaceRoot ${resolved} is not inside a Git worktree; review operations bind only to real worktrees of the session repository`);
 	}
 	if (lineageId !== undefined) candidateViews?.assertWorkspaceRoot(lineageId, target.toplevel);
+	if (resolution) resolution.identity = target;
 	return target.toplevel;
 }
 
@@ -6526,7 +6437,7 @@ function isRetainedNativeCaptureRoute(selection: RetainedNativeStatusSelection |
 
 function retainNativeCaptureRoutes(selections: Map<string, RetainedNativeStatusSelection>, workspaceRoot: string, status: ReviewStatusV3, baseRef: string | undefined): void {
 	const lineageId = status.authority?.lineageId;
-	if (status.applicability !== "current_target" || !isCanonicalProcessString(lineageId) || isTerminalReviewAuthorityState(status.authority?.state)) return;
+	if (!canOfferNativeCaptureBindings(status) || !isCanonicalProcessString(lineageId)) return;
 	const routes = (status.nextTransition?.kind === "collect" ? status.nextTransition.collect?.inputs ?? [] : []).map((input) => ({ key: reviewCaptureSelectionStorageKey(canonicalReviewCaptureBinding(input)), route: Object.freeze({ workspaceRoot, lineageId, ...(baseRef === undefined ? {} : { baseRef, committedOnly: true as const }) }) }));
 	for (const { key, route } of routes) {
 		const existing = selections.get(key);
@@ -6540,6 +6451,12 @@ function retainNativeCaptureRoutes(selections: Map<string, RetainedNativeStatusS
 function readRetainedNativeCaptureRoute(selections: Map<string, RetainedNativeStatusSelection>, collectBinding: string): RetainedNativeCaptureRoute | undefined {
 	const selection = selections.get(reviewCaptureSelectionStorageKey(collectBinding));
 	return isRetainedNativeCaptureRoute(selection) ? selection : undefined;
+}
+
+function trustedNativeCaptureBaseRef(route: RetainedNativeCaptureRoute | undefined, candidateViews: CandidateViewRegistry | null, cwd: string, lineageId: string): string | undefined {
+	if (route !== undefined) return route.baseRef;
+	const target = candidateViews?.hasProjection(lineageId, cwd) ? candidateViews.resolveProjection(lineageId, cwd) : undefined;
+	return target?.committedOnly === true ? nativeCommittedRangeSelector(target) : undefined;
 }
 
 function isTerminalReviewAuthorityState(state: string | undefined): boolean { return state === "invalidated" || state === "approved" || state === "escalated"; }
@@ -7138,18 +7055,11 @@ async function resolveNegotiatedReviewStatusForSession(
 	sessionKey: PendingReviewConsentSessionKey,
 ): Promise<ReviewStatusV3 | undefined> {
 	if (nativeReviewCli?.reviewMode === undefined || nativeReviewCli.targetStatus === undefined) return undefined;
-	if (ctx.hasUI !== true) return undefined;
-	// Passive status negotiation cannot bootstrap a repository. Explicit review
-	// controller requests retain their separate workspace validation path.
-	if (resolveSessionWorktree(ctx.cwd, ctx.cwd) === undefined) return undefined;
-	let modeEffective: "on" | "off";
-	try {
-		const mode = await nativeReviewCli.reviewMode({ cwd: ctx.cwd, operation: NATIVE_REVIEW_MODE_OPERATION.STATUS });
-		modeEffective = mode.status.effective;
-	} catch {
-		return undefined;
-	}
-	if (modeEffective === "off") return undefined;
+	if (ctx.hasUI !== true || !resolveSessionWorktree(ctx.cwd, ctx.cwd)) return undefined;
+	// STATUS can prepare an unversioned directory natively. Only a successfully
+	// decoded effective-on mode authorizes that entry; bootstrap never counts as
+	// an own mutation and native owns all metadata/ancestor safety decisions.
+	if (!await nativeRepositoryPreparationEnabled(nativeReviewCli, ctx.cwd)) return undefined;
 	try {
 		const retainedSelections = ((key: PendingReviewConsentSessionKey) => processRetainedNativeStatusSelections.get(key) ?? processRetainedNativeStatusSelections.set(key, new Map()).get(key)!)(sessionKey);
 		const negotiated = await negotiatedStatusForHostTransport(nativeReviewCli, { cwd: ctx.cwd }, retainedSelections, ctx.cwd);
@@ -7217,8 +7127,13 @@ const INSPECT_UNTRACKED_SELECTION_NEXT_STEP =
 	'The intended-untracked selection is required before START. The expected_untracked_inventory digest covers untracked path names only (git ls-files --others --exclude-standard); nothing is read or hashed at inventory time, and file content is hashed only for selected paths at candidate freeze. Either call gentle_review with operation "select-intended-untracked" passing this selectionBinding and intendedUntracked ([] excludes every eligible path, a subset includes only those paths), or call inspect again with untrackedScope ("exclude", or "select" with intendedUntracked) to resolve the round trip in one call. To keep a path out of the inventory permanently, ignore it through .gitignore or .git/info/exclude.';
 
 interface PublicReviewCaptureBinding { collectBinding: string; }
+function canOfferNativeCaptureBindings(status: ReviewStatusV3): boolean {
+	return status.applicability === "current_target" && isCanonicalProcessString(status.authority?.lineageId)
+		&& isCanonicalProcessString(status.targetIdentity) && !isTerminalReviewAuthorityState(status.authority?.state);
+}
+
 function publicReviewCaptureBindings(status: ReviewStatusV3): readonly PublicReviewCaptureBinding[] {
-	if (status.nextTransition?.kind !== "collect") return [];
+	if (!canOfferNativeCaptureBindings(status) || status.nextTransition?.kind !== "collect") return [];
 	return (status.nextTransition.collect?.inputs ?? []).filter((input) => input.captureOperation !== "external.select_intended_untracked").map((input) => ({ collectBinding: canonicalReviewCaptureBinding(input) }));
 }
 
@@ -7249,7 +7164,7 @@ function selectExactReviewCapture(
 		!isCanonicalProcessString(lineageId) ||
 		!isCanonicalProcessString(statusLineageId) ||
 		!isCanonicalProcessString(statusTargetIdentity) ||
-		status.applicability !== "current_target" ||
+		!canOfferNativeCaptureBindings(status) ||
 		statusLineageId !== lineageId
 	) {
 		return captureBindingRejected("current STATUS does not offer one non-empty matching lineage and target identity");
@@ -7402,16 +7317,17 @@ async function executeReviewCaptureOperation(
 	}
 	const canonicalBinding = parseCanonicalReviewCaptureBinding(parameters.collectBinding);
 	const cwd = resolveReviewControllerWorkspaceRoot(parameters.workspaceRoot, sessionCwd, candidateViews, parameters.lineageId);
-	const route = readRetainedNativeCaptureRoute(retainedUntrackedSelections, canonicalBinding);
-	if (requireRegisteredRoute && (route === undefined || route.workspaceRoot !== cwd || route.lineageId !== parameters.lineageId)) {
-		return captureBindingRejected("collectBinding is unknown, expired, or belongs to a different session route");
+	let route = readRetainedNativeCaptureRoute(retainedUntrackedSelections, canonicalBinding);
+	if (requireRegisteredRoute && route !== undefined && (route.workspaceRoot !== cwd || route.lineageId !== parameters.lineageId)) {
+		return captureBindingRejected("collectBinding belongs to a different registered route");
 	}
+	const baseRef = trustedNativeCaptureBaseRef(route, candidateViews, cwd, parameters.lineageId);
 	let status: ReviewStatusV3;
 	try {
 		const negotiated = await negotiatedStatusForHostTransport(nativeReviewCli, {
 			cwd,
 			lineageId: parameters.lineageId,
-			...(route?.baseRef === undefined ? {} : { baseRef: route.baseRef, committedOnly: true }),
+			...(baseRef === undefined ? {} : { baseRef, committedOnly: true }),
 			...readRetainedNativeUntrackedSelection(retainedUntrackedSelections, cwd, parameters.lineageId),
 			...(signal === undefined ? {} : { signal }),
 		}, retainedUntrackedSelections, cwd);
@@ -7422,6 +7338,9 @@ async function executeReviewCaptureOperation(
 	}
 	const selected = selectExactReviewCapture(status, parameters.lineageId, canonicalBinding);
 	if (!isSelectedReviewCapture(selected)) return selected;
+	// Exact fresh native admission validates this routing snapshot independently
+	// of cache capacity. Carry its trusted selector into every downstream path.
+	route = { workspaceRoot: cwd, lineageId: parameters.lineageId, ...(baseRef === undefined ? {} : { baseRef, committedOnly: true }) };
 
 	// During correction the flow carries both the original authority target
 	// identity and a distinct provider-issued correction target identity
@@ -7565,13 +7484,14 @@ async function executeReviewCaptureGroupOperation(
 	const canonicalBindings = parameters.collectBindings.map((binding) => parseCanonicalReviewCaptureBinding(binding));
 	const cwd = resolveReviewControllerWorkspaceRoot(parameters.workspaceRoot, sessionCwd, candidateViews, parameters.lineageId);
 	const routes = canonicalBindings.map((binding) => readRetainedNativeCaptureRoute(retainedUntrackedSelections, binding));
-	const route = routes[0];
-	if (requireRegisteredRoute && (route === undefined || routes.some((candidate) => candidate === undefined || candidate.workspaceRoot !== cwd || candidate.lineageId !== parameters.lineageId || candidate.baseRef !== route.baseRef))) {
-		return captureGroupRejected("collectBindings are unknown, expired, or belong to different session routes");
+	let route = routes.find((candidate) => candidate !== undefined);
+	if (requireRegisteredRoute && routes.some((candidate) => candidate !== undefined && (candidate.workspaceRoot !== cwd || candidate.lineageId !== parameters.lineageId || candidate.baseRef !== route?.baseRef))) {
+		return captureGroupRejected("collectBindings belong to different registered routes");
 	}
+	const baseRef = trustedNativeCaptureBaseRef(route, candidateViews, cwd, parameters.lineageId);
 	const freshStatus = () => negotiatedStatusForHostTransport(nativeReviewCli, {
 		cwd, lineageId: parameters.lineageId,
-		...(route?.baseRef === undefined ? {} : { baseRef: route.baseRef, committedOnly: true }),
+		...(baseRef === undefined ? {} : { baseRef, committedOnly: true }),
 		...readRetainedNativeUntrackedSelection(retainedUntrackedSelections, cwd, parameters.lineageId),
 		...(signal === undefined ? {} : { signal }),
 	}, retainedUntrackedSelections, cwd);
@@ -7585,6 +7505,7 @@ async function executeReviewCaptureGroupOperation(
 	}
 	const group = selectExactReviewCaptureGroup(status, parameters.lineageId, canonicalBindings);
 	if (!("slots" in group && "binding" in group)) return group;
+	route = { workspaceRoot: cwd, lineageId: parameters.lineageId, ...(baseRef === undefined ? {} : { baseRef, committedOnly: true }) };
 	if (parameters.reviewerRunAcknowledged !== true) {
 		return {
 			tool: "gentle_review_capture_group",
@@ -7690,15 +7611,8 @@ async function executeReviewControllerOperation(
 	intendedUntrackedSelection?: NativeIntendedUntrackedSelectionSubmission,
 ): Promise<Record<string, unknown>> {
 	const parameters = parseReviewControllerParameters(parametersValue);
-	const defaultCwd = resolveReviewControllerWorkspaceRoot(parameters.workspaceRoot, sessionCwd, candidateViews, parameters.lineageId);
-	const pendingReviewConsentSession = pendingReviewConsentSessionKey(context, pendingReviewConsentFallbackKey);
-	const _useTargetLifecycleRoot = requiresExplicitTargetLifecycleRoot(parameters.workspaceRoot, sessionCwd, defaultCwd);
-	const includeWorkspaceRoot = parameters.workspaceRoot !== undefined || defaultCwd !== sessionCwd;
 	if (parameters.operation === REVIEW_CONTROLLER_OPERATION.EXPORT || parameters.operation === REVIEW_CONTROLLER_OPERATION.IMPORT) {
-		// Legacy bundle transport rode on the retired pre-integration graph/compact
-		// stores. The native v2.1.11 CLI exposes no bundle equivalent, so both
-		// operations return a structured retirement envelope; the enum members are
-		// kept so the tool schema stays stable for existing callers.
+		// Retired transport needs no repository or lifecycle authority.
 		return {
 			operation: parameters.operation,
 			status: "blocked",
@@ -7709,6 +7623,27 @@ async function executeReviewControllerOperation(
 			next_action: "Use the native `gentle-ai review` CLI (start/finalize/validate/status/recover) against the repository review authority; receipts and canonical artifacts live in the Git common-directory store at .git/gentle-ai/reviews and travel with the repository through normal Git replication.",
 		};
 	}
+	const allowsPreparation = parameters.lineageId === undefined && (
+		parameters.operation === REVIEW_CONTROLLER_OPERATION.INSPECT ||
+		(parameters.operation === REVIEW_CONTROLLER_OPERATION.START &&
+			parseControllerJson(requiredControllerString(parameters, "input"), parameters.operation).mode === REVIEW_MODE.ORDINARY)
+	);
+	const workspaceResolution: { identity?: { toplevel: string; commonDir: string } } = {};
+	const defaultCwd = resolveReviewControllerWorkspaceRoot(parameters.workspaceRoot, sessionCwd, candidateViews, parameters.lineageId, allowsPreparation, workspaceResolution);
+	const needsPreparation = allowsPreparation && workspaceResolution.identity === undefined;
+	const preparationCurrent = allowsPreparation && context?.sessionManager
+		? captureBoundSessionRepositoryAuthority(context.sessionManager, context.sessionManager.getCwd?.() ?? sessionCwd)
+		: undefined;
+	const assertPreparationAuthority = () => {
+		if (allowsPreparation && signal?.aborted) throw reviewCancellation("Review controller operation was cancelled");
+		if (preparationCurrent && !preparationCurrent()) {
+			throw new Error("Session Git authority or lifecycle changed; cannot prepare its review repository.");
+		}
+	};
+	assertPreparationAuthority();
+	const pendingReviewConsentSession = pendingReviewConsentSessionKey(context, pendingReviewConsentFallbackKey);
+	const _useTargetLifecycleRoot = requiresExplicitTargetLifecycleRoot(parameters.workspaceRoot, sessionCwd, defaultCwd);
+	const includeWorkspaceRoot = parameters.workspaceRoot !== undefined || defaultCwd !== sessionCwd;
 	if (parameters.operation === REVIEW_CONTROLLER_OPERATION.ASSESS) {
 		// Read-only native risk assessment (gentle-ai#4295, gentle-pi#662). Never
 		// mutates, never requires a lineageId, and never routes through
@@ -7752,6 +7687,10 @@ async function executeReviewControllerOperation(
 				return nativeInspectInputRejection("base-ref-unresolvable");
 			}
 		}
+		if (needsPreparation && !await nativeRepositoryPreparationEnabled(nativeReviewCli, defaultCwd, signal)) {
+			return nativeRepositoryPreparationBlocked(parameters.operation);
+		}
+		assertPreparationAuthority();
 		const inspectSelector = canonicalBaseRef === undefined
 			? {}
 			: { baseRef: canonicalBaseRef, committedOnly: true as const };
@@ -8366,12 +8305,17 @@ async function executeReviewControllerOperation(
 							intendedUntracked: retainedPreLineageSelection.intendedUntracked,
 							...(retainedPreLineageSelection.submission === undefined ? {} : { submission: retainedPreLineageSelection.submission }),
 						});
-			try {
-				const gated = await resolveReviewModeGate(nativeReviewCli, parameters.operation, defaultCwd, signal);
-				if (gated !== undefined) return gated;
-			} catch (error) {
-				return nativeOperationFailure(parameters.operation, error);
+			if (needsPreparation) {
+				if (!await nativeRepositoryPreparationEnabled(nativeReviewCli, defaultCwd, signal)) return nativeRepositoryPreparationBlocked(parameters.operation);
+			} else {
+				try {
+					const gated = await resolveReviewModeGate(nativeReviewCli, parameters.operation, defaultCwd, signal);
+					if (gated !== undefined) return gated;
+				} catch (error) {
+					return nativeOperationFailure(parameters.operation, error);
+				}
 			}
+			assertPreparationAuthority();
 			if (nativeReviewCli?.targetStatus === undefined) return nativeStatusUnsupported(parameters.operation);
 			let target: ReviewStatusV3;
 			try {
@@ -8844,10 +8788,15 @@ function createGentleAiExtensionForTesting(
 	pi.on("session_tree", (_event, ctx) => reviewSidebar.reset(ctx));
 	let reminderSessionActive = true;
 	let reminderEpoch = 0;
+	let reminderManager: ExtensionContext["sessionManager"] | undefined;
+	let unbindPreparation: (() => void) | undefined;
 	pi.on("session_shutdown", (event, context) => {
 		reviewSidebar.reset();
 		reminderSessionActive = false;
 		reminderEpoch += 1;
+		unbindPreparation?.();
+		unbindPreparation = undefined;
+		reminderManager = undefined;
 		// Pi tears down this registry on reload as well as session replacement/quit.
 		try { candidateViews?.cleanupAll(); } catch { /* Preserve failed owned views for later recovery. */ }
 		const reason = (event as { reason?: unknown }).reason;
@@ -9221,6 +9170,24 @@ function createGentleAiExtensionForTesting(
 		elapsedTiming = new GentleAiElapsedTimingLedger(ctx.sessionManager, pi);
 		reminderSessionActive = true;
 		reminderEpoch += 1;
+		unbindPreparation?.();
+		reminderManager = ctx.sessionManager;
+		const epoch = reminderEpoch;
+		const manager = ctx.sessionManager;
+		const originalCwd = manager?.getCwd?.() ?? ctx.cwd;
+		unbindPreparation = manager ? bindSessionRepositoryPreparation(manager, originalCwd, async (root, current, signal) => {
+			if (!current() || nativeReviewCli?.targetStatus === undefined || safeBootstrapDirectory(originalCwd) !== root) return false;
+			if (!await nativeRepositoryPreparationEnabled(nativeReviewCli, root, signal) || !current() || safeBootstrapDirectory(originalCwd) !== root) return false;
+			try {
+				const existing = resolveSessionWorktree(originalCwd, originalCwd);
+				if (existing) return existing.root === root;
+				const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
+				const retained = processRetainedNativeStatusSelections.get(sessionKey) ?? new Map();
+				const negotiated = await negotiatedStatusForHostTransport(nativeReviewCli, { cwd: root, signal }, retained, root);
+				const identity = resolveSessionWorktree(originalCwd, originalCwd);
+				return negotiated.status !== undefined && current() && safeBootstrapDirectory(originalCwd) === root && identity?.root === root;
+			} catch { return false; }
+		}, () => reminderSessionActive && reminderEpoch === epoch && reminderManager === manager) : undefined;
 		try { candidateViews?.sweepOrphans(ctx.cwd); } catch { /* Ownership sweeping must not block startup. */ }
 		const reason = (event as { reason?: unknown }).reason;
 		if (reason !== "reload") revokeCurrentReviewSessionPermission(ctx);
@@ -9373,13 +9340,18 @@ function createGentleAiExtensionForTesting(
 		consumeReviewMutation(pi, ctx.sessionManager, root, mutation, "nudged", targetIdentity);
 	});
 
-	pi.on("tool_result", (event, ctx) => {
-		if (!reminderSessionActive || event.isError !== false || (event.toolName !== "write" && event.toolName !== "edit")) return;
+	pi.on("tool_result", async (event, ctx) => {
+		if (!reminderSessionActive || (reminderManager && reminderManager !== ctx.sessionManager) || event.isError !== false || (event.toolName !== "write" && event.toolName !== "edit")) return;
 		if (!isRecord(event.input) || typeof event.input.path !== "string" || !event.input.path.trim()) return;
 		try {
-			const root = resolveSessionWorktree(event.input.path, ctx.cwd)?.root;
+			const identity = resolveSessionWorktree(event.input.path, ctx.cwd);
+			const prospectiveRoot = identity ? undefined : sourcePathWithinProject(event.input.path, ctx.cwd);
+			const root = identity?.root ?? prospectiveRoot;
+			// Persist the observed own write before any await. Preparation is not
+			// mutation evidence, and cannot invent a pre-write Changes baseline.
 			if (root) recordReviewMutation(pi, ctx.sessionManager, root, { source: "direct", toolName: event.toolName, toolCallId: event.toolCallId });
-		} catch { /* Receipt persistence must not change a successful tool result. */ }
+			if (prospectiveRoot && !resolveSessionWorktree(ctx.cwd, ctx.cwd)) await prepareBoundSessionRepository(ctx.sessionManager, ctx.sessionManager.getCwd?.() ?? ctx.cwd, ctx.signal);
+		} catch { /* Preparation and receipt persistence cannot change a successful tool result. */ }
 	});
 
 	pi.on("tool_call", async (event, ctx) => {

@@ -24,11 +24,11 @@ interface Harness {
 	timers: Array<{ fn: () => void; ms: number; cancelled: boolean }>;
 	asks: Array<{ taskId: string; method: string }>;
 	finishes: string[];
-	spawnOptions: Array<{ env: NodeJS.ProcessEnv; stdio?: string[] }>;
+	spawnOptions: Array<{ command: string; args: string[]; env: NodeJS.ProcessEnv; stdio?: string[] }>;
 	advance(ms: number): void;
 }
 
-function harness(options: { failStart?: boolean; process?: RunnerDeps["process"]; pid?: number; maxConcurrency?: number; stallTimeoutMs?: number; toolStallTimeoutMs?: number; answer?: Record<string, unknown>; exitOnKill?: boolean; state?: Record<string, unknown>; stateSuccess?: boolean; onNotification?: RunnerHooks["onNotification"]; onSuccessfulMutation?: RunnerHooks["onSuccessfulMutation"]; onFinish?: RunnerHooks["onFinish"] } = {}): Harness {
+function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boolean; process?: RunnerDeps["process"]; pid?: number; maxConcurrency?: number; stallTimeoutMs?: number; toolStallTimeoutMs?: number; answer?: Record<string, unknown>; exitOnKill?: boolean; state?: Record<string, unknown>; stateSuccess?: boolean; onNotification?: RunnerHooks["onNotification"]; onSuccessfulMutation?: RunnerHooks["onSuccessfulMutation"]; onFinish?: RunnerHooks["onFinish"] } = {}): Harness {
 	const children: FakeChild[] = [];
 	const timers: Harness["timers"] = [];
 	const asks: Harness["asks"] = [];
@@ -38,9 +38,10 @@ function harness(options: { failStart?: boolean; process?: RunnerDeps["process"]
 	const deadlines = new Map<Harness["timers"][number], number>();
 	const deps: RunnerDeps = {
 		process: options.process,
-		spawn: (_command, _args, launchOptions) => {
+		resolvePi: options.resolvePi,
+		spawn: (command, args, launchOptions) => {
 			if (options.failStart) throw new Error("fixture spawn failed");
-			spawnOptions.push({ env: launchOptions.env, stdio: launchOptions.stdio });
+			spawnOptions.push({ command, args, env: launchOptions.env, stdio: launchOptions.stdio });
 			const fake = fakeChild({ exitOnKill: options.exitOnKill, pid: options.pid });
 			if (options.state !== undefined) {
 				fake.child.stdin.removeAllListeners("data");
@@ -758,10 +759,32 @@ test("AgentRunner retains only a 64-notification duplicate window", async () => 
 	assert.equal(notifications.length, 66, "an ID evicted from the recent 64-ack window can be admitted again");
 });
 
-test("piCommand reuses the running pi entry point and honors the override", () => {
-	assert.deepEqual(piCommand({ execPath: "/bin/node", argv: ["/bin/node", "/x/dist/cli.js"], env: {} }), { command: "/bin/node", args: ["/x/dist/cli.js"] });
-	assert.deepEqual(piCommand({ execPath: "/bin/node", argv: ["/bin/node", "/x/other.js"], env: {} }), { command: "pi", args: [] });
-	assert.deepEqual(piCommand({ execPath: "/bin/node", argv: [], env: { GENTLE_PI_AGENTS_PI: "/opt/pi --flag" } }), { command: "/opt/pi", args: ["--flag"] });
+test("piCommand reuses an existing pi entry point and falls back when it disappears", () => {
+	const proc = { execPath: "/bin/node", argv: ["/bin/node", "/x/dist/cli.js"], env: {} };
+	assert.deepEqual(piCommand(proc, (entry) => entry === "/x/dist/cli.js"), { command: "/bin/node", args: ["/x/dist/cli.js"] });
+	assert.deepEqual(piCommand(proc, () => false), { command: "pi", args: [] });
+	assert.deepEqual(piCommand({ ...proc, argv: ["/bin/node", "/x/other.js"] }, () => true), { command: "pi", args: [] });
+	assert.deepEqual(piCommand({ ...proc, argv: [] }, () => true), { command: "pi", args: [] });
+});
+
+test("piCommand honors the override without checking its entry", () => {
+	const proc = { execPath: "/bin/node", argv: ["/bin/node", "/x/dist/cli.js"], env: { GENTLE_PI_AGENTS_PI: " /bin/node /override/cli.js " } };
+	assert.deepEqual(piCommand(proc, () => { assert.fail("override must bypass the existence check"); }), { command: "/bin/node", args: ["/override/cli.js"] });
+});
+
+test("runner resolves the pi command at each spawn after the entry disappears", async () => {
+	let exists = true;
+	const proc = { execPath: "/bin/node", argv: ["/bin/node", "/x/dist/cli.js"], env: {} };
+	const h = harness({ resolvePi: () => piCommand(proc, () => exists) });
+	h.runner.run(request());
+	await tick();
+	assert.equal(h.spawnOptions[0].command, "/bin/node");
+	assert.equal(h.spawnOptions[0].args[0], "/x/dist/cli.js");
+	exists = false;
+	h.runner.run(request());
+	await tick();
+	assert.equal(h.spawnOptions[1].command, "pi");
+	assert.deepEqual(h.spawnOptions[1].args, childArguments(request()));
 });
 
 test("JsonLines splits on LF only, tolerates CRLF, and skips lines that are not JSON", () => {

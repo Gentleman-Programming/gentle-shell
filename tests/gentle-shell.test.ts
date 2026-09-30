@@ -4085,6 +4085,30 @@ const onlyHeadLabels = (git: readonly string[][]) => git.every((args) => {
  return command[0] === "symbolic-ref" || (command[0] === "rev-parse" && command.includes("--verify"));
 });
 
+test("same-session explicit registration after bootstrap does not claim Changes", async () => {
+	const { pi, handlers, commands, tools, git } = fakePi();
+	let bootstrapped = false;
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
+		resolveWorktree: (path) => bootstrapped ? { root: path === "." ? "/repo" : path, commonDir: path === "/foreign" ? "/foreign/git" : "/repo/.git" } : undefined,
+	});
+	const { ctx, ui } = fakeContext();
+	const manager = ctx.sessionManager;
+	await fire(handlers, "session_start", ctx);
+	const register = tools.get("session_worktree_register")!;
+	await assert.rejects(register.execute("before", { path: "/repo" }, undefined, undefined, ctx), /same Git clone/);
+	bootstrapped = true;
+	await register.execute("after", { path: "/repo" }, undefined, undefined, ctx);
+	await register.execute("dedup", { path: "/repo" }, undefined, undefined, ctx);
+	await assert.rejects(register.execute("foreign", { path: "/foreign" }, undefined, undefined, ctx), /same Git clone/);
+	assert.equal(ctx.sessionManager, manager);
+	assert.equal(ctx.sessionManager.getEntries().length, 1);
+	await commands.get("gentle:changes")!.handler("", ctx);
+	assert.match(ui.notices.join("\n"), /No captured agent changes/);
+	assert.equal(ui.overlay, undefined);
+	assert.deepEqual(git, []);
+	await fire(handlers, "session_shutdown", ctx);
+});
+
 test("Changes opens only for captured mutations, not registered dirty roots", async () => {
  const {pi,handlers,commands,tools,git}=fakePi();
  gentleShell(pi,{});

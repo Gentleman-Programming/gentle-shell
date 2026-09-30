@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { existsSync, realpathSync } from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -244,18 +244,18 @@ for (const scenario of ["same", "changed", "sibling-root", "nested-root", "faile
 	});
 }
 
-test("passive session events outside Git never invoke native review or initialize Git", async () => {
+test("passive session events outside Git with RDD off never invoke native STATUS or initialize Git", async () => {
 	await withSessionStartEnv(async (cwd) => {
 		const calls: string[] = [];
 		const native = {
-			reviewMode: async () => { calls.push("reviewMode"); return onMode("on")!({} as never); },
+			reviewMode: async () => { calls.push("reviewMode"); return onMode("off")!({} as never); },
 			targetStatus: async () => { calls.push("targetStatus"); return executeStartStatus("outside-git"); },
 		} as unknown as NativeReviewCli;
 		const { handlers } = harness(native);
 		const session = ctx("outside-git", true, cwd);
 		await handlers.get("session_start")!({ type: "session_start" }, session);
 		await handlers.get("agent_end")!(agentEndEvent, session);
-		assert.deepEqual(calls, [], "passive events must not query native review outside Git");
+		assert.deepEqual(calls, [], "passive non-Git events need no native entry");
 		assert.equal(existsSync(join(cwd, ".git")), false, "passive events must not initialize Git");
 	}, false);
 });
@@ -556,6 +556,87 @@ for (const toolName of ["read", "bash", "subagent_run", "edit", "write"]) {
 		assert.deepEqual(h.sent, []);
 	});
 }
+
+for (const mode of ["on", "off", "unknown", "missing", "malformed", "incompatible", "throws"] as const) {
+	test(`non-Git successful source write, never startup, prepares only with validated RDD on: ${mode}`, async () => {
+		await withSessionStartEnv(async (cwd) => {
+			const requests: unknown[] = [];
+			const native = {
+				reviewMode: mode === "missing" ? undefined : async () => {
+					if (mode === "throws") throw new Error("unavailable");
+					if (mode === "incompatible") throw new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE, "review/mode", false, false, "incompatible");
+					if (mode === "malformed") return { status: { effective: "on", source: "unrecognized" } };
+					return { operation: "status", scope: "clone", status: { global: "", cloneLocal: "", effective: mode, source: "global" } };
+				},
+				targetStatus: async (request: unknown) => {
+					requests.push(request);
+					// The fake native owns bootstrap, not the extension.
+					childProcess.execFileSync("git", ["init", "--quiet", cwd]);
+					return executeStartStatus(`sha256:${"8".repeat(64)}`);
+				},
+			} as unknown as NativeReviewCli;
+			const { handlers, sent } = harness(native);
+			const session = ctx(`non-git-${mode}`, true, cwd);
+			await handlers.get("session_start")!({}, session);
+			assert.equal(requests.length, 0, "passive startup cannot bootstrap");
+			assert.equal(existsSync(join(cwd, ".git")), false);
+			await handlers.get("agent_end")!(agentEndEvent, session);
+			assert.equal(requests.length, 0, "conversation cannot bootstrap");
+			await directWrite(handlers, session);
+			assert.equal(requests.length, mode === "on" ? 1 : 0);
+			assert.equal(existsSync(join(cwd, ".git")), mode === "on");
+			assert.deepEqual(sent, [], "preparation alone does not remind");
+		}, false);
+	});
+}
+
+for (const path of ["odd/tasks/feature.md", "README.md", ".pi/settings.json", "memory.md", "secrets/app.ts", "../foreign.ts"]) {
+	test(`bookkeeping or unsafe write cannot prepare: ${path}`, async () => {
+		await withSessionStartEnv(async (cwd) => {
+			let calls = 0;
+			const h = harness({ reviewMode: onMode("on"), targetStatus: async () => { calls++; return stopStatus("unused"); } } as unknown as NativeReviewCli);
+			const session = ctx("non-source", false, cwd);
+			await h.handlers.get("session_start")!({}, session);
+			await h.handlers.get("tool_result")!({ toolName: "write", toolCallId: "bookkeeping", input: { path }, isError: false }, session);
+			assert.equal(calls, 0);
+			assert.equal(existsSync(join(cwd, ".git")), false);
+		}, false);
+	});
+}
+
+for (const initiallyGit of [true, false]) {
+	test(`source preparation never reinitializes established metadata after loss: initially Git=${initiallyGit}`, async () => {
+		await withSessionStartEnv(async cwd => {
+			let calls = 0;
+			const h = harness({ reviewMode: onMode("on"), targetStatus: async () => {
+				calls++; childProcess.execFileSync("git", ["init", "--quiet", cwd]); return stopStatus("prepared");
+			} } as unknown as NativeReviewCli);
+			const session = ctx("established-source", false, cwd);
+			await h.handlers.get("session_start")!({}, session);
+			if (!initiallyGit) { await directWrite(h.handlers, session); assert.equal(calls, 1); }
+			await rename(join(cwd, ".git"), join(cwd, "saved-git"));
+			calls = 0;
+			await directWrite(h.handlers, session);
+			assert.equal(calls, 0, "no native bootstrap STATUS after previously established Git disappears");
+			assert.equal(existsSync(join(cwd, ".git")), false, "lost metadata remains lost, not reinitialized");
+		}, initiallyGit);
+	});
+}
+
+test("headless successful source write prepares after binding without a reminder", async () => {
+	await withSessionStartEnv(async cwd => {
+		let calls = 0;
+		const h = harness({ reviewMode: onMode("on"), targetStatus: async () => {
+			calls++; childProcess.execFileSync("git", ["init", "--quiet", cwd]); return stopStatus("prepared");
+		} } as unknown as NativeReviewCli);
+		const session = ctx("headless-source", false, cwd);
+		await h.handlers.get("session_start")!({}, session);
+		await directWrite(h.handlers, session);
+		assert.equal(calls, 1);
+		assert.equal(existsSync(join(cwd, ".git")), true);
+		assert.deepEqual(h.sent, []);
+	}, false);
+});
 
 test("session_start negotiates the current target identity when RDD is on", async () => {
 	const targetIdentity = `sha256:${"2".repeat(64)}`;

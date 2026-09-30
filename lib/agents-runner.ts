@@ -1,4 +1,5 @@
 import { isSessionChangeEvidence, type SessionChangeEvidence } from "./session-changes.ts";
+import { existsSync } from "node:fs";
 import type { Duplex, Readable, Writable } from "node:stream";
 import { stripVTControlCharacters } from "node:util";
 import { withoutInteractiveHost } from "./rpc-host.ts";
@@ -52,6 +53,7 @@ export interface RunnerDeps {
 	now(): number;
 	schedule(fn: () => void, ms: number): () => void;
 	pi: PiCommand;
+	resolvePi?(): PiCommand;
 	process?: ProcessControl;
 }
 
@@ -250,16 +252,16 @@ export function childArguments(request: TaskRequest): string[] {
 	return args;
 }
 
-// The child is the same pi that is running us: node plus its cli entry.
+// Reuse the running pi entry while it exists; upgrades may remove it.
 // GENTLE_PI_AGENTS_PI overrides it with a command line.
-export function piCommand(proc: ProcessLike = process): PiCommand {
+export function piCommand(proc: ProcessLike = process, exists: (path: string) => boolean = existsSync): PiCommand {
 	const override = proc.env.GENTLE_PI_AGENTS_PI?.trim();
 	if (override) {
 		const [command, ...args] = override.split(/\s+/);
 		return { command, args };
 	}
 	const entry = proc.argv[1];
-	if (entry && /(^|[\\/])cli\.js$/.test(entry)) return { command: proc.execPath, args: [entry] };
+	if (entry && /(^|[\\/])cli\.js$/.test(entry) && exists(entry)) return { command: proc.execPath, args: [entry] };
 	return { command: "pi", args: [] };
 }
 
@@ -458,7 +460,8 @@ export class AgentRunner {
 		delete env.GENTLE_PI_RESEARCH_SELECTION;
 		let child: ChildLike;
 		try {
-			child = this.deps.spawn(this.deps.pi.command, [...this.deps.pi.args, ...childArguments(request)], {
+			const pi = this.deps.resolvePi?.() ?? this.deps.pi;
+			child = this.deps.spawn(pi.command, [...pi.args, ...childArguments(request)], {
 				cwd: request.cwd,
 				env,
 				detached,

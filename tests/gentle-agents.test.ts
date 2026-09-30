@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { createRequire, syncBuiltinESMExports } from "node:module";
@@ -24,6 +24,7 @@ import { PresenceCursor, PresencePublisher, listPresence, readActivity } from ".
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
 import { AgentRunner } from "../lib/agents-runner.ts";
+import { bindSessionRepositoryPreparation } from "../lib/bounded-writer-admission.ts";
 import { CHILD_METRICS_EVENT } from "../lib/runtime-metrics-children.ts";
 
 // Gentle Agents extension: the subagent_* tools drive isolated pi children,
@@ -1096,7 +1097,7 @@ for (const boundary of ["allowed", "env", "session", "replacement", "bus-throws"
 		const listenerCounts = () => [...h.listeners].map(([name, set]) => [name, set.size]);
 		await h.fire("session_start", context.ctx);
 		const initialListeners = listenerCounts();
-		const result = h.tools.get("subagent_run")!.execute("call", { agent: "gentle-ai-worker", task: "private task", mode: "task" }, undefined, undefined, context.ctx);
+		const result = h.tools.get("subagent_run")!.execute("call", { agent: "gentle-ai-worker", task: "private task\n## Allowed edit surfaces\nsrc/app.ts\n## Return\nReport", mode: "task" }, undefined, undefined, context.ctx);
 		await tick();
 		assert.equal(runtime.children.length, 1);
 		const child = runtime.children[0];
@@ -2509,6 +2510,141 @@ test("retired SDD agent names and selection are rejected before dispatch", async
 	await h.fire("session_shutdown", ctx);
 });
 
+for (const drift of ["loss", "common-dir", "root"] as const) {
+	test(`established writer authority rejects metadata ${drift} before preparation or queue`, async () => {
+		const fixture = realpathSync(mkdtempSync(join(root, "established-writer-")));
+		const project = join(fixture, "project");
+		const cwd = join(project, "nested");
+		const home = join(fixture, "home");
+		mkdirSync(cwd, { recursive: true });
+		const definitions = join(home, ".pi", "agent", "agents");
+		mkdirSync(definitions, { recursive: true });
+		writeFileSync(join(definitions, "worker.md"), "---\ndescription: fixture\nmodel: offline/good\n---\nFixture");
+		execFileSync("git", ["init", "--quiet", project]);
+		const h = fakePi();
+		const runtime = deps();
+		Object.assign(runtime.deps, { home, resolveWorktree: resolveSessionWorktree });
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		Object.assign(ctx, { cwd, modelRegistry: { find: () => ({ provider: "offline", id: "good" }) } });
+		ctx.sessionManager.getCwd = () => cwd;
+		await h.fire("session_start", ctx);
+		let statusCalls = 0;
+		const unbind = bindSessionRepositoryPreparation(ctx.sessionManager, cwd, async () => { statusCalls++; return true; }, () => true);
+		try {
+			if (drift === "root") execFileSync("git", ["init", "--quiet", cwd]);
+			else {
+				renameSync(join(project, ".git"), join(project, "saved-git"));
+				if (drift === "common-dir") {
+					const alternate = join(fixture, "alternate");
+					mkdirSync(alternate);
+					execFileSync("git", ["init", "--quiet", alternate]);
+					writeFileSync(join(project, ".git"), `gitdir: ${join(alternate, ".git")}\n`);
+				}
+			}
+			await assert.rejects(h.tools.get("subagent_run")!.execute("lost-authority", { agent: "worker", task: "Implement\n## Allowed edit surfaces\nsrc/app.ts", mode: "background" }, undefined, undefined, ctx));
+			assert.equal(statusCalls, 0, "no bootstrap-capable STATUS after established identity drift");
+			assert.equal(runtime.children.length, 0, "no writer queued/spawned after established identity drift");
+		} finally { unbind(); await h.fire("session_shutdown", ctx); }
+	});
+}
+
+for (const scenario of ["implicit-worker", "explicit-worker", "implicit-gentle-ai-worker", "explicit-gentle-ai-worker", "scope", "task", "mode", "model", "profile-model", "profile-valid", "foreign", "nested", "repository", "print", "cancelled", "missing", "off", "shutdown", "replacement", "changed-id", "during-cancel", "docs", "read-only", "review", "jd"] as const) {
+	test(`bounded writer executor admission before bootstrap: ${scenario}`, async t => {
+		const fixture = realpathSync(mkdtempSync(join(root, "writer-admission-")));
+		const project = join(fixture, "project");
+		const fixtureHome = join(fixture, "home");
+		const definitions = join(fixtureHome, ".pi", "agent", "agents");
+		mkdirSync(definitions, { recursive: true });
+		mkdirSync(project);
+		mkdirSync(join(project, "nested"));
+		for (const role of ["worker", "gentle-ai-worker", "explore", "reviewer", "jd-fix-agent"]) writeFileSync(join(definitions, `${role}.md`), `---\ndescription: fixture\nmodel: offline/good\ntools: [read]\n---\nFixture`);
+		const h = fakePi();
+		const runtime = deps();
+		runtime.deps.home = fixtureHome;
+		runtime.deps.resolveWorktree = resolveSessionWorktree;
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		Object.assign(ctx, { cwd: project, modelRegistry: { find: (_provider: string, model: string) => scenario === "model" || model === "bad" ? undefined : { provider: "offline", id: model } } });
+		ctx.sessionManager.getCwd = () => project;
+		ctx.sessionManager.getEntries = () => h.entries as never;
+		await h.fire("session_start", ctx);
+		if (scenario === "profile-model" || scenario === "profile-valid") {
+			mkdirSync(join(project, ".pi", "gentle-ai"), { recursive: true });
+			writeFileSync(join(project, ".pi", "gentle-ai", "profile.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile: "invalid" }));
+			const config = runtime.deps.env!.GENTLE_PI_CONFIG_HOME = join(fixture, "config");
+			mkdirSync(config, { recursive: true });
+			writeFileSync(join(config, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, profiles: { invalid: { worker: { model: scenario === "profile-valid" ? "offline/pinned-good" : "offline/bad" } } } }));
+		}
+		let calls = 0;
+		const abort = new AbortController();
+		const unbind = scenario === "missing" ? () => {} : bindSessionRepositoryPreparation(ctx.sessionManager, project, async (_root, current) => {
+			calls++;
+			if (scenario === "shutdown") await h.fire("session_shutdown", ctx);
+			if (scenario === "replacement") { const next = fakeContext(); next.ctx.sessionManager.getCwd = () => project; await h.fire("session_start", next.ctx); }
+			if (scenario === "changed-id") ctx.sessionManager.getSessionId = () => "changed";
+			if (scenario === "during-cancel") abort.abort();
+			if (!current() || scenario === "off" || ["shutdown", "replacement"].includes(scenario)) return false;
+			execFileSync("git", ["init", "--quiet", project], { env: { PATH: process.env.PATH, HOME: fixtureHome, GIT_CONFIG_NOSYSTEM: "1" }, stdio: "pipe" });
+			return true;
+		}, () => true);
+		t.after(() => { unbind(); });
+		if (scenario === "cancelled") abort.abort();
+		if (scenario === "print") Object.assign(ctx, { mode: "print", hasUI: false });
+		const agent = scenario.includes("gentle-ai-worker") ? "gentle-ai-worker" : scenario === "read-only" ? "explore" : scenario === "review" ? "reviewer" : scenario === "jd" ? "jd-fix-agent" : "worker";
+		const task = `Implement source\n## Allowed edit surfaces\n${scenario === "docs" ? "odd/tasks/feature.md" : "src/app.ts"}\n## Return\nReport`;
+		const params = { agent, task: scenario === "scope" ? "No surface" : scenario === "task" ? 42 : task, mode: scenario === "mode" ? "invalid" : "background", ...(scenario.startsWith("explicit") ? { workspace_root: project } : {}), ...(scenario === "nested" ? { workspace_root: join(project, "nested") } : {}), ...(scenario === "foreign" ? { workspace_root: fixtureHome } : {}), ...(scenario === "repository" ? { repository_root: fixtureHome } : {}) };
+		const accepted = scenario.startsWith("implicit-") || scenario.startsWith("explicit-") || scenario === "profile-valid" || ["docs", "read-only", "review", "jd"].includes(scenario);
+		const result = h.tools.get("subagent_run")!.execute("admission", params, abort.signal, undefined, ctx);
+		if (accepted) await result; else await assert.rejects(result);
+		await tick();
+		const prepared = scenario.startsWith("implicit-") || scenario.startsWith("explicit-") || scenario === "profile-valid";
+		if (scenario === "profile-valid") assert.ok(runtime.spawned[0]?.includes("offline/pinned-good"), "repository declaration retains effective profile through bootstrap");
+		assert.equal(calls, prepared || ["off", "shutdown", "replacement", "changed-id", "during-cancel"].includes(scenario) ? 1 : 0);
+		assert.equal(existsSync(join(project, ".git")), prepared);
+		assert.equal(runtime.children.length, accepted ? 1 : 0, "invalid admission never queues/spawns");
+	});
+}
+
+for (const explicit of [false, true]) {
+	test(`same manager and ID after bootstrap permit ${explicit ? "explicit" : "implicit"} launch registration`, async () => {
+		const h = fakePi();
+		const runtime = deps();
+		let bootstrapped = false;
+		const baseSpawn = runtime.deps.spawn!;
+		runtime.deps.spawn = (command, args, options) => {
+			const child = baseSpawn(command, args, options);
+			const on = child.on.bind(child);
+			child.on = ((event: string, listener: () => void) => {
+				if (event === "spawn") queueMicrotask(listener);
+				else on(event as "exit", listener);
+				return child;
+			}) as typeof child.on;
+			return child;
+		};
+		runtime.deps.resolveWorktree = (path, base) => bootstrapped ? { root: resolve(base, path), commonDir: "/bootstrap/git" } : undefined;
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		const manager = ctx.sessionManager;
+		ctx.sessionManager.getEntries = () => h.entries as never;
+		await h.fire("session_start", ctx);
+		assert.deepEqual(h.entries, []);
+		bootstrapped = true;
+		const result = await h.tools.get("subagent_run")!.execute("bootstrap", { agent: "explore", task: "Map", mode: "background", ...(explicit ? { workspace_root: cwd } : {}) }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(runtime.children.length, 1);
+		assert.equal(ctx.sessionManager, manager);
+		assert.equal(ctx.sessionManager.getSessionId(), "s1");
+		assert.equal(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY).length, 1);
+		runtime.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "mapped" }] }] });
+		runtime.children[0].emit({ type: "agent_settled" });
+		await tick();
+		const taskId = (result.details.gentleAgents as { taskId: string }).taskId;
+		assert.match((await h.tools.get("subagent_status")!.execute("status", { task_id: taskId }, undefined, undefined, ctx)).content[0].text, /completed/);
+		assert.equal(h.entries.some(entry => entry.customType === REVIEW_REMINDER_RECEIPT), false, "spawn registration is not mutation evidence");
+	});
+}
+
 test("ordinary non-Git tasks still continue in their original cwd without registering a worktree", async () => {
 	const h = fakePi();
 	const runtime = deps();
@@ -2530,34 +2666,36 @@ test("ordinary non-Git tasks still continue in their original cwd without regist
 	await tick();
 });
 
-test("delayed child spawn retains the originating session and cannot append into its replacement", async () => {
-	const h = fakePi();
-	const runtime = deps();
-	const spawnEvents: Array<() => void> = [];
-	const baseSpawn = runtime.deps.spawn!;
-	runtime.deps.spawn = (command, args, options) => {
-		const child = baseSpawn(command, args, options);
-		const on = child.on.bind(child);
-		child.on = ((event: string, listener: () => void) => {
-			if (event === "spawn") spawnEvents.push(listener);
-			else on(event as "exit", listener);
+for (const sameId of [false, true]) {
+	test(`delayed child spawn cannot append into a ${sameId ? "same-ID manager" : "new-ID session"} replacement`, async () => {
+		const h = fakePi();
+		const runtime = deps();
+		const spawnEvents: Array<() => void> = [];
+		const baseSpawn = runtime.deps.spawn!;
+		runtime.deps.spawn = (command, args, options) => {
+			const child = baseSpawn(command, args, options);
+			const on = child.on.bind(child);
+			child.on = ((event: string, listener: () => void) => {
+				if (event === "spawn") spawnEvents.push(listener);
+				else on(event as "exit", listener);
+				return child;
+			}) as typeof child.on;
 			return child;
-		}) as typeof child.on;
-		return child;
-	};
-	gentleAgents(h.pi, {}, runtime.deps);
-	const { ctx } = fakeContext();
-	await h.fire("session_start", ctx);
-	await h.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "Map", workspace_root: join(root, "old-root"), mode: "background" }, undefined, undefined, ctx);
-	await tick();
-	const next = fakeContext();
-	(next.ctx.sessionManager as unknown as { getSessionId(): string }).getSessionId = () => "s2";
-	await h.fire("session_start", next.ctx);
-	spawnEvents[0]();
-	await tick();
-	assert.deepEqual(h.entries, [], "captured registry is closed instead of appending to the new bound API");
-	await h.fire("session_shutdown", next.ctx);
-});
+		};
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		await h.fire("session_start", ctx);
+		await h.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "Map", workspace_root: join(root, "old-root"), mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		const next = fakeContext();
+		(next.ctx.sessionManager as unknown as { getSessionId(): string }).getSessionId = () => sameId ? "s1" : "s2";
+		await h.fire("session_start", next.ctx);
+		spawnEvents[0]();
+		await tick();
+		assert.deepEqual(h.entries, [], "captured registry is closed instead of appending to the new bound API");
+		await h.fire("session_shutdown", next.ctx);
+	});
+}
 
 test("agentRuntimePaths isolates sessions and transcripts by profile and retains the explicit-home fallback", () => {
 	assert.deepEqual(agentRuntimePaths("/home/x", "/profiles/pi-principal/agent"), {

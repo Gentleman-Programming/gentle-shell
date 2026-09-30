@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test, { after } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import statistics, { STATISTICS_COMMAND_DESCRIPTION, STATISTICS_COMMAND_NAME, type StatisticsSnapshot } from "../extensions/statistics.ts";
+import statistics, { BILLABLE_COMMAND_NAME, STATISTICS_COMMAND_DESCRIPTION, STATISTICS_COMMAND_NAME, type StatisticsSnapshot } from "../extensions/statistics.ts";
 import { aggregateUsage } from "../lib/session-aggregate.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import type { StatisticsView } from "../lib/statistics-view.ts";
+
+const scratch = mkdtempSync(join(tmpdir(), "gentle-billable-"));
+after(() => rmSync(scratch, { recursive: true, force: true }));
 
 // I8: the statistics command and overlay wiring. A distinct command, a TUI-only
 // guard, a cached snapshot invalidated by events, and a palette row that is
@@ -132,6 +138,25 @@ test("the snapshot is cached, events invalidate it, and render never recomputes"
 	await h.fire("turn_end");
 	await open();
 	assert.equal(computes, 2, "an event invalidates and the next open recomputes exactly once");
+});
+
+test("the billable command collects a period and exports through the renderers", async () => {
+	const h = harness();
+	let collected = 0;
+	statistics(h.pi, {
+		agentHome: scratch,
+		computeSnapshot: async () => SNAPSHOT,
+		billableConfig: { hourlyRate: 50, currency: "USD", rounding: { mode: "none" } },
+		collectBillable: async () => {
+			collected += 1;
+			return [{ sessionId: "s1", project: "p", startedAt: 0, endedAt: 3_600_000, wallClockMs: 3_600_000, toolMs: 0, modelMs: 0, idleMs: 0, subagentMs: 0, costNanoUsd: 0, costProvenance: "measured" }];
+		},
+	});
+	const command = h.commands.get(BILLABLE_COMMAND_NAME);
+	assert.ok(command, "the billable command is registered");
+	await command!.handler("--days 3", h.ctx);
+	assert.equal(collected, 1);
+	assert.equal(h.notifications.some((message) => message.includes("Billable report")), true);
 });
 
 test("the palette catalog row is additive and safe when the command is absent", () => {

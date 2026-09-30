@@ -86,9 +86,12 @@ const ANCHORS: readonly RoutingAnchor[] = [
 	{
 		label: "mapping trigger at 4 or more files",
 		canonical: "**Mapping trigger:** when understanding the work requires 4 or more files",
+		// Gentle Shell intentionally leads the canon here: the local mirrors carry
+		// the measured evidence-budget rule instead of the 4-file count (tracked by
+		// gentle-ai#5139). The canonical anchor stays until gentle-ai follows.
 		mirrors: [
-			{ surface: DELEGATION, includes: "**Mapping trigger (4-file rule):** when understanding the work requires 4 or more files" },
-			{ surface: CORE, includes: "**4-file rule** — 4+ files to understand" },
+			{ surface: DELEGATION, includes: "**Mapping trigger (Evidence-budget rule):** read inline only when the evidence fits one parallel batch of at most 3 calls" },
+			{ surface: CORE, includes: "**Evidence-budget rule** — read inline only if evidence fits one parallel batch (at most 3 calls, ~10k tokens" },
 		],
 	},
 	{
@@ -107,9 +110,11 @@ const ANCHORS: readonly RoutingAnchor[] = [
 	{
 		label: "long-session backstop",
 		canonical: "**Long-session backstop:**",
+		// Gentle Shell intentionally leads the canon here: a parent-context token
+		// backstop replaces the tool-call count (tracked by gentle-ai#5139).
 		mirrors: [
-			{ surface: DELEGATION, includes: "**Long-session backstop (Long-session rule):**" },
-			{ surface: CORE, includes: "**Long-session rule** — ~20 tool calls, 5 exploratory reads, or 2 non-mechanical edits without delegation" },
+			{ surface: DELEGATION, includes: "**Context backstop:** when the parent context passes ~150k tokens" },
+			{ surface: CORE, includes: "**Context backstop** — parent context past ~150k tokens" },
 		],
 	},
 	{

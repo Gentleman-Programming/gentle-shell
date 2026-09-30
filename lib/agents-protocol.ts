@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 
 // Gentle Agents protocol. A child pi process streams RPC events; the host
@@ -224,6 +225,65 @@ function childResponse(message: Raw): ChildResponseObservation | undefined {
 			cacheRead: childTokens(usage?.cacheRead), cacheWrite: childTokens(usage?.cacheWrite),
 			totalTokens: childTokens(usage?.totalTokens), reasoning: childTokens(usage?.reasoning) }),
 	});
+}
+
+const ARGUMENT_PROGRESS_MAX = 4096;
+
+/** Per-child liveness evidence, separate from display events and usage.
+ * RPC deltas have no sequence number. Reject duplicate fingerprints rather
+ * than claiming indistinguishable repeated bytes are fresh progress. Retain
+ * only hashes, never arguments; exhaustion fails closed until a new message.
+ */
+export class ToolArgumentProgress {
+	private timestamp = -1;
+	private active = false;
+	private readonly blocks = new Map<number, boolean>();
+	private readonly fingerprints = new Set<string>();
+
+	observe(raw: Record<string, unknown>): boolean {
+		if (raw.type === "message_start") {
+			const message = raw.message as Raw | undefined;
+			if (message?.role === "assistant" && typeof message.timestamp === "number" && Number.isSafeInteger(message.timestamp)
+				&& message.timestamp >= 0 && message.timestamp > this.timestamp && !this.active) {
+				this.timestamp = message.timestamp;
+				this.active = true;
+				this.blocks.clear();
+				this.fingerprints.clear();
+			}
+			return false;
+		}
+		if (raw.type === "message_end" || raw.type === "agent_end" || raw.type === "agent_settled" || raw.type === "turn_end") {
+			this.active = false;
+			this.blocks.clear();
+			this.fingerprints.clear();
+			return false;
+		}
+		if (!this.active || raw.type !== "message_update") return false;
+		const inner = raw.assistantMessageEvent as Raw | undefined;
+		if (!inner || typeof inner !== "object") return false;
+		const index = inner.contentIndex;
+		if (typeof index !== "number" || !Number.isSafeInteger(index) || index < 0 || index >= ARGUMENT_PROGRESS_MAX) return false;
+		if (inner.type === "toolcall_start") {
+			// Older Pi RPC forwards SDK partial snapshots; current RPC puts the
+			// identity directly on toolcall_start. Neither shape is persisted.
+			const partial = inner.partial as Raw | undefined;
+			const block = Array.isArray(partial?.content) ? partial.content[index] as Raw | undefined : undefined;
+			const id = inner.id ?? (block?.type === "toolCall" ? block.id : undefined);
+			const name = inner.toolName ?? (block?.type === "toolCall" ? block.name : undefined);
+			if (typeof id === "string" && id.length > 0 && typeof name === "string" && name.length > 0 && !this.blocks.has(index)) this.blocks.set(index, true);
+			return false;
+		}
+		if (inner.type === "toolcall_end") {
+			if (this.blocks.has(index)) this.blocks.set(index, false);
+			return false;
+		}
+		if (inner.type !== "toolcall_delta" || this.blocks.get(index) !== true || typeof inner.delta !== "string" || inner.delta.length === 0) return false;
+		if (this.fingerprints.size >= ARGUMENT_PROGRESS_MAX) return false;
+		const fingerprint = createHash("sha256").update(`${index}:`).update(inner.delta).digest("hex");
+		if (this.fingerprints.has(fingerprint)) return false;
+		this.fingerprints.add(fingerprint);
+		return true;
+	}
 }
 
 // One RPC line in, zero or more deltas out. Streaming deltas carry only the

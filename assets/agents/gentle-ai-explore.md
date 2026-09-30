@@ -19,4 +19,4 @@ Map relevant files, symbols, relationships, and uncertainty within the parent-pr
 - Do not fix findings, delegate to child agents, commit, or push.
 - Do not use review lenses. RDD review remains independent and parent-owned.
 
-Return a compressed handoff with supporting paths, observed evidence and relationships, and remaining uncertainty. Never claim evidence you did not observe.
+Return a compressed handoff of at most ~2k tokens: `path:line` evidence, observed relationships, and remaining uncertainty. Never claim evidence you did not observe.

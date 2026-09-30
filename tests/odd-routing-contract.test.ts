@@ -129,7 +129,7 @@ test("ODD closes each task with a work-unit commit and reviews the commit or PR 
 		"keep a running count from work-unit commits",
 		"`ask-on-risk` (default), `auto-chain`, `single-pr`, or `exception-ok`",
 		"apply the chosen strategy before the next commit",
-		"`ask-on-risk` asks once for the chain strategy, `stacked-to-main` or `feature-branch-chain`",
+		"`ask-on-risk` asks once using the ordered oversized-delivery menu",
 		"`auto-chain` asks only for a missing chain strategy and slices automatically",
 		"Cache both choices, and record slice boundaries",
 		"Resolve the `work-unit-commits` and `chained-pr` skills by registry name",
@@ -145,8 +145,36 @@ test("ODD closes each task with a work-unit commit and reviews the commit or PR 
 		"Close task with a work-unit commit",
 		"RDD enabled at work-unit commit boundary",
 		"Running authored lines over 400",
-		"Apply delivery strategy: chained PR slice",
+		"Apply selected delivery strategy",
+		"Single PR; no chain artifacts",
 	]);
+});
+
+test("delivery instructions and docs preserve localized ordered outcomes and override chaining", () => {
+	for (const text of [delegation, read("docs/readme-reference.md")]) {
+		// English prose is documentation evidence, not mandatory runtime UI copy.
+		const outcomes = ["chain_strategy=feature-branch-chain", "chain_strategy=stacked-to-main", "delivery_strategy=single-pr"];
+		let previous = -1;
+		for (const outcome of outcomes) {
+			const index = text.indexOf(outcome);
+			assert.ok(index > previous, `missing or out-of-order semantic outcome: ${outcome}`);
+			previous = index;
+		}
+		assert.match(text, /1\. .*feature\/tracker.*feature-branch-chain/i);
+		assert.match(text, /2\. .*verified default\/main.*stacked-to-main/i);
+		assert.match(text, /3\. .*single PR.*least recommended.*delivery_strategy=single-pr/i);
+		containsAll(text, [
+			"delivery_strategy=single-pr", "not a `chain_strategy` token",
+			"overrides the pending chaining path", "clear the chain choice",
+			"suppress later chain prompts", "not automatically select `exception-ok`",
+			"destination repository's documented contribution/size policy",
+			"not a universal label requirement", "no tracker, child dependency diagram, or Chain Context",
+			"complete user-facing question", "every option label, description, and recommendation marker",
+			"active user's conversation language", "unchanged and untranslated",
+			"English examples are illustrative and localizable, not mandatory copy",
+		]);
+		assert.doesNotMatch(text, /single-pr.*requires? `size:exception`/i);
+	}
 });
 
 test("user documentation shows recovery and candidate-level consent without claiming model proof", () => {
@@ -214,7 +242,7 @@ test("mandatory delegation triggers are behavioral in the lazy canonical port an
 		"**Mapping trigger",
 		"**Writer trigger",
 		"**Preparation trigger:**",
-		"**Long-session backstop",
+		"**Context backstop:**",
 		"pause and delegate the next bounded unit of work",
 		"**Route declaration:**",
 		"record the chosen route per task",
@@ -235,19 +263,19 @@ test("mandatory delegation triggers are behavioral in the lazy canonical port an
 
 test("core and lazy canonical trigger lists agree in numbering and semantics", () => {
 	for (const entry of [
-		"1. **4-file rule**",
+		"1. **Evidence-budget rule**",
 		"2. **Multi-file write rule**",
 		"3. **Incident rule**",
-		"4. **Long-session rule**",
+		"4. **Context backstop**",
 		"5. **Verification rule**",
 	]) {
 		assert.ok(core.includes(entry), `always-on core trigger list is missing: ${entry}`);
 	}
 	for (const entry of [
-		"1. **Mapping trigger (4-file rule):**",
+		"1. **Mapping trigger (Evidence-budget rule):**",
 		"2. **Writer trigger (Multi-file write rule):**",
 		"3. **Incident rule:**",
-		"4. **Long-session backstop (Long-session rule):**",
+		"4. **Context backstop:**",
 		"5. **Verification rule**",
 	]) {
 		assert.ok(delegation.includes(entry), `lazy canonical trigger list is missing: ${entry}`);
@@ -259,6 +287,32 @@ test("core and lazy canonical trigger lists agree in numbering and semantics", (
 		"**Per-action rule**",
 	]) {
 		assert.ok(!delegation.includes(stale), `reconciled canonical list retains stale trigger framing: ${stale}`);
+	}
+});
+
+// Evidence-budget rule (gentle-shell#1587, measured in gentle-ai#5139): every
+// routing surface states the same numbers, and the retired file-count and
+// tool-call triggers are gone from all of them.
+test("evidence-budget numbers agree across routing surfaces and retired triggers are gone", () => {
+	const surfaces: Record<string, string> = {
+		"assets/orchestrator.md": core,
+		"assets/orchestrator-delegation.md": delegation,
+		"skills/gentle-ai/SKILL.md": read("skills/gentle-ai/SKILL.md"),
+	};
+	for (const [path, text] of Object.entries(surfaces)) {
+		containsAll(text, [
+			"**Evidence-budget rule**",
+			"at most 3 calls",
+			"~10k tokens",
+			"at most ~2k tokens",
+			"`path:line`",
+			"~150k tokens",
+			"Context backstop",
+		]);
+		assert.doesNotMatch(text, /4-file rule|20 tool calls|5 exploratory (?:file )?reads/, `${path} keeps a retired trigger`);
+	}
+	for (const agent of ["assets/agents/gentle-ai-explore.md", "assets/agents/gentle-ai-verify.md"]) {
+		containsAll(read(agent), ["at most ~2k tokens", "`path:line`"]);
 	}
 });
 

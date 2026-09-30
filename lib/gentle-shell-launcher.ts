@@ -379,7 +379,7 @@ export function missingPiMessage(): string {
 
 // --- pi version gate ---------------------------------------------------------
 
-export const MIN_PI_VERSION = "0.85.1";
+export const MIN_PI_VERSION = "0.99.1";
 
 export type PiVersionCheck = { ok: true; version: string } | { ok: false; message: string; version?: string };
 

@@ -3698,3 +3698,93 @@ test("Enter without a parent session id fails loud and writes nothing", async (t
 	assert.equal(notifications.at(-1)?.severity, "warning");
 	resetSessionProfileBindingsForTesting();
 });
+
+// #1305 slice 2 — path-tool consent fence at the tool_call hook.
+function fenceFixture(t: import("node:test").TestContext) {
+	const dir = realpathSync(mkdtempSync(join(tmpdir(), "fence-hook-")));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const repo = join(dir, "repo");
+	const sibling = join(dir, "sibling");
+	const empty = join(dir, "empty");
+	mkdirSync(join(empty), { recursive: true });
+	mkdirSync(sibling, { recursive: true });
+	const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+	Object.assign(env, { GIT_CONFIG_GLOBAL: join(empty, "config"), GIT_CONFIG_NOSYSTEM: "1" });
+	writeFileSync(join(empty, "config"), "");
+	execFileSync("git", ["-C", dir, "init", "--initial-branch=main", `--template=${empty}`, repo], { env, stdio: ["ignore", "pipe", "pipe"] });
+	return { repo, sibling };
+}
+
+test("path fence confirms outside targets with absolute names and grants per session", async (t) => {
+	const f = fenceFixture(t);
+	type ToolCallHandler = (event: { toolName: string; input: unknown }, ctx: ExtensionContext) => Promise<ToolCallEventResult | undefined>;
+	const handlers = new Map<string, ToolCallHandler>();
+	const emitted: { requestId: string; state: string; toolName: string }[] = [];
+	const confirmations: { title: string; preview: string }[] = [];
+	let approve = true;
+	const pi = {
+		on(name: string, handler: ToolCallHandler) { handlers.set(name, handler); },
+		events: { emit(_channel: string, data: unknown) {
+			const event = data as { requestId: string; state: string; toolName: string };
+			if (event?.requestId) emitted.push(event);
+		} },
+		registerCommand() {},
+		registerTool() {},
+	} as unknown as ExtensionAPI;
+	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	const toolCall = handlers.get("tool_call")!;
+	const ctx = {
+		cwd: f.repo,
+		hasUI: true,
+		ui: { confirm: async (title: string, preview: string) => { confirmations.push({ title, preview }); return approve; } },
+		sessionManager: { getSessionId: () => "fence-1", getEntries: () => [] },
+	} as unknown as ExtensionContext;
+
+	assert.equal(await toolCall({ toolName: "read", input: { path: "src/file.ts" } }, ctx), undefined, "inside target passes silently");
+	assert.equal(confirmations.length, 0, "no confirmation for inside targets");
+
+	const approved = await toolCall({ toolName: "read", input: { path: "../sibling/notes.txt" } }, ctx);
+	assert.equal(approved, undefined, "approved outside target proceeds");
+	assert.equal(confirmations.length, 1);
+	assert.equal(confirmations[0].title, "Allow access outside the project root?");
+	assert.ok(confirmations[0].preview.includes(join(f.sibling, "notes.txt")), "preview names the absolute target");
+	assert.deepEqual(emitted.map((event) => event.state), ["waiting", "approved"], "correlated permission lifecycle");
+
+	assert.equal(await toolCall({ toolName: "edit", input: { path: "../sibling/notes.txt" } }, ctx), undefined, "grant covers other tools for the same target");
+	assert.equal(confirmations.length, 1, "granted target is not re-asked in the same session");
+
+	await toolCall({ toolName: "write", input: { path: join(f.sibling, "other.txt") } }, ctx);
+	assert.equal(confirmations.length, 2, "a different outside target confirms again");
+	approve = false;
+	const denied = await toolCall({ toolName: "read", input: { path: "../sibling/denied.txt" } }, ctx);
+	assert.deepEqual(denied, { block: true, reason: "Gentle AI safety policy blocked the path access because it was not confirmed." }, "denied access never executes");
+	assert.deepEqual(emitted.slice(-2).map((event) => event.state), ["waiting", "denied"]);
+});
+
+test("path fence fails closed headless and stays silent outside git sessions", async (t) => {
+	const f = fenceFixture(t);
+	type ToolCallHandler = (event: { toolName: string; input: unknown }, ctx: ExtensionContext) => Promise<ToolCallEventResult | undefined>;
+	const handlers = new Map<string, ToolCallHandler>();
+	const pi = {
+		on(name: string, handler: ToolCallHandler) { handlers.set(name, handler); },
+		events: { emit() {} },
+		registerCommand() {},
+		registerTool() {},
+	} as unknown as ExtensionAPI;
+	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	const toolCall = handlers.get("tool_call")!;
+	const headlessCtx = {
+		cwd: f.repo,
+		hasUI: false,
+		sessionManager: { getSessionId: () => "fence-2", getEntries: () => [] },
+	} as unknown as ExtensionContext;
+	const blocked = await toolCall({ toolName: "read", input: { path: "../sibling/secret.txt" } }, headlessCtx);
+	assert.equal(blocked?.block, true, "headless fails closed");
+	assert.match(blocked!.reason as string, /outside the session worktree/);
+	assert.ok((blocked!.reason as string).includes(join(f.sibling, "secret.txt")), "reason names the absolute target");
+
+	const plain = realpathSync(mkdtempSync(join(tmpdir(), "fence-plain-")));
+	t.after(() => rmSync(plain, { recursive: true, force: true }));
+	const noGitCtx = { cwd: plain, hasUI: true, sessionManager: { getSessionId: () => "fence-3", getEntries: () => [] } } as unknown as ExtensionContext;
+	assert.equal(await toolCall({ toolName: "read", input: { path: "../../etc/hosts" } }, noGitCtx), undefined, "no resolvable worktree identity: fence stays silent");
+});

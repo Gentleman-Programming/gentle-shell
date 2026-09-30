@@ -27,11 +27,11 @@ Fresh Pi-bound STATUS must validate exact current-target lineage/target/binding 
 
 - [x] **T1 — Baseline/dependencies:** frozen install with scripts disabled; existing bounded tests 25/25, typecheck accepted 187 diagnostics with no regressions.
 - [x] **T2 — Reproduce/repair:** initial three recovery regressions RED, then six GREEN. Stale STATUS-count expectation separately RED/GREEN; four exact STATUS requests and zero stale captures asserted. Source/test diff +176/-15.
-- [ ] **T3 — Final candidate verification:** prior independent affected-file run 135/135 and named assertion 1/1; revalidation on updated base and native closure pending. No severe candidate-only trust defect found in prior readback.
+- [x] **T3 — Scoped candidate verification:** independent committed-unit recheck on updated base passed 135/135, typecheck baseline187, modules8/8 and diff checks; clean tree and publication-privacy readback. Native consolidated review approved and its exact acknowledgement burned authority. Global full-suite green and defect-specific native-provider E2E remain unclaimed.
 - [x] **T4 — Classify original-base failures:** independent clean original base reproduced all other 18 failure signatures, same cancellation/timeout and empty-persona harness failure. This proves attribution at the original base, not a fresh full-suite pass at the new update target.
 - [x] **T5 — Diagnose harness side effect:** extended fixture invoked existing dispatch hydration and created an owned view. Later exact view/marker/admin-dir/registration absence confirmed, no manual cleanup performed, removal actor unknown. No native lifecycle-authority mutation found in that hydration path.
 - [x] **T6 — Update/revalidate against current main:** fast-forwarded only this feature branch to the pinned target; exact patch/task-record hashes preserved through path-limited stash restore, no conflicts, backup retained. Complete affected files 135/135; typecheck baseline187, modules8/8 and diff checks pass. Full suite was not rerun on this target.
-- [ ] **T7 — Commit/review/PR** (in progress): coherent Conventional Commit; native assessment and provider-bound review/consent; acknowledge only exact approved continuation; publish only feature branch and open issue-linked PR with one `type:bug` label; report CI, never merge.
+- [ ] **T7 — Commit/review/PR** (publication in progress): code work unit `7b0e7ab9735c5a5c39d631eeeb26a0bf89026636`, 247 authored lines including record, medium native tier with one consolidated `review-reliability` lens; approval acknowledged and authority burned. Publish only feature branch, open issue-linked PR with one `type:bug` label, report CI; never merge.
 
 ## Observed evidence before update
 
@@ -51,6 +51,6 @@ Operator logs retained outside the repository use prefixes `gentle-1316-independ
 
 ## Next step and rollback
 
-Updated feature branch and unchanged local patch revalidated at the pinned target. Create the coherent work-unit commit, assess its committed range, follow native consent/review and prepare the PR. Native assessment previously could not classify the untracked task record and selected the high-risk independent-verifier fallback; prior independent scoped checks passed, but no native review receipt has been claimed. Commit identity and final native/CI outcomes will be recorded after they are observed.
+Work unit `7b0e7ab9735c5a5c39d631eeeb26a0bf89026636` is committed and independently rechecked (135/135). Native review approved and exact acknowledgement completed. ASSESS remains schema-incompatible, so conservative independent verification was performed; native START itself classified this scoped candidate as medium. Record-only evidence updates do not change executable behavior. Publish the feature branch and open the PR; CI outcomes are pending, with no merge authorization.
 
 Rollback only this fix's coherent work-unit commit (source, tests and record); preserve unrelated authority and worktrees. No push to main, merge or auto-merge authorization exists.

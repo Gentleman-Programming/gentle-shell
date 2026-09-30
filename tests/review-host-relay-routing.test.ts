@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { __testing } from "../extensions/gentle-ai.ts";
+import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
 import { localProfilePinPath, repoProfileDeclarationPath, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
 import { createProfile, emptyProfilesFile, profilesFilePath, writeProfilesFileSync } from "../lib/agent-profiles.ts";
 import type { AgentModelConfig } from "../lib/model-routing-authority.ts";
@@ -231,6 +232,122 @@ async function runCapture(cwd: string, harness: RoutingHarness, lineageId: strin
 		undefined, undefined, undefined, false, modelRegistry,
 	) as Record<string, unknown>;
 }
+
+// Fake STATUS/relay evidence exercises facade admission, not native-provider E2E.
+test("capture route recovery revalidates a single forecast after route loss", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const cwd = repository(t), lineageId = "recovered-single", input = relayCollectInput(lineageId, "review-risk", 0);
+	const selections = new Map(), current = finalizeStatus(lineageId, [input]);
+	const harness = nativeHarness([current, current, current]);
+	let relays = 0;
+	__testing.setReviewHostRelayRunnerForTesting(async () => {
+		relays += 1;
+		return { promptByteLength: 64, resultByteLength: 32, submission: '{"admission_decision":"completed"}' };
+	});
+	await __testing.executeReviewControllerOperation({ operation: "status", lineageId }, cwd, harness.native, undefined, null, undefined, selections);
+	const parameters = { lineageId, collectBinding: JSON.stringify(input) };
+	const forecast = await __testing.executeReviewCaptureOperation(parameters, cwd, harness.native, undefined, null, selections, true);
+	assert.equal(forecast.outcome, "reviewer-model-run-forecast");
+	assert.equal(relays, 0);
+	selections.clear();
+	const result = await __testing.executeReviewCaptureOperation({ ...parameters, reviewerRunAcknowledged: true }, cwd, harness.native, undefined, null, selections, true);
+	assert.equal(result.status, "captured");
+	assert.equal(relays, 1);
+	assert.equal(harness.statusCalls.length, 3);
+	assert.ok(harness.statusCalls.every((request) => request.agent === "pi"));
+});
+
+test("capture route recovery revalidates a complete group after forecast eviction", async (t) => {
+	t.after(() => __testing.setReviewHostRelayGroupRunnersForTesting());
+	const cwd = repository(t), lineageId = "recovered-group", inputs = groupInputs(lineageId), selections = new Map();
+	const harness = nativeHarness([finalizeStatus(lineageId, inputs), finalizeStatus(lineageId, inputs), finalizeStatus(lineageId, inputs), ...inputs.map((_input, index) => finalizeStatus(lineageId, inputs.slice(index))), finalizeStatus(lineageId)]);
+	let relays = 0, submissions = 0;
+	__testing.setReviewHostRelayGroupRunnersForTesting(async (requests) => { relays += requests.length; return requests.map(prepared); }, async () => {
+		submissions += 1;
+		return { promptByteLength: 64, resultByteLength: 32, submission: "{}" };
+	});
+	await __testing.executeReviewControllerOperation({ operation: "status", lineageId }, cwd, harness.native, undefined, null, undefined, selections);
+	const parameters = { lineageId, collectBindings: inputs.map((input) => JSON.stringify(input)) };
+	const forecast = await __testing.executeReviewCaptureGroupOperation(parameters, cwd, harness.native, undefined, null, selections, true);
+	assert.equal(forecast.outcome, "reviewer-model-run-forecast");
+	assert.equal(relays, 0);
+	selections.clear();
+	const result = await __testing.executeReviewCaptureGroupOperation({ ...parameters, reviewerRunAcknowledged: true }, cwd, harness.native, undefined, null, selections, true);
+	assert.equal(result.outcome, "native-reviewer-group-status-reconciled");
+	assert.equal(relays, 4);
+	assert.equal(submissions, 4);
+	assert.equal(harness.statusCalls.length, 8);
+});
+
+test("capture route recovery preserves the committed group selector after partial route loss", async (t) => {
+	const candidateViews = new CandidateViewRegistry();
+	t.after(() => { candidateViews.cleanupAll(); __testing.setReviewHostRelayGroupRunnersForTesting(); });
+	const cwd = repository(t), lineageId = "recovered-committed-group", inputs = groupInputs(lineageId), selections = new Map();
+	const view = candidateViews.create({ contributorRoot: cwd, baseRef: execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim(), committedOnly: true });
+	candidateViews.retain(view.token, lineageId);
+	const target = candidateViews.resolveProjection(lineageId, cwd), requests: Array<Record<string, unknown>> = [];
+	const statuses = [finalizeStatus(lineageId, inputs), finalizeStatus(lineageId, inputs), ...inputs.map((_input, index) => finalizeStatus(lineageId, inputs.slice(index))), finalizeStatus(lineageId)];
+	const native = { targetStatus: async (request: Record<string, unknown>) => { requests.push(request); return statuses.shift()!; } } as unknown as NativeReviewCli;
+	__testing.setReviewHostRelayGroupRunnersForTesting(async (requests) => requests.map(prepared), async () => ({ promptByteLength: 64, resultByteLength: 32, submission: "{}" }));
+	const parameters = { lineageId, collectBindings: inputs.map((input) => JSON.stringify(input)) };
+	const forecast = await __testing.executeReviewCaptureGroupOperation(parameters, cwd, native, undefined, candidateViews, selections, true);
+	assert.equal(forecast.outcome, "reviewer-model-run-forecast");
+	// Leave only a later matching route, rather than assuming the first survives.
+	for (const key of [...selections.keys()].slice(0, 3)) selections.delete(key);
+	const result = await __testing.executeReviewCaptureGroupOperation({ ...parameters, reviewerRunAcknowledged: true }, cwd, native, undefined, candidateViews, selections, true);
+	assert.equal(result.outcome, "native-reviewer-group-status-reconciled");
+	assert.equal(requests.length, 7);
+	assert.ok(requests.every((request) => request.baseRef === target.baseCommit && request.committedOnly === true && request.agent === "pi"));
+});
+
+test("capture route recovery rejects known workspace, lineage and selector route mismatches", async (t) => {
+	const cwd = repository(t), other = repository(t), lineageId = "known-route-boundaries", inputs = groupInputs(lineageId), selections = new Map();
+	const harness = nativeHarness([finalizeStatus(lineageId, inputs)]);
+	await __testing.executeReviewControllerOperation({ operation: "status", lineageId, input: JSON.stringify({ baseRef: "trusted-base", committedOnly: true }) }, cwd, harness.native, undefined, null, undefined, selections);
+	for (const parameters of [{ lineageId, workspaceRoot: other }, { lineageId: "foreign" }]) {
+		const single = await __testing.executeReviewCaptureOperation({ ...parameters, collectBinding: JSON.stringify(inputs[0]), reviewerRunAcknowledged: true }, cwd, harness.native, undefined, null, selections, true);
+		assert.equal(single.outcome, "capture-binding-rejected");
+		const group = await __testing.executeReviewCaptureGroupOperation({ ...parameters, collectBindings: inputs.map((input) => JSON.stringify(input)), reviewerRunAcknowledged: true }, cwd, harness.native, undefined, null, selections, true);
+		assert.equal(group.outcome, "capture-group-rejected");
+	}
+	const key = [...selections.keys()][1]!;
+	selections.set(key, { ...selections.get(key), baseRef: "wrong-base" });
+	const mixed = await __testing.executeReviewCaptureGroupOperation({ lineageId, collectBindings: inputs.map((input) => JSON.stringify(input)), reviewerRunAcknowledged: true }, cwd, harness.native, undefined, null, selections, true);
+	assert.equal(mixed.outcome, "capture-group-rejected");
+	assert.equal(harness.statusCalls.length, 1, "known route mismatches never retarget native STATUS or launch capture");
+});
+
+test("capture route recovery rejects fresh foreign, terminal, stale and malformed groups without relay", async (t) => {
+	t.after(() => { __testing.setReviewHostRelayRunnerForTesting(); __testing.setReviewHostRelayGroupRunnersForTesting(); });
+	const cwd = repository(t), lineageId = "recovery-negatives", inputs = groupInputs(lineageId);
+	let relays = 0;
+	__testing.setReviewHostRelayRunnerForTesting(async () => { relays += 1; throw new Error("unexpected relay"); });
+	__testing.setReviewHostRelayGroupRunnersForTesting(async () => { relays += 1; throw new Error("unexpected group"); }, async () => { throw new Error("unexpected submission"); });
+	const current = finalizeStatus(lineageId, inputs);
+	for (const fresh of [
+		finalizeStatus(lineageId), finalizeStatus("foreign", inputs),
+		{ ...current, targetIdentity: `sha256:${"9".repeat(64)}` },
+		{ ...current, applicability: "unrelated" },
+		{ ...current, authority: { ...current.authority!, state: "approved" } },
+		finalizeStatus(lineageId, groupInputs(lineageId, PHASE_REVISION)),
+	] as ReviewStatusV3[]) {
+		const single = await __testing.executeReviewCaptureOperation({ lineageId, collectBinding: JSON.stringify(inputs[0]), reviewerRunAcknowledged: true }, cwd, nativeHarness([fresh]).native, undefined, null, new Map(), true);
+		assert.equal(single.outcome, "capture-binding-rejected");
+		if (fresh.applicability !== "current_target" || fresh.authority?.state === "approved") {
+			const routes = new Map();
+			const listed = await __testing.executeReviewControllerOperation({ operation: "status", lineageId }, cwd, nativeHarness([fresh]).native, undefined, null, undefined, routes);
+			assert.deepEqual(listed.collectBindings, [], "publication follows route-registration eligibility");
+			assert.equal(routes.size, 0);
+		}
+		const group = await __testing.executeReviewCaptureGroupOperation({ lineageId, collectBindings: inputs.map((input) => JSON.stringify(input)), reviewerRunAcknowledged: true }, cwd, nativeHarness([fresh]).native, undefined, null, new Map(), true);
+		assert.equal(group.outcome, "capture-group-rejected");
+	}
+	for (const submitted of [inputs.slice(1), [inputs[0], inputs[0], ...inputs.slice(2)], [...inputs].reverse(), [...inputs.slice(0, 3), relayCollectInput("foreign", "review-reliability", 3)]]) {
+		const group = await __testing.executeReviewCaptureGroupOperation({ lineageId, collectBindings: submitted.map((input) => JSON.stringify(input)), reviewerRunAcknowledged: true }, cwd, nativeHarness([current]).native, undefined, null, new Map(), true);
+		assert.equal(group.outcome, "capture-group-rejected");
+	}
+	assert.equal(relays, 0);
+});
 
 test("one materialize binding routes exactly one provider slot through the host relay", async (t) => {
 	t.after(() => __testing.setReviewHostRelayRunnerForTesting());

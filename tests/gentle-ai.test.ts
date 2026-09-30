@@ -212,10 +212,10 @@ test("missing package-local binaries give a direct recovery without attributing 
 test("registered Gentle Review tools render reusable rose lifecycle call rows", () => {
 	const tools = registeredGentleTools();
 	const cases = [
-		["gentle_review", { operation: "status" }, "review status"],
-		["gentle_review", { operation: "future-operation", secret: "/private" }, "review"],
-		["gentle_review_scope", {}, "review scope"],
-		["gentle_review_capture_group", {}, "review capture group"],
+		["gentle_review", { operation: "status" }, "status"],
+		["gentle_review", { operation: "future-operation", secret: "/private" }, ""],
+		["gentle_review_scope", {}, "scope"],
+		["gentle_review_capture_group", {}, "capture group"],
 		[
 			"gentle_review_capture",
 			{
@@ -225,7 +225,7 @@ test("registered Gentle Review tools render reusable rose lifecycle call rows", 
 				secret: "secret-value",
 				arbitrary: "arbitrary-value",
 			},
-			"review capture",
+			"capture",
 		],
 	] as const;
 
@@ -238,8 +238,9 @@ test("registered Gentle Review tools render reusable rose lifecycle call rows", 
 		[...tools.keys()].filter((name) => name.startsWith("gentle_review")).sort(),
 	);
 
-	for (const [name, args, operationPath] of cases) {
+	for (const [name, args, operation] of cases) {
 		const tool = tools.get(name);
+		const title = (status: string) => ["🌹 rdd", [status, operation].filter(Boolean).join(" · ")].filter(Boolean).join(" ");
 		assert.ok(tool, `missing ${name}`);
 		const initial = tool.renderCall(args, lifecycleTheme, lifecycleContext());
 		const initialText = renderComponent(initial);
@@ -265,10 +266,14 @@ test("registered Gentle Review tools render reusable rose lifecycle call rows", 
 		assert.strictEqual(initial, running);
 		assert.strictEqual(running, completed);
 		assert.strictEqual(completed, failed);
-		assert.equal(cardTitle(initialText), `🌹︎ Gentle AI · running · ${operationPath}`); assert.equal(cardTone(initialText), "warning");
-		assert.equal(cardTitle(runningText), `🌹︎ Gentle AI · running · ${operationPath}`); assert.equal(cardTone(runningText), "warning");
-		assert.equal(cardTitle(completedText), `🌹︎ Gentle AI · completed · ${operationPath}`); assert.equal(cardTone(completedText), "success");
-		assert.equal(cardTitle(failedText), `🌹︎ Gentle AI · failed · ${operationPath}`); assert.equal(cardTone(failedText), "error");
+		assert.equal(cardTitle(initialText), title("running")); assert.equal(cardTone(initialText), "warning");
+		assert.equal(cardTitle(runningText), title("running")); assert.equal(cardTone(runningText), "warning");
+		assert.equal(cardTitle(completedText), title("")); assert.equal(cardTone(completedText), "success");
+		assert.doesNotMatch(cardTitle(completedText), /completed/);
+		assert.match(completedText, /to expand/);
+		assert.equal((initialText.match(/╰/g) ?? []).length, 1, "running call owns the closing frame");
+		assert.equal((completedText.match(/╰/g) ?? []).length, 0, "final result owns the closing frame");
+		assert.equal(cardTitle(failedText), title("failed")); assert.equal(cardTone(failedText), "error");
 		assert.doesNotMatch(renderComponent(failed), /future-operation|secret|private/);
 		for (const forbiddenValue of ["lineage-id", "binding-id", "sha256:hash-value", "secret-value", "arbitrary-value"]) {
 			assert.doesNotMatch(failedText, new RegExp(forbiddenValue));
@@ -276,7 +281,7 @@ test("registered Gentle Review tools render reusable rose lifecycle call rows", 
 	}
 });
 
-test("registered Gentle Review tools preserve result envelopes and redact collapsed result rendering", async () => {
+test("registered Gentle Review tools preserve result envelopes and preview useful collapsed results", async () => {
 	const tools = registeredGentleTools();
 	const scope = tools.get("gentle_review_scope");
 	const manifest = { version: 1, scopeByMode: { "100644": ["src/file.ts"] }, gitlinks: {} };
@@ -301,7 +306,7 @@ test("registered Gentle Review tools preserve result envelopes and redact collap
 	});
 	assert.deepEqual(result.details, visibleEnvelope);
 
-	const resultText = "safe result\x1b[31m\nlineage=secret body=private";
+	const resultText = "safe result\x1b[31m\nlineage=secret body=private\nthird useful detail\nfourth expanded detail";
 	for (const name of ["gentle_review", "gentle_review_scope", "gentle_review_capture"]) {
 		const tool = tools.get(name);
 		assert.equal(typeof tool?.renderResult, "function", `${name} must define result rendering`);
@@ -312,14 +317,17 @@ test("registered Gentle Review tools preserve result envelopes and redact collap
 		]) {
 			const collapsed = renderComponent(tool.renderResult({ content: [{ type: "text", text: resultText }] }, options, lifecycleTheme, {}));
 			const collapsedBody = cardBody(collapsed);
-			assert.equal((collapsedBody.match(/\d+ lines?\b/g) ?? []).length, 1, `${name} collapsed output must contain one expand hint`);
-			assert.match(collapsedBody, /^<dim>\d+ lines?\b<\/dim>/, `${name} collapsed output must start with the hint`);
-			assert.doesNotMatch(collapsed, /safe result|lineage=secret|private/);
+			assert.match(collapsedBody, /safe result[\s\S]*lineage=secret body=private[\s\S]*third useful detail/, `${name} previews actual result content, not redaction`);
+			assert.doesNotMatch(collapsedBody, /\d+ lines?\b|fourth expanded detail|to expand|\x1b\[/);
+			assert.equal(collapsedBody.split("\n").length, 3, `${name} has three useful collapsed rows`);
+			assert.match(collapsed, new RegExp(`<${options.isError ? "error" : options.isPartial ? "warning" : "success"}>│`), "host outcome preserves the semantic frame tone");
+			assert.equal((collapsed.match(/╰/g) ?? []).length, options.isPartial ? 0 : 1, "only final results close the frame");
 		}
 		const expanded = renderComponent(tool.renderResult({ content: [{ type: "text", text: resultText }] }, { expanded: true, isPartial: false, isError: true }, lifecycleTheme, {}));
-		assert.equal(cardBody(expanded).split("\n")[0], "safe result");
+		assert.equal(cardBody(expanded).split("\n")[0], "<error>safe result</error>");
 		assert.match(expanded, /safe result/);
-		assert.match(expanded, /lineage=secret body=private/);
+		assert.match(expanded, /lineage=secret body=private[\s\S]*third useful detail[\s\S]*fourth expanded detail/);
+		assert.equal((expanded.match(/╰/g) ?? []).length, 1, "expanded final result closes exactly one frame");
 		assert.doesNotMatch(expanded, /to expand/);
 		assert.doesNotMatch(cardBody(expanded), /\x1b\[/);
 		const nonText = renderComponent(tool.renderResult({ content: [{ type: "image", data: "opaque", mimeType: "image/png" }] }, { expanded: true, isPartial: false }, lifecycleTheme, {}));
@@ -1560,7 +1568,8 @@ test("concurrent guarded confirmations coalesce the Herdr lifecycle per extensio
 });
 
 
-test("RPIV questionnaire blockers emit only a private, balanced Herdr projection", () => {
+for (const channel of ["rpiv:ask-user:blocked", "gentle-pi:ask-user-question:blocked"]) {
+test(`${channel} emits only a private, balanced Herdr projection`, () => {
 	type HerdrBlockedEvent = { active: boolean; label?: string };
 	const eventHandlers = new Map<string, (data: unknown) => void>();
 	const published: Array<{ channel: string; data: unknown }> = [];
@@ -1583,9 +1592,15 @@ test("RPIV questionnaire blockers emit only a private, balanced Herdr projection
 		registerTool() {},
 	} as unknown as ExtensionAPI;
 	createGentleAiExtension({ nativeReviewCli: null })(pi);
-	assert.equal(eventHandlers.size, 2);
+	const privateHostDiscovery = "gentle:yolo:host-ui";
+	assert.equal(eventHandlers.has(privateHostDiscovery), true);
+	assert.deepEqual([...eventHandlers.keys()].filter(name => name !== privateHostDiscovery).sort(), [
+		"gentle-pi:ask-user-choice:blocked", "gentle-pi:ask-user-question:blocked", "rpiv:ask-user:blocked",
+	], "only the original three blocked channels remain besides the known private host adapter");
+	assert.deepEqual(published, [], "registering host discovery emits no public event or private payload");
 	assert.equal(eventHandlers.has("gentle-pi:ask-user-choice:blocked"), true);
 	assert.equal(eventHandlers.has("rpiv:ask-user:blocked"), true);
+	assert.equal(eventHandlers.has("gentle-pi:ask-user-question:blocked"), true);
 
 	const source = {
 		active: true,
@@ -1595,23 +1610,29 @@ test("RPIV questionnaire blockers emit only a private, balanced Herdr projection
 		command: "private questionnaire command",
 		arbitrary: { nested: "private questionnaire field" },
 	};
-	pi.events.emit("rpiv:ask-user:blocked", source);
-	assert.strictEqual(published[0]?.data, source, "the RPIV event remains the source event");
+	eventHandlers.get(privateHostDiscovery)!(source);
+	assert.deepEqual(published, [], "private discovery ignores questionnaire data instead of relaying it");
+	assert.deepEqual(herdrEvents, []);
+	pi.events.emit(channel, source);
+	assert.strictEqual(published[0]?.data, source, "the questionnaire event remains the source event");
 	assert.deepEqual(herdrEvents, [{ active: true, label: "Questionnaire awaiting input" }]);
 	assert.doesNotMatch(JSON.stringify(herdrEvents), /private questionnaire|questionnaire-path/i);
+	assert.deepEqual(published.filter(event => event.channel !== channel), [
+		{ channel: "herdr:blocked", data: { active: true, label: "Questionnaire awaiting input" } },
+	], "host discovery adds no new public projection or sensitive-content leakage");
 
-	pi.events.emit("rpiv:ask-user:blocked", { active: true, duplicate: true });
-	pi.events.emit("rpiv:ask-user:blocked", { active: "true" });
-	pi.events.emit("rpiv:ask-user:blocked", { active: null });
-	pi.events.emit("rpiv:ask-user:blocked", []);
-	pi.events.emit("rpiv:ask-user:blocked", null);
+	pi.events.emit(channel, { active: true, duplicate: true });
+	pi.events.emit(channel, { active: "true" });
+	pi.events.emit(channel, { active: null });
+	pi.events.emit(channel, []);
+	pi.events.emit(channel, null);
 	pi.events.emit("rpiv:ask-user:other", { active: false });
 	assert.deepEqual(herdrEvents, [{ active: true, label: "Questionnaire awaiting input" }]);
 
-	pi.events.emit("rpiv:ask-user:blocked", { active: false });
-	pi.events.emit("rpiv:ask-user:blocked", { active: false, duplicate: true });
-	pi.events.emit("rpiv:ask-user:blocked", { active: true });
-	pi.events.emit("rpiv:ask-user:blocked", { active: false });
+	pi.events.emit(channel, { active: false });
+	pi.events.emit(channel, { active: false, duplicate: true });
+	pi.events.emit(channel, { active: true });
+	pi.events.emit(channel, { active: false });
 	assert.deepEqual(herdrEvents, [
 		{ active: true, label: "Questionnaire awaiting input" },
 		{ active: false },
@@ -1620,7 +1641,9 @@ test("RPIV questionnaire blockers emit only a private, balanced Herdr projection
 	]);
 });
 
-test("Herdr coordinates guarded confirmations and RPIV labels without inactive relabel pulses", async () => {
+}
+
+test("Herdr preserves the initial label and balanced edges across overlapping sources", async () => {
 	type ToolCallHandler = (
 		event: { toolName: string; input: unknown },
 		ctx: ExtensionContext,
@@ -1671,14 +1694,34 @@ test("Herdr coordinates guarded confirmations and RPIV labels without inactive r
 	assert.equal(await guardedRequest, undefined);
 	assert.deepEqual(guardedFirst.herdrEvents, [
 		{ active: true, label: "Guarded command confirmation" },
-		{ active: true, label: "Questionnaire awaiting input" },
 	]);
 	guardedFirst.pi.events.emit("rpiv:ask-user:blocked", { active: false });
 	assert.deepEqual(guardedFirst.herdrEvents, [
 		{ active: true, label: "Guarded command confirmation" },
-		{ active: true, label: "Questionnaire awaiting input" },
 		{ active: false },
 	]);
+
+	// Each event channel is independent, even when native and legacy producers overlap.
+	const channels = ["gentle-pi:ask-user-question:blocked", "rpiv:ask-user:blocked", "gentle-pi:ask-user-choice:blocked"];
+	for (const lastChannel of channels) {
+		const overlap = createHarness();
+		for (const channel of channels) overlap.pi.events.emit(channel, { active: true });
+		const request = overlap.toolCall(
+			{ toolName: "bash", input: { command: "git rebase main" } }, overlap.context,
+		);
+		await Promise.resolve();
+		for (const channel of channels.filter((channel) => channel !== lastChannel)) {
+			overlap.pi.events.emit(channel, { active: false });
+			overlap.pi.events.emit(channel, { active: false });
+		}
+		overlap.confirmations[0]!(false);
+		await request;
+		assert.deepEqual(overlap.herdrEvents, [{ active: true, label: "Questionnaire awaiting input" }]);
+		overlap.pi.events.emit(lastChannel, { active: false });
+		assert.deepEqual(overlap.herdrEvents, [
+			{ active: true, label: "Questionnaire awaiting input" }, { active: false },
+		]);
+	}
 
 	const questionnaireFirst = createHarness();
 	questionnaireFirst.pi.events.emit("rpiv:ask-user:blocked", { active: true });
@@ -1692,7 +1735,6 @@ test("Herdr coordinates guarded confirmations and RPIV labels without inactive r
 	await questionnaireRequest;
 	assert.deepEqual(questionnaireFirst.herdrEvents, [
 		{ active: true, label: "Questionnaire awaiting input" },
-		{ active: true, label: "Guarded command confirmation" },
 		{ active: false },
 	]);
 });
@@ -1729,6 +1771,11 @@ test("closed choice blockers retain the visible choice label through guarded-con
 	createGentleAiExtension({ nativeReviewCli: null })(pi);
 	assert.equal(eventHandlers.has("gentle-pi:ask-user-choice:blocked"), true);
 
+	for (const malformed of [null, [], {}, { active: "true" }]) {
+		pi.events.emit("gentle-pi:ask-user-choice:blocked", malformed);
+	}
+	assert.deepEqual(herdrEvents, []);
+	choiceEvents.length = 0;
 	pi.events.emit("gentle-pi:ask-user-choice:blocked", { active: true });
 	assert.deepEqual(choiceEvents, [{ active: true }]);
 	assert.deepEqual(herdrEvents, [{ active: true, label: "Choice awaiting input" }]);
@@ -1751,7 +1798,6 @@ test("closed choice blockers retain the visible choice label through guarded-con
 	assert.deepEqual(choiceEvents, [{ active: true }, { active: false }]);
 	assert.deepEqual(herdrEvents, [
 		{ active: true, label: "Choice awaiting input" },
-		{ active: true, label: "Guarded command confirmation" },
 	]);
 	assert.equal(herdrEvents.some((event) => event.active === false), false);
 
@@ -1759,7 +1805,6 @@ test("closed choice blockers retain the visible choice label through guarded-con
 	assert.equal(await guardedRequest, undefined);
 	assert.deepEqual(herdrEvents, [
 		{ active: true, label: "Choice awaiting input" },
-		{ active: true, label: "Guarded command confirmation" },
 		{ active: false },
 	]);
 });
@@ -1812,15 +1857,15 @@ test("registered Gentle Review capture tools name the lens they run", () => {
 	const tools = registeredGentleTools();
 	const binding = (lens: string) => JSON.stringify({ name: "reviewer_result", captureOperation: "review.capture-result", arguments: [], artifactSubject: { lens } });
 	const single = tools.get("gentle_review_capture")!.renderCall({ lineageId: "l", collectBinding: binding("review-risk") }, lifecycleTheme, lifecycleContext({ executionStarted: true }));
-	assert.equal(cardTitle(renderComponent(single)), "🌹︎ Gentle AI · running · review capture · risk");
+	assert.equal(cardTitle(renderComponent(single)), "🌹 rdd running · capture · risk");
 	const bare = tools.get("gentle_review_capture")!.renderCall({ lineageId: "l", collectBinding: "{not json" }, lifecycleTheme, lifecycleContext({ executionStarted: true }));
-	assert.equal(cardTitle(renderComponent(bare)), "🌹︎ Gentle AI · running · review capture");
+	assert.equal(cardTitle(renderComponent(bare)), "🌹 rdd running · capture");
 	const group = tools.get("gentle_review_capture_group")!.renderCall(
 		{ lineageId: "l", collectBindings: [binding("review-risk"), binding("review-resilience"), binding("review-readability"), binding("review-reliability")] },
 		lifecycleTheme,
 		lifecycleContext({ executionStarted: true }),
 	);
-	assert.equal(cardTitle(renderComponent(group)), "🌹︎ Gentle AI · running · review capture group · risk · resilience · readability · reliability");
+	assert.equal(cardTitle(renderComponent(group)), "🌹 rdd running · capture group · risk · resilience · readability · reliability");
 });
 
 test("bash tool_call confirms a late guarded npm publish and denies on non-approval", async () => {

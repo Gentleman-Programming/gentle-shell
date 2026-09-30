@@ -463,7 +463,10 @@ test("interleaved sessions sharing a CLI retain only their own capture routes", 
 			const index = requests.length - 1;
 			if (index < 2) { [readyA, readyB][index]!(); await waits[index]!; }
 			const lineageId = String(request.lineageId);
-			return status(lineageId, [inputs.get(lineageId)!]);
+			// Cache absence alone is not foreign-session evidence. The provider
+			// rejects selectorless requests for these committed-range candidates.
+			return request.baseRef === (lineageId === a ? "base-a" : "base-b")
+				? status(lineageId, [inputs.get(lineageId)!]) : status(lineageId, []);
 		},
 		captureCorrectionPlan: async ({ argumentTokens }: { argumentTokens: readonly string[] }) => {
 			captures += 1;
@@ -487,7 +490,25 @@ test("interleaved sessions sharing a CLI retain only their own capture routes", 
 		outcomes: [ownA, ownB, foreign, cleaned].map(({ details }) => (details as { outcome?: string }).outcome),
 		revalidationCalls: requests.length - 2,
 		captures,
-	}, { outcomes: ["native-last-event-closure", "native-last-event-closure", "capture-binding-rejected", "capture-binding-rejected"], revalidationCalls: 2, captures: 2 });
+	}, { outcomes: ["native-last-event-closure", "native-last-event-closure", "capture-binding-rejected", "capture-binding-rejected"], revalidationCalls: 4, captures: 2 });
+});
+
+test("capture route recovery uses a trusted committed projection through unknown-outcome reconciliation", async (t) => {
+	const candidateViews = new CandidateViewRegistry();
+	t.after(() => candidateViews.cleanupAll());
+	const cwd = repository(t), lineageId = "recovered-committed", input = correctionPlanInput(lineageId);
+	const view = candidateViews.create({ contributorRoot: cwd, baseRef: execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim(), committedOnly: true });
+	candidateViews.retain(view.token, lineageId);
+	const target = candidateViews.resolveProjection(lineageId, cwd), requests: Array<Record<string, unknown>> = [];
+	const native = {
+		targetStatus: async (request: Record<string, unknown>) => { requests.push(request); return status(lineageId, [input]); },
+		captureCorrectionPlan: async () => { throw Object.assign(new Error("lost response"), { mutationOutcome: "unknown", nextAction: "review.status" }); },
+	} as unknown as NativeReviewCli;
+	const result = await __testing.executeReviewCaptureOperation({ lineageId, collectBinding: JSON.stringify(input), correctionLines: 1 }, cwd, native, undefined, candidateViews, new Map(), true);
+	assert.equal(result.outcome, "native-capture-outcome-unknown");
+	assert.equal(requests.length, 2, "one admission STATUS and one reconciliation, never capture replay");
+	assert.ok(requests.every((request) => request.cwd === cwd && request.lineageId === lineageId && request.baseRef === target.baseCommit && request.committedOnly === true));
+	assert.equal(requests[0]!.agent, "pi");
 });
 
 test("REPAIR retains frozen committed collect selectors and leaves workspace routes unselected", async (t) => {
@@ -649,7 +670,8 @@ test("STATUS preserves retained intended-untracked selection through selectorles
 		selections,
 		true,
 	);
-	assert.deepEqual({ outcome: stale.outcome, requests: requests.length, captures }, { outcome: "capture-binding-rejected", requests: 3, captures: 0 });
+	assert.deepEqual({ outcome: stale.outcome, requests: requests.length, captures }, { outcome: "capture-binding-rejected", requests: 4, captures: 0 });
+	assert.deepEqual(requests[3], { cwd, lineageId, agent: "pi", ...selectedUntracked });
 
 	const captured = await __testing.executeReviewCaptureOperation(
 		{ lineageId, collectBinding: bindingB, correctionLines: 1 },
@@ -666,6 +688,7 @@ test("STATUS preserves retained intended-untracked selection through selectorles
 		{ cwd, lineageId, agent: "pi", baseRef: "main", committedOnly: true },
 		{ cwd, lineageId, agent: "pi", ...selectedUntracked },
 		{ cwd, lineageId, agent: "pi", ...selectedUntracked },
+		{ cwd, lineageId, agent: "pi", ...selectedUntracked },
 	]);
 	assert.equal(captures, 1);
 
@@ -676,10 +699,14 @@ test("STATUS preserves retained intended-untracked selection through selectorles
 });
 
 test("route retention caps, rejects collisions and invalid selectors, and clears every terminal state", async () => {
-	const native = { targetStatus: async (request: Record<string, unknown>) => status(String(request.lineageId)) } as unknown as NativeReviewCli;
+	const requests: Array<Record<string, unknown>> = [];
+	const native = { targetStatus: async (request: Record<string, unknown>) => { requests.push(request); return status(String(request.lineageId), request.baseRef === undefined ? [] : [collectInput(String(request.lineageId))]); } } as unknown as NativeReviewCli;
 	const selections = new Map();
 	for (let index = 0; index <= 64; index += 1) await __testing.executeReviewControllerOperation({ operation: "status", lineageId: `bounded-${index}`, input: JSON.stringify({ baseRef: `base-${index}`, committedOnly: true }) }, process.cwd(), native, undefined, undefined, undefined, selections);
+	assert.equal(selections.size, 64, "route retention remains bounded before native refresh");
 	const evicted = await __testing.executeReviewCaptureOperation({ lineageId: "bounded-0", collectBinding: JSON.stringify(collectInput("bounded-0")) }, process.cwd(), native, undefined, undefined, selections, true);
+	assert.equal(requests.length, 66, "eviction must negotiate fresh native STATUS before rejection");
+	assert.deepEqual(requests.at(-1), { cwd: process.cwd(), lineageId: "bounded-0", agent: "pi" });
 	const collision = new Map(), lineageId = "route-collision", input = correctionPlanInput(lineageId);
 	await __testing.executeReviewControllerOperation({ operation: "status", lineageId, input: JSON.stringify({ baseRef: "base-a", committedOnly: true }) }, process.cwd(), { targetStatus: async () => status(lineageId, [input]) } as unknown as NativeReviewCli, undefined, undefined, undefined, collision);
 	const rejected = await __testing.executeReviewControllerOperation({ operation: "status", lineageId, input: JSON.stringify({ baseRef: "base-b", committedOnly: true }) }, process.cwd(), { targetStatus: async () => status(lineageId, [input]) } as unknown as NativeReviewCli, undefined, undefined, undefined, collision);
@@ -960,6 +987,44 @@ test("START reports POSIX candidate parent privacy refusal without native START 
 	assert.deepEqual(result.diagnostics, {
 		code: "candidate-owner-parent-privacy",
 		message: "candidate-views parent must be owned by the current user and inaccessible to group and others; inspect its ownership and permissions, then correct them out of band before retrying START",
+	});
+	assert.equal(starts, 0);
+});
+
+test("START reports ineffective POSIX private-mode mounts without native START or permission repair", { skip: process.platform === "win32" }, async (t) => {
+	const cwd = repository(t);
+	const target = startStatus(cwd);
+	const parent = join(cwd, ".git", "gentle-ai", "candidate-views");
+	mkdirSync(parent, { recursive: true, mode: 0o700 });
+	chmodSync(parent, 0o777);
+	const originalLstat = fs.lstatSync;
+	t.mock.method(fs, "lstatSync", (path: Parameters<typeof fs.lstatSync>[0], ...args: unknown[]) => {
+		const stat = (originalLstat as (...arguments_: unknown[]) => ReturnType<typeof fs.lstatSync>)(path, ...args);
+		return typeof path === "string" && path.includes(".gentle-ai-chmod-probe-")
+			? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { mode: (Number(stat.mode) & ~0o777) | 0o777, uid: process.getuid?.() })
+			: stat;
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	let starts = 0;
+	const native = {
+		targetStatus: async () => target,
+		start: async () => { starts++; throw new Error("native START must not run"); },
+	} as unknown as NativeReviewCli;
+	let result: Record<string, unknown>;
+	try {
+		result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary" }) }, cwd, native);
+	} finally {
+		assert.equal(fs.lstatSync(parent).mode & 0o777, 0o777);
+		chmodSync(parent, 0o700);
+	}
+	assert.equal(result.status, "blocked");
+	assert.equal(result.outcome, "native-operation-failed");
+	assert.equal(result.lineage_created, false);
+	assert.equal(result.mutation_outcome, "none");
+	assert.deepEqual(result.diagnostics, {
+		code: "candidate-owner-parent-chmod-ineffective",
+		message: "candidate-views parent filesystem does not honor POSIX permission changes; move this repository's Git common directory to a POSIX-metadata filesystem or enable metadata support before retrying START",
 	});
 	assert.equal(starts, 0);
 });

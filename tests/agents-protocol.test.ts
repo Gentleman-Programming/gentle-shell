@@ -4,6 +4,7 @@ import {
 	applyTaskEvent,
 	emptyThread,
 	normalizeRpcEvent,
+	ToolArgumentProgress,
 	TASK_EVENT,
 	TASK_STATUS,
 	taskLabel,
@@ -65,6 +66,45 @@ test("normalizeRpcEvent maps pi RPC events to task deltas and ignores the rest",
 	assert.deepEqual(normalizeRpcEvent({ type: "message_end", message: { role: "user" } }), []);
 	assert.deepEqual(normalizeRpcEvent({ type: "queue_update" }), []);
 	assert.deepEqual(normalizeRpcEvent("garbage"), []);
+});
+
+test("argument liveness accepts current and legacy Pi starts without display or usage deltas", () => {
+	for (const start of [{ type: "toolcall_start", contentIndex: 0, id: "c1", toolName: "write" },
+		{ type: "toolcall_start", contentIndex: 0, partial: { content: [{ type: "toolCall", id: "c1", name: "write", arguments: {} }] } }]) {
+		const progress = new ToolArgumentProgress();
+		const update = (inner: Record<string, unknown>) => ({ type: "message_update", assistantMessageEvent: inner });
+		const delta = update({ type: "toolcall_delta", contentIndex: 0, delta: "private" });
+		assert.equal(progress.observe(delta), false, "no active generation");
+		progress.observe({ type: "message_start", message: { role: "assistant", timestamp: 1 } });
+		assert.equal(progress.observe(delta), false, "no announced block");
+		assert.equal(progress.observe(update(start)), false, "announcement alone is not progress");
+		assert.equal(progress.observe(delta), true);
+		assert.equal(progress.observe(delta), false);
+		assert.deepEqual(normalizeRpcEvent(delta), [], "no arguments in display events or provisional totals");
+		progress.observe(update({ type: "toolcall_end", contentIndex: 0 }));
+		assert.equal(progress.observe(update({ type: "toolcall_delta", contentIndex: 0, delta: "late" })), false);
+		progress.observe(update(start));
+		assert.equal(progress.observe(delta), false, "a closed block cannot be reopened");
+	}
+});
+
+test("argument liveness fails closed on malformed starts, stale generations and fingerprint exhaustion", () => {
+	const progress = new ToolArgumentProgress();
+	const update = (inner: Record<string, unknown>) => ({ type: "message_update", assistantMessageEvent: inner });
+	for (const timestamp of [undefined, "1", -1, 1.5]) progress.observe({ type: "message_start", message: { role: "assistant", timestamp } });
+	assert.equal(progress.observe(update({ type: "toolcall_delta", contentIndex: 0, delta: "x" })), false);
+	progress.observe({ type: "message_start", message: { role: "assistant", timestamp: 1 } });
+	for (const fields of [{ id: 1, toolName: "write" }, { id: "c", toolName: "" }, { partial: null }]) {
+		progress.observe(update({ type: "toolcall_start", contentIndex: 0, ...fields }));
+		assert.equal(progress.observe(update({ type: "toolcall_delta", contentIndex: 0, delta: "x" })), false);
+	}
+	progress.observe(update({ type: "toolcall_start", contentIndex: 0, id: "c", toolName: "write" }));
+	for (let index = 0; index < 4096; index++) assert.equal(progress.observe(update({ type: "toolcall_delta", contentIndex: 0, delta: String(index) })), true);
+	assert.equal(progress.observe(update({ type: "toolcall_delta", contentIndex: 0, delta: "over-cap" })), false);
+	progress.observe({ type: "message_end" });
+	progress.observe({ type: "message_start", message: { role: "assistant", timestamp: 1 } });
+	progress.observe(update({ type: "toolcall_start", contentIndex: 0, id: "c", toolName: "write" }));
+	assert.equal(progress.observe(update({ type: "toolcall_delta", contentIndex: 0, delta: "stale" })), false);
 });
 
 test("response observations are opt-in, finalized, field-specific and content-free", () => {

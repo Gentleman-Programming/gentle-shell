@@ -391,6 +391,73 @@ test("public POSIX candidate-views parent reports bounded privacy guidance witho
 	view.cleanup();
 });
 
+test("POSIX chmod-ineffective parent reports filesystem capability guidance before worktree creation", { skip: process.platform === "win32" }, (t) => {
+	const cwd = repository(t);
+	const parent = join(cwd, ".git", "gentle-ai", "candidate-views");
+	mkdirSync(parent, { recursive: true, mode: 0o700 });
+	chmodSync(parent, 0o777);
+	const originalLstat = fs.lstatSync;
+	t.mock.method(fs, "lstatSync", (path: Parameters<typeof fs.lstatSync>[0], ...args: unknown[]) => {
+		const stat = (originalLstat as (...arguments_: unknown[]) => ReturnType<typeof fs.lstatSync>)(path, ...args);
+		return typeof path === "string" && path.includes(".gentle-ai-chmod-probe-")
+			? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { mode: (Number(stat.mode) & ~0o777) | 0o777, uid: process.getuid?.() })
+			: stat;
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	let adds = 0;
+	const registry = new CandidateViewRegistry((file, args, options) => {
+		if (args[0] === "worktree" && args[1] === "add") adds++;
+		return execFileSync(file, args, options);
+	});
+	assert.throws(() => registry.create({ contributorRoot: cwd }), (error: unknown) => {
+		assert.ok(error instanceof CandidateViewError);
+		assert.equal(error.reason, "candidate-owner-preparation-failed");
+		assert.deepEqual(error.diagnostics, {
+			code: "candidate-owner-parent-chmod-ineffective",
+			message: "candidate-views parent filesystem does not honor POSIX permission changes; move this repository's Git common directory to a POSIX-metadata filesystem or enable metadata support before retrying START",
+		});
+		assert.doesNotMatch(JSON.stringify(error.diagnostics), new RegExp(cwd));
+		return true;
+	});
+	assert.equal(adds, 0);
+	assert.equal(readdirSync(parent).some((name) => name.includes(".gentle-ai-chmod-probe-")), false);
+});
+
+test("inconclusive private-mode probe keeps bounded privacy guidance instead of claiming ineffective chmod", { skip: process.platform === "win32" }, (t) => {
+	const cwd = repository(t);
+	const parent = join(cwd, ".git", "gentle-ai", "candidate-views");
+	mkdirSync(parent, { recursive: true, mode: 0o700 });
+	chmodSync(parent, 0o777);
+	const originalMkdir = fs.mkdirSync;
+	t.mock.method(fs, "mkdirSync", (path: Parameters<typeof fs.mkdirSync>[0], ...args: unknown[]) => {
+		if (typeof path === "string" && path.includes(".gentle-ai-chmod-probe-")) throw Object.assign(new Error("probe creation refused"), { code: "EACCES" });
+		return (originalMkdir as (...arguments_: unknown[]) => ReturnType<typeof fs.mkdirSync>)(path, ...args);
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	let adds = 0;
+	const registry = new CandidateViewRegistry((file, args, options) => {
+		if (args[0] === "worktree" && args[1] === "add") adds++;
+		return execFileSync(file, args, options);
+	});
+	assert.throws(() => registry.create({ contributorRoot: cwd }), (error: unknown) => {
+		assert.ok(error instanceof CandidateViewError);
+		assert.equal(error.reason, "candidate-owner-preparation-failed");
+		assert.deepEqual(error.diagnostics, {
+			code: "candidate-owner-parent-privacy",
+			message: "candidate-views parent must be owned by the current user and inaccessible to group and others; inspect its ownership and permissions, then correct them out of band before retrying START",
+		});
+		assert.doesNotMatch(JSON.stringify(error.diagnostics), new RegExp(cwd));
+		return true;
+	});
+	assert.equal(adds, 0);
+	assert.equal(readdirSync(parent).some((name) => name.includes(".gentle-ai-chmod-probe-")), false);
+	chmodSync(parent, 0o700);
+	const view = registry.create({ contributorRoot: cwd });
+	view.cleanup();
+});
+
 test("POSIX parent privacy classification does not probe a replaced path after validating it", { skip: process.platform === "win32" }, (t) => {
 	const cwd = repository(t);
 	const commonDir = realpathSync(join(cwd, ".git"));
@@ -432,11 +499,13 @@ test("POSIX non-directory and symlink parents never receive privacy guidance", {
 });
 
 test("owner privacy diagnostic sanitizer rejects injected text", () => {
-	const forged = new CandidateViewError("rejected", "candidate-owner-preparation-failed", {
-		code: "candidate-owner-parent-privacy",
-		message: "private-fixture-path-and-user",
-	} as unknown as ConstructorParameters<typeof CandidateViewError>[2]);
-	assert.equal(forged.diagnostics, undefined);
+	for (const code of ["candidate-owner-parent-privacy", "candidate-owner-parent-chmod-ineffective"] as const) {
+		const forged = new CandidateViewError("rejected", "candidate-owner-preparation-failed", {
+			code,
+			message: "private-fixture-path-and-user",
+		} as unknown as ConstructorParameters<typeof CandidateViewError>[2]);
+		assert.equal(forged.diagnostics, undefined);
+	}
 });
 
 test("unknown owner failures never expose arbitrary messages in diagnostics", (t) => {

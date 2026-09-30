@@ -18,7 +18,8 @@ export function cardTitle(rendered: string): string {
 }
 
 export function cardTone(rendered: string): string | undefined {
-	return (rendered.split("\n")[0] ?? "").match(/<([a-zA-Z]+)>(?:✿|🌹︎) Gentle AI<\//)?.[1];
+	// Shell notices read `✿ Gentle AI`; rose tool cards read `🌹 rdd …` or `🌹 gentle-ai …`.
+	return (rendered.split("\n")[0] ?? "").match(/<([a-zA-Z]+)>(?:✿ Gentle AI<\/|\u{1F339} (?:rdd|gentle-ai)\b)/u)?.[1];
 }
 
 export function cardBody(rendered: string): string {

@@ -78,6 +78,10 @@ interface PackageJsonPiManifest {
 	extensions?: string[];
 }
 
+interface PackageJsonPeerMetadata {
+	optional?: boolean;
+}
+
 interface PackageJson {
 	description?: string;
 	keywords?: string[];
@@ -86,7 +90,10 @@ interface PackageJson {
 	scripts?: Record<string, string>;
 	dependencies?: Record<string, string>;
 	peerDependencies?: Record<string, string>;
+	peerDependenciesMeta?: Record<string, PackageJsonPeerMetadata>;
+	optionalDependencies?: Record<string, string>;
 	devDependencies?: Record<string, string>;
+	engines?: Record<string, string>;
 	bundledDependencies?: string[];
 	bundleDependencies?: string[];
 	repository?: {
@@ -123,17 +130,27 @@ test("public docs and metadata advertise ODD and review without retired phase wo
 
 test("technical reference declares the tested Pi minimum required for agent_settled", () => {
 	const manifest = readPackageJson();
-	assert.equal(manifest.peerDependencies?.["@earendil-works/pi-coding-agent"], ">=0.85.1");
-	assert.equal(manifest.devDependencies?.["@earendil-works/pi-coding-agent"], "0.87.1");
+	assert.equal(manifest.peerDependencies?.["@earendil-works/pi-coding-agent"], ">=0.99.1");
+	assert.equal(manifest.devDependencies?.["@earendil-works/pi-coding-agent"], "0.99.1");
+	assert.equal(manifest.peerDependenciesMeta?.["@earendil-works/pi-coding-agent"]?.optional, true);
+	assert.equal(manifest.engines?.node, ">=22.19.0");
 	const reference = readFileSync(join(PACKAGE_ROOT, "docs", "readme-reference.md"), "utf8");
-	assert.match(reference, /Pi 0\.85\.1 or newer/);
+	assert.match(reference, /Pi 0\.99\.1 or newer/);
 	assert.match(reference, /agent_settled/);
 	assert.match(readFileSync(join(PACKAGE_ROOT, "README.md"), "utf8"), /\]\(docs\/readme-reference\.md(?:#[^)]+)?\)/);
 });
 
-test("packed runtime declares its pi-ai compat import as a direct exact dependency", () => {
+test("packed runtime uses optional Pi host peers with exact development pins and no duplicate direct dependencies", () => {
 	const manifest = readPackageJson();
-	assert.equal(manifest.dependencies?.["@earendil-works/pi-ai"], "0.87.1");
+	for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-tui"]) {
+		assert.equal(manifest.peerDependencies?.[name], "*", name);
+		assert.equal(manifest.peerDependenciesMeta?.[name]?.optional, true, name);
+		assert.equal(manifest.devDependencies?.[name], "0.99.1", name);
+	}
+	for (const name of ["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai", "@earendil-works/pi-tui"]) {
+		assert.equal(manifest.dependencies?.[name], undefined, name);
+		assert.equal(manifest.optionalDependencies?.[name], undefined, name);
+	}
 });
 
 test("package manifest has no obsolete native activation build surface", () => {

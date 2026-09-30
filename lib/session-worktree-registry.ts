@@ -54,7 +54,7 @@ export class SessionWorktreeRegistry {
 	private readonly session: SessionReader;
 	private readonly cwd: string;
 	private readonly resolver: WorktreeResolver;
-	private readonly identity: WorktreeIdentity | undefined;
+	private identity: WorktreeIdentity | undefined;
 	private readonly recorded = new Set<string>();
 	private active = true;
 
@@ -80,9 +80,21 @@ export class SessionWorktreeRegistry {
 
 	validate(path: string): string {
 		if (!this.isCurrent()) throw new Error("Cannot register a worktree for an inactive session.");
+		const identity = this.refreshIdentity();
 		const target = this.resolver(path, this.cwd);
-		if (!target || !this.identity || target.commonDir !== this.identity.commonDir) throw new Error("Select an existing worktree in the same Git clone as this session.");
+		if (!target || !identity || target.commonDir !== identity.commonDir) throw new Error("Select an existing worktree in the same Git clone as this session.");
 		return target.root;
+	}
+
+	private refreshIdentity(): WorktreeIdentity | undefined {
+		// Bootstrap can establish authority only at the original session cwd.
+		// Never adopt a requested target, or replace an already established clone.
+		const current = this.resolver(this.cwd, this.cwd);
+		if (this.identity && (!current || current.root !== this.identity.root || current.commonDir !== this.identity.commonDir)) {
+			throw new Error("Session Git identity changed; cannot register a worktree.");
+		}
+		if (!this.identity && current) this.identity = { ...current };
+		return this.identity;
 	}
 
 	private restore(): void {

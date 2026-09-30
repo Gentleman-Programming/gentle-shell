@@ -277,6 +277,7 @@ test("ODD protocol is always-on in the rendered system prompt and runs by defaul
 		"Tell the user in one line which feature document was created and how many tasks it holds",
 		"6. **Implement task by task.**",
 		"7. **Close.**",
+		"call `gentle_odd_phase` only when the primary session's ODD phase actually changes",
 		"Harness principles:",
 		"# el Gentleman Orchestrator",
 	];

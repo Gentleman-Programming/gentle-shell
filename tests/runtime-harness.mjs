@@ -17,6 +17,7 @@ const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const { createGentleAiExtension } = await import(pathToFileURL(join(ROOT, "extensions/gentle-ai.ts")).href);
 const EXTENSIONS = [
 	"extensions/gentle-ai.ts",
+	"extensions/nan-provider.ts",
 	"extensions/quiet-tools.ts",
 	"extensions/skill-registry.ts",
 	"extensions/startup-banner.ts",
@@ -57,6 +58,7 @@ const FORBIDDEN_COMPAT_COMMANDS = [
 function createPi() {
 	const hooks = new Map();
 	const commands = new Map();
+	const providers = new Map();
 	const flags = new Map();
 	const tools = new Map();
 	const eventHandlers = new Map();
@@ -88,6 +90,10 @@ function createPi() {
 		},
 		registerCommand(name, definition) {
 			commands.set(name, definition);
+		},
+		registerProvider(name, config) {
+			if (typeof name === "object") providers.set(name.id, name);
+			else providers.set(name, config);
 		},
 		registerFlag(name, definition) {
 			flags.set(name, definition);
@@ -121,7 +127,7 @@ function createPi() {
 		},
 	};
 
-	return { pi, hooks, commands, flags, tools, emittedEvents };
+	return { pi, hooks, commands, providers, flags, tools, emittedEvents };
 }
 
 function createUi() {
@@ -202,25 +208,56 @@ function restoreWorkspaceWritePermissions(cwd) {
 	}
 }
 
-async function loadExtensions(pi) {
+const ownedFixtureRoots = [];
+const previousFixtureEnvironment = new Map([
+	"HOME", "USERPROFILE", "XDG_CONFIG_HOME", "PI_CODING_AGENT_DIR",
+	"GENTLE_PI_CONFIG_HOME", "GENTLE_PI_AGENT_HOME", "GENTLE_PI_TEST_ASSETS_DIR",
+	"GENTLE_PI_AGENTS_PARENT_PERMISSION_FD",
+].map((key) => [key, process.env[key]]));
+
+async function loadExtensions(pi, fixtureDependencies) {
 	for (const [index, rel] of EXTENSIONS.entries()) {
 		const mod = await import(`${pathToFileURL(join(ROOT, rel)).href}?runtime-harness=${index}`);
 		assert.equal(typeof mod.default, "function", `${rel} must export a default function`);
-		mod.default(pi);
+		if (rel === "extensions/gentle-ai.ts") createGentleAiExtension(fixtureDependencies)(pi);
+		else mod.default(pi);
 	}
 }
 
 async function run() {
 	const globalConfigHome = await tempWorkspace();
+	ownedFixtureRoots.push(globalConfigHome);
 	const globalAgentHome = await tempWorkspace();
+	ownedFixtureRoots.push(globalAgentHome);
 	const ambientTestAssetsDir = await tempWorkspace();
+	ownedFixtureRoots.push(ambientTestAssetsDir);
 	process.env.GENTLE_PI_CONFIG_HOME = globalConfigHome;
 	process.env.GENTLE_PI_AGENT_HOME = globalAgentHome;
 	process.env.GENTLE_PI_TEST_ASSETS_DIR = ambientTestAssetsDir;
+	process.env.HOME = globalAgentHome;
+	process.env.USERPROFILE = globalAgentHome;
+	process.env.XDG_CONFIG_HOME = join(globalAgentHome, "xdg");
+	process.env.PI_CODING_AGENT_DIR = join(globalAgentHome, "pi");
+	// Discovery still exercises the default exports under the actual worker
+	// role, but must never acquire the worker's parent-permission channel.
+	delete process.env.GENTLE_PI_AGENTS_PARENT_PERMISSION_FD;
+	const fixtureDependencies = {
+		nativeReviewCli: {},
+		processEnv: {
+			HOME: globalAgentHome, USERPROFILE: globalAgentHome,
+			GENTLE_PI_CONFIG_HOME: globalConfigHome, GENTLE_PI_AGENT_HOME: globalAgentHome,
+			PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
+			XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+			GENTLE_PI_AGENTS_CHILD: "0", GENTLE_AI_TELEMETRY: "0",
+		},
+		resolveTelemetryTriggerBinary: () => join(globalAgentHome, "never-executed"),
+		telemetryTriggerSpawn: () => assert.fail("Runtime fixtures must not spawn telemetry"),
+	};
 	const globalModelsPath = join(globalConfigHome, "models.json");
 	const globalSubagentsPath = join(globalAgentHome, "subagents.json");
-	const { pi, hooks, commands, flags, tools, emittedEvents } = createPi();
-	await loadExtensions(pi);
+	const { pi, hooks, commands, providers, flags, tools, emittedEvents } = createPi();
+	await loadExtensions(pi, fixtureDependencies);
+	assert.equal(providers.get("nan")?.getModels()[0]?.api, "openai-completions", "runtime extension loading registers the NaN provider");
 
 	// gentle-pi#404: a collect binding that returns the native last-event
 	// closure must terminate after one capture. It must not re-enter a public
@@ -298,7 +335,7 @@ async function run() {
 			},
 		};
 		const lastEventPi = createPi();
-		createGentleAiExtension({ nativeReviewCli })(lastEventPi.pi);
+		createGentleAiExtension({ ...fixtureDependencies, nativeReviewCli })(lastEventPi.pi);
 		const controller = lastEventPi.tools.get("gentle_review");
 		const capture = lastEventPi.tools.get("gentle_review_capture");
 		assert.ok(controller, "runtime must register the public status controller");
@@ -359,6 +396,14 @@ async function run() {
 	for (const toolName of ["read", "bash", "grep", "find", "ls", "edit", "write"]) {
 		assert.ok(tools.has(toolName), `missing quiet built-in tool renderer ${toolName}`);
 	}
+	const codemode = tools.get("codemode");
+	assert.ok(codemode, "quiet-tools must decorate the upstream codemode registration");
+	assert.equal(codemode.defaultActive, false, "rendering must not activate codemode");
+	assert.equal(codemode.renderShell, "self");
+	assert.equal(typeof codemode.renderCall, "function");
+	assert.equal(typeof codemode.renderResult, "function");
+	assert.equal(typeof codemode.prepareLoadout, "function", "upstream loadout policy must survive decoration");
+	assert.deepEqual(pi.getActiveTools(), ["read", "bash", "edit", "write"], "card registration must not change tool activation");
 	assert.ok(tools.has("gentle_review"), "missing registered bounded review controller tool");
 	assert.ok(tools.has("gentle_review_scope"), "missing registered bounded review scope tool");
 	assert.deepEqual(
@@ -383,6 +428,22 @@ async function run() {
 		[],
 		"declared extension directory must load without invalid helper modules",
 	);
+	assert.ok(
+		discovered.extensions.some((extension) => extension.resolvedPath.endsWith(join("extensions", "nan-provider.ts"))),
+		"declared extension directory must discover the NaN provider",
+	);
+
+	const nativeNan = discovered.runtime.pendingNativeProviderRegistrations
+		.find((entry) => entry.provider.id === "nan")?.provider;
+	assert.ok(nativeNan, "actual Pi loader must queue native NaN registration");
+	assert.ok(!discovered.runtime.pendingProviderRegistrations.some((entry) => entry.name === "nan"),
+		"NaN must not fall back to the legacy empty-key login route");
+	await assert.rejects(nativeNan.auth.apiKey.login({
+		signal: new AbortController().signal, prompt: async () => "", notify() {},
+	}), /non-empty/);
+	assert.deepEqual(await nativeNan.auth.apiKey.login({
+		signal: new AbortController().signal, prompt: async () => " synthetic-loader-key ", notify() {},
+	}), { type: "api_key", key: "synthetic-loader-key" });
 
 	// orchestrator-lazy-diet: Pi Subagent Model Routing detail (the "do not
 	// pass the `model` parameter by default" / SDD-model-assignment-scoping
@@ -394,23 +455,29 @@ async function run() {
 	const promptCwd = await tempWorkspace();
 	try {
 		const promptHook = hooks.get("before_agent_start")[0];
-		const promptResult = await promptHook({ systemPrompt: "base" }, createCtx(promptCwd));
-		assert.match(promptResult.systemPrompt, /base/);
-		assert.match(promptResult.systemPrompt, /el Gentleman/);
-		assert.match(promptResult.systemPrompt, /Organic Driven Development/);
-		assert.doesNotMatch(promptResult.systemPrompt, /## SDD Research Capabilities/);
-		assert.match(promptResult.systemPrompt, /review execution contract/);
+		// gentle-shell#1485: pi-claude-bridge drops a handler-returned systemPrompt
+		// and forwards only structured systemPromptOptions, so the harness must
+		// land in appendSystemPrompt and the hook must never return a replacement.
+		const promptEvent = { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" } };
+		const promptResult = await promptHook(promptEvent, createCtx(promptCwd));
+		assert.equal(promptResult, undefined, "before_agent_start must not return a replacement systemPrompt");
+		assert.equal(promptEvent.systemPrompt, "base", "the original systemPrompt field must be left untouched");
+		const promptAppended = promptEvent.systemPromptOptions.appendSystemPrompt;
+		assert.match(promptAppended, /el Gentleman/);
+		assert.match(promptAppended, /Organic Driven Development/);
+		assert.doesNotMatch(promptAppended, /## SDD Research Capabilities/);
+		assert.match(promptAppended, /review execution contract/);
 		assert.doesNotMatch(await readFile(join(ROOT, "extensions", "gentle-ai.ts"), "utf8"), /readCommandSddStatus/);
-		assert.match(promptResult.systemPrompt + delegationDetail, /do not pass the `model` parameter by default/);
-		assert.doesNotMatch(promptResult.systemPrompt, /Every Agent tool call MUST include `model`/);
+		assert.match(promptAppended + delegationDetail, /do not pass the `model` parameter by default/);
+		assert.doesNotMatch(promptAppended, /Every Agent tool call MUST include `model`/);
 		assert.ok(
-			promptResult.systemPrompt.includes(
+			promptAppended.includes(
 				`Package assets root: \`${join(ROOT, "assets")}\`. Lazy asset paths below are relative to this root.`,
 			),
 			"parent prompt must declare the one absolute root for relative lazy asset paths",
 		);
 		assert.doesNotMatch(
-			promptResult.systemPrompt,
+			promptAppended,
 			new RegExp(ambientTestAssetsDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
 			"normal runtime must ignore ambient GENTLE_PI_TEST_ASSETS_DIR",
 		);
@@ -420,26 +487,30 @@ async function run() {
 			join(globalConfigHome, "persona.json"),
 			'{"mode":"neutral"}\n',
 		);
-		const neutralPromptResult = await promptHook({ systemPrompt: "base" }, createCtx(promptCwd));
-		assert.match(neutralPromptResult.systemPrompt, /Do not use slang or regional expressions/);
+		const neutralPromptEvent = { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" } };
+		const neutralPromptResult = await promptHook(neutralPromptEvent, createCtx(promptCwd));
+		assert.equal(neutralPromptResult, undefined, "before_agent_start must not return a replacement systemPrompt");
+		const neutralAppended = neutralPromptEvent.systemPromptOptions.appendSystemPrompt;
+		assert.match(neutralAppended, /Do not use slang or regional expressions/);
 		assert.doesNotMatch(
-			neutralPromptResult.systemPrompt,
+			neutralAppended,
 			/When the user writes Spanish, answer in natural Rioplatense Spanish with voseo/,
 			"neutral persona prompt must not include unconditional voseo instructions after reload",
 		);
-		const subagentPromptResult = await promptHook(
-			{ agentName: "worker", systemPrompt: "worker base" },
-			createCtx(promptCwd),
-		);
-		assert.equal(subagentPromptResult.systemPrompt, "worker base");
+		const subagentEvent = { agentName: "worker", systemPrompt: "worker base", systemPromptOptions: { appendSystemPrompt: "" } };
+		const subagentPromptResult = await promptHook(subagentEvent, createCtx(promptCwd));
+		assert.equal(subagentPromptResult, undefined, "before_agent_start must not return a replacement systemPrompt");
+		assert.equal(subagentEvent.systemPromptOptions.appendSystemPrompt, "", "a named agent gets nothing appended");
 		await mkdir(join(promptCwd, ".pi", "gentle-ai"), { recursive: true });
 		await writeFile(
 			join(promptCwd, ".pi", "gentle-ai", "persona.json"),
 			'{"mode":"gentleman"}\n',
 		);
-		const localOverridePromptResult = await promptHook({ systemPrompt: "base" }, createCtx(promptCwd));
+		const localOverrideEvent = { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" } };
+		const localOverridePromptResult = await promptHook(localOverrideEvent, createCtx(promptCwd));
+		assert.equal(localOverridePromptResult, undefined, "before_agent_start must not return a replacement systemPrompt");
 		assert.match(
-			localOverridePromptResult.systemPrompt,
+			localOverrideEvent.systemPromptOptions.appendSystemPrompt,
 			/When the user writes Spanish, answer in natural Rioplatense Spanish with voseo/,
 		);
 		const personaCtx = createCtx(promptCwd, true);
@@ -799,7 +870,7 @@ async function run() {
 		registry.bindCurrent({ token: view.token, lineageId: "harness-candidate-drift", selectedLenses: ["review-risk"] });
 
 		const dispatchPi = createPi();
-		createGentleAiExtension({ candidateViews: registry })(dispatchPi.pi);
+		createGentleAiExtension({ ...fixtureDependencies, candidateViews: registry })(dispatchPi.pi);
 		const dispatchToolHook = dispatchPi.hooks.get("tool_call")[0];
 
 		// The contributor edits the tracked file strictly after the candidate
@@ -1814,4 +1885,10 @@ async function run() {
 run().catch((error) => {
 	console.error(error);
 	process.exitCode = 1;
+}).finally(async () => {
+	for (const [key, value] of previousFixtureEnvironment) {
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
+	for (const root of ownedFixtureRoots) await rm(root, { recursive: true, force: true });
 });

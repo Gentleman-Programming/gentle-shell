@@ -24,21 +24,24 @@ interface Harness {
 	timers: Array<{ fn: () => void; ms: number; cancelled: boolean }>;
 	asks: Array<{ taskId: string; method: string }>;
 	finishes: string[];
-	spawnOptions: Array<{ env: NodeJS.ProcessEnv; stdio?: string[] }>;
+	spawnOptions: Array<{ command: string; args: string[]; env: NodeJS.ProcessEnv; stdio?: string[] }>;
+	advance(ms: number): void;
 }
 
-function harness(options: { failStart?: boolean; process?: RunnerDeps["process"]; pid?: number; maxConcurrency?: number; stallTimeoutMs?: number; toolStallTimeoutMs?: number; answer?: Record<string, unknown>; exitOnKill?: boolean; state?: Record<string, unknown>; stateSuccess?: boolean; onNotification?: RunnerHooks["onNotification"]; onSuccessfulMutation?: RunnerHooks["onSuccessfulMutation"]; onFinish?: RunnerHooks["onFinish"] } = {}): Harness {
+function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boolean; process?: RunnerDeps["process"]; pid?: number; maxConcurrency?: number; stallTimeoutMs?: number; toolStallTimeoutMs?: number; answer?: Record<string, unknown>; exitOnKill?: boolean; state?: Record<string, unknown>; stateSuccess?: boolean; onNotification?: RunnerHooks["onNotification"]; onSuccessfulMutation?: RunnerHooks["onSuccessfulMutation"]; onFinish?: RunnerHooks["onFinish"] } = {}): Harness {
 	const children: FakeChild[] = [];
 	const timers: Harness["timers"] = [];
 	const asks: Harness["asks"] = [];
 	const finishes: string[] = [];
 	const spawnOptions: Harness["spawnOptions"] = [];
 	let clock = 1000;
+	const deadlines = new Map<Harness["timers"][number], number>();
 	const deps: RunnerDeps = {
 		process: options.process,
-		spawn: (_command, _args, launchOptions) => {
+		resolvePi: options.resolvePi,
+		spawn: (command, args, launchOptions) => {
 			if (options.failStart) throw new Error("fixture spawn failed");
-			spawnOptions.push({ env: launchOptions.env, stdio: launchOptions.stdio });
+			spawnOptions.push({ command, args, env: launchOptions.env, stdio: launchOptions.stdio });
 			const fake = fakeChild({ exitOnKill: options.exitOnKill, pid: options.pid });
 			if (options.state !== undefined) {
 				fake.child.stdin.removeAllListeners("data");
@@ -56,6 +59,7 @@ function harness(options: { failStart?: boolean; process?: RunnerDeps["process"]
 		schedule: (fn, ms) => {
 			const timer = { fn, ms, cancelled: false };
 			timers.push(timer);
+			deadlines.set(timer, clock + ms);
 			return () => {
 				timer.cancelled = true;
 			};
@@ -72,12 +76,110 @@ function harness(options: { failStart?: boolean; process?: RunnerDeps["process"]
 		onNotification: options.onNotification,
 		onSuccessfulMutation: options.onSuccessfulMutation,
 	});
-	return { store, runner, children, timers, asks, finishes, spawnOptions };
+	return { store, runner, children, timers, asks, finishes, spawnOptions, advance(ms) {
+		clock += ms;
+		for (const timer of timers) {
+			if (!timer.cancelled && deadlines.get(timer)! <= clock) {
+				timer.cancelled = true;
+				timer.fn();
+			}
+		}
+	} };
 }
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 const FOUR_MIN_MS = 4 * 60_000;
+
+function argumentUpdate(type: string, fields: Record<string, unknown> = {}): Record<string, unknown> {
+	return { type: "message_update", usage: { totalTokens: 999, cost: { total: 99 } }, assistantMessageEvent: { type, contentIndex: 0, ...fields } };
+}
+
+function beginArguments(child: FakeChild, timestamp = 1000): void {
+	child.emit({ type: "message_start", message: { role: "assistant", timestamp, content: [] } });
+	child.emit(argumentUpdate("toolcall_start", { id: "call-1", toolName: "write" }));
+}
+
+test("fresh argument streaming renews idle liveness without execution or provisional usage", async () => {
+	const h = harness({ stallTimeoutMs: 100, toolStallTimeoutMs: 1000 });
+	const task = h.runner.run(request());
+	await tick();
+	const child = h.children[0];
+	beginArguments(child);
+	// Each chunk arrives before the current idle deadline. Four renewals allow
+	// generation to outlast the original budget; only the latest timer can fire.
+	for (const delta of ['{"path":', '"private-path",', '"content":', '"private-arguments"}']) {
+		h.advance(80);
+		assert.equal(h.store.get(task.id)?.status, TASK_STATUS.RUNNING);
+		const before = h.timers.filter(timer => !timer.cancelled).at(-1)!;
+		child.emit(argumentUpdate("toolcall_delta", { delta }));
+		assert.equal(before.cancelled, true, "fresh argument data cancels the prior idle deadline");
+		assert.equal(h.timers.filter(timer => !timer.cancelled).at(-1)?.ms, 100);
+	}
+	const current = h.store.get(task.id)!;
+	assert.equal(current.toolCalls, 0);
+	assert.equal(current.tokens, 0);
+	assert.equal(current.cost, 0);
+	assert.equal(current.lastStep, "generating tool arguments");
+	assert.doesNotMatch(JSON.stringify(h.store.thread(task.id)), /private/);
+	h.advance(101);
+	await tick();
+	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.TIMED_OUT, "later silence still times out");
+	assert.doesNotMatch(h.store.get(task.id)?.error ?? "", /private/);
+});
+
+test("empty, replayed, malformed and unrelated argument traffic cannot renew idle liveness", async () => {
+	const h = harness({ stallTimeoutMs: 100 });
+	const task = h.runner.run(request());
+	await tick();
+	const child = h.children[0];
+	beginArguments(child);
+	const fresh = argumentUpdate("toolcall_delta", { delta: "private-chunk" });
+	child.emit(fresh);
+	const timer = h.timers.filter(timer => !timer.cancelled).at(-1)!;
+	for (const event of [fresh, argumentUpdate("toolcall_delta", { delta: "" }),
+		argumentUpdate("toolcall_delta", { delta: 123 }), argumentUpdate("toolcall_delta", { delta: "new", contentIndex: -1 }),
+		argumentUpdate("toolcall_delta", { delta: "new", contentIndex: 1 }),
+		argumentUpdate("toolcall_start", { id: "call-1", toolName: "write" }), fresh,
+		{ type: "message_start", message: { role: "assistant", timestamp: 1000 } }, fresh,
+		{ type: "queue_update" }, { type: "extension_ui_request", method: "setWidget", widgetLines: ["noise"] },
+		{ type: "bash_execution_update", delta: "noise" }]) child.emit(event);
+	assert.equal(timer.cancelled, false);
+	timer.fn();
+	await tick();
+	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.TIMED_OUT);
+});
+
+test("argument generation closes at message end, preserves final usage and execution budgets", async () => {
+	const h = harness({ stallTimeoutMs: 100, toolStallTimeoutMs: 1000 });
+	const task = h.runner.run(request());
+	await tick();
+	const child = h.children[0];
+	beginArguments(child);
+	child.emit(argumentUpdate("toolcall_delta", { delta: "private-chunk" }));
+	child.emit({ type: "message_end", message: { role: "assistant", usage: { totalTokens: 12, cost: { total: 0.1 } } } });
+	const idle = h.timers.filter(timer => !timer.cancelled).at(-1)!;
+	child.emit(argumentUpdate("toolcall_delta", { delta: "late" }));
+	assert.equal(idle.cancelled, false);
+	assert.equal(h.store.get(task.id)?.tokens, 12);
+	assert.equal(h.store.get(task.id)?.cost, 0.1);
+	child.emit({ type: "tool_execution_start", toolCallId: "call-1", toolName: "write", args: {} });
+	assert.equal(h.store.get(task.id)?.toolCalls, 1);
+	assert.equal(h.timers.filter(timer => !timer.cancelled).at(-1)?.ms, 1000);
+	child.emit({ type: "tool_execution_end", toolCallId: "call-1", result: { content: [] }, isError: false });
+	assert.equal(h.timers.filter(timer => !timer.cancelled).at(-1)?.ms, 100);
+	beginArguments(child, 1001);
+	child.emit(argumentUpdate("toolcall_delta", { delta: "private-chunk" }));
+	assert.equal(h.store.get(task.id)?.lastStep, "generating tool arguments", "a new generation admits the same chunk");
+	h.runner.cancel(task.id, "cancelled during arguments");
+	const timerCount = h.timers.length;
+	child.emit(argumentUpdate("toolcall_delta", { delta: "after cancellation" }));
+	await tick();
+	assert.equal(h.timers.length, timerCount);
+	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.CANCELLED);
+	assert.equal(h.store.get(task.id)?.toolCalls, 1);
+	assert.equal(h.store.get(task.id)?.tokens, 12);
+});
 
 // A child that never answers the launch RPC commands (get_state, prompt), so
 // the task's lastStep never leaves its initial "starting" stage. Used to
@@ -657,10 +759,32 @@ test("AgentRunner retains only a 64-notification duplicate window", async () => 
 	assert.equal(notifications.length, 66, "an ID evicted from the recent 64-ack window can be admitted again");
 });
 
-test("piCommand reuses the running pi entry point and honors the override", () => {
-	assert.deepEqual(piCommand({ execPath: "/bin/node", argv: ["/bin/node", "/x/dist/cli.js"], env: {} }), { command: "/bin/node", args: ["/x/dist/cli.js"] });
-	assert.deepEqual(piCommand({ execPath: "/bin/node", argv: ["/bin/node", "/x/other.js"], env: {} }), { command: "pi", args: [] });
-	assert.deepEqual(piCommand({ execPath: "/bin/node", argv: [], env: { GENTLE_PI_AGENTS_PI: "/opt/pi --flag" } }), { command: "/opt/pi", args: ["--flag"] });
+test("piCommand reuses an existing pi entry point and falls back when it disappears", () => {
+	const proc = { execPath: "/bin/node", argv: ["/bin/node", "/x/dist/cli.js"], env: {} };
+	assert.deepEqual(piCommand(proc, (entry) => entry === "/x/dist/cli.js"), { command: "/bin/node", args: ["/x/dist/cli.js"] });
+	assert.deepEqual(piCommand(proc, () => false), { command: "pi", args: [] });
+	assert.deepEqual(piCommand({ ...proc, argv: ["/bin/node", "/x/other.js"] }, () => true), { command: "pi", args: [] });
+	assert.deepEqual(piCommand({ ...proc, argv: [] }, () => true), { command: "pi", args: [] });
+});
+
+test("piCommand honors the override without checking its entry", () => {
+	const proc = { execPath: "/bin/node", argv: ["/bin/node", "/x/dist/cli.js"], env: { GENTLE_PI_AGENTS_PI: " /bin/node /override/cli.js " } };
+	assert.deepEqual(piCommand(proc, () => { assert.fail("override must bypass the existence check"); }), { command: "/bin/node", args: ["/override/cli.js"] });
+});
+
+test("runner resolves the pi command at each spawn after the entry disappears", async () => {
+	let exists = true;
+	const proc = { execPath: "/bin/node", argv: ["/bin/node", "/x/dist/cli.js"], env: {} };
+	const h = harness({ resolvePi: () => piCommand(proc, () => exists) });
+	h.runner.run(request());
+	await tick();
+	assert.equal(h.spawnOptions[0].command, "/bin/node");
+	assert.equal(h.spawnOptions[0].args[0], "/x/dist/cli.js");
+	exists = false;
+	h.runner.run(request());
+	await tick();
+	assert.equal(h.spawnOptions[1].command, "pi");
+	assert.deepEqual(h.spawnOptions[1].args, childArguments(request()));
 });
 
 test("JsonLines splits on LF only, tolerates CRLF, and skips lines that are not JSON", () => {

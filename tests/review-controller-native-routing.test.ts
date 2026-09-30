@@ -9,7 +9,7 @@ import { dirname, join, resolve, sep } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { __testing, createGentleAiExtension, PendingReviewConsentRegistry } from "../extensions/gentle-ai.ts";
-import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
+import { CandidateViewError, CandidateViewRegistry } from "../lib/review-candidate-view.ts";
 import { NATIVE_REVIEW_ERROR_CODE, NativeReviewCliError, NativeReviewConsentRequiredError, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { decodeReviewConsentV3, decodeReviewStatusV3, type ReviewCollectInputV3, type ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 
@@ -463,7 +463,10 @@ test("interleaved sessions sharing a CLI retain only their own capture routes", 
 			const index = requests.length - 1;
 			if (index < 2) { [readyA, readyB][index]!(); await waits[index]!; }
 			const lineageId = String(request.lineageId);
-			return status(lineageId, [inputs.get(lineageId)!]);
+			// Cache absence alone is not foreign-session evidence. The provider
+			// rejects selectorless requests for these committed-range candidates.
+			return request.baseRef === (lineageId === a ? "base-a" : "base-b")
+				? status(lineageId, [inputs.get(lineageId)!]) : status(lineageId, []);
 		},
 		captureCorrectionPlan: async ({ argumentTokens }: { argumentTokens: readonly string[] }) => {
 			captures += 1;
@@ -487,7 +490,25 @@ test("interleaved sessions sharing a CLI retain only their own capture routes", 
 		outcomes: [ownA, ownB, foreign, cleaned].map(({ details }) => (details as { outcome?: string }).outcome),
 		revalidationCalls: requests.length - 2,
 		captures,
-	}, { outcomes: ["native-last-event-closure", "native-last-event-closure", "capture-binding-rejected", "capture-binding-rejected"], revalidationCalls: 2, captures: 2 });
+	}, { outcomes: ["native-last-event-closure", "native-last-event-closure", "capture-binding-rejected", "capture-binding-rejected"], revalidationCalls: 4, captures: 2 });
+});
+
+test("capture route recovery uses a trusted committed projection through unknown-outcome reconciliation", async (t) => {
+	const candidateViews = new CandidateViewRegistry();
+	t.after(() => candidateViews.cleanupAll());
+	const cwd = repository(t), lineageId = "recovered-committed", input = correctionPlanInput(lineageId);
+	const view = candidateViews.create({ contributorRoot: cwd, baseRef: execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim(), committedOnly: true });
+	candidateViews.retain(view.token, lineageId);
+	const target = candidateViews.resolveProjection(lineageId, cwd), requests: Array<Record<string, unknown>> = [];
+	const native = {
+		targetStatus: async (request: Record<string, unknown>) => { requests.push(request); return status(lineageId, [input]); },
+		captureCorrectionPlan: async () => { throw Object.assign(new Error("lost response"), { mutationOutcome: "unknown", nextAction: "review.status" }); },
+	} as unknown as NativeReviewCli;
+	const result = await __testing.executeReviewCaptureOperation({ lineageId, collectBinding: JSON.stringify(input), correctionLines: 1 }, cwd, native, undefined, candidateViews, new Map(), true);
+	assert.equal(result.outcome, "native-capture-outcome-unknown");
+	assert.equal(requests.length, 2, "one admission STATUS and one reconciliation, never capture replay");
+	assert.ok(requests.every((request) => request.cwd === cwd && request.lineageId === lineageId && request.baseRef === target.baseCommit && request.committedOnly === true));
+	assert.equal(requests[0]!.agent, "pi");
 });
 
 test("REPAIR retains frozen committed collect selectors and leaves workspace routes unselected", async (t) => {
@@ -649,7 +670,8 @@ test("STATUS preserves retained intended-untracked selection through selectorles
 		selections,
 		true,
 	);
-	assert.deepEqual({ outcome: stale.outcome, requests: requests.length, captures }, { outcome: "capture-binding-rejected", requests: 3, captures: 0 });
+	assert.deepEqual({ outcome: stale.outcome, requests: requests.length, captures }, { outcome: "capture-binding-rejected", requests: 4, captures: 0 });
+	assert.deepEqual(requests[3], { cwd, lineageId, agent: "pi", ...selectedUntracked });
 
 	const captured = await __testing.executeReviewCaptureOperation(
 		{ lineageId, collectBinding: bindingB, correctionLines: 1 },
@@ -666,6 +688,7 @@ test("STATUS preserves retained intended-untracked selection through selectorles
 		{ cwd, lineageId, agent: "pi", baseRef: "main", committedOnly: true },
 		{ cwd, lineageId, agent: "pi", ...selectedUntracked },
 		{ cwd, lineageId, agent: "pi", ...selectedUntracked },
+		{ cwd, lineageId, agent: "pi", ...selectedUntracked },
 	]);
 	assert.equal(captures, 1);
 
@@ -676,10 +699,14 @@ test("STATUS preserves retained intended-untracked selection through selectorles
 });
 
 test("route retention caps, rejects collisions and invalid selectors, and clears every terminal state", async () => {
-	const native = { targetStatus: async (request: Record<string, unknown>) => status(String(request.lineageId)) } as unknown as NativeReviewCli;
+	const requests: Array<Record<string, unknown>> = [];
+	const native = { targetStatus: async (request: Record<string, unknown>) => { requests.push(request); return status(String(request.lineageId), request.baseRef === undefined ? [] : [collectInput(String(request.lineageId))]); } } as unknown as NativeReviewCli;
 	const selections = new Map();
 	for (let index = 0; index <= 64; index += 1) await __testing.executeReviewControllerOperation({ operation: "status", lineageId: `bounded-${index}`, input: JSON.stringify({ baseRef: `base-${index}`, committedOnly: true }) }, process.cwd(), native, undefined, undefined, undefined, selections);
+	assert.equal(selections.size, 64, "route retention remains bounded before native refresh");
 	const evicted = await __testing.executeReviewCaptureOperation({ lineageId: "bounded-0", collectBinding: JSON.stringify(collectInput("bounded-0")) }, process.cwd(), native, undefined, undefined, selections, true);
+	assert.equal(requests.length, 66, "eviction must negotiate fresh native STATUS before rejection");
+	assert.deepEqual(requests.at(-1), { cwd: process.cwd(), lineageId: "bounded-0", agent: "pi" });
 	const collision = new Map(), lineageId = "route-collision", input = correctionPlanInput(lineageId);
 	await __testing.executeReviewControllerOperation({ operation: "status", lineageId, input: JSON.stringify({ baseRef: "base-a", committedOnly: true }) }, process.cwd(), { targetStatus: async () => status(lineageId, [input]) } as unknown as NativeReviewCli, undefined, undefined, undefined, collision);
 	const rejected = await __testing.executeReviewControllerOperation({ operation: "status", lineageId, input: JSON.stringify({ baseRef: "base-b", committedOnly: true }) }, process.cwd(), { targetStatus: async () => status(lineageId, [input]) } as unknown as NativeReviewCli, undefined, undefined, undefined, collision);
@@ -936,6 +963,72 @@ function startStatus(cwd: string, baseRef?: string, intendedUntracked: readonly 
 	}
 }
 
+test("START reports POSIX candidate parent privacy refusal without native START or permission repair", { skip: process.platform === "win32" }, async (t) => {
+	const cwd = repository(t);
+	const target = startStatus(cwd);
+	const parent = join(cwd, ".git", "gentle-ai", "candidate-views");
+	chmodSync(parent, 0o777);
+	let starts = 0;
+	const native = {
+		targetStatus: async () => target,
+		start: async () => { starts++; throw new Error("native START must not run"); },
+	} as unknown as NativeReviewCli;
+	let result: Record<string, unknown>;
+	try {
+		result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary" }) }, cwd, native);
+	} finally {
+		assert.equal(fs.lstatSync(parent).mode & 0o777, 0o777);
+		chmodSync(parent, 0o700);
+	}
+	assert.equal(result.status, "blocked");
+	assert.equal(result.outcome, "native-operation-failed");
+	assert.equal(result.lineage_created, false);
+	assert.equal(result.mutation_outcome, "none");
+	assert.deepEqual(result.diagnostics, {
+		code: "candidate-owner-parent-privacy",
+		message: "candidate-views parent must be owned by the current user and inaccessible to group and others; inspect its ownership and permissions, then correct them out of band before retrying START",
+	});
+	assert.equal(starts, 0);
+});
+
+test("START reports ineffective POSIX private-mode mounts without native START or permission repair", { skip: process.platform === "win32" }, async (t) => {
+	const cwd = repository(t);
+	const target = startStatus(cwd);
+	const parent = join(cwd, ".git", "gentle-ai", "candidate-views");
+	mkdirSync(parent, { recursive: true, mode: 0o700 });
+	chmodSync(parent, 0o777);
+	const originalLstat = fs.lstatSync;
+	t.mock.method(fs, "lstatSync", (path: Parameters<typeof fs.lstatSync>[0], ...args: unknown[]) => {
+		const stat = (originalLstat as (...arguments_: unknown[]) => ReturnType<typeof fs.lstatSync>)(path, ...args);
+		return typeof path === "string" && path.includes(".gentle-ai-chmod-probe-")
+			? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { mode: (Number(stat.mode) & ~0o777) | 0o777, uid: process.getuid?.() })
+			: stat;
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	let starts = 0;
+	const native = {
+		targetStatus: async () => target,
+		start: async () => { starts++; throw new Error("native START must not run"); },
+	} as unknown as NativeReviewCli;
+	let result: Record<string, unknown>;
+	try {
+		result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary" }) }, cwd, native);
+	} finally {
+		assert.equal(fs.lstatSync(parent).mode & 0o777, 0o777);
+		chmodSync(parent, 0o700);
+	}
+	assert.equal(result.status, "blocked");
+	assert.equal(result.outcome, "native-operation-failed");
+	assert.equal(result.lineage_created, false);
+	assert.equal(result.mutation_outcome, "none");
+	assert.deepEqual(result.diagnostics, {
+		code: "candidate-owner-parent-chmod-ineffective",
+		message: "candidate-views parent filesystem does not honor POSIX permission changes; move this repository's Git common directory to a POSIX-metadata filesystem or enable metadata support before retrying START",
+	});
+	assert.equal(starts, 0);
+});
+
 test("ordinary START binds the native workspace candidate and returns the native result", async (t) => {
 	const cwd = repository(t);
 	const target = startStatus(cwd);
@@ -1043,6 +1136,171 @@ test("ordinary START adopts the offered committed-range base while an untracked 
 	assert.equal(creation.mock.callCount(), 1);
 	assert.equal(creation.mock.calls[0]!.arguments[0].baseRef, baseRef, "the candidate view adopts the offered base");
 	assert.equal(startCalls, 1, "native START is reached exactly once without drift");
+});
+
+test("ordinary START adopts a provider-offered base tree without treating it as caller input", async (t) => {
+	const cwd = repository(t);
+	execFileSync("git", ["add", "tracked.txt"], { cwd });
+	execFileSync("git", ["-c", "user.name=Routing Test", "-c", "user.email=routing@example.invalid", "commit", "-m", "candidate"], { cwd });
+	const baseCommit = execFileSync("git", ["rev-parse", "HEAD~1"], { cwd, encoding: "utf8" }).trim();
+	const baseTree = execFileSync("git", ["rev-parse", `${baseCommit}^{tree}`], { cwd, encoding: "utf8" }).trim();
+	const offered = startStatus(cwd);
+	offered.nextTransition = {
+		kind: "execute", reasonCode: "start_required",
+		execute: { operation: "review.start", arguments: [
+			{ name: "target", value: offered.targetIdentity, token: `--target=${offered.targetIdentity}` },
+			{ name: "projection", value: "workspace", token: "--projection=workspace" },
+			{ name: "base-ref", value: baseTree, token: `--base-ref=${baseTree}` },
+			{ name: "committed-only", value: "true", token: "--committed-only=true" },
+			{ name: "agent", value: "pi", token: "--agent=pi" },
+		], preconditions: [], binding: {} },
+	} as unknown as ReviewStatusV3["nextTransition"];
+	const adopted = startStatus(cwd, baseCommit);
+	const requests: Array<Record<string, unknown>> = [];
+	const starts: Array<Record<string, unknown>> = [];
+	const native = {
+		targetStatus: async (request: Record<string, unknown>) => {
+			requests.push(request);
+			return requests.length === 1 ? offered : adopted;
+		},
+		start: async (request: Record<string, unknown>) => {
+			starts.push(request);
+			return { lineageId: "tree-offer-started", state: "reviewing", riskLevel: "low", selectedLenses: [], changedFiles: 1, changedLines: 1, correctionBudget: 1, action: "created", lensesRequired: false, riskReasons: [], raw: {} };
+		},
+	} as unknown as NativeReviewCli;
+	const views = new CandidateViewRegistry();
+	t.after(() => views.cleanupAll());
+	const result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary" }) }, cwd, native, undefined, views);
+	assert.equal(result.operation, "start");
+	assert.equal(requests.length, 2, "provider-offered tree requires a second bound STATUS");
+	assert.equal(requests[1]!.baseRef, baseTree, "transport preserves the offered tree selector");
+	assert.equal(starts.length, 1);
+	assert.equal(starts[0]!.baseRef, baseTree, "native START receives the provider's original tree selector");
+	assert.equal(starts[0]!.targetIdentity, adopted.targetIdentity);
+	for (const input of [undefined, { baseRef: baseCommit, committedOnly: true }, undefined]) {
+		const before = requests.length;
+		const next = await __testing.executeReviewControllerOperation({ operation: "status", lineageId: "tree-offer-started", ...(input === undefined ? {} : { input: JSON.stringify(input) }) }, cwd, native, undefined, views);
+		assert.equal(next.operation, "status");
+		assert.equal(requests.length, before + 1);
+		assert.equal(requests.at(-1)!.baseRef, input?.baseRef ?? baseTree, "selectorless STATUS must replay the provider tree; explicit caller commit wins only for its call");
+		assert.equal(requests.at(-1)!.lineageId, "tree-offer-started");
+	}
+});
+
+test("facade STATUS hydrates an ordinary staged-index reviewer candidate without treating its base tree as an offered range", async (t) => {
+	const cwd = repository(t);
+	const baseTree = execFileSync("git", ["rev-parse", "HEAD^{tree}"], { cwd, encoding: "utf8" }).trim();
+	writeFileSync(join(cwd, "tracked.txt"), "staged index candidate\n");
+	execFileSync("git", ["add", "tracked.txt"], { cwd });
+	const stagedTree = execFileSync("git", ["write-tree"], { cwd, encoding: "utf8" }).trim();
+	const lineageId = "staged-index-hydration";
+	const target = status(lineageId);
+	target.projection = { ...target.projection, projection: "staged", baseTree, initialReviewTree: stagedTree, currentCandidateTree: stagedTree, paths: ["tracked.txt"] };
+	const views = new CandidateViewRegistry();
+	t.after(() => views.cleanupAll());
+	const native = { targetStatus: async () => target } as unknown as NativeReviewCli;
+	await __testing.executeReviewControllerOperation({ operation: "status", lineageId }, cwd, native, undefined, views);
+	const restored = views.resolveCurrentForLens("review-risk", cwd);
+	assert.equal(restored.baseTree, baseTree);
+	assert.equal(restored.candidateTree, stagedTree);
+	assert.equal(restored.committedOnly, false);
+	assert.equal(views.resolveProjection(lineageId, cwd).providerBaseTree, undefined);
+});
+
+test("fresh facade STATUS hydrates a historical commit-backed range without granting provider-tree provenance", async (t) => {
+	const cwd = repository(t);
+	const baseCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+	const baseTree = execFileSync("git", ["rev-parse", "HEAD^{tree}"], { cwd, encoding: "utf8" }).trim();
+	writeFileSync(join(cwd, "tracked.txt"), "committed candidate\n");
+	execFileSync("git", ["add", "tracked.txt"], { cwd });
+	execFileSync("git", ["-c", "user.name=Routing Test", "-c", "user.email=routing@example.invalid", "commit", "-m", "candidate"], { cwd });
+	const currentTree = execFileSync("git", ["rev-parse", "HEAD^{tree}"], { cwd, encoding: "utf8" }).trim();
+	const historical = status("historical-commit-range");
+	historical.projection = { ...historical.projection, projection: "staged", baseTree, initialReviewTree: currentTree, currentCandidateTree: currentTree, paths: ["tracked.txt"] };
+	const views = new CandidateViewRegistry();
+	t.after(() => views.cleanupAll());
+	await __testing.executeReviewControllerOperation({ operation: "status", lineageId: "historical-commit-range" }, cwd, { targetStatus: async () => historical } as unknown as NativeReviewCli, undefined, views);
+	const restored = views.resolveCurrentForLens("review-risk", cwd);
+	assert.equal(restored.baseCommit, baseCommit);
+	assert.equal(restored.baseTree, baseTree);
+	assert.equal(restored.candidateTree, currentTree);
+	assert.equal(restored.committedOnly, true);
+	assert.equal(views.resolveProjection("historical-commit-range", cwd).providerBaseTree, undefined);
+});
+
+test("facade STATUS refuses an unreachable base tree and a false staged-index kind", async (t) => {
+	const cwd = repository(t);
+	const currentTree = execFileSync("git", ["rev-parse", "HEAD^{tree}"], { cwd, encoding: "utf8" }).trim();
+	const unreachableTree = execFileSync("git", ["mktree"], { cwd, input: "", encoding: "utf8" }).trim();
+	assert.notEqual(unreachableTree, currentTree);
+	const unknown = status("unprovable-tree");
+	unknown.projection = { ...unknown.projection, projection: "staged", baseTree: unreachableTree, initialReviewTree: currentTree, currentCandidateTree: currentTree, paths: ["tracked.txt"] };
+	const views = new CandidateViewRegistry();
+	t.after(() => views.cleanupAll());
+	await __testing.executeReviewControllerOperation({ operation: "status", lineageId: "unprovable-tree" }, cwd, { targetStatus: async () => unknown } as unknown as NativeReviewCli, undefined, views);
+	assert.equal(views.hasProjection("unprovable-tree", cwd), false);
+	assert.throws(() => views.resolveCurrentForLens("review-risk", cwd), (error: unknown) => error instanceof CandidateViewError && error.reason === "current-binding-hydration-failed");
+
+	writeFileSync(join(cwd, "tracked.txt"), "staged index candidate\n");
+	execFileSync("git", ["add", "tracked.txt"], { cwd });
+	const stagedTree = execFileSync("git", ["write-tree"], { cwd, encoding: "utf8" }).trim();
+	writeFileSync(join(cwd, "tracked.txt"), "uncommitted workspace content\n");
+	const falseKind = status("false-staged-index");
+	falseKind.projection = { ...falseKind.projection, projection: "staged", baseTree: currentTree, initialReviewTree: stagedTree, currentCandidateTree: stagedTree, paths: ["tracked.txt"] };
+	const otherViews = new CandidateViewRegistry();
+	t.after(() => otherViews.cleanupAll());
+	await __testing.executeReviewControllerOperation({ operation: "status", lineageId: "false-staged-index" }, cwd, { targetStatus: async () => falseKind } as unknown as NativeReviewCli, undefined, otherViews);
+	assert.equal(otherViews.hasProjection("false-staged-index", cwd), false);
+	assert.throws(() => otherViews.resolveCurrentForLens("review-risk", cwd), (error: unknown) => error instanceof CandidateViewError && error.reason === "current-binding-hydration-failed" && error.message.includes("candidate-view-invalid"));
+});
+
+test("provider tree adoption refuses drifted targets, malformed offers and explicit caller trees", async (t) => {
+	const cwd = repository(t);
+	execFileSync("git", ["add", "tracked.txt"], { cwd });
+	execFileSync("git", ["-c", "user.name=Routing Test", "-c", "user.email=routing@example.invalid", "commit", "-m", "candidate"], { cwd });
+	const baseCommit = execFileSync("git", ["rev-parse", "HEAD~1"], { cwd, encoding: "utf8" }).trim();
+	const baseTree = execFileSync("git", ["rev-parse", `${baseCommit}^{tree}`], { cwd, encoding: "utf8" }).trim();
+	const adopted = startStatus(cwd, baseCommit);
+	const offered = startStatus(cwd);
+	offered.nextTransition = { kind: "execute", reasonCode: "start_required", execute: { operation: "review.start", arguments: [{ name: "base-ref", value: baseTree }, { name: "committed-only", value: "true" }], preconditions: [], binding: {} } } as unknown as ReviewStatusV3["nextTransition"];
+	const drifted = startStatus(cwd);
+	const malformed = startStatus(cwd);
+	malformed.nextTransition = { kind: "execute", reasonCode: "start_required", execute: { operation: "review.start", arguments: [{ name: "base-ref", value: baseTree }, { name: "base-ref", value: baseTree }, { name: "committed-only", value: "true" }], preconditions: [], binding: {} } } as unknown as ReviewStatusV3["nextTransition"];
+	const malformedExtra = startStatus(cwd);
+	malformedExtra.nextTransition = { kind: "execute", reasonCode: "start_required", execute: { operation: "review.start", arguments: [
+		{ name: "agent", value: "pi" }, { name: "base-ref", value: baseTree, token: `--base-ref=${baseTree}` },
+		{ name: "committed-only", value: "true", token: "--committed-only=true" }, { name: "committed-only", value: "false" },
+	], preconditions: [], binding: {} } } as unknown as ReviewStatusV3["nextTransition"];
+	const malformedToken = startStatus(cwd);
+	malformedToken.nextTransition = { kind: "execute", reasonCode: "start_required", execute: { operation: "review.start", arguments: [
+		{ name: "agent", value: "pi" }, { name: "base-ref", value: baseTree, token: "--base-ref=HEAD" },
+		{ name: "committed-only", value: "true", token: "--committed-only=true" },
+	], preconditions: [], binding: {} } } as unknown as ReviewStatusV3["nextTransition"];
+	const blob = execFileSync("git", ["rev-parse", "HEAD:tracked.txt"], { cwd, encoding: "utf8" }).trim();
+	const wrongType = startStatus(cwd);
+	wrongType.nextTransition = { kind: "execute", reasonCode: "start_required", execute: { operation: "review.start", arguments: [{ name: "base-ref", value: blob }, { name: "committed-only", value: "true" }], preconditions: [], binding: {} } } as unknown as ReviewStatusV3["nextTransition"];
+	for (const scenario of [
+		{ name: "changed tree target", first: offered, second: drifted, expectedReads: 2 },
+		{ name: "malformed duplicate offer", first: malformed, second: adopted, expectedReads: 1 },
+		{ name: "conflicting selector among unrelated arguments", first: malformedExtra, second: adopted, expectedReads: 1 },
+		{ name: "selector token disagrees with value", first: malformedToken, second: adopted, expectedReads: 1 },
+		{ name: "wrong object type", first: wrongType, second: adopted, expectedReads: 2 },
+	]) {
+		let reads = 0, starts = 0;
+		const views = new CandidateViewRegistry();
+		t.after(() => views.cleanupAll());
+		const native = { targetStatus: async () => (++reads === 1 ? scenario.first : scenario.second), start: async () => { starts++; throw new Error("native START must not run"); } } as unknown as NativeReviewCli;
+		const result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary" }) }, cwd, native, undefined, views);
+		assert.equal(reads, scenario.expectedReads, scenario.name);
+		assert.equal(starts, 0, scenario.name);
+		assert.equal(result.status, "blocked", scenario.name);
+	}
+	let reads = 0, starts = 0;
+	const native = { targetStatus: async () => { reads++; return offered; }, start: async () => { starts++; throw new Error("native START must not run"); } } as unknown as NativeReviewCli;
+	const rejected = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary", baseRef: baseTree, committedOnly: true }) }, cwd, native);
+	assert.equal(rejected.outcome, "native-start-base-ref-unresolvable");
+	assert.equal(reads, 0);
+	assert.equal(starts, 0);
 });
 
 test("ordinary START preserves sanitized foreign diagnostics through one ambiguous reconciliation", async (t) => {
@@ -1734,6 +1992,131 @@ test("inspect with a committed-range selector retains baseRef/committedOnly, and
 	// leftover baseRef field would make readRetainedNativeUntrackedSelection
 	// mistake it for a RetainedNativeCaptureRoute.
 	assert.equal("baseRef" in lineageEntry!, false);
+});
+
+// gentle-pi#review-ready-inspect-selector: a plain inspect that resolves ready
+// without ever needing an untrackedScope decision must still retain its own
+// committed-range selector, so the following plain START replays the exact
+// inspected range instead of adopting the native default base-ref (#874).
+test("a plain ready inspect retains its committed selector, and a plain START adopts it", async (t) => {
+	const cwd = repository(t);
+	const baseRef = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+	const target = startStatus(cwd, baseRef);
+	const requests: Array<Record<string, unknown>> = [],
+		starts: Array<Record<string, unknown>> = [],
+		retained = new Map();
+	const native = {
+		targetStatus: async (request: Record<string, unknown>) => { requests.push(request); return target; },
+		start: async (request: Record<string, unknown>) => {
+			starts.push(request);
+			return {
+				lineageId: "ready-started", state: "reviewing", riskLevel: "low", selectedLenses: [],
+				changedFiles: 1, changedLines: 1, correctionBudget: 1, action: "created", lensesRequired: false,
+				riskReasons: [], raw: {},
+			};
+		},
+	} as unknown as NativeReviewCli;
+	const inspected = await __testing.executeReviewControllerOperation(
+		{ operation: "inspect", input: JSON.stringify({ baseRef: "HEAD", committedOnly: true }) },
+		cwd, native, undefined, undefined, undefined, retained,
+	);
+	assert.equal(inspected.status, "ready");
+	const retainedEntry = retained.get(`${cwd}\u0000`) as { baseRef?: string; committedOnly?: true } | undefined;
+	assert.notEqual(retainedEntry, undefined);
+	assert.equal(retainedEntry!.baseRef, baseRef);
+	assert.equal(retainedEntry!.committedOnly, true);
+
+	const started = await __testing.executeReviewControllerOperation(
+		{ operation: "start", input: JSON.stringify({ mode: "ordinary" }) },
+		cwd, native, undefined, undefined, undefined, retained,
+	);
+	assert.equal(started.operation, "start");
+	assert.equal((started.result as { lineage_id?: string }).lineage_id, "ready-started");
+	assert.equal(requests.length, 2);
+	const startStatusRequest = requests[1]!;
+	assert.equal(startStatusRequest.baseRef, baseRef);
+	assert.equal(startStatusRequest.committedOnly, true);
+	assert.equal(starts.length, 1);
+	assert.equal(starts[0]!.baseRef, baseRef);
+	assert.equal(starts[0]!.committedOnly, true);
+	assert.equal(retained.has(`${cwd}\u0000`), false);
+});
+
+test("a later ready inspect with a different baseRef replaces the earlier retained selector", async (t) => {
+	const cwd = repository(t);
+	const baseRef1 = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+	const target1 = startStatus(cwd, baseRef1);
+	execFileSync("git", ["add", "tracked.txt"], { cwd, stdio: "ignore" });
+	execFileSync("git", ["-c", "user.name=Routing Test", "-c", "user.email=routing@example.invalid", "commit", "-m", "second"], { cwd, stdio: "ignore" });
+	const baseRef2 = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+	const target2 = startStatus(cwd, baseRef2);
+	const starts: Array<Record<string, unknown>> = [],
+		retained = new Map();
+	const native = {
+		targetStatus: async (request: Record<string, unknown>) => (request.baseRef === baseRef2 ? target2 : target1),
+		start: async (request: Record<string, unknown>) => {
+			starts.push(request);
+			return {
+				lineageId: "second-started", state: "reviewing", riskLevel: "low", selectedLenses: [],
+				changedFiles: 1, changedLines: 1, correctionBudget: 1, action: "created", lensesRequired: false,
+				riskReasons: [], raw: {},
+			};
+		},
+	} as unknown as NativeReviewCli;
+	await __testing.executeReviewControllerOperation(
+		{ operation: "inspect", input: JSON.stringify({ baseRef: baseRef1, committedOnly: true }) },
+		cwd, native, undefined, undefined, undefined, retained,
+	);
+	await __testing.executeReviewControllerOperation(
+		{ operation: "inspect", input: JSON.stringify({ baseRef: baseRef2, committedOnly: true }) },
+		cwd, native, undefined, undefined, undefined, retained,
+	);
+	const retainedEntry = retained.get(`${cwd}\u0000`) as { baseRef?: string } | undefined;
+	assert.equal(retainedEntry?.baseRef, baseRef2);
+
+	const started = await __testing.executeReviewControllerOperation(
+		{ operation: "start", input: JSON.stringify({ mode: "ordinary" }) },
+		cwd, native, undefined, undefined, undefined, retained,
+	);
+	assert.equal((started.result as { lineage_id?: string }).lineage_id, "second-started");
+	assert.equal(starts.length, 1);
+	assert.equal(starts[0]!.baseRef, baseRef2);
+});
+
+test("START rejects a ready-inspect retained selector when fresh STATUS identifies a changed candidate", async (t) => {
+	const cwd = repository(t);
+	const baseRef = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+	const candidateA = startStatus(cwd, baseRef);
+	const candidateB = {
+		...candidateA,
+		targetIdentity: "target-b",
+		projection: { ...candidateA.projection, currentCandidateTree: "candidate-b" },
+	} as ReviewStatusV3;
+	const retained = new Map();
+	let statusCalls = 0;
+	let starts = 0;
+	const native = {
+		targetStatus: async () => { statusCalls += 1; return statusCalls === 1 ? candidateA : candidateB; },
+		start: async () => {
+			starts += 1;
+			return {
+				lineageId: "unexpected", state: "reviewing", riskLevel: "low", selectedLenses: [],
+				changedFiles: 1, changedLines: 1, correctionBudget: 1, action: "created", lensesRequired: false,
+				riskReasons: [], raw: {},
+			};
+		},
+	} as unknown as NativeReviewCli;
+	await __testing.executeReviewControllerOperation(
+		{ operation: "inspect", input: JSON.stringify({ baseRef: "HEAD", committedOnly: true }) },
+		cwd, native, undefined, null, undefined, retained,
+	);
+	const rejected = await __testing.executeReviewControllerOperation(
+		{ operation: "start", input: JSON.stringify({ mode: "ordinary" }) },
+		cwd, native, undefined, null, undefined, retained,
+	);
+	assert.equal(rejected.outcome, "native-start-retained-selection-candidate-mismatch");
+	assert.equal(starts, 0);
+	assert.equal(retained.has(`${cwd}\u0000`), false);
 });
 
 test("an explicit baseRef that conflicts with a retained committed-range selector is not adopted", async (t) => {

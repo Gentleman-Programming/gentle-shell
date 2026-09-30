@@ -19,7 +19,6 @@ const CACHE_REL_PATH = ".atl/.skill-registry.cache.json";
 const SECTION_MARKER = "## Skills";
 const EXCLUDE_NAMES = new Set(["_shared", "skill-registry"]);
 const EXCLUDE_PREFIXES = ["sdd-"];
-const ATL_IGNORE_ENTRY = ".atl/";
 const WATCH_DEBOUNCE_MS = 500;
 const REGISTRY_SCHEMA_VERSION = 7;
 const NO_SKILL_REGISTRY_FLAG = "no-skill-registry";
@@ -315,19 +314,23 @@ interface RegenResult {
 }
 
 async function ensureAtlIgnored(cwd: string): Promise<void> {
-	const gitignorePath = join(cwd, ".gitignore");
-	let existing = "";
+	const atlDir = join(cwd, ".atl");
+	const gitignorePath = join(atlDir, ".gitignore");
 	if (await pathExists(gitignorePath)) {
-		existing = await readFile(gitignorePath, "utf8");
+		const existing = await readFile(gitignorePath, "utf8");
+		const ignoreRules = existing
+			.split("\n")
+			.map((line) => line.trim())
+			.filter((line) => line !== "" && !line.startsWith("#"));
+		if (ignoreRules.at(-1) === "*") {
+			return;
+		}
+		const prefix = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
+		await writeFile(gitignorePath, `${existing}${prefix}*\n`);
+		return;
 	}
-	const hasAtlIgnore = existing
-		.split("\n")
-		.map((line) => line.trim())
-		.some((line) => line === ".atl" || line === ATL_IGNORE_ENTRY);
-	if (hasAtlIgnore) return;
-	const prefix = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
-	const header = existing.includes("# Local Pi runtime state") ? "" : "# Local Pi runtime state\n";
-	await writeFile(gitignorePath, `${existing}${prefix}${header}${ATL_IGNORE_ENTRY}\n`);
+	await mkdir(atlDir, { recursive: true });
+	await writeFile(gitignorePath, "*\n");
 }
 
 function isGeneratedLegacyProjectRegistry(source: string): boolean {
@@ -534,6 +537,7 @@ export const __testing = {
 	parseFrontmatter,
 	renderRegistry,
 	regenerateRegistry,
+	ensureAtlIgnored,
 	shouldSkipSkillRegistryStartup,
 	shouldSkipDuplicateExtensionLoad,
 	startSkillRegistryWatcher,

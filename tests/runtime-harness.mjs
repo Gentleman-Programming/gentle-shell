@@ -92,7 +92,8 @@ function createPi() {
 			commands.set(name, definition);
 		},
 		registerProvider(name, config) {
-			providers.set(name, config);
+			if (typeof name === "object") providers.set(name.id, name);
+			else providers.set(name, config);
 		},
 		registerFlag(name, definition) {
 			flags.set(name, definition);
@@ -226,7 +227,7 @@ async function run() {
 	const globalSubagentsPath = join(globalAgentHome, "subagents.json");
 	const { pi, hooks, commands, providers, flags, tools, emittedEvents } = createPi();
 	await loadExtensions(pi);
-	assert.equal(providers.get("nan")?.api, "openai-completions", "runtime extension loading registers the NaN provider");
+	assert.equal(providers.get("nan")?.getModels()[0]?.api, "openai-completions", "runtime extension loading registers the NaN provider");
 
 	// gentle-pi#404: a collect binding that returns the native last-event
 	// closure must terminate after one capture. It must not re-enter a public
@@ -393,6 +394,18 @@ async function run() {
 		discovered.extensions.some((extension) => extension.resolvedPath.endsWith(join("extensions", "nan-provider.ts"))),
 		"declared extension directory must discover the NaN provider",
 	);
+
+	const nativeNan = discovered.runtime.pendingNativeProviderRegistrations
+		.find((entry) => entry.provider.id === "nan")?.provider;
+	assert.ok(nativeNan, "actual Pi loader must queue native NaN registration");
+	assert.ok(!discovered.runtime.pendingProviderRegistrations.some((entry) => entry.name === "nan"),
+		"NaN must not fall back to the legacy empty-key login route");
+	await assert.rejects(nativeNan.auth.apiKey.login({
+		signal: new AbortController().signal, prompt: async () => "", notify() {},
+	}), /non-empty/);
+	assert.deepEqual(await nativeNan.auth.apiKey.login({
+		signal: new AbortController().signal, prompt: async () => " synthetic-loader-key ", notify() {},
+	}), { type: "api_key", key: "synthetic-loader-key" });
 
 	// orchestrator-lazy-diet: Pi Subagent Model Routing detail (the "do not
 	// pass the `model` parameter by default" / SDD-model-assignment-scoping

@@ -1,5 +1,6 @@
-import type { RefreshModelsContext } from "@earendil-works/pi-ai";
-import type { ProviderConfig, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import * as piAi from "@earendil-works/pi-ai";
+import type { Provider, ProviderStreams, RefreshModelsContext } from "@earendil-works/pi-ai";
+import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 
 export const NAN_PROVIDER_ID = "nan";
 export const NAN_PROVIDER_BASE_URL = "https://api.nan.builders/v1";
@@ -34,8 +35,9 @@ const CHAT_MODELS: ProviderModelConfig[] = [
 	maxTokens: model.maxTokens ?? 8_192,
 }));
 
-// Offline discovery advertises only this known chat model, not the entire allowlist.
-const OFFLINE_MODELS = CHAT_MODELS.filter((model) => model.id === "deepseek-v4-flash");
+// The cold/offline baseline declares documented chat support, not key entitlement.
+// A successful live catalog remains authoritative for the credential that fetched it.
+const OFFLINE_MODELS = CHAT_MODELS;
 
 function cloneModel(model: ProviderModelConfig): ProviderModelConfig {
 	return { ...model, input: [...model.input], cost: { ...model.cost } };
@@ -104,19 +106,62 @@ function cloneCatalog(models: readonly ProviderModelConfig[]): ProviderModelConf
 	return models.map(cloneModel);
 }
 
-export function createNanProviderConfig(options: NanProviderOptions = {}): ProviderConfig {
+/** Native auth belongs to the provider; Pi persists only a successful login result. */
+export function createNanProviderConfig(options: NanProviderOptions = {}): Provider<"openai-completions"> {
+	const config = createCatalogConfig(options);
+	// Pi's extension loader aliases the bare root to compat, which exposes this
+	// host-owned lazy API factory. Do not import an SDK implementation subpath.
+	const api = piAi.lazyApi(async () => {
+		const runtime = piAi as typeof piAi & { openAICompletionsApi?: () => ProviderStreams };
+		if (!runtime.openAICompletionsApi) throw new Error("NaN requires Pi's OpenAI completions API factory");
+		return runtime.openAICompletionsApi();
+	});
+	return {
+		id: NAN_PROVIDER_ID,
+		name: "NaN",
+		baseUrl: NAN_PROVIDER_BASE_URL,
+		auth: { apiKey: {
+			name: "NaN API key",
+			async login(interaction) {
+				interaction.signal.throwIfAborted();
+				const entered = await interaction.prompt({
+					type: "secret", message: "Enter API key", signal: interaction.signal,
+				});
+				interaction.signal.throwIfAborted();
+				const key = entered.trim();
+				if (!key) throw new Error("NaN requires a non-empty API key");
+				return { type: "api_key", key };
+			},
+			async resolve({ ctx, credential, signal }) {
+				signal.throwIfAborted();
+				const stored = credential?.key?.trim();
+				const key = stored || (await ctx.env("NAN_API_KEY"))?.trim();
+				signal.throwIfAborted();
+				return key ? { auth: { apiKey: key }, source: stored ? "API key" : "NAN_API_KEY" } : undefined;
+			},
+		} },
+		getModels: () => config.getModels().map((model) => ({
+			...cloneModel(model), provider: NAN_PROVIDER_ID,
+			baseUrl: NAN_PROVIDER_BASE_URL, api: "openai-completions" as const,
+		})),
+		refreshModels: (context) => config.refreshModels(context),
+		stream: api.stream,
+		streamSimple: api.streamSimple,
+	};
+}
+
+function createCatalogConfig(options: NanProviderOptions = {}): {
+	getModels(): ProviderModelConfig[];
+	refreshModels(context: RefreshModelsContext): Promise<void>;
+} {
 	let catalog = cloneCatalog(OFFLINE_MODELS);
 	let catalogKey: string | undefined;
 	let credentialRevision = 0;
 	const fetchImpl = options.fetchImpl ?? globalThis.fetch;
 
 	return {
-		name: "NaN",
-		baseUrl: NAN_PROVIDER_BASE_URL,
-		api: "openai-completions",
-		apiKey: "$NAN_API_KEY",
-		authHeader: true,
-		models: cloneCatalog(catalog),
+		// One source of truth lets Pi snapshot the new catalog inside publish.update.
+		getModels: () => cloneCatalog(catalog),
 		refreshModels: async (context: RefreshModelsContext) => {
 			const apiKey = context.credential?.type === "api_key" ? context.credential.key : undefined;
 			if (apiKey !== catalogKey) {
@@ -127,7 +172,7 @@ export function createNanProviderConfig(options: NanProviderOptions = {}): Provi
 			}
 			const revision = credentialRevision;
 			if (!context.allowNetwork || context.signal.aborted || typeof fetchImpl !== "function") {
-				return cloneCatalog(catalog);
+				return;
 			}
 
 			const ids = await fetchLiveModelIds({
@@ -137,11 +182,12 @@ export function createNanProviderConfig(options: NanProviderOptions = {}): Provi
 				timeoutMs: options.timeoutMs ?? NAN_MODELS_TIMEOUT_MS,
 			});
 			if (revision !== credentialRevision || ids === undefined || context.signal.aborted) {
-				return cloneCatalog(catalog);
+				return;
 			}
 
-			catalog = knownChatModels(ids);
-			return cloneCatalog(catalog);
+			await context.publish({ update: () => {
+				if (revision === credentialRevision && !context.signal.aborted) catalog = knownChatModels(ids);
+			} });
 		},
 	};
 }

@@ -299,19 +299,36 @@ export interface CollectBillableOptions {
 	readonly range?: BillableRange;
 }
 
-/** Read every parent session in the range into the report's inputs. Streamed and off the render path. */
+/** Run `fn` over `items` with at most `limit` in flight, preserving order. */
+async function mapBounded<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+	const results: R[] = new Array(items.length);
+	let next = 0;
+	const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+		while (true) {
+			const index = next++;
+			if (index >= items.length) return;
+			results[index] = await fn(items[index]!);
+		}
+	});
+	await Promise.all(workers);
+	return results;
+}
+
+/** How many transcripts the collection reads at once. Bounded so a long date range cannot open every file. */
+export const BILLABLE_READ_CONCURRENCY = 4;
+
+/** Read every parent session in the range into the report's inputs. Streamed, bounded and off the render path. */
 export async function collectBillableSessions(options: CollectBillableOptions): Promise<BillableSessionInput[]> {
 	const range = options.range ?? { from: null, to: null };
 	const files = await listParentTranscripts(options.agentHome, range);
-	const sessions: BillableSessionInput[] = [];
-	for (const file of files) {
+	const sessions = await mapBounded(files, BILLABLE_READ_CONCURRENCY, async (file): Promise<BillableSessionInput> => {
 		const sessionId = file.replace(/^.*_/, "").replace(/\.jsonl$/, "");
 		const read = await readTranscript(file, { source: "parent", sessionId });
 		const cost = foldSessionCost(read.records.map((record) => record.cost));
 		const timeline = await readTimeline(file);
 		const first = read.records[0]?.timestamp;
 		const last = read.records[read.records.length - 1]?.timestamp;
-		sessions.push({
+		return {
 			sessionId,
 			project: await sessionProject(file),
 			startedAt: first ?? fileStartedAt(file) ?? 0,
@@ -323,7 +340,7 @@ export async function collectBillableSessions(options: CollectBillableOptions): 
 			subagentMs: await subagentWallClock(options.agentHome, sessionId),
 			costNanoUsd: cost.nanoUsd,
 			costProvenance: cost.complete ? "measured" : "partial",
-		});
-	}
+		};
+	});
 	return sessions;
 }

@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
 	billableEnabled,
 	buildBillableReport,
 	billableAmount,
 	BILLABLE_PROVENANCE,
+	BILLABLE_READ_CONCURRENCY,
 	BILLABLE_SCHEMA,
+	collectBillableSessions,
 	defaultBillableRange,
 	parseRounding,
 	readBillableConfig,
@@ -151,4 +156,30 @@ test("the billable feature is opt-in", () => {
 test("defaultBillableRange spans the requested days up to now", () => {
 	assert.deepEqual(defaultBillableRange(BASE, 7), { from: BASE - 7 * 24 * HOUR, to: BASE });
 	assert.deepEqual(defaultBillableRange(BASE, 0), { from: BASE, to: BASE });
+});
+
+test("the collection reads every session in the range, in order, with bounded concurrency", async () => {
+	const root = mkdtempSync(join(tmpdir(), "gentle-billable-"));
+	try {
+		const dir = join(root, "sessions", "--proj--");
+		mkdirSync(dir, { recursive: true });
+		for (const [stamp, sessionId] of [
+			["2026-09-01T00-00-00-000Z", "s1"],
+			["2026-09-02T00-00-00-000Z", "s2"],
+			["2026-09-03T00-00-00-000Z", "s3"],
+		] as const) {
+			const iso = `${stamp.slice(0, 10)}T${stamp.slice(11, 13)}:${stamp.slice(14, 16)}:${stamp.slice(17, 19)}.${stamp.slice(20, 23)}Z`;
+			writeFileSync(
+				join(dir, `${stamp}_${sessionId}.jsonl`),
+				`${JSON.stringify({ type: "session", id: sessionId, timestamp: iso, cwd: "/proj" })}\n${JSON.stringify({ type: "message", timestamp: iso, message: { role: "assistant", model: "m", provider: "p", usage: { input: 1, output: 1, totalTokens: 2, cost: { total: 0.001 } } } })}\n`,
+				"utf8",
+			);
+		}
+		const sessions = await collectBillableSessions({ agentHome: root });
+		assert.deepEqual(sessions.map((session) => session.sessionId), ["s1", "s2", "s3"], "order is preserved across concurrent reads");
+		assert.equal(sessions.every((session) => session.project === "proj"), true);
+		assert.ok(BILLABLE_READ_CONCURRENCY > 0 && BILLABLE_READ_CONCURRENCY <= 16, "a bounded, positive concurrency");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });

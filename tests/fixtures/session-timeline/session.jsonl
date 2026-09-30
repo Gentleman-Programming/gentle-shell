@@ -1,0 +1,9 @@
+{"type":"session","version":3,"id":"fixture-timeline","timestamp":"2026-09-29T10:00:00.000Z","cwd":"/proj"}
+{"type":"message","id":"u1","parentId":null,"timestamp":"2026-09-29T10:00:00.000Z","message":{"role":"user","content":"go"}}
+{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-09-29T10:00:02.000Z","message":{"role":"assistant","model":"m1","provider":"p1","stopReason":"toolUse","content":[{"type":"thinking"},{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"cd /proj && git status"}}]}}
+{"type":"message","id":"r1","parentId":"a1","timestamp":"2026-09-29T10:00:04.000Z","message":{"role":"toolResult","toolCallId":"c1","toolName":"bash","isError":false,"content":[{"type":"text","text":"clean"}]}}
+{"type":"message","id":"a2","parentId":"r1","timestamp":"2026-09-29T10:00:06.000Z","message":{"role":"assistant","model":"m1","provider":"p1","stopReason":"toolUse","content":[{"type":"toolCall","id":"c2","name":"bash","arguments":{"command":"cd /proj && pnpm test"}},{"type":"toolCall","id":"c3","name":"read","arguments":{"path":"/proj/x.ts"}}]}}
+{"type":"message","id":"r2","parentId":"a2","timestamp":"2026-09-29T10:00:09.000Z","message":{"role":"toolResult","toolCallId":"c2","toolName":"bash","isError":false,"content":[{"type":"text","text":"ok"}]}}
+{"type":"message","id":"r3","parentId":"r2","timestamp":"2026-09-29T10:00:09.001Z","message":{"role":"toolResult","toolCallId":"c3","toolName":"read","isError":false,"content":[{"type":"text","text":"file"}]}}
+{"type":"message","id":"a3","parentId":"r3","timestamp":"2026-09-29T10:00:12.000Z","message":{"role":"assistant","model":"m2","provider":"p1","stopReason":"endTurn","content":[{"type":"text","text":"done"}]}}
+{"type":"message","id":"u2","parentId":"a3","timestamp":"2026-09-29T10:01:00.000Z","message":{"role":"user","content":"again"}}

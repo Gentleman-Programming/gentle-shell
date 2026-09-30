@@ -16,8 +16,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
+import { buildBillableReport, collectBillableSessions, defaultBillableRange, readBillableConfig, type BillableConfig, type BillableRange, type BillableSessionInput } from "../lib/billable-hours.ts";
 import { aggregateUsage, type UsageAggregate } from "../lib/session-aggregate.ts";
-import { exportStatisticsCsv, exportStatisticsJson, exportStatisticsMarkdown } from "../lib/session-export.ts";
+import { exportBillableCsv, exportBillableJson, exportBillableMarkdown, exportStatisticsCsv, exportStatisticsJson, exportStatisticsMarkdown } from "../lib/session-export.ts";
 import { parseTranscriptLine, readTranscript, type TranscriptTaskIdentity, type TranscriptUsageRecord } from "../lib/session-transcript.ts";
 import { readTimeline, type Timeline } from "../lib/session-timeline.ts";
 import { buildStatisticsModel, StatisticsView, type StatisticsStyle } from "../lib/statistics-view.ts";
@@ -25,6 +26,9 @@ import { buildStatisticsModel, StatisticsView, type StatisticsStyle } from "../l
 /** Distinct from `gentle:usage`, which owns provider subscription quota. */
 export const STATISTICS_COMMAND_NAME = "gentle:statistics";
 export const STATISTICS_COMMAND_DESCRIPTION = "Show this session's statistics: cost, subagents, models and the time split. Distinct from /gentle:usage (subscription quota).";
+/** A period report: the hours, the rate and the amount, next to the measured API cost. */
+export const BILLABLE_COMMAND_NAME = "gentle:billable";
+export const BILLABLE_COMMAND_DESCRIPTION = "Export a billable-hours report for a period (default: the last 7 days). Pass --days N to widen it. Rate, currency and rounding come from GENTLE_BILLABLE_RATE/CURRENCY/ROUNDING.";
 
 export interface StatisticsSnapshot {
 	readonly aggregate: UsageAggregate;
@@ -40,6 +44,10 @@ export interface StatisticsDeps {
 	readonly computeSnapshot?: (ctx: ExtensionContext) => Promise<StatisticsSnapshot>;
 	/** Override the export side effect (tests). Returns the path shown to the user. */
 	readonly exportSnapshot?: (snapshot: StatisticsSnapshot) => Promise<string>;
+	/** Billable config (tests, or a caller that resolved it elsewhere). */
+	readonly billableConfig?: BillableConfig;
+	/** Override the billable collection (tests). */
+	readonly collectBillable?: (options: { agentHome: string; range: BillableRange }) => Promise<BillableSessionInput[]>;
 }
 
 function defaultAgentHome(deps: StatisticsDeps): string {
@@ -204,8 +212,32 @@ export default function statistics(pi: ExtensionAPI, deps: StatisticsDeps = {}):
 		);
 	};
 
+	const runBillable = async (ctx: ExtensionContext, args: string): Promise<void> => {
+		const days = /--days[= ](\d+)/.exec(args);
+		const range = defaultBillableRange(now(), days ? Number(days[1]) : 7);
+		const config = deps.billableConfig ?? readBillableConfig(process.env);
+		try {
+			const sessions = await (deps.collectBillable ?? collectBillableSessions)({ agentHome, range });
+			const report = buildBillableReport(sessions, config, range, now());
+			const dir = join(agentHome, "gentle-statistics", "exports");
+			await mkdir(dir, { recursive: true });
+			const stamp = new Date(report.generatedAt).toISOString().replace(/[:.]/g, "-");
+			const base = join(dir, `billable-${stamp}`);
+			await writeFile(`${base}.md`, exportBillableMarkdown(report, { generatedAt: report.generatedAt }), "utf8");
+			await writeFile(`${base}.csv`, exportBillableCsv(report), "utf8");
+			await writeFile(`${base}.json`, exportBillableJson(report), "utf8");
+			ctx.ui.notify(`Billable report: ${report.totals.sessions} session(s), ${report.totals.billableMs / 3_600_000}h → ${base}.md`, "info");
+		} catch {
+			ctx.ui.notify("Billable report failed.", "warning");
+		}
+	};
+
 	pi.registerCommand(STATISTICS_COMMAND_NAME, {
 		description: STATISTICS_COMMAND_DESCRIPTION,
 		handler: async (_args, ctx) => openOverlay(ctx),
+	});
+	pi.registerCommand(BILLABLE_COMMAND_NAME, {
+		description: BILLABLE_COMMAND_DESCRIPTION,
+		handler: async (args, ctx) => runBillable(ctx, args),
 	});
 }

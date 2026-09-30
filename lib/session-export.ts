@@ -13,6 +13,7 @@
 
 import { NANO_USD_SCALE } from "./session-usage.ts";
 import type { CountFigure, FigureProvenance, MoneyFigure, TokenFigure, UsageAggregate, UsageBucket } from "./session-aggregate.ts";
+import type { BillableReport } from "./billable-hours.ts";
 
 export const STATISTICS_EXPORT_SCHEMA = "gentle-shell.statistics/v1";
 
@@ -175,4 +176,88 @@ export function exportStatisticsMarkdown(aggregate: UsageAggregate, options: Exp
 		"",
 	);
 	return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Billable hours (I9): the same renderer discipline, from the billable report.
+// ---------------------------------------------------------------------------
+
+function hours(ms: number): string {
+	const totalMinutes = Math.round(ms / 60_000);
+	const h = Math.floor(totalMinutes / 60);
+	const m = totalMinutes % 60;
+	if (h === 0) return `${m}m`;
+	return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
+function amountText(amount: number, currency: string): string {
+	return `${amount.toFixed(2)} ${currency}`;
+}
+
+function apiCostText(nanoUsd: number, provenance: FigureProvenance): string {
+	return `$${usd(nanoUsd)}${provenance === "partial" ? " (partial)" : ""}`;
+}
+
+function roundingText(policy: BillableReport["config"]["rounding"]): string {
+	return policy.mode === "none" ? "none" : `${policy.mode} ${policy.minutes} min`;
+}
+
+function periodText(report: BillableReport): string {
+	const at = (value: number | null) => (value === null ? "…" : new Date(value).toISOString().slice(0, 10));
+	return report.range.from === null && report.range.to === null ? "all sessions" : `${at(report.range.from)} → ${at(report.range.to)}`;
+}
+
+/** A human hours report: totals, per project, per session, and the measured/derived statement. */
+export function exportBillableMarkdown(report: BillableReport, options: ExportOptions = {}): string {
+	const lines: string[] = ["# Billable hours", ""];
+	if (options.generatedAt !== undefined) lines.push(`Generated: ${new Date(options.generatedAt).toISOString()}`, "");
+	lines.push(
+		`Period: ${periodText(report)}`,
+		`Rate: ${report.config.hourlyRate.toFixed(2)} ${report.config.currency}/h · rounding: ${roundingText(report.config.rounding)}`,
+		"",
+		"## Totals",
+		"",
+		"| Sessions | Wall clock | Billable | Amount | API cost |",
+		"| ---: | ---: | ---: | ---: | --- |",
+		`| ${report.totals.sessions} | ${hours(report.totals.wallClockMs)} | ${hours(report.totals.billableMs)} | ${amountText(report.totals.amount, report.config.currency)} | ${apiCostText(report.totals.costNanoUsd, report.totals.costProvenance)} |`,
+		"",
+		"## By project",
+		"",
+		"| Project | Sessions | Wall clock | Billable | Amount |",
+		"| --- | ---: | ---: | ---: | ---: |",
+	);
+	for (const project of report.projects) lines.push(`| ${project.project} | ${project.sessions} | ${hours(project.wallClockMs)} | ${hours(project.billableMs)} | ${amountText(project.amount, report.config.currency)} |`);
+	lines.push("", "## By session", "", "| Session | Project | Wall clock | Billable | Amount | API cost |", "| --- | --- | ---: | ---: | ---: | --- |");
+	for (const session of report.sessions) lines.push(`| ${session.sessionId} | ${session.project} | ${hours(session.wallClockMs)} | ${hours(session.billableMs)} | ${amountText(session.amount, report.config.currency)} | ${apiCostText(session.costNanoUsd, session.costProvenance)} |`);
+	lines.push("", "## Provenance", "", `- measured: ${report.provenance.measured}`, `- derived: ${report.provenance.derived}`, `- estimated: ${report.provenance.estimated}`, "");
+	return lines.join("\n");
+}
+
+const BILLABLE_CSV_COLUMNS = ["scope", "key", "project", "sessions", "wall_clock_ms", "billable_ms", "amount", "currency", "api_cost_usd", "api_cost_provenance"] as const;
+
+/** One row per scope, with the API cost's provenance alongside the billed amount. */
+export function exportBillableCsv(report: BillableReport): string {
+	const lines = [BILLABLE_CSV_COLUMNS.join(",")];
+	lines.push(["total", "", "", String(report.totals.sessions), String(report.totals.wallClockMs), String(report.totals.billableMs), report.totals.amount.toFixed(2), report.config.currency, usd(report.totals.costNanoUsd), report.totals.costProvenance].join(","));
+	for (const project of report.projects) lines.push(["project", csvField(project.project), csvField(project.project), String(project.sessions), String(project.wallClockMs), String(project.billableMs), project.amount.toFixed(2), report.config.currency, usd(project.costNanoUsd), project.costProvenance].join(","));
+	for (const session of report.sessions) lines.push(["session", csvField(session.sessionId), csvField(session.project), "1", String(session.wallClockMs), String(session.billableMs), session.amount.toFixed(2), report.config.currency, usd(session.costNanoUsd), session.costProvenance].join(","));
+	return `${lines.join("\n")}\n`;
+}
+
+/** The versioned billable envelope. Only the report's own fields are read, so an extra field cannot leak. */
+export function exportBillableJson(report: BillableReport, options: ExportOptions = {}): string {
+	return `${JSON.stringify(
+		{
+			schema: report.schema,
+			generatedAt: options.generatedAt ?? report.generatedAt,
+			config: report.config,
+			range: report.range,
+			totals: report.totals,
+			projects: report.projects,
+			sessions: report.sessions,
+			provenance: report.provenance,
+		},
+		null,
+		2,
+	)}\n`;
 }

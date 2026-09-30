@@ -15,6 +15,7 @@ import {
 	renderUsageBar,
 	renderUsagePanel,
 	SUPPORTED_USAGE_PROVIDERS,
+	usageScopeProviders,
 	UsageSourceRegistry,
 	USAGE_SOURCE_SCHEMA,
 	UsageStore,
@@ -571,4 +572,76 @@ test("parseUsageHeaders picks whichever provider the headers belong to", () => {
 	assert.equal(parseUsageHeaders({ "x-codex-primary-used-percent": "10", "x-codex-primary-window-minutes": "300" }, NOW)?.provider, "openai-codex");
 	assert.equal(parseUsageHeaders({ "anthropic-ratelimit-unified-5h-utilization": "0.1" }, NOW)?.provider, "anthropic");
 	assert.equal(parseUsageHeaders({ "content-type": "application/json" }, NOW), undefined);
+});
+
+// Targeted providers: the session's own provider plus every provider the
+// active profile's subagent routing names. A qualified ref ("provider/id")
+// resolves directly; a bare model id resolves only through the registry
+// callback, so an ambiguous ref is dropped instead of guessed.
+
+test("usageScopeProviders targets the main provider and every qualified routing provider", () => {
+	assert.deepEqual(
+		usageScopeProviders("openai-codex", ["nan/glm5.3", "openai-codex/gpt-5.5", undefined], undefined),
+		["openai-codex", "nan"],
+	);
+});
+
+test("usageScopeProviders resolves bare model ids only through the registry callback", () => {
+	assert.deepEqual(usageScopeProviders(undefined, ["glm5.3"], (id) => (id === "glm5.3" ? "nan" : undefined)), ["nan"]);
+	assert.deepEqual(
+		usageScopeProviders(undefined, ["glm5.3", "mystery"], () => undefined),
+		[],
+		"an id the registry cannot resolve to exactly one provider is dropped, never guessed",
+	);
+});
+
+function scopePanel(usages: ProviderUsage[], providers: string[], failed: string[] = []): string[] {
+	return renderUsagePanel(usages, plainTheme, 100, NOW, { provider: "openai-codex" }, undefined, {
+		providers,
+		failed: new Set(failed),
+	});
+}
+
+test("renderUsagePanel draws the targeted scope in scope order with no-data and failed-fetch notes", () => {
+	const codex = parseCodexUsage(CODEX_PAYLOAD, NOW);
+	const nan = parseNanQuota(NAN_QUOTA, NOW);
+	const lines = scopePanel([nan, codex], ["openai-codex", "nan", "acme-cloud"], ["acme-cloud"]);
+	assert.match(lines[0], /^✿ openai-codex · pro/);
+	assert.match(lines.find((line) => line.startsWith("nan")) ?? "", /^nan · /, "a targeted provider with data renders like any other");
+	assert.match(lines.find((line) => line.startsWith("acme-cloud")) ?? "", /^acme-cloud · fetch failed · r to retry$/);
+});
+
+test("renderUsagePanel keeps a headers-only targeted provider pending, never a false failure", () => {
+	const pending = (providers: string[], failed: string[] = []) =>
+		renderUsagePanel([], plainTheme, 100, NOW, undefined, undefined, { providers, failed: new Set(failed) });
+	assert.deepEqual(
+		pending(["anthropic"]),
+		["anthropic · usage arrives with the first response"],
+	);
+	assert.deepEqual(
+		pending(["openai-codex"]),
+		["openai-codex · no usage yet · r to fetch"],
+		"an unattempted fetch still says pending, not failed",
+	);
+	assert.deepEqual(
+		pending(["openai-codex"], ["openai-codex"]),
+		["openai-codex · fetch failed · r to retry"],
+	);
+});
+
+test("renderUsagePanel never presents a provider outside the current scope after a profile switch", () => {
+	const codex = parseCodexUsage(CODEX_PAYLOAD, NOW);
+	const nan = parseNanQuota(NAN_QUOTA, NOW);
+	const lines = scopePanel([nan, codex], ["openai-codex"]);
+	assert.ok(lines.some((line) => line.startsWith("✿ openai-codex · pro")));
+	assert.equal(lines.some((line) => line.startsWith("nan ·")), false, "the previous profile's provider is not current scope");
+});
+
+test("renderUsagePanel renders the failure note beside a retained snapshot, and only after a real failure", () => {
+	const codex = parseCodexUsage(CODEX_PAYLOAD, NOW);
+	const afterFailure = scopePanel([codex], ["openai-codex"], ["openai-codex"]);
+	assert.match(afterFailure[0], /^✿ openai-codex · pro/, "the retained snapshot stays the provider's headline");
+	assert.match(afterFailure[1], /^ {2}codex week /, "the last good snapshot survives the failed refresh");
+	assert.ok(afterFailure.some((line) => /^ {2}fetch failed · r to retry$/.test(line)), "the failure is visible beside the retained snapshot");
+	assert.equal(scopePanel([codex], ["openai-codex"]).some((line) => line.includes("fetch failed")), false, "a provider whose latest refresh succeeded carries no failure note");
 });

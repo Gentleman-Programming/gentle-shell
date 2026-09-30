@@ -620,20 +620,32 @@ test("checkPeerVersionPin passes for a matching pin", () => {
 	assert.deepEqual(result, { ok: true, pinned: ">=0.85.1" });
 });
 
+test("Pi baseline and host peers follow the 0.99.1 package contract", () => {
+	const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+	assert.equal(MIN_PI_VERSION, "0.99.1");
+	assert.equal(pkg.engines.node, ">=22.19.0");
+	for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-tui"]) {
+		assert.equal(pkg.peerDependencies[name], "*");
+		assert.equal(pkg.peerDependenciesMeta[name].optional, true);
+		assert.equal(pkg.dependencies[name], undefined);
+		assert.equal(pkg.devDependencies[name], "0.99.1");
+	}
+});
+
 test("checkPiVersion accepts a version equal to the minimum", () => {
-	assert.deepEqual(checkPiVersion("0.85.1"), { ok: true, version: "0.85.1" });
+	assert.deepEqual(checkPiVersion("0.99.1"), { ok: true, version: "0.99.1" });
 });
 
 test("checkPiVersion accepts a version above the minimum", () => {
-	assert.deepEqual(checkPiVersion("0.86.0"), { ok: true, version: "0.86.0" });
+	assert.deepEqual(checkPiVersion("0.100.0"), { ok: true, version: "0.100.0" });
 });
 
 test("checkPiVersion accepts a v-prefixed version", () => {
-	assert.deepEqual(checkPiVersion("v0.85.1"), { ok: true, version: "0.85.1" });
+	assert.deepEqual(checkPiVersion("v0.99.1"), { ok: true, version: "0.99.1" });
 });
 
 test("checkPiVersion accepts a prerelease suffix at the minimum", () => {
-	assert.deepEqual(checkPiVersion("pi version 0.85.1-rc.2"), { ok: true, version: "0.85.1" });
+	assert.deepEqual(checkPiVersion("pi version 0.99.1-rc.2"), { ok: true, version: "0.99.1" });
 });
 
 test("checkPiVersion rejects a version below the minimum and names both versions", () => {
@@ -642,7 +654,7 @@ test("checkPiVersion rejects a version below the minimum and names both versions
 	if (result.ok) throw new Error("expected a failing result");
 	assert.equal(result.version, "0.85.0");
 	assert.match(result.message, /0\.85\.0/);
-	assert.match(result.message, /0\.85\.1/);
+	assert.match(result.message, /0\.99\.1/);
 });
 
 test("checkPiVersion rejects a prerelease below the minimum", () => {
@@ -656,7 +668,7 @@ test("checkPiVersion reports unparsable output with the raw text and the minimum
 	if (result.ok) throw new Error("expected a failing result");
 	assert.equal(result.version, undefined);
 	assert.match(result.message, /not a version/);
-	assert.match(result.message, /0\.85\.1/);
+	assert.match(result.message, /0\.99\.1/);
 });
 
 test("checkPiVersion accepts a custom minimum", () => {

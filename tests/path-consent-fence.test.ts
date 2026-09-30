@@ -63,6 +63,8 @@ test("registeredRootsForSession reads only this session's worktree entries", () 
 	session.appendCustomEntry(SESSION_WORKTREE_ENTRY, { sessionId: "other", root: "/wt/b", evidence: "tool:read" });
 	session.appendCustomEntry("other-type", {});
 	assert.deepEqual(registeredRootsForSession(session, session.getSessionId()), ["/wt/a"]);
+	// Harness fakes may expose getSessionId without durable entries.
+	assert.deepEqual(registeredRootsForSession({ getSessionId: () => "s" } as never, "s"), []);
 });
 
 test("evaluatePathFence decides pass, confirm, and headless block", (t) => {

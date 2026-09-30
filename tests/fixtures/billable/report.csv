@@ -1,0 +1,5 @@
+scope,key,project,sessions,wall_clock_ms,billable_ms,amount,currency,api_cost_usd,api_cost_provenance
+total,,,2,16200000,16200000,225.00,USD,0.500000,partial
+project,gentle-shell,gentle-shell,2,16200000,16200000,225.00,USD,0.500000,partial
+session,01a0ed23,gentle-shell,1,10800000,10800000,150.00,USD,0.500000,measured
+session,01a0ed55,gentle-shell,1,5400000,5400000,75.00,USD,0.000000,partial

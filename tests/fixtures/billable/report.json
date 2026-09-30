@@ -1,0 +1,72 @@
+{
+  "schema": "gentle-shell.billable-hours/v1",
+  "generatedAt": 0,
+  "config": {
+    "hourlyRate": 50,
+    "currency": "USD",
+    "rounding": {
+      "mode": "nearest",
+      "minutes": 6
+    }
+  },
+  "range": {
+    "from": 1788220800000,
+    "to": 1788307200000
+  },
+  "totals": {
+    "sessions": 2,
+    "wallClockMs": 16200000,
+    "billableMs": 16200000,
+    "amount": 225,
+    "costNanoUsd": 500000000,
+    "costProvenance": "partial"
+  },
+  "projects": [
+    {
+      "project": "gentle-shell",
+      "sessions": 2,
+      "wallClockMs": 16200000,
+      "billableMs": 16200000,
+      "amount": 225,
+      "costNanoUsd": 500000000,
+      "costProvenance": "partial"
+    }
+  ],
+  "sessions": [
+    {
+      "sessionId": "01a0ed23",
+      "project": "gentle-shell",
+      "startedAt": 1788220800000,
+      "endedAt": 1788231600000,
+      "wallClockMs": 10800000,
+      "toolMs": 3600000,
+      "modelMs": 1800000,
+      "idleMs": 5400000,
+      "subagentMs": 1200000,
+      "costNanoUsd": 500000000,
+      "costProvenance": "measured",
+      "billableMs": 10800000,
+      "amount": 150
+    },
+    {
+      "sessionId": "01a0ed55",
+      "project": "gentle-shell",
+      "startedAt": 1788235200000,
+      "endedAt": 1788240600000,
+      "wallClockMs": 5400000,
+      "toolMs": 2400000,
+      "modelMs": 1200000,
+      "idleMs": 1800000,
+      "subagentMs": 0,
+      "costNanoUsd": 0,
+      "costProvenance": "partial",
+      "billableMs": 5400000,
+      "amount": 75
+    }
+  ],
+  "provenance": {
+    "measured": "session and subagent wall-clock boundaries",
+    "derived": "per-tool duration and model latency from timestamp pairing",
+    "estimated": "idle is an estimate, never a measured time"
+  }
+}

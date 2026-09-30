@@ -2,6 +2,12 @@ import * as piAi from "@earendil-works/pi-ai";
 import type { Provider, ProviderStreams, RefreshModelsContext } from "@earendil-works/pi-ai";
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 
+// Pi 0.99 made ProviderModelConfig a chat/image/classifier union. This provider serves chat
+// models only, and pi's registration expects Model<"openai-completions">[], so the catalog is
+// typed as the chat member: the image and classifier members carry no reasoning, contextWindow
+// or maxTokens, which the union would have required here.
+type ChatModelConfig = Extract<ProviderModelConfig, { reasoning: boolean }>;
+
 export const NAN_PROVIDER_ID = "nan";
 export const NAN_PROVIDER_BASE_URL = "https://api.nan.builders/v1";
 export const NAN_MODELS_TIMEOUT_MS = 3_000;
@@ -18,7 +24,7 @@ const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 // Decimal bounds conservatively interpret the documented 1M/262K/131K labels.
 // Pi models text/image inputs only; MiMo's documented audio input is not advertised.
 // Where no output maximum is published, 8,192 is our conservative configured cap for coding with reasoning, not NaN's limit.
-const CHAT_MODELS: ProviderModelConfig[] = [
+const CHAT_MODELS: ChatModelConfig[] = [
 	{ id: "glm5.3", name: "GLM 5.3", input: ["text"], contextWindow: 1_000_000 },
 	{ id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", input: ["text", "image"], contextWindow: 1_000_000 },
 	{ id: "glm5.3-flash", name: "GLM 5.3 Flash", input: ["text", "image"], contextWindow: 1_000_000 },
@@ -28,7 +34,7 @@ const CHAT_MODELS: ProviderModelConfig[] = [
 	{ id: "qwen3.6", name: "Qwen 3.6", input: ["text", "image"], contextWindow: 262_000 },
 ].map((model) => ({
 	...model,
-	input: model.input as ProviderModelConfig["input"],
+	input: model.input as ChatModelConfig["input"],
 	api: "openai-completions",
 	reasoning: true,
 	cost: ZERO_COST,
@@ -39,11 +45,11 @@ const CHAT_MODELS: ProviderModelConfig[] = [
 // A successful live catalog remains authoritative for the credential that fetched it.
 const OFFLINE_MODELS = CHAT_MODELS;
 
-function cloneModel(model: ProviderModelConfig): ProviderModelConfig {
+function cloneModel(model: ChatModelConfig): ChatModelConfig {
 	return { ...model, input: [...model.input], cost: { ...model.cost } };
 }
 
-function knownChatModels(ids: readonly string[]): ProviderModelConfig[] {
+function knownChatModels(ids: readonly string[]): ChatModelConfig[] {
 	return ids.flatMap((id) => {
 		const known = CHAT_MODELS.find((model) => model.id === id);
 		return known ? [cloneModel(known)] : [];
@@ -102,7 +108,7 @@ async function fetchLiveModelIds(options: {
 	}
 }
 
-function cloneCatalog(models: readonly ProviderModelConfig[]): ProviderModelConfig[] {
+function cloneCatalog(models: readonly ChatModelConfig[]): ChatModelConfig[] {
 	return models.map(cloneModel);
 }
 
@@ -151,7 +157,7 @@ export function createNanProviderConfig(options: NanProviderOptions = {}): Provi
 }
 
 function createCatalogConfig(options: NanProviderOptions = {}): {
-	getModels(): ProviderModelConfig[];
+	getModels(): ChatModelConfig[];
 	refreshModels(context: RefreshModelsContext): Promise<void>;
 } {
 	let catalog = cloneCatalog(OFFLINE_MODELS);

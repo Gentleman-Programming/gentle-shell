@@ -1,0 +1,8 @@
+scope,key,turns,cost_usd,cost_provenance,cost_absent_components,tokens_input,tokens_output,tokens_cache_read,tokens_cache_write,tokens_reasoning,tokens_total,tokens_provenance,cache_read_share,cache_write_share,reasoning_share_of_output,output_to_total,cost_per_turn,tokens_per_turn,ratios_provenance
+session,,3,0.003000,partial,1,300,100,40,10,28,450,measured,0.088889,0.022222,0.280000,0.222222,0.001000,150.000000,derived
+model,p1/m1,2,0.001000,partial,1,100,40,30,5,8,175,measured,0.171429,0.028571,0.200000,0.228571,0.000500,87.500000,derived
+model,p1/m2,1,0.002000,measured,0,200,60,10,5,20,275,measured,0.036364,0.018182,0.333333,0.218182,0.002000,275.000000,derived
+agent_class,gentle-ai-worker,1,0.002000,measured,0,200,60,10,5,20,275,measured,0.036364,0.018182,0.333333,0.218182,0.002000,275.000000,derived
+agent_class,orchestrator,2,0.001000,partial,1,100,40,30,5,8,175,measured,0.171429,0.028571,0.200000,0.228571,0.000500,87.500000,derived
+subagent,S1,1,0.002000,measured,0,200,60,10,5,20,275,measured,0.036364,0.018182,0.333333,0.218182,0.002000,275.000000,derived
+project,projA,3,0.003000,partial,1,300,100,40,10,28,450,measured,0.088889,0.022222,0.280000,0.222222,0.001000,150.000000,derived

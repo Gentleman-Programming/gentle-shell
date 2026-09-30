@@ -1,0 +1,217 @@
+{
+  "schema": "gentle-shell.statistics/v1",
+  "session": {
+    "asOf": 0,
+    "turns": 3,
+    "cost": {
+      "nanoUsd": 3000000,
+      "provenance": "partial",
+      "absent": 1
+    },
+    "tokens": {
+      "input": 300,
+      "output": 100,
+      "cacheRead": 40,
+      "cacheWrite": 10,
+      "reasoning": 28,
+      "total": 450,
+      "provenance": "measured"
+    },
+    "ratios": {
+      "cacheReadShare": 0.08888888888888889,
+      "cacheWriteShare": 0.022222222222222223,
+      "reasoningShareOfOutput": 0.28,
+      "outputToTotal": 0.2222222222222222,
+      "costPerTurn": 0.001,
+      "tokensPerTurn": 150,
+      "provenance": "derived"
+    },
+    "counts": {
+      "sessions": {
+        "value": 1,
+        "provenance": "measured"
+      },
+      "subagents": {
+        "value": 1,
+        "provenance": "measured"
+      },
+      "toolCalls": {
+        "value": 7,
+        "provenance": "partial"
+      }
+    }
+  },
+  "perModel": [
+    {
+      "turns": 2,
+      "cost": {
+        "nanoUsd": 1000000,
+        "provenance": "partial",
+        "absent": 1
+      },
+      "tokens": {
+        "input": 100,
+        "output": 40,
+        "cacheRead": 30,
+        "cacheWrite": 5,
+        "reasoning": 8,
+        "total": 175,
+        "provenance": "measured"
+      },
+      "ratios": {
+        "cacheReadShare": 0.17142857142857143,
+        "cacheWriteShare": 0.02857142857142857,
+        "reasoningShareOfOutput": 0.2,
+        "outputToTotal": 0.22857142857142856,
+        "costPerTurn": 0.0005,
+        "tokensPerTurn": 87.5
+      },
+      "model": "m1",
+      "provider": "p1"
+    },
+    {
+      "turns": 1,
+      "cost": {
+        "nanoUsd": 2000000,
+        "provenance": "measured",
+        "absent": 0
+      },
+      "tokens": {
+        "input": 200,
+        "output": 60,
+        "cacheRead": 10,
+        "cacheWrite": 5,
+        "reasoning": 20,
+        "total": 275,
+        "provenance": "measured"
+      },
+      "ratios": {
+        "cacheReadShare": 0.03636363636363636,
+        "cacheWriteShare": 0.01818181818181818,
+        "reasoningShareOfOutput": 0.3333333333333333,
+        "outputToTotal": 0.21818181818181817,
+        "costPerTurn": 0.002,
+        "tokensPerTurn": 275
+      },
+      "model": "m2",
+      "provider": "p1"
+    }
+  ],
+  "perAgentClass": [
+    {
+      "turns": 1,
+      "cost": {
+        "nanoUsd": 2000000,
+        "provenance": "measured",
+        "absent": 0
+      },
+      "tokens": {
+        "input": 200,
+        "output": 60,
+        "cacheRead": 10,
+        "cacheWrite": 5,
+        "reasoning": 20,
+        "total": 275,
+        "provenance": "measured"
+      },
+      "ratios": {
+        "cacheReadShare": 0.03636363636363636,
+        "cacheWriteShare": 0.01818181818181818,
+        "reasoningShareOfOutput": 0.3333333333333333,
+        "outputToTotal": 0.21818181818181817,
+        "costPerTurn": 0.002,
+        "tokensPerTurn": 275
+      },
+      "agentClass": "gentle-ai-worker"
+    },
+    {
+      "turns": 2,
+      "cost": {
+        "nanoUsd": 1000000,
+        "provenance": "partial",
+        "absent": 1
+      },
+      "tokens": {
+        "input": 100,
+        "output": 40,
+        "cacheRead": 30,
+        "cacheWrite": 5,
+        "reasoning": 8,
+        "total": 175,
+        "provenance": "measured"
+      },
+      "ratios": {
+        "cacheReadShare": 0.17142857142857143,
+        "cacheWriteShare": 0.02857142857142857,
+        "reasoningShareOfOutput": 0.2,
+        "outputToTotal": 0.22857142857142856,
+        "costPerTurn": 0.0005,
+        "tokensPerTurn": 87.5
+      },
+      "agentClass": "orchestrator"
+    }
+  ],
+  "perSubagent": [
+    {
+      "turns": 1,
+      "cost": {
+        "nanoUsd": 2000000,
+        "provenance": "measured",
+        "absent": 0
+      },
+      "tokens": {
+        "input": 200,
+        "output": 60,
+        "cacheRead": 10,
+        "cacheWrite": 5,
+        "reasoning": 20,
+        "total": 275,
+        "provenance": "measured"
+      },
+      "ratios": {
+        "cacheReadShare": 0.03636363636363636,
+        "cacheWriteShare": 0.01818181818181818,
+        "reasoningShareOfOutput": 0.3333333333333333,
+        "outputToTotal": 0.21818181818181817,
+        "costPerTurn": 0.002,
+        "tokensPerTurn": 275
+      },
+      "taskId": "S1",
+      "agent": "gentle-ai-worker",
+      "label": "build",
+      "status": "completed",
+      "toolCalls": {
+        "value": 7,
+        "provenance": "measured"
+      }
+    }
+  ],
+  "perProject": [
+    {
+      "turns": 3,
+      "cost": {
+        "nanoUsd": 3000000,
+        "provenance": "partial",
+        "absent": 1
+      },
+      "tokens": {
+        "input": 300,
+        "output": 100,
+        "cacheRead": 40,
+        "cacheWrite": 10,
+        "reasoning": 28,
+        "total": 450,
+        "provenance": "measured"
+      },
+      "ratios": {
+        "cacheReadShare": 0.08888888888888889,
+        "cacheWriteShare": 0.022222222222222223,
+        "reasoningShareOfOutput": 0.28,
+        "outputToTotal": 0.2222222222222222,
+        "costPerTurn": 0.001,
+        "tokensPerTurn": 150
+      },
+      "project": "projA"
+    }
+  ]
+}

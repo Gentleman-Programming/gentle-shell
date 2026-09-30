@@ -6526,7 +6526,7 @@ function isRetainedNativeCaptureRoute(selection: RetainedNativeStatusSelection |
 
 function retainNativeCaptureRoutes(selections: Map<string, RetainedNativeStatusSelection>, workspaceRoot: string, status: ReviewStatusV3, baseRef: string | undefined): void {
 	const lineageId = status.authority?.lineageId;
-	if (status.applicability !== "current_target" || !isCanonicalProcessString(lineageId) || isTerminalReviewAuthorityState(status.authority?.state)) return;
+	if (!canOfferNativeCaptureBindings(status) || !isCanonicalProcessString(lineageId)) return;
 	const routes = (status.nextTransition?.kind === "collect" ? status.nextTransition.collect?.inputs ?? [] : []).map((input) => ({ key: reviewCaptureSelectionStorageKey(canonicalReviewCaptureBinding(input)), route: Object.freeze({ workspaceRoot, lineageId, ...(baseRef === undefined ? {} : { baseRef, committedOnly: true as const }) }) }));
 	for (const { key, route } of routes) {
 		const existing = selections.get(key);
@@ -6540,6 +6540,12 @@ function retainNativeCaptureRoutes(selections: Map<string, RetainedNativeStatusS
 function readRetainedNativeCaptureRoute(selections: Map<string, RetainedNativeStatusSelection>, collectBinding: string): RetainedNativeCaptureRoute | undefined {
 	const selection = selections.get(reviewCaptureSelectionStorageKey(collectBinding));
 	return isRetainedNativeCaptureRoute(selection) ? selection : undefined;
+}
+
+function trustedNativeCaptureBaseRef(route: RetainedNativeCaptureRoute | undefined, candidateViews: CandidateViewRegistry | null, cwd: string, lineageId: string): string | undefined {
+	if (route !== undefined) return route.baseRef;
+	const target = candidateViews?.hasProjection(lineageId, cwd) ? candidateViews.resolveProjection(lineageId, cwd) : undefined;
+	return target?.committedOnly === true ? nativeCommittedRangeSelector(target) : undefined;
 }
 
 function isTerminalReviewAuthorityState(state: string | undefined): boolean { return state === "invalidated" || state === "approved" || state === "escalated"; }
@@ -7217,8 +7223,13 @@ const INSPECT_UNTRACKED_SELECTION_NEXT_STEP =
 	'The intended-untracked selection is required before START. The expected_untracked_inventory digest covers untracked path names only (git ls-files --others --exclude-standard); nothing is read or hashed at inventory time, and file content is hashed only for selected paths at candidate freeze. Either call gentle_review with operation "select-intended-untracked" passing this selectionBinding and intendedUntracked ([] excludes every eligible path, a subset includes only those paths), or call inspect again with untrackedScope ("exclude", or "select" with intendedUntracked) to resolve the round trip in one call. To keep a path out of the inventory permanently, ignore it through .gitignore or .git/info/exclude.';
 
 interface PublicReviewCaptureBinding { collectBinding: string; }
+function canOfferNativeCaptureBindings(status: ReviewStatusV3): boolean {
+	return status.applicability === "current_target" && isCanonicalProcessString(status.authority?.lineageId)
+		&& isCanonicalProcessString(status.targetIdentity) && !isTerminalReviewAuthorityState(status.authority?.state);
+}
+
 function publicReviewCaptureBindings(status: ReviewStatusV3): readonly PublicReviewCaptureBinding[] {
-	if (status.nextTransition?.kind !== "collect") return [];
+	if (!canOfferNativeCaptureBindings(status) || status.nextTransition?.kind !== "collect") return [];
 	return (status.nextTransition.collect?.inputs ?? []).filter((input) => input.captureOperation !== "external.select_intended_untracked").map((input) => ({ collectBinding: canonicalReviewCaptureBinding(input) }));
 }
 
@@ -7249,7 +7260,7 @@ function selectExactReviewCapture(
 		!isCanonicalProcessString(lineageId) ||
 		!isCanonicalProcessString(statusLineageId) ||
 		!isCanonicalProcessString(statusTargetIdentity) ||
-		status.applicability !== "current_target" ||
+		!canOfferNativeCaptureBindings(status) ||
 		statusLineageId !== lineageId
 	) {
 		return captureBindingRejected("current STATUS does not offer one non-empty matching lineage and target identity");
@@ -7402,16 +7413,17 @@ async function executeReviewCaptureOperation(
 	}
 	const canonicalBinding = parseCanonicalReviewCaptureBinding(parameters.collectBinding);
 	const cwd = resolveReviewControllerWorkspaceRoot(parameters.workspaceRoot, sessionCwd, candidateViews, parameters.lineageId);
-	const route = readRetainedNativeCaptureRoute(retainedUntrackedSelections, canonicalBinding);
-	if (requireRegisteredRoute && (route === undefined || route.workspaceRoot !== cwd || route.lineageId !== parameters.lineageId)) {
-		return captureBindingRejected("collectBinding is unknown, expired, or belongs to a different session route");
+	let route = readRetainedNativeCaptureRoute(retainedUntrackedSelections, canonicalBinding);
+	if (requireRegisteredRoute && route !== undefined && (route.workspaceRoot !== cwd || route.lineageId !== parameters.lineageId)) {
+		return captureBindingRejected("collectBinding belongs to a different registered route");
 	}
+	const baseRef = trustedNativeCaptureBaseRef(route, candidateViews, cwd, parameters.lineageId);
 	let status: ReviewStatusV3;
 	try {
 		const negotiated = await negotiatedStatusForHostTransport(nativeReviewCli, {
 			cwd,
 			lineageId: parameters.lineageId,
-			...(route?.baseRef === undefined ? {} : { baseRef: route.baseRef, committedOnly: true }),
+			...(baseRef === undefined ? {} : { baseRef, committedOnly: true }),
 			...readRetainedNativeUntrackedSelection(retainedUntrackedSelections, cwd, parameters.lineageId),
 			...(signal === undefined ? {} : { signal }),
 		}, retainedUntrackedSelections, cwd);
@@ -7422,6 +7434,9 @@ async function executeReviewCaptureOperation(
 	}
 	const selected = selectExactReviewCapture(status, parameters.lineageId, canonicalBinding);
 	if (!isSelectedReviewCapture(selected)) return selected;
+	// Exact fresh native admission validates this routing snapshot independently
+	// of cache capacity. Carry its trusted selector into every downstream path.
+	route = { workspaceRoot: cwd, lineageId: parameters.lineageId, ...(baseRef === undefined ? {} : { baseRef, committedOnly: true }) };
 
 	// During correction the flow carries both the original authority target
 	// identity and a distinct provider-issued correction target identity
@@ -7565,13 +7580,14 @@ async function executeReviewCaptureGroupOperation(
 	const canonicalBindings = parameters.collectBindings.map((binding) => parseCanonicalReviewCaptureBinding(binding));
 	const cwd = resolveReviewControllerWorkspaceRoot(parameters.workspaceRoot, sessionCwd, candidateViews, parameters.lineageId);
 	const routes = canonicalBindings.map((binding) => readRetainedNativeCaptureRoute(retainedUntrackedSelections, binding));
-	const route = routes[0];
-	if (requireRegisteredRoute && (route === undefined || routes.some((candidate) => candidate === undefined || candidate.workspaceRoot !== cwd || candidate.lineageId !== parameters.lineageId || candidate.baseRef !== route.baseRef))) {
-		return captureGroupRejected("collectBindings are unknown, expired, or belong to different session routes");
+	let route = routes.find((candidate) => candidate !== undefined);
+	if (requireRegisteredRoute && routes.some((candidate) => candidate !== undefined && (candidate.workspaceRoot !== cwd || candidate.lineageId !== parameters.lineageId || candidate.baseRef !== route?.baseRef))) {
+		return captureGroupRejected("collectBindings belong to different registered routes");
 	}
+	const baseRef = trustedNativeCaptureBaseRef(route, candidateViews, cwd, parameters.lineageId);
 	const freshStatus = () => negotiatedStatusForHostTransport(nativeReviewCli, {
 		cwd, lineageId: parameters.lineageId,
-		...(route?.baseRef === undefined ? {} : { baseRef: route.baseRef, committedOnly: true }),
+		...(baseRef === undefined ? {} : { baseRef, committedOnly: true }),
 		...readRetainedNativeUntrackedSelection(retainedUntrackedSelections, cwd, parameters.lineageId),
 		...(signal === undefined ? {} : { signal }),
 	}, retainedUntrackedSelections, cwd);
@@ -7585,6 +7601,7 @@ async function executeReviewCaptureGroupOperation(
 	}
 	const group = selectExactReviewCaptureGroup(status, parameters.lineageId, canonicalBindings);
 	if (!("slots" in group && "binding" in group)) return group;
+	route = { workspaceRoot: cwd, lineageId: parameters.lineageId, ...(baseRef === undefined ? {} : { baseRef, committedOnly: true }) };
 	if (parameters.reviewerRunAcknowledged !== true) {
 		return {
 			tool: "gentle_review_capture_group",

@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { closeSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { conservativeOwnerDeathProofV1 } from "./review-lock.ts";
 
@@ -259,11 +259,46 @@ export function samePath(path: string, expected: string, platform: NodeJS.Platfo
 	return canonical(path) === canonical(expected);
 }
 
-function directory(path: string, privateMode = false, platform: NodeJS.Platform = process.platform): string {
+export class PosixCandidateOwnerParentPrivacyError extends Error {
+	constructor() {
+		super("Candidate owner parent privacy check failed");
+		this.name = "PosixCandidateOwnerParentPrivacyError";
+	}
+}
+
+export class PosixCandidateOwnerParentChmodIneffectiveError extends Error {
+	constructor() {
+		super("Candidate owner parent POSIX chmod attestation is ineffective");
+		this.name = "PosixCandidateOwnerParentChmodIneffectiveError";
+	}
+}
+
+function posixPrivateModeProbe(path: string): boolean {
+	const probe = join(path, `.gentle-ai-chmod-probe-${randomUUID()}`);
+	try {
+		mkdirSync(probe, { mode: 0o700 });
+		return (lstatSync(probe).mode & 0o777) === 0o700;
+	} catch {
+		return true;
+	} finally {
+		try { rmdirSync(probe); } catch {}
+	}
+}
+
+function directory(path: string, privateMode = false, platform: NodeJS.Platform = process.platform, classifyParentPrivacy = false): string {
 	const stat = lstatSync(path);
-	const uid = process.getuid?.();
-	if (!stat.isDirectory() || stat.isSymbolicLink() || !samePath(realpathSync(path), path, platform) ||
-		(privateMode && platform !== "win32" && (uid === undefined || stat.uid !== uid || (stat.mode & 0o077) !== 0))) throw new Error("Unsafe candidate owner directory");
+	if (!stat.isDirectory() || stat.isSymbolicLink() || !samePath(realpathSync(path), path, platform)) throw new Error("Unsafe candidate owner directory");
+	if (privateMode && platform !== "win32") {
+		const uid = process.getuid?.();
+		if (uid === undefined) throw new Error("Unsafe candidate owner directory");
+		if (stat.uid !== uid || (stat.mode & 0o077) !== 0) {
+			if (classifyParentPrivacy) {
+				if (stat.uid === uid && (stat.mode & 0o077) !== 0 && !posixPrivateModeProbe(path)) throw new PosixCandidateOwnerParentChmodIneffectiveError();
+				throw new PosixCandidateOwnerParentPrivacyError();
+			}
+			throw new Error("Unsafe candidate owner directory");
+		}
+	}
 	if (privateMode && platform === "win32") privateWindowsDacl(path, "directory", true);
 	return `${stat.dev}:${stat.ino}`;
 }
@@ -273,9 +308,10 @@ export function assertCandidateOwnerParent(commonDir: string, platform: NodeJS.P
 	const control = join(commonDir, "gentle-ai");
 	directory(control, false, platform);
 	const parent = join(commonDir, "gentle-ai", "candidate-views");
-	directory(parent, false, platform);
-	if (platform === "win32") privateWindowsCandidateOwnerBoundary(commonDir);
-	else directory(parent, true, platform);
+	if (platform === "win32") {
+		directory(parent, false, platform);
+		privateWindowsCandidateOwnerBoundary(commonDir);
+	} else directory(parent, true, platform, true);
 	return parent;
 }
 

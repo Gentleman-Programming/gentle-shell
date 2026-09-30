@@ -181,7 +181,23 @@ test("ambiguous or mutating shell commands leave the label unchanged", () => {
 	assert.equal(inferOddPhase("bash", undefined), undefined);
 });
 
-test("subagent and unknown tools leave the label unchanged", () => {
+test("known delegated agents infer the parent work phase in foreground and background", () => {
+	for (const [agent, phase] of [
+		["gentle-ai-worker", "implementing"],
+		["gentle-ai-verify", "checking"],
+		["gentle-ai-explore", "exploring"],
+	] as const) {
+		for (const mode of ["task", "background"]) {
+			assert.equal(inferOddPhase("subagent_run", { agent, mode, task: "untrusted task prose" }), phase);
+		}
+	}
+});
+
+test("unknown or malformed delegation arguments never infer from task prose", () => {
+	for (const args of [
+		{}, null, "gentle-ai-worker", { agent: 5 }, { agent: "gentle-ai-writer" },
+		{ task: "gentle-ai-verify checking" }, { agent: "gentle-ai-verify-extra" },
+	]) assert.equal(inferOddPhase("subagent_run", args), undefined);
 	for (const tool of ["subagent_start", "subagent_wait", "gentle_odd_phase", "mem_save", "web_fetch", ""]) {
 		assert.equal(inferOddPhase(tool, {}), undefined, tool);
 	}
@@ -193,4 +209,5 @@ test("MCP-prefixed tool names are normalized before mapping", () => {
 	assert.equal(inferOddPhase("mcp__custom-tools__write", { path: "odd/tasks/f.md" }), "planning");
 	assert.equal(inferOddPhase("mcp__custom-tools__bash", { command: "pnpm test" }), "checking");
 	assert.equal(inferOddPhase("mcp__custom-tools__mem_save", {}), undefined);
+	assert.equal(inferOddPhase("mcp__custom-tools__subagent_run", { agent: "gentle-ai-worker" }), "implementing");
 });

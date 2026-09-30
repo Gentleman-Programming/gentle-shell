@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after, before } from "node:test";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import type { ExecFileAdapter, ExecFileResult } from "../lib/native-review-cli.ts";
@@ -21,6 +24,36 @@ import {
 // extensions/gentle-ai.ts wires it in: the once-per-process activation nudge
 // and the foreground /gentle:telemetry slash command relay.
 // ---------------------------------------------------------------------------
+
+let fixtureRoot: string | undefined;
+let fixtureCwd: string;
+const fixtureEnvironment: NodeJS.ProcessEnv = {};
+const previousEnvironment = new Map<string, string | undefined>();
+before(() => {
+	fixtureRoot = mkdtempSync(join(tmpdir(), "gentle-pi-telemetry-fixture-"));
+	fixtureCwd = join(fixtureRoot, "project");
+	const home = join(fixtureRoot, "home");
+	mkdirSync(fixtureCwd);
+	mkdirSync(home);
+	Object.assign(fixtureEnvironment, {
+		HOME: home, USERPROFILE: home,
+		GENTLE_PI_CONFIG_HOME: join(home, "config"),
+		GENTLE_PI_AGENT_HOME: join(home, "agents"),
+		PI_CODING_AGENT_DIR: join(home, "pi"),
+		XDG_CONFIG_HOME: join(home, "xdg"),
+	});
+	for (const [key, value] of Object.entries(fixtureEnvironment)) {
+		previousEnvironment.set(key, process.env[key]);
+		process.env[key] = value;
+	}
+});
+after(() => {
+	for (const [key, value] of previousEnvironment) {
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
+	if (fixtureRoot !== undefined) rmSync(fixtureRoot, { recursive: true, force: true });
+});
 
 interface FakeSpawnRecord {
 	command: string;
@@ -172,13 +205,20 @@ function buildExtensionHarness(overrides: Parameters<typeof createGentleAiExtens
 		registerTool() {},
 		events: { emit() {} },
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli: null, ...overrides })(pi);
+	createGentleAiExtension({
+		nativeReviewCli: null,
+		resolveTelemetryTriggerBinary: () => assert.fail("Telemetry fixtures must inject a binary resolver"),
+		telemetryTriggerSpawn: () => assert.fail("Telemetry fixtures must inject a spawn mock"),
+		telemetryExecFileAdapter: async () => assert.fail("Telemetry fixtures must inject an exec adapter"),
+		...overrides,
+		processEnv: { ...fixtureEnvironment, GENTLE_PI_AGENTS_CHILD: "0", ...overrides.processEnv },
+	})(pi);
 	return { handlers, commands };
 }
 
-function fakeContext(cwd: string, notifications: Array<{ message: string; severity: string }>): ExtensionContext {
+function fakeContext(notifications: Array<{ message: string; severity: string }>): ExtensionContext {
 	return {
-		cwd,
+		cwd: fixtureCwd,
 		hasUI: true,
 		ui: {
 			notify(message: string, severity: string) {
@@ -202,7 +242,7 @@ test("activation: spawns the telemetry trigger exactly once for a primary sessio
 	const beforeAgentStart = handlers.get("before_agent_start");
 	assert.equal(typeof beforeAgentStart, "function");
 	const notifications: Array<{ message: string; severity: string }> = [];
-	const ctx = fakeContext("/work/project", notifications);
+	const ctx = fakeContext(notifications);
 
 	// A primary-session event carries no agent name at all.
 	await beforeAgentStart!({ systemPrompt: "" }, ctx);
@@ -210,8 +250,11 @@ test("activation: spawns the telemetry trigger exactly once for a primary sessio
 
 	assert.equal(fake.calls.length, 1, "the trigger must be attempted at most once per process");
 	const [call] = fake.calls;
+	assert.equal(call.options.env.GENTLE_PI_AGENTS_CHILD, "0");
+	assert.equal(call.options.env.HOME, fixtureEnvironment.HOME);
+	assert.equal(call.options.env.GENTLE_PI_AGENTS_PARENT_PERMISSION_FD, undefined);
 	assert.deepEqual(call.args, ["telemetry", "trigger", "--json"]);
-	assert.equal(call.options.cwd, "/work/project");
+	assert.equal(call.options.cwd, fixtureCwd);
 	assert.equal(call.options.detached, true);
 	assert.equal(call.options.windowsHide, true);
 	assert.equal(call.options.stdio, "ignore");
@@ -227,12 +270,27 @@ test("activation: never spawns for named agents, even with legacy prompt text", 
 	});
 	const beforeAgentStart = handlers.get("before_agent_start");
 	const notifications: Array<{ message: string; severity: string }> = [];
-	const ctx = fakeContext("/work/project", notifications);
+	const ctx = fakeContext(notifications);
 
 	await beforeAgentStart!({ agentName: "review-risk", systemPrompt: "" }, ctx);
 	await beforeAgentStart!({ agentName: "gentle-ai-worker", systemPrompt: "SDD apply executor" }, ctx);
 
 	assert.equal(fake.calls.length, 0, "named agents must never trigger the nudge");
+});
+
+test("activation: a child session neither spawns telemetry nor appends the primary harness", async (t) => {
+	t.after(() => __testing.resetTelemetryTriggerGuardForTesting());
+	__testing.resetTelemetryTriggerGuardForTesting();
+	const fake = fakeSpawn();
+	const { handlers } = buildExtensionHarness({
+		resolveTelemetryTriggerBinary: () => "/opt/gentle-ai/gentle-ai",
+		telemetryTriggerSpawn: fake.spawn,
+		processEnv: { GENTLE_PI_AGENTS_CHILD: "1" },
+	});
+	const event = { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "Child instructions" } };
+	assert.equal(await handlers.get("before_agent_start")!(event, fakeContext([])), undefined);
+	assert.equal(fake.calls.length, 0);
+	assert.equal(event.systemPromptOptions.appendSystemPrompt, "Child instructions");
 });
 
 test("activation: a missing binary or spawn error never affects activation", async (t) => {
@@ -245,7 +303,7 @@ test("activation: a missing binary or spawn error never affects activation", asy
 	});
 	const beforeAgentStart = handlers.get("before_agent_start");
 	const notifications: Array<{ message: string; severity: string }> = [];
-	const ctx = fakeContext("/work/project", notifications);
+	const ctx = fakeContext(notifications);
 
 	// Must resolve cleanly and produce the ordinary orchestrator prompt fields
 	// in appendSystemPrompt (never a returned systemPrompt), and never throw
@@ -287,7 +345,7 @@ test("/gentle:telemetry relays a status --json payload", async () => {
 	const command = commands.get("gentle:telemetry");
 	assert.ok(command, "gentle:telemetry must be registered");
 	const notifications: Array<{ message: string; severity: string }> = [];
-	await command!.handler("", fakeContext("/work/project", notifications));
+	await command!.handler("", fakeContext(notifications));
 
 	assert.equal(requests.length, 1);
 	assert.deepEqual(requests[0].arguments, ["telemetry", "status", "--json"]);
@@ -311,7 +369,7 @@ test("/gentle:telemetry disable prints a one-line confirmation", async () => {
 	});
 	const command = commands.get("gentle:telemetry");
 	const notifications: Array<{ message: string; severity: string }> = [];
-	await command!.handler("disable", fakeContext("/work/project", notifications));
+	await command!.handler("disable", fakeContext(notifications));
 
 	assert.deepEqual(notifications, [{ message: "Gentle AI telemetry disabled.", severity: "info" }]);
 });
@@ -331,7 +389,7 @@ test("/gentle:telemetry relays a typed non-zero failure", async () => {
 	});
 	const command = commands.get("gentle:telemetry");
 	const notifications: Array<{ message: string; severity: string }> = [];
-	await command!.handler("preview", fakeContext("/work/project", notifications));
+	await command!.handler("preview", fakeContext(notifications));
 
 	assert.equal(notifications.length, 1);
 	assert.equal(notifications[0].severity, "error");
@@ -346,7 +404,7 @@ test("/gentle:telemetry rejects an unknown sub-action without calling the binary
 	});
 	const command = commands.get("gentle:telemetry");
 	const notifications: Array<{ message: string; severity: string }> = [];
-	await command!.handler("frobnicate", fakeContext("/work/project", notifications));
+	await command!.handler("frobnicate", fakeContext(notifications));
 
 	assert.equal(requests.length, 0);
 	assert.equal(notifications.length, 1);

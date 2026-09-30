@@ -3,8 +3,8 @@
 // gentle_odd_phase, which models routinely skip; the tools the primary
 // session actually runs are a reliable, observable signal instead.
 //
-// The mapping is deliberately conservative: an unknown tool, a subagent
-// tool, or an ambiguous shell command returns undefined so the caller leaves
+// The mapping is deliberately conservative: an unknown tool, unknown subagent
+// role, or an ambiguous shell command returns undefined so the caller leaves
 // the current label unchanged. This module is pure (no Pi or registry
 // imports); precedence against explicit reports lives in OddPhaseRegistry.
 
@@ -23,6 +23,12 @@ const TOOL_PHASES: Readonly<Record<string, OddPhase>> = {
 	gentle_review_scope: "checking",
 	gentle_review_capture: "checking",
 	gentle_review_capture_group: "checking",
+};
+
+const DELEGATED_PHASES: Readonly<Record<string, OddPhase>> = {
+	"gentle-ai-worker": "implementing",
+	"gentle-ai-verify": "checking",
+	"gentle-ai-explore": "exploring",
 };
 
 const WRITE_TOOLS = new Set(["edit", "write"]);
@@ -84,6 +90,10 @@ const LEADING_KEYWORDS = /^(do|then|else|elif|if|while|until|time|!|\{|\()\s+/;
  */
 export function inferOddPhase(toolName: string, args: unknown): OddPhase | undefined {
 	const name = normalizeToolName(toolName);
+	if (name === "subagent_run") {
+		const agent = stringArg(args, "agent");
+		return agent && Object.hasOwn(DELEGATED_PHASES, agent) ? DELEGATED_PHASES[agent] : undefined;
+	}
 	if (WRITE_TOOLS.has(name)) return isOddTaskPath(stringArg(args, "path") ?? stringArg(args, "file_path")) ? "planning" : "implementing";
 	if (SHELL_TOOLS.has(name)) return inferShellPhase(stringArg(args, "command"));
 	return Object.hasOwn(TOOL_PHASES, name) ? TOOL_PHASES[name] : undefined;

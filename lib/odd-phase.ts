@@ -82,16 +82,21 @@ export class OddPhaseRegistry {
 	 * Applies a phase inferred from tool activity and returns the session's
 	 * resulting phase. An explicit report is not overridden by an inferred
 	 * "exploring" (read-only tools are routine while researching or
-	 * deciding); any other inferred phase is a stronger progression signal
-	 * and overrides it. Inferring the phase already shown changes nothing,
+	 * deciding). Incidental reads and planning bookkeeping also cannot
+	 * displace active implementation/checking. A known delegated exploration
+	 * is a deliberate transition, not an incidental read; later edits and
+	 * checks can still move between active work phases. Inferring the phase
+	 * already shown changes nothing,
 	 * keeps an explicit source explicit, and never requests a redraw, so
 	 * repeated tool calls do not repaint the prompt.
 	 */
-	infer(sessionId: string | undefined, phase: OddPhase): OddPhase | undefined {
+	infer(sessionId: string | undefined, phase: OddPhase, cause: "tool" | "delegation" = "tool"): OddPhase | undefined {
 		if (!sessionId) return undefined;
 		const current = this.phases.get(sessionId);
 		if (current?.phase === phase) return phase;
-		if (current?.source === "explicit" && phase === "exploring") return current.phase;
+		if (phase === "exploring" && cause !== "delegation" &&
+			(current?.source === "explicit" || current?.phase === "implementing" || current?.phase === "checking")) return current?.phase;
+		if (phase === "planning" && (current?.phase === "implementing" || current?.phase === "checking")) return current.phase;
 		return this.report(sessionId, phase, "inferred");
 	}
 

@@ -130,11 +130,15 @@ test("stronger inferred phases override an explicitly reported phase", () => {
 	}
 });
 
-test("once an inferred phase replaces an explicit one, a later inferred exploring applies again", () => {
-	const registry = new OddPhaseRegistry();
-	registry.report("session-a", "researching");
-	registry.infer("session-a", "implementing");
-	assert.equal(registry.infer("session-a", "exploring"), "exploring");
+test("incidental reads and bookkeeping do not replace active implementation or verification", () => {
+	for (const active of ["implementing", "checking"] as const) {
+		const registry = new OddPhaseRegistry();
+		registry.report("session-a", "researching");
+		registry.infer("session-a", active);
+		assert.equal(registry.infer("session-a", "exploring"), active);
+		assert.equal(registry.infer("session-a", "planning"), active);
+		assert.equal(registry.get("session-a"), active);
+	}
 });
 
 test("inferring the phase already reported explicitly keeps it explicit", () => {
@@ -144,12 +148,16 @@ test("inferring the phase already reported explicitly keeps it explicit", () => 
 	assert.equal(registry.infer("session-a", "exploring"), "implementing");
 });
 
-test("inferred phases override each other, and a later explicit report wins", () => {
+test("meaningful work transitions and explicit reports still change the phase", () => {
 	const registry = new OddPhaseRegistry();
 	registry.infer("session-a", "checking");
-	assert.equal(registry.infer("session-a", "exploring"), "exploring");
+	assert.equal(registry.infer("session-a", "implementing"), "implementing", "a later edit starts real work");
+	assert.equal(registry.infer("session-a", "checking"), "checking");
+	assert.equal(registry.infer("session-a", "exploring", "delegation"), "exploring", "a delegated exploration is deliberate");
 	assert.equal(registry.report("session-a", "closing"), "closing");
 	assert.equal(registry.infer("session-a", "exploring"), "closing");
+	registry.clear("session-a");
+	assert.equal(registry.infer("session-a", "exploring"), "exploring");
 });
 
 test("clear resets the explicit source so the next turn's inferred exploring applies", () => {
@@ -162,7 +170,7 @@ test("clear resets the explicit source so the next turn's inferred exploring app
 test("report with an inferred source behaves like infer-set state", () => {
 	const registry = new OddPhaseRegistry();
 	registry.report("session-a", "checking", "inferred");
-	assert.equal(registry.infer("session-a", "exploring"), "exploring");
+	assert.equal(registry.infer("session-a", "exploring"), "checking");
 });
 
 test("OddPhaseRegistry.infer redraws only when the label changes", () => {
@@ -178,6 +186,11 @@ test("OddPhaseRegistry.infer redraws only when the label changes", () => {
 	assert.equal(renders, 0, "an ignored inference must not redraw");
 	registry.infer("session-a", "implementing");
 	assert.equal(renders, 1);
+	registry.infer("session-a", "planning");
+	registry.infer("session-a", "exploring");
+	assert.equal(renders, 1, "incidental signals never repaint active work");
+	registry.infer("session-a", "exploring", "delegation");
+	assert.equal(renders, 2, "a delegated exploration must repaint");
 });
 
 test("OddPhaseRegistry.infer without a session id is a no-op", () => {

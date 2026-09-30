@@ -163,7 +163,8 @@ test("tool activity in the primary session drives the working label across exten
 	};
 	createGentleAiExtension({ nativeReviewCli: null } as never)(pi as never);
 	shell(pi as never, {}, { resolveWorktree: (path: string) => ({ root: path, commonDir: path }), gitRunner: () => async () => ({ stdout: "", stderr: "", code: 0, killed: false }), devBinary: () => undefined } as never);
-	const sessionId = "tool-activity-loader-test";
+	let sessionId = "tool-activity-loader-test";
+	let redraws = 0;
 	let editorFactory: ((tui: unknown, theme: unknown, bindings: unknown) => { render(width: number): string[]; setAnimationPolicy(policy: string): void; dispose(): void }) | undefined;
 	const ui = {
 		theme: { fg: (_color: string, text: string) => text, bold: (text: string) => text },
@@ -183,7 +184,7 @@ test("tool activity in the primary session drives the working label across exten
 	try {
 		await fire("session_start");
 		assert.ok(editorFactory, "Gentle Shell should install its prompt");
-		editor = editorFactory({ terminal: { rows: 40, columns: 120 }, requestRender() {} }, { borderColor: (text: string) => text, selectList: {} }, { matches: () => false });
+		editor = editorFactory({ terminal: { rows: 40, columns: 120 }, requestRender() { redraws++; } }, { borderColor: (text: string) => text, selectList: {} }, { matches: () => false });
 		editor.setAnimationPolicy("potato");
 		await fire("agent_start");
 		const render = () => stripAnsi(editor!.render(60)[0]!);
@@ -203,6 +204,30 @@ test("tool activity in the primary session drives the working label across exten
 		await tool("bash", { command: "git push" });
 		await tool("unknown_tool", {});
 		assert.match(render(), /planning…/, "unknown tools and ambiguous commands leave the label unchanged");
+		await tool("subagent_run", { agent: "gentle-ai-worker", mode: "task", task: "implement" });
+		assert.match(render(), /implementing…/, "foreground worker launch replaces stale planning");
+		redraws = 0;
+		await tool("read", { path: "lib/odd-phase.ts" });
+		await tool("todo", {});
+		await tool("write", { path: "odd/tasks/feature.md" });
+		assert.match(render(), /implementing…/, "incidental reads and task bookkeeping cannot hide worker activity");
+		assert.equal(redraws, 0, "ignored signals do not redraw the editor");
+		await tool("subagent_run", { agent: "gentle-ai-verify", mode: "background", task: "verify" });
+		assert.match(render(), /checking…/, "background verifier launch replaces active implementation");
+		assert.equal(redraws, 1, "phase change redraws even under potato animation");
+		await tool("read", { path: "tests/odd-phase.test.ts" });
+		await tool("todo", {});
+		assert.match(render(), /checking…/);
+		await tool("subagent_run", { agent: "unknown", task: "gentle-ai-worker implementing" });
+		assert.match(render(), /checking…/, "unknown agent prose is not evidence");
+		await tool("subagent_run", { agent: "gentle-ai-explore", mode: "task" });
+		assert.match(render(), /exploring…/, "later delegated exploration is a real phase transition");
+		await tool("subagent_run", { agent: "gentle-ai-worker", mode: "background" });
+		assert.match(render(), /implementing…/, "background worker replaces stale exploring");
+		await tool("subagent_run", { agent: "gentle-ai-verify", mode: "task" });
+		assert.match(render(), /checking…/, "foreground verifier replaces stale work");
+		await tool("edit", { path: "lib/odd-phase.ts" });
+		assert.match(render(), /implementing…/, "a subsequent source edit can restart implementation");
 
 		await tools.get("gentle_odd_phase")!.execute("call", { phase: "researching" }, undefined, undefined, ctx);
 		await tool("gentle_odd_phase", { phase: "researching" });
@@ -214,10 +239,15 @@ test("tool activity in the primary session drives the working label across exten
 		await fire("agent_start");
 		assert.match(render(), /working…/, "a new turn starts unlabeled");
 		const childCtx = { ...ctx, mode: "rpc" };
-		await fire("tool_execution_start", { type: "tool_execution_start", toolCallId: "child", toolName: "read", args: {} }, childCtx);
+		await fire("tool_execution_start", { type: "tool_execution_start", toolCallId: "child", toolName: "subagent_run", args: { agent: "gentle-ai-worker" } }, childCtx);
 		assert.equal(registry.get(sessionId), undefined, "a headless RPC (subagent) process never infers a phase");
+		sessionId = "other-session";
+		await tool("subagent_run", { agent: "gentle-ai-verify" });
+		assert.equal(registry.get("tool-activity-loader-test"), undefined, "another session cannot relabel the primary session");
+		assert.equal(registry.get(sessionId), "checking");
 	} finally {
-		registry.clear(sessionId);
+		registry.clear("tool-activity-loader-test");
+		registry.clear("other-session");
 		editor?.dispose();
 	}
 });

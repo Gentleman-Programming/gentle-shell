@@ -350,11 +350,11 @@ for (const range of DISPOSITION_MAP) {
 
 test("core-alone: load-bearing direct-delegation tokens remain without lazy union", () => {
 	const core = readRealAsset("orchestrator.md");
-	assert.match(core, /4-file rule/);
+	assert.match(core, /Evidence-budget rule/);
 	assert.match(core, /Multi-file write rule/);
 	assert.match(core, /Incident rule/);
 	assert.match(core, /Verification rule/);
-	assert.match(core, /Long-session rule/);
+	assert.match(core, /Context backstop/);
 });
 
 test("core-alone: dynamic Gentle AI ownership replaces package lifecycle instructions", () => {

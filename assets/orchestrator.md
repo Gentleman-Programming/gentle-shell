@@ -38,7 +38,7 @@ Delegation is not optional once complexity appears. If a task crosses the trigge
 
 Route ODD work through the smallest safe harness:
 
-1. **Inline Direct** — small, mechanical, parent has context (typo, one-file edit, read-only check of 1-3 known files, bash for state); stop when it is no longer small.
+1. **Inline Direct** — small, mechanical, parent has context (typo, one-file edit, read-only check within the evidence budget, bash for state); stop when it is no longer small.
 2. **Simple Delegation** — exploration → `gentle-ai-explore`; bounded implementation → `gentle-ai-worker`; command-running verification → `gentle-ai-verify`. Try its package role; if missing/unusable, use native `Agent` under the same read-only mapping/verification constraints and report fallback.
 
 ODD (Default Workflow, harness section above) is mandatory on every request; detail: `orchestrator-delegation.md`, `orchestrator-memory.md`. For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observed RED, GREEN, then refactor with checks. For passive documentation, non-testable changes, an unavailable runner or no meaningful RED, state why and run proportionate ordinary functional or structural verification instead. Test presence alone is not applicability; no chat or TUI toggle activates this policy.
@@ -51,11 +51,11 @@ Before launching bounded writer (`gentle-ai-worker` or `worker`), task/context n
 
 Mandatory Delegation Triggers — once fired, delegate through the best available runtime (prefer `subagent_run`, else native `Agent`):
 
-1. **4-file rule** — 4+ files to understand → delegate a scout/mapping task.
+1. **Evidence-budget rule** — read inline only if evidence fits one parallel batch (at most 3 calls, ~10k tokens; grep and line ranges, never whole large files). Larger reads, >~5 sequential lookups, or a long session ahead → one scout/explorer returning at most ~2k tokens with `path:line` evidence; re-read nothing it covered beyond one spot check. Never force delegation for a small targeted question.
 2. **Multi-file write rule** — 2+ non-trivial files touched → delegate one writer.
 3. **Incident rule** — diagnose wrong cwd/worktree/git/tooling incidents separately before resuming work.
-4. **Long-session rule** — ~20 tool calls, 5 exploratory reads, or 2 non-mechanical edits without delegation → pause and delegate.
-5. **Verification rule** — executing/delegating verification commands → `gentle-ai-verify`; only the 1-3-file read-only check stays inline.
+4. **Context backstop** — parent context past ~150k tokens → pause and delegate the next bounded unit of work. Keep command output bounded (counts, `--stat`, `tail`); full suites and builds go to a verifier.
+5. **Verification rule** — executing/delegating verification commands → `gentle-ai-verify`; only a read-only check within the evidence budget stays inline.
 
 {{GENTLE_PI_BACKGROUND_POLICY}}; rules: the background-subagents block in the delegation contract.
 

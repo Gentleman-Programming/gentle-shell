@@ -1,5 +1,6 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute } from "node:path";
+import { colorToRgb, parseColor } from "@earendil-works/pi-tui";
 
 const MAX_BYTES = 256_000;
 const HEX = /^#[0-9a-fA-F]{6}$/;
@@ -38,6 +39,13 @@ export function sourcePalettePreview(name: string, sourcePath: string | undefine
 		const prefix = background ? 48 : 38;
 		if (typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 255) return `\x1b[${prefix};5;${value}m`;
 		if (typeof value === "string" && HEX.test(value)) return `\x1b[${prefix};2;${parseInt(value.slice(1, 3), 16)};${parseInt(value.slice(3, 5), 16)};${parseInt(value.slice(5, 7), 16)}m`;
+		// Pi 0.99.1's built-in palettes use OKHSL. Delegate the exact color
+		// grammar, finite/range checks and conversion to the public host utility;
+		// do not broaden this source-only preview to arbitrary CSS colors.
+		if (typeof value === "string" && value.startsWith("okhsl(")) {
+			const { r, g, b } = colorToRgb(parseColor(value));
+			return `\x1b[${prefix};2;${r};${g};${b}m`;
+		}
 		throw new Error("Invalid theme palette color.");
 	};
 	return { title: `${name} · source palette`, sample: `${escape("accent", true)}  \x1b[0m ${escape("text", false)}Aa  sample text\x1b[0m` };

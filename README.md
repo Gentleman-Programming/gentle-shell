@@ -170,6 +170,16 @@ Model, effort, and who does what should be choices, not accidents. Named profile
 
 ---
 
+### 🚀 YOLO 🔥 — Session permission, destructive guards intact
+
+> 🚀 **Full speed, destructive actions still ask.** YOLO removes repeated permission questions for ordinary already-scoped work, which suits long autonomous runs. Destructive operations still require fresh confirmation.
+
+`/gentle:yolo enable` supplies standing permission for ordinary already-scoped implementation, checks, commits, non-force pushes and PR creation. Default **OFF**, interactive primary TUI only, bound to the live session and Git clone; `/gentle:yolo disable` revokes it and `/gentle:yolo status` checks it. With no argument, `/gentle:yolo` opens a menu (`enable`, `disable`, `status`) showing the current state; cancelling changes nothing, and without an interactive menu it reports status. Reload and session replacement reset it. Active status plus a separate widget show **🚀 YOLO ON 🔥 — destructive confirmations remain**. Explicit restrictions, configured confirmations/blocks, consequential unresolved choices, destination/credential ambiguity and native consent/recovery decisions remain mandatory. Children get no independent delivery grant. This is not a sandbox.
+
+Or open `/gentle:customize` → **Editor** and select **YOLO: OFF · session only**, immediately below Vim. Enter or Space toggles the same live-session permission as `/gentle:yolo`; browsing and previews never activate it. Unlike Vim, YOLO is not saved in preferences or visual profiles.
+
+**[Use and limits →](docs/yolo-mode.md)**
+
 ### Command palette — Every command, one keystroke away
 
 Extension commands are only useful if you can find them. `alt+k` opens a curated, grouped palette — Configuration, Session, Diagnostics, and Skills — searchable by label, command name, or description, showing entries only when they are actually registered.
@@ -268,12 +278,16 @@ pi
 
 See the [v3.5.1 release notes](https://github.com/Gentleman-Programming/gentle-shell/releases/tag/v3.5.1) for version-specific changes.
 
+### NaN model provider
+
+The first-party `nan` provider is included; no third-party provider package is required. Set `NAN_API_KEY` before starting Pi, or use native `/login` → NaN (also `/login nan`), then use `/model` to select a model. Both login routes await explicit API-key input; blank or whitespace-only entries fail without saving a credential, and surrounding whitespace is trimmed. Cancellation leaves the stored key unchanged. Stored keys take precedence over `NAN_API_KEY`. Pi streams chat completions through its OpenAI-compatible provider. Model discovery intersects NaN's authenticated `/v1/models` response with a maintained subset of known chat IDs from the [official model documentation](https://nan.builders/docs/models); unknown and non-chat IDs are omitted. A successful response with no known chat IDs stays empty. Documented context, reasoning, and text/image capabilities are preserved with conservative numeric bounds for abbreviated limits; audio input is not advertised by Pi. Where NaN does not publish an output maximum, the provider configures a conservative 8,192-token cap rather than claiming the model's true limit. Before a successful refresh, all seven documented chat models are available as the offline fallback in `/gentle:models`: `glm5.3`, `deepseek-v4-flash`, `glm5.3-flash`, `qwen3.8-flash`, `mimo-v2.6-flash`, `gemma4`, and `qwen3.6`. This fallback declares documented support, not proof of access for your key. Once refreshed, the successful live key-scoped list remains authoritative (including an empty list), even offline or after a failed refresh. Changing credentials resets the catalog to the full documented fallback until discovery succeeds for the new key. NaN MCP search and media bridges are not included.
+
 ```text
 /gentle:status
 /gentle:doctor
 ```
 
-> **RDD is opt-in:** enable native receipt-driven development only through an explicit `/gentle:review-mode enable` decision.
+> **RDD is opt-in:** enable native receipt-driven development only through an explicit `/gentle:review-mode enable` decision. The `.git/gentle-ai/candidate-views` parent must sit on a filesystem that honors private POSIX modes (or equivalent Windows ACLs); WSL DrvFS mounts without metadata can reject START before lineage creation.
 
 > **Fullscreen installation note:** a recognized global installation persists Pi’s `"tuiMode": "fullscreen"` setting. Project-local and other install paths do not receive that change.
 

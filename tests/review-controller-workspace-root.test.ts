@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -28,6 +28,7 @@ type ToolCallHandler = (
 interface Runtime {
 	controller: RegisteredTool;
 	toolCall: ToolCallHandler;
+	lifecycle(name: string, event: unknown, ctx: ExtensionContext): Promise<void>;
 }
 
 function runtime(
@@ -36,10 +37,12 @@ function runtime(
 ): Runtime {
 	const tools = new Map<string, RegisteredTool>();
 	let toolCall: ToolCallHandler | undefined;
+	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
 	const dependencies = { nativeReviewCli, candidateViews } as unknown as Parameters<typeof createGentleAiExtension>[0];
 	createGentleAiExtension(dependencies)({
 		on(name: string, handler: ToolCallHandler) {
 			if (name === "tool_call") toolCall = handler;
+			handlers.set(name, handler as unknown as (event: unknown, ctx: ExtensionContext) => unknown);
 		},
 		registerTool(definition: RegisteredTool & { name: string }) { tools.set(definition.name, definition); },
 		registerCommand() {},
@@ -47,7 +50,7 @@ function runtime(
 	const controller = tools.get("gentle_review");
 	assert.ok(controller);
 	assert.ok(toolCall);
-	return { controller, toolCall };
+	return { controller, toolCall, async lifecycle(name, event, ctx) { await handlers.get(name)?.(event, ctx); } };
 }
 
 function context(cwd: string): ExtensionContext {
@@ -68,6 +71,156 @@ function repository(t: test.TestContext, prefix = "gentle-pi-workspace-root-"): 
 	execFileSync("git", ["-c", "user.name=Workspace Test", "-c", "user.email=workspace@example.invalid", "commit", "-m", "initial"], { cwd });
 	return cwd;
 }
+
+for (const operation of ["inspect", "start"] as const) {
+	for (const mode of ["on", "off", "unknown", "missing", "malformed", "throws"] as const) {
+		test(`non-Git ${operation} requires validated RDD on: ${mode}`, async () => {
+			const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-bootstrap-target-")));
+			writeFileSync(join(cwd, "candidate.txt"), "unchanged candidate\n");
+			const requests: string[] = [];
+			const native = fakeNative({
+				reviewMode: mode === "missing" ? undefined : (async () => {
+					if (mode === "throws") throw new Error("mode unavailable");
+					return { operation: "status", scope: "clone", status: { global: "", cloneLocal: "", effective: mode === "malformed" ? "on" : mode, source: mode === "malformed" ? "invalid" : "global" } };
+				}) as NonNullable<NativeReviewCli["reviewMode"]>,
+				targetStatus: async (request) => {
+					requests.push(request.cwd);
+					// Stop at entry: this contract does not exercise START or consent.
+					throw new Error("native preparation reached");
+				},
+			});
+			for (const explicit of [false, true]) {
+				requests.length = 0;
+				const result = await __testing.executeReviewControllerOperation({
+					operation, ...(explicit ? { workspaceRoot: cwd } : {}),
+					...(operation === "start" ? { input: JSON.stringify({ mode: "ordinary" }) } : {}),
+				}, explicit ? process.cwd() : cwd, native);
+				assert.equal(result.status, "blocked");
+				assert.deepEqual(requests, mode === "on" ? [cwd] : []);
+			}
+			assert.equal(readFileSync(join(cwd, "candidate.txt"), "utf8"), "unchanged candidate\n");
+		});
+	}
+}
+
+for (const operation of ["inspect", "start"] as const) {
+	for (const transition of ["shutdown", "replacement", "same-manager-rebind", "changed-id", "cancelled", "live"] as const) {
+		test(`explicit non-Git ${operation} pins lifecycle across held mode: ${transition}`, async t => {
+			const fixture = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-explicit-lifecycle-")));
+			const home = join(fixture, "home");
+			const project = join(fixture, "project");
+			mkdirSync(home); mkdirSync(project);
+			writeFileSync(join(project, "candidate.txt"), "unchanged candidate\n");
+			const previous = { HOME: process.env.HOME, GENTLE_PI_AGENT_HOME: process.env.GENTLE_PI_AGENT_HOME, GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME };
+			Object.assign(process.env, { HOME: home, GENTLE_PI_AGENT_HOME: join(fixture, "agent"), GENTLE_PI_CONFIG_HOME: join(fixture, "config") });
+			t.after(() => {
+				for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+				rmSync(fixture, { recursive: true, force: true });
+			});
+			let entered!: () => void;
+			const modeEntered = new Promise<void>(resolve => { entered = resolve; });
+			let release!: () => void;
+			const heldMode = new Promise<void>(resolve => { release = resolve; });
+			let hold = false;
+			let statuses = 0;
+			let starts = 0;
+			const native = fakeNative({
+				reviewMode: async () => {
+					if (hold) { entered(); await heldMode; }
+					return { operation: "status", scope: "global", status: { global: "on", cloneLocal: "", effective: "on", source: "global" } };
+				},
+				targetStatus: async request => {
+					statuses++;
+					assert.equal(request.cwd, project);
+					// Only the fake provider mutates this disposable project. Stop before consent/START.
+					execFileSync("git", ["init", "--quiet", project]);
+					throw new Error("fixture preparation completed");
+				},
+				start: async () => { starts++; throw new Error("unexpected START"); },
+			});
+			const h = runtime(native);
+			const session = { ...context(home), sessionManager: { getSessionId: () => "same-id", getCwd: () => home, getEntries: () => [], getBranch: () => [] } } as unknown as ExtensionContext;
+			await h.lifecycle("session_start", { reason: "startup" }, session);
+			assert.equal(statuses, 0);
+			hold = true;
+			const abort = new AbortController();
+			const pending = h.controller.execute("held-explicit", { operation, workspaceRoot: project, ...(operation === "start" ? { input: JSON.stringify({ mode: "ordinary" }) } : {}) }, abort.signal, undefined, session);
+			// Observe rejection immediately, so a revoked call cannot become unhandled.
+			const settled = pending.then(result => ({ result }), error => ({ error }));
+			await modeEntered;
+			if (transition === "shutdown") await h.lifecycle("session_shutdown", { reason: "quit" }, session);
+			if (transition === "replacement") {
+				const successor = { ...session, sessionManager: { getSessionId: () => "same-id", getCwd: () => home, getEntries: () => [], getBranch: () => [] } } as unknown as ExtensionContext;
+				assert.notEqual(successor.sessionManager, session.sessionManager);
+				await h.lifecycle("session_start", { reason: "new" }, successor);
+			}
+			if (transition === "same-manager-rebind") await h.lifecycle("session_start", { reason: "reload" }, session);
+			if (transition === "changed-id") session.sessionManager.getSessionId = () => "changed-id";
+			if (transition === "cancelled") abort.abort();
+			release();
+			await settled;
+			assert.equal(abort.signal.aborted, transition === "cancelled", "lifecycle revocation is independent of caller abort");
+			assert.equal(statuses, transition === "live" ? 1 : 0, "revoked original context cannot reach native bootstrap STATUS");
+			assert.equal(starts, 0);
+			assert.equal(existsSync(join(project, ".git")), transition === "live");
+			assert.equal(existsSync(join(home, ".git")), false, "explicit selection never initializes HOME");
+			assert.equal(readFileSync(join(project, "candidate.txt"), "utf8"), "unchanged candidate\n");
+			await h.lifecycle("session_shutdown", { reason: "quit" }, session);
+		});
+	}
+}
+
+test("invalid bootstrap target selectors reject before native STATUS", async () => {
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-bootstrap-invalid-")));
+	let statusCalls = 0;
+	const native = fakeNative({
+		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "", effective: "on", source: "global" } }),
+		targetStatus: async () => { statusCalls += 1; throw new Error("must not reach STATUS"); },
+	});
+	for (const parameters of [
+		{ operation: "inspect", input: JSON.stringify({ baseRef: "HEAD" }) },
+		{ operation: "inspect", input: JSON.stringify({ baseRef: "missing-ref", committedOnly: true }) },
+		{ operation: "start", input: JSON.stringify({ mode: "ordinary", focus: "invalid" }) },
+		{ operation: "start", input: JSON.stringify({ mode: "ordinary", policyPath: "../outside" }) },
+	]) {
+		const result = await __testing.executeReviewControllerOperation(parameters, cwd, native);
+		assert.equal(result.status, "blocked");
+	}
+	for (const workspaceRoot of ["relative", join(cwd, "missing")]) {
+		await assert.rejects(__testing.executeReviewControllerOperation({ operation: "inspect", workspaceRoot }, cwd, native));
+	}
+	assert.equal(statusCalls, 0);
+});
+
+test("repository discovery ignores ambient Git root overrides", async (t) => {
+	const sessionRoot = repository(t);
+	const targetRoot = repository(t, "gentle-pi-isolated-target-");
+	const previous = { GIT_DIR: process.env.GIT_DIR, GIT_WORK_TREE: process.env.GIT_WORK_TREE };
+	t.after(() => {
+		for (const [key, value] of Object.entries(previous)) {
+			if (value === undefined) delete process.env[key]; else process.env[key] = value;
+		}
+	});
+	process.env.GIT_DIR = join(sessionRoot, ".git");
+	process.env.GIT_WORK_TREE = sessionRoot;
+	const requests: string[] = [];
+	await __testing.executeReviewControllerOperation({ operation: "inspect", workspaceRoot: targetRoot }, sessionRoot,
+		fakeNative({ targetStatus: async (request) => { requests.push(request.cwd); throw new Error("entry only"); } }));
+	assert.deepEqual(requests, [targetRoot]);
+});
+
+test("non-Git bound and maintenance routes cannot use preparation entry", async () => {
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-bootstrap-bound-")));
+	let statusCalls = 0;
+	const native = fakeNative({ targetStatus: async () => { statusCalls += 1; throw new Error("must not reach STATUS"); } });
+	for (const parameters of [
+		{ operation: "status" },
+		{ operation: "inspect", lineageId: "bound" },
+		{ operation: "start", input: JSON.stringify({ mode: "judgment-day" }) },
+		{ operation: "reset", input: "{}" },
+	]) await assert.rejects(__testing.executeReviewControllerOperation(parameters, cwd, native));
+	assert.equal(statusCalls, 0);
+});
 
 function addWorktree(t: test.TestContext, cwd: string, branch: string): string {
 	const parent = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-workspace-worktrees-")));
@@ -486,7 +639,6 @@ test("workspaceRoot fails closed before any native call for invalid target paths
 	});
 	const { controller } = runtime(counting);
 	const rejected: Array<{ label: string; workspaceRoot: string }> = [
-		{ label: "non-git directory", workspaceRoot: nonGit },
 		{ label: "missing directory", workspaceRoot: join(nonGit, "missing") },
 		{ label: "file path", workspaceRoot: filePath },
 		{ label: "relative path", workspaceRoot: "relative/worktree" },
@@ -505,6 +657,14 @@ test("workspaceRoot fails closed before any native call for invalid target paths
 			);
 		}
 	}
+	for (const operation of ["inspect", "start"] as const) {
+		const result = await controller.execute(`non-git-${operation}`, {
+			operation, workspaceRoot: nonGit,
+			...(operation === "start" ? { input: JSON.stringify({ mode: "ordinary" }) } : {}),
+		}, undefined, undefined, context(sessionCwd));
+		assert.equal((result.details as Record<string, unknown>).outcome, "native-repository-bootstrap-not-authorized");
+	}
+	await assert.rejects(controller.execute("non-git-bound", { operation: "status", workspaceRoot: nonGit, lineageId: "bound" }, undefined, undefined, context(sessionCwd)), /workspaceRoot/);
 	assert.equal(nativeCalls, 0);
 });
 

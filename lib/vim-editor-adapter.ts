@@ -41,9 +41,18 @@ interface PrivateEditor {
 }
 
 const SUPPORTED_VERSIONS = new Set(["0.99.1"]);
-const importedTuiMetadata: unknown = createRequire(import.meta.url)("@earendil-works/pi-tui/package.json");
-const IMPORTED_TUI_VERSION = typeof importedTuiMetadata === "object" && importedTuiMetadata !== null &&
-  "version" in importedTuiMetadata ? importedTuiMetadata.version : undefined;
+// pi-tui is an optional peer: an installed extension may resolve it only
+// through the host's import alias, which createRequire does not see. Missing
+// metadata leaves the default Editor path unauthorized instead of failing load.
+export function readTuiVersion(load: (id: string) => unknown = createRequire(import.meta.url)): unknown {
+  try {
+    const metadata = load("@earendil-works/pi-tui/package.json");
+    return typeof metadata === "object" && metadata !== null && "version" in metadata ? metadata.version : undefined;
+  } catch {
+    return undefined;
+  }
+}
+const IMPORTED_TUI_VERSION = readTuiVersion();
 
 // The caller supplies the Editor constructor from the same Pi/TUI package pair
 // as the version metadata. An arbitrary object with matching fields is not an editor.

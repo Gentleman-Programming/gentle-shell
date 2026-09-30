@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, resolve } from "node:path";
 import { CURSOR_MARKER, Editor, visibleWidth } from "@earendil-works/pi-tui";
-import { createVimEditorAdapter } from "../lib/vim-editor-adapter.ts";
+import { createVimEditorAdapter, readTuiVersion } from "../lib/vim-editor-adapter.ts";
 import { resolveVimRuntime, VIM_AGENT_INDEX_PATTERN, VIM_CLI_ENTRY_PATTERN } from "../extensions/gentle-shell.ts";
 import { VimOperatorEngine } from "../lib/vim-operator-engine.ts";
 import { VimVisualEngine } from "../lib/vim-visual-engine.ts";
@@ -175,6 +175,17 @@ test("runtime identity resolves only the matching installed coding-agent/TUI pai
   assert.deepEqual(resolveVimRuntime(target, runtimeAgent.CustomEditor), { version: runtimeTuiPackage.version, editorClass: runtimeTui.Editor });
   assert.equal(resolveVimRuntime(target, class Impostor extends runtimeTui.Editor {} as typeof runtimeAgent.CustomEditor), undefined);
   assert.deepEqual(resolveVimRuntime("/nonexistent/cli.js", runtimeAgent.CustomEditor), { version: "0.99.1", editorClass: Editor });
+});
+
+test("TUI metadata lookup fails closed when pi-tui is only host-provided", () => {
+  // Optional peer: installed extensions may not have pi-tui on disk, and the
+  // host alias does not cover createRequire. Loading must not throw.
+  const missing = () => { throw Object.assign(new Error("Cannot find module"), { code: "MODULE_NOT_FOUND" }); };
+  assert.equal(readTuiVersion(missing), undefined);
+  assert.equal(readTuiVersion(() => ({ version: "0.99.1" })), "0.99.1");
+  assert.equal(readTuiVersion(() => null), undefined);
+  // Without trusted metadata, the default Editor path is not authorized.
+  assert.throws(() => createVimEditorAdapter(editor(), "unknown"), /Unsupported Pi editor/);
 });
 
 function assertInstalledPiPairBehavior(version: "0.99.1", EditorClass: typeof Editor, CustomClass: { prototype: unknown } | undefined): void {

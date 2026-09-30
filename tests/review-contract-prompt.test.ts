@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after, before } from "node:test";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
@@ -23,6 +23,36 @@ type MutableEvent = { agentName?: string; systemPrompt: string; systemPromptOpti
 const REPO_ROOT = join(import.meta.dirname, "..");
 const MIRROR_LOCK_PATH = join(REPO_ROOT, "contracts", "review-provider-contract-mirror", "provider-contract.lock.json");
 
+let fixtureRoot: string | undefined;
+let fixtureCwd: string;
+const fixtureEnvironment: NodeJS.ProcessEnv = {};
+const previousEnvironment = new Map<string, string | undefined>();
+before(() => {
+	fixtureRoot = mkdtempSync(join(tmpdir(), "gentle-pi-review-prompt-"));
+	fixtureCwd = join(fixtureRoot, "project");
+	const home = join(fixtureRoot, "home");
+	mkdirSync(fixtureCwd);
+	mkdirSync(home);
+	Object.assign(fixtureEnvironment, {
+		HOME: home, USERPROFILE: home,
+		GENTLE_PI_CONFIG_HOME: join(home, "config"),
+		GENTLE_PI_AGENT_HOME: join(home, "agents"),
+		PI_CODING_AGENT_DIR: join(home, "pi"),
+		XDG_CONFIG_HOME: join(home, "xdg"),
+	});
+	for (const [key, value] of Object.entries(fixtureEnvironment)) {
+		previousEnvironment.set(key, process.env[key]);
+		process.env[key] = value;
+	}
+});
+after(() => {
+	for (const [key, value] of previousEnvironment) {
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
+	if (fixtureRoot !== undefined) rmSync(fixtureRoot, { recursive: true, force: true });
+});
+
 function mirroredPiOrchestrationText(): string {
 	const lock = JSON.parse(readFileSync(MIRROR_LOCK_PATH, "utf8")) as { contract_semver: string };
 	return readFileSync(
@@ -41,7 +71,12 @@ function harness(nativeReviewCli: NativeReviewCli | null, processEnv?: NodeJS.Pr
 		registerCommand() {},
 		registerTool() {},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli, processEnv })(pi);
+	createGentleAiExtension({
+		nativeReviewCli,
+		processEnv: { ...fixtureEnvironment, GENTLE_PI_AGENTS_CHILD: "0", ...processEnv, GENTLE_AI_TELEMETRY: "0" },
+		resolveTelemetryTriggerBinary: () => join(fixtureCwd, "never-executed"),
+		telemetryTriggerSpawn: () => assert.fail("Review prompt fixtures must not spawn telemetry"),
+	})(pi);
 	const beforeAgentStart = handlers.get("before_agent_start");
 	assert.equal(typeof beforeAgentStart, "function");
 	return { beforeAgentStart: beforeAgentStart as BeforeAgentStartHandler };
@@ -49,7 +84,7 @@ function harness(nativeReviewCli: NativeReviewCli | null, processEnv?: NodeJS.Pr
 
 function ctx(overrides: Record<string, unknown> = {}): ExtensionContext {
 	return {
-		cwd: process.cwd(),
+		cwd: fixtureCwd,
 		hasUI: true,
 		ui: { notify() {} },
 		sessionManager: { getSessionId: () => "review-contract-prompt-session" },

@@ -12,9 +12,11 @@ import { buildShellHeaderModel, renderShellBar, renderShellBottomOnlyBar, render
 import { CHANGE_STATUS, RootBranchLabels, renderChangesWidget, type ChangedFile, type ChangesModel, type GitRunner, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver, type WorktreeIdentity } from "../lib/session-worktree-registry.ts";
-import { CARD_TONE, renderCard, type Card, type CardTheme } from "../lib/shell-card.ts";
+import { CARD_STYLE, CARD_TONE, renderCard, setCardStyle, type Card, type CardTheme } from "../lib/shell-card.ts";
+import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
 import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/command-palette.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
+import { discoverYoloUiAdapter, YOLO_DISPLAY, type YoloDisplay, type YoloUiAdapter } from "../lib/yolo-session-policy.ts";
 import { VisualCustomizeView, type CustomizeCategory, type CustomizeRow, type ProfileActions } from "../lib/visual-customize-view.ts";
 import { deleteVisualProfile, getVisualProfile, listVisualProfiles, resetVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
 import { sourcePalettePreview } from "../lib/theme-customization.ts";
@@ -49,7 +51,7 @@ export function resolveVimRuntime(entry = process.argv[1], customClass: typeof C
 	const editorPrototype = Object.getPrototypeOf(customClass.prototype) as typeof Editor.prototype | undefined;
 	const editorClass = editorPrototype?.constructor as typeof Editor | undefined;
 	const candidates: string[] = [];
-	// The 0.87.1 CLI uses the bundled virtual module graph. Its public index
+	// The audited 0.99.1 CLI uses the bundled virtual module graph. Its public index
 	// exports the very CustomEditor class supplied to extensions by that graph.
 	try {
 		if (entry) {
@@ -61,7 +63,7 @@ export function resolveVimRuntime(entry = process.argv[1], customClass: typeof C
 					const requireFromBundle = createRequire(bundlePath);
 					const bundled = requireFromBundle(bundlePath) as { CustomEditor?: typeof CustomEditor; VERSION?: string };
 					const metadata = requireFromBundle(resolve(root, "package.json")) as { name?: string; version?: string };
-					if (metadata.name === "@earendil-works/pi-coding-agent" && metadata.version === "0.87.1" &&
+					if (metadata.name === "@earendil-works/pi-coding-agent" && metadata.version === "0.99.1" &&
 						bundled.VERSION === metadata.version && bundled.CustomEditor === customClass &&
 						typeof editorClass === "function" && editorClass.name === "Editor" &&
 						editorPrototype === editorClass.prototype &&
@@ -95,7 +97,7 @@ export function resolveVimRuntime(entry = process.argv[1], customClass: typeof C
 			const tuiMetadata = requireFromRuntime(resolve(tuiRoot, "package.json")) as { version?: string; name?: string };
 			if (agent.CustomEditor === customClass && tui.Editor === editorClass &&
 				agentMetadata.name === "@earendil-works/pi-coding-agent" && tuiMetadata.name === "@earendil-works/pi-tui" &&
-				(agentMetadata.version === "0.85.1" || agentMetadata.version === "0.87.1") &&
+				agentMetadata.version === "0.99.1" &&
 				agentMetadata.version === tuiMetadata.version) return { version: tuiMetadata.version, editorClass };
 		} catch { /* Unknown package or constructor: ordinary editing stays active. */ }
 	}
@@ -1347,6 +1349,7 @@ function messageText(content: string | Array<{ type: string; text?: string }>): 
 
 interface CardComponentOptions {
 	expanded: boolean;
+	previewRows?: number;
 	hint?: string;
 }
 
@@ -1370,15 +1373,19 @@ function spaced(component: { render(width: number): string[]; invalidate(): void
 	};
 }
 
+// Same rose identity as the Gentle AI tool cards (lib/gentle-ai-renderer.ts).
+const GENTLE_AI_GLYPH = "\u{1F339}";
+
 export function devBinaryCard(notice: DevBinaryNotice): Card {
 	if (notice.state === "invalid") {
-		return { title: "Gentle AI", subtitle: "dev binary override invalid", body: [notice.reason], tone: CARD_TONE.ERROR };
+		return { title: "gentle-ai", subtitle: "dev binary override invalid", body: [notice.reason], tone: CARD_TONE.ERROR, glyph: GENTLE_AI_GLYPH };
 	}
 	return {
-		title: "Gentle AI",
+		title: "gentle-ai",
 		subtitle: "dev binary override · field-test only",
 		body: [`${notice.path} · sha256:${notice.sha256.slice(0, SHA_PREFIX_LENGTH)}`],
 		tone: CARD_TONE.WARNING,
+		glyph: GENTLE_AI_GLYPH,
 	};
 }
 
@@ -1438,6 +1445,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	if (!shellEnabled(env)) return;
 	const profileReader = createActiveProfileReader(env);
 	const deps: ShellDeps = { ...defaultShellDeps, activeProfile: profileReader, ...overrides };
+	let closeCustomize: (() => void) | undefined;
 	let profilePoll: ReturnType<typeof setInterval> | undefined;
 	const stopProfilePoll = () => {
 		if (profilePoll) clearInterval(profilePoll);
@@ -1614,9 +1622,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		renderHost?.requestRender();
 	});
 	pi.registerMessageRenderer(REVIEW_PREFLIGHT_TYPE, (message, options, theme) => {
-		const body = messageText(message.content as string | Array<{ type: string; text?: string }>).split("\n");
+		const lines = messageText(message.content as string | Array<{ type: string; text?: string }>).split("\n");
+		const body = options.expanded ? lines : lines.filter((line) => line.trim() !== "");
 		const hint = keyHint("app.tools.expand", options.expanded ? "collapse" : "expand");
-		return cardComponent({ title: "Gentle AI", subtitle: "review preflight", body, tone: CARD_TONE.INFO }, theme, { expanded: options.expanded, hint });
+		return cardComponent({ title: "Gentle AI", subtitle: "review preflight", body, tone: CARD_TONE.INFO }, theme, { expanded: options.expanded, previewRows: 3, hint });
 	});
 	const openUsage = (ctx: ExtensionContext) =>
 		ctx.ui.custom<null>(
@@ -1668,6 +1677,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const animationOptions = { gentlePiConfigHome: doubleEscCancelConfigHome };
 	let animationPolicy = resolveAnimationPolicy(animationOptions).policy;
 	let vimPolicy = resolveVimPolicy(animationOptions).policy;
+	// Conversation cards read the style from a process-wide slot; the saved
+	// preference fills it at startup and again on every session start.
+	const applyCardStyle = () => setCardStyle(resolveCardStyle(animationOptions).style);
+	applyCardStyle();
 	const reportVim = (ctx: ExtensionContext, result: ReturnType<typeof resolveVimPolicy>) => {
 		const source = result.source === "default" ? "built-in default" : `global file ${result.globalFile}`;
 		const effective = prompt?.effectiveVimPolicy;
@@ -1742,6 +1755,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		},
 	});
 	pi.on("session_start", async (_event, ctx) => {
+		closeCustomize?.();
 		if (review) {
 			review = undefined;
 			redrawReview();
@@ -1752,6 +1766,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		changes = undefined;
 		registry = new SessionWorktreeRegistry(pi, ctx.sessionManager, ctx.cwd, deps.resolveWorktree);
 		registry.start();
+		applyCardStyle();
 		if (!ctx.hasUI) return;
 		visualSettings = resolveVisualSettings(animationOptions).settings;
 		if (!overrides.activeProfile) {
@@ -1842,7 +1857,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		ctx.ui.setWidget(
 			DEV_BINARY_WIDGET_KEY,
 			notice
-				? (_tui, theme) => spaced(cardComponent(devBinaryCard(notice), theme, { expanded: true }))
+				? (_tui, theme) => spaced(cardComponent(devBinaryCard(notice), theme, { expanded: true, previewRows: 3 }))
 				: undefined,
 		);
 		if (changes !== tracker) return;
@@ -1850,6 +1865,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		applyChanges(ctx, tracker.model);
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
+		closeCustomize?.();
 		if (review) {
 			review = undefined;
 			redrawReview();
@@ -1906,18 +1922,32 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		});
 	}
 	pi.registerCommand("gentle:customize", {
-		description: "Configure animations, banner, themes, layout, global Vim prompt editing and prompt history capture.",
+		description: "Configure appearance, global Vim prompt editing, session-only YOLO permission and prompt history capture.",
 		handler: async (_args, ctx) => {
 			if (ctx.mode !== "tui" || !ctx.hasUI) {
 				if (ctx.hasUI) ctx.ui.notify("Visual customization requires an interactive terminal.", "warning");
 				return;
 			}
+			closeCustomize?.();
+			let closed = false;
+			let adapter: YoloUiAdapter | undefined;
+			let unobserve: (() => void) | undefined;
+			let finish: (() => void) | undefined;
+			const close = () => {
+				if (closed) return;
+				closed = true;
+				unobserve?.(); adapter?.dispose(); finish?.();
+				if (closeCustomize === close) closeCustomize = undefined;
+			};
+			closeCustomize = close;
 			const home = { gentlePiConfigHome: doubleEscCancelConfigHome };
 			const rows: CustomizeRow[] = [];
 			const bannerHome = doubleEscCancelConfigHome;
-			let banner = await readBannerConfig(bannerHome);
+			let banner = await readBannerConfig(bannerHome).catch(error => { close(); throw error; });
+			if (closed) return;
 			let activeTheme = ctx.ui.theme.name;
 			let customizeView: VisualCustomizeView | undefined;
+			let requestCustomizeRender: (() => void) | undefined;
 			let category: CustomizeCategory = "Animations";
 			const add = (label: CustomizeRow["label"], notice: string, action: () => void | false | Promise<void | false>, preview?: CustomizeRow["preview"]) => rows.push({ category, label, preview, action: async () => {
 				if (await action() === false) return;
@@ -2016,6 +2046,40 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					reportVim(ctx, result);
 				},
 			});
+			let yoloDisplay: YoloDisplay = YOLO_DISPLAY.unavailable;
+			let requestYoloRender = () => {};
+			let refreshing: Promise<void> | undefined;
+			let refreshAgain = false;
+			// One in-flight read and one dirty bit coalesce slash/action/revocation
+			// changes. Labels and previews only read the authority-free snapshot.
+			const refreshYolo = (): Promise<void> => {
+				refreshAgain = true;
+				if (refreshing) return refreshing;
+				refreshing = (async () => {
+					while (refreshAgain && !closed) {
+						refreshAgain = false;
+						const next = await adapter?.read().catch(() => YOLO_DISPLAY.unavailable) ?? YOLO_DISPLAY.unavailable;
+						if (closed) return;
+						yoloDisplay = next;
+						requestYoloRender();
+					}
+				})().finally(() => { refreshing = undefined; });
+				return refreshing;
+			};
+			rows.push({
+				category,
+				label: () => `YOLO: ${yoloDisplay} · session only`,
+				preview: () => ({ title: "YOLO · session permission", sample: "ordinary scoped commits/push/PR · destructive confirmations remain · review consent unchanged · reset on reload" }),
+				action: async () => {
+					if (closed) return;
+					if (!adapter || yoloDisplay === YOLO_DISPLAY.unavailable) {
+						ctx.ui.notify("YOLO is unavailable in this live primary session.", "warning");
+						return;
+					}
+					await adapter.toggle();
+					await refreshYolo();
+				},
+			});
 			category = "History";
 			// The prompt-history extension re-reads this preference per prompt, so a
 			// change applies without restart. An explicit GENTLE_PI_HISTORY_CAPTURE
@@ -2045,6 +2109,22 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			for (const value of Object.values(STATUS_PLACEMENT)) add(() => `Status placement: ${value}${visual().statusPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, statusPlacement: value })), () => layoutPreview({ ...visual(), statusPlacement: value }));
 			for (const value of Object.values(HEADER_PLACEMENT)) add(() => `Header placement: ${value}${visual().headerPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, headerPlacement: value })), () => layoutPreview({ ...visual(), headerPlacement: value }));
 			for (const value of Object.values(DENSITY)) add(() => `Density: ${value}${visual().density === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, density: value })), () => layoutPreview({ ...visual(), density: value }));
+			category = "Cards";
+			// Conversation cards only; the Agents, Todos and Status panels keep their frame.
+			const cardStylePreview = { [CARD_STYLE.NEON]: "╭─ ✿ read package.json ─╮  outlined card", [CARD_STYLE.FLOAT]: "▎ ✿ read package.json     borderless panel" };
+			for (const style of Object.values(CARD_STYLE)) add(
+				() => {
+					const current = resolveCardStyle(home);
+					return `Card style: ${style}${current.style === style && !current.malformed ? " (current)" : ""}`;
+				},
+				`Card style: ${style}. Conversation cards redraw now.`,
+				() => {
+					writeCardStyle(style, home);
+					setCardStyle(style);
+					requestCustomizeRender?.();
+				},
+				() => ({ title: `Cards · ${style}`, sample: `${cardStylePreview[style]}${resolveCardStyle(home).malformed ? " · malformed or unreadable file" : ""}` }),
+			);
 			category = "Sections";
 			for (const key of VISUAL_SECTION_KEYS) add(
 				() => `Section ${key}: ${visual().visibility[key] ? "shown" : "hidden"}`,
@@ -2130,10 +2210,28 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				delete: (name) => { deleteVisualProfile(name, home); ctx.ui.notify(`Visual profile ${name} deleted.`, "info"); },
 				reset: () => { resetVisualProfiles(home); ctx.ui.notify("Visual profile catalog cleared; active settings unchanged.", "info"); },
 			};
-			await ctx.ui.custom<null>((tui, theme, _keys, done) => {
-				customizeView = new VisualCustomizeView({ rows, profiles, theme, requestRender: () => tui.requestRender(), rowsAvailable: () => Math.max(0, Math.floor(tui.terminal.rows * 0.85) - 2), onError: (error) => ctx.ui.notify(`Visual customization: ${error.message}`, "error"), onClose: () => done(null) });
-				return customizeView;
-			}, { overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "85%" } });
+			try {
+				adapter = await discoverYoloUiAdapter(pi, ctx);
+				if (closed) { adapter?.dispose(); return; }
+				unobserve = adapter?.observe(() => { void refreshYolo(); });
+				await refreshYolo();
+				if (closed) return;
+				await ctx.ui.custom<null>((tui, theme, _keys, done) => {
+					finish = () => done(null);
+					if (closed) done(null);
+					requestYoloRender = () => { if (!closed) tui.requestRender(); };
+					requestCustomizeRender = requestYoloRender;
+					customizeView = new VisualCustomizeView({ rows, profiles, theme, requestRender: requestYoloRender, rowsAvailable: () => Math.max(0, Math.floor(tui.terminal.rows * 0.85) - 2), onError: (error) => { if (!closed) ctx.ui.notify(`Visual customization: ${error.message}`, "error"); }, onClose: close });
+					const view = customizeView;
+					// Own interaction lifetime here, leaving the shared view unchanged.
+					return {
+						render: (width) => closed ? [] : view.render(width),
+						handleInput: (data) => { if (!closed) view.handleInput(data); },
+						invalidate: () => { if (!closed) view.invalidate(); },
+						dispose: close,
+					};
+				}, { overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "85%" } });
+			} finally { close(); }
 		},
 	});
 	pi.registerCommand("gentle:vim", {

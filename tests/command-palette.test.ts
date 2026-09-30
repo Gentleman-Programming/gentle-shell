@@ -376,7 +376,7 @@ test("COMMAND_PALETTE_CATALOG matches the curated command set, in order", () => 
 		"gentle:toggle-text-logo",
 		"gentle:dev-binary",
 	]);
-	assert.deepEqual(byTitle("Session"), ["yolo", "gentle:changes", "gentle:agents", "gentle:usage", "gentle:review-session-permission"]);
+	assert.deepEqual(byTitle("Session"), ["gentle:yolo", "gentle:changes", "gentle:agents", "gentle:usage", "gentle:review-session-permission"]);
 	assert.deepEqual(byTitle("Diagnostics"), ["gentle:status", "gentle:doctor"]);
 	assert.equal(byTitle("SDD"), undefined);
 	assert.deepEqual(byTitle("Skills"), ["skill-registry:refresh"]);

@@ -3,7 +3,7 @@ import { appendSystemPromptOnce, type AppendableSystemPromptOptions } from "./ap
 import { captureReviewSessionIdentity, sameReviewSessionIdentity, type ReviewSessionIdentity } from "./review-session-standing-permission.ts";
 
 export const YOLO_STATUS_KEY = "gentle:yolo";
-export const YOLO_STATUS_TEXT = "YOLO ON — destructive confirmations remain";
+export const YOLO_STATUS_TEXT = "🚀 YOLO ON 🔥 — destructive confirmations remain";
 export const YOLO_DIRECTIVE = `<gentle-yolo-session>
 YOLO session standing permission is ON, explicitly activated by the human for this live primary session and Git clone.
 Qualify the default commit, push and PR confirmation clauses: for ordinary already-scoped implementation, checks, commits, non-force pushes and PR creation, this activation supplies standing permission instead of repeated permission questions. Make ordinary reversible implementation choices without needless interviews.
@@ -137,6 +137,17 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 		publish(context, false);
 		observers.clear();
 	};
+	// Binds an interaction to the session that opened it: a reload, replacement,
+	// or cwd change while the human is deciding must not act on the new scope.
+	const bindCurrent = (context: ExtensionContext, disposed = () => false): (() => boolean) => {
+		const generation = ownerGeneration;
+		const manager = context.sessionManager, sessionId = manager.getSessionId(), cwd = context.cwd;
+		return () => {
+			try { return !disposed() && generation === ownerGeneration && manager === context.sessionManager &&
+				sessionId === manager.getSessionId() && cwd === context.cwd && context.hasUI; }
+			catch { return false; } // SDK contexts throw after runtime replacement.
+		};
+	};
 	// Both entry points execute this operation, including off/pending-on races.
 	const humanAction = async (action: HumanAction, context: ExtensionContext, current = () => true): Promise<void> => {
 		if (!current()) return;
@@ -166,15 +177,9 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 		if (typeof request.respond !== "function" || !request.context) return;
 		const context = request.context;
 		try {
-			const generation = ownerGeneration;
-			const manager = context.sessionManager, sessionId = manager.getSessionId(), cwd = context.cwd;
 			let disposed = false;
 			const subscriptions = new Set<() => void>();
-			const current = () => {
-				try { return !disposed && generation === ownerGeneration && manager === context.sessionManager &&
-					sessionId === manager.getSessionId() && cwd === context.cwd && context.hasUI; }
-				catch { return false; } // SDK contexts throw after runtime replacement.
-			};
+			const current = bindCurrent(context, () => disposed);
 			const read = async (): Promise<YoloDisplay> => {
 				if (!current()) return YOLO_DISPLAY.unavailable;
 				const epoch = policy.epoch;
@@ -201,19 +206,28 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 			});
 		} catch { /* Missing or obsolete trusted host context: discovery expires closed. */ }
 	});
-	pi.registerCommand("yolo", {
-		description: "Session-only ordinary development/delivery permission (on|off|status; empty toggles). Destructive confirmations remain.",
+	pi.registerCommand("gentle:yolo", {
+		description: "Session-only ordinary development/delivery permission (enable|disable|status); no argument opens a menu. Destructive confirmations remain.",
 		handler: async (args, context) => {
-			const action = args.trim();
-			if (!["", "on", "off", "status"].includes(action)) {
-				context.ui.notify("Use /yolo on|off|status, or /yolo to toggle. State unchanged.", "warning");
+			let action = args.trim() || "status";
+			let current = () => true;
+			// Headless callers keep the status fallback: an empty argument never grants.
+			if (!args.trim() && context.hasUI && typeof context.ui.select === "function") {
+				current = bindCurrent(context);
+				const state = await active(context) ? YOLO_DISPLAY.on : YOLO_DISPLAY.off;
+				const selected = await context.ui.select(`🚀 Gentle YOLO 🔥 — full speed, destructive actions still ask (current: ${state})`, ["enable", "disable", "status"]);
+				if (selected === undefined) return;
+				action = selected;
+			}
+			if (action !== "enable" && action !== "disable" && action !== "status") {
+				context.ui.notify("Use /gentle:yolo enable|disable|status. State unchanged.", "warning");
 				return;
 			}
 			if (action === "status") {
 				context.ui.notify(await active(context) ? YOLO_STATUS_TEXT : "YOLO OFF", "info");
 				return;
 			}
-			await humanAction(action as HumanAction, context);
+			await humanAction(action === "enable" ? HUMAN_ACTION.on : HUMAN_ACTION.off, context, current);
 		},
 	});
 	return { active, humanAction, reset };

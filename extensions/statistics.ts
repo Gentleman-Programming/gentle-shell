@@ -16,7 +16,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
-import { buildBillableReport, collectBillableSessions, defaultBillableRange, readBillableConfig, type BillableConfig, type BillableRange, type BillableSessionInput } from "../lib/billable-hours.ts";
+import { billableEnabled, buildBillableReport, collectBillableSessions, defaultBillableRange, readBillableConfig, type BillableConfig, type BillableRange, type BillableSessionInput } from "../lib/billable-hours.ts";
 import { aggregateUsage, type UsageAggregate } from "../lib/session-aggregate.ts";
 import { exportBillableCsv, exportBillableJson, exportBillableMarkdown, exportStatisticsCsv, exportStatisticsJson, exportStatisticsMarkdown } from "../lib/session-export.ts";
 import { parseTranscriptLine, readTranscript, type TranscriptTaskIdentity, type TranscriptUsageRecord } from "../lib/session-transcript.ts";
@@ -46,6 +46,8 @@ export interface StatisticsDeps {
 	readonly exportSnapshot?: (snapshot: StatisticsSnapshot) => Promise<string>;
 	/** Billable config (tests, or a caller that resolved it elsewhere). */
 	readonly billableConfig?: BillableConfig;
+	/** Resolved billable opt-in (tests). Defaults to `billableEnabled(process.env)`. */
+	readonly billableEnabled?: boolean;
 	/** Override the billable collection (tests). */
 	readonly collectBillable?: (options: { agentHome: string; range: BillableRange }) => Promise<BillableSessionInput[]>;
 }
@@ -121,6 +123,7 @@ function themeStyle(theme: { fg(role: string, text: string): string }): Statisti
 export default function statistics(pi: ExtensionAPI, deps: StatisticsDeps = {}): void {
 	const now = deps.now ?? (() => Date.now());
 	const agentHome = defaultAgentHome(deps);
+	const billableOn = deps.billableEnabled ?? billableEnabled(process.env);
 	let cached: StatisticsSnapshot | undefined;
 
 	const compute = async (ctx: ExtensionContext): Promise<StatisticsSnapshot> => {
@@ -172,7 +175,9 @@ export default function statistics(pi: ExtensionAPI, deps: StatisticsDeps = {}):
 				const view = new StatisticsView({
 					getModel: () => model,
 					style: themeStyle(theme),
+					rows: () => Math.max(0, tui.terminal.rows),
 					onClose: () => close(),
+					...(billableOn ? { onBillable: () => { void runBillable(ctx, ""); } } : {}),
 					onExport: () => {
 						void (async () => {
 							if (!current) return;
@@ -208,7 +213,7 @@ export default function statistics(pi: ExtensionAPI, deps: StatisticsDeps = {}):
 				})();
 				return view;
 			},
-			{ overlay: true },
+			{ overlay: true, overlayOptions: { margin: 1 } },
 		);
 	};
 
@@ -236,8 +241,10 @@ export default function statistics(pi: ExtensionAPI, deps: StatisticsDeps = {}):
 		description: STATISTICS_COMMAND_DESCRIPTION,
 		handler: async (_args, ctx) => openOverlay(ctx),
 	});
-	pi.registerCommand(BILLABLE_COMMAND_NAME, {
-		description: BILLABLE_COMMAND_DESCRIPTION,
-		handler: async (args, ctx) => runBillable(ctx, args),
-	});
+	if (billableOn) {
+		pi.registerCommand(BILLABLE_COMMAND_NAME, {
+			description: BILLABLE_COMMAND_DESCRIPTION,
+			handler: async (args, ctx) => runBillable(ctx, args),
+		});
+	}
 }

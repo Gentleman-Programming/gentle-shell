@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+	billableEnabled,
 	buildBillableReport,
 	billableAmount,
 	BILLABLE_PROVENANCE,
@@ -136,6 +137,15 @@ test("the report states which time is measured and which is derived", () => {
 	assert.match(report.provenance.measured, /wall-clock/);
 	assert.match(report.provenance.derived, /timestamp pairing/);
 	assert.match(report.provenance.estimated, /idle/);
+});
+
+test("the billable feature is opt-in", () => {
+	assert.equal(billableEnabled({}), false, "off by default: not everyone bills hours");
+	assert.equal(billableEnabled({ GENTLE_BILLABLE: "1" }), true);
+	assert.equal(billableEnabled({ GENTLE_BILLABLE: "0" }), false);
+	assert.equal(billableEnabled({ GENTLE_BILLABLE_RATE: "45" }), true, "a configured rate enables it");
+	assert.equal(billableEnabled({ GENTLE_BILLABLE: "0", GENTLE_BILLABLE_RATE: "45" }), false, "an explicit off wins over the rate");
+	assert.equal(billableEnabled({ GENTLE_BILLABLE_RATE: "  " }), false, "a blank rate does not enable it");
 });
 
 test("defaultBillableRange spans the requested days up to now", () => {

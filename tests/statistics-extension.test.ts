@@ -106,7 +106,7 @@ test("the command opens the overlay with the overlay option in TUI mode", async 
 	statistics(h.pi, { computeSnapshot: async () => SNAPSHOT });
 	await h.commands.get(STATISTICS_COMMAND_NAME)!.handler("", h.ctx);
 	assert.equal(h.overlays(), 1);
-	assert.deepEqual(h.overlayOptions(), { overlay: true });
+	assert.deepEqual(h.overlayOptions(), { overlay: true, overlayOptions: { margin: 1 } });
 	await tick();
 	assert.equal(h.components.length, 1);
 	assert.equal(h.components[0]!.render(80).length > 0, true);
@@ -146,6 +146,7 @@ test("the billable command collects a period and exports through the renderers",
 	statistics(h.pi, {
 		agentHome: scratch,
 		computeSnapshot: async () => SNAPSHOT,
+		billableEnabled: true,
 		billableConfig: { hourlyRate: 50, currency: "USD", rounding: { mode: "none" } },
 		collectBillable: async () => {
 			collected += 1;
@@ -157,6 +158,22 @@ test("the billable command collects a period and exports through the renderers",
 	await command!.handler("--days 3", h.ctx);
 	assert.equal(collected, 1);
 	assert.equal(h.notifications.some((message) => message.includes("Billable report")), true);
+});
+
+test("the billable command and the panel key are opt-in", async () => {
+	const off = harness();
+	statistics(off.pi, { computeSnapshot: async () => SNAPSHOT, billableEnabled: false });
+	assert.equal(off.commands.has(BILLABLE_COMMAND_NAME), false, "no command when the feature is off");
+	await off.commands.get(STATISTICS_COMMAND_NAME)!.handler("", off.ctx);
+	await tick();
+	assert.equal(off.components[0]!.render(100).some((line) => line.includes("Billable")), false, "no b key when the feature is off");
+
+	const on = harness();
+	statistics(on.pi, { computeSnapshot: async () => SNAPSHOT, billableEnabled: true });
+	assert.equal(on.commands.has(BILLABLE_COMMAND_NAME), true);
+	await on.commands.get(STATISTICS_COMMAND_NAME)!.handler("", on.ctx);
+	await tick();
+	assert.equal(on.components[0]!.render(100).some((line) => line.includes("Billable")), true, "the b key shows when the feature is on");
 });
 
 test("the palette catalog row is additive and safe when the command is absent", () => {

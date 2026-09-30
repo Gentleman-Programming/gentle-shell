@@ -64,6 +64,22 @@ export interface BillableEnv {
 	readonly GENTLE_BILLABLE_RATE?: string;
 	readonly GENTLE_BILLABLE_CURRENCY?: string;
 	readonly GENTLE_BILLABLE_ROUNDING?: string;
+	/** Explicit on/off. When absent, a configured rate enables the feature. */
+	readonly GENTLE_BILLABLE?: string;
+}
+
+function truthy(value: string | undefined): boolean {
+	return !["", "0", "false", "no", "off"].includes((value ?? "").trim().toLowerCase());
+}
+
+/**
+ * The billable feature is opt-in: not everyone bills hours. It is on when
+ * `GENTLE_BILLABLE` is truthy, or when no explicit flag is set and a rate is
+ * configured. An explicit `GENTLE_BILLABLE=0` always wins.
+ */
+export function billableEnabled(env: BillableEnv): boolean {
+	if (env.GENTLE_BILLABLE !== undefined) return truthy(env.GENTLE_BILLABLE);
+	return env.GENTLE_BILLABLE_RATE !== undefined && env.GENTLE_BILLABLE_RATE.trim() !== "";
 }
 
 export function readBillableConfig(env: BillableEnv): BillableConfig {

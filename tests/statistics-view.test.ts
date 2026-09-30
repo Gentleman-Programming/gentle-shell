@@ -121,6 +121,38 @@ test("the overlay keys close, export and refresh", () => {
 	assert.deepEqual([closed, exported, refreshed], [2, 1, 1], "an unknown key is ignored");
 });
 
+test("the billable key exports and the footer shows it", () => {
+	let billed = 0;
+	const view = new StatisticsView({
+		getModel: () => buildStatisticsModel(AGGREGATE, TIMELINE, 0),
+		onClose: () => {},
+		onExport: () => {},
+		onRefresh: () => {},
+		onBillable: () => {
+			billed += 1;
+		},
+	});
+	view.handleInput("b");
+	assert.equal(billed, 1);
+	assert.match(view.render(100).join("\n"), /b Billable/);
+});
+
+test("a short terminal drops to a compact layout that still shows the title and the keys", () => {
+	const model = buildStatisticsModel(AGGREGATE, TIMELINE, 0);
+	const full = renderStatistics(model, 100);
+	const compact = renderStatistics(model, 100, undefined, { compact: true });
+	assert.ok(compact.length < full.length, "compact is shorter than the full panel");
+	assert.equal(compact.some((line) => line.includes("Efficiency")), false, "the Efficiency section is dropped");
+	assert.equal(compact[0]!.startsWith("╭"), true, "the title frame survives");
+	assert.match(compact.join("\n"), /b Billable/);
+	assert.equal(compact.every((line) => visibleWidth(line) === 100), true);
+
+	const view = new StatisticsView({ getModel: () => model, rows: () => 15, onClose: () => {}, onExport: () => {}, onRefresh: () => {} });
+	assert.equal(view.render(100).some((line) => line.includes("Efficiency")), false, "a short terminal renders compact");
+	const tall = new StatisticsView({ getModel: () => model, rows: () => 40, onClose: () => {}, onExport: () => {}, onRefresh: () => {} });
+	assert.equal(tall.render(100).some((line) => line.includes("Efficiency")), true, "a tall terminal renders the full panel");
+});
+
 test("render reads the model getter and never rebuilds an aggregate", () => {
 	let calls = 0;
 	const view = new StatisticsView({

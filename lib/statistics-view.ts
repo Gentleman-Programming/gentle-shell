@@ -175,62 +175,75 @@ function rowLines(row: StatisticsRow, width: number, style: StatisticsStyle): st
 	return lines;
 }
 
+export interface StatisticsRenderOptions {
+	/** Drop the blanks and the Efficiency section so the panel fits a short terminal. */
+	readonly compact?: boolean;
+	/** Show the billable key hint (default true). */
+	readonly billable?: boolean;
+}
+
+function footerText(options: StatisticsRenderOptions): string {
+	return options.billable === false ? "e Export   r Refresh   Esc/q Close" : "e Export   r Refresh   b Billable   Esc/q Close";
+}
+
 /** The stacked, frameless layout used below `STATISTICS_NARROW_WIDTH`. */
-function renderNarrow(model: StatisticsModel, width: number, style: StatisticsStyle): string[] {
+function renderNarrow(model: StatisticsModel, width: number, style: StatisticsStyle, options: StatisticsRenderOptions): string[] {
 	const lines: string[] = [];
 	lines.push(style.title("Session statistics"));
 	for (const line of wrapParts([costText(model), `${model.turns} turns`, `${formatTokens(model.tokens.total)} tokens`, model.timeline ? formatDuration(model.timeline.wallClockMs) : "n/a"], width)) lines.push(line);
 	if (model.timeline) for (const line of wrapParts([`model ${formatDuration(model.timeline.modelMs)}`, `tools ${formatDuration(model.timeline.toolMs)}`, `idle ${formatDuration(model.timeline.idleMs)} (est.)`], width)) lines.push(style.dim(line));
-	lines.push("");
+	if (!options.compact) lines.push("");
 	lines.push(style.accent("Helpers"));
 	if (model.subagents.length === 0) lines.push(style.dim("  none"));
 	for (const row of model.subagents) lines.push(...rowLines(row, width, style));
-	lines.push("");
+	if (!options.compact) lines.push("");
 	lines.push(style.accent("Models"));
 	if (model.models.length === 0) lines.push(style.dim("  none"));
 	for (const row of model.models) lines.push(...rowLines(row, width, style));
-	lines.push("");
-	lines.push(style.accent("Efficiency"));
-	for (const line of wrapParts(model.ratios.map((entry) => `${entry.label} ${entry.value}`), width)) lines.push(style.dim(`  ${line}`));
-	lines.push("");
-	lines.push(style.dim("e Export   r Refresh   Esc/q Close"));
+	if (!options.compact) {
+		lines.push("", style.accent("Efficiency"));
+		for (const line of wrapParts(model.ratios.map((entry) => `${entry.label} ${entry.value}`), width)) lines.push(style.dim(`  ${line}`));
+		lines.push("");
+	}
+	lines.push(style.dim(footerText(options)));
 	lines.push(style.dim(STATISTICS_LEGEND));
 	return lines.map((line) => fit(line, width));
 }
 
 /** The framed layout used at and above `STATISTICS_NARROW_WIDTH`. */
-function renderWide(model: StatisticsModel, width: number, style: StatisticsStyle): string[] {
+function renderWide(model: StatisticsModel, width: number, style: StatisticsStyle, options: StatisticsRenderOptions): string[] {
 	const inner = Math.max(1, width - 4);
 	const content: string[] = [];
-	content.push("");
+	if (!options.compact) content.push("");
 	for (const line of wrapParts([costText(model), `${model.turns} turns`, `${formatTokens(model.tokens.total)} tokens`, model.timeline ? formatDuration(model.timeline.wallClockMs) : "n/a"], inner)) content.push(`  ${line}`);
 	if (model.timeline) content.push(`  ${style.dim(timeSplit(model))}`);
-	content.push("");
+	if (!options.compact) content.push("");
 	content.push(style.accent("  Helpers"));
 	if (model.subagents.length === 0) content.push(style.dim("    none"));
 	for (const row of model.subagents) content.push(...rowLines(row, inner, style));
-	content.push("");
+	if (!options.compact) content.push("");
 	content.push(style.accent("  Models"));
 	if (model.models.length === 0) content.push(style.dim("    none"));
 	for (const row of model.models) content.push(...rowLines(row, inner, style));
-	content.push("");
-	content.push(style.accent("  Efficiency"));
-	for (const line of wrapParts(model.ratios.map((entry) => `${entry.label} ${entry.value}`), inner - 4)) content.push(style.dim(`    ${line}`));
-	content.push("");
+	if (!options.compact) {
+		content.push("", style.accent("  Efficiency"));
+		for (const line of wrapParts(model.ratios.map((entry) => `${entry.label} ${entry.value}`), inner - 4)) content.push(style.dim(`    ${line}`));
+		content.push("");
+	}
 
 	const title = " Session statistics ";
 	const top = `${style.frame("╭─")}${style.title(title)}${style.frame(`${"─".repeat(Math.max(0, width - 3 - visibleWidth(title)))}╮`)}`;
 	const body = content.map((line) => `${style.frame("│ ")}${fit(line, inner)}${style.frame(" │")}`);
-	const footer = `${style.frame("│ ")}${fit(style.dim("e Export   r Refresh   Esc/q Close"), inner)}${style.frame(" │")}`;
+	const footer = `${style.frame("│ ")}${fit(style.dim(footerText(options)), inner)}${style.frame(" │")}`;
 	const legend = `${style.frame("│ ")}${fit(style.dim(STATISTICS_LEGEND), inner)}${style.frame(" │")}`;
 	const bottom = style.frame(`╰${"─".repeat(Math.max(0, width - 2))}╯`);
 	return [top, ...body, footer, legend, bottom];
 }
 
-/** Render the model at `width`: framed when wide, stacked when narrow. */
-export function renderStatistics(model: StatisticsModel, width: number, style: StatisticsStyle = PLAIN_STATISTICS_STYLE): string[] {
+/** Render the model at `width`: framed when wide, stacked when narrow, compact on a short terminal. */
+export function renderStatistics(model: StatisticsModel, width: number, style: StatisticsStyle = PLAIN_STATISTICS_STYLE, options: StatisticsRenderOptions = {}): string[] {
 	const safeWidth = Math.max(1, width);
-	return safeWidth < STATISTICS_NARROW_WIDTH ? renderNarrow(model, safeWidth, style) : renderWide(model, safeWidth, style);
+	return safeWidth < STATISTICS_NARROW_WIDTH ? renderNarrow(model, safeWidth, style, options) : renderWide(model, safeWidth, style, options);
 }
 
 export interface StatisticsViewDeps {
@@ -239,8 +252,15 @@ export interface StatisticsViewDeps {
 	readonly onClose: () => void;
 	readonly onExport: () => void;
 	readonly onRefresh: () => void;
+	/** Export the billable-hours report for the current period. */
+	readonly onBillable?: () => void;
+	/** Terminal rows, so the panel drops to a compact layout on a short terminal. */
+	readonly rows?: () => number;
 	readonly style?: StatisticsStyle;
 }
+
+/** Below this many terminal rows the panel drops the blanks and the Efficiency section. */
+export const STATISTICS_COMPACT_ROWS = 20;
 
 /** The overlay component: renders the cached model and owns the keys. */
 export class StatisticsView {
@@ -251,13 +271,16 @@ export class StatisticsView {
 	}
 
 	render(width: number): string[] {
-		return renderStatistics(this.deps.getModel(), width, this.deps.style ?? PLAIN_STATISTICS_STYLE);
+		const rows = this.deps.rows?.();
+		const compact = rows !== undefined && rows > 0 && rows < STATISTICS_COMPACT_ROWS;
+		return renderStatistics(this.deps.getModel(), width, this.deps.style ?? PLAIN_STATISTICS_STYLE, { compact, billable: this.deps.onBillable !== undefined });
 	}
 
 	handleInput(data: string): void {
 		if (data === "\u001b" || data === "q") this.deps.onClose();
 		else if (data === "e") this.deps.onExport();
 		else if (data === "r") this.deps.onRefresh();
+		else if (data === "b") this.deps.onBillable?.();
 	}
 
 	/** The model is supplied externally, so there is no cached render state to drop. */

@@ -70,6 +70,8 @@ Every bound fails closed. A value that cannot fit is dropped or shrunk; the enco
 | `timeline.modelLatency`, `timeline.toolDurations` | 20 entries each |
 | whole payload | 64 KiB |
 
+A tool command in `timeline.toolDurations` is redacted of absolute paths (`/...` becomes `…`) and then bounded, so no filesystem path reaches the wire.
+
 ## Oversize is a discard, not a silent truncation
 
 When the payload exceeds the bound, `encodeStatisticsLines` shrinks it in order: halve every breakdown's entries (repeatedly, down to zero), then drop the timeline. If even that does not fit, it returns **no lines** and the publisher sends nothing — a partial payload is never presented as complete. Malformed input fails closed to no lines.

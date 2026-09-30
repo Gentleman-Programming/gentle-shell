@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { aggregateUsage, type AggregationRecord } from "../lib/session-aggregate.ts";
+import { buildTimeline } from "../lib/session-timeline.ts";
 import { reportedCost, ABSENT_COST, type UsageTokens } from "../lib/session-usage.ts";
 import {
 	createStatisticsPublisher,
@@ -130,6 +131,16 @@ test("a busy attempt slot discards rather than queues", async () => {
 	await Promise.all([first, second]);
 	assert.equal(snapshots, 1, "the second flush while busy is discarded");
 	assert.equal(frames.length, 1);
+});
+
+test("a filesystem path in a tool command is redacted from the payload", () => {
+	const timeline = buildTimeline([
+		{ kind: "assistant", timestamp: 1000, model: "m", toolCalls: [{ id: "c1", name: "bash", command: "cat /home/secret/file.ts" }] },
+		{ kind: "toolResult", timestamp: 2000, toolName: "bash", toolCallId: "c1", isError: false },
+	]);
+	const line = encodeStatisticsLines(AGGREGATE, { timeline })[0]!;
+	assert.equal(line.includes("/home/"), false, "no absolute path may reach the wire");
+	assert.match(line, /…/);
 });
 
 test("a setWidget failure is reported, never thrown", async () => {

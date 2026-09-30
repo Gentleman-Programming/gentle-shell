@@ -64,6 +64,11 @@ function truncate(value: string, limit: number): string {
 	return value.length <= limit ? value : `${value.slice(0, Math.max(0, limit - 1))}…`;
 }
 
+/** No filesystem path may reach the wire: an absolute path run in a tool command is redacted. */
+function redactPaths(value: string): string {
+	return value.replace(/\/[^\s]*/g, "…");
+}
+
 /** The whitelisted bucket: turns, cost, tokens and ratios, never a field the aggregate also carries. */
 function bucketOf(bucket: UsageBucket): UsageBucket {
 	return { turns: bucket.turns, cost: bucket.cost, tokens: bucket.tokens, ratios: bucket.ratios };
@@ -77,7 +82,7 @@ function timelineSummary(timeline: Timeline, entries: number): StatisticsTimelin
 		idleMs: timeline.idleMs,
 		wallClockMs: timeline.wallClockMs,
 		modelLatency: timeline.modelLatency.slice(0, entries),
-		toolDurations: timeline.toolDurations.slice(0, entries),
+		toolDurations: timeline.toolDurations.slice(0, entries).map((entry) => ({ ...entry, command: truncate(redactPaths(entry.command), STATISTICS_STRING_LIMIT) })),
 	};
 }
 

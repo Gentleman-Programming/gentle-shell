@@ -279,3 +279,146 @@ export async function readTranscript(file: string, options: TranscriptReadOption
 	return { records, lines, malformedLines };
 }
 
+// ---------------------------------------------------------------------------
+// Enumeration: sessions by project and by date range.
+// ---------------------------------------------------------------------------
+
+async function listFiles(dir: string, suffix: string): Promise<string[]> {
+	try {
+		const entries = await readdir(dir, { withFileTypes: true });
+		return entries.filter((entry) => entry.isFile() && entry.name.endsWith(suffix)).map((entry) => join(dir, entry.name));
+	} catch {
+		return [];
+	}
+}
+
+async function fileRef(file: string, source: TranscriptSource): Promise<TranscriptFileRef | undefined> {
+	const sessionId = sessionIdFromFile(file);
+	if (sessionId === undefined) return undefined;
+	let startedAt = fileStartedAt(file);
+	if (startedAt === undefined) {
+		try {
+			startedAt = (await stat(file)).mtimeMs;
+		} catch {
+			return undefined;
+		}
+	}
+	return { file, source, sessionId, startedAt };
+}
+
+/**
+ * List transcript files for a project and a date range, sorted by session start
+ * then path so the order is deterministic. The range bounds the session's
+ * start time; a report that needs record-level filtering still sees every record.
+ */
+export async function listTranscriptFiles(options: TranscriptEnumerationOptions): Promise<readonly TranscriptFileRef[]> {
+	const includeParents = options.includeParents ?? options.projectCwd !== undefined;
+	const includeChildren = options.includeChildren ?? true;
+	const refs: TranscriptFileRef[] = [];
+	const collect = async (dir: string, source: TranscriptSource): Promise<void> => {
+		for (const file of await listFiles(dir, ".jsonl")) {
+			const ref = await fileRef(file, source);
+			if (ref) refs.push(ref);
+		}
+	};
+	if (includeParents && options.projectCwd !== undefined) await collect(piDefaultSessionDir(options.projectCwd, options.agentHome), "parent");
+	if (includeChildren) await collect(join(options.agentHome, "gentle-agents", "sessions"), "subagent");
+	const from = options.from ?? Number.NEGATIVE_INFINITY;
+	const to = options.to ?? Number.POSITIVE_INFINITY;
+	return refs
+		.filter((ref) => ref.startedAt >= from && ref.startedAt < to)
+		.sort((a, b) => a.startedAt - b.startedAt || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
+}
+
+// ---------------------------------------------------------------------------
+// Task identity: `{task, thread}` files, joined by transcript path.
+// ---------------------------------------------------------------------------
+
+function taskIdentity(content: string): { identity: TranscriptTaskIdentity; sessionPath?: string } | undefined {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(content);
+	} catch {
+		return undefined;
+	}
+	if (!isObject(parsed)) return undefined;
+	const task = parsed.task;
+	if (!isObject(task)) return undefined;
+	const taskId = task.id;
+	if (typeof taskId !== "string" || taskId.length === 0) return undefined;
+	const identity: TranscriptTaskIdentity = {
+		taskId,
+		agent: text(task.agent, UNKNOWN),
+		label: text(task.label, ""),
+		status: text(task.status, UNKNOWN),
+		turns: count(task.turns),
+		toolCalls: count(task.toolCalls),
+		startedAt: timestampMs(task.startedAt) ?? null,
+		endedAt: timestampMs(task.endedAt) ?? null,
+		model: text(task.model, UNKNOWN),
+		...(typeof task.thinking === "string" && task.thinking.length > 0 ? { thinking: task.thinking } : {}),
+	};
+	const sessionPath = typeof task.sessionPath === "string" && task.sessionPath.length > 0 ? task.sessionPath : undefined;
+	return { identity, ...(sessionPath ? { sessionPath } : {}) };
+}
+
+/** Load every finished task's identity, addressable by transcript path and session id. */
+export async function loadTaskIdentityIndex(tasksDir: string): Promise<TranscriptTaskIndex> {
+	const bySessionPath = new Map<string, TranscriptTaskIdentity>();
+	const bySessionId = new Map<string, TranscriptTaskIdentity>();
+	for (const file of await listFiles(tasksDir, ".json")) {
+		let content: string;
+		try {
+			content = await readFile(file, "utf8");
+		} catch {
+			continue;
+		}
+		const parsed = taskIdentity(content);
+		if (!parsed?.sessionPath) continue;
+		const resolved = resolve(parsed.sessionPath);
+		bySessionPath.set(resolved, parsed.identity);
+		const id = sessionIdFromFile(resolved);
+		if (id) bySessionId.set(id, parsed.identity);
+	}
+	return { bySessionPath, bySessionId };
+}
+
+/** `loadTaskIdentityIndex` against the standard `<agentHome>/gentle-agents/tasks` dir. */
+export function readTaskIdentityIndex(agentHome: string): Promise<TranscriptTaskIndex> {
+	return loadTaskIdentityIndex(join(agentHome, "gentle-agents", "tasks"));
+}
+
+// ---------------------------------------------------------------------------
+// Full replay: enumerate, join, stream.
+// ---------------------------------------------------------------------------
+
+/**
+ * Stream every usage record of the selected sessions, joining each child to its
+ * task identity. Files are processed in the deterministic enumeration order and
+ * records stay in line order, so two runs over the same tree agree.
+ */
+export async function* streamSessionUsage(options: SessionUsageReadOptions): AsyncGenerator<TranscriptItem> {
+	const refs = await listTranscriptFiles(options);
+	const index = await readTaskIdentityIndex(options.agentHome);
+	for (const ref of refs) {
+		const task =
+			ref.source === "subagent"
+				? index.bySessionPath.get(resolve(ref.file)) ?? index.bySessionId.get(ref.sessionId)
+				: undefined;
+		const readOptions: TranscriptReadOptions = { source: ref.source, sessionId: ref.sessionId, ...(task ? { task } : {}) };
+		for await (const item of streamTranscript(ref.file, readOptions)) yield item;
+	}
+}
+
+/** Collect the full replay. For a large tree prefer `streamSessionUsage`. */
+export async function readSessionUsage(options: SessionUsageReadOptions): Promise<TranscriptReadResult> {
+	const records: TranscriptUsageRecord[] = [];
+	let lines = 0;
+	let malformedLines = 0;
+	for await (const item of streamSessionUsage(options)) {
+		lines += 1;
+		if (item.kind === "usage") records.push(item.record);
+		else if (item.kind === "malformed") malformedLines += 1;
+	}
+	return { records, lines, malformedLines };
+}

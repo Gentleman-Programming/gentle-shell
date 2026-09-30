@@ -375,11 +375,13 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 	const liveSwitches: Array<{ kind: "model"; provider: string; id: string } | { kind: "thinking"; level: string }> = [];
 	let setModelResult = true;
 	let thinkingRejects = false;
+	let liveThinking = "medium";
 	createGentleAiExtension({ nativeReviewCli: null })({
 		on() {},
 		registerTool() {},
 		registerCommand(name, command) { commands.set(name, command); },
 		setModel: async (model: { provider: string; id: string }) => { liveSwitches.push({ kind: "model", provider: model.provider, id: model.id }); return setModelResult; },
+		getThinkingLevel: () => liveThinking,
 		setThinkingLevel: (level: string) => {
 			if (thinkingRejects) throw new Error(`thinking level ${level} is not supported by this model`);
 			liveSwitches.push({ kind: "thinking", level });
@@ -437,6 +439,10 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 		tui: fixtureTui as { terminal: { rows: number } },
 		panelVisits: () => panelVisits,
 		liveSwitches,
+		setLiveModel(provider: string, id: string, thinking: string) {
+			(ctx as { model?: { provider: string; id: string } }).model = { provider, id };
+			liveThinking = thinking;
+		},
 		refuseSetModel() { setModelResult = false; },
 		rejectThinkingLevel() { thinkingRejects = true; },
 		onPanel(action: typeof onPanel) { onPanel = action; },
@@ -1553,7 +1559,8 @@ test("concurrent guarded confirmations coalesce the Herdr lifecycle per extensio
 });
 
 
-test("RPIV questionnaire blockers emit only a private, balanced Herdr projection", () => {
+for (const channel of ["rpiv:ask-user:blocked", "gentle-pi:ask-user-question:blocked"]) {
+test(`${channel} emits only a private, balanced Herdr projection`, () => {
 	type HerdrBlockedEvent = { active: boolean; label?: string };
 	const eventHandlers = new Map<string, (data: unknown) => void>();
 	const published: Array<{ channel: string; data: unknown }> = [];
@@ -1576,9 +1583,10 @@ test("RPIV questionnaire blockers emit only a private, balanced Herdr projection
 		registerTool() {},
 	} as unknown as ExtensionAPI;
 	createGentleAiExtension({ nativeReviewCli: null })(pi);
-	assert.equal(eventHandlers.size, 2);
+	assert.equal(eventHandlers.size, 3);
 	assert.equal(eventHandlers.has("gentle-pi:ask-user-choice:blocked"), true);
 	assert.equal(eventHandlers.has("rpiv:ask-user:blocked"), true);
+	assert.equal(eventHandlers.has("gentle-pi:ask-user-question:blocked"), true);
 
 	const source = {
 		active: true,
@@ -1588,23 +1596,23 @@ test("RPIV questionnaire blockers emit only a private, balanced Herdr projection
 		command: "private questionnaire command",
 		arbitrary: { nested: "private questionnaire field" },
 	};
-	pi.events.emit("rpiv:ask-user:blocked", source);
-	assert.strictEqual(published[0]?.data, source, "the RPIV event remains the source event");
+	pi.events.emit(channel, source);
+	assert.strictEqual(published[0]?.data, source, "the questionnaire event remains the source event");
 	assert.deepEqual(herdrEvents, [{ active: true, label: "Questionnaire awaiting input" }]);
 	assert.doesNotMatch(JSON.stringify(herdrEvents), /private questionnaire|questionnaire-path/i);
 
-	pi.events.emit("rpiv:ask-user:blocked", { active: true, duplicate: true });
-	pi.events.emit("rpiv:ask-user:blocked", { active: "true" });
-	pi.events.emit("rpiv:ask-user:blocked", { active: null });
-	pi.events.emit("rpiv:ask-user:blocked", []);
-	pi.events.emit("rpiv:ask-user:blocked", null);
+	pi.events.emit(channel, { active: true, duplicate: true });
+	pi.events.emit(channel, { active: "true" });
+	pi.events.emit(channel, { active: null });
+	pi.events.emit(channel, []);
+	pi.events.emit(channel, null);
 	pi.events.emit("rpiv:ask-user:other", { active: false });
 	assert.deepEqual(herdrEvents, [{ active: true, label: "Questionnaire awaiting input" }]);
 
-	pi.events.emit("rpiv:ask-user:blocked", { active: false });
-	pi.events.emit("rpiv:ask-user:blocked", { active: false, duplicate: true });
-	pi.events.emit("rpiv:ask-user:blocked", { active: true });
-	pi.events.emit("rpiv:ask-user:blocked", { active: false });
+	pi.events.emit(channel, { active: false });
+	pi.events.emit(channel, { active: false, duplicate: true });
+	pi.events.emit(channel, { active: true });
+	pi.events.emit(channel, { active: false });
 	assert.deepEqual(herdrEvents, [
 		{ active: true, label: "Questionnaire awaiting input" },
 		{ active: false },
@@ -1613,7 +1621,9 @@ test("RPIV questionnaire blockers emit only a private, balanced Herdr projection
 	]);
 });
 
-test("Herdr coordinates guarded confirmations and RPIV labels without inactive relabel pulses", async () => {
+}
+
+test("Herdr preserves the initial label and balanced edges across overlapping sources", async () => {
 	type ToolCallHandler = (
 		event: { toolName: string; input: unknown },
 		ctx: ExtensionContext,
@@ -1664,14 +1674,34 @@ test("Herdr coordinates guarded confirmations and RPIV labels without inactive r
 	assert.equal(await guardedRequest, undefined);
 	assert.deepEqual(guardedFirst.herdrEvents, [
 		{ active: true, label: "Guarded command confirmation" },
-		{ active: true, label: "Questionnaire awaiting input" },
 	]);
 	guardedFirst.pi.events.emit("rpiv:ask-user:blocked", { active: false });
 	assert.deepEqual(guardedFirst.herdrEvents, [
 		{ active: true, label: "Guarded command confirmation" },
-		{ active: true, label: "Questionnaire awaiting input" },
 		{ active: false },
 	]);
+
+	// Each event channel is independent, even when native and legacy producers overlap.
+	const channels = ["gentle-pi:ask-user-question:blocked", "rpiv:ask-user:blocked", "gentle-pi:ask-user-choice:blocked"];
+	for (const lastChannel of channels) {
+		const overlap = createHarness();
+		for (const channel of channels) overlap.pi.events.emit(channel, { active: true });
+		const request = overlap.toolCall(
+			{ toolName: "bash", input: { command: "git rebase main" } }, overlap.context,
+		);
+		await Promise.resolve();
+		for (const channel of channels.filter((channel) => channel !== lastChannel)) {
+			overlap.pi.events.emit(channel, { active: false });
+			overlap.pi.events.emit(channel, { active: false });
+		}
+		overlap.confirmations[0]!(false);
+		await request;
+		assert.deepEqual(overlap.herdrEvents, [{ active: true, label: "Questionnaire awaiting input" }]);
+		overlap.pi.events.emit(lastChannel, { active: false });
+		assert.deepEqual(overlap.herdrEvents, [
+			{ active: true, label: "Questionnaire awaiting input" }, { active: false },
+		]);
+	}
 
 	const questionnaireFirst = createHarness();
 	questionnaireFirst.pi.events.emit("rpiv:ask-user:blocked", { active: true });
@@ -1685,7 +1715,6 @@ test("Herdr coordinates guarded confirmations and RPIV labels without inactive r
 	await questionnaireRequest;
 	assert.deepEqual(questionnaireFirst.herdrEvents, [
 		{ active: true, label: "Questionnaire awaiting input" },
-		{ active: true, label: "Guarded command confirmation" },
 		{ active: false },
 	]);
 });
@@ -1722,6 +1751,11 @@ test("closed choice blockers retain the visible choice label through guarded-con
 	createGentleAiExtension({ nativeReviewCli: null })(pi);
 	assert.equal(eventHandlers.has("gentle-pi:ask-user-choice:blocked"), true);
 
+	for (const malformed of [null, [], {}, { active: "true" }]) {
+		pi.events.emit("gentle-pi:ask-user-choice:blocked", malformed);
+	}
+	assert.deepEqual(herdrEvents, []);
+	choiceEvents.length = 0;
 	pi.events.emit("gentle-pi:ask-user-choice:blocked", { active: true });
 	assert.deepEqual(choiceEvents, [{ active: true }]);
 	assert.deepEqual(herdrEvents, [{ active: true, label: "Choice awaiting input" }]);
@@ -1744,7 +1778,6 @@ test("closed choice blockers retain the visible choice label through guarded-con
 	assert.deepEqual(choiceEvents, [{ active: true }, { active: false }]);
 	assert.deepEqual(herdrEvents, [
 		{ active: true, label: "Choice awaiting input" },
-		{ active: true, label: "Guarded command confirmation" },
 	]);
 	assert.equal(herdrEvents.some((event) => event.active === false), false);
 
@@ -1752,7 +1785,6 @@ test("closed choice blockers retain the visible choice label through guarded-con
 	assert.equal(await guardedRequest, undefined);
 	assert.deepEqual(herdrEvents, [
 		{ active: true, label: "Choice awaiting input" },
-		{ active: true, label: "Guarded command confirmation" },
 		{ active: false },
 	]);
 });
@@ -2193,16 +2225,18 @@ function pickWorkerModelThenUpdateProfile(panel: RoutingConsumerPanel): void {
 	panel.handleInput("u");
 }
 
-test("u saves global routing from /gentle:models and updates the active profile", async (t) => {
-	const { fixture, storePath, writeStore, writeSettings } = profilesStoreFixture(t);
+test("u saves global routing and captures live session orchestrator instead of defaults", async (t) => {
+	const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
 	writeSettings();
+	const settingsBefore = readFileSync(settingsPath, "utf8");
+	fixture.setLiveModel("openai", "alpha", "low");
 	writeStore({
 		team: { worker: { model: "openai/beta" } },
 		other: { worker: { model: "openai/beta", thinking: "high" } },
 	}, "team");
 	fixture.onInput((panel) => {
 		assert.match(renderComponent(panel), /Current profile: team/);
-		assert.match(renderComponent(panel), /u update profile/);
+		assert.match(renderComponent(panel), /u capture session in "team"/);
 		pickWorkerModelThenUpdateProfile(panel);
 	});
 	await fixture.run("gentle:models");
@@ -2211,8 +2245,9 @@ test("u saves global routing from /gentle:models and updates the active profile"
 	const store = JSON.parse(readFileSync(storePath, "utf8"));
 	assert.deepEqual(store.profiles.team, {
 		worker: { model: "openai/alpha" },
-		orchestrator: { model: "nan/deepseek-v4-flash", thinking: "high" },
+		orchestrator: { model: "openai/alpha", thinking: "low" },
 	});
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore, "global defaults remain unchanged");
 	assert.deepEqual(store.profiles.other, { worker: { model: "openai/beta", thinking: "high" } });
 	assert.equal(store.active, "team");
 	assert.equal(fixture.panelVisits(), 1, "u finishes the interaction");
@@ -2229,6 +2264,7 @@ test("u saves global routing from /gentle:models and updates the active profile"
 test("u updates the pinned profile instead of the active one inside a pinned repository", async (t) => {
 	const { fixture, storePath, writeStore, writeSettings, writePin, localPinPath } = profilesStoreFixture(t);
 	writeSettings();
+	fixture.setLiveModel("openai", "beta", "medium");
 	writeStore({
 		team: { worker: { model: "openai/beta" } },
 		other: { worker: { model: "openai/beta", thinking: "high" } },
@@ -2244,7 +2280,7 @@ test("u updates the pinned profile instead of the active one inside a pinned rep
 	const store = JSON.parse(readFileSync(storePath, "utf8"));
 	assert.deepEqual(store.profiles.other, {
 		worker: { model: "openai/alpha" },
-		orchestrator: { model: "nan/deepseek-v4-flash", thinking: "high" },
+		orchestrator: { model: "openai/beta", thinking: "medium" },
 	});
 	assert.deepEqual(store.profiles.team, { worker: { model: "openai/beta" } });
 	assert.equal(store.active, "team");

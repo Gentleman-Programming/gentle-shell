@@ -3,7 +3,7 @@ import { GAUGE_CELLS, gaugeTone, paintGauge, renderGauge, type GaugeTone } from 
 import { renderUsageBar, selectUsageLimit, type ProviderUsage, type UsageWindow } from "./shell-usage.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { CARD_TONE, cardInnerWidth, renderCard } from "./shell-card.ts";
-import { REVIEW_SIDEBAR_LABELS, type ReviewSidebarSnapshot } from "./review-sidebar-state.ts";
+import { REVIEW_SCOPE_UNAVAILABLE, REVIEW_SIDEBAR_LABELS, type ReviewSidebarSnapshot } from "./review-sidebar-state.ts";
 import type { VisualSettings } from "./visual-customization-policy.ts";
 
 type Presentation = Pick<VisualSettings, "density" | "visibility">;
@@ -221,9 +221,13 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 				label("/gentle:changes"),
 			],
 		}]),
-		...(model.review ? [{
+		...(model.review && presentation?.visibility.rdd !== false ? [{
 			title: "🌹 RDD",
-			lines: [value(REVIEW_SIDEBAR_LABELS[model.review.state]), label(sanitizeStatus(model.review.scope))],
+			lines: [
+				value(REVIEW_SIDEBAR_LABELS[model.review.state]),
+				// Unknown scope is an internal sentinel, not something the user acts on.
+				...(model.review.scope !== REVIEW_SCOPE_UNAVAILABLE ? [label(sanitizeStatus(model.review.scope))] : []),
+			],
 		}] : []),
 		{ title: "Integrations", lines: model.statuses.length
 			? model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)))

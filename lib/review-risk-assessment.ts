@@ -10,6 +10,11 @@
 // prints `{"schema":"gentle-ai.review-assessment/v1","risk":"passive|medium|high",
 // "reasons":[{"code":"…","path":"…","detail":"…"}],"changed_paths":1,
 // "changed_lines":1,"candidate":{"kind":"current-changes|base-diff","base_ref":"…"}}`.
+// gentle-pi#1175: the native v2 `assess.schema.json` requires only `code` on a
+// reason (`path`/`detail` are optional) and adds `candidate.consumed`,
+// `review_due`, `review_due_reason`, and an opaque `next_transition`. Older
+// binaries (for example the pinned gentle-ai v3.7.0) predate those fields, so
+// they decode as optional and stay absent rather than being defaulted.
 // A non-zero exit or a failure envelope means the candidate could not be
 // assessed; hosts treat that as `high`. Older binaries without the verb (or
 // any other decode/process failure) fail closed the same way -- see
@@ -30,15 +35,45 @@ export const REVIEW_ASSESSMENT_CANDIDATE_KIND = {
 } as const;
 export type ReviewAssessmentCandidateKind = (typeof REVIEW_ASSESSMENT_CANDIDATE_KIND)[keyof typeof REVIEW_ASSESSMENT_CANDIDATE_KIND];
 
+export const REVIEW_DUE_REASON = {
+	HIGH_RISK: "high_risk",
+	SLICE_BUDGET_REACHED: "slice_budget_reached",
+	PASSIVE: "passive",
+	UNDER_BUDGET: "under_budget",
+	ALREADY_REVIEWED: "already_reviewed",
+} as const;
+export type ReviewDueReason = (typeof REVIEW_DUE_REASON)[keyof typeof REVIEW_DUE_REASON];
+
+export const REVIEW_ASSESSMENT_NEXT_TRANSITION_OPERATION = "review.status" as const;
+
 export interface ReviewAssessmentReason {
 	readonly code: string;
-	readonly path: string;
-	readonly detail: string;
+	readonly path?: string;
+	readonly detail?: string;
 }
 
 export interface ReviewAssessmentCandidate {
 	readonly kind: ReviewAssessmentCandidateKind;
 	readonly baseRef: string | undefined;
+	/** Present only when native reports it; never defaulted (gentle-pi#1175). */
+	readonly consumed?: boolean;
+}
+
+export interface ReviewAssessmentNextTransitionArgument {
+	readonly name: string;
+	readonly value: string;
+	readonly token?: string;
+}
+
+/**
+ * The native, literally runnable `review status ... --next-transition`
+ * preflight continuation. Carried verbatim as an opaque value: hosts never
+ * rebuild, reorder, or synthesize it.
+ */
+export interface ReviewAssessmentNextTransition {
+	readonly operation: typeof REVIEW_ASSESSMENT_NEXT_TRANSITION_OPERATION;
+	readonly command: string;
+	readonly arguments: readonly ReviewAssessmentNextTransitionArgument[];
 }
 
 export interface ReviewAssessmentV1 {
@@ -48,31 +83,110 @@ export interface ReviewAssessmentV1 {
 	readonly changedPaths: number;
 	readonly changedLines: number;
 	readonly candidate: ReviewAssessmentCandidate;
+	/** Present together with `reviewDueReason`, or both absent on older binaries. */
+	readonly reviewDue?: boolean;
+	readonly reviewDueReason?: ReviewDueReason;
+	/** Present only when native reports it, and only with `reviewDue: true`. */
+	readonly nextTransition?: ReviewAssessmentNextTransition;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isNonEmptyString(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0;
+}
+
 function decodeReason(value: unknown): ReviewAssessmentReason {
 	if (!isRecord(value)) throw new TypeError("review assessment reason must be an object");
 	const { code, path, detail } = value;
-	if (typeof code !== "string" || code.length === 0) throw new TypeError("review assessment reason.code must be a non-empty string");
-	if (typeof path !== "string") throw new TypeError("review assessment reason.path must be a string");
-	if (typeof detail !== "string") throw new TypeError("review assessment reason.detail must be a string");
-	return Object.freeze({ code, path, detail });
+	if (!isNonEmptyString(code)) throw new TypeError("review assessment reason.code must be a non-empty string");
+	if (path !== undefined && !isNonEmptyString(path)) throw new TypeError("review assessment reason.path must be a non-empty string when present");
+	if (detail !== undefined && !isNonEmptyString(detail)) throw new TypeError("review assessment reason.detail must be a non-empty string when present");
+	// Absent path/detail stay absent: never synthesized (gentle-pi#1175).
+	return Object.freeze({
+		code,
+		...(path === undefined ? {} : { path: path as string }),
+		...(detail === undefined ? {} : { detail: detail as string }),
+	});
 }
 
 function decodeCandidate(value: unknown): ReviewAssessmentCandidate {
 	if (!isRecord(value)) throw new TypeError("review assessment candidate must be an object");
-	const { kind, base_ref: baseRef } = value;
+	const { kind, base_ref: baseRef, consumed } = value;
 	if (kind !== REVIEW_ASSESSMENT_CANDIDATE_KIND.CURRENT_CHANGES && kind !== REVIEW_ASSESSMENT_CANDIDATE_KIND.BASE_DIFF) {
 		throw new TypeError("review assessment candidate.kind must be current-changes or base-diff");
 	}
-	if (baseRef !== undefined && (typeof baseRef !== "string" || baseRef.length === 0)) {
+	if (baseRef !== undefined && !isNonEmptyString(baseRef)) {
 		throw new TypeError("review assessment candidate.base_ref must be a non-empty string when present");
 	}
-	return Object.freeze({ kind, baseRef: baseRef as string | undefined });
+	if (consumed !== undefined && typeof consumed !== "boolean") {
+		throw new TypeError("review assessment candidate.consumed must be a boolean when present");
+	}
+	// An older binary omits consumed; it stays absent, never defaulted.
+	return Object.freeze({ kind, baseRef: baseRef as string | undefined, ...(consumed === undefined ? {} : { consumed: consumed as boolean }) });
+}
+
+function isReviewDueReason(value: unknown): value is ReviewDueReason {
+	return Object.values(REVIEW_DUE_REASON).includes(value as ReviewDueReason);
+}
+
+// The native schema fixes review_due by reason: due for high_risk and
+// slice_budget_reached, not due for passive, under_budget, and
+// already_reviewed (gentle-pi#1175).
+const DUE_REVIEW_REASONS: readonly ReviewDueReason[] = [REVIEW_DUE_REASON.HIGH_RISK, REVIEW_DUE_REASON.SLICE_BUDGET_REACHED];
+
+/**
+ * Rejects a review_due/review_due_reason/consumed combination the native
+ * schema can never produce. `already_reviewed` takes precedence exactly when
+ * the candidate is consumed, so the two must agree in both directions. A
+ * contradictory envelope is never trusted, least of all as closure evidence.
+ * Envelopes without the pair (older binaries) are not checked here.
+ */
+function validateReviewDueConsistency(reviewDue: boolean, reviewDueReason: ReviewDueReason, candidate: ReviewAssessmentCandidate): void {
+	if (reviewDue !== DUE_REVIEW_REASONS.includes(reviewDueReason)) {
+		throw new TypeError(`review assessment review_due ${reviewDue} contradicts review_due_reason ${reviewDueReason}`);
+	}
+	const alreadyReviewed = reviewDueReason === REVIEW_DUE_REASON.ALREADY_REVIEWED;
+	if (alreadyReviewed !== (candidate.consumed === true)) {
+		throw new TypeError("review assessment review_due_reason already_reviewed must be reported exactly when candidate.consumed is true");
+	}
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+	return Object.keys(value).every((key) => allowed.includes(key));
+}
+
+function validateNextTransitionArgument(value: unknown): void {
+	if (!isRecord(value) || !hasOnlyKeys(value, ["name", "value", "token"])) {
+		throw new TypeError("review assessment next_transition argument must be an object with only name, value, and token");
+	}
+	if (!isNonEmptyString(value.name)) throw new TypeError("review assessment next_transition argument name must be a non-empty string");
+	if (typeof value.value !== "string") throw new TypeError("review assessment next_transition argument value must be a string");
+	if (value.token !== undefined && !isNonEmptyString(value.token)) {
+		throw new TypeError("review assessment next_transition argument token must be a non-empty string when present");
+	}
+}
+
+/**
+ * Validates `next_transition` exactly as the native schema declares it and
+ * returns the native value itself, frozen -- validated, never rebuilt,
+ * reordered, or synthesized (gentle-pi#1175).
+ */
+function decodeNextTransition(value: unknown): ReviewAssessmentNextTransition {
+	if (!isRecord(value) || !hasOnlyKeys(value, ["operation", "command", "arguments"])) {
+		throw new TypeError("review assessment next_transition must be an object with only operation, command, and arguments");
+	}
+	if (value.operation !== REVIEW_ASSESSMENT_NEXT_TRANSITION_OPERATION) {
+		throw new TypeError(`review assessment next_transition.operation must be ${REVIEW_ASSESSMENT_NEXT_TRANSITION_OPERATION}`);
+	}
+	if (!isNonEmptyString(value.command)) throw new TypeError("review assessment next_transition.command must be a non-empty string");
+	if (!Array.isArray(value.arguments)) throw new TypeError("review assessment next_transition.arguments must be an array");
+	for (const argument of value.arguments) validateNextTransitionArgument(argument);
+	for (const argument of value.arguments) Object.freeze(argument);
+	Object.freeze(value.arguments);
+	return Object.freeze(value) as unknown as ReviewAssessmentNextTransition;
 }
 
 /**
@@ -81,24 +195,55 @@ function decodeCandidate(value: unknown): ReviewAssessmentCandidate {
  * native review CLI wrapper turns a thrown error here into the same
  * schema-incompatible failure it already produces for every other decoded
  * native response.
+ *
+ * `review_due` and `review_due_reason` were added together natively: both
+ * absent (an older binary) or both present are accepted; only one of them is
+ * rejected. When present, the pair must agree with each other and with
+ * `candidate.consumed` (see `validateReviewDueConsistency`).
+ * `next_transition` is accepted only alongside `review_due: true`.
+ * Unknown extra top-level fields are ignored and never projected, so a newer
+ * binary stays decodable (gentle-pi#1175).
  */
 export function decodeReviewAssessmentV1(value: unknown): ReviewAssessmentV1 {
 	if (!isRecord(value)) throw new TypeError("review assessment must be an object");
 	if (value.schema !== REVIEW_ASSESSMENT_SCHEMA) throw new TypeError(`review assessment schema must be ${REVIEW_ASSESSMENT_SCHEMA}`);
-	const { risk, reasons, changed_paths: changedPaths, changed_lines: changedLines, candidate } = value;
+	const {
+		risk,
+		reasons,
+		changed_paths: changedPaths,
+		changed_lines: changedLines,
+		candidate,
+		review_due: reviewDue,
+		review_due_reason: reviewDueReason,
+		next_transition: nextTransition,
+	} = value;
 	if (risk !== REVIEW_ASSESSMENT_RISK.PASSIVE && risk !== REVIEW_ASSESSMENT_RISK.MEDIUM && risk !== REVIEW_ASSESSMENT_RISK.HIGH) {
 		throw new TypeError("review assessment risk must be passive, medium, or high");
 	}
 	if (!Array.isArray(reasons)) throw new TypeError("review assessment reasons must be an array");
 	if (!Number.isSafeInteger(changedPaths) || (changedPaths as number) < 0) throw new TypeError("review assessment changed_paths must be a non-negative integer");
 	if (!Number.isSafeInteger(changedLines) || (changedLines as number) < 0) throw new TypeError("review assessment changed_lines must be a non-negative integer");
+	if ((reviewDue === undefined) !== (reviewDueReason === undefined)) {
+		throw new TypeError("review assessment review_due and review_due_reason must be both present or both absent");
+	}
+	if (reviewDue !== undefined && typeof reviewDue !== "boolean") throw new TypeError("review assessment review_due must be a boolean when present");
+	if (reviewDueReason !== undefined && !isReviewDueReason(reviewDueReason)) {
+		throw new TypeError(`review assessment review_due_reason must be one of ${Object.values(REVIEW_DUE_REASON).join(", ")}`);
+	}
+	if (nextTransition !== undefined && reviewDue !== true) {
+		throw new TypeError("review assessment next_transition is only valid when review_due is true");
+	}
+	const decodedCandidate = decodeCandidate(candidate);
+	if (reviewDue !== undefined) validateReviewDueConsistency(reviewDue as boolean, reviewDueReason as ReviewDueReason, decodedCandidate);
 	return Object.freeze({
 		schema: REVIEW_ASSESSMENT_SCHEMA,
 		risk,
 		reasons: Object.freeze(reasons.map(decodeReason)),
 		changedPaths: changedPaths as number,
 		changedLines: changedLines as number,
-		candidate: decodeCandidate(candidate),
+		candidate: decodedCandidate,
+		...(reviewDue === undefined ? {} : { reviewDue: reviewDue as boolean, reviewDueReason: reviewDueReason as ReviewDueReason }),
+		...(nextTransition === undefined ? {} : { nextTransition: decodeNextTransition(nextTransition) }),
 	});
 }
 

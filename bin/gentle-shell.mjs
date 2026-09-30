@@ -10,6 +10,7 @@ import {
 	constants as fsConstants,
 	existsSync,
 	mkdirSync,
+	mkdtempSync,
 	openSync,
 	readdirSync,
 	readFileSync,
@@ -19,8 +20,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { createRequire } from "node:module";
-import { constants as osConstants, homedir } from "node:os";
+import { constants as osConstants, homedir, tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve as resolvePath } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -53,6 +53,13 @@ import {
 	restoreJsonField,
 	shellQuote,
 } from "../runtime/gentle-shell-launcher.mjs";
+import {
+	parseResumeHandoff,
+	planResumeHint,
+	RESUME_HANDOFF_DIR_PREFIX,
+	RESUME_HANDOFF_ENV,
+	RESUME_HANDOFF_FILE,
+} from "../runtime/gentle-shell-resume-hint.mjs";
 import { GENTLE_AI_VERSION, gentleAiBinaryPath, PackageLocalGentleAiBinaryMissingError } from "../runtime/gentle-ai-binary.mjs";
 import { DEFAULT_THEME_NAME, installIsolatedTuiModeSetting } from "../scripts/install-tui-mode-setting.mjs";
 
@@ -72,17 +79,30 @@ function readJsonIfExists(path) {
 	}
 }
 
-// @earendil-works/pi-coding-agent ships as an optional peer dependency: it may
-// not be installed at all, so a resolution failure here is expected, not an error.
+// Resolve the public ESM entry without importing the agent or reaching through
+// its exports map. Only an absent optional peer permits PATH fallback; malformed
+// installed metadata must not silently select a different runtime.
 function resolveBundledCli() {
+	let publicEntry;
 	try {
-		const require = createRequire(import.meta.url);
-		const pkgJsonPath = require.resolve("@earendil-works/pi-coding-agent/package.json");
-		const cliPath = join(dirname(pkgJsonPath), "dist", "bundle", "cli.js");
-		return existsSync(cliPath) ? cliPath : undefined;
-	} catch {
-		return undefined;
+		publicEntry = fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"));
+	} catch (error) {
+		if (error.code === "ERR_MODULE_NOT_FOUND") return undefined;
+		throw error;
 	}
+	const entry = realpathSync(publicEntry);
+	const root = dirname(dirname(entry));
+	const expectedEntry = join(root, "dist", "index.js");
+	const metadata = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+	if (entry !== expectedEntry || metadata.name !== "@earendil-works/pi-coding-agent" ||
+		metadata.bin?.pi !== "dist/bundle/cli.js") {
+		throw new Error("Unsupported adjacent Pi package entry/name/bin metadata");
+	}
+	const cliPath = join(root, metadata.bin.pi);
+	if (realpathSync(cliPath) !== cliPath || !statSync(cliPath).isFile()) {
+		throw new Error("Unsupported adjacent Pi CLI path");
+	}
+	return cliPath;
 }
 
 function findOnPath(name) {
@@ -160,6 +180,45 @@ function isDirectory(path) {
 	} catch {
 		return false;
 	}
+}
+
+// Reuse Herdr's managed bridge, never its transport. This process-boundary
+// lookup is deliberately best-effort and does not modify either agent home.
+function managedHerdrExtensionArgs(home, args) {
+	const env = process.env;
+	if (home.mode !== "isolated" || args.piSubcommand !== undefined || args.passthrough[0] === "mcp") return [];
+	if (env.HERDR_ENV !== "1" || !env.HERDR_SOCKET_PATH?.trim() || !env.HERDR_PANE_ID?.trim()) return [];
+	if (env.GENTLE_PI_AGENTS_CHILD === "1" || !process.stdin.isTTY || !process.stdout.isTTY) return [];
+	// Only automatic interactive loading: a user opt-out must not become an
+	// explicit -e (which Pi loads even under --no-extensions). Conservatively
+	// skip ambiguous mode flags too; --mode text alone still allows a TUI.
+	const forwarded = args.passthrough;
+	if (forwarded.some((arg) => ["--no-extensions", "-ne", "--print", "-p", "--export", "--list-models", "-v"].includes(arg))) return [];
+	if (forwarded.some((arg, i) => (arg === "--mode" && forwarded[i + 1] !== "text") || arg.startsWith("--mode="))) return [];
+	try {
+		if (!statSync(env.HERDR_SOCKET_PATH).isSocket()) return [];
+	} catch {
+		return [];
+	}
+	// Prefer a bridge in the selected home over adding a competing copy; keep
+	// the incoming Pi home override before falling back to Herdr's usual home.
+	const agentHomes = [home.dir, env.PI_CODING_AGENT_DIR, join(homedir(), ".pi", "agent")];
+	for (const agentHome of agentHomes) {
+		if (!agentHome) continue;
+		const bridge = join(agentHome, "extensions", "herdr-agent-state.ts");
+		try {
+			if (!statSync(bridge).isFile()) continue;
+			accessSync(bridge, fsConstants.R_OK);
+			// Pi's package-manager.toResolvedPaths and resource-loader.mergePaths
+			// dedupe canonical files across discovery, explicit -e and manifests.
+			// Existence alone is NOT proof of loading: declare the resource and
+			// let that resolver dedupe it, including explicit aliases from argv.
+			return ["-e", realpathSync(bridge)];
+		} catch {
+			// An absent/unreadable bridge never prevents the ordinary launch.
+		}
+	}
+	return [];
 }
 
 // Real-fs adapter for discoverLooseExtensionEntries (lib/gentle-shell-launcher.ts):
@@ -1228,20 +1287,93 @@ async function main() {
 		takeOver,
 		otherPackagePaths,
 		looseExtensionEntries,
-		passthrough: args.passthrough,
+		passthrough: [...managedHerdrExtensionArgs(home, args), ...args.passthrough],
 		piSubcommand: args.piSubcommand,
 		baseEnv: process.env,
 	});
 
+	// Only an interactive session ends with pi's exit resume hint, which
+	// gentle-shell completes with its own line; a pi subcommand gets no handoff.
+	const resumeHandoff = args.piSubcommand === undefined ? createResumeHandoff() : undefined;
+	const childEnv = resumeHandoff ? { ...invocation.env, [RESUME_HANDOFF_ENV]: resumeHandoff.path } : invocation.env;
+
 	const launchPlan = planSpawn({ command: invocation.command, args: invocation.args, platform: process.platform });
-	const child = spawn(launchPlan.command, launchPlan.args, { stdio: "inherit", env: invocation.env, shell: launchPlan.shell });
-	for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
-		process.on(signal, () => child.kill(signal));
+	let child;
+	try {
+		child = spawn(launchPlan.command, launchPlan.args, { stdio: "inherit", env: childEnv, shell: launchPlan.shell });
+	} catch (error) {
+		resumeHandoff?.dispose();
+		throw error;
 	}
-	child.on("error", (error) => fail(`Could not start pi: ${error.message}`, 1));
-	child.on("exit", (code, signal) => {
-		process.exit(signal ? signalExitCode(signal) : (code ?? 1));
+	// Only SIGHUP means the terminal is gone. pi may survive a forwarded
+	// SIGINT and keep running, so other signals must not silence the hint.
+	let terminalHungUp = false;
+	for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+		process.on(signal, () => {
+			if (signal === "SIGHUP") terminalHungUp = true;
+			child.kill(signal);
+		});
+	}
+	child.on("error", (error) => {
+		resumeHandoff?.dispose();
+		fail(`Could not start pi: ${error.message}`, 1);
 	});
+	child.on("exit", (code, signal) => {
+		const exitCode = signal ? signalExitCode(signal) : (code ?? 1);
+		if (resumeHandoff) {
+			const hint = planResumeHint({
+				handoff: resumeHandoff.read(),
+				homeFlags: homeSelectorFlags(home),
+				stdoutIsTTY: process.stdout.isTTY === true,
+				terminalHungUp,
+				platform: process.platform,
+				color: process.stdout.hasColors?.() === true,
+			});
+			resumeHandoff.dispose();
+			// TTY writes are asynchronous on Windows: exit only once the
+			// hint is flushed, or it can be lost.
+			if (hint) {
+				// A write error (e.g. EIO on a closed terminal) must not turn
+				// pi's exit into a launcher crash.
+				process.stdout.once("error", () => process.exit(exitCode));
+				process.stdout.write(hint, () => process.exit(exitCode));
+				return;
+			}
+		}
+		process.exit(exitCode);
+	});
+}
+
+// Private temp dir for the resume-hint handoff (lib/gentle-shell-resume-hint.ts).
+// Best effort: if it cannot be created, only pi's own hint is printed.
+function createResumeHandoff() {
+	let dir;
+	try {
+		dir = mkdtempSync(join(tmpdir(), RESUME_HANDOFF_DIR_PREFIX));
+	} catch {
+		return undefined;
+	}
+	const path = join(dir, RESUME_HANDOFF_FILE);
+	return {
+		path,
+		read: () => {
+			try {
+				const text = readJsonIfExists(path);
+				return text === undefined ? undefined : parseResumeHandoff(text);
+			} catch {
+				return undefined;
+			}
+		},
+		// Never throws: it runs inside the exit handler, where an EPERM on
+		// Windows would otherwise replace pi's exit code with a crash.
+		dispose: () => {
+			try {
+				rmSync(dir, { recursive: true, force: true });
+			} catch {
+				// A leftover empty temp dir is harmless.
+			}
+		},
+	};
 }
 
 main().catch((error) => {

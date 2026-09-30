@@ -7,13 +7,17 @@ import test, { after } from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
 import { CURSOR_MARKER, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
-import { USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA } from "../lib/shell-usage.ts";
+import { CODEX_USAGE_URL, NAN_QUOTA_URL, USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA } from "../lib/shell-usage.ts";
 import { createVimEditorAdapter } from "../lib/vim-editor-adapter.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { CHANGE_STATUS } from "../lib/shell-changes.ts";
 import { sidebarState, type SidebarRail } from "../lib/shell-sidebar.ts";
 import type { ShellBarTheme } from "../lib/shell-bar.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
+import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { decodeReviewStatusV3 } from "../lib/review-integration-v2.ts";
+import { REVIEW_SIDEBAR_EVENT } from "../lib/review-sidebar-state.ts";
+import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 import { resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy } from "../lib/vim-policy.ts";
@@ -283,6 +287,138 @@ test("gentleShell installs the footer on session_start when a UI exists", () => 
 	const lines = component.render(120);
 	assert.equal(lines.length, 1);
 	assert.match(lines[0], /main ⟡ gpt-5\.5 · medium/);
+});
+
+async function reviewSidebarHarness() {
+	const { pi, handlers, tools } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { activeProfile: () => undefined });
+	const { ctx, ui } = fakeContext();
+	ctx.cwd = process.cwd();
+	let sessionId = "shell-session";
+	ctx.sessionManager.getSessionId = () => sessionId;
+	const raw = JSON.parse(readFileSync(new URL("./fixtures/devbinary/status-v5-capture-result-submission.captured.json", import.meta.url), "utf8"));
+	raw.action = "stop";
+	raw.projection.paths = ["src/fresh.ts"];
+	const status = decodeReviewStatusV3(raw);
+	// Each hold() parks the next native status call until the returned release runs.
+	const held: Array<(release: (result: typeof status) => void) => void> = [];
+	const native = { targetStatus: async () => {
+		const park = held.shift();
+		return park ? new Promise<typeof status>((resolve) => park(resolve)) : status;
+	} } as unknown as NativeReviewCli;
+	const hold = () => {
+		let release!: () => void;
+		held.push((resolve) => { release = () => resolve(status); });
+		return () => release();
+	};
+	const published: unknown[] = [];
+	const bus = pi.events;
+	const observedPi = { ...pi, events: {
+		...bus,
+		emit(name: string, value: unknown) {
+			if (name === REVIEW_SIDEBAR_EVENT) published.push(value);
+			bus.emit(name, value);
+		},
+	} } as ExtensionAPI;
+	const producerHooks = new Map<string, Array<(event: unknown, context: ExtensionContext) => unknown>>();
+	createGentleAiExtension({ nativeReviewCli: native, candidateViews: null, processEnv: {} })({
+		...observedPi,
+		on(name: string, handler: (event: unknown, context: ExtensionContext) => unknown) {
+			producerHooks.set(name, [...(producerHooks.get(name) ?? []), handler]);
+		},
+	} as ExtensionAPI);
+	const produce = async (name: string, event: unknown = {}) => {
+		for (const hook of producerHooks.get(name) ?? []) await hook(event, ctx);
+	};
+	await fire(handlers, "session_start", ctx);
+	await produce("session_start");
+	const tui = { terminal: { rows: 40, columns: 160 }, requestRender() {} };
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { dispose(): void };
+	const component = factory(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+	const rail = sidebarState(tui as unknown as TUI).parts.get("footer") as SidebarRail;
+	return {
+		pi,
+		rail,
+		published,
+		hold,
+		text: () => rail.render(60).join("\n"),
+		sessionId: () => sessionId,
+		run: () => tools.get("gentle_review")!.execute("reset-test", { operation: "status", lineageId: status.authority!.lineageId }, undefined, undefined, ctx),
+		async startSession(next: string) {
+			sessionId = next;
+			await fire(handlers, "session_start", ctx);
+			await produce("session_start");
+		},
+		async navigateTree() {
+			await fire(handlers, "session_tree", ctx);
+			await produce("session_tree");
+		},
+		shutdownShell: () => fire(handlers, "session_shutdown", ctx),
+		async dispose() {
+			await produce("session_shutdown", { reason: "quit" });
+			await fire(handlers, "session_shutdown", ctx);
+			component.dispose();
+		},
+	};
+}
+
+test("review sidebar ignores a stale completion after session_start and accepts the new session", async () => {
+	const harness = await reviewSidebarHarness();
+	try {
+		const release = harness.hold();
+		const pending = harness.run();
+		assert.match(harness.text(), /Updating…/);
+		await harness.startSession("next-session");
+		assert.doesNotMatch(harness.text(), /RDD/);
+		const before = harness.published.length;
+		release();
+		await pending;
+		assert.equal(harness.published.length, before, "producer must not publish the old session completion");
+		assert.doesNotMatch(harness.text(), /RDD/, "old completion must not repaint the new session");
+		await harness.run();
+		assert.match(harness.text(), /fresh\.ts/, "a fresh result in the new session is accepted");
+	} finally {
+		await harness.dispose();
+	}
+});
+
+test("review sidebar ignores a stale completion after same-session tree navigation", async () => {
+	const harness = await reviewSidebarHarness();
+	try {
+		await harness.run();
+		assert.match(harness.text(), /fresh\.ts/);
+		const release = harness.hold();
+		const pending = harness.run();
+		assert.match(harness.text(), /Updating…/);
+		await harness.navigateTree();
+		assert.doesNotMatch(harness.text(), /RDD/, "tree navigation clears the visible snapshot");
+		const before = harness.published.length;
+		release();
+		await pending;
+		assert.equal(harness.published.length, before, "producer must not publish the old tree completion with the same session ID");
+		assert.doesNotMatch(harness.text(), /RDD/);
+		await harness.run();
+		assert.match(harness.text(), /fresh\.ts/, "a fresh tree-bound result is accepted");
+	} finally {
+		await harness.dispose();
+	}
+});
+
+test("review sidebar rejects foreign-session events and unsubscribes on shutdown", async () => {
+	const harness = await reviewSidebarHarness();
+	try {
+		await harness.run();
+		assert.match(harness.text(), /fresh\.ts/);
+		const previous = harness.rail.digest?.();
+		harness.pi.events.emit(REVIEW_SIDEBAR_EVENT, { sessionId: "foreign", snapshot: { state: "closed", scope: "foreign.ts" } });
+		assert.equal(harness.rail.digest?.(), previous, "foreign events cannot replace the current snapshot");
+		await harness.shutdownShell();
+		assert.doesNotMatch(harness.text(), /RDD/);
+		harness.pi.events.emit(REVIEW_SIDEBAR_EVENT, { sessionId: harness.sessionId(), snapshot: { state: "closed", scope: "late.ts" } });
+		assert.doesNotMatch(harness.text(), /RDD/, "shutdown unsubscribes the consumer");
+	} finally {
+		await harness.dispose();
+	}
 });
 
 test("the fullscreen Status rail carries a live digest so a profile switch refreshes it", async () => {
@@ -1511,7 +1647,7 @@ test("focused framed empty logical line keeps hardware cursor at column zero ins
 		editor.setVimPolicy("on");
 		editor.setText("a\n\nb");
 		editor.focused = true;
-		const adapter = createVimEditorAdapter(editor, "0.87.1");
+		const adapter = createVimEditorAdapter(editor, "0.99.1");
 		adapter.move({ line: 0, col: 0 });
 		editor.handleInput("\x1b");
 		editor.handleInput("v");
@@ -1535,7 +1671,7 @@ test("framed scrolled paste marker paints exactly its split visible cells", () =
 		editor.handleInput(`\x1b[200~${"z".repeat(1001)}\x1b[201~`);
 		const pasteEnd = editor.getText().length;
 		editor.insertTextAtCursor("TAIL");
-		const adapter = createVimEditorAdapter(editor, "0.87.1");
+		const adapter = createVimEditorAdapter(editor, "0.99.1");
 		adapter.move({ line: 0, col: 100 });
 		editor.handleInput("\x1b");
 		editor.handleInput("v");
@@ -1761,7 +1897,7 @@ test("vim command distinguishes persisted preference from rejected live editor a
 
 test("compatible vim command reports live activation and disable returns ordinary editing", async () => {
  const { pi, handlers, commands } = fakePi();
- gentleShell(pi, { GENTLE_PI_CONFIG_HOME: mkdtempSync(join(tmpdir(), "gentle-vim-compatible-")) }, { vimRuntimeVersion: () => "0.87.1" });
+ gentleShell(pi, { GENTLE_PI_CONFIG_HOME: mkdtempSync(join(tmpdir(), "gentle-vim-compatible-")) }, { vimRuntimeVersion: () => "0.99.1" });
  const { ctx, ui } = fakeContext();
  const editor = installedPrompt(ctx, ui, handlers);
  try {
@@ -1785,7 +1921,7 @@ test("vim NORMAL slash uses Pi's command and skill completion without displacing
 		matches: (data: string, action: string) => action === "app.interrupt" && data === "\x1b",
 	} as never, {
 		fg: (_color, text) => text, bold: (text) => text, requestRender() {}, pending: () => false,
-		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => "0.87.1",
+		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => "0.99.1",
 	});
 	const entries = ["gentle:vim", "gentle:models", "skill:example"];
 	const requests: string[] = [];
@@ -1901,7 +2037,7 @@ test("vim NORMAL blocks Kitty and emoji text, handles encoded motions and ignore
 test("vim bracketed paste frames split across editor events never run NORMAL commands", () => {
 	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, {
 		fg: (_color, text) => text, bold: (text) => text, requestRender() {}, pending: () => false,
-		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => "0.87.1",
+		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => "0.99.1",
 	});
 	try {
 		editor.setVimPolicy("on");
@@ -1924,7 +2060,7 @@ test("bracketed paste replaces native selection atomically while Vim VISUAL over
 	const payload = "z".repeat(1024 * 1024 + 1);
 	const deps = {
 		fg: (_color: string, text: string) => text, bold: (text: string) => text, requestRender() {}, pending: () => false,
-		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => "0.87.1",
+		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => "0.99.1",
 	};
 	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, deps);
 	try {
@@ -1956,7 +2092,7 @@ test("incomplete bracketed paste buffered up to exactly the 16 MiB bound still c
 	const BOUND = 16 * 1024 * 1024;
 	const deps = {
 		fg: (_color: string, text: string) => text, bold: (text: string) => text, requestRender() {}, pending: () => false,
-		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => "0.87.1",
+		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => "0.99.1",
 	};
 	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, deps);
 	try {
@@ -1976,7 +2112,7 @@ test("a complete bracketed paste larger than the 16 MiB incomplete-frame bound, 
 	const BOUND = 16 * 1024 * 1024;
 	const deps = {
 		fg: (_color: string, text: string) => text, bold: (text: string) => text, requestRender() {}, pending: () => false,
-		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => "0.87.1",
+		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => "0.99.1",
 	};
 	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, deps);
 	try {
@@ -1994,7 +2130,7 @@ test("an incomplete bracketed paste that crosses the 16 MiB bound without a term
 	const BOUND = 16 * 1024 * 1024;
 	const deps = {
 		fg: (_color: string, text: string) => text, bold: (text: string) => text, requestRender() {}, pending: () => false,
-		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => "0.87.1",
+		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => "0.99.1",
 	};
 	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, deps);
 	try {
@@ -2012,7 +2148,7 @@ test("an incomplete bracketed paste that crosses the 16 MiB bound without a term
 test("vim paste overflow and policy cancellation discard partial frames without leaking modal commands", () => {
 	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, {
 		fg: (_color, text) => text, bold: (text) => text, requestRender() {}, pending: () => false,
-		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => "0.87.1",
+		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => "0.99.1",
 	});
 	try {
 		editor.setVimPolicy("on");
@@ -2103,7 +2239,7 @@ test("vim NORMAL motions and insert/open commands use Unicode and multiline curs
 		editor.setVimPolicy("on");
 		editor.setText("a👩‍💻z\n  snow");
 		editor.handleInput("\x1b");
-		createVimEditorAdapter(editor, "0.87.1").move({ line: 0, col: 0 });
+		createVimEditorAdapter(editor, "0.99.1").move({ line: 0, col: 0 });
 		for (const key of ["l", "l", "j", "k", "g", "g", "G", "0", "^", "$"]) editor.handleInput(key);
 		assert.deepEqual(editor.getCursor(), { line: 1, col: 6 });
 		editor.handleInput("O");
@@ -2142,10 +2278,10 @@ test("NORMAL first non-whitespace motion and insert land after a combining graph
 		editor.setVimPolicy("on");
 		editor.setText(" \u0301a");
 		editor.handleInput("\x1b");
-		createVimEditorAdapter(editor, "0.87.1").move({ line: 0, col: 0 });
+		createVimEditorAdapter(editor, "0.99.1").move({ line: 0, col: 0 });
 		editor.handleInput("^");
 		assert.deepEqual(editor.getCursor(), { line: 0, col: 2 });
-		createVimEditorAdapter(editor, "0.87.1").move({ line: 0, col: 0 });
+		createVimEditorAdapter(editor, "0.99.1").move({ line: 0, col: 0 });
 		editor.handleInput("I");
 		assert.deepEqual(editor.getCursor(), { line: 0, col: 2 });
 		assert.match(editor.render(30).join("\n"), /INSERT/);
@@ -2182,7 +2318,7 @@ test("vim NORMAL counted find and repeats remain Unicode/paste-safe and do not c
 		editor.setVimPolicy("on");
 		editor.setText("a👩‍💻x👩‍💻x\nnext");
 		editor.handleInput("\x1b");
-		createVimEditorAdapter(editor, "0.87.1").move({ line: 0, col: 0 });
+		createVimEditorAdapter(editor, "0.99.1").move({ line: 0, col: 0 });
 		for (const key of ["2", "f", "👩‍💻"]) editor.handleInput(key);
 		assert.deepEqual(editor.getCursor(), { line: 0, col: 7 });
 		editor.handleInput(",");
@@ -2206,7 +2342,7 @@ test("vim operator session edits, cancels, and restores the draft with Pi undo",
 		editor.setVimPolicy("on");
 		editor.setText("👩‍💻 hello\nnext");
 		editor.handleInput("\x1b");
-		createVimEditorAdapter(editor, "0.87.1").move({ line: 0, col: 0 });
+		createVimEditorAdapter(editor, "0.99.1").move({ line: 0, col: 0 });
 		for (const key of ["d", "w"]) editor.handleInput(key);
 		assert.equal(editor.getText(), "hello\nnext");
 		editor.handleInput("u");
@@ -2228,7 +2364,7 @@ test("vim join and shift are single undo units and Escape cancels pending shift"
 		editor.setVimPolicy("on");
 		editor.setText("👩‍💻 one\n  two\nthird");
 		editor.handleInput("\x1b");
-		createVimEditorAdapter(editor, "0.87.1").move({ line: 0, col: 0 });
+		createVimEditorAdapter(editor, "0.99.1").move({ line: 0, col: 0 });
 		editor.handleInput(">");
 		editor.handleInput("\x1b");
 		editor.handleInput("J");
@@ -2252,7 +2388,7 @@ test("vim operator survives an unhandled extension shortcut probe", () => {
 		editor.setText("abc def");
 		editor.onExtensionShortcut = () => false;
 		editor.handleInput("\x1b");
-		createVimEditorAdapter(editor, "0.87.1").move({ line: 0, col: 0 });
+		createVimEditorAdapter(editor, "0.99.1").move({ line: 0, col: 0 });
 		editor.handleInput("d");
 		editor.handleInput("w");
 		assert.equal(editor.getText(), "def");
@@ -2269,20 +2405,20 @@ test("vim final-line yy/P, cc and empty S keep line boundaries and INSERT state"
 		editor.setVimPolicy("on");
 		editor.setText("one\ntwo");
 		editor.handleInput("\x1b");
-		createVimEditorAdapter(editor, "0.87.1").move({ line: 1, col: 0 });
+		createVimEditorAdapter(editor, "0.99.1").move({ line: 1, col: 0 });
 		for (const key of ["y", "y", "P"]) editor.handleInput(key);
 		assert.equal(editor.getText(), "one\ntwo\ntwo");
 		assert.deepEqual(editor.getCursor(), { line: 1, col: 0 });
 		editor.handleInput("u");
 		assert.equal(editor.getText(), "one\ntwo");
-		createVimEditorAdapter(editor, "0.87.1").move({ line: 1, col: 0 });
+		createVimEditorAdapter(editor, "0.99.1").move({ line: 1, col: 0 });
 		for (const key of ["c", "c"]) editor.handleInput(key);
 		assert.equal(editor.getText(), "one\n");
 		assert.deepEqual(editor.getCursor(), { line: 1, col: 0 });
 		assert.match(editor.render(40).join("\n"), /INSERT/);
 		editor.setText("one");
 		editor.handleInput("\x1b");
-		createVimEditorAdapter(editor, "0.87.1").move({ line: 0, col: 0 });
+		createVimEditorAdapter(editor, "0.99.1").move({ line: 0, col: 0 });
 		for (const key of ["c", "c"]) editor.handleInput(key);
 		assert.equal(editor.getText(), "");
 		assert.deepEqual(editor.getCursor(), { line: 0, col: 0 });
@@ -2303,7 +2439,7 @@ test("vim NORMAL Escape cancels pending find without inserting the next characte
 		editor.setVimPolicy("on");
 		editor.setText("ax");
 		editor.handleInput("\x1b");
-		createVimEditorAdapter(editor, "0.87.1").move({ line: 0, col: 0 });
+		createVimEditorAdapter(editor, "0.99.1").move({ line: 0, col: 0 });
 		editor.handleInput("f");
 		editor.handleInput("\x1b");
 		editor.handleInput("l");
@@ -2325,7 +2461,7 @@ test("vim NORMAL k at the first visual line does not recall history", () => {
 		editor.addToHistory("previous prompt");
 		editor.setText("draft\nsecond line");
 		editor.handleInput("\x1b");
-		createVimEditorAdapter(editor, "0.87.1").move({ line: 1, col: 0 });
+		createVimEditorAdapter(editor, "0.99.1").move({ line: 1, col: 0 });
 		editor.handleInput("k");
 		assert.deepEqual(editor.getCursor(), { line: 0, col: 0 });
 		const before = editor.getText();
@@ -2333,11 +2469,11 @@ test("vim NORMAL k at the first visual line does not recall history", () => {
 		assert.equal(editor.getText(), before, "top-edge k must not replace the draft with history");
 		assert.deepEqual(editor.getCursor(), { line: 0, col: 0 });
 		assert.match(editor.render(40).join("\n"), /NORMAL/);
-		createVimEditorAdapter(editor, "0.87.1").move({ line: 1, col: 0 });
+		createVimEditorAdapter(editor, "0.99.1").move({ line: 1, col: 0 });
 		editor.handleInput("j");
 		assert.equal(editor.getText(), before, "bottom-edge j must not browse history");
 		assert.deepEqual(editor.getCursor(), { line: 1, col: 0 });
-		createVimEditorAdapter(editor, "0.87.1").move({ line: 0, col: 0 });
+		createVimEditorAdapter(editor, "0.99.1").move({ line: 0, col: 0 });
 		editor.handleInput("\x1b[A");
 		assert.equal(editor.getText(), "previous prompt", "explicit Pi history binding still works");
 		assert.match(editor.render(40).join("\n"), /INSERT/);
@@ -2729,7 +2865,7 @@ test("customize History rows refuse to overwrite a malformed preference and repo
 test("external Vim preference change while customize is open never implies a compatibility failure", async (t) => {
 	const home = scopedDoubleEscCancelConfigHome(t);
 	const { pi, handlers, commands } = fakePi();
-	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home }, { vimRuntimeVersion: () => "0.87.1" });
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home }, { vimRuntimeVersion: () => "0.99.1" });
 	const { ctx, ui, overlayReady } = fakeContext();
 	const editor = installedPrompt(ctx, ui, handlers);
 	try {
@@ -2749,7 +2885,7 @@ test("external Vim preference change while customize is open never implies a com
 });
 
 test("customize updates live Vim prompt and reports unsupported effective state without attributing its cause", async (t) => {
-	for (const version of ["0.87.1", "unsupported"]) {
+	for (const version of ["0.99.1", "unsupported"]) {
 		const home = scopedDoubleEscCancelConfigHome(t);
 		const { pi, handlers, commands } = fakePi();
 		gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home }, { vimRuntimeVersion: () => version });
@@ -3942,6 +4078,30 @@ const onlyHeadLabels = (git: readonly string[][]) => git.every((args) => {
  return command[0] === "symbolic-ref" || (command[0] === "rev-parse" && command.includes("--verify"));
 });
 
+test("same-session explicit registration after bootstrap does not claim Changes", async () => {
+	const { pi, handlers, commands, tools, git } = fakePi();
+	let bootstrapped = false;
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
+		resolveWorktree: (path) => bootstrapped ? { root: path === "." ? "/repo" : path, commonDir: path === "/foreign" ? "/foreign/git" : "/repo/.git" } : undefined,
+	});
+	const { ctx, ui } = fakeContext();
+	const manager = ctx.sessionManager;
+	await fire(handlers, "session_start", ctx);
+	const register = tools.get("session_worktree_register")!;
+	await assert.rejects(register.execute("before", { path: "/repo" }, undefined, undefined, ctx), /same Git clone/);
+	bootstrapped = true;
+	await register.execute("after", { path: "/repo" }, undefined, undefined, ctx);
+	await register.execute("dedup", { path: "/repo" }, undefined, undefined, ctx);
+	await assert.rejects(register.execute("foreign", { path: "/foreign" }, undefined, undefined, ctx), /same Git clone/);
+	assert.equal(ctx.sessionManager, manager);
+	assert.equal(ctx.sessionManager.getEntries().length, 1);
+	await commands.get("gentle:changes")!.handler("", ctx);
+	assert.match(ui.notices.join("\n"), /No captured agent changes/);
+	assert.equal(ui.overlay, undefined);
+	assert.deepEqual(git, []);
+	await fire(handlers, "session_shutdown", ctx);
+});
+
 test("Changes opens only for captured mutations, not registered dirty roots", async () => {
  const {pi,handlers,commands,tools,git}=fakePi();
  gentleShell(pi,{});
@@ -4430,12 +4590,13 @@ test("a registered source's rejecting fetch never crashes the shell or poisons t
 	}
 	assert.deepEqual(unhandled, [], "a foreign source's rejection must never surface as an unhandled rejection");
 
-	// The panel still explains itself with the pending note, never a crash,
-	// even through the awaited refresh openUsage runs on open.
+	// The panel still explains itself with the generic failure note (the fetch
+	// ran and answered nothing), never a crash, even through the awaited
+	// refresh openUsage runs on open.
 	const opened = commands.get("gentle:usage")!.handler("", ctx);
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	const plain = ui.overlayView!.render(90).map(stripAnsi);
-	assert.match(plain[1], /✿ acme-cloud · no usage yet · r to fetch/);
+	assert.match(plain[1], /✿ acme-cloud · fetch failed · r to retry/);
 	ui.closeOverlay?.();
 	await opened;
 });
@@ -4469,7 +4630,7 @@ test("a registered source resolving usage for another provider is rejected witho
 	assert.match(renderFooter(ui), /nan total ▰+▱+/, "the real nan snapshot must survive a mismatched acme-cloud resolution untouched");
 });
 
-test("gentleShell leaves the pending note when a registered source resolves a malformed usage", async () => {
+test("gentleShell leaves a generic failure note when a registered source resolves a malformed usage", async () => {
 	const { pi, handlers, commands } = fakePi();
 	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { now: () => 1_788_600_000_000 });
 	pi.events.emit(USAGE_SOURCE_EVENT, {
@@ -4486,7 +4647,7 @@ test("gentleShell leaves the pending note when a registered source resolves a ma
 	const opened = commands.get("gentle:usage")!.handler("", ctx);
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	const plain = ui.overlayView!.render(90).map(stripAnsi);
-	assert.match(plain[1], /✿ acme-cloud · no usage yet · r to fetch/);
+	assert.match(plain[1], /✿ acme-cloud · fetch failed · r to retry/);
 	ui.closeOverlay?.();
 	await opened;
 });
@@ -4759,4 +4920,545 @@ test("resolving the overlay through closeOverlay sends nothing and does not thro
 	ui.closeOverlay?.();
 	await opened;
 	assert.deepEqual(sentMessages, []);
+});
+
+// Targeted usage scope: the session's own provider plus every provider the
+// active profile's subagent routing names, honoring a repository pin over the
+// global active profile.
+
+function writeProfilesStore(home: string, profiles: Record<string, unknown>, active?: string): void {
+	writeFileSync(join(home, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, ...(active ? { active } : {}), profiles }));
+}
+
+async function settle(): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+test("gentleShell refreshes the active profile's subagent providers alongside the session provider", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "shell-usage-scope-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	writeProfilesStore(home, { team: { reviewer: { model: "nan/glm5.3" } } }, "team");
+	const { pi, handlers } = fakePi();
+	const { fetchFn, calls } = fakeFetch(NAN_QUOTA_PAYLOAD);
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => 1_788_600_000_000 });
+	const { ctx } = fakeContext({ token: JWT });
+	await fire(handlers, "session_start", ctx);
+	await settle();
+	assert.ok(calls.some((call) => call.url === NAN_QUOTA_URL), "the profile's nan route is fetched");
+	assert.ok(calls.some((call) => call.url === CODEX_USAGE_URL), "the session provider is still fetched");
+
+	await fire(handlers, "agent_end", ctx);
+	await settle();
+	assert.equal(calls.length, 2, "the 5-minute throttle still applies per targeted provider");
+});
+
+test("a pinned profile's subagent providers are the refreshed ones, not the global active profile's", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "shell-usage-pin-"));
+	const commonDir = mkdtempSync(join(tmpdir(), "shell-usage-pin-git-"));
+	t.after(() => {
+		rmSync(home, { recursive: true, force: true });
+		rmSync(commonDir, { recursive: true, force: true });
+	});
+	mkdirSync(join(commonDir, "gentle-ai"), { recursive: true });
+	writeFileSync(join(commonDir, "gentle-ai", "profile-pin.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile: "pinned" }));
+	writeProfilesStore(home, {
+		team: { reviewer: { model: "openai-codex/gpt-5.5" } },
+		pinned: { reviewer: { model: "nan/glm5.3" } },
+	}, "team");
+	const { pi, handlers } = fakePi();
+	const { fetchFn, calls } = fakeFetch(NAN_QUOTA_PAYLOAD);
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => 1_788_600_000_000, resolveWorktree: () => ({ root: "/repo", commonDir }) });
+	const { ctx } = fakeContext({ token: JWT });
+	await fire(handlers, "session_start", ctx);
+	await settle();
+	assert.ok(calls.some((call) => call.url === NAN_QUOTA_URL), "the pin decides the routing, so the pinned profile's nan route is fetched");
+});
+
+test("a bare routing model id resolves through the model registry only when exactly one provider carries it", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "shell-usage-bare-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	writeProfilesStore(home, { team: { reviewer: { model: "glm5.3" } } }, "team");
+	const { pi, handlers } = fakePi();
+	const { fetchFn, calls } = fakeFetch(NAN_QUOTA_PAYLOAD);
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => 1_788_600_000_000 });
+	const { ctx } = fakeContext({ token: JWT });
+	(ctx as unknown as { modelRegistry: { getAll(): Array<{ id: string; provider: string }> } }).modelRegistry.getAll = () => [{ id: "gpt-5.5", provider: "openai-codex" }, { id: "glm5.3", provider: "nan" }];
+	await fire(handlers, "session_start", ctx);
+	await settle();
+	assert.ok(calls.some((call) => call.url === NAN_QUOTA_URL), "a bare id one provider carries is targeted");
+
+	const ambiguous = fakePi();
+	const ambiguousFetch = fakeFetch(NAN_QUOTA_PAYLOAD);
+	gentleShell(ambiguous.pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: ambiguousFetch.fetchFn, now: () => 1_788_600_000_000 });
+	const ambiguousCtx = fakeContext({ token: JWT });
+	(ambiguousCtx.ctx as unknown as { modelRegistry: { getAll(): Array<{ id: string; provider: string }> } }).modelRegistry.getAll = () => [{ id: "glm5.3", provider: "nan" }, { id: "glm5.3", provider: "openai-codex" }];
+	await fire(ambiguous.handlers, "session_start", ambiguousCtx.ctx);
+	await settle();
+	assert.equal(ambiguousFetch.calls.some((call) => call.url === NAN_QUOTA_URL), false, "a bare id two providers carry is never guessed");
+});
+
+test("a usage source registered after session start refreshes a subagent provider of the active profile", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "shell-usage-source-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	writeProfilesStore(home, { team: { watcher: { model: "acme-cloud/acme" } } }, "team");
+	const { pi, handlers } = fakePi();
+	const seen: Array<string | undefined> = [];
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { now: () => 1_788_600_000_000 });
+	const { ctx } = fakeContext({ token: "acme-token" });
+	await fire(handlers, "session_start", ctx);
+	await settle();
+
+	pi.events.emit(USAGE_SOURCE_EVENT, acmeSource((apiKey) => seen.push(apiKey)));
+	await settle();
+	assert.deepEqual(seen, ["acme-token"], "a subagent route's provider gets the registered fetch, not just the session's own provider");
+});
+
+test("the subscriptions panel shows targeted providers with no data and a generic fetch-failure note", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "shell-usage-fail-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	writeProfilesStore(home, { team: { reviewer: { model: "nan/glm5.3" } } }, "team");
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch(NAN_QUOTA_PAYLOAD, false).fetchFn, now: () => 1_788_600_000_000 });
+	const { ctx, ui } = fakeContext({ token: JWT });
+	await fire(handlers, "session_start", ctx);
+	const opened = commands.get("gentle:usage")!.handler("", ctx);
+	await settle();
+	const plain = ui.overlayView!.render(90).map(stripAnsi);
+	assert.match(plain.find((line) => line.includes("nan")) ?? "", /nan · fetch failed · r to retry/, "a targeted provider whose fetch answered nothing says so, generically");
+	assert.equal(plain.some((line) => /sk-nan-secret|Bearer|acct-1/.test(line)), false, "the failure note stays nonsecret");
+	ui.closeOverlay?.();
+	await opened;
+});
+
+// One stalled provider must not hold the panel hostage: refreshes run
+// concurrently per provider and each one is bounded, so the overlay opens
+// immediately, the healthy provider still lands its snapshot, the stalled one
+// degrades to the generic failure note when its window expires, and a late
+// answer can never mutate what the timeout already settled.
+test("a stalled provider times out without hanging the overlay, and a late answer cannot mutate", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "shell-usage-stall-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	writeProfilesStore(home, { team: { reviewer: { model: "nan/glm5.3" } } }, "team");
+	const { pi, handlers, commands } = fakePi();
+	let stalledCalls = 0;
+	let releaseStalled: ((usage: unknown) => void) | undefined;
+	const acmePayload = {
+		provider: "acme-cloud",
+		plan: "Acme cloud",
+		limits: [{ name: "acme-cloud", windows: [{ label: "week", usedPercent: 40, windowSeconds: 604_800, resetAt: null }], limitReached: false }],
+		fetchedAt: 0,
+	};
+	const { fetchFn } = fakeFetch(NAN_QUOTA_PAYLOAD);
+	gentleShell(
+		pi,
+		{ GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off", GENTLE_PI_SHELL_USAGE_TIMEOUT_MS: "25" },
+		{ fetch: fetchFn, now: () => 1_788_600_000_000 },
+	);
+	pi.events.emit(USAGE_SOURCE_EVENT, {
+		schema: USAGE_SOURCE_SCHEMA,
+		provider: "acme-cloud",
+		fetch: async () => {
+			stalledCalls += 1;
+			return await new Promise((resolve) => {
+				releaseStalled = () => resolve(acmePayload);
+			});
+		},
+	});
+	const { ctx, ui } = fakeContext({ token: "sk-nan-secret" });
+	(ctx as unknown as { model: { provider: string } }).model.provider = "acme-cloud";
+	await fire(handlers, "session_start", ctx);
+
+	// The stalled fetch is still pending, yet the panel opens right away and
+	// shows whatever the store already holds.
+	const opened = commands.get("gentle:usage")!.handler("", ctx);
+	await settle();
+	assert.ok(ui.overlayView, "the overlay must open while a provider is still stalled");
+	assert.match(ui.overlayView!.render(90).map(stripAnsi).find((line) => /^│ nan · updated just now/.test(line)) ?? "", /nan/, "the healthy provider's snapshot lands while the other provider is stalled");
+
+	// The stalled provider's window expires: its row wears the generic failure
+	// note, and it was still fetched — bounding, never skipping.
+	await new Promise((resolve) => setTimeout(resolve, 60));
+	await settle();
+	const plain = ui.overlayView!.render(90).map(stripAnsi);
+	assert.match(plain.find((line) => line.includes("acme-cloud")) ?? "", /acme-cloud · fetch failed · r to retry/, "the stalled provider degrades to the generic failure note");
+	assert.ok(stalledCalls >= 1, "the stalled provider was still fetched");
+
+	// An answer arriving after the timeout cannot mutate the settled state.
+	releaseStalled!(acmePayload);
+	await settle();
+	const late = ui.overlayView!.render(90).map(stripAnsi);
+	assert.match(late.find((line) => line.includes("acme-cloud")) ?? "", /fetch failed · r to retry/, "a late answer must not replace the timeout's failure note");
+	assert.doesNotMatch(late.join("\n"), /Acme cloud/, "a late answer must not record a snapshot");
+	ui.closeOverlay?.();
+	await opened;
+});
+
+// The fix for "healthy results record but nothing repaints until the slowest
+// timeout": each settled provider — snapshot or failure — notifies the shell
+// immediately, so the open overlay repaints per provider instead of waiting
+// for the whole refresh (whose slowest member is the bounded window itself).
+test("a settled provider repaints the overlay before the stalled provider's window expires", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "shell-usage-repaint-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	writeProfilesStore(home, { team: { reviewer: { model: "nan/glm5.3" } } }, "team");
+	const { pi, handlers, commands } = fakePi();
+	let releaseNan: (() => void) | undefined;
+	const nanFetch = (async () => {
+		return await new Promise<Response>((resolve) => {
+			releaseNan = () => resolve({ ok: true, json: async () => NAN_QUOTA_PAYLOAD } as Response);
+		});
+	}) as typeof fetch;
+	gentleShell(
+		pi,
+		{ GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off", GENTLE_PI_SHELL_USAGE_TIMEOUT_MS: "100" },
+		{ fetch: nanFetch, now: () => 1_788_600_000_000 },
+	);
+	pi.events.emit(USAGE_SOURCE_EVENT, {
+		schema: USAGE_SOURCE_SCHEMA,
+		provider: "acme-cloud",
+		fetch: async () => await new Promise(() => {}),
+	});
+	const { ctx, ui } = fakeContext({ token: "sk-nan-secret" });
+	(ctx as unknown as { model: { provider: string } }).model.provider = "acme-cloud";
+	await fire(handlers, "session_start", ctx);
+	await settle();
+	// Arm the shell render host the way a real session does (the footer factory
+	// owns renderHost), then count frames from the shared fake TUI.
+	renderFooter(ui);
+	let frames = 0;
+	const originalRequestRender = fakeTui.requestRender;
+	fakeTui.requestRender = () => {
+		frames += 1;
+	};
+	try {
+		const opened = commands.get("gentle:usage")!.handler("", ctx);
+		await settle();
+		// Both providers are pending; releasing only the healthy one must repaint
+		// the overlay at once, with the refresh still in flight.
+		const framesBeforeRelease = frames;
+		releaseNan!();
+		await settle();
+		const lines = ui.overlayView!.render(90).map(stripAnsi);
+		assert.ok(frames > framesBeforeRelease, "the settled provider notifies the shell before the stalled window expires");
+		assert.match(lines.find((line) => /^│ nan · updated just now/.test(line)) ?? "", /nan/, "the healthy row is painted immediately on its own settle");
+		assert.match(lines[0], /refreshing…/, "the repaint is per settled provider — the refresh is still in flight");
+		// Only then does the stalled provider's window expire into the failure note.
+		await new Promise((resolve) => setTimeout(resolve, 250));
+		await settle();
+		assert.match(ui.overlayView!.render(90).map(stripAnsi).find((line) => line.includes("acme-cloud")) ?? "", /fetch failed · r to retry/);
+		ui.closeOverlay?.();
+		await opened;
+	} finally {
+		fakeTui.requestRender = originalRequestRender;
+	}
+});
+
+// The window's signal must compose with whatever the caller already carries —
+// init.signal, like a source passing its own cancellation — not replace it:
+// either side aborting still aborts, exactly like a plain fetch.
+test("the refresh timeout composes with a source's own abort signal instead of replacing it", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "shell-usage-signal-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	const { pi, handlers } = fakePi();
+	let captured: AbortSignal | undefined;
+	const spyFetch = (async (_input: string | URL, init?: RequestInit) => {
+		captured = (init?.signal ?? undefined) as AbortSignal | undefined;
+		return await new Promise<Response>(() => {});
+	}) as typeof fetch;
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off", GENTLE_PI_SHELL_USAGE_TIMEOUT_MS: "100" }, { fetch: spyFetch, now: () => 1_788_600_000_000 });
+	const hangingSource = (caller: AbortController): unknown => ({
+		schema: USAGE_SOURCE_SCHEMA,
+		provider: "acme-cloud",
+		fetch: async (_apiKey: string | undefined, fetchFn: typeof fetch) => {
+			await fetchFn("https://acme.example/usage", { signal: caller.signal });
+			return undefined;
+		},
+	});
+	const { ctx } = fakeContext({ token: "acme-token" });
+	(ctx as unknown as { model: { provider: string } }).model.provider = "acme-cloud";
+	const callerA = new AbortController();
+	pi.events.emit(USAGE_SOURCE_EVENT, hangingSource(callerA));
+	await fire(handlers, "session_start", ctx);
+	await settle();
+	assert.ok(captured, "the source's fetch reached the shell fetch");
+	assert.notEqual(captured, callerA.signal, "the window's signal composes with the caller's, it does not replace it");
+	callerA.abort();
+	assert.ok(captured!.aborted, "the caller's own abort still aborts the composed signal");
+
+	// A fresh, un-aborted caller must still be aborted by the window itself.
+	const callerB = new AbortController();
+	pi.events.emit(USAGE_SOURCE_EVENT, hangingSource(callerB));
+	await settle();
+	const capturedB = captured;
+	assert.ok(capturedB && !capturedB.aborted, "the second dispatch starts un-aborted");
+	await new Promise((resolve) => setTimeout(resolve, 250));
+	assert.ok(capturedB!.aborted, "the window's expiry aborts the composed signal too");
+});
+
+// A provider whose credential resolution outlives its window must never start
+// its fetch at all: the timeout bounds the whole operation, not just the wire.
+test("a provider aborted while its credential resolves never starts its fetch", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "shell-usage-credential-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	const { pi, handlers } = fakePi();
+	let fetchCalls = 0;
+	const spyFetch = (async () => {
+		fetchCalls += 1;
+		return { ok: true, json: async () => ({}) } as Response;
+	}) as typeof fetch;
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off", GENTLE_PI_SHELL_USAGE_TIMEOUT_MS: "25" }, { fetch: spyFetch, now: () => 1_788_600_000_000 });
+	pi.events.emit(USAGE_SOURCE_EVENT, {
+		schema: USAGE_SOURCE_SCHEMA,
+		provider: "acme-cloud",
+		fetch: async () => {
+			fetchCalls += 1;
+			return undefined;
+		},
+	});
+	const { ctx } = fakeContext({ token: "acme-token" });
+	let releaseCredential: (() => void) | undefined;
+	(ctx as unknown as { modelRegistry: unknown }).modelRegistry = {
+		isUsingOAuth: () => true,
+		getApiKeyForProvider: () => new Promise<string | undefined>((resolve) => { releaseCredential = () => resolve("acme-token"); }),
+	};
+	(ctx as unknown as { model: { provider: string } }).model.provider = "acme-cloud";
+	await fire(handlers, "session_start", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 60));
+	releaseCredential!();
+	await settle();
+	assert.equal(fetchCalls, 0, "the window expired during credential resolution; the source must never be invoked");
+});
+
+test("the panel keeps a headers-only subagent provider pending instead of a false failure", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "shell-usage-anthropic-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	writeProfilesStore(home, { team: { reviewer: { model: "anthropic/claude-x" } } }, "team");
+	const { pi, handlers, commands } = fakePi();
+	const { fetchFn, calls } = fakeFetch(NAN_QUOTA_PAYLOAD);
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => 1_788_600_000_000 });
+	const { ctx, ui } = fakeContext({ token: JWT });
+	await fire(handlers, "session_start", ctx);
+	await settle();
+	assert.deepEqual(calls.map((call) => call.url), [CODEX_USAGE_URL], "anthropic has no usage endpoint to fetch; only the session's own provider is fetched");
+	const opened = commands.get("gentle:usage")!.handler("", ctx);
+	await settle();
+	const plain = ui.overlayView!.render(90).map(stripAnsi);
+	assert.match(plain.find((line) => line.includes("anthropic")) ?? "", /anthropic · usage arrives with the first response/);
+	assert.equal(plain.some((line) => line.includes("fetch failed")), false, "headers-only providers never wear a fetch-failure note");
+	ui.closeOverlay?.();
+	await opened;
+});
+
+test("after a profile switch the panel stops presenting the old profile's provider", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "shell-usage-switch-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	writeProfilesStore(home, { team: { reviewer: { model: "nan/glm5.3" } }, solo: {} }, "team");
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch(NAN_QUOTA_PAYLOAD).fetchFn, now: () => 1_788_600_000_000 });
+	const { ctx, ui } = fakeContext({ token: JWT });
+	await fire(handlers, "session_start", ctx);
+	const opened = commands.get("gentle:usage")!.handler("", ctx);
+	await settle();
+	assert.ok(ui.overlayView!.render(90).map(stripAnsi).some((line) => /^│ nan ·/.test(line)), "the team profile's nan route is current scope");
+	ui.closeOverlay?.();
+	await opened;
+
+	writeProfilesStore(home, { team: { reviewer: { model: "nan/glm5.3" } }, solo: {} }, "solo");
+	const reopened = commands.get("gentle:usage")!.handler("", ctx);
+	await settle();
+	assert.equal(ui.overlayView!.render(90).map(stripAnsi).some((line) => line.includes("nan")), false, "a provider recorded under the previous profile's routing is not current scope");
+	ui.closeOverlay?.();
+	await reopened;
+});
+
+function openPanelLines(ui: FakeUi): string[] {
+	return ui.overlayView!.render(90).map(stripAnsi);
+}
+
+test("a failed refresh says so beside the retained snapshot and clears on the next success", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "shell-usage-retained-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	writeProfilesStore(home, { team: { reviewer: { model: "nan/glm5.3" } } }, "team");
+	let fail = false;
+	let now = 1_788_600_000_000;
+	const fetchFn = (async () => {
+		if (fail) throw new TypeError("network down");
+		return { ok: true, json: async () => NAN_QUOTA_PAYLOAD } as Response;
+	}) as typeof fetch;
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => now });
+	const { ctx, ui } = fakeContext({ token: JWT });
+	await fire(handlers, "session_start", ctx);
+	await settle();
+	const opened = commands.get("gentle:usage")!.handler("", ctx);
+	await settle();
+	assert.ok(openPanelLines(ui).some((line) => /^│ nan · updated just now/.test(line)), "the good snapshot is recorded");
+	assert.equal(openPanelLines(ui).some((line) => line.includes("fetch failed")), false, "a successful refresh carries no failure note");
+	ui.closeOverlay?.();
+	await opened;
+
+	fail = true;
+	now += 6 * 60_000;
+	await fire(handlers, "agent_end", ctx);
+	await settle();
+	const reopened = commands.get("gentle:usage")!.handler("", ctx);
+	await settle();
+	const afterFailure = openPanelLines(ui);
+	assert.ok(afterFailure.some((line) => /^│ nan · updated 6m ago/.test(line)), "the retained snapshot still headlines the provider, honestly stale");
+	assert.ok(afterFailure.some((line) => line.includes("glm5.3") && line.includes("27%")), "the retained snapshot's rows survive");
+	assert.ok(afterFailure.some((line) => line.includes("fetch failed · r to retry")), "the failed refresh is visible beside the retained snapshot");
+	ui.closeOverlay?.();
+	await reopened;
+
+	fail = false;
+	now += 6 * 60_000;
+	await fire(handlers, "agent_end", ctx);
+	await settle();
+	const recovered = commands.get("gentle:usage")!.handler("", ctx);
+	await settle();
+	assert.ok(openPanelLines(ui).some((line) => /^│ nan · updated just now/.test(line)));
+	assert.equal(openPanelLines(ui).some((line) => line.includes("fetch failed")), false, "a successful refresh clears the failure note");
+	ui.closeOverlay?.();
+	await recovered;
+});
+
+test("a replaced source's late failure cannot mark the provider failed after its replacement succeeded", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "shell-usage-stale-fail-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	writeProfilesStore(home, { team: { watcher: { model: "acme-cloud/acme" } } }, "team");
+	let now = 1_788_600_000_000;
+	const acmePayload = () => ({
+		provider: "acme-cloud",
+		plan: "Acme",
+		limits: [{ name: "acme-cloud", windows: [{ label: "week", usedPercent: 40, windowSeconds: 604_800, resetAt: null }], limitReached: false }],
+		fetchedAt: 0,
+	});
+	let aCalls = 0;
+	let releaseStaleFailure!: () => void;
+	const staleGate = new Promise<void>((resolve) => { releaseStaleFailure = resolve; });
+	const sourceA = {
+		schema: USAGE_SOURCE_SCHEMA,
+		provider: "acme-cloud",
+		fetch: async () => {
+			aCalls += 1;
+			if (aCalls <= 2) return acmePayload();
+			await staleGate;
+			return undefined; // the replaced source's late failure
+		},
+	};
+	const sourceB = {
+		schema: USAGE_SOURCE_SCHEMA,
+		provider: "acme-cloud",
+		fetch: async () => {
+			if (bCalls === 0) {
+				bCalls += 1;
+				return acmePayload();
+			}
+			await new Promise(() => {}); // later refreshes stay in flight, mutating nothing
+		},
+	};
+	let bCalls = 0;
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch().fetchFn, now: () => now });
+	pi.events.emit(USAGE_SOURCE_EVENT, sourceA);
+	const { ctx, ui } = fakeContext({ token: JWT });
+	await fire(handlers, "session_start", ctx);
+	await settle();
+	const opened = commands.get("gentle:usage")!.handler("", ctx);
+	await settle();
+	assert.ok(openPanelLines(ui).some((line) => line.includes("acme-cloud") && line.includes("40%")), "the original source's snapshot is showing");
+
+	now += 6 * 60_000;
+	await fire(handlers, "agent_end", ctx);
+	await settle();
+	pi.events.emit(USAGE_SOURCE_EVENT, sourceB);
+	await settle();
+	releaseStaleFailure();
+	await settle();
+	const lines = openPanelLines(ui);
+	assert.ok(lines.some((line) => line.includes("acme-cloud") && line.includes("40%")), "the replacement's snapshot stands");
+	assert.equal(lines.some((line) => line.includes("fetch failed")), false, "the replaced source's late failure must not mark the provider failed");
+	ui.closeOverlay?.();
+	await opened;
+});
+
+test("a valid response-header snapshot clears a prior refresh failure", async (_t) => {
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch(USAGE_PAYLOAD, false).fetchFn, now: () => 1_788_600_000_000 });
+	const { ctx, ui } = fakeContext({ token: JWT });
+	await fire(handlers, "session_start", ctx);
+	await settle();
+	const opened = commands.get("gentle:usage")!.handler("", ctx);
+	await settle();
+	assert.ok(openPanelLines(ui).some((line) => line.includes("✿ openai-codex · fetch failed")), "the failed refresh is visible first");
+
+	for (const handler of handlers.get("after_provider_response") ?? []) {
+		handler({ status: 200, headers: { "x-codex-primary-used-percent": "10", "x-codex-primary-window-minutes": "300" } }, ctx);
+	}
+	const lines = openPanelLines(ui);
+	assert.ok(lines.some((line) => line.includes("✿ openai-codex · updated just now")), "the header snapshot is recorded");
+	assert.ok(lines.some((line) => line.includes("10%")), "the header snapshot's window renders");
+	assert.equal(lines.some((line) => line.includes("fetch failed")), false, "a valid header snapshot clears the failure");
+	ui.closeOverlay?.();
+	await opened;
+});
+
+test("the panel's scope is resolved on refresh, not on every render", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "shell-usage-cache-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	writeProfilesStore(home, { team: { reviewer: { model: "nan/glm5.3" } } }, "team");
+	let resolutions = 0;
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
+		fetch: fakeFetch(NAN_QUOTA_PAYLOAD).fetchFn,
+		now: () => 1_788_600_000_000,
+		resolveWorktree: (cwd: string) => {
+			resolutions += 1;
+			return { root: cwd, commonDir: "/clone/git" };
+		},
+	});
+	const { ctx, ui } = fakeContext({ token: JWT });
+	await fire(handlers, "session_start", ctx);
+	await settle();
+	const opened = commands.get("gentle:usage")!.handler("", ctx);
+	await settle();
+	assert.ok(openPanelLines(ui).some((line) => line.includes("nan")), "the panel renders the scoped providers");
+	const before = resolutions;
+	ui.overlayView!.render(90);
+	ui.overlayView!.render(90);
+	ui.overlayView!.render(90);
+	assert.equal(resolutions, before, "renders reuse the cached scope instead of re-resolving Git and the profiles store");
+	ui.closeOverlay?.();
+	await opened;
+});
+
+test("an older overlapping refresh cannot mark a provider failed after a newer one succeeded", async (_t) => {
+	const { pi, handlers, commands } = fakePi();
+	let now = 1_788_600_000_000;
+	let codexCalls = 0;
+	let releaseStaleFailure!: () => void;
+	const staleGate = new Promise<void>((resolve) => { releaseStaleFailure = resolve; });
+	const fetchFn = (async () => {
+		codexCalls += 1;
+		if (codexCalls === 1) {
+			await staleGate;
+			return { ok: false } as Response; // the older refresh's late failure
+		}
+		return { ok: true, json: async () => USAGE_PAYLOAD } as Response; // the newer refresh succeeds
+	}) as typeof fetch;
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => now });
+	const { ctx, ui } = fakeContext({ token: JWT });
+	await fire(handlers, "session_start", ctx);
+	await settle();
+	const opened = commands.get("gentle:usage")!.handler("", ctx);
+	await settle();
+	assert.ok(openPanelLines(ui).some((line) => line.includes("✿ openai-codex · pro")), "the newer refresh's snapshot is showing");
+
+	releaseStaleFailure();
+	await settle();
+	const lines = openPanelLines(ui);
+	assert.ok(lines.some((line) => line.includes("✿ openai-codex")), "the newer refresh's snapshot stands");
+	assert.equal(lines.some((line) => line.includes("fetch failed")), false, "the older refresh's late failure must not mark the provider failed");
+	ui.closeOverlay?.();
+	await opened;
 });

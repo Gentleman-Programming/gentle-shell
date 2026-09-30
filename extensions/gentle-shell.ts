@@ -3,7 +3,7 @@ import { Editor, decodeKittyPrintable, isKeyRelease, matchesKey, parseKey, trunc
 import { execFile, spawnSync } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { profilesFilePath, readProfilesFileResult } from "../lib/agent-profiles.ts";
+import { profilesFilePath, profileRoleEntries, readProfilesFileResult } from "../lib/agent-profiles.ts";
 import { resolveProfilePin } from "../lib/agent-profile-pin.ts";
 import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -17,12 +17,14 @@ import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { VisualCustomizeView, type CustomizeCategory, type CustomizeRow, type ProfileActions } from "../lib/visual-customize-view.ts";
 import { deleteVisualProfile, getVisualProfile, listVisualProfiles, resetVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
 import { sourcePalettePreview } from "../lib/theme-customization.ts";
-import { DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, STATUS_PLACEMENT, resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
+import { DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, STATUS_PLACEMENT, VISUAL_SECTION_KEYS, resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
 import { BANNER_COLORS, DEFAULT_BANNER_CONFIG, readBannerConfig, readBannerConfigForEdit, writeBannerConfig } from "./startup-banner.ts";
 import { agentsViewKey } from "../lib/agents-keys.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { DOUBLE_ESC_CANCEL_HINT, framePromptLines, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
+import { inferOddPhase } from "../lib/odd-phase-inference.ts";
+import { isInteractiveMode } from "../lib/rpc-host.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { resolveAnimationPolicy, writeAnimationPolicy, type AnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy, type VimPolicy } from "../lib/vim-policy.ts";
@@ -46,7 +48,7 @@ export function resolveVimRuntime(entry = process.argv[1], customClass: typeof C
 	const editorPrototype = Object.getPrototypeOf(customClass.prototype) as typeof Editor.prototype | undefined;
 	const editorClass = editorPrototype?.constructor as typeof Editor | undefined;
 	const candidates: string[] = [];
-	// The 0.87.1 CLI uses the bundled virtual module graph. Its public index
+	// The audited 0.99.1 CLI uses the bundled virtual module graph. Its public index
 	// exports the very CustomEditor class supplied to extensions by that graph.
 	try {
 		if (entry) {
@@ -58,7 +60,7 @@ export function resolveVimRuntime(entry = process.argv[1], customClass: typeof C
 					const requireFromBundle = createRequire(bundlePath);
 					const bundled = requireFromBundle(bundlePath) as { CustomEditor?: typeof CustomEditor; VERSION?: string };
 					const metadata = requireFromBundle(resolve(root, "package.json")) as { name?: string; version?: string };
-					if (metadata.name === "@earendil-works/pi-coding-agent" && metadata.version === "0.87.1" &&
+					if (metadata.name === "@earendil-works/pi-coding-agent" && metadata.version === "0.99.1" &&
 						bundled.VERSION === metadata.version && bundled.CustomEditor === customClass &&
 						typeof editorClass === "function" && editorClass.name === "Editor" &&
 						editorPrototype === editorClass.prototype &&
@@ -92,7 +94,7 @@ export function resolveVimRuntime(entry = process.argv[1], customClass: typeof C
 			const tuiMetadata = requireFromRuntime(resolve(tuiRoot, "package.json")) as { version?: string; name?: string };
 			if (agent.CustomEditor === customClass && tui.Editor === editorClass &&
 				agentMetadata.name === "@earendil-works/pi-coding-agent" && tuiMetadata.name === "@earendil-works/pi-tui" &&
-				(agentMetadata.version === "0.85.1" || agentMetadata.version === "0.87.1") &&
+				agentMetadata.version === "0.99.1" &&
 				agentMetadata.version === tuiMetadata.version) return { version: tuiMetadata.version, editorClass };
 		} catch { /* Unknown package or constructor: ordinary editing stays active. */ }
 	}
@@ -105,11 +107,12 @@ import {
 	type DoubleEscCancelPolicy,
 	type DoubleEscCancelResolution,
 } from "../lib/double-esc-cancel-policy.ts";
-import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseProviderUsage, parseUsageHeaders, parseUsageSource, UsageSourceRegistry, UsageStore, USAGE_SOURCE_EVENT, type ProviderUsage, type UsageSource } from "../lib/shell-usage.ts";
+import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseProviderUsage, parseUsageHeaders, parseUsageSource, usageScopeProviders, UsageSourceRegistry, UsageStore, USAGE_SOURCE_EVENT, type ProviderUsage, type UsageSource } from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarHeader, sidebarPart, sidebarState, VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar, narrowStatusOwner, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
 import { SessionChanges, SESSION_CHANGE_EVENT } from "../lib/session-changes.ts";
+import { REVIEW_SIDEBAR_EVENT, isReviewSidebarSnapshot, type ReviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
 import { SelectionEngine } from "../lib/selection-engine.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
@@ -221,7 +224,7 @@ function ambientDevBinary(): DevBinaryNotice | undefined {
 	}
 }
 
-const defaultShellDeps: Omit<ShellDeps, "activeProfile"> = { fetch: (...args) => globalThis.fetch(...args), now: () => Date.now(), devBinary: ambientDevBinary, resolveWorktree: resolveSessionWorktree, gitRunner: shellGitRunner };
+const defaultShellDeps: Omit<ShellDeps, "activeProfile"> = { fetch: (input, init) => globalThis.fetch(input, init), now: () => Date.now(), devBinary: ambientDevBinary, resolveWorktree: resolveSessionWorktree, gitRunner: shellGitRunner };
 
 interface AssistantUsageEntry {
 	type: string;
@@ -1212,6 +1215,12 @@ function changesPollMs(env: NodeJS.ProcessEnv): number {
 	return positiveMs(env.GENTLE_PI_SHELL_CHANGES_POLL_MS, CHANGES_POLL_DEFAULT_MS);
 }
 
+// One bounded window per provider refresh: a credential lookup or fetch that
+// never answers must not hold the other providers — or the panel opening on
+// them — past it. Tunable (tests, slow networks); invalid values fall back.
+const USAGE_FETCH_TIMEOUT_DEFAULT_MS = 10_000;
+const usageFetchTimeoutMs = (env: NodeJS.ProcessEnv): number => positiveMs(env.GENTLE_PI_SHELL_USAGE_TIMEOUT_MS, USAGE_FETCH_TIMEOUT_DEFAULT_MS);
+
 function changesFingerprint(model: ChangesModel): string {
 	return [model.notice ?? "", ...model.files.map((file) => `${file.path}:${file.status}:${file.added}:${file.deleted}:${file.diffRevision ?? ""}:${file.countsUnavailable ?? ""}`)].join("|");
 }
@@ -1430,29 +1439,136 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	// The 5-minute rule is per provider: one provider's fetch cannot leave the
 	// next one waiting for an interval it never used.
 	const usageFetchedAt = new Map<string, number>();
-	const refreshUsage = async (ctx: ExtensionContext, force: boolean) => {
-		const provider = ctx.model?.provider;
-		if (!provider) return;
-		const source = usageSources.get(provider);
-		if (!source && provider !== CODEX_PROVIDER && provider !== NAN_PROVIDER) return;
-		const now = deps.now();
-		if (!force && now - (usageFetchedAt.get(provider) ?? 0) < USAGE_REFRESH_MS) return;
-		usageFetchedAt.set(provider, now);
-		const apiKey = await ctx.modelRegistry.getApiKeyForProvider(provider).catch(() => undefined);
-		const fetched = source
-			? await fetchFromSource(source, apiKey, deps.fetch, deps.now())
-			: provider === NAN_PROVIDER
-				? await fetchNanUsage(apiKey, deps.fetch, deps.now())
-				: await fetchCodexUsage(apiKey, deps.fetch, deps.now());
-		if (!fetched) return;
-		// A registered source can be replaced while its own fetch is still in
-		// flight; the identity captured above is this call's source, so a stale
-		// answer that outlives its replacement is discarded instead of
-		// overwriting whatever the replacement already recorded.
-		if (source && usageSources.get(provider) !== source) return;
-		usage.record(fetched);
+	// Actual failures, per provider: a refresh that settled without a snapshot.
+	// In-flight fetches are never in here, so they cannot read as failed; a
+	// successful refresh (or a snapshot otherwise recorded) clears the provider.
+	const usageFailures = new Set<string>();
+	// Monotonic per-provider generation: each dispatched refresh takes the next
+	// number, and only the newest one for a provider may mutate its state. Two
+	// overlapping refreshes of the SAME source (or of builtins) can otherwise
+	// let an older failure settle after a newer success and poison it.
+	const usageGenerations = new Map<string, number>();
+	// One spelling of the config home, so the pin resolver, the global profiles
+	// store and the profile reader cannot drift onto two different stores.
+	const usageConfigHome = gentlePiConfigHome(env);
+	const usageFetchTimeout = usageFetchTimeoutMs(env);
+	// The subagent routing in force for this session: a repository pin first,
+	// then the global active profile. Only the profile's own role entries count;
+	// the reserved orchestrator key is not a route.
+	const activeRoutingModels = (ctx: ExtensionContext): Array<string | undefined> => {
+		const pin = resolveProfilePin({ cwd: ctx.cwd, configHome: usageConfigHome, resolveWorktree: deps.resolveWorktree });
+		const config = pin ? pin.modelProfiles : undefined;
+		if (config) return [...profileRoleEntries(config).map(([, entry]) => entry.model)];
+		const store = readProfilesFileResult(profilesFilePath(usageConfigHome));
+		const active = store.status === "valid" && store.file.active !== undefined ? store.file.profiles[store.file.active] : undefined;
+		return active ? profileRoleEntries(active).map(([, entry]) => entry.model) : [];
+	};
+	// A bare model id names a provider only when exactly one provider in the
+	// registry carries that id; anything else stays untargeted rather than guessed.
+	const bareModelProvider = (ctx: ExtensionContext, modelId: string): string | undefined => {
+		try {
+			const providers = new Set(ctx.modelRegistry.getAll().filter((model) => model.id === modelId).map((model) => model.provider));
+			return providers.size === 1 ? [...providers][0] : undefined;
+		} catch {
+			return undefined;
+		}
+	};
+	const usageScopeFor = (ctx: ExtensionContext): string[] =>
+		usageScopeProviders(ctx.model?.provider, activeRoutingModels(ctx), (modelId) => bareModelProvider(ctx, modelId));
+	let usageScope: string[] = [];
+	// The scope is Git/filesystem work, so it is resolved once per refresh and
+	// per registration — never per panel render, which only reads the cache.
+	const resolveUsageScope = (ctx: ExtensionContext): string[] => {
+		usageScope = usageScopeFor(ctx);
+		return usageScope;
+	};
+	// One notification per settled provider — snapshot or failure — so the
+	// shell and the open overlay repaint immediately instead of waiting for
+	// the whole refresh, whose slowest member is the bounded window itself.
+	const notifyUsageSettled = () => {
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
+	};
+	// One bounded, self-contained refresh per provider. Providers run
+	// concurrently: a stalled credential lookup or fetch for one can never hold
+	// the others — or the overlay opening on them — past its own window.
+	const refreshProvider = async (ctx: ExtensionContext, provider: string, source: UsageSource | undefined, force: boolean, now: number): Promise<boolean> => {
+		if (!source && provider !== CODEX_PROVIDER && provider !== NAN_PROVIDER) return false;
+		if (!force && now - (usageFetchedAt.get(provider) ?? 0) < USAGE_REFRESH_MS) return false;
+		usageFetchedAt.set(provider, now);
+		const generation = (usageGenerations.get(provider) ?? 0) + 1;
+		usageGenerations.set(provider, generation);
+		// The window covers credential resolution and the fetch together. The
+		// abort signal reaches the underlying fetch through the wrapped fetchFn —
+		// built-ins and registered sources alike — so an expired provider is
+		// actually cancelled when its caller honors the signal. The race is the
+		// only path to state mutation: whatever the work resolves after the
+		// window expired is a value nobody reads, so a late answer — success or
+		// failure — cannot mutate anything.
+		const controller = new AbortController();
+		let expire: (() => void) | undefined;
+		const expired = new Promise<"timeout">((resolve) => { expire = () => resolve("timeout"); });
+		const timer = setTimeout(() => {
+			controller.abort();
+			expire?.();
+		}, usageFetchTimeout);
+		// The window's signal composes with whatever the caller already carries —
+		// init.signal, or a Request input's own signal — instead of replacing it:
+		// either side aborting still aborts, exactly like a plain fetch. With no
+		// caller signal the window's signal passes through unchanged.
+		const boundedFetch: typeof fetch = (input, init) => {
+			const callerSignal = init?.signal ?? (typeof Request !== "undefined" && input instanceof Request ? input.signal : undefined);
+			return deps.fetch(input, {
+				...init,
+				signal: callerSignal ? AbortSignal.any([callerSignal, controller.signal]) : controller.signal,
+			});
+		};
+		const work = (async () => {
+			const apiKey = await ctx.modelRegistry.getApiKeyForProvider(provider).catch(() => undefined);
+			// The window may have expired while the credential was resolving: an
+			// aborted provider must not start its fetch at all.
+			if (controller.signal.aborted) return undefined;
+			return source
+				? fetchFromSource(source, apiKey, boundedFetch, deps.now())
+				: provider === NAN_PROVIDER
+					? fetchNanUsage(apiKey, boundedFetch, deps.now())
+					: fetchCodexUsage(apiKey, boundedFetch, deps.now());
+		})();
+		// The race's loser still runs to completion in the background: guard it so
+		// its rejection (a foreign source escaping its own catch) can never
+		// surface as unhandled, and clear the timer so nothing dangles.
+		const guarded = work.catch(() => undefined);
+		const settled = await Promise.race([guarded, expired]);
+		clearTimeout(timer);
+		// Discard before any state mutation: a generation mismatch means a newer
+		// refresh for this provider was dispatched and owns the state, and a
+		// replaced source's answer belongs to neither. A late success must not
+		// overwrite the newer snapshot, and a late failure must not mark the
+		// provider failed after its replacement succeeded.
+		if (usageGenerations.get(provider) !== generation) return false;
+		if (source && usageSources.get(provider) !== source) return false;
+		if (settled === "timeout" || !settled) {
+			usageFailures.add(provider);
+			notifyUsageSettled();
+			return false;
+		}
+		usage.record(settled);
+		usageFailures.delete(provider);
+		notifyUsageSettled();
+		return true;
+	};
+	const refreshUsage = async (ctx: ExtensionContext, force: boolean, only?: string) => {
+		const scope = resolveUsageScope(ctx);
+		const now = deps.now();
+		// Concurrent per provider; each settle notifies the shell (and repaints
+		// the open overlay) on its own, so a fast provider never waits for the
+		// slowest one's window. A discarded late answer notifies nothing: the
+		// refresh that owns the state notifies at its own settle.
+		await Promise.all(
+			scope
+				.filter((provider) => only === undefined || provider === only)
+				.map((provider) => refreshProvider(ctx, provider, usageSources.get(provider), force, now)),
+		);
 	};
 	// Subscribed once, for the life of the extension: a registration can
 	// arrive before the first session_start (the owning extension's factory
@@ -1464,12 +1580,19 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		const source = parseUsageSource(payload);
 		if (!source) return;
 		usageSources.register(source);
-		if (currentContext?.model?.provider === source.provider) void refreshUsage(currentContext, true);
+		if (!currentContext) return;
+		// A registration is interesting when its provider is targeted at all —
+		// the session's own or a subagent route of the active profile — and then
+		// only that provider is forced, never the whole scope.
+		if (resolveUsageScope(currentContext).includes(source.provider)) void refreshUsage(currentContext, true, source.provider);
 	});
 	pi.on("after_provider_response", (event) => {
 		const parsed = parseUsageHeaders(event.headers, deps.now());
 		if (!parsed) return;
 		usage.record(parsed);
+		// A snapshot that arrived with a response is evidence the provider is
+		// answering: a failure some earlier refresh recorded no longer stands.
+		usageFailures.delete(parsed.provider);
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
 	});
@@ -1478,11 +1601,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		const hint = keyHint("app.tools.expand", options.expanded ? "collapse" : "expand");
 		return cardComponent({ title: "Gentle AI", subtitle: "review preflight", body, tone: CARD_TONE.INFO }, theme, { expanded: options.expanded, hint });
 	});
-	const openUsage = async (ctx: ExtensionContext) => {
-		await refreshUsage(ctx, true);
-		await ctx.ui.custom<null>(
-			(tui, theme, _keybindings, done) =>
-				new UsageView(usage, {
+	const openUsage = (ctx: ExtensionContext) =>
+		ctx.ui.custom<null>(
+			(tui, theme, _keybindings, done) => {
+				const view = new UsageView(usage, {
 					theme,
 					now: () => deps.now(),
 					active: () => (ctx.model ? { provider: ctx.model.provider } : undefined),
@@ -1490,10 +1612,16 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					onRefresh: () => refreshUsage(ctx, true),
 					onClose: () => withOverlayRepaint(tui, done)(null),
 					requestRender: () => tui.requestRender(),
-				}),
+					scope: () => ({ providers: usageScope, failed: new Set(usageFailures) }),
+				});
+				// Open promptly: the panel draws whatever the store already holds
+				// while the forced refresh runs underneath it, and repaints when
+				// the refresh settles — answers, failures, or the bounded timeout.
+				view.refresh();
+				return view;
+			},
 			{ overlay: true, overlayOptions: { width: "70%", minWidth: 60, anchor: "center" } },
 		);
-	};
 	pi.registerCommand(USAGE_COMMAND_NAME, {
 		description: "Show subscription usage windows for the connected providers. Press r to refetch.",
 		handler: async (_args, ctx) => openUsage(ctx),
@@ -1547,6 +1675,22 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let changes: SessionChanges | undefined;
 	let registry: SessionWorktreeRegistry | undefined;
 	let currentContext: ExtensionContext | undefined;
+	let review: ReviewSidebarSnapshot | undefined;
+	const redrawReview = () => {
+		renderHost?.invalidateSidebar?.();
+		renderHost?.requestRender();
+	};
+	const unsubscribeReview = pi.events.on(REVIEW_SIDEBAR_EVENT, (value) => {
+		const event = value as { sessionId?: unknown; snapshot?: unknown } | undefined;
+		if (!currentContext || event?.sessionId !== currentContext.sessionManager.getSessionId()) return;
+		if (!isReviewSidebarSnapshot(event.snapshot)) return;
+		review = { state: event.snapshot.state, scope: event.snapshot.scope };
+		redrawReview();
+	});
+	pi.on("session_tree", () => {
+		review = undefined;
+		redrawReview();
+	});
 	let shown = "";
 	const applyChanges = (ctx: ExtensionContext, model: ChangesModel) => {
 		const fingerprint = changesFingerprint(model);
@@ -1581,6 +1725,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		},
 	});
 	pi.on("session_start", async (_event, ctx) => {
+		if (review) {
+			review = undefined;
+			redrawReview();
+		}
 		stopProfilePoll();
 		registry?.close();
 		currentContext = ctx;
@@ -1614,6 +1762,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const footerModel = (): ShellBarModel => ({
 				...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: usage.get(ctx.model?.provider ?? ""), profile: deps.activeProfile() }),
 				changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted, notice: tracker.model.notice },
+				review,
 			});
 			// At narrow fullscreen widths only one status row paints: a top header
 			// suppresses the bottom bar in the layout, and otherwise the bottom bar
@@ -1684,6 +1833,13 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		applyChanges(ctx, tracker.model);
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
+		if (review) {
+			review = undefined;
+			redrawReview();
+		}
+		// Pi rebuilds the extension runtime after every shutdown (reload, replacement,
+		// fork, quit), so the factory-level subscription never needs to be restored.
+		unsubscribeReview();
 		stopProfilePoll();
 		oddPhaseRegistry.clear(ctx.sessionManager.getSessionId());
 		oddPhaseRegistry.clearRenderRequest(ctx.sessionManager.getSessionId());
@@ -1873,7 +2029,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			for (const value of Object.values(HEADER_PLACEMENT)) add(() => `Header placement: ${value}${visual().headerPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, headerPlacement: value })), () => layoutPreview({ ...visual(), headerPlacement: value }));
 			for (const value of Object.values(DENSITY)) add(() => `Density: ${value}${visual().density === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, density: value })), () => layoutPreview({ ...visual(), density: value }));
 			category = "Sections";
-			for (const key of ["changes", "agents", "todo", "usageCost", "modelDetails"] as const) add(
+			for (const key of VISUAL_SECTION_KEYS) add(
 				() => `Section ${key}: ${visual().visibility[key] ? "shown" : "hidden"}`,
 				pending,
 				() => updateVisual((settings) => ({ ...settings, visibility: { ...settings.visibility, [key]: !settings.visibility[key] } })),
@@ -2059,12 +2215,27 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// is mid-turn, so the text simply waits and goes out, once, when that
 		// turn settles. It is never dropped.
 		// A new turn always starts unlabeled: any ODD phase reported for the
-		// previous turn must never leak into this one. The orchestrator
-		// reports the new turn's phase explicitly once it knows it.
+		// previous turn must never leak into this one. The new turn's tool
+		// activity, or an explicit orchestrator report, labels it again.
 		oddPhaseRegistry.clear(ctx.sessionManager.getSessionId());
 		prompt?.setWorking(true);
 		// The dev-binary card is a startup notice: it leaves with the first prompt.
 		if (ctx.hasUI) ctx.ui.setWidget(DEV_BINARY_WIDGET_KEY, undefined);
+	});
+	pi.on("tool_execution_start", (event, ctx) => {
+		// The working label follows the primary session's own tool activity so
+		// it never depends on the model remembering gentle_odd_phase, which
+		// stays the explicit refinement (its report is already explicit).
+		// Subagents run as headless `pi --mode rpc` children whose env never
+		// carries the interactive-host signal (lib/agents-runner.ts), so they
+		// never infer; their process-local registry could not reach this
+		// label anyway.
+		if (!ctx.hasUI || !isInteractiveMode(ctx.mode) || event.toolName === "gentle_odd_phase") return;
+		const phase = inferOddPhase(event.toolName, event.args);
+		if (phase) {
+			const delegated = event.toolName === "subagent_run" || /^mcp__.+?__subagent_run$/.test(event.toolName);
+			oddPhaseRegistry.infer(ctx.sessionManager.getSessionId(), phase, delegated ? "delegation" : "tool");
+		}
 	});
 	pi.on("agent_settled", (_event, ctx) => {
 		// Pi clears its own run-active flag before emitting agent_settled, so

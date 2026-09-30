@@ -3,11 +3,21 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { renderShellSidebarBar, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
-import { createReviewSidebarPublisher, reviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
+import { createReviewSidebarPublisher, REVIEW_SCOPE_UNAVAILABLE, REVIEW_SIDEBAR_LABELS, reviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
 import { __testing } from "../extensions/gentle-ai.ts";
-import type { NativeReviewCli } from "../lib/native-review-cli.ts";
+import { NATIVE_REVIEW_ERROR_CODE, NATIVE_REVIEW_OPERATION, NativeReviewCliError, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { decodeReviewStatusV3 } from "../lib/review-integration-v2.ts";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
+
+function toolContext(context: ExtensionContext): ExtensionToolContext {
+	return {
+		...context,
+		tools: [],
+		async executeTool() {
+			assert.fail("Sidebar publication must not execute nested tools");
+		},
+	};
+}
 
 // Display contract only: lifecycle evidence must be normalized by the producer,
 // never inferred from a successful tool execution by the renderer.
@@ -38,7 +48,8 @@ test("RDD maps explicit native evidence conservatively without parsing opaque bi
 			authority: { state }, projection: { paths }, next_transition: { kind: "collect" },
 		},
 	});
-	assert.deepEqual(reviewSidebarSnapshot("status", nativeStatus("reviewing")), { state: "in_review", scope: "app.ts +2" });
+	assert.deepEqual(reviewSidebarSnapshot("status", nativeStatus("reviewing")), { state: "in_review", scope: "app.ts +2 files" });
+	assert.equal(reviewSidebarSnapshot("status", nativeStatus("reviewing", ["src/app.ts", "test/app.test.ts"])).scope, "app.ts +1 file");
 	for (const [state, expected] of [["approved", "approved"], ["correction_required", "correction"], ["invalidated", "invalidated"], ["validating", "in_review"]] as const) {
 		assert.equal(reviewSidebarSnapshot("status", nativeStatus(state)).state, expected);
 	}
@@ -95,15 +106,15 @@ test("RDD completed STATUS evidence does not imply capture execution", () => {
 			});
 			assert.deepEqual(snapshot, { state: "in_review", scope: "app.ts" });
 			const pending = renderShellSidebarBar({ ...model(), review: snapshot }, theme, 46).join("\n");
-			assert.match(pending, /In review/);
-			assert.doesNotMatch(pending, /Reviewing/);
+			assert.match(pending, /Review in progress/);
+			assert.doesNotMatch(pending, /Reviewers running/);
 		}
 	}
 	// The future publisher owns execution evidence; this slice only renders its
 	// explicit display state, never inferring it from a completed native result.
 	const active = renderShellSidebarBar(model({ state: "reviewing", scope: "app.ts" }), theme, 46).join("\n");
-	assert.match(active, /Reviewing/);
-	assert.doesNotMatch(active, /In review/);
+	assert.match(active, /Reviewers running…/);
+	assert.doesNotMatch(active, /Review in progress/);
 });
 
 test("publisher retains scope only for issued capture bindings and matching closure", async () => {
@@ -114,7 +125,7 @@ test("publisher retains scope only for issued capture bindings and matching clos
 	const run = (name: string, params: Record<string, unknown>, details: unknown) => publisher.tool({
 		name, label: "Test", description: "Test", parameters: { type: "object" } as never,
 		async execute() { return { content: [], details }; },
-	}).execute("call", params as never, undefined, undefined, ctx);
+	}).execute("call", params as never, undefined, undefined, toolContext(ctx));
 	const status = { result: { schema: "gentle-ai.review-integration.status/v9", authority: { state: "reviewing", lineage_id: "lineage" }, target_identity: "target", applicability: "current_target", projection: { paths: ["src/app.ts"] }, next_transition: { kind: "collect" } }, collectBindings: [{ collectBinding: "issued" }] };
 	await run("gentle_review", { operation: "status", lineageId: "lineage" }, status);
 	assert.deepEqual(events.at(-1)?.snapshot, { state: "in_review", scope: "app.ts" });
@@ -122,6 +133,16 @@ test("publisher retains scope only for issued capture bindings and matching clos
 	assert.deepEqual(events.at(-1)?.snapshot, { state: "forecast", scope: "app.ts" });
 	await run("gentle_review_capture", { lineageId: "lineage", collectBinding: "wrong" }, { outcome: "reviewer-model-run-forecast" });
 	assert.equal(events.at(-1)?.snapshot.scope, "Candidate scope unavailable");
+});
+
+test("nested raw workspaceRoot loses only display correlation against canonical cwd", async () => {
+	const h = publisherFixture();
+	await h.seed();
+	await h.run("gentle_review_capture", { lineageId: "lineage", collectBinding: "first", workspaceRoot: "/repo/nested" }, { outcome: "reviewer-model-run-forecast" });
+	assert.deepEqual(h.snapshot(), { state: "forecast", scope: REVIEW_SCOPE_UNAVAILABLE });
+	await h.seed();
+	await h.run("gentle_review_capture", { lineageId: "lineage", collectBinding: "first", workspaceRoot: "/repo" }, { outcome: "reviewer-model-run-forecast" });
+	assert.deepEqual(h.snapshot(), { state: "forecast", scope: "app.ts" });
 });
 
 test("real facade STATUS binding retains sidebar scope through capture forecast", async () => {
@@ -151,7 +172,7 @@ test("publisher ignores late completions after reset without changing results", 
 	const result = { content: [], details: { status: "blocked" } };
 	const tool = publisher.tool({ name: "gentle_review", label: "Test", description: "Test", parameters: { type: "object" } as never, async execute() { await pending; return result; } });
 	publisher.reset(ctx);
-	const call = tool.execute("call", { operation: "status" } as never, undefined, undefined, ctx);
+	const call = tool.execute("call", { operation: "status" } as never, undefined, undefined, toolContext(ctx));
 	publisher.reset(ctx);
 	finish();
 	assert.equal(await call, result);
@@ -166,7 +187,7 @@ function publisherFixture() {
 	const run = (name: string, params: Record<string, unknown>, details: unknown | Promise<unknown>, context = ctx) => publisher.tool({
 		name, label: "Test", description: "Test", parameters: { type: "object" } as never,
 		async execute() { return { content: [], details: await details }; },
-	}).execute("call", params as never, undefined, undefined, context);
+	}).execute("call", params as never, undefined, undefined, toolContext(context));
 	const status = { result: { schema: "gentle-ai.review-integration.status/v9", authority: { state: "reviewing", lineage_id: "lineage" }, target_identity: "target", applicability: "current_target", projection: { paths: ["src/app.ts"] }, next_transition: { kind: "collect" } }, collectBindings: [{ collectBinding: "first" }, { collectBinding: "second" }] };
 	const seed = () => run("gentle_review", { operation: "status", lineageId: "lineage" }, status);
 	const snapshot = () => events.at(-1)!.snapshot;
@@ -299,6 +320,28 @@ test("unbound operations, mismatched acknowledgements, failures and resets disca
 	assert.equal(h.snapshot().scope, "Candidate scope unavailable");
 });
 
+test("cancellation errors remain unknown while other failures are unavailable, regardless of the signal", async () => {
+	const h = publisherFixture();
+	const abortError = () => Object.assign(new Error("Review controller operation was cancelled"), { name: "AbortError" });
+	const cases: Array<{ error: Error; aborted: boolean; state: string }> = [
+		{ error: abortError(), aborted: true, state: "unknown" },
+		{ error: new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.CANCELLED, NATIVE_REVIEW_OPERATION.STATUS, true, false, "native process was cancelled"), aborted: true, state: "unknown" },
+		// An abort that races an ordinary failure (for example a later authorization denial) is not a cancellation.
+		{ error: new Error("destructive review operation was not authorized"), aborted: true, state: "unavailable" },
+		{ error: new Error("execution stopped"), aborted: false, state: "unavailable" },
+	];
+	for (const { error, aborted, state } of cases) {
+		await h.seed();
+		const controller = new AbortController();
+		if (aborted) controller.abort();
+		const tool = h.publisher.tool({ name: "gentle_review", label: "Test", description: "Test", parameters: { type: "object" } as never,
+			async execute() { throw error; },
+		});
+		await assert.rejects(tool.execute("call", { operation: "status" } as never, controller.signal, undefined, toolContext(h.ctx)), (caught) => caught === error);
+		assert.deepEqual(h.snapshot(), { state, scope: REVIEW_SCOPE_UNAVAILABLE });
+	}
+});
+
 test("foreign sessions, disabled publisher and event failures never change tool outcomes", async () => {
 	const h = publisherFixture();
 	await h.seed();
@@ -313,27 +356,47 @@ test("foreign sessions, disabled publisher and event failures never change tool 
 	const throwing = createReviewSidebarPublisher({ events: { emit: () => { throw Error("display failed"); } } } as unknown as ExtensionAPI);
 	throwing.reset(h.ctx);
 	const tool = throwing.tool({ name: "gentle_review", label: "Test", description: "Test", parameters: { type: "object" } as never, async execute() { return result; } });
-	assert.equal(await tool.execute("call", { operation: "status" } as never, undefined, undefined, h.ctx), result);
+	assert.equal(await tool.execute("call", { operation: "status" } as never, undefined, undefined, toolContext(h.ctx)), result);
+});
+
+test("RDD labels say what is happening and who acts", () => {
+	assert.deepEqual(REVIEW_SIDEBAR_LABELS, {
+		checking: "Updating…",
+		reviewing: "Reviewers running…",
+		in_review: "Review in progress",
+		forecast: "Preparing reviewers…",
+		ready: "Not reviewed yet",
+		consent: "Needs your consent",
+		correction: "Fixing findings…",
+		approved: "Approved · finalizing…",
+		closed: "✓ Approved",
+		declined: "Skipped for this change",
+		invalidated: "Outdated · code changed",
+		unavailable: "Review unavailable",
+		unknown: "Status unknown",
+	});
 });
 
 test("RDD stays hidden without current-session evidence and occupies one group between Changes and Integrations", () => {
 	assert.doesNotMatch(renderShellSidebarBar(model(), theme, 46).join("\n"), /RDD/);
-	const text = renderShellSidebarBar(model({ state: "reviewing", scope: "app.ts +2" }), theme, 46).join("\n");
+	const text = renderShellSidebarBar(model({ state: "reviewing", scope: "app.ts +2 files" }), theme, 46).join("\n");
 	assert.equal((text.match(/RDD/g) ?? []).length, 1);
 	assert.ok(text.indexOf("Changes") < text.indexOf("RDD"));
 	assert.ok(text.indexOf("RDD") < text.indexOf("Integrations"));
-	assert.match(text, /Reviewing/);
-	assert.match(text, /app\.ts \+2/);
+	assert.match(text, /Reviewers running…/);
+	assert.match(text, /app\.ts \+2 files/);
 });
 
-test("RDD distinguishes approval awaiting acknowledgement from confirmed closure and wraps narrow scopes", () => {
-	const approved = renderShellSidebarBar(model({ state: "approved", scope: "Candidate scope unavailable" }), theme, 60).join("\n");
-	assert.match(approved, /Approved.*awaiting acknowledgement/);
-	assert.doesNotMatch(approved, /Closed/);
+test("RDD distinguishes approval still finalizing from confirmed closure and wraps narrow scopes", () => {
+	const approved = renderShellSidebarBar(model({ state: "approved", scope: REVIEW_SCOPE_UNAVAILABLE }), theme, 60).join("\n");
+	assert.match(approved, /Approved · finalizing…/);
+	assert.doesNotMatch(approved, /✓ Approved/);
+	assert.doesNotMatch(approved, /Candidate scope unavailable/);
 	const closed = renderShellSidebarBar(model({ state: "closed", scope: "app.ts" }), theme, 46).join("\n");
-	assert.match(closed, /Closed/);
+	assert.match(closed, /✓ Approved/);
+	assert.doesNotMatch(closed, /finalizing/);
 	for (const width of [20, 32, 46]) {
-		const lines = renderShellSidebarBar(model({ state: "reviewing", scope: "長い候補ファイル-name-with-many-characters.ts +2" }), theme, width);
+		const lines = renderShellSidebarBar(model({ state: "reviewing", scope: "長い候補ファイル-name-with-many-characters.ts +2 files" }), theme, width);
 		assert.ok(lines.every((line) => visibleWidth(line) <= width), `RDD must fit ${width} columns`);
 	}
 });

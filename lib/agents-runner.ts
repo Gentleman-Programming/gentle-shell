@@ -1,11 +1,12 @@
 import { isSessionChangeEvidence, type SessionChangeEvidence } from "./session-changes.ts";
+import { existsSync } from "node:fs";
 import type { Duplex, Readable, Writable } from "node:stream";
 import { stripVTControlCharacters } from "node:util";
 import { withoutInteractiveHost } from "./rpc-host.ts";
 import { AGENT_MODE, formatModelRef, type AgentDefinition, type AgentMode, type ModelRef } from "./agents-config.ts";
 import { CHILD_QUERY_MAX_INFLIGHT, CHILD_QUERY_TIMEOUT_MS, parseChildFrame, validChildMessage, validChildQueryId } from "./agents-messaging.ts";
 import { ParentStandingReviewPermissionBroker } from "./review-session-standing-permission-ipc.ts";
-import { isFinished, normalizeRpcEvent, TASK_EVENT, TASK_STATUS, taskLabel, type AskRequest, type ChildResponseObservation, type TaskRecord, type TaskStore } from "./agents-protocol.ts";
+import { isFinished, normalizeRpcEvent, ToolArgumentProgress, TASK_EVENT, TASK_STATUS, taskLabel, type AskRequest, type ChildResponseObservation, type TaskRecord, type TaskStore } from "./agents-protocol.ts";
 
 // Gentle Agents runner. Every subagent is its own `pi --mode rpc` process:
 // the host never runs subagent work on the TUI thread. It writes JSON
@@ -52,6 +53,7 @@ export interface RunnerDeps {
 	now(): number;
 	schedule(fn: () => void, ms: number): () => void;
 	pi: PiCommand;
+	resolvePi?(): PiCommand;
 	process?: ProcessControl;
 }
 
@@ -194,6 +196,7 @@ interface LiveTask {
 	// live work, so the watchdog gives it the tool ceiling instead of the idle
 	// silence budget. Keyed by call id, holding the announced tool name.
 	inFlightTools: Map<string, string>;
+	argumentProgress: ToolArgumentProgress;
 	// Bounded ring buffer of the child's raw stderr output, capped to the last
 	// STDERR_TAIL_MAX characters. Only surfaced on the stall and pre-settle exit
 	// terminal paths, never on completed, cancelled, or other failure reasons.
@@ -249,16 +252,16 @@ export function childArguments(request: TaskRequest): string[] {
 	return args;
 }
 
-// The child is the same pi that is running us: node plus its cli entry.
+// Reuse the running pi entry while it exists; upgrades may remove it.
 // GENTLE_PI_AGENTS_PI overrides it with a command line.
-export function piCommand(proc: ProcessLike = process): PiCommand {
+export function piCommand(proc: ProcessLike = process, exists: (path: string) => boolean = existsSync): PiCommand {
 	const override = proc.env.GENTLE_PI_AGENTS_PI?.trim();
 	if (override) {
 		const [command, ...args] = override.split(/\s+/);
 		return { command, args };
 	}
 	const entry = proc.argv[1];
-	if (entry && /(^|[\\/])cli\.js$/.test(entry)) return { command: proc.execPath, args: [entry] };
+	if (entry && /(^|[\\/])cli\.js$/.test(entry) && exists(entry)) return { command: proc.execPath, args: [entry] };
 	return { command: "pi", args: [] };
 }
 
@@ -457,7 +460,8 @@ export class AgentRunner {
 		delete env.GENTLE_PI_RESEARCH_SELECTION;
 		let child: ChildLike;
 		try {
-			child = this.deps.spawn(this.deps.pi.command, [...this.deps.pi.args, ...childArguments(request)], {
+			const pi = this.deps.resolvePi?.() ?? this.deps.pi;
+			child = this.deps.spawn(pi.command, [...pi.args, ...childArguments(request)], {
 				cwd: request.cwd,
 				env,
 				detached,
@@ -469,7 +473,7 @@ export class AgentRunner {
 			return;
 		}
 		const processGroup = detached && typeof child.pid === "number" && child.pid > 0 ? child.pid : undefined;
-		const live: LiveTask = { child, sawRunEvent: false, mutationStarts: new Map(), inFlightTools: new Map(), pending: new Map(), queries: new Map(), replies: new Map(), cancelStall: () => {}, cancelGrace: () => {}, processGroup, terminal: undefined, childExit: undefined, cleanupDeadlineAt: undefined, quarantined: false, nextId: 0, ipcClosed: false, acknowledgedIpcIds: new Set(), acknowledgedIpcOrder: [], stderrTail: "" };
+		const live: LiveTask = { child, sawRunEvent: false, mutationStarts: new Map(), inFlightTools: new Map(), argumentProgress: new ToolArgumentProgress(), pending: new Map(), queries: new Map(), replies: new Map(), cancelStall: () => {}, cancelGrace: () => {}, processGroup, terminal: undefined, childExit: undefined, cleanupDeadlineAt: undefined, quarantined: false, nextId: 0, ipcClosed: false, acknowledgedIpcIds: new Set(), acknowledgedIpcOrder: [], stderrTail: "" };
 		if (request.prepareResponseObservations) {
 			let ready = false;
 			live.observationPreparation = () => ready;
@@ -550,8 +554,8 @@ export class AgentRunner {
 
 	// An idle child is bounded by the silence budget; a child whose announced
 	// tool call is still running is live work and bounded by the longer tool
-	// ceiling. The budget is chosen from the state at arm time, and every RPC
-	// object re-arms, so a finished tool call returns the task to idle silence.
+	// ceiling. These are renewable silence budgets, not total duration limits.
+	// A finished tool call returns the task to idle silence.
 	private armStall(id: string, live: LiveTask): void {
 		live.cancelStall();
 		const tool = live.inFlightTools.values().next().value;
@@ -720,7 +724,12 @@ export class AgentRunner {
 		// renews the watchdog here, so fire-and-forget UI traffic that normalizes
 		// to nothing cannot keep a child that never started its run alive forever
 		// (#1034); the pre-existing timer stays armed until real progress arrives.
-		const progress = events.length > 0;
+		const argumentProgress = live.argumentProgress.observe(raw);
+		if (argumentProgress) {
+			live.sawRunEvent = true;
+			this.store.update(id, { lastStep: "generating tool arguments", lastActivityAt: this.deps.now() });
+		}
+		const progress = events.length > 0 || argumentProgress;
 		for (const event of events) {
 			if (event.type === TASK_EVENT.RESPONSE_OBSERVATION) {
 				const buffer = live.observations;

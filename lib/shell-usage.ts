@@ -1,4 +1,5 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
+import { parseModelRef } from "./agents-config.ts";
 import { paintGauge } from "./shell-gauge.ts";
 
 // Gentle Shell subscription usage: the rate-limit windows each connected
@@ -125,6 +126,10 @@ const PENDING_NOTE: Record<string, string> = {
 };
 const UNSUPPORTED_NOTE = "no subscription usage for this provider";
 const ACTIVE_MARK = "✿";
+// What a targeted provider with no snapshot says after a refresh actually ran
+// and answered nothing. Generic on purpose: it names no endpoint, key, or
+// account detail, exactly like the other notes here.
+export const USAGE_FETCH_FAILED_NOTE = "fetch failed · r to retry";
 
 export interface ActiveProvider {
 	provider: string;
@@ -289,7 +294,7 @@ export function parseCodexUsage(payload: unknown, now: number): ProviderUsage {
 	return { provider: CODEX_PROVIDER, plan: typeof raw.plan_type === "string" ? raw.plan_type : undefined, limits, fetchedAt: now };
 }
 
-function headerWindow(headers: Record<string, string>, kind: "primary" | "secondary", now: number): UsageWindow | undefined {
+function headerWindow(headers: Record<string, string>, kind: "primary" | "secondary"): UsageWindow | undefined {
 	const used = Number.parseFloat(headers[`${HEADER_PREFIX}${kind}-used-percent`] ?? "");
 	if (!Number.isFinite(used)) return undefined;
 	const minutes = Number.parseInt(headers[`${HEADER_PREFIX}${kind}-window-minutes`] ?? "", 10);
@@ -299,7 +304,7 @@ function headerWindow(headers: Record<string, string>, kind: "primary" | "second
 }
 
 export function parseCodexHeaders(headers: Record<string, string>, now: number): ProviderUsage | undefined {
-	const windows = [headerWindow(headers, "primary", now), headerWindow(headers, "secondary", now)].filter((window): window is UsageWindow => window !== undefined);
+	const windows = [headerWindow(headers, "primary"), headerWindow(headers, "secondary")].filter((window): window is UsageWindow => window !== undefined);
 	if (windows.length === 0) return undefined;
 	const reached = headers[`${HEADER_PREFIX}rate-limit-reached-type`];
 	return { provider: CODEX_PROVIDER, plan: undefined, limits: [{ name: CODEX_MAIN_LIMIT, windows, limitReached: Boolean(reached) }], fetchedAt: now };
@@ -527,18 +532,66 @@ function updatedAgo(fetchedAt: number, now: number): string {
 	return minutes < 1 ? "updated just now" : `updated ${minutes}m ago`;
 }
 
+// The providers one refresh targets: the session's own provider first, then
+// every provider the active profile's subagent routing names, deduplicated in
+// first-seen order. A qualified ref ("provider/id") resolves directly; a bare
+// model id resolves through the registry callback only when that callback can
+// name exactly one provider, so an ambiguous or unknown ref never guesses one
+// and is dropped instead.
+export function usageScopeProviders(
+	mainProvider: string | undefined,
+	routingModels: ReadonlyArray<string | undefined> | undefined,
+	resolveBareModel?: (modelId: string) => string | undefined,
+): string[] {
+	const providers = new Set<string>();
+	if (mainProvider) providers.add(mainProvider);
+	for (const model of routingModels ?? []) {
+		const ref = parseModelRef(model);
+		if (!ref) continue;
+		const provider = ref.provider ?? resolveBareModel?.(ref.id);
+		if (provider) providers.add(provider);
+	}
+	return [...providers];
+}
+
+// The current routing scope the panel draws: which providers are targeted, and
+// which of them failed their latest settled refresh. A provider recorded
+// earlier but no longer targeted is simply absent — it is not current scope.
+export interface UsagePanelScope {
+	providers: readonly string[];
+	// Actual failures only: a refresh that settled without a snapshot. A
+	// provider still fetching is never in here, so an in-flight refresh cannot
+	// read as failed, and a successful refresh removes the provider again.
+	failed: ReadonlySet<string>;
+}
+
 // The active provider comes first, marked with the petal, and explains
 // itself when it has no data yet. Other providers seen this session follow.
-export function renderUsagePanel(usages: ProviderUsage[], theme: UsageTheme, width: number, now: number, active?: ActiveProvider, registry?: UsageSourceRegistry): string[] {
+// With a scope, the panel draws exactly the targeted providers in scope order:
+// one with no snapshot explains itself (its latest refresh failed, or its
+// pending note otherwise), one whose latest refresh failed after a good
+// snapshot keeps that snapshot and says so beside it, and a provider recorded
+// under a previous profile's routing is never presented as current scope after
+// a profile switch.
+export function renderUsagePanel(usages: ProviderUsage[], theme: UsageTheme, width: number, now: number, active?: ActiveProvider, registry?: UsageSourceRegistry, scope?: UsagePanelScope): string[] {
 	const activeUsage = active ? usages.find((usage) => usage.provider === active.provider) : undefined;
-	const others = usages.filter((usage) => usage !== activeUsage);
-	if (!active && usages.length === 0) return [truncateToWidth(USAGE_EMPTY_MESSAGE, width, "…")];
+	const byProvider = new Map(usages.map((usage) => [usage.provider, usage] as const));
+	const rows = scope
+		? scope.providers.map((provider) => ({ provider, usage: byProvider.get(provider) }))
+		: [...(active ? [{ provider: active.provider, usage: activeUsage }] : []), ...usages.filter((usage) => usage !== activeUsage).map((usage) => ({ provider: usage.provider, usage }))];
+	if (rows.length === 0) return [truncateToWidth(USAGE_EMPTY_MESSAGE, width, "…")];
 	const lines: string[] = [];
-	if (active && !activeUsage) {
-		lines.push(`${theme.fg(ROLE.LIMIT, ACTIVE_MARK)} ${theme.fg(ROLE.PROVIDER, active.provider)} ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.RESET, providerNote(active.provider, registry))}`);
-	}
-	for (const usage of [...(activeUsage ? [activeUsage] : []), ...others]) {
-		const mark = usage === activeUsage ? `${theme.fg(ROLE.LIMIT, ACTIVE_MARK)} ` : "";
+	for (const row of rows) {
+		const mark = active?.provider === row.provider ? `${theme.fg(ROLE.LIMIT, ACTIVE_MARK)} ` : "";
+		if (!row.usage) {
+			// A settled refresh that answered nothing is a failure; a provider
+			// whose usage arrives with responses (Anthropic) or that has not
+			// failed keeps its pending note.
+			const note = scope?.failed.has(row.provider) ? USAGE_FETCH_FAILED_NOTE : providerNote(row.provider, registry);
+			lines.push(`${mark}${theme.fg(ROLE.PROVIDER, row.provider)} ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.RESET, note)}`);
+			continue;
+		}
+		const usage = row.usage;
 		const plan = usage.plan ? ` ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.PLAN, usage.plan)}` : "";
 		lines.push(`${mark}${theme.fg(ROLE.PROVIDER, usage.provider)}${plan} ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.RESET, updatedAgo(usage.fetchedAt, now))}`);
 		// One row per window: the limit name, its meter, its percentage and the reset
@@ -555,6 +608,9 @@ export function renderUsagePanel(usages: ProviderUsage[], theme: UsageTheme, wid
 			const tail = reset.length > 0 ? ` ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.RESET, reset)}` : "";
 			lines.push(`  ${theme.fg(ROLE.LABEL, row.name.padEnd(nameWidth))} ${paintMeter(row.window.usedPercent, PANEL_METER_CELLS, theme)} ${theme.fg(ROLE.PERCENT, percent)}${tail}`);
 		}
+		// A failure after a good snapshot never hides either fact: the last good
+		// snapshot stays on its rows and the failed refresh says so beside it.
+		if (scope?.failed.has(row.provider)) lines.push(`  ${theme.fg(ROLE.RESET, USAGE_FETCH_FAILED_NOTE)}`);
 	}
 	return lines.map((line) => truncateToWidth(line, width, "…"));
 }

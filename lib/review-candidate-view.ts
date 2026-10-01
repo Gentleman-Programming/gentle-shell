@@ -5,7 +5,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
-import { assertCandidateOwnerParent, createCandidateOwner, PosixCandidateOwnerParentPrivacyError, prepareCandidateOwnerParent, removeCandidateOwner, samePath, sweepCandidateOwners, type CandidateViewOwner } from "./review-candidate-view-owner.ts";
+import { assertCandidateOwnerParent, createCandidateOwner, PosixCandidateOwnerParentChmodIneffectiveError, PosixCandidateOwnerParentPrivacyError, prepareCandidateOwnerParent, removeCandidateOwner, samePath, sweepCandidateOwners, type CandidateViewOwner } from "./review-candidate-view-owner.ts";
 
 const REVIEW_LENS = ["review-risk", "review-resilience", "review-readability", "review-reliability"] as const;
 export type ReviewLens = (typeof REVIEW_LENS)[number];
@@ -237,7 +237,13 @@ export interface CandidateOwnerPrivacyDiagnostic {
 	message: typeof CANDIDATE_OWNER_PARENT_PRIVACY_MESSAGE;
 }
 
+export interface CandidateOwnerChmodIneffectiveDiagnostic {
+	code: "candidate-owner-parent-chmod-ineffective";
+	message: typeof CANDIDATE_OWNER_PARENT_CHMOD_INEFFECTIVE_MESSAGE;
+}
+
 const CANDIDATE_OWNER_PARENT_PRIVACY_MESSAGE = "candidate-views parent must be owned by the current user and inaccessible to group and others; inspect its ownership and permissions, then correct them out of band before retrying START" as const;
+const CANDIDATE_OWNER_PARENT_CHMOD_INEFFECTIVE_MESSAGE = "candidate-views parent filesystem does not honor POSIX permission changes; move this repository's Git common directory to a POSIX-metadata filesystem or enable metadata support before retrying START" as const;
 
 export interface CandidateViewDiagnostic {
 	phase: typeof CANDIDATE_VIEW_DIAGNOSTIC_PHASE;
@@ -250,8 +256,8 @@ export interface CandidateViewDiagnostic {
 
 export class CandidateViewError extends Error {
 	readonly reason: string;
-	readonly diagnostics?: CandidateViewDiagnostic | CandidateOwnerPrivacyDiagnostic;
-	constructor(message: string, reason = "candidate-view-invalid", diagnostics?: CandidateViewDiagnostic | CandidateOwnerPrivacyDiagnostic, options?: ErrorOptions) {
+	readonly diagnostics?: CandidateViewDiagnostic | CandidateOwnerPrivacyDiagnostic | CandidateOwnerChmodIneffectiveDiagnostic;
+	constructor(message: string, reason = "candidate-view-invalid", diagnostics?: CandidateViewDiagnostic | CandidateOwnerPrivacyDiagnostic | CandidateOwnerChmodIneffectiveDiagnostic, options?: ErrorOptions) {
 		super(message, options);
 		this.name = "CandidateViewError";
 		this.reason = reason;
@@ -294,9 +300,12 @@ function candidateGitDiagnostic(category: CandidateViewGitFailureCategory, argum
 	});
 }
 
-function sanitizeCandidateViewDiagnostic(diagnostics: CandidateViewDiagnostic | CandidateOwnerPrivacyDiagnostic): CandidateViewDiagnostic | CandidateOwnerPrivacyDiagnostic | undefined {
-	if ("code" in diagnostics) return diagnostics.code === "candidate-owner-parent-privacy" && diagnostics.message === CANDIDATE_OWNER_PARENT_PRIVACY_MESSAGE
-		? Object.freeze({ code: diagnostics.code, message: CANDIDATE_OWNER_PARENT_PRIVACY_MESSAGE }) : undefined;
+function sanitizeCandidateViewDiagnostic(diagnostics: CandidateViewDiagnostic | CandidateOwnerPrivacyDiagnostic | CandidateOwnerChmodIneffectiveDiagnostic): CandidateViewDiagnostic | CandidateOwnerPrivacyDiagnostic | CandidateOwnerChmodIneffectiveDiagnostic | undefined {
+	if ("code" in diagnostics) {
+		if (diagnostics.code === "candidate-owner-parent-privacy" && diagnostics.message === CANDIDATE_OWNER_PARENT_PRIVACY_MESSAGE) return Object.freeze({ code: diagnostics.code, message: CANDIDATE_OWNER_PARENT_PRIVACY_MESSAGE });
+		if (diagnostics.code === "candidate-owner-parent-chmod-ineffective" && diagnostics.message === CANDIDATE_OWNER_PARENT_CHMOD_INEFFECTIVE_MESSAGE) return Object.freeze({ code: diagnostics.code, message: CANDIDATE_OWNER_PARENT_CHMOD_INEFFECTIVE_MESSAGE });
+		return undefined;
+	}
 	const { phase, category, git_subcommand, timeout_ms, max_buffer_bytes, message } = diagnostics;
 	if (
 		phase !== CANDIDATE_VIEW_DIAGNOSTIC_PHASE ||
@@ -659,7 +668,9 @@ function candidateOwnerPreparationError(error: unknown): CandidateViewError {
 	const safeCode = typeof code === "string" && /^(?:EACCES|EPERM|ENOENT|EIO|ETIMEDOUT)$/.test(code) ? code : undefined;
 	const diagnostics = error instanceof PosixCandidateOwnerParentPrivacyError
 		? { code: "candidate-owner-parent-privacy" as const, message: CANDIDATE_OWNER_PARENT_PRIVACY_MESSAGE }
-		: undefined;
+		: error instanceof PosixCandidateOwnerParentChmodIneffectiveError
+			? { code: "candidate-owner-parent-chmod-ineffective" as const, message: CANDIDATE_OWNER_PARENT_CHMOD_INEFFECTIVE_MESSAGE }
+			: undefined;
 	return new CandidateViewError(`candidate view owner preparation failed${safeCode ? ` (${safeCode})` : ""}`, "candidate-owner-preparation-failed", diagnostics, { cause: error });
 }
 

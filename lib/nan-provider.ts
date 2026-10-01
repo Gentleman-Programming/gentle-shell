@@ -18,23 +18,50 @@ const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
 // Maintained chat subset from https://nan.builders/docs/models.
 // Decimal bounds conservatively interpret the documented 1M/262K/131K labels.
-// Pi models text/image inputs only; MiMo's documented audio input is not advertised.
-// Where no output maximum is published, 8,192 is our conservative configured cap for coding with reasoning, not NaN's limit.
-const CHAT_MODELS: NanChatModelConfig[] = [
-	{ id: "glm5.3", name: "GLM 5.3", input: ["text"], contextWindow: 1_000_000 },
-	{ id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", input: ["text", "image"], contextWindow: 1_000_000 },
-	{ id: "glm5.3-flash", name: "GLM 5.3 Flash", input: ["text", "image"], contextWindow: 1_000_000 },
-	{ id: "qwen3.8-flash", name: "Qwen 3.8 Flash", input: ["text", "image"], contextWindow: 1_048_576, maxTokens: 131_000 },
-	{ id: "mimo-v2.6-flash", name: "MiMo V2.6 Flash", input: ["text", "image"], contextWindow: 1_000_000 },
-	{ id: "gemma4", name: "Gemma 4", input: ["text", "image"], contextWindow: 262_000 },
-	{ id: "qwen3.6", name: "Qwen 3.6", input: ["text", "image"], contextWindow: 262_000 },
-].map((model) => ({
+// Pi models text/image inputs only; documented audio/video inputs are not advertised.
+// Reasoning shares max_tokens with the answer: 65,536 leaves answer room after a
+// 32,768 reasoning budget; DeepSeek uses NaN's 16,384 floor. Qwen 3.8 retains its
+// published 131K output maximum. The remaining 32,768 caps are configured, not NaN-published limits.
+// Pi requires explicit max mappings to offer that level; missing ordinary levels pass through.
+const FIXED_THINKING_LEVEL_MAP: NanChatModelConfig["thinkingLevelMap"] = {
+	off: null, minimal: null, low: null, high: null, xhigh: null, max: null,
+}; // Only medium remains usable: depth is fixed and reasoning cannot be disabled.
+
+const CHAT_MODELS: NanChatModelConfig[] = ([
+	{
+		id: "glm5.3", name: "GLM 5.3", input: ["text", "image"], contextWindow: 1_000_000,
+		thinkingLevelMap: { off: null, minimal: "low", xhigh: "max", max: "max" },
+	},
+	{
+		id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", input: ["text", "image"], contextWindow: 1_000_000,
+		thinkingLevelMap: FIXED_THINKING_LEVEL_MAP, maxTokens: 16_384,
+	},
+	{
+		id: "glm5.3-flash", name: "GLM 5.3 Flash", input: ["text", "image"], contextWindow: 1_000_000,
+		thinkingLevelMap: { off: null, minimal: "low", xhigh: "max", max: "max" },
+	},
+	{
+		id: "qwen3.8-flash", name: "Qwen 3.8 Flash", input: ["text", "image"], contextWindow: 1_048_576,
+		thinkingLevelMap: FIXED_THINKING_LEVEL_MAP, maxTokens: 131_000,
+	},
+	{
+		id: "mimo-v2.6-flash", name: "MiMo V2.6 Flash", input: ["text", "image"], contextWindow: 1_000_000,
+		thinkingLevelMap: FIXED_THINKING_LEVEL_MAP,
+	},
+	{
+		id: "gemma4", name: "Gemma 4", input: ["text", "image"], contextWindow: 262_000,
+		thinkingLevelMap: { off: "none", xhigh: "max", max: "max" }, maxTokens: 65_536,
+	},
+	{
+		id: "qwen3.6", name: "Qwen 3.6", input: ["text", "image"], contextWindow: 262_000,
+		thinkingLevelMap: { off: "none", xhigh: "max", max: "max" }, maxTokens: 65_536,
+	},
+] satisfies Partial<NanChatModelConfig>[]).map((model) => ({
 	...model,
-	input: model.input as NanChatModelConfig["input"],
 	api: "openai-completions",
 	reasoning: true,
 	cost: ZERO_COST,
-	maxTokens: model.maxTokens ?? 8_192,
+	maxTokens: model.maxTokens ?? 32_768,
 }));
 
 // The cold/offline baseline declares documented chat support, not key entitlement.
@@ -42,7 +69,12 @@ const CHAT_MODELS: NanChatModelConfig[] = [
 const OFFLINE_MODELS = CHAT_MODELS;
 
 function cloneModel(model: NanChatModelConfig): NanChatModelConfig {
-	return { ...model, input: [...model.input], cost: { ...model.cost } };
+	return {
+		...model,
+		input: [...model.input],
+		cost: { ...model.cost },
+		thinkingLevelMap: model.thinkingLevelMap ? { ...model.thinkingLevelMap } : undefined,
+	};
 }
 
 function knownChatModels(ids: readonly string[]): NanChatModelConfig[] {

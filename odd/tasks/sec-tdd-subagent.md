@@ -72,7 +72,8 @@ Security-sensitive changes (authentication, authorization, session management, u
     - Added `document_request` schema to the Return Contract.
     - Authored contract tests in `tests/generic-agent-tools.test.ts`. Observed RED failure on assertion, then GREEN after pattern refinement (all 5/5 passing).
     - Verified full manifest and routing suites: `tests/package-manifest.test.ts` (55/55 PASS), `tests/generic-agent-tools.test.ts` (5/5 PASS), `tests/odd-routing-contract.test.ts` (14/14 PASS), `tests/odd-routing-canonical-ratchet.test.ts` (7/7 PASS), `scripts/verify-package-files.mjs` (156 files PASS), and runtime modules check (PASS).
-- Next: Author work-unit commit for SEC-5, commit task document, review candidate, and report status to user.
+    - Addressed CodeRabbit review feedback on `assets/agents/gentle-ai-security.md`: aligned the agent description, purpose statement, and non-blocking rejection guidance so `gentle-ai-security` returns findings and evidence to the parent orchestrator (which owns updating the active ODD task file) rather than implying subagent ownership over ODD tasks.
+- Next: Author work-unit commit for review feedback, verify, and push to PR branch.
 
 ## Follow-up items
 - **Runtime enforcement gate for `gentle-ai-security`**: CodeRabbit noted that Pi's runtime does not enforce file-path or bash restrictions beyond prompt confinement. The orchestrator already documents "report test-authoring delegation unavailable if unenforceable" as the mitigation. A runtime gate analogous to `rejectUnscopedBoundedWriterDispatch` (checking allowed edit surfaces at dispatch time) would be a systematic improvement for all delegation agents, not only `gentle-ai-security`. This belongs to a separate PR/issue once the enforcement mechanism is designed.

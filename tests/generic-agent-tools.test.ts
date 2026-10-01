@@ -56,6 +56,17 @@ test("ODD security agent is confined to test files and static rules and hands pr
 	assert.match(security, /worker/i);
 });
 
+test("ODD security agent prompts for separate document only on severe verified vulnerabilities without blocking remediation", () => {
+	const security = readFileSync(join(agents, "gentle-ai-security.md"), "utf8");
+	assert.match(security, /(?:CRITICAL|HIGH)/);
+	assert.match(security, /vulnerability document|standalone vulnerability/i);
+	assert.match(security, /opt-in|user decision|consent|prompt the user|ask the user/i);
+	assert.match(security, /never (?:be )?generated automatically|not (?:be )?generated automatically/i);
+	assert.match(security, /declin(?:e|ing).*not block(?:ing)? (?:remediation|test)/i);
+	assert.match(security, /(?:MEDIUM|LOW|INFO).*not prompt/i);
+	assert.match(security, /document_request/);
+});
+
 test("retired Pi adversarial role agents are not packaged", () => {
 	for (const retired of ["review-refuter.md", "review-validator.md"]) {
 		assert.equal(existsSync(join(agents, retired)), false);

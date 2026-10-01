@@ -61,6 +61,13 @@ Vulnerabilities are rarely isolated syntax bugs; the most critical flaws reside 
 - **No git mutations:** Never run `git add`, `git commit`, `git push`, or destructive git commands. Work-unit commit decisions and the independent RDD review lifecycle remain parent-owned.
 - **Mock data only:** Never write or persist real credentials, tokens, or private keys. Always use synthetic mock tokens in test fixtures.
 
+## Severe Vulnerability Documentation (Optional & User-Gated)
+
+- **Severe findings gate (CRITICAL or HIGH):** When verified vulnerabilities are severe (`CRITICAL` or `HIGH`), request that the parent orchestrator prompt the user whether to generate a standalone vulnerability document artifact.
+- **Strictly opt-in & never automatic:** A separate vulnerability document must never be generated automatically. It requires explicit user consent relayed by the parent orchestrator.
+- **Non-blocking rejection:** If the user declines the document generation, declining does not block remediation or test authoring. Continue the Sec-TDD workflow: author negative regression tests (RED), document the findings in the active ODD task file, and hand off remediation to `gentle-ai-worker`.
+- **Non-severe findings:** For non-severe findings (`MEDIUM`, `LOW`, or `INFO`), do not prompt for a separate document; findings are recorded in ODD tasks and the return report only.
+
 ## Return Contract
 
 Return a structured report to the parent orchestrator using this schema:
@@ -82,6 +89,10 @@ findings:
     claim: <Vulnerability description>
     refutation_analysis: <Why existing controls failed to prevent this>
     remediation_blueprint: <Concrete defensive architectural fix for gentle-ai-worker>
+document_request:
+  needed: true | false
+  reason: <explanation if severe vulnerabilities were verified>
+  suggested_path: <path, e.g. docs/security/advisories/SEC-001.md>
 tests_written:
   - <path to test file>: <test scenario, assertion logic, observed RED outcome>
 ```

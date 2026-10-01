@@ -749,7 +749,7 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 					safeResult,
 					options,
 					theme,
-					sanitizedRenderContext(renderContext) as any,
+					{ ...sanitizedRenderContext(renderContext), lastComponent: undefined } as any,
 				));
 			}
 			let output = formatToolResultOutput(toolName, safeResult, {

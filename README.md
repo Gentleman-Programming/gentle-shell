@@ -314,6 +314,7 @@ Start with the product-facing destination, then move into the operational refere
 | [Telemetry](docs/telemetry.md) | Approved fields and source limitations. |
 | [Delegated verification](docs/delegated-verification.md) | Practical verification guidance. |
 | [Skill style guide](docs/skill-style-guide.md) | The package skill contract. |
+| [Upstream spec contracts](https://myspec.dev?utm_source=github&utm_medium=referral&utm_campaign=gentle-shell) | Collaborative web-based PRD authoring and architecture contracts for ODD feature planning. |
 
 <p align="right"><a href="#top">Back to top ↑</a></p>
 

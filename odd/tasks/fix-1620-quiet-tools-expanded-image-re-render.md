@@ -10,10 +10,11 @@ When an expanded `read` result has image content, `quiet-tools` wraps the output
 - [x] 1. Write failing regression test in `tests/quiet-tool-rendering.test.ts` covering expanded image read re-render with `lastComponent` (RED).
 - [x] 2. Update `extensions/quiet-tools.ts` to isolate `lastComponent: undefined` when delegating to `officialRenderResult` (GREEN).
 - [x] 3. Run full test suite and typecheck verification.
-- [ ] 4. Commit work unit with Conventional Commit and publish architectural triage on Issue #1620.
+- [x] 4. Commit work unit with Conventional Commit (`500cd067`) and prepare architectural triage on Issue #1620.
 
 ## Evidence
 - Reproduction confirmed RED: `TypeError: text.setText is not a function` at `readRenderers.renderResult` in Pi 0.99.2.
 - Verified GREEN: 57/57 tests in `tests/quiet-tool-rendering.test.ts` pass cleanly (including subtest 40 covering re-rendering with `lastComponent`).
 - `npm run typecheck`: clean, 0 regressions.
 - `check:provider-contract` and `check:runtime-modules`: clean.
+- Commit `500cd067` created and pushed to `origin/fix/1620-quiet-tools-expanded-image-re-render`.

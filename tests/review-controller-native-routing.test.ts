@@ -2711,6 +2711,33 @@ test("INSPECT rejects malformed committed-range selectors before negotiated STAT
 	assert.equal(targetCalls, 0);
 });
 
+test("INSPECT accepts empty object and empty string input for ambient inspection", async (t) => {
+	const cwd = repository(t);
+	let targetCalls = 0;
+	const requests: Array<Record<string, unknown>> = [];
+	const native = {
+		targetStatus: async (request: Record<string, unknown>) => {
+			targetCalls += 1;
+			requests.push(request);
+			return startStatus(cwd);
+		},
+	} as unknown as NativeReviewCli;
+
+	for (const input of ["{}", "", "   "]) {
+		const result = await __testing.executeReviewControllerOperation(
+			{ operation: "inspect", input },
+			cwd,
+			native,
+		);
+		assert.equal(result.status, "ready", `expected ready for input ${JSON.stringify(input)}`);
+	}
+	assert.equal(targetCalls, 3);
+	for (const request of requests) {
+		assert.equal(request.baseRef, undefined);
+		assert.equal(request.committedOnly, undefined);
+	}
+});
+
 test("ordinary START keeps default and explicit base selection fail-closed before native mutation", async (t) => {
 	const cwd = repository(t);
 	let targetCalls = 0;

@@ -5502,6 +5502,31 @@ async function executeNativeAbandon(
 		["Operation: ABANDON", "Exact published authorization binding:", authorization, "The native command may quarantine only an eligible pristine compact-v2 lineage."].join("\n"),
 	);
 	if (!approved) throw new Error("Review controller ABANDON was not explicitly authorized");
+	// The approval binds the exact derived authority. Re-read the inventory and
+	// fail closed on any drift before mutating, the way RECOVER rechecks its
+	// provider-bound authorization (same TOCTOU window: another actor may have
+	// advanced the lineage between the deriving read and the approval).
+	let recheck;
+	try {
+		recheck = await nativeReviewCli.reviewStatus({ cwd, ...(signal === undefined ? {} : { signal }) });
+	} catch (error) {
+		return nativeOperationFailure(operation, error);
+	}
+	const reconfirmed = recheck.complete
+		? recheck.entries.filter((entry) =>
+			entry.version === "compact-v2"
+			&& entry.lineageId === request.lineage
+			&& entry.discardedWork !== undefined
+			&& entry.revision === request.expectedRevision
+			&& entry.snapshotIdentity === request.snapshotIdentity
+			&& entry.discardedWork.capturedLensResults.every((lens, index) => lens === request.capturedLensResults[index])
+			&& entry.discardedWork.capturedLensResults.length === request.capturedLensResults.length
+			&& entry.discardedWork.findingsPresent === request.findingsPresent,
+		)
+		: [];
+	if (reconfirmed.length !== 1) {
+		return { operation, status: "blocked", outcome: "native-abandon-authority-changed", native_operation: nativeOperation, mutation_performed: false, mutation_outcome: "none", next_action: "inspect-and-restart-abandon-from-fresh-inventory" };
+	}
 	try {
 		const result = await nativeReviewCli.abandon({ ...request, maintainerAuthorization: authorization, ...(signal === undefined ? {} : { signal }) });
 		return { operation, native_operation: nativeOperation, result: result.record, mutation_performed: true, mutation_outcome: "committed", next_action: "inspect" };

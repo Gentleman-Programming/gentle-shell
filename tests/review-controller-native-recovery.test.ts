@@ -403,6 +403,31 @@ test("ABANDON blocks when no eligible compact-v2 entry carries discarded work", 
 	assert.equal(blocked.outcome, "native-abandon-ineligible");
 });
 
+test("ABANDON rechecks the derived authority after approval and fails closed on drift", async () => {
+	let reads = 0;
+	const native = {
+		reviewStatus: async () => {
+			reads += 1;
+			return reads === 1
+				? {
+					repository: "/canonical/repository",
+					complete: true,
+					entries: [{ version: "compact-v2", status: "active", path: "/authority/compact", lineageId: "stranded", revision: SHA, snapshotIdentity: SHA2, state: "correction_required", discardedWork: { capturedLensResults: ["00-review-risk", "01-review-resilience"], findingsPresent: true } }],
+				}
+				: {
+					repository: "/canonical/repository",
+					complete: true,
+					entries: [{ version: "compact-v2", status: "active", path: "/authority/compact", lineageId: "stranded", revision: `sha256:${"c".repeat(64)}`, snapshotIdentity: SHA2, state: "correction_required", discardedWork: { capturedLensResults: ["00-review-risk", "01-review-resilience"], findingsPresent: true } }],
+				};
+		},
+		abandon: async () => { throw new Error("must not abandon a drifted authority"); },
+	} as unknown as import("../lib/native-review-cli.ts").NativeReviewCli;
+	const drifted = await __testing.executeReviewControllerOperation({ operation: "abandon", input: JSON.stringify({ lineage: "stranded", actor: "maintainer", reason: "operator_disposition" }) }, process.cwd(), native, undefined, undefined, interactiveContext(true));
+	assert.equal(drifted.outcome, "native-abandon-authority-changed");
+	assert.equal(drifted.mutation_performed, false);
+	assert.equal(reads, 2);
+});
+
 test("ABANDON fails closed headlessly and on declined approval", async () => {
 	const calls: Array<Record<string, unknown>> = [];
 	const native = abandonedInventoryNative(calls);

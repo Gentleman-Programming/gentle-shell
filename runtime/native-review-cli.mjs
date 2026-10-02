@@ -1716,6 +1716,10 @@ export function nativeReviewAbandonAuthorization(request                        
 	// so the native v2 gate verifies an exact eight-line binding (schema, lineage,
 	// revision, snapshot_identity, reason, captured_lens_results, findings_present,
 	// actor) — there is no evidence_records_present line to derive or relay.
+	// capturedLensResults must arrive verbatim from the native authority
+	// inventory projection (issue #1159): the gate recomputes this line from its
+	// own ordered record, whose entries carry the ordinal prefix, so caller- or
+	// facade-authored lens names cannot reproduce it.
 	return [
 		"gentle-ai.review-abandon-authorization/v2",
 		`lineage=${request.lineage}`,

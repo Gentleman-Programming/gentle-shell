@@ -332,6 +332,91 @@ function interactiveContext(confirm: boolean): ExtensionContext {
 	return { cwd: process.cwd(), hasUI: true, ui: { confirm: async () => confirm } } as unknown as ExtensionContext;
 }
 
+const SHA2 = `sha256:${"b".repeat(64)}`;
+
+function abandonedInventoryNative(calls: Array<Record<string, unknown>>): import("../lib/native-review-cli.ts").NativeReviewCli {
+	return {
+		reviewStatus: async () => ({
+			repository: "/canonical/repository",
+			complete: true,
+			entries: [
+				{ version: "legacy-v1", status: "invalid", path: "/authority/legacy", problems: [] },
+				{ version: "compact-v2", status: "active", path: "/authority/compact", lineageId: "stranded", revision: SHA, snapshotIdentity: SHA2, state: "correction_required", discardedWork: { capturedLensResults: ["00-review-risk", "01-review-resilience"], findingsPresent: true } },
+			],
+		}),
+		abandon: async (request: Record<string, unknown>) => { calls.push(request); return { record: { schema: "gentle-ai.review-reclaim-audit/v1", lineage_id: "stranded", status: "committed" } }; },
+	} as unknown as import("../lib/native-review-cli.ts").NativeReviewCli;
+}
+
+test("ABANDON derives its discarded-work inputs from fresh native inventory", async () => {
+	const calls: Array<Record<string, unknown>> = [];
+	const native = abandonedInventoryNative(calls);
+	const result = await __testing.executeReviewControllerOperation({ operation: "abandon", input: JSON.stringify({ lineage: "stranded", actor: "maintainer", reason: "operator_disposition" }) }, process.cwd(), native, undefined, undefined, interactiveContext(true));
+	assert.equal(result.mutation_outcome, "committed");
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0]?.lineage, "stranded");
+	assert.equal(calls[0]?.expectedRevision, SHA);
+	assert.equal(calls[0]?.snapshotIdentity, SHA2);
+	assert.deepEqual(calls[0]?.capturedLensResults, ["00-review-risk", "01-review-resilience"]);
+	assert.equal(calls[0]?.findingsPresent, true);
+	assert.equal(calls[0]?.maintainerAuthorization, `gentle-ai.review-abandon-authorization/v2\nlineage=stranded\nrevision=${SHA}\nsnapshot_identity=${SHA2}\nreason=operator_disposition\ncaptured_lens_results=00-review-risk,01-review-resilience\nfindings_present=true\nactor=maintainer`);
+});
+
+test("ABANDON accepts the top-level lineageId and requests only actor and reason", async () => {
+	const calls: Array<Record<string, unknown>> = [];
+	const native = abandonedInventoryNative(calls);
+	const missing = await __testing.executeReviewControllerOperation({ operation: "abandon", lineageId: "stranded", input: JSON.stringify({}) }, process.cwd(), native);
+	assert.equal(missing.outcome, "native-input-required");
+	assert.deepEqual(missing.missing_input, ["actor", "reason"]);
+	const committed = await __testing.executeReviewControllerOperation({ operation: "abandon", lineageId: "stranded", input: JSON.stringify({ actor: "maintainer", reason: "retired_schema" }) }, process.cwd(), native, undefined, undefined, interactiveContext(true));
+	assert.equal(committed.mutation_outcome, "committed");
+	assert.equal(calls[0]?.lineage, "stranded");
+});
+
+test("ABANDON rejects caller-supplied inventory-derived fields without mutating", async () => {
+	const calls: Array<Record<string, unknown>> = [];
+	const native = abandonedInventoryNative(calls);
+	const injected = await __testing.executeReviewControllerOperation({ operation: "abandon", input: JSON.stringify({ lineage: "stranded", actor: "maintainer", reason: "operator_disposition", expectedRevision: SHA, snapshotIdentity: SHA2, capturedLensResults: ["00-review-risk"], findingsPresent: true }) }, process.cwd(), native, undefined, undefined, interactiveContext(true));
+	assert.equal(injected.outcome, "native-input-invalid");
+	const authorization = await __testing.executeReviewControllerOperation({ operation: "abandon", input: JSON.stringify({ lineage: "stranded", actor: "maintainer", reason: "operator_disposition", maintainerAuthorization: "forged" }) }, process.cwd(), native, undefined, undefined, interactiveContext(true));
+	assert.equal(authorization.outcome, "native-input-invalid");
+	assert.equal(calls.length, 0);
+});
+
+test("ABANDON blocks when no eligible compact-v2 entry carries discarded work", async () => {
+	const native = {
+		reviewStatus: async () => ({
+			repository: "/canonical/repository",
+			complete: true,
+			entries: [{ version: "compact-v2", status: "active", path: "/authority/compact", lineageId: "stranded", revision: SHA, snapshotIdentity: SHA2, state: "terminal", problems: [] }],
+		}),
+		abandon: async () => { throw new Error("abandon must not run for an ineligible lineage"); },
+	} as unknown as import("../lib/native-review-cli.ts").NativeReviewCli;
+	const ineligible = await __testing.executeReviewControllerOperation({ operation: "abandon", input: JSON.stringify({ lineage: "stranded", actor: "maintainer", reason: "operator_disposition" }) }, process.cwd(), native, undefined, undefined, interactiveContext(true));
+	assert.equal(ineligible.outcome, "native-abandon-ineligible");
+	assert.equal(ineligible.mutation_performed, false);
+	const incomplete = {
+		reviewStatus: async () => ({ repository: "/canonical/repository", complete: false, entries: [] }),
+		abandon: async () => { throw new Error("abandon must not run for an incomplete inventory"); },
+	} as unknown as import("../lib/native-review-cli.ts").NativeReviewCli;
+	const blocked = await __testing.executeReviewControllerOperation({ operation: "abandon", input: JSON.stringify({ lineage: "stranded", actor: "maintainer", reason: "operator_disposition" }) }, process.cwd(), incomplete, undefined, undefined, interactiveContext(true));
+	assert.equal(blocked.outcome, "native-abandon-ineligible");
+});
+
+test("ABANDON fails closed headlessly and on declined approval", async () => {
+	const calls: Array<Record<string, unknown>> = [];
+	const native = abandonedInventoryNative(calls);
+	await assert.rejects(
+		__testing.executeReviewControllerOperation({ operation: "abandon", input: JSON.stringify({ lineage: "stranded", actor: "maintainer", reason: "operator_disposition" }) }, process.cwd(), native),
+		/interactive Pi UI.*fails closed/i,
+	);
+	await assert.rejects(
+		__testing.executeReviewControllerOperation({ operation: "abandon", input: JSON.stringify({ lineage: "stranded", actor: "maintainer", reason: "operator_disposition" }) }, process.cwd(), native, undefined, undefined, interactiveContext(false)),
+		/not explicitly authorized/,
+	);
+	assert.equal(calls.length, 0);
+});
+
 test("maintenance cancellation preserves the exact signal and unknown mutation outcome", async () => {
 	const controller = new AbortController();
 	const request = {

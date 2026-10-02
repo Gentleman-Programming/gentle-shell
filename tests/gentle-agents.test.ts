@@ -110,19 +110,21 @@ mkdirSync(nonGitCwd, { recursive: true });
 writeFileSync(join(home, ".pi", "agent", "agents", "explore.md"), "---\ndescription: maps things\nmodel: openai-codex/gpt-5.6-terra\nthinking: high\ntools: [read, grep]\n---\nYou map things.");
 writeFileSync(join(home, ".pi", "agent", "subagents.json"), JSON.stringify({ max_concurrency: 2, model_profiles: { explore: { effort: "low" } } }));
 
-function fakePi() {
+// Existing prompt-lifecycle regressions exercise the bridge route by default.
+function fakePi(initialProvider: string = "claude-bridge") {
 	const handlers = new Map<string, Handler[]>();
 	const tools = new Map<string, Registered>();
 	const shortcuts = new Map<string, { description: string; handler(ctx: ExtensionContext): Promise<void> }>();
 	const commands = new Map<string, { handler(args: string, ctx: ExtensionContext): Promise<void> }>();
 	const sent: Array<{ message: Record<string, unknown>; options: Record<string, unknown> }> = [];
-	// Idle wake-ups go through pi.sendUserMessage; `delivery` records the
-	// interleaving of custom messages and wake-ups so ordering stays provable.
+	// `delivery` records custom messages and user wakes in dispatch order.
 	const userMessages: Array<{ content: unknown; options: Record<string, unknown> | undefined }> = [];
 	const delivery: string[] = [];
 	// A live idle flag shared by every context fired through this host, like
 	// Pi's ctx.isIdle(): busy from agent_start until agent_settled. Tests can
 	// force it to simulate compaction or other non-run busy states.
+	let selectedProvider: string | undefined = initialProvider;
+	const setProvider = (provider: string | undefined) => { selectedProvider = provider; };
 	let parentIdle = true;
 	const setIdle = (idle: boolean) => { parentIdle = idle; };
 	const renderers = new Map<string, (message: unknown, options: { expanded: boolean }, theme: unknown) => { render(width: number): string[] }>();
@@ -157,6 +159,10 @@ function fakePi() {
 	const fire = async (event: string, ctx: ExtensionContext, payload: unknown = {}) => {
 		const results: unknown[] = [];
 		if (!("isIdle" in ctx)) Object.assign(ctx, { isIdle: () => parentIdle });
+		if (!("model" in ctx)) Object.defineProperty(ctx, "model", {
+			configurable: true,
+			get: () => selectedProvider === undefined ? undefined : { provider: selectedProvider },
+		});
 		if (event === "agent_start") parentIdle = false;
 		else if (event === "agent_settled") parentIdle = true;
 		try {
@@ -172,7 +178,7 @@ function fakePi() {
 			}
 		}
 	};
-	return { pi, tools, shortcuts, commands, fire, sent, userMessages, delivery, setIdle, renderers, entryRenderers, entries, events, listeners };
+	return { pi, tools, shortcuts, commands, fire, sent, userMessages, delivery, setIdle, setProvider, renderers, entryRenderers, entries, events, listeners };
 }
 
 function fakeContext(tui: { requestRender(): void } = fakeTui, confirmResult: (title: string, message: string) => Promise<boolean> = async () => true, inputResult: (title: string, placeholder: string | undefined) => Promise<string | undefined> = async () => undefined, overlayTui: { terminal: { rows: number }; requestRender(): void } = { terminal: { rows: 30 }, requestRender() {} }, selectResult: (title: string, options: string[]) => Promise<string | undefined> = async (_title, options) => options[0]) {
@@ -236,6 +242,14 @@ function recordTimers(target: Partial<AgentsDeps>) {
 	const due = (ms: number) => pending.filter((timer) => timer.ms === ms && !timer.cancelled);
 	return {
 		pending: (ms: number) => due(ms).length,
+		// Capture a known newly armed timer before other same-duration timers
+		// (for example child query expiry) are added.
+		takeLast: (ms: number) => {
+			const timer = due(ms).at(-1);
+			assert.ok(timer, `expected a pending ${ms}ms timer`);
+			pending.splice(pending.indexOf(timer), 1);
+			return () => { if (!timer.cancelled) timer.fn(); };
+		},
 		run: (ms: number) => {
 			const timers = due(ms);
 			for (const timer of timers) {
@@ -4143,10 +4157,114 @@ test("a background completion settling while the parent agent runs is delivered 
 	await fire("session_shutdown", ctx);
 });
 
-// A direct custom-message turn (sendMessage + triggerTurn while idle) skips
-// Pi's prompt lifecycle, so before_agent_start never runs and prompt-capture
-// integrations such as the Claude bridge reject the turn. An idle parent must
-// instead store the structured result durably and be woken by a user message.
+for (const provider of ["openai", "anthropic", "custom-extension", undefined, "claude-bridge"]) {
+	for (const kind of ["completion", "query"] as const) {
+		test(`idle ${kind} wake uses the selected ${provider ?? "missing"} provider route`, async () => {
+			const h = fakePi();
+			h.setProvider(provider);
+			const harness = deps();
+			gentleAgents(h.pi, {}, harness.deps);
+			const { ctx } = fakeContext();
+			await h.fire("session_start", ctx);
+			await h.tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Route wake", mode: "background" }, undefined, undefined, ctx);
+			await tick();
+			if (kind === "query") harness.children[0].message({ id: "q1", kind: "query", message: "Child payload" });
+			else {
+				harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Child payload" }] }] });
+				harness.children[0].emit({ type: "agent_settled" });
+			}
+			await tick();
+			assert.deepEqual(h.sent[0]!.options, { triggerTurn: false });
+			assert.match(String(h.sent[0]!.message.content), /Child payload/);
+			if (provider === "claude-bridge") {
+				assert.equal(h.sent.length, 1);
+				assert.deepEqual(h.userMessages, [{
+					content: "[System-generated Gentle Agents notification, not written by the user] Subagent output was delivered to this session above. Review it and continue.",
+					options: { deliverAs: "steer" },
+				}]);
+				assert.equal(h.delivery.at(-1), "user");
+			} else {
+				assert.equal(h.userMessages.length, 0, "native and unclassified providers never receive a synthetic user turn");
+				assert.equal(h.sent.length, 2, "the stored payload still gets a continuation turn");
+				assert.deepEqual(h.sent[1]!.options, { deliverAs: "steer", triggerTurn: true });
+				assert.equal(h.sent[1]!.message.display, false);
+				assert.equal(h.sent[1]!.message.customType, "gentle-agents.wake");
+				assert.equal(h.sent[1]!.message.content, "Review the delivered subagent output and continue.");
+				assert.deepEqual(h.delivery, [`custom:gentle-agents.${kind === "query" ? "message" : "result"}`, "custom:gentle-agents.wake"]);
+			}
+			await h.fire("session_shutdown", ctx);
+		});
+	}
+}
+
+for (const [from, to] of [["openai", "claude-bridge"], ["claude-bridge", "openai"]]) {
+	test(`wake reads the live provider after storage: ${from} to ${to}`, async () => {
+		const h = fakePi(from);
+		const harness = deps();
+		gentleAgents(h.pi, {}, harness.deps);
+		const { ctx } = fakeContext();
+		await h.fire("session_start", ctx);
+		await h.tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Switch before dispatch", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		const sendMessage = h.pi.sendMessage;
+		Object.assign(h.pi, { sendMessage: (...args: Parameters<ExtensionAPI["sendMessage"]>) => {
+			sendMessage(...args);
+			// Storage happens synchronously, dispatch in the queued microtask.
+			if (args[0].customType === "gentle-agents.message") h.setProvider(to);
+		} });
+		harness.children[0].message({ id: "q1", kind: "query", message: "Switch?" });
+		await tick();
+		assert.equal(h.userMessages.length, to === "claude-bridge" ? 1 : 0);
+		assert.equal(h.sent.filter((entry) => entry.message.customType === "gentle-agents.wake").length, to === "openai" ? 1 : 0);
+		await h.fire("session_shutdown", ctx);
+	});
+}
+
+for (const boundary of ["session_compact", "session_compact_failed"] as const) {
+	test(`native wake preserves holds, coalescing and grace after ${boundary}`, async () => {
+		const h = fakePi("openai");
+		const harness = deps();
+		const timers = recordTimers(harness.deps);
+		gentleAgents(h.pi, {}, harness.deps);
+		const { ctx } = fakeContext();
+		await h.fire("session_start", ctx);
+		for (const task of ["Ask", "Finish"]) await h.tools.get("subagent_run")!.execute(task, { agent: "explore", task, mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		h.setIdle(false);
+		harness.children[0].message({ id: "q1", kind: "query", message: "Held question" });
+		harness.children[1].emit({ type: "agent_settled" });
+		await tick();
+		assert.equal(h.sent.length, 0);
+		await h.fire(boundary, ctx);
+		assert.equal(h.sent.length, 0);
+		h.setIdle(true);
+		assert.equal(timers.run(0), 1);
+		await tick();
+		assert.deepEqual(h.delivery, ["custom:gentle-agents.message", "custom:gentle-agents.result", "custom:gentle-agents.wake"]);
+		assert.deepEqual(h.sent.map((entry) => entry.options), [{ triggerTurn: false }, { triggerTurn: false }, { deliverAs: "steer", triggerTurn: true }]);
+		const expireWakeGrace = timers.takeLast(PARENT_WAKE_GRACE_MS);
+		harness.children[0].message({ id: "q2", kind: "query", message: "Later question" });
+		await tick();
+		assert.equal(h.sent.length, 4, "content arriving in the grace window shares the pending wake");
+		expireWakeGrace();
+		await tick();
+		assert.equal(h.sent.length, 5, "an unstarted wake cannot suppress new content beyond grace");
+		assert.equal(h.sent[4]!.message.display, false);
+		assert.deepEqual(h.sent[4]!.options, { deliverAs: "steer", triggerTurn: true });
+		await h.fire("agent_start", ctx);
+		harness.children[0].message({ id: "q3", kind: "query", message: "Busy question" });
+		await tick();
+		assert.equal(h.sent.length, 5, "busy content stays queued until the turn boundary");
+		await h.fire("turn_end", ctx);
+		assert.equal(h.sent.at(-1)!.message.customType, "gentle-agents.message");
+		assert.deepEqual(h.sent.at(-1)!.options, { deliverAs: "steer", triggerTurn: true }, "busy native delivery keeps the original steering route");
+		assert.equal(h.userMessages.length, 0);
+		await h.fire("session_shutdown", ctx);
+	});
+}
+
+// Bridge custom-message turns skip the prompt lifecycle needed for capture.
+// Store the structured result durably and wake the bridge by a user message.
 test("an idle parent stores the structured completion and is woken through the normal prompt lifecycle", async () => {
 	const { pi, tools, fire, sent, userMessages, delivery, renderers } = fakePi();
 	const harness = deps();

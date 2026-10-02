@@ -63,6 +63,8 @@ const TOOL_PREFIX = "subagent_";
 // Wakes an idle parent after child content was stored as a custom message.
 // It names itself as automated so the model never attributes it to the human.
 const PARENT_WAKE_TEXT = "[System-generated Gentle Agents notification, not written by the user] Subagent output was delivered to this session above. Review it and continue.";
+const PARENT_WAKE_TYPE = "gentle-agents.wake";
+const NATIVE_PARENT_WAKE_TEXT = "Review the delivered subagent output and continue.";
 // How long a dispatched wake may take to start a parent run before a later
 // delivery may send another one.
 export const PARENT_WAKE_GRACE_MS = 30_000;
@@ -629,13 +631,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// branch, so a parent that keeps calling tools would see the content only
 	// when the whole run ends — the original #867 delay.
 	//
-	// An idle parent must not get triggerTurn: the host would run the custom
-	// message as a direct turn that skips the prompt lifecycle
-	// (before_agent_start and the prompt refresh), and prompt-capture
-	// integrations such as the Claude bridge reject that turn. The structured
-	// message is stored durably without a turn instead, and a short
-	// system-generated user message wakes the parent through the normal prompt
-	// path. The wake never repeats child content, so the model sees it once.
+	// Idle child content is stored durably without a turn, then a separate
+	// coalesced wake requests continuation without repeating that content.
+	// Claude Bridge needs a user wake through the prompt lifecycle for capture;
+	// native providers can use a hidden custom-message turn instead.
 	//
 	// A parent that is busy without a run (compaction, or a prompt's pre-run
 	// compaction) is not streaming, so steer + triggerTurn would also start a
@@ -688,7 +687,18 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		try {
 			// "steer" matters only when a run started in between: the wake is then
 			// queued into it instead of being rejected as a concurrent prompt.
-			pi.sendUserMessage(PARENT_WAKE_TEXT, { deliverAs: "steer" });
+			// Read the live selection at dispatch, not when child content arrived.
+			// Only Claude Bridge is currently evidenced to require prompt capture;
+			// registering a custom provider alone does not make it a bridge.
+			if (parentCtx?.model?.provider === "claude-bridge") {
+				pi.sendUserMessage(PARENT_WAKE_TEXT, { deliverAs: "steer" });
+			} else {
+				pi.sendMessage({
+					customType: PARENT_WAKE_TYPE,
+					content: NATIVE_PARENT_WAKE_TEXT,
+					display: false,
+				}, { deliverAs: "steer", triggerTurn: true });
+			}
 		} catch {
 			// A stale runtime fails closed instead of throwing from a microtask.
 			endPromptStart();

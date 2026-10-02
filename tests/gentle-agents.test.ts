@@ -112,6 +112,7 @@ writeFileSync(join(home, ".pi", "agent", "subagents.json"), JSON.stringify({ max
 
 // Existing prompt-lifecycle regressions exercise the bridge route by default.
 function fakePi(initialProvider: string = "claude-bridge") {
+	const transformers: Array<Parameters<ExtensionAPI["registerMarkdownTransformer"]>[0]> = [];
 	const handlers = new Map<string, Handler[]>();
 	const tools = new Map<string, Registered>();
 	const shortcuts = new Map<string, { description: string; handler(ctx: ExtensionContext): Promise<void> }>();
@@ -134,6 +135,7 @@ function fakePi(initialProvider: string = "claude-bridge") {
 	const listeners = new Map<string, Set<(data: unknown) => void>>();
 	const pi = {
 		appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
+		registerMarkdownTransformer: (transformer: Parameters<ExtensionAPI["registerMarkdownTransformer"]>[0]) => transformers.push(transformer),
 		events: {
 			emit: (name: string, data: unknown) => { events.push({ name, data }); for (const listener of listeners.get(name) ?? []) listener(data); },
 			on: (name: string, listener: (data: unknown) => void) => {
@@ -178,7 +180,7 @@ function fakePi(initialProvider: string = "claude-bridge") {
 			}
 		}
 	};
-	return { pi, tools, shortcuts, commands, fire, sent, userMessages, delivery, setIdle, setProvider, renderers, entryRenderers, entries, events, listeners };
+	return { pi, tools, shortcuts, commands, fire, sent, userMessages, delivery, setIdle, setProvider, renderers, entryRenderers, entries, events, listeners, transformers };
 }
 
 function fakeContext(tui: { requestRender(): void } = fakeTui, confirmResult: (title: string, message: string) => Promise<boolean> = async () => true, inputResult: (title: string, placeholder: string | undefined) => Promise<string | undefined> = async () => undefined, overlayTui: { terminal: { rows: number }; requestRender(): void } = { terminal: { rows: 30 }, requestRender() {} }, selectResult: (title: string, options: string[]) => Promise<string | undefined> = async (_title, options) => options[0]) {
@@ -2579,12 +2581,12 @@ test("explicit child roots launch and continue in the actual cwd, persist withou
 	await tick();
 	assert.deepEqual(launched, [childRoot, childRoot]);
 	spawnEvents[1]();
-	assert.equal(h.entries.length, 1, "continuation dedupes the original root");
+	assert.equal(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY).length, 1, "continuation dedupes the original root");
 	const status = await h.tools.get("subagent_status")!.execute("status", { task_id: details.taskId }, undefined, undefined, ctx);
 	assert.match(status.content[0].text, /cwd:/);
 	await h.fire("session_shutdown", ctx);
 	spawnEvents[1]();
-	assert.equal(h.entries.length, 1, "late process events after shutdown cannot write session state");
+	assert.equal(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY).length, 1, "late process events after shutdown cannot register roots");
 	await tick();
 });
 
@@ -2771,7 +2773,7 @@ test("ordinary non-Git tasks still continue in their original cwd without regist
 	await h.tools.get("subagent_continue")!.execute("continue", { task_id: taskId, prompt: "Follow up", mode: "background" }, undefined, undefined, ctx);
 	await tick();
 	assert.equal(runtime.children.length, 2);
-	assert.deepEqual(h.entries, []);
+	assert.deepEqual(h.entries.filter(entry => entry.customType !== "gentle-agents.wake-identity"), []);
 	await h.fire("session_shutdown", ctx);
 	await tick();
 });
@@ -2802,7 +2804,7 @@ for (const sameId of [false, true]) {
 		await h.fire("session_start", next.ctx);
 		spawnEvents[0]();
 		await tick();
-		assert.deepEqual(h.entries, [], "captured registry is closed instead of appending to the new bound API");
+		assert.deepEqual(h.entries.filter(entry => entry.customType !== "gentle-agents.wake-identity"), [], "captured registry is closed instead of appending worktree state to the new bound API");
 		await h.fire("session_shutdown", next.ctx);
 	});
 }
@@ -3343,7 +3345,7 @@ test("AgentsView production footer uses rendered bounds and invalidates them bef
 	const harness = deps();
 	gentleAgents(pi, {}, harness.deps);
 	const { ctx, overlays, customCompletions } = fakeContext();
-	(ctx as unknown as { sessionManager: { getSessionId(): string; getCwd(): string } }).sessionManager = { getSessionId: () => "footer-session", getCwd: () => cwd };
+	(ctx as unknown as { sessionManager: { getSessionId(): string; getCwd(): string; getEntries(): [] } }).sessionManager = { getSessionId: () => "footer-session", getCwd: () => cwd, getEntries: () => [] };
 	await fire("session_start", ctx);
 	await tools.get("subagent_run")!.execute("c1", { agent: "寿司", task: "Footer target", mode: "background" }, undefined, undefined, ctx);
 	await tick();
@@ -3704,8 +3706,8 @@ test("the card follows the active session: after /new the earlier session's task
 	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Long job", mode: "background" }, undefined, undefined, ctx);
 	await tick();
 	assert.match(widget()![1], /◐  explore  Long job/);
-	const sessions = ctx as unknown as { sessionManager: { getSessionId(): string; getCwd(): string } };
-	sessions.sessionManager = { getSessionId: () => "s2", getCwd: () => cwd };
+	const sessions = ctx as unknown as { sessionManager: { getSessionId(): string; getCwd(): string; getEntries(): [] } };
+	sessions.sessionManager = { getSessionId: () => "s2", getCwd: () => cwd, getEntries: () => [] };
 	await fire("session_start", ctx, { type: "session_start", reason: "new" });
 	assert.deepEqual(widget(), [], "the new session starts with an empty card");
 	assert.match((await tools.get("subagent_list_tasks")!.execute("c2", {}, undefined, undefined, ctx)).content[0].text, /No subagent tasks in this session/);
@@ -3717,7 +3719,7 @@ test("the card follows the active session: after /new the earlier session's task
 	assert.doesNotMatch(overlay.render(80).map(stripAnsi).join("\n"), /◐ Subagent explore/, "retained children of a replaced session do not imply an open orchestrator");
 	overlay.handleInput("\x1b");
 	await opened;
-	sessions.sessionManager = { getSessionId: () => "s1", getCwd: () => cwd };
+	sessions.sessionManager = { getSessionId: () => "s1", getCwd: () => cwd, getEntries: () => [] };
 	await fire("session_start", ctx, { type: "session_start", reason: "resume" });
 	assert.match(widget()![1], /◐  explore  Long job/, "resuming the first session shows its task again");
 });
@@ -4157,6 +4159,58 @@ test("a background completion settling while the parent agent runs is delivered 
 	await fire("session_shutdown", ctx);
 });
 
+test("Bridge identity is durable, session-owned and registered once across session changes", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	ctx.sessionManager.getEntries = () => h.entries as unknown as ReturnType<ExtensionContext["sessionManager"]["getEntries"]>;
+	await h.fire("session_start", ctx);
+	await h.tools.get("subagent_run")!.execute("one", { agent: "explore", task: "Wake identity", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	runtime.children[0].message({ id: "q1", kind: "query", message: "Question" });
+	await tick();
+	const wake = String(h.userMessages[0].content);
+	const transform = h.transformers[0];
+	const context = { messageType: "user" as const, isStreaming: false, availableWidth: 80 };
+	assert.equal(transform(wake, context), "");
+	assert.equal(h.entries.filter(entry => entry.customType === "gentle-agents.wake-identity").length, 1);
+	await h.fire("session_start", ctx, { reason: "reload" });
+	assert.equal(transform(wake, context), "", "reload reconstructs ownership");
+	ctx.sessionManager.getSessionId = () => "other-session";
+	await h.fire("session_start", ctx, { reason: "new" });
+	assert.equal(transform(wake, context), wake, "another session cannot claim the old identity");
+	ctx.sessionManager.getSessionId = () => "s1";
+	await h.fire("session_start", ctx, { reason: "resume" });
+	assert.equal(transform(wake, context), "");
+	assert.equal(h.transformers.length, 1, "session changes do not register again");
+	assert.equal(transform(`Quoted: ${wake}`, context), `Quoted: ${wake}`);
+	assert.equal(transform(` ${wake}`, context), ` ${wake}`);
+	await h.fire("session_shutdown", ctx);
+	assert.equal(transform(wake, context), wake, "shutdown releases the old owner");
+});
+
+for (const failure of ["missing-api", "persistence", "warning-ui"] as const) {
+	test(`Bridge ${failure} fallback preserves continuation and flags visible wake`, async () => {
+		const h = fakePi();
+		const runtime = deps();
+		if (failure !== "persistence") delete (h.pi as Partial<ExtensionAPI>).registerMarkdownTransformer;
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx, dialogs } = fakeContext();
+		if (failure === "warning-ui") ctx.ui.notify = () => { throw new Error("UI unavailable"); };
+		await h.fire("session_start", ctx);
+		if (failure === "persistence") h.pi.appendEntry = () => { throw new Error("Persistence unavailable"); };
+		await h.tools.get("subagent_run")!.execute("fallback", { agent: "explore", task: "Fallback", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		runtime.children[0].message({ id: "q1", kind: "query", message: "Question" });
+		await tick();
+		assert.equal(h.userMessages.length, 1);
+		assert.equal(h.sent.length, 1, "payload is stored once despite compatibility fallback");
+		assert.doesNotMatch(String(h.userMessages[0].content), /gentle-agents wake:/);
+		if (failure !== "warning-ui") assert.ok(dialogs.some(message => message.includes("cannot hide Claude Bridge")));
+	});
+}
+
 for (const provider of ["openai", "anthropic", "custom-extension", undefined, "claude-bridge"]) {
 	for (const kind of ["completion", "query"] as const) {
 		test(`idle ${kind} wake uses the selected ${provider ?? "missing"} provider route`, async () => {
@@ -4178,10 +4232,10 @@ for (const provider of ["openai", "anthropic", "custom-extension", undefined, "c
 			assert.match(String(h.sent[0]!.message.content), /Child payload/);
 			if (provider === "claude-bridge") {
 				assert.equal(h.sent.length, 1);
-				assert.deepEqual(h.userMessages, [{
-					content: "[System-generated Gentle Agents notification, not written by the user] Subagent output was delivered to this session above. Review it and continue.",
-					options: { deliverAs: "steer" },
-				}]);
+				assert.equal(h.userMessages.length, 1);
+				assert.match(String(h.userMessages[0].content), /\[gentle-agents wake: [0-9a-f-]+\]$/);
+				assert.deepEqual(h.userMessages[0].options, { deliverAs: "steer" });
+				assert.equal(h.transformers[0](String(h.userMessages[0].content), { messageType: "user", isStreaming: false, availableWidth: 80 }), "");
 				assert.equal(h.delivery.at(-1), "user");
 			} else {
 				assert.equal(h.userMessages.length, 0, "native and unclassified providers never receive a synthetic user turn");

@@ -5,7 +5,7 @@ import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Box, visibleWidth } from "@earendil-works/pi-tui";
 import { renderGentleAiLifecycleCall, renderGentleAiResult, GentleAiCallCard } from "../lib/gentle-ai-renderer.ts";
-import { CARD_STYLE, setCardStyle } from "../lib/shell-card.ts";
+import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
 initTheme("dark");
@@ -56,7 +56,10 @@ test("review registrations own their shell", () => {
 	for (const tool of review) assert.equal(tool.renderShell, "self", tool.name);
 });
 
-test("review call and result cards have no passive background fill", () => {
+test("review call and result cards have no passive background fill", (t) => {
+	const found = cardStyle();
+	t.after(() => setCardStyle(found));
+	setCardStyle(CARD_STYLE.NEON);
 	const theme = { ...plainTheme, bg: (_role: string, text: string) => `\x1b[44m${text}\x1b[49m` };
 	for (const options of [
 		{ expanded: true }, { expanded: false },

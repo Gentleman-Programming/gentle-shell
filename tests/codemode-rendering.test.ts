@@ -12,7 +12,7 @@ import {
 import { getCapabilities, imageFallback, setCapabilities, visibleWidth } from "@earendil-works/pi-tui";
 import quietTools from "../extensions/quiet-tools.ts";
 import { decorateCodemodeTool, registerCompactCodemode } from "../lib/codemode-renderer.ts";
-import { CARD_STYLE, setCardStyle } from "../lib/shell-card.ts";
+import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
 type ToolRenderContext = Parameters<NonNullable<ToolDefinition["renderCall"]>>[2];
@@ -319,7 +319,10 @@ test("collapsed Code skips upstream bookkeeping to preview the actual final outp
 	assert.doesNotMatch(text, /Script completed|Wall time|Output:|hidden detail/);
 });
 
-test("Code components repaint semantic colors after theme invalidation without background fill", () => {
+test("Code components repaint semantic colors after theme invalidation without background fill", (t) => {
+	const found = cardStyle();
+	t.after(() => setCardStyle(found));
+	setCardStyle(CARD_STYLE.NEON);
 	const tool = registeredCodemode();
 	let paint = "\x1b[31m";
 	const themed = { fg: (_role: string, text: string) => `${paint}${text}\x1b[0m`, bg: (_role: string, text: string) => `\x1b[44m${text}\x1b[49m` };

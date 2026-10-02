@@ -5,8 +5,8 @@ import { gentlePiConfigHome } from "./agent-home.ts";
 import { CARD_STYLE, type CardStyle } from "./shell-card.ts";
 
 // The conversation card style chosen in Gentle → Customize. A missing file
-// means the outlined neon style; a malformed or unreadable one also reads as
-// neon, and the writer refuses to replace it so a hand edit is never lost.
+// means the borderless float style; a malformed or unreadable one also reads
+// as float, and the writer refuses to replace it so a hand edit is never lost.
 // There is no environment override.
 export const CARD_STYLE_SCHEMA = "gentle-pi.card-style/v1";
 const CARD_STYLE_FILE = "card-style.json";
@@ -35,10 +35,10 @@ export function resolveCardStyle(options: CardStyleOptions = {}): CardStyleResol
 	const globalFile = join(options.gentlePiConfigHome ?? gentlePiConfigHome(), CARD_STYLE_FILE);
 	try {
 		const style = parseCardStyleFile(readFileSync(globalFile, "utf8"));
-		return { style: style ?? CARD_STYLE.NEON, source: "global_file", malformed: style === undefined, globalFile };
+		return { style: style ?? CARD_STYLE.FLOAT, source: "global_file", malformed: style === undefined, globalFile };
 	} catch (error) {
 		const missing = typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
-		return { style: CARD_STYLE.NEON, source: missing ? "default" : "global_file", malformed: !missing, globalFile };
+		return { style: CARD_STYLE.FLOAT, source: missing ? "default" : "global_file", malformed: !missing, globalFile };
 	}
 }
 

@@ -2,11 +2,13 @@ import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works
 import { GAUGE_CELLS, gaugeTone, paintGauge, renderGauge, type GaugeTone } from "./shell-gauge.ts";
 import { renderUsageBar, selectUsageLimit, type ProviderUsage, type UsageWindow } from "./shell-usage.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
-import { CARD_TONE, cardInnerWidth, renderCard } from "./shell-card.ts";
+import { CARD_TONE, floatRows, panelInnerWidth, renderCard } from "./shell-card.ts";
 import { REVIEW_SCOPE_UNAVAILABLE, REVIEW_SIDEBAR_LABELS, type ReviewSidebarSnapshot } from "./review-sidebar-state.ts";
 import type { VisualSettings } from "./visual-customization-policy.ts";
+import { renderChangesWidget, type ChangesModel } from "./shell-changes.ts";
 
 type Presentation = Pick<VisualSettings, "density" | "visibility">;
+type HeaderPresentation = Presentation & Partial<Pick<VisualSettings, "headerPlacement" | "statusPlacement">>;
 
 export { gaugeTone, renderGauge, type GaugeTone };
 
@@ -66,6 +68,12 @@ export interface HeaderUsageSpan {
 
 export interface ShellHeaderResult {
 	text: string;
+	usageSpan?: HeaderUsageSpan;
+}
+
+export interface ShellHeaderChrome {
+	rows: string[];
+	headerRow: number;
 	usageSpan?: HeaderUsageSpan;
 }
 
@@ -195,7 +203,7 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 	const branch = model.branch ? `${label("Branch")} ${value(model.branch)}` : "";
 	// Pre-wrap values before indenting so Unicode/ANSI continuation lines keep
 	// the same inset without consuming the card's right border.
-	const innerWidth = cardInnerWidth(width);
+	const innerWidth = panelInnerWidth(theme, width);
 	const inset = Math.min(1, innerWidth - 1);
 	// Model, effort, context, cost, and the per-model usage table now live in
 	// the always-visible header row (and /gentle:usage for the full table);
@@ -240,7 +248,7 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 		...(presentation?.density === "minimal" ? [] : [label(group.title)]),
 		...group.lines.flatMap((line) => wrapTextWithAnsi(line, innerWidth - inset).map((part) => " ".repeat(inset) + part)),
 	]);
-	return renderCard({ title: "Status", body, tone: CARD_TONE.INFO }, theme, width, { expanded: true });
+	return renderCard({ title: "Status", body, tone: CARD_TONE.INFO }, theme, width, { expanded: true, panel: true });
 }
 
 const HEADER_BRAND = "✿ Gentle Shell";
@@ -291,7 +299,66 @@ function usageSegmentText(windows: UsageWindow[], theme: ShellBarTheme, stage: U
 	return hint ? `${head} ${theme.fg(ROLE.LABEL, "·")} ${theme.fg(USAGE_HINT_ROLE, hint)}` : head;
 }
 
+// The float header is a full-width INFO background bar with a two-column
+// inset on each side, closed below by the header edge line. floatRows paints
+// the background inside one-column transparent margins; those margin cells
+// are painted too, so the bar reaches both edges. Undefined for neon, a width
+// under the float minimum, or a theme without a background.
+function floatHeaderRow(theme: ShellBarTheme, width: number, content: (width: number) => string): string | undefined {
+	const painted = floatHeaderPaint(theme, width, content);
+	if (painted === undefined) return undefined;
+	const { inner, open } = painted;
+	// The background spans the full width: the margin cells are painted too, so
+	// the bar reaches both edges with no frame on its sides.
+	const side = `${open} `;
+	return `${side}${inner.slice(open.length, -BG_RESET.length)}${side}${BG_RESET}`;
+}
+
+function fitHeaderContent(text: string, width: number): string {
+	const clipped = visibleWidth(text) <= width ? text : truncateToWidth(text, width, "…");
+	return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
+}
+
 export function renderShellHeaderBar(model: ShellHeaderModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: Presentation): ShellHeaderResult {
+	const targetWidth = Math.max(0, Math.floor(width));
+	let content: ShellHeaderResult | undefined;
+	let contentWidth = targetWidth;
+	const row = floatHeaderRow(theme, targetWidth, (inner) => {
+		contentWidth = inner;
+		content = headerContent(model, theme, inner, usageHint, presentation);
+		return content.text;
+	});
+	if (row === undefined || !content) return headerContent(model, theme, width, usageHint, presentation);
+	const { usageSpan } = content;
+	// The inset splits evenly around the content, so its left share is where
+	// the content's columns start.
+	const offset = (targetWidth - contentWidth) / 2;
+	return usageSpan ? { text: row, usageSpan: { start: usageSpan.start + offset, end: usageSpan.end + offset } } : { text: row };
+}
+
+/** Shared geometry for the rail header and the below-editor header widget. */
+export function renderShellHeaderChrome(model: ShellHeaderModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: HeaderPresentation): ShellHeaderChrome {
+	const { text, usageSpan } = renderShellHeaderBar(model, theme, width, usageHint, presentation);
+	const targetWidth = Math.max(0, Math.floor(width));
+	const painted = floatHeaderPaint(theme, targetWidth, () => "");
+	const rule = renderShellHeaderRule(theme, targetWidth);
+	if (painted === undefined) return { rows: [text, rule], headerRow: 0, usageSpan };
+	const padding = `${painted.open}${" ".repeat(targetWidth)}${BG_RESET}`;
+	if (presentation?.headerPlacement === "below-input") {
+		// A lower one-eighth block hugs the painted padding in the next row.
+		const upperEdge = theme.fg(HEADER_RULE_ROLE, "▁".repeat(targetWidth));
+		return { rows: [upperEdge, padding, text, padding], headerRow: 2, usageSpan };
+	}
+	return { rows: [padding, text, padding, rule], headerRow: 1, usageSpan };
+}
+
+/** The usage segment is interactive only on the content row, never padding or the edge. */
+export function shellHeaderUsageHit(chrome: ShellHeaderChrome, x: number, y: number): boolean {
+	const { usageSpan } = chrome;
+	return y === chrome.headerRow && usageSpan !== undefined && x >= usageSpan.start && x < usageSpan.end;
+}
+
+function headerContent(model: ShellHeaderModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: Presentation): ShellHeaderResult {
 	const targetWidth = Math.max(0, Math.floor(width));
 	const ctxCost = joinSegments([contextSegment(model.contextPercent, theme), costSegment(model.costTotal, model.subscription, theme)], theme);
 	const windows = model.usage ? (selectUsageLimit(model.usage, model.modelId)?.windows ?? []) : [];
@@ -326,15 +393,47 @@ export function renderShellHeaderBar(model: ShellHeaderModel, theme: ShellBarThe
 	return { text: visibleWidth(brand) <= targetWidth ? brand : "" };
 }
 
+// A single owner supplies real captured filenames, not ShellBarModel's totals.
+// Undefined keeps every legacy surface alive for style/width/theme transitions.
+export function renderShellBelowInputFloat(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: HeaderPresentation, changes?: ChangesModel): ShellHeaderChrome | undefined {
+	if (presentation?.headerPlacement !== "below-input") return undefined;
+	const targetWidth = Math.max(0, Math.floor(width));
+	if (floatHeaderPaint(theme, targetWidth, () => "") === undefined) return undefined;
+	const chrome = renderShellHeaderChrome(buildShellHeaderModel(model), theme, targetWidth, usageHint, presentation);
+	const changesRow = changes?.files.length && presentation.visibility.changes !== false
+		? floatHeaderRow(theme, targetWidth, (inner) => renderChangesWidget(changes, theme, inner)[0] ?? "")
+		: undefined;
+	const statuses = presentation.statusPlacement === "hidden" ? [] : model.statuses.map(sanitizeStatus).filter(Boolean);
+	const statusRow = statuses.length
+		? floatHeaderRow(theme, targetWidth, () => joinSegments(statuses.map((status) => theme.fg(ROLE.STATUS, status)), theme))
+		: undefined;
+	return {
+		rows: [
+			chrome.rows[0]!,
+			chrome.rows[1]!,
+			...(changesRow ? [changesRow] : []),
+			chrome.rows[2]!,
+			...(statusRow ? [statusRow] : []),
+			chrome.rows[3]!,
+		],
+		headerRow: changesRow ? 3 : 2,
+		usageSpan: chrome.usageSpan,
+	};
+}
+
 // The bottom bar when it is the only status row of a narrow fullscreen
 // terminal (the header sits below the input and steps aside). It reuses the
 // header row's own cascade, so context, cost and usage outlive the location
 // on small screens, and keeps extension statuses on a second line instead of
 // dropping them the way the header deliberately does.
-export function renderShellBottomOnlyBar(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: Presentation): string[] {
-	const header = renderShellHeaderBar(buildShellHeaderModel(model), theme, width, usageHint, presentation).text;
+export function renderShellBottomOnlyBar(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: HeaderPresentation, changes?: ChangesModel): string[] {
+	const grouped = renderShellBelowInputFloat(model, theme, width, usageHint, presentation, changes);
+	if (grouped) return grouped.rows;
+	const headerModel = buildShellHeaderModel(model);
+	// Neon, missing backgrounds and sub-minimum widths keep the old row count.
+	const rows = [headerContent(headerModel, theme, width, usageHint, presentation).text];
 	const statuses = model.statuses.map(sanitizeStatus).filter((status) => status.length > 0).map((status) => theme.fg(ROLE.STATUS, status));
-	return statuses.length ? [header, truncateToWidth(joinSegments(statuses, theme), Math.max(0, Math.floor(width)), "…")] : [header];
+	return statuses.length ? [...rows, truncateToWidth(joinSegments(statuses, theme), Math.max(0, Math.floor(width)), "…")] : rows;
 }
 
 // The rule row painted directly under the header bar: one full-width horizontal
@@ -345,9 +444,33 @@ export function renderShellBottomOnlyBar(model: ShellBarModel, theme: ShellBarTh
 // with it.
 const HEADER_RULE_CHAR = "─";
 const HEADER_RULE_ROLE = "border";
+const HEADER_EDGE_CHAR = "▔";
+const BG_RESET = "\x1b[49m";
 
+// Paints the header content with floatRows and returns the row without its
+// transparent margins plus the background opener. The painted row is
+// `<open> <content> <reset>`; the opener has no spaces, so the first space ends
+// it. Undefined when the float style does not apply.
+function floatHeaderPaint(theme: ShellBarTheme, width: number, content: (width: number) => string): { inner: string; open: string } | undefined {
+	let floated = false;
+	const [row] = floatRows(CARD_TONE.INFO, theme, width, (inner) => {
+		floated = inner !== width;
+		return floated ? { body: [` ${fitHeaderContent(content(inner - 2), inner - 2)} `] } : {};
+	});
+	if (!floated || row === undefined) return undefined;
+	const inner = row.slice(1, -1);
+	return { inner, open: inner.slice(0, inner.indexOf(" ")) };
+}
+
+// In the float style the rule closes the hanging header tab with an upper
+// one-eighth block line. Box-drawing lines sit mid-cell: a transparent `└──┘`
+// leaves half an unpainted row under the tab, and a painted one overshoots it.
+// `▔` hugs the top of its cell, so the line touches the tab's background
+// exactly. The edge stays transparent beneath the painted bottom padding.
 export function renderShellHeaderRule(theme: ShellBarTheme, width: number): string {
-	return theme.fg(HEADER_RULE_ROLE, HEADER_RULE_CHAR.repeat(Math.max(0, Math.floor(width))));
+	const targetWidth = Math.max(0, Math.floor(width));
+	if (floatHeaderPaint(theme, targetWidth, () => "") !== undefined) return theme.fg(HEADER_RULE_ROLE, HEADER_EDGE_CHAR.repeat(targetWidth));
+	return theme.fg(HEADER_RULE_ROLE, HEADER_RULE_CHAR.repeat(targetWidth));
 }
 
 export function renderShellBar(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation): string[] {

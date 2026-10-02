@@ -60,6 +60,12 @@ export const AGENTS_STALE_RESULT_TYPE = "gentle-agents.stale-result";
 const RENDER_COALESCE_MS = 400;
 const CLOCK_TICK_MS = 1000;
 const TOOL_PREFIX = "subagent_";
+// Wakes an idle parent after child content was stored as a custom message.
+// It names itself as automated so the model never attributes it to the human.
+const PARENT_WAKE_TEXT = "[System-generated Gentle Agents notification, not written by the user] Subagent output was delivered to this session above. Review it and continue.";
+// How long a dispatched wake may take to start a parent run before a later
+// delivery may send another one.
+export const PARENT_WAKE_GRACE_MS = 30_000;
 
 const retiredSddAgent = (name: string): boolean => /^sdd(?:-|$)/.test(name);
 
@@ -584,24 +590,126 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	const completions = createCompletionQueue<TaskRecord>();
 	const messages = createAgentMessageQueue();
 	let activeAgentRuns = 0;
+	// ExtensionAPI has no idle probe; ctx.isIdle() is the only one. It is live
+	// and also reports compaction, which activeAgentRuns cannot see. The
+	// session_start context is kept for it and dropped at shutdown; a stale
+	// context throws instead of answering, so delivery fails closed.
+	let parentCtx: ExtensionContext | undefined;
+	// Mirrors the host's agent run, which spans agent_start through
+	// agent_settled, including post-run retries and in-run compaction. Unlike
+	// activeAgentRuns it stays set between agent_end and agent_settled, where
+	// Pi still streams and still drains steering.
+	let parentRunActive = false;
+	// Idle wake-up state. Child content stored while the parent is idle owes a
+	// wake, and one wake covers everything stored before the run it starts.
+	// While a prompt is starting (a dispatched wake, or any prompt seen at
+	// before_agent_start) no second wake is sent: two prompts racing through
+	// Pi's asynchronous pre-run phase can both reach the agent, and the loser
+	// resets the winner's run state. A prompt that never starts a run (handled
+	// by an input handler, or rejected) emits no extension event, so the
+	// starting state expires after PARENT_WAKE_GRACE_MS and an owed wake is
+	// sent then; it never suppresses later wakes for longer than that.
+	let wakeOwed = false;
+	let wakeQueued = false;
+	let promptStarting = false;
+	let cancelPromptGrace: (() => void) | undefined;
+	let cancelBoundaryFlush: (() => void) | undefined;
 
 	const isTaskLive = (id: string): boolean => {
 		const task = store.get(id);
 		return Boolean(task && ownedTaskIds.has(task.id) && !isFinished(task.status));
 	};
 
-	const deliver = (task: TaskRecord) => {
+	// Hands model-visible child content to the parent session.
+	//
+	// A busy parent gets "steer" + triggerTurn, which keeps delivery bounded to
+	// the current turn: the host polls steering each turn and injects the
+	// message before the next LLM call. "followUp" is NOT acceptable here
+	// because the host drains the follow-up queue only in the run loop's stop
+	// branch, so a parent that keeps calling tools would see the content only
+	// when the whole run ends — the original #867 delay.
+	//
+	// An idle parent must not get triggerTurn: the host would run the custom
+	// message as a direct turn that skips the prompt lifecycle
+	// (before_agent_start and the prompt refresh), and prompt-capture
+	// integrations such as the Claude bridge reject that turn. The structured
+	// message is stored durably without a turn instead, and a short
+	// system-generated user message wakes the parent through the normal prompt
+	// path. The wake never repeats child content, so the model sees it once.
+	//
+	// A parent that is busy without a run (compaction, or a prompt's pre-run
+	// compaction) is not streaming, so steer + triggerTurn would also start a
+	// direct turn. Its content stays queued ("hold") until a later boundary.
+	type ParentRoute = "idle" | "run" | "hold";
+	// Throws for a missing or stale parent context, so delivery fails closed.
+	const parentRoute = (): ParentRoute => {
+		if (!parentCtx) throw new Error("Gentle Agents has no live parent session context");
+		if (parentCtx.isIdle()) {
+			// The host is authoritative: an idle parent has no run, even if a
+			// lifecycle event was missed.
+			parentRunActive = false;
+			return "idle";
+		}
+		return parentRunActive ? "run" : "hold";
+	};
+
+	const endPromptStart = () => {
+		promptStarting = false;
+		cancelPromptGrace?.();
+		cancelPromptGrace = undefined;
+	};
+	const beginPromptStart = () => {
+		endPromptStart();
+		promptStarting = true;
+		cancelPromptGrace = deps.schedule(() => {
+			cancelPromptGrace = undefined;
+			promptStarting = false;
+			requestWake();
+		}, PARENT_WAKE_GRACE_MS);
+	};
+
+	// Every wake requested during one synchronous delivery pass is coalesced
+	// into a single dispatch after it, so the wake follows all stored content.
+	const requestWake = () => {
+		if (!wakeOwed || wakeQueued || promptStarting) return;
+		wakeQueued = true;
+		queueMicrotask(dispatchWake);
+	};
+	const dispatchWake = () => {
+		wakeQueued = false;
+		if (!wakeOwed || promptStarting) return;
+		let route: ParentRoute;
+		try { route = parentRoute(); } catch { return; }
+		// A run in progress already carries the stored content; a parent busy
+		// without a run keeps the wake owed until a later boundary flush.
+		if (route !== "idle") return;
+		wakeOwed = false;
+		beginPromptStart();
+		try {
+			// "steer" matters only when a run started in between: the wake is then
+			// queued into it instead of being rejected as a concurrent prompt.
+			pi.sendUserMessage(PARENT_WAKE_TEXT, { deliverAs: "steer" });
+		} catch {
+			// A stale runtime fails closed instead of throwing from a microtask.
+			endPromptStart();
+		}
+	};
+
+	const sendToParent = (message: Parameters<ExtensionAPI["sendMessage"]>[0], route: Exclude<ParentRoute, "hold">) => {
+		if (route === "run") {
+			pi.sendMessage(message, { deliverAs: "steer", triggerTurn: true });
+			return;
+		}
+		pi.sendMessage(message, { triggerTurn: false });
+		wakeOwed = true;
+		requestWake();
+	};
+
+	const deliver = (task: TaskRecord, route: Exclude<ParentRoute, "hold">) => {
 		// Ownership is consulted at delivery time, matching onNotification and
 		// onQuery: a completion owned by another session is dropped, not delivered.
 		if (activeSessionId() !== task.parentSessionId) return;
-		// "steer" + triggerTurn keeps delivery bounded to the current turn. While
-		// the parent streams, the host polls steering each turn and injects the
-		// message before the next LLM call; "followUp" is NOT acceptable here
-		// because the host drains the follow-up queue only in the run loop's stop
-		// branch, so a parent that keeps calling tools would see the completion
-		// only when the whole run ends — the original #867 delay. When the parent
-		// is idle, triggerTurn runs the prompt immediately, preserving wake-up.
-		pi.sendMessage({ customType: AGENTS_RESULT_TYPE, content: completionText(task), display: true, details: taskDetails(task) }, { deliverAs: "steer", triggerTurn: true });
+		sendToParent({ customType: AGENTS_RESULT_TYPE, content: completionText(task), display: true, details: taskDetails(task) }, route);
 	};
 
 	// A stale completion must not re-enter the LLM conversation, so it is
@@ -612,18 +720,30 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		pi.appendEntry(AGENTS_STALE_RESULT_TYPE, { taskId: task.id, agent: task.agent, label: task.label, status: task.status, ageSeconds });
 	};
 
-	const deliverMessage = (msg: PendingAgentMessage) => {
+	const deliverMessage = (msg: PendingAgentMessage, route: Exclude<ParentRoute, "hold">) => {
 		if (activeSessionId() !== msg.parentSessionId) return;
-		pi.sendMessage(
-			{ customType: AGENTS_MESSAGE_TYPE, content: msg.content, display: msg.display, details: msg.details },
-			{ deliverAs: "steer", triggerTurn: true },
-		);
+		sendToParent({ customType: AGENTS_MESSAGE_TYPE, content: msg.content, display: msg.display, details: msg.details }, route);
+	};
+
+	// Child content leaves its queue only when the parent can receive it. A
+	// held or undeliverable flush leaves everything queued for a later boundary;
+	// `rethrow` lets a query report a stale parent back to its child.
+	const deliveryRoute = (rethrow: boolean): Exclude<ParentRoute, "hold"> | undefined => {
+		try {
+			const route = parentRoute();
+			return route === "hold" ? undefined : route;
+		} catch (error) {
+			if (rethrow) throw error;
+			return undefined;
+		}
 	};
 
 	const flushMessages = (rethrow = false) => {
+		const route = deliveryRoute(rethrow);
+		if (!route) return;
 		for (const msg of messages.takeDeliverable(deps.now(), activeSessionId() ?? "", isTaskLive)) {
 			try {
-				deliverMessage(msg);
+				deliverMessage(msg, route);
 			} catch (error) {
 				if (rethrow) throw error;
 				/* Best-effort delivery: at most once, even if forwarding fails. */
@@ -632,10 +752,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	};
 
 	const flushCompletions = () => {
+		const route = deliveryRoute(false);
+		if (!route) return;
 		for (const { task, settledAt, stale } of completions.takeDeliverable(deps.now())) {
 			try {
 				if (stale) deliverStale(task, settledAt);
-				else deliver(task);
+				else deliver(task, route);
 			} catch { /* Best-effort delivery: at most once, even if forwarding fails. */ }
 		}
 	};
@@ -643,6 +765,30 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	const flushAll = () => {
 		flushMessages();
 		flushCompletions();
+		// A wake left owed by an earlier held or expired attempt is retried here.
+		requestWake();
+	};
+
+	// Pi still reports compaction while these handlers run (a manual
+	// session_compact, an automatic compaction's session_compact_failed), so
+	// held content is flushed once on the next scheduler tick instead. A parent
+	// still busy then keeps it held for the next boundary; nothing polls.
+	const scheduleBoundaryFlush = () => {
+		if (cancelBoundaryFlush) return;
+		cancelBoundaryFlush = deps.schedule(() => {
+			cancelBoundaryFlush = undefined;
+			flushAll();
+		}, 0);
+	};
+
+	// Session changes discard every pending wake and boundary flush.
+	const resetParentDelivery = (ctx: ExtensionContext | undefined) => {
+		parentCtx = ctx;
+		parentRunActive = false;
+		wakeOwed = false;
+		endPromptStart();
+		cancelBoundaryFlush?.();
+		cancelBoundaryFlush = undefined;
 	};
 
 	// A completion settles into our queue. An idle parent flushes right away so
@@ -662,15 +808,33 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// a final `turn_end` (an aborted run, or the host's early post-run return
 	// when a run produced no assistant message; the host compensates via
 	// hasQueuedMessages() + continue(), so steering there is still bounded).
-	// `agent_settled` is the final idle boundary after retries — normally a
-	// no-op safety net, since anything enqueued while idle flushes right away.
-	pi.on("agent_start", () => { activeAgentRuns += 1; });
+	// `agent_settled` is the final idle boundary after retries: it ends the
+	// host run and flushes anything held, including content held while a
+	// compaction ran inside or right before the run. `before_agent_start`
+	// marks a prompt that is about to start a run, and the compaction events
+	// release content held while the parent compacted without a run.
+	pi.on("before_agent_start", () => {
+		if (!parentRunActive) beginPromptStart();
+	});
+	pi.on("agent_start", () => {
+		activeAgentRuns += 1;
+		parentRunActive = true;
+		// The run carries everything stored while the parent was idle.
+		wakeOwed = false;
+		endPromptStart();
+	});
 	pi.on("agent_end", () => {
 		activeAgentRuns = Math.max(0, activeAgentRuns - 1);
 		flushAll();
 	});
-	pi.on("agent_settled", () => flushAll());
+	pi.on("agent_settled", () => {
+		parentRunActive = false;
+		endPromptStart();
+		flushAll();
+	});
 	pi.on("turn_end", () => flushAll());
+	pi.on("session_compact", scheduleBoundaryFlush);
+	pi.on("session_compact_failed", scheduleBoundaryFlush);
 
 	const runner = new AgentRunner(store, loadAgentsConfig({ cwd: process.cwd(), home: deps.home, agentHome }), deps, {
 		askUser: (_taskId, ask, raw) => answerThroughUi(ui, ask, raw),
@@ -1501,6 +1665,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// queue so nothing pending from another session can replay here.
 		completions.dropAll();
 		messages.dropAll();
+		resetParentDelivery(ctx);
 		presence?.dispose();
 		registryFor(ctx);
 		showWidget(ctx);
@@ -1550,6 +1715,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		completions.dropAll();
 		messages.dropAll();
 		activeAgentRuns = 0;
+		resetParentDelivery(undefined);
 		presence?.dispose();
 		presence = undefined;
 		rpcActivityPublisher?.stop();

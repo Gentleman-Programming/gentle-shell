@@ -42,7 +42,7 @@ test("legacy hosts without an event bus retain command registration but no menu 
 	const commands: string[] = [];
 	const pi = { registerCommand: (name: string) => commands.push(name) } as unknown as ExtensionAPI;
 	assert.ok(registerYoloSessionPolicy(pi, {}));
-	assert.deepEqual(commands, ["yolo"]);
+	assert.deepEqual(commands, ["gentle:yolo"], "bare yolo command is not registered");
 	assert.equal(await discoverYoloUiAdapter(pi, {} as ExtensionContext), undefined);
 });
 

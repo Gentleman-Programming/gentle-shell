@@ -1371,7 +1371,7 @@ test("guarded command confirmation emits a generic correlated permission lifecyc
 		registerCommand() {},
 		registerTool() {},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	createGentleAiExtension({ processEnv: { GENTLE_PI_AGENTS_CHILD: "0" }, nativeReviewCli: null })(pi);
 	const toolCall = handlers.get("tool_call");
 	assert.equal(typeof toolCall, "function");
 	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-permission-request-"));
@@ -1506,7 +1506,7 @@ test("concurrent guarded confirmations coalesce the Herdr lifecycle per extensio
 			registerCommand() {},
 			registerTool() {},
 		} as unknown as ExtensionAPI;
-		createGentleAiExtension({ nativeReviewCli: null })(pi);
+		createGentleAiExtension({ processEnv: { GENTLE_PI_AGENTS_CHILD: "0" }, nativeReviewCli: null })(pi);
 		return { handlers, emitted, confirmations };
 	};
 	const first = createHarness();
@@ -1671,7 +1671,7 @@ test("Herdr preserves the initial label and balanced edges across overlapping so
 			registerCommand() {},
 			registerTool() {},
 		} as unknown as ExtensionAPI;
-		createGentleAiExtension({ nativeReviewCli: null })(pi);
+		createGentleAiExtension({ processEnv: { GENTLE_PI_AGENTS_CHILD: "0" }, nativeReviewCli: null })(pi);
 		const context = {
 			cwd: process.cwd(),
 			hasUI: true,
@@ -1767,7 +1767,7 @@ test("closed choice blockers retain the visible choice label through guarded-con
 		registerCommand() {},
 		registerTool() {},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	createGentleAiExtension({ processEnv: { GENTLE_PI_AGENTS_CHILD: "0" }, nativeReviewCli: null })(pi);
 	assert.equal(eventHandlers.has("gentle-pi:ask-user-choice:blocked"), true);
 
 	for (const malformed of [null, [], {}, { active: "true" }]) {
@@ -1824,7 +1824,7 @@ test("permission lifecycle is inactive for unguarded and headless commands", asy
 		registerCommand() {},
 		registerTool() {},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	createGentleAiExtension({ processEnv: { GENTLE_PI_AGENTS_CHILD: "0" }, nativeReviewCli: null })(pi);
 	const toolCall = handlers.get("tool_call");
 	assert.equal(typeof toolCall, "function");
 	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-permission-headless-"));

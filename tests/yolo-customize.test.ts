@@ -78,7 +78,7 @@ function fixture(t: test.TestContext, order = "owner-first", env: NodeJS.Process
 	return {
 		pi, ctx, home, events, notices, statuses, widgets, snapshot, controller: () => controller!, renders: () => renders,
 		setSessionId: (id: string) => { sessionId = id; }, view: () => { assert.ok(view); return view; },
-		async command(args: string) { await commands.get("yolo")!.handler(args, ctx); },
+		async command(args: string) { await commands.get("gentle:yolo")!.handler(args, ctx); },
 		async apply(data: string) {
 			assert.ok(observeActionReady && view, "action-ready observation is enabled");
 			let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -126,9 +126,9 @@ for (const order of ["owner-first", "shell-first"]) test(`Editor YOLO menu and s
 	await h.apply("\r");
 	assert.match(text(view), /YOLO: ON · session only/);
 	assert.equal(h.statuses.get(yolo.YOLO_STATUS_KEY), yolo.YOLO_STATUS_TEXT);
-	await h.command("off"); await settle(() => /YOLO: OFF/.test(text(view)));
+	await h.command("disable"); await settle(() => /YOLO: OFF/.test(text(view)));
 	assert.equal(h.widgets.get(yolo.YOLO_STATUS_KEY), undefined);
-	await h.command("on"); await settle(() => /YOLO: ON/.test(text(view)));
+	await h.command("enable"); await settle(() => /YOLO: ON/.test(text(view)));
 	await h.apply(" "); assert.match(text(view), /YOLO: OFF/);
 	assert.equal(await h.controller().active(h.ctx), false);
 	assert.deepEqual(h.snapshot(), before, "YOLO never writes configuration or profile snapshots");
@@ -150,7 +150,7 @@ for (const invalid of [false, true]) test(`absent/invalid owner is unavailable, 
 });
 
 test("scope revocation refreshes without notification recursion or Git during render", async t => {
-	const h = fixture(t); await h.command("on");
+	const h = fixture(t); await h.command("enable");
 	const open = await h.open(); const view = h.view(); selectYolo(view);
 	assert.match(text(view), /YOLO: ON/);
 	const count = h.renders();
@@ -182,7 +182,7 @@ test("closed/replaced/reloaded menus cancel pending action and suppress late ren
 
 test("off wins over pending menu on; child/headless/RPC cannot acquire adapter authority", async t => {
 	const h = fixture(t); const open = await h.open(); selectYolo(h.view());
-	h.view().handleInput("\r"); await h.command("off");
+	h.view().handleInput("\r"); await h.command("disable");
 	await new Promise(resolve => setTimeout(resolve, 50));
 	assert.equal(await h.controller().active(h.ctx), false);
 	open.close(); await open.result;
@@ -204,7 +204,7 @@ test("closing a completed activation keeps permission but removes menu observers
 	open.close(); await open.result;
 	const renders = h.renders();
 	assert.equal(await h.controller().active(h.ctx), true);
-	await h.command("off"); await new Promise(resolve => setTimeout(resolve, 30));
+	await h.command("disable"); await new Promise(resolve => setTimeout(resolve, 30));
 	view.handleInput("\r"); assert.deepEqual(view.render(140), []);
 	assert.equal(h.renders(), renders);
 	assert.equal(await h.controller().active(h.ctx), false);
@@ -217,12 +217,12 @@ test("adapter callbacks fail closed after reset, disposal and context invalidati
 		assert.equal(await adapter.read(), "OFF");
 		let changes = 0;
 		const unobserve = adapter.observe(() => { changes++; });
-		await h.command("on"); assert.equal(await adapter.read(), "ON");
+		await h.command("enable"); assert.equal(await adapter.read(), "ON");
 		const observed = changes;
 		for (let i = 0; i < 3; i++) await adapter.read();
 		assert.equal(changes, observed, "unchanged reads never notify");
 		if (reason === "reset") h.controller().reset(h.ctx);
-		if (reason === "dispose") { adapter.dispose(); await h.command("off"); }
+		if (reason === "dispose") { adapter.dispose(); await h.command("disable"); }
 		if (reason === "session") h.setSessionId("new-session");
 		if (reason === "runtime") Object.defineProperty(h.ctx, "sessionManager", { get() { throw new Error("inactive SDK context"); } });
 		assert.equal(await adapter.read(), "UNAVAILABLE");

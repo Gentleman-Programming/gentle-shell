@@ -23,12 +23,13 @@ test("complete Gentle AI extension registers and executes YOLO through the actua
 	runner.setUIContext({ notify() {}, setStatus: (key: string, text?: string) => statuses.set(key, text), setWidget() {}, getAllThemes: () => [{ name: "test" }] } as unknown as ExtensionUIContext, "tui");
 	runner.bindCommandContext();
 	assert.equal(runner.getAllRegisteredTools().some(({ definition }) => definition.name.includes("yolo")), false);
-	const command = runner.getCommand("yolo"); assert.ok(command);
-	await command.handler("on", runner.createCommandContext());
+	assert.equal(runner.getCommand("yolo"), undefined, "bare yolo command is not registered");
+	const command = runner.getCommand("gentle:yolo"); assert.ok(command);
+	await command.handler("enable", runner.createCommandContext());
 	assert.equal(statuses.get(YOLO_STATUS_KEY), YOLO_STATUS_TEXT);
-	await command.handler("off", runner.createCommandContext());
+	await command.handler("disable", runner.createCommandContext());
 	assert.equal(statuses.get(YOLO_STATUS_KEY), undefined);
-	await command.handler("on", runner.createCommandContext());
+	await command.handler("enable", runner.createCommandContext());
 	await runner.emit({ type: "session_shutdown", reason: "reload" });
 	assert.equal(statuses.get(YOLO_STATUS_KEY), undefined, "production shutdown hook resets even on reload");
 	await command.handler("status", runner.createCommandContext());
@@ -64,13 +65,13 @@ test("SDK-loaded YOLO command resets across actual runner lifecycle dispatch and
 	};
 	let runner = await load();
 	const command = async (args: string) => {
-		const registered = runner.getCommand("yolo"); assert.ok(registered);
+		const registered = runner.getCommand("gentle:yolo"); assert.ok(registered);
 		await registered.handler(args, runner.createCommandContext());
 	};
 	await runner.emit({ type: "session_start", reason: "startup" });
 	await command("status"); assert.equal(statuses.get(YOLO_STATUS_KEY), undefined);
 	for (const reason of ["reload", "new", "resume", "fork", "quit"] as const) {
-		await command("on"); assert.equal(statuses.get(YOLO_STATUS_KEY), YOLO_STATUS_TEXT);
+		await command("enable"); assert.equal(statuses.get(YOLO_STATUS_KEY), YOLO_STATUS_TEXT);
 		await runner.emit({ type: "session_shutdown", reason });
 		assert.equal(statuses.get(YOLO_STATUS_KEY), undefined);
 		assert.equal(widgets.get(YOLO_STATUS_KEY), undefined);
@@ -79,11 +80,11 @@ test("SDK-loaded YOLO command resets across actual runner lifecycle dispatch and
 		if (reason !== "quit") await runner.emit({ type: "session_start", reason });
 		await command("status"); assert.equal(statuses.get(YOLO_STATUS_KEY), undefined);
 	}
-	await command("on");
+	await command("enable");
 	manager.newSession();
 	await command("status"); assert.equal(statuses.get(YOLO_STATUS_KEY), undefined, "live SDK session ID replacement revokes without relying on an event");
 	runner.setUIContext(ui, "rpc");
-	await command("on"); assert.equal(statuses.get(YOLO_STATUS_KEY), undefined);
+	await command("enable"); assert.equal(statuses.get(YOLO_STATUS_KEY), undefined);
 });
 
 for (const shellFirst of [false, true]) test(`SDK loads both extensions on one bus and drives real customize view (shell first: ${shellFirst})`, async t => {
@@ -125,7 +126,7 @@ for (const shellFirst of [false, true]) test(`SDK loads both extensions on one b
 	// The compatibility SDK omits mode; annotate the transport we explicitly
 	// bound above. All other getters retain real SDK invalidation semantics.
 	if (ctx.mode === undefined) Object.defineProperty(ctx, "mode", { value: "tui" });
-	const command = runner.getCommand("yolo")!, customize = runner.getCommand("gentle:customize")!;
+	const command = runner.getCommand("gentle:yolo")!, customize = runner.getCommand("gentle:customize")!;
 	assert.ok(command); assert.ok(customize);
 	const menu = customize.handler("", ctx);
 	await ready; assert.ok(view);
@@ -138,7 +139,7 @@ for (const shellFirst of [false, true]) test(`SDK loads both extensions on one b
 	assert.equal(statuses.get(YOLO_STATUS_KEY), YOLO_STATUS_TEXT);
 	await new Promise(resolve => setTimeout(resolve, 30));
 	assert.match(text(), /YOLO: ON/);
-	await command.handler("off", ctx);
+	await command.handler("disable", ctx);
 	await new Promise(resolve => setTimeout(resolve, 30));
 	assert.match(text(), /YOLO: OFF/);
 	for (const width of [1, 20, 45, 60, 140]) assert.ok(view.render(width).every(line => visibleWidth(line) <= width));

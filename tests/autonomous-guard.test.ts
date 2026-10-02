@@ -751,6 +751,29 @@ function makeStubBashPolicy(
 	};
 }
 
+test("evaluateBashPolicies: forwards yoloActive to every policy", async () => {
+	const seen: boolean[] = [];
+	const seam = makeBashPolicySeamHarness("/stub-cwd");
+	const result = await __testing.evaluateBashPolicies(
+		"git push",
+		seam.ctx,
+		seam.events,
+		seam.herdrLifecycle,
+		true,
+		[
+			{
+				name: "yolo-recorder",
+				async evaluate(_command, _ctx, _events, _herdrLifecycle, yoloActive) {
+					seen.push(yoloActive);
+					return undefined;
+				},
+			},
+		],
+	);
+	assert.equal(result, undefined);
+	assert.deepEqual(seen, [true], "the seam must thread yoloActive into policies");
+});
+
 test('evaluateBashPolicies: ordered policy list is exactly ["runtime-guardrails"]', () => {
 	assert.deepEqual(
 		__testing.BASH_COMMAND_POLICIES.map((policy) => policy.name),

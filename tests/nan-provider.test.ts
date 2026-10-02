@@ -215,7 +215,7 @@ test("adjustable models map Pi thinking levels to accepted NaN efforts", () => {
 
 test("fixed-depth models expose only medium and clamp unsupported thinking levels", () => {
 	const models = createNativeProvider().getModels();
-	for (const id of ["deepseek-v4-flash", "qwen3.8-flash", "mimo-v2.6-flash"]) {
+	for (const id of ["qwen3.8-flash", "mimo-v2.6-flash"]) {
 		const model = models.find((model) => model.id === id);
 		assert.ok(model);
 		assert.deepEqual(model.thinkingLevelMap, {
@@ -225,6 +225,20 @@ test("fixed-depth models expose only medium and clamp unsupported thinking level
 		for (const level of ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const) {
 			assert.equal(clampThinkingLevel(model, level), "medium");
 		}
+	}
+});
+
+test("deepseek-v4-flash exposes off mapped to NaN's disabling effort while keeping fixed depth", () => {
+	const models = createNativeProvider().getModels();
+	const model = models.find((model) => model.id === "deepseek-v4-flash");
+	assert.ok(model);
+	assert.deepEqual(model.thinkingLevelMap, {
+		off: "none", minimal: null, low: null, high: null, xhigh: null, max: null,
+	});
+	assert.deepEqual(getSupportedThinkingLevels(model), ["off", "medium"]);
+	assert.equal(clampThinkingLevel(model, "off"), "off");
+	for (const level of ["minimal", "low", "high", "xhigh", "max"] as const) {
+		assert.equal(clampThinkingLevel(model, level), "medium");
 	}
 });
 

@@ -25,7 +25,13 @@ const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 // Pi requires explicit max mappings to offer that level; missing ordinary levels pass through.
 const FIXED_THINKING_LEVEL_MAP: NanChatModelConfig["thinkingLevelMap"] = {
 	off: null, minimal: null, low: null, high: null, xhigh: null, max: null,
-}; // Only medium remains usable: depth is fixed and reasoning cannot be disabled.
+}; // Only medium remains usable: depth is fixed and reasoning cannot be disabled or turned off.
+
+// DeepSeek V4 Flash keeps its fixed depth for enabled levels, but its gateway
+// accepts reasoning_effort "none", which deterministically disables reasoning.
+const DEEPSEEK_V4_FLASH_THINKING_LEVEL_MAP: NanChatModelConfig["thinkingLevelMap"] = {
+	off: "none", minimal: null, low: null, high: null, xhigh: null, max: null,
+};
 
 const CHAT_MODELS: NanChatModelConfig[] = ([
 	{
@@ -34,7 +40,7 @@ const CHAT_MODELS: NanChatModelConfig[] = ([
 	},
 	{
 		id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", input: ["text", "image"], contextWindow: 1_000_000,
-		thinkingLevelMap: FIXED_THINKING_LEVEL_MAP, maxTokens: 16_384,
+		thinkingLevelMap: DEEPSEEK_V4_FLASH_THINKING_LEVEL_MAP, maxTokens: 16_384,
 	},
 	{
 		id: "glm5.3-flash", name: "GLM 5.3 Flash", input: ["text", "image"], contextWindow: 1_000_000,

@@ -5,7 +5,7 @@
 // another.
 
 const COLLAPSE_KEY_DEFAULT = "ctrl+shift+a";
-const VIEW_KEY_DEFAULT = "alt+a";
+const VIEW_KEY_DEFAULT = "alt+j";
 const STOP_KEY_DEFAULT = "alt+s";
 
 export function agentsViewKey(env: NodeJS.ProcessEnv = process.env): string | undefined {

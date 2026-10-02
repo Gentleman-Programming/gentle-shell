@@ -154,7 +154,7 @@ You should not have to run `git status` to find out what your agent did. Gentle 
 
 <img width="100%" src="docs/assets/features/agents-view.png" alt="Gentle Agents overlay showing a completed subagent thread with model, tokens, and elapsed columns, and the structured handoff it returned">
 
-Delegating work should not mean losing it. Every subagent runs as its own process with a live card above the editor — model, tokens, cost, elapsed — and `alt+a` opens the full view with retained threads, stop controls, and history restored on resume. A child can ask you a question as an ordinary dialog, and background results come back as cards that start a new turn — nothing polls.
+Delegating work should not mean losing it. Every subagent runs as its own process with a live card above the editor — model, tokens, cost, elapsed — and `alt+j` opens the full view with retained threads, stop controls, and history restored on resume. A child can ask you a question as an ordinary dialog, and background results come back as cards that start a new turn — nothing polls.
 
 **[Docs →](docs/gentle-shell.md#gentle-agents)**
 

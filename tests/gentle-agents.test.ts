@@ -2971,7 +2971,7 @@ test("agentsEnabled and agentsCollapseKey read their flags and stay off inside a
 	assert.equal(agentsEnabled({ GENTLE_PI_AGENTS_CHILD: "1" }), false);
 	assert.equal(agentsCollapseKey({}), "ctrl+shift+a");
 	assert.equal(agentsCollapseKey({ GENTLE_PI_AGENTS_KEY: "off" }), undefined);
-	assert.equal(agentsViewKey({}), "alt+a");
+	assert.equal(agentsViewKey({}), "alt+j");
 	assert.equal(agentsViewKey({ GENTLE_PI_AGENTS_VIEW_KEY: "off" }), undefined);
 	assert.equal(agentsStopKey({}), "alt+s");
 	assert.equal(agentsStopKey({ GENTLE_PI_AGENTS_STOP_KEY: "" }), undefined);
@@ -2980,6 +2980,37 @@ test("agentsEnabled and agentsCollapseKey read their flags and stay off inside a
 	gentleAgents(off.pi, { GENTLE_PI_AGENTS: "0" });
 	assert.equal(off.tools.size, 0);
 });
+
+test("agents view registers Alt+J by default without claiming Alt+A selection", () => {
+	const { pi, shortcuts } = fakePi();
+	gentleAgents(pi, {}, deps().deps);
+	assert.ok(shortcuts.has("alt+j"));
+	assert.equal(shortcuts.has("alt+a"), false);
+	assert.ok(shortcuts.has("alt+s"));
+	assert.ok(shortcuts.has("ctrl+shift+a"));
+});
+
+for (const [value, expected] of [
+	["alt+a", "alt+a"],
+	["  alt+k  ", "alt+k"],
+	["off", undefined],
+	["  OfF  ", undefined],
+	["", undefined],
+	["   ", undefined],
+] as const) {
+	test(`agents view override ${JSON.stringify(value)} preserves rebinding or disabling`, () => {
+		const env = { GENTLE_PI_AGENTS_VIEW_KEY: value };
+		assert.equal(agentsViewKey(env), expected);
+		const { pi, shortcuts } = fakePi();
+		gentleAgents(pi, env, deps().deps);
+		assert.equal(shortcuts.has("alt+j"), false);
+		assert.equal(shortcuts.has("alt+a"), expected === "alt+a");
+		if (expected !== undefined) assert.ok(shortcuts.has(expected));
+		assert.equal(shortcuts.size, expected === undefined ? 2 : 3);
+		assert.ok(shortcuts.has("alt+s"));
+		assert.ok(shortcuts.has("ctrl+shift+a"));
+	});
+}
 
 test("while pi-subagents-j0k3r is still installed the tools stay unregistered and the user is told how to switch", async () => {
 	const legacyHome = join(root, "legacy-home");
@@ -3429,7 +3460,7 @@ test("a task that finishes live stays visible as history, in both scopes, and it
 
 	// Back in the session where it actually finished, it stays listed as
 	// history -- in the current-session view and under "all sessions" too.
-	assert.ok(commands.has("gentle:agents") && shortcuts.has("alt+a"));
+	assert.ok(commands.has("gentle:agents") && shortcuts.has("alt+j"));
 	const opened = commands.get("gentle:agents")!.handler("", ctx);
 	for (let attempt = 0; attempt < 40 && overlays.length === 0; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 25));
 	const overlay = overlays[0];
@@ -3719,7 +3750,7 @@ test("the card caps its rows to the terminal height and says how many tasks are 
 	const card = widget()!;
 	assert.equal(card.length, 8, "a 20-row terminal gets five card rows (four tasks and the overflow line) inside the frame, then the spacer");
 	assert.match(card[0], /2 active · 4 queued/);
-	assert.match(card[5], /^│ … 2 more · alt\+a to view +│$/);
+	assert.match(card[5], /^│ … 2 more · alt\+j to view +│$/);
 });
 
 test("the production overlay reads terminal rows at render time without a minimum-height override", async () => {

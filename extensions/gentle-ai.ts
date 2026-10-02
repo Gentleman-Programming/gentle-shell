@@ -5514,6 +5514,7 @@ async function executeNativeRecoveryRoute(
 	cwd: string,
 	nativeReviewCli: NativeReviewCli | null,
 	signal: AbortSignal | undefined,
+	targetSelectors: { baseRef?: string; committedOnly?: boolean } = {},
 ): Promise<Record<string, unknown>> {
 	const nativeCommand = `review ${nativeOperation}`;
 	const method = nativeOperation === "reclaim" ? nativeReviewCli?.reclaim : nativeReviewCli?.recover;
@@ -5550,6 +5551,7 @@ async function executeNativeRecoveryRoute(
 			? await nativeReviewCli.reclaim!({ cwd, lineage: String(input.lineage), actor: String(input.actor), reason: String(input.reason), ...(signal === undefined ? {} : { signal }) })
 			: await nativeReviewCli.recover!({
 				cwd,
+				...targetSelectors,
 				predecessorLineage: String(input.predecessorLineage),
 				expectedPredecessorRevision: String(input.expectedPredecessorRevision),
 				successorLineage: String(input.successorLineage),
@@ -8021,7 +8023,7 @@ async function executeReviewControllerOperation(
 		// A stuck legacy mutation lock is an incomplete in-flight entry; the
 		// audited native quarantine owns its removal. Lock recovery is not a
 		// destructive authority reset, so pending authorizations survive.
-		return await executeNativeRecoveryRoute(parameters.operation, "reclaim", input, defaultCwd, nativeReviewCli, undefined, signal);
+		return await executeNativeRecoveryRoute(parameters.operation, "reclaim", input, defaultCwd, nativeReviewCli, signal);
 	}
 	if (parameters.operation === REVIEW_CONTROLLER_OPERATION.RECOVER) {
 		const input = parseControllerJson(requiredControllerString(parameters, "input"), parameters.operation);
@@ -8115,7 +8117,7 @@ async function executeReviewControllerOperation(
 				next_action: "reinspect-and-reauthorize-recovery",
 			};
 		}
-		return await executeNativeRecoveryRoute(parameters.operation, "recover", { ...input, disposition: status.actionDisposition, maintainerAuthorization: recoverAuthorization }, defaultCwd, nativeReviewCli, signal);
+		return await executeNativeRecoveryRoute(parameters.operation, "recover", { ...input, disposition: status.actionDisposition, maintainerAuthorization: recoverAuthorization }, defaultCwd, nativeReviewCli, signal, statusRequest.baseRef === undefined ? {} : { baseRef: statusRequest.baseRef, committedOnly: true });
 	}
 	if (parameters.operation === REVIEW_CONTROLLER_OPERATION.RESET) {
 		const input = parseControllerJson(requiredControllerString(parameters, "input"), parameters.operation);

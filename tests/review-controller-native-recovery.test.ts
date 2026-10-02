@@ -238,6 +238,22 @@ test("native recovery operations reject malformed canonical inputs before a proc
 	assert.equal(queue.calls.length, 0);
 });
 
+test("native RECOVER rejects malformed or unacknowledged committed selectors before launch", async () => {
+	const queue = queuedAdapter([]);
+	const request = { cwd: "/repo", predecessorLineage: "predecessor", expectedPredecessorRevision: "revision-1", successorLineage: "successor", disposition: "invalidated" as const, actor: "maintainer", reason: "recover authority" };
+	for (const selectors of [
+		{ baseRef: " base", committedOnly: true },
+		{ baseRef: "base\u0000", committedOnly: true },
+		{ baseRef: "base" },
+		{ baseRef: "base", committedOnly: false },
+		{ committedOnly: true },
+		{ committedOnly: false },
+	]) {
+		await assert.rejects(() => client(queue.adapter).recover({ ...request, ...selectors }), /Native RECOVER (baseRef|committedOnly)/);
+	}
+	assert.equal(queue.calls.length, 0);
+});
+
 test("partial maintenance failures preserve the provider audit record and unknown mutation outcome", async () => {
 	const request = {
 		cwd: "/repo", lineage: "abandoned", expectedRevision: "revision-1", snapshotIdentity: SHA,
@@ -395,6 +411,35 @@ test("RECOVER derives a provider-bound authorization, rechecks it, and fails clo
 	} as unknown as import("../lib/native-review-cli.ts").NativeReviewCli, undefined, undefined, interactiveContext(true));
 	assert.equal(changed.outcome, "native-recovery-authority-changed");
 	assert.equal(changed.mutation_outcome, "none");
+});
+
+test("approved RECOVER preserves the frozen committed-range selector from both STATUS reads", async () => {
+	const baseCommit = "1".repeat(40);
+	const providerBaseTree = "2".repeat(40);
+	const statuses: Array<Record<string, unknown>> = [];
+	const queue = queuedAdapter([{ stdout: JSON.stringify({ schema: "gentle-ai.review-recovery/v1" }) }]);
+	const review = client(queue.adapter);
+	const native = {
+		targetStatus: async (request: Record<string, unknown>) => { statuses.push(request); return recoveryStatus(); },
+		recover: review.recover.bind(review),
+	} as unknown as import("../lib/native-review-cli.ts").NativeReviewCli;
+	const views = {
+		hasProjection: (lineage: string, cwd: string) => lineage === "predecessor" && cwd === process.cwd(),
+		resolveProjection: () => ({ committedOnly: true, baseCommit, providerBaseTree }),
+	} as unknown as NonNullable<Parameters<typeof __testing.executeReviewControllerOperation>[4]>;
+	const input = { predecessorLineage: "predecessor", expectedPredecessorRevision: "revision-1", successorLineage: "successor", disposition: "invalidated", actor: "maintainer", reason: "recover authority" };
+	const result = await __testing.executeReviewControllerOperation({ operation: "recover", input: JSON.stringify(input) }, process.cwd(), native, undefined, views, interactiveContext(true));
+	assert.equal(result.mutation_outcome, "committed");
+	assert.equal(statuses.length, 2);
+	for (const status of statuses) {
+		assert.equal(status.baseRef, providerBaseTree);
+		assert.equal(status.committedOnly, true);
+	}
+	const args = queue.calls[0]!.arguments;
+	assert.ok(args.includes("--base-ref"), "RECOVER must carry the STATUS base selector");
+	assert.equal(args[args.indexOf("--base-ref") + 1], providerBaseTree);
+	assert.ok(args.includes("--committed-only"));
+	assert.ok(args.includes("--maintainer-authorization"));
 });
 
 test("RECOVER, RESET, and RECONCILE keep provider inputs and failures authority-scoped", async () => {

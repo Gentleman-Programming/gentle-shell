@@ -209,6 +209,28 @@ test("session start defers the active-override announcement to the shell card", 
 	}
 });
 
+test("session start stays silent in headless contexts even with an active override", async () => {
+	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
+	const previousShell = process.env.GENTLE_PI_SHELL;
+	process.env.GENTLE_PI_AGENT_HOME = await mkdtemp(join(tmpdir(), "gentle-pi-dev-agent-home-"));
+	delete process.env.GENTLE_PI_SHELL;
+	try {
+		await withDevOverride(async () => {
+			const { sessionStart } = await sessionStartHarness();
+			const cwd = await mkdtemp(join(tmpdir(), "gentle-pi-dev-cwd-"));
+			const notifications: Array<{ message: string; severity: string }> = [];
+			const headless = { ...contextFor(cwd, notifications), hasUI: false } as unknown as ExtensionContext;
+			await sessionStart({}, headless);
+			assert.equal(notifications.length, 0, JSON.stringify(notifications));
+		});
+	} finally {
+		if (previousAgentHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
+		else process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
+		if (previousShell === undefined) delete process.env.GENTLE_PI_SHELL;
+		else process.env.GENTLE_PI_SHELL = previousShell;
+	}
+});
+
 test("session start keeps the loud toast as fallback when the shell card is unavailable", async () => {
 	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
 	const previousShell = process.env.GENTLE_PI_SHELL;

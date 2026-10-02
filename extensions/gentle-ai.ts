@@ -9366,12 +9366,13 @@ function createGentleAiExtensionForTesting(
 		// Loud, every session: an active dev-binary override means this session
 		// runs an unpinned gentle-ai. One visible startup notice: the gentle-shell
 		// 🌹 card owns the announcement when it can render (shell enabled with UI);
-		// this toast is only the fallback for when the card is unavailable.
-		const devBinaryCardCoversNotice = ctx.hasUI && shellEnabled();
+		// this toast is only the fallback for when the card is unavailable. The
+		// hasUI guard stays: headless contexts have no toast to show.
+		const devBinaryToastFallback = ctx.hasUI && !shellEnabled();
 		try {
 			const devBinary = await describeDevBinaryOverride();
-			if (!devBinaryCardCoversNotice && devBinary.state === "active") ctx.ui.notify(devBinary.line, "warning");
-			if (!devBinaryCardCoversNotice && devBinary.state === "invalid") ctx.ui.notify(devBinary.line, "error");
+			if (devBinaryToastFallback && devBinary.state === "active") ctx.ui.notify(devBinary.line, "warning");
+			if (devBinaryToastFallback && devBinary.state === "invalid") ctx.ui.notify(devBinary.line, "error");
 		} catch (error) {
 			if (ctx.hasUI) ctx.ui.notify(`Gentle AI dev binary override check failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
 		}

@@ -741,7 +741,7 @@ function makeStubBashPolicy(
 	name: string,
 	verdict: { block: true; reason: string } | undefined,
 	calls: string[],
-): NonNullable<BashPolicySeamArgs[4]>[number] {
+): NonNullable<BashPolicySeamArgs[5]>[number] {
 	return {
 		name,
 		async evaluate(_command: string) {
@@ -750,6 +750,29 @@ function makeStubBashPolicy(
 		},
 	};
 }
+
+test("evaluateBashPolicies: forwards yoloActive to every policy", async () => {
+	const seen: boolean[] = [];
+	const seam = makeBashPolicySeamHarness("/stub-cwd");
+	const result = await __testing.evaluateBashPolicies(
+		"git push",
+		seam.ctx,
+		seam.events,
+		seam.herdrLifecycle,
+		true,
+		[
+			{
+				name: "yolo-recorder",
+				async evaluate(_command, _ctx, _events, _herdrLifecycle, yoloActive) {
+					seen.push(yoloActive);
+					return undefined;
+				},
+			},
+		],
+	);
+	assert.equal(result, undefined);
+	assert.deepEqual(seen, [true], "the seam must thread yoloActive into policies");
+});
 
 test('evaluateBashPolicies: ordered policy list is exactly ["runtime-guardrails"]', () => {
 	assert.deepEqual(
@@ -773,6 +796,7 @@ test("evaluateBashPolicies: short-circuits on the first verdict (later policies 
 		seam.ctx,
 		seam.events,
 		seam.herdrLifecycle,
+		false,
 		[
 			makeStubBashPolicy("first", firstVerdict, calls),
 			makeStubBashPolicy(
@@ -798,6 +822,7 @@ test("evaluateBashPolicies: allow verdict from the last policy returns undefined
 		seam.ctx,
 		seam.events,
 		seam.herdrLifecycle,
+		false,
 		[
 			makeStubBashPolicy("first-allow", undefined, calls),
 			makeStubBashPolicy("last-allow", undefined, calls),
@@ -822,6 +847,7 @@ test("evaluateBashPolicies: real runtime-guardrails policy blocks hard-deny comm
 			seam.ctx,
 			seam.events,
 			seam.herdrLifecycle,
+			false,
 		);
 		assert.equal(result?.block, true);
 		assert.match(result?.reason ?? "", /destructive/);
@@ -844,6 +870,7 @@ test("evaluateBashPolicies: real runtime-guardrails policy allows a non-guarded 
 			seam.ctx,
 			seam.events,
 			seam.herdrLifecycle,
+			false,
 		);
 		assert.equal(result, undefined);
 	} finally {

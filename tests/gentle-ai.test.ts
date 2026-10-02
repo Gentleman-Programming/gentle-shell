@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
 import { initTheme } from "@earendil-works/pi-coding-agent";
+import { validateToolArguments } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -969,7 +970,10 @@ test("ordinary START adopts the committed-range selectors the provider just offe
 		targetStatus: async () => offeredCommittedRangeStatus(baseCommit, baseTree, candidateTree),
 		start: async (request: Record<string, unknown>) => { starts.push(request); return startedReviewResult(); },
 	} as unknown as NativeReviewCli;
-	const result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary" }) }, cwd, native);
+	const parameters = validateToolArguments(registeredGentleTools().get("gentle_review"), {
+		type: "toolCall", id: "object-start", name: "gentle_review", arguments: { operation: "start", input: { mode: "ordinary" } },
+	});
+	const result = await __testing.executeReviewControllerOperation(parameters, cwd, native);
 	assert.equal(result.operation, "start");
 	assert.equal(starts.length, 1);
 	assert.equal(starts[0]?.baseRef, baseCommit);

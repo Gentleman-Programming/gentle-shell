@@ -29,6 +29,7 @@ import { listVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
+import { resolveAskPanelPreferences } from "../lib/ask-panel-policy.ts";
 
 
 // Vim fixtures claim the installed pi-tui release, which the adapter gate
@@ -2810,7 +2811,11 @@ function scopedDoubleEscCancelConfigHome(t: { after(callback: () => void): void 
 function findCustomizeRow(ui: FakeUi, label: string, width = 90): boolean {
 	const view = ui.overlayView!;
 	view.handleInput("\x1b[D");
-	for (let category = 0; category < 10; category++) {
+	// The category pane holds one entry per CustomizeCategory. The bound must stay
+	// ahead of that union's size, or a newly inserted category silently hides a row
+	// from every lookup that has to walk past it.
+	const CUSTOMIZE_CATEGORY_SCAN_LIMIT = 14;
+	for (let category = 0; category < CUSTOMIZE_CATEGORY_SCAN_LIMIT; category++) {
 		view.handleInput("\x1b[C");
 		for (let index = 0; index < 35; index++) {
 			if (view.render(width).some((line) => line.includes(`▸ ${label}`))) return true;
@@ -3049,6 +3054,57 @@ test("customize Cards rows refuse to overwrite a malformed preference", async (t
 	assert.ok(ui.notices.some(n => /Cannot update malformed or unreadable card style preference/i.test(n)), ui.notices.join("\n"));
 	assert.equal(readFileSync(join(home, "card-style.json"), "utf8"), "{");
 	assert.equal(cardStyle(), CARD_STYLE.FLOAT);
+	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("customize Ask rows persist both panel preferences and keep the other value", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	assert.deepEqual(resolveAskPanelPreferences({ gentlePiConfigHome: home }).preferences, { indicator: "minimal", defaultState: "expanded" }, "no preference file means the documented defaults");
+	assert.equal(existsSync(join(home, "ask-panel.json")), false, "highlighting never applies");
+	assert.ok(findCustomizeRow(ui, "Ask panel: default state · expanded"));
+	assert.match(ui.overlayView!.render(90).join("\n"), /Ask · 1\/2/);
+	assert.ok(findCustomizeRow(ui, "Ask panel: minimized indicator · minimal"));
+
+	await customizeAction(ui, "Ask panel: default state · expanded");
+	assert.deepEqual(resolveAskPanelPreferences({ gentlePiConfigHome: home }).preferences, { indicator: "minimal", defaultState: "auto" });
+	assert.match(ui.notices.at(-1)!, /Ask panel saved\. Applies to the next questionnaire\./);
+	assert.ok(findCustomizeRow(ui, "Ask panel: default state · auto"), "the row reflects the saved value without reopening the view");
+
+	await customizeAction(ui, "Ask panel: default state · auto");
+	assert.deepEqual(resolveAskPanelPreferences({ gentlePiConfigHome: home }).preferences, { indicator: "minimal", defaultState: "collapsed" });
+	assert.ok(findCustomizeRow(ui, "Ask panel: default state · collapsed"));
+
+	await customizeAction(ui, "Ask panel: minimized indicator · minimal");
+	assert.deepEqual(resolveAskPanelPreferences({ gentlePiConfigHome: home }).preferences, { indicator: "tabbed", defaultState: "collapsed" }, "the default state the other row set is preserved");
+	assert.match(ui.notices.at(-1)!, /Ask panel saved\. Applies to the next questionnaire\./);
+	assert.ok(findCustomizeRow(ui, "Ask panel: minimized indicator · tabbed"));
+	assert.match(ui.overlayView!.render(90).join("\n"), /Preview · Ask panel/);
+
+	await customizeAction(ui, "Ask panel: minimized indicator · tabbed");
+	assert.deepEqual(resolveAskPanelPreferences({ gentlePiConfigHome: home }).preferences, { indicator: "answers", defaultState: "collapsed" });
+	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("customize Ask rows refuse to overwrite a malformed preference and report it", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	writeFileSync(join(home, "ask-panel.json"), "{");
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	assert.deepEqual(resolveAskPanelPreferences({ gentlePiConfigHome: home }), { preferences: { indicator: "minimal", defaultState: "expanded" }, source: "global_file", malformed: true, globalFile: join(home, "ask-panel.json") });
+	assert.ok(findCustomizeRow(ui, "Ask panel: default state · expanded"));
+	assert.match(ui.overlayView!.render(90).join("\n"), /malformed or unreadable file/i);
+	ui.overlayView!.handleInput("\r");
+	for (let attempt = 0; attempt < 100 && !ui.notices.some(n => /malformed or unreadable ask panel/i.test(n)); attempt++) await new Promise<void>((resolve) => setTimeout(resolve, 5));
+	assert.ok(ui.notices.some(n => /Cannot update malformed or unreadable ask panel preference/i.test(n)), ui.notices.join("\n"));
+	assert.equal(readFileSync(join(home, "ask-panel.json"), "utf8"), "{", "a malformed file is never overwritten");
 	ui.overlayView!.handleInput("\x1b"); await pending;
 });
 

@@ -659,10 +659,11 @@ It scans common roots such as:
 
 Behavior:
 
-- `.atl/` is added to `.gitignore` when needed;
-- the registry refreshes on session start;
+- `.atl/.gitignore` receives a `*` rule when needed; the root `.gitignore` is unchanged;
+- the registry refreshes on session start, but automatic writes (including watcher refreshes) preserve Git-tracked targets;
+- skipped writes warn with the protected paths and `/skill-registry:refresh` as the deliberate regeneration path; Git detection failures skip automatic writes rather than assuming files are untracked;
 - startup refresh is skipped when Pi starts with `--no-skills` / `-ns`, `--no-skill-registry`, or `GENTLE_PI_NO_SKILL_REGISTRY=1`;
-- `/skill-registry:refresh` forces regeneration;
+- `/skill-registry:refresh` intentionally regenerates the registry and cache and updates the child ignore, even when tracked; review the resulting Git diff;
 - a best-effort watcher refreshes when skill files change;
 - the registry indexes skill names, full descriptions, scope, and exact `SKILL.md` paths without copying skill body rules.
 

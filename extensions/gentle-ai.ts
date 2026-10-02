@@ -5540,6 +5540,7 @@ async function executeNativeAbandon(
 	} catch (error) {
 		return nativeOperationFailure(operation, error);
 	}
+	if (signal?.aborted) throw reviewCancellation("Review controller operation was cancelled");
 	const reconfirmed = nativeAbandonCandidate(recheck, request.lineage);
 	if (reconfirmed === undefined
 		|| reconfirmed.revision !== request.expectedRevision
@@ -5548,6 +5549,7 @@ async function executeNativeAbandon(
 		|| !sameOrderedLensList(reconfirmed.discardedWork!.capturedLensResults, request.capturedLensResults)) {
 		return { operation, status: "blocked", outcome: "native-abandon-authority-changed", native_operation: nativeOperation, mutation_performed: false, mutation_outcome: "none", next_action: "inspect-and-restart-abandon-from-fresh-inventory" };
 	}
+	if (signal?.aborted) throw reviewCancellation("Review controller operation was cancelled");
 	try {
 		const result = await nativeReviewCli.abandon({ ...request, maintainerAuthorization: authorization, ...(signal === undefined ? {} : { signal }) });
 		return { operation, native_operation: nativeOperation, result: result.record, mutation_performed: true, mutation_outcome: "committed", next_action: "inspect" };

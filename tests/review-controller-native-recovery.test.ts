@@ -682,6 +682,35 @@ test("registered ABANDON fails closed on cancellation at the inventory and appro
 	assert.equal(queue.calls.length, 1);
 });
 
+test("registered ABANDON cancels during the second inventory without dispatching abandon argv", async () => {
+	const cancelling = new AbortController();
+	const calls: Array<Parameters<ExecFileAdapter>[0]> = [];
+	const adapter: ExecFileAdapter = async (request) => {
+		calls.push(request);
+		assert.equal(request.signal, cancelling.signal);
+		if (calls.length === 2) cancelling.abort();
+		return { stdout: request.arguments[1] === "abandon" ? JSON.stringify(ABANDON_RECORD) : statusStdout([ELIGIBLE_ENTRY]), stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
+	};
+	let approvals = 0;
+	const context = { cwd: process.cwd(), hasUI: true, ui: { confirm: async (_title: string, message: string) => {
+		approvals++;
+		assert.equal(cancelling.signal.aborted, false);
+		assert.ok(message.includes(`gentle-ai.review-abandon-authorization/v2\nlineage=stranded\nrevision=${SHA}\nsnapshot_identity=${SHA2}\nreason=operator_disposition\ncaptured_lens_results=00-review-risk,01-review-resilience\nfindings_present=true\nactor=maintainer`));
+		return true;
+	} } } as unknown as ExtensionContext;
+	const controller = registeredController(client(adapter) as unknown as import("../lib/native-review-cli.ts").NativeReviewCli);
+	let cancellation: unknown;
+	try {
+		await controller.execute("second-inventory-cancel", ABANDON_INPUT, cancelling.signal, undefined, context);
+	} catch (error) {
+		cancellation = error;
+	}
+	assert.equal(approvals, 1);
+	assert.ok(calls.every((request) => request.arguments[1] === "status"), "cancellation during the second inventory must not dispatch abandon argv");
+	assert.equal(calls.length, 2);
+	assert.match(String(cancellation), /cancelled/);
+});
+
 test("registered ABANDON rejects terminal status and terminal state entries before approval", async () => {
 	const terminalStatusEntry = { ...ELIGIBLE_ENTRY, status: "approved" };
 	const terminalStatusQueue = queuedAdapter([{ stdout: statusStdout([terminalStatusEntry]) }]);

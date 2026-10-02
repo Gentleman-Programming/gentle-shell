@@ -35,35 +35,40 @@ strict input key set and injected-field rejection like
 
 ## Tasks
 
-- [ ] T1 RED — controller tests for the derive flow in
-  tests/review-controller-native-recovery.test.ts: happy path derives the four
-  fields and commits with the exact eight-line binding; injected
-  inventory-derived fields rejected; no eligible entry blocked; missing
-  actor/reason reported; top-level lineageId accepted as the lineage source;
-  headless fails closed; declined approval aborts without mutation.
-- [ ] T2 GREEN — extensions/gentle-ai.ts: new `executeNativeAbandon`
-  (strict {lineage|lineageId, actor, reason} contract, fresh reviewStatus()
-  read, single compact-v2 entry with discardedWork, derived binding, UI
-  self-authorization), interceptor skip for ABANDON in
-  authorizeDestructiveReviewOperation, dispatch route with context.
-- [ ] T3 Contract text — tool description (gentle-ai.ts) and
-  docs/readme-reference.md updated to the derive contract;
-  review-authority-recovery-docs.test.ts assertions kept true.
-- [ ] T4 Provenance note — comment at the captured_lens_results binding render
-  in lib/native-review-cli.ts stating the values must come verbatim from the
-  native inventory projection.
-- [ ] T5 Verify — targeted suites green (review-controller-native-recovery,
-  review-authority-recovery-docs, native-review-cli) + full extension check.
-- [ ] T6 Ship — work-unit commit, native review under RDD, PR via branch-pr
-  (closes #1159).
+- [x] T1 RED — controller tests for the derive flow in
+  tests/review-controller-native-recovery.test.ts (5 tests: derive+commit with
+  exact eight-line binding, top-level lineageId, injected-field rejection,
+  ineligible/incomplete inventory, headless+declined fail-closed). Observed RED
+  (5 failing), then GREEN with T2.
+- [x] T2 GREEN — extensions/gentle-ai.ts: executeNativeAbandon (strict
+  {lineage|lineageId, actor, reason}, fresh reviewStatus() read, single
+  compact-v2 entry with discardedWork, derived binding, UI self-authorization),
+  interceptor early-return for ABANDON, dispatch route with context, dead
+  abandon branches removed from the caller-supplied maintenance family.
+- [x] T3 Contract text — tool description and docs/readme-reference.md now
+  state the derive contract (also fixes the stale nine-line/evidence-record
+  wording); review-authority-recovery-docs.test.ts green.
+- [x] T4 Provenance note — comment at the captured_lens_results binding render
+  in lib/native-review-cli.ts: values must arrive verbatim from the native
+  inventory projection (ordinal-prefixed order).
+- [x] T5 Verify — recovery suite 26/26; docs+cli batch 68/68; focused trio
+  (relay routing, restart parity, integration-v2) 86/86; pnpm typecheck zero
+  regressions; full suite only two known flakes (dev-binary surfacing,
+  history ts precedence) that pass standalone on base 4fcddc2f — pre-existing,
+  subsystem-disjoint.
+- [ ] T6 Ship — work-unit commit fcf02de1 done; native review + PR via
+  branch-pr pending.
 
 ## Evidence log
 
 - 2026-10-02 claim posted (issuecomment-5954784304).
-- 2026-10-02 exploration: `executeNativeAuthorityMaintenance` demands
+- 2026-10-02 exploration: `executeNativeAuthorityMaintenance` demanded
   expectedRevision/snapshotIdentity/capturedLensResults/findingsPresent;
-  `authorizeDestructiveReviewOperation` derives the UI binding from those
+  `authorizeDestructiveReviewOperation` derived the UI binding from those
   caller fields; `decodeNativeReviewStatusEntry` already exposes
   lineageId/revision/snapshotIdentity/discardedWork{capturedLensResults,
   findingsPresent}; `executeNativeLegacyAliasRepair` is the derive+UI-confirm
   precedent.
+- 2026-10-02 implementation: commit fcf02de1 on
+  fix/1159-abandon-inventory-derivation (+261/−21 across 5 files). Verification
+  by gentle-ai-verify + base-flake confirmation inline.

@@ -3085,3 +3085,39 @@ test("path fence fails closed headless and stays silent outside git sessions", a
 	const noGitCtx = { cwd: plain, hasUI: true, sessionManager: { getSessionId: () => "fence-3", getEntries: () => [] } } as unknown as ExtensionContext;
 	assert.equal(await toolCall({ toolName: "read", input: { path: "../../etc/hosts" } }, noGitCtx), undefined, "no resolvable worktree identity: fence stays silent");
 });
+
+test("path fence stays silent for sensitive short-circuits and non-session callers", async (t) => {
+	const f = fenceFixture(t);
+	type ToolCallHandler = (event: { toolName: string; input: unknown }, ctx: ExtensionContext) => Promise<ToolCallEventResult | undefined>;
+	const handlers = new Map<string, ToolCallHandler>();
+	const confirmations: string[] = [];
+	const pi = {
+		on(name: string, handler: ToolCallHandler) { handlers.set(name, handler); },
+		events: { emit() {} },
+		registerCommand() {},
+		registerTool() {},
+	} as unknown as ExtensionAPI;
+	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	const toolCall = handlers.get("tool_call")!;
+	const confirm = async (_title: string, preview: string) => {
+		confirmations.push(preview);
+		return false;
+	};
+	const sessionCtx = {
+		cwd: f.repo,
+		hasUI: true,
+		ui: { confirm },
+		sessionManager: { getSessionId: () => "fence-4", getEntries: () => [] },
+	} as unknown as ExtensionContext;
+	const sensitiveDenied = await toolCall({ toolName: "read", input: { path: "~/.ssh/config" } }, sessionCtx);
+	assert.equal(sensitiveDenied?.block, true, "sensitive outside path is denied outright");
+	assert.match(sensitiveDenied!.reason as string, /blocked access to sensitive path/);
+	assert.equal(confirmations.length, 0, "sensitive short-circuit never reaches the consent fence");
+	const noSessionCtx = {
+		cwd: f.repo,
+		hasUI: true,
+		ui: { confirm },
+	} as unknown as ExtensionContext;
+	assert.equal(await toolCall({ toolName: "read", input: { path: "../sibling/notes.txt" } }, noSessionCtx), undefined, "no sessionManager: the fence stays silent inside a resolvable worktree");
+	assert.equal(confirmations.length, 0, "non-session caller never triggers a confirmation");
+});

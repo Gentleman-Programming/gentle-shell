@@ -96,8 +96,16 @@ test("evaluatePathFence covers the six path tools and defaults grep/find/ls to c
 	assert.equal(evaluatePathFence("read", { path: "x" }, f.root, [], "s1", g, true).kind, "pass", "no resolvable boundary: fence stays silent, never false-blocks");
 });
 
-test("fence never fires for a denied-sensitive path or a non-session caller", (t) => {
+test("fence passes inside targets and still asks consent for a sensitive outside path", (t) => {
 	const f = fixture(t);
 	const g = grants();
 	assert.equal(evaluatePathFence("read", { path: join(f.root, "src", "ok.ts") }, f.root, [f.root], "s1", g, true).kind, "pass");
+	const sensitive = evaluatePathFence("read", { path: "~/.ssh/config" }, f.root, [f.root], "s1", g, true);
+	assert.equal(sensitive.kind, "confirm", "a sensitive path outside the boundary never silently passes");
+	if (sensitive.kind === "confirm") {
+		assert.deepEqual(sensitive.targets, [canonicalizeTarget("~/.ssh/config", f.root)], "the canonical sensitive target is named for consent");
+	}
+	// The sensitive-path short-circuit and the no-session guard live in
+	// extensions/gentle-ai.ts; tests/gentle-ai.test.ts proves each one keeps
+	// this fence from firing at the tool_call hook.
 });

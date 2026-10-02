@@ -56,8 +56,7 @@ strict input key set and injected-field rejection like
   regressions; full suite only two known flakes (dev-binary surfacing,
   history ts precedence) that pass standalone on base 4fcddc2f — pre-existing,
   subsystem-disjoint.
-- [ ] T6 Ship — work-unit commit fcf02de1 done; native review + PR via
-  branch-pr pending.
+- [x] T6 Ship — work-unit commit fcf02de1; native review approved (lineage review-09c6de152830006e, 0 corrections, authority burned); PR #1668 opened against Gentleman-Programming/gentle-shell from fork branch fix/1159-abandon-inventory-derivation; type:bug label requested in-body (maintainer-side).
 
 ## Evidence log
 
@@ -72,3 +71,4 @@ strict input key set and injected-field rejection like
 - 2026-10-02 implementation: commit fcf02de1 on
   fix/1159-abandon-inventory-derivation (+261/−21 across 5 files). Verification
   by gentle-ai-verify + base-flake confirmation inline.
+- 2026-10-02 shipped: native review APPROVED (medium tier, lens review-reliability, 3 informational advisories: uncovered blocked-path branches, eligibility pre-check ignoring entry state, reason enum unenforced); acknowledgement burned authority (gentle-ai.review-acknowledged/v1, consumed sha256:04d88c18...). PR: https://github.com/Gentleman-Programming/gentle-shell/pull/1668

@@ -17,10 +17,7 @@ import test from "node:test";
 
 const REPO_ROOT = join(import.meta.dirname, "..");
 const DELEGATION_PATH = join(REPO_ROOT, "assets", "orchestrator-delegation.md");
-const SDD_WORKFLOW_PATH = join(REPO_ROOT, "assets", "sdd-orchestrator-workflow.md");
-
 const DELEGATION = readFileSync(DELEGATION_PATH, "utf8");
-const SDD_WORKFLOW = readFileSync(SDD_WORKFLOW_PATH, "utf8");
 
 const CHOICE_TOKENS = ["report_and_continue", "continue_without_reporting", "stop_here"] as const;
 
@@ -230,17 +227,12 @@ test("orchestrator-delegation.md does NOT reference the rc.3 canon", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3 — SDD points to the single complete handoff contract
+// 3 — The retained delegation contract owns the complete handoff
 // ---------------------------------------------------------------------------
 
-test("sdd-orchestrator-workflow.md points provider defects to the complete delegation contract", () => {
-	assert.match(SDD_WORKFLOW, /## Provider Defect Handoff/);
-	assert.match(
-		SDD_WORKFLOW,
-		/The full contract lives in `assets\/orchestrator-delegation\.md` under `#### Gentle AI Provider Defect Handoff \(MANDATORY\)`/i,
-	);
+test("retained delegation owns the complete provider defect handoff", () => {
 	assert.match(DELEGATION, /^#### Gentle AI Provider Defect Handoff \(MANDATORY\)$/m);
-	assert.doesNotMatch(SDD_WORKFLOW, /`report_and_continue`|`continue_without_reporting`|`stop_here`/);
+	assert.match(DELEGATION, /Both continue choices execute that exact captured decline invocation exactly once/);
 });
 
 test("the complete delegation handoff invokes `gentle-ai review mode disable` exactly once", () => {

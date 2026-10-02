@@ -32,6 +32,8 @@ import {
 	quoteForCmdExe,
 	recordProvisioned,
 	resolveHome,
+	USER_PI_HOME_ENV,
+	userPiHome,
 	resolvePiRuntime,
 	restoreJsonField,
 	settingsDeclareGentlePi,
@@ -620,20 +622,37 @@ test("checkPeerVersionPin passes for a matching pin", () => {
 	assert.deepEqual(result, { ok: true, pinned: ">=0.85.1" });
 });
 
+test("Pi 0.99.1 baseline and host peers follow the open development range policy", () => {
+	const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+	assert.equal(MIN_PI_VERSION, "0.99.1");
+	assert.equal(pkg.engines.node, ">=22.19.0");
+	for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-tui"]) {
+		assert.equal(pkg.peerDependencies[name], "*");
+		assert.equal(pkg.peerDependenciesMeta[name].optional, true);
+		assert.equal(pkg.dependencies[name], undefined);
+	}
+	// Development ranges are policy specifiers; their floor never drops below
+	// the runtime minimum the launcher enforces.
+	for (const name of ["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai", "@earendil-works/pi-tui"]) {
+		assert.equal(pkg.devDependencies[name], ">=1.0.0", name);
+		assert.equal(checkPiVersion(pkg.devDependencies[name].slice(2)).ok, true, name);
+	}
+});
+
 test("checkPiVersion accepts a version equal to the minimum", () => {
-	assert.deepEqual(checkPiVersion("0.85.1"), { ok: true, version: "0.85.1" });
+	assert.deepEqual(checkPiVersion("0.99.1"), { ok: true, version: "0.99.1" });
 });
 
 test("checkPiVersion accepts a version above the minimum", () => {
-	assert.deepEqual(checkPiVersion("0.86.0"), { ok: true, version: "0.86.0" });
+	assert.deepEqual(checkPiVersion("0.100.0"), { ok: true, version: "0.100.0" });
 });
 
 test("checkPiVersion accepts a v-prefixed version", () => {
-	assert.deepEqual(checkPiVersion("v0.85.1"), { ok: true, version: "0.85.1" });
+	assert.deepEqual(checkPiVersion("v0.99.1"), { ok: true, version: "0.99.1" });
 });
 
 test("checkPiVersion accepts a prerelease suffix at the minimum", () => {
-	assert.deepEqual(checkPiVersion("pi version 0.85.1-rc.2"), { ok: true, version: "0.85.1" });
+	assert.deepEqual(checkPiVersion("pi version 0.99.1-rc.2"), { ok: true, version: "0.99.1" });
 });
 
 test("checkPiVersion rejects a version below the minimum and names both versions", () => {
@@ -642,7 +661,7 @@ test("checkPiVersion rejects a version below the minimum and names both versions
 	if (result.ok) throw new Error("expected a failing result");
 	assert.equal(result.version, "0.85.0");
 	assert.match(result.message, /0\.85\.0/);
-	assert.match(result.message, /0\.85\.1/);
+	assert.match(result.message, /0\.99\.1/);
 });
 
 test("checkPiVersion rejects a prerelease below the minimum", () => {
@@ -656,7 +675,7 @@ test("checkPiVersion reports unparsable output with the raw text and the minimum
 	if (result.ok) throw new Error("expected a failing result");
 	assert.equal(result.version, undefined);
 	assert.match(result.message, /not a version/);
-	assert.match(result.message, /0\.85\.1/);
+	assert.match(result.message, /0\.99\.1/);
 });
 
 test("checkPiVersion accepts a custom minimum", () => {
@@ -1103,6 +1122,23 @@ test("otherPackageInjections defaults to including every declared package when i
 
 // --- buildPiInvocation -------------------------------------------------------
 
+test("package injection relies on Pi's -e resource discovery in isolated and takeover modes", () => {
+	for (const takeOver of [false, true]) {
+		const built = buildPiInvocation({
+			runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
+			home: { mode: "isolated", dir: "/gentle-shell/agent", source: "default" },
+			packageRoot: "/pkg",
+			declaration: undefined,
+			takeOver,
+			otherPackagePaths: [],
+			passthrough: [],
+			baseEnv: {},
+			homedir: "/home/u",
+		});
+		assert.deepEqual(built.args, takeOver ? ["--no-extensions", "-e", "/pkg"] : ["-e", "/pkg"]);
+	}
+});
+
 const linkHome: ResolvedHome = { mode: "link", dir: "/pi/agent", source: "flag" };
 const isolatedHomeResolved: ResolvedHome = { mode: "isolated", dir: "/gentle-shell/agent", source: "default" };
 
@@ -1116,8 +1152,9 @@ test("buildPiInvocation injects the launcher env into baseEnv", () => {
 		otherPackagePaths: [],
 		passthrough: [],
 		baseEnv: { PATH: "/usr/bin" },
+		homedir: "/home/u",
 	});
-	assert.deepEqual(built.env, { PATH: "/usr/bin", PI_CODING_AGENT_DIR: "/pi/agent", GENTLE_PI_AGENT_HOME: "/pi/agent" });
+	assert.deepEqual(built.env, { PATH: "/usr/bin", PI_CODING_AGENT_DIR: "/pi/agent", GENTLE_PI_AGENT_HOME: "/pi/agent", GENTLE_SHELL_USER_PI_HOME: join("/home/u", ".pi", "agent") });
 });
 
 test("buildPiInvocation skips injection when there is a declaration and no takeover (npm matches the launcher's own install)", () => {
@@ -1130,6 +1167,7 @@ test("buildPiInvocation skips injection when there is a declaration and no takeo
 		otherPackagePaths: [],
 		passthrough: ["--mode", "rpc"],
 		baseEnv: {},
+		homedir: "/home/u",
 	});
 	assert.deepEqual(built.command, "/usr/bin/pi");
 	assert.deepEqual(built.args, ["--mode", "rpc"]);
@@ -1145,16 +1183,11 @@ test("buildPiInvocation adds the gentle-pi injection flags when there is no decl
 		otherPackagePaths: [],
 		passthrough: ["--mode", "rpc"],
 		baseEnv: {},
+		homedir: "/home/u",
 	});
 	assert.deepEqual(built.args, [
 		"-e",
 		"/pkg",
-		"--theme",
-		join("/pkg", "themes"),
-		"--skill",
-		join("/pkg", "skills"),
-		"--prompt-template",
-		join("/pkg", "prompts"),
 		"--mode",
 		"rpc",
 	]);
@@ -1171,6 +1204,7 @@ test("buildPiInvocation emits only runtime args and passthrough when a pi subcom
 		passthrough: ["install", "npm:x"],
 		piSubcommand: "install",
 		baseEnv: {},
+		homedir: "/home/u",
 	});
 	assert.deepEqual(built.args, ["install", "npm:x"]);
 	assert.equal(built.command, "/usr/bin/pi");
@@ -1187,11 +1221,13 @@ test("buildPiInvocation still injects the launcher env for a pi subcommand", () 
 		passthrough: ["list"],
 		piSubcommand: "list",
 		baseEnv: { PATH: "/usr/bin" },
+		homedir: "/home/u",
 	});
 	assert.deepEqual(built.env, {
 		PATH: "/usr/bin",
 		PI_CODING_AGENT_DIR: "/gentle-shell/agent",
 		GENTLE_PI_AGENT_HOME: "/gentle-shell/agent",
+		GENTLE_SHELL_USER_PI_HOME: join("/home/u", ".pi", "agent"),
 	});
 });
 
@@ -1205,11 +1241,49 @@ test("buildPiInvocation in link mode with a pi subcommand is exactly pi <subcomm
 		otherPackagePaths: [join("/agent", "npm", "node_modules", "some-other")],
 		passthrough: ["auth", "status"],
 		piSubcommand: "auth",
-		baseEnv: {},
+		baseEnv: { PI_CODING_AGENT_DIR: "/pi/agent" },
+		homedir: "/home/u",
 	});
 	assert.equal(built.command, "/usr/bin/pi");
 	assert.deepEqual(built.args, ["auth", "status"]);
-	assert.deepEqual(built.env, { PI_CODING_AGENT_DIR: "/pi/agent", GENTLE_PI_AGENT_HOME: "/pi/agent" });
+	assert.deepEqual(built.env, { PI_CODING_AGENT_DIR: "/pi/agent", GENTLE_PI_AGENT_HOME: "/pi/agent", GENTLE_SHELL_USER_PI_HOME: "/pi/agent" });
+});
+
+// The isolated home overrides PI_CODING_AGENT_DIR for the session, so the
+// user's own Pi home travels separately for read-only features such as
+// /gentle:stats. Isolation itself is unchanged.
+test("buildPiInvocation carries the user's original Pi home without weakening isolation", () => {
+	const build = (baseEnv: Record<string, string | undefined>, home: ResolvedHome = isolatedHomeResolved) => buildPiInvocation({
+		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
+		home,
+		packageRoot: "/pkg",
+		declaration: undefined,
+		takeOver: false,
+		otherPackagePaths: [],
+		passthrough: [],
+		baseEnv,
+		homedir: "/home/u",
+	}).env;
+	const conventional = build({});
+	assert.equal(conventional.PI_CODING_AGENT_DIR, "/gentle-shell/agent");
+	assert.equal(conventional.GENTLE_PI_AGENT_HOME, "/gentle-shell/agent");
+	assert.equal(conventional.GENTLE_SHELL_USER_PI_HOME, join("/home/u", ".pi", "agent"));
+	// A custom Pi home is preserved; an empty value falls through like Pi itself.
+	const custom = build({ PI_CODING_AGENT_DIR: "/custom/pi" });
+	assert.equal(custom.PI_CODING_AGENT_DIR, "/gentle-shell/agent");
+	assert.equal(custom.GENTLE_SHELL_USER_PI_HOME, "/custom/pi");
+	assert.equal(build({ PI_CODING_AGENT_DIR: "" }).GENTLE_SHELL_USER_PI_HOME, join("/home/u", ".pi", "agent"));
+	// A nested launch inherits the outer isolated PI_CODING_AGENT_DIR; the
+	// original home the outer launcher recorded must win over it.
+	const nested = build({ PI_CODING_AGENT_DIR: "/gentle-shell/agent", GENTLE_SHELL_USER_PI_HOME: "/custom/pi" });
+	assert.equal(nested.PI_CODING_AGENT_DIR, "/gentle-shell/agent");
+	assert.equal(nested.GENTLE_SHELL_USER_PI_HOME, "/custom/pi");
+	// --link: the active and original homes are the same directory.
+	const linked = build({ PI_CODING_AGENT_DIR: "/pi/agent" }, linkHome);
+	assert.equal(linked.PI_CODING_AGENT_DIR, "/pi/agent");
+	assert.equal(linked.GENTLE_SHELL_USER_PI_HOME, "/pi/agent");
+	assert.equal(USER_PI_HOME_ENV, "GENTLE_SHELL_USER_PI_HOME");
+	assert.equal(userPiHome({ GENTLE_SHELL_USER_PI_HOME: "/kept" }, "/home/u"), "/kept");
 });
 
 test("buildPiInvocation keeps the runtime's own args ahead of the injection and passthrough", () => {
@@ -1222,6 +1296,7 @@ test("buildPiInvocation keeps the runtime's own args ahead of the injection and 
 		otherPackagePaths: [],
 		passthrough: [],
 		baseEnv: {},
+		homedir: "/home/u",
 	});
 	assert.equal(built.args[0], "/bundled/cli.js");
 	assert.equal(built.command, "/usr/bin/node");
@@ -1237,6 +1312,7 @@ test("buildPiInvocation takes over a conflicting path declaration: --no-extensio
 		otherPackagePaths: [join("/agent", "npm", "node_modules", "some-other")],
 		passthrough: ["--mode", "rpc"],
 		baseEnv: {},
+		homedir: "/home/u",
 	});
 	assert.deepEqual(built.args, [
 		"--no-extensions",
@@ -1244,12 +1320,6 @@ test("buildPiInvocation takes over a conflicting path declaration: --no-extensio
 		join("/agent", "npm", "node_modules", "some-other"),
 		"-e",
 		"/pkg",
-		"--theme",
-		join("/pkg", "themes"),
-		"--skill",
-		join("/pkg", "skills"),
-		"--prompt-template",
-		join("/pkg", "prompts"),
 		"--mode",
 		"rpc",
 	]);
@@ -1265,17 +1335,12 @@ test("buildPiInvocation takes over with --package-root even for a matching npm d
 		otherPackagePaths: [],
 		passthrough: [],
 		baseEnv: {},
+		homedir: "/home/u",
 	});
 	assert.deepEqual(built.args, [
 		"--no-extensions",
 		"-e",
 		"/forced/root",
-		"--theme",
-		join("/forced/root", "themes"),
-		"--skill",
-		join("/forced/root", "skills"),
-		"--prompt-template",
-		join("/forced/root", "prompts"),
 	]);
 });
 
@@ -1289,6 +1354,7 @@ test("buildPiInvocation takes over with --package-root even when there is no dec
 		otherPackagePaths: [join("/agent", "npm", "node_modules", "some-other")],
 		passthrough: [],
 		baseEnv: {},
+		homedir: "/home/u",
 	});
 	assert.deepEqual(built.args, [
 		"--no-extensions",
@@ -1296,12 +1362,6 @@ test("buildPiInvocation takes over with --package-root even when there is no dec
 		join("/agent", "npm", "node_modules", "some-other"),
 		"-e",
 		"/forced/root",
-		"--theme",
-		join("/forced/root", "themes"),
-		"--skill",
-		join("/forced/root", "skills"),
-		"--prompt-template",
-		join("/forced/root", "prompts"),
 	]);
 });
 
@@ -1316,6 +1376,7 @@ test("buildPiInvocation injects loose extension entries during a takeover, after
 		looseExtensionEntries: [join("/agent", "extensions", "a.ts"), join("/project", ".pi", "extensions", "b.js")],
 		passthrough: ["--mode", "rpc"],
 		baseEnv: {},
+		homedir: "/home/u",
 	});
 	assert.deepEqual(built.args, [
 		"--no-extensions",
@@ -1327,12 +1388,6 @@ test("buildPiInvocation injects loose extension entries during a takeover, after
 		join("/project", ".pi", "extensions", "b.js"),
 		"-e",
 		"/pkg",
-		"--theme",
-		join("/pkg", "themes"),
-		"--skill",
-		join("/pkg", "skills"),
-		"--prompt-template",
-		join("/pkg", "prompts"),
 		"--mode",
 		"rpc",
 	]);
@@ -1348,8 +1403,9 @@ test("buildPiInvocation omits loose extension entry flags when the list is empty
 		otherPackagePaths: [],
 		passthrough: [],
 		baseEnv: {},
+		homedir: "/home/u",
 	});
-	assert.deepEqual(withoutField.args, ["--no-extensions", "-e", "/pkg", "--theme", join("/pkg", "themes"), "--skill", join("/pkg", "skills"), "--prompt-template", join("/pkg", "prompts")]);
+	assert.deepEqual(withoutField.args, ["--no-extensions", "-e", "/pkg"]);
 
 	const withEmptyField = buildPiInvocation({
 		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
@@ -1361,6 +1417,7 @@ test("buildPiInvocation omits loose extension entry flags when the list is empty
 		looseExtensionEntries: [],
 		passthrough: [],
 		baseEnv: {},
+		homedir: "/home/u",
 	});
 	assert.deepEqual(withEmptyField.args, withoutField.args);
 });
@@ -1381,6 +1438,7 @@ test("buildPiInvocation dedupes loose extension entries against other-package pa
 		looseExtensionEntries: ["/shared/dup.ts", "/agent/extensions/a.ts", "/agent/extensions/a.ts"],
 		passthrough: [],
 		baseEnv: {},
+		homedir: "/home/u",
 	});
 	assert.deepEqual(built.args, [
 		"--no-extensions",
@@ -1392,12 +1450,6 @@ test("buildPiInvocation dedupes loose extension entries against other-package pa
 		"/agent/extensions/a.ts",
 		"-e",
 		"/pkg",
-		"--theme",
-		join("/pkg", "themes"),
-		"--skill",
-		join("/pkg", "skills"),
-		"--prompt-template",
-		join("/pkg", "prompts"),
 	]);
 });
 
@@ -1415,6 +1467,7 @@ test("buildPiInvocation dedupes the launcher's own package root against an other
 		otherPackagePaths: [join("/agent", "npm", "node_modules", "some-other"), "/pkg"],
 		passthrough: [],
 		baseEnv: {},
+		homedir: "/home/u",
 	});
 	const eFlags = built.args.filter((arg, index) => built.args[index - 1] === "-e");
 	assert.deepEqual(eFlags, [join("/agent", "npm", "node_modules", "some-other"), "/pkg"]);
@@ -1424,12 +1477,6 @@ test("buildPiInvocation dedupes the launcher's own package root against an other
 		join("/agent", "npm", "node_modules", "some-other"),
 		"-e",
 		"/pkg",
-		"--theme",
-		join("/pkg", "themes"),
-		"--skill",
-		join("/pkg", "skills"),
-		"--prompt-template",
-		join("/pkg", "prompts"),
 	]);
 });
 

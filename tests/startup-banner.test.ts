@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import startup, { readGitBranch } from "../extensions/startup-banner.ts";
+import startup, { isPiCliSubcommandInvocation, readGitBranch } from "../extensions/startup-banner.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { stripAnsi } from "../lib/terminal-theme.ts";
@@ -210,6 +210,12 @@ for (const showRose of [false, true]) for (const showTextLogo of [false, true]) 
 	test(`startup art respects rose=${showRose}, logo=${showTextLogo} and cyan palette`, async (t) => {
 		t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
 		t.mock.method(fs, "readFile", async () => JSON.stringify({ showRose, showTextLogo, color: "cyan" }));
+		t.mock.method(fs, "readdir", async () => [
+			{ name: "sdd-apply.md", isFile: () => true },
+			{ name: "sdd-status.md", isFile: () => true },
+			{ name: "gentle-ai-worker.md", isFile: () => true },
+			{ name: "notes.txt", isFile: () => true },
+		] as any);
 		syncBuiltinESMExports();
 		t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
 		const argv = process.argv;
@@ -233,7 +239,8 @@ for (const showRose of [false, true]) for (const showTextLogo of [false, true]) 
 		await start!({}, { hasUI: true, cwd: "/fixture", ui: { setHeader: (factory: Function) => {
 			header = factory({ requestRender() {} }, { fg: (_role: string, text: string) => text });
 		} } });
-		t.mock.timers.tick(50);
+		t.mock.timers.tick(200);
+		for (let i = 0; i < 5; i++) await Promise.resolve();
 		try {
 			for (const width of [40, 80, 160, 200]) {
 				const lines = header!.render(width);
@@ -241,6 +248,8 @@ for (const showRose of [false, true]) for (const showTextLogo of [false, true]) 
 				const text = stripAnsi(lines.join("\n"));
 				assert.match(text, /GIT:/);
 				assert.match(text, /PATH:/);
+				assert.doesNotMatch(text, /phases\b/i, "historical SDD files never appear as active phases");
+				assert.match(text, /AGENTS:\s+1 agents/, "only the installed background agent is counted");
 				if (width >= 160) {
 					assert.equal(/[\u2800-\u28ff]/.test(text), showRose);
 					assert.equal(/[▒▄▀█]/.test(text), showTextLogo);
@@ -268,3 +277,122 @@ for (const showRose of [false, true]) for (const showTextLogo of [false, true]) 
 		}
 	});
 }
+
+test("startup banner counts MCP servers from the active Pi agent dir", async (t) => {
+	const agentDir = join(tmpdir(), "gp-banner-agent-dir");
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	t.after(() => {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	});
+	t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+	// Only the active agent dir's mcp.json declares two servers; any other
+	// mcp.json (for example ~/.pi/agent/mcp.json) declares five.
+	t.mock.method(fs, "readFile", async (path: string) => {
+		if (String(path) === join(agentDir, "mcp.json")) return JSON.stringify({ mcpServers: { one: {}, two: {} } });
+		if (String(path).endsWith("mcp.json")) return JSON.stringify({ mcpServers: { a: {}, b: {}, c: {}, d: {}, e: {} } });
+		return JSON.stringify({ showRose: false, showTextLogo: false, color: "pink" });
+	});
+	t.mock.method(fs, "readdir", async () => [] as any);
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const argv = process.argv;
+	process.argv = ["node"];
+	t.after(() => { process.argv = argv; });
+	for (const [key, value] of [["rows", 40], ["columns", 160]] as const) {
+		const descriptor = Object.getOwnPropertyDescriptor(process.stdout, key);
+		Object.defineProperty(process.stdout, key, { configurable: true, writable: true, value });
+		t.after(() => descriptor ? Object.defineProperty(process.stdout, key, descriptor) : Reflect.deleteProperty(process.stdout, key));
+	}
+	let start: Function;
+	let shutdown: Function;
+	let header: { render(width: number): string[]; dispose(): void };
+	const { default: coldStartup } = await import(new URL("../extensions/startup-banner.ts?mcp-agent-dir", import.meta.url).href) as typeof import("../extensions/startup-banner.ts");
+	coldStartup({ on: (name: string, fn: Function) => {
+		if (name === "session_start") start = fn;
+		if (name === "session_shutdown") shutdown = fn;
+	}, registerCommand() {}, getCommands: () => [], getAllTools: () => [] } as unknown as ExtensionAPI);
+	await start!({}, { hasUI: true, cwd: "/fixture", ui: { setHeader: (factory: Function) => {
+		header = factory({ requestRender() {} }, { fg: (_role: string, text: string) => text });
+	} } });
+	t.mock.timers.tick(200);
+	for (let i = 0; i < 5; i++) await Promise.resolve();
+	try {
+		assert.match(stripAnsi(header!.render(160).join("\n")), /MCP:\s+2 server\(s\)/);
+	} finally {
+		header!.dispose();
+		shutdown!();
+	}
+});
+
+test("startup banner counts packages, extensions and agents from the active Pi agent dir", async (t) => {
+	const agentDir = join(tmpdir(), "gp-banner-active-agent-dir");
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	t.after(() => {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	});
+	t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+	// The active agent dir declares one package with two extensions and three
+	// agents; any other agent dir (for example ~/.pi/agent) declares more.
+	t.mock.method(fs, "readFile", async (path: string) => {
+		const file = String(path);
+		if (file === join(agentDir, "settings.json")) return JSON.stringify({ packages: ["npm:@acme/pi-kit@1.0.0"] });
+		if (file.endsWith("settings.json")) return JSON.stringify({ packages: ["npm:a", "npm:b", "npm:c", "npm:d"] });
+		if (file === join(agentDir, "npm", "node_modules", "@acme/pi-kit", "package.json")) {
+			return JSON.stringify({ pi: { extensions: ["one.ts", "two.ts"] } });
+		}
+		if (file.endsWith("package.json")) return JSON.stringify({ pi: { extensions: ["x.ts", "y.ts", "z.ts", "w.ts", "v.ts"] } });
+		if (file.endsWith("mcp.json")) return JSON.stringify({ mcpServers: {} });
+		return JSON.stringify({ showRose: false, showTextLogo: false, color: "pink" });
+	});
+	const agentFile = (name: string) => ({ name, isFile: () => true });
+	t.mock.method(fs, "readdir", async (path: string) => String(path) === join(agentDir, "agents")
+		? [agentFile("one.md"), agentFile("two.md"), agentFile("three.md"), agentFile("sdd-apply.md")] as any
+		: [agentFile("a.md"), agentFile("b.md"), agentFile("c.md"), agentFile("d.md"), agentFile("e.md"), agentFile("f.md"), agentFile("g.md")] as any);
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const argv = process.argv;
+	process.argv = ["node"];
+	t.after(() => { process.argv = argv; });
+	for (const [key, value] of [["rows", 40], ["columns", 160]] as const) {
+		const descriptor = Object.getOwnPropertyDescriptor(process.stdout, key);
+		Object.defineProperty(process.stdout, key, { configurable: true, writable: true, value });
+		t.after(() => descriptor ? Object.defineProperty(process.stdout, key, descriptor) : Reflect.deleteProperty(process.stdout, key));
+	}
+	let start: Function;
+	let shutdown: Function;
+	let header: { render(width: number): string[]; dispose(): void };
+	const { default: coldStartup } = await import(new URL("../extensions/startup-banner.ts?active-agent-dir-counts", import.meta.url).href) as typeof import("../extensions/startup-banner.ts");
+	coldStartup({ on: (name: string, fn: Function) => {
+		if (name === "session_start") start = fn;
+		if (name === "session_shutdown") shutdown = fn;
+	}, registerCommand() {}, getCommands: () => [], getAllTools: () => [] } as unknown as ExtensionAPI);
+	await start!({}, { hasUI: true, cwd: "/fixture", ui: { setHeader: (factory: Function) => {
+		header = factory({ requestRender() {} }, { fg: (_role: string, text: string) => text });
+	} } });
+	t.mock.timers.tick(200);
+	for (let i = 0; i < 10; i++) await Promise.resolve();
+	try {
+		const text = stripAnsi(header!.render(160).join("\n"));
+		assert.match(text, /PLUGINS:\s+1 package\(s\)/);
+		assert.match(text, /EXTENSIONS:\s+2 active/);
+		assert.match(text, /AGENTS:\s+3 agents/);
+	} finally {
+		header!.dispose();
+		shutdown!();
+	}
+});
+
+test("launcher-injected extension directories do not suppress the startup banner", () => {
+	// Gentle Shell launches `pi -e <package-root-dir>`; a directory path is not a subcommand.
+	assert.equal(isPiCliSubcommandInvocation(["node", "pi", "-e", "/opt/gentle-pi"]), false);
+	assert.equal(isPiCliSubcommandInvocation(["node", "pi", "--no-extensions", "-e", "/a", "-e", "/b/ext.mjs"]), false);
+	assert.equal(isPiCliSubcommandInvocation(["node", "pi"]), false);
+	assert.equal(isPiCliSubcommandInvocation(["node", "pi", "-e", "/opt/gentle-pi", "install"]), false);
+	for (const sub of ["install", "remove", "uninstall", "update", "list", "config", "auth"]) {
+		assert.equal(isPiCliSubcommandInvocation(["node", "pi", sub, "npm:x"]), true, sub);
+	}
+});

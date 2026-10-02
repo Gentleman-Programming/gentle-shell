@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after, before } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import gentleTodo, { todoCollapseKey, todoEnabled } from "../extensions/gentle-todo.ts";
+import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
+
+// The card style defaults to float; these assertions pin the outlined (neon)
+// panels unless a test switches the style itself.
+const initialCardStyle = cardStyle();
+before(() => setCardStyle(CARD_STYLE.NEON));
+after(() => setCardStyle(initialCardStyle));
 
 // The Gentle Todo extension: the `todo` tool, the card above the editor,
 // the per-turn prompt block, and the staleness signal, driven by fakes.
@@ -160,28 +167,93 @@ test("the Todo header paints the shared hover role while hovered, and clears it 
 	assert.deepEqual(component.handleMouse?.(move(0)), { handled: true });
 });
 
-test("every turn carries the open tasks in the system prompt and the card goes stale after two silent turns", async () => {
+test("in the float style the Todos header sits on row 1 below the top padding, and hover and click work there", async (t) => {
+	const found = cardStyle();
+	t.after(() => setCardStyle(found));
+	const { pi, tools, fire } = fakePi();
+	gentleTodo(pi, {});
+	const { ctx, widgets } = fakeContext();
+	await fire("session_start", ctx);
+	await tools.get("todo")!.execute("c1", { action: "write", tasks: [{ title: "A", status: "in_progress" }, { title: "B" }] }, undefined, undefined, ctx);
+	await fire("tool_execution_end", ctx, { toolName: "todo" });
+	setCardStyle(CARD_STYLE.FLOAT);
+	// Float panels need a theme background; without one they keep the frame.
+	const theme = { ...plainTheme, bg: (_color: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
+	const component = widgets.get("gentle-todo")!(fakeTui, theme);
+	const rows = component.render(70).map(stripAnsi);
+	assert.match(rows[0]!, /^ ▎ +$/, "a padding row sits above the header");
+	assert.match(rows[1]!, /^ ▎ ❀ Todos ▾ Collapse  0 of 2 +ctrl\+shift\+t {3}$/);
+	assert.match(rows[2]!, /^ ▎ +$/, "a blank separator row follows the header");
+	assert.match(rows[3]!, /^ ▎ ◐ A/);
+	assert.doesNotMatch(rows.join("\n"), /[╭╮╰╯│]/u);
+	assert.equal(rows.at(-1), "", "the spacer row still keeps the card off the prompt");
+	const pointer = (type: "move" | "click", y: number) => ({
+		type, button: type === "move" ? "none" as const : "left" as const, x: 1, y, screenX: 1, screenY: y, width: 70, height: rows.length, shift: false, alt: false, ctrl: false,
+	});
+	assert.deepEqual(component.handleMouse?.(pointer("move", 1)), { handled: true, render: true }, "the header row is hoverable");
+	assert.deepEqual(component.handleMouse?.(pointer("move", 3)), { handled: true, render: true }, "a body row clears the hover");
+	assert.equal(component.handleMouse?.(pointer("click", 0)), undefined, "the padding row is not the control");
+	assert.equal(component.handleMouse?.(pointer("click", 2)), undefined, "the separator row is not the control");
+	assert.equal(component.handleMouse?.(pointer("click", 3)), undefined, "a body row is not the control");
+	assert.equal(component.handleMouse?.(pointer("click", 1))?.handled, true);
+	assert.match(stripAnsi(component.render(70)[1]!), /^ ▎ ❀ Todos ▸ Expand  0 of 2 /);
+});
+
+function promptEvent(): { systemPrompt: string; systemPromptOptions: { appendSystemPrompt: string } } {
+	return { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" } };
+}
+
+test("every turn carries the open tasks in appendSystemPrompt (never a returned systemPrompt) and the card goes stale after two silent turns", async () => {
 	const { pi, tools, fire } = fakePi();
 	gentleTodo(pi, {});
 	const { ctx, widget } = fakeContext();
 	await fire("session_start", ctx);
-	await fire("before_agent_start", ctx, { systemPrompt: "base" });
+	await fire("before_agent_start", ctx, promptEvent());
 	await tools.get("todo")!.execute("c1", { action: "write", tasks: [{ title: "Fix the bug" }] }, undefined, undefined, ctx);
 	await fire("tool_execution_end", ctx, { toolName: "todo" });
 
-	const withTasks = (await fire("before_agent_start", ctx, { systemPrompt: "base" })) as { systemPrompt: string };
-	assert.match(withTasks.systemPrompt, /^base\n\n## Todo list/);
-	assert.match(withTasks.systemPrompt, /1\. \[pending\] Fix the bug/);
+	const withTasksEvent = promptEvent();
+	const withTasksResult = await fire("before_agent_start", ctx, withTasksEvent);
+	assert.equal(withTasksResult, undefined, "the handler must not return a replacement systemPrompt");
+	assert.match(withTasksEvent.systemPromptOptions.appendSystemPrompt, /^## Todo list/);
+	assert.match(withTasksEvent.systemPromptOptions.appendSystemPrompt, /1\. \[pending\] Fix the bug/);
 	assert.doesNotMatch(widget()![0], /stale/);
 
-	const stale = (await fire("before_agent_start", ctx, { systemPrompt: "base" })) as { systemPrompt: string };
-	assert.match(stale.systemPrompt, /stale: 2 turns without an update/);
+	const staleEvent = promptEvent();
+	await fire("before_agent_start", ctx, staleEvent);
+	assert.match(staleEvent.systemPromptOptions.appendSystemPrompt, /stale: 2 turns without an update/);
 	assert.match(widget()![0], /ctrl\+shift\+t collapse/);
 	assert.match(widget()![1], /stale · 2 turns/);
 
 	await tools.get("todo")!.execute("c2", { action: "update", id: 1, status: "in_progress", note: "on it" }, undefined, undefined, ctx);
 	await fire("tool_execution_end", ctx, { toolName: "todo" });
 	assert.doesNotMatch(widget()![0], /stale/);
+});
+
+test("before_agent_start is idempotent: a todo block already present in appendSystemPrompt is not duplicated", async () => {
+	const { pi, tools, fire } = fakePi();
+	gentleTodo(pi, {});
+
+	// Capture the exact block a fresh turn produces (no staleness yet).
+	const probe = fakeContext();
+	await fire("session_start", probe.ctx);
+	await tools.get("todo")!.execute("c1", { action: "write", tasks: [{ title: "Fix the bug" }] }, undefined, undefined, probe.ctx);
+	await fire("tool_execution_end", probe.ctx, { toolName: "todo" });
+	const probeEvent = promptEvent();
+	await fire("before_agent_start", probe.ctx, probeEvent);
+	const block = probeEvent.systemPromptOptions.appendSystemPrompt;
+	assert.match(block, /^## Todo list/);
+
+	// A fresh session reaching the identical block, but whose options object
+	// already carries that exact text (e.g. a retried emission), must not
+	// duplicate it.
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	await tools.get("todo")!.execute("c1", { action: "write", tasks: [{ title: "Fix the bug" }] }, undefined, undefined, ctx);
+	await fire("tool_execution_end", ctx, { toolName: "todo" });
+	const seededEvent = { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: block } };
+	await fire("before_agent_start", ctx, seededEvent);
+	assert.equal(seededEvent.systemPromptOptions.appendSystemPrompt, block, "a block already present must not be appended again");
 });
 
 test("a finished list stays for its turn and clears at the next, and the collapse key folds the card", async () => {

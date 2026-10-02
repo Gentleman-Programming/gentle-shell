@@ -1,27 +1,29 @@
-import { fileURLToPath } from "node:url";
 import { agentsViewKey, agentsCollapseKey, agentsStopKey } from "../lib/agents-keys.ts";
-import { extractParentConfirmedSddPreflightContext, getPackageAssetOwner, isParentConfirmedSddPreflightContext, SHIPPED_SDD_AGENT_NAMES } from "../lib/sdd-preflight.ts";
-import { NativeReviewCliV216, createNodeExecFileAdapter, decodeNativeSddStatusV2, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { spawn } from "node:child_process";
 import { recordReviewMutation } from "../lib/review-reminder-receipt.ts";
 import { SESSION_CHANGE_RELAY } from "../lib/session-changes.ts";
 import { publishForeignSessionChange } from "../lib/session-change-capture.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, type WorktreeResolver } from "../lib/session-worktree-registry.ts";
 import { ForeignTargetGrants } from "../lib/foreign-target-grants.ts";
-import { existsSync, mkdirSync, readFileSync, lstatSync, realpathSync } from "node:fs";
+import { MESSAGING_REASON_MAX_UTF8_BYTES, MESSAGING_REASON_MIN_CHARACTERS, normalizeMessagingReason, SessionMessagingGrants } from "../lib/session-messaging-grants.ts";
+import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
-import { join, resolve, isAbsolute, sep } from "node:path";
-import { createBashToolDefinition, createLocalBashOperations, type BashOperations, keyHint, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { join, resolve, isAbsolute } from "node:path";
+import { fileURLToPath } from "node:url";
+import { keyHint, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, type TUI } from "@earendil-works/pi-tui";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
+import { VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
+import { resolveVisualSettings } from "../lib/visual-customization-policy.ts";
 import { createCompletionQueue } from "../lib/agents-completion-delivery.ts";
-import { AGENT_MODE, discoverAgents, parseAgentDefinition, loadAgentsConfig, resolveAgentProfile, withPinnedModelProfiles, type AgentDefinition, type AgentMode } from "../lib/agents-config.ts";
+import { createAgentMessageQueue, type PendingAgentMessage } from "../lib/agents-message-delivery.ts";
+import { AGENT_MODE, discoverAgents, formatModelRef, loadAgentsConfig, resolveAgentProfile, withPinnedModelProfiles, type AgentDefinition, type AgentMode } from "../lib/agents-config.ts";
 import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-policy.ts";
 import { installBackgroundCacheWarming } from "../lib/background-cache-warming.ts";
 import { isFinished, TASK_EVENT, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
-import { AgentRunner, piCommand, abortReasonText, plannedCommands, type RemediationPlan, type RemediationScope, REMEDIATION_PLAN_ENV, parseRemediationPlan, type AskAnswer, type RunnerDeps, type SddChangeSelection, type TaskRequest } from "../lib/agents-runner.ts";
+import { AgentRunner, piCommand, abortReasonText, type AskAnswer, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
 import { ChildMessenger, type IpcEndpoint } from "../lib/agents-messaging.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessionPresenceRegistry, type WindowsSessionRegistryPhaseObserver } from "../lib/windows-session-transport.ts";
@@ -30,6 +32,7 @@ import { inheritedUnsafeGitEnvironmentKeys } from "../lib/review-repository.ts";
 import { historyDir, loadHistory, loadStoredTask, pruneHistory, saveTask } from "../lib/agents-history.ts";
 import { sessionToMarkdown } from "../lib/agents-transcript.ts";
 import { AgentsView } from "../lib/agents-view.ts";
+import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
 import { PresencePublisher } from "../lib/orchestrator-presence.ts";
 import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/agents-rpc-publisher.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
@@ -38,8 +41,8 @@ import { AGENTS_GLYPH, renderAgentsCard, widgetExpiryMs, widgetRows } from "../l
 import { CARD_TONE, renderCard } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
 import { resolveGentlePiAgentHome, gentlePiConfigHome } from "../lib/agent-home.ts";
-import { resolveProfilePin } from "../lib/agent-profile-pin.ts";
-import { canonicalArtifactPath, researchAgent, renderResearchCapabilities, RESEARCH_CHILD_TOOLS_ENV, RESEARCH_SELECTION_ENV } from "../lib/sdd-research-capabilities.ts";
+import { resolveProfilePin, resolveUnversionedProjectProfile } from "../lib/agent-profile-pin.ts";
+import { allowedEditSurfaces, isDevelopmentSurface, isGenericBoundedWriter, prepareBoundSessionRepository, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sessionRepositoryAuthority } from "../lib/bounded-writer-admission.ts";
 import { CHILD_METRICS_EVENT, CHILD_METRICS_REVOKED, childEvent, launchSelection, type LaunchSelection } from "../lib/runtime-metrics-children.ts";
 import { runtimeMetricsEnvAllows, type RuntimeMetricsPolicyDeps } from "../lib/runtime-metrics-policy.ts";
 
@@ -57,125 +60,14 @@ export const AGENTS_STALE_RESULT_TYPE = "gentle-agents.stale-result";
 const RENDER_COALESCE_MS = 400;
 const CLOCK_TICK_MS = 1000;
 const TOOL_PREFIX = "subagent_";
-const SHIPPED_SDD_AGENT_NAME_SET = new Set(SHIPPED_SDD_AGENT_NAMES);
+// Wakes an idle parent after child content was stored as a custom message.
+// It names itself as automated so the model never attributes it to the human.
+const PARENT_WAKE_TEXT = "[System-generated Gentle Agents notification, not written by the user] Subagent output was delivered to this session above. Review it and continue.";
+// How long a dispatched wake may take to start a parent run before a later
+// delivery may send another one.
+export const PARENT_WAKE_GRACE_MS = 30_000;
 
-const SDD_PHASE_BY_AGENT = {
-	"sdd-apply": "apply",
-	"sdd-remediate": "remediate",
-	"sdd-verify": "verify",
-	"sdd-archive": "archive",
-} as const;
-
-function sddPhaseForAgent(name: string): SddChangeSelection["phase"] | undefined {
-	return Object.hasOwn(SDD_PHASE_BY_AGENT, name) ? SDD_PHASE_BY_AGENT[name as keyof typeof SDD_PHASE_BY_AGENT] : undefined;
-}
-
-function parseSddChange(value: unknown, agentName: string): SddChangeSelection | undefined {
-	if (value === undefined) return undefined;
-	const expectedPhase = sddPhaseForAgent(agentName);
-	if (!expectedPhase) throw new Error("sdd_change is allowed only for SDD apply, verify, or archive agents.");
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("sdd_change must be an object with changeName, workspaceRoot, and phase.");
-	const selection = value as Record<string, unknown>;
-	const keys = Object.keys(selection).sort();
-	if (keys.join(",") !== (expectedPhase === "remediate" ? "changeName,failedEvidenceRevision,phase,workspaceRoot" : "changeName,phase,workspaceRoot") ||
-		typeof selection.changeName !== "string" || selection.changeName.length === 0 ||
-		typeof selection.workspaceRoot !== "string" || selection.workspaceRoot.length === 0 ||
-		selection.phase !== expectedPhase) {
-		throw new Error("sdd_change must contain only a non-empty changeName, workspaceRoot, and the agent's matching phase.");
-	}
-	if (expectedPhase === "remediate" && (typeof selection.failedEvidenceRevision !== "string" || !/^sha256:[0-9a-f]{64}$/.test(selection.failedEvidenceRevision))) throw new Error("Invalid remediation revision");
-	return { changeName: selection.changeName, workspaceRoot: selection.workspaceRoot, phase: expectedPhase, ...(expectedPhase === "remediate" ? { failedEvidenceRevision: selection.failedEvidenceRevision as string } : {}) };
-}
-
-const REMEDIATION_SCHEMA = {
-	type: "object", additionalProperties: false, required: ["plan"],
-	properties: {
-		plan: { type: "object", additionalProperties: false, required: ["cwd", "commands", "runtimeHarness", "rollback"], properties: {
-			editPaths: { type: "array", maxItems: 32, items: { type: "string" }, description: "Exact canonical files requested for this launch; no entry means no edit/write authority." }, cwd: { type: "string" }, commands: { type: "array", minItems: 1, maxItems: 16, items: { type: "string" } },
-			runtimeHarness: { type: "object", additionalProperties: false, description: "Exactly one concrete command or prior concrete naReason containing because.", properties: { command: { type: "string" }, naReason: { type: "string" } } },
-			rollback: { type: "object", additionalProperties: false, required: ["boundary", "command"], properties: { boundary: { type: "string" }, command: { type: "string" } } },
-		} },
-
-	},
-};
-
-export async function confirmRemediationScope(plan: RemediationPlan, action: Record<string, unknown>, context?: Pick<ExtensionContext, "hasUI" | "ui">): Promise<RemediationScope> {
-	const cwd = plan.cwd, roots = action.allowedEditRoots;
-	if (realpathSync(cwd) !== cwd || action.workspaceRoot !== cwd || !Array.isArray(roots) || !roots.every(root => typeof root === "string" && isAbsolute(root) && canonicalArtifactPath(root) === root)) throw new Error("Remediation native scope mismatch");
-	const inside = (path: string, root: string) => path === root || path.startsWith(`${root}${sep}`);
-	const editPaths = plan.editPaths ?? [];
-	if (!Array.isArray(editPaths) || editPaths.length > 32 || new Set(editPaths).size !== editPaths.length) throw new Error("Ambiguous remediation paths");
-	for (const path of editPaths) {
-		if (typeof path !== "string" || !isAbsolute(path) || resolve(path) !== path || /[*?\[\]{}]/.test(path) || canonicalArtifactPath(path) !== path || !inside(path, cwd) || !roots.some(root => inside(path, root))) throw new Error("Remediation path outside canonical native scope");
-		if (existsSync(path) && !lstatSync(path).isFile()) throw new Error("Remediation requires exact file paths, not directories");
-	}
-	const scope: RemediationScope = { cwd, editPaths: [...editPaths], commands: plannedCommands(plan), allowedEditRoots: [...roots] };
-	if (!context?.hasUI || !context.ui?.confirm || await context.ui.confirm("Authorize one remediation launch", `Canonical worktree: ${cwd}\nNative allowed roots: ${JSON.stringify(roots)}\nExact edit/write files: ${JSON.stringify(editPaths)}\nExact invocations (not a shell sandbox):\n${scope.commands.map((command, slot) => `${slot}: cwd=${JSON.stringify(cwd)} command=${JSON.stringify(command)}`).join("\n")}`) !== true) throw new Error("Remediation requires fresh human authorization; no actor started");
-	if (realpathSync(cwd) !== cwd || editPaths.some(path => canonicalArtifactPath(path) !== path)) throw new Error("Remediation scope changed during authorization");
-	return scope;
-}
-export function remediationToolAllowed(scope: RemediationScope | undefined, cwd: string, tool: string, input: Record<string, unknown>): boolean {
-	try {
-		if (!scope || scope.cwd !== cwd || canonicalArtifactPath(cwd) !== cwd) return false;
-		if (tool === "bash") return typeof input.command === "string" && scope.commands.includes(input.command);
-		if (["edit", "write"].includes(tool)) {
-			if (typeof input.path !== "string") return false;
-			const path = resolve(cwd, input.path);
-			return scope.editPaths.includes(path) && canonicalArtifactPath(path) === path && scope.allowedEditRoots.some(root => path === root || path.startsWith(`${root}${sep}`));
-		}
-		if (["read", "grep", "find"].includes(tool)) {
-			if (input.path === undefined) return true;
-			if (typeof input.path !== "string" || !input.path || isAbsolute(input.path)) return false;
-			const path = resolve(cwd, input.path);
-			return canonicalArtifactPath(path) === path && (path === cwd || path.startsWith(`${cwd}${sep}`));
-		}
-		return tool === "subagent_parent_message";
-	} catch { return false; }
-}
-
-export async function admitManagedRemediation(request: TaskRequest, input: unknown, native: NativeReviewCli, context?: Pick<ExtensionContext, "hasUI" | "ui">): Promise<Partial<TaskRequest>> {
-	const selected = request.sddChange;
-	const asset = fileURLToPath(new URL("../assets/agents/sdd-remediate.md", import.meta.url));
-	if (request.agent.name !== "sdd-remediate" || selected?.phase !== "remediate" || selected.workspaceRoot !== request.cwd || !native.sddStatus || getPackageAssetOwner("agents/sdd-remediate.md") !== "sdd" || !existsSync(request.agent.filePath) ) throw new Error("Unsupported managed remediation owner/asset or native capability; install matching package assets before retrying");
-	const owned = parseAgentDefinition(readFileSync(asset, "utf8"), asset, "global");
-	const installed = parseAgentDefinition(readFileSync(request.agent.filePath, "utf8"), request.agent.filePath, request.agent.scope);
-	if (!("instructions" in owned) || !("instructions" in installed) || [request.agent, installed].some(agent => agent.instructions !== owned.instructions || JSON.stringify(agent.tools) !== JSON.stringify(owned.tools))) throw new Error("Unsupported remediation actor content; install matching managed assets");
-	const value = input as { plan?: unknown };
-	const plan = parseRemediationPlan(value?.plan, request.cwd);
-	const status = decodeNativeSddStatusV2(await native.sddStatus({ workspaceRoot: request.cwd, changeName: selected.changeName }), selected);
-	// Legacy remediation status carries the verification failure being repaired;
-	// that is not permission to bypass a missing native edit grant.
-	if (status.blockedReasons.some(reason => reason.includes("edit_authority_missing")) || status.nextRecommended !== "remediate" || !status.phaseInstructions?.remediate || status.remediationState?.failedEvidenceRevision !== selected.failedEvidenceRevision) throw new Error("Stale remediation selection; refresh native status");
-	const scope = await confirmRemediationScope(plan, status.actionContext, context);
-	return { sddRemediation: { scope, failedEvidenceRevision: selected.failedEvidenceRevision!, plan } };
-}
-
-// Installed only for the admitted remediation child. Stock shell execution,
-// cancellation, truncation and rendering remain owned by the SDK definition.
-export function remediationBash(cwd: string, operations: BashOperations = createLocalBashOperations(), scope?: RemediationScope) {
-	const captured = new Map<string, { toolCallId: string; command: string; cwd: string; exitCode: number | null }>();
-	const remaining = [...(scope?.commands ?? [])], used = new Set<string>();
-	const stock = createBashToolDefinition(cwd);
-	return {
-		definition: { ...stock, async execute(...input: Parameters<typeof stock.execute>) {
-			const [id, args, signal, onUpdate, ctx] = input;
-			const slot = remaining.indexOf(args.command);
-			if (!remediationToolAllowed(scope, ctx?.cwd ?? cwd, "bash", args) || slot < 0 || used.has(id)) throw new Error("Bash invocation is outside this launch human authorization");
-			remaining.splice(slot, 1); used.add(id);
-			const definition = createBashToolDefinition(cwd, { operations: { exec: async (command, directory, options) => {
-				const result = await operations.exec(command, directory, options);
-				if (captured.size < 32) captured.set(id, { toolCallId: id, command, cwd: directory, exitCode: result.exitCode });
-				return result;
-			} } });
-			return definition.execute(id, args, signal, onUpdate, ctx);
-		} },
-		result(event: { toolCallId: string; details?: unknown }) {
-			const observation = captured.get(event.toolCallId);
-			captured.delete(event.toolCallId);
-			return observation ? { details: { ...(event.details as object ?? {}), remediationCommand: observation } } : undefined;
-		},
-	};
-}
+const retiredSddAgent = (name: string): boolean => /^sdd(?:-|$)/.test(name);
 
 export interface SessionTransportRegistry {
 	list(excludeSessionId?: string): Promise<readonly SessionPresenceCandidate[]>;
@@ -202,7 +94,6 @@ export interface SessionTransportFactory {
 }
 
 export interface AgentsDeps extends RunnerDeps {
-	nativeSdd?: NativeReviewCli;
 	home: string;
 	agentHome?: string;
 	childIpc?: IpcEndpoint;
@@ -212,6 +103,22 @@ export interface AgentsDeps extends RunnerDeps {
 	runtimeMetricsPolicy?: RuntimeMetricsPolicyDeps;
 	metricsNow?: () => number;
 	metricsSchedule?: RunnerDeps["schedule"];
+	// Extensions every child loads with --extension (gentle-shell#1587).
+	childExtensionPaths?: string[];
+}
+
+// gentle-shell#1587: children do not load the gentle-pi package in the
+// isolated Gentle Shell home, so context filtering and destructive-command
+// safety are passed to every child explicitly. Missing files are omitted;
+// installations must include both entries to provide the delegated boundary.
+export function childContextExtensionPaths(exists: (path: string) => boolean = existsSync): string[] {
+	try {
+		return ["./child-context.ts", "./child-safety.ts"]
+			.map((path) => fileURLToPath(new URL(path, import.meta.url)))
+			.filter(exists);
+	} catch {
+		return [];
+	}
 }
 
 export function agentRuntimePaths(home: string, agentHome = join(home, ".pi", "agent")): { sessions: string; transcripts: string } {
@@ -234,9 +141,11 @@ const defaultDeps = (env: NodeJS.ProcessEnv): AgentsDeps => ({
 		return () => clearTimeout(timer);
 	},
 	pi: piCommand(),
+	resolvePi: () => piCommand(),
 	home: os.homedir(),
 	resolveWorktree: resolveSessionWorktree,
 	env,
+	childExtensionPaths: childContextExtensionPaths(),
 });
 
 export function agentsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -322,6 +231,22 @@ function text(value: string, details: Record<string, unknown> = {}, terminate = 
 	return { content: [{ type: "text", text: value }], details, ...(terminate ? { terminate: true } : {}) };
 }
 
+// gentle-pi#1175: the writer profile the runtime resolved for this task,
+// carried on its review-mutation receipt so ASSESS never trusts a model
+// re-declaration. `task.model` is the child's reported model once get_state
+// answers, or the launch profile's model. An inherited model is recorded as
+// the unresolved `formatModelRef(undefined)` placeholder; the parent's current
+// model is not reliable evidence (the child resolves its own default), so it is
+// omitted and ASSESS treats the writer as unknown, i.e. small.
+function runtimeWriterProfile(task: TaskRecord): { writerModelId?: string; writerEffort?: string } {
+	const modelId = typeof task.model === "string" && task.model !== formatModelRef(undefined) && task.model.trim() ? task.model : undefined;
+	const effort = typeof task.thinking === "string" && task.thinking.trim() ? task.thinking : undefined;
+	return {
+		...(modelId === undefined ? {} : { writerModelId: modelId }),
+		...(effort === undefined ? {} : { writerEffort: effort }),
+	};
+}
+
 function taskDetails(task: TaskRecord): Record<string, unknown> {
 	return { gentleAgents: { taskId: task.id, agent: task.agent, status: task.status, mode: task.mode, cwd: task.cwd } };
 }
@@ -364,10 +289,22 @@ export function resolveDefaultSubagentMode(input: {
 }
 
 // What the model reads when a background task ends: the outcome first, then
-// the answer itself. The card renderer shows the same text.
+// the answer itself. The expanded card shows the same text.
 export function completionText(task: TaskRecord): string {
 	const outcome = task.status === "completed" ? "finished" : task.status.replace("_", " ");
 	return `Subagent ${task.agent} (task ${task.id}, "${task.label}") ${outcome}.\n\n${finishedText(task)}`;
+}
+
+const COMPLETION_HEADER = /^Subagent [^\n]+ \(task [^\n]*\) [^\n]+\.$/;
+
+// The collapsed card leads with the answer or error: completionText's
+// bookkeeping paragraph stays for the model and the expanded card. Entries
+// without that header (older sessions) preview their full text.
+export function agentResultPreview(text: string): string {
+	const split = text.indexOf("\n\n");
+	if (split < 0 || !COMPLETION_HEADER.test(text.slice(0, split))) return text;
+	const rest = text.slice(split + 2);
+	return rest.trim() === "" ? text : rest;
 }
 
 // Host-side answer to a child's dialog: the same ctx.ui the human already
@@ -396,66 +333,21 @@ export async function answerThroughUi(ui: ExtensionContext["ui"] | undefined, as
 	}
 }
 
-const RESEARCH_SELECTION_SCHEMA = {
-	type: "object",
-	additionalProperties: false,
-	description: "Untrusted narrowing intent for sdd-research; exact tools and existing sourceInfo.path per tool. Never grants permissions or installs extensions.",
-	properties: Object.fromEntries(["documentation", "open-web"].map(kind => [kind, {
-		type: "object", additionalProperties: false, required: ["tools", "extensions"],
-		properties: {
-			tools: { type: "array", items: { type: "string" } },
-			extensions: { type: "object", additionalProperties: { type: "string" } },
-		},
-	}])),
-};
-
 export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<AgentsDeps> = {}): void {
-	if (env.GENTLE_PI_AGENTS_CHILD === "1" && env[RESEARCH_CHILD_TOOLS_ENV] !== undefined) {
-		let allowed: string[] = [];
-		try {
-			const parsed: unknown = JSON.parse(env[RESEARCH_CHILD_TOOLS_ENV]!);
-			if (Array.isArray(parsed) && parsed.every(value => typeof value === "string")) allowed = parsed;
-		} catch { /* Invalid launch restrictions deny every tool. */ }
-		let selection: unknown;
-		try { selection = JSON.parse(env[RESEARCH_SELECTION_ENV] ?? "null"); } catch { /* Missing selection grants no research. */ }
-		const current = () => researchAgent({ tools: allowed, instructions: "" } as AgentDefinition, pi, selection);
-		pi.on("before_agent_start", event => ({
-			systemPrompt: `${event.systemPrompt}\n\n${renderResearchCapabilities(current().capabilities)}\n\nResearch is output-only. Use parent-supplied local context; do not read or mutate repository or Engram artifacts. Return useful partial findings and unavailable sources honestly. The parent owns authorized persistence and actual readback.`,
-		}));
-		pi.on("tool_call", event => {
-			const registered = pi.getAllTools().some(tool => tool.name === event.toolName && tool.sourceInfo?.source !== "sdk");
-			const selected = current().agent.tools.includes(event.toolName) || event.toolName === "subagent_parent_message";
-			if (!registered || !selected || !allowed.includes(event.toolName) || !pi.getActiveTools().includes(event.toolName)) {
-				return { block: true, reason: "Tool is outside the output-only research child's active launch allowlist." };
-			}
-		});
-	}
 	const childIpc = ownedChildIpc(env, overrides.childIpc ?? (process.send ? process as unknown as IpcEndpoint : undefined));
 	if (env.GENTLE_PI_AGENTS_CHILD === "1") {
-		if (env[REMEDIATION_PLAN_ENV] !== undefined) {
-			let granted: RemediationScope | undefined;
-			pi.on("tool_call", (event, current) => remediationToolAllowed(granted, current.cwd, event.toolName, event.input) ? undefined : { block: true, reason: "Outside exact remediation human authorization" });
-			pi.on("session_start", (_event, ctx) => {
-				granted = undefined;
-				try {
-					const retained = JSON.parse(env[REMEDIATION_PLAN_ENV]!);
-					// SDK flags are owner-local; the runner transports the same selected context.
-					const selection = Object.hasOwn(retained, "selection") ? retained.selection : JSON.parse(String(pi.getFlag("gentle-sdd-change")));
-					parseSddChange(selection, "sdd-remediate");
-					const plan = parseRemediationPlan(retained.plan, ctx.cwd);
-					if (selection.workspaceRoot !== ctx.cwd || JSON.stringify(plannedCommands(plan)) !== JSON.stringify(retained.scope?.commands) || JSON.stringify(plan.editPaths ?? []) !== JSON.stringify(retained.scope?.editPaths)) throw new Error("Remediation grant/plan mismatch");
-					const shell = remediationBash(ctx.cwd, undefined, retained.scope);
-					pi.registerTool(shell.definition);
-					pi.on("tool_result", event => event.toolName === "bash" ? shell.result(event) : undefined);
-					granted = retained.scope;
-				} catch { /* No valid host grant: deny every tool, even if Pi continues initialization. */ }
-			});
+		// A stale managed-SDD child must never inherit unrestricted ordinary tools.
+		if (env.GENTLE_PI_RESEARCH_TOOLS !== undefined || env.GENTLE_PI_RESEARCH_SELECTION !== undefined || env.GENTLE_PI_RESEARCH_ARTIFACT !== undefined || env.GENTLE_PI_SDD_REMEDIATION_PLAN !== undefined) {
+			pi.on("tool_call", () => ({ block: true, reason: "Retired SDD child launch is not supported." }));
+			return;
 		}
 		if (childIpc) registerChildMessaging(pi, childIpc);
 		return;
 	}
 	if (!agentsEnabled(env)) return;
 	const deps: AgentsDeps = { ...defaultDeps(env), ...overrides };
+	// An explicitly injected pi command wins over the default per-spawn resolver.
+	if (overrides?.pi && !overrides.resolvePi) delete deps.resolvePi;
 	const selectedHome = overrides.agentHome ?? (overrides.home === undefined ? resolveGentlePiAgentHome(deps.env) : join(deps.home, ".pi", "agent"));
 	// Expand environment tildes like Pi, but leave explicit path APIs literal.
 	const environmentHome = overrides.agentHome === undefined && overrides.home === undefined;
@@ -479,6 +371,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	let ui: ExtensionContext["ui"] | undefined;
 	let host: { requestRender(): void } | undefined;
 	let sidebarTui: TUI | undefined;
+	const visualHome = gentlePiConfigHome(env);
+	let agentsVisible = resolveVisualSettings({ gentlePiConfigHome: visualHome }).settings.visibility.agents;
+	let stopVisualUpdates: (() => void) | undefined;
 	let sessions: ExtensionContext["sessionManager"] | undefined;
 	let presence: PresencePublisher | undefined;
 	let rpcActivityPublisher: RpcActivityPublisher | undefined;
@@ -499,12 +394,17 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		} catch { presence?.dispose(); presence = undefined; }
 	};
 	let worktrees: SessionWorktreeRegistry | undefined;
+	let worktreeManager: ExtensionContext["sessionManager"] | undefined;
+	let worktreeAuthority: (() => boolean) | undefined;
 	const foreignGrants = new ForeignTargetGrants();
+	const messagingGrants = new SessionMessagingGrants();
 	const foreignTasks = new Map<string, { root: string; commonDir: string; manager: ExtensionContext["sessionManager"] }>();
 	const foreignRequests = new WeakMap<TaskRequest, { root: string; commonDir: string; manager: ExtensionContext["sessionManager"] }>();
 	const registryFor = (ctx: ExtensionContext) => {
-		if (!worktrees || worktrees.sessionId !== ctx.sessionManager.getSessionId()) {
+		if (!worktrees || worktreeManager !== ctx.sessionManager || worktrees.sessionId !== ctx.sessionManager.getSessionId()) {
 			worktrees?.close();
+			worktreeManager = ctx.sessionManager;
+			worktreeAuthority = sessionRepositoryAuthority(ctx.sessionManager.getCwd(), deps.resolveWorktree);
 			worktrees = new SessionWorktreeRegistry(pi, ctx.sessionManager, ctx.sessionManager.getCwd(), deps.resolveWorktree);
 		}
 		return worktrees;
@@ -688,20 +588,128 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// flushed at the next turn boundary, and a stale one never re-enters the
 	// conversation.
 	const completions = createCompletionQueue<TaskRecord>();
+	const messages = createAgentMessageQueue();
 	let activeAgentRuns = 0;
+	// ExtensionAPI has no idle probe; ctx.isIdle() is the only one. It is live
+	// and also reports compaction, which activeAgentRuns cannot see. The
+	// session_start context is kept for it and dropped at shutdown; a stale
+	// context throws instead of answering, so delivery fails closed.
+	let parentCtx: ExtensionContext | undefined;
+	// Mirrors the host's agent run, which spans agent_start through
+	// agent_settled, including post-run retries and in-run compaction. Unlike
+	// activeAgentRuns it stays set between agent_end and agent_settled, where
+	// Pi still streams and still drains steering.
+	let parentRunActive = false;
+	// Idle wake-up state. Child content stored while the parent is idle owes a
+	// wake, and one wake covers everything stored before the run it starts.
+	// While a prompt is starting (a dispatched wake, or any prompt seen at
+	// before_agent_start) no second wake is sent: two prompts racing through
+	// Pi's asynchronous pre-run phase can both reach the agent, and the loser
+	// resets the winner's run state. A prompt that never starts a run (handled
+	// by an input handler, or rejected) emits no extension event, so the
+	// starting state expires after PARENT_WAKE_GRACE_MS and an owed wake is
+	// sent then; it never suppresses later wakes for longer than that.
+	let wakeOwed = false;
+	let wakeQueued = false;
+	let promptStarting = false;
+	let cancelPromptGrace: (() => void) | undefined;
+	let cancelBoundaryFlush: (() => void) | undefined;
 
-	const deliver = (task: TaskRecord) => {
+	const isTaskLive = (id: string): boolean => {
+		const task = store.get(id);
+		return Boolean(task && ownedTaskIds.has(task.id) && !isFinished(task.status));
+	};
+
+	// Hands model-visible child content to the parent session.
+	//
+	// A busy parent gets "steer" + triggerTurn, which keeps delivery bounded to
+	// the current turn: the host polls steering each turn and injects the
+	// message before the next LLM call. "followUp" is NOT acceptable here
+	// because the host drains the follow-up queue only in the run loop's stop
+	// branch, so a parent that keeps calling tools would see the content only
+	// when the whole run ends — the original #867 delay.
+	//
+	// An idle parent must not get triggerTurn: the host would run the custom
+	// message as a direct turn that skips the prompt lifecycle
+	// (before_agent_start and the prompt refresh), and prompt-capture
+	// integrations such as the Claude bridge reject that turn. The structured
+	// message is stored durably without a turn instead, and a short
+	// system-generated user message wakes the parent through the normal prompt
+	// path. The wake never repeats child content, so the model sees it once.
+	//
+	// A parent that is busy without a run (compaction, or a prompt's pre-run
+	// compaction) is not streaming, so steer + triggerTurn would also start a
+	// direct turn. Its content stays queued ("hold") until a later boundary.
+	type ParentRoute = "idle" | "run" | "hold";
+	// Throws for a missing or stale parent context, so delivery fails closed.
+	const parentRoute = (): ParentRoute => {
+		if (!parentCtx) throw new Error("Gentle Agents has no live parent session context");
+		if (parentCtx.isIdle()) {
+			// The host is authoritative: an idle parent has no run, even if a
+			// lifecycle event was missed.
+			parentRunActive = false;
+			return "idle";
+		}
+		return parentRunActive ? "run" : "hold";
+	};
+
+	const endPromptStart = () => {
+		promptStarting = false;
+		cancelPromptGrace?.();
+		cancelPromptGrace = undefined;
+	};
+	const beginPromptStart = () => {
+		endPromptStart();
+		promptStarting = true;
+		cancelPromptGrace = deps.schedule(() => {
+			cancelPromptGrace = undefined;
+			promptStarting = false;
+			requestWake();
+		}, PARENT_WAKE_GRACE_MS);
+	};
+
+	// Every wake requested during one synchronous delivery pass is coalesced
+	// into a single dispatch after it, so the wake follows all stored content.
+	const requestWake = () => {
+		if (!wakeOwed || wakeQueued || promptStarting) return;
+		wakeQueued = true;
+		queueMicrotask(dispatchWake);
+	};
+	const dispatchWake = () => {
+		wakeQueued = false;
+		if (!wakeOwed || promptStarting) return;
+		let route: ParentRoute;
+		try { route = parentRoute(); } catch { return; }
+		// A run in progress already carries the stored content; a parent busy
+		// without a run keeps the wake owed until a later boundary flush.
+		if (route !== "idle") return;
+		wakeOwed = false;
+		beginPromptStart();
+		try {
+			// "steer" matters only when a run started in between: the wake is then
+			// queued into it instead of being rejected as a concurrent prompt.
+			pi.sendUserMessage(PARENT_WAKE_TEXT, { deliverAs: "steer" });
+		} catch {
+			// A stale runtime fails closed instead of throwing from a microtask.
+			endPromptStart();
+		}
+	};
+
+	const sendToParent = (message: Parameters<ExtensionAPI["sendMessage"]>[0], route: Exclude<ParentRoute, "hold">) => {
+		if (route === "run") {
+			pi.sendMessage(message, { deliverAs: "steer", triggerTurn: true });
+			return;
+		}
+		pi.sendMessage(message, { triggerTurn: false });
+		wakeOwed = true;
+		requestWake();
+	};
+
+	const deliver = (task: TaskRecord, route: Exclude<ParentRoute, "hold">) => {
 		// Ownership is consulted at delivery time, matching onNotification and
 		// onQuery: a completion owned by another session is dropped, not delivered.
 		if (activeSessionId() !== task.parentSessionId) return;
-		// "steer" + triggerTurn keeps delivery bounded to the current turn. While
-		// the parent streams, the host polls steering each turn and injects the
-		// message before the next LLM call; "followUp" is NOT acceptable here
-		// because the host drains the follow-up queue only in the run loop's stop
-		// branch, so a parent that keeps calling tools would see the completion
-		// only when the whole run ends — the original #867 delay. When the parent
-		// is idle, triggerTurn runs the prompt immediately, preserving wake-up.
-		pi.sendMessage({ customType: AGENTS_RESULT_TYPE, content: completionText(task), display: true, details: taskDetails(task) }, { deliverAs: "steer", triggerTurn: true });
+		sendToParent({ customType: AGENTS_RESULT_TYPE, content: completionText(task), display: true, details: taskDetails(task) }, route);
 	};
 
 	// A stale completion must not re-enter the LLM conversation, so it is
@@ -712,13 +720,75 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		pi.appendEntry(AGENTS_STALE_RESULT_TYPE, { taskId: task.id, agent: task.agent, label: task.label, status: task.status, ageSeconds });
 	};
 
+	const deliverMessage = (msg: PendingAgentMessage, route: Exclude<ParentRoute, "hold">) => {
+		if (activeSessionId() !== msg.parentSessionId) return;
+		sendToParent({ customType: AGENTS_MESSAGE_TYPE, content: msg.content, display: msg.display, details: msg.details }, route);
+	};
+
+	// Child content leaves its queue only when the parent can receive it. A
+	// held or undeliverable flush leaves everything queued for a later boundary;
+	// `rethrow` lets a query report a stale parent back to its child.
+	const deliveryRoute = (rethrow: boolean): Exclude<ParentRoute, "hold"> | undefined => {
+		try {
+			const route = parentRoute();
+			return route === "hold" ? undefined : route;
+		} catch (error) {
+			if (rethrow) throw error;
+			return undefined;
+		}
+	};
+
+	const flushMessages = (rethrow = false) => {
+		const route = deliveryRoute(rethrow);
+		if (!route) return;
+		for (const msg of messages.takeDeliverable(deps.now(), activeSessionId() ?? "", isTaskLive)) {
+			try {
+				deliverMessage(msg, route);
+			} catch (error) {
+				if (rethrow) throw error;
+				/* Best-effort delivery: at most once, even if forwarding fails. */
+			}
+		}
+	};
+
 	const flushCompletions = () => {
+		const route = deliveryRoute(false);
+		if (!route) return;
 		for (const { task, settledAt, stale } of completions.takeDeliverable(deps.now())) {
 			try {
 				if (stale) deliverStale(task, settledAt);
-				else deliver(task);
+				else deliver(task, route);
 			} catch { /* Best-effort delivery: at most once, even if forwarding fails. */ }
 		}
+	};
+
+	const flushAll = () => {
+		flushMessages();
+		flushCompletions();
+		// A wake left owed by an earlier held or expired attempt is retried here.
+		requestWake();
+	};
+
+	// Pi still reports compaction while these handlers run (a manual
+	// session_compact, an automatic compaction's session_compact_failed), so
+	// held content is flushed once on the next scheduler tick instead. A parent
+	// still busy then keeps it held for the next boundary; nothing polls.
+	const scheduleBoundaryFlush = () => {
+		if (cancelBoundaryFlush) return;
+		cancelBoundaryFlush = deps.schedule(() => {
+			cancelBoundaryFlush = undefined;
+			flushAll();
+		}, 0);
+	};
+
+	// Session changes discard every pending wake and boundary flush.
+	const resetParentDelivery = (ctx: ExtensionContext | undefined) => {
+		parentCtx = ctx;
+		parentRunActive = false;
+		wakeOwed = false;
+		endPromptStart();
+		cancelBoundaryFlush?.();
+		cancelBoundaryFlush = undefined;
 	};
 
 	// A completion settles into our queue. An idle parent flushes right away so
@@ -726,8 +796,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// boundary, and the steer mode injects it before that turn's next LLM call
 	// instead of parking it behind the whole run.
 	const settleCompletion = (task: TaskRecord) => {
+		messages.invalidateTask(task.id);
 		completions.enqueue(task, deps.now());
-		if (activeAgentRuns === 0) flushCompletions();
+		if (activeAgentRuns === 0) flushAll();
 	};
 
 	// `agent_start`/`agent_end` bracket a parent agent run; `turn_end` fires at
@@ -737,34 +808,59 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// a final `turn_end` (an aborted run, or the host's early post-run return
 	// when a run produced no assistant message; the host compensates via
 	// hasQueuedMessages() + continue(), so steering there is still bounded).
-	// `agent_settled` is the final idle boundary after retries — normally a
-	// no-op safety net, since anything enqueued while idle flushes right away.
-	pi.on("agent_start", () => { activeAgentRuns += 1; });
+	// `agent_settled` is the final idle boundary after retries: it ends the
+	// host run and flushes anything held, including content held while a
+	// compaction ran inside or right before the run. `before_agent_start`
+	// marks a prompt that is about to start a run, and the compaction events
+	// release content held while the parent compacted without a run.
+	pi.on("before_agent_start", () => {
+		if (!parentRunActive) beginPromptStart();
+	});
+	pi.on("agent_start", () => {
+		activeAgentRuns += 1;
+		parentRunActive = true;
+		// The run carries everything stored while the parent was idle.
+		wakeOwed = false;
+		endPromptStart();
+	});
 	pi.on("agent_end", () => {
 		activeAgentRuns = Math.max(0, activeAgentRuns - 1);
-		flushCompletions();
+		flushAll();
 	});
-	pi.on("agent_settled", () => flushCompletions());
-	pi.on("turn_end", () => flushCompletions());
+	pi.on("agent_settled", () => {
+		parentRunActive = false;
+		endPromptStart();
+		flushAll();
+	});
+	pi.on("turn_end", () => flushAll());
+	pi.on("session_compact", scheduleBoundaryFlush);
+	pi.on("session_compact_failed", scheduleBoundaryFlush);
 
 	const runner = new AgentRunner(store, loadAgentsConfig({ cwd: process.cwd(), home: deps.home, agentHome }), deps, {
 		askUser: (_taskId, ask, raw) => answerThroughUi(ui, ask, raw),
 		onNotification: (task, message) => {
-			if (activeSessionId() !== task.parentSessionId) return false;
-			pi.sendMessage({ customType: AGENTS_MESSAGE_TYPE, content: message, display: false, details: { gentleAgents: { taskId: task.id, agent: task.agent, parentSessionId: task.parentSessionId, kind: "notification" } } }, { deliverAs: "followUp", triggerTurn: true });
+			if (activeSessionId() !== task.parentSessionId || isFinished(task.status)) return false;
+			messages.enqueueNotification(task, message, deps.now());
+			if (activeAgentRuns === 0) flushMessages();
 			return true;
 		},
 		onQuery: (task, requestId, message) => {
-			if (activeSessionId() !== task.parentSessionId) return false;
+			if (activeSessionId() !== task.parentSessionId || isFinished(task.status)) return false;
 			const hadYield = yieldedTaskIds.has(task.id);
 			if (task.mode === AGENT_MODE.TASK) yieldedTaskIds.add(task.id);
 			try {
-				pi.sendMessage({ customType: AGENTS_MESSAGE_TYPE, content: `Subagent ${task.agent} asks:\nTask ID: ${task.id}\nRequest ID: ${requestId}\nQuestion: ${message}`, display: true, details: { gentleAgents: { taskId: task.id, agent: task.agent, parentSessionId: task.parentSessionId, requestId, kind: "query" } } }, { deliverAs: "followUp", triggerTurn: true });
+				messages.enqueueQuery(task, requestId, message, deps.now());
+				if (activeAgentRuns === 0) flushMessages(true);
 				return true;
 			} catch (error) {
+				messages.expireQuery(task.id, requestId);
 				if (task.mode === AGENT_MODE.TASK && !hadYield) yieldedTaskIds.delete(task.id);
 				throw error;
 			}
+		},
+		onQuerySettled: (taskId, requestId, outcome) => {
+			if (outcome === "replied") messages.consumeQuery(taskId, requestId);
+			else messages.expireQuery(taskId, requestId);
 		},
 		onSuccessfulMutation: (task, tool) => {
 			// Same-clone registry attribution remains unchanged. A foreign task
@@ -813,7 +909,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				}
 				else if (resolvedPath !== undefined) noteDrop("evidence-path-mismatch");
 			}
-			if (!foreignTask) recordReviewMutation(pi, sessions, root, { source: "subagent", taskId: task.id, toolName: tool.toolName, toolCallId: tool.toolCallId });
+			if (!foreignTask) recordReviewMutation(pi, sessions, root, { source: "subagent", taskId: task.id, toolName: tool.toolName, toolCallId: tool.toolCallId, ...runtimeWriterProfile(task) });
 		},
 		onFinish: (task, observations) => {
 			// Completion is the only forwarding opportunity. No pending event, policy
@@ -831,6 +927,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			} catch { /* Metrics must never interrupt task finalization. */ }
 			try {
 				ownedTaskIds.delete(task.id);
+				messages.invalidateTask(task.id);
 				requestRender();
 				persist(task);
 				const yielded = yieldedTaskIds.delete(task.id);
@@ -859,12 +956,13 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.registerMessageRenderer(AGENTS_RESULT_TYPE, (message, options, theme) => {
 		const details = (message.details as { gentleAgents?: { agent?: string; status?: string } } | undefined)?.gentleAgents;
 		const content = message.content as string | Array<{ type: string; text?: string }>;
-		const body = (typeof content === "string" ? content : content.map((part) => (part.type === "text" ? (part.text ?? "") : "")).join("\n")).split("\n");
+		const text = typeof content === "string" ? content : content.map((part) => (part.type === "text" ? (part.text ?? "") : "")).join("\n");
+		const body = options.expanded ? text.split("\n") : agentResultPreview(text).split("\n").filter((line) => line.trim() !== "");
 		const tone = details?.status === "completed" ? CARD_TONE.SUCCESS : CARD_TONE.ERROR;
 		const hint = expandHint(options.expanded);
 		return {
 			render(width: number) {
-				return renderCard({ title: "Agent result", subtitle: details?.agent, body, tone, glyph: AGENTS_GLYPH }, theme, width, { expanded: options.expanded, hint });
+				return renderCard({ title: "Agent result", subtitle: details?.agent, body, tone, glyph: AGENTS_GLYPH }, theme, width, { expanded: options.expanded, previewRows: 3, hint });
 			},
 			invalidate() {},
 		};
@@ -886,7 +984,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		];
 		return {
 			render(width: number) {
-				return renderCard({ title: "Stale agent result", subtitle: `${agent} · task ${taskId}`, body, tone: CARD_TONE.WARNING, glyph: AGENTS_GLYPH }, theme, width, { expanded: options.expanded, hint: expandHint(options.expanded) });
+				return renderCard({ title: "Stale agent result", subtitle: `${agent} · task ${taskId}`, body, tone: CARD_TONE.WARNING, glyph: AGENTS_GLYPH }, theme, width, { expanded: options.expanded, previewRows: 3, hint: expandHint(options.expanded) });
 			},
 			invalidate() {},
 		};
@@ -990,6 +1088,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		let overlayHost: { requestRender(force?: boolean): void; stop(): void; start(): void } | undefined;
 		const chosen = await ctx.ui.custom<TaskRecord | null>(
 			(tui, theme, _keybindings, done) => {
+				const close = withOverlayRepaint(tui, done);
 				overlayHost = tui;
 				view = new AgentsView({
 					theme,
@@ -1004,8 +1103,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					onCancel: (task) => void stopSelected(task, ctx),
 					canCancel: isOwnedActive,
 					isLocalTask: (task) => !restoredTaskIds.has(task.id),
-					onOpen: (task) => done(task),
-					onClose: () => done(null),
+					onOpen: (task) => close(task),
+					onClose: () => close(null),
 					requestRender: () => tui.requestRender(),
 				});
 				overlays.add(view);
@@ -1058,6 +1157,14 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	const showWidget = (ctx: ExtensionContext) => {
 		ui = ctx.hasUI ? ctx.ui : undefined;
 		sessions = ctx.sessionManager;
+		agentsVisible = resolveVisualSettings({ gentlePiConfigHome: visualHome }).settings.visibility.agents;
+		stopVisualUpdates?.();
+		stopVisualUpdates = pi.events.on(VISUAL_SETTINGS_CHANGED, (event) => {
+			if ((event as { configHome?: unknown } | undefined)?.configHome !== visualHome) return;
+			agentsVisible = resolveVisualSettings({ gentlePiConfigHome: visualHome }).settings.visibility.agents;
+			if (sidebarTui) invalidateSidebar(sidebarTui);
+			host?.requestRender();
+		});
 		tickClock();
 		// Agents is not a rail part: the fullscreen sidebar only suppresses
 		// bottom components registered through sidebarPart, and this widget is
@@ -1067,6 +1174,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			sidebarTui = tui;
 			return {
 				render(width: number) {
+					if (!agentsVisible) return [];
 					const lines = renderAgentsCard(visibleTasks(), theme, width, deps.now(), { collapsed, collapseKey, maxRows: widgetRows(tui.terminal?.rows), viewKey });
 					return lines.length === 0 ? [] : [...lines, ""];
 				},
@@ -1077,15 +1185,38 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 
 	const roots = (ctx: ExtensionContext) => ({ cwd: ctx.sessionManager.getCwd(), home: deps.home, agentHome });
 
-	const buildRequest = async (ctx: ExtensionContext, agent: AgentDefinition, prompt: string, label: string | undefined, context: string | undefined, mode: AgentMode, resume?: string, workspaceRoot?: string, sddChange?: SddChangeSelection, researchSelection?: unknown, remediationIntent?: unknown, signal?: AbortSignal, repositoryRoot?: string): Promise<TaskRequest> => {
+	const buildRequest = async (ctx: ExtensionContext, agent: AgentDefinition, prompt: string, label: string | undefined, context: string | undefined, mode: AgentMode, resume?: string, workspaceRoot?: string, signal?: AbortSignal, repositoryRoot?: string): Promise<TaskRequest> => {
+		if (retiredSddAgent(agent.name)) throw new Error("Retired SDD agents cannot be dispatched.");
+		if (![AGENT_MODE.TASK, AGENT_MODE.BACKGROUND].includes(mode)) throw new Error("Subagent mode must be task or background.");
+		if (ctx.mode === "print" && mode === AGENT_MODE.BACKGROUND) throw new Error("Background subagents are unavailable in print mode: pi -p exits before a parent session can receive results. Use task mode, RPC mode, or interactive Pi.");
+		const scopeDenied = rejectUnscopedBoundedWriterDispatch({ agent: agent.name, task: prompt, context });
+		if (scopeDenied) throw new Error(scopeDenied.reason);
 		if (signal?.aborted) throw new Error("Subagent launch aborted before authorization.");
 		const registry = registryFor(ctx);
+		const authorityCurrent = worktreeAuthority!;
+		const originalManager = ctx.sessionManager;
+		const originalId = originalManager.getSessionId();
+		const originalCwd = originalManager.getCwd();
+		const current = () => sessions === originalManager && originalManager.getSessionId() === originalId && originalManager.getCwd() === originalCwd && !signal?.aborted && authorityCurrent();
+		if (isGenericBoundedWriter(agent.name) && !current()) throw new Error("Writer session Git authority changed before admission.");
+		let admittedModel: string | undefined;
+		const surfaces = allowedEditSurfaces(prompt, context);
+		if (!resume && isGenericBoundedWriter(agent.name) && surfaces?.some(isDevelopmentSurface) && !deps.resolveWorktree(originalCwd, originalCwd) && repositoryRoot === undefined) {
+			const root = safeBootstrapDirectory(originalCwd);
+			if (!root || (workspaceRoot !== undefined && (!isAbsolute(workspaceRoot) || safeBootstrapDirectory(workspaceRoot) !== root))) throw new Error("Writer bootstrap requires the original safe project root.");
+			const config = withPinnedModelProfiles(loadAgentsConfig(roots(ctx)), resolveUnversionedProjectProfile(root, gentlePiConfigHome(deps.env))?.modelProfiles);
+			const model = resolveAgentProfile(agent, config).model ?? ctx.model;
+			const catalogModel = model?.provider ? ctx.modelRegistry?.find(model.provider, model.id) : ctx.modelRegistry?.getAll().find(candidate => candidate.id === model?.id);
+			if (!catalogModel) throw new Error("Writer bootstrap requires a valid effective model in this session's catalog.");
+			admittedModel = `${catalogModel.provider}/${catalogModel.id}`;
+			if (!current() || !await prepareBoundSessionRepository(originalManager, originalCwd, signal) || !current() || safeBootstrapDirectory(originalCwd) !== root || resolveSessionWorktree(originalCwd, originalCwd)?.root !== root) throw new Error("Writer repository preparation was unavailable or its session/target changed.");
+		}
 		const parentCwd = ctx.sessionManager.getCwd();
 		// An explicit target is validated before any queue or session-dir writes.
 		const parentIdentity = deps.resolveWorktree(parentCwd, parentCwd);
 		if (repositoryRoot !== undefined && workspaceRoot !== undefined) throw new Error("repository_root and workspace_root are mutually exclusive.");
-		if (repositoryRoot !== undefined && (SHIPPED_SDD_AGENT_NAME_SET.has(agent.name) || sddChange || remediationIntent || deps.env.GENTLE_PI_AGENTS_CHILD === "1" || ctx.mode !== "tui" || !ctx.hasUI)) throw new Error("Foreign repository launch requires an interactive parent session without SDD or remediation.");
-		const selectedRoot = repositoryRoot ?? workspaceRoot ?? sddChange?.workspaceRoot;
+		if (repositoryRoot !== undefined && (deps.env.GENTLE_PI_AGENTS_CHILD === "1" || ctx.mode !== "tui" || !ctx.hasUI)) throw new Error("Foreign repository launch requires an interactive parent session.");
+		const selectedRoot = repositoryRoot ?? workspaceRoot;
 		// Preserve ordinary non-Git continuation, without admitting any new root.
 		const sameNonGitContinuation = resume !== undefined && repositoryRoot === undefined && selectedRoot === parentCwd && !parentIdentity;
 		let foreign = false;
@@ -1099,7 +1230,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				// same-clone registry. Never use a caller-injected resolver for this identity.
 				const identity = resolveSessionWorktree(selectedRoot, parentCwd);
 				const canonicalParent = resolveSessionWorktree(parentCwd, parentCwd);
-				if (!identity || (canonicalParent && identity.commonDir === canonicalParent.commonDir) || selectedRoot !== identity.root || !isAbsolute(selectedRoot) || realpathSync(selectedRoot) !== selectedRoot || sddChange || remediationIntent) throw new Error("repository_root must select a canonical independent Git repository.");
+				if (!identity || (canonicalParent && identity.commonDir === canonicalParent.commonDir) || selectedRoot !== identity.root || !isAbsolute(selectedRoot) || realpathSync(selectedRoot) !== selectedRoot) throw new Error("repository_root must select a canonical independent Git repository.");
 				await foreignGrants.authorize(ctx, identity, { continuation: resume !== undefined, signal });
 				foreignIdentity = identity;
 				foreignParent = canonicalParent;
@@ -1107,12 +1238,6 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				foreign = true;
 			}
 		} else target = parentIdentity?.root;
-		if (sddChange && target !== sddChange.workspaceRoot && target !== resolve(sddChange.workspaceRoot)) {
-			throw new Error("sdd_change workspaceRoot must resolve to the selected child worktree.");
-		}
-		const launchSddChange = sddChange === undefined || target === undefined
-			? undefined
-			: { ...sddChange, workspaceRoot: target };
 		// A per-repository profile pin replaces subagent routing for this launch without
 		// materialising anything: the global stores stay untouched, so two repositories
 		// worked in parallel stop fighting over one global routing. The child's own
@@ -1133,7 +1258,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			})?.modelProfiles,
 		);
 		const profile = resolveAgentProfile(agent, config);
-		const research = agent.name === "sdd-research" ? researchAgent(agent, pi, researchSelection) : undefined;
+		if (admittedModel !== undefined) {
+			const model = profile.model ?? ctx.model;
+			const catalogModel = model?.provider ? ctx.modelRegistry?.find(model.provider, model.id) : ctx.modelRegistry?.getAll().find(candidate => candidate.id === model?.id);
+			if (!catalogModel || `${catalogModel.provider}/${catalogModel.id}` !== admittedModel || !current()) throw new Error("Writer effective profile or session changed during preparation.");
+		}
 		const sessionDir = agentRuntimePaths(deps.home, agentHome).sessions;
 		if (foreign && target) {
 			const identity = resolveSessionWorktree(target, parentCwd);
@@ -1146,21 +1275,20 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const parentSessionId = ctx.sessionManager.getSessionId() ?? "";
 		const parentWorktreeRoot = ctx.sessionManager.getCwd();
 		const parentRepositoryIdentity = resolveCanonicalGitRepositoryIdentitySync(parentWorktreeRoot);
-		const sddPreflightContext = SHIPPED_SDD_AGENT_NAME_SET.has(agent.name)
-			? extractParentConfirmedSddPreflightContext(context)
-			: undefined;
 		const childEnv = { ...deps.env };
 		if (foreign) for (const key of inheritedUnsafeGitEnvironmentKeys(childEnv)) delete childEnv[key];
 		const request: TaskRequest = {
-			agent: research?.agent ?? agent,
-			remediationIntent,
+			agent,
 			prompt,
 			label,
 			context,
-			...(sddPreflightContext === undefined ? {} : { sddPreflightContext }),
 			mode,
 			cwd: target ?? parentWorktreeRoot,
 			parentSessionId,
+			...(admittedModel === undefined ? {} : { beforeSpawn: () => {
+				if (!current()) throw new Error("Writer session changed before spawn.");
+				registry.validate(originalCwd);
+			} }),
 			...(foreign && target ? { beforeSpawn: () => {
 				if (signal?.aborted || sessions !== ctx.sessionManager || ctx.sessionManager.getSessionId() !== registry.sessionId || ctx.sessionManager.getCwd() !== parentCwd) throw new Error("Foreign clone session or tool call changed before spawn.");
 				const identity = resolveSessionWorktree(target, parentCwd);
@@ -1173,9 +1301,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			thinking: profile.thinking,
 			sessionDir,
 			resumeSessionPath: resume,
-			env: research ? { ...childEnv, [RESEARCH_CHILD_TOOLS_ENV]: JSON.stringify([...research.agent.tools, "subagent_parent_message"]) } : childEnv,
-			...(research ? { researchSelection, extensionPaths: research.extensionPaths } : {}),
-			...(launchSddChange === undefined ? {} : { sddChange: launchSddChange }),
+			...(deps.childExtensionPaths && deps.childExtensionPaths.length > 0 ? { extensionPaths: [...deps.childExtensionPaths] } : {}),
+			env: childEnv,
 			...(foreign || parentRepositoryIdentity === undefined ? {} : {
 				authorizeParentStandingReviewPermission: (repositoryIdentity: string) => {
 					try {
@@ -1202,17 +1329,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (ctx.mode === "print" && request.mode === AGENT_MODE.BACKGROUND) {
 			throw new Error("Background subagents are unavailable in print mode: pi -p exits before a parent session can receive results. Use task mode, RPC mode, or interactive Pi.");
 		}
-		// This is the process-spawn boundary. A child receives its task context only
-		// after its RPC process starts, so validate the single parent transport here
-		// rather than letting a child invent/persist preferences during startup.
-		if (SHIPPED_SDD_AGENT_NAME_SET.has(request.agent.name) && !isParentConfirmedSddPreflightContext(request.context)) {
-			throw new Error("SDD child dispatch refused: parent-confirmed SDD preflight context is missing or malformed.");
-		}
-		if (request.agent.name === "sdd-remediate") {
-			const native = deps.nativeSdd ?? new NativeReviewCliV216(createNodeExecFileAdapter());
-			Object.assign(request, await admitManagedRemediation(request, request.remediationIntent, native, ctx));
-			if (activeSessionId() !== request.parentSessionId) throw new Error("Parent session changed; request fresh authorization before dispatch");
-		}
+		if (retiredSddAgent(request.agent.name)) throw new Error("Retired SDD agents cannot be dispatched.");
 
 		// Bounded live observation only. Native send owns the fresh policy decision;
 		// child execution never starts a telemetry policy process or renewal timer.
@@ -1265,10 +1382,17 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			const query = await runner.waitForQuery(task.id);
 			if (query) {
 				const live = store.get(task.id) ?? task;
-				return text(`Subagent ${live.agent} is waiting for your reply to request ${query.requestId}.`, { gentleAgents: { taskId: live.id, agent: live.agent, status: live.status, mode: live.mode, requestId: query.requestId } }, true);
+				messages.consumeQuery(task.id, query.requestId);
+				const questionSuffix = query.message ? `\n\nQuestion:\n${query.message}` : "";
+				return text(
+					`Subagent ${live.agent} is waiting for your reply to request ${query.requestId}.${questionSuffix}`,
+					{ gentleAgents: { taskId: live.id, agent: live.agent, status: live.status, mode: live.mode, requestId: query.requestId, ...(query.message ? { question: query.message } : {}) } },
+					true,
+				);
 			}
 			const finished = await runner.waitFor(task.id);
 			completions.consume(finished.id);
+			messages.invalidateTask(finished.id);
 			return text(finishedText(finished), taskDetails(finished));
 		} finally {
 			signal?.removeEventListener("abort", onAbort);
@@ -1283,12 +1407,21 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			description,
 			parameters: { type: "object", additionalProperties: false, ...parameters } as never,
 			renderCall(args, theme) {
+				// The result title belongs with the result body so a running poll
+				// can hide both without changing the tool call or its model output.
+				if (name === "result") return { render: () => [], invalidate() {} };
 				const params = args as { agent?: string; task_id?: string };
 				return new Text(theme.fg("toolTitle", `${AGENTS_GLYPH} agent ${name.replace(/_/g, " ")}${params.agent ? ` · ${params.agent}` : params.task_id ? ` · ${params.task_id}` : ""}`), 0, 0);
 			},
 			renderResult(result, options, theme) {
+				const task = (result.details as { gentleAgents?: { status?: string; taskId?: string } } | undefined)?.gentleAgents;
+				if (name === "result" && task?.status === TASK_STATUS.RUNNING) {
+					return { render: () => [], invalidate() {} };
+				}
 				const body = result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
-				return new Text(options.expanded ? body : theme.fg("muted", body.split("\n")[0] ?? ""), 0, 0);
+				const visibleBody = options.expanded ? body : theme.fg("muted", body.split("\n")[0] ?? "");
+				const title = `${AGENTS_GLYPH} agent result${task?.taskId ? ` · ${sanitizeTerminalText(task.taskId)}` : ""}`;
+				return new Text(name === "result" ? `${theme.fg("toolTitle", title)}\n${visibleBody}` : visibleBody, 0, 0);
 			},
 			async execute(_id, params, signal, _onUpdate, ctx) {
 				return execute(params as Record<string, unknown>, ctx, signal);
@@ -1327,12 +1460,25 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		name: "orchestrator_send_message",
 		label: "Send orchestrator message",
 		description: "Send a notification to another active session in this trusted local profile. If recipient_session_id is omitted, the sole peer is selected or the user selects one. Acceptance means enqueued, not read or completed.",
-		parameters: { type: "object", additionalProperties: false, required: ["message"], properties: { recipient_session_id: { type: "string" }, message: { type: "string" } } } as never,
+		parameters: {
+			type: "object",
+			additionalProperties: false,
+			required: ["message", "reason"],
+			properties: {
+				recipient_session_id: { type: "string" },
+				message: { type: "string" },
+				reason: { type: "string", minLength: MESSAGING_REASON_MIN_CHARACTERS, maxLength: MESSAGING_REASON_MAX_UTF8_BYTES, description: "Required concrete caller-supplied reason: at least 8 characters after trimming and at most 512 UTF-8 bytes." },
+			},
+		} as never,
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const transport = activeTransportFor(ctx);
-			const input = params as { recipient_session_id?: unknown; message?: unknown };
+			const input = params as { recipient_session_id?: unknown; message?: unknown; reason?: unknown };
 			if (!transport) return text("Error: session messaging is not ready.", { error: "not ready" });
-			if (typeof input.message !== "string" || Buffer.byteLength(input.message, "utf8") > 8192) return text("Error: recipient session ID or message is invalid.", { error: "invalid input" });
+			const message = input.message;
+			if (typeof message !== "string" || Buffer.byteLength(message, "utf8") > 8192) return text("Error: recipient session ID or message is invalid.", { error: "invalid input" });
+			let reason: string;
+			try { reason = normalizeMessagingReason(input.reason); }
+			catch { return text("Error: recipient session ID or message is invalid; a concrete reason of at least 8 trimmed characters and at most 512 UTF-8 bytes is required.", { error: "invalid input" }); }
 			let recipient: string | undefined;
 			let activation: PresenceRecord | undefined;
 			if (input.recipient_session_id !== undefined) {
@@ -1364,7 +1510,13 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			if (recipient === undefined || !validTransportSessionId(recipient)) return text("Error: recipient session ID or message is invalid.", { error: "invalid input" });
 			if (recipient === transport.sessionId) return text("Error: cannot send a message to the active session.", { error: "self" });
 			try {
-				const accepted = await transport.client.sendNotification(recipient, input.message, { signal, expectedActivation: activation, beforeConnect: () => activeTransportFor(ctx) === transport });
+				await messagingGrants.authorize(ctx, recipient, { message, reason, signal });
+			} catch (error) {
+				if (signal?.aborted) return text("Cross-orchestrator communication was cancelled.", { error: "cancelled" });
+				return text(`Error: ${error instanceof Error ? error.message : String(error)}`, { error: "denied" });
+			}
+			try {
+				const accepted = await transport.client.sendNotification(recipient, message, { signal, expectedActivation: activation, beforeConnect: () => activeTransportFor(ctx) === transport });
 				return activeTransportFor(ctx) === transport ? text(`Message ${accepted.id} from ${transport.sessionId} to ${recipient} accepted for delivery; it is not a delivery or read receipt.`, { gentleAgents: { messageId: accepted.id, senderSessionId: transport.sessionId, recipientSessionId: recipient, state: "accepted" } }) : text("Error: session messaging is not ready.", { error: "stale" });
 			} catch {
 				return text("Error: session message was not accepted.", { error: "not accepted" });
@@ -1391,14 +1543,19 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				context: { type: "string", description: "Optional extra context appended to the task." },
 				workspace_root: { type: "string", description: "Optional canonical main or linked Git worktree within the parent's same clone only; mutually exclusive with repository_root." },
 				repository_root: { type: "string", description: "Optional canonical independent Git repository; requires direct interactive session-scoped consent before queueing; mutually exclusive with workspace_root." },
-				research_selection: RESEARCH_SELECTION_SCHEMA,
-				remediation: REMEDIATION_SCHEMA, sdd_change: { type: "object", additionalProperties: false, required: ["changeName", "workspaceRoot", "phase"], properties: { changeName: { type: "string" }, workspaceRoot: { type: "string" }, failedEvidenceRevision: { type: "string" }, phase: { type: "string", enum: ["apply", "verify", "archive", "remediate"] } }, description: "Launch-local selected SDD identity, accepted only by matching SDD phase agents." },
 				mode: { type: "string", enum: ["task", "background"], description: "task waits for the result (default); background returns immediately." },
 			},
 		},
 		async (params, ctx, signal) => {
-			if (Object.hasOwn(params, "repository_root") && Object.hasOwn(params, "workspace_root")) throw new Error("repository_root and workspace_root are mutually exclusive.");
+			if (typeof params.agent !== "string" || !params.agent.trim() || typeof params.task !== "string" || !params.task.trim() || (params.context !== undefined && typeof params.context !== "string") || (params.label !== undefined && typeof params.label !== "string")) throw new Error("Subagent dispatch requires a named agent, non-empty task and string context/label.");
+			if (params.mode !== undefined && params.mode !== AGENT_MODE.TASK && params.mode !== AGENT_MODE.BACKGROUND) throw new Error("Subagent mode must be task or background.");
+			// An empty selector names no destination: only real roots are mutually
+			// exclusive, so a blank string must not masquerade as a second target.
+			const hasWorkspaceRoot = Object.hasOwn(params, "workspace_root") && params.workspace_root !== "";
+			const hasRepositoryRoot = Object.hasOwn(params, "repository_root") && params.repository_root !== "";
+			if (hasRepositoryRoot && hasWorkspaceRoot) throw new Error("repository_root and workspace_root are mutually exclusive.");
 			if ((Object.hasOwn(params, "repository_root") && typeof params.repository_root !== "string") || (Object.hasOwn(params, "workspace_root") && typeof params.workspace_root !== "string")) throw new Error("Root selectors must be strings.");
+			if (Object.hasOwn(params, "sdd_change") || Object.hasOwn(params, "remediation") || Object.hasOwn(params, "research_selection") || retiredSddAgent(String(params.agent))) return text("Error: retired SDD delegation is not supported.", { error: "retired SDD delegation" });
 			const { agents } = discoverAgents(roots(ctx));
 			const agent = agents.find((candidate) => candidate.name === params.agent);
 			if (!agent) return text(`Error: no subagent named "${String(params.agent)}". Known: ${agents.map((candidate) => candidate.name).join(", ") || "none"}`, { error: "unknown agent" });
@@ -1407,10 +1564,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				policy: resolveBackgroundSubagentsPolicy(ctx.cwd).policy,
 				parentMode: ctx.mode,
 			});
-			let sddChange: SddChangeSelection | undefined;
-			try { sddChange = parseSddChange(params.sdd_change, agent.name); }
-			catch (error) { return text(`Error: ${error instanceof Error ? error.message : String(error)}`, { error: "invalid sdd_change" }); }
-			return launch(ctx, await buildRequest(ctx, agent, String(params.task ?? ""), typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, undefined, typeof params.workspace_root === "string" ? params.workspace_root : undefined, sddChange, params.research_selection, params.remediation, signal, typeof params.repository_root === "string" ? params.repository_root : undefined), signal);
+			const workspaceRoot = typeof params.workspace_root === "string" && params.workspace_root !== "" ? params.workspace_root : undefined;
+			const repositoryRoot = typeof params.repository_root === "string" && params.repository_root !== "" ? params.repository_root : undefined;
+			return launch(ctx, await buildRequest(ctx, agent, String(params.task ?? ""), typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, undefined, workspaceRoot, signal, repositoryRoot), signal);
 		},
 	);
 
@@ -1424,7 +1580,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (!task) return text(`Error: no task ${String(params.task_id)}`, { error: "unknown task" });
 		// The parent just pulled a finished result; its pending completion must
 		// never be replayed on top of it.
-		if (isFinished(task.status)) completions.consume(task.id);
+		if (isFinished(task.status)) {
+			completions.consume(task.id);
+			messages.invalidateTask(task.id);
+		}
 		return text(isFinished(task.status) ? finishedText(task) : `Task ${task.id} is still ${task.status} (last: ${task.lastStep}).`, taskDetails(task));
 	});
 
@@ -1434,12 +1593,15 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	});
 
 	tool("reply", "Reply once to a live query from a child of the current parent session.", { required: ["task_id", "request_id", "message"], properties: { task_id: { type: "string" }, request_id: { type: "string" }, message: { type: "string" } } }, async (params, ctx) => {
-		const accepted = await runner.reply(String(params.task_id), String(params.request_id), typeof params.message === "string" ? params.message : "", ctx.sessionManager.getSessionId() ?? "");
+		const taskId = String(params.task_id);
+		const requestId = String(params.request_id);
+		const accepted = await runner.reply(taskId, requestId, typeof params.message === "string" ? params.message : "", ctx.sessionManager.getSessionId() ?? "");
 		return accepted ? text("Reply accepted for delivery.") : text("Error: query is unavailable.", { error: "query unavailable" });
 	});
 
 	tool("cancel",  "Cancel a queued or running subagent task.", { required: ["task_id"], properties: { task_id: { type: "string" } } }, async (params) => {
 		const id = String(params.task_id);
+		messages.invalidateTask(id);
 		return runner.cancel(id, "cancelled by the cancel tool") ? text(`Cancelled task ${id}.`) : text(`Error: task ${id} is not running.`, { error: "not running" });
 	});
 
@@ -1451,24 +1613,22 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	tool(
 		"continue",
 		"Resume a finished subagent task in its own session with a follow-up prompt.",
-		{ required: ["task_id", "prompt"], properties: { research_selection: RESEARCH_SELECTION_SCHEMA, task_id: { type: "string" }, prompt: { type: "string" }, label: { type: "string", description: "Three to six words naming the follow-up." }, remediation: REMEDIATION_SCHEMA, sdd_change: { type: "object", additionalProperties: false, required: ["changeName", "workspaceRoot", "phase"], properties: { changeName: { type: "string" }, workspaceRoot: { type: "string" }, failedEvidenceRevision: { type: "string" }, phase: { type: "string", enum: ["apply", "verify", "archive", "remediate"] } }, description: "Fresh launch-local selected SDD identity, required when continuing an SDD phase agent." }, mode: { type: "string", enum: ["task", "background"] } } },
+		{ required: ["task_id", "prompt"], properties: { task_id: { type: "string" }, prompt: { type: "string" }, label: { type: "string", description: "Three to six words naming the follow-up." }, mode: { type: "string", enum: ["task", "background"] } } },
 		async (params, ctx, signal) => {
+			if (Object.hasOwn(params, "sdd_change") || Object.hasOwn(params, "remediation") || Object.hasOwn(params, "research_selection")) return text("Error: retired SDD delegation is not supported.", { error: "retired SDD delegation" });
 			const previous = await resolveTask(String(params.task_id));
 			if (!previous) return text(`Error: no task ${String(params.task_id)}`, { error: "unknown task" });
+			if (retiredSddAgent(previous.agent)) return text("Error: retired SDD agents cannot be continued.", { error: "retired SDD delegation" });
 			if (!isFinished(previous.status) || !previous.sessionPath) return text(`Error: task ${previous.id} cannot be continued yet (${previous.status}).`, { error: "not continuable" });
 			// Continuing acts on the previous result, so any pending completion for
 			// it is already consumed by the parent.
 			completions.consume(previous.id);
+			messages.invalidateTask(previous.id);
 			const agent = discoverAgents(roots(ctx)).agents.find((candidate) => candidate.name === previous.agent);
 			if (!agent) return text(`Error: subagent "${previous.agent}" is no longer defined.`, { error: "unknown agent" });
 			const mode = (params.mode as AgentMode | undefined) ?? (previous.mode as AgentMode);
-			let sddChange: SddChangeSelection | undefined;
-			try { sddChange = parseSddChange(params.sdd_change, agent.name); }
-			catch (error) { return text(`Error: ${error instanceof Error ? error.message : String(error)}`, { error: "invalid sdd_change" }); }
-			if (sddPhaseForAgent(agent.name) && !sddChange) return text("Error: continuing an SDD phase agent requires a fresh sdd_change selection.", { error: "missing sdd_change" });
-
 			const foreignContinuation = foreignTasks.has(previous.id);
-			return launch(ctx, await buildRequest(ctx, agent, String(params.prompt ?? ""), typeof params.label === "string" ? params.label : undefined, previous.sddPreflightContext, mode, previous.sessionPath, foreignContinuation ? undefined : sddChange?.workspaceRoot ?? previous.cwd, sddChange, params.research_selection, params.remediation, signal, foreignContinuation ? previous.cwd : undefined), signal);
+			return launch(ctx, await buildRequest(ctx, agent, String(params.prompt ?? ""), typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, previous.sessionPath, foreignContinuation ? undefined : previous.cwd, signal, foreignContinuation ? previous.cwd : undefined), signal);
 		},
 	);
 
@@ -1504,6 +1664,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// A resumed, reloaded, or replaced session starts with an empty completion
 		// queue so nothing pending from another session can replay here.
 		completions.dropAll();
+		messages.dropAll();
+		resetParentDelivery(ctx);
 		presence?.dispose();
 		registryFor(ctx);
 		showWidget(ctx);
@@ -1551,7 +1713,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	});
 	pi.on("session_shutdown", async () => {
 		completions.dropAll();
+		messages.dropAll();
 		activeAgentRuns = 0;
+		resetParentDelivery(undefined);
 		presence?.dispose();
 		presence = undefined;
 		rpcActivityPublisher?.stop();
@@ -1560,9 +1724,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		for (const view of overlays) { view.handleInput("q"); view.dispose(); }
 		overlays.clear();
 		sessions = undefined;
+		stopVisualUpdates?.();
+		stopVisualUpdates = undefined;
 		sidebarTui = undefined;
 		worktrees?.close();
 		worktrees = undefined;
+		worktreeManager = undefined;
 		const stopped = shutdownSessionTransport();
 		runner.cancelAll("cancelled: parent session shut down");
 		await stopped;

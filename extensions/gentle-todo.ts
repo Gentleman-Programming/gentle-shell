@@ -1,6 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, type Component, type TUI } from "@earendil-works/pi-tui";
+import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import { NativePointerRegion } from "../lib/native-pointer-region.ts";
+import { panelHeaderRow } from "../lib/shell-card.ts";
 import { sidebarPart } from "../lib/shell-sidebar.ts";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import {
@@ -12,6 +14,7 @@ import {
 	TODO_DETAILS_KEY,
 	TODO_GLYPH,
 	TODO_TOOL_NAME,
+	todoCardTone,
 	todoPromptBlock,
 	todoSummary,
 	type TodoParams,
@@ -105,11 +108,16 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 
 	const todoCard = (current: TodoSession, theme: Parameters<typeof renderTodoCard>[1], scrollable: boolean, spacer: boolean): Component & { dispose(): void } => {
 		let hovered = false;
+		// The row the rendered card draws its header on: 0 for the outlined
+		// frame, 1 below the float panel's top padding row.
+		let headerRow = 0;
 		const card: Component = {
 			render(width: number) {
+				const stale = staleTurns(current.state, current.turn);
+				headerRow = panelHeaderRow(theme, width, todoCardTone(stale));
 				const lines = renderTodoCard(current.state, theme, width, {
 					collapsed: current.collapsed,
-					staleTurns: staleTurns(current.state, current.turn),
+					staleTurns: stale,
 					collapseKey,
 					hovered,
 					...(scrollable ? { scrollable: true } : {}),
@@ -122,10 +130,10 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		};
 		const region = new NativePointerRegion(card, {
 			onHover(event) {
-				// The region spans the whole card, but only the header row (y===0)
-				// is the clickable control, so a move elsewhere in the card clears
-				// hover exactly like leaving the region entirely would.
-				const next = event.y === 0;
+				// The region spans the whole card, but only the header row is the
+				// clickable control, so a move elsewhere in the card clears hover
+				// exactly like leaving the region entirely would.
+				const next = event.y === headerRow;
 				if (next === hovered) return { handled: true };
 				hovered = next;
 				return { handled: true, render: true };
@@ -136,7 +144,7 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 				current.host?.requestRender();
 			},
 			onClick(event) {
-				if (event.button !== "left" || event.y !== 0) return undefined;
+				if (event.button !== "left" || event.y !== headerRow) return undefined;
 				toggle(current);
 				return { handled: true, render: true };
 			},
@@ -236,7 +244,10 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		}
 		const block = todoPromptBlock(current.state, staleTurns(current.state, current.turn));
 		if (!block) return undefined;
-		return { systemPrompt: `${event.systemPrompt}\n\n${block}` };
+		// gentle-shell#1485: pi-claude-bridge drops a handler-returned
+		// systemPrompt, so the open-tasks block goes through appendSystemPrompt.
+		appendSystemPromptOnce(event.systemPromptOptions, block);
+		return undefined;
 	});
 
 	pi.on("tool_execution_end", (event, ctx) => {

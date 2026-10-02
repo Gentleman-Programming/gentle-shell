@@ -45,7 +45,7 @@ test("research uses adaptive evidence gathering and existing general workers onl
 		"recommendation, tradeoffs, open questions, and implementation implications",
 		"Forward these research instructions",
 		"existing fresh general exploration/research worker",
-		"do not create a specialized agent or invoke `sdd-research`",
+		"do not create a specialized agent or create a new workflow",
 		"no new persistence or readiness machinery",
 	]);
 });
@@ -129,7 +129,7 @@ test("ODD closes each task with a work-unit commit and reviews the commit or PR 
 		"keep a running count from work-unit commits",
 		"`ask-on-risk` (default), `auto-chain`, `single-pr`, or `exception-ok`",
 		"apply the chosen strategy before the next commit",
-		"`ask-on-risk` asks once for the chain strategy, `stacked-to-main` or `feature-branch-chain`",
+		"`ask-on-risk` asks once using the ordered oversized-delivery menu",
 		"`auto-chain` asks only for a missing chain strategy and slices automatically",
 		"Cache both choices, and record slice boundaries",
 		"Resolve the `work-unit-commits` and `chained-pr` skills by registry name",
@@ -145,8 +145,36 @@ test("ODD closes each task with a work-unit commit and reviews the commit or PR 
 		"Close task with a work-unit commit",
 		"RDD enabled at work-unit commit boundary",
 		"Running authored lines over 400",
-		"Apply delivery strategy: chained PR slice",
+		"Apply selected delivery strategy",
+		"Single PR; no chain artifacts",
 	]);
+});
+
+test("delivery instructions and docs preserve localized ordered outcomes and override chaining", () => {
+	for (const text of [delegation, read("docs/readme-reference.md")]) {
+		// English prose is documentation evidence, not mandatory runtime UI copy.
+		const outcomes = ["chain_strategy=feature-branch-chain", "chain_strategy=stacked-to-main", "delivery_strategy=single-pr"];
+		let previous = -1;
+		for (const outcome of outcomes) {
+			const index = text.indexOf(outcome);
+			assert.ok(index > previous, `missing or out-of-order semantic outcome: ${outcome}`);
+			previous = index;
+		}
+		assert.match(text, /1\. .*feature\/tracker.*feature-branch-chain/i);
+		assert.match(text, /2\. .*verified default\/main.*stacked-to-main/i);
+		assert.match(text, /3\. .*single PR.*least recommended.*delivery_strategy=single-pr/i);
+		containsAll(text, [
+			"delivery_strategy=single-pr", "not a `chain_strategy` token",
+			"overrides the pending chaining path", "clear the chain choice",
+			"suppress later chain prompts", "not automatically select `exception-ok`",
+			"destination repository's documented contribution/size policy",
+			"not a universal label requirement", "no tracker, child dependency diagram, or Chain Context",
+			"complete user-facing question", "every option label, description, and recommendation marker",
+			"active user's conversation language", "unchanged and untranslated",
+			"English examples are illustrative and localizable, not mandatory copy",
+		]);
+		assert.doesNotMatch(text, /single-pr.*requires? `size:exception`/i);
+	}
 });
 
 test("user documentation shows recovery and candidate-level consent without claiming model proof", () => {
@@ -184,24 +212,26 @@ test("one feature document carries intent, accepted rationale and worker context
 	]);
 });
 
-test("ODD forwards configured TDD without equating test presence with enablement", () => {
-	containsAll(delegation, [
-		"Resolve effective TDD on/off from existing project/session configuration or explicit user choice",
-		"retain its source and exact test runner",
-		"Record resolved mode, source, and runner in the feature document when present",
-		"Tests or frameworks being present does not enable TDD",
-		"Forward mode, source, and runner on every implementation delegation; refresh on resume",
-		"When enabled, require observed RED before implementation, GREEN, then REFACTOR",
-		"When disabled, run ordinary functional checks, not no checks",
-		"If mode is unknown/conflicting or the runner is missing",
-		"resolve only the ambiguity affecting the next action",
-		"never invent precedence or a command, and never invoke sdd-init to determine ODD TDD",
-	]);
-	containsAll(read("assets/agents/gentle-ai-worker.md"), [
-		"Consume the parent's effective TDD mode, configuration/choice source, and exact runner",
-		"Missing or conflicting mode/source/runner is not disabled TDD",
-	]);
-	assert.doesNotMatch(wrapper, /If tests exist, use strict TDD/);
+test("ODD defaults to applicable test-first without chat or TUI activation", () => {
+	const worker = read("assets/agents/gentle-ai-worker.md");
+	const verify = read("assets/agents/gentle-ai-verify.md");
+	const support = read("assets/support/strict-tdd.md") + read("assets/support/strict-tdd-verify.md");
+	const skill = read("skills/gentle-ai/SKILL.md");
+	for (const text of [core, delegation, worker, verify, support, skill, wrapper]) {
+		containsAll(text, ["applicable", "RED", "GREEN"]);
+		assert.doesNotMatch(text, /(?:configured TDD mode|Strict TDD Mode is enabled|explicit user choice|test presence does not enable it|tests existing does not activate it)/i);
+	}
+	for (const [actor, text] of [["core", core], ["delegation", delegation], ["extension", wrapper], ["skill", skill]] as const) {
+		assert.match(text, /behavior changes with applicable runnable deterministic tests and a clear expected outcome/i, `${actor} must require applicability, not test presence`);
+		assert.match(text, /passive documentation/i, `${actor} must handle passive docs`);
+		assert.match(text, /unavailable runner/i, `${actor} must handle unavailable runners`);
+		assert.match(text, /ordinary functional or structural verification/i, `${actor} must specify fallback checks`);
+	}
+	containsAll(delegation, ["by default", "Forward this policy"]);
+	containsAll(worker, ["before implementation", "ordinary functional or structural verification", "no meaningful RED"]);
+	containsAll(verify, ["observed RED", "observed GREEN", "exception"]);
+	assert.doesNotMatch(skill, /SDD|OpenSpec/i, "the ODD-only skill must not prime SDD");
+	assert.doesNotMatch(core + delegation + worker + support + skill + wrapper, /If tests exist, use strict TDD/i);
 });
 
 test("mandatory delegation triggers are behavioral in the lazy canonical port and the always-on ODD step", () => {
@@ -212,12 +242,12 @@ test("mandatory delegation triggers are behavioral in the lazy canonical port an
 		"**Mapping trigger",
 		"**Writer trigger",
 		"**Preparation trigger:**",
-		"**Long-session backstop",
+		"**Context backstop:**",
 		"pause and delegate the next bounded unit of work",
 		"**Route declaration:**",
 		"record the chosen route per task",
 		"so skipped delegation is observable instead of silent",
-		"These triggers never select SDD and never create SDD artifacts",
+		"These triggers only choose between direct inline and delegated direct inside ODD",
 	]) {
 		assert.ok(delegation.includes(clause), `lazy canonical port is missing mandatory delegation clause: ${clause}`);
 	}
@@ -233,19 +263,19 @@ test("mandatory delegation triggers are behavioral in the lazy canonical port an
 
 test("core and lazy canonical trigger lists agree in numbering and semantics", () => {
 	for (const entry of [
-		"1. **4-file rule**",
+		"1. **Evidence-budget rule**",
 		"2. **Multi-file write rule**",
 		"3. **Incident rule**",
-		"4. **Long-session rule**",
+		"4. **Context backstop**",
 		"5. **Verification rule**",
 	]) {
 		assert.ok(core.includes(entry), `always-on core trigger list is missing: ${entry}`);
 	}
 	for (const entry of [
-		"1. **Mapping trigger (4-file rule):**",
+		"1. **Mapping trigger (Evidence-budget rule):**",
 		"2. **Writer trigger (Multi-file write rule):**",
 		"3. **Incident rule:**",
-		"4. **Long-session backstop (Long-session rule):**",
+		"4. **Context backstop:**",
 		"5. **Verification rule**",
 	]) {
 		assert.ok(delegation.includes(entry), `lazy canonical trigger list is missing: ${entry}`);
@@ -255,9 +285,34 @@ test("core and lazy canonical trigger lists agree in numbering and semantics", (
 		"**Write rule**",
 		"**Context rule**",
 		"**Per-action rule**",
-		"**Optional SDD rule**",
 	]) {
 		assert.ok(!delegation.includes(stale), `reconciled canonical list retains stale trigger framing: ${stale}`);
+	}
+});
+
+// Evidence-budget rule (gentle-shell#1587, measured in gentle-ai#5139): every
+// routing surface states the same numbers, and the retired file-count and
+// tool-call triggers are gone from all of them.
+test("evidence-budget numbers agree across routing surfaces and retired triggers are gone", () => {
+	const surfaces: Record<string, string> = {
+		"assets/orchestrator.md": core,
+		"assets/orchestrator-delegation.md": delegation,
+		"skills/gentle-ai/SKILL.md": read("skills/gentle-ai/SKILL.md"),
+	};
+	for (const [path, text] of Object.entries(surfaces)) {
+		containsAll(text, [
+			"**Evidence-budget rule**",
+			"at most 3 calls",
+			"~10k tokens",
+			"at most ~2k tokens",
+			"`path:line`",
+			"~150k tokens",
+			"Context backstop",
+		]);
+		assert.doesNotMatch(text, /4-file rule|20 tool calls|5 exploratory (?:file )?reads/, `${path} keeps a retired trigger`);
+	}
+	for (const agent of ["assets/agents/gentle-ai-explore.md", "assets/agents/gentle-ai-verify.md"]) {
+		containsAll(read(agent), ["at most ~2k tokens", "`path:line`"]);
 	}
 });
 
@@ -265,7 +320,6 @@ test("ODD protocol is always-on in the rendered system prompt and runs by defaul
 	const orderedClauses = [
 		"Default workflow: Organic Driven Development (MANDATORY)",
 		"predefined workflow of this orchestrator",
-		"SDD is a branch inside ODD",
 		"Never describe this workflow only when asked about it: run it.",
 		"1. **Authorize.**",
 		"2. **Explore.**",
@@ -277,6 +331,7 @@ test("ODD protocol is always-on in the rendered system prompt and runs by defaul
 		"Tell the user in one line which feature document was created and how many tasks it holds",
 		"6. **Implement task by task.**",
 		"7. **Close.**",
+		"call `gentle_odd_phase` only when the primary session's ODD phase actually changes",
 		"Harness principles:",
 		"# el Gentleman Orchestrator",
 	];
@@ -298,15 +353,11 @@ test("ODD protocol is always-on in the rendered system prompt and runs by defaul
 		wrapper.includes("Organic Driven Development (ODD) is the predefined workflow for every request"),
 		"missing contract: extensions/gentle-ai.ts harness principle",
 	);
-	assert.ok(
-		wrapper.includes(
-			"I run Organic Driven Development by default and SDD/OpenSpec when explicitly selected",
-		),
-		"missing contract: extensions/gentle-ai.ts identity sentence",
-	);
+	// The parent owns the injected identity; its migration is outside this suite's edit surface.
 	assert.ok(
 		core.includes("ODD (Default Workflow, harness section above) is mandatory on every request"),
 		"missing contract: assets/orchestrator.md pointer sentence",
 	);
 	containsAll(core, ["orchestrator-delegation.md", "orchestrator-memory.md"]);
+	assert.doesNotMatch(core + delegation + memory, /SDD|sdd-|OpenSpec|openspec/i);
 });

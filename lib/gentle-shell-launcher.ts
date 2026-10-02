@@ -194,6 +194,16 @@ function linkDir(env: Record<string, string | undefined>, homedir: string): stri
 	return env.PI_CODING_AGENT_DIR || join(homedir, ".pi", "agent");
 }
 
+// The isolated home replaces PI_CODING_AGENT_DIR for the whole session, so the
+// user's own Pi home travels in this variable for read-only features such as
+// /gentle:stats. An inherited value wins: a gentle-shell launched from inside
+// a Gentle Shell session sees the outer isolated home as PI_CODING_AGENT_DIR.
+export const USER_PI_HOME_ENV = "GENTLE_SHELL_USER_PI_HOME";
+
+export function userPiHome(env: Record<string, string | undefined>, homedir: string): string {
+	return env[USER_PI_HOME_ENV] || linkDir(env, homedir);
+}
+
 function isolatedDir(env: Record<string, string | undefined>, homedir: string): string {
 	return env.GENTLE_SHELL_HOME || join(homedir, ".gentle-shell", "agent");
 }
@@ -379,7 +389,7 @@ export function missingPiMessage(): string {
 
 // --- pi version gate ---------------------------------------------------------
 
-export const MIN_PI_VERSION = "0.85.1";
+export const MIN_PI_VERSION = "0.99.1";
 
 export type PiVersionCheck = { ok: true; version: string } | { ok: false; message: string; version?: string };
 
@@ -866,6 +876,8 @@ export interface BuildPiInvocationInput {
 	// gentle-pi extension injection below may precede it.
 	piSubcommand?: PiSubcommand;
 	baseEnv: Record<string, string | undefined>;
+	// The OS home behind userPiHome's conventional ~/.pi/agent fallback.
+	homedir: string;
 }
 
 export interface PiInvocation {
@@ -874,18 +886,11 @@ export interface PiInvocation {
 	env: Record<string, string | undefined>;
 }
 
-function packageRootAssetArgs(packageRoot: string): string[] {
-	return ["--theme", join(packageRoot, "themes"), "--skill", join(packageRoot, "skills"), "--prompt-template", join(packageRoot, "prompts")];
-}
-
-function packageRootInjectionArgs(packageRoot: string): string[] {
-	return ["-e", packageRoot, ...packageRootAssetArgs(packageRoot)];
-}
 
 // Four cases, checked in this order — `piSubcommand` first, then `takeOver`:
 //   - piSubcommand: pi dispatches install/remove/uninstall/update/list/
 //     config/auth on argv[0] before it even parses flags, so any injected
-//     -e/--theme/--skill/--prompt-template flag ahead of it stops pi from
+//     -e flag ahead of it stops pi from
 //     recognising its subcommand at all — this is exactly the observed
 //     2026-09-22 bug where `gentle-shell install npm:x` opened an
 //     interactive pi session instead of running the package manager. No
@@ -908,7 +913,8 @@ function packageRootInjectionArgs(packageRoot: string): string[] {
 //     (R3-001): a loose entry that duplicates an other-package path, or
 //     repeats within looseExtensionEntries itself, is skipped rather than
 //     loaded twice.
-//   - Not takeOver, no declaration: inject this launcher's own packageRoot,
+//   - Not takeOver, no declaration: inject this launcher's own packageRoot
+//     once via -e; Pi discovers its extensions, skills, prompts and themes,
 //     exactly as when nothing else in settings loads gentle-pi.
 //   - Not takeOver, with a declaration: no injection at all — the target
 //     settings already load a gentle-pi the launcher accepts as-is (the
@@ -939,9 +945,9 @@ export function buildPiInvocation(input: BuildPiInvocationInput): PiInvocation {
 			injected.add(input.packageRoot);
 			args.push("-e", input.packageRoot);
 		}
-		args.push(...packageRootAssetArgs(input.packageRoot));
+
 	} else if (input.declaration === undefined) {
-		args.push(...packageRootInjectionArgs(input.packageRoot));
+		args.push("-e", input.packageRoot);
 	}
 
 	args.push(...input.passthrough);
@@ -949,7 +955,12 @@ export function buildPiInvocation(input: BuildPiInvocationInput): PiInvocation {
 	return {
 		command: input.runtime.command,
 		args,
-		env: { ...input.baseEnv, PI_CODING_AGENT_DIR: input.home.dir, GENTLE_PI_AGENT_HOME: input.home.dir },
+		env: {
+			...input.baseEnv,
+			PI_CODING_AGENT_DIR: input.home.dir,
+			GENTLE_PI_AGENT_HOME: input.home.dir,
+			[USER_PI_HOME_ENV]: userPiHome(input.baseEnv, input.homedir),
+		},
 	};
 }
 

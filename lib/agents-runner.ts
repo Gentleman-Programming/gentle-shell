@@ -1,12 +1,14 @@
 import { isSessionChangeEvidence, type SessionChangeEvidence } from "./session-changes.ts";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Duplex, Readable, Writable } from "node:stream";
 import { stripVTControlCharacters } from "node:util";
-import { RESEARCH_SELECTION_ENV } from "./sdd-research-capabilities.ts";
 import { withoutInteractiveHost } from "./rpc-host.ts";
 import { AGENT_MODE, formatModelRef, type AgentDefinition, type AgentMode, type ModelRef } from "./agents-config.ts";
 import { CHILD_QUERY_MAX_INFLIGHT, CHILD_QUERY_TIMEOUT_MS, parseChildFrame, validChildMessage, validChildQueryId } from "./agents-messaging.ts";
 import { ParentStandingReviewPermissionBroker } from "./review-session-standing-permission-ipc.ts";
-import { isFinished, normalizeRpcEvent, TASK_EVENT, TASK_STATUS, taskLabel, type AskRequest, type ChildResponseObservation, type TaskRecord, type TaskStore } from "./agents-protocol.ts";
+import { isFinished, normalizeRpcEvent, ToolArgumentProgress, TASK_EVENT, TASK_STATUS, taskLabel, type AskRequest, type ChildResponseObservation, type TaskRecord, type TaskStore } from "./agents-protocol.ts";
 
 // Gentle Agents runner. Every subagent is its own `pi --mode rpc` process:
 // the host never runs subagent work on the TUI thread. It writes JSON
@@ -53,6 +55,7 @@ export interface RunnerDeps {
 	now(): number;
 	schedule(fn: () => void, ms: number): () => void;
 	pi: PiCommand;
+	resolvePi?(): PiCommand;
 	process?: ProcessControl;
 }
 
@@ -73,6 +76,7 @@ export interface AskAnswer {
 export interface TaskQuery {
 	taskId: string;
 	requestId: string;
+	message: string;
 }
 
 export const MAX_CHILD_RESPONSE_OBSERVATIONS = 128;
@@ -104,51 +108,12 @@ export interface RunnerHooks {
 	// Accepts a child notification only while the originating parent session is active.
 	onNotification?(task: TaskRecord, message: string): boolean | void;
 	onQuery?(task: TaskRecord, requestId: string, message: string): boolean | void;
+	onQuerySettled?(taskId: string, requestId: string, outcome: "replied" | "expired"): void;
 	// Parent-only observation of a paired successful filesystem tool, not prose.
 	onSuccessfulMutation?(task: TaskRecord, tool: { toolName: "write" | "edit"; toolCallId: string; path: string; evidence?: SessionChangeEvidence }): void | Promise<void>;
 }
 
-export interface RemediationHarnessPlan { command?: string; naReason?: string }
-export interface RemediationRollbackPlan { boundary: string; command: string }
-export interface RemediationScope { cwd: string; editPaths: string[]; commands: string[]; allowedEditRoots: string[] }
-export interface RemediationPlan {
-	editPaths?: string[];
-	cwd: string;
-	commands: string[];
-	runtimeHarness: RemediationHarnessPlan;
-	rollback: RemediationRollbackPlan;
-}
-const concrete = (value: unknown): value is string => typeof value === "string" && value.trim() === value && value.length > 3 && value.length <= 4096 && !/[\0\r\n]/.test(value);
-export function parseRemediationPlan(value: unknown, cwd: string): RemediationPlan {
-	const plan = value as RemediationPlan;
-	if (!plan || plan.cwd !== cwd || !Array.isArray(plan.commands) || plan.commands.length < 1 || plan.commands.length > 16 || !plan.commands.every(concrete) ||
-		!concrete(plan.rollback?.boundary) || !concrete(plan.rollback?.command) || !plan.runtimeHarness ||
-		!(concrete(plan.runtimeHarness.command) && plan.runtimeHarness.naReason === undefined || plan.runtimeHarness.command === undefined && concrete(plan.runtimeHarness.naReason) && plan.runtimeHarness.naReason.length >= 20 && /because/i.test(plan.runtimeHarness.naReason))) throw new TypeError("Invalid remediation evidence plan");
-	return structuredClone(plan);
-}
-export const plannedCommands = (plan: RemediationPlan) => [...plan.commands, ...(plan.runtimeHarness.command ? [plan.runtimeHarness.command] : []), plan.rollback.command];
-// Launch-local scope only; task history is not an attempt authority.
-export interface RemediationContext {
-	failedEvidenceRevision: string;
-	plan: RemediationPlan;
-	scope: RemediationScope;
-}
-
-export interface SddChangeSelection {
-	changeName: string;
-	workspaceRoot: string;
-	phase: "apply" | "verify" | "archive" | "remediate";
-	failedEvidenceRevision?: string;
-}
-
-export const SDD_CHANGE_FLAG = "--gentle-sdd-change";
-
-export const REMEDIATION_PLAN_ENV = "GENTLE_PI_SDD_REMEDIATION_PLAN";
-
 export interface TaskRequest {
-	remediationIntent?: unknown;
-	sddRemediation?: RemediationContext;
-	sddPreflightContext?: string;
 	agent: AgentDefinition;
 	prompt: string;
 	label: string | undefined;
@@ -161,10 +126,7 @@ export interface TaskRequest {
 	sessionDir: string;
 	resumeSessionPath: string | undefined;
 	env: NodeJS.ProcessEnv;
-	// A launch-local SDD identity. It is never prompt text or shared state.
-	sddChange?: SddChangeSelection;
 	// Untrusted narrowing intent; paths come only from matching host provenance.
-	researchSelection?: unknown;
 	extensionPaths?: string[];
 	// Synchronous admission recheck at dequeue, before any OS spawn. Throws fail
 	// only this task; unlike onLaunch, it must never persist Changes evidence.
@@ -224,6 +186,8 @@ interface LiveTask {
 	processGroup: number | undefined;
 	terminal: { status: TaskRecord["status"]; error: string | null } | undefined;
 	childExit: number | null | undefined;
+	childExitSignal?: string | null;
+	instructionsTransportDir?: string;
 	cleanupDeadlineAt: number | undefined;
 	quarantined: boolean;
 	nextId: number;
@@ -236,6 +200,7 @@ interface LiveTask {
 	// live work, so the watchdog gives it the tool ceiling instead of the idle
 	// silence budget. Keyed by call id, holding the announced tool name.
 	inFlightTools: Map<string, string>;
+	argumentProgress: ToolArgumentProgress;
 	// Bounded ring buffer of the child's raw stderr output, capped to the last
 	// STDERR_TAIL_MAX characters. Only surfaced on the stall and pre-settle exit
 	// terminal paths, never on completed, cancelled, or other failure reasons.
@@ -243,6 +208,11 @@ interface LiveTask {
 }
 
 const STDERR_TAIL_MAX = 512;
+const DIR_MODE = 0o700;
+const FILE_MODE = 0o600;
+// UTF-8 bytes, not characters: argv size is what kills the child on macOS.
+export const MAX_INLINE_INSTRUCTIONS_BYTES = 1000;
+const MAX_TRANSPORT_PREFIX_CHARS = 64;
 const CHILD_MARKER = "GENTLE_PI_AGENTS_CHILD";
 const IPC_MARKER = "GENTLE_PI_AGENTS_OWNED_IPC";
 const PARENT_NOTIFICATION_TOOL = "subagent_parent_message";
@@ -277,31 +247,40 @@ function queryRejection(error: unknown): string {
 	return "parent rejected query";
 }
 
+export function formatChildExit(code: number | null | undefined, signal?: string | null): string {
+	if (typeof code === "number") return `code ${code}`;
+	if (signal) return `signal ${signal}`;
+	return `code ${code ?? "unknown"}`;
+}
+
 const hostProcess: ProcessControl = { platform: process.platform, kill: (pid, signal) => process.kill(pid, signal) };
 
-export function childArguments(request: TaskRequest): string[] {
+export function childArguments(request: TaskRequest, instructionsPath?: string): string[] {
 	const args = ["--mode", "rpc", "--session-dir", request.sessionDir];
 	for (const path of request.extensionPaths ?? []) args.push("--extension", path);
-	if (request.sddChange) args.push(SDD_CHANGE_FLAG, JSON.stringify(request.sddChange));
 	if (request.resumeSessionPath) args.push("--session", request.resumeSessionPath);
 	if (request.model) args.push("--model", request.thinking ? `${formatModelRef(request.model)}:${request.thinking}` : formatModelRef(request.model));
 	else if (request.thinking) args.push("--thinking", request.thinking);
-	const tools = request.agent.tools.length > 0 || request.agent.name === "sdd-research" ? [...new Set([...request.agent.tools, PARENT_NOTIFICATION_TOOL])] : DEFAULT_TOOLS;
+	const tools = request.agent.tools.length > 0 ? [...new Set([...request.agent.tools, PARENT_NOTIFICATION_TOOL])] : DEFAULT_TOOLS;
 	if (tools.length > 0) args.push("--tools", tools.join(","));
-	if (request.agent.instructions.length > 0) args.push("--append-system-prompt", request.agent.instructions);
+	if (instructionsPath) {
+		args.push("--append-system-prompt", instructionsPath);
+	} else if (request.agent.instructions.length > 0) {
+		args.push("--append-system-prompt", request.agent.instructions);
+	}
 	return args;
 }
 
-// The child is the same pi that is running us: node plus its cli entry.
+// Reuse the running pi entry while it exists; upgrades may remove it.
 // GENTLE_PI_AGENTS_PI overrides it with a command line.
-export function piCommand(proc: ProcessLike = process): PiCommand {
+export function piCommand(proc: ProcessLike = process, exists: (path: string) => boolean = existsSync): PiCommand {
 	const override = proc.env.GENTLE_PI_AGENTS_PI?.trim();
 	if (override) {
 		const [command, ...args] = override.split(/\s+/);
 		return { command, args };
 	}
 	const entry = proc.argv[1];
-	if (entry && /(^|[\\/])cli\.js$/.test(entry)) return { command: proc.execPath, args: [entry] };
+	if (entry && /(^|[\\/])cli\.js$/.test(entry) && exists(entry)) return { command: proc.execPath, args: [entry] };
 	return { command: "pi", args: [] };
 }
 
@@ -332,8 +311,7 @@ export class JsonLines {
 }
 
 export function promptText(request: TaskRequest): string {
-	const prompt = request.context ? `${request.prompt}\n\n## Context\n${request.context}` : request.prompt;
-	return request.sddRemediation ? `${prompt}\n\n## Human-authorized remediation plan\nExecute only these exact commands in the selected cwd; report actual results without claiming native verification.\n${JSON.stringify(request.sddRemediation.plan)}\nFailed evidence: ${request.sddRemediation.failedEvidenceRevision}` : prompt;
+	return request.context ? `${request.prompt}\n\n## Context\n${request.context}` : request.prompt;
 }
 
 export class AgentRunner {
@@ -363,7 +341,6 @@ export class AgentRunner {
 		const task: TaskRecord = {
 			id: `${now.toString(36)}-${this.counter.toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
 			agent: request.agent.name,
-			...(request.sddPreflightContext ? { sddPreflightContext: request.sddPreflightContext } : {}),
 			mode: request.mode,
 			prompt: request.prompt,
 			label: taskLabel(request.prompt, request.label),
@@ -390,23 +367,8 @@ export class AgentRunner {
 	}
 
 	run(request: TaskRequest): TaskRecord {
-		// Admission already confirmed the canonical cwd and human edit scope.
-		// Check this runner's queue/live slots before scheduling any launch: history
-		// is not a lock, and quarantined children still own their live slot.
-		if (request.sddRemediation) {
-			const active = [...this.queue.map(entry => entry.task), ...[...this.live.keys()].map(id => this.store.get(id))];
-			if (active.some(task => task?.agent === "sdd-remediate" && task.cwd === request.cwd)) {
-				throw new Error("Remediation already queued or running in this worktree; wait for confirmed cleanup or cancel the active task before requesting fresh authorization");
-			}
-		}
 		const task = this.createTask(request);
-		// A caller can retain and mutate its request after dispatch. Preserve only
-		// the identity selected at construction for this child launch.
-		const launchRequest = {
-			...request,
-			sddChange: request.sddChange && { ...request.sddChange },
-		};
-		this.queue.push({ task, request: launchRequest });
+		this.queue.push({ task, request });
 		queueMicrotask(() => this.pump());
 		return task;
 	}
@@ -445,6 +407,7 @@ export class AgentRunner {
 		if (live.queries.get(requestId) === query) {
 			query.cancel();
 			live.queries.delete(requestId);
+			this.hooks.onQuerySettled?.(id, requestId, "replied");
 		}
 		return accepted;
 	}
@@ -507,28 +470,51 @@ export class AgentRunner {
 		// one (`lib/rpc-host.ts`).
 		const env = withoutInteractiveHost({
 			...request.env,
-			...(request.extensionPaths ? { [RESEARCH_SELECTION_ENV]: JSON.stringify(request.researchSelection ?? null) } : {}),
 			[CHILD_MARKER]: "1",
 			[IPC_MARKER]: `${this.deps.now()}-${Math.random().toString(36).slice(2)}`,
 			...(hasParentPermissionChannel ? { GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3" } : {}),
 		});
-		delete env[REMEDIATION_PLAN_ENV];
-		if (request.sddRemediation) env[REMEDIATION_PLAN_ENV] = JSON.stringify({ plan: request.sddRemediation.plan, scope: request.sddRemediation.scope, selection: request.sddChange });
+		// Do not forward stale legacy child selection or authorization.
+		delete env.GENTLE_PI_SDD_REMEDIATION_PLAN;
+		delete env.GENTLE_PI_RESEARCH_SELECTION;
+		let instructionsTransportDir: string | undefined;
+		let instructionsTransportPath: string | undefined;
+		if (Buffer.byteLength(request.agent.instructions, "utf8") > MAX_INLINE_INSTRUCTIONS_BYTES) {
+			try {
+				const prefix = (request.agent.name || "instructions").replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, MAX_TRANSPORT_PREFIX_CHARS);
+				instructionsTransportDir = mkdtempSync(join(tmpdir(), `gentle-pi-subagent-${prefix}-`));
+				try { chmodSync(instructionsTransportDir, DIR_MODE); } catch { /* best effort */ }
+				instructionsTransportPath = join(instructionsTransportDir, "instructions.md");
+				writeFileSync(instructionsTransportPath, request.agent.instructions, { mode: FILE_MODE, encoding: "utf8" });
+				try { chmodSync(instructionsTransportPath, FILE_MODE); } catch { /* best effort */ }
+			} catch (error) {
+				if (instructionsTransportDir) {
+					try { rmSync(instructionsTransportDir, { recursive: true, force: true }); } catch { /* best effort */ }
+				}
+				this.store.update(id, { status: TASK_STATUS.RUNNING, startedAt: this.deps.now(), lastStep: "starting" });
+				this.finish(id, TASK_STATUS.FAILED, `could not write agent instructions: ${error instanceof Error ? error.message : String(error)}`);
+				return;
+			}
+		}
 		let child: ChildLike;
 		try {
-			child = this.deps.spawn(this.deps.pi.command, [...this.deps.pi.args, ...childArguments(request)], {
+			const pi = this.deps.resolvePi?.() ?? this.deps.pi;
+			child = this.deps.spawn(pi.command, [...pi.args, ...childArguments(request, instructionsTransportPath)], {
 				cwd: request.cwd,
 				env,
 				detached,
 				stdio: hasParentPermissionChannel ? ["pipe", "pipe", "pipe", permissionChannelStdio, "ipc"] : ["pipe", "pipe", "pipe", "ipc"],
 			});
 		} catch (error) {
+			if (instructionsTransportDir) {
+				try { rmSync(instructionsTransportDir, { recursive: true, force: true }); } catch { /* best effort */ }
+			}
 			this.store.update(id, { status: TASK_STATUS.RUNNING, startedAt: this.deps.now(), lastStep: "starting" });
 			this.finish(id, TASK_STATUS.FAILED, `could not start pi: ${error instanceof Error ? error.message : String(error)}`);
 			return;
 		}
 		const processGroup = detached && typeof child.pid === "number" && child.pid > 0 ? child.pid : undefined;
-		const live: LiveTask = { child, sawRunEvent: false, mutationStarts: new Map(), inFlightTools: new Map(), pending: new Map(), queries: new Map(), replies: new Map(), cancelStall: () => {}, cancelGrace: () => {}, processGroup, terminal: undefined, childExit: undefined, cleanupDeadlineAt: undefined, quarantined: false, nextId: 0, ipcClosed: false, acknowledgedIpcIds: new Set(), acknowledgedIpcOrder: [], stderrTail: "" };
+		const live: LiveTask = { child, sawRunEvent: false, mutationStarts: new Map(), inFlightTools: new Map(), argumentProgress: new ToolArgumentProgress(), pending: new Map(), queries: new Map(), replies: new Map(), cancelStall: () => {}, cancelGrace: () => {}, processGroup, terminal: undefined, childExit: undefined, childExitSignal: undefined, instructionsTransportDir, cleanupDeadlineAt: undefined, quarantined: false, nextId: 0, ipcClosed: false, acknowledgedIpcIds: new Set(), acknowledgedIpcOrder: [], stderrTail: "" };
 		if (request.prepareResponseObservations) {
 			let ready = false;
 			live.observationPreparation = () => ready;
@@ -570,11 +556,7 @@ export class AgentRunner {
 			const tail = live.stderrTail + chunk;
 			live.stderrTail = tail.length > STDERR_TAIL_MAX ? tail.slice(-STDERR_TAIL_MAX) : tail;
 		});
-		child.on("exit", (code) => this.exited(id, code));
-		if (request.sddRemediation && child.pid === undefined) {
-			this.childError(id, new Error("remediation child has no process ID"));
-			return;
-		}
+		child.on("exit", (code, signal) => this.exited(id, code, signal));
 		void this.send(id, { type: "get_state" }).then((response) => {
 			const data = response.data as { sessionFile?: unknown; model?: { provider?: unknown; id?: unknown } | null; thinkingLevel?: unknown } | undefined;
 			if (response.success !== true || live.terminal || this.live.get(id) !== live || !data) return;
@@ -613,8 +595,8 @@ export class AgentRunner {
 
 	// An idle child is bounded by the silence budget; a child whose announced
 	// tool call is still running is live work and bounded by the longer tool
-	// ceiling. The budget is chosen from the state at arm time, and every RPC
-	// object re-arms, so a finished tool call returns the task to idle silence.
+	// ceiling. These are renewable silence budgets, not total duration limits.
+	// A finished tool call returns the task to idle silence.
 	private armStall(id: string, live: LiveTask): void {
 		live.cancelStall();
 		const tool = live.inFlightTools.values().next().value;
@@ -668,12 +650,12 @@ export class AgentRunner {
 		try {
 			if (live.queries.has(parsed.frame.id)) rejectQuery("duplicate query request");
 			if (live.queries.size >= CHILD_QUERY_MAX_INFLIGHT) rejectQuery("too many pending parent queries");
-			query = { replying: false, cancel: this.deps.schedule(() => this.expireQuery(live, parsed.frame!.id), CHILD_QUERY_TIMEOUT_MS) };
+			query = { replying: false, cancel: this.deps.schedule(() => this.expireQuery(id, live, parsed.frame!.id), CHILD_QUERY_TIMEOUT_MS) };
 			live.queries.set(parsed.frame.id, query);
 			if (!this.hooks.onQuery) rejectQuery("task parent cannot accept queries");
 			if (this.hooks.onQuery(task, parsed.frame.id, parsed.frame.message) === false) rejectQuery("task parent is not the active host session");
 			if (task.mode === AGENT_MODE.TASK && !this.firstQueries.has(id)) {
-				const first = { taskId: id, requestId: parsed.frame.id };
+				const first = { taskId: id, requestId: parsed.frame.id, message: parsed.frame.message };
 				this.firstQueries.set(id, first);
 				for (const resolve of this.queryWaiters.get(id) ?? []) resolve(first);
 				this.queryWaiters.delete(id);
@@ -687,10 +669,11 @@ export class AgentRunner {
 		}
 	}
 
-	private expireQuery(live: LiveTask, id: string): void {
+	private expireQuery(taskId: string, live: LiveTask, id: string): void {
 		const query = live.queries.get(id);
 		if (!query) return;
 		live.queries.delete(id);
+		this.hooks.onQuerySettled?.(taskId, id, "expired");
 		if (query.replying) this.settleReply(live, id, false);
 		else this.sendQueryError(live, id, "parent query timed out");
 	}
@@ -782,7 +765,12 @@ export class AgentRunner {
 		// renews the watchdog here, so fire-and-forget UI traffic that normalizes
 		// to nothing cannot keep a child that never started its run alive forever
 		// (#1034); the pre-existing timer stays armed until real progress arrives.
-		const progress = events.length > 0;
+		const argumentProgress = live.argumentProgress.observe(raw);
+		if (argumentProgress) {
+			live.sawRunEvent = true;
+			this.store.update(id, { lastStep: "generating tool arguments", lastActivityAt: this.deps.now() });
+		}
+		const progress = events.length > 0 || argumentProgress;
 		for (const event of events) {
 			if (event.type === TASK_EVENT.RESPONSE_OBSERVATION) {
 				const buffer = live.observations;
@@ -906,6 +894,7 @@ export class AgentRunner {
 			if (this.deps.now() >= (live.cleanupDeadlineAt ?? 0)) {
 				live.cancelGrace();
 				live.quarantined = true;
+				this.cleanupLive(live);
 				this.finish(id, TASK_STATUS.FAILED, `process cleanup unconfirmed after ${GROUP_CONFIRM_DEADLINE_MS}ms; capacity quarantined`, live);
 				return;
 			}
@@ -930,10 +919,22 @@ export class AgentRunner {
 		if (this.deps.now() >= (live.cleanupDeadlineAt ?? 0)) {
 			live.cancelGrace();
 			live.quarantined = true;
+			this.cleanupLive(live);
 			this.finish(id, TASK_STATUS.FAILED, `child exit unconfirmed after ${GROUP_CONFIRM_DEADLINE_MS}ms; capacity quarantined`, live);
 			return;
 		}
 		live.cancelGrace = this.deps.schedule(() => this.confirmGroupExit(id, live), GROUP_CONFIRM_MS);
+	}
+
+	private cleanupLive(live: LiveTask): void {
+		live.permissionBroker?.close();
+		this.closeIpc(live);
+		live.cancelStall();
+		live.cancelGrace();
+		if (live.instructionsTransportDir) {
+			try { rmSync(live.instructionsTransportDir, { recursive: true, force: true }); } catch { /* best effort */ }
+			live.instructionsTransportDir = undefined;
+		}
 	}
 
 	private childError(id: string, error: Error): void {
@@ -945,30 +946,26 @@ export class AgentRunner {
 			this.requestStop(id, TASK_STATUS.FAILED, `pi process error: ${error.message}`);
 			return;
 		}
-		live.permissionBroker?.close();
-		this.closeIpc(live);
-		live.cancelStall();
-		live.cancelGrace();
+		this.cleanupLive(live);
 		this.live.delete(id);
 		this.finish(id, TASK_STATUS.FAILED, `could not start pi: ${error.message}`, live);
 	}
 
-	private exited(id: string, code: number | null): void {
+	private exited(id: string, code: number | null, signal?: NodeJS.Signals | string | null): void {
 		const live = this.live.get(id);
 		if (!live) return;
 		live.childExit = code;
+		live.childExitSignal = signal ?? null;
+		const exitDesc = formatChildExit(code, signal);
 		if (this.groupExists(live)) {
-			if (!live.terminal) this.requestStop(id, TASK_STATUS.FAILED, `pi exited with code ${code ?? "unknown"} before agent_settled${this.stderrSuffix(live)}`);
+			if (!live.terminal) this.requestStop(id, TASK_STATUS.FAILED, `pi exited with ${exitDesc} before agent_settled${this.stderrSuffix(live)}`);
 			return;
 		}
 		this.completeExit(id, live);
 	}
 
 	private completeExit(id: string, live: LiveTask): void {
-		live.permissionBroker?.close();
-		this.closeIpc(live);
-		live.cancelStall();
-		live.cancelGrace();
+		this.cleanupLive(live);
 		this.live.delete(id);
 		// Quarantine already notified completion, but its retained slot is now free.
 		if (live.quarantined) {
@@ -976,7 +973,8 @@ export class AgentRunner {
 			return;
 		}
 		const terminal = live.terminal;
-		this.finish(id, terminal ? terminal.status : TASK_STATUS.FAILED, terminal ? terminal.error : `pi exited with code ${live.childExit ?? "unknown"} before agent_settled${this.stderrSuffix(live)}`, live);
+		const exitDesc = formatChildExit(live.childExit, live.childExitSignal);
+		this.finish(id, terminal ? terminal.status : TASK_STATUS.FAILED, terminal ? terminal.error : `pi exited with ${exitDesc} before agent_settled${this.stderrSuffix(live)}`, live);
 	}
 
 	private finish(id: string, status: TaskRecord["status"], error: string | null, live?: LiveTask): void {

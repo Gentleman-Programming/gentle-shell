@@ -9,10 +9,6 @@ const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const AGENTS = join(ROOT, "assets", "agents");
 const ASSETS = join(ROOT, "assets");
 
-// SDD phase executors installed to ~/.pi/agent/agents/ by installSddAssets.
-// Each carries its own effective prompt; none inherits the parent workflow.
-const SDD_PREFIX = "sdd-";
-
 // Strict-output agents that must remain untouched by Key Learnings: the
 // Judgment Day roles (`jd-*`) and the review lens roles (`review-*`). Derived
 // from the agents actually on disk rather than hardcoded, so retiring one
@@ -52,52 +48,9 @@ function agentFiles(): string[] {
 	return readdirSync(AGENTS).filter((f) => f.endsWith(".md")).sort();
 }
 
-function sddAgents(): string[] {
-	return agentFiles().filter((f) => f.startsWith(SDD_PREFIX));
-}
-
 function strictJsonAgents(): string[] {
 	return agentFiles().filter((f) => STRICT_JSON_PREFIX.test(f));
 }
-
-test("every SDD phase executor carries an effective `## Key Learnings Closing` section with full semantics", () => {
-	const agents = sddAgents();
-	assert.ok(agents.length >= 12, `expected >=12 SDD agents, found ${agents.length}`);
-	const missing: string[] = [];
-	const failed: string[] = [];
-	for (const file of agents) {
-		const source = readFileSync(join(AGENTS, file), "utf8");
-		const section = readSection(source, "Key Learnings Closing");
-		if (section === null) { missing.push(file); continue; }
-		for (const [label, regex] of KL_SEMANTICS) {
-			if (!regex.test(section)) failed.push(`${file}: ${label}`);
-		}
-	}
-	assert.deepEqual(missing, [], "every SDD agent must carry a `## Key Learnings Closing` section");
-	assert.deepEqual(failed, [], "every section must encode all canonical semantics");
-});
-
-test("no SDD phase executor infers Key Learnings through `standard phase envelope` alone", () => {
-	for (const file of sddAgents()) {
-		const source = readFileSync(join(AGENTS, file), "utf8");
-		const section = readSection(source, "Key Learnings Closing");
-		assert.ok(section, `${file} must have a direct Key Learnings Closing section`);
-	}
-});
-
-test("SDD executor coverage is exhaustive against actual agent files", () => {
-	const actual = sddAgents();
-	// Allowlist: the 13 known phase executors. A new sdd-*.md without a
-	// Key Learnings Closing section fails the first test; this test proves
-	// the allowlist matches reality so coverage cannot silently drift.
-	const expected = [
-		"sdd-apply.md", "sdd-archive.md", "sdd-design.md", "sdd-explore.md",
-		"sdd-init.md", "sdd-onboard.md", "sdd-proposal.md", "sdd-remediate.md", "sdd-research.md",
-		"sdd-spec.md", "sdd-status.md", "sdd-tasks.md",
-		"sdd-verify.md",
-	];
-	assert.deepEqual(actual, expected, "SDD agent set must match the known allowlist");
-});
 
 test("generic delegation contract instructs the same `## Key Learnings` closing block", () => {
 	const delegation = readFileSync(join(ASSETS, "orchestrator-delegation.md"), "utf8");
@@ -109,14 +62,6 @@ test("generic delegation contract instructs the same `## Key Learnings` closing 
 	assert.match(section, /native `Agent`/, "must cover native Agent fallback");
 	assert.match(section, /strict JSON/i, "must exclude strict-JSON agents");
 	assert.match(section, /layers on after/, "must state the block layers on after the envelope");
-});
-
-test("sdd-orchestrator-workflow documents routing, not executor authority", () => {
-	const workflow = readFileSync(join(ASSETS, "sdd-orchestrator-workflow.md"), "utf8");
-	const section = readSection(workflow, "Key Learnings closing block (routing)");
-	assert.ok(section, "workflow must document Key Learnings routing");
-	assert.match(section, /installed SDD phase executor agent.*carries the effective.*contract/i);
-	assert.match(section, /documents routing only and is not the executor authority/);
 });
 
 test("provider ownership: no Pi TypeScript runtime parses Key Learnings or invokes passive-capture tools", () => {
@@ -214,27 +159,6 @@ test("strict review and Judgment Day agents do not gain Key Learnings or trailin
 });
 
 test("the canonical Key Learnings heading has no trailing colon in any asset", () => {
-	for (const file of sddAgents()) {
-		const source = readFileSync(join(AGENTS, file), "utf8");
-		assert.match(source, /`## Key Learnings`/, `${file} must reference the canonical heading`);
-		assert.doesNotMatch(source, /`## Key Learnings:`/, `${file} must not use a trailing colon`);
-	}
 	const delegation = readFileSync(join(ASSETS, "orchestrator-delegation.md"), "utf8");
 	assert.doesNotMatch(delegation, /`## Key Learnings:`/);
-});
-
-test("modified SDD agents are packaged and installed by the existing installer", () => {
-	const verifier = readFileSync(join(ROOT, "scripts", "verify-package-files.mjs"), "utf8");
-	const expected = [
-		"assets/agents/sdd-apply.md", "assets/agents/sdd-archive.md",
-		"assets/agents/sdd-design.md", "assets/agents/sdd-explore.md",
-		"assets/agents/sdd-init.md", "assets/agents/sdd-onboard.md",
-		"assets/agents/sdd-proposal.md", "assets/agents/sdd-research.md",
-		"assets/agents/sdd-spec.md", "assets/agents/sdd-status.md",
-		"assets/agents/sdd-tasks.md",
-		"assets/agents/sdd-verify.md",
-	];
-	for (const path of expected) {
-		assert.match(verifier, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `${path} must be in the package verifier`);
-	}
 });

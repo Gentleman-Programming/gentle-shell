@@ -62,6 +62,33 @@ test("UsageView refetches on r and closes on escape or q", async () => {
 	assert.equal(events.filter((event) => event === "close").length, 2);
 });
 
+test("UsageView starts a refresh at open and repaints when it settles", async () => {
+	const store = new UsageStore();
+	const events: string[] = [];
+	let resolveRefresh: (() => void) | undefined;
+	const view = new UsageView(store, {
+		theme: plainTheme,
+		now: () => NOW,
+		active: () => undefined,
+		onRefresh: () =>
+			new Promise<void>((resolve) => {
+				events.push("refresh");
+				resolveRefresh = resolve;
+			}),
+		onClose: () => events.push("close"),
+		requestRender: () => events.push("render"),
+	});
+	view.refresh();
+	assert.deepEqual(events, ["render", "refresh"], "opening the panel dispatches the refresh instead of waiting for it");
+	assert.match(stripAnsi(view.render(90)[0]), /✿ Subscriptions · refreshing…/, "the panel says it is refreshing while the dispatch is in flight");
+	store.record(parseCodexUsage(payload(40), NOW));
+	resolveRefresh!();
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.deepEqual(events, ["render", "refresh", "render"], "settling repaints once");
+	assert.match(stripAnsi(view.render(90)[0]), /^╭─ ✿ Subscriptions ─+╮$/, "the title returns once the refresh settles");
+	assert.match(stripAnsi(view.render(90)[2]), /40%/, "the settled snapshot is drawn");
+});
+
 function click(x: number, y: number, width: number, height: number): TuiMouseEvent {
 	return { type: "click", button: "left", x, y, screenX: x, screenY: y, width, height, shift: false, alt: false, ctrl: false };
 }

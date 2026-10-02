@@ -6,10 +6,12 @@
 // process, filesystem, and child process.
 import {
 	accessSync,
+	chmodSync,
 	closeSync,
 	constants as fsConstants,
 	existsSync,
 	mkdirSync,
+	mkdtempSync,
 	openSync,
 	readdirSync,
 	readFileSync,
@@ -19,8 +21,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { createRequire } from "node:module";
-import { constants as osConstants, homedir } from "node:os";
+import { constants as osConstants, homedir, tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve as resolvePath } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -53,6 +54,13 @@ import {
 	restoreJsonField,
 	shellQuote,
 } from "../runtime/gentle-shell-launcher.mjs";
+import {
+	parseResumeHandoff,
+	planResumeHint,
+	RESUME_HANDOFF_DIR_PREFIX,
+	RESUME_HANDOFF_ENV,
+	RESUME_HANDOFF_FILE,
+} from "../runtime/gentle-shell-resume-hint.mjs";
 import { GENTLE_AI_VERSION, gentleAiBinaryPath, PackageLocalGentleAiBinaryMissingError } from "../runtime/gentle-ai-binary.mjs";
 import { DEFAULT_THEME_NAME, installIsolatedTuiModeSetting } from "../scripts/install-tui-mode-setting.mjs";
 
@@ -72,17 +80,30 @@ function readJsonIfExists(path) {
 	}
 }
 
-// @earendil-works/pi-coding-agent ships as an optional peer dependency: it may
-// not be installed at all, so a resolution failure here is expected, not an error.
+// Resolve the public ESM entry without importing the agent or reaching through
+// its exports map. Only an absent optional peer permits PATH fallback; malformed
+// installed metadata must not silently select a different runtime.
 function resolveBundledCli() {
+	let publicEntry;
 	try {
-		const require = createRequire(import.meta.url);
-		const pkgJsonPath = require.resolve("@earendil-works/pi-coding-agent/package.json");
-		const cliPath = join(dirname(pkgJsonPath), "dist", "bundle", "cli.js");
-		return existsSync(cliPath) ? cliPath : undefined;
-	} catch {
-		return undefined;
+		publicEntry = fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"));
+	} catch (error) {
+		if (error.code === "ERR_MODULE_NOT_FOUND") return undefined;
+		throw error;
 	}
+	const entry = realpathSync(publicEntry);
+	const root = dirname(dirname(entry));
+	const expectedEntry = join(root, "dist", "index.js");
+	const metadata = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+	if (entry !== expectedEntry || metadata.name !== "@earendil-works/pi-coding-agent" ||
+		metadata.bin?.pi !== "dist/bundle/cli.js") {
+		throw new Error("Unsupported adjacent Pi package entry/name/bin metadata");
+	}
+	const cliPath = join(root, metadata.bin.pi);
+	if (realpathSync(cliPath) !== cliPath || !statSync(cliPath).isFile()) {
+		throw new Error("Unsupported adjacent Pi CLI path");
+	}
+	return cliPath;
 }
 
 function findOnPath(name) {
@@ -160,6 +181,45 @@ function isDirectory(path) {
 	} catch {
 		return false;
 	}
+}
+
+// Reuse Herdr's managed bridge, never its transport. This process-boundary
+// lookup is deliberately best-effort and does not modify either agent home.
+function managedHerdrExtensionArgs(home, args) {
+	const env = process.env;
+	if (home.mode !== "isolated" || args.piSubcommand !== undefined || args.passthrough[0] === "mcp") return [];
+	if (env.HERDR_ENV !== "1" || !env.HERDR_SOCKET_PATH?.trim() || !env.HERDR_PANE_ID?.trim()) return [];
+	if (env.GENTLE_PI_AGENTS_CHILD === "1" || !process.stdin.isTTY || !process.stdout.isTTY) return [];
+	// Only automatic interactive loading: a user opt-out must not become an
+	// explicit -e (which Pi loads even under --no-extensions). Conservatively
+	// skip ambiguous mode flags too; --mode text alone still allows a TUI.
+	const forwarded = args.passthrough;
+	if (forwarded.some((arg) => ["--no-extensions", "-ne", "--print", "-p", "--export", "--list-models", "-v"].includes(arg))) return [];
+	if (forwarded.some((arg, i) => (arg === "--mode" && forwarded[i + 1] !== "text") || arg.startsWith("--mode="))) return [];
+	try {
+		if (!statSync(env.HERDR_SOCKET_PATH).isSocket()) return [];
+	} catch {
+		return [];
+	}
+	// Prefer a bridge in the selected home over adding a competing copy; keep
+	// the incoming Pi home override before falling back to Herdr's usual home.
+	const agentHomes = [home.dir, env.PI_CODING_AGENT_DIR, join(homedir(), ".pi", "agent")];
+	for (const agentHome of agentHomes) {
+		if (!agentHome) continue;
+		const bridge = join(agentHome, "extensions", "herdr-agent-state.ts");
+		try {
+			if (!statSync(bridge).isFile()) continue;
+			accessSync(bridge, fsConstants.R_OK);
+			// Pi's package-manager.toResolvedPaths and resource-loader.mergePaths
+			// dedupe canonical files across discovery, explicit -e and manifests.
+			// Existence alone is NOT proof of loading: declare the resource and
+			// let that resolver dedupe it, including explicit aliases from argv.
+			return ["-e", realpathSync(bridge)];
+		} catch {
+			// An absent/unreadable bridge never prevents the ordinary launch.
+		}
+	}
+	return [];
 }
 
 // Real-fs adapter for discoverLooseExtensionEntries (lib/gentle-shell-launcher.ts):
@@ -254,9 +314,46 @@ function readRawConfig(configPath) {
 function writeRawConfig(configPath, config) {
 	const configDir = dirname(configPath);
 	if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true, mode: 0o700 });
-	const tempPath = join(configDir, `.${basenameOf(configPath)}.gentle-shell-${process.pid}.tmp`);
-	writeFileSync(tempPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-	renameSync(tempPath, configPath);
+	writeFileAtomically(configPath, `${JSON.stringify(config, null, 2)}\n`);
+}
+
+// The one atomic write every launcher-owned config/settings update goes
+// through: a temp file next to the real target, then a rename onto it, so a
+// crash or kill never leaves a partial file. When `path` is a symlink (Nix
+// home-manager, stow, and similar dotfile managers ship settings.json and
+// config.json that way), the write lands on the link's real target and the
+// link itself stays in place; renaming onto `path` would replace the link
+// with a regular file. A missing path or a dangling link has no real target
+// to preserve, so it is written at `path` itself, exactly as before this
+// helper existed, instead of creating a file wherever a dangling link points.
+// The permission bits are `mode` when given, otherwise the real target's own
+// (applied with chmod, so the umask cannot narrow them); a new file keeps
+// the default creation mode. The temp file is removed when the write or
+// rename throws, and the error propagates to the caller's own handling.
+function writeFileAtomically(path, data, { mode } = {}) {
+	let target = path;
+	try {
+		target = realpathSync(path);
+	} catch (error) {
+		if (error.code !== "ENOENT") throw error;
+	}
+	let targetMode = mode;
+	if (targetMode === undefined) {
+		try {
+			targetMode = statSync(target).mode & 0o777;
+		} catch (error) {
+			if (error.code !== "ENOENT") throw error;
+		}
+	}
+	const tempPath = join(dirname(target), `.${basenameOf(target)}.gentle-shell-${process.pid}.tmp`);
+	try {
+		writeFileSync(tempPath, data);
+		if (targetMode !== undefined) chmodSync(tempPath, targetMode);
+		renameSync(tempPath, target);
+	} catch (error) {
+		rmSync(tempPath, { force: true });
+		throw error;
+	}
 }
 
 function loadConfig() {
@@ -512,9 +609,7 @@ function restoreFile(snapshot) {
 	}
 	if (currentBytes !== undefined && currentBytes.equals(snapshot.bytes)) return false;
 	mkdirSync(dirname(path), { recursive: true });
-	const tempPath = join(dirname(path), `.${basenameOf(path)}.gentle-shell-restore-${process.pid}.tmp`);
-	writeFileSync(tempPath, snapshot.bytes, { mode: snapshot.mode });
-	renameSync(tempPath, path);
+	writeFileAtomically(path, snapshot.bytes, { mode: snapshot.mode });
 	return true;
 }
 
@@ -574,10 +669,7 @@ function restoreManagedAssetDigestField(path, originalText) {
 	if (currentText === undefined) return false;
 	const restoredText = restoreJsonField(originalText, currentText, MANAGED_ASSET_DIGEST_FIELD);
 	if (restoredText === undefined) return false;
-	const mode = statSync(path).mode & 0o777;
-	const tempPath = join(dirname(path), `.${basenameOf(path)}.gentle-shell-restore-${process.pid}.tmp`);
-	writeFileSync(tempPath, restoredText, { mode });
-	renameSync(tempPath, path);
+	writeFileAtomically(path, restoredText);
 	return true;
 }
 
@@ -618,10 +710,7 @@ function enforceDefaultThemeField(settingsPath, originalSettingsText) {
 		? restoreJsonField(originalSettingsText, currentText, "theme")
 		: forceJsonFieldIfAbsentInOriginal(originalSettingsText, currentText, "theme", DEFAULT_THEME_NAME);
 	if (newText === undefined) return false;
-	const mode = statSync(settingsPath).mode & 0o777;
-	const tempPath = join(dirname(settingsPath), `.${basenameOf(settingsPath)}.gentle-shell-restore-${process.pid}.tmp`);
-	writeFileSync(tempPath, newText, { mode });
-	renameSync(tempPath, settingsPath);
+	writeFileAtomically(settingsPath, newText);
 	return originalHadTheme ? "restored" : "forced";
 }
 
@@ -639,6 +728,53 @@ function safely(label, path, fallback, fn) {
 		process.stderr.write(`gentle-shell: could not ${label} at ${path} (${error.message}); continuing\n`);
 		return fallback;
 	}
+}
+
+// gentle-pi replaces Pi's replaceable builtin codemode with its own decorated
+// codemode tool (extensions/quiet-tools.ts -> registerCompactCodemode in
+// lib/codemode-renderer.ts), and Pi prints a startup warning whenever a
+// builtin loses its tool to another extension. Pi's only per-builtin opt-out
+// is a `-builtin:<name>` entry in the settings `extensions` array, so every
+// normal launch ensures that entry in the settings.json of a home
+// gentle-shell owns (see main, below).
+const BUILTIN_CODEMODE_EXTENSION = "builtin:codemode";
+
+// Pure: returns `settingsText` with `-<builtin>` appended to its `extensions`
+// array (created when absent), or undefined when nothing should change — the
+// text does not parse as a JSON object, `extensions` exists but is not an
+// array, or the array already holds any explicit entry for the builtin
+// (`+`, `-`, `!`, or bare), which is the user's own decision. Keeps every
+// other key and entry in place, plus the text's own indentation and trailing
+// newline (same detection as detectJsonFormatting in
+// lib/gentle-shell-launcher.ts).
+function withBuiltinExtensionExcluded(settingsText, builtin) {
+	let settings;
+	try {
+		settings = JSON.parse(settingsText);
+	} catch {
+		return undefined;
+	}
+	if (typeof settings !== "object" || settings === null || Array.isArray(settings)) return undefined;
+	const extensions = Object.prototype.hasOwnProperty.call(settings, "extensions") ? settings.extensions : [];
+	if (!Array.isArray(extensions)) return undefined;
+	if (extensions.some((entry) => typeof entry === "string" && entry.replace(/^[+!-]/, "") === builtin)) return undefined;
+	const indent = settingsText.match(/\{\r?\n([ \t]+)/)?.[1];
+	const serialized = JSON.stringify({ ...settings, extensions: [...extensions, `-${builtin}`] }, null, indent);
+	return settingsText.endsWith("\n") ? `${serialized}\n` : serialized;
+}
+
+// Applies withBuiltinExtensionExcluded to an existing settings.json with the
+// same atomic temp-file-then-rename write as the restores above. A missing
+// settings.json is left missing: only the brand-new-home bootstrap
+// (installIsolatedTuiModeSetting) seeds that file, and this launch-time step
+// never takes over that role. Returns true when it actually wrote the file.
+function ensureBuiltinCodemodeExcluded(settingsPath) {
+	const currentText = readJsonIfExists(settingsPath);
+	if (currentText === undefined) return false;
+	const newText = withBuiltinExtensionExcluded(currentText, BUILTIN_CODEMODE_EXTENSION);
+	if (newText === undefined) return false;
+	writeFileAtomically(settingsPath, newText);
+	return true;
 }
 
 // Provisions `home` with everything `gentle-ai install --agent pi` installs
@@ -1139,6 +1275,21 @@ async function main() {
 		// exits with the same signal-derived code instead of falling through
 		// to launch pi.
 		if (autoProvisionResult !== undefined) process.exit(autoProvisionResult.exitCode);
+
+		// Runs after auto-provision, so it sees settings.json exactly as that
+		// run left it. Only a home gentle-shell owns, by the same rule
+		// auto-provisioning uses (homeIsForeign): never --link (excluded above),
+		// a foreign --home, or pi's own default agent home, since plain pi may
+		// share those and would lose its builtin codemode. `setup` (including
+		// --dry-run) returned before this point.
+		const settingsPath = join(home.dir, "settings.json");
+		const excluded = safely("exclude Pi's builtin codemode in your Gentle Shell settings", settingsPath, false, () => {
+			const previous = provisionedEntry(readRawConfig(resolveConfigPath()), safeRealpath(home.dir));
+			return !homeIsForeign(home, previous, homeHadContentBeforeBootstrap) && ensureBuiltinCodemodeExcluded(settingsPath);
+		});
+		if (excluded) {
+			process.stderr.write(`gentle-shell: disabled Pi's builtin codemode in ${settingsPath} (Gentle Shell ships its own codemode tool)\n`);
+		}
 	}
 
 	const packageRootExplicit = args.packageRoot !== undefined;
@@ -1228,20 +1379,94 @@ async function main() {
 		takeOver,
 		otherPackagePaths,
 		looseExtensionEntries,
-		passthrough: args.passthrough,
+		passthrough: [...managedHerdrExtensionArgs(home, args), ...args.passthrough],
 		piSubcommand: args.piSubcommand,
 		baseEnv: process.env,
+		homedir: homedir(),
 	});
 
+	// Only an interactive session ends with pi's exit resume hint, which
+	// gentle-shell completes with its own line; a pi subcommand gets no handoff.
+	const resumeHandoff = args.piSubcommand === undefined ? createResumeHandoff() : undefined;
+	const childEnv = resumeHandoff ? { ...invocation.env, [RESUME_HANDOFF_ENV]: resumeHandoff.path } : invocation.env;
+
 	const launchPlan = planSpawn({ command: invocation.command, args: invocation.args, platform: process.platform });
-	const child = spawn(launchPlan.command, launchPlan.args, { stdio: "inherit", env: invocation.env, shell: launchPlan.shell });
-	for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
-		process.on(signal, () => child.kill(signal));
+	let child;
+	try {
+		child = spawn(launchPlan.command, launchPlan.args, { stdio: "inherit", env: childEnv, shell: launchPlan.shell });
+	} catch (error) {
+		resumeHandoff?.dispose();
+		throw error;
 	}
-	child.on("error", (error) => fail(`Could not start pi: ${error.message}`, 1));
-	child.on("exit", (code, signal) => {
-		process.exit(signal ? signalExitCode(signal) : (code ?? 1));
+	// Only SIGHUP means the terminal is gone. pi may survive a forwarded
+	// SIGINT and keep running, so other signals must not silence the hint.
+	let terminalHungUp = false;
+	for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+		process.on(signal, () => {
+			if (signal === "SIGHUP") terminalHungUp = true;
+			child.kill(signal);
+		});
+	}
+	child.on("error", (error) => {
+		resumeHandoff?.dispose();
+		fail(`Could not start pi: ${error.message}`, 1);
 	});
+	child.on("exit", (code, signal) => {
+		const exitCode = signal ? signalExitCode(signal) : (code ?? 1);
+		if (resumeHandoff) {
+			const hint = planResumeHint({
+				handoff: resumeHandoff.read(),
+				homeFlags: homeSelectorFlags(home),
+				stdoutIsTTY: process.stdout.isTTY === true,
+				terminalHungUp,
+				platform: process.platform,
+				color: process.stdout.hasColors?.() === true,
+			});
+			resumeHandoff.dispose();
+			// TTY writes are asynchronous on Windows: exit only once the
+			// hint is flushed, or it can be lost.
+			if (hint) {
+				// A write error (e.g. EIO on a closed terminal) must not turn
+				// pi's exit into a launcher crash.
+				process.stdout.once("error", () => process.exit(exitCode));
+				process.stdout.write(hint, () => process.exit(exitCode));
+				return;
+			}
+		}
+		process.exit(exitCode);
+	});
+}
+
+// Private temp dir for the resume-hint handoff (lib/gentle-shell-resume-hint.ts).
+// Best effort: if it cannot be created, only pi's own hint is printed.
+function createResumeHandoff() {
+	let dir;
+	try {
+		dir = mkdtempSync(join(tmpdir(), RESUME_HANDOFF_DIR_PREFIX));
+	} catch {
+		return undefined;
+	}
+	const path = join(dir, RESUME_HANDOFF_FILE);
+	return {
+		path,
+		read: () => {
+			try {
+				const text = readJsonIfExists(path);
+				return text === undefined ? undefined : parseResumeHandoff(text);
+			} catch {
+				return undefined;
+			}
+		},
+		// Never throws: it runs inside the exit handler, where an EPERM on
+		// Windows would otherwise replace pi's exit code with a crash.
+		dispose: () => {
+			try {
+				rmSync(dir, { recursive: true, force: true });
+			} catch {
+				// A leftover empty temp dir is harmless.
+			}
+		},
+	};
 }
 
 main().catch((error) => {

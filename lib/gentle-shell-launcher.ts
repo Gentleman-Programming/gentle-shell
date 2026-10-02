@@ -194,6 +194,16 @@ function linkDir(env: Record<string, string | undefined>, homedir: string): stri
 	return env.PI_CODING_AGENT_DIR || join(homedir, ".pi", "agent");
 }
 
+// The isolated home replaces PI_CODING_AGENT_DIR for the whole session, so the
+// user's own Pi home travels in this variable for read-only features such as
+// /gentle:stats. An inherited value wins: a gentle-shell launched from inside
+// a Gentle Shell session sees the outer isolated home as PI_CODING_AGENT_DIR.
+export const USER_PI_HOME_ENV = "GENTLE_SHELL_USER_PI_HOME";
+
+export function userPiHome(env: Record<string, string | undefined>, homedir: string): string {
+	return env[USER_PI_HOME_ENV] || linkDir(env, homedir);
+}
+
 function isolatedDir(env: Record<string, string | undefined>, homedir: string): string {
 	return env.GENTLE_SHELL_HOME || join(homedir, ".gentle-shell", "agent");
 }
@@ -866,6 +876,8 @@ export interface BuildPiInvocationInput {
 	// gentle-pi extension injection below may precede it.
 	piSubcommand?: PiSubcommand;
 	baseEnv: Record<string, string | undefined>;
+	// The OS home behind userPiHome's conventional ~/.pi/agent fallback.
+	homedir: string;
 }
 
 export interface PiInvocation {
@@ -943,7 +955,12 @@ export function buildPiInvocation(input: BuildPiInvocationInput): PiInvocation {
 	return {
 		command: input.runtime.command,
 		args,
-		env: { ...input.baseEnv, PI_CODING_AGENT_DIR: input.home.dir, GENTLE_PI_AGENT_HOME: input.home.dir },
+		env: {
+			...input.baseEnv,
+			PI_CODING_AGENT_DIR: input.home.dir,
+			GENTLE_PI_AGENT_HOME: input.home.dir,
+			[USER_PI_HOME_ENV]: userPiHome(input.baseEnv, input.homedir),
+		},
 	};
 }
 

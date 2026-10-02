@@ -393,7 +393,7 @@ async function run() {
 	assert.equal(hooks.has("input"), false, "retired SDD slash input must not be intercepted");
 	assert.ok(hooks.has("before_agent_start"), "missing before_agent_start hook");
 	assert.ok(hooks.has("tool_call"), "missing tool_call hook");
-	for (const toolName of ["read", "bash", "grep", "find", "ls", "edit", "write"]) {
+	for (const toolName of ["read", "grep", "find", "ls", "edit", "write"]) {
 		assert.ok(tools.has(toolName), `missing quiet built-in tool renderer ${toolName}`);
 	}
 	const codemode = tools.get("codemode");

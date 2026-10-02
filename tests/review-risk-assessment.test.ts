@@ -92,8 +92,8 @@ test("decodeReviewAssessmentV1 rejects a malformed shape", () => {
 // ---------------------------------------------------------------------------
 // gentle-pi#1175: the native v2 `assess.schema.json` requires only `code` on a
 // reason, and adds `candidate.consumed`, `review_due`, `review_due_reason`,
-// and `next_transition`. Older binaries (for example the pinned gentle-ai
-// v3.7.0) predate those fields; they must decode without invented values.
+// and `next_transition`. Older binaries (for example gentle-ai v3.7.0)
+// predate those fields; they must decode without invented values.
 // ---------------------------------------------------------------------------
 
 function nextTransition(overrides: Record<string, unknown> = {}): Record<string, unknown> {

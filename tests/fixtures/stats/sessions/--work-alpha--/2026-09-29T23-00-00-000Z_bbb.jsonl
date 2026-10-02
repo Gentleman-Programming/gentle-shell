@@ -1,0 +1,3 @@
+{"type":"session","version":3,"id":"bbb","timestamp":"2026-09-29T23:00:00.000Z","cwd":"/work/alpha"}
+{"type":"message","id":"a1","parentId":null,"timestamp":"2026-09-29T23:10:00.000Z","message":{"role":"assistant","provider":"claude-bridge","model":"claude-opus-5-5","usage":{"input":10,"output":20,"cacheRead":0,"cacheWrite":0,"totalTokens":30,"cost":{"total":0.1}}}}
+{"type":"message","id":"a2","parentId":"a1","timestamp":"2026-09-30T01:00:00.000Z","message":{"role":"assistant","provider":"claude-bridge","model":"claude-opus-5-5","usage":{"input":0,"output":70,"cacheRead":0,"cacheWrite":0,"totalTokens":70,"cost":{"total":0.2}}}}

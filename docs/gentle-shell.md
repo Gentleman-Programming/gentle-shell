@@ -15,7 +15,7 @@ The [v2.6.0 release](https://github.com/Gentleman-Programming/gentle-pi/releases
 - The Agents List and Details views preserve the orchestrator/session hierarchy and completion, abort, and lost-exit history. Parent-child queries and notifications have an explicit handoff path, while model, effort, and usage stay observable per task.
 - Named `/gentle:profiles` atomically route the orchestrator separately from packaged and review roles; see the [technical reference](readme-reference.md#agent-model-profiles) for the profile model.
 
-The source checkout prepares `gentle-pi` `3.7.0` with a package-local Gentle AI `v3.7.0` pin; this does not imply that the package release has been published.
+The source checkout prepares `gentle-pi` `4.0.0` with a package-local Gentle AI `v4.0.0` pin; this does not imply that the package release has been published.
 
 ## Shell interactions and runtime behavior
 
@@ -23,20 +23,21 @@ Gentle Shell is the Pi workspace experience provided by the `gentle-pi` package.
 
 ### Fullscreen layout
 
-At 140 columns or wider, fullscreen splits into a live header row over a transcript-and-rail split, both driven by [`lib/shell-sidebar-layout.ts`](../lib/shell-sidebar-layout.ts):
+At 140 columns or wider, fullscreen defaults to a live header over a transcript-and-rail split, both driven by [`lib/shell-sidebar-layout.ts`](../lib/shell-sidebar-layout.ts):
 
 ```text
 ✿ Gentle Shell ⟡ ~/work/gentle-pi main ⟡ gpt-5.5 · medium · team              ctx ▰▰▰▰▱▱▱▱ 45% ⟡ $9.49 sub
 ```
 
-- The header is one row, always visible, and carries only what changes every frame: session identity on the left (brand, cwd, branch, dirty count, model · effort · profile) and the two live counters right-aligned (the context gauge and session cost). It never shows the working/thinking state or extension statuses — those stay in the prompt title and the compact bar. When the terminal is too narrow for everything, segments give way in a fixed order — profile, then effort, then the whole cwd/branch/dirty group — before the counters are touched; below that, only the brand survives, and below that the header renders nothing.
-- The right rail scrolls **Status → Changes → TODO**, each an event-driven card that only repaints when its own state changes: a model switch or a cost tick refreshes the header, not the rail. Every card (sidebar or not) paints the same rose frame — the rounded border in the theme's plain border role, the title in the accent role — the look every `CARD_TONE.INFO` card in Gentle Shell uses (warning/error/success cards keep their own tone colors).
-- The Status card carries only what an explicit event refreshes: Project (cwd, branch, session name, active profile), Changes, and Integrations (other extensions' statuses). Model, effort, context, cost, and the per-model usage table live in the header instead — the header ticks every frame, so duplicating them in a card would just make that card repaint every frame too.
+- The header carries live session data: session identity on the left (brand, cwd, branch, dirty count, model · effort · profile) and the two live counters right-aligned (the context gauge and session cost). It never shows the working/thinking state or extension statuses — those stay in the prompt indicator and the Status surface. When the terminal is too narrow for everything, segments give way in a fixed order — profile, then effort, then the whole cwd/branch/dirty group — before the counters are touched; below that, only the brand survives, and below that the header renders nothing.
+- The right rail scrolls **Status → Changes → TODO**. Cards cache their rendered content until their own digest or an explicit invalidation changes. `neon` keeps the rounded border and accent title; `float` uses a tone background, a full-height `▎` accent, one-column transparent margins, painted padding above and below, and a blank painted separator between heading and body. Warning/error/success panels retain their tone colors.
+- The Status card carries Project (cwd, branch, session name, active profile), Changes, and Integrations (other extensions' statuses); its live digest detects changes without requiring an event. Model, effort, context, cost, and the per-model usage table live in the header instead — the header ticks every frame, so duplicating them in a card would just make that card repaint every frame too.
 - Gentle Agents is not part of the rail in any mode: its one card stays above the editor, where it already lived, with fixed right-aligned columns for `model · effort`, tokens, cost, and elapsed, each sized to the widest value among the shown tasks — so the numbers line up vertically even when one row's values are much shorter than another's. A queued task fills only the elapsed column with the word `queued`, leaving the other columns blank rather than overwriting the row.
 - The sidebar reuses its last frame until something it paints changes, so silent frames stay cheap; a per-section cache means one card's changing digest (or the header's) never forces an unrelated card to redraw.
-- Narrow terminals and regular mode keep the compact bottom bar and the above-editor Agents widget, with no header row and no sidebar.
+- Header placement is configurable. Above input, the float header has a full-width background, painted padding above and below its content, and a transparent `▔` bottom edge. Below input, the float footer groups captured Changes (when present), header data, and locally owned integration statuses under one upper edge; it never duplicates statuses owned by the rail.
+- Below 140 columns, fullscreen has no sidebar. A configured top header owns the narrow status surface; otherwise the bottom bar owns it, unless Status is hidden. Regular mode keeps the compact one-line bottom bar and the above-editor Agents widget, without a fullscreen header or sidebar.
 
-Below 140 columns, or in regular mode, the compact bottom bar replaces pi's three-line footer with a single line of segments instead:
+The regular-mode compact bar replaces pi's three-line footer with a single line of segments:
 
 ```text
 ✿ gentle shell ⟡ ~/work/gentle-pi main ⟡ gpt-5.5 · medium ⟡ ctx ▰▰▰▰▱▱▱▱ 45% ⟡ $9.49 sub ⟡ MCP: 3 servers enabled        Release notes
@@ -47,7 +48,7 @@ Below 140 columns, or in regular mode, the compact bottom bar replaces pi's thre
 - Statuses other extensions publish through `setStatus` are appended as trailing segments; the session name sits at the right edge.
 - On narrow terminals the session name is dropped first, then trailing segments, before the line is truncated.
 
-The prompt wraps pi's editor in a rounded frame with a petal that shows what the agent is doing:
+The prompt follows the selected card style. `neon` keeps pi's editor in its rounded frame:
 
 ```text
 ╭─ ✿ working ──────────────────────────────────────────╮
@@ -55,9 +56,9 @@ The prompt wraps pi's editor in a rounded frame with a petal that shows what the
 ╰──────────────────────────────────────────────────────╯
 ```
 
-- The petal is still while pi waits, spins with a `working` label while the agent works, and turns amber with a `queued` label when messages are waiting behind the current turn. pi's own "Working" row above the editor is hidden, since the frame already says it.
-- The frame uses the theme's border color over the panel background, so the prompt reads as one panel with the cards around it; the editor's scroll indicators stay inside the frame.
-- The hint appears only while the editor is empty.
+- `float` paints the prompt with the card's quieter `toolSuccessBg`, one-column transparent margins and a full-height `▎` accent in the editor's current frame/mode color. The painted top row contains the petal and working state; editable rows have an interior inset and painted bottom padding replaces the bottom rule. Cursor, selection, autocomplete and mouse geometry remain native.
+- The petal is still with a `waiting for input` label in float while pi waits, spins with a `working` label while the agent works, and turns amber with a `queued` label when messages are waiting behind the current turn. In float it lives inside the painted top row; in neon it lives in the top rule. Pi's own "Working" row above the editor is hidden.
+- The empty-editor typing hint appears only while the editor is empty; Esc/queued hints remain inside the painted top row even with a nonempty float draft. Widths below 10 columns or a missing/unusable background keep the complete neon prompt path.
 - If another extension already installed a custom editor, Gentle Shell leaves it alone.
 
 Changes shows **captured write/edit operations from this agent session and its owned subagents**. It does not scan the repository on startup, read all untracked files, or poll live files in the background. Fullscreen, the sidebar, and mouse interaction are unchanged.
@@ -138,26 +139,49 @@ The panel rows a provider reports its windows with:
 - Only the plan name and the windows are kept; account details in the payload are discarded.
 - Gauges turn amber at 80% and red at 95%, like the context gauge.
 
-Gentle notices are drawn as cards: the same rounded frame as the prompt. An informational card paints the rounded frame in the theme's plain border role and its title in the accent role — the rose look every sidebar card, the review preflight reminder, and a quiet Agents card share. A warning, error, or success card paints its frame and title in its own tone color instead.
+Gentle notices follow the selected card style. In `neon`, informational cards use the rounded frame in the theme's border role and an accent title; warning, error, and success cards use their own tone colors. In `float`, notices use the tone-background panel described below. The following example shows `neon`:
 
 ```text
 ╭─ ✿ Gentle AI · review preflight ─────────────────────────────────────╮
-│ Receipt-driven development is enabled, and this worktree holds an…   │
+│ Receipt-driven development is enabled, and this worktree holds an    │
+│ unreviewed candidate (target sha256:…). First determine whether the  │
+│ user explicitly left this exact target unreviewed. If yes, do not    │
 ╰──────────────────────────────────────────────────────────────────────╯
 ```
 
-- Every call into the gentle-ai binary and every `gentle_review` tool renders as a card under the rose, `🌹︎ Gentle AI`: the rail is amber while it runs, green when it finished, red when it failed; the expand key sits in the top rule once the tool finished, and the collapsed result shows only its line count. Reviewer captures name their lens (`review capture · risk`; the group lists all four).
-- The review preflight reminder renders as a card in the transcript with the expand key in its top rule.
-- An active dev-binary override shows above the editor at startup, in amber, naming the binary and its digest, and leaves with the first prompt; an invalid override shows in red with the reason.
+- Quiet tools use the selected card style with their actual name in the heading (`read`, `bash`, `grep`, `find`, `ls`, `edit`, `write`); bash keeps its command visible. Collapsed results show up to three physical preview rows, including search/list entries or changed diff lines alongside useful totals. Expand with the configured key shown in the top rule for complete available output and image handling.
+- Every call into the gentle-ai binary and every `gentle_review` tool draws a rose card titled like the quiet `read` card: the colored 🌹 emoji, a short name, then the operation (`🌹 rdd inspect`, `🌹 gentle-ai version`), with `running`/`preparing`/`failed` shown until the call completes (`🌹 rdd running · start`). The rail uses the existing theme roles: warning while running/partial, success on completion, error on failure. Collapsed results show up to three useful physical rows, not just a line count. A JSON envelope instead collapses to one summary line of its key fields (status, outcome, risk, action, reason code, diagnostic message, e.g. `blocked · start · fresh_target_ready`) and expands as pretty-printed JSON. The expand key sits in the top rule once finished, and elapsed timing stays on the closing rule. Reviewer captures name their lens (`rdd capture · risk`; the group lists all four).
+- The review preflight reminder renders as a card in the transcript with the expand key in its top rule. Collapsed, it previews up to three non-blank physical rows of the reminder; expanded, it shows the full text.
+- An active dev-binary override shows above the editor at startup as a 🌹 gentle-ai card, in amber, naming the binary and its digest, and leaves with the first prompt; an invalid override shows in red with the reason.
 - Subagents draw their own card; see Gentle Agents below.
+
+### Card style
+
+Pick the conversation-card and shell-chrome style in `/gentle:customize` → **Cards**. A successful save immediately redraws conversation cards, Agents, TODO, Status, header/footer and prompt — no other state change or reload is needed. The choice is saved in `card-style.json` in the Gentle Pi config home; it is not part of visual profiles or visual reset. If saving fails, the live style stays unchanged.
+
+| Style | Look |
+|-------|------|
+| `neon` | The outlined rounded card shown above. |
+| `float` (default) | A borderless panel on the tone's tool background (success/info, pending, error), with a tone-colored `▎` accent bar, a one-column margin on each side, a blank row above the heading and at the bottom, and a blank row between the heading and the body. |
+
+```text
+ ▎
+ ▎ ⌖ find *.md in .                                  ctrl+o to expand
+ ▎
+ ▎ README.md
+ ▎
+```
+
+- `float` applies to tool, Code and 🌹 cards, Agent result and stale cards, the review preflight reminder, the dev-binary notice, and the Agents, Todos and Status panels. The prompt and fullscreen header/footer use their specialized float chrome described above. The regular-mode one-line Status bar is unchanged.
+- A theme without a tool background, or a card narrower than 10 columns, falls back to `neon`. A malformed `card-style.json` reads as `float` and the panel refuses to overwrite it.
 
 ### Compact Code card
 
-With quiet tools enabled, `codemode` renders as one rounded **Code** card. The collapsed view shows up to eight observed child calls in their original order, including repeats, with Pi's actual `running`, `ok`, `error`, or `cancelled` status and available nonnegative duration. Additional calls are counted; errors and cancellations outside the preview remain visible in that count.
+With quiet tools enabled, `codemode` uses the same rounded **Code** card. The collapsed view shows up to eight observed child calls in their original order, including repeats, with Pi's actual status and available nonnegative duration. Additional calls and failures are counted. Error payloads have a separate two-row preview even when their child falls outside the first eight; final output has a three-row physical budget, and a full-output locator remains visible when available.
 
-- Collapsed rows do not echo JavaScript, child arguments, output, paths, or error payloads. Expand with the key shown in the top rule to inspect the actual script, all observed children, error text, and complete available text output.
-- Overall `running`/`finished`/`failed` labels follow the host render context. `finished` does not promise that every child succeeded or that effects were rolled back. No inferred children, progress percentage, or aggregate duration is added. Pi's final wall-time text remains available in expanded output.
-- Missing metadata is reported honestly. Terminal controls are stripped from displayed text; this is terminal-spoofing protection, **not secret redaction**. Expanded content can contain sensitive data.
+- JavaScript and child arguments stay out of the collapsed preview. Expand with the configured key shown in the top rule for the actual script, all observed children, complete available error/output text, image fallback and full-output locator.
+- Host failure/partial flags and observed child failures retain their existing semantic colors; no generic `finished` heading, inferred children, progress percentage, or aggregate duration is added. Pi's final status/wall-time header stays in expanded output rather than displacing useful collapsed content. Child success does not promise rollback or overall success.
+- Missing metadata is reported honestly. Terminal controls are stripped from displayed text; this is terminal-spoofing protection, **not secret redaction**. Both collapsed previews and expanded content can contain sensitive data.
 - Only presentation changes: upstream execution, schema, loadout, exposure and inactive-by-default behavior stay intact. `GENTLE_PI_QUIET_TOOLS=0` leaves the upstream presentation alone and does not change tool activation.
 
 ### Native interactive tools
@@ -172,7 +196,7 @@ Gentle Shell ships its own interactive tools instead of depending on third-party
 
 ### Gentle Agents
 
-The current package requires Pi 0.99.1 or newer and Node >=22.19.0 (development tests pin Pi 0.99.1). Use the latest Pi release; gentle-pi does not update your installed Pi automatically. Children, including any `GENTLE_PI_AGENTS_PI` override, must emit `agent_settled`: `agent_end` records a run's output but is not completion because retries or queued continuations may follow.
+The current package requires Pi 0.99.1 or newer and Node >=22.19.0. Development tests resolve Pi through the open `>=1.0.0` development range. The private Vim editor adapter admits only the audited Pi `0.99.1`, `0.99.2`, and `1.0.0` releases; any other release keeps ordinary prompt editing until its editor is audited. Use the latest Pi release; gentle-pi does not update your installed Pi automatically. Children, including any `GENTLE_PI_AGENTS_PI` override, must emit `agent_settled`: `agent_end` records a run's output but is not completion because retries or queued continuations may follow.
 
 The `subagent_*` tools and the agents card replace the third-party subagents package (remove `npm:pi-subagents-j0k3r` from your pi packages; while it is still installed the tools stay unregistered and a warning says so at startup). Agent definitions and settings are the ones you already have: markdown agents in `~/.pi/agent/agents/`, `~/.pi/agent/subagents/`, `<cwd>/.pi/agents/`, `<cwd>/.pi/subagents/` (project beats global, `subagents/` beats `agents/`), and `subagents.json` at the global and project level (`default_model`, `default_effort`, `default_mode`, `model_profiles`, `stall_timeout_ms`, `tool_stall_timeout_ms`, `max_concurrency`, `history_max_tasks`).
 
@@ -189,12 +213,14 @@ The card is above the editor in every mode, including fullscreen — it is not o
 
 Every subagent is its own `pi --mode rpc` child process, so the terminal never runs subagent work: the host reads JSON lines, applies each one as a small delta to a bounded per-task thread, and notifies only the listeners of that task. A task-mode child's question (`ctx.ui.select`, `confirm`, `input`, `editor`) reaches you as an ordinary pi dialog; a background child's question is dismissed. Subagents have no automatic total execution timeout: a long-running child remains live while it continues emitting RPC events. A silent child still times out through the configurable `stall_timeout_ms` watchdog (default four minutes). An announced tool call that is still running is live work, not silence, so it is bounded by `tool_stall_timeout_ms` instead (default 30 minutes, never below `stall_timeout_ms`). Closing pi stops the children that are still running.
 
+Delegated children (`GENTLE_PI_AGENTS_CHILD=1`) load the same context files as their parent, minus the gentle-ai managed blocks that bind themselves to the orchestrator, such as `orchestrator` and `agent-routing` (the full list lives in [`lib/child-context-files.ts`](../lib/child-context-files.ts)). Every other managed block (for example `codegraph-guidance`, `engram-protocol`, or `remote-authorization` nested inside `agent-routing`) and all unmanaged project text reach the child unchanged. A marker counts only when it is alone on its line outside fenced code; if a file's markers are unbalanced, mismatched, or ambiguous, that file is passed through unfiltered. Gentle Agents launches every child with `--extension` pointing at the packaged `extensions/child-context.ts`, because a child does not load the gentle-pi package on its own in the isolated Gentle Shell home; if that file is missing, the child starts without it and keeps today's unfiltered context. The extension registers only a `before_agent_start` hook and does nothing outside a child session, so primary sessions always receive their context files as-is.
+
 - `subagent_list_agents`, `subagent_run` (`agent`, `task`, `label?`, `context?`, `workspace_root?` or `repository_root?`, `mode?` task or background), `subagent_status`, `subagent_result`, `subagent_list_tasks`, `subagent_reply` (one current-session reply to a live child query), `subagent_cancel`, `subagent_send_message` (steer a running child), `subagent_continue` (resume a finished task in its own session).
 - `orchestrator_session_id`, `orchestrator_list`, and `orchestrator_send_message` provide local-profile session notifications. List results advertise IDs only and reachability remains unknown. Sending selects the sole advertised peer or asks the user to choose; outbound messages require explicit interactive human consent before dispatch (Allow once, Allow for this session, or Deny), and fail closed if interactive UI or its selector is unavailable, even after a session grant. Each send requires a caller-supplied reason with at least 8 characters after trimming and at most 512 UTF-8 bytes. The consent preview visibly escapes controls and Unicode line separators; the delivered message remains unchanged. A successful ACK means the peer accepted the notification for delivery, not that it read or completed work. This is notification-and-ACK transport only: it has no cross-session queries, offline queue, retries, broadcasts, or read/completion guarantees. On Unix, presence records remain in the profile's private transport directory while socket endpoints use a private, profile-hashed directory below the canonical system temporary directory, keeping endpoint length independent of the profile path and at most 100 encoded bytes. The shared system temporary parent is only validated (current-user-owned without group/other write, or root/current-user-owned, world-writable, and sticky); it is never claimed, permissioned, or cleaned up by gentle-pi. On POSIX, the transport uses private Unix-domain sockets; on Windows, it uses private named pipes scoped by the current account SID, served by a package-local PowerShell helper (`runtime/windows-session-transport.ps1`): the transport selects that fixed helper, and availability and delivery depend on the helper's bounded startup and pipe checks. Notification and ACK limits remain bounded across platforms.
 - `subagent_run.workspace_root` selects the parent's main worktree or an existing linked worktree in the parent's Git clone only. Validation happens before queueing; the child runs at that canonical root. Successful OS spawn registers it in the originating parent's same-clone registry, including delayed queued launches; failed spawns do not register.
 - Alternatively, `subagent_run.repository_root` selects an explicit canonical root of an independent Git repository; the two root selectors cannot be combined. A direct interactive parent must grant that clone before queue or child session-directory writes. The grant belongs to the live parent session and canonical Git common directory: subsequent launches there can reuse it, but denial, cancellation, lost UI, reload, or changed session/repository identity fails closed. Print, RPC, and child callers cannot request a foreign target; foreign remediation launches are unsupported. Task and background launches still obey their ordinary mode restrictions. Queued tasks revalidate immediately before spawn; `subagent_continue` retains the target cwd and revalidates the grant rather than prompting to restore a lost one. Status and task details expose the cwd. Foreign children never enter the same-clone registry or its footer/widget counts. A delegation grant is not permission to review, commit, push, or deliver in the target repository.
 - Background work requires a live interactive/RPC parent. Both `subagent_run` and `subagent_continue` reject background mode in `pi -p` before creating or spawning a task: the parent exits before it can receive a later result. Use task mode for bounded print-mode work.
-- A background task's result comes back to the model as a `gentle-agents.result` message, drawn as a rose card, and starts a new turn when the agent is idle; the model never polls.
+- A background task's result comes back to the model as a `gentle-agents.result` message and starts a new turn when the agent is idle; the model never polls. Its **Agent result** card uses the success color when the task completed and the error color otherwise. Collapsed, it previews up to three non-blank rows of the answer or error, leaving out the `Subagent … (task …) <outcome>.` bookkeeping line the model reads; older results without that line preview their full text. Expanded, it shows the complete message, header included. A result held past the stale window becomes a transcript-only **Stale agent result** card in the warning color: it previews up to three rows of its warning and never shows an answer it does not have (use `subagent_result` for that).
 - A configured child can call `subagent_parent_message` with bounded, well-formed Unicode text. Notifications retain their existing admission semantics. A `kind: "query"` waits for one strictly correlated `subagent_reply` for at most 30 seconds; each child has at most four pending queries, and disconnect, timeout, stop, and send failure settle each request once. The current parent session alone can reply. The first admitted task-mode query ends the original tool response while its child keeps running; its eventual non-cancelled completion returns once as a follow-up only if that same session is still active. Channel closure prevents later sends and automatic retry is not provided. Peer transport, offline delivery, retries, and broadcasts are unsupported.
 - The card shows the active session's tasks only: after `/new` or `/resume` the earlier session's tasks leave it and come back with their session. Finished rows stay for one minute (three at most), and the card spends at most a quarter of the terminal (three to eight rows) on tasks; beyond that the rest fold into one `… N more · alt+a to view` line so the editor never leaves the screen. Questions and running work keep their rows first.
 - `/gentle:agents` or `alt+a` opens a full-terminal overlay. At 60+ columns, the split view shows groups/tasks beside the retained semantic thread; uppercase `F` or **Fullscreen** expands that thread. At 12–59 columns, click a current subagent directly to inspect its thread; in All sessions, first select its orchestrator. `Enter`/`Tab` also enter a narrow selection. **Back** or `Escape` returns one level, closing only at the root; **Close** or `q` closes globally without cancelling children. Selection and manual thread scrolling survive Back and resize.
@@ -226,6 +252,30 @@ Three things keep the list current, which a static tool description cannot:
 - A list that goes two turns untouched while tasks stay open turns amber with `stale · N turns`, and the prompt says so, so the model brings it up to date.
 
 A finished list stays on screen for the turn it finished in and clears at the next. `ctrl+shift+t` collapses the card to the task in progress (`GENTLE_PI_TODO_KEY` rebinds it, `off` disables it); `GENTLE_PI_TODO=0` disables the tool and the card.
+
+### Gentle Stats
+
+`/gentle:stats` opens a full-terminal panel over your local usage history, read from the session files Pi already writes. It combines the active home's `sessions` directory with your regular Pi home's (`~/.pi/agent/sessions`, or the custom `PI_CODING_AGENT_DIR` that `gentle-shell` recorded as `GENTLE_SHELL_USER_PI_HOME` before isolating). The same directory reached twice counts once, and a session present in both homes counts once (the copy with more usage records, then the most recent one). Nothing new is stored. Subscription limits stay in `/gentle:usage`.
+
+```text
+╭─ ✿ Stats ─────────────────────────────────────── [×] ─╮
+│ [Overview]  Models   Session                 │
+│     May Jun       Jul     Aug       Sep      │
+│ Mon · · · · · · · · · · · · · · · · · · · █  │
+│     · · · · · · · · · · · · · · · ▓ · · · ░  │
+│     Less · ░ ▒ ▓ █ More                      │
+│ Favorite model  claude-opus-5-5              │
+│ Total tokens    2.8k                         │
+│ ✿ That's ~0.5% of the tokens in Don Quixote. │
+```
+
+- **Overview**: a weekday-by-week heatmap (up to 52 weeks for all time), favorite model, total tokens, sessions, longest session, active days, longest and current streak, most active day, the input/output/cache breakdown, and cost.
+- **Models**: tokens, cost, messages, and share per model, with a share bar.
+- **Session**: the live session's model, cost, wall time since its first entry, tokens, and the lines added and removed that Gentle Changes captured.
+- `Tab`/`shift+Tab`, `←`/`→`, or `1`/`2`/`3` switch tabs; `r` cycles all time, last 7 days, and last 30 days; `s` toggles all projects and the current project (sessions started in this cwd); `q` or `esc` closes. Header tabs, `[× Close]`, and the footer hints are clickable.
+- The heatmap shades come from the active theme's `accent` and `borderMuted` roles, so every Gentle theme recolors it.
+- Only top-level session files are read: subagent runs are not included, and the panel says so. The first opening scans every file; later openings reread only files that changed.
+- There is no default shortcut. Set `GENTLE_PI_STATS_VIEW_KEY` (for example `alt+t`) to bind one; `off` or empty leaves it unbound.
 
 ### Bridge providers
 

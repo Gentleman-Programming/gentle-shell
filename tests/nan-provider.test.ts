@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { RefreshModelsContext } from "@earendil-works/pi-ai";
-import { createModels, InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, createModels, getSupportedThinkingLevels, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import type { Provider } from "@earendil-works/pi-ai";
 import nanProviderExtension from "../extensions/nan-provider.ts";
 import { createNanProviderConfig as createNativeProvider, NAN_PROVIDER_BASE_URL, NAN_PROVIDER_ID } from "../lib/nan-provider.ts";
@@ -191,8 +191,64 @@ test("initial catalog contains all seven documented chat models with configured 
 	assert.deepEqual(model?.input, ["text", "image"]);
 	assert.equal(model?.contextWindow, 1_000_000);
 	assert.equal(models.length, 7);
-	assert.equal(model?.maxTokens, 8_192);
+	assert.equal(model?.maxTokens, 16_384);
 	assert.deepEqual(model?.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+});
+
+test("adjustable models map Pi thinking levels to accepted NaN efforts", () => {
+	const models = createNativeProvider().getModels();
+	for (const id of ["glm5.3", "glm5.3-flash"]) {
+		const model = models.find((model) => model.id === id);
+		assert.ok(model);
+		assert.deepEqual(model.thinkingLevelMap, { off: null, minimal: "low", xhigh: "max", max: "max" });
+		assert.deepEqual(getSupportedThinkingLevels(model), ["minimal", "low", "medium", "high", "xhigh", "max"]);
+		assert.equal(clampThinkingLevel(model, "off"), "minimal");
+	}
+	for (const id of ["qwen3.6", "gemma4"]) {
+		const model = models.find((model) => model.id === id);
+		assert.ok(model);
+		assert.deepEqual(model.thinkingLevelMap, { off: "none", xhigh: "max", max: "max" });
+		assert.deepEqual(getSupportedThinkingLevels(model), ["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+		assert.equal(clampThinkingLevel(model, "off"), "off");
+	}
+});
+
+test("fixed-depth models expose only medium and clamp unsupported thinking levels", () => {
+	const models = createNativeProvider().getModels();
+	for (const id of ["deepseek-v4-flash", "qwen3.8-flash", "mimo-v2.6-flash"]) {
+		const model = models.find((model) => model.id === id);
+		assert.ok(model);
+		assert.deepEqual(model.thinkingLevelMap, {
+			off: null, minimal: null, low: null, high: null, xhigh: null, max: null,
+		});
+		assert.deepEqual(getSupportedThinkingLevels(model), ["medium"]);
+		for (const level of ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const) {
+			assert.equal(clampThinkingLevel(model, level), "medium");
+		}
+	}
+});
+
+test("thinking maps are isolated across snapshots, providers, and live catalog refreshes", async () => {
+	const provider = createNativeProvider({
+		fetchImpl: async () => jsonResponse({ data: DOCUMENTED_CHAT_IDS.map((id) => ({ id })) }),
+	});
+	const baseline = provider.getModels();
+	for (const model of provider.getModels()) {
+		assert.ok(model.thinkingLevelMap);
+		model.thinkingLevelMap.off = "mutated";
+		model.thinkingLevelMap.medium = null;
+	}
+	assert.deepEqual(provider.getModels(), baseline);
+	assert.deepEqual(createNativeProvider().getModels(), baseline);
+	await provider.refreshModels!(refreshContext({ type: "api_key", key: "map-key" }));
+	assert.deepEqual(provider.getModels(), baseline);
+	for (const model of provider.getModels()) {
+		assert.ok(model.thinkingLevelMap);
+		model.thinkingLevelMap.xhigh = "mutated";
+	}
+	assert.deepEqual(provider.getModels(), baseline);
+	await provider.refreshModels!(refreshContext({ type: "api_key", key: "map-key" }));
+	assert.deepEqual(provider.getModels(), baseline);
 });
 
 test("catalog snapshots cannot mutate the offline baseline or another provider", async () => {
@@ -204,7 +260,7 @@ test("catalog snapshots cannot mutate the offline baseline or another provider",
 	snapshot.pop();
 	const fresh = provider.getModels();
 	assert.deepEqual(fresh.map((model) => model.id), DOCUMENTED_CHAT_IDS);
-	assert.deepEqual(fresh[0].input, ["text"]);
+	assert.deepEqual(fresh[0].input, ["text", "image"]);
 	assert.equal(fresh[0].cost.input, 0);
 	assert.deepEqual(createNativeProvider().getModels(), fresh);
 	await provider.refreshModels!({
@@ -236,21 +292,21 @@ test("live discovery uses the key-scoped endpoint and replaces the fallback with
 	const known = models?.[0];
 	assert.equal(known?.api, "openai-completions");
 	assert.equal(known?.reasoning, true);
-	assert.deepEqual(known?.input, ["text"]);
+	assert.deepEqual(known?.input, ["text", "image"]);
 	assert.equal(known?.contextWindow, 1_000_000);
-	assert.equal(known?.maxTokens, 8_192);
+	assert.equal(known?.maxTokens, 32_768);
 	assert.deepEqual(known?.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 });
 
 test("known chat models retain documented capabilities without advertising audio", async () => {
 	const expected = [
-		["glm5.3", 1_000_000, ["text"], 8_192],
-		["deepseek-v4-flash", 1_000_000, ["text", "image"], 8_192],
-		["glm5.3-flash", 1_000_000, ["text", "image"], 8_192],
+		["glm5.3", 1_000_000, ["text", "image"], 32_768],
+		["deepseek-v4-flash", 1_000_000, ["text", "image"], 16_384],
+		["glm5.3-flash", 1_000_000, ["text", "image"], 32_768],
 		["qwen3.8-flash", 1_048_576, ["text", "image"], 131_000],
-		["mimo-v2.6-flash", 1_000_000, ["text", "image"], 8_192],
-		["gemma4", 262_000, ["text", "image"], 8_192],
-		["qwen3.6", 262_000, ["text", "image"], 8_192],
+		["mimo-v2.6-flash", 1_000_000, ["text", "image"], 32_768],
+		["gemma4", 262_000, ["text", "image"], 65_536],
+		["qwen3.6", 262_000, ["text", "image"], 65_536],
 	] as const;
 	const config = createNanProviderConfig({
 		fetchImpl: async () => jsonResponse({ data: expected.map(([id]) => ({ id })) }),

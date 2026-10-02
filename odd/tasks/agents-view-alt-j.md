@@ -9,11 +9,13 @@ Fix #1565 by moving default agents view from Alt+A to Alt+J, preserving prompt s
 - Human authorized preparation and approval request. PR publication waits for status:approved.
 
 ## Tasks
-- [ ] T1: Remap default agents view, test/document, verify, review and commit. Status: in_progress.
+- [x] T1: Remap default agents view, test/document, verify, review and commit. Status: done.
   - Route: gentle-ai-worker (multi-file); gentle-ai-verify (partial result and independent spot-check).
   - Acceptance observed: default Alt+J registration without Alt+A; overrides/trim/off/empty preserved; derived widget hints updated; Alt+A selection unchanged.
-  - Commit: pending.
-  - Native assessment: medium, large writer, reviewDue false (under_budget); candidate outcome unknown. Initial assessment was unassessable due untracked intended tracking file; parent staged all five paths, resolving that issue. Review preflight pending.
+  - Work-unit commit: 6b5ace3fdbe63c1429b8ccb6f1ccdbdeb371b314, fix(agents): move default view shortcut to Alt+J (93 authored lines including tracking).
+  - Native assessment: medium, large writer, reviewDue false (under_budget). Initial assessment was unassessable due untracked intended tracking file; parent staged all five paths, resolving that issue.
+  - Native review: review-949baca5ecd983a1, consolidated review-reliability approved; exact acknowledgement completed, authority burned (gentle-ai.review-acknowledged/v1). No further lifecycle action pending.
+- [ ] T2: Publish PR after maintainer approval and verified delivery destination. Status: pending.
 
 ## Verification evidence
 - Writer muqzzij3-5-1mnr: RED three expected default failures before source change; GREEN 501 focused tests.
@@ -45,4 +47,4 @@ Type: Bug fix (type:bug)
 - Verification: focused 501/501 twice; process-isolated full suite 4546 passed, 34 skipped; typecheck, runtime modules, package files and packed-package checks passed. Physical terminal check not performed. Document pre-existing child-environment failure above.
 
 ## Next step
-Commit verified work unit, follow native review preflight for this candidate, record commit/review evidence, and await maintainer approval before publishing the PR.
+Local implementation and PR summary are prepared. Await status:approved on #1565; then verify the publishing destination, push non-force, and create the linked type:bug PR. Do not confuse native candidate review approval with GitHub issue approval.

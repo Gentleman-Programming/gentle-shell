@@ -181,7 +181,7 @@ test("caller-relative grouped capture closure preserves selected workspace root"
 	t.after(() => __testing.setReviewHostRelayGroupRunnersForTesting());
 	const lineageId = "caller-relative-grouped";
 	const root = realpathSync(process.cwd());
-	const inputs = ["review-risk", "review-resilience", "review-readability", "review-reliability"].map((lens, order) => {
+	const inputs = (["review-risk", "review-resilience", "review-readability", "review-reliability"] as const).map((lens, order) => {
 		const input = collectInput(lineageId);
 		input.arguments = input.arguments.map((argument) => {
 			const value = argument.name === "lens" ? lens : argument.name === "order" ? String(order) : argument.name === "subject-hash" ? `sha256:${String(order).repeat(64)}` : argument.value;

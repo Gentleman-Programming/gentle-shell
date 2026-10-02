@@ -14,9 +14,16 @@ Two `tsc` diagnostics in `extensions/gentle-ai.ts` hide defects:
 
 ## Tasks
 
-- [ ] 1. `recover-lock` forwards the caller's `AbortSignal` to native reclaim
+- [x] 1. `recover-lock` forwards the caller's `AbortSignal` to native reclaim
   (RED test in `tests/review-controller-native-recovery.test.ts`, then fix).
-- [ ] 2. Remove the dead `NATIVE_REVIEW_OPERATION.VERSION` comparison, refresh
+- [x] 2. Remove the dead `NATIVE_REVIEW_OPERATION.VERSION` comparison, refresh
   the type baseline, run the full suite.
 
 ## Evidence
+
+- Task 1: RED observed (`signal` arrived `undefined`), GREEN 22/22 in
+  `tests/review-controller-native-recovery.test.ts`; commit `1d3b208b`.
+- Task 2: `pnpm typecheck` no regressions, baseline refreshed to 185
+  diagnostics (from 187). Full `pnpm test`: 4532 pass, 7 fail; all 7 fail
+  identically on `origin/main` 7a27c1c0 (pre-existing, macOS temp-dir symlink
+  and dev-binary notice tests).

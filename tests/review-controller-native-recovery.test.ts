@@ -681,3 +681,15 @@ test("registered ABANDON fails closed on cancellation at the inventory and appro
 	);
 	assert.equal(queue.calls.length, 1);
 });
+
+test("registered ABANDON rejects terminal status and terminal state entries before approval", async () => {
+	const terminalStatusEntry = { ...ELIGIBLE_ENTRY, status: "approved" };
+	const terminalStatusQueue = queuedAdapter([{ stdout: statusStdout([terminalStatusEntry]) }]);
+	const terminalStatus = await (registeredController(client(terminalStatusQueue.adapter) as unknown as import("../lib/native-review-cli.ts").NativeReviewCli)).execute("t", ABANDON_INPUT, undefined, undefined, interactiveContext(true));
+	assert.equal((terminalStatus.details as { outcome?: string }).outcome, "native-abandon-ineligible");
+	assert.equal(terminalStatusQueue.calls.length, 1);
+	const terminalStateQueue = queuedAdapter([{ stdout: statusStdout([{ ...ELIGIBLE_ENTRY, state: "closed" }]) }]);
+	const terminalState = await (registeredController(client(terminalStateQueue.adapter) as unknown as import("../lib/native-review-cli.ts").NativeReviewCli)).execute("t", ABANDON_INPUT, undefined, undefined, interactiveContext(true));
+	assert.equal((terminalState.details as { outcome?: string }).outcome, "native-abandon-ineligible");
+	assert.equal(terminalStateQueue.calls.length, 1);
+});

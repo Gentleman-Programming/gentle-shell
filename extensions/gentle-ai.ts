@@ -179,6 +179,7 @@ import {
 	nativeReviewLegacyQuarantineAuthorization,
 	nativeReviewReconcileAuthorization,
 	nativeReviewRecoverAuthorization,
+	NATIVE_REVIEW_AUTHORITY_STATUS,
 	type NativeReviewAuthorityEntry,
 
 	NativeReviewCliError,
@@ -5430,20 +5431,32 @@ async function executeNativeAuthorityMaintenance(
 	}
 }
 
+// Terminal authority states observed in the native lifecycle (closure,
+// retirement, quarantine, abandonment records). Native re-derives the real
+// eligibility; this pre-check only fails fast on clearly dead lineages so a
+// terminal entry never reaches the approval path.
+const NATIVE_ABANDON_TERMINAL_STATES = new Set(["approved", "closed", "superseded", "quarantined", "abandoned"]);
+
 /**
  * The single eligible ABANDON candidate for a lineage, or undefined. Requires
  * an authoritative inventory, unique lineage identity across ALL entries
  * before any eligibility filter (an incomplete duplicate must not be hidden by
- * the selection), and a compact-v2 entry carrying the discarded-work
- * projection (reviewer input from dnlrsls on #1668: complete:true,
- * authoritative:false must not reach the approval path).
+ * the selection), and a live compact-v2 entry (active status, non-terminal
+ * state) carrying the discarded-work projection (reviewer input from dnlrsls
+ * and CodeRabbit on #1668: complete:true authoritative:false, hidden duplicates,
+ * and terminal lineages must not reach the approval path).
  */
 function nativeAbandonCandidate(inventory: { authoritative: boolean; entries: readonly NativeReviewAuthorityEntry[] }, lineage: string): NativeReviewAuthorityEntry | undefined {
 	if (!inventory.authoritative) return undefined;
 	const matches = inventory.entries.filter((entry) => entry.lineageId === lineage);
 	if (matches.length !== 1) return undefined;
 	const entry = matches[0]!;
-	if (entry.version !== "compact-v2" || entry.discardedWork === undefined || !isCanonicalProcessString(entry.revision) || entry.snapshotIdentity === undefined) return undefined;
+	if (entry.version !== "compact-v2"
+		|| entry.status !== NATIVE_REVIEW_AUTHORITY_STATUS.ACTIVE
+		|| (entry.state !== undefined && NATIVE_ABANDON_TERMINAL_STATES.has(entry.state))
+		|| entry.discardedWork === undefined
+		|| !isCanonicalProcessString(entry.revision)
+		|| entry.snapshotIdentity === undefined) return undefined;
 	return entry;
 }
 

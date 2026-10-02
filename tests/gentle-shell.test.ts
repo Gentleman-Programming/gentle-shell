@@ -29,7 +29,7 @@ import { listVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
-import { resolveAskPanelPreferences } from "../lib/ask-panel-policy.ts";
+import { ASK_PANEL_SCHEMA, resolveAskPanelPreferences } from "../lib/ask-panel-policy.ts";
 
 
 // Vim fixtures claim the installed pi-tui release, which the adapter gate
@@ -3087,6 +3087,24 @@ test("customize Ask rows persist both panel preferences and keep the other value
 
 	await customizeAction(ui, "Ask panel: minimized indicator · tabbed");
 	assert.deepEqual(resolveAskPanelPreferences({ gentlePiConfigHome: home }).preferences, { indicator: "answers", defaultState: "collapsed" });
+	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("a hand edit of the ask panel preference while customize is open is never shown stale", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	assert.ok(findCustomizeRow(ui, "Ask panel: minimized indicator · minimal"));
+	// Another session, or a hand edit, rewrites the file while this view is open.
+	writeFileSync(join(home, "ask-panel.json"), `${JSON.stringify({ schema: ASK_PANEL_SCHEMA, indicator: "answers", defaultState: "auto" })}\n`);
+	assert.ok(findCustomizeRow(ui, "Ask panel: minimized indicator · answers"), "the label re-reads the file instead of the value cached when the view opened");
+	assert.ok(findCustomizeRow(ui, "Ask panel: default state · auto"));
+	// The next press advances from what is on disk, not from the stale cache.
+	await customizeAction(ui, "Ask panel: minimized indicator · answers");
+	assert.deepEqual(resolveAskPanelPreferences({ gentlePiConfigHome: home }).preferences, { indicator: "minimal", defaultState: "auto" });
 	ui.overlayView!.handleInput("\x1b"); await pending;
 });
 

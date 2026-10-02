@@ -9,10 +9,33 @@ import {
 	type KeybindingsManager,
 	type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
+import {
+	ASK_PANEL_DEFAULT_STATE,
+	ASK_PANEL_DEFAULTS,
+	ASK_PANEL_INDICATOR,
+	type AskPanelPreferences,
+} from "../ask-panel-policy.ts";
 import { CUSTOM_ROW_LABEL, type QuestionData } from "./schema.ts";
 
 /** Minimum terminal width at which the preview pane splits beside the list. */
 export const MIN_PREVIEW_WIDTH = 80;
+
+/**
+ * Heuristic rows the native dock chrome (two borders plus padding) consumes
+ * outside this component's rendered lines. Used only by the `auto` default
+ * state to decide whether the expanded panel would leave transcript visible.
+ */
+export const RESERVED_CHROME_ROWS = 4;
+
+/**
+ * Heuristic transcript rows the expanded panel must leave visible before the
+ * `auto` default state collapses it. Both constants are tuned for a typical
+ * 24-row terminal and documented rather than measured from the terminal.
+ */
+export const MIN_TRACE_ROWS = 8;
+
+/** Reserved line owner row for the minimized bar; never a selectable option row. */
+const MINIMIZED_ROW = -2;
 
 /** Fraction of the width given to the option column when a preview pane is shown. */
 const PREVIEW_SPLIT = 0.45;
@@ -49,6 +72,10 @@ export interface QuestionnaireViewOptions {
 	theme: QuestionnaireTheme;
 	keybindings?: KeybindingsManager;
 	onComplete?: (result: QuestionnaireResult) => void;
+	/** Panel preferences; defaults to {@link ASK_PANEL_DEFAULTS}. */
+	preferences?: AskPanelPreferences;
+	/** Terminal height in rows; absent disables automatic minimization. */
+	terminalRows?: number;
 }
 
 interface QuestionState {
@@ -140,10 +167,14 @@ export class QuestionnaireView extends Container implements Focusable {
 	private readonly theme: QuestionnaireTheme;
 	private readonly keybindings: KeybindingsManager | undefined;
 	private readonly onComplete: ((result: QuestionnaireResult) => void) | undefined;
+	private readonly preferences: AskPanelPreferences;
+	private readonly terminalRows: number | undefined;
 	private readonly states: QuestionState[];
 	private readonly editor: CustomTextEditor;
 	private focusedQuestion = 0;
 	private editingQuestion: number | undefined;
+	private collapsed: boolean;
+	private userToggled = false;
 	private completed = false;
 	private result: QuestionnaireResult | undefined;
 	private lineOwners: Array<LineOwner | undefined> = [];
@@ -155,6 +186,9 @@ export class QuestionnaireView extends Container implements Focusable {
 		this.theme = options.theme;
 		this.keybindings = options.keybindings;
 		this.onComplete = options.onComplete;
+		this.preferences = options.preferences ?? ASK_PANEL_DEFAULTS;
+		this.terminalRows = options.terminalRows;
+		this.collapsed = this.preferences.defaultState === ASK_PANEL_DEFAULT_STATE.COLLAPSED;
 		this.states = options.questions.map(() => ({
 			cursor: 0,
 			toggled: new Set<number>(),
@@ -191,6 +225,22 @@ export class QuestionnaireView extends Container implements Focusable {
 
 	handleInput(data: string): void {
 		if (this.completed || isKeyRelease(data)) return;
+
+		// The expand/collapse idiom toggles the panel in every state, including
+		// while the free-text editor is open (the draft is preserved by closeEditor).
+		if (this.matchesToggle(data)) {
+			this.toggleCollapsed();
+			return;
+		}
+
+		// While minimized only cancellation is honored; navigation, space and
+		// confirm are ignored so nothing can be committed from the bar.
+		if (this.collapsed) {
+			if (this.matches(data, "tui.select.cancel")) {
+				this.finish({ cancelled: true, answers: this.collectedAnswers() });
+			}
+			return;
+		}
 
 		if (this.editingQuestion !== undefined) {
 			// Tab still switches questions while editing; the draft is preserved.
@@ -251,7 +301,22 @@ export class QuestionnaireView extends Container implements Focusable {
 		if (this.editingQuestion !== undefined) return this.editor.handleMouse(event);
 
 		const owner = this.lineOwners[event.y];
-		if (!owner || owner.rowIndex < 0 || event.button !== "left") return undefined;
+		if (!owner || event.button !== "left") return undefined;
+
+		// The minimized bar only expands: a press takes focus, a click toggles,
+		// and it can never select an option or commit.
+		if (owner.rowIndex === MINIMIZED_ROW) {
+			if (event.type === "press") {
+				return { handled: true as const, focus: true, render: false, target: this.mouseTarget(event) };
+			}
+			if (event.type === "click") {
+				this.toggleCollapsed();
+				return { handled: true as const, focus: true, render: true, target: this.mouseTarget(event) };
+			}
+			return undefined;
+		}
+
+		if (owner.rowIndex < 0) return undefined;
 
 		if (event.type === "press") {
 			const changed = this.focusRow(owner.questionIndex, owner.rowIndex);
@@ -277,6 +342,31 @@ export class QuestionnaireView extends Container implements Focusable {
 
 	override render(width: number): string[] {
 		const viewport = Math.max(1, width);
+		if (this.questions.length === 0) {
+			this.lineOwners = [];
+			return [];
+		}
+
+		if (this.collapsed) {
+			const bar = this.renderMinimized(viewport);
+			this.lineOwners = bar.owners;
+			return bar.lines;
+		}
+
+		const expanded = this.renderExpanded(viewport);
+		if (this.shouldAutoMinimize(expanded.lines.length)) {
+			this.collapsed = true;
+			const bar = this.renderMinimized(viewport);
+			this.lineOwners = bar.owners;
+			return bar.lines;
+		}
+
+		this.lineOwners = expanded.owners;
+		return expanded.lines;
+	}
+
+	/** Full panel: tab strip, active body (with preview), blank, hint. */
+	private renderExpanded(viewport: number): { lines: string[]; owners: Array<LineOwner | undefined> } {
 		const lines: string[] = [];
 		const owners: Array<LineOwner | undefined> = [];
 		const push = (text: string, owner?: LineOwner) => {
@@ -285,11 +375,6 @@ export class QuestionnaireView extends Container implements Focusable {
 				owners.push(owner);
 			}
 		};
-
-		if (this.questions.length === 0) {
-			this.lineOwners = [];
-			return [];
-		}
 
 		push(this.renderTabs());
 		push("");
@@ -314,9 +399,117 @@ export class QuestionnaireView extends Container implements Focusable {
 
 		push("");
 		push(this.hint());
+		return { lines, owners };
+	}
 
-		this.lineOwners = owners;
-		return lines;
+	/**
+	 * `auto` collapses only when the expanded panel would not leave the
+	 * minimum transcript visible. The decision is one-way and can never be
+	 * overridden by a render: once collapsed it stays collapsed until the user
+	 * toggles, and an explicit toggle disables `auto` for this instance.
+	 */
+	private shouldAutoMinimize(expandedLines: number): boolean {
+		if (this.userToggled || this.collapsed) return false;
+		if (this.preferences.defaultState !== ASK_PANEL_DEFAULT_STATE.AUTO) return false;
+		if (this.terminalRows === undefined) return false;
+		const available = this.terminalRows - RESERVED_CHROME_ROWS - MIN_TRACE_ROWS;
+		return expandedLines > available;
+	}
+
+	/** One status bar (two for the tabbed indicator) instead of the body. */
+	private renderMinimized(viewport: number): { lines: string[]; owners: LineOwner[] } {
+		const owner: LineOwner = { questionIndex: this.focusedQuestion, rowIndex: MINIMIZED_ROW };
+		const lines: string[] = [];
+		const owners: LineOwner[] = [];
+		const push = (text: string) => {
+			for (const line of this.wrap(text, viewport)) {
+				lines.push(line);
+				owners.push(owner);
+			}
+		};
+
+		const indicator = this.preferences.indicator;
+		if (indicator === ASK_PANEL_INDICATOR.TABBED) {
+			push(this.renderTabs());
+			push(this.tabbedBar());
+		}
+		else if (indicator === ASK_PANEL_INDICATOR.ANSWERS) {
+			push(this.answersBar());
+		}
+		else {
+			push(this.minimalBar());
+		}
+		return { lines, owners };
+	}
+
+	/** Default bar: progress, header, option count, toggle and cancel hints. */
+	private minimalBar(): string {
+		const sep = this.theme.fg("dim", " · ");
+		const rest = [
+			this.accent(`${this.focusedQuestion + 1}/${this.questions.length}`),
+			this.accent(this.activeHeader()),
+			this.theme.fg("dim", `${this.activeOptionCount()} options`),
+			this.theme.fg("dim", `${this.toggleKeyLabel()} expand`),
+			this.theme.fg("muted", "esc cancel"),
+		].join(sep);
+		return `${this.accent("▸")} ${rest}`;
+	}
+
+	/** Tabbed indicator's second line, below the existing tab strip. */
+	private tabbedBar(): string {
+		const sep = this.theme.fg("dim", " · ");
+		const rest = [
+			this.theme.fg("muted", "minimized"),
+			this.theme.fg("dim", `${this.toggleKeyLabel()} expand`),
+			this.theme.fg("muted", "esc cancel"),
+		].join(sep);
+		return `${this.accent("▸")} ${rest}`;
+	}
+
+	/** Answers indicator: progress, header, active answer (or none), toggle hint. */
+	private answersBar(): string {
+		const sep = this.theme.fg("dim", " · ");
+		const rest = [
+			this.accent(`${this.focusedQuestion + 1}/${this.questions.length}`),
+			this.accent(this.activeHeader()),
+			this.theme.fg("dim", `answered: ${this.answeredLabel()}`),
+			this.theme.fg("dim", `${this.toggleKeyLabel()} expand`),
+		].join(sep);
+		return `${this.accent("▸")} ${rest}`;
+	}
+
+	private activeHeader(): string {
+		return this.questions[this.focusedQuestion]?.header ?? "";
+	}
+
+	private activeOptionCount(): number {
+		return this.questions[this.focusedQuestion]?.options.length ?? 0;
+	}
+
+	/** Active question's committed answer as a short label; `none` when unanswered. */
+	private answeredLabel(): string {
+		const answer = this.states[this.focusedQuestion]?.answer;
+		if (!answer) return "none";
+		if (answer.kind === "multi") return answer.selected?.join(", ") || "none";
+		return answer.answer ?? "none";
+	}
+
+	/** Displayed toggle key: the resolved `app.tools.expand` binding, else `ctrl+o`. */
+	private toggleKeyLabel(): string {
+		return this.keybindings?.getKeys?.("app.tools.expand")?.[0] ?? "ctrl+o";
+	}
+
+	private matchesToggle(data: string): boolean {
+		if (this.keybindings?.matches) return this.keybindings.matches(data, "app.tools.expand");
+		return matchesKey(data, "ctrl+o");
+	}
+
+	/** Explicit toggle always wins and disables automatic minimization. */
+	private toggleCollapsed(): void {
+		this.closeEditor();
+		this.userToggled = true;
+		this.collapsed = !this.collapsed;
+		this.invalidate();
 	}
 
 	override invalidate(): void {
@@ -392,7 +585,7 @@ export class QuestionnaireView extends Container implements Focusable {
 		const question = this.questions[this.focusedQuestion];
 		const parts = ["↑↓ move"];
 		if (question?.multiSelect) parts.push("space toggle");
-		parts.push("enter select", "tab switch", "esc cancel");
+		parts.push("enter select", "tab switch", `${this.toggleKeyLabel()} minimize`, "esc cancel");
 		return this.theme.fg("dim", parts.join(" · "));
 	}
 

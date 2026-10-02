@@ -72,3 +72,4 @@ strict input key set and injected-field rejection like
   fix/1159-abandon-inventory-derivation (+261/−21 across 5 files). Verification
   by gentle-ai-verify + base-flake confirmation inline.
 - 2026-10-02 shipped: native review APPROVED (medium tier, lens review-reliability, 3 informational advisories: uncovered blocked-path branches, eligibility pre-check ignoring entry state, reason enum unenforced); acknowledgement burned authority (gentle-ai.review-acknowledged/v1, consumed sha256:04d88c18...). PR: https://github.com/Gentleman-Programming/gentle-shell/pull/1668
+- 2026-10-02 post-PR hardening: CodeRabbit actionable (recheck derived authority after approval) implemented as native-abandon-authority-changed (drift test added, 27/27); runtime/native-review-cli.mjs regenerated fixing verify + session-transport-macos checks. All checks green except CodeRabbit re-review pending.

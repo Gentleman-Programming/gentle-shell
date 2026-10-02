@@ -896,6 +896,7 @@ test("ordinary native capture exposes a registered schema and STATUS binding cop
 
 	assert.ok(tools.has("gentle_review_capture"));
 	assert.deepEqual(tools.get("gentle_review_capture")?.parameters.required, ["lineageId", "collectBinding"]);
+	assert.deepEqual(tools.get("gentle_review")?.parameters.required, ["operation"]);
 
 	const sha = `sha256:${"a".repeat(64)}`;
 	const lineageId = "ordinary-capture";

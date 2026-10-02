@@ -52,6 +52,7 @@ const CURSOR = "\x1b[7m \x1b[0m";
 
 function options(overrides: Partial<PromptFrameOptions> = {}): PromptFrameOptions {
 	return {
+		style: "neon",
 		state: PROMPT_STATE.IDLE,
 		tick: 0,
 		borderColor: (text) => text,
@@ -197,7 +198,7 @@ test("withPromptHint leaves the line alone when the hint does not fit", () => {
 	assert.equal(hinted, line);
 });
 
-test("working prompt stays transparent at narrow and normal widths", () => {
+test("neon/fallback working prompt stays transparent at narrow and normal widths", () => {
 	for (const width of [0, 1, 2, 3, 8, 40]) {
 		const lines = framePromptLines(["──", ` ${CURSOR}界`, "──"], width, options({
 			state: PROMPT_STATE.WORKING, fg: (_c, t) => t,
@@ -221,8 +222,65 @@ test("working prompt stays transparent at narrow and normal widths", () => {
 	}
 });
 
-test("transparent prompt preserves pi's cursor reset", () => {
+test("neon/fallback transparent prompt preserves pi's cursor reset", () => {
 	const lines = framePromptLines(editorLines(40), 40, options({ fg: (_c, t) => t }));
 	assert.ok(lines[1].includes(CURSOR));
 	assert.doesNotMatch(lines.join("\n"), /\x1b\[44m/);
+});
+
+const floatBg = (_role: string, text: string) => `\x1b[48;2;20;30;40m${text}\x1b[49m`;
+
+test("T2 float prompt keeps status and content inside the background with inset and bottom padding", () => {
+	const rows = framePromptLines(["── ↑ 2 more", `ab${CURSOR}cd`, "── ↓ 3 more"], 80, options({
+		style: "float", bg: floatBg, fg: (_c, t) => t, state: PROMPT_STATE.WORKING, workingLabel: "exploring…", escHint: "esc again to cancel",
+	}));
+	assert.equal(rows.length, 3);
+	assert.match(stripAnsi(rows[0]), /^ ▎ ✿ exploring… · ↑ 2 more · esc again to cancel/);
+	assert.match(stripAnsi(rows[1]), /^ ▎ ab cd + $/);
+	assert.ok(rows[1].includes(`${CURSOR}\x1b[48;2;20;30;40m`));
+	assert.equal(stripAnsi(rows[2]), ` ▎${" ".repeat(77)} `);
+	assert.ok(rows.every((row) => row.startsWith(" \x1b[48;2;20;30;40m") && row.endsWith("\x1b[49m ")));
+	assert.ok(rows.every((row) => visibleWidth(row) === 80));
+});
+
+test("T2 float prompt falls back byte-exactly before narrow or unusable backgrounds", () => {
+	for (const width of [0, 1, 2, 9, 10, 30, 80]) {
+		const native = ["──", `x${CURSOR}`, "──"];
+		const plain = options({ fg: (_c, t) => t });
+		const neon = framePromptLines(native, width, { ...plain, style: "neon", bg: floatBg });
+		assert.deepEqual(neon, framePromptLines(native, width, plain));
+		for (const bg of [undefined, (_r: string, t: string) => t,
+			(_r: string, t: string) => `\x1b[39m${t}\x1b[49m`,
+			(_r: string, t: string) => `\x1b[44m\x1b[49m${t}\x1b[49m`,
+			(_r: string, _t: string): string => { throw new Error("missing"); }]) {
+			assert.deepEqual(framePromptLines(native, width, { ...plain, style: "float", bg }), neon);
+		}
+		const float = framePromptLines(native, width, { ...plain, style: "float", bg: floatBg });
+		if (width < 10) assert.deepEqual(float, neon);
+		else assert.match(stripAnsi(float[1]), /^ ▎/);
+		assert.ok(float.every((row) => visibleWidth(row) <= width));
+	}
+});
+
+test("T2 float prompt idle label uses the quiet card background without changing other states or neon", () => {
+	const bg = (role: string, text: string) => {
+		assert.equal(role, "toolSuccessBg");
+		return floatBg(role, text);
+	};
+	for (const state of [PROMPT_STATE.IDLE, PROMPT_STATE.WORKING, PROMPT_STATE.QUEUED]) {
+		const rows = framePromptLines(["──", "draft", "──"], 80, options({ style: "float", bg, state, fg: (_c, t) => t }));
+		assert.match(stripAnsi(rows[0]), state === PROMPT_STATE.IDLE ? /✿ waiting for input/ : state === PROMPT_STATE.WORKING ? /working…/ : /queued/);
+		if (state !== PROMPT_STATE.IDLE) assert.doesNotMatch(stripAnsi(rows[0]), /waiting for input/);
+	}
+	const neon = framePromptLines(["──", "draft", "──"], 80, options({ style: "neon", state: PROMPT_STATE.IDLE, fg: (_c, t) => t }));
+	assert.doesNotMatch(stripAnsi(neon[0]), /waiting for input/);
+});
+
+test("T2 float prompt rearms real SGR resets without altering inversion or marker bytes", () => {
+	for (const open of ["\x1b[44m", "\x1b[48;5;24m", "\x1b[48;2;0;30;0m"]) {
+		const marker = "\x1b_pi:c\x07";
+		const native = `${marker}\x1b[7mx\x1b[0mY\x1b[0;7mZ\x1b[27m`;
+		const rows = framePromptLines(["──", native, "──"], 30, options({ style: "float", bg: (_r, t) => `${open}${t}\x1b[49m`, fg: (_c, t) => t }));
+		assert.ok(rows[1].includes(`${marker}\x1b[7mx\x1b[0m${open}Y\x1b[0;7m${open}Z\x1b[27m`));
+	}
 });

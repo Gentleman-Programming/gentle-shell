@@ -1382,6 +1382,7 @@ async function main() {
 		passthrough: [...managedHerdrExtensionArgs(home, args), ...args.passthrough],
 		piSubcommand: args.piSubcommand,
 		baseEnv: process.env,
+		homedir: homedir(),
 	});
 
 	// Only an interactive session ends with pi's exit resume hint, which

@@ -5,6 +5,7 @@ import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRep
 import { consumeReviewMutation, pendingReviewMutation, pendingReviewMutationProfiles, recordReviewMutation, type ReceiptSession } from "../lib/review-reminder-receipt.ts";
 import { createReviewSidebarPublisher } from "../lib/review-sidebar-state.ts";
 import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
+import { shellEnabled } from "../lib/shell-bar.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { declareReviewRelayHandshake } from "../lib/review-relay-contract.ts";
 import { execFileSync } from "node:child_process";
@@ -9363,11 +9364,15 @@ function createGentleAiExtensionForTesting(
 		if (reason !== "reload") revokeCurrentReviewSessionPermission(ctx);
 		await refreshReviewSessionPermissionStatus(ctx);
 		// Loud, every session: an active dev-binary override means this session
-		// runs an unpinned gentle-ai. Announce which one before anything else.
+		// runs an unpinned gentle-ai. One visible startup notice: the gentle-shell
+		// 🌹 card owns the announcement when it can render (shell enabled with UI);
+		// this toast is only the fallback for when the card is unavailable. The
+		// hasUI guard stays: headless contexts have no toast to show.
+		const devBinaryToastFallback = ctx.hasUI && !shellEnabled();
 		try {
 			const devBinary = await describeDevBinaryOverride();
-			if (ctx.hasUI && devBinary.state === "active") ctx.ui.notify(devBinary.line, "warning");
-			if (ctx.hasUI && devBinary.state === "invalid") ctx.ui.notify(devBinary.line, "error");
+			if (devBinaryToastFallback && devBinary.state === "active") ctx.ui.notify(devBinary.line, "warning");
+			if (devBinaryToastFallback && devBinary.state === "invalid") ctx.ui.notify(devBinary.line, "error");
 		} catch (error) {
 			if (ctx.hasUI) ctx.ui.notify(`Gentle AI dev binary override check failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
 		}

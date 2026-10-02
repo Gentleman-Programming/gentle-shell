@@ -8021,7 +8021,7 @@ async function executeReviewControllerOperation(
 		// A stuck legacy mutation lock is an incomplete in-flight entry; the
 		// audited native quarantine owns its removal. Lock recovery is not a
 		// destructive authority reset, so pending authorizations survive.
-		return await executeNativeRecoveryRoute(parameters.operation, "reclaim", input, defaultCwd, nativeReviewCli, undefined, signal);
+		return await executeNativeRecoveryRoute(parameters.operation, "reclaim", input, defaultCwd, nativeReviewCli, signal);
 	}
 	if (parameters.operation === REVIEW_CONTROLLER_OPERATION.RECOVER) {
 		const input = parseControllerJson(requiredControllerString(parameters, "input"), parameters.operation);

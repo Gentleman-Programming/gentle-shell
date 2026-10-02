@@ -2810,7 +2810,11 @@ function scopedDoubleEscCancelConfigHome(t: { after(callback: () => void): void 
 function findCustomizeRow(ui: FakeUi, label: string, width = 90): boolean {
 	const view = ui.overlayView!;
 	view.handleInput("\x1b[D");
-	for (let category = 0; category < 10; category++) {
+	// The category pane holds one entry per CustomizeCategory. The bound must stay
+	// ahead of that union's size, or a newly inserted category silently hides a row
+	// from every lookup that has to walk past it.
+	const CUSTOMIZE_CATEGORY_SCAN_LIMIT = 14;
+	for (let category = 0; category < CUSTOMIZE_CATEGORY_SCAN_LIMIT; category++) {
 		view.handleInput("\x1b[C");
 		for (let index = 0; index < 35; index++) {
 			if (view.render(width).some((line) => line.includes(`▸ ${label}`))) return true;

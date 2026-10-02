@@ -179,6 +179,7 @@ import {
 	nativeReviewLegacyQuarantineAuthorization,
 	nativeReviewReconcileAuthorization,
 	nativeReviewRecoverAuthorization,
+	type NativeReviewAuthorityEntry,
 
 	NativeReviewCliError,
 	nativeUntrackedSelection,
@@ -5430,6 +5431,27 @@ async function executeNativeAuthorityMaintenance(
 }
 
 /**
+ * The single eligible ABANDON candidate for a lineage, or undefined. Requires
+ * an authoritative inventory, unique lineage identity across ALL entries
+ * before any eligibility filter (an incomplete duplicate must not be hidden by
+ * the selection), and a compact-v2 entry carrying the discarded-work
+ * projection (reviewer input from dnlrsls on #1668: complete:true,
+ * authoritative:false must not reach the approval path).
+ */
+function nativeAbandonCandidate(inventory: { authoritative: boolean; entries: readonly NativeReviewAuthorityEntry[] }, lineage: string): NativeReviewAuthorityEntry | undefined {
+	if (!inventory.authoritative) return undefined;
+	const matches = inventory.entries.filter((entry) => entry.lineageId === lineage);
+	if (matches.length !== 1) return undefined;
+	const entry = matches[0]!;
+	if (entry.version !== "compact-v2" || entry.discardedWork === undefined || !isCanonicalProcessString(entry.revision) || entry.snapshotIdentity === undefined) return undefined;
+	return entry;
+}
+
+function sameOrderedLensList(actual: readonly string[], expected: readonly string[]): boolean {
+	return actual.length === expected.length && actual.every((lens, index) => lens === expected[index]);
+}
+
+/**
  * ABANDON freshly reads the native authority inventory, locates the single
  * eligible compact-v2 entry for the caller-specified lineage, derives its
  * revision, snapshot identity, and discarded-work summary, and renders the
@@ -5472,19 +5494,11 @@ async function executeNativeAbandon(
 	} catch (error) {
 		return nativeOperationFailure(operation, error);
 	}
-	const candidate = inventory.complete
-		? inventory.entries.filter((entry) =>
-			entry.version === "compact-v2"
-			&& entry.lineageId === lineage
-			&& entry.discardedWork !== undefined
-			&& isCanonicalProcessString(entry.revision)
-			&& entry.snapshotIdentity !== undefined,
-		)
-		: [];
-	if (candidate.length !== 1) {
+	if (signal?.aborted) throw reviewCancellation("Review controller operation was cancelled");
+	const entry = nativeAbandonCandidate(inventory, lineage);
+	if (entry === undefined) {
 		return { operation, status: "blocked", outcome: "native-abandon-ineligible", native_operation: nativeOperation, mutation_performed: false, mutation_outcome: "none", next_action: "inspect-complete-native-authority-inventory" };
 	}
-	const entry = candidate[0]!;
 	const request = {
 		cwd,
 		lineage: entry.lineageId!,
@@ -5506,25 +5520,19 @@ async function executeNativeAbandon(
 	// fail closed on any drift before mutating, the way RECOVER rechecks its
 	// provider-bound authorization (same TOCTOU window: another actor may have
 	// advanced the lineage between the deriving read and the approval).
+	if (signal?.aborted) throw reviewCancellation("Review controller operation was cancelled");
 	let recheck;
 	try {
 		recheck = await nativeReviewCli.reviewStatus({ cwd, ...(signal === undefined ? {} : { signal }) });
 	} catch (error) {
 		return nativeOperationFailure(operation, error);
 	}
-	const reconfirmed = recheck.complete
-		? recheck.entries.filter((entry) =>
-			entry.version === "compact-v2"
-			&& entry.lineageId === request.lineage
-			&& entry.discardedWork !== undefined
-			&& entry.revision === request.expectedRevision
-			&& entry.snapshotIdentity === request.snapshotIdentity
-			&& entry.discardedWork.capturedLensResults.every((lens, index) => lens === request.capturedLensResults[index])
-			&& entry.discardedWork.capturedLensResults.length === request.capturedLensResults.length
-			&& entry.discardedWork.findingsPresent === request.findingsPresent,
-		)
-		: [];
-	if (reconfirmed.length !== 1) {
+	const reconfirmed = nativeAbandonCandidate(recheck, request.lineage);
+	if (reconfirmed === undefined
+		|| reconfirmed.revision !== request.expectedRevision
+		|| reconfirmed.snapshotIdentity !== request.snapshotIdentity
+		|| reconfirmed.discardedWork!.findingsPresent !== request.findingsPresent
+		|| !sameOrderedLensList(reconfirmed.discardedWork!.capturedLensResults, request.capturedLensResults)) {
 		return { operation, status: "blocked", outcome: "native-abandon-authority-changed", native_operation: nativeOperation, mutation_performed: false, mutation_outcome: "none", next_action: "inspect-and-restart-abandon-from-fresh-inventory" };
 	}
 	try {

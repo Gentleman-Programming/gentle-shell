@@ -101,34 +101,46 @@ export async function captureNodeTestExecution(opts: ExecutionCaptureOptions): P
 	if (opts.signal?.aborted) return fail("aborted");
 	if (preTestSha === "unavailable" || (resolvedSrc !== undefined && preSrcSha === "unavailable")) return fail("error");
 
-	const env = { ...process.env };
-	delete env.NODE_TEST_CONTEXT;
+	const env: NodeJS.ProcessEnv = {};
+	for (const key of ["PATH", "Path", "SystemRoot", "SYSTEMROOT", "WINDIR", "TMP", "TEMP", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE"]) {
+		if (process.env[key] !== undefined) env[key] = process.env[key];
+	}
 	const maxBytes = opts.maxBufferBytes ?? 512 * 1024;
+	const detached = process.platform !== "win32";
 	const cp = spawn(process.execPath, [
 		"--experimental-strip-types", "--test",
 		`--test-reporter=${fileURLToPath(import.meta.url)}`,
 		`--test-name-pattern=^${opts.testName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
 		"--", resolvedTest,
-	], { stdio: ["ignore", "pipe", "pipe"], env });
+	], { stdio: ["ignore", "pipe", "pipe"], env, detached });
 
 	const stdoutChunks: Buffer[] = [];
-	let stdoutBytes = 0, stderrBytes = 0, wasTimeout = false, wasAborted = false, truncated = false;
-	const onAbort = () => { wasAborted = true; cp.kill("SIGKILL"); };
+	let stdoutBytes = 0, stderrBytes = 0, wasTimeout = false, wasAborted = false, truncated = false, terminated = false;
+	const terminate = () => {
+		if (terminated) return;
+		terminated = true;
+		cp.stdout.destroy(); cp.stderr.destroy();
+		if (detached && cp.pid && Number.isSafeInteger(cp.pid) && cp.pid > 0) {
+			try { process.kill(-cp.pid, "SIGKILL"); return; } catch {}
+		}
+		cp.kill("SIGKILL");
+	};
+	const onAbort = () => { wasAborted = true; terminate(); };
 	if (opts.signal) opts.signal.addEventListener("abort", onAbort, { once: true });
-	const timer = setTimeout(() => { wasTimeout = true; cp.kill("SIGKILL"); }, opts.timeoutMs ?? 5000);
+	const timer = setTimeout(() => { wasTimeout = true; terminate(); }, opts.timeoutMs ?? 5000);
 
 	cp.stdout.on("data", (c: Buffer) => {
 		stdoutBytes += c.length;
-		if (stdoutBytes > maxBytes) { truncated = true; cp.kill("SIGKILL"); } else stdoutChunks.push(c);
+		if (stdoutBytes > maxBytes) { truncated = true; terminate(); } else stdoutChunks.push(c);
 	});
 	cp.stderr.on("data", (c: Buffer) => {
 		stderrBytes += c.length;
-		if (stderrBytes > maxBytes) { truncated = true; cp.kill("SIGKILL"); }
+		if (stderrBytes > maxBytes) { truncated = true; terminate(); }
 	});
 
 	let exitCode: number | null = null, exitSig: NodeJS.Signals | null = null;
 	try {
-		await new Promise<void>((r) => { cp.on("close", (c, s) => { exitCode = c; exitSig = s; r(); }); cp.on("error", () => r()); });
+		await new Promise<void>((r) => { cp.once("close", (c, s) => { exitCode = c; exitSig = s; r(); }); cp.once("error", () => r()); });
 	} finally {
 		clearTimeout(timer);
 		if (opts.signal) opts.signal.removeEventListener("abort", onAbort);

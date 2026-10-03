@@ -4862,10 +4862,11 @@ const REVIEW_CONTROLLER_PARAMETER_FIELDS = {
 	},
 } as const;
 
-// Providers such as non-strict Anthropic emit only root properties/required.
-// Keep the full declaration here and operation constraints in runtime branches.
-// The nullable root shell prevents Pi from deleting an optional supplied null;
-// both the branches below and the facade reject it, so it never becomes omitted.
+// Root-level union combinators (anyOf/oneOf/allOf) are forbidden by the Anthropic
+// tool definition spec and cause Claude Code/Agent SDK to drop the tool (#1698).
+// The root schema is a plain object; the nullable root shell prevents Pi from
+// deleting an optional supplied null, while runtime branches in the facade
+// enforce that null and non-START/ASSESS objects are rejected fail-closed.
 const REVIEW_CONTROLLER_PARAMETERS = {
 	...REVIEW_CONTROLLER_PARAMETER_FIELDS,
 	properties: {
@@ -4875,24 +4876,6 @@ const REVIEW_CONTROLLER_PARAMETERS = {
 			description: `${REVIEW_CONTROLLER_PARAMETER_FIELDS.properties.input.description} Null is invalid; omit input when optional.`,
 		},
 	},
-	anyOf: [
-		{
-			...REVIEW_CONTROLLER_PARAMETER_FIELDS,
-			properties: {
-				...REVIEW_CONTROLLER_PARAMETER_FIELDS.properties,
-				operation: { ...REVIEW_CONTROLLER_PARAMETER_FIELDS.properties.operation, enum: ["start", "assess"] },
-				input: { ...REVIEW_JSON_ARGUMENT, description: REVIEW_CONTROLLER_PARAMETER_FIELDS.properties.input.description },
-			},
-		},
-		{
-			...REVIEW_CONTROLLER_PARAMETER_FIELDS,
-			properties: {
-				...REVIEW_CONTROLLER_PARAMETER_FIELDS.properties,
-				operation: { ...REVIEW_CONTROLLER_PARAMETER_FIELDS.properties.operation, enum: Object.values(REVIEW_CONTROLLER_OPERATION).filter((operation) => operation !== "start" && operation !== "assess") },
-				input: { ...REVIEW_JSON_STRING, description: "Serialized JSON object string only; objects are accepted only by START/ASSESS." },
-			},
-		},
-	],
 } as const;
 
 const REVIEW_CAPTURE_PARAMETERS = {

@@ -7,8 +7,26 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = join(fileURLToPath(new URL("..", import.meta.url)));
 
-const requiredPaths = [
+// Browser installation wizard: bootstrap scripts, entry, host and static assets.
+export const installerPaths = Object.freeze([
+  "bin/gentle-shell-install.mjs",
+  "scripts/installer-server.mjs",
+  "scripts/installer-runner.mjs",
+  "scripts/installer-preflight.mjs",
+  "scripts/installer-probes.mjs",
+  "scripts/installer-downloads.mjs",
+  "scripts/installer-windows.mjs",
+  "scripts/installer-windows-artifacts.json",
+  "scripts/bootstrap.sh",
+  "scripts/bootstrap.cmd",
+  "assets/install-wizard/index.html",
+  "assets/install-wizard/wizard.js",
+  "assets/install-wizard/wizard.css",
+]);
+
+export const requiredPaths = [
   "bin/gentle-shell.mjs",
+  ...installerPaths,
   "assets/orchestrator.md",
   "assets/orchestrator-delegation.md",
   "assets/orchestrator-memory.md",
@@ -173,6 +191,14 @@ const contractHashes = {
 
 requiredPaths.push(...Object.keys(contractHashes));
 
+// Required package-relative paths that are missing or are not regular files.
+export function missingRequiredPaths(packageRoot, paths) {
+  return paths.filter((relativePath) => {
+    const absolutePath = join(packageRoot, relativePath);
+    return !existsSync(absolutePath) || !statSync(absolutePath).isFile();
+  });
+}
+
 function listFilesRecursively(directory) {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const absolutePath = join(directory, entry.name);
@@ -287,10 +313,7 @@ async function main() {
     process.exit(1);
   }
 
-  const missing = requiredPaths.filter((relativePath) => {
-    const absolutePath = join(root, relativePath);
-    return !existsSync(absolutePath) || !statSync(absolutePath).isFile();
-  });
+  const missing = missingRequiredPaths(root, requiredPaths);
 
   if (missing.length > 0) {
     console.error("gentle-pi package is missing required Pi resources:");

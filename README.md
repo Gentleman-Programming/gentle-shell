@@ -315,6 +315,7 @@ Start with the product-facing destination, then move into the operational refere
 | [Telemetry](docs/telemetry.md) | Approved fields and source limitations. |
 | [Delegated verification](docs/delegated-verification.md) | Practical verification guidance. |
 | [Skill style guide](docs/skill-style-guide.md) | The package skill contract. |
+| [Installation wizard (in development)](docs/install-wizard.md) | The browser installation wizard's design, security model and preview. Not a supported installation path yet. |
 
 <p align="right"><a href="#top">Back to top ↑</a></p>
 

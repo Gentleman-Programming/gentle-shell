@@ -115,3 +115,39 @@ jobs:
       - name: Run Windows native consent boundary
         shell: pwsh
         run: pnpm exec node --experimental-strip-types --test tests/native-review-consent.test.ts
+
+  # The installer suites import only Node built-ins and repository files, so no
+  # dependency installation is needed.
+  installer:
+    name: installer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+
+      - name: Run installer suites
+        run: node --experimental-strip-types --test tests/install-wizard.test.ts tests/installer-server.test.ts tests/verify-package-files.test.ts tests/installer-probes.test.ts tests/installer-runner.test.ts tests/installer-preflight.test.ts tests/installer-posix-bootstrap.test.ts tests/installer-windows-bootstrap.test.ts
+
+      # The native tests skip off Windows; here every one must run and pass.
+      - name: Require native Windows installer tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $output = & node --experimental-strip-types --test --test-reporter=tap --test-name-pattern "^native Windows" tests/installer-windows-bootstrap.test.ts 2>&1
+          $status = $LASTEXITCODE
+          $output | Write-Output
+          if ($status -ne 0) { exit $status }
+          $text = $output -join "`n"
+          $passes = [regex]::Match($text, "(?m)^# pass (\d+)$")
+          $skips = [regex]::Match($text, "(?m)^# skipped (\d+)$")
+          if (!$passes.Success -or [int]$passes.Groups[1].Value -lt 14 -or !$skips.Success -or [int]$skips.Groups[1].Value -ne 0) { throw "Native Windows installer tests were skipped or not selected" }

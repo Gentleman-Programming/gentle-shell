@@ -3839,6 +3839,9 @@ test("session transport adds host tools, forwards notifications, and closes on s
 	assert.ok(h.tools.has("orchestrator_send_message"));
 	assert.match((await h.tools.get("orchestrator_list")!.execute("list", {}, undefined, undefined, ctx)).content[0].text, /peer/);
 	assert.ok(callback, "listener receives the inbound callback");
+	// Idle and held routing are covered by the orchestrator delivery tests; a
+	// running parent keeps the original follow-up delivery.
+	await h.fire("agent_start", ctx);
 	await callback!({ id: "message-1", senderSessionId: "peer", message: "\u001b[31mraw model content" });
 	assert.equal(h.sent.at(-1)?.message.customType, "gentle-agents.orchestrator-message");
 	assert.match(String(h.sent.at(-1)?.message.content), /\u001b\[31mraw model content/);
@@ -4440,6 +4443,104 @@ for (const boundary of ["session_compact", "session_compact_failed"] as const) {
 		await fire("session_shutdown", ctx);
 	});
 }
+
+// Incoming orchestrator session messages share the child-content delivery
+// router: an idle parent must be woken through the prompt lifecycle, a busy
+// run keeps the follow-up route, and a parent compacting without a run holds
+// the message for the next boundary.
+async function orchestratorHost() {
+	const host = fakePi();
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	let received: ((notification: { id: string; senderSessionId: string; message: string }) => Promise<void>) | undefined;
+	harness.deps.sessionTransport = {
+		...inertSessionTransport,
+		createListener: (registry, _sessionId, callback) => {
+			received = callback;
+			return { registry, start: async () => {}, close: async () => {} };
+		},
+	};
+	gentleAgents(host.pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await host.fire("session_start", ctx);
+	await eventually(() => received !== undefined, "session transport listener starts");
+	const notify = (message: string) => received!({ id: "m1", senderSessionId: "peer", message });
+	return { ...host, ctx, timers, notify };
+}
+
+test("an orchestrator message to an idle parent is stored without a direct turn and wakes the parent once", async () => {
+	const { fire, ctx, sent, userMessages, delivery, notify } = await orchestratorHost();
+	await notify("hello idle");
+	await tick();
+	assert.deepEqual(sent.map((entry) => entry.options), [{ triggerTurn: false }], "the message is stored without triggerTurn");
+	assert.equal(sent[0]!.message.customType, "gentle-agents.orchestrator-message");
+	assert.match(String(sent[0]!.message.content), /hello idle/);
+	assert.equal(userMessages.length, 1, "one wake starts the turn through the prompt lifecycle");
+	assert.doesNotMatch(String(userMessages[0]!.content), /hello idle/, "the wake never repeats the message");
+	assert.deepEqual(delivery, ["custom:gentle-agents.orchestrator-message", "user"]);
+	await fire("session_shutdown", ctx);
+});
+
+test("an orchestrator message during a parent run keeps the follow-up route and sends no wake", async () => {
+	const { fire, ctx, sent, userMessages, notify } = await orchestratorHost();
+	await fire("agent_start", ctx);
+	await notify("hello run");
+	await tick();
+	assert.deepEqual(sent.map((entry) => entry.options), [{ deliverAs: "followUp", triggerTurn: true }]);
+	assert.equal(userMessages.length, 0);
+	await fire("session_shutdown", ctx);
+});
+
+test("an orchestrator message held while the parent compacts is routed after the boundary", async () => {
+	const { fire, ctx, sent, userMessages, delivery, notify, setIdle, timers } = await orchestratorHost();
+	setIdle(false);
+	await notify("hello compaction");
+	await tick();
+	assert.equal(sent.length, 0, "no direct turn starts while the parent compacts");
+	assert.equal(userMessages.length, 0, "no wake is sent while the parent compacts");
+	await fire("session_compact", ctx);
+	setIdle(true);
+	assert.equal(timers.run(0), 1, "one deferred flush is scheduled for the boundary");
+	await tick();
+	assert.deepEqual(sent.map((entry) => entry.options), [{ triggerTurn: false }], "the held message is stored without a direct turn");
+	assert.deepEqual(delivery, ["custom:gentle-agents.orchestrator-message", "user"]);
+	await fire("session_shutdown", ctx);
+});
+
+test("an orchestrator message held for a busy parent is delivered by the next turn boundary flush", async () => {
+	const { fire, ctx, sent, notify, setIdle } = await orchestratorHost();
+	setIdle(false);
+	await notify("hello hold");
+	assert.equal(sent.length, 0, "nothing is sent while the parent is busy without a run");
+	await fire("agent_start", ctx);
+	await fire("turn_end", ctx);
+	assert.deepEqual(sent.map((entry) => entry.options), [{ deliverAs: "followUp", triggerTurn: true }], "a run that started meanwhile receives it as a follow-up");
+	await fire("session_shutdown", ctx);
+});
+
+test("an orchestrator message to a parent with a stale context fails delivery so the sender learns", async () => {
+	const { fire, ctx, sent, userMessages, notify } = await orchestratorHost();
+	Object.assign(ctx, { isIdle: () => { throw new Error("This extension ctx is stale after session replacement or reload."); } });
+	await assert.rejects(notify("hello stale"), /stale/);
+	assert.equal(sent.length, 0);
+	assert.equal(userMessages.length, 0);
+	await fire("session_shutdown", ctx);
+});
+
+test("a held orchestrator message does not survive a session change", async () => {
+	const { fire, ctx, sent, userMessages, notify, setIdle, timers } = await orchestratorHost();
+	setIdle(false);
+	await notify("hello dropped");
+	await fire("session_start", ctx, { reason: "new" });
+	setIdle(true);
+	await fire("agent_settled", ctx);
+	await fire("session_compact", ctx);
+	timers.run(0);
+	await tick();
+	assert.equal(sent.length, 0, "the old session's held message is not replayed into the new one");
+	assert.equal(userMessages.length, 0);
+	await fire("session_shutdown", ctx);
+});
 
 test("between agent_end and agent_settled the parent run is still active, so child content keeps the steer route", async () => {
 	const { pi, tools, fire, sent, userMessages } = fakePi();

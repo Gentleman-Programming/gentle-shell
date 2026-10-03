@@ -13,8 +13,8 @@ The user explicitly selected automatic fallback, not replacement of primary mode
 - Each complete delivery slice is at most 400 changed lines, including tests and documentation.
 
 ## Tasks
-- [ ] FB-1: Record installed SDK routing evidence and constraints; first documentation work-unit commit is pending.
-- [ ] FB-2: Implement and test bounded provider-error eligibility and one-fallback-attempt policy. First source work unit; no activation yet.
+- [x] FB-1: Recorded installed SDK routing evidence and constraints in commit `19f2a196`.
+- [/] FB-2: Implement and test bounded provider-error eligibility and one-fallback-attempt policy. First source work unit; no activation yet.
 - [ ] FB-3: Integrate and verify in-process reviewer fallback while preserving native bindings and actual model attribution.
 - [ ] FB-4: Integrate safe child/parent fallback and activate authorized routes only after same-session/no-replay tests; report unsupported cases.
 
@@ -27,4 +27,7 @@ The user explicitly selected automatic fallback, not replacement of primary mode
 ## Progress and delivery boundaries
 - Branch: `feat/model-gemini-fallback`, based on `a6e905e8` from `test/sec-tdd-dispatch`. Do not add fallback code to the SEC-8 slice.
 - SEC-8 functional evidence: independent 363/363 tests, package and whitespace PASS; its whole slice is 349 lines. Commits: `b7ace465`, `a6e905e8`. Native review of the second unit remains pending: two consent bindings expired with `lineage_created: false`; neither was a decline or approval. No push, PR, or merge performed.
-- No automatic fallback source changes or activation have been performed. Primary model settings remain unchanged.
+- FB-2 adds a standalone eligibility/attempt policy; no runtime integration or activation has occurred. Primary settings are unchanged; a manual bounded Gemini writer was used after Terra SSE disconnection.
+- FB-2 TDD: Observed assertion RED on initial stub (1 failed, 'stop'!=='fallback'), GREEN (5 passed); hardening round observed 3 RED on numeric code regex, conflicting origin, and missing availability, then 5 GREEN. Package and diff checks clean.
+- Independent verifier `musjf3fg-t-ydeh`: fresh 5/5 PASS; package 156 files/69 pinned artifacts; staged/base whitespace clean; complete slice 359 lines before this passive evidence update. Current tests cover every previously named category; the prior uncommitted test formatting cannot be independently reconstructed.
+- Native START for hardened policy was blocked by expired consent `2c04688d-2c62-4eae-93e5-9135006a9474`: no lineage, no authority mutation, neither approval nor decline. FB-2 closure remains pending a fresh human consent/disposition.

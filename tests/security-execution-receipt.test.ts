@@ -23,6 +23,7 @@ async function captureAndAssertDenials(opts: Parameters<typeof captureNodeTestEx
 test("A1: captures pass and genuine assertion non-authoritatively with post SHA256", async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sec-a1-p-"));
 	try {
+		await assertMinimalEnvironment();
 		const tf1 = writeTemp(dir, "p.js", `const test = require("node:test"); test("ok", () => {});`);
 		const sf = writeTemp(dir, "s.js", "module.exports = 1;");
 		const rPass = await captureAndAssertDenials({
@@ -52,6 +53,52 @@ test("A1: captures pass and genuine assertion non-authoritatively with post SHA2
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+async function assertMinimalEnvironment() {
+	const originalCanary = process.env.SEC_A1_ENV_CANARY;
+	const originalOptions = process.env.NODE_OPTIONS;
+	const originalPath = process.env.NODE_PATH;
+	process.env.SEC_A1_ENV_CANARY = "synthetic-only";
+	process.env.NODE_OPTIONS = "--no-warnings";
+	process.env.NODE_PATH = "/synthetic-node-path";
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sec-a1-env-"));
+	try {
+		const tf = writeTemp(dir, "env.js", `const test = require("node:test"); const assert = require("node:assert/strict"); test("env", () => { assert.equal(process.env.SEC_A1_ENV_CANARY, undefined); assert.equal(process.env.NODE_OPTIONS, undefined); assert.equal(process.env.NODE_PATH, undefined); });`);
+		assert.equal((await captureAndAssertDenials({ testFile: tf, testName: "env" })).execution.observedOutcome, "pass");
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+		if (originalCanary === undefined) delete process.env.SEC_A1_ENV_CANARY; else process.env.SEC_A1_ENV_CANARY = originalCanary;
+		if (originalOptions === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = originalOptions;
+		if (originalPath === undefined) delete process.env.NODE_PATH; else process.env.NODE_PATH = originalPath;
+	}
+}
+
+async function waitForFile(file: string, timeoutMs = 1000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!fs.existsSync(file)) {
+		if (Date.now() >= deadline) throw new Error("descendant handshake did not arrive");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+}
+
+async function assertDescendantTermination(kind: "abort" | "timeout") {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sec-a1-tree-"));
+	const handshake = path.join(dir, "grandchild.pid");
+	let grandchildPid: number | undefined;
+	try {
+		const tf = writeTemp(dir, "tree.js", `const test = require("node:test"); const fs = require("node:fs"); const { spawn } = require("node:child_process"); test("tree", async () => { spawn(process.execPath, ["-e", ${JSON.stringify(`require("node:fs").writeFileSync(${JSON.stringify(handshake)}, String(process.pid)); setTimeout(() => {}, 2000);`)}], { stdio: "inherit" }); for (let i = 0; i < 100 && !fs.existsSync(${JSON.stringify(handshake)}); i++) await new Promise(resolve => setTimeout(resolve, 10)); });`);
+		const ac = new AbortController();
+		const pending = captureAndAssertDenials({ testFile: tf, testName: "tree", timeoutMs: kind === "timeout" ? 800 : 1500, ...(kind === "abort" && { signal: ac.signal }) });
+		await waitForFile(handshake);
+		grandchildPid = Number(fs.readFileSync(handshake, "utf8"));
+		if (kind === "abort") ac.abort();
+		const r = await Promise.race([pending, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("close remained blocked by descendant")), 800))]);
+		assert.equal(r.execution.observedOutcome, kind === "abort" ? "aborted" : "timeout");
+	} finally {
+		if (grandchildPid && Number.isSafeInteger(grandchildPid)) { try { process.kill(grandchildPid, "SIGKILL"); } catch {} }
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+}
 
 test("A1: raw setup, hook, skip, unmatched observations remain non-authoritative", async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sec-a1-s-"));
@@ -128,6 +175,8 @@ test("A1: nonexecuted cases and invalid configs fail closed with null exit and u
 test("A1: regression scenarios (global error, drift, spoof, loud buffer, leading hyphen, todo)", async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sec-a1-reg-"));
 	try {
+		await assertDescendantTermination("abort");
+		await assertDescendantTermination("timeout");
 		const tf1 = writeTemp(dir, "ge.js", `const test = require("node:test"); test("ok-target", () => {}); setTimeout(() => { throw new Error("async"); }, 10);`);
 		const r1 = await captureAndAssertDenials({ testFile: tf1, testName: "ok-target" });
 		assert.equal(r1.execution.observedOutcome, "error");

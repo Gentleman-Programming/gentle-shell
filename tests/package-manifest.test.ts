@@ -699,14 +699,15 @@ test("selective delegation installation owns only generic agents", () => {
 		const result = installPackageAssets(agentHome, false, ["delegation"]);
 		assert.deepEqual(Object.keys(installedAssetManifest(agentHome).assets).sort(), [
 			"agents/gentle-ai-explore.md",
+			"agents/gentle-ai-security.md",
 			"agents/gentle-ai-verify.md",
 			"agents/gentle-ai-worker.md",
 			"gentle-ai/support/strict-tdd-verify.md",
 			"gentle-ai/support/strict-tdd.md",
 		]);
-		assert.deepEqual(result, { agents: 3, chains: 0, support: 2, skipped: 0 });
+		assert.deepEqual(result, { agents: 4, chains: 0, support: 2, skipped: 0 });
 		assert.deepEqual(readdirSync(join(agentHome, "agents")).sort(), [
-			"gentle-ai-explore.md", "gentle-ai-verify.md", "gentle-ai-worker.md",
+			"gentle-ai-explore.md", "gentle-ai-security.md", "gentle-ai-verify.md", "gentle-ai-worker.md",
 		]);
 		assert.equal(existsSync(join(agentHome, "chains")), false);
 		assert.deepEqual(readdirSync(join(agentHome, "gentle-ai", "support")).sort(), ["strict-tdd-verify.md", "strict-tdd.md"]);
@@ -742,7 +743,7 @@ test("selective installation retires only assets belonging to the selected owner
 
 const EXPECTED_OWNER_ASSETS: Record<PackageAssetOwner, readonly string[]> = {
 	delegation: [
-		"agents/gentle-ai-explore.md", "agents/gentle-ai-verify.md", "agents/gentle-ai-worker.md",
+		"agents/gentle-ai-explore.md", "agents/gentle-ai-security.md", "agents/gentle-ai-verify.md", "agents/gentle-ai-worker.md",
 		"gentle-ai/support/strict-tdd.md", "gentle-ai/support/strict-tdd-verify.md",
 	],
 	review: [
@@ -788,10 +789,10 @@ test("all-assets installation covers every retained packaged file with explicit 
 		assert.equal(getPackageAssetOwner(key), undefined, "unknown assets must not default to SDD");
 	}
 	withIsolatedAssetHome((agentHome) => {
-		assert.deepEqual(installPackageAssets(agentHome, false), { agents: 10, chains: 1, support: 2, skipped: 0 });
+		assert.deepEqual(installPackageAssets(agentHome, false), { agents: 11, chains: 1, support: 2, skipped: 0 });
 		assert.deepEqual(Object.keys(installedAssetManifest(agentHome).assets).sort(), packaged);
-		assert.deepEqual(installPackageAssets(agentHome, false), { agents: 0, chains: 0, support: 0, skipped: 13 });
-		assert.deepEqual(installPackageAssets(agentHome, true), { agents: 10, chains: 1, support: 2, skipped: 0 });
+		assert.deepEqual(installPackageAssets(agentHome, false), { agents: 0, chains: 0, support: 0, skipped: 14 });
+		assert.deepEqual(installPackageAssets(agentHome, true), { agents: 11, chains: 1, support: 2, skipped: 0 });
 	});
 });
 
@@ -805,7 +806,7 @@ test("selective refresh preserves unselected ownership and selected user changes
 			writeFileSync(join(agentHome, key), "User-authored instructions\n");
 		}
 		const before = new Map(assetFileKeys(agentHome).map(key => [key, readFileSync(join(agentHome, key), "utf8")]));
-		assert.deepEqual(installPackageAssets(agentHome, true, ["delegation"]), { agents: 2, chains: 0, support: 2, skipped: 1 });
+		assert.deepEqual(installPackageAssets(agentHome, true, ["delegation"]), { agents: 3, chains: 0, support: 2, skipped: 1 });
 		delete manifest.assets[selectedUserKey];
 		assert.deepEqual(installedAssetManifest(agentHome), manifest);
 		for (const [key, content] of before) {
@@ -1583,13 +1584,18 @@ test("global model routing uses PI_CODING_AGENT_DIR for package-installed agents
 
 		const result = applyModelConfig(temporaryProject, {
 			"gentle-ai-explore": { model: "provider/model", thinking: "high" },
+			"gentle-ai-security": { model: "provider/sec-model", thinking: "medium" },
 		});
 
-		assert.equal(result.updated, 2);
+		assert.equal(result.updated, 4);
 		const config = JSON.parse(readFileSync(join(temporaryPiAgentDir, "subagents.json"), "utf8"));
 		assert.deepEqual(config.model_profiles["gentle-ai-explore"], {
 			model: "provider/model",
 			effort: "high",
+		});
+		assert.deepEqual(config.model_profiles["gentle-ai-security"], {
+			model: "provider/sec-model",
+			effort: "medium",
 		});
 	} finally {
 		if (previousAgentHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;

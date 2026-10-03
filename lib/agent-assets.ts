@@ -24,6 +24,7 @@ const LEGACY_MANAGED_ASSET_MANIFESTS = Object.freeze([
 
 const ASSET_OWNER_BY_KEY = Object.freeze({
 	"agents/gentle-ai-explore.md": "delegation",
+	"agents/gentle-ai-security.md": "delegation",
 	"agents/gentle-ai-verify.md": "delegation",
 	"agents/gentle-ai-worker.md": "delegation",
 	"agents/jd-fix-agent.md": "review",

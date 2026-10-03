@@ -98,12 +98,16 @@ missing Herdr/socket contexts do not publish. The packaged extension loads throu
 
 Herdr 0.8.2/protocol 20 needs **two separate rows**, not a newline inside a token:
 add `['$summary'], ['$summary2']` to the Agents sidebar rows in your config.
-The first row is `◐ title`; the optional continuation is indented by the reporter,
-though Herdr may normalize leading whitespace.
-Text wraps by display cells at word boundaries (long words split by grapheme),
-with ellipsis only on the last overflowing row, or on an extremely narrow first
-row. Both tokens together are capped at 256 UTF-8 bytes; ANSI/bidi controls are
-removed. Pathological oversized graphemes may be replaced by an ellipsis.
+The first row is `◐ title`; the extension prefixes the optional continuation with
+two spaces, though Herdr may normalize leading whitespace.
+Text wraps by display cells, preferring word boundaries unless a grapheme-safe
+word split avoids unnecessary truncation across the two rows. Ellipsis appears
+only on the last overflowing row, or on an extremely narrow first row. Each token
+is capped at 80 Unicode scalar characters, including icon, spaces and ellipsis,
+before Herdr normalizes it; both tokens together are capped at 256 UTF-8 bytes
+(excluding private newline framing). ANSI/bidi controls are removed while emoji
+ZWJ sequences are preserved. Pathological oversized graphemes may be replaced by
+an ellipsis.
 
 Width comes from root `sidebar_width` in `session.json` beside `HERDR_SOCKET_PATH`,
 less five columns for divider, possible scrollbar and the detail-row prefix.
@@ -116,7 +120,8 @@ Source `gentle:activity` owns only `summary`/`summary2`, not lifecycle. Updates 
 latest-only, serialized and best-effort offline, with a 30-second TTL refreshed every
 10 seconds while active. Each report clears an unused second row; idle, session
 changes and shutdown clear both. TTL expiry covers abrupt exits. The managed Herdr
-bridge remains lifecycle authority.
+bridge remains lifecycle authority. Reports invoke `HERDR_BIN_PATH` when supplied,
+otherwise `herdr` from `PATH`, without a shell.
 
 ## Navigation
 

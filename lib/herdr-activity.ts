@@ -43,22 +43,25 @@ export function createActivityColumns(socket: string, now: () => number = Date.n
 	};
 }
 
-/** Fit whole graphemes, preferring the previous space when a word would split. */
-function fit(parts: string[], columns: number, bytes: number): number {
+/** Fit whole graphemes within cell, UTF-8 byte and Unicode scalar budgets. */
+function fit(parts: string[], columns: number, bytes: number, characters: number, preferWords = true): number {
 	let cells = 0;
 	let used = 0;
+	let scalars = 0;
 	let count = 0;
 	let space = -1;
 	for (const part of parts) {
 		const width = visibleWidth(part);
 		const size = Buffer.byteLength(part);
-		if (cells + width > columns || used + size > bytes) break;
+		const length = Array.from(part).length;
+		if (cells + width > columns || used + size > bytes || scalars + length > characters) break;
 		if (part === " ") space = count;
 		cells += width;
 		used += size;
+		scalars += length;
 		count++;
 	}
-	if (count < parts.length && parts[count] !== " " && space > 0) return space;
+	if (preferWords && count < parts.length && parts[count] !== " " && space > 0) return space;
 	return count;
 }
 
@@ -71,7 +74,7 @@ export function activitySummary(tasks: unknown, columns = FALLBACK_COLUMNS): str
 	// Bound sanitization/segmentation work, preserve ZWJ emoji but strip bidi controls.
 	/* eslint-disable no-control-regex */
 	const clean = stripTerminalSequences(title.slice(0, 4096))
-		.replace(/[\x00-\x1f\x7f-\x9f\u200b-\u200c\u200e-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g, " ")
+		.replace(/[\x00-\x1f\x7f-\x9f\u061c\u200b-\u200c\u200e-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g, " ")
 		.replace(/\s+/g, " ").trim();
 	/* eslint-enable no-control-regex */
 	if (!clean) return null;
@@ -80,18 +83,30 @@ export function activitySummary(tasks: unknown, columns = FALLBACK_COLUMNS): str
 	if (clipped) parts.pop();
 	columns = Number.isFinite(columns) ? Math.max(1, Math.min(512, Math.floor(columns))) : FALLBACK_COLUMNS;
 	if (columns <= 2) return columns === 1 ? "…" : "◐…";
-	const whole = fit(parts, columns - 2, 252);
+	// Herdr caps each token at 80 scalars; count our icon/indent before its trim.
+	const whole = fit(parts, columns - 2, 252, 78, false);
 	if (!clipped && whole === parts.length) return `◐ ${parts.join("")}`;
-	// Reserve a second-row indent, separator and ellipsis in the shared byte budget.
-	const firstCount = fit(parts, columns - 2, 246);
+	// Reserve the second-row indent and ellipsis; private LF framing is not a token byte.
+	let firstCount = fit(parts, columns - 2, 247, 78);
 	if (!firstCount) return columns === 3 ? "◐…" : "◐ …";
+	const restFits = (count: number): boolean => {
+		const first = `◐ ${parts.slice(0, count).join("").trimEnd()}`;
+		const rest = parts.slice(count);
+		while (rest[0] === " ") rest.shift();
+		return fit(rest, columns - 2, 256 - Buffer.byteLength(first) - 2, 78, false) === rest.length;
+	};
+	// Prefer words unless splitting one would preserve the entire two-row title.
+	if (!clipped && !restFits(firstCount)) {
+		const hardCount = fit(parts, columns - 2, 247, 78, false);
+		if (restFits(hardCount)) firstCount = hardCount;
+	}
 	const first = `◐ ${parts.slice(0, firstCount).join("").trimEnd()}`;
 	const rest = parts.slice(firstCount);
 	while (rest[0] === " ") rest.shift();
-	const bytes = 256 - Buffer.byteLength(first) - 3; // LF + two-space indent.
-	let count = fit(rest, columns - 2, bytes);
+	const bytes = 256 - Buffer.byteLength(first) - 2; // Two-space indent.
+	let count = fit(rest, columns - 2, bytes, 78, false);
 	const overflow = clipped || count < rest.length;
-	if (overflow) count = fit(rest, columns - 3, bytes - 3);
+	if (overflow) count = fit(rest, columns - 3, bytes - 3, 77);
 	const second = rest.slice(0, count).join("").trimEnd();
 	return `${first}\n  ${second}${overflow ? "…" : ""}`;
 }
@@ -107,7 +122,7 @@ export function metadataArgs(pane: string, summary: string | null, seq: number):
 export function metadataTransport(env: NodeJS.ProcessEnv): (summary: string | null, seq: number) => Promise<void> {
 	return (summary, seq) => new Promise((resolve) => {
 		// No shell, bounded output/time, and failure never blocks Pi's handlers.
-		execFile("herdr", metadataArgs(env.HERDR_PANE_ID!, summary, seq), {
+		execFile(env.HERDR_BIN_PATH ?? "herdr", metadataArgs(env.HERDR_PANE_ID!, summary, seq), {
 			env, timeout: 1500, maxBuffer: 4096, windowsHide: true,
 		}, () => resolve());
 	});
@@ -134,7 +149,8 @@ export class ActivityPublisher {
 	}
 
 	update(summary: string | null, force = false): void {
-		if (this.closed || (!force && summary === (this.pending === undefined ? this.last : this.pending))) return;
+		if (this.closed || (!force && (this.pending !== undefined
+			? summary === this.pending : !this.running && summary === this.last))) return;
 		this.pending = summary;
 		if (summary === null) {
 			this.cancel?.();

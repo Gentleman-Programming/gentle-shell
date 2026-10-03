@@ -712,6 +712,66 @@ test("childArguments grants every child the notification-only parent message too
 	assert.equal(args[args.indexOf("--tools") + 1], "read,grep,subagent_parent_message");
 });
 
+test("childArguments dynamically expands mcp sentinel into codemode, tool_search, and active mcp tools (#1686)", () => {
+	const activeMcpTools = [
+		"mcp__context7__resolve_library_id",
+		"mcp__context7__get_docs",
+		"mcp__notion__search",
+	];
+	const req = request({
+		agent: { ...explorer, tools: ["read", "grep", "mcp"] },
+		mcpTools: activeMcpTools,
+	});
+	const args = childArguments(req);
+	const toolsArg = args[args.indexOf("--tools") + 1];
+	const tools = toolsArg.split(",");
+
+	assert.ok(!tools.includes("mcp"), "retired mcp token must be omitted from --tools");
+	assert.ok(tools.includes("codemode"), "codemode must be present when mcp is declared");
+	assert.ok(tools.includes("tool_search"), "tool_search must be present when mcp is declared");
+	for (const mcpTool of activeMcpTools) {
+		assert.ok(tools.includes(mcpTool), `${mcpTool} must be included in --tools`);
+	}
+	assert.ok(tools.includes("read") && tools.includes("grep") && tools.includes("subagent_parent_message"));
+});
+
+test("childArguments expands scoped mcp__<server> tokens to matching active tools (#1686)", () => {
+	const activeMcpTools = [
+		"mcp__context7__resolve_library_id",
+		"mcp__context7__get_docs",
+		"mcp__notion__search",
+	];
+	const req = request({
+		agent: { ...explorer, tools: ["read", "mcp__context7"] },
+		mcpTools: activeMcpTools,
+	});
+	const args = childArguments(req);
+	const toolsArg = args[args.indexOf("--tools") + 1];
+	const tools = toolsArg.split(",");
+
+	assert.ok(!tools.includes("mcp__context7"), "server prefix token must be expanded");
+	assert.ok(tools.includes("codemode") && tools.includes("tool_search"));
+	assert.ok(tools.includes("mcp__context7__resolve_library_id"));
+	assert.ok(tools.includes("mcp__context7__get_docs"));
+	assert.ok(!tools.includes("mcp__notion__search"), "unscoped servers must not be included");
+});
+
+test("childArguments preserves strict tool isolation when agent omits mcp (#1686)", () => {
+	const activeMcpTools = ["mcp__context7__resolve_library_id"];
+	const req = request({
+		agent: { ...explorer, tools: ["read", "bash"] },
+		mcpTools: activeMcpTools,
+	});
+	const args = childArguments(req);
+	const toolsArg = args[args.indexOf("--tools") + 1];
+	const tools = toolsArg.split(",");
+
+	assert.ok(!tools.includes("codemode"));
+	assert.ok(!tools.includes("tool_search"));
+	assert.ok(!tools.includes("mcp__context7__resolve_library_id"));
+	assert.deepEqual(tools, ["read", "bash", "subagent_parent_message"]);
+});
+
 test("AgentRunner admits strict live notifications once and closes IPC before Stop", async () => {
 	const notifications: string[] = [];
 	const { runner, children, spawnOptions } = harness({ onNotification: (task, message) => task.parentSessionId === "s1" && (notifications.push(message), true) });

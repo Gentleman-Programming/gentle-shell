@@ -20,12 +20,13 @@ Issue: #1064 (slice 2, PR #1558). Reviewer: barbatdev (2026-10-03 19:21 UTC) —
 
 1. [x] RED→GREEN: writer-admission regression test + admission fix (`extensions/gentle-agents.ts`).
 2. [x] Launch-seam tests: session-over-pin + queue freeze under rebind.
-3. [ ] Focused checks (full `gentle-agents.test.ts`, typecheck), work-unit commits, push.
+3. [x] Focused checks (full `gentle-agents.test.ts`, typecheck), work-unit commits, push.
 4. [ ] RDD review lifecycle for the candidate (inspect → start → capture → acknowledge).
 
 ## Evidence
 
-- Commits: (pending)
+- Commits: `71c8161fa` fix(agents): writer admission agreement (RED→GREEN, regression test included); `19efec0fd` test(agents): session-over-pin + queue freeze at the launch seam. Pushed to `fork/feat/1064-session-effective-routing` (4ffe4f9e1..19efec0fd).
+- Checks: `tests/gentle-agents.test.ts` 175/175, `tests/session-profile-binding.test.ts` green, `scripts/check-types.mjs` no regressions.
 
 ## Out of scope
 

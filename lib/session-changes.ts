@@ -9,8 +9,18 @@ export const SESSION_CHANGE_ENTRY = "gentle-pi.session-change/v1";
 export const SESSION_CHANGE_EVENT = "gentle-pi:session-change";
 export const SESSION_CHANGE_RELAY = "gentle-pi:child-session-change";
 export const MAX_CHANGE_BYTES = 64 * 1024;
-const MAX_RECORDS = 256;
+// The panel shows FILES, so that is what is bounded. Counting mutation records
+// instead meant every repeat `write`/`edit` of a file already on screen spent a
+// slot, and a long session froze the panel well before it had touched 256
+// distinct files (#1043).
+const MAX_FILES = 256;
 const MAX_SESSION_BYTES = 4 * 1024 * 1024;
+// Which bound fired, said separately: the two have different remedies, and the
+// old shared wording read as though the session itself had failed.
+const FILE_LIMIT_NOTICE =
+	`Session change capture limit reached; ${MAX_FILES} files are shown and later files are not tracked. Earlier files keep updating.`;
+const BYTE_LIMIT_NOTICE =
+	"Session change capture limit reached; the snapshot budget is full and later changes are not captured.";
 const MAX_LINES = 2000;
 export type ChangeSnapshot = { kind: "text"; text: string } | { kind: "absent" } | { kind: "unavailable"; reason: string };
 export interface SessionChangeEvidence {
@@ -69,6 +79,7 @@ const snapshotText = (value: ChangeSnapshot) => value.kind === "text" ? value.te
 export class SessionChanges {
 	private readonly seen = new Set<string>();
 	private readonly files = new Map<string, Map<string, FileState>>();
+	private trackedFiles = 0;
 	private bytes = 0;
 	private announced = false;
 	notice: string | undefined;
@@ -86,16 +97,25 @@ export class SessionChanges {
 	record(evidence: SessionChangeEvidence): boolean {
 		if (!isSessionChangeEvidence(evidence) || this.seen.has(evidence.id)) return false;
 		const bytes = Buffer.byteLength(JSON.stringify(evidence));
-		if (this.seen.size >= MAX_RECORDS || this.bytes + bytes > MAX_SESSION_BYTES) {
-			this.notice = "Session change capture limit reached; additional changes are not displayed.";
+		if (this.bytes + bytes > MAX_SESSION_BYTES) {
+			this.notice = BYTE_LIMIT_NOTICE;
+			return false;
+		}
+		let files = this.files.get(evidence.root);
+		const previous = files?.get(evidence.path);
+		// A file already on screen is admitted whatever the count is: refusing it
+		// froze the panel on a stale state rather than bounding anything, since
+		// the entry it would have updated is already held. Only a file that would
+		// be the 257th is turned away, and the byte budget above bounds the
+		// evidence a long session can keep whatever its shape.
+		if (!previous && this.trackedFiles >= MAX_FILES) {
+			this.notice = FILE_LIMIT_NOTICE;
 			return false;
 		}
 		this.seen.add(evidence.id);
 		this.bytes += bytes;
 		if (sameSnapshot(evidence.before, evidence.after)) return false;
-		let files = this.files.get(evidence.root);
 		if (!files) this.files.set(evidence.root, files = new Map());
-		const previous = files.get(evidence.path);
 		const state: FileState = { before: previous?.before ?? structuredClone(evidence.before), after: structuredClone(evidence.after) };
 		state.unavailable = previous?.unavailable;
 		if (previous && !sameSnapshot(previous.after, evidence.before)) state.unavailable = "Snapshot continuity lost (external or unobserved edit); session diff unavailable.";
@@ -103,6 +123,7 @@ export class SessionChanges {
 		if (evidence.after.kind === "unavailable") state.unavailable ??= evidence.after.reason;
 		// Keep the final state even after an own revert, to detect later external edits.
 		this.patch(evidence.path, state);
+		if (!previous) this.trackedFiles += 1;
 		files.set(evidence.path, state);
 		this.cached = undefined;
 		return true;

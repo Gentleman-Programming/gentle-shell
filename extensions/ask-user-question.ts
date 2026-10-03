@@ -284,6 +284,7 @@ export default function askUserQuestion(pi: ExtensionAPI): void {
 						theme,
 						keybindings,
 						onComplete: (result) => done(result),
+						rows: () => tui?.terminal?.rows ?? 24,
 					});
 					// Native dock swap, never an overlay: the transcript stays scrollable
 					// while the questionnaire owns focus. No `overlay` option is passed.

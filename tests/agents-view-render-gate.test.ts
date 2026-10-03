@@ -1,0 +1,296 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test, { type TestContext } from "node:test";
+import { TASK_STATUS, TaskStore, type TaskRecord, type TaskThread } from "../lib/agents-protocol.ts";
+import { AgentsView } from "../lib/agents-view.ts";
+import { PresenceCursor, PresencePublisher, type ActivityInput } from "../lib/orchestrator-presence.ts";
+
+// The 1 Hz presence poll must request a render only when a poll changed
+// something the view shows. A live-but-quiet peer re-arms the timer without
+// reassigning state or paying the full-transcript layout pass every second.
+
+const plainTheme = { fg: (_color: string, text: string) => text };
+
+function localTask(id: string, overrides: Partial<TaskRecord> = {}): TaskRecord {
+	return { id, agent: "explore", mode: "task", prompt: "p", label: "p", cwd: "/r", parentSessionId: "s", status: TASK_STATUS.RUNNING, createdAt: 1000, startedAt: 1000, endedAt: null, model: "gpt-5.6-terra", thinking: undefined, sessionPath: "/sessions/x.jsonl", error: null, result: null, lastStep: "grep", lastActivityAt: 1000, turns: 0, toolCalls: 0, tokens: 34_000, cost: 0.27, ...overrides };
+}
+
+function peer(id: string, overrides: Partial<ActivityInput["task"]> = {}, thread: ActivityInput["thread"] = { version: 1, dropped: 0, items: [{ kind: "text", text: "hello" }] }): ActivityInput {
+	return {
+		task: { id, agent: "worker", label: "peer", status: "running", model: "m", createdAt: 1000, startedAt: 1000, endedAt: null, lastActivityAt: 1000, ...overrides },
+		thread,
+	};
+}
+
+function gateHarness(t: TestContext, profile: string, clock: { value: number } = { value: 61_000 }) {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const polls = t.mock.method(PresenceCursor.prototype, "next");
+	const store = new TaskStore();
+	let renders = 0;
+	const view = new AgentsView({
+		theme: plainTheme,
+		rows: 8,
+		store,
+		sessionId: "s",
+		now: () => clock.value,
+		onCancel() {},
+		onOpen() {},
+		onClose() {},
+		requestRender: () => {
+			renders += 1;
+		},
+		presence: { profile },
+	});
+	return { store, view, renders: () => renders, polls: () => polls.mock.callCount(), clock };
+}
+
+// Settle the pending poll's zero-delay hops without reaching its 1 s re-arm.
+function settle(t: TestContext): void {
+	for (let index = 0; index < 64; index += 1) t.mock.timers.tick(1);
+}
+
+function nextPoll(t: TestContext): void {
+	t.mock.timers.tick(1000);
+	settle(t);
+}
+
+function tempProfile(t: TestContext): string {
+	const profile = fs.mkdtempSync(join(fs.realpathSync(tmpdir()), "presence-gate-"));
+	t.after(() => fs.rmSync(profile, { recursive: true, force: true }));
+	return profile;
+}
+
+test("a live-but-quiet peer renders once and then polls silently", (t) => {
+	const profile = tempProfile(t);
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer-a", label: "Peer A", activity: [peer("p1")] });
+	t.after(() => publisher.dispose());
+	const { view, renders, polls } = gateHarness(t, profile);
+	settle(t);
+	assert.equal(polls(), 1);
+	assert.equal(renders(), 1, "the first poll renders once");
+	nextPoll(t);
+	assert.equal(polls(), 2, "the poll still runs every second");
+	assert.equal(renders(), 1, "an identical poll does not render again");
+	nextPoll(t);
+	assert.equal(polls(), 3, "the timer keeps re-arming while quiet");
+	assert.equal(renders(), 1);
+	view.dispose();
+});
+
+test("a peer task status change renders again", (t) => {
+	const profile = tempProfile(t);
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer-a", label: "Peer A", activity: [peer("p1")] });
+	t.after(() => publisher.dispose());
+	const { view, renders } = gateHarness(t, profile);
+	settle(t);
+	assert.equal(renders(), 1);
+	publisher.update([peer("p1", { status: "waiting" })]);
+	t.mock.timers.tick(500);
+	nextPoll(t);
+	assert.equal(renders(), 2, "a peer status change is visible on the next poll");
+	nextPoll(t);
+	assert.equal(renders(), 2, "the settled state stops rendering again");
+	view.dispose();
+});
+
+test("a same-length rewrite of peer thread content renders again", (t) => {
+	const profile = tempProfile(t);
+	// keepTail (TEXT_CAP / maxOutputChars) lets a streaming peer rewrite item
+	// content in place; a rewrite that preserves length must still trip the gate.
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer-a", label: "Peer A", activity: [peer("p1", {}, { version: 1, dropped: 0, items: [{ kind: "text", text: "streamed tail is now AAAA" }] })] });
+	t.after(() => publisher.dispose());
+	const { view, renders } = gateHarness(t, profile);
+	settle(t);
+	assert.equal(renders(), 1);
+	publisher.update([peer("p1", {}, { version: 1, dropped: 0, items: [{ kind: "text", text: "streamed tail is now BBBB" }] })]);
+	t.mock.timers.tick(500);
+	nextPoll(t);
+	assert.equal(renders(), 2, "a same-length different-content rewrite renders on the next poll");
+	nextPoll(t);
+	assert.equal(renders(), 2, "the settled state stops rendering again");
+	view.dispose();
+});
+
+test("peer membership and availability changes render again", (t) => {
+	const profile = tempProfile(t);
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer-a", label: "Peer A", activity: [peer("p1")] });
+	const { view, renders } = gateHarness(t, profile);
+	settle(t);
+	assert.equal(renders(), 1);
+	publisher.update([peer("p1"), peer("p2", { agent: "builder" })]);
+	t.mock.timers.tick(500);
+	nextPoll(t);
+	assert.equal(renders(), 2, "an appearing peer task renders again");
+	fs.unlinkSync(join(profile, "gentle-agents", "presence", `${publisher.target.sessionHash}.${publisher.target.incarnation}.activity.json`));
+	nextPoll(t);
+	assert.equal(renders(), 3, "an unavailable activity changes the rendered group label");
+	publisher.dispose();
+	nextPoll(t);
+	assert.equal(renders(), 4, "a disappearing peer group renders again");
+	nextPoll(t);
+	assert.equal(renders(), 4, "the settled empty directory stops rendering again");
+	view.dispose();
+});
+
+test("local task changes render once and the next poll stays silent", (t) => {
+	const profile = tempProfile(t);
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer-a", label: "Peer A", activity: [peer("p1")] });
+	t.after(() => publisher.dispose());
+	const { store, view, renders, polls } = gateHarness(t, profile);
+	settle(t);
+	assert.equal(renders(), 1);
+	store.add(localTask("mine"));
+	assert.equal(renders(), 2, "the store change itself renders immediately");
+	nextPoll(t);
+	assert.equal(polls(), 2);
+	assert.equal(renders(), 2, "the poll after a store render stays silent: the gate re-anchored to the new local snapshot");
+	store.update("mine", { lastStep: "edited" });
+	assert.equal(renders(), 3, "the subscribed selection renders on its own update");
+	nextPoll(t);
+	assert.equal(polls(), 3);
+	assert.equal(renders(), 3, "the re-anchored gate keeps the next poll silent");
+	nextPoll(t);
+	assert.equal(renders(), 3, "an unchanged store stays silent too");
+	view.dispose();
+});
+
+test("a clock-only displayed-second change renders and an unchanged displayed second stays silent", (t) => {
+	const profile = tempProfile(t);
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer-a", label: "Peer A", activity: [peer("p1")] });
+	t.after(() => publisher.dispose());
+	const { view, renders, clock } = gateHarness(t, profile);
+	settle(t);
+	assert.equal(renders(), 1);
+	clock.value = 61_500;
+	nextPoll(t);
+	assert.equal(renders(), 1, "a clock advance inside the same displayed second stays silent");
+	clock.value = 62_000;
+	nextPoll(t);
+	assert.equal(renders(), 2, "the next displayed second of an active peer task renders on the poll");
+	clock.value = 62_500;
+	nextPoll(t);
+	assert.equal(renders(), 2, "the re-anchored gate stays silent inside the new displayed second");
+	view.dispose();
+});
+
+test("a clock-only displayed-second change on a local active task renders too", (t) => {
+	const profile = tempProfile(t);
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer-a", label: "Peer A", activity: [peer("p1")] });
+	t.after(() => publisher.dispose());
+	const { store, view, renders, clock } = gateHarness(t, profile);
+	settle(t);
+	assert.equal(renders(), 1);
+	store.add(localTask("mine"));
+	assert.equal(renders(), 2, "the store change itself renders immediately");
+	clock.value = 61_500;
+	nextPoll(t);
+	assert.equal(renders(), 2, "a clock advance inside the same displayed second stays silent");
+	clock.value = 62_000;
+	nextPoll(t);
+	assert.equal(renders(), 3, "the next displayed second of an active local task renders on the poll");
+	view.dispose();
+});
+
+test("a completed task's displayed elapsed stays frozen as the clock advances", (t) => {
+	const profile = tempProfile(t);
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer-a", label: "Peer A", activity: [peer("p1", { status: "completed", endedAt: 50_000 })] });
+	t.after(() => publisher.dispose());
+	const { store, view, renders, clock } = gateHarness(t, profile);
+	store.add(localTask("done", { status: TASK_STATUS.COMPLETED, endedAt: 55_000 }));
+	settle(t);
+	assert.equal(renders(), 2, "the local add and the first poll render once each");
+	clock.value = 62_000;
+	nextPoll(t);
+	clock.value = 63_000;
+	nextPoll(t);
+	clock.value = 180_000;
+	nextPoll(t);
+	assert.equal(renders(), 2, "clock-only changes never render a completed task's frozen elapsed");
+	view.dispose();
+});
+
+test("a same-length rewrite before the tail of peer thread content renders again", (t) => {
+	const profile = tempProfile(t);
+	// keepTail (TEXT_CAP / maxOutputChars) lets a streaming peer rewrite item
+	// content in place; a rewrite that preserves length outside the final 64
+	// characters must still trip the gate, which a tail-only hash would miss.
+	const tail = "this tail stays byte-identical across the rewrite";
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer-a", label: "Peer A", activity: [peer("p1", {}, { version: 1, dropped: 0, items: [{ kind: "text", text: `${"X".repeat(72)}${tail}` }] })] });
+	t.after(() => publisher.dispose());
+	const { view, renders } = gateHarness(t, profile);
+	settle(t);
+	assert.equal(renders(), 1);
+	publisher.update([peer("p1", {}, { version: 1, dropped: 0, items: [{ kind: "text", text: `${"Y".repeat(72)}${tail}` }] })]);
+	t.mock.timers.tick(500);
+	nextPoll(t);
+	assert.equal(renders(), 2, "a same-length rewrite before the final 64 characters renders on the next poll");
+	nextPoll(t);
+	assert.equal(renders(), 2, "the settled state stops rendering again");
+	view.dispose();
+});
+
+test("delimiter-colliding task fields do not collapse the gate", (t) => {
+	const profile = tempProfile(t);
+	// Under a raw colon-joined signature, agent "w:x" with model "m:y" and
+	// agent "w" with model "x:m:y" produce identical signature text while
+	// rendering different headers; the length-prefixed encoding keeps them
+	// distinct.
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer-a", label: "Peer A", activity: [peer("p1", { agent: "w:x", model: "m:y" })] });
+	t.after(() => publisher.dispose());
+	const { view, renders } = gateHarness(t, profile);
+	settle(t);
+	assert.equal(renders(), 1);
+	publisher.update([peer("p1", { agent: "w", model: "x:m:y" })]);
+	t.mock.timers.tick(500);
+	nextPoll(t);
+	assert.equal(renders(), 2, "a field-boundary collision renders as the real change it is");
+	nextPoll(t);
+	assert.equal(renders(), 2, "the settled state stops rendering again");
+	view.dispose();
+});
+
+test("presence read failures still render and recover on the next successful poll", (t) => {
+	const parent = fs.mkdtempSync(join(fs.realpathSync(tmpdir()), "presence-gate-"));
+	t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+	const profile = join(parent, "absent");
+	const { view, renders, polls } = gateHarness(t, profile);
+	assert.equal(renders(), 1, "a failed first poll renders the empty error state");
+	nextPoll(t);
+	assert.equal(renders(), 2, "the error path still renders on every failed poll");
+	fs.mkdirSync(profile);
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer-a", label: "Peer A", activity: [peer("p1")] });
+	t.after(() => publisher.dispose());
+	nextPoll(t);
+	assert.equal(polls(), 1, "the recovered poll finally reads the directory");
+	assert.equal(renders(), 3, "recovery renders the found peers");
+	nextPoll(t);
+	assert.equal(renders(), 3, "the recovered quiet state stops rendering again");
+	view.dispose();
+});
+
+test("an elapsed-only change renders again and keeps unchanged thread items cached", (t) => {
+	const profile = tempProfile(t);
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer-a", label: "Peer A", activity: [peer("p1", {}, { version: 1, dropped: 0, items: [{ kind: "text", text: "hello" }, { kind: "text", text: "world" }] })] });
+	t.after(() => publisher.dispose());
+	const clock = { value: 61_000 };
+	const { view, renders } = gateHarness(t, profile, clock);
+	settle(t);
+	assert.equal(renders(), 1, "the first poll renders once");
+	const threads = () => (view as unknown as { remoteThreads: Map<string, TaskThread> }).remoteThreads;
+	const appliedOnce = threads();
+	const first = [...appliedOnce.values()][0]!;
+	nextPoll(t);
+	assert.equal(renders(), 1, "a quiet poll inside the same displayed second stays silent");
+	clock.value += 1_000;
+	nextPoll(t);
+	assert.equal(renders(), 2, "a displayed-elapsed tick requests a render");
+	const second = threads();
+	assert.notEqual(second, appliedOnce, "the elapsed poll applies a fresh threads map");
+	const secondThread = [...second.values()][0]!;
+	assert.equal(secondThread.items.length, first.items.length, "the peer thread keeps both items");
+	assert.equal(secondThread.items[0], first.items[0], "the unchanged first item reuses its cached identity across the elapsed render");
+	assert.equal(secondThread.items[1], first.items[1], "the unchanged second item reuses its cached identity across the elapsed render");
+	view.dispose();
+});

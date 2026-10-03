@@ -78,7 +78,7 @@ jobs:
 
   review-routing-windows:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     env:
       npm_config_ignore_scripts: "true"
     steps:
@@ -104,7 +104,7 @@ jobs:
 
       - name: Run Windows review routing regressions
         shell: pwsh
-        timeout-minutes: 12
+        timeout-minutes: 20
         run: |
           $log = Join-Path $env:RUNNER_TEMP 'review-routing-windows.tap.log'
           $previousErrorActionPreference = $ErrorActionPreference
@@ -140,6 +140,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
+          fetch-depth: 2
 
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4

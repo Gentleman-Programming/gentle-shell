@@ -10,6 +10,7 @@ import { YOLO_STATUS_TEXT } from "../lib/yolo-session-policy.ts";
 
 const ON_TEXT = "🚀 YOLO ON 🔥 — destructive confirmations remain";
 const USAGE = "Use /gentle:yolo enable|disable|status. State unchanged.";
+const STALE_MENU = "YOLO unchanged — the session changed while the menu was open.";
 const menuTitle = (state: "ON" | "OFF") => `🚀 Gentle YOLO 🔥 — full speed, destructive actions still ask (current: ${state})`;
 
 export function harness(env: NodeJS.ProcessEnv = {}) {
@@ -250,7 +251,10 @@ test("a session replaced while the menu is open cannot receive the enable choice
 	h.setSelect(async () => { h.setSessionId("replacement-session"); return "enable"; });
 	await h.command("");
 	assert.equal(h.statuses.get("gentle:yolo"), undefined, "stale menu choice never activates the new session");
-	assert.notEqual(h.notices.at(-1), ON_TEXT);
+	assert.equal(h.notices.at(-1), STALE_MENU, "the discarded choice is reported, not silent");
+	h.setSelect(async () => { h.setSessionId("another-session"); return "disable"; });
+	await h.command("");
+	assert.equal(h.notices.at(-1), STALE_MENU, "a stale disable is reported too");
 	h.setSelect(async () => "status");
 	await h.command("");
 	assert.equal(h.notices.at(-1), "YOLO OFF");

@@ -164,25 +164,84 @@ test("gentle:dev-binary registers, reports, and clears the persistent override",
 	}
 });
 
-test("session start announces the active override once, loudly", async () => {
+interface SessionStartHarness {
+	sessionStart: (event: unknown, ctx: ExtensionContext) => Promise<void>;
+}
+
+async function sessionStartHarness(): Promise<SessionStartHarness> {
+	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>();
+	const pi = {
+		on(name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) {
+			handlers.set(name, handler);
+		},
+		registerCommand() {},
+		registerTool() {},
+	} as unknown as ExtensionAPI;
+	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	const sessionStart = handlers.get("session_start");
+	assert.equal(typeof sessionStart, "function");
+	return { sessionStart: sessionStart! };
+}
+
+// The 🌹 dev-binary card (gentle-shell) owns the startup notice when it can
+// render; the session-start toast is only the fallback for when the card is
+// unavailable (shell disabled, no UI).
+test("session start defers the active-override announcement to the shell card", async () => {
 	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
+	const previousShell = process.env.GENTLE_PI_SHELL;
 	process.env.GENTLE_PI_AGENT_HOME = await mkdtemp(join(tmpdir(), "gentle-pi-dev-agent-home-"));
+	delete process.env.GENTLE_PI_SHELL;
 	try {
 		await withDevOverride(async ({ devBinary, sha256 }) => {
-			const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>();
-			const pi = {
-				on(name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) {
-					handlers.set(name, handler);
-				},
-				registerCommand() {},
-				registerTool() {},
-			} as unknown as ExtensionAPI;
-			createGentleAiExtension({ nativeReviewCli: null })(pi);
-			const sessionStart = handlers.get("session_start");
-			assert.equal(typeof sessionStart, "function");
+			const { sessionStart } = await sessionStartHarness();
 			const cwd = await mkdtemp(join(tmpdir(), "gentle-pi-dev-cwd-"));
 			const notifications: Array<{ message: string; severity: string }> = [];
-			await sessionStart!({}, contextFor(cwd, notifications));
+			await sessionStart({}, contextFor(cwd, notifications));
+			const expected = `Gentle AI dev binary override active (unpinned, field-test only): ${devBinary} 9.9.9-dev+surface sha256:${sha256.slice(0, 16)}`;
+			const announcement = notifications.find((entry) => entry.message.includes(expected));
+			assert.equal(announcement, undefined, JSON.stringify(notifications));
+		});
+	} finally {
+		if (previousAgentHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
+		else process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
+		if (previousShell === undefined) delete process.env.GENTLE_PI_SHELL;
+		else process.env.GENTLE_PI_SHELL = previousShell;
+	}
+});
+
+test("session start stays silent in headless contexts even with an active override", async () => {
+	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
+	const previousShell = process.env.GENTLE_PI_SHELL;
+	process.env.GENTLE_PI_AGENT_HOME = await mkdtemp(join(tmpdir(), "gentle-pi-dev-agent-home-"));
+	delete process.env.GENTLE_PI_SHELL;
+	try {
+		await withDevOverride(async () => {
+			const { sessionStart } = await sessionStartHarness();
+			const cwd = await mkdtemp(join(tmpdir(), "gentle-pi-dev-cwd-"));
+			const notifications: Array<{ message: string; severity: string }> = [];
+			const headless = { ...contextFor(cwd, notifications), hasUI: false } as unknown as ExtensionContext;
+			await sessionStart({}, headless);
+			assert.equal(notifications.length, 0, JSON.stringify(notifications));
+		});
+	} finally {
+		if (previousAgentHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
+		else process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
+		if (previousShell === undefined) delete process.env.GENTLE_PI_SHELL;
+		else process.env.GENTLE_PI_SHELL = previousShell;
+	}
+});
+
+test("session start keeps the loud toast as fallback when the shell card is unavailable", async () => {
+	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
+	const previousShell = process.env.GENTLE_PI_SHELL;
+	process.env.GENTLE_PI_AGENT_HOME = await mkdtemp(join(tmpdir(), "gentle-pi-dev-agent-home-"));
+	process.env.GENTLE_PI_SHELL = "off";
+	try {
+		await withDevOverride(async ({ devBinary, sha256 }) => {
+			const { sessionStart } = await sessionStartHarness();
+			const cwd = await mkdtemp(join(tmpdir(), "gentle-pi-dev-cwd-"));
+			const notifications: Array<{ message: string; severity: string }> = [];
+			await sessionStart({}, contextFor(cwd, notifications));
 			const expected = `Gentle AI dev binary override active (unpinned, field-test only): ${devBinary} 9.9.9-dev+surface sha256:${sha256.slice(0, 16)}`;
 			const announcement = notifications.find((entry) => entry.message.includes(expected));
 			assert.ok(announcement, JSON.stringify(notifications));
@@ -191,5 +250,7 @@ test("session start announces the active override once, loudly", async () => {
 	} finally {
 		if (previousAgentHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
 		else process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
+		if (previousShell === undefined) delete process.env.GENTLE_PI_SHELL;
+		else process.env.GENTLE_PI_SHELL = previousShell;
 	}
 });

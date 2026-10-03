@@ -1,6 +1,5 @@
-import type { AgentToolResult, ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI, ExtensionFactory, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
-	createBashTool,
 	createEditTool,
 	createFindTool,
 	createGrepTool,
@@ -24,6 +23,7 @@ import {
 import { sanitizeTerminalText, stripAnsi } from "../lib/terminal-theme.ts";
 
 type QuietToolName = "read" | "bash" | "grep" | "find" | "ls" | "edit" | "write";
+type RegisteredToolName = Exclude<QuietToolName, "bash">;
 type ThemeLike = {
 	bold(value: string): string;
 	fg(color: string, value: string): string;
@@ -31,13 +31,12 @@ type ThemeLike = {
 
 const TOOL_CREATORS = {
 	read: createReadToolDefinition,
-	bash: createBashTool,
 	grep: createGrepTool,
 	find: createFindTool,
 	ls: createLsTool,
 	edit: createEditTool,
 	write: createWriteTool,
-} satisfies Record<QuietToolName, (cwd: string) => any>;
+} satisfies Record<RegisteredToolName, (cwd: string) => any>;
 
 // Caller-owned identities: shared notices and lower widgets retain their glyphs.
 const TOOL_GLYPH = {
@@ -66,17 +65,17 @@ const EMPTY_RESULT_MESSAGES: Partial<Record<QuietToolName, string[]>> = {
 	bash: ["(no output)"],
 };
 
-const toolCache = new Map<string, Record<QuietToolName, any>>();
+const toolCache = new Map<string, Record<RegisteredToolName, any>>();
 
-function createBuiltInTools(cwd: string): Record<QuietToolName, any> {
+function createBuiltInTools(cwd: string): Record<RegisteredToolName, any> {
 	return Object.fromEntries(
-		(Object.entries(TOOL_CREATORS) as [QuietToolName, (cwd: string) => any][]).map(
+		(Object.entries(TOOL_CREATORS) as [RegisteredToolName, (cwd: string) => any][]).map(
 			([name, createTool]) => [name, createTool(cwd)],
 		),
-	) as Record<QuietToolName, any>;
+	) as Record<RegisteredToolName, any>;
 }
 
-function getBuiltInTools(cwd: string): Record<QuietToolName, any> {
+function getBuiltInTools(cwd: string): Record<RegisteredToolName, any> {
 	let tools = toolCache.get(cwd);
 	if (!tools) {
 		tools = createBuiltInTools(cwd);
@@ -686,21 +685,21 @@ function gentleAiRenderTransition(
 	return { directResult: false };
 }
 
-function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArguments: () => RegExp, timing: () => GentleAiElapsedTimingLedger | undefined): void {
-	const registrationTool = getBuiltInTools(process.cwd())[toolName];
-	const officialRenderResult = registrationTool.renderResult;
+/** Rendering-only factory; Bash renderers are not attached to production native Bash. */
+export function createQuietToolRenderer(
+	toolName: QuietToolName,
+	resolveOverride: GentleAiDevBinaryOverrideResolver = () => undefined,
+	timing: () => GentleAiElapsedTimingLedger | undefined = () => undefined,
+	officialRenderResult?: ToolDefinition["renderResult"],
+): Pick<ToolDefinition, "renderShell" | "renderCall" | "renderResult"> {
+	const commandArguments = () => createGentleAiCommandArguments(resolveQuietToolsDevBinaryPath(resolveOverride));
 	const withElapsedTiming = (context: GentleAiRenderContext): GentleAiRenderContext => {
 		const ledger = timing();
 		return ledger ? { ...context, elapsedTiming: ledger } : context;
 	};
 
-	pi.registerTool({
-		...registrationTool,
+	return {
 		renderShell: "self",
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const runtimeTool = getBuiltInTools(ctx.cwd)[toolName];
-			return runtimeTool.execute(toolCallId, params, signal, onUpdate, ctx);
-		},
 		renderCall(args, theme, context) {
 			const callArgs = args as Record<string, unknown>;
 			const renderContext = sanitizedRenderContext(context as ToolRenderContextLike | undefined);
@@ -776,6 +775,17 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 			// The card top rule carries the expand key, so an empty result only closes the frame.
 			return carded(() => new Text("", 0, 0));
 		},
+	};
+}
+
+function registerQuietTool(pi: ExtensionAPI, toolName: RegisteredToolName, resolveOverride: GentleAiDevBinaryOverrideResolver, timing: () => GentleAiElapsedTimingLedger | undefined): void {
+	const registrationTool = getBuiltInTools(process.cwd())[toolName];
+	pi.registerTool({
+		...registrationTool,
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			return getBuiltInTools(ctx.cwd)[toolName].execute(toolCallId, params, signal, onUpdate, ctx);
+		},
+		...createQuietToolRenderer(toolName, resolveOverride, timing, registrationTool.renderResult),
 	});
 }
 
@@ -799,8 +809,8 @@ export default function quietTools(pi: ExtensionAPI, resolveOverride: GentleAiDe
 	pi.on("tool_execution_end", (event) => recordGentleTiming(event, Date.now()));
 	const withElapsedTiming = (context: GentleAiRenderContext): GentleAiRenderContext =>
 		elapsedTiming ? { ...context, elapsedTiming } : context;
-	for (const toolName of Object.keys(TOOL_CREATORS) as QuietToolName[]) {
-		registerQuietTool(pi, toolName, () => createGentleAiCommandArguments(resolveQuietToolsDevBinaryPath(resolveOverride)), () => elapsedTiming);
+	for (const toolName of Object.keys(TOOL_CREATORS) as RegisteredToolName[]) {
+		registerQuietTool(pi, toolName, resolveOverride, () => elapsedTiming);
 	}
 	return registerCompactCodemode(pi);
 }

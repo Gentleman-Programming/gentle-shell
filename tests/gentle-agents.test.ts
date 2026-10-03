@@ -4584,7 +4584,18 @@ test("a completion held past the stale window becomes transcript-only content an
 	await tick();
 	clock += STALE_COMPLETION_MS + 1_000;
 	await fire("turn_end", ctx);
-	assert.equal(sent.filter((entry) => entry.message.customType === "gentle-agents.result").length, 0, "a stale completion never enters the model context");
+	assert.equal(sent.filter((entry) => entry.message.customType === "gentle-agents.result").length, 0, "a stale completion never replays the full result into the model context");
+	// #1092: the model still learns the task finished, via one compact notice without the report.
+	const notices = sent.filter((entry) => entry.message.customType === "gentle-agents.stale-notice");
+	assert.equal(notices.length, 1, "an unread stale completion yields exactly one model-facing notice");
+	assert.deepEqual(notices[0]!.options, { deliverAs: "steer", triggerTurn: true });
+	assert.equal(notices[0]!.message.display, false);
+	assert.match(String(notices[0]!.message.content), new RegExp(id));
+	assert.match(String(notices[0]!.message.content), /subagent_result/);
+	assert.doesNotMatch(String(notices[0]!.message.content), /Late answer\./, "the notice never carries the report");
+	await fire("agent_end", ctx);
+	await fire("agent_settled", ctx);
+	assert.equal(sent.length, 1, "no later flush replays or re-notifies");
 	const stale = entries.filter((entry) => entry.customType === "gentle-agents.stale-result");
 	assert.equal(stale.length, 1, "the human still sees the stale completion as durable transcript content");
 	assert.match(JSON.stringify(stale[0]!.data), new RegExp(id), "the stale notice names the task");
@@ -4593,6 +4604,160 @@ test("a completion held past the stale window becomes transcript-only content an
 	assert.match(rendered, new RegExp(id));
 	assert.match(rendered, /explore/);
 	assert.match(rendered, /ago/);
+	await fire("session_shutdown", ctx);
+});
+
+// A stale notice is child content like any other (#1528): it follows the
+// idle/run/hold router, so an idle parent is woken through the prompt
+// lifecycle instead of a direct turn that skips before_agent_start.
+const finishBackground = (harness: ReturnType<typeof deps>, index: number, text: string) => {
+	harness.children[index].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text }] }] });
+	harness.children[index].emit({ type: "agent_settled" });
+};
+
+test("issue #1092: a stale notice for an idle parent is stored without a direct turn and woken once", async () => {
+	const { pi, tools, fire, sent, entries, userMessages } = fakePi();
+	const harness = deps();
+	let clock = 1000;
+	harness.deps.now = () => clock;
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	const started = await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Idle stale", mode: "background" }, undefined, undefined, ctx);
+	const id = (started.details.gentleAgents as { taskId: string }).taskId;
+	await tick();
+	await fire("agent_start", ctx);
+	finishBackground(harness, 0, "Idle answer.");
+	await tick();
+	clock += STALE_COMPLETION_MS + 1_000;
+	// agent_settled leaves the parent idle, so the held completion flushes as stale to an idle parent.
+	await fire("agent_settled", ctx);
+	await tick();
+	const notices = sent.filter((entry) => entry.message.customType === "gentle-agents.stale-notice");
+	assert.equal(notices.length, 1);
+	assert.deepEqual(notices[0]!.options, { triggerTurn: false }, "an idle parent never gets a direct triggerTurn message");
+	assert.equal(sent.some((entry) => entry.options.triggerTurn === true), false);
+	assert.equal(userMessages.length, 1, "exactly one wake follows the stored notice");
+	assert.doesNotMatch(String(userMessages[0]!.content), new RegExp(`${id}|Idle answer\\.|subagent_result`), "the wake repeats neither the notice nor the report");
+	assert.equal(entries.filter((entry) => entry.customType === "gentle-agents.stale-result").length, 1, "the transcript entry is still appended");
+	await fire("session_shutdown", ctx);
+});
+
+test("issue #1092: a stale notice while the parent run is active is steered into that run without a wake", async () => {
+	const { pi, tools, fire, sent, userMessages } = fakePi();
+	const harness = deps();
+	let clock = 1000;
+	harness.deps.now = () => clock;
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Run stale", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	await fire("agent_start", ctx);
+	finishBackground(harness, 0, "Run answer.");
+	await tick();
+	clock += STALE_COMPLETION_MS + 1_000;
+	await fire("turn_end", ctx);
+	assert.deepEqual(sent.map((entry) => [entry.message.customType, entry.options]), [["gentle-agents.stale-notice", { deliverAs: "steer", triggerTurn: true }]]);
+	assert.equal(userMessages.length, 0);
+	await fire("session_shutdown", ctx);
+});
+
+test("issue #1092: a stale completion held while the parent compacts outside a run is routed only at the boundary", async () => {
+	const { pi, tools, fire, sent, entries, userMessages, setIdle } = fakePi();
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	let clock = 1000;
+	harness.deps.now = () => clock;
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Held stale", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	setIdle(false);
+	finishBackground(harness, 0, "Held answer.");
+	await tick();
+	clock += STALE_COMPLETION_MS + 1_000;
+	await fire("session_compact", ctx);
+	assert.equal(sent.length, 0, "nothing is sent while the parent is busy without a run");
+	assert.equal(userMessages.length, 0);
+	assert.equal(entries.length, 0, "the stale entry waits for the boundary too");
+	setIdle(true);
+	assert.equal(timers.run(0), 1);
+	await tick();
+	assert.deepEqual(sent.map((entry) => [entry.message.customType, entry.options]), [["gentle-agents.stale-notice", { triggerTurn: false }]]);
+	assert.equal(userMessages.length, 1);
+	assert.equal(entries.filter((entry) => entry.customType === "gentle-agents.stale-result").length, 1);
+	await fire("session_shutdown", ctx);
+});
+
+test("issue #1092: a stale and a fresh completion in one idle flush share a single wake", async () => {
+	const { pi, tools, fire, sent, userMessages, delivery } = fakePi();
+	const harness = deps();
+	let clock = 1000;
+	harness.deps.now = () => clock;
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Old", mode: "background" }, undefined, undefined, ctx);
+	await tools.get("subagent_run")!.execute("c2", { agent: "explore", task: "Fresh", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	await fire("agent_start", ctx);
+	finishBackground(harness, 0, "Old answer.");
+	await tick();
+	clock += STALE_COMPLETION_MS + 1_000;
+	finishBackground(harness, 1, "Fresh answer.");
+	await tick();
+	await fire("agent_settled", ctx);
+	await tick();
+	assert.deepEqual(sent.map((entry) => [entry.message.customType, entry.options]), [["gentle-agents.stale-notice", { triggerTurn: false }], ["gentle-agents.result", { triggerTurn: false }]]);
+	assert.equal(userMessages.length, 1, "one coalesced wake covers both stored messages");
+	assert.deepEqual(delivery.slice(-1), ["user"]);
+	await fire("session_shutdown", ctx);
+});
+
+test("issue #1092: a completion consumed before it went stale sends no notice and no entry", async () => {
+	const { pi, tools, fire, sent, entries } = fakePi();
+	const harness = deps();
+	let clock = 1000;
+	harness.deps.now = () => clock;
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	const started = await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Pulled late", mode: "background" }, undefined, undefined, ctx);
+	const id = (started.details.gentleAgents as { taskId: string }).taskId;
+	await tick();
+	await fire("agent_start", ctx);
+	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Pulled answer." }] }] });
+	harness.children[0].emit({ type: "agent_settled" });
+	await tick();
+	await tools.get("subagent_result")!.execute("c2", { task_id: id }, undefined, undefined, ctx);
+	clock += STALE_COMPLETION_MS + 1_000;
+	await fire("turn_end", ctx);
+	assert.equal(sent.length, 0, "a consumed stale completion sends nothing");
+	assert.equal(entries.filter((entry) => entry.customType === "gentle-agents.stale-result").length, 0);
+	await fire("session_shutdown", ctx);
+});
+
+test("issue #1092: a stale completion owned by another session sends no notice and no entry", async () => {
+	const { pi, tools, fire, sent, entries } = fakePi();
+	const harness = deps();
+	let clock = 1000;
+	harness.deps.now = () => clock;
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Foreign stale", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	await fire("agent_start", ctx);
+	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Foreign answer." }] }] });
+	harness.children[0].emit({ type: "agent_settled" });
+	await tick();
+	(ctx.sessionManager as { getSessionId(): string }).getSessionId = () => "s2";
+	clock += STALE_COMPLETION_MS + 1_000;
+	await fire("turn_end", ctx);
+	assert.equal(sent.length, 0);
+	assert.equal(entries.length, 0);
 	await fire("session_shutdown", ctx);
 });
 

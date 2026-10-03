@@ -57,6 +57,7 @@ export const AGENTS_RESULT_TYPE = "gentle-agents.result";
 export const AGENTS_MESSAGE_TYPE = "gentle-agents.message";
 export const AGENTS_ORCHESTRATOR_MESSAGE_TYPE = "gentle-agents.orchestrator-message";
 export const AGENTS_STALE_RESULT_TYPE = "gentle-agents.stale-result";
+export const AGENTS_STALE_NOTICE_TYPE = "gentle-agents.stale-notice";
 const RENDER_COALESCE_MS = 400;
 const CLOCK_TICK_MS = 1000;
 const TOOL_PREFIX = "subagent_";
@@ -594,8 +595,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// calling tools entirely, so in a long orchestrator run the notification
 	// could land nearly an hour after the parent pulled the same result (#867).
 	// Gentle Agents now owns the pending completions: they settle here, are
-	// flushed at the next turn boundary, and a stale one never re-enters the
-	// conversation.
+	// flushed at the next turn boundary, and a stale one never replays its
+	// report into the conversation (it gets a compact pull notice instead).
 	const completions = createCompletionQueue<TaskRecord>();
 	const messages = createAgentMessageQueue();
 	let activeAgentRuns = 0;
@@ -776,12 +777,27 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		sendToParent({ customType: AGENTS_RESULT_TYPE, content: completionText(task), display: true, details: taskDetails(task) }, route);
 	};
 
-	// A stale completion must not re-enter the LLM conversation, so it is
-	// delivered as durable TUI-only content and the human still sees it.
-	const deliverStale = (task: TaskRecord, settledAt: number) => {
+	// A stale completion never replays its report into the LLM conversation
+	// (the parent may have used it already; consume() suppresses that case, so
+	// anything reaching here is unread). A single parent tool call can outlast
+	// the window, so the human gets the transcript entry and the model gets one
+	// compact notice, without the report, telling it to pull the result. The
+	// notice takes the same route as any child content (see the router above,
+	// #1528): an idle parent stores it with triggerTurn:false and gets one
+	// coalesced wake instead of a direct turn that skips before_agent_start.
+	const deliverStale = (task: TaskRecord, settledAt: number, route: Exclude<ParentRoute, "hold">) => {
 		if (activeSessionId() !== task.parentSessionId) return;
 		const ageSeconds = Math.max(0, Math.round((deps.now() - settledAt) / 1000));
 		pi.appendEntry(AGENTS_STALE_RESULT_TYPE, { taskId: task.id, agent: task.agent, label: task.label, status: task.status, ageSeconds });
+		const outcome = task.status === "completed" ? "finished" : task.status.replace("_", " ");
+		sendToParent(
+			{
+				customType: AGENTS_STALE_NOTICE_TYPE,
+				content: `Subagent ${task.agent} (task ${task.id}, "${task.label}") ${outcome} ${ageSeconds}s ago and its result was not read yet. Call subagent_result or subagent_status with task_id ${task.id}.`,
+				display: false,
+			},
+			route,
+		);
 	};
 
 	const deliverMessage = (msg: PendingAgentMessage, route: Exclude<ParentRoute, "hold">) => {
@@ -820,7 +836,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (!route) return;
 		for (const { task, settledAt, stale } of completions.takeDeliverable(deps.now())) {
 			try {
-				if (stale) deliverStale(task, settledAt);
+				if (stale) deliverStale(task, settledAt, route);
 				else deliver(task, route);
 			} catch { /* Best-effort delivery: at most once, even if forwarding fails. */ }
 		}

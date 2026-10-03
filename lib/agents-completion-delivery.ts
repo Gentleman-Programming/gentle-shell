@@ -11,12 +11,13 @@
 // behavior is unit-testable against a fake clock.
 
 /**
- * A completion older than this at flush time is stale: the parent had many
- * turns to pull the result with subagent_result, so replaying it into the
- * model context would re-enter state the conversation may already have used.
- * Ninety seconds comfortably covers one slow orchestrator turn (model latency
- * plus a few tool calls) while staying orders of magnitude below the 50-58
- * minute followUp delays measured in issue #867.
+ * A completion older than this at flush time is stale: its full report is
+ * never replayed into model context. Consumed results are already suppressed
+ * by consume(), so this only bounds how late a full replay may land; an
+ * unread stale completion still gets a compact pull notice from the extension,
+ * because one long parent tool call can exceed the window before any flush.
+ * Ninety seconds stays orders of magnitude below the 50-58 minute followUp
+ * delays measured in issue #867.
  */
 export const STALE_COMPLETION_MS = 90_000;
 

@@ -290,7 +290,7 @@ The first-party `nan` provider is included; no third-party provider package is r
 
 > **RDD is opt-in:** enable native receipt-driven development only through an explicit `/gentle:review-mode enable` decision. The `.git/gentle-ai/candidate-views` parent must sit on a filesystem that honors private POSIX modes (or equivalent Windows ACLs); WSL DrvFS mounts without metadata can reject START before lineage creation.
 
-> **Fullscreen installation note:** a recognized global installation persists Pi’s `"tuiMode": "fullscreen"` setting. Project-local and other install paths do not receive that change.
+> **Fullscreen installation note:** a recognized global installation persists Pi’s `"tuiMode": "fullscreen"` setting only when `tuiMode` is unset or unrecognized; an explicit `"regular"` choice is preserved across updates. Project-local and other install paths do not receive that change.
 
 > **Interactive RPC hosts:** the desktop app sets `GENTLE_SHELL_INTERACTIVE_HOST=1` automatically, without touching your Pi config — see the [installation reference](docs/readme-reference.md#interactive-rpc-hosts).
 

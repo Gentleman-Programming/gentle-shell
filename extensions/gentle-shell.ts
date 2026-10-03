@@ -1,6 +1,7 @@
 import { CustomEditor, keyHint, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { Editor, decodeKittyPrintable, isKeyRelease, matchesKey, parseKey, truncateToWidth, visibleWidth, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 import { execFile, spawnSync } from "node:child_process";
+import { runShellGit } from "../lib/shell-git-process.ts";
 import { realpathSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { profilesFilePath, profileRoleEntries, readProfilesFileResult } from "../lib/agent-profiles.ts";
@@ -1174,20 +1175,7 @@ export function shellGitRunner(cwd: string, env: NodeJS.ProcessEnv = process.env
 	// Pi exec cannot replace the inherited environment. Use argv directly and
 	// a complete sanitized environment for discovery, status, and lazy diffs.
 	const childEnv = worktreeGitEnvironment(env);
-	return (args) => new Promise((resolve) => {
-		run("git", ["-C", cwd, ...args], {
-			env: childEnv,
-			encoding: "utf8",
-			shell: false,
-			windowsHide: true,
-			timeout: GIT_TIMEOUT_MS,
-			// Pi exec accumulates output without a maxBuffer cap. In particular,
-			// large porcelain inventories must not become partial successful scans.
-			maxBuffer: Infinity,
-		}, (error, stdout) => {
-			resolve({ stdout, code: error ? typeof error.code === "number" ? error.code : 1 : 0 });
-		});
-	});
+	return (args) => runShellGit(cwd, args, childEnv, run, process.platform, GIT_TIMEOUT_MS);
 }
 
 export async function loadFileDiff(git: GitRunner, file: ChangedFile): Promise<string> {

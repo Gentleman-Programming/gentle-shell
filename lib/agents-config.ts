@@ -73,6 +73,7 @@ export interface AgentsConfig {
 	toolStallTimeoutMs: number;
 	maxConcurrency: number;
 	historyMaxTasks: number;
+	extensions?: string[];
 }
 
 export interface ProfileSources {
@@ -251,6 +252,11 @@ function parseProfiles(value: unknown): Record<string, ModelProfile> {
 	return profiles;
 }
 
+function parseExtensions(value: unknown): string[] | undefined {
+	if (!Array.isArray(value) || !value.every((path) => typeof path === "string")) return undefined;
+	return value.filter((path) => path.length > 0);
+}
+
 function mergeProfiles(base: Record<string, ModelProfile>, override: Record<string, ModelProfile>): Record<string, ModelProfile> {
 	const merged = { ...base };
 	for (const [name, profile] of Object.entries(override)) {
@@ -280,6 +286,7 @@ export function parseAgentsConfig(global: RawConfig, project: RawConfig): Agents
 		toolStallTimeoutMs: Math.max(positiveInteger(merged.tool_stall_timeout_ms, DEFAULT_TOOL_STALL_TIMEOUT_MS), stallTimeoutMs),
 		maxConcurrency: positiveInteger(merged.max_concurrency, DEFAULT_MAX_CONCURRENCY),
 		historyMaxTasks: positiveInteger(merged.history_max_tasks, DEFAULT_HISTORY_MAX_TASKS),
+		extensions: parseExtensions(merged.extensions),
 	};
 }
 

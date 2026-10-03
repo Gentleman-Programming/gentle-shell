@@ -108,7 +108,7 @@ mkdirSync(join(home, ".pi", "agent", "agents"), { recursive: true });
 mkdirSync(cwd, { recursive: true });
 mkdirSync(nonGitCwd, { recursive: true });
 writeFileSync(join(home, ".pi", "agent", "agents", "explore.md"), "---\ndescription: maps things\nmodel: openai-codex/gpt-5.6-terra\nthinking: high\ntools: [read, grep]\n---\nYou map things.");
-writeFileSync(join(home, ".pi", "agent", "subagents.json"), JSON.stringify({ max_concurrency: 2, model_profiles: { explore: { effort: "low" } } }));
+writeFileSync(join(home, ".pi", "agent", "subagents.json"), JSON.stringify({ max_concurrency: 2, extensions: ["/global/extension.js"], model_profiles: { explore: { effort: "low" } } }));
 
 // Existing prompt-lifecycle regressions exercise the bridge route by default.
 function fakePi(initialProvider: string = "claude-bridge") {
@@ -2103,7 +2103,7 @@ test("default Node spawn adapter distinguishes IPC-only and permission-capable c
 		children[2]!.emit({ type: "agent_settled" });
 		await permission.result;
 
-		const args = ["--host-flag", "--mode", "rpc", "--session-dir", join(home, ".pi", "agent", "gentle-agents", "sessions"), ...childContextExtensionPaths().flatMap((path) => ["--extension", path]), "--model", "openai-codex/gpt-5.6-terra:low", "--tools", "read,grep,subagent_parent_message", "--append-system-prompt", "You map things."];
+		const args = ["--host-flag", "--mode", "rpc", "--session-dir", join(home, ".pi", "agent", "gentle-agents", "sessions"), "--no-extensions", "--extension", "/global/extension.js", ...childContextExtensionPaths().flatMap((path) => ["--extension", path]), "--model", "openai-codex/gpt-5.6-terra:low", "--tools", "read,grep,subagent_parent_message", "--append-system-prompt", "You map things."];
 		assert.equal(captured.length, 3, "the extension reaches Node's spawn boundary for IPC-only and permission-channel launches");
 		const permissionChannelStdio = process.platform === "win32" ? "overlapped" : "pipe";
 		for (const [index, fixture] of ["task", "background", "permission"].entries()) {
@@ -3028,6 +3028,7 @@ test("subagent_list_agents and subagent_run in task mode launch a child with the
 	const [args] = harness.spawned;
 	assert.equal(args[args.indexOf("--model") + 1], "openai-codex/gpt-5.6-terra:low", "the profile effort overrides the definition");
 	assert.equal(args[args.indexOf("--tools") + 1], "read,grep,subagent_parent_message");
+	assert.deepEqual(args.slice(args.indexOf("--no-extensions"), args.indexOf("--model")), ["--no-extensions", "--extension", "/global/extension.js", ...childContextExtensionPaths().flatMap((path) => ["--extension", path])], "the configured extension selection isolates the child launch and context extensions ride along");
 	await tick();
 	assert.match(String(harness.children[0].written[1].message), /Map lib\/ and report every module\.\n\n## Context\nFocus on agents-\*\.ts/);
 	assert.match(widget()![0], /^╭─ ❀ Agents · 1 active ─+╮$/);
@@ -4851,7 +4852,7 @@ test("children receive context and safety extensions, and missing files are omit
 			await h.tools.get("subagent_run")!.execute(`child-context-${scenario}`, { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
 			await tick();
 			assert.equal(runtime.spawned.length, 1);
-			assert.deepEqual(extensionArguments(runtime.spawned[0]!), scenario === "present" ? [resolve(expected), resolve(safety)] : []);
+			assert.deepEqual(extensionArguments(runtime.spawned[0]!), scenario === "present" ? ["/global/extension.js", resolve(expected), resolve(safety)] : ["/global/extension.js"], "context files ride along after the configured selection and are omitted when missing");
 		} finally {
 			await h.fire("session_shutdown", ctx);
 			await tick();

@@ -92,7 +92,7 @@ export function discoverYoloUiAdapter(pi: ExtensionAPI, context: ExtensionContex
 
 export interface YoloSessionController {
 	active(context: ExtensionContext): Promise<boolean>;
-	humanAction(action: HumanAction, context: ExtensionContext, current?: () => boolean): Promise<void>;
+	humanAction(action: HumanAction, context: ExtensionContext, current?: () => boolean): Promise<boolean>;
 	reset(context: ExtensionContext): void;
 }
 
@@ -149,11 +149,13 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 		};
 	};
 	// Both entry points execute this operation, including off/pending-on races.
-	const humanAction = async (action: HumanAction, context: ExtensionContext, current = () => true): Promise<void> => {
-		if (!current()) return;
+	// Resolves false only when the interaction stopped being current, so the
+	// caller can report the discarded choice; a superseding action stays silent.
+	const humanAction = async (action: HumanAction, context: ExtensionContext, current = () => true): Promise<boolean> => {
+		if (!current()) return false;
 		if (action === HUMAN_ACTION.off) {
 			policy.reset(); publish(context, false); context.ui.notify("YOLO OFF", "info");
-			return;
+			return true;
 		}
 		const wasEnabled = policy.enabled;
 		policy.reset();
@@ -161,13 +163,15 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 		const epoch = policy.epoch;
 		const identity = await capture(context);
 		const enable = action === HUMAN_ACTION.on || !wasEnabled;
-		if (epoch !== policy.epoch || !current()) return;
+		if (!current()) return false;
+		if (epoch !== policy.epoch) return true;
 		const changed = policy.set(enable, identity, epoch);
 		const enabled = changed && policy.active(identity);
 		publish(context, enabled);
 		context.ui.notify(enabled ? YOLO_STATUS_TEXT : enable
 			? "YOLO OFF — activation requires an interactive primary TUI session and an identifiable Git clone."
 			: "YOLO OFF", enabled || !enable ? "info" : "warning");
+		return true;
 	};
 	// Legacy minimal hosts can run the command without an inter-extension bus;
 	// they simply cannot expose the menu adapter.
@@ -192,7 +196,7 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 			};
 			request.respond({
 				read,
-				toggle: () => humanAction(HUMAN_ACTION.toggle, context, current),
+				toggle: async () => { await humanAction(HUMAN_ACTION.toggle, context, current); },
 				observe: (refresh) => {
 					if (!current()) return () => {};
 					subscriptions.add(refresh); observers.add(refresh);
@@ -227,7 +231,9 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 				context.ui.notify(await active(context) ? YOLO_STATUS_TEXT : "YOLO OFF", "info");
 				return;
 			}
-			await humanAction(action === "enable" ? HUMAN_ACTION.on : HUMAN_ACTION.off, context, current);
+			if (await humanAction(action === "enable" ? HUMAN_ACTION.on : HUMAN_ACTION.off, context, current)) return;
+			try { context.ui.notify("YOLO unchanged — the session changed while the menu was open.", "warning"); }
+			catch { /* SDK contexts throw after runtime replacement. */ }
 		},
 	});
 	return { active, humanAction, reset };

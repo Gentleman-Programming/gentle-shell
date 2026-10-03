@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"aaa","timestamp":"2026-09-28T10:00:00.000Z","cwd":"/work/alpha"}
+{"type":"message","id":"a1","parentId":null,"timestamp":"2026-09-28T10:01:00.000Z","message":{"role":"assistant","provider":"claude-bridge","model":"claude-opus-5-5","usage":{"input":100,"output":50,"cacheRead":1000,"cacheWrite":200,"totalTokens":1350,"cost":{"total":0.5}}}}

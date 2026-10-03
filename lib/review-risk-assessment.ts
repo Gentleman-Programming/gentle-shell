@@ -13,7 +13,7 @@
 // gentle-pi#1175: the native v2 `assess.schema.json` requires only `code` on a
 // reason (`path`/`detail` are optional) and adds `candidate.consumed`,
 // `review_due`, `review_due_reason`, and an opaque `next_transition`. Older
-// binaries (for example the pinned gentle-ai v3.7.0) predate those fields, so
+// binaries (for example gentle-ai v3.7.0) predate those fields, so
 // they decode as optional and stay absent rather than being defaulted.
 // A non-zero exit or a failure envelope means the candidate could not be
 // assessed; hosts treat that as `high`. Older binaries without the verb (or

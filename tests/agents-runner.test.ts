@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import fs, { existsSync, readFileSync, statSync } from "node:fs";
+import fs, { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { basename, dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { PassThrough } from "node:stream";
 import { AGENT_MODE, parseAgentsConfig, resolveAgentProfile, type AgentDefinition } from "../lib/agents-config.ts";
 import { TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
@@ -1692,4 +1693,128 @@ test("temporary instructions transport file is cleaned up if child emits an earl
 	assert.ok(capturedPromptPath, "should have captured a transport file path");
 	assert.ok(!existsSync(capturedPromptPath), "temporary transport file must be cleaned up on early child error");
 	assert.ok(!existsSync(dirname(capturedPromptPath)), "temporary transport directory must be cleaned up on early child error");
+});
+
+// Role fallbacks (#964): explicit provider quota exhaustion moves the same task to
+// the role's next model. Anything else, and an empty list, fails as it always did.
+
+const QUOTA_ERROR = { role: "assistant", content: [], stopReason: "error", errorMessage: '402: {"error":{"type":"insufficient_quota","message":"You exceeded your current quota"}}' };
+const CONCURRENCY_ERROR = { role: "assistant", content: [], stopReason: "error", errorMessage: '429: {"message":"qwen3.6 concurrency limit: max 5 simultaneous requests.","type":"rate_limit_error"}' };
+const FINAL_REPORT = { role: "assistant", content: [{ type: "text", text: "fallback report" }], stopReason: "stop" };
+const PRIMARY = { provider: "openai-codex", id: "gpt-5.6-terra" };
+const FALLBACK_A = { provider: "provider-b", id: "fallback-a" };
+const FALLBACK_B = { provider: "provider-c", id: "fallback-b" };
+
+function settle(child: FakeChild, message: Record<string, unknown>): void {
+	child.emit({ type: "agent_end", messages: [message] });
+	child.emit({ type: "agent_settled" });
+}
+
+function modelArgument(args: string[]): string | undefined {
+	return args[args.indexOf("--model") + 1];
+}
+
+test("AgentRunner relaunches the same task on the next fallback after quota exhaustion", async () => {
+	const { store, runner, children, spawnOptions } = harness();
+	const task = runner.run(request({ fallbacks: [FALLBACK_A, FALLBACK_B] }));
+	await tick();
+	assert.equal(modelArgument(spawnOptions[0].args), "openai-codex/gpt-5.6-terra:high");
+
+	settle(children[0], QUOTA_ERROR);
+	await tick();
+	await tick();
+
+	assert.equal(children.length, 2, "one replacement child, not one per remaining fallback");
+	assert.equal(modelArgument(spawnOptions[1].args), "provider-b/fallback-a:high", "the role's thinking level is preserved");
+	const running = store.get(task.id)!;
+	assert.equal(running.status, TASK_STATUS.RUNNING, "the task is not finished between attempts");
+	assert.equal(running.model, "provider-b/fallback-a");
+	assert.deepEqual(running.fallback, { reason: "provider quota exhausted", models: ["openai-codex/gpt-5.6-terra", "provider-b/fallback-a"] });
+	assert.equal(children[1].written.find((command) => command.type === "prompt")?.message, "Map the repo", "no session file to continue, so the same prompt is sent again");
+	assert.match(JSON.stringify(store.thread(task.id)), /fallback: openai-codex\/gpt-5.6-terra reported provider quota exhausted; restarting the task on provider-b\/fallback-a/);
+
+	settle(children[1], FINAL_REPORT);
+	const finished = await runner.waitFor(task.id);
+	assert.equal(finished.status, TASK_STATUS.COMPLETED);
+	assert.equal(finished.result, "fallback report");
+	assert.equal(finished.error, null);
+	assert.equal(finished.fallback?.models.at(-1), "provider-b/fallback-a", "the record names the model that completed the work");
+});
+
+test("AgentRunner continues the failed child's session on a fallback when the session file exists", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "gentle-fallback-"));
+	try {
+		const sessionFile = join(dir, "child.jsonl");
+		writeFileSync(sessionFile, "{}\n");
+		const { runner, children, spawnOptions } = harness({ state: { sessionFile } });
+		const task = runner.run(request({ fallbacks: [FALLBACK_A], context: "extra context" }));
+		await tick();
+		settle(children[0], QUOTA_ERROR);
+		await tick();
+		await tick();
+
+		const args = spawnOptions[1].args;
+		assert.equal(args[args.indexOf("--session") + 1], sessionFile);
+		assert.equal(modelArgument(args), "provider-b/fallback-a:high");
+		const prompt = String(children[1].written.find((command) => command.type === "prompt")?.message);
+		assert.match(prompt, /provider reported provider quota exhausted/);
+		assert.match(prompt, /Continue the task/);
+		assert.doesNotMatch(prompt, /extra context/, "the session already holds the task context");
+		assert.equal(runner.cancel(task.id), true);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("AgentRunner walks the fallback list in order and fails with the models tried when all are exhausted", async () => {
+	const { store, runner, children, spawnOptions } = harness();
+	const task = runner.run(request({ fallbacks: [FALLBACK_A, FALLBACK_B] }));
+	await tick();
+	for (let attempt = 0; attempt < 3; attempt += 1) {
+		settle(children[attempt], QUOTA_ERROR);
+		await tick();
+		await tick();
+	}
+
+	assert.equal(children.length, 3, "attempts are bounded by the configured list");
+	assert.deepEqual(spawnOptions.map((spawn) => modelArgument(spawn.args)), ["openai-codex/gpt-5.6-terra:high", "provider-b/fallback-a:high", "provider-c/fallback-b:high"]);
+	const failed = await runner.waitFor(task.id);
+	assert.equal(failed.status, TASK_STATUS.FAILED);
+	assert.match(failed.error ?? "", /every configured model is out of quota \(tried openai-codex\/gpt-5\.6-terra, provider-b\/fallback-a, provider-c\/fallback-b\)/);
+	assert.match(failed.error ?? "", /model_profiles/);
+	assert.equal(store.get(task.id)?.fallback?.models.length, 3);
+});
+
+test("AgentRunner does not fall back for rate limits, concurrency caps, generic errors or an empty list", async () => {
+	const scenarios = [
+		{ name: "concurrency limit", message: CONCURRENCY_ERROR, fallbacks: [FALLBACK_A] },
+		{ name: "generic error", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "WebSocket error" }, fallbacks: [FALLBACK_A] },
+		{ name: "error without a message", message: { role: "assistant", content: [], stopReason: "error" }, fallbacks: [FALLBACK_A] },
+		{ name: "quota without fallbacks", message: QUOTA_ERROR, fallbacks: [] },
+		{ name: "quota with no list at all", message: QUOTA_ERROR, fallbacks: undefined },
+	];
+	for (const scenario of scenarios) {
+		const { runner, children } = harness();
+		const task = runner.run(request({ fallbacks: scenario.fallbacks }));
+		await tick();
+		settle(children[0], scenario.message);
+		const failed = await runner.waitFor(task.id);
+		assert.equal(failed.status, TASK_STATUS.FAILED, scenario.name);
+		assert.equal(children.length, 1, `${scenario.name} must not relaunch`);
+		assert.equal(failed.fallback, undefined, scenario.name);
+		assert.doesNotMatch(failed.error ?? "", /out of quota/, scenario.name);
+	}
+});
+
+test("AgentRunner never relaunches a fallback after the task was cancelled while its child stopped", async () => {
+	const { runner, children } = harness({ exitOnKill: false });
+	const task = runner.run(request({ fallbacks: [FALLBACK_A] }));
+	await tick();
+	settle(children[0], QUOTA_ERROR);
+	await tick();
+	assert.equal(runner.cancel(task.id, "user cancelled"), true);
+	children[0].exit(0);
+	const finished = await runner.waitFor(task.id);
+	assert.equal(finished.status, TASK_STATUS.CANCELLED);
+	assert.equal(children.length, 1);
 });

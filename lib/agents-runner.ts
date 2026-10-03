@@ -125,6 +125,12 @@ export interface TaskRequest {
 	thinking: string | undefined;
 	sessionDir: string;
 	resumeSessionPath: string | undefined;
+	// Untried models for this role, in order. When the child settles failed with
+	// explicit provider quota exhaustion, the runner continues the same task on the
+	// next one, keeping the role's thinking level. Omitted means no fallback.
+	fallbacks?: ModelRef[];
+	// Runner-owned: every model this task has run on, in order. Set by a fallback.
+	attemptedModels?: string[];
 	env: NodeJS.ProcessEnv;
 	// Untrusted narrowing intent; paths come only from matching host provenance.
 	extensionPaths?: string[];
@@ -205,8 +211,14 @@ interface LiveTask {
 	// STDERR_TAIL_MAX characters. Only surfaced on the stall and pre-settle exit
 	// terminal paths, never on completed, cancelled, or other failure reasons.
 	stderrTail: string;
+	// The latest agent_end reported explicit quota exhaustion (a later successful
+	// retry inside the child clears it), and the request that replaces this child
+	// once it has exited. Set only at settlement.
+	quotaExhausted?: boolean;
+	fallback?: TaskRequest;
 }
 
+const FALLBACK_REASON = "provider quota exhausted";
 const STDERR_TAIL_MAX = 512;
 const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -419,7 +431,13 @@ export class AgentRunner {
 			this.finish(id, TASK_STATUS.CANCELLED, `${reason} before start`);
 			return true;
 		}
-		if (!this.live.has(id)) return false;
+		const live = this.live.get(id);
+		if (!live) return false;
+		// A child already stopping for a fallback must not be relaunched after this.
+		if (live.fallback) {
+			live.fallback = undefined;
+			if (live.terminal) live.terminal = { status: TASK_STATUS.CANCELLED, error: reason };
+		}
 		this.requestStop(id, TASK_STATUS.CANCELLED, reason, true);
 		return true;
 	}
@@ -804,10 +822,18 @@ export class AgentRunner {
 				}
 			}
 			if (event.type === TASK_EVENT.ASK) void this.answer(id, request, live, event.request, raw);
+			if (event.type === TASK_EVENT.AGENT_END) live.quotaExhausted = event.quotaExhausted === true;
 			if (event.type === TASK_EVENT.AGENT_SETTLED) {
 				if (live.observations) live.observations.agentSettled = true;
 				const terminal = this.store.get(id);
-				if (terminal?.error) this.requestStop(id, TASK_STATUS.FAILED, terminal.error);
+				if (terminal?.error) {
+					let error = terminal.error;
+					if (live.quotaExhausted) {
+						live.fallback = this.fallbackRequest(id, request);
+						if (!live.fallback && request.attemptedModels) error = `${error}; every configured model is out of quota (tried ${request.attemptedModels.join(", ")}). Top up credits or add another fallback in model_profiles`;
+					}
+					this.requestStop(id, TASK_STATUS.FAILED, error);
+				}
 				else if (terminal?.result) this.requestStop(id, TASK_STATUS.COMPLETED, null);
 				else this.requestStop(id, TASK_STATUS.FAILED, "assistant settled without a final report");
 			}
@@ -973,8 +999,45 @@ export class AgentRunner {
 			return;
 		}
 		const terminal = live.terminal;
+		if (live.fallback && terminal?.status === TASK_STATUS.FAILED) {
+			this.relaunchOnFallback(id, live.fallback);
+			return;
+		}
 		const exitDesc = formatChildExit(live.childExit, live.childExitSignal);
 		this.finish(id, terminal ? terminal.status : TASK_STATUS.FAILED, terminal ? terminal.error : `pi exited with ${exitDesc} before agent_settled${this.stderrSuffix(live)}`, live);
+	}
+
+	// The next route for a role whose model just exhausted its quota, or undefined
+	// when no fallback is left. Continuing the failed child's own session keeps the
+	// work it already did (files edited, tool results read) and the role's context,
+	// so the new model only gets a short nudge. A session file that never reached
+	// disk cannot be resumed; then the same prompt and context start over, which is
+	// safe because nothing was recorded to continue from. Thinking is never touched.
+	private fallbackRequest(id: string, request: TaskRequest): TaskRequest | undefined {
+		const [model, ...rest] = request.fallbacks ?? [];
+		if (!model) return undefined;
+		const session = this.store.get(id)?.sessionPath;
+		const resumed = session && existsSync(session) ? session : undefined;
+		return {
+			...request,
+			model,
+			fallbacks: rest,
+			attemptedModels: [...(request.attemptedModels ?? [formatModelRef(request.model)]), formatModelRef(model)],
+			...(resumed ? { resumeSessionPath: resumed, prompt: `The previous model stopped because its provider reported ${FALLBACK_REASON}. You are now ${formatModelRef(model)}. Continue the task from where the conversation stopped and do not redo finished work.`, context: undefined } : {}),
+			// The first launch already registered the worktree and opened telemetry.
+			onLaunch: undefined,
+			prepareResponseObservations: undefined,
+			canCollectResponseObservations: undefined,
+			collectResponseObservations: false,
+		};
+	}
+
+	private relaunchOnFallback(id: string, next: TaskRequest): void {
+		const models = next.attemptedModels ?? [];
+		const mode = next.resumeSessionPath ? "continuing the same session" : "restarting the task";
+		this.store.update(id, { model: formatModelRef(next.model), result: null, error: null, endedAt: null, fallback: { reason: FALLBACK_REASON, models: [...models] } });
+		this.store.apply(id, { type: TASK_EVENT.NOTE, text: `fallback: ${models[models.length - 2]} reported ${FALLBACK_REASON}; ${mode} on ${models[models.length - 1]}` }, this.deps.now());
+		this.launch(id, next);
 	}
 
 	private finish(id: string, status: TaskRecord["status"], error: string | null, live?: LiveTask): void {

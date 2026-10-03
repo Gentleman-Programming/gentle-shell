@@ -263,12 +263,22 @@ function taskDetails(task: TaskRecord): Record<string, unknown> {
 export function describeTask(task: TaskRecord): string {
 	const head = `${task.id} · ${task.agent} · ${task.status} · ${task.mode}`;
 	const detail = task.error ? `\n${task.error}` : "";
-	return `${head} · cwd: ${task.cwd} · ${task.turns} turns · ${task.toolCalls} tool calls · last: ${task.lastStep}${detail}`;
+	return `${head} · cwd: ${task.cwd} · ${task.turns} turns · ${task.toolCalls} tool calls · last: ${task.lastStep}${fallbackSuffix(task)}${detail}`;
+}
+
+// Which model really did the work after a role fallback, and why it moved.
+function fallbackNote(task: TaskRecord): string {
+	return task.fallback ? `fallback: ${task.fallback.models.join(" -> ")} (${task.fallback.reason})` : "";
+}
+
+function fallbackSuffix(task: TaskRecord): string {
+	return task.fallback ? ` · ${fallbackNote(task)}` : "";
 }
 
 function finishedText(task: TaskRecord): string {
-	if (task.status === "completed") return task.result ?? "(the subagent returned no text)";
-	return `Subagent ${task.agent} ${task.status}${task.error ? `: ${task.error}` : ""}${task.result ? `\n\nLast answer:\n${task.result}` : ""}`;
+	const note = task.fallback ? `\n\n[${fallbackNote(task)}]` : "";
+	if (task.status === "completed") return `${task.result ?? "(the subagent returned no text)"}${note}`;
+	return `Subagent ${task.agent} ${task.status}${task.error ? `: ${task.error}` : ""}${task.result ? `\n\nLast answer:\n${task.result}` : ""}${note}`;
 }
 
 // pi's keybinding hint needs a live theme; outside one (tests, headless) the
@@ -1373,6 +1383,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			...(target === undefined || foreign ? {} : { onLaunch: () => { registry.register(target, "subagent:spawn"); } }),
 			model: profile.model,
 			thinking: profile.thinking,
+			...(profile.fallbacks === undefined ? {} : { fallbacks: profile.fallbacks }),
 			sessionDir,
 			resumeSessionPath: resume,
 			...(deps.childExtensionPaths && deps.childExtensionPaths.length > 0 ? { extensionPaths: [...deps.childExtensionPaths] } : {}),

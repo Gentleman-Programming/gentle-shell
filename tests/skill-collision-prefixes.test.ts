@@ -6,12 +6,16 @@ import { __testing } from "../extensions/skill-registry.ts";
 
 const repoRoot = join(import.meta.dirname, "..");
 
+/**
+ * Reads and extracts the skill name from the frontmatter of a given skill directory.
+ */
 function readSkillName(dir: string): string | undefined {
 	const source = readFileSync(join(repoRoot, "skills", dir, "SKILL.md"), "utf8");
 	return __testing.parseFrontmatter(source).name;
 }
 
 const PREFIXED_NAMES: Record<string, string> = {
+	"audio-notifications": "gentle-ai-audio-notifications",
 	"branch-pr": "gentle-ai-branch-pr",
 	"chained-pr": "gentle-ai-chained-pr",
 	"cognitive-doc-design": "gentle-ai-cognitive-doc-design",

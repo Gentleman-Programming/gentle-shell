@@ -4,6 +4,7 @@ import { execFile, spawnSync } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { profilesFilePath, profileRoleEntries, readProfilesFileResult } from "../lib/agent-profiles.ts";
+import { readSessionProfileBinding } from "../lib/session-profile-binding.ts";
 import { resolveProfilePin } from "../lib/agent-profile-pin.ts";
 import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -161,7 +162,7 @@ export interface ShellDeps {
 }
 
 export type ActiveProfileReader = (() => string | undefined) & {
-	bind(cwd: string, resolveWorktree: WorktreeResolver): boolean;
+	bind(cwd: string, resolveWorktree: WorktreeResolver, sessionId?: string): boolean;
 	refresh(): boolean;
 	reset(): void;
 };
@@ -175,6 +176,7 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 	let bound = false;
 	let cwd: string | undefined;
 	let identity: WorktreeIdentity | undefined;
+	let sessionId: string | undefined;
 	let effective: string | undefined;
 	const global = () => {
 		try {
@@ -195,6 +197,17 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 	const reader = (() => bound ? effective : global()) as ActiveProfileReader;
 	reader.refresh = () => {
 		if (!bound) return false;
+		// gentle-shell#1064 slice 1: a parent-session profile binding outranks
+		// both the pin layers and the global active profile, with the same
+		// "name (scope)" spelling the pin uses. The shared precedence rule lives
+		// in one place: session → p (local pin) → P (repo declaration) → global.
+		const session = sessionId === undefined ? undefined : readSessionProfileBinding(sessionId);
+		if (session !== undefined) {
+			const next = `${session.name} (session)`;
+			const changed = next !== effective;
+			effective = next;
+			return changed;
+		}
 		const pin = identity && cwd ? resolveProfilePin({
 			cwd,
 			configHome: env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai"),
@@ -205,14 +218,15 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 		effective = next;
 		return changed;
 	};
-	reader.bind = (nextCwd, resolveWorktree) => {
+	reader.bind = (nextCwd, resolveWorktree, nextSessionId) => {
 		reader.reset();
 		cwd = nextCwd;
+		sessionId = nextSessionId;
 		try { identity = resolveWorktree(nextCwd, nextCwd); } catch { identity = undefined; }
 		bound = true;
 		return reader.refresh();
 	};
-	reader.reset = () => { bound = false; cwd = undefined; identity = undefined; effective = undefined; };
+	reader.reset = () => { bound = false; cwd = undefined; identity = undefined; sessionId = undefined; effective = undefined; };
 	return reader;
 }
 
@@ -1480,10 +1494,13 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	// store and the profile reader cannot drift onto two different stores.
 	const usageConfigHome = gentlePiConfigHome(env);
 	const usageFetchTimeout = usageFetchTimeoutMs(env);
-	// The subagent routing in force for this session: a repository pin first,
-	// then the global active profile. Only the profile's own role entries count;
-	// the reserved orchestrator key is not a route.
+	// The subagent routing in force for this session: a session binding first
+	// (gentle-shell#1064 slice 1), then a repository pin, then the global active
+	// profile. Only the profile's own role entries count; the reserved
+	// orchestrator key is not a route.
 	const activeRoutingModels = (ctx: ExtensionContext): Array<string | undefined> => {
+		const session = readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.modelProfiles;
+		if (session) return [...profileRoleEntries(session).map(([, entry]) => entry.model)];
 		const pin = resolveProfilePin({ cwd: ctx.cwd, configHome: usageConfigHome, resolveWorktree: deps.resolveWorktree });
 		const config = pin ? pin.modelProfiles : undefined;
 		if (config) return [...profileRoleEntries(config).map(([, entry]) => entry.model)];
@@ -1774,7 +1791,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		if (!ctx.hasUI) return;
 		visualSettings = resolveVisualSettings(animationOptions).settings;
 		if (!overrides.activeProfile) {
-			profileReader.bind(ctx.cwd, deps.resolveWorktree);
+			profileReader.bind(ctx.cwd, deps.resolveWorktree, ctx.sessionManager.getSessionId());
 			const sessionId = ctx.sessionManager.getSessionId();
 			profilePoll = setInterval(() => {
 				if (currentContext !== ctx || ctx.sessionManager.getSessionId() !== sessionId) return;

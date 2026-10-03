@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { captureNodeTestExecution } from "../lib/security-execution-receipt.ts";
+import { captureNodeTestExecution, validateExecutionReceipt } from "../lib/security-execution-receipt.ts";
 
 function writeTemp(dir: string, name: string, content: string): string {
 	const file = path.join(dir, name);
@@ -206,4 +206,122 @@ test("A1: regression scenarios (global error, drift, spoof, loud buffer, leading
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+const SHA = "a".repeat(64);
+const TS = new Date().toISOString();
+const UUID = "00000000-0000-4000-8000-000000000000";
+const ABS = "/abs/path/test.js";
+
+function baseGreen(): Record<string, unknown> {
+	return {
+		id: UUID, timestamp: TS, runner: "node:test", supported: true,
+		callerMetadata: {}, targetedTest: { file: ABS, testName: "t" },
+		provenance: { testContentSha256: SHA, postTestContentSha256: SHA, observedRevision: "unavailable" },
+		processExit: { code: 0, signal: null },
+		execution: { observedOutcome: "pass", eventsObserved: 1, truncated: false },
+		verdict: { isAssertionRed: false, isGreen: false, failClosed: true, validationState: "unvalidated_capture" },
+	};
+}
+
+function baseRed(): Record<string, unknown> {
+	return {
+		id: UUID, timestamp: TS, runner: "node:test", supported: true,
+		callerMetadata: {}, targetedTest: { file: ABS, testName: "t" },
+		provenance: { testContentSha256: SHA, postTestContentSha256: SHA, observedRevision: "unavailable" },
+		processExit: { code: 1, signal: null },
+		execution: {
+			observedOutcome: "fail_assertion", eventsObserved: 1, truncated: false,
+			failureType: "testCodeFailure",
+			assertionFailure: { code: "ERR_ASSERTION", operator: "strictEqual", actual: "a", expected: "b" },
+		},
+		verdict: { isAssertionRed: false, isGreen: false, failClosed: true, validationState: "unvalidated_capture" },
+	};
+}
+
+function invalid(r: unknown, label: string) {
+	const v = validateExecutionReceipt(r);
+	assert.equal(v.isValid, false, `${label}: isValid`);
+	assert.equal(v.isGreen, false, `${label}: isGreen`);
+	assert.equal(v.isAssertionRed, false, `${label}: isAssertionRed`);
+	assert.equal(v.failClosed, true, `${label}: failClosed`);
+	assert.equal(v.validationState, "invalid", `${label}: validationState`);
+	assert.ok(typeof v.failureReason === "string" && v.failureReason.length > 0, `${label}: failureReason`);
+}
+
+test("A2: strict validation of execution receipts - valid green and red, fail-closed rejections", () => {
+	// Valid GREEN
+	const g = validateExecutionReceipt(baseGreen());
+	assert.equal(g.isValid, true, "green isValid");
+	assert.equal(g.isGreen, true, "green isGreen");
+	assert.equal(g.isAssertionRed, false, "green isAssertionRed");
+	assert.equal(g.failClosed, false, "green failClosed");
+	assert.equal(g.validationState, "valid_green", "green validationState");
+	assert.equal(g.failureReason, undefined, "green failureReason");
+
+	// Valid GREEN with sourceFile hashes
+	const gSrc = validateExecutionReceipt({ ...baseGreen(), provenance: { ...baseGreen().provenance as object, sourceContentSha256: SHA, postSourceContentSha256: SHA } });
+	assert.equal(gSrc.isValid, true, "green+src isValid");
+	assert.equal(gSrc.validationState, "valid_green", "green+src validationState");
+
+	// Valid RED
+	const red = validateExecutionReceipt(baseRed());
+	assert.equal(red.isValid, true, "red isValid");
+	assert.equal(red.isGreen, false, "red isGreen");
+	assert.equal(red.isAssertionRed, true, "red isAssertionRed");
+	assert.equal(red.failClosed, false, "red failClosed");
+	assert.equal(red.validationState, "valid_red", "red validationState");
+	assert.equal(red.failureReason, undefined, "red failureReason");
+
+	// --- Fail-closed rejections ---
+	// Malformed / unsupported
+	invalid(null, "null");
+	invalid(undefined, "undefined");
+	invalid(42, "non-object");
+	invalid({ ...baseGreen(), supported: false }, "supported=false");
+	invalid({ ...baseGreen(), runner: "jest" }, "wrong runner");
+	invalid({ ...baseGreen(), id: "not-a-uuid" }, "bad id");
+	invalid({ ...baseGreen(), id: undefined }, "missing id");
+	invalid({ ...baseGreen(), timestamp: "not-a-date" }, "bad timestamp");
+	invalid({ ...baseGreen(), timestamp: undefined }, "missing timestamp");
+
+	// Missing / non-absolute test file, empty testName
+	invalid({ ...baseGreen(), targetedTest: { file: "relative/path.js", testName: "t" } }, "relative file");
+	invalid({ ...baseGreen(), targetedTest: { file: ABS, testName: "" } }, "empty testName");
+	invalid({ ...baseGreen(), targetedTest: undefined }, "missing targetedTest");
+
+	// Hash instability / drift
+	invalid({ ...baseGreen(), provenance: { testContentSha256: SHA, postTestContentSha256: "b".repeat(64), observedRevision: "unavailable" } }, "pre/post test sha mismatch");
+	invalid({ ...baseGreen(), provenance: { testContentSha256: "unavailable", postTestContentSha256: "unavailable", observedRevision: "unavailable" } }, "test sha unavailable");
+	invalid({ ...baseGreen(), provenance: { testContentSha256: SHA, postTestContentSha256: SHA, sourceContentSha256: SHA, postSourceContentSha256: "b".repeat(64), observedRevision: "unavailable" } }, "src sha mismatch");
+	invalid({ ...baseGreen(), provenance: { testContentSha256: SHA, postTestContentSha256: SHA, sourceContentSha256: "unavailable", postSourceContentSha256: "unavailable", observedRevision: "unavailable" } }, "src sha unavailable");
+
+	// SHA format invalid
+	invalid({ ...baseGreen(), provenance: { testContentSha256: "zz", postTestContentSha256: "zz", observedRevision: "unavailable" } }, "sha bad format");
+
+	// Truncated capture
+	invalid({ ...baseGreen(), execution: { ...baseGreen().execution as object, truncated: true } }, "truncated");
+
+	// Zero events
+	invalid({ ...baseGreen(), execution: { ...baseGreen().execution as object, eventsObserved: 0 } }, "zero events");
+	invalid({ ...baseGreen(), execution: { ...baseGreen().execution as object, eventsObserved: -1 } }, "negative events");
+
+	// Process exit anomalies
+	invalid({ ...baseGreen(), processExit: { code: null, signal: null } }, "exitCode null GREEN");
+	invalid({ ...baseGreen(), processExit: { code: 0, signal: "SIGKILL" } }, "signal SIGKILL GREEN");
+	invalid({ ...baseGreen(), processExit: { code: 1, signal: null } }, "GREEN exitCode!=0");
+	invalid({ ...baseRed(), processExit: { code: 0, signal: null } }, "RED exitCode==0");
+	invalid({ ...baseRed(), processExit: { code: null, signal: null } }, "RED exitCode null");
+	invalid({ ...baseRed(), processExit: { code: 1, signal: "SIGTERM" } }, "signal SIGTERM RED");
+
+	// Rejected observedOutcomes
+	for (const outcome of ["skipped", "unmatched", "timeout", "aborted", "fail_setup", "error"]) {
+		invalid({ ...baseGreen(), execution: { ...baseGreen().execution as object, observedOutcome: outcome } }, `outcome=${outcome}`);
+	}
+
+	// RED missing/wrong assertionFailure or failureType
+	invalid({ ...baseRed(), execution: { ...(baseRed().execution as Record<string, unknown>), assertionFailure: undefined } }, "RED no assertionFailure");
+	invalid({ ...baseRed(), execution: { ...(baseRed().execution as Record<string, unknown>), assertionFailure: { code: "ERR_OTHER" } } }, "RED wrong code");
+	invalid({ ...baseRed(), execution: { ...(baseRed().execution as Record<string, unknown>), failureType: "hookFailed" } }, "RED wrong failureType");
+	invalid({ ...baseRed(), execution: { ...(baseRed().execution as Record<string, unknown>), failureType: undefined } }, "RED missing failureType");
 });

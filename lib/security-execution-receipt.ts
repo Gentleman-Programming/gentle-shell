@@ -48,6 +48,79 @@ export interface SecurityExecutionReceipt {
 	verdict: { isAssertionRed: false; isGreen: false; failClosed: true; validationState: "unvalidated_capture" };
 }
 
+export type ValidatedReceiptState = "valid_green" | "valid_red" | "invalid";
+
+export interface ValidatedExecutionReceipt {
+	receipt: SecurityExecutionReceipt | null;
+	isValid: boolean;
+	isGreen: boolean;
+	isAssertionRed: boolean;
+	failClosed: boolean;
+	validationState: ValidatedReceiptState;
+	failureReason?: string;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SHA256_RE = /^[0-9a-f]{64}$/i;
+
+function isValidSha(sha: unknown): sha is string { return SHA256_RE.test(sha as string); }
+
+function invalidResult(failureReason: string): ValidatedExecutionReceipt {
+	return { receipt: null, isValid: false, isGreen: false, isAssertionRed: false, failClosed: true, validationState: "invalid", failureReason };
+}
+
+export function validateExecutionReceipt(receipt: unknown): ValidatedExecutionReceipt {
+	if (receipt === null || typeof receipt !== "object") return invalidResult("Malformed or non-object receipt");
+	const r = receipt as Record<string, unknown>;
+
+	if (r["supported"] !== true) return invalidResult("Unsupported receipt");
+	if (r["runner"] !== "node:test") return invalidResult("Unsupported runner");
+	if (typeof r["id"] !== "string" || !UUID_RE.test(r["id"])) return invalidResult("Invalid receipt id");
+	const ts = r["timestamp"];
+	if (typeof ts !== "string" || Number.isNaN(Date.parse(ts))) return invalidResult("Invalid timestamp");
+
+	const tt = r["targetedTest"] as Record<string, unknown> | undefined;
+	if (!tt || typeof tt !== "object") return invalidResult("Invalid targeted test binding");
+	if (typeof tt["file"] !== "string" || !path.isAbsolute(tt["file"] as string)) return invalidResult("Invalid targeted test binding");
+	if (typeof tt["testName"] !== "string" || (tt["testName"] as string).length === 0) return invalidResult("Invalid targeted test binding");
+
+	const prov = r["provenance"] as Record<string, unknown> | undefined;
+	if (!prov || typeof prov !== "object") return invalidResult("Invalid or drifted content hash");
+	const { testContentSha256: tSha, postTestContentSha256: ptSha, sourceContentSha256: sSha, postSourceContentSha256: psSha } = prov as Record<string, unknown>;
+	if (!isValidSha(tSha) || !isValidSha(ptSha) || tSha !== ptSha) return invalidResult("Invalid or drifted content hash");
+	if (sSha !== undefined || psSha !== undefined) {
+		if (!isValidSha(sSha) || !isValidSha(psSha) || sSha !== psSha) return invalidResult("Invalid or drifted content hash");
+	}
+
+	const exec = r["execution"] as Record<string, unknown> | undefined;
+	if (!exec || typeof exec !== "object") return invalidResult("Incomplete test execution events");
+	if (exec["truncated"] === true) return invalidResult("Execution output truncated");
+	if (typeof exec["eventsObserved"] !== "number" || (exec["eventsObserved"] as number) <= 0) return invalidResult("Incomplete test execution events");
+
+	const pe = r["processExit"] as Record<string, unknown> | undefined;
+	if (!pe || typeof pe !== "object") return invalidResult("Process exit code missing or invalid");
+	if ((pe["signal"] as unknown) !== null) return invalidResult("Process terminated by signal");
+	if (typeof pe["code"] !== "number") return invalidResult("Process exit code missing or invalid");
+
+	const outcome = exec["observedOutcome"] as string;
+	const typed = r as unknown as SecurityExecutionReceipt;
+
+	if (outcome === "pass") {
+		if (pe["code"] !== 0) return invalidResult("Pass outcome requires exit code 0");
+		return { receipt: typed, isValid: true, isGreen: true, isAssertionRed: false, failClosed: false, validationState: "valid_green" };
+	}
+
+	if (outcome === "fail_assertion") {
+		if (pe["code"] === 0) return invalidResult("Assertion failure outcome requires non-zero exit code");
+		if (exec["failureType"] !== "testCodeFailure") return invalidResult("Assertion failure requires testCodeFailure");
+		const af = exec["assertionFailure"] as Record<string, unknown> | undefined;
+		if (!af || af["code"] !== "ERR_ASSERTION") return invalidResult("Assertion failure requires ERR_ASSERTION");
+		return { receipt: typed, isValid: true, isGreen: false, isAssertionRed: true, failClosed: false, validationState: "valid_red" };
+	}
+
+	return invalidResult(`Unacceptable outcome: ${outcome}`);
+}
+
 export default async function* customReporter(source: AsyncIterable<any>) {
 	for await (const ev of source) {
 		const t = ev?.type;

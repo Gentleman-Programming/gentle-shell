@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { resolveAskPanelPreferences } from "../lib/ask-panel-policy.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { type QuestionData, type QuestionParams, QuestionParamsSchema } from "../lib/questionnaire/schema.ts";
 import {
@@ -276,6 +277,9 @@ export default function askUserQuestion(pi: ExtensionAPI): void {
 			}
 
 			let selection: QuestionnaireResult | undefined;
+			// Resolve the panel preferences once per invocation; the factory below
+			// reads the terminal height each time the view is mounted.
+			const panelPreferences = resolveAskPanelPreferences();
 			try {
 				pi.events.emit(ASK_USER_QUESTION_BLOCKED_EVENT, { active: true });
 				selection = await ctx.ui.custom<QuestionnaireResult>((tui, theme, keybindings, done) => {
@@ -283,6 +287,8 @@ export default function askUserQuestion(pi: ExtensionAPI): void {
 						questions: params.questions,
 						theme,
 						keybindings,
+						preferences: panelPreferences.preferences,
+						terminalRows: tui.terminal?.rows,
 						onComplete: (result) => done(result),
 					});
 					// Native dock swap, never an overlay: the transcript stays scrollable

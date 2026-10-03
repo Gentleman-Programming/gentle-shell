@@ -1,4 +1,4 @@
-import { CustomEditor, keyHint, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
+import { CustomEditor, keyHint, keyText, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { Editor, decodeKittyPrintable, isKeyRelease, matchesKey, parseKey, truncateToWidth, visibleWidth, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 import { execFile, spawnSync } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
@@ -13,6 +13,7 @@ import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver, type WorktreeIdentity } from "../lib/session-worktree-registry.ts";
 import { CARD_STYLE, CARD_TONE, cardStyle, renderCard, setCardStyle, type Card, type CardTheme } from "../lib/shell-card.ts";
 import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
+import { ASK_PANEL_DEFAULT_STATE, ASK_PANEL_INDICATOR, resolveAskPanelPreferences, writeAskPanelPreferences, type AskPanelPreferences } from "../lib/ask-panel-policy.ts";
 import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/command-palette.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { discoverYoloUiAdapter, YOLO_DISPLAY, type YoloDisplay, type YoloUiAdapter } from "../lib/yolo-session-policy.ts";
@@ -2159,6 +2160,55 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					requestCustomizeRender?.();
 				},
 				() => ({ title: `Cards · ${style}`, sample: `${cardStylePreview[style]}${resolveCardStyle(home).malformed ? " · malformed or unreadable file" : ""}` }),
+			);
+			category = "Ask";
+			// The questionnaire panel preferences live in one file and each row
+			// preserves the value the other one saved; the writer refuses a
+			// malformed or unreadable file so a hand edit is never lost. The value is
+			// resolved on every render, like the other rows in this view, so a hand
+			// edit or another session is never shown stale.
+			const askPanel = () => resolveAskPanelPreferences(home);
+			const askDefaultStateCycle = [ASK_PANEL_DEFAULT_STATE.EXPANDED, ASK_PANEL_DEFAULT_STATE.AUTO, ASK_PANEL_DEFAULT_STATE.COLLAPSED] as const;
+			const askIndicatorCycle = [ASK_PANEL_INDICATOR.MINIMAL, ASK_PANEL_INDICATOR.TABBED, ASK_PANEL_INDICATOR.ANSWERS] as const;
+			const cycleAsk = <T,>(values: readonly T[], current: T): T => values[(values.indexOf(current) + 1) % values.length]!;
+			// The panel names the toggle with the resolved binding, so the previews have
+			// to show the same one instead of assuming the default.
+			const askPanelToggle = () => keyText("app.tools.expand");
+			const askPanelBar = () => `▸ 1/3 · Preferred channel · 4 options · ${askPanelToggle()} expand · esc cancel`;
+			const askPanelMalformed = () => askPanel().malformed ? " · malformed or unreadable file" : "";
+			add(
+				() => `Ask panel: default state · ${askPanel().preferences.defaultState}`,
+				"Ask panel saved. Applies to the next questionnaire.",
+				() => {
+					const current = askPanel().preferences;
+					const next: AskPanelPreferences = { ...current, defaultState: cycleAsk(askDefaultStateCycle, current.defaultState) };
+					writeAskPanelPreferences(next, home);
+					requestCustomizeRender?.();
+				},
+				() => {
+					const state = askPanel().preferences.defaultState;
+					const meaning = state === ASK_PANEL_DEFAULT_STATE.EXPANDED ? "expanded · full question body (today's default)"
+						: state === ASK_PANEL_DEFAULT_STATE.AUTO ? "auto · minimizes only when the body would not fit the terminal"
+							: "collapsed · always starts as the bar";
+					return { title: `Ask panel · default state: ${state}`, sample: `${state === ASK_PANEL_DEFAULT_STATE.EXPANDED ? meaning : `${meaning} · ${askPanelBar()}`}${askPanelMalformed()}` };
+				},
+			);
+			add(
+				() => `Ask panel: minimized indicator · ${askPanel().preferences.indicator}`,
+				"Ask panel saved. Applies to the next questionnaire.",
+				() => {
+					const current = askPanel().preferences;
+					const next: AskPanelPreferences = { ...current, indicator: cycleAsk(askIndicatorCycle, current.indicator) };
+					writeAskPanelPreferences(next, home);
+					requestCustomizeRender?.();
+				},
+				() => {
+					const indicator = askPanel().preferences.indicator;
+					const sample = indicator === ASK_PANEL_INDICATOR.MINIMAL ? askPanelBar()
+						: indicator === ASK_PANEL_INDICATOR.TABBED ? `1/3 ✓ · 2/3 · ▸ minimized · ${askPanelToggle()} expand · esc cancel`
+							: `▸ 1/3 · Preferred channel · answered: Alpha, Beta · ${askPanelToggle()} expand`;
+					return { title: `Ask panel · minimized indicator: ${indicator}`, sample: `${sample}${askPanelMalformed()}` };
+				},
 			);
 			category = "Sections";
 			for (const key of VISUAL_SECTION_KEYS) add(

@@ -264,11 +264,10 @@ Every other argument is forwarded to pi unchanged, for example `gentle-shell --m
 
 ### Path B: inside an existing pi
 
-Install the stable release into an existing pi agent, restart Pi, then synchronize the installed assets.
+Install the current release into an existing pi agent, restart Pi, then synchronize the installed assets.
 
 ```bash
-# Published stable release: v3.5.1
-pi install npm:gentle-pi@3.5.1
+pi install npm:gentle-pi
 
 # Restart Pi, then run:
 gentle-ai sync
@@ -277,7 +276,9 @@ gentle-ai sync
 pi
 ```
 
-See the [v3.5.1 release notes](https://github.com/Gentleman-Programming/gentle-shell/releases/tag/v3.5.1) for version-specific changes.
+This installs the current npm release and follows later releases with `pi update --extensions`. Pin an explicit version (for example `pi install npm:gentle-pi@3.5.1`) only when you need a reproducible install. A pinned install stays on that release, `pi update --extensions` will not move it, so to upgrade a pinned install reinstall without the version.
+
+See the [published releases](https://github.com/Gentleman-Programming/gentle-shell/releases) for version-specific changes.
 
 ### NaN model provider
 

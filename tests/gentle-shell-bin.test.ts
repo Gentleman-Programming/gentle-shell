@@ -30,6 +30,23 @@ const binUrl = new URL("../bin/gentle-shell.mjs", import.meta.url);
 const binPath = fileURLToPath(binUrl);
 const packageRoot = dirname(dirname(binPath));
 
+test("Herdr activity is discoverable through the isolated launcher package", async () => {
+	const { buildPiInvocation } = await import("../lib/gentle-shell-launcher.ts");
+	const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
+	assert.ok(manifest.pi.extensions.includes("./extensions"));
+	assert.ok(existsSync(join(packageRoot, "extensions", "gentle-herdr-activity.ts")));
+	for (const takeOver of [false, true]) {
+		const invocation = buildPiInvocation({
+			runtime: { kind: "path", command: "fake-pi", args: [] },
+			home: { mode: "isolated", source: "default", dir: "/fake/home" },
+			packageRoot, declaration: undefined, takeOver, otherPackagePaths: [],
+			passthrough: [], baseEnv: {}, homedir: "/fake",
+		});
+		assert.ok(invocation.args.includes(packageRoot));
+		assert.equal(invocation.env.PI_CODING_AGENT_DIR, "/fake/home");
+	}
+});
+
 test("real adjacent Pi resolves through its public entry without PATH or a runtime override", (t) => {
 	const f = fixture(t);
 	const result = spawnSync(process.execPath, [binPath, "--version"], {

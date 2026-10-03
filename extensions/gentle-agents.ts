@@ -1202,10 +1202,22 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (isGenericBoundedWriter(agent.name) && !current()) throw new Error("Writer session Git authority changed before admission.");
 		let admittedModel: string | undefined;
 		const surfaces = allowedEditSurfaces(prompt, context);
+		// gentle-shell#1064 slice 2: the binding is read once per task request,
+		// before admission, so the admitted model and the launch routing resolve
+		// the same session layer and can never disagree about it (#1558: a bound
+		// session used to kill its own non-git writer mid-preparation because
+		// admission still read only the pin/global layers).
+		const sessionBinding = readSessionProfileBinding(ctx.sessionManager.getSessionId());
 		if (!resume && isGenericBoundedWriter(agent.name) && surfaces?.some(isDevelopmentSurface) && !deps.resolveWorktree(originalCwd, originalCwd) && repositoryRoot === undefined) {
 			const root = safeBootstrapDirectory(originalCwd);
 			if (!root || (workspaceRoot !== undefined && (!isAbsolute(workspaceRoot) || safeBootstrapDirectory(workspaceRoot) !== root))) throw new Error("Writer bootstrap requires the original safe project root.");
-			const config = withPinnedModelProfiles(loadAgentsConfig(roots(ctx)), resolveUnversionedProjectProfile(root, gentlePiConfigHome(deps.env))?.modelProfiles);
+			const config = withPinnedModelProfiles(
+				loadAgentsConfig(roots(ctx)),
+				sessionOrPinModelProfiles(
+					sessionBinding?.modelProfiles,
+					resolveUnversionedProjectProfile(root, gentlePiConfigHome(deps.env))?.modelProfiles,
+				),
+			);
 			const model = resolveAgentProfile(agent, config).model ?? ctx.model;
 			const catalogModel = model?.provider ? ctx.modelRegistry?.find(model.provider, model.id) : ctx.modelRegistry?.getAll().find(candidate => candidate.id === model?.id);
 			if (!catalogModel) throw new Error("Writer bootstrap requires a valid effective model in this session's catalog.");
@@ -1255,7 +1267,6 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// with the same wholesale-replacement contract as the pin. The binding is
 		// resolved here, at task-request creation, so queued and running children
 		// keep the routing frozen into their requests even if the session rebinds.
-		const sessionBinding = readSessionProfileBinding(ctx.sessionManager.getSessionId());
 		const config = withPinnedModelProfiles(
 			loadAgentsConfig(roots(ctx)),
 			sessionOrPinModelProfiles(

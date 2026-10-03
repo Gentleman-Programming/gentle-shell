@@ -21,7 +21,7 @@ Issue: #1064 (slice 2, PR #1558). Reviewer: barbatdev (2026-10-03 19:21 UTC) —
 1. [x] RED→GREEN: writer-admission regression test + admission fix (`extensions/gentle-agents.ts`).
 2. [x] Launch-seam tests: session-over-pin + queue freeze under rebind.
 3. [x] Focused checks (full `gentle-agents.test.ts`, typecheck), work-unit commits, push.
-4. [ ] RDD review lifecycle for the candidate (inspect → start → capture → acknowledge).
+4. [x] RDD review lifecycle for the candidate (inspect → start → capture → acknowledge).
 
 ## Evidence
 
@@ -31,3 +31,6 @@ Issue: #1064 (slice 2, PR #1558). Reviewer: barbatdev (2026-10-03 19:21 UTC) —
 ## Out of scope
 
 - Follow-up #1064 slices (reload/edit/delete semantics, orchestrator/default handling, lens routing, resume persistence, store-write hardening).
+
+- RDD: lineage review-7bd1feb74621ae95, tier medium (lens review-reliability), closed **approved** and acknowledged; advisory follow-ups: catalog-miss branch untested (gentle-agents.ts:1214-1220), stale launch-seam binding comment (:1267-1269).
+- Docs commit: bd15da867.

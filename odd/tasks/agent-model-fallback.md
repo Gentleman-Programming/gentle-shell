@@ -14,8 +14,8 @@ The user explicitly selected automatic fallback, not replacement of primary mode
 
 ## Tasks
 - [x] FB-1: Recorded installed SDK routing evidence and constraints in commit `19f2a196`.
-- [/] FB-2: Implement and test bounded provider-error eligibility and one-fallback-attempt policy. First source work unit; no activation yet.
-- [ ] FB-3: Integrate and verify in-process reviewer fallback while preserving native bindings and actual model attribution.
+- [x] FB-2: Implement and test bounded provider-error eligibility and one-fallback-attempt policy. First source work unit approved and acknowledged; no activation yet.
+- [/] FB-3: Integrate and verify in-process reviewer fallback while preserving native bindings and actual model attribution; read-only mapping underway.
 - [ ] FB-4: Integrate safe child/parent fallback and activate authorized routes only after same-session/no-replay tests; report unsupported cases.
 
 ## SDK evidence and constraints
@@ -32,3 +32,4 @@ The user explicitly selected automatic fallback, not replacement of primary mode
 - Independent verifier `musjf3fg-t-ydeh`: fresh 5/5 PASS; package 156 files/69 pinned artifacts; staged/base whitespace clean; complete slice 359 lines before this passive evidence update. Current tests cover every previously named category; the prior uncommitted test formatting cannot be independently reconstructed.
 - Native START for hardened policy was blocked by expired consent `2c04688d-2c62-4eae-93e5-9135006a9474`: no lineage, no authority mutation, neither approval nor decline. FB-2 closure remains pending a fresh human consent/disposition.
 - Local policy work-unit commit: `ffbf2efb` (`feat(agents): add bounded Gemini fallback policy`). Functional checks pass, but this is not native approval or runtime activation. No push, PR, or merge; FB-3/FB-4 remain unimplemented.
+- Subsequent bounded native review `review-01d1697f5a239fc7` approved and exact acknowledgement burned target `sha256:84340f408d26fd5ae361ec6c4f6a7cda5d87a7842581870026e79d1b64b55133` (338 review lines; base `19f2a1965701b600c066d2d8a34987a682a24ec0`). FB-2 is closed; previous expired consent is historical. Runtime integration remains pending. Next reviewer unit must use a new stacked branch, excluding this policy slice.

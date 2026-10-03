@@ -269,7 +269,7 @@ function candidateRepository(t: test.TestContext): string {
 	writeFileSync(join(cwd, "tracked.txt"), "base\n");
 	git("add", "tracked.txt");
 	git("-c", "user.name=Routing Test", "-c", "user.email=routing@example.invalid", "commit", "-m", "base");
-	return realpathSync(cwd);
+	return realpathSync(git("rev-parse", "--show-toplevel").trim());
 }
 
 test("approved acknowledgement burn tears down the retained candidate view and keeps its projection", async (t) => {
@@ -811,7 +811,7 @@ function repository(t: test.TestContext): string {
 	execFileSync("git", ["add", "tracked.txt"], { cwd, stdio: "ignore" });
 	execFileSync("git", ["-c", "user.name=Routing Test", "-c", "user.email=routing@example.invalid", "commit", "-m", "base"], { cwd, stdio: "ignore" });
 	writeFileSync(join(cwd, "tracked.txt"), "candidate\n");
-	return cwd;
+	return realpathSync(execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8" }).trim());
 }
 
 test("candidate lifecycle sweeps startup and cleans every shutdown including reload", async (t) => {

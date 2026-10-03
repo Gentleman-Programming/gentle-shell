@@ -412,7 +412,7 @@ function candidateRepository(t: test.TestContext): string {
 	writeFileSync(join(cwd, "tracked.txt"), "base\n");
 	git("add", "tracked.txt");
 	git("-c", "user.name=Routing Test", "-c", "user.email=routing@example.invalid", "commit", "-m", "base");
-	return realpathSync(cwd);
+	return realpathSync(git("rev-parse", "--show-toplevel").trim());
 }
 
 test("approved acknowledgement burn tears down the retained candidate view and keeps its projection", async (t) => {
@@ -954,7 +954,7 @@ function repository(t: test.TestContext): string {
 	execFileSync("git", ["add", "tracked.txt"], { cwd, stdio: "ignore" });
 	execFileSync("git", ["-c", "user.name=Routing Test", "-c", "user.email=routing@example.invalid", "commit", "-m", "base"], { cwd, stdio: "ignore" });
 	writeFileSync(join(cwd, "tracked.txt"), "candidate\n");
-	return cwd;
+	return realpathSync(execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8" }).trim());
 }
 
 test("candidate lifecycle sweeps startup and cleans every shutdown including reload", async (t) => {
@@ -2947,20 +2947,95 @@ test("INSPECT rejects malformed committed-range selectors before negotiated STAT
 		},
 	} as unknown as NativeReviewCli;
 
-	for (const input of [
-		{ baseRef: "HEAD", committedOnly: false },
-		{ committedOnly: true },
-		{ baseRef: "HEAD", committedOnly: true, mode: "ordinary" },
+	for (const { input, reason, field } of [
+		{ input: { baseRef: "HEAD", committedOnly: false }, reason: "committed-only-required" },
+		{ input: { baseRef: "HEAD" }, reason: "committed-only-required" },
+		{ input: { committedOnly: true }, reason: "committed-only-invalid" },
+		{ input: { baseRef: " HEAD", committedOnly: true }, reason: "base-ref-invalid" },
+		{ input: { baseRef: 42, committedOnly: true }, reason: "base-ref-invalid" },
+		{ input: { baseRef: "HEAD", committedOnly: true, mode: "ordinary" }, reason: "unknown-field", field: "mode" },
 	]) {
 		const rejected = await __testing.executeReviewControllerOperation(
 			{ operation: "inspect", input: JSON.stringify(input) },
 			cwd,
 			native,
 		);
+		assert.equal(rejected.status, "blocked");
+		assert.equal(rejected.reason, reason);
+		assert.equal(rejected.field, field);
 		assert.equal(rejected.outcome, "native-inspect-input-invalid");
+		assert.equal(rejected.mutation_performed, false);
 		assert.equal(rejected.mutation_outcome, "none");
+		assert.equal(targetCalls, 0);
 	}
 	assert.equal(targetCalls, 0);
+});
+
+test("INSPECT accepts empty object and empty string input for ambient inspection", async (t) => {
+	const cwd = repository(t);
+	let targetCalls = 0;
+	const requests: Array<Record<string, unknown>> = [];
+	const native = {
+		targetStatus: async (request: Record<string, unknown>) => {
+			targetCalls += 1;
+			requests.push(request);
+			return startStatus(cwd);
+		},
+	} as unknown as NativeReviewCli;
+
+	for (const input of ["{}", "", "   "]) {
+		const result = await __testing.executeReviewControllerOperation(
+			{ operation: "inspect", input },
+			cwd,
+			native,
+		);
+		assert.equal(result.status, "ready", `expected ready for input ${JSON.stringify(input)}`);
+	}
+	assert.equal(targetCalls, 3);
+	for (const request of requests) {
+		assert.equal(request.baseRef, undefined);
+		assert.equal(request.committedOnly, undefined);
+	}
+});
+
+test("INSPECT ambient input with top-level selected-empty stays read-only when selection is not required", async (t) => {
+	const cwd = repository(t);
+	const requests: Array<Record<string, unknown>> = [];
+	let mutationCalls = 0;
+	const mutationMethods = [
+		"start", "answerConsent", "reclaim", "recover", "abandon",
+		"quarantineLegacy", "reconcileAuthority", "repairLegacyAlias", "repair",
+		"captureResult", "captureCorrectionPlan", "captureProviderRole", "captureUnachievableLens",
+		"reviewMode",
+	] as const satisfies readonly (keyof NativeReviewCli)[];
+	const mutationSpies = Object.fromEntries(mutationMethods.map((method) => [method, async () => {
+		mutationCalls += 1;
+		throw new Error(`Unexpected NativeReviewCli.${method} call during ambient INSPECT`);
+	}]));
+	const native = {
+		...mutationSpies,
+		targetStatus: async (request: Record<string, unknown>) => {
+			requests.push(request);
+			return startStatus(cwd);
+		},
+	} as unknown as NativeReviewCli;
+	for (const input of [undefined, "{}", "", "   "]) {
+		const parameters = { operation: "inspect", ...(input === undefined ? {} : { input }), untrackedScope: "select", intendedUntracked: [] };
+		const result = await __testing.executeReviewControllerOperation(parameters, cwd, native);
+		assert.equal(result.status, "ready");
+		assert.equal(mutationCalls, 0, `unexpected mutation for input ${JSON.stringify(input)}`);
+		assert.equal(result.untracked_selection, "not-required");
+		assert.deepEqual(parameters.intendedUntracked, []);
+	}
+	assert.equal(requests.length, 4);
+	for (const request of requests) {
+		assert.equal(request.cwd, cwd);
+		assert.equal("baseRef" in request, false);
+		assert.equal("committedOnly" in request, false);
+		// Without a provider selection stop, no selection submission is needed.
+		assert.equal("untrackedScope" in request, false);
+		assert.equal("intendedUntracked" in request, false);
+	}
 });
 
 test("ordinary START keeps default and explicit base selection fail-closed before native mutation", async (t) => {

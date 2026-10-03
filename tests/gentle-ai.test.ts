@@ -14,6 +14,7 @@ import type {
 	ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
 import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { discoverAgents, loadAgentsConfig, resolveAgentProfile } from "../lib/agents-config.ts";
 import { PROFILES_KIND, PROFILES_VERSION } from "../lib/agent-profiles.ts";
 import type { AgentRoutingEntry } from "../lib/model-routing-authority.ts";
 type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel">;
@@ -348,11 +349,16 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 	const projectPath = join(root, ".pi", "gentle-ai", "models.json");
 	const globalPath = join(configHome, "models.json");
 	const exportPath = join(configHome, "models.export.json");
-	for (const dir of [dirname(projectPath), join(root, "agents"), join(agentHome, "agents"), join(agentHome, "subagents")]) {
+	for (const dir of [dirname(projectPath), join(root, ".pi", "agents"), join(root, "agents"), join(agentHome, "agents"), join(agentHome, "subagents")]) {
 		mkdirSync(dir, { recursive: true });
 	}
 	for (const name of agents) {
-		writeMarkdown(join(root, ".pi", "agents", `${name}.md`), `---\nname: ${name}\ndescription: Worker\n---\nbody\n`);
+		const path = join(root, ".pi", "agents", `${name}.md`);
+		if (name === "gentle-ai-security") {
+			writeFileSync(path, readFileSync(join(process.cwd(), "assets", "agents", "gentle-ai-security.md"), "utf8"));
+		} else {
+			writeMarkdown(path, `---\nname: ${name}\ndescription: Worker\n---\nbody\n`);
+		}
 	}
 	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
 	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
@@ -1371,7 +1377,7 @@ test("guarded command confirmation emits a generic correlated permission lifecyc
 		registerCommand() {},
 		registerTool() {},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	createGentleAiExtension({ nativeReviewCli: null, processEnv: {} })(pi);
 	const toolCall = handlers.get("tool_call");
 	assert.equal(typeof toolCall, "function");
 	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-permission-request-"));
@@ -1506,7 +1512,7 @@ test("concurrent guarded confirmations coalesce the Herdr lifecycle per extensio
 			registerCommand() {},
 			registerTool() {},
 		} as unknown as ExtensionAPI;
-		createGentleAiExtension({ nativeReviewCli: null })(pi);
+		createGentleAiExtension({ nativeReviewCli: null, processEnv: {} })(pi);
 		return { handlers, emitted, confirmations };
 	};
 	const first = createHarness();
@@ -1671,7 +1677,7 @@ test("Herdr preserves the initial label and balanced edges across overlapping so
 			registerCommand() {},
 			registerTool() {},
 		} as unknown as ExtensionAPI;
-		createGentleAiExtension({ nativeReviewCli: null })(pi);
+		createGentleAiExtension({ nativeReviewCli: null, processEnv: {} })(pi);
 		const context = {
 			cwd: process.cwd(),
 			hasUI: true,
@@ -1767,7 +1773,7 @@ test("closed choice blockers retain the visible choice label through guarded-con
 		registerCommand() {},
 		registerTool() {},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	createGentleAiExtension({ nativeReviewCli: null, processEnv: {} })(pi);
 	assert.equal(eventHandlers.has("gentle-pi:ask-user-choice:blocked"), true);
 
 	for (const malformed of [null, [], {}, { active: "true" }]) {
@@ -1824,7 +1830,7 @@ test("permission lifecycle is inactive for unguarded and headless commands", asy
 		registerCommand() {},
 		registerTool() {},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	createGentleAiExtension({ nativeReviewCli: null, processEnv: {} })(pi);
 	const toolCall = handlers.get("tool_call");
 	assert.equal(typeof toolCall, "function");
 	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-permission-headless-"));
@@ -2417,6 +2423,53 @@ for (const reader of ["readEffectiveModelConfig", "readEffectiveModelConfigAsync
 		});
 	});
 }
+
+test("injected child environment denies destructive commands before the permission UI", async () => {
+	type ToolCallHandler = (event: { toolName: string; input: unknown }, ctx: ExtensionContext) => Promise<ToolCallEventResult | undefined>;
+	const handlers = new Map<string, ToolCallHandler>();
+	const pi = {
+		on(name: string, handler: ToolCallHandler) { handlers.set(name, handler); },
+		events: { emit() {} }, registerCommand() {}, registerTool() {},
+	} as unknown as ExtensionAPI;
+	createGentleAiExtension({ nativeReviewCli: null, processEnv: { GENTLE_PI_AGENTS_CHILD: "1" } })(pi);
+	const result = await handlers.get("tool_call")!(
+		{ toolName: "bash", input: { command: "git push --force origin main" } },
+		{ cwd: process.cwd(), hasUI: true, ui: { confirm: async () => assert.fail("child denial must precede confirmation") } } as ExtensionContext,
+	);
+	assert.deepEqual(result, {
+		block: true,
+		reason: "Gentle AI child safety blocked a recognized destructive command. Return an explicit safer plan to the parent; children cannot authorize data loss.",
+	});
+});
+
+test("gentle:models persists a packaged security profile selected through the UI", async (t) => {
+	const fixture = routingConsumerFixture(t, ["gentle-ai-security"]);
+	fixture.onInput((panel) => {
+		assert.ok(panel.render(200).some((row) => row.includes("gentle-ai-security")), "the packaged security agent must be a selectable UI row");
+		for (let step = 0; step < 3; step += 1) panel.handleInput("j");
+		panel.handleInput("\r");
+		for (const character of "alpha") panel.handleInput(character);
+		panel.handleInput("\r");
+		panel.handleInput("e");
+		for (let step = 0; step < 4; step += 1) panel.handleInput("j");
+		panel.handleInput("\r");
+		panel.handleInput("\x13");
+	});
+	await fixture.run("gentle:models");
+
+	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), {
+		"gentle-ai-security": { model: "openai/alpha", thinking: "medium" },
+	});
+	const security = discoverAgents({ cwd: fixture.root, home: join(fixture.root, "home"), agentHome: fixture.agentHome }).agents.find((agent) => agent.name === "gentle-ai-security");
+	assert.ok(security, "the real packaged security definition must be discoverable");
+	assert.deepEqual(JSON.parse(readFileSync(join(fixture.root, ".pi", "subagents.json"), "utf8")), {
+		model_profiles: { "gentle-ai-security": { model: "openai/alpha", effort: "medium" } },
+	});
+	assert.deepEqual(resolveAgentProfile(security, loadAgentsConfig({ cwd: fixture.root, home: join(fixture.root, "home"), agentHome: fixture.agentHome })), {
+		model: { provider: "openai", id: "alpha" }, thinking: "medium", source: { model: "profile", thinking: "profile" },
+	});
+	assert.deepEqual(security.tools, ["read", "grep", "find", "codegraph"]);
+});
 
 test("effective routing prefers models.json over the materialized stores", (t) => {
 	const fixture = routingConsumerFixture(t, ["worker", "helper"]);

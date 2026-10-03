@@ -3012,6 +3012,55 @@ test("a stale or unreadable pin degrades to the global routing instead of failin
 	assert.equal(await launchPinned(base), "openai-codex/gpt-5.6-terra:low");
 });
 
+// gentle-shell#1558 (barbatdev review): the two registered launch-seam gaps.
+// The pure helpers were covered, but the real subagent_run seam had no
+// committed test for the session layer.
+test("a session binding outranks the repository pin at the launch seam", async t => {
+	t.after(() => resetSessionProfileBindingsForTesting());
+	const base = pinFixture("session-over-pin");
+	base.writeStore({
+		pinned: { explore: { model: "openai/alpha", thinking: "minimal" } },
+		bound: { explore: { model: "openai/beta" } },
+	});
+	base.writePin("pinned");
+	// fakeContext's session id is "s1"; the binding is process state, so it is
+	// bound before the launch and reset by t.after so later pin tests stay pure.
+	bindSessionProfile("s1", "bound", { explore: { model: "openai/beta" } });
+	assert.equal(await launchPinned(base), "openai/beta:high", "the session binding wins over a winning repository pin");
+});
+
+test("a queued launch keeps the session routing frozen across a rebind", async t => {
+	t.after(() => resetSessionProfileBindingsForTesting());
+	const base = pinFixture("queue-freeze");
+	base.writeStore({
+		first: { explore: { model: "openai/alpha", thinking: "minimal" } },
+		second: { explore: { model: "openai/beta" } },
+	});
+	bindSessionProfile("s1", "first", { explore: { model: "openai/alpha", thinking: "minimal" } });
+	const harness = deps();
+	harness.deps.resolveWorktree = () => ({ root: base.root, commonDir: base.commonDir });
+	harness.deps.env = { PATH: "/bin", GENTLE_PI_CONFIG_HOME: base.configHome };
+	const { pi, tools, fire } = fakePi();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	try {
+		const model = (args: string[]) => args[args.indexOf("--model") + 1];
+		// The first launch freezes first's routing into its task request and its
+		// spawned child. Rebinding the session must leave that request untouched;
+		// only a request created afterwards resolves the new binding.
+		await tools.get("subagent_run")!.execute("freeze-1", { agent: "explore", task: "Map first", mode: "background" }, undefined, undefined, ctx);
+		bindSessionProfile("s1", "second", { explore: { model: "openai/beta" } });
+		await tools.get("subagent_run")!.execute("freeze-2", { agent: "explore", task: "Map second", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(model(harness.spawned[0]), "openai/alpha:minimal", "the request created before the rebind keeps its frozen routing");
+		assert.equal(model(harness.spawned[1]), "openai/beta:high", "only requests created after the rebind resolve the new binding");
+	} finally {
+		await fire("session_shutdown", ctx);
+		await tick();
+	}
+});
+
 test("agentsEnabled and agentsCollapseKey read their flags and stay off inside a child", () => {
 	assert.equal(agentsEnabled({}), true);
 	assert.equal(agentsEnabled({ GENTLE_PI_AGENTS: "off" }), false);

@@ -17,6 +17,20 @@ interface RegistryHost {
 }
 interface Registration { sessionId: string; root: string; evidence: string }
 
+// Boundary reads for other extensions: the roots this session durably
+// registered, without granting registry mutation. Same-clone was enforced at
+// registration time; callers that need freshness re-resolve each root.
+export function registeredRootsForSession(session: SessionReader, sessionId: string): string[] {
+	const roots: string[] = [];
+	if (typeof session.getEntries !== "function") return roots; // harness fakes without durable entries
+	for (const entry of session.getEntries()) {
+		if (entry.type !== "custom" || entry.customType !== SESSION_WORKTREE_ENTRY || !entry.data || typeof entry.data !== "object") continue;
+		const data = entry.data as Partial<Registration>;
+		if (data.sessionId === sessionId && typeof data.root === "string") roots.push(data.root);
+	}
+	return roots;
+}
+
 // Pass this as a complete child environment, not an overlay on inherited env.
 export function worktreeGitEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
 	return Object.fromEntries(Object.entries(env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")));

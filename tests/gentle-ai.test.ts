@@ -3494,7 +3494,7 @@ test("a keeps the legacy global apply semantics", async (t) => {
 	const ctx = {
 		cwd: fixture.root,
 		hasUI: true,
-		ui: { notify() {} },
+		ui: { notify() {}, confirm: async () => true },
 		sessionManager: { getSessionId: () => "session-panel" },
 	} as unknown as ExtensionContext;
 	const live = { setModel: async () => true, setThinkingLevel() {} };

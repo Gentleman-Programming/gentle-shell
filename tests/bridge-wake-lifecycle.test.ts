@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTools, type AssistantMessage, type TranscriptContext } from "@earendil-works/pi-ai";
@@ -24,7 +25,7 @@ async function until(predicate: () => boolean) {
 }
 
 test("actual SDK Bridge wake retains preparation, history, reload and resumed rendering offline", async () => {
-	const root = mkdtempSync(join(process.env.TMPDIR!, "bridge-lifecycle-"));
+	const root = mkdtempSync(join(tmpdir(), "bridge-lifecycle-"));
 	const home = join(root, "home"), cwd = join(root, "project"), agentDir = join(root, "agent");
 	mkdirSync(home, { recursive: true });
 	mkdirSync(cwd); mkdirSync(join(agentDir, "agents"), { recursive: true });

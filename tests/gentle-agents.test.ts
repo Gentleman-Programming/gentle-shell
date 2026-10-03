@@ -4388,3 +4388,95 @@ test("children receive context and safety extensions, and missing files are omit
 		}
 	}
 });
+
+// SEC-8: dispatch integration test for the packaged gentle-ai-security analyst.
+// Installs the actual asset into an isolated home, dispatches via subagent_run,
+// and asserts the spawned --tools argument matches the runner contract exactly.
+test("subagent_run for gentle-ai-security spawns with exact read-only tool list and excludes write tools", async () => {
+	const fixture = mkdtempSync(join(tmpdir(), "gentle-agents-sec-dispatch-"));
+	const fixtureHome = join(fixture, "home");
+	const definitions = join(fixtureHome, ".pi", "agent", "agents");
+	mkdirSync(definitions, { recursive: true });
+	const assetPath = join(process.cwd(), "assets", "agents", "gentle-ai-security.md");
+	writeFileSync(join(definitions, "gentle-ai-security.md"), readFileSync(assetPath, "utf8"));
+	const { pi, tools, fire } = fakePi();
+	const runtime = deps();
+	runtime.deps.home = fixtureHome;
+	gentleAgents(pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	try {
+		await tools.get("subagent_run")!.execute(
+			"sec-dispatch",
+			{ agent: "gentle-ai-security", task: "Audit the authentication module for injection risks.", mode: "background" },
+			undefined,
+			undefined,
+			ctx,
+		);
+		await tick();
+		assert.equal(runtime.children.length, 1, "one child must be spawned for the security analyst");
+		const args = runtime.spawned[0];
+		const toolsValue = args[args.indexOf("--tools") + 1];
+		assert.equal(
+			toolsValue,
+			"read,grep,find,codegraph,subagent_parent_message",
+			"security analyst must receive exact read-only tool list with parent notification appended",
+		);
+		for (const denied of ["edit", "write", "bash", "mem_save"]) {
+			assert.ok(!toolsValue.split(",").includes(denied), `security analyst must not receive tool: ${denied}`);
+		}
+	} finally {
+		await fire("session_shutdown", ctx);
+		await tick();
+		rmSync(fixture, { recursive: true, force: true });
+	}
+});
+
+// SEC-8: dispatch integration test for the packaged gentle-ai-security analyst with a
+// user-configured model profile. Writes subagents.json in the fixture home to configure
+// a model+effort for gentle-ai-security, dispatches via subagent_run, and asserts both
+// the spawned --model (with effort) and the unchanged exact read-only --tools.
+test("subagent_run for gentle-ai-security with profile respects configured model and preserves read-only tool list", async () => {
+	const fixture = mkdtempSync(join(tmpdir(), "gentle-agents-sec-profile-"));
+	const fixtureHome = join(fixture, "home");
+	const definitions = join(fixtureHome, ".pi", "agent", "agents");
+	mkdirSync(definitions, { recursive: true });
+	const assetPath = join(process.cwd(), "assets", "agents", "gentle-ai-security.md");
+	writeFileSync(join(definitions, "gentle-ai-security.md"), readFileSync(assetPath, "utf8"));
+	writeFileSync(
+		join(fixtureHome, ".pi", "agent", "subagents.json"),
+		JSON.stringify({ model_profiles: { "gentle-ai-security": { model: "anthropic/claude-opus-4", effort: "high" } } }),
+	);
+	const { pi, tools, fire } = fakePi();
+	const runtime = deps();
+	runtime.deps.home = fixtureHome;
+	gentleAgents(pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	try {
+		await tools.get("subagent_run")!.execute(
+			"sec-profile-dispatch",
+			{ agent: "gentle-ai-security", task: "Audit the session management for fixation risks.", mode: "background" },
+			undefined,
+			undefined,
+			ctx,
+		);
+		await tick();
+		assert.equal(runtime.children.length, 1, "one child must be spawned for the profiled security analyst");
+		const args = runtime.spawned[0];
+		assert.equal(
+			args[args.indexOf("--model") + 1],
+			"anthropic/claude-opus-4:high",
+			"profiled security analyst must launch with configured model and effort",
+		);
+		assert.equal(
+			args[args.indexOf("--tools") + 1],
+			"read,grep,find,codegraph,subagent_parent_message",
+			"profiled security analyst must still receive exact read-only tool list",
+		);
+	} finally {
+		await fire("session_shutdown", ctx);
+		await tick();
+		rmSync(fixture, { recursive: true, force: true });
+	}
+});

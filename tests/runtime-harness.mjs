@@ -1285,18 +1285,17 @@ async function run() {
 		assert.match(legacyCtx.ui.notifications.at(-1).message, /cannot open model config/);
 		await writeFile(globalModelsPath, JSON.stringify({}, null, 2));
 		await hooks.get("session_start")[0]({ reason: "startup" }, legacyCtx);
-		const emptyGlobalPreservesAgent = await readFile(
+		const emptyGlobalClearsAgent = await readFile(
 			join(legacyModelsCwd, ".pi", "agents", "sdd-apply.md"),
 			"utf8",
 		);
-		assert.match(emptyGlobalPreservesAgent, /model: global\/provider-model/);
-		const emptyGlobalPreservesProfiles = JSON.parse(
+		assert.doesNotMatch(emptyGlobalClearsAgent, /model:/);
+		const emptyGlobalClearsProfiles = JSON.parse(
 			await readFile(join(legacyModelsCwd, ".pi", "subagents.json"), "utf8"),
 		);
-		assert.equal(
-			emptyGlobalPreservesProfiles.model_profiles["sdd-apply"].model,
-			"global/provider-model",
-		);
+		assert.equal(emptyGlobalClearsProfiles.model_profiles, undefined);
+		await writeFile(globalModelsPath, JSON.stringify({ "sdd-apply": "global/provider-model" }, null, 2));
+		await hooks.get("session_start")[0]({ reason: "startup" }, legacyCtx);
 		await writeFile(
 			globalModelsPath,
 			JSON.stringify({ "sdd-apply": { model: "bad\nmodel: injected" } }, null, 2),
@@ -1310,10 +1309,7 @@ async function run() {
 		const invalidEntryPreservesProfiles = JSON.parse(
 			await readFile(join(legacyModelsCwd, ".pi", "subagents.json"), "utf8"),
 		);
-		assert.equal(
-			invalidEntryPreservesProfiles.model_profiles["sdd-apply"].model,
-			"global/provider-model",
-		);
+		assert.equal(invalidEntryPreservesProfiles.model_profiles["sdd-apply"].model, "global/provider-model");
 		await writeFile(globalModelsPath, JSON.stringify({ "sdd-apply": {} }, null, 2));
 		await hooks.get("session_start")[0]({ reason: "startup" }, legacyCtx);
 		const explicitInheritClearsAgent = await readFile(
@@ -1328,6 +1324,26 @@ async function run() {
 	} finally {
 		await rm(legacyModelsCwd, { recursive: true, force: true });
 		await rm(globalModelsPath, { force: true });
+	}
+
+	const missingModelsCwd = await tempWorkspace();
+	try {
+		await rm(globalModelsPath, { force: true });
+		await mkdir(join(missingModelsCwd, ".pi", "agents"), { recursive: true });
+		await writeFile(
+			join(missingModelsCwd, ".pi", "agents", "custom-agent.md"),
+			`---\nname: custom-agent\ndescription: Custom\nmodel: keep/provider\nthinking: high\n---\n`,
+		);
+		await writeFile(
+			join(missingModelsCwd, ".pi", "subagents.json"),
+			JSON.stringify({ model_profiles: { "custom-agent": { model: "keep/provider", effort: "high" } } }, null, 2),
+		);
+		await hooks.get("session_start")[0]({ reason: "startup" }, createCtx(missingModelsCwd, true));
+		assert.match(await readFile(join(missingModelsCwd, ".pi", "agents", "custom-agent.md"), "utf8"), /model: keep\/provider/);
+		const missingConfigProfiles = JSON.parse(await readFile(join(missingModelsCwd, ".pi", "subagents.json"), "utf8"));
+		assert.equal(missingConfigProfiles.model_profiles["custom-agent"].model, "keep/provider");
+	} finally {
+		await rm(missingModelsCwd, { recursive: true, force: true });
 	}
 
 	const staleSettingsOnlyCwd = await tempWorkspace();
@@ -1543,26 +1559,22 @@ async function run() {
 		);
 		await writeFile(globalModelsPath, JSON.stringify({}, null, 2));
 		await hooks.get("session_start")[0]({ reason: "startup" }, createCtx(modelsCwd, true));
-		const preservedProfiles = JSON.parse(
+		const clearedByEmptySnapshotProfiles = JSON.parse(
 			await readFile(join(modelsCwd, ".pi", "subagents.json"), "utf8"),
 		);
-		assert.equal(
-			preservedProfiles.model_profiles.worker.model,
-			"existing/model",
-		);
-		assert.equal(preservedProfiles.model_profiles.worker.effort, "high");
+		assert.equal(clearedByEmptySnapshotProfiles.model_profiles, undefined);
 		const preservedProjectWorker = await readFile(
 			join(modelsCwd, ".pi", "agents", "worker.md"),
 			"utf8",
 		);
 		assert.match(preservedProjectWorker, /model: existing\/project-worker/);
 		assert.match(preservedProjectWorker, /thinking: high/);
-		const preservedProjectSubagentWorker = await readFile(
+		const clearedProjectSubagentWorkerByEmptySnapshot = await readFile(
 			join(modelsCwd, ".pi", "subagents", "worker.md"),
 			"utf8",
 		);
-		assert.match(preservedProjectSubagentWorker, /model: existing\/project-subagent-worker/);
-		assert.match(preservedProjectSubagentWorker, /thinking: medium/);
+		assert.doesNotMatch(clearedProjectSubagentWorkerByEmptySnapshot, /model:/);
+		assert.doesNotMatch(clearedProjectSubagentWorkerByEmptySnapshot, /thinking:/);
 		await writeFile(globalModelsPath, JSON.stringify({ worker: {} }, null, 2));
 		await hooks.get("session_start")[0]({ reason: "startup" }, createCtx(modelsCwd, true));
 		const clearedProfiles = JSON.parse(

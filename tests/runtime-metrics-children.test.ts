@@ -29,9 +29,13 @@ test("installed package definitions retain classification after the actual routi
 	// The installer copies packaged agent assets verbatim on first install.
 	// Isolate the real pure routing writer; do not run an installer or read user agents.
 	const source = readFileSync(new URL("../extensions/gentle-ai.ts", import.meta.url), "utf8");
+	const parser = source.match(/function parseRoutingFrontmatter\([\s\S]*?\n\}/)?.[0];
 	const transform = source.match(/function updateFrontmatterRouting\([\s\S]*?\n\}/)?.[0];
+	assert.ok(parser);
 	assert.ok(transform);
-	const route = runInNewContext(`(${stripTypeScriptTypes(transform)})`);
+	const route = runInNewContext(
+		`(() => { ${stripTypeScriptTypes(parser)}; return ${stripTypeScriptTypes(transform)}; })()`,
+	);
 	for (const entry of readdirSync(new URL("../assets/agents/", import.meta.url)).filter(file => file.endsWith(".md"))) {
 		const file = entry.slice(0, -3);
 		const className = file.startsWith("gentle-ai-") ? file.slice("gentle-ai-".length) : file;

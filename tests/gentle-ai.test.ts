@@ -16,6 +16,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { PROFILES_KIND, PROFILES_VERSION } from "../lib/agent-profiles.ts";
+import { discoverAgents, loadAgentsConfig, resolveAgentProfile, withPinnedModelProfiles } from "../lib/agents-config.ts";
+import { resolveProfilePin } from "../lib/agent-profile-pin.ts";
 import type { AgentRoutingEntry } from "../lib/model-routing-authority.ts";
 type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel">;
 import { PROFILE_PIN_KIND, PROFILE_PIN_VERSION, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
@@ -542,6 +544,116 @@ test("models saves and clears independent provider review roles without local ar
 		"review-validator": {},
 	});
 	assertNoLocalArtifacts();
+});
+
+test("Codex Recommended maps known roles by tier and clears unknown discovered roles", () => {
+	const preset = __testing.buildCodexRecommendedPreset([
+		"sdd-design",
+		"sdd-apply",
+		"sdd-remediate",
+		"sdd-archive",
+		"gentle-ai-worker",
+		"gentle-ai-explore",
+		"gentle-ai-verify",
+		"review-risk",
+		"custom-agent",
+	]);
+
+	assert.deepEqual(preset["sdd-design"], { model: "openai-codex/gpt-5.6-sol", thinking: "high" });
+	assert.deepEqual(preset["sdd-apply"], { model: "openai-codex/gpt-5.6-terra", thinking: "medium" });
+	assert.deepEqual(preset["sdd-remediate"], { model: "openai-codex/gpt-5.6-terra", thinking: "medium" });
+	assert.deepEqual(preset["sdd-archive"], { model: "openai-codex/gpt-5.6-luna", thinking: "low" });
+	assert.deepEqual(preset["gentle-ai-worker"], { model: "openai-codex/gpt-5.6-terra", thinking: "medium" });
+	assert.deepEqual(preset["gentle-ai-explore"], { model: "openai-codex/gpt-5.6-luna", thinking: "low" });
+	assert.deepEqual(preset["gentle-ai-verify"], { model: "openai-codex/gpt-5.6-sol", thinking: "high" });
+	assert.deepEqual(preset["review-risk"], { model: "openai-codex/gpt-5.6-sol", thinking: "high" });
+	assert.deepEqual(preset["custom-agent"], {});
+	assert.equal("orchestrator" in preset, false);
+});
+
+test("authoritative routing snapshots clear omitted discoverable agent pins", async (t) => {
+	const fixture = routingConsumerFixture(t, ["worker", "custom-agent"]);
+	const customPath = join(fixture.root, ".pi", "agents", "custom-agent.md");
+	writeMarkdown(customPath, "---\nname: custom-agent\ndescription: Custom\nmodel: anthropic/stale\nthinking: high\n---\nbody\n");
+	writeMarkdown(join(fixture.root, ".pi", "subagents.json"), `${JSON.stringify({
+		model_profiles: {
+			worker: { model: "anthropic/old", effort: "high" },
+			"custom-agent": { model: "anthropic/stale", effort: "high" },
+		},
+	}, null, 2)}\n`);
+
+	await applyModelConfigAsync(fixture.root, {
+		worker: { model: "openai-codex/gpt-5.6-terra", thinking: "medium" },
+	});
+
+	const profiles = JSON.parse(readFileSync(join(fixture.root, ".pi", "subagents.json"), "utf8"));
+	assert.deepEqual(profiles.model_profiles.worker, {
+		model: "openai-codex/gpt-5.6-terra",
+		effort: "medium",
+	});
+	assert.equal(profiles.model_profiles["custom-agent"], undefined);
+	assert.doesNotMatch(readFileSync(customPath, "utf8"), /^model:|^thinking:/m);
+});
+
+test("routing reconciliation supports canonical LF and CRLF frontmatter", async (t) => {
+	const fixture = routingConsumerFixture(t, ["alias-agent", "crlf-agent"]);
+	const aliasPath = join(fixture.root, ".pi", "agents", "alias-agent.md");
+	const crlfPath = join(fixture.root, ".pi", "agents", "crlf-agent.md");
+	writeFileSync(aliasPath, "---\nname: alias-agent\ndescription: Alias\nmodel: stale/model\nthinking: high\neffort: xhigh\nthinking_level: max\n---\nbody\n");
+	writeFileSync(crlfPath, "---\r\nname: crlf-agent\r\ndescription: CRLF\r\nmodel: stale/model\r\neffort: high\r\n---\r\nbody\r\n");
+
+	await applyModelConfigAsync(fixture.root, {
+		"alias-agent": {},
+		"crlf-agent": { model: "openai/new", thinking: "medium" },
+	});
+
+	const alias = readFileSync(aliasPath, "utf8");
+	assert.doesNotMatch(alias, /^(?:model|thinking|effort|thinking_level):/m);
+	const crlf = readFileSync(crlfPath, "utf8");
+	assert.match(crlf, /description: CRLF\r\nmodel: openai\/new\r\nthinking: medium\r\n---\r\n/);
+	assert.doesNotMatch(crlf, /\neffort:|\nthinking_level:/);
+	assert.equal(crlf.replaceAll("\r\n", "").includes("\n"), false);
+});
+
+test("materialized frontmatter fails closed on malformed delimiters and reads CRLF aliases", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "gentle-pi-frontmatter-routing-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const missingCloser = join(root, "missing.md");
+	const suffixedCloser = join(root, "suffix.md");
+	const crlf = join(root, "crlf.md");
+	writeFileSync(missingCloser, "---\nname: broken\nbody\nmodel: body/example\nthinking: high\n");
+	writeFileSync(suffixedCloser, "---\nname: broken\n---not-a-delimiter\nmodel: body/example\n");
+	writeFileSync(crlf, "---\r\nname: valid\r\nmodel: openai/crlf\r\neffort: high\r\n---\r\nbody\r\n");
+
+	const missingSource = readFileSync(missingCloser, "utf8");
+	const suffixSource = readFileSync(suffixedCloser, "utf8");
+	assert.equal(__testing.updateFrontmatterRouting(missingSource, { model: "openai/new" }), missingSource);
+	assert.equal(__testing.updateFrontmatterRouting(suffixSource, { model: "openai/new" }), suffixSource);
+	assert.deepEqual(__testing.readMaterializedFrontmatter(missingCloser), {});
+	assert.deepEqual(__testing.readMaterializedFrontmatter(suffixedCloser), {});
+	assert.deepEqual(__testing.readMaterializedFrontmatter(crlf), {
+		model: "openai/crlf",
+		thinking: "high",
+	});
+});
+
+test("model panel previews and saves the Codex Recommended complete snapshot", () => {
+	const { preview, result } = __testing.applyCodexModelPanelPreset(
+		{ "custom-agent": { model: "anthropic/stale", thinking: "high" } },
+		["sdd-design", "custom-agent"],
+		100,
+	);
+	const rendered = stripAnsi(preview.join("\n"));
+	assert.match(rendered, /p Codex Recommended/);
+	assert.match(rendered, /sdd-design\s+model=openai-codex\/gpt-5\.6-sol, effort=high/);
+	assert.match(rendered, /custom-agent\s+model=inherit, effort=inherit/);
+	assert.deepEqual(result, {
+		type: "save",
+		config: {
+			"sdd-design": { model: "openai-codex/gpt-5.6-sol", thinking: "high" },
+			"custom-agent": {},
+		},
+	});
 });
 
 test("provider review roles skip migration and both projection paths even when discoverable", async (t) => {
@@ -1267,8 +1379,8 @@ test("model panel lists grow with the terminal height instead of a fixed window"
 		.renderSddModelPanel({}, models, agents, 100, undefined, 40)
 		.map(stripAnsi);
 	assert.equal(agentLines.length, 40);
-	// 40 rows minus 15 rows of chrome: every remaining row lists an agent or "Set all".
-	assert.equal(agentLines.filter((line) => /(agent-\d\d|Set all agents)\s+model=/.test(line)).length, 25);
+	// 40 rows minus 16 rows of responsive chrome: every remaining row lists an agent or "Set all".
+	assert.equal(agentLines.filter((line) => /(agent-\d\d|Set all agents)\s+model=/.test(line)).length, 24);
 	assert.ok(agentLines.some((line) => /x export/.test(line)));
 
 	const pickerLines = __testing
@@ -1277,6 +1389,29 @@ test("model panel lists grow with the terminal height instead of a fixed window"
 	assert.equal(pickerLines.length, 40);
 	// 40 rows minus 8 rows of chrome.
 	assert.equal(pickerLines.filter((line) => /provider\/model-\d\d/.test(line)).length, 32);
+});
+
+test("model panel keeps essential routing visible without overflowing short terminals", () => {
+	for (const height of [12, 16]) {
+		const lines = __testing.renderSddModelPanel({}, ["openai/gpt-5.5"], ["safe-agent"], 100, undefined, height).map(stripAnsi);
+		assert.equal(lines.length, height, `panel exceeded ${height} terminal rows`);
+		assert.match(lines.join("\n"), /Set all agents\s+model=/);
+		assert.match(lines.join("\n"), /Codex Recommended/);
+		assert.match(lines[0] ?? "", /^╭/);
+		assert.match(lines.at(-1) ?? "", /^╰/);
+	}
+});
+
+test("model panel keeps selected agent, Set all, and preset visible after short-terminal navigation", () => {
+	const agents = Array.from({ length: 20 }, (_, i) => `agent-${String(i).padStart(2, "0")}`);
+	const lines = __testing.renderSddModelPanel({}, ["openai/gpt-5.5"], agents, 100, undefined, 12, Array<string>(12).fill("j")).map(stripAnsi);
+	const rendered = lines.join("\n");
+	assert.equal(lines.length, 12);
+	assert.match(rendered, /▸ agent-11\s+model=/);
+	assert.match(rendered, /Set all agents\s+model=/);
+	assert.match(rendered, /Codex Recommended/);
+	assert.match(lines[0] ?? "", /^╭/);
+	assert.match(lines.at(-1) ?? "", /^╰/);
 });
 
 test("model panel render uses the Pi-provided current theme when supplied", () => {
@@ -2884,8 +3019,16 @@ test("effective routing prefers models.json over the materialized stores", (t) =
 	assert.equal(existsSync(join(fixture.root, ".pi", "gentle-ai", "models.json")), false, "reading never writes");
 });
 
-test("the profiles panel fills the terminal, lists routing per agent, and scrolls", async (t) => {
+test("the profiles panel previews omitted roles against effective routing and scrolls", async (t) => {
 	const { fixture, writeStore } = profilesStoreFixture(t);
+	writeMarkdown(
+		join(fixture.root, ".pi", "agents", "custom-agent.md"),
+		"---\nname: custom-agent\ndescription: Custom\nmodel: anthropic/stale\nthinking: high\n---\n",
+	);
+	writeMarkdown(
+		join(fixture.root, ".pi", "subagents.json"),
+		`${JSON.stringify({ model_profiles: { "custom-agent": { model: "anthropic/stale", effort: "high" } } }, null, 2)}\n`,
+	);
 	writeStore({
 		team: {
 			orchestrator: { model: "nan/glm5.3", thinking: "high" },
@@ -2894,7 +3037,7 @@ test("the profiles panel fills the terminal, lists routing per agent, and scroll
 		},
 	}, "team");
 	let rendered: string | undefined;
-	let panel: { render(width: number): string[] } | undefined;
+	let panel: { render(width: number): string[]; handleInput(data: string): void } | undefined;
 	fixture.onInput((visited) => {
 		panel = visited;
 		rendered = renderComponent(visited);
@@ -2911,11 +3054,14 @@ test("the profiles panel fills the terminal, lists routing per agent, and scroll
 	const text = rendered;
 	// Routing is listed one agent per line, aligned in columns, never collapsed
 	// into "N agents → model: a, b, …" summaries.
-	assert.match(text, /Profile routing/);
+	assert.match(text, /After apply \(complete snapshot\)/);
 	assert.match(text, /Current routing \(effective\)/);
 	assert.match(text, /orchestrator\s+nan\/glm5\.3 · high/);
 	assert.match(text, /worker\s+openai\/alpha\s+high/);
-	assert.match(text, /sdd-design\s+nan\/glm5\.3\s+high/);
+	assert.match(text, /custom-agent\s+inherit\s+inherit/);
+	panel!.handleInput("j");
+	const scrolledPreview = stripAnsi(panel!.render(120).join("\n"));
+	assert.match(scrolledPreview, /custom-agent\s+anthropic\/stale\s+high/);
 	assert.doesNotMatch(text, /agents? → /);
 
 	// A taller terminal renders a taller frame with the same content.
@@ -3103,6 +3249,59 @@ test("p pins the selected profile for the clone without touching the global rout
 	setProfilePinWorktreeResolverForTesting(() => { throw new Error("unexpected pin read during render"); });
 	assert.doesNotMatch(stripAnsi(renderComponent(firstPanel!)), /pin\s+local: team/);
 	assert.match(stripAnsi(renderComponent(reopenedPanel)), /pin\s+local: team/);
+});
+
+test("session startup preserves pinned omitted-agent definition routing and unpinned reconciliation", async (t) => {
+	const { fixture, repoPinPath, writeStore } = profilesStoreFixture(t);
+	const helperPath = join(fixture.root, ".pi", "agents", "helper.md");
+	const definition = "---\nname: helper\ndescription: Helper\nmodel: definition/helper\nthinking: high\n---\nbody\n";
+	writeMarkdown(helperPath, definition);
+	writeStore({ team: { worker: { model: "pin/worker" } } });
+	writeProfilePinSync(repoPinPath, "team");
+	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>();
+	createGentleAiExtension({ nativeReviewCli: null })({
+		on(name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) { handlers.set(name, handler); },
+		registerCommand() {}, registerTool() {},
+	} as unknown as ExtensionAPI);
+	const start = async () => handlers.get("session_start")!({}, { cwd: fixture.root, hasUI: false } as ExtensionContext);
+	const resolved = (name: string) => {
+		const agent = discoverAgents({ cwd: fixture.root, home: fixture.root, agentHome: fixture.agentHome }).agents.find((item) => item.name === name);
+		assert.ok(agent);
+		return resolveAgentProfile(agent, withPinnedModelProfiles(
+			loadAgentsConfig({ cwd: fixture.root, home: fixture.root, agentHome: fixture.agentHome }),
+			resolveProfilePin({ cwd: fixture.root, configHome: fixture.configHome })?.modelProfiles,
+		));
+	};
+	for (const global of [
+		{},
+		{ worker: { model: "global/worker" } },
+		{ helper: { model: "global/helper", thinking: "low" }, worker: { model: "global/worker" } },
+	]) {
+		writeMarkdown(fixture.globalPath, JSON.stringify(global));
+		await start();
+		assert.equal(readFileSync(helperPath, "utf8"), definition);
+		assert.equal(resolved("helper").model?.id, "helper");
+		assert.equal(resolved("helper").thinking, "high");
+		assert.equal(resolved("helper").source.model, "definition");
+		assert.equal(resolved("helper").source.thinking, "definition");
+		assert.equal(resolved("worker").model?.id, "worker");
+		assert.equal(resolved("worker").source.model, "profile");
+		assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), global);
+	}
+	writeMarkdown(fixture.globalPath, JSON.stringify({ helper: {}, worker: { model: "global/worker" } }));
+	writeProfilePinSync(repoPinPath, "stale");
+	await start();
+	assert.doesNotMatch(readFileSync(helperPath, "utf8"), /model: definition\/helper/);
+	writeMarkdown(helperPath, "---\nname: helper\ndescription: Helper\nmodel: definition/helper\n---\nbody\n");
+	writeFileSync(repoPinPath, "[]");
+	await start();
+	assert.doesNotMatch(readFileSync(helperPath, "utf8"), /model: definition\/helper/);
+	writeMarkdown(helperPath, "---\nname: helper\ndescription: Helper\nmodel: definition/helper\n---\nbody\n");
+	// A missing pin follows the same global reconciliation path.
+	const { unlinkSync } = await import("node:fs");
+	unlinkSync(repoPinPath);
+	await start();
+	assert.doesNotMatch(readFileSync(helperPath, "utf8"), /model: definition\/helper/);
 });
 
 test("the profile pin scope note sanitizes its worktree-derived path", (t) => {

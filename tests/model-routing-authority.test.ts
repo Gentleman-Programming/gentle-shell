@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -212,7 +212,7 @@ test("saved-routing apply fails closed for invalid project and global sources", 
 	assert.equal(statSync(profilePath).mtimeMs, before.mtimeMs);
 });
 
-test("saved-routing apply preserves missing, valid, null, inherit, and omission behavior", async (t) => {
+test("saved-routing apply preserves missing config and fails closed on malformed entries", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "gentle-pi-model-routing-apply-valid-"));
 	const configHome = join(root, "global");
 	const projectConfigDir = join(root, ".pi", "gentle-ai");
@@ -265,13 +265,11 @@ test("saved-routing apply preserves missing, valid, null, inherit, and omission 
 	assert.doesNotMatch(readFileSync(agentPath, "utf8"), /thinking:/);
 
 	const afterValidBytes = readFileSync(profilePath, "utf8");
-	const afterValid = statSync(profilePath);
 	writeFileSync(projectPath, JSON.stringify({ worker: null }));
 	const nullEntry = await applySavedModelConfig(context);
-	assert.equal(nullEntry.invalidPath, undefined);
+	assert.equal(nullEntry.invalidPath, projectPath);
 	assert.equal(readFileSync(profilePath, "utf8"), afterValidBytes);
-	assert.equal(statSync(profilePath).mtimeMs, afterValid.mtimeMs);
-	assert.doesNotMatch(readFileSync(agentPath, "utf8"), /model: null/);
+	assert.match(readFileSync(agentPath, "utf8"), /model: inherit/);
 
 	let mutatorCalls = 0;
 	const applyConfig = async () => {
@@ -282,4 +280,42 @@ test("saved-routing apply preserves missing, valid, null, inherit, and omission 
 	const injected = await applySavedModelConfig(context, applyConfig);
 	assert.equal(injected.invalidPath, undefined);
 	assert.equal(mutatorCalls, 1);
+
+	const replacement = `${projectPath}.replacement`;
+	writeFileSync(projectPath, JSON.stringify({ worker: { model: "invalid-snapshot/model", extra: "unsupported" } }));
+	writeFileSync(replacement, JSON.stringify({ worker: "valid/replacement" }));
+	let replaced = false;
+	let appliedInvalid = false;
+	const raced = await applySavedModelConfig(context, async () => {
+		appliedInvalid = true;
+		return { updated: 1, skipped: 0 };
+	}, { afterRead: () => { renameSync(replacement, projectPath); replaced = true; } });
+	assert.equal(replaced, true, "replacement happens after parsing A and before any later validation");
+	assert.deepEqual(raced, { updated: 0, skipped: 0, invalidPath: projectPath });
+	assert.equal(appliedInvalid, false, "invalid A cannot borrow validation from valid B");
+
+	writeFileSync(projectPath, JSON.stringify({ worker: "valid/original" }));
+	writeFileSync(replacement, JSON.stringify({ worker: null }));
+	let appliedValid: unknown;
+	const validBeforeReplacement = await applySavedModelConfig(context, async (_cwd, config) => {
+		appliedValid = config;
+		return { updated: 1, skipped: 0 };
+	}, { afterRead: () => renameSync(replacement, projectPath) });
+	assert.deepEqual(validBeforeReplacement, { updated: 1, skipped: 0 });
+	assert.deepEqual(appliedValid, { worker: { model: "valid/original" } });
+
+	for (const [raw, expected] of [
+		[{ worker: { effort: "high" } }, { worker: { model: undefined, thinking: "high" } }],
+		[{ worker: { model: "openai/new", effort: "low" } }, { worker: { model: "openai/new", thinking: "low" } }],
+		[{ worker: { thinking: "high", effort: "low" } }, { worker: { model: undefined, thinking: "high" } }],
+	] as const) {
+		writeFileSync(projectPath, JSON.stringify(raw));
+		let applied: unknown;
+		const result = await applySavedModelConfig(context, async (_cwd, config) => {
+			applied = config;
+			return { updated: 1, skipped: 0 };
+		});
+		assert.deepEqual(result, { updated: 1, skipped: 0 });
+		assert.deepEqual(applied, expected);
+	}
 });

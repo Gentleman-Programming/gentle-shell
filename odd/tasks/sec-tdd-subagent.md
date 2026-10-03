@@ -73,7 +73,33 @@ Security-sensitive changes (authentication, authorization, session management, u
     - Authored contract tests in `tests/generic-agent-tools.test.ts`. Observed RED failure on assertion, then GREEN after pattern refinement (all 5/5 passing).
     - Verified full manifest and routing suites: `tests/package-manifest.test.ts` (55/55 PASS), `tests/generic-agent-tools.test.ts` (5/5 PASS), `tests/odd-routing-contract.test.ts` (14/14 PASS), `tests/odd-routing-canonical-ratchet.test.ts` (7/7 PASS), `scripts/verify-package-files.mjs` (156 files PASS), and runtime modules check (PASS).
     - Addressed CodeRabbit review feedback on `assets/agents/gentle-ai-security.md`: aligned the agent description, purpose statement, and non-blocking rejection guidance so `gentle-ai-security` returns findings and evidence to the parent orchestrator (which owns updating the active ODD task file) rather than implying subagent ownership over ODD tasks.
-- Next: Author work-unit commit for review feedback, verify, and push to PR branch.
+- Previous continuation superseded by the full review implementation below. Historical checks above are not evidence for the new work.
 
-## Follow-up items
-- **Runtime enforcement gate for `gentle-ai-security`**: CodeRabbit noted that Pi's runtime does not enforce file-path or bash restrictions beyond prompt confinement. The orchestrator already documents "report test-authoring delegation unavailable if unenforceable" as the mitigation. A runtime gate analogous to `rejectUnscopedBoundedWriterDispatch` (checking allowed edit surfaces at dispatch time) would be a systematic improvement for all delegation agents, not only `gentle-ai-security`. This belongs to a separate PR/issue once the enforcement mechanism is designed.
+## Authorized review implementation
+The user authorized all proposals from the human review on PR #1537, including runtime, CodeGraph, and ODD changes previously deferred. Preserve historical SEC-1 through SEC-6 evidence; the contracts below supersede historical tool-confinement decisions.
+
+### Delivery and safety
+- Strategy: auto-chain, stacked-to-main, selected explicitly by the user. Verified upstream default branch: main.
+- Keep each entire PR diff at most 400 additions plus deletions, including tests and docs. Existing #1537 starts at 225 changed lines, head `0d5c5338`. Measure actual branch-base diffs before delivery; never compress code to fit.
+- Forecast: 8 or more coherent slices, approximately 2,000–3,200 changed lines total; refine after runtime mapping. First slice updates #1537 if its full diff fits; later branches target the preceding branch. Publishing slices is authorized; merging is not.
+- One writer at a time. Use delegated implementation for multi-file changes and command verification. Applicable deterministic behaviors require observed RED, GREEN, then focused refactor checks.
+- A role split is least privilege, not an OS sandbox. Tool admission is not per-edit enforcement. CodeGraph init creates an index. Bash/network guarantees require independently enforced isolation; do not pretend a command allowlist confines repository-controlled test execution.
+- No secrets or live external attacks. Mutation verification uses an isolated disposable candidate, never a destructive revert in the active tree. Policy edits require separate human approval, even for agents with write tools.
+
+### New tasks and proposed slice boundaries
+- [ ] SEC-7: Convert security to an analyst with read/grep/find/codegraph only; route test authoring to worker and execution to verifier; remove writable detection policy and circular fallback. Route: delegated multi-file writer. Checks: agent tools, generic contracts, ODD routing, packaging. Status: in progress.
+- [ ] SEC-8: Test real security dispatch and model/profile selection, including effective tool denial; use existing dispatch harness rather than prose-only assertions. Route: delegated writer. Checks: dispatch and profile integration tests.
+- [ ] SEC-9: Implement typed finding evidence and deterministic lifecycle validation: hypothesis/refuted/advisory/verified/remediated/locked; require assertion-specific RED, GREEN, isolated mutation RED, provenance, and independent severe-finding confirmation. Route: delegated writer. Checks: transition, malformed-evidence, setup-error, provenance and severity tests.
+- [ ] SEC-10: Add deterministic sensitive-diff floor using paths/dependencies/patterns; graph may only expand scope. Integrate automatic ODD consent routing and structured declined-audit records without blocking or inventing a vulnerability. Route: delegated writer. Checks: triggers, false-negative floors, consent and decline integration tests.
+- [ ] SEC-11: Extend bounded CodeGraph wrapper with structured callers/callees/impact/affected, index/commit provenance and affected regression selection with conservative fallback. Route: delegated writer. Checks: wrapper validation, output bounds, stale-index and missing-edge cases.
+- [ ] SEC-12: Respect telemetry opt-out in CodeGraph and child invocations; document index and subprocess side effects honestly. Route: delegated writer. Checks: subprocess environment, inherited overrides, no unintended enablement.
+- [ ] SEC-13: Bind per-actor identity and capabilities at spawn; reject prohibited tools/paths before execution and reject out-of-scope captured writes at exit without attributing unrelated concurrent changes to the child. Route: delegated writer. Checks: child hook, identity, path/glob/symlink, continuation and exit-capture integration tests.
+- [ ] SEC-14: Add protected versioned negative specification, deterministic enforcement and canaries; prevent actor modification of policy and .semgrep without human approval. Route: delegated writer. Checks: one violation canary per claimed invariant, policy ownership and malformed-policy fail-closed tests.
+- [ ] SEC-15: Implement the supported bash/network isolation path with explicit capability detection and safe unsupported-platform behavior, not prompt guarantees; keep ordinary user setup organic. Route: delegated writer following bounded architecture mapping. Checks: supported isolation and unsupported/missing-sandbox cases; report any unavailable OS checks.
+- [ ] SEC-16: Verify and publish all bounded slices, link dependencies and follow-ups, and respond to the reviewer with observed evidence. Route: delegated verifier plus parent delivery. Checks: per-slice focused/full applicable suites, <=400-line diffs, package integrity and user-owned native RDD boundaries.
+
+### Acceptance and progress
+- All proposals must have implemented behavior and applicable checks, or an explicit unresolved blocker; a prompt-only promise is not implementation of runtime enforcement.
+- No new ODD CLI, specialist orchestration runtime, mandatory manual configuration, or automatic merge. Existing parent/subagent flow remains the user-facing entry point.
+- Mapping received; reject scout suggestions that call test surfaces a sandbox or add mem_save to the read-only analyst. Broader runtime and CodeGraph mapping still required before their slices.
+- Next: implement SEC-7 with test-first contract changes, assess the candidate, verify independently as required, and measure the complete first PR diff. Engram recovery mirror is available again.

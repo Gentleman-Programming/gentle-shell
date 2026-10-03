@@ -126,6 +126,8 @@ export interface TaskRequest {
 	sessionDir: string;
 	resumeSessionPath: string | undefined;
 	env: NodeJS.ProcessEnv;
+	// Active parent MCP tools for dynamic runtime capability expansion (#1686).
+	mcpTools?: readonly string[] | string[];
 	// Untrusted narrowing intent; paths come only from matching host provenance.
 	extensionPaths?: string[];
 	// Synchronous admission recheck at dequeue, before any OS spawn. Throws fail
@@ -255,13 +257,41 @@ export function formatChildExit(code: number | null | undefined, signal?: string
 
 const hostProcess: ProcessControl = { platform: process.platform, kill: (pid, signal) => process.kill(pid, signal) };
 
+/**
+ * Expands declared agent tools for Pi 1.0 native MCP execution (#1686).
+ * When `mcp` is declared, it is treated as a runtime capability sentinel:
+ * 1. Omit the retired literal `mcp` token.
+ * 2. Add `codemode` and `tool_search` to enable Pi 1.0 native MCP execution and discovery.
+ * 3. Add all active parent MCP tools (`mcp__*`).
+ * When a scoped prefix like `mcp__<server>` is declared, it expands to `codemode`,
+ * `tool_search`, and tools matching `mcp__<server>__*`.
+ * Agents without `mcp` retain strict isolation with no MCP tools added.
+ */
+export function expandChildTools(tools: readonly string[], activeMcpTools: readonly string[] = []): string[] {
+	if (tools.length === 0) return [];
+	const expanded: string[] = [];
+	for (const tool of tools) {
+		if (tool === "mcp") {
+			expanded.push("codemode", "tool_search", ...activeMcpTools);
+		} else if (/^mcp__[a-zA-Z0-9_-]+$/.test(tool)) {
+			const prefix = `${tool}__`;
+			const matched = activeMcpTools.filter((t) => t.startsWith(prefix));
+			expanded.push("codemode", "tool_search", ...matched);
+		} else {
+			expanded.push(tool);
+		}
+	}
+	return [...new Set([...expanded, PARENT_NOTIFICATION_TOOL])];
+}
+
 export function childArguments(request: TaskRequest, instructionsPath?: string): string[] {
 	const args = ["--mode", "rpc", "--session-dir", request.sessionDir];
 	for (const path of request.extensionPaths ?? []) args.push("--extension", path);
 	if (request.resumeSessionPath) args.push("--session", request.resumeSessionPath);
 	if (request.model) args.push("--model", request.thinking ? `${formatModelRef(request.model)}:${request.thinking}` : formatModelRef(request.model));
 	else if (request.thinking) args.push("--thinking", request.thinking);
-	const tools = request.agent.tools.length > 0 ? [...new Set([...request.agent.tools, PARENT_NOTIFICATION_TOOL])] : DEFAULT_TOOLS;
+	const rawTools = request.agent.tools;
+	const tools = rawTools.length > 0 ? expandChildTools(rawTools, request.mcpTools) : DEFAULT_TOOLS;
 	if (tools.length > 0) args.push("--tools", tools.join(","));
 	if (instructionsPath) {
 		args.push("--append-system-prompt", instructionsPath);

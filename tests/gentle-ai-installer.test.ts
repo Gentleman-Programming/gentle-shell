@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
+import fsPromises from "node:fs/promises";
+import pathModule from "node:path";
+import { syncBuiltinESMExports } from "node:module";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { chmod, copyFile, mkdtemp, mkdir, readFile, readdir, rename, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdtemp, mkdir, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -158,6 +161,56 @@ test("win32 x64 and arm64 install the exact Go SumDB source tag without archive 
 		assert.deepEqual(fixture.calls.filter((call) => call.file === goPath).map((call) => call.arguments_.slice(0, 2)), [
 			["version"], ["install", "github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai@v4.0.0"], ["version", "-m"],
 		]);
+	}
+});
+
+test("long Windows staging prefixes publish and reuse a verified package-local bundle", async () => {
+	const root = await mkdtemp(join(tmpdir(), "gentle-pi-long-staging-"));
+	let packageRoot = root;
+	const stagingSuffix = join(".gentle-ai", `.v${INSTALLER_VERSION}.staging-`);
+	while (join(packageRoot, stagingSuffix).length + 6 <= 260) packageRoot = join(packageRoot, "deep".repeat(12));
+	assert.ok(join(packageRoot, stagingSuffix).length + 6 > 260, "the final mkdtemp path must exceed the legacy Windows bound");
+	const goPath = join(root, "go.exe");
+	const originalMkdtemp = fsPromises.mkdtemp;
+	const originalNamespace = pathModule.toNamespacedPath;
+	let longStagingCalls = 0;
+	try {
+		await writeFile(goPath, "trusted local Go executable");
+		// POSIX uses // as a filesystem-equivalent marker for the simulated
+		// Windows namespace. Native Windows uses its real path and filesystem APIs.
+		if (process.platform !== "win32") {
+			pathModule.toNamespacedPath = (value: string) => value.startsWith("/") ? `/${value}` : value;
+			fsPromises.mkdtemp = ((prefix: string, options?: Parameters<typeof originalMkdtemp>[1]) => {
+				if (prefix.includes(`.v${INSTALLER_VERSION}.staging-`) && prefix.length + 6 > 260) {
+					longStagingCalls += 1;
+					if (!prefix.startsWith("//")) return Promise.reject(Object.assign(new Error("long Windows mkdtemp prefix"), { code: "ENOENT" }));
+				}
+				return originalMkdtemp(prefix, options);
+			}) as typeof fsPromises.mkdtemp;
+			syncBuiltinESMExports();
+		}
+		const fixture = windowsGoFixture();
+		fixture.setGoExecutable(goPath);
+		const options = { packageRoot, platform: "win32", arch: "x64", execFile: fixture.run, resolveGoExecutable: async () => goPath };
+		const runtimeRoot = join(packageRoot, ".gentle-ai");
+		const failing = windowsGoFixture({ installError: new Error("fake Go failed") });
+		failing.setGoExecutable(goPath);
+		await assert.rejects(() => installGentleAi({ ...options, execFile: failing.run }), { code: "GENTLE_AI_GO_INSTALL_FAILED" });
+		assert.deepEqual(await readdir(runtimeRoot), [], "failed installs remove staging and their owned lock");
+		const installed = await installGentleAi(options);
+		assert.equal(installed.installed, true);
+		assert.equal(await readFile(join(runtimeRoot, `v${INSTALLER_VERSION}`, "gentle-ai.exe"), "utf8"), "trusted Windows source build");
+		const manifest = JSON.parse(await readFile(join(runtimeRoot, `v${INSTALLER_VERSION}`, "integrity.json"), "utf8"));
+		assert.equal(manifest.moduleChecksum, GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM);
+		assert.equal(manifest.binarySha256, createHash("sha256").update("trusted Windows source build").digest("hex"));
+		assert.equal((await installGentleAi(options)).installed, false);
+		assert.deepEqual(await readdir(runtimeRoot), [`v${INSTALLER_VERSION}`]);
+		if (process.platform !== "win32") assert.ok(longStagingCalls >= 2, "the simulated long-path boundary must be exercised");
+	} finally {
+		fsPromises.mkdtemp = originalMkdtemp;
+		pathModule.toNamespacedPath = originalNamespace;
+		syncBuiltinESMExports();
+		await rm(root, { recursive: true, force: true });
 	}
 });
 

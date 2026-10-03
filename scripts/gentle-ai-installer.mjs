@@ -13,7 +13,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import https from "node:https";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative, toNamespacedPath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -644,7 +644,7 @@ async function installWindowsGentleAiFromGoSumdb(options, packageRoot, architect
 	const execute = options.execFile ?? execFileAsync;
 	return withInstallLock(packageRoot, options, async (runtimeRoot) => {
 		await cleanupStaleStagingBundles(runtimeRoot);
-		const stagingDirectory = await mkdtemp(join(runtimeRoot, `.v${INSTALLER_VERSION}.staging-`));
+		const stagingDirectory = await mkdtemp(toNamespacedPath(join(runtimeRoot, `.v${INSTALLER_VERSION}.staging-`)));
 		try {
 			await chmod(stagingDirectory, 0o700);
 			const buildDirectory = join(stagingDirectory, ".build");
@@ -679,7 +679,7 @@ async function installSignedRelease(options, packageRoot, platform, arch, asset)
 		await cleanupStaleStagingBundles(runtimeRoot);
 		const existing = versionBundlePath(runtimeRoot);
 		if (await existingSignedBundleMatches(existing, asset, platform)) return { installed: false, binaryPath: join(existing, asset.executable), asset };
-		const stagingDirectory = await mkdtemp(join(runtimeRoot, `.v${INSTALLER_VERSION}.staging-`));
+		const stagingDirectory = await mkdtemp(toNamespacedPath(join(runtimeRoot, `.v${INSTALLER_VERSION}.staging-`)));
 		try {
 			const form = gentleAiAssetForm(asset.name);
 			const archive = join(stagingDirectory, asset.name);

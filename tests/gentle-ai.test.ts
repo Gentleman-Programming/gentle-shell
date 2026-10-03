@@ -3484,7 +3484,14 @@ test("Enter binds the selected profile to the parent session and writes nothing"
 	assert.equal(readFileSync(settingsPath, "utf8"), before.settings, "Pi settings are untouched");
 	assert.equal(existsSync(fixture.globalPath), false, "no global models.json is written");
 	assert.equal(existsSync(join(fixture.root, ".pi", "subagents.json")), false, "no materialized store is written");
-	assert.match(notifications.at(-1)?.message ?? "", /session/i);
+	// gentle-shell#1557: slice 1 stores the binding; the notice must not claim
+	// launch resolution (that is slice 2, gentle-shell#1558) and must keep the
+	// nothing-was-written sentence.
+	const applied = notifications.at(-1)?.message ?? "";
+	assert.match(applied, /bound profile "team" to this session/);
+	assert.match(applied, /stored for this session; launch routing is unchanged/, "the notice states the binding is stored without claiming launch resolution");
+	assert.match(applied, /global routing, pins, and materialized stores are untouched/);
+	assert.doesNotMatch(applied, /launch(?:es)?[^.]*resolve/i, "slice 1 must not claim launches resolve the binding");
 	resetSessionProfileBindingsForTesting();
 });
 

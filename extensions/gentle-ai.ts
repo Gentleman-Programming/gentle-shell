@@ -4006,12 +4006,14 @@ class ProfilesPanel implements OverlayComponent {
 			// any invalid or stale layer, and the scope sentence all come from the shared
 			// precedence rule the launch resolver uses.
 			...profilePinDetailLines(this.pinStatus, this.file.profiles).map((line) => this.renderLine(line, width, "muted")),
-			// gentle-shell#1064 slice 1: a session binding outranks the pin for this
-			// session's launches, so it is named right after the pin layers it
-			// supersedes — the same "name (session)" spelling the shell bar shows.
+			// gentle-shell#1064 slice 1: the binding is stored for this session and
+			// outranks the pin in the panel list, so it is named right after the pin
+			// layers. Launch resolution ships with slice 2 (gentle-shell#1558); this
+			// slice stores the binding only, launch routing is unchanged, and nothing
+			// was written.
 			...(this.sessionBoundName === undefined
 				? []
-				: [this.renderLine(`session        ${sanitizeTerminalText(this.sessionBoundName)} (session) — this session's launches resolve it; nothing was written`, width, "muted")]),
+				: [this.renderLine(`session        ${sanitizeTerminalText(this.sessionBoundName)} (session) — stored for this session; launch routing is unchanged; nothing was written`, width, "muted")]),
 			"",
 			this.renderLine("Profile routing", width, "accent"),
 			...this.indentLines(this.routingLines(profileRows, widths), width),
@@ -4209,9 +4211,9 @@ async function runProfilesPanelAction(
 			// parent session. The binding is in-process state keyed by the session
 			// id: it writes no store marker, no global routing, no materialized
 			// stores, no agent frontmatter, no Pi settings, and no pin or declaration
-			// layer, pin or not. Launches from this session resolve it ahead of
-			// p/P/global; queued and running children keep the routing their task
-			// requests already carry. Refreshing the binding means selecting again.
+			// layer, pin or not. This slice stores the binding only: launch routing
+			// is unchanged until slice 2 (gentle-shell#1558) resolves the binding
+			// at launch. Refreshing the binding means selecting again.
 			const sessionId = ctx.sessionManager?.getSessionId?.();
 			if (typeof sessionId !== "string" || sessionId.length === 0) {
 				ctx.ui.notify(
@@ -4222,7 +4224,7 @@ async function runProfilesPanelAction(
 			}
 			bindSessionProfile(sessionId, result.name, normalizeModelConfig(file.profiles[result.name]) ?? {});
 			ctx.ui.notify(
-				`el Gentleman bound profile "${result.name}" to this session — shown as "${result.name} (session)". Subagent launches from this session resolve it; queued and running children keep their routing. Nothing was written: the global routing, pins, and materialized stores are untouched. Set as global default with a.`,
+				`el Gentleman bound profile "${result.name}" to this session — shown as "${result.name} (session)". The binding is stored for this session; launch routing is unchanged. Nothing was written: the global routing, pins, and materialized stores are untouched. Set as global default with a.`,
 				"info",
 			);
 			return file;

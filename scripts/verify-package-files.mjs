@@ -18,6 +18,7 @@ const requiredPaths = [
   "assets/orchestrator-memory.md",
   "assets/orchestrator-skills.md",
   "assets/agents/gentle-ai-explore.md",
+  "assets/agents/gentle-ai-security.md",
   "assets/agents/gentle-ai-verify.md",
   "assets/agents/gentle-ai-worker.md",
   "assets/agents/jd-fix-agent.md",

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -246,4 +246,26 @@ test("a pinned profile replaces subagent routing and leaves every other default 
 	// A pinned profile that mentions no role still replaces the routing, so a
 	// repository can pin "everything inherits" without touching the global store.
 	assert.deepEqual(withPinnedModelProfiles(global, {}).modelProfiles, {});
+});
+
+// SEC-8: discoverAgents loads the packaged gentle-ai-security asset
+// from an isolated agent home written with the actual asset content.
+test("discoverAgents loads packaged gentle-ai-security with read-only tool list", () => {
+	const base = mkdtempSync(join(tmpdir(), "gentle-agents-config-sec-"));
+	try {
+		const agentHome = join(base, "agent");
+		mkdirSync(join(agentHome, "agents"), { recursive: true });
+		const assetPath = join(process.cwd(), "assets", "agents", "gentle-ai-security.md");
+		writeFileSync(join(agentHome, "agents", "gentle-ai-security.md"), readFileSync(assetPath, "utf8"));
+		const { agents, errors } = discoverAgents({ cwd: base, home: base, agentHome });
+		assert.deepEqual(errors, []);
+		const security = agents.find((a) => a.name === "gentle-ai-security");
+		assert.ok(security, "gentle-ai-security must be discovered");
+		assert.deepEqual(security.tools, ["read", "grep", "find", "codegraph"]);
+		for (const denied of ["edit", "write", "bash", "mem_save"]) {
+			assert.ok(!security.tools.includes(denied), `security analyst must not have tool: ${denied}`);
+		}
+	} finally {
+		rmSync(base, { recursive: true, force: true });
+	}
 });

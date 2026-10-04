@@ -65,6 +65,8 @@ export interface RunnerLimits {
 	// Longer ceiling used while an announced tool call is in flight. Optional so
 	// callers that only bound silence keep the idle budget as the tool ceiling.
 	toolStallTimeoutMs?: number;
+	// Bounded asynchronous cleanup window allowed after settlement before escalating to SIGTERM/SIGKILL.
+	cleanupTimeoutMs?: number;
 }
 
 export interface AskAnswer {
@@ -220,6 +222,7 @@ const DEFAULT_TOOLS: readonly string[] = [];
 const TERMINATION_GRACE_MS = 250;
 const GROUP_CONFIRM_MS = 25;
 const GROUP_CONFIRM_DEADLINE_MS = 1_000;
+export const DEFAULT_CLEANUP_TIMEOUT_MS = 5_000;
 const QUERY_REJECTION_ERRORS = new Set([
 	"invalid child IPC frame",
 	"invalid child IPC correlation",
@@ -807,9 +810,9 @@ export class AgentRunner {
 			if (event.type === TASK_EVENT.AGENT_SETTLED) {
 				if (live.observations) live.observations.agentSettled = true;
 				const terminal = this.store.get(id);
-				if (terminal?.error) this.requestStop(id, TASK_STATUS.FAILED, terminal.error);
-				else if (terminal?.result) this.requestStop(id, TASK_STATUS.COMPLETED, null);
-				else this.requestStop(id, TASK_STATUS.FAILED, "assistant settled without a final report");
+				if (terminal?.error) this.settleOrderly(id, TASK_STATUS.FAILED, terminal.error);
+				else if (terminal?.result) this.settleOrderly(id, TASK_STATUS.COMPLETED, null);
+				else this.settleOrderly(id, TASK_STATUS.FAILED, "assistant settled without a final report");
 			}
 		}
 		if (!live.terminal && progress) this.armStall(id, live);
@@ -848,6 +851,37 @@ export class AgentRunner {
 		} catch {
 			// already gone
 		}
+	}
+
+	private settleOrderly(id: string, status: TaskRecord["status"], error: string | null): void {
+		const live = this.live.get(id);
+		if (!live || live.terminal) return;
+		live.terminal = { status, error };
+		live.mutationStarts.clear();
+		live.inFlightTools.clear();
+		live.cleanupDeadlineAt = this.deps.now() + GROUP_CONFIRM_DEADLINE_MS;
+		live.permissionBroker?.close();
+		this.closeIpc(live);
+		live.cancelStall();
+		const current = this.store.get(id);
+		if (current && !isFinished(current.status)) {
+			this.store.update(id, { lastStep: "cleaning up" });
+		}
+		try {
+			live.child.stdin.end();
+		} catch {
+			this.signal(live, "SIGTERM");
+		}
+		const cleanupTimeoutMs = this.limits.cleanupTimeoutMs ?? DEFAULT_CLEANUP_TIMEOUT_MS;
+		live.cancelGrace = this.deps.schedule(() => {
+			if (this.live.get(id) !== live) return;
+			this.signal(live, "SIGTERM");
+			live.cancelGrace = this.deps.schedule(() => {
+				if (this.live.get(id) !== live) return;
+				this.signal(live, "SIGKILL");
+				this.confirmGroupExit(id, live);
+			}, TERMINATION_GRACE_MS);
+		}, cleanupTimeoutMs);
 	}
 
 	private requestStop(id: string, status: TaskRecord["status"], error: string | null, abort = false): void {

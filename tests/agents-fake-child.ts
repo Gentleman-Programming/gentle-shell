@@ -38,6 +38,12 @@ export function fakeChild(options: { exitOnKill?: boolean; pid?: number } = {}):
 			stdout.write(`${JSON.stringify({ type: "response", id: command.id, command: command.type, success: true, data })}\n`);
 		}
 	});
+	const origEnd = stdin.end.bind(stdin);
+	stdin.end = ((...args: unknown[]) => {
+		const res = (origEnd as Function)(...args);
+		if (options.exitOnKill !== false) queueMicrotask(() => emitter.emit("exit", 0, null));
+		return res;
+	}) as typeof stdin.end;
 	const child: ChildLike = {
 		pid: options.pid,
 		stdin,

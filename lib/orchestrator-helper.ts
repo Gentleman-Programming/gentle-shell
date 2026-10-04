@@ -52,6 +52,17 @@ interface Envelope {
 	requestCaps: { inputBytes: number; questionBytes: number; maxTokens: number; outputBytes: number; deadlineMs: number };
 	usage: Record<string, number | "unknown"> | "unknown"; text?: string; partial?: boolean;
 }
+/** Shared dry-run projection/budget check: no registry access or model execution. */
+export function preflightHelper(receipt: MetadataReceipt, question: string, model: Model<Api>) {
+	if (typeof question !== "string" || !question.trim() || Buffer.byteLength(question) > 1024
+		|| /[\p{Cc}\p{Cf}\p{Cs}]/u.test(question)) return { code: "invalid-question" as const };
+	try {
+		const source = capture(receipt);
+		const content = JSON.stringify({ question, source, targetModel: { provider: model.provider, id: model.id } });
+		if (Buffer.byteLength(SYSTEM) + Buffer.byteLength(content) > 16384) return { code: "input-too-large" as const };
+		return { content, source };
+	} catch { return { code: "invalid-source" as const }; }
+}
 /** Trusted internal execution core, NOT cost authorization. Future UI must authorize before invocation.
  * Loading/constructing never starts a model. One lease per host engine survives abort until actual settlement. */
 export class OrchestratorHelper {
@@ -62,6 +73,7 @@ export class OrchestratorHelper {
 		this.registry = registry;
 		this.deadlineMs = Number.isFinite(options.deadlineMs) ? Math.max(1, Math.min(20_000, options.deadlineMs!)) : 20_000;
 	}
+	get busy() { return this.active !== undefined; }
 	cancel() { this.active?.abort(); } // Never release a potentially still-billable lease.
 	async run(r: Request): Promise<Envelope> {
 		const base: Envelope = { kind: "advice", source: "helper_advice", ownerReply: false, authority: "none", status: "unavailable",
@@ -73,15 +85,10 @@ export class OrchestratorHelper {
 		if (this.active) return fail("busy");
 		if (r.signal?.aborted) return fail("cancelled");
 		if (!current()) return fail("stale-source");
-		if (typeof r.question !== "string" || !r.question.trim() || Buffer.byteLength(r.question) > 1024
-			|| /[\p{Cc}\p{Cf}\p{Cs}]/u.test(r.question)) return fail("invalid-question");
-		let content: string;
-		try {
-			const source = capture(r.receipt);
-			base.snapshotDigest = source.digest ?? null; base.capturedAt = source.observedAt ?? null; base.targetSessionId = source.targetSessionId ?? null;
-			content = JSON.stringify({ question: r.question, source, targetModel: base.requestedModel });
-		} catch { return fail("invalid-source"); }
-		if (Buffer.byteLength(SYSTEM) + Buffer.byteLength(content) > 16384) return fail("input-too-large");
+		const prepared = preflightHelper(r.receipt, r.question, r.model);
+		if (prepared.code) return fail(prepared.code);
+		const { content, source } = prepared;
+		base.snapshotDigest = source.digest ?? null; base.capturedAt = source.observedAt ?? null; base.targetSessionId = source.targetSessionId ?? null;
 		if (r.signal?.aborted) return fail("cancelled");
 		if (!current()) return fail("stale-source");
 		const controller = new AbortController();

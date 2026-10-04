@@ -333,6 +333,44 @@ Base `d12c8ca5`, previous PR #1734 (347 lines; actual SDK parent rerun passed, c
   verdict, interactive TUI or Windows proof claimed. Parent prep preserved;
   parent owns mirror, assessment/review, commits and delivery. Rollback boundary:
   new internal helper/test plus this unit's docs/task text only.
+
+## Unit 9: explicit opt-in reasoning consultation (in progress)
+
+Base `938e06e6`, previous PR #1735 (385 lines; 214 functional tests and metadata SDK regression passed). Branch `feat/1702-reasoning-consult`. Connect the bounded helper to an explicit reasoning mode of `orchestrator_consult`, with real supported UI choice and live session/model/target-bound, revocable in-memory cost permission. Metadata remains the default zero-call lane; headless mode fails closed. Revalidate source and caller around dialogs/model work, retain hard non-authority and never derive consent from messages or published notes. SDK nested-call acceptance must be separate evidence from metadata-only SDK proof; correlated owner decisions remain a later protocol unit.
+
+### Unit 9a: permission coordinator and host guard (public wiring deferred)
+
+One authorized cohesive slicing pass keeps this unit under the full 400-line
+review budget: shared helper preflight/busy guard plus ephemeral cost-permission
+coordinator, deterministic tests and docs. No extension/public tool edits; the
+public reasoning and revocation modes, lifecycle hookup and actual nested-SDK
+acceptance remain Unit 9b. The coordinator requires live host/source callbacks;
+it is not a second authority registry and never starts a run just to grant.
+
+- RED: authorized eight-file Node command reported 214 passed / one failed,
+  missing new permission module (import-boundary RED, not a registered-mode
+  behavior failure). GREEN: same command finally reported 221 passed / zero
+  failed, including scope eviction, running-source/host changes, missing model,
+  pre-abort, in-place provider/ID changes and sanitized UI errors.
+- Simulated UI tests cover closed denial/unknown choices, headless, malformed and
+  oversized inputs before UI, once versus session reuse, changed public snapshots,
+  exact manager/ID/cwd/model/registry/target isolation, pending concurrency,
+  abort/revoke/changed-source-after-dialog and hung lease across registry changes.
+  Published decision text grants nothing; no real human UI proof is claimed.
+- Actual existing SDK command passed one metadata regression only; no nested
+  helper, interactive TUI, public reasoning denial or owner decision proof.
+- CodeGraph root/index check failed before scoped reads; no out-of-scope init.
+  Full installed SDK/extensions/TUI/RPC/models and relevant UI/session/virtual-model
+  references plus actual public context/dialog/registry declarations were read.
+  Parent preparation is preserved; parent owns mirror, review and delivery.
+  Both issues remain OPEN. Rollback: coordinator/tests, shared preflight/busy API
+  and this slice's docs only; preserve metadata/core execution contracts.
+- Final `node scripts/check-types.mjs`: 186 diagnostics, no regressions, 12 pairs
+  improved; one new fixture literal-inference diagnostic was corrected first.
+  `node scripts/build-runtime-modules.mjs --check`: eight modules match, metrics
+  validated. `git diff --check` passed. Existing non-Git fixture warnings remain.
+  No installs, dependency/profile/source mutation outside authorized fixtures,
+  staging, commits, pushes, PRs, spawning/delegation or merge operations.
 ### CI fixture readiness correction (local verification; remote recovery pending)
 - Historical CI RED supplied by parent: run `37156574198`, job `111301069665`, SDK line 199 expected two records but observed one; 4,637 passed / one failed / 34 skipped. Logical sender ID exists before asynchronous socket publication and is not transport readiness. No new production RED or delayed-start reproduction claimed; strict TDD not active.
 - Each actual SDK host now awaits its own SessionManager ID in private transport presence with an actual socket under the exact guarded leaf, a five-second deadline and short I/O yields. The exact two-record assertion remains, strengthened with owner/caller IDs, schema and private file UID/mode checks; no extra model turns or production changes. Replacement uses the same guard; 30-second test cap and owned-output cleanup remain unchanged.

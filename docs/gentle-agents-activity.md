@@ -131,6 +131,27 @@ unknown). Thinking is dropped; permission claims remain untrusted text with
 remote billing caps. Unit tests use local controlled SDK-compatible streams;
 the SDK fixture below still proves metadata only, not nested-helper execution.
 
+### Cost-permission coordinator (internal integration slice)
+
+`lib/orchestrator-helper-consent.ts` prepares the next public reasoning lane; it
+is **not wired to `orchestrator_consult` yet**. Metadata remains unchanged. The
+coordinator uses supported `ctx.ui.select` in TUI/RPC, with exactly Allow once,
+Allow this target + model for this session, and Decline. Unknown responses and
+headless contexts fail closed. The forecast names the configured provider/model,
+captured public target/time, all core bounds and the non-guaranteed billing limit.
+This is model-cost permission only, never messaging or native-action consent.
+
+The host must supply its live context and canonical bounded source readers, and
+call `clear()` on session/reload/shutdown boundaries. Grants bind exact manager,
+session ID, cwd, model object/provider/ID, registry and logical target; at most
+eight targets survive in memory. Updated public snapshots may reuse a session
+grant; once never caches. `revoke(target)` invalidates pending choices and cancels
+the helper without releasing a still-billable lease. Shared core preflight runs
+before dialogs; source digest/recency is rechecked afterward and host/source
+currentness guards execution. No notes, message grants or model text grant cost.
+Tests simulate SDK UI responses, not actual human approval. Public tool wiring,
+lifecycle hookup, public revocation and actual nested-SDK proof remain next-unit work.
+
 ### Public-SDK acceptance fixture
 
 `tests/orchestrator-consultation-sdk.test.ts` uses installed Pi SDK 1.0.0:

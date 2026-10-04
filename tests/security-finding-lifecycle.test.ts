@@ -6,7 +6,10 @@ import {
 	SecurityFindingTransitionError,
 	transitionSecurityFinding,
 } from "../lib/security-finding-lifecycle.ts";
-import type { SecurityExecutionReceipt } from "../lib/security-execution-receipt.ts";
+import {
+	type SecurityExecutionReceipt,
+	validateExecutionReceipt,
+} from "../lib/security-execution-receipt.ts";
 
 function makeSyntheticReceipt(overrides: {
 	observedOutcome?: "pass" | "fail_assertion" | "fail_setup";
@@ -18,6 +21,7 @@ function makeSyntheticReceipt(overrides: {
 	const ptSha = overrides.ptSha ?? tSha;
 	const outcome = overrides.observedOutcome ?? "fail_assertion";
 	const isPass = outcome === "pass";
+	const isFailSetup = outcome === "fail_setup";
 
 	return {
 		id: "11111111-2222-4333-8444-555555555555",
@@ -42,8 +46,8 @@ function makeSyntheticReceipt(overrides: {
 			observedOutcome: outcome,
 			eventsObserved: 2,
 			truncated: false,
-			failureType: isPass ? undefined : "testCodeFailure",
-			assertionFailure: isPass
+			failureType: isPass ? undefined : (isFailSetup ? "testContextFailure" : "testCodeFailure"),
+			assertionFailure: isPass || isFailSetup
 				? undefined
 				: {
 						code: "ERR_ASSERTION",
@@ -139,11 +143,13 @@ describe("SecurityFindingLifecycle State Machine", () => {
 
 	it("transitions from hypothesis to verified with valid RED receipt", () => {
 		const finding = createSecurityFinding(defaultParams);
-		const receipt = makeSyntheticReceipt({
-			observedOutcome: "fail_assertion",
-			failureType: "testCodeFailure",
-			code: "ERR_ASSERTION",
-		});
+		// makeSyntheticReceipt with fail_assertion produces: exit code 1, failureType testCodeFailure, assertionFailure ERR_ASSERTION
+		const receipt = makeSyntheticReceipt({ observedOutcome: "fail_assertion" });
+		// Explicitly confirm the receipt validates to valid_red before exercising the transition
+		const validation = validateExecutionReceipt(receipt);
+		assert.equal(validation.validationState, "valid_red",
+			`Expected valid_red receipt for verification, got ${validation.validationState}: ${validation.failureReason ?? "unknown"}`
+		);
 		const verified = transitionSecurityFinding(finding, {
 			toState: "verified",
 			evidence: {
@@ -159,7 +165,11 @@ describe("SecurityFindingLifecycle State Machine", () => {
 			...defaultParams,
 			severity: "HIGH",
 		});
+		// Confirm the receipt validates to valid_red so independent-confirmation is the sole rejection cause
 		const receipt = makeSyntheticReceipt({});
+		assert.equal(validateExecutionReceipt(receipt).validationState, "valid_red",
+			"Precondition: receipt must be valid_red so only independent-confirmation rules are exercised"
+		);
 
 		// Missing independent confirmation -> fails
 		assert.throws(
@@ -215,7 +225,7 @@ describe("SecurityFindingLifecycle State Machine", () => {
 	it("rejects non-assertion failures, setup failures, and harness errors for verified transition", () => {
 		const finding = createSecurityFinding(defaultParams);
 
-		// Setup failure
+		// Setup failure: validateExecutionReceipt will reject because outcome is not pass or fail_assertion
 		assert.throws(
 			() =>
 				transitionSecurityFinding(finding, {
@@ -225,10 +235,12 @@ describe("SecurityFindingLifecycle State Machine", () => {
 						receipt: makeSyntheticReceipt({ observedOutcome: "fail_setup" }),
 					},
 				}),
-			SecurityFindingTransitionError,
+			(err: any) =>
+				err instanceof SecurityFindingTransitionError &&
+				err.message.includes("Verification requires valid RED execution receipt, got invalid: Unacceptable outcome: fail_setup"),
 		);
 
-		// Drifted test hash
+		// Drifted test hash: validateExecutionReceipt will reject because tSha !== ptSha
 		assert.throws(
 			() =>
 				transitionSecurityFinding(finding, {
@@ -241,10 +253,12 @@ describe("SecurityFindingLifecycle State Machine", () => {
 						}),
 					},
 				}),
-			SecurityFindingTransitionError,
+			(err: any) =>
+				err instanceof SecurityFindingTransitionError &&
+				err.message.includes("Verification requires valid RED execution receipt, got invalid: Invalid or drifted content hash"),
 		);
 
-		// Mismatched test name or file
+		// Mismatched test name or file: passes receipt validation but fails checkTargetBinding
 		assert.throws(
 			() =>
 				transitionSecurityFinding(finding, {
@@ -254,7 +268,9 @@ describe("SecurityFindingLifecycle State Machine", () => {
 						receipt: makeSyntheticReceipt({ testName: "other test" }),
 					},
 				}),
-			SecurityFindingTransitionError,
+			(err: any) =>
+				err instanceof SecurityFindingTransitionError &&
+				err.message.includes("Receipt target mismatch"),
 		);
 	});
 
@@ -271,15 +287,16 @@ describe("SecurityFindingLifecycle State Machine", () => {
 		});
 		assert.equal(verified.state, "verified");
 
-		// 2. Verified -> Remediated (with GREEN receipt)
+		// 2. Verified -> Remediated (with GREEN receipt: observedOutcome pass, exit code 0, no failureType)
+		const greenReceipt = makeSyntheticReceipt({ observedOutcome: "pass" });
+		assert.equal(validateExecutionReceipt(greenReceipt).validationState, "valid_green",
+			"Precondition: remediation receipt must validate to valid_green"
+		);
 		const remediated = transitionSecurityFinding(verified, {
 			toState: "remediated",
 			evidence: {
 				kind: "remediation",
-				receipt: makeSyntheticReceipt({
-					observedOutcome: "pass",
-					exitCode: 0,
-				}),
+				receipt: greenReceipt,
 			},
 		});
 		assert.equal(remediated.state, "remediated");

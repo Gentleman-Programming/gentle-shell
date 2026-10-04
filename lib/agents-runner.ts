@@ -264,7 +264,8 @@ const hostProcess: ProcessControl = { platform: process.platform, kill: (pid, si
  * 2. Add `codemode` and `tool_search` to enable Pi 1.0 native MCP execution and discovery.
  * 3. Add all active parent MCP tools (`mcp__*`).
  * When a scoped prefix like `mcp__<server>` is declared, it expands to `codemode`,
- * `tool_search`, and tools matching `mcp__<server>__*`.
+ * `tool_search`, and matching `mcp__<server>__*` tools only when matching active tools exist.
+ * If no matching tools exist for that server prefix, discovery tools are omitted.
  * Agents without `mcp` retain strict isolation with no MCP tools added.
  */
 export function expandChildTools(tools: readonly string[], activeMcpTools: readonly string[] = []): string[] {
@@ -276,7 +277,9 @@ export function expandChildTools(tools: readonly string[], activeMcpTools: reado
 		} else if (/^mcp__[a-zA-Z0-9_-]+$/.test(tool)) {
 			const prefix = `${tool}__`;
 			const matched = activeMcpTools.filter((t) => t.startsWith(prefix));
-			expanded.push("codemode", "tool_search", ...matched);
+			if (matched.length > 0) {
+				expanded.push("codemode", "tool_search", ...matched);
+			}
 		} else {
 			expanded.push(tool);
 		}

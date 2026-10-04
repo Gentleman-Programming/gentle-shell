@@ -772,6 +772,38 @@ test("childArguments preserves strict tool isolation when agent omits mcp (#1686
 	assert.deepEqual(tools, ["read", "bash", "subagent_parent_message"]);
 });
 
+test("childArguments retains codemode and tool_search when mcp is declared even with no active MCP tools (#1686)", () => {
+	const req = request({
+		agent: { ...explorer, tools: ["read", "mcp"] },
+		mcpTools: [],
+	});
+	const args = childArguments(req);
+	const toolsArg = args[args.indexOf("--tools") + 1];
+	const tools = toolsArg.split(",");
+
+	assert.ok(!tools.includes("mcp"));
+	assert.ok(tools.includes("codemode"));
+	assert.ok(tools.includes("tool_search"));
+	assert.deepEqual(tools, ["read", "codemode", "tool_search", "subagent_parent_message"]);
+});
+
+test("childArguments omits codemode and tool_search when scoped mcp__<server> has no matching tools (#1686)", () => {
+	const activeMcpTools = ["mcp__notion__search"];
+	const req = request({
+		agent: { ...explorer, tools: ["read", "mcp__context7"] },
+		mcpTools: activeMcpTools,
+	});
+	const args = childArguments(req);
+	const toolsArg = args[args.indexOf("--tools") + 1];
+	const tools = toolsArg.split(",");
+
+	assert.ok(!tools.includes("mcp__context7"), "server prefix token must be omitted");
+	assert.ok(!tools.includes("codemode"), "codemode must be omitted when no scoped tools match");
+	assert.ok(!tools.includes("tool_search"), "tool_search must be omitted when no scoped tools match");
+	assert.ok(!tools.includes("mcp__notion__search"), "unscoped servers must not be included");
+	assert.deepEqual(tools, ["read", "subagent_parent_message"]);
+});
+
 test("AgentRunner admits strict live notifications once and closes IPC before Stop", async () => {
 	const notifications: string[] = [];
 	const { runner, children, spawnOptions } = harness({ onNotification: (task, message) => task.parentSessionId === "s1" && (notifications.push(message), true) });

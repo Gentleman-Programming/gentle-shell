@@ -94,12 +94,16 @@ const ANCHORS: readonly RoutingAnchor[] = [
 		],
 	},
 	{
-		label: "writer trigger fires only for a large task, never by file count",
-		canonical: "**Writer trigger:** a large task delegates one bounded writer per task; file count never fires this trigger",
-		// Gentle Shell intentionally leads the canon here (gentle-shell#1731): the
-		// writer fires on named reasons (parallelism, context), never on size
-		// alone; T24 turned the price-ratio reason off. The canon port is G1 in
-		// odd/tasks/delegate-for-reason.md.
+		label: "writer trigger fires only for a named reason (gentle-shell#1731)",
+		canonical: "**Writer trigger:** a writer is delegated only for a named reason, one bounded writer per unit",
+		mirrors: [
+			{ surface: DELEGATION, includes: "Delegate one bounded writer per unit only for a named reason" },
+			{ surface: CORE, includes: "only for a reason (`orchestrator-writer.md`)" },
+		],
+	},
+	{
+		label: "writer trigger never fires on size, a large task alone, or file count",
+		canonical: "Never delegate a writer for size, a large task alone, file count, or a price ratio; file count never fires this trigger",
 		mirrors: [
 			{ surface: DELEGATION, includes: "**Writer trigger (Writer rule):** a large task alone never delegates, and file count never fires this trigger" },
 			{ surface: CORE, includes: "**Writer rule** — never by file count or a large task alone" },
@@ -136,9 +140,7 @@ const ANCHORS: readonly RoutingAnchor[] = [
 	},
 	{
 		label: "long-session backstop",
-		canonical: "**Long-session backstop:**",
-		// Gentle Shell intentionally leads the canon here: a parent-context token
-		// backstop replaces the tool-call count (tracked by gentle-ai#5139).
+		canonical: "**Long-session backstop:** at approximately 150k parent-context tokens, pause and delegate the next bounded unit",
 		mirrors: [
 			{ surface: DELEGATION, includes: "**Context backstop:** when the parent context passes ~150k tokens" },
 			{ surface: CORE, includes: "**Context backstop** — parent context past ~150k tokens" },

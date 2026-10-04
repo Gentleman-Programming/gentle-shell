@@ -114,9 +114,56 @@ Reuse canonical Git root/common-directory resolution for the host, launch-owned 
 
 ## Next stacked units / remaining acceptance
 
-#1701 remains open: recorded repository/worktree context and bounded registered-root facts are implemented in Unit 3; full registered-root coverage beyond eight facts/byte limits and scalable bounded continuation remain separate acceptance work. Isolated actual SDK profile readback passed; interactive TUI was not exercised. Subject declaration and canonical rename refresh are delivered by Unit 2. Finished/restored children remain excluded from active writer metadata. First-page overflow conservatively leaves context unknown; older publishers remain visible but have unknown discovery metadata.
+#1701 remains open: recorded repository/worktree context and bounded registered-root facts are implemented in Unit 3; Unit 4 now supplies bounded recorded-path continuation beyond eight entries; Git facts beyond the existing prefix and overflow beyond the explicit catalog bounds remain unknown. Isolated actual SDK profile readback passed; interactive TUI was not exercised. Subject declaration and canonical rename refresh are delivered by Unit 2. Finished/restored children remain excluded from active writer metadata. First-page overflow conservatively leaves context unknown; older publishers remain visible but have unknown discovery metadata.
 #1702 remains separate: metadata alone cannot answer arbitrary cross-session reasoning questions.
 
-Pending product decision before its model-backed lane: choose permitted context (published status/summaries only, bounded recent conversation, or separately authorized read-only declared files). No auxiliary may forge an owner decision. Metadata-only queries and bounded scope continuation are still pending; do not report the complete feature as delivered.
+Context decision accepted: initial consultations use published status and curated summaries only. Automatic conversation/system-prompt/file sharing is not authorized; any future expansion needs explicit user enablement. No auxiliary may forge an owner decision. Metadata-only queries, reasoning and decision handling remain pending.
 
-Rollback boundary: remove this unit's optional sidecar/projection/join and restore raw-ID-only `orchestrator_list`, together with its tests/docs; do not touch transport messaging, existing activity threads, dependency artifacts, or unrelated work.
+## Unit 4: bounded metadata continuation (native review approved; SDK acceptance pending)
+
+Parent: behavior commit `8a9ccc66` passed native `review-reliability` (`review-657ff6e298bd22b3`), approved and acknowledged/burned. Its non-blocking catalog-write-isolation advisory belongs to later work; the approved review is not reopened. Actual SDK continuation remains unverified (missing adapter), unlike Unit 3's prior SDK proof.
+
+Previous PR: #1720; branch `feat/1701-scope-continuation`, base `9acd5a81`. Continue owned task and recorded registered-workspace metadata past the first eight facts through private, activation/snapshot-bound pages. Reuse existing sources; no transcript/thread reads, extra model calls, receiver wakeups or extra Git probes per heartbeat. Preserve bounded omissions and unknown Git facts for unvisited roots.
+
+Rollback boundary: remove this unit's optional catalog/projection/join and restore the previous first-page `orchestrator_list`, together with its tests/docs; do not touch transport messaging, existing activity threads, dependency artifacts, or unrelated work.
+
+- One private sibling snapshot per activation: 64 KiB maximum, 64 children and
+  64 recorded registry paths, eight of each per page, at most eight pages. Whole
+  entry overflow has exact omission counts; unsafe literal paths are null.
+- Cursors pin session/incarnation, activation and canonical public-catalog
+  digest with publisher-minted page tokens. Envelope/header generation still agrees on each read. Caller mutation is detached; stable
+  publication is cached. Header schema and existing Git prefix remain unchanged.
+- RED: `node --experimental-strip-types --test tests/orchestrator-catalog.test.ts`
+  failed 0/1 passing: missing `catalog.tasks` with ten children and ten roots.
+  GREEN: same command passed the new behavior; expanded alternates passed 2/2.
+- Historical pre-correction: `node --experimental-strip-types --test tests/orchestrator-presence.test.ts tests/orchestrator-discovery.test.ts tests/gentle-agents.test.ts tests/orchestrator-catalog.test.ts`
+  passed 197/197. Existing non-repository/missing-cwd Git fixture warnings remain.
+- Alternates cover tampered/wrong-peer/stale/replacement cursors, heartbeat and
+  generation consistency, private-field exclusion, no new resolver calls, byte
+  and entry overflow, missing/legacy/malformed/oversized/symlink/FIFO snapshots,
+  scan isolation, owner-only disposal and preservation of replacement files.
+- Registered-tool harness verifies selected-peer first/next pages with zero child
+  launches, custom messages or user messages. Actual SDK continuation-profile
+  readback is deferred to the parent verifier; no live UI or Windows claim.
+- `node scripts/check-types.mjs`: 186 diagnostics, no regressions; 12 pairs improved.
+  `node scripts/build-runtime-modules.mjs --check`: eight modules match.
+- Test-owned OS-temp roots are removed by teardown; publishers dispose only their
+  own files. No dependency changes, commits, pushes, PRs or merges by this writer.
+  #1701 remains open pending parent verification/review; #1702 remains future
+  published-status/curated-summary work, never automatic conversation sharing.
+
+### Busy private-activity correction (current evidence)
+
+RED/GREEN command: `node --experimental-strip-types --test tests/orchestrator-catalog.test.ts tests/orchestrator-presence.test.ts tests/orchestrator-discovery.test.ts tests/gentle-agents.test.ts`.
+RED: 196 passed, one failed; unchanged public tasks/roots with only private thread
+and activity-time changes advanced activity generation, but continuation returned
+undefined instead of t8/t9. GREEN: 197 passed, zero failed after binding tokens to
+public catalog bytes, not private generation/envelope bytes. Public status, root,
+membership and label deltas still reject old cursors; mismatched current envelope
+generation remains unknown. Unrelated legacy metadata preserves page tokens.
+`updateDiscovery` owns public-source semantics; production uses the same owned
+list for activity and discovery, never infers public membership from empty activity.
+Current type/runtime commands above passed again (186 diagnostics, no regressions;
+eight modules match). Test-owned fixture teardown remains unchanged.
+Actual SDK continuation execution is NOT claimed: parent reports MODULE_NOT_FOUND.
+SDK integration is deferred to a separate acceptance unit before #1701 closure.

@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { validRecordedScope, type RecordedScope } from "./orchestrator-scope.ts";
+import { projectCatalog } from "./orchestrator-catalog.ts";
 
 // Same-profile OS-user trust boundary, not an authorization channel. POSIX modes
 // restrict newly created storage; Windows deployments must supply their own ACLs.
@@ -118,7 +119,7 @@ function directory(path: string, privateMode = false, owned = privateMode) {
 	if (!stat.isDirectory() || stat.isSymbolicLink() || (owned && process.platform !== "win32"
 		&& ((stat.mode & (privateMode ? 0o077 : 0o022)) !== 0 || stat.uid !== process.getuid?.()))) throw new Error("unsafe-directory");
 }
-function rootFor(profile: string, create = false) {
+export function rootFor(profile: string, create = false, catalog = false) {
 	const absolute = resolve(profile);
 	// Reject symlink ancestors too. The caller supplies an existing profile root.
 	for (let path = absolute;; path = dirname(path)) {
@@ -126,7 +127,7 @@ function rootFor(profile: string, create = false) {
 		if (dirname(path) === path) break;
 	}
 	const shared = join(absolute, "gentle-agents");
-	const root = join(shared, "presence");
+	const root = join(shared, catalog ? "catalog" : "presence");
 	// History may already own a 0755 shared root. Never change its permissions.
 	for (const path of [shared, root]) {
 		if (create) {
@@ -140,7 +141,7 @@ function rootFor(profile: string, create = false) {
 function regular(stat: fs.Stats) {
 	if (!stat.isFile() || stat.nlink !== 1 || (process.platform !== "win32" && stat.uid !== process.getuid?.())) throw new Error("unsafe-file");
 }
-function boundedRead(path: string, limit: number) {
+export function boundedRead(path: string, limit: number) {
 	const before = fs.lstatSync(path);
 	regular(before);
 	if (before.size > limit) throw new Error("oversized");
@@ -277,6 +278,8 @@ export class PresencePublisher {
 	private readonly labelSource?: () => string;
 	private header!: Header;
 	private discovery?: DiscoveryMetadata;
+	private catalog?: ReturnType<typeof projectCatalog>;
+	private catalogTokens: string[] = [];
 	private published = "";
 	private pending = "";
 	private timer?: ReturnType<typeof setTimeout>;
@@ -311,7 +314,7 @@ export class PresencePublisher {
 	/** Metadata-only projection; never reads task prompts, results, or threads.
 	 * Binding to the listener activation prevents reused session IDs from joining. */
 	updateDiscovery(peer: { sessionId: string; endpoint: string; createdAt: number }, input: {
-		workspace: string; tasks: readonly { id: string; label: string; status: string; cwd: string }[]; scope?: RecordedScope;
+		workspace: string; tasks: readonly { id: string; label: string; status: string; cwd: string }[]; scope?: RecordedScope; registered?: readonly string[];
 	}) {
 		if (this.disposed) throw new Error("disposed");
 		if (sessionHash(peer.sessionId) !== this.target.sessionHash) throw new Error("malformed-discovery");
@@ -331,7 +334,13 @@ export class PresencePublisher {
 			}
 		}
 		if (!validDiscovery(discovery)) throw new Error("malformed-discovery");
-		if (JSON.stringify(discovery) === JSON.stringify(this.discovery)) return;
+		const catalog = projectCatalog(input.tasks, input.registered ?? []);
+		if (JSON.stringify(discovery) === JSON.stringify(this.discovery) && JSON.stringify(catalog) === JSON.stringify(this.catalog)) return;
+		// Only catalog or routing-activation changes rotate page tokens; private
+		// activity generations and unrelated legacy metadata do not invalidate them.
+		if (JSON.stringify(catalog) !== JSON.stringify(this.catalog) || discovery.activation !== this.discovery?.activation)
+			this.catalogTokens = Array.from({ length: 7 }, () => randomUUID());
+		this.catalog = catalog;
 		this.discovery = discovery;
 		this.writeDiscovery();
 	}
@@ -354,16 +363,18 @@ export class PresencePublisher {
 		if (this.disposed) return;
 		try { action(); } catch (error) { this.error = reason(error); this.dispose(); }
 	}
-	private write(kind: "header" | "activity" | "discovery", bytes: string) {
-		const root = rootFor(this.profile);
-		const name = filename(this.target, kind);
+	private write(kind: "header" | "activity" | "discovery" | "catalog", bytes: string) {
+		const root = rootFor(this.profile, kind === "catalog", kind === "catalog");
+		const name = kind === "catalog" ? `${this.target.sessionHash}.${this.target.incarnation}.json` : filename(this.target, kind);
 		atomicWrite(root, name, bytes);
 		const { dev, ino } = fs.lstatSync(join(root, name));
-		this.owned.set(name, { dev, ino });
+		this.owned.set(join(root, name), { dev, ino });
 	}
 	private writeDiscovery() {
 		if (!this.discovery) return;
 		try {
+			if (this.catalog) this.write("catalog", JSON.stringify({ schema: 1, ...this.target,
+				generation: this.header.generation, activation: this.discovery.activation, tokens: this.catalogTokens, catalog: this.catalog }));
 			this.write("discovery", JSON.stringify({ schema: 1, ...this.target, generation: this.header.generation, metadata: this.discovery }));
 		} catch { /* Metadata failure must not withdraw an existing activity peer. */ }
 	}
@@ -400,9 +411,9 @@ export class PresencePublisher {
 		clearTimeout(this.timer);
 		clearInterval(this.heartbeat);
 		this.pending = this.published = "";
-		for (const [name, identity] of this.owned) {
+		for (const [path, identity] of this.owned) {
 			try {
-				const path = join(rootFor(this.profile), name);
+				rootFor(this.profile, false, dirname(path) === join(resolve(this.profile), "gentle-agents", "catalog"));
 				const stat = fs.lstatSync(path);
 				regular(stat);
 				if (stat.dev === identity.dev && stat.ino === identity.ino) fs.unlinkSync(path);

@@ -3933,7 +3933,9 @@ test("registered orchestrator_list joins peer metadata without child launches or
 	const publisher = PresencePublisher.start({ profile, sessionId: "peer", label: "Auth review", activity: [] });
 	try {
 		const scope = new OrchestratorScopeCache(path => ({ root: path, commonDir: "/clone" })).project("/repo", [{ id: "child", cwd: "/repo-child" }], ["/repo"]);
-		publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [{ id: "child", label: "Check auth", status: "waiting", cwd: "/repo-child" }], scope } as never);
+		const tasks = [{ id: "child", label: "Check auth", status: "waiting", cwd: "/repo-child" },
+			...Array.from({ length: 9 }, (_, i) => ({ id: `extra${i}`, label: `Extra ${i}`, status: "running", cwd: `/child/${i}` }))];
+		publisher.updateDiscovery(peer, { workspace: "/repo", tasks, registered: Array.from({ length: 10 }, (_, i) => `/registered/${i}`), scope });
 		let ready = false;
 		const registry = { list: async () => [], listActivations: async () => [peer] };
 		runtime.deps.agentHome = profile;
@@ -3953,6 +3955,11 @@ test("registered orchestrator_list joins peer metadata without child launches or
 		assert.equal((result.details.gentleAgents as any).candidates[0].scope.host.root, "/repo");
 		assert.equal((result.details.gentleAgents as any).candidates[0].scope.tasks[0].repository.root, "/repo-child");
 		assert.match(result.content[0].text, /clone: [a-f0-9]{64}/);
+		const cursor = (result.details.gentleAgents as any).candidates[0].catalog.cursor;
+		const next = await h.tools.get("orchestrator_list")!.execute("next", { recipient_session_id: "peer", cursor }, undefined, undefined, ctx);
+		assert.deepEqual((next.details.gentleAgents as any).candidates[0].catalog.tasks.map((t: any) => t.id), ["extra7", "extra8"]);
+		assert.deepEqual((next.details.gentleAgents as any).candidates[0].catalog.registered, ["/registered/8", "/registered/9"]);
+		assert.equal(h.userMessages.length, 0);
 		publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [] });
 		const legacy = await h.tools.get("orchestrator_list")!.execute("legacy", {}, undefined, undefined, ctx);
 		assert.match(legacy.content[0].text, /repository: unknown/);

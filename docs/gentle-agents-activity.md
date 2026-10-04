@@ -70,8 +70,8 @@ session replacement invalidate it; stable token updates/heartbeats do not probe 
 
 `omittedTasks`, `omittedRegistered`, and `complete` describe listing bounds. If the
 sidecar byte budget cannot fit scope lists, both lists are withheld with exact
-omission counts while retaining host context. Full registered-scope continuation
-and interactive live-profile verification remain follow-ups; #1701 stays open.
+omission counts while retaining host context. Bounded recorded-path continuation
+is described below; Git facts beyond the existing prefix remain unknown. #1701 stays open.
 New readers accept legacy sidecars without scope. Old strict optional-sidecar
 readers may show unknown discovery context; activity visibility is unchanged.
 Malformed scope alone falls back to unknown repository facts without hiding IDs.
@@ -80,6 +80,45 @@ Recorded launch directories do not prove current child cwd or freedom from share
 artifacts. A shell `cd` does not change Pi's session cwd. Omission counts mean the
 child list is incomplete, not an exhaustive writer inventory. This metadata cannot
 answer arbitrary reasoning questions (#1702).
+
+### Continue recorded metadata
+
+Call `orchestrator_list` without arguments as before. Each recent peer can also
+carry `catalog`: eight child summaries (`id`, `label`, `status`, actual recorded
+launch `cwd`) and eight recorded registered-root paths. To continue, pass its exact
+`recipient_session_id` and opaque `catalog.cursor` to the same tool. Aliases are
+for display, not selection. No human picker or recipient wakeup is involved.
+
+| Bound | Contract |
+|---|---|
+| Snapshot | One private sibling `gentle-agents/catalog` file per publisher, at most 64 KiB |
+| Entries | At most 64 tasks and 64 registered paths; eight of each per page, at most eight pages |
+| Overflow | Whole entries omitted; exact `omittedTasks` / `omittedRegistered` counts on every page |
+| Paths | Literal absolute recorded facts, at most 256 UTF-8 bytes; controls and normalized separators become `null`, never rewritten |
+| Cursor | At most 1,024 characters; pins session hash, incarnation, transport activation and canonical public-catalog digest plus a publisher-minted page token |
+
+Refresh from the first page after a public catalog change or producer replacement.
+Private activity/thread/token updates may advance activity generation without
+invalidating continuation: only the public catalog fields and omission counts
+identify its snapshot. Envelope/header generation must still match on each read.
+Wrong-recipient, changed or malformed cursors return unknown catalog context, not
+a cached old page. Missing/malformed/oversized/symlink/FIFO snapshots likewise leave
+legacy headers and activity visible. Legacy publishers need no catalog. The sibling
+storage cannot inflate the existing bounded presence scan; disposal removes only
+publisher-owned inodes and leaves replacements alone.
+
+Derivation explicitly selects summary fields from the existing owned unfinished,
+non-restored task list and durable session registry entries. It detaches caller
+inputs, never reads another task thread, and adds no Git probes, child launches,
+messages or model calls. Each paging read is one bounded local snapshot read, with
+no Git resolution. `updateDiscovery` is the public catalog source, independently
+of activity serialization; production publishes both from the same owned task
+list. Direct publisher callers must refresh discovery when public fields or
+membership change, not infer them from empty/unrelated activity input. Host aliases
+or legacy scope-only changes do not establish a new catalog identity.
+Recorded cwd/root paths are **not** canonical Git identities or
+an exhaustive global writer inventory; the earlier Git prefix retains its own gaps.
+#1702 remains published-status/curated-summary work, not automatic conversation sharing.
 
 ## Turning it on
 

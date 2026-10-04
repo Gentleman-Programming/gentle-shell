@@ -423,7 +423,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					const data = entry.data as { sessionId?: string; root?: string; evidence?: string } | undefined;
 					return data?.sessionId === activeSessionId() && typeof data.root === "string" && typeof data.evidence === "string" ? [data.root] : [];
 				});
-				presence?.updateDiscovery(transport.listener.record, { workspace: sessions.getCwd(), tasks,
+				presence?.updateDiscovery(transport.listener.record, { workspace: sessions.getCwd(), tasks, registered,
 					scope: scopeCache.project(sessions.getCwd(), tasks, registered) });
 			}
 		} catch { presence?.dispose(); presence = undefined; }
@@ -1562,14 +1562,20 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		name: "orchestrator_list",
 		label: "List orchestrators",
 		description: "List other sessions advertised by the trusted local profile. Advertised reachability is unknown and does not prove a session is live.",
-		parameters: { type: "object", additionalProperties: false, properties: {} } as never,
+		parameters: { type: "object", additionalProperties: false, properties: {
+			recipient_session_id: { type: "string", description: "Exact routing ID of the peer to inspect." },
+			cursor: { type: "string", description: "Opaque catalog continuation from that peer; requires recipient_session_id." },
+		} } as never,
 		async execute(_id, _params, _signal, _onUpdate, ctx) {
 			const transport = activeTransportFor(ctx);
 			if (!transport) return text("Error: session discovery is not ready.", { error: "not ready" });
 			try {
 				const activations = await transport.listener.registry.listActivations(transport.sessionId);
 				if (activeTransportFor(ctx) !== transport) return text("Error: session discovery became unavailable before results were confirmed.", { error: "stale" });
-				const peers = discoverOrchestrators(agentHome, activations);
+				const params = _params as { recipient_session_id?: string; cursor?: string };
+				if (params.cursor !== undefined && !params.recipient_session_id) return text("Error: cursor requires recipient_session_id.", { error: "invalid-cursor" });
+				const peers = discoverOrchestrators(agentHome, activations, Date.now(), params.recipient_session_id
+					? { recipientSessionId: params.recipient_session_id, cursor: params.cursor } : undefined);
 				const repository = (fact?: RepositoryFact) => fact?.root
 					? `repository: ${fact.root} · clone: ${fact.cloneHash} · Git resolved at: ${fact.resolvedAt} (${fact.source})`
 					: "repository: unknown";
@@ -1578,7 +1584,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					const tasks = peer.tasks?.map(task => `\n  - ${task.label || task.id} [${task.status}] · launch workspace: ${task.workspace || "unknown"} · ${repository(peer.scope?.tasks.find(t => t.id === task.id)?.repository)}`).join("") ?? "";
 					const registered = peer.scope?.registered.map(fact => `\n  registered: ${repository(fact)}`).join("") ?? "";
 					const gaps = peer.scope && !peer.scope.complete ? `\n  (scope incomplete: ${peer.scope.omittedTasks} tasks, ${peer.scope.omittedRegistered} registered roots omitted)` : "";
-					return `- ${peer.sessionId}${context} · ${repository(peer.scope?.host)} · metadata: ${peer.freshness}${tasks}${registered}${gaps}${peer.omitted ? `\n  (${peer.omitted} more tasks omitted)` : ""}`;
+					const catalog = peer.catalog ? `\n  recorded catalog (not Git identity): ${JSON.stringify(peer.catalog)}` : "\n  recorded catalog: unknown";
+					return `- ${peer.sessionId}${context} · ${repository(peer.scope?.host)} · metadata: ${peer.freshness}${tasks}${registered}${gaps}${catalog}${peer.omitted ? `\n  (${peer.omitted} more tasks omitted)` : ""}`;
 				});
 				return peers.length === 0 ? text("No other sessions are currently advertised. Advertisements have unknown reachability and do not guarantee a live session.") : text(`Advertised sessions (reachability is unknown):\n${rows.join("\n")}`, { gentleAgents: { candidates: peers } });
 			} catch {

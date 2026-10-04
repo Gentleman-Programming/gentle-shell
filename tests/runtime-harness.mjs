@@ -1019,7 +1019,7 @@ async function run() {
 		assert.equal(existsSync(installedExplorePath), true);
 		assert.deepEqual(
 			readAgentDefinition(await readFile(installedExplorePath, "utf8")),
-			{ name: "gentle-ai-explore", tools: ["read", "grep", "find", "codegraph"] },
+			{ name: "gentle-ai-explore", tools: ["read", "grep", "find", "codegraph", "web_search", "fetch_content"] },
 			"isolated package installation must activate only the explorer inspection tools",
 		);
 		const installedRiskSource = await readFile(

@@ -33,6 +33,7 @@ interface ChoiceTool {
 	promptGuidelines?: string[];
 	parameters: ChoiceParameters;
 	execute: (...args: unknown[]) => Promise<ChoiceResult>;
+	renderResult?: (result: unknown, options: unknown, theme: ChoiceTheme) => { render(width: number): string[] };
 }
 
 interface ChoiceLifecycleEvent {
@@ -710,4 +711,33 @@ test("ask_user_choice is offered on an interactive rpc host and withdrawn once t
 	delete process.env[INTERACTIVE_HOST_ENV];
 	for (const hook of registration.hooks) await hook({}, { mode: "rpc" });
 	assert.deepEqual(registration.activeTools(), ["read"]);
+});
+
+test("ask_user_choice renderResult renders selected, custom response with text, and cancelled states (#1692)", () => {
+	const registration = registerChoiceTool();
+	const theme: ChoiceTheme = { fg: (_color, text) => text, bg: (_color, text) => text, bold: (text) => text };
+
+	// 1. Selected option
+	const selected = registration.tool.renderResult!(
+		{ details: { selection: { index: 1, label: "Deploy to production" } } },
+		{},
+		theme,
+	).render(80).join("\n");
+	assert.match(selected, /✓ 1\. Deploy to production/);
+
+	// 2. Custom response with submitted text (#1692)
+	const custom = registration.tool.renderResult!(
+		{ details: { customResponse: "use the staging bucket" } },
+		{},
+		theme,
+	).render(80).join("\n");
+	assert.match(custom, /✓ Custom response — use the staging bucket/);
+
+	// 3. Cancelled
+	const cancelled = registration.tool.renderResult!(
+		{ details: { cancelled: true } },
+		{},
+		theme,
+	).render(80).join("\n");
+	assert.match(cancelled, /Cancelled/);
 });

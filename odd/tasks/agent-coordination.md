@@ -224,3 +224,57 @@ sidecar readback accepted). GREEN: 203 passed / zero failed, covering all 15
 separators and healthy absolute cwd. Type/build/diff checks above passed again.
 Curated publication/targeted list slice is complete; consultation/receipt, model
 helper, correlated owner reply, and actual SDK acceptance remain pending.
+
+## Unit 6: direct published-state consultation (metadata slice verified; SDK deferred)
+
+Base `75644e32`, previous PR #1729 (388 lines; remote functional checks passed, CodeRabbit skipped for stacked base). Branch `feat/1702-metadata-consult`: a metadata-only `orchestrator_consult` reads the selected peer's whitelisted published projection and returns a bounded frozen snapshot with freshness, incompleteness and explicit non-authority. No receiver wakeups, private history reads or nested model calls. Prepare a permanent actual public-SDK fixture if the coherent slice fits the review budget; otherwise SDK acceptance is the next isolated unit, not a claimed success. Reasoning and correlated peer decisions remain separate; child queries cannot safely masquerade as peer requests.
+
+- Registered `orchestrator_consult` accepts only metadata, exact stable recipient ID
+  and optional existing catalog cursor. It reuses selected-activation discovery,
+  checks the caller transport after asynchronous listing, and captures frozen JSON.
+  No human picker/consent, private context reads, Git probes, launches or messages.
+- Receipt bound: 16 KiB, otherwise explicit unavailable; no meaning truncation.
+  Identity hashes public content plus activation/incarnation, never private activity.
+  Presence observation is separate from historical notes/Git resolution times.
+  Source `published_snapshot`, `ownerReply: false`, `authority: none`; paths/tasks
+  are recorded context, not exclusive/global writer ownership or review consent.
+- RED/GREEN command: `node --experimental-strip-types --test tests/orchestrator-consultation.test.ts tests/orchestrator-state.test.ts tests/orchestrator-catalog.test.ts tests/orchestrator-discovery.test.ts tests/orchestrator-presence.test.ts tests/gentle-agents.test.ts`.
+  RED: 202 passed / two failed (missing module and registered consultation tool).
+  Final GREEN: 207 passed / zero failed. An intermediate resolver spy incorrectly
+  threw during startup; changed it to count/delegate baseline resolution instead.
+- Alternates: first/next pages, exact omission counts, detached mutation, replacement,
+  invalid cursors, stale/missing/wrong-selected publications, extra authority fields,
+  oversized source/snapshot, unknown versus withdrawn notes and historical age.
+  Corrupt private activity with an owner-history sentinel does not affect readback;
+  private task getters throw if accessed. Registered harness sees no extra resolver
+  calls, child launches, custom/user messages or consent selection.
+- `node scripts/check-types.mjs`: 186 diagnostics, no regressions; 12 pairs improved.
+  `node scripts/build-runtime-modules.mjs --check`: eight modules match; metrics
+  sources validated. `git diff --check` passed. Existing fixture Git warnings remain.
+- SDK fixture NOT written/executed: adding the isolated provider/two-session/worktree
+  fixture would exceed this cohesive slice's 400-line budget; next isolated unit.
+  No live model, paid/outbound API, interactive TUI or native Windows proof claimed.
+  New owned OS-temp profiles are removed in teardown; no dependency mutation.
+- CodeGraph root/index check preceded scoped source reads; index absent and init
+  would write outside allowed surfaces. Read-only query confirmed uninitialized;
+  narrow provided paths used. Installed SDK/extensions/custom-provider docs and
+  relevant session-format/message-type/tool-example references were read.
+- Assets keep the existing subject contract and add milestone publication guidance;
+  core coordination prose is consolidated to protect the existing prompt budget.
+  Dedicated prompt-budget suite was not authorized/run; parent should verify it.
+  Both issues remain OPEN; parent owns mirror, assessment, commit and delivery.
+  Rollback: consultation helper, conditional discovery binding, tool registration,
+  tests/docs only; preserve published-state, catalog, identity and messaging bases.
+
+### Authorized prompt follow-up: confirmed failures (no source fixes)
+- `node --experimental-strip-types --test tests/orchestrator-budget.test.ts tests/orchestrator-rdd-ownership.test.ts tests/append-system-prompt-route.test.ts`: 44 passed / 2 failed (46 total); parent-only routing and RDD ownership passed.
+- Controlled 128-character assets root renders 8,199 bytes, exceeding 8,192 by seven; Core Role verbatim contract rejects the condensed fixture:11 text. Delivery needs a bounded asset correction, not weakened tests.
+- CodeGraph query remained uninitialized; no index created. Filename-scoped fallback found existing suites; owned OS-temp fixtures clean up in their teardown. SDK consultation acceptance remains deferred; no nested helper implemented.
+
+### Asset correction: lazy placement verified
+- Parent chose the existing lazy delegation guide for the entire milestone hint. `assets/orchestrator.md` now matches HEAD byte-for-byte (including original Core Role); no existing guardrails, fixtures or caps changed. New guidance sits beside delegation preparation, with safe own state, no extra turns/reads/noise and no consent authority.
+- RED remains the observed 44 passed / two failed. GREEN: `node --experimental-strip-types --test tests/orchestrator-budget.test.ts tests/orchestrator-rdd-ownership.test.ts tests/append-system-prompt-route.test.ts`: all 46 passed, zero failures, including verbatim role and 128-character root budget.
+- `node --experimental-strip-types --test tests/orchestrator-consultation.test.ts tests/orchestrator-state.test.ts tests/orchestrator-catalog.test.ts tests/orchestrator-discovery.test.ts tests/orchestrator-presence.test.ts tests/gentle-agents.test.ts`: all 207 passed, zero failures; existing fixture Git warnings remain.
+- `node scripts/check-types.mjs`: 186 diagnostics, no regressions, 12 pairs improved. `node scripts/build-runtime-modules.mjs --check`: eight modules match; metrics validated. `git diff --check` passed.
+- Controlled-long render is 8,176 bytes (derived from prior measured 8,199 minus the 23-byte asset restoration); the unchanged cap test independently passes. Full working slice including parent/staged/new files: 319 changed lines; staged content untouched, parent must restage final restoration and lazy asset.
+- Owned temporary fixture teardown retained. SDK artifact/execution and nested helper remain absent; both issues stay open pending separate acceptance and parent delivery.

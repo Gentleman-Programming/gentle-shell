@@ -3030,7 +3030,7 @@ test("subagent_list_agents and subagent_run in task mode launch a child with the
 	gentleAgents(pi, {}, harness.deps);
 	const { ctx, widget } = fakeContext();
 	await fire("session_start", ctx);
-	assert.deepEqual([...tools.keys()].sort(), ["orchestrator_list", "orchestrator_send_message", "orchestrator_session_id", "subagent_cancel", "subagent_continue", "subagent_list_agents", "subagent_list_tasks", "subagent_reply", "subagent_result", "subagent_run", "subagent_send_message", "subagent_status"]);
+	assert.deepEqual([...tools.keys()].sort(), ["orchestrator_consult", "orchestrator_list", "orchestrator_send_message", "orchestrator_session_id", "subagent_cancel", "subagent_continue", "subagent_list_agents", "subagent_list_tasks", "subagent_reply", "subagent_result", "subagent_run", "subagent_send_message", "subagent_status"]);
 	const listed = await tools.get("subagent_list_agents")!.execute("c0", {}, undefined, undefined, ctx);
 	assert.match(listed.content[0].text, /- explore \(global\): maps things/);
 
@@ -3958,7 +3958,11 @@ test("registered orchestrator_list joins peer metadata without child launches or
 			...Array.from({ length: 9 }, (_, i) => ({ id: `extra${i}`, label: `Extra ${i}`, status: "running", cwd: `/child/${i}` }))];
 		publisher.updateDiscovery(peer, { workspace: "/repo", tasks, registered: Array.from({ length: 10 }, (_, i) => `/registered/${i}`), scope });
 		let ready = false;
-		const registry = { list: async () => [], listActivations: async () => [peer] };
+		let probes = 0;
+		const resolveWorktree = runtime.deps.resolveWorktree;
+		runtime.deps.resolveWorktree = (...args) => { probes++; return resolveWorktree(...args); };
+		let gate: (() => Promise<void>) | undefined;
+		const registry = { list: async () => [], listActivations: async () => { await gate?.(); return [peer]; } };
 		runtime.deps.agentHome = profile;
 		runtime.deps.sessionTransport = {
 			createRegistry: async () => registry,
@@ -3969,6 +3973,7 @@ test("registered orchestrator_list joins peer metadata without child launches or
 		const { ctx } = fakeContext();
 		await h.fire("session_start", ctx);
 		await eventually(() => ready, "discovery transport ready");
+		ctx.ui.select = async () => { throw new Error("metadata consultation must not ask for consent"); };
 		const result = await h.tools.get("orchestrator_list")!.execute("list", {}, undefined, undefined, ctx);
 		assert.match(result.content[0].text, /peer.*Auth review.*recorded workspace: \/repo/);
 		assert.match(result.content[0].text, /Check auth \[waiting\].*launch workspace: \/repo-child/);
@@ -3988,12 +3993,32 @@ test("registered orchestrator_list joins peer metadata without child launches or
 		const noted = await h.tools.get("orchestrator_list")!.execute("note", { recipient_session_id: "peer" }, undefined, undefined, ctx);
 		assert.match(noted.content[0].text, /Explicit summary/);
 		assert.equal((noted.details.gentleAgents as any).candidates[0].state.recordedAt, 1);
+		const consult = h.tools.get("orchestrator_consult")!;
+		const probesBeforeConsult = probes;
+		const receipt = JSON.parse((await consult.execute("consult", { recipient_session_id: "peer" }, undefined, undefined, ctx)).content[0].text);
+		assert.equal(receipt.snapshot.state.state.progress, "Explicit summary");
+		assert.equal(receipt.snapshot.state.recordedAt, 1);
+		assert.equal(receipt.ownerReply, false);
+		assert.equal(receipt.authority, "none");
+		assert.equal(receipt.targetSessionId, "peer");
+		assert.doesNotMatch(JSON.stringify(receipt), /endpoint|activation|prompt|thread/);
+		for (const invalid of [{ recipient_session_id: "peer", kind: "reasoning" }, { recipient_session_id: "peer", question: "secret" }, {}]) {
+			await assert.rejects(consult.execute("invalid", invalid, undefined, undefined, ctx), /Invalid metadata/);
+		}
+		assert.equal(probes, probesBeforeConsult);
 		publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [] });
 		const legacy = await h.tools.get("orchestrator_list")!.execute("legacy", {}, undefined, undefined, ctx);
 		assert.match(legacy.content[0].text, /repository: unknown/);
 		assert.equal((legacy.details.gentleAgents as any).candidates[0].sessionId, "peer");
+		let release!: () => void;
+		gate = () => new Promise<void>(resolve => { release = resolve; });
+		const pending = consult.execute("pending", { recipient_session_id: "peer" }, undefined, undefined, ctx);
+		await h.fire("session_shutdown", ctx);
+		release();
+		assert.equal(JSON.parse((await pending).content[0].text).status, "unavailable");
 		assert.equal(runtime.spawned.length, 0);
 		assert.equal(h.sent.length, 0);
+		assert.equal(h.userMessages.length, 0);
 		await h.fire("session_shutdown", ctx);
 	} finally { publisher.dispose(); }
 });

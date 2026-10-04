@@ -35,6 +35,7 @@ import { AgentsView } from "../lib/agents-view.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
 import { PresencePublisher, sanitizeDisplayLabel } from "../lib/orchestrator-presence.ts";
 import { discoverOrchestrators } from "../lib/orchestrator-discovery.ts";
+import { consultPublishedMetadata, unavailableMetadata, type MetadataReceipt } from "../lib/orchestrator-consultation.ts";
 import { OrchestratorStateCache } from "../lib/orchestrator-state.ts";
 import { OrchestratorScopeCache, type RepositoryFact } from "../lib/orchestrator-scope.ts";
 import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/agents-rpc-publisher.ts";
@@ -1563,6 +1564,31 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			if (state !== undefined) publishActivity();
 			presence?.refreshLabel();
 			return text(`Active session ID: ${transport.sessionId}\nCurrent alias: ${alias || "unnamed"}`, { gentleAgents: { senderSessionId: transport.sessionId, alias } });
+		},
+	});
+	pi.registerTool({
+		name: "orchestrator_consult",
+		label: "Consult published metadata",
+		description: "Read a frozen published metadata snapshot from an exact local-profile session. No owner reply, consent, reasoning, messaging or private context access.",
+		parameters: { type: "object", additionalProperties: false, required: ["recipient_session_id"], properties: {
+			kind: { type: "string", enum: ["metadata"] },
+			recipient_session_id: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" },
+			cursor: { type: "string", maxLength: 1024 },
+		} } as never,
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const input = params as { kind?: unknown; recipient_session_id?: unknown; cursor?: unknown };
+			if (!input || Object.keys(input).some(k => !["kind", "recipient_session_id", "cursor"].includes(k))
+				|| (input.kind !== undefined && input.kind !== "metadata") || !validTransportSessionId(input.recipient_session_id)
+				|| (input.cursor !== undefined && (typeof input.cursor !== "string" || input.cursor.length > 1024))) throw new Error("Invalid metadata consultation parameters.");
+			const selection = { recipientSessionId: input.recipient_session_id, cursor: input.cursor as string | undefined };
+			const transport = activeTransportFor(ctx);
+			const result = (receipt: MetadataReceipt) => text(JSON.stringify(receipt), { gentleAgents: { senderSessionId: transport?.sessionId, receipt } });
+			if (!transport) return result(unavailableMetadata(selection.recipientSessionId, "not-ready"));
+			try {
+				const activations = await transport.listener.registry.listActivations(transport.sessionId);
+				if (activeTransportFor(ctx) !== transport) return result(unavailableMetadata(selection.recipientSessionId, "source-session-changed"));
+				return result(consultPublishedMetadata(agentHome, activations, selection));
+			} catch { return result(unavailableMetadata(selection.recipientSessionId, "discovery-unavailable")); }
 		},
 	});
 	pi.registerTool({

@@ -14,12 +14,14 @@ export interface OrchestratorCandidate {
 	state?: DiscoveryMetadata["state"];
 	catalog?: CatalogPage;
 	catalogUnavailable?: string;
+	/** Internal binding for targeted consultation; never expose transport records. */
+	publication?: { incarnation: string; activation: string; heartbeat: number };
 }
 
 /** One bounded metadata page, no thread reads or transport probes. The registry
  * selects a canonical routing activation; metadata must bind to that exact one.
  * Incomplete scans and duplicate presence headers fail closed. */
-export function discoverOrchestrators(profile: string, peers: readonly PresenceRecord[], now = Date.now(), selection?: { recipientSessionId: string; cursor?: string }): OrchestratorCandidate[] {
+export function discoverOrchestrators(profile: string, peers: readonly PresenceRecord[], now = Date.now(), selection?: { recipientSessionId: string; cursor?: string; consultation?: boolean }): OrchestratorCandidate[] {
 	const page = listPresence(profile, now);
 	const ids = [...new Set(peers.map(peer => peer.sessionId))];
 	return ids.filter(id => !selection || selection.recipientSessionId === id).map(sessionId => {
@@ -36,6 +38,7 @@ export function discoverOrchestrators(profile: string, peers: readonly PresenceR
 		const catalog = readCatalog(profile, header, metadata.activation, selection?.cursor);
 		return { ...unknown, ...(catalog.page ? { catalog: catalog.page } : { catalogUnavailable: catalog.unavailable }), freshness: "recent", label: header.label, workspace: metadata.workspace,
 			tasks: metadata.tasks, omitted: metadata.omitted, ...(metadata.scope ? { scope: metadata.scope } : {}),
+			...(selection?.consultation ? { publication: { incarnation: header.incarnation, activation: metadata.activation, heartbeat: header.heartbeat } } : {}),
 			...(selection?.recipientSessionId === sessionId && metadata.state?.sessionId === sessionId ? { state: metadata.state } : {}) };
 	});
 }

@@ -71,8 +71,35 @@ cwd becomes null; malformed non-null readback withholds the note, never rewrites
 Source is `owner-curated`, `ownerReply: false`, `authority: none`: even `decisions`
 is data, never a grant or human consent. Missing/invalid/over-budget notes are unknown;
 withdrawal remains explicit null. Advertising is best-effort; legacy headers/activity
-stay unchanged. Metadata-only `orchestrator_consult`, reasoning, correlated owner
-decisions, and actual SDK execution proof remain later units; neither issue is closed.
+stay unchanged. Direct metadata consultation is available below; reasoning, correlated
+owner decisions, and actual SDK execution proof remain later units. Neither issue is closed.
+
+### Consult a published snapshot
+
+Call `orchestrator_consult` with required stable `recipient_session_id`, optional
+`kind: "metadata"` (the only kind), and optional existing opaque catalog `cursor`.
+No free-form question, owner request, human picker or read-consent dialog is used
+for this profile's explicitly published data. Use `orchestrator_session_id.state`
+to publish short updates before delegation or meaningful progress milestones when
+helpful; do not add a model turn solely to publish or emit per-tool/token updates.
+
+The JSON receipt is deeply detached and frozen in-process, at most 16 KiB. It
+contains public label/workspace, owned task summaries, recorded scope, one catalog
+page, historical curated state, observation time and presence freshness. Missing
+notes/scope are explicitly unknown; withdrawn notes remain an explicit null record.
+Counts and continuation identify listing gaps. Over-budget snapshots are unavailable,
+never silently truncated. Missing/stale/ambiguous publications and invalid cursors
+are unavailable, not owner refusals. Refresh from page one after public changes.
+
+`digest` binds captured public content to the selected activation and incarnation;
+it excludes private activity digests/generation and observation clocks. Heartbeat
+recency is not proof of current notes, Git resolution, reachability or global writer
+ownership: state `recordedAt` and scope `resolvedAt` keep their historical meaning.
+The source is `published_snapshot`, `ownerReply: false`, `authority: none`.
+This is not native consent, a review receipt or a correlated owner decision.
+No transcripts, prompts, threads, results, instructions, profile credentials or
+transport capabilities are exported. No new Git probes, messages, receiver wakes,
+child/helper launches or model calls occur. The reasoning helper lane is unavailable.
 
 ### Recorded repository scope
 

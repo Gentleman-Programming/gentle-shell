@@ -3,11 +3,12 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { __testing } from "../extensions/gentle-ai.ts";
+import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
 // These are instruction-delivery contracts, not proof of autonomous model adherence.
 const read = (path: string) => readFileSync(join(import.meta.dirname, "..", path), "utf8");
 const core = read("assets/orchestrator.md");
-const delegation = read("assets/orchestrator-delegation.md");
+const delegation = readDelegationDetail();
 const memory = read("assets/orchestrator-memory.md");
 const wrapper = read("extensions/gentle-ai.ts");
 
@@ -17,7 +18,7 @@ function containsAll(text: string, clauses: readonly string[]): void {
 
 test("organic entry stays read-only without authorization and loads detail before work", () => {
 	containsAll(core, [
-		"Substantial authorized work: use ODD",
+		"large tasks get ODD tracking and workers only by the Writer rule, else inline",
 		"ODD (Default Workflow, harness section above) is mandatory on every request",
 		"orchestrator-delegation.md",
 		"orchestrator-memory.md",
@@ -25,7 +26,7 @@ test("organic entry stays read-only without authorization and loads detail befor
 	containsAll(delegation, [
 		"Investigation, explanation, review, comparison, and proposal-only requests remain read-only",
 		"without a task or storage permission prompt",
-		"Small, understood work creates no durable task artifacts",
+		"small work creates no durable task artifacts",
 	]);
 	assert.doesNotMatch(core + wrapper, /Prefer SDD\/OpenSpec artifacts|Substantial feature: suggest SDD organically/);
 	assert.doesNotMatch(core + delegation, /Suggest it when proposal\/spec\/design\/tasks|propose SDD only when durable proposal\/spec\/design\/tasks/);
@@ -109,12 +110,12 @@ test("assumption challenge and task checks do not activate or duplicate native r
 
 test("ODD closes each task with a work-unit commit and reviews the commit or PR slice", () => {
 	containsAll(wrapper, [
-		"Every task closes with at least one work-unit commit on the feature branch, branch first when on the default branch",
+		"Every tracked task closes with at least one work-unit commit on the feature branch, branch first when on the default branch",
 		"with tests and docs alongside the behavior, using a Conventional Commit message",
 		"record the commit identity in the feature document as evidence",
-		"Work-unit commits on the feature branch are part of authorized substantial ODD implementation; push, pull request creation, and merge remain the user's decisions",
+		"Work-unit commits on the feature branch are part of authorized large ODD implementation; push, pull request creation, and merge remain the user's decisions",
 		"The native review candidate is a work-unit commit or a PR slice, never a TODO checkbox and never the accumulated feature branch",
-		"close each task with a work-unit commit",
+		"close each tracked task with a work-unit commit",
 	]);
 	containsAll(delegation, [
 		'after each work-unit commit, assess it with that same call and `{"baseRef":"<last reviewed boundary>","committedOnly":true}`',
@@ -195,21 +196,70 @@ test("user documentation shows recovery and candidate-level consent without clai
 test("one feature document carries intent, accepted rationale and worker context", () => {
 	containsAll(memory, [
 		"one feature document, not a separate plan file or topic",
-		"objective, problem, why, scope, constraints",
-		"progress, verification evidence, and next step",
-		"concise rationale for meaningful accepted changes",
-		"Routine corrections stay with their tasks; no exhaustive decision journal",
+		"verification evidence, progress, and next step",
+		"rationale for meaningful accepted changes",
+		"Routine corrections stay brief; no exhaustive decision journal",
 		"Accepted user, review, or verification changes",
 		"automatically update affected intent and TODOs",
 		"add genuinely new tasks or reopen invalidated items with a reason",
 		"Findings alone never authorize scope expansion or automatic acceptance",
 		"Before implementation or resume, the parent reads both the actual file and full observation",
-		"passes the locator and relevant context; workers read the document before edits",
+		"passes the locator, task IDs, and linked `S#`; workers read the document until `## Log` before edits",
 	]);
 	containsAll(read("assets/agents/gentle-ai-worker.md"), [
 		"Read the parent's ODD feature document locator before edits",
 		"Preserve valid completed work; return proposed intent/task changes and their reasons",
 	]);
+});
+
+// gentle-shell#1713: handoffs paraphrased the user's request, the feature
+// document summarized it, and verify never saw it. The document is now the
+// specification subagents read by reference, in a fixed token-cheap order.
+test("feature document is the verbatim specification subagents read by reference", () => {
+	const always = [
+		"`## Specs`",
+		"`## Tasks`",
+		"`## Log`",
+		"exact strings, error messages, and examples verbatim",
+		"`L1` is the user's original request verbatim",
+		"rewrites only the affected `S#`, and reopens only its task",
+		"Hand off by reference, never by paraphrase",
+		"read until `## Log`",
+		"Without a feature document, include the user's request verbatim",
+		"a verdict per `S#`",
+		"reproduce it before deciding it already works",
+	];
+	for (const persona of ["gentleman", "neutral"] as const) {
+		const prompt = __testing.buildGentlePrompt(persona);
+		containsAll(prompt, [...always,
+			// Parity with the gentle-ai canon (gentle-ai#5215).
+			"name the document, task, and specs (for example `Spec: odd/tasks/<feature>.md, T2, S3-S4`), tell workers to read until `## Log`",
+			"runs the spec's examples the parent authorized, against isolated state when they mutate data",
+		]);
+		assert.doesNotMatch(prompt, /\(read until \\?`## Log\\?`\)\. Do T#/, "inline code spans cannot nest backticks");
+	}
+	containsAll(memory, [
+		"specification subagents read by reference",
+		"stable content first and the growing log last",
+		"never summarize or reword those fragments",
+		"Do not add requirements the user never asked for",
+		"`L1` holds the user's original request verbatim",
+		"rewrites only the affected `S#`, and reopens only its linked task",
+	]);
+	assert.doesNotMatch(delegation, /Translate the user's request into concise English/);
+	containsAll(delegation, [
+		"never translate, condense, or paraphrase the user's requirements",
+		"Reproduce a user-reported failure",
+	]);
+	containsAll(read("assets/agents/gentle-ai-worker.md"), ["until `## Log`", "which `S#` the change covers"]);
+	containsAll(read("assets/agents/gentle-ai-verify.md"), [
+		"execute only exact test, build, lint, or spec example commands explicitly authorized by the parent",
+		"verbatim user entries in `## Log`",
+		"verdict per `S#`",
+		"compare the exact output and error text",
+		"isolated state",
+	]);
+	containsAll(read("assets/agents/gentle-ai-explore.md"), ["until `## Log`"]);
 });
 
 test("ODD defaults to applicable test-first without chat or TUI activation", () => {
@@ -221,7 +271,10 @@ test("ODD defaults to applicable test-first without chat or TUI activation", () 
 		containsAll(text, ["applicable", "RED", "GREEN"]);
 		assert.doesNotMatch(text, /(?:configured TDD mode|Strict TDD Mode is enabled|explicit user choice|test presence does not enable it|tests existing does not activate it)/i);
 	}
-	for (const [actor, text] of [["core", core], ["delegation", delegation], ["extension", wrapper], ["skill", skill]] as const) {
+	// The core sits after the harness in the same system prompt, so it points at
+	// the harness test-first policy instead of restating it (gentle-shell#1494).
+	assert.ok(core.includes("the harness's applicable test-first policy"), "core must point at the harness test-first policy");
+	for (const [actor, text] of [["delegation", delegation], ["extension", wrapper], ["skill", skill]] as const) {
 		assert.match(text, /behavior changes with applicable runnable deterministic tests and a clear expected outcome/i, `${actor} must require applicability, not test presence`);
 		assert.match(text, /passive documentation/i, `${actor} must handle passive docs`);
 		assert.match(text, /unavailable runner/i, `${actor} must handle unavailable runners`);
@@ -263,20 +316,24 @@ test("mandatory delegation triggers are behavioral in the lazy canonical port an
 
 test("core and lazy canonical trigger lists agree in numbering and semantics", () => {
 	for (const entry of [
-		"1. **Evidence-budget rule**",
-		"2. **Multi-file write rule**",
-		"3. **Incident rule**",
-		"4. **Context backstop**",
-		"5. **Verification rule**",
+		"1. **Ask**",
+		"2. **Evidence-budget rule**",
+		"3. **Verification rule**",
+		"4. **Track**",
+		"5. **Writer rule**",
+		"6. **Incident rule**",
+		"7. **Context backstop**",
 	]) {
 		assert.ok(core.includes(entry), `always-on core trigger list is missing: ${entry}`);
 	}
 	for (const entry of [
-		"1. **Mapping trigger (Evidence-budget rule):**",
-		"2. **Writer trigger (Multi-file write rule):**",
-		"3. **Incident rule:**",
-		"4. **Context backstop:**",
-		"5. **Verification rule**",
+		"1. **Ask:**",
+		"2. **Mapping trigger (Evidence-budget rule):**",
+		"3. **Verification rule**",
+		"4. **Track:**",
+		"5. **Writer trigger (Writer rule):**",
+		"6. **Incident rule:**",
+		"7. **Context backstop:**",
 	]) {
 		assert.ok(delegation.includes(entry), `lazy canonical trigger list is missing: ${entry}`);
 	}
@@ -325,7 +382,7 @@ test("ODD protocol is always-on in the rendered system prompt and runs by defaul
 		"2. **Explore.**",
 		"3. **Resolve uncertainty.**",
 		"4. **Classify.**",
-		"two or more meaningful implementation steps",
+		"Size the task by the orchestrator's Task Size section",
 		"5. **Track before the first write.**",
 		"create or rebuild the visible `todo` list from the reconciled feature tasks",
 		"Tell the user in one line which feature document was created and how many tasks it holds",

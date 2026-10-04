@@ -4,6 +4,295 @@ An interactive RPC host — a client that runs `pi --mode rpc` itself, such as t
 
 Source map: [publisher](../lib/agents-rpc-publisher.ts), [wiring](../extensions/gentle-agents.ts), [store](../lib/agents-protocol.ts).
 
+## Same-profile orchestrator discovery (Refs #1701)
+
+`orchestrator_list` keeps stable raw routing session IDs and adds recorded display
+labels, session workspaces, and up to eight currently owned, unfinished child task
+labels/statuses/launch workspaces. This is a metadata-only view, not the RPC payload
+below: it exports no prompts, transcripts, thinking, or tool output and makes no
+model calls or messaging requests.
+
+Metadata lives in an optional private, 16-KiB derived sidecar, bound to the existing
+session hash, presence incarnation/generation, and listener activation. Schema-1
+headers are unchanged: missing or invalid sidecars never hide existing activity peers.
+Only currently runtime-owned active tasks (running, queued, waiting) are published,
+not finished tasks or restored running history: those are not potential future writers.
+
+The transport registry selects its newest advertised activation per session (ties
+use its existing deterministic token order). Context joins only that exact routing
+snapshot, never another activation sharing its ID. Multiple matching presence headers,
+malformed records, missing metadata, or an incomplete bounded scan leave context
+unknown without hiding advertised peers. Recent means the existing 15-second presence
+heartbeat window, not verified reachability. Stale records expose no context.
+Reachability remains unknown even with recent metadata.
+
+Paths longer than 120 characters or requiring control-character normalization are
+unknown rather than misleadingly shortened. Labels are sanitized and bounded to
+120 characters; duplicate labels do not merge IDs. Additional child tasks are
+counted as omitted. Task workspaces are recorded launch directories, not proof of
+isolation, ownership locks, or exclusive access.
+
+### Declare a recognizable subject
+
+When starting a task or delegation, call `orchestrator_session_id` with a short,
+non-sensitive `subject`; no peer survey or additional model call is needed. The tool
+returns the stable routing ID and current canonical alias. It uses Pi's
+`setSessionName` only when the canonical name is empty, preserving existing names
+and later human renames. Subjects are control-stripped, whitespace-normalized, and
+bounded to 120 Unicode characters. Do not supply arbitrary prompts or secrets.
+Aliases are display hints, never authentication or routing identities.
+
+Presence reads the current canonical Pi name on its existing five-second heartbeat,
+including idle `/name` or session-picker renames; declaration refreshes it immediately.
+An unnamed session retains its workspace-basename display fallback. Session replacement
+or shutdown disposes the previous publisher; a stale name source stops publication.
+Headers remain unchanged; the optional sidecar now also carries `scope`.
+
+### Publish curated state (Refs #1702; first slice)
+
+`orchestrator_session_id` also accepts optional `state`: strings named `objective`,
+`progress`, `decisions`, and `blockers` (2,048 UTF-8 bytes total). An object replaces
+all fields, `null` withdraws, and omission leaves the current record unchanged.
+Extra keys, controls, and oversized input are rejected before naming or persistence;
+records additionally fit 4 KiB. Never include credentials, internal instructions,
+or raw prompts. Whitelisting is not automatic secret redaction.
+
+Pi's public `appendEntry` persists a non-context custom record on the active branch.
+Only that branch's latest typed record is restored on start/reload/tree navigation;
+malformed or foreign records suppress older notes. Manager replacement and shutdown
+clear the cache. Conversation bodies, system prompts, results, and compaction summaries
+are never inspected to derive these notes. Stable reads/heartbeats do not scan history.
+
+Targeted `orchestrator_list` readback exposes detached historical notes, generated
+stable owner ID, recorded cwd (or null), and `recordedAt`, not heartbeat freshness.
+Cwd must be native absolute, control/surrogate-free, at most 1,024 UTF-8 bytes,
+and free of the 15 normalized Unicode separators listed below. Invalid generated
+cwd becomes null; malformed non-null readback withholds the note, never rewrites paths.
+Source is `owner-curated`, `ownerReply: false`, `authority: none`: even `decisions`
+is data, never a grant or human consent. Missing/invalid/over-budget notes are unknown;
+withdrawal remains explicit null. Advertising is best-effort; legacy headers/activity
+stay unchanged. Metadata and opt-in helper reasoning are available below; correlated
+owner decisions remain a later protocol unit. Neither issue is closed.
+
+### Consult a published snapshot
+
+Call `orchestrator_consult` with required stable `recipient_session_id`, optional
+`kind: "metadata"` (default), and optional existing opaque catalog `cursor`.
+No free-form question, owner request, human picker or read-consent dialog is used
+for this profile's explicitly published data. Use `orchestrator_session_id.state`
+to publish short updates before delegation or meaningful progress milestones when
+helpful; do not add a model turn solely to publish or emit per-tool/token updates.
+
+The JSON receipt is deeply detached and frozen in-process, at most 16 KiB. It
+contains public label/workspace, owned task summaries, recorded scope, one catalog
+page, historical curated state, observation time and presence freshness. Missing
+notes/scope are explicitly unknown; withdrawn notes remain an explicit null record.
+Counts and continuation identify listing gaps. Over-budget snapshots are unavailable,
+never silently truncated. Missing/stale/ambiguous publications and invalid cursors
+are unavailable, not owner refusals. Refresh from page one after public changes.
+
+`digest` binds captured public content to the selected activation and incarnation;
+it excludes private activity digests/generation and observation clocks. Heartbeat
+recency is not proof of current notes, Git resolution, reachability or global writer
+ownership: state `recordedAt` and scope `resolvedAt` keep their historical meaning.
+The source is `published_snapshot`, `ownerReply: false`, `authority: none`.
+This is not native consent, a review receipt or a correlated owner decision.
+No transcripts, prompts, threads, results, instructions, profile credentials or
+transport capabilities are exported. No new Git probes, messages, receiver wakes,
+child/helper launches or model calls occur in metadata mode. A question never
+implicitly selects reasoning; unknown metadata never triggers a helper.
+
+### Opt-in read-only reasoning
+
+Use `kind: "reasoning"` with a required `question` and the same exact recipient
+and optional catalog cursor. Supported TUI/RPC `ctx.ui.select` supplies model-cost
+permission; JSON/print and SDK contexts without actual dialog UI fail closed.
+Model booleans, curated decisions and helper text cannot authorize invocation or
+impersonate owners. Unknown/irrelevant/oversized arguments fail before effects.
+
+One public `ModelRegistry.streamSimple` request receives a static read-only prompt
+and one JSON question/public-snapshot message. Nested field whitelists exclude raw
+extra properties, history, credentials, transport capabilities and catalog cursors.
+Unknowns, omissions and historical source times remain visible; no tools execute.
+
+| Bound | Contract |
+|---|---|
+| Input | 16 KiB total system + question JSON; question nonempty, control-free, at most 1,024 UTF-8 bytes |
+| Output | Requested 512 tokens/minimal reasoning; text at most 4,096 UTF-8 bytes, no meaning truncation |
+| Lifetime | Local deadline at most 20 seconds; cancellation/deadline races return without waiting for ignored abort |
+| Concurrency | One execution lease per live SDK model registry, retained across coordinator/runtime replacement until actual provider result settlement |
+
+No retries or automatic runs. A hung provider keeps that registry busy; cancel does
+not reopen a potentially billable lease. Host currentness checks fail closed before
+invocation and after completion. Tool-call content, errors, empty/oversized text and
+stale results are explicit unavailable outcomes, never owner refusals. Length-stop
+text is marked partial. Advice carries captured digest/time/target, requested and
+actual model IDs, request caps and only finite nonnegative token/cost totals (or
+unknown). Thinking is dropped; permission claims remain untrusted text with
+`ownerReply: false`, `authority: none`. Abort/token requests are not guaranteed
+remote billing caps. Unit tests use local controlled SDK-compatible streams;
+the SDK fixture below also proves actual nested execution with simulated UI choices.
+
+### Cost permission and revocation
+
+`lib/orchestrator-helper-consent.ts` coordinates the public reasoning lane while
+metadata remains unchanged. Supported `ctx.ui.select` in TUI/RPC offers Allow once,
+Allow this target + model for this session, and Decline. Unknown responses and
+headless contexts fail closed. The forecast names the configured provider/model,
+captured public target/time, all core bounds and the non-guaranteed billing limit.
+This is model-cost permission only, never messaging or native-action consent.
+
+The host reads the actual SDK context's live getters and canonical bounded public
+source before/after waits. Session start, switch/fork/tree, model selection,
+resource reload and shutdown clear permissions and cancel pending work. Grants bind exact manager,
+session ID, cwd, model object/provider/ID, registry and logical target; at most
+eight targets survive in memory. Updated public snapshots may reuse a session
+grant; once never caches. `kind: "revoke-reasoning"` accepts only the recipient,
+removes its scope and invalidates pending choices without UI or model calls.
+Preflight precedes dialogs; changed public progress/page, replaced/stale/unavailable
+source or caller cancellation discards advice without retry. Canonical routing is
+re-listed after execution, with epoch/model/source checks still owning the reply.
+Private activity and heartbeat changes do not change the public digest.
+
+Pi's reload loader disables module caching, so an execution-only global symbol
+holds a weak registry-keyed engine map. No permission or identity survives runtime
+replacement; a new coordinator returns busy without UI while the old ignored-abort
+result remains pending, then requires fresh permission after settlement. This is
+stricter than one run per coordinator. Old clear cannot cancel a successor engine.
+No durable policy file, owner request, correlation or consent receipt is created.
+Tests simulate SDK UI responses, not real human approval. Actual nested-SDK helper
+execution is verified below; interactive human UI proof remains deferred.
+
+### Public-SDK acceptance fixture
+
+`tests/orchestrator-consultation-sdk.test.ts` uses installed Pi SDK 1.0.0:
+`DefaultResourceLoader`, `createAgentSession`, `bindExtensions`, local
+`registerProvider` streaming and `session.prompt`. Four separate managers/runtimes
+share one trusted fixture profile: owner, JSON caller, simulated-UI RPC caller,
+and fresh replacement owner. Provider/API IDs are unique per runtime.
+Production Gentle Agents/Shell extensions supply the actual registered tools.
+No private SDK invocation, fabricated tool context or transport adapter is used.
+
+The fixture also proves actual SDK JSON/no-UI reasoning denial with exactly two
+existing local driver turns and no nested helper or receiver calls. It proves
+curated branch persistence, preserved human names, frozen
+non-authoritative readback, actual private-message exclusion, opaque pagination
+for nine then ten Git worktrees, public membership invalidation, unchanged-private-
+history continuation, explicit null withdrawal and fresh replacement unknowns.
+Driver tool/final model turns are intentional local iterations; consultation adds
+no receiver model calls or caller Git probes during the business tool execution.
+Intentional owner-publication prompts are counted separately, including during
+the controlled in-flight test. Shell prompt setup still probes Git.
+No child execution or 1,000-projection claim is made.
+
+Public `AgentSession.bindExtensions(bindings: ExtensionBindings): Promise<void>`
+accepts `mode: "rpc"` and a fully typed `uiContext: ExtensionUIContext`. The fixture
+asserts actual SDK context getters report RPC/hasUI; it never assigns private
+context/mode fields or directly executes a tool. A test-host selector returns
+simulated Decline/unknown/Allow once/session responses; presentation methods are
+explicit RPC stubs, other dialogs throw. This is not a real human grant or RPC
+wire-client test. The original two-record/socket assertion precedes the extra caller.
+
+Five actual nested registry requests are observed separately from the exactly two
+main driver turns per tool prompt. Each opted-in request has empty tools, the same
+static read-only system prompt, and exactly one question/public-JSON user message
+(normalized by SDK to two transcript messages). Real caller/owner private-history
+sentinels, parent instructions and catalog cursor capabilities are excluded. The
+provider receives 512 tokens/minimal reasoning/no tool choice/no retries and a live
+abort signal. Known local token/cost usage and requested/actual model IDs match the
+non-authoritative advice envelope; a reply claiming permission grants nothing.
+
+Once re-prompts; session permission reuses updated published state for the same
+owner ID without another dialog; revoke adds no dialog/helper and forces a fresh
+choice. Metadata, JSON/no-UI, decline and unknown choices add zero helpers. A
+controlled deferred provider result plus actual owner publication deterministically
+returns stale-source without old advice or retries. Registry lease/replacement and
+ignored-abort races remain controlled unit-test evidence, not this SDK scenario.
+
+Outputs have two explicit ownership selectors: a private OS-temp fixture root
+(profile, settings, credentials/model storage, sessions and Git), and production's
+unique `/tmp/gentle-pi-<uid>/<profile-hash>` socket leaf. The fixture checks absence
+before startup, private ownership/canonical containment, and actual socket paths.
+Cleanup aborts sessions and invokes captured production public shutdown handlers
+with actual SDK contexts before dispose (dispose alone does not emit shutdown).
+It waits boundedly for presence withdrawal/empty sockets, revalidates ownership,
+then removes only the exact empty leaf, never its UID parent or historical leaves.
+The owned root is removed afterward; post-cleanup absence is checked. Windows is
+explicitly skipped. This is not interactive TUI, human consent, native review,
+Windows execution or issue-closure evidence; correlated owner decisions remain pending.
+
+### Recorded repository scope
+
+Scope reuses `resolveSessionWorktree`: canonical Git root plus a SHA-256 hash of
+canonical common-directory identity, with ambient `GIT_*` routing excluded. Sibling
+worktrees share a clone hash, not a root; separate clones differ. No remote URL or
+credential is read, and neither names nor scope grants authority. Non-Git, missing,
+or unsafe paths are unknown, never guessed or shortened (scope paths: 256 bytes).
+Literal scope paths containing NBSP, U+2000–200A, U+202F, U+205F or U+3000 are
+unknown: the shared spelling resolver maps them to ASCII space and could otherwise
+select a different existing repository. Input, resolved-root output and sidecar
+readback all reject them. Ordinary spaces and Unicode letters remain supported.
+
+`scope.host`, child `repository` facts keyed by task ID, and up to eight `registered`
+facts carry `source: recorded-workspace/git` and `resolvedAt` (resolution attempt
+time, not heartbeat age). Registered roots come from the existing session registry's
+durable entries, not another registry. Missing/pruned registrations resolve unknown.
+One bounded derived snapshot caches successful and unknown resolutions by actual Pi
+cwd, admitted launch cwd/membership, and registered roots. Lifecycle changes and
+session replacement invalidate it; stable token updates/heartbeats do not probe Git.
+
+`omittedTasks`, `omittedRegistered`, and `complete` describe listing bounds. If the
+sidecar byte budget cannot fit scope lists, both lists are withheld with exact
+omission counts while retaining host context. Bounded recorded-path continuation
+is described below; Git facts beyond the existing prefix remain unknown. #1701 stays open.
+New readers accept legacy sidecars without scope. Old strict optional-sidecar
+readers may show unknown discovery context; activity visibility is unchanged.
+Malformed scope alone falls back to unknown repository facts without hiding IDs.
+
+Recorded launch directories do not prove current child cwd or freedom from shared
+artifacts. A shell `cd` does not change Pi's session cwd. Omission counts mean the
+child list is incomplete, not an exhaustive writer inventory. This metadata cannot
+answer arbitrary reasoning questions (#1702).
+
+### Continue recorded metadata
+
+Call `orchestrator_list` without arguments as before. Each recent peer can also
+carry `catalog`: eight child summaries (`id`, `label`, `status`, actual recorded
+launch `cwd`) and eight recorded registered-root paths. To continue, pass its exact
+`recipient_session_id` and opaque `catalog.cursor` to the same tool. Aliases are
+for display, not selection. No human picker or recipient wakeup is involved.
+
+| Bound | Contract |
+|---|---|
+| Snapshot | One private sibling `gentle-agents/catalog` file per publisher, at most 64 KiB |
+| Entries | At most 64 tasks and 64 registered paths; eight of each per page, at most eight pages |
+| Overflow | Whole entries omitted; exact `omittedTasks` / `omittedRegistered` counts on every page |
+| Paths | Literal absolute recorded facts, at most 256 UTF-8 bytes; controls and normalized separators become `null`, never rewritten |
+| Cursor | At most 1,024 characters; pins session hash, incarnation, transport activation and canonical public-catalog digest plus a publisher-minted page token |
+
+Refresh from the first page after a public catalog change or producer replacement.
+Private activity/thread/token updates may advance activity generation without
+invalidating continuation: only the public catalog fields and omission counts
+identify its snapshot. Envelope/header generation must still match on each read.
+Wrong-recipient, changed or malformed cursors return unknown catalog context, not
+a cached old page. Missing/malformed/oversized/symlink/FIFO snapshots likewise leave
+legacy headers and activity visible. Legacy publishers need no catalog. The sibling
+storage cannot inflate the existing bounded presence scan; disposal removes only
+publisher-owned inodes and leaves replacements alone.
+
+Derivation explicitly selects summary fields from the existing owned unfinished,
+non-restored task list and durable session registry entries. It detaches caller
+inputs, never reads another task thread, and adds no Git probes, child launches,
+messages or model calls. Each paging read is one bounded local snapshot read, with
+no Git resolution. `updateDiscovery` is the public catalog source, independently
+of activity serialization; production publishes both from the same owned task
+list. Direct publisher callers must refresh discovery when public fields or
+membership change, not infer them from empty/unrelated activity input. Host aliases
+or legacy scope-only changes do not establish a new catalog identity.
+Recorded cwd/root paths are **not** canonical Git identities or
+an exhaustive global writer inventory; the earlier Git prefix retains its own gaps.
+#1702 remains published-status/curated-summary work, not automatic conversation sharing.
+
 ## Turning it on
 
 Set `GENTLE_SHELL_INTERACTIVE_HOST=1` on the `pi --mode rpc` process the host spawns directly. `lib/rpc-host.ts`'s `isInteractiveRpcHost(mode, env)` gates the feature on that exact value; any other value, or its absence, keeps RPC headless — the existing subagent-child behavior is byte-identical. `lib/agents-runner.ts` strips the variable from every subagent child's environment, so a subagent spawned by an interactive host never inherits it and stays headless itself.

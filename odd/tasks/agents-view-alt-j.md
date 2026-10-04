@@ -46,5 +46,13 @@ Type: Bug fix (type:bug)
 - Add default-registration and override/disabling regressions.
 - Verification: focused 501/501 twice; process-isolated full suite 4546 passed, 34 skipped; typecheck, runtime modules, package files and packed-package checks passed. Physical terminal check not performed. Document pre-existing child-environment failure above.
 
+## Main integration verification
+- User request: "deberiamos verificarlo nuevamente ya que actualizamos a main?"; authorization: "si dale" to integrate and verify without publication.
+- Integrated main 794cb93a with a non-rewriting merge; no conflicts.
+- Focused tests: 528 passed, 0 failed, 0 skipped.
+- env -u GENTLE_PI_AGENTS_CHILD pnpm test: 4882 passed, 0 failed, 34 skipped; provider-contract and runtime-harness passed.
+- Previous native approval applies to the old-base candidate only; do not claim it approves the updated slice.
+- Physical terminal testing and updated typecheck/package checks not performed in this integration pass.
+
 ## Next step
 Local implementation and PR summary are prepared. Await status:approved on #1565; then verify the publishing destination, push non-force, and create the linked type:bug PR. Do not confuse native candidate review approval with GitHub issue approval.

@@ -71,8 +71,8 @@ cwd becomes null; malformed non-null readback withholds the note, never rewrites
 Source is `owner-curated`, `ownerReply: false`, `authority: none`: even `decisions`
 is data, never a grant or human consent. Missing/invalid/over-budget notes are unknown;
 withdrawal remains explicit null. Advertising is best-effort; legacy headers/activity
-stay unchanged. Direct metadata consultation is available below; reasoning, correlated
-owner decisions, and actual SDK execution proof remain later units. Neither issue is closed.
+stay unchanged. Direct metadata consultation is available below; reasoning and correlated
+owner decisions remain later units. Public-SDK acceptance is recorded below. Neither issue is closed.
 
 ### Consult a published snapshot
 
@@ -100,6 +100,35 @@ This is not native consent, a review receipt or a correlated owner decision.
 No transcripts, prompts, threads, results, instructions, profile credentials or
 transport capabilities are exported. No new Git probes, messages, receiver wakes,
 child/helper launches or model calls occur. The reasoning helper lane is unavailable.
+
+### Public-SDK acceptance fixture
+
+`tests/orchestrator-consultation-sdk.test.ts` uses installed Pi SDK 1.0.0:
+`DefaultResourceLoader`, `createAgentSession`, `bindExtensions`, local
+`registerProvider` streaming and `session.prompt`. Two separate managers/cwds
+share one trusted fixture profile; a third fresh session tests owner replacement.
+Production Gentle Agents/Shell extensions supply the actual registered tools.
+No private SDK invocation, fabricated tool context or transport adapter is used.
+
+The fixture proves curated branch persistence, preserved human names, frozen
+non-authoritative readback, actual private-message exclusion, opaque pagination
+for nine then ten Git worktrees, public membership invalidation, unchanged-private-
+history continuation, explicit null withdrawal and fresh replacement unknowns.
+Driver tool/final model turns are intentional local iterations; consultation adds
+no receiver model calls or Git probes during the business tool execution. Shell
+prompt setup still probes Git. No child execution or 1,000-projection claim is made.
+
+Outputs have two explicit ownership selectors: a private OS-temp fixture root
+(profile, settings, credentials/model storage, sessions and Git), and production's
+unique `/tmp/gentle-pi-<uid>/<profile-hash>` socket leaf. The fixture checks absence
+before startup, private ownership/canonical containment, and actual socket paths.
+Cleanup aborts sessions and invokes captured production public shutdown handlers
+with actual SDK contexts before dispose (dispose alone does not emit shutdown).
+It waits boundedly for presence withdrawal/empty sockets, revalidates ownership,
+then removes only the exact empty leaf, never its UID parent or historical leaves.
+The owned root is removed afterward; post-cleanup absence is checked. Windows is
+explicitly skipped. This is not interactive TUI, human consent, native review,
+Windows execution, reasoning-helper acceptance or issue-closure evidence.
 
 ### Recorded repository scope
 

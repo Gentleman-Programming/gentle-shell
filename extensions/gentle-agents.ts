@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { recordReviewMutation } from "../lib/review-reminder-receipt.ts";
 import { SESSION_CHANGE_RELAY } from "../lib/session-changes.ts";
 import { publishForeignSessionChange } from "../lib/session-change-capture.ts";
-import { SessionWorktreeRegistry, resolveSessionWorktree, type WorktreeResolver } from "../lib/session-worktree-registry.ts";
+import { SESSION_WORKTREE_ENTRY, SESSION_WORKTREE_CHANGED, SessionWorktreeRegistry, resolveSessionWorktree, type WorktreeResolver } from "../lib/session-worktree-registry.ts";
 import { ForeignTargetGrants } from "../lib/foreign-target-grants.ts";
 import { MESSAGING_REASON_MAX_UTF8_BYTES, MESSAGING_REASON_MIN_CHARACTERS, normalizeMessagingReason, SessionMessagingGrants } from "../lib/session-messaging-grants.ts";
 import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
@@ -35,6 +35,7 @@ import { AgentsView } from "../lib/agents-view.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
 import { PresencePublisher, sanitizeDisplayLabel } from "../lib/orchestrator-presence.ts";
 import { discoverOrchestrators } from "../lib/orchestrator-discovery.ts";
+import { OrchestratorScopeCache, type RepositoryFact } from "../lib/orchestrator-scope.ts";
 import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/agents-rpc-publisher.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
@@ -387,6 +388,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	let stopVisualUpdates: (() => void) | undefined;
 	let sessions: ExtensionContext["sessionManager"] | undefined;
 	let presence: PresencePublisher | undefined;
+	const scopeCache = new OrchestratorScopeCache(deps.resolveWorktree);
 	let rpcActivityPublisher: RpcActivityPublisher | undefined;
 	// Messages already surfaced to the user this session through the RPC
 	// activity publisher's `onError`, so a recurring push failure (the
@@ -395,6 +397,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	let notifiedRpcActivityErrors: Set<string> | undefined;
 	const overlays = new Set<AgentsView>();
 	const startPresence = (manager: ExtensionContext["sessionManager"]) => {
+		scopeCache.clear();
 		const sessionId = manager.getSessionId() ?? "";
 		const labelSource = () => {
 			if (sessions !== manager || (manager.getSessionId() ?? "") !== sessionId) throw new Error("stale-session");
@@ -413,10 +416,23 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			presence?.update(tasks.map((task) => ({ task, thread: store.thread(task.id) })));
 			const transport = activeSessionTransport;
 			if (transport?.sessionManager === sessions && transport.sessionId === activeSessionId() && transport.listener.record) {
-				presence?.updateDiscovery(transport.listener.record, { workspace: sessions.getCwd(), tasks });
+				// Read the existing durable registry, without roots()'s repeated Git validation.
+				// These are recorded contexts, never authority for admission or messaging.
+				const registered = sessions.getEntries().flatMap(entry => {
+					if (entry.type !== "custom" || entry.customType !== SESSION_WORKTREE_ENTRY) return [];
+					const data = entry.data as { sessionId?: string; root?: string; evidence?: string } | undefined;
+					return data?.sessionId === activeSessionId() && typeof data.root === "string" && typeof data.evidence === "string" ? [data.root] : [];
+				});
+				presence?.updateDiscovery(transport.listener.record, { workspace: sessions.getCwd(), tasks,
+					scope: scopeCache.project(sessions.getCwd(), tasks, registered) });
 			}
 		} catch { presence?.dispose(); presence = undefined; }
 	};
+	const unsubscribeScope = pi.events.on(SESSION_WORKTREE_CHANGED, (event) => {
+		if ((event as { sessionId?: string } | undefined)?.sessionId !== sessions?.getSessionId()) return;
+		scopeCache.clear();
+		publishActivity();
+	});
 	let worktrees: SessionWorktreeRegistry | undefined;
 	let worktreeManager: ExtensionContext["sessionManager"] | undefined;
 	let worktreeAuthority: (() => boolean) | undefined;
@@ -461,6 +477,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.on("session_shutdown", () => {
 		clearTaskMetrics();
 		unsubscribeMetrics();
+		unsubscribeScope();
+		scopeCache.clear();
 	});
 	let stopAllConfirmation: Promise<void> | undefined;
 
@@ -1552,10 +1570,15 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				const activations = await transport.listener.registry.listActivations(transport.sessionId);
 				if (activeTransportFor(ctx) !== transport) return text("Error: session discovery became unavailable before results were confirmed.", { error: "stale" });
 				const peers = discoverOrchestrators(agentHome, activations);
+				const repository = (fact?: RepositoryFact) => fact?.root
+					? `repository: ${fact.root} · clone: ${fact.cloneHash} · Git resolved at: ${fact.resolvedAt} (${fact.source})`
+					: "repository: unknown";
 				const rows = peers.map(peer => {
 					const context = peer.freshness === "recent" ? ` · ${peer.label || "unnamed"} · recorded workspace: ${peer.workspace || "unknown"}` : " · context: unknown";
-					const tasks = peer.tasks?.map(task => `\n  - ${task.label || task.id} [${task.status}] · launch workspace: ${task.workspace || "unknown"}`).join("") ?? "";
-					return `- ${peer.sessionId}${context} · metadata: ${peer.freshness}${tasks}${peer.omitted ? `\n  (${peer.omitted} more tasks omitted)` : ""}`;
+					const tasks = peer.tasks?.map(task => `\n  - ${task.label || task.id} [${task.status}] · launch workspace: ${task.workspace || "unknown"} · ${repository(peer.scope?.tasks.find(t => t.id === task.id)?.repository)}`).join("") ?? "";
+					const registered = peer.scope?.registered.map(fact => `\n  registered: ${repository(fact)}`).join("") ?? "";
+					const gaps = peer.scope && !peer.scope.complete ? `\n  (scope incomplete: ${peer.scope.omittedTasks} tasks, ${peer.scope.omittedRegistered} registered roots omitted)` : "";
+					return `- ${peer.sessionId}${context} · ${repository(peer.scope?.host)} · metadata: ${peer.freshness}${tasks}${registered}${gaps}${peer.omitted ? `\n  (${peer.omitted} more tasks omitted)` : ""}`;
 				});
 				return peers.length === 0 ? text("No other sessions are currently advertised. Advertisements have unknown reachability and do not guarantee a live session.") : text(`Advertised sessions (reachability is unknown):\n${rows.join("\n")}`, { gentleAgents: { candidates: peers } });
 			} catch {

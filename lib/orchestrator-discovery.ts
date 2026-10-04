@@ -9,6 +9,7 @@ export interface OrchestratorCandidate {
 	workspace?: string;
 	tasks?: DiscoveryMetadata["tasks"];
 	omitted?: number;
+	scope?: DiscoveryMetadata["scope"];
 }
 
 /** One bounded metadata page, no thread reads or transport probes. The registry
@@ -29,6 +30,6 @@ export function discoverOrchestrators(profile: string, peers: readonly PresenceR
 		if (metadata?.activation !== activationHash(activations[0])) return unknown;
 		if (!header.recent) return { ...unknown, freshness: "stale" };
 		return { ...unknown, freshness: "recent", label: header.label, workspace: metadata.workspace,
-			tasks: metadata.tasks, omitted: metadata.omitted };
+			tasks: metadata.tasks, omitted: metadata.omitted, ...(metadata.scope ? { scope: metadata.scope } : {}) };
 	});
 }

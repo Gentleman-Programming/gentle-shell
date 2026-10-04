@@ -7,6 +7,7 @@ import test, { type TestContext } from "node:test";
 import { PresencePublisher, listPresence } from "../lib/orchestrator-presence.ts";
 import { ActiveSessionListener, SessionPresenceRegistry } from "../lib/agents-session-transport.ts";
 import { discoverOrchestrators } from "../lib/orchestrator-discovery.ts";
+import { OrchestratorScopeCache } from "../lib/orchestrator-scope.ts";
 
 function fixture(t: TestContext) {
 	const profile = realpathSync(mkdtempSync(join(tmpdir(), "discovery-")));
@@ -111,6 +112,43 @@ test("real POSIX registry selects one routing activation; another activation's m
 	publisher.updateDiscovery(selected[0], { workspace: "/selected", tasks: [] });
 	assert.equal(discoverOrchestrators(profile, selected)[0].workspace, "/selected");
 	assert.equal(discoverOrchestrators(profile, selected)[0].reachability, "unknown");
+});
+
+test("malformed scope alone falls back unknown; heartbeat retains Git resolution age", (t) => {
+	const profile = fixture(t);
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer", label: "Repo", activity: [] });
+	t.after(() => publisher.dispose());
+	const scope = new OrchestratorScopeCache(path => ({ root: path, commonDir: "/clone" }), () => 1).project("/repo", [], ["/repo"]);
+	publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [], scope });
+	publisher.refreshLabel();
+	assert.equal(discoverOrchestrators(profile, [peer])[0].scope?.host.resolvedAt, 1);
+	const name = `${publisher.target.sessionHash}.${publisher.target.incarnation}.discovery.json`;
+	const path = join(profile, "gentle-agents", "presence", name);
+	const value = JSON.parse(readFileSync(path, "utf8"));
+	value.metadata.scope.host.root = "/repo\nother";
+	writeFileSync(path, JSON.stringify(value));
+	const candidate = discoverOrchestrators(profile, [peer])[0];
+	assert.equal(candidate.sessionId, "peer");
+	assert.equal(candidate.workspace, "/repo");
+	assert.equal(candidate.scope, undefined);
+});
+
+test("sidecar byte overflow reports exact scope gaps rather than truncating roots", (t) => {
+	const profile = fixture(t);
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer", label: "Repo", activity: [] });
+	t.after(() => publisher.dispose());
+	const tasks = Array.from({ length: 8 }, (_, i) => ({ id: "😀".repeat(119) + i, cwd: "/" + "r".repeat(250) + i,
+		label: "😀".repeat(120), status: "running" }));
+	const scope = new OrchestratorScopeCache(path => ({ root: path, commonDir: "/clone" })).project("/repo", tasks, tasks.map(t => t.cwd));
+	publisher.updateDiscovery(peer, { workspace: "/repo", tasks, scope });
+	scope.host.root = "/caller-mutated";
+	publisher.refreshLabel();
+	const result = discoverOrchestrators(profile, [peer])[0].scope!;
+	assert.equal(result.host.root, "/repo");
+	assert.equal(result.complete, false);
+	assert.equal(result.omittedTasks, 8);
+	assert.equal(result.omittedRegistered, 8);
+	assert.deepEqual(result.registered, []);
 });
 
 test("duplicate display names do not become routing identities", (t) => {

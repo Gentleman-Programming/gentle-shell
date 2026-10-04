@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
+import { validRecordedScope, type RecordedScope } from "./orchestrator-scope.ts";
 
 // Same-profile OS-user trust boundary, not an authorization channel. POSIX modes
 // restrict newly created storage; Windows deployments must supply their own ACLs.
@@ -28,6 +29,7 @@ export interface Activity { tasks: { summary: ActivityInput["task"]; thread: {
 } }[] }
 export interface Target { sessionHash: string; incarnation: string }
 export interface DiscoveryMetadata {
+	scope?: RecordedScope;
 	activation: string;
 	workspace: string;
 	tasks: { id: string; label: string; status: string; workspace: string }[];
@@ -90,7 +92,7 @@ function validTarget(value: Target) {
 		&& typeof value.incarnation === "string" && UUID.test(value.incarnation);
 }
 function validDiscovery(d: unknown): d is DiscoveryMetadata {
-	return object(d) && keys(d, ["activation", "workspace", "tasks", "omitted"])
+	return object(d) && keys(d, Object.hasOwn(d, "scope") ? ["activation", "workspace", "tasks", "omitted", "scope"] : ["activation", "workspace", "tasks", "omitted"])
 		&& typeof d.activation === "string" && HASH.test(d.activation)
 		&& typeof d.workspace === "string" && d.workspace === label(d.workspace) && integer(d.omitted)
 		&& Array.isArray(d.tasks) && d.tasks.length <= 8 && d.tasks.every((t: unknown) => object(t)
@@ -263,7 +265,8 @@ export function readDiscovery(profile: string, h: Header): DiscoveryMetadata | u
 		if (!object(value) || !keys(value, ["schema", "sessionHash", "incarnation", "generation", "metadata"])
 			|| value.schema !== 1 || value.sessionHash !== h.sessionHash || value.incarnation !== h.incarnation
 			|| value.generation !== h.generation || !validDiscovery(value.metadata)) return undefined;
-		return value.metadata;
+		const { scope, ...legacy } = value.metadata;
+		return validRecordedScope(scope) ? { ...legacy, scope } : legacy;
 	} catch { return undefined; }
 }
 
@@ -308,15 +311,25 @@ export class PresencePublisher {
 	/** Metadata-only projection; never reads task prompts, results, or threads.
 	 * Binding to the listener activation prevents reused session IDs from joining. */
 	updateDiscovery(peer: { sessionId: string; endpoint: string; createdAt: number }, input: {
-		workspace: string; tasks: readonly { id: string; label: string; status: string; cwd: string }[];
+		workspace: string; tasks: readonly { id: string; label: string; status: string; cwd: string }[]; scope?: RecordedScope;
 	}) {
 		if (this.disposed) throw new Error("disposed");
 		if (sessionHash(peer.sessionId) !== this.target.sessionHash) throw new Error("malformed-discovery");
 		// A shortened path could denote a different workspace; do not advertise it.
 		const workspace = (path: string) => Array.from(path).length <= 120 && label(path) === path ? path : "";
-		const discovery = { activation: activationHash(peer), workspace: workspace(input.workspace),
+		const discovery: DiscoveryMetadata = { activation: activationHash(peer), workspace: workspace(input.workspace),
 			tasks: input.tasks.slice(0, 8).map(t => ({ id: label(t.id), label: label(t.label), status: t.status, workspace: workspace(t.cwd) })),
 			omitted: Math.max(0, input.tasks.length - 8) };
+		if (input.scope && validRecordedScope(input.scope)) {
+			discovery.scope = structuredClone(input.scope);
+			// Leave explicit gaps instead of publishing a sidecar readers cannot fit.
+			if (Buffer.byteLength(JSON.stringify(discovery)) > HEADER_LIMIT - 1024) {
+				const scope = discovery.scope;
+				discovery.scope = { ...scope, tasks: [], registered: [],
+					omittedTasks: scope.tasks.length + scope.omittedTasks,
+					omittedRegistered: scope.registered.length + scope.omittedRegistered, complete: false };
+			}
+		}
 		if (!validDiscovery(discovery)) throw new Error("malformed-discovery");
 		if (JSON.stringify(discovery) === JSON.stringify(this.discovery)) return;
 		this.discovery = discovery;

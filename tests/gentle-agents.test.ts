@@ -22,6 +22,7 @@ import { STALE_COMPLETION_MS } from "../lib/agents-completion-delivery.ts";
 import { applyTaskEvent, emptyThread, TASK_EVENT, TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
 import { NativePointerScope } from "../lib/native-pointer-region.ts";
 import { PresenceCursor, PresencePublisher, listPresence, readActivity, readDiscovery } from "../lib/orchestrator-presence.ts";
+import { OrchestratorScopeCache } from "../lib/orchestrator-scope.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
 import { AgentRunner } from "../lib/agents-runner.ts";
@@ -1301,6 +1302,9 @@ test("live-only extension instances discover same-profile peers across cwd bound
 	await run(local, "local");
 	const peerId = await run(peer, "peer");
 	await eventually(() => listPresence(profile).entries.some(header => readDiscovery(profile, header)?.tasks.some(task => task.id === peerId)), "admitted runtime-owned tasks publish without subsequent child events");
+	const scope = listPresence(profile).entries.map(header => readDiscovery(profile, header)?.scope).find(scope => scope?.tasks.some(task => task.id === peerId));
+	assert.equal(scope?.tasks.find(task => task.id === peerId)?.repository.root, peer.ctx.sessionManager.getCwd());
+	assert.equal(scope?.host.cloneHash, scope?.tasks.find(task => task.id === peerId)?.repository.cloneHash);
 	await tick();
 	peer.children[0].emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "peer streamed text" } });
 	await eventually(() => listPresence(profile).entries.some((header) => readActivity(profile, header).activity?.tasks.some((row) => row.summary.id === peerId && row.thread.items.some((item) => item.text === "peer streamed text"))), "task deltas, not just status changes, must publish peer activity");
@@ -3873,7 +3877,8 @@ test("registered session identity declares subjects and refreshes canonical idle
 	Object.assign(h.pi, { setSessionName: (value: string) => { name = value; names.push(value); } });
 	gentleAgents(h.pi, {}, runtime.deps);
 	const { ctx } = fakeContext();
-	Object.assign(ctx.sessionManager, { getSessionName: () => name });
+	const registrations = [{ type: "custom", customType: SESSION_WORKTREE_ENTRY, data: { sessionId: "s1", root: cwd, evidence: "fixture" } }];
+	Object.assign(ctx.sessionManager, { getSessionName: () => name, getEntries: () => registrations });
 	await h.fire("session_start", ctx);
 	await eventually(() => ready, "subject transport ready");
 	const tool = h.tools.get("orchestrator_session_id")!;
@@ -3885,12 +3890,18 @@ test("registered session identity declares subjects and refreshes canonical idle
 	const before = listPresence(profile).entries[0]!;
 	assert.equal(before.label, "Fix auth");
 	assert.equal(readDiscovery(profile, before)?.workspace, cwd);
+	assert.equal(readDiscovery(profile, before)?.scope?.host.root, cwd);
+	assert.equal(readDiscovery(profile, before)?.scope?.registered[0]?.root, cwd);
 	name = "Human rename";
 	heartbeats[0](); // Existing publisher heartbeat, without any task/model activity.
 	const renamed = listPresence(profile).entries[0]!;
 	assert.equal(renamed.label, name);
 	assert.equal(renamed.generation, before.generation);
 	assert.deepEqual(readActivity(profile, renamed).activity?.tasks, []);
+	assert.equal(readDiscovery(profile, renamed)?.scope?.host.resolvedAt, readDiscovery(profile, before)?.scope?.host.resolvedAt);
+	registrations.push({ ...registrations[0], data: { ...registrations[0].data, root: join(cwd, "registered") } });
+	h.pi.events.emit(SESSION_WORKTREE_CHANGED, { sessionId: "s1" });
+	assert.deepEqual(readDiscovery(profile, listPresence(profile).entries[0])?.scope?.registered.map(fact => fact.root), [cwd, join(cwd, "registered")]);
 	await declare("Do not overwrite");
 	assert.deepEqual(names, ["Fix auth"]);
 	assert.match((await declare()).content[0].text, /Human rename/);
@@ -3905,6 +3916,7 @@ test("registered session identity declares subjects and refreshes canonical idle
 	heartbeats[0]();
 	assert.equal(listPresence(profile).entries.length, 1);
 	assert.equal(listPresence(profile).entries[0].label, "Replacement");
+	assert.equal(readDiscovery(profile, listPresence(profile).entries[0])?.scope?.host.root, cwd);
 	const stale = await declare("Stale subject", ctx);
 	assert.match(stale.content[0].text, /not ready/);
 	assert.equal(names.length, 2);
@@ -3920,7 +3932,8 @@ test("registered orchestrator_list joins peer metadata without child launches or
 	const peer = { version: 1 as const, sessionId: "peer", endpoint: "/fixture/peer.sock", createdAt: 1 };
 	const publisher = PresencePublisher.start({ profile, sessionId: "peer", label: "Auth review", activity: [] });
 	try {
-		publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [{ id: "child", label: "Check auth", status: "waiting", cwd: "/repo-child" }] });
+		const scope = new OrchestratorScopeCache(path => ({ root: path, commonDir: "/clone" })).project("/repo", [{ id: "child", cwd: "/repo-child" }], ["/repo"]);
+		publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [{ id: "child", label: "Check auth", status: "waiting", cwd: "/repo-child" }], scope } as never);
 		let ready = false;
 		const registry = { list: async () => [], listActivations: async () => [peer] };
 		runtime.deps.agentHome = profile;
@@ -3937,6 +3950,13 @@ test("registered orchestrator_list joins peer metadata without child launches or
 		assert.match(result.content[0].text, /peer.*Auth review.*recorded workspace: \/repo/);
 		assert.match(result.content[0].text, /Check auth \[waiting\].*launch workspace: \/repo-child/);
 		assert.match(result.content[0].text, /reachability is unknown/);
+		assert.equal((result.details.gentleAgents as any).candidates[0].scope.host.root, "/repo");
+		assert.equal((result.details.gentleAgents as any).candidates[0].scope.tasks[0].repository.root, "/repo-child");
+		assert.match(result.content[0].text, /clone: [a-f0-9]{64}/);
+		publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [] });
+		const legacy = await h.tools.get("orchestrator_list")!.execute("legacy", {}, undefined, undefined, ctx);
+		assert.match(legacy.content[0].text, /repository: unknown/);
+		assert.equal((legacy.details.gentleAgents as any).candidates[0].sessionId, "peer");
 		assert.equal(runtime.spawned.length, 0);
 		assert.equal(h.sent.length, 0);
 		await h.fire("session_shutdown", ctx);

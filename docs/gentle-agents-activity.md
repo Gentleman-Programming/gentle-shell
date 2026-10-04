@@ -46,10 +46,37 @@ Presence reads the current canonical Pi name on its existing five-second heartbe
 including idle `/name` or session-picker renames; declaration refreshes it immediately.
 An unnamed session retains its workspace-basename display fallback. Session replacement
 or shutdown disposes the previous publisher; a stale name source stops publication.
-Headers and optional metadata sidecar contracts remain unchanged.
+Headers remain unchanged; the optional sidecar now also carries `scope`.
 
-Repository identity and extended work scope remain for a later stacked slice.
-Recorded launch directories do not prove repository identity or freedom from shared
+### Recorded repository scope
+
+Scope reuses `resolveSessionWorktree`: canonical Git root plus a SHA-256 hash of
+canonical common-directory identity, with ambient `GIT_*` routing excluded. Sibling
+worktrees share a clone hash, not a root; separate clones differ. No remote URL or
+credential is read, and neither names nor scope grants authority. Non-Git, missing,
+or unsafe paths are unknown, never guessed or shortened (scope paths: 256 bytes).
+Literal scope paths containing NBSP, U+2000–200A, U+202F, U+205F or U+3000 are
+unknown: the shared spelling resolver maps them to ASCII space and could otherwise
+select a different existing repository. Input, resolved-root output and sidecar
+readback all reject them. Ordinary spaces and Unicode letters remain supported.
+
+`scope.host`, child `repository` facts keyed by task ID, and up to eight `registered`
+facts carry `source: recorded-workspace/git` and `resolvedAt` (resolution attempt
+time, not heartbeat age). Registered roots come from the existing session registry's
+durable entries, not another registry. Missing/pruned registrations resolve unknown.
+One bounded derived snapshot caches successful and unknown resolutions by actual Pi
+cwd, admitted launch cwd/membership, and registered roots. Lifecycle changes and
+session replacement invalidate it; stable token updates/heartbeats do not probe Git.
+
+`omittedTasks`, `omittedRegistered`, and `complete` describe listing bounds. If the
+sidecar byte budget cannot fit scope lists, both lists are withheld with exact
+omission counts while retaining host context. Full registered-scope continuation
+and interactive live-profile verification remain follow-ups; #1701 stays open.
+New readers accept legacy sidecars without scope. Old strict optional-sidecar
+readers may show unknown discovery context; activity visibility is unchanged.
+Malformed scope alone falls back to unknown repository facts without hiding IDs.
+
+Recorded launch directories do not prove current child cwd or freedom from shared
 artifacts. A shell `cd` does not change Pi's session cwd. Omission counts mean the
 child list is incomplete, not an exhaustive writer inventory. This metadata cannot
 answer arbitrary reasoning questions (#1702).

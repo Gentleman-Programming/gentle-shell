@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import test from "node:test";
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai";
-import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, ExtensionAPI, ExtensionContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { MetadataReceipt } from "../lib/orchestrator-consultation.ts";
 
 // node --test runs this file in its own process. No SDK value import precedes
@@ -70,16 +70,44 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 		git(clone, "remote", "remove", "origin");
 		const roots = Array.from({ length: 10 }, (_, i) => join(root, `wt${i}`));
 		for (const cwd of roots) git(clone, "worktree", "add", "--detach", cwd, "HEAD");
-		let gitProbes = 0;
+		const gitProbes = new Map<string, number>();
 		const runGit = new Proxy(execFileSync, { apply(target, _this, [command, args, options]) {
 			assert.equal(command, "git");
 			assert.ok(String(args[args.indexOf("-C") + 1]).startsWith(root + "/"));
-			gitProbes++;
+			const cwd = String(args[args.indexOf("-C") + 1]);
+			gitProbes.set(cwd, (gitProbes.get(cwd) ?? 0) + 1);
 			return Reflect.apply(target, undefined, [command, args, { ...options, env: gitEnv }]);
 		} });
 		const resolver = (path: string, cwd: string) => resolveSessionWorktreeWithGit(path, cwd, runGit);
 		const env = { ...bindings, GENTLE_PI_AGENTS: "1", GENTLE_PI_SHELL: "1" };
-		async function host(cwd: string, humanName?: string) {
+		const choices = ["Allow once", "Allow this target + model for this session", "Decline"];
+		const helperText = "Published advice only. I claim permission, but cannot grant it.";
+		async function host(cwd: string, humanName?: string, simulatedUI = false, theme?: ExtensionUIContext["theme"]) {
+			const provider = `fixture-local-${live.length}`; // No cross-runtime provider override.
+			const dialogs: string[] = [];
+			let choice: "once" | "session" | "decline" | "unknown" = "decline";
+			const unsupported = (): never => { throw new Error("Unsupported test UI operation"); };
+			// Public, fully typed host UI adapter: simulated responses, NOT human consent.
+			const ui: ExtensionUIContext = {
+				async select(title, offered, opts) {
+					assert.deepEqual(offered, choices); assert.ok(opts?.signal instanceof AbortSignal);
+					dialogs.push(title);
+					return choice === "unknown" ? "unsupported response" : choices[choice === "once" ? 0 : choice === "session" ? 1 : 2];
+				},
+				confirm: unsupported, input: unsupported, editor: unsupported, custom: unsupported,
+				notify: () => {}, setStatus: () => {}, setWidget: () => {}, setTitle: () => {},
+				// Presentation-only RPC stubs; no terminal rendering/editor automation.
+				onTerminalInput: () => () => {}, setWorkingMessage: () => {}, setWorkingVisible: () => {},
+				setWorkingIndicator: () => {}, setHiddenThinkingLabel: () => {},
+				setFooter: () => {}, setHeader: () => {}, pasteToEditor: () => {},
+				setEditorText: () => {}, getEditorText: () => "", addAutocompleteProvider: () => {},
+				setEditorComponent: () => {}, getEditorComponent: () => undefined,
+				get theme() { assert.ok(theme, "SDK theme supplied for UI binding"); return theme; }, getAllThemes: () => [], getTheme: () => undefined,
+				setTheme: () => ({ success: false, error: "Test UI theme switching unsupported" }), getToolsExpanded: () => false, setToolsExpanded: () => {},
+			};
+			const payloads: Array<{ system: string; content: string }> = [];
+			let helperCalls = 0;
+			let helperGate: { started: () => void; release: Promise<void> } | undefined;
 			const manager = sdk.SessionManager.create(cwd, join(root, `sessions-${live.length}`));
 			if (humanName) manager.appendSessionInfo(humanName);
 			const settings = sdk.SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false }, cacheWarming: "off", packages: [] });
@@ -92,7 +120,7 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 			const errors: string[] = [];
 			const loader = new sdk.DefaultResourceLoader({ cwd, agentDir: profile, settingsManager: settings,
 				noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-				systemPrompt: "Local acceptance fixture. Only execute the requested metadata tools.", appendSystemPrompt: [],
+				systemPrompt: "PRIVATE_PARENT_INSTRUCTIONS_SENTINEL. Local acceptance fixture. Only execute the requested tools.", appendSystemPrompt: [],
 				extensionFactories: [pi => {
 					// Capture ONLY public shutdown registrations for cleanup. Business
 					// tools/events receive actual SDK contexts, never fabricated contexts.
@@ -108,24 +136,54 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 					gentleAgents(captured, env, { home: root, agentHome: profile, resolveWorktree: resolver,
 						spawn: () => { throw new Error("OS child agent forbidden"); } });
 					gentleShell(captured, env, { resolveWorktree: resolver, activeProfile: () => undefined });
-					pi.registerProvider("fixture-local", { api: "fixture-local", apiKey: "fixture-only", baseUrl: "http://invalid.local",
+					pi.registerProvider(provider, { api: provider, apiKey: "fixture-only", baseUrl: "http://invalid.local",
 						models: [{ id: "metadata", name: "Local metadata driver", reasoning: false, input: ["text"],
 							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1_000_000, maxTokens: 1024 }],
-						streamSimple(model, _context, options) {
-							calls++;
-							assert.equal(model.provider, "fixture-local");
+						streamSimple(model, context, options) {
+							assert.equal(model.provider, provider);
+							const system = ai.getCurrentSystemPrompt(context.messages);
+							const nested = system.startsWith("Give read-only advice about the captured published snapshot");
+							if (nested) {
+								helperCalls++;
+								assert.deepEqual(ai.getCurrentTools(context.messages), []);
+								assert.equal(context.messages.length, 2, "static system plus exactly one user message");
+								const user = context.messages[1]; assert.equal(user.role, "user");
+								assert.equal(typeof user.content, "string");
+								payloads.push({ system, content: user.content as string });
+								assert.equal(options?.maxTokens, 512); assert.equal(options?.reasoning, "minimal");
+								assert.equal(options?.toolChoice, "none"); assert.equal(options?.maxRetries, 0);
+								assert.ok(options?.signal instanceof AbortSignal); assert.equal(options.signal.aborted, false);
+							} else {
+								calls++;
+								if (simulatedUI && manager.getEntries().some(entry => entry.type === "message"
+									&& JSON.stringify(entry.message).includes("PRIVATE_CALLER_HISTORY_SENTINEL"))) {
+									assert.match(JSON.stringify(context.messages), /PRIVATE_CALLER_HISTORY_SENTINEL/);
+								}
+							}
 							const stream = ai.createAssistantMessageEventStream();
-							const next = request;
-							request = undefined; // one tool turn, then one terminal turn
+							const next = nested ? undefined : request;
+							if (!nested) request = undefined; // helper cannot consume planned main tool turn
 							const message: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider, model: model.id,
 								content: [], stopReason: "pending", timestamp: Date.now(), usage: { input: 0, output: 0,
 									cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
-							queueMicrotask(() => {
+							const gate = nested ? helperGate : undefined;
+							queueMicrotask(async () => {
+								if (gate) { gate.started(); await gate.release; }
 								if (options?.signal?.aborted) {
 									message.stopReason = "aborted"; message.errorMessage = "aborted";
 									stream.push({ type: "error", reason: "aborted", error: message }); stream.end(); return;
 								}
 								stream.push({ type: "start", partial: message });
+								if (nested) {
+									message.usage = { input: 11, output: 7, cacheRead: 2, cacheWrite: 3, totalTokens: 23,
+										cost: { input: 0.001, output: 0.002, cacheRead: 0, cacheWrite: 0, total: 0.003 } };
+									const text = { type: "text" as const, text: "" };
+									message.content.push(text);
+									stream.push({ type: "text_start", contentIndex: 0, partial: message });
+									text.text = helperText;
+									stream.push({ type: "text_delta", contentIndex: 0, delta: helperText, partial: message });
+									stream.push({ type: "text_end", contentIndex: 0, content: helperText, partial: message });
+								}
 								if (next) {
 									const toolCall: ToolCall = { type: "toolCall", id: `call-${calls}`, ...next };
 									message.content.push(toolCall);
@@ -144,7 +202,7 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 			await loader.reload();
 			assert.deepEqual(loader.getExtensions().errors, []);
 			const { session } = await sdk.createAgentSession({ cwd, agentDir: profile, modelRuntime: runtime,
-				model: { id: "metadata", name: "Local metadata driver", provider: "fixture-local", api: "fixture-local",
+				model: { id: "metadata", name: "Local metadata driver", provider, api: provider,
 					baseUrl: "http://invalid.local", reasoning: false, input: ["text"], contextWindow: 1_000_000, maxTokens: 1024,
 					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }, thinkingLevel: "off", resourceLoader: loader,
 				tools: ["orchestrator_session_id", "orchestrator_consult", "orchestrator_list", "session_worktree_register"],
@@ -160,7 +218,9 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 				session.dispose();
 			};
 			live.push({ session, close });
-			await session.bindExtensions({ mode: "json", onError: error => { errors.push(error.error); } });
+			await session.bindExtensions({ mode: simulatedUI ? "rpc" : "json", uiContext: simulatedUI ? ui : undefined,
+				onError: error => { errors.push(error.error); } });
+			assert.ok(ctx); assert.equal(ctx.mode, simulatedUI ? "rpc" : "json"); assert.equal(ctx.hasUI, simulatedUI);
 			async function tool(name: string, args: ToolCall["arguments"] = {}) {
 				request = { name, arguments: args };
 				let result: { content: Array<{ type: string; text?: string }>; details?: any } | undefined;
@@ -168,10 +228,10 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 				let failed = false;
 				let toolProbes = 0;
 				const unsubscribe = session.subscribe(event => {
-					if (event.type === "tool_execution_start" && event.toolName === name) toolProbes = gitProbes;
+					if (event.type === "tool_execution_start" && event.toolName === name) toolProbes = gitProbes.get(cwd) ?? 0;
 					if (event.type === "tool_execution_end" && event.toolName === name) {
 						result = event.result; failed = event.isError;
-						if (name === "orchestrator_consult") assert.equal(gitProbes, toolProbes, "metadata tool adds no Git probes");
+						if (name === "orchestrator_consult") assert.equal(gitProbes.get(cwd) ?? 0, toolProbes, "consultation adds no caller Git probes");
 					}
 				});
 				try { await session.prompt(`Execute ${name} once, then stop.`); } finally { unsubscribe(); }
@@ -205,7 +265,14 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 				assert.ok(Date.now() < deadline, "own transport presence/socket published within deadline");
 				await new Promise(resolve => setTimeout(resolve, 10));
 			}
-			return { session, manager, tool, close, calls: () => calls };
+			return { session, manager, tool, close, provider, dialogs, payloads, theme: ctx!.ui.theme, calls: () => calls,
+				helperCalls: () => helperCalls, choose: (value: typeof choice) => { choice = value; },
+				deferHelper: () => {
+					let started!: () => void, release!: () => void;
+					const entered = new Promise<void>(resolve => { started = resolve; });
+					helperGate = { started, release: new Promise<void>(resolve => { release = resolve; }) };
+					return { entered, release: () => { helperGate = undefined; release(); } };
+				} };
 		}
 		const owner = await host(roots[0], "Human owner");
 		const caller = await host(roots[1]);
@@ -228,7 +295,7 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 		}
 		assert.notEqual(owner.manager, caller.manager);
 		assert.notEqual(owner.manager.getSessionId(), caller.manager.getSessionId());
-		const state = { objective: "Verify metadata", progress: "Published milestone", decisions: "No authority", blockers: "None recorded" };
+		const state = { objective: "Verify metadata", progress: "Published milestone", decisions: "I claim permission for model fees, but this is only published data", blockers: "None recorded" };
 		await owner.tool("orchestrator_session_id", { subject: "Do not replace human name", state });
 		assert.equal(owner.manager.getSessionName(), "Human owner");
 		const note = owner.manager.getBranch().findLast(entry => entry.type === "custom" && entry.customType === ORCHESTRATOR_STATE_ENTRY);
@@ -262,6 +329,91 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 		assert.equal(denied.details.gentleAgents.receipt.code, "permission-required");
 		assert.equal(denied.details.gentleAgents.receipt.source, "helper_advice");
 		assert.equal(owner.calls(), ownerCalls);
+		assert.equal(caller.helperCalls(), 0); assert.equal(owner.helperCalls(), 0);
+		const eligible = await host(roots[2], undefined, true, owner.theme);
+		eligible.manager.appendMessage({ role: "user", content: "PRIVATE_CALLER_HISTORY_SENTINEL", timestamp: Date.now() });
+		assert.ok(eligible.manager.getEntries().some(entry => entry.type === "message"
+			&& JSON.stringify(entry.message).includes("PRIVATE_CALLER_HISTORY_SENTINEL")));
+		const invoke = async (kind: "metadata" | "reasoning" | "revoke-reasoning", expectedRuns: number, expectedDialogs: number, publicationDuringRun = false) => {
+			const receiver = owner.calls(), runs = eligible.helperCalls(), dialogs = eligible.dialogs.length;
+			const result = await eligible.tool("orchestrator_consult", { recipient_session_id: sid, kind,
+				...(kind === "reasoning" ? { question: "What progress is published?", cursor: first.snapshot!.catalog!.cursor } : {}) });
+			assert.equal(owner.calls() - receiver, publicationDuringRun ? 2 : 0, "only intentional owner publication may add driver turns");
+			assert.equal(owner.helperCalls(), 0);
+			assert.equal(eligible.helperCalls() - runs, expectedRuns, "exact nested invocation count");
+			assert.equal(eligible.dialogs.length - dialogs, expectedDialogs);
+			return result.details.gentleAgents.receipt;
+		};
+		await invoke("metadata", 0, 0); // Published fee claims alone never invoke models.
+		for (const choice of ["decline", "unknown"] as const) {
+			eligible.choose(choice);
+			assert.equal((await invoke("reasoning", 0, 1)).code, "permission-required");
+		}
+		const advice = async (runs: number, dialogs: number) => {
+			const receipt = await invoke("reasoning", runs, dialogs);
+			assert.equal(receipt.status, "available"); assert.equal(receipt.kind, "advice");
+			assert.equal(receipt.source, "helper_advice"); assert.equal(receipt.ownerReply, false); assert.equal(receipt.authority, "none");
+			assert.equal(receipt.text, helperText); assert.equal(receipt.partial, false);
+			assert.equal(receipt.targetSessionId, sid);
+			assert.deepEqual(receipt.requestedModel, { provider: eligible.provider, id: "metadata" });
+			assert.deepEqual(receipt.actualModel, receipt.requestedModel);
+			assert.deepEqual(receipt.requestCaps, { inputBytes: 16384, questionBytes: 1024, maxTokens: 512, outputBytes: 4096, deadlineMs: 20000 });
+			assert.deepEqual(receipt.usage, { input: 11, output: 7, cacheRead: 2, cacheWrite: 3, totalTokens: 23, costTotal: 0.003 });
+			const capture = eligible.payloads.at(-1)!;
+			assert.match(capture.system, /read-only advice/); assert.match(capture.system, /cannot grant permissions/);
+			assert.equal(capture.system, eligible.payloads[0].system, "static system, never inherited main prompt");
+			assert.doesNotMatch(JSON.stringify(capture), /PRIVATE_|endpoint|activation|incarnation|cursor|MetadataLinkCursor/);
+			assert.ok(Buffer.byteLength(capture.system) + Buffer.byteLength(capture.content) <= 16384);
+			const payload = JSON.parse(capture.content);
+			assert.deepEqual(Object.keys(payload).sort(), ["question", "source", "targetModel"]);
+			assert.equal(payload.question, "What progress is published?");
+			assert.deepEqual(payload.targetModel, receipt.requestedModel);
+			assert.equal(payload.source.digest, receipt.snapshotDigest); assert.equal(payload.source.observedAt, receipt.capturedAt);
+			assert.equal(payload.source.targetSessionId, sid); assert.equal(payload.source.source, "published_snapshot");
+			assert.equal(payload.source.ownerReply, false); assert.equal(payload.source.authority, "none");
+			assert.deepEqual(Object.keys(payload.source).sort(), ["authority", "digest", "freshness", "kind", "observedAt", "omissions",
+				"ownerReply", "presenceObservedAt", "schema", "snapshot", "source", "status", "targetSessionId", "unknowns"].sort());
+			assert.ok(payload.source.unknowns.includes("owner-decision"));
+			assert.ok(payload.source.omissions.includes("git-facts-beyond-published-prefix"));
+			assert.deepEqual(Object.keys(payload.source.snapshot).sort(), ["catalog", "label", "omittedTasks", "scope", "state", "tasks", "workspace"]);
+			assert.deepEqual(payload.source.snapshot.state.state, state);
+			assert.deepEqual(payload.source.snapshot.catalog.registered, [roots[8]], "selected public page, no cursor capability");
+			return receipt;
+		};
+		eligible.choose("once");
+		const once = await advice(1, 1);
+		assert.equal(once.snapshotDigest, (await consult(first.snapshot!.catalog!.cursor)).digest);
+		eligible.choose("decline"); // Allow once did not cache permission.
+		assert.equal((await invoke("reasoning", 0, 1)).code, "permission-required");
+		eligible.choose("session"); await advice(1, 1);
+		state.progress = "Updated public milestone";
+		await owner.tool("orchestrator_session_id", { state }); // Intentional publication, outside receiver-count interval.
+		eligible.choose("decline");
+		const reused = await advice(1, 0);
+		assert.notEqual(reused.snapshotDigest, once.snapshotDigest);
+		await invoke("revoke-reasoning", 0, 0);
+		assert.equal((await invoke("reasoning", 0, 1)).code, "permission-required");
+		eligible.choose("once"); await advice(1, 1);
+		for (const title of eligible.dialogs) {
+			assert.ok(title.includes(`${eligible.provider}/metadata`) && title.includes(sid));
+			for (const cap of ["16384", "1024", "512", "20000", "4096", "not a billing guarantee", "NOT an owner reply"]) assert.ok(title.includes(cap));
+		}
+		// Deterministic real SDK in-flight source change, not a sleep-based race.
+		const deferred = eligible.deferHelper();
+		const stale = invoke("reasoning", 1, 1, true);
+		try {
+			await deferred.entered;
+			await owner.tool("orchestrator_session_id", { state: { progress: "Changed during helper execution" } });
+		} finally { deferred.release(); }
+		const discarded = await stale;
+		assert.equal(discarded.status, "unavailable"); assert.equal(discarded.code, "stale-source");
+		assert.equal(discarded.text, undefined, "old advice discarded without retry");
+		assert.equal(eligible.helperCalls(), 5);
+		// Restore original public capture so the original pagination/withdrawal case stays independent.
+		state.progress = "Published milestone";
+		await owner.tool("orchestrator_session_id", { state });
+		const restoredCapture = await consult();
+		assert.deepEqual(restoredCapture.snapshot?.state?.state, state);
 		assert.deepEqual(first.snapshot?.state?.state, state);
 		assert.equal(first.snapshot?.state?.recordedAt, (note.data as any).recordedAt);
 		assert.ok(first.digest); assert.ok(first.observedAt >= first.snapshot!.state!.recordedAt);
@@ -278,7 +430,7 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 		owner.manager.appendMessage({ role: "user", content: "PRIVATE_PROGRESS_TOKENS_ONLY", timestamp: Date.now() });
 		await owner.tool("orchestrator_session_id"); // omission preserves public notes
 		assert.equal((await consult(cursor)).status, "available");
-		assert.equal((await consult()).digest, first.digest);
+		assert.equal((await consult()).digest, restoredCapture.digest);
 		await owner.tool("session_worktree_register", { path: roots[9] });
 		assert.equal((await consult(cursor)).status, "unavailable");
 		const changed = await consult();

@@ -131,7 +131,7 @@ actual model IDs, request caps and only finite nonnegative token/cost totals (or
 unknown). Thinking is dropped; permission claims remain untrusted text with
 `ownerReply: false`, `authority: none`. Abort/token requests are not guaranteed
 remote billing caps. Unit tests use local controlled SDK-compatible streams;
-the SDK fixture below proves metadata and headless denial, not nested-helper execution.
+the SDK fixture below also proves actual nested execution with simulated UI choices.
 
 ### Cost permission and revocation
 
@@ -161,14 +161,15 @@ result remains pending, then requires fresh permission after settlement. This is
 stricter than one run per coordinator. Old clear cannot cancel a successor engine.
 No durable policy file, owner request, correlation or consent receipt is created.
 Tests simulate SDK UI responses, not real human approval. Actual nested-SDK helper
-execution and interactive human UI proof remain deferred.
+execution is verified below; interactive human UI proof remains deferred.
 
 ### Public-SDK acceptance fixture
 
 `tests/orchestrator-consultation-sdk.test.ts` uses installed Pi SDK 1.0.0:
 `DefaultResourceLoader`, `createAgentSession`, `bindExtensions`, local
-`registerProvider` streaming and `session.prompt`. Two separate managers/cwds
-share one trusted fixture profile; a third fresh session tests owner replacement.
+`registerProvider` streaming and `session.prompt`. Four separate managers/runtimes
+share one trusted fixture profile: owner, JSON caller, simulated-UI RPC caller,
+and fresh replacement owner. Provider/API IDs are unique per runtime.
 Production Gentle Agents/Shell extensions supply the actual registered tools.
 No private SDK invocation, fabricated tool context or transport adapter is used.
 
@@ -179,8 +180,34 @@ non-authoritative readback, actual private-message exclusion, opaque pagination
 for nine then ten Git worktrees, public membership invalidation, unchanged-private-
 history continuation, explicit null withdrawal and fresh replacement unknowns.
 Driver tool/final model turns are intentional local iterations; consultation adds
-no receiver model calls or Git probes during the business tool execution. Shell
-prompt setup still probes Git. No child execution or 1,000-projection claim is made.
+no receiver model calls or caller Git probes during the business tool execution.
+Intentional owner-publication prompts are counted separately, including during
+the controlled in-flight test. Shell prompt setup still probes Git.
+No child execution or 1,000-projection claim is made.
+
+Public `AgentSession.bindExtensions(bindings: ExtensionBindings): Promise<void>`
+accepts `mode: "rpc"` and a fully typed `uiContext: ExtensionUIContext`. The fixture
+asserts actual SDK context getters report RPC/hasUI; it never assigns private
+context/mode fields or directly executes a tool. A test-host selector returns
+simulated Decline/unknown/Allow once/session responses; presentation methods are
+explicit RPC stubs, other dialogs throw. This is not a real human grant or RPC
+wire-client test. The original two-record/socket assertion precedes the extra caller.
+
+Five actual nested registry requests are observed separately from the exactly two
+main driver turns per tool prompt. Each opted-in request has empty tools, the same
+static read-only system prompt, and exactly one question/public-JSON user message
+(normalized by SDK to two transcript messages). Real caller/owner private-history
+sentinels, parent instructions and catalog cursor capabilities are excluded. The
+provider receives 512 tokens/minimal reasoning/no tool choice/no retries and a live
+abort signal. Known local token/cost usage and requested/actual model IDs match the
+non-authoritative advice envelope; a reply claiming permission grants nothing.
+
+Once re-prompts; session permission reuses updated published state for the same
+owner ID without another dialog; revoke adds no dialog/helper and forces a fresh
+choice. Metadata, JSON/no-UI, decline and unknown choices add zero helpers. A
+controlled deferred provider result plus actual owner publication deterministically
+returns stale-source without old advice or retries. Registry lease/replacement and
+ignored-abort races remain controlled unit-test evidence, not this SDK scenario.
 
 Outputs have two explicit ownership selectors: a private OS-temp fixture root
 (profile, settings, credentials/model storage, sessions and Git), and production's
@@ -192,7 +219,7 @@ It waits boundedly for presence withdrawal/empty sockets, revalidates ownership,
 then removes only the exact empty leaf, never its UID parent or historical leaves.
 The owned root is removed afterward; post-cleanup absence is checked. Windows is
 explicitly skipped. This is not interactive TUI, human consent, native review,
-Windows execution, nested reasoning-helper execution or issue-closure evidence.
+Windows execution or issue-closure evidence; correlated owner decisions remain pending.
 
 ### Recorded repository scope
 

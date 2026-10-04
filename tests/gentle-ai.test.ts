@@ -3878,3 +3878,29 @@ test("path fence stays silent for sensitive short-circuits and non-session calle
 	assert.equal(await toolCall({ toolName: "read", input: { path: "../sibling/notes.txt" } }, noSessionCtx), undefined, "no sessionManager: the fence stays silent inside a resolvable worktree");
 	assert.equal(confirmations.length, 0, "non-session caller never triggers a confirmation");
 });
+
+test("path fence blocks outside targets until the session manager provides an id", async (t) => {
+	const f = fenceFixture(t);
+	type ToolCallHandler = (event: { toolName: string; input: unknown }, ctx: ExtensionContext) => Promise<ToolCallEventResult | undefined>;
+	const handlers = new Map<string, ToolCallHandler>();
+	const confirmations: string[] = [];
+	const pi = {
+		on(name: string, handler: ToolCallHandler) { handlers.set(name, handler); },
+		events: { emit() {} },
+		registerCommand() {},
+		registerTool() {},
+	} as unknown as ExtensionAPI;
+	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	const toolCall = handlers.get("tool_call")!;
+	const ctx = {
+		cwd: f.repo,
+		hasUI: true,
+		ui: { confirm: async (_title: string, preview: string) => { confirmations.push(preview); return true; } },
+		sessionManager: { getSessionId: () => "", getEntries: () => [] },
+	} as unknown as ExtensionContext;
+	assert.equal(await toolCall({ toolName: "read", input: { path: "src/file.ts" } }, ctx), undefined, "in-worktree access still passes without a session id");
+	assert.equal(confirmations.length, 0, "no confirmation is asked while the identity is unavailable");
+	const blocked = await toolCall({ toolName: "read", input: { path: "../sibling/notes.txt" } }, ctx);
+	assert.deepEqual(blocked, { block: true, reason: "Session identity is unavailable; access outside the session worktree is blocked." }, "outside targets fail closed until the session id exists");
+	assert.equal(confirmations.length, 0, "the unavailable-identity block never asks for consent");
+});

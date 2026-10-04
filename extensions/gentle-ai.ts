@@ -1906,14 +1906,20 @@ async function confirmOutsideBoundaryTargets(
 	herdrLifecycle: HerdrConfirmationLifecycle,
 	grants: PathTargetGrants,
 ): Promise<ToolCallEventResult | undefined> {
-	const sessionKey = ctx.sessionManager?.getSessionId?.();
-	if (!sessionKey) return undefined;
+	// A missing manager (a non-session caller) or a non-Git cwd keeps the fence
+	// silent. A manager whose session id is not assigned yet is different: the
+	// fence cannot attribute grants or registered roots, so in-worktree access
+	// still passes but outside-worktree targets fail closed until an id exists.
+	const manager = ctx.sessionManager;
+	if (!manager) return undefined;
+	const sessionKey = manager.getSessionId?.();
 	const identity = resolveSessionWorktree(ctx.cwd, ctx.cwd);
 	if (!identity) return undefined;
-	const roots = [identity.root, ...registeredRootsForSession(ctx.sessionManager, sessionKey).filter((root) => resolveSessionWorktree(root, ctx.cwd)?.commonDir === identity.commonDir)];
-	const decision = evaluatePathFence(toolName, input, ctx.cwd, roots, sessionKey, grants, ctx.hasUI);
+	const roots = [identity.root, ...(sessionKey ? registeredRootsForSession(manager, sessionKey).filter((root) => resolveSessionWorktree(root, ctx.cwd)?.commonDir === identity.commonDir) : [])];
+	const decision = evaluatePathFence(toolName, input, ctx.cwd, roots, sessionKey ?? "", sessionKey ? grants : new PathTargetGrants(), ctx.hasUI);
 	if (decision.kind === "pass") return undefined;
 	if (decision.kind === "headless-block") return { block: true, reason: decision.reason };
+	if (!sessionKey) return { block: true, reason: "Session identity is unavailable; access outside the session worktree is blocked." };
 	const requestId = randomUUID();
 	const emitPermissionRequest = (state: "waiting" | "approved" | "denied"): void => {
 		events.emit("pi-permission-system:permission-request", {

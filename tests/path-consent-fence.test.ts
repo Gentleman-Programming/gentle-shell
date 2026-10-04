@@ -145,14 +145,13 @@ test("PathTargetGrants are session-bound and fail closed across sessions", () =>
 	assert.deepEqual(g.pending("session-a", ["/outside/one"]), [], "original session grant survives");
 });
 
-test("registeredRootsForSession reads only this session's worktree entries", () => {
-	const dir = realpathSync(mkdtempSync(join(tmpdir(), "fence-entries-")));
-	rmSync(dir, { recursive: true, force: true });
-	const session = SessionManager.inMemory(join(dir, "repo"));
-	session.appendCustomEntry(SESSION_WORKTREE_ENTRY, { sessionId: session.getSessionId(), root: "/wt/a", evidence: "tool:read" });
-	session.appendCustomEntry(SESSION_WORKTREE_ENTRY, { sessionId: "other", root: "/wt/b", evidence: "tool:read" });
+test("registeredRootsForSession reads only this session's worktree entries", (t) => {
+	const f = fixture(t);
+	const session = SessionManager.inMemory(f.root);
+	session.appendCustomEntry(SESSION_WORKTREE_ENTRY, { sessionId: session.getSessionId(), root: f.root, evidence: "tool:read" });
+	session.appendCustomEntry(SESSION_WORKTREE_ENTRY, { sessionId: "other", root: f.sibling, evidence: "tool:read" });
 	session.appendCustomEntry("other-type", {});
-	assert.deepEqual(registeredRootsForSession(session, session.getSessionId()), ["/wt/a"]);
+	assert.deepEqual(registeredRootsForSession(session, session.getSessionId()), [f.root]);
 	// Harness fakes may expose getSessionId without durable entries.
 	assert.deepEqual(registeredRootsForSession({ getSessionId: () => "s" } as never, "s"), []);
 });

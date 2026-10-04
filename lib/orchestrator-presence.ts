@@ -47,10 +47,11 @@ const object = (v: unknown): v is ObjectValue => !!v && typeof v === "object" &&
 const integer = (v: unknown) => Number.isSafeInteger(v) && (v as number) >= 0;
 const keys = (v: ObjectValue, names: string[]) => Object.keys(v).length === names.length && names.every((k) => Object.hasOwn(v, k));
 const digest = (data: string | Buffer) => createHash("sha256").update(data).digest("hex");
-function label(text: string) {
+export function sanitizeDisplayLabel(text: string) {
 	const clean = stripVTControlCharacters(text).replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim();
 	return Array.from(clean).slice(0, 120).join("").trimEnd();
 }
+const label = sanitizeDisplayLabel;
 const pick = (v: ObjectValue, names: string[]) => Object.fromEntries(names.map((k) => [k, v[k]]));
 const summaryTextKeys = ["id", "agent", "label", "status", "model"];
 const summaryKeys = [...summaryTextKeys, "createdAt", "startedAt", "endedAt", "lastActivityAt"];
@@ -270,6 +271,7 @@ export class PresencePublisher {
 	readonly target: Readonly<Target>;
 	private readonly profile: string;
 	private readonly displayLabel: string;
+	private readonly labelSource?: () => string;
 	private header!: Header;
 	private discovery?: DiscoveryMetadata;
 	private published = "";
@@ -281,12 +283,13 @@ export class PresencePublisher {
 	/** Timer I/O failures stop publication; consumers still apply the recent TTL. */
 	error?: string;
 
-	private constructor(options: { profile: string; sessionId: string; label: string }) {
+	private constructor(options: { profile: string; sessionId: string; label: string; labelSource?: () => string }) {
 		this.profile = options.profile;
 		this.displayLabel = label(options.label);
+		this.labelSource = options.labelSource;
 		this.target = Object.freeze({ sessionHash: digest(options.sessionId), incarnation: randomUUID() });
 	}
-	static start(options: { profile: string; sessionId: string; label: string; activity: readonly ActivityInput[] }) {
+	static start(options: { profile: string; sessionId: string; label: string; labelSource?: () => string; activity: readonly ActivityInput[] }) {
 		const publisher = new PresencePublisher(options);
 		try {
 			rootFor(options.profile, true);
@@ -296,6 +299,11 @@ export class PresencePublisher {
 			publisher.heartbeat.unref();
 			return publisher;
 		} catch (error) { publisher.dispose(); throw error; }
+	}
+	/** Refresh through the existing publication path, without changing activity generation.
+	 * The source must be a cheap canonical-name getter; throw when its session is stale. */
+	refreshLabel() {
+		this.guarded(() => this.publishHeader());
 	}
 	/** Metadata-only projection; never reads task prompts, results, or threads.
 	 * Binding to the listener activation prevents reused session IDs from joining. */
@@ -347,7 +355,7 @@ export class PresencePublisher {
 		} catch { /* Metadata failure must not withdraw an existing activity peer. */ }
 	}
 	private publishHeader() {
-		const header = { ...this.header, heartbeat: Date.now() };
+		const header = { ...this.header, label: label(this.labelSource?.() ?? this.displayLabel), heartbeat: Date.now() };
 		if (!validHeader(header)) throw new Error("malformed-header");
 		this.write("header", JSON.stringify(header));
 		this.header = header;

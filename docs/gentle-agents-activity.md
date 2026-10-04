@@ -15,7 +15,8 @@ model calls or messaging requests.
 Metadata lives in an optional private, 16-KiB derived sidecar, bound to the existing
 session hash, presence incarnation/generation, and listener activation. Schema-1
 headers are unchanged: missing or invalid sidecars never hide existing activity peers.
-Only currently runtime-owned tasks are published, not restored running history.
+Only currently runtime-owned active tasks (running, queued, waiting) are published,
+not finished tasks or restored running history: those are not potential future writers.
 
 The transport registry selects its newest advertised activation per session (ties
 use its existing deterministic token order). Context joins only that exact routing
@@ -31,9 +32,27 @@ unknown rather than misleadingly shortened. Labels are sanitized and bounded to
 counted as omitted. Task workspaces are recorded launch directories, not proof of
 isolation, ownership locks, or exclusive access.
 
-This first stacked slice does not declare an orchestrator's subject, repository
-identity, or extended work scope. A display label is recorded at activation, not
-an inferred task summary. It cannot answer arbitrary reasoning questions (#1702).
+### Declare a recognizable subject
+
+When starting a task or delegation, call `orchestrator_session_id` with a short,
+non-sensitive `subject`; no peer survey or additional model call is needed. The tool
+returns the stable routing ID and current canonical alias. It uses Pi's
+`setSessionName` only when the canonical name is empty, preserving existing names
+and later human renames. Subjects are control-stripped, whitespace-normalized, and
+bounded to 120 Unicode characters. Do not supply arbitrary prompts or secrets.
+Aliases are display hints, never authentication or routing identities.
+
+Presence reads the current canonical Pi name on its existing five-second heartbeat,
+including idle `/name` or session-picker renames; declaration refreshes it immediately.
+An unnamed session retains its workspace-basename display fallback. Session replacement
+or shutdown disposes the previous publisher; a stale name source stops publication.
+Headers and optional metadata sidecar contracts remain unchanged.
+
+Repository identity and extended work scope remain for a later stacked slice.
+Recorded launch directories do not prove repository identity or freedom from shared
+artifacts. A shell `cd` does not change Pi's session cwd. Omission counts mean the
+child list is incomplete, not an exhaustive writer inventory. This metadata cannot
+answer arbitrary reasoning questions (#1702).
 
 ## Turning it on
 

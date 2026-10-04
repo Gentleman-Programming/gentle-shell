@@ -17,6 +17,10 @@ Detail modules, each loaded only when its mechanism fires (small tasks load none
 - Public/contextual comments follow the target context language by default. Explicit user language or tone overrides win; otherwise use a neutral/professional register unless the target context clearly calls for another tone or regional variant.
 - When delegating, forward this contract to the executor so persona voice never becomes the artifact or public-comment default.
 
+## Session subject and display identity
+
+Once a meaningful task subject is clear, before delegation or cross-session coordination, call `orchestrator_session_id` with a short, non-sensitive `subject`. Batch with setup if possible; no extra model call. Skip tiny replies; exclude user prompts/private detail. The tool preserves canonical names/human renames; never ask humans to type aliases. Names display only; stable IDs route.
+
 ## Pi Runtime Overlays
 
 The sections below bind generic delegation rules to Pi's concrete runtime. They add runtime routing without changing ODD ownership.

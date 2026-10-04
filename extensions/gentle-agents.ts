@@ -33,7 +33,7 @@ import { historyDir, loadHistory, loadStoredTask, pruneHistory, saveTask } from 
 import { sessionToMarkdown } from "../lib/agents-transcript.ts";
 import { AgentsView } from "../lib/agents-view.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
-import { PresencePublisher } from "../lib/orchestrator-presence.ts";
+import { PresencePublisher, sanitizeDisplayLabel } from "../lib/orchestrator-presence.ts";
 import { discoverOrchestrators } from "../lib/orchestrator-discovery.ts";
 import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/agents-rpc-publisher.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
@@ -394,12 +394,20 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// session instead of flooding the UI. Reset on every `session_start`.
 	let notifiedRpcActivityErrors: Set<string> | undefined;
 	const overlays = new Set<AgentsView>();
+	const startPresence = (manager: ExtensionContext["sessionManager"]) => {
+		const sessionId = manager.getSessionId() ?? "";
+		const labelSource = () => {
+			if (sessions !== manager || (manager.getSessionId() ?? "") !== sessionId) throw new Error("stale-session");
+			return manager.getSessionName?.() || manager.getCwd().split(/[\\/]/).pop() || "Orchestrator";
+		};
+		return PresencePublisher.start({ profile: agentHome, sessionId, label: labelSource(), labelSource, activity: [] });
+	};
 	const publishActivity = () => {
 		if (!sessions) return;
 		try {
 			if (!presence || presence.error) {
-				presence = PresencePublisher.start({ profile: agentHome, sessionId: activeSessionId() ?? "",
-					label: sessions.getSessionName?.() || sessions.getCwd().split(/[\\/]/).pop() || "Orchestrator", activity: [] });
+				presence?.dispose();
+				presence = startPresence(sessions);
 			}
 			const tasks = store.list(activeSessionId()).filter((task) => ownedTaskIds.has(task.id) && !isFinished(task.status) && !restoredTaskIds.has(task.id));
 			presence?.update(tasks.map((task) => ({ task, thread: store.thread(task.id) })));
@@ -1515,11 +1523,21 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.registerTool({
 		name: "orchestrator_session_id",
 		label: "Orchestrator session ID",
-		description: "Return this host session's active ID.",
-		parameters: { type: "object", additionalProperties: false, properties: {} } as never,
-		async execute(_id, _params, _signal, _onUpdate, ctx) {
+		description: "Return this host session's stable routing ID and current display alias. When starting a task or delegation, declare a short recognizable subject here; do not query all peers. Names never authenticate. Existing Pi names and human renames are preserved. Use a concise non-sensitive label, not a prompt.",
+		parameters: { type: "object", additionalProperties: false, properties: {
+			subject: { type: "string", maxLength: 120, description: "Optional short task subject; names only an unnamed Pi session." },
+		} } as never,
+		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const transport = activeTransportFor(ctx);
-			return transport ? text(`Active session ID: ${transport.sessionId}`, { gentleAgents: { senderSessionId: transport.sessionId } }) : text("Error: session messaging is not ready.", { error: "not ready" });
+			if (!transport) return text("Error: session messaging is not ready.", { error: "not ready" });
+			const subject = (params as { subject?: unknown }).subject;
+			if (typeof subject === "string" && !ctx.sessionManager.getSessionName?.()) {
+				const declared = sanitizeDisplayLabel(subject);
+				if (declared) pi.setSessionName(declared);
+			}
+			const alias = sanitizeDisplayLabel(ctx.sessionManager.getSessionName?.() ?? "");
+			presence?.refreshLabel();
+			return text(`Active session ID: ${transport.sessionId}\nCurrent alias: ${alias || "unnamed"}`, { gentleAgents: { senderSessionId: transport.sessionId, alias } });
 		},
 	});
 	pi.registerTool({
@@ -1772,8 +1790,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const preexisting = event.reason === "resume" || (event.reason === "startup" && ctx.sessionManager.getEntries().length > 0);
 		if (preexisting && sessionId) void restoreSessionHistory(ctx, sessionId);
 		try {
-			presence = PresencePublisher.start({ profile: agentHome, sessionId: activeSessionId() ?? "",
-				label: ctx.sessionManager.getSessionName?.() || ctx.sessionManager.getCwd().split(/[\\/]/).pop() || "Orchestrator", activity: [] });
+			presence = startPresence(ctx.sessionManager);
 			publishActivity();
 		} catch { presence = undefined; }
 		void startSessionTransport(ctx);

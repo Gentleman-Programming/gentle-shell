@@ -3848,6 +3848,71 @@ test("session transport startup failure cleans the constructed Windows-capable t
 	assert.match((await h.tools.get("orchestrator_session_id")!.execute("id", {}, undefined, undefined, ctx)).content[0].text, /not ready/);
 });
 
+test("registered session identity declares subjects and refreshes canonical idle renames", async (t) => {
+	const h = fakePi();
+	const runtime = deps();
+	const profile = realpathSync(mkdtempSync(join(root, "subject-runtime-")));
+	runtime.deps.agentHome = profile;
+	let ready = false;
+	const registry = { list: async () => [], listActivations: async () => [] };
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: (_registry, sessionId) => ({ registry,
+			record: { version: 1 as const, sessionId, endpoint: "/fixture/subject.sock", createdAt: 1 },
+			start: async () => { ready = true; }, close: async () => {} }),
+		createClient: () => ({ close() {}, sendNotification: async () => { throw new Error("no messages expected"); } }),
+	};
+	const heartbeats: (() => void)[] = [];
+	const interval = globalThis.setInterval;
+	t.mock.method(globalThis, "setInterval", (callback: () => void, ms: number) => {
+		if (ms === 5000) heartbeats.push(callback);
+		return interval(callback, ms);
+	});
+	let name = "";
+	const names: string[] = [];
+	Object.assign(h.pi, { setSessionName: (value: string) => { name = value; names.push(value); } });
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	Object.assign(ctx.sessionManager, { getSessionName: () => name });
+	await h.fire("session_start", ctx);
+	await eventually(() => ready, "subject transport ready");
+	const tool = h.tools.get("orchestrator_session_id")!;
+	const declare = (subject?: unknown, context = ctx) => tool.execute("id", { subject }, undefined, undefined, context);
+	const result = await declare("\u001b[31m Fix\n auth\u202e ");
+	assert.equal(name, "Fix auth");
+	assert.match(result.content[0].text, /Active session ID: s1.*\n.*Fix auth/);
+	assert.deepEqual(result.details.gentleAgents, { senderSessionId: "s1", alias: "Fix auth" });
+	const before = listPresence(profile).entries[0]!;
+	assert.equal(before.label, "Fix auth");
+	assert.equal(readDiscovery(profile, before)?.workspace, cwd);
+	name = "Human rename";
+	heartbeats[0](); // Existing publisher heartbeat, without any task/model activity.
+	const renamed = listPresence(profile).entries[0]!;
+	assert.equal(renamed.label, name);
+	assert.equal(renamed.generation, before.generation);
+	assert.deepEqual(readActivity(profile, renamed).activity?.tasks, []);
+	await declare("Do not overwrite");
+	assert.deepEqual(names, ["Fix auth"]);
+	assert.match((await declare()).content[0].text, /Human rename/);
+	name = "";
+	await declare("\u0000\u001b[31m");
+	assert.equal(name, "", "control-only subject never names a session");
+	await declare("😀".repeat(130));
+	assert.equal(Array.from(name).length, 120);
+	const replacement = fakeContext().ctx;
+	Object.assign(replacement.sessionManager, { getSessionId: () => "s2", getSessionName: () => "Replacement" });
+	await h.fire("session_start", replacement, { reason: "new" });
+	heartbeats[0]();
+	assert.equal(listPresence(profile).entries.length, 1);
+	assert.equal(listPresence(profile).entries[0].label, "Replacement");
+	const stale = await declare("Stale subject", ctx);
+	assert.match(stale.content[0].text, /not ready/);
+	assert.equal(names.length, 2);
+	assert.equal(runtime.spawned.length, 0);
+	assert.equal(h.sent.length, 0);
+	assert.equal(h.userMessages.length, 0);
+});
+
 test("registered orchestrator_list joins peer metadata without child launches or messages", async () => {
 	const h = fakePi();
 	const runtime = deps();

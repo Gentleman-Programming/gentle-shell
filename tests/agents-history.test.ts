@@ -62,3 +62,20 @@ test("retired remediation payloads remain readable and are never automatically p
 	assert.deepEqual((await loadStoredTask(legacyDir, "legacy"))?.task, JSON.parse(before).task);
 	assert.equal(readFileSync(join(legacyDir, "legacy.json"), "utf8"), before);
 });
+
+test("pruneHistory preserves in-flight unfinished tasks regardless of history cap", async () => {
+	const inFlightDir = join(root, "inflight-tasks");
+	const inFlightTask: TaskRecord = { ...task("inflight", 500), status: TASK_STATUS.RUNNING, endedAt: null };
+	const completedTask1 = task("c1", 1000);
+	const completedTask2 = task("c2", 2000);
+	await saveTask(inFlightDir, inFlightTask, emptyThread());
+	await saveTask(inFlightDir, completedTask1, emptyThread());
+	await saveTask(inFlightDir, completedTask2, emptyThread());
+
+	// Prune with maxTasks = 1 (should prune the older completed task c1, but keep inFlightTask)
+	await pruneHistory(inFlightDir, 1);
+	const remaining = await loadHistory(inFlightDir);
+	assert.ok(remaining.some((entry) => entry.task.id === "inflight"), "in-flight task is preserved");
+	assert.ok(remaining.some((entry) => entry.task.id === "c2"), "newest completed task is preserved");
+	assert.ok(!remaining.some((entry) => entry.task.id === "c1"), "older completed task is pruned");
+});

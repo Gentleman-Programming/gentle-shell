@@ -20,6 +20,11 @@ interface Request {
 	/** Host verifies canonical selected activation/public digest throughout execution. */
 	isSourceCurrent: () => boolean;
 }
+// Pi's jiti loader disables moduleCache. Keep ONLY execution leases across reloads;
+// no caller identity, permissions, source snapshots or model configuration here.
+const leaseKey = Symbol.for("gentle-pi.orchestrator-helper.execution/v1");
+const shared = globalThis as typeof globalThis & { [leaseKey]?: WeakMap<HelperHost["modelRegistry"], OrchestratorHelper> };
+const engines = shared[leaseKey] ??= new WeakMap<HelperHost["modelRegistry"], OrchestratorHelper>();
 const CHOICES = ["Allow once", "Allow this target + model for this session", "Decline"];
 const unavailable = (code: string) => ({ status: "unavailable" as const, code,
 	source: "helper_advice" as const, ownerReply: false as const, authority: "none" as const });
@@ -33,7 +38,6 @@ export class HelperCostPermission {
 	private epoch = 0;
 	private pending = false;
 	private engine?: OrchestratorHelper;
-	private engineRegistry?: HelperHost["modelRegistry"];
 	private readHost: () => HelperHost | undefined;
 	constructor(readHost: () => HelperHost | undefined) { this.readHost = readHost; }
 	clear() {
@@ -65,7 +69,7 @@ export class HelperCostPermission {
 		const { receipt, question } = r; // Preserve the original frozen public capture across UI waits.
 		const binding = this.capture();
 		if (!this.same(binding, this.binding)) { this.clear(); this.binding = binding; }
-		if (this.pending || this.engine?.busy) return unavailable("busy");
+		if (this.pending || this.engine?.busy || (binding && engines.get(binding.registry)?.busy)) return unavailable("busy");
 		if (!binding) return unavailable("permission-required");
 		const prepared = preflightHelper(receipt, question, binding.model);
 		if (prepared.code) return unavailable(prepared.code);
@@ -95,17 +99,23 @@ export class HelperCostPermission {
 			const fresh = await r.readSource();
 			if (!current() || fresh.status !== "available" || fresh.freshness !== "recent"
 				|| fresh.targetSessionId !== target || fresh.digest !== receipt.digest) return unavailable("stale-source");
+			if (engines.get(binding.registry)?.busy) return unavailable("busy");
 			if (sessionChoice) {
 				if (this.scopes.size >= 8) this.scopes.delete(this.scopes.values().next().value!);
 				this.scopes.add(target); // Logical target, NOT a snapshot digest or private generation.
 			}
-			if (this.engineRegistry !== binding.registry) {
-				// The busy gate above prevents replacement while an old provider ignores abort.
-				this.engine = new OrchestratorHelper(binding.registry);
-				this.engineRegistry = binding.registry;
-			}
-			return await this.engine!.run({ receipt, question,
+			// Each owner keeps its own cancellation handle; stale clear cannot abort a successor.
+			this.engine = new OrchestratorHelper(binding.registry);
+			engines.set(binding.registry, this.engine);
+			const advice = await this.engine.run({ receipt, question,
 				model: binding.model, signal: r.signal, isCurrent: current });
+			if (advice.status !== "available") return advice;
+			// Canonical routing can change independently of publication. Re-read after
+			// execution while the same epoch/live model binding still owns the reply.
+			const finalSource = await r.readSource();
+			return current() && finalSource.status === "available" && finalSource.freshness === "recent"
+				&& finalSource.targetSessionId === target && finalSource.digest === receipt.digest
+				? advice : unavailable("stale-source");
 		} catch { return unavailable("permission-required"); }
 		finally { this.pending = false; }
 	}

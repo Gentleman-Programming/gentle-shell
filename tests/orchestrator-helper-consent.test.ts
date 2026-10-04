@@ -40,7 +40,7 @@ function fixture() {
 	return { permission, run, counts: () => [dialogs, calls], host: () => host,
 		choice: (v: string | undefined) => { choice = v; }, dialog: (v: typeof choose) => { choose = v; },
 		hostChange: (v: Partial<HelperHost>) => { host = { ...host, ...v }; }, sid: (v: string) => { sid = v; },
-		source: (v: MetadataReceipt) => { source = v; }, hang: () => { settle = () => {}; }, settle: () => settle?.() };
+		source: (v: MetadataReceipt) => { source = v; }, hang: () => { settle = () => {}; }, settle: () => { settle?.(); settle = undefined; } };
 }
 
 test("closed SDK choices, notes and headless contexts cannot grant model cost", async () => {
@@ -129,6 +129,35 @@ test("bounded target scopes evict oldest and source/host changes discard running
 		else g.hostChange({ cwd: "/changed" });
 		g.settle(); assert.equal((await pending).code, "stale-source");
 	}
+});
+
+test("post-execution canonical read still binds epoch, live model and source", async () => {
+	for (const change of ["model", "revoke", "source"]) {
+		const f = fixture(); f.choice("Allow once"); let reads = 0;
+		const outcome = await f.run({ readSource: async () => {
+			if (++reads === 2) {
+				if (change === "model") f.hostChange({ model: { ...model } });
+				if (change === "revoke") f.permission.revoke("owner");
+				if (change === "source") return receipt("owner", "changed");
+			}
+			return receipt();
+		} });
+		assert.equal(outcome.code, "stale-source"); assert.deepEqual(f.counts(), [1, 1]);
+	}
+});
+
+test("replacement coordinator shares execution lease but never cost permission", async () => {
+	const f = fixture(); f.choice("Allow this target + model for this session"); f.hang();
+	const pending = f.run(); await new Promise(resolve => setImmediate(resolve));
+	f.permission.clear(); assert.equal((await pending).code, "cancelled");
+	const replacement = new HelperCostPermission(() => f.host());
+	const run = () => replacement.run({ receipt: receipt(), question: "What is recorded?",
+		readSource: async () => receipt(), isSourceCurrent: () => true });
+	assert.equal((await run()).code, "busy"); assert.deepEqual(f.counts(), [1, 1]);
+	f.settle(); await new Promise(resolve => setImmediate(resolve));
+	f.choice("Decline"); assert.equal((await run()).code, "permission-required");
+	f.choice("Allow once"); assert.equal((await run()).status, "available");
+	assert.deepEqual(f.counts(), [3, 2]);
 });
 
 test("revocation retains hung billable lease across registry changes until actual settlement", async () => {

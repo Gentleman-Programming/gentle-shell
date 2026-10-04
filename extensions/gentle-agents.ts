@@ -36,6 +36,7 @@ import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
 import { PresencePublisher, sanitizeDisplayLabel } from "../lib/orchestrator-presence.ts";
 import { discoverOrchestrators } from "../lib/orchestrator-discovery.ts";
 import { consultPublishedMetadata, unavailableMetadata, type MetadataReceipt } from "../lib/orchestrator-consultation.ts";
+import { HelperCostPermission } from "../lib/orchestrator-helper-consent.ts";
 import { OrchestratorStateCache } from "../lib/orchestrator-state.ts";
 import { OrchestratorScopeCache, type RepositoryFact } from "../lib/orchestrator-scope.ts";
 import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/agents-rpc-publisher.ts";
@@ -641,6 +642,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// session_start context is kept for it and dropped at shutdown; a stale
 	// context throws instead of answering, so delivery fails closed.
 	let parentCtx: ExtensionContext | undefined;
+	const helperPermission = new HelperCostPermission(() => parentCtx && activeTransportFor(parentCtx) ? parentCtx : undefined);
+	pi.on("session_before_switch", () => helperPermission.clear());
+	pi.on("session_before_fork", () => helperPermission.clear());
+	pi.on("session_before_tree", () => helperPermission.clear());
+	pi.on("model_select", () => helperPermission.clear());
+	pi.on("resources_discover", () => helperPermission.clear());
 	let bridgeWakeIdentity: BridgeWakeIdentity | undefined;
 	let wakeVisibilityWarning = false;
 	const restoreBridgeWakeIdentity = (ctx: ExtensionContext | undefined) => {
@@ -884,6 +891,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 
 	// Session changes discard every pending wake and boundary flush.
 	const resetParentDelivery = (ctx: ExtensionContext | undefined) => {
+		helperPermission.clear(); // Revoke before dropping old callback authority.
 		parentCtx = ctx;
 		restoreBridgeWakeIdentity(ctx);
 		wakeVisibilityWarning = false;
@@ -1568,26 +1576,50 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	});
 	pi.registerTool({
 		name: "orchestrator_consult",
-		label: "Consult published metadata",
-		description: "Read a frozen published metadata snapshot from an exact local-profile session. No owner reply, consent, reasoning, messaging or private context access.",
+		label: "Consult published context",
+		description: "Read published metadata (default), request bounded helper reasoning with explicit UI model-cost permission and a question, or revoke-reasoning for an exact target. Never an owner reply, consent or private context access.",
 		parameters: { type: "object", additionalProperties: false, required: ["recipient_session_id"], properties: {
-			kind: { type: "string", enum: ["metadata"] },
+			kind: { type: "string", enum: ["metadata", "reasoning", "revoke-reasoning"] },
+			question: { type: "string", maxLength: 1024 },
 			recipient_session_id: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" },
 			cursor: { type: "string", maxLength: 1024 },
 		} } as never,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			const input = params as { kind?: unknown; recipient_session_id?: unknown; cursor?: unknown };
-			if (!input || Object.keys(input).some(k => !["kind", "recipient_session_id", "cursor"].includes(k))
-				|| (input.kind !== undefined && input.kind !== "metadata") || !validTransportSessionId(input.recipient_session_id)
+			const input = params as { kind?: unknown; recipient_session_id?: unknown; cursor?: unknown; question?: unknown };
+			const kind = input?.kind === undefined ? "metadata" : input.kind;
+			if (!input || Object.keys(input).some(k => !["kind", "recipient_session_id", "cursor", "question"].includes(k))
+				|| !["metadata", "reasoning", "revoke-reasoning"].includes(kind as string) || !validTransportSessionId(input.recipient_session_id)
+				|| (kind === "revoke-reasoning" && input.cursor !== undefined)
+				|| (kind !== "reasoning" && input.question !== undefined)
+				|| (kind === "reasoning" && (typeof input.question !== "string" || !input.question.trim()
+					|| Buffer.byteLength(input.question) > 1024 || /[\p{Cc}\p{Cf}\p{Cs}]/u.test(input.question)))
 				|| (input.cursor !== undefined && (typeof input.cursor !== "string" || input.cursor.length > 1024))) throw new Error("Invalid metadata consultation parameters.");
 			const selection = { recipientSessionId: input.recipient_session_id, cursor: input.cursor as string | undefined };
 			const transport = activeTransportFor(ctx);
-			const result = (receipt: MetadataReceipt) => text(JSON.stringify(receipt), { gentleAgents: { senderSessionId: transport?.sessionId, receipt } });
+			const result = (receipt: MetadataReceipt) => {
+				const output = kind === "metadata" ? receipt : { status: "unavailable", code: receipt.unknowns[0], source: "helper_advice", ownerReply: false, authority: "none" };
+				return text(JSON.stringify(output), { gentleAgents: { senderSessionId: transport?.sessionId, receipt: output } });
+			};
 			if (!transport) return result(unavailableMetadata(selection.recipientSessionId, "not-ready"));
+			const reply = (receipt: unknown) => text(JSON.stringify(receipt), { gentleAgents: { senderSessionId: transport.sessionId, receipt } });
+			if (kind === "revoke-reasoning") {
+				helperPermission.revoke(selection.recipientSessionId);
+				return reply({ status: "revoked", source: "helper_advice", ownerReply: false, authority: "none" });
+			}
 			try {
 				const activations = await transport.listener.registry.listActivations(transport.sessionId);
 				if (activeTransportFor(ctx) !== transport) return result(unavailableMetadata(selection.recipientSessionId, "source-session-changed"));
-				return result(consultPublishedMetadata(agentHome, activations, selection));
+				const receipt = consultPublishedMetadata(agentHome, activations, selection);
+				if (kind === "metadata") return result(receipt);
+				const current = () => activeTransportFor(ctx) === transport && parentCtx?.sessionManager === ctx.sessionManager;
+				const readSource = async () => {
+					const peers = await transport.listener.registry.listActivations(transport.sessionId);
+					return current() ? consultPublishedMetadata(agentHome, peers, selection)
+						: unavailableMetadata(selection.recipientSessionId, "source-session-changed");
+				};
+				const advice = await helperPermission.run({ receipt, question: input.question as string, signal: _signal,
+					readSource, isSourceCurrent: () => current() && consultPublishedMetadata(agentHome, activations, selection).digest === receipt.digest });
+				return reply(advice);
 			} catch { return result(unavailableMetadata(selection.recipientSessionId, "discovery-unavailable")); }
 		},
 	});
@@ -1833,6 +1865,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	}
 
 	pi.on("session_tree", (_event, ctx) => {
+		helperPermission.clear();
 		if (sessions !== ctx.sessionManager) return;
 		stateCache.load(ctx.sessionManager);
 		publishActivity();

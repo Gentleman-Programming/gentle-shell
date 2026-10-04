@@ -71,13 +71,13 @@ cwd becomes null; malformed non-null readback withholds the note, never rewrites
 Source is `owner-curated`, `ownerReply: false`, `authority: none`: even `decisions`
 is data, never a grant or human consent. Missing/invalid/over-budget notes are unknown;
 withdrawal remains explicit null. Advertising is best-effort; legacy headers/activity
-stay unchanged. Direct metadata consultation is available below; reasoning and correlated
-owner decisions remain later units. Public-SDK acceptance is recorded below. Neither issue is closed.
+stay unchanged. Metadata and opt-in helper reasoning are available below; correlated
+owner decisions remain a later protocol unit. Neither issue is closed.
 
 ### Consult a published snapshot
 
 Call `orchestrator_consult` with required stable `recipient_session_id`, optional
-`kind: "metadata"` (the only kind), and optional existing opaque catalog `cursor`.
+`kind: "metadata"` (default), and optional existing opaque catalog `cursor`.
 No free-form question, owner request, human picker or read-consent dialog is used
 for this profile's explicitly published data. Use `orchestrator_session_id.state`
 to publish short updates before delegation or meaningful progress milestones when
@@ -99,14 +99,16 @@ The source is `published_snapshot`, `ownerReply: false`, `authority: none`.
 This is not native consent, a review receipt or a correlated owner decision.
 No transcripts, prompts, threads, results, instructions, profile credentials or
 transport capabilities are exported. No new Git probes, messages, receiver wakes,
-child/helper launches or model calls occur. The public reasoning helper lane is unavailable.
+child/helper launches or model calls occur in metadata mode. A question never
+implicitly selects reasoning; unknown metadata never triggers a helper.
 
-### Internal read-only helper core (not publicly enabled)
+### Opt-in read-only reasoning
 
-`lib/orchestrator-helper.ts` is a trusted internal execution engine, not a tool or
-cost grant. A future host integration must obtain real human UI opt-in bound to
-its live caller, selected snapshot and model before invoking it. Model booleans,
-curated decisions and helper text cannot authorize invocation or impersonate owners.
+Use `kind: "reasoning"` with a required `question` and the same exact recipient
+and optional catalog cursor. Supported TUI/RPC `ctx.ui.select` supplies model-cost
+permission; JSON/print and SDK contexts without actual dialog UI fail closed.
+Model booleans, curated decisions and helper text cannot authorize invocation or
+impersonate owners. Unknown/irrelevant/oversized arguments fail before effects.
 
 One public `ModelRegistry.streamSimple` request receives a static read-only prompt
 and one JSON question/public-snapshot message. Nested field whitelists exclude raw
@@ -118,9 +120,9 @@ Unknowns, omissions and historical source times remain visible; no tools execute
 | Input | 16 KiB total system + question JSON; question nonempty, control-free, at most 1,024 UTF-8 bytes |
 | Output | Requested 512 tokens/minimal reasoning; text at most 4,096 UTF-8 bytes, no meaning truncation |
 | Lifetime | Local deadline at most 20 seconds; cancellation/deadline races return without waiting for ignored abort |
-| Concurrency | One in-flight lease per engine, retained until actual provider result settlement, even after cancellation |
+| Concurrency | One execution lease per live SDK model registry, retained across coordinator/runtime replacement until actual provider result settlement |
 
-No retries or automatic runs. A hung provider keeps that engine busy; cancel does
+No retries or automatic runs. A hung provider keeps that registry busy; cancel does
 not reopen a potentially billable lease. Host currentness checks fail closed before
 invocation and after completion. Tool-call content, errors, empty/oversized text and
 stale results are explicit unavailable outcomes, never owner refusals. Length-stop
@@ -129,28 +131,37 @@ actual model IDs, request caps and only finite nonnegative token/cost totals (or
 unknown). Thinking is dropped; permission claims remain untrusted text with
 `ownerReply: false`, `authority: none`. Abort/token requests are not guaranteed
 remote billing caps. Unit tests use local controlled SDK-compatible streams;
-the SDK fixture below still proves metadata only, not nested-helper execution.
+the SDK fixture below proves metadata and headless denial, not nested-helper execution.
 
-### Cost-permission coordinator (internal integration slice)
+### Cost permission and revocation
 
-`lib/orchestrator-helper-consent.ts` prepares the next public reasoning lane; it
-is **not wired to `orchestrator_consult` yet**. Metadata remains unchanged. The
-coordinator uses supported `ctx.ui.select` in TUI/RPC, with exactly Allow once,
+`lib/orchestrator-helper-consent.ts` coordinates the public reasoning lane while
+metadata remains unchanged. Supported `ctx.ui.select` in TUI/RPC offers Allow once,
 Allow this target + model for this session, and Decline. Unknown responses and
 headless contexts fail closed. The forecast names the configured provider/model,
 captured public target/time, all core bounds and the non-guaranteed billing limit.
 This is model-cost permission only, never messaging or native-action consent.
 
-The host must supply its live context and canonical bounded source readers, and
-call `clear()` on session/reload/shutdown boundaries. Grants bind exact manager,
+The host reads the actual SDK context's live getters and canonical bounded public
+source before/after waits. Session start, switch/fork/tree, model selection,
+resource reload and shutdown clear permissions and cancel pending work. Grants bind exact manager,
 session ID, cwd, model object/provider/ID, registry and logical target; at most
 eight targets survive in memory. Updated public snapshots may reuse a session
-grant; once never caches. `revoke(target)` invalidates pending choices and cancels
-the helper without releasing a still-billable lease. Shared core preflight runs
-before dialogs; source digest/recency is rechecked afterward and host/source
-currentness guards execution. No notes, message grants or model text grant cost.
-Tests simulate SDK UI responses, not actual human approval. Public tool wiring,
-lifecycle hookup, public revocation and actual nested-SDK proof remain next-unit work.
+grant; once never caches. `kind: "revoke-reasoning"` accepts only the recipient,
+removes its scope and invalidates pending choices without UI or model calls.
+Preflight precedes dialogs; changed public progress/page, replaced/stale/unavailable
+source or caller cancellation discards advice without retry. Canonical routing is
+re-listed after execution, with epoch/model/source checks still owning the reply.
+Private activity and heartbeat changes do not change the public digest.
+
+Pi's reload loader disables module caching, so an execution-only global symbol
+holds a weak registry-keyed engine map. No permission or identity survives runtime
+replacement; a new coordinator returns busy without UI while the old ignored-abort
+result remains pending, then requires fresh permission after settlement. This is
+stricter than one run per coordinator. Old clear cannot cancel a successor engine.
+No durable policy file, owner request, correlation or consent receipt is created.
+Tests simulate SDK UI responses, not real human approval. Actual nested-SDK helper
+execution and interactive human UI proof remain deferred.
 
 ### Public-SDK acceptance fixture
 
@@ -161,7 +172,9 @@ share one trusted fixture profile; a third fresh session tests owner replacement
 Production Gentle Agents/Shell extensions supply the actual registered tools.
 No private SDK invocation, fabricated tool context or transport adapter is used.
 
-The fixture proves curated branch persistence, preserved human names, frozen
+The fixture also proves actual SDK JSON/no-UI reasoning denial with exactly two
+existing local driver turns and no nested helper or receiver calls. It proves
+curated branch persistence, preserved human names, frozen
 non-authoritative readback, actual private-message exclusion, opaque pagination
 for nine then ten Git worktrees, public membership invalidation, unchanged-private-
 history continuation, explicit null withdrawal and fresh replacement unknowns.
@@ -179,7 +192,7 @@ It waits boundedly for presence withdrawal/empty sockets, revalidates ownership,
 then removes only the exact empty leaf, never its UID parent or historical leaves.
 The owned root is removed afterward; post-cleanup absence is checked. Windows is
 explicitly skipped. This is not interactive TUI, human consent, native review,
-Windows execution, reasoning-helper acceptance or issue-closure evidence.
+Windows execution, nested reasoning-helper execution or issue-closure evidence.
 
 ### Recorded repository scope
 

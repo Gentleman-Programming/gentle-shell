@@ -254,6 +254,14 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 		};
 		const first = await consult();
 		assert.equal(first.status, "available");
+		// Actual SDK JSON/no-UI context: reasoning must not add a nested model run.
+		// tool() asserts exactly the existing two local driver turns, not UI proof.
+		const ownerCalls = owner.calls();
+		const denied = await caller.tool("orchestrator_consult", { recipient_session_id: sid,
+			kind: "reasoning", question: "What progress is published?" });
+		assert.equal(denied.details.gentleAgents.receipt.code, "permission-required");
+		assert.equal(denied.details.gentleAgents.receipt.source, "helper_advice");
+		assert.equal(owner.calls(), ownerCalls);
 		assert.deepEqual(first.snapshot?.state?.state, state);
 		assert.equal(first.snapshot?.state?.recordedAt, (note.data as any).recordedAt);
 		assert.ok(first.digest); assert.ok(first.observedAt >= first.snapshot!.state!.recordedAt);

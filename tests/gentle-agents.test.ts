@@ -12,6 +12,7 @@ import { SessionChanges, type SessionChangeEvidence } from "../lib/session-chang
 import test, { after, afterEach, before, mock } from "node:test";
 import type { TestContext } from "node:test";
 import { generateUnifiedPatch, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import { visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { sidebarState } from "../lib/shell-sidebar.ts";
 import gentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
@@ -4021,6 +4022,113 @@ test("registered orchestrator_list joins peer metadata without child launches or
 		assert.equal(h.userMessages.length, 0);
 		await h.fire("session_shutdown", ctx);
 	} finally { publisher.dispose(); }
+});
+
+test("registered reasoning and revocation use live SDK host and published source only", async () => {
+	const h = fakePi(), runtime = deps();
+	const profile = realpathSync(mkdtempSync(join(root, "reasoning-runtime-")));
+	const peer = { version: 1 as const, sessionId: "peer", endpoint: "/fixture/peer.sock", createdAt: 1 };
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer", label: "Published peer", activity: [] });
+	const publish = (progress = "Recorded") => publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [], state: {
+		schema: 1, sessionId: "peer", cwd: "/repo", recordedAt: 1, source: "owner-curated",
+		ownerReply: false, authority: "none", state: { progress },
+	} });
+	publish(); let ready = false, dialogs = 0, calls = 0, choice = "Decline";
+	let complete: (() => void) | undefined, hang = false;
+	let peers = [peer];
+	let duringDialog: (() => Promise<void> | void) | undefined;
+	const registry = { list: async () => [], listActivations: async () => peers };
+	runtime.deps.agentHome = profile;
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: () => ({ registry, start: async () => { ready = true; }, close: async () => {} }),
+		createClient: () => ({ close() {}, sendNotification: async () => { throw Error("no owner message"); } }),
+	};
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	const answer = { role: "assistant", api: "fixture", provider: "fixture", model: "local", timestamp: 1,
+		stopReason: "stop", content: [{ type: "text", text: "Published advice" }], usage: {
+			input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } as AssistantMessage;
+	Object.assign(ctx, { model: { id: "local", provider: "fixture", maxTokens: 1024 }, modelRegistry: {
+		streamSimple(_model: unknown, context: { tools: unknown[]; messages: unknown[] }, options: { maxRetries: number }) {
+			calls++; assert.deepEqual(context.tools, []); assert.equal(context.messages.length, 1);
+			assert.equal(options.maxRetries, 0);
+			const stream = createAssistantMessageEventStream();
+			stream.result = hang ? () => new Promise(resolve => { complete = () => resolve(answer); }) : async () => answer;
+			return stream;
+		},
+	} });
+	// Test-simulated supported UI choices, NOT evidence of actual human approval.
+	ctx.ui.select = async (title, options) => {
+		dialogs++; assert.match(title, /Model-cost permission only/);
+		assert.deepEqual(options, ["Allow once", "Allow this target + model for this session", "Decline"]);
+		await duringDialog?.(); return choice;
+	};
+	try {
+		await h.fire("session_start", ctx); await eventually(() => ready, "reasoning transport ready");
+		const tool = h.tools.get("orchestrator_consult")!;
+		const run = async (kind = "reasoning", patch = {}, caller = ctx, signal?: AbortSignal) => JSON.parse((await tool.execute("c",
+			{ recipient_session_id: "peer", kind, ...(kind === "reasoning" ? { question: "What is published?" } : {}), ...patch }, signal, undefined, caller)).content[0].text);
+		assert.equal((await run("metadata")).status, "available"); assert.deepEqual([dialogs, calls], [0, 0]);
+		assert.equal((await run()).code, "permission-required"); assert.deepEqual([dialogs, calls], [1, 0]);
+		choice = "Allow once"; const advice = await run();
+		assert.equal(advice.source, "helper_advice"); assert.equal(advice.ownerReply, false); assert.equal(advice.authority, "none");
+		assert.equal(advice.requestCaps.maxTokens, 512); assert.equal(advice.usage.totalTokens, 2);
+		assert.deepEqual(advice.actualModel, { provider: "fixture", id: "local" }); assert.deepEqual([dialogs, calls], [2, 1]);
+		choice = "Allow this target + model for this session"; await run();
+		publisher.updateDiscovery(peer, { workspace: "/updated-public", tasks: [] }); await run();
+		assert.deepEqual([dialogs, calls], [3, 3]);
+		Object.assign(ctx, { hasUI: false });
+		assert.equal((await run("revoke-reasoning")).status, "revoked");
+		assert.deepEqual([dialogs, calls], [3, 3]); Object.assign(ctx, { hasUI: true });
+		choice = "Decline"; assert.equal((await run()).code, "permission-required");
+		for (const patch of [{ hasUI: false }, { mode: "print" }, { mode: "json" }]) {
+			Object.assign(ctx, patch); assert.equal((await run()).code, "permission-required");
+		}
+		Object.assign(ctx, { hasUI: true, mode: "rpc" }); choice = "Allow once";
+		assert.equal((await run()).status, "available");
+		const before = [dialogs, calls];
+		for (const args of [{ question: "implicit" }, { kind: "reasoning" }, { kind: "revoke-reasoning", cursor: "x" },
+			{ kind: "metadata", question: "irrelevant" }, { kind: "reasoning", question: "é".repeat(513) },
+			{ kind: null }, { kind: "unknown" }, { cursor: "x".repeat(1025) }, { unexpected: true }]) {
+			await assert.rejects(tool.execute("bad", { recipient_session_id: "peer", ...args }, undefined, undefined, ctx), /Invalid metadata/);
+		}
+		assert.deepEqual([dialogs, calls], before);
+		choice = "Allow this target + model for this session"; await run();
+		for (const event of ["session_tree", "resources_discover", "session_before_switch", "session_before_fork", "session_before_tree", "model_select", "session_start"]) {
+			await h.fire(event, ctx); choice = "Decline";
+			assert.equal((await run()).code, "permission-required");
+			choice = "Allow this target + model for this session"; await run();
+		}
+		await run("revoke-reasoning"); choice = "Allow once"; hang = true;
+		for (const change of ["public", "activation", "unavailable", "private", "abort", "revoke"]) {
+			publish(); peers = [peer]; const controller = new AbortController();
+			const pending = run("reasoning", {}, ctx, controller.signal);
+			await eventually(() => !!complete, "helper pending");
+			if (change === "public") publish("Changed progress");
+			if (change === "activation") peers = [{ ...peer, endpoint: "/fixture/replaced.sock" }];
+			if (change === "unavailable") peers = [];
+			if (change === "private") { publisher.update([]); publisher.refreshLabel(); }
+			if (change === "abort") controller.abort();
+			if (change === "revoke") await run("revoke-reasoning");
+			complete!(); complete = undefined;
+			const outcome = await pending;
+			assert.equal(outcome.status, change === "private" ? "available" : "unavailable");
+		}
+		hang = false; peers = [peer];
+		for (const change of [() => Object.assign(ctx, { model: { ...ctx.model! } }),
+			() => publish("Changed after dialog"),
+			() => h.fire("session_tree", ctx), () => run("revoke-reasoning"),
+			() => h.fire("session_shutdown", ctx),
+			() => h.fire("session_start", fakeContext().ctx, { reason: "new" })]) {
+			await h.fire("session_start", ctx); await new Promise(resolve => setImmediate(resolve));
+			publish(); duringDialog = async () => { await change(); }; const count = calls;
+			assert.equal((await run()).status, "unavailable"); assert.equal(calls, count);
+		}
+		assert.equal((await run("metadata", {}, ctx)).status, "unavailable");
+		assert.equal(runtime.spawned.length, 0); assert.equal(h.sent.length, 0); assert.equal(h.userMessages.length, 0);
+	} finally { await h.fire("session_shutdown", ctx); publisher.dispose(); }
 });
 
 test("session transport adds host tools, forwards notifications, and closes on shutdown", async () => {

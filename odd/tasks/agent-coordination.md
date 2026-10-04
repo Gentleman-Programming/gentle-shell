@@ -376,3 +376,43 @@ it is not a second authority registry and never starts a run just to grant.
 - Each actual SDK host now awaits its own SessionManager ID in private transport presence with an actual socket under the exact guarded leaf, a five-second deadline and short I/O yields. The exact two-record assertion remains, strengthened with owner/caller IDs, schema and private file UID/mode checks; no extra model turns or production changes. Replacement uses the same guard; 30-second test cap and owned-output cleanup remain unchanged.
 - Focused SDK command above passed three consecutive runs (one test each); the same authorized ten-file suite passed 254/254. Type check: 186 baseline diagnostics, no regressions; runtime check: eight modules match; diff whitespace check passed. Existing fixture Git warnings remain.
 - Read-only CodeGraph exploration preceded narrow inspection in this indexed worktree. Parent must propagate the fix through feature branches and obtain fresh remote checks; neither PR's CI recovery nor full-repository validation is claimed. Both issues remain OPEN.
+
+## Unit 9b: public reasoning/revocation tool (functional verification complete; parent review pending)
+
+Base `152855c5`, previous PR #1736 (338-line coordinator slice). SDK startup fix propagated through feature-only merges; fresh #1734/#1735 functional CI passed. Wire explicit reasoning and restrictive revocation into `orchestrator_consult`, preserving metadata as the zero-call default. Actual supported UI supplies cost permission; clear it on every lifecycle boundary, revalidate live caller/model/public source and preserve a still-billable engine lease across runtime replacement. No owner decisions or automatic conversation sharing. SDK nested-helper proof must explicitly distinguish simulated UI choices from real human consent.
+
+- Public kinds are metadata (default), reasoning with required bounded question,
+  and restrictive revoke-reasoning. Invalid/irrelevant arguments fail before
+  effects; no implicit question routing or helper fallback from unknown metadata.
+  Actual SDK context getters supply live caller/model/registry/UI, never grants
+  from notes. Canonical selected peer/page and public digest are revalidated
+  around dialog/execution; post-execution read retains epoch/model checks.
+- Supported lifecycle events clear permissions/cancel work before losing old
+  callback authority. A global-symbol weak registry-keyed execution-only map
+  survives Pi's moduleCache:false reload loader. Hung ignored-abort streams block
+  replacement coordinators without UI until settlement; no grant inheritance.
+  Each coordinator owns its cancellation handle, not a successor's engine.
+- Meaningful RED: required eight-file Node command observed 221 passed / two
+  failed: registered reasoning threw Invalid metadata consultation parameters;
+  replacement coordinator started another stream and timed out instead of busy.
+  Earlier missing publisher label was a corrected test-fixture error, not RED.
+  GREEN: same exact command now passes 224/224. Simulated UI covers deny/once/cache,
+  revoke, headless/print/json/RPC, updated public snapshot, running public/canonical
+  changes versus private activity, caller/model replacement, cancellation and
+  lifecycle scope/pending-choice discard. No real human approval proof claimed.
+- Actual SDK command passes one permanent fixture, including new JSON/no-UI
+  permission-required denial with exactly two local driver turns, zero nested
+  helper calls and unchanged receiver count. Existing guarded socket startup and
+  two output selectors/cleanup remain intact. Actual nested-helper SDK execution,
+  interactive TUI/human permission and native Windows proof remain DEFERRED.
+- Both issues remain OPEN; no correlated owner decision, consent receipt or native
+  verdict fabricated. Assets/default list/identity and prompt budgets unchanged.
+  Parent prep preserved; mirror, assessment, remote CI and all Git delivery remain
+  parent-owned. Rollback: this unit's tool/coordinator/test/doc edits only.
+- `node scripts/check-types.mjs`: 186 baseline diagnostics, no regressions, 12
+  pairs improved. Runtime `--check`: eight generated modules match; metrics
+  validated. `git diff --check` passed. Existing fixture Git warnings remain.
+  CodeGraph explore failed without an index before narrow reads; initialization
+  would violate edit surfaces. Installed relevant SDK/extensions/TUI/RPC/virtual
+  model docs/references and live context/UI/registry/lifecycle declarations were
+  inspected. No installs, shared-profile mutations or Git delivery operations.

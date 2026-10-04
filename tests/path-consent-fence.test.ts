@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync, readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -20,6 +20,96 @@ function fixture(t: test.TestContext) {
 }
 
 const grants = () => new PathTargetGrants();
+
+function fileLink(t: test.TestContext, target: string, link: string): boolean {
+	try {
+		symlinkSync(target, link, "file");
+		return true;
+	} catch (error) {
+		if (["EPERM", "EACCES", "ENOTSUP"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+			t.skip("Platform cannot create file symlinks without additional privileges");
+			return false;
+		}
+		throw error;
+	}
+}
+
+test("dangling outside file alias requires consent before an actual OS write", (t) => {
+	const f = fixture(t);
+	const destination = join(f.sibling, "new.txt");
+	const alias = join(f.root, "dangling");
+	if (!fileLink(t, destination, alias)) return;
+	assert.equal(evaluatePathFence("write", { path: alias }, f.root, [f.root], "s", grants(), true).kind, "confirm");
+	assert.equal(canonicalizeTarget(alias, f.root), destination);
+	assert.equal(evaluatePathFence("write", { path: alias }, f.root, [f.root], "s", grants(), false).kind, "headless-block");
+	const g = grants();
+	g.grant("s", [destination]);
+	assert.equal(evaluatePathFence("write", { path: alias }, f.root, [f.root], "s", g, true).kind, "pass");
+	writeFileSync(alias, "fixture witness");
+	assert.equal(readFileSync(destination, "utf8"), "fixture witness");
+});
+
+test("link traversal preserves filesystem parents rather than lexical parents", async (t) => {
+	for (const shape of ["existing", "ambiguous", "relative-parent"]) {
+		await t.test(shape, (t) => {
+			const f = fixture(t);
+			const destination = join(f.sibling, "victim.txt");
+			const link = shape === "relative-parent" ? join(f.sibling, "nested", "link") : join(f.root, "parent-link");
+			if (shape === "existing") writeFileSync(destination, "before");
+			const target = shape === "relative-parent" ? "../victim.txt" : "alias/nested/../victim.txt";
+			if (!fileLink(t, target, link)) return;
+			const path = shape === "relative-parent" ? join(f.root, "alias", "nested", "link") : link;
+			const g = grants();
+			g.grant("s", [join(f.root, "victim.txt")]);
+			if (shape === "ambiguous") {
+				assert.throws(() => canonicalizeTarget(path, f.root));
+				for (const hasUI of [true, false]) {
+					assert.equal(evaluatePathFence("write", { path }, f.root, [f.root], "s", g, hasUI).kind, "headless-block");
+				}
+				return;
+			}
+			assert.equal(canonicalizeTarget(path, f.root), destination);
+			assert.equal(evaluatePathFence("write", { path }, f.root, [f.root], "s", g, true).kind, "confirm");
+			g.grant("s", [destination]);
+			assert.equal(evaluatePathFence("write", { path }, f.root, [f.root], "s", g, true).kind, "pass");
+			writeFileSync(path, "outside witness");
+			assert.equal(readFileSync(destination, "utf8"), "outside witness");
+		});
+	}
+});
+
+test("relative and chained dangling links preserve actual destination authority", (t) => {
+	const f = fixture(t);
+	if (!fileLink(t, "../sibling/missing.txt", join(f.root, "first"))) return;
+	if (!fileLink(t, "first", join(f.root, "second"))) return;
+	assert.equal(canonicalizeTarget("second", f.root), join(f.sibling, "missing.txt"));
+	assert.deepEqual(resolveOutsidePaths(["second"], f.root, [f.root]), [join(f.sibling, "missing.txt")]);
+	assert.deepEqual(resolveOutsidePaths(["second"], f.root, [f.root, f.sibling]), []);
+	if (!fileLink(t, "src/missing.txt", join(f.root, "inside"))) return;
+	assert.deepEqual(resolveOutsidePaths(["inside"], f.root, [f.root]), []);
+});
+
+test("symlink cycles fail closed even with lexical grants", (t) => {
+	const f = fixture(t);
+	if (!fileLink(t, "loop-b", join(f.root, "loop-a"))) return;
+	if (!fileLink(t, "loop-a", join(f.root, "loop-b"))) return;
+	assert.throws(() => canonicalizeTarget("loop-a", f.root));
+	const g = grants();
+	g.grant("s", [join(f.root, "loop-a")]);
+	for (const hasUI of [true, false]) {
+		assert.equal(evaluatePathFence("write", { path: "loop-a" }, f.root, [f.root], "s", g, hasUI).kind, "headless-block");
+	}
+});
+
+test("dangling directory junction tails resolve outside and non-directory tails block", (t) => {
+	const f = fixture(t);
+	const destination = join(f.sibling, "missing-directory");
+	symlinkSync(destination, join(f.root, "dangling-directory"), process.platform === "win32" ? "junction" : "dir");
+	assert.equal(canonicalizeTarget("dangling-directory/deep/new.txt", f.root), join(destination, "deep", "new.txt"));
+	assert.equal(evaluatePathFence("write", { path: "dangling-directory/deep/new.txt" }, f.root, [f.root], "s", grants(), true).kind, "confirm");
+	writeFileSync(join(f.root, "plain-file"), "fixture");
+	assert.equal(evaluatePathFence("write", { path: "plain-file/child" }, f.root, [f.root], "s", grants(), true).kind, "headless-block");
+});
 
 test("canonicalizeTarget resolves relatives, ~, symlinks, and missing tails", (t) => {
 	const f = fixture(t);

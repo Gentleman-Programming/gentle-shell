@@ -6,8 +6,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
-import { initTheme } from "@earendil-works/pi-coding-agent";
+import { initTheme, SessionManager } from "@earendil-works/pi-coding-agent";
 import { validateToolArguments } from "@earendil-works/pi-ai";
+import { SESSION_WORKTREE_ENTRY } from "../lib/session-worktree-registry.ts";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -3787,6 +3788,59 @@ test("path fence fails closed headless and stays silent outside git sessions", a
 	t.after(() => rmSync(plain, { recursive: true, force: true }));
 	const noGitCtx = { cwd: plain, hasUI: true, sessionManager: { getSessionId: () => "fence-3", getEntries: () => [] } } as unknown as ExtensionContext;
 	assert.equal(await toolCall({ toolName: "read", input: { path: "../../etc/hosts" } }, noGitCtx), undefined, "no resolvable worktree identity: fence stays silent");
+});
+
+test("path fence rejects corrupt registered roots through real session entries", async (t) => {
+	const f = fenceFixture(t);
+	type ToolCallHandler = (event: { toolName: string; input: unknown }, ctx: ExtensionContext) => Promise<ToolCallEventResult | undefined>;
+	const handlers = new Map<string, ToolCallHandler>();
+	const pi = {
+		on(name: string, handler: ToolCallHandler) { handlers.set(name, handler); },
+		events: { emit() {} },
+		registerCommand() {},
+		registerTool() {},
+	} as unknown as ExtensionAPI;
+	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	const toolCall = handlers.get("tool_call")!;
+	for (const root of ["", ".", "..", "repo", " ", 42, null]) {
+		await t.test(`corrupt root ${JSON.stringify(root)}`, async () => {
+			const session = SessionManager.inMemory(f.repo);
+			session.appendCustomEntry(SESSION_WORKTREE_ENTRY, { sessionId: session.getSessionId(), root, evidence: "explicit" });
+			const ctx = { cwd: f.repo, hasUI: false, sessionManager: session } as unknown as ExtensionContext;
+			const denied = await toolCall({ toolName: "read", input: { path: join(f.sibling, "notes.txt") } }, ctx);
+			assert.equal(denied?.block, true, "corrupt metadata cannot authorize an outside target");
+			assert.equal(await toolCall({ toolName: "write", input: { path: "ordinary-missing.txt" } }, ctx), undefined, "the original session root remains usable");
+		});
+	}
+});
+
+test("path fence preserves registered same-clone roots and session binding", async (t) => {
+	const f = fenceFixture(t);
+	const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")));
+	const empty = join(dirname(f.repo), "empty");
+	Object.assign(env, { GIT_CONFIG_GLOBAL: join(empty, "config"), GIT_CONFIG_NOSYSTEM: "1" });
+	const git = (args: string[]) => execFileSync("git", ["-C", f.repo, "-c", `core.hooksPath=${empty}`, "-c", "commit.gpgsign=false", ...args], { env, stdio: "pipe" });
+	git(["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "Fixture"]);
+	const linked = join(dirname(f.repo), "linked");
+	git(["worktree", "add", "-b", "linked", linked]);
+	type ToolCallHandler = (event: { toolName: string; input: unknown }, ctx: ExtensionContext) => Promise<ToolCallEventResult | undefined>;
+	const handlers = new Map<string, ToolCallHandler>();
+	const pi = {
+		on(name: string, handler: ToolCallHandler) { handlers.set(name, handler); },
+		events: { emit() {} }, registerCommand() {}, registerTool() {},
+	} as unknown as ExtensionAPI;
+	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	const toolCall = handlers.get("tool_call")!;
+	const session = SessionManager.inMemory(f.repo);
+	session.appendCustomEntry(SESSION_WORKTREE_ENTRY, { sessionId: session.getSessionId(), root: linked, evidence: "explicit" });
+	const ctx = { cwd: f.repo, hasUI: false, sessionManager: session } as unknown as ExtensionContext;
+	assert.equal(await toolCall({ toolName: "write", input: { path: join(linked, "missing.txt") } }, ctx), undefined);
+	const replacement = SessionManager.inMemory(f.repo);
+	replacement.appendCustomEntry(SESSION_WORKTREE_ENTRY, { sessionId: session.getSessionId(), root: linked, evidence: "explicit" });
+	const denied = await toolCall({ toolName: "write", input: { path: join(linked, "missing.txt") } }, { ...ctx, sessionManager: replacement } as unknown as ExtensionContext);
+	assert.equal(denied?.block, true, "inherited entries cannot expand a replacement session");
+	session.appendCustomEntry(SESSION_WORKTREE_ENTRY, { sessionId: session.getSessionId(), root: dirname(f.repo), evidence: "explicit" });
+	assert.equal((await toolCall({ toolName: "read", input: { path: join(f.sibling, "notes.txt") } }, ctx))?.block, true, "an unrelated ancestor cannot expand the clone boundary");
 });
 
 test("path fence stays silent for sensitive short-circuits and non-session callers", async (t) => {

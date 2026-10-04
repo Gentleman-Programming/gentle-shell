@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { SessionWorktreeRegistry, resolveSessionWorktree, resolveSessionWorktreeWithGit, SESSION_WORKTREE_ENTRY, toolWorktreePath, worktreeGitEnvironment } from "../lib/session-worktree-registry.ts";
+import { SessionWorktreeRegistry, registeredRootsForSession, resolveSessionWorktree, resolveSessionWorktreeWithGit, SESSION_WORKTREE_ENTRY, toolWorktreePath, worktreeGitEnvironment } from "../lib/session-worktree-registry.ts";
 
 // All Git and session writes belong to unique fixtures, never the live clone.
 function fixture(t: test.TestContext) {
@@ -179,6 +179,20 @@ test("restoration validates entries and hides missing roots without deleting the
 	rmSync(f.linked, { recursive: true });
 	assert.deepEqual(registry.roots(), [f.main]);
 	assert.ok(h.session.getEntries().some((entry) => entry.type === "custom" && (entry.data as { root?: string })?.root === f.linked));
+});
+
+test("durable root consumers reject malformed spellings instead of resolving them into authority", (t) => {
+	const f = fixture(t);
+	const h = host(f.main);
+	const id = h.session.getSessionId();
+	const malformed = ["", ".", "..", "../linked", " ", 42, null, f.alias, `${f.linked}/..`, `${f.linked}/`, `${f.linked}\0`];
+	for (const root of malformed) h.session.appendCustomEntry(SESSION_WORKTREE_ENTRY, { sessionId: id, root, evidence: "explicit" });
+	assert.deepEqual(registeredRootsForSession(h.session, id), [], "the raw boundary reader must not promote malformed metadata");
+	assert.deepEqual(h.registry().roots(), [], "registry restoration must not promote relative or alias spellings either");
+	h.session.appendCustomEntry(SESSION_WORKTREE_ENTRY, { sessionId: "another-session", root: f.main, evidence: "explicit" });
+	h.session.appendCustomEntry(SESSION_WORKTREE_ENTRY, { sessionId: id, root: f.linked, evidence: "explicit" });
+	assert.deepEqual(registeredRootsForSession(h.session, id), [f.linked]);
+	assert.deepEqual(h.registry().roots(), [f.linked], "valid canonical same-clone roots remain available");
 });
 
 test("Git child environment removes routing and config overrides without mutating its source", () => {

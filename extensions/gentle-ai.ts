@@ -1,4 +1,5 @@
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
+import { filterSessionContextFiles } from "../lib/child-context-files.ts";
 import { recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
 import { blockChildDestructiveCommand } from "./child-safety.ts";
 import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRepositoryPreparation, captureBoundSessionRepositoryAuthority, prepareBoundSessionRepository, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sourcePathWithinProject } from "../lib/bounded-writer-admission.ts";
@@ -9876,6 +9877,14 @@ function createGentleAiExtensionForTesting(
 		} else {
 			processAgentEndSubagentDepth.set(subagentDepthKey, 0);
 		}
+		// gentle-shell#1722: skip duplicate gentle-ai orchestration blocks from
+		// ancestor AGENTS.md files (e.g. ~/AGENTS.md) and ensure orchestrator-only
+		// blocks are filtered out of context files in the primary session,
+		// preserving only unmanaged text and non-orchestrator guidance.
+		if (isPrimarySession) {
+			filterSessionContextFiles(event.systemPromptOptions, ctx?.cwd ?? process.cwd());
+		}
+
 		// gentle-pi#677: nudge gentle-ai's own telemetry trigger for a primary
 		// session only, reusing the exact isNamedAgent predicate that
 		// decides the orchestrator prompt below. At most one attempt per

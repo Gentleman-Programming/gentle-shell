@@ -292,6 +292,47 @@ Base `49592c5a`, previous PR #1733 (319 lines; 207 functional and 46 prompt chec
 - `node scripts/check-types.mjs`: 186 recorded diagnostics, no regressions; 12 pairs improved. `node scripts/build-runtime-modules.mjs --check`: eight modules match, metrics validated. `git diff --check`: passed.
 - CodeGraph absent; initialization prohibited outside edit surfaces, narrow known paths used. No production edits, dependency mutation or delivery operations. Both issues remain open for parent whole-feature audit; reasoning helper and correlated owner decisions remain pending. No human consent, native verdict, interactive TUI or Windows runtime claim.
 
+## Unit 8: internal one-run read-only helper (core verified; public integration pending)
+
+Base `d12c8ca5`, previous PR #1734 (347 lines; actual SDK parent rerun passed, combined 254 tests passed). Branch `feat/1702-bounded-helper`. Add an internal SDK-stream engine using only captured published metadata and an explicit question, without tools, history, agents or owner wakeups. Bound total input, requested output, local deadline, concurrency, abort/source checks and actual usage; never retry. Provider abort/token limits are requests, not guaranteed billing caps. No public reasoning route or human permission is activated here: the next integration unit must obtain real UI opt-in bound to the live session/model. Correlated owner decision delivery remains separate.
+
+- Internal `OrchestratorHelper` uses public `ModelRegistry.streamSimple` only;
+  SDK imports are type-only. One static system prompt plus one user JSON message,
+  nested public-field whitelists, no tools/history/resource files/environment export.
+  Source unknowns/omissions and historical times remain visible; capability cursor
+  is excluded. Required real-host currentness closure binds caller/selected snapshot.
+- Limits: 16 KiB total input, nonempty/control-free 1,024-byte question, requested
+  512 tokens/minimal reasoning, 4,096-byte text, local deadline at most 20 seconds.
+  No retries. Hard race returns timeout/cancellation even when abort is ignored;
+  cancel retains the single-engine lease until actual result settlement. Hung
+  providers remain busy. Requests/abort are not guaranteed remote price caps.
+- Advice envelopes retain non-authority, captured digest/time/target, model IDs,
+  request caps and whitelisted finite nonnegative usage/cost or unknown. Length
+  is partial; errors/tool calls/empty/oversized/stale outputs are unavailable, not
+  owner negatives. Thinking is dropped; textual grant claims stay untrusted text.
+- RED: `node --experimental-strip-types --test tests/orchestrator-helper.test.ts`
+  failed the runnable concurrent behavior (`undefined !== 'busy'`); baseline
+  invoked two controlled streams. GREEN: same command now passes all seven tests.
+  Alternates cover ignored abort/late rejection/lease reuse, caller/engine cancel,
+  replacement before/after, private nested getters, detachment, exact UTF-8 input
+  and output boundaries, partial/error/tool outcomes and sanitized setup failures.
+- Full authorized seven-file helper/consultation/state/catalog/discovery/presence/
+  agents command: 214 passed, zero failed; existing non-Git/missing-cwd fixture
+  warnings remain. `node --experimental-strip-types --test tests/orchestrator-consultation-sdk.test.ts`:
+  one passed, unchanged guarded fixture; actual SDK metadata regression only,
+  NOT helper nested-stream acceptance. Engine tests use pure local SDK-compatible
+  controlled streams with no profile/socket outputs or paid/external requests.
+- `node scripts/check-types.mjs`: initially four new diagnostics, fixed; final
+  186 diagnostics, no regressions, 12 pairs improved. Runtime `--check`: eight
+  modules match, metrics validated. CodeGraph index absent; initialization would
+  violate edit surfaces, so known narrow reads used. Installed SDK/extensions/
+  models/custom-provider docs, relevant message/example crossrefs and actual
+  public registry/context/options/stream declarations inspected before API use.
+- Next unit: real host tool/human UI opt-in and actual SDK nested-stream proof.
+  Both issues remain OPEN; no public reasoning/owner reply, human approval/native
+  verdict, interactive TUI or Windows proof claimed. Parent prep preserved;
+  parent owns mirror, assessment/review, commits and delivery. Rollback boundary:
+  new internal helper/test plus this unit's docs/task text only.
 ### CI fixture readiness correction (local verification; remote recovery pending)
 - Historical CI RED supplied by parent: run `37156574198`, job `111301069665`, SDK line 199 expected two records but observed one; 4,637 passed / one failed / 34 skipped. Logical sender ID exists before asynchronous socket publication and is not transport readiness. No new production RED or delayed-start reproduction claimed; strict TDD not active.
 - Each actual SDK host now awaits its own SessionManager ID in private transport presence with an actual socket under the exact guarded leaf, a five-second deadline and short I/O yields. The exact two-record assertion remains, strengthened with owner/caller IDs, schema and private file UID/mode checks; no extra model turns or production changes. Replacement uses the same guard; 30-second test cap and owned-output cleanup remain unchanged.

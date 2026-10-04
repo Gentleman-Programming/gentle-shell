@@ -99,7 +99,37 @@ The source is `published_snapshot`, `ownerReply: false`, `authority: none`.
 This is not native consent, a review receipt or a correlated owner decision.
 No transcripts, prompts, threads, results, instructions, profile credentials or
 transport capabilities are exported. No new Git probes, messages, receiver wakes,
-child/helper launches or model calls occur. The reasoning helper lane is unavailable.
+child/helper launches or model calls occur. The public reasoning helper lane is unavailable.
+
+### Internal read-only helper core (not publicly enabled)
+
+`lib/orchestrator-helper.ts` is a trusted internal execution engine, not a tool or
+cost grant. A future host integration must obtain real human UI opt-in bound to
+its live caller, selected snapshot and model before invoking it. Model booleans,
+curated decisions and helper text cannot authorize invocation or impersonate owners.
+
+One public `ModelRegistry.streamSimple` request receives a static read-only prompt
+and one JSON question/public-snapshot message. Nested field whitelists exclude raw
+extra properties, history, credentials, transport capabilities and catalog cursors.
+Unknowns, omissions and historical source times remain visible; no tools execute.
+
+| Bound | Contract |
+|---|---|
+| Input | 16 KiB total system + question JSON; question nonempty, control-free, at most 1,024 UTF-8 bytes |
+| Output | Requested 512 tokens/minimal reasoning; text at most 4,096 UTF-8 bytes, no meaning truncation |
+| Lifetime | Local deadline at most 20 seconds; cancellation/deadline races return without waiting for ignored abort |
+| Concurrency | One in-flight lease per engine, retained until actual provider result settlement, even after cancellation |
+
+No retries or automatic runs. A hung provider keeps that engine busy; cancel does
+not reopen a potentially billable lease. Host currentness checks fail closed before
+invocation and after completion. Tool-call content, errors, empty/oversized text and
+stale results are explicit unavailable outcomes, never owner refusals. Length-stop
+text is marked partial. Advice carries captured digest/time/target, requested and
+actual model IDs, request caps and only finite nonnegative token/cost totals (or
+unknown). Thinking is dropped; permission claims remain untrusted text with
+`ownerReply: false`, `authority: none`. Abort/token requests are not guaranteed
+remote billing caps. Unit tests use local controlled SDK-compatible streams;
+the SDK fixture below still proves metadata only, not nested-helper execution.
 
 ### Public-SDK acceptance fixture
 

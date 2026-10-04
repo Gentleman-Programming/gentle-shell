@@ -21,7 +21,7 @@ import { historyDir, loadHistory, saveTask } from "../lib/agents-history.ts";
 import { STALE_COMPLETION_MS } from "../lib/agents-completion-delivery.ts";
 import { applyTaskEvent, emptyThread, TASK_EVENT, TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
 import { NativePointerScope } from "../lib/native-pointer-region.ts";
-import { PresenceCursor, PresencePublisher, listPresence, readActivity } from "../lib/orchestrator-presence.ts";
+import { PresenceCursor, PresencePublisher, listPresence, readActivity, readDiscovery } from "../lib/orchestrator-presence.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
 import { AgentRunner } from "../lib/agents-runner.ts";
@@ -1246,10 +1246,16 @@ function liveProfile(name: string): string {
 	return profile;
 }
 
-function liveInstance(t: test.TestContext, profile: string, sessionId: string) {
+function liveInstance(t: test.TestContext, profile: string, sessionId: string, metadata = false) {
 	const h = fakePi();
 	const runtime = deps();
 	const context = fakeContext();
+	if (metadata) {
+		runtime.deps.sessionTransport = {
+			...inertSessionTransport,
+			createListener: registry => ({ registry, record: { version: 1, sessionId, endpoint: `/fixture/${sessionId}`, createdAt: 1 }, start: async () => {}, close: async () => {} }),
+		};
+	}
 	Object.assign(context.ctx.sessionManager, {
 		getSessionId: () => sessionId,
 		getSessionName: () => sessionId,
@@ -1278,8 +1284,8 @@ async function liveOverlay(instance: ReturnType<typeof liveInstance>) {
 
 test("live-only extension instances discover same-profile peers across cwd boundaries without importing their tasks", async (t) => {
 	const profile = liveProfile("live-peer-profile");
-	const local = liveInstance(t, profile, "local-live");
-	const peer = liveInstance(t, profile, "peer-live");
+	const local = liveInstance(t, profile, "local-live", true);
+	const peer = liveInstance(t, profile, "peer-live", true);
 	assert.equal(listPresence(profile).entries.length, 0, "factory construction starts no presence resources");
 	await local.fire("session_start", local.ctx, { reason: "startup" });
 	await peer.fire("session_start", peer.ctx, { reason: "startup" });
@@ -1294,6 +1300,7 @@ test("live-only extension instances discover same-profile peers across cwd bound
 	};
 	await run(local, "local");
 	const peerId = await run(peer, "peer");
+	await eventually(() => listPresence(profile).entries.some(header => readDiscovery(profile, header)?.tasks.some(task => task.id === peerId)), "admitted runtime-owned tasks publish without subsequent child events");
 	await tick();
 	peer.children[0].emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "peer streamed text" } });
 	await eventually(() => listPresence(profile).entries.some((header) => readActivity(profile, header).activity?.tasks.some((row) => row.summary.id === peerId && row.thread.items.some((item) => item.text === "peer streamed text"))), "task deltas, not just status changes, must publish peer activity");
@@ -3551,17 +3558,45 @@ test("the overlay explains that stopping a waiting subagent dismisses its questi
 	await opened;
 });
 
-test("restored task history cannot enter the live panel or execute stop even with the current session ID", async () => {
+test("restored task history cannot enter the live panel or discovery during synchronous summary callbacks", async (t) => {
 	const { pi, fire, commands, tools } = fakePi();
 	const harness = deps();
 	const historyHome = join(root, "history-home");
 	const historical: TaskRecord = { id: "history-running", agent: "explore", mode: "background", prompt: "p", label: "p", cwd, parentSessionId: "s1", status: TASK_STATUS.RUNNING, createdAt: 1, startedAt: 1, endedAt: null, model: "m", thinking: undefined, sessionPath: null, error: null, result: null, lastStep: "working", lastActivityAt: 1, turns: 0, toolCalls: 0, tokens: 0, cost: 0 };
-	await saveTask(historyDir(historyHome), historical, emptyThread());
 	harness.deps.home = historyHome;
+	const profile = liveProfile("restored-discovery");
+	await saveTask(historyDir(historyHome, profile), historical, emptyThread());
+	chmodSync(join(profile, "gentle-agents"), 0o755);
+	harness.deps.agentHome = profile;
+	const registry = { list: async () => [], listActivations: async () => [] };
+	harness.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: (_, sessionId) => ({ registry, record: { version: 1, sessionId, endpoint: "/fixture/restore", createdAt: 1 }, start: async () => {}, close: async () => {} }),
+		createClient: inertSessionTransport.createClient,
+	};
+	let checked = false;
+	let leaked: unknown;
+	const update = PresencePublisher.prototype.update;
+	let snapshot: unknown;
+	t.mock.method(PresencePublisher.prototype, "update", function (this: PresencePublisher, input: Parameters<PresencePublisher["update"]>[0]) {
+		snapshot = input.map(row => row.task.id);
+		return update.call(this, input);
+	});
+	const restore = TaskStore.prototype.restore;
+	t.mock.method(TaskStore.prototype, "restore", function (this: TaskStore, ...args: Parameters<TaskStore["restore"]>) {
+		const result = restore.apply(this, args);
+		leaked = snapshot;
+		checked = true;
+		return result;
+	});
 	gentleAgents(pi, {}, harness.deps);
 	const { ctx, dialogs, overlays } = fakeContext();
 	await fire("session_start", ctx);
-	await tools.get("subagent_status")!.execute("restore", { task_id: historical.id }, undefined, undefined, ctx);
+	await tick();
+	await fire("session_start", ctx, { reason: "resume" });
+	await eventually(() => checked, "restoration callback checked");
+	assert.deepEqual(leaked, [], "summary callback must not publish restored running history");
+	assert.deepEqual(readDiscovery(profile, listPresence(profile).entries[0])?.tasks, []);
 	const opened = commands.get("gentle:agents")!.handler("", ctx);
 	for (let attempt = 0; attempt < 40 && overlays.length === 0; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 25));
 	assert.doesNotMatch(stripAnsi(overlays[0]!.render(80).join("\n")), /Stop selected|Subagent explore/);
@@ -3813,6 +3848,36 @@ test("session transport startup failure cleans the constructed Windows-capable t
 	assert.match((await h.tools.get("orchestrator_session_id")!.execute("id", {}, undefined, undefined, ctx)).content[0].text, /not ready/);
 });
 
+test("registered orchestrator_list joins peer metadata without child launches or messages", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	const profile = realpathSync(mkdtempSync(join(root, "discovery-runtime-")));
+	const peer = { version: 1 as const, sessionId: "peer", endpoint: "/fixture/peer.sock", createdAt: 1 };
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer", label: "Auth review", activity: [] });
+	try {
+		publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [{ id: "child", label: "Check auth", status: "waiting", cwd: "/repo-child" }] });
+		let ready = false;
+		const registry = { list: async () => [], listActivations: async () => [peer] };
+		runtime.deps.agentHome = profile;
+		runtime.deps.sessionTransport = {
+			createRegistry: async () => registry,
+			createListener: () => ({ registry, start: async () => { ready = true; }, close: async () => {} }),
+			createClient: () => ({ close() {}, sendNotification: async () => { throw new Error("no messages expected"); } }),
+		};
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		await h.fire("session_start", ctx);
+		await eventually(() => ready, "discovery transport ready");
+		const result = await h.tools.get("orchestrator_list")!.execute("list", {}, undefined, undefined, ctx);
+		assert.match(result.content[0].text, /peer.*Auth review.*recorded workspace: \/repo/);
+		assert.match(result.content[0].text, /Check auth \[waiting\].*launch workspace: \/repo-child/);
+		assert.match(result.content[0].text, /reachability is unknown/);
+		assert.equal(runtime.spawned.length, 0);
+		assert.equal(h.sent.length, 0);
+		await h.fire("session_shutdown", ctx);
+	} finally { publisher.dispose(); }
+});
+
 test("session transport adds host tools, forwards notifications, and closes on shutdown", async () => {
 	const h = fakePi();
 	const runtime = deps();
@@ -3820,7 +3885,7 @@ test("session transport adds host tools, forwards notifications, and closes on s
 	let listenerStarts = 0;
 	let listenerCloses = 0;
 	let clientCloses = 0;
-	const registry = { list: async () => [{ sessionId: "peer", reachability: "unknown" }], listActivations: async () => [] };
+	const registry = { list: async () => [{ sessionId: "peer", reachability: "unknown" }], listActivations: async () => [{ version: 1 as const, sessionId: "peer", endpoint: "/fixture/peer.sock", createdAt: 1 }] };
 	runtime.deps.sessionTransport = {
 		createRegistry: async () => registry,
 		createListener: (_registry, _sessionId, received) => {

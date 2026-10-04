@@ -4,6 +4,37 @@ An interactive RPC host — a client that runs `pi --mode rpc` itself, such as t
 
 Source map: [publisher](../lib/agents-rpc-publisher.ts), [wiring](../extensions/gentle-agents.ts), [store](../lib/agents-protocol.ts).
 
+## Same-profile orchestrator discovery (Refs #1701)
+
+`orchestrator_list` keeps stable raw routing session IDs and adds recorded display
+labels, session workspaces, and up to eight currently owned, unfinished child task
+labels/statuses/launch workspaces. This is a metadata-only view, not the RPC payload
+below: it exports no prompts, transcripts, thinking, or tool output and makes no
+model calls or messaging requests.
+
+Metadata lives in an optional private, 16-KiB derived sidecar, bound to the existing
+session hash, presence incarnation/generation, and listener activation. Schema-1
+headers are unchanged: missing or invalid sidecars never hide existing activity peers.
+Only currently runtime-owned tasks are published, not restored running history.
+
+The transport registry selects its newest advertised activation per session (ties
+use its existing deterministic token order). Context joins only that exact routing
+snapshot, never another activation sharing its ID. Multiple matching presence headers,
+malformed records, missing metadata, or an incomplete bounded scan leave context
+unknown without hiding advertised peers. Recent means the existing 15-second presence
+heartbeat window, not verified reachability. Stale records expose no context.
+Reachability remains unknown even with recent metadata.
+
+Paths longer than 120 characters or requiring control-character normalization are
+unknown rather than misleadingly shortened. Labels are sanitized and bounded to
+120 characters; duplicate labels do not merge IDs. Additional child tasks are
+counted as omitted. Task workspaces are recorded launch directories, not proof of
+isolation, ownership locks, or exclusive access.
+
+This first stacked slice does not declare an orchestrator's subject, repository
+identity, or extended work scope. A display label is recorded at activation, not
+an inferred task summary. It cannot answer arbitrary reasoning questions (#1702).
+
 ## Turning it on
 
 Set `GENTLE_SHELL_INTERACTIVE_HOST=1` on the `pi --mode rpc` process the host spawns directly. `lib/rpc-host.ts`'s `isInteractiveRpcHost(mode, env)` gates the feature on that exact value; any other value, or its absence, keeps RPC headless — the existing subagent-child behavior is byte-identical. `lib/agents-runner.ts` strips the variable from every subagent child's environment, so a subagent spawned by an interactive host never inherits it and stays headless itself.

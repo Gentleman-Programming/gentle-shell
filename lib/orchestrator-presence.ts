@@ -27,6 +27,16 @@ export interface Activity { tasks: { summary: ActivityInput["task"]; thread: {
 	version: number; dropped: number; items: ObjectValue[];
 } }[] }
 export interface Target { sessionHash: string; incarnation: string }
+export interface DiscoveryMetadata {
+	activation: string;
+	workspace: string;
+	tasks: { id: string; label: string; status: string; workspace: string }[];
+	omitted: number;
+}
+export function sessionHash(sessionId: string) { return digest(sessionId); }
+export function activationHash(peer: { sessionId: string; endpoint: string; createdAt: number }) {
+	return digest(JSON.stringify([peer.sessionId, peer.endpoint, peer.createdAt]));
+}
 export interface Header extends Target {
 	schema: 1; label: string; heartbeat: number; generation: number;
 	counts: { running: number; queued: number; waiting: number; finished: number };
@@ -78,6 +88,15 @@ function validTarget(value: Target) {
 	return object(value) && typeof value.sessionHash === "string" && HASH.test(value.sessionHash)
 		&& typeof value.incarnation === "string" && UUID.test(value.incarnation);
 }
+function validDiscovery(d: unknown): d is DiscoveryMetadata {
+	return object(d) && keys(d, ["activation", "workspace", "tasks", "omitted"])
+		&& typeof d.activation === "string" && HASH.test(d.activation)
+		&& typeof d.workspace === "string" && d.workspace === label(d.workspace) && integer(d.omitted)
+		&& Array.isArray(d.tasks) && d.tasks.length <= 8 && d.tasks.every((t: unknown) => object(t)
+			&& keys(t, ["id", "label", "status", "workspace"])
+			&& ["id", "label", "workspace"].every(k => typeof t[k] === "string" && t[k] === label(t[k]))
+			&& STATUSES.includes(t.status));
+}
 function validHeader(h: unknown): h is Header {
 	if (!object(h) || !keys(h, ["schema", "sessionHash", "incarnation", "label", "heartbeat", "generation", "counts", "digest", "unavailable"])) return false;
 	return validTarget(h as Header) && h.schema === 1 && typeof h.label === "string" && h.label === label(h.label)
@@ -86,7 +105,7 @@ function validHeader(h: unknown): h is Header {
 		&& ((h.unavailable === null && typeof h.digest === "string" && HASH.test(h.digest))
 			|| (h.unavailable === "activity-too-large" && h.digest === null));
 }
-function filename(target: Target, kind: "header" | "activity") {
+function filename(target: Target, kind: "header" | "activity" | "discovery") {
 	if (!validTarget(target)) throw new Error("malformed");
 	return `${target.sessionHash}.${target.incarnation}.${kind}.json`;
 }
@@ -236,11 +255,23 @@ export function readActivity(profile: string, selection: Header): { activity?: A
 	} catch (error) { return { unavailable: reason(error) }; }
 }
 
+/** Optional derived sidecar; failures never invalidate the schema-1 header. */
+export function readDiscovery(profile: string, h: Header): DiscoveryMetadata | undefined {
+	try {
+		const value = JSON.parse(boundedRead(join(rootFor(profile), filename(h, "discovery")), HEADER_LIMIT).toString("utf8"));
+		if (!object(value) || !keys(value, ["schema", "sessionHash", "incarnation", "generation", "metadata"])
+			|| value.schema !== 1 || value.sessionHash !== h.sessionHash || value.incarnation !== h.incarnation
+			|| value.generation !== h.generation || !validDiscovery(value.metadata)) return undefined;
+		return value.metadata;
+	} catch { return undefined; }
+}
+
 export class PresencePublisher {
 	readonly target: Readonly<Target>;
 	private readonly profile: string;
 	private readonly displayLabel: string;
 	private header!: Header;
+	private discovery?: DiscoveryMetadata;
 	private published = "";
 	private pending = "";
 	private timer?: ReturnType<typeof setTimeout>;
@@ -266,6 +297,23 @@ export class PresencePublisher {
 			return publisher;
 		} catch (error) { publisher.dispose(); throw error; }
 	}
+	/** Metadata-only projection; never reads task prompts, results, or threads.
+	 * Binding to the listener activation prevents reused session IDs from joining. */
+	updateDiscovery(peer: { sessionId: string; endpoint: string; createdAt: number }, input: {
+		workspace: string; tasks: readonly { id: string; label: string; status: string; cwd: string }[];
+	}) {
+		if (this.disposed) throw new Error("disposed");
+		if (sessionHash(peer.sessionId) !== this.target.sessionHash) throw new Error("malformed-discovery");
+		// A shortened path could denote a different workspace; do not advertise it.
+		const workspace = (path: string) => Array.from(path).length <= 120 && label(path) === path ? path : "";
+		const discovery = { activation: activationHash(peer), workspace: workspace(input.workspace),
+			tasks: input.tasks.slice(0, 8).map(t => ({ id: label(t.id), label: label(t.label), status: t.status, workspace: workspace(t.cwd) })),
+			omitted: Math.max(0, input.tasks.length - 8) };
+		if (!validDiscovery(discovery)) throw new Error("malformed-discovery");
+		if (JSON.stringify(discovery) === JSON.stringify(this.discovery)) return;
+		this.discovery = discovery;
+		this.writeDiscovery();
+	}
 	/** Eagerly projects/serializes each supplied snapshot to detach caller-owned data.
 	 * Only disk publication is coalesced; callers should avoid unrelated invalidations. */
 	update(input: readonly ActivityInput[]) {
@@ -285,18 +333,25 @@ export class PresencePublisher {
 		if (this.disposed) return;
 		try { action(); } catch (error) { this.error = reason(error); this.dispose(); }
 	}
-	private write(kind: "header" | "activity", bytes: string) {
+	private write(kind: "header" | "activity" | "discovery", bytes: string) {
 		const root = rootFor(this.profile);
 		const name = filename(this.target, kind);
 		atomicWrite(root, name, bytes);
 		const { dev, ino } = fs.lstatSync(join(root, name));
 		this.owned.set(name, { dev, ino });
 	}
+	private writeDiscovery() {
+		if (!this.discovery) return;
+		try {
+			this.write("discovery", JSON.stringify({ schema: 1, ...this.target, generation: this.header.generation, metadata: this.discovery }));
+		} catch { /* Metadata failure must not withdraw an existing activity peer. */ }
+	}
 	private publishHeader() {
 		const header = { ...this.header, heartbeat: Date.now() };
 		if (!validHeader(header)) throw new Error("malformed-header");
 		this.write("header", JSON.stringify(header));
 		this.header = header;
+		this.writeDiscovery();
 	}
 	private flush() {
 		if (this.pending === this.published) return;

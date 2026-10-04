@@ -1,6 +1,7 @@
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { isDeepStrictEqual } from "node:util";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
+import { filterSessionContextFiles } from "../lib/child-context-files.ts";
 import { dataArgumentRanges, recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
 import { defaultTempScratchFs, isTempScratchRemoval, type TempScratchFs } from "../lib/yolo-temp-scratch.ts";
 import { SHELL_COMMAND_TOOLS } from "../lib/background-jobs.ts";
@@ -11259,6 +11260,14 @@ function createGentleAiExtensionForTesting(
 			processAgentEndSubagentDepth.set(subagentDepthKey, 0);
 		}
 		verifierSettleNamedRuns.set(subagentDepthKey, isPrimarySession ? 0 : (verifierSettleNamedRuns.get(subagentDepthKey) ?? 0) + 1);
+		// gentle-shell#1722: skip duplicate gentle-ai orchestration blocks from
+		// ancestor AGENTS.md files (e.g. ~/AGENTS.md) and ensure orchestrator-only
+		// blocks are filtered out of context files in the primary session,
+		// preserving only unmanaged text and non-orchestrator guidance.
+		if (isPrimarySession) {
+			filterSessionContextFiles(event.systemPromptOptions, ctx?.cwd ?? process.cwd());
+		}
+
 		// gentle-pi#677: nudge gentle-ai's own telemetry trigger for a primary
 		// session only, reusing the exact isNamedAgent predicate that
 		// decides the orchestrator prompt below. At most one attempt per

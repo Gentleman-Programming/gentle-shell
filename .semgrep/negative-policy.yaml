@@ -1,0 +1,49 @@
+# SEC-14: Canonical static negative policy ruleset.
+# Prevents hardcoded secret patterns and arbitrary uncontained subprocess execution.
+rules:
+  - id: no-hardcoded-secret-assignment
+    patterns:
+      - pattern: |
+          $VAR = "..."
+      - metavariable-regex:
+          metavariable: $VAR
+          regex: (?i)(password|passwd|secret|api_key|apikey|access_token|auth_token|private_key|client_secret)
+    message: "Hardcoded secret detected in variable assignment '$VAR'. Use environment variables or a secrets manager."
+    languages: [typescript, javascript]
+    severity: ERROR
+
+  - id: no-hardcoded-secret-object-key
+    patterns:
+      - pattern: |
+          {$KEY: "..."}
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: (?i)(password|passwd|secret|api_key|apikey|access_token|auth_token|private_key|client_secret)
+    message: "Hardcoded secret value in object literal key '$KEY'. Use environment variables or a secrets manager."
+    languages: [typescript, javascript]
+    severity: ERROR
+
+  - id: no-arbitrary-subprocess-exec
+    patterns:
+      - pattern: exec($CMD, ...)
+      - pattern: execSync($CMD, ...)
+      - pattern: execFile($CMD, ...)
+      - pattern: execFileSync($CMD, ...)
+    message: >
+      Arbitrary subprocess execution detected. Use spawnSync with an explicit
+      argument array instead of shell=true or exec-family functions that
+      accept uncontrolled shell strings.
+    languages: [typescript, javascript]
+    severity: WARNING
+
+  - id: no-shell-true-spawn
+    patterns:
+      - pattern: |
+          spawn($CMD, $ARGS, {shell: true, ...})
+      - pattern: |
+          spawnSync($CMD, $ARGS, {shell: true, ...})
+    message: >
+      'shell: true' enables arbitrary shell expansion. Pass arguments as an array
+      and omit the shell option to prevent injection.
+    languages: [typescript, javascript]
+    severity: ERROR

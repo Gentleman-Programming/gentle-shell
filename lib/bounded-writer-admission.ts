@@ -1,7 +1,8 @@
 import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, parse, relative, resolve } from "node:path";
+import { isAbsolute, normalize, parse, relative, resolve } from "node:path";
 import { resolveSessionWorktree, type WorktreeResolver } from "./session-worktree-registry.ts";
+import { evaluatePolicyWriteAdmission } from "./negative-specification.ts";
 
 const WRITER_NAMES = ["gentle-ai-worker", "worker", "jd-fix-agent"];
 export const WRITER_EDIT_SURFACE_REJECTION =
@@ -144,4 +145,87 @@ export async function prepareBoundSessionRepository(manager: SessionOwner, cwd: 
 	}
 	try { return await binding.pending && current() && safeBootstrapDirectory(cwd) === root; }
 	catch { return false; }
+}
+
+// SEC-13: Path-scoped write admission for bounded writer actors.
+
+function matchesGlob(normalizedPath: string, pattern: string): boolean {
+	// Tokenize on glob metacharacters, escape literal parts, then reassemble.
+	const p = pattern.replace(/\\/g, "/");
+	const parts = p.split(/(\*\*\/|\*\*|\*)/);
+	const regex = parts
+		.map((part) => {
+			if (part === "**/") return "(?:[^/]+/)*";
+			if (part === "**") return ".*";
+			if (part === "*") return "[^/]*";
+			return part.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+		})
+		.join("");
+	return new RegExp(`^${regex}$`).test(normalizedPath);
+}
+
+/**
+ * Returns true when `targetPath` falls within at least one of `allowedSurfaces`.
+ * Prevents directory traversal, resolves relative paths against `workspaceRoot`,
+ * and supports exact path matches and wildcard/glob patterns.
+ */
+export function isPathWithinAllowedSurfaces(
+	targetPath: string,
+	allowedSurfaces: string[],
+	workspaceRoot?: string,
+): boolean {
+	if (!targetPath || !allowedSurfaces.length) return false;
+
+	const root = workspaceRoot ? normalize(workspaceRoot) : undefined;
+	const absoluteTarget = root ? resolve(root, targetPath) : resolve(targetPath);
+	const normalized = absoluteTarget.replace(/\\/g, "/");
+
+	// Prevent directory traversal outside workspaceRoot.
+	if (root) {
+		const normalizedRoot = root.replace(/\\/g, "/");
+		const rel = relative(normalizedRoot, normalized);
+		if (rel.startsWith("../") || rel === "..") return false;
+	}
+
+	for (const surface of allowedSurfaces) {
+		const surfaceNormalized = surface.replace(/\\/g, "/");
+		// Resolve surface to absolute for comparison, then convert to relative for glob.
+		const absoluteSurface = root ? resolve(root, surfaceNormalized).replace(/\\/g, "/") : surfaceNormalized;
+		// Exact match.
+		if (normalized === absoluteSurface) return true;
+		// Glob match against the relative path (relative to root or cwd).
+		const relTarget = root ? relative(root.replace(/\\/g, "/"), normalized) : normalized;
+		if (matchesGlob(relTarget, surfaceNormalized)) return true;
+		if (matchesGlob(normalized, absoluteSurface)) return true;
+	}
+	return false;
+}
+
+/**
+ * Reconciles the child's captured mutations against the declared allowed edit
+ * surfaces. Only mutations explicitly attributed to the child (via their
+ * toolCallId) are validated; unrelated concurrent file changes are ignored.
+ * SEC-14: when `options` is provided, additionally rejects any mutation
+ * targeting a protected policy surface without explicit human approval.
+ */
+export function validateCapturedWritesAtExit(
+	capturedMutations: Array<{ path: string; toolCallId: string }>,
+	allowedSurfaces: string[],
+	workspaceRoot?: string,
+	options?: { hasHumanApproval?: boolean },
+): { valid: boolean; outOfScopePaths: string[] } {
+	const outOfScopePaths: string[] = [];
+	for (const mutation of capturedMutations) {
+		if (!isPathWithinAllowedSurfaces(mutation.path, allowedSurfaces, workspaceRoot)) {
+			outOfScopePaths.push(mutation.path);
+			continue;
+		}
+		if (options !== undefined) {
+			const admission = evaluatePolicyWriteAdmission(mutation.path, options);
+			if (!admission.admitted) {
+				outOfScopePaths.push(mutation.path);
+			}
+		}
+	}
+	return { valid: outOfScopePaths.length === 0, outOfScopePaths };
 }

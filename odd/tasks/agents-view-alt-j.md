@@ -51,7 +51,9 @@ Type: Bug fix (type:bug)
 - Integrated main 794cb93a with a non-rewriting merge; no conflicts.
 - Focused tests: 528 passed, 0 failed, 0 skipped.
 - env -u GENTLE_PI_AGENTS_CHILD pnpm test: 4882 passed, 0 failed, 34 skipped; provider-contract and runtime-harness passed.
-- Previous native approval applies to the old-base candidate only; do not claim it approves the updated slice.
+- Integration commit: b82b94526c926bdde02625365846c84275a2518d.
+- Independent verifier muuec3ga-1-v1bw passed 528 focused tests and git diff --check main...HEAD, confirming default, overrides, selection and hints.
+- Updated native review review-13b5f9aacf3d7cf2 approved with review-reliability; exact acknowledgement completed and authority burned (gentle-ai.review-acknowledged/v1). Previous native approval remains historical only.
 - Physical terminal testing and updated typecheck/package checks not performed in this integration pass.
 
 ## Next step

@@ -194,7 +194,7 @@ function fakeContext(tui: { requestRender(): void } = fakeTui, confirmResult: (t
 		cwd,
 		hasUI: true,
 		mode: "tui",
-		sessionManager: { getSessionId: () => "s1", getCwd: () => cwd, getEntries: () => [] },
+		sessionManager: { getSessionId: () => "s1", getCwd: () => cwd, getEntries: () => [], getBranch: () => [] },
 		ui: {
 			notify: (message: string) => dialogs.push(`notify:${message}`),
 			custom: (factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (value: unknown) => void) => Overlay, options: unknown) =>
@@ -3361,7 +3361,7 @@ test("AgentsView production footer uses rendered bounds and invalidates them bef
 	const harness = deps();
 	gentleAgents(pi, {}, harness.deps);
 	const { ctx, overlays, customCompletions } = fakeContext();
-	(ctx as unknown as { sessionManager: { getSessionId(): string; getCwd(): string; getEntries(): [] } }).sessionManager = { getSessionId: () => "footer-session", getCwd: () => cwd, getEntries: () => [] };
+	Object.assign(ctx.sessionManager, { getSessionId: () => "footer-session" });
 	await fire("session_start", ctx);
 	await tools.get("subagent_run")!.execute("c1", { agent: "寿司", task: "Footer target", mode: "background" }, undefined, undefined, ctx);
 	await tick();
@@ -3750,8 +3750,8 @@ test("the card follows the active session: after /new the earlier session's task
 	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Long job", mode: "background" }, undefined, undefined, ctx);
 	await tick();
 	assert.match(widget()![1], /◐  explore  Long job/);
-	const sessions = ctx as unknown as { sessionManager: { getSessionId(): string; getCwd(): string; getEntries(): [] } };
-	sessions.sessionManager = { getSessionId: () => "s2", getCwd: () => cwd, getEntries: () => [] };
+	const sessions = ctx as unknown as { sessionManager: { getSessionId(): string; getCwd(): string; getBranch(): []; getEntries(): [] } };
+	sessions.sessionManager = { getSessionId: () => "s2", getCwd: () => cwd, getBranch: () => [], getEntries: () => [] };
 	await fire("session_start", ctx, { type: "session_start", reason: "new" });
 	assert.deepEqual(widget(), [], "the new session starts with an empty card");
 	assert.match((await tools.get("subagent_list_tasks")!.execute("c2", {}, undefined, undefined, ctx)).content[0].text, /No subagent tasks in this session/);
@@ -3763,7 +3763,7 @@ test("the card follows the active session: after /new the earlier session's task
 	assert.doesNotMatch(overlay.render(80).map(stripAnsi).join("\n"), /◐ Subagent explore/, "retained children of a replaced session do not imply an open orchestrator");
 	overlay.handleInput("\x1b");
 	await opened;
-	sessions.sessionManager = { getSessionId: () => "s1", getCwd: () => cwd, getEntries: () => [] };
+	sessions.sessionManager = { getSessionId: () => "s1", getCwd: () => cwd, getBranch: () => [], getEntries: () => [] };
 	await fire("session_start", ctx, { type: "session_start", reason: "resume" });
 	assert.match(widget()![1], /◐  explore  Long job/, "resuming the first session shows its task again");
 });
@@ -3889,6 +3889,17 @@ test("registered session identity declares subjects and refreshes canonical idle
 	assert.deepEqual(result.details.gentleAgents, { senderSessionId: "s1", alias: "Fix auth" });
 	const before = listPresence(profile).entries[0]!;
 	assert.equal(before.label, "Fix auth");
+	assert.equal(readDiscovery(profile, before)?.state, undefined, "no implicit summary");
+	Object.assign(ctx.sessionManager, { getBranch: () => h.entries });
+	await tool.execute("publish", { state: { objective: "Verify auth", decisions: "Advisory only" } }, undefined, undefined, ctx);
+	assert.equal(readDiscovery(profile, listPresence(profile).entries[0])?.state?.state?.objective, "Verify auth");
+	const published = h.entries.at(-1)!;
+	const writes = h.entries.length;
+	await assert.rejects(() => tool.execute("invalid", { subject: "No effect", state: { grant: "yes" } }, undefined, undefined, ctx), /invalid/);
+	assert.equal(h.entries.length, writes);
+	assert.equal(name, "Fix auth");
+	await declare();
+	assert.equal(h.entries.length, writes, "omission leaves notes unchanged");
 	assert.equal(readDiscovery(profile, before)?.workspace, cwd);
 	assert.equal(readDiscovery(profile, before)?.scope?.host.root, cwd);
 	assert.equal(readDiscovery(profile, before)?.scope?.registered[0]?.root, cwd);
@@ -3910,6 +3921,16 @@ test("registered session identity declares subjects and refreshes canonical idle
 	assert.equal(name, "", "control-only subject never names a session");
 	await declare("😀".repeat(130));
 	assert.equal(Array.from(name).length, 120);
+	await tool.execute("withdraw", { state: null }, undefined, undefined, ctx);
+	await h.fire("session_start", ctx, { reason: "reload" });
+	await eventually(() => readDiscovery(profile, listPresence(profile).entries[0])?.state?.state === null, "withdrawal reload");
+	Object.assign(ctx.sessionManager, { getBranch: () => [published] });
+	await h.fire("session_tree", ctx);
+	assert.equal(readDiscovery(profile, listPresence(profile).entries[0])?.state?.state?.objective, "Verify auth");
+	const sameId = fakeContext().ctx;
+	Object.assign(sameId.sessionManager, { getSessionName: () => name, getBranch: () => [] });
+	await h.fire("session_start", sameId, { reason: "resume" });
+	assert.equal(readDiscovery(profile, listPresence(profile).entries[0])?.state, undefined);
 	const replacement = fakeContext().ctx;
 	Object.assign(replacement.sessionManager, { getSessionId: () => "s2", getSessionName: () => "Replacement" });
 	await h.fire("session_start", replacement, { reason: "new" });
@@ -3960,6 +3981,13 @@ test("registered orchestrator_list joins peer metadata without child launches or
 		assert.deepEqual((next.details.gentleAgents as any).candidates[0].catalog.tasks.map((t: any) => t.id), ["extra7", "extra8"]);
 		assert.deepEqual((next.details.gentleAgents as any).candidates[0].catalog.registered, ["/registered/8", "/registered/9"]);
 		assert.equal(h.userMessages.length, 0);
+		publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [], state: {
+			schema: 1, sessionId: "peer", cwd: "/repo", recordedAt: 1, source: "owner-curated",
+			ownerReply: false, authority: "none", state: { progress: "Explicit summary" },
+		} });
+		const noted = await h.tools.get("orchestrator_list")!.execute("note", { recipient_session_id: "peer" }, undefined, undefined, ctx);
+		assert.match(noted.content[0].text, /Explicit summary/);
+		assert.equal((noted.details.gentleAgents as any).candidates[0].state.recordedAt, 1);
 		publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [] });
 		const legacy = await h.tools.get("orchestrator_list")!.execute("legacy", {}, undefined, undefined, ctx);
 		assert.match(legacy.content[0].text, /repository: unknown/);

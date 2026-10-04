@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
-import { PresencePublisher, listPresence } from "../lib/orchestrator-presence.ts";
+import { PresencePublisher, listPresence, readActivity } from "../lib/orchestrator-presence.ts";
 import { ActiveSessionListener, SessionPresenceRegistry } from "../lib/agents-session-transport.ts";
 import { discoverOrchestrators } from "../lib/orchestrator-discovery.ts";
 import { OrchestratorScopeCache } from "../lib/orchestrator-scope.ts";
+import { OrchestratorStateCache } from "../lib/orchestrator-state.ts";
 
 function fixture(t: TestContext) {
 	const profile = realpathSync(mkdtempSync(join(tmpdir(), "discovery-")));
@@ -80,6 +81,65 @@ test("joins activation-bound metadata without exporting prompts or thread output
 		assert.equal(bounded.tasks?.[0].workspace, "");
 		assert.throws(() => publisher.updateDiscovery({ ...peer, sessionId: "other" }, { workspace: "/repo", tasks: [] }), /malformed/);
 	} finally { publisher.dispose(); }
+});
+
+test("published notes detach, age independently, and fail unknown without hiding legacy activity", (t) => {
+	const profile = fixture(t);
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer", label: "Review", activity: [] });
+	t.after(() => publisher.dispose());
+	const cache = new OrchestratorStateCache();
+	const manager = { getSessionId: () => "peer", getCwd: () => "/repo", getBranch: () => [] };
+	cache.load(manager);
+	cache.publish(manager, { progress: "Curated" }, () => {}, 1);
+	const state = cache.get(manager)!;
+	publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [], state });
+	state.state!.progress = "mutated";
+	publisher.refreshLabel();
+	const selected = () => discoverOrchestrators(profile, [peer], Date.now(), { recipientSessionId: "peer" })[0];
+	assert.equal(selected().state?.state?.progress, "Curated");
+	assert.equal(discoverOrchestrators(profile, [peer])[0].state, undefined, "no-argument listing does not bulk-export notes");
+	assert.equal(selected().state?.recordedAt, 1);
+	assert.equal(selected().state?.ownerReply, false);
+	assert.equal(discoverOrchestrators(profile, [{ ...peer, endpoint: "/replacement" }])[0].state, undefined);
+	const header = listPresence(profile).entries[0];
+	const path = join(profile, "gentle-agents", "presence", `${header.sessionHash}.${header.incarnation}.discovery.json`);
+	const value = JSON.parse(readFileSync(path, "utf8"));
+	for (const invalid of [{ ...value.metadata.state, authority: "grant" }, { ...value.metadata.state, sessionId: "other" },
+		{ ...value.metadata.state, cwd: "relative/repo" }, { ...value.metadata.state, cwd: "/repo\u00a0name" },
+		{ ...value.metadata.state, state: { objective: "😀".repeat(513) } }]) {
+		writeFileSync(path, JSON.stringify({ ...value, metadata: { ...value.metadata, state: invalid } }));
+		assert.equal(selected().state, undefined);
+		assert.equal(selected().workspace, "/repo");
+		assert.deepEqual(readActivity(profile, listPresence(profile).entries[0]).activity?.tasks, []);
+		assert.equal(listPresence(profile).entries.length, 1);
+	}
+	cache.publish(manager, null, () => {}, 2);
+	publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [], state: cache.get(manager) });
+	assert.equal(selected().state?.state, null);
+});
+
+for (const failure of ["unwritable", "symlink"] as const) test(`optional catalog ${failure} failure preserves discovery and legacy activity`, { skip: process.platform === "win32" }, (t) => {
+	const profile = fixture(t);
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer", label: "Review", activity: [] });
+	const catalog = join(profile, "gentle-agents", "catalog");
+	if (failure === "symlink") symlinkSync(profile, catalog, "dir");
+	else { mkdirSync(catalog, { mode: 0o700 }); chmodSync(catalog, 0o500); }
+	try {
+		publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [] });
+		assert.equal(listPresence(profile).entries.length, 1);
+		assert.deepEqual(readActivity(profile, listPresence(profile).entries[0]).activity?.tasks, []);
+		assert.equal(publisher.error, undefined);
+		assert.equal(discoverOrchestrators(profile, [peer])[0].workspace, "/repo");
+		assert.equal(discoverOrchestrators(profile, [peer])[0].catalog, undefined);
+		if (failure === "symlink") { unlinkSync(catalog); mkdirSync(catalog, { mode: 0o700 }); }
+		else chmodSync(catalog, 0o700);
+		publisher.refreshLabel(); // Retry the existing optional publication path.
+		assert.ok(discoverOrchestrators(profile, [peer])[0].catalog);
+	} finally {
+		if (failure === "unwritable") chmodSync(catalog, 0o700);
+		publisher.dispose();
+	}
+	assert.equal(listPresence(profile).entries.length, 0);
 });
 
 test("missing and ambiguous metadata never hide routing IDs", (t) => {

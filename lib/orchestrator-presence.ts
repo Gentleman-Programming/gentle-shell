@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { validRecordedScope, type RecordedScope } from "./orchestrator-scope.ts";
 import { projectCatalog } from "./orchestrator-catalog.ts";
+import { decodePublishedState, type PublishedState } from "./orchestrator-state.ts";
 
 // Same-profile OS-user trust boundary, not an authorization channel. POSIX modes
 // restrict newly created storage; Windows deployments must supply their own ACLs.
@@ -30,6 +31,7 @@ export interface Activity { tasks: { summary: ActivityInput["task"]; thread: {
 } }[] }
 export interface Target { sessionHash: string; incarnation: string }
 export interface DiscoveryMetadata {
+	state?: PublishedState;
 	scope?: RecordedScope;
 	activation: string;
 	workspace: string;
@@ -93,7 +95,7 @@ function validTarget(value: Target) {
 		&& typeof value.incarnation === "string" && UUID.test(value.incarnation);
 }
 function validDiscovery(d: unknown): d is DiscoveryMetadata {
-	return object(d) && keys(d, Object.hasOwn(d, "scope") ? ["activation", "workspace", "tasks", "omitted", "scope"] : ["activation", "workspace", "tasks", "omitted"])
+	return object(d) && keys(d, ["activation", "workspace", "tasks", "omitted", ...["scope", "state"].filter(k => Object.hasOwn(d, k))])
 		&& typeof d.activation === "string" && HASH.test(d.activation)
 		&& typeof d.workspace === "string" && d.workspace === label(d.workspace) && integer(d.omitted)
 		&& Array.isArray(d.tasks) && d.tasks.length <= 8 && d.tasks.every((t: unknown) => object(t)
@@ -266,8 +268,9 @@ export function readDiscovery(profile: string, h: Header): DiscoveryMetadata | u
 		if (!object(value) || !keys(value, ["schema", "sessionHash", "incarnation", "generation", "metadata"])
 			|| value.schema !== 1 || value.sessionHash !== h.sessionHash || value.incarnation !== h.incarnation
 			|| value.generation !== h.generation || !validDiscovery(value.metadata)) return undefined;
-		const { scope, ...legacy } = value.metadata;
-		return validRecordedScope(scope) ? { ...legacy, scope } : legacy;
+		const { scope, state, ...legacy } = value.metadata;
+		const decoded = decodePublishedState(state);
+		return { ...legacy, ...(validRecordedScope(scope) ? { scope } : {}), ...(decoded ? { state: decoded } : {}) };
 	} catch { return undefined; }
 }
 
@@ -314,7 +317,7 @@ export class PresencePublisher {
 	/** Metadata-only projection; never reads task prompts, results, or threads.
 	 * Binding to the listener activation prevents reused session IDs from joining. */
 	updateDiscovery(peer: { sessionId: string; endpoint: string; createdAt: number }, input: {
-		workspace: string; tasks: readonly { id: string; label: string; status: string; cwd: string }[]; scope?: RecordedScope; registered?: readonly string[];
+		workspace: string; tasks: readonly { id: string; label: string; status: string; cwd: string }[]; scope?: RecordedScope; registered?: readonly string[]; state?: PublishedState;
 	}) {
 		if (this.disposed) throw new Error("disposed");
 		if (sessionHash(peer.sessionId) !== this.target.sessionHash) throw new Error("malformed-discovery");
@@ -323,6 +326,8 @@ export class PresencePublisher {
 		const discovery: DiscoveryMetadata = { activation: activationHash(peer), workspace: workspace(input.workspace),
 			tasks: input.tasks.slice(0, 8).map(t => ({ id: label(t.id), label: label(t.label), status: t.status, workspace: workspace(t.cwd) })),
 			omitted: Math.max(0, input.tasks.length - 8) };
+		const state = decodePublishedState(input.state);
+		if (state?.sessionId === peer.sessionId) discovery.state = state;
 		if (input.scope && validRecordedScope(input.scope)) {
 			discovery.scope = structuredClone(input.scope);
 			// Leave explicit gaps instead of publishing a sidecar readers cannot fit.
@@ -333,6 +338,7 @@ export class PresencePublisher {
 					omittedRegistered: scope.registered.length + scope.omittedRegistered, complete: false };
 			}
 		}
+		if (Buffer.byteLength(JSON.stringify(discovery)) > HEADER_LIMIT - 1024) delete discovery.state;
 		if (!validDiscovery(discovery)) throw new Error("malformed-discovery");
 		const catalog = projectCatalog(input.tasks, input.registered ?? []);
 		if (JSON.stringify(discovery) === JSON.stringify(this.discovery) && JSON.stringify(catalog) === JSON.stringify(this.catalog)) return;
@@ -375,6 +381,8 @@ export class PresencePublisher {
 		try {
 			if (this.catalog) this.write("catalog", JSON.stringify({ schema: 1, ...this.target,
 				generation: this.header.generation, activation: this.discovery.activation, tokens: this.catalogTokens, catalog: this.catalog }));
+		} catch { /* Optional catalog failure must not suppress other metadata. */ }
+		try {
 			this.write("discovery", JSON.stringify({ schema: 1, ...this.target, generation: this.header.generation, metadata: this.discovery }));
 		} catch { /* Metadata failure must not withdraw an existing activity peer. */ }
 	}

@@ -48,6 +48,32 @@ An unnamed session retains its workspace-basename display fallback. Session repl
 or shutdown disposes the previous publisher; a stale name source stops publication.
 Headers remain unchanged; the optional sidecar now also carries `scope`.
 
+### Publish curated state (Refs #1702; first slice)
+
+`orchestrator_session_id` also accepts optional `state`: strings named `objective`,
+`progress`, `decisions`, and `blockers` (2,048 UTF-8 bytes total). An object replaces
+all fields, `null` withdraws, and omission leaves the current record unchanged.
+Extra keys, controls, and oversized input are rejected before naming or persistence;
+records additionally fit 4 KiB. Never include credentials, internal instructions,
+or raw prompts. Whitelisting is not automatic secret redaction.
+
+Pi's public `appendEntry` persists a non-context custom record on the active branch.
+Only that branch's latest typed record is restored on start/reload/tree navigation;
+malformed or foreign records suppress older notes. Manager replacement and shutdown
+clear the cache. Conversation bodies, system prompts, results, and compaction summaries
+are never inspected to derive these notes. Stable reads/heartbeats do not scan history.
+
+Targeted `orchestrator_list` readback exposes detached historical notes, generated
+stable owner ID, recorded cwd (or null), and `recordedAt`, not heartbeat freshness.
+Cwd must be native absolute, control/surrogate-free, at most 1,024 UTF-8 bytes,
+and free of the 15 normalized Unicode separators listed below. Invalid generated
+cwd becomes null; malformed non-null readback withholds the note, never rewrites paths.
+Source is `owner-curated`, `ownerReply: false`, `authority: none`: even `decisions`
+is data, never a grant or human consent. Missing/invalid/over-budget notes are unknown;
+withdrawal remains explicit null. Advertising is best-effort; legacy headers/activity
+stay unchanged. Metadata-only `orchestrator_consult`, reasoning, correlated owner
+decisions, and actual SDK execution proof remain later units; neither issue is closed.
+
 ### Recorded repository scope
 
 Scope reuses `resolveSessionWorktree`: canonical Git root plus a SHA-256 hash of

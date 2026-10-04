@@ -167,3 +167,60 @@ Current type/runtime commands above passed again (186 diagnostics, no regression
 eight modules match). Test-owned fixture teardown remains unchanged.
 Actual SDK continuation execution is NOT claimed: parent reports MODULE_NOT_FOUND.
 SDK integration is deferred to a separate acceptance unit before #1701 closure.
+
+## Unit 5: explicitly published state (verified first slice; consultations deferred)
+
+Parent assessment: 386-line behavior candidate, medium risk, runtime large writer, under budget; writer self-verification stands with no required independent verifier. Native outcome is unknown, not closed. Actual SDK acceptance, direct consultation receipts, reasoning and correlated owner decisions remain pending.
+
+Previous PR: #1724 (390 changed lines, 197 tests passing, remote functional checks green; CodeRabbit skipped for the stacked base). Branch `feat/1702-published-state`, base `0e5d6f8f`. Reuse canonical SessionManager custom entries for owner-curated objective/progress/decisions/blockers, with generated source/time and bounded payloads. Never import conversation bodies or authority. Metadata-only consultations will read the existing selected-activation projections without waking the owner or calling a model. Reasoning and correlated owner decisions remain later units; neither issue is closed.
+
+- One approved slicing pass delivers optional `state` on `orchestrator_session_id`
+  plus targeted `orchestrator_list` readback. Object replaces, null withdraws,
+  omission preserves. Four whitelisted strings share 2,048 UTF-8 bytes; records
+  fit 4 KiB. Validation precedes naming/persistence; no model-supplied owner/time/grant.
+- Public `pi.appendEntry`, not a mutable context-manager cast, writes non-context
+  custom entries. Latest typed active-branch entry only; malformed/foreign latest
+  suppresses older notes. Startup/reload/tree reload the cache; replacement/shutdown
+  clear binding. Recorded cwd is bounded or null; recordedAt is not heartbeat time.
+- RED (authorized five-file Node command): 196 passed / one failed,
+  `undefined !== 'Verify auth'`; baseline advertised no explicit notes.
+  GREEN first slice: 200 passed / zero failed. Alternates cover null restore,
+  tree navigation, same-ID/new-manager replacement, human renames, stale sources,
+  private-body/summary getter exclusion, UTF-8 and envelope bounds, invalid records,
+  and 1,000 cached reads with no extra branch scans. Registered readback observes
+  zero child launches/custom messages/user messages; actual SDK proof is deferred.
+- `orchestrator_consult` and frozen consultation receipts remain the next unit,
+  not implemented or claimed here. Both issues remain open. Parent owns mirror,
+  review, commits and delivery. Rollback: only new state/cache/optional sidecar/tool
+  wiring and associated tests/docs; preserve existing identity/transport/catalog.
+
+### Separate later R3 catalog-write-isolation hardening
+
+Inspection confirmed catalog failure skipped the discovery write, but did not
+withdraw a valid header. Split optional write guards; do not reopen consumed
+`review-657ff6e298bd22b3`. RED: same five-file command, 200 passed / two failed,
+missing `/repo` metadata for unwritable and symlink catalog roots. Owned temporary
+fixtures verify legacy activity remains readable, metadata survives, retry works,
+and publisher cleanup stays scoped. Final GREEN: 202 passed / zero failed with
+`node --experimental-strip-types --test tests/orchestrator-state.test.ts tests/orchestrator-catalog.test.ts tests/orchestrator-presence.test.ts tests/orchestrator-discovery.test.ts tests/gentle-agents.test.ts`.
+`node scripts/check-types.mjs`: 186 diagnostics, no regressions, 12 pairs improved.
+`node scripts/build-runtime-modules.mjs --check`: eight modules match; metrics
+sources validated. `git diff --check` passed. Existing fixture non-Git/missing-cwd
+warnings remain; new R3 fixtures are POSIX-only, not Windows execution proof.
+During implementation two incomplete test managers needed supported `getBranch`
+stubs, and two new type errors were corrected without changing the baseline.
+CodeGraph was lazy-initialized in this dedicated worktree and a read-only query
+succeeded; unsupported `explore --depth` failed before scoped source inspection.
+No installs, dependency changes, live-model/profile execution, commits or delivery
+operations by this writer. Actual SDK acceptance remains separately pending.
+
+### New candidate boundary alignment: recorded cwd
+
+Native `isAbsolute` plus existing Unicode-separator/control/surrogate and byte
+boundaries now withhold ambiguous generated cwd as null and reject malformed
+non-null readback; no resolver/Git call or prior path-rewrite defect is claimed.
+RED: same five-file command, 201 passed / two failed (relative publication and
+sidecar readback accepted). GREEN: 203 passed / zero failed, covering all 15
+separators and healthy absolute cwd. Type/build/diff checks above passed again.
+Curated publication/targeted list slice is complete; consultation/receipt, model
+helper, correlated owner reply, and actual SDK acceptance remain pending.

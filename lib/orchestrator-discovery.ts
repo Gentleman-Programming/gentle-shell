@@ -11,6 +11,7 @@ export interface OrchestratorCandidate {
 	tasks?: DiscoveryMetadata["tasks"];
 	omitted?: number;
 	scope?: DiscoveryMetadata["scope"];
+	state?: DiscoveryMetadata["state"];
 	catalog?: CatalogPage;
 	catalogUnavailable?: string;
 }
@@ -34,6 +35,7 @@ export function discoverOrchestrators(profile: string, peers: readonly PresenceR
 		if (!header.recent) return { ...unknown, freshness: "stale" };
 		const catalog = readCatalog(profile, header, metadata.activation, selection?.cursor);
 		return { ...unknown, ...(catalog.page ? { catalog: catalog.page } : { catalogUnavailable: catalog.unavailable }), freshness: "recent", label: header.label, workspace: metadata.workspace,
-			tasks: metadata.tasks, omitted: metadata.omitted, ...(metadata.scope ? { scope: metadata.scope } : {}) };
+			tasks: metadata.tasks, omitted: metadata.omitted, ...(metadata.scope ? { scope: metadata.scope } : {}),
+			...(selection?.recipientSessionId === sessionId && metadata.state?.sessionId === sessionId ? { state: metadata.state } : {}) };
 	});
 }

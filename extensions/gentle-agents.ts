@@ -35,6 +35,7 @@ import { AgentsView } from "../lib/agents-view.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
 import { PresencePublisher, sanitizeDisplayLabel } from "../lib/orchestrator-presence.ts";
 import { discoverOrchestrators } from "../lib/orchestrator-discovery.ts";
+import { OrchestratorStateCache } from "../lib/orchestrator-state.ts";
 import { OrchestratorScopeCache, type RepositoryFact } from "../lib/orchestrator-scope.ts";
 import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/agents-rpc-publisher.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
@@ -389,6 +390,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	let sessions: ExtensionContext["sessionManager"] | undefined;
 	let presence: PresencePublisher | undefined;
 	const scopeCache = new OrchestratorScopeCache(deps.resolveWorktree);
+	const stateCache = new OrchestratorStateCache();
 	let rpcActivityPublisher: RpcActivityPublisher | undefined;
 	// Messages already surfaced to the user this session through the RPC
 	// activity publisher's `onError`, so a recurring push failure (the
@@ -424,7 +426,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					return data?.sessionId === activeSessionId() && typeof data.root === "string" && typeof data.evidence === "string" ? [data.root] : [];
 				});
 				presence?.updateDiscovery(transport.listener.record, { workspace: sessions.getCwd(), tasks, registered,
-					scope: scopeCache.project(sessions.getCwd(), tasks, registered) });
+					scope: scopeCache.project(sessions.getCwd(), tasks, registered), state: stateCache.get(sessions) });
 			}
 		} catch { presence?.dispose(); presence = undefined; }
 	};
@@ -1541,19 +1543,24 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.registerTool({
 		name: "orchestrator_session_id",
 		label: "Orchestrator session ID",
-		description: "Return this host session's stable routing ID and current display alias. When starting a task or delegation, declare a short recognizable subject here; do not query all peers. Names never authenticate. Existing Pi names and human renames are preserved. Use a concise non-sensitive label, not a prompt.",
+		description: "Return this host session's stable routing ID and current display alias. When starting a task or delegation, declare a short recognizable subject here; do not query all peers. Names never authenticate. Existing Pi names and human renames are preserved. Use a concise non-sensitive label, not a prompt. Optionally publish owner-curated state (2048 UTF-8 bytes total); null withdraws, omission leaves unchanged. Never include credentials, internal instructions, or raw prompts. Historical notes are not consent or an owner reply.",
 		parameters: { type: "object", additionalProperties: false, properties: {
 			subject: { type: "string", maxLength: 120, description: "Optional short task subject; names only an unnamed Pi session." },
+			state: { anyOf: [{ type: "null" }, { type: "object", additionalProperties: false, properties: {
+				objective: { type: "string" }, progress: { type: "string" }, decisions: { type: "string" }, blockers: { type: "string" },
+			} }] },
 		} } as never,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const transport = activeTransportFor(ctx);
 			if (!transport) return text("Error: session messaging is not ready.", { error: "not ready" });
-			const subject = (params as { subject?: unknown }).subject;
+			const { subject, state } = params as { subject?: unknown; state?: unknown };
+			if (state !== undefined) stateCache.publish(ctx.sessionManager, state, (type, data) => pi.appendEntry(type, data));
 			if (typeof subject === "string" && !ctx.sessionManager.getSessionName?.()) {
 				const declared = sanitizeDisplayLabel(subject);
 				if (declared) pi.setSessionName(declared);
 			}
 			const alias = sanitizeDisplayLabel(ctx.sessionManager.getSessionName?.() ?? "");
+			if (state !== undefined) publishActivity();
 			presence?.refreshLabel();
 			return text(`Active session ID: ${transport.sessionId}\nCurrent alias: ${alias || "unnamed"}`, { gentleAgents: { senderSessionId: transport.sessionId, alias } });
 		},
@@ -1585,7 +1592,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					const registered = peer.scope?.registered.map(fact => `\n  registered: ${repository(fact)}`).join("") ?? "";
 					const gaps = peer.scope && !peer.scope.complete ? `\n  (scope incomplete: ${peer.scope.omittedTasks} tasks, ${peer.scope.omittedRegistered} registered roots omitted)` : "";
 					const catalog = peer.catalog ? `\n  recorded catalog (not Git identity): ${JSON.stringify(peer.catalog)}` : "\n  recorded catalog: unknown";
-					return `- ${peer.sessionId}${context} · ${repository(peer.scope?.host)} · metadata: ${peer.freshness}${tasks}${registered}${gaps}${catalog}${peer.omitted ? `\n  (${peer.omitted} more tasks omitted)` : ""}`;
+					const note = params.recipient_session_id ? `\n  owner-curated recorded state (not consent or owner reply; authority none): ${peer.state ? JSON.stringify(peer.state) : "unknown"}` : "";
+					return `- ${peer.sessionId}${context} · ${repository(peer.scope?.host)} · metadata: ${peer.freshness}${tasks}${registered}${gaps}${catalog}${note}${peer.omitted ? `\n  (${peer.omitted} more tasks omitted)` : ""}`;
 				});
 				return peers.length === 0 ? text("No other sessions are currently advertised. Advertisements have unknown reachability and do not guarantee a live session.") : text(`Advertised sessions (reachability is unknown):\n${rows.join("\n")}`, { gentleAgents: { candidates: peers } });
 			} catch {
@@ -1798,7 +1806,13 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		});
 	}
 
+	pi.on("session_tree", (_event, ctx) => {
+		if (sessions !== ctx.sessionManager) return;
+		stateCache.load(ctx.sessionManager);
+		publishActivity();
+	});
 	pi.on("session_start", async (event, ctx) => {
+		stateCache.load(ctx.sessionManager);
 		// A resumed, reloaded, or replaced session starts with an empty completion
 		// queue so nothing pending from another session can replay here.
 		completions.dropAll();
@@ -1855,6 +1869,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		resetParentDelivery(undefined);
 		presence?.dispose();
 		presence = undefined;
+		stateCache.clear();
 		rpcActivityPublisher?.stop();
 		rpcActivityPublisher = undefined;
 		cancelClock?.();

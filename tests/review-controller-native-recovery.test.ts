@@ -634,6 +634,17 @@ test("RECOVER requires a live UI decision and RECOVER_LOCK requires its owner bi
 	assert.equal(recovered.mutation_outcome, "committed");
 });
 
+test("recover-lock forwards the caller's cancellation signal to native reclaim", async () => {
+	const controller = new AbortController();
+	const requests: Array<Record<string, unknown>> = [];
+	const native = {
+		reclaim: async (request: Record<string, unknown>) => { requests.push(request); return { record: { schema: "gentle-ai.review-reclaim-audit/v1" } }; },
+	} as unknown as import("../lib/native-review-cli.ts").NativeReviewCli;
+	await __testing.executeReviewControllerOperation({ operation: "recover-lock", input: JSON.stringify({ ownerHash: "a".repeat(64), lineage: "stuck", actor: "maintainer", reason: "stale" }) }, process.cwd(), native, controller.signal);
+	assert.equal(requests.length, 1);
+	assert.equal(requests[0]?.signal, controller.signal);
+});
+
 test("REPAIR_LEGACY_ALIAS derives its immutable target from fresh native inventory", async () => {
 	const calls: Array<Record<string, unknown>> = [];
 	const native = {

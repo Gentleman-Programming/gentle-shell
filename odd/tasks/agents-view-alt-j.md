@@ -15,7 +15,7 @@ Fix #1565 by moving default agents view from Alt+A to Alt+J, preserving prompt s
   - Work-unit commit: 6b5ace3fdbe63c1429b8ccb6f1ccdbdeb371b314, fix(agents): move default view shortcut to Alt+J (93 authored lines including tracking).
   - Native assessment: medium, large writer, reviewDue false (under_budget). Initial assessment was unassessable due untracked intended tracking file; parent staged all five paths, resolving that issue.
   - Native review: review-949baca5ecd983a1, consolidated review-reliability approved; exact acknowledgement completed, authority burned (gentle-ai.review-acknowledged/v1). No further lifecycle action pending.
-- [ ] T2: Publish PR after maintainer approval and verified delivery destination. Status: pending.
+- [ ] T2: Publish PR after maintainer approval and verified delivery destination. Status: partial; PR published, maintainer type:bug label still required.
 
 ## Verification evidence
 - Writer muqzzij3-5-1mnr: RED three expected default failures before source change; GREEN 501 focused tests.
@@ -56,5 +56,22 @@ Type: Bug fix (type:bug)
 - Updated native review review-13b5f9aacf3d7cf2 approved with review-reliability; exact acknowledgement completed and authority burned (gentle-ai.review-acknowledged/v1). Previous native approval remains historical only.
 - Physical terminal testing and updated typecheck/package checks not performed in this integration pass.
 
+## Publication outcome
+- Issue #1565 status:approved confirmed.
+- Authorized fork MarsSall/gentle-pi verified as a fork of Gentleman-Programming/gentle-shell, actor ADMIN on fork.
+- Non-force push succeeded; origin points to that fork. Documentation-only review evidence commit: 12b4df24.
+- PR https://github.com/Gentleman-Programming/gentle-shell/pull/1797 OPEN; title, body, main base and MarsSall:fix/agents-view-alt-j head confirmed by readback.
+- Creation succeeded, but adding type:bug failed due upstream permissions. PR has no labels. No create retry or label retry attempted.
+- GitHub checks queued/in progress; physical keyboard verification outstanding.
+
+## CodeRabbit follow-up
+- User authorized correcting applicable feedback, then explicitly authorized commit and push.
+- Added empty/nonempty draft tests through real GentlePromptEditor, registered Agents callback and real overlay; host key matching is simulated at the public editor seam, not production InteractiveMode wiring.
+- Both regressions fail with the historical Alt+A default and pass with Alt+J. Alt+A select-all, draft preservation and overlay opening are asserted.
+- Added agentsViewKey JSDoc explaining default, explicit overrides and disabling.
+- Focused tests: 474 passed. Full suite: 4884 passed, 0 failed, 34 skipped; provider-contract and runtime-harness passed. git diff --check passed.
+- Native review review-92a3457356fd8d94 approved and acknowledged; authority burned (gentle-ai.review-acknowledged/v1).
+- Previous published-head CI passed; new-head CI and CodeRabbit readback remain pending. Physical keyboard and updated typecheck/package checks were not performed.
+
 ## Next step
-Local implementation and PR summary are prepared. Await status:approved on #1565; then verify the publishing destination, push non-force, and create the linked type:bug PR. Do not confuse native candidate review approval with GitHub issue approval.
+Maintainer must add type:bug to PR #1797. Await new-head CI and review; do not merge or claim merge-ready.

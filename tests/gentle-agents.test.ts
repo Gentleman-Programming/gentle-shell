@@ -13,8 +13,9 @@ import test, { after, afterEach, before, mock } from "node:test";
 import type { TestContext } from "node:test";
 import { generateUnifiedPatch, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
-import { visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { matchesKey, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { sidebarState } from "../lib/shell-sidebar.ts";
+import { GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import gentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener } from "../lib/windows-session-transport.ts";
@@ -3011,6 +3012,60 @@ test("agentsEnabled and agentsCollapseKey read their flags and stay off inside a
 	gentleAgents(off.pi, { GENTLE_PI_AGENTS: "0" });
 	assert.equal(off.tools.size, 0);
 });
+
+for (const draft of ["", "draft"]) {
+	test(`composed Agents shortcut preserves ${draft ? "nonempty" : "empty"} draft`, async () => {
+		const h = fakePi();
+		gentleAgents(h.pi, {}, deps().deps);
+		const { ctx, overlays, customOptions } = fakeContext();
+		type Args = ConstructorParameters<typeof GentlePromptEditor>;
+		const identity = (text: string) => text;
+		const editor = new GentlePromptEditor(
+			{ terminal: { rows: 30, columns: 100 }, requestRender() {} } as unknown as Args[0],
+			{ borderColor: identity, selectList: {} } as unknown as Args[1],
+			{ matches: () => false } as unknown as Args[2],
+			{ fg: (_role, text) => text, bold: identity, requestRender() {}, pending: () => false,
+				now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {} },
+		);
+		editor.focused = true;
+		let probes = 0;
+		const pending: Promise<void>[] = [];
+		// Simulate host matching at the public editor seam; invoke real registered handlers.
+		editor.onExtensionShortcut = (data) => {
+			probes++;
+			for (const [key, registration] of h.shortcuts) {
+				if (!matchesKey(data, key)) continue;
+				pending.push(Promise.resolve(registration.handler(ctx)));
+				return true;
+			}
+			return false;
+		};
+		try {
+			editor.setText(draft);
+			editor.handleInput("\x1ba");
+			assert.equal(editor.getText(), draft);
+			assert.equal(probes, 0, "native select-all does not reach extension dispatch");
+			assert.equal(overlays.length, 0);
+			if (draft) assert.match(editor.render(80).join("\n"), /5 chars selected/);
+			editor.handleInput("\x1bj");
+			assert.equal(probes, 1);
+			assert.equal(pending.length, 1);
+			assert.equal(overlays.length, 1);
+			assert.match(overlays[0].render(80).join("\n"), /Agents/);
+			assert.equal(editor.getText(), draft);
+			assert.ok(customOptions.length === 1);
+			overlays[0].handleInput("\x1b");
+			await pending[0];
+			editor.handleInput("\x1ba");
+			editor.handleInput("\x7f");
+			assert.equal(editor.getText(), "", "select-all deletes the whole draft");
+		} finally {
+			for (const overlay of overlays) overlay.handleInput("\x1b");
+			await Promise.all(pending);
+			editor.dispose();
+		}
+	});
+}
 
 test("agents view registers Alt+J by default without claiming Alt+A selection", () => {
 	const { pi, shortcuts } = fakePi();

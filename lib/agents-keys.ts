@@ -8,6 +8,9 @@ const COLLAPSE_KEY_DEFAULT = "ctrl+shift+a";
 const VIEW_KEY_DEFAULT = "alt+j";
 const STOP_KEY_DEFAULT = "alt+s";
 
+/** Resolve the view shortcut, defaulting to Alt+J to avoid native Alt+A select-all.
+ * Explicit overrides remain supported; blank or "off" values disable the shortcut.
+ */
 export function agentsViewKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
 	const value = env.GENTLE_PI_AGENTS_VIEW_KEY?.trim();
 	if (value === undefined) return VIEW_KEY_DEFAULT;

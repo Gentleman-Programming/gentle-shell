@@ -647,6 +647,9 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     disposeHeader();
     if (!ctx.hasUI) return;
+    // Delegated rpc children report hasUI=true but have no terminal to paint
+    // (gentle-shell#1690); do not rely on a piped stdout lacking rows/columns.
+    if (process.env.GENTLE_PI_AGENTS_CHILD === "1") return;
 
     // CLI subcommands such as `pi update` or `pi install` skip the animated intro.
     if (isPiCliSubcommandInvocation(process.argv)) return;

@@ -1383,6 +1383,8 @@ async function main() {
 		piSubcommand: args.piSubcommand,
 		baseEnv: process.env,
 		homedir: homedir(),
+		// The spawn below sets no cwd, so pi runs in the launcher's own.
+		cwd: process.cwd(),
 	});
 
 	// Only an interactive session ends with pi's exit resume hint, which

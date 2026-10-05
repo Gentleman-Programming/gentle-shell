@@ -15,6 +15,7 @@ import { resolveGentleAiDevBinaryOverride, type GentleAiDevBinaryOverride } from
 import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
 import { quietToolsEnabled } from "../lib/quiet-tools-config.ts";
 import { registerCompactCodemode } from "../lib/codemode-renderer.ts";
+import { offerBuiltinCodemodeOptOut, type BuiltinCodemodeOptOutOptions } from "../lib/builtin-codemode-optout.ts";
 import { getGentleAiRenderState, renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
 import {
 	CARD_TONE, cardAwaitingResult, cardBottom, cardInnerWidth, cardLine, cardRunningLine, cardTopRows, floatRows, markCardResult,
@@ -789,11 +790,24 @@ function registerQuietTool(pi: ExtensionAPI, toolName: RegisteredToolName, resol
 	});
 }
 
-export default function quietTools(pi: ExtensionAPI, resolveOverride: GentleAiDevBinaryOverrideResolver = () => resolveGentleAiDevBinaryOverride()): ReturnType<ExtensionFactory> {
+export default function quietTools(
+	pi: ExtensionAPI,
+	resolveOverride: GentleAiDevBinaryOverrideResolver = () => resolveGentleAiDevBinaryOverride(),
+	codemodeOptOut: Omit<BuiltinCodemodeOptOutOptions, "effectiveExtensions"> = {},
+): ReturnType<ExtensionFactory> {
 	if (!quietToolsEnabled()) return;
 	let elapsedTiming: GentleAiElapsedTimingLedger | undefined;
+	let codemodeOptOutOffered = false;
 	pi.on("session_start", (_event, ctx) => {
 		elapsedTiming = new GentleAiElapsedTimingLedger(ctx.sessionManager, pi);
+		// The compact codemode below displaces Pi's builtin, which makes Pi warn
+		// at startup. Offer the settings opt-out once per process, detached so
+		// the dialog never holds up startup; the offer itself never throws.
+		if (codemodeOptOutOffered) return;
+		codemodeOptOutOffered = true;
+		let effectiveExtensions: unknown;
+		try { effectiveExtensions = pi.getSettings().extensions; } catch { /* Fall back to the settings file alone. */ }
+		void offerBuiltinCodemodeOptOut(ctx, { ...codemodeOptOut, effectiveExtensions });
 	});
 	// Only bash calls that render as gentle-ai cards carry a durable duration;
 	// every other quiet tool keeps its plain renderer and writes no entries.

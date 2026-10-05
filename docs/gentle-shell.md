@@ -279,6 +279,12 @@ A finished list stays on screen for the turn it finished in and clears at the ne
 
 ### Bridge providers
 
+Idle Claude Bridge continuation uses the normal user-prompt lifecycle so prompt preparation and tool declarations are retained. Gentle Agents hides only its exact, uniquely generated reserved wake in Pi's interactive transcript; child result and query cards remain visible. Native providers keep their hidden `display: false` custom wake.
+
+The reserved identity is stored once per session as a non-context custom entry and reconstructed on reload/resume, including identities on abandoned branches. It is session-owned: switching sessions releases the previous identity. Ordinary text quoting the old notification, prefixes, substrings, and whitespace variations is not hidden. Pi's transformer exposes no author/message ID, so an exact copy of the current reserved identity is indistinguishable from its generated wake.
+
+This is **TUI-only suppression**: the generated user-role message remains in session history, model context, and RPC. It does not fix the SDK's idle custom-message lifecycle. Older runtimes without the Markdown transformer API, or failed identity persistence, retain visible continuation and emit a warning rather than dropping the wake. Existing unreserved wakes are not retroactively hidden.
+
 The Gentle AI harness (ODD workflow, identity, review contract) and the open-tasks block are appended to `before_agent_start`'s `systemPromptOptions.appendSystemPrompt` instead of being returned as a replacement `systemPrompt` (gentle-shell#1485). Provider bridges such as `pi-claude-bridge` forward only those structured sections after their own preset and drop a returned `systemPrompt`, so this route reaches every provider, bridged or not.
 
 Set `GENTLE_PI_SHELL=0` to keep pi's built-in footer and editor.

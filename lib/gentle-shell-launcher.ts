@@ -1,4 +1,5 @@
-import { join, resolve as resolvePath } from "node:path";
+import { isAbsolute, join, resolve as resolvePath } from "node:path";
+import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection, type ChildPackageInjection } from "./child-package-injection.ts";
 
 // The gentle-shell launcher: pure, side-effect-free functions over injected
 // env/fs/exec. `bin/gentle-shell.mjs` (T2) wires these into the real process,
@@ -878,6 +879,10 @@ export interface BuildPiInvocationInput {
 	baseEnv: Record<string, string | undefined>;
 	// The OS home behind userPiHome's conventional ~/.pi/agent fallback.
 	homedir: string;
+	// The directory pi is spawned in, which pi resolves a relative -e path
+	// against. bin/gentle-shell.mjs spawns pi without a cwd, so this is the
+	// launcher's own process.cwd().
+	cwd: string;
 }
 
 export interface PiInvocation {
@@ -919,8 +924,15 @@ export interface PiInvocation {
 //   - Not takeOver, with a declaration: no injection at all — the target
 //     settings already load a gentle-pi the launcher accepts as-is (the
 //     `--link` case with a pi-managed install matching this launcher).
+//
+// The two injecting cases also export CHILD_PACKAGE_INJECTION_ENV (#1690) so
+// the subagent runner can give delegated children the same package. It holds
+// only the launcher's own computed -e set; passthrough -e flags (the managed
+// herdr extension, or one the user typed) are not part of it. Every other case
+// removes an inherited value, so a nested launch never leaks a stale signal.
 export function buildPiInvocation(input: BuildPiInvocationInput): PiInvocation {
 	const args = [...input.runtime.args];
+	let childInjection: ChildPackageInjection | undefined;
 
 	if (input.piSubcommand !== undefined) {
 		// No injection at all: pi must see the bare subcommand as argv[0].
@@ -945,23 +957,36 @@ export function buildPiInvocation(input: BuildPiInvocationInput): PiInvocation {
 			injected.add(input.packageRoot);
 			args.push("-e", input.packageRoot);
 		}
-
+		// The argv dedupe above compares raw strings; the signal dedupes again
+		// after absolutizing, so a relative and an absolute spelling of the same
+		// file appear once, in first-occurrence order.
+		const signalPaths = new Set([...injected].map((path) => absoluteExtensionPath(path, input.cwd)));
+		childInjection = { noExtensions: true, extensionPaths: [...signalPaths] };
 	} else if (input.declaration === undefined) {
 		args.push("-e", input.packageRoot);
+		childInjection = { noExtensions: false, extensionPaths: [absoluteExtensionPath(input.packageRoot, input.cwd)] };
 	}
 
 	args.push(...input.passthrough);
 
-	return {
-		command: input.runtime.command,
-		args,
-		env: {
-			...input.baseEnv,
-			PI_CODING_AGENT_DIR: input.home.dir,
-			GENTLE_PI_AGENT_HOME: input.home.dir,
-			[USER_PI_HOME_ENV]: userPiHome(input.baseEnv, input.homedir),
-		},
+	const env: Record<string, string | undefined> = {
+		...input.baseEnv,
+		PI_CODING_AGENT_DIR: input.home.dir,
+		GENTLE_PI_AGENT_HOME: input.home.dir,
+		[USER_PI_HOME_ENV]: userPiHome(input.baseEnv, input.homedir),
 	};
+	if (childInjection === undefined) delete env[CHILD_PACKAGE_INJECTION_ENV];
+	else env[CHILD_PACKAGE_INJECTION_ENV] = encodeChildPackageInjection(childInjection);
+
+	return { command: input.runtime.command, args, env };
+}
+
+// pi resolves a relative -e path against its spawn cwd. Children may run
+// elsewhere, so the signal carries the same file as an absolute path. Loose
+// entries can be relative when the isolated or linked home comes from a
+// relative env value.
+function absoluteExtensionPath(path: string, cwd: string): string {
+	return isAbsolute(path) ? path : resolvePath(cwd, path);
 }
 
 // --- spawn planning ------------------------------------------------------------

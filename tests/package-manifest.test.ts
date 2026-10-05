@@ -550,7 +550,7 @@ function readMarkdownSection(source: string, heading: string): string {
 
 function assertWorkerFallbackRouting(section: string, sectionName: string): void {
 	const boundedWriterPolicy = section.match(
-		/For bounded multi-file writes,[\s\S]*?(?=\n\n|\n\s*\d+\.|$)/,
+		/For a large task's bounded writes,[\s\S]*?(?=\n\n|\n\s*\d+\.|$)/,
 	)?.[0];
 	assert.ok(boundedWriterPolicy, `${sectionName} must define bounded writer routing`);
 
@@ -1441,7 +1441,7 @@ test("gentle-ai-worker packages the exact scoped writer contract", () => {
 	const testDiscipline = readMarkdownSection(source, "Test discipline");
 	assert.match(testDiscipline, /Apply the ODD test-first policy by default for behavior changes with applicable runnable deterministic tests and a clear expected outcome/);
 	assert.match(testDiscipline, /Test presence alone does not establish applicability; no TUI toggle or per-task chat choice is needed/);
-	assert.match(testDiscipline, /RED[\s\S]*GREEN[\s\S]*TRIANGULATE[\s\S]*REFACTOR/);
+	assert.match(testDiscipline, /RED[\s\S]*GREEN[\s\S]*PRESERVE[\s\S]*REFACTOR/);
 	assert.match(testDiscipline, /no meaningful RED[\s\S]*proportionate ordinary functional or structural verification/);
 	assert.match(testDiscipline, /Never claim RED\/GREEN evidence that was not observed/);
 	assert.match(
@@ -1636,7 +1636,7 @@ test("normal and forced installation copy generic agents with complete role cont
 					assert.match(source, /compressed (?:handoff|evidence handoff)/);
 					assert.match(source, /Do not use review lenses\. RDD review remains independent and parent-owned\./);
 					if (name === "gentle-ai-verify") {
-						assert.match(source, /exact test, build, or lint commands explicitly authorized by the parent/);
+						assert.match(source, /exact test, build, lint, or spec example commands explicitly authorized by the parent/);
 						assert.match(source, /only outputs the parent explicitly identified as expected/);
 						assert.match(source, /unexpected mutation as a blocker/);
 						assert.match(source, /do not clean it up or fix it/);
@@ -1652,16 +1652,30 @@ test("normal and forced installation copy generic agents with complete role cont
 	}
 });
 
-test("bounded implementation routing uses the same explicit fallback in both policy sections", () => {
+test("bounded implementation routing resolves the explicit canonical fallback reference", () => {
 	const routing = readFileSync(
 		join(PACKAGE_ROOT, "assets", "orchestrator-delegation.md"),
 		"utf8",
 	);
-	const simpleDelegation = readMarkdownSection(routing, "2. Simple Delegation");
+	const reference = "For bounded writes, follow the canonical Writer rule under Mandatory Delegation Triggers.";
+	const resolveSimpleDelegation = (source: string): string => {
+		const simpleDelegation = readMarkdownSection(source, "2. Simple Delegation");
+		assert.ok(simpleDelegation.split("\n").includes(reference), "Simple Delegation must name the exact canonical Writer rule");
+		const canonical = readMarkdownSection(source, "Mandatory Delegation Triggers");
+		assertWorkerFallbackRouting(canonical, "resolved Simple Delegation");
+		return canonical;
+	};
 	const mandatoryDelegation = readMarkdownSection(routing, "Mandatory Delegation Triggers");
 
-	assertWorkerFallbackRouting(simpleDelegation, "Simple Delegation");
+	assertWorkerFallbackRouting(resolveSimpleDelegation(routing), "Simple Delegation");
 	assertWorkerFallbackRouting(mandatoryDelegation, "Mandatory Delegation Triggers");
+	assert.throws(() => resolveSimpleDelegation(routing.replace(reference, "")), /must name the exact canonical Writer rule/);
+	assert.throws(() => resolveSimpleDelegation(routing.replace(reference, reference.replace("Mandatory Delegation Triggers", "Other Rule"))),
+		/must name the exact canonical Writer rule/);
+	assert.throws(() => resolveSimpleDelegation(routing.replace("#### Mandatory Delegation Triggers", "#### Missing Canonical Rule")),
+		/exactly one Mandatory Delegation Triggers section/);
+	assert.throws(() => resolveSimpleDelegation(routing.replace("user-configured `worker`", "unspecified worker")),
+		/must prefer the package-owned worker before a user-configured worker/);
 	assert.doesNotMatch(
 		routing,
 		/non-normative compatibility quotation|former wording is retained|no-runtime inline exception|superseded by the stop requirement/,
@@ -1680,8 +1694,9 @@ test("orchestrator routes generic roles without static RDD lens routing", () => 
 		assert.match(routing, /`gentle-ai-explore`/);
 		assert.match(routing, /`gentle-ai-worker`/);
 		assert.match(routing, /`gentle-ai-verify`/);
-		assert.match(routing, /read-only check within the evidence budget/);
-		assert.match(routing, /(?:verification that |verification commands →).*executes? or delegates?|executing\/delegating verification commands/);
+		assert.match(routing, /focused test and (?:the )?suite/);
+		// The Verification rule line itself must route high risk to the verifier.
+		assert.match(routing, /^\d\. \*\*Verification rule\*\*[^\n]*high[- ]risk[^\n]*`gentle-ai-verify`/m);
 		assert.match(routing, /missing(?: or |\/)unusable[\s\S]*native `Agent`[\s\S]*(?:the )?same read-only/);
 		assert.match(routing, /report (?:the )?fallback/);
 		assert.doesNotMatch(routing, /review lenses? (?:inside|only inside)|review lens routing/i);

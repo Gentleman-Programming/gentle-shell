@@ -30,6 +30,23 @@ const binUrl = new URL("../bin/gentle-shell.mjs", import.meta.url);
 const binPath = fileURLToPath(binUrl);
 const packageRoot = dirname(dirname(binPath));
 
+test("Herdr activity is discoverable through the isolated launcher package", async () => {
+	const { buildPiInvocation } = await import("../lib/gentle-shell-launcher.ts");
+	const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
+	assert.ok(manifest.pi.extensions.includes("./extensions"));
+	assert.ok(existsSync(join(packageRoot, "extensions", "gentle-herdr-activity.ts")));
+	for (const takeOver of [false, true]) {
+		const invocation = buildPiInvocation({
+			runtime: { kind: "path", command: "fake-pi", args: [] },
+			home: { mode: "isolated", source: "default", dir: "/fake/home" },
+			packageRoot, declaration: undefined, takeOver, otherPackagePaths: [],
+			passthrough: [], baseEnv: {}, homedir: "/fake", cwd: "/fake/cwd",
+		});
+		assert.ok(invocation.args.includes(packageRoot));
+		assert.equal(invocation.env.PI_CODING_AGENT_DIR, "/fake/home");
+	}
+});
+
 test("real adjacent Pi resolves through its public entry without PATH or a runtime override", (t) => {
 	const f = fixture(t);
 	const result = spawnSync(process.execPath, [binPath, "--version"], {
@@ -152,6 +169,7 @@ function writePiScript(path: string, version: string, removeExitCode = 0) {
 			"  PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,",
 			"  GENTLE_PI_AGENT_HOME: process.env.GENTLE_PI_AGENT_HOME,",
 			"  GENTLE_SHELL_USER_PI_HOME: process.env.GENTLE_SHELL_USER_PI_HOME,",
+			"  GENTLE_SHELL_CHILD_PACKAGE_INJECTION: process.env.GENTLE_SHELL_CHILD_PACKAGE_INJECTION,",
 			"}));",
 			"process.exit(0);",
 			"",
@@ -640,6 +658,20 @@ test("forwarded args reach pi after the injected extension flags, in order", (t)
 		"hi",
 	]);
 	assert.equal(payload.GENTLE_PI_AGENT_HOME, f.gentleShellHome);
+});
+
+// #1690: the spawned pi must carry the launcher's own -e set so the subagent
+// runner can forward it to delegated children; a stale inherited value is replaced.
+test("an isolated launch without a gentle-pi declaration signals its package injection to pi", (t) => {
+	const f = fixture(t);
+	const stale = JSON.stringify({ version: 1, noExtensions: true, extensionPaths: [join(f.root, "outer")] });
+	for (const inherited of [undefined, stale]) {
+		const result = run({ ...f.env, GENTLE_SHELL_CHILD_PACKAGE_INJECTION: inherited }, ["--mode", "rpc"]);
+		assert.equal(result.status, 0, result.stderr);
+		const payload = JSON.parse(result.stdout);
+		assert.deepEqual(payload.args.slice(0, 2), ["-e", packageRoot]);
+		assert.deepEqual(JSON.parse(payload.GENTLE_SHELL_CHILD_PACKAGE_INJECTION), { version: 1, noExtensions: false, extensionPaths: [packageRoot] });
+	}
 });
 
 test("an isolated launch keeps its own agent home and carries the user's original Pi home, even when nested", (t) => {

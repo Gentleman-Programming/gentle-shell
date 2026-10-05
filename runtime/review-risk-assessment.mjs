@@ -260,6 +260,53 @@ export const VERIFICATION_TIER = {
 }         ;
 
 
+// ---------------------------------------------------------------------------
+// Agent-raised risk (gentle-shell#1494). The agent that made the change may
+// raise its risk to high by citing one item of the high-risk list in the
+// always-on Task Size section; it can never lower a tier. Lowering stays with
+// the deterministic native assessment.
+// ---------------------------------------------------------------------------
+
+export const HIGH_RISK_ITEMS = Object.freeze({
+	1: "data or irreversible effects",
+	2: "security",
+	3: "changing or removing contracts others already consume",
+	4: "concurrency",
+	5: "delivery or environment",
+	6: "no test would catch a regression",
+}         );
+
+
+
+
+
+
+
+export const AGENT_RISK_ESCALATION_REASON_MAX = 500;
+
+export function decodeAgentRiskEscalation(value         )                      {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error("escalate must be an object with item and reason");
+	}
+	const record = value                           ;
+	const unexpected = Object.keys(record).find((key) => key !== "item" && key !== "reason");
+	if (unexpected !== undefined) throw new Error(`escalate does not accept ${unexpected}`);
+	const { item, reason } = record;
+	if (typeof item !== "number" || !Number.isInteger(item) || !(item in HIGH_RISK_ITEMS)) {
+		throw new Error("escalate item must be an integer from 1 to 6 naming a high-risk item");
+	}
+	if (typeof reason !== "string" || reason.trim() === "" || reason.length > AGENT_RISK_ESCALATION_REASON_MAX) {
+		throw new Error(`escalate reason must be a non-empty string of at most ${AGENT_RISK_ESCALATION_REASON_MAX} characters`);
+	}
+	return Object.freeze({ item: item                , reason });
+}
+
+/** Raises passive or medium to high when the agent escalated; never lowers. */
+export function escalatedRisk(risk                  , escalation                                 )                   {
+	if (escalation === undefined) return risk;
+	return risk === VERIFICATION_TIER.PASSIVE || risk === VERIFICATION_TIER.MEDIUM ? VERIFICATION_TIER.HIGH : risk;
+}
+
 export const RDD_LINE = {
 	ON: "on",
 	OFF: "off",

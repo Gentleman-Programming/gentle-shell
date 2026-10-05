@@ -12,6 +12,7 @@ import { SessionChanges, type SessionChangeEvidence } from "../lib/session-chang
 import test, { after, afterEach, before, mock } from "node:test";
 import type { TestContext } from "node:test";
 import { generateUnifiedPatch, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import { visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { sidebarState } from "../lib/shell-sidebar.ts";
 import gentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
@@ -21,11 +22,13 @@ import { historyDir, loadHistory, saveTask } from "../lib/agents-history.ts";
 import { STALE_COMPLETION_MS } from "../lib/agents-completion-delivery.ts";
 import { applyTaskEvent, emptyThread, TASK_EVENT, TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
 import { NativePointerScope } from "../lib/native-pointer-region.ts";
-import { PresenceCursor, PresencePublisher, listPresence, readActivity } from "../lib/orchestrator-presence.ts";
+import { PresenceCursor, PresencePublisher, listPresence, readActivity, readDiscovery } from "../lib/orchestrator-presence.ts";
+import { OrchestratorScopeCache } from "../lib/orchestrator-scope.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
 import { AgentRunner } from "../lib/agents-runner.ts";
 import { bindSessionRepositoryPreparation } from "../lib/bounded-writer-admission.ts";
+import { bindSessionProfile, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import { CHILD_METRICS_EVENT } from "../lib/runtime-metrics-children.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 // The card style defaults to float; these assertions pin the outlined (neon)
@@ -110,19 +113,22 @@ mkdirSync(nonGitCwd, { recursive: true });
 writeFileSync(join(home, ".pi", "agent", "agents", "explore.md"), "---\ndescription: maps things\nmodel: openai-codex/gpt-5.6-terra\nthinking: high\ntools: [read, grep]\n---\nYou map things.");
 writeFileSync(join(home, ".pi", "agent", "subagents.json"), JSON.stringify({ max_concurrency: 2, model_profiles: { explore: { effort: "low" } } }));
 
-function fakePi() {
+// Existing prompt-lifecycle regressions exercise the bridge route by default.
+function fakePi(initialProvider: string = "claude-bridge") {
+	const transformers: Array<Parameters<ExtensionAPI["registerMarkdownTransformer"]>[0]> = [];
 	const handlers = new Map<string, Handler[]>();
 	const tools = new Map<string, Registered>();
 	const shortcuts = new Map<string, { description: string; handler(ctx: ExtensionContext): Promise<void> }>();
 	const commands = new Map<string, { handler(args: string, ctx: ExtensionContext): Promise<void> }>();
 	const sent: Array<{ message: Record<string, unknown>; options: Record<string, unknown> }> = [];
-	// Idle wake-ups go through pi.sendUserMessage; `delivery` records the
-	// interleaving of custom messages and wake-ups so ordering stays provable.
+	// `delivery` records custom messages and user wakes in dispatch order.
 	const userMessages: Array<{ content: unknown; options: Record<string, unknown> | undefined }> = [];
 	const delivery: string[] = [];
 	// A live idle flag shared by every context fired through this host, like
 	// Pi's ctx.isIdle(): busy from agent_start until agent_settled. Tests can
 	// force it to simulate compaction or other non-run busy states.
+	let selectedProvider: string | undefined = initialProvider;
+	const setProvider = (provider: string | undefined) => { selectedProvider = provider; };
 	let parentIdle = true;
 	const setIdle = (idle: boolean) => { parentIdle = idle; };
 	const renderers = new Map<string, (message: unknown, options: { expanded: boolean }, theme: unknown) => { render(width: number): string[] }>();
@@ -132,6 +138,7 @@ function fakePi() {
 	const listeners = new Map<string, Set<(data: unknown) => void>>();
 	const pi = {
 		appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
+		registerMarkdownTransformer: (transformer: Parameters<ExtensionAPI["registerMarkdownTransformer"]>[0]) => transformers.push(transformer),
 		events: {
 			emit: (name: string, data: unknown) => { events.push({ name, data }); for (const listener of listeners.get(name) ?? []) listener(data); },
 			on: (name: string, listener: (data: unknown) => void) => {
@@ -157,6 +164,10 @@ function fakePi() {
 	const fire = async (event: string, ctx: ExtensionContext, payload: unknown = {}) => {
 		const results: unknown[] = [];
 		if (!("isIdle" in ctx)) Object.assign(ctx, { isIdle: () => parentIdle });
+		if (!("model" in ctx)) Object.defineProperty(ctx, "model", {
+			configurable: true,
+			get: () => selectedProvider === undefined ? undefined : { provider: selectedProvider },
+		});
 		if (event === "agent_start") parentIdle = false;
 		else if (event === "agent_settled") parentIdle = true;
 		try {
@@ -172,7 +183,7 @@ function fakePi() {
 			}
 		}
 	};
-	return { pi, tools, shortcuts, commands, fire, sent, userMessages, delivery, setIdle, renderers, entryRenderers, entries, events, listeners };
+	return { pi, tools, shortcuts, commands, fire, sent, userMessages, delivery, setIdle, setProvider, renderers, entryRenderers, entries, events, listeners, transformers };
 }
 
 function fakeContext(tui: { requestRender(): void } = fakeTui, confirmResult: (title: string, message: string) => Promise<boolean> = async () => true, inputResult: (title: string, placeholder: string | undefined) => Promise<string | undefined> = async () => undefined, overlayTui: { terminal: { rows: number }; requestRender(): void } = { terminal: { rows: 30 }, requestRender() {} }, selectResult: (title: string, options: string[]) => Promise<string | undefined> = async (_title, options) => options[0]) {
@@ -185,7 +196,7 @@ function fakeContext(tui: { requestRender(): void } = fakeTui, confirmResult: (t
 		cwd,
 		hasUI: true,
 		mode: "tui",
-		sessionManager: { getSessionId: () => "s1", getCwd: () => cwd, getEntries: () => [] },
+		sessionManager: { getSessionId: () => "s1", getCwd: () => cwd, getEntries: () => [], getBranch: () => [] },
 		ui: {
 			notify: (message: string) => dialogs.push(`notify:${message}`),
 			custom: (factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (value: unknown) => void) => Overlay, options: unknown) =>
@@ -224,6 +235,68 @@ function fakeContext(tui: { requestRender(): void } = fakeTui, confirmResult: (t
 	return { ctx, widget, dialogs, overlays, customCompletions, customOptions };
 }
 
+for (const scenario of ["background", "task", "append-failure", "overflow", "bytes", "replacement", "task-replacement", "unsafe-id", "no-transport"] as const) {
+	test(`explicit run work publication: ${scenario}`, async t => {
+		const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+		gentleAgents(h.pi, {}, runtime.deps);
+		await h.fire("session_start", ctx);
+		const initial = { objective: "Keep objective", work: { area: "Owner", tasks: { historical: { area: "Old" } } as Record<string, { area: string }> } };
+		if (scenario === "overflow") for (let i = 0; i < 7; i++) initial.work.tasks[`old-${i}`] = { area: "Old" };
+		if (scenario === "bytes") initial.objective = "x".repeat(1980);
+		await h.tools.get("orchestrator_session_id")!.execute("publish", { state: initial }, undefined, undefined, ctx);
+		const before = h.entries.length;
+		if (scenario === "append-failure") t.mock.method(h.pi, "appendEntry", () => { throw new Error("private credential detail"); });
+		let allocated: TaskRecord;
+		const run = t.mock.method(AgentRunner.prototype, "run", request => {
+			assert.equal(Object.hasOwn(request, "work"), false);
+			assert.equal(request.prompt, "Map");
+			allocated = { id: scenario === "unsafe-id" ? "constructor" : "actual-allocated-id", agent: "explore", label: "Map", mode: request.mode,
+				status: TASK_STATUS.COMPLETED, cwd, prompt: request.prompt, parentSessionId: request.parentSessionId,
+				createdAt: 1, startedAt: 1, endedAt: 2, model: "fixture", thinking: undefined,
+				sessionPath: null, error: null, result: "Done", lastStep: "Done", lastActivityAt: 2,
+				turns: 1, toolCalls: 0, tokens: 0, cost: 0 };
+			if (scenario === "replacement") ctx.sessionManager = { ...ctx.sessionManager };
+			return allocated;
+		});
+		t.mock.method(AgentRunner.prototype, "waitForQuery", async () => undefined);
+		t.mock.method(AgentRunner.prototype, "waitFor", async () => {
+			if (scenario === "task-replacement") ctx.sessionManager = { ...ctx.sessionManager };
+			return allocated;
+		});
+		if (scenario === "no-transport") await h.fire("session_shutdown", ctx);
+		const result = await h.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "Map",
+			mode: scenario === "task" || scenario === "task-replacement" ? "task" : "background", work: { area: "Auth" } }, undefined, undefined, ctx);
+		assert.equal(run.mock.callCount(), 1);
+		assert.equal((result.details.gentleAgents as { taskId: string }).taskId, allocated!.id);
+		assert.equal(Object.hasOwn(allocated!, "work"), false);
+		const success = scenario === "background" || scenario === "task";
+		assert.equal((result.details.workPublication as { status: string }).status, success ? "recorded" : "unavailable");
+		assert.equal(h.entries.length, before + (success || scenario === "task-replacement" ? 1 : 0));
+		assert.doesNotMatch(result.content[0].text, /private credential/);
+		if (success) {
+			const state = (h.entries.at(-1)!.data as { state: typeof initial }).state;
+			assert.equal(state.objective, "Keep objective");
+			assert.deepEqual(state.work.tasks, { historical: { area: "Old" }, "actual-allocated-id": { area: "Auth" } });
+			const unclassified = await h.tools.get("subagent_run")!.execute("plain", { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
+			assert.equal(unclassified.details.workPublication, undefined);
+			assert.equal(h.entries.length, before + 1);
+		}
+	});
+}
+
+test("invalid run work rejects before foreign consent or allocation", async t => {
+	const h = fakePi(), runtime = deps(), { ctx, dialogs } = fakeContext();
+	gentleAgents(h.pi, {}, runtime.deps);
+	await h.fire("session_start", ctx);
+	const run = t.mock.method(AgentRunner.prototype, "run", () => { throw new Error("allocation reached"); });
+	for (const work of [{}, { tasks: { guessed: { area: "Auth" } } }, { area: "bad\n" }]) {
+		await assert.rejects(h.tools.get("subagent_run")!.execute("invalid", { agent: "explore", task: "Map",
+			repository_root: "/foreign", work }, undefined, undefined, ctx), /invalid-published-state/);
+	}
+	assert.equal(run.mock.callCount(), 0);
+	assert.deepEqual(dialogs, []);
+});
+
 // Records deps.schedule calls so a test fires exactly the timers it means to;
 // unrelated runner timers stay pending.
 function recordTimers(target: Partial<AgentsDeps>) {
@@ -236,6 +309,14 @@ function recordTimers(target: Partial<AgentsDeps>) {
 	const due = (ms: number) => pending.filter((timer) => timer.ms === ms && !timer.cancelled);
 	return {
 		pending: (ms: number) => due(ms).length,
+		// Capture a known newly armed timer before other same-duration timers
+		// (for example child query expiry) are added.
+		takeLast: (ms: number) => {
+			const timer = due(ms).at(-1);
+			assert.ok(timer, `expected a pending ${ms}ms timer`);
+			pending.splice(pending.indexOf(timer), 1);
+			return () => { if (!timer.cancelled) timer.fn(); };
+		},
 		run: (ms: number) => {
 			const timers = due(ms);
 			for (const timer of timers) {
@@ -341,15 +422,17 @@ test("cache warming follows actual Gentle Agents ownership and completion lifecy
 	await decide(undefined);
 });
 
-const PRINT_BACKGROUND_ERROR = "Background subagents are unavailable in print mode: pi -p exits before a parent session can receive results. Use task mode, RPC mode, or interactive Pi.";
+// `pi -p` and `pi --mode json` share pi's one-shot runner: it disposes the
+// runtime once the prompt returns, so neither can receive a background result.
+const SINGLE_SHOT_BACKGROUND_ERROR = "Background subagents are unavailable in single-shot modes: pi -p and pi --mode json exit before a parent session can receive results. Use task mode, RPC mode, or interactive Pi.";
 
-for (const continuation of [false, true]) {
-	test(`print mode rejects background ${continuation ? "continuation" : "launch"} before allocating a task`, async (t) => {
+for (const hostMode of ["print", "json"] as const) for (const continuation of [false, true]) {
+	test(`${hostMode} mode rejects background ${continuation ? "continuation" : "launch"} before allocating a task`, async (t) => {
 		const h = fakePi();
 		const runtime = deps();
 		gentleAgents(h.pi, {}, runtime.deps);
 		const { ctx } = fakeContext();
-		Object.assign(ctx, { mode: "print", hasUI: false });
+		Object.assign(ctx, { mode: hostMode, hasUI: false });
 		await h.fire("session_start", ctx);
 		let taskId: string | undefined;
 		if (continuation) {
@@ -368,7 +451,7 @@ for (const continuation of [false, true]) {
 		const tool = h.tools.get(continuation ? "subagent_continue" : "subagent_run")!;
 		await assert.rejects(tool.execute("denied", continuation
 			? { task_id: taskId, prompt: "Follow up", mode: "background" }
-			: { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx), { message: PRINT_BACKGROUND_ERROR });
+			: { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx), { message: SINGLE_SHOT_BACKGROUND_ERROR });
 		await tick();
 		assert.equal(run.mock.callCount(), 0, "rejection must precede runner task ID allocation");
 		assert.equal(runtime.spawned.length, spawnedBefore, "no child spawned");
@@ -378,8 +461,9 @@ for (const continuation of [false, true]) {
 	});
 }
 
-for (const mode of ["print", "tui", "rpc"] as const) {
-	test(`${mode} preserves ${mode === "print" ? "bounded task" : "background"} execution`, async () => {
+for (const mode of ["print", "json", "tui", "rpc"] as const) {
+	const singleShot = mode === "print" || mode === "json";
+	test(`${mode} preserves ${singleShot ? "bounded task" : "background"} execution`, async () => {
 		const h = fakePi();
 		const runtime = deps();
 		gentleAgents(h.pi, {}, runtime.deps);
@@ -387,17 +471,17 @@ for (const mode of ["print", "tui", "rpc"] as const) {
 		Object.assign(ctx, { mode, hasUI: mode === "tui" });
 		await h.fire("session_start", ctx);
 		let resolved = false;
-		const pending = h.tools.get("subagent_run")!.execute("control", { agent: "explore", task: "Map", mode: mode === "print" ? "task" : "background" }, undefined, undefined, ctx).then(result => { resolved = true; return result; });
+		const pending = h.tools.get("subagent_run")!.execute("control", { agent: "explore", task: "Map", mode: singleShot ? "task" : "background" }, undefined, undefined, ctx).then(result => { resolved = true; return result; });
 		await tick();
 		assert.equal(runtime.spawned.length, 1);
-		assert.equal(resolved, mode !== "print", "only task mode waits for completion");
+		assert.equal(resolved, !singleShot, "only task mode waits for completion");
 		runtime.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "mapped" }] }] });
 		runtime.children[0].emit({ type: "agent_settled" });
 		const result = await pending;
-		if (mode === "print") assert.match(result.content[0].text, /mapped/);
 		const taskId = (result.details.gentleAgents as { taskId: string }).taskId;
 		assert.ok(taskId);
-		if (mode !== "print") {
+		if (singleShot) assert.equal(result.content[0].text, `Subagent explore (task ${taskId}, "Map") finished.\n\nmapped`, "the task result names its real id for subagent_continue");
+		if (!singleShot) {
 			await tick();
 			assert.match((await h.tools.get("subagent_status")!.execute("status", { task_id: taskId }, undefined, undefined, ctx)).content[0].text, /completed · background/);
 			assert.equal(h.sent.length, 1, "settlement delivers exactly one completion");
@@ -652,7 +736,7 @@ test("first handoff failure keeps ordinary completion, later failure retains yie
 	firstHarness.children[0].message({ id: "q1", kind: "query", message: "q" });
 	firstHarness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "ordinary" }], stopReason: "stop" }] });
 	firstHarness.children[0].emit({ type: "agent_settled" });
-	assert.equal((await ordinary).content[0].text, "ordinary");
+	assert.match((await ordinary).content[0].text, /^Subagent explore \(task [^,]+, "fail handoff"\) finished\.\n\nordinary$/);
 
 	const second = fakePi();
 	const secondHarness = deps();
@@ -1230,10 +1314,16 @@ function liveProfile(name: string): string {
 	return profile;
 }
 
-function liveInstance(t: test.TestContext, profile: string, sessionId: string) {
+function liveInstance(t: test.TestContext, profile: string, sessionId: string, metadata = false) {
 	const h = fakePi();
 	const runtime = deps();
 	const context = fakeContext();
+	if (metadata) {
+		runtime.deps.sessionTransport = {
+			...inertSessionTransport,
+			createListener: registry => ({ registry, record: { version: 1, sessionId, endpoint: `/fixture/${sessionId}`, createdAt: 1 }, start: async () => {}, close: async () => {} }),
+		};
+	}
 	Object.assign(context.ctx.sessionManager, {
 		getSessionId: () => sessionId,
 		getSessionName: () => sessionId,
@@ -1262,8 +1352,8 @@ async function liveOverlay(instance: ReturnType<typeof liveInstance>) {
 
 test("live-only extension instances discover same-profile peers across cwd boundaries without importing their tasks", async (t) => {
 	const profile = liveProfile("live-peer-profile");
-	const local = liveInstance(t, profile, "local-live");
-	const peer = liveInstance(t, profile, "peer-live");
+	const local = liveInstance(t, profile, "local-live", true);
+	const peer = liveInstance(t, profile, "peer-live", true);
 	assert.equal(listPresence(profile).entries.length, 0, "factory construction starts no presence resources");
 	await local.fire("session_start", local.ctx, { reason: "startup" });
 	await peer.fire("session_start", peer.ctx, { reason: "startup" });
@@ -1278,6 +1368,10 @@ test("live-only extension instances discover same-profile peers across cwd bound
 	};
 	await run(local, "local");
 	const peerId = await run(peer, "peer");
+	await eventually(() => listPresence(profile).entries.some(header => readDiscovery(profile, header)?.tasks.some(task => task.id === peerId)), "admitted runtime-owned tasks publish without subsequent child events");
+	const scope = listPresence(profile).entries.map(header => readDiscovery(profile, header)?.scope).find(scope => scope?.tasks.some(task => task.id === peerId));
+	assert.equal(scope?.tasks.find(task => task.id === peerId)?.repository.root, peer.ctx.sessionManager.getCwd());
+	assert.equal(scope?.host.cloneHash, scope?.tasks.find(task => task.id === peerId)?.repository.cloneHash);
 	await tick();
 	peer.children[0].emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "peer streamed text" } });
 	await eventually(() => listPresence(profile).entries.some((header) => readActivity(profile, header).activity?.tasks.some((row) => row.summary.id === peerId && row.thread.items.some((item) => item.text === "peer streamed text"))), "task deltas, not just status changes, must publish peer activity");
@@ -2565,12 +2659,12 @@ test("explicit child roots launch and continue in the actual cwd, persist withou
 	await tick();
 	assert.deepEqual(launched, [childRoot, childRoot]);
 	spawnEvents[1]();
-	assert.equal(h.entries.length, 1, "continuation dedupes the original root");
+	assert.equal(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY).length, 1, "continuation dedupes the original root");
 	const status = await h.tools.get("subagent_status")!.execute("status", { task_id: details.taskId }, undefined, undefined, ctx);
 	assert.match(status.content[0].text, /cwd:/);
 	await h.fire("session_shutdown", ctx);
 	spawnEvents[1]();
-	assert.equal(h.entries.length, 1, "late process events after shutdown cannot write session state");
+	assert.equal(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY).length, 1, "late process events after shutdown cannot register roots");
 	await tick();
 });
 
@@ -2702,6 +2796,52 @@ for (const scenario of ["implicit-worker", "explicit-worker", "implicit-gentle-a
 	});
 }
 
+// gentle-shell#1558 (barbatdev review): the non-git writer admission and the
+// launch path must resolve the same model. Before the session-binding layer,
+// both read pin/global only; with a binding present the launch resolves it
+// first while admission still read the declaration, so a bound session killed
+// its own writer mid-preparation with a false "profile or session changed".
+test("a session binding keeps writer admission and launch resolution in agreement", async t => {
+	t.after(() => resetSessionProfileBindingsForTesting());
+	const fixture = realpathSync(mkdtempSync(join(root, "writer-session-binding-")));
+	const project = join(fixture, "project");
+	const fixtureHome = join(fixture, "home");
+	const definitions = join(fixtureHome, ".pi", "agent", "agents");
+	mkdirSync(definitions, { recursive: true });
+	mkdirSync(project);
+	writeFileSync(join(definitions, "worker.md"), "---\ndescription: fixture\nmodel: offline/good\ntools: [read]\n---\nFixture");
+	// The unversioned project declaration routes the writer at one model and the
+	// session binding at another: only agreement between the two resolutions can
+	// let this launch through, and both must pick the binding's model.
+	mkdirSync(join(project, ".pi", "gentle-ai"), { recursive: true });
+	writeFileSync(join(project, ".pi", "gentle-ai", "profile.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile: "declared" }));
+	const configHome = join(fixture, "config");
+	mkdirSync(configHome, { recursive: true });
+	writeFileSync(join(configHome, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, profiles: { declared: { worker: { model: "offline/pinned-good" } }, bound: { worker: { model: "offline/bound-good" } } } }));
+	bindSessionProfile("s1", "bound", { worker: { model: "offline/bound-good" } });
+	const h = fakePi();
+	const runtime = deps();
+	runtime.deps.home = fixtureHome;
+	runtime.deps.env!.GENTLE_PI_CONFIG_HOME = configHome;
+	runtime.deps.resolveWorktree = resolveSessionWorktree;
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	Object.assign(ctx, { cwd: project, modelRegistry: { find: (_provider: string, model: string) => ({ provider: "offline", id: model }) } });
+	ctx.sessionManager.getCwd = () => project;
+	await h.fire("session_start", ctx);
+	const unbind = bindSessionRepositoryPreparation(ctx.sessionManager, project, async (_root, current) => {
+		if (!current()) return false;
+		execFileSync("git", ["init", "--quiet", project], { env: { PATH: process.env.PATH, HOME: fixtureHome, GIT_CONFIG_NOSYSTEM: "1" }, stdio: "pipe" });
+		return true;
+	}, () => true);
+	try {
+		await h.tools.get("subagent_run")!.execute("session-binding-admission", { agent: "worker", task: "Implement source\n## Allowed edit surfaces\nsrc/app.ts\n## Return\nReport", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(runtime.children.length, 1, "the bound session's writer launches instead of dying as a false profile/session drift");
+		assert.ok(runtime.spawned[0]?.includes("offline/bound-good"), "admission and launch both resolve the binding ahead of the project declaration");
+	} finally { unbind(); await h.fire("session_shutdown", ctx); await tick(); }
+});
+
 for (const explicit of [false, true]) {
 	test(`same manager and ID after bootstrap permit ${explicit ? "explicit" : "implicit"} launch registration`, async () => {
 		const h = fakePi();
@@ -2757,7 +2897,7 @@ test("ordinary non-Git tasks still continue in their original cwd without regist
 	await h.tools.get("subagent_continue")!.execute("continue", { task_id: taskId, prompt: "Follow up", mode: "background" }, undefined, undefined, ctx);
 	await tick();
 	assert.equal(runtime.children.length, 2);
-	assert.deepEqual(h.entries, []);
+	assert.deepEqual(h.entries.filter(entry => entry.customType !== "gentle-agents.wake-identity"), []);
 	await h.fire("session_shutdown", ctx);
 	await tick();
 });
@@ -2788,7 +2928,7 @@ for (const sameId of [false, true]) {
 		await h.fire("session_start", next.ctx);
 		spawnEvents[0]();
 		await tick();
-		assert.deepEqual(h.entries, [], "captured registry is closed instead of appending to the new bound API");
+		assert.deepEqual(h.entries.filter(entry => entry.customType !== "gentle-agents.wake-identity"), [], "captured registry is closed instead of appending worktree state to the new bound API");
 		await h.fire("session_shutdown", next.ctx);
 	});
 }
@@ -2965,6 +3105,55 @@ test("a stale or unreadable pin degrades to the global routing instead of failin
 	assert.equal(await launchPinned(base), "openai-codex/gpt-5.6-terra:low");
 });
 
+// gentle-shell#1558 (barbatdev review): the two registered launch-seam gaps.
+// The pure helpers were covered, but the real subagent_run seam had no
+// committed test for the session layer.
+test("a session binding outranks the repository pin at the launch seam", async t => {
+	t.after(() => resetSessionProfileBindingsForTesting());
+	const base = pinFixture("session-over-pin");
+	base.writeStore({
+		pinned: { explore: { model: "openai/alpha", thinking: "minimal" } },
+		bound: { explore: { model: "openai/beta" } },
+	});
+	base.writePin("pinned");
+	// fakeContext's session id is "s1"; the binding is process state, so it is
+	// bound before the launch and reset by t.after so later pin tests stay pure.
+	bindSessionProfile("s1", "bound", { explore: { model: "openai/beta" } });
+	assert.equal(await launchPinned(base), "openai/beta:high", "the session binding wins over a winning repository pin");
+});
+
+test("a queued launch keeps the session routing frozen across a rebind", async t => {
+	t.after(() => resetSessionProfileBindingsForTesting());
+	const base = pinFixture("queue-freeze");
+	base.writeStore({
+		first: { explore: { model: "openai/alpha", thinking: "minimal" } },
+		second: { explore: { model: "openai/beta" } },
+	});
+	bindSessionProfile("s1", "first", { explore: { model: "openai/alpha", thinking: "minimal" } });
+	const harness = deps();
+	harness.deps.resolveWorktree = () => ({ root: base.root, commonDir: base.commonDir });
+	harness.deps.env = { PATH: "/bin", GENTLE_PI_CONFIG_HOME: base.configHome };
+	const { pi, tools, fire } = fakePi();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	try {
+		const model = (args: string[]) => args[args.indexOf("--model") + 1];
+		// The first launch freezes first's routing into its task request and its
+		// spawned child. Rebinding the session must leave that request untouched;
+		// only a request created afterwards resolves the new binding.
+		await tools.get("subagent_run")!.execute("freeze-1", { agent: "explore", task: "Map first", mode: "background" }, undefined, undefined, ctx);
+		bindSessionProfile("s1", "second", { explore: { model: "openai/beta" } });
+		await tools.get("subagent_run")!.execute("freeze-2", { agent: "explore", task: "Map second", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(model(harness.spawned[0]), "openai/alpha:minimal", "the request created before the rebind keeps its frozen routing");
+		assert.equal(model(harness.spawned[1]), "openai/beta:high", "only requests created after the rebind resolve the new binding");
+	} finally {
+		await fire("session_shutdown", ctx);
+		await tick();
+	}
+});
+
 test("agentsEnabled and agentsCollapseKey read their flags and stay off inside a child", () => {
 	assert.equal(agentsEnabled({}), true);
 	assert.equal(agentsEnabled({ GENTLE_PI_AGENTS: "off" }), false);
@@ -3003,7 +3192,7 @@ test("subagent_list_agents and subagent_run in task mode launch a child with the
 	gentleAgents(pi, {}, harness.deps);
 	const { ctx, widget } = fakeContext();
 	await fire("session_start", ctx);
-	assert.deepEqual([...tools.keys()].sort(), ["orchestrator_list", "orchestrator_send_message", "orchestrator_session_id", "subagent_cancel", "subagent_continue", "subagent_list_agents", "subagent_list_tasks", "subagent_reply", "subagent_result", "subagent_run", "subagent_send_message", "subagent_status"]);
+	assert.deepEqual([...tools.keys()].sort(), ["orchestrator_consult", "orchestrator_list", "orchestrator_send_message", "orchestrator_session_id", "subagent_cancel", "subagent_continue", "subagent_list_agents", "subagent_list_tasks", "subagent_reply", "subagent_result", "subagent_run", "subagent_send_message", "subagent_status"]);
 	const listed = await tools.get("subagent_list_agents")!.execute("c0", {}, undefined, undefined, ctx);
 	assert.match(listed.content[0].text, /- explore \(global\): maps things/);
 
@@ -3023,7 +3212,9 @@ test("subagent_list_agents and subagent_run in task mode launch a child with the
 	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "lib has three agent files." }] }] });
 	harness.children[0].emit({ type: "agent_settled" });
 	const result = await running;
-	assert.equal(result.content[0].text, "lib has three agent files.");
+	const runId = (result.details.gentleAgents as { taskId: string }).taskId;
+	assert.equal(result.content[0].text, `Subagent explore (task ${runId}, "map lib modules") finished.\n\nlib has three agent files.`, "the model sees the real task id and label, not only details");
+	assert.deepEqual(tools.get("subagent_run")!.renderResult(result as Parameters<Registered["renderResult"]>[0], { expanded: false }, plainTheme).render(80).map((line) => line.trimEnd()), ["lib has three agent files."], "the collapsed card still leads with the answer");
 	assert.equal((result.details.gentleAgents as { status: string }).status, "completed");
 	assert.match(widget()![1], /✓  explore  map lib modules/);
 	const orphan = tools.get("subagent_run")!.execute("c9", { agent: "explore", task: "Orphan", mode: "background" }, undefined, undefined, ctx);
@@ -3129,9 +3320,15 @@ test("background runs return at once; status, result, send_message, cancel, and 
 	await tick();
 	harness.children[1].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Summary." }] }] });
 	harness.children[1].emit({ type: "agent_settled" });
-	assert.equal((await resumed).content[0].text, "Summary.");
+	const summary = await resumed;
+	assert.equal(summary.content[0].text, `Subagent explore (task ${(summary.details.gentleAgents as { taskId: string }).taskId}, "Now summarize") finished.\n\nSummary.`);
 	assert.match((await tools.get("subagent_cancel")!.execute("c9", { task_id: id }, undefined, undefined, ctx)).content[0].text, /not running/);
 	assert.match((await tools.get("subagent_status")!.execute("c10", { task_id: "nope" }, undefined, undefined, ctx)).content[0].text, /Error: no task nope/);
+	// gentle-shell#1713: a guessed id ("1") must point back to real ids.
+	// Review follow-up: a call without a context still gets the structured error.
+	assert.match((await tools.get("subagent_status")!.execute("c10c", { task_id: "1" }, undefined, undefined, undefined as never)).content[0].text, /^Error: no task 1\./);
+	for (const name of ["subagent_status", "subagent_result"]) assert.match((await tools.get(name)!.execute("c10a", { task_id: "1" }, undefined, undefined, ctx)).content[0].text, new RegExp(`^Error: no task 1\\. Recent task ids: .*${id} \\(explore\\)`), name);
+	assert.match((await tools.get("subagent_continue")!.execute("c10b", { task_id: "1", prompt: "more" }, undefined, undefined, ctx)).content[0].text, new RegExp(`^Error: no task 1\\. Recent task ids: .*${id} \\(explore\\)`));
 	assert.match((await tools.get("subagent_run")!.execute("c11", { agent: "ghost", task: "x" }, undefined, undefined, ctx)).content[0].text, /no subagent named "ghost"\. Known: explore/);
 });
 
@@ -3329,7 +3526,7 @@ test("AgentsView production footer uses rendered bounds and invalidates them bef
 	const harness = deps();
 	gentleAgents(pi, {}, harness.deps);
 	const { ctx, overlays, customCompletions } = fakeContext();
-	(ctx as unknown as { sessionManager: { getSessionId(): string; getCwd(): string } }).sessionManager = { getSessionId: () => "footer-session", getCwd: () => cwd };
+	Object.assign(ctx.sessionManager, { getSessionId: () => "footer-session" });
 	await fire("session_start", ctx);
 	await tools.get("subagent_run")!.execute("c1", { agent: "寿司", task: "Footer target", mode: "background" }, undefined, undefined, ctx);
 	await tick();
@@ -3530,17 +3727,45 @@ test("the overlay explains that stopping a waiting subagent dismisses its questi
 	await opened;
 });
 
-test("restored task history cannot enter the live panel or execute stop even with the current session ID", async () => {
+test("restored task history cannot enter the live panel or discovery during synchronous summary callbacks", async (t) => {
 	const { pi, fire, commands, tools } = fakePi();
 	const harness = deps();
 	const historyHome = join(root, "history-home");
 	const historical: TaskRecord = { id: "history-running", agent: "explore", mode: "background", prompt: "p", label: "p", cwd, parentSessionId: "s1", status: TASK_STATUS.RUNNING, createdAt: 1, startedAt: 1, endedAt: null, model: "m", thinking: undefined, sessionPath: null, error: null, result: null, lastStep: "working", lastActivityAt: 1, turns: 0, toolCalls: 0, tokens: 0, cost: 0 };
-	await saveTask(historyDir(historyHome), historical, emptyThread());
 	harness.deps.home = historyHome;
+	const profile = liveProfile("restored-discovery");
+	await saveTask(historyDir(historyHome, profile), historical, emptyThread());
+	chmodSync(join(profile, "gentle-agents"), 0o755);
+	harness.deps.agentHome = profile;
+	const registry = { list: async () => [], listActivations: async () => [] };
+	harness.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: (_, sessionId) => ({ registry, record: { version: 1, sessionId, endpoint: "/fixture/restore", createdAt: 1 }, start: async () => {}, close: async () => {} }),
+		createClient: inertSessionTransport.createClient,
+	};
+	let checked = false;
+	let leaked: unknown;
+	const update = PresencePublisher.prototype.update;
+	let snapshot: unknown;
+	t.mock.method(PresencePublisher.prototype, "update", function (this: PresencePublisher, input: Parameters<PresencePublisher["update"]>[0]) {
+		snapshot = input.map(row => row.task.id);
+		return update.call(this, input);
+	});
+	const restore = TaskStore.prototype.restore;
+	t.mock.method(TaskStore.prototype, "restore", function (this: TaskStore, ...args: Parameters<TaskStore["restore"]>) {
+		const result = restore.apply(this, args);
+		leaked = snapshot;
+		checked = true;
+		return result;
+	});
 	gentleAgents(pi, {}, harness.deps);
 	const { ctx, dialogs, overlays } = fakeContext();
 	await fire("session_start", ctx);
-	await tools.get("subagent_status")!.execute("restore", { task_id: historical.id }, undefined, undefined, ctx);
+	await tick();
+	await fire("session_start", ctx, { reason: "resume" });
+	await eventually(() => checked, "restoration callback checked");
+	assert.deepEqual(leaked, [], "summary callback must not publish restored running history");
+	assert.deepEqual(readDiscovery(profile, listPresence(profile).entries[0])?.tasks, []);
 	const opened = commands.get("gentle:agents")!.handler("", ctx);
 	for (let attempt = 0; attempt < 40 && overlays.length === 0; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 25));
 	assert.doesNotMatch(stripAnsi(overlays[0]!.render(80).join("\n")), /Stop selected|Subagent explore/);
@@ -3690,8 +3915,8 @@ test("the card follows the active session: after /new the earlier session's task
 	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Long job", mode: "background" }, undefined, undefined, ctx);
 	await tick();
 	assert.match(widget()![1], /◐  explore  Long job/);
-	const sessions = ctx as unknown as { sessionManager: { getSessionId(): string; getCwd(): string } };
-	sessions.sessionManager = { getSessionId: () => "s2", getCwd: () => cwd };
+	const sessions = ctx as unknown as { sessionManager: { getSessionId(): string; getCwd(): string; getBranch(): []; getEntries(): [] } };
+	sessions.sessionManager = { getSessionId: () => "s2", getCwd: () => cwd, getBranch: () => [], getEntries: () => [] };
 	await fire("session_start", ctx, { type: "session_start", reason: "new" });
 	assert.deepEqual(widget(), [], "the new session starts with an empty card");
 	assert.match((await tools.get("subagent_list_tasks")!.execute("c2", {}, undefined, undefined, ctx)).content[0].text, /No subagent tasks in this session/);
@@ -3703,7 +3928,7 @@ test("the card follows the active session: after /new the earlier session's task
 	assert.doesNotMatch(overlay.render(80).map(stripAnsi).join("\n"), /◐ Subagent explore/, "retained children of a replaced session do not imply an open orchestrator");
 	overlay.handleInput("\x1b");
 	await opened;
-	sessions.sessionManager = { getSessionId: () => "s1", getCwd: () => cwd };
+	sessions.sessionManager = { getSessionId: () => "s1", getCwd: () => cwd, getBranch: () => [], getEntries: () => [] };
 	await fire("session_start", ctx, { type: "session_start", reason: "resume" });
 	assert.match(widget()![1], /◐  explore  Long job/, "resuming the first session shows its task again");
 });
@@ -3792,6 +4017,339 @@ test("session transport startup failure cleans the constructed Windows-capable t
 	assert.match((await h.tools.get("orchestrator_session_id")!.execute("id", {}, undefined, undefined, ctx)).content[0].text, /not ready/);
 });
 
+test("registered session identity declares subjects and refreshes canonical idle renames", async (t) => {
+	const h = fakePi();
+	const runtime = deps();
+	const profile = realpathSync(mkdtempSync(join(root, "subject-runtime-")));
+	runtime.deps.agentHome = profile;
+	let ready = false;
+	const registry = { list: async () => [], listActivations: async () => [] };
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: (_registry, sessionId) => ({ registry,
+			record: { version: 1 as const, sessionId, endpoint: "/fixture/subject.sock", createdAt: 1 },
+			start: async () => { ready = true; }, close: async () => {} }),
+		createClient: () => ({ close() {}, sendNotification: async () => { throw new Error("no messages expected"); } }),
+	};
+	const heartbeats: (() => void)[] = [];
+	const interval = globalThis.setInterval;
+	t.mock.method(globalThis, "setInterval", (callback: () => void, ms: number) => {
+		if (ms === 5000) heartbeats.push(callback);
+		return interval(callback, ms);
+	});
+	let name = "";
+	const names: string[] = [];
+	Object.assign(h.pi, { setSessionName: (value: string) => { name = value; names.push(value); } });
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	const registrations = [{ type: "custom", customType: SESSION_WORKTREE_ENTRY, data: { sessionId: "s1", root: cwd, evidence: "fixture" } }];
+	Object.assign(ctx.sessionManager, { getSessionName: () => name, getEntries: () => registrations });
+	await h.fire("session_start", ctx);
+	await eventually(() => ready, "subject transport ready");
+	const tool = h.tools.get("orchestrator_session_id")!;
+	const declare = (subject?: unknown, context = ctx) => tool.execute("id", { subject }, undefined, undefined, context);
+	const initialWrites = h.entries.length;
+	await assert.rejects(() => tool.execute("invalid-work", { subject: "No effect", state: { work: { topic: "Login" } } }, undefined, undefined, ctx), /invalid/);
+	assert.equal(name, "");
+	assert.equal(h.entries.length, initialWrites);
+	assert.equal(readDiscovery(profile, listPresence(profile).entries[0])?.state, undefined);
+	const result = await declare("\u001b[31m Fix\n auth\u202e ");
+	assert.equal(name, "Fix auth");
+	assert.match(result.content[0].text, /Active session ID: s1.*\n.*Fix auth/);
+	assert.deepEqual(result.details.gentleAgents, { senderSessionId: "s1", alias: "Fix auth" });
+	const before = listPresence(profile).entries[0]!;
+	assert.equal(before.label, "Fix auth");
+	assert.equal(readDiscovery(profile, before)?.state, undefined, "no implicit summary");
+	Object.assign(ctx.sessionManager, { getBranch: () => h.entries });
+	const work = { area: "Auth", topic: "Login", tags: ["Review"], refs: [
+		{ kind: "issue", repository: "github.com/Owner/Repo", id: "12" },
+	] };
+	await tool.execute("publish", { state: { objective: "Verify auth", decisions: "Advisory only", work } }, undefined, undefined, ctx);
+	assert.equal(readDiscovery(profile, listPresence(profile).entries[0])?.state?.state?.objective, "Verify auth");
+	assert.deepEqual(readDiscovery(profile, listPresence(profile).entries[0])?.state?.state?.work, work);
+	const published = h.entries.at(-1)!;
+	const writes = h.entries.length;
+	await assert.rejects(() => tool.execute("invalid", { subject: "No effect", state: { grant: "yes" } }, undefined, undefined, ctx), /invalid/);
+	assert.equal(h.entries.length, writes);
+	assert.equal(name, "Fix auth");
+	await declare();
+	assert.equal(h.entries.length, writes, "omission leaves notes unchanged");
+	assert.equal(readDiscovery(profile, before)?.workspace, cwd);
+	assert.equal(readDiscovery(profile, before)?.scope?.host.root, cwd);
+	assert.equal(readDiscovery(profile, before)?.scope?.registered[0]?.root, cwd);
+	name = "Human rename";
+	heartbeats[0](); // Existing publisher heartbeat, without any task/model activity.
+	const renamed = listPresence(profile).entries[0]!;
+	assert.equal(renamed.label, name);
+	assert.equal(renamed.generation, before.generation);
+	assert.deepEqual(readActivity(profile, renamed).activity?.tasks, []);
+	assert.equal(readDiscovery(profile, renamed)?.scope?.host.resolvedAt, readDiscovery(profile, before)?.scope?.host.resolvedAt);
+	registrations.push({ ...registrations[0], data: { ...registrations[0].data, root: join(cwd, "registered") } });
+	h.pi.events.emit(SESSION_WORKTREE_CHANGED, { sessionId: "s1" });
+	assert.deepEqual(readDiscovery(profile, listPresence(profile).entries[0])?.scope?.registered.map(fact => fact.root), [cwd, join(cwd, "registered")]);
+	await declare("Do not overwrite");
+	assert.deepEqual(names, ["Fix auth"]);
+	assert.match((await declare()).content[0].text, /Human rename/);
+	name = "";
+	await declare("\u0000\u001b[31m");
+	assert.equal(name, "", "control-only subject never names a session");
+	await declare("😀".repeat(130));
+	assert.equal(Array.from(name).length, 120);
+	await tool.execute("withdraw", { state: null }, undefined, undefined, ctx);
+	await h.fire("session_start", ctx, { reason: "reload" });
+	await eventually(() => readDiscovery(profile, listPresence(profile).entries[0])?.state?.state === null, "withdrawal reload");
+	Object.assign(ctx.sessionManager, { getBranch: () => [published] });
+	await h.fire("session_tree", ctx);
+	assert.equal(readDiscovery(profile, listPresence(profile).entries[0])?.state?.state?.objective, "Verify auth");
+	const sameId = fakeContext().ctx;
+	Object.assign(sameId.sessionManager, { getSessionName: () => name, getBranch: () => [] });
+	await h.fire("session_start", sameId, { reason: "resume" });
+	assert.equal(readDiscovery(profile, listPresence(profile).entries[0])?.state, undefined);
+	const replacement = fakeContext().ctx;
+	Object.assign(replacement.sessionManager, { getSessionId: () => "s2", getSessionName: () => "Replacement" });
+	await h.fire("session_start", replacement, { reason: "new" });
+	heartbeats[0]();
+	assert.equal(listPresence(profile).entries.length, 1);
+	assert.equal(listPresence(profile).entries[0].label, "Replacement");
+	assert.equal(readDiscovery(profile, listPresence(profile).entries[0])?.scope?.host.root, cwd);
+	const stale = await declare("Stale subject", ctx);
+	assert.match(stale.content[0].text, /not ready/);
+	assert.equal(names.length, 2);
+	assert.equal(runtime.spawned.length, 0);
+	assert.equal(h.sent.length, 0);
+	assert.equal(h.userMessages.length, 0);
+});
+
+test("registered orchestrator_list joins peer metadata without child launches or messages", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	const profile = realpathSync(mkdtempSync(join(root, "discovery-runtime-")));
+	const peer = { version: 1 as const, sessionId: "peer", endpoint: "/fixture/peer.sock", createdAt: 1 };
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer", label: "Auth review", activity: [] });
+	try {
+		const scope = new OrchestratorScopeCache(path => ({ root: path, commonDir: "/clone" })).project("/repo", [{ id: "child", cwd: "/repo-child" }], ["/repo"]);
+		const tasks = [{ id: "child", label: "Check auth", status: "waiting", cwd: "/repo-child" },
+			...Array.from({ length: 9 }, (_, i) => ({ id: `extra${i}`, label: `Extra ${i}`, status: "running", cwd: `/child/${i}` }))];
+		publisher.updateDiscovery(peer, { workspace: "/repo", tasks, registered: Array.from({ length: 10 }, (_, i) => `/registered/${i}`), scope,
+			state: { schema: 2, sessionId: "peer", cwd: "/repo", recordedAt: 1, source: "owner-curated",
+				ownerReply: false, authority: "none", state: { work: { tasks: { child: { area: "Auth" }, extra8: { area: "Billing" } } } } },
+		});
+		let ready = false;
+		let probes = 0;
+		const resolveWorktree = runtime.deps.resolveWorktree;
+		runtime.deps.resolveWorktree = (...args) => { probes++; return resolveWorktree(...args); };
+		let gate: (() => Promise<void>) | undefined;
+		let scans = 0;
+		const registry = { list: async () => [], listActivations: async () => { scans++; await gate?.(); return [peer]; } };
+		runtime.deps.agentHome = profile;
+		runtime.deps.sessionTransport = {
+			createRegistry: async () => registry,
+			createListener: () => ({ registry, start: async () => { ready = true; }, close: async () => {} }),
+			createClient: () => ({ close() {}, sendNotification: async () => { throw new Error("no messages expected"); } }),
+		};
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		await h.fire("session_start", ctx);
+		await eventually(() => ready, "discovery transport ready");
+		ctx.ui.select = async () => { throw new Error("metadata consultation must not ask for consent"); };
+		const result = await h.tools.get("orchestrator_list")!.execute("list", {}, undefined, undefined, ctx);
+		assert.match(result.content[0].text, /peer.*Auth review.*recorded workspace: \/repo/);
+		assert.match(result.content[0].text, /Check auth \[waiting\].*launch workspace: \/repo-child/);
+		assert.match(result.content[0].text, /reachability is unknown/);
+		assert.equal((result.details.gentleAgents as any).candidates[0].scope.host.root, "/repo");
+		assert.equal((result.details.gentleAgents as any).candidates[0].scope.tasks[0].repository.root, "/repo-child");
+		assert.match(result.content[0].text, /clone: [a-f0-9]{64}/);
+		const cursor = (result.details.gentleAgents as any).candidates[0].catalog.cursor;
+		const next = await h.tools.get("orchestrator_list")!.execute("next", { recipient_session_id: "peer", cursor }, undefined, undefined, ctx);
+		assert.deepEqual((next.details.gentleAgents as any).candidates[0].catalog.tasks.map((t: any) => t.id), ["extra7", "extra8"]);
+		assert.deepEqual((next.details.gentleAgents as any).candidates[0].catalog.registered, ["/registered/8", "/registered/9"]);
+		assert.equal(h.userMessages.length, 0);
+		const selectedWork = await h.tools.get("orchestrator_list")!.execute("selected-work", {
+			filter: {}, recipient_session_id: "peer", cursor,
+		}, undefined, undefined, ctx);
+		assert.deepEqual(JSON.parse(selectedWork.content[0].text).matches.map((row: any) => row.taskId), ["extra8"]);
+		const firstWorkPage = await h.tools.get("orchestrator_list")!.execute("first-work", {
+			filter: {}, recipient_session_id: "peer",
+		}, undefined, undefined, ctx);
+		assert.deepEqual(JSON.parse(firstWorkPage.content[0].text).matches.map((row: any) => row.taskId), ["child"]);
+		publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [], state: {
+			schema: 2, sessionId: "peer", cwd: "/repo", recordedAt: 1, source: "owner-curated",
+			ownerReply: false, authority: "none", state: { progress: "Explicit summary", work: { area: "Auth" } },
+		} });
+		const noted = await h.tools.get("orchestrator_list")!.execute("note", { recipient_session_id: "peer" }, undefined, undefined, ctx);
+		assert.match(noted.content[0].text, /Explicit summary/);
+		assert.equal((noted.details.gentleAgents as any).candidates[0].state.recordedAt, 1);
+		assert.deepEqual((noted.details.gentleAgents as any).candidates[0].state.state.work, { area: "Auth" });
+		const list = h.tools.get("orchestrator_list")!;
+		const workResult = await list.execute("work", { filter: {} }, undefined, undefined, ctx);
+		const work = JSON.parse(workResult.content[0].text);
+		assert.deepEqual(JSON.parse(JSON.stringify((workResult.details.gentleAgents as any).workSearch)), work);
+		assert.equal(work.schema, 1);
+		assert.deepEqual(work.matches[0].work, { area: "Auth" });
+		assert.equal(work.coverage.exhaustive, false);
+		assert.doesNotMatch(workResult.content[0].text, /Explicit summary|endpoint|activation|cursor|capabilities/);
+		const defaultList = await list.execute("default", {}, undefined, undefined, ctx);
+		assert.doesNotMatch(defaultList.content[0].text, /Explicit summary|"work"/);
+		assert.equal((defaultList.details.gentleAgents as any).candidates[0].state, undefined);
+		const beforeInvalid = scans;
+		for (const invalid of [null, [], { unexpected: true }, { filter: null }, { filter: { topic: "Login" } },
+			{ filter: { area: 1 } }, { filter: { area: "é".repeat(33) } }, { filter: { text: "bad\u0000text" } },
+			{ filter: { ref: { kind: "issue", repository: "github.com/A/B", id: "01" } } },
+			{ filter: { related_to: { session_id: "peer", extra: true } } }]) {
+			await assert.rejects(list.execute("invalid", invalid, undefined, undefined, ctx), /Invalid orchestrator list/);
+		}
+		for (const args of [{ cursor: "x" }, { filter: {}, cursor: "x" }]) {
+			const invalidCursor = await list.execute("cursor", args, undefined, undefined, ctx);
+			assert.equal(invalidCursor.details.error, "invalid-cursor");
+			assert.equal(invalidCursor.content[0].text, "Error: cursor requires recipient_session_id.");
+		}
+		assert.equal(scans, beforeInvalid, "invalid arguments never reach peer/profile discovery");
+		const consult = h.tools.get("orchestrator_consult")!;
+		const probesBeforeConsult = probes;
+		const receipt = JSON.parse((await consult.execute("consult", { recipient_session_id: "peer" }, undefined, undefined, ctx)).content[0].text);
+		assert.equal(receipt.snapshot.state.state.progress, "Explicit summary");
+		assert.equal(receipt.snapshot.state.recordedAt, 1);
+		assert.deepEqual(receipt.snapshot.state.state.work, { area: "Auth" });
+		assert.equal(receipt.ownerReply, false);
+		assert.equal(receipt.authority, "none");
+		assert.equal(receipt.targetSessionId, "peer");
+		assert.doesNotMatch(JSON.stringify(receipt), /endpoint|activation|prompt|thread/);
+		for (const invalid of [{ recipient_session_id: "peer", kind: "reasoning" }, { recipient_session_id: "peer", question: "secret" }, {}]) {
+			await assert.rejects(consult.execute("invalid", invalid, undefined, undefined, ctx), /Invalid metadata/);
+		}
+		assert.equal(probes, probesBeforeConsult);
+		publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [], state: {
+			schema: 2, sessionId: "peer", cwd: "/repo", recordedAt: 2, source: "owner-curated",
+			ownerReply: false, authority: "none", state: { work: { topic: "Missing area" } },
+		} });
+		const malformed = await h.tools.get("orchestrator_list")!.execute("malformed", { recipient_session_id: "peer" }, undefined, undefined, ctx);
+		assert.equal((malformed.details.gentleAgents as any).candidates[0].sessionId, "peer");
+		assert.equal((malformed.details.gentleAgents as any).candidates[0].state, undefined);
+		assert.ok(readActivity(profile, listPresence(profile).entries[0]).activity);
+		publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [] });
+		const legacy = await h.tools.get("orchestrator_list")!.execute("legacy", {}, undefined, undefined, ctx);
+		assert.match(legacy.content[0].text, /repository: unknown/);
+		assert.equal((legacy.details.gentleAgents as any).candidates[0].sessionId, "peer");
+		let release!: () => void;
+		gate = () => new Promise<void>(resolve => { release = resolve; });
+		const pending = consult.execute("pending", { recipient_session_id: "peer" }, undefined, undefined, ctx);
+		await h.fire("session_shutdown", ctx);
+		release();
+		assert.equal(JSON.parse((await pending).content[0].text).status, "unavailable");
+		assert.equal(runtime.spawned.length, 0);
+		assert.equal(h.sent.length, 0);
+		assert.equal(h.userMessages.length, 0);
+		await h.fire("session_shutdown", ctx);
+	} finally { publisher.dispose(); }
+});
+
+test("registered reasoning and revocation use live SDK host and published source only", async () => {
+	const h = fakePi(), runtime = deps();
+	const profile = realpathSync(mkdtempSync(join(root, "reasoning-runtime-")));
+	const peer = { version: 1 as const, sessionId: "peer", endpoint: "/fixture/peer.sock", createdAt: 1 };
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer", label: "Published peer", activity: [] });
+	const publish = (progress = "Recorded") => publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [], state: {
+		schema: 1, sessionId: "peer", cwd: "/repo", recordedAt: 1, source: "owner-curated",
+		ownerReply: false, authority: "none", state: { progress },
+	} });
+	publish(); let ready = false, dialogs = 0, calls = 0, choice = "Decline";
+	let complete: (() => void) | undefined, hang = false;
+	let peers = [peer];
+	let duringDialog: (() => Promise<void> | void) | undefined;
+	const registry = { list: async () => [], listActivations: async () => peers };
+	runtime.deps.agentHome = profile;
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: () => ({ registry, start: async () => { ready = true; }, close: async () => {} }),
+		createClient: () => ({ close() {}, sendNotification: async () => { throw Error("no owner message"); } }),
+	};
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	const answer = { role: "assistant", api: "fixture", provider: "fixture", model: "local", timestamp: 1,
+		stopReason: "stop", content: [{ type: "text", text: "Published advice" }], usage: {
+			input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } as AssistantMessage;
+	Object.assign(ctx, { model: { id: "local", provider: "fixture", maxTokens: 1024 }, modelRegistry: {
+		streamSimple(_model: unknown, context: { tools: unknown[]; messages: unknown[] }, options: { maxRetries: number }) {
+			calls++; assert.deepEqual(context.tools, []); assert.equal(context.messages.length, 1);
+			assert.equal(options.maxRetries, 0);
+			const stream = createAssistantMessageEventStream();
+			stream.result = hang ? () => new Promise(resolve => { complete = () => resolve(answer); }) : async () => answer;
+			return stream;
+		},
+	} });
+	// Test-simulated supported UI choices, NOT evidence of actual human approval.
+	ctx.ui.select = async (title, options) => {
+		dialogs++; assert.match(title, /Model-cost permission only/);
+		assert.deepEqual(options, ["Allow once", "Allow this target + model for this session", "Decline"]);
+		await duringDialog?.(); return choice;
+	};
+	try {
+		await h.fire("session_start", ctx); await eventually(() => ready, "reasoning transport ready");
+		const tool = h.tools.get("orchestrator_consult")!;
+		const run = async (kind = "reasoning", patch = {}, caller = ctx, signal?: AbortSignal) => JSON.parse((await tool.execute("c",
+			{ recipient_session_id: "peer", kind, ...(kind === "reasoning" ? { question: "What is published?" } : {}), ...patch }, signal, undefined, caller)).content[0].text);
+		assert.equal((await run("metadata")).status, "available"); assert.deepEqual([dialogs, calls], [0, 0]);
+		assert.equal((await run()).code, "permission-required"); assert.deepEqual([dialogs, calls], [1, 0]);
+		choice = "Allow once"; const advice = await run();
+		assert.equal(advice.source, "helper_advice"); assert.equal(advice.ownerReply, false); assert.equal(advice.authority, "none");
+		assert.equal(advice.requestCaps.maxTokens, 512); assert.equal(advice.usage.totalTokens, 2);
+		assert.deepEqual(advice.actualModel, { provider: "fixture", id: "local" }); assert.deepEqual([dialogs, calls], [2, 1]);
+		choice = "Allow this target + model for this session"; await run();
+		publisher.updateDiscovery(peer, { workspace: "/updated-public", tasks: [] }); await run();
+		assert.deepEqual([dialogs, calls], [3, 3]);
+		Object.assign(ctx, { hasUI: false });
+		assert.equal((await run("revoke-reasoning")).status, "revoked");
+		assert.deepEqual([dialogs, calls], [3, 3]); Object.assign(ctx, { hasUI: true });
+		choice = "Decline"; assert.equal((await run()).code, "permission-required");
+		for (const patch of [{ hasUI: false }, { mode: "print" }, { mode: "json" }]) {
+			Object.assign(ctx, patch); assert.equal((await run()).code, "permission-required");
+		}
+		Object.assign(ctx, { hasUI: true, mode: "rpc" }); choice = "Allow once";
+		assert.equal((await run()).status, "available");
+		const before = [dialogs, calls];
+		for (const args of [{ question: "implicit" }, { kind: "reasoning" }, { kind: "revoke-reasoning", cursor: "x" },
+			{ kind: "metadata", question: "irrelevant" }, { kind: "reasoning", question: "é".repeat(513) },
+			{ kind: null }, { kind: "unknown" }, { cursor: "x".repeat(1025) }, { unexpected: true }]) {
+			await assert.rejects(tool.execute("bad", { recipient_session_id: "peer", ...args }, undefined, undefined, ctx), /Invalid metadata/);
+		}
+		assert.deepEqual([dialogs, calls], before);
+		choice = "Allow this target + model for this session"; await run();
+		for (const event of ["session_tree", "resources_discover", "session_before_switch", "session_before_fork", "session_before_tree", "model_select", "session_start"]) {
+			await h.fire(event, ctx); choice = "Decline";
+			assert.equal((await run()).code, "permission-required");
+			choice = "Allow this target + model for this session"; await run();
+		}
+		await run("revoke-reasoning"); choice = "Allow once"; hang = true;
+		for (const change of ["public", "activation", "unavailable", "private", "abort", "revoke"]) {
+			publish(); peers = [peer]; const controller = new AbortController();
+			const pending = run("reasoning", {}, ctx, controller.signal);
+			await eventually(() => !!complete, "helper pending");
+			if (change === "public") publish("Changed progress");
+			if (change === "activation") peers = [{ ...peer, endpoint: "/fixture/replaced.sock" }];
+			if (change === "unavailable") peers = [];
+			if (change === "private") { publisher.update([]); publisher.refreshLabel(); }
+			if (change === "abort") controller.abort();
+			if (change === "revoke") await run("revoke-reasoning");
+			complete!(); complete = undefined;
+			const outcome = await pending;
+			assert.equal(outcome.status, change === "private" ? "available" : "unavailable");
+		}
+		hang = false; peers = [peer];
+		for (const change of [() => Object.assign(ctx, { model: { ...ctx.model! } }),
+			() => publish("Changed after dialog"),
+			() => h.fire("session_tree", ctx), () => run("revoke-reasoning"),
+			() => h.fire("session_shutdown", ctx),
+			() => h.fire("session_start", fakeContext().ctx, { reason: "new" })]) {
+			await h.fire("session_start", ctx); await new Promise(resolve => setImmediate(resolve));
+			publish(); duringDialog = async () => { await change(); }; const count = calls;
+			assert.equal((await run()).status, "unavailable"); assert.equal(calls, count);
+		}
+		assert.equal((await run("metadata", {}, ctx)).status, "unavailable");
+		assert.equal(runtime.spawned.length, 0); assert.equal(h.sent.length, 0); assert.equal(h.userMessages.length, 0);
+	} finally { await h.fire("session_shutdown", ctx); publisher.dispose(); }
+});
+
 test("session transport adds host tools, forwards notifications, and closes on shutdown", async () => {
 	const h = fakePi();
 	const runtime = deps();
@@ -3799,7 +4357,7 @@ test("session transport adds host tools, forwards notifications, and closes on s
 	let listenerStarts = 0;
 	let listenerCloses = 0;
 	let clientCloses = 0;
-	const registry = { list: async () => [{ sessionId: "peer", reachability: "unknown" }], listActivations: async () => [] };
+	const registry = { list: async () => [{ sessionId: "peer", reachability: "unknown" }], listActivations: async () => [{ version: 1 as const, sessionId: "peer", endpoint: "/fixture/peer.sock", createdAt: 1 }] };
 	runtime.deps.sessionTransport = {
 		createRegistry: async () => registry,
 		createListener: (_registry, _sessionId, received) => {
@@ -4143,10 +4701,166 @@ test("a background completion settling while the parent agent runs is delivered 
 	await fire("session_shutdown", ctx);
 });
 
-// A direct custom-message turn (sendMessage + triggerTurn while idle) skips
-// Pi's prompt lifecycle, so before_agent_start never runs and prompt-capture
-// integrations such as the Claude bridge reject the turn. An idle parent must
-// instead store the structured result durably and be woken by a user message.
+test("Bridge identity is durable, session-owned and registered once across session changes", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	ctx.sessionManager.getEntries = () => h.entries as unknown as ReturnType<ExtensionContext["sessionManager"]["getEntries"]>;
+	await h.fire("session_start", ctx);
+	await h.tools.get("subagent_run")!.execute("one", { agent: "explore", task: "Wake identity", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	runtime.children[0].message({ id: "q1", kind: "query", message: "Question" });
+	await tick();
+	const wake = String(h.userMessages[0].content);
+	const transform = h.transformers[0];
+	const context = { messageType: "user" as const, isStreaming: false, availableWidth: 80 };
+	assert.equal(transform(wake, context), "");
+	assert.equal(h.entries.filter(entry => entry.customType === "gentle-agents.wake-identity").length, 1);
+	await h.fire("session_start", ctx, { reason: "reload" });
+	assert.equal(transform(wake, context), "", "reload reconstructs ownership");
+	ctx.sessionManager.getSessionId = () => "other-session";
+	await h.fire("session_start", ctx, { reason: "new" });
+	assert.equal(transform(wake, context), wake, "another session cannot claim the old identity");
+	ctx.sessionManager.getSessionId = () => "s1";
+	await h.fire("session_start", ctx, { reason: "resume" });
+	assert.equal(transform(wake, context), "");
+	assert.equal(h.transformers.length, 1, "session changes do not register again");
+	assert.equal(transform(`Quoted: ${wake}`, context), `Quoted: ${wake}`);
+	assert.equal(transform(` ${wake}`, context), ` ${wake}`);
+	await h.fire("session_shutdown", ctx);
+	assert.equal(transform(wake, context), wake, "shutdown releases the old owner");
+});
+
+for (const failure of ["missing-api", "persistence", "warning-ui"] as const) {
+	test(`Bridge ${failure} fallback preserves continuation and flags visible wake`, async () => {
+		const h = fakePi();
+		const runtime = deps();
+		if (failure !== "persistence") delete (h.pi as Partial<ExtensionAPI>).registerMarkdownTransformer;
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx, dialogs } = fakeContext();
+		if (failure === "warning-ui") ctx.ui.notify = () => { throw new Error("UI unavailable"); };
+		await h.fire("session_start", ctx);
+		if (failure === "persistence") h.pi.appendEntry = () => { throw new Error("Persistence unavailable"); };
+		await h.tools.get("subagent_run")!.execute("fallback", { agent: "explore", task: "Fallback", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		runtime.children[0].message({ id: "q1", kind: "query", message: "Question" });
+		await tick();
+		assert.equal(h.userMessages.length, 1);
+		assert.equal(h.sent.length, 1, "payload is stored once despite compatibility fallback");
+		assert.doesNotMatch(String(h.userMessages[0].content), /gentle-agents wake:/);
+		if (failure !== "warning-ui") assert.ok(dialogs.some(message => message.includes("cannot hide Claude Bridge")));
+	});
+}
+
+for (const provider of ["openai", "anthropic", "custom-extension", undefined, "claude-bridge"]) {
+	for (const kind of ["completion", "query"] as const) {
+		test(`idle ${kind} wake uses the selected ${provider ?? "missing"} provider route`, async () => {
+			const h = fakePi();
+			h.setProvider(provider);
+			const harness = deps();
+			gentleAgents(h.pi, {}, harness.deps);
+			const { ctx } = fakeContext();
+			await h.fire("session_start", ctx);
+			await h.tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Route wake", mode: "background" }, undefined, undefined, ctx);
+			await tick();
+			if (kind === "query") harness.children[0].message({ id: "q1", kind: "query", message: "Child payload" });
+			else {
+				harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Child payload" }] }] });
+				harness.children[0].emit({ type: "agent_settled" });
+			}
+			await tick();
+			assert.deepEqual(h.sent[0]!.options, { triggerTurn: false });
+			assert.match(String(h.sent[0]!.message.content), /Child payload/);
+			if (provider === "claude-bridge") {
+				assert.equal(h.sent.length, 1);
+				assert.equal(h.userMessages.length, 1);
+				assert.match(String(h.userMessages[0].content), /\[gentle-agents wake: [0-9a-f-]+\]$/);
+				assert.deepEqual(h.userMessages[0].options, { deliverAs: "steer" });
+				assert.equal(h.transformers[0](String(h.userMessages[0].content), { messageType: "user", isStreaming: false, availableWidth: 80 }), "");
+				assert.equal(h.delivery.at(-1), "user");
+			} else {
+				assert.equal(h.userMessages.length, 0, "native and unclassified providers never receive a synthetic user turn");
+				assert.equal(h.sent.length, 2, "the stored payload still gets a continuation turn");
+				assert.deepEqual(h.sent[1]!.options, { deliverAs: "steer", triggerTurn: true });
+				assert.equal(h.sent[1]!.message.display, false);
+				assert.equal(h.sent[1]!.message.customType, "gentle-agents.wake");
+				assert.equal(h.sent[1]!.message.content, "Review the delivered subagent output and continue.");
+				assert.deepEqual(h.delivery, [`custom:gentle-agents.${kind === "query" ? "message" : "result"}`, "custom:gentle-agents.wake"]);
+			}
+			await h.fire("session_shutdown", ctx);
+		});
+	}
+}
+
+for (const [from, to] of [["openai", "claude-bridge"], ["claude-bridge", "openai"]]) {
+	test(`wake reads the live provider after storage: ${from} to ${to}`, async () => {
+		const h = fakePi(from);
+		const harness = deps();
+		gentleAgents(h.pi, {}, harness.deps);
+		const { ctx } = fakeContext();
+		await h.fire("session_start", ctx);
+		await h.tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Switch before dispatch", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		const sendMessage = h.pi.sendMessage;
+		Object.assign(h.pi, { sendMessage: (...args: Parameters<ExtensionAPI["sendMessage"]>) => {
+			sendMessage(...args);
+			// Storage happens synchronously, dispatch in the queued microtask.
+			if (args[0].customType === "gentle-agents.message") h.setProvider(to);
+		} });
+		harness.children[0].message({ id: "q1", kind: "query", message: "Switch?" });
+		await tick();
+		assert.equal(h.userMessages.length, to === "claude-bridge" ? 1 : 0);
+		assert.equal(h.sent.filter((entry) => entry.message.customType === "gentle-agents.wake").length, to === "openai" ? 1 : 0);
+		await h.fire("session_shutdown", ctx);
+	});
+}
+
+for (const boundary of ["session_compact", "session_compact_failed"] as const) {
+	test(`native wake preserves holds, coalescing and grace after ${boundary}`, async () => {
+		const h = fakePi("openai");
+		const harness = deps();
+		const timers = recordTimers(harness.deps);
+		gentleAgents(h.pi, {}, harness.deps);
+		const { ctx } = fakeContext();
+		await h.fire("session_start", ctx);
+		for (const task of ["Ask", "Finish"]) await h.tools.get("subagent_run")!.execute(task, { agent: "explore", task, mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		h.setIdle(false);
+		harness.children[0].message({ id: "q1", kind: "query", message: "Held question" });
+		harness.children[1].emit({ type: "agent_settled" });
+		await tick();
+		assert.equal(h.sent.length, 0);
+		await h.fire(boundary, ctx);
+		assert.equal(h.sent.length, 0);
+		h.setIdle(true);
+		assert.equal(timers.run(0), 1);
+		await tick();
+		assert.deepEqual(h.delivery, ["custom:gentle-agents.message", "custom:gentle-agents.result", "custom:gentle-agents.wake"]);
+		assert.deepEqual(h.sent.map((entry) => entry.options), [{ triggerTurn: false }, { triggerTurn: false }, { deliverAs: "steer", triggerTurn: true }]);
+		const expireWakeGrace = timers.takeLast(PARENT_WAKE_GRACE_MS);
+		harness.children[0].message({ id: "q2", kind: "query", message: "Later question" });
+		await tick();
+		assert.equal(h.sent.length, 4, "content arriving in the grace window shares the pending wake");
+		expireWakeGrace();
+		await tick();
+		assert.equal(h.sent.length, 5, "an unstarted wake cannot suppress new content beyond grace");
+		assert.equal(h.sent[4]!.message.display, false);
+		assert.deepEqual(h.sent[4]!.options, { deliverAs: "steer", triggerTurn: true });
+		await h.fire("agent_start", ctx);
+		harness.children[0].message({ id: "q3", kind: "query", message: "Busy question" });
+		await tick();
+		assert.equal(h.sent.length, 5, "busy content stays queued until the turn boundary");
+		await h.fire("turn_end", ctx);
+		assert.equal(h.sent.at(-1)!.message.customType, "gentle-agents.message");
+		assert.deepEqual(h.sent.at(-1)!.options, { deliverAs: "steer", triggerTurn: true }, "busy native delivery keeps the original steering route");
+		assert.equal(h.userMessages.length, 0);
+		await h.fire("session_shutdown", ctx);
+	});
+}
+
+// Bridge custom-message turns skip the prompt lifecycle needed for capture.
+// Store the structured result durably and wake the bridge by a user message.
 test("an idle parent stores the structured completion and is woken through the normal prompt lifecycle", async () => {
 	const { pi, tools, fire, sent, userMessages, delivery, renderers } = fakePi();
 	const harness = deps();
@@ -4660,7 +5374,10 @@ test("issue #1162: task-mode subagent_run includes question directly in waiting 
 test("children receive context and safety extensions, and missing files are omitted", async () => {
 	const expected = join(dirname(fileURLToPath(import.meta.url)), "..", "extensions", "child-context.ts");
 	const safety = join(dirname(fileURLToPath(import.meta.url)), "..", "extensions", "child-safety.ts");
-	assert.deepEqual(childContextExtensionPaths(), [resolve(expected), resolve(safety)]);
+	// gentle-shell#1731 T32: the nan provider is registered by a gentle-pi
+	// extension, so a child routed to nan/* could not resolve its model.
+	const nanProvider = join(dirname(fileURLToPath(import.meta.url)), "..", "extensions", "nan-provider.ts");
+	assert.deepEqual(childContextExtensionPaths(), [resolve(expected), resolve(safety), resolve(nanProvider)]);
 	assert.deepEqual(childContextExtensionPaths(() => false), [], "a missing extension file fails safe to no --extension");
 	const extensionArguments = (args: string[]) => args.filter((_, index) => args[index - 1] === "--extension");
 	for (const scenario of ["present", "missing"] as const) {
@@ -4674,10 +5391,132 @@ test("children receive context and safety extensions, and missing files are omit
 			await h.tools.get("subagent_run")!.execute(`child-context-${scenario}`, { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
 			await tick();
 			assert.equal(runtime.spawned.length, 1);
-			assert.deepEqual(extensionArguments(runtime.spawned[0]!), scenario === "present" ? [resolve(expected), resolve(safety)] : []);
+			assert.deepEqual(extensionArguments(runtime.spawned[0]!), scenario === "present" ? [resolve(expected), resolve(safety), resolve(nanProvider)] : []);
 		} finally {
 			await h.fire("session_shutdown", ctx);
 			await tick();
 		}
+	}
+});
+
+// gentle-shell#1713 (review R3-001): prove the subagent_continue wiring end to
+// end, not only the helper. A writer follow-up without its own section reaches
+// the child with the surfaces its original launch was admitted with.
+test("a writer continuation without its own section inherits the admitted surfaces end to end", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	const profile = mkdtempSync(join(tmpdir(), "gentle-agents-continue-"));
+	mkdirSync(join(profile, "agents"), { recursive: true });
+	writeFileSync(join(profile, "agents", "gentle-ai-worker.md"), readFileSync(new URL("../assets/agents/gentle-ai-worker.md", import.meta.url)));
+	writeFileSync(join(profile, "subagents.json"), JSON.stringify({ model_profiles: { "gentle-ai-worker": { model: "openai/gpt-4o", effort: "high" } } }));
+	const env: NodeJS.ProcessEnv = {};
+	gentleAgents(h.pi, env, { ...runtime.deps, env, agentHome: profile });
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+	const launched = h.tools.get("subagent_run")!.execute("run", { agent: "gentle-ai-worker", task: "Do T2.\n\n## Allowed edit surfaces\n- src/app.ts\n- `docs/with space.md`\n\n## Return\nReport", mode: "task" }, undefined, undefined, ctx);
+	await tick();
+	runtime.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "partial" }] }] });
+	runtime.children[0].emit({ type: "agent_settled" });
+	const taskId = ((await launched).details.gentleAgents as { taskId: string }).taskId;
+	const continued = h.tools.get("subagent_continue")!.execute("follow", { task_id: taskId, prompt: "Continue with the remaining specs.", mode: "task" }, undefined, undefined, ctx);
+	await tick();
+	assert.equal(runtime.children.length, 2, "the continuation is admitted instead of rejected");
+	const prompt = String(runtime.children[1].written.find(frame => typeof frame.message === "string")?.message);
+	assert.match(prompt, /^Continue with the remaining specs\.\n\n## Allowed edit surfaces\n`docs\/with space\.md`\n`src\/app\.ts`\n/);
+	runtime.children[1].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] });
+	runtime.children[1].emit({ type: "agent_settled" });
+	await continued;
+	await h.fire("session_shutdown", ctx);
+	rmSync(profile, { recursive: true, force: true });
+});
+
+// gentle-shell#1731 T4 (S2, AC6): subagent_run and subagent_continue admit a
+// writer only while no live writer in the same worktree claims an overlapping
+// `## Allowed edit surfaces` entry; read-only agents are never registered.
+test("parallel writers are admitted only with disjoint Allowed edit surfaces end to end", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	const profile = mkdtempSync(join(tmpdir(), "gentle-agents-parallel-writers-"));
+	mkdirSync(join(profile, "agents"), { recursive: true });
+	writeFileSync(join(profile, "agents", "gentle-ai-worker.md"), readFileSync(new URL("../assets/agents/gentle-ai-worker.md", import.meta.url)));
+	writeFileSync(join(profile, "agents", "explore.md"), "---\ndescription: maps things\ntools: [read, grep]\n---\nYou map things.");
+	writeFileSync(join(profile, "subagents.json"), JSON.stringify({ max_concurrency: 5, model_profiles: { "gentle-ai-worker": { model: "openai/gpt-4o", effort: "high" } } }));
+	const env: NodeJS.ProcessEnv = {};
+	gentleAgents(h.pi, env, { ...runtime.deps, env, agentHome: profile });
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+	const scoped = (surface: string) => `Write it.\n\n## Allowed edit surfaces\n${surface}\n\n## Return\nReport`;
+	const run = (agent: string, task: string) => h.tools.get("subagent_run")!.execute("run", { agent, task, mode: "background" }, undefined, undefined, ctx);
+	const taskId = (result: { details: Record<string, unknown> }) => (result.details.gentleAgents as { taskId: string }).taskId;
+	const finish = async (child: FakeChild, id: string) => {
+		child.emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] });
+		child.emit({ type: "agent_settled" });
+		for (let attempt = 0; attempt < 40; attempt++) {
+			const status = await h.tools.get("subagent_status")!.execute("status", { task_id: id }, undefined, undefined, ctx);
+			if ((status.details.gentleAgents as { status?: string } | undefined)?.status === TASK_STATUS.COMPLETED) return;
+			await tick();
+		}
+		assert.fail(`task ${id} never completed`);
+	};
+	try {
+		const app = taskId(await run("gentle-ai-worker", scoped("src/app.ts")));
+		const other = taskId(await run("gentle-ai-worker", scoped("`src/other.ts`")));
+		await tick();
+		assert.equal(runtime.children.length, 2, "disjoint writers run concurrently");
+		await assert.rejects(run("gentle-ai-worker", scoped("src/*.ts")), (error: Error) => {
+			assert.match(error.message, new RegExp(`task ${app}`));
+			assert.match(error.message, new RegExp(`task ${other}`));
+			assert.match(error.message, /`src\/\*\.ts` overlaps `src\/app\.ts`/);
+			return true;
+		});
+		await run("explore", "Map src/app.ts and src/other.ts");
+		await tick();
+		assert.equal(runtime.children.length, 3, "read-only agents are never blocked by live writers");
+		await finish(runtime.children[0], app);
+		// The continuation inherits src/app.ts and is admitted again only while no
+		// live writer claims an overlapping entry.
+		await assert.rejects(run("gentle-ai-worker", scoped("src/**")), new RegExp(`task ${other}`), "src/** still overlaps the live src/other.ts writer");
+		const blocking = taskId(await run("gentle-ai-worker", scoped("src/app.ts")));
+		await assert.rejects(h.tools.get("subagent_continue")!.execute("follow", { task_id: app, prompt: "Continue.", mode: "background" }, undefined, undefined, ctx), new RegExp(`task ${blocking}`));
+		await finish(runtime.children[3], blocking);
+		await h.tools.get("subagent_continue")!.execute("follow", { task_id: app, prompt: "Continue.", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(runtime.children.length, 5, "the continuation is admitted once its surfaces are free");
+	} finally {
+		await h.fire("session_shutdown", ctx);
+		rmSync(profile, { recursive: true, force: true });
+	}
+});
+
+// Second verify A1: writers claim surfaces under the canonical worktree root,
+// so a writer spawned in the session's subdirectory cwd and one sent to the
+// worktree root through workspace_root are compared.
+test("a subdirectory session cwd and workspace_root of the same worktree share one writer key", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	const profile = mkdtempSync(join(tmpdir(), "gentle-agents-writer-root-"));
+	mkdirSync(join(profile, "agents"), { recursive: true });
+	writeFileSync(join(profile, "agents", "gentle-ai-worker.md"), readFileSync(new URL("../assets/agents/gentle-ai-worker.md", import.meta.url)));
+	writeFileSync(join(profile, "subagents.json"), JSON.stringify({ max_concurrency: 5, model_profiles: { "gentle-ai-worker": { model: "openai/gpt-4o", effort: "high" } } }));
+	const sub = join(cwd, "sub");
+	mkdirSync(sub, { recursive: true });
+	// Git semantics: any path inside the project resolves to the project root.
+	const resolveWorktree = (path: string, base: string) => {
+		const target = resolve(base, path);
+		return { root: target === cwd || target.startsWith(`${cwd}${sep}`) ? cwd : target, commonDir: "/fixture/common" };
+	};
+	const env: NodeJS.ProcessEnv = {};
+	gentleAgents(h.pi, env, { ...runtime.deps, resolveWorktree, env, agentHome: profile });
+	const { ctx } = fakeContext();
+	Object.assign(ctx, { cwd: sub, sessionManager: { getSessionId: () => "s1", getCwd: () => sub, getEntries: () => [], getBranch: () => [] } });
+	await h.fire("session_start", ctx);
+	const task = "Write it.\n\n## Allowed edit surfaces\nsrc/app.ts\n\n## Return\nReport";
+	try {
+		const first = await h.tools.get("subagent_run")!.execute("run", { agent: "gentle-ai-worker", task, mode: "background" }, undefined, undefined, ctx);
+		const firstId = (first.details.gentleAgents as { taskId: string }).taskId;
+		await assert.rejects(h.tools.get("subagent_run")!.execute("run", { agent: "gentle-ai-worker", task, workspace_root: cwd, mode: "background" }, undefined, undefined, ctx), new RegExp(`task ${firstId}`));
+	} finally {
+		await h.fire("session_shutdown", ctx);
+		rmSync(profile, { recursive: true, force: true });
 	}
 });

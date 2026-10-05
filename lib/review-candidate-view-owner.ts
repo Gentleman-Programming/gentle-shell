@@ -286,14 +286,15 @@ function posixPrivateModeProbe(path: string): boolean {
 }
 
 function directory(path: string, privateMode = false, platform: NodeJS.Platform = process.platform, classifyParentPrivacy = false): string {
-	const stat = lstatSync(path);
+	// 64-bit dev/ino may collide as Numbers; validate metadata and identity from one exact observation.
+	const stat = lstatSync(path, { bigint: true });
 	if (!stat.isDirectory() || stat.isSymbolicLink() || !samePath(realpathSync(path), path, platform)) throw new Error("Unsafe candidate owner directory");
 	if (privateMode && platform !== "win32") {
 		const uid = process.getuid?.();
 		if (uid === undefined) throw new Error("Unsafe candidate owner directory");
-		if (stat.uid !== uid || (stat.mode & 0o077) !== 0) {
+		if (stat.uid !== BigInt(uid) || (stat.mode & 0o077n) !== 0n) {
 			if (classifyParentPrivacy) {
-				if (stat.uid === uid && (stat.mode & 0o077) !== 0 && !posixPrivateModeProbe(path)) throw new PosixCandidateOwnerParentChmodIneffectiveError();
+				if (stat.uid === BigInt(uid) && (stat.mode & 0o077n) !== 0n && !posixPrivateModeProbe(path)) throw new PosixCandidateOwnerParentChmodIneffectiveError();
 				throw new PosixCandidateOwnerParentPrivacyError();
 			}
 			throw new Error("Unsafe candidate owner directory");
@@ -329,10 +330,11 @@ export function prepareCandidateOwnerParent(commonDir: string, platform: NodeJS.
 }
 
 function regular(path: string, privateMode = false, platform: NodeJS.Platform = process.platform): string {
-	const stat = lstatSync(path);
+	// Keep 64-bit identity exact without a second stat lookup racing the privacy checks.
+	const stat = lstatSync(path, { bigint: true });
 	const uid = process.getuid?.();
-	if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || !samePath(realpathSync(path), path, platform) || stat.size > 16384 ||
-		(privateMode && platform !== "win32" && (uid === undefined || stat.uid !== uid || (stat.mode & 0o777) !== 0o600))) throw new Error("Unsafe candidate owner file");
+	if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n || !samePath(realpathSync(path), path, platform) || stat.size > 16384n ||
+		(privateMode && platform !== "win32" && (uid === undefined || stat.uid !== BigInt(uid) || (stat.mode & 0o777n) !== 0o600n))) throw new Error("Unsafe candidate owner file");
 	if (privateMode && platform === "win32") privateWindowsDacl(path, "file", false);
 	return `${stat.dev}:${stat.ino}`;
 }

@@ -48,3 +48,13 @@ test("disabled shell leaves bundled editor behavior untouched", async () => {
 	await pretty(pi, undefined, async (api: unknown) => { received = api; }, { GENTLE_PI_SHELL: "0" });
 	assert.equal(received, pi);
 });
+
+// gentle-shell#1690: a delegated child has no shell (shellEnabled is false),
+// so the upstream fallback would start FFF indexing in every child.
+test("delegated children never load upstream pi-pretty", async () => {
+	let loaded = false;
+	const pi = {};
+	const result = await pretty(pi, undefined, async () => { loaded = true; }, { GENTLE_PI_AGENTS_CHILD: "1" });
+	assert.equal(loaded, false);
+	assert.equal(result, undefined);
+});

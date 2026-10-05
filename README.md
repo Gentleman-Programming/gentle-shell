@@ -170,6 +170,16 @@ Model, effort, and who does what should be choices, not accidents. Named profile
 
 ---
 
+### 🚀 YOLO 🔥 — Session permission, destructive guards intact
+
+> 🚀 **Full speed, destructive actions still ask.** YOLO removes repeated permission questions for ordinary already-scoped work, which suits long autonomous runs. Destructive operations still require fresh confirmation.
+
+`/gentle:yolo enable` supplies standing permission for ordinary already-scoped implementation, checks, commits, non-force pushes and PR creation. Default **OFF**, interactive primary TUI only, bound to the live session and Git clone; `/gentle:yolo disable` revokes it and `/gentle:yolo status` checks it. With no argument, `/gentle:yolo` opens a menu (`enable`, `disable`, `status`) showing the current state; cancelling changes nothing, and without an interactive menu it reports status. Reload and session replacement reset it. Active status plus a separate widget show **🚀 YOLO ON 🔥 — destructive confirmations remain**. Explicit restrictions, configured confirmations/blocks, consequential unresolved choices, destination/credential ambiguity and native consent/recovery decisions remain mandatory. Children get no independent delivery grant. This is not a sandbox.
+
+Or open `/gentle:customize` → **Editor** and select **YOLO: OFF · session only**, immediately below Vim. Enter or Space toggles the same live-session permission as `/gentle:yolo`; browsing and previews never activate it. Unlike Vim, YOLO is not saved in preferences or visual profiles.
+
+**[Use and limits →](docs/yolo-mode.md)**
+
 ### Command palette — Every command, one keystroke away
 
 Extension commands are only useful if you can find them. `alt+k` opens a curated, grouped palette — Configuration, Session, Diagnostics, and Skills — searchable by label, command name, or description, showing entries only when they are actually registered.
@@ -195,6 +205,7 @@ Extension commands are only useful if you can find them. `alt+k` opens a curated
 | Native interactive tools | Built-in questions, choices, and review captures — no third-party dependency. |
 | Gentle Todo | A plan card that turns amber when the model lets it go stale. |
 | Subscription usage | Per-window meters and resets for supported provider accounts. |
+| Gentle Stats | `/gentle:stats` shows local usage history: activity heatmap, tokens, cost, streaks, and per-model share. |
 | Gentle notices | Gentle AI calls and review reminders as cards in the transcript. |
 
 > **Every component, skill and preset: [Full breakdown →](docs/gentle-shell.md)**
@@ -267,6 +278,8 @@ pi
 ```
 
 See the [v3.5.1 release notes](https://github.com/Gentleman-Programming/gentle-shell/releases/tag/v3.5.1) for version-specific changes.
+
+**Builtin codemode warning.** gentle-pi replaces Pi's builtin `codemode` with its compact renderer, so Pi warns at startup that the builtin was not loaded. In your own Pi home (`pi` with this package, or `gentle-shell --link`), gentle-pi asks once in the interactive TUI whether to add `"-builtin:codemode"` to `extensions` in the agent `settings.json` (usually `~/.pi/agent/settings.json`); it writes only if you accept, and the warning disappears from the next launch. A declined prompt is not repeated. To silence it by hand, add the entry yourself, for example `"extensions": ["-builtin:codemode"]`. Isolated `gentle-shell` homes already carry it.
 
 ### NaN model provider
 

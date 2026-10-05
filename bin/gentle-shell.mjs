@@ -6,6 +6,7 @@
 // process, filesystem, and child process.
 import {
 	accessSync,
+	chmodSync,
 	closeSync,
 	constants as fsConstants,
 	existsSync,
@@ -313,9 +314,46 @@ function readRawConfig(configPath) {
 function writeRawConfig(configPath, config) {
 	const configDir = dirname(configPath);
 	if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true, mode: 0o700 });
-	const tempPath = join(configDir, `.${basenameOf(configPath)}.gentle-shell-${process.pid}.tmp`);
-	writeFileSync(tempPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-	renameSync(tempPath, configPath);
+	writeFileAtomically(configPath, `${JSON.stringify(config, null, 2)}\n`);
+}
+
+// The one atomic write every launcher-owned config/settings update goes
+// through: a temp file next to the real target, then a rename onto it, so a
+// crash or kill never leaves a partial file. When `path` is a symlink (Nix
+// home-manager, stow, and similar dotfile managers ship settings.json and
+// config.json that way), the write lands on the link's real target and the
+// link itself stays in place; renaming onto `path` would replace the link
+// with a regular file. A missing path or a dangling link has no real target
+// to preserve, so it is written at `path` itself, exactly as before this
+// helper existed, instead of creating a file wherever a dangling link points.
+// The permission bits are `mode` when given, otherwise the real target's own
+// (applied with chmod, so the umask cannot narrow them); a new file keeps
+// the default creation mode. The temp file is removed when the write or
+// rename throws, and the error propagates to the caller's own handling.
+function writeFileAtomically(path, data, { mode } = {}) {
+	let target = path;
+	try {
+		target = realpathSync(path);
+	} catch (error) {
+		if (error.code !== "ENOENT") throw error;
+	}
+	let targetMode = mode;
+	if (targetMode === undefined) {
+		try {
+			targetMode = statSync(target).mode & 0o777;
+		} catch (error) {
+			if (error.code !== "ENOENT") throw error;
+		}
+	}
+	const tempPath = join(dirname(target), `.${basenameOf(target)}.gentle-shell-${process.pid}.tmp`);
+	try {
+		writeFileSync(tempPath, data);
+		if (targetMode !== undefined) chmodSync(tempPath, targetMode);
+		renameSync(tempPath, target);
+	} catch (error) {
+		rmSync(tempPath, { force: true });
+		throw error;
+	}
 }
 
 function loadConfig() {
@@ -571,9 +609,7 @@ function restoreFile(snapshot) {
 	}
 	if (currentBytes !== undefined && currentBytes.equals(snapshot.bytes)) return false;
 	mkdirSync(dirname(path), { recursive: true });
-	const tempPath = join(dirname(path), `.${basenameOf(path)}.gentle-shell-restore-${process.pid}.tmp`);
-	writeFileSync(tempPath, snapshot.bytes, { mode: snapshot.mode });
-	renameSync(tempPath, path);
+	writeFileAtomically(path, snapshot.bytes, { mode: snapshot.mode });
 	return true;
 }
 
@@ -633,10 +669,7 @@ function restoreManagedAssetDigestField(path, originalText) {
 	if (currentText === undefined) return false;
 	const restoredText = restoreJsonField(originalText, currentText, MANAGED_ASSET_DIGEST_FIELD);
 	if (restoredText === undefined) return false;
-	const mode = statSync(path).mode & 0o777;
-	const tempPath = join(dirname(path), `.${basenameOf(path)}.gentle-shell-restore-${process.pid}.tmp`);
-	writeFileSync(tempPath, restoredText, { mode });
-	renameSync(tempPath, path);
+	writeFileAtomically(path, restoredText);
 	return true;
 }
 
@@ -677,10 +710,7 @@ function enforceDefaultThemeField(settingsPath, originalSettingsText) {
 		? restoreJsonField(originalSettingsText, currentText, "theme")
 		: forceJsonFieldIfAbsentInOriginal(originalSettingsText, currentText, "theme", DEFAULT_THEME_NAME);
 	if (newText === undefined) return false;
-	const mode = statSync(settingsPath).mode & 0o777;
-	const tempPath = join(dirname(settingsPath), `.${basenameOf(settingsPath)}.gentle-shell-restore-${process.pid}.tmp`);
-	writeFileSync(tempPath, newText, { mode });
-	renameSync(tempPath, settingsPath);
+	writeFileAtomically(settingsPath, newText);
 	return originalHadTheme ? "restored" : "forced";
 }
 
@@ -698,6 +728,53 @@ function safely(label, path, fallback, fn) {
 		process.stderr.write(`gentle-shell: could not ${label} at ${path} (${error.message}); continuing\n`);
 		return fallback;
 	}
+}
+
+// gentle-pi replaces Pi's replaceable builtin codemode with its own decorated
+// codemode tool (extensions/quiet-tools.ts -> registerCompactCodemode in
+// lib/codemode-renderer.ts), and Pi prints a startup warning whenever a
+// builtin loses its tool to another extension. Pi's only per-builtin opt-out
+// is a `-builtin:<name>` entry in the settings `extensions` array, so every
+// normal launch ensures that entry in the settings.json of a home
+// gentle-shell owns (see main, below).
+const BUILTIN_CODEMODE_EXTENSION = "builtin:codemode";
+
+// Pure: returns `settingsText` with `-<builtin>` appended to its `extensions`
+// array (created when absent), or undefined when nothing should change — the
+// text does not parse as a JSON object, `extensions` exists but is not an
+// array, or the array already holds any explicit entry for the builtin
+// (`+`, `-`, `!`, or bare), which is the user's own decision. Keeps every
+// other key and entry in place, plus the text's own indentation and trailing
+// newline (same detection as detectJsonFormatting in
+// lib/gentle-shell-launcher.ts).
+function withBuiltinExtensionExcluded(settingsText, builtin) {
+	let settings;
+	try {
+		settings = JSON.parse(settingsText);
+	} catch {
+		return undefined;
+	}
+	if (typeof settings !== "object" || settings === null || Array.isArray(settings)) return undefined;
+	const extensions = Object.prototype.hasOwnProperty.call(settings, "extensions") ? settings.extensions : [];
+	if (!Array.isArray(extensions)) return undefined;
+	if (extensions.some((entry) => typeof entry === "string" && entry.replace(/^[+!-]/, "") === builtin)) return undefined;
+	const indent = settingsText.match(/\{\r?\n([ \t]+)/)?.[1];
+	const serialized = JSON.stringify({ ...settings, extensions: [...extensions, `-${builtin}`] }, null, indent);
+	return settingsText.endsWith("\n") ? `${serialized}\n` : serialized;
+}
+
+// Applies withBuiltinExtensionExcluded to an existing settings.json with the
+// same atomic temp-file-then-rename write as the restores above. A missing
+// settings.json is left missing: only the brand-new-home bootstrap
+// (installIsolatedTuiModeSetting) seeds that file, and this launch-time step
+// never takes over that role. Returns true when it actually wrote the file.
+function ensureBuiltinCodemodeExcluded(settingsPath) {
+	const currentText = readJsonIfExists(settingsPath);
+	if (currentText === undefined) return false;
+	const newText = withBuiltinExtensionExcluded(currentText, BUILTIN_CODEMODE_EXTENSION);
+	if (newText === undefined) return false;
+	writeFileAtomically(settingsPath, newText);
+	return true;
 }
 
 // Provisions `home` with everything `gentle-ai install --agent pi` installs
@@ -1198,6 +1275,21 @@ async function main() {
 		// exits with the same signal-derived code instead of falling through
 		// to launch pi.
 		if (autoProvisionResult !== undefined) process.exit(autoProvisionResult.exitCode);
+
+		// Runs after auto-provision, so it sees settings.json exactly as that
+		// run left it. Only a home gentle-shell owns, by the same rule
+		// auto-provisioning uses (homeIsForeign): never --link (excluded above),
+		// a foreign --home, or pi's own default agent home, since plain pi may
+		// share those and would lose its builtin codemode. `setup` (including
+		// --dry-run) returned before this point.
+		const settingsPath = join(home.dir, "settings.json");
+		const excluded = safely("exclude Pi's builtin codemode in your Gentle Shell settings", settingsPath, false, () => {
+			const previous = provisionedEntry(readRawConfig(resolveConfigPath()), safeRealpath(home.dir));
+			return !homeIsForeign(home, previous, homeHadContentBeforeBootstrap) && ensureBuiltinCodemodeExcluded(settingsPath);
+		});
+		if (excluded) {
+			process.stderr.write(`gentle-shell: disabled Pi's builtin codemode in ${settingsPath} (Gentle Shell ships its own codemode tool)\n`);
+		}
 	}
 
 	const packageRootExplicit = args.packageRoot !== undefined;
@@ -1290,6 +1382,9 @@ async function main() {
 		passthrough: [...managedHerdrExtensionArgs(home, args), ...args.passthrough],
 		piSubcommand: args.piSubcommand,
 		baseEnv: process.env,
+		homedir: homedir(),
+		// The spawn below sets no cwd, so pi runs in the launcher's own.
+		cwd: process.cwd(),
 	});
 
 	// Only an interactive session ends with pi's exit resume hint, which

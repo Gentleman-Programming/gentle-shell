@@ -15,7 +15,9 @@ function isolatedHome(t: test.TestContext): string {
 	const home = mkdtempSync(join(tmpdir(), "gentle-pi-config-home-"));
 	const previousHome = process.env.HOME;
 	const previousUserProfile = process.env.USERPROFILE;
-	// Isolation must cover POSIX and Windows, the way homedir() resolves each.
+	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+	// Clear the higher-priority config override as well as isolating both OS homes.
+	delete process.env.GENTLE_PI_CONFIG_HOME;
 	process.env.HOME = home;
 	process.env.USERPROFILE = home;
 	t.after(() => {
@@ -23,6 +25,8 @@ function isolatedHome(t: test.TestContext): string {
 		else process.env.HOME = previousHome;
 		if (previousUserProfile === undefined) delete process.env.USERPROFILE;
 		else process.env.USERPROFILE = previousUserProfile;
+		if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
 		rmSync(home, { recursive: true, force: true });
 	});
 	return home;
@@ -39,6 +43,25 @@ test("gentlePiConfigHome honours GENTLE_PI_CONFIG_HOME and otherwise falls back 
 		join(home, ".pi", "gentle-ai", "profiles.json"),
 		"the store path is derived from the config home, not from the agent home",
 	);
+});
+
+test("the isolated home restores defined and undefined config overrides", async (t) => {
+	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+	try {
+		for (const inherited of [undefined, "/synthetic-inherited-config"]) {
+			if (inherited === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+			else process.env.GENTLE_PI_CONFIG_HOME = inherited;
+			await t.test(`inherited override: ${inherited === undefined ? "unset" : "set"}`, (child) => {
+				const home = isolatedHome(child);
+				assert.equal(process.env.GENTLE_PI_CONFIG_HOME, undefined);
+				assert.equal(gentlePiConfigHome(), join(home, ".pi", "gentle-ai"));
+			});
+			assert.equal(process.env.GENTLE_PI_CONFIG_HOME, inherited);
+		}
+	} finally {
+		if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+	}
 });
 
 test("the config home ignores the Pi agent-home overrides", (t) => {

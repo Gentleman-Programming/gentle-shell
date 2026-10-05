@@ -10,6 +10,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
+// The banner reads process.env directly; a suite launched from a delegated
+// child must still exercise the parent paths (gentle-shell#1690).
+delete process.env.GENTLE_PI_AGENTS_CHILD;
+
 test("startup artwork spells Gentle Shell with aligned animation spans", () => {
 	const source = readFileSync(new URL("../extensions/startup-banner.ts", import.meta.url), "utf8");
 	const logo = JSON.parse(source.match(/const TEXT_LOGO = (\[[\s\S]*?\]);/)![1].replace(/,\s*]/, "]")) as string[];
@@ -395,4 +399,46 @@ test("launcher-injected extension directories do not suppress the startup banner
 	for (const sub of ["install", "remove", "uninstall", "update", "list", "config", "auth"]) {
 		assert.equal(isPiCliSubcommandInvocation(["node", "pi", sub, "npm:x"]), true, sub);
 	}
+});
+
+// gentle-shell#1690: a delegated rpc child has hasUI=true; only a piped stdout
+// without rows/columns kept the banner off before the explicit child guard.
+test("delegated children never paint the startup banner", async (t) => {
+	const previousChild = process.env.GENTLE_PI_AGENTS_CHILD;
+	process.env.GENTLE_PI_AGENTS_CHILD = "1";
+	t.after(() => {
+		if (previousChild === undefined) delete process.env.GENTLE_PI_AGENTS_CHILD;
+		else process.env.GENTLE_PI_AGENTS_CHILD = previousChild;
+	});
+	const home = mkdtempSync(join(tmpdir(), "gp-banner-child-"));
+	const previousHome = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = home;
+	t.after(() => {
+		if (previousHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previousHome;
+		rmSync(home, { recursive: true, force: true });
+	});
+	t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+	t.mock.method(fs, "readFile", async () => JSON.stringify({ showRose: true, showTextLogo: true, color: "pink" }));
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const argv = process.argv;
+	process.argv = ["node"];
+	t.after(() => { process.argv = argv; });
+	for (const [key, value] of [["rows", 40], ["columns", 160]] as const) {
+		const descriptor = Object.getOwnPropertyDescriptor(process.stdout, key);
+		Object.defineProperty(process.stdout, key, { configurable: true, writable: true, value });
+		t.after(() => descriptor ? Object.defineProperty(process.stdout, key, descriptor) : Reflect.deleteProperty(process.stdout, key));
+	}
+	let start: Function;
+	let shutdown: Function;
+	startup({ on: (name: string, fn: Function) => {
+		if (name === "session_start") start = fn;
+		if (name === "session_shutdown") shutdown = fn;
+	}, registerCommand() {}, getCommands: () => [], getAllTools: () => [] } as unknown as ExtensionAPI);
+	t.after(() => shutdown?.());
+	let headers = 0;
+	await start!({}, { hasUI: true, cwd: "/fixture", ui: { setHeader: () => { headers++; } } });
+	t.mock.timers.tick(50);
+	assert.equal(headers, 0);
 });

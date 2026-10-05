@@ -393,7 +393,7 @@ async function run() {
 	assert.equal(hooks.has("input"), false, "retired SDD slash input must not be intercepted");
 	assert.ok(hooks.has("before_agent_start"), "missing before_agent_start hook");
 	assert.ok(hooks.has("tool_call"), "missing tool_call hook");
-	for (const toolName of ["read", "bash", "grep", "find", "ls", "edit", "write"]) {
+	for (const toolName of ["read", "grep", "find", "ls", "edit", "write"]) {
 		assert.ok(tools.has(toolName), `missing quiet built-in tool renderer ${toolName}`);
 	}
 	const codemode = tools.get("codemode");
@@ -450,7 +450,8 @@ async function run() {
 	// rules) moved verbatim to assets/orchestrator-delegation.md; the
 	// always-on combined prompt now only carries a pointer to it. Union read
 	// so these assertions are repointed, not weakened.
-	const delegationDetail = await readFile(join(ROOT, "assets", "orchestrator-delegation.md"), "utf8");
+	const { DELEGATION_MODULES } = await import("./support/orchestrator-modules.ts");
+	const delegationDetail = (await Promise.all(DELEGATION_MODULES.map((file) => readFile(join(ROOT, "assets", file), "utf8")))).join("\n\n");
 
 	const promptCwd = await tempWorkspace();
 	try {

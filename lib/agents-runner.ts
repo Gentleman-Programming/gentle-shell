@@ -9,6 +9,7 @@ import { AGENT_MODE, formatModelRef, type AgentDefinition, type AgentMode, type 
 import { CHILD_QUERY_MAX_INFLIGHT, CHILD_QUERY_TIMEOUT_MS, parseChildFrame, validChildMessage, validChildQueryId } from "./agents-messaging.ts";
 import { ParentStandingReviewPermissionBroker } from "./review-session-standing-permission-ipc.ts";
 import { isFinished, normalizeRpcEvent, ToolArgumentProgress, TASK_EVENT, TASK_STATUS, taskLabel, type AskRequest, type ChildResponseObservation, type TaskRecord, type TaskStore } from "./agents-protocol.ts";
+import { WriterSurfaceRegistry, writerSurfaceConflictMessage } from "./writer-surfaces.ts";
 
 // Gentle Agents runner. Every subagent is its own `pi --mode rpc` process:
 // the host never runs subagent work on the TUI thread. It writes JSON
@@ -132,6 +133,13 @@ export interface TaskRequest {
 	// ambient discovery, an empty array launches with only --no-extensions, and
 	// entries are extension paths passed in order.
 	extensions?: string[];
+	// Parsed `## Allowed edit surfaces` of a bounded writer. While the task is
+	// queued or running it claims them in `cwd`; run() rejects an overlapping
+	// claim (gentle-shell#1731). Read-only agents leave this unset.
+	writerSurfaces?: readonly string[];
+	// Canonical worktree root the claim is keyed to; the parent computes it before
+	// run() so admission stays synchronous. Defaults to `cwd`.
+	writerRoot?: string;
 	// Synchronous admission recheck at dequeue, before any OS spawn. Throws fail
 	// only this task; unlike onLaunch, it must never persist Changes evidence.
 	beforeSpawn?: () => void;
@@ -333,6 +341,7 @@ export class AgentRunner {
 	private readonly waiters = new Map<string, Array<(task: TaskRecord) => void>>();
 	private readonly queryWaiters = new Map<string, Array<(query: TaskQuery | undefined) => void>>();
 	private readonly firstQueries = new Map<string, TaskQuery>();
+	private readonly writers = new WriterSurfaceRegistry();
 	private counter = 0;
 
 	constructor(store: TaskStore, limits: RunnerLimits, deps: RunnerDeps, hooks: RunnerHooks) {
@@ -374,8 +383,15 @@ export class AgentRunner {
 		return task;
 	}
 
+	// Check and claim happen in this one synchronous call, so two launches can
+	// never both pass admission for overlapping surfaces; finish() releases.
 	run(request: TaskRequest): TaskRecord {
+		if (request.writerSurfaces) {
+			const conflicts = this.writers.conflicts(request.writerRoot ?? request.cwd, request.writerSurfaces);
+			if (conflicts.length) throw new Error(writerSurfaceConflictMessage(conflicts));
+		}
 		const task = this.createTask(request);
+		if (request.writerSurfaces) this.writers.claim(task.id, request.writerRoot ?? request.cwd, request.writerSurfaces);
 		// A caller can retain and mutate its request after dispatch. Preserve only
 		// the extension selection captured at construction for this child launch.
 		const launchRequest = request.extensions === undefined ? request : { ...request, extensions: [...request.extensions] };
@@ -980,6 +996,7 @@ export class AgentRunner {
 		this.live.delete(id);
 		// Quarantine already notified completion, but its retained slot is now free.
 		if (live.quarantined) {
+			this.writers.release(id);
 			queueMicrotask(() => this.pump());
 			return;
 		}
@@ -989,6 +1006,9 @@ export class AgentRunner {
 	}
 
 	private finish(id: string, status: TaskRecord["status"], error: string | null, live?: LiveTask): void {
+		// A quarantined child may still be writing: its claim lives as long as its
+		// reserved slot and is released in completeExit on proven exit.
+		if (!live?.quarantined) this.writers.release(id);
 		const current = this.store.get(id);
 		if (!current || isFinished(current.status)) return;
 		const finished = this.store.update(id, { status, endedAt: this.deps.now(), error, lastStep: error ?? "done" });

@@ -65,9 +65,66 @@ async function assertAccepted(input: Record<string, unknown>, message: string) {
 	assert.equal(await dispatchWriter(input), undefined, message);
 }
 
-async function assertRejected(input: Record<string, unknown>, message: string) {
-	assert.deepEqual(await dispatchWriter(input), { block: true, reason: REJECTION }, message);
+const RESEND = "Resend the same task text unchanged except for that section; never shorten or re-summarize it.";
+const PROBLEM = /^(?:No `## Allowed edit surfaces` heading was found\.|The section has no entries\.|Repeated sections list different surfaces\.|Line ".+" is not a valid surface entry; move prose under a following Markdown heading\.|Line ".+" is not a valid surface entry; if it is a path, wrap the whole entry in backticks, otherwise move it under a following Markdown heading\.|Entry ".+" is not a narrow repository-relative path; remove absolute paths, `\.\.` segments, root globs, and stray backticks\.)$/;
+
+// Every rejection is the canonical text, exactly one concrete problem, and the
+// resend instruction; nothing else (review R3-005).
+function rejectionProblem(reason: string): string {
+	assert.ok(reason.startsWith(`${REJECTION} `), "canonical rejection prefix");
+	assert.ok(reason.endsWith(` ${RESEND}`), "resend instruction suffix");
+	const problem = reason.slice(REJECTION.length + 1, reason.length - RESEND.length - 1);
+	assert.match(problem, PROBLEM);
+	return problem;
 }
+
+async function assertRejected(input: Record<string, unknown>, message: string) {
+	const result = await dispatchWriter(input);
+	assert.equal(result?.block, true, message);
+	rejectionProblem(result.reason);
+}
+
+// gentle-shell#1713: an unexplained rejection made the orchestrator resend
+// shorter, re-summarized tasks (1786 -> 1542 chars) and lose requirements.
+test("rejection names the offending line and asks for the same task unchanged", async () => {
+	const result = await dispatchWriter({
+		agent: "gentle-ai-worker",
+		mode: "task",
+		task: [
+			"Implement split transactions.",
+			"",
+			"## Allowed edit surfaces",
+			"- src/model.ts",
+			"- test/**/*.test.ts",
+			"",
+			"Requirements: one parent transaction with ordered allocations.",
+		].join("\n"),
+	});
+	assert.equal(result?.block, true);
+	assert.match(result.reason, /Line "Requirements: one parent transaction with ordered allocations\." is not a valid surface entry/);
+	assert.match(result.reason, /Resend the same task text unchanged except for that section; never shorten or re-summarize it\./);
+	const missing = await dispatchWriter({ agent: "gentle-ai-worker", mode: "task", task: "Implement it." });
+	assert.match(missing?.reason ?? "", /No `## Allowed edit surfaces` heading was found\./);
+});
+
+test("each rejection names its concrete problem, and invalid paths are not called prose", async () => {
+	const problem = async (input: Record<string, unknown>) => rejectionProblem((await dispatchWriter({ agent: "gentle-ai-worker", mode: "task", ...input }))!.reason);
+	assert.equal(await problem({ task: "## Allowed edit surfaces\n\n## Return\nReport" }), "The section has no entries.");
+	assert.equal(await problem({ task: "## Allowed edit surfaces\nsrc/a.ts", context: "## Allowed edit surfaces\nsrc/b.ts" }), "Repeated sections list different surfaces.");
+	for (const path of ["/etc/passwd", "../outside.ts", "src/../../x.ts", "**/*.ts", "src/`odd.ts"]) {
+		assert.equal(await problem({ task: `## Allowed edit surfaces\n- ${path}` }), `Entry "${path}" is not a narrow repository-relative path; remove absolute paths, \`..\` segments, root globs, and stray backticks.`, path);
+	}
+	const long = `Then ${"verify every requirement ".repeat(8)}carefully.`;
+	const ambiguous = (shown: string) => `Line "${shown}" is not a valid surface entry; if it is a path, wrap the whole entry in backticks, otherwise move it under a following Markdown heading.`;
+	assert.equal(await problem({ task: `## Allowed edit surfaces\nsrc/a.ts\n${long}` }), ambiguous(`${long.slice(0, 120)}...`));
+	// A real path with a space must not be steered out of the section.
+	assert.equal(await problem({ task: "## Allowed edit surfaces\n- docs/with space.md" }), ambiguous("- docs/with space.md"));
+	// Whitespace that stays invalid even when quoted is plain prose.
+	assert.equal(await problem({ task: "## Allowed edit surfaces\n- ~ notes for later" }), `Line "- ~ notes for later" is not a valid surface entry; move prose under a following Markdown heading.`);
+	const control = await problem({ task: "## Allowed edit surfaces\nsrc/a\u0007.ts" });
+	assert.doesNotMatch(control, /\u0007/);
+	assert.match(control, /^Entry "src\/a \.ts" is not a narrow repository-relative path/);
+});
 
 test("task-scoped surfaces are accepted ahead of a deeper heading", async () => {
 	await assertAccepted({

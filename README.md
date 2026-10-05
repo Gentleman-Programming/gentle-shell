@@ -205,6 +205,7 @@ Extension commands are only useful if you can find them. `alt+k` opens a curated
 | Native interactive tools | Built-in questions, choices, and review captures — no third-party dependency. |
 | Gentle Todo | A plan card that turns amber when the model lets it go stale. |
 | Subscription usage | Per-window meters and resets for supported provider accounts. |
+| Gentle Stats | `/gentle:stats` shows local usage history: activity heatmap, tokens, cost, streaks, and per-model share. |
 | Gentle notices | Gentle AI calls and review reminders as cards in the transcript. |
 
 > **Every component, skill and preset: [Full breakdown →](docs/gentle-shell.md)**
@@ -277,6 +278,8 @@ pi
 ```
 
 See the [v3.5.1 release notes](https://github.com/Gentleman-Programming/gentle-shell/releases/tag/v3.5.1) for version-specific changes.
+
+**Builtin codemode warning.** gentle-pi replaces Pi's builtin `codemode` with its compact renderer, so Pi warns at startup that the builtin was not loaded. In your own Pi home (`pi` with this package, or `gentle-shell --link`), gentle-pi asks once in the interactive TUI whether to add `"-builtin:codemode"` to `extensions` in the agent `settings.json` (usually `~/.pi/agent/settings.json`); it writes only if you accept, and the warning disappears from the next launch. A declined prompt is not repeated. To silence it by hand, add the entry yourself, for example `"extensions": ["-builtin:codemode"]`. Isolated `gentle-shell` homes already carry it.
 
 ### NaN model provider
 

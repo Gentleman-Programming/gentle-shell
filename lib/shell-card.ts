@@ -54,6 +54,14 @@ export interface CardRenderOptions {
 	previewRows?: number;
 	/** Right-aligned hint in the top rule, e.g. the expand key. May carry ANSI. */
 	hint?: string;
+	/**
+	 * Fixed chrome panels (Agents, Todos, Status rail) opt in here. The float
+	 * style then paints them like float cards, centered between two padding
+	 * rows with a blank row between header and body: `panelExtraRows` taller
+	 * than neon when a body exists, with the header on `panelHeaderRow`.
+	 * Neon keeps the outlined frame. Conversation cards never set it.
+	 */
+	panel?: boolean;
 }
 
 export const CARD_GLYPH = "✿";
@@ -285,7 +293,7 @@ function panelOpener(theme: CardTheme, tone: CardTone): string {
  */
 export function floatRows(tone: CardTone, theme: CardTheme, width: number, render: (width: number) => CardParts): string[] {
 	const target = Math.max(0, Math.floor(width));
-	const open = cardStyle() === CARD_STYLE.FLOAT && target >= FLOAT_MIN_WIDTH ? panelOpener(theme, tone) : "";
+	const open = floatOpener(theme, tone, target);
 	if (!open) {
 		const { head = [], body = [], bottom } = render(width);
 		return [...head, ...body, ...(bottom === undefined ? [] : [bottom])];
@@ -301,8 +309,47 @@ export function floatRows(tone: CardTone, theme: CardTheme, width: number, rende
 			...(bottom === undefined ? [] : [bottom]),
 		];
 	});
+	return paintFloat(rows, open);
+}
+
+/** The tone background opener when the float style applies at this width, or "" for the outlined card. */
+function floatOpener(theme: CardTheme, tone: CardTone, width: number): string {
+	return cardStyle() === CARD_STYLE.FLOAT && Math.floor(width) >= FLOAT_MIN_WIDTH ? panelOpener(theme, tone) : "";
+}
+
+// Paints every row behind its tone background, re-armed after any reset the
+// content carries, inside a transparent one-column margin on both sides.
+// Padding rows keep their tone-coloured accent just like content rows.
+function paintFloat(rows: readonly string[], open: string): string[] {
 	const margin = " ".repeat(FLOAT_MARGIN);
 	return rows.map((row) => `${margin}${open}${row.replace(BG_CLEARING, (reset) => reset + open)}${BG_RESET}${margin}`);
+}
+
+/**
+ * Content columns of a panel body (Agents, Todos, Status rail) in the active
+ * style. Callers that pre-wrap or pre-fit rows use it so a float panel, two
+ * columns narrower than the outlined frame, never re-wraps or clips them.
+ */
+export function panelInnerWidth(theme: CardTheme, width: number, tone: CardTone = CARD_TONE.INFO): number {
+	return floatOpener(theme, tone, width) ? cardInnerWidth(Math.floor(width) - FLOAT_MARGIN * 2) : cardInnerWidth(width);
+}
+
+/**
+ * The row a panel draws its header on in the active style: 0 for the
+ * outlined frame, 1 below the float panel's top padding row. Callers
+ * hit-test their header control with it.
+ */
+export function panelHeaderRow(theme: CardTheme, width: number, tone: CardTone = CARD_TONE.INFO): number {
+	return floatOpener(theme, tone, width) ? 1 : 0;
+}
+
+/**
+ * Rows a float panel with a body adds over the outlined frame: the top
+ * padding row and the separator below the header, or 0 for the outlined
+ * frame. Callers with a row budget spend them from the body.
+ */
+export function panelExtraRows(theme: CardTheme, width: number, tone: CardTone = CARD_TONE.INFO): number {
+	return floatOpener(theme, tone, width) ? 2 : 0;
 }
 
 export function renderCard(card: Card, theme: CardTheme, width: number, options: CardRenderOptions): string[] {
@@ -313,20 +360,49 @@ export function renderCard(card: Card, theme: CardTheme, width: number, options:
 		body: cardBodyRows(card.body.map((line) => theme.fg(BODY_ROLE, line)), card.tone, theme, inner, options),
 		bottom: cardBottom(card.tone, theme, inner),
 	}));
-	// Panels (Agents, Todos, Status) always keep the outlined frame.
+	// Without the panel opt-in, legacy cards always keep the outlined frame.
 	if (chrome !== OUTLINE_CHROME) return withChrome(OUTLINE_CHROME, () => renderCard(card, theme, width, options));
-	const innerWidth = Math.max(1, width - FRAME_COLUMNS);
+	const open = options.panel ? floatOpener(theme, card.tone, width) : "";
+	if (open) return paintFloat(withChrome(FLOAT_CHROME, () => floatPanel(card, theme, Math.floor(width) - FLOAT_MARGIN * 2, options)), open);
 	const top = cardTop(card, theme, width, options.hint);
 	const bottom = cardBottom(card.tone, theme, width);
+	return [top, ...cardText(card, theme, cardInnerWidth(width), options.expanded).map((line) => cardLine(line, card.tone, theme, width)), bottom];
+}
+
+/** Body text of a legacy card or panel, wrapped to its content columns, before the side rails. */
+function cardText(card: Card, theme: CardTheme, innerWidth: number, expanded: boolean): string[] {
 	const lines = bodyLines(card, innerWidth);
-	const body = (() => {
-		if (lines.length === 0) return [];
-		if (!options.expanded) {
-			const first = lines.find((line) => line !== "") ?? "";
-			const clipped = lines.length > 1 ? truncateToWidth(first, Math.max(1, innerWidth - 1), "") + "…" : first;
-			return [cardLine(theme.fg(BODY_ROLE, clipped), card.tone, theme, width)];
-		}
-		return lines.map((line) => cardLine(line === "" ? "" : theme.fg(BODY_ROLE, line), card.tone, theme, width));
-	})();
-	return [top, ...body, bottom];
+	if (lines.length === 0) return [];
+	if (!expanded) {
+		const first = lines.find((line) => line !== "") ?? "";
+		const clipped = lines.length > 1 ? truncateToWidth(first, Math.max(1, innerWidth - 1), "") + "…" : first;
+		return [theme.fg(BODY_ROLE, clipped)];
+	}
+	return lines.map((line) => (line === "" ? "" : theme.fg(BODY_ROLE, line)));
+}
+
+// Float panels: the float card chrome. Padding rows that keep the accent bar
+// sit above the heading, between heading and body (only when a body exists)
+// and in the bottom rule's place, centering the content: panelExtraRows taller
+// than neon, with the heading on row 1 (see panelHeaderRow).
+function floatPanel(card: Card, theme: CardTheme, width: number, options: CardRenderOptions): string[] {
+	const blank = cardBottom(card.tone, theme, width);
+	const body = cardText(card, theme, cardInnerWidth(width), options.expanded).map((line) => cardLine(line, card.tone, theme, width));
+	return [blank, panelHeader(card, theme, width, options.hint), ...(body.length > 0 ? [blank, ...body] : []), blank];
+}
+
+function fitRow(text: string, width: number): string {
+	const clipped = visibleWidth(text) <= width ? text : truncateToWidth(text, width, "…");
+	return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
+}
+
+// `▎ <glyph> <title>  <subtitle>` left and the hint right, ending in the same
+// two columns the body rows keep for their right edge.
+function panelHeader(card: Card, theme: CardTheme, width: number, hint?: string): string {
+	const lead = theme.fg(FRAME_ROLE[card.tone], chrome.topLeft) + chrome.topLead;
+	const subtitle = card.subtitle ? `  ${theme.fg(SUBTITLE_ROLE, card.subtitle)}` : "";
+	const left = `${lead}${theme.fg(TITLE_ROLE[card.tone], `${card.glyph ?? CARD_GLYPH} ${card.title}`)}${subtitle}`;
+	const right = hint ? `${theme.fg(SUBTITLE_ROLE, hint)}${chrome.topRight}` : "";
+	const gap = width - visibleWidth(left) - visibleWidth(right);
+	return right && gap >= 1 ? `${left}${" ".repeat(gap)}${right}` : fitRow(left, width);
 }

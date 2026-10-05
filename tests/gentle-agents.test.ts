@@ -5392,7 +5392,7 @@ test("children receive context and safety extensions, and missing files are omit
 			await h.tools.get("subagent_run")!.execute(`child-context-${scenario}`, { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
 			await tick();
 			assert.equal(runtime.spawned.length, 1);
-			assert.deepEqual(extensionArguments(runtime.spawned[0]!), scenario === "present" ? [resolve(expected), resolve(safety), resolve(nanProvider)] : []);
+			assert.deepEqual(extensionArguments(runtime.spawned[0]!), scenario === "present" ? ["/global/extension.js", resolve(expected), resolve(safety), resolve(nanProvider)] : ["/global/extension.js"], "the configured selection rides first, context files (including nan-provider) ride along, and missing context files are omitted");
 		} finally {
 			await h.fire("session_shutdown", ctx);
 			await tick();

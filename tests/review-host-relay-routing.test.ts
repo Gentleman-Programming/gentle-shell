@@ -226,7 +226,7 @@ async function runCapture(cwd: string, harness: RoutingHarness, lineageId: strin
 	const selected = harness.statusQueue[0]?.nextTransition?.collect?.inputs[0];
 	if (selected === undefined) throw new Error("capture test requires one current collect input");
 	return await __testing.executeReviewCaptureOperation(
-		{ lineageId, collectBinding: JSON.stringify(selected), ...input },
+		{ lineageId, collectBinding: selected, ...input },
 		cwd,
 		harness.native,
 		undefined, undefined, undefined, false, modelRegistry,
@@ -438,7 +438,7 @@ test("Pi-authored review documents are rejected at the capture input boundary", 
 
 function groupInputs(lineageId: string, revision = SHA): ReviewCollectInputV3[] { return ["review-risk", "review-resilience", "review-readability", "review-reliability"].map((lens, order) => relayCollectInput(lineageId, lens, order, true, "provider", revision)); }
 
-async function runCaptureGroup(cwd: string, harness: RoutingHarness, lineageId: string, inputs: readonly ReviewCollectInputV3[], reviewerRunAcknowledged = true, modelRegistry?: InProcessReviewerRegistry): Promise<Record<string, unknown>> { return await __testing.executeReviewCaptureGroupOperation({ lineageId, collectBindings: inputs.map((input) => JSON.stringify(input)), reviewerRunAcknowledged }, cwd, harness.native, undefined, undefined, undefined, false, modelRegistry) as Record<string, unknown>; }
+async function runCaptureGroup(cwd: string, harness: RoutingHarness, lineageId: string, inputs: readonly ReviewCollectInputV3[], reviewerRunAcknowledged = true, modelRegistry?: InProcessReviewerRegistry): Promise<Record<string, unknown>> { return await __testing.executeReviewCaptureGroupOperation({ lineageId, collectBindings: inputs.map((input, index) => index % 2 === 0 ? input : JSON.stringify(input)), reviewerRunAcknowledged }, cwd, harness.native, undefined, undefined, undefined, false, modelRegistry) as Record<string, unknown>; }
 
 function prepared(request: ReviewHostRelayRequest) { return { request, promptByteLength: 64, resultByteLength: 32 }; }
 

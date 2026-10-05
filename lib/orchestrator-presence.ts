@@ -2,6 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
+import { validRecordedScope, type RecordedScope } from "./orchestrator-scope.ts";
+import { projectCatalog } from "./orchestrator-catalog.ts";
+import { decodePublishedState, type PublishedState } from "./orchestrator-state.ts";
 
 // Same-profile OS-user trust boundary, not an authorization channel. POSIX modes
 // restrict newly created storage; Windows deployments must supply their own ACLs.
@@ -27,6 +30,18 @@ export interface Activity { tasks: { summary: ActivityInput["task"]; thread: {
 	version: number; dropped: number; items: ObjectValue[];
 } }[] }
 export interface Target { sessionHash: string; incarnation: string }
+export interface DiscoveryMetadata {
+	state?: PublishedState;
+	scope?: RecordedScope;
+	activation: string;
+	workspace: string;
+	tasks: { id: string; label: string; status: string; workspace: string }[];
+	omitted: number;
+}
+export function sessionHash(sessionId: string) { return digest(sessionId); }
+export function activationHash(peer: { sessionId: string; endpoint: string; createdAt: number }) {
+	return digest(JSON.stringify([peer.sessionId, peer.endpoint, peer.createdAt]));
+}
 export interface Header extends Target {
 	schema: 1; label: string; heartbeat: number; generation: number;
 	counts: { running: number; queued: number; waiting: number; finished: number };
@@ -37,10 +52,11 @@ const object = (v: unknown): v is ObjectValue => !!v && typeof v === "object" &&
 const integer = (v: unknown) => Number.isSafeInteger(v) && (v as number) >= 0;
 const keys = (v: ObjectValue, names: string[]) => Object.keys(v).length === names.length && names.every((k) => Object.hasOwn(v, k));
 const digest = (data: string | Buffer) => createHash("sha256").update(data).digest("hex");
-function label(text: string) {
+export function sanitizeDisplayLabel(text: string) {
 	const clean = stripVTControlCharacters(text).replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim();
 	return Array.from(clean).slice(0, 120).join("").trimEnd();
 }
+const label = sanitizeDisplayLabel;
 const pick = (v: ObjectValue, names: string[]) => Object.fromEntries(names.map((k) => [k, v[k]]));
 const summaryTextKeys = ["id", "agent", "label", "status", "model"];
 const summaryKeys = [...summaryTextKeys, "createdAt", "startedAt", "endedAt", "lastActivityAt"];
@@ -78,6 +94,15 @@ function validTarget(value: Target) {
 	return object(value) && typeof value.sessionHash === "string" && HASH.test(value.sessionHash)
 		&& typeof value.incarnation === "string" && UUID.test(value.incarnation);
 }
+function validDiscovery(d: unknown): d is DiscoveryMetadata {
+	return object(d) && keys(d, ["activation", "workspace", "tasks", "omitted", ...["scope", "state"].filter(k => Object.hasOwn(d, k))])
+		&& typeof d.activation === "string" && HASH.test(d.activation)
+		&& typeof d.workspace === "string" && d.workspace === label(d.workspace) && integer(d.omitted)
+		&& Array.isArray(d.tasks) && d.tasks.length <= 8 && d.tasks.every((t: unknown) => object(t)
+			&& keys(t, ["id", "label", "status", "workspace"])
+			&& ["id", "label", "workspace"].every(k => typeof t[k] === "string" && t[k] === label(t[k]))
+			&& STATUSES.includes(t.status));
+}
 function validHeader(h: unknown): h is Header {
 	if (!object(h) || !keys(h, ["schema", "sessionHash", "incarnation", "label", "heartbeat", "generation", "counts", "digest", "unavailable"])) return false;
 	return validTarget(h as Header) && h.schema === 1 && typeof h.label === "string" && h.label === label(h.label)
@@ -86,7 +111,7 @@ function validHeader(h: unknown): h is Header {
 		&& ((h.unavailable === null && typeof h.digest === "string" && HASH.test(h.digest))
 			|| (h.unavailable === "activity-too-large" && h.digest === null));
 }
-function filename(target: Target, kind: "header" | "activity") {
+function filename(target: Target, kind: "header" | "activity" | "discovery") {
 	if (!validTarget(target)) throw new Error("malformed");
 	return `${target.sessionHash}.${target.incarnation}.${kind}.json`;
 }
@@ -96,7 +121,7 @@ function directory(path: string, privateMode = false, owned = privateMode) {
 	if (!stat.isDirectory() || stat.isSymbolicLink() || (owned && process.platform !== "win32"
 		&& ((stat.mode & (privateMode ? 0o077 : 0o022)) !== 0 || stat.uid !== process.getuid?.()))) throw new Error("unsafe-directory");
 }
-function rootFor(profile: string, create = false) {
+export function rootFor(profile: string, create = false, catalog = false) {
 	const absolute = resolve(profile);
 	// Reject symlink ancestors too. The caller supplies an existing profile root.
 	for (let path = absolute;; path = dirname(path)) {
@@ -104,7 +129,7 @@ function rootFor(profile: string, create = false) {
 		if (dirname(path) === path) break;
 	}
 	const shared = join(absolute, "gentle-agents");
-	const root = join(shared, "presence");
+	const root = join(shared, catalog ? "catalog" : "presence");
 	// History may already own a 0755 shared root. Never change its permissions.
 	for (const path of [shared, root]) {
 		if (create) {
@@ -118,7 +143,7 @@ function rootFor(profile: string, create = false) {
 function regular(stat: fs.Stats) {
 	if (!stat.isFile() || stat.nlink !== 1 || (process.platform !== "win32" && stat.uid !== process.getuid?.())) throw new Error("unsafe-file");
 }
-function boundedRead(path: string, limit: number) {
+export function boundedRead(path: string, limit: number) {
 	const before = fs.lstatSync(path);
 	regular(before);
 	if (before.size > limit) throw new Error("oversized");
@@ -236,11 +261,28 @@ export function readActivity(profile: string, selection: Header): { activity?: A
 	} catch (error) { return { unavailable: reason(error) }; }
 }
 
+/** Optional derived sidecar; failures never invalidate the schema-1 header. */
+export function readDiscovery(profile: string, h: Header): DiscoveryMetadata | undefined {
+	try {
+		const value = JSON.parse(boundedRead(join(rootFor(profile), filename(h, "discovery")), HEADER_LIMIT).toString("utf8"));
+		if (!object(value) || !keys(value, ["schema", "sessionHash", "incarnation", "generation", "metadata"])
+			|| value.schema !== 1 || value.sessionHash !== h.sessionHash || value.incarnation !== h.incarnation
+			|| value.generation !== h.generation || !validDiscovery(value.metadata)) return undefined;
+		const { scope, state, ...legacy } = value.metadata;
+		const decoded = decodePublishedState(state);
+		return { ...legacy, ...(validRecordedScope(scope) ? { scope } : {}), ...(decoded ? { state: decoded } : {}) };
+	} catch { return undefined; }
+}
+
 export class PresencePublisher {
 	readonly target: Readonly<Target>;
 	private readonly profile: string;
 	private readonly displayLabel: string;
+	private readonly labelSource?: () => string;
 	private header!: Header;
+	private discovery?: DiscoveryMetadata;
+	private catalog?: ReturnType<typeof projectCatalog>;
+	private catalogTokens: string[] = [];
 	private published = "";
 	private pending = "";
 	private timer?: ReturnType<typeof setTimeout>;
@@ -250,12 +292,13 @@ export class PresencePublisher {
 	/** Timer I/O failures stop publication; consumers still apply the recent TTL. */
 	error?: string;
 
-	private constructor(options: { profile: string; sessionId: string; label: string }) {
+	private constructor(options: { profile: string; sessionId: string; label: string; labelSource?: () => string }) {
 		this.profile = options.profile;
 		this.displayLabel = label(options.label);
+		this.labelSource = options.labelSource;
 		this.target = Object.freeze({ sessionHash: digest(options.sessionId), incarnation: randomUUID() });
 	}
-	static start(options: { profile: string; sessionId: string; label: string; activity: readonly ActivityInput[] }) {
+	static start(options: { profile: string; sessionId: string; label: string; labelSource?: () => string; activity: readonly ActivityInput[] }) {
 		const publisher = new PresencePublisher(options);
 		try {
 			rootFor(options.profile, true);
@@ -265,6 +308,47 @@ export class PresencePublisher {
 			publisher.heartbeat.unref();
 			return publisher;
 		} catch (error) { publisher.dispose(); throw error; }
+	}
+	/** Refresh through the existing publication path, without changing activity generation.
+	 * The source must be a cheap canonical-name getter; throw when its session is stale. */
+	refreshLabel() {
+		this.guarded(() => this.publishHeader());
+	}
+	/** Metadata-only projection; never reads task prompts, results, or threads.
+	 * Binding to the listener activation prevents reused session IDs from joining. */
+	updateDiscovery(peer: { sessionId: string; endpoint: string; createdAt: number }, input: {
+		workspace: string; tasks: readonly { id: string; label: string; status: string; cwd: string }[]; scope?: RecordedScope; registered?: readonly string[]; state?: PublishedState;
+	}) {
+		if (this.disposed) throw new Error("disposed");
+		if (sessionHash(peer.sessionId) !== this.target.sessionHash) throw new Error("malformed-discovery");
+		// A shortened path could denote a different workspace; do not advertise it.
+		const workspace = (path: string) => Array.from(path).length <= 120 && label(path) === path ? path : "";
+		const discovery: DiscoveryMetadata = { activation: activationHash(peer), workspace: workspace(input.workspace),
+			tasks: input.tasks.slice(0, 8).map(t => ({ id: label(t.id), label: label(t.label), status: t.status, workspace: workspace(t.cwd) })),
+			omitted: Math.max(0, input.tasks.length - 8) };
+		const state = decodePublishedState(input.state);
+		if (state?.sessionId === peer.sessionId) discovery.state = state;
+		if (input.scope && validRecordedScope(input.scope)) {
+			discovery.scope = structuredClone(input.scope);
+			// Leave explicit gaps instead of publishing a sidecar readers cannot fit.
+			if (Buffer.byteLength(JSON.stringify(discovery)) > HEADER_LIMIT - 1024) {
+				const scope = discovery.scope;
+				discovery.scope = { ...scope, tasks: [], registered: [],
+					omittedTasks: scope.tasks.length + scope.omittedTasks,
+					omittedRegistered: scope.registered.length + scope.omittedRegistered, complete: false };
+			}
+		}
+		if (Buffer.byteLength(JSON.stringify(discovery)) > HEADER_LIMIT - 1024) delete discovery.state;
+		if (!validDiscovery(discovery)) throw new Error("malformed-discovery");
+		const catalog = projectCatalog(input.tasks, input.registered ?? []);
+		if (JSON.stringify(discovery) === JSON.stringify(this.discovery) && JSON.stringify(catalog) === JSON.stringify(this.catalog)) return;
+		// Only catalog or routing-activation changes rotate page tokens; private
+		// activity generations and unrelated legacy metadata do not invalidate them.
+		if (JSON.stringify(catalog) !== JSON.stringify(this.catalog) || discovery.activation !== this.discovery?.activation)
+			this.catalogTokens = Array.from({ length: 7 }, () => randomUUID());
+		this.catalog = catalog;
+		this.discovery = discovery;
+		this.writeDiscovery();
 	}
 	/** Eagerly projects/serializes each supplied snapshot to detach caller-owned data.
 	 * Only disk publication is coalesced; callers should avoid unrelated invalidations. */
@@ -285,18 +369,29 @@ export class PresencePublisher {
 		if (this.disposed) return;
 		try { action(); } catch (error) { this.error = reason(error); this.dispose(); }
 	}
-	private write(kind: "header" | "activity", bytes: string) {
-		const root = rootFor(this.profile);
-		const name = filename(this.target, kind);
+	private write(kind: "header" | "activity" | "discovery" | "catalog", bytes: string) {
+		const root = rootFor(this.profile, kind === "catalog", kind === "catalog");
+		const name = kind === "catalog" ? `${this.target.sessionHash}.${this.target.incarnation}.json` : filename(this.target, kind);
 		atomicWrite(root, name, bytes);
 		const { dev, ino } = fs.lstatSync(join(root, name));
-		this.owned.set(name, { dev, ino });
+		this.owned.set(join(root, name), { dev, ino });
+	}
+	private writeDiscovery() {
+		if (!this.discovery) return;
+		try {
+			if (this.catalog) this.write("catalog", JSON.stringify({ schema: 1, ...this.target,
+				generation: this.header.generation, activation: this.discovery.activation, tokens: this.catalogTokens, catalog: this.catalog }));
+		} catch { /* Optional catalog failure must not suppress other metadata. */ }
+		try {
+			this.write("discovery", JSON.stringify({ schema: 1, ...this.target, generation: this.header.generation, metadata: this.discovery }));
+		} catch { /* Metadata failure must not withdraw an existing activity peer. */ }
 	}
 	private publishHeader() {
-		const header = { ...this.header, heartbeat: Date.now() };
+		const header = { ...this.header, label: label(this.labelSource?.() ?? this.displayLabel), heartbeat: Date.now() };
 		if (!validHeader(header)) throw new Error("malformed-header");
 		this.write("header", JSON.stringify(header));
 		this.header = header;
+		this.writeDiscovery();
 	}
 	private flush() {
 		if (this.pending === this.published) return;
@@ -324,9 +419,9 @@ export class PresencePublisher {
 		clearTimeout(this.timer);
 		clearInterval(this.heartbeat);
 		this.pending = this.published = "";
-		for (const [name, identity] of this.owned) {
+		for (const [path, identity] of this.owned) {
 			try {
-				const path = join(rootFor(this.profile), name);
+				rootFor(this.profile, false, dirname(path) === join(resolve(this.profile), "gentle-agents", "catalog"));
 				const stat = fs.lstatSync(path);
 				regular(stat);
 				if (stat.dev === identity.dev && stat.ino === identity.ino) fs.unlinkSync(path);

@@ -30,6 +30,23 @@ const binUrl = new URL("../bin/gentle-shell.mjs", import.meta.url);
 const binPath = fileURLToPath(binUrl);
 const packageRoot = dirname(dirname(binPath));
 
+test("Herdr activity is discoverable through the isolated launcher package", async () => {
+	const { buildPiInvocation } = await import("../lib/gentle-shell-launcher.ts");
+	const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
+	assert.ok(manifest.pi.extensions.includes("./extensions"));
+	assert.ok(existsSync(join(packageRoot, "extensions", "gentle-herdr-activity.ts")));
+	for (const takeOver of [false, true]) {
+		const invocation = buildPiInvocation({
+			runtime: { kind: "path", command: "fake-pi", args: [] },
+			home: { mode: "isolated", source: "default", dir: "/fake/home" },
+			packageRoot, declaration: undefined, takeOver, otherPackagePaths: [],
+			passthrough: [], baseEnv: {}, homedir: "/fake",
+		});
+		assert.ok(invocation.args.includes(packageRoot));
+		assert.equal(invocation.env.PI_CODING_AGENT_DIR, "/fake/home");
+	}
+});
+
 test("real adjacent Pi resolves through its public entry without PATH or a runtime override", (t) => {
 	const f = fixture(t);
 	const result = spawnSync(process.execPath, [binPath, "--version"], {
@@ -37,7 +54,10 @@ test("real adjacent Pi resolves through its public entry without PATH or a runti
 		encoding: "utf8",
 	});
 	assert.equal(result.status, 0, result.stderr);
-	assert.match(result.stdout, /pi 0\.99\.1/);
+	// The adjacent peer is the release the open development range resolved,
+	// not the manifest specifier.
+	const installed: string = JSON.parse(readFileSync(join(packageRoot, "node_modules", "@earendil-works", "pi-coding-agent", "package.json"), "utf8")).version;
+	assert.match(result.stdout, new RegExp(`pi ${installed.replace(/\./g, "\\.")}\\b`));
 	assert.equal(existsSync(join(f.home, ".gentle-shell", "agent")), false);
 });
 
@@ -148,6 +168,7 @@ function writePiScript(path: string, version: string, removeExitCode = 0) {
 			"  args,",
 			"  PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,",
 			"  GENTLE_PI_AGENT_HOME: process.env.GENTLE_PI_AGENT_HOME,",
+			"  GENTLE_SHELL_USER_PI_HOME: process.env.GENTLE_SHELL_USER_PI_HOME,",
 			"}));",
 			"process.exit(0);",
 			"",
@@ -636,6 +657,34 @@ test("forwarded args reach pi after the injected extension flags, in order", (t)
 		"hi",
 	]);
 	assert.equal(payload.GENTLE_PI_AGENT_HOME, f.gentleShellHome);
+});
+
+test("an isolated launch keeps its own agent home and carries the user's original Pi home, even when nested", (t) => {
+	const f = fixture(t);
+	const base = { ...f.env };
+	delete base.PI_CODING_AGENT_DIR;
+	delete base.GENTLE_SHELL_USER_PI_HOME;
+	const launch = (overrides: NodeJS.ProcessEnv, args: string[] = []) => {
+		const result = run({ ...base, ...overrides }, [...args, "--mode", "rpc"]);
+		assert.equal(result.status, 0, result.stderr);
+		return JSON.parse(result.stdout);
+	};
+	const conventional = launch({});
+	assert.equal(conventional.PI_CODING_AGENT_DIR, f.gentleShellHome);
+	assert.equal(conventional.GENTLE_SHELL_USER_PI_HOME, join(f.home, ".pi", "agent"));
+	const customHome = join(f.root, "custom-pi");
+	const custom = launch({ PI_CODING_AGENT_DIR: customHome });
+	assert.equal(custom.PI_CODING_AGENT_DIR, f.gentleShellHome);
+	assert.equal(custom.GENTLE_PI_AGENT_HOME, f.gentleShellHome);
+	assert.equal(custom.GENTLE_SHELL_USER_PI_HOME, customHome);
+	// A gentle-shell started from inside a Gentle Shell session inherits both variables.
+	const nested = launch({ PI_CODING_AGENT_DIR: custom.PI_CODING_AGENT_DIR, GENTLE_SHELL_USER_PI_HOME: custom.GENTLE_SHELL_USER_PI_HOME });
+	assert.equal(nested.PI_CODING_AGENT_DIR, f.gentleShellHome);
+	assert.equal(nested.GENTLE_SHELL_USER_PI_HOME, customHome);
+	const linked = launch({ PI_CODING_AGENT_DIR: customHome }, ["--link"]);
+	assert.equal(linked.PI_CODING_AGENT_DIR, customHome);
+	assert.equal(linked.GENTLE_SHELL_USER_PI_HOME, customHome);
+	assert.equal(existsSync(join(customHome, "sessions")), false);
 });
 
 test("--link skips injection and leaves settings.json byte-identical when it already declares gentle-pi", (t) => {

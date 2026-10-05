@@ -845,6 +845,31 @@ function assertNoNativeInstallerArtifacts(packageRoot, consumerDirectory, receip
 	if (existsSync(join(consumerDirectory, "node_modules", ".bin", nativeCommand))) throw new Error("unhooked install unexpectedly exposed a native Gentle AI executable");
 }
 
+function compareRelease(left, right) {
+	const a = left.split(".").map(Number);
+	const b = right.split(".").map(Number);
+	for (let index = 0; index < 3; index++) if (a[index] !== b[index]) return a[index] - b[index];
+	return 0;
+}
+
+// The manifest's devDependency is a policy specifier (an open `>=` range), not
+// a version. Probes install the exact SDK release this checkout resolved, so
+// the consumer reproduces the tested runtime instead of the newest match.
+export function resolveProjectPiSdkVersion(projectRoot, probe = "packed probe") {
+	const manifest = safeJson(readFileSync(join(projectRoot, "package.json")), "project package manifest");
+	const range = manifest?.devDependencies?.["@earendil-works/pi-coding-agent"];
+	const policy = typeof range === "string" ? /^(>=)?(\d+\.\d+\.\d+)$/.exec(range) : null;
+	if (policy === null) throw new Error(`${probe} requires an exact or >= Pi SDK development range`);
+	const installed = safeJson(readFileSync(join(projectRoot, "node_modules", "@earendil-works", "pi-coding-agent", "package.json")), "project-installed Pi SDK manifest");
+	const version = installed?.version;
+	if (installed?.name !== "@earendil-works/pi-coding-agent" || typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version)) {
+		throw new Error(`${probe} requires a project-installed Pi SDK with an exact release version`);
+	}
+	const order = compareRelease(version, policy[2]);
+	if (policy[1] === ">=" ? order < 0 : order !== 0) throw new Error(`${probe}: project-installed Pi SDK ${version} does not satisfy ${range}`);
+	return version;
+}
+
 export function resolveInstalledJitiStaticEntry(consumerDirectory, sdkPackageJson, sdkVersion, selectCheck, checkIds) {
 	selectCheck(checkIds.sdkManifest);
 	const checkedSdkPackageJson = assertOwnedRegularFile(consumerDirectory, relative(consumerDirectory, sdkPackageJson));
@@ -1404,9 +1429,7 @@ async function testSdkLifecyclePackedSession() {
 		const { env } = isolatedUnhookedEnvironment(temporary);
 		Object.assign(env, { GENTLE_PI_AGENTS: "1", PI_OFFLINE: "1" });
 		selectSdkLifecycleCheck(receipt, "project-sdk-version");
-		const manifest = safeJson(readFileSync(join(root, "package.json")), "project package manifest");
-		const sdkVersion = manifest?.devDependencies?.["@earendil-works/pi-coding-agent"];
-		if (sdkVersion !== "0.99.1") throw new Error("SDK lifecycle probe requires the project-pinned Pi SDK");
+		const sdkVersion = resolveProjectPiSdkVersion(root, "SDK lifecycle probe");
 		selectSdkLifecycleCheck(receipt, "pack-command");
 		const packed = safeJson(runBoundedNpm("pack", ["pack", "--ignore-scripts", "--json", "--pack-destination", packDirectory], env, root), "npm pack output");
 		stage = "pack-result";
@@ -1479,9 +1502,7 @@ async function testWindowsStartupTimingPackedHelper() {
 		const { env } = isolatedUnhookedEnvironment(temporary);
 		Object.assign(env, { GENTLE_PI_AGENTS: "1", PI_OFFLINE: "1" });
 		selectWindowsStartupTimingCheck(receipt, "project-sdk-version");
-		const manifest = safeJson(readFileSync(join(root, "package.json")), "project package manifest");
-		const sdkVersion = manifest?.devDependencies?.["@earendil-works/pi-coding-agent"];
-		if (sdkVersion !== "0.99.1") throw new Error("Windows startup timing probe requires the project-pinned Pi SDK");
+		const sdkVersion = resolveProjectPiSdkVersion(root, "Windows startup timing probe");
 		selectWindowsStartupTimingCheck(receipt, "pack-command");
 		const packed = safeJson(runBoundedNpm("pack", ["pack", "--ignore-scripts", "--json", "--pack-destination", packDirectory], env, root), "npm pack output");
 		stage = "pack-result";
@@ -1557,9 +1578,7 @@ async function testWindowsStartupTimingEnvironmentExperiment() {
 		const pathDelta = deriveWindowsStartupTimingPathDelta(process.env);
 		const treatmentPathDelta = validateWindowsStartupTimingMachinePaths(pathDelta) ? pathDelta : undefined;
 		selectWindowsStartupTimingCheck(receipt, "project-sdk-version");
-		const manifest = safeJson(readFileSync(join(root, "package.json")), "project package manifest");
-		const sdkVersion = manifest?.devDependencies?.["@earendil-works/pi-coding-agent"];
-		if (sdkVersion !== "0.99.1") throw new Error("Windows startup environment experiment requires the project-pinned Pi SDK");
+		const sdkVersion = resolveProjectPiSdkVersion(root, "Windows startup environment experiment");
 		selectWindowsStartupTimingCheck(receipt, "pack-command");
 		const packed = safeJson(runBoundedNpm("pack", ["pack", "--ignore-scripts", "--json", "--pack-destination", packDirectory], isolatedEnv, root), "npm pack output");
 		stage = "pack-result";
@@ -1656,9 +1675,7 @@ async function testUnhookedPackedImports() {
 		mkdirSync(consumerDirectory);
 		const { env, homes } = isolatedUnhookedEnvironment(temporary);
 		selectUnhookedCheck(receipt, "project-sdk-version");
-		const manifest = safeJson(readFileSync(join(root, "package.json")), "project package manifest");
-		const sdkVersion = manifest?.devDependencies?.["@earendil-works/pi-coding-agent"];
-		if (sdkVersion !== "0.99.1") throw new Error("unhooked probe requires the project-pinned Pi SDK");
+		const sdkVersion = resolveProjectPiSdkVersion(root, "unhooked probe");
 		selectUnhookedCheck(receipt, "pack-command");
 		const packOutput = runBoundedNpm("pack", ["pack", "--ignore-scripts", "--json", "--pack-destination", packDirectory], env, root);
 		stage = "pack-result";

@@ -5,20 +5,20 @@ nodeLinker: hoisted
 # Supply-chain defense — most malicious packages are caught within a few days.
 minimumReleaseAge: 4320
 
-# Approved Pi 0.99.2 upgrade; frozen installs also verify release age.
-# One-time exception to adopt 0.99.2 before the 72h maturity window. With the
-# open-range devDependency policy (>=0.99.2), routine updates need no entry
+# Approved Pi 1.0.0 upgrade; frozen installs also verify release age.
+# One-time exception to adopt 1.0.0 before the 72h maturity window. With the
+# open-range devDependency policy (>=1.0.0), routine updates need no entry
 # here: releases become eligible automatically once 72h old.
 # Keep the exception version-specific, including Pi's required aligned packages.
 minimumReleaseAgeExclude:
-  - '@earendil-works/pi-coding-agent@0.99.2'
-  - '@earendil-works/chord@0.99.2'
-  - '@earendil-works/pi-agent-core@0.99.2'
-  - '@earendil-works/pi-ai@0.99.2'
-  - '@earendil-works/pi-tui@0.99.2'
-  - '@earendil-works/pi-mcp@0.99.2'
-  - '@earendil-works/pi-codemode@0.99.2'
-  - '@earendil-works/pi-telemetry@0.99.2'
+  - '@earendil-works/pi-coding-agent@1.0.0'
+  - '@earendil-works/chord@1.0.0'
+  - '@earendil-works/pi-agent-core@1.0.0'
+  - '@earendil-works/pi-ai@1.0.0'
+  - '@earendil-works/pi-tui@1.0.0'
+  - '@earendil-works/pi-mcp@1.0.0'
+  - '@earendil-works/pi-codemode@1.0.0'
+  - '@earendil-works/pi-telemetry@1.0.0'
 
 # Refuse to install a package whose maintainer trust level has decreased
 # (e.g. previously verified publisher loses verification).

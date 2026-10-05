@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const ASSETS = join(ROOT, "assets");
@@ -13,7 +14,7 @@ function read(relativePath: string): string {
 }
 
 const core = read("assets/orchestrator.md");
-const delegation = read("assets/orchestrator-delegation.md");
+const delegation = readDelegationDetail();
 const staticPrompts = `${core}\n${delegation}`;
 
 test("static prompts omit stale native RDD lifecycle mirrors", () => {
@@ -62,18 +63,18 @@ test("rendered parent prompt keeps the RDD boundary while omitting lifecycle mir
 	}
 	// gentle-pi#661: getOrchestratorPrompt()'s no-argument default renders the
 	// "unknown (native status unavailable)" RDD status line -- the longest of
-	// the three renderable forms -- so this IS the worst-case render the 8 KiB
+	// the three renderable forms -- so this IS the worst-case render the core
 	// budget below must cover, not a smaller placeholder production later
-	// exceeds.
+	// exceeds. gentle-shell#1731 T10 (user decision): budget 8,192 -> 8,400 B.
 	assert.ok(
 		rendered.includes("Receipt-driven development: unknown (native status unavailable)"),
 		"the default render must include the worst-case RDD status line",
 	);
-	assert.ok(Buffer.byteLength(rendered, "utf8") <= 8192, "the rendered parent prompt must stay below the reduced 8 KiB budget");
+	assert.ok(Buffer.byteLength(rendered, "utf8") <= 8400, "the rendered parent prompt must stay within the 8,400 B core budget");
 });
 
 test("static prompts retain ODD and delegated-work guidance without SDD", () => {
-	for (const heading of ["## Memory Contract", "## Work Routing Ladder"]) {
+	for (const heading of ["## Memory Contract", "## Task Size", "## Mechanisms"]) {
 		assert.ok(core.includes(heading), `core lost ${heading}`);
 	}
 	for (const heading of [

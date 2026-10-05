@@ -269,7 +269,7 @@ export type VerificationTier = (typeof VERIFICATION_TIER)[keyof typeof VERIFICAT
 export const HIGH_RISK_ITEMS = Object.freeze({
 	1: "data or irreversible effects",
 	2: "security",
-	3: "contracts others consume",
+	3: "changing or removing contracts others already consume",
 	4: "concurrency",
 	5: "delivery or environment",
 	6: "no test would catch a regression",

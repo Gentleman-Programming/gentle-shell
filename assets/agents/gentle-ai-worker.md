@@ -59,14 +59,14 @@ Never save secrets, credentials, personal data, tokens, private keys, raw untrus
 
 Apply the ODD test-first policy by default for behavior changes with applicable runnable deterministic tests and a clear expected outcome. Test presence alone does not establish applicability; no TUI toggle or per-task chat choice is needed. Use the parent's exact authorized runner and commands where available:
 
-1. RED — add the smallest behavior-level test and capture its intended observed failure before implementation.
+1. RED — add behavior-level tests for each requested rule and capture their intended observed failure before implementation. Each test asserts every observable effect of the rule it covers (exit code, exact stdout and stderr, and that rejected input leaves stored data and counters unchanged), covers the cases the rule itself names (its examples, boundaries, and errors), and checks through the public interface, never internal storage. When you add or change a command, option, or message, update the help text and docs that describe it.
 2. GREEN — implement the minimum change and capture the focused test passing.
-3. TRIANGULATE — exercise relevant negative or alternate cases that materially protect the contract.
+3. PRESERVE — For every existing command or option the change touches, add one test proving its previous behavior still holds; add no other cases. An existing behavior counts as touched when it shares the code you changed (options, parsers, helpers, validation). These are expected to pass, so they need no RED run.
 4. REFACTOR — improve clarity only while focused tests remain green.
 
 For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, state the specific exception and run proportionate ordinary functional or structural verification. Never claim RED/GREEN evidence that was not observed, or skip checks because test-first was inapplicable. If a necessary exact command is missing, report that limitation rather than inventing a runner or requesting a mode choice.
 
-Run focused tests first. Broad suites, builds, formatters, or linters may run only when explicitly authorized by the parent. Keep every command exact and verify its scope before execution. Do not claim completion while required validation is failing.
+Run focused tests first. Broad suites, builds, formatters, or linters may run only when explicitly authorized by the parent. Keep every command exact and verify its scope before execution. Do not claim completion while required validation is failing. Make one correction attempt per failing check, and a second only if the same check still fails after a real fix; then stop and return `status: partial` with the failing command and its output, never looping.
 
 ## Verification
 
@@ -100,7 +100,7 @@ files_changed:
 tdd_evidence:
   - RED: <observed failure or justified applicability exception>
   - GREEN: <observed pass or justified applicability exception>
-  - TRIANGULATE/REFACTOR: <observed evidence when applicable>
+  - PRESERVE/REFACTOR: <observed evidence when applicable>
 validation:
   - <exact command>: <observed result>
 risks:

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { __testing } from "../extensions/gentle-ai.ts";
-import { allowedEditSurfaces, inheritAllowedEditSurfaces, bindSessionRepositoryPreparation, boundSessionRepositoryAuthorityCurrent, captureBoundSessionRepositoryAuthority, isDevelopmentSurface, prepareBoundSessionRepository, sessionRepositoryAuthority } from "../lib/bounded-writer-admission.ts";
+import { allowedEditSurfaces, inheritAllowedEditSurfaces, isBoundedWriter, bindSessionRepositoryPreparation, boundSessionRepositoryAuthorityCurrent, captureBoundSessionRepositoryAuthority, isDevelopmentSurface, prepareBoundSessionRepository, sessionRepositoryAuthority } from "../lib/bounded-writer-admission.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 
 test("development admission excludes sensitive, config and bookkeeping surfaces structurally", () => {
@@ -113,4 +113,10 @@ test("writer continuations inherit the original surfaces only when they carry no
 	const quotedOnly = "## Allowed edit surfaces\n- `-`\n- src/model.ts";
 	assert.deepEqual(allowedEditSurfaces(quotedOnly), ["-", "src/model.ts"]);
 	assert.deepEqual(allowedEditSurfaces(inheritAllowedEditSurfaces("worker", "Continue.", undefined, quotedOnly)), ["-", "src/model.ts"]);
+});
+
+// gentle-shell#1731: only agents behind the surfaces guard claim surfaces at runtime.
+test("bounded writers are exactly the agents behind the Allowed edit surfaces guard", () => {
+	for (const name of ["gentle-ai-worker", "worker", "jd-fix-agent"]) assert.equal(isBoundedWriter(name), true, name);
+	for (const name of ["explore", "gentle-ai-explore", "gentle-ai-verify", "reviewer", ""]) assert.equal(isBoundedWriter(name), false, name);
 });

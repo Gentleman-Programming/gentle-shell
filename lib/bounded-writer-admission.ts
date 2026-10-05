@@ -94,6 +94,12 @@ export function inheritAllowedEditSurfaces(agent: string, followUp: string, cont
 	return `${followUp}\n\n## Allowed edit surfaces\n${inherited.map(path => `\`${path}\``).join("\n")}\n`;
 }
 
+// Every agent admitted through the `## Allowed edit surfaces` guard, including
+// Judgment Day fix agents; only these claim surfaces at runtime admission.
+export function isBoundedWriter(name: string): boolean {
+	return WRITER_NAMES.includes(name);
+}
+
 export function isGenericBoundedWriter(name: string): boolean {
 	return name === "gentle-ai-worker" || name === "worker";
 }

@@ -40,7 +40,7 @@ test("applicability, fallback and honest evidence flow through ODD actors", () =
 		assert.match(text, /ordinary functional or structural verification/i, `${actor} must verify fallbacks`);
 	}
 	assert.match(support, /no meaningful RED/);
-	assert.match(worker, /RED — add the smallest behavior-level test and capture its intended observed failure/);
+	assert.match(worker, /RED — add behavior-level tests for each requested rule and capture their intended observed failure/);
 	assert.match(verifier, /execute only exact test, build, lint, or spec example commands explicitly authorized by the parent/);
 	assert.match(verifier, /Do not infer RED from a test file existing/);
 });

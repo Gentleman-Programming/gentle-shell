@@ -1,10 +1,11 @@
 import { isAbsolute } from "node:path";
+import { decodeWork, type PublishedWork } from "./orchestrator-work.ts";
 
 export const ORCHESTRATOR_STATE_ENTRY = "gentle-agents.published-state";
 const fields = ["objective", "progress", "decisions", "blockers"] as const;
-export type CuratedState = Partial<Record<typeof fields[number], string>>;
+export type CuratedState = Partial<Record<typeof fields[number], string>> & { work?: PublishedWork };
 export interface PublishedState {
-	schema: 1; sessionId: string; recordedAt: number; cwd: string | null;
+	schema: 1 | 2; sessionId: string; recordedAt: number; cwd: string | null;
 	source: "owner-curated"; ownerReply: false; authority: "none"; state: CuratedState | null;
 }
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
@@ -14,23 +15,36 @@ const safeCwd = (v: unknown): v is string => safeText(v) && isAbsolute(v) && Buf
 /** Field whitelist, not secret redaction. Reject rather than truncate meaning. */
 export function decodeCuratedState(value: unknown): CuratedState | null {
 	if (value === null) return null;
-	if (!object(value) || Object.keys(value).some(k => !fields.includes(k as typeof fields[number]))
-		|| Object.values(value).some(v => !safeText(v))
-		|| Object.values(value).reduce<number>((bytes, v) => bytes + Buffer.byteLength(v as string), 0) > 2048)
+	if (!object(value) || Object.keys(value).some(k => k !== "work" && !fields.includes(k as typeof fields[number])))
 		throw new Error("invalid-published-state");
-	return Object.fromEntries(fields.filter(k => Object.hasOwn(value, k)).map(k => [k, value[k]]));
+	const state: CuratedState = {};
+	let bytes = 0;
+	for (const key of fields) {
+		if (!Object.hasOwn(value, key)) continue;
+		if (!safeText(value[key])) throw new Error("invalid-published-state");
+		state[key] = value[key];
+		bytes += Buffer.byteLength(value[key]);
+	}
+	if (Object.hasOwn(value, "work")) {
+		state.work = decodeWork(value.work);
+		bytes += Buffer.byteLength(JSON.stringify(state.work));
+	}
+	if (bytes > 2048) throw new Error("invalid-published-state");
+	return state;
 }
 export function decodePublishedState(value: unknown): PublishedState | undefined {
 	try {
 		const keys = ["schema", "sessionId", "recordedAt", "cwd", "source", "ownerReply", "authority", "state"];
 		if (!object(value) || Object.keys(value).length !== keys.length || !keys.every(k => Object.hasOwn(value, k))
-			|| value.schema !== 1 || !safeText(value.sessionId) || !value.sessionId || Buffer.byteLength(value.sessionId) > 256
+			|| (value.schema !== 1 && value.schema !== 2) || !safeText(value.sessionId) || !value.sessionId || Buffer.byteLength(value.sessionId) > 256
 			|| !Number.isSafeInteger(value.recordedAt) || (value.recordedAt as number) < 0
 			|| !(value.cwd === null || safeCwd(value.cwd))
 			|| value.source !== "owner-curated" || value.ownerReply !== false || value.authority !== "none"
 			|| Buffer.byteLength(JSON.stringify(value)) > 4096) return undefined;
-		return { schema: 1, sessionId: value.sessionId, recordedAt: value.recordedAt as number,
-			cwd: safeText(value.cwd) ? value.cwd : null, source: "owner-curated", ownerReply: false, authority: "none", state: decodeCuratedState(value.state) };
+		const state = decodeCuratedState(value.state);
+		if ((value.schema === 2) !== !!state?.work) return undefined;
+		return { schema: value.schema, sessionId: value.sessionId, recordedAt: value.recordedAt as number,
+			cwd: safeText(value.cwd) ? value.cwd : null, source: "owner-curated", ownerReply: false, authority: "none", state };
 	} catch { return undefined; }
 }
 interface StateManager {
@@ -65,11 +79,12 @@ export class OrchestratorStateCache {
 		const state = decodeCuratedState(input);
 		if (this.manager !== manager || this.sessionId !== manager.getSessionId()) throw new Error("stale-published-state");
 		const cwd = manager.getCwd();
-		const record = decodePublishedState({ schema: 1, sessionId: manager.getSessionId(), recordedAt: now,
+		const record = decodePublishedState({ schema: state?.work ? 2 : 1, sessionId: manager.getSessionId(), recordedAt: now,
 			cwd: safeCwd(cwd) ? cwd : null,
 			source: "owner-curated", ownerReply: false, authority: "none", state });
 		if (!record) throw new Error("invalid-published-state");
 		append(ORCHESTRATOR_STATE_ENTRY, structuredClone(record));
+		if (this.manager !== manager || this.sessionId !== record.sessionId || manager.getSessionId() !== record.sessionId) throw new Error("stale-published-state");
 		this.value = record;
 	}
 }

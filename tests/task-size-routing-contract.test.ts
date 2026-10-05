@@ -92,6 +92,8 @@ test("AC4: each mechanism turns on only by its own trigger and size is re-evalua
 		"open product or design decision",
 		"high risk",
 		"never by file count",
+		// gentle-shell#1731: the writer fires on reasons, not on size alone.
+		"never by file count or a large task alone",
 	]) {
 		assert.ok(triggers.includes(clause), `mechanism list is missing: ${clause}`);
 	}
@@ -106,15 +108,21 @@ test("AC5: the high-risk list lives once in the core, native tier wins, unclear 
 		"**High risk**",
 		"hard to detect, hard to undo, or reaches beyond the change",
 		"(1) data or irreversible effects",
+		// gentle-shell#1731 T10: items 1 and 3 cover changing or breaking existing things, not adding.
+		"rewriting or deleting stored data, format changes, writing data without validation; not saving new records",
 		"(2) security",
-		"(3) contracts others consume",
+		"(3) changing or removing contracts others already consume",
+		"; not adding a flag, command or optional field",
 		"(4) concurrency",
 		"(5) delivery or environment",
 		"(6) no test would catch a regression",
 		"only when a bounded look cannot tell whether (1)-(5) apply",
-		"native assess returns a tier, that tier wins",
+		"When RDD is on and native assess returns a tier, that tier wins",
 	]) {
 		assert.ok(size.includes(clause), `high-risk definition is missing: ${clause}`);
+	}
+	for (const broad of ["(1) data or irreversible effects (migrations, persisted data or formats)", "(3) contracts others consume"]) {
+		assert.ok(!size.includes(broad), `high-risk list keeps the broad form: ${broad}`);
 	}
 	for (const [path, text] of Object.entries({ delegation, skill })) {
 		assert.ok(!text.includes("(1) data or irreversible effects"), `${path} restates the high-risk list`);
@@ -124,9 +132,15 @@ test("AC5: the high-risk list lives once in the core, native tier wins, unclear 
 // AC7 (S7): the small path reads no lazy rule file, and each lazy module stays
 // small enough that one mechanism costs one bounded read instead of 49 KB.
 const MODULE_BUDGETS: Record<string, number> = {
-	"orchestrator-delegation.md": 20_000,
-	"orchestrator-tracking.md": 12_500,
-	"orchestrator-verification.md": 5_500,
+	// gentle-shell#1731 merge with main: main's session subject/state guidance plus the reason-based Writer rule (20,000 -> 20,500 B).
+	"orchestrator-delegation.md": 20_500,
+	// gentle-shell#1731 T23: Close gate accepts one Needs your decision result as a stop (12,500 -> 12,600 B).
+	"orchestrator-tracking.md": 12_600,
+	// gentle-shell#1731 T3: parallel review protocol; lazy (delegation or high risk only), core and normative rule untouched.
+	// gentle-shell#1731 T11/T12: verify-per-unit timing and the every-S# verify handoff (6,000 -> 6,400 B).
+	// gentle-shell#1731 T15: one end-of-feature verify for same-model inline deliveries (6,400 -> 6,500 B).
+	// gentle-shell#1731 T23: bounded self-review and partial/blocked writer -> Needs your decision (7,000 -> 7,300 B).
+	"orchestrator-verification.md": 7_300,
 	"orchestrator-writer.md": 4_500,
 	"orchestrator-prompts.md": 13_000,
 };
@@ -152,6 +166,24 @@ test("AC7: each delegation module stays under its byte budget and is loaded by i
 	}
 });
 
+test("work usage stays complete in the human guide while routing precedence stays canonical", () => {
+	const asset = read("assets/orchestrator-delegation.md");
+	const guide = read("docs/gentle-agents-activity.md");
+	assert.ok(asset.includes("tool schemas and `docs/gentle-agents-activity.md`"));
+	for (const clause of [
+		'`{"area":"Auth","topic":"Login","tags":["Review"],"refs":[{"kind":"issue","repository":"github.com/Owner/Repo","id":"12"}]}`',
+		'`filter: {"related_to":{"session_id":"<stable owner ID>"}}`',
+		"Never publish private history as metadata.",
+		"not inherited. Keep the returned actual task ID: it is **not** a child session ID.",
+		"never automatically page. Source unavailable means no related rows, not refusal.",
+		"confer no ownership, consent or permission. Querying needs no helper/model call.",
+	]) assert.ok(guide.includes(clause), `human guide must retain: ${clause}`);
+	assert.equal(asset.split("For a large task's bounded writes, prefer").length - 1, 1);
+	assert.equal(asset.split("Route generic exploration first to the installed package-owned `gentle-ai-explore`").length - 1, 1);
+	assert.ok(asset.includes("Judgment Day phase roles are never generic fallbacks."));
+	assert.ok(asset.includes("same read-only mapping task and report the fallback."));
+});
+
 // S7 axis 2 (more input than output): tracking writes are mechanical; the
 // model edits instead of rewriting and never re-emits the whole document just
 // to mirror it.
@@ -173,7 +205,11 @@ test("T4: tracking updates edit in place and mirror without re-emitting the docu
 test("T6: each delegation module carries its own clauses and names the modules it depends on", () => {
 	const placement: Record<string, readonly string[]> = {
 		"orchestrator-tracking.md": ["#### Authorization and progress", "Delivery follows work units", "Raise a candidate you know is high risk"],
-		"orchestrator-verification.md": ["| Native risk tier | Verification when RDD is `off`/`unknown` |", "## Agent escalation (gentle-shell#1494)"],
+		"orchestrator-verification.md": [
+			"| Native risk tier | Verification when RDD is `off`/`unknown` |",
+			"## Agent escalation (gentle-shell#1494)",
+			"## Parallel review protocol (gentle-shell#1731)",
+		],
 		"orchestrator-writer.md": ["#### Allowed edit surfaces (MANDATORY)", "#### Judgment Day fix dispatch"],
 		"orchestrator-prompts.md": ["### Lossless Blocking Prompts (MANDATORY)", "#### Gentle AI Provider Defect Handoff (MANDATORY)"],
 	};

@@ -18,7 +18,7 @@ function containsAll(text: string, clauses: readonly string[]): void {
 
 test("organic entry stays read-only without authorization and loads detail before work", () => {
 	containsAll(core, [
-		"large tasks get ODD tracking and workers",
+		"large tasks get ODD tracking and workers only by the Writer rule, else inline",
 		"ODD (Default Workflow, harness section above) is mandatory on every request",
 		"orchestrator-delegation.md",
 		"orchestrator-memory.md",

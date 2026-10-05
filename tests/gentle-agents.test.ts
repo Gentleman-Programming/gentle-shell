@@ -234,6 +234,68 @@ function fakeContext(tui: { requestRender(): void } = fakeTui, confirmResult: (t
 	return { ctx, widget, dialogs, overlays, customCompletions, customOptions };
 }
 
+for (const scenario of ["background", "task", "append-failure", "overflow", "bytes", "replacement", "task-replacement", "unsafe-id", "no-transport"] as const) {
+	test(`explicit run work publication: ${scenario}`, async t => {
+		const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+		gentleAgents(h.pi, {}, runtime.deps);
+		await h.fire("session_start", ctx);
+		const initial = { objective: "Keep objective", work: { area: "Owner", tasks: { historical: { area: "Old" } } as Record<string, { area: string }> } };
+		if (scenario === "overflow") for (let i = 0; i < 7; i++) initial.work.tasks[`old-${i}`] = { area: "Old" };
+		if (scenario === "bytes") initial.objective = "x".repeat(1980);
+		await h.tools.get("orchestrator_session_id")!.execute("publish", { state: initial }, undefined, undefined, ctx);
+		const before = h.entries.length;
+		if (scenario === "append-failure") t.mock.method(h.pi, "appendEntry", () => { throw new Error("private credential detail"); });
+		let allocated: TaskRecord;
+		const run = t.mock.method(AgentRunner.prototype, "run", request => {
+			assert.equal(Object.hasOwn(request, "work"), false);
+			assert.equal(request.prompt, "Map");
+			allocated = { id: scenario === "unsafe-id" ? "constructor" : "actual-allocated-id", agent: "explore", label: "Map", mode: request.mode,
+				status: TASK_STATUS.COMPLETED, cwd, prompt: request.prompt, parentSessionId: request.parentSessionId,
+				createdAt: 1, startedAt: 1, endedAt: 2, model: "fixture", thinking: undefined,
+				sessionPath: null, error: null, result: "Done", lastStep: "Done", lastActivityAt: 2,
+				turns: 1, toolCalls: 0, tokens: 0, cost: 0 };
+			if (scenario === "replacement") ctx.sessionManager = { ...ctx.sessionManager };
+			return allocated;
+		});
+		t.mock.method(AgentRunner.prototype, "waitForQuery", async () => undefined);
+		t.mock.method(AgentRunner.prototype, "waitFor", async () => {
+			if (scenario === "task-replacement") ctx.sessionManager = { ...ctx.sessionManager };
+			return allocated;
+		});
+		if (scenario === "no-transport") await h.fire("session_shutdown", ctx);
+		const result = await h.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "Map",
+			mode: scenario === "task" || scenario === "task-replacement" ? "task" : "background", work: { area: "Auth" } }, undefined, undefined, ctx);
+		assert.equal(run.mock.callCount(), 1);
+		assert.equal((result.details.gentleAgents as { taskId: string }).taskId, allocated!.id);
+		assert.equal(Object.hasOwn(allocated!, "work"), false);
+		const success = scenario === "background" || scenario === "task";
+		assert.equal((result.details.workPublication as { status: string }).status, success ? "recorded" : "unavailable");
+		assert.equal(h.entries.length, before + (success || scenario === "task-replacement" ? 1 : 0));
+		assert.doesNotMatch(result.content[0].text, /private credential/);
+		if (success) {
+			const state = (h.entries.at(-1)!.data as { state: typeof initial }).state;
+			assert.equal(state.objective, "Keep objective");
+			assert.deepEqual(state.work.tasks, { historical: { area: "Old" }, "actual-allocated-id": { area: "Auth" } });
+			const unclassified = await h.tools.get("subagent_run")!.execute("plain", { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
+			assert.equal(unclassified.details.workPublication, undefined);
+			assert.equal(h.entries.length, before + 1);
+		}
+	});
+}
+
+test("invalid run work rejects before foreign consent or allocation", async t => {
+	const h = fakePi(), runtime = deps(), { ctx, dialogs } = fakeContext();
+	gentleAgents(h.pi, {}, runtime.deps);
+	await h.fire("session_start", ctx);
+	const run = t.mock.method(AgentRunner.prototype, "run", () => { throw new Error("allocation reached"); });
+	for (const work of [{}, { tasks: { guessed: { area: "Auth" } } }, { area: "bad\n" }]) {
+		await assert.rejects(h.tools.get("subagent_run")!.execute("invalid", { agent: "explore", task: "Map",
+			repository_root: "/foreign", work }, undefined, undefined, ctx), /invalid-published-state/);
+	}
+	assert.equal(run.mock.callCount(), 0);
+	assert.deepEqual(dialogs, []);
+});
+
 // Records deps.schedule calls so a test fires exactly the timers it means to;
 // unrelated runner timers stay pending.
 function recordTimers(target: Partial<AgentsDeps>) {
@@ -359,15 +421,17 @@ test("cache warming follows actual Gentle Agents ownership and completion lifecy
 	await decide(undefined);
 });
 
-const PRINT_BACKGROUND_ERROR = "Background subagents are unavailable in print mode: pi -p exits before a parent session can receive results. Use task mode, RPC mode, or interactive Pi.";
+// `pi -p` and `pi --mode json` share pi's one-shot runner: it disposes the
+// runtime once the prompt returns, so neither can receive a background result.
+const SINGLE_SHOT_BACKGROUND_ERROR = "Background subagents are unavailable in single-shot modes: pi -p and pi --mode json exit before a parent session can receive results. Use task mode, RPC mode, or interactive Pi.";
 
-for (const continuation of [false, true]) {
-	test(`print mode rejects background ${continuation ? "continuation" : "launch"} before allocating a task`, async (t) => {
+for (const hostMode of ["print", "json"] as const) for (const continuation of [false, true]) {
+	test(`${hostMode} mode rejects background ${continuation ? "continuation" : "launch"} before allocating a task`, async (t) => {
 		const h = fakePi();
 		const runtime = deps();
 		gentleAgents(h.pi, {}, runtime.deps);
 		const { ctx } = fakeContext();
-		Object.assign(ctx, { mode: "print", hasUI: false });
+		Object.assign(ctx, { mode: hostMode, hasUI: false });
 		await h.fire("session_start", ctx);
 		let taskId: string | undefined;
 		if (continuation) {
@@ -386,7 +450,7 @@ for (const continuation of [false, true]) {
 		const tool = h.tools.get(continuation ? "subagent_continue" : "subagent_run")!;
 		await assert.rejects(tool.execute("denied", continuation
 			? { task_id: taskId, prompt: "Follow up", mode: "background" }
-			: { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx), { message: PRINT_BACKGROUND_ERROR });
+			: { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx), { message: SINGLE_SHOT_BACKGROUND_ERROR });
 		await tick();
 		assert.equal(run.mock.callCount(), 0, "rejection must precede runner task ID allocation");
 		assert.equal(runtime.spawned.length, spawnedBefore, "no child spawned");
@@ -396,8 +460,9 @@ for (const continuation of [false, true]) {
 	});
 }
 
-for (const mode of ["print", "tui", "rpc"] as const) {
-	test(`${mode} preserves ${mode === "print" ? "bounded task" : "background"} execution`, async () => {
+for (const mode of ["print", "json", "tui", "rpc"] as const) {
+	const singleShot = mode === "print" || mode === "json";
+	test(`${mode} preserves ${singleShot ? "bounded task" : "background"} execution`, async () => {
 		const h = fakePi();
 		const runtime = deps();
 		gentleAgents(h.pi, {}, runtime.deps);
@@ -405,17 +470,17 @@ for (const mode of ["print", "tui", "rpc"] as const) {
 		Object.assign(ctx, { mode, hasUI: mode === "tui" });
 		await h.fire("session_start", ctx);
 		let resolved = false;
-		const pending = h.tools.get("subagent_run")!.execute("control", { agent: "explore", task: "Map", mode: mode === "print" ? "task" : "background" }, undefined, undefined, ctx).then(result => { resolved = true; return result; });
+		const pending = h.tools.get("subagent_run")!.execute("control", { agent: "explore", task: "Map", mode: singleShot ? "task" : "background" }, undefined, undefined, ctx).then(result => { resolved = true; return result; });
 		await tick();
 		assert.equal(runtime.spawned.length, 1);
-		assert.equal(resolved, mode !== "print", "only task mode waits for completion");
+		assert.equal(resolved, !singleShot, "only task mode waits for completion");
 		runtime.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "mapped" }] }] });
 		runtime.children[0].emit({ type: "agent_settled" });
 		const result = await pending;
-		if (mode === "print") assert.match(result.content[0].text, /mapped/);
 		const taskId = (result.details.gentleAgents as { taskId: string }).taskId;
 		assert.ok(taskId);
-		if (mode !== "print") {
+		if (singleShot) assert.equal(result.content[0].text, `Subagent explore (task ${taskId}, "Map") finished.\n\nmapped`, "the task result names its real id for subagent_continue");
+		if (!singleShot) {
 			await tick();
 			assert.match((await h.tools.get("subagent_status")!.execute("status", { task_id: taskId }, undefined, undefined, ctx)).content[0].text, /completed · background/);
 			assert.equal(h.sent.length, 1, "settlement delivers exactly one completion");
@@ -670,7 +735,7 @@ test("first handoff failure keeps ordinary completion, later failure retains yie
 	firstHarness.children[0].message({ id: "q1", kind: "query", message: "q" });
 	firstHarness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "ordinary" }], stopReason: "stop" }] });
 	firstHarness.children[0].emit({ type: "agent_settled" });
-	assert.equal((await ordinary).content[0].text, "ordinary");
+	assert.match((await ordinary).content[0].text, /^Subagent explore \(task [^,]+, "fail handoff"\) finished\.\n\nordinary$/);
 
 	const second = fakePi();
 	const secondHarness = deps();
@@ -3051,7 +3116,9 @@ test("subagent_list_agents and subagent_run in task mode launch a child with the
 	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "lib has three agent files." }] }] });
 	harness.children[0].emit({ type: "agent_settled" });
 	const result = await running;
-	assert.equal(result.content[0].text, "lib has three agent files.");
+	const runId = (result.details.gentleAgents as { taskId: string }).taskId;
+	assert.equal(result.content[0].text, `Subagent explore (task ${runId}, "map lib modules") finished.\n\nlib has three agent files.`, "the model sees the real task id and label, not only details");
+	assert.deepEqual(tools.get("subagent_run")!.renderResult(result as Parameters<Registered["renderResult"]>[0], { expanded: false }, plainTheme).render(80).map((line) => line.trimEnd()), ["lib has three agent files."], "the collapsed card still leads with the answer");
 	assert.equal((result.details.gentleAgents as { status: string }).status, "completed");
 	assert.match(widget()![1], /✓  explore  map lib modules/);
 	const orphan = tools.get("subagent_run")!.execute("c9", { agent: "explore", task: "Orphan", mode: "background" }, undefined, undefined, ctx);
@@ -3157,7 +3224,8 @@ test("background runs return at once; status, result, send_message, cancel, and 
 	await tick();
 	harness.children[1].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Summary." }] }] });
 	harness.children[1].emit({ type: "agent_settled" });
-	assert.equal((await resumed).content[0].text, "Summary.");
+	const summary = await resumed;
+	assert.equal(summary.content[0].text, `Subagent explore (task ${(summary.details.gentleAgents as { taskId: string }).taskId}, "Now summarize") finished.\n\nSummary.`);
 	assert.match((await tools.get("subagent_cancel")!.execute("c9", { task_id: id }, undefined, undefined, ctx)).content[0].text, /not running/);
 	assert.match((await tools.get("subagent_status")!.execute("c10", { task_id: "nope" }, undefined, undefined, ctx)).content[0].text, /Error: no task nope/);
 	// gentle-shell#1713: a guessed id ("1") must point back to real ids.
@@ -3941,6 +4009,11 @@ test("registered session identity declares subjects and refreshes canonical idle
 	await eventually(() => ready, "subject transport ready");
 	const tool = h.tools.get("orchestrator_session_id")!;
 	const declare = (subject?: unknown, context = ctx) => tool.execute("id", { subject }, undefined, undefined, context);
+	const initialWrites = h.entries.length;
+	await assert.rejects(() => tool.execute("invalid-work", { subject: "No effect", state: { work: { topic: "Login" } } }, undefined, undefined, ctx), /invalid/);
+	assert.equal(name, "");
+	assert.equal(h.entries.length, initialWrites);
+	assert.equal(readDiscovery(profile, listPresence(profile).entries[0])?.state, undefined);
 	const result = await declare("\u001b[31m Fix\n auth\u202e ");
 	assert.equal(name, "Fix auth");
 	assert.match(result.content[0].text, /Active session ID: s1.*\n.*Fix auth/);
@@ -3949,8 +4022,12 @@ test("registered session identity declares subjects and refreshes canonical idle
 	assert.equal(before.label, "Fix auth");
 	assert.equal(readDiscovery(profile, before)?.state, undefined, "no implicit summary");
 	Object.assign(ctx.sessionManager, { getBranch: () => h.entries });
-	await tool.execute("publish", { state: { objective: "Verify auth", decisions: "Advisory only" } }, undefined, undefined, ctx);
+	const work = { area: "Auth", topic: "Login", tags: ["Review"], refs: [
+		{ kind: "issue", repository: "github.com/Owner/Repo", id: "12" },
+	] };
+	await tool.execute("publish", { state: { objective: "Verify auth", decisions: "Advisory only", work } }, undefined, undefined, ctx);
 	assert.equal(readDiscovery(profile, listPresence(profile).entries[0])?.state?.state?.objective, "Verify auth");
+	assert.deepEqual(readDiscovery(profile, listPresence(profile).entries[0])?.state?.state?.work, work);
 	const published = h.entries.at(-1)!;
 	const writes = h.entries.length;
 	await assert.rejects(() => tool.execute("invalid", { subject: "No effect", state: { grant: "yes" } }, undefined, undefined, ctx), /invalid/);
@@ -4014,13 +4091,17 @@ test("registered orchestrator_list joins peer metadata without child launches or
 		const scope = new OrchestratorScopeCache(path => ({ root: path, commonDir: "/clone" })).project("/repo", [{ id: "child", cwd: "/repo-child" }], ["/repo"]);
 		const tasks = [{ id: "child", label: "Check auth", status: "waiting", cwd: "/repo-child" },
 			...Array.from({ length: 9 }, (_, i) => ({ id: `extra${i}`, label: `Extra ${i}`, status: "running", cwd: `/child/${i}` }))];
-		publisher.updateDiscovery(peer, { workspace: "/repo", tasks, registered: Array.from({ length: 10 }, (_, i) => `/registered/${i}`), scope });
+		publisher.updateDiscovery(peer, { workspace: "/repo", tasks, registered: Array.from({ length: 10 }, (_, i) => `/registered/${i}`), scope,
+			state: { schema: 2, sessionId: "peer", cwd: "/repo", recordedAt: 1, source: "owner-curated",
+				ownerReply: false, authority: "none", state: { work: { tasks: { child: { area: "Auth" }, extra8: { area: "Billing" } } } } },
+		});
 		let ready = false;
 		let probes = 0;
 		const resolveWorktree = runtime.deps.resolveWorktree;
 		runtime.deps.resolveWorktree = (...args) => { probes++; return resolveWorktree(...args); };
 		let gate: (() => Promise<void>) | undefined;
-		const registry = { list: async () => [], listActivations: async () => { await gate?.(); return [peer]; } };
+		let scans = 0;
+		const registry = { list: async () => [], listActivations: async () => { scans++; await gate?.(); return [peer]; } };
 		runtime.deps.agentHome = profile;
 		runtime.deps.sessionTransport = {
 			createRegistry: async () => registry,
@@ -4044,18 +4125,52 @@ test("registered orchestrator_list joins peer metadata without child launches or
 		assert.deepEqual((next.details.gentleAgents as any).candidates[0].catalog.tasks.map((t: any) => t.id), ["extra7", "extra8"]);
 		assert.deepEqual((next.details.gentleAgents as any).candidates[0].catalog.registered, ["/registered/8", "/registered/9"]);
 		assert.equal(h.userMessages.length, 0);
+		const selectedWork = await h.tools.get("orchestrator_list")!.execute("selected-work", {
+			filter: {}, recipient_session_id: "peer", cursor,
+		}, undefined, undefined, ctx);
+		assert.deepEqual(JSON.parse(selectedWork.content[0].text).matches.map((row: any) => row.taskId), ["extra8"]);
+		const firstWorkPage = await h.tools.get("orchestrator_list")!.execute("first-work", {
+			filter: {}, recipient_session_id: "peer",
+		}, undefined, undefined, ctx);
+		assert.deepEqual(JSON.parse(firstWorkPage.content[0].text).matches.map((row: any) => row.taskId), ["child"]);
 		publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [], state: {
-			schema: 1, sessionId: "peer", cwd: "/repo", recordedAt: 1, source: "owner-curated",
-			ownerReply: false, authority: "none", state: { progress: "Explicit summary" },
+			schema: 2, sessionId: "peer", cwd: "/repo", recordedAt: 1, source: "owner-curated",
+			ownerReply: false, authority: "none", state: { progress: "Explicit summary", work: { area: "Auth" } },
 		} });
 		const noted = await h.tools.get("orchestrator_list")!.execute("note", { recipient_session_id: "peer" }, undefined, undefined, ctx);
 		assert.match(noted.content[0].text, /Explicit summary/);
 		assert.equal((noted.details.gentleAgents as any).candidates[0].state.recordedAt, 1);
+		assert.deepEqual((noted.details.gentleAgents as any).candidates[0].state.state.work, { area: "Auth" });
+		const list = h.tools.get("orchestrator_list")!;
+		const workResult = await list.execute("work", { filter: {} }, undefined, undefined, ctx);
+		const work = JSON.parse(workResult.content[0].text);
+		assert.deepEqual(JSON.parse(JSON.stringify((workResult.details.gentleAgents as any).workSearch)), work);
+		assert.equal(work.schema, 1);
+		assert.deepEqual(work.matches[0].work, { area: "Auth" });
+		assert.equal(work.coverage.exhaustive, false);
+		assert.doesNotMatch(workResult.content[0].text, /Explicit summary|endpoint|activation|cursor|capabilities/);
+		const defaultList = await list.execute("default", {}, undefined, undefined, ctx);
+		assert.doesNotMatch(defaultList.content[0].text, /Explicit summary|"work"/);
+		assert.equal((defaultList.details.gentleAgents as any).candidates[0].state, undefined);
+		const beforeInvalid = scans;
+		for (const invalid of [null, [], { unexpected: true }, { filter: null }, { filter: { topic: "Login" } },
+			{ filter: { area: 1 } }, { filter: { area: "é".repeat(33) } }, { filter: { text: "bad\u0000text" } },
+			{ filter: { ref: { kind: "issue", repository: "github.com/A/B", id: "01" } } },
+			{ filter: { related_to: { session_id: "peer", extra: true } } }]) {
+			await assert.rejects(list.execute("invalid", invalid, undefined, undefined, ctx), /Invalid orchestrator list/);
+		}
+		for (const args of [{ cursor: "x" }, { filter: {}, cursor: "x" }]) {
+			const invalidCursor = await list.execute("cursor", args, undefined, undefined, ctx);
+			assert.equal(invalidCursor.details.error, "invalid-cursor");
+			assert.equal(invalidCursor.content[0].text, "Error: cursor requires recipient_session_id.");
+		}
+		assert.equal(scans, beforeInvalid, "invalid arguments never reach peer/profile discovery");
 		const consult = h.tools.get("orchestrator_consult")!;
 		const probesBeforeConsult = probes;
 		const receipt = JSON.parse((await consult.execute("consult", { recipient_session_id: "peer" }, undefined, undefined, ctx)).content[0].text);
 		assert.equal(receipt.snapshot.state.state.progress, "Explicit summary");
 		assert.equal(receipt.snapshot.state.recordedAt, 1);
+		assert.deepEqual(receipt.snapshot.state.state.work, { area: "Auth" });
 		assert.equal(receipt.ownerReply, false);
 		assert.equal(receipt.authority, "none");
 		assert.equal(receipt.targetSessionId, "peer");
@@ -4064,6 +4179,14 @@ test("registered orchestrator_list joins peer metadata without child launches or
 			await assert.rejects(consult.execute("invalid", invalid, undefined, undefined, ctx), /Invalid metadata/);
 		}
 		assert.equal(probes, probesBeforeConsult);
+		publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [], state: {
+			schema: 2, sessionId: "peer", cwd: "/repo", recordedAt: 2, source: "owner-curated",
+			ownerReply: false, authority: "none", state: { work: { topic: "Missing area" } },
+		} });
+		const malformed = await h.tools.get("orchestrator_list")!.execute("malformed", { recipient_session_id: "peer" }, undefined, undefined, ctx);
+		assert.equal((malformed.details.gentleAgents as any).candidates[0].sessionId, "peer");
+		assert.equal((malformed.details.gentleAgents as any).candidates[0].state, undefined);
+		assert.ok(readActivity(profile, listPresence(profile).entries[0]).activity);
 		publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [] });
 		const legacy = await h.tools.get("orchestrator_list")!.execute("legacy", {}, undefined, undefined, ctx);
 		assert.match(legacy.content[0].text, /repository: unknown/);
@@ -5212,7 +5335,10 @@ test("issue #1162: task-mode subagent_run includes question directly in waiting 
 test("children receive context and safety extensions, and missing files are omitted", async () => {
 	const expected = join(dirname(fileURLToPath(import.meta.url)), "..", "extensions", "child-context.ts");
 	const safety = join(dirname(fileURLToPath(import.meta.url)), "..", "extensions", "child-safety.ts");
-	assert.deepEqual(childContextExtensionPaths(), [resolve(expected), resolve(safety)]);
+	// gentle-shell#1731 T32: the nan provider is registered by a gentle-pi
+	// extension, so a child routed to nan/* could not resolve its model.
+	const nanProvider = join(dirname(fileURLToPath(import.meta.url)), "..", "extensions", "nan-provider.ts");
+	assert.deepEqual(childContextExtensionPaths(), [resolve(expected), resolve(safety), resolve(nanProvider)]);
 	assert.deepEqual(childContextExtensionPaths(() => false), [], "a missing extension file fails safe to no --extension");
 	const extensionArguments = (args: string[]) => args.filter((_, index) => args[index - 1] === "--extension");
 	for (const scenario of ["present", "missing"] as const) {
@@ -5226,7 +5352,7 @@ test("children receive context and safety extensions, and missing files are omit
 			await h.tools.get("subagent_run")!.execute(`child-context-${scenario}`, { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
 			await tick();
 			assert.equal(runtime.spawned.length, 1);
-			assert.deepEqual(extensionArguments(runtime.spawned[0]!), scenario === "present" ? [resolve(expected), resolve(safety)] : []);
+			assert.deepEqual(extensionArguments(runtime.spawned[0]!), scenario === "present" ? [resolve(expected), resolve(safety), resolve(nanProvider)] : []);
 		} finally {
 			await h.fire("session_shutdown", ctx);
 			await tick();
@@ -5263,4 +5389,95 @@ test("a writer continuation without its own section inherits the admitted surfac
 	await continued;
 	await h.fire("session_shutdown", ctx);
 	rmSync(profile, { recursive: true, force: true });
+});
+
+// gentle-shell#1731 T4 (S2, AC6): subagent_run and subagent_continue admit a
+// writer only while no live writer in the same worktree claims an overlapping
+// `## Allowed edit surfaces` entry; read-only agents are never registered.
+test("parallel writers are admitted only with disjoint Allowed edit surfaces end to end", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	const profile = mkdtempSync(join(tmpdir(), "gentle-agents-parallel-writers-"));
+	mkdirSync(join(profile, "agents"), { recursive: true });
+	writeFileSync(join(profile, "agents", "gentle-ai-worker.md"), readFileSync(new URL("../assets/agents/gentle-ai-worker.md", import.meta.url)));
+	writeFileSync(join(profile, "agents", "explore.md"), "---\ndescription: maps things\ntools: [read, grep]\n---\nYou map things.");
+	writeFileSync(join(profile, "subagents.json"), JSON.stringify({ max_concurrency: 5, model_profiles: { "gentle-ai-worker": { model: "openai/gpt-4o", effort: "high" } } }));
+	const env: NodeJS.ProcessEnv = {};
+	gentleAgents(h.pi, env, { ...runtime.deps, env, agentHome: profile });
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+	const scoped = (surface: string) => `Write it.\n\n## Allowed edit surfaces\n${surface}\n\n## Return\nReport`;
+	const run = (agent: string, task: string) => h.tools.get("subagent_run")!.execute("run", { agent, task, mode: "background" }, undefined, undefined, ctx);
+	const taskId = (result: { details: Record<string, unknown> }) => (result.details.gentleAgents as { taskId: string }).taskId;
+	const finish = async (child: FakeChild, id: string) => {
+		child.emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] });
+		child.emit({ type: "agent_settled" });
+		for (let attempt = 0; attempt < 40; attempt++) {
+			const status = await h.tools.get("subagent_status")!.execute("status", { task_id: id }, undefined, undefined, ctx);
+			if ((status.details.gentleAgents as { status?: string } | undefined)?.status === TASK_STATUS.COMPLETED) return;
+			await tick();
+		}
+		assert.fail(`task ${id} never completed`);
+	};
+	try {
+		const app = taskId(await run("gentle-ai-worker", scoped("src/app.ts")));
+		const other = taskId(await run("gentle-ai-worker", scoped("`src/other.ts`")));
+		await tick();
+		assert.equal(runtime.children.length, 2, "disjoint writers run concurrently");
+		await assert.rejects(run("gentle-ai-worker", scoped("src/*.ts")), (error: Error) => {
+			assert.match(error.message, new RegExp(`task ${app}`));
+			assert.match(error.message, new RegExp(`task ${other}`));
+			assert.match(error.message, /`src\/\*\.ts` overlaps `src\/app\.ts`/);
+			return true;
+		});
+		await run("explore", "Map src/app.ts and src/other.ts");
+		await tick();
+		assert.equal(runtime.children.length, 3, "read-only agents are never blocked by live writers");
+		await finish(runtime.children[0], app);
+		// The continuation inherits src/app.ts and is admitted again only while no
+		// live writer claims an overlapping entry.
+		await assert.rejects(run("gentle-ai-worker", scoped("src/**")), new RegExp(`task ${other}`), "src/** still overlaps the live src/other.ts writer");
+		const blocking = taskId(await run("gentle-ai-worker", scoped("src/app.ts")));
+		await assert.rejects(h.tools.get("subagent_continue")!.execute("follow", { task_id: app, prompt: "Continue.", mode: "background" }, undefined, undefined, ctx), new RegExp(`task ${blocking}`));
+		await finish(runtime.children[3], blocking);
+		await h.tools.get("subagent_continue")!.execute("follow", { task_id: app, prompt: "Continue.", mode: "background" }, undefined, undefined, ctx);
+		await tick();
+		assert.equal(runtime.children.length, 5, "the continuation is admitted once its surfaces are free");
+	} finally {
+		await h.fire("session_shutdown", ctx);
+		rmSync(profile, { recursive: true, force: true });
+	}
+});
+
+// Second verify A1: writers claim surfaces under the canonical worktree root,
+// so a writer spawned in the session's subdirectory cwd and one sent to the
+// worktree root through workspace_root are compared.
+test("a subdirectory session cwd and workspace_root of the same worktree share one writer key", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	const profile = mkdtempSync(join(tmpdir(), "gentle-agents-writer-root-"));
+	mkdirSync(join(profile, "agents"), { recursive: true });
+	writeFileSync(join(profile, "agents", "gentle-ai-worker.md"), readFileSync(new URL("../assets/agents/gentle-ai-worker.md", import.meta.url)));
+	writeFileSync(join(profile, "subagents.json"), JSON.stringify({ max_concurrency: 5, model_profiles: { "gentle-ai-worker": { model: "openai/gpt-4o", effort: "high" } } }));
+	const sub = join(cwd, "sub");
+	mkdirSync(sub, { recursive: true });
+	// Git semantics: any path inside the project resolves to the project root.
+	const resolveWorktree = (path: string, base: string) => {
+		const target = resolve(base, path);
+		return { root: target === cwd || target.startsWith(`${cwd}${sep}`) ? cwd : target, commonDir: "/fixture/common" };
+	};
+	const env: NodeJS.ProcessEnv = {};
+	gentleAgents(h.pi, env, { ...runtime.deps, resolveWorktree, env, agentHome: profile });
+	const { ctx } = fakeContext();
+	Object.assign(ctx, { cwd: sub, sessionManager: { getSessionId: () => "s1", getCwd: () => sub, getEntries: () => [], getBranch: () => [] } });
+	await h.fire("session_start", ctx);
+	const task = "Write it.\n\n## Allowed edit surfaces\nsrc/app.ts\n\n## Return\nReport";
+	try {
+		const first = await h.tools.get("subagent_run")!.execute("run", { agent: "gentle-ai-worker", task, mode: "background" }, undefined, undefined, ctx);
+		const firstId = (first.details.gentleAgents as { taskId: string }).taskId;
+		await assert.rejects(h.tools.get("subagent_run")!.execute("run", { agent: "gentle-ai-worker", task, workspace_root: cwd, mode: "background" }, undefined, undefined, ctx), new RegExp(`task ${firstId}`));
+	} finally {
+		await h.fire("session_shutdown", ctx);
+		rmSync(profile, { recursive: true, force: true });
+	}
 });

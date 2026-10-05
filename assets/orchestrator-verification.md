@@ -1,6 +1,6 @@
 # Orchestrator — Verification (lazy-loaded)
 
-Bind this to the parent Pi session only. Load it when the Verification rule fires (a high-risk change) or a delegated writer returns; small tasks never need it (see `orchestrator.md` Task Size).
+Bind this to the parent Pi session only. Load it when the Verification rule fires (a high-risk change) or a delegated writer returns; the small path never needs it.
 
 ## Verification rule (normative)
 
@@ -17,4 +17,12 @@ The small-model bias raises the tier by one for verification purposes (medium be
 
 ## Agent escalation (gentle-shell#1494)
 
-When the change touches an item of the high-risk list in the always-on Task Size section and the native tier is passive or medium, pass `"escalate": {"item": <1-6>, "reason": "<one line>"}` in the same assess input. The tool raises the tier to high, keeps the native tier as `nativeRisk`, and returns `agentEscalation`. It never lowers a tier. Until the installed gentle-ai assess accepts the field, the raise applies to this verification plan only, not to the native review tier.
+When the change touches a Task Size high-risk item and the native tier is passive or medium, pass `"escalate": {"item": <1-6>, "reason": "<one line>"}` in the same assess input: the tool raises the tier to high, keeps the native one as `nativeRisk`, returns `agentEscalation`, and never lowers a tier. Until the installed gentle-ai assess accepts it, the raise binds this verification plan only, not the native review tier.
+
+## Parallel review protocol (gentle-shell#1731)
+
+1. **Self-review**, required by each writer prompt, in its own session before returning: spec sections by reference (#1713), the request's authorized examples, tests, and typecheck; it fixes and continues (one correction per failing check, a second only if the same check still fails, then `partial`), reporting requirement by requirement. Low and medium risk need nothing else.
+2. **Independent verify per unit**, once, after its final self-review (never per worker cycle or retry), in parallel when several finish together, only when that unit is high risk: its Risk line, `assess` over its actual diff or the worker's own `escalate` (high-risk list in Task Size; small-model bias per the tier table), never inferred from the worker's summary alone. Assess per unit via its work-unit commit (`{"baseRef":"<previous>","committedOnly":true}`) or its own isolated worktree. Same-model inline code over several deliveries of one feature: one verify at the feature's end; smaller-model writer code stays per unit.
+3. **Seam check**: after parallel units finish, one inline full-suite command (the parent spot check) catches seams between units.
+4. **Verify handoff**: the whole feature document (every `S#`, never one task), the baseline commit, and the probe command forms (tests, CLI, typecheck) for probes on isolated state in a fresh `mktemp -d` scratch copy, never just "read-only"; `gentle-ai-verify` holds the checklist. Resolve every unmet item before closing; the writer commits its probes as regression tests.
+5. **One correction**: verify blockers get one correction batch that fixes every reported blocker, then one re-verify limited to those blockers, never a new full sweep. Blockers still open after that stop as one **Needs your decision**. Advisories never start a correction. A second correction runs automatically only when the recheck shows the same blocker still failing; a new finding never earns one. A `partial` or `blocked` writer report gets only this correction, never an extra verify run (overriding the Verification rule's on-demand verify); partial, blocked, unavailable, or exhausted proof left after it becomes that one **Needs your decision**.

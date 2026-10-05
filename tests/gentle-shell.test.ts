@@ -1522,6 +1522,24 @@ test("VISUAL autocomplete leaves app shortcut ownership ahead of c and p", () =>
 	} finally { editor.dispose(); }
 });
 
+// gentle-shell#1565: prompt select-all must not swallow the alt+a extension
+// shortcut (Gentle Agents view) when there is no text to select.
+test("GentlePromptEditor routes alt+a to extension shortcuts only on an empty prompt", () => {
+	const { pi, handlers } = fakePi(); gentleShell(pi, {});
+	const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		const seen: string[] = [];
+		editor.onExtensionShortcut = (data) => { seen.push(data); return data === "\x1ba"; };
+		editor.handleInput("\x1ba");
+		assert.deepEqual(seen, ["\x1ba"]);
+		editor.setText("abc");
+		editor.handleInput("\x1ba");
+		assert.deepEqual(seen, ["\x1ba"]);
+		editor.handleInput("\x7f");
+		assert.equal(editor.getText(), "");
+	} finally { editor.dispose(); }
+});
+
 test("GentlePromptEditor enters INSERT before an app shortcut writes from NORMAL", () => {
 	const { pi, handlers } = fakePi();
 	gentleShell(pi, {});

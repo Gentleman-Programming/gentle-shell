@@ -168,6 +168,25 @@ test("alt+a selects all; backspace replaces the whole text", () => {
 	assert.equal(cursorOf(editor).line, 0);
 });
 
+// gentle-shell#1565: with nothing to select, alt+a must reach the native
+// dispatch so extension shortcuts bound to it (the Gentle Agents view) fire.
+test("alt+a on an empty prompt falls through to native dispatch", () => {
+	const editor = makeEditor();
+	const engine = new SelectionEngine(editor);
+	const forwarded: string[] = [];
+	engine.handleInput(ALT_A, (d: string) => forwarded.push(d));
+	assert.deepEqual(forwarded, [ALT_A]);
+});
+
+test("alt+a with text selects all and is not forwarded", () => {
+	const editor = makeEditor();
+	const engine = new SelectionEngine(editor);
+	const forwarded: string[] = [];
+	editor.setText("abc");
+	engine.handleInput(ALT_A, (d: string) => forwarded.push(d));
+	assert.deepEqual(forwarded, []);
+});
+
 test("movement collapses the selection; later delete behaves natively", () => {
 	const editor = makeEditor();
 	const engine = new SelectionEngine(editor);

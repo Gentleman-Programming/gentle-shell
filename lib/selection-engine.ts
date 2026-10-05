@@ -329,6 +329,12 @@ export class SelectionEngine {
 			return;
 		}
 		if (matchesKey(data, "alt+a")) {
+			// gentle-shell#1565: with nothing to select, let alt+a reach the native
+			// dispatch so extension shortcuts bound to it (Gentle Agents) still fire.
+			if (this.s.lines.every((line) => line === "")) {
+				native(data);
+				return;
+			}
 			this.selectAll();
 			return;
 		}

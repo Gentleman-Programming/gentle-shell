@@ -4,7 +4,7 @@
 // (lib/odd-phase-inference.ts, wired in extensions/gentle-shell.ts) and
 // explicit reports by the orchestrator through gentle_odd_phase, which
 // refine it with phases tools cannot show (see
-// assets/orchestrator-delegation.md). Never inferred from assistant prose;
+// assets/orchestrator-tracking.md). Never inferred from assistant prose;
 // the prompt falls back to the generic "working…" label when nothing applies.
 
 // Covers the ODD protocol steps in AGENTS.md (1 authorize .. 7 close); not a

@@ -1,5 +1,5 @@
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { CARD_TONE, cardInnerWidth, renderCard, type CardTheme } from "./shell-card.ts";
+import { CARD_TONE, panelHeaderRow, panelInnerWidth, renderCard, type CardTheme, type CardTone } from "./shell-card.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { paintHoverable } from "./shell-hover.ts";
 
@@ -244,11 +244,11 @@ export function todoPromptBlock(state: TodoState, stale: number): string | undef
 	].join("\n") + staleLine;
 }
 
-function taskRow(task: TodoTask, theme: TodoTheme, width: number): string {
+function taskRow(task: TodoTask, theme: TodoTheme, inner: number): string {
 	if (task.status === TODO_STATUS.DONE) {
 		// Wrap before applying SGR 9: every physical title closes its own style
 		// before renderCard adds padding and rails.
-		return wrapTextWithAnsi(task.title, Math.max(1, cardInnerWidth(width) - 2))
+		return wrapTextWithAnsi(task.title, Math.max(1, inner - 2))
 			.map((line, index) => `${index === 0 ? theme.fg(GLYPH_ROLE[task.status], STATUS_GLYPH[task.status]) : " "} ${theme.fg(STATUS_ROLE[task.status], theme.strikethrough(line))}`)
 			.join("\n");
 	}
@@ -259,25 +259,30 @@ function taskRow(task: TodoTask, theme: TodoTheme, width: number): string {
 
 // Long lists keep the card short: done tasks fold into "✓ N done" and the
 // open ones fill the remaining rows, with a trailing count for the rest.
-function bodyRows(state: TodoState, theme: TodoTheme, width: number): string[] {
-	if (state.tasks.length <= ROW_CAP) return state.tasks.map((task) => taskRow(task, theme, width));
+function bodyRows(state: TodoState, theme: TodoTheme, inner: number): string[] {
+	if (state.tasks.length <= ROW_CAP) return state.tasks.map((task) => taskRow(task, theme, inner));
 	const { done } = todoSummary(state);
 	const open = state.tasks.filter((task) => task.status !== TODO_STATUS.DONE);
 	const rows: string[] = [];
 	if (done > 0) rows.push(`${theme.fg(GLYPH_ROLE[TODO_STATUS.DONE], STATUS_GLYPH[TODO_STATUS.DONE])} ${theme.fg(NOTE_ROLE, `${done} done`)}`);
 	const room = ROW_CAP - rows.length - (open.length > ROW_CAP - rows.length ? 1 : 0);
-	for (const task of open.slice(0, room)) rows.push(taskRow(task, theme, width));
+	for (const task of open.slice(0, room)) rows.push(taskRow(task, theme, inner));
 	if (open.length > room) rows.push(theme.fg(NOTE_ROLE, `… ${open.length - room} more`));
 	return rows;
 }
 
-function collapsedRow(state: TodoState, theme: TodoTheme, width: number): string {
+function collapsedRow(state: TodoState, theme: TodoTheme, inner: number): string {
 	const active = state.tasks.find((task) => task.status === TODO_STATUS.IN_PROGRESS);
-	if (active) return taskRow(active, theme, width);
+	if (active) return taskRow(active, theme, inner);
 	const pending = state.tasks.find((task) => task.status === TODO_STATUS.PENDING);
-	if (pending) return taskRow(pending, theme, width);
+	if (pending) return taskRow(pending, theme, inner);
 	const { open } = todoSummary(state);
 	return `${theme.fg(GLYPH_ROLE[TODO_STATUS.PENDING], STATUS_GLYPH[TODO_STATUS.PENDING])} ${theme.fg(NOTE_ROLE, `${open} open`)}`;
+}
+
+/** The tone the Todos card renders in: warning once the list went stale, info otherwise. */
+export function todoCardTone(staleTurns: number): CardTone {
+	return staleTurns >= STALE_AFTER_TURNS ? CARD_TONE.WARNING : CARD_TONE.INFO;
 }
 
 export function renderTodoCard(state: TodoState, theme: TodoTheme, width: number, options: TodoRenderOptions): string[] {
@@ -288,16 +293,21 @@ export function renderTodoCard(state: TodoState, theme: TodoTheme, width: number
 	const actionLabel = action[0]!.toUpperCase() + action.slice(1);
 	const icon = options.collapsed ? "▸" : "▾";
 	const control = `${icon} ${width >= 28 ? actionLabel : ""}`.trimEnd();
-	const hint = options.collapseKey ? `${options.collapseKey} ${action}` : undefined;
-	const rows = options.collapsed ? [collapsedRow(state, theme, width)] : options.scrollable ? state.tasks.map((task) => taskRow(task, theme, width)) : bodyRows(state, theme, width);
+	const tone = todoCardTone(options.staleTurns);
+	const hint = options.collapseKey
+		? panelHeaderRow(theme, width, tone) ? options.collapseKey : `${options.collapseKey} ${action}`
+		: undefined;
+	// Content columns of the card body in the active style (float is narrower).
+	const inner = panelInnerWidth(theme, width, tone);
+	const rows = options.collapsed ? [collapsedRow(state, theme, inner)] : options.scrollable ? state.tasks.map((task) => taskRow(task, theme, inner)) : bodyRows(state, theme, inner);
 	const body = stale ? [theme.fg(NOTE_ROLE, `stale · ${options.staleTurns} turns`), ...rows] : rows;
 	// The clickable control paints the shared hover role while hovered --
 	// same treatment every other clickable surface uses -- instead of its
 	// ordinary accent role.
 	return renderCard(
-		{ title: `Todos ${paintHoverable(theme, control, options.hovered, "accent")}`, subtitle: `${done} of ${total}`, body, tone: stale ? CARD_TONE.WARNING : CARD_TONE.INFO, glyph: TODO_GLYPH },
+		{ title: `Todos ${paintHoverable(theme, control, options.hovered, "accent")}`, subtitle: `${done} of ${total}`, body, tone, glyph: TODO_GLYPH },
 		theme,
 		width,
-		{ expanded: true, hint },
+		{ expanded: true, hint, panel: true },
 	);
 }

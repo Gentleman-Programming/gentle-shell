@@ -30,7 +30,8 @@ import test, { after } from "node:test";
 const REPO_ROOT = join(import.meta.dirname, "..");
 const REAL_ASSETS_DIR = join(REPO_ROOT, "assets");
 const FIXTURE_PATH = join(import.meta.dirname, "fixtures", "orchestrator.pre-diet.md");
-const BUDGET_BYTES = 8192;
+// gentle-shell#1731 T10 (user decision): 8,192 -> 8,400 B for the narrowed high-risk items 1 and 3.
+const BUDGET_BYTES = 8400;
 const MIN_CONTROLLED_LONG_ASSETS_ROOT_CHARS = 93;
 
 const LAZY_ASSET_NAMES = [
@@ -122,7 +123,7 @@ function measureOrchestratorPromptBytes(assetsDir: string): number {
 // measuring a shorter render again.
 const RDD_WORST_CASE_LINE = "Receipt-driven development: unknown (native status unavailable)";
 
-test("getOrchestratorPrompt return value stays within the canonical 8,192 B budget at a short assets root", () => {
+test("getOrchestratorPrompt return value stays within the canonical 8,400 B budget at a short assets root", () => {
 	const rendered = __testing.renderOrchestratorPrompt(representativeProductionAssetsDir);
 	assert.ok(
 		rendered.includes(RDD_WORST_CASE_LINE),
@@ -197,13 +198,13 @@ const DISPOSITION_MAP: DispositionRange[] = [
 	{ lines: [9, 13], target: "core", label: "Core Role" },
 	{ lines: [15, 15], target: "core", label: "Language Boundary heading" },
 	{ lines: [17, 17], target: "core", label: "Language Boundary LB1 pointer" },
-	{ lines: [19, 19], target: "delegation", label: "Language Boundary LB2 (subagent-English)" },
+	{ lines: [19, 19], target: "replaced", label: "Language Boundary LB2: request translation replaced by spec-by-reference handoffs (gentle-shell#1713)" },
 	{ lines: [21, 21], target: "replaced", label: "Language Boundary LB3: retired artifact types" },
 	{ lines: [23, 23], target: "core", label: "Language Boundary LB4 (public comment language)" },
 	{ lines: [25, 28], target: "delegation", label: "Language Boundary LB5 (exceptions)" },
 	{ lines: [29, 29], target: "obsolete", label: "Retired artifact exception" },
 	{ lines: [31, 40], target: "replaced", label: "Mental Model: ODD-only" },
-	{ lines: [42, 42], target: "core", label: "Work Routing Ladder heading" },
+	{ lines: [42, 42], target: "replaced", label: "Work Routing Ladder heading replaced by Task Size and Mechanisms (gentle-shell#1494)" },
 	{
 		lines: [44, 97],
 		target: "replaced",
@@ -302,6 +303,9 @@ const SUPERSEDED_LIFECYCLE_REVIEW_LINES = new Set([
 	154,
 	160,
 	166,
+	// 282: gentle-shell#1731 T4 relaxed the single-writer Safety line to disjoint
+	// Allowed edit surfaces (runtime-enforced) or isolated worktrees.
+	282,
 ]);
 
 for (const range of DISPOSITION_MAP) {
@@ -351,10 +355,24 @@ for (const range of DISPOSITION_MAP) {
 test("core-alone: load-bearing direct-delegation tokens remain without lazy union", () => {
 	const core = readRealAsset("orchestrator.md");
 	assert.match(core, /Evidence-budget rule/);
-	assert.match(core, /Multi-file write rule/);
+	assert.match(core, /Writer rule/);
 	assert.match(core, /Incident rule/);
 	assert.match(core, /Verification rule/);
 	assert.match(core, /Context backstop/);
+});
+
+test("lazy coordination detail retains subject guidance without inflating the core", () => {
+	const core = readRealAsset("orchestrator.md");
+	const detail = readRealAsset("orchestrator-delegation.md");
+	assert.match(core, /Bind this to the parent Pi session only/);
+	assert.match(core, /orchestrator-delegation\.md/);
+	assert.match(detail, /on delegation or routing triggers/);
+	assert.match(detail, /Once a meaningful task subject is clear, before delegation or cross-session coordination, call `orchestrator_session_id`/);
+	assert.match(detail, /short, non-sensitive `subject`/);
+	assert.match(detail, /Batch with setup if possible; no extra model call/);
+	assert.match(detail, /Skip tiny replies; exclude user prompts\/private detail/);
+	assert.match(detail, /preserves canonical names\/human renames; never ask humans to type aliases/);
+	assert.match(detail, /Names display only; stable IDs route/);
 });
 
 test("core-alone: dynamic Gentle AI ownership replaces package lifecycle instructions", () => {
@@ -448,8 +466,13 @@ test("every compressed lazy-file pointer in the core still names the material it
 	const namedPointers: ReadonlyArray<{ file: string; mustName: readonly string[] }> = [
 		{
 			file: "orchestrator-delegation.md",
-			mustName: ["Per-action table", "Work Routing Ladder", "Canonical Workflows", "blocking-prompt relays"],
+			mustName: ["Per-action table", "Work Routing Ladder", "Canonical Workflows"],
 		},
+		// gentle-shell#1494 per-mechanism modules.
+		{ file: "orchestrator-prompts.md", mustName: ["blocking-prompt relays", "provider defects"] },
+		{ file: "orchestrator-tracking.md", mustName: ["Track", "feature document"] },
+		{ file: "orchestrator-verification.md", mustName: ["Verification rule", "high risk"] },
+		{ file: "orchestrator-writer.md", mustName: ["Writer rule", "large task"] },
 		{
 			file: "orchestrator-memory.md",
 			mustName: ["ODD task continuity", "memory lifecycle"],

@@ -33,6 +33,29 @@ function fixture(t: test.TestContext) {
 	return profile;
 }
 
+test("heartbeat refreshes a bounded canonical label and stops an invalid source", (t) => {
+	const profile = fixture(t);
+	let heartbeat: (() => void) | undefined;
+	const interval = globalThis.setInterval;
+	t.mock.method(globalThis, "setInterval", (callback: () => void, ms: number) => {
+		if (ms === 5000) heartbeat = callback;
+		return interval(callback, ms);
+	});
+	let current = "Initial";
+	let valid = true;
+	const p = PresencePublisher.start({ profile, sessionId: "label-session", label: "Fallback", activity: [],
+		labelSource: () => { if (!valid) throw new Error("stale-session"); return current; } });
+	t.after(() => p.dispose());
+	current = "\u001b[31m Human\n rename\u202e ";
+	heartbeat!();
+	assert.equal(listPresence(profile).entries[0].label, "Human rename");
+	assert.equal(listPresence(profile).entries[0].generation, 1);
+	valid = false;
+	heartbeat!();
+	assert.equal(p.error, "stale-session");
+	assert.deepEqual(listPresence(profile).entries, []);
+});
+
 function rows(text = "full retained output") {
 	return [{ task: { id: "t", agent: "worker", label: "summary", status: "running", model: "model",
 		createdAt: 1000, startedAt: 1100, endedAt: null, lastActivityAt: 1200,

@@ -32,6 +32,9 @@ export default async function gentlePiPrettyExtension(
 	bundled?: PiPrettyExtension,
 	env: NodeJS.ProcessEnv = process.env,
 ): Promise<unknown> {
+	// gentle-shell#1690: a delegated child has no transcript to prettify, and
+	// the upstream fallback would start its own file indexing in every child.
+	if (env.GENTLE_PI_AGENTS_CHILD === "1") return undefined;
 	if (quietToolsEnabled()) {
 		process.env.PRETTY_DISABLE_TOOLS = mergeDisabledTools(
 			process.env.PRETTY_DISABLE_TOOLS,

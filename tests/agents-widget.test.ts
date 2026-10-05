@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after, before, type TestContext } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { TASK_STATUS, type TaskRecord } from "../lib/agents-protocol.ts";
 import { formatElapsed, renderAgentsCard, widgetExpiryMs, widgetRows, widgetTasks } from "../lib/agents-widget.ts";
+import { CARD_STYLE, cardStyle, setCardStyle, type CardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
 // Gentle Agents widget: the card above the editor that shows what the
@@ -10,6 +11,42 @@ import { stripAnsi } from "../lib/terminal-theme.ts";
 // Layout: glyph, agent, task summary (wrapped), then model · tokens · cost · time.
 
 const plainTheme = { fg: (_color: string, text: string) => text };
+
+// The card style defaults to float; these assertions pin the outlined (neon)
+// panels unless a test switches the style itself.
+const initialCardStyle = cardStyle();
+before(() => setCardStyle(CARD_STYLE.NEON));
+after(() => setCardStyle(initialCardStyle));
+
+function useCardStyle(t: TestContext, style: CardStyle): void {
+	const found = cardStyle();
+	t.after(() => setCardStyle(found));
+	setCardStyle(style);
+}
+
+const BG_OPEN = "\x1b[48;5;22m";
+const BG_CLOSE = "\x1b[49m";
+
+/** The same theme with a background, so the float style applies (without one panels keep the frame). */
+function withBackground<T extends object>(theme: T): T & { bg(color: string, text: string): string } {
+	return { ...theme, bg: (_color: string, text: string) => `${BG_OPEN}${text}${BG_CLOSE}` };
+}
+
+/** Float panel rows: a painted panel inside transparent one-column margins, between padding rows that keep the accent bar. */
+function assertFloatRows(lines: readonly string[], width: number): void {
+	for (const line of lines) {
+		assert.equal(visibleWidth(line), width, `"${stripAnsi(line)}" is not ${width} wide`);
+		assert.ok(line.startsWith(` ${BG_OPEN}`) && line.endsWith(`${BG_CLOSE} `), `painted inside the margins: ${JSON.stringify(line)}`);
+	}
+	const padding = ` ▎${" ".repeat(width - 3)} `;
+	assert.equal(stripAnsi(lines[0]!), padding, "a padding row with the accent bar sits above the header");
+	assert.equal(stripAnsi(lines.at(-1)!), padding, "a padding row with the accent bar replaces the bottom rule");
+}
+
+/** The text of a body row, without the neon side rails or the float accent bar. */
+function bodyText(row: string): string {
+	return stripAnsi(row).replace(/^ ?[│▎] /u, "").replace(/ ?│? ?$/u, "").trimEnd();
+}
 
 function task(overrides: Partial<TaskRecord>): TaskRecord {
 	return { id: "t", agent: "sdd-explore", mode: "task", prompt: "map footer data sources", label: "map footer data sources", cwd: "/r", parentSessionId: "s", status: TASK_STATUS.RUNNING, createdAt: 1000, startedAt: 1000, endedAt: null, model: "anthropic/claude-sonnet-5", thinking: undefined, sessionPath: null, error: null, result: null, lastStep: "grep", lastActivityAt: 1000, turns: 0, toolCalls: 0, tokens: 34_000, cost: 0.27, ...overrides };
@@ -228,6 +265,68 @@ test("renderAgentsCard caps the rows at maxRows, keeps active tasks ahead of fin
 	assert.match(renderAgentsCard(waiting, plainTheme, 80, 5000, { collapsed: false, maxRows: 2 }).map(stripAnsi)[1], /^│ \?  sdd-explore  asked: Delete\?/, "a question is never hidden");
 });
 
+test("renderAgentsCard in the float style spends its padding and separator rows from maxRows, so a capped card is exactly as tall as neon", (t) => {
+	const tasks = [
+		task({ id: "done", status: TASK_STATUS.COMPLETED, startedAt: 500, endedAt: 2000 }),
+		...Array.from({ length: 6 }, (_, index) => task({ id: `run${index}`, label: `job ${index}`, createdAt: 1000 + index, startedAt: 1000 + index })),
+	];
+	const theme = withBackground(plainTheme);
+	const neon = renderAgentsCard(tasks, theme, 80, 5000, { collapsed: false, maxRows: 4, viewKey: "alt+a" });
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const float = renderAgentsCard(tasks, theme, 80, 5000, { collapsed: false, maxRows: 4, viewKey: "alt+a" }).map(stripAnsi);
+	assert.equal(neon.length, 6, "neon: frame plus four rows");
+	assert.equal(float.length, neon.length, "float: padding, header, separator, two rows, padding");
+	assert.match(float[1]!, /6 active · 1 done/, "the title still counts every shown task");
+	assert.match(float[2]!, /^ ▎ +$/, "a blank separator row follows the header");
+	assert.match(float[3]!, /◐  sdd-explore  job 0/);
+	assert.match(float[4]!, /^ ▎ … 6 more · alt\+a to view +$/, "two more tasks fold into the overflow row");
+	for (const maxRows of [3, 4, 5, 7, 8, 9]) {
+		const capped = renderAgentsCard(tasks, theme, 80, 5000, { collapsed: false, maxRows });
+		assert.ok(capped.length <= maxRows + 2, `maxRows ${maxRows}: ${capped.length} rows exceed the neon cap`);
+	}
+	assert.match(stripAnsi(renderAgentsCard(tasks, theme, 80, 5000, { collapsed: false, maxRows: 8 }).at(-2)!), /… 2 more/, "seven tasks no longer fit eight rows once the padding and separator rows are spent");
+	assert.equal(renderAgentsCard(tasks, theme, 80, 5000, { collapsed: false, maxRows: 9 }).length, 11, "at the cap no row is hidden");
+});
+
+test("the minimum widget budget fits an overflow-only float body without changing neon", (t) => {
+	const maxRows = widgetRows(12);
+	assert.equal(maxRows, 3, "small terminals reach the three-row task budget");
+	const theme = withBackground(plainTheme);
+	for (const count of [1, 2, 6]) {
+		const tasks = Array.from({ length: count }, (_, index) => task({ id: `run${index}`, label: `job ${index}`, startedAt: 1000 + index }));
+		const options = { collapsed: false, maxRows, viewKey: "alt+a" };
+		setCardStyle(CARD_STYLE.NEON);
+		const neon = renderAgentsCard(tasks, plainTheme, 80, 5000, options);
+		assert.deepEqual(renderAgentsCard(tasks, theme, 80, 5000, options), neon, "neon stays byte-identical with background support");
+		useCardStyle(t, CARD_STYLE.FLOAT);
+		assert.deepEqual(renderAgentsCard(tasks, plainTheme, 80, 5000, options), neon, "missing-background fallback keeps neon rows");
+		setCardStyle(CARD_STYLE.NEON);
+		const neonNarrow = renderAgentsCard(tasks, theme, 9, 5000, options);
+		setCardStyle(CARD_STYLE.FLOAT);
+		assert.deepEqual(renderAgentsCard(tasks, theme, 9, 5000, options), neonNarrow, "narrow fallback keeps neon rows");
+		const rows = renderAgentsCard(tasks, theme, 80, 5000, options);
+		assert.equal(rows.length, maxRows + 2, `${count} tasks must fit five total float rows`);
+		assertFloatRows(rows, 80);
+		assert.match(stripAnsi(rows[2]!), /^ ▎ +$/, "separator stays intact");
+		if (count === 1) assert.match(stripAnsi(rows[3]!), /job 0/, "a single task fits directly");
+		else assert.match(stripAnsi(rows[3]!), new RegExp(`^ ▎ … ${count} more · alt\\+a to view +$`), "the only body row truthfully counts every hidden task");
+		assert.equal(renderAgentsCard(tasks, theme, 80, 5000, { ...options, collapsed: true }).length, maxRows + 2, "collapsed cards keep one task and fit");
+	}
+});
+
+test("float row budgets still prioritize a question when a task and overflow both fit", (t) => {
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const tasks = [
+		task({ id: "first", label: "running first", startedAt: 1000 }),
+		task({ id: "second", label: "running second", startedAt: 2000 }),
+		task({ id: "question", status: TASK_STATUS.WAITING, lastStep: "asked: Delete?", startedAt: 3000 }),
+	];
+	const rows = renderAgentsCard(tasks, withBackground(plainTheme), 80, 5000, { collapsed: false, maxRows: 4, viewKey: "alt+a" });
+	assert.equal(rows.length, 6);
+	assert.match(stripAnsi(rows[3]!), /^ ▎ \?  sdd-explore  asked: Delete\?/);
+	assert.match(stripAnsi(rows[4]!), /^ ▎ … 2 more · alt\+a to view +$/);
+});
+
 test("renderAgentsCard formats subagent cost with formatCost (three decimals below $1, two at or above $1)", () => {
 	const tasks = [
 		task({ id: "small", agent: "scout", cost: 0.09, tokens: 1000, startedAt: 1000, endedAt: 2000 }),
@@ -236,4 +335,34 @@ test("renderAgentsCard formats subagent cost with formatCost (three decimals bel
 	const card = renderAgentsCard(tasks, plainTheme, 80, 5000, { collapsed: false });
 	assert.ok(card.some((line) => line.includes("$0.090")), "cost below $1 shows 3 decimals");
 	assert.ok(card.some((line) => line.includes("$12.50")), "cost at or above $1 shows 2 decimals");
+});
+
+test("renderAgentsCard in the float style is a float panel two rows taller than neon with unclipped columns", (t) => {
+	const tasks = [
+		task({ id: "a", status: TASK_STATUS.COMPLETED, startedAt: 1000, endedAt: 26_000 }),
+		task({ id: "b", agent: "sdd-apply", label: "write gentle-shell footer", startedAt: 44_000, tokens: 12_000, cost: 0.09 }),
+	];
+	const theme = withBackground(plainTheme);
+	for (const options of [{ collapsed: false }, { collapsed: true, collapseKey: "ctrl+a" }, { collapsed: false, maxRows: 1, viewKey: "ctrl+v" }]) {
+		const neon = renderAgentsCard(tasks, theme, 84, 85_000, options);
+		useCardStyle(t, CARD_STYLE.FLOAT);
+		const float = renderAgentsCard(tasks, theme, 84, 85_000, options);
+		setCardStyle(CARD_STYLE.NEON);
+		assert.equal(float.length, neon.length + 2, "the top padding and separator rows add two rows");
+		assert.match(stripAnsi(float[1]!), /^ ▎ ❀ Agents  1 active · 1 done +\S.*\S {3}$/, "header on row 1, hint right-aligned");
+		assert.match(stripAnsi(float[2]!), /^ ▎ +$/, "a blank separator row follows the header");
+		assertFloatRows(float, 84);
+		for (const [index, row] of float.slice(3, -1).entries()) {
+			assert.match(stripAnsi(row), /^ ▎ \S/u);
+			if (bodyText(row).startsWith("…")) continue;
+			// Task columns fit the float body, so the right-aligned time is never clipped.
+			const tail = bodyText(neon[index + 1]!).split(" ").at(-1)!;
+			assert.ok(bodyText(row).endsWith(tail), `"${stripAnsi(row)}" keeps "${tail}"`);
+			assert.match(stripAnsi(row), /\S {3}$/u, "the time ends where the float body ends");
+		}
+	}
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const tagged = withBackground({ fg: (color: string, text: string) => `<${color}>${text}</${color}>` });
+	const [, header] = renderAgentsCard([task({ status: TASK_STATUS.WAITING })], tagged, 120, 5000, { collapsed: true, collapseKey: "ctrl+a" });
+	assert.match(stripAnsi(header!), /^ <warning>▎<\/warning> <warning>❀ Agents<\/warning>  <muted>1 waiting<\/muted> +<muted>ctrl\+a expand<\/muted> {3}$/);
 });

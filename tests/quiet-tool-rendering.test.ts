@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { realpathSync } from "node:fs";
 import test from "node:test";
 import { initTheme, keyHint } from "@earendil-works/pi-coding-agent";
 import { imageFallback, visibleWidth } from "@earendil-works/pi-tui";
@@ -7,7 +6,8 @@ import { cardBody, cardHint, cardTitle, cardTone } from "./gentle-card-text.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import piPretty from "../extensions/pi-pretty.ts";
-import quietTools, {
+import productionQuietTools, {
+	createQuietToolRenderer,
 	countNonEmptyLines,
 	extractTextContent,
 	formatToolResultOutput,
@@ -170,6 +170,15 @@ async function withEnvAsync<T>(updates: Record<string, string | undefined>, run:
 	}
 }
 
+// Standalone rendering-only fixture for historical Bash formatting contracts.
+// No executor, shellPath, or claim of production native-Bash UI parity.
+function quietTools(pi: any, resolveOverride?: any) {
+	productionQuietTools(pi, resolveOverride);
+	if (process.env.GENTLE_PI_QUIET_TOOLS !== "0") {
+		pi.registerTool({ name: "bash", ...createQuietToolRenderer("bash", resolveOverride) });
+	}
+}
+
 function registeredQuietTools() {
 	const { pi, tools } = createPi();
 	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
@@ -194,13 +203,14 @@ function assertGenericBash(tool: any, command: string): void {
 	assert.match(output, /original command output/);
 }
 
-test("quiet tool rendering registers noisy built-in tools", () => {
+test("quiet tools register six overrides and codemode, never Bash", () => {
 	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => {
 		const { pi, tools } = createPi();
 
-		quietTools(pi as any);
+		productionQuietTools(pi as any);
 
-		for (const toolName of ["read", "bash", "grep", "find", "ls", "edit", "write", "codemode"]) {
+		assert.equal(tools.has("bash"), false);
+		for (const toolName of ["read", "grep", "find", "ls", "edit", "write", "codemode"]) {
 			const tool = tools.get(toolName);
 			assert.ok(tool, `missing quiet renderer for ${toolName}`);
 			assert.equal(tool.renderShell, "self", `${toolName} must opt out of Pi's painted Box`);
@@ -210,24 +220,19 @@ test("quiet tool rendering registers noisy built-in tools", () => {
 	});
 });
 
-test("quiet tool execution uses the tool-call cwd", async () => {
-	const tool = registeredQuietTools().get("bash");
-	const context = {
-		cwd: "/tmp",
-		sessionManager: {
-			getSessionId: () => "quiet-tool-test",
-			getSessionFile: () => undefined,
-		},
-	};
-	const output = extractTextContent(
-		await tool.execute("tool-call", { command: "pwd" }, new AbortController().signal, undefined, context),
-	).trim();
-	// pwd prints the physical directory: on macOS /tmp is a symlink to /private/tmp.
-	assert.equal(output, realpathSync("/tmp"));
-	assert.notEqual(output, process.cwd());
+test("quiet tools never replace an existing native Bash tool", () => {
+	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => {
+		const { pi, tools } = createPi({ throwOnToolConflict: true });
+		const native = createSdkTool("bash");
+		pi.registerTool(native);
+		productionQuietTools(pi as any);
+		assert.strictEqual(tools.get("bash"), native);
+	});
 });
 
-test("quiet Bash rendering leaves configured shellPath outside its scope (#107)", () => {
+// Actual configured Bash execution is covered in quiet-bash-runtime.test.ts.
+
+test("standalone Bash rendering fixture does not interpret shellPath", () => {
 	const tool = registeredQuietTools().get("bash");
 	const render = (context: Record<string, unknown> = {}) => renderToString(tool.renderCall({ command: "printf output" }, passthroughTheme, routineRenderContext(context)));
 	const configured = render({ shellPath: "/configured/bash" });
@@ -239,7 +244,7 @@ test("quiet tool rendering can be disabled by env", () => {
 	withEnv({ GENTLE_PI_QUIET_TOOLS: "0" }, () => {
 		const { pi, tools } = createPi();
 
-		quietTools(pi as any);
+		productionQuietTools(pi as any);
 
 		assert.equal(tools.size, 0);
 	});
@@ -252,9 +257,10 @@ test("pi-pretty suppresses overlapping tools before quiet tools register", async
 			const { pi, tools } = createPi({ throwOnToolConflict: true });
 
 			await piPretty(pi as any, fakePiPrettyDeps as any);
-			quietTools(pi as any);
+			productionQuietTools(pi as any);
 
-			for (const toolName of ["read", "bash", "grep", "find", "ls", "edit", "write"]) {
+			assert.equal(tools.has("bash"), false);
+			for (const toolName of ["read", "grep", "find", "ls", "edit", "write"]) {
 				assert.ok(tools.has(toolName), `missing quiet tool ${toolName}`);
 			}
 			assert.equal(process.env.PRETTY_DISABLE_TOOLS, "multi_grep,read,bash,ls,find,grep");
@@ -1387,7 +1393,7 @@ test("quiet components repaint after theme invalidation and retain transparent e
 	assert.equal(first.replace(/\x1b\[[\d;]*m/g, ""), changed.replace(/\x1b\[[\d;]*m/g, ""));
 });
 
-test("all seven quiet cards retain distinct top-rule identity and useful bounded results", () => {
+test("six quiet cards and standalone Bash fixture retain distinct identity and bounded results", () => {
 	const tools = registeredQuietTools();
 	for (const [name, glyph] of [["read", "≡"], ["bash", "$"], ["grep", "⌕"], ["find", "⌖"], ["ls", "☷"], ["edit", "✎"], ["write", "+"]] as const) {
 		const tool = tools.get(name);

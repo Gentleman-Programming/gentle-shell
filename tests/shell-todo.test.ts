@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after, before, type TestContext } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
 	applyTodo,
@@ -12,6 +12,7 @@ import {
 	todoSummary,
 	type TodoState,
 } from "../lib/shell-todo.ts";
+import { CARD_STYLE, cardStyle, setCardStyle, type CardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
 // Gentle Todo: a task list the model rewrites as it works. The reducer is
@@ -26,6 +27,42 @@ const plainTheme = {
 		return `~${text}~`;
 	},
 };
+
+// The card style defaults to float; these assertions pin the outlined (neon)
+// panels unless a test switches the style itself.
+const initialCardStyle = cardStyle();
+before(() => setCardStyle(CARD_STYLE.NEON));
+after(() => setCardStyle(initialCardStyle));
+
+function useCardStyle(t: TestContext, style: CardStyle): void {
+	const found = cardStyle();
+	t.after(() => setCardStyle(found));
+	setCardStyle(style);
+}
+
+const BG_OPEN = "\x1b[48;5;22m";
+const BG_CLOSE = "\x1b[49m";
+
+/** The same theme with a background, so the float style applies (without one panels keep the frame). */
+function withBackground<T extends object>(theme: T): T & { bg(color: string, text: string): string } {
+	return { ...theme, bg: (_color: string, text: string) => `${BG_OPEN}${text}${BG_CLOSE}` };
+}
+
+/** Float panel rows: a painted panel inside transparent one-column margins, between padding rows that keep the accent bar. */
+function assertFloatRows(lines: readonly string[], width: number): void {
+	for (const line of lines) {
+		assert.equal(visibleWidth(line), width, `"${stripAnsi(line)}" is not ${width} wide`);
+		assert.ok(line.startsWith(` ${BG_OPEN}`) && line.endsWith(`${BG_CLOSE} `), `painted inside the margins: ${JSON.stringify(line)}`);
+	}
+	const padding = ` ▎${" ".repeat(width - 3)} `;
+	assert.equal(stripAnsi(lines[0]!), padding, "a padding row with the accent bar sits above the header");
+	assert.equal(stripAnsi(lines.at(-1)!), padding, "a padding row with the accent bar replaces the bottom rule");
+}
+
+/** The text of a body row, without the neon side rails or the float accent bar. */
+function bodyText(row: string): string {
+	return stripAnsi(row).replace(/^ ?[│▎] /u, "").replace(/ ?│? ?$/u, "").trimEnd();
+}
 
 function seeded(): TodoState {
 	return applyTodo(
@@ -292,4 +329,53 @@ test("renderTodoCard uses custom shortcuts, omits disabled shortcuts, and remain
 		const lines = renderTodoCard(seeded(), plainTheme, width, { collapsed: false, staleTurns: 2, collapseKey: "ctrl+shift+t" });
 		for (const line of lines) assert.equal(visibleWidth(line), width, `"${stripAnsi(line)}" is not ${width} wide`);
 	}
+});
+
+test("renderTodoCard in the float style keeps its clickable control on the header row, one row below the top padding, above a separator row", (t) => {
+	const theme = withBackground(plainTheme);
+	for (const options of [
+		{ collapsed: false, staleTurns: 0, collapseKey: "ctrl+shift+t" },
+		{ collapsed: true, staleTurns: 0, collapseKey: "ctrl+shift+t" },
+		{ collapsed: false, staleTurns: 4 },
+		{ collapsed: false, staleTurns: 0, scrollable: true },
+	]) {
+		const neon = renderTodoCard(seeded(), theme, 60, options);
+		useCardStyle(t, CARD_STYLE.FLOAT);
+		const float = renderTodoCard(seeded(), theme, 60, options);
+		setCardStyle(CARD_STYLE.NEON);
+		assert.equal(float.length, neon.length + 2, "the top padding and separator rows add two rows");
+		const action = options.collapsed ? "▸ Expand" : "▾ Collapse";
+		const hint = options.collapseKey ? `ctrl\\+shift\\+t {3}` : "";
+		assert.match(stripAnsi(float[1]!), new RegExp(`^ ▎ ❀ Todos ${action}  1 of 3 +${hint}$`), "row 1 is the clickable header");
+		assert.match(stripAnsi(float[2]!), /^ ▎ +$/, "a blank separator row follows the header");
+		assertFloatRows(float, 60);
+		assert.deepEqual(float.slice(3, -1).map(bodyText), neon.slice(1, -1).map(bodyText));
+	}
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const tagged = withBackground({ ...plainTheme, fg: (color: string, text: string) => `<${color}>${text}</${color}>` });
+	const [, header] = renderTodoCard(seeded(), tagged, 120, { collapsed: false, staleTurns: 0, hovered: true });
+	assert.match(stripAnsi(header!), /^ <border>▎<\/border> <accent>❀ Todos <[a-zA-Z]+>▾ Collapse<\/[a-zA-Z]+><\/accent>  <muted>1 of 3<\/muted> +$/, "the hovered control keeps its own role and case");
+});
+
+test("float Todos keeps the configured shortcut visible at rail width without repeating the action", (t) => {
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const theme = withBackground(plainTheme);
+	for (const collapsed of [false, true]) {
+		for (const collapseKey of ["ctrl+shift+t", "alt+t", undefined]) {
+			const rows = renderTodoCard(seeded(), theme, 48, { collapsed, staleTurns: 0, collapseKey });
+			const header = stripAnsi(rows[1]!);
+			assert.match(header, collapsed ? /▸ Expand/ : /▾ Collapse/);
+			if (collapseKey) assert.ok(header.includes(collapseKey));
+			else assert.doesNotMatch(header, /ctrl\+shift\+t|alt\+t/);
+			assert.equal(visibleWidth(rows[1]!), 48);
+		}
+	}
+});
+
+test("a done todo wraps to the float body so the strikethrough never re-wraps", (t) => {
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const state = applyTodo(emptyTodo(), { action: "write", tasks: [{ title: "word ".repeat(20).trim(), status: "done" }] }, 1).state;
+	const lines = renderTodoCard(state, withBackground(plainTheme), 40, { collapsed: false, staleTurns: 0 });
+	assertFloatRows(lines, 40);
+	for (const row of lines.slice(3, -1)) assert.match(stripAnsi(row), /^ ▎ [✓ ] ~[^~]+~ +$/u, "each physical row closes its own strikethrough");
 });

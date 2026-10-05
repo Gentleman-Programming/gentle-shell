@@ -1,0 +1,3 @@
+{"type":"session","version":3,"id":"fff","timestamp":"2026-09-20T09:00:00.000Z","cwd":"/work/gamma"}
+{"type":"model_change","id":"m1","parentId":null,"timestamp":"2026-09-20T09:00:01.000Z","provider":"openai-codex","modelId":"gpt-5.3-codex"}
+{"type":"message","id":"a1","parentId":"m1","timestamp":"2026-09-20T09:05:00.000Z","message":{"role":"assistant","provider":"openai-codex","model":"gpt-5.3-codex","usage":{"input":2000,"output":1000,"cacheRead":0,"cacheWrite":0,"totalTokens":3000,"cost":{"total":1.5}}}}

@@ -30,7 +30,7 @@ Use it for:
 | Keep docs with the user-visible change | Docs belong with the feature or workflow they explain. |
 | Tell a story | A reviewer should understand why each commit exists from its diff and message. |
 | Future PR-ready | Each commit should be a candidate chained PR when the change grows. |
-| SDD workload guard | If SDD tasks forecast a >400-line change, group commits into chained PR slices before implementation. |
+| SDD workload guard | If SDD tasks forecast a >400-line change, honor the selected `delivery_strategy`. On chaining paths only, group commits into chained PR slices before implementation. For explicit `single-pr` or `exception-ok`, keep one PR, report the review load, and follow the destination repository's documented contribution/size policy; selection alone does not accept an exception. |
 | Budget is not code-golf | Never shrink a diff by deleting comments, blank lines, docs, or tests, or by compressing code, to fit the review budget (400 by default, or the session `review_budget_lines`). Slice by work unit or report the overage. |
 
 ## Work Unit Checklist
@@ -67,8 +67,9 @@ When `sdd-tasks` produces a Review Workload Forecast:
 
 - Low risk: keep work-unit commits inside one PR.
 - Medium risk: commit by work unit and monitor changed lines before PR creation.
-- High risk: follow SDD `delivery_strategy` — ask on `ask-on-risk`, auto-slice on `auto-chain`, require `size:exception` on over-budget `single-pr`, or record accepted `size:exception` on `exception-ok`.
-- Splitting is bounded: after one honest slicing pass, if no cohesive work-unit split fits the budget, stop and report the smallest honest count with a `size:exception` recommendation. Do not iterate shrinking the code to reach the number.
+- High risk: follow SDD `delivery_strategy` — ask on `ask-on-risk`, auto-slice with the cached chain choice on `auto-chain`, follow the destination repository's documented contribution/size policy on over-budget `single-pr`, or record an explicitly accepted policy exception on `exception-ok`. A single-PR selection does not itself accept an exception.
+- `size:exception` is a Gentle-owned repository policy, not a universal label requirement. Never request, create, or add the label for generic users unless the destination policy uses it; preserve its maintainer acceptance and protected-label authorization gates.
+- Splitting is bounded: after one honest slicing pass, if no cohesive work-unit split fits the budget, stop and report the smallest honest count and rationale. Recommend an exception only where destination policy provides it. Do not iterate shrinking the code to reach the number.
 
 Each SDD work unit should map cleanly to a commit or PR with:
 

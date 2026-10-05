@@ -3,6 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import {
 	chmodSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
@@ -29,6 +30,23 @@ const binUrl = new URL("../bin/gentle-shell.mjs", import.meta.url);
 const binPath = fileURLToPath(binUrl);
 const packageRoot = dirname(dirname(binPath));
 
+test("Herdr activity is discoverable through the isolated launcher package", async () => {
+	const { buildPiInvocation } = await import("../lib/gentle-shell-launcher.ts");
+	const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
+	assert.ok(manifest.pi.extensions.includes("./extensions"));
+	assert.ok(existsSync(join(packageRoot, "extensions", "gentle-herdr-activity.ts")));
+	for (const takeOver of [false, true]) {
+		const invocation = buildPiInvocation({
+			runtime: { kind: "path", command: "fake-pi", args: [] },
+			home: { mode: "isolated", source: "default", dir: "/fake/home" },
+			packageRoot, declaration: undefined, takeOver, otherPackagePaths: [],
+			passthrough: [], baseEnv: {}, homedir: "/fake", cwd: "/fake/cwd",
+		});
+		assert.ok(invocation.args.includes(packageRoot));
+		assert.equal(invocation.env.PI_CODING_AGENT_DIR, "/fake/home");
+	}
+});
+
 test("real adjacent Pi resolves through its public entry without PATH or a runtime override", (t) => {
 	const f = fixture(t);
 	const result = spawnSync(process.execPath, [binPath, "--version"], {
@@ -36,7 +54,10 @@ test("real adjacent Pi resolves through its public entry without PATH or a runti
 		encoding: "utf8",
 	});
 	assert.equal(result.status, 0, result.stderr);
-	assert.match(result.stdout, /pi 0\.99\.1/);
+	// The adjacent peer is the release the open development range resolved,
+	// not the manifest specifier.
+	const installed: string = JSON.parse(readFileSync(join(packageRoot, "node_modules", "@earendil-works", "pi-coding-agent", "package.json"), "utf8")).version;
+	assert.match(result.stdout, new RegExp(`pi ${installed.replace(/\./g, "\\.")}\\b`));
 	assert.equal(existsSync(join(f.home, ".gentle-shell", "agent")), false);
 });
 
@@ -147,6 +168,8 @@ function writePiScript(path: string, version: string, removeExitCode = 0) {
 			"  args,",
 			"  PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,",
 			"  GENTLE_PI_AGENT_HOME: process.env.GENTLE_PI_AGENT_HOME,",
+			"  GENTLE_SHELL_USER_PI_HOME: process.env.GENTLE_SHELL_USER_PI_HOME,",
+			"  GENTLE_SHELL_CHILD_PACKAGE_INJECTION: process.env.GENTLE_SHELL_CHILD_PACKAGE_INJECTION,",
 			"}));",
 			"process.exit(0);",
 			"",
@@ -635,6 +658,48 @@ test("forwarded args reach pi after the injected extension flags, in order", (t)
 		"hi",
 	]);
 	assert.equal(payload.GENTLE_PI_AGENT_HOME, f.gentleShellHome);
+});
+
+// #1690: the spawned pi must carry the launcher's own -e set so the subagent
+// runner can forward it to delegated children; a stale inherited value is replaced.
+test("an isolated launch without a gentle-pi declaration signals its package injection to pi", (t) => {
+	const f = fixture(t);
+	const stale = JSON.stringify({ version: 1, noExtensions: true, extensionPaths: [join(f.root, "outer")] });
+	for (const inherited of [undefined, stale]) {
+		const result = run({ ...f.env, GENTLE_SHELL_CHILD_PACKAGE_INJECTION: inherited }, ["--mode", "rpc"]);
+		assert.equal(result.status, 0, result.stderr);
+		const payload = JSON.parse(result.stdout);
+		assert.deepEqual(payload.args.slice(0, 2), ["-e", packageRoot]);
+		assert.deepEqual(JSON.parse(payload.GENTLE_SHELL_CHILD_PACKAGE_INJECTION), { version: 1, noExtensions: false, extensionPaths: [packageRoot] });
+	}
+});
+
+test("an isolated launch keeps its own agent home and carries the user's original Pi home, even when nested", (t) => {
+	const f = fixture(t);
+	const base = { ...f.env };
+	delete base.PI_CODING_AGENT_DIR;
+	delete base.GENTLE_SHELL_USER_PI_HOME;
+	const launch = (overrides: NodeJS.ProcessEnv, args: string[] = []) => {
+		const result = run({ ...base, ...overrides }, [...args, "--mode", "rpc"]);
+		assert.equal(result.status, 0, result.stderr);
+		return JSON.parse(result.stdout);
+	};
+	const conventional = launch({});
+	assert.equal(conventional.PI_CODING_AGENT_DIR, f.gentleShellHome);
+	assert.equal(conventional.GENTLE_SHELL_USER_PI_HOME, join(f.home, ".pi", "agent"));
+	const customHome = join(f.root, "custom-pi");
+	const custom = launch({ PI_CODING_AGENT_DIR: customHome });
+	assert.equal(custom.PI_CODING_AGENT_DIR, f.gentleShellHome);
+	assert.equal(custom.GENTLE_PI_AGENT_HOME, f.gentleShellHome);
+	assert.equal(custom.GENTLE_SHELL_USER_PI_HOME, customHome);
+	// A gentle-shell started from inside a Gentle Shell session inherits both variables.
+	const nested = launch({ PI_CODING_AGENT_DIR: custom.PI_CODING_AGENT_DIR, GENTLE_SHELL_USER_PI_HOME: custom.GENTLE_SHELL_USER_PI_HOME });
+	assert.equal(nested.PI_CODING_AGENT_DIR, f.gentleShellHome);
+	assert.equal(nested.GENTLE_SHELL_USER_PI_HOME, customHome);
+	const linked = launch({ PI_CODING_AGENT_DIR: customHome }, ["--link"]);
+	assert.equal(linked.PI_CODING_AGENT_DIR, customHome);
+	assert.equal(linked.GENTLE_SHELL_USER_PI_HOME, customHome);
+	assert.equal(existsSync(join(customHome, "sessions")), false);
 });
 
 test("--link skips injection and leaves settings.json byte-identical when it already declares gentle-pi", (t) => {
@@ -2037,6 +2102,253 @@ test("automatic setup restores the home's own theme when gentle-ai overwrites it
 	assert.equal(result.status, 0, result.stderr);
 	const settings = JSON.parse(readFileSync(join(target, "settings.json"), "utf8"));
 	assert.equal(settings.theme, "dracula");
+});
+
+// --- builtin codemode exclusion ----------------------------------------------
+//
+// gentle-pi registers its own decorated codemode tool, so Pi's replaceable
+// builtin codemode always loses to it and Pi prints a startup warning. The
+// only per-builtin opt-out Pi supports is a `-builtin:codemode` entry in the
+// settings `extensions` array, which every normal launch ensures in a home
+// gentle-shell owns — never in --link, a foreign --home, pi's own default
+// agent home, a pi subcommand, or `setup --dry-run`.
+
+const CODEMODE_EXCLUSION = "-builtin:codemode";
+
+function settingsText(dir: string): string {
+	return readFileSync(join(dir, "settings.json"), "utf8");
+}
+
+test("a fresh isolated home excludes Pi's builtin codemode, and a second launch changes nothing", (t) => {
+	const f = fixture(t);
+	const first = run(f.env, ["--mode", "rpc"]);
+	assert.equal(first.status, 0, first.stderr);
+	const settings = JSON.parse(settingsText(f.gentleShellHome));
+	assert.deepEqual(settings.extensions, [CODEMODE_EXCLUSION]);
+	assert.equal(settings.tuiMode, "fullscreen");
+	assert.equal(settings.theme, "Gentleman-Cute");
+
+	const before = settingsText(f.gentleShellHome);
+	const second = run(f.env, ["--mode", "rpc"]);
+	assert.equal(second.status, 0, second.stderr);
+	assert.equal(settingsText(f.gentleShellHome), before);
+	assert.doesNotMatch(second.stderr, /builtin codemode/);
+});
+
+test("an existing isolated home gains the exclusion after its own extension entries, keeping every other key and its formatting", (t) => {
+	for (const [indent, newline] of [[4, "\n"], [undefined, ""]] as const) {
+		const f = fixture(t);
+		mkdirSync(f.gentleShellHome, { recursive: true });
+		const original = { tuiMode: "fullscreen", theme: "rose", extensions: ["./ext/a.ts", "!./ext/b.ts"], packages: ["npm:pi-btw"] };
+		writeFileSync(join(f.gentleShellHome, "settings.json"), `${JSON.stringify(original, null, indent)}${newline}`);
+
+		const result = run(f.env, ["--mode", "rpc"]);
+		assert.equal(result.status, 0, result.stderr);
+		const expected = { ...original, extensions: [...original.extensions, CODEMODE_EXCLUSION] };
+		assert.equal(settingsText(f.gentleShellHome), `${JSON.stringify(expected, null, indent)}${newline}`);
+		assert.match(result.stderr, /builtin codemode/);
+	}
+});
+
+test("an explicit user entry for builtin:codemode is left byte-identical", (t) => {
+	for (const entry of ["+builtin:codemode", "!builtin:codemode", "builtin:codemode", CODEMODE_EXCLUSION]) {
+		const f = fixture(t);
+		mkdirSync(f.gentleShellHome, { recursive: true });
+		const text = JSON.stringify({ tuiMode: "fullscreen", extensions: ["./ext/a.ts", entry] });
+		writeFileSync(join(f.gentleShellHome, "settings.json"), text);
+
+		const result = run(f.env, ["--mode", "rpc"]);
+		assert.equal(result.status, 0, result.stderr);
+		assert.equal(settingsText(f.gentleShellHome), text, entry);
+	}
+});
+
+test("a malformed or unexpected settings.json is never overwritten and pi still starts", (t) => {
+	for (const text of ["{ not json", "[]", '{"extensions":"oops"}']) {
+		const f = fixture(t);
+		mkdirSync(f.gentleShellHome, { recursive: true });
+		writeFileSync(join(f.gentleShellHome, "settings.json"), text);
+
+		const result = run(f.env, ["--mode", "rpc"]);
+		assert.equal(result.status, 0, result.stderr);
+		assert.deepEqual(JSON.parse(result.stdout).args.slice(-2), ["--mode", "rpc"]);
+		assert.equal(settingsText(f.gentleShellHome), text);
+	}
+});
+
+test("an owned home without settings.json is not given one", (t) => {
+	const f = fixture(t);
+	mkdirSync(f.gentleShellHome, { recursive: true });
+	const result = run(f.env, ["--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(existsSync(join(f.gentleShellHome, "settings.json")), false);
+});
+
+test("--link never gains the exclusion", (t) => {
+	const f = fixture(t);
+	const piAgentDir = join(f.root, "pi-agent-link");
+	mkdirSync(piAgentDir, { recursive: true });
+	const text = JSON.stringify({ tuiMode: "fullscreen" });
+	writeFileSync(join(piAgentDir, "settings.json"), text);
+
+	const result = run({ ...f.env, PI_CODING_AGENT_DIR: piAgentDir }, ["--link", "--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(settingsText(piAgentDir), text);
+});
+
+test("a foreign --home and pi's own default agent home are never edited, while a bootstrapped --home is", (t) => {
+	const f = fixture(t);
+	const foreign = join(f.root, "existing-pi-home");
+	const defaultPiHome = join(f.home, ".pi", "agent");
+	const text = JSON.stringify({ tuiMode: "fullscreen" });
+	for (const dir of [foreign, defaultPiHome]) {
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "settings.json"), text);
+		const result = run({ ...f.env, PI_CODING_AGENT_DIR: undefined }, ["--home", dir, "--mode", "rpc"]);
+		assert.equal(result.status, 0, result.stderr);
+		assert.equal(settingsText(dir), text, dir);
+	}
+
+	const bootstrapped = join(f.root, "brand-new-home");
+	const result = run(f.env, ["--home", bootstrapped, "--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(JSON.parse(settingsText(bootstrapped)).extensions, [CODEMODE_EXCLUSION]);
+});
+
+test("a pi subcommand and setup --dry-run never edit the home's settings", (t) => {
+	const f = fixture(t);
+	mkdirSync(f.gentleShellHome, { recursive: true });
+	const text = JSON.stringify({ tuiMode: "fullscreen" });
+	writeFileSync(join(f.gentleShellHome, "settings.json"), text);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScript(gentleAiScript);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript };
+
+	for (const args of [["list"], ["setup", "--dry-run"]]) {
+		const result = run(env, args);
+		assert.equal(result.status, 0, result.stderr);
+		assert.equal(settingsText(f.gentleShellHome), text, args.join(" "));
+	}
+});
+
+test("the exclusion is ensured after automatic setup rewrites settings.json", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai-drops-extensions.mjs");
+	writeFileSync(
+		gentleAiScript,
+		[
+			"#!/usr/bin/env node",
+			"import { readFileSync, writeFileSync } from 'node:fs';",
+			"import { join } from 'node:path';",
+			"const settingsPath = join(process.env.PI_CODING_AGENT_DIR, 'settings.json');",
+			"const { extensions, ...settings } = JSON.parse(readFileSync(settingsPath, 'utf8'));",
+			"writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\\n');",
+			"process.exit(0);",
+			"",
+		].join("\n"),
+	);
+	chmodSync(gentleAiScript, 0o755);
+	mkdirSync(f.gentleShellHome, { recursive: true });
+	writeFileSync(join(f.gentleShellHome, "settings.json"), `${JSON.stringify({ tuiMode: "fullscreen", extensions: [CODEMODE_EXCLUSION] }, null, 2)}\n`);
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+
+	const result = run(env, ["--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(JSON.parse(settingsText(f.gentleShellHome)).extensions, [CODEMODE_EXCLUSION]);
+});
+
+// --- atomic writes keep symlinked config files intact ------------------------
+//
+// Dotfile managers (Nix home-manager, stow, ...) ship settings.json and
+// config.json as symlinks. Every atomic launcher write must rename onto the
+// link's real target, so the link survives and the target gets the new
+// bytes with its own permission bits.
+
+// File symlinks need extra privileges on Windows; skip where unavailable.
+const fileSymlinkSkip = (() => {
+	const dir = mkdtempSync(join(tmpdir(), "gentle-shell-symlink-probe-"));
+	try {
+		writeFileSync(join(dir, "target"), "");
+		symlinkSync(join(dir, "target"), join(dir, "link"), "file");
+		return false;
+	} catch {
+		return "file symlinks are unavailable here";
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+})();
+
+function symlinkedFile(linkPath: string, targetPath: string, text: string, mode: number) {
+	mkdirSync(dirname(linkPath), { recursive: true });
+	mkdirSync(dirname(targetPath), { recursive: true });
+	writeFileSync(targetPath, text);
+	chmodSync(targetPath, mode);
+	symlinkSync(targetPath, linkPath, "file");
+}
+
+function assertStillLinkedTo(linkPath: string, targetPath: string, mode: number) {
+	assert.ok(lstatSync(linkPath).isSymbolicLink(), `${linkPath} is still a symlink`);
+	assert.equal(realpathSync(linkPath), realpathSync(targetPath));
+	if (process.platform !== "win32") assert.equal(statSync(targetPath).mode & 0o777, mode);
+	for (const dir of [dirname(linkPath), dirname(targetPath)]) {
+		assert.deepEqual(readdirSync(dir).filter((name) => name.endsWith(".tmp")), [], `no temp file left in ${dir}`);
+	}
+}
+
+test("the builtin codemode exclusion writes through a symlinked settings.json", { skip: fileSymlinkSkip }, (t) => {
+	const f = fixture(t);
+	const linkPath = join(f.gentleShellHome, "settings.json");
+	const targetPath = join(f.root, "dotfiles", "settings.json");
+	symlinkedFile(linkPath, targetPath, JSON.stringify({ tuiMode: "fullscreen", theme: "rose" }), 0o640);
+
+	const result = run(f.env, ["--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	assertStillLinkedTo(linkPath, targetPath, 0o640);
+	assert.deepEqual(JSON.parse(readFileSync(targetPath, "utf8")), { tuiMode: "fullscreen", theme: "rose", extensions: [CODEMODE_EXCLUSION] });
+});
+
+test("the automatic setup theme restore writes through a symlinked settings.json", { skip: fileSymlinkSkip }, (t) => {
+	const f = fixture(t);
+	const target = join(f.root, "linked-themed-home");
+	const linkPath = join(target, "settings.json");
+	const targetPath = join(f.root, "dotfiles", "themed-settings.json");
+	symlinkedFile(linkPath, targetPath, JSON.stringify({ tuiMode: "fullscreen", theme: "dracula" }), 0o600);
+	writeFileSync(join(target, ".gentle-shell-home"), JSON.stringify({ createdBy: "gentle-shell", version: ownGentlePiVersion() }));
+
+	const gentleAiScript = join(f.root, "fake-gentle-ai-sets-theme.mjs");
+	writeGentleAiScriptSettingTheme(gentleAiScript, "kanagawa");
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+
+	const result = run(env, ["--home", target, "--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	assertStillLinkedTo(linkPath, targetPath, 0o600);
+	assert.equal(JSON.parse(readFileSync(targetPath, "utf8")).theme, "dracula");
+});
+
+test("'home' persistence writes through a symlinked config.json", { skip: fileSymlinkSkip }, (t) => {
+	const f = fixture(t);
+	const linkPath = join(f.root, "config", "config.json");
+	const targetPath = join(f.root, "dotfiles", "config.json");
+	symlinkedFile(linkPath, targetPath, "{}\n", 0o600);
+
+	const result = run({ ...f.env, GENTLE_SHELL_CONFIG: linkPath }, ["home", "link"]);
+	assert.equal(result.status, 0, result.stderr);
+	assertStillLinkedTo(linkPath, targetPath, 0o600);
+	assert.deepEqual(JSON.parse(readFileSync(targetPath, "utf8")), { home: "link" });
+});
+
+test("a dangling config.json symlink is replaced in place, never followed to create its target", { skip: fileSymlinkSkip }, (t) => {
+	const f = fixture(t);
+	const linkPath = join(f.root, "config", "config.json");
+	const missingTarget = join(f.root, "missing", "config.json");
+	mkdirSync(dirname(linkPath), { recursive: true });
+	symlinkSync(missingTarget, linkPath, "file");
+
+	const result = run({ ...f.env, GENTLE_SHELL_CONFIG: linkPath }, ["home", "link"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(lstatSync(linkPath).isSymbolicLink(), false);
+	assert.deepEqual(JSON.parse(readFileSync(linkPath, "utf8")), { home: "link" });
+	assert.equal(existsSync(dirname(missingTarget)), false);
 });
 
 // --- --package-root silently ignored in a declared non-link home ----------

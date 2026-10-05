@@ -7,8 +7,11 @@ import {
 	type ExtensionFactory,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { Text, getCapabilities, imageFallback, truncateToWidth, type Component } from "@earendil-works/pi-tui";
-import { CARD_TONE, cardBottom, cardInnerWidth, cardLine, cardTop, type CardTheme, type CardTone } from "./shell-card.ts";
+import { getCapabilities, imageFallback, type Component } from "@earendil-works/pi-tui";
+import {
+	CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardLine, cardRunningLine, cardTop, floatRows, markCardResult,
+	type CardRowContext, type CardTheme, type CardTone,
+} from "./shell-card.ts";
 import { sanitizeTerminalText, stripAnsi } from "./terminal-theme.ts";
 
 const CALL_STATUS = {
@@ -70,41 +73,41 @@ function childLine(call: ObservedCall, theme: CardTheme): string {
 	const status = call.status ?? "status unavailable";
 	const tone = failed(call) ? CARD_TONE.ERROR : call.status === CALL_STATUS.OK ? CARD_TONE.SUCCESS : CARD_TONE.WARNING;
 	const time = duration(call.durationMs);
-	// Arguments are deliberately never read. Error payloads belong in expansion.
+	// Arguments are deliberately never read; error payloads have their own bounded preview.
 	return `${theme.fg(tone, status)} · ${call.name || "name unavailable"}${time ? ` · ${time}` : ""}${call.error && call.status !== CALL_STATUS.ERROR ? " · error reported" : ""}`;
 }
 
 class CodemodeCard implements Component {
 	private readonly theme: CardTheme;
 	private readonly tone: CardTone;
-	private readonly rows: readonly string[];
+	private readonly body: (width: number) => string[];
 	private readonly top: boolean;
-	private readonly expanded: boolean;
-	private readonly phase?: string;
 	private readonly hint?: string;
+	// Whether the call card above this result already drew body rows (the script).
+	private readonly afterBody: boolean;
+	// The call card's render context: until a result exists, the call closes the frame.
+	private readonly row?: CardRowContext;
 
-	constructor(theme: CardTheme, tone: CardTone, rows: readonly string[], top: boolean, expanded: boolean, phase?: string, hint?: string) {
+	constructor(theme: CardTheme, tone: CardTone, body: (width: number) => string[], top: boolean, hint?: string, afterBody = false, row?: CardRowContext) {
 		this.theme = theme;
 		this.tone = tone;
-		this.rows = rows;
+		this.body = body;
 		this.top = top;
-		this.expanded = expanded;
-		this.phase = phase;
 		this.hint = hint;
+		this.afterBody = afterBody;
+		this.row = row;
 	}
 
 	render(width: number): string[] {
 		const target = Math.max(0, Math.floor(width));
 		if (target === 0) return [];
-		const innerWidth = cardInnerWidth(target);
-		const body = this.rows.flatMap((row) => this.expanded
-			? new Text(row, 0, 0).render(innerWidth)
-			: [truncateToWidth(row, innerWidth, "…")]);
-		return [
-			...(this.top ? [cardTop({ title: "Code", subtitle: this.phase, body: [], tone: this.tone }, this.theme, target, this.hint)] : []),
-			...body.map((line) => cardLine(line, this.tone, this.theme, target)),
-			...(!this.top ? [cardBottom(this.tone, this.theme, target)] : []),
-		];
+		const running = this.top && this.row !== undefined && cardAwaitingResult(this.row);
+		return floatRows(this.tone, this.theme, target, (inner) => ({
+			head: this.top ? [cardTop({ title: "Code", glyph: "λ", body: [], tone: this.tone }, this.theme, inner, this.hint)] : [],
+			body: running ? [...this.body(inner), cardRunningLine(this.tone, this.theme, inner)] : this.body(inner),
+			bottom: this.top && !running ? undefined : cardBottom(this.tone, this.theme, inner),
+			afterHeading: !this.top && !this.afterBody,
+		}));
 	}
 
 	invalidate(): void {}
@@ -116,37 +119,50 @@ export function decorateCodemodeTool(tool: ToolDefinition): ToolDefinition {
 		...tool,
 		renderShell: "self",
 		renderCall(args, theme, context) {
-			const phase = context.isError ? "failed" : context.isPartial
-				? context.executionStarted ? "running" : undefined : "finished";
 			const tone = context.isError ? CARD_TONE.ERROR : context.isPartial ? CARD_TONE.WARNING : CARD_TONE.INFO;
 			const code = record(args).code;
 			const rows = context.expanded && typeof code === "string" ? [safe(code)] : [];
 			const hint = stripAnsi(keyHint("app.tools.expand", context.expanded ? "to collapse" : "to expand"));
-			return new CodemodeCard(theme, tone, rows, true, context.expanded, phase, hint);
+			return new CodemodeCard(theme, tone, (width) => cardBodyRows(rows, tone, theme, width, { expanded: true }), true, hint, false, context);
 		},
 		renderResult(result, options, theme, context) {
+			markCardResult(context?.state);
 			const calls = observedCalls(result.details);
 			const isError = context.isError || record(result).isError === true;
 			const failures = calls.filter(failed).length;
 			const tone = isError || failures > 0 ? CARD_TONE.ERROR : options.isPartial ? CARD_TONE.WARNING : CARD_TONE.INFO;
 			const shown = options.expanded ? calls : calls.slice(0, COLLAPSED_CALL_LIMIT);
-			const rows = shown.flatMap((call) => [
-				childLine(call, theme),
-				...(options.expanded && call.error ? [theme.fg("error", call.error)] : []),
-			]);
-			if (shown.length < calls.length) {
-				rows.push(theme.fg("muted", `${failures} errors/cancellations reported · ${calls.length - shown.length} more calls · expand to inspect`));
-			}
-			if (isError) rows.push(theme.fg("error", "Script failed"));
-			if (calls.length === 0) rows.push(theme.fg("muted", "No observed child calls"));
-			if (options.expanded) {
-				// The public render context owns the exact args for this call, including replay.
-				// renderCall displays its JS; result content retains the real final wall-time header.
-				rows.push(...textOutput(result, context.showImages).map((text) => theme.fg(isError ? "error" : "toolOutput", text)));
-				const path = record(result.details).fullOutputPath;
-				if (typeof path === "string") rows.push(theme.fg("muted", `Full output: ${safe(path)}`));
-			}
-			return new CodemodeCard(theme, tone, rows, false, options.expanded);
+			const output = textOutput(result, context.showImages).flatMap((text) => {
+				const rows = text.split("\n");
+				// Pi prefixes final script output with status/wall-time bookkeeping.
+				// Keep it in expansion, but spend the collapsed budget on the payload.
+				const marker = rows.indexOf("Output:");
+				return !options.expanded && /^Script (?:completed|failed)/.test(rows[0] ?? "") && marker >= 0
+					? rows.slice(marker + 1) : rows;
+			});
+			const path = record(result.details).fullOutputPath;
+			// Mirrors renderCall: an expanded call shows the script as its body.
+			const callHasBody = options.expanded && typeof record(context?.args).code === "string";
+			return new CodemodeCard(theme, tone, (width) => {
+				const rows = shown.flatMap((call) => [
+					childLine(call, theme),
+					...(options.expanded && call.error ? [theme.fg("error", call.error)] : []),
+				]);
+				if (shown.length < calls.length) rows.push(theme.fg("muted", `${failures} errors/cancellations reported · ${calls.length - shown.length} more calls · expand to inspect`));
+				if (isError) rows.push(theme.fg("error", "Script failed"));
+				if (calls.length === 0) rows.push(theme.fg("muted", "No observed child calls"));
+				// Each child gets one collapsed physical row, preserving the observed order.
+				const body = options.expanded
+					? cardBodyRows(rows, tone, theme, width, { expanded: true })
+					: rows.map((row) => cardLine(row, tone, theme, width));
+				if (!options.expanded) {
+					const errors = calls.filter((call) => call.error).map((call) => `${call.name || "name unavailable"}: ${call.error}`);
+					body.push(...cardBodyRows(errors.map((error) => theme.fg("error", error)), tone, theme, width, { expanded: false, previewRows: 2 }));
+				}
+				body.push(...cardBodyRows(output.filter((row) => options.expanded || row.trim().length > 0).map((row) => theme.fg(isError ? "error" : "toolOutput", row)), tone, theme, width, { expanded: options.expanded, previewRows: 3 }));
+				if (typeof path === "string") body.push(...cardBodyRows([theme.fg("muted", `Full output: ${safe(path)}`)], tone, theme, width, { expanded: options.expanded, previewRows: 1 }));
+				return body;
+			}, false, undefined, callHasBody);
 		},
 	};
 }

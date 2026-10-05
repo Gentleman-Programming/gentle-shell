@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"ccc","timestamp":"2026-09-01T12:00:00.000Z","cwd":"/work/beta"}
+{"type":"message","id":"a1","parentId":null,"timestamp":"2026-09-01T12:05:00.000Z","message":{"role":"assistant","provider":"openai-codex","model":"gpt-5.5","usage":{"input":500,"output":500,"cacheRead":0,"cacheWrite":0,"cost":{"total":1}}}}

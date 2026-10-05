@@ -118,7 +118,7 @@ function fakePi(initialProvider: string = "claude-bridge") {
 	const transformers: Array<Parameters<ExtensionAPI["registerMarkdownTransformer"]>[0]> = [];
 	const handlers = new Map<string, Handler[]>();
 	const tools = new Map<string, Registered>();
-	const shortcuts = new Map<string, { description: string; handler(ctx: ExtensionContext): Promise<void> }>();
+	const shortcuts = new Map<Parameters<typeof matchesKey>[1], { description: string; handler(ctx: ExtensionContext): Promise<void> }>();
 	const commands = new Map<string, { handler(args: string, ctx: ExtensionContext): Promise<void> }>();
 	const sent: Array<{ message: Record<string, unknown>; options: Record<string, unknown> }> = [];
 	// `delivery` records custom messages and user wakes in dispatch order.
@@ -152,7 +152,7 @@ function fakePi(initialProvider: string = "claude-bridge") {
 		registerEntryRenderer: (type: string, renderer: (entry: { type: string; customType: string; data: unknown }, options: { expanded: boolean }, theme: unknown) => { render(width: number): string[] }) => entryRenderers.set(type, renderer),
 		on: (event: string, handler: Handler) => handlers.set(event, [...(handlers.get(event) ?? []), handler]),
 		registerTool: (tool: Registered) => tools.set(tool.name, tool),
-		registerShortcut: (key: string, registration: { description: string; handler(ctx: ExtensionContext): Promise<void> }) => shortcuts.set(key, registration),
+		registerShortcut: (key: Parameters<typeof matchesKey>[1], registration: { description: string; handler(ctx: ExtensionContext): Promise<void> }) => shortcuts.set(key, registration),
 		registerCommand: (name: string, registration: { handler(args: string, ctx: ExtensionContext): Promise<void> }) => commands.set(name, registration),
 	} as unknown as ExtensionAPI;
 	let activeSession: ExtensionContext | undefined;

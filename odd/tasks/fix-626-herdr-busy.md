@@ -111,3 +111,19 @@ T3.
 - 2026-10-05: claim coordinated on the issue; `hernanharco` yielded
   (`go ahead, this one is yours`) and asked for lower-before-raise plus a
   `/reload` test. Acceptance comment posted.
+- 2026-10-05: independent verification on the final tree. Focused
+  `tests/herdr-busy.test.ts` 7/7, `tests/gentle-agents.test.ts` 214/214, the
+  agents trio 137/137, `pnpm typecheck` 186 recorded diagnostics with no
+  regression, and `node scripts/build-runtime-modules.mjs --check` consistent.
+  Negative control in a throwaway `/tmp` copy: reverting the wiring fails the
+  three integration tests with `actual: []`, and reverting the session guard
+  fails exactly the empty-session test with
+  `actual [{ active: true, label: "1 subagent running" }]` against `[]`.
+- 2026-10-05: work unit committed as `092f2d8b` (5 files, 406 insertions) on
+  `fix/626-herdr-busy`.
+- 2026-10-05: native review approved on lineage `review-a4cfe36504f2efd4`,
+  target `sha256:b1701bbe` (tier medium, lens `review-reliability`, correction
+  budget 200); the exact acknowledgement burned authority under
+  `gentle-ai.review-acknowledged/v1`. One non-blocking advisory,
+  `R3-stuck-busy-wedge` against this file's `lib/herdr-busy.ts`, disposition
+  informational: follow-up work, not a correction for this candidate.

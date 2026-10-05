@@ -34,11 +34,11 @@ const FIXTURE_PATH = join(import.meta.dirname, "fixtures", "orchestrator.pre-die
 // Canonical worst case (controlled long assets root), re-measured after the
 // 2026-09-30 refresh merge: main grew the shared prompt ~380 B past the
 // pre-merge 7131 B canonical. Re-measured after the 2026-10-05 refresh merge:
-// this branch's #348 contract text (parent inline path owes the same read) plus
-// main's grown shared prompt put the controlled worst case at 8,501 B, past
-// main's #1731 T10 cap (8,400 B). Pinned to the measured value; whether the
-// contract prose should be trimmed back under 8,400 B is a review decision.
-const BUDGET_BYTES = 8501;
+// the #348 clause (the parent's own inline path owes the same read) rides on
+// main's tightened phrasing, putting the controlled long-assets-root worst
+// case at 8,457 B. The separate 8,400 B core cap in
+// orchestrator-rdd-ownership.test.ts still holds.
+const BUDGET_BYTES = 8457;
 const MIN_CONTROLLED_LONG_ASSETS_ROOT_CHARS = 93;
 
 const LAZY_ASSET_NAMES = [

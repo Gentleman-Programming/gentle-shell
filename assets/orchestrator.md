@@ -70,7 +70,7 @@ With memory, the parent selects context; subagents save discoveries before retur
 
 ## Skill Registry Protocol
 
-The parent resolves skill paths once per session under `## Skills to load before work`; subagents read those `SKILL.md` files first, or report unavailable paths; the parent's own inline path owes the same read. Fallback semantics (`paths-injected`/`fallback-registry`/`fallback-path`/`none`): `orchestrator-skills.md`.
+The parent resolves skill paths once per session under `## Skills to load before work`; subagents read those `SKILL.md` files first (`paths-injected`) or report unavailable paths; the parent's own inline path owes the same read. Fallback semantics: `orchestrator-skills.md`.
 
 ## Intent-Driven Skill Discovery
 

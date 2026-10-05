@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { __testing } from "../extensions/gentle-ai.ts";
+import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
 // ---------------------------------------------------------------------------
 // persona-single-channel migration test
@@ -328,10 +329,7 @@ test("Table B rule: LB2 subagent-English delegation kept verbatim in orchestrato
 	// assets/orchestrator-delegation.md (delegation-scoped rule); the always-on
 	// combined injection now only carries a pointer to it. Union read so this
 	// assertion is repointed, not weakened.
-	const delegationDetail = readFileSync(
-		fileURLToPath(new URL("../assets/orchestrator-delegation.md", import.meta.url)),
-		"utf8",
-	);
+	const delegationDetail = readDelegationDetail();
 	for (const persona of ["gentleman", "neutral"] as const) {
 		const prompt = __testing.buildGentlePrompt(persona) + delegationDetail;
 		assert.match(
@@ -369,10 +367,7 @@ test("Table B rule: LB5 exceptions kept verbatim in orchestrator (unique)", () =
 	// assets/orchestrator-delegation.md (delegation-scoped exceptions); the
 	// always-on combined injection now only carries a pointer to it. Union
 	// read so this assertion is repointed, not weakened.
-	const delegationDetail = readFileSync(
-		fileURLToPath(new URL("../assets/orchestrator-delegation.md", import.meta.url)),
-		"utf8",
-	);
+	const delegationDetail = readDelegationDetail();
 	for (const persona of ["gentleman", "neutral"] as const) {
 		const prompt = __testing.buildGentlePrompt(persona) + delegationDetail;
 		assert.match(
@@ -456,10 +451,7 @@ test("dup guard (exact-string): LB2/LB3/LB4 each occur exactly once", () => {
 	// the always-on combined injection by design — see "No Double-Delivery").
 	// LB3/LB4 stay verbatim in the always-on core. Union read for LB2 so the
 	// "exactly once" guard is repointed to its new home, not weakened.
-	const delegationDetail = readFileSync(
-		fileURLToPath(new URL("../assets/orchestrator-delegation.md", import.meta.url)),
-		"utf8",
-	);
+	const delegationDetail = readDelegationDetail();
 	const lb2 =
 		"Subagent-facing prompts should be written in English by default, even when the user speaks Spanish.";
 	const lb3 =

@@ -4,6 +4,9 @@ import { CustomEditor } from "@earendil-works/pi-coding-agent";
 import { GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { SelectionEngine } from "../lib/selection-engine.ts";
 import { decodePrintableKey } from "../lib/pi-tui-keys.ts";
+import { CURSOR_MARKER, visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
+import { stripAnsi } from "../lib/terminal-theme.ts";
 
 // Native selection engine tests: drive a real CustomEditor through the
 // SelectionEngine the same way GentlePromptEditor wires it — engine.handleInput
@@ -22,6 +25,112 @@ function makeEditor(): CustomEditor {
 	(editor as unknown as { focused: boolean }).focused = true;
 	return editor;
 }
+
+function floatEditor(bg?: (role: string, text: string) => string): GentlePromptEditor {
+	const tui = { terminal: { rows: 30, columns: 100 }, requestRender() {} } as unknown as CtorParams[0];
+	const identity = (text: string) => text;
+	const theme = { borderColor: identity, selectList: {
+		selectedPrefix: identity, selectedText: identity, description: identity, scrollInfo: identity, noMatch: identity,
+	} } as unknown as CtorParams[1];
+	const editor = new GentlePromptEditor(tui, theme, { matches: () => false } as unknown as CtorParams[2], {
+		fg: (_r, t) => t, bg, bold: identity, requestRender() {}, pending: () => false,
+		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {},
+	});
+	editor.focused = true;
+	return editor;
+}
+
+const promptBg = (_role: string, text: string) => `\x1b[44m${text}\x1b[49m`;
+const click = (x: number, y: number, width: number): TuiMouseEvent => ({
+	type: "click", button: "left", x, y, width, height: 30, screenX: x, screenY: y, shift: false, alt: false, ctrl: false,
+});
+
+test("T2 float prompt native cursor, selection, replacement and mouse share geometry", () => {
+	const previous = cardStyle();
+	setCardStyle(CARD_STYLE.FLOAT);
+	const editor = floatEditor(promptBg);
+	try {
+		editor.borderColor = (text) => `\x1b[35m${text}\x1b[39m`;
+		editor.setText("abcd");
+		editor.handleInput("\x1b[D");
+		let rows = editor.render(80);
+		assert.match(rows[0], /\x1b\[35m▎\x1b\[39m/);
+		assert.equal(visibleWidth(rows[1].split(CURSOR_MARKER)[0]), 6);
+		assert.ok(rows[1].includes(`${CURSOR_MARKER}\x1b[7md\x1b[0m\x1b[44m`));
+		editor.handleInput("\x1b[1;2H");
+		rows = editor.render(80);
+		assert.equal(stripAnsi(rows[1].replaceAll(CURSOR_MARKER, "")).trim(), "▎ abcd");
+		assert.ok(rows[1].includes(`${CURSOR_MARKER}\x1b[7ma\x1b[0m\x1b[44m\x1b[7mbc\x1b[27md`), "native selection inversion survives the software cursor reset");
+		assert.match(rows[2], /3 chars selected/);
+		assert.doesNotMatch(rows[2], /╯/);
+		assert.ok(rows[2].includes("\x1b[44m"));
+		editor.handleInput("X");
+		assert.equal(editor.getText(), "Xd");
+		editor.setText("abcd");
+		editor.render(30);
+		editor.handleMouse(click(4, 1, 30));
+		assert.deepEqual(editor.getCursor(), { line: 0, col: 1 });
+		editor.handleMouse(click(10, 0, 30));
+		assert.deepEqual(editor.getCursor(), { line: 0, col: 1 }, "padding row is inert");
+		editor.handleMouse(click(10, 2, 30));
+		assert.deepEqual(editor.getCursor(), { line: 0, col: 1 }, "hint row is inert");
+		editor.borderColor = (text) => `\x1b[36m${text}\x1b[39m`;
+		assert.match(editor.render(30)[1], /\x1b\[36m▎\x1b\[39m/, "accent reads the current public mode callback");
+		assert.equal(editor.handleMouse({ ...click(3, 1, 30), type: "press" }), undefined, "native drag selection remains unhandled");
+		editor.setText("abcdefghijklmnop");
+		const wrapped = editor.render(12);
+		assert.equal(wrapped.length, 5, "native layout width=6 wraps into three content rows");
+		editor.handleMouse(click(5, 2, 12));
+		assert.deepEqual(editor.getCursor(), { line: 0, col: 8 });
+		editor.handleInput("\x1ba");
+		assert.ok(editor.render(10).slice(1, -1).every((row) => row.includes("\x1b[7m")), "selection paints every wrapped content row");
+	} finally { editor.dispose(); setCardStyle(previous); }
+});
+
+test("T2 float prompt actual native completions retain start row, height and click application", async () => {
+	const previous = cardStyle();
+	setCardStyle(CARD_STYLE.FLOAT);
+	const editor = floatEditor(promptBg);
+	editor.setAutocompleteProvider({
+		async getSuggestions() { return { prefix: "/", items: [{ value: "/alpha", label: "alpha" }, { value: "/beta", label: "beta" }] }; },
+		applyCompletion(_lines, _line, _col, item) { return { lines: [item.value], cursorLine: 0, cursorCol: item.value.length }; },
+	});
+	try {
+		editor.handleInput("/");
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(editor.isShowingAutocomplete(), true);
+		const rows = editor.render(30);
+		assert.equal(rows.length, 5);
+		assert.match(stripAnsi(rows[3]), /^ ▎ → alpha/);
+		assert.match(stripAnsi(rows[4]), /^ ▎   beta/);
+		assert.ok(rows.every((row) => visibleWidth(row) === 30));
+		assert.equal(visibleWidth(rows[1].split(CURSOR_MARKER)[0]), 4);
+		assert.equal(editor.handleMouse(click(4, 4, 30))?.handled, true);
+		assert.equal(editor.getText(), "/beta");
+		assert.equal(editor.isShowingAutocomplete(), false);
+	} finally { editor.dispose(); setCardStyle(previous); }
+});
+
+test("T2 float prompt actual editor fallback and neon bytes remain exact at all widths", () => {
+	const previous = cardStyle();
+	const editor = floatEditor(promptBg);
+	const fallback = floatEditor((_role, text) => text);
+	try {
+		for (const width of [0, 1, 2, 9, 10, 30, 80]) {
+			// Pi 0.99.2 wordWrapLine recurses on a wide glyph at layoutWidth=1.
+			const text = width < 10 ? "abcd" : "雪abcd";
+			editor.setText(text); fallback.setText(text);
+			setCardStyle(CARD_STYLE.NEON);
+			const neon = editor.render(width);
+			setCardStyle(CARD_STYLE.FLOAT);
+			assert.deepEqual(fallback.render(width), neon);
+			const rows = editor.render(width);
+			if (width < 10) assert.deepEqual(rows, neon);
+			else assert.match(stripAnsi(rows[0]), /^ ▎ ✿/);
+			assert.ok(rows.every((row) => visibleWidth(row) <= width));
+		}
+	} finally { editor.dispose(); fallback.dispose(); setCardStyle(previous); }
+});
 
 const END = "\x1b[F";
 const HOME = "\x1b[H";

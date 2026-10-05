@@ -12,6 +12,9 @@ import {
 	GENTLE_AI_PENDING_DIGEST,
 	INSTALLER_VERSION,
 	GENTLE_AI_RELEASE_ASSETS,
+	GENTLE_AI_WINDOWS_SOURCE_MODULE,
+	GENTLE_AI_WINDOWS_SOURCE_PACKAGE_PATH,
+	GENTLE_AI_WINDOWS_SOURCE_TAG,
 	GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM,
 	downloadGentleAiAsset,
 	gentleAiAssetForm,
@@ -21,18 +24,20 @@ import {
 	trustedSystemExtractor,
 } from "../scripts/gentle-ai-installer.mjs";
 
-// v3.7.0 archive digests independently match the minisign-signed release
+// v4.0.0 archive digests independently match the minisign-signed release
 // checksums; binary digests were computed from the extracted executables.
 const EXPECTED_ASSETS = {
-	"darwin/amd64": { name: "gentle-ai_3.7.0_darwin_amd64.tar.gz", sha256: "e55ff3ee06258a90e9195c0e3a593b85f6d79cc439e9e6c04b2596725120a610", binarySha256: "aa30a940e3b75ac218249b3f92d17afd2b972f833258e8212175a73d8e76d5bf" },
-	"darwin/arm64": { name: "gentle-ai_3.7.0_darwin_arm64.tar.gz", sha256: "66eb5740c4506cb2cfd1cc5207439c61cfe07678854f4ac7c83027a95a0e666a", binarySha256: "ca726cf3f9a523dc0112aa113beb634cda389e8b47edc5851254c32979bee89e" },
-	"linux/amd64": { name: "gentle-ai_3.7.0_linux_amd64.tar.gz", sha256: "a730a61a43758f04cc9a4ac644945cc0e8652a1e33d6997a0a3d3f0044d2fff5", binarySha256: "002d09fd2b9628a29986a660c1f51f8a5042ff7fd54c8ab15b7b27de96c6cccc" },
-	"linux/arm64": { name: "gentle-ai_3.7.0_linux_arm64.tar.gz", sha256: "a3a3d3a974f3d9b67d935fe9e306ae83c305da4ec1baed4a5319c10b044cd0eb", binarySha256: "e29546c51d8d65528bf565239ed3fc174da73c5fa3e861e64f20f84b16f28f26" },
+	"darwin/amd64": { name: "gentle-ai_4.0.0_darwin_amd64.tar.gz", sha256: "b5b74f22b38ec3339b38e8c68f797dc76ff12ed6580826a6e425d5c718da80c1", binarySha256: "d4a5b16ff70e65331e17a62356941bb0c75ecb9dbe3a0d98a6b54cfbd76cd6b0" },
+	"darwin/arm64": { name: "gentle-ai_4.0.0_darwin_arm64.tar.gz", sha256: "d2159caf6d68f367b18830ece6af71ef26963d5f5320d7df6a794773f45cc7e9", binarySha256: "18a9f7fae55d85c95684b6d512a4a148d0cb24a856325f72573c34caf65159eb" },
+	"linux/amd64": { name: "gentle-ai_4.0.0_linux_amd64.tar.gz", sha256: "5f4417cf29c969c86da4799942fd673368840901be1bb09c779a12d7ed6096ea", binarySha256: "50ba217b5138c1a9c7d5bf2f79931b1bb89b89c4cf650dcd7ee037657c88158d" },
+	"linux/arm64": { name: "gentle-ai_4.0.0_linux_arm64.tar.gz", sha256: "1383b040c95cfc69206660d73c21907b14ad70ab913f410917c54f43d3147e57", binarySha256: "6703704f0c4a5b70c36fbdc44db641e810871cab16bc28040d06aa1d10704ad3" },
 } as const;
 
-test("published Gentle AI v3.7.0 is the installer pin", () => {
-	assert.equal(INSTALLER_VERSION, "3.7.0");
-	assert.equal(GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM, "h1:MQbzHlLdPklUQn0rVE9Mz94UygHsN2OPe7xMfPn9aGw=");
+test("published Gentle AI v4.0.0 is the installer pin", () => {
+	assert.equal(INSTALLER_VERSION, "4.0.0");
+	// v4.0.0 moved the Go module path to the /v4 major-version suffix.
+	assert.equal(GENTLE_AI_WINDOWS_SOURCE_MODULE, "github.com/gentleman-programming/gentle-ai/v4");
+	assert.equal(GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM, "h1:pZ/XZ2Pk3U9lgXigOTY62zlxxFOHnc9CjQhLgaV/Hfc=");
 });
 
 test("default installer package root is the package containing scripts, not its parent", () => {
@@ -43,15 +48,15 @@ test("default installer package root is the package containing scripts, not its 
 	assert.notEqual(resolveGentleAiInstallerPackageRoot(), dirname(expectedPackageRoot));
 });
 
-test("release mapping selects only the supported official v3.7.0 assets and pinned digests", () => {
+test("release mapping selects only the supported official v4.0.0 assets and pinned digests", () => {
 	assert.deepEqual(
 		Object.fromEntries(Object.entries(GENTLE_AI_RELEASE_ASSETS).map(([key, asset]) => [key, { name: asset.name, sha256: asset.sha256, binarySha256: asset.binarySha256 }])),
 		EXPECTED_ASSETS,
 	);
-	assert.equal(resolveGentleAiReleaseAsset("linux", "x64").name, "gentle-ai_3.7.0_linux_amd64.tar.gz");
-	assert.equal(resolveGentleAiReleaseAsset("darwin", "arm64").name, "gentle-ai_3.7.0_darwin_arm64.tar.gz");
+	assert.equal(resolveGentleAiReleaseAsset("linux", "x64").name, "gentle-ai_4.0.0_linux_amd64.tar.gz");
+	assert.equal(resolveGentleAiReleaseAsset("darwin", "arm64").name, "gentle-ai_4.0.0_darwin_arm64.tar.gz");
 	for (const asset of Object.values(GENTLE_AI_RELEASE_ASSETS)) {
-		assert.match(asset.url, /^https:\/\/github\.com\/Gentleman-Programming\/gentle-ai\/releases\/download\/v3\.7\.0\//);
+		assert.match(asset.url, /^https:\/\/github\.com\/Gentleman-Programming\/gentle-ai\/releases\/download\/v4\.0\.0\//);
 	}
 });
 
@@ -61,7 +66,7 @@ test("raw release assets are admitted only under a prerelease pin", () => {
 	assert.equal(gentleAiAssetForm("gentle-ai_2.5.0-rc.3_windows_amd64.exe", "2.5.0-rc.3"), "raw-binary");
 	// A raw binary under a stable pin means the pin itself is wrong: stable
 	// releases publish signed archives only, so this fails closed pre-download.
-	assert.throws(() => gentleAiAssetForm("gentle-ai_3.7.0_linux_amd64", "3.7.0"), /only admitted for a prerelease pin/);
+	assert.throws(() => gentleAiAssetForm("gentle-ai_4.0.0_linux_amd64", "4.0.0"), /only admitted for a prerelease pin/);
 	assert.throws(() => gentleAiAssetForm("gentle-ai.dmg", "2.5.0-rc.3"), /unsupported Gentle AI release asset form/);
 	// The current stable pin admits every pinned asset row through the same
 	// gate the installer uses at download time (default installerVersion
@@ -88,7 +93,7 @@ test("release digests are all-or-none and install fails closed while any digest 
 			}),
 			/checksum mismatch/,
 		);
-		assert.equal(existsSync(join(packageRoot, ".gentle-ai", "v3.7.0", "gentle-ai")), false);
+		assert.equal(existsSync(join(packageRoot, ".gentle-ai", "v4.0.0", "gentle-ai")), false);
 	}
 });
 
@@ -116,8 +121,8 @@ function windowsGoFixture(fixtureOptions: WindowsGoFixtureOptions = {}) {
 	let goExecutable = "go";
 	const metadata = [
 		"gentle-ai.exe: go1.25.10",
-		"\tpath\tgithub.com/gentleman-programming/gentle-ai/v3/cmd/gentle-ai",
-		`\tmod\tgithub.com/gentleman-programming/gentle-ai/v3\tv3.7.0\t${GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM}`,
+		"\tpath\tgithub.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai",
+		`\tmod\tgithub.com/gentleman-programming/gentle-ai/v4\tv4.0.0\t${GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM}`,
 		"\tbuild\t-buildmode=exe", "\tbuild\t-compiler=gc", "\tbuild\tCGO_ENABLED=0", `\tbuild\tGOARCH=${fixtureOptions.goArchitecture ?? "amd64"}`, "\tbuild\tGOOS=windows",
 	].join("\n");
 	const run = async (file: string, arguments_: string[], options: WindowsGoCall["options"]) => {
@@ -135,7 +140,7 @@ function windowsGoFixture(fixtureOptions: WindowsGoFixtureOptions = {}) {
 			return { stdout: "", stderr: "" };
 		}
 		if (file === goExecutable && arguments_[0] === "version" && arguments_[1] === "-m") return { stdout: metadata, stderr: "" };
-		if (arguments_.length === 1 && arguments_[0] === "version") return { stdout: fixtureOptions.reportedVersion ?? "gentle-ai 3.7.0\n", stderr: "" };
+		if (arguments_.length === 1 && arguments_[0] === "version") return { stdout: fixtureOptions.reportedVersion ?? "gentle-ai 4.0.0\n", stderr: "" };
 		throw new Error(`unexpected command: ${file} ${arguments_.join(" ")}`);
 	};
 	return { calls, run, setGoExecutable: (path: string) => { goExecutable = path; } };
@@ -151,7 +156,7 @@ test("win32 x64 and arm64 install the exact Go SumDB source tag without archive 
 		const result = await installGentleAi({ packageRoot, platform: "win32", arch, execFile: fixture.run, resolveGoExecutable: async () => goPath });
 		assert.equal(result.installed, true);
 		assert.deepEqual(fixture.calls.filter((call) => call.file === goPath).map((call) => call.arguments_.slice(0, 2)), [
-			["version"], ["install", "github.com/gentleman-programming/gentle-ai/v3/cmd/gentle-ai@v3.7.0"], ["version", "-m"],
+			["version"], ["install", "github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai@v4.0.0"], ["version", "-m"],
 		]);
 	}
 });
@@ -170,7 +175,7 @@ test("Windows source install reports missing or too-old Go without publishing a 
 			() => installGentleAi({ packageRoot, platform: "win32", arch: "x64", execFile: fixture.run, resolveGoExecutable: async () => goPath }),
 			(error: unknown) => error instanceof Error && "code" in error && error.code === fixtureOptions.expectedCode,
 		);
-		assert.equal(existsSync(join(packageRoot, ".gentle-ai", "v3.7.0", "gentle-ai.exe")), false);
+		assert.equal(existsSync(join(packageRoot, ".gentle-ai", "v4.0.0", "gentle-ai.exe")), false);
 		assert.deepEqual((await readdir(packageRoot)).filter((entry) => entry.includes("install-")), []);
 	}
 });
@@ -189,7 +194,7 @@ test("Windows source install cleans staging after Go failure or wrong built vers
 			() => installGentleAi({ packageRoot, platform: "win32", arch: "x64", execFile: fixture.run, resolveGoExecutable: async () => goPath }),
 			(error: unknown) => error instanceof Error && "code" in error && error.code === fixtureOptions.expectedCode,
 		);
-		const runtimeDirectory = join(packageRoot, ".gentle-ai", "v3.7.0");
+		const runtimeDirectory = join(packageRoot, ".gentle-ai", "v4.0.0");
 		assert.ok(fixture.calls.some((call) => call.arguments_[0] === "install"));
 		assert.equal(existsSync(join(runtimeDirectory, "gentle-ai.exe")), false);
 		assert.equal(existsSync(runtimeDirectory) && (await readdir(runtimeDirectory)).some((entry) => entry.startsWith(".go-install-") || entry.endsWith(".tmp")), false);
@@ -210,7 +215,7 @@ test("Windows source installs reuse only a fully verified package-local binary",
 	assert.equal(reused.installed, false);
 	assert.ok(reuse.calls.every((call) => call.file !== "gentle-ai"), "the installer must never fall back to ambient gentle-ai on PATH");
 
-	await writeFile(join(packageRoot, ".gentle-ai", "v3.7.0", "integrity.json"), "{}\n");
+	await writeFile(join(packageRoot, ".gentle-ai", "v4.0.0", "integrity.json"), "{}\n");
 	const repaired = windowsGoFixture();
 	repaired.setGoExecutable(goPath);
 	assert.equal((await installGentleAi({ packageRoot, platform: "win32", arch: "x64", execFile: repaired.run, resolveGoExecutable: async () => goPath })).installed, true);
@@ -251,8 +256,8 @@ async function hardenedWindowsGoFixture(packageRoot: string, fixtureOptions: Har
 		: undefined;
 	const metadata = fixtureOptions.metadataOverride ?? [
 		"gentle-ai.exe: go1.25.10",
-		"\tpath\tgithub.com/gentleman-programming/gentle-ai/v3/cmd/gentle-ai",
-		`\tmod\tgithub.com/gentleman-programming/gentle-ai/v3\tv3.7.0\t${GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM}`,
+		"\tpath\tgithub.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai",
+		`\tmod\tgithub.com/gentleman-programming/gentle-ai/v4\tv4.0.0\t${GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM}`,
 		"\tbuild\t-buildmode=exe",
 		"\tbuild\t-compiler=gc",
 		"\tbuild\tCGO_ENABLED=0",
@@ -272,7 +277,7 @@ async function hardenedWindowsGoFixture(packageRoot: string, fixtureOptions: Har
 			return { stdout: "", stderr: "" };
 		}
 		if (file === goPath && arguments_[0] === "version" && arguments_[1] === "-m") return { stdout: metadata, stderr: "" };
-		if (arguments_.length === 1 && arguments_[0] === "version") return { stdout: "gentle-ai 3.7.0\n", stderr: "" };
+		if (arguments_.length === 1 && arguments_[0] === "version") return { stdout: "gentle-ai 4.0.0\n", stderr: "" };
 		throw new Error(`unexpected command: ${file} ${arguments_.join(" ")}`);
 	};
 	return {
@@ -314,7 +319,7 @@ test("Windows source installation resolves one validated Go executable and seals
 	const goCalls = fixture.calls.filter((call) => call.file === fixture.goPath);
 	assert.deepEqual(goCalls.map((call) => call.arguments_.slice(0, 2)), [
 		["version"],
-		["install", "github.com/gentleman-programming/gentle-ai/v3/cmd/gentle-ai@v3.7.0"],
+		["install", "github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai@v4.0.0"],
 		["version", "-m"],
 	]);
 	for (const call of goCalls) {
@@ -340,14 +345,14 @@ test("Windows source manifest binds verified Go metadata and architecture", asyn
 	const packageRoot = await mkdtemp(join(tmpdir(), "gentle-pi-installer-provenance-"));
 	const fixture = await hardenedWindowsGoFixture(packageRoot, { architecture: "arm64" });
 	const result = await installGentleAi({ packageRoot, platform: "win32", arch: "arm64", execFile: fixture.run, resolveGoExecutable: fixture.resolveGoExecutable });
-	const manifest = JSON.parse(await readFile(join(packageRoot, ".gentle-ai", "v3.7.0", "integrity.json"), "utf8")) as Record<string, string>;
+	const manifest = JSON.parse(await readFile(join(packageRoot, ".gentle-ai", "v4.0.0", "integrity.json"), "utf8")) as Record<string, string>;
 	assert.equal(result.installed, true);
 	assert.deepEqual(manifest, {
-		version: "3.7.0",
+		version: "4.0.0",
 		method: "go-sumdb-source-build",
-		package: "github.com/gentleman-programming/gentle-ai/v3/cmd/gentle-ai",
-		module: "github.com/gentleman-programming/gentle-ai/v3",
-		tag: "v3.7.0",
+		package: "github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai",
+		module: "github.com/gentleman-programming/gentle-ai/v4",
+		tag: "v4.0.0",
 		architecture: "arm64",
 		binarySha256: createHash("sha256").update("trusted Windows source build").digest("hex"),
 		moduleChecksum: GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM,
@@ -367,12 +372,12 @@ test("Windows source installation rejects Go metadata for a different architectu
 		() => installGentleAi({ packageRoot, platform: "win32", arch: "x64", execFile: fixture.run, resolveGoExecutable: fixture.resolveGoExecutable }),
 		(error: unknown) => error instanceof Error && "code" in error && error.code === "GENTLE_AI_GO_INSTALL_FAILED",
 	);
-	assert.equal(existsSync(join(packageRoot, ".gentle-ai", "v3.7.0", "gentle-ai.exe")), false);
+	assert.equal(existsSync(join(packageRoot, ".gentle-ai", "v4.0.0", "gentle-ai.exe")), false);
 });
 
 test("Windows source installation treats a fresh ownerless lock as active", async () => {
 	const packageRoot = await mkdtemp(join(tmpdir(), "gentle-pi-installer-ownerless-lock-"));
-	const lockPath = join(packageRoot, ".gentle-ai", ".v3.7.0.install.lock");
+	const lockPath = join(packageRoot, ".gentle-ai", ".v4.0.0.install.lock");
 	await mkdir(lockPath, { recursive: true });
 	const fixture = await hardenedWindowsGoFixture(packageRoot);
 	await assertManualLockRecoveryRequired(packageRoot, fixture);
@@ -380,7 +385,7 @@ test("Windows source installation treats a fresh ownerless lock as active", asyn
 
 test("Windows source installation preserves a lock whose owner nonce changed before release", async () => {
 	const packageRoot = await mkdtemp(join(tmpdir(), "gentle-pi-installer-owner-lock-"));
-	const lockOwnerPath = join(packageRoot, ".gentle-ai", ".v3.7.0.install.lock", "owner.json");
+	const lockOwnerPath = join(packageRoot, ".gentle-ai", ".v4.0.0.install.lock", "owner.json");
 	const fixture = await hardenedWindowsGoFixture(packageRoot);
 	let replacedOwner = false;
 	const run = async (...arguments_: Parameters<typeof fixture.run>) => {
@@ -397,7 +402,7 @@ test("Windows source installation preserves a lock whose owner nonce changed bef
 });
 
 async function assertManualLockRecoveryRequired(packageRoot: string, fixture: Awaited<ReturnType<typeof hardenedWindowsGoFixture>>, options: Record<string, unknown> = {}) {
-	const lockPath = join(packageRoot, ".gentle-ai", ".v3.7.0.install.lock");
+	const lockPath = join(packageRoot, ".gentle-ai", ".v4.0.0.install.lock");
 	await assert.rejects(
 		() => installGentleAi({ packageRoot, platform: "win32", arch: "x64", execFile: fixture.run, resolveGoExecutable: fixture.resolveGoExecutable, ...options }),
 		(error: unknown) => error instanceof Error && error.message.includes(lockPath) && /confirm no installer is active.*remove.*manually/i.test(error.message),
@@ -407,18 +412,18 @@ async function assertManualLockRecoveryRequired(packageRoot: string, fixture: Aw
 }
 
 function tombstonePath(packageRoot: string, nonce: string): string {
-	return join(packageRoot, ".gentle-ai", `.v3.7.0.install.tombstone-${nonce}`);
+	return join(packageRoot, ".gentle-ai", `.v4.0.0.install.tombstone-${nonce}`);
 }
 
 async function tombstones(packageRoot: string): Promise<string[]> {
 	const runtimeRoot = join(packageRoot, ".gentle-ai");
 	return existsSync(runtimeRoot)
-		? (await readdir(runtimeRoot)).filter((entry) => entry.startsWith(".v3.7.0.install.tombstone-"))
+		? (await readdir(runtimeRoot)).filter((entry) => entry.startsWith(".v4.0.0.install.tombstone-"))
 		: [];
 }
 
 function backupBundlePath(packageRoot: string, nonce: string): string {
-	return join(packageRoot, ".gentle-ai", `.v3.7.0.backup-${nonce}`);
+	return join(packageRoot, ".gentle-ai", `.v4.0.0.backup-${nonce}`);
 }
 
 async function copyWindowsBundle(source: string, destination: string): Promise<void> {
@@ -429,7 +434,7 @@ async function copyWindowsBundle(source: string, destination: string): Promise<v
 
 test("Windows source installation fails closed for an ownerless lock even after the stale threshold", async () => {
 	const packageRoot = await mkdtemp(join(tmpdir(), "gentle-pi-installer-ownerless-stale-lock-"));
-	const lockPath = join(packageRoot, ".gentle-ai", ".v3.7.0.install.lock");
+	const lockPath = join(packageRoot, ".gentle-ai", ".v4.0.0.install.lock");
 	await mkdir(lockPath, { recursive: true });
 	const fixture = await hardenedWindowsGoFixture(packageRoot);
 	await assertManualLockRecoveryRequired(packageRoot, fixture, { now: () => Date.now() + 10 * 60_000 });
@@ -437,7 +442,7 @@ test("Windows source installation fails closed for an ownerless lock even after 
 
 test("Windows source installation fails closed for a stale owner lock", async () => {
 	const packageRoot = await mkdtemp(join(tmpdir(), "gentle-pi-installer-stale-lock-"));
-	const lockPath = join(packageRoot, ".gentle-ai", ".v3.7.0.install.lock");
+	const lockPath = join(packageRoot, ".gentle-ai", ".v4.0.0.install.lock");
 	await mkdir(lockPath, { recursive: true });
 	await writeFile(join(lockPath, "owner.json"), `${JSON.stringify({ createdAt: 0, nonce: "0".repeat(64) })}\n`);
 	const fixture = await hardenedWindowsGoFixture(packageRoot);
@@ -489,7 +494,7 @@ test("Windows source acquisition fails closed when a tombstone appears after its
 		(error: unknown) => error instanceof Error && error.message.includes(foreignTombstone),
 	);
 	assert.equal(existsSync(foreignTombstone), true);
-	assert.equal(existsSync(join(packageRoot, ".gentle-ai", ".v3.7.0.install.lock")), false);
+	assert.equal(existsSync(join(packageRoot, ".gentle-ai", ".v4.0.0.install.lock")), false);
 	assert.equal(fixture.calls.some((call) => call.arguments_[0] === "install"), false);
 });
 
@@ -497,7 +502,7 @@ test("Windows source release deletes its matching tombstone and allows reuse", a
 	const packageRoot = await mkdtemp(join(tmpdir(), "gentle-pi-installer-owned-lock-release-"));
 	const fixture = await hardenedWindowsGoFixture(packageRoot);
 	await installGentleAi({ packageRoot, platform: "win32", arch: "x64", execFile: fixture.run, resolveGoExecutable: fixture.resolveGoExecutable });
-	assert.equal(existsSync(join(packageRoot, ".gentle-ai", ".v3.7.0.install.lock")), false);
+	assert.equal(existsSync(join(packageRoot, ".gentle-ai", ".v4.0.0.install.lock")), false);
 	assert.deepEqual(await tombstones(packageRoot), []);
 	const reuse = await hardenedWindowsGoFixture(packageRoot);
 	assert.equal((await installGentleAi({ packageRoot, platform: "win32", arch: "x64", execFile: reuse.run, resolveGoExecutable: reuse.resolveGoExecutable })).installed, false);
@@ -507,7 +512,7 @@ test("Windows source recovers a valid backup after a crash between publication r
 	const packageRoot = await mkdtemp(join(tmpdir(), "gentle-pi-installer-backup-crash-"));
 	const initial = await hardenedWindowsGoFixture(packageRoot);
 	await installGentleAi({ packageRoot, platform: "win32", arch: "x64", execFile: initial.run, resolveGoExecutable: initial.resolveGoExecutable });
-	const live = join(packageRoot, ".gentle-ai", "v3.7.0");
+	const live = join(packageRoot, ".gentle-ai", "v4.0.0");
 	const backup = backupBundlePath(packageRoot, "crash");
 	await rename(live, backup);
 	const recovery = await hardenedWindowsGoFixture(packageRoot);
@@ -543,7 +548,7 @@ test("Windows source cleans one validated backup only when the live bundle is va
 	const packageRoot = await mkdtemp(join(tmpdir(), "gentle-pi-installer-backup-valid-live-"));
 	const initial = await hardenedWindowsGoFixture(packageRoot);
 	await installGentleAi({ packageRoot, platform: "win32", arch: "x64", execFile: initial.run, resolveGoExecutable: initial.resolveGoExecutable });
-	const live = join(packageRoot, ".gentle-ai", "v3.7.0");
+	const live = join(packageRoot, ".gentle-ai", "v4.0.0");
 	const backup = backupBundlePath(packageRoot, "valid");
 	await copyWindowsBundle(live, backup);
 	const reuse = await hardenedWindowsGoFixture(packageRoot);
@@ -556,7 +561,7 @@ test("Windows source preserves a valid backup when the live bundle is invalid", 
 	const packageRoot = await mkdtemp(join(tmpdir(), "gentle-pi-installer-backup-invalid-live-"));
 	const initial = await hardenedWindowsGoFixture(packageRoot);
 	await installGentleAi({ packageRoot, platform: "win32", arch: "x64", execFile: initial.run, resolveGoExecutable: initial.resolveGoExecutable });
-	const live = join(packageRoot, ".gentle-ai", "v3.7.0");
+	const live = join(packageRoot, ".gentle-ai", "v4.0.0");
 	const backup = backupBundlePath(packageRoot, "valid");
 	await copyWindowsBundle(live, backup);
 	await writeFile(join(live, "integrity.json"), "{}\n");
@@ -574,7 +579,7 @@ test("Windows concurrent installs fail closed until normal release, then reuse t
 	const fixture = await hardenedWindowsGoFixture(packageRoot, { blockInstall: true });
 	const first = installGentleAi({ packageRoot, platform: "win32", arch: "x64", execFile: fixture.run, resolveGoExecutable: fixture.resolveGoExecutable });
 	await fixture.waitForInstall();
-	const lockPath = join(packageRoot, ".gentle-ai", ".v3.7.0.install.lock");
+	const lockPath = join(packageRoot, ".gentle-ai", ".v4.0.0.install.lock");
 	await assert.rejects(
 		() => installGentleAi({ packageRoot, platform: "win32", arch: "x64", execFile: fixture.run, resolveGoExecutable: fixture.resolveGoExecutable }),
 		(error: unknown) => error instanceof Error && error.message.includes(lockPath),
@@ -588,7 +593,7 @@ test("Windows concurrent installs fail closed until normal release, then reuse t
 
 test("Windows source publication rolls back a prior bundle when final directory swap fails", async () => {
 	const packageRoot = await mkdtemp(join(tmpdir(), "gentle-pi-installer-rollback-"));
-	const versionDirectory = join(packageRoot, ".gentle-ai", "v3.7.0");
+	const versionDirectory = join(packageRoot, ".gentle-ai", "v4.0.0");
 	await mkdir(versionDirectory, { recursive: true });
 	await writeFile(join(versionDirectory, "old.txt"), "previous bundle");
 	const fixture = await hardenedWindowsGoFixture(packageRoot);
@@ -609,6 +614,405 @@ test("Windows source publication rolls back a prior bundle when final directory 
 	assert.equal(await readFile(join(versionDirectory, "old.txt"), "utf8"), "previous bundle");
 });
 
+function codedError(code: string, message: string) {
+	return Object.assign(new Error(message), { code });
+}
+
+function expectedWindowsSourceManifest(architecture: "x64" | "arm64") {
+	return {
+		version: INSTALLER_VERSION,
+		method: "go-sumdb-source-build",
+		package: GENTLE_AI_WINDOWS_SOURCE_PACKAGE_PATH,
+		module: GENTLE_AI_WINDOWS_SOURCE_MODULE,
+		tag: GENTLE_AI_WINDOWS_SOURCE_TAG,
+		architecture,
+		binarySha256: createHash("sha256").update("trusted Windows source build").digest("hex"),
+		moduleChecksum: GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM,
+		goVersion: "go1.25.10",
+		goos: "windows",
+		goarch: architecture === "x64" ? "amd64" : "arm64",
+		buildMode: "exe",
+		compiler: "gc",
+		cgoEnabled: "0",
+	};
+}
+
+async function publicationLeftovers(packageRoot: string) {
+	const runtimeRoot = join(packageRoot, ".gentle-ai");
+	return existsSync(runtimeRoot)
+		? (await readdir(runtimeRoot)).filter((entry) => entry.startsWith(`.v${INSTALLER_VERSION}.staging-`) || entry.startsWith(`.v${INSTALLER_VERSION}.backup-`) || entry.startsWith(`.v${INSTALLER_VERSION}.install.`))
+		: [];
+}
+
+async function waitForCount(getCount: () => number, expected: number, label: string) {
+	const deadline = Date.now() + 5_000;
+	while (Date.now() < deadline) {
+		if (getCount() >= expected) return;
+		await new Promise<void>((resolve) => setImmediate(resolve));
+	}
+	throw new Error(`timed out waiting for ${label} (${getCount()} < ${expected})`);
+}
+
+async function settleWithMockedTimers<T>(t: { mock: { timers: { tick(milliseconds: number): void } } }, operation: Promise<T>): Promise<T> {
+	let done = false;
+	let value: T | undefined;
+	let failure: { error: unknown } | undefined;
+	operation.then(
+		(resolved) => { value = resolved; done = true; },
+		(error) => { failure = { error }; done = true; },
+	);
+	const deadline = Date.now() + 5_000;
+	while (!done && Date.now() < deadline) {
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		if (!done) t.mock.timers.tick(1_600);
+	}
+	if (!done) throw new Error("install did not settle under mocked publication timers");
+	if (failure) throw failure.error;
+	return value as T;
+}
+
+test("Windows source publication retries a transient staging lock then reuses the published bundle", async () => {
+	for (const [arch, goArchitecture] of [["x64", "amd64"], ["arm64", "arm64"]] as const) {
+		const packageRoot = await mkdtemp(join(tmpdir(), `gentle-pi-installer-windows-retry-${arch}-`));
+		const fixture = await hardenedWindowsGoFixture(packageRoot, { architecture: goArchitecture });
+		const versionDirectory = join(packageRoot, ".gentle-ai", `v${INSTALLER_VERSION}`);
+		let stagingAttempts = 0;
+		const result = await installGentleAi({
+			packageRoot,
+			platform: "win32",
+			arch,
+			execFile: fixture.run,
+			resolveGoExecutable: fixture.resolveGoExecutable,
+			rename: async (from: string, to: string) => {
+				if (from.includes(".staging-") && to === versionDirectory) {
+					stagingAttempts += 1;
+					if (stagingAttempts === 1) throw codedError("EPERM", "simulated staging lock");
+				}
+				await rename(from, to);
+			},
+		});
+		assert.equal(result.installed, true);
+		assert.equal(stagingAttempts, 2);
+		assert.equal(fixture.calls.filter((call) => call.file === fixture.goPath && call.arguments_[0] === "install").length, 1);
+		assert.equal(await readFile(join(versionDirectory, "gentle-ai.exe"), "utf8"), "trusted Windows source build");
+		assert.equal(await readFile(join(versionDirectory, "integrity.json"), "utf8"), `${JSON.stringify(expectedWindowsSourceManifest(arch))}\n`);
+		assert.deepEqual(await publicationLeftovers(packageRoot), []);
+		const reuse = await hardenedWindowsGoFixture(packageRoot, { architecture: goArchitecture });
+		assert.equal((await installGentleAi({ packageRoot, platform: "win32", arch, execFile: reuse.run, resolveGoExecutable: reuse.resolveGoExecutable })).installed, false);
+		assert.equal(reuse.calls.some((call) => call.arguments_[0] === "install"), false);
+	}
+});
+
+test("Windows publication retries EPERM, EBUSY, and EACCES through five attempts with increasing delays", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const delays = [200, 400, 800, 1600];
+	for (const code of ["EPERM", "EBUSY", "EACCES"] as const) {
+		const packageRoot = await mkdtemp(join(tmpdir(), `gentle-pi-installer-windows-retry-budget-${code}-`));
+		const fixture = await hardenedWindowsGoFixture(packageRoot);
+		const versionDirectory = join(packageRoot, ".gentle-ai", `v${INSTALLER_VERSION}`);
+		let stagingAttempts = 0;
+		const install = installGentleAi({
+			packageRoot,
+			platform: "win32",
+			arch: "x64",
+			execFile: fixture.run,
+			resolveGoExecutable: fixture.resolveGoExecutable,
+			rename: async (from: string, to: string) => {
+				if (from.includes(".staging-") && to === versionDirectory) {
+					stagingAttempts += 1;
+					if (stagingAttempts < 5) throw codedError(code, `simulated ${code} lock`);
+				}
+				await rename(from, to);
+			},
+		});
+		for (let attempt = 1; attempt <= 4; attempt += 1) {
+			await waitForCount(() => stagingAttempts, attempt, `${code} attempt ${attempt}`);
+			t.mock.timers.tick(delays[attempt - 1] - 1);
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.equal(stagingAttempts, attempt, `${code} must not retry before ${delays[attempt - 1]}ms`);
+			t.mock.timers.tick(1);
+		}
+		await waitForCount(() => stagingAttempts, 5, `${code} fifth attempt`);
+		assert.equal((await install).installed, true, `${code} must succeed on the fifth attempt without a further delay`);
+		assert.equal(stagingAttempts, 5);
+		assert.equal(fixture.calls.filter((call) => call.file === fixture.goPath && call.arguments_[0] === "install").length, 1);
+	}
+});
+
+test("Windows source replacement retries transient backup and staging locks then removes the backup", async () => {
+	const packageRoot = await mkdtemp(join(tmpdir(), "gentle-pi-installer-windows-replace-retry-"));
+	const initial = await hardenedWindowsGoFixture(packageRoot);
+	await installGentleAi({ packageRoot, platform: "win32", arch: "x64", execFile: initial.run, resolveGoExecutable: initial.resolveGoExecutable });
+	const versionDirectory = join(packageRoot, ".gentle-ai", `v${INSTALLER_VERSION}`);
+	await writeFile(join(versionDirectory, "integrity.json"), "{}\n");
+	const fixture = await hardenedWindowsGoFixture(packageRoot);
+	let backupAttempts = 0;
+	let stagingAttempts = 0;
+	const result = await installGentleAi({
+		packageRoot,
+		platform: "win32",
+		arch: "x64",
+		execFile: fixture.run,
+		resolveGoExecutable: fixture.resolveGoExecutable,
+		rename: async (from: string, to: string) => {
+			if (from === versionDirectory && to.includes(".backup-")) {
+				backupAttempts += 1;
+				if (backupAttempts === 1) throw codedError("EPERM", "simulated backup lock");
+			}
+			if (from.includes(".staging-") && to === versionDirectory) {
+				stagingAttempts += 1;
+				if (stagingAttempts === 1) throw codedError("EBUSY", "simulated staging lock");
+			}
+			await rename(from, to);
+		},
+	});
+	assert.equal(result.installed, true);
+	assert.equal(backupAttempts, 2);
+	assert.equal(stagingAttempts, 2);
+	assert.equal(await readFile(join(versionDirectory, "gentle-ai.exe"), "utf8"), "trusted Windows source build");
+	assert.equal(await readFile(join(versionDirectory, "integrity.json"), "utf8"), `${JSON.stringify(expectedWindowsSourceManifest("x64"))}\n`);
+	assert.equal((await readdir(join(packageRoot, ".gentle-ai"))).some((entry) => entry.startsWith(`.v${INSTALLER_VERSION}.backup-`)), false);
+});
+
+test("Windows source publication restores the prior bundle after exhausting a staging lock, retrying a transient rollback", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const packageRoot = await mkdtemp(join(tmpdir(), "gentle-pi-installer-windows-permanent-lock-"));
+	const versionDirectory = join(packageRoot, ".gentle-ai", `v${INSTALLER_VERSION}`);
+	await mkdir(versionDirectory, { recursive: true });
+	await writeFile(join(versionDirectory, "old.txt"), "previous bundle");
+	const fixture = await hardenedWindowsGoFixture(packageRoot);
+	const stagingErrors: Error[] = [];
+	let rollbackAttempts = 0;
+	await assert.rejects(
+		settleWithMockedTimers(t, installGentleAi({
+			packageRoot,
+			platform: "win32",
+			arch: "x64",
+			execFile: fixture.run,
+			resolveGoExecutable: fixture.resolveGoExecutable,
+			rename: async (from: string, to: string) => {
+				if (from.includes(".staging-") && to === versionDirectory) {
+					const error = codedError("EPERM", `simulated staging lock ${stagingErrors.length + 1}`);
+					stagingErrors.push(error);
+					throw error;
+				}
+				if (from.includes(".backup-") && to === versionDirectory) {
+					rollbackAttempts += 1;
+					if (rollbackAttempts === 1) throw codedError("EBUSY", "simulated rollback lock");
+				}
+				await rename(from, to);
+			},
+		})),
+		(error: unknown) => error === stagingErrors[4],
+	);
+	assert.equal(stagingErrors.length, 5);
+	assert.equal(rollbackAttempts, 2);
+	assert.equal(await readFile(join(versionDirectory, "old.txt"), "utf8"), "previous bundle");
+	assert.equal((await readdir(join(packageRoot, ".gentle-ai"))).some((entry) => entry.startsWith(`.v${INSTALLER_VERSION}.backup-`)), false);
+	assert.equal(existsSync(join(versionDirectory, "gentle-ai.exe")), false);
+});
+
+test("Windows source publication leaves the live bundle untouched when the backup move is exhausted", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const packageRoot = await mkdtemp(join(tmpdir(), "gentle-pi-installer-windows-backup-exhausted-"));
+	const versionDirectory = join(packageRoot, ".gentle-ai", `v${INSTALLER_VERSION}`);
+	await mkdir(versionDirectory, { recursive: true });
+	await writeFile(join(versionDirectory, "old.txt"), "previous bundle");
+	const fixture = await hardenedWindowsGoFixture(packageRoot);
+	const backupErrors: Error[] = [];
+	await assert.rejects(
+		settleWithMockedTimers(t, installGentleAi({
+			packageRoot,
+			platform: "win32",
+			arch: "x64",
+			execFile: fixture.run,
+			resolveGoExecutable: fixture.resolveGoExecutable,
+			rename: async (from: string, to: string) => {
+				if (from === versionDirectory && to.includes(".backup-")) {
+					const error = codedError("EPERM", `simulated backup lock ${backupErrors.length + 1}`);
+					backupErrors.push(error);
+					throw error;
+				}
+				await rename(from, to);
+			},
+		})),
+		(error: unknown) => error === backupErrors[4],
+	);
+	assert.equal(backupErrors.length, 5);
+	assert.equal(await readFile(join(versionDirectory, "old.txt"), "utf8"), "previous bundle");
+	assert.equal((await readdir(join(packageRoot, ".gentle-ai"))).some((entry) => entry.startsWith(`.v${INSTALLER_VERSION}.backup-`)), false);
+});
+
+test("Windows source publication retains the backup when rollback retries are exhausted", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const packageRoot = await mkdtemp(join(tmpdir(), "gentle-pi-installer-windows-rollback-exhausted-"));
+	const versionDirectory = join(packageRoot, ".gentle-ai", `v${INSTALLER_VERSION}`);
+	await mkdir(versionDirectory, { recursive: true });
+	await writeFile(join(versionDirectory, "old.txt"), "previous bundle");
+	const fixture = await hardenedWindowsGoFixture(packageRoot);
+	const rollbackErrors: Error[] = [];
+	await assert.rejects(
+		settleWithMockedTimers(t, installGentleAi({
+			packageRoot,
+			platform: "win32",
+			arch: "x64",
+			execFile: fixture.run,
+			resolveGoExecutable: fixture.resolveGoExecutable,
+			rename: async (from: string, to: string) => {
+				if (from.includes(".staging-") && to === versionDirectory) throw codedError("EPERM", "simulated staging lock");
+				if (from.includes(".backup-") && to === versionDirectory) {
+					const error = codedError("EACCES", `simulated rollback lock ${rollbackErrors.length + 1}`);
+					rollbackErrors.push(error);
+					throw error;
+				}
+				await rename(from, to);
+			},
+		})),
+		(error: unknown) => error instanceof Error
+			&& error.message === "Gentle AI bundle publication failed and rollback could not restore the prior bundle"
+			&& error.cause === rollbackErrors[4],
+	);
+	assert.equal(rollbackErrors.length, 5);
+	assert.equal(existsSync(versionDirectory), false);
+	const backups = (await readdir(join(packageRoot, ".gentle-ai"))).filter((entry) => entry.startsWith(`.v${INSTALLER_VERSION}.backup-`));
+	assert.equal(backups.length, 1);
+	assert.equal(await readFile(join(packageRoot, ".gentle-ai", backups[0], "old.txt"), "utf8"), "previous bundle");
+});
+
+test("Windows source restores a valid backup through a transient lock on the next install", async () => {
+	const packageRoot = await mkdtemp(join(tmpdir(), "gentle-pi-installer-windows-restore-retry-"));
+	const initial = await hardenedWindowsGoFixture(packageRoot);
+	await installGentleAi({ packageRoot, platform: "win32", arch: "x64", execFile: initial.run, resolveGoExecutable: initial.resolveGoExecutable });
+	const live = join(packageRoot, ".gentle-ai", `v${INSTALLER_VERSION}`);
+	const backup = backupBundlePath(packageRoot, "restore");
+	await rename(live, backup);
+	const recovery = await hardenedWindowsGoFixture(packageRoot);
+	let restoreAttempts = 0;
+	let buildAttempted = false;
+	const run = async (...arguments_: Parameters<typeof recovery.run>) => {
+		if (arguments_[1][0] === "install") { buildAttempted = true; throw new Error("recovery must precede a new build"); }
+		return recovery.run(...arguments_);
+	};
+	const restored = await installGentleAi({
+		packageRoot,
+		platform: "win32",
+		arch: "x64",
+		execFile: run,
+		resolveGoExecutable: recovery.resolveGoExecutable,
+		rename: async (from: string, to: string) => {
+			if (from.includes(".backup-") && to === live) {
+				restoreAttempts += 1;
+				if (restoreAttempts === 1) throw codedError("EPERM", "simulated restore lock");
+			}
+			await rename(from, to);
+		},
+	});
+	assert.equal(restored.installed, false);
+	assert.equal(restoreAttempts, 2);
+	assert.equal(existsSync(live), true);
+	assert.equal(existsSync(backup), false);
+	assert.equal(buildAttempted, false);
+	assert.equal(await readFile(join(live, "gentle-ai.exe"), "utf8"), "trusted Windows source build");
+});
+
+test("Windows publication does not retry ENOSPC or uncoded rename failures", async () => {
+	for (const failure of [codedError("ENOSPC", "simulated disk full"), new Error("simulated uncoded failure")]) {
+		const packageRoot = await mkdtemp(join(tmpdir(), "gentle-pi-installer-windows-nonretryable-"));
+		const fixture = await hardenedWindowsGoFixture(packageRoot);
+		const versionDirectory = join(packageRoot, ".gentle-ai", `v${INSTALLER_VERSION}`);
+		let stagingAttempts = 0;
+		await assert.rejects(
+			() => installGentleAi({
+				packageRoot,
+				platform: "win32",
+				arch: "x64",
+				execFile: fixture.run,
+				resolveGoExecutable: fixture.resolveGoExecutable,
+				rename: async (from: string, to: string) => {
+					if (from.includes(".staging-") && to === versionDirectory) {
+						stagingAttempts += 1;
+						throw failure;
+					}
+					await rename(from, to);
+				},
+			}),
+			(error: unknown) => error === failure,
+		);
+		assert.equal(stagingAttempts, 1);
+		assert.equal(existsSync(join(versionDirectory, "gentle-ai.exe")), false);
+	}
+});
+
+test("Darwin/Linux signed publication fails on EPERM after one attempt", async () => {
+	const payload = Buffer.from("signed archive fixture");
+	const binary = "signed binary";
+	for (const [platform, key] of [["darwin", "darwin/amd64"], ["linux", "linux/amd64"]] as const) {
+		const packageRoot = await mkdtemp(join(tmpdir(), `gentle-pi-installer-signed-noretry-${platform}-`));
+		const asset = {
+			name: `gentle-ai_${INSTALLER_VERSION}_${platform}_amd64.tar.gz`,
+			sha256: createHash("sha256").update(payload).digest("hex"),
+			binarySha256: createHash("sha256").update(binary).digest("hex"),
+			url: "https://example.invalid/gentle-ai.tar.gz",
+			executable: "gentle-ai",
+		};
+		const versionDirectory = join(packageRoot, ".gentle-ai", `v${INSTALLER_VERSION}`);
+		let stagingAttempts = 0;
+		await assert.rejects(
+			() => installGentleAi({
+				packageRoot,
+				platform,
+				arch: "x64",
+				releaseAssets: { [key]: asset },
+				download: async (_url: string, destination: string) => writeFile(destination, payload),
+				extractArchive: async (_archive: string, destination: string) => {
+					await mkdir(destination, { recursive: true });
+					await writeFile(join(destination, "gentle-ai"), binary);
+				},
+				rename: async (from: string, to: string) => {
+					if (from.includes(".staging-") && to === versionDirectory) {
+						stagingAttempts += 1;
+						throw codedError("EPERM", "simulated staging lock");
+					}
+					await rename(from, to);
+				},
+			}),
+			(error: unknown) => error instanceof Error && (error as NodeJS.ErrnoException).code === "EPERM",
+		);
+		assert.equal(stagingAttempts, 1, platform);
+		assert.equal(existsSync(join(versionDirectory, "gentle-ai")), false);
+	}
+});
+
+test("Windows source install with a persistent publication lock cleans staging without pretending a runtime exists", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const packageRoot = await mkdtemp(join(tmpdir(), "gentle-pi-installer-windows-persistent-lock-"));
+	const fixture = await hardenedWindowsGoFixture(packageRoot);
+	const versionDirectory = join(packageRoot, ".gentle-ai", `v${INSTALLER_VERSION}`);
+	const stagingErrors: Error[] = [];
+	await assert.rejects(
+		settleWithMockedTimers(t, installGentleAi({
+			packageRoot,
+			platform: "win32",
+			arch: "x64",
+			execFile: fixture.run,
+			resolveGoExecutable: fixture.resolveGoExecutable,
+			rename: async (from: string, to: string) => {
+				if (from.includes(".staging-") && to === versionDirectory) {
+					const error = codedError("EPERM", `simulated staging lock ${stagingErrors.length + 1}`);
+					stagingErrors.push(error);
+					throw error;
+				}
+				await rename(from, to);
+			},
+		})),
+		(error: unknown) => error === stagingErrors[4],
+	);
+	assert.equal(stagingErrors.length, 5);
+	assert.equal(existsSync(join(versionDirectory, "gentle-ai.exe")), false);
+	assert.equal(existsSync(versionDirectory), false);
+	assert.deepEqual(await publicationLeftovers(packageRoot), []);
+});
+
 test("Darwin/Linux signed bundles retain their four-field manifest and reusable compatibility", async () => {
 	const packageRoot = await mkdtemp(join(tmpdir(), "gentle-pi-installer-signed-compatibility-"));
 	const payload = Buffer.from("signed archive fixture");
@@ -625,7 +1029,7 @@ test("Darwin/Linux signed bundles retain their four-field manifest and reusable 
 		},
 	};
 	await installGentleAi(options);
-	const manifestPath = join(packageRoot, ".gentle-ai", "v3.7.0", "integrity.json");
+	const manifestPath = join(packageRoot, ".gentle-ai", "v4.0.0", "integrity.json");
 	const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, string>;
 	assert.deepEqual(Object.keys(manifest), ["version", "asset", "assetSha256", "binarySha256"]);
 	assert.equal((await installGentleAi({ ...options, download: async () => { throw new Error("signed bundle must be reused"); } })).installed, false);
@@ -638,7 +1042,7 @@ test("a pinned asset falls back to its gentle-pi mirror only on download failure
 	// under the current stable pin, whose form gate refuses raw binaries.
 	const payload = Buffer.from("signed archive fixture");
 	const binary = "mirrored binary";
-	const baseAsset = { name: "gentle-ai_3.7.0_linux_amd64.tar.gz", sha256: createHash("sha256").update(payload).digest("hex"), binarySha256: createHash("sha256").update(binary).digest("hex"), url: "https://example.invalid/upstream", mirrorUrl: "https://example.invalid/mirror", executable: "gentle-ai" };
+	const baseAsset = { name: "gentle-ai_4.0.0_linux_amd64.tar.gz", sha256: createHash("sha256").update(payload).digest("hex"), binarySha256: createHash("sha256").update(binary).digest("hex"), url: "https://example.invalid/upstream", mirrorUrl: "https://example.invalid/mirror", executable: "gentle-ai" };
 	const extractArchive = async (_archive: string, destination: string) => {
 		await mkdir(destination, { recursive: true });
 		await writeFile(join(destination, "gentle-ai"), binary);
@@ -756,7 +1160,7 @@ test("checksum mismatch cleans temporary state without promoting a binary", asyn
 		}),
 		/checksum mismatch/,
 	);
-	assert.equal(existsSync(join(packageRoot, ".gentle-ai", "v3.7.0", "gentle-ai")), false);
+	assert.equal(existsSync(join(packageRoot, ".gentle-ai", "v4.0.0", "gentle-ai")), false);
 	assert.deepEqual((await readdir(packageRoot)).filter((entry) => entry.startsWith(".gentle-ai-install-")), []);
 });
 
@@ -778,7 +1182,7 @@ test("installer promotes only the expected regular executable with executable PO
 			await chmod(extracted, 0o700);
 		},
 	});
-	const binary = join(packageRoot, ".gentle-ai", "v3.7.0", "gentle-ai");
+	const binary = join(packageRoot, ".gentle-ai", "v4.0.0", "gentle-ai");
 	assert.equal(existsSync(binary), true);
 	assert.equal(await readFile(binary, "utf8"), "native executable");
 	assert.ok(((await stat(binary)).mode & 0o111) !== 0);
@@ -809,7 +1213,7 @@ test("installer rejects an extracted binary that differs from its pinned digest"
 		}),
 		/binary checksum mismatch/,
 	);
-	assert.equal(existsSync(join(packageRoot, ".gentle-ai", "v3.7.0", "gentle-ai")), false);
+	assert.equal(existsSync(join(packageRoot, ".gentle-ai", "v4.0.0", "gentle-ai")), false);
 });
 
 test("installer repairs a valid non-executable POSIX binary instead of reusing it", async (t) => {
@@ -832,7 +1236,7 @@ test("installer repairs a valid non-executable POSIX binary instead of reusing i
 		},
 	};
 	await installGentleAi(options);
-	const binary = join(packageRoot, ".gentle-ai", "v3.7.0", "gentle-ai");
+	const binary = join(packageRoot, ".gentle-ai", "v4.0.0", "gentle-ai");
 	await chmod(binary, 0o600);
 	const repaired = await installGentleAi(options);
 	assert.equal(repaired.installed, true);
@@ -869,7 +1273,7 @@ test("installer rejects archives with multiple expected executable entries", asy
 		}),
 		/exactly one regular gentle-ai/,
 	);
-	assert.equal(existsSync(join(packageRoot, ".gentle-ai", "v3.7.0", "gentle-ai")), false);
+	assert.equal(existsSync(join(packageRoot, ".gentle-ai", "v4.0.0", "gentle-ai")), false);
 });
 
 test("installer rejects an archive without the expected regular executable", async () => {
@@ -887,7 +1291,7 @@ test("installer rejects an archive without the expected regular executable", asy
 		}),
 		/non-regular gentle-ai/,
 	);
-	assert.equal(existsSync(join(packageRoot, ".gentle-ai", "v3.7.0", "gentle-ai")), false);
+	assert.equal(existsSync(join(packageRoot, ".gentle-ai", "v4.0.0", "gentle-ai")), false);
 });
 
 test("safeRemoveDirectory passes Windows-safe retry options to recursive rm cleanup", async () => {

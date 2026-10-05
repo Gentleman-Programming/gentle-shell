@@ -261,6 +261,8 @@ export const NATIVE_REVIEW_RECOVER_DISPOSITION = ["scope_changed", "invalidated"
 
 
 
+
+
 export const NATIVE_REVIEW_LEGACY_QUARANTINE = {
 	DIAGNOSTIC: "historical findings freeze changed unrelated transaction state",
 	DISPOSITION: "quarantine-malformed-freeze-event",
@@ -1028,6 +1030,13 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// 547b68e172cc87aa297309d61624e5fc2c24d407a494b53eeb5a2b053904352c
 	// at contract 1.2.0. No new negotiated capability is asserted.
 	"3.7.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v4.0.0 repeats 3.7.0: the published provider-contract tar remains SHA-256
+	// 547b68e172cc87aa297309d61624e5fc2c24d407a494b53eeb5a2b053904352c
+	// at contract 1.2.0, and the published binary still advertises
+	// capabilities/v2.6 under review-integration/v2. The Go module path moved
+	// to /v4 without a review-integration/v2 change. No new negotiated
+	// capability is asserted.
+	"4.0.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 });
 
 
@@ -1596,9 +1605,13 @@ class NativeReviewPlainCli {
 		if (request.maintainerAuthorization !== undefined && (request.maintainerAuthorization.length === 0 || /[\u0000-\u0009\u000b-\u001f\u007f]/.test(request.maintainerAuthorization))) {
 			throw new TypeError("Native RECOVER maintainerAuthorization must be a non-empty LF-only binding");
 		}
+		if (request.baseRef !== undefined && !isCanonicalProcessString(request.baseRef)) throw new TypeError("Native RECOVER baseRef must be a non-empty, trimmed, NUL-free string");
+		if (request.baseRef !== undefined && request.committedOnly !== true) throw new TypeError("Native RECOVER baseRef requires explicit committedOnly acknowledgement");
+		if (request.baseRef === undefined && request.committedOnly !== undefined) throw new TypeError("Native RECOVER committedOnly requires an explicit baseRef");
 		if (!(NATIVE_REVIEW_RECOVER_DISPOSITION                     ).includes(request.disposition)) throw new TypeError("Native RECOVER disposition must be scope_changed, invalidated, or escalated");
 		const { body } = await this.execute(NATIVE_REVIEW_OPERATION.RECOVER, request.cwd, [
 			"review", "recover", "--cwd", request.cwd,
+			...(request.baseRef === undefined ? [] : ["--base-ref", request.baseRef, "--committed-only"]),
 			"--predecessor-lineage", request.predecessorLineage,
 			"--expected-predecessor-revision", request.expectedPredecessorRevision,
 			"--successor-lineage", request.successorLineage,
@@ -1709,6 +1722,10 @@ export function nativeReviewAbandonAuthorization(request                        
 	// so the native v2 gate verifies an exact eight-line binding (schema, lineage,
 	// revision, snapshot_identity, reason, captured_lens_results, findings_present,
 	// actor) — there is no evidence_records_present line to derive or relay.
+	// capturedLensResults must arrive verbatim from the native authority
+	// inventory projection (issue #1159): the gate recomputes this line from its
+	// own ordered record, whose entries carry the ordinal prefix, so caller- or
+	// facade-authored lens names cannot reproduce it.
 	return [
 		"gentle-ai.review-abandon-authorization/v2",
 		`lineage=${request.lineage}`,

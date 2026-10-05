@@ -711,3 +711,17 @@ test("ask_user_choice is offered on an interactive rpc host and withdrawn once t
 	for (const hook of registration.hooks) await hook({}, { mode: "rpc" });
 	assert.deepEqual(registration.activeTools(), ["read"]);
 });
+
+test("ask_user_choice transcript shows the custom response text the user typed", () => {
+	const { tool } = registerChoiceTool();
+	const renderResult = (tool as unknown as {
+		renderResult: (result: unknown, options: unknown, theme: ChoiceTheme) => { render(width: number): string[] };
+	}).renderResult;
+	const theme: ChoiceTheme = { fg: (_color, text) => text, bg: (_color, text) => text, bold: (text) => text };
+	const rendered = renderResult(
+		{ content: [], details: { question: "Explain?", options, customResponse: "use the staging bucket" } },
+		{},
+		theme,
+	).render(100).join("\n");
+	assert.equal(stripTerminalSequences(rendered).trimEnd(), "✓ Custom response — use the staging bucket");
+});

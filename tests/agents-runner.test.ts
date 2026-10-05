@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import fs, { existsSync, readFileSync, statSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { basename, dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
-import { AGENT_MODE, parseAgentsConfig, resolveAgentProfile, type AgentDefinition } from "../lib/agents-config.ts";
+import { AGENT_MODE, parseAgentDefinition, parseAgentsConfig, resolveAgentProfile, type AgentDefinition } from "../lib/agents-config.ts";
 import { TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
 import { AgentRunner, childArguments, JsonLines, piCommand, abortReasonText, type ChildLike, type RunnerDeps, type RunnerHooks, type TaskRequest } from "../lib/agents-runner.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
@@ -1692,4 +1692,59 @@ test("temporary instructions transport file is cleaned up if child emits an earl
 	assert.ok(capturedPromptPath, "should have captured a transport file path");
 	assert.ok(!existsSync(capturedPromptPath), "temporary transport file must be cleaned up on early child error");
 	assert.ok(!existsSync(dirname(capturedPromptPath)), "temporary transport directory must be cleaned up on early child error");
+});
+
+// SEC-8: dispatch and model/profile selection tests for the packaged gentle-ai-security analyst.
+// These tests read the real packaged asset at assets/agents/gentle-ai-security.md and drive the
+// existing childArguments / AgentRunner harness without any network or subprocess Pi session.
+
+const SECURITY_ASSET = join(process.cwd(), "assets", "agents", "gentle-ai-security.md");
+const EXPECTED_SECURITY_TOOLS = "read,grep,find,codegraph,subagent_parent_message";
+const DENIED_EDIT_TOOLS = ["edit", "write", "bash", "mem_save"];
+
+function parseSecurityAgent(): AgentDefinition {
+	const raw = readFileSync(SECURITY_ASSET, "utf8");
+	const def = parseAgentDefinition(raw, SECURITY_ASSET, "global");
+	if ("error" in def) throw new Error(`gentle-ai-security.md did not parse: ${def.error}`);
+	return def;
+}
+
+test("childArguments for gentle-ai-security produces exact tool list with parent notification and excludes write tools", () => {
+	const securityAgent = parseSecurityAgent();
+	const req = request({ agent: securityAgent });
+	const args = childArguments(req);
+	const toolsValue = args[args.indexOf("--tools") + 1];
+	assert.equal(toolsValue, EXPECTED_SECURITY_TOOLS, "runner must append subagent_parent_message to the security analyst tool list");
+	for (const denied of DENIED_EDIT_TOOLS) {
+		assert.ok(!toolsValue.split(",").includes(denied), `security analyst must not receive ${denied}`);
+	}
+});
+
+test("resolveAgentProfile for gentle-ai-security respects a user-configured model profile", () => {
+	const securityAgent = parseSecurityAgent();
+	const config = parseAgentsConfig(
+		{ model_profiles: { "gentle-ai-security": { model: "openai-codex/gpt-5.6-terra", effort: "high" } } },
+		undefined,
+	);
+	const profile = resolveAgentProfile(securityAgent, config);
+	assert.equal(profile.model?.id, "gpt-5.6-terra", "user profile model must override the definition default");
+	assert.equal(profile.thinking, "high", "user profile effort must override the definition default");
+	assert.equal(profile.source.model, "profile");
+	assert.equal(profile.source.thinking, "profile");
+	// Confirm the profiled model still produces the correct tool list when dispatched.
+	const args = childArguments(request({ agent: securityAgent, model: profile.model, thinking: profile.thinking }));
+	assert.equal(args[args.indexOf("--tools") + 1], EXPECTED_SECURITY_TOOLS);
+	assert.equal(args[args.indexOf("--model") + 1], "openai-codex/gpt-5.6-terra:high");
+});
+
+test("AgentRunner dispatches gentle-ai-security in background mode and records it as settled", async () => {
+	const securityAgent = parseSecurityAgent();
+	const { runner, children } = harness();
+	const task = runner.run(request({ agent: securityAgent, mode: AGENT_MODE.BACKGROUND }));
+	await tick();
+	assert.equal(children.length, 1, "one child must be spawned");
+	children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "audit complete" }] }] });
+	children[0].emit({ type: "agent_settled" });
+	const finished = await runner.waitFor(task.id);
+	assert.equal(finished.status, TASK_STATUS.COMPLETED);
 });

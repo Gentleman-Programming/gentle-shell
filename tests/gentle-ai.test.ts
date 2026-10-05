@@ -17,7 +17,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { PROFILES_KIND, PROFILES_VERSION, readProfilesFileResult } from "../lib/agent-profiles.ts";
-import { readSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
+import { bindSessionProfile, readSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import type { AgentRoutingEntry, ThinkingLevel } from "../lib/model-routing-authority.ts";
 type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel" | "getThinkingLevel">;
 import { PROFILE_PIN_KIND, PROFILE_PIN_VERSION, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
@@ -423,6 +423,9 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 	const ctx = {
 		cwd: root,
 		hasUI: true,
+		// A real Pi session always has an id; the profiles panel resolves the
+		// session binding through it, so the fixture models one stable session.
+		sessionManager: { getSessionId: () => "session-panel" },
 		modelRegistry: {
 			getAvailable: async () => registryModels.filter((model) => model.provider === "openai"),
 			find: (provider: string, id: string) => registryModels.find((model) => model.provider === provider && model.id === id),
@@ -3677,6 +3680,48 @@ test("Enter with a winning pin binds the session and never touches the pin layer
 	assert.equal(readFileSync(localPinPath, "utf8"), pinBefore, "the clone pin is untouched");
 	assert.equal(readFileSync(storePath, "utf8"), storeBefore, "the store is untouched");
 	assert.equal(existsSync(fixture.globalPath), false);
+	resetSessionProfileBindingsForTesting();
+});
+
+test("a session-bound panel renders the binding snapshot as the current routing", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/beta" } } }, "team");
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	t.after(() => resetSessionProfileBindingsForTesting());
+	bindSessionProfile("session-panel", "team", { worker: { model: "openai/gamma" } });
+	fixture.onInput((panel) => {
+		const rendered = renderComponent(panel);
+		assert.match(rendered, /Current routing \(effective\)/);
+		assert.match(rendered, /openai\/gamma/, "the current routing is the session binding's snapshot");
+		assert.doesNotMatch(rendered, /openai\/alpha/, "the global routing stays out of a bound session's panel");
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	resetSessionProfileBindingsForTesting();
+});
+
+test("the (session) marker survives a snapshot refresh of the panel list", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/beta" } } }, "team");
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	t.after(() => resetSessionProfileBindingsForTesting());
+	bindSessionProfile("session-panel", "team", { worker: { model: "openai/gamma" } });
+	fixture.onInput((panel) => {
+		assert.match(renderComponent(panel), /team \(active\) \(session\)/);
+		panel.handleInput("s");
+		assert.match(renderComponent(panel), /Snapshot saved; live routing unchanged\./);
+		assert.match(renderComponent(panel), /team \(active\) \(session\)/, "the refreshed list keeps the session marker");
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	// The snapshot must capture the routing the panel showed as current, so the
+	// saved team profile carries the session binding's model, never the global
+	// layer underneath it.
+	const saved = readValidProfilesStore(storePath);
+	assert.equal(saved.profiles.team?.worker?.model, "openai/gamma", "the saved profile carries the session-bound routing");
+	assert.notEqual(saved.profiles.team?.worker?.model, "openai/alpha", "the global routing never leaks into the saved snapshot");
 	resetSessionProfileBindingsForTesting();
 });
 

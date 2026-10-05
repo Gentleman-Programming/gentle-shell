@@ -1652,16 +1652,30 @@ test("normal and forced installation copy generic agents with complete role cont
 	}
 });
 
-test("bounded implementation routing uses the same explicit fallback in both policy sections", () => {
+test("bounded implementation routing resolves the explicit canonical fallback reference", () => {
 	const routing = readFileSync(
 		join(PACKAGE_ROOT, "assets", "orchestrator-delegation.md"),
 		"utf8",
 	);
-	const simpleDelegation = readMarkdownSection(routing, "2. Simple Delegation");
+	const reference = "For bounded writes, follow the canonical Writer rule under Mandatory Delegation Triggers.";
+	const resolveSimpleDelegation = (source: string): string => {
+		const simpleDelegation = readMarkdownSection(source, "2. Simple Delegation");
+		assert.ok(simpleDelegation.split("\n").includes(reference), "Simple Delegation must name the exact canonical Writer rule");
+		const canonical = readMarkdownSection(source, "Mandatory Delegation Triggers");
+		assertWorkerFallbackRouting(canonical, "resolved Simple Delegation");
+		return canonical;
+	};
 	const mandatoryDelegation = readMarkdownSection(routing, "Mandatory Delegation Triggers");
 
-	assertWorkerFallbackRouting(simpleDelegation, "Simple Delegation");
+	assertWorkerFallbackRouting(resolveSimpleDelegation(routing), "Simple Delegation");
 	assertWorkerFallbackRouting(mandatoryDelegation, "Mandatory Delegation Triggers");
+	assert.throws(() => resolveSimpleDelegation(routing.replace(reference, "")), /must name the exact canonical Writer rule/);
+	assert.throws(() => resolveSimpleDelegation(routing.replace(reference, reference.replace("Mandatory Delegation Triggers", "Other Rule"))),
+		/must name the exact canonical Writer rule/);
+	assert.throws(() => resolveSimpleDelegation(routing.replace("#### Mandatory Delegation Triggers", "#### Missing Canonical Rule")),
+		/exactly one Mandatory Delegation Triggers section/);
+	assert.throws(() => resolveSimpleDelegation(routing.replace("user-configured `worker`", "unspecified worker")),
+		/must prefer the package-owned worker before a user-configured worker/);
 	assert.doesNotMatch(
 		routing,
 		/non-normative compatibility quotation|former wording is retained|no-runtime inline exception|superseded by the stop requirement/,

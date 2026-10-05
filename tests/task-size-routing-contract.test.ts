@@ -166,6 +166,24 @@ test("AC7: each delegation module stays under its byte budget and is loaded by i
 	}
 });
 
+test("work usage stays complete in the human guide while routing precedence stays canonical", () => {
+	const asset = read("assets/orchestrator-delegation.md");
+	const guide = read("docs/gentle-agents-activity.md");
+	assert.ok(asset.includes("tool schemas and `docs/gentle-agents-activity.md`"));
+	for (const clause of [
+		'`{"area":"Auth","topic":"Login","tags":["Review"],"refs":[{"kind":"issue","repository":"github.com/Owner/Repo","id":"12"}]}`',
+		'`filter: {"related_to":{"session_id":"<stable owner ID>"}}`',
+		"Never publish private history as metadata.",
+		"not inherited. Keep the returned actual task ID: it is **not** a child session ID.",
+		"never automatically page. Source unavailable means no related rows, not refusal.",
+		"confer no ownership, consent or permission. Querying needs no helper/model call.",
+	]) assert.ok(guide.includes(clause), `human guide must retain: ${clause}`);
+	assert.equal(asset.split("For a large task's bounded writes, prefer").length - 1, 1);
+	assert.equal(asset.split("Route generic exploration first to the installed package-owned `gentle-ai-explore`").length - 1, 1);
+	assert.ok(asset.includes("Judgment Day phase roles are never generic fallbacks."));
+	assert.ok(asset.includes("same read-only mapping task and report the fallback."));
+});
+
 // S7 axis 2 (more input than output): tracking writes are mechanical; the
 // model edits instead of rewriting and never re-emits the whole document just
 // to mirror it.

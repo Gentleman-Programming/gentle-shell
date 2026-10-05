@@ -9,6 +9,7 @@ import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandI
 import { CURSOR_MARKER, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { CODEX_USAGE_URL, NAN_QUOTA_URL, USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA } from "../lib/shell-usage.ts";
+import { bindSessionProfile, clearSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import { createVimEditorAdapter } from "../lib/vim-editor-adapter.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { CHANGE_STATUS } from "../lib/shell-changes.ts";
@@ -5831,4 +5832,37 @@ test("an older overlapping refresh cannot mark a provider failed after a newer o
 	assert.equal(lines.some((line) => line.includes("fetch failed")), false, "the older refresh's late failure must not mark the provider failed");
 	ui.closeOverlay?.();
 	await opened;
+});
+
+test("active profile reader prefers a session binding, labels it (session), and falls back when it clears", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "shell-profile-session-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const path = join(root, "profiles.json");
+	writeFileSync(path, JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, active: "team", profiles: { team: {}, work: {} } }));
+	resetSessionProfileBindingsForTesting();
+	bindSessionProfile("session-1", "work", { worker: { model: "zai/glm-4.7" } });
+	const read = createActiveProfileReader({ GENTLE_PI_CONFIG_HOME: root });
+	assert.equal(read(), "team", "an unbound reader still reads the global active profile");
+	read.bind(root, () => undefined, "session-1");
+	assert.equal(read(), "work (session)", "a bound session outranks the global active profile");
+	assert.equal(read(), "work (session)", "the session label is stable across reads");
+	clearSessionProfileBinding("session-1");
+	assert.equal(read.refresh(), true, "refresh detects the cleared binding");
+	assert.equal(read(), "team", "the read falls back once the binding clears");
+	read.reset();
+	assert.equal(read(), "team", "reset keeps the global read working");
+	resetSessionProfileBindingsForTesting();
+});
+
+test("active profile reader keeps the pin label when a different session is bound", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "shell-profile-session-pin-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	writeFileSync(join(root, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, active: "team", profiles: { team: {}, work: {} } }));
+	resetSessionProfileBindingsForTesting();
+	bindSessionProfile("session-other", "work", { worker: { model: "zai/glm-4.7" } });
+	const read = createActiveProfileReader({ GENTLE_PI_CONFIG_HOME: root });
+	read.bind(root, () => ({ root, commonDir: root }), "session-1");
+	assert.equal(read(), "team", "no pin file and no binding for this session: the global active profile governs");
+	clearSessionProfileBinding("session-other");
+	resetSessionProfileBindingsForTesting();
 });

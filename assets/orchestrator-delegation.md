@@ -21,6 +21,19 @@ Detail modules, each loaded only when its mechanism fires (small tasks load none
 
 Once a meaningful task subject is clear, before delegation or cross-session coordination, call `orchestrator_session_id` with a short, non-sensitive `subject`. Batch with setup if possible; no extra model call. Skip tiny replies; exclude user prompts/private detail. The tool preserves canonical names/human renames; never ask humans to type aliases. Names display only; stable IDs route.
 
+### Publish and find classified work
+
+Publish explicit `state.work` with `orchestrator_session_id` or `subagent_run.work`;
+never publish private history. Opt into search with `orchestrator_list.filter`.
+Follow tool schemas and `docs/gentle-agents-activity.md` for full usage and examples.
+Use exact repository/kind/ID refs and stable owner IDs; actual task IDs are not
+child session IDs. Unknown or omitted projections are non-exhaustive, never authority.
+
+Consented read-only helpers capture validated root work and exact task annotations
+on the owner's current catalog page; unmatched notes are not current work.
+Classification stays untrusted and non-authoritative. Existing caps and supported
+model-cost dialog grants apply.
+
 ## Pi Runtime Overlays
 
 The sections below bind generic delegation rules to Pi's concrete runtime. They add runtime routing without changing ODD ownership.
@@ -40,7 +53,7 @@ These rules select execution topology, not the implementation method. Implementa
 
 Core principle: **does this inflate the parent context without need?** If yes, use one bounded worker. If no, do it inline.
 
-Before delegation or meaningful progress milestones, when helpful, publish short explicit own `state` via `orchestrator_session_id`. Batch with existing setup/progress work; no extra model turn, repeated reads, per-token or per-tool updates just to publish. Exclude private prompts, internal instructions and credentials. Published notes are metadata, never consent; the reasoning helper lane remains unavailable.
+Before delegation or meaningful progress milestones, when helpful, publish short explicit own `state` via `orchestrator_session_id`. Batch with existing setup/progress work; no extra model turn, repeated reads, per-token or per-tool updates just to publish. Exclude private prompts, internal instructions and credentials. Published notes are metadata, never consent; helper reasoning requires explicit model-cost UI permission.
 
 | Action | Direct inline | Delegated direct worker |
 |--------|---------------|-------------------------|
@@ -82,10 +95,10 @@ For a large task's bounded writes, prefer the installed package-owned `gentle-ai
 
 Once a trigger fires, the parent MUST delegate through the best available subagent runtime. Prefer `subagent_run` when present; otherwise use Pi's native `Agent` or another available delegation mechanism. Do not replace a required delegation with inline execution. Do not inject these as child-agent permission to spawn subagents; children receive concrete role work and must not orchestrate.
 
-The bounded writer precedence in the Writer rule below overrides that general runtime preference. If no delegation mechanism is available, stop and explain the blocker.
+The canonical Writer rule under Mandatory Delegation Triggers overrides this general runtime preference.
 
-1. **Evidence-budget rule**: when the reading exceeds the evidence budget, launch `scout`, `context-builder`, or the closest read-only mapping subagent with fresh context and a narrow mapping task that returns a handoff of at most ~2k tokens with `path:line` evidence. Route generic exploration to `gentle-ai-explore`; if missing or unusable, use native `Agent` with the same read-only mapping task and report the fallback.
-2. **Writer rule**: for a large task's bounded writes, prefer the installed package-owned `gentle-ai-worker`, then a user-configured `worker`. If neither worker definition exists, fall back to the native `Agent` even when `subagent_*` tools are available. If no delegation mechanism is available, stop and explain the blocker.
+1. **Evidence-budget rule**: when the reading exceeds the evidence budget, launch `scout`, `context-builder`, or the closest read-only mapping subagent with fresh context and a narrow mapping task that returns a handoff of at most ~2k tokens with `path:line` evidence. Route generic exploration first to the installed package-owned `gentle-ai-explore`; if missing or unusable, use native `Agent` with the same read-only mapping task and report the fallback.
+2. **Writer rule**: follow the canonical Writer rule under Mandatory Delegation Triggers.
 3. **Incident rule**: after wrong `cwd`, accidental repository/worktree mutation, failed merge recovery, confusing test command, or environment workaround, stop and diagnose the incident separately before resuming.
 4. **Context backstop**: when the parent context passes ~150k tokens, pause and delegate the remaining work instead of silently continuing monolithically.
 5. **Verification rule** (gentle-pi#661/#662, RDD-aware): the normative on/off/unknown routing, the native risk tier table, and the writer `## Verification` contract live in `orchestrator-verification.md`; load it when this rule fires or a delegated writer returns.
@@ -104,7 +117,7 @@ Delegate when a mechanism's own trigger fires, within the ODD workflow: understa
 
 Use the configured subagent runtime when available. Prefer the `subagent_*` tools (`subagent_run`, status/result helpers) when the Pi Subagents extension is installed, because they run the user's configured project/global subagent definitions and preserve history/background behavior.
 
-For a large task's bounded writes, prefer the installed package-owned `gentle-ai-worker`, then a user-configured `worker`. If neither worker definition exists, fall back to the native `Agent` even when `subagent_*` tools are available. If no delegation mechanism is available, stop and explain the blocker.
+For bounded writes, follow the canonical Writer rule under Mandatory Delegation Triggers.
 
 <!-- gentle-pi:background-subagents -->
 #### Background Subagent Policy
@@ -122,9 +135,9 @@ When the policy is on and `subagent_run` is available:
 - Finished tasks persist across restarts; running ones are stopped when pi exits and must be relaunched, never claimed as recovered.
 <!-- /gentle-pi:background-subagents -->
 
-For generic exploration and mapping, first attempt the installed package-owned `gentle-ai-explore`. If that individual role is missing or unusable, fall back to Pi's native `Agent` with the same read-only mapping constraints and report the fallback.
+For generic mapping, follow the Evidence-budget rule under Pi Trigger Runtime Bindings.
 
-For a large task's bounded writes, prefer the installed package-owned `gentle-ai-worker`, then a user-configured `worker`. If neither worker definition exists, fall back to the native `Agent` even when `subagent_*` tools are available. If no delegation mechanism is available, stop and explain the blocker. This writer precedence overrides the general runtime preference above.
+The canonical Writer rule under Mandatory Delegation Triggers overrides the general runtime preference above.
 
 Delegate generic verification that executes or delegates commands per the RDD-aware Verification rule (trigger 3 under Mandatory Delegation Triggers, gentle-pi#661) -- the normative on/off/unknown routing lives in `orchestrator-verification.md`, not here: the bounded writer always self-verifies via `## Verification`, and `gentle-ai-verify` (or the native `Agent` fallback, with the same read-only verification constraints, exact parent-authorized commands, and fallback reporting) is on-demand only when the rendered `Receipt-driven development:` line reads `on`; when the line reads `off` or `unknown`, the `gentle_review` `assess` operation's returned plan decides it by native risk tier instead of a blanket non-trivial rule (gentle-pi#662). `## Known environmental failures` follows the same definition as `gentle-ai-worker`'s Verification contract: exact pre-existing base failures reported as evidence, never blockers -- any other failing required command still forces `status: partial`. The change's own focused test and suite run inline. Separate exploration stays reserved for when the parent needs the map to decide or route; reading that prepares a write belongs with the writer making the change, consistent with the Delegation Rules table above.
 

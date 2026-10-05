@@ -505,6 +505,9 @@ function shouldSkipSkillRegistryStartup(
 	env = process.env,
 ): boolean {
 	return (
+		// gentle-shell#1690: delegated children share the parent's cwd; the
+		// parent owns .atl/ writes, the legacy rename and the watcher.
+		env.GENTLE_PI_AGENTS_CHILD === "1" ||
 		pi.getFlag(NO_SKILL_REGISTRY_FLAG) === true ||
 		isTruthyEnv(env[NO_SKILL_REGISTRY_ENV]) ||
 		hasCliArg(argv, "--no-skills", "-ns")

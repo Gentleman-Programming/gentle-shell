@@ -4008,7 +4008,7 @@ class ProfilesPanel implements OverlayComponent {
 	private refreshListItems(): void {
 		// Keep the list instance (and its pointer observer) alive while refreshing the
 		// mutable item records that NativeChoiceList already holds by reference.
-		for (const item of buildProfileListItems(this.file, evaluateProfilePin(this.pinStatus, this.file.profiles).winner?.profile)) {
+		for (const item of buildProfileListItems(this.file, evaluateProfilePin(this.pinStatus, this.file.profiles).winner?.profile, this.sessionBoundName)) {
 			const current = this.listItems.find((candidate) => candidate.id === item.id);
 			if (current) Object.assign(current, item);
 		}
@@ -4887,7 +4887,10 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): 
 			file,
 			name,
 			profileSnapshotFrom(
-				readEffectiveModelConfig(ctx.cwd),
+				// The snapshot captures the same routing the panel shows as current,
+				// so a session binding outranks the shared layers here too.
+				readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.modelProfiles
+					?? readEffectiveModelConfig(ctx.cwd),
 				readOrchestratorSettings(orchestratorSettingsPath()),
 			),
 		);
@@ -4897,10 +4900,17 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): 
 	};
 	let selectedName: string | undefined;
 	const sessionBoundName = () => readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.name;
+	// The panel's "Current routing (effective)" table shows what this session's
+	// launches resolve right now, and a session binding outranks every shared
+	// layer, so a bound session reads its snapshot as the current routing while an
+	// unbound session keeps reading the effective config exactly as before.
+	const currentRoutingForPanel = async () =>
+		readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.modelProfiles
+		?? await readEffectiveModelConfigAsync(ctx.cwd);
 	let result = await showProfilesPanel(
 		ctx,
 		file,
-		await readEffectiveModelConfigAsync(ctx.cwd),
+		await currentRoutingForPanel(),
 		selectedName,
 		saveSnapshot,
 		undefined,
@@ -4913,7 +4923,7 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): 
 		result = await showProfilesPanel(
 			ctx,
 			file,
-			await readEffectiveModelConfigAsync(ctx.cwd),
+			await currentRoutingForPanel(),
 			selectedName,
 			saveSnapshot,
 			report.status,
@@ -9860,6 +9870,35 @@ function createGentleAiExtensionForTesting(
 		reminderEpoch += 1;
 		unbindPreparation?.();
 		reminderManager = ctx.sessionManager;
+		// gentle-shell#1690: a delegated child runs in the parent's resolved
+		// worktree. Repository preparation, review negotiation, asset install and
+		// model config belong to the parent session and write shared state. The
+		// standing review grant is host-only (a child never captures an identity),
+		// so revoke/refresh have nothing to act on; the child relay is load-time.
+		// Only that parent-owned work is skipped: the session-local resets above,
+		// the dev-binary notice, and any step added after this call, still run in
+		// children.
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") await startParentSession(event, ctx);
+		else await surfaceDevBinaryOverride(ctx);
+	});
+
+	// Loud, every session: an active dev-binary override means this session
+	// runs an unpinned gentle-ai. One visible startup notice: the gentle-shell
+	// 🌹 card owns the announcement when it can render (shell enabled with UI);
+	// this toast is only the fallback for when the card is unavailable. The
+	// hasUI guard stays: headless contexts have no toast to show.
+	const surfaceDevBinaryOverride = async (ctx: ExtensionContext): Promise<void> => {
+		const devBinaryToastFallback = ctx.hasUI && !shellEnabled();
+		try {
+			const devBinary = await describeDevBinaryOverride();
+			if (devBinaryToastFallback && devBinary.state === "active") ctx.ui.notify(devBinary.line, "warning");
+			if (devBinaryToastFallback && devBinary.state === "invalid") ctx.ui.notify(devBinary.line, "error");
+		} catch (error) {
+			if (ctx.hasUI) ctx.ui.notify(`Gentle AI dev binary override check failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		}
+	};
+
+	const startParentSession = async (event: unknown, ctx: ExtensionContext): Promise<void> => {
 		const epoch = reminderEpoch;
 		const manager = ctx.sessionManager;
 		const originalCwd = manager?.getCwd?.() ?? ctx.cwd;
@@ -9880,19 +9919,7 @@ function createGentleAiExtensionForTesting(
 		const reason = (event as { reason?: unknown }).reason;
 		if (reason !== "reload") revokeCurrentReviewSessionPermission(ctx);
 		await refreshReviewSessionPermissionStatus(ctx);
-		// Loud, every session: an active dev-binary override means this session
-		// runs an unpinned gentle-ai. One visible startup notice: the gentle-shell
-		// 🌹 card owns the announcement when it can render (shell enabled with UI);
-		// this toast is only the fallback for when the card is unavailable. The
-		// hasUI guard stays: headless contexts have no toast to show.
-		const devBinaryToastFallback = ctx.hasUI && !shellEnabled();
-		try {
-			const devBinary = await describeDevBinaryOverride();
-			if (devBinaryToastFallback && devBinary.state === "active") ctx.ui.notify(devBinary.line, "warning");
-			if (devBinaryToastFallback && devBinary.state === "invalid") ctx.ui.notify(devBinary.line, "error");
-		} catch (error) {
-			if (ctx.hasUI) ctx.ui.notify(`Gentle AI dev binary override check failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
-		}
+		await surfaceDevBinaryOverride(ctx);
 		try {
 			const installResult = installPackageAssets(ctx.cwd, true, ["delegation", "review"]);
 			migrateLegacyProjectModelOverrides(ctx.cwd);
@@ -9928,7 +9955,7 @@ function createGentleAiExtensionForTesting(
 		} catch {
 			// Startup negotiation is best-effort only; never surface or throw.
 		}
-	});
+	};
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		const isNamedAgent = isNamedAgentStartEvent(event);
@@ -10049,7 +10076,7 @@ function createGentleAiExtensionForTesting(
 			// Persist the observed own write before any await. Preparation is not
 			// mutation evidence, and cannot invent a pre-write Changes baseline.
 			if (root) recordReviewMutation(pi, ctx.sessionManager, root, { source: "direct", toolName: event.toolName, toolCallId: event.toolCallId, ...directWriterProfile(pi, ctx) });
-			if (prospectiveRoot && !resolveSessionWorktree(ctx.cwd, ctx.cwd)) await prepareBoundSessionRepository(ctx.sessionManager, ctx.sessionManager.getCwd?.() ?? ctx.cwd, ctx.signal);
+			if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && prospectiveRoot && !resolveSessionWorktree(ctx.cwd, ctx.cwd)) await prepareBoundSessionRepository(ctx.sessionManager, ctx.sessionManager.getCwd?.() ?? ctx.cwd, ctx.signal);
 		} catch { /* Preparation and receipt persistence cannot change a successful tool result. */ }
 	});
 

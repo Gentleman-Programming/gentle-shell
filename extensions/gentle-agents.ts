@@ -46,6 +46,7 @@ import { OrchestratorScopeCache, type RepositoryFact } from "../lib/orchestrator
 import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/agents-rpc-publisher.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
+import { HERDR_BUSY_CHANNEL, nextHerdrBusyAction, type HerdrBusyEmitted } from "../lib/herdr-busy.ts";
 import { AGENTS_GLYPH, renderAgentsCard, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
 import { CARD_TONE, renderCard } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
@@ -1291,9 +1292,35 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		await writeFile(path, markdown, "utf8");
 		return path;
 	};
+	// gentle-shell#626: herdr's pane busy while owned subagents of the active
+	// session run, even when the parent itself settled around a background
+	// child. Pure edge-triggered projection (lib/herdr-busy.ts), recomputed on
+	// every summary notification and on the session lifecycle edges; the
+	// consumer owns blocked-over-busy precedence, so no gating happens here.
+	let emittedBusy: HerdrBusyEmitted;
+	const refreshHerdrBusy = (): void => {
+		const sessionId = activeSessionId();
+		if (!sessionId) {
+			// No active session owns work: never raise, and lower anything this
+			// runtime already raised so busy never outlives its session.
+			if (emittedBusy?.active) pi.events.emit(HERDR_BUSY_CHANNEL, { active: false });
+			emittedBusy = { active: false };
+			return;
+		}
+		const action = nextHerdrBusyAction(store.list(sessionId).filter((task) => ownedTaskIds.has(task.id)), emittedBusy);
+		if (action.kind === "none") return;
+		if (action.kind === "lower") pi.events.emit(HERDR_BUSY_CHANNEL, { active: false });
+		else {
+			if (action.kind === "lower-then-raise") pi.events.emit(HERDR_BUSY_CHANNEL, { active: false });
+			pi.events.emit(HERDR_BUSY_CHANNEL, { active: true, label: action.label });
+		}
+		emittedBusy = action.kind === "lower" ? { active: false } : { active: true, label: action.label };
+	};
+
 	// A status change is worth a frame right away; deltas inside a task are
 	// coalesced so a chatty child cannot flood the terminal.
 	store.subscribeSummary(() => {
+		refreshHerdrBusy();
 		publishActivity();
 		if (sidebarTui) invalidateSidebar(sidebarTui);
 		host?.requestRender();
@@ -1508,6 +1535,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		ownedTaskIds.add(task.id);
 		publishWork?.(task.id);
 		publishActivity(); // Admission's summary notification precedes runtime ownership.
+		refreshHerdrBusy(); // So does the busy raise: ownership lands after that notification.
 		store.subscribe(task.id, () => { publishActivity(); requestRender(); });
 		if (request.mode === AGENT_MODE.BACKGROUND) return text(`Started ${task.agent} in the background as task ${task.id}. Retain that id; completion is pushed automatically. Never sleep or periodically poll subagent_status/subagent_result for completion or cache maintenance. Inspect status only at a real orchestration decision boundary; never relaunch equivalent queued/running work.`, taskDetails(task));
 		// A tool call aborted by the host (a human interrupting the turn, a timeout)
@@ -1980,6 +2008,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			presence = startPresence(ctx.sessionManager);
 			publishActivity();
 		} catch { presence = undefined; }
+		// /reload and /resume recompute busy from live owned work only: a task
+		// restored from disk never enters ownedTaskIds, so counting it would
+		// report working for work this runtime no longer owns. An unchanged
+		// label dedups; a session without owned running work lowers.
+		refreshHerdrBusy();
 		void startSessionTransport(ctx);
 		// The desktop app's own pi process: publish live subagent state through
 		// setWidget's RPC-mode string[] path. Plain headless RPC (no variable) and
@@ -2008,6 +2041,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.on("session_shutdown", async () => {
 		completions.dropAll();
 		messages.dropAll();
+		// No stale busy may survive the runtime.
+		if (emittedBusy?.active) pi.events.emit(HERDR_BUSY_CHANNEL, { active: false });
+		emittedBusy = { active: false };
 		activeAgentRuns = 0;
 		resetParentDelivery(undefined);
 		presence?.dispose();

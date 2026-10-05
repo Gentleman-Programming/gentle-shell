@@ -5424,3 +5424,156 @@ test("a subdirectory session cwd and workspace_root of the same worktree share o
 		rmSync(profile, { recursive: true, force: true });
 	}
 });
+
+// gentle-shell#626: the herdr pane stays busy while owned background subagents
+// of the active session run, even after the parent itself settles. Mirrors the
+// pi-subagents edge-triggered herdr producer exactly.
+const busyEvents = (h: ReturnType<typeof fakePi>) => h.events.filter((entry) => entry.name === "herdr:busy").map((entry) => entry.data);
+
+test("herdr:busy follows owned background subagents, not the parent run", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+	assert.deepEqual(busyEvents(h), [], "no busy event before any subagent work");
+
+	await h.tools.get("subagent_run")!.execute("busy-a", { agent: "explore", task: "Map one", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.deepEqual(busyEvents(h), [{ active: true, label: "1 subagent running" }]);
+
+	await h.tools.get("subagent_run")!.execute("busy-b", { agent: "explore", task: "Map two", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.deepEqual(busyEvents(h), [
+		{ active: true, label: "1 subagent running" },
+		{ active: false },
+		{ active: true, label: "2 subagents running" },
+	], "a label change emits the lower before the raise, in one step");
+
+	// The parent's own run settling must not drop busy while children still run.
+	const raised = busyEvents(h).length;
+	await h.fire("agent_start", ctx);
+	await h.fire("agent_settled", ctx);
+	assert.equal(busyEvents(h).length, raised, "an idle parent never lowers busy while a child still runs");
+
+	runtime.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "one" }] }] });
+	runtime.children[0].emit({ type: "agent_settled" });
+	await tick();
+	assert.deepEqual(busyEvents(h).slice(-2), [{ active: false }, { active: true, label: "1 subagent running" }], "the first settlement relabels with lower then raise");
+
+	runtime.children[1].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "two" }] }] });
+	runtime.children[1].emit({ type: "agent_settled" });
+	await tick();
+	assert.deepEqual(busyEvents(h).at(-1), { active: false }, "the last settlement lowers busy exactly once");
+	const lowered = busyEvents(h).length;
+	await tick();
+	assert.equal(busyEvents(h).length, lowered, "no stale busy after the last settlement");
+});
+
+test("herdr:busy lowers on failure and cancellation", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+
+	await h.tools.get("subagent_run")!.execute("busy-fail", { agent: "explore", task: "Fail", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.deepEqual(busyEvents(h), [{ active: true, label: "1 subagent running" }]);
+	runtime.children[0].fail("boom");
+	await tick();
+	assert.deepEqual(busyEvents(h), [{ active: true, label: "1 subagent running" }, { active: false }], "a failed child lowers busy");
+
+	const cancelled = await h.tools.get("subagent_run")!.execute("busy-cancel", { agent: "explore", task: "Cancel me", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.deepEqual(busyEvents(h).at(-1), { active: true, label: "1 subagent running" });
+	const cancelId = (cancelled.details.gentleAgents as { taskId: string }).taskId;
+	await h.tools.get("subagent_cancel")!.execute("busy-stop", { task_id: cancelId }, undefined, undefined, ctx);
+	await tick();
+	assert.deepEqual(busyEvents(h).at(-1), { active: false }, "a cancelled task lowers busy");
+});
+
+test("herdr:busy restores on session_start and lowers on session_shutdown", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+
+	await h.tools.get("subagent_run")!.execute("busy-edge", { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.deepEqual(busyEvents(h), [{ active: true, label: "1 subagent running" }]);
+
+	// A reload of the same session keeps the pane busy: the consumer already
+	// holds the raise, so the unchanged label dedups to nothing.
+	await h.fire("session_start", ctx, { reason: "reload" });
+	assert.deepEqual(busyEvents(h), [{ active: true, label: "1 subagent running" }], "reload neither duplicates nor drops the raise");
+
+	// Switching to a session that owns no running work lowers busy.
+	const other = fakeContext();
+	other.ctx.sessionManager = { ...other.ctx.sessionManager, getSessionId: () => "s2" };
+	await h.fire("session_start", other.ctx, { reason: "new" });
+	assert.deepEqual(busyEvents(h).at(-1), { active: false }, "a session without owned running work is not busy");
+
+	// Resuming the original session restores busy from its still-running child.
+	await h.fire("session_start", ctx, { reason: "resume" });
+	assert.deepEqual(busyEvents(h).at(-1), { active: true, label: "1 subagent running" }, "session_start restores busy for owned running work");
+
+	await h.fire("session_shutdown", ctx);
+	assert.deepEqual(busyEvents(h).at(-1), { active: false }, "session_shutdown lowers busy");
+	const lowered = busyEvents(h).length;
+	await tick();
+	assert.equal(busyEvents(h).length, lowered, "no busy event trails the shutdown lower");
+});
+
+test("herdr:busy ignores a disk-restored running task via the ownership filter", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	const historyHome = join(root, "busy-restore-history-home");
+	const restored: TaskRecord = { id: "busy-restored", agent: "explore", mode: "background", prompt: "p", label: "p", cwd, parentSessionId: "busy-restore-session", status: TASK_STATUS.RUNNING, createdAt: 1, startedAt: 1, endedAt: null, model: "m", thinking: undefined, sessionPath: null, error: null, result: null, lastStep: "running", lastActivityAt: 1, turns: 1, toolCalls: 0, tokens: 0, cost: 0 };
+	await saveTask(historyDir(historyHome), restored, emptyThread());
+	runtime.deps.home = historyHome;
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	ctx.sessionManager.getSessionId = () => "busy-restore-session";
+	await h.fire("session_start", ctx, { reason: "resume" });
+
+	// Pull the task from disk into the store: it lands in restoredTaskIds,
+	// never ownedTaskIds, so the pane must stay quiet -- it is not live work
+	// this runtime owns, and counting it would report busy for work that no
+	// longer exists.
+	await h.tools.get("subagent_status")!.execute("status", { task_id: "busy-restored" }, undefined, undefined, ctx);
+	await tick();
+	assert.deepEqual(busyEvents(h), [], "a disk-restored running task never raises busy");
+	await h.fire("session_shutdown", ctx);
+});
+
+test("herdr:busy treats an empty session id as no active session", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	ctx.sessionManager.getSessionId = () => "";
+	await h.fire("session_start", ctx);
+
+	// The discriminating case for the empty-id guard: an owned running task
+	// whose store key is "" (the launch path builds parentSessionId as
+	// getSessionId() ?? ""). Only the guard -- not a store-key mismatch -- can
+	// keep this quiet, and only the guard lowers busy a real session raised.
+	await h.tools.get("subagent_run")!.execute("busy-blank", { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.deepEqual(busyEvents(h), [], "an empty session id never raises busy");
+
+	// A busy state raised by a real session must lower once the active session
+	// id becomes empty, even though the blank session still owns running work.
+	const real = fakeContext();
+	await h.fire("session_start", real.ctx, { reason: "new" });
+	await h.tools.get("subagent_run")!.execute("busy-real", { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, real.ctx);
+	await tick();
+	assert.deepEqual(busyEvents(h).at(-1), { active: true, label: "1 subagent running" });
+	await h.fire("session_start", ctx, { reason: "resume" });
+	assert.deepEqual(busyEvents(h).at(-1), { active: false }, "an empty session id lowers already-raised busy");
+	const lowered = busyEvents(h).length;
+	await tick();
+	assert.equal(busyEvents(h).length, lowered, "an empty session id never re-raises busy");
+});

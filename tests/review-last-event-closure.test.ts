@@ -229,6 +229,68 @@ test("closure escalation is strict diagnostic data restricted to escalated state
 	assert.throws(() => decodeReviewLastEventClosureV1({ ...payload, unexpected: true }), /is not allowed/);
 });
 
+function targetedValidationClosure(): Record<string, unknown> {
+	return {
+		...closure("review/capture-validation", "validation-evidence"), state: "escalated",
+		escalation: { cause: "targeted_validator_rejected", finding_ids: ["R3-001"] },
+		targeted_validator_evidence: {
+			targeted_validation_request_hash: SHA, correction_target_identity: SHA,
+			original_criteria: { passed: false, evidence: ["original criterion still fails"] },
+			correction_regression: { passed: false, evidence: ["correction regressed a second path"], regressions: [{ location: "lib/session.ts:4", claim: "changed behavior regressed", proof_refs: ["observed result"] }] },
+			follow_ups: [{ observation: "inspect the remaining behavior", proof_refs: ["observed result"] }],
+		},
+	};
+}
+
+test("TS and runtime preserve targeted-validator diagnostics without granting authority", async () => {
+	const runtime = await import(new URL("../runtime/review-integration-v2.mjs", import.meta.url).href);
+	for (const decode of [decodeReviewLastEventClosureV1, runtime.decodeReviewLastEventClosureV1]) {
+		const payload = targetedValidationClosure();
+		const decoded = decode(payload);
+		assert.deepEqual(decoded.targetedValidatorEvidence.raw, payload.targeted_validator_evidence);
+		assert.equal(decoded.targetedValidatorEvidence.targetedValidationRequestHash, SHA);
+		assert.equal(decoded.targetedValidatorEvidence.correctionTargetIdentity, SHA);
+		assert.equal(decoded.targetedValidatorEvidence.originalCriteria.passed, false);
+		assert.deepEqual(decoded.targetedValidatorEvidence.correctionRegression.regressions[0].proofRefs, ["observed result"]);
+		assert.deepEqual(decoded.targetedValidatorEvidence.followUps[0].proofRefs, ["observed result"]);
+		assert.equal(decoded.acknowledgement, undefined);
+		assert.equal(decoded.statusContinuation, undefined);
+		const historical = { ...payload };
+		delete historical.targeted_validator_evidence;
+		assert.equal(decode(historical).targetedValidatorEvidence, undefined);
+		assert.throws(() => decode({ ...payload, acknowledgement: {} }), /acknowledgement requires approved state/);
+		assert.throws(() => decode({ ...payload, status_continuation: {} }), /status_continuation/);
+	}
+});
+
+test("targeted-validator evidence is strict and exclusive to escalated validation closures", async () => {
+	const runtime = await import(new URL("../runtime/review-integration-v2.mjs", import.meta.url).href);
+	const payload = targetedValidationClosure();
+	const evidence = payload.targeted_validator_evidence as Record<string, unknown>;
+	for (const decode of [decodeReviewLastEventClosureV1, runtime.decodeReviewLastEventClosureV1]) {
+		for (const operation of ["review/capture-result", "review.capture-refuter", "review.capture-correction-plan", "review/capture-validation"]) {
+			for (const state of ["approved", "correction_required", "escalated"]) {
+				if (operation === "review/capture-validation" && state === "escalated") continue;
+				assert.throws(() => decode({ ...payload, operation, state, escalation: undefined }), /targeted_validator_evidence requires escalated review\/capture-validation/);
+			}
+		}
+		for (const invalid of [
+			null, undefined, {}, { ...evidence, extra: true },
+			{ ...evidence, targeted_validation_request_hash: "bad-hash" }, { ...evidence, correction_target_identity: "bad-hash" },
+			{ ...evidence, original_criteria: null }, { ...evidence, original_criteria: { passed: "false", evidence: ["proof"] } },
+			{ ...evidence, original_criteria: { passed: false, evidence: [] } }, { ...evidence, original_criteria: { passed: false, evidence: [""] } },
+			{ ...evidence, original_criteria: { passed: false, evidence: [" \t\n"] } }, { ...evidence, correction_regression: { passed: true, evidence: ["\u0085\u00a0"] } },
+			{ ...evidence, correction_regression: { passed: true, evidence: ["proof"], extra: true } },
+			{ ...evidence, correction_regression: { passed: false, evidence: ["proof"], regressions: [{ location: "path:1", claim: "claim", proof_refs: [] }] } },
+			{ ...evidence, correction_regression: { passed: false, evidence: ["proof"], regressions: [{ location: "path:1", claim: "claim", proof_refs: ["proof"], extra: true }] } },
+			{ ...evidence, follow_ups: null }, { ...evidence, follow_ups: [{ observation: "note", proof_refs: [] }] },
+			{ ...evidence, follow_ups: [{ observation: "note", proof_refs: ["proof"], extra: true }] },
+		]) assert.throws(() => decode({ ...payload, targeted_validator_evidence: invalid }), TypeError);
+		const minimal = { ...evidence, original_criteria: { passed: false, evidence: [" original observation "] }, correction_regression: { passed: true, evidence: ["no regression"] }, follow_ups: [] };
+		assert.deepEqual(decode({ ...payload, targeted_validator_evidence: minimal }).targetedValidatorEvidence.raw, minimal);
+	}
+});
+
 test("single-lens terminal escalation returns its evidence directly without reconciliation or replay", async (t) => {
 	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
 	const lineageId = "single-escalation", input = materializeInput(lineageId);

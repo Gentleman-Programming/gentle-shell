@@ -2714,6 +2714,27 @@ const REVIEW_LAST_EVENT_CAUSAL_DISPOSITIONS = ["introduced", "behavior-activated
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 function decodeReviewStatusContinuationArtifactV1(value         , label        )                                     {
 	const artifact = exactRecord(value, label, ["schema", "capability", "sha256", "lineage_id", "target_identity", "lens", "selected_order", "subject_hash", "admission_decision"]);
 	if (artifact.schema !== "gentle-ai.review-result-artifact/v2") throw new TypeError(`${label}.schema must be gentle-ai.review-result-artifact/v2`);
@@ -2840,11 +2861,53 @@ function decodeReviewLastEventReviewerResultV1(value         , label        )   
 	};
 }
 
+function decodeReviewTargetedValidatorCheckEvidenceV1(value         , label        )                                         {
+	const check = exactRecord(value, label, ["passed", "evidence"], ["regressions"]);
+	const regressions = Object.hasOwn(check, "regressions")
+		? array(check.regressions, `${label}.regressions`, (entry, entryLabel) => {
+			const row = exactRecord(entry, entryLabel, ["location", "claim", "proof_refs"], ["id"]);
+			return {
+				...(Object.hasOwn(row, "id") ? { id: nonempty(row.id, `${entryLabel}.id`) } : {}),
+				location: nonempty(row.location, `${entryLabel}.location`),
+				claim: nonempty(row.claim, `${entryLabel}.claim`),
+				proofRefs: stringArray(row.proof_refs, `${entryLabel}.proof_refs`, { minimum: 1 }),
+			};
+		}) : undefined;
+	return {
+		passed: boolean(check.passed, `${label}.passed`),
+		// Native admission rejects observations containing only Unicode whitespace.
+		evidence: stringArray(check.evidence, `${label}.evidence`, { minimum: 1, pattern: /[^\p{White_Space}]/u }),
+		...(regressions === undefined ? {} : { regressions }),
+	};
+}
+
+function decodeReviewTargetedValidatorEvidenceV1(value         , label        )                                    {
+	const body = exactRecord(value, label, ["targeted_validation_request_hash", "correction_target_identity", "original_criteria", "correction_regression", "follow_ups"]);
+	return {
+		targetedValidationRequestHash: sha256(body.targeted_validation_request_hash, `${label}.targeted_validation_request_hash`),
+		correctionTargetIdentity: sha256(body.correction_target_identity, `${label}.correction_target_identity`),
+		originalCriteria: decodeReviewTargetedValidatorCheckEvidenceV1(body.original_criteria, `${label}.original_criteria`),
+		correctionRegression: decodeReviewTargetedValidatorCheckEvidenceV1(body.correction_regression, `${label}.correction_regression`),
+		followUps: array(body.follow_ups, `${label}.follow_ups`, (entry, entryLabel) => {
+			const row = exactRecord(entry, entryLabel, ["observation", "proof_refs"]);
+			return { observation: nonempty(row.observation, `${entryLabel}.observation`), proofRefs: stringArray(row.proof_refs, `${entryLabel}.proof_refs`, { minimum: 1 }) };
+		}),
+		raw: body,
+	};
+}
+
 export function decodeReviewLastEventClosureV1(value         )                           {
-	const body = exactRecord(value, "last_event_closure", ["schema", "operation", "lineage_id", "state", "store_revision"], ["target_identity", "request_hash", "correction_lines", "action", "escalation", "advisory_findings", "reviewer_results", "status_continuation", "acknowledgement"]);
+	const body = exactRecord(value, "last_event_closure", ["schema", "operation", "lineage_id", "state", "store_revision"], ["target_identity", "request_hash", "correction_lines", "action", "escalation", "targeted_validator_evidence", "advisory_findings", "reviewer_results", "status_continuation", "acknowledgement"]);
 	if (body.schema !== REVIEW_LAST_EVENT_CLOSURE_SCHEMA) throw new TypeError(`last_event_closure.schema must be ${REVIEW_LAST_EVENT_CLOSURE_SCHEMA}`);
 	const operation = enumeration(body.operation, Object.values(REVIEW_LAST_EVENT_CLOSURE_OPERATION), "last_event_closure.operation")                                   ;
 	const state = enumeration(body.state, REVIEW_LAST_EVENT_TERMINAL_STATES, "last_event_closure.state")                               ;
+	if (Object.hasOwn(body, "targeted_validator_evidence") && (operation !== REVIEW_LAST_EVENT_CLOSURE_OPERATION.CAPTURE_VALIDATION || state !== "escalated")) {
+		throw new TypeError("last_event_closure targeted_validator_evidence requires escalated review/capture-validation");
+	}
+	// Diagnostic evidence is optional for older providers and never controls terminal authority.
+	const targetedValidatorEvidence = Object.hasOwn(body, "targeted_validator_evidence")
+		? decodeReviewTargetedValidatorEvidenceV1(body.targeted_validator_evidence, "last_event_closure.targeted_validator_evidence")
+		: undefined;
 	if (Object.hasOwn(body, "escalation") && state !== "escalated") throw new TypeError("last_event_closure escalation requires escalated state");
 	// Older native closures omit this diagnostic; its presence never grants a continuation.
 	const escalation = Object.hasOwn(body, "escalation")
@@ -2857,6 +2920,7 @@ export function decodeReviewLastEventClosureV1(value         )                  
 		state,
 		storeRevision: sha256(body.store_revision, "last_event_closure.store_revision"),
 		...(escalation === undefined ? {} : { escalation }),
+		...(targetedValidatorEvidence === undefined ? {} : { targetedValidatorEvidence }),
 	};
 	if (operation === REVIEW_LAST_EVENT_CLOSURE_OPERATION.CAPTURE_CORRECTION_PLAN) {
 		if (body.reviewer_results !== undefined) throw new TypeError("last_event_closure reviewer_results requires approved state");

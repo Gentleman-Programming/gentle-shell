@@ -4,8 +4,7 @@ import { execFile, spawnSync } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { profilesFilePath, profileRoleEntries, readProfilesFileResult } from "../lib/agent-profiles.ts";
-import { readSessionProfileBinding } from "../lib/session-profile-binding.ts";
-import { resolveProfilePin } from "../lib/agent-profile-pin.ts";
+import { resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles } from "../lib/session-profile-freeze.ts";
 import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, keepNativeWorkingRow, shellEnabled, shellHeaderUsageHit, shellJobsCount, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
@@ -202,23 +201,18 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 	const reader = (() => bound ? effective : global()) as ActiveProfileReader;
 	reader.refresh = () => {
 		if (!bound) return false;
-		// gentle-shell#1064 slice 1: a parent-session profile binding outranks
-		// both the pin layers and the global active profile, with the same
-		// "name (scope)" spelling the pin uses. The shared precedence rule lives
-		// in one place: session → p (local pin) → P (repo declaration) → global.
-		const session = sessionId === undefined ? undefined : readSessionProfileBinding(sessionId);
-		if (session !== undefined) {
-			const next = `${session.name} (session)`;
-			const changed = next !== effective;
-			effective = next;
-			return changed;
-		}
-		const pin = identity && cwd ? resolveProfilePin({
+		// gentle-shell#1064: the status shows the profile launches use, through
+		// the same single rule (explicit Enter binding → profile frozen at
+		// startup → live p → P → G only in follow mode), with the existing
+		// spelling: "name (session)", "name (local)", "name (repo)", or the bare
+		// global name.
+		const next = cwd === undefined ? global() : sessionProfileLabel(resolveSessionProfile({
+			sessionId,
 			cwd,
 			configHome: env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai"),
-			resolveWorktree: () => identity!,
-		}) : undefined;
-		const next = pin ? `${pin.profile} (${pin.source})` : global();
+			resolveWorktree: () => identity,
+			env,
+		}));
 		const changed = next !== effective;
 		effective = next;
 		return changed;
@@ -1547,19 +1541,20 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	// store and the profile reader cannot drift onto two different stores.
 	const usageConfigHome = gentlePiConfigHome(env);
 	const usageFetchTimeout = usageFetchTimeoutMs(env);
-	// The subagent routing in force for this session: a session binding first
-	// (gentle-shell#1064 slice 1), then a repository pin, then the global active
-	// profile. Only the profile's own role entries count; the reserved
-	// orchestrator key is not a route.
+	// The subagent routing in force for this session, through the same single
+	// rule launches use (gentle-shell#1064): explicit Enter binding, then the
+	// profile frozen at startup, then the live p → P → G only in follow mode.
+	// Only the profile's own role entries count; the reserved orchestrator key
+	// is not a route.
 	const activeRoutingModels = (ctx: ExtensionContext): Array<string | undefined> => {
-		const session = readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.modelProfiles;
-		if (session) return [...profileRoleEntries(session).map(([, entry]) => entry.model)];
-		const pin = resolveProfilePin({ cwd: ctx.cwd, configHome: usageConfigHome, resolveWorktree: deps.resolveWorktree });
-		const config = pin ? pin.modelProfiles : undefined;
-		if (config) return [...profileRoleEntries(config).map(([, entry]) => entry.model)];
-		const store = readProfilesFileResult(profilesFilePath(usageConfigHome));
-		const active = store.status === "valid" && store.file.active !== undefined ? store.file.profiles[store.file.active] : undefined;
-		return active ? profileRoleEntries(active).map(([, entry]) => entry.model) : [];
+		const config = sessionProfileModelProfiles(resolveSessionProfile({
+			sessionId: ctx.sessionManager?.getSessionId?.(),
+			cwd: ctx.cwd,
+			configHome: usageConfigHome,
+			resolveWorktree: deps.resolveWorktree,
+			env,
+		}));
+		return config ? profileRoleEntries(config).map(([, entry]) => entry.model) : [];
 	};
 	// A bare model id names a provider only when exactly one provider in the
 	// registry carries that id; anything else stays untargeted rather than guessed.

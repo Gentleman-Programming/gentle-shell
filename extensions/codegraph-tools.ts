@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { resolveTelemetryOptOutEnv } from "../lib/telemetry-optout.ts";
 
 const CODEGRAPH_OPERATION = {
 	INIT: "init",
@@ -248,6 +249,7 @@ const runCodeGraphCommand: CodeGraphRunner = async (args, options) => {
 		signal: options.signal,
 		maxBuffer: options.maxBuffer,
 		windowsHide: true,
+		env: { ...process.env, ...resolveTelemetryOptOutEnv(process.env) },
 	};
 	let unavailableError: unknown;
 
@@ -283,11 +285,12 @@ export function createCodeGraphTool(runner: CodeGraphRunner = runCodeGraphComman
 		renderShell: "self" as const,
 		label: "CodeGraph",
 		description:
-			"Initialize, search, or explore the CodeGraph index for the current Pi workspace only. This tool never accepts a project path or shell command.",
+			"Initialize, search, or explore the CodeGraph index for the current Pi workspace only. This tool never accepts a project path or shell command. The init operation writes a .codegraph/ index directory to disk inside the workspace. All operations run a local codegraph subprocess; that subprocess runs with telemetry opt-out enforced (DO_NOT_TRACK=1, CODEGRAPH_TELEMETRY=0) and never phones home when these flags are respected.",
 		promptSnippet: "Initialize and query CodeGraph for the current workspace without shell access",
 		promptGuidelines: [
-			"Use operation init before querying when the current workspace has no .codegraph index.",
+			"Use operation init before querying when the current workspace has no .codegraph index. init creates a .codegraph/ directory on disk inside the workspace root — this is an intentional, local-only side effect.",
 			"Use query for symbol search and explore for source plus call paths. Do not use this tool to run arbitrary commands or target another directory.",
+			"Every CodeGraph subprocess is started with DO_NOT_TRACK=1 and CODEGRAPH_TELEMETRY=0. User opt-outs are always respected and cannot be overridden by child processes.",
 		],
 		parameters: CODEGRAPH_TOOL_PARAMETERS,
 		executionMode: "sequential" as const,

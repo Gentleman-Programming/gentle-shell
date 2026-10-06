@@ -636,6 +636,23 @@ export interface ReviewEscalationV1 {
 	refuterOutcomes?: readonly ReviewEscalationRefuterOutcomeV1[];
 }
 
+function decodeReviewEscalationV1(value: unknown, label: string): ReviewEscalationV1 {
+	const source = exactRecord(value, label, ["cause", "finding_ids"], ["refuter_outcomes"]);
+	const escalation: ReviewEscalationV1 = {
+		cause: enumeration(source.cause, ESCALATION_CAUSES, `${label}.cause`),
+		findingIds: stringArray(source.finding_ids, `${label}.finding_ids`),
+	};
+	if (Object.hasOwn(source, "refuter_outcomes")) escalation.refuterOutcomes = array(source.refuter_outcomes, `${label}.refuter_outcomes`, (entry, itemLabel) => {
+		const row = exactRecord(entry, itemLabel, ["finding_id", "outcome", "proof"]);
+		return {
+			findingId: nonempty(row.finding_id, `${itemLabel}.finding_id`),
+			outcome: enumeration(row.outcome, ESCALATION_REFUTER_OUTCOMES, `${itemLabel}.outcome`),
+			proof: nonempty(row.proof, `${itemLabel}.proof`),
+		};
+	});
+	return escalation;
+}
+
 export interface ReviewStatusV3 {
 	/** Optional v7 diagnostic evidence, never routing or reconstructed authority. */
 	escalation?: ReviewEscalationV1;
@@ -2104,23 +2121,9 @@ export function decodeReviewStatusV3(value: unknown): ReviewStatusV3 {
 		};
 	}
 
-	let escalation: ReviewEscalationV1 | undefined;
-	if (Object.hasOwn(body, "escalation")) {
-		const label = "status.escalation";
-		const source = exactRecord(body.escalation, label, ["cause", "finding_ids"], ["refuter_outcomes"]);
-		escalation = {
-			cause: enumeration(source.cause, ESCALATION_CAUSES, `${label}.cause`),
-			findingIds: stringArray(source.finding_ids, `${label}.finding_ids`),
-		};
-		if (Object.hasOwn(source, "refuter_outcomes")) escalation.refuterOutcomes = array(source.refuter_outcomes, `${label}.refuter_outcomes`, (entry, itemLabel) => {
-			const row = exactRecord(entry, itemLabel, ["finding_id", "outcome", "proof"]);
-			return {
-				findingId: nonempty(row.finding_id, `${itemLabel}.finding_id`),
-				outcome: enumeration(row.outcome, ESCALATION_REFUTER_OUTCOMES, `${itemLabel}.outcome`),
-				proof: nonempty(row.proof, `${itemLabel}.proof`),
-			};
-		});
-	}
+	const escalation = Object.hasOwn(body, "escalation")
+		? decodeReviewEscalationV1(body.escalation, "status.escalation")
+		: undefined;
 
 	// status/v7 top-level optional digest (gentle-ai v2.6.0): resolves #4066's
 	// closed loop where `sdd-attempt finish` named a digest status never
@@ -2692,6 +2695,7 @@ export interface ReviewLastEventClosureV1 {
 	targetIdentity?: string;
 	requestHash?: string;
 	correctionLines?: number;
+	escalation?: ReviewEscalationV1;
 	advisoryFindings?: ReviewAdvisoryFindingsV1;
 	reviewerResults?: readonly ReviewLastEventReviewerResultV1[];
 	statusContinuation?: ReviewStatusContinuationV1;
@@ -2836,16 +2840,22 @@ function decodeReviewLastEventReviewerResultV1(value: unknown, label: string): R
 }
 
 export function decodeReviewLastEventClosureV1(value: unknown): ReviewLastEventClosureV1 {
-	const body = exactRecord(value, "last_event_closure", ["schema", "operation", "lineage_id", "state", "store_revision"], ["target_identity", "request_hash", "correction_lines", "action", "advisory_findings", "reviewer_results", "status_continuation", "acknowledgement"]);
+	const body = exactRecord(value, "last_event_closure", ["schema", "operation", "lineage_id", "state", "store_revision"], ["target_identity", "request_hash", "correction_lines", "action", "escalation", "advisory_findings", "reviewer_results", "status_continuation", "acknowledgement"]);
 	if (body.schema !== REVIEW_LAST_EVENT_CLOSURE_SCHEMA) throw new TypeError(`last_event_closure.schema must be ${REVIEW_LAST_EVENT_CLOSURE_SCHEMA}`);
 	const operation = enumeration(body.operation, Object.values(REVIEW_LAST_EVENT_CLOSURE_OPERATION), "last_event_closure.operation") as ReviewLastEventClosureOperation;
 	const state = enumeration(body.state, REVIEW_LAST_EVENT_TERMINAL_STATES, "last_event_closure.state") as ReviewLastEventClosureState;
+	if (Object.hasOwn(body, "escalation") && state !== "escalated") throw new TypeError("last_event_closure escalation requires escalated state");
+	// Older native closures omit this diagnostic; its presence never grants a continuation.
+	const escalation = Object.hasOwn(body, "escalation")
+		? decodeReviewEscalationV1(body.escalation, "last_event_closure.escalation")
+		: undefined;
 	const shared = {
 		schema: REVIEW_LAST_EVENT_CLOSURE_SCHEMA,
 		operation,
 		lineageId: lineage(body.lineage_id, "last_event_closure.lineage_id"),
 		state,
 		storeRevision: sha256(body.store_revision, "last_event_closure.store_revision"),
+		...(escalation === undefined ? {} : { escalation }),
 	};
 	if (operation === REVIEW_LAST_EVENT_CLOSURE_OPERATION.CAPTURE_CORRECTION_PLAN) {
 		if (body.reviewer_results !== undefined) throw new TypeError("last_event_closure reviewer_results requires approved state");

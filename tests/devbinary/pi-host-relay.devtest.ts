@@ -530,6 +530,61 @@ test("dev-binary: a garbage reviewer result is refused at admission as a proven 
 	assert.equal(reoffered, true, "the unconsumed slot must be reoffered by fresh STATUS");
 });
 
+test("dev-binary: Pi returns a terminal single-lens escalation from the real committed candidate capture", { skip: !RUNNABLE }, async (t) => {
+	const cwd = repository(t, "gentle-pi-escalation-");
+	const home = mkdtempSync(join(tmpdir(), "gentle-pi-escalation-home-"));
+	t.after(() => { rmSync(home, { recursive: true, force: true }); __testing.setReviewHostRelayRunnerForTesting(); });
+	const environment = { ...reviewEnvironment(home), GENTLE_PI_CONFIG_HOME: join(home, "config"), GENTLE_PI_AGENT_HOME: join(home, "agent") }, binary = RELAY_DEV_BINARY!;
+	const baseRef = git(cwd, "rev-parse", "HEAD");
+	writeFileSync(join(cwd, "app.ts"), "export const value = 2;\n");
+	git(cwd, "add", "app.ts");
+	git(cwd, "commit", "-qm", "candidate");
+	enableGlobalReview(binary, cwd, cwd, environment);
+	const calls: NativeProcessCall[] = [];
+	const { controller, capture } = reviewToolsForNative(devNativeCli(binary, environment, calls));
+	const context = sessionContext(cwd), selector = { baseRef, committedOnly: true };
+	await controller.execute("escalation-inspect", { operation: "inspect", workspaceRoot: cwd }, undefined, undefined, context);
+	const prompted = record((await controller.execute("escalation-start", { operation: "start", workspaceRoot: cwd, input: JSON.stringify({ mode: "ordinary", ...selector }) }, undefined, undefined, context)).details, "escalation start");
+	assert.equal(prompted.outcome, "native-review-consent-required");
+	const started = record((await controller.execute("escalation-consent", { operation: "answer-consent", input: JSON.stringify({ consentBinding: prompted.consent_binding, answer: "granted" }) }, undefined, undefined, context)).details, "escalation consent");
+	const lineage = stringValue(record(started.result, "escalation start result").lineage_id, "escalation lineage");
+	const statusParameters = { operation: "status", lineageId: lineage, workspaceRoot: cwd, input: JSON.stringify(selector) };
+	const before = record((await controller.execute("escalation-status", statusParameters, undefined, undefined, context)).details, "escalation status");
+	assert.equal(record(record(before.result, "initial status").projection, "committed projection").kind, "base-diff");
+	const binding = collectBindingFor(before, "review.capture-result");
+	const reviewer = fauxReviewerFor((subjectHash) => JSON.stringify({
+		subject_hash: subjectHash,
+		inspection: { status: "completed", paths: ["app.ts"] },
+		findings: [{ id: "R3-001", location: "app.ts:1", severity: "CRITICAL", claim: "synthetic severe finding with unknown causal origin", proof_refs: ["app.ts:1"], evidence_class: "deterministic", causal_disposition: "unknown" }],
+		evidence: ["inspected the frozen committed candidate"],
+	}));
+	__testing.setReviewHostRelayRunnerForTesting(async (request) => {
+		reviewer.enqueue();
+		return await runReviewHostRelaySlot({ ...request, gentleAiExecutable: binary, environment, reviewerRegistry: reviewer.registry, selection: reviewer.selection, routingKey: reviewer.routingKey });
+	});
+	const parameters = { lineageId: lineage, workspaceRoot: cwd, collectBinding: binding };
+	const forecast = record((await capture.execute("escalation-forecast", parameters, undefined, undefined, context)).details, "escalation forecast");
+	assert.equal(forecast.outcome, "reviewer-model-run-forecast");
+	assert.equal(record(forecast.cost_forecast, "escalation forecast cost").model_runs, 1);
+	assert.equal(reviewer.calls.length, 0);
+	const offset = calls.length;
+	const result = record((await capture.execute("escalation-capture", { ...parameters, reviewerRunAcknowledged: true }, undefined, undefined, context)).details, "escalation capture");
+	assert.equal(result.status, "closed", JSON.stringify(result));
+	assert.equal(result.state, "escalated");
+	const closure = record(result.closure, "escalation closure");
+	assert.deepEqual(closure.escalation, { cause: "unknown_causality", finding_ids: ["R3-001"] });
+	assert.equal(closure.acknowledgement, undefined);
+	assert.equal(result.next_action, undefined);
+	assert.equal(reviewer.calls.length, 1);
+	assert.equal(calls.slice(offset).filter((call) => call.arguments[1] === "status").length, 1, "capture closes without a post-success reconciliation");
+	const after = record((await controller.execute("escalation-terminal-status", statusParameters, undefined, undefined, context)).details, "terminal status");
+	const nativeStatus = record(after.result, "terminal native status");
+	assert.equal(record(nativeStatus.authority, "terminal authority").state, "escalated");
+	assert.equal(record(nativeStatus.authority, "terminal authority").revision, closure.store_revision);
+	assert.equal(record(nativeStatus.next_transition, "terminal transition").reason_code, "native_stop_required");
+	assert.deepEqual(nativeStatus.escalation, closure.escalation);
+});
+
 // This completes the same organic A -> B path through correction evidence,
 // host-mediated targeted validation, and terminal approval. The only
 // reviewers are the fixed faux registries below; no real model, provider, or

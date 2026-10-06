@@ -34,7 +34,7 @@ function closure(operation: string, lineageId: string): Record<string, unknown> 
 	};
 }
 
-function bindingArguments(lineageId: string, suffix = "0"): ReviewCollectInputV3["arguments"] {
+function bindingArguments(lineageId: string, suffix = "0", subjectHash = SHA): ReviewCollectInputV3["arguments"] {
 	return [
 		{ name: "lineage", value: lineageId, token: `--lineage=${lineageId}` },
 		{ name: "expected-revision", value: SHA, token: `--expected-revision=${SHA}` },
@@ -42,13 +42,13 @@ function bindingArguments(lineageId: string, suffix = "0"): ReviewCollectInputV3
 		{ name: "repository-context", value: `rctx1_${"c".repeat(64)}`, token: `--repository-context=rctx1_${"c".repeat(64)}` },
 		{ name: "lens", value: `review-risk-${suffix}`, token: `--lens=review-risk-${suffix}` },
 		{ name: "order", value: suffix, token: `--order=${suffix}` },
-		{ name: "subject-hash", value: SHA, token: `--subject-hash=${SHA}` },
+		{ name: "subject-hash", value: subjectHash, token: `--subject-hash=${subjectHash}` },
 	];
 }
 
-function materializeInput(lineageId: string, suffix = "0"): ReviewCollectInputV3 {
+function materializeInput(lineageId: string, suffix = "0", subjectHash = SHA): ReviewCollectInputV3 {
 	const arguments_ = [
-		...bindingArguments(lineageId, suffix),
+		...bindingArguments(lineageId, suffix, subjectHash),
 		{ name: "agent", value: "pi", token: "--agent=pi" },
 		{ name: "materialize", value: "true", token: "--materialize=true" },
 	];
@@ -59,7 +59,7 @@ function materializeInput(lineageId: string, suffix = "0"): ReviewCollectInputV3
 		arguments: arguments_,
 		artifactSubject: {
 			schema: "gentle-ai.review-artifact-subject/v2",
-			subjectHash: SHA,
+			subjectHash,
 			lineageId,
 			authorityRevision: SHA,
 			targetIdentity: SHA,
@@ -71,7 +71,7 @@ function materializeInput(lineageId: string, suffix = "0"): ReviewCollectInputV3
 		},
 		submission: {
 			operationToken: "capture-result",
-			argumentTokens: [...bindingArguments(lineageId, suffix).map((argument) => argument.token!), "--input={{value}}"],
+			argumentTokens: [...bindingArguments(lineageId, suffix, subjectHash).map((argument) => argument.token!), "--input={{value}}"],
 			values: [{ slot: "reviewer_result", domain: "artifact_path_or_stdin", substitutionLocation: 7 }],
 		},
 	};
@@ -193,6 +193,86 @@ test("approved closure preserves complete admitted reviewer results before ackno
 	const correctionPlan = closure("review.capture-correction-plan", "review-results");
 	correctionPlan.reviewer_results = approved.reviewer_results;
 	assert.throws(() => decodeReviewLastEventClosureV1(correctionPlan), /reviewer_results requires approved state/);
+});
+
+test("escalated closures preserve the native diagnostic evidence without granting a continuation", () => {
+	const evidence = { cause: "unknown_causality", finding_ids: ["R3-001"], refuter_outcomes: [{ finding_id: "R3-001", outcome: "inconclusive", proof: "causal origin could not be established" }] };
+	for (const operation of ["review/capture-result", "review.capture-refuter", "review/capture-validation"]) {
+		const payload = { ...closure(operation, "escalated-evidence"), state: "escalated", escalation: evidence };
+		const decoded = decodeReviewLastEventClosureV1(payload);
+		assert.equal(decoded.state, "escalated");
+		assert.deepEqual(decoded.escalation, {
+			cause: "unknown_causality", findingIds: ["R3-001"],
+			refuterOutcomes: [{ findingId: "R3-001", outcome: "inconclusive", proof: "causal origin could not be established" }],
+		});
+		assert.equal(decoded.acknowledgement, undefined);
+		assert.equal(decoded.statusContinuation, undefined);
+		const historical = { ...payload } as Record<string, unknown>;
+		delete historical.escalation;
+		assert.equal(decodeReviewLastEventClosureV1(historical).state, "escalated", "older provider closures remain readable");
+	}
+});
+
+test("closure escalation is strict diagnostic data restricted to escalated state", () => {
+	const evidence = { cause: "unknown_causality", finding_ids: ["R3-001"] };
+	const payload = { ...closure("review/capture-result", "strict-escalation"), state: "escalated", escalation: evidence };
+	for (const invalid of [
+		null, undefined, {}, { ...evidence, cause: "unknown-new-cause" },
+		{ cause: evidence.cause }, { ...evidence, finding_ids: [""] },
+		{ ...evidence, unexpected: true }, { ...evidence, refuter_outcomes: null },
+		{ ...evidence, refuter_outcomes: [{ finding_id: "R3-001", outcome: "approved", proof: "unsupported outcome" }] },
+		{ ...evidence, refuter_outcomes: [{ finding_id: "R3-001", outcome: "inconclusive", proof: "proof", unexpected: true }] },
+	]) assert.throws(() => decodeReviewLastEventClosureV1({ ...payload, escalation: invalid }), TypeError);
+	for (const operation of ["review/capture-result", "review.capture-correction-plan"]) {
+		assert.throws(() => decodeReviewLastEventClosureV1({ ...closure(operation, "wrong-state"), escalation: evidence }), /escalation requires escalated state/);
+	}
+	assert.throws(() => decodeReviewLastEventClosureV1({ ...payload, unexpected: true }), /is not allowed/);
+});
+
+test("single-lens terminal escalation returns its evidence directly without reconciliation or replay", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const lineageId = "single-escalation", input = materializeInput(lineageId);
+	const escalation = { cause: "unknown_causality", finding_ids: ["R3-001"] };
+	let statusCalls = 0, captures = 0;
+	const native = { targetStatus: async () => { statusCalls += 1; return status(lineageId, [input]); } } as unknown as NativeReviewCli;
+	__testing.setReviewHostRelayRunnerForTesting(async () => {
+		captures += 1;
+		return { promptByteLength: 1, resultByteLength: 1, submission: JSON.stringify({ ...closure("review/capture-result", lineageId), state: "escalated", escalation }) };
+	});
+	const result = await capture(lineageId, input, native, { reviewerRunAcknowledged: true });
+	assert.equal(result.status, "closed");
+	assert.equal(result.state, "escalated");
+	assert.deepEqual((result.closure as Record<string, unknown>).escalation, escalation);
+	assert.equal(result.next_action, undefined);
+	assert.equal(statusCalls, 1);
+	assert.equal(captures, 1);
+});
+
+test("one- and four-lens groups count the final escalated submission and preserve its native evidence", async (t) => {
+	t.after(() => __testing.setReviewHostRelayGroupRunnersForTesting());
+	for (const count of [1, 4]) {
+		const lineageId = `group-escalation-${count}`;
+		const inputs = Array.from({ length: count }, (_, index) => materializeInput(lineageId, String(index), `sha256:${String(index + 1).repeat(64)}`));
+		const escalation = { cause: "unknown_causality", finding_ids: ["R3-001"], refuter_outcomes: [{ finding_id: "R3-001", outcome: "inconclusive", proof: "causal origin could not be established" }] };
+		let submitted = 0, statusCalls = 0;
+		const native = { targetStatus: async () => {
+			statusCalls += 1;
+			return { ...status(lineageId, inputs.slice(submitted)), repositoryContext: { capability: "review.opaque_repository_context", handle: `rctx1_${"c".repeat(64)}`, revision: SHA, targetIdentity: SHA } };
+		} } as unknown as NativeReviewCli;
+		__testing.setReviewHostRelayGroupRunnersForTesting(async (requests) => requests.map((request) => ({ request, promptByteLength: 1, resultByteLength: 1 })), async () => {
+			submitted += 1;
+			return { promptByteLength: 1, resultByteLength: 1, submission: submitted === count ? JSON.stringify({ ...closure("review/capture-result", lineageId), state: "escalated", escalation }) : '{"admission_decision":"completed"}' };
+		});
+		const result = await __testing.executeReviewCaptureGroupOperation({ lineageId, collectBindings: inputs, reviewerRunAcknowledged: true }, process.cwd(), native);
+		assert.equal(result.status, "closed", JSON.stringify(result));
+		assert.equal(result.state, "escalated");
+		assert.equal(result.submitted_reviewers, count);
+		assert.equal(result.mutation_outcome, "completed");
+		assert.deepEqual((result.closure as Record<string, unknown>).escalation, escalation);
+		assert.equal(result.next_action, undefined);
+		assert.equal(submitted, count);
+		assert.equal(statusCalls, count + 1, "closure triggers no post-success STATUS");
+	}
 });
 
 test("retired legacy client no longer exposes a FINALIZE route", () => {

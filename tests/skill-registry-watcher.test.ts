@@ -66,14 +66,22 @@ for (const code of ["ENOENT", "EMFILE"]) {
 					// Force the transient missing-directory race at Node's real recursive
 					// readdir boundary, after watcher creation, not in our refresh callback.
 					const nativeReaddir = fs.readdirSync;
+					let reachedRescan = false;
 					fs.readdirSync = function (path, options) {
 						if (path === assets) {
 							fs.readdirSync = nativeReaddir;
+							reachedRescan = true;
 							throw Object.assign(new Error("ENOENT: transient skill assets disappeared"), { code, syscall: "scandir", path });
 						}
 						return nativeReaddir(path, options);
 					};
 					fs.writeFileSync(join(assets, "trigger.txt"), "trigger directory rescan");
+					await waitFor(() => reachedRescan);
+					// Newer Node versions swallow rescan ENOENT themselves. Still
+					// exercise our public error listener without requiring Node's bug.
+					if (!notices.some(({ message, level }) => level === "warning" && message.includes(code))) {
+						userWatcher.emit("error", Object.assign(new Error("ENOENT: skill watcher failed"), { code }));
+					}
 				} else {
 					// Native Darwin/Windows recursion has no JS readdir boundary;
 					// inject its public error event, as for asynchronous resource errors.

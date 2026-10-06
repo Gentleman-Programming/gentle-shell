@@ -344,6 +344,100 @@ test("passes exactly one user message with the verbatim prompt, no systemPrompt,
 });
 
 // ---------------------------------------------------------------------------
+// Resolved auth context — synthetic OAuth-like endpoint and provider env
+// ---------------------------------------------------------------------------
+
+for (const dispatch of ["composed provider", "compatibility complete"] as const) {
+	function captureDispatch() {
+		const provider = capturingProvider(assistantText("ok"));
+		const compatibility = capturingComplete(assistantText("ok"));
+		return {
+			getProvider: dispatch === "composed provider" ? provider.getProvider : undefined,
+			complete: dispatch === "composed provider" ? unreachableComplete : compatibility.complete,
+			calls: dispatch === "composed provider" ? provider.calls : compatibility.calls,
+		};
+	}
+
+	test(`${dispatch} preserves the registry's exchanged key, headers, account endpoint, and env`, async () => {
+		const original = Object.freeze(fakeModel({ provider: "github-copilot", baseUrl: "https://api.individual.githubcopilot.com" }));
+		const snapshot = { ...original };
+		const baseUrl = "https://api.synthetic-account.githubcopilot.com";
+		const headers = Object.freeze({ "x-synthetic-auth": "registry-header", "x-suppress-default": null });
+		const env = Object.freeze({ RDD_SYNTHETIC_PROVIDER_REGION: "test-region" });
+		const ambientBefore = process.env.RDD_SYNTHETIC_PROVIDER_REGION;
+		const { getProvider, complete, calls } = captureDispatch();
+		const outcome = await runInProcessReviewer(baseRequest({ selection: "github-copilot/gpt-5" }), {
+			registry: {
+				...fakeRegistry([original], async (resolvedModel) => {
+					assert.equal(resolvedModel, original, "auth must resolve against the registry model");
+					return { ok: true, apiKey: "synthetic-exchanged-access-token", headers, baseUrl, env };
+				}),
+				...(getProvider === undefined ? {} : { getProvider }),
+			},
+			complete,
+		});
+		assert.equal(expectText(outcome).reviewerModel, "github-copilot/gpt-5");
+		assert.equal(calls.length, 1);
+		assert.deepEqual(calls[0]!.model, { ...snapshot, baseUrl });
+		assert.notEqual(calls[0]!.model, original, "the endpoint override needs a request-local model");
+		assert.equal(calls[0]!.options?.apiKey, "synthetic-exchanged-access-token");
+		assert.equal(calls[0]!.options?.headers, headers);
+		assert.equal(calls[0]!.options?.env, env);
+		assert.deepEqual(original, snapshot, "shared registry state must remain unchanged");
+		assert.equal(process.env.RDD_SYNTHETIC_PROVIDER_REGION, ambientBefore, "env must be forwarded, not installed globally");
+	});
+
+	test(`${dispatch} forwards env without an endpoint override`, async () => {
+		const original = Object.freeze(fakeModel());
+		const env = Object.freeze({ RDD_SYNTHETIC_PROVIDER_REGION: "env-only-region" });
+		const { getProvider, complete, calls } = captureDispatch();
+		expectText(await runInProcessReviewer(baseRequest(), {
+			registry: {
+				...fakeRegistry([original], async () => ({ ok: true, apiKey: "synthetic-key", env })),
+				...(getProvider === undefined ? {} : { getProvider }),
+			},
+			complete,
+		}));
+		assert.equal(calls[0]!.model, original);
+		assert.equal(calls[0]!.options?.env, env);
+	});
+
+	test(`${dispatch} preserves model defaults and omits unresolved env`, async () => {
+		const original = Object.freeze(fakeModel());
+		const { getProvider, complete, calls } = captureDispatch();
+		expectText(await runInProcessReviewer(baseRequest(), {
+			registry: { ...fakeRegistry([original]), ...(getProvider === undefined ? {} : { getProvider }) },
+			complete,
+		}));
+		assert.equal(calls[0]!.model, original);
+		assert.equal(calls[0]!.model.baseUrl, "https://api.openai.com");
+		assert.ok(!("env" in (calls[0]!.options ?? {})));
+	});
+
+	for (const routedToOpenCode of [true, false]) {
+		test(`${dispatch} uses the resolved endpoint for attribution when routed ${routedToOpenCode ? "to" : "away from"} OpenCode`, async () => {
+			const original = Object.freeze(fakeModel({
+				provider: "custom",
+				baseUrl: routedToOpenCode ? "https://default.invalid" : "https://opencode.ai/v1",
+			}));
+			const baseUrl = routedToOpenCode ? "https://opencode.ai/v1" : "https://account.invalid/v1";
+			const { getProvider, complete, calls } = captureDispatch();
+			expectText(await runInProcessReviewer(baseRequest({ selection: "custom/gpt-5", sessionId: "ses-synthetic" }), {
+				registry: {
+					...fakeRegistry([original], async () => ({ ok: true, apiKey: "synthetic-key", baseUrl })),
+					...(getProvider === undefined ? {} : { getProvider }),
+				},
+				complete,
+			}));
+			assert.deepEqual(calls[0]!.options?.headers, routedToOpenCode
+				? { "x-opencode-session": "ses-synthetic", "x-opencode-client": "pi" }
+				: undefined);
+			assert.equal(calls[0]!.model.baseUrl, baseUrl);
+		});
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Thinking mapping
 // ---------------------------------------------------------------------------
 

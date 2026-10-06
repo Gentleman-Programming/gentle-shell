@@ -406,6 +406,7 @@ function decodeCanonicalPath(value: Buffer): string {
 
 function assertSafeSymlinkTarget(root: string, entryPath: string, value: Buffer): void {
 	const target = value.toString("utf8");
+	const normalized = target.endsWith("/") ? target.slice(0, -1) : target;
 	if (
 		!Buffer.from(target, "utf8").equals(value) ||
 		target.length === 0 ||
@@ -413,7 +414,7 @@ function assertSafeSymlinkTarget(root: string, entryPath: string, value: Buffer)
 		/^[A-Za-z]:\//.test(target) ||
 		target.includes("\\") ||
 		/[\u0000-\u001f\u007f]/.test(target) ||
-		target.split("/").some((segment) => segment.length === 0 || segment === ".")
+		normalized.split("/").some((segment) => segment.length === 0 || segment === ".")
 	) {
 		throw new CandidateViewError("candidate view symlink target is unsafe");
 	}

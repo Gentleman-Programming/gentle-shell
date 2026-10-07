@@ -179,11 +179,11 @@ export function createNanProviderConfig(options: NanProviderOptions = {}): Provi
 				return key ? { auth: { apiKey: key }, source: stored ? "API key" : "NAN_API_KEY" } : undefined;
 			},
 		} },
-		getModels: () => config.getModels().map((model) => ({
+		getModels: () => api ? config.getModels().map((model) => ({
 			...cloneModel(model), provider: NAN_PROVIDER_ID,
 			baseUrl: NAN_PROVIDER_BASE_URL, api: "openai-completions" as const,
-		})),
-		refreshModels: (context) => config.refreshModels(context),
+		})) : [],
+		refreshModels: (context) => api ? config.refreshModels(context) : Promise.resolve(),
 		stream: api?.stream as unknown as Provider<"openai-completions">["stream"],
 		streamSimple: api?.streamSimple as unknown as Provider<"openai-completions">["streamSimple"],
 	};

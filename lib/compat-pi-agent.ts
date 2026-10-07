@@ -3,7 +3,34 @@ import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-a
 
 export function fallbackGenerateUnifiedPatch(path: string, oldContent: string, newContent: string): string {
 	if (oldContent === newContent) return "";
-	return `--- ${path}\n+++ ${path}\n@@ -1 +1 @@\n-${oldContent}\n+${newContent}\n`;
+	const oldLines = oldContent === "" ? [] : oldContent.split("\n");
+	const newLines = newContent === "" ? [] : newContent.split("\n");
+	const oldCount = oldLines.length;
+	const newCount = newLines.length;
+	const oldStart = oldCount === 0 ? 0 : 1;
+	const newStart = newCount === 0 ? 0 : 1;
+	const oldRange = oldCount === 1 ? `${oldStart}` : `${oldStart},${oldCount}`;
+	const newRange = newCount === 1 ? `${newStart}` : `${newStart},${newCount}`;
+	const header = `--- ${path}\n+++ ${path}\n@@ -${oldRange} +${newRange} @@\n`;
+	const removed = oldLines.map((line) => `-${line}\n`).join("");
+	const added = newLines.map((line) => `+${line}\n`).join("");
+	return `${header}${removed}${added}`;
+}
+
+export function fallbackCreateCodemodeExtension(_options?: unknown): ExtensionFactory {
+	return (pi: ExtensionAPI) => {
+		if (typeof pi.registerTool === "function") {
+			pi.registerTool({
+				name: "codemode",
+				description: "Execute code mode actions (unsupported in this host environment)",
+				parameters: { type: "object", properties: {} } as never,
+				defaultActive: false,
+				execute() {
+					throw new Error("Codemode is not supported in this host environment");
+				},
+			});
+		}
+	};
 }
 
 type GenerateUnifiedPatchFn = (path: string, oldContent: string, newContent: string) => string;
@@ -19,7 +46,7 @@ export const generateUnifiedPatch: GenerateUnifiedPatchFn =
 	agentNamespace.generateUnifiedPatch ?? fallbackGenerateUnifiedPatch;
 
 export const createCodemodeExtension: CreateCodemodeExtensionFn =
-	agentNamespace.createCodemodeExtension ?? ((_options?: unknown) => (_api: ExtensionAPI) => {});
+	agentNamespace.createCodemodeExtension ?? fallbackCreateCodemodeExtension;
 
 export const getReadmePath = agentNamespace.getReadmePath ?? (() => "");
 

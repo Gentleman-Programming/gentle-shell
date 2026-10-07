@@ -13,11 +13,12 @@ import {
 } from "../lib/compat-pi-tui.ts";
 import {
 	fallbackGenerateUnifiedPatch,
+	fallbackCreateCodemodeExtension,
 	generateUnifiedPatch,
 	createCodemodeExtension,
 	getReadmePath,
 } from "../lib/compat-pi-agent.ts";
-
+import { createNanProviderConfig } from "../lib/nan-provider.ts";
 test("FallbackMouseRegion renders child and delegates mouse event", () => {
 	const child = {
 		render(_width: number) {
@@ -53,6 +54,42 @@ test("FallbackMouseRegion prefers child mouse handler when provided", () => {
 	});
 	region.handleMouse({ x: 0, y: 0, type: "move" as const } as unknown as TuiMouseEvent);
 	assert.equal(childHandled, true);
+});
+test("FallbackMouseRegion falls back to onMouse when child reports handled: false", () => {
+	let fallbackCalled = false;
+	const child = {
+		render: () => [],
+		handleMouse: () => ({ handled: false }),
+		invalidate: () => {},
+	};
+	const region = new FallbackMouseRegion(child, () => {
+		fallbackCalled = true;
+		return { handled: true };
+	});
+	const res = region.handleMouse({ x: 0, y: 0, type: "click" as const } as unknown as TuiMouseEvent);
+	assert.equal(fallbackCalled, true);
+	assert.deepEqual(res, { handled: true });
+});
+
+test("FallbackVStack continues past entries that return handled: false", () => {
+	let entryBCalled = false;
+	const entryA = {
+		render: () => [],
+		handleMouse: () => ({ handled: false }),
+		invalidate: () => {},
+	};
+	const entryB = {
+		render: () => [],
+		handleMouse: () => {
+			entryBCalled = true;
+			return { handled: true };
+		},
+		invalidate: () => {},
+	};
+	const vstack = new FallbackVStack([entryA, entryB]);
+	const res = vstack.handleMouse({ x: 0, y: 0, type: "click" as const } as unknown as TuiMouseEvent);
+	assert.equal(entryBCalled, true);
+	assert.deepEqual(res, { handled: true });
 });
 
 test("FallbackVStack renders children from entries", () => {
@@ -91,14 +128,59 @@ test("fallbackGenerateUnifiedPatch produces diff when content differs", () => {
 	const patch = fallbackGenerateUnifiedPatch("test.txt", "before", "after");
 	assert.ok(patch.includes("--- test.txt"));
 	assert.ok(patch.includes("+++ test.txt"));
+	assert.ok(patch.includes("@@ -1 +1 @@"));
 	assert.ok(patch.includes("-before"));
 	assert.ok(patch.includes("+after"));
+});
+
+test("fallbackGenerateUnifiedPatch handles multiline additions and removals", () => {
+	const patch = fallbackGenerateUnifiedPatch("file.txt", "line 1\nline 2", "line 1\nline 2\nline 3");
+	assert.ok(patch.includes("--- file.txt\n+++ file.txt"));
+	assert.ok(patch.includes("@@ -1,2 +1,3 @@"));
+	assert.ok(patch.includes("-line 1\n-line 2\n+line 1\n+line 2\n+line 3"));
+});
+
+test("fallbackGenerateUnifiedPatch handles empty old content (new file)", () => {
+	const patch = fallbackGenerateUnifiedPatch("new.txt", "", "hello\nworld");
+	assert.ok(patch.includes("--- new.txt\n+++ new.txt"));
+	assert.ok(patch.includes("@@ -0,0 +1,2 @@"));
+	assert.ok(patch.includes("+hello\n+world"));
+});
+
+test("fallbackGenerateUnifiedPatch handles empty new content (deleted file)", () => {
+	const patch = fallbackGenerateUnifiedPatch("deleted.txt", "bye\nworld", "");
+	assert.ok(patch.includes("--- deleted.txt\n+++ deleted.txt"));
+	assert.ok(patch.includes("@@ -1,2 +0,0 @@"));
+	assert.ok(patch.includes("-bye\n-world"));
+});
+
+test("fallbackCreateCodemodeExtension registers tool and throws on execute", () => {
+	let registered: { name: string; execute: Function } | undefined;
+	const pi = {
+		registerTool: (tool: { name: string; execute: Function }) => {
+			registered = tool;
+		},
+	};
+	const ext = fallbackCreateCodemodeExtension();
+	ext(pi as never);
+	assert.ok(registered);
+	assert.equal(registered.name, "codemode");
+	assert.throws(() => registered!.execute(), /not supported/);
+});
+
+test("createNanProviderConfig builds valid provider configuration", () => {
+	const config = createNanProviderConfig();
+	assert.ok(config);
+	assert.equal(config.id, "nan");
+	assert.equal(config.name, "NaN");
 });
 
 test("compat-pi-agent exports functions and fallbacks cleanly", () => {
 	assert.equal(typeof generateUnifiedPatch, "function");
 	assert.equal(typeof createCodemodeExtension, "function");
 	assert.equal(typeof getReadmePath, "function");
+	assert.equal(typeof fallbackGenerateUnifiedPatch, "function");
+	assert.equal(typeof fallbackCreateCodemodeExtension, "function");
 	const ext = createCodemodeExtension();
 	assert.equal(typeof ext, "function");
 	assert.equal(typeof getReadmePath(), "string");

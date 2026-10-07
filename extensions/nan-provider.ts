@@ -5,7 +5,8 @@ export default function registerNanProvider(pi: ExtensionAPI): void {
 	if (typeof pi.registerProvider !== "function") return;
 	try {
 		pi.registerProvider(createNanProviderConfig());
-	} catch {
-		// Tolerates alternative host registerProvider signature or missing stream factory
+	} catch (error) {
+		// Tolerates alternative host registerProvider signature or missing stream factory while emitting a diagnostic
+		console.warn(`[gentle-pi] NaN provider registration skipped: ${error instanceof Error ? error.message : String(error)}`);
 	}
 }

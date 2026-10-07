@@ -1,15 +1,11 @@
 import * as realPiTui from "@earendil-works/pi-tui";
 import type { Component, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
 
-export class MouseRegion implements Component {
+export class FallbackMouseRegion implements Component {
 	readonly child: Component;
 	readonly onMouse: (event: TuiMouseEvent) => TuiMouseEventResult | undefined;
 
 	constructor(child: Component, onMouse: (event: TuiMouseEvent) => TuiMouseEventResult | undefined) {
-		const RealCtor = (realPiTui as unknown as { MouseRegion?: typeof MouseRegion }).MouseRegion;
-		if (RealCtor && RealCtor !== MouseRegion) {
-			return new RealCtor(child, onMouse);
-		}
 		this.child = child;
 		this.onMouse = onMouse;
 	}
@@ -20,7 +16,8 @@ export class MouseRegion implements Component {
 
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		const childResult = this.child.handleMouse?.(event);
-		return childResult ?? this.onMouse(event);
+		if (childResult?.handled) return childResult;
+		return this.onMouse(event);
 	}
 
 	invalidate(): void {
@@ -28,8 +25,8 @@ export class MouseRegion implements Component {
 	}
 }
 
-export const FallbackMouseRegion = MouseRegion;
-
+export const MouseRegion: typeof FallbackMouseRegion =
+	(realPiTui as unknown as { MouseRegion?: typeof FallbackMouseRegion }).MouseRegion ?? FallbackMouseRegion;
 function extractComponent(entry: unknown): Component | null {
 	if (!entry || typeof entry !== "object") return null;
 	if ("render" in entry && typeof entry.render === "function") {
@@ -52,15 +49,11 @@ export type StackEntryOptions = {
 };
 export type StackChild = Component | (StackEntryOptions & { component: Component });
 
-export class VStack implements Component {
+export class FallbackVStack implements Component {
 	readonly entries: StackChild[];
 	readonly options: unknown;
 
 	constructor(entries: StackChild[] = [], options: unknown = {}) {
-		const RealCtor = (realPiTui as unknown as { VStack?: typeof VStack }).VStack;
-		if (RealCtor && RealCtor !== VStack) {
-			return new RealCtor(entries, options);
-		}
 		this.entries = entries;
 		this.options = options;
 	}
@@ -81,7 +74,7 @@ export class VStack implements Component {
 			const comp = extractComponent(entry);
 			if (comp && typeof comp.handleMouse === "function") {
 				const res = comp.handleMouse(event);
-				if (res) return res;
+				if (res?.handled) return res;
 			}
 		}
 		return undefined;
@@ -90,8 +83,8 @@ export class VStack implements Component {
 	invalidate(): void {}
 }
 
-export const FallbackVStack = VStack;
-
+export const VStack: typeof FallbackVStack =
+	(realPiTui as unknown as { VStack?: typeof FallbackVStack }).VStack ?? FallbackVStack;
 interface RgbColor {
 	r: number;
 	g: number;

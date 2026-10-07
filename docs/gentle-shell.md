@@ -203,6 +203,30 @@ The `subagent_*` tools and the agents card replace the third-party subagents pac
 
 Agent paths follow `GENTLE_PI_AGENT_HOME`, then `PI_CODING_AGENT_DIR`, then `~/.pi/agent` for definitions, config, history, child sessions, and transcripts. These overrides select the agent profile; they do not sandbox project or shared global resources.
 
+#### Role model fallbacks
+
+A `model_profiles` entry in `subagents.json` (global or project) may list ordered `fallbacks` for the role. When the role's model reports explicit credit or quota exhaustion, the same task continues on the next fallback with the role's thinking level unchanged:
+
+```json
+{
+  "model_profiles": {
+    "gentle-ai-worker": {
+      "model": "provider-a/primary-model",
+      "effort": "high",
+      "fallbacks": ["provider-b/fallback-model", "provider-c/primary-model"]
+    }
+  }
+}
+```
+
+- Only explicit exhaustion triggers a fallback: the usage limits Pi itself refuses to retry (`insufficient_quota`, `quota exceeded`, `billing`, `available balance`, `out of budget`, monthly, free and subscription usage limits), plus HTTP 402 and an exhausted quota or credit balance. Rate limits never do, even when worded as a quota (`Quota exceeded … per minute`) or reported only as `RESOURCE_EXHAUSTED`; neither do concurrency caps, overloads or ordinary errors. Pi's own retries handle the transient ones before the child settles, so a quota error Pi does retry falls back only once that retry budget is spent.
+- A fallback may reuse the primary's model id on another provider (account rotation). An entry equal to the primary itself is ignored, as are non-string or empty entries.
+- A project `fallbacks` list replaces the global one for that role; a project entry without `fallbacks` inherits it, and `"fallbacks": []` clears it. Fallbacks apply whichever source supplied the primary (profile, agent frontmatter or `default_model`).
+- The task continues in the failed child's own session when its file exists, so finished work and context carry over; otherwise it restarts with the original prompt and context. Each attempt is one new child, bounded by the list.
+- The agents card and `subagent_status` show the model currently running; `subagent_status` and the result name every model tried, in order, and the reason (`fallback: provider-a/primary-model -> provider-b/fallback-model (provider quota exhausted)`), and the task thread records a note. When every model is exhausted the task fails with the models tried and a hint to add credits or another fallback.
+- Applying a profile from `/gentle:profiles` or `/gentle:models`, or a repository's pinned profile, keeps a role's `fallbacks` while its primary model is unchanged (including a role that names no primary on either side) and drops them when the primary changes.
+- Fallbacks cover subagent roles. The primary orchestrator (#882) and in-process review lenses keep their own routing, and continuing a finished task later starts again from the role's primary.
+
 ```text
 ╭─ ❀ Agents · 1 active · 1 done ─────────────────────────────── 1m24s ╮
 │ ✓  gentle-ai-explore  map footer sources   gpt-5.6-terra ·  34k ·  $0.27 · 25s │

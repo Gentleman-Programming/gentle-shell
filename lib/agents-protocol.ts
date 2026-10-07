@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isQuotaExhaustion } from "./agents-quota.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 
 // Gentle Agents protocol. A child pi process streams RPC events; the host
@@ -64,6 +65,8 @@ export interface AgentEndEvent {
 	text: string;
 	outcome: "success" | "error" | "aborted" | "empty";
 	diagnostic?: string;
+	/** The provider explicitly reported credit/quota exhaustion (see agents-quota.ts). */
+	quotaExhausted?: true;
 }
 export interface AgentSettledEvent { type: typeof TASK_EVENT.AGENT_SETTLED }
 export interface ErrorEvent { type: typeof TASK_EVENT.ERROR; message: string }
@@ -137,6 +140,8 @@ export interface TaskRecord {
 	toolCalls: number;
 	tokens: number;
 	cost: number;
+	/** Set once a role fallback took over: why, and every model tried in order (the last one is current). */
+	fallback?: { reason: string; models: string[] };
 }
 
 export interface TaskSummary {
@@ -177,12 +182,18 @@ function keepTail(text: string, max: number): string {
 function terminalAssistant(messages: unknown): Omit<AgentEndEvent, "type"> {
 	if (!Array.isArray(messages)) return { text: "", outcome: "empty", diagnostic: "assistant returned no final report" };
 	for (let index = messages.length - 1; index >= 0; index -= 1) {
-		const message = messages[index] as { role?: string; content?: unknown; stopReason?: unknown };
+		const message = messages[index] as { role?: string; content?: unknown; stopReason?: unknown; errorMessage?: unknown };
 		if (message?.role !== "assistant") continue;
 		const stopReason = clean(message.stopReason).toLowerCase();
 		// Do not preserve unbounded provider error payloads. The terminal reason is
-		// enough for an operator to distinguish failure from an empty report.
-		if (stopReason === "error") return { text: "", outcome: "error", diagnostic: "assistant reported an error" };
+		// enough for an operator to distinguish failure from an empty report. The
+		// one thing the payload may say that routing needs is quota exhaustion, so
+		// it is classified here and only a fixed phrase and a flag leave this scope.
+		if (stopReason === "error") {
+			return isQuotaExhaustion(message.errorMessage)
+				? { text: "", outcome: "error", diagnostic: "assistant reported an error: provider quota exhausted", quotaExhausted: true }
+				: { text: "", outcome: "error", diagnostic: "assistant reported an error" };
+		}
 		if (stopReason === "aborted") return { text: "", outcome: "aborted", diagnostic: "assistant aborted" };
 		const text = contentText(message.content);
 		return text.length > 0

@@ -62,6 +62,9 @@ export interface AgentDefinitionError {
 export interface ModelProfile {
 	model: ModelRef | undefined;
 	thinking: ThinkingLevel | undefined;
+	// Ordered models tried after the primary reports quota exhaustion. Absent
+	// means "not configured" (a lower scope may supply it); empty means "none".
+	fallbacks?: ModelRef[];
 }
 
 export interface AgentsConfig {
@@ -83,6 +86,8 @@ export interface ProfileSources {
 export interface ResolvedProfile {
 	model: ModelRef | undefined;
 	thinking: ThinkingLevel | undefined;
+	// Present only when the role has fallbacks distinct from the resolved primary.
+	fallbacks?: ModelRef[];
 	source: ProfileSources;
 }
 
@@ -239,6 +244,21 @@ function positiveInteger(value: unknown, fallback: number): number {
 	return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
+// A non-array value is "not configured"; unusable entries are dropped and
+// repeats keep their first position.
+function parseFallbacks(value: unknown): ModelRef[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const seen = new Set<string>();
+	const refs: ModelRef[] = [];
+	for (const item of value) {
+		const ref = parseModelRef(item);
+		if (!ref || seen.has(formatModelRef(ref))) continue;
+		seen.add(formatModelRef(ref));
+		refs.push(ref);
+	}
+	return refs;
+}
+
 function parseProfiles(value: unknown): Record<string, ModelProfile> {
 	const profiles: Record<string, ModelProfile> = {};
 	if (!value || typeof value !== "object") return profiles;
@@ -246,7 +266,12 @@ function parseProfiles(value: unknown): Record<string, ModelProfile> {
 		if (!raw || typeof raw !== "object") continue;
 		const entry = raw as Record<string, unknown>;
 		const thinking = parseThinking(entry.effort ?? entry.thinking);
-		profiles[name] = { model: parseModelRef(entry.model), thinking: thinking !== undefined && THINKING_LEVELS.includes(thinking) ? (thinking as ThinkingLevel) : undefined };
+		const fallbacks = parseFallbacks(entry.fallbacks);
+		profiles[name] = {
+			model: parseModelRef(entry.model),
+			thinking: thinking !== undefined && THINKING_LEVELS.includes(thinking) ? (thinking as ThinkingLevel) : undefined,
+			...(fallbacks === undefined ? {} : { fallbacks }),
+		};
 	}
 	return profiles;
 }
@@ -254,7 +279,8 @@ function parseProfiles(value: unknown): Record<string, ModelProfile> {
 function mergeProfiles(base: Record<string, ModelProfile>, override: Record<string, ModelProfile>): Record<string, ModelProfile> {
 	const merged = { ...base };
 	for (const [name, profile] of Object.entries(override)) {
-		merged[name] = { model: profile.model ?? base[name]?.model, thinking: profile.thinking ?? base[name]?.thinking };
+		const fallbacks = profile.fallbacks ?? base[name]?.fallbacks;
+		merged[name] = { model: profile.model ?? base[name]?.model, thinking: profile.thinking ?? base[name]?.thinking, ...(fallbacks === undefined ? {} : { fallbacks }) };
 	}
 	return merged;
 }
@@ -309,7 +335,20 @@ export function withPinnedModelProfiles(
 	// repository that pinned a different one, which is the exact conflict a pin
 	// exists to remove. Only `modelProfiles` moves: the orchestrator routing and
 	// every operational default stay global.
-	return { ...config, modelProfiles: parseProfiles(pinned) };
+	const modelProfiles = parseProfiles(pinned);
+	// The pin store carries no fallbacks. A role that keeps the very same primary
+	// keeps the fallbacks configured for it; a different primary starts clean.
+	for (const [name, profile] of Object.entries(modelProfiles)) {
+		const configured = config.modelProfiles[name];
+		// Both unset means the role still inherits the same primary (definition or default_model).
+		const samePrimary = profile.model === undefined
+			? configured?.model === undefined
+			: configured?.model !== undefined && formatModelRef(profile.model) === formatModelRef(configured.model);
+		if (profile.fallbacks === undefined && configured?.fallbacks !== undefined && samePrimary) {
+			profile.fallbacks = configured.fallbacks;
+		}
+	}
+	return { ...config, modelProfiles };
 }
 
 function pick<T>(candidates: Array<[T | undefined, ProfileSource]>): [T | undefined, ProfileSource] {
@@ -328,7 +367,10 @@ export function resolveAgentProfile(agent: AgentDefinition, config: AgentsConfig
 		[agent.thinking, PROFILE_SOURCE.DEFINITION],
 		[config.defaultThinking, PROFILE_SOURCE.DEFAULT],
 	]);
-	return { model, thinking, source: { model: modelSource, thinking: thinkingSource } };
+	// A fallback equal to the primary would only repeat the exhausted route. The
+	// same model id on another provider (account rotation) is a different ref.
+	const fallbacks = (profile?.fallbacks ?? []).filter((ref) => formatModelRef(ref) !== formatModelRef(model));
+	return { model, thinking, ...(fallbacks.length > 0 ? { fallbacks } : {}), source: { model: modelSource, thinking: thinkingSource } };
 }
 
 export function formatModelRef(model: ModelRef | undefined): string {

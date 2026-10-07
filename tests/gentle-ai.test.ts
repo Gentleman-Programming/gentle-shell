@@ -3598,6 +3598,47 @@ test("switchLiveOrchestrator returns note when setModel fails", async () => {
 	assert.equal(result, "\nno authentication is configured for openai; this session keeps its current model.");
 });
 
+test("applying a profile keeps role fallbacks only for a role whose primary model is unchanged", async (t) => {
+	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	const helperPath = join(fixture.root, ".pi", "agents", "helper.md");
+	writeMarkdown(helperPath, "---\nname: helper\ndescription: Helper\nmodel: openai/beta\n---\nbody\n");
+	const subagentsPath = join(fixture.root, ".pi", "subagents.json");
+	writeFileSync(subagentsPath, `${JSON.stringify({ model_profiles: {
+		worker: { model: "openai/alpha", effort: "low", fallbacks: ["other/alpha"] },
+		helper: { model: "openai/beta", fallbacks: ["other/beta"] },
+	} }, null, 2)}\n`);
+	writeStore({ team: { worker: { model: "openai/alpha", thinking: "high" }, helper: { model: "openai/gamma" } } });
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	const profiles = JSON.parse(readFileSync(subagentsPath, "utf8"));
+	assert.deepEqual(profiles.model_profiles, {
+		worker: { model: "openai/alpha", effort: "high", fallbacks: ["other/alpha"] },
+		helper: { model: "openai/gamma" },
+	}, "fallbacks follow the primary they were written for");
+});
+
+test("clearing a role keeps a fallback-only profile and drops fallbacks whose primary is cleared", async (t) => {
+	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	const helperPath = join(fixture.root, ".pi", "agents", "helper.md");
+	writeMarkdown(helperPath, "---\nname: helper\ndescription: Helper\nmodel: openai/beta\n---\nbody\n");
+	const subagentsPath = join(fixture.root, ".pi", "subagents.json");
+	writeFileSync(subagentsPath, `${JSON.stringify({ model_profiles: {
+		worker: { fallbacks: ["other/alpha"] },
+		helper: { model: "openai/beta", fallbacks: ["other/beta"] },
+	} }, null, 2)}\n`);
+	writeStore({ team: { worker: {}, helper: {} } });
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	const profiles = JSON.parse(readFileSync(subagentsPath, "utf8"));
+	assert.deepEqual(profiles.model_profiles, {
+		worker: { fallbacks: ["other/alpha"] },
+	}, "a cleared entry keeps fallbacks only where no primary changed");
+});
+
 /** Reads the fixture's profiles store or fails the test: every panel-action fixture writes a valid store before acting. */
 function readValidProfilesStore(path: string) {
 	const result = readProfilesFileResult(path);

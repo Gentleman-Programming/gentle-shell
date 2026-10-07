@@ -247,3 +247,55 @@ test("a pinned profile replaces subagent routing and leaves every other default 
 	// repository can pin "everything inherits" without touching the global store.
 	assert.deepEqual(withPinnedModelProfiles(global, {}).modelProfiles, {});
 });
+
+test("model profiles parse ordered fallbacks and ignore unusable entries", () => {
+	const config = parseAgentsConfig({
+		model_profiles: {
+			"sdd-apply": { model: "provider-a/primary", thinking: "high", fallbacks: ["provider-b/fallback", "  ", 7, null, "provider-b/fallback", "provider-c/other"] },
+			plain: { model: "provider-a/primary" },
+			notAList: { model: "provider-a/primary", fallbacks: "provider-b/fallback" },
+		},
+	}, undefined);
+	assert.deepEqual(config.modelProfiles["sdd-apply"].fallbacks, [{ provider: "provider-b", id: "fallback" }, { provider: "provider-c", id: "other" }]);
+	assert.equal("fallbacks" in config.modelProfiles.plain, false, "a profile without the key keeps today's shape");
+	assert.equal("fallbacks" in config.modelProfiles.notAList, false, "a non-array value counts as not configured");
+});
+
+test("a project fallback list replaces the global one and an absent list inherits it", () => {
+	const config = parseAgentsConfig(
+		{ model_profiles: { worker: { model: "a/primary", fallbacks: ["b/one", "c/two"] }, reviewer: { model: "a/primary", fallbacks: ["b/one"] }, other: { fallbacks: ["b/one"] } } },
+		{ model_profiles: { worker: { effort: "low" }, reviewer: { fallbacks: ["d/three"] }, other: { fallbacks: [] } } },
+	);
+	assert.deepEqual(config.modelProfiles.worker.fallbacks?.map((ref) => ref.id), ["one", "two"], "a project that sets no list inherits the global one");
+	assert.deepEqual(config.modelProfiles.reviewer.fallbacks, [{ provider: "d", id: "three" }], "a project list overrides the global list");
+	assert.deepEqual(config.modelProfiles.other.fallbacks, [], "an explicit empty project list clears the fallbacks");
+});
+
+test("resolveAgentProfile exposes fallbacks other than the resolved primary", () => {
+	const agent = parseAgentDefinition("---\nname: worker\n---\nbody", "/worker.md", "global") as Parameters<typeof resolveAgentProfile>[0];
+	const config = parseAgentsConfig({ model_profiles: { worker: { model: "a/primary", effort: "high", fallbacks: ["a/primary", "b/primary", "c/other"] } } }, undefined);
+	const profile = resolveAgentProfile(agent, config);
+	assert.deepEqual(profile.fallbacks?.map((ref) => `${ref.provider}/${ref.id}`), ["b/primary", "c/other"], "the same id on another provider is kept, the exhausted route itself is not");
+	assert.equal(profile.thinking, "high");
+	assert.equal("fallbacks" in resolveAgentProfile(agent, parseAgentsConfig(undefined, undefined)), false);
+});
+
+test("a pin keeps configured fallbacks only for a role that keeps its primary", () => {
+	const global = parseAgentsConfig({ model_profiles: {
+		kept: { model: "a/primary", fallbacks: ["b/one"] },
+		changed: { model: "a/primary", fallbacks: ["b/one"] },
+		inherited: { effort: "high", fallbacks: ["b/one"] },
+		newlySet: { fallbacks: ["b/one"] },
+	} }, undefined);
+	const pinned = withPinnedModelProfiles(global, {
+		kept: { model: "a/primary", thinking: "low" },
+		changed: { model: "z/other" },
+		inherited: { thinking: "low" },
+		newlySet: { model: "z/other" },
+	});
+	assert.deepEqual(pinned.modelProfiles.kept.fallbacks, [{ provider: "b", id: "one" }]);
+	assert.equal("fallbacks" in pinned.modelProfiles.changed, false);
+	// A role that names no primary on either side still inherits the same one.
+	assert.deepEqual(pinned.modelProfiles.inherited.fallbacks, [{ provider: "b", id: "one" }]);
+	assert.equal("fallbacks" in pinned.modelProfiles.newlySet, false);
+});

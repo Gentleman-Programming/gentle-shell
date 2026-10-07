@@ -21,6 +21,8 @@ import {
 	readdirSync,
 	readFileSync,
 	realpathSync,
+	renameSync,
+	statSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
@@ -2495,13 +2497,82 @@ async function readMaterializedProfileNamesAsync(path: string): Promise<Set<stri
 // after acquisition, never merged from a stale per-routing-write snapshot.
 // The critical section contains no await, so a synchronous caller cannot
 // wait on an async owner suspended in this same process.
+//
+// Self-heal (review R3-001): a process killed between openSync(wx) and the
+// release-unlink would strand the lock forever, burning the retry deadline
+// on every later startup and freezing the ownership set. The lock records
+// its owner pid and creation time; a waiter breaks a lock whose owner is
+// provably dead (ESRCH) or whose age exceeds the maximum critical section
+// by far. Breaking renames to a unique name first, so exactly one breaker
+// removes the original and losers just retry.
+const MATERIALIZE_LOCK_MAX_AGE_MS = 60_000;
+
+type MaterializedProfileLockOwner = { pid: number; createdAtMs: number };
+
+function readMaterializedProfileLockOwner(lockPath: string): MaterializedProfileLockOwner | undefined {
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(lockPath, "utf8"));
+		if (!isRecord(parsed) || typeof parsed.pid !== "number" || typeof parsed.createdAtMs !== "number") {
+			return undefined;
+		}
+		return { pid: parsed.pid, createdAtMs: parsed.createdAtMs };
+	} catch {
+		return undefined;
+	}
+}
+
+function processAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		// EPERM means the process exists but belongs to another user.
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+function breakStaleMaterializedProfileLock(
+	lockPath: string,
+	owner: MaterializedProfileLockOwner | undefined,
+): void {
+	// Break iff the lock file predates the maximum plausible critical
+	// section (mtime, works even for unreadable owners) or its recorded
+	// owner is provably dead. A fresh lock with a live or unknown owner is
+	// always respected, so concurrent sessions never break each other.
+	let ageMs: number;
+	try {
+		ageMs = Date.now() - statSync(lockPath).mtimeMs;
+	} catch {
+		return;
+	}
+	const stale = ageMs >= MATERIALIZE_LOCK_MAX_AGE_MS;
+	const deadOwner = owner !== undefined && !processAlive(owner.pid);
+	if (!stale && !deadOwner) return;
+	const breakPath = `${lockPath}.break-${randomUUID()}`;
+	try {
+		renameSync(lockPath, breakPath);
+		unlinkSync(breakPath);
+	} catch {
+		/* another breaker won the rename, or the owner released */
+	}
+}
+
 function tryMaterializedProfileLock(path: string): number | undefined {
+	const lockPath = `${path}.lock`;
 	try {
 		mkdirSync(dirname(path), { recursive: true });
-		return openSync(`${path}.lock`, "wx", 0o600);
+		const fd = openSync(lockPath, "wx", 0o600);
+		try {
+			writeFileSync(fd, `${JSON.stringify({ pid: process.pid, createdAtMs: Date.now() })}\n`);
+		} catch {
+			try { closeSync(fd); } finally { unlinkSync(lockPath); }
+			return undefined;
+		}
+		return fd;
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "EEXIST") return undefined;
-		throw error;
+		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+		breakStaleMaterializedProfileLock(lockPath, readMaterializedProfileLockOwner(lockPath));
+		return undefined;
 	}
 }
 
@@ -2521,8 +2592,8 @@ function commitMaterializedProfileName(path: string, name: string, owned: boolea
 }
 
 function updateMaterializedProfileName(path: string, name: string, owned: boolean): void {
-	// Best-effort bookkeeping stays bounded. Never remove a lock held by
-	// another session, including one whose process may have exited.
+	// Best-effort bookkeeping stays bounded; stale locks self-heal above, so
+	// the deadline is only reached under genuine live contention.
 	try {
 		const deadline = Date.now() + 5_000;
 		while (true) {

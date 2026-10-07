@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import fsPromises from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
@@ -244,4 +244,38 @@ test("consented panel save still clears the routing it was told to inherit", asy
 		"a clear for one agent still leaves other user entries alone",
 	);
 	assert.equal(stored.max_concurrency, 3);
+});
+
+test("a stranded ownership lock self-heals instead of blocking bookkeeping forever", async (t) => {
+	const deadChild = spawn(process.execPath, ["-e", "process.exit(0)"]);
+	const [code] = await once(deadChild, "exit");
+	assert.equal(code, 0);
+	const deadPid = deadChild.pid!;
+	for (const [name, stranded] of [
+		["dead owner", `${JSON.stringify({ pid: deadPid, createdAtMs: Date.now() })}\n`],
+		["unreadable stale owner", ""],
+	] as const) {
+		await t.test(name, async (t) => {
+			const fixture = preservedProfilesFixture(t);
+			const trackingDir = join(fixture.agentHome, "gentle-ai");
+			mkdirSync(trackingDir, { recursive: true });
+			const lockPath = join(trackingDir, "materialized-model-profiles.json.lock");
+			writeFileSync(lockPath, stranded);
+			if (stranded === "") {
+				// Age the unreadable lock past the maximum plausible critical section.
+				const stale = new Date(Date.now() - 120_000);
+				utimesSync(lockPath, stale, stale);
+			}
+			await applyModelConfigAsync(fixture.root, { worker: { model: "openai/materialized" } });
+			const sidecar = JSON.parse(readFileSync(join(trackingDir, "materialized-model-profiles.json"), "utf8"));
+			assert.deepEqual(sidecar.agents, ["worker"], "bookkeeping recovered through the healed lock");
+			assert.equal(existsSync(lockPath), false, "the stranded lock is gone");
+			writeFileSync(fixture.globalModelsPath, JSON.stringify({ worker: {} }));
+			const result = await applySavedModelConfig(fixture.context);
+			assert.equal(result.updated, 2, "the recovered ownership lets a sweep clear the materialized route");
+			const stored = JSON.parse(readFileSync(fixture.subagentsPath, "utf8"));
+			assert.equal("worker" in stored.model_profiles, false);
+			assert.equal(stored.model_profiles["my-custom-agent"].model, "anthropic/opus");
+		});
+	}
 });

@@ -1285,7 +1285,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 
 	// A stale completion is appended as a custom entry: durable transcript
 	// content for the human that never participates in the LLM context.
-	pi.registerEntryRenderer(AGENTS_STALE_RESULT_TYPE, (entry, options, theme) => {
+	pi.registerEntryRenderer?.(AGENTS_STALE_RESULT_TYPE, (entry, options, theme) => {
 		const data = (entry.data ?? {}) as { taskId?: unknown; agent?: unknown; label?: unknown; status?: unknown; ageSeconds?: unknown };
 		const taskId = typeof data.taskId === "string" ? data.taskId : "unknown";
 		const agent = typeof data.agent === "string" ? data.agent : "Subagent";

@@ -145,11 +145,16 @@ export function createNanProviderConfig(options: NanProviderOptions = {}): Provi
 	const config = createCatalogConfig(options);
 	// Pi's extension loader aliases the bare root to compat, which exposes this
 	// host-owned lazy API factory. Do not import an SDK implementation subpath.
-	const api = piAi.lazyApi(async () => {
-		const runtime = piAi as typeof piAi & { openAICompletionsApi?: () => ProviderStreams };
-		if (!runtime.openAICompletionsApi) throw new Error("NaN requires Pi's OpenAI completions API factory");
-		return runtime.openAICompletionsApi();
-	});
+	const runtime = piAi as unknown as {
+		lazyApi?: (load: () => Promise<ProviderStreams>) => ProviderStreams;
+		openAICompletionsApi?: () => ProviderStreams;
+	};
+	const api = typeof runtime.lazyApi === "function"
+		? runtime.lazyApi(async () => {
+			if (!runtime.openAICompletionsApi) throw new Error("NaN requires Pi's OpenAI completions API factory");
+			return runtime.openAICompletionsApi();
+		})
+		: undefined;
 	return {
 		id: NAN_PROVIDER_ID,
 		name: "NaN",
@@ -179,8 +184,8 @@ export function createNanProviderConfig(options: NanProviderOptions = {}): Provi
 			baseUrl: NAN_PROVIDER_BASE_URL, api: "openai-completions" as const,
 		})),
 		refreshModels: (context) => config.refreshModels(context),
-		stream: api.stream,
-		streamSimple: api.streamSimple,
+		stream: api?.stream as unknown as Provider<"openai-completions">["stream"],
+		streamSimple: api?.streamSimple as unknown as Provider<"openai-completions">["streamSimple"],
 	};
 }
 

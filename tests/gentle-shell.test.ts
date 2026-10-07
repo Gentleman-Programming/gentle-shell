@@ -431,6 +431,71 @@ test("review sidebar rejects foreign-session events and unsubscribes on shutdown
 	}
 });
 
+test("jobs snapshots populate Status, use one compact fallback, and reject stale sessions", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" });
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const statuses = new Map([["gentle-jobs", "⧗ 1 job"], ["mcp", "MCP: 3 servers"]]);
+	const data = { getGitBranch: () => "main", getExtensionStatuses: () => statuses, getAvailableProviderCount: () => 1, onBranchChange: () => () => {} };
+	const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 160 }, requestRender() {} };
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { render(width: number): string[]; dispose(): void };
+	const component = factory(tui, plainTheme, data);
+	const state = sidebarState(tui as unknown as TUI);
+	const rail = state.parts.get("footer")!;
+	const header = state.parts.get("header")!;
+	const publish = (sessionId: string, jobs: unknown) => pi.events.emit("gentle-ai:jobs-sidebar", { sessionId, snapshot: { jobs } });
+	try {
+		publish("shell-session", [{ id: "job-1", label: "CI for PR 1860", startedAt: 1 }]);
+		assert.match(rail.render(46).join("\n"), /Jobs[\s\S]*CI for PR 1860/);
+		assert.match(rail.render(46).join("\n"), /MCP: 3 servers/);
+		assert.doesNotMatch(rail.render(46).join("\n"), /1 job/, "Jobs replaces the generic integration counter");
+		state.active = true;
+		state.ownsHost = () => true;
+		assert.doesNotMatch(header.render(160).join("\n"), /1 job/, "the visible Status card owns jobs details");
+		state.active = false;
+		tui.terminal.columns = 80;
+		assert.match(header.render(80).join("\n"), /1 job/, "mobile topbar preserves the count");
+		const before = rail.digest?.();
+		publish("foreign", []);
+		publish("shell-session", [{ label: "invalid" }]);
+		assert.equal(rail.digest?.(), before);
+		publish("shell-session", []);
+		assert.doesNotMatch(rail.render(46).join("\n"), /Jobs|CI for PR/);
+		assert.doesNotMatch(header.render(80).join("\n"), /1 job/);
+		publish("shell-session", [{ id: "job-2", label: "Build runtime", startedAt: 2 }]);
+		await fire(handlers, "session_start", ctx);
+		assert.doesNotMatch(rail.render(46).join("\n"), /Build runtime/);
+		await fire(handlers, "session_shutdown", ctx);
+		publish("shell-session", [{ id: "job-3", label: "late", startedAt: 3 }]);
+		assert.doesNotMatch(rail.render(46).join("\n"), /late/);
+	} finally { component.dispose(); }
+});
+
+test("hidden Status leaves only a jobs count in regular bottom and fullscreen header chrome", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	writeVisualSettings({ ...resolveVisualSettings({ gentlePiConfigHome: home }).settings, statusPlacement: "hidden" }, { gentlePiConfigHome: home });
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" });
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const tui = { mode: "regular", terminal: { rows: 40, columns: 160 }, requestRender() {} };
+	const data = { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} };
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { render(width: number): string[]; dispose(): void };
+	const component = factory(tui, plainTheme, data);
+	try {
+		pi.events.emit("gentle-ai:jobs-sidebar", { sessionId: "shell-session", snapshot: { jobs: [{ id: "job-1", label: "CI for PR 1860", startedAt: 1 }] } });
+		assert.equal(component.render(80).join("\n"), "⧗ 1 job");
+		assert.doesNotMatch(component.render(80).join("\n"), /CI for PR|gpt-5/);
+		tui.mode = "fullscreen";
+		const header = sidebarState(tui as unknown as TUI).parts.get("header")!;
+		assert.match(header.render(160).join("\n"), /⧗ 1 job/);
+		assert.doesNotMatch(component.render(160).join("\n"), /1 job/, "the hidden fullscreen footer does not duplicate the topbar count");
+		pi.events.emit("gentle-ai:jobs-sidebar", { sessionId: "shell-session", snapshot: { jobs: [] } });
+		assert.doesNotMatch(header.render(160).join("\n"), /jobs?/);
+	} finally { component.dispose(); await fire(handlers, "session_shutdown", ctx); }
+});
+
 test("the fullscreen Status rail carries a live digest so a profile switch refreshes it", async () => {
 	const { pi, handlers } = fakePi();
 	let profile: string | undefined = "team";
@@ -735,6 +800,16 @@ test("T2 float prompt installed editor reads live toolSuccessBg and preserves Es
 		themeHost.theme = plainTheme as unknown as typeof ctx.ui.theme;
 		assert.match(stripAnsi(editor.render(80)[0]), /^╭/);
 	} finally { themeHost.theme = originalTheme; editor.dispose(); setCardStyle(previous); }
+});
+
+// Herdr's native Pi manifest detects activity from Pi's standard loader row
+// ("⠋ Working..."); the petal frame alone reads as idle to it.
+test("gentleShell keeps Pi's native Working row inside Herdr so native detection sees activity", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { HERDR_ENV: "1" });
+	const { ctx, ui } = fakeContext();
+	installedPrompt(ctx, ui, handlers);
+	assert.notEqual(ui.workingVisible, false, "Herdr needs Pi's standard Working row");
 });
 
 test("gentleShell frames the editor with the petal prompt and a hint while empty", () => {

@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { shellEnabled } from "../lib/shell-bar.ts";
+import { keepNativeWorkingRow, shellEnabled } from "../lib/shell-bar.ts";
 import {
 	mergeDisabledTools,
 	PI_PRETTY_SUPPRESSED_TOOL_NAMES,
@@ -80,8 +80,9 @@ export default async function gentlePiPrettyExtension(
 	// GentlePromptEditor already carries the live working state in its frame.
 	// Hide Pi's separate loader row to avoid repeating Thinking above the input;
 	// transcript thinking blocks remain untouched as historical reasoning markers.
+	// Inside Herdr the row stays: its native Pi detection reads it.
 	api.on("session_start", (_event, ctx) => {
-		if (ctx.mode === "tui") ctx.ui.setWorkingVisible(false);
+		if (ctx.mode === "tui" && !keepNativeWorkingRow(env)) ctx.ui.setWorkingVisible(false);
 	});
 	api.on("session_shutdown", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;

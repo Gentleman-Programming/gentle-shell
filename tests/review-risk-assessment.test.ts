@@ -311,24 +311,22 @@ const RDD_LINES: readonly RddLine[] = [RDD_LINE.ON, RDD_LINE.OFF, RDD_LINE.UNKNO
 const PROFILES: readonly WriterProfile[] = [WRITER_PROFILE.SMALL, WRITER_PROFILE.LARGE];
 const NON_CLOSED_OUTCOMES: readonly NativeReviewOutcome[] = [NATIVE_REVIEW_OUTCOME.DECLINED, NATIVE_REVIEW_OUTCOME.UNAVAILABLE, NATIVE_REVIEW_OUTCOME.UNKNOWN];
 
-test("verificationPlan: rdd on + closed, passive risk -> structural readback only regardless of writer profile", () => {
-	for (const writerProfile of PROFILES) {
-		const plan = verificationPlan({ rddLine: RDD_LINE.ON, risk: VERIFICATION_TIER.PASSIVE, writerProfile, nativeReviewOutcome: NATIVE_REVIEW_OUTCOME.CLOSED });
-		assert.equal(plan.structuralReadbackOnly, true);
-		assert.equal(plan.writerSelfVerification, false);
-		assert.equal(plan.independentVerifier, false);
-	}
-});
-
-test("verificationPlan: rdd on + closed, medium/high/unassessable risk -> writer self-verification, no independent verifier", () => {
-	for (const risk of [VERIFICATION_TIER.MEDIUM, VERIFICATION_TIER.HIGH, VERIFICATION_TIER.UNASSESSABLE]) {
+// verify-always-rdd-high S1: the native review is an additional outside view
+// and never replaces verification, so a closed review under rdd on yields the
+// exact risk-gated plan rdd off yields, for every risk and writer profile.
+test("verificationPlan: rdd on + closed behaves exactly like rdd off for every risk/profile combination", () => {
+	for (const risk of RISKS) {
 		for (const writerProfile of PROFILES) {
-			const plan = verificationPlan({ rddLine: RDD_LINE.ON, risk, writerProfile, nativeReviewOutcome: NATIVE_REVIEW_OUTCOME.CLOSED });
-			assert.equal(plan.writerSelfVerification, true, `rdd on+closed, risk ${risk}, profile ${writerProfile}`);
-			assert.equal(plan.structuralReadbackOnly, false);
-			assert.equal(plan.independentVerifier, false, `the closed native review is the independent check under rdd on for risk ${risk}`);
+			const off = verificationPlan({ rddLine: RDD_LINE.OFF, risk, writerProfile });
+			const closed = verificationPlan({ rddLine: RDD_LINE.ON, risk, writerProfile, nativeReviewOutcome: NATIVE_REVIEW_OUTCOME.CLOSED });
+			assert.equal(closed.writerSelfVerification, off.writerSelfVerification, `closed, risk ${risk}, profile ${writerProfile}`);
+			assert.equal(closed.structuralReadbackOnly, off.structuralReadbackOnly, `closed, risk ${risk}, profile ${writerProfile}`);
+			assert.equal(closed.independentVerifier, off.independentVerifier, `closed, risk ${risk}, profile ${writerProfile}`);
 		}
 	}
+	const high = verificationPlan({ rddLine: RDD_LINE.ON, risk: VERIFICATION_TIER.HIGH, writerProfile: WRITER_PROFILE.LARGE, nativeReviewOutcome: NATIVE_REVIEW_OUTCOME.CLOSED });
+	assert.equal(high.independentVerifier, true, "a closed review never removes the high-risk independent verifier");
+	assert.match(high.reason, /never replaces verification/);
 });
 
 // ---------------------------------------------------------------------------
@@ -365,9 +363,9 @@ test("verificationPlan: an omitted nativeReviewOutcome under rdd on defaults to 
 	}
 });
 
-test("verificationPlan: on+closed+medium+large -> no verifier", () => {
-	const plan = verificationPlan({ rddLine: RDD_LINE.ON, risk: VERIFICATION_TIER.MEDIUM, writerProfile: WRITER_PROFILE.LARGE, nativeReviewOutcome: NATIVE_REVIEW_OUTCOME.CLOSED });
-	assert.equal(plan.independentVerifier, false);
+test("verificationPlan: on+closed+medium+small -> verifier (the small-model bias still applies)", () => {
+	const plan = verificationPlan({ rddLine: RDD_LINE.ON, risk: VERIFICATION_TIER.MEDIUM, writerProfile: WRITER_PROFILE.SMALL, nativeReviewOutcome: NATIVE_REVIEW_OUTCOME.CLOSED });
+	assert.equal(plan.independentVerifier, true);
 	assert.equal(plan.writerSelfVerification, true);
 });
 
@@ -811,7 +809,7 @@ test("gentle_review assess: native consumed true derives closed for this candida
 	assert.equal(details.nativeReviewOutcome, "closed");
 	assert.equal(details.outcome_source, "derived");
 	assert.equal(details.plan.writerSelfVerification, true);
-	assert.equal(details.plan.independentVerifier, false, "a natively closed candidate restores the RDD on-path");
+	assert.equal(details.plan.independentVerifier, true, "a natively closed candidate keeps the risk-tier verifier (verify-always-rdd-high S1)");
 });
 
 test("gentle_review assess: a caller-declared closed without native consumed evidence fails closed to unknown", async () => {
@@ -827,7 +825,7 @@ test("gentle_review assess: a caller-declared closed corroborated by native cons
 	const details = await assessWith(closureCli({ consumed: true }), { nativeReviewOutcome: "closed" });
 	assert.equal(details.nativeReviewOutcome, "closed");
 	assert.equal(details.outcome_source, "derived", "closure is attributed to the native evidence, not to the caller's claim");
-	assert.equal(details.plan.independentVerifier, false);
+	assert.equal(details.plan.independentVerifier, true, "closure never removes the risk-tier verifier");
 });
 
 test("gentle_review assess: explicit declined, unavailable, or unknown beats native consumed (only ever raises the bar)", async () => {

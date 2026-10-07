@@ -43,6 +43,7 @@ export const COMMAND_PALETTE_CATALOG: readonly CommandPaletteCatalogGroup[] = [
 			{ command: "gentle:yolo", label: "🚀 YOLO 🔥 session permission" },
 			{ command: "gentle:changes", label: "Browse captured changes" },
 			{ command: "gentle:agents", label: "Subagents" },
+			{ command: "gentle:jobs", label: "Background jobs" },
 			{ command: "gentle:usage", label: "Subscription usage" },
 			{ command: "gentle:review-session-permission", label: "Review session permission" },
 		],

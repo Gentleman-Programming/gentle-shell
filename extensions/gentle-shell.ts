@@ -8,7 +8,7 @@ import { readSessionProfileBinding } from "../lib/session-profile-binding.ts";
 import { resolveProfilePin } from "../lib/agent-profile-pin.ts";
 import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, shellEnabled, shellHeaderUsageHit, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
+import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, keepNativeWorkingRow, shellEnabled, shellHeaderUsageHit, shellJobsCount, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
 import { CHANGE_STATUS, RootBranchLabels, renderChangesWidget, type ChangedFile, type ChangesModel, type GitRunner, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver, type WorktreeIdentity } from "../lib/session-worktree-registry.ts";
@@ -113,9 +113,10 @@ import {
 import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseProviderUsage, parseUsageHeaders, parseUsageSource, usageScopeProviders, UsageSourceRegistry, UsageStore, USAGE_SOURCE_EVENT, type ProviderUsage, type UsageSource } from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarHeader, sidebarPart, sidebarState, VISUAL_SETTINGS_CHANGED, type SidebarRail } from "../lib/shell-sidebar.ts";
-import { installSidebar, invalidateSidebar, narrowStatusOwner, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
+import { installSidebar, invalidateSidebar, narrowStatusOwner, SIDEBAR_BREAKPOINT, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
 import { SessionChanges, SESSION_CHANGE_EVENT } from "../lib/session-changes.ts";
 import { REVIEW_SIDEBAR_EVENT, isReviewSidebarSnapshot, type ReviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
+import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY, isJobsSidebarSnapshot, type RunningJobDisplay } from "../lib/jobs-sidebar-state.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
 import { SelectionEngine } from "../lib/selection-engine.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
@@ -143,6 +144,7 @@ interface ShellBarComponent {
 }
 
 interface BuildOptions {
+	jobs?: RunningJobDisplay[];
 	profile?: string;
 	home?: string;
 	dirty?: number;
@@ -276,6 +278,7 @@ export function buildShellBarModel(
 	const usage = ctx.getContextUsage();
 	const model = ctx.model;
 	const statuses = Array.from(footerData.getExtensionStatuses().entries())
+		.filter(([key]) => options.jobs === undefined || key !== JOBS_STATUS_KEY)
 		.sort(([a], [b]) => a.localeCompare(b))
 		.map(([, text]) => text);
 	return {
@@ -291,6 +294,7 @@ export function buildShellBarModel(
 		costTotal: sessionCost(ctx),
 		subscription: model ? ctx.modelRegistry.isUsingOAuth(model) : false,
 		usage: options.usage,
+		...(options.jobs !== undefined ? { jobs: options.jobs } : {}),
 		statuses,
 	};
 }
@@ -1727,6 +1731,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let registry: SessionWorktreeRegistry | undefined;
 	let currentContext: ExtensionContext | undefined;
 	let review: ReviewSidebarSnapshot | undefined;
+	let runningJobs: RunningJobDisplay[] | undefined;
 	const redrawReview = () => {
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
@@ -1736,6 +1741,13 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		if (!currentContext || event?.sessionId !== currentContext.sessionManager.getSessionId()) return;
 		if (!isReviewSidebarSnapshot(event.snapshot)) return;
 		review = { state: event.snapshot.state, scope: event.snapshot.scope };
+		redrawReview();
+	});
+	const unsubscribeJobs = pi.events.on(JOBS_SIDEBAR_EVENT, (value) => {
+		const event = value as { sessionId?: unknown; snapshot?: unknown } | undefined;
+		if (!currentContext || event?.sessionId !== currentContext.sessionManager.getSessionId()) return;
+		if (!isJobsSidebarSnapshot(event.snapshot)) return;
+		runningJobs = event.snapshot.jobs.map(({ id, label, startedAt }) => ({ id, label, startedAt }));
 		redrawReview();
 	});
 	pi.on("session_tree", () => {
@@ -1777,6 +1789,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	});
 	pi.on("session_start", async (_event, ctx) => {
 		closeCustomize?.();
+		runningJobs = undefined;
 		if (review) {
 			review = undefined;
 			redrawReview();
@@ -1813,7 +1826,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// statuses. The digest is what keeps the fullscreen memo honest, and it
 			// rebuilds the model exactly as the narrow bottom bar does every frame.
 			const footerModel = (): ShellBarModel => ({
-				...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: usage.get(ctx.model?.provider ?? ""), profile: deps.activeProfile() }),
+				...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: usage.get(ctx.model?.provider ?? ""), profile: deps.activeProfile(), jobs: runningJobs }),
 				changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted, notice: tracker.model.notice },
 				review,
 			});
@@ -1821,8 +1834,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// suppresses the bottom bar in the layout, and otherwise the bottom bar
 			// takes over the header's data while the below-input header steps aside.
 			const statusOwner = () => narrowStatusOwner({ mode: (tui as TUI & { mode?: string }).mode, columns: tui.terminal?.columns ?? 0, statusPlacement: visualSettings.statusPlacement, headerPlacement: visualSettings.headerPlacement });
+			const statusCardVisible = () => Boolean(tui.terminal && tui.terminal.columns >= SIDEBAR_BREAKPOINT && sidebarState(tui).ownsHost?.() && visualSettings.statusPlacement !== "hidden");
 			const belowFloat = (width: number, statuses: boolean) => (tui as TUI & { mode?: string }).mode === "fullscreen"
-				? renderShellBelowInputFloat({ ...footerModel(), ...(statuses ? {} : { statuses: [] }) }, theme, width, usageShortcutKey, visualSettings, tracker.model)
+				? renderShellBelowInputFloat({ ...footerModel(), ...(statuses ? {} : { statuses: [] }), ...(statusCardVisible() ? { jobs: undefined } : {}) }, theme, width, usageShortcutKey, visualSettings, tracker.model)
 				: undefined;
 			// Match sidebarPart's live paint ownership, including an unavailable rail.
 			const footerSuppressed = () => {
@@ -1848,9 +1862,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				invalidate() {},
 			});
 			// The header row carries everything that ticks every frame (model,
-			// effort, context, cost, usage) plus session identity; it never sees
-			// extension statuses or the working/thinking state.
-			const headerBar = (width: number) => renderShellHeaderChrome(buildShellHeaderModel(footerModel()), theme, width, usageShortcutKey, visualSettings);
+			// effort, context, cost, usage) plus session identity and the jobs count
+			// when Status is absent. Opaque statuses and working state stay excluded.
+			const headerBar = (width: number) => renderShellHeaderChrome(buildShellHeaderModel(footerModel(), !statusCardVisible() && (statusOwner() === STATUS_OWNER.HEADER || visualSettings.statusPlacement === "hidden")), theme, width, usageShortcutKey, visualSettings);
 			const disposeHeader = sidebarHeader(tui, {
 				digest: () => JSON.stringify([footerModel(), tracker.model, visualSettings, cardStyle()]),
 				render: (width) => headerBar(width).rows,
@@ -1882,6 +1896,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			}), { placement: "belowEditor" });
 			return { ...part,
 				render(width: number) {
+					if (visualSettings.statusPlacement === "hidden" && (tui as TUI & { mode?: string }).mode !== "fullscreen" && runningJobs?.length) {
+						return [truncateToWidth(theme.fg("muted", shellJobsCount(runningJobs.length)), width, "…")];
+					}
 					const rows = part.render(width);
 					// Preserve a shrinkable exterior dock row, outside prompt/completion geometry.
 					return rows.length === 0 && (tui as TUI & { mode?: string }).mode === "fullscreen"
@@ -1902,7 +1919,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		);
 		// Hide native feedback only when our petal replaces it. Native transcript
 		// thinking blocks remain Pi-owned; this changes only the supported loader UI.
-		if (ownsPrompt) ctx.ui.setWorkingVisible(false);
+		// Inside Herdr the row stays: its native Pi detection reads it.
+		if (ownsPrompt && !keepNativeWorkingRow(env)) ctx.ui.setWorkingVisible(false);
 		const notice = deps.devBinary();
 		ctx.ui.setWidget(
 			DEV_BINARY_WIDGET_KEY,
@@ -1923,6 +1941,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// Pi rebuilds the extension runtime after every shutdown (reload, replacement,
 		// fork, quit), so the factory-level subscription never needs to be restored.
 		unsubscribeReview();
+		unsubscribeJobs();
+		runningJobs = undefined;
 		stopProfilePoll();
 		oddPhaseRegistry.clear(ctx.sessionManager.getSessionId());
 		oddPhaseRegistry.clearRenderRequest(ctx.sessionManager.getSessionId());

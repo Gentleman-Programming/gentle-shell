@@ -52,6 +52,10 @@ interface Registered {
 }
 
 const plainTheme = { fg: (_color: string, text: string) => text };
+// Session shutdown persists finished subagent history asynchronously, so a
+// late write can race a teardown removal; Node retries ENOTEMPTY/EBUSY here
+// instead of failing the test (macOS showed it, #1840).
+const TEST_DIR_REMOVAL = { recursive: true, force: true, maxRetries: 5, retryDelay: 50 } as const;
 const fakeTui = { requestRender() {} };
 const inertSessionTransport: SessionTransportFactory = {
 	createRegistry: async () => ({ list: async () => [], listActivations: async () => [] }),
@@ -102,7 +106,7 @@ after(async () => {
 	finally {
 		if (previousGentlePiConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
 		else process.env.GENTLE_PI_CONFIG_HOME = previousGentlePiConfigHome;
-		rmSync(root, { recursive: true, force: true });
+		rmSync(root, TEST_DIR_REMOVAL);
 	}
 });
 const home = join(root, "home");
@@ -1835,9 +1839,9 @@ test("C1 investigation: the relay mechanism is correct when every guard input is
 		await h.fire("session_shutdown", ctx);
 		await tick();
 	} finally {
-		rmSync(repoRoot, { recursive: true, force: true });
-		rmSync(gitHome, { recursive: true, force: true });
-		rmSync(gitHooksDir, { recursive: true, force: true });
+		rmSync(repoRoot, TEST_DIR_REMOVAL);
+		rmSync(gitHome, TEST_DIR_REMOVAL);
+		rmSync(gitHooksDir, TEST_DIR_REMOVAL);
 	}
 });
 
@@ -2210,7 +2214,7 @@ test("default Node spawn adapter distinguishes IPC-only and permission-capable c
 		mkdirSync(gitTemplate);
 		execFileSync("git", ["init", "--quiet", `--template=${gitTemplate}`, canonicalGitCwd]);
 	} catch (error) {
-		rmSync(canonicalGitFixture, { recursive: true, force: true });
+		rmSync(canonicalGitFixture, TEST_DIR_REMOVAL);
 		throw error;
 	}
 	childProcess.spawn = ((command: string, args: readonly string[], options: Record<string, unknown>) => {
@@ -2267,7 +2271,7 @@ test("default Node spawn adapter distinguishes IPC-only and permission-capable c
 		try {
 			await shutdownAndRestoreNativeSpawn(childProcess, originalSpawn, () => Promise.all(shutdown.map((close) => close())));
 		} finally {
-			rmSync(canonicalGitFixture, { recursive: true, force: true });
+			rmSync(canonicalGitFixture, TEST_DIR_REMOVAL);
 		}
 	}
 });
@@ -2430,7 +2434,7 @@ test("foreign clone tool requires consent before queueing and never enters paren
 		await tick();
 		assert.equal(runtime.children.length, 3, "stale queued foreign task must fail before OS spawn");
 		await h.fire("session_shutdown", successor);
-	} finally { rmSync(fixture, { recursive: true, force: true }); }
+	} finally { rmSync(fixture, TEST_DIR_REMOVAL); }
 });
 
 test("foreign child Changes require successful target-bound tool evidence, never model claims or sibling writes", async () => {
@@ -2514,7 +2518,7 @@ test("foreign child Changes require successful target-bound tool evidence, never
 		assert.equal(h.entries.filter(entry => entry.customType === "gentle-pi.session-change/v1").length, 3, "session replacement during a tool cannot attribute its result");
 		assert.equal(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY).length, 0);
 		await h.fire("session_shutdown", successor);
-	} finally { rmSync(fixture, { recursive: true, force: true }); }
+	} finally { rmSync(fixture, TEST_DIR_REMOVAL); }
 });
 
 test("foreign task mode waits for the child and continuation reuses its live grant", async () => {
@@ -2562,7 +2566,7 @@ test("foreign task mode waits for the child and continuation reuses its live gra
 		assert.equal(((await continued).details.gentleAgents as { cwd: string }).cwd, foreign);
 		assert.equal(runtime.spawned.length, 2);
 		await h.fire("session_shutdown", ctx);
-	} finally { rmSync(fixture, { recursive: true, force: true }); }
+	} finally { rmSync(fixture, TEST_DIR_REMOVAL); }
 });
 
 test("aborting during foreign consent cannot grant or queue a background child", async () => {
@@ -2587,7 +2591,7 @@ test("aborting during foreign consent cannot grant or queue a background child",
 		assert.equal(runtime.children.length, 0);
 		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
 		await h.fire("session_shutdown", ctx);
-	} finally { rmSync(fixture, { recursive: true, force: true }); }
+	} finally { rmSync(fixture, TEST_DIR_REMOVAL); }
 });
 
 test("an interactive non-Git umbrella can target an independent repository without registering it", async () => {
@@ -2607,7 +2611,7 @@ test("an interactive non-Git umbrella can target an independent repository witho
 		assert.equal((launched.details.gentleAgents as { cwd: string }).cwd, foreign);
 		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
 		await h.fire("session_shutdown", ctx);
-	} finally { rmSync(fixture, { recursive: true, force: true }); }
+	} finally { rmSync(fixture, TEST_DIR_REMOVAL); }
 });
 
 test("foreign selector rejects RPC and retired SDD selections before consent", async () => {
@@ -2643,7 +2647,7 @@ test("foreign selector rejects RPC and retired SDD selections before consent", a
 		assert.equal(dialogs.length, 0);
 		assert.equal(runtime.children.length, 0);
 		await h.fire("session_shutdown", ctx);
-	} finally { rmSync(fixture, { recursive: true, force: true }); }
+	} finally { rmSync(fixture, TEST_DIR_REMOVAL); }
 });
 
 test("foreign clone rejects aliases, absent UI, decline and changed session before any child starts", async () => {
@@ -2677,7 +2681,7 @@ test("foreign clone rejects aliases, absent UI, decline and changed session befo
 		assert.equal(dialogs.filter(dialog => dialog.startsWith("confirm:")).length, 2);
 		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
 		await h.fire("session_shutdown", ctx);
-	} finally { rmSync(fixture, { recursive: true, force: true }); }
+	} finally { rmSync(fixture, TEST_DIR_REMOVAL); }
 });
 
 test("explicit child roots launch and continue in the actual cwd, persist without shell, and reject other clones", async () => {
@@ -3255,7 +3259,7 @@ test("subagent_list_agents and subagent_run in task mode launch a child with the
 	gentleAgents(pi, {}, harness.deps);
 	const { ctx, widget } = fakeContext();
 	await fire("session_start", ctx);
-	assert.deepEqual([...tools.keys()].sort(), ["orchestrator_consult", "orchestrator_list", "orchestrator_send_message", "orchestrator_session_id", "subagent_cancel", "subagent_continue", "subagent_list_agents", "subagent_list_tasks", "subagent_reply", "subagent_result", "subagent_run", "subagent_send_message", "subagent_status"]);
+	assert.deepEqual([...tools.keys()].sort(), ["bash_background", "job_list", "job_stop", "monitor", "orchestrator_consult", "orchestrator_list", "orchestrator_send_message", "orchestrator_session_id", "subagent_cancel", "subagent_continue", "subagent_list_agents", "subagent_list_tasks", "subagent_reply", "subagent_result", "subagent_run", "subagent_send_message", "subagent_status"]);
 	const listed = await tools.get("subagent_list_agents")!.execute("c0", {}, undefined, undefined, ctx);
 	assert.match(listed.content[0].text, /- explore \(global\): maps things/);
 
@@ -5680,7 +5684,7 @@ test("a writer continuation without its own section inherits the admitted surfac
 	runtime.children[1].emit({ type: "agent_settled" });
 	await continued;
 	await h.fire("session_shutdown", ctx);
-	rmSync(profile, { recursive: true, force: true });
+	rmSync(profile, TEST_DIR_REMOVAL);
 });
 
 // #1690: the launcher's injection signal in the host env replaces the curated
@@ -5772,7 +5776,7 @@ test("parallel writers are admitted only with disjoint Allowed edit surfaces end
 		assert.equal(runtime.children.length, 5, "the continuation is admitted once its surfaces are free");
 	} finally {
 		await h.fire("session_shutdown", ctx);
-		rmSync(profile, { recursive: true, force: true });
+		rmSync(profile, TEST_DIR_REMOVAL);
 	}
 });
 
@@ -5805,6 +5809,393 @@ test("a subdirectory session cwd and workspace_root of the same worktree share o
 		await assert.rejects(h.tools.get("subagent_run")!.execute("run", { agent: "gentle-ai-worker", task, workspace_root: cwd, mode: "background" }, undefined, undefined, ctx), new RegExp(`task ${firstId}`));
 	} finally {
 		await h.fire("session_shutdown", ctx);
-		rmSync(profile, { recursive: true, force: true });
+		rmSync(profile, TEST_DIR_REMOVAL);
+	}
+});
+
+// Background jobs share the subagent parent delivery router: the exit notice
+// is stored and woken like an idle completion, or steered into a running turn.
+function fakeJobShell() {
+	const runs: Array<{ command: string; onData(data: Buffer): void; signal?: AbortSignal; exit(code: number): void }> = [];
+	const shell = () => ({
+		operations: {
+			exec: (command: string, _cwd: string, options: { onData(data: Buffer): void; signal?: AbortSignal }) => new Promise<{ exitCode: number | null }>((done, fail) => {
+				options.signal?.addEventListener("abort", () => fail(new Error("aborted")), { once: true });
+				runs.push({ command, onData: options.onData, signal: options.signal, exit: (code) => done({ exitCode: code }) });
+			}),
+		},
+	});
+	const dir = mkdtempSync(join(tmpdir(), "gentle-jobs-agents-"));
+	return { runs, shell, dir, cleanup: () => rmSync(dir, TEST_DIR_REMOVAL) };
+}
+// A job settles only after its log file closes, which takes real I/O turns.
+const jobIo = () => new Promise((done) => setTimeout(done, 50));
+const toolText = (result: { content: Array<{ text?: string }> }) => result.content.map((part) => part.text ?? "").join("\n");
+
+test("bash_background returns at once, and an idle parent gets one stored exit notice and one wake", async () => {
+	const { pi, tools, fire, sent, userMessages, delivery, renderers } = fakePi();
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		const started = toolText(await tools.get("bash_background")!.execute("b1", { command: "gh run watch 42 --exit-status", label: "CI" }, undefined, undefined, ctx));
+		assert.match(started, /job-1/);
+		assert.ok(started.includes(join(jobs.dir, "job-1.log")), "the output file path is returned");
+		assert.match(started, /notified once/i);
+		assert.equal(jobs.runs[0]!.command, "gh run watch 42 --exit-status");
+		assert.equal(sent.length, 0, "nothing reaches the parent while the job runs");
+		jobs.runs[0]!.onData(Buffer.from("check build: fail\n"));
+		jobs.runs[0]!.exit(1);
+		await jobIo();
+		const notices = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
+		assert.equal(notices.length, 1, "the exit is reported exactly once");
+		assert.deepEqual(notices[0]!.options, { triggerTurn: false }, "an idle parent stores the notice without a direct turn");
+		const content = String(notices[0]!.message.content);
+		for (const expected of [/job-1/, /"CI"/, /exited with code 1/, /gh run watch 42 --exit-status/, /check build: fail/, /job-1\.log/]) assert.match(content, expected);
+		assert.equal(userMessages.length, 1, "the idle parent is woken exactly once");
+		assert.deepEqual(delivery, ["custom:gentle-jobs.notice", "user"], "the notice is stored before the wake");
+		assert.match(renderers.get("gentle-jobs.notice")!(notices[0]!.message, { expanded: true }, plainTheme).render(70).map(stripAnsi).join("\n"), /exited with code 1/);
+		await fire("turn_end", ctx);
+		await fire("agent_settled", ctx);
+		assert.equal(sent.length, 1, "later boundaries never replay the notice");
+		assert.equal(userMessages.length, 1, "later boundaries never repeat the wake");
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
+test("a busy parent gets the exit notice steered into its run at the next turn boundary", async () => {
+	const { pi, tools, fire, sent, userMessages } = fakePi();
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		await fire("agent_start", ctx);
+		await tools.get("bash_background")!.execute("b1", { command: "make build" }, undefined, undefined, ctx);
+		jobs.runs[0]!.exit(0);
+		await jobIo();
+		assert.equal(sent.length, 0, "a busy parent is not interrupted mid-tool-call");
+		await fire("turn_end", ctx);
+		assert.equal(sent.length, 1);
+		assert.deepEqual(sent[0]!.options, { deliverAs: "steer", triggerTurn: true });
+		assert.match(String(sent[0]!.message.content), /job-1 \("make build"\) exited with code 0/);
+		assert.equal(userMessages.length, 0, "a running parent needs no wake");
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
+test("job_list and job_stop cover this session's jobs; stopped jobs send no notice and shutdown stops the rest", async () => {
+	const { pi, tools, fire, sent } = fakePi();
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		assert.match(toolText(await tools.get("job_list")!.execute("l0", {}, undefined, undefined, ctx)), /No background jobs/);
+		await tools.get("bash_background")!.execute("b1", { command: "sleep 100", label: "long" }, undefined, undefined, ctx);
+		await tools.get("bash_background")!.execute("b2", { command: "npm run dev" }, undefined, undefined, ctx);
+		const listed = toolText(await tools.get("job_list")!.execute("l1", {}, undefined, undefined, ctx));
+		assert.match(listed, /job-1 · running · long/);
+		assert.match(listed, /job-2 · running · npm run dev/);
+		assert.match(toolText(await tools.get("job_stop")!.execute("s1", { job_id: "job-1" }, undefined, undefined, ctx)), /Stopped job-1/);
+		assert.equal(jobs.runs[0]!.signal?.aborted, true, "the job's process tree is killed");
+		await assert.rejects(async () => tools.get("job_stop")!.execute("s2", { job_id: "job-9" }, undefined, undefined, ctx), /No background job job-9 in this session/);
+		await jobIo();
+		assert.equal(sent.length, 0, "a stopped job sends no exit notice");
+		assert.match(toolText(await tools.get("job_list")!.execute("l2", {}, undefined, undefined, ctx)), /job-1 · stopped · long/);
+		await fire("session_shutdown", ctx);
+		assert.equal(jobs.runs[1]!.signal?.aborted, true, "session shutdown stops every running job");
+		await jobIo();
+		assert.equal(sent.length, 0);
+	} finally {
+		jobs.cleanup();
+	}
+});
+
+test("/gentle:jobs opens this session's jobs overlay, stops the selected job, and the footer counts running jobs", async () => {
+	const { pi, tools, commands, fire, sent } = fakePi();
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx, overlays } = fakeContext();
+	const statuses: Array<string | undefined> = [];
+	const snapshots: Array<{ sessionId: string; snapshot: { jobs: Array<{ id: string; label: string; startedAt: number }> } }> = [];
+	const unsubscribe = pi.events.on("gentle-ai:jobs-sidebar", (value) => { snapshots.push(value as typeof snapshots[number]); });
+	Object.assign(ctx.ui, { setStatus: (key: string, value: string | undefined) => { if (key === "gentle-jobs") statuses.push(value); } });
+	try {
+		await fire("session_start", ctx);
+		await tools.get("bash_background")!.execute("b1", { command: "gh run watch 42 --exit-status", label: "CI" }, undefined, undefined, ctx);
+		assert.equal(statuses.at(-1), "⧗ 1 job");
+		assert.equal(snapshots.at(-1)?.sessionId, ctx.sessionManager.getSessionId());
+		assert.deepEqual(snapshots.at(-1)?.snapshot.jobs.map(({ id, label }) => ({ id, label })), [{ id: "job-1", label: "CI" }]);
+		const opened = commands.get("gentle:jobs")!.handler("", ctx);
+		await tick();
+		const view = overlays.at(-1)!;
+		const screen = view.render(100).map(stripAnsi).join("\n");
+		assert.match(screen, /Jobs · 1 running · 0 finished/);
+		assert.match(screen, /gh run watch 42 --exit-status/);
+		view.handleInput("s");
+		assert.equal(jobs.runs[0]!.signal?.aborted, true, "s stops the selected job");
+		assert.equal(statuses.at(-1), undefined, "the footer count clears when nothing runs");
+		assert.deepEqual(snapshots.at(-1)?.snapshot.jobs, [], "the Status descriptions clear when nothing runs");
+		await jobIo();
+		const notices = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
+		assert.equal(notices.length, 1, "the agent was told it would be notified, so a human stop is reported once");
+		assert.match(String(notices[0]!.message.content), /job-1 \("CI"\) was stopped by the user/);
+		view.handleInput("q");
+		await opened;
+	} finally {
+		unsubscribe();
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
+test("a job exit notice whose forwarding throws while the parent is idle is retried after the bounded grace", async () => {
+	const { pi, tools, fire, sent, userMessages } = fakePi();
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...harness.deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		await tools.get("bash_background")!.execute("b1", { command: "make ci" }, undefined, undefined, ctx);
+		const sendMessage = pi.sendMessage;
+		Object.assign(pi, { sendMessage: () => { throw new Error("host busy"); } });
+		jobs.runs[0]!.exit(0);
+		await jobIo();
+		assert.equal(sent.length, 0);
+		assert.equal(userMessages.length, 0);
+		Object.assign(pi, { sendMessage });
+		// No turn boundary is coming for an idle parent, so the retry is a timer.
+		assert.equal(timers.run(PARENT_WAKE_GRACE_MS), 1, "one bounded retry flush is armed");
+		await tick();
+		const notices = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
+		assert.equal(notices.length, 1, "the requeued notice reaches the idle parent");
+		assert.match(String(notices[0]!.message.content), /job-1 \("make ci"\) exited with code 0/);
+		assert.equal(userMessages.length, 1, "and the idle parent is woken for it");
+		assert.equal(timers.run(PARENT_WAKE_GRACE_MS), 1);
+		await tick();
+		assert.equal(sent.length, 1, "a successful retry never delivers the notice twice");
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
+for (const boundary of ["session_compact", "session_compact_failed"] as const) {
+	test(`a parent compacting outside an agent run holds a job exit notice until ${boundary}, then wakes it`, async () => {
+		const { pi, tools, fire, sent, userMessages, delivery, setIdle } = fakePi();
+		const harness = deps();
+		const timers = recordTimers(harness.deps);
+		const jobs = fakeJobShell();
+		gentleAgents(pi, {}, { ...harness.deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+		const { ctx } = fakeContext();
+		try {
+			await fire("session_start", ctx);
+			await tools.get("bash_background")!.execute("b1", { command: "make ci" }, undefined, undefined, ctx);
+			setIdle(false);
+			jobs.runs[0]!.exit(1);
+			await jobIo();
+			assert.equal(sent.length, 0, "no direct custom-message turn starts while the parent compacts");
+			assert.equal(userMessages.length, 0, "no wake is sent while the parent compacts");
+			await fire(boundary, ctx);
+			assert.equal(sent.length, 0, "the boundary handler runs before Pi leaves the compacting state");
+			setIdle(true);
+			assert.equal(timers.run(0), 1, "one deferred flush is scheduled for the compaction boundary");
+			await tick();
+			assert.deepEqual(sent.map((entry) => entry.options), [{ triggerTurn: false }], "the held notice is stored without a direct turn");
+			assert.deepEqual(delivery, ["custom:gentle-jobs.notice", "user"], "one wake follows the held notice");
+		} finally {
+			await fire("session_shutdown", ctx);
+			jobs.cleanup();
+		}
+	});
+}
+
+test("session shutdown removes the default background job log directory", async () => {
+	const { pi, tools, fire } = fakePi();
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...deps().deps, jobShell: jobs.shell });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		const started = toolText(await tools.get("bash_background")!.execute("b1", { command: "sleep 100" }, undefined, undefined, ctx));
+		const outputPath = /Output: (.+)$/m.exec(started)![1]!;
+		assert.ok(existsSync(dirname(outputPath)), "the job log directory exists while the session runs");
+		await fire("session_shutdown", ctx);
+		assert.equal(existsSync(dirname(outputPath)), false, "the job log directory is removed with the session");
+	} finally {
+		jobs.cleanup();
+	}
+});
+
+test("session shutdown never hangs on a job whose process ignores the stop", { timeout: 5000 }, async () => {
+	const { pi, tools, fire } = fakePi();
+	const dir = mkdtempSync(join(tmpdir(), "gentle-jobs-stuck-"));
+	// A process that never exits, even after its abort signal.
+	const stuck = () => ({ operations: { exec: () => new Promise<{ exitCode: number | null }>(() => {}) } });
+	const schedule: AgentsDeps["schedule"] = (fn, ms) => { const timer = setTimeout(fn, Math.min(ms, 10)); timer.unref(); return () => clearTimeout(timer); };
+	gentleAgents(pi, {}, { ...deps().deps, schedule, jobShell: stuck });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		await tools.get("bash_background")!.execute("b1", { command: "sleep 100" }, undefined, undefined, ctx);
+		await fire("session_shutdown", ctx);
+	} finally {
+		rmSync(dir, TEST_DIR_REMOVAL);
+	}
+});
+
+// A monitor reports output lines while it runs, through the same router.
+test("monitor delivers line events to an idle parent with one wake, and reports its end with the event count", async () => {
+	const { pi, tools, fire, sent, userMessages, renderers } = fakePi();
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...harness.deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		const started = toolText(await tools.get("monitor")!.execute("m1", { command: "gh run watch 7", label: "CI checks", timeout_seconds: 900 }, undefined, undefined, ctx));
+		assert.match(started, /Started monitor job-1 \("CI checks"\)/);
+		assert.match(started, /900s/);
+		jobs.runs[0]!.onData(Buffer.from("lint: pass\nunit: fail\n"));
+		assert.equal(sent.length, 0, "lines wait for the batch window");
+		assert.equal(timers.run(200), 1);
+		await tick();
+		const events = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
+		assert.equal(events.length, 1);
+		assert.deepEqual(events[0]!.options, { triggerTurn: false });
+		assert.match(String(events[0]!.message.content), /Monitor job-1 \("CI checks"\) reported 2 new lines:\nlint: pass\nunit: fail/);
+		assert.equal(userMessages.length, 1, "the idle parent is woken for the events");
+		assert.match(renderers.get("gentle-jobs.notice")!(events[0]!.message, { expanded: true }, plainTheme).render(70).map(stripAnsi).join("\n"), /unit: fail/);
+		jobs.runs[0]!.onData(Buffer.from("e2e: pass\n"));
+		jobs.runs[0]!.exit(1);
+		await jobIo();
+		const contents = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice").map((entry) => String(entry.message.content));
+		assert.equal(contents.length, 3, "pending lines are delivered before the end notice");
+		assert.match(contents[1]!, /reported 1 new line:\ne2e: pass/);
+		assert.match(contents[2]!, /Monitor job-1 \("CI checks"\) exited with code 1 after .* 3 events\./);
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
+test("monitor events wait for a busy parent's turn boundary and coalesce into one notice", async () => {
+	const { pi, tools, fire, sent } = fakePi();
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...harness.deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		await fire("agent_start", ctx);
+		await tools.get("monitor")!.execute("m1", { command: "tail -f log", timeout_seconds: 60 }, undefined, undefined, ctx);
+		jobs.runs[0]!.onData(Buffer.from("ERROR a\n"));
+		timers.run(200);
+		jobs.runs[0]!.onData(Buffer.from("ERROR b\n"));
+		timers.run(200);
+		assert.equal(sent.length, 0, "a busy parent is not interrupted mid-tool-call");
+		await fire("turn_end", ctx);
+		assert.equal(sent.length, 1, "both batches arrive as one notice");
+		assert.deepEqual(sent[0]!.options, { deliverAs: "steer", triggerTurn: true });
+		assert.match(String(sent[0]!.message.content), /reported 2 new lines:\nERROR a\nERROR b/);
+		// job_stop ends the monitor without any further notice.
+		assert.match(toolText(await tools.get("job_stop")!.execute("s1", { job_id: "job-1" }, undefined, undefined, ctx)), /Stopped job-1/);
+		jobs.runs[0]!.onData(Buffer.from("ERROR c\n"));
+		timers.run(200);
+		timers.run(60_000);
+		await jobIo();
+		await fire("turn_end", ctx);
+		assert.equal(sent.length, 1, "a stopped monitor reports nothing more");
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
+test("monitor rejects a missing or out-of-range timeout before starting anything", async () => {
+	const { pi, tools, fire } = fakePi();
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		for (const params of [{ command: "x" }, { command: "x", timeout_seconds: 0 }, { command: "x", timeout_seconds: 3600 }]) {
+			await assert.rejects(async () => tools.get("monitor")!.execute("m", params, undefined, undefined, ctx), /timeout_seconds must be a whole number from 1 to 1800/);
+		}
+		assert.equal(jobs.runs.length, 0);
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
+test("events from two interleaved monitors coalesce per monitor while the parent is busy", async () => {
+	const { pi, tools, fire, sent } = fakePi();
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...harness.deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		await fire("agent_start", ctx);
+		await tools.get("monitor")!.execute("m1", { command: "watch a", label: "A", timeout_seconds: 60 }, undefined, undefined, ctx);
+		await tools.get("monitor")!.execute("m2", { command: "watch b", label: "B", timeout_seconds: 60 }, undefined, undefined, ctx);
+		for (const round of [1, 2, 3]) {
+			jobs.runs[0]!.onData(Buffer.from(`a${round}\n`));
+			jobs.runs[1]!.onData(Buffer.from(`b${round}\n`));
+			timers.run(200);
+		}
+		await fire("turn_end", ctx);
+		const contents = sent.map((entry) => String(entry.message.content));
+		assert.equal(contents.length, 2, "one notice per monitor, not one per batch");
+		assert.match(contents[0]!, /\("A"\) reported 3 new lines:\na1\na2\na3/);
+		assert.match(contents[1]!, /\("B"\) reported 3 new lines:\nb1\nb2\nb3/);
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
+test("a human stop of a monitor from /gentle:jobs delivers its pending lines, then one stop notice, then nothing", async () => {
+	const { pi, tools, commands, fire, sent } = fakePi();
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...harness.deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx, overlays } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		await fire("agent_start", ctx);
+		await tools.get("monitor")!.execute("m1", { command: "tail -f log", label: "log", timeout_seconds: 60 }, undefined, undefined, ctx);
+		jobs.runs[0]!.onData(Buffer.from("ERROR seen\n"));
+		const opened = commands.get("gentle:jobs")!.handler("", ctx);
+		await tick();
+		overlays.at(-1)!.handleInput("s");
+		overlays.at(-1)!.handleInput("q");
+		await opened;
+		assert.equal(jobs.runs[0]!.signal?.aborted, true);
+		jobs.runs[0]!.onData(Buffer.from("ERROR after stop\n"));
+		timers.run(200);
+		timers.run(60_000);
+		await jobIo();
+		await fire("turn_end", ctx);
+		const contents = sent.map((entry) => String(entry.message.content));
+		assert.equal(contents.length, 2, `notices: ${JSON.stringify(contents)}`);
+		assert.match(contents[0]!, /reported 1 new line:\nERROR seen/);
+		assert.match(contents[1]!, /Monitor job-1 \("log"\) was stopped by the user after .*, 1 event\./);
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
 	}
 });

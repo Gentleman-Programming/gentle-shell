@@ -473,6 +473,24 @@ export interface NativeReviewUnachievableLensCaptureArtifact {
 // gentle-pi#638 fail-open capability gate: `review capture-unachievable` is younger than every released binary pinned in NATIVE_CLI_CONTRACTS, so the verb is gated invocation-adjacent instead of by a capability row. An older binary renders Go's exact `unknown review command "capture-unachievable"` refusal (internal/cli/review_facade.go) on stderr with no stdout, so the invocation rejects before any decode and the captured diagnostics are the only place that text survives. Every other failure -- a typed binding-mismatch refusal, a timeout, a decode failure -- is a real outcome the caller must surface, never a capability signal. Duck-typed on purpose: the classifier must survive a duplicated module instance exactly like the error it inspects.
 const NATIVE_REVIEW_UNKNOWN_UNACHIEVABLE_VERB_REFUSAL = /unknown review command "capture-unachievable"/;
 
+// A provider older than START lens selection refuses the STATUS preflight
+// flags with this exact typed preflight cause, before reading the repository.
+const NATIVE_REVIEW_UNKNOWN_LENS_FLAG_CAUSE = /^flag provided but not defined: -lenses(?:-reason)?$/;
+
+/** Reports a not-started STATUS refusal caused only by an unknown --lenses flag. */
+export function isNativeReviewLensSelectionUnsupported(error: unknown): boolean {
+	if (!(error instanceof NativeReviewIntegrationError)) return false;
+	const failure = error.failureEnvelope;
+	return failure.code === "invalid_request" && failure.mutationOutcome === "not_started" &&
+		typeof failure.cause === "string" && NATIVE_REVIEW_UNKNOWN_LENS_FLAG_CAUSE.test(failure.cause);
+}
+
+function nativeLensSelectionArguments(request: NativeLensSelectionRequest): readonly string[] {
+	if (request.lenses === undefined && request.lensesReason === undefined) return [];
+	if (request.lenses === undefined || request.lenses.length === 0 || request.lensesReason === undefined) throw new TypeError("Native lens selection requires lenses and lensesReason together");
+	return ["--lenses", request.lenses.join(","), "--lenses-reason", request.lensesReason];
+}
+
 export function isNativeReviewUnachievableVerbRefused(error: unknown): boolean {
 	if (typeof error !== "object" || error === null) return false;
 	const stderr = (error as { diagnostics?: { stderr?: unknown } }).diagnostics?.stderr;
@@ -499,7 +517,17 @@ interface NativeUntrackedSelectionRequest {
 	intendedUntrackedSelection?: NativeIntendedUntrackedSelectionSubmission;
 }
 
-export interface NativeStartRequest extends NativeUntrackedSelectionRequest {
+/**
+ * The agent's own review lens choice (gentle-ai START --lenses): canonical
+ * lens names in 4R order and one reason. Providers that predate it refuse
+ * the flag, and START then falls back to the tier default.
+ */
+export interface NativeLensSelectionRequest {
+	lenses?: readonly string[];
+	lensesReason?: string;
+}
+
+export interface NativeStartRequest extends NativeUntrackedSelectionRequest, NativeLensSelectionRequest {
 	cwd: string;
 	baseRef?: string;
 	committedOnly?: boolean;
@@ -526,7 +554,7 @@ export interface NativeReviewConsentDeclinedResult {
 export interface NativeReviewConsentStartedResult { kind: "started"; start: NativeStartResult; }
 export type NativeReviewConsentAnswerResult = NativeReviewConsentStartedResult | NativeReviewConsentDeclinedResult;
 export interface NativeReviewStatusRequest { cwd: string; signal?: AbortSignal; }
-export interface NativeTargetStatusRequest extends NativeUntrackedSelectionRequest {
+export interface NativeTargetStatusRequest extends NativeUntrackedSelectionRequest, NativeLensSelectionRequest {
 	cwd: string;
 	lineageId?: string;
 	baseRef?: string;
@@ -2159,7 +2187,7 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		// drift; Pi never rebuilds that vector from request fields.
 		const projection = request.projection ?? "workspace";
 		const selection = nativeUntrackedSelection(request);
-		const status = await this.targetStatus({
+		const statusRequest: NativeTargetStatusRequest = {
 			cwd: request.cwd,
 			projection,
 			...(request.baseRef === undefined ? {} : { baseRef: request.baseRef, committedOnly: true }),
@@ -2168,7 +2196,19 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 			...(request.intendedUntrackedSelection === undefined ? {} : { intendedUntrackedSelection: request.intendedUntrackedSelection }),
 			agent: "pi",
 			...(request.signal === undefined ? {} : { signal: request.signal }),
-		});
+		};
+		const lensSelection = request.lenses === undefined && request.lensesReason === undefined
+			? {}
+			: { lenses: request.lenses, lensesReason: request.lensesReason };
+		let status: ReviewStatusV3;
+		try {
+			status = await this.targetStatus({ ...statusRequest, ...lensSelection });
+		} catch (error) {
+			// Phase A: a provider that predates lens selection still reviews,
+			// with the tier default, instead of refusing the candidate.
+			if (Object.keys(lensSelection).length === 0 || !isNativeReviewLensSelectionUnsupported(error)) throw error;
+			status = await this.targetStatus(statusRequest);
+		}
 		const transition = status.nextTransition?.kind === "execute" && status.nextTransition.execute?.operation === "review.start"
 			? status.nextTransition.execute
 			: undefined;
@@ -2303,8 +2343,9 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 			...(request.baseRef === undefined ? [] : ["--base-ref", request.baseRef, "--committed-only"]),
 			...(request.lineageId === undefined ? [] : ["--lineage", request.lineageId]),
 			...(request.agent === undefined ? [] : ["--agent", request.agent]),
+			...nativeLensSelectionArguments(request),
 			"--next-transition",
-		] : ["review", "status", "--cwd", request.cwd, ...submittedTokens, ...forwardedBaseRef, ...forwardedLineage];
+		] : ["review", "status", "--cwd", request.cwd, ...submittedTokens, ...forwardedBaseRef, ...forwardedLineage, ...nativeLensSelectionArguments(request)];
 		const execution = await this.negotiated(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal);
 		assertSupportedNextTransitionOperation(execution.body);
 		return decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewStatusV3(execution.body));

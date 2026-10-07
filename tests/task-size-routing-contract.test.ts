@@ -206,7 +206,7 @@ test("T6: each delegation module carries its own clauses and names the modules i
 	const placement: Record<string, readonly string[]> = {
 		"orchestrator-tracking.md": ["#### Authorization and progress", "Delivery follows work units", "Raise a candidate you know is high risk"],
 		"orchestrator-verification.md": [
-			"| Native risk tier | Verification when RDD is `off`/`unknown` |",
+			"| Native risk tier | Verification (any RDD state) |",
 			"## Agent escalation (gentle-shell#1494)",
 			"## Parallel review protocol (gentle-shell#1731)",
 		],

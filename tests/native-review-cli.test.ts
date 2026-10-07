@@ -418,6 +418,63 @@ test("native START queries STATUS then executes only the provider-rendered order
 	]);
 });
 
+// Captured from the released gentle-ai 4.0.0 binary, which predates START
+// lens selection (verify-always-rdd-high S8).
+const LENS_SELECTION_UNSUPPORTED_FAILURE = {
+	schema: "gentle-ai.review-integration.failure/v2", contract: "gentle-ai.review-integration/v2", operation: "review.status",
+	phase: "preflight", code: "invalid_request", message: "The negotiated review request is invalid.", mutation_outcome: "not_started",
+	authority_applicability: "not_evaluated", retry_safe: true, replayability: "not_replayable", required_inputs: [],
+	next_action: "correct_request", cause: "flag provided but not defined: -lenses",
+};
+
+test("native START preflights the agent lens selection through STATUS", async () => {
+	const tokens = [
+		"--contract=gentle-ai.review-integration/v2", "--cwd=/repo", `--target=${TARGET}`,
+		"--projection=workspace", "--agent=pi", "--consent=relay",
+		"--lenses=review-risk,review-reliability", "--lenses-reason=changes token parsing",
+	];
+	const queue = queuedAdapter([
+		{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens)) },
+		{ stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) },
+	]);
+	await client(queue.adapter).start({ cwd: "/repo", targetIdentity: TARGET, lenses: ["review-risk", "review-reliability"], lensesReason: "changes token parsing" });
+	assert.deepEqual(queue.calls.map((call) => call.arguments), [
+		["review", "status", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo", "--projection", "workspace", "--agent", "pi",
+			"--lenses", "review-risk,review-reliability", "--lenses-reason", "changes token parsing", "--next-transition"],
+		["review", "start", ...tokens],
+	]);
+});
+
+test("native START falls back to the tier default when the provider predates lens selection", async () => {
+	const tokens = [
+		"--contract=gentle-ai.review-integration/v2", "--cwd=/repo", `--target=${TARGET}`,
+		"--projection=workspace", "--agent=pi", "--consent=relay",
+	];
+	const queue = queuedAdapter([
+		{ stdout: JSON.stringify(LENS_SELECTION_UNSUPPORTED_FAILURE), exitCode: 1 },
+		{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens)) },
+		{ stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) },
+	]);
+	const result = await client(queue.adapter).start({ cwd: "/repo", targetIdentity: TARGET, lenses: ["review-risk"], lensesReason: "changes token parsing" });
+	assert.equal(result.action, "closed");
+	assert.deepEqual(queue.calls.map((call) => call.arguments), [
+		["review", "status", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo", "--projection", "workspace", "--agent", "pi",
+			"--lenses", "review-risk", "--lenses-reason", "changes token parsing", "--next-transition"],
+		["review", "status", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo", "--projection", "workspace", "--agent", "pi", "--next-transition"],
+		["review", "start", ...tokens],
+	]);
+});
+
+test("native START never retries a selection refusal that is not an unknown lens flag", async () => {
+	const refusal = { ...LENS_SELECTION_UNSUPPORTED_FAILURE, cause: 'review status --lenses names unknown lens "security"' };
+	const queue = queuedAdapter([{ stdout: JSON.stringify(refusal), exitCode: 1 }]);
+	await assert.rejects(
+		() => client(queue.adapter).start({ cwd: "/repo", targetIdentity: TARGET, lenses: ["security"], lensesReason: "why" }),
+		(error: unknown) => error instanceof NativeReviewIntegrationError && error.failureEnvelope.cause === refusal.cause,
+	);
+	assert.equal(queue.calls.length, 1);
+});
+
 test("native START relays provider-owned intended-untracked selection and transition argv verbatim", async () => {
 	const selectionValue = JSON.stringify(["new.ts", "nested/other.ts"]);
 	const selectionTokens = ["--selection-kind=untracked", "--selection-json={{value}}", "--selection-proof=provider-issued"];

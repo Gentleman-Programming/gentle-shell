@@ -3642,6 +3642,8 @@ test("Enter switches the live orchestrator, binds the profile, and writes nothin
 	assert.equal(existsSync(join(fixture.root, ".pi", "subagents.json")), false, "no materialized store is written");
 	const applied = notifications.at(-1)?.message ?? "";
 	assert.match(applied, /bound profile "team" to this session/);
+	assert.match(applied, /shown as "team \(session\)"/);
+	assert.match(applied, /This session now runs on openai\/beta · high/);
 	assert.match(applied, /Subagents and reviewers use this session's routing snapshot/);
 	assert.match(applied, /global routing, pins, and materialized stores are untouched/);
 	assert.doesNotMatch(applied, /launch routing is unchanged/);

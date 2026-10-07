@@ -808,7 +808,7 @@ Profiles are named, switchable snapshots of the global agent-model routing from 
 | Key     | Action                                                                 |
 | ------- | ---------------------------------------------------------------------- |
 | `enter` | Apply the selected profile to this session only: switch its live orchestrator when defined and bind its subagent and reviewer routing snapshot. Shared defaults and pins are untouched. |
-| `a`     | Explicitly set the selected profile as the global default and materialize routing. Inside a pinned repository it updates the clone-local pin instead; see **Per-repository pins** below. |
+| `a`     | Explicitly set the selected profile as the global default and materialize routing. Inside a pinned repository it updates the clone-local pin instead and leaves the orchestrator unchanged; see **Per-repository pins** below. |
 | `c`     | Create a new, empty profile.                                           |
 | `s`     | Snapshot the current routing into the selected profile (including the orchestrator currently set in `settings.json`); live routing is unchanged. |
 | `d`     | Duplicate the selected profile.                                        |

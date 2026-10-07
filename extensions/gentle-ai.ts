@@ -15,13 +15,14 @@ import { isProxy } from "node:util/types";
 import {
 	closeSync,
 	existsSync,
+	fstatSync,
+	linkSync,
 	lstatSync,
 	openSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
 	realpathSync,
-	renameSync,
 	statSync,
 	unlinkSync,
 	writeFileSync,
@@ -2509,9 +2510,9 @@ const MATERIALIZE_LOCK_MAX_AGE_MS = 60_000;
 
 type MaterializedProfileLockOwner = { pid: number; createdAtMs: number };
 
-function readMaterializedProfileLockOwner(lockPath: string): MaterializedProfileLockOwner | undefined {
+function readMaterializedProfileLockOwnerFd(fd: number): MaterializedProfileLockOwner | undefined {
 	try {
-		const parsed: unknown = JSON.parse(readFileSync(lockPath, "utf8"));
+		const parsed: unknown = JSON.parse(readFileSync(fd, "utf8"));
 		if (!isRecord(parsed) || typeof parsed.pid !== "number" || typeof parsed.createdAtMs !== "number") {
 			return undefined;
 		}
@@ -2531,29 +2532,48 @@ function processAlive(pid: number): boolean {
 	}
 }
 
-function breakStaleMaterializedProfileLock(
-	lockPath: string,
-	owner: MaterializedProfileLockOwner | undefined,
-): void {
-	// Break iff the lock file predates the maximum plausible critical
-	// section (mtime, works even for unreadable owners) or its recorded
-	// owner is provably dead. A fresh lock with a live or unknown owner is
-	// always respected, so concurrent sessions never break each other.
-	let ageMs: number;
+function breakStaleMaterializedProfileLock(lockPath: string): void {
+	// Reclaim iff the pinned lock instance predates the maximum plausible
+	// critical section (mtime, works even for unreadable owners) or its
+	// recorded owner is provably dead. The instance is claimed through a
+	// hardlink of the inspected file and an inode comparison, so a live owner
+	// that replaced the path between inspection and reclaim is never stolen
+	// from: the claim is dropped and the path left untouched when the link
+	// resolved to a different instance than the one checked.
+	let fd: number;
 	try {
-		ageMs = Date.now() - statSync(lockPath).mtimeMs;
+		fd = openSync(lockPath, "r");
 	} catch {
-		return;
+		return; // released, or another breaker already reclaimed it
 	}
-	const stale = ageMs >= MATERIALIZE_LOCK_MAX_AGE_MS;
-	const deadOwner = owner !== undefined && !processAlive(owner.pid);
-	if (!stale && !deadOwner) return;
-	const breakPath = `${lockPath}.break-${randomUUID()}`;
 	try {
-		renameSync(lockPath, breakPath);
-		unlinkSync(breakPath);
-	} catch {
-		/* another breaker won the rename, or the owner released */
+		const stale = Date.now() - fstatSync(fd).mtimeMs >= MATERIALIZE_LOCK_MAX_AGE_MS;
+		const owner = readMaterializedProfileLockOwnerFd(fd);
+		const deadOwner = owner !== undefined && !processAlive(owner.pid);
+		if (!stale && !deadOwner) return;
+		const claimPath = `${lockPath}.claim-${randomUUID()}`;
+		try {
+			linkSync(lockPath, claimPath);
+		} catch {
+			return; // the path vanished mid-inspection; the retry loop re-runs
+		}
+		const claimed = statSync(claimPath);
+		const pinned = fstatSync(fd);
+		const sameInstance = claimed.dev === pinned.dev && claimed.ino === pinned.ino;
+		try {
+			unlinkSync(claimPath);
+		} catch {
+			/* best-effort claim cleanup */
+		}
+		if (sameInstance) {
+			try {
+				unlinkSync(lockPath);
+			} catch {
+				/* another breaker already removed the original name */
+			}
+		}
+	} finally {
+		closeSync(fd);
 	}
 }
 
@@ -2571,7 +2591,7 @@ function tryMaterializedProfileLock(path: string): number | undefined {
 		return fd;
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-		breakStaleMaterializedProfileLock(lockPath, readMaterializedProfileLockOwner(lockPath));
+		breakStaleMaterializedProfileLock(lockPath);
 		return undefined;
 	}
 }

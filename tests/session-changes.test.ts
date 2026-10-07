@@ -112,3 +112,65 @@ test("capture-limit notice is delivered once but stays on the model", () => {
 	assert.equal(new SessionChanges("s").takeNotice(),undefined);
 	assert.equal(new SessionChanges("s").model.notice,undefined);
 });
+
+test("many edits to few files never reach the cap, because the cap counts files (#1043)", () => {
+	// The long-session shape the old bound got wrong: every repeat `write`/`edit`
+	// of a file already on screen spent a slot, so the panel froze after 256
+	// MUTATIONS while tracking three files.
+	const changes = new SessionChanges("session");
+	const paths = ["a.ts","b.ts","c.ts"];
+	for(let i=0;i<600;i++){
+		const path = paths[i % paths.length]!;
+		changes.record(evidence("edit-"+String(i),"/repo",path,text("v"+String(i)+"\n"),text("v"+String(i+1)+"\n")));
+	}
+	assert.equal(changes.notice,undefined);
+	assert.equal(changes.model.files.length,3);
+
+	// And the budget those 600 edits did not spend is still there: a file the
+	// session has not touched yet must still be admitted. A counter that
+	// advanced per record rather than per new file would pass every assertion
+	// above and turn this one away.
+	assert.equal(changes.record(evidence("fresh","/repo","d.ts")),true);
+	assert.equal(changes.model.files.length,4);
+	assert.equal(changes.notice,undefined);
+});
+
+test("a file already tracked keeps updating after the file cap is reached (#1043)", () => {
+	// The half the panel's staleness was actually made of: once the bound fired,
+	// a later edit to a file already on screen was dropped too, so the entry it
+	// would have refreshed sat at its last admitted state.
+	const changes = new SessionChanges("session");
+	for(let i=0;i<256;i++) changes.record(evidence("seed-"+String(i),"/repo",String(i)+".ts"));
+	const before = changes.model.files.find(file => file.path === "0.ts")!.diffRevision;
+
+	assert.equal(changes.record(evidence("late-new","/repo","257.ts")),false);
+	assert.equal(changes.record(evidence("late-known","/repo","0.ts",text("new\n"),text("newer\n"))),true);
+
+	assert.equal(changes.model.files.length,256);
+	assert.notEqual(changes.model.files.find(file => file.path === "0.ts")!.diffRevision,before);
+});
+
+test("the notice names which bound fired (#1043)", () => {
+	// "additional changes are not displayed" was assigned for both bounds, which
+	// told an operator neither what filled up nor that the session was fine.
+	const files = new SessionChanges("session");
+	for(let i=0;i<257;i++) files.record(evidence(String(i),"/repo",String(i)+".ts"));
+	assert.match(files.notice!,/files are shown/);
+
+	const bytes = new SessionChanges("session");
+	const big = "x".repeat(60*1024);
+	for(let i=0;i<200;i++) bytes.record(evidence("big-"+String(i),"/repo",String(i)+".ts",text(big+"\n"),text(big+"y\n")));
+	assert.match(bytes.notice!,/snapshot budget/);
+});
+
+test("a no-op edit to an unseen path does not spend a file slot (#1043)", () => {
+	// before === after is dropped before anything is tracked, so it must not be
+	// the reason a later real edit is refused.
+	const changes = new SessionChanges("session");
+	for(let i=0;i<255;i++) changes.record(evidence("seed-"+String(i),"/repo",String(i)+".ts"));
+	assert.equal(changes.record(evidence("noop","/repo","noop.ts",text("same\n"),text("same\n"))),false);
+
+	assert.equal(changes.record(evidence("real","/repo","real.ts")),true);
+	assert.equal(changes.model.files.length,256);
+	assert.equal(changes.notice,undefined);
+});

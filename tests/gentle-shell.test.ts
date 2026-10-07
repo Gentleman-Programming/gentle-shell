@@ -802,6 +802,16 @@ test("T2 float prompt installed editor reads live toolSuccessBg and preserves Es
 	} finally { themeHost.theme = originalTheme; editor.dispose(); setCardStyle(previous); }
 });
 
+// Herdr's native Pi manifest detects activity from Pi's standard loader row
+// ("⠋ Working..."); the petal frame alone reads as idle to it.
+test("gentleShell keeps Pi's native Working row inside Herdr so native detection sees activity", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { HERDR_ENV: "1" });
+	const { ctx, ui } = fakeContext();
+	installedPrompt(ctx, ui, handlers);
+	assert.notEqual(ui.workingVisible, false, "Herdr needs Pi's standard Working row");
+});
+
 test("gentleShell frames the editor with the petal prompt and a hint while empty", () => {
 	const { pi, handlers } = fakePi();
 	gentleShell(pi, {});

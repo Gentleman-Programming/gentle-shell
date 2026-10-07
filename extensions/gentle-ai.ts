@@ -4041,14 +4041,10 @@ class ProfilesPanel implements OverlayComponent {
 			// any invalid or stale layer, and the scope sentence all come from the shared
 			// precedence rule the launch resolver uses.
 			...profilePinDetailLines(this.pinStatus, this.file.profiles).map((line) => this.renderLine(line, width, "muted")),
-			// gentle-shell#1064 slice 1: the binding is stored for this session and
-			// outranks the pin in the panel list, so it is named right after the pin
-			// layers. Launch resolution ships with slice 2 (gentle-shell#1558); this
-			// slice stores the binding only, launch routing is unchanged, and nothing
-			// was written.
+			// The session snapshot overrides subagent routing without changing pin layers.
 			...(this.sessionBoundName === undefined
 				? []
-				: [this.renderLine(`session        ${sanitizeTerminalText(this.sessionBoundName)} (session) — stored for this session; launch routing is unchanged; nothing was written`, width, "muted")]),
+				: [this.renderLine(`session        ${sanitizeTerminalText(this.sessionBoundName)} (session) — stored for this session; nothing was written`, width, "muted")]),
 			"",
 			this.renderLine("Profile routing", width, "accent"),
 			...this.indentLines(this.routingLines(profileRows, widths), width),
@@ -4242,13 +4238,9 @@ async function runProfilesPanelAction(
 	switch (result.type) {
 		case "apply": {
 			if (!hasOwnProfile(file.profiles, result.name)) return file;
-			// gentle-shell#1064 slice 1: Enter binds the selected profile to this
-			// parent session. The binding is in-process state keyed by the session
-			// id: it writes no store marker, no global routing, no materialized
-			// stores, no agent frontmatter, no Pi settings, and no pin or declaration
-			// layer, pin or not. This slice stores the binding only: launch routing
-			// is unchanged until slice 2 (gentle-shell#1558) resolves the binding
-			// at launch. Refreshing the binding means selecting again.
+			// Enter applies a session-only snapshot: subagents consume the binding
+			// at launch, and the orchestrator switches live without persisting defaults.
+			// Global routing, materialized stores, and pin layers remain untouched.
 			const sessionId = ctx.sessionManager?.getSessionId?.();
 			if (typeof sessionId !== "string" || sessionId.length === 0) {
 				ctx.ui.notify(
@@ -4257,9 +4249,12 @@ async function runProfilesPanelAction(
 				);
 				return file;
 			}
-			bindSessionProfile(sessionId, result.name, normalizeModelConfig(file.profiles[result.name]) ?? {});
+			const normalized = normalizeModelConfig(file.profiles[result.name]) ?? {};
+			bindSessionProfile(sessionId, result.name, normalized);
+			const orchestratorEntry = readProfileOrchestrator(normalized);
+			const liveNote = orchestratorEntry ? await switchLiveOrchestrator(ctx, live, orchestratorEntry) : "";
 			ctx.ui.notify(
-				`el Gentleman bound profile "${result.name}" to this session — shown as "${result.name} (session)". The binding is stored for this session; launch routing is unchanged. Nothing was written: the global routing, pins, and materialized stores are untouched. Set as global default with a.`,
+				`el Gentleman bound profile "${result.name}" to this session — shown as "${result.name} (session)". Nothing was written: the global routing, pins, and materialized stores are untouched. Set as global default with a.${liveNote}`,
 				"info",
 			);
 			return file;

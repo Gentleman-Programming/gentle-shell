@@ -117,6 +117,13 @@ export function shellEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 	return !(value === "0" || value === "false" || value === "off");
 }
 
+// Herdr's native Pi detection matches Pi's standard loader row ("⠋ Working...").
+// Inside a Herdr pane keep that row, which Pi shows only during real activity,
+// so detection works without a local manifest override.
+export function keepNativeWorkingRow(env: NodeJS.ProcessEnv = process.env): boolean {
+	return env.HERDR_ENV === "1" && env.GENTLE_PI_AGENTS_CHILD !== "1";
+}
+
 export function formatTokens(count: number): string {
 	if (count < 1000) return count.toString();
 	if (count < 10_000) return `${(count / 1000).toFixed(1)}k`;

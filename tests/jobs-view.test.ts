@@ -78,6 +78,51 @@ test("j/k move the selection, s stops only a running job, and q closes", () => {
 	} finally { h.view.dispose(); }
 });
 
+test("jobs show running first and newest first within each group without changing source order", () => {
+	const jobs = [
+		job({ id: "old-finished", status: "exited", exitCode: 0, startedAt: 1_000, endedAt: 2_000 }),
+		job({ id: "old-running", startedAt: 3_000 }),
+		job({ id: "new-finished", status: "stopped", startedAt: 9_000, endedAt: 10_000 }),
+		job({ id: "new-running", startedAt: 5_000 }),
+	];
+	const h = harness(jobs);
+	try {
+		const lines = h.screen();
+		const names = ["new-running", "old-running", "new-finished", "old-finished"];
+		const positions = names.map((name) => lines.findIndex((line) => line.includes(name)));
+		assert.ok(positions.every((index, i) => index > 0 && (i === 0 || index > positions[i - 1]!)));
+		h.view.handleInput("s");
+		assert.deepEqual(h.stopped, ["new-running"], "the default selection follows display order");
+		h.view.handleInput("j");
+		h.view.handleInput("s");
+		assert.deepEqual(h.stopped, ["new-running", "old-running"], "navigation follows the same sorted order");
+		jobs.push(job({ id: "latest-running", startedAt: 11_000 }));
+		assert.match(h.screen().join("\n"), /› ◐ old-running/, "a new job preserves selection by ID");
+		assert.deepEqual(jobs.map((entry) => entry.id), ["old-finished", "old-running", "new-finished", "new-running", "latest-running"]);
+	} finally { h.view.dispose(); }
+});
+
+test("initial selection survives new jobs and completion before any keyboard navigation", () => {
+	const first = job({ id: "job-A", startedAt: 1_000 });
+	const jobs = [first];
+	const h = harness(jobs);
+	try {
+		assert.match(h.screen().join("\n"), /› ◐ job-A/);
+		jobs.push(job({ id: "job-B", startedAt: 2_000 }));
+		assert.match(h.screen().join("\n"), /› ◐ job-A/, "a newly started job does not steal selection");
+		h.view.handleInput("s");
+		assert.deepEqual(h.stopped, ["job-A"], "stop still targets the initially selected job");
+		first.status = "exited";
+		first.exitCode = 0;
+		first.endedAt = 3_000;
+		assert.match(h.screen().join("\n"), /› ✓ job-A/, "completion does not steal selection");
+		assert.match(h.screen().join("\n"), /exited with code 0/);
+		h.view.handleInput("s");
+		assert.deepEqual(h.stopped, ["job-A"], "stop on a finished selection does not target another running job");
+		assert.deepEqual(jobs.map((entry) => entry.id), ["job-A", "job-B"]);
+	} finally { h.view.dispose(); }
+});
+
 test("an empty session says so", () => {
 	const h = harness([]);
 	try {

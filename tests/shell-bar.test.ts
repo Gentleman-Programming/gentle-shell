@@ -107,6 +107,46 @@ test("visual visibility hides only selected optional status segments", () => {
 	assert.doesNotMatch(renderShellHeaderBar(buildShellHeaderModel(data), plainTheme, 160, undefined, settings).text, /gpt-5\.5|ctx|\$9\.49|usage/);
 });
 
+test("Status groups running job descriptions beside RDD without a compact count", () => {
+	const data = model({ jobs: [
+		{ id: "job-2", label: "CI for PR 1860", startedAt: 2 },
+		{ id: "job-1", label: "Build runtime", startedAt: 1 },
+	], review: { state: "reviewing", scope: "first.ts" } });
+	for (const width of [30, 60]) {
+		const lines = renderShellSidebarBar(data, plainTheme, width);
+		const text = lines.join("\n");
+		assert.match(text, /Jobs[\s\S]*CI for PR 1860[\s\S]*Build runtime/);
+		assert.match(text, /🌹 RDD/);
+		assert.doesNotMatch(text, /2 jobs/);
+		assert.ok(lines.every((line) => visibleWidth(line) <= width));
+	}
+	assert.doesNotMatch(renderShellSidebarBar(model({ jobs: [] }), plainTheme, 60).join("\n"), /Jobs/);
+});
+
+test("header shows only the running job count when requested and preserves it at mobile widths", () => {
+	const data = model({ jobs: [{ id: "job-1", label: "CI for PR 1860", startedAt: 1 }] });
+	for (const width of [40, 80, 160]) {
+		const text = renderShellHeaderBar(buildShellHeaderModel(data, true), plainTheme, width).text;
+		assert.match(text, /⧗ 1 job/);
+		assert.doesNotMatch(text, /CI for PR/);
+		assert.ok(visibleWidth(text) <= width);
+	}
+	assert.doesNotMatch(renderShellHeaderBar(buildShellHeaderModel(data), plainTheme, 160).text, /1 job/);
+	assert.doesNotMatch(renderShellHeaderBar(buildShellHeaderModel(model({ jobs: [] }), true), plainTheme, 160).text, /jobs?/);
+});
+
+test("bottom-only and hidden below-input chrome retain a compact jobs count", (t) => {
+	const data = model({ jobs: [{ id: "job-1", label: "CI for PR 1860", startedAt: 1 }] });
+	assert.match(renderShellBottomOnlyBar(data, plainTheme, 80).join("\n"), /⧗ 1 job/);
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const settings = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "below-input" as const, statusPlacement: "hidden" as const };
+	const rows = renderShellBelowInputFloat(data, withBackground(plainTheme), 80, undefined, settings)?.rows;
+	assert.ok(rows);
+	assert.match(rows.join("\n"), /⧗ 1 job/);
+	assert.doesNotMatch(rows.join("\n"), /CI for PR/);
+	assert.ok(rows.every((line) => visibleWidth(line) <= 80));
+});
+
 test("Status title stays plain without an active review", () => {
 	const lines = renderShellSidebarBar(model(), plainTheme, 60);
 	assert.match(lines[0], /^╭─ ✿ Status ─+╮$/);

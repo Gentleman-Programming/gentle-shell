@@ -19,6 +19,7 @@ import { createJobRegistry, type JobExecOperations, type JobRecord } from "../li
 import { JOB_GLYPH, JOB_NOTICE_TYPE, jobDetails, jobNoticeText, monitorEventsText, monitorStoppedText, registerBackgroundJobTools } from "../lib/background-jobs-tools.ts";
 import { createMonitorController, mergeMonitorBatches, type MonitorNotice } from "../lib/background-monitor.ts";
 import { JobsView } from "../lib/jobs-view.ts";
+import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY } from "../lib/jobs-sidebar-state.ts";
 import { Text, type TUI } from "@earendil-works/pi-tui";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import { VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
@@ -70,7 +71,6 @@ import { runtimeMetricsEnvAllows, type RuntimeMetricsPolicyDeps } from "../lib/r
 export const AGENTS_WIDGET_KEY = "gentle-agents";
 export const AGENTS_COMMAND_NAME = "gentle:agents";
 export const JOBS_COMMAND_NAME = "gentle:jobs";
-const JOBS_STATUS_KEY = "gentle-jobs";
 // How long session shutdown waits for stopped jobs to close their logs.
 const JOBS_SHUTDOWN_GRACE_MS = 2000;
 export const AGENTS_RESULT_TYPE = "gentle-agents.result";
@@ -1067,10 +1067,15 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		deliveryRetries = 0;
 	};
 
-	// The footer counts this session's running jobs; nothing shows at zero.
+	// Structured descriptions feed Status; native hosts keep the compact count.
 	const refreshJobStatus = () => {
-		const running = jobs.list(activeSessionId() ?? "").filter((job) => job.status === "running").length;
-		try { parentCtx?.ui.setStatus(JOBS_STATUS_KEY, running === 0 ? undefined : `${JOB_GLYPH} ${running} job${running === 1 ? "" : "s"}`); } catch { /* Status is cosmetic. */ }
+		const sessionId = activeSessionId();
+		const running = jobs.list(sessionId ?? "").filter((job) => job.status === "running")
+			.sort((a, b) => b.startedAt - a.startedAt);
+		try { parentCtx?.ui.setStatus(JOBS_STATUS_KEY, running.length === 0 ? undefined : `${JOB_GLYPH} ${running.length} job${running.length === 1 ? "" : "s"}`); } catch { /* Status is cosmetic. */ }
+		if (sessionId) {
+			try { pi.events.emit(JOBS_SIDEBAR_EVENT, { sessionId, snapshot: { jobs: running.map(({ id, label, startedAt }) => ({ id, label, startedAt })) } }); } catch { /* Display only. */ }
+		}
 	};
 
 	// A job exit settles like a completion below: flushed at once for an idle
@@ -2127,7 +2132,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	}
 
 	pi.registerCommand(JOBS_COMMAND_NAME, {
-		description: "Show this session's background jobs (bash_background and monitor): status, command, output tail; s stops the selected job.",
+		description: "Show background jobs: running first, newest first within each group; status, command, output tail; s stops the selected job.",
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) return;
 			if (ctx.mode !== "tui") {

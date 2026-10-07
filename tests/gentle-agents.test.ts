@@ -5898,11 +5898,15 @@ test("/gentle:jobs opens this session's jobs overlay, stops the selected job, an
 	gentleAgents(pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
 	const { ctx, overlays } = fakeContext();
 	const statuses: Array<string | undefined> = [];
+	const snapshots: Array<{ sessionId: string; snapshot: { jobs: Array<{ id: string; label: string; startedAt: number }> } }> = [];
+	const unsubscribe = pi.events.on("gentle-ai:jobs-sidebar", (value) => { snapshots.push(value as typeof snapshots[number]); });
 	Object.assign(ctx.ui, { setStatus: (key: string, value: string | undefined) => { if (key === "gentle-jobs") statuses.push(value); } });
 	try {
 		await fire("session_start", ctx);
 		await tools.get("bash_background")!.execute("b1", { command: "gh run watch 42 --exit-status", label: "CI" }, undefined, undefined, ctx);
 		assert.equal(statuses.at(-1), "⧗ 1 job");
+		assert.equal(snapshots.at(-1)?.sessionId, ctx.sessionManager.getSessionId());
+		assert.deepEqual(snapshots.at(-1)?.snapshot.jobs.map(({ id, label }) => ({ id, label })), [{ id: "job-1", label: "CI" }]);
 		const opened = commands.get("gentle:jobs")!.handler("", ctx);
 		await tick();
 		const view = overlays.at(-1)!;
@@ -5912,6 +5916,7 @@ test("/gentle:jobs opens this session's jobs overlay, stops the selected job, an
 		view.handleInput("s");
 		assert.equal(jobs.runs[0]!.signal?.aborted, true, "s stops the selected job");
 		assert.equal(statuses.at(-1), undefined, "the footer count clears when nothing runs");
+		assert.deepEqual(snapshots.at(-1)?.snapshot.jobs, [], "the Status descriptions clear when nothing runs");
 		await jobIo();
 		const notices = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
 		assert.equal(notices.length, 1, "the agent was told it would be notified, so a human stop is reported once");
@@ -5919,6 +5924,7 @@ test("/gentle:jobs opens this session's jobs overlay, stops the selected job, an
 		view.handleInput("q");
 		await opened;
 	} finally {
+		unsubscribe();
 		await fire("session_shutdown", ctx);
 		jobs.cleanup();
 	}

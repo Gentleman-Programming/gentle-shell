@@ -12,7 +12,7 @@ import { sanitizeTerminalText } from "./terminal-theme.ts";
 export interface JobsViewDeps {
 	theme: { fg(role: string, text: string): string };
 	rows: () => number;
-	/** This session's jobs, in start order; read on every render. */
+	/** This session's jobs; the view sorts a copy by activity and recency. */
 	jobs: () => JobRecord[];
 	now: () => number;
 	onStop(job: JobRecord): void;
@@ -63,7 +63,7 @@ export class JobsView {
 
 	handleInput(data: string): void {
 		if (this.closed) return;
-		const jobs = this.deps.jobs();
+		const jobs = this.orderedJobs();
 		const index = Math.max(0, jobs.findIndex((job) => job.id === this.selected(jobs)?.id));
 		if (data === "q") this.close();
 		else if (matchesKey(data, Key.escape)) {
@@ -84,7 +84,7 @@ export class JobsView {
 		if (layout.width === 0 || layout.height === 0) return [];
 		if (layout.mode === "fallback") return [fit("× Close Jobs", layout.width)];
 		const { theme } = this.deps;
-		const jobs = this.deps.jobs();
+		const jobs = this.orderedJobs();
 		const selected = this.selected(jobs);
 		const inner = layout.width - 2;
 		const running = jobs.filter((job) => job.status === "running").length;
@@ -102,12 +102,19 @@ export class JobsView {
 		return [top, ...body, `${bar} ${fit(keys, inner - 2)} ${bar}`, theme.fg(ROLE.FRAME, `╰${rule(inner)}╯`)];
 	}
 
+	private orderedJobs(): JobRecord[] {
+		return [...this.deps.jobs()].sort((a, b) =>
+			Number(b.status === "running") - Number(a.status === "running") || b.startedAt - a.startedAt);
+	}
+
 	private close(): void {
 		this.deps.onClose();
 	}
 
 	private selected(jobs: JobRecord[]): JobRecord | undefined {
-		return jobs.find((job) => job.id === this.selectedId) ?? jobs[0];
+		const selected = jobs.find((job) => job.id === this.selectedId) ?? jobs[0];
+		this.selectedId = selected?.id;
+		return selected;
 	}
 
 	private elapsed(job: JobRecord): string {

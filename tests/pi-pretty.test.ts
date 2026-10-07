@@ -52,6 +52,19 @@ test("bundled pretty keeps Pi's native Working row inside Herdr", async () => {
 	assert.notEqual(visible, false, "Herdr's native Pi detection reads the standard Working row");
 });
 
+test("bundled pretty tolerates UI contexts lacking working indicator methods", async () => {
+	const handlers = new Map<string, Function[]>();
+	const pi = { on(name: string, handler: Function) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); } };
+	const ctx = { mode: "tui", ui: {} };
+	await pretty(pi, undefined, async () => {}, {});
+	for (const handler of handlers.get("session_start") ?? []) {
+		await assert.doesNotReject(async () => handler({}, ctx));
+	}
+	for (const handler of handlers.get("session_shutdown") ?? []) {
+		await assert.doesNotReject(async () => handler({}, ctx));
+	}
+});
+
 test("disabled shell leaves bundled editor behavior untouched", async () => {
 	let received: unknown;
 	const pi = {};

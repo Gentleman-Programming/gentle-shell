@@ -812,6 +812,18 @@ test("gentleShell keeps Pi's native Working row inside Herdr so native detection
 	assert.notEqual(ui.workingVisible, false, "Herdr needs Pi's standard Working row");
 });
 
+test("gentleShell tolerates UI contexts lacking setWorkingVisible", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	delete (ui as unknown as Record<string, unknown>).setWorkingVisible;
+	assert.doesNotThrow(() => {
+		const editor = installedPrompt(ctx, ui, handlers);
+		for (const handler of handlers.get("session_shutdown") ?? []) handler({}, ctx);
+		editor.dispose();
+	});
+});
+
 test("gentleShell frames the editor with the petal prompt and a hint while empty", () => {
 	const { pi, handlers } = fakePi();
 	gentleShell(pi, {});

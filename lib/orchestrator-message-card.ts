@@ -1,6 +1,6 @@
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import {
-	CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardRunningLine, cardTopRows,
+	CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardRunningLine, cardTop,
 	floatRows, markCardResult, renderCard, type CardRowContext, type CardTheme,
 } from "./shell-card.ts";
 
@@ -25,7 +25,7 @@ interface MessageRowContext extends CardRowContext {
 
 const clean = (value: unknown): string => typeof value === "string" ? sanitizeTerminalText(value) : "";
 const route = (data: OrchestratorMessageDetails, incoming = false): string =>
-	`${clean(data.senderLabel) || (incoming ? "Orchestrator" : "You")} → ${clean(data.recipientLabel) || (incoming ? "You" : "Orchestrator")}`;
+	`🤖 ${clean(data.senderLabel) || (incoming ? "Orchestrator" : "You")} → 🤖 ${clean(data.recipientLabel) || (incoming ? "You" : "Orchestrator")}`;
 
 function technicalRows(data: OrchestratorMessageDetails): string[] {
 	return [
@@ -58,7 +58,8 @@ export function outgoingMessageCall(args: { message?: unknown }, theme: CardThem
 			const tone = context.state?.messageError ? CARD_TONE.ERROR : CARD_TONE.INFO;
 			const title = pending ? "Sending message" : context.state?.messageError ? "Message not sent" : data.state === "accepted" ? "Message queued" : "Orchestrator message";
 			return floatRows(tone, theme, width, (inner) => ({
-				head: cardTopRows({ title, subtitle: route(data), body: [], tone, glyph: "↗" }, theme, inner, hint),
+				// Fixed status titles stay on one row; long routes are clipped, not wrapped.
+				head: [cardTop({ title, subtitle: route(data), body: [], tone, glyph: "↗" }, theme, inner, hint)],
 				...(pending ? {
 					body: [...cardBodyRows(clean(args.message).split("\n"), tone, theme, inner, { expanded: !!context.expanded, previewRows: 3 }), cardRunningLine(tone, theme, inner)],
 					bottom: cardBottom(tone, theme, inner),

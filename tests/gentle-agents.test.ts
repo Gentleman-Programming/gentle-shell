@@ -4447,7 +4447,7 @@ test("session transport adds host tools, forwards notifications, and closes on s
 	const renderer = h.renderers.get("gentle-agents.orchestrator-message")!;
 	const compact = renderer(h.sent.at(-1)!.message, { expanded: false }, plainTheme).render(80).join("\n");
 	assert.match(compact, /Message received/);
-	assert.match(compact, /Orchestrator → Integration/);
+	assert.match(compact, /🤖 Orchestrator → 🤖 Integration/);
 	assert.match(compact, /raw model content/);
 	assert.doesNotMatch(compact, /Session message from|correlation|message-1|\u001b/);
 	const expanded = renderer(h.sent.at(-1)!.message, { expanded: true }, plainTheme).render(80).join("\n");
@@ -4524,7 +4524,7 @@ test("session transport selects a peer for outbound delivery and rejects stale c
 	const output = (tool.renderResult as Function)(result, { expanded: false }, plainTheme, renderContext);
 	const compact = [...call.render(80), ...output.render(80)].join("\n");
 	assert.match(compact, /Message queued/);
-	assert.match(compact, /Backend → Orchestrator/);
+	assert.match(compact, /🤖 Backend → 🤖 Orchestrator/);
 	assert.match(compact, /hello peer/);
 	assert.doesNotMatch(compact, /accepted-1|Sender session:|Recipient session:|because the peer/);
 	const expanded = (tool.renderResult as Function)(result, { expanded: true }, plainTheme, { ...renderContext, expanded: true }).render(80).join("\n");

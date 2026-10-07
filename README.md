@@ -208,6 +208,8 @@ Extension commands are only useful if you can find them. `alt+k` opens a curated
 | Gentle Stats | `/gentle:stats` shows local usage history: activity heatmap, tokens, cost, streaks, and per-model share. |
 | Gentle notices | Gentle AI calls and review reminders as cards in the transcript. |
 
+Cross-orchestrator messages appear as compact `🤖 Sender → 🤖 Recipient` cards with single-row headings. Expand a card to inspect available identifiers and reasons. **Message queued** means queued, not delivered or read; long names are clipped to fit narrow terminals.
+
 > **Every component, skill and preset: [Full breakdown →](docs/gentle-shell.md)**
 
 ---

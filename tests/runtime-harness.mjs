@@ -1566,22 +1566,31 @@ async function run() {
 		assert.match(preservedProjectSubagentWorker, /thinking: medium/);
 		await writeFile(globalModelsPath, JSON.stringify({ worker: {} }, null, 2));
 		await hooks.get("session_start")[0]({ reason: "startup" }, createCtx(modelsCwd, true));
-		const clearedProfiles = JSON.parse(
+		// gentle-ai#4946: a persisted clear (an "inherit" saved from
+		// /gentle:models) may only remove routing this harness materialized
+		// itself. Hand-authored project routing survives the unconsented
+		// activation sweep; a clear keeps its full effect through the consented
+		// flows that issue it (panel save, confirmed profile apply).
+		const preservedClearProfiles = JSON.parse(
 			await readFile(join(modelsCwd, ".pi", "subagents.json"), "utf8"),
 		);
-		assert.equal(clearedProfiles.model_profiles, undefined);
+		assert.equal(
+			preservedClearProfiles.model_profiles.worker.model,
+			"existing/model",
+		);
+		assert.equal(preservedClearProfiles.model_profiles.worker.effort, "high");
 		const unchangedProjectWorker = await readFile(
 			join(modelsCwd, ".pi", "agents", "worker.md"),
 			"utf8",
 		);
 		assert.match(unchangedProjectWorker, /model: existing\/project-worker/);
 		assert.match(unchangedProjectWorker, /thinking: high/);
-		const clearedProjectSubagentWorker = await readFile(
+		const preservedClearProjectSubagentWorker = await readFile(
 			join(modelsCwd, ".pi", "subagents", "worker.md"),
 			"utf8",
 		);
-		assert.doesNotMatch(clearedProjectSubagentWorker, /model:/);
-		assert.doesNotMatch(clearedProjectSubagentWorker, /thinking:/);
+		assert.match(preservedClearProjectSubagentWorker, /model: existing\/project-subagent-worker/);
+		assert.match(preservedClearProjectSubagentWorker, /thinking: medium/);
 
 		await writeFile(
 			globalModelsPath,

@@ -37,7 +37,8 @@ import { historyDir, loadHistory, loadStoredTask, pruneHistory, saveTask } from 
 import { sessionToMarkdown } from "../lib/agents-transcript.ts";
 import { AgentsView } from "../lib/agents-view.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
-import { PresencePublisher, sanitizeDisplayLabel } from "../lib/orchestrator-presence.ts";
+import { PresencePublisher, sanitizeDisplayLabel, listPresence, sessionHash } from "../lib/orchestrator-presence.ts";
+import { incomingMessageCard, outgoingMessageCall, outgoingMessageResult, type OrchestratorMessageDetails } from "../lib/orchestrator-message-card.ts";
 import { discoverOrchestrators } from "../lib/orchestrator-discovery.ts";
 import { consultPublishedMetadata, unavailableMetadata, type MetadataReceipt } from "../lib/orchestrator-consultation.ts";
 import { HelperCostPermission } from "../lib/orchestrator-helper-consent.ts";
@@ -68,6 +69,16 @@ export const AGENTS_COMMAND_NAME = "gentle:agents";
 export const AGENTS_RESULT_TYPE = "gentle-agents.result";
 export const AGENTS_MESSAGE_TYPE = "gentle-agents.message";
 export const AGENTS_ORCHESTRATOR_MESSAGE_TYPE = "gentle-agents.orchestrator-message";
+
+// Display labels are best-effort local snapshots, never routing or authority.
+function messagePeerLabel(profile: string, sessionId: string): string | undefined {
+	try {
+		const page = listPresence(profile);
+		if (page.unavailable || page.overflow || page.rejected) return undefined;
+		const matches = page.entries.filter(header => header.sessionHash === sessionHash(sessionId));
+		return matches.length === 1 && matches[0].recent ? sanitizeDisplayLabel(matches[0].label) || undefined : undefined;
+	} catch { return undefined; }
+}
 export const AGENTS_STALE_RESULT_TYPE = "gentle-agents.stale-result";
 export const AGENTS_STALE_NOTICE_TYPE = "gentle-agents.stale-notice";
 const RENDER_COALESCE_MS = 400;
@@ -613,7 +624,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				listener = sessionTransport.createListener(registry, sessionId, async (notification) => {
 					const active = activeSessionTransport;
 					if (!active || active.generation !== generation || active.sessionManager !== sessionManager || active.sessionId !== sessionId || sessions !== sessionManager || activeSessionId() !== sessionId) throw new Error("stale session transport");
-					pi.sendMessage({ customType: AGENTS_ORCHESTRATOR_MESSAGE_TYPE, content: `Session message from ${notification.senderSessionId} (correlation ${notification.id}): ${notification.message}`, display: true, details: { gentleAgents: { senderSessionId: notification.senderSessionId, recipientSessionId: sessionId, correlationId: notification.id, direction: "incoming" } } }, { deliverAs: "followUp", triggerTurn: true });
+					pi.sendMessage({ customType: AGENTS_ORCHESTRATOR_MESSAGE_TYPE, content: `Session message from ${notification.senderSessionId} (correlation ${notification.id}): ${notification.message}`, display: true, details: { gentleAgents: { senderSessionId: notification.senderSessionId, recipientSessionId: sessionId, correlationId: notification.id, direction: "incoming", message: notification.message, senderLabel: messagePeerLabel(agentHome, notification.senderSessionId), recipientLabel: sanitizeDisplayLabel(sessionManager.getSessionName?.() ?? "") } } }, { deliverAs: "followUp", triggerTurn: true });
 				});
 				client = sessionTransport.createClient(registry, sessionId);
 				if (sessions !== sessionManager || generation !== transportGeneration || activeSessionId() !== sessionId) {
@@ -1167,11 +1178,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	});
 
 	pi.registerMessageRenderer(AGENTS_ORCHESTRATOR_MESSAGE_TYPE, (message, options, theme) => {
-		const details = (message.details as { gentleAgents?: { senderSessionId?: unknown } } | undefined)?.gentleAgents;
-		const sender = typeof details?.senderSessionId === "string" ? details.senderSessionId : "unknown";
-		const heading = `⇄ Orchestrator message · Received · From ${sanitizeTerminalText(sender)}`;
-		const body = sanitizeTerminalText(messageText(message.content));
-		return new Text(`${theme.fg("customMessageLabel", heading)}\n${theme.fg("customMessageText", body)}`, options.outputPad, 0);
+		const details = (message.details as { gentleAgents?: OrchestratorMessageDetails } | undefined)?.gentleAgents ?? {};
+		return incomingMessageCard(details, messageText(message.content), options.expanded, theme, expandHint(options.expanded));
 	});
 
 	pi.registerMessageRenderer(AGENTS_RESULT_TYPE, (message, options, theme) => {
@@ -1834,6 +1842,13 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.registerTool({
 		name: "orchestrator_send_message",
 		label: "Send orchestrator message",
+		renderShell: "self",
+		renderCall(args, theme, context) {
+			return outgoingMessageCall(args as { message?: unknown }, theme, context, expandHint(context.expanded));
+		},
+		renderResult(result, options, theme, context) {
+			return outgoingMessageResult(result, options.expanded, options.isPartial, theme, context);
+		},
 		description: "Send a notification to another active session in this trusted local profile. If recipient_session_id is omitted, the sole peer is selected or the user selects one. Acceptance means enqueued, not read or completed.",
 		parameters: {
 			type: "object",
@@ -1892,7 +1907,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			}
 			try {
 				const accepted = await transport.client.sendNotification(recipient, message, { signal, expectedActivation: activation, beforeConnect: () => activeTransportFor(ctx) === transport });
-				return activeTransportFor(ctx) === transport ? text(`Message ${accepted.id} from ${transport.sessionId} to ${recipient} accepted for delivery; it is not a delivery or read receipt.`, { gentleAgents: { messageId: accepted.id, senderSessionId: transport.sessionId, recipientSessionId: recipient, state: "accepted" } }) : text("Error: session messaging is not ready.", { error: "stale" });
+				return activeTransportFor(ctx) === transport ? text(`Message ${accepted.id} from ${transport.sessionId} to ${recipient} accepted for delivery; it is not a delivery or read receipt.`, { gentleAgents: { messageId: accepted.id, senderSessionId: transport.sessionId, recipientSessionId: recipient, state: "accepted", message, reason, senderLabel: sanitizeDisplayLabel(ctx.sessionManager.getSessionName?.() ?? ""), recipientLabel: messagePeerLabel(agentHome, recipient) } }) : text("Error: session messaging is not ready.", { error: "stale" });
 			} catch {
 				return text("Error: session message was not accepted.", { error: "not accepted" });
 			}

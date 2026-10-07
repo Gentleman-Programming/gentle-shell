@@ -4439,10 +4439,20 @@ test("session transport adds host tools, forwards notifications, and closes on s
 	assert.ok(h.tools.has("orchestrator_send_message"));
 	assert.match((await h.tools.get("orchestrator_list")!.execute("list", {}, undefined, undefined, ctx)).content[0].text, /peer/);
 	assert.ok(callback, "listener receives the inbound callback");
+	Object.assign(ctx.sessionManager, { getSessionName: () => "Integration" });
 	await callback!({ id: "message-1", senderSessionId: "peer", message: "\u001b[31mraw model content" });
 	assert.equal(h.sent.at(-1)?.message.customType, "gentle-agents.orchestrator-message");
 	assert.match(String(h.sent.at(-1)?.message.content), /\u001b\[31mraw model content/);
 	assert.deepEqual(h.sent.at(-1)?.options, { deliverAs: "followUp", triggerTurn: true });
+	const renderer = h.renderers.get("gentle-agents.orchestrator-message")!;
+	const compact = renderer(h.sent.at(-1)!.message, { expanded: false }, plainTheme).render(80).join("\n");
+	assert.match(compact, /Message received/);
+	assert.match(compact, /Orchestrator → Integration/);
+	assert.match(compact, /raw model content/);
+	assert.doesNotMatch(compact, /Session message from|correlation|message-1|\u001b/);
+	const expanded = renderer(h.sent.at(-1)!.message, { expanded: true }, plainTheme).render(80).join("\n");
+	assert.match(expanded, /message-1/);
+	assert.match(expanded, /Sender session: peer/);
 	await h.fire("session_shutdown", ctx);
 	assert.equal(clientCloses, 1);
 	assert.equal(listenerCloses, 1);
@@ -4498,6 +4508,7 @@ test("session transport selects a peer for outbound delivery and rejects stale c
 	const { ctx, dialogs } = fakeContext();
 	await h.fire("session_start", ctx);
 	await eventually(() => callbacks.length === 1, "initial transport callback registration");
+	Object.assign(ctx.sessionManager, { getSessionName: () => "Backend" });
 	const result = await h.tools.get("orchestrator_send_message")!.execute("send", { message: "hello peer", reason: "because the peer needs an update" }, undefined, undefined, ctx);
 	assert.deepEqual(dialogs, [
 		"select:Select recipient orchestrator:Orchestrator alpha|Orchestrator beta",
@@ -4505,6 +4516,20 @@ test("session transport selects a peer for outbound delivery and rejects stale c
 	]);
 	assert.deepEqual(sent, [{ recipient: "alpha", message: "hello peer", expectedActivation: records[0] }]);
 	assert.match(result.content[0].text, /accepted for delivery; it is not a delivery or read receipt/);
+	const tool = h.tools.get("orchestrator_send_message")!;
+	assert.equal(tool.renderShell, "self", "do not nest the card in Pi's default tool box");
+	const args = { message: "hello peer", reason: "because the peer needs an update" };
+	const renderContext = { args, state: {}, expanded: false, isPartial: false };
+	const call = (tool.renderCall as Function)(args, plainTheme, renderContext);
+	const output = (tool.renderResult as Function)(result, { expanded: false }, plainTheme, renderContext);
+	const compact = [...call.render(80), ...output.render(80)].join("\n");
+	assert.match(compact, /Message queued/);
+	assert.match(compact, /Backend → Orchestrator/);
+	assert.match(compact, /hello peer/);
+	assert.doesNotMatch(compact, /accepted-1|Sender session:|Recipient session:|because the peer/);
+	const expanded = (tool.renderResult as Function)(result, { expanded: true }, plainTheme, { ...renderContext, expanded: true }).render(80).join("\n");
+	assert.match(expanded, /accepted-1/);
+	assert.match(expanded, /not a delivery or read receipt/);
 	const original = callbacks[0]!;
 	(ctx.sessionManager as unknown as { getSessionId(): string }).getSessionId = () => "s2";
 	await h.fire("session_start", ctx);

@@ -3605,10 +3605,10 @@ function readValidProfilesStore(path: string) {
 	return result.file;
 }
 
-test("Enter binds the selected profile to the parent session and writes nothing", async (t) => {
+test("Enter switches the live orchestrator, binds the profile, and writes nothing", async (t) => {
 	const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
 	writeSettings();
-	writeStore({ team: { worker: { model: "openai/alpha" } }, old: {} }, "old");
+	writeStore({ team: { orchestrator: { model: "openai/beta", thinking: "high" }, worker: { model: "openai/alpha" } }, old: {} }, "old");
 	const before = {
 		store: readFileSync(storePath, "utf8"),
 		settings: readFileSync(settingsPath, "utf8"),
@@ -3620,10 +3620,19 @@ test("Enter binds the selected profile to the parent session and writes nothing"
 		hasUI: true,
 		ui: { notify(message: string, severity: string) { notifications.push({ message, severity }); } },
 		sessionManager: { getSessionId: () => "session-panel" },
+		modelRegistry: { find: () => ({ provider: "openai", id: "beta" }) },
 	} as unknown as ExtensionContext;
-	const live = { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel(): ThinkingLevel { return "medium"; } };
+	const models: unknown[] = [];
+	const thinking: ThinkingLevel[] = [];
+	const live = {
+		setModel: async (model: unknown) => { models.push(model); return true; },
+		setThinkingLevel(level: ThinkingLevel) { thinking.push(level); },
+		getThinkingLevel(): ThinkingLevel { return "medium"; },
+	};
 	const file = readValidProfilesStore(storePath);
 	await __testing.runProfilesPanelAction(ctx, live, storePath, file, { type: "apply", name: "team" }, {});
+	assert.deepEqual(models, [{ provider: "openai", id: "beta" }]);
+	assert.deepEqual(thinking, ["high"]);
 	const binding = readSessionProfileBinding("session-panel");
 	assert.equal(binding?.name, "team");
 	assert.equal(binding?.modelProfiles.worker?.model, "openai/alpha");
@@ -3686,6 +3695,46 @@ test("reviewer routing uses the selecting session snapshot without leaking to ot
 	assert.equal(selected["review-reliability"], undefined, "a complete session snapshot never falls back per role");
 	assert.equal(__testing.readReviewerModelConfig(fixture.root, "other-session")["review-risk"]?.model, "openai/global");
 	assert.equal(__testing.readReviewerModelConfig(fixture.root, undefined)["review-risk"]?.model, "openai/global");
+});
+
+test("Enter preserves session-only routing when the orchestrator is absent or cannot switch", async (t) => {
+	for (const rejected of [false, true]) {
+		const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+		writeSettings();
+		writeStore({ team: {
+			worker: { model: "openai/alpha" },
+			...(rejected ? { orchestrator: { model: "openai/beta", thinking: "high" as const } } : {}),
+		} }, undefined);
+		const storeBefore = readFileSync(storePath, "utf8");
+		const settingsBefore = readFileSync(settingsPath, "utf8");
+		resetSessionProfileBindingsForTesting();
+		t.after(() => resetSessionProfileBindingsForTesting());
+		const notifications: string[] = [];
+		let modelCalls = 0;
+		let thinkingCalls = 0;
+		const ctx = {
+			cwd: fixture.root,
+			hasUI: true,
+			ui: { notify(message: string) { notifications.push(message); } },
+			sessionManager: { getSessionId: () => "session-panel" },
+			modelRegistry: { find: () => ({ provider: "openai", id: "beta" }) },
+		} as unknown as ExtensionContext;
+		const live = {
+			setModel: async () => { modelCalls++; return false; },
+			setThinkingLevel() { thinkingCalls++; },
+			getThinkingLevel(): ThinkingLevel { return "medium"; },
+		};
+		await __testing.runProfilesPanelAction(ctx, live, storePath, readValidProfilesStore(storePath), { type: "apply", name: "team" }, {});
+		assert.equal(modelCalls, rejected ? 1 : 0);
+		assert.equal(thinkingCalls, 0);
+		assert.equal(readSessionProfileBinding("session-panel")?.modelProfiles.worker?.model, "openai/alpha");
+		assert.equal(readFileSync(storePath, "utf8"), storeBefore);
+		assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore);
+		assert.equal(existsSync(fixture.globalPath), false);
+		assert.equal(existsSync(join(fixture.root, ".pi", "subagents.json")), false);
+		if (rejected) assert.match(notifications.at(-1) ?? "", /no authentication is configured for openai; this session keeps its current model/);
+		else assert.doesNotMatch(notifications.at(-1) ?? "", /This session now runs/);
+	}
 });
 
 test("a keeps the legacy global apply semantics", async (t) => {

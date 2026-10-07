@@ -4046,14 +4046,10 @@ class ProfilesPanel implements OverlayComponent {
 			// any invalid or stale layer, and the scope sentence all come from the shared
 			// precedence rule the launch resolver uses.
 			...profilePinDetailLines(this.pinStatus, this.file.profiles).map((line) => this.renderLine(line, width, "muted")),
-			// gentle-shell#1064 slice 1: the binding is stored for this session and
-			// outranks the pin in the panel list, so it is named right after the pin
-			// layers. Launch resolution ships with slice 2 (gentle-shell#1558); this
-			// slice stores the binding only, launch routing is unchanged, and nothing
-			// was written.
+			// The session snapshot overrides subagent routing without changing pin layers.
 			...(this.sessionBoundName === undefined
 				? []
-				: [this.renderLine(`session        ${sanitizeTerminalText(this.sessionBoundName)} (session) — stored for this session; launch routing is unchanged; nothing was written`, width, "muted")]),
+				: [this.renderLine(`session        ${sanitizeTerminalText(this.sessionBoundName)} (session) — stored for this session; nothing was written`, width, "muted")]),
 			"",
 			this.renderLine("Profile routing", width, "accent"),
 			...this.indentLines(this.routingLines(profileRows, widths), width),

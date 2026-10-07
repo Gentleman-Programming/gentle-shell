@@ -13,12 +13,15 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { isProxy } from "node:util/types";
 import {
+	closeSync,
 	existsSync,
 	lstatSync,
+	openSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
 	realpathSync,
+	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import {
@@ -2488,31 +2491,68 @@ async function readMaterializedProfileNamesAsync(path: string): Promise<Set<stri
 	}
 }
 
-function writeMaterializedProfileNames(path: string, names: Set<string>): void {
-	// Best-effort bookkeeping: a failed sidecar write must never fail the
-	// routing write itself. A stale extra name only lets a future sweep clear
-	// an entry this harness set, which is the pre-fix behavior; a stale missing
-	// name only preserves routing, which is this fix's conservative direction.
+// Both callers use the same exclusive lock file. Membership is read only
+// after acquisition, never merged from a stale per-routing-write snapshot.
+// The critical section contains no await, so a synchronous caller cannot
+// wait on an async owner suspended in this same process.
+function tryMaterializedProfileLock(path: string): number | undefined {
 	try {
 		mkdirSync(dirname(path), { recursive: true });
+		return openSync(`${path}.lock`, "wx", 0o600);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "EEXIST") return undefined;
+		throw error;
+	}
+}
+
+function commitMaterializedProfileName(path: string, name: string, owned: boolean, lock: number): void {
+	try {
+		const names = readMaterializedProfileNames(path);
+		if (names.has(name) === owned) return;
+		if (owned) names.add(name);
+		else names.delete(name);
 		writeFileSync(
 			path,
 			`${JSON.stringify({ kind: MATERIALIZE_TRACKING_KIND, agents: [...names].sort() }, null, 2)}\n`,
 		);
-	} catch {
-		/* bookkeeping only */
+	} finally {
+		try { closeSync(lock); } finally { unlinkSync(`${path}.lock`); }
 	}
 }
 
-async function writeMaterializedProfileNamesAsync(path: string, names: Set<string>): Promise<void> {
+function updateMaterializedProfileName(path: string, name: string, owned: boolean): void {
+	// Best-effort bookkeeping stays bounded. Never remove a lock held by
+	// another session, including one whose process may have exited.
 	try {
-		await mkdir(dirname(path), { recursive: true });
-		await writeFile(
-			path,
-			`${JSON.stringify({ kind: MATERIALIZE_TRACKING_KIND, agents: [...names].sort() }, null, 2)}\n`,
-		);
+		const deadline = Date.now() + 5_000;
+		while (true) {
+			const lock = tryMaterializedProfileLock(path);
+			if (lock !== undefined) {
+				commitMaterializedProfileName(path, name, owned, lock);
+				return;
+			}
+			if (Date.now() >= deadline) return;
+			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+		}
 	} catch {
-		/* bookkeeping only */
+		/* bookkeeping only; routing write already succeeded */
+	}
+}
+
+async function updateMaterializedProfileNameAsync(path: string, name: string, owned: boolean): Promise<void> {
+	try {
+		const deadline = Date.now() + 5_000;
+		while (true) {
+			const lock = tryMaterializedProfileLock(path);
+			if (lock !== undefined) {
+				commitMaterializedProfileName(path, name, owned, lock);
+				return;
+			}
+			if (Date.now() >= deadline) return;
+			await new Promise<void>((resolve) => setTimeout(resolve, 25));
+		}
+	} catch {
+		/* bookkeeping only; routing write already succeeded */
 	}
 }
 
@@ -2557,16 +2597,10 @@ function updateSubagentModelProfileAtPath(
 		? readMaterializedProfileNames(options.trackingPath)
 		: undefined;
 	const trackName = () => {
-		if (!options.trackingPath || !tracked) return;
-		if (tracked.has(name)) return;
-		tracked.add(name);
-		writeMaterializedProfileNames(options.trackingPath, tracked);
+		if (options.trackingPath) updateMaterializedProfileName(options.trackingPath, name, true);
 	};
 	const untrackName = () => {
-		if (!options.trackingPath || !tracked) return;
-		if (!tracked.has(name)) return;
-		tracked.delete(name);
-		writeMaterializedProfileNames(options.trackingPath, tracked);
+		if (options.trackingPath) updateMaterializedProfileName(options.trackingPath, name, false);
 	};
 	// gentle-ai#4946: an unconsented sweep clear may only remove routing this
 	// harness materialized itself. A user-authored profile is never tracked,
@@ -2575,8 +2609,8 @@ function updateSubagentModelProfileAtPath(
 	// A write that would leave the profile as it is (including removing a
 	// profile that was never there) is not an update and touches no file.
 	if (JSON.stringify(modelProfiles[name]) === JSON.stringify(profile)) {
-		if (profile) trackName();
-		else untrackName();
+		// Equal values are not proof that this harness wrote the profile.
+		if (!profile) untrackName();
 		return false;
 	}
 	if (profile) {
@@ -2615,16 +2649,10 @@ async function updateSubagentModelProfileAtPathAsync(
 		? await readMaterializedProfileNamesAsync(options.trackingPath)
 		: undefined;
 	const trackName = async () => {
-		if (!options.trackingPath || !tracked) return;
-		if (tracked.has(name)) return;
-		tracked.add(name);
-		await writeMaterializedProfileNamesAsync(options.trackingPath, tracked);
+		if (options.trackingPath) await updateMaterializedProfileNameAsync(options.trackingPath, name, true);
 	};
 	const untrackName = async () => {
-		if (!options.trackingPath || !tracked) return;
-		if (!tracked.has(name)) return;
-		tracked.delete(name);
-		await writeMaterializedProfileNamesAsync(options.trackingPath, tracked);
+		if (options.trackingPath) await updateMaterializedProfileNameAsync(options.trackingPath, name, false);
 	};
 	// gentle-ai#4946: an unconsented sweep clear may only remove routing this
 	// harness materialized itself. A user-authored profile is never tracked,
@@ -2633,8 +2661,8 @@ async function updateSubagentModelProfileAtPathAsync(
 	// A write that would leave the profile as it is (including removing a
 	// profile that was never there) is not an update and touches no file.
 	if (JSON.stringify(modelProfiles[name]) === JSON.stringify(profile)) {
-		if (profile) await trackName();
-		else await untrackName();
+		// Equal values are not proof that this harness wrote the profile.
+		if (!profile) await untrackName();
 		return false;
 	}
 	if (profile) {

@@ -4,6 +4,12 @@ Delivery repo: gentle-shell (gentle-pi npm package). Cross-repo close of
 Gentleman-Programming/gentle-ai#4946. Branch: `fix/4946-preserve-subagents-model-profiles`
 (base `6e681f1d0`). Test runner: `npm test` in the repo root (vitest-style suites under `tests/`).
 
+Scope: this change fixes the UNCONSENDED activation sweep only. Destructive
+confirmed flows stay destructive by design (`/gentle:models` panel save, a
+confirmed profile apply naming its cleared routes); whether that satisfies
+the issue's full acceptance is a maintainer call, so the cross-repo issue
+stays open for maintainer closure rather than auto-closing.
+
 ## Specs
 
 S1. "`gentle-ai sync` — and applying a Pi model profile from the TUI Model Configuration menu — rewrites `~/.pi/agent/subagents.json` with gentle-ai's own default, deleting every `model_profiles` entry configured for Pi subagents." (gentle-ai#4946 body)
@@ -31,3 +37,4 @@ L4. 2026-10-07 RED evidence: `tests/model-profiles-preservation.test.ts` initial
 L5. 2026-10-07 Contract conflict found and resolved: runtime-harness pinned the OPPOSITE of S2 twice (`explicitInheritClears` for tracked entries — kept, fix satisfies it via tracking; persisted-clear-deletes-hand-authored-project-routing — superseded by approved S2, harness expectation updated with disclosure). Boundary: hand edits made AFTER a harness-materialized write are still re-materialized by the store's non-clear entries (store remains authoritative for values it owns); only unconsented DELETION of never-owned entries changed.
 
 L6. 2026-10-07 Native review APPROVED (lineage review-55dc2be703dbb107, medium, review-reliability, 4 informational advisories) and acknowledged (authority burned). PR https://github.com/Gentleman-Programming/gentle-shell/pull/1847 opened. Pending external: type:bug label (maintainer-side), CodeRabbit pass, human review, issue close on merge (cross-repo, manual).
+L7. 2026-10-07 CodeRabbit follow-up round on PR #1847 (3 actionables). Findings 1+2 implemented in the working tree by the user (16:39-16:40 local, between-session edits): no-op materializations no longer claim ownership (equal values are not proof of authorship), and sidecar membership updates run under an exclusive per-sidecar lock (openSync wx, fresh read inside the critical section, 5s bounded best-effort skip, owner-only release) with sync/async interleave and real multi-process contention tests. Verified in-session: preservation suite 12/12, routing/agents/gentle-ai 174/174, runtime harness pass, types no regressions. Finding 3 (this scope note) added here. Commit follows as one work unit.

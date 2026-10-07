@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { applyModelConfig, applySavedModelConfig } from "../extensions/gentle-ai.ts";
+import { applyModelConfig, applyModelConfigAsync, applySavedModelConfig } from "../extensions/gentle-ai.ts";
 
 // gentle-ai#4946: the activation sweep re-applies saved routing without user
 // consent. Persisted clear entries (an "inherit" saved from /gentle:models is
@@ -106,6 +110,125 @@ test("startup sweep still materializes saved non-clear routing", async (t) => {
 		"materializing one agent leaves other user entries alone",
 	);
 	assert.equal(stored.max_concurrency, 3);
+});
+
+test("equal-value routing does not claim user profiles in either apply path", async (t) => {
+	for (const [name, apply] of [["sync", applyModelConfig], ["async", applyModelConfigAsync]] as const) {
+		await t.test(name, async (t) => {
+			const fixture = preservedProfilesFixture(t);
+			const original = readFileSync(fixture.subagentsPath, "utf8");
+			await apply(fixture.root, { worker: { model: "openai/gpt-4o", thinking: "high" } });
+			assert.equal(readFileSync(fixture.subagentsPath, "utf8"), original, "equal routing is not rewritten");
+			writeFileSync(fixture.globalModelsPath, JSON.stringify({ worker: {} }));
+			const result = await applySavedModelConfig(fixture.context);
+			assert.equal(result.updated, 0, "the sweep must skip the never-materialized clear");
+			assert.equal(readFileSync(fixture.subagentsPath, "utf8"), original, "user routing survives the later clear");
+		});
+	}
+});
+
+test("overlapping sync and async ownership updates preserve additions and removals", async (t) => {
+	for (const operation of ["add", "remove"] as const) {
+		await t.test(operation, async (t) => {
+			const fixture = preservedProfilesFixture(t);
+			writeFileSync(join(fixture.agentHome, "agents", "helper.md"), "---\nname: helper\ndescription: Helper\n---\nbody\n");
+			if (operation === "remove") {
+				applyModelConfig(fixture.root, { helper: { model: "openai/helper" } });
+			}
+			const originalWrite = fsPromises.writeFile;
+			let interleaved = false;
+			const mock = t.mock.method(fsPromises, "writeFile", async (...args: Parameters<typeof originalWrite>) => {
+				if (String(args[0]) === fixture.subagentsPath && !interleaved) {
+					interleaved = true;
+					// The async path has read its inputs but has not committed routing.
+					// Another session's synchronous mutation commits in this interval.
+					applyModelConfig(fixture.root, { helper: operation === "add" ? { model: "openai/helper" } : {} });
+				}
+				return originalWrite(...args);
+			});
+			syncBuiltinESMExports();
+			try {
+				await applyModelConfigAsync(fixture.root, { worker: { model: "openai/worker" } });
+			} finally {
+				mock.mock.restore();
+				syncBuiltinESMExports();
+			}
+			assert.equal(interleaved, true, "the sync mutation must occur before the async routing write");
+			// Restore both visible entries to probe ownership through a public sweep,
+			// independently of the existing whole-subagents.json write race.
+			writeFileSync(fixture.subagentsPath, JSON.stringify({
+				max_concurrency: 3,
+				model_profiles: {
+					worker: { model: "openai/worker" },
+					helper: { model: "openai/helper" },
+					"my-custom-agent": { model: "anthropic/opus" },
+				},
+			}));
+			writeFileSync(fixture.globalModelsPath, JSON.stringify({ worker: {}, helper: {} }));
+			const result = await applySavedModelConfig(fixture.context);
+			assert.equal(result.invalidPath, undefined);
+			const stored = JSON.parse(readFileSync(fixture.subagentsPath, "utf8"));
+			assert.equal("worker" in stored.model_profiles, false, "the async materialized entry is cleared");
+			assert.equal("helper" in stored.model_profiles, operation === "remove", "the sync ownership mutation survives");
+			assert.equal(stored.max_concurrency, 3);
+			assert.deepEqual(stored.model_profiles["my-custom-agent"], { model: "anthropic/opus" });
+		});
+	}
+});
+
+test("both apply paths coordinate ownership with another process", async (t) => {
+	for (const [name, apply] of [["sync", applyModelConfig], ["async", applyModelConfigAsync]] as const) {
+		await t.test(name, async (t) => {
+			const fixture = preservedProfilesFixture(t);
+			const trackingDir = join(fixture.agentHome, "gentle-ai");
+			mkdirSync(trackingDir, { recursive: true });
+			const lockPath = join(trackingDir, "materialized-model-profiles.json.lock");
+			const owner = spawn(process.execPath, ["-e", `
+				const fs = require('node:fs');
+				const path = process.argv[1];
+				const fd = fs.openSync(path, 'wx', 0o600);
+				process.on('message', () => {
+					fs.closeSync(fd);
+					fs.unlinkSync(path);
+					process.exit(0);
+				});
+				process.send('locked');
+			`, lockPath], { stdio: ["ignore", "ignore", "inherit", "ipc"] });
+			const exited = once(owner, "exit");
+			t.after(() => owner.kill());
+			assert.deepEqual(await once(owner, "message"), ["locked", undefined]);
+			const originalOpen = fs.openSync;
+			let waited = false;
+			const mock = t.mock.method(fs, "openSync", (...args: Parameters<typeof originalOpen>) => {
+				try {
+					return originalOpen(...args);
+				} catch (error) {
+					if (String(args[0]) === lockPath && (error as NodeJS.ErrnoException).code === "EEXIST" && !waited) {
+						waited = true;
+						owner.send("release");
+					}
+					throw error;
+				}
+			});
+			syncBuiltinESMExports();
+			try {
+				await apply(fixture.root, { worker: { model: "openai/materialized" } });
+				assert.equal(waited, true, "ownership must wait for the other process's lock");
+				assert.deepEqual(await exited, [0, null]);
+			} finally {
+				mock.mock.restore();
+				syncBuiltinESMExports();
+				owner.kill();
+			}
+			writeFileSync(fixture.globalModelsPath, JSON.stringify({ worker: {} }));
+			const result = await applySavedModelConfig(fixture.context);
+			assert.equal(result.updated, 2, "routing and frontmatter clear after ownership is committed");
+			const stored = JSON.parse(readFileSync(fixture.subagentsPath, "utf8"));
+			assert.equal("worker" in stored.model_profiles, false);
+			assert.deepEqual(stored.model_profiles["my-custom-agent"], { model: "anthropic/opus" });
+			assert.equal(stored.max_concurrency, 3);
+		});
+	}
 });
 
 test("consented panel save still clears the routing it was told to inherit", async (t) => {

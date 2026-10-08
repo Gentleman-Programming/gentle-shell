@@ -2,8 +2,8 @@
 // No Pi API, disk access, shared binding store, or orchestrator application.
 import { isValidProfileName } from "./agent-profiles.ts";
 import {
+	isSafeAgentName,
 	isThinkingLevel,
-	normalizeModelConfig,
 	normalizeModelId,
 	normalizeRoutingEntry,
 	type AgentModelConfig,
@@ -86,12 +86,10 @@ function readSnapshot(value: unknown): AgentModelConfig | undefined {
 	if (!isRecord(value)) return undefined;
 	const entries: Array<[string, AgentRoutingEntry]> = [];
 	for (const [name, rawRoute] of Object.entries(value)) {
-		// Reuse the existing safe agent-name policy without letting its forgiving
-		// whole-config normalization silently discard a bad route. A marker also
-		// works for __proto__: that helper's setter exposes the marker via lookup;
-		// our output below uses own data properties, never prototype setters.
-		const probe = normalizeModelConfig({ [name]: { model: "validation/model" } });
-		if (probe?.[name]?.model !== "validation/model") return undefined;
+		// Shared agent-name policy, applied here without the forgiving whole-config
+		// normalization that would silently discard a bad route. Output below uses
+		// own data properties, never prototype setters.
+		if (!isSafeAgentName(name)) return undefined;
 		const route = readRoute(rawRoute);
 		if (route === undefined) return undefined;
 		entries.push([name, route]);

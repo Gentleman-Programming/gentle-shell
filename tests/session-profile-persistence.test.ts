@@ -157,6 +157,10 @@ test("hostile record keys remain own data without changing prototypes", () => {
 	assert.deepEqual(result.binding.modelProfiles["__proto__"], {
 		model: "provider/safe",
 	});
+	for (const key of ["constructor", "prototype"]) {
+		assert.equal(Object.hasOwn(result.binding.modelProfiles, key), true);
+		assert.deepEqual(result.binding.modelProfiles[key], {});
+	}
 });
 
 test("required fields cannot be supplied by prototypes", () => {

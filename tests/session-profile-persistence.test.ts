@@ -2,8 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
 	SESSION_PROFILE_CUSTOM_TYPE,
+	createSessionProfileBind,
+	createSessionProfileClear,
 	readSessionProfileEntry,
+	replaySessionProfileBranch,
 } from "../lib/session-profile-persistence.ts";
+
+import { normalizeModelConfig } from "../lib/model-routing-authority.ts";
+import {
+	normalizeProfilesFile,
+	PROFILES_KIND,
+	PROFILES_VERSION,
+} from "../lib/agent-profiles.ts";
 
 const custom = (data: unknown, customType = SESSION_PROFILE_CUSTOM_TYPE) => ({
 	type: "custom",
@@ -17,9 +27,46 @@ const bind = (modelProfiles: unknown = {}) => ({
 	modelProfiles,
 });
 
-// These are supplied entries, not evidence of persistence on disk.
-test("custom type identifies the v1 session profile family", () => {
+// These are supplied branch entries, not evidence of persistence on disk.
+test("writer emits only the v1 user binding fields and a minimal clear", () => {
 	assert.equal(SESSION_PROFILE_CUSTOM_TYPE, "gentle-pi.session-profile/v1");
+	assert.deepEqual(createSessionProfileBind("work", {}), bind());
+	assert.deepEqual(createSessionProfileClear(), { kind: "clear" });
+});
+
+test("writer accepts real normalized optional fields without persisting undefined", () => {
+	const raw = {
+		worker: "provider/model",
+		reviewer: { effort: "high" },
+		orchestrator: { model: "provider/main" },
+		inheriting: {},
+	};
+	const routes = normalizeModelConfig(raw);
+	const profiles = normalizeProfilesFile({
+		kind: PROFILES_KIND,
+		version: PROFILES_VERSION,
+		profiles: { work: raw },
+	});
+	assert.ok(routes);
+	assert.ok(profiles);
+	assert.equal(Object.hasOwn(routes.reviewer, "model"), true);
+	assert.equal(Object.hasOwn(routes.reviewer, "thinking"), true);
+	const expected = bind({
+		worker: { model: "provider/model" },
+		reviewer: { thinking: "high" },
+		orchestrator: { model: "provider/main" },
+		inheriting: {},
+	});
+	for (const config of [routes, profiles.file.profiles.work]) {
+		const payload = createSessionProfileBind("work", config);
+		assert.deepEqual(payload, expected);
+		assert.deepEqual(readSessionProfileEntry(custom(payload)), {
+			status: "bound",
+			binding: expected,
+		});
+		assert.notEqual(payload.modelProfiles.reviewer, config.reviewer);
+	}
+	assert.equal(Object.hasOwn(routes.reviewer, "model"), true);
 });
 
 test("decoder stays strict about present undefined known fields", () => {
@@ -34,11 +81,12 @@ test("decoder stays strict about present undefined known fields", () => {
 	}
 });
 
-test("bound empty snapshot is distinct from cleared", () => {
+test("bound empty snapshot is distinct from absent and cleared", () => {
 	assert.deepEqual(readSessionProfileEntry(custom(bind())), {
 		status: "bound",
 		binding: bind(),
 	});
+	assert.deepEqual(replaySessionProfileBranch([]), { status: "absent" });
 	assert.deepEqual(readSessionProfileEntry(custom({ kind: "clear" })), {
 		status: "cleared",
 	});
@@ -169,8 +217,32 @@ test("required fields cannot be supplied by prototypes", () => {
 	});
 });
 
-test("reader returns defensive snapshots", () => {
-	const entry = custom(bind({ worker: { model: "provider/first" } }));
+test("writer rejects invalid input rather than manufacturing an empty snapshot", () => {
+	assert.throws(() => createSessionProfileBind("../bad", {}));
+	assert.throws(() =>
+		createSessionProfileBind("work", { worker: { model: "bad model" } }),
+	);
+	for (const route of [
+		{ model: null },
+		{ model: "bad model", thinking: undefined },
+		{ model: undefined, thinking: "extreme" },
+		{ effort: undefined },
+	]) {
+		assert.throws(() =>
+			createSessionProfileBind("work", {
+				good: { model: "provider/good" },
+				worker: route,
+			} as Parameters<typeof createSessionProfileBind>[1]),
+		);
+	}
+});
+
+test("writer and reader return defensive snapshots", () => {
+	const source = { worker: { model: "provider/first" } };
+	const payload = createSessionProfileBind("work", source);
+	source.worker.model = "provider/second";
+	assert.equal(payload.modelProfiles.worker.model, "provider/first");
+	const entry = custom(payload);
 	const first = readSessionProfileEntry(entry);
 	assert.equal(first.status, "bound");
 	if (first.status !== "bound") return;
@@ -190,6 +262,27 @@ test("noncustom and unrelated custom entries are absent even with matching paylo
 		assert.deepEqual(readSessionProfileEntry(entry), { status: "absent" });
 });
 
+test("newest family entry is terminal and retains its actual branch index", () => {
+	const old = custom(bind({ worker: "provider/old" }));
+	const message = {
+		type: "message",
+		message: { role: "user", content: "hello" },
+	};
+	for (const [entry, status] of [
+		[custom({ kind: "clear" }), "cleared"],
+		[custom({ kind: "bind" }), "invalid"],
+		[custom(bind(), "gentle-pi.session-profile/v2"), "unsupported"],
+	] as const) {
+		assert.deepEqual(
+			replaySessionProfileBranch([old, message, entry, custom({}, "other/v1")]),
+			{
+				status,
+				entryIndex: 2,
+			},
+		);
+	}
+});
+
 test("family identifier, not payload version, determines support", () => {
 	for (const customType of [
 		"gentle-pi.session-profile/v0",
@@ -204,4 +297,38 @@ test("family identifier, not payload version, determines support", () => {
 		readSessionProfileEntry(custom(bind(), "gentle-pi.session-profile-other/v1")),
 		{ status: "absent" },
 	);
+});
+
+test("branch order selects latest bind; clear and bad entries can be explicitly superseded", () => {
+	const latest = custom(bind({ worker: "provider/new" }));
+	for (const earlier of [
+		custom({ kind: "clear" }),
+		custom(null),
+		custom(null, "gentle-pi.session-profile/v2"),
+	]) {
+		assert.deepEqual(replaySessionProfileBranch([earlier, latest]), {
+			status: "bound",
+			entryIndex: 1,
+			binding: bind({ worker: { model: "provider/new" } }),
+		});
+	}
+});
+
+test("replay sees only caller-supplied active branch, not siblings or later paths", () => {
+	const ancestor = custom(bind());
+	const sibling = custom({ kind: "clear" });
+	const future = custom(null, "gentle-pi.session-profile/v2");
+	assert.equal(
+		replaySessionProfileBranch([ancestor, sibling]).status,
+		"cleared",
+	);
+	assert.equal(
+		replaySessionProfileBranch([ancestor, future]).status,
+		"unsupported",
+	);
+	assert.deepEqual(replaySessionProfileBranch([ancestor, { type: "message" }]), {
+		status: "bound",
+		entryIndex: 0,
+		binding: bind(),
+	});
 });

@@ -1,4 +1,4 @@
-// Standalone v1 codec decoder (gentle-shell#1064).
+// Standalone v1 codec and pure active-branch replay (gentle-shell#1064).
 // No Pi API, disk access, shared binding store, or orchestrator application.
 import { isValidProfileName } from "./agent-profiles.ts";
 import {
@@ -40,6 +40,12 @@ export type SessionProfileReadResult =
 	| { status: "invalid" }
 	| { status: "unsupported" };
 
+export type SessionProfileReplayResult =
+	| { status: "absent" }
+	| (Exclude<SessionProfileReadResult, { status: "absent" }> & {
+			entryIndex: number;
+	  });
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -58,10 +64,22 @@ function isOrigin(value: unknown): value is SessionProfileOrigin {
 }
 
 /** Validate known fields before the permissive routing helper can drop them. */
-function readRoute(value: unknown): AgentRoutingEntry | undefined {
+function readRoute(
+	value: unknown,
+	encoderInput = false,
+): AgentRoutingEntry | undefined {
 	if (typeof value === "string") return normalizeRoutingEntry(value);
 	if (!isRecord(value)) return undefined;
-	const route = value;
+	// Typed normalized routes can own optional undefined fields. Omit only those
+	// encoder fields; persisted fields and legacy effort retain strict validation.
+	const route = encoderInput
+		? Object.fromEntries(
+				Object.entries(value).filter(
+					([key, field]) =>
+						!((key === "model" || key === "thinking") && field === undefined),
+				),
+			)
+		: value;
 	if (hasOwn(route, "model") && normalizeModelId(route.model) === undefined)
 		return undefined;
 	if (hasOwn(route, "thinking") && !isThinkingLevel(route.thinking))
@@ -82,7 +100,10 @@ function readRoute(value: unknown): AgentRoutingEntry | undefined {
 	);
 }
 
-function readSnapshot(value: unknown): AgentModelConfig | undefined {
+function readSnapshot(
+	value: unknown,
+	encoderInput = false,
+): AgentModelConfig | undefined {
 	if (!isRecord(value)) return undefined;
 	const entries: Array<[string, AgentRoutingEntry]> = [];
 	for (const [name, rawRoute] of Object.entries(value)) {
@@ -90,7 +111,7 @@ function readSnapshot(value: unknown): AgentModelConfig | undefined {
 		// normalization that would silently discard a bad route. Output below uses
 		// own data properties, never prototype setters.
 		if (!isSafeAgentName(name)) return undefined;
-		const route = readRoute(rawRoute);
+		const route = readRoute(rawRoute, encoderInput);
 		if (route === undefined) return undefined;
 		entries.push([name, route]);
 	}
@@ -99,13 +120,28 @@ function readSnapshot(value: unknown): AgentModelConfig | undefined {
 
 function readBind(
 	data: Record<string, unknown>,
+	encoderInput = false,
 ): SessionProfileBindPayload | undefined {
 	if (!["origin", "name", "modelProfiles"].every((key) => hasOwn(data, key)))
 		return undefined;
 	if (!isOrigin(data.origin) || !isValidProfileName(data.name)) return undefined;
-	const modelProfiles = readSnapshot(data.modelProfiles);
+	const modelProfiles = readSnapshot(data.modelProfiles, encoderInput);
 	if (modelProfiles === undefined) return undefined;
 	return { kind: "bind", origin: data.origin, name: data.name, modelProfiles };
+}
+
+/** Create a detached user selection payload; never appends or claims durability. */
+export function createSessionProfileBind(
+	name: string,
+	modelProfiles: AgentModelConfig,
+): SessionProfileBindPayload {
+	const binding = readBind({ origin: "user", name, modelProfiles }, true);
+	if (!binding) throw new TypeError("Invalid session profile binding");
+	return binding;
+}
+
+export function createSessionProfileClear(): SessionProfileClearPayload {
+	return { kind: "clear" };
 }
 
 /** Unknown family identifiers are terminal unsupported states, regardless of data. */
@@ -126,4 +162,26 @@ export function readSessionProfileEntry(
 	if (data.kind !== "bind") return { status: "invalid" };
 	const binding = readBind(data);
 	return binding ? { status: "bound", binding } : { status: "invalid" };
+}
+
+/**
+ * Caller MUST supply ALREADY disk-corroborated active-branch entries, in branch
+ * order (oldest to newest). This function cannot establish that precondition:
+ * it does not read disk, call Pi, enforce append-failure recovery, establish
+ * durability, or update the shared map. In-memory getBranch() alone is NOT
+ * corroboration. Sibling and future paths must be excluded by the caller.
+ *
+ * The newest family entry wins even when invalid or unsupported; never revive
+ * an older binding. Cleared permits current fallback at a later consumer,
+ * whereas invalid/unsupported must remain distinct from absent. entryIndex is
+ * the actual supplied branch offset for a later adapter's location warning.
+ */
+export function replaySessionProfileBranch(
+	entries: readonly SessionProfileEntry[],
+): SessionProfileReplayResult {
+	for (let entryIndex = entries.length - 1; entryIndex >= 0; entryIndex--) {
+		const result = readSessionProfileEntry(entries[entryIndex]);
+		if (result.status !== "absent") return { ...result, entryIndex };
+	}
+	return { status: "absent" };
 }

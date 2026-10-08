@@ -29,8 +29,8 @@ Acceptance:
 
 ## Tasks
 
-- [ ] R1 ACTIVE: reproduce the maintained-runner defect and implement the minimal fix with regressions.
-- [ ] R2 Independently verify focused and broader checks, runtime generation and ownership safeguards.
+- [x] R1 Reproduce and implement owned polling plus fresh status proof with regressions. Work-unit commit: `ebea5675`; independent focused checks 341/341.
+- [ ] R2 ACTIVE/BLOCKED: broader checks observed; full unit stage retains 11 baseline failures, with no branch-only failures. Ratchet and runtime checks pass; CI/packed checks are pending.
 - [ ] R3 Commit a coherent work unit and prepare/publish a separate PR under target policy.
 - [ ] R4 Report evidence and delivery limits; return to the paused MES workflow without running its browser tests.
 
@@ -53,4 +53,4 @@ Approved issue #633 explicitly covers owned-process cleanup, once-only settlemen
 - Typecheck ratchet passed with 186 existing diagnostics and no regressions (not zero-diagnostic compilation). Nine generated runtime modules match; runner is imported directly and is not a generated module.
 - Independent diff checks passed; package/lock unchanged; exactly four authorized source/test files changed, 307 diff lines. Local pinned pnpm install ignored lifecycle scripts; earlier loader/pnpm failures are not behavioral RED.
 - Current harness was not installed or reloaded. Historical host cleanup remains unknown. No MES/browser test, database operation, unrelated process signal or security relaxation.
-- Work-unit commit and remote PR evidence are recorded only after observed delivery. Full-suite baseline failures and publication requirements remain explicit blockers.
+- Work-unit commit `ebea5675` contains the four source/test files and this tracker (363 total diff lines). Nonclosing approved issue reference: `Refs #633`. No remote fork, push or PR exists yet; authenticated upstream permission is READ and no current-actor fork was found. Full-suite baseline failures, contributor publication authorization and ordinary type-label assignment remain explicit.

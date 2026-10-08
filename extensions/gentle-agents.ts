@@ -14,7 +14,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { join, resolve, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createLocalBashOperations, keyHint, SettingsManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createLocalBashOperations, keyHint, SettingsManager, type AgentToolResult, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createJobRegistry, type JobExecOperations, type JobRecord } from "../lib/background-jobs.ts";
 import { JOB_GLYPH, JOB_NOTICE_TYPE, jobDetails, jobNoticeText, monitorEventsText, monitorStoppedText, registerBackgroundJobTools } from "../lib/background-jobs-tools.ts";
 import { createMonitorController, mergeMonitorBatches, type MonitorNotice } from "../lib/background-monitor.ts";
@@ -55,6 +55,7 @@ import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/ag
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { AGENTS_GLYPH, renderAgentsCard, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
+import { renderGentleAgentCall, renderGentleAgentResult, formatLiveTaskActivity, type GentleAgentRenderContext } from "../lib/agents-renderer.ts";
 import { CARD_TONE, renderCard } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
@@ -446,6 +447,7 @@ export async function answerThroughUi(ui: ExtensionContext["ui"] | undefined, as
 }
 
 export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<AgentsDeps> = {}): void {
+	// SAFETY: process with process.send implements IpcEndpoint in Node child processes
 	const childIpc = ownedChildIpc(env, overrides.childIpc ?? (process.send ? process as unknown as IpcEndpoint : undefined));
 	if (env.GENTLE_PI_AGENTS_CHILD === "1") {
 		// A stale managed-SDD child must never inherit unrestricted ordinary tools.
@@ -587,7 +589,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// started before /new or /resume stays in the store and comes back with
 	// its session. Before the first session_start there is nothing to scope by.
 	const activeSessionId = (): string | undefined => (sessions === undefined ? undefined : sessions.getSessionId() ?? "");
-	// Pi 0.86.1 adds this event; the package's pinned 0.85.1 types predate it.
+	// SAFETY: Pi 0.86.1 adds this event; the package's pinned 0.85.1 types predate it.
 	installBackgroundCacheWarming(pi as unknown as Parameters<typeof installBackgroundCacheWarming>[0], () => ({
 		sessionId: activeSessionId(),
 		ownedTaskIds,
@@ -622,9 +624,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				if (closePromise) return closePromise;
 				closePromise = Promise.resolve().then(async () => {
 					await Promise.allSettled([
-						(async () => { try { client?.close(); } catch {} })(),
-						(async () => { try { await listener?.close(); } catch {} })(),
-						(async () => { try { if (registry && (!listener || !listener.closesRegistry)) await registry.close?.(); } catch {} })(),
+						(async () => { try { client?.close(); } catch { /* ignore */ } })(),
+						(async () => { try { await listener?.close(); } catch { /* ignore */ } })(),
+						(async () => { try { if (registry && (!listener || !listener.closesRegistry)) await registry.close?.(); } catch { /* ignore */ } })(),
 					]);
 				});
 				return closePromise;
@@ -1627,6 +1629,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		}
 		if (signal?.aborted) throw new Error("Subagent launch aborted before queueing.");
 		mkdirSync(sessionDir, { recursive: true });
+		// SAFETY: parent sessionManager implements ReviewSessionManager in review integration host
 		const parentSessionManager = ctx.sessionManager as unknown as ReviewSessionManager;
 		const parentSessionId = ctx.sessionManager.getSessionId() ?? "";
 		const parentWorktreeRoot = ctx.sessionManager.getCwd();
@@ -1684,7 +1687,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		return request;
 	};
 
-	const launch = async (ctx: ExtensionContext, request: TaskRequest, signal?: AbortSignal, publishWork?: (id: string) => void): Promise<ToolText> => {
+	const launch = async (ctx: ExtensionContext, request: TaskRequest, signal?: AbortSignal, publishWork?: (id: string) => void, onUpdate?: (result: AgentToolResult<unknown>) => void): Promise<ToolText> => {
 		if (isSingleShotMode(ctx.mode) && request.mode === AGENT_MODE.BACKGROUND) throw new Error(SINGLE_SHOT_BACKGROUND_ERROR);
 		if (retiredSddAgent(request.agent.name)) throw new Error("Retired SDD agents cannot be dispatched.");
 
@@ -1723,6 +1726,24 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		publishActivity(); // Admission's summary notification precedes runtime ownership.
 		store.subscribe(task.id, () => { publishActivity(); requestRender(); });
 		if (request.mode === AGENT_MODE.BACKGROUND) return text(`Started ${task.agent} in the background as task ${task.id}. Retain that id; completion is pushed automatically. Never sleep or periodically poll subagent_status/subagent_result for completion or cache maintenance. Inspect status only at a real orchestration decision boundary; never relaunch equivalent queued/running work.`, taskDetails(task));
+
+		let unsubscribeUpdates: (() => void) | undefined;
+		if (onUpdate) {
+			unsubscribeUpdates = store.subscribe(task.id, (liveTask, thread) => {
+				const liveStep = formatLiveTaskActivity(liveTask, thread);
+				try {
+					onUpdate({
+						content: [{ type: "text", text: liveStep }],
+						details: {
+							gentleAgents: taskDetails(liveTask),
+							liveStep,
+						},
+					});
+				} catch {
+					// Safe: do not break execution if UI callback throws
+				}
+			});
+		}
 		// A tool call aborted by the host (a human interrupting the turn, a timeout)
 		// would otherwise leave the child running and end the call with no result and
 		// no recorded reason. Cancel through the runner so the lifecycle runs and the
@@ -1756,36 +1777,39 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			// otherwise guesses ordinal ids for subagent_continue (#1731 T19).
 			return text(completionText(finished), taskDetails(finished));
 		} finally {
+			unsubscribeUpdates?.();
 			signal?.removeEventListener("abort", onAbort);
 		}
 	};
 
-	const tool = (name: string, description: string, parameters: Record<string, unknown>, execute: (params: Record<string, unknown>, ctx: ExtensionContext, signal?: AbortSignal) => Promise<ToolText>) => {
+	const tool = (name: string, description: string, parameters: Record<string, unknown>, execute: (params: Record<string, unknown>, ctx: ExtensionContext, signal?: AbortSignal, onUpdate?: (result: AgentToolResult<unknown>) => void) => Promise<ToolText>) => {
 		pi.registerTool({
 			name: `${TOOL_PREFIX}${name}`,
 			renderShell: "self",
 			label: `Agent ${name.replace(/_/g, " ")}`,
 			description,
 			parameters: { type: "object", additionalProperties: false, ...parameters } as never,
-			renderCall(args, theme) {
+			renderCall(args, theme, context) {
 				// The result title belongs with the result body so a running poll
 				// can hide both without changing the tool call or its model output.
 				if (name === "result") return { render: () => [], invalidate() {} };
-				const params = args as { agent?: string; task_id?: string };
-				return new Text(theme.fg("toolTitle", `${AGENTS_GLYPH} agent ${name.replace(/_/g, " ")}${params.agent ? ` · ${params.agent}` : params.task_id ? ` · ${params.task_id}` : ""}`), 0, 0);
+				return renderGentleAgentCall(name, args as Record<string, unknown>, theme, context as GentleAgentRenderContext | undefined);
 			},
-			renderResult(result, options, theme) {
+			renderResult(result, options, theme, context) {
 				const task = (result.details as { gentleAgents?: { status?: string; taskId?: string } } | undefined)?.gentleAgents;
 				if (name === "result" && task?.status === TASK_STATUS.RUNNING) {
 					return { render: () => [], invalidate() {} };
 				}
-				const body = result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
-				const visibleBody = options.expanded ? body : theme.fg("muted", agentResultPreview(body).split("\n")[0] ?? "");
-				const title = `${AGENTS_GLYPH} agent result${task?.taskId ? ` · ${sanitizeTerminalText(task.taskId)}` : ""}`;
-				return new Text(name === "result" ? `${theme.fg("toolTitle", title)}\n${visibleBody}` : visibleBody, 0, 0);
+				if (name === "result") {
+					const body = result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
+					const visibleBody = options.expanded ? body : theme.fg("muted", agentResultPreview(body).split("\n")[0] ?? "");
+					const title = `${AGENTS_GLYPH} agent result${task?.taskId ? ` · ${sanitizeTerminalText(task.taskId)}` : ""}`;
+					return new Text(`${theme.fg("toolTitle", title)}\n${visibleBody}`, 0, 0);
+				}
+				return renderGentleAgentResult(result as AgentToolResult<unknown>, options, theme, context as GentleAgentRenderContext | undefined);
 			},
-			async execute(_id, params, signal, _onUpdate, ctx) {
-				return execute(params as Record<string, unknown>, ctx, signal);
+			async execute(_id, params, signal, onUpdate, ctx) {
+				return execute(params as Record<string, unknown>, ctx, signal, onUpdate);
 			},
 		});
 	};

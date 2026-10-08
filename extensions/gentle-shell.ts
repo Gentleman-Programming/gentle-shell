@@ -283,7 +283,9 @@ function sessionStats(ctx: ExtensionContext): ShellSessionStats {
 	const manager = ctx.sessionManager as ExtensionContext["sessionManager"] & { getEntryCount?(): number };
 	const compute = (): ShellSessionStats => ({ costTotal: sessionCost(ctx), usage: ctx.getContextUsage() });
 	// Append-only session entries move the leaf, including compaction and branch
-	// switches. Older/test hosts without that identity must stay uncached.
+	// switches. A virtual model's routed physical model comes from the latest
+	// response, which is appended as an entry, so the leaf covers it as well.
+	// Older/test hosts without that identity must stay uncached.
 	if (typeof manager.getLeafId !== "function") return compute();
 	const sessionId = manager.getSessionId();
 	const leafId = manager.getLeafId();

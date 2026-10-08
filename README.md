@@ -210,6 +210,7 @@ Open `/gentle:customize` → **Notifications** (the card header reads **Audio no
 | Parent ↔ subagent communication | Delegate, steer, reply, and cross-session notification within your local profile. |
 | Native interactive tools | Built-in questions, choices, and review captures — no third-party dependency. |
 | Gentle Todo | A plan card that turns amber when the model lets it go stale. |
+| Gentle Project Map | A versioned repository map your sessions plan against, with capability worktrees and an explicit, honest Open Pi launch. |
 | Subscription usage | Per-window meters and resets for supported provider accounts. |
 | Gentle Stats | `/gentle:stats` shows local usage history: activity heatmap, tokens, cost, streaks, and per-model share. |
 | Gentle notices | Gentle AI calls and review reminders as cards in the transcript. |
@@ -333,6 +334,7 @@ Start with the product-facing destination, then move into the operational refere
 | Destination | Purpose |
 | --- | --- |
 | [gentle-shell reference](docs/gentle-shell.md) | Workspace layout, changes, usage, agents, and todo interactions. |
+| [Project Map reference](docs/project-map.md) | The versioned map, the coordination protocol, capability worktrees, and the Open Pi launch. |
 | [ODD workflow](docs/readme-reference.md#organic-driven-development) · [Technical reference](docs/readme-reference.md) | Everyday work and recovery, installation, configuration, commands, and contributor detail. |
 | [Review integration](docs/review-integration.md) | The provider/consumer boundary for native review. |
 | [Native authority architecture](docs/native-authority-architecture.md) | Ownership boundaries and review architecture. |

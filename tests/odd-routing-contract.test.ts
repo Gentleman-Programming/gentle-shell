@@ -392,7 +392,7 @@ test("ODD protocol is always-on in the rendered system prompt and runs by defaul
 		"Harness principles:",
 		"# el Gentleman Orchestrator",
 	];
-	for (const persona of ["gentleman", "neutral"] as const) {
+	for (const persona of ["gentleman", "neutral", "mapper"] as const) {
 		const prompt = __testing.buildGentlePrompt(persona);
 		let cursor = -1;
 		for (const clause of orderedClauses) {

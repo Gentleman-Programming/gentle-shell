@@ -1232,9 +1232,9 @@ async function pathExists(path: string): Promise<boolean> {
 	}
 }
 
-type PersonaMode = "gentleman" | "neutral";
+type PersonaMode = "gentleman" | "neutral" | "mapper";
 
-const PERSONA_OPTIONS = ["gentleman", "neutral"] as const;
+const PERSONA_OPTIONS = ["gentleman", "neutral", "mapper"] as const;
 
 const GENTLEMAN_PERSONA_PROMPT = `Persona:
 - Be direct, technical, and concise.
@@ -1255,6 +1255,25 @@ const NEUTRAL_PERSONA_PROMPT = `Persona:
 - Push back when the user asks for code without enough context or understanding.
 - Correct errors directly, explain why, and show the better path.`;
 
+const MAPPER_PERSONA_PROMPT = `Persona:
+- Be direct, technical, and concise.
+- Always respond in the same language the user writes in.
+- When the user writes Spanish, answer in natural Rioplatense Spanish with voseo.
+- Act as a senior architect and teacher: concepts before code, no shortcuts.
+- Treat AI as a tool directed by the human; never present yourself as a default chatbot.
+- Push back when the user asks for code without enough context or understanding.
+- Correct errors directly, explain why, and show the better path.
+
+Mapper role:
+- Your job is this project's map: the functional points that say what the project does and what is still missing.
+- The map exists so that neither the user nor the orchestrator has to load the whole project into context: after a functionality lands, the map answers what comes next.
+- You write those functional points into the project's own documents, following the FP format. A row carries its functional-point code and what the point is, and nothing else.
+- The state of a row is the checkbox, and ODD's tracking already updates it as work closes. The order of the rows is the order of their codes. So what comes next is the first pending row in code order — read it from there instead of inferring it.
+- Do not add fields, priority markers, dependency notes, or a second copy of the map. When the map cannot answer something, say what is missing instead of inventing it.
+- Read the project before you write: the decomposition comes from what the project actually does, from its documents and its code, not from the conversation alone. Name the documents you read.
+- You do not implement source code. When the user asks for implementation, say that the switch back is \`/gentle:persona\` and that the orchestrator builds it under ODD.
+- Organic Driven Development still governs you: explore before writing, track the map's document, and close your work with a commit. You add a role; you remove nothing.`;
+
 function buildGentlePrompt(
 	persona: PersonaMode,
 	cwd: string = process.cwd(),
@@ -1263,7 +1282,9 @@ function buildGentlePrompt(
 	hostMode?: string,
 ): string {
 	const personaPrompt =
-		persona === "neutral" ? NEUTRAL_PERSONA_PROMPT : GENTLEMAN_PERSONA_PROMPT;
+		persona === "mapper"
+			? MAPPER_PERSONA_PROMPT
+			: persona === "neutral" ? NEUTRAL_PERSONA_PROMPT : GENTLEMAN_PERSONA_PROMPT;
 	const languageBoundary =
 		persona === "neutral"
 			? "Language: neutral/professional Spanish when the user writes Spanish. Do NOT use voseo or Rioplatense regional expressions."
@@ -1940,6 +1961,7 @@ function readPersonaFile(path: string): PersonaMode | undefined {
 	try {
 		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
 		if (!isRecord(parsed)) return undefined;
+		if (parsed.mode === "mapper") return "mapper";
 		return parsed.mode === "neutral" ? "neutral" : "gentleman";
 	} catch {
 		return undefined;
@@ -1955,9 +1977,7 @@ function readPersonaMode(cwd: string): PersonaMode {
 }
 
 function writePersonaMode(cwd: string, mode: PersonaMode): string[] {
-	const paths = [personaConfigPath(cwd)];
-	const projectPath = projectPersonaConfigPath(cwd);
-	if (existsSync(projectPath)) paths.push(projectPath);
+	const paths = [projectPersonaConfigPath(cwd)];
 	for (const path of paths) {
 		mkdirSync(dirname(path), { recursive: true });
 		writeFileSync(path, `${JSON.stringify({ mode }, null, 2)}\n`);
@@ -4928,16 +4948,13 @@ async function handlePersonaCommand(ctx: ExtensionContext): Promise<void> {
 		`el Gentleman persona (current: ${current})`,
 		[...PERSONA_OPTIONS],
 	);
-	if (selected !== "gentleman" && selected !== "neutral") return;
+	if (selected !== "gentleman" && selected !== "neutral" && selected !== "mapper") return;
 	const writtenPaths = writePersonaMode(ctx.cwd, selected);
 	ctx.ui.notify(
 		[
 			`el Gentleman persona set to: ${selected}`,
-			`Global config: ${personaConfigPath(ctx.cwd)}`,
-			...(writtenPaths.length > 1
-				? [`Project override updated: ${projectPersonaConfigPath(ctx.cwd)}`]
-				: []),
-			"Run /reload or start a new Pi session for already-injected prompts to refresh.",
+			`Project override updated: ${writtenPaths[0]}`,
+			"Applies from the next message; no reload needed.",
 		].join("\n"),
 		"info",
 	);
@@ -9346,6 +9363,12 @@ export const __testing = {
 	parseReviewCaptureParameters,
 	parseReviewCaptureGroupParameters,
 	runProfilesPanelAction,
+	readPersonaFile,
+	readPersonaMode,
+	writePersonaMode,
+	personaConfigPath,
+	projectPersonaConfigPath,
+	handlePersonaCommand,
 	resolveReviewModeGate,
 	readEffectiveModelConfig,
 	readReviewerModelConfig,

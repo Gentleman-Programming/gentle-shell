@@ -116,6 +116,10 @@ const requiredPaths = [
   "skills/chained-pr/SKILL.md",
   "skills/cognitive-doc-design/SKILL.md",
   "skills/comment-writer/SKILL.md",
+  "skills/fp-format/SKILL.md",
+  "skills/fp-format/assets/fp-document-template.md",
+  "skills/fp-format/assets/fp-document-example.md",
+  "skills/fp-format/references/format-rules.md",
   "skills/gentle-ai/SKILL.md",
   "skills/issue-creation/SKILL.md",
   "skills/judgment-day/SKILL.md",
@@ -124,6 +128,34 @@ const requiredPaths = [
   "skills/skill-improver/SKILL.md",
   "skills/skill-registry/SKILL.md",
   "skills/work-unit-commits/SKILL.md",
+  // Project Map surfaces. They ship inside the `lib/` and `extensions/` package globs, so
+  // nothing was broken today — but nothing failed either if one of them were dropped, and a
+  // package that silently loses a module is the worst way to find out. They are loaded as
+  // TypeScript, deliberately have no `runtime/*.mjs` twin, and are therefore pinned by name.
+  "lib/project-map-coordination-state.ts",
+  "lib/project-map-description.ts",
+  "lib/project-map-help-modal.ts",
+  "lib/project-map-translations.ts",
+  "lib/project-map-surface-table.ts",
+  "lib/project-map-integration-documents.ts",
+  "lib/project-map-integration.ts",
+  "lib/project-map-store-blockers.ts",
+  "lib/project-map-store-claims.ts",
+  "lib/project-map-store-contracts.ts",
+  "lib/project-map-store-heartbeats.ts",
+  "lib/project-map-store-history.ts",
+  "lib/project-map-store-receipts.ts",
+  "lib/project-map-store-root.ts",
+  "lib/project-map-store-schema.ts",
+  "lib/project-map-store-worktrees.ts",
+  "lib/project-map-store.ts",
+  "lib/shell-project-map-card.ts",
+  "lib/shell-project-map-display-order.ts",
+  "lib/shell-project-map-draft.ts",
+  "lib/shell-project-map-schema.ts",
+  "lib/shell-project-map-tabs.ts",
+  "lib/shell-project-map-view.ts",
+  "extensions/gentle-project-map.ts",
 ];
 
 const contractHashes = {

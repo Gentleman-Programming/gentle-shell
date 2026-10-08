@@ -517,15 +517,21 @@ async function run() {
 		const personaCtx = createCtx(promptCwd, true);
 		personaCtx.ui.select = async () => "neutral";
 		await commands.get("gentle:persona").handler("", personaCtx);
+		// The write policy is project-scoped: the global file must keep the exact bytes it
+		// was seeded with, which is what distinguishes "untouched" from "rewritten" (the
+		// writer emits pretty-printed JSON, so a rewrite would not match the seeded line).
 		assert.equal(
 			await readFile(join(globalConfigHome, "persona.json"), "utf8"),
-			'{\n  "mode": "neutral"\n}\n',
+			'{"mode":"neutral"}\n',
 		);
 		assert.equal(
 			await readFile(join(promptCwd, ".pi", "gentle-ai", "persona.json"), "utf8"),
 			'{\n  "mode": "neutral"\n}\n',
 		);
-		assert.match(personaCtx.ui.notifications.at(-1).message, /Global config:/);
+		const personaNotice = personaCtx.ui.notifications.at(-1).message;
+		assert.match(personaNotice, /Project override updated:/);
+		assert.match(personaNotice, /no reload needed/);
+		assert.doesNotMatch(personaNotice, /Global config:/);
 	} finally {
 		await rm(promptCwd, { recursive: true, force: true });
 	}

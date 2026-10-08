@@ -19,7 +19,7 @@ ODD runs on every request, without the user asking for a workflow, a plan, or ta
 6. **Implement task by task** — route each task through the smallest safe workflow, with configured TDD and applicable checks. Every task closes with at least one work-unit commit on the feature branch (branch first when on the default branch), with tests and docs alongside the behavior, using a Conventional Commit message; the feature document records the commit identity as evidence.
 7. **Close** — report the verified outcome, failed/pending checks, and the next step. The native review candidate is a work-unit commit or a PR slice, never a TODO checkbox and never the accumulated feature branch.
 
-- **One feature document:** `odd/tasks/<feature-name>.md` holds objective, problem, why, scope, constraints, actionable checklist with stable IDs and acceptance criteria, verification evidence, progress, and next step. Project-scoped Engram topic `odd/<feature-name>/tasks` mirrors the full document and repository-relative locator. Keep concise rationale for meaningful accepted changes here, not a separate plan or exhaustive journal. Accepted user, review, or verification changes update intent and tasks together; preserve valid completed work, add new tasks or reopen invalidated items with reasons. Findings alone do not authorize expansion or acceptance. Routine corrections stay with their tasks; checkoffs require observed proof.
+- **One feature document:** `odd/tasks/<feature-name>.md` holds objective, problem, why, scope, constraints, actionable checklist with stable IDs and acceptance criteria, verification evidence, progress, and next step. Every feature document the orchestrator creates or updates declares the functional point it belongs to once, with a body line **Belongs to:** `<code>` beside the title and before the first work unit. Use one backticked code; the first readable declaration wins. With a readable declaration naming a row the map declares, every work unit other than a row is that point's sub-element, regardless of its code, with repeated coded entries listed only once. A marker inside a work unit remains part of that unit's body. The association requires the existing `project_map.delegable` convention and a parent row the extraction actually produced, and adds no configuration key; sub-task codes need not extend the point's code. An unreadable or unusable declaration associates nothing, never falls back to the code rule, and reports one omission — `docs/project-map.md` specifies the marker's tolerance and each failure's message. Project-scoped Engram topic `odd/<feature-name>/tasks` mirrors the full document and repository-relative locator. Keep concise rationale for meaningful accepted changes here, not a separate plan or exhaustive journal. Accepted user, review, or verification changes update intent and tasks together; preserve valid completed work, add new tasks or reopen invalidated items with reasons. Findings alone do not authorize expansion or acceptance. Routine corrections stay with their tasks; checkoffs require observed proof.
 - **Recovery:** write local progress first and read back both copies; writes are not atomic. Unavailable Engram leaves an explicit pending mirror, not invented success or a block on unrelated safe work. Before implementation or resume, the parent reads full feature memory and the actual task file, reconciles code and evidence, and preserves conflicting versions. Pass the locator and relevant context; workers read the document before edits. The existing Todo UI is a projection, not another authority.
 - **Task size:** about 400 authored changed lines (additions plus deletions) is advisory only, not a cap, acceptance criterion, automatic stop, forced split, or RDD trigger. Keep coherent behavior with tests and docs, explain natural overages, and continue under existing PR policy. Forward this instruction to workers; never remove whitespace, comments, or tests, minify, invent abstractions, or split artificially for cosmetic savings.
 - **Delegation boundary:** the parent delegates a writer for tracked tasks only for a reason (parallel units or context), never for size, file count, or a price ratio, and a second direct path alone is not a runtime refusal. The runtime cannot infer whether an edit is mechanical from write history. Validate consequential premises before building, reuse relevant sibling findings, run focused checks while iterating, then the applicable full suite at closure. This is effort guidance, not a hard token or line budget.
@@ -136,7 +136,7 @@ otherwise `herdr` from `PATH`, without a shell.
 
 | Capability                     | What it does                                                                                                                                  |
 | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| **el Gentleman persona**       | Makes Pi behave like a senior architect and teacher, not a generic chatbot. Spanish responses use Rioplatense voseo by default; neutral mode is saved globally with project overrides. |
+| **el Gentleman persona**       | Makes Pi behave like a senior architect and teacher, not a generic chatbot. Spanish responses use Rioplatense voseo by default; `neutral` is professional Spanish, and `mapper` turns the same harness to writing the project's functional points. The switch is saved as a project override. |
 | **Configurable startup intro** | Adds a rose/text-logo startup intro, compact runtime panel, color presets, and commands to hide or show the decorative parts.                  |
 | **Work routing discipline**    | ODD keeps small tasks inline and delegates context-heavy work. |
 | **Subagent orchestration**     | Keeps one parent session responsible while child agents explore, implement, test, or review with focused context.                             |
@@ -436,7 +436,7 @@ The Gentle AI adapter projects native `gentle-pi:ask-user-question:blocked`, leg
 /gentle:doctor          Run read-only diagnostics for assets, config, tools, and guards.
 /gentle:models             Assign global model/effort routing to packaged/custom agents.
 /gentle:profiles           Create, switch, and manage global agent-model profiles.
-/gentle:persona            Switch between gentleman and neutral persona modes.
+/gentle:persona            Switch the persona for this project: gentleman, neutral, or mapper.
 /gentle:background-subagents  Show or set the managed background-subagents policy, with its deciding source.
 /gentle:review-mode          Show or set the receipt-driven development mode (status|enable|disable).
 /gentle:animations         Show or set global animations: quality, performance, or potato.
@@ -740,20 +740,25 @@ Delegation contract:
 | ----------- | ------------------------------------------------------------------------------------------------------------- |
 | `gentleman` | Senior architect, teacher, direct technical feedback, Rioplatense Spanish/voseo when the user writes Spanish. |
 | `neutral`   | Same discipline, warmer professional language, no regional expression.                                        |
+| `mapper`    | Same discipline in mapping mode: writes the project's functional points so the map answers what comes next.   |
 
-Saved globally at:
+`mapper` adds a role instead of replacing one: the identity, the ODD workflow, the delegation ladder and the review lifecycle stay exactly as they are, and the mode only adds the mapping contract. It writes the project's functional points and does not implement source code, and it points back to `/gentle:persona` when what you want is implementation. See [Project Map](project-map.md) for the map it feeds.
 
-```text
-~/.pi/gentle-ai/persona.json
-```
-
-A project can still override the global default with:
+The persona is saved as a **project override**:
 
 ```text
 .pi/gentle-ai/persona.json
 ```
 
-`/gentle:persona` writes the global config and updates an existing project override when one is present, so the current project does not stay stale. Run `/reload` or start a new Pi session after switching persona.
+`/gentle:persona` writes that file, creating it when it does not exist, and leaves the global default alone:
+
+```text
+~/.pi/gentle-ai/persona.json
+```
+
+The global file is what a project without an override inherits, and the command does not change it; edit it by hand for a different default everywhere.
+
+Switching takes effect **on the next message**, with no `/reload`: the persona section is re-derived per run and patched by name. Measured on a real RPC session against this checkout with the file flipped on disk between turns: turn one carried the full section set (96,497 bytes) with the `gentleman` block, and turn two carried a 27,567-byte patch of the persona section with the `mapper` block, with the identity, the ODD workflow and the orchestrator contract still present in it.
 
 ## Model and effort assignment
 
@@ -929,7 +934,7 @@ One limitation is worth stating. When a pinned profile omits an agent, that agen
 | `/gentle:models`                 | Opens global model + effort assignment UI. Press `x` to export, `r` to restore saved routing, and `u` to save routing and capture the session in the current profile. |
 | `/gentle:profiles`               | Opens global agent-model profiles: apply live, create, snapshot, duplicate, rename, delete, export, and import. |
 | `/gentle:commands`               | Opens the command palette (default `alt+k`): a curated, grouped menu (Configuration, Session, Diagnostics, Skills) of registered Gentle commands; search and run by label. |
-| `/gentle:persona`                | Switches global persona mode, with project override support.        |
+| `/gentle:persona`                | Switches the persona for the current project (writes the project override; leaves the global default alone). |
 | `/gentle:background-subagents`   | Shows or sets the managed background-subagents policy (`status\|enable\|disable`), naming the source that decided it. |
 | `/gentle:double-esc-cancel`      | Shows or sets the double-esc-cancel preference (`status\|enable\|disable`); no argument toggles it. |
 | `/gentle:animations`            | Shows or sets global animations (`status\|quality\|performance\|potato`); no argument opens a selector. |

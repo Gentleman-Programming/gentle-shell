@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { initTheme, keyHint } from "@earendil-works/pi-coding-agent";
 import { imageFallback, visibleWidth } from "@earendil-works/pi-tui";
 import { cardBody, cardHint, cardTitle, cardTone } from "./gentle-card-text.ts";
@@ -987,6 +990,62 @@ test("quiet tool rendering keeps concise collapsed edit and write summaries", ()
 	assert.equal(tailLines(text, 10), Array.from({ length: 10 }, (_, index) => `line ${index + 3}`).join("\n"));
 	assert.equal(formatToolResultOutput("edit", textResult(text, { diff: "@@\n-old\n+new" }) as any, { expanded: false }), "\n✓ +1 / -1");
 	assert.equal(formatToolResultOutput("write", textResult("Successfully wrote 12 bytes\n" + text) as any, { expanded: false }), "\n✓ wrote 12 bytes");
+});
+
+test("quiet write expansion shows the complete written content without changing the compact summary", () => {
+	const tool = registeredQuietTools().get("write");
+	const content = Array.from({ length: 12 }, (_, index) => `written line ${index + 1}`).join("\n");
+	const result = textResult("Successfully wrote 182 bytes to file.ts");
+	const context = { args: { path: "file.ts", content } };
+
+	assert.equal(renderToolResult(tool, result, { expanded: true, isPartial: false }, context), content);
+	assert.equal(renderToolResult(tool, result, { expanded: false, isPartial: false }, context), "✓ wrote 182 bytes");
+});
+
+test("quiet write expansion renders content after a real built-in write", async () => {
+	const cwd = await mkdtemp(join(tmpdir(), "gentle-write-expanded-"));
+	try {
+		const tool = registeredQuietTools().get("write");
+		const args = { path: "example.ts", content: "export const answer = 42;\n" };
+		const result = await tool.execute("write-expanded", args, undefined, undefined, { cwd });
+
+		assert.equal(await readFile(join(cwd, args.path), "utf8"), args.content);
+		assert.match(extractTextContent(result), /Successfully wrote/);
+		assert.doesNotMatch(extractTextContent(result), /export const answer/);
+		assert.equal(renderToolResult(tool, result, { expanded: true, isPartial: false }, { args }), args.content);
+	} finally {
+		await rm(cwd, { recursive: true, force: true });
+	}
+});
+
+test("quiet write expansion sanitizes content and respects narrow card widths", () => {
+	const tool = registeredQuietTools().get("write");
+	const content = "first\n\nsafe\x1b]52;c;Y2xpcGJvYXJk\x07\x1b[2Jdone\n界e\u0301😀";
+	const result = textResult("Successfully wrote to file.ts");
+	const context = { args: { path: "file.ts", content } };
+	const options = { expanded: true, isPartial: false };
+
+	assert.equal(renderToolResult(tool, result, options, context), "first\n\nsafedone\n界e\u0301😀");
+	const lines = frameLines(tool.renderResult(result, options, passthroughTheme, context), 16);
+	assert.ok(lines.every((line) => visibleWidth(line) <= 16));
+	assert.doesNotMatch(lines.join("\n"), /\x1b/);
+});
+
+test("quiet write expansion preserves failures, partial results and fallback confirmations", () => {
+	const tool = registeredQuietTools().get("write");
+	const context = { args: { path: "file.ts", content: "not written" } };
+	const options = { expanded: true, isPartial: false };
+	for (const errorContext of [context, { ...context, isError: true }]) {
+		const rendered = renderToolResult(tool, textResult("EACCES: permission denied"), { ...options, isError: true }, errorContext);
+		assert.equal(rendered, "EACCES: permission denied");
+	}
+	const partial = renderToolResult(tool, textResult("writing…"), { expanded: true, isPartial: true }, context);
+	assert.match(partial, /writing…/);
+	assert.doesNotMatch(partial, /not written/);
+	const confirmation = "Successfully wrote 0 bytes to file.ts";
+	for (const fallbackContext of [{}, { args: {} }, { args: { content: 42 } }, { args: { content: "" } }]) {
+		assert.equal(renderToolResult(tool, textResult(confirmation), options, fallbackContext), confirmation);
+	}
 });
 
 test("quiet tool rendering sanitizes collapsed output and call rows", () => {

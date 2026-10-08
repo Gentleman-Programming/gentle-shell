@@ -424,7 +424,10 @@ export function formatToolResultOutput(
 ): string {
 	const text = safeText(extractTextContent(result));
 	if (expanded) {
-		const detail = expandedResultText(toolName, result, text);
+		// Write results only acknowledge the operation; the body lives in the call args.
+		const detail = toolName === "write" && !isError && typeof args?.content === "string" && args.content.length > 0
+			? safeText(args.content)
+			: expandedResultText(toolName, result, text);
 		return detail ? `\n${detail}` : "";
 	}
 	if (isError) {

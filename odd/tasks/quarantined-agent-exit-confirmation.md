@@ -30,9 +30,9 @@ Acceptance:
 ## Tasks
 
 - [x] R1 Reproduce and implement owned polling plus fresh status proof with regressions. Work-unit commit: `ebea5675`; independent focused checks 341/341.
-- [ ] R2 ACTIVE/BLOCKED: broader checks observed; full unit stage retains 11 baseline failures, with no branch-only failures. Ratchet and runtime checks pass; CI/packed checks are pending.
-- [ ] R3 Commit a coherent work unit and prepare/publish a separate PR under target policy.
-- [ ] R4 Report evidence and delivery limits; return to the paused MES workflow without running its browser tests.
+- [ ] R2 PAUSED/BLOCKED: broader checks observed; full unit stage retains 11 baseline failures, with no branch-only failures. Ratchet/runtime checks pass; required CI/packed checks are not yet reported.
+- [ ] R3 PARTIAL/BLOCKED: commits and fork branch published; draft PR #1958 confirmed. Upstream denied metadata update; maintainer must assign exactly one `type:bug` label before policy-complete delivery.
+- [x] R4 Prepare the verified outcome and delivery limits for handoff. Return to MES paused; no runtime installation, cleanup claim or browser-test resumption.
 
 ## Initial evidence
 
@@ -53,4 +53,8 @@ Approved issue #633 explicitly covers owned-process cleanup, once-only settlemen
 - Typecheck ratchet passed with 186 existing diagnostics and no regressions (not zero-diagnostic compilation). Nine generated runtime modules match; runner is imported directly and is not a generated module.
 - Independent diff checks passed; package/lock unchanged; exactly four authorized source/test files changed, 307 diff lines. Local pinned pnpm install ignored lifecycle scripts; earlier loader/pnpm failures are not behavioral RED.
 - Current harness was not installed or reloaded. Historical host cleanup remains unknown. No MES/browser test, database operation, unrelated process signal or security relaxation.
-- Work-unit commit `ebea5675` contains the four source/test files and this tracker (363 total diff lines). Nonclosing approved issue reference: `Refs #633`. No remote fork, push or PR exists yet; authenticated upstream permission is READ and no current-actor fork was found. Full-suite baseline failures, contributor publication authorization and ordinary type-label assignment remain explicit.
+- Work-unit `ebea5675` and evidence commit `489cbf8d` were published to the explicitly authorized contributor fork and branch. Draft PR: https://github.com/Gentleman-Programming/gentle-shell/pull/1958 (`Refs #633`, base `main`). REST readback confirmed author, target, head and draft state after one create attempt.
+- The create command printed the PR URL, then its metadata update was denied. Label readback is empty: no permission bypass or uncertain-write retry. A maintainer must add ordinary `type:bug`; this is not policy-complete or merge-ready.
+- Upstream advanced eight commits to `6e7e3a18f794223396527a54c7c36d19c7d236c6`; none changes the four source/test surfaces. No rebase or merge was performed. Only optional CodeRabbit SUCCESS is currently reported; required CI/packed/platform results remain unobserved.
+- Publication CWD incident: explicit target/head kept the PR correct, but the first CLI invocation emitted the parent worktree dirty-count warning. The documented `--head` behavior skips local fork/push; subsequent commands were bound to the maintained root. No MES write or automatic browser action occurred.
+- All branch pushes were normal HTTPS with the authorized GitHub session and per-invocation credential helper. No global credential/configuration change, ambient SSH reuse, force push, issue closure, protected label mutation or merge.

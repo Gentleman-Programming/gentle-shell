@@ -67,6 +67,11 @@ function keyhintOf(row: CustomizeRow): string { return (row as CustomizeRow & { 
 function fakeInline(inputs: (string | undefined)[] = [], confirms: boolean[] = []): CustomizeInline {
 	return { input: async () => inputs.shift(), confirm: async () => confirms.shift() ?? false, disposed: false };
 }
+/** Inline bridge that records the field requests, so a row's prompt and prefill are observable. */
+function recordingInline(inputs: (string | undefined)[]): { inline: CustomizeInline; requests: { prompt: string; value: string }[] } {
+	const requests: { prompt: string; value: string }[] = [];
+	return { requests, inline: { input: async request => { requests.push(request); return inputs.shift(); }, confirm: async () => false, disposed: false } };
+}
 function label(row: CustomizeRow): string { return typeof row.label === "function" ? row.label() : row.label; }
 
 test("Notifications rows toggle and mute directly without any nested native dialog", async () => {
@@ -301,7 +306,7 @@ test("event rows cover supported events and never expose session.shutdown", () =
 test("p on every basic non-event notification control stays on the audio card, opens no profiles and never previews", () => {
 	const h = harness(); try {
 		const rows = h.rows();
-		const targets = ["Audio notifications:", "Audio: unmuted", "Advanced"];
+		const targets = ["Audio notifications:", "Audio: unmuted", "Audio: minimum interval", "Audio: coalesce window", "Advanced"];
 		const listed: number[] = [];
 		const view = new VisualCustomizeView({ rows, theme: { fg: (_role: string, text: string) => text }, rowsAvailable: () => 24, requestRender: () => {}, onClose: () => {}, profiles: {
 			list: () => { listed.push(1); return []; }, save: () => {}, apply: () => {}, delete: () => {}, reset: () => {},
@@ -320,12 +325,14 @@ test("p on every basic non-event notification control stays on the audio card, o
 	} finally { h.owner.retire(); }
 });
 
-test("the basic card exposes exactly six human controls and an Advanced toggle without raw ids", () => {
+test("the basic card exposes exactly eight human controls and an Advanced toggle without raw ids", () => {
 	const h = harness(); try {
 		const labels = visibleRows(h.rows()).map(label);
-		assert.equal(labels.length, 6, "the basic card must expose exactly six controls");
+		assert.equal(labels.length, 8, "the basic card must expose exactly eight controls");
 		assert.ok(labels.some(text => text.startsWith("Audio notifications:")), "the global switch row is required");
 		assert.ok(labels.some(text => /^Audio: (?:un)?muted/.test(text)), "the process mute row is required");
+		assert.ok(labels.some(text => /^Audio: minimum interval \d+ ms$/.test(text)), "a minimum-interval row is required");
+		assert.ok(labels.some(text => /^Audio: coalesce window \d+ ms$/.test(text)), "a coalescing-window row is required");
 		assert.ok(labels.some(text => text.startsWith("Success:")), "a Success group row is required");
 		assert.ok(labels.some(text => text.startsWith("Error:")), "an Error group row is required");
 		assert.ok(labels.some(text => text.startsWith("Attention:")), "an Attention group row is required");
@@ -365,7 +372,7 @@ test("Advanced folds the thirteen detailed event rows inside the same card witho
 test("global controls and the fold toggle advertise no sound key while group and detail rows do", async () => {
 	const h = harness(); try {
 		const rows = h.rows();
-		for (const prefix of ["Audio notifications:", "Audio: unmuted", "Advanced"])
+		for (const prefix of ["Audio notifications:", "Audio: unmuted", "Audio: minimum interval", "Audio: coalesce window", "Advanced"])
 			assert.doesNotMatch(keyhintOf(findRow(rows, prefix)), /f sound/, `${prefix} is not a per-type file target`);
 		for (const { prefix } of GROUPS) assert.match(keyhintOf(findRow(rows, prefix)), /f sound/, `${prefix} assigns its own sound`);
 		await findRow(rows, /^Advanced/).action(fakeInline());
@@ -637,5 +644,100 @@ test("the Advanced per-event rows intentionally keep raw ids and builtin refs", 
 		selectControl(view, "agent.failed:");
 		const frame = view.render(90).join("\n");
 		assert.match(frame, /agent\.failed: builtin:error/, "advanced details intentionally show the raw event id and builtin ref");
+	} finally { h.owner.retire(); }
+});
+
+/**
+ * Every write is validated against the native path flavor, so a row's own sound must be a path this platform accepts.
+ * The payload is never decoded here: only the snapshot write has to pass the same validation production uses.
+ */
+const ownSound = (fixture: string): NotificationSound => `file:${fixture}`;
+const enterCycleFromFile = (own: NotificationSound): readonly NotificationSound[] => [null, "builtin:success", "builtin:error", "builtin:attention", own];
+
+/** Drives one row through `presses` Enters and returns the assigned sound after each write. */
+async function pressEnter(row: CustomizeRow, sound: () => NotificationSound, presses: number): Promise<NotificationSound[]> {
+	const seen: NotificationSound[] = [];
+	for (let press = 0; press < presses; press++) { await row.action(fakeInline()); seen.push(sound()); }
+	return seen;
+}
+
+// #1896 slice 1: a `file:` reference is absent from the fixed builtin cycle, so `findIndex` returned -1 and
+// the first Enter dropped the user's own sound. The cycle is now per row, and the row remembers its own file
+// while it is silenced, so the assignment is reachable again by continuing to press Enter.
+test("an event row keeps its own file in the Enter cycle instead of dropping it on the first press", async () => {
+	const own = ownSound(WAV_FIXTURES.success);
+	const h = harness({ events: { "agent.failed": own, "agent.completed": "builtin:success" } }); try {
+		const sound = (): NotificationSound => getNotificationService()!.getState().settings.audio.events["agent.failed"] ?? null;
+		const rows = h.rows();
+		assert.match(label(findRow(rows, "agent.failed:")), /success\.wav$/, "the row reads as its own file before the first press");
+		const seen = await pressEnter(findRow(rows, "agent.failed:"), sound, 5);
+		assert.deepEqual(seen, enterCycleFromFile(own), "Enter walks silence, the builtins and returns to the row's own file");
+		assert.equal(getNotificationService()!.getState().settings.audio.events["agent.completed"], "builtin:success", "an event row never writes its siblings");		assert.equal(h.writes, 5, "every press is one atomic write");
+		assert.equal(h.played, 0, "Enter never previews");
+	} finally { h.owner.retire(); }
+});
+
+test("a type group keeps its own file in the Enter cycle and still applies silence first", async () => {
+	const own = ownSound(WAV_FIXTURES.error);
+	const h = harness({ events: { ...groupEvents(["agent.failed", "subagent.failed", "subagent.timed_out"], own), "agent.attention": "builtin:attention", "subagent.waiting": "builtin:error" } }); try {
+		const sound = (): NotificationSound => getNotificationService()!.getState().settings.audio.events["agent.failed"] ?? null;
+		const rows = h.rows();
+		assert.equal(label(findRow(rows, "Error:")), `Error: ${basename(WAV_FIXTURES.error)}`, "a uniform group shows its own file basename");
+		const seen = await pressEnter(findRow(rows, "Error:"), sound, 5);
+		assert.deepEqual(seen, enterCycleFromFile(own), "the whole group returns to its own file atomically");
+		const events = getNotificationService()!.getState().settings.audio.events;
+		assert.equal(events["subagent.timed_out"], own, "every target of the group follows its own cycle");
+		assert.equal(events["agent.attention"], "builtin:attention", "the Attention group is never touched");
+		assert.equal(events["subagent.waiting"], "builtin:error", "a group edit never reaches an unrelated event");
+		assert.equal(h.writes, 5);
+	} finally { h.owner.retire(); }
+});
+
+// #1896 slice 1: both timing keys already exist in `gentle-shell.notifications/v1`, so exposing them changes no schema.
+test("the two timing keys are editable global rows that reject anything outside their integer range", async () => {
+	const h = harness(); try {
+		const audio = () => getNotificationService()!.getState().settings.audio;
+		const rows = h.rows();
+		const interval = findRow(rows, "Audio: minimum interval");
+		const coalesce = findRow(rows, "Audio: coalesce window");
+		assert.equal(label(interval), "Audio: minimum interval 1000 ms", "the default minimum interval is the documented 1000 ms");
+		assert.equal(label(coalesce), "Audio: coalesce window 300 ms", "the default coalescing window is the documented 300 ms");
+		assert.match(interval.preview!().sample, /1000 ms/, "the preview states the live minimum interval");
+		assert.match(coalesce.preview!().sample, /300 ms/, "the preview states the live coalescing window");
+
+		const prefilled = recordingInline(["250"]);
+		await interval.action(prefilled.inline);
+		assert.deepEqual(prefilled.requests.map(request => request.value), ["1000"], "Enter opens one field prefilled with the current value");
+		assert.equal(audio().minimumIntervalMs, 250, "a valid integer inside the range is saved");
+		assert.equal(audio().coalesceWindowMs, 300, "editing one timing key never touches the other");
+
+		const windowEdited = recordingInline(["2000"]);
+		await coalesce.action(windowEdited.inline);
+		assert.deepEqual(windowEdited.requests.map(request => request.value), ["300"], "the coalescing window prefills its own value");
+		assert.equal(audio().coalesceWindowMs, 2000, "the upper bound of the coalescing window is accepted");
+		assert.equal(h.writes, 2);
+
+		for (const rejected of ["", "  ", "abc", "-5", "60001", "1.5", "1e3", "250ms"]) await interval.action(recordingInline([rejected]).inline);
+		assert.equal(audio().minimumIntervalMs, 250, "no rejected value is ever saved");
+		assert.equal(h.writes, 2, "no rejected value writes configuration");
+		assert.ok(h.notes.some(text => /between 0 and 60000/.test(text)), "a rejected interval reports its accepted range");
+
+		await interval.action(recordingInline([undefined]).inline);
+		assert.equal(audio().minimumIntervalMs, 250, "cancelling the field preserves the current value");
+		assert.equal(h.writes, 2, "cancelling the field never writes");
+		assert.equal(h.played, 0, "the timing rows never preview audio");
+	} finally { h.owner.retire(); }
+});
+
+test("the timing rows read as globals and never leak a reference or a raw event id", () => {
+	const h = harness(); try {
+		const rows = h.rows();
+		for (const prefix of ["Audio: minimum interval", "Audio: coalesce window"]) {
+			const row = findRow(rows, prefix);
+			assert.equal(keyhintOf(row), "", `${prefix} owns no sound key`);
+			assert.doesNotMatch(label(row), /builtin:|file:|(?:agent|subagent|session)\./, `${prefix} leaks a raw reference`);
+			assert.doesNotMatch(row.preview!().sample, /builtin:|file:|(?:agent|subagent|session)\./, `${prefix} preview leaks a raw reference`);
+		}
+		assert.equal(h.writes, 0); assert.equal(h.probes, 0); assert.equal(h.played, 0);
 	} finally { h.owner.retire(); }
 });

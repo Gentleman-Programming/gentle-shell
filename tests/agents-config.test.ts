@@ -194,6 +194,20 @@ test("parseAgentsConfig applies defaults, validates values, and silently ignores
 	assert.equal(parseAgentsConfig({ default_mode: "background" }, undefined).defaultMode, AGENT_MODE.BACKGROUND);
 });
 
+test("parseAgentsConfig leaves the total-work ceilings unset until a positive integer is configured", () => {
+	const defaults = parseAgentsConfig(undefined, undefined);
+	assert.equal(defaults.maxTurns, undefined, "an unconfigured ceiling must keep today's unbounded behavior");
+	assert.equal(defaults.maxTotalTokens, undefined);
+	const configured = parseAgentsConfig({ max_turns: 8, max_total_tokens: 150_000 }, undefined);
+	assert.equal(configured.maxTurns, 8);
+	assert.equal(configured.maxTotalTokens, 150_000);
+	assert.equal(parseAgentsConfig({ max_turns: 8 }, { max_turns: 3 }).maxTurns, 3, "the project ceiling wins over the global one");
+	for (const invalid of ["eight", 0, -1, 8.5, null, true]) {
+		assert.equal(parseAgentsConfig({ max_turns: invalid, max_total_tokens: invalid }, undefined).maxTurns, undefined, `invalid max_turns ${String(invalid)} must mean no ceiling`);
+		assert.equal(parseAgentsConfig({ max_total_tokens: invalid }, undefined).maxTotalTokens, undefined, `invalid max_total_tokens ${String(invalid)} must mean no ceiling`);
+	}
+});
+
 test("parseAgentsConfig resolves the tool-call stall ceiling above the idle silence budget", () => {
 	const defaults = parseAgentsConfig(undefined, undefined);
 	assert.equal(defaults.stallTimeoutMs, 4 * 60_000);

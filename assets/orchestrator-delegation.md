@@ -19,7 +19,7 @@ Detail modules, each loaded only when its mechanism fires (small tasks load none
 
 ## Session subject and display identity
 
-Once a meaningful task subject is clear, before delegation or cross-session coordination, call `orchestrator_session_id` with a short, non-sensitive `subject`. Do not require a subject declaration for small direct tasks. Batch with setup if possible; no extra model call. Skip tiny replies; exclude user prompts/private detail. The tool preserves canonical names/human renames; never ask humans to type aliases. Names display only; stable IDs route.
+Once a meaningful subject is clear, before delegation or cross-session coordination, call `orchestrator_session_id` with a short, non-sensitive `subject`. Do not require a subject declaration for small direct tasks. Batch with setup if possible; no extra model call. Skip tiny replies; exclude user prompts/private detail. The tool preserves canonical names/human renames; never ask humans to type aliases. Names display only; stable IDs route.
 
 ### Publish and find classified work
 

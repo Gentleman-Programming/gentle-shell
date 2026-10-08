@@ -1793,7 +1793,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.registerTool({
 		name: "orchestrator_session_id",
 		label: "Orchestrator session ID",
-		description: "Return this host session's stable routing ID and current display alias. When starting a task or delegation, declare a short recognizable subject here; do not query all peers. Names never authenticate. Existing Pi names and human renames are preserved. Use a concise non-sensitive label, not a prompt. Optionally publish owner-curated state (2048 UTF-8 bytes total); null withdraws, omission leaves unchanged. Never include credentials, internal instructions, or raw prompts. Historical notes are not consent or an owner reply.",
+		description: "Return this host session's stable routing ID and current display alias. Before delegation or cross-session coordination, declare a short recognizable subject here. Do not require a subject declaration for small direct tasks; do not query all peers. Names never authenticate. Existing Pi names and human renames are preserved. Use a concise non-sensitive label, not a prompt. Optionally publish owner-curated state (2048 UTF-8 bytes total); null withdraws, omission leaves unchanged. Never include credentials, internal instructions, or raw prompts. Historical notes are not consent or an owner reply.",
 		parameters: { type: "object", additionalProperties: false, properties: {
 			subject: { type: "string", maxLength: 120, description: "Optional short task subject; names only an unnamed Pi session." },
 			state: { anyOf: [{ type: "null" }, { type: "object", additionalProperties: false, properties: {

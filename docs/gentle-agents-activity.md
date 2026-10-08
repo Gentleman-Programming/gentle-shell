@@ -34,8 +34,9 @@ isolation, ownership locks, or exclusive access.
 
 ### Declare a recognizable subject
 
-When starting a task or delegation, call `orchestrator_session_id` with a short,
-non-sensitive `subject`; no peer survey or additional model call is needed. The tool
+Before delegation or cross-session coordination, call `orchestrator_session_id`
+with a short, non-sensitive `subject`. Do not require a subject declaration for small direct tasks;
+no peer survey or additional model call is needed. The tool
 returns the stable routing ID and current canonical alias. It uses Pi's
 `setSessionName` only when the canonical name is empty, preserving existing names
 and later human renames. Subjects are control-stripped, whitespace-normalized, and

@@ -1,4 +1,4 @@
-// Observable append authority; no SDK, lifecycle seams or consumers.
+// Observable append authority and explicit lifecycle seams; no SDK or consumers.
 import { readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -34,6 +34,9 @@ type Scope = {
  // belongs to this controller and its enclosing scopes map.
  uncertain: boolean;
  certified: Map<string, Entry>;
+ // Copied uncertainty is not evidence of a failed append and is never excluded
+ // through the reader's known-failed-ID seam.
+ untrusted: Set<string>;
  pending?: Entry;
 };
 export type SessionProfileAppendOutcome = {
@@ -47,6 +50,23 @@ export type SessionProfileAppendOutcome = {
 export interface SessionProfileAppendOptions {
  readFile?: (path: string) => string;
 }
+export interface SessionProfileForkView extends SessionProfileSource {
+ getBranch(fromId?: string): readonly unknown[];
+ getEntry(id: string): unknown;
+ getHeader(): unknown;
+}
+export type SessionProfileForkTarget = {
+ entryId: string;
+ position: "before" | "at";
+};
+declare const forkProof: unique symbol;
+export type SessionProfileForkPreparation = {
+ readonly [forkProof]: "preparation";
+};
+export type SessionProfileForkHandoff = { readonly [forkProof]: "handoff" };
+export type SessionProfileForkEvidence =
+ | { status: "captured"; evidence: SessionProfileForkPreparation }
+ | { status: "indeterminate"; reason: string };
 export interface SessionProfileAttachment {
  bind(
   name: string,
@@ -54,6 +74,59 @@ export interface SessionProfileAttachment {
  ): SessionProfileAppendOutcome;
  clear(): SessionProfileAppendOutcome;
  refresh(): SessionProfileAppendOutcome;
+}
+export type SessionProfileAttachContext = {
+ reason: "startup" | "reload" | "new" | "resume" | "fork";
+ previousSessionFile?: string;
+ fork?: {
+  handoff: SessionProfileForkHandoff;
+  publicView: SessionProfileForkView;
+ };
+};
+export type SessionProfileDetachContext = {
+ reason: "reload" | "new" | "resume" | "fork" | "quit";
+ targetSessionFile?: string;
+ preparation?: SessionProfileForkPreparation;
+};
+type ForkSnapshot = {
+ owner: object;
+ generation: number;
+ source: SessionProfileSource;
+ scope: Capture;
+ path: Entry[];
+ leaf: string | null;
+ failed: Set<string>;
+ untrusted: Set<string>;
+ ambiguous: boolean;
+};
+type ForkTransfer = ForkSnapshot & { targetFile?: string; consumed: boolean };
+type ForkStore = {
+ version: 1;
+ preparations: WeakMap<object, ForkSnapshot>;
+ transfers: WeakMap<object, ForkTransfer>;
+};
+// Keep the key stable across code reloads; the value owns protocol negotiation.
+const forkStoreKey = Symbol.for("gentle-pi.session-profile.fork-evidence");
+function forkStore(): ForkStore {
+ const existing = Reflect.get(globalThis, forkStoreKey) as
+  | ForkStore
+  | undefined;
+ if (existing) {
+  if (
+   existing.version !== 1 ||
+   !(existing.preparations instanceof WeakMap) ||
+   !(existing.transfers instanceof WeakMap)
+  )
+   throw new Error("fork-protocol");
+  return existing;
+ }
+ const store: ForkStore = {
+  version: 1,
+  preparations: new WeakMap(),
+  transfers: new WeakMap(),
+ };
+ Object.defineProperty(globalThis, forkStoreKey, { value: store });
+ return store;
 }
 function detached<T>(value: T): T {
  try {
@@ -80,7 +153,8 @@ function noConversation(branch: Entry[]): boolean {
  * appendEntry is the synchronous public extension seam (void, not an ID).
  * Only an explicit operation can activate preflush memory. Refresh never
  * restores unwritten getBranch selections. Quarantine survives branch changes
- * for each source/session/file.
+ * for each source/session/file. Only confirmed opaque fork evidence can convey
+ * copied-path quarantine; attachment handles never transfer activation.
  * Corroboration does not promise fsync, full ancestry or external-writer safety.
  */
 export function createSessionProfileAppendController(
@@ -88,13 +162,23 @@ export function createSessionProfileAppendController(
  initialAppendEntry: (customType: string, data: unknown) => void,
  options: SessionProfileAppendOptions = {},
 ) {
- const scopes = new Map<string, Map<string | undefined, Scope>>();
- const source = initialSource;
- const appendEntry = initialAppendEntry;
+ // Evidence survives detach, but source identity still partitions all scopes.
+ const sourceScopes = new WeakMap<
+  SessionProfileSource,
+  Map<string, Map<string | undefined, Scope>>
+ >();
+ let scopes = new Map<string, Map<string | undefined, Scope>>();
+ sourceScopes.set(initialSource, scopes);
+ let source: SessionProfileSource | undefined = initialSource;
+ let appendEntry: ((customType: string, data: unknown) => void) | undefined =
+  initialAppendEntry;
+ let generation = 0;
+ const identity = {};
  let active: Scope | undefined;
- const readFile =
+ let readFile: ((file: string) => string) | undefined =
   options.readFile ?? ((file: string) => readFileSync(file, "utf8"));
  function capture(): Capture {
+  if (!source) throw new Error("detached-source");
   const session = source.getSessionId(),
    file = source.getSessionFile();
   if (!session || (file !== undefined && (typeof file !== "string" || !file)))
@@ -139,6 +223,7 @@ export function createSessionProfileAppendController(
     ambiguous: false,
     uncertain: false,
     certified: new Map(),
+    untrusted: new Set(),
    };
    files.set(c.file, state);
   }
@@ -158,6 +243,7 @@ export function createSessionProfileAppendController(
    knownFailedEntryIds: s.failed,
    readFile(file) {
     try {
+     if (!readFile) throw new Error("detached-reader");
      const text = readFile(file);
      s.established = true;
      return text;
@@ -191,8 +277,9 @@ export function createSessionProfileAppendController(
   // certified selection when the newest entry's provenance is ambiguous.
   const latest = c.branch.findLast(isSessionProfileFamilyEntry);
   return (
-   s.uncertain &&
-   (!latest || !isDeepStrictEqual(s.certified.get(latest.id), latest))
+   (latest !== undefined && s.untrusted.has(latest.id)) ||
+   (s.uncertain &&
+    (!latest || !isDeepStrictEqual(s.certified.get(latest.id), latest)))
   );
  }
  function refresh(): SessionProfileAppendOutcome {
@@ -246,6 +333,7 @@ export function createSessionProfileAppendController(
   }
   let threw = false;
   try {
+   if (!appendEntry) return unavailable("detached-source");
    appendEntry(SESSION_PROFILE_CUSTOM_TYPE, detached(payload));
   } catch {
    threw = true;
@@ -360,9 +448,253 @@ export function createSessionProfileAppendController(
    return unavailable("append-not-corroborated");
   }
  }
- return {
-  bind: (name, models) => append(createSessionProfileBind(name, models)),
-  clear: () => append(createSessionProfileClear()),
-  refresh,
- } satisfies SessionProfileAttachment;
+ function attachment(): SessionProfileAttachment {
+  const epoch = generation;
+  const live = () => source !== undefined && epoch === generation;
+  return {
+   bind: (name, models) =>
+    live()
+     ? append(createSessionProfileBind(name, models))
+     : unavailable("detached-source"),
+   clear: () =>
+    live()
+     ? append(createSessionProfileClear())
+     : unavailable("detached-source"),
+   refresh: () => (live() ? refresh() : unavailable("detached-source")),
+  };
+ }
+ function negativeEvidence(path: Entry[], s?: Scope) {
+  const failed = new Set<string>(),
+   untrusted = new Set<string>();
+  for (const entry of path) {
+   if (!isSessionProfileFamilyEntry(entry)) continue;
+   if (s?.failed.has(entry.id)) failed.add(entry.id);
+   if (
+    s?.untrusted.has(entry.id) ||
+    (s?.uncertain && !isDeepStrictEqual(s.certified.get(entry.id), entry))
+   )
+    untrusted.add(entry.id);
+  }
+  return { failed, untrusted, ambiguous: s?.ambiguous ?? false };
+ }
+ function captureForkEvidence(
+  target: SessionProfileForkTarget,
+  view: SessionProfileForkView,
+ ): SessionProfileForkEvidence {
+  try {
+   if (
+    source !== view ||
+    !target.entryId ||
+    !["at", "before"].includes(target.position)
+   )
+    throw new Error("fork-source");
+   const c = capture();
+   const selected = detached(view.getEntry(target.entryId)) as Entry & {
+    message?: { role?: string };
+   };
+   if (
+    !selected ||
+    selected.id !== target.entryId ||
+    (target.position === "before" &&
+     (selected.type !== "message" || selected.message?.role !== "user"))
+   )
+    throw new Error("fork-target");
+   const leaf =
+    target.position === "at"
+     ? selected.id
+     : (selected.parentId as string | null);
+   if (leaf !== null && (typeof leaf !== "string" || !leaf))
+    throw new Error("fork-target");
+   const raw = leaf === null ? [] : view.getBranch(leaf);
+   if (!Array.isArray(raw)) throw new Error("fork-path");
+   for (const value of raw) {
+    if (!value || typeof value !== "object") throw new Error("fork-metadata");
+    const e = value as Entry;
+    if (
+     isSessionProfileFamilyEntry(e) &&
+     !hasSessionProfileCandidateMetadata(e)
+    )
+     throw new Error("fork-metadata");
+   }
+   const path = detached(raw) as Entry[];
+   if (
+    (leaf !== null && path.at(-1)?.id !== leaf) ||
+    path.some((e) => typeof e.id !== "string" || !e.id) ||
+    new Set(path.map((e) => e.id)).size !== path.length ||
+    !stable(c)
+   )
+    throw new Error("fork-path");
+   const s = scopes.get(c.session)?.get(c.file);
+   const token = Object.freeze({}) as SessionProfileForkPreparation;
+   forkStore().preparations.set(token, {
+    owner: identity,
+    generation,
+    source,
+    scope: c,
+    path,
+    leaf,
+    ...negativeEvidence(path, s),
+   });
+   return { status: "captured", evidence: token };
+  } catch {
+   return { status: "indeterminate", reason: "unobservable-fork" };
+  }
+ }
+ function detach(
+  context?: SessionProfileDetachContext,
+ ): SessionProfileForkHandoff | undefined {
+  let token: SessionProfileForkHandoff | undefined;
+  try {
+   if (context?.reason === "fork" && context.preparation) {
+    const prepared = forkStore().preparations.get(context.preparation);
+    const current = capture();
+    if (
+     !prepared ||
+     prepared.owner !== identity ||
+     prepared.generation !== generation ||
+     prepared.source !== source ||
+     !sameScope(prepared.scope, current)
+    )
+     throw new Error("fork-preparation");
+    const view = source as SessionProfileForkView;
+    const path =
+     prepared.leaf === null ? [] : detached(view.getBranch(prepared.leaf));
+    if (
+     !isDeepStrictEqual(prepared.path, path) ||
+     !stable(current) ||
+     (current.file !== undefined && !context.targetSessionFile)
+    )
+     throw new Error("fork-transition");
+    const latest = negativeEvidence(
+     prepared.path,
+     scopes.get(current.session)?.get(current.file),
+    );
+    token = Object.freeze({}) as SessionProfileForkHandoff;
+    forkStore().transfers.set(token, {
+     ...prepared,
+     failed: new Set([...prepared.failed, ...latest.failed]),
+     untrusted: new Set([...prepared.untrusted, ...latest.untrusted]),
+     ambiguous: prepared.ambiguous || latest.ambiguous,
+     targetFile: context.targetSessionFile,
+     consumed: false,
+    });
+    forkStore().preparations.delete(context.preparation);
+   }
+  } catch {
+   token = undefined;
+  }
+  // Even a failed proof capture must release the old runtime capability.
+  for (const files of scopes.values())
+   for (const s of files.values()) s.pending = undefined;
+  generation++;
+  source = undefined;
+  appendEntry = undefined;
+  readFile = undefined;
+  active = undefined;
+  return token;
+ }
+ function applyFork(
+  context: SessionProfileAttachContext,
+  c: Capture,
+  s: Scope,
+ ) {
+  const claim = context.fork;
+  const evidence = claim && forkStore().transfers.get(claim.handoff);
+  if (!claim || !evidence || evidence.consumed) throw new Error("fork-handoff");
+  evidence.consumed = true;
+  const view = claim.publicView;
+  const header = detached(view.getHeader()) as {
+   type?: string;
+   id?: string;
+   parentSession?: string;
+  };
+  if (
+   view !== source ||
+   c.session === evidence.scope.session ||
+   c.file !== evidence.targetFile ||
+   context.previousSessionFile !== evidence.scope.file ||
+   !header ||
+   header.type !== "session" ||
+   header.id !== c.session ||
+   header.parentSession !== evidence.scope.file ||
+   (c.file === undefined && view !== evidence.source)
+  )
+   throw new Error("fork-destination");
+  const expected = evidence.path.filter((e) => e.type !== "label");
+  // The source cut may itself be a removed label. Its destination boundary is
+  // the last retained record, not an original label ID or a recreated label.
+  const copyLeaf = expected.at(-1)?.id ?? null;
+  // Validate the actual destination cut, not a matching ancestor subbranch.
+  // Recreated labels may follow the cut, but no later retained record may.
+  const copied = c.branch.filter((e) => e.type !== "label");
+  // Orphan recovery can produce a suffix, not a fabricated complete ancestry.
+  const suffix = expected.slice(expected.length - copied.length);
+  if (
+   copied.length > expected.length ||
+   copied.length !== suffix.length ||
+   (copied.at(-1)?.id ?? null) !== copyLeaf
+  )
+   throw new Error("fork-path");
+  const replacements = new Map<string, string>();
+  let labels: string[] = [];
+  for (const e of evidence.path) {
+   if (e.type === "label") {
+    labels.push(e.id);
+    continue;
+   }
+   for (const id of labels) replacements.set(id, e.id);
+   labels = [];
+  }
+  let parentId: string | null = null;
+  for (let index = 0; index < copied.length; index++) {
+   const from = suffix[index],
+    to = copied[index];
+   const rewritten: Entry = { ...from, parentId };
+   if (from.type === "compaction")
+    rewritten.firstKeptEntryId =
+     replacements.get(from.firstKeptEntryId as string) ?? from.firstKeptEntryId;
+   if (!isDeepStrictEqual(rewritten, to)) throw new Error("fork-record");
+   parentId = to.id;
+   if (evidence.failed.has(to.id)) s.failed.add(to.id);
+   if (evidence.untrusted.has(to.id)) s.untrusted.add(to.id);
+  }
+  if (!stable(c)) throw new Error("fork-source-changed");
+  if (copied.some(isSessionProfileFamilyEntry) && evidence.ambiguous) {
+   s.ambiguous = true;
+   s.uncertain = true;
+  }
+ }
+ // Optional callbacks belong to this attachment, not the retained owner.
+ // Omitted options use the default disk reader, never the factory's old reader.
+ function attach(
+  currentSource: SessionProfileSource,
+  currentAppend: (customType: string, data: unknown) => void,
+  context: SessionProfileAttachContext,
+  currentOptions: SessionProfileAppendOptions = {},
+ ): SessionProfileAttachment {
+  detach();
+  source = currentSource;
+  appendEntry = currentAppend;
+  readFile =
+   currentOptions.readFile ?? ((file: string) => readFileSync(file, "utf8"));
+  scopes = sourceScopes.get(currentSource) ?? new Map();
+  sourceScopes.set(currentSource, scopes);
+  if (context.reason === "fork") {
+   try {
+    const c = capture();
+    applyFork(context, c, scope(c));
+   } catch {
+    // A fresh explicit disk-corroborated bind/clear can recover; no fallback.
+    try {
+     const s = scope(capture());
+     s.ambiguous = true;
+     s.uncertain = true;
+    } catch {
+     /* Source remains unobservable. */
+    }
+   }
+  }
+  return attachment();
+ }
+ return { ...attachment(), captureForkEvidence, detach, attach };
 }

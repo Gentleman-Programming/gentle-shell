@@ -245,3 +245,46 @@ test("public sibling disk records never override the selected active branch", ()
  const other = fixture();
  assert.equal(other.adapter.refresh().status, "indeterminate");
 });
+
+for (const failedOperation of ["bind", "clear"] as const) {
+ test(`public EISDIR ${failedOperation} quarantine survives detach and fresh append capability`, () => {
+  const f = fixture();
+  f.adapter.bind("trusted", {});
+  flush(f.manager);
+  const file = f.manager.getSessionFile();
+  assert.ok(file);
+  const original = readFileSync(file, "utf8");
+  renameSync(file, `${file}.saved`);
+  mkdirSync(file);
+  const failed =
+   failedOperation === "bind"
+    ? f.adapter.bind("FAILED", {})
+    : f.adapter.clear();
+  assert.equal(failed.status, "indeterminate");
+  assert.equal(readFileSync(`${file}.saved`, "utf8"), original);
+  const ghost = f.manager.getLeafId();
+  assert.ok(ghost);
+  renameSync(file, `${file}.fault-directory`);
+  renameSync(`${file}.saved`, file);
+  f.adapter.detach();
+  let calls = 0;
+  const current = f.adapter.attach(
+   f.manager,
+   (t, d) => {
+    calls++;
+    f.manager.appendCustomEntry(t, d);
+   },
+   { reason: "reload" },
+  );
+  bound(current.refresh(), "trusted");
+  const length = f.manager.getBranch().length;
+  assert.equal(f.adapter.bind("stale", {}).status, "indeterminate");
+  assert.equal(f.manager.getBranch().length, length);
+  assert.equal(calls, 0);
+  assert.equal(current.clear().status, "persisted");
+  assert.equal(calls, 1);
+  f.manager.branch(ghost);
+  bound(current.refresh(), "trusted");
+  assert.equal(f.errors.length, 1);
+ });
+}

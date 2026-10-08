@@ -5192,6 +5192,28 @@ test("gentleShell records SSE rate-limit headers from provider responses", async
 	assert.doesNotMatch(renderFooter(ui), /codex/);
 });
 
+test("gentleShell ignores incomplete Codex headers and retains the last real quota without assuming 5h", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch({}, false).fetchFn, now: () => 0 });
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const respond = (headers: Record<string, string>) => {
+		for (const handler of handlers.get("after_provider_response") ?? []) handler({ status: 200, headers }, ctx);
+	};
+	respond({ "x-codex-primary-used-percent": "0" });
+	assert.doesNotMatch(renderFooter(ui), /codex|0m/, "missing duration is not a real quota");
+	respond({ "x-codex-secondary-used-percent": "31", "x-codex-secondary-window-minutes": "10080" });
+	const valid = renderFooter(ui);
+	assert.match(valid, /codex week .*31%/);
+	assert.doesNotMatch(valid, /5h|0m/);
+	for (const minutes of [undefined, "0", "invalid"]) {
+		const headers: Record<string, string> = { "x-codex-primary-used-percent": "0" };
+		if (minutes !== undefined) headers["x-codex-primary-window-minutes"] = minutes;
+		respond(headers);
+		assert.equal(renderFooter(ui), valid, "a malformed response must not replace the known weekly quota");
+	}
+});
+
 test("gentleShell registers /gentle:usage and opens the subscriptions overlay", async () => {
 	const { pi, handlers, commands } = fakePi();
 	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch().fetchFn, now: () => 1_788_600_000_000 });

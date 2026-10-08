@@ -1239,27 +1239,27 @@ async function run() {
 		await mkdir(join(legacyModelsCwd, ".pi", "agents"), { recursive: true });
 		await mkdir(join(legacyModelsCwd, ".pi", "gentle-ai"), { recursive: true });
 		await writeFile(
-			join(legacyModelsCwd, ".pi", "agents", "sdd-apply.md"),
-			`---\nname: sdd-apply\ndescription: Apply phase\n---\n\nbody\n`,
+			join(legacyModelsCwd, ".pi", "agents", "legacy-worker.md"),
+			`---\nname: legacy-worker\ndescription: Legacy model routing worker\n---\n\nbody\n`,
 		);
 		await writeFile(
 			join(legacyModelsCwd, ".pi", "gentle-ai", "models.json"),
-			JSON.stringify({ "sdd-apply": "legacy/provider-model" }, null, 2),
+			JSON.stringify({ "legacy-worker": "legacy/provider-model" }, null, 2),
 		);
 		const legacyCtx = createCtx(legacyModelsCwd, true);
 		await hooks.get("session_start")[0]({ reason: "startup" }, legacyCtx);
 		const legacyAgent = await readFile(
-			join(legacyModelsCwd, ".pi", "agents", "sdd-apply.md"),
+			join(legacyModelsCwd, ".pi", "agents", "legacy-worker.md"),
 			"utf8",
 		);
 		assert.match(legacyAgent, /model: legacy\/provider-model/);
 		await writeFile(
 			globalModelsPath,
-			JSON.stringify({ "sdd-apply": "global/provider-model" }, null, 2),
+			JSON.stringify({ "legacy-worker": "global/provider-model" }, null, 2),
 		);
 		await hooks.get("session_start")[0]({ reason: "startup" }, legacyCtx);
 		const globalWinsAgent = await readFile(
-			join(legacyModelsCwd, ".pi", "agents", "sdd-apply.md"),
+			join(legacyModelsCwd, ".pi", "agents", "legacy-worker.md"),
 			"utf8",
 		);
 		assert.match(globalWinsAgent, /model: global\/provider-model/);
@@ -1267,7 +1267,7 @@ async function run() {
 		await writeFile(globalModelsPath, "{ invalid json");
 		await hooks.get("session_start")[0]({ reason: "startup" }, legacyCtx);
 		const invalidGlobalSkippedAgent = await readFile(
-			join(legacyModelsCwd, ".pi", "agents", "sdd-apply.md"),
+			join(legacyModelsCwd, ".pi", "agents", "legacy-worker.md"),
 			"utf8",
 		);
 		assert.match(invalidGlobalSkippedAgent, /model: global\/provider-model/);
@@ -1287,7 +1287,7 @@ async function run() {
 		await writeFile(globalModelsPath, JSON.stringify({}, null, 2));
 		await hooks.get("session_start")[0]({ reason: "startup" }, legacyCtx);
 		const emptyGlobalPreservesAgent = await readFile(
-			join(legacyModelsCwd, ".pi", "agents", "sdd-apply.md"),
+			join(legacyModelsCwd, ".pi", "agents", "legacy-worker.md"),
 			"utf8",
 		);
 		assert.match(emptyGlobalPreservesAgent, /model: global\/provider-model/);
@@ -1295,16 +1295,16 @@ async function run() {
 			await readFile(join(legacyModelsCwd, ".pi", "subagents.json"), "utf8"),
 		);
 		assert.equal(
-			emptyGlobalPreservesProfiles.model_profiles["sdd-apply"].model,
+			emptyGlobalPreservesProfiles.model_profiles["legacy-worker"].model,
 			"global/provider-model",
 		);
 		await writeFile(
 			globalModelsPath,
-			JSON.stringify({ "sdd-apply": { model: "bad\nmodel: injected" } }, null, 2),
+			JSON.stringify({ "legacy-worker": { model: "bad\nmodel: injected" } }, null, 2),
 		);
 		await hooks.get("session_start")[0]({ reason: "startup" }, legacyCtx);
 		const invalidEntryPreservesAgent = await readFile(
-			join(legacyModelsCwd, ".pi", "agents", "sdd-apply.md"),
+			join(legacyModelsCwd, ".pi", "agents", "legacy-worker.md"),
 			"utf8",
 		);
 		assert.match(invalidEntryPreservesAgent, /model: global\/provider-model/);
@@ -1312,13 +1312,13 @@ async function run() {
 			await readFile(join(legacyModelsCwd, ".pi", "subagents.json"), "utf8"),
 		);
 		assert.equal(
-			invalidEntryPreservesProfiles.model_profiles["sdd-apply"].model,
+			invalidEntryPreservesProfiles.model_profiles["legacy-worker"].model,
 			"global/provider-model",
 		);
-		await writeFile(globalModelsPath, JSON.stringify({ "sdd-apply": {} }, null, 2));
+		await writeFile(globalModelsPath, JSON.stringify({ "legacy-worker": {} }, null, 2));
 		await hooks.get("session_start")[0]({ reason: "startup" }, legacyCtx);
 		const explicitInheritClearsAgent = await readFile(
-			join(legacyModelsCwd, ".pi", "agents", "sdd-apply.md"),
+			join(legacyModelsCwd, ".pi", "agents", "legacy-worker.md"),
 			"utf8",
 		);
 		assert.doesNotMatch(explicitInheritClearsAgent, /model:/);
@@ -1508,8 +1508,8 @@ async function run() {
 			`---\nname: researcher\ndescription: Legacy builtin researcher\n---\n`,
 		);
 		await writeFile(
-			join(modelsCwd, ".pi", "agents", "sdd-apply.md"),
-			`---\nname: sdd-apply\ndescription: Apply phase\n---\n\nbody\n`,
+			join(modelsCwd, ".pi", "agents", "legacy-worker.md"),
+			`---\nname: legacy-worker\ndescription: Model routing worker\n---\n\nbody\n`,
 		);
 		await writeFile(
 			join(modelsCwd, ".pi", "subagents", "project-special.md"),
@@ -1585,7 +1585,7 @@ async function run() {
 
 		await writeFile(
 			globalModelsPath,
-			JSON.stringify({ "sdd-apply": "openai/gpt-5" }, null, 2),
+			JSON.stringify({ "legacy-worker": "openai/gpt-5" }, null, 2),
 		);
 
 		const ctx = createCtx(modelsCwd, true);
@@ -1651,7 +1651,7 @@ async function run() {
 
 		await hooks.get("session_start")[0]({ reason: "startup" }, ctx);
 		const legacyAppliedAgent = await readFile(
-			join(modelsCwd, ".pi", "agents", "sdd-apply.md"),
+			join(modelsCwd, ".pi", "agents", "legacy-worker.md"),
 			"utf8",
 		);
 		assert.match(legacyAppliedAgent, /model: openai\/gpt-5/);
@@ -1661,7 +1661,7 @@ async function run() {
 			Promise.resolve({
 				type: "save",
 				config: {
-					"sdd-apply": { model: "openai/gpt-5", thinking: "high" },
+					"legacy-worker": { model: "openai/gpt-5", thinking: "high" },
 					worker: { model: "openai/gpt-5-mini", thinking: "low" },
 					researcher: { model: "openai/gpt-5-mini", thinking: "low" },
 					"project-special": { model: "openai/gpt-5-mini", thinking: "low" },
@@ -1678,7 +1678,7 @@ async function run() {
 		const savedConfig = JSON.parse(
 			await readFile(globalModelsPath, "utf8"),
 		);
-		assert.deepEqual(savedConfig["sdd-apply"], {
+		assert.deepEqual(savedConfig["legacy-worker"], {
 			model: "openai/gpt-5",
 			thinking: "high",
 		});
@@ -1689,7 +1689,7 @@ async function run() {
 		);
 
 		const applyAgent = await readFile(
-			join(modelsCwd, ".pi", "agents", "sdd-apply.md"),
+			join(modelsCwd, ".pi", "agents", "legacy-worker.md"),
 			"utf8",
 		);
 		assert.match(applyAgent, /model: openai\/gpt-5/);
@@ -1699,10 +1699,10 @@ async function run() {
 			await readFile(join(modelsCwd, ".pi", "subagents.json"), "utf8"),
 		);
 		assert.equal(
-			projectSubagents.model_profiles["sdd-apply"].model,
+			projectSubagents.model_profiles["legacy-worker"].model,
 			"openai/gpt-5",
 		);
-		assert.equal(projectSubagents.model_profiles["sdd-apply"].effort, "high");
+		assert.equal(projectSubagents.model_profiles["legacy-worker"].effort, "high");
 		assert.equal(
 			projectSubagents.model_profiles.worker.model,
 			"openai/gpt-5-mini",
@@ -1762,7 +1762,7 @@ async function run() {
 		const customSavedConfig = JSON.parse(
 			await readFile(globalModelsPath, "utf8"),
 		);
-		assert.deepEqual(customSavedConfig["sdd-apply"], {
+		assert.deepEqual(customSavedConfig["legacy-worker"], {
 			model: "custom/provider-model",
 			thinking: "medium",
 		});
@@ -1787,7 +1787,7 @@ async function run() {
 		const rejectedCustomConfig = JSON.parse(
 			await readFile(globalModelsPath, "utf8"),
 		);
-		assert.deepEqual(rejectedCustomConfig["sdd-apply"], {
+		assert.deepEqual(rejectedCustomConfig["legacy-worker"], {
 			model: "custom/provider-model",
 			thinking: "medium",
 		});
@@ -1801,7 +1801,7 @@ async function run() {
 		const exported = JSON.parse(await readFile(join(globalConfigHome, "models.export.json"), "utf8"));
 		assert.equal(exported.kind, "gentle-pi.agent_model_routing");
 		assert.equal(exported.version, 1);
-		assert.deepEqual(exported.agents["sdd-apply"], {
+		assert.deepEqual(exported.agents["legacy-worker"], {
 			model: "custom/provider-model",
 			thinking: "medium",
 		});
@@ -1811,7 +1811,7 @@ async function run() {
 			JSON.stringify({
 				kind: "gentle-pi.agent_model_routing",
 				version: 1,
-				agents: { "sdd-apply": { model: "restore/provider", thinking: "high" } },
+				agents: { "legacy-worker": { model: "restore/provider", thinking: "high" } },
 			}, null, 2),
 		);
 		let restorePanelCalls = 0;
@@ -1822,11 +1822,11 @@ async function run() {
 		};
 		await commands.get("gentle:models").handler("", ctx);
 		const restoredConfig = JSON.parse(await readFile(globalModelsPath, "utf8"));
-		assert.deepEqual(restoredConfig["sdd-apply"], {
+		assert.deepEqual(restoredConfig["legacy-worker"], {
 			model: "restore/provider",
 			thinking: "high",
 		});
-		const restoredAgent = await readFile(join(modelsCwd, ".pi", "agents", "sdd-apply.md"), "utf8");
+		const restoredAgent = await readFile(join(modelsCwd, ".pi", "agents", "legacy-worker.md"), "utf8");
 		assert.match(restoredAgent, /model: restore\/provider/);
 		assert.match(restoredAgent, /thinking: high/);
 
@@ -1835,17 +1835,17 @@ async function run() {
 		ctx.ui.custom = () =>
 			Promise.resolve({
 				type: "save",
-				config: { "sdd-apply": { model: "openai/gpt-5", thinking: "max" } },
+				config: { "legacy-worker": { model: "openai/gpt-5", thinking: "max" } },
 			});
 		await commands.get("gentle:models").handler("", ctx);
 		const maxSavedConfig = JSON.parse(await readFile(globalModelsPath, "utf8"));
-		assert.equal(maxSavedConfig["sdd-apply"].thinking, "max");
+		assert.equal(maxSavedConfig["legacy-worker"].thinking, "max");
 		const maxSubagents = JSON.parse(
 			await readFile(join(modelsCwd, ".pi", "subagents.json"), "utf8"),
 		);
-		assert.equal(maxSubagents.model_profiles["sdd-apply"].effort, "max");
+		assert.equal(maxSubagents.model_profiles["legacy-worker"].effort, "max");
 		const maxApplyAgent = await readFile(
-			join(modelsCwd, ".pi", "agents", "sdd-apply.md"),
+			join(modelsCwd, ".pi", "agents", "legacy-worker.md"),
 			"utf8",
 		);
 		assert.match(maxApplyAgent, /thinking: max/);
@@ -1866,7 +1866,7 @@ async function run() {
 			});
 		await commands.get("gentle:models").handler("", ctx);
 		const pickerMaxConfig = JSON.parse(await readFile(globalModelsPath, "utf8"));
-		assert.equal(pickerMaxConfig["sdd-apply"].thinking, "max");
+		assert.equal(pickerMaxConfig["legacy-worker"].thinking, "max");
 	} finally {
 		await rm(modelsCwd, { recursive: true, force: true });
 		await rm(globalModelsPath, { force: true });

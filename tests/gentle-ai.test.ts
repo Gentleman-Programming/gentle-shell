@@ -1138,7 +1138,7 @@ test("retired SDD startup flag is not registered or imported", () => {
 	assert.doesNotMatch(source, /from ["']\.\.\/lib\/sdd-preflight\.ts["']/);
 });
 
-test("agent model discovery prioritizes Judgment Day agents", (t) => {
+test("agent model discovery prioritizes Judgment Day and excludes retired SDD", (t) => {
 	const root = mkdtempSync(join(tmpdir(), "gentle-pi-model-agents-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	writeMarkdown(join(root, "zeta.md"), "name: zeta\n");
@@ -1159,8 +1159,6 @@ test("agent model discovery prioritizes Judgment Day agents", (t) => {
 			"jd-judge-b",
 			"jd-fix-agent",
 			"alpha",
-			"sdd-apply",
-			"sdd-init",
 			"zeta",
 		],
 	);

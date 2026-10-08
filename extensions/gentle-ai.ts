@@ -2260,6 +2260,11 @@ async function withOmittedAgentsClearedAsync(
 	return completed;
 }
 
+// Match gentle-agents.ts's dispatch retirement contract, not incidental "sdd" text.
+function isRetiredSddAgentName(name: string): boolean {
+	return /^sdd(?:-|$)/.test(name);
+}
+
 function parseAgentName(filePath: string): string | undefined {
 	let content: string;
 	try {
@@ -2268,7 +2273,7 @@ function parseAgentName(filePath: string): string | undefined {
 		return undefined;
 	}
 	const name = content.match(/^name:\s*["']?([^"'\n]+)["']?\s*$/m)?.[1]?.trim();
-	if (!name) return undefined;
+	if (!name || isRetiredSddAgentName(name)) return undefined;
 	const packageName = content
 		.match(/^package:\s*["']?([^"'\n]+)["']?\s*$/m)?.[1]
 		?.trim();
@@ -2285,7 +2290,7 @@ async function parseAgentNameAsync(
 		return undefined;
 	}
 	const name = content.match(/^name:\s*["']?([^"'\n]+)["']?\s*$/m)?.[1]?.trim();
-	if (!name) return undefined;
+	if (!name || isRetiredSddAgentName(name)) return undefined;
 	const packageName = content
 		.match(/^package:\s*["']?([^"'\n]+)["']?\s*$/m)?.[1]
 		?.trim();
@@ -2565,12 +2570,14 @@ function orchestratorSettingsPath(): string {
 function removeLegacyAgentOverridesFromSettings(
 	settingsPath: string,
 	settings: Record<string, unknown>,
+	preservedOverrides: Record<string, unknown>,
 ): void {
 	const subagents = isRecord(settings.subagents)
 		? { ...settings.subagents }
 		: undefined;
 	if (!subagents) return;
-	delete subagents.agentOverrides;
+	if (Object.keys(preservedOverrides).length > 0) subagents.agentOverrides = preservedOverrides;
+	else delete subagents.agentOverrides;
 	if (Object.keys(subagents).length > 0) settings.subagents = subagents;
 	else delete settings.subagents;
 	mkdirSync(dirname(settingsPath), { recursive: true });
@@ -2627,8 +2634,14 @@ function migrateLegacyProjectModelOverrides(cwd: string): number {
 		: undefined;
 	if (!agentOverrides) return 0;
 	const agentsByName = new Map(listDiscoverableAgents(cwd).map((agent) => [agent.name, agent]));
+	// An undiscovered retired identity is not a project-scoped agent. Leave
+	// its legacy value (even malformed/clear) and historical profiles unmanaged.
+	const preservedOverrides = Object.fromEntries(Object.entries(agentOverrides)
+		.filter(([name]) => !agentsByName.has(name) && /(?:^|\.)sdd(?:-|$)/.test(name)));
+	const preservedCount = Object.keys(preservedOverrides).length;
+	if (preservedCount > 0 && preservedCount === Object.keys(agentOverrides).length) return 0;
 	const migratableEntries = Object.entries(agentOverrides)
-		.filter(([name]) => !isProviderReviewRole(name))
+		.filter(([name]) => !isProviderReviewRole(name) && !Object.hasOwn(preservedOverrides, name))
 		.map(([name, value]) => ({ name, entry: normalizeRoutingEntry(value) }))
 		.filter((item): item is { name: string; entry: AgentRoutingEntry } =>
 			item.entry !== undefined && !isClearRoutingEntry(item.entry),
@@ -2644,7 +2657,7 @@ function migrateLegacyProjectModelOverrides(cwd: string): number {
 		const source = agentsByName.get(name)?.source ?? "project";
 		if (updateSubagentModelProfile(cwd, source, name, entry, { preserveExisting: true })) migrated += 1;
 	}
-	removeLegacyAgentOverridesFromSettings(settingsPath, settings);
+	removeLegacyAgentOverridesFromSettings(settingsPath, settings, preservedOverrides);
 	return migrated;
 }
 
@@ -2701,6 +2714,9 @@ export function applyModelConfig(
 		else skipped += 1;
 	}
 	for (const [name, entry] of Object.entries(config)) {
+		// Orphan keys lack the raw-name boundary: preserve any possible SDD identity.
+		// Discovered ordinary agents, including SDD-looking packages, stay routable.
+		if (!seenAgents.has(name) && /(?:^|\.)sdd(?:-|$)/.test(name)) continue;
 		if (isProviderReviewRole(name)) continue;
 		// The orchestrator is routing, not an agent: its model lives in Pi's global
 		// settings.json and must never reach subagents.json.
@@ -2753,6 +2769,7 @@ export async function applyModelConfigAsync(
 		else skipped += 1;
 	}
 	for (const [name, entry] of Object.entries(config)) {
+		if (!seenAgents.has(name) && /(?:^|\.)sdd(?:-|$)/.test(name)) continue;
 		if (isProviderReviewRole(name)) continue;
 		if (isProfileOrchestratorKey(name)) continue;
 		if (!seenAgents.has(name) && isClearRoutingEntry(entry)) {

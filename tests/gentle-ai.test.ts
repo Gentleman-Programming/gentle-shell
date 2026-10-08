@@ -381,6 +381,7 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 		rmSync(root, { recursive: true, force: true });
 	});
 	const commands = new Map<string, Parameters<ExtensionAPI["registerCommand"]>[1]>();
+	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>();
 	// The live session seam a profile apply drives: Pi's own setModel and
 	// setThinkingLevel on the ExtensionAPI move the session the user is in.
 	const liveSwitches: Array<{ kind: "model"; provider: string; id: string } | { kind: "thinking"; level: string }> = [];
@@ -388,7 +389,7 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 	let thinkingRejects = false;
 	let liveThinking = "medium";
 	createGentleAiExtension({ nativeReviewCli: null })({
-		on() {},
+		on(name, handler) { handlers.set(name, handler as (event: unknown, ctx: ExtensionContext) => Promise<void>); },
 		registerTool() {},
 		registerCommand(name, command) { commands.set(name, command); },
 		setModel: async (model: { provider: string; id: string }) => { liveSwitches.push({ kind: "model", provider: model.provider, id: model.id }); return setModelResult; },
@@ -472,6 +473,7 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 		answerInputs(...answers: Array<string | undefined>) { inputAnswers.push(...answers); },
 		inputPrompts,
 		run: (name: string) => commands.get(name)!.handler("", ctx),
+		start: () => handlers.get("session_start")!({}, { ...ctx, sessionManager: undefined } as unknown as ExtensionContext),
 	};
 }
 
@@ -593,6 +595,71 @@ test("provider review roles skip migration and both projection paths even when d
 	await applyModelConfigAsync(fixture.root, { worker: { model: "openai/alpha" } });
 	assert.match(readFileSync(join(fixture.root, ".pi", "agents", "worker.md"), "utf8"), /model: openai\/alpha/);
 	assert.ok(JSON.parse(readFileSync(profilePaths[0], "utf8")).model_profiles.worker);
+});
+
+test("models cancellation and startup preserve retired legacy routing while migrating ordinary entries", async (t) => {
+	for (const flow of ["cancel", "startup"] as const) {
+		for (const mixed of [false, true]) {
+			await t.test(`${flow}/${mixed ? "mixed" : "retired-only"}`, async (t) => {
+				const fixture = routingConsumerFixture(t, mixed ? ["worker"] : []);
+				const agentPath = join(fixture.agentHome, "agents", "personal.md");
+				const agentBytes = "---\nname: sdd-apply\ndescription: Personal retired agent\nmodel: old/model\n---\nUser body\n";
+				writeMarkdown(agentPath, agentBytes);
+				const retired: Record<string, unknown> = Object.fromEntries(["sdd-apply", "sdd", "legacy.package.sdd-apply",
+					"sdd-legacy.worker", "sdd-orphan"].map((name) => [name, { model: "legacy/model", thinking: "high" }]));
+				retired["legacy.package.sdd-invalid"] = null;
+				retired["legacy.package.sdd-clear"] = {};
+				const globalPath = join(fixture.agentHome, "subagents.json");
+				const globalBytes = JSON.stringify({ unrelated: { keep: true }, model_profiles: {
+					"sdd-apply": { model: "old/model", effort: "low" },
+				} }, null, 2) + "\n";
+				writeMarkdown(globalPath, globalBytes);
+				if (mixed) {
+					writeMarkdown(join(fixture.root, ".pi", "agents", "packaged.md"),
+						"---\nname: worker\npackage: sdd-library\ndescription: Ordinary package\n---\nbody\n");
+				}
+				const ordinary = mixed ? {
+					worker: { model: "new/model", thinking: "high" },
+					"sdd-library.worker": { model: "new/model", thinking: "high" },
+					"orphan-worker": { model: "new/model", thinking: "high" },
+				} : {};
+				const settingsPath = join(fixture.root, ".pi", "settings.json");
+				const settings = { theme: "keep", subagents: { history: "keep", agentOverrides: { ...retired, ...ordinary } } };
+				const settingsBytes = JSON.stringify(settings, null, 2) + "\n";
+				writeMarkdown(settingsPath, settingsBytes);
+				if (flow === "cancel") await fixture.run("gentle:models");
+				else await fixture.start();
+				assert.equal(readFileSync(agentPath, "utf8"), agentBytes);
+				assert.equal(readFileSync(globalPath, "utf8"), globalBytes);
+				assert.deepEqual(JSON.parse(readFileSync(settingsPath, "utf8")), {
+					...settings, subagents: { ...settings.subagents, agentOverrides: retired },
+				});
+				const projectPath = join(fixture.root, ".pi", "subagents.json");
+				if (!mixed) {
+					assert.equal(readFileSync(settingsPath, "utf8"), settingsBytes);
+					assert.equal(existsSync(projectPath), false, "retired-only flow created project profiles");
+				} else {
+					const profiles = JSON.parse(readFileSync(projectPath, "utf8")).model_profiles;
+					for (const name of Object.keys(retired)) assert.equal(profiles[name], undefined, name);
+					for (const name of Object.keys(ordinary)) {
+						assert.deepEqual(profiles[name], { model: "new/model", effort: "high" }, name);
+					}
+				}
+				// An existing historical project profile is also unmanaged.
+				const historical = { unrelated: "keep", model_profiles: { "sdd-apply": { model: "old/project" } } };
+				const historicalBytes = JSON.stringify(historical, null, 2) + "\n";
+				writeMarkdown(projectPath, historicalBytes);
+				writeMarkdown(settingsPath, settingsBytes);
+				if (flow === "cancel") await fixture.run("gentle:models");
+				else await fixture.start();
+				if (!mixed) assert.equal(readFileSync(projectPath, "utf8"), historicalBytes);
+				const after = JSON.parse(readFileSync(projectPath, "utf8"));
+				assert.deepEqual(after.model_profiles["sdd-apply"], historical.model_profiles["sdd-apply"]);
+				assert.equal(after.unrelated, historical.unrelated);
+				assert.equal(readFileSync(globalPath, "utf8"), globalBytes);
+			});
+		}
+	}
 });
 
 test("models rejects invalid project routing with its selected source path", async (t) => {
@@ -1138,7 +1205,7 @@ test("retired SDD startup flag is not registered or imported", () => {
 	assert.doesNotMatch(source, /from ["']\.\.\/lib\/sdd-preflight\.ts["']/);
 });
 
-test("agent model discovery prioritizes Judgment Day agents", (t) => {
+test("agent model discovery prioritizes Judgment Day and excludes retired SDD", (t) => {
 	const root = mkdtempSync(join(tmpdir(), "gentle-pi-model-agents-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	writeMarkdown(join(root, "zeta.md"), "name: zeta\n");
@@ -1159,8 +1226,6 @@ test("agent model discovery prioritizes Judgment Day agents", (t) => {
 			"jd-judge-b",
 			"jd-fix-agent",
 			"alpha",
-			"sdd-apply",
-			"sdd-init",
 			"zeta",
 		],
 	);

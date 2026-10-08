@@ -613,3 +613,119 @@ test("a throwing post-append stability recheck is never adopted later", () => {
   armed = false;
   bound(controller.bind("again", {}), "again");
 });
+
+for (const operation of ["bind", "clear"] as const) {
+ test(`detach revokes pending ${operation} and initial lease without redirecting callbacks`, () => {
+  const f = fixture();
+  const owner = f.controller as typeof f.controller & {
+   detach(): void;
+   attach(
+    source: typeof f.source,
+    append: typeof f.append,
+    context: { reason: string },
+   ): typeof f.controller;
+  };
+  const selected =
+   operation === "bind" ? owner.bind("pending", {}) : owner.clear();
+  assert.equal(selected.status, "not-persisted");
+  assert.equal(typeof owner.detach, "function");
+  owner.detach();
+  owner.detach();
+  const length = f.rows.length;
+  assert.equal(owner.refresh().status, "indeterminate");
+  assert.equal(owner.bind("stale", {}).status, "indeterminate");
+  assert.equal(owner.clear().status, "indeterminate");
+  assert.equal(f.rows.length, length);
+  let calls = 0;
+  const current = owner.attach(
+   f.source,
+   (t, d) => {
+    calls++;
+    f.append(t, d);
+   },
+   { reason: "reload" },
+   { readFile: f.readFile },
+  );
+  assert.equal(current.refresh().status, "indeterminate");
+  assert.equal(current.bind("current", {}).status, "not-persisted");
+  assert.equal(owner.bind("old-generation", {}).status, "indeterminate");
+  assert.equal(calls, 1);
+  assert.equal(f.rows.length, length + 1);
+ });
+}
+test("detach retains observed established history and failed-ID exclusion after recovery", () => {
+ const f = fixture();
+ f.mode = "disk";
+ const owner = f.controller as typeof f.controller & {
+  detach(): void;
+  attach(
+   source: typeof f.source,
+   append: typeof f.append,
+   context: { reason: string },
+  ): typeof f.controller;
+ };
+ owner.bind("trusted", {});
+ f.mode = "throw";
+ owner.bind("failed", {});
+ f.save();
+ assert.equal(typeof owner.detach, "function");
+ owner.detach();
+ const current = owner.attach(
+  f.source,
+  f.append,
+  { reason: "reload" },
+  { readFile: f.readFile },
+ );
+ bound(current.refresh(), "trusted");
+ f.text = undefined;
+ f.rows = [];
+ assert.equal(current.refresh().status, "indeterminate");
+ f.mode = "normal";
+ assert.equal(
+  current.bind("unwritten-after-established-loss", {}).status,
+  "indeterminate",
+ );
+});
+for (const changed of ["data", "timestamp", "parentId", "extra"] as const) {
+ test(`same-ID ${changed} ambiguity survives detach, exact recovery and branch return`, () => {
+  const f = fixture();
+  f.mode = "disk";
+  let fail = false;
+  const append = (t: string, d: unknown) => {
+   if (!fail) return f.append(t, d);
+   const row = f.rows[0];
+   if (changed === "data") row.data.name = "FAILED";
+   if (changed === "timestamp") row.timestamp = "changed";
+   if (changed === "parentId") row.parentId = "unexpected-parent";
+   if (changed === "extra") row.extra = true;
+   f.save();
+   throw new Error("injected whole-record mutation");
+  };
+  const owner = createSessionProfileAppendController(f.source, append, {
+   readFile: () => f.text!,
+  }) as ReturnType<typeof createSessionProfileAppendController> & {
+   detach(): void;
+   attach(
+    source: typeof f.source,
+    appendEntry: (type: string, data: unknown) => void,
+    context: { reason: string },
+   ): typeof f.controller;
+  };
+  owner.bind("trusted", {});
+  fail = true;
+  assert.equal(owner.bind("failed", {}).status, "indeterminate");
+  const historical = f.rows.slice();
+  assert.equal(typeof owner.detach, "function");
+  owner.detach();
+  fail = false;
+  const current = owner.attach(
+   f.source,
+   append,
+   { reason: "reload" },
+   { readFile: f.readFile },
+  );
+  assert.equal(current.clear().status, "persisted");
+  f.rows = historical;
+  assert.equal(current.refresh().status, "indeterminate");
+ });
+}

@@ -2570,12 +2570,14 @@ function orchestratorSettingsPath(): string {
 function removeLegacyAgentOverridesFromSettings(
 	settingsPath: string,
 	settings: Record<string, unknown>,
+	preservedOverrides: Record<string, unknown>,
 ): void {
 	const subagents = isRecord(settings.subagents)
 		? { ...settings.subagents }
 		: undefined;
 	if (!subagents) return;
-	delete subagents.agentOverrides;
+	if (Object.keys(preservedOverrides).length > 0) subagents.agentOverrides = preservedOverrides;
+	else delete subagents.agentOverrides;
 	if (Object.keys(subagents).length > 0) settings.subagents = subagents;
 	else delete settings.subagents;
 	mkdirSync(dirname(settingsPath), { recursive: true });
@@ -2632,8 +2634,14 @@ function migrateLegacyProjectModelOverrides(cwd: string): number {
 		: undefined;
 	if (!agentOverrides) return 0;
 	const agentsByName = new Map(listDiscoverableAgents(cwd).map((agent) => [agent.name, agent]));
+	// An undiscovered retired identity is not a project-scoped agent. Leave
+	// its legacy value (even malformed/clear) and historical profiles unmanaged.
+	const preservedOverrides = Object.fromEntries(Object.entries(agentOverrides)
+		.filter(([name]) => !agentsByName.has(name) && /(?:^|\.)sdd(?:-|$)/.test(name)));
+	const preservedCount = Object.keys(preservedOverrides).length;
+	if (preservedCount > 0 && preservedCount === Object.keys(agentOverrides).length) return 0;
 	const migratableEntries = Object.entries(agentOverrides)
-		.filter(([name]) => !isProviderReviewRole(name))
+		.filter(([name]) => !isProviderReviewRole(name) && !Object.hasOwn(preservedOverrides, name))
 		.map(([name, value]) => ({ name, entry: normalizeRoutingEntry(value) }))
 		.filter((item): item is { name: string; entry: AgentRoutingEntry } =>
 			item.entry !== undefined && !isClearRoutingEntry(item.entry),
@@ -2649,7 +2657,7 @@ function migrateLegacyProjectModelOverrides(cwd: string): number {
 		const source = agentsByName.get(name)?.source ?? "project";
 		if (updateSubagentModelProfile(cwd, source, name, entry, { preserveExisting: true })) migrated += 1;
 	}
-	removeLegacyAgentOverridesFromSettings(settingsPath, settings);
+	removeLegacyAgentOverridesFromSettings(settingsPath, settings, preservedOverrides);
 	return migrated;
 }
 

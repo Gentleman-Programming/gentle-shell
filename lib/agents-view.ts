@@ -776,8 +776,13 @@ export class AgentsView {
 	}
 
 	private scrollBy(delta: number): void {
+		const task = this.selectedTask();
+		const layout = this.layout();
+		const lines = task ? this.threadLines(this.remoteThreads.get(task.id) ?? this.deps.store.thread(task.id), layout.threadWidth) : [];
+		const maxScroll = Math.max(0, lines.length - Math.max(0, layout.bodyRows - 1));
 		this.follow = false;
-		this.scroll = Math.max(0, this.scroll + delta);
+		// Clamp the current visible position before moving, including after resize.
+		this.scroll = Math.max(0, Math.min(maxScroll, Math.min(this.scroll, maxScroll) + delta));
 		this.deps.requestRender();
 	}
 

@@ -298,6 +298,33 @@ test("AgentsView keys move the selection, scroll, follow, cancel, open, and clos
 	assert.deepEqual(events, ["cancel:a", "open:a", "close"]);
 });
 
+test("AgentsView clamps thread scrolling at the bottom so the first upward key moves", () => {
+	for (const [down, up] of [["\x0a", "\x0b"], ["\x1b[6~", "\x1b[5~"]]) {
+		const { store, view } = harness(8);
+		try {
+			store.add(task("a"));
+			for (let i = 0; i < 30; i++) store.apply("a", { type: TASK_EVENT.TEXT, text: `line ${i}\n` }, 2000);
+			const bottom = view.render(80).slice(1, 5);
+			assert.match(bottom.join("\n"), /line 29/);
+			view.handleInput(up);
+			const previousPage = view.render(80).slice(1, 5);
+			assert.notDeepEqual(previousPage, bottom, "ordinary upward scrolling still moves one page");
+			view.handleInput(down);
+			assert.deepEqual(view.render(80).slice(1, 5), bottom, "ordinary downward scrolling returns to the bottom");
+			for (let i = 0; i < 7; i++) {
+				view.handleInput(down);
+				assert.deepEqual(view.render(80).slice(1, 5), bottom, "extra downward presses leave the bottom visible");
+			}
+			view.handleInput(up);
+			assert.deepEqual(view.render(80).slice(1, 5), previousPage, "the first upward press moves immediately without consuming hidden offset");
+			view.handleInput("f");
+			assert.deepEqual(view.render(80).slice(1, 5), bottom, "follow still restores the tail");
+		} finally {
+			view.dispose();
+		}
+	}
+});
+
 test("AgentsView subscribes only to the selected task and survives an empty store", () => {
 	const { store, view, renders } = harness(6);
 	assert.match(stripAnsi(view.render(60)[1]), /no tasks yet/);

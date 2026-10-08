@@ -9,8 +9,10 @@ import { childPackageExtensionArgs } from "./child-package-injection.ts";
 import { AGENT_MODE, formatModelRef, type AgentDefinition, type AgentMode, type ModelRef } from "./agents-config.ts";
 import { CHILD_QUERY_MAX_INFLIGHT, CHILD_QUERY_TIMEOUT_MS, parseChildFrame, validChildMessage, validChildQueryId } from "./agents-messaging.ts";
 import { ParentStandingReviewPermissionBroker } from "./review-session-standing-permission-ipc.ts";
-import { isFinished, normalizeRpcEvent, ToolArgumentProgress, TASK_EVENT, TASK_STATUS, taskLabel, type AskRequest, type ChildResponseObservation, type TaskRecord, type TaskStore } from "./agents-protocol.ts";
+import { isFinished, normalizeRpcEvent, ToolArgumentProgress, TASK_EVENT, TASK_STATUS, taskLabel, type AskRequest, type ChildResponseObservation, type TaskRecord, type TaskStore, type SubagentSpecialization, ALLOWED_READONLY_EXTENSIONS } from "./agents-protocol.ts";
 import { WriterSurfaceRegistry, writerSurfaceConflictMessage } from "./writer-surfaces.ts";
+
+export { ALLOWED_READONLY_EXTENSIONS, type SubagentSpecialization };
 
 // Gentle Agents runner. Every subagent is its own `pi --mode rpc` process:
 // the host never runs subagent work on the TUI thread. It writes JSON
@@ -116,6 +118,7 @@ export interface RunnerHooks {
 }
 
 export interface TaskRequest {
+	specialization?: SubagentSpecialization;
 	agent: AgentDefinition;
 	prompt: string;
 	label: string | undefined;
@@ -269,13 +272,52 @@ export function formatChildExit(code: number | null | undefined, signal?: string
 
 const hostProcess: ProcessControl = { platform: process.platform, kill: (pid, signal) => process.kill(pid, signal) };
 
+export function composeSpecializationPrompt(specialization: SubagentSpecialization): string {
+	const lines = [
+		"## DYNAMIC SPECIALIZATION OVERLAY (Active for this execution)",
+	];
+	if (specialization.label && specialization.label.trim()) {
+		lines.push(`- Specialized Role: ${specialization.label.trim()}`);
+	}
+	lines.push(`- Specific Directives: ${specialization.instructionsOverlay}`);
+	if (specialization.outputContract && specialization.outputContract.trim()) {
+		lines.push(`- Output Contract: ${specialization.outputContract.trim()}`);
+	}
+	lines.push("Respect this specialization as your primary lens while strictly adhering to your base constraints.");
+	return lines.join("\n");
+}
+
+export function childSystemPrompt(request: TaskRequest): string {
+	const base = request.agent.instructions ?? "";
+	if (!request.specialization) return base;
+	const overlay = composeSpecializationPrompt(request.specialization);
+	return base.length > 0 ? `${base}\n\n${overlay}` : overlay;
+}
+
+export function validateSpecializationSandbox(agent: AgentDefinition, specialization?: SubagentSpecialization): void {
+	if (!specialization || !specialization.extraTools || specialization.extraTools.length === 0) return;
+	const tools = agent.tools ?? [];
+	const isReadOnly = !tools.includes("write") && !tools.includes("edit");
+	if (isReadOnly) {
+		const allowedSet = new Set(ALLOWED_READONLY_EXTENSIONS);
+		for (const tool of specialization.extraTools) {
+			if (!allowedSet.has(tool)) {
+				throw new Error(`Specialization tool "${tool}" is not allowed for read-only agent "${agent.name}". Allowed read-only extensions: ${ALLOWED_READONLY_EXTENSIONS.join(", ")}`);
+			}
+		}
+	}
+}
+
 // The --tools value, or undefined when Pi keeps its default tools.
 function requestedTools(request: TaskRequest): string | undefined {
-	const tools = request.agent.tools.length > 0 ? [...new Set([...request.agent.tools, PARENT_NOTIFICATION_TOOL])] : DEFAULT_TOOLS;
+	const extraTools = request.specialization?.extraTools ?? [];
+	const hasTools = request.agent.tools.length > 0 || extraTools.length > 0;
+	const tools = hasTools ? [...new Set([...request.agent.tools, ...extraTools, PARENT_NOTIFICATION_TOOL])] : DEFAULT_TOOLS;
 	return tools.length > 0 ? tools.join(",") : undefined;
 }
 
 export function childArguments(request: TaskRequest, instructionsPath?: string): string[] {
+	validateSpecializationSandbox(request.agent, request.specialization);
 	const args = ["--mode", "rpc", "--session-dir", request.sessionDir];
 	args.push(...childPackageExtensionArgs({ noExtensions: request.noExtensions === true, extensionPaths: request.extensionPaths ?? [] }));
 	if (request.resumeSessionPath) args.push("--session", request.resumeSessionPath);
@@ -283,10 +325,11 @@ export function childArguments(request: TaskRequest, instructionsPath?: string):
 	else if (request.thinking) args.push("--thinking", request.thinking);
 	const tools = requestedTools(request);
 	if (tools !== undefined) args.push("--tools", tools);
+	const systemPrompt = childSystemPrompt(request);
 	if (instructionsPath) {
 		args.push("--append-system-prompt", instructionsPath);
-	} else if (request.agent.instructions.length > 0) {
-		args.push("--append-system-prompt", request.agent.instructions);
+	} else if (systemPrompt.length > 0) {
+		args.push("--append-system-prompt", systemPrompt);
 	}
 	return args;
 }
@@ -362,6 +405,7 @@ export class AgentRunner {
 		const task: TaskRecord = {
 			id: `${now.toString(36)}-${this.counter.toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
 			agent: request.agent.name,
+			...(request.specialization ? { specialization: request.specialization } : {}),
 			mode: request.mode,
 			prompt: request.prompt,
 			label: taskLabel(request.prompt, request.label),
@@ -390,6 +434,7 @@ export class AgentRunner {
 	// Check and claim happen in this one synchronous call, so two launches can
 	// never both pass admission for overlapping surfaces; finish() releases.
 	run(request: TaskRequest): TaskRecord {
+		validateSpecializationSandbox(request.agent, request.specialization);
 		if (request.writerSurfaces) {
 			const conflicts = this.writers.conflicts(request.writerRoot ?? request.cwd, request.writerSurfaces);
 			if (conflicts.length) throw new Error(writerSurfaceConflictMessage(conflicts));

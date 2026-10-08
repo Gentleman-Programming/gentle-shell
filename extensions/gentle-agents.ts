@@ -30,8 +30,8 @@ import { AGENT_MODE, discoverAgents, formatModelRef, loadAgentsConfig, resolveAg
 import { readSessionProfileBinding, sessionOrPinModelProfiles } from "../lib/session-profile-binding.ts";
 import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-policy.ts";
 import { installBackgroundCacheWarming } from "../lib/background-cache-warming.ts";
-import { isFinished, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
-import { AgentRunner, piCommand, abortReasonText, REQUESTED_TOOLS_ENV, type AskAnswer, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
+import { isFinished, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TASK_STATUS, TaskStore, type AskRequest, type SubagentSpecialization, type TaskRecord } from "../lib/agents-protocol.ts";
+import { AgentRunner, piCommand, abortReasonText, REQUESTED_TOOLS_ENV, validateSpecializationSandbox, type AskAnswer, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
 import { parseChildPackageInjection } from "../lib/child-package-injection.ts";
 import { ChildMessenger, type IpcEndpoint } from "../lib/agents-messaging.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
@@ -114,6 +114,46 @@ export const PARENT_WAKE_GRACE_MS = 30_000;
 const PARENT_DELIVERY_RETRY_LIMIT = 3;
 
 const retiredSddAgent = (name: string): boolean => /^sdd(?:-|$)/.test(name);
+
+const SPECIALIZATION_SCHEMA = {
+	type: "object",
+	additionalProperties: false,
+	required: ["instructionsOverlay"],
+	properties: {
+		label: { type: "string", description: "Concise badge / label for TUI visualization (e.g. 'ODD Architect')" },
+		instructionsOverlay: { type: "string", description: "Domain-specific directives and focus instructions merged into the subagent prompt" },
+		extraTools: { type: "array", items: { type: "string" }, description: "Controlled extension of read-only tools" },
+		outputContract: { type: "string", description: "Expected structure or template for the return report" },
+	},
+};
+
+export function parseSpecialization(value: unknown): SubagentSpecialization | undefined {
+	if (value === undefined) return undefined;
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error("specialization must be an object.");
+	}
+	const spec = value as Record<string, unknown>;
+	if (typeof spec.instructionsOverlay !== "string" || spec.instructionsOverlay.trim().length === 0) {
+		throw new Error("specialization requires non-empty instructionsOverlay.");
+	}
+	if (spec.label !== undefined && typeof spec.label !== "string") {
+		throw new Error("specialization label must be a string.");
+	}
+	if (spec.outputContract !== undefined && typeof spec.outputContract !== "string") {
+		throw new Error("specialization outputContract must be a string.");
+	}
+	if (spec.extraTools !== undefined) {
+		if (!Array.isArray(spec.extraTools) || !spec.extraTools.every((t) => typeof t === "string")) {
+			throw new Error("specialization extraTools must be an array of strings.");
+		}
+	}
+	return {
+		...(spec.label !== undefined ? { label: spec.label as string } : {}),
+		instructionsOverlay: spec.instructionsOverlay as string,
+		...(spec.extraTools !== undefined ? { extraTools: [...(spec.extraTools as string[])] } : {}),
+		...(spec.outputContract !== undefined ? { outputContract: spec.outputContract as string } : {}),
+	};
+}
 
 export interface SessionTransportRegistry {
 	list(excludeSessionId?: string): Promise<readonly SessionPresenceCandidate[]>;
@@ -446,6 +486,7 @@ export async function answerThroughUi(ui: ExtensionContext["ui"] | undefined, as
 }
 
 export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<AgentsDeps> = {}): void {
+	// SAFETY: process with process.send implements IpcEndpoint in Node child processes
 	const childIpc = ownedChildIpc(env, overrides.childIpc ?? (process.send ? process as unknown as IpcEndpoint : undefined));
 	if (env.GENTLE_PI_AGENTS_CHILD === "1") {
 		// A stale managed-SDD child must never inherit unrestricted ordinary tools.
@@ -587,7 +628,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// started before /new or /resume stays in the store and comes back with
 	// its session. Before the first session_start there is nothing to scope by.
 	const activeSessionId = (): string | undefined => (sessions === undefined ? undefined : sessions.getSessionId() ?? "");
-	// Pi 0.86.1 adds this event; the package's pinned 0.85.1 types predate it.
+	// SAFETY: Pi 0.86.1 adds this event; the package's pinned 0.85.1 types predate it.
 	installBackgroundCacheWarming(pi as unknown as Parameters<typeof installBackgroundCacheWarming>[0], () => ({
 		sessionId: activeSessionId(),
 		ownedTaskIds,
@@ -622,9 +663,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				if (closePromise) return closePromise;
 				closePromise = Promise.resolve().then(async () => {
 					await Promise.allSettled([
-						(async () => { try { client?.close(); } catch {} })(),
-						(async () => { try { await listener?.close(); } catch {} })(),
-						(async () => { try { if (registry && (!listener || !listener.closesRegistry)) await registry.close?.(); } catch {} })(),
+						(async () => { try { client?.close(); } catch { /* ignore */ } })(),
+						(async () => { try { await listener?.close(); } catch { /* ignore */ } })(),
+						(async () => { try { if (registry && (!listener || !listener.closesRegistry)) await registry.close?.(); } catch { /* ignore */ } })(),
 					]);
 				});
 				return closePromise;
@@ -1521,7 +1562,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 
 	const roots = (ctx: ExtensionContext) => ({ cwd: ctx.sessionManager.getCwd(), home: deps.home, agentHome });
 
-	const buildRequest = async (ctx: ExtensionContext, agent: AgentDefinition, prompt: string, label: string | undefined, context: string | undefined, mode: AgentMode, resume?: string, workspaceRoot?: string, signal?: AbortSignal, repositoryRoot?: string): Promise<TaskRequest> => {
+	const buildRequest = async (ctx: ExtensionContext, agent: AgentDefinition, prompt: string, label: string | undefined, context: string | undefined, mode: AgentMode, resume?: string, workspaceRoot?: string, signal?: AbortSignal, repositoryRoot?: string, specialization?: SubagentSpecialization): Promise<TaskRequest> => {
 		if (retiredSddAgent(agent.name)) throw new Error("Retired SDD agents cannot be dispatched.");
 		if (![AGENT_MODE.TASK, AGENT_MODE.BACKGROUND].includes(mode)) throw new Error("Subagent mode must be task or background.");
 		if (isSingleShotMode(ctx.mode) && mode === AGENT_MODE.BACKGROUND) throw new Error(SINGLE_SHOT_BACKGROUND_ERROR);
@@ -1627,6 +1668,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		}
 		if (signal?.aborted) throw new Error("Subagent launch aborted before queueing.");
 		mkdirSync(sessionDir, { recursive: true });
+		// SAFETY: parent sessionManager implements ReviewSessionManager in review integration host
 		const parentSessionManager = ctx.sessionManager as unknown as ReviewSessionManager;
 		const parentSessionId = ctx.sessionManager.getSessionId() ?? "";
 		const parentWorktreeRoot = ctx.sessionManager.getCwd();
@@ -1638,6 +1680,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			prompt,
 			label,
 			context,
+			...(specialization === undefined ? {} : { specialization }),
 			mode,
 			cwd: target ?? parentWorktreeRoot,
 			parentSessionId,
@@ -2033,6 +2076,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				work: workDescriptorSchema,
 				workspace_root: { type: "string", description: "Optional canonical main or linked Git worktree within the parent's same clone only; mutually exclusive with repository_root." },
 				repository_root: { type: "string", description: "Optional canonical independent Git repository; requires direct interactive session-scoped consent before queueing; mutually exclusive with workspace_root." },
+				specialization: SPECIALIZATION_SCHEMA,
 				mode: { type: "string", enum: ["task", "background"], description: "task waits for the result (default); background returns immediately." },
 			},
 		},
@@ -2056,11 +2100,18 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				policy: resolveBackgroundSubagentsPolicy(ctx.cwd).policy,
 				parentMode: ctx.mode,
 			});
+			let specialization: SubagentSpecialization | undefined;
+			try {
+				specialization = parseSpecialization(params.specialization);
+				if (specialization) validateSpecializationSandbox(agent, specialization);
+			} catch (error) {
+				return text(`Error: ${error instanceof Error ? error.message : String(error)}`, { error: "invalid specialization" });
+			}
 			const workspaceRoot = typeof params.workspace_root === "string" && params.workspace_root !== "" ? params.workspace_root : undefined;
 			const repositoryRoot = typeof params.repository_root === "string" && params.repository_root !== "" ? params.repository_root : undefined;
 			const publication: { status: "recorded" | "unavailable" } = { status: "unavailable" };
 			const current = () => ctx.sessionManager === manager && manager.getSessionId() === sessionId && !!activeTransportFor(ctx);
-			const result = await launch(ctx, await buildRequest(ctx, agent, String(params.task ?? ""), typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, undefined, workspaceRoot, signal, repositoryRoot), signal, work ? id => {
+			const result = await launch(ctx, await buildRequest(ctx, agent, String(params.task ?? ""), typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, undefined, workspaceRoot, signal, repositoryRoot, specialization), signal, work ? id => {
 				try {
 					if (!current()) return;
 					const state = stateCache.get(manager)?.state ?? {};
@@ -2136,7 +2187,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			const mode = (params.mode as AgentMode | undefined) ?? (previous.mode as AgentMode);
 			const foreignContinuation = foreignTasks.has(previous.id);
 			const prompt = inheritAllowedEditSurfaces(previous.agent, String(params.prompt ?? ""), params.context, previous.prompt);
-			return launch(ctx, await buildRequest(ctx, agent, prompt, typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, previous.sessionPath, foreignContinuation ? undefined : previous.cwd, signal, foreignContinuation ? previous.cwd : undefined), signal);
+			return launch(ctx, await buildRequest(ctx, agent, prompt, typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, previous.sessionPath, foreignContinuation ? undefined : previous.cwd, signal, foreignContinuation ? previous.cwd : undefined, previous.specialization), signal);
 		},
 	);
 

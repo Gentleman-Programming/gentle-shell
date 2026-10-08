@@ -71,6 +71,10 @@ export interface AgentsConfig {
 	modelProfiles: Record<string, ModelProfile>;
 	stallTimeoutMs: number;
 	toolStallTimeoutMs: number;
+	// Total-work ceilings. Unset means the runner is unbounded, which stays the
+	// default; both are optional settings rather than values with a default.
+	maxTurns: number | undefined;
+	maxTotalTokens: number | undefined;
 	maxConcurrency: number;
 	historyMaxTasks: number;
 }
@@ -239,6 +243,12 @@ function positiveInteger(value: unknown, fallback: number): number {
 	return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
+// Unlike positiveInteger, an absent or invalid value here means "no ceiling",
+// which is a meaningful setting rather than a value to replace with a default.
+function optionalPositiveInteger(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
 function parseProfiles(value: unknown): Record<string, ModelProfile> {
 	const profiles: Record<string, ModelProfile> = {};
 	if (!value || typeof value !== "object") return profiles;
@@ -278,6 +288,11 @@ export function parseAgentsConfig(global: RawConfig, project: RawConfig): Agents
 		// longer ceiling; the idle budget still bounds a genuinely quiet child and
 		// remains the hard floor for this one.
 		toolStallTimeoutMs: Math.max(positiveInteger(merged.tool_stall_timeout_ms, DEFAULT_TOOL_STALL_TIMEOUT_MS), stallTimeoutMs),
+		// The silence budgets above bound a quiet child; these bound what a busy one
+		// may spend in total. Not configured means no ceiling, so an existing file
+		// keeps today's behavior until an operator opts in.
+		maxTurns: optionalPositiveInteger(merged.max_turns),
+		maxTotalTokens: optionalPositiveInteger(merged.max_total_tokens),
 		maxConcurrency: positiveInteger(merged.max_concurrency, DEFAULT_MAX_CONCURRENCY),
 		historyMaxTasks: positiveInteger(merged.history_max_tasks, DEFAULT_HISTORY_MAX_TASKS),
 	};

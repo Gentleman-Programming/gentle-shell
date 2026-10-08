@@ -470,9 +470,6 @@ function copyDirectoryFiles(
 				delete manifest.assets[ownershipKey];
 				skipped += 1;
 				continue;
-			} else if (ownershipKey === "agents/sdd-research.md" && installedContent !== undefined) {
-				// Keep routing adopted by the legacy migration on subsequent refreshes.
-				nextSource = migrateLegacyAssetContent(ownershipKey, installedContent, source);
 			}
 		}
 		writeFileSync(targetPath, nextSource);
@@ -480,6 +477,17 @@ function copyDirectoryFiles(
 		copied += 1;
 	}
 	return { copied, skipped };
+}
+
+function forgetSddAssetOwnership(manifest: ManagedAssetsManifest): void {
+	// SDD files are no longer package-managed. Forget ownership without
+	// inspecting or modifying installed files, regardless of selected owners.
+	for (const key of Object.keys(manifest.assets)) {
+		if (key.startsWith("agents/sdd-") || key.startsWith("chains/sdd-") ||
+			key.startsWith("gentle-ai/support/sdd-")) {
+			delete manifest.assets[key];
+		}
+	}
 }
 
 // Assets retired by gentle-pi#311 P5: the Pi-owned adversarial review actors.
@@ -493,16 +501,6 @@ function copyDirectoryFiles(
 // history); user-modified copies are left in place and only lose managed
 // ownership.
 const RETIRED_MANAGED_ASSETS = Object.freeze([
-	// Canonical spec composition now belongs to archive (gentle-pi#1051).
-	"agents/sdd-sync.md",
-	...[
-		"apply", "archive", "design", "explore", "init", "onboard", "proposal",
-		"remediate", "research", "spec", "status", "tasks", "verify",
-	].map(name => `agents/sdd-${name}.md`),
-	"chains/sdd-full.chain.md",
-	"chains/sdd-plan.chain.md",
-	"chains/sdd-verify.chain.md",
-	"gentle-ai/support/sdd-status-contract.md",
 	"agents/review-refuter.md",
 	"agents/review-validator.md",
 ]);
@@ -514,7 +512,7 @@ function removeRetiredManagedAssets(
 ): void {
 	let legacyHashes: Record<string, readonly string[]> | undefined;
 	for (const ownershipKey of RETIRED_MANAGED_ASSETS) {
-		if (selected && !selected.has(ownershipKey) && !(ownershipKey.includes("sdd-") && selected.has("gentle-ai/support/strict-tdd.md"))) continue;
+		if (selected && !selected.has(ownershipKey)) continue;
 		const installedPath = join(agentHome, ...ownershipKey.split("/"));
 		if (!existsSync(installedPath)) {
 			delete manifest.assets[ownershipKey];
@@ -564,6 +562,7 @@ export function installPackageAssets(
 				(cachedLegacyAssetHashes ??= readLegacyManagedAssetHashes());
 		}
 		const manifest = readManagedAssetsManifest(manifestPath);
+		forgetSddAssetOwnership(manifest);
 		removeRetiredManagedAssets(agentHome, manifest, selected);
 		const agents = copyDirectoryFiles(
 			join(ASSETS_DIR, "agents"),

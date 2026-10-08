@@ -916,7 +916,7 @@ test("packed tarball excludes retired workflow paths while source retains legacy
 	}
 });
 
-test("legacy research retirement requires exact ownership and preserves edited copies", () => {
+test("legacy research copies remain byte-identical and unmanaged, including edited copies", () => {
 	const legacy = readFileSync(join(PACKAGE_ROOT, "tests/fixtures/legacy/sdd-research-v2.5.0.md"), "utf8");
 	const history = JSON.parse(readFileSync(join(PACKAGE_ROOT, "assets", "migrations", "managed-assets-v2.5.0.json"), "utf8"));
 	assert.equal(sha256(legacy), history.assets["agents/sdd-research.md"]);
@@ -927,8 +927,7 @@ test("legacy research retirement requires exact ownership and preserves edited c
 			const content = edited ? `${legacy}\nUser research restrictions.\n` : legacy;
 			writeFileSync(target, content);
 			installPackageAssets(agentHome, true);
-			assert.equal(existsSync(target), edited);
-			if (edited) assert.equal(readFileSync(target, "utf8"), content);
+			assert.deepEqual(readFileSync(target), Buffer.from(content));
 			assert.equal(installedAssetManifest(agentHome).assets["agents/sdd-research.md"], undefined);
 		});
 	}
@@ -1818,7 +1817,7 @@ test("package verification no longer requires the retired remediation actor", ()
 	assert.doesNotMatch(readFileSync(join(PACKAGE_ROOT, "scripts/verify-package-files.mjs"), "utf8"), /^\s*"assets\/agents\/sdd-remediate\.md",?$/m);
 });
 
-test("package installation retires owned sync but preserves modified copies and unrelated owners", () => {
+test("package installation forgets sync ownership but preserves owned and modified copies and unrelated owners", () => {
 	withIsolatedAssetHome((agentHome) => {
 		installPackageAssets(agentHome, false);
 		const path = join(agentHome, "agents/sdd-sync.md");
@@ -1826,15 +1825,18 @@ test("package installation retires owned sync but preserves modified copies and 
 		const legacy = "Previously managed sync executor\n";
 		const manifest = installedAssetManifest(agentHome);
 		manifest.assets["agents/sdd-sync.md"] = sha256(legacy);
+		manifest.assets["unknown/user-asset.md"] = sha256("Unrelated ownership\n");
 		writeFileSync(path, legacy);
 		writeFileSync(manifestPath, JSON.stringify(manifest));
 		installPackageAssets(agentHome, true, ["delegation"]);
-		assert.equal(existsSync(path), false);
+		assert.deepEqual(readFileSync(path), Buffer.from(legacy));
 		assert.equal(installedAssetManifest(agentHome).assets["agents/sdd-sync.md"], undefined);
+		assert.equal(installedAssetManifest(agentHome).assets["unknown/user-asset.md"], manifest.assets["unknown/user-asset.md"]);
 		writeFileSync(path, "User-modified sync instructions\n");
 		writeFileSync(manifestPath, JSON.stringify(manifest));
 		installPackageAssets(agentHome, true, ["delegation"]);
-		assert.equal(readFileSync(path, "utf8"), "User-modified sync instructions\n");
+		assert.deepEqual(readFileSync(path), Buffer.from("User-modified sync instructions\n"));
 		assert.equal(installedAssetManifest(agentHome).assets["agents/sdd-sync.md"], undefined);
+		assert.equal(installedAssetManifest(agentHome).assets["unknown/user-asset.md"], manifest.assets["unknown/user-asset.md"]);
 	});
 });

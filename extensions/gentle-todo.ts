@@ -24,13 +24,16 @@ import {
 // Gentle Todo: the task list the model keeps while it works, drawn as a
 // Gentle Shell card above the editor. Three things keep it current that a
 // static tool description cannot: `write` replaces the whole list in one
-// call, every turn's system prompt carries the open tasks and the rules, and
+// call, each run's system prompt carries the open tasks and the rules, and
 // a list that goes untouched while tasks stay open is marked stale for both
-// the human and the model.
+// the human and the model. Long runs also receive one request-local reminder
+// after several tool-use turns, without waking the agent or changing tasks.
 
 const WIDGET_KEY = "gentle-todo";
 const STATUS_ENUM = ["pending", "in_progress", "blocked", "done", "dropped"];
 const COLLAPSE_KEY_DEFAULT = "ctrl+shift+t";
+const REMIND_AFTER_TOOL_TURNS = 4;
+const TODO_REMINDER = "The todo plan has not been reviewed during several tool-use turns. Check whether it still matches the work performed and update tasks where needed. Do not mark work done without verification.";
 const TOOL_PARAMETERS = {
 	type: "object",
 	additionalProperties: false,
@@ -74,6 +77,10 @@ export function todoCollapseKey(env: NodeJS.ProcessEnv = process.env): string | 
 interface TodoSession {
 	state: TodoState;
 	turn: number;
+	/** Separate from the existing run-based card freshness. */
+	toolTurnsSinceWrite: number;
+	reminded: boolean;
+	wroteThisTurn: boolean;
 	collapsed: boolean;
 	/** A finished list stays on screen for the turn it finished in, then clears. */
 	clearOnNextTurn: boolean;
@@ -95,7 +102,7 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		const key = sessionKey(ctx);
 		let current = sessions.get(key);
 		if (!current) {
-			current = { state: emptyTodo(), turn: 0, collapsed: false, clearOnNextTurn: false, ui: undefined, host: undefined, tui: undefined };
+			current = { state: emptyTodo(), turn: 0, toolTurnsSinceWrite: 0, reminded: false, wroteThisTurn: false, collapsed: false, clearOnNextTurn: false, ui: undefined, host: undefined, tui: undefined };
 			sessions.set(key, current);
 		}
 		return current;
@@ -203,6 +210,11 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 			if (!result.error) {
 				current.state = result.state;
 				current.clearOnNextTurn = false;
+				if (params.action !== "list") {
+					current.toolTurnsSinceWrite = 0;
+					current.reminded = false;
+					current.wroteThisTurn = true;
+				}
 				if (current.tui) invalidateSidebar(current.tui);
 			}
 			return {
@@ -228,6 +240,9 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		const replayed = replayTodo(ctx.sessionManager.getBranch());
 		current.state = replayed.tasks.length > 0 && todoSummary(replayed).open === 0 ? { ...replayed, tasks: [] } : replayed;
 		current.turn = ctx.sessionManager.getBranch().filter((entry) => (entry as { type?: string }).type === "message" && (entry as { message?: { role?: string } }).message?.role === "user").length;
+		current.toolTurnsSinceWrite = 0;
+		current.reminded = false;
+		current.wroteThisTurn = false;
 		current.ui = ctx.hasUI ? ctx.ui : undefined;
 		show(current);
 	});
@@ -251,6 +266,28 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		// systemPrompt, so the open-tasks block goes through appendSystemPrompt.
 		appendSystemPromptOnce(event.systemPromptOptions, block);
 		return undefined;
+	});
+
+	pi.on("turn_end", (event, ctx) => {
+		const current = session(ctx);
+		// A turn containing a valid todo write is already reconciled. Failed
+		// writes and list reads deliberately do not refresh this counter.
+		if (!current.wroteThisTurn && event.message.role === "assistant" && event.message.content.some((part) => part.type === "toolCall")) {
+			current.toolTurnsSinceWrite += 1;
+		}
+		current.wroteThisTurn = false;
+	});
+
+	pi.on("context", (event, ctx) => {
+		const current = session(ctx);
+		if (current.reminded || current.toolTurnsSinceWrite < REMIND_AFTER_TOOL_TURNS) return undefined;
+		if (!current.state.tasks.some((task) => task.status === "pending" || task.status === "in_progress")) return undefined;
+		current.reminded = true;
+		// Context transforms are request-local: no transcript entry, UI
+		// notification, continuation or provider-specific wake is needed.
+		return {
+			messages: [...event.messages, { role: "custom" as const, customType: "gentle-todo-reminder", content: TODO_REMINDER, display: false, timestamp: Date.now() }],
+		};
 	});
 
 	pi.on("tool_execution_end", (event, ctx) => {

@@ -269,6 +269,35 @@ function sessionCost(ctx: ExtensionContext): number {
 	return total;
 }
 
+type ShellSessionStats = { costTotal: number; usage: ReturnType<ExtensionContext["getContextUsage"]> };
+const shellSessionStats = new WeakMap<object, {
+	sessionId: string | undefined;
+	leafId: string | null;
+	entryCount: number | undefined;
+	model: ExtensionContext["model"];
+	contextWindow: number | undefined;
+	stats: ShellSessionStats;
+}>();
+
+function sessionStats(ctx: ExtensionContext): ShellSessionStats {
+	const manager = ctx.sessionManager as ExtensionContext["sessionManager"] & { getEntryCount?(): number };
+	const compute = (): ShellSessionStats => ({ costTotal: sessionCost(ctx), usage: ctx.getContextUsage() });
+	// Append-only session entries move the leaf, including compaction and branch
+	// switches. Older/test hosts without that identity must stay uncached.
+	if (typeof manager.getLeafId !== "function") return compute();
+	const sessionId = manager.getSessionId();
+	const leafId = manager.getLeafId();
+	const entryCount = manager.getEntryCount?.();
+	const model = ctx.model;
+	const contextWindow = model?.contextWindow;
+	const cached = shellSessionStats.get(manager);
+	if (cached && cached.sessionId === sessionId && cached.leafId === leafId &&
+		cached.entryCount === entryCount && cached.model === model && cached.contextWindow === contextWindow) return cached.stats;
+	const stats = compute();
+	shellSessionStats.set(manager, { sessionId, leafId, entryCount, model, contextWindow, stats });
+	return stats;
+}
+
 export function buildShellBarModel(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
@@ -276,7 +305,7 @@ export function buildShellBarModel(
 	options: BuildOptions = {},
 ): ShellBarModel {
 	const home = options.home ?? os.homedir();
-	const usage = ctx.getContextUsage();
+	const { usage, costTotal } = sessionStats(ctx);
 	const model = ctx.model;
 	const statuses = Array.from(footerData.getExtensionStatuses().entries())
 		.filter(([key]) => options.jobs === undefined || key !== JOBS_STATUS_KEY)
@@ -292,7 +321,7 @@ export function buildShellBarModel(
 		effort: model?.reasoning ? pi.getThinkingLevel() : undefined,
 		contextPercent: usage?.percent ?? null,
 		contextWindow: usage?.contextWindow ?? model?.contextWindow ?? 0,
-		costTotal: sessionCost(ctx),
+		costTotal,
 		subscription: model ? ctx.modelRegistry.isUsingOAuth(model) : false,
 		usage: options.usage,
 		...(options.jobs !== undefined ? { jobs: options.jobs } : {}),

@@ -379,3 +379,93 @@ test("a done todo wraps to the float body so the strikethrough never re-wraps", 
 	assertFloatRows(lines, 40);
 	for (const row of lines.slice(3, -1)) assert.match(stripAnsi(row), /^ ▎ [✓ ] ~[^~]+~ +$/u, "each physical row closes its own strikethrough");
 });
+
+// #1814 dropped: terminal, never counts as open, reads apart from done.
+// #1820 blocked: open but not actionable, always carries its reason.
+
+test("applyTodo accepts dropped and blocked, maps cancel vocabulary to dropped, and names every status on an unknown one", () => {
+	const { state, error } = applyTodo(
+		emptyTodo(),
+		{ action: "write", tasks: [{ title: "Old plan", status: "dropped" }, { title: "Deploy", status: "blocked", note: "waiting for an admin" }, { title: "A", status: "cancelled" }, { title: "B", status: "canceled" }, { title: "C", status: "abandoned" }] },
+		1,
+	);
+	assert.equal(error, undefined);
+	assert.deepEqual(state.tasks.map((task) => task.status), [TODO_STATUS.DROPPED, TODO_STATUS.BLOCKED, TODO_STATUS.DROPPED, TODO_STATUS.DROPPED, TODO_STATUS.DROPPED]);
+	assert.equal(state.tasks[1].note, "waiting for an admin");
+	const bad = applyTodo(emptyTodo(), { action: "write", tasks: [{ title: "X", status: "later" }] }, 1);
+	assert.equal(bad.error, 'unknown status "later" (use pending, in_progress, blocked, done, or dropped)');
+});
+
+test("applyTodo rejects blocked without a note and leaves the list unchanged", () => {
+	const before = seeded();
+	for (const params of [
+		{ action: "add", title: "Deploy", status: "blocked" },
+		{ action: "update", id: 3, status: "blocked" },
+		{ action: "write", tasks: [{ title: "Deploy", status: "blocked", note: "   " }] },
+	]) {
+		const result = applyTodo(before, params, 9);
+		assert.equal(result.error, "blocked needs a note naming what it waits for");
+		assert.equal(result.text, "Error: blocked needs a note naming what it waits for");
+		assert.strictEqual(result.state, before, `${params.action} must not change the list`);
+	}
+	const blocked = applyTodo(before, { action: "update", id: 3, status: "blocked", note: "waiting for the API contract" }, 9);
+	assert.equal(blocked.error, undefined);
+	assert.equal(blocked.text, "#3 Show git bash tails → blocked");
+	const unblocked = applyTodo(blocked.state, { action: "update", id: 3, status: "pending" }, 10);
+	assert.equal(unblocked.state.tasks[2].status, TODO_STATUS.PENDING);
+});
+
+test("dropped tasks never count as open: a list of done and dropped is finished, silent, and never stale", () => {
+	const state = applyTodo(emptyTodo(), { action: "write", tasks: [{ title: "A", status: "done" }, { title: "B", status: "dropped" }, { title: "C", status: "dropped" }] }, 1).state;
+	assert.deepEqual(todoSummary(state), { done: 1, total: 3, open: 0 });
+	assert.equal(todoPromptBlock(state, 5), undefined);
+	assert.equal(staleTurns(state, 9), 0);
+});
+
+test("blocked tasks stay open but alone never make the list stale; an actionable task still does", () => {
+	const blockedOnly = applyTodo(emptyTodo(), { action: "write", tasks: [{ title: "A", status: "done" }, { title: "Deploy", status: "blocked", note: "waiting for an admin" }] }, 1).state;
+	assert.deepEqual(todoSummary(blockedOnly), { done: 1, total: 2, open: 1 });
+	assert.equal(staleTurns(blockedOnly, 9), 0);
+	const block = todoPromptBlock(blockedOnly, 0) ?? "";
+	assert.match(block, /2\. \[blocked\] Deploy — waiting for an admin/);
+	assert.match(block, /A blocked task waits on something outside the list: do not work on it until its condition holds/);
+	assert.match(block, /mark the tasks it made obsolete dropped instead of leaving them pending or marking them done/);
+	const mixed = applyTodo(blockedOnly, { action: "add", title: "Write docs" }, 1).state;
+	assert.equal(staleTurns(mixed, 3), 2);
+});
+
+test("renderTodoCard draws blocked with its reason and dropped dim without strikethrough, excluding dropped from the count", () => {
+	const state = applyTodo(
+		emptyTodo(),
+		{ action: "write", tasks: [{ title: "Ship", status: "done" }, { title: "Old plan", status: "dropped" }, { title: "Deploy", status: "blocked", note: "waiting for an admin" }, { title: "Docs" }] },
+		1,
+	).state;
+	const plain = renderTodoCard(state, plainTheme, 60, { collapsed: false, staleTurns: 0 }).map(stripAnsi);
+	assert.match(plain[0], /Todos ▾ Collapse · 1 of 3/);
+	assert.match(plain[2], /^│ ✕ Old plan +│$/);
+	assert.match(plain[3], /^│ ⊘ Deploy · waiting for an admin +│$/);
+	const roles: string[] = [];
+	const spy = { ...plainTheme, fg(color: string, text: string) { roles.push(`${color}:${text}`); return text; } };
+	renderTodoCard(state, spy, 60, { collapsed: false, staleTurns: 0 });
+	assert.ok(roles.includes("muted:✕") && roles.includes("dim:Old plan"), "dropped: muted glyph, dim title");
+	assert.ok(roles.includes("warning:⊘"), "blocked: warning glyph");
+});
+
+test("the collapsed card skips blocked tasks for the next one, and shows a blocked task only when nothing else is open", () => {
+	const state = applyTodo(emptyTodo(), { action: "write", tasks: [{ title: "Deploy", status: "blocked", note: "waiting for an admin" }, { title: "Docs" }] }, 1).state;
+	assert.match(renderTodoCard(state, plainTheme, 60, { collapsed: true, staleTurns: 0 }).map(stripAnsi)[1], /^│ ○ Docs +│$/);
+	const onlyBlocked = applyTodo(state, { action: "update", id: 2, status: "done" }, 2).state;
+	assert.match(renderTodoCard(onlyBlocked, plainTheme, 60, { collapsed: true, staleTurns: 0 }).map(stripAnsi)[1], /^│ ⊘ Deploy · waiting for an admin +│$/);
+});
+
+test("renderTodoCard folds dropped tasks next to done ones in a long list", () => {
+	const tasks = Array.from({ length: 20 }, (_, index) => ({ title: `Task ${index + 1}`, status: index < 5 ? "done" : index < 8 ? "dropped" : "pending" }));
+	const state = applyTodo(emptyTodo(), { action: "write", tasks }, 1).state;
+	const plain = renderTodoCard(state, plainTheme, 60, { collapsed: false, staleTurns: 0 }).map(stripAnsi);
+	assert.equal(plain.length, 14);
+	assert.match(plain[0], /Todos ▾ Collapse · 5 of 17/);
+	assert.match(plain[1], /^│ ✓ 5 done +│$/);
+	assert.match(plain[2], /^│ ✕ 3 dropped +│$/);
+	assert.match(plain[3], /^│ ○ Task 9 +│$/);
+	assert.match(plain[12], /^│ … 3 more +│$/);
+});

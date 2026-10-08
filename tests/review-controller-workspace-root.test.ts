@@ -192,6 +192,47 @@ test("invalid bootstrap target selectors reject before native STATUS", async () 
 	assert.equal(statusCalls, 0);
 });
 
+test("START forwards the agent lens selection in canonical order and rejects malformed selections before native STATUS", async (t) => {
+	const cwd = repository(t);
+	writeFileSync(join(cwd, "app.ts"), "export const value = 2;\n");
+	const startRequests: Parameters<NativeReviewCli["start"]>[0][] = [];
+	const { controller } = runtime(fakeNative({
+		start: async (request) => {
+			startRequests.push(request);
+			return { lineageId: "lens-selection-lineage", state: "reviewing", riskLevel: "medium", selectedLenses: ["review-risk", "review-reliability"], changedFiles: 1, changedLines: 1, correctionBudget: 1, action: "created", lensesRequired: true };
+		},
+	}));
+	const started = await controller.execute("start-lenses", { operation: "start", input: JSON.stringify({ mode: "ordinary", lenses: ["reliability", "review-risk"], lensesReason: "changes token parsing" }) }, undefined, undefined, context(cwd));
+	assert.notEqual((started.details as { status?: string }).status, "blocked");
+	assert.equal(startRequests.length, 1);
+	assert.deepEqual(startRequests[0]?.lenses, ["review-risk", "review-reliability"]);
+	assert.equal(startRequests[0]?.lensesReason, "changes token parsing");
+
+	let statusCalls = 0;
+	const native = fakeNative({
+		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "", effective: "on", source: "global" } }),
+		targetStatus: async () => { statusCalls += 1; throw new Error("must not reach STATUS"); },
+		start: async () => { throw new Error("must not reach START"); },
+	});
+	for (const input of [
+		{ mode: "ordinary", lenses: ["risk"] },
+		{ mode: "ordinary", lensesReason: "why" },
+		{ mode: "ordinary", lenses: [], lensesReason: "why" },
+		{ mode: "ordinary", lenses: "risk", lensesReason: "why" },
+		{ mode: "ordinary", lenses: ["security"], lensesReason: "why" },
+		{ mode: "ordinary", lenses: ["risk", "review-risk"], lensesReason: "why" },
+		{ mode: "ordinary", lenses: ["risk"], lensesReason: " " },
+		{ mode: "ordinary", lenses: ["risk"], lensesReason: "x".repeat(501) },
+		{ mode: "ordinary", lenses: ["risk"], lensesReason: "why", focus: "risk" },
+	]) {
+		const result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify(input) }, cwd, native);
+		assert.equal(result.status, "blocked", JSON.stringify(input));
+		assert.equal(result.reason, "lenses-invalid", JSON.stringify(input));
+		assert.equal(result.outcome, "native-start-input-invalid", JSON.stringify(input));
+	}
+	assert.equal(statusCalls, 0);
+});
+
 test("repository discovery ignores ambient Git root overrides", async (t) => {
 	const sessionRoot = repository(t);
 	const targetRoot = repository(t, "gentle-pi-isolated-target-");

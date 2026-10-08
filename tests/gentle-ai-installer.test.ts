@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { chmod, copyFile, mkdtemp, mkdir, readFile, readdir, rename, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdtemp, mkdir, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -1125,7 +1125,7 @@ function pendingRequest() {
 	pending.setTimeout = () => undefined;
 	return pending;
 }
-test("download bounds stalled headers and bodies with transient retry exhaustion", async () => {
+test("download bounds stalled headers and bodies with transient retry exhaustion", async (t) => {
 	for (const [stage, request] of [
 		["headers", () => pendingRequest()],
 		["body", (_url: URL, _options: unknown, callback: (response: PassThrough & { statusCode?: number; headers: Record<string, string> }) => void) => {
@@ -1134,10 +1134,36 @@ test("download bounds stalled headers and bodies with transient retry exhaustion
 			return pendingRequest();
 		}],
 	] as const) {
+		// A private directory per run: the PID-derived path this test used before lived
+		// in the shared tmpdir and collided with leftovers from earlier runs, which is
+		// how an EEXIST from the exclusive open reached the assertion instead of the
+		// timeout under test.
+		const directory = await mkdtemp(join(tmpdir(), "gentle-pi-stalled-"));
+		t.after(() => rm(directory, { recursive: true, force: true }));
+		const destination = join(directory, stage);
 		let attempts = 0;
-		await assert.rejects(() => downloadGentleAiAsset("https://example.invalid/archive", join(tmpdir(), `gentle-pi-stalled-${stage}-${process.pid}`), 1024, 0, { request: (...args: never[]) => { attempts += 1; return request(...args); }, headerTimeoutMs: 1, bodyTimeoutMs: 1, maxAttempts: 2, retryDelayMs: 0 }), new RegExp(`download ${stage} timed out`));
+		await assert.rejects(() => downloadGentleAiAsset("https://example.invalid/archive", destination, 1024, 0, { request: (...args: never[]) => { attempts += 1; return request(...args); }, headerTimeoutMs: 1, bodyTimeoutMs: 1, maxAttempts: 2, retryDelayMs: 0 }), new RegExp(`download ${stage} timed out`));
 		assert.equal(attempts, 2);
+		// A failed attempt settles only once its destination stream closed, so the retry
+		// never races a late recreation of the path, and nothing partial survives.
+		assert.equal(existsSync(destination), false, `a failed ${stage} download leaves no partial file behind`);
 	}
+});
+
+test("download never removes a destination it did not create", async (t) => {
+	const directory = await mkdtemp(join(tmpdir(), "gentle-pi-existing-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const destination = join(directory, "archive");
+	await writeFile(destination, "a file this download never owned");
+	// A single attempt on purpose: the retry path removes the destination on its own,
+	// so the ownership rule is only observable without a retry.
+	const request = (_url: URL, _options: unknown, callback: (response: PassThrough & { statusCode?: number; headers: Record<string, string> }) => void) => {
+		const response = Object.assign(new PassThrough(), { statusCode: 200, headers: {} });
+		queueMicrotask(() => callback(response));
+		return pendingRequest();
+	};
+	await assert.rejects(() => downloadGentleAiAsset("https://example.invalid/archive", destination, 1024, 0, { request, headerTimeoutMs: 1, bodyTimeoutMs: 1, maxAttempts: 1, retryDelayMs: 0 }));
+	assert.equal(await readFile(destination, "utf8"), "a file this download never owned");
 });
 
 test("download retries only transient HTTP statuses and exhausts within the attempt bound", async () => {

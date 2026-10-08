@@ -11,7 +11,11 @@ import { paintHoverable } from "./shell-hover.ts";
 export const TODO_STATUS = {
 	PENDING: "pending",
 	IN_PROGRESS: "in_progress",
+	/** Open, but waiting on something outside the list; always carries a note naming it. */
+	BLOCKED: "blocked",
 	DONE: "done",
+	/** Will not be done, on purpose: terminal, and never counts as open. */
+	DROPPED: "dropped",
 } as const;
 
 export type TodoStatus = (typeof TODO_STATUS)[keyof typeof TODO_STATUS];
@@ -86,10 +90,20 @@ export interface TodoRenderOptions {
 export const TODO_DETAILS_KEY = "gentleTodo";
 export const TODO_TOOL_NAME = "todo";
 export const TODO_GLYPH = "❀";
-const STATUS_ALIASES: Record<string, TodoStatus> = { completed: TODO_STATUS.DONE, complete: TODO_STATUS.DONE, doing: TODO_STATUS.IN_PROGRESS, todo: TODO_STATUS.PENDING };
-const STATUS_GLYPH: Record<TodoStatus, string> = { [TODO_STATUS.PENDING]: "○", [TODO_STATUS.IN_PROGRESS]: "◐", [TODO_STATUS.DONE]: "✓" };
-const STATUS_ROLE: Record<TodoStatus, string> = { [TODO_STATUS.PENDING]: "text", [TODO_STATUS.IN_PROGRESS]: "accent", [TODO_STATUS.DONE]: "dim" };
-const GLYPH_ROLE: Record<TodoStatus, string> = { [TODO_STATUS.PENDING]: "muted", [TODO_STATUS.IN_PROGRESS]: "accent", [TODO_STATUS.DONE]: "success" };
+const STATUS_ALIASES: Record<string, TodoStatus> = {
+	completed: TODO_STATUS.DONE,
+	complete: TODO_STATUS.DONE,
+	doing: TODO_STATUS.IN_PROGRESS,
+	todo: TODO_STATUS.PENDING,
+	cancelled: TODO_STATUS.DROPPED,
+	canceled: TODO_STATUS.DROPPED,
+	abandoned: TODO_STATUS.DROPPED,
+};
+const STATUS_LIST = "pending, in_progress, blocked, done, or dropped";
+const BLOCKED_NEEDS_NOTE = "blocked needs a note naming what it waits for";
+const STATUS_GLYPH: Record<TodoStatus, string> = { [TODO_STATUS.PENDING]: "○", [TODO_STATUS.IN_PROGRESS]: "◐", [TODO_STATUS.BLOCKED]: "⊘", [TODO_STATUS.DONE]: "✓", [TODO_STATUS.DROPPED]: "✕" };
+const STATUS_ROLE: Record<TodoStatus, string> = { [TODO_STATUS.PENDING]: "text", [TODO_STATUS.IN_PROGRESS]: "accent", [TODO_STATUS.BLOCKED]: "text", [TODO_STATUS.DONE]: "dim", [TODO_STATUS.DROPPED]: "dim" };
+const GLYPH_ROLE: Record<TodoStatus, string> = { [TODO_STATUS.PENDING]: "muted", [TODO_STATUS.IN_PROGRESS]: "accent", [TODO_STATUS.BLOCKED]: "warning", [TODO_STATUS.DONE]: "success", [TODO_STATUS.DROPPED]: "muted" };
 const NOTE_ROLE = "muted";
 const STALE_AFTER_TURNS = 2;
 /** Above this many rows the finished tasks fold into one line and the rest is capped. */
@@ -111,20 +125,30 @@ function parseStatus(value: unknown): TodoStatus | undefined {
 	return STATUS_ALIASES[normalized];
 }
 
-export function todoSummary(state: TodoState): TodoSummary {
-	const done = state.tasks.filter((task) => task.status === TODO_STATUS.DONE).length;
-	return { done, total: state.tasks.length, open: state.tasks.length - done };
+function countStatus(state: TodoState, status: TodoStatus): number {
+	return state.tasks.filter((task) => task.status === status).length;
 }
 
+/** Dropped tasks are neither done nor open. */
+export function todoSummary(state: TodoState): TodoSummary {
+	const done = countStatus(state, TODO_STATUS.DONE);
+	return { done, total: state.tasks.length, open: state.tasks.length - done - countStatus(state, TODO_STATUS.DROPPED) };
+}
+
+// Only work the model can pick up goes stale: a list whose open tasks all
+// wait on something outside it has nothing to bring up to date.
 export function staleTurns(state: TodoState, currentTurn: number): number {
-	if (state.updatedTurn === null || todoSummary(state).open === 0) return 0;
+	const actionable = state.tasks.some((task) => task.status === TODO_STATUS.PENDING || task.status === TODO_STATUS.IN_PROGRESS);
+	if (state.updatedTurn === null || !actionable) return 0;
 	return Math.max(0, currentTurn - state.updatedTurn);
 }
 
 function summaryText(state: TodoState): string {
 	const { done, total } = todoSummary(state);
-	const inProgress = state.tasks.filter((task) => task.status === TODO_STATUS.IN_PROGRESS).length;
-	return `${total} ${total === 1 ? "task" : "tasks"} · ${done} done · ${inProgress} in progress`;
+	const inProgress = countStatus(state, TODO_STATUS.IN_PROGRESS);
+	const blocked = countStatus(state, TODO_STATUS.BLOCKED);
+	const dropped = countStatus(state, TODO_STATUS.DROPPED);
+	return `${total} ${total === 1 ? "task" : "tasks"} · ${done} done · ${inProgress} in progress${blocked ? ` · ${blocked} blocked` : ""}${dropped ? ` · ${dropped} dropped` : ""}`;
 }
 
 function taskLine(task: TodoTask): string {
@@ -135,8 +159,9 @@ function buildTask(input: TodoTaskInput, id: number): TodoTask | string {
 	const title = cleanText(input.title);
 	if (title.length === 0) return "title is required";
 	const status = parseStatus(input.status);
-	if (status === undefined) return `unknown status "${input.status}" (use pending, in_progress, or done)`;
+	if (status === undefined) return `unknown status "${input.status}" (use ${STATUS_LIST})`;
 	const note = cleanText(input.note);
+	if (status === TODO_STATUS.BLOCKED && note.length === 0) return BLOCKED_NEEDS_NOTE;
 	return { id, title, status, ...(note ? { note } : {}) };
 }
 
@@ -240,6 +265,7 @@ export function todoPromptBlock(state: TodoState, stale: number): string | undef
 	return [
 		"## Todo list",
 		"Keep it current with the `todo` tool: mark a task in_progress before starting it, done right after finishing it, and rewrite the whole list with `write` whenever the plan changes. Update it before you end the turn.",
+		"A blocked task waits on something outside the list: do not work on it until its condition holds. When the plan changes, mark the tasks it made obsolete dropped instead of leaving them pending or marking them done.",
 		...lines,
 	].join("\n") + staleLine;
 }
@@ -253,18 +279,22 @@ function taskRow(task: TodoTask, theme: TodoTheme, inner: number): string {
 			.join("\n");
 	}
 	const title = task.title;
-	const note = task.status === TODO_STATUS.IN_PROGRESS && task.note ? ` ${theme.fg(NOTE_ROLE, "·")} ${theme.fg(NOTE_ROLE, task.note)}` : "";
+	const showsNote = task.status === TODO_STATUS.IN_PROGRESS || task.status === TODO_STATUS.BLOCKED;
+	const note = showsNote && task.note ? ` ${theme.fg(NOTE_ROLE, "·")} ${theme.fg(NOTE_ROLE, task.note)}` : "";
 	return `${theme.fg(GLYPH_ROLE[task.status], STATUS_GLYPH[task.status])} ${theme.fg(STATUS_ROLE[task.status], title)}${note}`;
 }
 
-// Long lists keep the card short: done tasks fold into "✓ N done" and the
-// open ones fill the remaining rows, with a trailing count for the rest.
+// Long lists keep the card short: done and dropped tasks fold into "✓ N done"
+// and "✕ N dropped", and the open ones fill the remaining rows, with a
+// trailing count for the rest.
 function bodyRows(state: TodoState, theme: TodoTheme, inner: number): string[] {
 	if (state.tasks.length <= ROW_CAP) return state.tasks.map((task) => taskRow(task, theme, inner));
-	const { done } = todoSummary(state);
-	const open = state.tasks.filter((task) => task.status !== TODO_STATUS.DONE);
+	const open = state.tasks.filter((task) => task.status !== TODO_STATUS.DONE && task.status !== TODO_STATUS.DROPPED);
 	const rows: string[] = [];
-	if (done > 0) rows.push(`${theme.fg(GLYPH_ROLE[TODO_STATUS.DONE], STATUS_GLYPH[TODO_STATUS.DONE])} ${theme.fg(NOTE_ROLE, `${done} done`)}`);
+	for (const [status, label] of [[TODO_STATUS.DONE, "done"], [TODO_STATUS.DROPPED, "dropped"]] as const) {
+		const count = countStatus(state, status);
+		if (count > 0) rows.push(`${theme.fg(GLYPH_ROLE[status], STATUS_GLYPH[status])} ${theme.fg(NOTE_ROLE, `${count} ${label}`)}`);
+	}
 	const room = ROW_CAP - rows.length - (open.length > ROW_CAP - rows.length ? 1 : 0);
 	for (const task of open.slice(0, room)) rows.push(taskRow(task, theme, inner));
 	if (open.length > room) rows.push(theme.fg(NOTE_ROLE, `… ${open.length - room} more`));
@@ -276,6 +306,8 @@ function collapsedRow(state: TodoState, theme: TodoTheme, inner: number): string
 	if (active) return taskRow(active, theme, inner);
 	const pending = state.tasks.find((task) => task.status === TODO_STATUS.PENDING);
 	if (pending) return taskRow(pending, theme, inner);
+	const blocked = state.tasks.find((task) => task.status === TODO_STATUS.BLOCKED);
+	if (blocked) return taskRow(blocked, theme, inner);
 	const { open } = todoSummary(state);
 	return `${theme.fg(GLYPH_ROLE[TODO_STATUS.PENDING], STATUS_GLYPH[TODO_STATUS.PENDING])} ${theme.fg(NOTE_ROLE, `${open} open`)}`;
 }
@@ -288,6 +320,8 @@ export function todoCardTone(staleTurns: number): CardTone {
 export function renderTodoCard(state: TodoState, theme: TodoTheme, width: number, options: TodoRenderOptions): string[] {
 	if (state.tasks.length === 0) return [];
 	const { done, total } = todoSummary(state);
+	// Dropped work is not part of the plan anymore, so it leaves the denominator.
+	const planned = total - countStatus(state, TODO_STATUS.DROPPED);
 	const stale = options.staleTurns >= STALE_AFTER_TURNS;
 	const action = options.collapsed ? "expand" : "collapse";
 	const actionLabel = action[0]!.toUpperCase() + action.slice(1);
@@ -305,7 +339,7 @@ export function renderTodoCard(state: TodoState, theme: TodoTheme, width: number
 	// same treatment every other clickable surface uses -- instead of its
 	// ordinary accent role.
 	return renderCard(
-		{ title: `Todos ${paintHoverable(theme, control, options.hovered, "accent")}`, subtitle: `${done} of ${total}`, body, tone, glyph: TODO_GLYPH },
+		{ title: `Todos ${paintHoverable(theme, control, options.hovered, "accent")}`, subtitle: `${done} of ${planned}`, body, tone, glyph: TODO_GLYPH },
 		theme,
 		width,
 		{ expanded: true, hint, panel: true },

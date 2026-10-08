@@ -9,6 +9,7 @@ import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandI
 import { CURSOR_MARKER, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { CODEX_USAGE_URL, NAN_QUOTA_URL, USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA } from "../lib/shell-usage.ts";
+import { bindSessionProfile, clearSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import { createVimEditorAdapter } from "../lib/vim-editor-adapter.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { CHANGE_STATUS } from "../lib/shell-changes.ts";
@@ -29,6 +30,8 @@ import { listVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
+import { claimNotificationOwner } from "../lib/notification-service.ts";
+import { DEFAULT_NOTIFICATION_SETTINGS } from "../lib/notification-policy.ts";
 
 
 // Vim fixtures claim the installed pi-tui release, which the adapter gate
@@ -430,6 +433,71 @@ test("review sidebar rejects foreign-session events and unsubscribes on shutdown
 	}
 });
 
+test("jobs snapshots populate Status, use one compact fallback, and reject stale sessions", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" });
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const statuses = new Map([["gentle-jobs", "⧗ 1 job"], ["mcp", "MCP: 3 servers"]]);
+	const data = { getGitBranch: () => "main", getExtensionStatuses: () => statuses, getAvailableProviderCount: () => 1, onBranchChange: () => () => {} };
+	const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 160 }, requestRender() {} };
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { render(width: number): string[]; dispose(): void };
+	const component = factory(tui, plainTheme, data);
+	const state = sidebarState(tui as unknown as TUI);
+	const rail = state.parts.get("footer")!;
+	const header = state.parts.get("header")!;
+	const publish = (sessionId: string, jobs: unknown) => pi.events.emit("gentle-ai:jobs-sidebar", { sessionId, snapshot: { jobs } });
+	try {
+		publish("shell-session", [{ id: "job-1", label: "CI for PR 1860", startedAt: 1 }]);
+		assert.match(rail.render(46).join("\n"), /Jobs[\s\S]*CI for PR 1860/);
+		assert.match(rail.render(46).join("\n"), /MCP: 3 servers/);
+		assert.doesNotMatch(rail.render(46).join("\n"), /1 job/, "Jobs replaces the generic integration counter");
+		state.active = true;
+		state.ownsHost = () => true;
+		assert.doesNotMatch(header.render(160).join("\n"), /1 job/, "the visible Status card owns jobs details");
+		state.active = false;
+		tui.terminal.columns = 80;
+		assert.match(header.render(80).join("\n"), /1 job/, "mobile topbar preserves the count");
+		const before = rail.digest?.();
+		publish("foreign", []);
+		publish("shell-session", [{ label: "invalid" }]);
+		assert.equal(rail.digest?.(), before);
+		publish("shell-session", []);
+		assert.doesNotMatch(rail.render(46).join("\n"), /Jobs|CI for PR/);
+		assert.doesNotMatch(header.render(80).join("\n"), /1 job/);
+		publish("shell-session", [{ id: "job-2", label: "Build runtime", startedAt: 2 }]);
+		await fire(handlers, "session_start", ctx);
+		assert.doesNotMatch(rail.render(46).join("\n"), /Build runtime/);
+		await fire(handlers, "session_shutdown", ctx);
+		publish("shell-session", [{ id: "job-3", label: "late", startedAt: 3 }]);
+		assert.doesNotMatch(rail.render(46).join("\n"), /late/);
+	} finally { component.dispose(); }
+});
+
+test("hidden Status leaves only a jobs count in regular bottom and fullscreen header chrome", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	writeVisualSettings({ ...resolveVisualSettings({ gentlePiConfigHome: home }).settings, statusPlacement: "hidden" }, { gentlePiConfigHome: home });
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" });
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const tui = { mode: "regular", terminal: { rows: 40, columns: 160 }, requestRender() {} };
+	const data = { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} };
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { render(width: number): string[]; dispose(): void };
+	const component = factory(tui, plainTheme, data);
+	try {
+		pi.events.emit("gentle-ai:jobs-sidebar", { sessionId: "shell-session", snapshot: { jobs: [{ id: "job-1", label: "CI for PR 1860", startedAt: 1 }] } });
+		assert.equal(component.render(80).join("\n"), "⧗ 1 job");
+		assert.doesNotMatch(component.render(80).join("\n"), /CI for PR|gpt-5/);
+		tui.mode = "fullscreen";
+		const header = sidebarState(tui as unknown as TUI).parts.get("header")!;
+		assert.match(header.render(160).join("\n"), /⧗ 1 job/);
+		assert.doesNotMatch(component.render(160).join("\n"), /1 job/, "the hidden fullscreen footer does not duplicate the topbar count");
+		pi.events.emit("gentle-ai:jobs-sidebar", { sessionId: "shell-session", snapshot: { jobs: [] } });
+		assert.doesNotMatch(header.render(160).join("\n"), /jobs?/);
+	} finally { component.dispose(); await fire(handlers, "session_shutdown", ctx); }
+});
+
 test("the fullscreen Status rail carries a live digest so a profile switch refreshes it", async () => {
 	const { pi, handlers } = fakePi();
 	let profile: string | undefined = "team";
@@ -734,6 +802,16 @@ test("T2 float prompt installed editor reads live toolSuccessBg and preserves Es
 		themeHost.theme = plainTheme as unknown as typeof ctx.ui.theme;
 		assert.match(stripAnsi(editor.render(80)[0]), /^╭/);
 	} finally { themeHost.theme = originalTheme; editor.dispose(); setCardStyle(previous); }
+});
+
+// Herdr's native Pi manifest detects activity from Pi's standard loader row
+// ("⠋ Working..."); the petal frame alone reads as idle to it.
+test("gentleShell keeps Pi's native Working row inside Herdr so native detection sees activity", () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { HERDR_ENV: "1" });
+	const { ctx, ui } = fakeContext();
+	installedPrompt(ctx, ui, handlers);
+	assert.notEqual(ui.workingVisible, false, "Herdr needs Pi's standard Working row");
 });
 
 test("gentleShell frames the editor with the petal prompt and a hint while empty", () => {
@@ -2810,7 +2888,7 @@ function scopedDoubleEscCancelConfigHome(t: { after(callback: () => void): void 
 function findCustomizeRow(ui: FakeUi, label: string, width = 90): boolean {
 	const view = ui.overlayView!;
 	view.handleInput("\x1b[D");
-	for (let category = 0; category < 10; category++) {
+	for (let category = 0; category < 11; category++) {
 		view.handleInput("\x1b[C");
 		for (let index = 0; index < 35; index++) {
 			if (view.render(width).some((line) => line.includes(`▸ ${label}`))) return true;
@@ -2829,6 +2907,61 @@ async function customizeAction(ui: FakeUi, label: string): Promise<void> {
 	for (let attempt = 0; attempt < 100 && ui.notices.length === notices; attempt++) await new Promise<void>((resolve) => setTimeout(resolve, 5));
 	assert.ok(ui.notices.length > notices, `action did not finish: ${label}`);
 }
+
+test("customize Notifications applies audio controls directly in the same overlay, without nested menus or visual writes", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home }); // Shell loads BEFORE owner.
+	const child = process.env.GENTLE_PI_AGENTS_CHILD;
+	process.env.GENTLE_PI_AGENTS_CHILD = "0";
+	t.after(() => { if (child === undefined) delete process.env.GENTLE_PI_AGENTS_CHILD; else process.env.GENTLE_PI_AGENTS_CHILD = child; });
+	let nested = 0; let writes = 0;
+	const { ctx, ui, overlayReady } = fakeContext({ select: async () => { nested++; return undefined; } });
+	const uiSpies = ctx.ui as unknown as Record<string, unknown>;
+	uiSpies.input = async () => { nested++; return undefined; };
+	uiSpies.confirm = async () => { nested++; return false; };
+	const owner = claimNotificationOwner(() => {}, { env: {},
+		read: () => ({ settings: structuredClone(DEFAULT_NOTIFICATION_SETTINGS), source: "default", globalFile: join(home, "notifications.json"), malformed: false, readError: false }),
+		write: () => { writes++; return join(home, "notifications.json"); } });
+	owner.attach(ctx); t.after(() => owner.retire());
+	let settled = false;
+	const pending = commands.get("gentle:customize")!.handler("", ctx).then(() => { settled = true; });
+	await overlayReady;
+	try {
+		assert.ok(findCustomizeRow(ui, "Audio notifications: off"), "global switch is a direct row");
+		assert.ok(findCustomizeRow(ui, "Audio: unmuted"), "mute is a direct row");
+		assert.equal(findCustomizeRow(ui, "Audio availability: check"), false, "availability row is removed from the card");
+		assert.equal(findCustomizeRow(ui, "Audio: restore preset"), false, "restore row is removed from the card");
+		assert.ok(findCustomizeRow(ui, "Success:"), "Success group is a direct row");
+		assert.ok(findCustomizeRow(ui, "Error:"), "Error group is a direct row");
+		assert.ok(findCustomizeRow(ui, "Attention:"), "Attention group is a direct row");
+		assert.match(ui.overlayView!.render(90).join("\n"), /Audio notifications/);
+		assert.equal(settled, false, "the overlay never closes to open a panel");
+		// Per-event exceptions stay folded until Advanced is expanded in the same overlay.
+		assert.ok(findCustomizeRow(ui, "Advanced:"), "Advanced toggle is a direct row");
+		assert.doesNotMatch(ui.overlayView!.render(90).join("\n"), /agent\.failed:/, "per-event rows stay folded by default");
+		ui.overlayView!.handleInput("\r");
+		// Let the toggle's busy microtask settle before activating a revealed row.
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		const notices = ui.notices.length;
+		assert.ok(findCustomizeRow(ui, "agent.failed:"));
+		ui.overlayView!.handleInput("\r");
+		for (let attempt = 0; attempt < 100 && ui.notices.length === notices; attempt++) await new Promise<void>((resolve) => setTimeout(resolve, 5));
+		assert.ok(ui.notices.length > notices, "direct Enter action finished");
+		assert.equal(writes, 1);
+		assert.match(ui.overlayView!.render(90).join("\n"), /agent\.failed: builtin:attention/);
+		assert.equal(nested, 0, "no ctx.ui.select/input/confirm anywhere in the flow");
+		assert.equal(settled, false, "the notification action never closed the customize overlay");
+		assert.equal(existsSync(join(home, "visual.json")), false);
+		assert.equal(existsSync(join(home, "notifications.json")), false, "stubbed write left no file");
+	} finally { ui.closeOverlay?.(); await pending; }
+});
+
+test("production customize never wires the legacy notification panel", () => {
+	const source = readFileSync(new URL("../extensions/gentle-shell.ts", import.meta.url), "utf8");
+	assert.doesNotMatch(source, /openNotificationPanel|notification-ui\.ts/);
+	assert.match(source, /buildNotificationRows/);
+});
 
 test("customize Editor rows preview global preference without applying until Enter or Space", async (t) => {
 	const home = scopedDoubleEscCancelConfigHome(t);
@@ -3143,7 +3276,7 @@ test("customize Vim reports a persistence error without changing the live prompt
 	chmodSync(home, 0o500);
 	try {
 		await customizeAction(ui, "Vim: enable");
-		assert.match(ui.notices.at(-1)!, /Visual customization:/);
+		assert.match(ui.notices.at(-1)!, /Customization:/);
 		assert.equal(editor.effectiveVimPolicy, "off");
 		assert.equal(resolveVimPolicy({ gentlePiConfigHome: home }).policy, "off");
 	} finally {
@@ -4541,7 +4674,7 @@ test("registered canonical root governs real Git discovery, status and diff desp
 	h.pi.exec = ((command: string, args: string[], options: { timeout?: number } = {}) => new Promise((resolve) => {
 		execFile(command, args, { env: poisoned, encoding: "utf8", timeout: options.timeout, maxBuffer: Infinity }, (error, stdout, stderr) => resolve({ stdout, stderr, code: error ? typeof error.code === "number" ? error.code : 1 : 0, killed: Boolean(error?.killed) }));
 	})) as ExtensionAPI["exec"];
-	const { ctx, ui, overlayReady } = fakeContext();
+	const { ctx, ui } = fakeContext();
 	(ctx as unknown as { cwd: string }).cwd = selected;
 	(ctx.sessionManager as unknown as { getCwd(): string }).getCwd = () => selected;
 	const run = shellGitRunner(selected, poisoned);
@@ -5057,6 +5190,28 @@ test("gentleShell records SSE rate-limit headers from provider responses", async
 	}
 	assert.match(renderFooter(ui), /claude 5h ▰▰▱▱▱▱▱▱ 25% · week 90%/);
 	assert.doesNotMatch(renderFooter(ui), /codex/);
+});
+
+test("gentleShell ignores incomplete Codex headers and retains the last real quota without assuming 5h", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch({}, false).fetchFn, now: () => 0 });
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const respond = (headers: Record<string, string>) => {
+		for (const handler of handlers.get("after_provider_response") ?? []) handler({ status: 200, headers }, ctx);
+	};
+	respond({ "x-codex-primary-used-percent": "0" });
+	assert.doesNotMatch(renderFooter(ui), /codex|0m/, "missing duration is not a real quota");
+	respond({ "x-codex-secondary-used-percent": "31", "x-codex-secondary-window-minutes": "10080" });
+	const valid = renderFooter(ui);
+	assert.match(valid, /codex week .*31%/);
+	assert.doesNotMatch(valid, /5h|0m/);
+	for (const minutes of [undefined, "0", "invalid"]) {
+		const headers: Record<string, string> = { "x-codex-primary-used-percent": "0" };
+		if (minutes !== undefined) headers["x-codex-primary-window-minutes"] = minutes;
+		respond(headers);
+		assert.equal(renderFooter(ui), valid, "a malformed response must not replace the known weekly quota");
+	}
 });
 
 test("gentleShell registers /gentle:usage and opens the subscriptions overlay", async () => {
@@ -5831,4 +5986,72 @@ test("an older overlapping refresh cannot mark a provider failed after a newer o
 	assert.equal(lines.some((line) => line.includes("fetch failed")), false, "the older refresh's late failure must not mark the provider failed");
 	ui.closeOverlay?.();
 	await opened;
+});
+
+test("active profile reader prefers a session binding, labels it (session), and falls back when it clears", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "shell-profile-session-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const path = join(root, "profiles.json");
+	writeFileSync(path, JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, active: "team", profiles: { team: {}, work: {} } }));
+	resetSessionProfileBindingsForTesting();
+	bindSessionProfile("session-1", "work", { worker: { model: "zai/glm-4.7" } });
+	const read = createActiveProfileReader({ GENTLE_PI_CONFIG_HOME: root });
+	assert.equal(read(), "team", "an unbound reader still reads the global active profile");
+	read.bind(root, () => undefined, "session-1");
+	assert.equal(read(), "work (session)", "a bound session outranks the global active profile");
+	assert.equal(read(), "work (session)", "the session label is stable across reads");
+	clearSessionProfileBinding("session-1");
+	assert.equal(read.refresh(), true, "refresh detects the cleared binding");
+	assert.equal(read(), "team", "the read falls back once the binding clears");
+	read.reset();
+	assert.equal(read(), "team", "reset keeps the global read working");
+	resetSessionProfileBindingsForTesting();
+});
+
+test("active profile reader keeps the pin label when a different session is bound", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "shell-profile-session-pin-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	writeFileSync(join(root, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, active: "team", profiles: { team: {}, work: {} } }));
+	resetSessionProfileBindingsForTesting();
+	bindSessionProfile("session-other", "work", { worker: { model: "zai/glm-4.7" } });
+	const read = createActiveProfileReader({ GENTLE_PI_CONFIG_HOME: root });
+	read.bind(root, () => ({ root, commonDir: root }), "session-1");
+	assert.equal(read(), "team", "no pin file and no binding for this session: the global active profile governs");
+	clearSessionProfileBinding("session-other");
+	resetSessionProfileBindingsForTesting();
+});
+
+test("an explicit session binding routes the Usage scope ahead of the pin and the global layers", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "shell-usage-session-"));
+	const commonDir = mkdtempSync(join(tmpdir(), "shell-usage-session-git-"));
+	t.after(() => {
+		rmSync(home, { recursive: true, force: true });
+		rmSync(commonDir, { recursive: true, force: true });
+	});
+	mkdirSync(join(commonDir, "gentle-ai"), { recursive: true });
+	// Every shared layer points at openai-codex (the pin wins over the global
+	// active profile), while the session binds nan explicitly: the Usage panel
+	// must refresh the binding's provider, not the layers underneath it.
+	writeProfilesStore(home, {
+		team: { reviewer: { model: "openai-codex/gpt-5.5" } },
+		solo: { reviewer: { model: "openai-codex/gpt-5.5" } },
+		bound: { reviewer: { model: "nan/glm5.3" } },
+	}, "team");
+	writeFileSync(join(commonDir, "gentle-ai", "profile-pin.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile: "solo" }));
+	resetSessionProfileBindingsForTesting();
+	bindSessionProfile("shell-session", "bound", { reviewer: { model: "nan/glm5.3" } });
+	try {
+		const { pi, commands } = fakePi();
+		gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch(NAN_QUOTA_PAYLOAD).fetchFn, now: () => 1_788_600_000_000, resolveWorktree: () => ({ root: "/repo", commonDir }) });
+		const { ctx, ui } = fakeContext({ token: JWT });
+		const opened = commands.get("gentle:usage")!.handler("", ctx);
+		await settle();
+		const lines = openPanelLines(ui).join("\n");
+		assert.ok(lines.split("\n").some((line) => /^│ nan ·/.test(line)), "the Usage panel refreshes the session binding's nan provider");
+		assert.ok(!lines.split("\n").some((line) => /^│ openai-codex ·/.test(line)), "the pinned codex route stays out of the bound session's Usage scope");
+		ui.closeOverlay?.();
+		await opened;
+	} finally {
+		resetSessionProfileBindingsForTesting();
+	}
 });

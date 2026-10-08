@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Duplex, Readable, Writable } from "node:stream";
 import { stripVTControlCharacters } from "node:util";
 import { withoutInteractiveHost } from "./rpc-host.ts";
+import { childPackageExtensionArgs } from "./child-package-injection.ts";
 import { AGENT_MODE, formatModelRef, type AgentDefinition, type AgentMode, type ModelRef } from "./agents-config.ts";
 import { CHILD_QUERY_MAX_INFLIGHT, CHILD_QUERY_TIMEOUT_MS, parseChildFrame, validChildMessage, validChildQueryId } from "./agents-messaging.ts";
 import { ParentStandingReviewPermissionBroker } from "./review-session-standing-permission-ipc.ts";
@@ -127,8 +128,11 @@ export interface TaskRequest {
 	sessionDir: string;
 	resumeSessionPath: string | undefined;
 	env: NodeJS.ProcessEnv;
-	// Untrusted narrowing intent; paths come only from matching host provenance.
+	// Host-provided only: the launcher's package injection signal (#1690) or
+	// the curated fallback. Never derived from tool input or agent definitions.
 	extensionPaths?: string[];
+	// Same host-only provenance as extensionPaths (#1690).
+	noExtensions?: boolean;
 	// Parsed `## Allowed edit surfaces` of a bounded writer. While the task is
 	// queued or running it claims them in `cwd`; run() rejects an overlapping
 	// claim (gentle-shell#1731). Read-only agents leave this unset.
@@ -224,6 +228,8 @@ const MAX_TRANSPORT_PREFIX_CHARS = 64;
 const CHILD_MARKER = "GENTLE_PI_AGENTS_CHILD";
 const IPC_MARKER = "GENTLE_PI_AGENTS_OWNED_IPC";
 const PARENT_NOTIFICATION_TOOL = "subagent_parent_message";
+/** The exact --tools list, so the child can report requested names Pi dropped silently (#1690). */
+export const REQUESTED_TOOLS_ENV = "GENTLE_PI_AGENTS_REQUESTED_TOOLS";
 const DEFAULT_TOOLS: readonly string[] = [];
 const TERMINATION_GRACE_MS = 250;
 const GROUP_CONFIRM_MS = 25;
@@ -263,14 +269,20 @@ export function formatChildExit(code: number | null | undefined, signal?: string
 
 const hostProcess: ProcessControl = { platform: process.platform, kill: (pid, signal) => process.kill(pid, signal) };
 
+// The --tools value, or undefined when Pi keeps its default tools.
+function requestedTools(request: TaskRequest): string | undefined {
+	const tools = request.agent.tools.length > 0 ? [...new Set([...request.agent.tools, PARENT_NOTIFICATION_TOOL])] : DEFAULT_TOOLS;
+	return tools.length > 0 ? tools.join(",") : undefined;
+}
+
 export function childArguments(request: TaskRequest, instructionsPath?: string): string[] {
 	const args = ["--mode", "rpc", "--session-dir", request.sessionDir];
-	for (const path of request.extensionPaths ?? []) args.push("--extension", path);
+	args.push(...childPackageExtensionArgs({ noExtensions: request.noExtensions === true, extensionPaths: request.extensionPaths ?? [] }));
 	if (request.resumeSessionPath) args.push("--session", request.resumeSessionPath);
 	if (request.model) args.push("--model", request.thinking ? `${formatModelRef(request.model)}:${request.thinking}` : formatModelRef(request.model));
 	else if (request.thinking) args.push("--thinking", request.thinking);
-	const tools = request.agent.tools.length > 0 ? [...new Set([...request.agent.tools, PARENT_NOTIFICATION_TOOL])] : DEFAULT_TOOLS;
-	if (tools.length > 0) args.push("--tools", tools.join(","));
+	const tools = requestedTools(request);
+	if (tools !== undefined) args.push("--tools", tools);
 	if (instructionsPath) {
 		args.push("--append-system-prompt", instructionsPath);
 	} else if (request.agent.instructions.length > 0) {
@@ -493,6 +505,9 @@ export class AgentRunner {
 		// Do not forward stale legacy child selection or authorization.
 		delete env.GENTLE_PI_SDD_REMEDIATION_PLAN;
 		delete env.GENTLE_PI_RESEARCH_SELECTION;
+		const tools = requestedTools(request);
+		if (tools !== undefined) env[REQUESTED_TOOLS_ENV] = tools;
+		else delete env[REQUESTED_TOOLS_ENV];
 		let instructionsTransportDir: string | undefined;
 		let instructionsTransportPath: string | undefined;
 		if (Buffer.byteLength(request.agent.instructions, "utf8") > MAX_INLINE_INSTRUCTIONS_BYTES) {

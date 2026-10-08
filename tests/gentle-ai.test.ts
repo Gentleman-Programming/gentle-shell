@@ -16,7 +16,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { PROFILES_KIND, PROFILES_VERSION, readProfilesFileResult } from "../lib/agent-profiles.ts";
-import { readSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
+import { bindSessionProfile, readSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import type { AgentRoutingEntry, ThinkingLevel } from "../lib/model-routing-authority.ts";
 type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel" | "getThinkingLevel">;
 import { PROFILE_PIN_KIND, PROFILE_PIN_VERSION, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
@@ -422,6 +422,9 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 	const ctx = {
 		cwd: root,
 		hasUI: true,
+		// A real Pi session always has an id; the profiles panel resolves the
+		// session binding through it, so the fixture models one stable session.
+		sessionManager: { getSessionId: () => "session-panel" },
 		modelRegistry: {
 			getAvailable: async () => registryModels.filter((model) => model.provider === "openai"),
 			find: (provider: string, id: string) => registryModels.find((model) => model.provider === provider && model.id === id),
@@ -2830,6 +2833,32 @@ test("s snapshots current routing in place without applying or reopening the pro
 	assert.match(renderComponent(firstPanel!), /Snapshot saved; live routing unchanged\. Profile "a-target" saved from current routing\./);
 });
 
+test("s snapshots the live session's orchestrator over the settings defaults", async (t) => {
+	const { fixture, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	writeStore({
+		"a-target": {},
+		"z-active": { worker: { model: "openai/beta" } },
+	}, "z-active");
+	// The session runs live on openai/omega at low effort while settings.json still
+	// defaults to nan/deepseek-v4-flash at high: the snapshot must capture the
+	// session the user is actually in, not the default new sessions would get.
+	fixture.setLiveModel("openai", "omega", "low");
+	const settingsBefore = readFileSync(settingsPath, "utf8");
+	fixture.onInput((panel) => {
+		panel.handleInput("s");
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	const store = JSON.parse(readFileSync(join(fixture.configHome, "profiles.json"), "utf8"));
+	assert.deepEqual(
+		store.profiles["a-target"].orchestrator,
+		{ model: "openai/omega", thinking: "low" },
+		"the orchestrator entry comes from the live session, not settings.json",
+	);
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore, "settings are untouched");
+});
+
 // /gentle:models can finish with `u`: the global save `ctrl+s` performs, followed
 // by the snapshot `/gentle:profiles` performs with `s` on the current profile.
 function pickWorkerModelThenUpdateProfile(panel: RoutingConsumerPanel): void {
@@ -3602,10 +3631,10 @@ function readValidProfilesStore(path: string) {
 	return result.file;
 }
 
-test("Enter binds the selected profile to the parent session and writes nothing", async (t) => {
+test("Enter switches the live orchestrator, binds the profile, and writes nothing", async (t) => {
 	const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
 	writeSettings();
-	writeStore({ team: { worker: { model: "openai/alpha" } }, old: {} }, "old");
+	writeStore({ team: { orchestrator: { model: "openai/beta", thinking: "high" }, worker: { model: "openai/alpha" } }, old: {} }, "old");
 	const before = {
 		store: readFileSync(storePath, "utf8"),
 		settings: readFileSync(settingsPath, "utf8"),
@@ -3617,10 +3646,19 @@ test("Enter binds the selected profile to the parent session and writes nothing"
 		hasUI: true,
 		ui: { notify(message: string, severity: string) { notifications.push({ message, severity }); } },
 		sessionManager: { getSessionId: () => "session-panel" },
+		modelRegistry: { find: () => ({ provider: "openai", id: "beta" }) },
 	} as unknown as ExtensionContext;
-	const live = { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel(): ThinkingLevel { return "medium"; } };
+	const models: unknown[] = [];
+	const thinking: ThinkingLevel[] = [];
+	const live = {
+		setModel: async (model: unknown) => { models.push(model); return true; },
+		setThinkingLevel(level: ThinkingLevel) { thinking.push(level); },
+		getThinkingLevel(): ThinkingLevel { return "medium"; },
+	};
 	const file = readValidProfilesStore(storePath);
 	await __testing.runProfilesPanelAction(ctx, live, storePath, file, { type: "apply", name: "team" }, {});
+	assert.deepEqual(models, [{ provider: "openai", id: "beta" }]);
+	assert.deepEqual(thinking, ["high"]);
 	const binding = readSessionProfileBinding("session-panel");
 	assert.equal(binding?.name, "team");
 	assert.equal(binding?.modelProfiles.worker?.model, "openai/alpha");
@@ -3628,15 +3666,103 @@ test("Enter binds the selected profile to the parent session and writes nothing"
 	assert.equal(readFileSync(settingsPath, "utf8"), before.settings, "Pi settings are untouched");
 	assert.equal(existsSync(fixture.globalPath), false, "no global models.json is written");
 	assert.equal(existsSync(join(fixture.root, ".pi", "subagents.json")), false, "no materialized store is written");
-	// gentle-shell#1557: slice 1 stores the binding; the notice must not claim
-	// launch resolution (that is slice 2, gentle-shell#1558) and must keep the
-	// nothing-was-written sentence.
 	const applied = notifications.at(-1)?.message ?? "";
 	assert.match(applied, /bound profile "team" to this session/);
-	assert.match(applied, /stored for this session; launch routing is unchanged/, "the notice states the binding is stored without claiming launch resolution");
+	assert.match(applied, /shown as "team \(session\)"/);
+	assert.match(applied, /This session now runs on openai\/beta · high/);
+	assert.match(applied, /Subagents and reviewers use this session's routing snapshot/);
 	assert.match(applied, /global routing, pins, and materialized stores are untouched/);
-	assert.doesNotMatch(applied, /launch(?:es)?[^.]*resolve/i, "slice 1 must not claim launches resolve the binding");
+	assert.doesNotMatch(applied, /launch routing is unchanged/);
 	resetSessionProfileBindingsForTesting();
+});
+
+test("Enter switches only the selecting session's orchestrator and leaves shared defaults untouched", async (t) => {
+	const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	writeStore({ team: { orchestrator: { model: "openai/alpha", thinking: "high" }, worker: { model: "openai/beta" } }, old: {} }, "old");
+	const beforeStore = readFileSync(storePath, "utf8");
+	const beforeSettings = readFileSync(settingsPath, "utf8");
+	resetSessionProfileBindingsForTesting();
+	t.after(() => resetSessionProfileBindingsForTesting());
+	bindSessionProfile("other-session", "old", { worker: { model: "openai/old" } });
+	const switches: string[] = [];
+	const thinking: ThinkingLevel[] = [];
+	const ctx = {
+		cwd: fixture.root, hasUI: true,
+		ui: { notify() {} },
+		sessionManager: { getSessionId: () => "selecting-session" },
+		modelRegistry: { find: (provider: string, id: string) => ({ provider, id }) },
+	} as unknown as ExtensionContext;
+	const live = {
+		setModel: async (model: { provider: string; id: string }) => { switches.push(`${model.provider}/${model.id}`); return true; },
+		setThinkingLevel: (level: ThinkingLevel) => { thinking.push(level); },
+		getThinkingLevel: (): ThinkingLevel => "medium",
+	} as unknown as LiveSession;
+	await __testing.runProfilesPanelAction(ctx, live, storePath, readValidProfilesStore(storePath), { type: "apply", name: "team" });
+	assert.deepEqual(switches, ["openai/alpha"]);
+	assert.deepEqual(thinking, ["high"]);
+	assert.equal(readSessionProfileBinding("selecting-session")?.name, "team");
+	assert.equal(readSessionProfileBinding("other-session")?.modelProfiles.worker?.model, "openai/old");
+	assert.equal(readSessionProfileBinding("unbound-session"), undefined);
+	assert.equal(readFileSync(storePath, "utf8"), beforeStore);
+	assert.equal(readFileSync(settingsPath, "utf8"), beforeSettings);
+	assert.equal(existsSync(fixture.globalPath), false);
+	assert.equal(existsSync(join(fixture.root, ".pi", "subagents.json")), false);
+});
+
+test("reviewer routing uses the selecting session snapshot without leaking to other sessions", (t) => {
+	const { fixture, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: {} }, "team");
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, JSON.stringify({ "review-risk": { model: "openai/global" }, "review-reliability": { model: "openai/global" } }));
+	resetSessionProfileBindingsForTesting();
+	t.after(() => resetSessionProfileBindingsForTesting());
+	bindSessionProfile("selecting-session", "team", { "review-risk": { model: "openai/session", thinking: "high" } });
+	const selected = __testing.readReviewerModelConfig(fixture.root, "selecting-session");
+	assert.equal(selected["review-risk"]?.model, "openai/session");
+	assert.equal(selected["review-reliability"], undefined, "a complete session snapshot never falls back per role");
+	assert.equal(__testing.readReviewerModelConfig(fixture.root, "other-session")["review-risk"]?.model, "openai/global");
+	assert.equal(__testing.readReviewerModelConfig(fixture.root, undefined)["review-risk"]?.model, "openai/global");
+});
+
+test("Enter preserves session-only routing when the orchestrator is absent or cannot switch", async (t) => {
+	for (const rejected of [false, true]) {
+		const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+		writeSettings();
+		writeStore({ team: {
+			worker: { model: "openai/alpha" },
+			...(rejected ? { orchestrator: { model: "openai/beta", thinking: "high" as const } } : {}),
+		} }, undefined);
+		const storeBefore = readFileSync(storePath, "utf8");
+		const settingsBefore = readFileSync(settingsPath, "utf8");
+		resetSessionProfileBindingsForTesting();
+		t.after(() => resetSessionProfileBindingsForTesting());
+		const notifications: string[] = [];
+		let modelCalls = 0;
+		let thinkingCalls = 0;
+		const ctx = {
+			cwd: fixture.root,
+			hasUI: true,
+			ui: { notify(message: string) { notifications.push(message); } },
+			sessionManager: { getSessionId: () => "session-panel" },
+			modelRegistry: { find: () => ({ provider: "openai", id: "beta" }) },
+		} as unknown as ExtensionContext;
+		const live = {
+			setModel: async () => { modelCalls++; return false; },
+			setThinkingLevel() { thinkingCalls++; },
+			getThinkingLevel(): ThinkingLevel { return "medium"; },
+		};
+		await __testing.runProfilesPanelAction(ctx, live, storePath, readValidProfilesStore(storePath), { type: "apply", name: "team" }, {});
+		assert.equal(modelCalls, rejected ? 1 : 0);
+		assert.equal(thinkingCalls, 0);
+		assert.equal(readSessionProfileBinding("session-panel")?.modelProfiles.worker?.model, "openai/alpha");
+		assert.equal(readFileSync(storePath, "utf8"), storeBefore);
+		assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore);
+		assert.equal(existsSync(fixture.globalPath), false);
+		assert.equal(existsSync(join(fixture.root, ".pi", "subagents.json")), false);
+		if (rejected) assert.match(notifications.at(-1) ?? "", /no authentication is configured for openai; this session keeps its current model/);
+		else assert.doesNotMatch(notifications.at(-1) ?? "", /This session now runs/);
+	}
 });
 
 test("a keeps the legacy global apply semantics", async (t) => {
@@ -3676,6 +3802,71 @@ test("Enter with a winning pin binds the session and never touches the pin layer
 	assert.equal(readFileSync(localPinPath, "utf8"), pinBefore, "the clone pin is untouched");
 	assert.equal(readFileSync(storePath, "utf8"), storeBefore, "the store is untouched");
 	assert.equal(existsSync(fixture.globalPath), false);
+	resetSessionProfileBindingsForTesting();
+});
+
+test("a session-bound panel renders the binding snapshot as the current routing", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/beta" } } }, "team");
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	t.after(() => resetSessionProfileBindingsForTesting());
+	bindSessionProfile("session-panel", "team", { worker: { model: "openai/gamma" } });
+	fixture.onInput((panel) => {
+		const rendered = renderComponent(panel);
+		assert.match(rendered, /Current routing \(effective\)/);
+		assert.match(rendered, /openai\/gamma/, "the current routing is the session binding's snapshot");
+		assert.doesNotMatch(rendered, /openai\/alpha/, "the global routing stays out of a bound session's panel");
+		assert.match(
+			rendered,
+			/team \(session\) — launches resolve it ahead of pins/,
+			"the session line states what the binding governs post-#1558 (the panel truncates long lines)",
+		);
+		assert.doesNotMatch(rendered, /launch routing is unchanged/, "no stale slice-1 claim survives in the panel");
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	resetSessionProfileBindingsForTesting();
+});
+
+test("the now line reports the live session's orchestrator over the settings defaults", async (t) => {
+	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	writeStore({ team: { worker: { model: "openai/beta" } } }, "team");
+	// The session runs live on openai/omega at low effort while settings.json still
+	// defaults to nan/deepseek-v4-flash at high: the panel's now line must report
+	// what this session actually runs, not the default new sessions would get.
+	fixture.setLiveModel("openai", "omega", "low");
+	fixture.onInput((panel) => {
+		const rendered = renderComponent(panel);
+		assert.match(rendered, /now\s+openai\/omega/, "the now line shows the live session's orchestrator");
+		assert.doesNotMatch(rendered, /now\s+nan\//, "the settings default stays off the now line when a live model runs");
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+});
+
+test("the (session) marker survives a snapshot refresh of the panel list", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/beta" } } }, "team");
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	t.after(() => resetSessionProfileBindingsForTesting());
+	bindSessionProfile("session-panel", "team", { worker: { model: "openai/gamma" } });
+	fixture.onInput((panel) => {
+		assert.match(renderComponent(panel), /team \(active\) \(session\)/);
+		panel.handleInput("s");
+		assert.match(renderComponent(panel), /Snapshot saved; live routing unchanged\./);
+		assert.match(renderComponent(panel), /team \(active\) \(session\)/, "the refreshed list keeps the session marker");
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	// The snapshot must capture the routing the panel showed as current, so the
+	// saved team profile carries the session binding's model, never the global
+	// layer underneath it.
+	const saved = readValidProfilesStore(storePath);
+	assert.equal(saved.profiles.team?.worker?.model, "openai/gamma", "the saved profile carries the session-bound routing");
+	assert.notEqual(saved.profiles.team?.worker?.model, "openai/alpha", "the global routing never leaks into the saved snapshot");
 	resetSessionProfileBindingsForTesting();
 });
 

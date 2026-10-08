@@ -1,6 +1,6 @@
 {
   "schema": "gentle-pi.provider-contract-roles-baseline/v1",
-  "contract_semver": "1.2.0",
+  "contract_semver": "1.3.0",
   "roles": [
     {
       "id": "lens",

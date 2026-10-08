@@ -5,8 +5,8 @@ import { syncBuiltinESMExports } from "node:module";
 import { basename, dirname } from "node:path";
 import { PassThrough } from "node:stream";
 import { AGENT_MODE, parseAgentsConfig, resolveAgentProfile, type AgentDefinition } from "../lib/agents-config.ts";
-import { TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
-import { AgentRunner, childArguments, JsonLines, piCommand, abortReasonText, type ChildLike, type RunnerDeps, type RunnerHooks, type TaskRequest } from "../lib/agents-runner.ts";
+import { MISSING_TOOLS_NOTE_PREFIX, TASK_STATUS, TaskStore, THREAD_ITEM, type TaskRecord } from "../lib/agents-protocol.ts";
+import { AgentRunner, childArguments, JsonLines, piCommand, abortReasonText, REQUESTED_TOOLS_ENV, type ChildLike, type RunnerDeps, type RunnerHooks, type TaskRequest } from "../lib/agents-runner.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
 import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
 
@@ -712,6 +712,70 @@ test("childArguments grants every child the notification-only parent message too
 	assert.equal(args[args.indexOf("--tools") + 1], "read,grep,subagent_parent_message");
 });
 
+// #1690: a forwarded launcher takeover keeps --no-extensions ahead of every
+// --extension and leaves the rest of the launch unchanged.
+test("childArguments forwards a takeover set with --no-extensions first", async () => {
+	const extensionPaths = ["/agent/npm/node_modules/other", "/agent/extensions/a b.ts", "/pkg"];
+	const expected = ["--mode", "rpc", "--session-dir", "/sessions", "--no-extensions", "--extension", extensionPaths[0], "--extension", extensionPaths[1], "--extension", extensionPaths[2], "--model", "openai-codex/gpt-5.6-terra:high", "--tools", "read,grep,subagent_parent_message", "--append-system-prompt", "You map things."];
+	assert.deepEqual(childArguments(request({ noExtensions: true, extensionPaths })), expected);
+	const h = harness();
+	const task = h.runner.run(request({ noExtensions: true, extensionPaths }));
+	await tick();
+	assert.deepEqual(h.spawnOptions.at(-1)!.args.slice(-expected.length), expected, "the spawned child receives the same argv");
+	h.runner.cancel(task.id);
+});
+
+test("childArguments forwards a plain package root without --no-extensions", () => {
+	assert.deepEqual(childArguments(request({ noExtensions: false, extensionPaths: ["/pkg"] })), ["--mode", "rpc", "--session-dir", "/sessions", "--extension", "/pkg", "--model", "openai-codex/gpt-5.6-terra:high", "--tools", "read,grep,subagent_parent_message", "--append-system-prompt", "You map things."]);
+	const args = childArguments(request({ extensionPaths: ["/pkg/extensions/child-context.ts"] }));
+	assert.ok(!args.includes("--no-extensions"), "an absent flag never disables discovery");
+});
+
+// Pins the runner as written: the T3 injection parser rejects a takeover with
+// no extension paths upstream, so this shape never comes from the launcher.
+test("childArguments passes --no-extensions alone for a takeover with no paths (shape rejected upstream by the injection parser)", () => {
+	assert.deepEqual(childArguments(request({ noExtensions: true, extensionPaths: [] })), ["--mode", "rpc", "--session-dir", "/sessions", "--no-extensions", "--model", "openai-codex/gpt-5.6-terra:high", "--tools", "read,grep,subagent_parent_message", "--append-system-prompt", "You map things."]);
+});
+
+// #1690: the child compares this list with its own tools and reports the
+// names Pi dropped, so it must be exactly what --tools carries.
+test("AgentRunner gives the child its exact --tools list and never forwards a stale one", async () => {
+	const h = harness();
+	const scoped = h.runner.run(request({ env: { [REQUESTED_TOOLS_ENV]: "stale" } }));
+	const unscoped = h.runner.run(request({ agent: { ...explorer, tools: [] }, env: { [REQUESTED_TOOLS_ENV]: "stale" } }));
+	await tick();
+	const [first, second] = h.spawnOptions;
+	assert.equal(first.env[REQUESTED_TOOLS_ENV], first.args[first.args.indexOf("--tools") + 1]);
+	assert.equal(first.env[REQUESTED_TOOLS_ENV], "read,grep,subagent_parent_message");
+	assert.ok(!second.args.includes("--tools"), "a profile without tools keeps Pi's defaults");
+	assert.equal(second.env[REQUESTED_TOOLS_ENV], undefined, "no --tools means no requested list, inherited or not");
+	h.runner.cancel(scoped.id);
+	h.runner.cancel(unscoped.id);
+});
+
+// A child reports missing tools at its first before_agent_start, before Pi answers the
+// prompt command; the note still lands and the launch steps still advance.
+test("AgentRunner records a missing-tools note that arrives before the prompt is accepted", async () => {
+	const h = harness();
+	const task = h.runner.run(request());
+	const message = `${MISSING_TOOLS_NOTE_PREFIX} gentle_review_scope`;
+	const stepsAtNote: string[] = [];
+	h.store.subscribe(task.id, (record, thread) => {
+		if (stepsAtNote.length === 0 && thread.items.some((item) => item.kind === THREAD_ITEM.NOTE)) stepsAtNote.push(record.lastStep);
+	});
+	await Promise.resolve();
+	// Spawned, but the fake child has not answered get_state or prompt yet.
+	h.children[0].emit({ type: "extension_ui_request", id: "u1", method: "notify", message, notifyType: "warning" });
+	await tick();
+	await tick();
+	assert.deepEqual(stepsAtNote, ["starting"], "the note is applied before any launch reply");
+	assert.deepEqual(h.store.thread(task.id).items.filter((item) => item.kind === THREAD_ITEM.NOTE), [{ kind: THREAD_ITEM.NOTE, text: message }]);
+	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.RUNNING);
+	assert.equal(h.store.get(task.id)?.lastStep, "prompt accepted", "the note does not hold back the launch steps");
+	assert.deepEqual(h.children[0].written.map((command) => command.type), ["get_state", "prompt"], "a notify is never answered");
+	h.runner.cancel(task.id);
+});
+
 test("AgentRunner admits strict live notifications once and closes IPC before Stop", async () => {
 	const notifications: string[] = [];
 	const { runner, children, spawnOptions } = harness({ onNotification: (task, message) => task.parentSessionId === "s1" && (notifications.push(message), true) });
@@ -949,7 +1013,7 @@ for (const [platform, detached] of [["win32", false], ["linux", true]] as const)
 	assert.deepEqual(launches, [{
 		command: "pi-fixture",
 		args: ["--from-host", "--mode", "rpc", "--session-dir", "/sessions", "--model", "openai-codex/gpt-5.6-terra:high", "--tools", "read,grep,subagent_parent_message", "--append-system-prompt", "You map things."],
-		options: { cwd: "/repo", env: { PATH: "/fixture", KEEP: "yes", GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: ownedIpc }, detached, stdio: ["pipe", "pipe", "pipe", "ipc"] },
+		options: { cwd: "/repo", env: { PATH: "/fixture", KEEP: "yes", GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: ownedIpc, [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message" }, detached, stdio: ["pipe", "pipe", "pipe", "ipc"] },
 	}]);
 	child.emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "platform checked" }], stopReason: "stop" }] });
 	child.emit({ type: "agent_settled" });
@@ -1032,7 +1096,7 @@ test("AgentRunner retains permission broker fd3 and assigns messaging IPC to fd4
 	const launch = spawnOptions[0];
 	const permissionChannelStdio = process.platform === "win32" ? "overlapped" : "pipe";
 	assert.match(launch?.env.GENTLE_PI_AGENTS_OWNED_IPC ?? "", /^\d+-[a-z0-9]+$/, "the owned-IPC marker has the runner's opaque shape");
-	assert.deepEqual(launch?.env, { GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: launch?.env.GENTLE_PI_AGENTS_OWNED_IPC, GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3" });
+	assert.deepEqual(launch?.env, { GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: launch?.env.GENTLE_PI_AGENTS_OWNED_IPC, GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3", [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message" });
 	assert.deepEqual(launch?.stdio, ["pipe", "pipe", "pipe", permissionChannelStdio, "ipc"]);
 	assert.equal(launch?.stdio?.length, 5);
 	children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "channel checked" }], stopReason: "stop" }] });

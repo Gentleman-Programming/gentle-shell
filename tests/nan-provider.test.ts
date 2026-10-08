@@ -228,16 +228,15 @@ test("fixed-depth models expose only medium and clamp unsupported thinking level
 	}
 });
 
-test("deepseek-v4-flash exposes off mapped to NaN's disabling effort while keeping fixed depth", () => {
+test("deepseek-v4-flash exposes only adaptive reasoning and cannot advertise off", () => {
 	const models = createNativeProvider().getModels();
 	const model = models.find((model) => model.id === "deepseek-v4-flash");
 	assert.ok(model);
 	assert.deepEqual(model.thinkingLevelMap, {
-		off: "none", minimal: null, low: null, high: null, xhigh: null, max: null,
+		off: null, minimal: null, low: null, high: null, xhigh: null, max: null,
 	});
-	assert.deepEqual(getSupportedThinkingLevels(model), ["off", "medium"]);
-	assert.equal(clampThinkingLevel(model, "off"), "off");
-	for (const level of ["minimal", "low", "high", "xhigh", "max"] as const) {
+	assert.deepEqual(getSupportedThinkingLevels(model), ["medium"]);
+	for (const level of ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const) {
 		assert.equal(clampThinkingLevel(model, level), "medium");
 	}
 });

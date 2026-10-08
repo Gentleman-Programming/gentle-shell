@@ -1,5 +1,6 @@
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import { recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
+import { SHELL_COMMAND_TOOLS } from "../lib/background-jobs.ts";
 import { blockChildDestructiveCommand } from "./child-safety.ts";
 import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRepositoryPreparation, captureBoundSessionRepositoryAuthority, prepareBoundSessionRepository, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sourcePathWithinProject } from "../lib/bounded-writer-admission.ts";
 import { consumeReviewMutation, pendingReviewMutation, pendingReviewMutationProfiles, recordReviewMutation, type ReceiptSession } from "../lib/review-reminder-receipt.ts";
@@ -2196,6 +2197,11 @@ function readEffectiveModelConfig(cwd: string): AgentModelConfig {
 	return pinnedEffectiveModelConfig(cwd) ?? readGlobalEffectiveModelConfig(cwd);
 }
 
+/** Resolve one complete reviewer routing snapshot without per-role fallback. */
+function readReviewerModelConfig(cwd: string, sessionId: string | undefined): AgentModelConfig {
+	return readSessionProfileBinding(sessionId)?.modelProfiles ?? pinnedEffectiveModelConfig(cwd) ?? readModelConfig(cwd);
+}
+
 /** The routing in effect once the pin is set aside: what a global save materializes. */
 function readGlobalEffectiveModelConfig(cwd: string): AgentModelConfig {
 	const effective = cloneModelConfig(readModelConfig(cwd));
@@ -3788,6 +3794,7 @@ class ProfilesPanel implements OverlayComponent {
 	// Actions reopen the panel, refreshing this snapshot without disk reads during rendering.
 	private readonly pinStatus: ProfilePinStatus | undefined;
 	private readonly sessionBoundName: string | undefined;
+	private readonly liveOrchestrator: (() => AgentRoutingEntry | undefined) | undefined;
 
 	constructor(
 		file: AgentProfilesFile,
@@ -3802,6 +3809,7 @@ class ProfilesPanel implements OverlayComponent {
 		requestRender: () => void,
 		pinStatus: () => ProfilePinStatus | undefined,
 		sessionBound: () => string | undefined,
+		liveOrchestrator?: () => AgentRoutingEntry | undefined,
 		feedback?: string,
 	) {
 		this.file = file;
@@ -3815,6 +3823,7 @@ class ProfilesPanel implements OverlayComponent {
 		this.orchestratorSettings = orchestratorSettings;
 		this.pinStatus = pinStatus();
 		this.sessionBoundName = sessionBound();
+		this.liveOrchestrator = liveOrchestrator;
 		const items = buildProfileListItems(file, evaluateProfilePin(this.pinStatus, file.profiles).winner?.profile, this.sessionBoundName);
 		this.listItems = items;
 		this.list = new NativeChoiceList<ProfileListItem>(
@@ -3957,7 +3966,7 @@ class ProfilesPanel implements OverlayComponent {
 	private refreshListItems(): void {
 		// Keep the list instance (and its pointer observer) alive while refreshing the
 		// mutable item records that NativeChoiceList already holds by reference.
-		for (const item of buildProfileListItems(this.file, evaluateProfilePin(this.pinStatus, this.file.profiles).winner?.profile)) {
+		for (const item of buildProfileListItems(this.file, evaluateProfilePin(this.pinStatus, this.file.profiles).winner?.profile, this.sessionBoundName)) {
 			const current = this.listItems.find((candidate) => candidate.id === item.id);
 			if (current) Object.assign(current, item);
 		}
@@ -4040,14 +4049,13 @@ class ProfilesPanel implements OverlayComponent {
 			// any invalid or stale layer, and the scope sentence all come from the shared
 			// precedence rule the launch resolver uses.
 			...profilePinDetailLines(this.pinStatus, this.file.profiles).map((line) => this.renderLine(line, width, "muted")),
-			// gentle-shell#1064 slice 1: the binding is stored for this session and
-			// outranks the pin in the panel list, so it is named right after the pin
-			// layers. Launch resolution ships with slice 2 (gentle-shell#1558); this
-			// slice stores the binding only, launch routing is unchanged, and nothing
-			// was written.
+			// gentle-shell#1064: the binding is stored for this session and outranks
+			// the pin in the panel list, so it is named right after the pin layers.
+			// Since #1558 launches resolve it ahead of pins and the global default,
+			// and nothing was written to make that true.
 			...(this.sessionBoundName === undefined
 				? []
-				: [this.renderLine(`session        ${sanitizeTerminalText(this.sessionBoundName)} (session) — stored for this session; launch routing is unchanged; nothing was written`, width, "muted")]),
+				: [this.renderLine(`session        ${sanitizeTerminalText(this.sessionBoundName)} (session) — launches resolve it ahead of pins and the global default; nothing was written`, width, "muted")]),
 			"",
 			this.renderLine("Profile routing", width, "accent"),
 			...this.indentLines(this.routingLines(profileRows, widths), width),
@@ -4058,6 +4066,13 @@ class ProfilesPanel implements OverlayComponent {
 	}
 
 	private effectiveOrchestratorLabel(): string {
+		// The now line answers what this session runs: the live orchestrator wins
+		// when one exists, and the settings read only stands in for sessions
+		// without a live model (and still surfaces an unreadable settings file).
+		const live = this.liveOrchestrator?.();
+		if (live !== undefined) {
+			return formatOrchestratorSelection(live);
+		}
 		const settings = this.orchestratorSettings;
 		if (settings.status === "invalid") {
 			return `unreadable (${sanitizeTerminalText(settings.reason)})`;
@@ -4111,6 +4126,7 @@ async function showProfilesPanel(
 	currentConfig: AgentModelConfig,
 	selectedName: string | undefined,
 	saveSnapshot: ProfilesSnapshotHandler,
+	live: LiveSession,
 	status?: string,
 	sessionBoundName?: string,
 ): Promise<ProfilesPanelResult> {
@@ -4132,6 +4148,7 @@ async function showProfilesPanel(
 				() => tui.requestRender(),
 				() => readProfilePinStatus(ctx.cwd),
 				() => sessionBoundName,
+				() => liveOrchestratorSnapshot(ctx, live)?.entry,
 				status,
 			);
 			const container = createNativeFullscreenInteraction({
@@ -4184,10 +4201,10 @@ type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel" | "getThin
 /**
  * Switch the running session to the profile's orchestrator. `settings.json`
  * is the default for new sessions only; Pi's `setModel`/`setThinkingLevel`
- * are what move the live one. Failures never undo the persisted default: the
- * profile is applied for the next session either way, and the note says what
- * this session did. Nothing here may throw — settings.json is already written
- * and the apply must finish reporting.
+ * are what move the live one without persisting global defaults. This helper
+ * also serves explicit global apply, but never writes settings itself. Failures
+ * keep the current live model and report what happened; callers retain their
+ * routing snapshot or persisted default independently.
  */
 async function switchLiveOrchestrator(ctx: ExtensionContext, live: LiveSession, entry: AgentRoutingEntry): Promise<string> {
 	const reference = parseOrchestratorModelRef(entry.model);
@@ -4218,13 +4235,32 @@ async function switchLiveOrchestrator(ctx: ExtensionContext, live: LiveSession, 
 	return `\nThis session now runs on ${label} · ${entry.thinking}.`;
 }
 
+/**
+ * The live session's orchestrator entry, when a model is running. `s` captures
+ * what the session actually runs rather than the default new sessions would
+ * get from settings.json; an unreadable thinking level still snapshots the
+ * model, just without a thinking claim.
+ */
+/** The live session's orchestrator: a snapshot result shaped for `s`, not a settings-file read. */
+interface LiveOrchestratorSnapshot {
+	readonly status: "valid";
+	readonly entry: AgentRoutingEntry;
+}
+
+function liveOrchestratorSnapshot(ctx: ExtensionContext, live: LiveSession): LiveOrchestratorSnapshot | undefined {
+	if (ctx.model === undefined || typeof ctx.model.provider !== "string" || typeof ctx.model.id !== "string") return undefined;
+	let thinking: unknown;
+	try { thinking = live.getThinkingLevel(); } catch { thinking = undefined; }
+	return { status: "valid", entry: { model: `${ctx.model.provider}/${ctx.model.id}`, thinking: isThinkingLevel(thinking) ? thinking : undefined } };
+}
+
 function profileSnapshotFrom(
 	current: AgentModelConfig,
-	settings: OrchestratorSettingsReadResult,
+	orchestrator: LiveOrchestratorSnapshot | OrchestratorSettingsReadResult,
 ): AgentModelConfig {
 	const snapshot = cloneModelConfig(current);
-	if (settings.status === "valid" && settings.entry !== undefined) {
-		snapshot[PROFILE_ORCHESTRATOR_KEY] = { ...settings.entry };
+	if (orchestrator.status === "valid" && orchestrator.entry !== undefined) {
+		snapshot[PROFILE_ORCHESTRATOR_KEY] = { ...orchestrator.entry };
 	}
 	return snapshot;
 }
@@ -4241,13 +4277,9 @@ async function runProfilesPanelAction(
 	switch (result.type) {
 		case "apply": {
 			if (!hasOwnProfile(file.profiles, result.name)) return file;
-			// gentle-shell#1064 slice 1: Enter binds the selected profile to this
-			// parent session. The binding is in-process state keyed by the session
-			// id: it writes no store marker, no global routing, no materialized
-			// stores, no agent frontmatter, no Pi settings, and no pin or declaration
-			// layer, pin or not. This slice stores the binding only: launch routing
-			// is unchanged until slice 2 (gentle-shell#1558) resolves the binding
-			// at launch. Refreshing the binding means selecting again.
+			// Enter applies a complete routing snapshot to this parent session and
+			// switches only its live orchestrator. No shared defaults, materialized
+			// stores, agent frontmatter, pins, or declarations are written.
 			const sessionId = ctx.sessionManager?.getSessionId?.();
 			if (typeof sessionId !== "string" || sessionId.length === 0) {
 				ctx.ui.notify(
@@ -4256,9 +4288,12 @@ async function runProfilesPanelAction(
 				);
 				return file;
 			}
-			bindSessionProfile(sessionId, result.name, normalizeModelConfig(file.profiles[result.name]) ?? {});
+			const snapshot = normalizeModelConfig(file.profiles[result.name]) ?? {};
+			bindSessionProfile(sessionId, result.name, snapshot);
+			const orchestrator = readProfileOrchestrator(snapshot);
+			const liveNote = orchestrator === undefined ? "" : await switchLiveOrchestrator(ctx, live, orchestrator);
 			ctx.ui.notify(
-				`el Gentleman bound profile "${result.name}" to this session — shown as "${result.name} (session)". The binding is stored for this session; launch routing is unchanged. Nothing was written: the global routing, pins, and materialized stores are untouched. Set as global default with a.`,
+				`el Gentleman bound profile "${result.name}" to this session — shown as "${result.name} (session)". Subagents and reviewers use this session's routing snapshot. Shared defaults were not written: the global routing, pins, and materialized stores are untouched. Set as global default with a.${liveNote}`,
 				"info",
 			);
 			return file;
@@ -4836,8 +4871,15 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): 
 			file,
 			name,
 			profileSnapshotFrom(
-				readEffectiveModelConfig(ctx.cwd),
-				readOrchestratorSettings(orchestratorSettingsPath()),
+				// The snapshot captures the same routing the panel shows as current,
+				// so a session binding outranks the shared layers here too.
+				readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.modelProfiles
+					?? readEffectiveModelConfig(ctx.cwd),
+				// The orchestrator follows the same honesty rule: capture what the
+				// session actually runs (ctx.model plus the live thinking level)
+				// when a live model exists; settings.json defaults stand in only
+				// when it does not (LCubero's finding on #1064).
+				liveOrchestratorSnapshot(ctx, live) ?? readOrchestratorSettings(orchestratorSettingsPath()),
 			),
 		);
 		writeProfilesFileSync(path, next);
@@ -4846,12 +4888,20 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): 
 	};
 	let selectedName: string | undefined;
 	const sessionBoundName = () => readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.name;
+	// The panel's "Current routing (effective)" table shows what this session's
+	// launches resolve right now, and a session binding outranks every shared
+	// layer, so a bound session reads its snapshot as the current routing while an
+	// unbound session keeps reading the effective config exactly as before.
+	const currentRoutingForPanel = async () =>
+		readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.modelProfiles
+		?? await readEffectiveModelConfigAsync(ctx.cwd);
 	let result = await showProfilesPanel(
 		ctx,
 		file,
-		await readEffectiveModelConfigAsync(ctx.cwd),
+		await currentRoutingForPanel(),
 		selectedName,
 		saveSnapshot,
+		live,
 		undefined,
 		sessionBoundName(),
 	);
@@ -4862,9 +4912,10 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): 
 		result = await showProfilesPanel(
 			ctx,
 			file,
-			await readEffectiveModelConfigAsync(ctx.cwd),
+			await currentRoutingForPanel(),
 			selectedName,
 			saveSnapshot,
+			live,
 			report.status,
 			sessionBoundName(),
 		);
@@ -4969,7 +5020,7 @@ const REVIEW_CONTROLLER_PARAMETER_FIELDS = {
 		},
 		input: {
 			type: "string",
-			description: "A JSON object or serialized object string for START/ASSESS only; every other operation requires a serialized object string. New native ordinary START uses {\"mode\":\"ordinary\"}; answer-consent uses exactly {\"consentBinding\":\"<opaque id>\",\"answer\":\"granted|declined\"}. Ordinary provider capture belongs only to gentle_review_capture. An explicit baseRef requires committedOnly: true and requests a committed range, while repository-local policyPath remains optional. baseRef must be HEAD, a full 40- or 64-character commit id, or a ref name; abbreviated commit ids are rejected as base-ref-unresolvable. ASSESS accepts an optional object with baseRef, committedOnly, writerModelId, writerEffort, and nativeReviewOutcome (gentle-pi#662/#668/#1175). The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); writerModelId and writerEffort are only a fallback when no runtime evidence exists (caller), and with neither the profile fails closed to small (fallback). A missing model, a mini model token (gemini is not mini), or low effort keeps the conservative small-model bias. ASSESS derives `closed` only from the native candidate.consumed fact for this exact candidate, which native records only when the approved review for that candidate is acknowledged; a caller-supplied closed is not authority and, without that fact, resolves to unknown. A declined, unavailable, or unknown outcome falls back to the exact risk-gated plan ASSESS returns when RDD is off, re-enabling the separate verifier; unknown is never treated as closed, and a decline is candidate-scoped and never lowers the bar below the RDD-off path. A declined or unavailable outcome, stated explicitly or recorded by this process for this exact candidate (never a different one, and never from repository state alone), wins over closure. The returned outcome_source (explicit|derived|unknown) says which of these produced the value. Legacy controller input remains separate.",
+			description: "A JSON object or serialized object string for START/ASSESS only; every other operation requires a serialized object string. New native ordinary START uses {\"mode\":\"ordinary\"}, plus the agent lens selection {\"lenses\":[\"risk\",...],\"lensesReason\":\"<what you touched and how>\"} (both or neither, 1-4 of risk, resilience, readability, reliability; never with focus; providers that predate it keep the tier default); answer-consent uses exactly {\"consentBinding\":\"<opaque id>\",\"answer\":\"granted|declined\"}. Ordinary provider capture belongs only to gentle_review_capture. An explicit baseRef requires committedOnly: true and requests a committed range, while repository-local policyPath remains optional. baseRef must be HEAD, a full 40- or 64-character commit id, or a ref name; abbreviated commit ids are rejected as base-ref-unresolvable. ASSESS accepts an optional object with baseRef, committedOnly, writerModelId, writerEffort, and nativeReviewOutcome (gentle-pi#662/#668/#1175). The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); writerModelId and writerEffort are only a fallback when no runtime evidence exists (caller), and with neither the profile fails closed to small (fallback). A missing model, a mini model token (gemini is not mini), or low effort keeps the conservative small-model bias. ASSESS derives `closed` only from the native candidate.consumed fact for this exact candidate, which native records only when the approved review for that candidate is acknowledged; a caller-supplied closed is not authority and, without that fact, resolves to unknown. Every outcome yields the exact risk-gated plan ASSESS returns when RDD is off: a closed review never removes the separate verifier the tier requires (verify-always-rdd-high S1), unknown is never treated as closed, and a decline is candidate-scoped and never lowers the bar below the RDD-off path. A declined or unavailable outcome, stated explicitly or recorded by this process for this exact candidate (never a different one, and never from repository state alone), wins over closure. The returned outcome_source (explicit|derived|unknown) says which of these produced the value. Legacy controller input remains separate.",
 		},
 		outputPath: { type: "string", description: "Retired with legacy bundle export; ignored. Export returns legacy-operation-retired." },
 		inputPath: { type: "string", description: "Repository-local JSON input file for the separate legacy controller flow (alternative to input). Legacy bundle import is retired." },
@@ -4982,10 +5033,11 @@ const REVIEW_CONTROLLER_PARAMETER_FIELDS = {
 	},
 } as const;
 
-// Providers such as non-strict Anthropic emit only root properties/required.
-// Keep the full declaration here and operation constraints in runtime branches.
-// The nullable root shell prevents Pi from deleting an optional supplied null;
-// both the branches below and the facade reject it, so it never becomes omitted.
+// Root-level union combinators (anyOf/oneOf/allOf) are forbidden by the Anthropic
+// tool definition spec and cause Claude Code/Agent SDK to drop the tool (#1698).
+// The root schema is a plain object; the nullable root shell prevents Pi from
+// deleting an optional supplied null, while runtime branches in the facade
+// enforce that null and non-START/ASSESS objects are rejected fail-closed.
 const REVIEW_CONTROLLER_PARAMETERS = {
 	...REVIEW_CONTROLLER_PARAMETER_FIELDS,
 	properties: {
@@ -4995,24 +5047,6 @@ const REVIEW_CONTROLLER_PARAMETERS = {
 			description: `${REVIEW_CONTROLLER_PARAMETER_FIELDS.properties.input.description} Null is invalid; omit input when optional.`,
 		},
 	},
-	anyOf: [
-		{
-			...REVIEW_CONTROLLER_PARAMETER_FIELDS,
-			properties: {
-				...REVIEW_CONTROLLER_PARAMETER_FIELDS.properties,
-				operation: { ...REVIEW_CONTROLLER_PARAMETER_FIELDS.properties.operation, enum: ["start", "assess"] },
-				input: { ...REVIEW_JSON_ARGUMENT, description: REVIEW_CONTROLLER_PARAMETER_FIELDS.properties.input.description },
-			},
-		},
-		{
-			...REVIEW_CONTROLLER_PARAMETER_FIELDS,
-			properties: {
-				...REVIEW_CONTROLLER_PARAMETER_FIELDS.properties,
-				operation: { ...REVIEW_CONTROLLER_PARAMETER_FIELDS.properties.operation, enum: Object.values(REVIEW_CONTROLLER_OPERATION).filter((operation) => operation !== "start" && operation !== "assess") },
-				input: { ...REVIEW_JSON_STRING, description: "Serialized JSON object string only; objects are accepted only by START/ASSESS." },
-			},
-		},
-	],
 } as const;
 
 const REVIEW_CAPTURE_PARAMETERS = {
@@ -6166,6 +6200,31 @@ const NATIVE_START_FOCUS = {
 } as const;
 type NativeStartFocus = (typeof NATIVE_START_FOCUS)[keyof typeof NATIVE_START_FOCUS];
 
+const NATIVE_START_LENSES = ["review-risk", "review-resilience", "review-readability", "review-reliability"] as const;
+const NATIVE_START_LENS_REASON_MAX = 500;
+
+/**
+ * Validates the optional agent lens selection of an ordinary START input
+ * (gentle-ai START --lenses): both fields or neither, one to four known lens
+ * names (short or review- form) without repeats, a non-empty single-line
+ * reason of at most 500 bytes, and never together with focus. Returns the
+ * canonical request fields, {} without a selection, or undefined when invalid.
+ */
+function validateNativeStartLensSelection(rawStart: Record<string, unknown>): { lenses?: readonly string[]; lensesReason?: string } | undefined {
+	const { lenses, lensesReason } = rawStart;
+	if (lenses === undefined && lensesReason === undefined) return {};
+	if (!Array.isArray(lenses) || lenses.length === 0 || typeof lensesReason !== "string" || rawStart.focus !== undefined) return undefined;
+	if (lensesReason.trim() === "" || /[\r\n]/.test(lensesReason) || Buffer.byteLength(lensesReason, "utf8") > NATIVE_START_LENS_REASON_MAX) return undefined;
+	const chosen = new Set<string>();
+	for (const lens of lenses) {
+		if (typeof lens !== "string") return undefined;
+		const canonical = lens.startsWith("review-") ? lens : `review-${lens}`;
+		if (!(NATIVE_START_LENSES as readonly string[]).includes(canonical) || chosen.has(canonical)) return undefined;
+		chosen.add(canonical);
+	}
+	return { lenses: NATIVE_START_LENSES.filter((lens) => chosen.has(lens)), lensesReason };
+}
+
 function isNativeStartFocus(value: unknown): value is NativeStartFocus {
 	return typeof value === "string" && (Object.values(NATIVE_START_FOCUS) as readonly string[]).includes(value);
 }
@@ -6269,7 +6328,7 @@ function nativeStartRejection(reason: string, field?: string): Record<string, un
 							? "native-start-committed-only-required"
 							: reason === "committed-only-invalid"
 								? "native-start-committed-only-invalid"
-								: reason === "unknown-field" || reason === "focus-invalid" || reason === "untracked-selection-invalid" || reason === "provider-base-offer-invalid" || reason === "provider-base-tree-mismatch"
+								: reason === "unknown-field" || reason === "focus-invalid" || reason === "lenses-invalid" || reason === "untracked-selection-invalid" || reason === "provider-base-offer-invalid" || reason === "provider-base-tree-mismatch"
 									? "native-start-input-invalid"
 									: "native-start-policy-path-invalid",
 		reason,
@@ -7193,6 +7252,12 @@ function mapLastEventClosure(
 			...(closure.requestHash === undefined ? {} : { request_hash: closure.requestHash }),
 			...(closure.correctionLines === undefined ? {} : { correction_lines: closure.correctionLines }),
 			...(closure.advisoryFindings === undefined ? {} : { advisory_findings: closure.advisoryFindings }),
+			...(closure.escalation === undefined ? {} : { escalation: {
+				cause: closure.escalation.cause,
+				finding_ids: closure.escalation.findingIds,
+				...(closure.escalation.refuterOutcomes === undefined ? {} : { refuter_outcomes: closure.escalation.refuterOutcomes.map(({ findingId, ...outcome }) => ({ finding_id: findingId, ...outcome })) }),
+			} }),
+			...(closure.targetedValidatorEvidence === undefined ? {} : { targeted_validator_evidence: closure.targetedValidatorEvidence.raw }),
 			...(closure.statusContinuation === undefined ? {} : { status_continuation: closure.statusContinuation.raw }),
 			// The host has to see the acknowledgement to run it: approval now
 			// waits for that exact invocation instead of burning on its own, so
@@ -7300,7 +7365,7 @@ async function executeReviewHostRelayCapture(
 			// global routing. A pin that omits a required role stays omitted: the
 			// typed reviewer-config-invalid refusal below is fail-closed, never a
 			// silent per-role fallback to another account's routing.
-			const launch = reviewHostRelaySelection(slot.routingKey ?? slot.lens, pinnedEffectiveModelConfig(cwd) ?? readModelConfig(cwd));
+			const launch = reviewHostRelaySelection(slot.routingKey ?? slot.lens, readReviewerModelConfig(cwd, reviewerSessionId));
 			return {
 				captureArgumentTokens: slot.captureArgumentTokens,
 				targetCwd: cwd,
@@ -8131,10 +8196,9 @@ async function executeReviewCaptureGroupOperation(
 			mutation_outcome: "none",
 		};
 	}
-	// One routing snapshot for the whole group: the pin-over-global precedence
-	// is identical for every slot, so resolving it once before the map avoids
-	// re-running the pin resolver and config reads per slot.
-	const reviewerRouting = pinnedEffectiveModelConfig(cwd) ?? readModelConfig(cwd);
+	// Resolve session-over-pin-over-global once for the entire reviewer group,
+	// so every slot uses the same complete routing snapshot.
+	const reviewerRouting = readReviewerModelConfig(cwd, reviewerSessionId);
 	const requests: readonly ReviewHostRelayRequest[] = group.slots.map((slot) => ({
 		captureArgumentTokens: slot.captureArgumentTokens,
 		targetCwd: cwd,
@@ -8849,10 +8913,12 @@ async function executeReviewControllerOperation(
 		);
 		if (rawStart.mode === REVIEW_MODE.ORDINARY) {
 			if ("policyHash" in rawStart) return nativeStartRejection("legacy-policy-hash-unsupported");
-			const unknownField = Object.keys(rawStart).find((field) => !["mode", "baseRef", "committedOnly", "policyPath", "focus", "untrackedScope", "expectedUntrackedInventory", "intendedUntracked"].includes(field));
+			const unknownField = Object.keys(rawStart).find((field) => !["mode", "baseRef", "committedOnly", "policyPath", "focus", "lenses", "lensesReason", "untrackedScope", "expectedUntrackedInventory", "intendedUntracked"].includes(field));
 			if (unknownField !== undefined) return nativeStartRejection("unknown-field", unknownField);
 			const focus = rawStart.focus;
 			if (focus !== undefined && !isNativeStartFocus(focus)) return nativeStartRejection("focus-invalid");
+			const lensSelection = validateNativeStartLensSelection(rawStart);
+			if (lensSelection === undefined) return nativeStartRejection("lenses-invalid");
 			const policy: NativeStartPolicyValidation = rawStart.policyPath === undefined
 				? {}
 				: validateNativeStartPolicyPath(defaultCwd, rawStart.policyPath);
@@ -9048,6 +9114,7 @@ async function executeReviewControllerOperation(
 						...(parameters.lineageId === undefined ? {} : { lineageId: parameters.lineageId }),
 						...(policy.policyPath === undefined ? {} : { policyPath: policy.policyPath }),
 						...(focus === undefined ? {} : { focus }),
+						...lensSelection,
 						...(signal === undefined ? {} : { signal }),
 					});
 				} catch (error) {
@@ -9281,6 +9348,7 @@ export const __testing = {
 	runProfilesPanelAction,
 	resolveReviewModeGate,
 	readEffectiveModelConfig,
+	readReviewerModelConfig,
 	readEffectiveModelConfigAsync,
 	followRenamedPin,
 	profilePinScopeNote,
@@ -9660,7 +9728,7 @@ function createGentleAiExtensionForTesting(
 			"Inspect and recover review authority and start native ordinary review. Ordinary capture is available only through the separate gentle_review_capture tool. Review outcomes never authorize delivery: commit, push, pull-request, and release commands follow ordinary repository policy. RESET/RECOVER remain destructive and are executed by the audited native CLI.",
 		promptSnippet: "Inspect authority, then start native ordinary review; use gentle_review_capture for one current collect slot",
 		promptGuidelines: [
-			'Call {"operation":"inspect"} before START. New native ordinary START uses a JSON string such as "{\\"mode\\":\\"ordinary\\"}"; an explicit baseRef must be paired with committedOnly: true to request a committed range, while policyPath remains repository-local. policyHash is legacy compact-only. The controller derives lineage, Git/untracked scope, tier, lenses, authored lines, and budget; the frozen correction budget counts logical corrections, while correction-plan correctionLines count diff lines (one replaced source line is one deletion plus one addition).',
+			'Call {"operation":"inspect"} before START. New native ordinary START uses a JSON string such as "{\\"mode\\":\\"ordinary\\",\\"lenses\\":[\\"reliability\\"],\\"lensesReason\\":\\"<what you touched and how>\\"}": pick every pertinent 4R lens (risk, resilience, readability, reliability) for what you touched and how; an explicit baseRef must be paired with committedOnly: true to request a committed range, while policyPath remains repository-local. policyHash is legacy compact-only. The controller derives lineage, Git/untracked scope, tier, lenses, authored lines, and budget; the frozen correction budget counts logical corrections, while correction-plan correctionLines count diff lines (one replaced source line is one deletion plus one addition).',
 			'An inspect blocked on the intended-untracked selection returns nextStep naming the exact continuation: call select-intended-untracked with the returned selectionBinding, or call inspect again with top-level untrackedScope ("exclude", or "select" with intendedUntracked) to resolve the round trip in one call; the retained selection is adopted by the next plain START.',
 			"Use RECONCILE_AUTHORITY only to quarantine one invalid native recovery successor. Supply exact predecessorLineage, expectedPredecessorRevision, successorLineage, expectedSuccessorRevision, actor, and reason values; Pi derives and displays the seven-line native authorization binding for fresh UI approval. The predecessor stays untouched, native returns the durable audit record, and Pi never falls back to RESET or RECOVER.",
 			"Use ABANDON or QUARANTINE_LEGACY only after an explicit user decision. ABANDON accepts only lineage, actor, and reason (reason must be the native enum `operator_disposition` or `retired_schema`): Pi freshly reads the native authority inventory, derives the lineage's revision, snapshot identity, and discarded-work summary, and renders the exact eight-line binding before interactive approval; caller-supplied inventory-derived fields are rejected. QUARANTINE_LEGACY accepts only the published malformed freeze-findings diagnostic/disposition. A dual reconciliation may supply only anomalies `unchanged_target,malformed_recovery_authorization` in that exact order. Use REPAIR_LEGACY_ALIAS only with lineage, actor, and reason: Pi freshly reads native inventory and derives repository, revision, diagnostic, disposition, and the exact eight-line binding before interactive approval. `review dispose-result` is unsupported pending design.",
@@ -9668,7 +9736,7 @@ function createGentleAiExtensionForTesting(
 			"For blocked-legacy or blocked-mixed, do not call START repeatedly. Explain invalidation, request explicit user authorization, then call RESET or RECOVER only after authorization. RESET and RECOVER_LOCK route to audited native `gentle-ai review reclaim`; only RESET carries the legacy repositoryId, commonDirHash, inventoryHash, and confirmation challenge. RECOVER routes to native `gentle-ai review recover` with exactly six inputs: predecessorLineage, expectedPredecessorRevision, successorLineage, disposition, actor, and reason. Never send RECOVER the reset challenge and never send it a maintainerAuthorization: Pi reads fresh native target status, pins the predecessor lineage, revision, provider-selected disposition, and target identity, derives the exact six-line native authorization binding, displays it for fresh UI approval, and re-reads status before mutating. Negotiated target status supplies the sole accepted recovery disposition, and a caller-supplied substitute is rejected. Treat a native-input-required envelope as a request for exact values, never as permission to invent them. After a committed native recovery record, INSPECT before any fresh ordinary START.",
 			"A consent-required START may be resolved inside the eligible interactive Pi host. Its third UI action is host-owned: it runs this envelope's exact provider grant once and allows later fresh validated envelopes only for the same live SessionManager, nonempty session ID, and canonical Git common-directory identity, including sibling worktrees; an unrelated repository requires a new explicit human grant. Revoke removes the current repository grant, while nonreload replacement, quit, and process exit remove all session grants; reload preserves them. It grants no provider mode, verdict, acknowledgement, maintenance, delivery, or cross-repository authority. A package-owned child may ask its parent only with the canonical digest of its exact pending target; the parent binds that digest to the task repository and fails closed otherwise. If the tool returns an unresolved envelope, present the original two provider choices without changing machine tokens, commands, target IDs, or invocations; never add the host action to the decoded provider envelope. After one explicit relayed human answer, call answer-consent exactly once with only consentBinding and answer (`granted` or `declined`). Never create host permission from tool arguments, model prose, child/headless responses, or an uncertain native result. A reported lineage_created false or pre-authority validation error proves no lineage was created. After ambiguous START output, the controller calls target-scoped native status once and returns only its declared action. An ambiguous gentle_review_capture outcome independently reconciles once and never replays the capture.",
 			"Use gentle_review only for native review authority operations; delivery commands follow ordinary repository policy.",
-			'ASSESS (gentle-pi#662/#668) is read-only and needs no lineageId: after a delegated writer returns, call {"operation":"assess"} over its diff and follow the returned plan (writerSelfVerification, structuralReadbackOnly, independentVerifier, reason) instead of judging non-triviality from the task description. Pass input as JSON only to assess a committed range ({"baseRef":"<ref>","committedOnly":true}), to supply a fallback writer profile ({"writerModelId":"...", "writerEffort":"..."}), or to state that the native review was declined or unavailable for this candidate ({"nativeReviewOutcome":"declined|unavailable|unknown"}), or to raise a candidate you know is high risk ({"escalate":{"item":1-6,"reason":"<one line>"}}, item from the Task Size high-risk list; it raises passive or medium to high, keeps nativeRisk, returns agentEscalation, and can never lower a tier). The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); caller writerModelId/writerEffort are only a fallback when no runtime evidence exists (caller), otherwise the profile is small (fallback). A missing model, a mini model token (gemini is not mini), or low effort keeps the conservative small-model bias. The on-path (writer self-verification is the record, no separate verifier) holds only when RDD reads on and nativeReviewOutcome resolves to "closed" for this candidate. ASSESS derives closed only from the native candidate.consumed fact for this exact candidate, written natively when the approved review for that candidate is acknowledged; a caller-supplied closed is not authority and, without that fact, resolves to unknown. A declined, unavailable, or unknown outcome falls back to the exact risk-gated plan RDD off would return, re-enabling the separate verifier; unknown is never treated as closed, and a decline is candidate-scoped and never lowers the bar below RDD off. A decline or unavailable review recorded by this process is bound to that exact candidate\'s own target identity, never to a different candidate or to bare repository state, and wins over closure. The result\'s outcome_source (explicit|derived|unknown) and writerProfileSource (runtime|caller|fallback) state which evidence produced each value. When native reports them, ASSESS projects reviewDue, reviewDueReason, candidate.consumed, and the native continuation verbatim; older binaries omit them and nothing is invented. Relay that continuation unchanged; never rebuild it. A native code review is not a substitute for applicable functional checks: tests, builds, and functional verification such as browser checks for UI changes still run when applicable. A failed or unavailable native assessment reports risk "unassessable", verified exactly like "high". This never mutates review authority state.',
+			'ASSESS (gentle-pi#662/#668) is read-only and needs no lineageId: after a delegated writer returns, call {"operation":"assess"} over its diff and follow the returned plan (writerSelfVerification, structuralReadbackOnly, independentVerifier, reason) instead of judging non-triviality from the task description. Pass input as JSON only to assess a committed range ({"baseRef":"<ref>","committedOnly":true}), to supply a fallback writer profile ({"writerModelId":"...", "writerEffort":"..."}), or to state that the native review was declined or unavailable for this candidate ({"nativeReviewOutcome":"declined|unavailable|unknown"}), or to raise a candidate you know is high risk ({"escalate":{"item":1-6,"reason":"<one line>"}}, item from the Task Size high-risk list; it raises passive or medium to high, keeps nativeRisk, returns agentEscalation, and can never lower a tier). The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); caller writerModelId/writerEffort are only a fallback when no runtime evidence exists (caller), otherwise the profile is small (fallback). A missing model, a mini model token (gemini is not mini), or low effort keeps the conservative small-model bias. The plan follows the native risk tier whatever RDD reads and whatever the native review outcome: the native review is an additional outside view and never removes a verifier the tier requires (verify-always-rdd-high S1). ASSESS derives closed only from the native candidate.consumed fact for this exact candidate, written natively when the approved review for that candidate is acknowledged; a caller-supplied closed is not authority and, without that fact, resolves to unknown; the outcome only explains the plan. A decline or unavailable review recorded by this process is bound to that exact candidate\'s own target identity, never to a different candidate or to bare repository state, and wins over closure. The result\'s outcome_source (explicit|derived|unknown) and writerProfileSource (runtime|caller|fallback) state which evidence produced each value. When native reports them, ASSESS projects reviewDue, reviewDueReason, candidate.consumed, and the native continuation verbatim; older binaries omit them and nothing is invented. Relay that continuation unchanged; never rebuild it. A native code review is not a substitute for applicable functional checks: tests, builds, and functional verification such as browser checks for UI changes still run when applicable. A failed or unavailable native assessment reports risk "unassessable", verified exactly like "high". This never mutates review authority state.',
 		],
 		parameters: REVIEW_CONTROLLER_PARAMETERS,
 		executionMode: "sequential",
@@ -9808,6 +9876,35 @@ function createGentleAiExtensionForTesting(
 		reminderEpoch += 1;
 		unbindPreparation?.();
 		reminderManager = ctx.sessionManager;
+		// gentle-shell#1690: a delegated child runs in the parent's resolved
+		// worktree. Repository preparation, review negotiation, asset install and
+		// model config belong to the parent session and write shared state. The
+		// standing review grant is host-only (a child never captures an identity),
+		// so revoke/refresh have nothing to act on; the child relay is load-time.
+		// Only that parent-owned work is skipped: the session-local resets above,
+		// the dev-binary notice, and any step added after this call, still run in
+		// children.
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") await startParentSession(event, ctx);
+		else await surfaceDevBinaryOverride(ctx);
+	});
+
+	// Loud, every session: an active dev-binary override means this session
+	// runs an unpinned gentle-ai. One visible startup notice: the gentle-shell
+	// 🌹 card owns the announcement when it can render (shell enabled with UI);
+	// this toast is only the fallback for when the card is unavailable. The
+	// hasUI guard stays: headless contexts have no toast to show.
+	const surfaceDevBinaryOverride = async (ctx: ExtensionContext): Promise<void> => {
+		const devBinaryToastFallback = ctx.hasUI && !shellEnabled();
+		try {
+			const devBinary = await describeDevBinaryOverride();
+			if (devBinaryToastFallback && devBinary.state === "active") ctx.ui.notify(devBinary.line, "warning");
+			if (devBinaryToastFallback && devBinary.state === "invalid") ctx.ui.notify(devBinary.line, "error");
+		} catch (error) {
+			if (ctx.hasUI) ctx.ui.notify(`Gentle AI dev binary override check failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		}
+	};
+
+	const startParentSession = async (event: unknown, ctx: ExtensionContext): Promise<void> => {
 		const epoch = reminderEpoch;
 		const manager = ctx.sessionManager;
 		const originalCwd = manager?.getCwd?.() ?? ctx.cwd;
@@ -9828,19 +9925,7 @@ function createGentleAiExtensionForTesting(
 		const reason = (event as { reason?: unknown }).reason;
 		if (reason !== "reload") revokeCurrentReviewSessionPermission(ctx);
 		await refreshReviewSessionPermissionStatus(ctx);
-		// Loud, every session: an active dev-binary override means this session
-		// runs an unpinned gentle-ai. One visible startup notice: the gentle-shell
-		// 🌹 card owns the announcement when it can render (shell enabled with UI);
-		// this toast is only the fallback for when the card is unavailable. The
-		// hasUI guard stays: headless contexts have no toast to show.
-		const devBinaryToastFallback = ctx.hasUI && !shellEnabled();
-		try {
-			const devBinary = await describeDevBinaryOverride();
-			if (devBinaryToastFallback && devBinary.state === "active") ctx.ui.notify(devBinary.line, "warning");
-			if (devBinaryToastFallback && devBinary.state === "invalid") ctx.ui.notify(devBinary.line, "error");
-		} catch (error) {
-			if (ctx.hasUI) ctx.ui.notify(`Gentle AI dev binary override check failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
-		}
+		await surfaceDevBinaryOverride(ctx);
 		try {
 			const installResult = installPackageAssets(ctx.cwd, true, ["delegation", "review"]);
 			migrateLegacyProjectModelOverrides(ctx.cwd);
@@ -9876,7 +9961,7 @@ function createGentleAiExtensionForTesting(
 		} catch {
 			// Startup negotiation is best-effort only; never surface or throw.
 		}
-	});
+	};
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		const isNamedAgent = isNamedAgentStartEvent(event);
@@ -9975,6 +10060,18 @@ function createGentleAiExtensionForTesting(
 		// Another concurrent end or ACK may already have consumed this prefix.
 		if (!pendingReviewMutation(ctx.sessionManager, root, mutation)) return;
 		if (status.nextTransition?.kind !== "execute" || status.nextTransition.execute.operation !== "review.start") return;
+		// verify-always-rdd-high S2: automatic review is for high risk only, so a
+		// candidate the native assessment reports not review_due earns no nudge.
+		// An assessment that cannot answer, or an older binary without
+		// review_due, keeps the nudge.
+		if (nativeReviewCli.assess !== undefined) {
+			let reviewDue: boolean | undefined;
+			try { reviewDue = (await nativeReviewCli.assess({ cwd: root })).reviewDue; }
+			catch { reviewDue = undefined; }
+			if (reviewDue === false) return;
+			if (!reminderSessionActive || epoch !== reminderEpoch || pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey) !== sessionKey) return;
+			if (!pendingReviewMutation(ctx.sessionManager, root, mutation)) return;
+		}
 		const targetIdentity = status.targetIdentity;
 		pi.sendMessage(
 			{
@@ -9997,7 +10094,7 @@ function createGentleAiExtensionForTesting(
 			// Persist the observed own write before any await. Preparation is not
 			// mutation evidence, and cannot invent a pre-write Changes baseline.
 			if (root) recordReviewMutation(pi, ctx.sessionManager, root, { source: "direct", toolName: event.toolName, toolCallId: event.toolCallId, ...directWriterProfile(pi, ctx) });
-			if (prospectiveRoot && !resolveSessionWorktree(ctx.cwd, ctx.cwd)) await prepareBoundSessionRepository(ctx.sessionManager, ctx.sessionManager.getCwd?.() ?? ctx.cwd, ctx.signal);
+			if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && prospectiveRoot && !resolveSessionWorktree(ctx.cwd, ctx.cwd)) await prepareBoundSessionRepository(ctx.sessionManager, ctx.sessionManager.getCwd?.() ?? ctx.cwd, ctx.signal);
 		} catch { /* Preparation and receipt persistence cannot change a successful tool result. */ }
 	});
 
@@ -10024,15 +10121,14 @@ function createGentleAiExtensionForTesting(
 				};
 			}
 		}
-		if (event.toolName !== "bash") return undefined;
-		if (!isRecord(event.input) || typeof event.input.command !== "string") {
-			return undefined;
-		}
+		if (!SHELL_COMMAND_TOOLS.has(event.toolName) || !isRecord(event.input)) return undefined;
+		const command = (event.input as { command?: unknown }).command;
+		if (typeof command !== "string") return undefined;
 		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") {
-			const childDenied = blockChildDestructiveCommand(event.input.command);
+			const childDenied = blockChildDestructiveCommand(command);
 			if (childDenied) return childDenied;
 		}
-		return await confirmCommand(event.input.command, ctx, pi.events, herdrLifecycle, yoloActive);
+		return await confirmCommand(command, ctx, pi.events, herdrLifecycle, yoloActive);
 	});
 
 	for (const owner of ["delegation", "review"] as const) {

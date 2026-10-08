@@ -3346,6 +3346,118 @@ test("the Agents widget never registers a sidebar rail part and stays visible ev
 	assert.match(widget()![1]!, /explore  map lib modules/, "the widget keeps rendering regardless of sidebar ownership");
 });
 
+for (const probeError of [undefined, "EPERM", "EIO"] as const) test(`status exposes fresh current-host exit confirmation (${probeError ?? "present"})`, async () => {
+	const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+	let clock = 1000, gone = false;
+	const signals: Array<NodeJS.Signals | 0> = [];
+	runtime.deps.now = () => clock;
+	const timers = recordTimers(runtime.deps);
+	runtime.deps.spawn = () => {
+		const child = fakeChild({ exitOnKill: false, pid: 43212 });
+		runtime.children.push(child);
+		return child.child;
+	};
+	runtime.deps.process = { platform: "linux", kill: (pid, signal) => {
+		assert.equal(pid, -43212);
+		signals.push(signal);
+		if (signal === 0 && (gone || probeError)) throw Object.assign(new Error("fake probe"), { code: gone ? "ESRCH" : probeError });
+	} };
+	gentleAgents(h.pi, {}, runtime.deps);
+	await h.fire("session_start", ctx);
+	const started = await h.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "Retained report", mode: "background" }, undefined, undefined, ctx);
+	const id = (started.details.gentleAgents as { taskId: string }).taskId;
+	await tick();
+	const status = () => h.tools.get("subagent_status")!.execute("status", { task_id: id }, undefined, undefined, ctx);
+	const assertConfirmation = (result: Awaited<ReturnType<typeof status>>, expected: string) => {
+		assert.match(result.content[0].text, new RegExp(`exit confirmation: ${expected}`));
+		assert.equal((result.details.gentleAgents as { exitConfirmation: string }).exitConfirmation, expected);
+		assert.doesNotMatch(JSON.stringify(result), /43212|processGroup|confirmedExits/);
+	};
+	assertConfirmation(await status(), "unconfirmed");
+	assert.deepEqual(signals, [], "ordinary status must not probe or stop the child");
+	runtime.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Retained report" }] }] });
+	runtime.children[0].emit({ type: "agent_settled" });
+	timers.run(250);
+	clock += 1000;
+	timers.run(25);
+	await tick();
+	const failed = await status();
+	assertConfirmation(failed, "unconfirmed");
+	const stale = timers.takeLast(25);
+	gone = true;
+	ctx.sessionManager.getSessionId = () => "foreign";
+	const before = signals.length;
+	assertConfirmation(await status(), "unavailable");
+	ctx.sessionManager.getSessionId = () => "";
+	assertConfirmation(await status(), "unavailable");
+	assert.equal(signals.length, before);
+	ctx.sessionManager.getSessionId = () => "s1";
+	assertConfirmation(await status(), "confirmed");
+	const after = signals.length;
+	assert.equal(after, before + 1, "status freshly probes the exact retained group");
+	stale();
+	assertConfirmation(await status(), "confirmed");
+	assert.equal(signals.length, after);
+	assert.deepEqual(signals.filter(signal => signal !== 0), ["SIGTERM", "SIGKILL"]);
+	const result = await h.tools.get("subagent_result")!.execute("result", { task_id: id }, undefined, undefined, ctx);
+	assert.match(result.content[0].text, /failed.*cleanup unconfirmed[\s\S]*Retained report/);
+	assert.equal((result.details.gentleAgents as { status: string }).status, "failed");
+	assert.equal(timers.pending(25), 0);
+});
+
+test("status confirmation keeps no-group quarantine conservative and requires the active context", async () => {
+	const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+	let clock = 1000;
+	runtime.deps.now = () => clock;
+	const timers = recordTimers(runtime.deps);
+	runtime.deps.spawn = () => {
+		const child = fakeChild({ exitOnKill: false });
+		runtime.children.push(child);
+		return child.child;
+	};
+	runtime.deps.process = { platform: "win32", kill: () => assert.fail("no group probe") };
+	gentleAgents(h.pi, {}, runtime.deps);
+	await h.fire("session_start", ctx);
+	const started = await h.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "No group", mode: "background" }, undefined, undefined, ctx);
+	const id = (started.details.gentleAgents as { taskId: string }).taskId;
+	await tick();
+	const check = async (taskId: string, context: ExtensionContext, expected: string) => {
+		const result = await h.tools.get("subagent_status")!.execute("status", { task_id: taskId }, undefined, undefined, context);
+		assert.match(result.content[0].text, new RegExp(`exit confirmation: ${expected}`));
+		assert.equal((result.details.gentleAgents as { exitConfirmation: string }).exitConfirmation, expected);
+	};
+	await check(id, fakeContext().ctx, "unavailable");
+	await check("unknown", ctx, "unavailable");
+	await h.tools.get("subagent_cancel")!.execute("cancel", { task_id: id }, undefined, undefined, ctx);
+	timers.run(250);
+	clock += 1000;
+	timers.run(25);
+	await check(id, ctx, "unavailable");
+	runtime.children[0].exit(0);
+	await check(id, ctx, "confirmed");
+	await check(id, fakeContext().ctx, "unavailable");
+});
+
+test("status exit confirmation is unavailable for restored history and a reloaded host", async () => {
+	const historyHome = join(root, "exit-confirmation-history");
+	const base: TaskRecord = { id: "exit-history-completed", agent: "explore", mode: "background", prompt: "p", label: "p", cwd, parentSessionId: "s1", status: TASK_STATUS.COMPLETED, createdAt: 1, startedAt: 1, endedAt: 2, model: "m", thinking: undefined, sessionPath: null, error: null, result: "done", lastStep: "done", lastActivityAt: 2, turns: 1, toolCalls: 0, tokens: 0, cost: 0 };
+	const records = [base, { ...base, id: "exit-history-failed", status: TASK_STATUS.FAILED, error: "capacity quarantined" }];
+	for (const task of records) await saveTask(historyDir(historyHome), task, emptyThread());
+	for (let host = 0; host < 2; host++) {
+		const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+		runtime.deps.home = historyHome;
+		runtime.deps.process = { platform: "linux", kill: () => assert.fail("history never owns a probe") };
+		gentleAgents(h.pi, {}, runtime.deps);
+		await h.fire("session_start", ctx);
+		for (const task of records) {
+			const result = await h.tools.get("subagent_status")!.execute("status", { task_id: task.id }, undefined, undefined, ctx);
+			assert.match(result.content[0].text, /exit confirmation: unavailable/);
+			assert.equal((result.details.gentleAgents as { exitConfirmation: string }).exitConfirmation, "unavailable");
+		}
+		await h.fire("session_shutdown", ctx);
+	}
+});
+
 test("background runs return at once; status, result, send_message, cancel, and continue follow the task", async () => {
 	const { pi, tools, fire, sent, renderers } = fakePi();
 	const harness = deps();

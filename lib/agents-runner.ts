@@ -81,6 +81,8 @@ export interface TaskQuery {
 	message: string;
 }
 
+export type ExitConfirmation = "confirmed" | "unconfirmed" | "unavailable";
+
 export const MAX_CHILD_RESPONSE_OBSERVATIONS = 128;
 
 /** Local producer snapshot only; never native workflow success or export authority.
@@ -185,6 +187,7 @@ interface PendingReply {
 }
 
 interface LiveTask {
+	readonly parentSessionId: string;
 	child: ChildLike;
 	sawRunEvent: boolean;
 	observations?: ChildObservationBuffer;
@@ -342,6 +345,8 @@ export class AgentRunner {
 	private readonly processControl: ProcessControl;
 	private readonly queue: Array<{ task: TaskRecord; request: TaskRequest }> = [];
 	private readonly live = new Map<string, LiveTask>();
+	// Current runner lifetime only, like the task store: never restored from history.
+	private readonly confirmedExits = new Map<string, string>();
 	private readonly waiters = new Map<string, Array<(task: TaskRecord) => void>>();
 	private readonly queryWaiters = new Map<string, Array<(query: TaskQuery | undefined) => void>>();
 	private readonly firstQueries = new Map<string, TaskQuery>();
@@ -399,6 +404,20 @@ export class AgentRunner {
 		this.queue.push({ task, request });
 		queueMicrotask(() => this.pump());
 		return task;
+	}
+
+	/** Current-host exit proof, scoped to the immutable originating session.
+	 * Only quarantined ownership is freshly probed; ordinary live work is untouched.
+	 * Missing bindings/history are unavailable, not evidence of process absence. */
+	exitConfirmation(id: string, parentSessionId: string): ExitConfirmation {
+		if (!parentSessionId.trim()) return "unavailable";
+		const live = this.live.get(id);
+		if (!live) return this.confirmedExits.get(id) === parentSessionId ? "confirmed" : "unavailable";
+		if (live.parentSessionId !== parentSessionId) return "unavailable";
+		if (!live.quarantined) return "unconfirmed";
+		if (live.processGroup === undefined && live.childExit === undefined) return "unavailable";
+		this.confirmGroupExit(id, live);
+		return this.confirmedExits.get(id) === parentSessionId ? "confirmed" : "unconfirmed";
 	}
 
 	waitFor(id: string): Promise<TaskRecord> {
@@ -545,7 +564,7 @@ export class AgentRunner {
 			return;
 		}
 		const processGroup = detached && typeof child.pid === "number" && child.pid > 0 ? child.pid : undefined;
-		const live: LiveTask = { child, sawRunEvent: false, mutationStarts: new Map(), inFlightTools: new Map(), argumentProgress: new ToolArgumentProgress(), pending: new Map(), queries: new Map(), replies: new Map(), cancelStall: () => {}, cancelGrace: () => {}, processGroup, terminal: undefined, childExit: undefined, childExitSignal: undefined, instructionsTransportDir, cleanupDeadlineAt: undefined, quarantined: false, nextId: 0, ipcClosed: false, acknowledgedIpcIds: new Set(), acknowledgedIpcOrder: [], stderrTail: "" };
+		const live: LiveTask = { parentSessionId: request.parentSessionId, child, sawRunEvent: false, mutationStarts: new Map(), inFlightTools: new Map(), argumentProgress: new ToolArgumentProgress(), pending: new Map(), queries: new Map(), replies: new Map(), cancelStall: () => {}, cancelGrace: () => {}, processGroup, terminal: undefined, childExit: undefined, childExitSignal: undefined, instructionsTransportDir, cleanupDeadlineAt: undefined, quarantined: false, nextId: 0, ipcClosed: false, acknowledgedIpcIds: new Set(), acknowledgedIpcOrder: [], stderrTail: "" };
 		if (request.prepareResponseObservations) {
 			let ready = false;
 			live.observationPreparation = () => ready;
@@ -920,16 +939,17 @@ export class AgentRunner {
 
 	private confirmGroupExit(id: string, live: LiveTask): void {
 		if (this.live.get(id) !== live) return;
+		live.cancelGrace();
 		const group = this.probeGroup(live);
 		if (group === "present") {
-			if (this.deps.now() >= (live.cleanupDeadlineAt ?? 0)) {
-				live.cancelGrace();
+			if (!live.quarantined && this.deps.now() >= (live.cleanupDeadlineAt ?? 0)) {
 				live.quarantined = true;
 				this.cleanupLive(live);
 				this.finish(id, TASK_STATUS.FAILED, `process cleanup unconfirmed after ${GROUP_CONFIRM_DEADLINE_MS}ms; capacity quarantined`, live);
-				return;
 			}
-			live.cancelGrace = this.deps.schedule(() => this.confirmGroupExit(id, live), GROUP_CONFIRM_MS);
+			// Quarantine records failure, not exit. Keep probing only this owned
+			// binding; a finish hook may already have confirmed and released it.
+			if (this.live.get(id) === live) live.cancelGrace = this.deps.schedule(() => this.confirmGroupExit(id, live), GROUP_CONFIRM_MS);
 			return;
 		}
 		if (group === "gone") {
@@ -996,8 +1016,10 @@ export class AgentRunner {
 	}
 
 	private completeExit(id: string, live: LiveTask): void {
+		if (this.live.get(id) !== live) return;
 		this.cleanupLive(live);
 		this.live.delete(id);
+		this.confirmedExits.set(id, live.parentSessionId);
 		// Quarantine already notified completion, but its retained slot is now free.
 		if (live.quarantined) {
 			this.writers.release(id);

@@ -31,7 +31,7 @@ import { readSessionProfileBinding, sessionOrPinModelProfiles } from "../lib/ses
 import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-policy.ts";
 import { installBackgroundCacheWarming } from "../lib/background-cache-warming.ts";
 import { isFinished, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
-import { AgentRunner, piCommand, abortReasonText, REQUESTED_TOOLS_ENV, type AskAnswer, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
+import { AgentRunner, piCommand, abortReasonText, REQUESTED_TOOLS_ENV, type AskAnswer, type ExitConfirmation, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
 import { parseChildPackageInjection } from "../lib/child-package-injection.ts";
 import { ChildMessenger, type IpcEndpoint } from "../lib/agents-messaging.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
@@ -350,14 +350,15 @@ function runtimeWriterProfile(task: TaskRecord): { writerModelId?: string; write
 	};
 }
 
-function taskDetails(task: TaskRecord): Record<string, unknown> {
-	return { gentleAgents: { taskId: task.id, agent: task.agent, status: task.status, mode: task.mode, cwd: task.cwd } };
+function taskDetails(task: TaskRecord, exitConfirmation?: ExitConfirmation): Record<string, unknown> {
+	return { gentleAgents: { taskId: task.id, agent: task.agent, status: task.status, mode: task.mode, cwd: task.cwd, ...(exitConfirmation === undefined ? {} : { exitConfirmation }) } };
 }
 
-export function describeTask(task: TaskRecord): string {
+export function describeTask(task: TaskRecord, exitConfirmation?: ExitConfirmation): string {
 	const head = `${task.id} · ${task.agent} · ${task.status} · ${task.mode}`;
 	const detail = task.error ? `\n${task.error}` : "";
-	return `${head} · cwd: ${task.cwd} · ${task.turns} turns · ${task.toolCalls} tool calls · last: ${task.lastStep}${detail}`;
+	const confirmation = exitConfirmation === undefined ? "" : ` · exit confirmation: ${exitConfirmation}`;
+	return `${head} · cwd: ${task.cwd} · ${task.turns} turns · ${task.toolCalls} tool calls · last: ${task.lastStep}${confirmation}${detail}`;
 }
 
 function finishedText(task: TaskRecord): string {
@@ -1381,10 +1382,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 
 	// A guessed id ("1") leads back to real ids instead of a dead end, so the
 	// parent retries the same call rather than re-summarizing it (gentle-shell#1713).
-	const unknownTask = (id: unknown, ctx: ExtensionContext | undefined) => {
+	const unknownTask = (id: unknown, ctx: ExtensionContext | undefined, exitConfirmation?: ExitConfirmation) => {
 		const recent = [...store.list(ctx?.sessionManager?.getSessionId() ?? "")].sort((a, b) => b.createdAt - a.createdAt).slice(0, 5);
 		const hint = recent.length ? ` Recent task ids: ${recent.map((task) => `${task.id} (${task.agent})`).join(", ")}.` : "";
-		return text(`Error: no task ${String(id)}.${hint}`, { error: "unknown task" });
+		const confirmation = exitConfirmation === undefined ? "" : ` · exit confirmation: ${exitConfirmation}`;
+		return text(`Error: no task ${String(id)}.${hint}${confirmation}`, { error: "unknown task", ...(exitConfirmation === undefined ? {} : { gentleAgents: { exitConfirmation } }) });
 	};
 
 	// Restores this exact session's own finished subagents as visible history
@@ -2077,9 +2079,15 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		},
 	);
 
-	tool("status", "Report the status of one subagent task.", { required: ["task_id"], properties: { task_id: { type: "string" } } }, async (params, ctx) => {
+	tool("status", "Report one subagent task and current-host exit confirmation (confirmed, unconfirmed or unavailable). History alone is not exit proof.", { required: ["task_id"], properties: { task_id: { type: "string" } } }, async (params, ctx) => {
 		const task = await resolveTask(String(params.task_id));
-		return task ? text(describeTask(task), taskDetails(task)) : unknownTask(params.task_id, ctx);
+		if (!task) return unknownTask(params.task_id, ctx, "unavailable");
+		// Finished/quarantined tasks leave ownedTaskIds. Only the runner's original
+		// live binding or local confirmed-exit evidence can authorize this query.
+		const sessionId = ctx?.sessionManager?.getSessionId() ?? "";
+		const confirmation = ctx?.sessionManager === sessions && sessionId === activeSessionId()
+			? runner.exitConfirmation(task.id, sessionId) : "unavailable";
+		return text(describeTask(task, confirmation), taskDetails(task, confirmation));
 	});
 
 	tool("result", "Return the final answer of a finished subagent task, or its current state if it is still running.", { required: ["task_id"], properties: { task_id: { type: "string" } } }, async (params, ctx) => {
@@ -2096,7 +2104,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 
 	tool("list_tasks", "List the subagent tasks of this session, newest first.", { properties: {} }, async (_params, ctx) => {
 		const tasks = store.list(ctx.sessionManager.getSessionId() ?? "");
-		return text(tasks.length === 0 ? "No subagent tasks in this session." : tasks.map(describeTask).join("\n"));
+		return text(tasks.length === 0 ? "No subagent tasks in this session." : tasks.map(task => describeTask(task)).join("\n"));
 	});
 
 	tool("reply", "Reply once to a live query from a child of the current parent session.", { required: ["task_id", "request_id", "message"], properties: { task_id: { type: "string" }, request_id: { type: "string" }, message: { type: "string" } } }, async (params, ctx) => {

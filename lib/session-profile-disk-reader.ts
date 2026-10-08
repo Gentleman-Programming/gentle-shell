@@ -2,15 +2,10 @@
 import { readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import {
+	isSessionProfileFamilyEntry,
 	readSessionProfileEntry,
-	SESSION_PROFILE_CUSTOM_TYPE,
 	type SessionProfileReadResult,
 } from "./session-profile-persistence.ts";
-
-const profileFamily = SESSION_PROFILE_CUSTOM_TYPE.slice(
-	0,
-	SESSION_PROFILE_CUSTOM_TYPE.lastIndexOf("/") + 1,
-);
 
 export interface SessionProfileSource {
 	getSessionId(): string;
@@ -36,6 +31,12 @@ export interface DiskProfileOptions {
 
 function record(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+/** Own required metadata of a profile-family candidate, before serialization. */
+export function hasSessionProfileCandidateMetadata(value: unknown): boolean {
+	return (
+		record(value) && metadata(value) && Object.hasOwn(value, "customType")
+	);
 }
 function metadata(value: Record<string, unknown>): boolean {
 	return (
@@ -87,11 +88,8 @@ export function readSessionProfileDisk(
 		// missing/inherited fields. Ordinary branch entries have no profile meaning.
 		for (const raw of rawBranch) {
 			if (
-				record(raw) &&
-				raw.type === "custom" &&
-				typeof raw.customType === "string" &&
-				raw.customType.startsWith(profileFamily) &&
-				(!metadata(raw) || !Object.hasOwn(raw, "customType"))
+				isSessionProfileFamilyEntry(raw) &&
+				!hasSessionProfileCandidateMetadata(raw)
 			)
 				return unavailable("invalid-candidate-metadata");
 		}
@@ -101,11 +99,8 @@ export function readSessionProfileDisk(
 		for (let index = branch.length - 1; index >= 0; index--) {
 			const candidate = branch[index];
 			if (
-				record(candidate) &&
-				candidate.type === "custom" &&
-				typeof candidate.customType === "string" &&
-				candidate.customType.startsWith(profileFamily) &&
-				!failed.has(candidate.id as string)
+				isSessionProfileFamilyEntry(candidate) &&
+				!failed.has((candidate as { id?: unknown }).id as string)
 			) {
 				entryIndex = index;
 				break;

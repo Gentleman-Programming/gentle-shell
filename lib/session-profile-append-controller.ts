@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import {
+ hasSessionProfileCandidateMetadata,
  readSessionProfileDisk,
  type DiskProfileResult,
  type SessionProfileSource,
@@ -9,6 +10,7 @@ import {
 import {
  createSessionProfileBind,
  createSessionProfileClear,
+ isSessionProfileFamilyEntry,
  readSessionProfileEntry,
  SESSION_PROFILE_CUSTOM_TYPE,
  type SessionProfileBindPayload,
@@ -61,13 +63,6 @@ function detached<T>(value: T): T {
   throw new TypeError("Unserializable controller snapshot");
  }
 }
-function family(entry: Entry): boolean {
- return (
-  entry.type === "custom" &&
-  typeof entry.customType === "string" &&
-  entry.customType.startsWith("gentle-pi.session-profile/")
- );
-}
 function unavailable(reason: string): SessionProfileAppendOutcome {
  return { status: "indeterminate", state: { status: "indeterminate", reason } };
 }
@@ -109,19 +104,11 @@ export function createSessionProfileAppendController(
   // Match the reader's own-field requirements before JSON can hide inherited
   // metadata or an entry's toJSON can manufacture otherwise missing fields.
   for (const value of raw) {
-   if (value && typeof value === "object" && family(value as Entry)) {
-    const entry = value as Entry;
-    if (
-     !["type", "id", "parentId", "timestamp", "customType"].every((key) =>
-      Object.hasOwn(entry, key),
-     ) ||
-     typeof entry.timestamp !== "string" ||
-     !entry.timestamp ||
-     (entry.parentId !== null &&
-      (typeof entry.parentId !== "string" || !entry.parentId))
-    )
-     throw new Error("profile-metadata");
-   }
+   if (
+    isSessionProfileFamilyEntry(value) &&
+    !hasSessionProfileCandidateMetadata(value)
+   )
+    throw new Error("profile-metadata");
   }
   const branch = detached(raw) as Entry[];
   if (
@@ -196,13 +183,13 @@ export function createSessionProfileAppendController(
   };
  }
  function selected(c: Capture, s: Scope): Entry | undefined {
-  return c.branch.findLast((entry) => family(entry) && !s.failed.has(entry.id));
+  return c.branch.findLast((entry) => isSessionProfileFamilyEntry(entry) && !s.failed.has(entry.id));
  }
  function uncertainSelection(c: Capture, s: Scope): boolean {
   // Under unknown branch movement, even the raw newest family entry must be
   // a separately corroborated recovery. Exclusion cannot revive an older
   // certified selection when the newest entry's provenance is ambiguous.
-  const latest = c.branch.findLast(family);
+  const latest = c.branch.findLast(isSessionProfileFamilyEntry);
   return (
    s.uncertain &&
    (!latest || !isDeepStrictEqual(s.certified.get(latest.id), latest))
@@ -282,7 +269,7 @@ export function createSessionProfileAppendController(
        if (value && typeof value === "object") {
         const entry = value as Entry;
         if (
-         family(entry) &&
+         isSessionProfileFamilyEntry(entry) &&
          typeof entry.id === "string" &&
          entry.id &&
          !old.has(entry.id)
@@ -309,7 +296,7 @@ export function createSessionProfileAppendController(
   const oldIds = new Set(before.branch.map((entry) => entry.id));
   const added = after.branch.filter((entry) => !oldIds.has(entry.id));
   if (threw) {
-   for (const entry of added) if (family(entry)) s.failed.add(entry.id);
+   for (const entry of added) if (isSessionProfileFamilyEntry(entry)) s.failed.add(entry.id);
    if (!prefix(before.branch, after.branch)) {
     s.ambiguous = true;
     s.uncertain = true;

@@ -31,7 +31,7 @@ interface Harness {
 	advance(ms: number): void;
 }
 
-function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boolean; process?: RunnerDeps["process"]; pid?: number; maxConcurrency?: number; stallTimeoutMs?: number; toolStallTimeoutMs?: number; answer?: Record<string, unknown>; exitOnKill?: boolean; state?: Record<string, unknown>; stateSuccess?: boolean; onNotification?: RunnerHooks["onNotification"]; onSuccessfulMutation?: RunnerHooks["onSuccessfulMutation"]; onFinish?: RunnerHooks["onFinish"] } = {}): Harness {
+function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boolean; process?: RunnerDeps["process"]; pid?: number; maxConcurrency?: number; stallTimeoutMs?: number; toolStallTimeoutMs?: number; maxTurns?: number; maxTotalTokens?: number; answer?: Record<string, unknown> | Promise<Record<string, unknown>>; exitOnKill?: boolean; state?: Record<string, unknown>; stateSuccess?: boolean; onNotification?: RunnerHooks["onNotification"]; onSuccessfulMutation?: RunnerHooks["onSuccessfulMutation"]; onFinish?: RunnerHooks["onFinish"] } = {}): Harness {
 	const children: FakeChild[] = [];
 	const timers: Harness["timers"] = [];
 	const asks: Harness["asks"] = [];
@@ -70,10 +70,12 @@ function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boo
 		pi: { command: "pi", args: [] },
 	};
 	const store = new TaskStore();
-	const runner = new AgentRunner(store, { maxConcurrency: options.maxConcurrency ?? 2, stallTimeoutMs: options.stallTimeoutMs ?? 10_000, toolStallTimeoutMs: options.toolStallTimeoutMs }, deps, {
+	const runner = new AgentRunner(store, { maxConcurrency: options.maxConcurrency ?? 2, stallTimeoutMs: options.stallTimeoutMs ?? 10_000, toolStallTimeoutMs: options.toolStallTimeoutMs, maxTurns: options.maxTurns, maxTotalTokens: options.maxTotalTokens }, deps, {
 		askUser: async (taskId, ask) => {
 			asks.push({ taskId, method: ask.method });
-			return options.answer ?? { value: "yes" };
+			// An answer may be a promise the test holds open, so a task stays in its
+			// wait window while later frames arrive.
+			return await (options.answer ?? { value: "yes" });
 		},
 		onFinish: (task, observations) => { finishes.push(task.id); options.onFinish?.(task, observations); },
 		onNotification: options.onNotification,
@@ -1756,4 +1758,96 @@ test("temporary instructions transport file is cleaned up if child emits an earl
 	assert.ok(capturedPromptPath, "should have captured a transport file path");
 	assert.ok(!existsSync(capturedPromptPath), "temporary transport file must be cleaned up on early child error");
 	assert.ok(!existsSync(dirname(capturedPromptPath)), "temporary transport directory must be cleaned up on early child error");
+});
+
+// Execution budgets bound total work, not silence: the stall watchdog still owns
+// a quiet child, and these ceilings own a busy one. Both read the counters the
+// card already shows, and both stop through the same termination path.
+function completeTurn(child: FakeChild, tokens = 0): void {
+	child.emit({ type: "message_end", message: { role: "assistant", usage: { totalTokens: tokens, cost: { total: 0 } } } });
+	child.emit({ type: "turn_end" });
+}
+
+test("max_turns stops the child when the recorded turn count reaches the ceiling", async () => {
+	const h = harness({ stallTimeoutMs: FOUR_MIN_MS, maxTurns: 2 });
+	const task = h.runner.run(request());
+	await tick();
+	const child = h.children[0];
+	completeTurn(child);
+	await tick();
+	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.RUNNING, "one turn is below a ceiling of two");
+	completeTurn(child);
+	await tick();
+	const finished = await h.runner.waitFor(task.id);
+	assert.equal(finished.status, TASK_STATUS.TIMED_OUT);
+	assert.match(finished.error ?? "", /reached max_turns 2 after:/);
+	assert.equal(finished.turns, 2, "the budget reads the same turn count the card shows");
+	assert.ok(child.killed.includes("SIGTERM"), "the ceiling stops the child through the existing termination path");
+});
+
+test("with no budget configured a busy child keeps running", async () => {
+	const h = harness({ stallTimeoutMs: FOUR_MIN_MS });
+	const task = h.runner.run(request());
+	await tick();
+	const child = h.children[0];
+	for (let index = 0; index < 25; index += 1) completeTurn(child, 50_000);
+	await tick();
+	const running = h.store.get(task.id);
+	assert.equal(running?.status, TASK_STATUS.RUNNING, "no ceiling means no stop");
+	assert.equal(running?.turns, 25);
+	assert.equal(running?.tokens, 25 * 50_000);
+	assert.deepEqual(child.killed, []);
+});
+
+test("max_total_tokens stops the child on reported usage alone", async () => {
+	const h = harness({ stallTimeoutMs: FOUR_MIN_MS, maxTotalTokens: 100_000 });
+	const task = h.runner.run(request());
+	await tick();
+	const child = h.children[0];
+	completeTurn(child, 60_000);
+	await tick();
+	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.RUNNING, "one turn of usage is below the ceiling");
+	completeTurn(child, 60_000);
+	await tick();
+	const finished = await h.runner.waitFor(task.id);
+	assert.equal(finished.status, TASK_STATUS.TIMED_OUT);
+	assert.match(finished.error ?? "", /reached max_total_tokens 100000 \(120000 reported\) after:/);
+	assert.equal(finished.tokens, 120_000, "the ceiling reads the reported usage the card shows");
+	assert.equal(finished.turns, 1, "the usage that crossed the ceiling stopped the child before its turn completed");
+});
+
+test("a provider that reports no usage leaves the token ceiling inert", async () => {
+	const h = harness({ stallTimeoutMs: FOUR_MIN_MS, maxTotalTokens: 1 });
+	const task = h.runner.run(request());
+	await tick();
+	const child = h.children[0];
+	for (let index = 0; index < 6; index += 1) completeTurn(child, 0);
+	await tick();
+	const running = h.store.get(task.id);
+	assert.equal(running?.status, TASK_STATUS.RUNNING, "an unreported usage count must never fire the ceiling");
+	assert.equal(running?.turns, 6);
+	assert.equal(running?.tokens, 0);
+	assert.deepEqual(child.killed, []);
+});
+
+test("a task that emits an event while waiting counts as resumed and is then stopped by the ceiling", async () => {
+	// No budget needs a special case for a waiting task: the store already resumes
+	// one on any non-ASK event (agents-protocol.ts:426), and only an event that
+	// changes turns or tokens can cross a ceiling. This pins that contract.
+	let release: (answer: Record<string, unknown>) => void = () => {};
+	const answered = new Promise<Record<string, unknown>>((resolve) => { release = resolve; });
+	const h = harness({ stallTimeoutMs: FOUR_MIN_MS, maxTurns: 1, answer: answered });
+	const task = h.runner.run(request());
+	await tick();
+	const child = h.children[0];
+	child.emit({ type: "extension_ui_request", id: "q1", method: "select", title: "Which one?" });
+	await tick();
+	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.WAITING, "the child is waiting on the operator");
+	completeTurn(child);
+	await tick();
+	const finished = await h.runner.waitFor(task.id);
+	assert.equal(finished.status, TASK_STATUS.TIMED_OUT, "the frame that crosses the ceiling also resumes the task");
+	assert.equal(finished.turns, 1);
+	assert.match(finished.error ?? "", /reached max_turns 1 after:/);
+	release({ value: "yes" });
 });

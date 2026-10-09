@@ -42,6 +42,7 @@ import { fileURLToPath } from "node:url";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
+	SessionShutdownEvent,
 	Theme,
 	ThemeColor,
 	ToolCallEventResult,
@@ -113,7 +114,9 @@ import {
 	type ProfilePinSource,
 	type ProfilePinStatus,
 } from "../lib/agent-profile-pin.ts";
-import { bindSessionProfile, readSessionProfileBinding } from "../lib/session-profile-binding.ts";
+import { clearSessionProfileBinding, readSessionProfileBinding } from "../lib/session-profile-binding.ts";
+import { createSessionProfileIntegration, hasPendingSessionProfileSelection, readCurrentSessionProfileOutcome, runCurrentSessionProfileSelection, waitCurrentSessionProfileSelection } from "../lib/session-profile-integration.ts";
+import { publishSessionProfileOutcome, readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import {
 	applyOrchestratorSettings,
 	readOrchestratorSettings,
@@ -4664,9 +4667,10 @@ async function runProfilesPanelAction(
 	switch (result.type) {
 		case "apply": {
 			if (!hasOwnProfile(file.profiles, result.name)) return file;
-			// Enter applies a complete routing snapshot to this parent session and
-			// switches only its live orchestrator. No shared defaults, materialized
-			// stores, agent frontmatter, pins, or declarations are written.
+			// Enter persists a complete routing snapshot for this parent session,
+			// publishes only the returned state, then switches its live orchestrator.
+			// No shared defaults, materialized stores, agent frontmatter, pins, or
+			// declarations are written.
 			const sessionId = ctx.sessionManager?.getSessionId?.();
 			if (typeof sessionId !== "string" || sessionId.length === 0) {
 				ctx.ui.notify(
@@ -4675,14 +4679,42 @@ async function runProfilesPanelAction(
 				);
 				return file;
 			}
-			const snapshot = normalizeModelConfig(file.profiles[result.name]) ?? {};
-			bindSessionProfile(sessionId, result.name, snapshot);
-			const orchestrator = readProfileOrchestrator(snapshot);
-			const liveNote = orchestrator === undefined ? "" : await switchLiveOrchestrator(ctx, live, orchestrator);
-			ctx.ui.notify(
-				`el Gentleman bound profile "${result.name}" to this session — shown as "${result.name} (session)". Subagents and reviewers use this session's routing snapshot. Shared defaults were not written: the global routing, pins, and materialized stores are untouched. Set as global default with a.${liveNote}`,
-				"info",
-			);
+			const selected = await runCurrentSessionProfileSelection(ctx.sessionManager, async (attachment, owned) => {
+				const outcome = attachment.bind(result.name, normalizeModelConfig(file.profiles[result.name]) ?? {});
+				if (!owned()) return false;
+				const authority = publishSessionProfileOutcome(ctx.sessionManager, outcome);
+				if ((outcome.status !== "persisted" && outcome.status !== "not-persisted") || outcome.state.status !== "bound" || !authority.available) {
+					ctx.ui.notify(
+						`el Gentleman could not bind profile "${result.name}". ${authority.available ? "The last disk-corroborated state was preserved." : "Session profile authority is unavailable; affected launches are blocked."} No live model or thinking change was applied.`,
+						"warning",
+					);
+					return false;
+				}
+				const snapshot = outcome.state.binding;
+				// The live switch applies only while this exact snapshot is still current.
+				const current = () => {
+					if (!owned()) return false;
+					const state = readCurrentSessionProfileOutcome(ctx.sessionManager)?.state;
+					return state?.status === "bound" && JSON.stringify(state.binding) === JSON.stringify(snapshot);
+				};
+				const orchestrator = readProfileOrchestrator(snapshot.modelProfiles);
+				const liveNote = orchestrator === undefined ? "" : await switchLiveOrchestrator(ctx, {
+					setModel: (model) => current() ? live.setModel(model) : Promise.resolve(false),
+					setThinkingLevel: (level) => { if (current()) live.setThinkingLevel(level); },
+					getThinkingLevel: () => live.getThinkingLevel(),
+				}, orchestrator);
+				if (current())
+					ctx.ui.notify(
+						`el Gentleman bound profile "${snapshot.name}" to this session — shown as "${snapshot.name} (session)"; ${outcome.status === "persisted" ? "persisted in this session" : "not yet persisted; active only until detach or disk corroboration"}. Subagents and reviewers use this session's routing snapshot. Shared defaults were not written: the global routing, pins, and materialized stores are untouched. Set as global default with a.${liveNote}`,
+						"info",
+					);
+				return true;
+			});
+			if (selected === undefined)
+				ctx.ui.notify(
+					`el Gentleman cannot bind profile "${result.name}": the current session attachment is unavailable. No profile or live model change was applied.`,
+					"warning",
+				);
 			return file;
 		}
 		case "apply-global": {
@@ -5295,17 +5327,32 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): 
 	while (result.type !== "close") {
 		const report: ProfilesPanelReport = {};
 		file = await runProfilesPanelAction(ctx, live, path, file, result, report);
+		// A reload or session replacement while an action or read awaited makes
+		// this command ctx stale; the panel closes instead of touching it again.
+		if (!isCommandContextActive(ctx)) return;
 		selectedName = report.selectedName ?? ("name" in result ? result.name : undefined);
+		const routing = await currentRoutingForPanel();
+		if (!isCommandContextActive(ctx)) return;
 		result = await showProfilesPanel(
 			ctx,
 			file,
-			await currentRoutingForPanel(),
+			routing,
 			selectedName,
 			saveSnapshot,
 			live,
 			report.status,
 			sessionBoundName(),
 		);
+	}
+}
+
+/** Pi's runner throws on any access to a ctx made stale by reload or session replacement. */
+function isCommandContextActive(ctx: ExtensionContext): boolean {
+	try {
+		void ctx.sessionManager;
+		return true;
+	} catch {
+		return false;
 	}
 }
 
@@ -9897,11 +9944,20 @@ function createGentleAiExtensionForTesting(
 
 	const statusTiming = new StatusTimingDiagnostics();
 	const reviewSidebar = createReviewSidebarPublisher(pi);
+	const sessionProfiles = createSessionProfileIntegration();
+	pi.on("session_before_fork", async (event, ctx) => {
+		await waitCurrentSessionProfileSelection(ctx.sessionManager);
+		sessionProfiles.beforeFork(ctx.sessionManager, { entryId: event.entryId, position: event.position });
+	});
+	pi.on("session_before_tree", async (_event, ctx) => {
+		await waitCurrentSessionProfileSelection(ctx.sessionManager);
+	});
 	const observedReviewTool: typeof reviewSidebar.tool = (definition) => statusTiming.tool(reviewSidebar.tool(definition));
 	pi.on("session_tree", (_event, ctx) => {
 		auto.reset();
 		reviewSidebar.reset(ctx);
 		statusTiming.reset(ctx);
+		readSessionProfileAuthority(ctx.sessionManager);
 	});
 	// Lean RDD-off review loadout (applyRddOffReviewPrompt): every
 	// before_agent_start sets it from the pinned line before Pi prepares that
@@ -9912,6 +9968,19 @@ function createGentleAiExtensionForTesting(
 	let reminderManager: ExtensionContext["sessionManager"] | undefined;
 	let unbindPreparation: (() => void) | undefined;
 	pi.on("session_shutdown", (event, context) => {
+		// A pending Enter selection settles before the profile owner shuts down;
+		// without one the whole shutdown stays synchronous, so terminal cleanup
+		// (child permission transport, sidebars) is never deferred a turn.
+		if (hasPendingSessionProfileSelection(context.sessionManager)) {
+			return waitCurrentSessionProfileSelection(context.sessionManager).then(() => shutdownSession(event, context));
+		}
+		shutdownSession(event, context);
+	});
+	function shutdownSession(event: SessionShutdownEvent, context: ExtensionContext): void {
+		if (sessionProfiles.isCurrent(context.sessionManager)) {
+			clearSessionProfileBinding(context.sessionManager.getSessionId());
+			sessionProfiles.shutdown(context.sessionManager, event);
+		}
 		pinnedRddStatusLines.delete(pendingReviewConsentSessionKey(context, pendingReviewConsentFallbackKey));
 		rddOffReviewLoadout = false;
 		auto.reset();
@@ -9935,7 +10004,7 @@ function createGentleAiExtensionForTesting(
 		cleanupAllPendingReviewConsents(pendingReviewConsentRegistry, sessionKey);
 		processRetainedNativeStatusSelections.delete(sessionKey);
 		processAgentEndSubagentDepth.delete(sessionKey);
-	});
+	}
 
 	// gentle-pi ODD input phase labels: the explicit half of the bounded ODD
 	// phase signal for the Gentle prompt's working label. Gentle Shell infers
@@ -10300,6 +10369,10 @@ function createGentleAiExtensionForTesting(
 	}));
 
 	pi.on("session_start", async (event, ctx) => {
+		const profileSessionId = ctx.sessionManager?.getSessionId?.();
+		if (profileSessionId) clearSessionProfileBinding(profileSessionId);
+		sessionProfiles.start(ctx.sessionManager, (type, data) => pi.appendEntry(type, data), event);
+		readSessionProfileAuthority(ctx.sessionManager);
 		auto.reset();
 		yolo.reset(ctx);
 		// Package-owned children reset local state but never initialize primary defaults.

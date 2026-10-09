@@ -116,6 +116,13 @@ export async function runCurrentSessionProfileSelection<T>(
 }
 
 /** Await before fork-copy/tree movement and before detach/invalidation. */
+/** Whether an Enter selection is still settling, so callers wait only when needed. */
+export function hasPendingSessionProfileSelection(
+ manager: SessionProfileLifecycleManager,
+): boolean {
+ return registry().owners.get(manager)?.pending !== undefined;
+}
+
 export async function waitCurrentSessionProfileSelection(
  manager: SessionProfileLifecycleManager,
 ): Promise<void> {

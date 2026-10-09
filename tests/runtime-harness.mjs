@@ -1347,10 +1347,12 @@ async function run() {
 		);
 		await writeFile(globalModelsPath, JSON.stringify({ worker: {} }, null, 2));
 		await hooks.get("session_start")[0]({ reason: "startup" }, createCtx(staleSettingsOnlyCwd, true));
-		const staleOnlyClearedProfiles = JSON.parse(
+		const staleOnlyPreservedProfiles = JSON.parse(
 			await readFile(globalSubagentsPath, "utf8"),
 		);
-		assert.equal(staleOnlyClearedProfiles.model_profiles, undefined);
+		assert.deepEqual(staleOnlyPreservedProfiles.model_profiles, {
+			worker: { model: "stale/model", effort: "high" },
+		});
 	} finally {
 		await rm(staleSettingsOnlyCwd, { recursive: true, force: true });
 		await rm(globalModelsPath, { force: true });

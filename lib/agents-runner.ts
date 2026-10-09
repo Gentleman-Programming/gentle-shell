@@ -2,7 +2,7 @@ import { isSessionChangeEvidence, type SessionChangeEvidence } from "./session-c
 import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Duplex, Readable, Writable } from "node:stream";
+import { Duplex, type Readable, type Writable } from "node:stream";
 import { stripVTControlCharacters } from "node:util";
 import { withoutInteractiveHost } from "./rpc-host.ts";
 import { childPackageExtensionArgs } from "./child-package-injection.ts";
@@ -18,12 +18,12 @@ import { WriterSurfaceRegistry, writerSurfaceConflictMessage } from "./writer-su
 // and enforces an inactivity watchdog per task.
 
 export interface ChildLike {
-	pid: number | undefined;
+	pid?: number;
 	connected?: boolean;
-	stdin: Writable;
-	stdout: Readable;
+	stdin: Writable | null;
+	stdout: Readable | null;
 	stderr: Readable | null | undefined;
-	stdio?: Array<Duplex | null | undefined>;
+	stdio?: Array<Readable | Writable | null | undefined>;
 	kill(signal?: NodeJS.Signals): boolean;
 	send?(message: Record<string, unknown>, callback?: (error: Error | null) => void): boolean;
 	disconnect?(): void;
@@ -37,6 +37,7 @@ export interface SpawnOptions {
 	cwd: string;
 	env: NodeJS.ProcessEnv;
 	detached?: boolean;
+	windowsHide?: boolean;
 	stdio?: Array<"pipe" | "ignore" | "inherit" | "ipc" | "overlapped">;
 }
 
@@ -534,6 +535,7 @@ export class AgentRunner {
 				cwd: request.cwd,
 				env,
 				detached,
+				windowsHide: true,
 				stdio: hasParentPermissionChannel ? ["pipe", "pipe", "pipe", permissionChannelStdio, "ipc"] : ["pipe", "pipe", "pipe", "ipc"],
 			});
 		} catch (error) {
@@ -559,7 +561,7 @@ export class AgentRunner {
 		}
 		this.live.set(id, live);
 		const permissionPipe = child.stdio?.[3];
-		if (hasParentPermissionChannel && permissionPipe !== undefined && permissionPipe !== null) {
+		if (hasParentPermissionChannel && permissionPipe instanceof Duplex) {
 			live.permissionBroker = new ParentStandingReviewPermissionBroker(
 				{ readable: permissionPipe, writable: permissionPipe },
 				(repositoryIdentity) => this.live.get(id) === live && !live.terminal && request.authorizeParentStandingReviewPermission?.(repositoryIdentity) === true,
@@ -577,6 +579,11 @@ export class AgentRunner {
 			try { request.onLaunch?.(); }
 			catch (error) { this.requestStop(id, TASK_STATUS.FAILED, `could not register launched worktree: ${error instanceof Error ? error.message : String(error)}`); }
 		});
+		child.on("exit", (code, signal) => this.exited(id, code, signal));
+		if (!child.stdin || !child.stdout) {
+			this.requestStop(id, TASK_STATUS.FAILED, "could not start pi: missing RPC streams");
+			return;
+		}
 		child.stdin.on("error", () => {});
 		this.armStall(id, live);
 		const lines = new JsonLines((value) => this.receive(id, request, value));
@@ -587,7 +594,6 @@ export class AgentRunner {
 			const tail = live.stderrTail + chunk;
 			live.stderrTail = tail.length > STDERR_TAIL_MAX ? tail.slice(-STDERR_TAIL_MAX) : tail;
 		});
-		child.on("exit", (code, signal) => this.exited(id, code, signal));
 		void this.send(id, { type: "get_state" }).then((response) => {
 			const data = response.data as { sessionFile?: unknown; model?: { provider?: unknown; id?: unknown } | null; thinkingLevel?: unknown } | undefined;
 			if (response.success !== true || live.terminal || this.live.get(id) !== live || !data) return;
@@ -757,7 +763,7 @@ export class AgentRunner {
 
 	private write(live: LiveTask, payload: Record<string, unknown>): void {
 		try {
-			live.child.stdin.write(`${JSON.stringify(payload)}\n`);
+			live.child.stdin?.write(`${JSON.stringify(payload)}\n`);
 		} catch {
 			// the child is gone; the exit handler settles the task
 		}

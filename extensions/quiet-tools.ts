@@ -480,7 +480,9 @@ interface ToolRenderContextLike {
 	lastComponent?: unknown;
 	state?: unknown;
 	cwd?: string;
-	[key: string]: unknown;
+	expanded?: boolean;
+	toolCallId?: string;
+	durationMs?: number;
 }
 
 function formatToolCall(toolName: QuietToolName, args: Record<string, unknown>, theme: ThemeLike): string {
@@ -680,11 +682,15 @@ function hasImageContent(result: AgentToolResult<unknown>): boolean {
 	return result.content.some((content) => content.type === "image");
 }
 
-function sanitizedRenderContext(context: ToolRenderContextLike | undefined): ToolRenderContextLike {
+function isRenderArgs(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function sanitizedRenderContext(context: (Omit<ToolRenderContextLike, "args"> & { args?: unknown }) | undefined): ToolRenderContextLike {
 	if (!context) return { args: {} };
 	return {
 		...context,
-		args: sanitizedArgs(context.args),
+		args: sanitizedArgs(isRenderArgs(context.args) ? context.args : undefined),
 		cwd: typeof context.cwd === "string" ? safeText(context.cwd) : context.cwd,
 	};
 }
@@ -733,7 +739,7 @@ export function createQuietToolRenderer(
 		renderShell: "self",
 		renderCall(args, theme, context) {
 			const callArgs = args as Record<string, unknown>;
-			const renderContext = sanitizedRenderContext(context as ToolRenderContextLike | undefined);
+			const renderContext = sanitizedRenderContext(context);
 			const operationPath = toolName === "bash"
 				? gentleAiRenderTransition(callArgs, renderContext, commandArguments()).operationPath
 				: undefined;
@@ -749,12 +755,15 @@ export function createQuietToolRenderer(
 		},
 		/** Builds the card component for this render pass; collapsed cards delegate to the wrapped-line cache keyed by the tool result object. */
 		renderResult(result, options, theme, context) {
-			const renderContext = context as ToolRenderContextLike | undefined;
+			const renderContext = context ? sanitizedRenderContext(context) : undefined;
 			markCardResult(renderContext?.state);
 			const cacheKey = typeof result === "object" && result !== null ? result : undefined;
 			const safeResult = sanitizedResult(result);
 			const text = safeText(extractTextContent(safeResult));
-			const isError = renderContext?.isError ?? options.isError ?? false;
+			// Current Pi carries errors on the context. Older renderer callers
+			// supplied them on options; keep that structural fallback for those hosts.
+			const legacyError = "isError" in options && options.isError === true;
+			const isError = renderContext?.isError ?? legacyError;
 			const directResult = toolName === "bash" && gentleAiRenderTransition(
 				renderContext?.args,
 				renderContext,

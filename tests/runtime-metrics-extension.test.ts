@@ -13,7 +13,7 @@ function harness(env: NodeJS.ProcessEnv = {}, mode: "tui" | "print" = "tui", shu
 	let session = "first";
 	let finish!: () => void;
 	let signal!: AbortSignal;
-	const sent: RuntimeMetricBucket[][] = [];
+	const sent: (readonly RuntimeMetricBucket[])[] = [];
 	const launches: unknown[] = [];
 	const ctx: any = { cwd: "/fixture", mode, model,
 		sessionManager: { getSessionId: () => session, getEntries: () => assert.fail("no reconstruction") } };

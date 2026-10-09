@@ -38,7 +38,7 @@ function runtime(
 	const tools = new Map<string, RegisteredTool>();
 	let toolCall: ToolCallHandler | undefined;
 	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
-	const dependencies = { nativeReviewCli, candidateViews } as unknown as Parameters<typeof createGentleAiExtension>[0];
+	const dependencies = { nativeReviewCli, candidateViews, processEnv: { GENTLE_PI_AGENTS_CHILD: "0" } } as unknown as Parameters<typeof createGentleAiExtension>[0];
 	createGentleAiExtension(dependencies)({
 		on(name: string, handler: ToolCallHandler) {
 			if (name === "tool_call") toolCall = handler;
@@ -739,7 +739,7 @@ test("same-session START binding migrates to one validation capture without a FI
 		captureProviderRole: async (request) => {
 			captureCalls += 1;
 			assert.equal(request.captureOperation, "review.capture-validation");
-			return { schema: "gentle-ai.review-last-event-closure/v1", operation: "review.capture-validation", lineageId, state: "approved", storeRevision: `sha256:${"a".repeat(64)}` };
+			return { schema: "gentle-ai.review-last-event-closure/v1", operation: "review/capture-validation", lineageId, state: "approved", storeRevision: `sha256:${"a".repeat(64)}` };
 		},
 	});
 	const { controller } = runtime(native, candidateViews);

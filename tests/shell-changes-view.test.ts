@@ -148,7 +148,7 @@ test("worktree accordion selects a clicked file without opening its editor", () 
 test("worktree accordion receives native fullscreen press and release as a file click", async () => {
 	let onInput: ((data: string) => void) | undefined;
 	const terminal: Terminal = {
-		start(input) { onInput = input; }, stop() {}, async drainInput() {}, write() {}, get columns() { return 80; }, get rows() { return 8; }, get kittyProtocolActive() { return false; }, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {},
+		start(input) { onInput = input; }, stop() {}, async drainInput() {}, write() {}, get columns() { return 80; }, get rows() { return 8; }, get kittyProtocolActive() { return false; }, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
 	};
 	const opened: string[] = [];
 	const component = new WorktreeChangesView([{ root: "/main", branch: "main", model: changesModel([file("a.ts", 1, 0), file("b.ts", 1, 0)]) }], {
@@ -298,7 +298,7 @@ test("right press reaches the native Windows paste fallback when eligible", () =
 	let onInput: ((data: string) => void) | undefined;
 	let pasted = 0;
 	const terminal: Terminal = {
-		start(input) { onInput = input; }, stop() {}, async drainInput() {}, write() {}, get columns() { return 80; }, get rows() { return 12; }, get kittyProtocolActive() { return false; }, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {},
+		start(input) { onInput = input; }, stop() {}, async drainInput() {}, write() {}, get columns() { return 80; }, get rows() { return 12; }, get kittyProtocolActive() { return false; }, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
 	};
 	const { view: component } = view();
 	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true, onRightClickPaste: () => { pasted++; } });
@@ -617,7 +617,7 @@ test("ChangesView click selects a file without opening it", async () => {
 test("ChangesView receives native fullscreen press and release as a click", async () => {
 	let onInput: ((data: string) => void) | undefined;
 	const terminal: Terminal = {
-		start(input) { onInput = input; }, stop() {}, async drainInput() {}, write() {}, get columns() { return 80; }, get rows() { return 12; }, get kittyProtocolActive() { return false; }, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {},
+		start(input) { onInput = input; }, stop() {}, async drainInput() {}, write() {}, get columns() { return 80; }, get rows() { return 12; }, get kittyProtocolActive() { return false; }, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
 	};
 	const { view: component, events } = view();
 	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true });

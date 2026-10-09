@@ -230,7 +230,7 @@ export function codeGraphNodeScript(cmdPath: string): string | undefined {
 	}
 }
 
-function* codeGraphNodeScriptsOnPath(): Iterable<string> {
+function* codeGraphNodeScriptsOnPath(): Generator<string, undefined, unknown> {
 	for (const cmdPath of codeGraphCmdPathsOnPath()) {
 		const script = codeGraphNodeScript(cmdPath);
 		if (script) yield script;
@@ -297,7 +297,7 @@ export function createCodeGraphTool(runner: CodeGraphRunner = runCodeGraphComman
 			signal: AbortSignal | undefined,
 			_onUpdate: undefined,
 			ctx: ExtensionContext,
-		) {
+		): Promise<{ content: { type: "text"; text: string }[]; details: { operation: CodeGraphOperation; cwd: string; args: string[] } | CodeGraphFallbackDetails }> {
 			const cwd = resolveWorkspaceCwd(ctx.cwd);
 			assertSafeIndexDirectory(cwd);
 			const args = commandArguments(parameters, cwd);

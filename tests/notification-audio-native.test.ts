@@ -244,7 +244,8 @@ test("child environment is an allowlist: Pulse vars kept, credentials and debug 
 test("real worker probe against a fake Unix socket authenticates without CREATE", async () => {
 	const server = await startFakeServer();
 	try {
-		const player = new NativePulsePlayer({ env: { ...process.env, PULSE_SERVER: `unix:${server.path}` }, probeTimeoutMs: 8000 });
+		// Exercise the Linux Pulse transport against a fake socket on any Unix host.
+		const player = new NativePulsePlayer({ platform: "linux", env: { PULSE_SERVER: `unix:${server.path}` }, probeTimeoutMs: 8000 });
 		const result = await player.probe();
 		assert.deepEqual(result, { available: true, formats: ["wav"] });
 		assert.deepEqual(server.seen, [8, 9, 20]);
@@ -259,7 +260,7 @@ test("real worker plays a fake PCM snapshot to a fake socket with no OS audio", 
 	writeFileSync(snapshot, bytes, { mode: 0o400 });
 	const server = await startFakeServer();
 	try {
-		const player = new NativePulsePlayer({ env: { ...process.env, PULSE_SERVER: `unix:${server.path}` }, playTimeoutMs: 8000 });
+		const player = new NativePulsePlayer({ platform: "linux", env: { PULSE_SERVER: `unix:${server.path}` }, playTimeoutMs: 8000 });
 		await player.play(snapshot);
 		assert.deepEqual(Buffer.concat(server.pcm), dataOf(bytes));
 		assert.ok(server.seen.includes(3) && server.seen.includes(12) && server.seen.includes(4));
@@ -273,7 +274,7 @@ test("real worker rejects invalid WAV before opening the socket", async () => {
 	writeFileSync(snapshot, Buffer.alloc(64, 0x00), { mode: 0o400 });
 	const server = await startFakeServer();
 	try {
-		const player = new NativePulsePlayer({ env: { ...process.env, PULSE_SERVER: `unix:${server.path}` }, playTimeoutMs: 8000 });
+		const player = new NativePulsePlayer({ platform: "linux", env: { PULSE_SERVER: `unix:${server.path}` }, playTimeoutMs: 8000 });
 		await assert.rejects(player.play(snapshot), /Native pulse/);
 		assert.deepEqual(server.seen, []);
 	} finally { await server.close(); rmSync(dir, { recursive: true, force: true }); }

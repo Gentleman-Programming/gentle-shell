@@ -85,9 +85,9 @@ const relayDevBinaryGate = POSIX
 	})
 	: { run: false as const, reason: "Windows is explicitly skipped until a native fake-pi.exe exists; this test never enables a shell fallback." };
 const RUNNABLE = POSIX && primaryDevBinaryGate.run && relayDevBinaryGate.run;
-if (!POSIX) console.log(`tests/devbinary/pi-host-relay.devtest.ts: ${relayDevBinaryGate.reason}`);
-if (!primaryDevBinaryGate.run) console.log(`tests/devbinary/pi-host-relay.devtest.ts: ${primaryDevBinaryGate.reason}`);
-if (!relayDevBinaryGate.run && POSIX) console.log(`tests/devbinary/pi-host-relay.devtest.ts: ${relayDevBinaryGate.reason}`);
+if (relayDevBinaryGate.run === false && !POSIX) console.log(`tests/devbinary/pi-host-relay.devtest.ts: ${relayDevBinaryGate.reason}`);
+if (primaryDevBinaryGate.run === false) console.log(`tests/devbinary/pi-host-relay.devtest.ts: ${primaryDevBinaryGate.reason}`);
+if (relayDevBinaryGate.run === false && POSIX) console.log(`tests/devbinary/pi-host-relay.devtest.ts: ${relayDevBinaryGate.reason}`);
 
 const ZERO_FINDING_PATHS = Object.freeze([".github/workflows/relay.yml"]);
 

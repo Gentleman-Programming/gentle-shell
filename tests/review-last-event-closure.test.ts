@@ -34,13 +34,20 @@ function closure(operation: string, lineageId: string): Record<string, unknown> 
 	};
 }
 
+function fixtureLens(suffix: string) {
+	const lenses = ["review-risk", "review-reliability", "review-resilience", "review-readability"] as const;
+	const lens = lenses[Number(suffix)];
+	assert.ok(lens, "fixture order must select an authoritative lens");
+	return lens;
+}
+
 function bindingArguments(lineageId: string, suffix = "0", subjectHash = SHA): ReviewCollectInputV3["arguments"] {
 	return [
 		{ name: "lineage", value: lineageId, token: `--lineage=${lineageId}` },
 		{ name: "expected-revision", value: SHA, token: `--expected-revision=${SHA}` },
 		{ name: "target", value: SHA, token: `--target=${SHA}` },
 		{ name: "repository-context", value: `rctx1_${"c".repeat(64)}`, token: `--repository-context=rctx1_${"c".repeat(64)}` },
-		{ name: "lens", value: `review-risk-${suffix}`, token: `--lens=review-risk-${suffix}` },
+		{ name: "lens", value: fixtureLens(suffix), token: `--lens=${fixtureLens(suffix)}` },
 		{ name: "order", value: suffix, token: `--order=${suffix}` },
 		{ name: "subject-hash", value: subjectHash, token: `--subject-hash=${subjectHash}` },
 	];
@@ -66,7 +73,7 @@ function materializeInput(lineageId: string, suffix = "0", subjectHash = SHA): R
 			baseTree: TREE,
 			candidateTree: TREE,
 			changedPathManifestSha256: SHA,
-			lens: `review-risk-${suffix}`,
+			lens: fixtureLens(suffix),
 			selectedOrder: Number(suffix),
 		},
 		submission: {

@@ -139,18 +139,23 @@ const DUE_REVIEW_REASONS: readonly ReviewDueReason[] = [REVIEW_DUE_REASON.HIGH_R
 
 /**
  * Rejects a review_due/review_due_reason/consumed combination the native
- * schema can never produce. `already_reviewed` takes precedence exactly when
- * the candidate is consumed, so the two must agree in both directions. A
- * contradictory envelope is never trusted, least of all as closure evidence.
- * Envelopes without the pair (older binaries) are not checked here.
+ * schema can never produce. A consumed candidate must report
+ * `already_reviewed`, but that reason can also describe an acknowledged
+ * committed predecessor followed by a passive delta (#1954). It does not
+ * prove this exact candidate was consumed; preserve native's explicit false.
+ * Native v2 requires consumed, so missing evidence with already_reviewed is
+ * still rejected. Envelopes without the pair (older binaries) are unchecked.
  */
 function validateReviewDueConsistency(reviewDue: boolean, reviewDueReason: ReviewDueReason, candidate: ReviewAssessmentCandidate): void {
 	if (reviewDue !== DUE_REVIEW_REASONS.includes(reviewDueReason)) {
 		throw new TypeError(`review assessment review_due ${reviewDue} contradicts review_due_reason ${reviewDueReason}`);
 	}
 	const alreadyReviewed = reviewDueReason === REVIEW_DUE_REASON.ALREADY_REVIEWED;
-	if (alreadyReviewed !== (candidate.consumed === true)) {
-		throw new TypeError("review assessment review_due_reason already_reviewed must be reported exactly when candidate.consumed is true");
+	if (candidate.consumed === true && !alreadyReviewed) {
+		throw new TypeError("review assessment candidate.consumed true requires review_due_reason already_reviewed");
+	}
+	if (alreadyReviewed && candidate.consumed === undefined) {
+		throw new TypeError("review assessment review_due_reason already_reviewed requires explicit candidate.consumed evidence");
 	}
 }
 

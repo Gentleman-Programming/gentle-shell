@@ -46,7 +46,7 @@ function context(overrides: Partial<ToolRenderContext> = {}): ToolRenderContext 
 		args: { code: "await tools.read({path: '/private/argument'});" },
 		toolCallId: "code-1", invalidate() {}, lastComponent: undefined, state: {}, cwd: "/fixture",
 		executionStarted: true, argsComplete: true, isPartial: false, expanded: false, showImages: false,
-		isError: false, ...overrides,
+		isError: false, durationMs: undefined, outputPad: undefined, ...overrides,
 	};
 }
 
@@ -108,6 +108,7 @@ test("public loadout modes preserve hidden and deferred exposure policy", async 
 			declared: [tool, direct], callable: [direct, deferred], registered: [tool, direct, deferred, hidden],
 			getExposure: (name: string) => name === "deferred_fixture" ? "deferred" : name === "hidden_fixture" ? "hidden" : "direct",
 			getNamespace: () => undefined,
+			getPromptGuidelines: () => [],
 		} as unknown as Parameters<NonNullable<ToolDefinition["prepareLoadout"]>>[0];
 		const changes = tool.prepareLoadout!(loadout)!;
 		assert.deepEqual(changes.hiddenDeclarations, mode === "only" ? ["direct_fixture"] : []);

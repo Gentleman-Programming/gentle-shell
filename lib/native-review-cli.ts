@@ -1267,50 +1267,6 @@ function decodeReleaseEvidence(value: unknown): void {
 	for (const field of ["release_tree", "configuration_hash", "generated_artifact_hash", "provenance_hash", "publication_boundary_hash", "evidence_freshness_hash"]) requiredString(release[field]);
 	if (release.publication_state !== "sealed" || release.evidence_freshness_state !== "current") throw new Error("invalid release evidence");
 }
-function decodeNonDecidingGateContext(value: unknown, expectedGate: string): NativeGateContext {
-	const context = exactObject(value, ["gate"]);
-	const gate = enumString(context.gate, NATIVE_GATE);
-	if (gate !== expectedGate) throw new Error("native non-deciding gate context does not match the requested gate");
-	return { lineageId: "", storeRevision: "", raw: context };
-}
-function decodeGateContext(value: unknown): NativeGateContext {
-	const context = exactObject(
-		value,
-		["gate", "lineage_id", "generation", "base_tree", "candidate_tree", "paths_digest", "fix_delta_hash", "policy_hash", "ledger_hash", "evidence_hash", "base_relationship_valid"],
-		["store_revision", "genesis_revision", "chain_identity", "bundle_digest", "external_evidence", "base_advanced_compatible", "release", "pre_pr_boundary", "denial"],
-	);
-	const gate = stringValue(context.gate);
-	if (gate !== "" && !(NATIVE_GATE as readonly string[]).includes(gate)) throw new Error("invalid gate context gate");
-	for (const field of ["lineage_id", "base_tree", "candidate_tree", "paths_digest", "fix_delta_hash", "policy_hash", "ledger_hash", "evidence_hash"]) stringValue(context[field]);
-	for (const field of ["store_revision", "genesis_revision", "chain_identity", "bundle_digest"]) if (context[field] !== undefined) stringValue(context[field]);
-	nonNegativeInteger(context.generation);
-	booleanValue(context.base_relationship_valid);
-	if (context.external_evidence !== undefined) enumString(context.external_evidence, ["invalidating", "escalating"]);
-	let sanitizedContext = context;
-	if (context.denial !== undefined) {
-		const denial = exactObject(context.denial, ["stage", "code"]);
-		const stage = sanitizeNativeDiagnosticText(requiredString(denial.stage), NATIVE_REVIEW_DENIAL_TEXT_LIMIT);
-		const code = sanitizeNativeDiagnosticText(requiredString(denial.code), NATIVE_REVIEW_DENIAL_TEXT_LIMIT);
-		if (!isCanonicalProcessString(stage) || !isCanonicalProcessString(code)) throw new Error("non-canonical denial evidence");
-		sanitizedContext = { ...context, denial: { stage, code } };
-	}
-	if (context.pre_pr_boundary !== undefined) {
-		const boundary = exactObject(context.pre_pr_boundary, ["source", "selector", "commit"], ["remote", "remote_ref", "remote_identity"]);
-		enumString(boundary.source, ["explicit", "publication-default"]); requiredString(boundary.selector); stringValue(boundary.commit);
-		for (const field of ["remote", "remote_ref", "remote_identity"]) if (boundary[field] !== undefined) requiredString(boundary[field]);
-	}
-	if (context.base_advanced_compatible !== undefined) {
-		const proof = exactObject(context.base_advanced_compatible, ["status", "compatible", "old_base_tree", "new_base_tree", "original_patch_identity", "delivered_patch_identity", "delivered_paths_digest", "base_advance_paths_digest", "paths_disjoint", "merged_result_tree", "ci_attestation_artifact_hash", "ci_attestation_issuer", "ci_status"]);
-		for (const field of ["status", "old_base_tree", "new_base_tree", "original_patch_identity", "delivered_patch_identity", "delivered_paths_digest", "base_advance_paths_digest", "merged_result_tree", "ci_attestation_artifact_hash", "ci_attestation_issuer", "ci_status"]) requiredString(proof[field]);
-		booleanValue(proof.compatible); booleanValue(proof.paths_disjoint);
-	}
-	if (context.release !== undefined) decodeReleaseEvidence(context.release);
-	return {
-		lineageId: stringValue(context.lineage_id),
-		storeRevision: context.store_revision === undefined ? "" : stringValue(context.store_revision),
-		raw: sanitizedContext,
-	};
-}
 function decodeNativeReviewRecovery(value: unknown): NativeReviewRecovery {
 	const recovery = exactObject(value, ["predecessor_lineage_id", "predecessor_revision", "disposition", "reason", "actor", "recovered_at"], ["maintainer_authorization"]);
 	return {
@@ -1401,7 +1357,7 @@ function decodeNativeReviewStatus(value: unknown): NativeReviewStatusResult {
 	const complete = booleanValue(body.complete);
 	const authoritative = booleanValue(body.authoritative);
 	if (authoritative && !complete) throw new Error("incomplete inventory cannot be authoritative");
-	if (!Array.isArray(body.entries) || !Array.isArray(body.locks)) throw new Error("invalid native status inventory");
+	if (!Array.isArray(body.entries) || !Array.isArray(body.locks) || !Array.isArray(body.diagnostics)) throw new Error("invalid native status inventory");
 	return {
 		repository: requiredString(body.repository),
 		complete,
@@ -1586,7 +1542,7 @@ class NativeReviewPlainCli {
 		if (result.outputLimitExceeded) throw nativeError(NATIVE_REVIEW_ERROR_CODE.OUTPUT_LIMIT, operation, mutating, "native process output exceeded limit", result, true, undefined, this.maxBufferBytes);
 		if (result.timedOut) throw nativeError(NATIVE_REVIEW_ERROR_CODE.TIMEOUT, operation, mutating, "native process timed out", result);
 		if (result.signal) throw nativeError(NATIVE_REVIEW_ERROR_CODE.SIGNAL, operation, mutating, "native process was signalled", result);
-		const maintenancePartialFailure = [NATIVE_REVIEW_OPERATION.ABANDON, NATIVE_REVIEW_OPERATION.QUARANTINE_LEGACY, NATIVE_REVIEW_OPERATION.RECONCILE_AUTHORITY, NATIVE_REVIEW_OPERATION.REPAIR_LEGACY_ALIAS].includes(operation) && result.exitCode !== 0;
+		const maintenancePartialFailure = new Set<NativeReviewOperation>([NATIVE_REVIEW_OPERATION.ABANDON, NATIVE_REVIEW_OPERATION.QUARANTINE_LEGACY, NATIVE_REVIEW_OPERATION.RECONCILE_AUTHORITY, NATIVE_REVIEW_OPERATION.REPAIR_LEGACY_ALIAS]).has(operation) && result.exitCode !== 0;
 		const toleratedNotice = stderrIsTolerated(result.stderr, toleratedStderr);
 		if (result.exitCode !== 0 && !maintenancePartialFailure) throw nativeError(NATIVE_REVIEW_ERROR_CODE.NON_ZERO, operation, mutating, "native process failed", result);
 		if (result.stderr.trim().length > 0 && !maintenancePartialFailure && !toleratedNotice) throw nativeError(NATIVE_REVIEW_ERROR_CODE.UNEXPECTED_STDERR, operation, mutating, "native process wrote stderr", result);

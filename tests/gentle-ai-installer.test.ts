@@ -26,6 +26,19 @@ import {
 
 // v4.0.0 archive digests independently match the minisign-signed release
 // checksums; binary digests were computed from the extracted executables.
+function releaseAssets(): Record<string, { name: string; sha256: string; binarySha256: string; url: string }> {
+	const assets: Record<string, { name: string; sha256: string; binarySha256: string; url: string }> = {};
+	for (const [key, value] of Object.entries(GENTLE_AI_RELEASE_ASSETS)) {
+		assert.ok(typeof value === "object" && value !== null);
+		assert.ok("name" in value && typeof value.name === "string");
+		assert.ok("sha256" in value && typeof value.sha256 === "string");
+		assert.ok("binarySha256" in value && typeof value.binarySha256 === "string");
+		assert.ok("url" in value && typeof value.url === "string");
+		assets[key] = { name: value.name, sha256: value.sha256, binarySha256: value.binarySha256, url: value.url };
+	}
+	return assets;
+}
+
 const EXPECTED_ASSETS = {
 	"darwin/amd64": { name: "gentle-ai_4.0.0_darwin_amd64.tar.gz", sha256: "b5b74f22b38ec3339b38e8c68f797dc76ff12ed6580826a6e425d5c718da80c1", binarySha256: "d4a5b16ff70e65331e17a62356941bb0c75ecb9dbe3a0d98a6b54cfbd76cd6b0" },
 	"darwin/arm64": { name: "gentle-ai_4.0.0_darwin_arm64.tar.gz", sha256: "d2159caf6d68f367b18830ece6af71ef26963d5f5320d7df6a794773f45cc7e9", binarySha256: "18a9f7fae55d85c95684b6d512a4a148d0cb24a856325f72573c34caf65159eb" },
@@ -50,12 +63,12 @@ test("default installer package root is the package containing scripts, not its 
 
 test("release mapping selects only the supported official v4.0.0 assets and pinned digests", () => {
 	assert.deepEqual(
-		Object.fromEntries(Object.entries(GENTLE_AI_RELEASE_ASSETS).map(([key, asset]) => [key, { name: asset.name, sha256: asset.sha256, binarySha256: asset.binarySha256 }])),
+		Object.fromEntries(Object.entries(releaseAssets()).map(([key, asset]) => [key, { name: asset.name, sha256: asset.sha256, binarySha256: asset.binarySha256 }])),
 		EXPECTED_ASSETS,
 	);
 	assert.equal(resolveGentleAiReleaseAsset("linux", "x64").name, "gentle-ai_4.0.0_linux_amd64.tar.gz");
 	assert.equal(resolveGentleAiReleaseAsset("darwin", "arm64").name, "gentle-ai_4.0.0_darwin_arm64.tar.gz");
-	for (const asset of Object.values(GENTLE_AI_RELEASE_ASSETS)) {
+	for (const asset of Object.values(releaseAssets())) {
 		assert.match(asset.url, /^https:\/\/github\.com\/Gentleman-Programming\/gentle-ai\/releases\/download\/v4\.0\.0\//);
 	}
 });
@@ -71,13 +84,13 @@ test("raw release assets are admitted only under a prerelease pin", () => {
 	// The current stable pin admits every pinned asset row through the same
 	// gate the installer uses at download time (default installerVersion
 	// argument): signed archives, never raw binaries.
-	for (const asset of Object.values(GENTLE_AI_RELEASE_ASSETS)) {
+	for (const asset of Object.values(releaseAssets())) {
 		assert.equal(gentleAiAssetForm(asset.name), "archive");
 	}
 });
 
 test("release digests are all-or-none and install fails closed while any digest is pending", async () => {
-	const digests = Object.values(GENTLE_AI_RELEASE_ASSETS).flatMap((asset) => [asset.sha256, asset.binarySha256]);
+	const digests = Object.values(releaseAssets()).flatMap((asset) => [asset.sha256, asset.binarySha256]);
 	const pinned = digests.filter((digest) => /^[0-9a-f]{64}$/.test(digest));
 	const pending = digests.filter((digest) => digest === GENTLE_AI_PENDING_DIGEST);
 	assert.equal(pinned.length + pending.length, digests.length, "every digest must be pinned hex or the explicit pending sentinel");
@@ -1127,7 +1140,7 @@ function pendingRequest() {
 }
 test("download bounds stalled headers and bodies with transient retry exhaustion", async (t) => {
 	for (const [stage, request] of [
-		["headers", () => pendingRequest()],
+		["headers", (_url: URL, _options: unknown, _callback: (response: PassThrough & { statusCode?: number; headers: Record<string, string> }) => void) => pendingRequest()],
 		["body", (_url: URL, _options: unknown, callback: (response: PassThrough & { statusCode?: number; headers: Record<string, string> }) => void) => {
 			const response = Object.assign(new PassThrough(), { statusCode: 200, headers: {} });
 			queueMicrotask(() => callback(response));
@@ -1142,7 +1155,7 @@ test("download bounds stalled headers and bodies with transient retry exhaustion
 		t.after(() => rm(directory, { recursive: true, force: true }));
 		const destination = join(directory, stage);
 		let attempts = 0;
-		await assert.rejects(() => downloadGentleAiAsset("https://example.invalid/archive", destination, 1024, 0, { request: (...args: never[]) => { attempts += 1; return request(...args); }, headerTimeoutMs: 1, bodyTimeoutMs: 1, maxAttempts: 2, retryDelayMs: 0 }), new RegExp(`download ${stage} timed out`));
+		await assert.rejects(() => downloadGentleAiAsset("https://example.invalid/archive", destination, 1024, 0, { request: (url: URL, options: unknown, callback: (response: PassThrough & { statusCode?: number; headers: Record<string, string> }) => void) => { attempts += 1; return request(url, options, callback); }, headerTimeoutMs: 1, bodyTimeoutMs: 1, maxAttempts: 2, retryDelayMs: 0 }), new RegExp(`download ${stage} timed out`));
 		assert.equal(attempts, 2);
 		// A failed attempt settles only once its destination stream closed, so the retry
 		// never races a late recreation of the path, and nothing partial survives.

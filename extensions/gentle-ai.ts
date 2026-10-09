@@ -5280,15 +5280,15 @@ function parseReviewControllerParameters(value: unknown): ReviewControllerParame
 		}
 	}
 
-	const needsLineage = ![REVIEW_CONTROLLER_OPERATION.START, REVIEW_CONTROLLER_OPERATION.ANSWER_CONSENT, REVIEW_CONTROLLER_OPERATION.STATUS, REVIEW_CONTROLLER_OPERATION.EXPORT, REVIEW_CONTROLLER_OPERATION.IMPORT, REVIEW_CONTROLLER_OPERATION.INSPECT, REVIEW_CONTROLLER_OPERATION.RESET, REVIEW_CONTROLLER_OPERATION.RECOVER, REVIEW_CONTROLLER_OPERATION.RECOVER_LOCK, REVIEW_CONTROLLER_OPERATION.ABANDON, REVIEW_CONTROLLER_OPERATION.QUARANTINE_LEGACY, REVIEW_CONTROLLER_OPERATION.RECONCILE_AUTHORITY, REVIEW_CONTROLLER_OPERATION.REPAIR_LEGACY_ALIAS, REVIEW_CONTROLLER_OPERATION.REPAIR, REVIEW_CONTROLLER_OPERATION.ASSESS].includes(value.operation as ReviewControllerOperation);
+	const needsLineage = !([REVIEW_CONTROLLER_OPERATION.START, REVIEW_CONTROLLER_OPERATION.ANSWER_CONSENT, REVIEW_CONTROLLER_OPERATION.STATUS, REVIEW_CONTROLLER_OPERATION.EXPORT, REVIEW_CONTROLLER_OPERATION.IMPORT, REVIEW_CONTROLLER_OPERATION.INSPECT, REVIEW_CONTROLLER_OPERATION.RESET, REVIEW_CONTROLLER_OPERATION.RECOVER, REVIEW_CONTROLLER_OPERATION.RECOVER_LOCK, REVIEW_CONTROLLER_OPERATION.ABANDON, REVIEW_CONTROLLER_OPERATION.QUARANTINE_LEGACY, REVIEW_CONTROLLER_OPERATION.RECONCILE_AUTHORITY, REVIEW_CONTROLLER_OPERATION.REPAIR_LEGACY_ALIAS, REVIEW_CONTROLLER_OPERATION.REPAIR, REVIEW_CONTROLLER_OPERATION.ASSESS] as readonly ReviewControllerOperation[]).includes(value.operation);
 	if (needsLineage && (typeof value.lineageId !== "string" || value.lineageId.trim().length === 0)) {
 		throw new Error("Review controller requires a lineageId");
 	}
 	const parameters: ReviewControllerParameters = {
 		operation: value.operation,
 		...(typeof value.lineageId === "string" ? { lineageId: value.lineageId } : {}),
-		...(value.operation === REVIEW_CONTROLLER_OPERATION.INSPECT && value.untrackedScope !== undefined ? { untrackedScope: value.untrackedScope } : {}),
-		...(value.operation === REVIEW_CONTROLLER_OPERATION.INSPECT && value.intendedUntracked !== undefined ? { intendedUntracked: [...value.intendedUntracked] } : {}),
+		...(value.operation === REVIEW_CONTROLLER_OPERATION.INSPECT && (value.untrackedScope === NATIVE_START_UNTRACKED_SCOPE.EXCLUDE || value.untrackedScope === NATIVE_START_UNTRACKED_SCOPE.SELECT) ? { untrackedScope: value.untrackedScope } : {}),
+		...(value.operation === REVIEW_CONTROLLER_OPERATION.INSPECT && Array.isArray(value.intendedUntracked) ? { intendedUntracked: [...value.intendedUntracked] } : {}),
 	};
 	for (const key of ["changeName", "idempotencyKey", "transition", "input", "outputPath", "inputPath", "operationId", "lineageIds", "acknowledgeUntrustedBundleSource", "workspaceRoot"] as const) {
 		const optional = value[key];
@@ -5310,17 +5310,18 @@ function parseReviewCaptureParameters(value: unknown): ReviewCaptureParameters {
 	const unexpected = Object.keys(value).find((key) => !allowed.has(key));
 	if (unexpected !== undefined) throw new Error(`Review capture does not accept ${unexpected}`);
 	if (!isCanonicalProcessString(value.lineageId)) throw new Error("Review capture requires an exact non-empty lineageId");
+	const { reviewerRunAcknowledged, correctionLines, workspaceRoot } = value;
 	const collectBinding = serializeReviewJsonArgument(value.collectBinding);
 	if (collectBinding.length === 0) throw new Error("Review capture requires a non-empty collectBinding");
 	if (value.reviewerRunAcknowledged !== undefined && typeof value.reviewerRunAcknowledged !== "boolean") throw new Error("Review capture reviewerRunAcknowledged must be boolean");
-	if (value.correctionLines !== undefined && (!Number.isSafeInteger(value.correctionLines) || value.correctionLines < 1)) throw new Error("Review capture correctionLines must be a positive integer");
+	if (value.correctionLines !== undefined && (typeof value.correctionLines !== "number" || !Number.isSafeInteger(value.correctionLines) || value.correctionLines < 1)) throw new Error("Review capture correctionLines must be a positive integer");
 	if (value.workspaceRoot !== undefined && typeof value.workspaceRoot !== "string") throw new Error("Review capture workspaceRoot must be a string");
 	return {
 		lineageId: value.lineageId,
 		collectBinding,
-		...(value.reviewerRunAcknowledged === undefined ? {} : { reviewerRunAcknowledged: value.reviewerRunAcknowledged }),
-		...(value.correctionLines === undefined ? {} : { correctionLines: value.correctionLines }),
-		...(value.workspaceRoot === undefined ? {} : { workspaceRoot: value.workspaceRoot }),
+		...(typeof reviewerRunAcknowledged === "boolean" ? { reviewerRunAcknowledged } : {}),
+		...(typeof correctionLines === "number" ? { correctionLines } : {}),
+		...(typeof workspaceRoot === "string" ? { workspaceRoot } : {}),
 	};
 }
 
@@ -5331,6 +5332,7 @@ function parseReviewCaptureGroupParameters(value: unknown): ReviewCaptureGroupPa
 	if (unexpected !== undefined) throw new Error(`Review capture group does not accept ${unexpected}`);
 	if (!isCanonicalProcessString(value.lineageId)) throw new Error("Review capture group requires an exact non-empty lineageId");
 	if (!Array.isArray(value.collectBindings) || value.collectBindings.length === 0) throw new Error("Review capture group requires one or more collectBindings");
+	const { reviewerRunAcknowledged, workspaceRoot } = value;
 	const collectBindings = value.collectBindings.map(serializeReviewJsonArgument);
 	if (collectBindings.some((binding) => binding.length === 0)) throw new Error("Review capture group requires non-empty collectBindings");
 	if (value.reviewerRunAcknowledged !== undefined && typeof value.reviewerRunAcknowledged !== "boolean") throw new Error("Review capture group reviewerRunAcknowledged must be boolean");
@@ -5338,8 +5340,8 @@ function parseReviewCaptureGroupParameters(value: unknown): ReviewCaptureGroupPa
 	return {
 		lineageId: value.lineageId,
 		collectBindings,
-		...(value.reviewerRunAcknowledged === undefined ? {} : { reviewerRunAcknowledged: value.reviewerRunAcknowledged }),
-		...(value.workspaceRoot === undefined ? {} : { workspaceRoot: value.workspaceRoot }),
+		...(typeof reviewerRunAcknowledged === "boolean" ? { reviewerRunAcknowledged } : {}),
+		...(typeof workspaceRoot === "string" ? { workspaceRoot } : {}),
 	};
 }
 
@@ -5634,7 +5636,7 @@ function asNativeReviewConsentBindingError(error: unknown): { reason: string; me
 	return typeof reason !== "string" || reason.length === 0 ? undefined : { reason, message: error.message };
 }
 
-function nativeStatusPackageBinaryMissing(operation: ReviewControllerOperation, diagnostics: NativeReviewProcessDiagnostics): Record<string, unknown> {
+function nativeStatusPackageBinaryMissing(operation: ReviewControllerOperation | "gentle_review_capture", diagnostics: NativeReviewProcessDiagnostics): Record<string, unknown> {
 	return {
 		operation,
 		status: "blocked",
@@ -6268,6 +6270,22 @@ interface RetainedPreLineageNativeUntrackedSelection {
 	readonly committedOnly?: true;
 }
 
+interface ReviewConsentTimer {
+	unref(): void;
+	cancel?(): void;
+	[Symbol.toPrimitive]?(): number;
+}
+
+function cancelReviewConsentTimer(timer: ReviewConsentTimer | undefined): void {
+	if (timer?.cancel !== undefined) timer.cancel();
+	else if (timer?.[Symbol.toPrimitive] !== undefined) clearTimeout(timer[Symbol.toPrimitive]());
+}
+
+function scheduleReviewConsentTimer(callback: () => void, delayMs: number): ReviewConsentTimer {
+	const timer = setTimeout(callback, delayMs);
+	return { unref: () => { timer.unref(); }, cancel: () => clearTimeout(timer) };
+}
+
 interface RetainedNativeCaptureRoute { readonly workspaceRoot: string; readonly lineageId: string; readonly baseRef?: string; readonly committedOnly?: true; }
 
 // An inspect that stops before submission has no resolved untracked selection
@@ -6298,12 +6316,13 @@ function validateNativeStartUntrackedSelection(value: Record<string, unknown>): 
 		!isCanonicalProcessString(expectedUntrackedInventory) ||
 		(intendedUntracked !== undefined && (!Array.isArray(intendedUntracked) || intendedUntracked.some((path) => !isNativeStartUntrackedPath(path) || intendedUntracked.indexOf(path) !== intendedUntracked.lastIndexOf(path))))
 	) return { reason: "untracked-selection-invalid" };
-	if (scope === NATIVE_START_UNTRACKED_SCOPE.EXCLUDE && (intendedUntracked?.length ?? 0) > 0) return { reason: "untracked-selection-invalid" };
-	if (scope === NATIVE_START_UNTRACKED_SCOPE.SELECT && (intendedUntracked?.length ?? 0) === 0) return { reason: "untracked-selection-invalid" };
+	const paths = Array.isArray(intendedUntracked) ? intendedUntracked : [];
+	if (scope === NATIVE_START_UNTRACKED_SCOPE.EXCLUDE && paths.length > 0) return { reason: "untracked-selection-invalid" };
+	if (scope === NATIVE_START_UNTRACKED_SCOPE.SELECT && paths.length === 0) return { reason: "untracked-selection-invalid" };
 	return {
 		untrackedScope: scope,
 		expectedUntrackedInventory,
-		intendedUntracked: intendedUntracked === undefined ? [] : [...intendedUntracked],
+		intendedUntracked: [...paths],
 	};
 }
 
@@ -6383,7 +6402,7 @@ interface PendingReviewConsent {
 	consent: ReviewConsentEnvelope;
 	consentDigest: string;
 	expiresAt: number;
-	expiry?: ReturnType<typeof setTimeout>;
+	expiry?: ReviewConsentTimer;
 }
 
 const PENDING_REVIEW_CONSENT_DISPOSITION = {
@@ -6521,19 +6540,19 @@ function pendingReviewConsentSessionKey(context: ExtensionContext | undefined, f
 
 function consumePendingReviewConsent(pending: PendingReviewConsent, registry: PendingReviewConsentRegistry, sessionKey: PendingReviewConsentSessionKey): boolean {
 	if (!registry.consume(sessionKey, pending)) return false;
-	if (pending.expiry !== undefined) clearTimeout(pending.expiry);
+	cancelReviewConsentTimer(pending.expiry);
 	pending.expiry = undefined;
 	return true;
 }
 
 function discardPendingReviewConsent(pending: PendingReviewConsent, registry: PendingReviewConsentRegistry, sessionKey: PendingReviewConsentSessionKey): void {
-	if (pending.expiry !== undefined) clearTimeout(pending.expiry);
+	cancelReviewConsentTimer(pending.expiry);
 	pending.expiry = undefined;
 	registry.discard(sessionKey, pending);
 }
 
 function expirePendingReviewConsent(pending: PendingReviewConsent, registry: PendingReviewConsentRegistry, sessionKey: PendingReviewConsentSessionKey): void {
-	if (pending.expiry !== undefined) clearTimeout(pending.expiry);
+	cancelReviewConsentTimer(pending.expiry);
 	pending.expiry = undefined;
 	if (registry.expire(sessionKey, pending)) pending.cleanupCandidate();
 }
@@ -6843,10 +6862,10 @@ function nativeOperationFailure(operation: ReviewControllerOperation | "gentle_r
 	const nativeCliError = asNativeReviewCliError(error);
 	if (nativeCliError?.code === NATIVE_REVIEW_ERROR_CODE.PACKAGE_BINARY_MISSING) return nativeStatusPackageBinaryMissing(operation, nativeCliError.diagnostics);
 	const nativeDiagnostics = nativeCliError?.diagnostics;
-	// A target-status probe verifies `version` before it invokes `review/status`.
-	// Preserve either already-sanitized diagnostic on every controller route rather
-	// than relabeling an actionable failure as an opaque controller failure.
-	const preservesNativeTargetStatusDiagnostic = nativeDiagnostics?.operation === NATIVE_REVIEW_OPERATION.VERSION || nativeDiagnostics?.operation === NATIVE_REVIEW_OPERATION.STATUS;
+	// Target-status probes use the adapter's review/status diagnostic domain.
+	// Preserve that sanitized diagnostic on every controller route rather than
+	// relabeling an actionable failure as an opaque controller failure.
+	const preservesNativeTargetStatusDiagnostic = nativeDiagnostics?.operation === NATIVE_REVIEW_OPERATION.STATUS;
 	const preservesAnswerConsentStartDiagnostic = operation === REVIEW_CONTROLLER_OPERATION.ANSWER_CONSENT && nativeDiagnostics?.operation === NATIVE_REVIEW_OPERATION.START;
 	const diagnostics = operation === REVIEW_CONTROLLER_OPERATION.START && error instanceof CandidateViewError && value.candidateViewPreNative === true
 		? error.diagnostics ?? { code: error.reason, message: "candidate view rejected before native START" }
@@ -7046,7 +7065,7 @@ function retainNativeUntrackedSelection(selections: Map<string, RetainedNativeSt
 
 function readRetainedNativeUntrackedSelection(selections: Map<string, RetainedNativeStatusSelection>, workspaceRoot: string, lineageId: string): NativeStartUntrackedSelection {
 	const selection = selections.get(reviewLifecycleStorageKey(workspaceRoot, lineageId));
-	return selection === undefined || "baseRef" in selection || "selectionBinding" in selection
+	return selection === undefined || !("untrackedScope" in selection) || "targetIdentity" in selection
 		? {}
 		: {
 			untrackedScope: selection.untrackedScope,
@@ -7896,8 +7915,13 @@ function captureGroupAuthorityDrift(status: ReviewStatusV3): Record<string, unkn
 }
 
 interface SelectedReviewCaptureGroup {
+	selected: true;
 	slots: readonly ReviewHostRelaySlot[];
 	binding: ReviewLastEventClosureBinding;
+}
+
+function isSelectedReviewCaptureGroup(value: SelectedReviewCaptureGroup | Record<string, unknown>): value is SelectedReviewCaptureGroup {
+	return value.selected === true;
 }
 
 function selectExactReviewCaptureGroup(
@@ -7945,7 +7969,7 @@ function selectExactReviewCaptureGroup(
 		}
 		lenses.add(lens); orders.add(order); subjectHashes.add(subject.subjectHash);
 	}
-	return { slots, binding: first.binding };
+	return { selected: true, slots, binding: first.binding };
 }
 
 function reviewHostRelayGroupFailure(
@@ -8185,7 +8209,7 @@ async function executeReviewCaptureGroupOperation(
 		return { ...captureGroupRejected(error instanceof Error ? error.message : String(error)), outcome: "native-status-failed" };
 	}
 	const group = selectExactReviewCaptureGroup(status, parameters.lineageId, canonicalBindings);
-	if (!("slots" in group && "binding" in group)) return group;
+	if (!isSelectedReviewCaptureGroup(group)) return group;
 	route = { workspaceRoot: cwd, lineageId: parameters.lineageId, ...(baseRef === undefined ? {} : { baseRef, committedOnly: true }) };
 	if (parameters.reviewerRunAcknowledged !== true) {
 		return {
@@ -8287,7 +8311,7 @@ async function executeReviewControllerOperation(
 	pendingReviewConsentRegistry: PendingReviewConsentRegistry = processPendingReviewConsentRegistry,
 	pendingReviewConsentFallbackKey: symbol = Symbol("pending-review-consent-fallback"),
 	reviewConsentNow: () => number = Date.now,
-	reviewConsentScheduleTimer: (callback: () => void, delayMs: number) => { unref: () => void } = setTimeout,
+	reviewConsentScheduleTimer: (callback: () => void, delayMs: number) => ReviewConsentTimer = scheduleReviewConsentTimer,
 	intendedUntrackedSelection?: NativeIntendedUntrackedSelectionSubmission,
 ): Promise<Record<string, unknown>> {
 	const parameters = parseReviewControllerParameters(parametersValue);
@@ -8770,9 +8794,9 @@ async function executeReviewControllerOperation(
 			outcome: "native-approved-acknowledgement-completed",
 			lineage_id: parameters.lineageId,
 			target_identity: status.targetIdentity,
-			...(acknowledged === undefined ? {} : { consumed_revision: acknowledged.consumedRevision }),
+			...(acknowledged ? { consumed_revision: acknowledged.consumedRevision } : {}),
 			authority: "burned",
-			...(acknowledged === undefined ? {} : { burn_evidence: acknowledged.schema }),
+			...(acknowledged ? { burn_evidence: acknowledged.schema } : {}),
 			delivery: "ordinary-repository-policy",
 			mutation_performed: true,
 			mutation_outcome: "committed",
@@ -8945,7 +8969,7 @@ async function executeReviewControllerOperation(
 					: undefined;
 			let canonicalBaseRef: string | undefined;
 			let providerBaseTree: string | undefined;
-			if (baseRef !== undefined) {
+			if (typeof baseRef === "string") {
 				try {
 					canonicalBaseRef = resolveCanonicalCandidateBase(defaultCwd, baseRef).commit;
 				} catch (error) {
@@ -9114,7 +9138,7 @@ async function executeReviewControllerOperation(
 						...(untrackedSubmission === undefined ? {} : { intendedUntrackedSelection: untrackedSubmission }),
 						...(parameters.lineageId === undefined ? {} : { lineageId: parameters.lineageId }),
 						...(policy.policyPath === undefined ? {} : { policyPath: policy.policyPath }),
-						...(focus === undefined ? {} : { focus }),
+						...(isNativeStartFocus(focus) ? { focus } : {}),
 						...lensSelection,
 						...(signal === undefined ? {} : { signal }),
 					});
@@ -9306,7 +9330,7 @@ async function executeReviewControllerOperation(
 		const retainedCommittedTarget = rawStatus === undefined && parameters.lineageId !== undefined && candidateViews?.hasProjection(parameters.lineageId, defaultCwd)
 			? candidateViews.resolveProjection(parameters.lineageId, defaultCwd)
 			: undefined;
-		const effectiveBaseRef = baseRef ?? (retainedCommittedTarget?.committedOnly === true ? nativeCommittedRangeSelector(retainedCommittedTarget) : undefined);
+		const effectiveBaseRef = typeof baseRef === "string" ? baseRef : (retainedCommittedTarget?.committedOnly === true ? nativeCommittedRangeSelector(retainedCommittedTarget) : undefined);
 		if (nativeReviewCli?.targetStatus !== undefined) {
 			try {
 				const negotiated = await negotiatedStatusForHostTransport(nativeReviewCli, {
@@ -9415,7 +9439,7 @@ export interface GentleAiRuntimeDependencies {
 	// tests inject a fake clock so expiry is observable without a 10-minute
 	// sleep and without relying on the queued cleanup macrotask firing.
 	now?: () => number;
-	scheduleTimer?: (callback: () => void, delayMs: number) => { unref: () => void };
+	scheduleTimer?: (callback: () => void, delayMs: number) => ReviewConsentTimer;
 	// The environment the session's child processes inherit; tests inject a
 	// plain object so the handshake declaration is observable without
 	// touching the test runner's own process.env.
@@ -9447,7 +9471,7 @@ function createGentleAiExtensionForTesting(
 		: undefined;
 	const childStandingReviewPermission = dependencies.childStandingReviewPermissionClient ?? childStandingReviewPermissionLease?.client;
 	const reviewConsentNow = dependencies.now ?? (() => Date.now());
-	const reviewConsentScheduleTimer = dependencies.scheduleTimer ?? ((callback, delayMs) => setTimeout(callback, delayMs));
+	const reviewConsentScheduleTimer = dependencies.scheduleTimer ?? scheduleReviewConsentTimer;
 	const pendingReviewConsentRegistry = dependencies.pendingReviewConsentRegistry ?? processPendingReviewConsentRegistry;
 	const resolveTelemetryTriggerBinary = dependencies.resolveTelemetryTriggerBinary ?? resolveGentleAiBinary;
 	const telemetryExecFileAdapter = dependencies.telemetryExecFileAdapter ?? createNodeExecFileAdapter();

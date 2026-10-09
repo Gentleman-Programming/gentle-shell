@@ -17,7 +17,7 @@ import type {
 import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { PROFILES_KIND, PROFILES_VERSION, readProfilesFileResult } from "../lib/agent-profiles.ts";
 import { bindSessionProfile, readSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
-import { createSessionProfileIntegration } from "../lib/session-profile-integration.ts";
+import { createSessionProfileIntegration, runCurrentSessionProfileSelection } from "../lib/session-profile-integration.ts";
 import type { AgentRoutingEntry, ThinkingLevel } from "../lib/model-routing-authority.ts";
 type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel" | "getThinkingLevel">;
 import { PROFILE_PIN_KIND, PROFILE_PIN_VERSION, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
@@ -3751,6 +3751,36 @@ test("Enter preserves session-only routing when the orchestrator is absent or ca
 		if (rejected) assert.match(notifications.at(-1) ?? "", /no authentication is configured for openai; this session keeps its current model/);
 		else assert.doesNotMatch(notifications.at(-1) ?? "", /This session now runs/);
 	}
+});
+
+test("Enter skipped by a session replacement while queued never touches the stale ctx", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, undefined);
+	resetSessionProfileBindingsForTesting();
+	t.after(() => resetSessionProfileBindingsForTesting());
+	const manager = profileActionManager(fixture.root);
+	let stale = false;
+	const notifications: string[] = [];
+	const ui = { notify(message: string) { notifications.push(message); } };
+	const ctx = {
+		cwd: fixture.root,
+		hasUI: true,
+		get ui() { if (stale) throw new Error("stale ctx"); return ui; },
+		get sessionManager() { if (stale) throw new Error("stale ctx"); return manager; },
+	} as unknown as ExtensionContext;
+	let release!: () => void;
+	const holder = runCurrentSessionProfileSelection(manager, () => new Promise<void>((resolve) => { release = resolve; }));
+	const live = { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel: (): ThinkingLevel => "medium" };
+	const enter = __testing.runProfilesPanelAction(ctx, live, storePath, readValidProfilesStore(storePath), { type: "apply", name: "team" }, {});
+	await new Promise((resolve) => setImmediate(resolve));
+	const file = manager.getSessionFile();
+	manager.getSessionFile = () => `${file}.replaced`;
+	stale = true;
+	release();
+	await holder;
+	await enter;
+	assert.deepEqual(notifications, [], "no notice is sent through the stale ctx");
+	assert.equal(readSessionProfileBinding(manager.getSessionId()), undefined);
 });
 
 test("a keeps the legacy global apply semantics", async (t) => {

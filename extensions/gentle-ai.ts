@@ -4288,7 +4288,9 @@ async function runProfilesPanelAction(
 					);
 				return true;
 			});
-			if (selected === undefined)
+			// A selection skipped by a reload or session replacement leaves a stale
+			// ctx; only a still-active command reports the missing attachment.
+			if (selected === undefined && isCommandContextActive(ctx))
 				ctx.ui.notify(
 					`el Gentleman cannot bind profile "${result.name}": the current session attachment is unavailable. No profile or live model change was applied.`,
 					"warning",

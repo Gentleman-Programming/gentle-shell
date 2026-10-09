@@ -9,7 +9,12 @@ import {
  AgentSessionRuntime,
  SessionManager,
 } from "@earendil-works/pi-coding-agent";
-import { createSessionProfileIntegration } from "../lib/session-profile-integration.ts";
+import {
+ createSessionProfileIntegration,
+ readCurrentSessionProfileOutcome,
+ runCurrentSessionProfileSelection,
+ waitCurrentSessionProfileSelection,
+} from "../lib/session-profile-integration.ts";
 
 const version = JSON.parse(
  readFileSync(
@@ -691,3 +696,122 @@ for (const position of ["before", "at"] as const) {
   name(current.outcome, "retained");
  });
 }
+
+// Selection serialization helpers: FIFO queue, revocation and settle semantics.
+function started() {
+ const f = fixture();
+ flush(f.manager);
+ f.integration.start(f.manager, f.append, { reason: "startup" });
+ return f;
+}
+function gate() {
+ let open!: () => void;
+ const opened = new Promise<void>((resolve) => {
+  open = resolve;
+ });
+ return { open, opened };
+}
+
+test("queued selections run in FIFO order and wait settles only after the last one", async () => {
+ const f = started();
+ const order: string[] = [];
+ const first = gate();
+ const a = runCurrentSessionProfileSelection(f.manager, async () => {
+  await first.opened;
+  order.push("a");
+  return "a";
+ });
+ const b = runCurrentSessionProfileSelection(f.manager, async () => {
+  order.push("b");
+  return "b";
+ });
+ let waited = false;
+ const wait = waitCurrentSessionProfileSelection(f.manager).then(() => {
+  waited = true;
+ });
+ await new Promise((resolve) => setImmediate(resolve));
+ assert.deepEqual(order, []);
+ assert.equal(waited, false, "wait does not settle while a selection is pending");
+ first.open();
+ assert.deepEqual(await Promise.all([a, b]), ["a", "b"]);
+ await wait;
+ assert.deepEqual(order, ["a", "b"]);
+ assert.equal(waited, true);
+});
+
+test("a rejected selection reaches its caller and does not block the next one", async () => {
+ const f = started();
+ const failed = runCurrentSessionProfileSelection(f.manager, async () => {
+  throw new Error("effect failed");
+ });
+ const next = runCurrentSessionProfileSelection(f.manager, async () => "next");
+ await assert.rejects(failed, /effect failed/);
+ assert.equal(await next, "next");
+ await waitCurrentSessionProfileSelection(f.manager);
+});
+
+test("shutdown while a selection is queued revokes it before its effect runs", async () => {
+ const f = started();
+ const first = gate();
+ let ran = false;
+ const holder = runCurrentSessionProfileSelection(f.manager, async (_attachment, current) => {
+  await first.opened;
+  return current();
+ });
+ const queued = runCurrentSessionProfileSelection(f.manager, async () => {
+  ran = true;
+  return "ran";
+ });
+ await new Promise((resolve) => setImmediate(resolve)); // the holder effect is now in flight
+ f.integration.shutdown(f.manager, { reason: "quit" });
+ first.open();
+ assert.equal(await holder, false, "current() turns false after shutdown");
+ assert.equal(await queued, undefined, "the queued effect is skipped");
+ assert.equal(ran, false);
+ assert.equal(
+  (readCurrentSessionProfileOutcome(f.manager)?.state as { reason?: string }).reason,
+  "unavailable-lifecycle",
+ );
+});
+
+test("a reload start while a selection is queued revokes the old attachment", async () => {
+ const f = started();
+ const first = gate();
+ const holder = runCurrentSessionProfileSelection(f.manager, async (attachment, current) => {
+  await first.opened;
+  return { current: current(), outcome: attachment.bind("late", {}) };
+ });
+ await new Promise((resolve) => setImmediate(resolve)); // the holder effect is now in flight
+ f.integration.shutdown(f.manager, { reason: "reload" });
+ f.integration.start(f.manager, f.append, { reason: "reload" });
+ first.open();
+ const result = await holder;
+ assert.equal(result?.current, false);
+ assert.notEqual(result?.outcome.status, "persisted", "the old attachment cannot append");
+ assert.equal(
+  f.manager.getBranch().some((entry) => entry.type === "custom" && entry.customType?.startsWith("gentle-pi.session-profile/")),
+  false,
+ );
+});
+
+test("a session file change while a selection waits makes current() false", async () => {
+ const f = started();
+ const first = gate();
+ const holder = runCurrentSessionProfileSelection(f.manager, async (_attachment, current) => {
+  await first.opened;
+  return current();
+ });
+ await new Promise((resolve) => setImmediate(resolve)); // the holder effect is now in flight
+ const original = f.manager.getSessionFile.bind(f.manager);
+ f.manager.getSessionFile = () => `${original()}.moved`;
+ first.open();
+ assert.equal(await holder, false);
+ f.manager.getSessionFile = original;
+});
+
+test("helpers report no owner as undefined", async () => {
+ const f = fixture();
+ assert.equal(readCurrentSessionProfileOutcome(f.manager), undefined);
+ assert.equal(await runCurrentSessionProfileSelection(f.manager, async () => "never"), undefined);
+ await waitCurrentSessionProfileSelection(f.manager);
+});

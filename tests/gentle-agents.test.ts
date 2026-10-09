@@ -2395,6 +2395,9 @@ test("foreign clone tool requires consent before queueing and never enters paren
 		await tick();
 		assert.deepEqual(spawned, [foreign]);
 		assert.equal((runnerRun.mock.calls[0]?.arguments[0] as { authorizeParentStandingReviewPermission?: unknown }).authorizeParentStandingReviewPermission, undefined, "foreign child must not receive parent review permission channel");
+		// The parent session froze "no profile" (no pin, no global active), so the
+		// foreign launch keeps the foreign repository's own pin (gentle-shell#1064
+		// 3b-ii). Dropping `foreignRepository` from the launch wiring breaks this.
 		assert.equal(runtime.spawned[0]?.[runtime.spawned[0]!.indexOf("--model") + 1], "openai/foreign-model:minimal");
 		assert.equal((result.details.gentleAgents as { cwd: string }).cwd, foreign);
 		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
@@ -2443,6 +2446,34 @@ test("foreign clone tool requires consent before queueing and never enters paren
 		assert.equal(runtime.children.length, 3, "stale queued foreign task must fail before OS spawn");
 		await h.fire("session_shutdown", successor);
 	} finally { rmSync(fixture, TEST_DIR_REMOVAL); }
+});
+
+test("a frozen session profile routes a foreign repository launch over that repository's pin", async (t) => {
+	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "foreign-frozen-")));
+	t.after(() => rmSync(fixture, TEST_DIR_REMOVAL));
+	const parent = join(fixture, "parent"), foreign = join(fixture, "foreign"), template = join(fixture, "template");
+	mkdirSync(template);
+	for (const path of [parent, foreign]) execFileSync("git", ["init", "--quiet", `--template=${template}`, path]);
+	const configHome = join(fixture, "config");
+	mkdirSync(configHome);
+	writeFileSync(join(configHome, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, active: "session", profiles: {
+		session: { explore: { model: "openai/session-model", thinking: "low" } },
+		pinned: { explore: { model: "openai/foreign-model", thinking: "minimal" } },
+	} }));
+	mkdirSync(join(foreign, ".git", "gentle-ai"));
+	writeFileSync(join(foreign, ".git", "gentle-ai", "profile-pin.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile: "pinned" }));
+	const h = fakePi(), runtime = deps();
+	runtime.deps.env = { PATH: "/bin", GENTLE_PI_CONFIG_HOME: configHome };
+	runtime.deps.resolveWorktree = resolveSessionWorktree;
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	ctx.sessionManager.getCwd = () => parent;
+	await h.fire("session_start", ctx);
+	t.after(async () => { await h.fire("session_shutdown", ctx); await tick(); });
+	assert.equal(readFrozenInheritedProfile("s1")?.profile?.name, "session", "the parent froze the global active profile");
+	await h.tools.get("subagent_run")!.execute("foreign-frozen", { agent: "explore", task: "Map", repository_root: foreign, mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.equal(runtime.spawned[0]?.[runtime.spawned[0]!.indexOf("--model") + 1], "openai/session-model:low", "the session profile wins over the foreign pin");
 });
 
 test("foreign child Changes require successful target-bound tool evidence, never model claims or sibling writes", async () => {

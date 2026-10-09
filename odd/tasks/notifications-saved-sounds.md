@@ -36,10 +36,10 @@ S8. Un archivo de biblioteca ausente es una biblioteca vacía, sin crear archivo
 
 | ID | Specs | Ruta | Commit |
 | --- | --- | --- | --- |
-| T1 | S5, S7, S8 | inline: `lib/notification-sounds.ts` + `tests/notification-sounds.test.ts` | pendiente |
-| T2 | S2 | inline: `lib/visual-customize-view.ts` + `tests/visual-customize-view.test.ts` | pendiente |
-| T3 | S1, S3, S4, S6 | inline: `lib/notification-customize.ts` + `tests/notification-customize.test.ts` + docs (`docs/sound-notifications.md`, `README.md`, `docs/readme-reference.md`) | pendiente |
-| T4 | S1-S8 | inline: focused + typecheck + comparación de fallos pre-existentes | pendiente |
+| T1 | S5, S7, S8 | inline: `lib/notification-sounds.ts` + `tests/notification-sounds.test.ts` | `ebb9faea0` |
+| T2 | S2 | inline: `lib/visual-customize-view.ts` + `tests/visual-customize-view.test.ts` | `c1e74ec6a` |
+| T3 | S1, S3, S4, S6 | inline: `lib/notification-customize.ts` + `tests/notification-customize.test.ts` + docs (`docs/sound-notifications.md`, `README.md`, `docs/readme-reference.md`) | `7fe52d6d7` |
+| T4 | S1-S8 | inline: focused + typecheck + comparación de fallos pre-existentes | este cierre |
 
 ## Log
 
@@ -70,3 +70,25 @@ L4 — Evidencia de partida (medida antes de escribir): el entorno de reproducci
 real de producción (`NotificationPlayer.play` con el host fijo de Windows) reprodujo los tres tonos incluidos
 (`resolved OK`, `permit=true`, ~1,3 s cada uno). `matchesKey(data, "ctrl+s")` acepta `\x13` y la secuencia kitty
 `\x1b[115;5u`, y `Key.ctrlS` no existe en pi-tui, así que el atajo se escribe como la cadena `"ctrl+s"`.
+
+L5 — Commit `9c1a0772a` (doc), `ebb9faea0` (T1), `c1e74ec6a` (T2), `7fe52d6d7` (T3). RED observado en cada
+unidad antes de escribir fuente: T1 con el módulo ausente (`ERR_MODULE_NOT_FOUND`), T2 con 3 fallos en el view,
+T3 con 7 fallos en la tarjeta (el octavo caso, «Enter assigns without adding it to the library», ya pasaba y
+queda como guarda).
+
+L6 — Bug real que encontró el test del ciclo, no una preferencia: con la biblioteca insertada *después* de la
+memoria de la fila (`[owned, current, ...saved]`), al pasar por un sonido guardado la fila adoptaba ese archivo
+como «propio» y el orden pasaba a `[null, s, e, a, error.wav, success.wav]`, así que el último guardado saltaba
+al primero y nunca se llegaba a silencio. Corregido a `[...saved, owned, current]`: la lista guardada primero y
+lo no guardado al final. El ciclo de la Slice 1 (un archivo no guardado) no cambia de comportamiento.
+
+L7 — Verificación (Windows, node 22.23.0): `tests/notification-sounds.test.ts` 9/9; `tests/visual-customize-view.test.ts`
+42/42; `tests/notification-customize.test.ts` 50 tests con un solo fallo, el pre-existente `f opens an inline
+field ...`; grupo notification completo 24 fallos / 170 pass / 194 tests contra 24 / 146 / 170 antes del feature,
+con los 23 fallos en archivos que este cambio no toca más ese caso conocido, y los 20 tests nuevos en verde;
+`pnpm run typecheck` 186 diagnósticos registrados sin regresiones.
+
+L8 — Pendiente y fuera de alcance declarado: el volumen por sonido y el traslado de la biblioteca a
+`audio.sounds` con esquema `/v2` siguen sin decidir; la pregunta abierta del grupo mixto (hoy `Enter` sobre un
+tipo mixto aplica el tono recomendado y descarta las excepciones por evento) sigue igual. Sin push ni PR: el
+parche se aplicó al checkout instalado solo para la prueba manual del usuario.

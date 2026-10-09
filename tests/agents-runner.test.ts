@@ -1330,6 +1330,139 @@ test("AgentRunner turns a synchronous spawn exception into a failed task", async
 	assert.match(finished.error ?? "", /could not start pi: ENOENT/);
 });
 
+for (const probeError of [undefined, "EPERM", "EIO"] as const) test(`quarantined owned group disappearance releases capacity without child exit (${probeError ?? "present"})`, async () => {
+	let gone = false;
+	const signals: Array<NodeJS.Signals | 0> = [];
+	const h = harness({ maxConcurrency: 1, exitOnKill: false, pid: 43210,
+		process: { platform: "linux", kill: (pid, signal) => {
+			assert.equal(pid, -43210, "only the fake child's bound group may be probed or signalled");
+			signals.push(signal);
+			if (signal === 0 && (gone || probeError)) throw Object.assign(new Error("fake probe"), { code: gone ? "ESRCH" : probeError });
+		} } });
+	const first = h.runner.run(request());
+	const second = h.runner.run(request({ prompt: "queued" }));
+	const third = h.runner.run(request({ prompt: "also queued" }));
+	await tick();
+	h.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Retained answer" }] }] });
+	h.children[0].emit({ type: "agent_settled" });
+	h.advance(250);
+	h.advance(1000);
+	await tick();
+	assert.equal(h.store.get(first.id)?.status, TASK_STATUS.FAILED);
+	assert.match(h.store.get(first.id)?.error ?? "", /capacity quarantined/);
+	assert.equal(h.store.get(first.id)?.result, "Retained answer");
+	const historical = structuredClone(h.store.get(first.id));
+	for (let count = 0; count < 3; count++) {
+		h.advance(25);
+		await tick();
+		assert.equal(h.store.get(second.id)?.status, TASK_STATUS.QUEUED);
+		assert.equal(h.children.length, 1);
+		assert.deepEqual(h.finishes, [first.id]);
+	}
+	assert.deepEqual(signals.filter(signal => signal !== 0), ["SIGTERM", "SIGKILL"]);
+	const confirmation = h.timers.find(timer => !timer.cancelled && timer.ms === 25);
+	assert.ok(confirmation);
+	confirmation.fn();
+	confirmation.fn();
+	assert.equal(h.timers.filter(timer => !timer.cancelled && timer.ms === 25).length, 1, "rechecks replace the pending timer");
+	gone = true;
+	h.advance(25);
+	await tick();
+	assert.equal(h.children.length, 2, "a fresh ESRCH probe must release the quarantined slot without child exit");
+	assert.equal(h.store.get(second.id)?.status, TASK_STATUS.RUNNING);
+	assert.equal(h.store.get(third.id)?.status, TASK_STATUS.QUEUED);
+	assert.equal(h.timers.filter(timer => !timer.cancelled && timer.ms === 25).length, 0);
+	const probeCount = signals.length;
+	confirmation.fn();
+	confirmation.fn();
+	assert.equal(signals.length, probeCount, "stale callbacks cannot probe a released binding");
+	h.advance(100);
+	h.children[0].exit(0);
+	await tick();
+	assert.equal(h.children.length, 2, "stale confirmation and late exit cannot release another slot");
+	assert.deepEqual(h.finishes, [first.id]);
+	assert.deepEqual(h.store.get(first.id), historical);
+	assert.deepEqual(signals.filter(signal => signal !== 0), ["SIGTERM", "SIGKILL"]);
+	h.runner.cancel(third.id);
+	h.children[1].exit(0);
+	await tick();
+	assert.equal(h.timers.filter(timer => !timer.cancelled).length, 0);
+});
+
+for (const probeError of [undefined, "EPERM", "EIO"] as const) test(`fresh exit confirmation uses owned quarantine only (${probeError ?? "present"})`, async () => {
+	let gone = false;
+	const signals: Array<NodeJS.Signals | 0> = [];
+	const h = harness({ maxConcurrency: 1, exitOnKill: false, pid: 43211,
+		process: { platform: "linux", kill: (pid, signal) => {
+			assert.equal(pid, -43211);
+			signals.push(signal);
+			if (signal === 0 && (gone || probeError)) throw Object.assign(new Error("fake probe"), { code: gone ? "ESRCH" : probeError });
+		} } });
+	const first = h.runner.run(request());
+	const second = h.runner.run(request());
+	await tick();
+	assert.equal(h.runner.exitConfirmation(first.id, "s1"), "unconfirmed");
+	assert.deepEqual(signals, [], "ordinary running status must not probe");
+	h.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Retained" }] }] });
+	h.children[0].emit({ type: "agent_settled" });
+	h.advance(250);
+	h.advance(1000);
+	const historical = structuredClone(h.store.get(first.id));
+	h.store.update(first.id, { parentSessionId: "foreign" });
+	const before = signals.length;
+	for (const session of ["", "foreign"]) assert.equal(h.runner.exitConfirmation(first.id, session), "unavailable");
+	assert.equal(signals.length, before, "mutable task history cannot authorize a probe");
+	h.store.update(first.id, { parentSessionId: "s1" });
+	assert.equal(h.runner.exitConfirmation(first.id, "s1"), "unconfirmed");
+	assert.equal(signals.length, before + 1, "quarantined status performs a fresh owned probe");
+	assert.equal(h.timers.filter(timer => !timer.cancelled && timer.ms === 25).length, 1);
+	assert.equal(h.store.get(second.id)?.status, TASK_STATUS.QUEUED);
+	gone = true;
+	assert.equal(h.runner.exitConfirmation(first.id, "s1"), "confirmed");
+	await tick();
+	assert.equal(h.children.length, 2);
+	assert.deepEqual(h.store.get(first.id), historical);
+	assert.deepEqual(h.finishes, [first.id]);
+	const confirmedProbeCount = signals.length;
+	assert.equal(h.runner.exitConfirmation(first.id, "s1"), "confirmed");
+	assert.equal(h.runner.exitConfirmation(first.id, "foreign"), "unavailable");
+	assert.equal(signals.length, confirmedProbeCount);
+	assert.deepEqual(signals.filter(signal => signal !== 0), ["SIGTERM", "SIGKILL"]);
+	assert.equal(h.timers.filter(timer => !timer.cancelled && timer.ms === 25).length, 0);
+	h.children[1].exit(0);
+	await tick();
+});
+
+test("fresh exit confirmation rejects history, reload-lost bindings and missing exit evidence", async () => {
+	const h = harness({ exitOnKill: false, process: { platform: "win32", kill: () => assert.fail("no group probe") } });
+	assert.equal(h.runner.exitConfirmation("unknown", "s1"), "unavailable");
+	const task = h.runner.run(request());
+	await tick();
+	h.runner.cancel(task.id);
+	h.advance(250);
+	h.advance(1000);
+	assert.equal(h.runner.exitConfirmation(task.id, "s1"), "unavailable");
+	h.children[0].exit(0);
+	assert.equal(h.runner.exitConfirmation(task.id, "s1"), "confirmed", "trustworthy no-group exit is retained locally");
+	assert.equal(h.runner.exitConfirmation(task.id, ""), "unavailable");
+	const fresh = harness();
+	for (const status of [TASK_STATUS.COMPLETED, TASK_STATUS.FAILED]) {
+		fresh.store.restore({ ...h.store.get(task.id)!, status }, h.store.thread(task.id));
+		assert.equal(fresh.runner.exitConfirmation(task.id, "s1"), "unavailable");
+	}
+	const empty = h.runner.run(request({ parentSessionId: "" }));
+	await tick();
+	assert.equal(h.runner.exitConfirmation(empty.id, ""), "unavailable");
+	h.children[1].exit(0);
+	assert.equal(h.runner.exitConfirmation(empty.id, ""), "unavailable");
+	const failedSpawn = harness({ failStart: true });
+	const failed = failedSpawn.runner.run(request());
+	assert.equal(failedSpawn.runner.exitConfirmation(failed.id, "s1"), "unavailable", "queued records alone are not proof");
+	await tick();
+	assert.equal(failedSpawn.store.get(failed.id)?.status, TASK_STATUS.FAILED);
+	assert.equal(failedSpawn.runner.exitConfirmation(failed.id, "s1"), "unavailable");
+});
+
 for (const lateEvents of [false, true]) test(`AgentRunner releases quarantined capacity only on proven exit (late events: ${lateEvents})`, async () => {
 	const store = new TaskStore();
 	const timers: Array<{ fn: () => void; ms: number; cancelled: boolean }> = [];
@@ -1377,7 +1510,7 @@ for (const lateEvents of [false, true]) test(`AgentRunner releases quarantined c
 	assert.equal(observations[0]?.agentSettled, false);
 	assert.equal(observations[0]?.responses.length, 1);
 	assert.equal(store.get(second.id)?.status, TASK_STATUS.QUEUED, "the unconfirmed group retains its capacity");
-	assert.equal(timers.filter((timer) => timer.ms === 25 && !timer.cancelled).length, 0, "confirmation polling stops at its deadline");
+	assert.equal(timers.filter((timer) => timer.ms === 25 && !timer.cancelled).length, 1, "owned-group confirmation continues after quarantine");
 	const finished = structuredClone(store.get(first.id));
 	if (lateEvents) {
 		const thread = structuredClone(store.thread(first.id));

@@ -2,13 +2,20 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { registerBackgroundJobTools, type BackgroundJobToolsOptions } from "../lib/background-jobs-tools.ts";
+import { createJobRegistry } from "../lib/background-jobs.ts";
+import { registerBackgroundJobTools } from "../lib/background-jobs-tools.ts";
 
 // Guidance contract, not runtime routing or a performance guarantee.
 const tools: Array<{ name: string; description: string; parameters: unknown }> = [];
 registerBackgroundJobTools({ registerTool: (tool) => tools.push(tool), registerMessageRenderer: () => {} } as unknown as ExtensionAPI, {
-	registry: {}, sessionId: () => "contract", now: () => 0,
-} as BackgroundJobToolsOptions);
+	registry: createJobRegistry({
+		outputDir: () => { throw new Error("Guidance contracts must not write job logs"); },
+		now: () => 0,
+		shell: () => { throw new Error("Guidance contracts must not execute jobs"); },
+		onSettled: () => {},
+	}),
+	sessionId: () => "contract", now: () => 0,
+});
 const background = tools.find((tool) => tool.name === "bash_background")!;
 const core = readFileSync(new URL("../assets/orchestrator.md", import.meta.url), "utf8");
 const guide = readFileSync(new URL("../docs/gentle-shell.md", import.meta.url), "utf8");

@@ -1,29 +1,45 @@
-name: Native lock application integration
+name: Native lock Node 22 paired diagnostic
+# S7 diagnosis ONLY. Original integration evidence/gate is immutable at b06c3a75.
+# Selected-six success cannot repair or relabel the original full-suite failure.
 on:
   push:
     branches: [ci/4946-native-lock-integration]
 permissions:
   contents: read
 jobs:
-  integration:
+  diagnostic:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        node: ['22.19.0', '24.14.0']
+        include:
+          - label: baseline
+            ref: 3c0e0470e47fe7842870127bf666b679251270e0
+            manifest: 063ba8d6fc03f8bb8871511eb53477ce0258eb6a833e91da73322a08c7cd69bf
+            lock: 32fc8adb30b49a3069c6872bd6910f523ea6ce31bc94860f17879aa1d4f90fc8
+          - label: candidate
+            ref: b06c3a75d2c1ae03e43bdb15d99e33f41829ba93
+            manifest: 10586c634d675bd00b57f41790d60efb6ab8f9b2392bfd2a8ba65a68f80eae32
+            lock: 2646daa2845e87a50fda83c8b3dfdd3f1cc45189d3ea29fd74228e8791adc88e
+    env:
+      DIAGNOSTIC_ID: ${{ matrix.label }}
+      EXPECTED_REF: ${{ matrix.ref }}
+      EXPECTED_MANIFEST: ${{ matrix.manifest }}
+      EXPECTED_LOCK: ${{ matrix.lock }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
+          ref: ${{ matrix.ref }}
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: ${{ matrix.node }}
-      - name: Isolate configuration and caches
+          node-version: '22.19.0'
+      - name: Isolate configuration and caches per ref
         id: init
         run: |
           set -euo pipefail
-          root=$(mktemp -d "$RUNNER_TEMP/native-integration.XXXXXX")
+          root=$(mktemp -d "$RUNNER_TEMP/node22-diagnostic.XXXXXX")
           mkdir -p "$root/home" "$root/tmp" "$root/config" "$root/cache" "$root/agent" "$root/models"
           for entry in "HOME=home" "USERPROFILE=home" "TMPDIR=tmp" "TMP=tmp" "TEMP=tmp" "XDG_CONFIG_HOME=config" "XDG_CACHE_HOME=cache" "npm_config_cache=cache/npm" "PNPM_HOME=cache/pnpm" "GENTLE_PI_AGENT_HOME=agent" "PI_CODING_AGENT_DIR=agent" "GENTLE_PI_CONFIG_HOME=models"; do
             echo "${entry%%=*}=$root/${entry#*=}" >> "$GITHUB_ENV"
@@ -32,45 +48,92 @@ jobs:
           echo 'GENTLE_PI_REQUIRE_NATIVE_BINARY=1' >> "$GITHUB_ENV"
           echo "CI_PROOF_ROOT=$root" >> "$GITHUB_ENV"
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        id: pnpm
         with:
           version: 11.1.1
           run_install: false
+      - name: Verify identity and record frozen graph before execution
+        id: identity
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          import { execFileSync } from 'node:child_process';
+          const hash = path => crypto.createHash('sha256').update(fs.readFileSync(path)).digest('hex');
+          const ref = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+          const hashes = Object.fromEntries(['package.json', 'pnpm-lock.yaml', 'tests/gentle-agents.test.ts'].map(path => [path, hash(path)]));
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const roots = ['@earendil-works/pi-coding-agent', '@earendil-works/pi-ai', '@earendil-works/pi-tui'];
+          const evidence = { id: process.env.DIAGNOSTIC_ID, ref, node: process.version, platform: process.platform, arch: process.arch, hashes,
+            rootDeclarations: Object.fromEntries(roots.map(name => [name, pkg.devDependencies[name]])), dependencies: pkg.dependencies,
+            graphLimit: 'Each ref uses its OWN frozen graph. Candidate adds fs-native-extensions@1.5.1 and its native subtree; graphs are NOT identical. SDK/AI/TUI root declarations are unchanged. Lock text below records resolved versions, not runtime equivalence.' };
+          fs.writeFileSync(`${process.env.CI_PROOF_ROOT}/identity.json`, JSON.stringify(evidence, null, 2));
+          console.log(`DIAGNOSTIC_IDENTITY_${process.env.DIAGNOSTIC_ID} ${JSON.stringify(evidence)}`);
+          console.log('FROZEN_LOCK_BEGIN\n' + fs.readFileSync('pnpm-lock.yaml', 'utf8') + '\nFROZEN_LOCK_END');
+          if (ref !== process.env.EXPECTED_REF || process.version !== 'v22.19.0' || process.platform !== 'linux' || process.arch !== 'x64' ||
+              hashes['package.json'] !== process.env.EXPECTED_MANIFEST || hashes['pnpm-lock.yaml'] !== process.env.EXPECTED_LOCK ||
+              hashes['tests/gentle-agents.test.ts'] !== '37e2203dc1149b8d0af89cd5361c8a44b38fd5e96156fcf06e3a8fc6a5e3eec0') throw new Error('Unexpected ref/runtime/manifest/lock/test-source drift');
+          NODE
       - name: Frozen graph without lifecycle scripts
         id: install
-        run: timeout --verbose 300s pnpm install --frozen-lockfile --ignore-scripts --store-dir "$CI_PROOF_ROOT/cache/store"
+        run: timeout --verbose --kill-after=10s 300s pnpm install --frozen-lockfile --ignore-scripts --store-dir "$CI_PROOF_ROOT/cache/store"
       - name: Explicit integrity-pinned native application installer
         id: native
-        run: timeout --verbose 180s node scripts/install-gentle-ai.mjs
-      - name: Full suite (all stages and final summary)
-        id: suite
-        continue-on-error: true
-        run: timeout --verbose 900s pnpm test
-      - name: Focused recovery and preservation
-        id: focused
-        if: ${{ !cancelled() && steps.native.outcome == 'success' }}
-        continue-on-error: true
-        run: timeout --verbose 180s node --experimental-strip-types --test tests/model-profiles-lock-recovery.test.ts tests/model-profiles-preservation.test.ts
-      - name: Type ratchet
-        id: types
-        if: ${{ !cancelled() && steps.native.outcome == 'success' }}
-        continue-on-error: true
-        run: timeout --verbose 120s pnpm run typecheck
-      - name: Runtime consistency
-        id: runtime
-        if: ${{ !cancelled() && steps.native.outcome == 'success' }}
-        continue-on-error: true
-        run: timeout --verbose 120s pnpm run check:runtime-modules
-      - name: Package contents
-        id: contents
-        if: ${{ !cancelled() && steps.native.outcome == 'success' }}
-        continue-on-error: true
-        run: timeout --verbose 120s node scripts/verify-package-files.mjs
-      - name: Packed public SDK application proof
-        id: packed
-        if: ${{ !cancelled() && steps.native.outcome == 'success' }}
-        continue-on-error: true
-        run: timeout --verbose 300s node .github/native-lock-integration/packed-probe.mjs
-      - name: Required outcome gate
+        run: timeout --verbose --kill-after=10s 180s node scripts/install-gentle-ai.mjs
+      - name: Selected six once with TAP and bounded process group
+        id: selected
+        # Inline payload belongs to this workflow, never imported from a different ref.
+        # No keepalive/timer patches: preserve lifecycle cancellation behavior.
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          import { spawnSync, execFileSync } from 'node:child_process';
+          const names = [
+            'session shutdown never hangs on a job whose process ignores the stop',
+            'monitor delivers line events to an idle parent with one wake, and reports its end with the event count',
+            "monitor events wait for a busy parent's turn boundary and coalesce into one notice",
+            'monitor rejects a missing or out-of-range timeout before starting anything',
+            'events from two interleaved monitors coalesce per monitor while the parent is busy',
+            'a human stop of a monitor from /gentle:jobs delivers its pending lines, then one stop notice, then nothing',
+          ];
+          const pattern = '^(?:' + names.map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')$';
+          const sourceHash = crypto.createHash('sha256').update(fs.readFileSync('tests/gentle-agents.test.ts')).digest('hex');
+          const ref = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+          if (ref !== process.env.EXPECTED_REF || sourceHash !== '37e2203dc1149b8d0af89cd5361c8a44b38fd5e96156fcf06e3a8fc6a5e3eec0') throw new Error('Pre-command identity drift');
+          const args = ['--verbose', '--kill-after=10s', '120s', process.execPath, '--experimental-strip-types', '--test', '--test-reporter=tap', '--test-name-pattern=' + pattern, 'tests/gentle-agents.test.ts'];
+          // spawnSync keeps the real GNU timeout exit, without a masking shell pipe.
+          // GNU timeout owns the process group; this parent does not keep the test loop alive.
+          const run = spawnSync('timeout', args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+          const stdout = run.stdout ?? ''; const stderr = run.stderr ?? '';
+          fs.writeFileSync(`${process.env.CI_PROOF_ROOT}/stdout.tap`, stdout);
+          fs.writeFileSync(`${process.env.CI_PROOF_ROOT}/stderr.log`, stderr);
+          console.log(`DIAGNOSTIC_STDOUT_BEGIN_${process.env.DIAGNOSTIC_ID}\n${stdout}\nDIAGNOSTIC_STDOUT_END_${process.env.DIAGNOSTIC_ID}`);
+          console.log(`DIAGNOSTIC_STDERR_BEGIN_${process.env.DIAGNOSTIC_ID}\n${stderr}\nDIAGNOSTIC_STDERR_END_${process.env.DIAGNOSTIC_ID}`);
+          const blocks = [...stdout.matchAll(/^(not ok|ok) (\d+) - (.+)\r?\n([\s\S]*?)(?=^(?:not ok|ok) \d+ - |$(?![\s\S]))/gm)];
+          const selected = names.map(name => {
+            const matches = blocks.filter(match => match[3] === name || match[3].startsWith(name + ' #'));
+            const block = matches[0];
+            const status = matches.length !== 1 ? 'missing-or-duplicate' : /# SKIP\b/i.test(block[3]) ? 'skip' : /failureType: ['"]?cancelledByParent/.test(block[4]) ? 'cancelled' : block[1] === 'ok' ? 'pass' : 'fail';
+            return { name, status, occurrences: matches.length };
+          });
+          const aggregate = Object.fromEntries(['tests', 'suites', 'pass', 'fail', 'cancelled', 'skipped', 'todo', 'duration_ms'].map(key => {
+            const matches = [...stdout.matchAll(new RegExp('^# ' + key + ' ([0-9.]+)\\r?$', 'gm'))];
+            return [key, matches.length === 1 ? Number(matches[0][1]) : null];
+          }));
+          const passed = !run.error && run.status === 0 && run.signal === null && selected.every(row => row.status === 'pass') &&
+            Object.values(aggregate).every(value => value !== null) && aggregate.pass === 6 && aggregate.fail === 0 && aggregate.cancelled === 0 && aggregate.todo === 0 && aggregate.tests === aggregate.pass + aggregate.skipped;
+          const result = { id: process.env.DIAGNOSTIC_ID, ref, node: process.version, sourceHash, pattern, command: ['timeout', ...args],
+            exit: run.status, signal: run.signal, timeout: run.status === 124 || run.status === 137, error: run.error?.message ?? null,
+            signalLimit: 'signal is the timeout wrapper signal; GNU timeout exit 137 may mean group SIGKILL, exit 124 means deadline. No inferred child signal.',
+            selected, aggregate, selectedSixPassed: passed, applicationValidation: false,
+            limitation: 'Filtering loses full-file execution context. Even paired selected-six passes do NOT establish the original suite fixed or Node22 causality.' };
+          fs.writeFileSync(`${process.env.CI_PROOF_ROOT}/result.json`, JSON.stringify(result, null, 2));
+          console.log(`DIAGNOSTIC_RESULT_${result.id} ${JSON.stringify(result)}`);
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## Selected six: ${result.id}\n\n\`\`\`json\n${JSON.stringify(result, null, 2)}\n\`\`\`\n`);
+          if (!passed) process.exitCode = 1;
+          NODE
+      - name: Always disclose bootstrap versus test failure
         if: ${{ always() }}
         env:
           OUTCOMES: ${{ toJSON(steps) }}
@@ -78,9 +141,15 @@ jobs:
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
           const steps = JSON.parse(process.env.OUTCOMES);
-          const required = ['init', 'install', 'native', 'suite', 'focused', 'types', 'runtime', 'contents', 'packed'];
-          const rows = required.map(id => `${id}: ${steps[id]?.outcome ?? 'missing'}`);
-          console.log(rows.join('\n'));
-          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, '## Native application integration\n\n' + rows.join('\n\n') + '\n\nTimeouts/skips/missing outcomes are failures. Automated public SDK proof is not interactive Pi proof.\n');
-          if (required.some(id => steps[id]?.outcome !== 'success')) process.exitCode = 1;
+          const required = ['init', 'pnpm', 'identity', 'install', 'native', 'selected'];
+          const outcomes = Object.fromEntries(required.map(id => [id, steps[id]?.outcome ?? 'missing']));
+          const bootstrap = required.filter(id => id !== 'selected').every(id => outcomes[id] === 'success');
+          const resultPath = `${process.env.CI_PROOF_ROOT}/result.json`;
+          const result = fs.existsSync(resultPath) ? JSON.parse(fs.readFileSync(resultPath, 'utf8')) : null;
+          const report = { id: process.env.DIAGNOSTIC_ID, expectedRef: process.env.EXPECTED_REF, outcomes,
+            classification: !bootstrap ? 'bootstrap-failure' : !result ? 'test-evidence-missing' : result.selectedSixPassed ? 'selected-six-pass-only' : 'selected-six-failure',
+            result, applicationValidation: false };
+          console.log(`DIAGNOSTIC_SUMMARY_${report.id} ${JSON.stringify(report)}`);
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## Diagnostic summary: ${report.id}\n\n\`\`\`json\n${JSON.stringify(report, null, 2)}\n\`\`\`\nNo full-suite retry, production change, or application GREEN. Own frozen graphs differ in the native dependency subtree; unchanged SDK/AI/TUI roots are not identical dependency graphs. Original b06 integration evidence remains authoritative. Hosted paired stdout/statuses require parent comparison; job conclusion alone is not comparative proof.\n`);
+          if (!bootstrap || !result?.selectedSixPassed || required.some(id => outcomes[id] !== 'success')) process.exitCode = 1;
           NODE

@@ -27,7 +27,7 @@ import { resolveVisualSettings } from "../lib/visual-customization-policy.ts";
 import { createCompletionQueue } from "../lib/agents-completion-delivery.ts";
 import { createAgentMessageQueue, type PendingAgentMessage } from "../lib/agents-message-delivery.ts";
 import { AGENT_MODE, discoverAgents, formatModelRef, loadAgentsConfig, resolveAgentProfile, withPinnedModelProfiles, type AgentDefinition, type AgentMode } from "../lib/agents-config.ts";
-import { readSessionProfileBinding, sessionOrPinModelProfiles } from "../lib/session-profile-binding.ts";
+import { freezeSessionProfileAtStartup, inheritedProfileDriftNotice, resolveSessionProfile, sessionProfileRoutingAt } from "../lib/session-profile-freeze.ts";
 import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-policy.ts";
 import { installBackgroundCacheWarming } from "../lib/background-cache-warming.ts";
 import { isFinished, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
@@ -61,7 +61,6 @@ import { CARD_TONE, renderCard } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { resolveAgentHomeDirectory } from "../lib/agent-model-resolution.ts";
-import { resolveProfilePin, resolveUnversionedProjectProfile } from "../lib/agent-profile-pin.ts";
 import { allowedEditSurfaces, inheritAllowedEditSurfaces, isBoundedWriter, isDevelopmentSurface, isGenericBoundedWriter, prepareBoundSessionRepository, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sessionRepositoryAuthority } from "../lib/bounded-writer-admission.ts";
 import { CHILD_METRICS_EVENT, CHILD_METRICS_REVOKED, childEvent, launchSelection, type LaunchSelection } from "../lib/runtime-metrics-children.ts";
 import { runtimeMetricsEnvAllows, type RuntimeMetricsPolicyDeps } from "../lib/runtime-metrics-policy.ts";
@@ -1553,21 +1552,26 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (isGenericBoundedWriter(agent.name) && !current()) throw new Error("Writer session Git authority changed before admission.");
 		let admittedModel: string | undefined;
 		const surfaces = allowedEditSurfaces(prompt, context);
-		// gentle-shell#1064 slice 2: the binding is read once per task request,
-		// before admission, so the admitted model and the launch routing resolve
-		// the same session layer and can never disagree about it (#1558: a bound
-		// session used to kill its own non-git writer mid-preparation because
-		// admission still read only the pin/global layers).
-		const sessionBinding = readSessionProfileBinding(ctx.sessionManager.getSessionId());
+		// gentle-shell#1064 slice 2: the session profile is resolved once per task
+		// request, before admission, so the admitted model and the launch routing
+		// resolve the same session layer and can never disagree about it (#1558: a
+		// bound session used to kill its own non-git writer mid-preparation because
+		// admission still read only the pin/global layers). Slice 3b-ii: the same
+		// read covers the frozen inherited profile and `follow` mode.
+		const profileConfigHome = gentlePiConfigHome(deps.env);
+		const sessionProfile = resolveSessionProfile({
+			sessionId: ctx.sessionManager.getSessionId(),
+			cwd: originalCwd,
+			configHome: profileConfigHome,
+			resolveWorktree: deps.resolveWorktree,
+			env: deps.env,
+		});
 		if (!resume && isGenericBoundedWriter(agent.name) && surfaces?.some(isDevelopmentSurface) && !deps.resolveWorktree(originalCwd, originalCwd) && repositoryRoot === undefined) {
 			const root = safeBootstrapDirectory(originalCwd);
 			if (!root || (workspaceRoot !== undefined && (!isAbsolute(workspaceRoot) || safeBootstrapDirectory(workspaceRoot) !== root))) throw new Error("Writer bootstrap requires the original safe project root.");
 			const config = withPinnedModelProfiles(
 				loadAgentsConfig(roots(ctx)),
-				sessionOrPinModelProfiles(
-					sessionBinding?.modelProfiles,
-					resolveUnversionedProjectProfile(root, gentlePiConfigHome(deps.env))?.modelProfiles,
-				),
+				sessionProfileRoutingAt(sessionProfile, { cwd: root, configHome: profileConfigHome, resolveWorktree: deps.resolveWorktree }),
 			);
 			const model = resolveAgentProfile(agent, config).model ?? ctx.model;
 			const catalogModel = model?.provider ? ctx.modelRegistry?.find(model.provider, model.id) : ctx.modelRegistry?.getAll().find(candidate => candidate.id === model?.id);
@@ -1613,22 +1617,34 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const pinIdentity: WorktreeResolver = foreign ? resolveSessionWorktree : target !== undefined && parentIdentity !== undefined && target === parentIdentity.root
 			? () => parentIdentity
 			: deps.resolveWorktree;
-		// gentle-shell#1064 slice 1: a parent-session profile binding outranks the
-		// pin layers for launches from that session (`session → p → P → global`),
-		// with the same wholesale-replacement contract as the pin. The binding is
+		// gentle-shell#1064: the session profile outranks the shared defaults for
+		// launches from that session (`session → frozen p → P → G`), with the same
+		// wholesale-replacement contract as the pin. Explicit and frozen profiles
+		// belong to the session and apply to every target, a foreign repository
+		// included; only `follow` reads the defaults of the target. The profile is
 		// resolved here, at task-request creation, so queued and running children
 		// keep the routing frozen into their requests even if the session rebinds.
 		const config = withPinnedModelProfiles(
 			loadAgentsConfig(roots(ctx)),
-			sessionOrPinModelProfiles(
-				sessionBinding?.modelProfiles,
-				resolveProfilePin({
-					cwd: target ?? parentCwd,
-					configHome: gentlePiConfigHome(deps.env),
-					resolveWorktree: pinIdentity,
-				})?.modelProfiles,
-			),
+			sessionProfileRoutingAt(sessionProfile, {
+				cwd: target ?? parentCwd,
+				configHome: profileConfigHome,
+				resolveWorktree: pinIdentity,
+				foreignRepository: foreign,
+			}),
 		);
+		// Drift is measured against the defaults of the session's own directory,
+		// where the profile was frozen, never against a delegated target.
+		if (ctx.hasUI) {
+			const drift = inheritedProfileDriftNotice({
+				sessionId: ctx.sessionManager.getSessionId(),
+				cwd: parentCwd,
+				configHome: profileConfigHome,
+				resolveWorktree: deps.resolveWorktree,
+				env: deps.env,
+			});
+			if (drift !== undefined) ctx.ui.notify(drift, "info");
+		}
 		const profile = resolveAgentProfile(agent, config);
 		if (admittedModel !== undefined) {
 			const model = profile.model ?? ctx.model;
@@ -2226,6 +2242,21 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		publishActivity();
 	});
 	pi.on("session_start", async (event, ctx) => {
+		// gentle-shell#1064 slice 3b-ii: a parent session that has no explicit
+		// profile binding freezes `p → P → G` now. This handler is parent-only (a
+		// child returns before registering it) and runs for every reason Pi
+		// reports, including `startup` for --resume/--continue/--session. The
+		// freeze is in-memory and idempotent per session id: /reload keeps it, a
+		// new process freezes again until slice 3b-i persists it as an entry.
+		try {
+			freezeSessionProfileAtStartup({
+				sessionId: ctx.sessionManager.getSessionId(),
+				cwd: ctx.sessionManager.getCwd(),
+				configHome: gentlePiConfigHome(deps.env),
+				resolveWorktree: deps.resolveWorktree,
+				env: deps.env,
+			});
+		} catch { /* A launch freezes lazily through the same resolver. */ }
 		stateCache.load(ctx.sessionManager);
 		// A resumed, reloaded, or replaced session starts with an empty completion
 		// queue so nothing pending from another session can replay here.

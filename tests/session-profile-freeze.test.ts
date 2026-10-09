@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after, beforeEach } from "node:test";
 import { createProfile, emptyProfilesFile, profilesFilePath, setActiveProfile, writeProfilesFileSync } from "../lib/agent-profiles.ts";
-import { clearProfilePinSync, localProfilePinPath, repoProfileDeclarationPath, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
+import { clearProfilePinSync, localProfilePinPath, repoProfileDeclarationPath, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
 import type { AgentModelConfig } from "../lib/model-routing-authority.ts";
 import { bindSessionProfile, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import {
@@ -118,6 +118,19 @@ test("resolveInheritedProfile falls to the global active profile in profiles.jso
 		origin: "global",
 		modelProfiles: LOCAL,
 	});
+});
+
+test("resolveInheritedProfile asks the default worktree resolver once when no resolver is passed", (t) => {
+	const f = fixture();
+	f.setActive("local");
+	let lookups = 0;
+	setProfilePinWorktreeResolverForTesting(() => { lookups++; return f.identity; });
+	t.after(() => setProfilePinWorktreeResolverForTesting());
+	assert.equal(resolveInheritedProfile({ cwd: f.cwd, configHome: f.configHome })?.name, "local");
+	assert.equal(lookups, 1, "the no-pin path reuses one worktree lookup");
+	f.pinLocal("frontier");
+	assert.equal(resolveInheritedProfile({ cwd: f.cwd, configHome: f.configHome })?.origin, "local");
+	assert.equal(lookups, 2);
 });
 
 test("resolveInheritedProfile returns undefined when no layer has a profile", () => {

@@ -945,12 +945,14 @@ Both use the same shape, and both are a separate artifact from `profiles.json`:
 ```
 
 The fullscreen shell header and Status → Project → Profile show the effective profile for the session
-repository: `name (local)` for a clone-local pin, `name (repo)` for a repository declaration, or the
-global active name without a suffix. Invalid or stale pins fall through to the next valid layer.
-Changes made inside or outside the profiles panel appear within about two seconds while the UI
-session is active; the indicator is omitted if no valid profile remains.
+repository: `name (session)` for a profile selected in this session, `name (local)` for a clone-local
+pin, `name (repo)` for a repository declaration, or the global active name without a suffix. Invalid
+or stale pins fall through to the next valid layer. A session shows the profile it froze at startup
+(see **Session profile frozen at startup** below); a selection in this session, or any default change
+in `follow` mode, appears within about two seconds while the UI session is active. The indicator is
+omitted if no valid profile remains.
 
-For a given working directory the winner is the local pin, then the repository declaration, then no pin. With no pin at all the repository keeps the behavior described above and follows the globally active profile. `p` and `P` are toggles: pressing one on the profile that already holds that layer removes it, and either key pressed outside a Git worktree writes nothing and says so.
+For a given working directory the winner is the local pin, then the repository declaration, then the globally active profile. A session resolves these layers once, when it starts, and keeps the result. `p` and `P` are toggles: pressing one on the profile that already holds that layer removes it, and either key pressed outside a Git worktree writes nothing and says so.
 
 In a pinned repository the pinned profile governs subagent launches: the agents it names take its model and effort, and the agents it omits return to inherit (their own definition, then the default model). The globally active profile and writes made through `/gentle:models` do not reach those launches, which `/gentle:models` reports when it runs inside a pinned repository. `a` follows the same boundary: inside a pinned repository it re-pins that repository instead of writing the global routing, so a global apply can never move another repository's routing. `enter` writes nothing at all: it binds the profile to the current session, which outranks the pin for this session's launches. The panel states which layer won, names the file that holds it, and marks the profile with `(pinned)`.
 
@@ -971,6 +973,34 @@ A pin that cannot be honored never blocks work and is never destroyed by a read.
 The orchestrator sits deliberately outside the pin. Its `defaultProvider`, `defaultModel`, and `defaultThinkingLevel` live in Pi's global `settings.json`, and a pin never writes them. Pi supports project settings, where `.pi/settings.json` overrides the global file, so a per-repository orchestrator is possible in principle; it is not done here because it would make Pi treat the repository as having project settings and ask for trust at startup, and because it would only affect new sessions.
 
 One limitation is worth stating. When a pinned profile omits an agent, that agent's own frontmatter still applies, so a model that an earlier global apply materialized into a user agent's frontmatter can still be inherited. Frontmatter cannot be told apart from content an author wrote, so a pin does not clear it.
+
+### Session profile frozen at startup
+
+Every parent session uses one profile for its subagent launches, the footer and Status profile, and the Usage provider scope. All three read the same rule:
+
+1. The profile selected in this session (`name (session)`).
+2. Otherwise, the profile the session froze when it started.
+3. Otherwise, only in `follow` mode, the current defaults.
+
+A session that never selected a profile resolves the shared defaults once, at startup: the local pin (`p`), then the repository declaration (`P`), then the globally active profile in `profiles.json`. It keeps that profile's name, routing, and origin (`local`, `repo`, or `global`). Changing a pin, the repository declaration, the active profile, or the profile's content afterwards affects new sessions only, the same way Pi's "set as default" for the orchestrator model leaves open sessions alone. Outside a Git worktree the repository declaration is still read, as non-Git writer admission does.
+
+**Behavior change for unpinned sessions.** Without a pin or declaration, launches now use the globally active profile from `profiles.json`, replacing the materialized `subagents.json` routing wholesale like a pin does. Before, an unpinned launch read the materialized stores. When nothing is pinned and no profile is active, the session freezes "no profile" and keeps routing through the materialized stores, as before; a pin added later does not change it.
+
+**Drift notice.** On each subagent launch, a session with a frozen profile compares it with the current defaults of its own directory, without applying them. When they differ, it shows one line:
+
+```text
+el Gentleman: the default profile changed to "local" (local), this session keeps "frontier" (local). Press Enter on a profile in /gentle:profiles to adopt it.
+```
+
+The notice appears once per distinct change: further launches stay quiet until the defaults change again. The same profile reached through another layer is not a change; an edit of the profile's content is. Sessions with a profile selected in the session, `follow` sessions, and subagent children never show it.
+
+**Foreign repositories.** A selected or frozen profile belongs to the session and also routes launches into a foreign `repository_root`. A session frozen without a profile leaves a foreign repository on its own local pin and repository declaration; the globally active profile does not apply there.
+
+**`follow` mode.** Start Pi with `GENTLE_PI_PROFILE_FOLLOW=1` (CI and headless runs) to skip the freeze: every launch resolves the current defaults of its target, and no drift notice is shown. Any other value, or no value, freezes. Selecting a profile with Enter still makes it the session's profile. Limitation: the orchestrator model is chosen when the session starts and does not follow later default changes, so after one the orchestrator and the subagents can follow different profiles.
+
+**Subagent children** never freeze, compare, or warn: their model comes from the parent's launch.
+
+**Current limits.** The frozen profile is kept in memory for the life of the Pi process, so `/reload` keeps it. Resuming a session in a new process (`--resume`, `--continue`, `--session`), `/new`, and `/fork` freeze again from the defaults current at that moment, and the drift notice memory starts empty, so a pending change is announced once more. Persisting the frozen profile in the session file is planned.
 
 ## Commands
 

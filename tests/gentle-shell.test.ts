@@ -4,12 +4,17 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test, { after } from "node:test";
+import test, { after, afterEach } from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
 import { CURSOR_MARKER, matchesKey, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { CODEX_USAGE_URL, NAN_QUOTA_URL, USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA } from "../lib/shell-usage.ts";
 import { bindSessionProfile, clearSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
+import { readFrozenInheritedProfile, resetFrozenInheritedProfilesForTesting } from "../lib/session-profile-freeze.ts";
+
+// Fixture sessions share ids across tests; the inherited-profile freeze is
+// process state keyed by session id (gentle-shell#1064 slice 3b-ii).
+afterEach(() => resetFrozenInheritedProfilesForTesting());
 import { createVimEditorAdapter } from "../lib/vim-editor-adapter.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { CHANGE_STATUS } from "../lib/shell-changes.ts";
@@ -748,7 +753,9 @@ test("profile polling refreshes both fullscreen surfaces only on change and stop
 	t.mock.method(globalThis, "clearInterval", (handle: { timer: (typeof intervals)[number] }) => { handle.timer.stopped = true; });
 	const { pi, handlers } = fakePi();
 	let resolutions = 0;
-	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
+	// follow mode keeps the live p → P → G resolution, so a pin edit reaches the
+	// open session through the poll (gentle-shell#1064 slice 3b-ii).
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off", GENTLE_PI_PROFILE_FOLLOW: "1" }, {
 		resolveWorktree: () => { resolutions++; return { root: repo, commonDir }; },
 	});
 	const first = fakeContext();
@@ -5929,12 +5936,70 @@ test("after a profile switch the panel stops presenting the old profile's provid
 	ui.closeOverlay?.();
 	await opened;
 
-	writeProfilesStore(home, { team: { reviewer: { model: "nan/glm5.3" } }, solo: {} }, "solo");
+	// An open session changes profile only through its own Enter (gentle-shell#1064
+	// slice 3b-ii): a new global default would leave its frozen routing in place.
+	bindSessionProfile("shell-session", "solo", {});
+	t.after(() => resetSessionProfileBindingsForTesting());
 	const reopened = commands.get("gentle:usage")!.handler("", ctx);
 	await settle();
 	assert.equal(ui.overlayView!.render(90).map(stripAnsi).some((line) => line.includes("nan")), false, "a provider recorded under the previous profile's routing is not current scope");
 	ui.closeOverlay?.();
 	await reopened;
+});
+
+test("an open session keeps its frozen profile in the status and Usage scope when the defaults change", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "shell-frozen-"));
+	const commonDir = mkdtempSync(join(tmpdir(), "shell-frozen-git-"));
+	t.after(() => {
+		rmSync(home, { recursive: true, force: true });
+		rmSync(commonDir, { recursive: true, force: true });
+	});
+	mkdirSync(join(commonDir, "gentle-ai"), { recursive: true });
+	writeProfilesStore(home, { team: { reviewer: { model: "nan/glm5.3" } }, solo: { reviewer: { model: "openai-codex/gpt-5.5" } } }, "team");
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch(NAN_QUOTA_PAYLOAD).fetchFn, now: () => 1_788_600_000_000, resolveWorktree: () => ({ root: "/repo", commonDir }) });
+	const { ctx, ui } = fakeContext({ token: JWT });
+	await fire(handlers, "session_start", ctx);
+	assert.equal(readFrozenInheritedProfile("shell-session")?.profile?.name, "team", "the session froze the global active profile at start");
+	writeProfilesStore(home, { team: { reviewer: { model: "nan/glm5.3" } }, solo: { reviewer: { model: "openai-codex/gpt-5.5" } } }, "solo");
+	writeFileSync(join(commonDir, "gentle-ai", "profile-pin.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile: "solo" }));
+	const opened = commands.get("gentle:usage")!.handler("", ctx);
+	await settle();
+	assert.ok(openPanelLines(ui).some((line) => /^│ nan ·/.test(line)), "Usage keeps the frozen profile's nan route");
+	ui.closeOverlay?.();
+	await opened;
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void };
+	const tui = { terminal: { rows: 40, columns: 160 }, requestRender() {} };
+	const component = factory(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+	try {
+		const status = (sidebarState(tui as unknown as TUI).parts.get("footer") as SidebarRail).render(60).join("\n");
+		assert.match(status, /Profile.*team/, "the status keeps the bare global name of the frozen profile");
+		assert.doesNotMatch(status, /solo/);
+	} finally {
+		component.dispose();
+	}
+});
+
+test("active profile reader: a bound session shows its frozen profile, and follow shows the live default", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "shell-profile-frozen-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const commonDir = join(root, "git");
+	mkdirSync(join(commonDir, "gentle-ai"), { recursive: true });
+	writeFileSync(join(root, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, active: "team", profiles: { team: {}, other: {} } }));
+	const pin = (profile: string) => writeFileSync(join(commonDir, "gentle-ai", "profile-pin.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile }));
+	pin("other");
+	const frozen = createActiveProfileReader({ GENTLE_PI_CONFIG_HOME: root });
+	frozen.bind(root, () => ({ root, commonDir }), "session-frozen");
+	assert.equal(frozen(), "other (local)");
+	const follow = createActiveProfileReader({ GENTLE_PI_CONFIG_HOME: root, GENTLE_PI_PROFILE_FOLLOW: "1" });
+	follow.bind(root, () => ({ root, commonDir }), "session-follow");
+	assert.equal(follow(), "other (local)");
+	rmSync(join(commonDir, "gentle-ai", "profile-pin.json"));
+	assert.equal(frozen.refresh(), false, "the frozen label does not move");
+	assert.equal(frozen(), "other (local)");
+	assert.equal(follow.refresh(), true);
+	assert.equal(follow(), "team", "follow falls to the global active profile");
+	assert.equal(readFrozenInheritedProfile("session-follow"), undefined);
 });
 
 function openPanelLines(ui: FakeUi): string[] {

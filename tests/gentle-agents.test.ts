@@ -30,6 +30,7 @@ import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
 import { AgentRunner, REQUESTED_TOOLS_ENV } from "../lib/agents-runner.ts";
 import { bindSessionRepositoryPreparation } from "../lib/bounded-writer-admission.ts";
 import { bindSessionProfile, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
+import { readFrozenInheritedProfile, resetFrozenInheritedProfilesForTesting } from "../lib/session-profile-freeze.ts";
 import { CHILD_METRICS_EVENT } from "../lib/runtime-metrics-children.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 // The card style defaults to float; these assertions pin the outlined (neon)
@@ -92,6 +93,9 @@ const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-agents-ext-")));
 const activeSessionTeardowns = new Set<() => Promise<void>>();
 const stopActiveSessions = () => Promise.all([...activeSessionTeardowns].map((shutdown) => shutdown()));
 afterEach(stopActiveSessions);
+// Every fixture session is "s1": the inherited-profile freeze is process state
+// keyed by session id, so each test starts from an unfrozen session.
+afterEach(() => resetFrozenInheritedProfilesForTesting());
 // subagent_run's default mode now reads the background-subagents policy
 // in-process (gentle-pi#background-subagents-default-mode), which falls
 // back to the real ~/.pi/gentle-ai/background-subagents.json when
@@ -353,7 +357,9 @@ function deps(): { deps: Partial<AgentsDeps>; children: FakeChild[]; spawned: st
 			pi: { command: "pi", args: [] },
 			home,
 			resolveWorktree: (path, base) => ({ root: resolve(base, path), commonDir: "/fixture/common" }),
-			env: { PATH: "/bin" },
+			// The launch reads the global active profile from the config home; keep it
+			// on the scratch directory instead of the developer's own profiles.json.
+			env: { PATH: "/bin", GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME },
 			sessionTransport: inertSessionTransport,
 		},
 	};
@@ -1223,7 +1229,7 @@ for (const boundary of ["allowed", "env", "session", "replacement", "bus-throws"
 			return { stdout: JSON.stringify({ schema: "gentle-ai.telemetry-policy/v1", operation: "policy", enabled: true,
 				source: "state", reason: "enabled" }), stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
 		} };
-		const env: NodeJS.ProcessEnv = {};
+		const env: NodeJS.ProcessEnv = { GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME };
 		const profile = join(root, `metrics-${boundary}`);
 		mkdirSync(join(profile, "agents"), { recursive: true });
 		writeFileSync(join(profile, "agents", "gentle-ai-worker.md"), readFileSync(new URL("../assets/agents/gentle-ai-worker.md", import.meta.url)));
@@ -2227,6 +2233,8 @@ test("default Node spawn adapter distinguishes IPC-only and permission-capable c
 	try {
 		const launch = async (mode: "task" | "background", env: NodeJS.ProcessEnv, sessionCwd = nonGitCwd) => {
 			const h = fakePi();
+			// The launch reads the global active profile; keep it on the scratch config home.
+			env = { ...env, GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME };
 			gentleAgents(h.pi, env, { home, agentHome: join(home, ".pi", "agent"), env, pi: { command: "/fixture/pi", args: ["--host-flag"] }, resolveWorktree: () => undefined, sessionTransport: inertSessionTransport });
 			const { ctx } = fakeContext();
 			(ctx.sessionManager as unknown as { getCwd(): string }).getCwd = () => sessionCwd;
@@ -2258,7 +2266,7 @@ test("default Node spawn adapter distinguishes IPC-only and permission-capable c
 			assert.equal(captured[index]?.command, "/fixture/pi");
 			assert.deepEqual(captured[index]?.args, args);
 			assert.equal(captured[index]?.options.cwd, permissionChannel ? canonicalGitCwd : nonGitCwd);
-			assert.deepEqual(captured[index]?.options.env, { PATH: "/bin", FIXTURE: fixture, GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: ownedIpc, ...(permissionChannel ? { GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3" } : {}), [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message" });
+			assert.deepEqual(captured[index]?.options.env, { PATH: "/bin", FIXTURE: fixture, GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME, GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: ownedIpc, ...(permissionChannel ? { GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3" } : {}), [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message" });
 			assert.equal(captured[index]?.options.shell, undefined, "the adapter does not invoke a shell");
 			assert.equal(captured[index]?.options.windowsHide, true, "the adapter always hides a Windows console");
 			assert.equal(captured[index]?.options.detached, process.platform !== "win32", "the adapter forwards the runner's platform selection");
@@ -2387,6 +2395,9 @@ test("foreign clone tool requires consent before queueing and never enters paren
 		await tick();
 		assert.deepEqual(spawned, [foreign]);
 		assert.equal((runnerRun.mock.calls[0]?.arguments[0] as { authorizeParentStandingReviewPermission?: unknown }).authorizeParentStandingReviewPermission, undefined, "foreign child must not receive parent review permission channel");
+		// The parent session froze "no profile" (no pin, no global active), so the
+		// foreign launch keeps the foreign repository's own pin (gentle-shell#1064
+		// 3b-ii). Dropping `foreignRepository` from the launch wiring breaks this.
 		assert.equal(runtime.spawned[0]?.[runtime.spawned[0]!.indexOf("--model") + 1], "openai/foreign-model:minimal");
 		assert.equal((result.details.gentleAgents as { cwd: string }).cwd, foreign);
 		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
@@ -2435,6 +2446,34 @@ test("foreign clone tool requires consent before queueing and never enters paren
 		assert.equal(runtime.children.length, 3, "stale queued foreign task must fail before OS spawn");
 		await h.fire("session_shutdown", successor);
 	} finally { rmSync(fixture, TEST_DIR_REMOVAL); }
+});
+
+test("a frozen session profile routes a foreign repository launch over that repository's pin", async (t) => {
+	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "foreign-frozen-")));
+	t.after(() => rmSync(fixture, TEST_DIR_REMOVAL));
+	const parent = join(fixture, "parent"), foreign = join(fixture, "foreign"), template = join(fixture, "template");
+	mkdirSync(template);
+	for (const path of [parent, foreign]) execFileSync("git", ["init", "--quiet", `--template=${template}`, path]);
+	const configHome = join(fixture, "config");
+	mkdirSync(configHome);
+	writeFileSync(join(configHome, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, active: "session", profiles: {
+		session: { explore: { model: "openai/session-model", thinking: "low" } },
+		pinned: { explore: { model: "openai/foreign-model", thinking: "minimal" } },
+	} }));
+	mkdirSync(join(foreign, ".git", "gentle-ai"));
+	writeFileSync(join(foreign, ".git", "gentle-ai", "profile-pin.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile: "pinned" }));
+	const h = fakePi(), runtime = deps();
+	runtime.deps.env = { PATH: "/bin", GENTLE_PI_CONFIG_HOME: configHome };
+	runtime.deps.resolveWorktree = resolveSessionWorktree;
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	ctx.sessionManager.getCwd = () => parent;
+	await h.fire("session_start", ctx);
+	t.after(async () => { await h.fire("session_shutdown", ctx); await tick(); });
+	assert.equal(readFrozenInheritedProfile("s1")?.profile?.name, "session", "the parent froze the global active profile");
+	await h.tools.get("subagent_run")!.execute("foreign-frozen", { agent: "explore", task: "Map", repository_root: foreign, mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.equal(runtime.spawned[0]?.[runtime.spawned[0]!.indexOf("--model") + 1], "openai/session-model:low", "the session profile wins over the foreign pin");
 });
 
 test("foreign child Changes require successful target-bound tool evidence, never model claims or sibling writes", async () => {
@@ -2825,7 +2864,8 @@ for (const scenario of ["implicit-worker", "explicit-worker", "implicit-gentle-a
 		Object.assign(ctx, { cwd: project, modelRegistry: { find: (_provider: string, model: string) => scenario === "model" || model === "bad" ? undefined : { provider: "offline", id: model } } });
 		ctx.sessionManager.getCwd = () => project;
 		ctx.sessionManager.getEntries = () => h.entries as never;
-		await h.fire("session_start", ctx);
+		// The repository declaration exists before the session starts: the session
+		// freezes it at session_start (gentle-shell#1064 slice 3b-ii).
 		if (scenario === "profile-model" || scenario === "profile-valid") {
 			mkdirSync(join(project, ".pi", "gentle-ai"), { recursive: true });
 			writeFileSync(join(project, ".pi", "gentle-ai", "profile.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile: "invalid" }));
@@ -2833,6 +2873,7 @@ for (const scenario of ["implicit-worker", "explicit-worker", "implicit-gentle-a
 			mkdirSync(config, { recursive: true });
 			writeFileSync(join(config, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, profiles: { invalid: { worker: { model: scenario === "profile-valid" ? "offline/pinned-good" : "offline/bad" } } } }));
 		}
+		await h.fire("session_start", ctx);
 		let calls = 0;
 		const abort = new AbortController();
 		const unbind = scenario === "missing" ? () => {} : bindSessionRepositoryPreparation(ctx.sessionManager, project, async (_root, current) => {
@@ -3094,8 +3135,8 @@ function pinFixture(name: string) {
 		declarationPath,
 		writePin: (profile: string) => writePinText(localPinPath, profile),
 		writeDeclaration: (profile: string) => writePinText(declarationPath, profile),
-		writeStore: (profiles: Record<string, unknown>) => {
-			writeFileSync(join(configHome, "profiles.json"), `${JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, profiles }, null, 2)}\n`);
+		writeStore: (profiles: Record<string, unknown>, active?: string) => {
+			writeFileSync(join(configHome, "profiles.json"), `${JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, ...(active === undefined ? {} : { active }), profiles }, null, 2)}\n`);
 		},
 	};
 }
@@ -3219,6 +3260,121 @@ test("a queued launch keeps the session routing frozen across a rebind", async t
 		await fire("session_shutdown", ctx);
 		await tick();
 	}
+});
+
+// gentle-shell#1064 slice 3b-ii: a parent session without an explicit Enter
+// binding freezes p → P → G at session_start; later default changes only show
+// a drift notice once per change. GENTLE_PI_PROFILE_FOLLOW=1 keeps the live
+// resolution.
+async function launchSession(base: ReturnType<typeof pinFixture>, env: Record<string, string> = {}) {
+	const harness = deps();
+	harness.deps.resolveWorktree = () => ({ root: base.root, commonDir: base.commonDir });
+	harness.deps.env = { PATH: "/bin", GENTLE_PI_CONFIG_HOME: base.configHome, ...env };
+	const { pi, tools, fire } = fakePi();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx, dialogs } = fakeContext();
+	await fire("session_start", ctx);
+	let count = 0;
+	return {
+		dialogs,
+		driftNotices: () => dialogs.filter((dialog) => dialog.includes("the default profile changed")),
+		launch: async () => {
+			await tools.get("subagent_run")!.execute(`drift-${count}`, { agent: "explore", task: `Map ${count}`, mode: "background" }, undefined, undefined, ctx);
+			await tick();
+			const args = harness.spawned[count];
+			// Settle the child so the next launch is not held by the concurrency cap.
+			const child = harness.children[count++]!;
+			child.emit({ type: "agent_end", messages: [] });
+			child.emit({ type: "agent_settled" });
+			child.exit(0);
+			await tick();
+			return args[args.indexOf("--model") + 1];
+		},
+		shutdown: async () => {
+			await fire("session_shutdown", ctx);
+			await tick();
+		},
+	};
+}
+
+const DRIFT_PROFILES = {
+	frontier: { explore: { model: "openai/alpha", thinking: "minimal" } },
+	local: { explore: { model: "openai/beta" } },
+};
+
+test("session_start freezes the inherited pin: a later pin change does not move the open session", async t => {
+	const base = pinFixture("freeze-pin");
+	base.writeStore(DRIFT_PROFILES);
+	base.writePin("frontier");
+	const session = await launchSession(base);
+	t.after(session.shutdown);
+	assert.equal(readFrozenInheritedProfile("s1")?.profile?.name, "frontier", "frozen at session_start, before any launch");
+	base.writePin("local");
+	assert.equal(await session.launch(), "openai/alpha:minimal");
+	assert.equal(await session.launch(), "openai/alpha:minimal");
+	assert.deepEqual(session.driftNotices(), [
+		'notify:el Gentleman: the default profile changed to "local" (local), this session keeps "frontier" (local). Press Enter on a profile in /gentle:profiles to adopt it.',
+	], "one notice for one change, across two launches");
+	base.writeStore(DRIFT_PROFILES, "local");
+	base.writeDeclaration("local");
+	rmSync(base.localPinPath);
+	assert.equal(await session.launch(), "openai/alpha:minimal");
+	assert.equal(session.driftNotices().length, 1, "the same default reached through another layer is not a new change");
+});
+
+test("an unpinned session routes through the global active profile and freezes it", async t => {
+	const base = pinFixture("freeze-global");
+	base.writeStore(DRIFT_PROFILES, "frontier");
+	const session = await launchSession(base);
+	t.after(session.shutdown);
+	base.writeStore(DRIFT_PROFILES, "local");
+	assert.equal(await session.launch(), "openai/alpha:minimal", "the global active profile replaces the materialized routing");
+	assert.equal(session.driftNotices().length, 1);
+	assert.match(session.driftNotices()[0]!, /changed to "local" \(global\), this session keeps "frontier" \(global\)/);
+});
+
+test("a session with no profile anywhere keeps today's routing even after a pin appears", async t => {
+	const base = pinFixture("freeze-none");
+	base.writeStore(DRIFT_PROFILES);
+	const session = await launchSession(base);
+	t.after(session.shutdown);
+	assert.equal(await session.launch(), "openai-codex/gpt-5.6-terra:low", "today's materialized routing");
+	base.writePin("frontier");
+	assert.equal(await session.launch(), "openai-codex/gpt-5.6-terra:low");
+	assert.deepEqual(session.driftNotices(), [
+		'notify:el Gentleman: the default profile changed to "frontier" (local), this session keeps no profile. Press Enter on a profile in /gentle:profiles to adopt it.',
+	]);
+});
+
+test("an explicit Enter binding wins over the frozen profile and never shows the drift notice", async t => {
+	t.after(() => resetSessionProfileBindingsForTesting());
+	const base = pinFixture("freeze-explicit");
+	base.writeStore(DRIFT_PROFILES);
+	base.writePin("frontier");
+	const session = await launchSession(base);
+	t.after(session.shutdown);
+	bindSessionProfile("s1", "local", { explore: { model: "openai/beta" } });
+	base.writePin("local");
+	base.writeStore(DRIFT_PROFILES, "frontier");
+	rmSync(base.localPinPath);
+	assert.equal(await session.launch(), "openai/beta:high");
+	assert.deepEqual(session.driftNotices(), []);
+});
+
+test("follow mode re-resolves the defaults on every launch without a notice; Enter makes it explicit", async t => {
+	t.after(() => resetSessionProfileBindingsForTesting());
+	const base = pinFixture("follow");
+	base.writeStore(DRIFT_PROFILES);
+	base.writePin("frontier");
+	const session = await launchSession(base, { GENTLE_PI_PROFILE_FOLLOW: "1" });
+	t.after(session.shutdown);
+	assert.equal(readFrozenInheritedProfile("s1"), undefined, "follow never freezes");
+	assert.equal(await session.launch(), "openai/alpha:minimal");
+	base.writePin("local");
+	assert.equal(await session.launch(), "openai/beta:high");
+	bindSessionProfile("s1", "frontier", { explore: { model: "openai/alpha", thinking: "minimal" } });
+	assert.equal(await session.launch(), "openai/alpha:minimal", "the explicit binding stops following");
+	assert.deepEqual(session.driftNotices(), []);
 });
 
 test("agentsEnabled and agentsCollapseKey read their flags and stay off inside a child", () => {

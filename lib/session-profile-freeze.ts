@@ -16,8 +16,8 @@
 // The live resolution applies only in `follow` mode (GENTLE_PI_PROFILE_FOLLOW=1,
 // for CI and headless runs), in subagent children (their routing comes from the
 // parent through --model), and when no session id is available. In `follow`
-// mode the orchestrator still comes from the startup profile while children
-// follow later defaults: an accepted, documented limitation.
+// mode the orchestrator is still chosen at startup while children follow later
+// defaults: an accepted, documented limitation.
 //
 // The frozen state is in-process only, like the explicit binding of slice 2: it
 // lives on `globalThis` behind a `Symbol.for` key because Pi evaluates this
@@ -114,19 +114,14 @@ function isChildSession(env: NodeJS.ProcessEnv): boolean {
  * is never part of the routing. `undefined` means no layer has a profile.
  */
 export function resolveInheritedProfile(options: InheritedProfileOptions): InheritedProfile | undefined {
-	// One worktree lookup serves both the pin layers and the non-Git check.
-	let resolved = false;
-	let identity: WorktreeIdentity | undefined;
-	const resolveWorktree: WorktreeResolver | undefined = options.resolveWorktree === undefined ? undefined : (cwd, base) => {
-		if (!resolved) {
-			resolved = true;
-			identity = options.resolveWorktree!(cwd, base);
-		}
-		return identity;
-	};
-	const pin = resolveProfilePin({ cwd: options.cwd, configHome: options.configHome, resolveWorktree });
-	if (pin !== undefined) return { name: pin.profile, origin: pin.source, modelProfiles: pin.modelProfiles };
-	if (readProfilePinStatus(options.cwd, resolveWorktree) === undefined) {
+	// One worktree lookup serves both the pin layers and the non-Git check,
+	// whether the caller passes a resolver or the pin module's default runs.
+	const status = readProfilePinStatus(options.cwd, options.resolveWorktree);
+	if (status !== undefined) {
+		const identity: WorktreeIdentity = { root: status.root, commonDir: status.commonDir };
+		const pin = resolveProfilePin({ cwd: options.cwd, configHome: options.configHome, resolveWorktree: () => identity });
+		if (pin !== undefined) return { name: pin.profile, origin: pin.source, modelProfiles: pin.modelProfiles };
+	} else {
 		const declaration = resolveUnversionedProjectProfile(options.cwd, options.configHome);
 		if (declaration !== undefined) return { name: declaration.profile, origin: "repo", modelProfiles: declaration.modelProfiles };
 	}

@@ -2490,6 +2490,47 @@ test("applying a populated profile with matching routes but a different orchestr
 	assert.notEqual(JSON.parse(readFileSync(storePath, "utf8")).active, "team", "declining leaves the store untouched");
 });
 
+test("profile replacement with 23 routes changes files only after confirmation", async (t) => {
+	for (const approved of [false, true]) {
+		await t.test(approved ? "confirmed replacement" : "declined replacement", async (t) => {
+			const { fixture, storePath, writeStore, writeSettings, settingsPath } = profilesStoreFixture(t);
+			writeSettings();
+			writeStore({ team: { worker: { model: "openai/alpha" } } });
+			const names = ["worker", "review-refuter", ...Array.from({ length: 21 }, (_, i) => `helper-${i + 1}`)];
+			const profiles = Object.fromEntries(names.map((name) => [name, { model: "openai/beta", effort: "high" }]));
+			const subagentsPath = join(fixture.root, ".pi", "subagents.json");
+			writeFileSync(subagentsPath, `${JSON.stringify({ max_concurrency: 3, user_setting: { keep: true }, model_profiles: profiles })}\n`);
+			writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/beta", thinking: "high" } })}\n`);
+			const markdown = names.map((name) => join(fixture.root, ".pi", "agents", `${name}.md`));
+			for (const [i, path] of markdown.entries()) writeMarkdown(path, `---\nname: ${names[i]}\ndescription: User agent\nmodel: openai/beta\nthinking: high\n---\nUser instruction for ${names[i]}.\n`);
+			const files = [fixture.globalPath, subagentsPath, storePath, settingsPath, ...markdown];
+			const before = files.map((path) => readFileSync(path, "utf8"));
+			fixture.onConfirm(async () => approved);
+			applyOnce(fixture);
+			await fixture.run("gentle:profiles");
+			assert.equal(fixture.confirmCalls.length, 1);
+			assert.equal(fixture.confirmCalls[0][0], 'Apply profile "team"?');
+			for (const name of names.slice(2)) assert.ok(fixture.confirmCalls[0][1].includes(`${name}: openai/beta · high → inherit`), `confirmation names ${name}`);
+			assert.deepEqual(fixture.liveSwitches, [], "no orchestrator changes were requested");
+			assert.equal(readFileSync(settingsPath, "utf8"), before[3]);
+			if (!approved) {
+				assert.deepEqual(files.map((path) => readFileSync(path, "utf8")), before, "declining preserves all 23 routes and Markdown, stores and settings byte-identically");
+				return;
+			}
+			assert.deepEqual(JSON.parse(readFileSync(subagentsPath, "utf8")), { max_concurrency: 3, user_setting: { keep: true }, model_profiles: { worker: { model: "openai/alpha" }, "review-refuter": profiles["review-refuter"] } });
+			assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), { worker: { model: "openai/alpha" } });
+			assert.equal(JSON.parse(readFileSync(storePath, "utf8")).active, "team");
+			for (const [i, path] of markdown.entries()) {
+				const stored = readFileSync(path, "utf8");
+				assert.ok(stored.endsWith(`User instruction for ${names[i]}.\n`));
+				if (i === 0) { assert.match(stored, /^model: openai\/alpha$/m); assert.doesNotMatch(stored, /^thinking:/m); }
+				else if (i === 1) assert.equal(stored, before[4 + i], "provider review role is not cleared");
+				else { assert.doesNotMatch(stored, /^model:/m); assert.doesNotMatch(stored, /^thinking:/m); }
+			}
+		});
+	}
+});
+
 test("applying a populated profile names materialized-only routes it would clear before asking", async (t) => {
 	const { fixture, storePath, writeStore, writeSettings, settingsPath } = profilesStoreFixture(t);
 	writeSettings();

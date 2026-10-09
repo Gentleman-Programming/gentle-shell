@@ -182,3 +182,13 @@ test("the owner of an installation is pnpm under PNPM_HOME, npm only inside npm'
 	}
 	assert.equal(installOwner({ pnpmHome: null, npmRoot: null, packageRoot: "/u/.local/lib/node_modules/gentle-pi" }), null);
 });
+
+test("installOwner attributes another named package, such as the scoped Pi, the same way", () => {
+	const roots = { pnpmHome: "/u/Library/pnpm", npmRoot: "/u/.local/lib/node_modules", name: "@earendil-works/pi-coding-agent" };
+	assert.equal(installOwner({ ...roots, packageRoot: "/u/.local/lib/node_modules/@earendil-works/pi-coding-agent" }), "npm");
+	assert.equal(installOwner({ ...roots, packageRoot: "/u/Library/pnpm/global/v11/x/node_modules/@earendil-works/pi-coding-agent" }), "pnpm");
+	for (const packageRoot of ["/u/.local/lib/node_modules/gentle-pi", "/u/.local/lib/node_modules/@earendil-works",
+		"/u/.local/share/mise/installs/pi/lib/node_modules/@earendil-works/pi-coding-agent"]) {
+		assert.equal(installOwner({ ...roots, packageRoot }), null, packageRoot);
+	}
+});

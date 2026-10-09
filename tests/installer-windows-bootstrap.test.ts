@@ -248,6 +248,25 @@ test("Windows PowerShell's PATHEXT with .CPL resolves an existing pnpm wrapper a
 		assert.equal(acquired.acquired, true);
 	} finally { f.cleanup(); }
 });
+test("an existing pnpm wrapper of another major or older than the pin is left unchanged and the verified pnpm is acquired", async () => {
+	for (const version of ["10.27.0", "11.0.0", "12.0.0"]) {
+		const f = fixture();
+		try {
+			const commands = join(f.root, "commands"); pnpmWrapperDirectory(commands);
+			const metadata = JSON.stringify({ ...pinnedPackage, version });
+			writeFileSync(join(commands, "node_modules/pnpm/package.json"), metadata);
+			const tools = join(f.root, "tools"); mkdirSync(tools);
+			const nodes: string[] = [];
+			const result = await ensureWindowsPnpm({ tools, env: { Path: commands, PATHEXT: ".EXE;.CMD" }, adapters: { storage: () => {},
+				download: async () => pnpmTar(), digest, process: (command: string, args: string[]) => { nodes.push(command); return cliProcess(command, args); } } });
+			assert.equal(result.acquired, true, version);
+			assert.equal(result.command, process.execPath);
+			assert.deepEqual(result.prefix, [join(tools, "pnpm/package/bin/pnpm.mjs")]);
+			assert.equal(nodes.includes(join(commands, "node.exe")), false, "the existing wrapper's Node never runs");
+			assert.equal(readFileSync(join(commands, "node_modules/pnpm/package.json"), "utf8"), metadata);
+		} finally { f.cleanup(); }
+	}
+});
 test("a .cpl pnpm or node found first in PATH order fails closed instead of being skipped", async () => {
 	const f = fixture();
 	try {

@@ -20,6 +20,11 @@ export const requirements = Object.freeze({
 	go: GENTLE_AI_WINDOWS_MINIMUM_GO_VERSION,
 });
 
+/** Pi version the installer installs next to gentle-pi, and the version an older
+ * Pi is updated to (never below requirements.pi; the runner asserts it).
+ */
+export const PI_INSTALL_VERSION = "1.0.0";
+
 /** Runtime persisted under PNPM_HOME. Bootstrap-only Node: `pnpm runtime set
  * node <node> -g`, then `pnpm add -g npm@<npm> pnpm@<pnpm>`. Persistent Node:
  * one `pnpm add -g` of only the missing npm and/or bootstrap-only pnpm.
@@ -64,8 +69,12 @@ const probeNames = ["node", "pnpm", "pi", "shell", "gentleAi", "go", "globalBin"
  * pnpm also needs compatible:true (runtime/capability evidence), shell global:true,
  * and Gentle AI compatible:true (normal binary resolver/integrity evidence).
  * Node may add persistent (resolvable from the user's PATH without bootstrap
- * tool directories) and npm (a genuine npm resolves there) booleans; pnpm may
- * add persistent (resolvable from the user's PATH). globalBin returns { available, path, writable, onPath } for
+ * tool directories) and npm (a usable npm resolves there) booleans; pnpm may
+ * add persistent (resolvable from the user's PATH). A bootstrap-only Node or
+ * pnpm may add found: the stable version of the older or incompatible one on the
+ * user's PATH that the bootstrap left in place; a pnpm probe for the user's own
+ * pnpm in `$PNPM_HOME/bin` (where persisting pnpm writes) adds inGlobalBin:true
+ * and reports that pnpm itself, never as found. globalBin returns { available, path, writable, onPath } for
  * pnpmGlobalBin's `$PNPM_HOME/bin` directory; setup returns boolean, or
  * { available: true, recoverable: true } for the pinned stack this pnpm installed
  * whose setup did not finish (only its setup is then planned).
@@ -150,13 +159,42 @@ export function planPreflight(inventory, { channel = "release" } = {}) {
 			blockers.push({ code: `${status}-tool`, tool: name });
 		}
 	}
-	for (const name of ["node", "pi"]) record(name, classify(inventory[name], requirements[name]), requirements[name]);
+	record("node", classify(inventory.node, requirements.node), requirements.node);
+	// An older Pi whose owner (pnpm or npm) is known is updated with that package
+	// manager to PI_INSTALL_VERSION instead of blocking; the plan records the
+	// found version and owner the update must still match. An older Pi neither
+	// owns (mise, Homebrew, a binary) is left as it is: the installer's Pi is
+	// installed alongside, exactly as when Pi is absent.
+	const piSeen = inventory.pi;
+	const piStatus = classify(piSeen, requirements.pi);
+	if (piStatus === "incompatible" && piSeen.usable === true && (piSeen.owner === "pnpm" || piSeen.owner === "npm")) {
+		tools.pi = { status: "needs-update", required: requirements.pi, version: piSeen.version, owner: piSeen.owner };
+	} else if (piStatus === "incompatible" && piSeen.usable === true) {
+		tools.pi = { status: "needs-install", required: requirements.pi, version: piSeen.version };
+	} else {
+		record("pi", piStatus, requirements.pi);
+	}
+	const updatePi = tools.pi.status === "needs-update";
+	const installPi = tools.pi.status === "unavailable" || tools.pi.status === "needs-install";
 	if (update) record("shell", "needs-update", requirements.shell);
 	else if (npmCurrent) record("shell", "reusable", requirements.shell);
 	else record("shell", classify(inventory.shell, requirements.shell, (o) => o.global), requirements.shell);
 	// packageManager pins the acquisition choice, not a minimum supported pnpm.
 	// Existing versions require explicit engine/capability evidence from the probe.
 	record("pnpm", classify(inventory.pnpm, "0.0.0", (o) => o.compatible), requirements.pnpm);
+	// An older Node or an incompatible pnpm on the user's PATH is left as it is: the
+	// bootstrap acquired its pinned copy, which the probe reports (bootstrap-only)
+	// with the user's stable version as `found`. That copy runs the installer and
+	// is persisted below; the plan records both versions.
+	const replacedRuntimes = [];
+	for (const name of ["node", "pnpm"]) {
+		const seen = inventory[name];
+		const found = versionParts(seen?.found);
+		const replaced = name === "node" ? found !== null && compareVersions(found, versionParts(requirements.node)) < 0 : found !== null;
+		if (tools[name].status !== "reusable" || seen.persistent !== false || !replaced) continue;
+		tools[name] = { ...tools[name], found: found.join("."), version: persistencePins[name] };
+		replacedRuntimes.push(name);
+	}
 	record("gentleAi", classify(inventory.gentleAi, requirements.gentleAi, (o) => o.compatible, true), requirements.gentleAi);
 	const needsNative = tools.gentleAi.status === "unavailable";
 	// The main channel builds Gentle AI from source on every platform.
@@ -178,15 +216,27 @@ export function planPreflight(inventory, { channel = "release" } = {}) {
 	if (missingShell || needsNative || inventory.setup === false || recovering) setupStatus = "needs-setup";
 	else if (inventory.setup === true) setupStatus = "reusable";
 	record("setup", setupStatus);
+	// Runtimes are persisted only while installing Gentle Shell (the runner's
+	// persistence variants): with an existing Shell, updated or current, a replaced
+	// Node or pnpm keeps blocking as before. A setup recovery persists nothing and
+	// runs with the bootstrap's copy.
+	if (["needs-update", "reusable"].includes(tools.shell.status) && !recovering) {
+		for (const name of replacedRuntimes) blockers.push({ code: "incompatible-tool", tool: name });
+	}
 	if (blockers.length) return { tools, blockers, actions, ready: false };
 
 	function action(id, kind, target, version) {
 		actions.push({ id, kind, target, ...(version ? { version } : {}) });
 	}
-	// Existing Gentle Shell: update it (installing a missing Pi first), then set it up.
+	// Existing Gentle Shell: update it (installing a missing Pi or updating an older
+	// one first), then set it up. A current npm Shell only gets its Pi updated or
+	// the installer's Pi added.
 	if (update || npmCurrent) {
+		if (updatePi) action("update-pi", "upgrade", "pi", PI_INSTALL_VERSION);
+		// A current npm Shell next to an older Pi neither manager owns gets the installer's Pi.
+		if (!update && tools.pi.status === "needs-install") action("install-pi", "install-global", "pi", requirements.pi);
 		if (update) {
-			if (tools.pi.status === "unavailable") action("install-pi", "install-global", "pi", requirements.pi);
+			if (installPi) action("install-pi", "install-global", "pi", requirements.pi);
 			action(`update-shell-${update}`, "upgrade", "shell");
 			action("setup-shell", "normal-setup", "shell");
 		}
@@ -202,7 +252,7 @@ export function planPreflight(inventory, { channel = "release" } = {}) {
 	acquire("pnpm");
 	if (tools.globalBin.status !== "reusable") action("setup-global-bin", "setup", "globalBin");
 	// A bootstrap Node lives in a temporary tools directory, and Gentle AI's Engram
-	// step needs a genuine npm: persist what is missing under PNPM_HOME through
+	// step needs a working npm: persist what is missing under PNPM_HOME through
 	// pnpm itself. A persistent Node is never replaced or shadowed. A recovery
 	// never persists: the earlier run did that before installing the stack.
 	const node = inventory.node;
@@ -219,7 +269,8 @@ export function planPreflight(inventory, { channel = "release" } = {}) {
 		else if (pnpm) action("persist-pnpm", "install-global", "pnpm", persistencePins.pnpm);
 	}
 	acquire("go");
-	if (tools.pi.status === "unavailable") action("install-pi", "install-global", "pi", requirements.pi);
+	if (installPi) action("install-pi", "install-global", "pi", requirements.pi);
+	if (updatePi) action("update-pi", "upgrade", "pi", PI_INSTALL_VERSION);
 	if (missingShell) action("install-shell", "install-global", "shell", requirements.shell);
 	// Global gentle-pi postinstall owns native provisioning when Shell is missing.
 	// Otherwise the later runner must reuse that existing installer, not duplicate it.

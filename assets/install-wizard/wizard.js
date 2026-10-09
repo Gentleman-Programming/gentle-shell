@@ -37,6 +37,11 @@ export const stepLabels = Object.freeze({
 	"install-pi": "Install Pi",
 	"update-shell": "Update Gentle Shell",
 	"verify-updated-shell": "Verify the updated Gentle Shell",
+	"check-installed-pi": "Find the installed Pi",
+	"update-pi": "Update Pi",
+	"verify-updated-pi": "Verify the updated Pi",
+	"check-existing-pi": "Check for an existing pnpm Pi",
+	"verify-installed-pi": "Verify the installed Pi",
 });
 export function stepLabel(id) {
 	return typeof id === "string" && Object.hasOwn(stepLabels, id) ? stepLabels[id] : String(id);
@@ -94,11 +99,19 @@ function withMain(ids, steps) {
 
 export function expectedSteps(actionIds) {
 	const ids = new Set(list(actionIds));
+	// An older Pi is found, updated and verified before any Gentle Shell step.
+	const piCheck = ids.has("update-pi") ? ["check-installed-pi"] : [];
+	const piSteps = ids.has("update-pi") ? ["update-pi", "verify-updated-pi"] : [];
 	// An existing Gentle Shell is updated in place, then set up again.
 	const update = ["update-shell-release", "update-shell-main"].find((id) => ids.has(id));
 	if (update) {
-		return ["check-npm", "check-global-bin", "check-installed-shell", ...(ids.has("install-pi") ? ["install-pi"] : []),
-			"update-shell", "verify-updated-shell", ...(update === "update-shell-release" ? ["verify-gentle-ai"] : []), "shell-setup"];
+		return ["check-npm", "check-global-bin", "check-installed-shell", ...piCheck, ...(ids.has("install-pi") ? ["install-pi"] : []),
+			...piSteps, "update-shell", "verify-updated-shell", ...(update === "update-shell-release" ? ["verify-gentle-ai"] : []), "shell-setup"];
+	}
+	if (piOnlyPlan(actionIds)) {
+		// The installer's Pi alone, next to an older one neither pnpm nor npm owns.
+		return ids.has("update-pi") ? ["check-npm", "check-global-bin", ...piCheck, ...piSteps]
+			: ["check-npm", "check-global-bin", "check-existing-pi", "install-pi", "verify-installed-pi"];
 	}
 	const addNpm = ids.has("persist-package-managers") || ids.has("persist-npm");
 	const addPnpm = ids.has("persist-package-managers") || ids.has("persist-pnpm");
@@ -111,7 +124,7 @@ export function expectedSteps(actionIds) {
 	// An npm that is about to be installed is checked after it is added.
 	// With Pi already installed, only Gentle Shell is added, so only it must be absent.
 	const shellOnly = ids.has("install-shell") && !ids.has("install-pi");
-	const steps = [...(addNpm ? [] : ["check-npm"]), "check-global-bin", shellOnly ? "check-existing-shell" : "check-existing-stack"];
+	const steps = [...(addNpm ? [] : ["check-npm"]), "check-global-bin", shellOnly ? "check-existing-shell" : "check-existing-stack", ...piCheck];
 	if (ids.has("persist-node")) {
 		steps.push("persist-node", "persist-package-managers", "verify-persistent-runtime", "check-npm", "configure-npm-prefix");
 	} else if (addNpm || addPnpm) {
@@ -120,9 +133,15 @@ export function expectedSteps(actionIds) {
 		if (addNpm) steps.push("check-npm");
 		if (addPnpm) steps.push("verify-persistent-pnpm");
 	}
-	steps.push("install-global", "verify-global-list", "verify-shell-bin", "verify-gentle-ai", "shell-setup");
+	steps.push(...piSteps, "install-global", "verify-global-list", "verify-shell-bin", "verify-gentle-ai", "shell-setup");
 	if (ids.has("setup-global-bin")) steps.push("persist-path");
 	return withMain(ids, steps);
+}
+
+/** Pi alone (a current Gentle Shell): only its update, or the installer's Pi, and readiness. */
+function piOnlyPlan(actionIds) {
+	const ids = list(actionIds);
+	return ["update-pi", "install-pi"].some((pi) => ids.includes(pi) && ids.every((id) => [pi, "verify-readiness"].includes(id)));
 }
 
 /** The runner's fixed setup recovery: only setup, readiness and optionally PATH. */
@@ -145,6 +164,7 @@ export function planModel(view) {
 	if (blockers.length > 0) kind = "blocked";
 	else if (actions.every((action) => action.id === "verify-readiness")) kind = "nothing";
 	else if (actions.some((action) => action.id.startsWith("update-shell-"))) kind = "update";
+	else if (piOnlyPlan(actions.map((action) => action.id))) kind = actions.some((action) => action.id === "update-pi") ? "update-pi" : "install-pi";
 	else if (recoveryPlan(actions.map((action) => action.id))) kind = "recovery";
 	const profile = view?.profileChange ?? {};
 	const persistence = view?.persistence ?? {};
@@ -412,8 +432,13 @@ export function renderPlan(doc, model, handlers) {
 	}
 	const recovery = model.kind === "recovery";
 	const updating = model.kind === "update";
+	const updatingPi = model.kind === "update-pi";
+	const installingPi = model.kind === "install-pi";
+	const piUpdate = model.actions.some((action) => action.id === "update-pi");
 	const checkbox = el(doc, "input", { type: "checkbox", id: "consent", class: "consent-input", "aria-describedby": "consent-hint" });
-	const install = actionButton(doc, recovery ? "Complete setup" : updating ? "Update Gentle Shell" : "Install Gentle Shell", "primary", (button) =>
+	const label = recovery ? "Complete setup" : updating ? "Update Gentle Shell" : updatingPi ? "Update Pi" : installingPi ? "Install Pi"
+		: "Install Gentle Shell";
+	const install = actionButton(doc, label, "primary", (button) =>
 		handlers.install({ consent: checkbox.checked === true, checkbox, button }));
 	checkbox.addEventListener("change", () => {
 		if (checkbox.checked) checkbox.removeAttribute("aria-invalid");
@@ -425,6 +450,12 @@ export function renderPlan(doc, model, handlers) {
 		: updating
 		? { title: "Update Gentle Shell",
 			lead: "Gentle Shell is already installed. This updates it with the package manager that installed it; your settings and sessions stay. Nothing changes until you confirm." }
+		: updatingPi
+		? { title: "Update Pi",
+			lead: "Gentle Shell is already installed, but Pi is older than it needs. This updates Pi with the package manager that installed it; your settings and sessions stay. Nothing changes until you confirm." }
+		: installingPi
+		? { title: "Install Pi for Gentle Shell",
+			lead: "Gentle Shell is already installed, but Pi is missing or older than it needs. This installs Pi globally with pnpm; any other Pi on this computer is left unchanged. Nothing changes until you confirm." }
 		: { title: "Review the installation plan",
 			lead: "Nothing changes until you confirm. This is exactly what the installer will do on this computer." };
 	return panel(doc, { stage: "review", eyebrow: "Step 2 of 4 · Review", ...heading },
@@ -433,7 +464,7 @@ export function renderPlan(doc, model, handlers) {
 		el(doc, "h2", { id: "changes-title", class: "section-title" }, "What changes on this computer"),
 		el(doc, "div", { class: "grid" }, model.disclosures.map((item) => disclosureCard(doc, item)))),
 	el(doc, "section", { class: "block", "aria-labelledby": "steps-title" },
-		el(doc, "h2", { id: "steps-title", class: "section-title" }, recovery ? "Setup steps" : updating ? "Update steps" : "Installation steps"),
+		el(doc, "h2", { id: "steps-title", class: "section-title" }, recovery ? "Setup steps" : updating || updatingPi ? "Update steps" : "Installation steps"),
 		el(doc, "ol", { class: "plan-steps" }, model.actions.map((action) => el(doc, "li", {},
 			el(doc, "span", { class: "plan-step-text" }, rich(doc, action.description)))))),
 	el(doc, "div", { class: "consent" },
@@ -441,7 +472,13 @@ export function renderPlan(doc, model, handlers) {
 		el(doc, "div", {},
 			el(doc, "label", { for: "consent", class: "consent-label" }, "I reviewed this plan and agree to these changes on this computer."),
 			el(doc, "p", { id: "consent-hint", class: "hint" }, updating
-				? "The installer runs only the steps listed above and updates only Gentle Shell (and Pi, if it is missing)."
+				? "The installer runs only the steps listed above and updates only Gentle Shell (and Pi, if it is missing or older than required)."
+				: updatingPi
+				? "The installer runs only the steps listed above and updates only Pi, never to an older version."
+				: installingPi
+				? "The installer runs only the steps listed above and adds only Pi. Existing installations are not replaced."
+				: piUpdate
+				? "The installer runs only the steps listed above. Existing installations are not replaced, except the older Pi it updates."
 				: "The installer runs only the steps listed above. Existing installations are not replaced."))),
 	el(doc, "div", { class: "actions" }, install, close));
 }

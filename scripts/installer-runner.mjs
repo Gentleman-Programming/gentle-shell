@@ -5,19 +5,20 @@ import {
 	gentleAiDevBinaryOverrideConfigured,
 	resolveGentleAiBinary,
 } from "../runtime/gentle-ai-binary.mjs";
-import { persistencePins, pnpmGlobalBin, requirements } from "./installer-preflight.mjs";
-import { GENTLE_AI_REPOSITORY, SHELL_REPOSITORY, mainVersion } from "./main-channel.mjs";
+import { PI_INSTALL_VERSION, persistencePins, pnpmGlobalBin, requirements } from "./installer-preflight.mjs";
+import { GENTLE_AI_REPOSITORY, SHELL_REPOSITORY, installOwner, mainVersion } from "./main-channel.mjs";
 
 // Standard installation runner: one fixed, consented global pnpm installation
 // of Pi plus gentle-pi, then the public `gentle-shell setup`. Every adapter is
 // injected by trusted local code; requests carry no commands, URLs, roots or env.
-// When Node is bootstrap-only or npm is not genuine, fixed steps first persist
+// When Node is bootstrap-only or no usable npm resolves, fixed steps first persist
 // node, npm and pnpm under PNPM_HOME through pnpm itself. When an earlier run
 // installed the pinned stack but stopped in setup, a fixed recovery re-verifies
 // that stack and reruns only `gentle-shell setup` (and `pnpm setup`), never `add -g`.
+// An older Pi that pnpm or npm owns is first updated with that package manager.
 
 /** Pi version installed next to gentle-pi (optional peer, resolved in one add). */
-export const PI_INSTALL_VERSION = "1.0.0";
+export { PI_INSTALL_VERSION };
 export const PI_PACKAGE = "@earendil-works/pi-coding-agent";
 export const SHELL_PACKAGE = "gentle-pi";
 
@@ -60,6 +61,9 @@ export const failedSteps = Object.freeze([
 	"install-pi",
 	"update-shell",
 	"verify-updated-shell",
+	"update-pi",
+	"verify-updated-pi",
+	"verify-installed-pi",
 ]);
 
 const SECOND = 1000;
@@ -90,6 +94,7 @@ const knownActions = Object.freeze({
 	"record-channel": { kind: "configure", target: "channel" },
 	"update-shell-release": { kind: "upgrade", target: "shell" },
 	"update-shell-main": { kind: "upgrade", target: "shell" },
+	"update-pi": { kind: "upgrade", target: "pi", version: PI_INSTALL_VERSION },
 });
 // The clean-stack path: both global packages are missing.
 const requiredActions = ["install-pi", "install-shell", "setup-shell", "verify-readiness"];
@@ -98,6 +103,9 @@ const optionalActions = ["setup-global-bin"];
 const shellOnlyActions = ["install-shell", "setup-shell", "verify-readiness"];
 // An existing Gentle Shell: exactly one update, then setup; a missing Pi is installed first.
 const updateActions = ["update-shell-release", "update-shell-main"];
+// Pi alone (a current Gentle Shell): an older owned Pi's update, or the installer's
+// Pi added next to an older one neither pnpm nor npm owns; then readiness.
+const piOnlyVariants = Object.freeze([["update-pi", "verify-readiness"], ["install-pi", "verify-readiness"]]);
 // The main channel overlay: all three after a release installation, or none.
 const mainActions = ["build-gentle-ai-main", "install-shell-main", "record-channel"];
 // Setup recovery: the pinned stack this pnpm installed is present (planPreflight
@@ -159,25 +167,33 @@ function planGate(plan, platform) {
 	const only = (allowed) => ids.every((id) => allowed.includes(id));
 	// All or nothing, like the persistence variants: never part of an installation.
 	const recovery = recoveryActions.every((id) => ids.includes(id)) && only([...recoveryActions, ...optionalActions]);
+	// A Pi update needs the older, owned Pi preflight recorded, and never installs Pi as well.
+	const updatingPi = ids.includes("update-pi");
+	if (updatingPi && (ids.includes("install-pi") || plan.tools.pi?.status !== "needs-update")) return "unsupported-plan";
+	const piOnly = overlay.length === 0 && plan.tools.shell?.status === "reusable" &&
+		piOnlyVariants.some((variant) => variant.every((id) => ids.includes(id)) && only(variant)) &&
+		(updatingPi || ["unavailable", "needs-install"].includes(plan.tools.pi?.status));
 	// gentle-pi's postinstall may build Gentle AI from source on Windows; the runner
 	// never acquires Go. A recovery runs no postinstall: its binary is verified.
-	if (platform === "win32" && (ids.includes("acquire-go") || (!recovery && plan.tools.go?.status !== "reusable"))) return "go-required";
+	// A Pi-only update touches no Gentle Shell package either.
+	if (platform === "win32" && (ids.includes("acquire-go") || (!recovery && !piOnly && plan.tools.go?.status !== "reusable"))) return "go-required";
 	const persisting = persistenceActions.filter((id) => ids.includes(id));
 	if (persisting.length > 0 && !persistenceVariants.some((variant) =>
 		variant.length === persisting.length && variant.every((id) => persisting.includes(id)))) return "unsupported-plan";
 	const updating = updateActions.filter((id) => ids.includes(id));
 	if (updating.length > 0) {
 		const valid = updating.length === 1 && overlay.length === 0 && ["setup-shell", "verify-readiness"].every((id) => ids.includes(id)) &&
-			only([...updating, "install-pi", "setup-shell", "verify-readiness"]) &&
+			only([...updating, "install-pi", "update-pi", "setup-shell", "verify-readiness"]) &&
 			(updating[0] !== "update-shell-main" || plan.tools.go?.status === "reusable");
 		return valid ? null : "unsupported-plan";
 	}
 	const clean = requiredActions.every((id) => ids.includes(id)) && only([...requiredActions, ...optionalActions, ...persistenceActions]);
-	// The same actions as a forged recovery plus install-shell: the tools must say Shell is missing and Pi reusable.
+	// The same actions as a forged recovery plus install-shell: the tools must say Shell
+	// is missing and Pi reusable, or older and updated first.
 	const shellOnly = shellOnlyActions.every((id) => ids.includes(id)) && !ids.includes("install-pi") &&
-		plan.tools.shell?.status === "unavailable" && plan.tools.pi?.status === "reusable" &&
-		only([...shellOnlyActions, ...optionalActions, ...persistenceActions]);
-	return clean || shellOnly || recovery ? null : "unsupported-plan";
+		plan.tools.shell?.status === "unavailable" && plan.tools.pi?.status === (updatingPi ? "needs-update" : "reusable") &&
+		only([...shellOnlyActions, "update-pi", ...optionalActions, ...persistenceActions]);
+	return clean || shellOnly || recovery || piOnly ? null : "unsupported-plan";
 }
 
 function pathKeyOf(env, platform) {
@@ -308,11 +324,28 @@ function inGlobalBin(file, platform, globalBin) {
 	return globalBin !== null && samePath(path.dirname(file), globalBin.path, platform);
 }
 
-/** Genuine npm: the first resolved npm is the npm package's own CLI, which then runs.
- * Accepted: a Node-bundled npm (POSIX symlink target or Windows `npm.cmd` with
- * `node_modules/npm` beside it), or, for any npm in `$PNPM_HOME/bin` (shim or
- * symlink), pnpm's global npm resolving inside PNPM_HOME at the persistence pin.
- * Returns { cli }, "npm-shadowed" (Windows: an earlier non-.cmd npm wins) or false.
+/** The npm the user runs works in the user's environment: run from `/` with the
+ * child env, `npm --version` prints a stable version and `npm config get prefix`
+ * one absolute path. Whatever installed it (Node, Homebrew, nvm, fnm, or a
+ * mise, asdf or Volta shim), this is how Gentle AI's Engram step will run it.
+ */
+async function worksAsNpm(npm, child, adapters) {
+	const output = async (args) => {
+		const result = await adapters.run(npm, args, { env: child, cwd: "/", deadlineMs: deadlines.probe });
+		return succeeded(result) && result.truncated !== true ? String(result.stdout ?? "").trim() : null;
+	};
+	if (stable(await output(["--version"])) === null) return false;
+	const prefix = await output(["config", "get", "prefix"]);
+	return prefix !== null && posix.isAbsolute(prefix) && !/[\r\n]/.test(prefix);
+}
+
+/** A usable npm: the first npm resolved in the child env.
+ * On POSIX any npm outside `$PNPM_HOME/bin` that works there (worksAsNpm) is
+ * accepted as { command }. Otherwise the npm package's own CLI must resolve and
+ * run, returned as { cli }: for any npm in `$PNPM_HOME/bin` (shim or symlink),
+ * pnpm's global npm resolving inside PNPM_HOME at the persistence pin; on
+ * Windows, `npm.cmd` with `node_modules/npm` beside it.
+ * Returns { command }, { cli }, "npm-shadowed" (Windows: an earlier non-.cmd npm wins) or false.
  */
 export async function genuineNpm(child, platform, nodePath, adapters, globalBin = null) {
 	const path = platform === "win32" ? win32 : posix;
@@ -329,7 +362,7 @@ export async function genuineNpm(child, platform, nodePath, adapters, globalBin 
 	} else if (platform === "win32") {
 		cli = path.join(path.dirname(first), "node_modules", "npm", "bin", "npm-cli.js");
 	} else {
-		cli = await fs.realpath(first);
+		return (await worksAsNpm(first, child, adapters)) ? { command: first } : false;
 	}
 	if (!entryShape(cli, path, "npm", "npm-cli.js")) return false;
 	return (await runsAsPackage(cli, "npm", pinned, nodePath, child, platform, adapters)) ? { cli } : false;
@@ -384,14 +417,14 @@ function stackListings(stdout) {
 	return listed;
 }
 
-/** Shell-only pre-install `list -g --json`: true when no project lists gentle-pi,
- * "existing-stack" when one does, false when the shape is unknown.
+/** Shell-only (or Pi-only) pre-install `list -g --json`: true when no project
+ * lists the package, "existing-stack" when one does, false when the shape is unknown.
  */
-function noExistingShell(stdout) {
+function notListed(stdout, name) {
 	const projects = JSON.parse(stdout);
 	if (!Array.isArray(projects) || !projects.every(plainObject)) return false;
 	return projects.some((project) => ["dependencies", "devDependencies", "optionalDependencies"]
-		.some((field) => plainObject(project[field]) && Object.hasOwn(project[field], SHELL_PACKAGE))) ? "existing-stack" : true;
+		.some((field) => plainObject(project[field]) && Object.hasOwn(project[field], name))) ? "existing-stack" : true;
 }
 
 /** Pre-install `list -g --json`: true when neither package is listed in any
@@ -459,6 +492,8 @@ function explicitNpmPrefix(env, platform) {
  */
 async function configureNpmPrefix({ node, cli, child, platform, globalBin, adapters, storePath }) {
 	const path = platform === "win32" ? win32 : posix;
+	// Only the persisted npm's { cli } reaches this step ($PNPM_HOME/bin is first); anything else fails closed.
+	if (typeof cli !== "string") return null;
 	const npm = (args) => adapters.run(node, [cli, ...args], { env: child, deadlineMs: deadlines.probe });
 	const effective = async () => {
 		const result = await npm(["config", "get", "prefix"]);
@@ -531,6 +566,9 @@ export function setupErrorDetail(text, home, platform) {
  * run(command, argv, { env, deadlineMs, stderrTail? }) with shell:false semantics returning
  * { code, signal, timedOut, stdout, stderrTail? }, fs { isFile, realpath, readText },
  * verifyGentleAi({ packageRoot, platform, env, home }) and log({ step, status }).
+ * An update plan also uses locateShell() and upgradeShell({ channel, packageRoot,
+ * currentVersion }); a plan that updates an older Pi uses locatePi(), which returns
+ * the single installed Pi as { root, version, owner } or null.
  * Nothing is ever deleted; no provisioning marker is written. A setup-recovery
  * plan replaces check-existing-stack with check-recoverable-stack and skips
  * install-global; every later step and outcome rule is the same.
@@ -561,7 +599,10 @@ export async function runStandardInstall(request, adapters) {
 	const ids = request.plan.actions.map((action) => action.id);
 	// planGate accepted either the clean-stack path or the fixed setup recovery.
 	const update = ids.find((id) => updateActions.includes(id));
-	const recovering = !ids.includes("install-shell") && !update;
+	// An older Pi is updated first; alone, nothing else runs (planGate: piOnlyVariants).
+	const updatingPi = ids.includes("update-pi");
+	const piOnly = (updatingPi || ids.includes("install-pi")) && !ids.includes("install-shell") && !update;
+	const recovering = !ids.includes("install-shell") && !update && !piOnly;
 	const shellOnly = ids.includes("install-shell") && !ids.includes("install-pi");
 	const main = ids.includes("install-shell-main");
 	// Fixed variants (planGate): runtime + both managers, or one add of the missing ones.
@@ -572,7 +613,7 @@ export async function runStandardInstall(request, adapters) {
 	const npmCheck = async () => {
 		const verdict = await genuineNpm(child, platform, adapters.nodePath, adapters, globalBin);
 		if (typeof verdict !== "object" || verdict === null) return verdict;
-		npmCli = verdict.cli;
+		npmCli = verdict.cli ?? null;
 		return true;
 	};
 
@@ -580,6 +621,30 @@ export async function runStandardInstall(request, adapters) {
 	// a check may return a more specific blocked reason instead of false.
 	// An npm that is about to be persisted is checked only after it has been added.
 	let installed = null;
+	let installedPi = null;
+	let npmCommand = null;
+	// The Pi to update is still exactly the older one preflight recorded, from the
+	// same owner: never a reinstall or downgrade. For npm, the npm on PATH must
+	// install into the global root that holds it.
+	const checkInstalledPi = async () => {
+		const recorded = request.plan.tools.pi;
+		const found = await adapters.locatePi?.();
+		if (!found || !["pnpm", "npm"].includes(found.owner) || found.owner !== recorded?.owner || found.version !== recorded?.version) return false;
+		if (stable(found.version) === null || atLeast(found.version, requirements.pi)) return false;
+		if (typeof found.root !== "string" || !path.isAbsolute(found.root)) return false;
+		if (found.owner === "npm") {
+			// A Windows npm.cmd cannot run with shell:false; the probes never attribute one.
+			const npm = platform === "win32" ? null : await lookPath("npm", env, platform, adapters.fs);
+			if (!npm) return false;
+			const result = await adapters.run(npm, ["root", "-g"], { env, deadlineMs: deadlines.probe });
+			const reported = succeeded(result) ? String(result.stdout ?? "").trim().split(/\r?\n/).at(-1) : "";
+			const npmRoot = path.isAbsolute(reported) ? await adapters.fs.realpath(reported) : null;
+			if (installOwner({ packageRoot: found.root, pnpmHome: null, npmRoot, name: PI_PACKAGE }) !== "npm") return false;
+			npmCommand = npm;
+		}
+		installedPi = found;
+		return true;
+	};
 	const checks = [
 		...(addNpm ? [] : [["check-npm", "npm-unavailable", npmCheck]]),
 		["check-global-bin", "global-bin-mismatch", async () => {
@@ -589,7 +654,7 @@ export async function runStandardInstall(request, adapters) {
 		}],
 		// Never rely on the caller's plan alone: an existing Pi or gentle-pi is not overwritten,
 		// and a recovery still finds exactly the pinned stack this pnpm installed.
-		update
+		...(piOnly ? [] : [update
 			? ["check-installed-shell", "existing-stack-unverified", async () => {
 				installed = await adapters.locateShell?.();
 				return ["pnpm", "npm"].includes(installed?.owner) && typeof installed.root === "string" && path.isAbsolute(installed.root);
@@ -597,7 +662,7 @@ export async function runStandardInstall(request, adapters) {
 			: shellOnly
 			? ["check-existing-shell", "global-list-unavailable", async () => {
 				const result = await list();
-				return succeeded(result) && noExistingShell(String(result.stdout ?? ""));
+				return succeeded(result) && notListed(String(result.stdout ?? ""), SHELL_PACKAGE);
 			}]
 			: recovering
 			? ["check-recoverable-stack", "global-list-unavailable", async () => {
@@ -610,7 +675,13 @@ export async function runStandardInstall(request, adapters) {
 			: ["check-existing-stack", "global-list-unavailable", async () => {
 				const result = await list();
 				return succeeded(result) && noExistingStack(String(result.stdout ?? ""));
-			}],
+			}]]),
+		...(updatingPi ? [["check-installed-pi", "existing-stack-unverified", checkInstalledPi]] : []),
+		// The installer's Pi added on its own: pnpm must not list any Pi yet.
+		...(piOnly && !updatingPi ? [["check-existing-pi", "global-list-unavailable", async () => {
+			const result = await list();
+			return succeeded(result) && notListed(String(result.stdout ?? ""), PI_PACKAGE);
+		}]] : []),
 	];
 	for (const [step, reason, check] of checks) {
 		const verdict = await check().catch(() => false);
@@ -643,6 +714,25 @@ export async function runStandardInstall(request, adapters) {
 		...(addPnpm ? [["verify-persistent-pnpm", () => persistentPnpm(child, platform, adapters.nodePath, globalBin, adapters)]] : []),
 	];
 	// A recovery never runs `add -g`: the installed packages are verified as they are.
+	// The older Pi, updated with the package manager that owns it, then found again:
+	// the next probe must see a single Pi (one listed twice is located as null)
+	// from the same owner at the target version, never a downgrade.
+	const piSteps = updatingPi ? [
+		["update-pi", async () => {
+			const spec = `${PI_PACKAGE}@${PI_INSTALL_VERSION}`;
+			const result = installedPi.owner === "npm"
+				? await adapters.run(npmCommand, ["install", "-g", spec], { env, deadlineMs: deadlines.install })
+				: await runPnpm(["add", "-g", spec], deadlines.install);
+			return succeeded(result);
+		}],
+		["verify-updated-pi", async () => {
+			const after = await adapters.locatePi();
+			if (!after || after.owner !== installedPi.owner || typeof after.root !== "string" || !path.isAbsolute(after.root)) return false;
+			if (stable(after.version) === null || !atLeast(after.version, PI_INSTALL_VERSION)) return false;
+			// npm replaces the package in place; pnpm 11 moves it to a new global directory.
+			return after.owner === "pnpm" || samePath(after.root, installedPi.root, platform);
+		}],
+	] : [];
 	const install = ["install-global", async () => succeeded(await runPnpm(["add", "-g", ...(shellOnly ? [] : [`${PI_PACKAGE}@${PI_INSTALL_VERSION}`]),
 		`${SHELL_PACKAGE}@${requirements.shell}`, `--allow-build=${SHELL_PACKAGE}`], deadlines.install))];
 	function mainSteps() {
@@ -679,6 +769,7 @@ export async function runStandardInstall(request, adapters) {
 	}
 	const steps = [
 		...(persistRuntime ? persistence : addOnly ? packageManagers : []),
+		...piSteps,
 		...(recovering ? [] : [install]),
 		["verify-global-list", async () => {
 			const result = await list();
@@ -708,6 +799,7 @@ export async function runStandardInstall(request, adapters) {
 		const setupStep = steps.find(([name]) => name === "shell-setup");
 		steps.splice(0, steps.length,
 			...(ids.includes("install-pi") ? [["install-pi", async () => succeeded(await runPnpm(["add", "-g", `${PI_PACKAGE}@${PI_INSTALL_VERSION}`], deadlines.install))]] : []),
+			...piSteps,
 			["update-shell", async () => (await adapters.upgradeShell({ channel, packageRoot: installed.root, currentVersion: installed.version })) === true],
 			["verify-updated-shell", async () => {
 				const after = await adapters.locateShell();
@@ -725,7 +817,18 @@ export async function runStandardInstall(request, adapters) {
 	// globalBin.onPath was computed from the user's own PATH, not the child env.
 	// pnpm setup installs @pnpm/exe over the network, so it gets the setup deadline.
 	// An update keeps the PATH its existing installation already uses.
-	const persistPath = !globalBin.onPath && !update;
+	if (piOnly) {
+		// The installer's Pi alone: the same `add -g` as install-pi, then found in pnpm's list.
+		steps.splice(0, steps.length, ...(updatingPi ? piSteps : [
+			["install-pi", async () => succeeded(await runPnpm(["add", "-g", `${PI_PACKAGE}@${PI_INSTALL_VERSION}`], deadlines.install))],
+			["verify-installed-pi", async () => {
+				const after = await adapters.locatePi();
+				return after?.owner === "pnpm" && typeof after.root === "string" && path.isAbsolute(after.root) &&
+					stable(after.version) !== null && atLeast(after.version, PI_INSTALL_VERSION);
+			}],
+		]));
+	}
+	const persistPath = !globalBin.onPath && !update && !piOnly;
 	if (persistPath) {
 		steps.push(["persist-path", async () => {
 			const result = await adapters.run(pnpm.command, [...pnpm.prefix, "setup"], { env: child, deadlineMs: deadlines.setup, stderrTail: 4096 });

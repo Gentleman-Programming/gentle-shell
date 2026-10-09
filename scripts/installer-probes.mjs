@@ -15,13 +15,15 @@ import {
 	packageNativeGentleAi,
 	pnpmInvocation,
 	recoverableStackRoot,
+	samePath,
 	spawnable,
 	succeeded,
 } from "./installer-runner.mjs";
 
 // Real host probes for collectInventory. Every effect goes through injected
 // adapters; probes only run fixed read-only argv (`--version`, `go version`,
-// `pnpm list -g`) and never write, create directories or run setup/postinstall.
+// `pnpm list -g`, `npm config get prefix`, `npm root -g`) and never write,
+// create directories or run setup/postinstall.
 
 const SECOND = 1000;
 const deadlines = Object.freeze({ version: 10 * SECOND, list: 30 * SECOND });
@@ -198,6 +200,11 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 		return succeeded(result) && result.truncated !== true ? String(result.stdout ?? "").trim() : null;
 	};
 	const persistentOn = async (name) => (await lookPath(name, user, platform, fs)) !== null;
+	const roots = bootstrapRoots({ platform, env });
+	const marker = platform === "win32" ? new RegExp(BOOTSTRAP_TOOLS.source, "i") : BOOTSTRAP_TOOLS;
+	/** A file inside the bootstrap's temporary tools directory. */
+	const fromBootstrap = (file) => path.isAbsolute(file) && (roots.some((root) => contains(root, file, platform)) ||
+		path.normalize(file).split(path.sep).some((part) => marker.test(part)));
 
 	let listing;
 	/** Output of the single `list -g` call, or null when it is unavailable. */
@@ -267,6 +274,12 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 		return path.isAbsolute(line) ? fs.realpath(line).catch(() => null) : null;
 	})());
 	const shellBin = () => path.join(globalBin.path, platform === "win32" ? "gentle-shell.cmd" : "gentle-shell");
+	/** The Pi on the user's PATH outside pnpm: real root, its package version and owner (npm or null). */
+	const piOnPath = async () => {
+		const found = await packageOnPath("pi", PI_PACKAGE);
+		if (!found) return null;
+		return { root: found.root, version: found.version, owner: installOwner({ packageRoot: found.root, pnpmHome: null, npmRoot: await npmGlobalRoot(), name: PI_PACKAGE }) };
+	};
 
 	const probes = {
 		/** The installed Gentle Shell for an update: real root, version and owner (pnpm, npm or null). */
@@ -280,21 +293,38 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 			if (!found) return null;
 			return { root: found.root, version: found.version, owner: installOwner({ packageRoot: found.root, pnpmHome: null, npmRoot: await npmGlobalRoot() }) };
 		},
+		/** The single installed Pi for an update: real root, version and owner (pnpm, npm or null). */
+		async locatePi() {
+			const pi = await globalPackage(PI_PACKAGE, "pi");
+			if (pi.state === "present" && typeof pi.entry.path === "string" && path.isAbsolute(pi.entry.path)) {
+				return { root: await fs.realpath(pi.entry.path), version: pi.version, owner: "pnpm" };
+			}
+			return pi.state === "unknown" && pi.outsidePnpm ? piOnPath() : null;
+		},
 		async node() {
 			const persistent = await lookPath("node", user, platform, fs);
-			const node = persistent ?? await lookPath("node", env, platform, fs);
+			const bootstrap = await lookPath("node", env, platform, fs);
+			let node = persistent ?? bootstrap;
 			if (!node) return absent();
 			if (!spawnable(node, platform)) return unknown();
-			const version = exactVersion(await output(node, ["--version"], env, deadlines.version), NODE_VERSION);
+			const nodeVersion = async (file) => exactVersion(await output(file, ["--version"], env, deadlines.version), NODE_VERSION);
+			let version = await nodeVersion(node);
 			if (!version) return unknown();
-			// A genuine npm must resolve without bootstrap tools, as in a fresh terminal.
+			// An older Node on the user's PATH is left as it is: the bootstrap's verified
+			// Node runs the installer, so it is reported (bootstrap-only) with the older one found.
+			let found = null;
+			if (persistent && bootstrap && persistent !== bootstrap && !atLeast(version, requirements.node) && spawnable(bootstrap, platform)) {
+				const pinned = await nodeVersion(bootstrap);
+				if (pinned && atLeast(pinned, requirements.node)) [found, node, version] = [version, bootstrap, pinned];
+			}
+			// A usable npm must resolve without bootstrap tools, as in a fresh terminal.
 			let npm = null;
 			try {
 				npm = typeof (await genuineNpm(userChild, platform, node, { run, fs }, globalBin)) === "object";
 			} catch {
 				npm = null;
 			}
-			return { available: true, version, usable: true, persistent: persistent !== null, npm };
+			return { available: true, version, usable: true, persistent: persistent !== null && found === null, npm, ...(found ? { found } : {}) };
 		},
 		async pnpm() {
 			const pnpm = await pnpmInvocation(env, platform, fs);
@@ -304,16 +334,40 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 			if (!version) return unknown();
 			// pnpm checks its Node engine at startup; the runner's argv is verified for pnpm 11 only.
 			const compatible = Number(version.split(".")[0]) === PNPM_MAJOR && atLeast(version, requirements.pnpm);
-			return { available: true, version, usable: true, compatible, persistent: await persistentOn("pnpm") };
+			// The bootstrap's own pnpm (POSIX PATH or Windows handoff entry) is bootstrap-only
+			// even next to the user's pnpm, which it acquired because that one is incompatible.
+			if (!fromBootstrap(pnpm.prefix[0] ?? pnpm.command)) {
+				return { available: true, version, usable: true, compatible, persistent: await persistentOn("pnpm") };
+			}
+			// That pnpm's version, read in the user's environment (POSIX: a Windows .cmd needs a shell).
+			const own = await lookPath("pnpm", user, platform, fs);
+			const result = own && platform !== "win32" ? await run(own, ["--version"], { env: user, cwd: path.parse(own).root, deadlineMs: deadlines.version }) : null;
+			const found = succeeded(result) && result.truncated !== true ? exactVersion(result.stdout, STABLE) : null;
+			const usableFound = found !== null && Number(found.split(".")[0]) === PNPM_MAJOR && atLeast(found, requirements.pnpm);
+			// Persisting pnpm writes $PNPM_HOME/bin: a user's pnpm there is reported as it is
+			// (incompatible, or unknown without a version), never replaced or downgraded.
+			if (own && globalBin && samePath(path.dirname(own), globalBin.path, platform)) {
+				return found ? { available: true, version: found, usable: true, compatible: usableFound, persistent: true, inGlobalBin: true }
+					: { ...unknown(), inGlobalBin: true };
+			}
+			const replaced = found !== null && !usableFound;
+			return { available: true, version, usable: true, compatible, persistent: false, ...(replaced ? { found } : {}) };
 		},
+		// Only a Pi older than the minimum reports its owner (pnpm or npm): the one the installer updates.
 		async pi() {
 			const pi = await globalPackage(PI_PACKAGE, "pi");
-			if (pi.state === "present") return { available: true, version: pi.version, usable: true };
+			const older = (version) => !MAIN_BUILD.test(version) && !atLeast(version, requirements.pi);
+			if (pi.state === "present") return { available: true, version: pi.version, usable: true, ...(older(pi.version) ? { owner: "pnpm" } : {}) };
 			if (pi.state === "absent" || !pi.outsidePnpm) return pi.state === "absent" ? absent() : unknown();
 			// Another installation of Pi: reused as long as it reports a stable version.
 			const command = await lookPath("pi", user, platform, fs);
 			const version = command ? /(?:^|\s|v)(\d+\.\d+\.\d+)(?:\s|$)/.exec(await output(command, ["--version"], user, deadlines.version) ?? "") : null;
-			return version ? { available: true, version: version[1], usable: true, external: true } : notPnpmGlobal(pi);
+			if (!version) return notPnpmGlobal(pi);
+			const found = { available: true, version: version[1], usable: true, external: true };
+			if (!older(found.version)) return found;
+			// npm owns it only when its package in npm's global root reports that same version.
+			const located = await piOnPath().catch(() => null);
+			return located?.owner === "npm" && located.version === found.version ? { ...found, owner: "npm" } : found;
 		},
 		async shell() {
 			const shell = await globalPackage(SHELL_PACKAGE, "gentle-shell");

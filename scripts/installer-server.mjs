@@ -2,7 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
-import { requirements } from "./installer-preflight.mjs";
+import { PI_INSTALL_VERSION, requirements } from "./installer-preflight.mjs";
 
 // Local wizard host: a dependency-free loopback HTTP server with a fixed route
 // allowlist. The browser never sends commands, paths, plans or environment:
@@ -81,6 +81,7 @@ export const actionDescriptions = Object.freeze({
 	"record-channel": "Remember the `main` channel, so `gentle-shell upgrade` keeps following `main`.",
 	"update-shell-release": "Update Gentle Shell to the latest release with the package manager that installed it (pnpm or npm).",
 	"update-shell-main": "Update Gentle Shell and Gentle AI to the latest commits of `main`, built on this computer, with the package manager that installed Gentle Shell.",
+	"update-pi": "Update Pi with the package manager that installed it (pnpm or npm).",
 });
 
 const tryAgain = "Fix the cause, then run the installer again.";
@@ -95,7 +96,7 @@ export const guidance = Object.freeze({
 		"pnpm-home-unknown": "The pnpm home directory could not be determined. Set PNPM_HOME to an absolute directory, then run the installer again.",
 		"node-unavailable": "The installer could not find its own Node.js executable. Run the installer again from the bootstrap script.",
 		"pnpm-unavailable": "pnpm could not be started. Run the installer again from the bootstrap script so it can provide pnpm.",
-		"npm-unavailable": "A genuine npm was not found on PATH. Gentle AI needs it; reinstall Node.js with npm, then run the installer again.",
+		"npm-unavailable": "No working npm was found on PATH. Gentle AI needs it; check that `npm --version` works in a new terminal, then run the installer again.",
 		"npm-shadowed": "Another `npm` program appears on PATH before Node.js's npm. Remove or reorder it, then run the installer again.",
 		"global-bin-mismatch": "pnpm reported a different global bin directory than expected. Check PNPM_HOME, then run the installer again.",
 		"global-list-unavailable": "pnpm could not list global packages. Check that `pnpm list -g` works, then run the installer again.",
@@ -123,6 +124,9 @@ export const guidance = Object.freeze({
 		"install-pi": `Installing Pi with pnpm failed. Your existing Gentle Shell was not changed. Check your network connection. ${tryAgain}`,
 		"update-shell": "Updating Gentle Shell failed. Run `gentle-shell upgrade` in a terminal to see the details.",
 		"verify-updated-shell": "Gentle Shell did not report the expected version after the update. Run `gentle-shell --version`, then `gentle-shell upgrade` in a terminal.",
+		"update-pi": `Updating Pi with the package manager that installed it failed. Gentle Shell was not changed. Check your network connection. ${tryAgain}`,
+		"verify-updated-pi": "After the update, this installer could not find a single Pi at the expected version from the same package manager. Gentle Shell was not changed. Run `pi --version` in a terminal, then run the installer again.",
+		"verify-installed-pi": "After installing Pi, this installer could not find it at the expected version in pnpm's global packages. Gentle Shell and your other Pi were not changed. Run `pnpm list -g` in a terminal, then run the installer again.",
 	}),
 	blockers: Object.freeze({
 		"unsupported-target": "This operating system or CPU is not supported by the wizard. Follow the README for a manual installation.",
@@ -187,6 +191,7 @@ const minimumTools = Object.freeze({
 	pi: { label: "Pi", where: "" },
 	shell: { label: "Gentle Shell", where: " globally with pnpm",
 		remedy: (required) => `Update it with \`pnpm add -g gentle-pi@${required}\`, or remove it with \`pnpm remove -g gentle-pi\`` },
+	go: { label: "Go", where: "", remedy: () => "This installer does not download Go: update it the way you installed it" },
 });
 // A Pi whose version cannot be read, or a Gentle Shell neither pnpm nor npm manages.
 const unmanaged = Object.freeze({
@@ -202,22 +207,85 @@ function older(found, required) {
 	}
 	return false;
 }
+/** A user's pnpm in $PNPM_HOME/bin, where the installer would persist its own:
+ * never replaced or downgraded, so the guidance says how to update an older one
+ * with pnpm itself (`pnpm self-update <version>`). */
+function globalBinPnpm(blocker, found, required) {
+	const where = "is installed in the pnpm global bin directory, where this installer would put its own pnpm,";
+	const update = `\`pnpm self-update ${required}\``;
+	if (blocker.code === "unknown-tool" || !STABLE.test(found ?? "")) {
+		return `A pnpm ${where} but its version could not be checked. Nothing was replaced. ` +
+			`If \`pnpm --version\` reports a version older than ${required}, update it with ${update}, then select Check again.`;
+	}
+	const major = required.split(".")[0];
+	if (older(found, required)) {
+		return `pnpm ${found} ${where} but this installer needs pnpm ${required} or a newer ${major}.x. Nothing was replaced. ` +
+			`Update it with ${update}, then select Check again.`;
+	}
+	return `pnpm ${found} ${where} but this installer only runs pnpm ${major} (${required} or a newer ${major}.x). ` +
+		`Nothing was replaced, and this installer never downgrades pnpm. To use it, make a pnpm ${major} release your global pnpm the way you prefer, then select Check again.`;
+}
+
 /** Names the found and required versions when an incompatible tool is simply
- * older than its minimum, and explains a Pi or Shell installed outside pnpm;
- * anything else keeps the fixed guidance. */
+ * older than its minimum, and explains a Pi or Shell installed outside pnpm or
+ * a pnpm in the global bin directory; anything else keeps the fixed guidance. */
 function blockerGuidance(blocker, inventory, plan) {
 	const fixed = guidance.blockers[blocker.code] ?? guidance.fallback;
+	const pnpmRequired = plan.tools?.pnpm?.required;
+	if (blocker.tool === "pnpm" && ["incompatible-tool", "unknown-tool"].includes(blocker.code) &&
+		inventory?.pnpm?.inGlobalBin === true && STABLE.test(pnpmRequired ?? "")) {
+		return globalBinPnpm(blocker, inventory.pnpm.version, pnpmRequired);
+	}
 	if (blocker.code === "unknown-tool" && Object.hasOwn(unmanaged, blocker.tool) && inventory?.[blocker.tool]?.outsidePnpm === true) {
 		return unmanaged[blocker.tool];
 	}
 	const tool = Object.hasOwn(minimumTools, blocker.tool) ? minimumTools[blocker.tool] : null;
 	if (blocker.code !== "incompatible-tool" || tool === null) return fixed;
-	const found = inventory?.[blocker.tool]?.version;
+	// An older Node left next to the bootstrap's copy is recorded in the plan.
+	const found = plan.tools?.[blocker.tool]?.found ?? inventory?.[blocker.tool]?.version;
 	const required = plan.tools?.[blocker.tool]?.required;
 	if (typeof found !== "string" || typeof required !== "string" || !older(found, required)) return fixed;
 	const version = found.replace(/^v/, "");
 	const remedy = tool.remedy ? tool.remedy(required) : "Update it";
 	return `${tool.label} ${version} is installed${tool.where}, but this installer needs ${required} or newer. Nothing was replaced. ${remedy}, then select Check again.`;
+}
+
+/** An older Pi's update names its found and target versions and the package
+ * manager that owns it, and the installer's Pi added next to an older one names
+ * both versions, from the plan's own record; anything else is fixed text. */
+function actionDescription(action, plan) {
+	const pi = plan.tools?.pi;
+	const stable = (...versions) => versions.every((version) => typeof version === "string" && STABLE.test(version));
+	const bare = (version) => version.replace(/^v/, "");
+	if (action.id === "update-pi" && ["pnpm", "npm"].includes(pi?.owner) && stable(pi.version, pi.required, action.version)) {
+		return `Update Pi ${bare(pi.version)} to ${bare(action.version)} with ${pi.owner}, the package manager that installed it. ` +
+			`Gentle Shell needs Pi ${bare(pi.required)} or newer.`;
+	}
+	if (action.id === "install-pi" && pi?.status === "needs-install" && stable(pi.version)) {
+		return `Install Pi ${PI_INSTALL_VERSION} globally with pnpm for Gentle Shell. The Pi ${bare(pi.version)} already on this computer ` +
+			"was not installed with pnpm or npm, so it is left unchanged. Gentle Shell uses the installer's Pi; the `pi` command in a terminal may still run the older one.";
+	}
+	return actionDescriptions[action.id] ?? "Prepare the installation.";
+}
+
+/** An older Node or incompatible pnpm the plan records as left in place next to
+ * the installer's pinned copy: found and pinned versions, from the plan itself.
+ * Nothing promises PATH precedence: a version manager may prepend its own again.
+ */
+function alongsideNotes(plan) {
+	const notes = [];
+	const node = plan.tools?.node;
+	if (STABLE.test(node?.found ?? "") && STABLE.test(node.version ?? "")) {
+		notes.push(`Node.js ${node.found} on this computer is older than ${node.required}, so the installer uses its pinned Node.js ${node.version} ` +
+			`and installs it under $PNPM_HOME. Your Node.js ${node.found} is left unchanged.`);
+	}
+	const pnpm = plan.tools?.pnpm;
+	if (STABLE.test(pnpm?.found ?? "") && STABLE.test(pnpm.version ?? "")) {
+		notes.push(`pnpm ${pnpm.found} on this computer is not a pnpm ${pnpm.version.split(".")[0]} release this installer can use, ` +
+			`so the installer uses its pinned pnpm ${pnpm.version} and installs it under $PNPM_HOME. Your pnpm ${pnpm.found} is left unchanged.`);
+	}
+	if (notes.length > 0) notes.push("A version manager such as `mise activate` may still put your own versions first on PATH in new terminals.");
+	return notes;
 }
 
 function planView(planId, { inventory, plan }) {
@@ -226,6 +294,7 @@ function planView(planId, { inventory, plan }) {
 	const pnpmHome = binDir === null ? null : dirname(binDir);
 	const changesProfile = ids.includes("setup-global-bin");
 	let tools = [];
+	const alongside = alongsideNotes(plan);
 	if (ids.includes("persist-node")) tools = ["node", "npm", "pnpm"];
 	else if (ids.includes("persist-package-managers")) tools = ["npm", "pnpm"];
 	else if (ids.includes("persist-npm")) tools = ["npm"];
@@ -235,7 +304,7 @@ function planView(planId, { inventory, plan }) {
 		ready: plan.ready === true,
 		actions: plan.actions.map((action) => ({
 			id: identifier(action.id),
-			description: actionDescriptions[action.id] ?? "Prepare the installation.",
+			description: actionDescription(action, plan),
 		})),
 		blockers: plan.blockers.map((blocker) => ({
 			code: identifier(blocker.code),
@@ -254,7 +323,7 @@ function planView(planId, { inventory, plan }) {
 			tools,
 			pnpmHome,
 			description: tools.length > 0
-				? `${tools.join(", ")} will be installed under $PNPM_HOME (${pnpmHome ?? "pnpm's home directory"}) so new terminals keep working after the temporary installer tools are removed. Existing installations are not replaced.`
+				? [`${tools.join(", ")} will be installed under $PNPM_HOME (${pnpmHome ?? "pnpm's home directory"}) so new terminals keep working after the temporary installer tools are removed. Existing installations are not replaced.`, ...alongside].join(" ")
 				: "No runtime needs to be installed under $PNPM_HOME; your existing Node.js, npm and pnpm are reused.",
 		},
 	};

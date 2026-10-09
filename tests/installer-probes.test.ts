@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -22,7 +22,7 @@ const LIST = "list -g --depth 0 --json";
 const npmPackage = JSON.stringify({ name: "npm", version: "11.19.0" });
 
 type Result = { code: number | null; signal?: string | null; timedOut?: boolean; truncated?: boolean; stdout?: string };
-type Call = { command: string; args: string[]; env: Record<string, string>; deadlineMs: number };
+type Call = { command: string; args: string[]; env: Record<string, string>; deadlineMs: number; cwd?: string };
 
 // A bootstrap-acquired Node and pnpm in the temporary tools directory, ahead of the user's PATH.
 const bootstrapEnv = { HOME, PATH: `${TOOLS}/node/bin:${TOOLS}/pnpm/bin:/usr/bin:/bin` };
@@ -39,8 +39,8 @@ function probes({ env = bootstrapEnv as Record<string, string>, files = [] as st
 	const instance = createProbes({
 		platform,
 		env,
-		run: async (command: string, args: string[], options: { env: Record<string, string>; deadlineMs: number }) => {
-			calls.push({ command, args, env: options.env, deadlineMs: options.deadlineMs });
+		run: async (command: string, args: string[], options: { env: Record<string, string>; deadlineMs: number; cwd?: string }) => {
+			calls.push({ command, args, env: options.env, deadlineMs: options.deadlineMs, ...(options.cwd === undefined ? {} : { cwd: options.cwd }) });
 			const key = [command, ...args].join(" ");
 			const entry = results[key];
 			if (!entry) {
@@ -83,7 +83,27 @@ const userNode = {
 	realpaths: { "/usr/bin/npm": USER_NPM_CLI },
 	texts: { "/usr/lib/node_modules/npm/package.json": JSON.stringify({ name: "npm", version: "10.9.2" }) },
 	results: { [`${USER_NODE} --version`]: { code: 0, stdout: "v24.18.0\n" },
-		[`${USER_NODE} ${USER_NPM_CLI} --version`]: { code: 0, stdout: "10.9.2\n" } } as Record<string, Result>,
+		"/usr/bin/npm --version": { code: 0, stdout: "10.9.2\n" },
+		"/usr/bin/npm config get prefix": { code: 0, stdout: "/usr\n" } } as Record<string, Result>,
+};
+// npm from a version manager: a mise shim (a symlink to the mise binary) or a Volta-like shim script.
+const MISE_SHIMS = "/home/u/.local/share/mise/shims";
+const managedNpm = (directory: string, results: Record<string, Result> = {}) => probes({
+	env: { HOME, PATH: `${TOOLS}/pnpm/bin:${directory}:/usr/bin` },
+	files: [`${directory}/node`, `${directory}/npm`, TOOLS_PNPM],
+	realpaths: { [`${directory}/npm`]: "/home/u/.local/bin/mise" },
+	results: { [`${directory}/node --version`]: { code: 0, stdout: "v24.18.0\n" },
+		[`${directory}/npm --version`]: { code: 0, stdout: "10.9.2\n" },
+		[`${directory}/npm config get prefix`]: { code: 0, stdout: "/home/u/.local/share/mise/installs/node/24.18.0\n" }, ...results },
+});
+// A clean installation plan for that Node; everything else is ready to install.
+const npmPlan = async (h: ReturnType<typeof probes>) => {
+	const plan = planPreflight({ platform: "linux", arch: "x64", node: await h.probes.node(),
+		pnpm: { available: true, version: "11.1.1", usable: true, compatible: true, persistent: true }, pi: { available: false },
+		shell: { available: false }, gentleAi: { available: false }, go: { available: false },
+		globalBin: { available: true, path: BIN, writable: true, onPath: true }, setup: false });
+	assert.deepEqual(plan.blockers, []);
+	return plan.actions.map((action: { id: string }) => action.id);
 };
 
 test("bootstrap tool roots come from GENTLE_BOOTSTRAP_TOOLS and PATH segments, and are removed from the user PATH", () => {
@@ -104,11 +124,88 @@ test("node on the user's real PATH is persistent with genuine npm evidence", asy
 	for (const call of h.calls) assert.ok(call.deadlineMs > 0);
 });
 
+test("a working npm from a version manager is usable: no npm is persisted for it", async () => {
+	for (const directory of [MISE_SHIMS, "/home/u/.volta/bin"]) {
+		const h = managedNpm(directory);
+		assert.deepEqual(await h.probes.node(), { available: true, version: "24.18.0", usable: true, persistent: true, npm: true });
+		assert.deepEqual(h.unexpected, []);
+		// That npm itself runs from `/` in the user's env with $PNPM_HOME/bin first, never npm-cli.js with another Node.
+		const runs = h.calls.filter((call) => call.command === `${directory}/npm`);
+		assert.deepEqual(runs.map((call) => call.args.join(" ")), ["--version", "config get prefix"]);
+		for (const call of runs) {
+			assert.equal(call.cwd, "/");
+			assert.equal(call.env.PATH, `${BIN}:${directory}:/usr/bin`);
+		}
+		assert.deepEqual(await npmPlan(managedNpm(directory)), ["install-pi", "install-shell", "setup-shell", "verify-readiness"]);
+	}
+});
+
+test("an npm that fails, prints no stable version or no absolute prefix is not usable: persist-npm is planned", async () => {
+	const failures: Record<string, Result>[] = [
+		{ [`${MISE_SHIMS}/npm --version`]: { code: 1, stdout: "" } },
+		{ [`${MISE_SHIMS}/npm --version`]: { code: 0, stdout: "11.0.0-pre.1\n" } },
+		{ [`${MISE_SHIMS}/npm --version`]: { code: 0, truncated: true, stdout: "10.9.2" } },
+		{ [`${MISE_SHIMS}/npm config get prefix`]: { code: 0, stdout: "relative/prefix\n" } },
+		{ [`${MISE_SHIMS}/npm config get prefix`]: { code: 0, timedOut: true, stdout: "/opt/node\n" } },
+	];
+	for (const results of failures) {
+		assert.equal((await managedNpm(MISE_SHIMS, results).probes.node()).npm, false, JSON.stringify(results));
+		assert.ok((await npmPlan(managedNpm(MISE_SHIMS, results))).includes("persist-npm"));
+	}
+});
+
+test("a mise-like npm shim runs for real: a symlink to a non-npm executable that behaves like npm", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX shims");
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-probe-npm-")));
+	try {
+		const shims = join(root, "shims");
+		mkdirSync(shims);
+		// Like mise, one executable dispatches on the name it was run as, and reads the global config only from `/`.
+		const mise = join(root, "mise");
+		writeFileSync(mise, `#!/bin/sh\n[ "$(basename "$0")" = npm ] || exit 9\n[ "$(pwd)" = / ] || exit 8\n` +
+			`case "$*" in\n  --version) echo 10.9.2 ;;\n  "config get prefix") echo /opt/mise/node ;;\n  *) exit 7 ;;\nesac\n`);
+		chmodSync(mise, 0o755);
+		symlinkSync(mise, join(shims, "npm"));
+		symlinkSync(process.execPath, join(shims, "node"));
+		const { run, fs } = hostAdapters();
+		const env = { HOME: root, PNPM_HOME: join(root, "pnpm"), PATH: `${shims}:/usr/bin:/bin` };
+		const node = await createProbes({ platform: process.platform, env, run, fs }).node();
+		assert.equal(node.npm, true);
+		assert.equal(node.persistent, true);
+		// The same shim answering a relative prefix is not usable.
+		writeFileSync(mise, readFileSync(mise, "utf8").replace("echo /opt/mise/node", "echo opt/mise/node"));
+		assert.equal((await createProbes({ platform: process.platform, env, run, fs }).node()).npm, false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("a node only inside the bootstrap tools directory is bootstrap-only and its npm does not count", async () => {
 	const h = probes(bootstrapNode);
 	assert.deepEqual(await h.probes.node(), { available: true, version: "24.18.0", usable: true, persistent: false, npm: false });
 	assert.deepEqual(h.unexpected, []);
 	assert.equal(h.calls.some((call) => call.args[0] === TOOLS_NPM_CLI), false);
+});
+
+test("an older Node on the user's PATH is left as it is: the bootstrap's Node is reported with the older version found", async () => {
+	const older = { ...userNode.results, [`${USER_NODE} --version`]: { code: 0, stdout: "v22.18.0\n" } };
+	const h = probes({ files: [...userNode.files, ...bootstrapNode.files], realpaths: { ...userNode.realpaths, ...bootstrapNode.realpaths },
+		texts: { ...userNode.texts, ...bootstrapNode.texts }, results: { ...older, [`${TOOLS_NODE} --version`]: { code: 0, stdout: "v24.21.0\n" },
+			[`${TOOLS_NODE} ${USER_NPM_CLI} --version`]: { code: 0, stdout: "10.9.2\n" } } });
+	const node = await h.probes.node();
+	assert.equal(node.version, "24.21.0");
+	assert.equal(node.persistent, false);
+	assert.equal(node.found, "22.18.0");
+	// A current user Node is reused as before, and an older one without a bootstrap copy is reported as it is.
+	const current = probes({ files: [...userNode.files, ...bootstrapNode.files], realpaths: userNode.realpaths, texts: userNode.texts,
+		results: { ...userNode.results, [`${TOOLS_NODE} --version`]: { code: 0, stdout: "v24.21.0\n" } } });
+	assert.deepEqual(await current.probes.node(), { available: true, version: "24.18.0", usable: true, persistent: true, npm: true });
+	const alone = probes({ ...userNode, env: { HOME, PATH: "/usr/bin" }, results: older });
+	assert.deepEqual(await alone.probes.node(), { available: true, version: "22.18.0", usable: true, persistent: true, npm: true });
+	// A bootstrap copy that is itself not newer is no replacement.
+	const stale = probes({ files: [...userNode.files, ...bootstrapNode.files], realpaths: userNode.realpaths, texts: userNode.texts,
+		results: { ...older, [`${TOOLS_NODE} --version`]: { code: 0, stdout: "v22.0.0\n" } } });
+	assert.equal((await stale.probes.node()).found, undefined);
 });
 
 test("node absent, unparseable, failing, timed out or truncated", async () => {
@@ -148,6 +245,69 @@ test("pnpm outside the verified major, unparseable, timed out or absent", async 
 		assert.deepEqual(await h.probes.pnpm(), { available: null });
 	}
 	assert.deepEqual(await probes({ env: { HOME, PATH: "/usr/bin" } }).probes.pnpm(), { available: false });
+});
+
+test("the bootstrap's pnpm next to an incompatible pnpm on the user's PATH is bootstrap-only and reports the version found", async () => {
+	const results = { [`${TOOLS_PNPM} --version`]: { code: 0, stdout: "11.1.1\n" } };
+	for (const [own, found] of [["10.27.0", "10.27.0"], ["12.0.0", "12.0.0"], ["11.1.1", undefined], ["not a version", undefined]] as const) {
+		const h = probes({ files: [TOOLS_PNPM, "/usr/bin/pnpm"], results: { ...results, "/usr/bin/pnpm --version": { code: 0, stdout: `${own}\n` } } });
+		assert.deepEqual(await h.probes.pnpm(), { available: true, version: "11.1.1", usable: true, compatible: true, persistent: false,
+			...(found ? { found } : {}) }, own);
+		// The user's pnpm runs only for its version, with the user's own environment.
+		const own_ = h.calls.find((call) => call.command === "/usr/bin/pnpm");
+		assert.deepEqual(own_?.args, ["--version"]);
+		assert.equal(own_?.env.PATH, "/usr/bin:/bin");
+	}
+	// The Windows handoff from the bootstrap tools is bootstrap-only even with a pnpm.cmd on the user's Path.
+	const local = "C:\\Users\\u\\AppData\\Local";
+	const tools = `${local}\\.gentle-shell-bootstrap-tools.1`;
+	const node = `${tools}\\node\\node.exe`;
+	const entry = `${tools}\\pnpm\\package\\bin\\pnpm.mjs`;
+	const env = { LOCALAPPDATA: local, USERPROFILE: "C:\\Users\\u", Path: "C:\\Tools", GENTLE_BOOTSTRAP_TOOLS: tools,
+		GENTLE_INSTALL_PNPM_NODE: node, GENTLE_INSTALL_PNPM_ENTRY: entry };
+	const windows = probes({ platform: "win32", env, files: ["C:\\Tools\\pnpm.cmd"], results: { [`${node} ${entry} --version`]: { code: 0, stdout: "11.1.1\r\n" } } });
+	assert.deepEqual(await windows.probes.pnpm(), { available: true, version: "11.1.1", usable: true, compatible: true, persistent: false });
+});
+
+test("a user's pnpm in $PNPM_HOME/bin is reported as it is next to the bootstrap's pnpm, never as replaced", async () => {
+	// Persisting pnpm writes $PNPM_HOME/bin/pnpm: the user's own pnpm there is never replaced or downgraded.
+	const env = { HOME, PATH: `${TOOLS}/node/bin:${TOOLS}/pnpm/bin:${BIN}:/usr/bin:/bin` };
+	const results = { [`${TOOLS_PNPM} --version`]: { code: 0, stdout: "11.1.1\n" } };
+	for (const own of ["11.0.5", "12.0.0", "10.27.0"]) {
+		const h = probes({ env, files: [TOOLS_PNPM, `${BIN}/pnpm`], results: { ...results, [`${BIN}/pnpm --version`]: { code: 0, stdout: `${own}\n` } } });
+		assert.deepEqual(await h.probes.pnpm(), { available: true, version: own, usable: true, compatible: false, persistent: true, inGlobalBin: true }, own);
+	}
+	// Without a version it is unknown, still never replaced.
+	const unread = probes({ env, files: [TOOLS_PNPM, `${BIN}/pnpm`], results: { ...results, [`${BIN}/pnpm --version`]: { code: 2 } } });
+	assert.deepEqual(await unread.probes.pnpm(), { available: null, inGlobalBin: true });
+	// A compatible one there needs nothing persisted over it.
+	const current = probes({ env, files: [TOOLS_PNPM, `${BIN}/pnpm`], results: { ...results, [`${BIN}/pnpm --version`]: { code: 0, stdout: "11.5.0\n" } } });
+	assert.deepEqual(await current.probes.pnpm(), { available: true, version: "11.5.0", usable: true, compatible: true, persistent: true, inGlobalBin: true });
+	// Through the planner: a blocker before consent, and nothing persisted over it.
+	for (const own of ["11.0.5", "12.0.0"]) {
+		const h = probes({ env, files: [TOOLS_PNPM, `${BIN}/pnpm`], results: { ...results, [`${BIN}/pnpm --version`]: { code: 0, stdout: `${own}\n` } } });
+		const inventory = await collectInventory({ platform: "linux", arch: "x64", probes: { pnpm: h.probes.pnpm,
+			node: async () => ({ available: true, version: "24.18.0", usable: true, persistent: true, npm: true }),
+			pi: async () => ({ available: false }), shell: async () => ({ available: false }), gentleAi: async () => ({ available: false }),
+			go: async () => ({ available: false }), globalBin: async () => ({ available: true, path: BIN, writable: true, onPath: true }),
+			setup: async () => false } });
+		const plan = planPreflight(inventory);
+		assert.deepEqual(plan.blockers, [{ code: "incompatible-tool", tool: "pnpm" }], own);
+		assert.deepEqual(plan.actions, []);
+	}
+	// The same user pnpm outside $PNPM_HOME/bin keeps the pinned copy alongside.
+	const outside = probes({ files: [TOOLS_PNPM, "/usr/bin/pnpm"], results: { ...results, "/usr/bin/pnpm --version": { code: 0, stdout: "11.0.5\n" } } });
+	assert.deepEqual(await outside.probes.pnpm(), { available: true, version: "11.1.1", usable: true, compatible: true, persistent: false, found: "11.0.5" });
+	// Windows cannot run the user's pnpm.cmd for its version: one in $PNPM_HOME\bin is unknown.
+	const local = "C:\\Users\\u\\AppData\\Local";
+	const tools = `${local}\\.gentle-shell-bootstrap-tools.1`;
+	const node = `${tools}\\node\\node.exe`;
+	const entry = `${tools}\\pnpm\\package\\bin\\pnpm.mjs`;
+	const windowsEnv = { LOCALAPPDATA: local, USERPROFILE: "C:\\Users\\u", Path: `${local}\\pnpm\\bin`, GENTLE_BOOTSTRAP_TOOLS: tools,
+		GENTLE_INSTALL_PNPM_NODE: node, GENTLE_INSTALL_PNPM_ENTRY: entry };
+	const windows = probes({ platform: "win32", env: windowsEnv, files: [`${local}\\pnpm\\bin\\pnpm.cmd`],
+		results: { [`${node} ${entry} --version`]: { code: 0, stdout: "11.1.1\r\n" } } });
+	assert.deepEqual(await windows.probes.pnpm(), { available: null, inGlobalBin: true });
 });
 
 test("Windows pnpm uses the direct bootstrap handoff; a .cmd shim alone is unknown", async () => {
@@ -273,6 +433,62 @@ test("a Pi on PATH that pnpm does not manage is reused with the version it repor
 	for (const piOutput of ["", "pi dev build\n"]) {
 		assert.deepEqual(await outside("3.9.0", { piOutput }).probes.pi(), { available: null, outsidePnpm: true }, piOutput);
 	}
+});
+
+const PI_PACKAGE = "@earendil-works/pi-coding-agent";
+const PI_ROOT = `${PNPM_HOME}/global/v11/abc/node_modules/${PI_PACKAGE}`;
+const NPM_PI = `${NPM_ROOT}/${PI_PACKAGE}`;
+// A Pi on PATH outside pnpm: npm's own global root, or another installation such as mise.
+const outsidePi = (version: string, root = NPM_PI) => probes({
+	env: { HOME, PATH: `${TOOLS}/pnpm/bin:/usr/local/bin:/usr/bin` },
+	files: [TOOLS_PNPM, "/usr/local/bin/pi", "/usr/local/bin/npm"],
+	dirs: [HOME, NPM_ROOT],
+	realpaths: { "/usr/local/bin/pi": `${root}/dist/cli.js` },
+	texts: { [`${root}/package.json`]: JSON.stringify({ name: PI_PACKAGE, version }) },
+	results: { ...pnpmVersion, "/usr/local/bin/npm root -g": { code: 0, stdout: `${NPM_ROOT}\n` },
+		"/usr/local/bin/pi --version": { code: 0, stdout: `${version}\n` } },
+});
+
+test("an older pnpm-global Pi reports pnpm as its owner, and locatePi finds its real root", async () => {
+	const older = probes({ files: [TOOLS_PNPM], dirs: [HOME, PI_ROOT], results: { [`${TOOLS_PNPM} ${LIST}`]: { code: 0,
+		stdout: listing({ [PI_PACKAGE]: { version: "0.87.1", path: PI_ROOT } }) } } });
+	assert.deepEqual(await older.probes.pi(), { available: true, version: "0.87.1", usable: true, owner: "pnpm" });
+	assert.deepEqual(await older.probes.locatePi(), { root: PI_ROOT, version: "0.87.1", owner: "pnpm" });
+	// A current Pi keeps its shape: nothing about it is updated.
+	const current = probes({ files: [TOOLS_PNPM], dirs: [HOME, PI_ROOT], results: { [`${TOOLS_PNPM} ${LIST}`]: { code: 0,
+		stdout: listing({ [PI_PACKAGE]: { version: PI_INSTALL_VERSION, path: PI_ROOT } }) } } });
+	assert.deepEqual(await current.probes.pi(), { available: true, version: PI_INSTALL_VERSION, usable: true });
+	assert.deepEqual(await current.probes.locatePi(), { root: PI_ROOT, version: PI_INSTALL_VERSION, owner: "pnpm" });
+	// Listed twice (two global projects): ambiguous, so nothing is located.
+	const twice = probes({ files: [TOOLS_PNPM], dirs: [HOME, PI_ROOT], results: { [`${TOOLS_PNPM} ${LIST}`]: { code: 0,
+		stdout: JSON.stringify([{ dependencies: { [PI_PACKAGE]: { version: "0.87.1", path: PI_ROOT } } },
+			{ dependencies: { [PI_PACKAGE]: { version: PI_INSTALL_VERSION, path: PI_ROOT } } }]) } } });
+	assert.deepEqual(await twice.probes.pi(), { available: null });
+	assert.equal(await twice.probes.locatePi(), null);
+});
+
+test("an older Pi in npm's global root reports npm as its owner; one elsewhere has no owner", async () => {
+	const npm = outsidePi("0.87.1");
+	assert.deepEqual(await npm.probes.pi(), { available: true, version: "0.87.1", usable: true, external: true, owner: "npm" });
+	assert.deepEqual(await npm.probes.locatePi(), { root: NPM_PI, version: "0.87.1", owner: "npm" });
+	const mise = outsidePi("0.87.1", "/home/u/.local/share/mise/installs/pi/lib/node_modules/@earendil-works/pi-coding-agent");
+	assert.deepEqual(await mise.probes.pi(), { available: true, version: "0.87.1", usable: true, external: true });
+	assert.equal((await mise.probes.locatePi())?.owner, null);
+	// A current npm Pi is reused as before, without asking npm where its global root is.
+	const current = outsidePi(PI_INSTALL_VERSION);
+	assert.deepEqual(await current.probes.pi(), { available: true, version: PI_INSTALL_VERSION, usable: true, external: true });
+	assert.equal(current.calls.some((call) => call.args.join(" ") === "root -g"), false);
+	// No Pi at all: nothing is located.
+	assert.equal(await probes({ files: [TOOLS_PNPM], results: pnpmVersion }).probes.locatePi(), null);
+});
+
+test("after the installer's Pi is added next to another one, the next probe reuses the pnpm-global Pi and never runs the other", async () => {
+	const h = probes({ env: { HOME, PATH: `${TOOLS}/pnpm/bin:/home/u/.local/share/mise/shims:/usr/bin` },
+		files: [TOOLS_PNPM, "/home/u/.local/share/mise/shims/pi"], dirs: [HOME, PI_ROOT],
+		results: { [`${TOOLS_PNPM} ${LIST}`]: { code: 0, stdout: listing({ [PI_PACKAGE]: { version: PI_INSTALL_VERSION, path: PI_ROOT } }) } } });
+	assert.deepEqual(await h.probes.pi(), { available: true, version: PI_INSTALL_VERSION, usable: true });
+	assert.equal(h.calls.some((call) => call.command.includes("mise")), false);
+	assert.equal(planPreflight({ platform: "linux", arch: "x64", pi: await h.probes.pi() }).tools.pi.status, "reusable");
 });
 
 test("a Gentle Shell installed by npm reports its version and npm as its owner", async () => {

@@ -2,7 +2,7 @@ import { lstatSync, readFileSync, realpathSync, mkdirSync, writeFileSync, rmSync
 import { dirname, join, resolve, win32 } from "node:path";
 import { spawnSync } from "node:child_process";
 import { gunzipSync } from "node:zlib";
-import { artifactFor, verifiedDownload, compatibleEngine, launchWizard } from "./installer-downloads.mjs";
+import { artifactFor, verifiedDownload, compatibleEngine, launchWizard, pinnedPnpmCompatible } from "./installer-downloads.mjs";
 
 export const windowsNodeFloor = ">=24.3.0";
 const maxExpandedBytes = 128 * 1024 * 1024;
@@ -233,6 +233,8 @@ function proveCli(node, entry, metadata, env, processAdapter) {
 /** Returns a direct invocation, NOT a fabricated npm/pnpm executable shim.
  * T4 must call command + prefix with shell:false and retain this child env.
  * `onStep` receives fixed phase names for diagnostics only; it never alters checks.
+ * A proven wrapper whose package reports a stable version of another major or
+ * older than the pin is left as it is: the verified pnpm is acquired instead.
  */
 export async function ensureWindowsPnpm({ tools, env, node = process.execPath, adapters = {}, onStep = () => {} }) {
 	const processAdapter = adapters.process ?? windowsProcessCheck;
@@ -261,9 +263,12 @@ export async function ensureWindowsPnpm({ tools, env, node = process.execPath, a
 		onStep("package");
 		const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
 		if (metadata.bin?.pnpm !== `bin/${proof.entry.endsWith("pnpm.cjs") ? "pnpm.cjs" : "pnpm.mjs"}`) throw new Error("Windows pnpm package target rejected");
-		onStep("cli-proof");
-		proveCli(selectedNode, entry, metadata, env, processAdapter);
-		return { acquired: false, env, command: selectedNode, prefix: [entry] };
+		const stable = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(metadata.version ?? "");
+		if (metadata.name !== "pnpm" || !stable || pinnedPnpmCompatible(metadata.version)) {
+			onStep("cli-proof");
+			proveCli(selectedNode, entry, metadata, env, processAdapter);
+			return { acquired: false, env, command: selectedNode, prefix: [entry] };
+		}
 	}
 	onStep("tools-check");
 	storage(tools, env);

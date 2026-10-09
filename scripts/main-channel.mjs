@@ -11,7 +11,7 @@
 //     `<version>-main.<sha12>` and packed without `prepack` (which runs the full
 //     test suite), then installed globally like any local tarball.
 // The recorded channel lets `gentle-shell upgrade` follow release or main.
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, normalize, relative } from "node:path";
 import { gentleAiDevBinaryRegistrationPath, registerGentleAiDevBinary, unregisterGentleAiDevBinary } from "../runtime/gentle-ai-binary.mjs";
 import { pnpmGlobalBin } from "./installer-preflight.mjs";
 
@@ -250,15 +250,15 @@ async function latestRelease(fetch) {
 }
 
 /**
- * Which package manager owns an installed gentle-pi, from real (symlink-free) paths:
- * pnpm when it lives under PNPM_HOME, npm only when it is `<npm root -g>/gentle-pi`
- * itself, otherwise null — for example an `npm link` of a source checkout, which
- * must never be reinstalled over.
+ * Which package manager owns an installed package (gentle-pi unless `name` says
+ * otherwise), from real (symlink-free) paths: pnpm when it lives under PNPM_HOME,
+ * npm only when it is `<npm root -g>/<name>` itself, otherwise null — for example
+ * an `npm link` of a source checkout, which must never be reinstalled over.
  */
-export function installOwner({ packageRoot, pnpmHome, npmRoot }) {
+export function installOwner({ packageRoot, pnpmHome, npmRoot, name = "gentle-pi" }) {
 	if (typeof packageRoot !== "string") return null;
 	if (typeof pnpmHome === "string" && inside(pnpmHome, packageRoot)) return "pnpm";
-	if (typeof npmRoot === "string" && relative(npmRoot, packageRoot) === "gentle-pi") return "npm";
+	if (typeof npmRoot === "string" && relative(npmRoot, packageRoot) === normalize(name)) return "npm";
 	return null;
 }
 

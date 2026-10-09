@@ -1317,15 +1317,15 @@ async function run() {
 		);
 		await writeFile(globalModelsPath, JSON.stringify({ "sdd-apply": {} }, null, 2));
 		await hooks.get("session_start")[0]({ reason: "startup" }, legacyCtx);
-		const explicitInheritClearsAgent = await readFile(
+		const savedInheritPreservesAgent = await readFile(
 			join(legacyModelsCwd, ".pi", "agents", "sdd-apply.md"),
 			"utf8",
 		);
-		assert.doesNotMatch(explicitInheritClearsAgent, /model:/);
-		const explicitInheritClearsProfiles = JSON.parse(
+		assert.match(savedInheritPreservesAgent, /model: global\/provider-model/);
+		const savedInheritPreservesProfiles = JSON.parse(
 			await readFile(join(legacyModelsCwd, ".pi", "subagents.json"), "utf8"),
 		);
-		assert.equal(explicitInheritClearsProfiles.model_profiles, undefined);
+		assert.equal(savedInheritPreservesProfiles.model_profiles["sdd-apply"].model, "global/provider-model");
 	} finally {
 		await rm(legacyModelsCwd, { recursive: true, force: true });
 		await rm(globalModelsPath, { force: true });
@@ -1347,10 +1347,12 @@ async function run() {
 		);
 		await writeFile(globalModelsPath, JSON.stringify({ worker: {} }, null, 2));
 		await hooks.get("session_start")[0]({ reason: "startup" }, createCtx(staleSettingsOnlyCwd, true));
-		const staleOnlyClearedProfiles = JSON.parse(
+		const staleOnlyPreservedProfiles = JSON.parse(
 			await readFile(globalSubagentsPath, "utf8"),
 		);
-		assert.equal(staleOnlyClearedProfiles.model_profiles, undefined);
+		assert.deepEqual(staleOnlyPreservedProfiles.model_profiles, {
+			worker: { model: "stale/model", effort: "high" },
+		});
 	} finally {
 		await rm(staleSettingsOnlyCwd, { recursive: true, force: true });
 		await rm(globalModelsPath, { force: true });
@@ -1566,22 +1568,29 @@ async function run() {
 		assert.match(preservedProjectSubagentWorker, /thinking: medium/);
 		await writeFile(globalModelsPath, JSON.stringify({ worker: {} }, null, 2));
 		await hooks.get("session_start")[0]({ reason: "startup" }, createCtx(modelsCwd, true));
-		const clearedProfiles = JSON.parse(
+		// gentle-ai#4946: startup/reload never treats persisted inherit as
+		// deletion approval, including for previously materialized routing.
+		// Explicit panel saves and confirmed profile replacement still clear.
+		const preservedClearProfiles = JSON.parse(
 			await readFile(join(modelsCwd, ".pi", "subagents.json"), "utf8"),
 		);
-		assert.equal(clearedProfiles.model_profiles, undefined);
+		assert.equal(
+			preservedClearProfiles.model_profiles.worker.model,
+			"existing/model",
+		);
+		assert.equal(preservedClearProfiles.model_profiles.worker.effort, "high");
 		const unchangedProjectWorker = await readFile(
 			join(modelsCwd, ".pi", "agents", "worker.md"),
 			"utf8",
 		);
 		assert.match(unchangedProjectWorker, /model: existing\/project-worker/);
 		assert.match(unchangedProjectWorker, /thinking: high/);
-		const clearedProjectSubagentWorker = await readFile(
+		const preservedClearProjectSubagentWorker = await readFile(
 			join(modelsCwd, ".pi", "subagents", "worker.md"),
 			"utf8",
 		);
-		assert.doesNotMatch(clearedProjectSubagentWorker, /model:/);
-		assert.doesNotMatch(clearedProjectSubagentWorker, /thinking:/);
+		assert.match(preservedClearProjectSubagentWorker, /model: existing\/project-subagent-worker/);
+		assert.match(preservedClearProjectSubagentWorker, /thinking: medium/);
 
 		await writeFile(
 			globalModelsPath,

@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 import { convertToLlm, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Component } from "@earendil-works/pi-tui";
+import type { Component, TUI } from "@earendil-works/pi-tui";
 import gentleTodo, { todoCollapseKey, todoEnabled } from "../extensions/gentle-todo.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
+import { sidebarState } from "../lib/shell-sidebar.ts";
+import { installSidebar } from "../lib/shell-sidebar-layout.ts";
 
 // The card style defaults to float; these assertions pin the outlined (neon)
 // panels unless a test switches the style itself.
@@ -75,6 +77,87 @@ function fakeContext(branch: unknown[] = [], hasUI = true) {
 	const widget = () => widgetComponent()?.render(70).map(stripAnsi);
 	return { ctx, widgets, widget, widgetComponent };
 }
+
+test("long Todo widgets stay bounded, scroll, resize and keep their collapse control in mobile and sidebar", async (t) => {
+	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
+		setCardStyle(style);
+		const { pi, tools, fire, shortcuts } = fakePi();
+		gentleTodo(pi, {});
+		const { ctx, widgets } = fakeContext();
+		await fire("session_start", ctx);
+		const title = "long active title ".repeat(150);
+		const note = "description ".repeat(150);
+		const result = await tools.get("todo")!.execute("write", { action: "write", tasks: [{ title, note, status: "in_progress" }, { title: "LAST TASK" }] }, undefined, undefined, ctx);
+		await fire("tool_execution_end", ctx, { toolName: "todo" });
+		const tui = { requestRender() {}, terminal: { rows: 30, columns: 40 } };
+		const theme = { ...plainTheme, bg: (_color: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
+		const bottom = widgets.get("gentle-todo")!(tui, theme);
+		const rail = sidebarState(tui as never).parts.get("todo")!;
+		for (const component of [bottom, rail]) {
+			const before = component.render(40).map(stripAnsi);
+			assert.ok(before.length <= 10, "card uses at most one third of terminal height");
+			const header = style === CARD_STYLE.FLOAT ? 1 : 0;
+			assert.match(before[header]!, /Todos ▾/);
+			assert.equal(component.handleMouse?.({ type: "wheel", button: "none", wheelDelta: 10000, x: 5, y: header + 2, screenX: 5, screenY: 5, width: 40, height: before.length, shift: false, alt: false, ctrl: false })?.handled, true);
+			const after = component.render(40).map(stripAnsi);
+			assert.match(after[header]!, /Todos ▾/);
+			assert.match(after.join("\n"), /LAST TASK/, "all details remain reachable by scrolling");
+			assert.notDeepEqual(after, before);
+		}
+		tui.terminal.rows = 24;
+		assert.ok(bottom.render(40).length <= 8, "height responds to resize");
+		await shortcuts.get("ctrl+shift+t")!.handler(ctx);
+		const collapsed = bottom.render(40).map(stripAnsi);
+		assert.ok(collapsed.length <= (style === CARD_STYLE.FLOAT ? 6 : 4));
+		assert.match(collapsed.join("\n"), /long active title/);
+		assert.match(collapsed.join("\n"), /…/);
+		assert.equal((result.details.gentleTodo as { tasks: { title: string; note: string }[] }).tasks[0].title, title.trim());
+		assert.equal((result.details.gentleTodo as { tasks: { title: string; note: string }[] }).tasks[0].note, note.trim());
+		await shortcuts.get("ctrl+shift+t")!.handler(ctx);
+		await shortcuts.get("ctrl+shift+down")!.handler(ctx);
+		assert.notDeepEqual(bottom.render(40), collapsed, "keyboard scrolling is available without mouse");
+	}
+	t.after(() => setCardStyle(CARD_STYLE.NEON));
+});
+
+test("Todo keyboard scrolling targets the visible card after a cached sidebar breakpoint round-trip", async (t) => {
+	const node = Symbol.for("@earendil-works/pi-tui/layout-node");
+	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
+		setCardStyle(style);
+		const { pi, tools, fire, shortcuts } = fakePi();
+		gentleTodo(pi, {});
+		const { ctx, widgets } = fakeContext();
+		await fire("session_start", ctx);
+		await tools.get("todo")!.execute("write", { action: "write", tasks: [{ title: Array.from({ length: 100 }, (_, i) => `TITLE${i}`).join(" "), status: "in_progress" }] }, undefined, undefined, ctx);
+		await fire("tool_execution_end", ctx, { toolName: "todo" });
+		const root = { render: () => [], invalidate() {}, [node]: () => ({ type: "vstack", entries: [] }) };
+		const tui = { mode: "fullscreen", terminal: { rows: 30, columns: 160 }, layoutRoot: root, requestRender() {} };
+		const theme = { ...plainTheme, bold: (text: string) => text, bg: (_color: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
+		const bottom = widgets.get("gentle-todo")!(tui, theme);
+		const dispose = installSidebar(tui as unknown as TUI, theme);
+		try {
+			const railLines = () => {
+				const layout = root[node]() as unknown as { entries: { component: Component }[] };
+				return layout.entries[1]!.component.render(50).map(stripAnsi);
+			};
+			railLines();
+			tui.terminal.columns = 40;
+			root[node]();
+			bottom.render(40);
+			tui.terminal.columns = 160;
+			const before = railLines();
+			await shortcuts.get("ctrl+shift+down")!.handler(ctx);
+			const after = railLines();
+			assert.notDeepEqual(after, before, "DOWN changes the visible cached rail, not the hidden bottom widget");
+			assert.match(after.join("\n"), /↑↓ 4–/);
+			await shortcuts.get("ctrl+shift+up")!.handler(ctx);
+			assert.deepEqual(railLines(), before, "UP restores the expanded viewport");
+		} finally {
+			dispose();
+		}
+	}
+	t.after(() => setCardStyle(CARD_STYLE.NEON));
+});
 
 test("todoEnabled and todoCollapseKey read their environment flags", () => {
 	assert.equal(todoEnabled({}), true);

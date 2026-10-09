@@ -179,6 +179,10 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	};
 	scroll.handleMouse = (event) => {
 		if (event.type === "wheel") {
+			// A bounded section (Todo) owns its inner viewport. Only wheel
+			// events it declines should move the surrounding rail.
+			const sectionResult = dispatchPartMouse(event);
+			if (sectionResult?.handled) return sectionResult;
 			// Consume even at the boundary or over blank rail space: Pi 0.85.1
 			// can send unconsumed delta to the primary transcript despite containment.
 			scroll.scrollBy(event.wheelDelta ?? 0);

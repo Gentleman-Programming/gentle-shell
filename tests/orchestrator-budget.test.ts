@@ -30,7 +30,12 @@ import test, { after } from "node:test";
 const REPO_ROOT = join(import.meta.dirname, "..");
 const REAL_ASSETS_DIR = join(REPO_ROOT, "assets");
 const FIXTURE_PATH = join(import.meta.dirname, "fixtures", "orchestrator.pre-diet.md");
-// Canonical always-on budget; re-measured at the controlled 128-char assets-root worst case: main's #1731 narrowed core (8,400) plus this branch's compact #348 parent-inline duty clause (+48 B). Default-root render stays within #1731's 8,400 guard (orchestrator-rdd-ownership.test.ts).
+// Canonical always-on budget (controlled 128-char assets-root worst case).
+// Lineage: 8320 (pre-SDD-removal) -> 7131 (SDD/openspec removal) -> 8457
+// (2026-10-05 refresh: #348 clause on main's tightened phrasing) -> 8448
+// (compact "Fallbacks:" tail, -9 B; main's #1731 narrowed core + #348 clause).
+// Default-root render stays within #1731's 8,400 guard
+// (orchestrator-rdd-ownership.test.ts).
 const BUDGET_BYTES = 8448;
 const MIN_CONTROLLED_LONG_ASSETS_ROOT_CHARS = 93;
 

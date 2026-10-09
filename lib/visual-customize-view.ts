@@ -63,11 +63,22 @@ export interface CustomizeRow {
 /** Minimal in-card bridge so a row never opens a nested native dialog. */
 export interface CustomizeInline {
 	/** Opens an inline field on the highlighted row; resolves on submit or undefined when cancelled. */
-	input(request: { prompt: string; value: string }): Promise<string | undefined>;
+	input(request: CustomizeInputRequest): Promise<CustomizeInputResult | undefined>;
 	/** Opens an inline confirmation; resolves true only after an explicit, fully visible yes. */
 	confirm(message: string): Promise<boolean>;
 	/** Set once the owning card is disposed; a row must never persist after this. */
 	disposed: boolean;
+}
+/** One inline field request. The save shortcut is offered, and advertised in the field footer, only on request. */
+export interface CustomizeInputRequest {
+	prompt: string;
+	value: string;
+	allowSave?: boolean;
+}
+/** What one field resolved to; `save` is true only when the user used the save shortcut instead of Enter. */
+export interface CustomizeInputResult {
+	value: string;
+	save: boolean;
 }
 export interface ProfileActions {
 	list(): VisualProfile[];
@@ -106,7 +117,7 @@ export class VisualCustomizeView {
 	private confirmation?: { action: "replace" | "apply" | "delete" | "reset"; name?: string; fingerprint?: string };
 	private confirmationVisible = false;
 	private profileBusy = false;
-	private inlineInput?: { prompt: string; value: string; resolve: (value: string | undefined) => void; visible: boolean };
+	private inlineInput?: { prompt: string; value: string; allowSave: boolean; resolve: (result: CustomizeInputResult | undefined) => void; visible: boolean };
 	private inlineConfirm?: { message: string; resolve: (value: boolean) => void; visible: boolean };
 	private readonly inline: CustomizeInline = {
 		input: request => this.openInlineInput(request),
@@ -123,9 +134,9 @@ export class VisualCustomizeView {
 		const confirm = this.inlineConfirm;
 		if (confirm) { this.inlineConfirm = undefined; confirm.resolve(false); }
 	}
-	private openInlineInput(request: { prompt: string; value: string }): Promise<string | undefined> {
+	private openInlineInput(request: CustomizeInputRequest): Promise<CustomizeInputResult | undefined> {
 		if (this.closed) return Promise.resolve(undefined);
-		return new Promise(resolve => { this.inlineInput = { prompt: request.prompt, value: request.value, resolve, visible: false }; });
+		return new Promise(resolve => { this.inlineInput = { prompt: request.prompt, value: request.value, allowSave: request.allowSave === true, resolve, visible: false }; });
 	}
 	private openInlineConfirm(message: string): Promise<boolean> {
 		if (this.closed) return Promise.resolve(false);
@@ -173,18 +184,25 @@ export class VisualCustomizeView {
 		const navOnly = width < 60 && this.pane === "categories" && this.categories.length > 1;
 		return { inner: width - CARD_PADDING, lines: height >= 11 ? 3 : height >= 8 ? 1 : 0, navOnly };
 	}
+	/** Recomputes the field's own visibility from live geometry; an unseen value is never submitted. */
+	private inlineFieldVisible(field: { prompt: string; value: string; visible: boolean }): boolean {
+		const area = this.previewCapacity();
+		field.visible = area !== undefined && !area.navOnly && area.lines > 0 && visibleWidth(`${field.prompt}: ${field.value}▏`) <= area.inner;
+		return field.visible;
+	}
 	private handleInlineInput(data: string): void {
 		const field = this.inlineInput!;
 		if (matchesKey(data, Key.escape)) { this.inlineInput = undefined; field.resolve(undefined); }
 		else if (data.startsWith("\x1b[200~")) {
 			const pasted = pastedText(data);
 			if (pasted !== undefined) field.value = appendInput(field.value, pasted);
+		// The save shortcut is never text: it either submits the value as saved, or is consumed without effect.
+		} else if (matchesKey(data, "ctrl+s")) {
+			if (field.allowSave && this.inlineFieldVisible(field)) { this.inlineInput = undefined; field.resolve({ value: field.value, save: true }); }
 		} else if (matchesKey(data, Key.enter) || data.endsWith("\r") && safeText(data.slice(0, -1))) {
 			if (!matchesKey(data, Key.enter)) field.value = appendInput(field.value, data.slice(0, -1));
 			// Guard against a resize that hides the field before this Enter: an unseen value never submits.
-			const area = this.previewCapacity();
-			field.visible = area !== undefined && !area.navOnly && area.lines > 0 && visibleWidth(`${field.prompt}: ${field.value}▏`) <= area.inner;
-			if (field.visible) { this.inlineInput = undefined; field.resolve(field.value); }
+			if (this.inlineFieldVisible(field)) { this.inlineInput = undefined; field.resolve({ value: field.value, save: false }); }
 		} else if (matchesKey(data, Key.backspace) || data === "\x7f") field.value = dropLastGrapheme(field.value);
 		else { const text = decodeKittyPrintable(data) ?? data; if (safeText(text)) field.value = appendInput(field.value, text); }
 		this.options.requestRender();
@@ -410,7 +428,9 @@ export class VisualCustomizeView {
 			this.inlineInput.visible = !navOnly && previewLines > 0 && visibleWidth(field) <= inner;
 			if (previewLines > 0) {
 				lines.push(paint(field, inner, "accent"));
-				if (previewLines === 3) lines.push(paint(this.inlineInput.visible ? "Enter confirm · Esc cancel" : "Value too wide · enlarge terminal · Esc cancel", inner, "muted"));
+				if (previewLines === 3) lines.push(paint(this.inlineInput.visible
+					? `Enter confirm · ${this.inlineInput.allowSave ? "Ctrl+S save · " : ""}Esc cancel`
+					: "Value too wide · enlarge terminal · Esc cancel", inner, "muted"));
 			}
 		} else if (previewLines === 3) {
 			let preview: ReturnType<NonNullable<CustomizeRow["preview"]>> | undefined;

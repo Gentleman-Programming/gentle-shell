@@ -1,3 +1,4 @@
+import { tryNativeFileLock, releaseNativeFileLock } from "../lib/native-file-lock.ts";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import { recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
 import { SHELL_COMMAND_TOOLS } from "../lib/background-jobs.ts";
@@ -13,18 +14,14 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { isProxy } from "node:util/types";
 import {
-	closeSync,
 	existsSync,
-	fstatSync,
-	linkSync,
 	lstatSync,
-	openSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
 	realpathSync,
 	statSync,
-	unlinkSync,
+	renameSync,
 	writeFileSync,
 } from "node:fs";
 import {
@@ -2494,106 +2491,10 @@ async function readMaterializedProfileNamesAsync(path: string): Promise<Set<stri
 	}
 }
 
-// Both callers use the same exclusive lock file. Membership is read only
-// after acquisition, never merged from a stale per-routing-write snapshot.
-// The critical section contains no await, so a synchronous caller cannot
-// wait on an async owner suspended in this same process.
-//
-// Self-heal (review R3-001): a process killed between openSync(wx) and the
-// release-unlink would strand the lock forever, burning the retry deadline
-// on every later startup and freezing the ownership set. The lock records
-// its owner pid and creation time; a waiter breaks a lock whose owner is
-// provably dead (ESRCH) or whose age exceeds the maximum critical section
-// by far. Breaking renames to a unique name first, so exactly one breaker
-// removes the original and losers just retry.
-const MATERIALIZE_LOCK_MAX_AGE_MS = 60_000;
-
-type MaterializedProfileLockOwner = { pid: number; createdAtMs: number };
-
-function readMaterializedProfileLockOwnerFd(fd: number): MaterializedProfileLockOwner | undefined {
-	try {
-		const parsed: unknown = JSON.parse(readFileSync(fd, "utf8"));
-		if (!isRecord(parsed) || typeof parsed.pid !== "number" || typeof parsed.createdAtMs !== "number") {
-			return undefined;
-		}
-		return { pid: parsed.pid, createdAtMs: parsed.createdAtMs };
-	} catch {
-		return undefined;
-	}
-}
-
-function processAlive(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (error) {
-		// EPERM means the process exists but belongs to another user.
-		return (error as NodeJS.ErrnoException).code === "EPERM";
-	}
-}
-
-function breakStaleMaterializedProfileLock(lockPath: string): void {
-	// Reclaim iff the pinned lock instance predates the maximum plausible
-	// critical section (mtime, works even for unreadable owners) or its
-	// recorded owner is provably dead. The instance is claimed through a
-	// hardlink of the inspected file and an inode comparison, so a live owner
-	// that replaced the path between inspection and reclaim is never stolen
-	// from: the claim is dropped and the path left untouched when the link
-	// resolved to a different instance than the one checked.
-	let fd: number;
-	try {
-		fd = openSync(lockPath, "r");
-	} catch {
-		return; // released, or another breaker already reclaimed it
-	}
-	try {
-		const stale = Date.now() - fstatSync(fd).mtimeMs >= MATERIALIZE_LOCK_MAX_AGE_MS;
-		const owner = readMaterializedProfileLockOwnerFd(fd);
-		const deadOwner = owner !== undefined && !processAlive(owner.pid);
-		if (!stale && !deadOwner) return;
-		const claimPath = `${lockPath}.claim-${randomUUID()}`;
-		try {
-			linkSync(lockPath, claimPath);
-		} catch {
-			return; // the path vanished mid-inspection; the retry loop re-runs
-		}
-		const claimed = statSync(claimPath);
-		const pinned = fstatSync(fd);
-		const sameInstance = claimed.dev === pinned.dev && claimed.ino === pinned.ino;
-		try {
-			unlinkSync(claimPath);
-		} catch {
-			/* best-effort claim cleanup */
-		}
-		if (sameInstance) {
-			try {
-				unlinkSync(lockPath);
-			} catch {
-				/* another breaker already removed the original name */
-			}
-		}
-	} finally {
-		closeSync(fd);
-	}
-}
-
+// Membership is read only after kernel-lock acquisition. No await occurs
+// while held: a synchronous caller cannot wait on a suspended local owner.
 function tryMaterializedProfileLock(path: string): number | undefined {
-	const lockPath = `${path}.lock`;
-	try {
-		mkdirSync(dirname(path), { recursive: true });
-		const fd = openSync(lockPath, "wx", 0o600);
-		try {
-			writeFileSync(fd, `${JSON.stringify({ pid: process.pid, createdAtMs: Date.now() })}\n`);
-		} catch {
-			try { closeSync(fd); } finally { unlinkSync(lockPath); }
-			return undefined;
-		}
-		return fd;
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-		breakStaleMaterializedProfileLock(lockPath);
-		return undefined;
-	}
+	return tryNativeFileLock(`${path}.lock`);
 }
 
 function commitMaterializedProfileName(path: string, name: string, owned: boolean, lock: number): void {
@@ -2602,18 +2503,23 @@ function commitMaterializedProfileName(path: string, name: string, owned: boolea
 		if (names.has(name) === owned) return;
 		if (owned) names.add(name);
 		else names.delete(name);
+		// Publish only a complete snapshot. Death during the temporary write
+		// leaves the previous ownership intact, never a truncated sidecar.
+		const temporary = `${path}.tmp-${randomUUID()}`;
 		writeFileSync(
-			path,
+			temporary,
 			`${JSON.stringify({ kind: MATERIALIZE_TRACKING_KIND, agents: [...names].sort() }, null, 2)}\n`,
+			{ flag: "wx", mode: 0o600 },
 		);
+		renameSync(temporary, path);
 	} finally {
-		try { closeSync(lock); } finally { unlinkSync(`${path}.lock`); }
+		releaseNativeFileLock(lock);
 	}
 }
 
 function updateMaterializedProfileName(path: string, name: string, owned: boolean): void {
-	// Best-effort bookkeeping stays bounded; stale locks self-heal above, so
-	// the deadline is only reached under genuine live contention.
+	// Best-effort bookkeeping stays bounded under genuine live contention.
+	// Native failure never permits an unlocked ownership write.
 	try {
 		const deadline = Date.now() + 5_000;
 		while (true) {

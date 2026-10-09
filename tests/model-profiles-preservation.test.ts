@@ -186,10 +186,12 @@ test("both apply paths coordinate ownership with another process", async (t) => 
 			const owner = spawn(process.execPath, ["-e", `
 				const fs = require('node:fs');
 				const path = process.argv[1];
-				const fd = fs.openSync(path, 'wx', 0o600);
+				const native = require('fs-native-extensions');
+				const fd = fs.openSync(path, 'a+', 0o600);
+				if (!native.tryLock(fd)) throw new Error('lock unavailable');
 				process.on('message', () => {
+					native.unlock(fd);
 					fs.closeSync(fd);
-					fs.unlinkSync(path);
 					process.exit(0);
 				});
 				process.send('locked');
@@ -200,15 +202,12 @@ test("both apply paths coordinate ownership with another process", async (t) => 
 			const originalOpen = fs.openSync;
 			let waited = false;
 			const mock = t.mock.method(fs, "openSync", (...args: Parameters<typeof originalOpen>) => {
-				try {
-					return originalOpen(...args);
-				} catch (error) {
-					if (String(args[0]) === lockPath && (error as NodeJS.ErrnoException).code === "EEXIST" && !waited) {
-						waited = true;
-						owner.send("release");
-					}
-					throw error;
+				const fd = originalOpen(...args);
+				if (String(args[0]) === lockPath && !waited) {
+					waited = true;
+					owner.send("release");
 				}
+				return fd;
 			});
 			syncBuiltinESMExports();
 			try {
@@ -246,7 +245,7 @@ test("consented panel save still clears the routing it was told to inherit", asy
 	assert.equal(stored.max_concurrency, 3);
 });
 
-test("a stranded ownership lock self-heals instead of blocking bookkeeping forever", async (t) => {
+test("legacy lock contents and age do not block kernel ownership", async (t) => {
 	const deadChild = spawn(process.execPath, ["-e", "process.exit(0)"]);
 	const [code] = await once(deadChild, "exit");
 	assert.equal(code, 0);
@@ -269,7 +268,8 @@ test("a stranded ownership lock self-heals instead of blocking bookkeeping forev
 			await applyModelConfigAsync(fixture.root, { worker: { model: "openai/materialized" } });
 			const sidecar = JSON.parse(readFileSync(join(trackingDir, "materialized-model-profiles.json"), "utf8"));
 			assert.deepEqual(sidecar.agents, ["worker"], "bookkeeping recovered through the healed lock");
-			assert.equal(existsSync(lockPath), false, "the stranded lock is gone");
+			assert.equal(existsSync(lockPath), true, "the permanent mutex path survives");
+			assert.equal(readFileSync(lockPath, "utf8"), stranded, "legacy contents do not confer ownership and are not replaced");
 			writeFileSync(fixture.globalModelsPath, JSON.stringify({ worker: {} }));
 			const result = await applySavedModelConfig(fixture.context);
 			assert.equal(result.updated, 2, "the recovered ownership lets a sweep clear the materialized route");

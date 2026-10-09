@@ -256,6 +256,8 @@ In the isolated Gentle Shell home, `settings.json` does not declare gentle-pi; t
 
 ### Background jobs
 
+Use synchronous bash for local, finite, deterministic checks reasonably expected to finish within 30 seconds, with an explicit timeout <= 30 seconds (30 included). Use `bash_background` for longer or unknown duration, external waits, CI, builds, and servers. Inline means the same parent, not necessarily synchronous bash. Report a timeout as failure; never automatically retry, restart, or migrate it to background. Preserve RED/GREEN and public-check exit codes, stdout, and stderr; do not defer or batch Engram bugfix saves and session summaries or bypass RDD. This is agent-facing guidance, not runtime enforcement and not a performance guarantee.
+
 Waiting on CI, a build, or a server should cost neither a `sleep` loop nor a subagent, and neither should reacting to a log or a CI run while it progresses. `bash_background` runs a shell command in the background and returns a job id at once; the agent ends its turn or keeps working, and when the command exits the agent gets one message with the exit code, the last output lines, and the output file path. The wait condition lives inside the command, so its exit is the event:
 
 ```bash

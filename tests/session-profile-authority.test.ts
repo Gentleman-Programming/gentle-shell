@@ -24,6 +24,8 @@ import gentleAgents, {
 } from "../extensions/gentle-agents.ts";
 import { bindSessionRepositoryPreparation } from "../lib/bounded-writer-admission.ts";
 import { SESSION_PROFILE_CUSTOM_TYPE } from "../lib/session-profile-persistence.ts";
+import { readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
+import { bindSessionProfile, readSessionProfileBinding } from "../lib/session-profile-binding.ts";
 
 // Admission tests use actual factory loader/runner and manager. They do not
 // claim runtime lifecycle or visual evidence: those are separate fixtures.
@@ -203,4 +205,29 @@ test("U3 independently evaluated binding readers share only process-local snapsh
  clearSessionProfileBinding("u3-module");
  assert.equal(copy.readSessionProfileBinding("u3-module"), undefined);
  assert.equal(SESSION_PROFILE_CUSTOM_TYPE, "gentle-pi.session-profile/v1");
+});
+
+// Profile-less branches never depend on parsing the rest of the session file.
+function savedProfileLessSession(t: test.TestContext) {
+ const root = mkdtempSync(join(tmpdir(), "u3-profileless-"));
+ t.after(() => rmSync(root, { recursive: true, force: true }));
+ const manager = SessionManager.create(root, join(root, "sessions"));
+ manager.appendMessage({ role: "user", content: "fixture", timestamp: 1 });
+ manager.appendMessage({ role: "assistant", content: [{ type: "text", text: "ok" }], api: "openai-completions", provider: "openai", model: "gpt-4o", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 2 } as never);
+ const file = manager.getSessionFile()!;
+ assert.ok(readFileSync(file, "utf8").length > 0, "fixture session is flushed");
+ return { manager, file };
+}
+
+test("unrelated session-file corruption does not block a profile-less branch", (t) => {
+ const { manager, file } = savedProfileLessSession(t);
+ writeFileSync(file, `${readFileSync(file, "utf8")}{not json\n`);
+ assert.deepEqual(readSessionProfileAuthority(manager), { available: true });
+});
+
+test("a profile-less saved branch drops a binding left from another branch", (t) => {
+ const { manager } = savedProfileLessSession(t);
+ bindSessionProfile(manager.getSessionId(), "other-branch", { worker: { model: "openai/gpt-4o" } });
+ assert.deepEqual(readSessionProfileAuthority(manager), { available: true });
+ assert.equal(readSessionProfileBinding(manager.getSessionId()), undefined);
 });

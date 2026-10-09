@@ -1629,7 +1629,6 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			foreignGrants.assertCurrent(ctx, identity);
 		}
 		if (signal?.aborted) throw new Error("Subagent launch aborted before queueing.");
-		requireSessionProfileAuthority(originalManager);
 		mkdirSync(sessionDir, { recursive: true });
 		const parentSessionManager = ctx.sessionManager as unknown as ReviewSessionManager;
 		const parentSessionId = ctx.sessionManager.getSessionId() ?? "";

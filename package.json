@@ -96,6 +96,7 @@
 		"@earendil-works/pi-ai": ">=1.0.0",
 		"@earendil-works/pi-tui": ">=1.0.0",
 		"@types/node": "^24.13.3",
+		"pi-subagents": "0.37.1",
 		"typescript": "^5.9.3"
 	},
 	"engines": {

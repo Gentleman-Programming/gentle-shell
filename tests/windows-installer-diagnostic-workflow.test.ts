@@ -11,14 +11,16 @@ const readWorkflow = () => readFileSync(workflowPath, "utf8").replace(/\r\n/g, "
 test("diagnostic selects the pinned Windows source, runtime and single TAP file", () => {
 	const workflow = readWorkflow();
 	assert.match(workflow, /runs-on: windows-2025/);
-	assert.match(workflow, /node-version: "24\.21\.0"/);
+	assert.match(workflow, /node-version: "24\.14\.0"/);
 	assert.match(workflow, /ref: 41210ef5d87f6242c507b04b818801ffa9b7f49b/);
 	assert.match(workflow, /path: source/);
 	assert.deepEqual(workflow.match(/tests\/[\w-]+\.test\.ts/g), ["tests/installer-windows-bootstrap.test.ts"]);
 	assert.match(workflow, /"--test-reporter=tap"/);
 	assert.match(workflow, /"--experimental-strip-types", "--test"/);
-	assert.match(workflow, /process\.version !== "v24\.21\.0"/);
+	assert.match(workflow, /process\.version !== "v24\.14\.0"/);
 	assert.match(workflow, /checkedOutSource !== sourceRef/);
+	assert.match(workflow, /process\.env\.ImageOS !== "win25-vs2026"/);
+	assert.match(workflow, /process\.env\.ImageVersion !== "20260925\.250\.1"/);
 	const script = workflow.match(/^\s*@'\n([\s\S]*?)^\s*'@ \| Set-Content/m)?.[1];
 	assert.ok(script, "PowerShell here-string contains the diagnostic Node program");
 	const checked = spawnSync(process.execPath, ["--check"], { input: script, encoding: "utf8" });
@@ -29,7 +31,7 @@ test("diagnostic selects the pinned Windows source, runtime and single TAP file"
 
 test("diagnostic is branch-only, bounded and preserves failed-run evidence", () => {
 	const workflow = readWorkflow();
-	assert.match(workflow, /on:\n  push:\n    branches:\n      - ci\/213-windows-diagnostic\n    paths:\n      - \.github\/workflows\/windows-installer-diagnostic\.yml\n/);
+	assert.match(workflow, /on:\n  push:\n    branches:\n      - ci\/213-windows-node-24-14\n    paths:\n      - \.github\/workflows\/windows-installer-diagnostic\.yml\n/);
 	assert.doesNotMatch(workflow, /pull_request|workflow_dispatch|matrix:|pnpm|npm install|secrets\./);
 	assert.match(workflow, /permissions:\n  contents: read\n/);
 	assert.equal((workflow.match(/persist-credentials: false/g) ?? []).length, 2);

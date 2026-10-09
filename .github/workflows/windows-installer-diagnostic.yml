@@ -1,10 +1,10 @@
-name: Windows installer diagnostic (issue 213)
+name: Windows installer Node 24.14 control (issue 213)
 
 # A single push on this diagnostic branch; no PR or ordinary-suite trigger.
 on:
   push:
     branches:
-      - ci/213-windows-diagnostic
+      - ci/213-windows-node-24-14
     paths:
       - .github/workflows/windows-installer-diagnostic.yml
 
@@ -28,10 +28,10 @@ jobs:
           path: source
           persist-credentials: false
 
-      - name: Setup original Node patch
+      - name: Setup control Node patch
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "24.21.0"
+          node-version: "24.14.0"
 
       # Only built-ins and repository files are imported; no install step.
       - name: Capture one installer file with TAP
@@ -59,7 +59,8 @@ jobs:
             deadlineMs, maxOutputBytes
           };
           fs.writeFileSync(path.join(output, "metadata.json"), JSON.stringify(metadata, null, 2));
-          if (process.platform !== "win32" || process.version !== "v24.21.0" || head.status !== 0 || checkedOutSource !== sourceRef) {
+          if (process.platform !== "win32" || process.version !== "v24.14.0" || head.status !== 0 || checkedOutSource !== sourceRef ||
+              process.env.ImageOS !== "win25-vs2026" || process.env.ImageVersion !== "20260925.250.1") {
             throw new Error("Diagnostic runtime or source does not match the approved target");
           }
           const stdout = fs.createWriteStream(path.join(output, "stdout.log"));

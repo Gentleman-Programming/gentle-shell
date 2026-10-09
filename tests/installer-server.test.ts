@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { exitCodeFor, openBrowser, openerFor, redirectPage, runnerEnvironment, writeRedirect } from "../bin/gentle-shell-install.mjs";
-import { planPreflight } from "../scripts/installer-preflight.mjs";
+import { planPreflight, requirements } from "../scripts/installer-preflight.mjs";
 import { blockedReasons, failedSteps } from "../scripts/installer-runner.mjs";
 import { createInstallerServer, guidance } from "../scripts/installer-server.mjs";
 
@@ -60,15 +60,17 @@ function send(port: number, { method = "GET", path = "/", headers = {} as Record
 	});
 }
 
-async function start({ collect = async () => collected(), runInstall = (async () => ({ outcome: "ready", completed: [] })) as RunInstall,
+async function start({ collect = (async () => collected()) as (channel: string) => Promise<Collected>, runInstall = (async () => ({ outcome: "ready", completed: [] })) as RunInstall,
 	limits = {}, clock = { value: 1_000_000 } } = {}) {
 	let collects = 0;
+	const channels: string[] = [];
 	const runs: Array<{ request: { plan: Plan; consent: boolean } }> = [];
 	const host = createInstallerServer({
 		assetsDir,
-		collectPlan: async () => {
+		collectPlan: async (channel: string) => {
 			collects += 1;
-			return collect();
+			channels.push(channel);
+			return collect(channel);
 		},
 		runInstall: async (request: { plan: Plan; consent: boolean }, log: Log) => {
 			runs.push({ request });
@@ -86,7 +88,7 @@ async function start({ collect = async () => collected(), runInstall = (async ()
 		const cookie = String(response.headers["set-cookie"]).split(";")[0];
 		return cookie;
 	};
-	return { host, port, url, address, origin, code, login, runs, clock, collects: () => collects };
+	return { host, port, url, address, origin, code, login, runs, clock, collects: () => collects, channels };
 }
 
 function post(port: number, path: string, cookie: string, body: unknown, headers: Record<string, string> = {}) {
@@ -270,6 +272,170 @@ test("/api/plan reports blockers with guidance and no profile change when alread
 		assert.ok(view.blockers[0].guidance.length > 20);
 		assert.equal(view.profileChange.changesProfile, false);
 		assert.deepEqual(view.persistence.tools, []);
+	} finally {
+		await host.close("test");
+	}
+});
+
+test("/api/plan names the found and required version of an older Gentle Shell and how to resolve it", async () => {
+	const { host, port, login } = await start({ collect: async () => collected({
+		pi: { available: true, version: "1.0.4", usable: true },
+		shell: { available: true, version: "3.4.0", usable: false, global: true },
+		gentleAi: { available: null }, setup: { available: null },
+	}) });
+	try {
+		const view = await plan(port, await login());
+		assert.deepEqual(view.blockers.map((blocker: { code: string; tool: string }) => [blocker.code, blocker.tool]), [["incompatible-tool", "shell"]]);
+		assert.equal(view.blockers[0].guidance,
+			"Gentle Shell 3.4.0 is installed globally with pnpm, but this installer needs 4.0.0 or newer. Nothing was replaced. " +
+			"Update it with `pnpm add -g gentle-pi@4.0.0`, or remove it with `pnpm remove -g gentle-pi`, then select Check again.");
+		assert.deepEqual(view.actions, []);
+	} finally {
+		await host.close("test");
+	}
+});
+
+test("/api/plan names the found and required version of another older tool", async () => {
+	const { host, port, login } = await start({ collect: async () => collected({ pi: { available: true, version: "0.99.0", usable: true } }) });
+	try {
+		const view = await plan(port, await login());
+		const blocker = view.blockers.find((item: { tool: string }) => item.tool === "pi");
+		assert.equal(blocker.guidance, "Pi 0.99.0 is installed, but this installer needs 0.99.1 or newer. Nothing was replaced. Update it, then select Check again.");
+	} finally {
+		await host.close("test");
+	}
+});
+
+test("/api/plan explains a Gentle Shell that neither pnpm nor npm manages", async () => {
+	const { host, port, login } = await start({ collect: async () => collected({
+		pi: { available: true, version: "1.0.4", usable: true },
+		shell: { available: null, outsidePnpm: true }, gentleAi: { available: null }, setup: { available: null },
+	}) });
+	try {
+		const view = await plan(port, await login());
+		assert.deepEqual(view.blockers.map((blocker: { code: string; tool: string }) => [blocker.code, blocker.tool]), [["unknown-tool", "shell"]]);
+		assert.equal(view.blockers[0].guidance,
+			"Gentle Shell is already installed, but neither pnpm nor npm manages it (a linked source checkout, for example), " +
+			"so this installer cannot update it. Nothing was replaced. Update it the way you installed it, then select Check again.");
+	} finally {
+		await host.close("test");
+	}
+});
+
+test("/api/plan explains a Pi whose version cannot be read", async () => {
+	const { host, port, login } = await start({ collect: async () => collected({ pi: { available: null, outsidePnpm: true } }) });
+	try {
+		const view = await plan(port, await login());
+		assert.equal(view.blockers.find((item: { tool: string }) => item.tool === "pi").guidance,
+			"Pi is already installed, but `pi --version` did not report a version this installer can check. Make sure `pi --version` works in a terminal, then select Check again.");
+	} finally {
+		await host.close("test");
+	}
+});
+
+test("/api/plan describes updating an existing Gentle Shell on either channel", async () => {
+	const shell = { available: true, version: "3.9.0", usable: true, global: true, owner: "npm" };
+	const { host, port, login } = await start({ collect: async (channel) => collectedFor(channel, { pi: { available: true, version: "1.0.4", usable: true },
+		shell, go: { available: true, version: "1.26.0", usable: true }, gentleAi: { available: null }, setup: { available: null } }) });
+	try {
+		const cookie = await login();
+		const release = await plan(port, cookie);
+		assert.deepEqual(release.actions.map((action: { id: string; description: string }) => [action.id, action.description]), [
+			["update-shell-release", "Update Gentle Shell to the latest release with the package manager that installed it (pnpm or npm)."],
+			["setup-shell", release.actions[1].description],
+			["verify-readiness", "Verify that the installed stack is ready."]]);
+		const main = JSON.parse((await send(port, { path: "/api/plan?channel=main", headers: { cookie, ...API } })).body);
+		assert.equal(main.actions[0].description,
+			"Update Gentle Shell and Gentle AI to the latest commits of `main`, built on this computer, with the package manager that installed Gentle Shell.");
+	} finally {
+		await host.close("test");
+	}
+});
+
+test("/api/plan keeps the generic guidance for an unknown tool without more evidence", async () => {
+	const { host, port, login } = await start({ collect: async () => collected({ shell: { available: null } }) });
+	try {
+		const view = await plan(port, await login());
+		const blocker = view.blockers.find((item: { tool: string }) => item.tool === "shell");
+		assert.equal(blocker.guidance, guidance.blockers["unknown-tool"]);
+	} finally {
+		await host.close("test");
+	}
+});
+
+test("/api/plan keeps the generic guidance when no older version is known", async () => {
+	const { host, port, login } = await start({ collect: async () => collected({
+		gentleAi: { available: true, version: "1.0.0", usable: true, compatible: false } }) });
+	try {
+		const view = await plan(port, await login());
+		const blocker = view.blockers.find((item: { tool: string }) => item.tool === "gentleAi");
+		assert.equal(blocker.guidance, guidance.blockers["incompatible-tool"]);
+	} finally {
+		await host.close("test");
+	}
+});
+
+const mainReady = { pi: { available: false }, shell: { available: false }, go: { available: true, version: "1.26.0", usable: true } };
+function collectedFor(channel: string, changes: Record<string, unknown> = mainReady): Collected {
+	const inventory = { ...cleanInventory, ...changes };
+	return { inventory, plan: planPreflight(inventory, { channel }) };
+}
+
+test("/api/plan plans the release channel by default and the main channel on request", async () => {
+	const { host, port, login, channels } = await start({ collect: async (channel) => collectedFor(channel) });
+	try {
+		const cookie = await login();
+		const release = await plan(port, cookie);
+		assert.equal(release.channel, "release");
+		const response = await send(port, { path: "/api/plan?channel=main", headers: { cookie, ...API } });
+		assert.equal(response.status, 200);
+		const main = JSON.parse(response.body);
+		assert.equal(main.channel, "main");
+		const described = Object.fromEntries(main.actions.map((action: { id: string; description: string }) => [action.id, action.description]));
+		assert.equal(described["build-gentle-ai-main"], "Build Gentle AI from the latest commit of its `main` branch with Go, verified by Go's checksum database, and use it instead of the pinned release binary.");
+		assert.equal(described["install-shell-main"], "Install Gentle Shell from the latest commit of its `main` branch with pnpm, replacing the release package.");
+		assert.equal(described["record-channel"], "Remember the `main` channel, so `gentle-shell upgrade` keeps following `main`.");
+		assert.deepEqual(channels, ["release", "main"]);
+	} finally {
+		await host.close("test");
+	}
+});
+
+test("/api/plan rejects any other channel or query", async () => {
+	const { host, port, login, collects } = await start({ collect: async (channel) => collectedFor(channel) });
+	try {
+		const cookie = await login();
+		for (const query of ["channel=nightly", "channel=main&x=1", "x=main", "channel=main&channel=release", "channel="]) {
+			assert.equal((await send(port, { path: `/api/plan?${query}`, headers: { cookie, ...API } })).status, 400, query);
+		}
+		assert.equal(collects(), 0);
+	} finally {
+		await host.close("test");
+	}
+});
+
+test("installing a main plan re-checks the computer on the main channel", async () => {
+	const { host, port, login, channels, runs } = await start({ collect: async (channel) => collectedFor(channel) });
+	try {
+		const cookie = await login();
+		const response = await send(port, { path: "/api/plan?channel=main", headers: { cookie, ...API } });
+		const view = JSON.parse(response.body);
+		assert.equal((await post(port, "/api/install", cookie, { consent: true, planId: view.planId })).status, 202);
+		assert.deepEqual(channels, ["main", "main"]);
+		assert.ok(runs[0].request.plan.actions.some((action: { id: string }) => action.id === "install-shell-main"));
+	} finally {
+		await host.close("test");
+	}
+});
+
+test("/api/plan explains that the main channel needs Go", async () => {
+	const { host, port, login } = await start({ collect: async (channel) => collectedFor(channel, { pi: { available: false }, shell: { available: false } }) });
+	try {
+		const cookie = await login();
+		const view = JSON.parse((await send(port, { path: "/api/plan?channel=main", headers: { cookie, ...API } })).body);
+		const blocker = view.blockers.find((item: { code: string }) => item.code === "main-requires-go");
+		assert.equal(blocker.guidance, `The \`main\` channel builds Gentle AI from source and needs Go ${requirements.go} or newer on your PATH. Install Go, or choose the release channel, then select Check again.`);
+		assert.deepEqual(view.actions, []);
 	} finally {
 		await host.close("test");
 	}

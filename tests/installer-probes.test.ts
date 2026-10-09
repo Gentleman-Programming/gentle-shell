@@ -184,7 +184,7 @@ test("pnpm-global Pi and Shell report versions; verified package-native Gentle A
 	const files = [TOOLS_PNPM, `${BIN}/gentle-shell`, gentleAiBinaryPath(SHELL_ROOT, "linux")];
 	const h = probes({ files, dirs: [HOME, PNPM_HOME, SHELL_ROOT], results: { [`${TOOLS_PNPM} ${LIST}`]: { code: 0, stdout } } });
 	assert.deepEqual(await h.probes.pi(), { available: true, version: "1.0.0", usable: true });
-	assert.deepEqual(await h.probes.shell(), { available: true, version: requirements.shell, usable: true, global: true });
+	assert.deepEqual(await h.probes.shell(), { available: true, version: requirements.shell, usable: true, global: true, owner: "pnpm" });
 	assert.deepEqual(await h.probes.gentleAi(), { available: true, version: requirements.gentleAi, usable: true, compatible: true });
 	assert.deepEqual(h.integrityCalls, [{ packageRoot: SHELL_ROOT, platform: "linux", env: bootstrapEnv, home: HOME }]);
 	// The pinned stack in one pnpm project under PNPM_HOME: only its setup may be rerun.
@@ -245,11 +245,60 @@ test("a failed, unparseable or ambiguous global list makes Pi, Shell, Gentle AI 
 	assert.deepEqual(await h.probes.shell(), { available: null });
 });
 
-test("Pi or Shell on the user's PATH but not pnpm-global is unknown, never absent", async () => {
+test("a pnpm-global Shell from the main channel is present with its main version; other prereleases stay unknown", async () => {
+	const main = `${requirements.shell}-main.6e7e3a18f794`;
+	const cases: Array<[string, object]> = [[main, { available: true, version: main, usable: true, global: true, owner: "pnpm" }],
+		[`${requirements.shell}-rc.1`, { available: null }], [`${requirements.shell}-main.6E7E3A18F794`, { available: null }]];
+	for (const [version, expected] of cases) {
+		const stdout = listing({ "gentle-pi": { version, path: SHELL_ROOT } });
+		const h = probes({ files: [TOOLS_PNPM, `${BIN}/gentle-shell`], results: { [`${TOOLS_PNPM} ${LIST}`]: { code: 0, stdout } } });
+		assert.deepEqual(await h.probes.shell(), expected, version);
+	}
+});
+
+const NPM_ROOT = "/usr/local/lib/node_modules";
+const NPM_SHELL = `${NPM_ROOT}/gentle-pi`;
+const outside = (shellVersion: string, { linked = false, piOutput = "1.0.4\n" } = {}) => probes({
+	env: { HOME, PATH: `${TOOLS}/pnpm/bin:/usr/local/bin:/usr/bin` },
+	files: [TOOLS_PNPM, "/usr/local/bin/pi", "/usr/local/bin/gentle-shell", "/usr/local/bin/npm"],
+	dirs: [HOME, NPM_ROOT, "/home/u/work/gentle-pi"],
+	realpaths: { "/usr/local/bin/gentle-shell": `${linked ? "/home/u/work/gentle-pi" : NPM_SHELL}/bin/gentle-shell.mjs` },
+	texts: { [`${linked ? "/home/u/work/gentle-pi" : NPM_SHELL}/package.json`]: JSON.stringify({ name: "gentle-pi", version: shellVersion }) },
+	results: { ...pnpmVersion, "/usr/local/bin/npm root -g": { code: 0, stdout: `${NPM_ROOT}\n` },
+		"/usr/local/bin/pi --version": { code: 0, stdout: piOutput } },
+});
+
+test("a Pi on PATH that pnpm does not manage is reused with the version it reports", async () => {
+	assert.deepEqual(await outside("3.9.0").probes.pi(), { available: true, version: "1.0.4", usable: true, external: true });
+	for (const piOutput of ["", "pi dev build\n"]) {
+		assert.deepEqual(await outside("3.9.0", { piOutput }).probes.pi(), { available: null, outsidePnpm: true }, piOutput);
+	}
+});
+
+test("a Gentle Shell installed by npm reports its version and npm as its owner", async () => {
+	for (const version of ["3.9.0", `${requirements.shell}-main.6e7e3a18f794`]) {
+		assert.deepEqual(await outside(version).probes.shell(), { available: true, version, usable: true, global: true, owner: "npm" }, version);
+	}
+});
+
+test("a Gentle Shell that npm links from a source checkout stays unknown and is never claimed by npm", async () => {
+	assert.deepEqual(await outside("3.9.0", { linked: true }).probes.shell(), { available: null, outsidePnpm: true });
+});
+
+test("locateShell finds the installed Gentle Shell with its real root, version and owner", async () => {
+	const stdout = listing({ "gentle-pi": { version: "3.9.0", path: SHELL_ROOT } });
+	const pnpm = probes({ files: [TOOLS_PNPM], dirs: [HOME, SHELL_ROOT], results: { [`${TOOLS_PNPM} ${LIST}`]: { code: 0, stdout } } });
+	assert.deepEqual(await pnpm.probes.locateShell(), { root: SHELL_ROOT, version: "3.9.0", owner: "pnpm" });
+	assert.deepEqual(await outside("3.9.0").probes.locateShell(), { root: NPM_SHELL, version: "3.9.0", owner: "npm" });
+	assert.deepEqual(await outside("3.9.0", { linked: true }).probes.locateShell(), { root: "/home/u/work/gentle-pi", version: "3.9.0", owner: null });
+	assert.equal(await probes({ files: [TOOLS_PNPM], results: pnpmVersion }).probes.locateShell(), null);
+});
+
+test("Pi or Shell on the user's PATH but not pnpm-global is unknown, never absent, and says so", async () => {
 	const h = probes({ files: [TOOLS_PNPM, "/usr/local/bin/pi", "/usr/local/bin/gentle-shell"],
 		env: { HOME, PATH: `${TOOLS}/pnpm/bin:/usr/local/bin` }, results: pnpmVersion });
-	assert.deepEqual(await h.probes.pi(), { available: null });
-	assert.deepEqual(await h.probes.shell(), { available: null });
+	assert.deepEqual(await h.probes.pi(), { available: null, outsidePnpm: true });
+	assert.deepEqual(await h.probes.shell(), { available: null, outsidePnpm: true });
 	assert.deepEqual(await h.probes.setup(), { available: null });
 });
 
@@ -326,6 +375,20 @@ test("host adapters: argv without a shell, exit codes, deadlines and bounded out
 	const missing = await run(join(tmpdir(), "gentle-probe-missing-command"), [], { env, deadlineMs: 10_000 });
 	assert.equal(missing.code, null);
 	assert.equal(missing.timedOut, false);
+});
+
+test("host run runs in the requested working directory, and in the current one without it", async () => {
+	const { run } = hostAdapters();
+	const env = { PATH: process.env.PATH ?? "" };
+	const directory = realpathSync(mkdtempSync(join(tmpdir(), "gentle-probe-cwd-")));
+	try {
+		const inside = await run(process.execPath, ["-e", "process.stdout.write(process.cwd())"], { env, cwd: directory, deadlineMs: 10_000 });
+		assert.equal(inside.stdout, directory);
+		const ambient = await run(process.execPath, ["-e", "process.stdout.write(process.cwd())"], { env, deadlineMs: 10_000 });
+		assert.equal(ambient.stdout, process.cwd());
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
 });
 
 test("host run discards stderr unless a bounded stderr tail is requested", async () => {

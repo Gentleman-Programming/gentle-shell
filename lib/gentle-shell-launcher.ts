@@ -5,7 +5,7 @@ import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection, type ChildPac
 // env/fs/exec. `bin/gentle-shell.mjs` (T2) wires these into the real process,
 // filesystem and child process so this module stays fully unit-testable.
 
-export type LauncherCommand = "home" | "setup";
+export type LauncherCommand = "home" | "setup" | "upgrade";
 
 // pi's own package-management subcommands (see pi's cli/args.ts printHelp
 // "Commands" list): each is dispatched by pi itself, before pi's own flag
@@ -36,11 +36,11 @@ export interface ParsedLauncherArgs {
 	error?: string;
 }
 
-// Home-subcommand parsing is deliberately shallow: `home` only counts as the
-// subcommand when it is argv[0], and everything after it is handed over
+// Home- and upgrade-subcommand parsing is deliberately shallow: `home` or
+// `upgrade` only counts as the subcommand when it is argv[0], and everything after it is handed over
 // untouched as commandArgs — T2 owns interpreting `home link|isolated|<path>`.
 export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
-	if (argv[0] === "home") {
+	if (argv[0] === "home" || argv[0] === "upgrade") {
 		return {
 			link: false,
 			isolated: false,
@@ -48,7 +48,7 @@ export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
 			packageRoot: undefined,
 			help: false,
 			version: false,
-			command: "home",
+			command: argv[0],
 			commandArgs: argv.slice(1),
 			passthrough: [],
 			piSubcommand: undefined,
@@ -1173,6 +1173,7 @@ export function helpText(): string {
 		"Usage: gentle-shell [options] [-- pi-args...]",
 		"       gentle-shell home [link|isolated|<path>]",
 		"       gentle-shell [home selectors] setup [--dry-run]",
+		"       gentle-shell upgrade [--channel release|main]",
 		"",
 		"Opens pi with the Gentle Shell package loaded, without touching your",
 		"vanilla pi installation.",
@@ -1192,6 +1193,9 @@ export function helpText(): string {
 		"                   (runs the package-local gentle-ai 'install --agent pi --scope global').",
 		"                   Accepts --dry-run, forwarded to gentle-ai. Accepts a home selector",
 		"                   (--link, --isolated, --home <dir>) before it.",
+		"  upgrade          Update Gentle Shell along its channel: the latest release, or the latest",
+		"                   main commits of Gentle Shell and Gentle AI (built locally; needs Go and",
+		"                   pnpm). --channel switches the channel first.",
 		"",
 		"Managing packages:",
 		"  gentle-shell install npm:<pkg>   Run pi's own 'install' against the resolved home.",

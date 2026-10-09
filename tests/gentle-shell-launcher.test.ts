@@ -155,6 +155,20 @@ test("parseLauncherArgs recognises the home subcommand as argv[0] and captures t
 	assert.deepEqual(parsed.passthrough, []);
 });
 
+test("parseLauncherArgs recognises the upgrade subcommand as argv[0] and captures its arguments", () => {
+	const parsed = parseLauncherArgs(["upgrade", "--channel", "main"]);
+	assert.equal(parsed.command, "upgrade");
+	assert.deepEqual(parsed.commandArgs, ["--channel", "main"]);
+	assert.deepEqual(parsed.passthrough, []);
+	assert.equal(parsed.piSubcommand, undefined);
+});
+
+test("help text documents gentle-shell upgrade and its channels", () => {
+	const text = helpText();
+	assert.ok(text.includes("       gentle-shell upgrade [--channel release|main]"));
+	assert.ok(text.includes("  upgrade          Update Gentle Shell along its channel: the latest release, or the latest"));
+});
+
 test("parseLauncherArgs treats home as a plain passthrough token when it is not argv[0]", () => {
 	const parsed = parseLauncherArgs(["--isolated", "home"]);
 	assert.equal(parsed.command, undefined);

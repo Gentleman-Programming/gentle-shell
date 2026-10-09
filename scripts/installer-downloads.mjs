@@ -112,7 +112,9 @@ function regular(path) {
 function processCheck(command, args, env) {
 	// TERM can be ignored, leaving spawnSync blocked beyond its timeout. Kill only
 	// the spawned prerequisite child; this is not process-tree cancellation.
-	const result = spawnSync(command, args, { env, encoding: "utf8", timeout: 15000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024, windowsHide: true });
+	// A neutral cwd: inside a project, pnpm 11 reports the version that
+	// project's packageManager pins instead of its own.
+	const result = spawnSync(command, args, { cwd: "/", env, encoding: "utf8", timeout: 15000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024, windowsHide: true });
 	if (result.error || result.status !== 0) throw new Error("Prerequisite process check failed");
 	return result.stdout.trim();
 }
@@ -125,8 +127,18 @@ function findExecutable(name, env) {
 	}
 	return null;
 }
+// pnpm 11 installs itself behind a regular cmd-shim file, not a symlink; its
+// package lives only in the shim's `# cmd-shim-target=` comment. The target is
+// a starting point for the package search, not proof: provePnpm still runs the
+// command and requires its --version to match that package.json.
+function shimTarget(command) {
+	if (!regular(command)) return null;
+	const head = readFileSync(command, "utf8").slice(0, 4096);
+	const match = /^# cmd-shim-target=(\/[^\r\n]+)$/m.exec(head);
+	return match && stat(match[1]) ? match[1] : null;
+}
 function packageFor(command) {
-	let directory = dirname(realpathSync(command));
+	let directory = dirname(realpathSync(shimTarget(command) ?? command));
 	for (let depth = 0; depth < 4; depth += 1) {
 		const file = join(directory, "package.json");
 		if (regular(file)) {

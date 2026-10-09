@@ -527,6 +527,53 @@ h2 {
 
 /* Consent */
 
+.channel {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+	gap: 12px;
+	margin: 0 0 8px;
+	padding: 0;
+	border: 0;
+}
+
+.channel > legend {
+	grid-column: 1 / -1;
+	padding: 0;
+}
+
+.channel-option {
+	display: grid;
+	grid-template-columns: auto 1fr;
+	column-gap: 12px;
+	padding: 16px 18px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-md);
+	background: var(--surface-1);
+	transition: border-color .2s var(--ease), box-shadow .2s var(--ease);
+}
+
+.channel-option:has(.channel-input:checked) {
+	border-color: #f095c88c;
+	box-shadow: 0 0 0 3px #f095c81a;
+}
+
+.channel-option .hint {
+	grid-column: 2;
+}
+
+.channel-input {
+	width: 20px;
+	height: 20px;
+	margin: 1px 0 0;
+	accent-color: var(--accent);
+	cursor: pointer;
+}
+
+.channel-label {
+	font-weight: 600;
+	cursor: pointer;
+}
+
 .consent {
 	display: flex;
 	align-items: flex-start;

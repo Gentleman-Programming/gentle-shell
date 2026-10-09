@@ -40,12 +40,16 @@ function fixture() {
 	const nodeBody = `#!/bin/sh\nif [ "$1" = --version ]; then\nif [ -n "\${NODE_PROBE_SCRIPT:-}" ]; then exec '${node}' "$NODE_PROBE_SCRIPT"; fi\nprintf '%s\\n' "\${NODE_VERSION:-v24.21.0}"; else exec '${node}' "$@"; fi\n`;
 	executable("tar", `if [ "$1" = -tzf ]; then printf '%s\\n' "$3"; elif [ "$1" = -tvzf ]; then printf '%s\\n' '-rwxr-xr-x node'; else\nwhile [ "$#" -gt 0 ]; do if [ "$1" = -C ]; then shift; target=$1; fi; member=$1; shift; done\nmkdir -p "$target/\${member%/node}"\ncat > "$target/$member" <<'NODE'\n${nodeBody}NODE\nchmod 700 "$target/$member"\nfi`);
 	const addNode = () => writeFileSync(join(bin, "node"), nodeBody, { mode: 0o755 });
-	const addPnpm = (version = "11.1.1", engine = ">=22.13.0") => {
+	// "symlink" mimics a package-manager link; "shim" mimics the regular cmd-shim
+	// file pnpm 11 writes when it installs itself (target only in a comment).
+	const addPnpm = (version = "11.1.1", engine = ">=22.13.0", style: "symlink" | "shim" | "shim-without-target" = "symlink") => {
 		const pkg = join(root, "pnpm package");
 		mkdirSync(join(pkg, "bin"), { recursive: true });
 		writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "pnpm", version, engines: { node: engine } }));
 		writeFileSync(join(pkg, "bin/pnpm.mjs"), `#!/bin/sh\ncase "$1" in --version) echo '${version}';; help) echo ' --global '; esac\n`, { mode: 0o755 });
-		symlinkSync(join(pkg, "bin/pnpm.mjs"), join(bin, "pnpm"));
+		const entry = join(pkg, "bin/pnpm.mjs");
+		if (style === "symlink") symlinkSync(entry, join(bin, "pnpm"));
+		else writeFileSync(join(bin, "pnpm"), `#!/bin/sh\nexec '${entry}' "$@"\n${style === "shim" ? `# cmd-shim-target=${entry}\n` : ""}`, { mode: 0o755 });
 	};
 	const wizard = () => writeFileSync(join(bundle, "bin/gentle-shell-install.mjs"), "console.log('wizard-child:' + process.env.PATH);\n");
 	// A wizard that tampers with the ownership marker of the tools it runs from.
@@ -203,6 +207,41 @@ posixTest("existing pnpm with unknown engine blocks instead of acquisition", () 
 		const result = f.run();
 		assert.notEqual(result.status, 0);
 		assert.match(result.stderr, /pnpm.*compatibility/i);
+		assert.deepEqual(readdirSync(f.home), []);
+	} finally { f.cleanup(); }
+});
+posixTest("existing pnpm behind a self-installed cmd-shim is reused", () => {
+	const f = fixture();
+	try {
+		f.addNode(); f.addPnpm("11.1.1", ">=22.13.0", "shim"); f.wizard();
+		const result = f.run();
+		assert.equal(result.status, 0, result.stderr);
+		assert.match(result.stdout, /wizard-child:/);
+		assert.deepEqual(readdirSync(f.home), []);
+	} finally { f.cleanup(); }
+});
+posixTest("pnpm version evidence ignores the packageManager pin of the bundle it runs from", () => {
+	const f = fixture();
+	try {
+		f.addNode(); f.addPnpm("11.5.0"); f.wizard();
+		// pnpm 11 switches to the version a project pins when run inside it.
+		writeFileSync(join(f.root, "pnpm package/bin/pnpm.mjs"),
+			`#!/bin/sh\ncase "$1" in --version) if [ -f package.json ]; then echo '11.1.1'; else echo '11.5.0'; fi;; help) echo ' --global '; esac\n`, { mode: 0o755 });
+		const result = spawnSync("/bin/sh", [join(f.bundle, "scripts/bootstrap.sh")], {
+			cwd: f.bundle, env: { PATH: f.bin, HOME: f.home }, encoding: "utf8", timeout: 15000,
+		});
+		assert.equal(result.status, 0, result.stderr);
+		assert.match(result.stdout, /wizard-child:/);
+	} finally { f.cleanup(); }
+});
+posixTest("a pnpm shim without a cmd-shim target still blocks", () => {
+	const f = fixture();
+	try {
+		f.addNode(); f.addPnpm("11.1.1", ">=22.13.0", "shim-without-target"); f.wizard();
+		const result = f.run();
+		assert.notEqual(result.status, 0);
+		assert.match(result.stderr, /pnpm compatibility is unknown: package engine evidence missing/);
+		assert.doesNotMatch(result.stdout, /wizard-child/);
 		assert.deepEqual(readdirSync(f.home), []);
 	} finally { f.cleanup(); }
 });

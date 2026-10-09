@@ -133,7 +133,8 @@ test("AC5: the high-risk list lives once in the core, native tier wins, unclear 
 // small enough that one mechanism costs one bounded read instead of 49 KB.
 const MODULE_BUDGETS: Record<string, number> = {
 	// gentle-shell#1731 merge with main: main's session subject/state guidance plus the reason-based Writer rule (20,000 -> 20,500 B).
-	"orchestrator-delegation.md": 20_500,
+	// gentle-shell#1269: capability-compatible routing rule checked before delegation (20,500 -> 20,800 B).
+	"orchestrator-delegation.md": 20_800,
 	// gentle-shell#1731 T23: Close gate accepts one Needs your decision result as a stop (12,500 -> 12,600 B).
 	"orchestrator-tracking.md": 12_600,
 	// gentle-shell#1731 T3: parallel review protocol; lazy (delegation or high risk only), core and normative rule untouched.
@@ -164,6 +165,16 @@ test("AC7: each delegation module stays under its byte budget and is loaded by i
 		const line = mechanisms.split("\n").find((entry) => entry.startsWith(label)) ?? "";
 		assert.ok(line.includes(`\`${file}\``), `${label} must load ${file}`);
 	}
+});
+
+// gentle-shell#1269/#1598: the capability rule is the substantive part of the fix,
+// so losing it must fail a test instead of quietly passing the AC7 budget gate.
+// Focused on the two claims that carry the fix, not on the exact wording around them.
+test("delegation reports a capability gap instead of substituting inline work for a fired trigger", () => {
+	assert.match(delegation, /declared `tools` in `subagent_list_agents` before launching/);
+	assert.match(delegation, /never give a read-only explorer shell, HTTP or MCP work/);
+	assert.match(delegation, /report the capability gap; a fired trigger is never replaced by inline work/);
+	assert.equal(delegation.split("report the capability gap").length - 1, 1);
 });
 
 test("work usage stays complete in the human guide while routing precedence stays canonical", () => {

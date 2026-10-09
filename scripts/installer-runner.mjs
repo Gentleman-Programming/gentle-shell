@@ -6,6 +6,7 @@ import {
 	resolveGentleAiBinary,
 } from "../runtime/gentle-ai-binary.mjs";
 import { persistencePins, pnpmGlobalBin, requirements } from "./installer-preflight.mjs";
+import { GENTLE_AI_REPOSITORY, SHELL_REPOSITORY, mainVersion } from "./main-channel.mjs";
 
 // Standard installation runner: one fixed, consented global pnpm installation
 // of Pi plus gentle-pi, then the public `gentle-shell setup`. Every adapter is
@@ -53,6 +54,12 @@ export const failedSteps = Object.freeze([
 	"verify-gentle-ai",
 	"shell-setup",
 	"persist-path",
+	"build-gentle-ai-main",
+	"install-shell-main",
+	"record-channel",
+	"install-pi",
+	"update-shell",
+	"verify-updated-shell",
 ]);
 
 const SECOND = 1000;
@@ -78,10 +85,21 @@ const knownActions = Object.freeze({
 	"provision-native": { kind: "existing-installer", target: "gentleAi", version: requirements.gentleAi },
 	"setup-shell": { kind: "normal-setup", target: "shell" },
 	"verify-readiness": { kind: "verify", target: "stack" },
+	"build-gentle-ai-main": { kind: "build-native-main", target: "gentleAi" },
+	"install-shell-main": { kind: "install-global", target: "shell" },
+	"record-channel": { kind: "configure", target: "channel" },
+	"update-shell-release": { kind: "upgrade", target: "shell" },
+	"update-shell-main": { kind: "upgrade", target: "shell" },
 });
 // The clean-stack path: both global packages are missing.
 const requiredActions = ["install-pi", "install-shell", "setup-shell", "verify-readiness"];
 const optionalActions = ["setup-global-bin"];
+// Pi already installed: only Gentle Shell is added (never Pi).
+const shellOnlyActions = ["install-shell", "setup-shell", "verify-readiness"];
+// An existing Gentle Shell: exactly one update, then setup; a missing Pi is installed first.
+const updateActions = ["update-shell-release", "update-shell-main"];
+// The main channel overlay: all three after a release installation, or none.
+const mainActions = ["build-gentle-ai-main", "install-shell-main", "record-channel"];
 // Setup recovery: the pinned stack this pnpm installed is present (planPreflight
 // saw a recoverable setup), so only setup and the optional PATH step remain.
 const recoveryActions = ["setup-shell", "verify-readiness"];
@@ -95,6 +113,7 @@ const persistenceVariants = Object.freeze([
 ]);
 const persistenceActions = [...new Set(persistenceVariants.flat())];
 
+const MAIN_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-main\.[0-9a-f]{12}$/;
 function stable(version) {
 	const match = typeof version === "string" && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(version);
 	return match ? match.slice(1).map(Number) : null;
@@ -133,7 +152,10 @@ function validRequest(request) {
 /** Gates that need no process: returns a blocked reason or null. */
 function planGate(plan, platform) {
 	if (plan.blockers.length > 0) return "preflight-blocked";
-	const ids = plan.actions.map((action) => action.id);
+	const all = plan.actions.map((action) => action.id);
+	const overlay = mainActions.filter((id) => all.includes(id));
+	if (overlay.length > 0 && (overlay.length !== mainActions.length || plan.tools.go?.status !== "reusable")) return "unsupported-plan";
+	const ids = all.filter((id) => !mainActions.includes(id));
 	const only = (allowed) => ids.every((id) => allowed.includes(id));
 	// All or nothing, like the persistence variants: never part of an installation.
 	const recovery = recoveryActions.every((id) => ids.includes(id)) && only([...recoveryActions, ...optionalActions]);
@@ -143,8 +165,19 @@ function planGate(plan, platform) {
 	const persisting = persistenceActions.filter((id) => ids.includes(id));
 	if (persisting.length > 0 && !persistenceVariants.some((variant) =>
 		variant.length === persisting.length && variant.every((id) => persisting.includes(id)))) return "unsupported-plan";
+	const updating = updateActions.filter((id) => ids.includes(id));
+	if (updating.length > 0) {
+		const valid = updating.length === 1 && overlay.length === 0 && ["setup-shell", "verify-readiness"].every((id) => ids.includes(id)) &&
+			only([...updating, "install-pi", "setup-shell", "verify-readiness"]) &&
+			(updating[0] !== "update-shell-main" || plan.tools.go?.status === "reusable");
+		return valid ? null : "unsupported-plan";
+	}
 	const clean = requiredActions.every((id) => ids.includes(id)) && only([...requiredActions, ...optionalActions, ...persistenceActions]);
-	return clean || recovery ? null : "unsupported-plan";
+	// The same actions as a forged recovery plus install-shell: the tools must say Shell is missing and Pi reusable.
+	const shellOnly = shellOnlyActions.every((id) => ids.includes(id)) && !ids.includes("install-pi") &&
+		plan.tools.shell?.status === "unavailable" && plan.tools.pi?.status === "reusable" &&
+		only([...shellOnlyActions, ...optionalActions, ...persistenceActions]);
+	return clean || shellOnly || recovery ? null : "unsupported-plan";
 }
 
 function pathKeyOf(env, platform) {
@@ -351,6 +384,16 @@ function stackListings(stdout) {
 	return listed;
 }
 
+/** Shell-only pre-install `list -g --json`: true when no project lists gentle-pi,
+ * "existing-stack" when one does, false when the shape is unknown.
+ */
+function noExistingShell(stdout) {
+	const projects = JSON.parse(stdout);
+	if (!Array.isArray(projects) || !projects.every(plainObject)) return false;
+	return projects.some((project) => ["dependencies", "devDependencies", "optionalDependencies"]
+		.some((field) => plainObject(project[field]) && Object.hasOwn(project[field], SHELL_PACKAGE))) ? "existing-stack" : true;
+}
+
 /** Pre-install `list -g --json`: true when neither package is listed in any
  * project, "existing-stack" when one is, false when the shape is unknown.
  */
@@ -364,7 +407,7 @@ function noExistingStack(stdout) {
  * Exactly one listed project may own gentle-pi, and Pi must resolve beside it;
  * other projects (such as the persisted npm and pnpm) are ignored.
  */
-async function verifiedPackageRoot(stdout, pnpmHome, platform, fs) {
+async function verifiedPackageRoot(stdout, pnpmHome, platform, fs, shellVersion = requirements.shell, requirePi = true) {
 	const path = platform === "win32" ? win32 : posix;
 	const projects = JSON.parse(stdout);
 	if (!Array.isArray(projects)) return null;
@@ -373,7 +416,7 @@ async function verifiedPackageRoot(stdout, pnpmHome, platform, fs) {
 	if (!plainObject(dependencies)) return null;
 	const pi = dependencies[PI_PACKAGE];
 	const shell = dependencies[SHELL_PACKAGE];
-	if (pi?.version !== PI_INSTALL_VERSION || shell?.version !== requirements.shell) return null;
+	if ((requirePi && pi?.version !== PI_INSTALL_VERSION) || shell?.version !== shellVersion) return null;
 	if (typeof shell.path !== "string" || !path.isAbsolute(shell.path)) return null;
 	const [root, home] = [await fs.realpath(shell.path), await fs.realpath(pnpmHome)];
 	return contains(home, root, platform) ? root : null;
@@ -517,7 +560,10 @@ export async function runStandardInstall(request, adapters) {
 	const list = () => runPnpm(["list", "-g", "--depth", "0", "--json"], deadlines.probe);
 	const ids = request.plan.actions.map((action) => action.id);
 	// planGate accepted either the clean-stack path or the fixed setup recovery.
-	const recovering = !ids.includes("install-shell");
+	const update = ids.find((id) => updateActions.includes(id));
+	const recovering = !ids.includes("install-shell") && !update;
+	const shellOnly = ids.includes("install-shell") && !ids.includes("install-pi");
+	const main = ids.includes("install-shell-main");
 	// Fixed variants (planGate): runtime + both managers, or one add of the missing ones.
 	const persistRuntime = ids.includes("persist-node");
 	const addNpm = ids.includes("persist-package-managers") || ids.includes("persist-npm");
@@ -533,6 +579,7 @@ export async function runStandardInstall(request, adapters) {
 	// Pre-install gates: a false check or adapter exception blocks before mutation;
 	// a check may return a more specific blocked reason instead of false.
 	// An npm that is about to be persisted is checked only after it has been added.
+	let installed = null;
 	const checks = [
 		...(addNpm ? [] : [["check-npm", "npm-unavailable", npmCheck]]),
 		["check-global-bin", "global-bin-mismatch", async () => {
@@ -542,7 +589,17 @@ export async function runStandardInstall(request, adapters) {
 		}],
 		// Never rely on the caller's plan alone: an existing Pi or gentle-pi is not overwritten,
 		// and a recovery still finds exactly the pinned stack this pnpm installed.
-		recovering
+		update
+			? ["check-installed-shell", "existing-stack-unverified", async () => {
+				installed = await adapters.locateShell?.();
+				return ["pnpm", "npm"].includes(installed?.owner) && typeof installed.root === "string" && path.isAbsolute(installed.root);
+			}]
+			: shellOnly
+			? ["check-existing-shell", "global-list-unavailable", async () => {
+				const result = await list();
+				return succeeded(result) && noExistingShell(String(result.stdout ?? ""));
+			}]
+			: recovering
 			? ["check-recoverable-stack", "global-list-unavailable", async () => {
 				const result = await list();
 				if (!succeeded(result)) return false;
@@ -586,19 +643,55 @@ export async function runStandardInstall(request, adapters) {
 		...(addPnpm ? [["verify-persistent-pnpm", () => persistentPnpm(child, platform, adapters.nodePath, globalBin, adapters)]] : []),
 	];
 	// A recovery never runs `add -g`: the installed packages are verified as they are.
-	const install = ["install-global", async () => succeeded(await runPnpm(["add", "-g", `${PI_PACKAGE}@${PI_INSTALL_VERSION}`,
+	const install = ["install-global", async () => succeeded(await runPnpm(["add", "-g", ...(shellOnly ? [] : [`${PI_PACKAGE}@${PI_INSTALL_VERSION}`]),
 		`${SHELL_PACKAGE}@${requirements.shell}`, `--allow-build=${SHELL_PACKAGE}`], deadlines.install))];
+	function mainSteps() {
+		const channel = adapters.mainChannel;
+		const ctx = { env, home };
+		const runIn = (command, argv, options = {}) => adapters.run(command, argv, { env: options.env ?? child, cwd: options.cwd, deadlineMs: options.deadlineMs ?? deadlines.install });
+		let gentleAiCommit = null;
+		let shellCommit = null;
+		return [
+			["build-gentle-ai-main", async () => {
+				const goPath = await lookPath("go", env, platform, adapters.fs);
+				if (!goPath || !channel) return false;
+				gentleAiCommit = await channel.resolveCommit(GENTLE_AI_REPOSITORY);
+				await channel.buildGentleAi({ commit: gentleAiCommit, goPath, platform, ctx, run: runIn });
+				return true;
+			}],
+			["install-shell-main", async () => {
+				shellCommit = await channel.resolveCommit(SHELL_REPOSITORY);
+				const tgz = await channel.packShell({ commit: shellCommit, ctx, run: runIn, pnpm });
+				if (!succeeded(await runPnpm(["add", "-g", tgz, `--allow-build=${SHELL_PACKAGE}`], deadlines.install))) return false;
+				const result = await list();
+				if (!succeeded(result)) return false;
+				const root = await verifiedPackageRoot(String(result.stdout ?? ""), globalBin.pnpmHome, platform, adapters.fs,
+					mainVersion(requirements.shell, shellCommit), !shellOnly);
+				if (root === null) return false;
+				packageRoot = root;
+				return true;
+			}],
+			["record-channel", async () => {
+				await channel.writeChannel(ctx, { channel: "main", shellCommit, gentleAiCommit });
+				return true;
+			}],
+		];
+	}
 	const steps = [
 		...(persistRuntime ? persistence : addOnly ? packageManagers : []),
 		...(recovering ? [] : [install]),
 		["verify-global-list", async () => {
 			const result = await list();
 			if (!succeeded(result)) return false;
-			packageRoot = await verifiedPackageRoot(String(result.stdout ?? ""), globalBin.pnpmHome, platform, adapters.fs);
+			packageRoot = await verifiedPackageRoot(String(result.stdout ?? ""), globalBin.pnpmHome, platform, adapters.fs, requirements.shell, !shellOnly);
 			return packageRoot !== null;
 		}],
 		["verify-shell-bin", () => adapters.fs.isFile(path.join(globalBin.path, platform === "win32" ? "gentle-shell.cmd" : "gentle-shell"))],
 		["verify-gentle-ai", async () => (await adapters.verifyGentleAi({ packageRoot, platform, env, home }))?.ok === true],
+		// Main overlays the verified release stack: Gentle AI built from the latest
+		// main commit (registered as the override), then Gentle Shell packed from
+		// it. Setup below then runs from the main package.
+		...(main ? mainSteps() : []),
 			// The setup commands are the only ones whose stderr tail is requested.
 		["shell-setup", async () => {
 			const result = await adapters.run(adapters.nodePath, [path.join(packageRoot, "bin", "gentle-shell.mjs"), "setup"],
@@ -608,10 +701,31 @@ export async function runStandardInstall(request, adapters) {
 			return false;
 		}],
 	];
+	if (update) {
+		// Update an existing Gentle Shell with its owner's package manager (the same
+		// logic as `gentle-shell upgrade`), confirm the result, then set it up.
+		const channel = update === "update-shell-main" ? "main" : "release";
+		const setupStep = steps.find(([name]) => name === "shell-setup");
+		steps.splice(0, steps.length,
+			...(ids.includes("install-pi") ? [["install-pi", async () => succeeded(await runPnpm(["add", "-g", `${PI_PACKAGE}@${PI_INSTALL_VERSION}`], deadlines.install))]] : []),
+			["update-shell", async () => (await adapters.upgradeShell({ channel, packageRoot: installed.root, currentVersion: installed.version })) === true],
+			["verify-updated-shell", async () => {
+				const after = await adapters.locateShell();
+				const version = String(after?.version ?? "");
+				const expected = channel === "main" ? MAIN_VERSION.test(version)
+					: stable(version) !== null && (stable(installed.version) === null || atLeast(version, installed.version));
+				if (!expected || after.owner !== installed.owner || !path.isAbsolute(after.root)) return false;
+				packageRoot = after.root;
+				return true;
+			}],
+			...(channel === "release" ? [["verify-gentle-ai", async () => (await adapters.verifyGentleAi({ packageRoot, platform, env, home }))?.ok === true]] : []),
+			setupStep);
+	}
 	// A child PATH never proves a fresh terminal; persist it with pnpm's own setup.
 	// globalBin.onPath was computed from the user's own PATH, not the child env.
 	// pnpm setup installs @pnpm/exe over the network, so it gets the setup deadline.
-	const persistPath = !globalBin.onPath;
+	// An update keeps the PATH its existing installation already uses.
+	const persistPath = !globalBin.onPath && !update;
 	if (persistPath) {
 		steps.push(["persist-path", async () => {
 			const result = await adapters.run(pnpm.command, [...pnpm.prefix, "setup"], { env: child, deadlineMs: deadlines.setup, stderrTail: 4096 });

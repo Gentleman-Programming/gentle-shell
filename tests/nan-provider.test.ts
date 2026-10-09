@@ -4,7 +4,7 @@ import type { RefreshModelsContext } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, createModels, getSupportedThinkingLevels, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import type { Provider } from "@earendil-works/pi-ai";
 import nanProviderExtension from "../extensions/nan-provider.ts";
-import { createNanProviderConfig as createNativeProvider, NAN_PROVIDER_BASE_URL, NAN_PROVIDER_ID } from "../lib/nan-provider.ts";
+import { createNanProviderConfig as createNativeProvider, isNanAdaptiveReasoningModel, NAN_PROVIDER_BASE_URL, NAN_PROVIDER_ID } from "../lib/nan-provider.ts";
 
 // Keep catalog assertions independent of the native refresh's void return contract.
 function createNanProviderConfig(options: Parameters<typeof createNativeProvider>[0] = {}) {
@@ -195,50 +195,47 @@ test("initial catalog contains all seven documented chat models with configured 
 	assert.deepEqual(model?.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 });
 
-test("adjustable models map Pi thinking levels to accepted NaN efforts", () => {
+test("GLM models expose exactly NaN's four efforts and no off", () => {
 	const models = createNativeProvider().getModels();
 	for (const id of ["glm5.3", "glm5.3-flash"]) {
 		const model = models.find((model) => model.id === id);
 		assert.ok(model);
-		assert.deepEqual(model.thinkingLevelMap, { off: null, minimal: "low", xhigh: "max", max: "max" });
-		assert.deepEqual(getSupportedThinkingLevels(model), ["minimal", "low", "medium", "high", "xhigh", "max"]);
-		assert.equal(clampThinkingLevel(model, "off"), "minimal");
-	}
-	for (const id of ["qwen3.6", "gemma4"]) {
-		const model = models.find((model) => model.id === id);
-		assert.ok(model);
-		assert.deepEqual(model.thinkingLevelMap, { off: "none", xhigh: "max", max: "max" });
-		assert.deepEqual(getSupportedThinkingLevels(model), ["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
-		assert.equal(clampThinkingLevel(model, "off"), "off");
+		assert.deepEqual(model.thinkingLevelMap, { off: null, minimal: null, xhigh: null, max: "max" });
+		assert.deepEqual(getSupportedThinkingLevels(model), ["low", "medium", "high", "max"]);
+		// Pi levels NaN does not declare clamp onto the nearest declared effort.
+		assert.equal(clampThinkingLevel(model, "off"), "low");
+		assert.equal(clampThinkingLevel(model, "minimal"), "low");
+		assert.equal(clampThinkingLevel(model, "xhigh"), "max");
 	}
 });
 
-test("fixed-depth models expose only medium and clamp unsupported thinking levels", () => {
+test("models with none and minimal expose exactly NaN's six efforts", () => {
 	const models = createNativeProvider().getModels();
-	for (const id of ["qwen3.8-flash", "mimo-v2.6-flash"]) {
+	// Qwen 3.6 and Gemma 4 honor these values as depth controls; DeepSeek V4 Flash,
+	// Qwen 3.8 Flash, and MiMo accept them while NaN manages depth itself.
+	for (const id of ["qwen3.6", "gemma4", "deepseek-v4-flash", "qwen3.8-flash", "mimo-v2.6-flash"]) {
 		const model = models.find((model) => model.id === id);
 		assert.ok(model);
-		assert.deepEqual(model.thinkingLevelMap, {
-			off: null, minimal: null, low: null, high: null, xhigh: null, max: null,
-		});
-		assert.deepEqual(getSupportedThinkingLevels(model), ["medium"]);
-		for (const level of ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const) {
-			assert.equal(clampThinkingLevel(model, level), "medium");
-		}
+		assert.deepEqual(model.thinkingLevelMap, { off: "none", xhigh: null, max: "max" });
+		assert.deepEqual(getSupportedThinkingLevels(model), ["off", "minimal", "low", "medium", "high", "max"]);
+		assert.equal(clampThinkingLevel(model, "xhigh"), "max");
 	}
 });
 
-test("deepseek-v4-flash exposes only adaptive reasoning and cannot advertise off", () => {
+test("only the self-managing models carry the adaptive reasoning marker", () => {
 	const models = createNativeProvider().getModels();
-	const model = models.find((model) => model.id === "deepseek-v4-flash");
-	assert.ok(model);
-	assert.deepEqual(model.thinkingLevelMap, {
-		off: null, minimal: null, low: null, high: null, xhigh: null, max: null,
-	});
-	assert.deepEqual(getSupportedThinkingLevels(model), ["medium"]);
-	for (const level of ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const) {
-		assert.equal(clampThinkingLevel(model, level), "medium");
+	assert.deepEqual(
+		models.filter((model) => isNanAdaptiveReasoningModel(model)).map((model) => model.id),
+		["deepseek-v4-flash", "qwen3.8-flash", "mimo-v2.6-flash"],
+	);
+	// Qwen 3.6 and Gemma 4 share the same map but honor the level as a depth budget.
+	for (const id of ["qwen3.6", "gemma4", "glm5.3", "glm5.3-flash"]) {
+		const model = models.find((model) => model.id === id);
+		assert.ok(model);
+		assert.equal(isNanAdaptiveReasoningModel(model), false);
 	}
+	assert.equal(isNanAdaptiveReasoningModel(undefined), false);
+	assert.equal(isNanAdaptiveReasoningModel({ provider: "openai", id: "deepseek-v4-flash" }), false);
 });
 
 test("thinking maps are isolated across snapshots, providers, and live catalog refreshes", async () => {

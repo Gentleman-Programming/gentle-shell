@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
-import { CURSOR_MARKER, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, matchesKey, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { CODEX_USAGE_URL, NAN_QUOTA_URL, USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA } from "../lib/shell-usage.ts";
 import { bindSessionProfile, clearSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
@@ -30,6 +30,7 @@ import { listVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
+import { CARD_CONTENT, cardContent, resolveCardContent, setCardContent, writeCardContent } from "../lib/card-content-policy.ts";
 import { claimNotificationOwner } from "../lib/notification-service.ts";
 import { DEFAULT_NOTIFICATION_SETTINGS } from "../lib/notification-policy.ts";
 
@@ -281,6 +282,63 @@ test("buildShellBarModel shortens the home directory and hides effort for non-re
 	assert.equal(built.cwd, "~/work/gentle-pi");
 	assert.equal(built.effort, undefined);
 	assert.equal(built.branch, null);
+});
+
+test("buildShellBarModel reports auto effort for NaN models that manage their own depth", () => {
+	const { pi } = fakePi();
+	const { ctx } = fakeContext();
+	const model = ctx.model as unknown as { id: string; provider: string };
+	model.provider = "nan";
+	model.id = "deepseek-v4-flash";
+	const footerData = {
+		getGitBranch: () => null,
+		getExtensionStatuses: () => new Map(),
+		getAvailableProviderCount: () => 1,
+		onBranchChange: () => () => {},
+	};
+	assert.equal(buildShellBarModel(pi, ctx, footerData, { home: "/home/alan" }).effort, "auto");
+	// A NaN model that honors the level keeps reporting the selected one.
+	model.id = "glm5.3";
+	assert.equal(buildShellBarModel(pi, ctx, footerData, { home: "/home/alan" }).effort, "medium");
+});
+
+test("a self-managing NaN model announces its automatic depth once per session", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const adaptive = { id: "qwen3.8-flash", provider: "nan", name: "Qwen 3.8 Flash", reasoning: true };
+	const budget = { id: "glm5.3", provider: "nan", name: "GLM 5.3", reasoning: true };
+	(ctx as unknown as { model: unknown }).model = adaptive;
+	const emit = async (event: string, payload: unknown) => {
+		for (const handler of handlers.get(event) ?? []) await handler(payload, ctx);
+	};
+	await emit("thinking_level_select", { type: "thinking_level_select", level: "high", previousLevel: "medium" });
+	assert.deepEqual(ui.notices.filter((notice) => notice.includes("automatically")), [
+		"Qwen 3.8 Flash chooses its reasoning depth automatically; the selected thinking level is accepted but does not change it.",
+	]);
+	// Re-selecting the same model or level never repeats the notice.
+	await emit("model_select", { type: "model_select", model: adaptive, previousModel: budget, source: "set" });
+	assert.equal(ui.notices.filter((notice) => notice.includes("automatically")).length, 1);
+	// A model that applies the level never announces.
+	(ctx as unknown as { model: unknown }).model = budget;
+	await emit("model_select", { type: "model_select", model: budget, previousModel: adaptive, source: "set" });
+	assert.equal(ui.notices.filter((notice) => notice.includes("automatically")).length, 1);
+});
+
+test("a session that starts on a self-managing NaN model announces it once", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const adaptive = { id: "mimo-v2.6-flash", provider: "nan", name: "MiMo V2.6 Flash", reasoning: true };
+	(ctx as unknown as { model: unknown }).model = adaptive;
+	for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
+	assert.deepEqual(ui.notices.filter((notice) => notice.includes("automatically")), [
+		"MiMo V2.6 Flash chooses its reasoning depth automatically; the selected thinking level is accepted but does not change it.",
+	]);
+	// A session that starts on a model which honors the level stays silent.
+	(ctx as unknown as { model: unknown }).model = { id: "gemma4", provider: "nan", name: "Gemma 4", reasoning: true };
+	for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
+	assert.equal(ui.notices.filter((notice) => notice.includes("automatically")).length, 1);
 });
 
 test("gentleShell installs the footer on session_start when a UI exists", () => {
@@ -1574,6 +1632,49 @@ test("GentlePromptEditor keeps visual selection when autocomplete offers printab
 		assert.match(editor.render(30).join("\n"), /VISUAL/);
 		assert.equal(editor.isShowingAutocomplete(), false);
 		assert.deepEqual(reverseColumns(editor.render(30)[1]!), [3, 4], "the selected range remains anchored");
+	} finally { editor.dispose(); }
+});
+
+// gentle-shell#1565: in ordinary editing the Gentle Agents alt+a shortcut
+// must win over prompt select-all, for empty and non-empty drafts alike.
+test("GentlePromptEditor gives extension shortcuts precedence over selection chords", () => {
+	const { pi, handlers } = fakePi(); gentleShell(pi, {});
+	const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		const seen: string[] = [];
+		editor.onExtensionShortcut = (data) => { seen.push(data); return matchesKey(data, "alt+a"); };
+		for (const altA of ["\x1ba", "\x1b[97;3u", "\x1b[97;3:1u"]) {
+			seen.length = 0;
+			editor.setText("");
+			editor.handleInput(altA);
+			assert.deepEqual(seen, [altA], "empty draft dispatches the shortcut");
+			seen.length = 0;
+			editor.setText("abc\ndef");
+			editor.handleInput(altA);
+			assert.deepEqual(seen, [altA], "non-empty draft dispatches the shortcut");
+			assert.doesNotMatch(editor.render(40).join("\n"), /\x1b\[7mabc/);
+			editor.handleInput("\x7f");
+			assert.equal(editor.getText(), "abc\nde", "the draft was not selected");
+		}
+		// alt+e is the dedicated select-all chord while alt+a belongs to Agents.
+		editor.setText("abc\ndef");
+		editor.handleInput("\x1be");
+		assert.match(editor.render(40).join("\n"), /\x1b\[7mabc/);
+		editor.handleInput("\x7f");
+		assert.equal(editor.getText(), "");
+	} finally { editor.dispose(); }
+});
+
+test("GentlePromptEditor keeps alt+a select-all when no extension claims it", () => {
+	const { pi, handlers } = fakePi(); gentleShell(pi, {});
+	const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+	try {
+		editor.onExtensionShortcut = () => false;
+		editor.setText("abc\ndef");
+		editor.handleInput("\x1ba");
+		assert.match(editor.render(40).join("\n"), /\x1b\[7mabc/);
+		editor.handleInput("\x7f");
+		assert.equal(editor.getText(), "");
 	} finally { editor.dispose(); }
 });
 
@@ -3019,7 +3120,7 @@ test("customize Cards rows persist the card style and switch live conversation c
 	const pending = commands.get("gentle:customize")!.handler("", ctx);
 	await overlayReady;
 	assert.ok(findCustomizeRow(ui, "Card style: float (current)"));
-	assert.match(ui.overlayView!.render(90).join("\n"), /Cards · 2\/2/);
+	assert.match(ui.overlayView!.render(90).join("\n"), /Cards · 2\/4/);
 	assert.ok(findCustomizeRow(ui, "Card style: neon"));
 	assert.ok(!ui.overlayView!.render(90).some((line) => line.includes("▸ Card style: neon (current)")), "neon is not current without a saved preference");
 	assert.equal(existsSync(join(home, "card-style.json")), false, "highlighting never applies");
@@ -3040,6 +3141,32 @@ test("customize Cards rows persist the card style and switch live conversation c
 	await customizeAction(ui, "Card style: float");
 	assert.equal(resolveCardStyle({ gentlePiConfigHome: home }).style, "float");
 	assert.equal(cardStyle(), CARD_STYLE.FLOAT);
+	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("customize Cards rows persist the card content level and switch the live quiet tools", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const previous = cardContent();
+	t.after(() => setCardContent(previous));
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	assert.equal(cardContent(), CARD_CONTENT.DEFAULT, "no preference file means default");
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	assert.ok(findCustomizeRow(ui, "Card content: default (current)"));
+	assert.ok(findCustomizeRow(ui, "Card content: minimal"));
+	assert.equal(existsSync(join(home, "card-content.json")), false, "highlighting never applies");
+	await customizeAction(ui, "Card content: minimal");
+	await new Promise<void>(resolve => setImmediate(resolve));
+	assert.equal(resolveCardContent({ gentlePiConfigHome: home }).content, "minimal");
+	assert.equal(cardContent(), CARD_CONTENT.MINIMAL, "the live slot follows the choice");
+	assert.match(ui.notices.at(-1)!, /Card content: minimal/);
+	assert.ok(findCustomizeRow(ui, "Card content: minimal (current)"));
+	assert.ok(findCustomizeRow(ui, "Card content: default"));
+	await customizeAction(ui, "Card content: default");
+	assert.equal(resolveCardContent({ gentlePiConfigHome: home }).content, "default");
+	assert.equal(cardContent(), CARD_CONTENT.DEFAULT);
 	ui.overlayView!.handleInput("\x1b"); await pending;
 });
 
@@ -3163,6 +3290,20 @@ test("the saved card style applies at startup and on every session start", async
 	const { ctx } = fakeContext({ hasUI: false });
 	for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
 	assert.equal(cardStyle(), CARD_STYLE.FLOAT);
+});
+
+test("the saved card content applies at startup and on every session start", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const found = cardContent();
+	t.after(() => setCardContent(found));
+	writeCardContent("minimal", { gentlePiConfigHome: home });
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	assert.equal(cardContent(), CARD_CONTENT.MINIMAL);
+	writeCardContent("default", { gentlePiConfigHome: home });
+	const { ctx } = fakeContext({ hasUI: false });
+	for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
+	assert.equal(cardContent(), CARD_CONTENT.DEFAULT);
 });
 
 test("customize Cards rows refuse to overwrite a malformed preference", async (t) => {

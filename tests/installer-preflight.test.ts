@@ -50,6 +50,49 @@ for (const platform of ["linux", "darwin", "win32"]) {
 	});
 }
 
+const mainSteps = ["build-gentle-ai-main", "install-shell-main", "record-channel"];
+for (const platform of ["linux", "darwin", "win32"]) {
+	test(`the main channel on ${platform} adds the main build steps after a clean installation`, () => {
+		const inventory = { ...clean(platform), node: tool("24.1.0"), pnpm: { ...tool("11.1.1"), compatible: true },
+			globalBin: { available: true, path: "/disposable/bin", writable: true, onPath: true }, go: tool("1.26.0") };
+		const release = ids(inventory);
+		const plan = planPreflight(inventory, { channel: "main" });
+		assert.deepEqual(plan.blockers, []);
+		assert.equal(plan.tools.go.status, "reusable");
+		assert.deepEqual(plan.actions.map((action: { id: string }) => action.id), [...release, ...mainSteps]);
+		assert.deepEqual(plan.actions.slice(-3), [
+			{ id: "build-gentle-ai-main", kind: "build-native-main", target: "gentleAi" },
+			{ id: "install-shell-main", kind: "install-global", target: "shell" },
+			{ id: "record-channel", kind: "configure", target: "channel" }]);
+		assert.equal(plan.ready, false);
+	});
+}
+
+test("the main channel requires a compatible Go on every platform", () => {
+	for (const go of [absent, tool("1.25.9"), { available: null }]) {
+		const plan = planPreflight({ ...clean("darwin"), go }, { channel: "main" });
+		assert.ok(plan.blockers.some((blocker: { code: string; tool: string }) => blocker.code === "main-requires-go" && blocker.tool === "go"));
+		assert.deepEqual(plan.actions, []);
+	}
+});
+
+test("the release channel is the default and plans exactly as before", () => {
+	for (const inventory of [clean("darwin"), installed("linux"), { ...clean("win32"), go: tool("1.26.0") }]) {
+		assert.deepEqual(planPreflight(inventory, { channel: "release" }), planPreflight(inventory));
+	}
+	assert.equal(planPreflight(clean("darwin")).tools.go.status, "not-required");
+});
+
+test("an already set-up stack on the main channel plans no main steps, since nothing is installed", () => {
+	const plan = planPreflight({ ...installed("darwin"), go: tool("1.26.0") }, { channel: "main" });
+	assert.deepEqual(plan.actions.map((action: { id: string }) => action.id), ["verify-readiness"]);
+	assert.equal(plan.ready, true);
+});
+
+test("an unknown channel is rejected", () => {
+	assert.throws(() => planPreflight(clean("linux"), { channel: "nightly" }), /Unsupported installation channel/);
+});
+
 test("Windows requires compatible Go only before a missing native binary", () => {
 	const inventory = { ...installed("win32"), gentleAi: absent, go: tool("1.26.0") };
 	assert.equal(planPreflight(inventory).tools.go.status, "reusable");
@@ -66,6 +109,87 @@ for (const [name, version] of [["node", "22.18.0"], ["pi", "0.99.0"], ["shell", 
 		assert.equal(plan.ready, false);
 	});
 }
+
+test("an older Shell without its global command is reported as incompatible, not unknown", () => {
+	const unchecked = { available: null };
+	const inventory = { ...installed(), shell: { available: true, version: "3.4.0", usable: false, global: true },
+		gentleAi: unchecked, setup: unchecked };
+	const plan = planPreflight(inventory);
+	assert.deepEqual(plan.blockers, [{ code: "incompatible-tool", tool: "shell" }]);
+	assert.equal(plan.tools.shell.status, "incompatible");
+	assert.deepEqual(plan.actions, []);
+	assert.equal(plan.ready, false);
+});
+
+test("a Shell installed outside pnpm is the only blocker, without derived Gentle AI and setup blockers", () => {
+	const unchecked = { available: null };
+	const plan = planPreflight({ ...installed(), shell: { available: null, outsidePnpm: true }, gentleAi: unchecked, setup: unchecked });
+	assert.deepEqual(plan.blockers, [{ code: "unknown-tool", tool: "shell" }]);
+	assert.deepEqual(plan.actions, []);
+	assert.equal(plan.ready, false);
+});
+
+const unchecked = { available: null };
+const owned = (version: string, owner = "pnpm", usable = true) => ({ available: true, version, usable, global: true, owner });
+const updateIds = (plan: { actions: Array<{ id: string }> }) => plan.actions.map((action) => action.id);
+
+test("an older Gentle Shell that pnpm or npm owns is updated to the latest release, then set up", () => {
+	for (const shell of [owned("3.9.0"), owned("3.9.0", "npm"), owned("3.4.0", "pnpm", false), owned(`${requirements.shell}-main.6e7e3a18f794`, "npm")]) {
+		const plan = planPreflight({ ...installed(), shell, gentleAi: unchecked, setup: unchecked });
+		assert.deepEqual(plan.blockers, [], JSON.stringify(shell));
+		assert.equal(plan.tools.shell.status, "needs-update");
+		assert.deepEqual(updateIds(plan), ["update-shell-release", "setup-shell", "verify-readiness"]);
+		assert.deepEqual(plan.actions[0], { id: "update-shell-release", kind: "upgrade", target: "shell" });
+		assert.equal(plan.ready, false);
+	}
+});
+
+test("a current Gentle Shell installed by npm needs nothing on the release channel", () => {
+	const plan = planPreflight({ ...installed(), shell: owned(requirements.shell, "npm"), gentleAi: unchecked, setup: unchecked });
+	assert.deepEqual(plan.blockers, []);
+	assert.deepEqual(updateIds(plan), ["verify-readiness"]);
+	assert.equal(plan.ready, true);
+});
+
+test("a current pnpm-owned Gentle Shell plans exactly as before", () => {
+	const inventory = installed();
+	assert.deepEqual(planPreflight({ ...inventory, shell: { ...inventory.shell, owner: "pnpm" } }), planPreflight(inventory));
+});
+
+test("on the main channel an owned Gentle Shell is updated to the latest main, which needs Go", () => {
+	for (const shell of [owned(requirements.shell), owned("3.9.0", "npm"), owned(`${requirements.shell}-main.6e7e3a18f794`)]) {
+		const plan = planPreflight({ ...installed(), shell, go: tool("1.26.0"), gentleAi: unchecked, setup: unchecked }, { channel: "main" });
+		assert.deepEqual(plan.blockers, []);
+		assert.deepEqual(updateIds(plan), ["update-shell-main", "setup-shell", "verify-readiness"]);
+		assert.deepEqual(plan.actions[0], { id: "update-shell-main", kind: "upgrade", target: "shell" });
+	}
+	const noGo = planPreflight({ ...installed(), shell: owned("3.9.0"), go: absent }, { channel: "main" });
+	assert.deepEqual(noGo.blockers, [{ code: "main-requires-go", tool: "go" }]);
+});
+
+test("a missing Pi is installed before an existing Gentle Shell is updated", () => {
+	const plan = planPreflight({ ...installed(), pi: absent, shell: owned("3.9.0", "npm"), gentleAi: unchecked, setup: unchecked });
+	assert.deepEqual(updateIds(plan), ["install-pi", "update-shell-release", "setup-shell", "verify-readiness"]);
+});
+
+test("an existing compatible Pi from any installation is reused and only Gentle Shell is installed", () => {
+	for (const pi of [tool("1.2.0"), { ...tool("1.0.4"), external: true }]) {
+		const plan = planPreflight({ ...installed(), pi, shell: absent, gentleAi: absent, setup: false });
+		assert.equal(plan.tools.pi.status, "reusable");
+		assert.deepEqual(updateIds(plan), ["install-shell", "setup-shell", "verify-readiness"]);
+	}
+});
+
+test("an unknown Gentle AI still blocks when the Shell is reusable", () => {
+	const plan = planPreflight({ ...installed(), gentleAi: { available: null } });
+	assert.deepEqual(plan.blockers, [{ code: "unknown-tool", tool: "gentleAi" }]);
+});
+
+test("a current Shell without its global command still blocks as unknown", () => {
+	const plan = planPreflight({ ...installed(), shell: { available: true, version: "5.0.0", usable: false, global: true } });
+	assert.deepEqual(plan.blockers, [{ code: "unknown-tool", tool: "shell" }]);
+	assert.deepEqual(plan.actions, []);
+});
 
 test("missing Windows Go is acquired before reprovisioning an existing Shell", () => {
 	const inventory = { ...installed("win32"), gentleAi: absent };

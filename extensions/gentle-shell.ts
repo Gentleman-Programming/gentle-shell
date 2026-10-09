@@ -14,6 +14,7 @@ import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver, type WorktreeIdentity } from "../lib/session-worktree-registry.ts";
 import { CARD_STYLE, CARD_TONE, cardStyle, renderCard, setCardStyle, type Card, type CardTheme } from "../lib/shell-card.ts";
 import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
+import { CARD_CONTENT, resolveCardContent, setCardContent, writeCardContent } from "../lib/card-content-policy.ts";
 import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/command-palette.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { discoverYoloUiAdapter, YOLO_DISPLAY, type YoloDisplay, type YoloUiAdapter } from "../lib/yolo-session-policy.ts";
@@ -29,6 +30,7 @@ import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { inferOddPhase } from "../lib/odd-phase-inference.ts";
 import { isInteractiveMode } from "../lib/rpc-host.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
+import { isNanAdaptiveReasoningModel } from "../lib/nan-provider.ts";
 import { resolveAnimationPolicy, writeAnimationPolicy, type AnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy, type VimPolicy } from "../lib/vim-policy.ts";
 import { resolveHistoryCapture, writeHistoryCapturePolicy } from "../lib/history-capture-policy.ts";
@@ -309,6 +311,7 @@ export function buildShellBarModel(
 	const home = options.home ?? os.homedir();
 	const { usage, costTotal } = sessionStats(ctx);
 	const model = ctx.model;
+	const adaptiveReasoning = isNanAdaptiveReasoningModel(model);
 	const statuses = Array.from(footerData.getExtensionStatuses().entries())
 		.filter(([key]) => options.jobs === undefined || key !== JOBS_STATUS_KEY)
 		.sort(([a], [b]) => a.localeCompare(b))
@@ -320,7 +323,7 @@ export function buildShellBarModel(
 		dirty: options.dirty,
 		sessionName: ctx.sessionManager.getSessionName(),
 		modelId: model?.id ?? "no-model",
-		effort: model?.reasoning ? pi.getThinkingLevel() : undefined,
+		effort: model?.reasoning ? (adaptiveReasoning ? "auto" : pi.getThinkingLevel()) : undefined,
 		contextPercent: usage?.percent ?? null,
 		contextWindow: usage?.contextWindow ?? model?.contextWindow ?? 0,
 		costTotal,
@@ -589,9 +592,10 @@ export class GentlePromptEditor extends CustomEditor {
 			this.pendingIdleClearText = undefined;
 		}
 		// Vim owns its modal keys and paste frames. Ordinary editing retains
-		// native selection before the prompt's existing input chain.
+		// native selection before the prompt's existing input chain, but a
+		// registered extension shortcut still owns its chord (gentle-shell#1565).
 		if (this.vimPolicy === "on") this.handleInputNative(data);
-		else this.selectionEngine.handleInput(data, (d) => this.handleInputNative(d));
+		else this.selectionEngine.handleInput(data, (d) => this.handleInputNative(d), (d) => this.onExtensionShortcut?.(d) === true);
 	}
 
 	private handleInputNative(data: string): void {
@@ -1528,6 +1532,17 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	// overlapping refreshes of the SAME source (or of builtins) can otherwise
 	// let an older failure settle after a newer success and poison it.
 	const usageGenerations = new Map<string, number>();
+	// NaN accepts a thinking level for DeepSeek V4 Flash, Qwen 3.8 Flash, and MiMo
+	// but manages their depth itself, so the header reports `auto` and the shell says
+	// why once per model instead of repeating it on every level change.
+	const adaptiveReasoningNotices = new Set<string>();
+	const announceAdaptiveReasoning = (ctx: ExtensionContext, model: { provider: string; id: string; name?: string } | undefined) => {
+		if (!ctx.hasUI || !isNanAdaptiveReasoningModel(model)) return;
+		const key = `${model.provider}/${model.id}`;
+		if (adaptiveReasoningNotices.has(key)) return;
+		adaptiveReasoningNotices.add(key);
+		ctx.ui.notify(`${model.name || model.id} chooses its reasoning depth automatically; the selected thinking level is accepted but does not change it.`, "info");
+	};
 	// One spelling of the config home, so the pin resolver, the global profiles
 	// store and the profile reader cannot drift onto two different stores.
 	const usageConfigHome = gentlePiConfigHome(env);
@@ -1739,6 +1754,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	// preference fills it at startup and again on every session start.
 	const applyCardStyle = () => setCardStyle(resolveCardStyle(animationOptions).style);
 	applyCardStyle();
+	// The Card content preference rides the same kind of slot: the quiet tool
+	// renderers read it live, so the saved level applies from the first render.
+	const applyCardContent = () => setCardContent(resolveCardContent(animationOptions).content);
+	applyCardContent();
 	const reportVim = (ctx: ExtensionContext, result: ReturnType<typeof resolveVimPolicy>) => {
 		const source = result.source === "default" ? "built-in default" : `global file ${result.globalFile}`;
 		const effective = prompt?.effectiveVimPolicy;
@@ -1824,6 +1843,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	pi.on("session_start", async (_event, ctx) => {
 		closeCustomize?.();
 		runningJobs = undefined;
+		adaptiveReasoningNotices.clear();
+		// A restored or default session never emits model_select, so the startup model
+		// announces itself here when it manages its own depth.
+		announceAdaptiveReasoning(ctx, ctx.model);
 		if (review) {
 			review = undefined;
 			redrawReview();
@@ -1835,6 +1858,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		registry = new SessionWorktreeRegistry(pi, ctx.sessionManager, ctx.cwd, deps.resolveWorktree);
 		registry.start();
 		applyCardStyle();
+		applyCardContent();
 		if (!ctx.hasUI) return;
 		visualSettings = resolveVisualSettings(animationOptions).settings;
 		if (!overrides.activeProfile) {
@@ -2233,6 +2257,26 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				},
 				() => ({ title: `Cards · ${style}`, sample: `${cardStylePreview[style]}${resolveCardStyle(home).malformed ? " · malformed or unreadable file" : ""}` }),
 			);
+			// The content level picks between the quiet tools' result previews
+			// (default) and command-only cards (minimal).
+			const cardContentPreview = {
+				[CARD_CONTENT.DEFAULT]: "≡ read a.ts · result previews + counts · bash rows keep pi's native card",
+				[CARD_CONTENT.MINIMAL]: "≡ read a.ts · command only · ctrl+o expands · bash draws as a Gentle card",
+			};
+			for (const content of Object.values(CARD_CONTENT)) add(
+				() => {
+					const current = resolveCardContent(home);
+					return `Card content: ${content}${current.content === content && !current.malformed ? " (current)" : ""}`;
+				},
+				`Card content: ${content}. Quiet tool cards redraw now; bash rows follow on new calls.`,
+				() => {
+					writeCardContent(content, home);
+					setCardContent(content);
+					renderHost?.requestRender();
+					requestCustomizeRender?.();
+				},
+				() => ({ title: `Cards · content ${content}`, sample: `${cardContentPreview[content]}${resolveCardContent(home).malformed ? " · malformed or unreadable file" : ""}` }),
+			);
 			category = "Sections";
 			for (const key of VISUAL_SECTION_KEYS) add(
 				() => `Section ${key}: ${visual().visibility[key] ? "shown" : "hidden"}`,
@@ -2491,5 +2535,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	pi.on("agent_end", async (_event, ctx) => {
 		await refreshChanges(ctx);
 		void refreshUsage(ctx, false);
+	});
+	pi.on("model_select", (event, ctx) => {
+		announceAdaptiveReasoning(ctx, event.model);
+	});
+	pi.on("thinking_level_select", (_event, ctx) => {
+		announceAdaptiveReasoning(ctx, ctx.model);
 	});
 }

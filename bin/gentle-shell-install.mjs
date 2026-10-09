@@ -6,8 +6,9 @@ import { join, posix, resolve, win32 } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { collectInventory, planPreflight } from "../scripts/installer-preflight.mjs";
 import { createProbes, hostAdapters, userEnvironment } from "../scripts/installer-probes.mjs";
-import { packageNativeGentleAi, pnpmInvocation, runStandardInstall } from "../scripts/installer-runner.mjs";
+import { lookPath, packageNativeGentleAi, pnpmInvocation, runStandardInstall } from "../scripts/installer-runner.mjs";
 import { createInstallerServer } from "../scripts/installer-server.mjs";
+import { mainChannelAdapter, runUpgrade } from "../scripts/main-channel.mjs";
 
 // Browser installation wizard entry, started by the bootstrap with no argv.
 // Thin wiring only: real probes and adapters, the standard runner and the
@@ -129,20 +130,41 @@ async function main() {
 			void redirect?.remove();
 		},
 		assetsDir: fileURLToPath(new URL("../assets/install-wizard/", import.meta.url)),
-		collectPlan: async () => {
+		collectPlan: async (channel) => {
 			// Fresh probes every time: createProbes caches its global package listing.
 			const inventory = await collectInventory({ platform, arch, probes: createProbes({ platform, env, run, fs }) });
-			return { inventory, plan: planPreflight(inventory) };
+			return { inventory, plan: planPreflight(inventory, { channel }) };
 		},
-		runInstall: async (request, log) => runStandardInstall(request, {
+		runInstall: async (request, log) => {
+			const runnerEnv = await runnerEnvironment({ platform, env, fs });
+			return runStandardInstall(request, {
 			platform,
 			nodePath: process.execPath,
-			env: await runnerEnvironment({ platform, env, fs }),
+			env: runnerEnv,
 			run,
 			fs,
+			// An existing Gentle Shell: fresh probes find it, `gentle-shell upgrade`'s logic updates it.
+			locateShell: () => createProbes({ platform, env, run, fs }).locateShell(),
+			upgradeShell: async ({ channel, packageRoot, currentVersion }) => (await runUpgrade({
+				args: ["--channel", channel],
+				ctx: { env: runnerEnv, home: runnerEnv.HOME ?? env.HOME ?? env.USERPROFILE },
+				platform,
+				packageRoot,
+				currentVersion,
+				adapters: {
+					fetch: globalThis.fetch,
+					fs: fsPromises,
+					which: (name) => lookPath(name, runnerEnv, platform, fs),
+					run: (command, argv, options = {}) => run(command, argv, { env: options.env ?? runnerEnv, cwd: options.cwd, deadlineMs: options.deadlineMs ?? 20 * 60_000 }),
+				},
+				out: () => {},
+			})) === 0,
 			verifyGentleAi: packageNativeGentleAi,
+			// Only a main plan uses it: network access and writes under ~/.pi/gentle-ai.
+			mainChannel: mainChannelAdapter({ fs: fsPromises }),
 			log,
-		}),
+		});
+		},
 	});
 	let started;
 	try {

@@ -8,6 +8,7 @@ import { imageFallback, visibleWidth } from "@earendil-works/pi-tui";
 import { cardBody, cardHint, cardTitle, cardTone } from "./gentle-card-text.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
+import { CARD_CONTENT, cardContent, setCardContent } from "../lib/card-content-policy.ts";
 import piPretty from "../extensions/pi-pretty.ts";
 import productionQuietTools, {
 	createQuietToolRenderer,
@@ -1645,3 +1646,99 @@ test("quiet cards stay outlined in the neon style with a background-capable them
 	assert.match(rows.at(-1)!, /^╰─+╯$/);
 	assert.doesNotMatch(rows.join("\n"), /▎/);
 });
+
+// The Card content slot is process-wide; each test that needs a level sets it
+// and restores the previous one.
+function useCardContent(t: { after(fn: () => void): void }, level: (typeof CARD_CONTENT)[keyof typeof CARD_CONTENT]): void {
+	const previous = cardContent();
+	t.after(() => setCardContent(previous));
+	setCardContent(level);
+}
+
+test("the Card content preference defaults to the result previews", () => {
+	assert.equal(cardContent(), CARD_CONTENT.DEFAULT);
+	const rendered = renderToolResult(registeredQuietTools().get("read"), textResult("first line\nsecond line"), { expanded: false, isPartial: false }, {});
+	assert.match(rendered, /first line/);
+});
+
+test("minimal command-only cards keep the bounded error tail of failed calls", (t) => {
+	useCardContent(t, CARD_CONTENT.MINIMAL);
+	const tools = registeredQuietTools();
+	for (const toolName of ["read", "bash", "write", "grep", "find", "ls", "edit"] as const) {
+		const rendered = renderToolResult(tools.get(toolName), textResult("error one\nerror two\nerror three\nerror four"), { expanded: false, isPartial: false, isError: true }, toolName === "bash" ? { args: { command: "false" } } : {});
+		assert.match(rendered, /error two\nerror three\nerror four/, `${toolName}: a failed call says why while collapsed`);
+		assert.doesNotMatch(rendered, /to expand/);
+	}
+});
+
+test("every quiet tool card shows only the command while collapsed and stays expandable", (t) => {
+	useCardContent(t, CARD_CONTENT.MINIMAL);
+	const tools = registeredQuietTools();
+	const finished = { isPartial: false, executionStarted: true };
+	const cases: Array<[string, Record<string, unknown>, string, string]> = [
+		["read", { path: "a.ts" }, "first line\nsecond line", "first line"],
+		["write", { path: "b.ts", content: "body" }, "Successfully wrote 4 bytes", "body"],
+		["bash", { command: "printf hi" }, "hi\nthere", "there"],
+		["grep", { pattern: "needle", path: "src" }, "src/a.ts:1:needle", "src/a.ts:1:needle"],
+		["find", { pattern: "*.ts", path: "src" }, "src/a.ts\nsrc/b.ts", "src/b.ts"],
+		["ls", { path: "src" }, "file-a.ts\nfile-b.ts", "file-b.ts"],
+		["edit", { path: "file.ts", edits: [] }, "Applied edits", "Applied edits"],
+	];
+	for (const [name, args, output, visible] of cases) {
+		const tool = tools.get(name);
+		const context = routineRenderContext({ args, ...finished });
+		const callRows = tool.renderCall(args, passthroughTheme, context).render(120).map(stripAnsi);
+		assert.ok(callRows.some((row) => row.includes("to expand")), `${name}: the expand key stays`);
+		const collapsed = renderToString(tool.renderResult(textResult(output), { expanded: false, isPartial: false }, passthroughTheme, context));
+		assert.equal(collapsed.trim(), "", `${name}: no result rows while collapsed`);
+		const expanded = renderToString(tool.renderResult(textResult(output), { expanded: true, isPartial: false }, passthroughTheme, context));
+		assert.match(expanded, new RegExp(visible.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `${name}: expanding reveals the result`);
+	}
+});
+
+test("the default Card content preference restores result previews and native bash drawing", () => {
+	const tools = registeredQuietTools();
+	const read = tools.get("read");
+	setCardContent(CARD_CONTENT.DEFAULT);
+	try {
+		const context = routineRenderContext({ args: { path: "a.ts" }, executionStarted: true, isPartial: false });
+		const collapsed = renderToString(read.renderResult(textResult("first line\nsecond line"), { expanded: false, isPartial: false }, passthroughTheme, context));
+		assert.match(collapsed, /first line\nsecond line/, "default content keeps the read preview");
+		const write = renderToString(tools.get("write").renderResult(textResult("Successfully wrote 4 bytes"), { expanded: false, isPartial: false }, passthroughTheme, routineRenderContext({ args: { path: "b.ts", content: "body" }, executionStarted: true, isPartial: false })));
+		assert.match(write, /wrote 4 bytes/, "default content keeps the write summary");
+
+		const { pi } = createPi();
+		const resolvers: Array<(toolName: string, next: () => unknown) => unknown> = [];
+		(pi as any).registerToolRenderer = (resolver: (toolName: string, next: () => unknown) => unknown) => {
+			resolvers.push(resolver);
+		};
+		withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
+		const native = { marker: "native" };
+		assert.equal(resolvers.at(-1)!("bash", () => native), native, "default content defers bash drawing to the native renderer");
+		assert.equal(resolvers.at(-1)!("read", () => native), native, "every other tool still defers");
+	} finally {
+		setCardContent(CARD_CONTENT.DEFAULT);
+	}
+});
+
+test("the production factory takes over native bash drawing through a tool renderer resolver", (t) => {
+	useCardContent(t, CARD_CONTENT.MINIMAL);
+	const { pi } = createPi();
+	const resolvers: Array<(toolName: string, next: () => unknown) => unknown> = [];
+	(pi as any).registerToolRenderer = (resolver: (toolName: string, next: () => unknown) => unknown) => {
+		resolvers.push(resolver);
+	};
+	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
+	assert.ok(resolvers.length >= 1, "quiet tools registers a tool renderer resolver");
+	const resolver = resolvers.at(-1)!;
+	const native = { marker: "native" };
+	assert.equal(resolver("read", () => native), native, "every other tool keeps the next renderer");
+	const bash = resolver("bash", () => native) as any;
+	assert.notEqual(bash, native);
+	assert.equal(bash.renderShell, "self");
+	assert.equal(typeof bash.renderCall, "function");
+	assert.equal(typeof bash.renderResult, "function");
+	const call = bash.renderCall({ command: "printf hi", timeout: 5 }, passthroughTheme, routineRenderContext({ args: { command: "printf hi", timeout: 5 }, executionStarted: true, isPartial: false }));
+	assert.match(renderToString(call), /printf hi \(timeout 5s\)/);
+});
+

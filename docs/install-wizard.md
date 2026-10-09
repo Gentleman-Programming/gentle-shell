@@ -5,11 +5,11 @@ foundation, the standard installation runner module (including runtime
 persistence), the secure local wizard host with its packaged entry and the
 interactive browser wizard UI are implemented. Windows native validation
 remains unavailable locally.
-**This is not a supported installation path yet:** published bootstrap
-artifacts, real browsers and native macOS/Windows clean-machine runs are still
-unverified (T7); one Linux clean-container run passed (see
-[Clean-machine acceptance](#clean-machine-acceptance-t7)). For ordinary
-installation and terminal use, follow the [README](../README.md).
+**Preview:** run it from a checkout with `sh scripts/bootstrap.sh` (macOS,
+Linux) or `scripts\bootstrap.cmd` (Windows), as the [README](../README.md#path-c-browser-installer-preview)
+shows. There are no published bootstrap artifacts yet, and native macOS/Windows
+clean-machine runs are still unverified (T7); one Linux clean-container run
+passed (see [Clean-machine acceptance](#clean-machine-acceptance-t7)).
 
 ## What is available
 
@@ -87,7 +87,16 @@ caller-provided functions; adapter implementations require review.
 ## Reading a plan
 
 Tool statuses distinguish `unavailable`, `unknown`, `incompatible`, `reusable`,
-`needs-setup` and `not-required`. Any blocker suppresses all actions: repairing an
+`needs-setup` and `not-required`. A known version below the minimum is `incompatible` even when the tool cannot
+run (for example an older Shell whose global command is missing); Gentle AI and
+setup add no separate `unknown` blocker then, because they are only checked for
+the pinned Shell. When Node.js, Pi or Gentle Shell is simply older than its
+minimum, the wizard's guidance names the found and required versions (for the
+Shell, also the pnpm commands that update or remove it); other blockers keep
+their fixed guidance. A Pi or Shell command on PATH that pnpm does not manage
+stays `unknown` (never replaced), and its probe adds `outsidePnpm: true` so the
+guidance can say so; Gentle AI and setup add no separate blocker while the Shell
+blocks. Any blocker suppresses all actions: repairing an
 existing incompatible or uncertain component requires a later explicit decision,
 not automatic replacement. `ready` means no acquisition/setup is indicated by
 this inventory, **not that verification has executed**.
@@ -422,6 +431,65 @@ pre-install gate.
 so the runner never reads them: a user-level prefix that itself points into
 the store is indistinguishable from the default and would be replaced.
 
+### Existing installations
+
+The wizard installs what is missing and updates what exists; it never reinstalls
+or downgrades Pi, and nothing changes before consent.
+
+| Found | Plan |
+| --- | --- |
+| A compatible Pi (pnpm-global, or any `pi` on PATH whose `pi --version` reports a stable version ≥ the minimum) and no Gentle Shell | Install only Gentle Shell: `pnpm add -g gentle-pi@<version> --allow-build=gentle-pi`, after checking that pnpm lists no gentle-pi (`check-existing-shell`). Pi is left as it is. |
+| A Gentle Shell that pnpm or npm owns | `update-shell-release` when it is older, unusable or a main build; `update-shell-main` on the main channel (needs Go). Then `setup-shell`. A missing Pi is installed first (`install-pi`). |
+| A current Gentle Shell that npm owns, on release | Nothing to do. |
+| A Gentle Shell neither pnpm nor npm owns (an `npm link` of a source checkout, for example) | Blocked with an explanation; never reinstalled. |
+
+Ownership comes from real paths ([`installOwner`](../scripts/main-channel.mjs)):
+pnpm when the package lives under PNPM_HOME, npm only when it is
+`<npm root -g>/gentle-pi` itself (POSIX; a Windows `npm.cmd` cannot be run
+without a shell, so npm ownership is not detected there yet). The update runs
+the same code as `gentle-shell upgrade --channel <channel>`
+(`check-installed-shell`, `update-shell`), then `verify-updated-shell` requires
+the same owner and a stable version not older than before (release) or a
+`-main.<sha12>` version (main); release also re-runs `verify-gentle-ai`. An
+update never runs `pnpm setup`: the existing installation already has its PATH.
+
+### Main channel
+
+The Review screen offers **Latest release** (default) or **Latest main**. Choosing
+main reloads the plan with `GET /api/plan?channel=main`; the install request is
+unchanged because the consented plan already holds its steps. Neither repository
+publishes main builds, so main is built on this computer
+([`scripts/main-channel.mjs`](../scripts/main-channel.mjs)):
+
+- Preflight requires a compatible Go (≥ the Windows minimum) on every platform
+  and otherwise blocks with `main-requires-go`. Main steps are added only when the
+  plan installs or completes setup; a stack that is already set up switches with
+  `gentle-shell upgrade --channel main`, or the wizard's update plan below.
+- After the release stack is installed and `verify-gentle-ai` passed, the runner:
+  1. `build-gentle-ai-main`: resolves the latest `main` commit of
+     Gentleman-Programming/gentle-ai (GitHub API, raw SHA), runs
+     `go install github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai@<sha>`
+     in a sealed Go environment (`GOPROXY=https://proxy.golang.org`,
+     `GOSUMDB=sum.golang.org`, `GOTOOLCHAIN=local`, `GOFLAGS=-modcacherw`), requires
+     the binary's version to end in that commit's first 12 characters, keeps it
+     under `<config home>/main/gentle-ai/<sha>/` and registers it as the
+     `gentle-pi.dev-binary/v1` override, which never falls back to the pinned
+     binary silently.
+  2. `install-shell-main`: downloads the latest `main` commit's source tarball,
+     sets its version to `<version>-main.<sha12>`, removes `prepack` and `prepare`
+     (which would run the full test suite), packs it with `pnpm pack` into
+     `<config home>/main/packages/`, runs `pnpm add -g <tgz> --allow-build=gentle-pi`
+     and requires `pnpm list -g` to report that exact version under PNPM_HOME.
+     Installing `github:` or codeload URLs directly is not used: pnpm runs
+     `prepack` for both.
+  3. `record-channel`: writes `{"schema":"gentle-shell.channel/v1","channel":"main",
+     "shellCommit":…,"gentleAiCommit":…}` to `<config home>/channel.json`.
+- `shell-setup` then runs from the main package. The config home is
+  `GENTLE_PI_CONFIG_HOME` or `~/.pi/gentle-ai`, as for the dev-binary override.
+- Trust: Gentle AI source is verified by Go's checksum database; the Gentle Shell
+  source is fetched over TLS from GitHub by exact commit SHA, with no pinned
+  digest. Main builds are development builds.
+
 ### Remaining T7 real-machine checks
 
 The runner is verified only with deterministic fake adapters. Observed pnpm
@@ -562,8 +630,8 @@ exception from it is ignored.
 ### Endpoints
 
 Fixed allowlist, matched on the raw request path: anything else is 404, a
-known path with another method is 405. Only `/session` and `/api/progress`
-take a query string. Assets map to fixed file names in `assetsDir`; no request
+known path with another method is 405. Only `/session`, `/api/progress` and
+`/api/plan` (exactly `channel=release` or `channel=main`) take a query string. Assets map to fixed file names in `assetsDir`; no request
 path reaches the filesystem, so traversal forms (`/../`, `%2e%2e`, `%2f`) are
 simply unknown paths.
 
@@ -571,7 +639,7 @@ simply unknown paths.
 | --- | --- |
 | `GET /session?code=` | Consumes the one-time code, sets the cookie and returns 200 `text/html` that refreshes to `/`; 401 for a missing, wrong, used or expired code. |
 | `GET /`, `/wizard.js`, `/wizard.css` | `index.html`, `wizard.js`, `wizard.css` from `assetsDir`; 404 when absent. |
-| `GET /api/plan` | Runs `collectPlan()` server-side, stores the plan under a new opaque `planId` and returns a view model: `actions` (`id` plus a fixed English description), `blockers` (`code`, `tool` — a preflight tool key such as `node` or `gentleAi`, otherwise `unknown` — and guidance), `profileChange` (whether `pnpm setup` edits the shell profile or Windows user PATH, and the bin directory), `persistence` (which of node, npm and pnpm go under `$PNPM_HOME`) and `ready`. 409 while installing. Accepts no input. |
+| `GET /api/plan` | Runs `collectPlan(channel)` server-side for `?channel=release` (also the default without a query) or `?channel=main`, stores the plan under a new opaque `planId` and returns a view model: `actions` (`id` plus a fixed English description), `blockers` (`code`, `tool` — a preflight tool key such as `node` or `gentleAi`, otherwise `unknown` — and guidance), `profileChange` (whether `pnpm setup` edits the shell profile or Windows user PATH, and the bin directory), `persistence` (which of node, npm and pnpm go under `$PNPM_HOME`), `ready` and `channel`. 409 while installing. Any other query is 400. |
 | `POST /api/install` | Body exactly `{ "planId": string, "consent": true }` (400 otherwise, including extra keys or a plan). 409 `install-running` while an installation runs; 409 `already-completed` once an installation has a final outcome (one installation per wizard run; the outcome is never replaced); 409 `plan-changed` for a stale `planId` or when a fresh re-inventory differs from the stored plan. Otherwise 202, and the runner receives the server-stored plan with `consent: true`. |
 | `GET /api/progress?after=<seq>` | Entries `{ seq, step, status, reason }` after `seq` from a ring buffer of the last 200; values outside `[a-z][a-z0-9-]*` become `unknown`, and no other runner field is kept. Also `running` and the final `outcome` with fixed guidance. |
 | `POST /api/shutdown` | Body empty or `{}`. Closes the host (409 while installing). |
@@ -700,7 +768,12 @@ With that entry available, the fixed sequence is:
    `add`/`bin` help-capability evidence. Engines support only simple `>=x.y` or
    `>=x.y.z` lower bounds; comparison fills an omitted patch with zero. Actual
    Node versions must remain exact stable versions; other ranges block rather
-   than guess.
+   than guess. The package is found from the resolved `pnpm` command; when that
+   command is a regular cmd-shim file (as pnpm 11 writes when it installs
+   itself), the search starts from its `# cmd-shim-target=` path. That path only
+   locates `package.json`; `pnpm --version` must still match it. Prerequisite
+   checks run from `/`, so a pnpm that switches to a project's `packageManager`
+   pin reports its own version.
    Missing pnpm is acquired from a fixed registry tarball, SHA512-SRI verified,
    checked for unsafe paths/links, extracted and probed before publication.
 4. Start the fixed bundle entry with the refreshed child environment. A mandatory
@@ -928,7 +1001,11 @@ stage removes the claimed root only when its full path is a direct child of
 `.bootstrap-owned` marker is a reparse point, and the marker holds the exact
 text. It uses `[IO.Directory]::Delete(path, true)`, which does not recurse
 through reparse points, instead of Windows PowerShell 5.1 `Remove-Item`. A
-refusal or failure prints the same notice with the path and still exits 0. ACL/ancestor checks are conservative and may
+refusal or failure prints the same notice with the path and still exits 0.
+Redirected cleanup notices use UTF-8 so captured logs preserve Unicode paths.
+Interactive stderr keeps its existing encoding; bootstrap does not change the
+console code page. PowerShell helper lookup honors Windows `SystemRoot` casing
+in copied environments. ACL/ancestor checks are conservative and may
 reject managed/nonstandard layouts rather than relax security. They do not
 claim protection from a malicious process running as the same principal or an
 administrator, nor eliminate same-principal time-of-check/time-of-use races.

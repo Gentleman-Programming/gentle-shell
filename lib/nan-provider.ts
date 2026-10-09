@@ -22,39 +22,61 @@ const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 // Reasoning shares max_tokens with the answer: 65,536 leaves answer room after a
 // 32,768 reasoning budget; DeepSeek uses NaN's 16,384 floor. Qwen 3.8 retains its
 // published 131K output maximum. The remaining 32,768 caps are configured, not NaN-published limits.
-// Pi requires explicit max mappings to offer that level; missing ordinary levels pass through.
-const FIXED_THINKING_LEVEL_MAP: NanChatModelConfig["thinkingLevelMap"] = {
-	off: null, minimal: null, low: null, high: null, xhigh: null, max: null,
-}; // Medium is a Pi placeholder: NaN controls depth and offers no effort-based off switch.
+// Pi requires explicit max mappings to offer that level; a null hides a level Pi would otherwise
+// offer, and missing ordinary levels pass through. Each map exposes exactly the efforts NaN's
+// reasoning contract declares and sends only values NaN accepts.
+// GLM 5.3 / GLM 5.3 Flash: low · medium · high · max, fully controllable and without an off.
+const GLM_THINKING_LEVEL_MAP: NanChatModelConfig["thinkingLevelMap"] = {
+	off: null, minimal: null, xhigh: null, max: "max",
+};
+// Qwen 3.6 and Gemma 4 honor none · minimal · low · medium · high · max as depth controls.
+// DeepSeek V4 Flash, Qwen 3.8 Flash, and MiMo accept the same values while NaN manages their
+// depth itself; none disables reasoning only where NaN honors it.
+const EXTENDED_THINKING_LEVEL_MAP: NanChatModelConfig["thinkingLevelMap"] = {
+	off: "none", xhigh: null, max: "max",
+};
+
+/**
+ * NaN accepts `reasoning_effort` for these models but manages their depth itself, so the selected
+ * level never changes it. Qwen 3.6 and Gemma 4 share the extended map yet honor the level as a
+ * reasoning budget, so the distinction lives here and the shell labels only these three automatic.
+ */
+export const NAN_ADAPTIVE_REASONING_MODEL_IDS: ReadonlySet<string> = new Set([
+	"deepseek-v4-flash", "qwen3.8-flash", "mimo-v2.6-flash",
+]);
+
+export function isNanAdaptiveReasoningModel(model: { provider: string; id: string } | undefined): boolean {
+	return model !== undefined && model.provider === NAN_PROVIDER_ID && NAN_ADAPTIVE_REASONING_MODEL_IDS.has(model.id);
+}
 
 const CHAT_MODELS: NanChatModelConfig[] = ([
 	{
 		id: "glm5.3", name: "GLM 5.3", input: ["text", "image"], contextWindow: 1_000_000,
-		thinkingLevelMap: { off: null, minimal: "low", xhigh: "max", max: "max" },
+		thinkingLevelMap: GLM_THINKING_LEVEL_MAP,
 	},
 	{
 		id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", input: ["text", "image"], contextWindow: 1_000_000,
-		thinkingLevelMap: FIXED_THINKING_LEVEL_MAP, maxTokens: 16_384,
+		thinkingLevelMap: EXTENDED_THINKING_LEVEL_MAP, maxTokens: 16_384,
 	},
 	{
 		id: "glm5.3-flash", name: "GLM 5.3 Flash", input: ["text", "image"], contextWindow: 1_000_000,
-		thinkingLevelMap: { off: null, minimal: "low", xhigh: "max", max: "max" },
+		thinkingLevelMap: GLM_THINKING_LEVEL_MAP,
 	},
 	{
 		id: "qwen3.8-flash", name: "Qwen 3.8 Flash", input: ["text", "image"], contextWindow: 1_048_576,
-		thinkingLevelMap: FIXED_THINKING_LEVEL_MAP, maxTokens: 131_000,
+		thinkingLevelMap: EXTENDED_THINKING_LEVEL_MAP, maxTokens: 131_000,
 	},
 	{
 		id: "mimo-v2.6-flash", name: "MiMo V2.6 Flash", input: ["text", "image"], contextWindow: 1_000_000,
-		thinkingLevelMap: FIXED_THINKING_LEVEL_MAP,
+		thinkingLevelMap: EXTENDED_THINKING_LEVEL_MAP,
 	},
 	{
 		id: "gemma4", name: "Gemma 4", input: ["text", "image"], contextWindow: 262_000,
-		thinkingLevelMap: { off: "none", xhigh: "max", max: "max" }, maxTokens: 65_536,
+		thinkingLevelMap: EXTENDED_THINKING_LEVEL_MAP, maxTokens: 65_536,
 	},
 	{
 		id: "qwen3.6", name: "Qwen 3.6", input: ["text", "image"], contextWindow: 262_000,
-		thinkingLevelMap: { off: "none", xhigh: "max", max: "max" }, maxTokens: 65_536,
+		thinkingLevelMap: EXTENDED_THINKING_LEVEL_MAP, maxTokens: 65_536,
 	},
 ] satisfies Partial<NanChatModelConfig>[]).map((model) => ({
 	...model,

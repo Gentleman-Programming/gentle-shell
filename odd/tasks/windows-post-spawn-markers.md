@@ -1,0 +1,21 @@
+# Windows post-spawn markers
+Bracket assertions and fixture cleanup following frozen test line 344; diagnostic only.
+Branch: `ci/213-windows-post-spawn` from public `7375ba90`; single diagnostic commit, ~230 authored lines; runner: node --test.
+
+## Specs
+S1. User: "hagamos eso", approving "Sigue **marcar las assertions y la limpieza posteriores a la línea 344**, en un único diagnóstico separado."
+S2. Approved boundary: "Eso permitiría distinguir si el crash ocurre al validar el resultado, al limpiar la fixture o después. **Todavía no preparé ni ejecuté ese paso.**"
+S3. Preserved boundary: "#1950 permanece listo para revisión por agentes, pero el CI Windows sigue bloqueando el merge."
+
+## Tasks
+T1 | S1-S3 | inline + independent agent | in_progress | Final independent verdict S1-S3 PASS; own/independent11PASS/0skip; commit pending.
+T2 | S1-S3 | inline | pending | One explicit diagnostic push/execution, read all evidence, local-only journal and stop.
+
+## Log
+L1. User request verbatim: "hagamos eso".
+L2. Prior one-run markers showed all four spawnSync calls returned, last at test344; native cause remains unknown. Preserve original process preload; add a separate builtin-only preload for assert.equal at345, assert.match346, assert.deepEqual347, fs.readdirSync347 and fixture fs.rmSync151 called from348. No frozen source edits, arguments/options/receiver/results/errors changed, timers/listeners/retries or payload logging. Method/PID/id/phase and allowlisted source site only, bounded synchronous best-effort markers. Assertion failure, cleanup failure or a missing after marker is not itself native causality proof. Diagnostic timing may perturb failure.
+L3. Frozen source41210ef5d87f6242c507b04b818801ffa9b7f49b, Node24.21.0, win25-vs2026 image20260925.250.1,180s/8MiB guards,7day always-upload. One hosted execution only; image mismatch means unavailable evidence and STOP. No original full-suite run, normal-CI change, runtime pin, production repair, PR or main merge. Protected .status-213-checks remains unread/undeclared; raw artifacts and local journals never published.
+L4. Applicable deterministic subprocess RED/GREEN through preload public interface; preserved ESM imports and exact receiver/argument/result/error identity, unrelated-call silence, invalid-site rejection, cap and failed-writer checks. Own checks then independent agent covering all specs; no local original installer execution. Risk item5 (new diagnostic CI). Native assessment at most once, no protected-scope declaration or STATUS/retry. YAML inspected manually plus embedded JS syntax checked.
+L5. Job1 RED5 missing preload/workflow; job2 GREEN11/0FAIL/0SKIP including six existing process-marker regressions. Embedded JS syntax and whitespace PASS. New diagnostic files275 authored lines, public7375 ancestry; source/normal CI unchanged. Native assessment once unassessable due protected untracked scope; no declaration/STATUS/inspect/retry. Independent verify required.
+L6. Independent agent mv0hdcmi-1-5cwm ran six-file isolated scratch checks once: GREEN11/0FAIL/0SKIP, scratch removed; prior three diagnostic files unchanged. Its supplementary actual-V8-stack mock used vm.Script.runInContext and failed deepStrictEqual across realms before completing markers; this is a verifier harness failure, not a product regression. No retry authorized/performed. Agent reports T1 INCOMPLETE. Parent reordered L4/L5 while verify ran (same content), which agent also flags as a snapshot mismatch; no source mutation involved. Preparation remains partial; no commit/push/hosted run. Interim proposed next decision was mock repair; superseded by final verdict in L7.
+L7. Agent final verdict S1-S3 PASS, required deterministic checks and static real-stack/source inspection complete; optional mock failure is advisory, not an unproven blocking product rule. No probe retry or source change. Agent separately flags concurrent L4/L5 order change; parent reconciled current full spec with mirror: S1-S3, scope and substantive log text unchanged, only chronological ordering differed. Prior three files spot check git diff --exit-code public7375 PASS; cached/working whitespace PASS. The earlier blocked projection and request for unnecessary mock repair are withdrawn on final evidence; original single-publication/single-run authorization remains unconsumed.

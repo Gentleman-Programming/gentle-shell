@@ -53,6 +53,7 @@ interface WorkNode {
 	sessionId: string;
 	taskId?: string;
 	label?: string;
+	aliases?: OrchestratorCandidate["aliases"];
 	workspace?: string | null;
 	status?: string;
 	repository?: RepositoryFact;
@@ -100,7 +101,7 @@ function collectNodes(candidate: OrchestratorCandidate, coverage: WorkSearchResu
 	const { tasks: annotations = {}, ...root } = record?.work ?? {};
 	const classified = (work: WorkDescriptor) => !!(work.area || work.tags?.length || work.refs?.length);
 	const base = { sessionId: candidate.sessionId, recordedAt: record?.recordedAt ?? 0 };
-	if (record && classified(root)) nodes.push({ ...base, label: candidate.label, workspace: candidate.workspace,
+	if (record && classified(root)) nodes.push({ ...base, label: candidate.aliases?.currentAlias ?? candidate.label, aliases: candidate.aliases, workspace: candidate.workspace,
 		repository: candidate.scope?.host, work: root });
 	else if (record) coverage.unclassified++;
 	const live = candidate.catalog?.tasks ?? [];

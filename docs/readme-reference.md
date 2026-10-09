@@ -815,7 +815,7 @@ Profiles are named, switchable snapshots of the global agent-model routing from 
 
 | Key     | Action                                                                 |
 | ------- | ---------------------------------------------------------------------- |
-| `enter` | Apply the selected profile to this session only: switch its live orchestrator when defined and bind its subagent and reviewer routing snapshot. Shared defaults and pins are untouched. |
+| `enter` | Apply the selected profile to this session only: append its session record, bind its subagent and reviewer routing snapshot, then switch its live orchestrator when defined. Shared defaults and pins are untouched. |
 | `a`     | Explicitly set the selected profile as the global default and materialize routing. Inside a pinned repository it updates the clone-local pin instead and leaves the orchestrator unchanged; see **Per-repository pins** below. |
 | `c`     | Create a new, empty profile.                                           |
 | `s`     | Snapshot the current routing into the selected profile (including the orchestrator currently set in `settings.json`); live routing is unchanged. |
@@ -830,7 +830,16 @@ Profiles are named, switchable snapshots of the global agent-model routing from 
 | `pgup`/`pgdn`, `ctrl+j`/`ctrl+k` | Scroll the detail pane by a page.                                |
 | `esc`   | Close.                                                                 |
 
-Selecting a profile with Enter does not write `profiles.json`, `models.json`, Pi's global `settings.json`, agent frontmatter, `subagents.json`, or repository pins. Other open sessions keep their own bindings and live orchestrators. The session binding overrides pins and global routing as a complete snapshot, including reviewer routing; omitted roles do not fall back to another profile. The binding lasts in the current process (including `/reload`); resuming in another process requires selecting it again.
+Selecting a profile with Enter does not write `profiles.json`, `models.json`, Pi's global `settings.json`, agent frontmatter, `subagents.json`, or repository pins. Other open sessions keep their own bindings and live orchestrators. The session binding overrides pins and global routing as a complete snapshot, including reviewer routing; omitted roles do not fall back to another profile. Already queued or running requests keep their frozen routing.
+
+| Outcome | What happens |
+| --- | --- |
+| Persisted | The selected record is corroborated on disk before routing is published. |
+| Not yet persisted | Enter explicitly reports a preflush selection. It is usable now, but detach/reload does not restore it without later disk corroboration. |
+| Append failure | No success or live-model effect. Keep only returned disk-corroborated state; otherwise block affected launches. |
+| Invalid, future or unavailable authority | Do not fall through to shared routing; affected subagent launches are blocked. An explicit successful selection or fresh corroboration can restore availability. |
+
+Start, resume, reload, fork and tree navigation restore only the current corroborated branch state. Restoration never applies the profile's orchestrator. Fork capture is read-only until a confirmed transition; cancellation/rejection preserves current authority. Pending Enter live operations settle before fork-copy, tree movement or detach.
 
 Explicitly setting the global default with `a` writes `~/.pi/gentle-ai/models.json`, then reconciles agent frontmatter and `subagents.json` the same way `/gentle:models` does. A profile is a complete snapshot: every discoverable agent it omits returns to inherit, so routing materialized by a previous profile, by `/gentle:models`, or by a migration never survives a switch silently. The reconciliation happens on the next subagent launch, and that launch still routes with the previous routing — expect one launch of lag after switching. The active profile is persisted so `/gentle:profiles` reopens with the applied profile marked.
 

@@ -168,6 +168,9 @@ async function proveInlineSkillContractGap(): Promise<void> {
 			providerRequests.push(structuredClone(context));
 			const stream = createAssistantMessageEventStream();
 			const readStep = turnStep++ === 0;
+			// The done event's `reason` excludes "error"; share one literal union
+			// between the message field and the event so both typecheck.
+			const stopReason = readStep ? ("toolUse" as const) : ("stop" as const);
 			const usage = {
 				input: 0,
 				output: 0,
@@ -182,7 +185,7 @@ async function proveInlineSkillContractGap(): Promise<void> {
 				provider: model.provider,
 				model: model.id,
 				content: [],
-				stopReason: readStep ? "toolUse" : "stop",
+				stopReason,
 				timestamp: Date.now(),
 				usage,
 			};
@@ -211,7 +214,7 @@ async function proveInlineSkillContractGap(): Promise<void> {
 					stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: message });
 					stream.push({ type: "text_end", contentIndex: 0, content: text, partial: message });
 				}
-				stream.push({ type: "done", reason: message.stopReason, message });
+				stream.push({ type: "done", reason: stopReason, message });
 				stream.end();
 			});
 			return stream;

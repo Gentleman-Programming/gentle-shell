@@ -56,7 +56,9 @@ function noProfile(manager: SessionProfileLifecycleManager): boolean {
 /** Load-order independent read. Without an owner, disk is read-only authority;
  * with an owner, every request revalidates its existing negative evidence.
  * An ordinary empty/preflush branch with no profile meaning retains its legacy
- * routing. Missing disk never restores a profile found only in memory.
+ * routing. Missing disk never restores a profile found only in memory. A saved
+ * profile-less branch is decided before any disk read, so unrelated session-file
+ * damage never blocks it, and a binding left from another branch is dropped.
  */
 export function readSessionProfileAuthority(
  manager: SessionProfileLifecycleManager,
@@ -65,6 +67,10 @@ export function readSessionProfileAuthority(
   const id = manager.getSessionId(),
    file = manager.getSessionFile?.();
   if (!id) return { available: false };
+  if (noProfile(manager) && file !== undefined && existsSync(file)) {
+   clearSessionProfileBinding(id);
+   return { available: true };
+  }
   const owned = readCurrentSessionProfileOutcome(manager);
   const outcome = owned ?? {
    status: "persisted" as const,

@@ -554,3 +554,62 @@ test("invalid encoder input fails before append without corrupting existing auth
  assert.equal(f.rows.length, length);
  bound(f.controller.refresh(), "good");
 });
+
+// A stability recheck that throws after a successful append takes the catch
+// path; the record must stay untrusted even though the disk is sound. The
+// fourth branch read after the append is that recheck.
+test("a throwing post-append stability recheck is never adopted later", () => {
+  const failingRead = 4;
+  let rows: any[] = [],
+   text: string | undefined,
+   serial = 0,
+   armed = false,
+   reads = 0;
+  const save = () => {
+   text = [
+    JSON.stringify({ type: "session", id: "session" }),
+    ...rows.map((row) => JSON.stringify(row)),
+   ].join("\n");
+  };
+  const source = {
+   getSessionId: () => "session",
+   getSessionFile: () => "session.jsonl",
+   getBranch: () => {
+    if (armed && ++reads === failingRead) throw new Error("branch");
+    return rows;
+   },
+  };
+  const controller = createSessionProfileAppendController(
+   source,
+   (type, data) => {
+    rows.push({
+     type: "custom",
+     customType: type,
+     data,
+     id: `entry-${++serial}`,
+     parentId: rows.at(-1)?.id ?? null,
+     timestamp: "now",
+    });
+    save();
+    armed = true;
+   },
+   {
+    readFile: () => {
+     if (text === undefined)
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+     return text;
+    },
+   },
+  );
+  const result = controller.bind("new", {});
+  armed = false;
+  assert.equal(result.status, "indeterminate");
+  assert.equal(
+   (result.state as { reason?: string }).reason,
+   "append-not-corroborated",
+  );
+  const later = controller.refresh();
+  assert.equal(later.status, "indeterminate", "a reported failure is never adopted later");
+  armed = false;
+  bound(controller.bind("again", {}), "again");
+});

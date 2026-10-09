@@ -139,7 +139,7 @@ export function buildNotificationRows(ctx: ExtensionContext): CustomizeRow[] {
 		if (!expected) return true;
 		const path = await inline.input({ prompt: "Local audio path (WAV/OGG/FLAC, absolute, no URLs)", value: prefill });
 		if (path === undefined) return true;
-		const sound = `file:${path}` as const;
+		const sound = `file:${path.value}` as const;
 		if (getNotificationService() !== expected) return true;
 		const valid = await expected.validateFile(ctx, sound);
 		// A replaced owner, closed card or changed session invalidates the validated choice before any write.
@@ -198,7 +198,7 @@ export function buildNotificationRows(ctx: ExtensionContext): CustomizeRow[] {
 				if (!service) return;
 				const entered = await inline.input({ prompt: `Audio ${timing.name} in milliseconds (${range})`, value: String(service.getState().settings.audio[timing.key]) });
 				if (entered === undefined || inline.disposed) return;
-				const value = entered.trim();
+				const value = entered.value.trim();
 				// Reject rather than clamp or convert: a silently altered timing value is not what was asked to be stored.
 				if (!/^\d+$/.test(value) || Number(value) < limits.min || Number(value) > limits.max) {
 					notify(`Audio ${timing.name} must be a whole number of milliseconds between ${limits.min} and ${limits.max}; nothing was saved.`, true);

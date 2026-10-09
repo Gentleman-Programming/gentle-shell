@@ -4,7 +4,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { buildNotificationRows } from "../lib/notification-customize.ts";
 import { claimNotificationOwner, getNotificationService } from "../lib/notification-service.ts";
 import { DEFAULT_NOTIFICATION_SETTINGS, type NotificationEvent, type NotificationSettings, type NotificationSound } from "../lib/notification-policy.ts";
-import { VisualCustomizeView, type CustomizeInline, type CustomizeRow } from "../lib/visual-customize-view.ts";
+import { VisualCustomizeView, type CustomizeInline, type CustomizeInputRequest, type CustomizeInputResult, type CustomizeRow } from "../lib/visual-customize-view.ts";
 import { fileURLToPath } from "node:url";
 import { basename } from "node:path";
 
@@ -64,13 +64,17 @@ function isVisible(row: CustomizeRow): boolean {
 function visibleRows(rows: CustomizeRow[]): CustomizeRow[] { return rows.filter(isVisible); }
 function keyhintOf(row: CustomizeRow): string { return (row as CustomizeRow & { keyhint?: string }).keyhint ?? ""; }
 
-function fakeInline(inputs: (string | undefined)[] = [], confirms: boolean[] = []): CustomizeInline {
-	return { input: async () => inputs.shift(), confirm: async () => confirms.shift() ?? false, disposed: false };
+/** One scripted field submission: a bare string is Enter, an object carries the save shortcut. */
+type InlineStep = string | CustomizeInputResult | undefined;
+const asResult = (step: InlineStep): CustomizeInputResult | undefined => typeof step === "string" ? { value: step, save: false } : step;
+
+function fakeInline(inputs: InlineStep[] = [], confirms: boolean[] = []): CustomizeInline {
+	return { input: async () => asResult(inputs.shift()), confirm: async () => confirms.shift() ?? false, disposed: false };
 }
-/** Inline bridge that records the field requests, so a row's prompt and prefill are observable. */
-function recordingInline(inputs: (string | undefined)[]): { inline: CustomizeInline; requests: { prompt: string; value: string }[] } {
-	const requests: { prompt: string; value: string }[] = [];
-	return { requests, inline: { input: async request => { requests.push(request); return inputs.shift(); }, confirm: async () => false, disposed: false } };
+/** Inline bridge that records the field requests, so a row's prompt, prefill and save offer are observable. */
+function recordingInline(inputs: InlineStep[]): { inline: CustomizeInline; requests: CustomizeInputRequest[] } {
+	const requests: CustomizeInputRequest[] = [];
+	return { requests, inline: { input: async request => { requests.push(request); return asResult(inputs.shift()); }, confirm: async () => false, disposed: false } };
 }
 function label(row: CustomizeRow): string { return typeof row.label === "function" ? row.label() : row.label; }
 
@@ -538,7 +542,7 @@ test("a uniform file group shows the basename, prefills its path and previews th
 		assert.doesNotMatch(label(success), /builtin:|file:|agent\.|subagent\./, "the main label stays human and raw-reference free");
 		getNotificationService()!.validateFile = async () => true;
 		const requests: string[] = [];
-		const inline: CustomizeInline = { input: async request => { requests.push(request.value); return WAV_FIXTURES.success; }, confirm: async () => false, disposed: false };
+		const inline: CustomizeInline = { input: async request => { requests.push(request.value); return { value: WAV_FIXTURES.success, save: false }; }, confirm: async () => false, disposed: false };
 		await Promise.resolve(success.key!("f", inline));
 		await tick(); await tick();
 		assert.deepEqual(requests, [WAV_FIXTURES.success], "the field is prefilled with the current file path");

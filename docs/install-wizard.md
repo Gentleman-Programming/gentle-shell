@@ -801,7 +801,12 @@ With that entry available, the fixed sequence is:
    than guess. The package is found from the resolved `pnpm` command; when that
    command is a regular cmd-shim file (as pnpm 11 writes when it installs
    itself), the search starts from its `# cmd-shim-target=` path. That path only
-   locates `package.json`; `pnpm --version` must still match it. Prerequisite
+   locates `package.json`; `pnpm --version` must still match it. A standalone
+   pnpm (a Mach-O or ELF executable, as mise, asdf and pnpm's own installer
+   provide) embeds its Node runtime and has no `package.json`: it skips the
+   package engine check but must still report an exact stable `--version` and
+   pass the same global `add`/`bin` capability checks. A script or shim without a
+   package still blocks. Prerequisite
    checks run from `/`, so a pnpm that switches to a project's `packageManager`
    pin reports its own version.
    Missing pnpm is acquired from a fixed registry tarball, SHA512-SRI verified,

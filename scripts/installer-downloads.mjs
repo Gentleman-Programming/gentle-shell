@@ -1,5 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import { lstatSync, readFileSync, realpathSync, mkdirSync, mkdtempSync, writeFileSync, renameSync, rmSync } from "node:fs";
+import { closeSync, lstatSync, openSync, readFileSync, readSync, realpathSync, mkdirSync, mkdtempSync, writeFileSync, renameSync, rmSync } from "node:fs";
 import { basename, dirname, join, resolve, delimiter } from "node:path";
 import { spawnSync, spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
@@ -151,11 +151,29 @@ function packageFor(command) {
 	}
 	throw new Error("Existing pnpm compatibility is unknown: package engine evidence missing");
 }
+// mise, asdf and pnpm's own installer ship pnpm as a standalone native executable
+// that embeds its own Node runtime, so it has no pnpm package.json and the user's
+// Node engine does not apply to it. Only a Mach-O or ELF header qualifies; scripts
+// and shims without a package still need package engine evidence.
+const nativeHeaders = ["cffaedfe", "cefaedfe", "feedfacf", "feedface", "cafebabe", "bebafeca", "7f454c46"];
+function standalonePnpm(command) {
+	const target = realpathSync(command);
+	if (!regular(target)) return false;
+	const header = Buffer.alloc(4);
+	const fd = openSync(target, "r");
+	try {
+		if (readSync(fd, header, 0, 4, 0) !== 4) return false;
+	} finally {
+		closeSync(fd);
+	}
+	return nativeHeaders.includes(header.toString("hex"));
+}
 function provePnpm(command, prefix, metadata, nodeVersion, env, processAdapter) {
-	if (!parts(metadata.version) || !compatibleEngine(metadata.engines?.node, nodeVersion)) {
+	if (metadata && (!parts(metadata.version) || !compatibleEngine(metadata.engines?.node, nodeVersion))) {
 		throw new Error("pnpm compatibility is unknown or incompatible; refusing replacement");
 	}
-	if (processAdapter(command, [...prefix, "--version"], env) !== metadata.version) throw new Error("pnpm version rejected");
+	const version = processAdapter(command, [...prefix, "--version"], env);
+	if (metadata ? version !== metadata.version : !parts(version)) throw new Error("pnpm version rejected");
 	// Read-only CLI capability checks; do not execute add/bin or write global config.
 	for (const capability of ["add", "bin"]) {
 		if (!/(?:^|[\s,])--global(?:[\s,=]|$)/.test(processAdapter(command, [...prefix, "help", capability], env))) {
@@ -204,7 +222,7 @@ export async function ensurePnpm({ tools, env, nodeVersion, adapters = {} }) {
 	const processAdapter = adapters.process ?? processCheck;
 	const existing = findExecutable("pnpm", env);
 	if (existing) {
-		provePnpm(existing, [], packageFor(existing), nodeVersion, env, processAdapter);
+		provePnpm(existing, [], standalonePnpm(existing) ? null : packageFor(existing), nodeVersion, env, processAdapter);
 		return { env, acquired: false };
 	}
 	const info = stat(tools);

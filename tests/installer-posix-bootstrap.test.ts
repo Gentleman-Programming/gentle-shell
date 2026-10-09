@@ -245,6 +245,60 @@ posixTest("a pnpm shim without a cmd-shim target still blocks", () => {
 		assert.deepEqual(readdirSync(f.home), []);
 	} finally { f.cleanup(); }
 });
+// mise, asdf and pnpm's own installer ship pnpm as a standalone native executable
+// that embeds its runtime: there is no pnpm package.json to read engines from.
+const nativeHeaders: Record<string, number[]> = {
+	"Mach-O 64-bit": [0xcf, 0xfa, 0xed, 0xfe], "Mach-O universal": [0xca, 0xfe, 0xba, 0xbe], ELF: [0x7f, 0x45, 0x4c, 0x46],
+};
+function standalonePnpm(f: ReturnType<typeof fixture>, header: number[], linked = false) {
+	const installs = join(f.root, "mise/installs/pnpm/10.27.0");
+	mkdirSync(installs, { recursive: true });
+	const binary = join(installs, "pnpm");
+	writeFileSync(binary, Buffer.concat([Buffer.from(header), Buffer.alloc(64)]), { mode: 0o755 });
+	if (linked) symlinkSync(binary, join(f.bin, "pnpm"));
+	else writeFileSync(join(f.bin, "pnpm"), Buffer.concat([Buffer.from(header), Buffer.alloc(64)]), { mode: 0o755 });
+}
+const standaloneProcess = (version: string, calls: string[][] = []) => (_command: string, args: string[]) => {
+	calls.push(args);
+	return args.at(-1) === "--version" ? version : " --global ";
+};
+posixTest("a standalone native pnpm (mise, pnpm installer) is reused after version and capability proof", async () => {
+	for (const [label, header] of Object.entries(nativeHeaders)) {
+		for (const linked of [false, true]) {
+			const f = fixture();
+			try {
+				standalonePnpm(f, header, linked);
+				const calls: string[][] = [];
+				const result = await ensurePnpm({ tools: f.home, env: { PATH: f.bin }, nodeVersion: "24.21.0", adapters: {
+					process: standaloneProcess("10.27.0", calls), download: () => { throw new Error("must not download"); },
+				} });
+				assert.equal(result.acquired, false, `${label} linked=${linked}`);
+				assert.deepEqual(calls, [["--version"], ["help", "add"], ["help", "bin"]], `${label} linked=${linked}`);
+				assert.deepEqual(readdirSync(f.home), [], "no private tooling is created");
+			} finally { f.cleanup(); }
+		}
+	}
+});
+posixTest("a standalone native pnpm without a semver version or global capability still blocks", async () => {
+	const f = fixture();
+	try {
+		standalonePnpm(f, nativeHeaders["Mach-O 64-bit"]);
+		const adapters = (process: (command: string, args: string[]) => string) => ({ process, download: () => { throw new Error("must not download"); } });
+		for (const version of ["", "10.27", "not pnpm", "10.27.0-beta.1"]) {
+			await assert.rejects(ensurePnpm({ tools: f.home, env: { PATH: f.bin }, nodeVersion: "24.21.0", adapters: adapters(standaloneProcess(version)) }), /pnpm version rejected/, version);
+		}
+		await assert.rejects(ensurePnpm({ tools: f.home, env: { PATH: f.bin }, nodeVersion: "24.21.0", adapters: adapters((_c, args) => args.at(-1) === "--version" ? "10.27.0" : "no global flag") }),
+			/pnpm global-install capability evidence missing/);
+	} finally { f.cleanup(); }
+});
+posixTest("a script pnpm without a package is not treated as standalone", async () => {
+	const f = fixture();
+	try {
+		writeFileSync(join(f.bin, "pnpm"), "#!/bin/sh\necho 10.27.0\n", { mode: 0o755 });
+		await assert.rejects(ensurePnpm({ tools: f.home, env: { PATH: f.bin }, nodeVersion: "24.21.0", adapters: { process: () => { throw new Error("must not run"); } } }),
+			/package engine evidence missing/);
+	} finally { f.cleanup(); }
+});
 posixTest("missing required shell utility is named", () => {
 	const f = fixture();
 	try {

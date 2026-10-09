@@ -1,6 +1,5 @@
-import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI, ExtensionFactory, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
-	createBashTool,
 	createEditTool,
 	createFindTool,
 	createGrepTool,
@@ -9,17 +8,24 @@ import {
 	createWriteTool,
 	keyHint,
 } from "@earendil-works/pi-coding-agent";
-import { Text, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
+import { Text, type Component } from "@earendil-works/pi-tui";
 import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import { resolveGentleAiDevBinaryOverride, type GentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
+import { CARD_CONTENT, cardContent } from "../lib/card-content-policy.ts";
 import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
 import { quietToolsEnabled } from "../lib/quiet-tools-config.ts";
+import { registerCompactCodemode } from "../lib/codemode-renderer.ts";
+import { offerBuiltinCodemodeOptOut, type BuiltinCodemodeOptOutOptions } from "../lib/builtin-codemode-optout.ts";
 import { getGentleAiRenderState, renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
-import { CARD_GLYPH, CARD_TONE, cardBottom, cardInnerWidth, cardLine, type CardTheme } from "../lib/shell-card.ts";
+import {
+	CARD_TONE, cardAwaitingResult, cardBottom, cardInnerWidth, cardLine, cardRunningLine, cardStyle, cardTopRows, floatRows, markCardResult,
+	type CardRowContext, type CardTheme,
+} from "../lib/shell-card.ts";
 import { sanitizeTerminalText, stripAnsi } from "../lib/terminal-theme.ts";
 
 type QuietToolName = "read" | "bash" | "grep" | "find" | "ls" | "edit" | "write";
+type RegisteredToolName = Exclude<QuietToolName, "bash">;
 type ThemeLike = {
 	bold(value: string): string;
 	fg(color: string, value: string): string;
@@ -27,19 +33,34 @@ type ThemeLike = {
 
 const TOOL_CREATORS = {
 	read: createReadToolDefinition,
-	bash: createBashTool,
 	grep: createGrepTool,
 	find: createFindTool,
 	ls: createLsTool,
 	edit: createEditTool,
 	write: createWriteTool,
-} satisfies Record<QuietToolName, (cwd: string) => any>;
+} satisfies Record<RegisteredToolName, (cwd: string) => any>;
+
+// Caller-owned identities: shared notices and lower widgets retain their glyphs.
+const TOOL_GLYPH = {
+	read: "≡",
+	bash: "$",
+	grep: "⌕",
+	find: "⌖",
+	ls: "☷",
+	edit: "✎",
+	write: "+",
+} as const satisfies Record<QuietToolName, string>;
 
 const COLLAPSED_COUNT_LABELS: Partial<Record<QuietToolName, string>> = {
 	grep: "matches",
 	find: "files",
 	ls: "entries",
 };
+
+// Cards that show only the command while the Card content preference is
+// minimal: their results stay one expand key away and never add rows to the
+// transcript view.
+const COMMAND_ONLY_TOOLS: ReadonlySet<QuietToolName> = new Set(["read", "bash", "grep", "find", "ls", "edit", "write"]);
 
 const COLLAPSED_TAIL_LINE_LIMIT = 10;
 const PREVIEW_LINE_LIMIT = 3;
@@ -51,17 +72,17 @@ const EMPTY_RESULT_MESSAGES: Partial<Record<QuietToolName, string[]>> = {
 	bash: ["(no output)"],
 };
 
-const toolCache = new Map<string, Record<QuietToolName, any>>();
+const toolCache = new Map<string, Record<RegisteredToolName, any>>();
 
-function createBuiltInTools(cwd: string): Record<QuietToolName, any> {
+function createBuiltInTools(cwd: string): Record<RegisteredToolName, any> {
 	return Object.fromEntries(
-		(Object.entries(TOOL_CREATORS) as [QuietToolName, (cwd: string) => any][]).map(
+		(Object.entries(TOOL_CREATORS) as [RegisteredToolName, (cwd: string) => any][]).map(
 			([name, createTool]) => [name, createTool(cwd)],
 		),
-	) as Record<QuietToolName, any>;
+	) as Record<RegisteredToolName, any>;
 }
 
-function getBuiltInTools(cwd: string): Record<QuietToolName, any> {
+function getBuiltInTools(cwd: string): Record<RegisteredToolName, any> {
 	let tools = toolCache.get(cwd);
 	if (!tools) {
 		tools = createBuiltInTools(cwd);
@@ -409,7 +430,10 @@ export function formatToolResultOutput(
 ): string {
 	const text = safeText(extractTextContent(result));
 	if (expanded) {
-		const detail = expandedResultText(toolName, result, text);
+		// Write results only acknowledge the operation; the body lives in the call args.
+		const detail = toolName === "write" && !isError && typeof args?.content === "string" && args.content.length > 0
+			? safeText(args.content)
+			: expandedResultText(toolName, result, text);
 		return detail ? `\n${detail}` : "";
 	}
 	if (isError) {
@@ -468,7 +492,9 @@ function formatToolCall(toolName: QuietToolName, args: Record<string, unknown>, 
 		case "bash": {
 			const command = safeText(asString(args.command, "..."));
 			const timeout = typeof args.timeout === "number" ? theme.fg("muted", ` (timeout ${args.timeout}s)`) : "";
-			return `${theme.fg("toolTitle", theme.bold(`$ ${command}`))}${timeout}`;
+			// Minimal cards title bash with the bare command; the card glyph supplies the `$` prompt.
+			const title = cardContent() === CARD_CONTENT.MINIMAL ? command : `bash $ ${command}`;
+			return `${theme.fg("toolTitle", theme.bold(title))}${timeout}`;
 		}
 		case "grep": {
 			let text = `${theme.fg("toolTitle", theme.bold("grep"))} ${theme.fg("accent", `/${safeText(asString(args.pattern))}/`)} in ${safeText(shortenPath(args.path) || ".")}`;
@@ -546,6 +572,7 @@ class BoundedRows implements Component {
 // prose. pi does not paint tool backgrounds for renderShell "self", so the
 // frame tone carries the status the painted Box would otherwise show. The call
 // owns the top rule; the result draws the sides and always closes the frame.
+// Until the first result exists, the call closes the frame itself.
 type ToolTone = typeof CARD_TONE.WARNING | typeof CARD_TONE.SUCCESS | typeof CARD_TONE.ERROR;
 
 function toolTone(pending: boolean, failed: boolean): ToolTone {
@@ -553,65 +580,82 @@ function toolTone(pending: boolean, failed: boolean): ToolTone {
 	return pending ? CARD_TONE.WARNING : CARD_TONE.SUCCESS;
 }
 
+/** One settled frame per component: bounded memory, including all card chrome. */
+class ToolCardRows {
+	private frame?: { width: number; style: ReturnType<typeof cardStyle>; running: boolean; lines: string[] };
+
+	render(width: number, running: boolean, build: () => string[]): string[] {
+		const style = cardStyle();
+		if (this.frame?.width === width && this.frame.style === style && this.frame.running === running) return this.frame.lines;
+		const lines = build();
+		this.frame = { width, style, running, lines };
+		return lines;
+	}
+
+	invalidate(): void { this.frame = undefined; }
+}
+
 class ToolCardTop implements Component {
-	private readonly header: string;
+	private readonly rows = new ToolCardRows();
+	private readonly header: () => string;
+	private readonly glyph: string;
 	private readonly tone: ToolTone;
 	private readonly theme: CardTheme;
 	private readonly hint: string | undefined;
+	private readonly row: CardRowContext | undefined;
 
-	constructor(header: string, tone: ToolTone, theme: CardTheme, hint?: string) {
+	constructor(header: () => string, tone: ToolTone, theme: CardTheme, glyph: string, hint?: string, row?: CardRowContext) {
 		this.header = header;
+		this.glyph = glyph;
 		this.tone = tone;
 		this.theme = theme;
 		this.hint = hint;
+		this.row = row;
 	}
 
-	/** Renders `╭─ ✿ <call> ── <hint> ╮`, the hint only when it fits beside the call, like the Gentle AI card. A call that does not fit the rule (a long or multi-line command) continues on card rows below it, so every line of the command stays visible. */
+	/** Renders `╭─ <icon> <call> ── <hint> ╮`, reserving applicable hint space before wrapping the call. A call that does not fit the rule (a long or multi-line command) continues on card rows below it, so every line of the command stays visible. */
 	render(width: number): string[] {
 		const target = Math.max(0, Math.floor(width));
 		if (target === 0) return [];
-		const frame = (text: string) => this.theme.fg(this.tone, text);
-		if (target < 8) return [frame(`╭${"─".repeat(Math.max(0, target - 2))}${target > 1 ? "╮" : ""}`)];
-		// Frame columns: "╭─ " (3), glyph and space (2), a space before the fill, and at least "─╮" (2).
-		const fullHintWidth = this.hint ? visibleWidth(this.hint) + 2 : 0;
-		const hint = this.hint && target - 8 - fullHintWidth >= 12 ? this.hint : undefined;
-		const hintWidth = hint ? fullHintWidth : 0;
-		const room = target - 8 - hintWidth;
-		const [first = "", ...rest] = this.header.split("\n");
-		const [call = "", ...overflow] = first === "" ? [""] : wrapTextWithAnsi(first, room);
-		const fill = "─".repeat(Math.max(1, target - 7 - hintWidth - visibleWidth(call)));
-		const tail = hint ? ` ${this.theme.fg("dim", hint)} ` : "";
-		const top = `${frame("╭─ ")}${this.theme.fg("accent", CARD_GLYPH)} ${call} ${frame(fill)}${tail}${frame("╮")}`;
-		const innerWidth = cardInnerWidth(target);
-		const continuation = [...overflow, ...rest].flatMap((line) => (line === "" ? [""] : wrapTextWithAnsi(line, innerWidth)));
-		return [top, ...continuation.map((line) => cardLine(line, this.tone, this.theme, target))];
+		const running = this.row !== undefined && cardAwaitingResult(this.row);
+		return this.rows.render(target, running, () => floatRows(this.tone, this.theme, target, (inner) => ({
+			head: cardTopRows({ title: this.header(), glyph: this.glyph, body: [], tone: this.tone }, this.theme, inner, this.hint),
+			body: running ? [cardRunningLine(this.tone, this.theme, inner)] : undefined,
+			bottom: running ? cardBottom(this.tone, this.theme, inner) : undefined,
+		})));
 	}
 
-	invalidate(): void {}
+	invalidate(): void { this.rows.invalidate(); }
 }
 
 class ToolCardBody implements Component {
-	private readonly inner: Component;
+	private readonly rows = new ToolCardRows();
+	private readonly inner: () => Component;
 	private readonly tone: ToolTone;
 	private readonly theme: CardTheme;
 
-	constructor(inner: Component, tone: ToolTone, theme: CardTheme) {
+	private readonly cacheable: boolean;
+
+	constructor(inner: () => Component, tone: ToolTone, theme: CardTheme, cacheable = true) {
 		this.inner = inner;
 		this.tone = tone;
 		this.theme = theme;
+		this.cacheable = cacheable;
 	}
 
 	/** Renders the inner component between the card sides and closes the frame, even when the result has no rows. */
 	render(width: number): string[] {
 		const target = Math.max(0, Math.floor(width));
 		if (target === 0) return [];
-		const body = this.inner.render(cardInnerWidth(target)).map((line) => cardLine(line.trimEnd(), this.tone, this.theme, target));
-		return [...body, cardBottom(this.tone, this.theme, target)];
+		const build = () => floatRows(this.tone, this.theme, target, (inner) => ({
+			body: this.inner().render(cardInnerWidth(inner)).map((line) => cardLine(line.trimEnd(), this.tone, this.theme, inner)),
+			bottom: cardBottom(this.tone, this.theme, inner),
+			afterHeading: true,
+		}));
+		return this.cacheable ? this.rows.render(target, false, build) : build();
 	}
 
-	invalidate(): void {
-		this.inner.invalidate?.();
-	}
+	invalidate(): void { this.rows.invalidate(); }
 }
 
 function shouldRenderPreviewTail(
@@ -672,21 +716,21 @@ function gentleAiRenderTransition(
 	return { directResult: false };
 }
 
-function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArguments: () => RegExp, timing: () => GentleAiElapsedTimingLedger | undefined): void {
-	const registrationTool = getBuiltInTools(process.cwd())[toolName];
-	const officialRenderResult = registrationTool.renderResult;
+/** Rendering-only factory; the default export attaches the Bash renderers to native Bash through pi.registerToolRenderer, so execution and schema stay pi's. */
+export function createQuietToolRenderer(
+	toolName: QuietToolName,
+	resolveOverride: GentleAiDevBinaryOverrideResolver = () => undefined,
+	timing: () => GentleAiElapsedTimingLedger | undefined = () => undefined,
+	officialRenderResult?: ToolDefinition["renderResult"],
+): Pick<ToolDefinition, "renderShell" | "renderCall" | "renderResult"> {
+	const commandArguments = () => createGentleAiCommandArguments(resolveQuietToolsDevBinaryPath(resolveOverride));
 	const withElapsedTiming = (context: GentleAiRenderContext): GentleAiRenderContext => {
 		const ledger = timing();
 		return ledger ? { ...context, elapsedTiming: ledger } : context;
 	};
 
-	pi.registerTool({
-		...registrationTool,
+	return {
 		renderShell: "self",
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const runtimeTool = getBuiltInTools(ctx.cwd)[toolName];
-			return runtimeTool.execute(toolCallId, params, signal, onUpdate, ctx);
-		},
 		renderCall(args, theme, context) {
 			const callArgs = args as Record<string, unknown>;
 			const renderContext = sanitizedRenderContext(context as ToolRenderContextLike | undefined);
@@ -701,11 +745,12 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 			// Same place and wording as the Gentle AI card: the expand key rides the top rule once the call finished.
 			const finished = renderContext.isPartial === false && (renderContext.executionStarted === true || renderContext.isError === true);
 			const hint = finished ? stripAnsi(keyHint("app.tools.expand", renderContext.expanded === true ? "to collapse" : "to expand")) : undefined;
-			return new ToolCardTop(formatToolCall(toolName, callArgs, theme), tone, theme, hint);
+			return new ToolCardTop(() => formatToolCall(toolName, callArgs, theme), tone, theme, TOOL_GLYPH[toolName], hint, renderContext);
 		},
 		/** Builds the card component for this render pass; collapsed cards delegate to the wrapped-line cache keyed by the tool result object. */
 		renderResult(result, options, theme, context) {
 			const renderContext = context as ToolRenderContextLike | undefined;
+			markCardResult(renderContext?.state);
 			const cacheKey = typeof result === "object" && result !== null ? result : undefined;
 			const safeResult = sanitizedResult(result);
 			const text = safeText(extractTextContent(safeResult));
@@ -720,47 +765,86 @@ function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName, commandArg
 				return renderGentleAiResult(safeResult, { expanded: options.expanded, isPartial: options.isPartial, isError }, theme, renderContext ? withElapsedTiming(renderContext as GentleAiRenderContext) : undefined);
 			}
 			const resultTone = toolTone(options.isPartial === true, isError);
-			const carded = (component: Component): Component => new ToolCardBody(component, resultTone, theme);
+			const carded = (component: () => Component, cacheable = options.isPartial !== true): Component => new ToolCardBody(component, resultTone, theme, cacheable);
+			// Under the minimal Card content preference, every quiet tool draws
+			// the command alone while collapsed; the expand key still reveals
+			// the full result. Failures keep their bounded error tail so a red
+			// card always says why. The default preference keeps the previews.
+			if (COMMAND_ONLY_TOOLS.has(toolName) && !options.expanded && !isError && cardContent() === CARD_CONTENT.MINIMAL) {
+				return carded(() => new Text("", 0, 0));
+			}
 			if (options.isPartial) {
-				if (options.expanded) return carded(new Text(`${theme.fg("warning", partialLabel(toolName, text))}\n${theme.fg("muted", text)}`, 0, 0));
+				if (options.expanded) return carded(() => new Text(`${theme.fg("warning", partialLabel(toolName, text))}\n${theme.fg("muted", text)}`, 0, 0));
 				const visible = lastOutputLines(text, PREVIEW_LINE_LIMIT);
-				return carded(new BoundedRows([
+				return carded(() => new BoundedRows([
 					{ text: theme.fg("warning", partialLabel(toolName, text)), rows: 1 },
 					...(visible ? [{ text: theme.fg("muted", visible), rows: PREVIEW_LINE_LIMIT, tail: true }] : []),
 				], cacheKey));
 			}
 			if (options.expanded && toolName === "read" && hasImageContent(safeResult) && officialRenderResult) {
-				return carded(officialRenderResult(
+				return carded(() => officialRenderResult(
 					safeResult,
 					options,
 					theme,
 					sanitizedRenderContext(renderContext) as any,
-				));
+				), false);
 			}
-			const output = formatToolResultOutput(toolName, safeResult, {
+			let output = formatToolResultOutput(toolName, safeResult, {
 				expanded: options.expanded,
 				isError,
 				args: renderContext?.args,
 			});
-			const color = options.expanded ? "toolOutput" : isError ? "error" : "muted";
-			if (options.expanded) return carded(new Text(output ? theme.fg(color, output.replace(/^\n/, "")) : "", 0, 0));
+			// Counts alone hide the result: retain their useful totals alongside actual rows.
+			if (!options.expanded && !isError && output && COLLAPSED_COUNT_LABELS[toolName]) {
+				output += `\n${firstLines(text, PREVIEW_LINE_LIMIT - 1)}`;
+			}
+			if (!options.expanded && !isError && toolName === "edit") {
+				const diff = detailsRecord(safeResult).diff;
+				if (typeof diff === "string") output += `\n${firstLines(safeText(diff).split("\n").filter((line) => /^[+-]/.test(line)).join("\n"), PREVIEW_LINE_LIMIT - 1)}`;
+			}
+			const color = isError ? "error" : options.expanded ? "toolOutput" : "muted";
+			if (options.expanded) return carded(() => new Text(output ? theme.fg(color, output.replace(/^\n/, "")) : "", 0, 0));
 			if (output) {
 				const tail = shouldRenderPreviewTail(toolName, text, isError, renderContext?.args);
-				return carded(new BoundedRows([
+				return carded(() => new BoundedRows([
 					{ text: theme.fg(color, output.replace(/^\n/, "")), rows: PREVIEW_LINE_LIMIT, tail },
 				], cacheKey));
 			}
 			// The card top rule carries the expand key, so an empty result only closes the frame.
-			return carded(new Text("", 0, 0));
+			return carded(() => new Text("", 0, 0));
 		},
+	};
+}
+
+function registerQuietTool(pi: ExtensionAPI, toolName: RegisteredToolName, resolveOverride: GentleAiDevBinaryOverrideResolver, timing: () => GentleAiElapsedTimingLedger | undefined): void {
+	const registrationTool = getBuiltInTools(process.cwd())[toolName];
+	pi.registerTool({
+		...registrationTool,
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			return getBuiltInTools(ctx.cwd)[toolName].execute(toolCallId, params, signal, onUpdate, ctx);
+		},
+		...createQuietToolRenderer(toolName, resolveOverride, timing, registrationTool.renderResult),
 	});
 }
 
-export default function quietTools(pi: ExtensionAPI, resolveOverride: GentleAiDevBinaryOverrideResolver = () => resolveGentleAiDevBinaryOverride()): void {
+export default function quietTools(
+	pi: ExtensionAPI,
+	resolveOverride: GentleAiDevBinaryOverrideResolver = () => resolveGentleAiDevBinaryOverride(),
+	codemodeOptOut: Omit<BuiltinCodemodeOptOutOptions, "effectiveExtensions"> = {},
+): ReturnType<ExtensionFactory> {
 	if (!quietToolsEnabled()) return;
 	let elapsedTiming: GentleAiElapsedTimingLedger | undefined;
+	let codemodeOptOutOffered = false;
 	pi.on("session_start", (_event, ctx) => {
 		elapsedTiming = new GentleAiElapsedTimingLedger(ctx.sessionManager, pi);
+		// The compact codemode below displaces Pi's builtin, which makes Pi warn
+		// at startup. Offer the settings opt-out once per process, detached so
+		// the dialog never holds up startup; the offer itself never throws.
+		if (codemodeOptOutOffered) return;
+		codemodeOptOutOffered = true;
+		let effectiveExtensions: unknown;
+		try { effectiveExtensions = pi.getSettings().extensions; } catch { /* Fall back to the settings file alone. */ }
+		void offerBuiltinCodemodeOptOut(ctx, { ...codemodeOptOut, effectiveExtensions });
 	});
 	// Only bash calls that render as gentle-ai cards carry a durable duration;
 	// every other quiet tool keeps its plain renderer and writes no entries.
@@ -776,7 +860,18 @@ export default function quietTools(pi: ExtensionAPI, resolveOverride: GentleAiDe
 	pi.on("tool_execution_end", (event) => recordGentleTiming(event, Date.now()));
 	const withElapsedTiming = (context: GentleAiRenderContext): GentleAiRenderContext =>
 		elapsedTiming ? { ...context, elapsedTiming } : context;
-	for (const toolName of Object.keys(TOOL_CREATORS) as QuietToolName[]) {
-		registerQuietTool(pi, toolName, () => createGentleAiCommandArguments(resolveQuietToolsDevBinaryPath(resolveOverride)), () => elapsedTiming);
+	for (const toolName of Object.keys(TOOL_CREATORS) as RegisteredToolName[]) {
+		registerQuietTool(pi, toolName, resolveOverride, () => elapsedTiming);
 	}
+	// Native Bash keeps pi's execution and schema; only its drawing becomes a
+	// Gentle card while the Card content preference is minimal, so quiet bash
+	// rows match the other tools. The resolver API is newer than this
+	// package's pinned pi types, so it is probed structurally; hosts without it
+	// — and the default content preference — keep pi's native bash rendering.
+	const host = pi as typeof pi & { registerToolRenderer?: (resolver: (toolName: string, next: () => unknown) => unknown) => void };
+	if (typeof host.registerToolRenderer === "function") {
+		host.registerToolRenderer((toolName, next) =>
+			toolName === "bash" && cardContent() === CARD_CONTENT.MINIMAL ? createQuietToolRenderer("bash", resolveOverride, () => elapsedTiming) : next());
+	}
+	return registerCompactCodemode(pi);
 }

@@ -1,8 +1,15 @@
 import { CURSOR_MARKER, Editor, visibleWidth } from "@earendil-works/pi-tui";
 import { createRequire } from "node:module";
 
-// Private shape pinned to @earendil-works/pi-tui 0.85.1. Never silently adapt
-// another build: the editor's undo snapshot also owns the paste registry.
+// Private shape audited against @earendil-works/pi-tui 0.99.1, 0.99.2 and 1.0.0:
+// editor.js state/pastes/history, sticky cursor reset, layoutText/render geometry,
+// autocomplete cancellation and { state, pastes, pasteCounter } undo restoration;
+// undo-stack.js clone-on-push/pop snapshots. The two 0.99 releases ship identical
+// editor/undo-stack sources; 1.0.0 is a touched-contract audit, not byte identity.
+// Actual 1.0.0 bundled and unbundled tests exercise identity, edit/undo, paste,
+// selection, wrapping/scroll and autocomplete; fabricated metadata tests only
+// prove exact-version admission for the older audited releases.
+// Never silently adapt another build: undo also owns the paste registry.
 interface Position { line: number; col: number }
 interface State { lines: string[]; cursorLine: number; cursorCol: number }
 interface Snapshot { state: State; pastes: Map<number, string>; pasteCounter: number }
@@ -38,17 +45,29 @@ interface PrivateEditor {
   exitHistoryBrowsing(): void;
 }
 
-const SUPPORTED_VERSIONS = new Set(["0.85.1", "0.87.1"]);
-const importedTuiMetadata: unknown = createRequire(import.meta.url)("@earendil-works/pi-tui/package.json");
+// The single audited-release source for the adapter and Gentle Shell's runtime
+// identity gates. Add a release only after re-auditing the files named above.
+export const AUDITED_PI_EDITOR_VERSIONS = Object.freeze(["0.99.1", "0.99.2", "1.0.0"] as const);
+export type AuditedPiEditorVersion = (typeof AUDITED_PI_EDITOR_VERSIONS)[number];
+
+export function isAuditedPiEditorVersion(version: unknown): version is AuditedPiEditorVersion {
+  return typeof version === "string" && (AUDITED_PI_EDITOR_VERSIONS as readonly string[]).includes(version);
+}
+// Pi aliases only ES imports of host packages. This raw require walks
+// node_modules from the extension, which a git install lacks (#1586), so an
+// unresolved host leaves the version unknown and the identity gate closed.
+const importedTuiMetadata: unknown = (() => {
+  try { return createRequire(import.meta.url)("@earendil-works/pi-tui/package.json"); } catch { return undefined; }
+})();
 const IMPORTED_TUI_VERSION = typeof importedTuiMetadata === "object" && importedTuiMetadata !== null &&
   "version" in importedTuiMetadata ? importedTuiMetadata.version : undefined;
 
 // The caller supplies the Editor constructor from the same Pi/TUI package pair
 // as the version metadata. An arbitrary object with matching fields is not an editor.
 function hasEditorIdentity(value: unknown, version: string, editorClass: typeof Editor, verifiedVersion?: string): boolean {
-  if (!SUPPORTED_VERSIONS.has(version) || typeof value !== "object" || value === null ||
+  if (!isAuditedPiEditorVersion(version) || typeof value !== "object" || value === null ||
       (verifiedVersion !== undefined ? version !== verifiedVersion :
-        editorClass === Editor ? version !== IMPORTED_TUI_VERSION : version !== "0.87.1") || !(value instanceof editorClass)) return false;
+        editorClass === Editor ? version !== IMPORTED_TUI_VERSION : true) || !(value instanceof editorClass)) return false;
   let prototype: unknown = Object.getPrototypeOf(value);
   for (let depth = 0; depth < 3; depth++) {
     if (prototype === editorClass.prototype) return true;
@@ -141,6 +160,20 @@ function assertPosition(editor: PrivateEditor, pos: Position): void {
   }
 }
 
+function hasSnapshotShape(value: unknown): value is Snapshot {
+  if (typeof value !== "object" || value === null || !("state" in value) ||
+      !("pastes" in value) || !("pasteCounter" in value)) return false;
+  const state = value.state;
+  return typeof state === "object" && state !== null && "lines" in state &&
+    Array.isArray(state.lines) && state.lines.length > 0 && state.lines.every((line) => typeof line === "string") &&
+    "cursorLine" in state && Number.isInteger(state.cursorLine) &&
+    typeof state.cursorLine === "number" && state.cursorLine >= 0 && state.cursorLine < state.lines.length &&
+    "cursorCol" in state && typeof state.cursorCol === "number" && Number.isInteger(state.cursorCol) &&
+    state.cursorCol >= 0 && state.cursorCol <= state.lines[state.cursorLine].length &&
+    value.pastes instanceof Map && [...value.pastes].every(([id, text]) => Number.isInteger(id) && id > 0 && typeof text === "string") &&
+    typeof value.pasteCounter === "number" && Number.isInteger(value.pasteCounter) && value.pasteCounter >= 0;
+}
+
 export function createVimEditorAdapter(value: unknown, version: string, editorClass: typeof Editor = Editor, verifiedVersion?: string) {
   if (!hasEditorIdentity(value, version, editorClass, verifiedVersion)) throw new Error("Unsupported Pi editor layout/version");
   const editor = value as unknown as PrivateEditor;
@@ -150,6 +183,9 @@ export function createVimEditorAdapter(value: unknown, version: string, editorCl
       !Number.isInteger(editor.pasteCounter) || !Array.isArray(editor.history) ||
       typeof editor.undoStack?.push !== "function" || typeof editor.undoStack?.pop !== "function" ||
       !Array.isArray(editor.undoStack.stack) || editor.undoStack.length !== editor.undoStack.stack.length ||
+      !hasSnapshotShape(editor) || !editor.undoStack.stack.every(hasSnapshotShape) ||
+      typeof editor.getText !== "function" || typeof editor.getCursor !== "function" ||
+      !editor.history.every((line) => typeof line === "string") ||
       typeof editor.pushUndoSnapshot !== "function" || typeof editor.undo !== "function" || typeof editor.setCursorCol !== "function" ||
       typeof editor.cancelAutocomplete !== "function" || typeof editor.exitHistoryBrowsing !== "function" ||
       typeof editor.layoutText !== "function" || typeof editor.render !== "function" ||

@@ -7,7 +7,17 @@ import { createReviewSidebarPublisher, REVIEW_SCOPE_UNAVAILABLE, REVIEW_SIDEBAR_
 import { __testing } from "../extensions/gentle-ai.ts";
 import { NATIVE_REVIEW_ERROR_CODE, NATIVE_REVIEW_OPERATION, NativeReviewCliError, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { decodeReviewStatusV3 } from "../lib/review-integration-v2.ts";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
+
+function toolContext(context: ExtensionContext): ExtensionToolContext {
+	return {
+		...context,
+		tools: [],
+		async executeTool() {
+			assert.fail("Sidebar publication must not execute nested tools");
+		},
+	};
+}
 
 // Display contract only: lifecycle evidence must be normalized by the producer,
 // never inferred from a successful tool execution by the renderer.
@@ -115,7 +125,7 @@ test("publisher retains scope only for issued capture bindings and matching clos
 	const run = (name: string, params: Record<string, unknown>, details: unknown) => publisher.tool({
 		name, label: "Test", description: "Test", parameters: { type: "object" } as never,
 		async execute() { return { content: [], details }; },
-	}).execute("call", params as never, undefined, undefined, ctx);
+	}).execute("call", params as never, undefined, undefined, toolContext(ctx));
 	const status = { result: { schema: "gentle-ai.review-integration.status/v9", authority: { state: "reviewing", lineage_id: "lineage" }, target_identity: "target", applicability: "current_target", projection: { paths: ["src/app.ts"] }, next_transition: { kind: "collect" } }, collectBindings: [{ collectBinding: "issued" }] };
 	await run("gentle_review", { operation: "status", lineageId: "lineage" }, status);
 	assert.deepEqual(events.at(-1)?.snapshot, { state: "in_review", scope: "app.ts" });
@@ -162,7 +172,7 @@ test("publisher ignores late completions after reset without changing results", 
 	const result = { content: [], details: { status: "blocked" } };
 	const tool = publisher.tool({ name: "gentle_review", label: "Test", description: "Test", parameters: { type: "object" } as never, async execute() { await pending; return result; } });
 	publisher.reset(ctx);
-	const call = tool.execute("call", { operation: "status" } as never, undefined, undefined, ctx);
+	const call = tool.execute("call", { operation: "status" } as never, undefined, undefined, toolContext(ctx));
 	publisher.reset(ctx);
 	finish();
 	assert.equal(await call, result);
@@ -177,7 +187,7 @@ function publisherFixture() {
 	const run = (name: string, params: Record<string, unknown>, details: unknown | Promise<unknown>, context = ctx) => publisher.tool({
 		name, label: "Test", description: "Test", parameters: { type: "object" } as never,
 		async execute() { return { content: [], details: await details }; },
-	}).execute("call", params as never, undefined, undefined, context);
+	}).execute("call", params as never, undefined, undefined, toolContext(context));
 	const status = { result: { schema: "gentle-ai.review-integration.status/v9", authority: { state: "reviewing", lineage_id: "lineage" }, target_identity: "target", applicability: "current_target", projection: { paths: ["src/app.ts"] }, next_transition: { kind: "collect" } }, collectBindings: [{ collectBinding: "first" }, { collectBinding: "second" }] };
 	const seed = () => run("gentle_review", { operation: "status", lineageId: "lineage" }, status);
 	const snapshot = () => events.at(-1)!.snapshot;
@@ -327,7 +337,7 @@ test("cancellation errors remain unknown while other failures are unavailable, r
 		const tool = h.publisher.tool({ name: "gentle_review", label: "Test", description: "Test", parameters: { type: "object" } as never,
 			async execute() { throw error; },
 		});
-		await assert.rejects(tool.execute("call", { operation: "status" } as never, controller.signal, undefined, h.ctx), (caught) => caught === error);
+		await assert.rejects(tool.execute("call", { operation: "status" } as never, controller.signal, undefined, toolContext(h.ctx)), (caught) => caught === error);
 		assert.deepEqual(h.snapshot(), { state, scope: REVIEW_SCOPE_UNAVAILABLE });
 	}
 });
@@ -346,7 +356,7 @@ test("foreign sessions, disabled publisher and event failures never change tool 
 	const throwing = createReviewSidebarPublisher({ events: { emit: () => { throw Error("display failed"); } } } as unknown as ExtensionAPI);
 	throwing.reset(h.ctx);
 	const tool = throwing.tool({ name: "gentle_review", label: "Test", description: "Test", parameters: { type: "object" } as never, async execute() { return result; } });
-	assert.equal(await tool.execute("call", { operation: "status" } as never, undefined, undefined, h.ctx), result);
+	assert.equal(await tool.execute("call", { operation: "status" } as never, undefined, undefined, toolContext(h.ctx)), result);
 });
 
 test("RDD labels say what is happening and who acts", () => {

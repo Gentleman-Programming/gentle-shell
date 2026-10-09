@@ -1,20 +1,21 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import baseTest from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import {
 	GENTLE_AI_DEV_BINARY_ENV,
 	resolveGentleAiBinary,
 	type GentleAiDevBinaryEnvironment,
 } from "../lib/gentle-ai-binary.ts";
-import { NativeReviewCliV216 } from "../lib/native-review-cli.ts";
+import { createNodeExecFileAdapter, NativeReviewCliV216 } from "../lib/native-review-cli.ts";
+import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
 import { decodeReviewLastEventClosureV1 } from "../lib/review-integration-v2.ts";
 import { decodeReviewLastEventClosureV1 as decodeRuntimeReviewLastEventClosureV1 } from "../runtime/review-integration-v2.mjs";
@@ -128,6 +129,102 @@ async function run(command: string, arguments_: readonly string[], cwd: string, 
 		throw error;
 	}
 }
+
+test("SDK explicit review delegates enabled-only non-Git preparation to the pinned native binary without START", async (t) => {
+	const previous: Record<string, string | undefined> = {};
+	for (const key of Object.keys(process.env).filter((key) => key.startsWith("GIT_"))) {
+		previous[key] = process.env[key];
+		delete process.env[key];
+	}
+	const home = await reviewEnabledHome(t);
+	for (const [key, value] of Object.entries({
+		GENTLE_PI_AGENT_HOME: join(home, "agent"), PI_CODING_AGENT_DIR: join(home, "agent"),
+		GENTLE_PI_CONFIG_HOME: join(home, "pi-config"), PI_OFFLINE: "1",
+		GENTLE_PI_REVIEW_RELAY_CONTRACT: "invalid-ambient-relay",
+	})) {
+		previous[key] = process.env[key];
+		process.env[key] = value;
+	}
+	t.after(() => {
+		for (const [key, value] of Object.entries(previous)) {
+			if (value === undefined) delete process.env[key]; else process.env[key] = value;
+		}
+	});
+	const version = await run(binary, ["version"], home);
+	t.diagnostic(`native binary=${binary}; version=${version.stdout.trim()}`);
+	const calls: string[][] = [];
+	const agentDir = process.env.GENTLE_PI_AGENT_HOME!;
+	await mkdir(agentDir, { recursive: true });
+	const modelRuntime = await ModelRuntime.create({
+		authPath: join(agentDir, "empty-auth.json"), modelsPath: null,
+		modelsStorePath: join(agentDir, "models-store.json"), allowModelNetwork: false,
+	});
+	const startup = async (cwd: string, enabled = true) => {
+		const before = calls.length;
+		const wasVersioned = resolveSessionWorktree(cwd, cwd) !== undefined;
+		// Production adapter overwrites the poisoned ambient relay declaration.
+		// Fresh native clients also prevent a cached refusal from masking later
+		// parent/broken-metadata scenarios without actually invoking STATUS.
+		const adapter = createNodeExecFileAdapter();
+		const native = new NativeReviewCliV216(async (request) => {
+			calls.push([...request.arguments]);
+			return adapter(request);
+		}, binary);
+		const resourceLoader = new DefaultResourceLoader({
+			cwd, agentDir, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+			extensionFactories: [createGentleAiExtension({ nativeReviewCli: native, candidateViews: null, processEnv: {} })],
+		});
+		await resourceLoader.reload();
+		assert.deepEqual(resourceLoader.getExtensions().errors, []);
+		const { session } = await createAgentSession({
+			cwd, agentDir, resourceLoader, modelRuntime, sessionManager: SessionManager.inMemory(cwd), noTools: "builtin",
+			settingsManager: SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false } }),
+		});
+		try {
+			await session.bindExtensions({ mode: "print" });
+			assert.equal(calls.slice(before).some(args => args[0] === "review" && args[1] === "status"), false, "passive non-Git startup cannot prepare");
+			session.setActiveToolsByName(["gentle_review"]);
+			const inspect = session.agent.state.tools.find(tool => tool.name === "gentle_review");
+			assert.ok(inspect, "real SDK registers the facade");
+			await inspect.execute("explicit-review", { operation: "inspect", workspaceRoot: cwd });
+			assert.equal(session.messages.length, 0, "explicit review entry must not begin a model turn");
+		} finally { await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" }); session.dispose(); }
+		const scenarioCalls = calls.slice(before);
+		if (!wasVersioned) assert.ok(scenarioCalls.some((args) => args[0] === "review" && args[1] === "mode"), "every non-Git explicit review invokes native mode");
+		const statuses = scenarioCalls.filter((args) => args[0] === "review" && args[1] === "status");
+		assert.equal(statuses.length > 0, enabled, "every on scenario invokes native STATUS; off cannot");
+		t.diagnostic(`startup cwd=${cwd}; STATUS calls=${statuses.length}`);
+	};
+	const plain = join(home, "enabled-project");
+	await mkdir(plain);
+	await writeFile(join(plain, "candidate.txt"), "candidate bytes\n");
+	await startup(plain);
+	assert.equal(existsSync(join(plain, ".git")), true, "explicit enabled review must reach native bootstrap");
+	assert.equal(await readFile(join(plain, "candidate.txt"), "utf8"), "candidate bytes\n");
+	assert.notEqual((await run("git", ["rev-parse", "--verify", "HEAD"], plain, true)).exitCode, 0, "HEAD remains unborn");
+	assert.equal((await run("git", ["remote"], plain)).stdout, "");
+	assert.equal(existsSync(join(plain, ".git", "gentle-ai", "reviews")), false, "entry does not create review lineage storage");
+	const nested = join(plain, "nested");
+	await mkdir(nested);
+	await startup(nested);
+	assert.equal(existsSync(join(nested, ".git")), false, "containing repository is reused");
+	const broken = join(home, "broken-project");
+	await mkdir(broken);
+	await writeFile(join(broken, ".git"), "gitdir: missing-metadata\n");
+	await startup(broken);
+	assert.equal(await readFile(join(broken, ".git"), "utf8"), "gitdir: missing-metadata\n");
+	const brokenChild = join(broken, "child");
+	await mkdir(brokenChild);
+	await startup(brokenChild);
+	assert.equal(existsSync(join(brokenChild, ".git")), false);
+	await run(binary, ["review", "mode", "disable", "--scope", "global", "--cwd", plain, "--json"], plain);
+	const off = join(home, "off-project");
+	await mkdir(off);
+	await startup(off, false);
+	assert.equal(existsSync(join(off, ".git")), false, "off explicit review leaves the target unversioned");
+	assert.equal(calls.some((args) => args[0] === "review" && args[1] === "start"), false);
+	t.diagnostic(`native SDK startup calls=${JSON.stringify(calls)}`);
+});
 
 test("generated runtime decoder consumes the captured terminal closure directly", async () => {
 	const fixture = JSON.parse(await readFile(join(packageRoot, "tests", "fixtures", "devbinary", "last-event-capture-result-approved.captured.json"), "utf8"));

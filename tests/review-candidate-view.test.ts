@@ -364,6 +364,53 @@ test("candidate owner publication never removes a replaced marker", (t) => {
 	assert.equal(readdirSync(parent).some((name) => name.endsWith(".reaper-lock")), false);
 });
 
+test("candidate owner publication preserves a replaced marker with 64-bit identity precision loss", (t) => {
+	mockWindowsAcl(t);
+	const cwd = repository(t), parent = join(cwd, ".git", "gentle-ai", "candidate-views");
+	const originalLstat = fs.lstatSync, fsync = fs.fsyncSync, write = fs.writeFileSync;
+	// Modeled identities, not measured NTFS values: distinct 64-bit indices round to one Number.
+	const high = 2n ** 53n;
+	assert.notEqual(high, high + 1n);
+	assert.equal(Number(high), Number(high + 1n));
+	let marker: string | undefined, replaced = false, faults = 0, adds = 0;
+	let savedContent: string | undefined;
+	t.mock.method(fs, "lstatSync", (path: Parameters<typeof fs.lstatSync>[0], ...args: unknown[]) => {
+		const stat = (originalLstat as (...arguments_: unknown[]) => ReturnType<typeof fs.lstatSync>)(path, ...args);
+		if (marker === undefined && typeof path === "string" && path.endsWith(".owner.json") && path === join(parent, readdirSync(parent).find((name) => name.endsWith(".owner.json")) ?? "")) marker = path;
+		if (path !== marker) return stat;
+		const bigint = (args[0] as { bigint?: boolean } | undefined)?.bigint === true;
+		const ino = replaced ? high + 1n : high;
+		// Retain real metadata and Stats methods; only the identity pair is synthetic.
+		return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, {
+			dev: bigint ? high : Number(high), ino: bigint ? ino : Number(ino),
+		});
+	});
+	t.mock.method(fs, "fsyncSync", (fd: number) => {
+		if (replaced) return fsync(fd);
+		assert.ok(marker, "owned marker identity must be captured before the fault");
+		faults++;
+		savedContent = readFileSync(marker, "utf8");
+		renameSync(marker, `${marker}.saved`);
+		write(marker, "replacement", { mode: 0o600 });
+		replaced = true;
+		throw new Error("fixture marker fsync failure after 64-bit identity replacement");
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const registry = new CandidateViewRegistry((file, args, options) => {
+		if (args[0] === "worktree" && args[1] === "add") adds++;
+		return execFileSync(file, args, options);
+	}, "win32");
+	assert.throws(() => registry.create({ contributorRoot: cwd }), (error: unknown) => error instanceof CandidateViewError && error.reason === "candidate-owner-preparation-failed");
+	assert.equal(faults, 1, "replacement fault must be reached exactly once");
+	assert.equal(adds, 0);
+	assert.ok(marker);
+	assert.equal(readFileSync(`${marker}.saved`, "utf8"), savedContent);
+	assert.equal(readdirSync(parent).some((name) => name.endsWith(".reaper-lock")), false);
+	assert.equal(existsSync(marker), true, "publication rollback deleted the replacement after distinct 64-bit identities rounded to the same Number");
+	assert.equal(readFileSync(marker, "utf8"), "replacement");
+});
+
 test("public POSIX candidate-views parent reports bounded privacy guidance without changing permissions or adding a worktree", { skip: process.platform === "win32" }, (t) => {
 	const cwd = repository(t);
 	const parent = join(cwd, ".git", "gentle-ai", "candidate-views");
@@ -386,6 +433,73 @@ test("public POSIX candidate-views parent reports bounded privacy guidance witho
 	});
 	assert.equal(lstatSync(parent).mode & 0o777, 0o777);
 	assert.equal(adds, 0);
+	chmodSync(parent, 0o700);
+	const view = registry.create({ contributorRoot: cwd });
+	view.cleanup();
+});
+
+test("POSIX chmod-ineffective parent reports filesystem capability guidance before worktree creation", { skip: process.platform === "win32" }, (t) => {
+	const cwd = repository(t);
+	const parent = join(cwd, ".git", "gentle-ai", "candidate-views");
+	mkdirSync(parent, { recursive: true, mode: 0o700 });
+	chmodSync(parent, 0o777);
+	const originalLstat = fs.lstatSync;
+	t.mock.method(fs, "lstatSync", (path: Parameters<typeof fs.lstatSync>[0], ...args: unknown[]) => {
+		const stat = (originalLstat as (...arguments_: unknown[]) => ReturnType<typeof fs.lstatSync>)(path, ...args);
+		return typeof path === "string" && path.includes(".gentle-ai-chmod-probe-")
+			? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { mode: (Number(stat.mode) & ~0o777) | 0o777, uid: process.getuid?.() })
+			: stat;
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	let adds = 0;
+	const registry = new CandidateViewRegistry((file, args, options) => {
+		if (args[0] === "worktree" && args[1] === "add") adds++;
+		return execFileSync(file, args, options);
+	});
+	assert.throws(() => registry.create({ contributorRoot: cwd }), (error: unknown) => {
+		assert.ok(error instanceof CandidateViewError);
+		assert.equal(error.reason, "candidate-owner-preparation-failed");
+		assert.deepEqual(error.diagnostics, {
+			code: "candidate-owner-parent-chmod-ineffective",
+			message: "candidate-views parent filesystem does not honor POSIX permission changes; move this repository's Git common directory to a POSIX-metadata filesystem or enable metadata support before retrying START",
+		});
+		assert.doesNotMatch(JSON.stringify(error.diagnostics), new RegExp(cwd));
+		return true;
+	});
+	assert.equal(adds, 0);
+	assert.equal(readdirSync(parent).some((name) => name.includes(".gentle-ai-chmod-probe-")), false);
+});
+
+test("inconclusive private-mode probe keeps bounded privacy guidance instead of claiming ineffective chmod", { skip: process.platform === "win32" }, (t) => {
+	const cwd = repository(t);
+	const parent = join(cwd, ".git", "gentle-ai", "candidate-views");
+	mkdirSync(parent, { recursive: true, mode: 0o700 });
+	chmodSync(parent, 0o777);
+	const originalMkdir = fs.mkdirSync;
+	t.mock.method(fs, "mkdirSync", (path: Parameters<typeof fs.mkdirSync>[0], ...args: unknown[]) => {
+		if (typeof path === "string" && path.includes(".gentle-ai-chmod-probe-")) throw Object.assign(new Error("probe creation refused"), { code: "EACCES" });
+		return (originalMkdir as (...arguments_: unknown[]) => ReturnType<typeof fs.mkdirSync>)(path, ...args);
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	let adds = 0;
+	const registry = new CandidateViewRegistry((file, args, options) => {
+		if (args[0] === "worktree" && args[1] === "add") adds++;
+		return execFileSync(file, args, options);
+	});
+	assert.throws(() => registry.create({ contributorRoot: cwd }), (error: unknown) => {
+		assert.ok(error instanceof CandidateViewError);
+		assert.equal(error.reason, "candidate-owner-preparation-failed");
+		assert.deepEqual(error.diagnostics, {
+			code: "candidate-owner-parent-privacy",
+			message: "candidate-views parent must be owned by the current user and inaccessible to group and others; inspect its ownership and permissions, then correct them out of band before retrying START",
+		});
+		assert.doesNotMatch(JSON.stringify(error.diagnostics), new RegExp(cwd));
+		return true;
+	});
+	assert.equal(adds, 0);
+	assert.equal(readdirSync(parent).some((name) => name.includes(".gentle-ai-chmod-probe-")), false);
 	chmodSync(parent, 0o700);
 	const view = registry.create({ contributorRoot: cwd });
 	view.cleanup();
@@ -432,11 +546,13 @@ test("POSIX non-directory and symlink parents never receive privacy guidance", {
 });
 
 test("owner privacy diagnostic sanitizer rejects injected text", () => {
-	const forged = new CandidateViewError("rejected", "candidate-owner-preparation-failed", {
-		code: "candidate-owner-parent-privacy",
-		message: "private-fixture-path-and-user",
-	} as unknown as ConstructorParameters<typeof CandidateViewError>[2]);
-	assert.equal(forged.diagnostics, undefined);
+	for (const code of ["candidate-owner-parent-privacy", "candidate-owner-parent-chmod-ineffective"] as const) {
+		const forged = new CandidateViewError("rejected", "candidate-owner-preparation-failed", {
+			code,
+			message: "private-fixture-path-and-user",
+		} as unknown as ConstructorParameters<typeof CandidateViewError>[2]);
+		assert.equal(forged.diagnostics, undefined);
+	}
 });
 
 test("unknown owner failures never expose arbitrary messages in diagnostics", (t) => {
@@ -651,6 +767,47 @@ for (const race of ["root", "registration", "lock"] as const) {
 		if (race === "lock") assert.equal(readFileSync(`${view.root}.reaper-lock`, "utf8"), "replacement");
 	});
 }
+
+test("ordinary cleanup preserves a replaced root with 64-bit identity precision loss", (t) => {
+	mockWindowsAcl(t);
+	const cwd = repository(t), high = 2n ** 53n;
+	const originalLstat = fs.lstatSync;
+	let root = "", replaced = false, lists = 0, removes = 0;
+	const registry = new CandidateViewRegistry((file, args, options) => {
+		// Never allow Git to delete the replacement, even on the failing implementation.
+		if (args[0] === "worktree" && args[1] === "remove") { removes++; return ""; }
+		const result = execFileSync(file, args, options);
+		if (root && args[0] === "worktree" && args[1] === "list" && ++lists === 2) {
+			const pointer = readFileSync(join(root, ".git"));
+			renameSync(root, `${root}.saved`);
+			mkdirSync(root);
+			writeFileSync(join(root, ".git"), pointer);
+			writeFileSync(join(root, "replacement.txt"), "replacement");
+			replaced = true;
+		}
+		return result;
+	});
+	const view = registry.create({ contributorRoot: cwd });
+	root = view.root;
+	t.mock.method(fs, "lstatSync", (path: Parameters<typeof fs.lstatSync>[0], ...args: unknown[]) => {
+		const stat = (originalLstat as (...arguments_: unknown[]) => ReturnType<typeof fs.lstatSync>)(path, ...args);
+		if (path !== root) return stat;
+		const bigint = (args[0] as { bigint?: boolean } | undefined)?.bigint === true;
+		const ino = replaced ? high + 1n : high;
+		return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, {
+			dev: bigint ? high : Number(high), ino: bigint ? ino : Number(ino),
+		});
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	assert.throws(() => view.cleanup());
+	assert.equal(replaced, true);
+	assert.equal(readFileSync(join(root, "replacement.txt"), "utf8"), "replacement");
+	assert.equal(existsSync(`${root}.saved`), true);
+	assert.equal(existsSync(ownerMarker(root)), true);
+	assert.equal(existsSync(`${root}.reaper-lock`), false);
+	assert.equal(removes, 0, "distinct 64-bit directory identities must stop cleanup before Git removal");
+});
 
 test("ordinary cleanup never unlinks a replaced sidecar after Git removal", (t) => {
 	const cwd = repository(t);

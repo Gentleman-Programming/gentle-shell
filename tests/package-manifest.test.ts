@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { parseNpmPackResult } from "../scripts/npm-pack-result.mjs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -18,6 +19,8 @@ import { fileURLToPath } from "node:url";
 import { applyModelConfig } from "../extensions/gentle-ai.ts";
 import { resolveGentlePiAgentHome } from "../lib/agent-home.ts";
 import { getPackageAssetOwner, installPackageAssets, type PackageAssetOwner } from "../lib/agent-assets.ts";
+import { AUDITED_PI_EDITOR_VERSIONS } from "../lib/vim-editor-adapter.ts";
+import { resolveProjectPiSdkVersion } from "../scripts/test-packed-runner.mjs";
 // Package installation is owned by lib/agent-assets.ts, not the retired SDD preflight.
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -78,6 +81,10 @@ interface PackageJsonPiManifest {
 	extensions?: string[];
 }
 
+interface PackageJsonPeerMetadata {
+	optional?: boolean;
+}
+
 interface PackageJson {
 	description?: string;
 	keywords?: string[];
@@ -86,7 +93,10 @@ interface PackageJson {
 	scripts?: Record<string, string>;
 	dependencies?: Record<string, string>;
 	peerDependencies?: Record<string, string>;
+	peerDependenciesMeta?: Record<string, PackageJsonPeerMetadata>;
+	optionalDependencies?: Record<string, string>;
 	devDependencies?: Record<string, string>;
+	engines?: Record<string, string>;
 	bundledDependencies?: string[];
 	bundleDependencies?: string[];
 	repository?: {
@@ -123,17 +133,87 @@ test("public docs and metadata advertise ODD and review without retired phase wo
 
 test("technical reference declares the tested Pi minimum required for agent_settled", () => {
 	const manifest = readPackageJson();
-	assert.equal(manifest.peerDependencies?.["@earendil-works/pi-coding-agent"], ">=0.85.1");
-	assert.equal(manifest.devDependencies?.["@earendil-works/pi-coding-agent"], "0.87.1");
+	assert.equal(manifest.peerDependencies?.["@earendil-works/pi-coding-agent"], ">=0.99.1");
+	assert.equal(manifest.devDependencies?.["@earendil-works/pi-coding-agent"], ">=1.0.0");
+	assert.equal(manifest.peerDependenciesMeta?.["@earendil-works/pi-coding-agent"]?.optional, true);
+	assert.equal(manifest.engines?.node, ">=22.19.0");
+	for (const path of ["docs/readme-reference.md", "docs/gentle-shell.md"]) {
+		const source = readFileSync(join(PACKAGE_ROOT, path), "utf8");
+		assert.match(source, /Pi 0\.99\.1 or newer/, path);
+		assert.match(source, /open `>=1\.0\.0` development range/, path);
+		assert.doesNotMatch(source, /development tests pin Pi/, path);
+		// Docs name exactly the audited Vim editor releases, never a future one.
+		const auditedReleases = new Intl.ListFormat("en", { style: "long", type: "conjunction" })
+			.format(AUDITED_PI_EDITOR_VERSIONS.map(v => `\`${v.replace(/\./g, "\\.")}\``));
+		assert.match(source, new RegExp(`audited Pi ${auditedReleases}`), path);
+	}
 	const reference = readFileSync(join(PACKAGE_ROOT, "docs", "readme-reference.md"), "utf8");
-	assert.match(reference, /Pi 0\.85\.1 or newer/);
 	assert.match(reference, /agent_settled/);
 	assert.match(readFileSync(join(PACKAGE_ROOT, "README.md"), "utf8"), /\]\(docs\/readme-reference\.md(?:#[^)]+)?\)/);
 });
 
-test("packed runtime declares its pi-ai compat import as a direct exact dependency", () => {
+test("packed runtime uses optional Pi host peers with one open development range and no duplicate direct dependencies", () => {
 	const manifest = readPackageJson();
-	assert.equal(manifest.dependencies?.["@earendil-works/pi-ai"], "0.87.1");
+	for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-tui"]) {
+		assert.equal(manifest.peerDependencies?.[name], "*", name);
+		assert.equal(manifest.peerDependenciesMeta?.[name]?.optional, true, name);
+	}
+	// The devDependency specifier is policy (a range); the resolved install is
+	// one exact release shared by every Pi host package.
+	const installed = new Set<string>();
+	for (const name of ["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai", "@earendil-works/pi-tui"]) {
+		assert.equal(manifest.devDependencies?.[name], ">=1.0.0", name);
+		const metadata = JSON.parse(readFileSync(join(PACKAGE_ROOT, "node_modules", name, "package.json"), "utf8")) as { name: string; version: string };
+		assert.equal(metadata.name, name);
+		installed.add(metadata.version);
+	}
+	assert.deepEqual([...installed], [resolveProjectPiSdkVersion(PACKAGE_ROOT)]);
+	for (const name of ["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai", "@earendil-works/pi-tui"]) {
+		assert.equal(manifest.dependencies?.[name], undefined, name);
+		assert.equal(manifest.optionalDependencies?.[name], undefined, name);
+	}
+});
+
+// Fixture project roots let the resolver's range policy be tested without
+// touching the real install.
+function withPiSdkProject(range: unknown, installed: unknown, run: (root: string) => void): void {
+	const root = mkdtempSync(join(tmpdir(), "gentle-pi-sdk-version-"));
+	try {
+		const sdk = join(root, "node_modules", "@earendil-works", "pi-coding-agent");
+		mkdirSync(sdk, { recursive: true });
+		writeFileSync(join(root, "package.json"), JSON.stringify({ devDependencies: { "@earendil-works/pi-coding-agent": range } }));
+		writeFileSync(join(sdk, "package.json"), JSON.stringify(installed));
+		run(root);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+}
+
+test("packed probes install the project-resolved Pi SDK release, never the devDependency specifier", () => {
+	const sdk = (version: unknown) => ({ name: "@earendil-works/pi-coding-agent", version });
+	for (const [range, version] of [[">=0.99.2", "0.99.2"], [">=0.99.2", "0.99.10"], [">=0.99.2", "1.0.0"], ["0.99.2", "0.99.2"]]) {
+		withPiSdkProject(range, sdk(version), (root) => assert.equal(resolveProjectPiSdkVersion(root), version, `${range} ${version}`));
+	}
+	for (const [range, installed, error] of [
+		[">=0.99.2", sdk("0.99.1"), /0\.99\.1 does not satisfy >=0\.99\.2/],
+		["0.99.1", sdk("0.99.2"), /0\.99\.2 does not satisfy 0\.99\.1/],
+		["*", sdk("0.99.2"), /exact or >= Pi SDK development range/],
+		["^0.99.2", sdk("0.99.2"), /exact or >= Pi SDK development range/],
+		[undefined, sdk("0.99.2"), /exact or >= Pi SDK development range/],
+		[">=0.99.2", sdk(">=0.99.2"), /exact release version/],
+		[">=0.99.2", sdk("0.99.3-rc.1"), /exact release version/],
+		[">=0.99.2", { name: "impostor", version: "0.99.2" }, /exact release version/],
+	] as const) {
+		withPiSdkProject(range, installed, (root) => assert.throws(() => resolveProjectPiSdkVersion(root), error, String(range)));
+	}
+	const installed = JSON.parse(readFileSync(join(PACKAGE_ROOT, "node_modules", "@earendil-works", "pi-coding-agent", "package.json"), "utf8")) as { version: string };
+	assert.equal(resolveProjectPiSdkVersion(PACKAGE_ROOT), installed.version);
+	const packedRunner = readFileSync(join(PACKAGE_ROOT, "scripts", "test-packed-runner.mjs"), "utf8");
+	for (const name of ["testSdkLifecyclePackedSession", "testWindowsStartupTimingPackedHelper", "testWindowsStartupTimingEnvironmentExperiment", "testUnhookedPackedImports"]) {
+		const probe = readNamedFunction(packedRunner, name);
+		assert.match(probe, /const sdkVersion = resolveProjectPiSdkVersion\(root, "[^"]+"\);/, name);
+		assert.doesNotMatch(probe, /devDependencies/, name);
+	}
 });
 
 test("package manifest has no obsolete native activation build surface", () => {
@@ -172,6 +252,25 @@ test("package verification names the native review runtime boundary and packaged
 		/createNativeReviewCli\(\)/,
 		"the production extension must construct its native client from the packaged runtime module",
 	);
+});
+
+test("double-click installers are attached to the release only after the verified publication", () => {
+	const workflow = readFileSync(join(PACKAGE_ROOT, ".github", "workflows", "publish.yml"), "utf8");
+	const job = workflow.match(/^ {2}installers:\n([\s\S]*?)(?=^ {2}[A-Za-z0-9_-]+:\n|(?![\s\S]))/m)?.[1];
+	assert.ok(job, "publish.yml has an installers job");
+	assert.match(job, /^ {4}needs: publish$/m, "installers wait for the verified npm publication");
+	assert.match(job, /^ {4}if: github\.repository == 'Gentleman-Programming\/gentle-shell'$/m);
+	assert.match(job, /^ {6}contents: write$/m, "only this job may write the release");
+	assert.match(job, /ref: \$\{\{ github\.sha \}\}/, "the installers come from the verified release commit");
+	assert.match(job, /persist-credentials: false/);
+	assert.match(job, /node scripts\/build-installer-bundles\.mjs --out "\$\{RUNNER_TEMP\}\/installers"/);
+	assert.match(job, /RELEASE_TAG: \$\{\{ needs\.publish\.outputs\.tag \}\}/, "the tag the publish job verified, not the raw input");
+	assert.match(job, /package-manager-cache: false/);
+	assert.match(workflow, /^ {4}outputs:\n {6}tag: \$\{\{ steps\.release\.outputs\.tag \}\}$/m, "publish exports its verified tag");
+	assert.match(job, /gh release upload "\$\{RELEASE_TAG\}" "\$\{RUNNER_TEMP\}"\/installers\/\* --repo "\$\{GITHUB_REPOSITORY\}" --clobber/);
+	const publish = workflow.match(/^ {2}publish:\n([\s\S]*?)(?=^ {2}installers:\n)/m)?.[1];
+	assert.ok(publish);
+	assert.doesNotMatch(publish, /contents: write/, "the npm publication job keeps read-only contents");
 });
 
 test("npm publication is bound to the exact package tag and triggering commit", () => {
@@ -332,20 +431,20 @@ test("package manifest installs pi-pretty through a wrapper without bundling nat
 	);
 });
 
-test("package verification binds the published Gentle AI v3.7.0 runtime pin", () => {
+test("package verification binds the published Gentle AI v4.0.0 runtime pin", () => {
 	const installer = readFileSync(join(PACKAGE_ROOT, "scripts", "gentle-ai-installer.mjs"), "utf8");
 	const binary = readFileSync(join(PACKAGE_ROOT, "lib", "gentle-ai-binary.ts"), "utf8");
 	const verifier = readFileSync(join(PACKAGE_ROOT, "scripts", "verify-package-files.mjs"), "utf8");
 
-	assert.match(installer, /INSTALLER_VERSION = "3\.7\.0"/);
+	assert.match(installer, /INSTALLER_VERSION = "4\.0\.0"/);
 	assert.match(installer, /GENTLE_AI_WINDOWS_SOURCE_PACKAGE.*GENTLE_AI_WINDOWS_SOURCE_MODULE/);
-	assert.match(installer, /GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM = "h1:MQbzHlLdPklUQn0rVE9Mz94UygHsN2OPe7xMfPn9aGw="/);
+	assert.match(installer, /GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM = "h1:pZ\/XZ2Pk3U9lgXigOTY62zlxxFOHnc9CjQhLgaV\/Hfc="/);
 	assert.match(installer, /GOTOOLCHAIN: "local"/);
 	assert.match(installer, /GOSUMDB: "sum\.golang\.org"/);
 	assert.match(binary, /GENTLE_AI_VERSION = INSTALLER_VERSION/);
 	assert.match(binary, /GO_SUMDB_SOURCE_BUILD/);
 	assert.match(binary, /GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM/);
-	assert.match(verifier, /v3\.7\.0/);
+	assert.match(verifier, /v4\.0\.0/);
 });
 
 
@@ -471,7 +570,7 @@ function readMarkdownSection(source: string, heading: string): string {
 
 function assertWorkerFallbackRouting(section: string, sectionName: string): void {
 	const boundedWriterPolicy = section.match(
-		/For bounded multi-file writes,[\s\S]*?(?=\n\n|\n\s*\d+\.|$)/,
+		/For a large task's bounded writes,[\s\S]*?(?=\n\n|\n\s*\d+\.|$)/,
 	)?.[0];
 	assert.ok(boundedWriterPolicy, `${sectionName} must define bounded writer routing`);
 
@@ -768,6 +867,42 @@ test("selective review migration adopts only untouched legacy copies and preserv
 	}
 });
 
+test("native pulse audio ships owned TypeScript sources without new dependencies or addons", () => {
+	const manifest = readPackageJson();
+	const verifier = readFileSync(join(PACKAGE_ROOT, "scripts", "verify-package-files.mjs"), "utf8");
+	const sources = [
+		"lib/notification-pulse-protocol.ts", "lib/notification-pulse-client.ts",
+		"lib/notification-pulse-stream.ts", "lib/notification-audio-native.ts",
+		"lib/notification-pulse-worker.ts",
+	];
+	for (const source of sources) {
+		assert.ok(existsSync(join(PACKAGE_ROOT, source)), `${source} must exist`);
+		assert.ok(verifier.includes(`"${source}"`), `${source} must be a required package resource`);
+	}
+	assert.ok(!manifest.files?.includes("native/"), "no native addon directory may ship");
+	for (const name of Object.keys(manifest.dependencies ?? {})) assert.doesNotMatch(name, /pulse|audio|sound|native/i, name);
+	for (const name of Object.keys(manifest.scripts ?? {})) assert.doesNotMatch(name, /pulse|native:build|audio:install/i, name);
+	for (const path of ["lib/notification-pulse-worker.ts", "lib/notification-audio-native.ts"]) {
+		const source = readFileSync(join(PACKAGE_ROOT, path), "utf8");
+		assert.doesNotMatch(source, /@earendil-works|\.node["']|addon/i, path);
+		assert.doesNotMatch(source, /postinstall|installer|download/i, path);
+	}
+});
+
+test("native windows audio ships an owned encoded-command adapter without scripts or dependencies", () => {
+	const manifest = readPackageJson();
+	const verifier = readFileSync(join(PACKAGE_ROOT, "scripts", "verify-package-files.mjs"), "utf8");
+	const path = "lib/notification-audio-windows.ts";
+	assert.ok(existsSync(join(PACKAGE_ROOT, path)), `${path} must exist`);
+	assert.ok(verifier.includes(`"${path}"`), `${path} must be a required package resource`);
+	for (const dependency of Object.keys(manifest.dependencies ?? {})) assert.doesNotMatch(dependency, /audio|sound|windows|powershell|native/i, dependency);
+	for (const script of Object.keys(manifest.scripts ?? {})) assert.doesNotMatch(script, /windows:build|powershell|audio:install/i, script);
+	const source = readFileSync(join(PACKAGE_ROOT, path), "utf8");
+	assert.match(source, /-EncodedCommand/, "the adapter must drive the trusted built-in PowerShell host with an encoded command");
+	assert.doesNotMatch(source, /\.ps1|ExecutionPolicy|\.node["']|addon/i, path);
+	assert.doesNotMatch(source, /postinstall|installer|download/i, path);
+});
+
 test("packed tarball excludes retired workflow paths while source retains legacy migration proof", () => {
 	const fixture = "tests/fixtures/legacy/sdd-research-v2.5.0.md";
 	assert.ok(existsSync(join(PACKAGE_ROOT, fixture)), "the historical source fixture must remain available to migration tests");
@@ -778,9 +913,22 @@ test("packed tarball excludes retired workflow paths while source retains legacy
 			encoding: "utf8",
 			maxBuffer: 8 * 1024 * 1024,
 		});
-		const [packed] = JSON.parse(output) as [{ files: { path: string }[] }];
+		const [packed] = parseNpmPackResult(output);
 		assert.ok(packed?.files?.length, "npm pack must return a nonempty tar manifest");
 		assert.ok(packed.files.some(file => file.path === "tests/package-manifest.test.ts"), "other tests remain packed");
+		for (const path of [
+			"extensions/gentle-notifications.ts",
+			"lib/notification-audio.ts", "lib/notification-customize.ts", "lib/notification-events.ts", "lib/notification-policy.ts",
+			"lib/notification-scheduler.ts", "lib/notification-service.ts", "lib/notification-ui.ts",
+			"assets/sounds/success.wav", "assets/sounds/error.wav", "assets/sounds/attention.wav",
+			"assets/sounds/LICENSE.md", "docs/sound-notifications.md", "docs/sound-notifications-proposal.md",
+			"lib/notification-pulse-protocol.ts", "lib/notification-pulse-client.ts", "lib/notification-pulse-stream.ts",
+			"lib/notification-audio-native.ts", "lib/notification-pulse-worker.ts",
+			"lib/notification-audio-windows.ts",
+			"scripts/npm-pack-result.mjs",
+		]) {
+			assert.ok(packed.files.some(file => file.path === path), `${path} must be packed`);
+		}
 		assert.deepEqual(packed.files.filter(file => /sdd|openspec/i.test(file.path)).map(file => file.path), []);
 	} finally {
 		rmSync(destination, { recursive: true, force: true });
@@ -1362,7 +1510,7 @@ test("gentle-ai-worker packages the exact scoped writer contract", () => {
 	const testDiscipline = readMarkdownSection(source, "Test discipline");
 	assert.match(testDiscipline, /Apply the ODD test-first policy by default for behavior changes with applicable runnable deterministic tests and a clear expected outcome/);
 	assert.match(testDiscipline, /Test presence alone does not establish applicability; no TUI toggle or per-task chat choice is needed/);
-	assert.match(testDiscipline, /RED[\s\S]*GREEN[\s\S]*TRIANGULATE[\s\S]*REFACTOR/);
+	assert.match(testDiscipline, /RED[\s\S]*GREEN[\s\S]*PRESERVE[\s\S]*REFACTOR/);
 	assert.match(testDiscipline, /no meaningful RED[\s\S]*proportionate ordinary functional or structural verification/);
 	assert.match(testDiscipline, /Never claim RED\/GREEN evidence that was not observed/);
 	assert.match(
@@ -1557,7 +1705,7 @@ test("normal and forced installation copy generic agents with complete role cont
 					assert.match(source, /compressed (?:handoff|evidence handoff)/);
 					assert.match(source, /Do not use review lenses\. RDD review remains independent and parent-owned\./);
 					if (name === "gentle-ai-verify") {
-						assert.match(source, /exact test, build, or lint commands explicitly authorized by the parent/);
+						assert.match(source, /exact test, build, lint, or spec example commands explicitly authorized by the parent/);
 						assert.match(source, /only outputs the parent explicitly identified as expected/);
 						assert.match(source, /unexpected mutation as a blocker/);
 						assert.match(source, /do not clean it up or fix it/);
@@ -1573,16 +1721,30 @@ test("normal and forced installation copy generic agents with complete role cont
 	}
 });
 
-test("bounded implementation routing uses the same explicit fallback in both policy sections", () => {
+test("bounded implementation routing resolves the explicit canonical fallback reference", () => {
 	const routing = readFileSync(
 		join(PACKAGE_ROOT, "assets", "orchestrator-delegation.md"),
 		"utf8",
 	);
-	const simpleDelegation = readMarkdownSection(routing, "2. Simple Delegation");
+	const reference = "For bounded writes, follow the canonical Writer rule under Mandatory Delegation Triggers.";
+	const resolveSimpleDelegation = (source: string): string => {
+		const simpleDelegation = readMarkdownSection(source, "2. Simple Delegation");
+		assert.ok(simpleDelegation.split("\n").includes(reference), "Simple Delegation must name the exact canonical Writer rule");
+		const canonical = readMarkdownSection(source, "Mandatory Delegation Triggers");
+		assertWorkerFallbackRouting(canonical, "resolved Simple Delegation");
+		return canonical;
+	};
 	const mandatoryDelegation = readMarkdownSection(routing, "Mandatory Delegation Triggers");
 
-	assertWorkerFallbackRouting(simpleDelegation, "Simple Delegation");
+	assertWorkerFallbackRouting(resolveSimpleDelegation(routing), "Simple Delegation");
 	assertWorkerFallbackRouting(mandatoryDelegation, "Mandatory Delegation Triggers");
+	assert.throws(() => resolveSimpleDelegation(routing.replace(reference, "")), /must name the exact canonical Writer rule/);
+	assert.throws(() => resolveSimpleDelegation(routing.replace(reference, reference.replace("Mandatory Delegation Triggers", "Other Rule"))),
+		/must name the exact canonical Writer rule/);
+	assert.throws(() => resolveSimpleDelegation(routing.replace("#### Mandatory Delegation Triggers", "#### Missing Canonical Rule")),
+		/exactly one Mandatory Delegation Triggers section/);
+	assert.throws(() => resolveSimpleDelegation(routing.replace("user-configured `worker`", "unspecified worker")),
+		/must prefer the package-owned worker before a user-configured worker/);
 	assert.doesNotMatch(
 		routing,
 		/non-normative compatibility quotation|former wording is retained|no-runtime inline exception|superseded by the stop requirement/,
@@ -1601,8 +1763,9 @@ test("orchestrator routes generic roles without static RDD lens routing", () => 
 		assert.match(routing, /`gentle-ai-explore`/);
 		assert.match(routing, /`gentle-ai-worker`/);
 		assert.match(routing, /`gentle-ai-verify`/);
-		assert.match(routing, /(?:truly local )?read-only check(?:ing)? of (?:known )?1[-–]3 known files|1[-–]3-file read-only check/);
-		assert.match(routing, /(?:verification that |verification commands →).*executes? or delegates?|executing\/delegating verification commands/);
+		assert.match(routing, /focused test and (?:the )?suite/);
+		// The Verification rule line itself must route high risk to the verifier.
+		assert.match(routing, /^\d\. \*\*Verification rule\*\*[^\n]*high[- ]risk[^\n]*`gentle-ai-verify`/m);
 		assert.match(routing, /missing(?: or |\/)unusable[\s\S]*native `Agent`[\s\S]*(?:the )?same read-only/);
 		assert.match(routing, /report (?:the )?fallback/);
 		assert.doesNotMatch(routing, /review lenses? (?:inside|only inside)|review lens routing/i);
@@ -1626,9 +1789,9 @@ test("pi-pretty wrapper uses cached ESM loading for compiled and pnpm symlink in
 	assert.match(wrapper, /quietToolsEnabled/);
 });
 
-test("Gentle Shell v3.7.0 package manifest declares the release version", () => {
+test("Gentle Shell v4.0.0 package manifest declares the release version", () => {
 	const packageJson = readPackageJson();
-	assert.equal(packageJson.version, "3.7.0", "the release manifest must be explicitly pinned to v3.7.0");
+	assert.equal(packageJson.version, "4.0.0", "the release manifest must be explicitly pinned to v4.0.0");
 	assert.equal(packageJson.scripts?.test, "node scripts/run-test-suite.mjs");
 	assert.ok(packageJson.files?.includes("assets/"));
 	assert.ok(packageJson.files?.includes("contracts/"));

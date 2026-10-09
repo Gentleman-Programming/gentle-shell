@@ -530,6 +530,176 @@ test("dev-binary: a garbage reviewer result is refused at admission as a proven 
 	assert.equal(reoffered, true, "the unconsumed slot must be reoffered by fresh STATUS");
 });
 
+test("dev-binary: Pi returns a terminal single-lens escalation from the real committed candidate capture", { skip: !RUNNABLE }, async (t) => {
+	const cwd = repository(t, "gentle-pi-escalation-");
+	const home = mkdtempSync(join(tmpdir(), "gentle-pi-escalation-home-"));
+	t.after(() => { rmSync(home, { recursive: true, force: true }); __testing.setReviewHostRelayRunnerForTesting(); });
+	const environment = { ...reviewEnvironment(home), GENTLE_PI_CONFIG_HOME: join(home, "config"), GENTLE_PI_AGENT_HOME: join(home, "agent") }, binary = RELAY_DEV_BINARY!;
+	const baseRef = git(cwd, "rev-parse", "HEAD");
+	writeFileSync(join(cwd, "app.ts"), "export const value = 2;\n");
+	git(cwd, "add", "app.ts");
+	git(cwd, "commit", "-qm", "candidate");
+	enableGlobalReview(binary, cwd, cwd, environment);
+	const calls: NativeProcessCall[] = [];
+	const { controller, capture } = reviewToolsForNative(devNativeCli(binary, environment, calls));
+	const context = sessionContext(cwd), selector = { baseRef, committedOnly: true };
+	await controller.execute("escalation-inspect", { operation: "inspect", workspaceRoot: cwd }, undefined, undefined, context);
+	const prompted = record((await controller.execute("escalation-start", { operation: "start", workspaceRoot: cwd, input: JSON.stringify({ mode: "ordinary", ...selector }) }, undefined, undefined, context)).details, "escalation start");
+	assert.equal(prompted.outcome, "native-review-consent-required");
+	const started = record((await controller.execute("escalation-consent", { operation: "answer-consent", input: JSON.stringify({ consentBinding: prompted.consent_binding, answer: "granted" }) }, undefined, undefined, context)).details, "escalation consent");
+	const lineage = stringValue(record(started.result, "escalation start result").lineage_id, "escalation lineage");
+	const statusParameters = { operation: "status", lineageId: lineage, workspaceRoot: cwd, input: JSON.stringify(selector) };
+	const before = record((await controller.execute("escalation-status", statusParameters, undefined, undefined, context)).details, "escalation status");
+	assert.equal(record(record(before.result, "initial status").projection, "committed projection").kind, "base-diff");
+	const binding = collectBindingFor(before, "review.capture-result");
+	const reviewer = fauxReviewerFor((subjectHash) => JSON.stringify({
+		subject_hash: subjectHash,
+		inspection: { status: "completed", paths: ["app.ts"] },
+		findings: [{ id: "R3-001", location: "app.ts:1", severity: "CRITICAL", claim: "synthetic severe finding with unknown causal origin", proof_refs: ["app.ts:1"], evidence_class: "deterministic", causal_disposition: "unknown" }],
+		evidence: ["inspected the frozen committed candidate"],
+	}));
+	__testing.setReviewHostRelayRunnerForTesting(async (request) => {
+		reviewer.enqueue();
+		return await runReviewHostRelaySlot({ ...request, gentleAiExecutable: binary, environment, reviewerRegistry: reviewer.registry, selection: reviewer.selection, routingKey: reviewer.routingKey });
+	});
+	const parameters = { lineageId: lineage, workspaceRoot: cwd, collectBinding: binding };
+	const forecast = record((await capture.execute("escalation-forecast", parameters, undefined, undefined, context)).details, "escalation forecast");
+	assert.equal(forecast.outcome, "reviewer-model-run-forecast");
+	assert.equal(record(forecast.cost_forecast, "escalation forecast cost").model_runs, 1);
+	assert.equal(reviewer.calls.length, 0);
+	const offset = calls.length;
+	const result = record((await capture.execute("escalation-capture", { ...parameters, reviewerRunAcknowledged: true }, undefined, undefined, context)).details, "escalation capture");
+	assert.equal(result.status, "closed", JSON.stringify(result));
+	assert.equal(result.state, "escalated");
+	const closure = record(result.closure, "escalation closure");
+	assert.deepEqual(closure.escalation, { cause: "unknown_causality", finding_ids: ["R3-001"] });
+	assert.equal(closure.acknowledgement, undefined);
+	assert.equal(result.next_action, undefined);
+	assert.equal(reviewer.calls.length, 1);
+	assert.equal(calls.slice(offset).filter((call) => call.arguments[1] === "status").length, 1, "capture closes without a post-success reconciliation");
+	const after = record((await controller.execute("escalation-terminal-status", statusParameters, undefined, undefined, context)).details, "terminal status");
+	const nativeStatus = record(after.result, "terminal native status");
+	assert.equal(record(nativeStatus.authority, "terminal authority").state, "escalated");
+	assert.equal(record(nativeStatus.authority, "terminal authority").revision, closure.store_revision);
+	assert.equal(record(nativeStatus.next_transition, "terminal transition").reason_code, "native_stop_required");
+	assert.deepEqual(nativeStatus.escalation, closure.escalation);
+});
+
+// gentle-pi#998: real admitted validator rejection must survive Pi's closure decoder.
+test("dev-binary: Pi preserves targeted-validator rejection evidence in an escalated correction closure", { skip: !RUNNABLE }, async (t) => {
+	const cwd = repository(t, "gentle-pi-validator-rejection-");
+	const home = mkdtempSync(join(tmpdir(), "gentle-pi-validator-rejection-home-"));
+	t.after(() => { rmSync(home, { recursive: true, force: true }); __testing.setReviewHostRelayRunnerForTesting(); });
+	const environment = { ...reviewEnvironment(home), GENTLE_PI_CONFIG_HOME: join(home, "config"), GENTLE_PI_AGENT_HOME: join(home, "agent"), PI_CODING_AGENT_DIR: join(home, "agent") };
+	const binary = RELAY_DEV_BINARY!;
+	assert.equal(realpathSync(binary), realpathSync(DEV_BINARY!));
+	writeFileSync(join(cwd, "app.ts"), "export const value = 2;\n");
+	enableGlobalReview(binary, cwd, cwd, environment);
+	const calls: NativeProcessCall[] = [];
+	const { controller, capture } = reviewToolsForNative(devNativeCli(binary, environment, calls));
+	const context = sessionContext(cwd);
+	const control = async (id: string, params: unknown) => record((await controller.execute(id, params, undefined, undefined, context)).details, id);
+	await control("rejection-inspect", { operation: "inspect", workspaceRoot: cwd });
+	const prompted = await control("rejection-start", { operation: "start", workspaceRoot: cwd, input: JSON.stringify({ mode: "ordinary" }) });
+	assert.equal(prompted.outcome, "native-review-consent-required");
+	const started = await control("rejection-consent", { operation: "answer-consent", input: JSON.stringify({ consentBinding: prompted.consent_binding, answer: "granted" }) });
+	const lineage = stringValue(record(started.result, "rejection start result").lineage_id, "rejection lineage");
+	const statusParameters = { operation: "status", workspaceRoot: cwd, lineageId: lineage };
+	const reviewer = fauxReviewerFor((subjectHash) => JSON.stringify({
+		subject_hash: subjectHash,
+		inspection: { status: "completed", paths: ["app.ts"] },
+		findings: [{ id: "R3-001", location: "app.ts:1", severity: "BLOCKER", claim: "value must be corrected", proof_refs: ["app.ts:1"], evidence_class: "deterministic", causal_disposition: "introduced" }],
+		evidence: ["inspected the frozen candidate"],
+	}));
+	let validator: ReturnType<typeof fauxReviewerFor> | undefined;
+	let emittedClosure: Record<string, unknown> | undefined;
+	const relayRoles: string[] = [];
+	__testing.setReviewHostRelayRunnerForTesting(async (request) => {
+		assert.equal(request.targetCwd, cwd);
+		const selected = request.routingKey === "review-validator" ? validator : reviewer;
+		assert.ok(selected, "validator fixture must be bound before capture");
+		relayRoles.push(request.routingKey!);
+		selected.enqueue();
+		const relay = await runReviewHostRelaySlot({ ...request, gentleAiExecutable: binary, environment, reviewerRegistry: selected.registry, selection: selected.selection, routingKey: request.routingKey });
+		if (request.routingKey === "review-validator") emittedClosure = record(JSON.parse(relay.submission) as unknown, "native rejection submission");
+		return relay;
+	});
+	const captureRole = async (id: string, binding: string) => {
+		const params = { lineageId: lineage, workspaceRoot: cwd, collectBinding: binding };
+		const modelCalls = reviewer.calls.length + (validator?.calls.length ?? 0), roleCalls = relayRoles.length;
+		const forecast = record((await capture.execute(`${id}-forecast`, params, undefined, undefined, context)).details, "rejection forecast");
+		assert.equal(forecast.outcome, "reviewer-model-run-forecast");
+		assert.equal(reviewer.calls.length + (validator?.calls.length ?? 0), modelCalls, "no model call before acknowledgement");
+		assert.equal(relayRoles.length, roleCalls, "no role replay before acknowledgement");
+		const result = record((await capture.execute(id, { ...params, reviewerRunAcknowledged: true }, undefined, undefined, context)).details, id);
+		assert.equal(reviewer.calls.length + (validator?.calls.length ?? 0), modelCalls + 1);
+		return result;
+	};
+	let correctionOpened = false;
+	for (let attempt = 0; attempt < 4; attempt += 1) {
+		const status = await control(`rejection-reviewer-status-${attempt}`, statusParameters);
+		const binding = collectBindingsFor(status, "review.capture-result")[0];
+		assert.ok(binding, "native STATUS must offer a reviewer slot");
+		const result = await captureRole(`rejection-reviewer-${attempt}`, binding);
+		assert.ok(["captured", "closed"].includes(stringValue(result.status, "reviewer capture status")));
+		if (result.closure !== undefined) {
+			assert.equal(record(result.closure, "reviewer closure").state, "correction_required");
+			correctionOpened = true;
+			break;
+		}
+	}
+	assert.equal(correctionOpened, true, "real admitted findings must open correction");
+	const correctionStatus = await control("rejection-correction-status", statusParameters);
+	const correctionBinding = collectBindingFor(correctionStatus, "review.capture-correction-plan");
+	const plan = record((await capture.execute("rejection-plan", { lineageId: lineage, workspaceRoot: cwd, collectBinding: correctionBinding, correctionLines: 1 }, undefined, undefined, context)).details, "correction plan");
+	assert.equal(record(plan.closure, "correction plan closure").state, "correction_required");
+	writeFileSync(join(cwd, "app.ts"), "export const value = 3;\n");
+	const validationStatus = await control("rejection-validation-status", statusParameters);
+	const binding = collectBindingFor(validationStatus, "review.capture-validation");
+	const request = record(parsedCollectBinding(binding).validationRequest, "native validation request");
+	const requestHash = collectBindingArgument(binding, "request-hash"), target = collectBindingArgument(binding, "target");
+	assert.equal(request.requestHash, requestHash);
+	assert.equal(request.correctionTargetIdentity, target);
+	assert.deepEqual(request.correctionPaths, ["app.ts"]);
+	const proof = {
+		targeted_validation_request_hash: requestHash,
+		correction_target_identity: target,
+		original_criteria: { passed: true, evidence: ["value correction satisfies original criteria"] },
+		correction_regression: { passed: false, evidence: ["corrected value breaks the consumer"], regressions: [{ id: "REG-001", location: "app.ts:1", claim: "value 3 breaks the consumer", proof_refs: ["app.ts:1", "focused regression check"] }] },
+		follow_ups: [{ observation: "consumer expectation needs investigation", proof_refs: ["app.ts:1"] }],
+	};
+	validator = fauxReviewerFor(() => JSON.stringify(proof));
+	const result = await captureRole("rejection-validation", binding);
+	assert.ok(emittedClosure, "real native submission must emit a closure");
+	t.diagnostic(`native rejection closure: ${JSON.stringify(emittedClosure)}`);
+	assert.equal(emittedClosure.operation, "review/capture-validation");
+	assert.equal(emittedClosure.state, "escalated");
+	assert.equal(emittedClosure.acknowledgement, undefined);
+	const escalation = record(emittedClosure.escalation, "native rejection escalation");
+	assert.equal(escalation.cause, "targeted_validator_rejected");
+	assert.deepEqual(emittedClosure.targeted_validator_evidence, proof);
+	const terminal = record(candidateJson(binary, cwd, ["review", "status", "--cwd", cwd, "--contract", "gentle-ai.review-integration/v2", "--agent", "pi", "--next-transition", "--lineage", lineage], environment), "persisted rejection STATUS");
+	assert.equal(record(terminal.authority, "terminal authority").state, "escalated");
+	assert.equal(record(terminal.authority, "terminal authority").revision, emittedClosure.store_revision);
+	assert.equal(record(terminal.next_transition, "terminal transition").kind, "stop");
+	assert.equal(record(terminal.next_transition, "terminal transition").reason_code, "native_stop_required");
+	assert.deepEqual(terminal.escalation, escalation);
+	assert.equal(validator.calls.length, 1);
+	assert.ok(validator.calls[0]!.promptText.includes(requestHash));
+	assert.equal(result.status, "closed", JSON.stringify(result));
+	assert.equal(result.outcome, "native-last-event-closure");
+	assert.equal(result.state, "escalated");
+	const closure = record(result.closure, "Pi rejection closure");
+	assert.equal(closure.operation, "review/capture-validation");
+	assert.equal(closure.lineage_id, lineage);
+	assert.equal(closure.store_revision, emittedClosure.store_revision);
+	assert.deepEqual(closure.escalation, escalation);
+	assert.deepEqual(closure.targeted_validator_evidence, proof, "Pi must preserve all native proof fields and hash bindings");
+	assert.equal(closure.acknowledgement, undefined);
+	assert.equal(result.next_action, undefined);
+	assert.equal(calls.some((call) => call.arguments[1] === "capture-validation"), false, "validation must use the registered host relay");
+});
+
 // This completes the same organic A -> B path through correction evidence,
 // host-mediated targeted validation, and terminal approval. The only
 // reviewers are the fixed faux registries below; no real model, provider, or

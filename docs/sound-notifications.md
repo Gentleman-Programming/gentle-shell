@@ -9,10 +9,10 @@ Audio is **off by default**. In a primary Pi terminal, open `/gentle:customize` 
 - **Audio notifications: on / off** toggles the global switch. Highlighting or rendering the row never discovers a player or enables anything.
 - **Audio: unmuted / muted** toggles this process' mute. Mute survives reload and session replacement; restarting Pi clears it. Muting/disabling discards pending events; resuming never replays them.
 - **Audio: minimum interval N ms** and **Audio: coalesce window N ms** are the two global timing keys (`minimumIntervalMs`, `coalesceWindowMs`). **Enter** opens an inline field prefilled with the current value: only a whole number inside the schema range is saved, anything else is refused with a notice and writes nothing. `0` disables that timing window without disabling audio.
-- **Success / Error / Attention** are the three basic types. Each shows its human selection — `success tone` / `error tone` / `attention tone`, `silence`, a local audio basename, or `Custom (varies)` when the type's events diverge. **Enter** cycles that type in the order `silence → success tone → error tone → attention tone → that type's own file → silence`; on a mixed type Enter applies the recommended tone for that type. A type that owns a local file keeps it in its own cycle while the type is silenced, so continuing to press Enter returns to the assignment instead of losing it. **`f`** opens an inline field to assign a literal absolute local file to that type, independently of the other types; the field is prefilled with the current path when the type already owns a file. **`p`** explicitly previews the type's selected sound, never an arbitrary one.
+- **Success / Error / Attention** are the three basic types. Each shows its human selection — `success tone` / `error tone` / `attention tone`, `silence`, a local audio basename, or `Custom (varies)` when the type's events diverge. **Enter** cycles that type in the order `silence → success tone → error tone → attention tone → every saved sound in the order it was saved → silence`; on a mixed type Enter applies the recommended tone for that type. A row that owns a local file keeps it as the last step of its own cycle while it is silenced, so continuing to press Enter returns to the assignment instead of losing it. **`f`** opens an inline field to assign a literal absolute local file to that type, independently of the other types; the field is prefilled with the current path when the type already owns a file, and **`Ctrl+S`** saves the value in that field to the library so every row's cycle keeps it (`Enter` assigns without saving). **`p`** explicitly previews the type's selected sound, never an arbitrary one.
 - **Advanced: show/hide per-event exceptions** reveals the per-event rows (`agent.completed`, `subagent.failed`, …) for one-off overrides. They start folded; expanding or collapsing only changes the card view and never writes configuration or reproduces sound. Each per-event row cycles that same order and assigns its own file like a type row, with the same per-row memory of its file. **`f`** and **`p`** on any type or per-event row stay inside the same card; in Notifications `p` never opens the visual profiles pane.
 
-The cycle memory belongs to the open card: both timings and every sound assignment are read from configuration, so closing and reopening `/gentle:customize` rebuilds the rows and a row silenced before closing reads as silence again. A persisted library of your own sounds is not implemented.
+The per-row memory belongs to the open card; the **saved sounds do not**. A file assigned with `Enter` is remembered by its row while that card stays open, so closing and reopening `/gentle:customize` rebuilds the rows from configuration and a row silenced before closing reads as silence again. Sounds recorded with `Ctrl+S` are written to disk, so they are part of every row's cycle after a reload or a restart until they are removed from the file.
 
 The inline field and the recovery confirmation render inside the same card. **Escape** cancels the field or confirmation; a second Escape closes the card. If the field, value or `y yes` cannot be shown in full (a resize or a very small terminal), Enter or `y` is refused instead of acting on something invisible. Invalid/unreadable configuration disables automatic audio: saving in that state requires a fresh explicit inline confirmation to replace it, cancel preserves the file and settings, and a failed write does not grant consent to the next attempt. Diagnostics are generic local UI notices, not conversation messages, tools, model context or agent state.
 
@@ -68,6 +68,24 @@ Complete default schema (the shutdown entry is inert):
 ```
 
 Unknown keys/schema/events are rejected. `enabled` must be boolean; backend must be `auto`; timing values are integer milliseconds: minimum interval 0–60000, coalesce window 0–2000, inclusive. Zero disables that timing window, not the TTL. Both timing values are editable from the card; out-of-range or non-integer input is refused with a notice instead of being clamped or converted. Writes use an exclusive 0600 temporary file beside the target followed by atomic rename. Changes apply to the live owner immediately and invalidate stale pending mappings. Direct external edits are read on the next session attachment/reload, not polled in the background.
+
+## Saved sounds
+
+`Ctrl+S` in the file field writes the typed, validated sound to a **second file**: `<gentlePiConfigHome()>/notifications-sounds.json`, schema `gentle-shell.notification-sounds/v1`. It is deliberately separate from the audio configuration, which validates its keys exactly: a library key inside `audio` would make any build that does not know it classify your configuration as malformed and offer to replace it. An older build simply ignores this file, and the assigned sound stays a `file:` reference in `notifications.json`, so audio keeps working even if the file is deleted.
+
+```json
+{
+  "schema": "gentle-shell.notification-sounds/v1",
+  "sounds": [
+    { "path": "C:\\Users\\you\\Downloads\\first.wav" },
+    { "path": "/home/you/sounds/second.ogg" }
+  ]
+}
+```
+
+Strict, like the audio configuration: only that schema and exactly one `path` key per entry, and every path is validated with the same absolute-path and format policy the assignments use, so `Ctrl+S` never stores something `Enter` would refuse. A missing file is an empty list and is never created by reading. One file is one entry: comparison folds case and separators on Windows and stays case-sensitive on POSIX, while the entry keeps your spelling. The list holds at most **eight** sounds; a full list refuses the new one and reports it rather than dropping a sound you saved. An unreadable or malformed list blocks saving and names the file: `/gentle:customize` never overwrites it silently. Writes are atomic (exclusive `0600` temporary beside the target, then rename) and validate the whole list before touching the filesystem. The file is hand-editable; removing an entry removes it from every cycle.
+
+The cycle is `silence → the included tones → the saved sounds in saved order → the row's own unsaved file`. Event priority, coalescing and the schedule are unaffected: this list only decides which sounds a row can cycle through.
 
 ## Local WAV security
 

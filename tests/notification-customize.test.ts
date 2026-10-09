@@ -3,12 +3,31 @@ import test from "node:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { buildNotificationRows } from "../lib/notification-customize.ts";
 import { claimNotificationOwner, getNotificationService } from "../lib/notification-service.ts";
+import { SAVED_SOUNDS_SCHEMA } from "../lib/notification-sounds.ts";
 import { DEFAULT_NOTIFICATION_SETTINGS, type NotificationEvent, type NotificationSettings, type NotificationSound } from "../lib/notification-policy.ts";
 import { VisualCustomizeView, type CustomizeInline, type CustomizeInputRequest, type CustomizeInputResult, type CustomizeRow } from "../lib/visual-customize-view.ts";
 import { fileURLToPath } from "node:url";
-import { basename } from "node:path";
+import { basename, join } from "node:path";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+/**
+ * The saved-sounds library lives in the config home, so every card test runs against an isolated one: an empty
+ * library must be the default regardless of the developer's own `~/.pi/gentle-ai/notifications-sounds.json`.
+ */
+const TEST_HOME = mkdtempSync(join(tmpdir(), "gentle-notification-customize-"));
+process.env.GENTLE_PI_CONFIG_HOME = TEST_HOME;
+process.on("exit", () => { try { rmSync(TEST_HOME, { recursive: true, force: true }); } catch { /* best effort */ } });
+const LIBRARY = join(TEST_HOME, "notifications-sounds.json");
+/** Each library test seeds and clears the file, so no test can inherit another one's saved sounds. */
+function useLibrary(content?: string): void {
+	if (content === undefined) rmSync(LIBRARY, { force: true });
+	else writeFileSync(LIBRARY, content, { mode: 0o600 });
+}
+const savedLibrary = (): Array<{ path: string }> => JSON.parse(readFileSync(LIBRARY, "utf8")).sounds;
+const soundOf = (fixture: string) => `file:${fixture}` as const;
 
 /** Real packaged WAVs so a valid path uses an existing fixture, never a synthetic name. */
 const WAV_FIXTURE = fileURLToPath(new URL("../assets/sounds/success.wav", import.meta.url));
@@ -655,7 +674,7 @@ test("the Advanced per-event rows intentionally keep raw ids and builtin refs", 
  * Every write is validated against the native path flavor, so a row's own sound must be a path this platform accepts.
  * The payload is never decoded here: only the snapshot write has to pass the same validation production uses.
  */
-const ownSound = (fixture: string): NotificationSound => `file:${fixture}`;
+const ownSound = (fixture: string): NotificationSound => soundOf(fixture);
 const enterCycleFromFile = (own: NotificationSound): readonly NotificationSound[] => [null, "builtin:success", "builtin:error", "builtin:attention", own];
 
 /** Drives one row through `presses` Enters and returns the assigned sound after each write. */
@@ -731,6 +750,104 @@ test("the two timing keys are editable global rows that reject anything outside 
 		assert.equal(h.writes, 2, "cancelling the field never writes");
 		assert.equal(h.played, 0, "the timing rows never preview audio");
 	} finally { h.owner.retire(); }
+});
+
+test("Ctrl+S saves the validated sound into the library and assigns it in one action", async () => {
+	useLibrary();
+	const h = harness(); try {
+		const path = WAV_FIXTURES.error;
+		getNotificationService()!.validateFile = async () => true;
+		const pending = findRow(h.rows(), "agent.failed:").key!("f", fakeInline([{ value: path, save: true }]));
+		await pending; await tick(); await tick();
+		assert.equal(getNotificationService()!.getState().settings.audio.events["agent.failed"], soundOf(path), "Ctrl+S assigns the sound it saved");
+		assert.deepEqual(savedLibrary(), [{ path }], "the sound is persisted for the Enter cycle");
+		assert.ok(h.notes.some(text => /saved to the Enter cycle/.test(text)), "the save is reported");
+		assert.equal(h.writes, 1, "one configuration write for the assignment");
+	} finally { h.owner.retire(); useLibrary(); }
+});
+
+test("Enter assigns the sound without adding it to the library", async () => {
+	useLibrary();
+	const h = harness(); try {
+		getNotificationService()!.validateFile = async () => true;
+		const pending = findRow(h.rows(), "agent.failed:").key!("f", fakeInline([{ value: WAV_FIXTURES.error, save: false }]));
+		await pending; await tick(); await tick();
+		assert.equal(getNotificationService()!.getState().settings.audio.events["agent.failed"], soundOf(WAV_FIXTURES.error));
+		assert.equal(existsSync(LIBRARY), false, "Enter never creates the library");
+		assert.equal(h.notes.some(text => /saved to the Enter cycle/.test(text)), false);
+	} finally { h.owner.retire(); useLibrary(); }
+});
+
+test("saving the same sound twice stores it once and says so", async () => {
+	useLibrary();
+	const h = harness(); try {
+		getNotificationService()!.validateFile = async () => true;
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const pending = findRow(h.rows(), "agent.failed:").key!("f", fakeInline([{ value: WAV_FIXTURES.error, save: true }]));
+			await pending; await tick(); await tick();
+		}
+		assert.deepEqual(savedLibrary(), [{ path: WAV_FIXTURES.error }], "one file is one saved sound");
+		assert.ok(h.notes.some(text => /already saved/.test(text)), "the duplicate is reported instead of silently ignored");
+	} finally { h.owner.retire(); useLibrary(); }
+});
+
+test("the Enter cycle walks every saved sound after the builtin tones", async () => {
+	useLibrary(JSON.stringify({ schema: SAVED_SOUNDS_SCHEMA, sounds: [{ path: WAV_FIXTURES.success }, { path: WAV_FIXTURES.error }] }));
+	const h = harness(); try {
+		const sound = (): NotificationSound => getNotificationService()!.getState().settings.audio.events["agent.failed"] ?? null;
+		const seen = await pressEnter(findRow(h.rows(), "agent.failed:"), sound, 6);
+		assert.deepEqual(seen, ["builtin:attention", soundOf(WAV_FIXTURES.success), soundOf(WAV_FIXTURES.error), null, "builtin:success", "builtin:error"],
+			"Enter walks the builtins, then every saved sound, then wraps");
+		assert.equal(h.played, 0, "cycling never previews");
+	} finally { h.owner.retire(); useLibrary(); }
+});
+
+test("a group cycle also reaches the saved sounds", async () => {
+	useLibrary(JSON.stringify({ schema: SAVED_SOUNDS_SCHEMA, sounds: [{ path: WAV_FIXTURES.attention }] }));
+	const h = harness(); try {
+		const sound = (): NotificationSound => getNotificationService()!.getState().settings.audio.events["agent.failed"] ?? null;
+		const seen = await pressEnter(findRow(h.rows(), "Error:"), sound, 6);
+		assert.deepEqual(seen, ["builtin:attention", soundOf(WAV_FIXTURES.attention), null, "builtin:success", "builtin:error", "builtin:attention"],
+			"a group walks the saved sounds in order and wraps through silence");
+	} finally { h.owner.retire(); useLibrary(); }
+});
+
+test("an unreadable library blocks the save instead of being overwritten", async () => {
+	const broken = JSON.stringify({ schema: SAVED_SOUNDS_SCHEMA, sounds: [{ path: "relative.wav" }] });
+	useLibrary(broken);
+	const h = harness(); try {
+		getNotificationService()!.validateFile = async () => true;
+		const pending = findRow(h.rows(), "agent.failed:").key!("f", fakeInline([{ value: WAV_FIXTURES.error, save: true }]));
+		await pending; await tick(); await tick();
+		assert.equal(readFileSync(LIBRARY, "utf8"), broken, "the unreadable library is never silently replaced");
+		assert.ok(h.notes.some(text => /Saved sounds/.test(text)), "the refusal is reported with the file to fix");
+		assert.equal(getNotificationService()!.getState().settings.audio.events["agent.failed"], soundOf(WAV_FIXTURES.error), "the sound is still assigned");
+	} finally { h.owner.retire(); useLibrary(); }
+});
+
+test("a full library refuses a new sound and keeps every saved one", async () => {
+	const full = Array.from({ length: 8 }, (_unused, index) => ({ path: `C:\\sounds\\${index}.wav` }));
+	useLibrary(JSON.stringify({ schema: SAVED_SOUNDS_SCHEMA, sounds: full }));
+	const h = harness(); try {
+		getNotificationService()!.validateFile = async () => true;
+		const pending = findRow(h.rows(), "agent.failed:").key!("f", fakeInline([{ value: WAV_FIXTURES.error, save: true }]));
+		await pending; await tick(); await tick();
+		assert.deepEqual(savedLibrary(), full, "a full library is never trimmed");
+		assert.ok(h.notes.some(text => /full/.test(text)), "the refusal names the limit");
+	} finally { h.owner.retire(); useLibrary(); }
+});
+
+test("the Advanced per-event rows save their own sound the same way", async () => {
+	useLibrary();
+	const h = harness(); try {
+		const rows = h.rows();
+		await findRow(rows, /^Advanced/).action(fakeInline());
+		getNotificationService()!.validateFile = async () => true;
+		const pending = findRow(rows, "subagent.waiting:").key!("f", fakeInline([{ value: WAV_FIXTURES.attention, save: true }]));
+		await pending; await tick(); await tick();
+		assert.equal(getNotificationService()!.getState().settings.audio.events["subagent.waiting"], soundOf(WAV_FIXTURES.attention));
+		assert.deepEqual(savedLibrary(), [{ path: WAV_FIXTURES.attention }]);
+	} finally { h.owner.retire(); useLibrary(); }
 });
 
 test("the timing rows read as globals and never leak a reference or a raw event id", () => {

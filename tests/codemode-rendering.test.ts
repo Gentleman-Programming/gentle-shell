@@ -42,12 +42,13 @@ function registeredCodemode() {
 }
 
 function context(overrides: Partial<ToolRenderContext> = {}): ToolRenderContext {
-	return {
+	const fixture = {
 		args: { code: "await tools.read({path: '/private/argument'});" },
 		toolCallId: "code-1", invalidate() {}, lastComponent: undefined, state: {}, cwd: "/fixture",
 		executionStarted: true, argsComplete: true, isPartial: false, expanded: false, showImages: false,
-		isError: false, durationMs: undefined, outputPad: undefined, ...overrides,
+		isError: false, durationMs: undefined, outputPad: 0, ...overrides,
 	};
+	return fixture;
 }
 
 function result(calls: unknown = [], text = "Script completed\nWall time 0.1 seconds\nOutput:\n"): AgentToolResult<unknown> {

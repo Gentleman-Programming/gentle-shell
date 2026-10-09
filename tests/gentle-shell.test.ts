@@ -10,7 +10,7 @@ import { CURSOR_MARKER, matchesKey, visibleWidth, type TUI, type TuiMouseEvent }
 import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { CODEX_USAGE_URL, NAN_QUOTA_URL, USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA } from "../lib/shell-usage.ts";
 import { bindSessionProfile, clearSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
-import { createVimEditorAdapter } from "../lib/vim-editor-adapter.ts";
+import { createVimEditorAdapter, isAuditedPiEditorVersion } from "../lib/vim-editor-adapter.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { CHANGE_STATUS } from "../lib/shell-changes.ts";
 import { sidebarPart, sidebarState, type SidebarRail } from "../lib/shell-sidebar.ts";
@@ -2073,8 +2073,8 @@ test("visual customization and Vim register once and remain independently discov
 	assert.equal(JSON.parse(readFileSync(join(home, "vim.json"), "utf8")).policy, "on");
 });
 
-test("actual Pi 1.1.0 enables a live prompt and enters NORMAL without a compatibility fallback", async () => {
- assert.equal(INSTALLED_PI, "1.1.0", "the shell audit must run against actual installed Pi 1.1.0");
+test(`actual Pi ${INSTALLED_PI} enables a live prompt and enters NORMAL without a compatibility fallback`, async () => {
+ assert.ok(isAuditedPiEditorVersion(INSTALLED_PI), `actual installed Pi ${INSTALLED_PI} must be audited`);
  const configHome = mkdtempSync(join(tmpdir(), "gentle-vim-shell-"));
  const { pi, handlers, commands } = fakePi();
  gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome });

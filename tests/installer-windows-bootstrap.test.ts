@@ -274,8 +274,34 @@ test("a .cpl pnpm or node found first in PATH order fails closed instead of bein
 			"pnpm.cmd wins over pnpm.cpl in the same directory; the missing node then stops it");
 	} finally { f.cleanup(); }
 });
-test("Windows PATHEXT still rejects unknown, duplicate and empty extensions", async () => {
-	for (const PATHEXT of [".EXE;.CMD;.XYZ", ".EXE;.CMD;.CPL;.cpl", ".EXE;;.CMD", ".EXE;CPL", ""]) {
+// Python adds .PY and .PYW to PATHEXT (#1978); Ruby, Perl and others add their
+// own. Any well-formed extension resolves in its PATHEXT place, and only a .cmd
+// npm shim with an .exe Node is ever accepted, so an unlisted one is never run.
+const pythonPathExt = ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.PY;.PYW";
+test("Windows PATHEXT with Python's .PY and .PYW resolves an existing pnpm wrapper", async () => {
+	const f = fixture();
+	try {
+		const commands = join(f.root, "commands"); pnpmWrapperDirectory(commands);
+		for (const PATHEXT of [pythonPathExt, `${pythonPathExt};.CPL`]) {
+			const existing = await ensureWindowsPnpm({ tools: f.root, env: { Path: commands, PATHEXT }, adapters: { storage: () => {}, process: cliProcess } });
+			assert.equal(existing.acquired, false, PATHEXT);
+			assert.equal(existing.command, join(commands, "node.exe"), PATHEXT);
+		}
+	} finally { f.cleanup(); }
+});
+test("a pnpm.py found first in PATH order fails closed and is never run", async () => {
+	const f = fixture();
+	try {
+		const early = join(f.root, "early"); const commands = join(f.root, "commands");
+		mkdirSync(early); pnpmWrapperDirectory(commands);
+		writeFileSync(join(early, "pnpm.py"), "print('not pnpm')");
+		const env = { Path: [early, commands].join(";"), PATHEXT: pythonPathExt };
+		await assert.rejects(ensureWindowsPnpm({ tools: f.root, env, adapters: { storage: () => {}, download: () => { throw new Error("must not download"); }, process: () => { throw new Error("must not run"); } } }),
+			(error: Error) => error.message === "Unknown pnpm wrapper; refusing replacement" && windowsBootstrapReason(error, "wrapper") === "wrapper-unknown (wrapper)");
+	} finally { f.cleanup(); }
+});
+test("Windows PATHEXT still rejects duplicate, empty and malformed extensions", async () => {
+	for (const PATHEXT of [".EXE;.CMD;.CPL;.cpl", ".EXE;.CMD;.PY;.py", ".EXE;;.CMD", ".EXE;CPL", "", ".", ".EXE;.E XE", ".EXE;.EXE*", ".EXE;..CMD", ".EXE;.CM\\D", ".EXE;.\u212A"]) {
 		await assert.rejects(ensureWindowsPnpm({ tools: "C:\\tools", env: { Path: "C:\\fixture", PATHEXT } }), /Unknown Windows PATHEXT semantics/, PATHEXT);
 	}
 });
@@ -503,9 +529,9 @@ test("Windows helper steps name each pnpm discovery, storage and proof phase", a
 		findCommand: () => "C:\\fixture\\pnpm.cmd", storage: () => { throw Object.assign(new Error("Windows ACL evidence rejected"), { check: "target-owner" }); },
 	} }), (error: { check?: string }) => error.check === "target-owner");
 	assert.deepEqual(steps, ["pnpm-discovery", "wrapper-storage"]);
-	// An extension outside the known Windows set still stops discovery and names the code.
+	// A malformed PATHEXT (here a duplicate extension) still stops discovery and names the code.
 	const unknown: string[] = [];
-	await assert.rejects(ensureWindowsPnpm({ tools: "C:\\tools", env: { Path: "C:\\fixture", PATHEXT: ".EXE;.CMD;.XYZ" }, onStep: (step: string) => unknown.push(step) }), /Unknown Windows PATHEXT semantics/);
+	await assert.rejects(ensureWindowsPnpm({ tools: "C:\\tools", env: { Path: "C:\\fixture", PATHEXT: ".EXE;.CMD;.cmd" }, onStep: (step: string) => unknown.push(step) }), /Unknown Windows PATHEXT semantics/);
 	assert.deepEqual(unknown, ["pnpm-discovery"]);
 	const helper = readFileSync(new URL("../scripts/installer-windows.mjs", import.meta.url), "utf8");
 	const body = helper.slice(helper.indexOf("export async function ensureWindowsPnpm"), helper.indexOf("export async function bootstrapWindows"));

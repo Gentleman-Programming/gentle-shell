@@ -249,7 +249,6 @@ function piConsent() {
 }
 
 function controllerHarness(cwd: string, processEnv: NodeJS.ProcessEnv = {}, options: {
-	now?: () => number;
 	answerConsentError?: Error & { mutationOutcome?: "none" | "unknown" };
 	startAction?: "created" | "resumed" | "replayed" | "closed" | "blocked-scope-action";
 	childStandingReviewPermissionClient?: ChildStandingReviewPermissionClient;
@@ -284,7 +283,7 @@ function controllerHarness(cwd: string, processEnv: NodeJS.ProcessEnv = {}, opti
 			return { kind: "started", start: { lineageId: `lineage-${answers.length}`, state: action === "blocked-scope-action" ? "unreviewed" : "approved", riskLevel: "high", selectedLenses: [], changedFiles: 1, changedLines: 2, correctionBudget: 0, action, lensesRequired: false, riskReasons: [] } };
 		},
 	} as unknown as NativeReviewCli;
-	createGentleAiExtension({ nativeReviewCli: native, candidateViews: new CandidateViewRegistry(), processEnv, now: options.now, childStandingReviewPermissionClient: options.childStandingReviewPermissionClient })({
+	createGentleAiExtension({ nativeReviewCli: native, candidateViews: new CandidateViewRegistry(), processEnv, childStandingReviewPermissionClient: options.childStandingReviewPermissionClient })({
 		on(name: string, handler: RegisteredEvent) { events.set(name, handler); },
 		registerCommand(name: string, definition: RegisteredCommand) { commands.set(name, definition); },
 		registerTool(definition: RegisteredTool & { name: string }) { tools.set(definition.name, definition); },
@@ -471,10 +470,11 @@ test("blocked-scope-action never persists host permission", async (t) => {
 	assert.deepEqual(runtime.answers, ["granted", "declined"]);
 });
 
-test("a stale consent result with contextual native status never arms host permission", async (t) => {
+test("a late consent answer is accepted once and arms host permission without another prompt", async (t) => {
 	const cwd = reviewRepository(t);
 	let now = 0;
-	const runtime = controllerHarness(cwd, {}, { now: () => now });
+	t.mock.method(Date, "now", () => now);
+	const runtime = controllerHarness(cwd);
 	const manager = {};
 	let prompts = 0;
 	const ctx = interactiveContext(cwd, manager, async (_title, options) => {
@@ -486,14 +486,13 @@ test("a stale consent result with contextual native status never arms host permi
 		return options[1];
 	});
 	const start = { operation: "start", input: JSON.stringify({ mode: "ordinary" }) };
-	const stale = (await runtime.controller.execute("expired-host-choice", start, undefined, undefined, ctx)).details;
-	assert.equal(stale.outcome, "consent-binding-stale");
-	assert.equal(stale.native_invocation_attempted, false);
-	assert.equal(typeof stale.result, "object", "native STATUS is contextual evidence, not a successful START result");
+	const accepted = (await runtime.controller.execute("late-host-choice", start, undefined, undefined, ctx)).details;
+	assert.notEqual(accepted.outcome, "consent-binding-stale");
+	assert.deepEqual(runtime.answers, ["granted"]);
 	writeFileSync(join(cwd, "app.ts"), "export const value = 3;\n");
-	await runtime.controller.execute("after-stale", start, undefined, undefined, ctx);
-	assert.equal(prompts, 2, "the next fresh consent envelope must still prompt after a stale contextual result");
-	assert.deepEqual(runtime.answers, ["declined"]);
+	await runtime.controller.execute("after-late-answer", start, undefined, undefined, ctx);
+	assert.equal(prompts, 1, "a late session grant must not cause a second prompt");
+	assert.deepEqual(runtime.answers, ["granted", "granted"]);
 });
 
 test("a failed consent invocation never arms host permission", async (t) => {

@@ -229,8 +229,8 @@ function assertInstalledPiPairBehavior(version: string, EditorClass: typeof Edit
   assert.equal(adapter.renderSelection(18, { line: 0, col: 0 }, { line: 0, col: 6 }, scrolled).length, scrolled.length);
 }
 
-test("actual bundled Pi 1.1.0 proves editing, undo, paste, selection, wrap and autocomplete", () => {
-  assert.equal(bundledAgent.VERSION, "1.1.0");
+test(`actual bundled Pi ${INSTALLED_PI} proves editing, undo, paste, selection, wrap and autocomplete`, () => {
+  assert.equal(bundledAgent.VERSION, INSTALLED_PI);
   assertInstalledPiPairBehavior(bundledAgent.VERSION, BundledEditor, bundledAgent.CustomEditor, bundledAgent.VERSION);
 });
 
@@ -271,7 +271,7 @@ test("resolveVimRuntime resolves local bundle cli entrypoint when provided", () 
 
 test("audited Pi editor releases are one frozen exact allowlist that includes the installed TUI", () => {
   assert.deepEqual([...AUDITED_PI_EDITOR_VERSIONS], ["0.99.1", "0.99.2", "1.0.0", "1.1.0"]);
-  assert.equal(INSTALLED_PI, "1.1.0", "this audit must exercise actual Pi 1.1.0, not a fabricated release");
+  assert.equal(bundledAgent.VERSION, INSTALLED_PI, "bundled and local metadata must describe the same actual installed release");
   assert.ok(Object.isFrozen(AUDITED_PI_EDITOR_VERSIONS));
   assert.throws(() => (AUDITED_PI_EDITOR_VERSIONS as unknown as string[]).push("0.99.3"), TypeError);
   assert.ok(isAuditedPiEditorVersion(INSTALLED_PI), `installed pi-tui ${INSTALLED_PI} must be audited`);

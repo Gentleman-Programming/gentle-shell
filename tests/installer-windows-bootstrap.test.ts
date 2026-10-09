@@ -386,7 +386,12 @@ test("native Windows entry: spaces, Unicode, CMD metacharacters and early missin
 		const scripts = join(f.root, "scripts"); mkdirSync(scripts);
 		copyFileSync(new URL("../scripts/bootstrap.cmd", import.meta.url), join(scripts, "bootstrap.cmd"));
 		const local = join(f.root, "home"); mkdirSync(local);
+		// Diagnostic-only markers distinguish a child timeout from a test-worker
+		// exit without logging fixture paths or environment values.
+		console.error("WINDOWS_ENTRY_PROBE_START timeoutMs=5000");
+		const started = Date.now();
 		const result = spawnSync(join(process.env.SystemRoot!, "System32/cmd.exe"), ["/d", "/c", "scripts\\bootstrap.cmd"], { cwd: f.root, env: { ...process.env, LOCALAPPDATA: local }, timeout: 5000, killSignal: "SIGKILL", encoding: "utf8", maxBuffer: 1024 * 1024 });
+		console.error("WINDOWS_ENTRY_PROBE_RESULT", JSON.stringify({ elapsedMs: Date.now() - started, status: result.status, signal: result.signal, errorCode: (result.error as NodeJS.ErrnoException | undefined)?.code ?? null, expectedDiagnostic: /No acquisition attempted/.test(result.stderr ?? "") }));
 		assert.equal(result.error, undefined); assert.equal(result.status, 1);
 		assert.match(result.stderr, /No acquisition attempted/);
 		assert.deepEqual(readdirSync(local), []);

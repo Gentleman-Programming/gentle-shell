@@ -30,6 +30,7 @@ import { createAgentMessageQueue, type PendingAgentMessage } from "../lib/agents
 import { AGENT_MODE, PROFILE_SOURCE, discoverAgents, formatModelRef, loadAgentsConfig, resolveAgentProfile, unmatchedProfileKeys, withPinnedModelProfiles, type AgentDefinition, type AgentMode, type ProfileSource } from "../lib/agents-config.ts";
 import { freezeSessionProfileAtStartup, inheritedProfileDriftNotice, resolveSessionProfile, sessionProfileRoutingAt, type InheritedProfileOptions, type SessionProfileResolution } from "../lib/session-profile-freeze.ts";
 import { resolveProfilePin, resolveUnversionedProjectProfile } from "../lib/agent-profile-pin.ts";
+import { requireSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-policy.ts";
 import { installBackgroundCacheWarming } from "../lib/background-cache-warming.ts";
 import { isFinished, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
@@ -1748,6 +1749,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// bound session used to kill its own non-git writer mid-preparation because
 		// admission still read only the pin/global layers). Slice 3b-ii: the same
 		// read covers the frozen inherited profile and `follow` mode.
+		requireSessionProfileAuthority(ctx.sessionManager);
 		const profileConfigHome = gentlePiConfigHome(deps.env);
 		const sessionProfile = resolveSessionProfile({
 			sessionId: ctx.sessionManager.getSessionId(),
@@ -1769,6 +1771,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			admittedModel = `${catalogModel.provider}/${catalogModel.id}`;
 			if (!current() || !await prepareBoundSessionRepository(originalManager, originalCwd, signal) || !current() || safeBootstrapDirectory(originalCwd) !== root || resolveSessionWorktree(originalCwd, originalCwd)?.root !== root) throw new Error("Writer repository preparation was unavailable or its session/target changed.");
 		}
+		requireSessionProfileAuthority(originalManager);
 		const parentCwd = ctx.sessionManager.getCwd();
 		// An explicit target is validated before any queue or session-dir writes.
 		const parentIdentity = deps.resolveWorktree(parentCwd, parentCwd);
@@ -1815,6 +1818,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// included; only `follow` reads the defaults of the target. The profile is
 		// resolved here, at task-request creation, so queued and running children
 		// keep the routing frozen into their requests even if the session rebinds.
+		requireSessionProfileAuthority(originalManager);
 		// The routing target this launch reads (#1064), reused to name the winning
 		// layer (#2180) so both answers come from one resolution.
 		const routingTarget = {
@@ -1877,6 +1881,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			foreignGrants.assertCurrent(ctx, identity);
 		}
 		if (signal?.aborted) throw new Error("Subagent launch aborted before queueing.");
+		requireSessionProfileAuthority(originalManager);
 		mkdirSync(sessionDir, { recursive: true });
 		const parentSessionManager = ctx.sessionManager as unknown as ReviewSessionManager;
 		const parentSessionId = ctx.sessionManager.getSessionId() ?? "";
@@ -2314,6 +2319,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			},
 		},
 		async (params, ctx, signal) => {
+			requireSessionProfileAuthority(ctx.sessionManager);
 			const work = Object.hasOwn(params, "work") ? decodeWorkDescriptor(params.work) : undefined;
 			const manager = ctx.sessionManager, sessionId = manager.getSessionId();
 			if (typeof params.agent !== "string" || !params.agent.trim() || typeof params.task !== "string" || !params.task.trim() || (params.context !== undefined && typeof params.context !== "string") || (params.label !== undefined && typeof params.label !== "string")) throw new Error("Subagent dispatch requires a named agent, non-empty task and string context/label.");
@@ -2399,6 +2405,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		"Resume a finished subagent task in its own session with a follow-up prompt.",
 		{ required: ["task_id", "prompt"], properties: { task_id: { type: "string" }, prompt: { type: "string" }, label: { type: "string", description: "Three to six words naming the follow-up." }, mode: { type: "string", enum: ["task", "background"] } } },
 		async (params, ctx, signal) => {
+			requireSessionProfileAuthority(ctx.sessionManager);
 			if (Object.hasOwn(params, "sdd_change") || Object.hasOwn(params, "remediation") || Object.hasOwn(params, "research_selection")) return text("Error: retired SDD delegation is not supported.", { error: "retired SDD delegation" });
 			const previous = await resolveTask(String(params.task_id));
 			if (!previous) return unknownTask(params.task_id, ctx);

@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { platform, tmpdir } from "node:os";
+import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import type {
+	AssistantMessage,
+	ToolCall,
+	ToolResultMessage,
+	TranscriptContext,
+} from "@earendil-works/pi-ai";
 
 // ---------------------------------------------------------------------------
 // gentle-shell#348 — slice 1 (repro, extended by slice 3): the parent-inline
@@ -27,6 +33,15 @@ import { fileURLToPath } from "node:url";
 // 3. The skill's contract body itself still never reaches the composed prompt
 //    (the registry indexes metadata only; the in-session read delivers the
 //    body at runtime).
+// 4. Execution half, via the accepted offline provider seam
+//    (`modelRuntime.registerProvider` + `streamSimple` with
+//    `createAssistantMessageEventStream`, as in bridge-wake-lifecycle): a
+//    scripted turn complies with the parent-inline contract the lazy
+//    `orchestrator-skills.md` `### Parent inline execution` section specifies
+//    — the parent reads the exact indexed `SKILL.md` path through the read
+//    tool, the tool result carries the contract body, and the final reply
+//    applies the contract (marker) and closes with the
+//    `Skill applied (inline): <name>` attribution line.
 //
 // Harness: same accepted offline runtime pattern as
 // tests/asset-installation-runtime.test.ts — the parent test builds a throwaway
@@ -38,6 +53,8 @@ import { fileURLToPath } from "node:url";
 const FIXTURE_MARKER = "FIXTURE348-CONTRACT-MARK";
 const FIXTURE_SKILL_NAME = "fixture-contract-probe";
 const CHILD_FLAG = "GENTLE_PI_348_INLINE_PROBE_CHILD";
+const PROVIDER_ID = "gentle-348-fixture";
+const MODEL_ID = "inline-probe";
 
 const FIXTURE_SKILL_SOURCE = `---
 name: ${FIXTURE_SKILL_NAME}
@@ -124,6 +141,85 @@ async function proveInlineSkillContractGap(): Promise<void> {
 		allowModelNetwork: false,
 	});
 
+	// Offline scripted provider turn (existing seam, same shape as
+	// tests/bridge-wake-lifecycle.test.ts): two deterministic responses. Turn 1
+	// issues the read tool call on the exact registry-indexed SKILL.md path;
+	// turn 2 applies the contract body that came back and closes with the
+	// attribution line the lazy `orchestrator-skills.md` section requires.
+	const { createAssistantMessageEventStream, getCurrentSystemPrompt } = await import("@earendil-works/pi-ai");
+	const providerRequests: TranscriptContext[] = [];
+	let turnStep = 0;
+	modelRuntime.registerProvider(PROVIDER_ID, {
+		api: "gentle-348-offline",
+		apiKey: "fixture-only",
+		baseUrl: "http://invalid.local",
+		models: [
+			{
+				id: MODEL_ID,
+				name: "Gentle #348 inline probe",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 100_000,
+				maxTokens: 4_096,
+			},
+		],
+		streamSimple: (model, context) => {
+			providerRequests.push(structuredClone(context));
+			const stream = createAssistantMessageEventStream();
+			const readStep = turnStep++ === 0;
+			const usage = {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			};
+			const message: AssistantMessage = {
+				role: "assistant",
+				api: model.api,
+				provider: model.provider,
+				model: model.id,
+				content: [],
+				stopReason: readStep ? "toolUse" : "stop",
+				timestamp: Date.now(),
+				usage,
+			};
+			queueMicrotask(() => {
+				stream.push({ type: "start", partial: message });
+				if (readStep) {
+					const toolCall: ToolCall = {
+					type: "toolCall",
+					id: "call-348-skill-read",
+					name: "read",
+					arguments: { path: join(cwd, "skills", FIXTURE_SKILL_NAME, "SKILL.md") },
+				};
+					message.content.push(toolCall);
+					stream.push({ type: "toolcall_start", contentIndex: 0, partial: message });
+					stream.push({
+						type: "toolcall_delta",
+						contentIndex: 0,
+						delta: JSON.stringify(toolCall.arguments),
+						partial: message,
+					});
+					stream.push({ type: "toolcall_end", contentIndex: 0, toolCall, partial: message });
+				} else {
+					const text = `Probe result under the fixture contract.\n${FIXTURE_MARKER}\nSkill applied (inline): ${FIXTURE_SKILL_NAME}`;
+					message.content.push({ type: "text", text });
+					stream.push({ type: "text_start", contentIndex: 0, partial: message });
+					stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: message });
+					stream.push({ type: "text_end", contentIndex: 0, content: text, partial: message });
+				}
+				stream.push({ type: "done", reason: message.stopReason, message });
+				stream.end();
+			});
+			return stream;
+		},
+	});
+	const model = modelRuntime.getModel(PROVIDER_ID, MODEL_ID);
+	assert.ok(model, "scripted offline provider model must resolve");
+
 	const runtime = await createAgentSessionRuntime(
 		async ({ cwd, sessionManager, sessionStartEvent }) => {
 			const services = await createAgentSessionServices({
@@ -154,6 +250,7 @@ async function proveInlineSkillContractGap(): Promise<void> {
 					sessionManager,
 					sessionStartEvent,
 					tools: ["read", "bash"],
+					model,
 				})),
 				services,
 				diagnostics: services.diagnostics,
@@ -234,8 +331,61 @@ async function proveInlineSkillContractGap(): Promise<void> {
 		assertParentPromptCarriesInlineSkillReadObligation(prompt);
 		assertParentPromptOmitsSkillContractBody(prompt, FIXTURE_MARKER);
 
+		// f-check (execution half): one scripted offline provider turn walks the
+		// full parent-inline contract: the model reads the exact indexed
+		// SKILL.md path through the read tool, the tool result carries the
+		// contract body, and the final reply applies the contract and closes
+		// with the attribution line.
+		await session.prompt("Produce the fixture probe result inline now, applying the fixture-contract-probe skill.");
+		assert.ok(session.isIdle, "scripted turn must settle");
+		assert.equal(providerRequests.length, 2, "scripted turn must be exactly two provider calls");
+
+		// f1: the turn actually ran under the composed prompt that carries the
+		// duty (same prompt-only guards, applied to the captured request).
+		const turnSystemPrompt = getCurrentSystemPrompt(providerRequests[0].messages);
+		assertParentPromptCarriesInlineSkillReadObligation(turnSystemPrompt);
+
+		// f2: the parent read the exact registry-indexed SKILL.md path.
+		const assistantMessages = session.messages.filter(
+			(message): message is AssistantMessage => message.role === "assistant",
+		);
+		const skillRead = assistantMessages
+			.flatMap((message) => message.content)
+			.find((block): block is ToolCall => block.type === "toolCall" && block.name === "read");
+		assert.ok(skillRead, "parent turn must issue a read tool call");
+		const indexedSkillPath = join(cwd, "skills", FIXTURE_SKILL_NAME, "SKILL.md");
+		assert.equal(
+			(skillRead.arguments as { path?: string }).path,
+			indexedSkillPath,
+			"parent must read the exact registry-indexed SKILL.md path",
+		);
+
+		// f3: the read executed against the real indexed file — the tool result
+		// delivers the contract body.
+		const skillReadResult = session.messages.find(
+			(message): message is ToolResultMessage =>
+				message.role === "toolResult" && message.toolCallId === skillRead.id,
+		);
+		assert.ok(skillReadResult, "read tool call must have a tool result");
+		assert.ok(!skillReadResult.isError, "indexed SKILL.md read must not error");
+		assert.ok(
+			JSON.stringify(skillReadResult.content).includes(FIXTURE_MARKER),
+			"tool result must deliver the indexed contract body",
+		);
+
+		// f4: the final reply applies the contract and attributes the skill.
+		const finalText = (assistantMessages.at(-1)?.content ?? [])
+			.filter((block): block is { type: "text"; text: string } => block.type === "text")
+			.map((block) => block.text)
+			.join("\n");
+		assert.ok(finalText.includes(FIXTURE_MARKER), "final reply must carry the skill's contract marker");
+		assert.ok(
+			finalText.includes(`Skill applied (inline): ${FIXTURE_SKILL_NAME}`),
+			"final reply must close with the inline attribution line",
+		);
+
 		console.log(
-			"inline-skill-probe: fixture indexed (project) -> composed parent prompt carries the subagent SKILL.md read clause AND the parent's own inline duty; contract body stays out of the prompt",
+			"inline-skill-probe: fixture indexed (project) -> composed parent prompt carries the subagent SKILL.md read clause AND the parent's own inline duty; contract body stays out of the prompt; scripted turn read the indexed SKILL.md and applied the contract inline",
 		);
 	} finally {
 		await runtime.dispose();
@@ -269,7 +419,15 @@ if (process.env[CHILD_FLAG] === "1") {
 					encoding: "utf8",
 					timeout: 120_000,
 					env: {
-						PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
+						// CR fix: platform-correct child PATH — node:path `delimiter` plus
+						// the current platform's system directories, keeping the Node
+						// executable directory first.
+						PATH: [
+							dirname(process.execPath),
+							...(platform() === "win32"
+								? [join(process.env.SystemRoot ?? "C:\\Windows", "System32")]
+								: ["/usr/bin", "/bin"]),
+						].join(delimiter),
 						HOME: home,
 						TMPDIR: root,
 						PI_CODING_AGENT_DIR: agentDir,

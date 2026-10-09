@@ -108,6 +108,7 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 			const payloads: Array<{ system: string; content: string }> = [];
 			let helperCalls = 0;
 			let helperGate: { started: () => void; release: Promise<void> } | undefined;
+			let mainGate: { started: () => void; release: Promise<void> } | undefined;
 			const manager = sdk.SessionManager.create(cwd, join(root, `sessions-${live.length}`));
 			if (humanName) manager.appendSessionInfo(humanName);
 			const settings = sdk.SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false }, cacheWarming: "off", packages: [] });
@@ -166,7 +167,7 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 							const message: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider, model: model.id,
 								content: [], stopReason: "pending", timestamp: Date.now(), usage: { input: 0, output: 0,
 									cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
-							const gate = nested ? helperGate : undefined;
+							const gate = nested ? helperGate : mainGate;
 							queueMicrotask(async () => {
 								if (gate) { gate.started(); await gate.release; }
 								if (options?.signal?.aborted) {
@@ -269,6 +270,12 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 			}
 			return { session, manager, tool, close, provider, dialogs, payloads, theme: ctx!.ui.theme, calls: () => calls,
 				helperCalls: () => helperCalls, choose: (value: typeof choice) => { choice = value; },
+				deferMain: () => {
+					let started!: () => void, release!: () => void;
+					const entered = new Promise<void>(resolve => { started = resolve; });
+					mainGate = { started, release: new Promise<void>(resolve => { release = resolve; }) };
+					return { entered, release: () => { mainGate = undefined; release(); } };
+				},
 				deferHelper: () => {
 					let started!: () => void, release!: () => void;
 					const entered = new Promise<void>(resolve => { started = resolve; });
@@ -323,6 +330,36 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 		};
 		const first = await consult();
 		assert.equal(first.status, "available");
+		// Hold A's actual SDK main lane busy. B must read the published snapshot
+		// before releasing A, without messaging or a helper/receiver model call.
+		const busy = owner.deferMain();
+		const ownerRun = owner.session.prompt("Continue the current work without requesting a tool.");
+		let deadline: ReturnType<typeof setTimeout> | undefined;
+		try {
+			await busy.entered;
+			assert.equal(owner.session.isStreaming, true);
+			const whileBusy = await Promise.race([
+				consult(),
+				new Promise<never>((_resolve, reject) => {
+					deadline = setTimeout(() => reject(new Error("Metadata waited for the busy owner")), 5000);
+				}),
+			]);
+			assert.equal(owner.session.isStreaming, true, "owner remains busy when metadata returns");
+			assert.equal(whileBusy.status, "available");
+			assert.deepEqual(whileBusy.snapshot?.state?.state, state);
+			assert.deepEqual(whileBusy.snapshot?.aliases, {
+				initialAlias: "Do not replace human name", currentAlias: "Do not replace human name",
+			});
+			assert.equal(whileBusy.snapshot?.state?.recordedAt, (note.data as any).recordedAt,
+				"observation does not refresh the published status timestamp");
+			assert.equal(owner.helperCalls(), 0);
+			assert.equal(caller.helperCalls(), 0);
+		} finally {
+			clearTimeout(deadline);
+			busy.release();
+			await ownerRun;
+		}
+		assert.equal(owner.session.isStreaming, false);
 		// Actual SDK JSON/no-UI context: reasoning must not add a nested model run.
 		// tool() asserts exactly the existing two local driver turns, not UI proof.
 		const ownerCalls = owner.calls();

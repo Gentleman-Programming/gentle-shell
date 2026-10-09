@@ -235,9 +235,24 @@ are unchanged; caller replacement prevents a stale `recorded` result.
 Call `orchestrator_consult` with required stable `recipient_session_id`, optional
 `kind: "metadata"` (default), and optional existing opaque catalog `cursor`.
 No free-form question, owner request, human picker or read-consent dialog is used
-for this profile's explicitly published data. Use `orchestrator_session_id.state`
-to publish short updates before delegation or meaningful progress milestones when
-helpful; do not add a model turn solely to publish or emit per-tool/token updates.
+for this profile's explicitly published data. Publish `subject` and `state` together
+before work beyond small direct tasks; update at task changes and completion. Keep
+small direct tasks exempt. Batch with setup/progress; do not add a model turn solely
+to publish or emit per-tool/token updates.
+
+Use `objective` for the goal, `progress` for current and next scope, and `blockers`
+for anything preventing progress. Use `state.work` for relevant area/topic and
+exact repository-qualified issue/PR refs;
+classify delegated work through `subagent_run.work`. A state object replaces the
+snapshot, so include every field that should remain public. At completion, publish
+the outcome and next scope or withdraw the state with `null`; do not leave completed
+work described as active.
+
+Peers read this snapshot while the owner is busy, without an owner reply or waiting
+for idle. Use metadata consultation before sending a question; contact the owner
+only when the published context cannot answer it or an owner decision is needed.
+A search with no matches does not establish that nobody else is working on the feature:
+unknown, stale, unclassified and omitted scope must remain explicit.
 
 The JSON receipt is deeply detached and frozen in-process, at most 16 KiB. It
 contains public label/workspace, owned task summaries, recorded scope, one catalog

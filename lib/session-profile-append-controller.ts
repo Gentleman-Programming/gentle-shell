@@ -351,8 +351,12 @@ export function createSessionProfileAppendController(
      state: readSessionProfileEntry(entry),
     });
    }
+   // Reported as not adopted: a later disk recovery must not adopt it
+   // silently. Only a fresh explicit, corroborated bind or clear recovers.
+   s.uncertain = true;
    return unavailable("append-not-corroborated");
   } catch {
+   s.uncertain = true;
    return unavailable("append-not-corroborated");
   }
  }

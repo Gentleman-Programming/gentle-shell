@@ -198,6 +198,32 @@ for (const fault of [
   assert.equal(f.controller.refresh().status, "indeterminate");
  });
 }
+for (const fault of [
+ "missing",
+ "corrupt",
+ "unreadable",
+ "mismatch",
+ "wrong-session",
+]) {
+ test(`uncorroborated append stays untrusted after ${fault} disk recovers`, () => {
+  const f = fixture();
+  f.mode = "disk";
+  f.controller.bind("old", {});
+  f.mode = "normal";
+  if (fault === "missing") f.text = undefined;
+  if (fault === "corrupt") f.text = "{";
+  if (fault === "unreadable") f.text = "unreadable";
+  if (fault === "wrong-session")
+   f.text = JSON.stringify({ type: "session", id: "wrong" });
+  assert.equal(f.controller.bind("new", {}).status, "indeterminate");
+  f.save();
+  const later = f.controller.refresh();
+  assert.equal(later.status, "indeterminate", "a reported failure is never adopted later");
+  assert.equal(later.state.status, "indeterminate");
+  f.mode = "disk";
+  bound(f.controller.bind("again", {}), "again");
+ });
+}
 for (const status of ["bound", "cleared", "invalid", "unsupported"] as const) {
  test(`no-advance exception retains only corroborated ${status} authority`, () => {
   const f = fixture();

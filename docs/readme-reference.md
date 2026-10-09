@@ -775,6 +775,8 @@ Saved globally at:
 
 Existing project-local `.pi/gentle-ai/models.json` files are still read as a legacy fallback when no global model config exists, but `/gentle:models` writes the shared global config.
 
+Startup and reload materialize saved non-empty routing, but never treat a saved empty agent entry (`{}`) as permission to delete an existing `subagents.json` model profile or agent frontmatter. This also preserves previously materialized routes and routes whose agent definition is missing. To clear routing, explicitly save an inherit choice in `/gentle:models` or confirm a profile replacement in `/gentle:profiles`. Activation needs no ownership sidecar or lock.
+
 Inside `/gentle:models`, press `x` to export the saved routing to `~/.pi/gentle-ai/models.export.json`, or `r` to restore from that file after confirmation. Export uses a versioned envelope and restore writes the normal `models.json` shape before applying routing to agents.
 
 Press `u` to save global agent routing like `ctrl+s`, then capture that routing plus this session's orchestrator model and thinking level in the current profile. If this session has no model, `u` falls back to the orchestrator defaults in `settings.json`; it never changes those defaults. Unlike `/gentle:profiles` `s`, which snapshots persisted settings, `u` captures the live session when available. The panel names the profile `u` targets: the profile this repository pins when a pin wins, otherwise the globally active profile. When no profiles store exists yet, `u` seeds it with a `current` profile the way `/gentle:profiles` does on first open; when the store exists but nothing is active and nothing is pinned, the global save still happens and the panel points you to `/gentle:profiles`.

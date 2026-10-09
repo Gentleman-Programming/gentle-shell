@@ -1,4 +1,3 @@
-import { tryNativeFileLock, releaseNativeFileLock } from "../lib/native-file-lock.ts";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import { recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
 import { SHELL_COMMAND_TOOLS } from "../lib/background-jobs.ts";
@@ -20,8 +19,6 @@ import {
 	readdirSync,
 	readFileSync,
 	realpathSync,
-	statSync,
-	renameSync,
 	writeFileSync,
 } from "node:fs";
 import {
@@ -2456,103 +2453,6 @@ function agentModelProfileConfigPath(cwd: string, source: AgentSource): string {
 		: join(gentlePiAgentHome(), "subagents.json");
 }
 
-// gentle-ai#4946: which `model_profiles` entries this harness materialized
-// into a given `subagents.json`. The unconsented activation sweep may clear
-// only these names; user-authored entries always survive it.
-const MATERIALIZE_TRACKING_KIND = "gentle-pi.materialized-model-profiles/v1";
-
-function materializedProfilesTrackingPath(cwd: string, source: AgentSource): string {
-	return source === "project"
-		? join(cwd, ".pi", "gentle-ai", "materialized-model-profiles.json")
-		: join(gentlePiAgentHome(), "gentle-ai", "materialized-model-profiles.json");
-}
-
-function readMaterializedProfileNames(path: string): Set<string> {
-	try {
-		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-		if (!isRecord(parsed) || parsed.kind !== MATERIALIZE_TRACKING_KIND) return new Set();
-		const agents = parsed.agents;
-		if (!Array.isArray(agents)) return new Set();
-		return new Set(agents.filter((name): name is string => typeof name === "string"));
-	} catch {
-		return new Set();
-	}
-}
-
-async function readMaterializedProfileNamesAsync(path: string): Promise<Set<string>> {
-	try {
-		const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
-		if (!isRecord(parsed) || parsed.kind !== MATERIALIZE_TRACKING_KIND) return new Set();
-		const agents = parsed.agents;
-		if (!Array.isArray(agents)) return new Set();
-		return new Set(agents.filter((name): name is string => typeof name === "string"));
-	} catch {
-		return new Set();
-	}
-}
-
-// Membership is read only after kernel-lock acquisition. No await occurs
-// while held: a synchronous caller cannot wait on a suspended local owner.
-function tryMaterializedProfileLock(path: string): number | undefined {
-	return tryNativeFileLock(`${path}.lock`);
-}
-
-function commitMaterializedProfileName(path: string, name: string, owned: boolean, lock: number): void {
-	try {
-		const names = readMaterializedProfileNames(path);
-		if (names.has(name) === owned) return;
-		if (owned) names.add(name);
-		else names.delete(name);
-		// Publish only a complete snapshot. Death during the temporary write
-		// leaves the previous ownership intact, never a truncated sidecar.
-		const temporary = `${path}.tmp-${randomUUID()}`;
-		writeFileSync(
-			temporary,
-			`${JSON.stringify({ kind: MATERIALIZE_TRACKING_KIND, agents: [...names].sort() }, null, 2)}\n`,
-			{ flag: "wx", mode: 0o600 },
-		);
-		renameSync(temporary, path);
-	} finally {
-		releaseNativeFileLock(lock);
-	}
-}
-
-function updateMaterializedProfileName(path: string, name: string, owned: boolean): void {
-	// Best-effort bookkeeping stays bounded under genuine live contention.
-	// Native failure never permits an unlocked ownership write.
-	try {
-		const deadline = Date.now() + 5_000;
-		while (true) {
-			const lock = tryMaterializedProfileLock(path);
-			if (lock !== undefined) {
-				commitMaterializedProfileName(path, name, owned, lock);
-				return;
-			}
-			if (Date.now() >= deadline) return;
-			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
-		}
-	} catch {
-		/* bookkeeping only; routing write already succeeded */
-	}
-}
-
-async function updateMaterializedProfileNameAsync(path: string, name: string, owned: boolean): Promise<void> {
-	try {
-		const deadline = Date.now() + 5_000;
-		while (true) {
-			const lock = tryMaterializedProfileLock(path);
-			if (lock !== undefined) {
-				commitMaterializedProfileName(path, name, owned, lock);
-				return;
-			}
-			if (Date.now() >= deadline) return;
-			await new Promise<void>((resolve) => setTimeout(resolve, 25));
-		}
-	} catch {
-		/* bookkeeping only; routing write already succeeded */
-	}
-}
-
 function modelProfileForRoutingEntry(
 	entry: AgentRoutingEntry | undefined,
 ): Record<string, string> | undefined {
@@ -2563,19 +2463,11 @@ function modelProfileForRoutingEntry(
 	return Object.keys(profile).length > 0 ? profile : undefined;
 }
 
-type SubagentProfileUpdateOptions = {
-	preserveExisting?: boolean;
-	/** Where materialized-name bookkeeping lives for this config path. */
-	trackingPath?: string;
-	/** Unconsented activation sweep: clears may only remove tracked names. */
-	sweepMode?: boolean;
-};
-
 function updateSubagentModelProfileAtPath(
 	path: string,
 	name: string,
 	entry: AgentRoutingEntry | undefined,
-	options: SubagentProfileUpdateOptions = {},
+	options: { preserveExisting?: boolean } = {},
 ): boolean {
 	let config: Record<string, unknown> = {};
 	if (existsSync(path)) {
@@ -2590,26 +2482,9 @@ function updateSubagentModelProfileAtPath(
 		? { ...config.model_profiles }
 		: {};
 	const profile = modelProfileForRoutingEntry(entry);
-	const tracked = options.trackingPath
-		? readMaterializedProfileNames(options.trackingPath)
-		: undefined;
-	const trackName = () => {
-		if (options.trackingPath) updateMaterializedProfileName(options.trackingPath, name, true);
-	};
-	const untrackName = () => {
-		if (options.trackingPath) updateMaterializedProfileName(options.trackingPath, name, false);
-	};
-	// gentle-ai#4946: an unconsented sweep clear may only remove routing this
-	// harness materialized itself. A user-authored profile is never tracked,
-	// so it survives every session start.
-	if (!profile && options.sweepMode && tracked && !tracked.has(name)) return false;
 	// A write that would leave the profile as it is (including removing a
 	// profile that was never there) is not an update and touches no file.
-	if (JSON.stringify(modelProfiles[name]) === JSON.stringify(profile)) {
-		// Equal values are not proof that this harness wrote the profile.
-		if (!profile) untrackName();
-		return false;
-	}
+	if (JSON.stringify(modelProfiles[name]) === JSON.stringify(profile)) return false;
 	if (profile) {
 		if (options.preserveExisting && isRecord(modelProfiles[name])) return false;
 		modelProfiles[name] = profile;
@@ -2618,8 +2493,6 @@ function updateSubagentModelProfileAtPath(
 	else delete config.model_profiles;
 	mkdirSync(dirname(path), { recursive: true });
 	writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
-	if (profile) trackName();
-	else untrackName();
 	return true;
 }
 
@@ -2627,7 +2500,7 @@ async function updateSubagentModelProfileAtPathAsync(
 	path: string,
 	name: string,
 	entry: AgentRoutingEntry | undefined,
-	options: SubagentProfileUpdateOptions = {},
+	options: { preserveExisting?: boolean } = {},
 ): Promise<boolean> {
 	let config: Record<string, unknown> = {};
 	if (await pathExists(path)) {
@@ -2642,26 +2515,9 @@ async function updateSubagentModelProfileAtPathAsync(
 		? { ...config.model_profiles }
 		: {};
 	const profile = modelProfileForRoutingEntry(entry);
-	const tracked = options.trackingPath
-		? await readMaterializedProfileNamesAsync(options.trackingPath)
-		: undefined;
-	const trackName = async () => {
-		if (options.trackingPath) await updateMaterializedProfileNameAsync(options.trackingPath, name, true);
-	};
-	const untrackName = async () => {
-		if (options.trackingPath) await updateMaterializedProfileNameAsync(options.trackingPath, name, false);
-	};
-	// gentle-ai#4946: an unconsented sweep clear may only remove routing this
-	// harness materialized itself. A user-authored profile is never tracked,
-	// so it survives every session start.
-	if (!profile && options.sweepMode && tracked && !tracked.has(name)) return false;
 	// A write that would leave the profile as it is (including removing a
 	// profile that was never there) is not an update and touches no file.
-	if (JSON.stringify(modelProfiles[name]) === JSON.stringify(profile)) {
-		// Equal values are not proof that this harness wrote the profile.
-		if (!profile) await untrackName();
-		return false;
-	}
+	if (JSON.stringify(modelProfiles[name]) === JSON.stringify(profile)) return false;
 	if (profile) {
 		if (options.preserveExisting && isRecord(modelProfiles[name])) return false;
 		modelProfiles[name] = profile;
@@ -2670,8 +2526,6 @@ async function updateSubagentModelProfileAtPathAsync(
 	else delete config.model_profiles;
 	await mkdir(dirname(path), { recursive: true });
 	await writeFile(path, `${JSON.stringify(config, null, 2)}\n`);
-	if (profile) await trackName();
-	else await untrackName();
 	return true;
 }
 
@@ -2680,13 +2534,13 @@ function updateSubagentModelProfile(
 	source: AgentSource,
 	name: string,
 	entry: AgentRoutingEntry | undefined,
-	options: SubagentProfileUpdateOptions = {},
+	options: { preserveExisting?: boolean } = {},
 ): boolean {
 	return updateSubagentModelProfileAtPath(
 		agentModelProfileConfigPath(cwd, source),
 		name,
 		entry,
-		{ trackingPath: materializedProfilesTrackingPath(cwd, source), ...options },
+		options,
 	);
 }
 
@@ -2794,45 +2648,19 @@ async function updateSubagentModelProfileAsync(
 	source: AgentSource,
 	name: string,
 	entry: AgentRoutingEntry | undefined,
-	options: SubagentProfileUpdateOptions = {},
+	options: { preserveExisting?: boolean } = {},
 ): Promise<boolean> {
 	return updateSubagentModelProfileAtPathAsync(
 		agentModelProfileConfigPath(cwd, source),
 		name,
 		entry,
-		{ trackingPath: materializedProfilesTrackingPath(cwd, source), ...options },
+		options,
 	);
-}
-
-type ApplyModelConfigOptions = {
-	/** Unconsented activation sweep: clears may only remove tracked names. */
-	sweepMode?: boolean;
-};
-
-function sweepOwnsClear(
-	cwd: string,
-	source: AgentSource,
-	name: string,
-	options: ApplyModelConfigOptions,
-): boolean {
-	if (!options.sweepMode) return true;
-	return readMaterializedProfileNames(materializedProfilesTrackingPath(cwd, source)).has(name);
-}
-
-async function sweepOwnsClearAsync(
-	cwd: string,
-	source: AgentSource,
-	name: string,
-	options: ApplyModelConfigOptions,
-): Promise<boolean> {
-	if (!options.sweepMode) return true;
-	return (await readMaterializedProfileNamesAsync(materializedProfilesTrackingPath(cwd, source))).has(name);
 }
 
 export function applyModelConfig(
 	cwd: string,
 	config: AgentModelConfig,
-	options: ApplyModelConfigOptions = {},
 ): { updated: number; skipped: number } {
 	let updated = 0;
 	let skipped = 0;
@@ -2845,18 +2673,8 @@ export function applyModelConfig(
 			skipped += 1;
 			continue;
 		}
-		// gentle-ai#4946: in the unconsented activation sweep, a clear for a
-		// name this harness never materialized must not strip user-authored
-		// routing from either surface (subagents.json or agent frontmatter).
-		if (
-			isClearRoutingEntry(entry) &&
-			!sweepOwnsClear(cwd, agent.source, agent.name, options)
-		) {
-			skipped += 1;
-			continue;
-		}
 		if (agent.source === "builtin") {
-			if (updateSubagentModelProfile(cwd, agent.source, agent.name, entry, options)) updated += 1;
+			if (updateSubagentModelProfile(cwd, agent.source, agent.name, entry)) updated += 1;
 			else skipped += 1;
 			continue;
 		}
@@ -2874,21 +2692,16 @@ export function applyModelConfig(
 				updated += 1;
 			}
 		}
-		if (updateSubagentModelProfile(cwd, agent.source, agent.name, entry, options)) updated += 1;
+		if (updateSubagentModelProfile(cwd, agent.source, agent.name, entry)) updated += 1;
 		else skipped += 1;
 	}
-	// gentle-ai#4946 note: entries for names with NO discoverable agent
-	// definition are stale leftovers, not live user routing. The sweep keeps
-	// pruning them (destructive), so sweepMode is dropped here; only routing
-	// for agents that still exist is protected above.
-	const staleClearOptions: SubagentProfileUpdateOptions = { ...options, sweepMode: false };
 	for (const [name, entry] of Object.entries(config)) {
 		if (isProviderReviewRole(name)) continue;
 		// The orchestrator is routing, not an agent: its model lives in Pi's global
 		// settings.json and must never reach subagents.json.
 		if (isProfileOrchestratorKey(name)) continue;
 		if (!seenAgents.has(name) && isClearRoutingEntry(entry)) {
-			if (updateSubagentModelProfile(cwd, "user", name, entry, staleClearOptions)) updated += 1;
+			if (updateSubagentModelProfile(cwd, "user", name, entry)) updated += 1;
 			else skipped += 1;
 		}
 	}
@@ -2898,7 +2711,6 @@ export function applyModelConfig(
 export async function applyModelConfigAsync(
 	cwd: string,
 	config: AgentModelConfig,
-	options: ApplyModelConfigOptions = {},
 ): Promise<{ updated: number; skipped: number }> {
 	let updated = 0;
 	let skipped = 0;
@@ -2911,18 +2723,8 @@ export async function applyModelConfigAsync(
 			skipped += 1;
 			continue;
 		}
-		// gentle-ai#4946: in the unconsented activation sweep, a clear for a
-		// name this harness never materialized must not strip user-authored
-		// routing from either surface (subagents.json or agent frontmatter).
-		if (
-			isClearRoutingEntry(entry) &&
-			!(await sweepOwnsClearAsync(cwd, agent.source, agent.name, options))
-		) {
-			skipped += 1;
-			continue;
-		}
 		if (agent.source === "builtin") {
-			if (await updateSubagentModelProfileAsync(cwd, agent.source, agent.name, entry, options))
+			if (await updateSubagentModelProfileAsync(cwd, agent.source, agent.name, entry))
 				updated += 1;
 			else skipped += 1;
 			continue;
@@ -2941,20 +2743,15 @@ export async function applyModelConfigAsync(
 				updated += 1;
 			}
 		}
-		if (await updateSubagentModelProfileAsync(cwd, agent.source, agent.name, entry, options))
+		if (await updateSubagentModelProfileAsync(cwd, agent.source, agent.name, entry))
 			updated += 1;
 		else skipped += 1;
 	}
-	// gentle-ai#4946 note: entries for names with NO discoverable agent
-	// definition are stale leftovers, not live user routing. The sweep keeps
-	// pruning them (destructive), so sweepMode is dropped here; only routing
-	// for agents that still exist is protected above.
-	const staleClearOptions: SubagentProfileUpdateOptions = { ...options, sweepMode: false };
 	for (const [name, entry] of Object.entries(config)) {
 		if (isProviderReviewRole(name)) continue;
 		if (isProfileOrchestratorKey(name)) continue;
 		if (!seenAgents.has(name) && isClearRoutingEntry(entry)) {
-			if (await updateSubagentModelProfileAsync(cwd, "user", name, entry, staleClearOptions))
+			if (await updateSubagentModelProfileAsync(cwd, "user", name, entry))
 				updated += 1;
 			else skipped += 1;
 		}
@@ -2973,18 +2770,14 @@ export async function applySavedModelConfig(
 	if (result.status === "invalid") {
 		return { updated: 0, skipped: 0, invalidPath: result.path };
 	}
-	// gentle-ai#4946: this activation sweep re-applies saved routing without
-	// user consent, so a persisted clear entry (an "inherit" saved from
-	// /gentle:models is `{}`) may only remove routing this harness itself
-	// materialized (tracked in the sidecar next to each `subagents.json`).
-	// User-authored `model_profiles` survive the sweep; clears keep their full
-	// effect only through the consented flows that issue them: the panel save
-	// and a confirmed profile apply.
-	return applyConfig(
-		ctx.cwd,
-		result.status === "valid" ? result.config : {},
-		{ sweepMode: true },
+	// Startup/reload has no deletion approval. Persisted inherit entries are
+	// not instructions to erase routing, even if an agent is no longer present.
+	// Explicit panel saves and confirmed profile replacement still apply clears.
+	const config = result.status === "valid" ? result.config : {};
+	const activationConfig = Object.fromEntries(
+		Object.entries(config).filter(([, entry]) => !isClearRoutingEntry(entry)),
 	);
+	return applyConfig(ctx.cwd, activationConfig);
 }
 
 function describeModelConfig(cwd: string, config: AgentModelConfig): string[] {

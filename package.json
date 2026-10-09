@@ -72,8 +72,7 @@
 		]
 	},
 	"dependencies": {
-		"@heyhuynhgiabuu/pi-pretty": "0.6.27",
-		"fs-native-extensions": "1.5.1"
+		"@heyhuynhgiabuu/pi-pretty": "0.6.27"
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-coding-agent": ">=0.99.1",

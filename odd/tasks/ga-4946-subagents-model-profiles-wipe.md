@@ -1,5 +1,7 @@
 # gentle-ai#4946: preserve user `model_profiles` in `~/.pi/agent/subagents.json`
 
+Historical contribution record. The ownership/locking design and its review receipts below apply only to the original contribution, not the current maintainer candidate. Current requirements and verification are in [ga-4946-maintainer-routing.md](ga-4946-maintainer-routing.md); activation now preserves all saved empty routes, including previously materialized and missing-definition agents.
+
 Delivery repo: gentle-shell (gentle-pi npm package). Cross-repo close of
 Gentleman-Programming/gentle-ai#4946. Branch: `fix/4946-preserve-subagents-model-profiles`
 (base `6e681f1d0`). Test runner: `npm test` in the repo root (vitest-style suites under `tests/`).

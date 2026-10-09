@@ -101,10 +101,10 @@ del tope de la tarjeta siembra paths nativos de la plataforma. Evidencia: Linux 
 Eso también prueba que los 24 fallos locales son del entorno Windows: el job de Windows de CI solo corre tres
 archivos de review, y el suite completo corre en ubuntu.
 
-L10 — PR abierto: **#1974** (`main` ← `Fivoryu:fix/notifications-enter-cycle-and-timing-rows`), 7 commits,
-+788/−42 en 11 archivos, sin labels (la cuenta tiene `READ` sobre el repo: no puede etiquetar el issue ni el PR)
-y con los runs de CI en `action_required` esperando que un maintainer apruebe la ejecución del workflow de un
-fork. Antes del push: `node scripts/verify-package-files.mjs` 196 archivos / 69 pins ✓, `check:runtime-modules` ✓,
+L10 — PR abierto: **#1974** (`main` ← `Fivoryu:fix/notifications-enter-cycle-and-timing-rows`), 11 archivos tocados
+(la rama completa: Slice 1 + biblioteca + docs), sin labels (la cuenta tiene `READ` sobre el repo: no puede
+etiquetar el issue ni el PR) y con los runs de CI en `action_required` esperando que un maintainer apruebe la
+ejecución del workflow de un fork. Antes del push: `node scripts/verify-package-files.mjs` 196 archivos / 69 pins ✓, `check:runtime-modules` ✓,
 `pnpm run typecheck` 186 sin regresiones ✓. **NO** se pudieron correr localmente `pnpm test` completo ni
 `test:packed-package`: falta toolchain Linux (el `npm` de Windows con node de Linux se mezcla y falla por
 entorno), así que la primera corrida completa es la de CI.

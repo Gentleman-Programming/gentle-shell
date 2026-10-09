@@ -105,6 +105,7 @@ import {
 import { clearSessionProfileBinding, readSessionProfileBinding } from "../lib/session-profile-binding.ts";
 import { createSessionProfileIntegration, readCurrentSessionProfileOutcome, runCurrentSessionProfileSelection, waitCurrentSessionProfileSelection } from "../lib/session-profile-integration.ts";
 import { publishSessionProfileOutcome, readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
+import { isSessionProfileFamilyEntry } from "../lib/session-profile-persistence.ts";
 import {
 	applyOrchestratorSettings,
 	readOrchestratorSettings,
@@ -4934,7 +4935,10 @@ async function handleProfilesClear(ctx: ExtensionContext): Promise<void> {
 	}
 	const selected = await runCurrentSessionProfileSelection(ctx.sessionManager, async (attachment, owned) => {
 		const prior = attachment.refresh().state;
-		if (prior.status === "absent") {
+		// An unsaved or in-memory branch reads as indeterminate; without any profile
+		// record on the branch it was never selected, so nothing is written.
+		const selectedBefore = ctx.sessionManager.getBranch().some((entry) => isSessionProfileFamilyEntry(entry));
+		if (prior.status === "absent" || (prior.status === "indeterminate" && !selectedBefore)) {
 			ctx.ui.notify("el Gentleman: no session profile was ever selected in this session; nothing to clear.", "info");
 			return true;
 		}

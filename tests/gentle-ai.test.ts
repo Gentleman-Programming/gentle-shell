@@ -19,6 +19,7 @@ import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExten
 import { PROFILES_KIND, PROFILES_VERSION, readProfilesFileResult } from "../lib/agent-profiles.ts";
 import { bindSessionProfile, readSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import { createSessionProfileIntegration, runCurrentSessionProfileSelection } from "../lib/session-profile-integration.ts";
+import { readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import type { AgentRoutingEntry, ThinkingLevel } from "../lib/model-routing-authority.ts";
 type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel" | "getThinkingLevel">;
 import { PROFILE_PIN_KIND, PROFILE_PIN_VERSION, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
@@ -3853,6 +3854,22 @@ test("/gentle:profiles clear on a never-bound session writes nothing and says so
 	assert.match(h.last().message, /no session profile was ever selected in this session; nothing to clear/);
 	h.assertSharedUntouched();
 });
+
+for (const kind of ["in-memory", "unsaved"] as const)
+	test(`/gentle:profiles clear on a never-bound ${kind} session writes nothing and keeps launches available`, async (t) => {
+		const h = profilesCommandHarness(t);
+		const manager = kind === "in-memory" ? SessionManager.inMemory(h.ctx.cwd) : SessionManager.create(h.ctx.cwd, join(h.ctx.cwd, "unsaved-sessions"));
+		if (kind === "in-memory") manager.appendMessage({ role: "user", content: "unsaved conversation", timestamp: 1 });
+		createSessionProfileIntegration().start(manager, (type, data) => { manager.appendCustomEntry(type, data); }, { reason: "startup" });
+		(h.ctx as unknown as { sessionManager: unknown }).sessionManager = manager;
+		await h.run("clear");
+		assert.equal(manager.getBranch().filter((entry) => entry.type === "custom").length, 0, "no clear record is written");
+		assert.equal(h.last().severity, "info");
+		assert.match(h.last().message, /no session profile was ever selected in this session; nothing to clear/);
+		const authority = readSessionProfileAuthority(manager);
+		assert.equal(authority.available, true, "subagent launches stay available");
+		assert.equal(authority.available && authority.binding, undefined);
+	});
 
 test("/gentle:profiles clear on an already-cleared session writes nothing and says so", async (t) => {
 	const h = profilesCommandHarness(t);

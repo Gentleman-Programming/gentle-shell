@@ -1,0 +1,88 @@
+# One-off diagnostic: authorized separate-branch execution, not a product fix.
+# The original candidate and PR remain unchanged.
+name: Issue 1494 diagnostic
+
+on:
+  push:
+    branches: [fix/issue-1494-ci-diagnostic]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic:
+    name: diagnostic (${{ matrix.lane }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: windows-installer
+            os: windows-latest
+          - lane: linux-sdk
+            os: ubuntu-latest
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: fdf0595f0376d1cb97de41d310140e077f3591c7
+          persist-credentials: false
+
+      - name: Setup pnpm for SDK fixture
+        if: matrix.lane == 'linux-sdk'
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 11.1.1
+
+      - name: Setup exact observed Node version
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24.21.0'
+
+      - name: Install locked SDK dependencies
+        if: matrix.lane == 'linux-sdk'
+        run: pnpm install --frozen-lockfile
+
+      - name: Capture one diagnostic invocation
+        shell: bash
+        env:
+          DIAGNOSTIC_LANE: ${{ matrix.lane }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = fdf0595f0376d1cb97de41d310140e077f3591c7
+          test "$(node --version)" = v24.21.0
+          case "$DIAGNOSTIC_LANE" in
+            windows-installer)
+              files=(tests/install-wizard.test.ts tests/installer-server.test.ts tests/verify-package-files.test.ts tests/installer-probes.test.ts tests/installer-runner.test.ts tests/installer-preflight.test.ts tests/installer-posix-bootstrap.test.ts tests/installer-windows-bootstrap.test.ts)
+              ;;
+            linux-sdk)
+              export GENTLE_PI_REQUIRE_NATIVE_BINARY=1
+              files=(tests/orchestrator-consultation-sdk.test.ts)
+              ;;
+            *) exit 2 ;;
+          esac
+          logs="$RUNNER_TEMP/issue-1494-$DIAGNOSTIC_LANE"
+          mkdir "$logs"
+          printf 'candidate=%s\nnode=%s\nlane=%s\n' "$(git rev-parse HEAD)" "$(node --version)" "$DIAGNOSTIC_LANE"
+          printf 'selected-file=%s\n' "${files[@]}"
+          # No retries or hidden fallback; preserve the original child exit code.
+          set +e
+          node --experimental-strip-types --test --test-reporter=tap "${files[@]}" >"$logs/stdout.tap" 2>"$logs/stderr.log"
+          status=$?
+          set -e
+          printf '%s\n' "$status" >"$logs/exit-code.txt"
+          printf '\n=== stdout.tap (%s) ===\n' "$DIAGNOSTIC_LANE"
+          cat "$logs/stdout.tap"
+          printf '\n=== stderr.log (%s) ===\n' "$DIAGNOSTIC_LANE"
+          cat "$logs/stderr.log"
+          printf '\n=== exit-code: %s ===\n' "$status"
+          # The SDK test must execute, not silently succeed through a skip.
+          # Windows may skip portable/POSIX guards exactly as in the original suite.
+          if [ "$status" -eq 0 ] && [ "$DIAGNOSTIC_LANE" = linux-sdk ]; then
+            if ! grep -Eq '^# pass [1-9][0-9]*$' "$logs/stdout.tap" || ! grep -Eq '^# skipped 0$' "$logs/stdout.tap"; then
+              echo 'SDK fixture did not execute with zero skips'
+              exit 2
+            fi
+          fi
+          exit "$status"

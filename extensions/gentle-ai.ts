@@ -4920,6 +4920,65 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): 
 	}
 }
 
+/**
+ * `/gentle:profiles clear`: append an explicit clear record for this session and
+ * publish only the returned state. Never-bound and already-cleared sessions write
+ * nothing; an unreadable record is the recovery case and is cleared. The live
+ * orchestrator and every shared default stay untouched.
+ */
+async function handleProfilesClear(ctx: ExtensionContext): Promise<void> {
+	const sessionId = ctx.sessionManager?.getSessionId?.();
+	if (typeof sessionId !== "string" || sessionId.length === 0) {
+		ctx.ui.notify("el Gentleman cannot clear the session profile: no parent session id is available here.", "warning");
+		return;
+	}
+	const selected = await runCurrentSessionProfileSelection(ctx.sessionManager, async (attachment, owned) => {
+		const prior = attachment.refresh().state;
+		if (prior.status === "absent") {
+			ctx.ui.notify("el Gentleman: no session profile was ever selected in this session; nothing to clear.", "info");
+			return true;
+		}
+		if (prior.status === "cleared") {
+			ctx.ui.notify("el Gentleman: this session profile is already cleared; nothing to clear.", "info");
+			return true;
+		}
+		const outcome = attachment.clear();
+		if (!owned()) return false;
+		const authority = publishSessionProfileOutcome(ctx.sessionManager, outcome);
+		if ((outcome.status !== "persisted" && outcome.status !== "not-persisted") || outcome.state.status !== "cleared" || !authority.available) {
+			ctx.ui.notify(
+				`el Gentleman could not clear the session profile. ${authority.available ? "The last disk-corroborated state was preserved." : "Session profile authority is unavailable; affected launches are blocked."}`,
+				"warning",
+			);
+			return false;
+		}
+		const what = prior.status === "bound" ? `session profile "${prior.binding.name}"` : "the unreadable session profile record";
+		ctx.ui.notify(
+			`el Gentleman cleared ${what} — ${outcome.status === "persisted" ? "persisted in this session" : "not yet persisted; active only until detach or disk corroboration"}. New launches use the routing without a session profile (pins, repository declaration, global). The live orchestrator is unchanged.`,
+			"info",
+		);
+		return true;
+	});
+	if (selected === undefined)
+		ctx.ui.notify("el Gentleman cannot clear the session profile: the current session attachment is unavailable. Nothing was changed.", "warning");
+}
+
+/**
+ * Warn when the current session profile record cannot be read: an invalid record
+ * or one from a newer version blocks affected launches instead of falling back.
+ */
+function notifySessionProfileProblem(ctx: ExtensionContext): void {
+	const state = readCurrentSessionProfileOutcome(ctx.sessionManager)?.state;
+	if (state?.status !== "invalid" && state?.status !== "unsupported") return;
+	const file = ctx.sessionManager.getSessionFile?.() ?? "this in-memory session";
+	const where = `${sanitizeTerminalText(file)} entry ${state.entryIndex ?? "?"}${state.lineNumber === undefined ? "" : ` (line ${state.lineNumber})`}`;
+	const kind = state.status === "invalid" ? "invalid" : "from a newer version";
+	ctx.ui.notify(
+		`el Gentleman: the session profile record at ${where} is ${kind}. Subagent launches are blocked until it is replaced. Select a profile with Enter or run /gentle:profiles clear.`,
+		"warning",
+	);
+}
+
 /** Pi's runner throws on any access to a ctx made stale by reload or session replacement. */
 function isCommandContextActive(ctx: ExtensionContext): boolean {
 	try {
@@ -9354,6 +9413,7 @@ export const __testing = {
 	parseReviewCaptureParameters,
 	parseReviewCaptureGroupParameters,
 	runProfilesPanelAction,
+	notifySessionProfileProblem,
 	resolveReviewModeGate,
 	readEffectiveModelConfig,
 	readReviewerModelConfig,
@@ -9506,6 +9566,7 @@ function createGentleAiExtensionForTesting(
 	pi.on("session_tree", (_event, ctx) => {
 		reviewSidebar.reset(ctx);
 		readSessionProfileAuthority(ctx.sessionManager);
+		if (ctx.hasUI) notifySessionProfileProblem(ctx);
 	});
 	let reminderSessionActive = true;
 	let reminderEpoch = 0;
@@ -9897,6 +9958,7 @@ function createGentleAiExtensionForTesting(
 		if (profileSessionId) clearSessionProfileBinding(profileSessionId);
 		sessionProfiles.start(ctx.sessionManager, (type, data) => pi.appendEntry(type, data), event);
 		readSessionProfileAuthority(ctx.sessionManager);
+		if (ctx.hasUI) notifySessionProfileProblem(ctx);
 		yolo.reset(ctx);
 		reviewSidebar.reset(ctx);
 		elapsedTiming = new GentleAiElapsedTimingLedger(ctx.sessionManager, pi);
@@ -10182,8 +10244,9 @@ function createGentleAiExtensionForTesting(
 	});
 
 	pi.registerCommand("gentle:profiles", {
-		description: "Create, switch, and manage global agent-model profiles for el Gentleman.",
-		handler: async (_args, ctx) => {
+		description: "Create, switch, and manage global agent-model profiles for el Gentleman. `/gentle:profiles clear` removes this session's profile selection.",
+		handler: async (args, ctx) => {
+			if (args.trim() === "clear") return handleProfilesClear(ctx);
 			await handleProfilesCommand(ctx, pi);
 		},
 	});

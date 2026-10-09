@@ -826,7 +826,7 @@ test("an unreadable library blocks the save instead of being overwritten", async
 });
 
 test("a full library refuses a new sound and keeps every saved one", async () => {
-	const full = Array.from({ length: 8 }, (_unused, index) => ({ path: `C:\\sounds\\${index}.wav` }));
+	const full = Array.from({ length: 8 }, (_unused, index) => ({ path: join(TEST_HOME, "sounds", `${index}.wav`) }));
 	useLibrary(JSON.stringify({ schema: SAVED_SOUNDS_SCHEMA, sounds: full }));
 	const h = harness(); try {
 		getNotificationService()!.validateFile = async () => true;

@@ -34,7 +34,8 @@ function memoryIO() {
 	};
 	return { files, calls, io, setReadFailure: (code: string) => { readFailure = code; }, failRename: () => { renameFailure = true; } };
 }
-const options = (io: NotificationIO, home = HOME) => ({ gentlePiConfigHome: home, io });
+/** The flavor is an explicit input, never the host platform: these tests must behave identically on Linux CI. */
+const options = (io: NotificationIO, home = HOME) => ({ gentlePiConfigHome: home, io, pathFlavor: "win32" as const });
 /** Built with `join` so the assertion holds on both path flavors; the production code uses the same join. */
 const HOME = "/config";
 const ENTRY = join(HOME, "notifications-sounds.json");
@@ -51,7 +52,7 @@ test("an absent saved-sounds file is an empty library that creates nothing and w
 });
 
 test("only the strict saved-sounds shape is accepted", () => {
-	assert.deepEqual(parseSavedSoundsFile(document([{ path: WIN_A }])), [{ path: WIN_A }]);
+	assert.deepEqual(parseSavedSoundsFile(document([{ path: WIN_A }]), "win32"), [{ path: WIN_A }]);
 	for (const rejected of [
 		document([{ path: WIN_A }], "gentle-shell.notifications/v1"),
 		document([{ path: WIN_A, volume: 50 }]),
@@ -65,7 +66,17 @@ test("only the strict saved-sounds shape is accepted", () => {
 		JSON.stringify({ schema: SAVED_SOUNDS_SCHEMA }),
 		JSON.stringify({ sounds: [{ path: WIN_A }] }),
 		"[]", "null", "{", "",
-	]) assert.equal(parseSavedSoundsFile(rejected), undefined, `must reject ${rejected}`);
+	]) assert.equal(parseSavedSoundsFile(rejected, "win32"), undefined, `must reject ${rejected}`);
+});
+
+test("the same library resolves and round-trips under the POSIX flavor", () => {
+	const posix = "/home/you/sounds/a.ogg";
+	assert.deepEqual(parseSavedSoundsFile(document([{ path: posix }]), "posix"), [{ path: posix }]);
+	assert.equal(parseSavedSoundsFile(document([{ path: posix }]), "win32"), undefined, "a POSIX path is not a Windows entry");
+	const fs = memoryIO();
+	writeSavedSounds([{ path: posix }], { gentlePiConfigHome: HOME, io: fs.io, pathFlavor: "posix" });
+	fs.files.set(ENTRY, fs.files.get(ENTRY)!);
+	assert.deepEqual(resolveSavedSounds({ gentlePiConfigHome: HOME, io: fs.io, pathFlavor: "posix" }).sounds, [{ path: posix }]);
 });
 
 test("the same file is one entry under Windows casing and separators, and two under POSIX", () => {

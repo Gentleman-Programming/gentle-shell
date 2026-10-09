@@ -5876,7 +5876,10 @@ test("bash_background returns at once, and an idle parent gets one stored exit n
 		assert.equal(sent.length, 0, "nothing reaches the parent while the job runs");
 		jobs.runs[0]!.onData(Buffer.from("check build: fail\n"));
 		jobs.runs[0]!.exit(1);
-		await jobIo();
+		await eventually(
+			() => sent.some((entry) => entry.message.customType === "gentle-jobs.notice") && userMessages.length > 0,
+			"the closed job log must deliver its exit notice and wake before assertions",
+		);
 		const notices = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
 		assert.equal(notices.length, 1, "the exit is reported exactly once");
 		assert.deepEqual(notices[0]!.options, { triggerTurn: false }, "an idle parent stores the notice without a direct turn");

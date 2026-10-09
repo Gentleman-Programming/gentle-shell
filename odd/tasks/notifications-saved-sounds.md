@@ -39,7 +39,7 @@ S8. Un archivo de biblioteca ausente es una biblioteca vacía, sin crear archivo
 | T1 | S5, S7, S8 | inline: `lib/notification-sounds.ts` + `tests/notification-sounds.test.ts` | `ebb9faea0` |
 | T2 | S2 | inline: `lib/visual-customize-view.ts` + `tests/visual-customize-view.test.ts` | `c1e74ec6a` |
 | T3 | S1, S3, S4, S6 | inline: `lib/notification-customize.ts` + `tests/notification-customize.test.ts` + docs (`docs/sound-notifications.md`, `README.md`, `docs/readme-reference.md`) | `7fe52d6d7` |
-| T4 | S1-S8 | inline: focused + typecheck + comparación de fallos pre-existentes | este cierre |
+| T4 | S1-S8 | inline: focused + typecheck + comparación de fallos pre-existentes | `90c947118` + cierre |
 
 ## Log
 
@@ -90,5 +90,21 @@ con los 23 fallos en archivos que este cambio no toca más ese caso conocido, y 
 
 L8 — Pendiente y fuera de alcance declarado: el volumen por sonido y el traslado de la biblioteca a
 `audio.sounds` con esquema `/v2` siguen sin decidir; la pregunta abierta del grupo mixto (hoy `Enter` sobre un
-tipo mixto aplica el tono recomendado y descarta las excepciones por evento) sigue igual. Sin push ni PR: el
-parche se aplicó al checkout instalado solo para la prueba manual del usuario.
+tipo mixto aplica el tono recomendado y descarta las excepciones por evento) sigue igual.
+
+L9 — Defecto de portabilidad que encontró correr los tests en Linux (y que habría roto CI): los tests de la
+biblioteca usaban paths de Windows contra el flavor **por defecto**, que fuera de Windows es `posix`, así que
+`writeSavedSounds`/`resolveSavedSounds` los rechazaban y 4 casos fallaban. Corregido en `90c947118` fijando el
+flavor por test (`win32` para los documentos con paths de Windows, más un caso de round-trip `posix`); el test
+del tope de la tarjeta siembra paths nativos de la plataforma. Evidencia: Linux con node 24 → grupo notification
+**195/195** y `tests/gentle-shell.test.ts` **263/263**; Windows → 102 tests con el único fallo pre-existente.
+Eso también prueba que los 24 fallos locales son del entorno Windows: el job de Windows de CI solo corre tres
+archivos de review, y el suite completo corre en ubuntu.
+
+L10 — PR abierto: **#1974** (`main` ← `Fivoryu:fix/notifications-enter-cycle-and-timing-rows`), 7 commits,
++788/−42 en 11 archivos, sin labels (la cuenta tiene `READ` sobre el repo: no puede etiquetar el issue ni el PR)
+y con los runs de CI en `action_required` esperando que un maintainer apruebe la ejecución del workflow de un
+fork. Antes del push: `node scripts/verify-package-files.mjs` 196 archivos / 69 pins ✓, `check:runtime-modules` ✓,
+`pnpm run typecheck` 186 sin regresiones ✓. **NO** se pudieron correr localmente `pnpm test` completo ni
+`test:packed-package`: falta toolchain Linux (el `npm` de Windows con node de Linux se mezcla y falla por
+entorno), así que la primera corrida completa es la de CI.

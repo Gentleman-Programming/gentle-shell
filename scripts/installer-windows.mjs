@@ -135,7 +135,9 @@ export function windowsStorageEvidence(output) {
 export function verifyWindowsStorage(path, env, processAdapter = windowsProcessCheck) {
 	if (process.platform !== "win32") throw new Error("Native Windows storage verification unavailable");
 	if (!win32.isAbsolute(path) || path.startsWith("\\\\")) throw new Error("Unsafe Windows storage path");
-	windowsStorageEvidence(processAdapter(join(env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", aclCheck], { ...env, GENTLE_WINDOWS_CHECK: path }));
+	// Windows process.env is case-insensitive, but a copied environment is not.
+	const systemRoot = env.SystemRoot ?? Object.entries(env).find(([key]) => key.toLowerCase() === "systemroot")?.[1];
+	windowsStorageEvidence(processAdapter(join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", aclCheck], { ...env, GENTLE_WINDOWS_CHECK: path }));
 }
 
 /** Strict bounded tar reader: no system tar, archive links or archive execution.

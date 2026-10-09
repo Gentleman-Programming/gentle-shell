@@ -204,7 +204,8 @@ rem through reparse points. A removal problem never fails the installation.
   "$marker = Get-Item -LiteralPath (Join-Path $tools '.bootstrap-owned') -Force;" ^
   "if ($marker.PSIsContainer -or ($marker.Attributes -band [IO.FileAttributes]::ReparsePoint) -or (Get-Content -LiteralPath $marker.FullName -Raw) -ne 'gentle-pi prerequisite tooling only') { throw 'Cleanup marker rejected' };" ^
   "[IO.Directory]::Delete($tools, $true);" ^
-  "} catch { [Console]::Error.WriteLine('Bootstrap: installation finished, but temporary tools could not be removed: ' + $env:GENTLE_BOOTSTRAP_TOOLS); exit 1 } }"
+  "} catch { $message = 'Bootstrap: installation finished, but temporary tools could not be removed: ' + $env:GENTLE_BOOTSTRAP_TOOLS;" ^
+  "if ([Console]::IsErrorRedirected) { $bytes = [Text.Encoding]::UTF8.GetBytes($message + [Environment]::NewLine); $stderr = [Console]::OpenStandardError(); $stderr.Write($bytes, 0, $bytes.Length); $stderr.Flush() } else { [Console]::Error.WriteLine($message) }; exit 1 } }"
 endlocal & exit /b 0
 
 :unavailable

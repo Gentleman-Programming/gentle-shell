@@ -928,7 +928,11 @@ stage removes the claimed root only when its full path is a direct child of
 `.bootstrap-owned` marker is a reparse point, and the marker holds the exact
 text. It uses `[IO.Directory]::Delete(path, true)`, which does not recurse
 through reparse points, instead of Windows PowerShell 5.1 `Remove-Item`. A
-refusal or failure prints the same notice with the path and still exits 0. ACL/ancestor checks are conservative and may
+refusal or failure prints the same notice with the path and still exits 0.
+Redirected cleanup notices use UTF-8 so captured logs preserve Unicode paths.
+Interactive stderr keeps its existing encoding; bootstrap does not change the
+console code page. PowerShell helper lookup honors Windows `SystemRoot` casing
+in copied environments. ACL/ancestor checks are conservative and may
 reject managed/nonstandard layouts rather than relax security. They do not
 claim protection from a malicious process running as the same principal or an
 administrator, nor eliminate same-principal time-of-check/time-of-use races.

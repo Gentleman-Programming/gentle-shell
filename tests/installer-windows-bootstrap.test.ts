@@ -721,6 +721,32 @@ async function ownedNativeFixture() {
 	return f;
 }
 
+test("native Windows: storage check resolves case-insensitive environment copies", { skip: nativeUnavailable }, () => {
+	const target = join(process.env.SystemRoot!, "fixture-owned", "tools");
+	const root = process.env.SystemRoot!;
+	const calls: { executable: string; args: string[]; env: NodeJS.ProcessEnv }[] = [];
+	const adapter = (executable: string, args: string[], env: NodeJS.ProcessEnv) => {
+		calls.push({ executable, args, env });
+		return "safe";
+	};
+	const canonical = { SystemRoot: root };
+	assert.equal(verifyWindowsStorage(target, canonical, adapter), undefined);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].executable, join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"));
+	assert.equal(calls[0].args.length, 5);
+	assert.deepEqual(calls[0].args.slice(0, 4), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]);
+	assert.match(calls[0].args[4], /LanguageMode -ne 'FullLanguage'/);
+	assert.deepEqual(calls[0].env, { ...canonical, GENTLE_WINDOWS_CHECK: target });
+	assert.deepEqual(canonical, { SystemRoot: root });
+	const copied = { SYSTEMROOT: root };
+	assert.equal(verifyWindowsStorage(target, copied, adapter), undefined);
+	assert.equal(calls.length, 2);
+	assert.equal(calls[1].executable, calls[0].executable);
+	assert.deepEqual(calls[1].args, calls[0].args);
+	assert.deepEqual(calls[1].env, { ...copied, GENTLE_WINDOWS_CHECK: target });
+	assert.deepEqual(copied, { SYSTEMROOT: root });
+});
+
 test("native Windows: production owned claim/check, ACL depth and collision preservation", { skip: nativeUnavailable }, async () => {
 	const f = await ownedNativeFixture();
 	try {

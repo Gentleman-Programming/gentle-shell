@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
-import { initTheme } from "@earendil-works/pi-coding-agent";
+import { initTheme, SessionManager } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import type {
@@ -18,6 +18,7 @@ import type {
 import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { PROFILES_KIND, PROFILES_VERSION, bootstrapProfilesFile, readProfilesFileResult, type AgentProfilesFile } from "../lib/agent-profiles.ts";
 import { bindSessionProfile, readSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
+import { createSessionProfileIntegration } from "../lib/session-profile-integration.ts";
 import type { AgentModelConfig, AgentRoutingEntry, ThinkingLevel } from "../lib/model-routing-authority.ts";
 type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel" | "getThinkingLevel">;
 import { PROFILE_PIN_KIND, PROFILE_PIN_VERSION, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
@@ -504,6 +505,9 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 			liveThinking = thinking;
 		},
 		refuseSetModel() { setModelResult = false; },
+		// Enter persists the session profile record, so a test that presses it
+		// swaps in a real session manager it can append to and corroborate.
+		useSessionManager(manager: unknown) { (ctx as { sessionManager: unknown }).sessionManager = manager; },
 		rejectThinkingLevel() { thinkingRejects = true; },
 		confirmCalls,
 		onConfirm(handler: (title: string, message: string) => Promise<boolean>) { onConfirm = handler; },
@@ -3230,6 +3234,7 @@ test("models screen saves the explicit orchestrator choice into the profile", as
 	assert.equal(fixture.notifications.some((entry) => entry.severity === "warning"), false);
 
 	// Use in this session still drives the live session.
+	fixture.useSessionManager(profileActionManager(fixture.root));
 	actOnProfile(fixture, "u");
 	await fixture.run("gentle:profiles");
 	assert.deepEqual(fixture.liveSwitches, [
@@ -4126,6 +4131,14 @@ function readValidProfilesStore(path: string) {
 	return result.file;
 }
 
+/** A real persisted session started under the profile integration, so Enter can bind and persist. */
+function profileActionManager(root: string): SessionManager {
+	const manager = SessionManager.create(root, join(root, "session-fixture"));
+	manager.appendMessage({ role: "user", content: "isolated profile action", timestamp: 1 });
+	createSessionProfileIntegration().start(manager, (type, data) => { manager.appendCustomEntry(type, data); }, { reason: "startup" });
+	return manager;
+}
+
 test("Enter switches the live orchestrator, binds the profile, and writes nothing", async (t) => {
 	const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
 	writeSettings();
@@ -4136,11 +4149,12 @@ test("Enter switches the live orchestrator, binds the profile, and writes nothin
 	};
 	resetSessionProfileBindingsForTesting();
 	const notifications: Array<{ message: string; severity: string }> = [];
+	const manager = profileActionManager(fixture.root);
 	const ctx = {
 		cwd: fixture.root,
 		hasUI: true,
 		ui: { notify(message: string, severity: string) { notifications.push({ message, severity }); } },
-		sessionManager: { getSessionId: () => "session-panel" },
+		sessionManager: manager,
 		modelRegistry: { find: () => ({ provider: "openai", id: "beta" }) },
 	} as unknown as ExtensionContext;
 	const models: unknown[] = [];
@@ -4154,16 +4168,18 @@ test("Enter switches the live orchestrator, binds the profile, and writes nothin
 	await __testing.runProfilesPanelAction(ctx, live, storePath, file, { type: "use-session", name: "team" }, {});
 	assert.deepEqual(models, [{ provider: "openai", id: "beta" }]);
 	assert.deepEqual(thinking, ["high"]);
-	const binding = readSessionProfileBinding("session-panel");
+	const binding = readSessionProfileBinding(manager.getSessionId());
 	assert.equal(binding?.name, "team");
 	assert.equal(binding?.modelProfiles.worker?.model, "openai/alpha");
 	assert.equal(readFileSync(storePath, "utf8"), before.store, "the profiles store is untouched");
 	assert.equal(readFileSync(settingsPath, "utf8"), before.settings, "Pi settings are untouched");
 	assert.equal(existsSync(fixture.globalPath), false, "no global models.json is written");
 	assert.equal(existsSync(join(fixture.root, ".pi", "subagents.json")), false, "no materialized store is written");
+	assert.equal(manager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === "gentle-pi.session-profile/v1").length, 1, "only the session profile record is written");
 	const applied = notifications.at(-1)?.message ?? "";
 	assert.match(applied, /bound profile "team" to this session/);
 	assert.match(applied, /its tab shows ◉/);
+	assert.match(applied, /persisted in this session/);
 	assert.match(applied, /This session now runs on openai\/beta · high/);
 	assert.match(applied, /Subagents and reviewers use this session's routing snapshot/);
 	assert.match(applied, /global routing, pins, and materialized stores are untouched/);
@@ -4182,10 +4198,11 @@ test("Enter switches only the selecting session's orchestrator and leaves shared
 	bindSessionProfile("other-session", "old", { worker: { model: "openai/old" } });
 	const switches: string[] = [];
 	const thinking: ThinkingLevel[] = [];
+	const manager = profileActionManager(fixture.root);
 	const ctx = {
 		cwd: fixture.root, hasUI: true,
 		ui: { notify() {} },
-		sessionManager: { getSessionId: () => "selecting-session" },
+		sessionManager: manager,
 		modelRegistry: { find: (provider: string, id: string) => ({ provider, id }) },
 	} as unknown as ExtensionContext;
 	const live = {
@@ -4196,7 +4213,7 @@ test("Enter switches only the selecting session's orchestrator and leaves shared
 	await __testing.runProfilesPanelAction(ctx, live, storePath, readValidProfilesStore(storePath), { type: "use-session", name: "team" });
 	assert.deepEqual(switches, ["openai/alpha"]);
 	assert.deepEqual(thinking, ["high"]);
-	assert.equal(readSessionProfileBinding("selecting-session")?.name, "team");
+	assert.equal(readSessionProfileBinding(manager.getSessionId())?.name, "team");
 	assert.equal(readSessionProfileBinding("other-session")?.modelProfiles.worker?.model, "openai/old");
 	assert.equal(readSessionProfileBinding("unbound-session"), undefined);
 	assert.equal(readFileSync(storePath, "utf8"), beforeStore);
@@ -4235,11 +4252,12 @@ test("Enter preserves session-only routing when the orchestrator is absent or ca
 		const notifications: string[] = [];
 		let modelCalls = 0;
 		let thinkingCalls = 0;
+		const manager = profileActionManager(fixture.root);
 		const ctx = {
 			cwd: fixture.root,
 			hasUI: true,
 			ui: { notify(message: string) { notifications.push(message); } },
-			sessionManager: { getSessionId: () => "session-panel" },
+			sessionManager: manager,
 			modelRegistry: { find: () => ({ provider: "openai", id: "beta" }) },
 		} as unknown as ExtensionContext;
 		const live = {
@@ -4250,7 +4268,7 @@ test("Enter preserves session-only routing when the orchestrator is absent or ca
 		await __testing.runProfilesPanelAction(ctx, live, storePath, readValidProfilesStore(storePath), { type: "use-session", name: "team" }, {});
 		assert.equal(modelCalls, rejected ? 1 : 0);
 		assert.equal(thinkingCalls, 0);
-		assert.equal(readSessionProfileBinding("session-panel")?.modelProfiles.worker?.model, "openai/alpha");
+		assert.equal(readSessionProfileBinding(manager.getSessionId())?.modelProfiles.worker?.model, "openai/alpha");
 		assert.equal(readFileSync(storePath, "utf8"), storeBefore);
 		assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore);
 		assert.equal(existsSync(fixture.globalPath), false);
@@ -4284,16 +4302,17 @@ test("Enter with a winning pin binds the session and never touches the pin layer
 	const pinBefore = readFileSync(localPinPath, "utf8");
 	const storeBefore = readFileSync(storePath, "utf8");
 	resetSessionProfileBindingsForTesting();
+	const manager = profileActionManager(fixture.root);
 	const ctx = {
 		cwd: fixture.root,
 		hasUI: true,
 		ui: { notify() {} },
-		sessionManager: { getSessionId: () => "session-panel" },
+		sessionManager: manager,
 	} as unknown as ExtensionContext;
 	const live = { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel(): ThinkingLevel { return "medium"; } };
 	const file = readValidProfilesStore(storePath);
 	await __testing.runProfilesPanelAction(ctx, live, storePath, file, { type: "use-session", name: "team" }, {});
-	assert.equal(readSessionProfileBinding("session-panel")?.name, "team");
+	assert.equal(readSessionProfileBinding(manager.getSessionId())?.name, "team");
 	assert.equal(readFileSync(localPinPath, "utf8"), pinBefore, "the clone pin is untouched");
 	assert.equal(readFileSync(storePath, "utf8"), storeBefore, "the store is untouched");
 	assert.equal(existsSync(fixture.globalPath), false);

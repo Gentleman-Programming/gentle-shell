@@ -43,6 +43,7 @@ import { fileURLToPath } from "node:url";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
+	SessionShutdownEvent,
 	Theme,
 	ThemeColor,
 	ToolCallEventResult,
@@ -114,7 +115,9 @@ import {
 	type ProfilePinSource,
 	type ProfilePinStatus,
 } from "../lib/agent-profile-pin.ts";
-import { bindSessionProfile, readSessionProfileBinding } from "../lib/session-profile-binding.ts";
+import { clearSessionProfileBinding, readSessionProfileBinding } from "../lib/session-profile-binding.ts";
+import { createSessionProfileIntegration, hasPendingSessionProfileSelection, readCurrentSessionProfileOutcome, runCurrentSessionProfileSelection, waitCurrentSessionProfileSelection } from "../lib/session-profile-integration.ts";
+import { publishSessionProfileOutcome, readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import {
 	applyOrchestratorSettings,
 	readOrchestratorSettings,
@@ -4931,9 +4934,10 @@ async function runProfilesPanelAction(
 	switch (result.type) {
 		case "use-session": {
 			if (!hasOwnProfile(file.profiles, result.name)) return file;
-			// Use in this session binds a complete routing snapshot to this parent
-			// session and switches only its live orchestrator. No shared defaults,
-			// materialized stores, agent frontmatter, pins, or declarations are written.
+			// Enter persists a complete routing snapshot for this parent session,
+			// publishes only the returned state, then switches its live orchestrator.
+			// No shared defaults, materialized stores, agent frontmatter, pins, or
+			// declarations are written.
 			const sessionId = ctx.sessionManager?.getSessionId?.();
 			if (typeof sessionId !== "string" || sessionId.length === 0) {
 				report.status = `This Pi session has no id to bind "${result.name}" to. Use Make default instead.`;
@@ -4943,15 +4947,51 @@ async function runProfilesPanelAction(
 				);
 				return file;
 			}
-			const snapshot = normalizeModelConfig(result.config ?? file.profiles[result.name]) ?? {};
-			bindSessionProfile(sessionId, result.name, snapshot);
-			const orchestrator = readProfileOrchestrator(snapshot);
-			const liveNote = orchestrator === undefined ? "" : await switchLiveOrchestrator(ctx, live, orchestrator);
-			report.status = `This session now uses "${result.name}". Nothing shared was written.${liveNote.replace(/\n/g, " ")}`;
-			ctx.ui.notify(
-				`el Gentleman bound profile "${result.name}" to this session — its tab shows ◉. Subagents and reviewers use this session's routing snapshot. Shared defaults were not written: the global routing, pins, and materialized stores are untouched. Make default writes them.${liveNote}`,
-				"info",
-			);
+			const selected = await runCurrentSessionProfileSelection(ctx.sessionManager, async (attachment, owned) => {
+				const outcome = attachment.bind(result.name, normalizeModelConfig(result.config ?? file.profiles[result.name]) ?? {});
+				if (!owned()) return false;
+				const authority = publishSessionProfileOutcome(ctx.sessionManager, outcome);
+				if ((outcome.status !== "persisted" && outcome.status !== "not-persisted") || outcome.state.status !== "bound" || !authority.available) {
+					const kept = authority.available ? "The last disk-corroborated state was preserved." : "Session profile authority is unavailable; affected launches are blocked.";
+					report.status = `"${result.name}" was not bound to this session. ${kept}`;
+					ctx.ui.notify(
+						`el Gentleman could not bind profile "${result.name}". ${kept} No live model or thinking change was applied.`,
+						"warning",
+					);
+					return false;
+				}
+				const snapshot = outcome.state.binding;
+				// The live switch applies only while this exact snapshot is still current.
+				const current = () => {
+					if (!owned()) return false;
+					const state = readCurrentSessionProfileOutcome(ctx.sessionManager)?.state;
+					return state?.status === "bound" && JSON.stringify(state.binding) === JSON.stringify(snapshot);
+				};
+				const orchestrator = readProfileOrchestrator(snapshot.modelProfiles);
+				const liveNote = orchestrator === undefined ? "" : await switchLiveOrchestrator(ctx, {
+					setModel: (model) => current() ? live.setModel(model) : Promise.resolve(false),
+					setThinkingLevel: (level) => { if (current()) live.setThinkingLevel(level); },
+					getThinkingLevel: () => live.getThinkingLevel(),
+				}, orchestrator);
+				if (current()) {
+					const persistence = outcome.status === "persisted" ? "persisted in this session" : "not yet persisted; active only until detach or disk corroboration";
+					report.status = `This session now uses "${snapshot.name}" (${persistence}). Nothing shared was written.${liveNote.replace(/\n/g, " ")}`;
+					ctx.ui.notify(
+						`el Gentleman bound profile "${snapshot.name}" to this session — its tab shows ◉; ${persistence}. Subagents and reviewers use this session's routing snapshot. Shared defaults were not written: the global routing, pins, and materialized stores are untouched. Make default writes them.${liveNote}`,
+						"info",
+					);
+				}
+				return true;
+			});
+			// A selection skipped by a reload or session replacement leaves a stale
+			// ctx; only a still-active command reports the missing attachment.
+			if (selected === undefined && isCommandContextActive(ctx)) {
+				report.status = `"${result.name}" was not bound: this session's attachment is unavailable.`;
+				ctx.ui.notify(
+					`el Gentleman cannot bind profile "${result.name}": the current session attachment is unavailable. No profile or live model change was applied.`,
+					"warning",
+				);
+			}
 			return file;
 		}
 		case "apply-global": {
@@ -5613,142 +5653,177 @@ async function openProfilesPanelLoop(
 	};
 	const differsFromStore = (name: string, config: AgentModelConfig) =>
 		JSON.stringify(normalizeModelConfig(config) ?? {}) !== JSON.stringify(normalizeModelConfig(file.profiles[name]) ?? {});
-	while (true) {
-		if (selectedName === undefined || !hasOwnProfile(file.profiles, selectedName)) {
-			selectedName = Object.keys(file.profiles)[0];
-			draftOverride = undefined;
+	// Pi's runner invalidates this command ctx in a microtask when a reload or
+	// session replacement lands, possibly while a panel or input step is still in
+	// flight. Every step therefore re-checks the ctx when it settles (or throws),
+	// and a stale ctx closes the loop quietly instead of touching ctx.cwd again.
+	const stale = Symbol("stale-profiles-ctx");
+	const step = async <T>(run: () => Promise<T>): Promise<T> => {
+		let value: T;
+		try {
+			value = await run();
+		} catch (error) {
+			if (!isCommandContextActive(ctx)) throw stale;
+			throw error;
 		}
-		if (selectedName === undefined) {
-			ctx.ui.notify("el Gentleman has no profiles left. Run /gentle:profiles again to seed one from the routing in effect.", "info");
-			return;
-		}
-		const stored = cloneModelConfig(normalizeModelConfig(file.profiles[selectedName]) ?? {});
-		const boundName = sessionBoundName();
-		const result = await showRoutingTablePanel(ctx, {
-			name: selectedName,
-			config: draftOverride ?? stored,
-			file,
-			sessionBoundName: boundName,
-			pinWinner: pinWinner(),
-			feedback,
-			notices: routingScreenNotices(ctx, file, selectedName, boundName),
-			switchProfile,
-		});
-		draftOverride = undefined;
-		feedback = undefined;
-		const previous = selectedName;
-		if (result.saveFirst && !writeDraft(previous, result.saveFirst)) {
-			draftOverride = result.saveFirst;
-			continue;
-		}
-		const savedNote = result.saveFirst ? `Saved "${previous}". ` : "";
-		switch (result.type) {
-			case "close":
+		if (!isCommandContextActive(ctx)) throw stale;
+		return value;
+	};
+	try {
+		await runProfilesPanelSteps();
+	} catch (error) {
+		if (error !== stale) throw error;
+	}
+	async function runProfilesPanelSteps(): Promise<void> {
+		while (true) {
+			if (!isCommandContextActive(ctx)) return;
+			if (selectedName === undefined || !hasOwnProfile(file.profiles, selectedName)) {
+				selectedName = Object.keys(file.profiles)[0];
+				draftOverride = undefined;
+			}
+			if (selectedName === undefined) {
+				ctx.ui.notify("el Gentleman has no profiles left. Run /gentle:profiles again to seed one from the routing in effect.", "info");
 				return;
-			case "load":
-				selectedName = result.name;
-				feedback = `${savedNote}Showing "${result.name}".`;
-				continue;
-			case "custom": {
-				const label = result.target === PROFILE_ORCHESTRATOR_KEY
-					? "the orchestrator"
-					: result.target === ROUTING_ALL_ROW ? "every agent" : sanitizeTerminalText(result.target);
-				const answer = await ctx.ui.input(`Custom model id for ${label}`, "provider/model");
-				draftOverride = cloneModelConfig(result.config);
-				if (answer === undefined || answer.trim() === "") {
-					feedback = "No custom model set.";
-					continue;
-				}
-				const model = normalizeModelId(answer.trim());
-				if (!model) {
-					feedback = "Custom model id must be one provider/model line using letters, numbers, '.', '-', '_', '~', ':', '@', '/', '+', '%' only.";
-					continue;
-				}
-				const keys = result.target === ROUTING_ALL_ROW ? modelAssignmentNames(ctx.cwd) : [result.target];
-				for (const key of keys) draftOverride[key] = { ...(draftOverride[key] ?? {}), model };
-				feedback = `${label}: model ${model}. Save keeps it in "${previous}".`;
+			}
+			const shown = selectedName;
+			const stored = cloneModelConfig(normalizeModelConfig(file.profiles[shown]) ?? {});
+			const boundName = sessionBoundName();
+			const result = await step(() => showRoutingTablePanel(ctx, {
+				name: shown,
+				config: draftOverride ?? stored,
+				file,
+				sessionBoundName: boundName,
+				pinWinner: pinWinner(),
+				feedback,
+				notices: routingScreenNotices(ctx, file, shown, boundName),
+				switchProfile,
+			}));
+			draftOverride = undefined;
+			feedback = undefined;
+			const previous = selectedName;
+			if (result.saveFirst && !writeDraft(previous, result.saveFirst)) {
+				draftOverride = result.saveFirst;
 				continue;
 			}
-			case "save":
-				if (writeDraft(previous, result.config)) feedback = `Saved "${previous}".`;
-				else draftOverride = result.config;
-				continue;
-			case "use-session": {
-				// What you see is what the session uses: edits are saved first.
-				// A tab switch may have changed the shown profile since this visit opened.
-				const config = result.config ?? cloneModelConfig(normalizeModelConfig(file.profiles[previous]) ?? {});
-				const saved = differsFromStore(previous, config);
-				if (saved && !writeDraft(previous, config)) {
-					draftOverride = config;
+			const savedNote = result.saveFirst ? `Saved "${previous}". ` : "";
+			switch (result.type) {
+				case "close":
+					return;
+				case "load":
+					selectedName = result.name;
+					feedback = `${savedNote}Showing "${result.name}".`;
+					continue;
+				case "custom": {
+					const label = result.target === PROFILE_ORCHESTRATOR_KEY
+						? "the orchestrator"
+						: result.target === ROUTING_ALL_ROW ? "every agent" : sanitizeTerminalText(result.target);
+					const answer = await step(() => ctx.ui.input(`Custom model id for ${label}`, "provider/model"));
+					draftOverride = cloneModelConfig(result.config);
+					if (answer === undefined || answer.trim() === "") {
+						feedback = "No custom model set.";
+						continue;
+					}
+					const model = normalizeModelId(answer.trim());
+					if (!model) {
+						feedback = "Custom model id must be one provider/model line using letters, numbers, '.', '-', '_', '~', ':', '@', '/', '+', '%' only.";
+						continue;
+					}
+					const keys = result.target === ROUTING_ALL_ROW ? modelAssignmentNames(ctx.cwd) : [result.target];
+					for (const key of keys) draftOverride[key] = { ...(draftOverride[key] ?? {}), model };
+					feedback = `${label}: model ${model}. Save keeps it in "${previous}".`;
 					continue;
 				}
-				const report: ProfilesPanelReport = {};
-				file = await runProfilesPanelAction(ctx, live, path, file, { type: "use-session", name: previous, config }, report);
-				feedback = `${saved ? `Saved "${previous}". ` : ""}${report.status ?? ""}`.trim() || undefined;
-				continue;
-			}
-			case "apply-global": {
-				// Make default saves what you see, then runs the guarded global
-				// apply with its diff confirmation, pin honesty, and rollback.
-				const saved = differsFromStore(previous, result.config);
-				if (saved && !writeDraft(previous, result.config)) {
-					draftOverride = result.config;
+				case "save":
+					if (writeDraft(previous, result.config)) feedback = `Saved "${previous}".`;
+					else draftOverride = result.config;
+					continue;
+				case "use-session": {
+					// What you see is what the session uses: edits are saved first.
+					// A tab switch may have changed the shown profile since this visit opened.
+					const config = result.config ?? cloneModelConfig(normalizeModelConfig(file.profiles[previous]) ?? {});
+					const saved = differsFromStore(previous, config);
+					if (saved && !writeDraft(previous, config)) {
+						draftOverride = config;
+						continue;
+					}
+					const report: ProfilesPanelReport = {};
+					file = await step(() => runProfilesPanelAction(ctx, live, path, file, { type: "use-session", name: previous, config }, report));
+					feedback = `${saved ? `Saved "${previous}". ` : ""}${report.status ?? ""}`.trim() || undefined;
 					continue;
 				}
-				file = await runProfilesPanelAction(ctx, live, path, file, { type: "apply-global", name: previous, config: cloneModelConfig(result.config) });
-				const prefix = saved ? `Saved "${previous}". ` : "";
-				feedback = file.active === previous
-					? `${prefix}"${previous}" is the default for new sessions.`
-					: pinWinner() === previous
-						? `${prefix}This repo pins its profile, so "${previous}" now applies to this repo only.`
-						: `${prefix}"${previous}" was not made the default.`;
-				continue;
-			}
-			case "create-live": {
-				const answer = await ctx.ui.input("Name for a profile of what's running now", "e.g. snapshot");
-				const name = answer?.trim() ?? "";
-				if (name === "") {
-					feedback = `${savedNote}No profile created.`;
+				case "apply-global": {
+					// Make default saves what you see, then runs the guarded global
+					// apply with its diff confirmation, pin honesty, and rollback.
+					const saved = differsFromStore(previous, result.config);
+					if (saved && !writeDraft(previous, result.config)) {
+						draftOverride = result.config;
+						continue;
+					}
+					file = await step(() => runProfilesPanelAction(ctx, live, path, file, { type: "apply-global", name: previous, config: cloneModelConfig(result.config) }));
+					const prefix = saved ? `Saved "${previous}". ` : "";
+					feedback = file.active === previous
+						? `${prefix}"${previous}" is the default for new sessions.`
+						: pinWinner() === previous
+							? `${prefix}This repo pins its profile, so "${previous}" now applies to this repo only.`
+							: `${prefix}"${previous}" was not made the default.`;
 					continue;
 				}
-				// Captures the routing this session's launches resolve and the
-				// orchestrator it actually runs, the way the old snapshot did.
-				const snapshot = profileSnapshotFrom(
-					readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.modelProfiles
-						?? await readEffectiveModelConfigAsync(ctx.cwd),
-					liveOrchestratorSnapshot(ctx, live) ?? readOrchestratorSettings(orchestratorSettingsPath()),
-				);
-				try {
-					const next = createProfile(file, name, snapshot);
-					writeProfilesFileSync(path, next);
-					file = next;
-					selectedName = name;
-					feedback = `${savedNote}Created "${name}" from what's running now.`;
-				} catch (error) {
-					feedback = `${savedNote}Profile not created: ${profilesErrorMessage(error)}`;
+				case "create-live": {
+					const answer = await step(() => ctx.ui.input("Name for a profile of what's running now", "e.g. snapshot"));
+					const name = answer?.trim() ?? "";
+					if (name === "") {
+						feedback = `${savedNote}No profile created.`;
+						continue;
+					}
+					// Captures the routing this session's launches resolve and the
+					// orchestrator it actually runs, the way the old snapshot did.
+					const snapshot = profileSnapshotFrom(
+						readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.modelProfiles
+							?? await step(() => readEffectiveModelConfigAsync(ctx.cwd)),
+						liveOrchestratorSnapshot(ctx, live) ?? readOrchestratorSettings(orchestratorSettingsPath()),
+					);
+					try {
+						const next = createProfile(file, name, snapshot);
+						writeProfilesFileSync(path, next);
+						file = next;
+						selectedName = name;
+						feedback = `${savedNote}Created "${name}" from what's running now.`;
+					} catch (error) {
+						feedback = `${savedNote}Profile not created: ${profilesErrorMessage(error)}`;
+					}
+					continue;
 				}
-				continue;
-			}
-			default: {
-				const report: ProfilesPanelReport = {};
-				file = await runProfilesPanelAction(ctx, live, path, file, result, report);
-				selectedName = report.selectedName ?? selectedName;
-				if (result.type === "delete" && !hasOwnProfile(file.profiles, previous)) {
-					feedback = `Deleted "${previous}".`;
-				} else if (result.type === "pin") {
-					feedback = report.status ?? (pinWinner() === previous
-						? `"${previous}" is used in this repo.`
-						: `"${previous}" is no longer pinned to this repo.`);
-				} else {
-					feedback = report.status ? `${savedNote}${report.status}` : savedNote || undefined;
-				}
-				// Rename, pin, and a declined delete keep the profile on screen; carry
-				// unsaved edits across them instead of reloading from the store.
-				if (result.draft && hasOwnProfile(file.profiles, selectedName) && (selectedName === previous || result.type === "rename")) {
-					draftOverride = result.draft;
+				default: {
+					const report: ProfilesPanelReport = {};
+					file = await step(() => runProfilesPanelAction(ctx, live, path, file, result, report));
+					selectedName = report.selectedName ?? selectedName;
+					if (result.type === "delete" && !hasOwnProfile(file.profiles, previous)) {
+						feedback = `Deleted "${previous}".`;
+					} else if (result.type === "pin") {
+						feedback = report.status ?? (pinWinner() === previous
+							? `"${previous}" is used in this repo.`
+							: `"${previous}" is no longer pinned to this repo.`);
+					} else {
+						feedback = report.status ? `${savedNote}${report.status}` : savedNote || undefined;
+					}
+					// Rename, pin, and a declined delete keep the profile on screen; carry
+					// unsaved edits across them instead of reloading from the store.
+					if (result.draft && hasOwnProfile(file.profiles, selectedName) && (selectedName === previous || result.type === "rename")) {
+						draftOverride = result.draft;
+					}
 				}
 			}
 		}
+	}
+}
+
+/** Pi's runner throws on any access to a ctx made stale by reload or session replacement. */
+function isCommandContextActive(ctx: ExtensionContext): boolean {
+	try {
+		void ctx.sessionManager;
+		return true;
+	} catch {
+		return false;
 	}
 }
 
@@ -10344,11 +10419,20 @@ function createGentleAiExtensionForTesting(
 
 	const statusTiming = new StatusTimingDiagnostics();
 	const reviewSidebar = createReviewSidebarPublisher(pi);
+	const sessionProfiles = createSessionProfileIntegration();
+	pi.on("session_before_fork", async (event, ctx) => {
+		await waitCurrentSessionProfileSelection(ctx.sessionManager);
+		sessionProfiles.beforeFork(ctx.sessionManager, { entryId: event.entryId, position: event.position });
+	});
+	pi.on("session_before_tree", async (_event, ctx) => {
+		await waitCurrentSessionProfileSelection(ctx.sessionManager);
+	});
 	const observedReviewTool: typeof reviewSidebar.tool = (definition) => statusTiming.tool(reviewSidebar.tool(definition));
 	pi.on("session_tree", (_event, ctx) => {
 		auto.reset();
 		reviewSidebar.reset(ctx);
 		statusTiming.reset(ctx);
+		readSessionProfileAuthority(ctx.sessionManager);
 	});
 	// Lean RDD-off review loadout (applyRddOffReviewPrompt): every
 	// before_agent_start sets it from the pinned line before Pi prepares that
@@ -10359,6 +10443,19 @@ function createGentleAiExtensionForTesting(
 	let reminderManager: ExtensionContext["sessionManager"] | undefined;
 	let unbindPreparation: (() => void) | undefined;
 	pi.on("session_shutdown", (event, context) => {
+		// A pending Enter selection settles before the profile owner shuts down;
+		// without one the whole shutdown stays synchronous, so terminal cleanup
+		// (child permission transport, sidebars) is never deferred a turn.
+		if (hasPendingSessionProfileSelection(context.sessionManager)) {
+			return waitCurrentSessionProfileSelection(context.sessionManager).then(() => shutdownSession(event, context));
+		}
+		shutdownSession(event, context);
+	});
+	function shutdownSession(event: SessionShutdownEvent, context: ExtensionContext): void {
+		if (sessionProfiles.isCurrent(context.sessionManager)) {
+			clearSessionProfileBinding(context.sessionManager.getSessionId());
+			sessionProfiles.shutdown(context.sessionManager, event);
+		}
 		pinnedRddStatusLines.delete(pendingReviewConsentSessionKey(context, pendingReviewConsentFallbackKey));
 		rddOffReviewLoadout = false;
 		auto.reset();
@@ -10382,7 +10479,7 @@ function createGentleAiExtensionForTesting(
 		cleanupAllPendingReviewConsents(pendingReviewConsentRegistry, sessionKey);
 		processRetainedNativeStatusSelections.delete(sessionKey);
 		processAgentEndSubagentDepth.delete(sessionKey);
-	});
+	}
 
 	// gentle-pi ODD input phase labels: the explicit half of the bounded ODD
 	// phase signal for the Gentle prompt's working label. Gentle Shell infers
@@ -10747,6 +10844,10 @@ function createGentleAiExtensionForTesting(
 	}));
 
 	pi.on("session_start", async (event, ctx) => {
+		const profileSessionId = ctx.sessionManager?.getSessionId?.();
+		if (profileSessionId) clearSessionProfileBinding(profileSessionId);
+		sessionProfiles.start(ctx.sessionManager, (type, data) => pi.appendEntry(type, data), event);
+		readSessionProfileAuthority(ctx.sessionManager);
 		auto.reset();
 		yolo.reset(ctx);
 		// Package-owned children reset local state but never initialize primary defaults.

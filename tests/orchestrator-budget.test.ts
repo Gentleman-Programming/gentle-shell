@@ -30,8 +30,13 @@ import test, { after } from "node:test";
 const REPO_ROOT = join(import.meta.dirname, "..");
 const REAL_ASSETS_DIR = join(REPO_ROOT, "assets");
 const FIXTURE_PATH = join(import.meta.dirname, "fixtures", "orchestrator.pre-diet.md");
-// gentle-shell#1731 T10 (user decision): 8,192 -> 8,400 B for the narrowed high-risk items 1 and 3.
-const BUDGET_BYTES = 8400;
+// Canonical always-on budget (controlled 128-char assets-root worst case).
+// Lineage: 8320 (pre-SDD-removal) -> 7131 (SDD/openspec removal) -> 8457
+// (2026-10-05 refresh: #348 clause on main's tightened phrasing) -> 8448
+// (compact "Fallbacks:" tail, -9 B; main's #1731 narrowed core + #348 clause).
+// Default-root render stays within #1731's 8,400 guard
+// (orchestrator-rdd-ownership.test.ts).
+const BUDGET_BYTES = 8448;
 const MIN_CONTROLLED_LONG_ASSETS_ROOT_CHARS = 93;
 
 const LAZY_ASSET_NAMES = [
@@ -123,7 +128,7 @@ function measureOrchestratorPromptBytes(assetsDir: string): number {
 // measuring a shorter render again.
 const RDD_WORST_CASE_LINE = "Receipt-driven development: unknown (native status unavailable)";
 
-test("getOrchestratorPrompt return value stays within the canonical 8,400 B budget at a short assets root", () => {
+test(`getOrchestratorPrompt return value stays within the canonical ${BUDGET_BYTES} B budget at a short assets root`, () => {
 	const rendered = __testing.renderOrchestratorPrompt(representativeProductionAssetsDir);
 	assert.ok(
 		rendered.includes(RDD_WORST_CASE_LINE),

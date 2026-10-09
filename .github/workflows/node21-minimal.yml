@@ -1,0 +1,116 @@
+name: Node 24.21 minimal overflow probe (issue 213)
+
+# A single push on this diagnostic branch; no PR or ordinary-suite trigger.
+on:
+  push:
+    branches:
+      - ci/213-node21-minimal
+    paths:
+      - .github/workflows/node21-minimal.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic:
+    runs-on: windows-2025
+    timeout-minutes: 7
+    steps:
+      - name: Checkout diagnostic definition
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup diagnostic Node patch
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24.21.0"
+
+      # Only built-ins and repository files are imported; no install step.
+      - name: Capture one minimal overflow probe with TAP
+        shell: pwsh
+        run: |
+          @'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const os = require("node:os");
+          const { spawn, spawnSync } = require("node:child_process");
+          const sourceRef = process.env.GITHUB_SHA;
+          const source = path.resolve(".");
+          const output = path.resolve("diagnostic-output");
+          const deadlineMs = 180_000;
+          const maxOutputBytes = 8 * 1024 * 1024;
+          fs.mkdirSync(output);
+          const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: source, encoding: "utf8", timeout: 5_000 });
+          const checkedOutSource = (head.stdout || "").trim();
+          const metadata = {
+            sourceRef, checkedOutSource, workflowCommit: process.env.GITHUB_SHA,
+            nodeVersion: process.version, platform: process.platform, osRelease: os.release(),
+            imageOS: process.env.ImageOS || null, imageVersion: process.env.ImageVersion || null,
+            systemRootNames: Object.keys(process.env).filter(name => /^SystemRoot$/i.test(name)),
+            clonedSystemRootPresent: typeof { ...process.env }.SystemRoot === "string",
+            deadlineMs, maxOutputBytes
+          };
+          fs.writeFileSync(path.join(output, "metadata.json"), JSON.stringify(metadata, null, 2));
+          if (process.platform !== "win32" || process.version !== "v24.21.0" || head.status !== 0 || checkedOutSource !== sourceRef ||
+              process.env.ImageOS !== "win25-vs2026" || process.env.ImageVersion !== "20260925.250.1") {
+            throw new Error("Diagnostic runtime or source does not match the approved target");
+          }
+          const stdout = fs.createWriteStream(path.join(output, "stdout.log"));
+          const stderr = fs.createWriteStream(path.join(output, "stderr.log"));
+          const started = performance.now();
+          let termination = "none";
+          let bytes = 0;
+          let capturedBytes = 0;
+          let cleanupCode = null;
+          let spawnError = null;
+          const child = spawn(process.execPath, ["--test", "--test-reporter=tap", "tests/diagnostics/node21-overflow.test.mjs"], {
+            cwd: source, env: process.env, stdio: ["ignore", "pipe", "pipe"]
+          });
+          function terminate(reason) {
+            if (termination !== "none") return;
+            termination = reason;
+            if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+            const killed = spawnSync(path.join(process.env.SystemRoot, "System32", "taskkill.exe"), ["/pid", String(child.pid), "/T", "/F"], {
+              encoding: "utf8", timeout: 5_000, maxBuffer: 65_536
+            });
+            cleanupCode = killed.status;
+            if (killed.status !== 0) {
+              child.kill("SIGKILL");
+              child.stdout.destroy();
+              child.stderr.destroy();
+            }
+          }
+          function capture(stream, buffer) {
+            bytes += buffer.length;
+            const available = maxOutputBytes - capturedBytes;
+            const kept = buffer.subarray(0, Math.min(buffer.length, available));
+            if (kept.length > 0) { stream.write(kept); capturedBytes += kept.length; }
+            if (bytes > maxOutputBytes) terminate("output_limit");
+          }
+          const timer = setTimeout(() => terminate("deadline"), deadlineMs);
+          child.stdout.on("data", buffer => capture(stdout, buffer));
+          child.stderr.on("data", buffer => capture(stderr, buffer));
+          child.on("error", error => { spawnError = error.code || "unknown"; });
+          child.on("close", async (code, signal) => {
+            clearTimeout(timer);
+            await Promise.all([new Promise(resolve => stdout.end(resolve)), new Promise(resolve => stderr.end(resolve))]);
+            const result = { ...metadata, exitCode: code, signal, termination, cleanupCode, spawnError, receivedBytes: bytes, capturedBytes, durationMs: Math.round(performance.now() - started) };
+            fs.writeFileSync(path.join(output, "result.json"), JSON.stringify(result, null, 2));
+            console.log("DIAGNOSTIC_RESULT " + JSON.stringify(result));
+            console.log("STDOUT\n" + fs.readFileSync(path.join(output, "stdout.log"), "utf8"));
+            console.log("STDERR\n" + fs.readFileSync(path.join(output, "stderr.log"), "utf8"));
+            process.exitCode = termination === "deadline" ? 124 : termination === "output_limit" ? 125 : code === 0 && !spawnError ? 0 : 1;
+          });
+          '@ | Set-Content -Encoding utf8 diagnostic.cjs
+          node diagnostic.cjs
+          exit $LASTEXITCODE
+
+      - name: Preserve diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: issue-213-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: diagnostic-output/
+          if-no-files-found: error
+          retention-days: 7

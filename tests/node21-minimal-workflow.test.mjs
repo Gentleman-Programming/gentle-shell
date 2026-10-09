@@ -1,0 +1,35 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import test from "node:test";
+const workflow = () => readFileSync(new URL("../.github/workflows/node21-minimal.yml", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+test("one branch-only Node21 probe retains capture and image guards", () => {
+ const w = workflow();
+ assert.match(w, /branches:\n      - ci\/213-node21-minimal/);
+ assert.match(w, /node-version: "24\.21\.0"/);
+ assert.match(w, /process\.version !== "v24\.21\.0"/);
+ assert.match(w, /process\.env\.ImageOS !== "win25-vs2026"/);
+ assert.match(w, /process\.env\.ImageVersion !== "20260925\.250\.1"/);
+ assert.match(w, /sourceRef = process\.env\.GITHUB_SHA/);
+ assert.match(w, /checkedOutSource !== sourceRef/);
+ assert.equal((w.match(/"tests\/diagnostics\/node21-overflow\.test\.mjs"/g) ?? []).length, 1);
+ assert.match(w, /deadlineMs = 180_000/);
+ assert.match(w, /maxOutputBytes = 8 \* 1024 \* 1024/);
+ assert.match(w, /"\/pid", String\(child\.pid\), "\/T", "\/F"/);
+ assert.match(w, /if: always\(\)/);
+ assert.match(w, /retention-days: 7/);
+ assert.match(w, /permissions:\n  contents: read/);
+ assert.equal((w.match(/persist-credentials: false/g) ?? []).length, 1);
+ assert.doesNotMatch(w, /workflow_dispatch|pull_request|matrix:|installer-windows-bootstrap|continue-on-error|npm install/);
+ const script = w.match(/^\s*@'\n([\s\S]*?)^\s*'@ \| Set-Content/m)?.[1];
+ assert.ok(script);
+ const checked = spawnSync(process.execPath, ["--check"], { input: script, encoding: "utf8", timeout: 5000 });
+ assert.equal(checked.status, 0, checked.stderr); assert.equal(checked.stdout, ""); assert.equal(checked.stderr, "");
+});
+test("probe isolates the frozen oversized-output call without installer imports", () => {
+ const p = readFileSync(new URL("./diagnostics/node21-overflow.test.mjs", import.meta.url), "utf8");
+ assert.deepEqual([...p.matchAll(/from "([^"]+)"/g)].map(m => m[1]).sort(), ["node:assert/strict", "node:child_process", "node:fs", "node:test"].sort());
+ assert.equal((p.match(/spawnSync\(/g) ?? []).length, 1);
+ for (const fragment of ["process.stdout.write('x'.repeat(2*1024*1024))", "timeout: 15000", "killSignal: \"SIGKILL\"", "maxBuffer: 1024 * 1024", "windowsHide: true", "shell: false", "env: process.env", "encoding: \"utf8\"", "PROBE_BEFORE", "PROBE_AFTER"]) assert.ok(p.includes(fragment), fragment);
+ assert.doesNotMatch(p, /writeFile|mkdir|fetch\(|https?:|installer/);
+});

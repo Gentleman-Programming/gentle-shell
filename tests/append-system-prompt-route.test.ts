@@ -144,6 +144,36 @@ test("re-running both handlers on the same already-populated options object does
 	assert.equal(gentleAiOccurrencesAfterSecondRun, 1, "a second gentle-ai run on the same options object must not duplicate the harness");
 });
 
+test("before_agent_start filters ancestor AGENTS.md gentle-ai blocks from contextFiles in primary session (#1722)", async () => {
+	const aiHandlers = gentleAiHandlers();
+	const session = ctx();
+
+	const ancestorManagedOnly = "<!-- gentle-ai:sdd-orchestrator -->\nOrchestrator instructions\n<!-- /gentle-ai:sdd-orchestrator -->\n";
+	const ancestorWithUserText = "# Workspace\nRun tests.\n\n<!-- gentle-ai:agent-routing -->\nRouting\n<!-- /gentle-ai:agent-routing -->\n";
+	const projectLocal = "# Project\n<!-- gentle-ai:orchestrator -->\nOld\n<!-- /gentle-ai:orchestrator -->\n";
+
+	const contextFiles = [
+		{ path: join(process.env.HOME ?? "/home", "AGENTS.md"), content: ancestorManagedOnly },
+		{ path: join(fixtureRoot!, "AGENTS.md"), content: ancestorWithUserText },
+		{ path: join(fixtureCwd, "AGENTS.md"), content: projectLocal },
+	];
+
+	const event = { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "", contextFiles } };
+	await aiHandlers.get("before_agent_start")!(event, session);
+
+	// 1. Ancestor with only managed blocks was stripped and omitted
+	// 2. Ancestor with user text had managed blocks stripped, keeping user text
+	// 3. Project-local had orchestrator block stripped
+	assert.equal(event.systemPromptOptions.contextFiles.length, 2);
+	assert.equal(event.systemPromptOptions.contextFiles[0].path, join(fixtureRoot!, "AGENTS.md"));
+	assert.equal(event.systemPromptOptions.contextFiles[0].content, "# Workspace\nRun tests.\n");
+	assert.equal(event.systemPromptOptions.contextFiles[1].path, join(fixtureCwd, "AGENTS.md"));
+	assert.equal(event.systemPromptOptions.contextFiles[1].content, "# Project\n");
+
+	// Injected gentlePrompt in appendSystemPrompt delivers the one true orchestrator
+	assert.match(event.systemPromptOptions.appendSystemPrompt, /el Gentleman Identity and Harness/);
+});
+
 for (const scenario of ["child", "named-agent"] as const) {
 	test(`${scenario} start leaves shared prompt options unchanged and returns no replacement`, async () => {
 		const handlers = gentleAiHandlers(scenario === "child" ? { GENTLE_PI_AGENTS_CHILD: "1" } : {});

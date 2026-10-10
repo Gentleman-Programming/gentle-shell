@@ -2,7 +2,13 @@
 // same context files as the orchestrator, including gentle-ai managed blocks
 // that bind themselves to the orchestrator only. Those blocks cost ~37k prefix
 // tokens per child and give a worker orchestration rules it must not follow.
+// gentle-shell#1722: primary sessions also load ancestor AGENTS.md files
+// (such as ~/AGENTS.md) which duplicate gentle-pi's injected orchestrator
+// prompt and waste ~15k tokens per request.
 // This module removes exactly those blocks and keeps everything else.
+
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 export const ORCHESTRATOR_ONLY_MANAGED_BLOCKS = [
 	"orchestrator",
@@ -60,7 +66,10 @@ function unchanged(content: string): ManagedBlockFilterResult {
 	return { content, removedBlocks: 0, failSafe: true };
 }
 
-export function filterOrchestratorOnlyBlocks(content: string): ManagedBlockFilterResult {
+export function filterManagedBlocks(
+	content: string,
+	shouldRemove: (name: string) => boolean = (name) => REMOVED_NAMES.has(name),
+): ManagedBlockFilterResult {
 	const lines: Line[] = [];
 	const stack: string[] = [];
 	let fence: { char: string; length: number } | null = null;
@@ -94,7 +103,7 @@ export function filterOrchestratorOnlyBlocks(content: string): ManagedBlockFilte
 			// A block reopened inside itself is ambiguous: fail safe.
 			if (stack.includes(name)) return unchanged(content);
 			stack.push(name);
-			if (REMOVED_NAMES.has(name)) removedBlocks += 1;
+			if (shouldRemove(name)) removedBlocks += 1;
 			lines.push({ text, owner: name });
 			continue;
 		}
@@ -112,7 +121,7 @@ export function filterOrchestratorOnlyBlocks(content: string): ManagedBlockFilte
 	let trailingBlanks = 0;
 	let afterRemoval = false;
 	for (const line of lines) {
-		if (line.owner !== null && REMOVED_NAMES.has(line.owner)) {
+		if (line.owner !== null && shouldRemove(line.owner)) {
 			afterRemoval = true;
 			continue;
 		}
@@ -126,6 +135,10 @@ export function filterOrchestratorOnlyBlocks(content: string): ManagedBlockFilte
 		while (output.length > 0 && BLANK_LINE.test(output[output.length - 1])) output.pop();
 	}
 	return { content: output.join(""), removedBlocks, failSafe: false };
+}
+
+export function filterOrchestratorOnlyBlocks(content: string): ManagedBlockFilterResult {
+	return filterManagedBlocks(content, (name) => REMOVED_NAMES.has(name));
 }
 
 export function stripOrchestratorOnlyBlocks(content: string): string {
@@ -160,6 +173,69 @@ export function filterChildSessionContextFiles(options: ContextFileOptions | nul
 		const result = filterChildContextFiles(options.contextFiles);
 		if (result.removedBlocks > 0) options.contextFiles = result.files;
 		return result;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Checks whether a context file is in an ancestor directory above cwd (or is ~/AGENTS.md / ~/CLAUDE.md) (#1722).
+ */
+export function isAncestorContextFile(
+	filePath: string,
+	cwd: string = process.cwd(),
+	home: string = homedir(),
+): boolean {
+	const resolvedPath = resolve(filePath);
+	const resolvedCwd = resolve(cwd);
+	const resolvedHome = resolve(home);
+	if (resolvedPath === join(resolvedHome, "AGENTS.md") || resolvedPath === join(resolvedHome, "CLAUDE.md")) {
+		return true;
+	}
+	const fileDir = dirname(resolvedPath);
+	const rel = relative(fileDir, resolvedCwd);
+	return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+/**
+ * Filters context files for primary and child sessions (#1722).
+ * For ancestor files (such as ~/AGENTS.md), removes all duplicate gentle-ai managed blocks
+ * while preserving unmanaged user and project text. If an ancestor file becomes empty, it is omitted.
+ * For project-local files, removes ORCHESTRATOR_ONLY_MANAGED_BLOCKS to prevent prompt divergence.
+ */
+export function filterSessionContextFiles(
+	options: ContextFileOptions | null | undefined,
+	cwd: string = process.cwd(),
+	home: string = homedir(),
+): ChildContextFilesResult<ContextFile> | null {
+	try {
+		if (!options || !Array.isArray(options.contextFiles)) return null;
+		const files: ContextFile[] = [];
+		let removedBlocks = 0;
+		let removedBytes = 0;
+		const failSafePaths: string[] = [];
+
+		for (const file of options.contextFiles) {
+			const isAncestor = isAncestorContextFile(file.path, cwd, home);
+			const shouldRemove = isAncestor ? () => true : (name: string) => REMOVED_NAMES.has(name);
+			const filtered = filterManagedBlocks(file.content, shouldRemove);
+			if (filtered.failSafe) failSafePaths.push(file.path);
+			if (filtered.removedBlocks === 0) {
+				files.push({ ...file });
+				continue;
+			}
+			removedBlocks += filtered.removedBlocks;
+			removedBytes += encoder.encode(file.content).length - encoder.encode(filtered.content).length;
+			if (isAncestor && filtered.content.trim().length === 0) {
+				continue;
+			}
+			files.push({ ...file, content: filtered.content });
+		}
+
+		if (removedBlocks > 0 || files.length !== options.contextFiles.length) {
+			options.contextFiles = files;
+		}
+		return { files, removedBlocks, removedBytes, failSafePaths };
 	} catch {
 		return null;
 	}

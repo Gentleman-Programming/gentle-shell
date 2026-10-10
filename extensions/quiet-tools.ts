@@ -795,7 +795,7 @@ export function createQuietToolRenderer(
 					safeResult,
 					options,
 					theme,
-					sanitizedRenderContext(renderContext) as any,
+					{ ...sanitizedRenderContext(renderContext), lastComponent: undefined } as any,
 				), false);
 			}
 			let output = formatToolResultOutput(toolName, safeResult, {

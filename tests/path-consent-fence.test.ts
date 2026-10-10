@@ -3,8 +3,8 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { PathTargetGrants, canonicalizeTarget, evaluatePathFence, resolveOutsidePaths } from "../lib/path-consent-fence.ts";
+import { SessionManager, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool } from "@earendil-works/pi-coding-agent";
+import { PathTargetGrants, canonicalizeTarget, collectStringPaths, evaluatePathFence, PATH_FENCE_TOOL_NAMES, resolveOutsidePaths } from "../lib/path-consent-fence.ts";
 import { registeredRootsForSession, SESSION_WORKTREE_ENTRY } from "../lib/session-worktree-registry.ts";
 
 // All writes belong to unique fixtures, never the live clone.
@@ -20,6 +20,42 @@ function fixture(t: test.TestContext) {
 }
 
 const grants = () => new PathTargetGrants();
+
+// Pin every input key, not just known path spellings: an added backupPath (or
+// any nested input change) must force review of fence coverage on a Pi upgrade.
+test("installed fenced tool schemas cannot silently drift beyond path coverage", () => {
+	const tools = [createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool].map(create => create(process.cwd()));
+	const expected: Record<string, string[]> = {
+		read: ["limit", "offset", "path"],
+		write: ["content", "path"],
+		edit: ["edits", "edits[].newText", "edits[].oldText", "path"],
+		grep: ["context", "glob", "ignoreCase", "limit", "literal", "path", "pattern"],
+		find: ["limit", "path", "pattern"],
+		ls: ["limit", "path"],
+	};
+	assert.deepEqual(tools.map(tool => tool.name).sort(), [...PATH_FENCE_TOOL_NAMES].sort());
+	const schemaKeys = (schema: any, prefix = ""): string[] => {
+		const keys = Object.entries(schema.properties ?? {}).flatMap(([key, child]) => {
+			const path = prefix ? `${prefix}.${key}` : key;
+			return [path, ...schemaKeys(child, path)];
+		});
+		if (schema.items) keys.push(...schemaKeys(schema.items, `${prefix}[]`));
+		for (const branch of [...(schema.anyOf ?? []), ...(schema.oneOf ?? []), ...(schema.allOf ?? [])]) keys.push(...schemaKeys(branch, prefix));
+		return [...new Set(keys)].sort();
+	};
+	const assertCoverage = (name: string, properties: Record<string, unknown>) => {
+		assert.deepEqual(schemaKeys({ properties }), expected[name], `${name}: review path-fence coverage when tool inputs change`);
+	};
+	for (const tool of tools) {
+		assertCoverage(tool.name, tool.parameters.properties);
+		assert.deepEqual(collectStringPaths({ path: "/outside/target" }), ["/outside/target"]);
+	}
+	const edit = tools.find(tool => tool.name === "edit")!;
+	assert.throws(() => assertCoverage("edit", { ...edit.parameters.properties, backupPath: { type: "string" } }), /review path-fence coverage/);
+	const nested = structuredClone(edit.parameters.properties) as Record<string, any>;
+	nested.edits.items.properties.backupPath = { type: "string" };
+	assert.throws(() => assertCoverage("edit", nested), /review path-fence coverage/);
+});
 
 function fileLink(t: test.TestContext, target: string, link: string): boolean {
 	try {

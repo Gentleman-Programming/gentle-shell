@@ -1871,7 +1871,7 @@ async function confirmCommand(
 	emitPermissionRequest("waiting");
 	herdrLifecycle.begin();
 	try {
-		approved = (await ctx.ui.confirm(title, preview)) === true;
+		approved = (await ctx.ui?.confirm?.(title, preview)) === true;
 	} catch (error) {
 		confirmationFailed = true;
 		confirmationError = error;

@@ -1,6 +1,7 @@
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { hidePrompt } from "../extensions/history/hide-prompts.ts";
@@ -23,8 +24,17 @@ import {
 
 const CWD = "/pi-history-fixtures/project-gc";
 
+const fixtureRoots: string[] = [];
+afterEach(() => {
+  for (const root of fixtureRoots.splice(0)) {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function makeRoot(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-gc-"));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-gc-"));
+  fixtureRoots.push(root);
+  return root;
 }
 
 function projectRoot(root: string): string {
@@ -216,10 +226,8 @@ test("compaction keeps the newest 10 files, merges the rest", () => {
   assert.equal(names.includes("h06.jsonl"), true);
 });
 
-// node:test has no test.skipIf (Bun-ism): root skips via the options object.
 test(
-  "an unreadable file (chmod 000) is left in place; GC still compacts the readable tail",
-  { skip: process.getuid?.() === 0 ? "requires non-root" : false },
+  "an unreadable file is left in place; GC still compacts the readable tail",
   () => {
     const root = makeRoot();
     const dir = projectRoot(root);
@@ -230,8 +238,34 @@ test(
     writeFile(dir, "readable-old.jsonl", 5, 1000);
     const sealed = writeFile(dir, "sealed-old.jsonl", 5, 2000);
     writeFile(dir, "newest.jsonl", 5, 3000);
+    const sealedBytes = fs.readFileSync(sealed, "utf8");
+    const realRead = fs.readFileSync;
+    const realOpen = fs.openSync;
+    let deniedReads = 0;
+    let deniedOpens = 0;
     fs.chmodSync(sealed, 0o000);
     try {
+      let modeDeniesRead = false;
+      try {
+        realRead(sealed);
+      } catch (error) {
+        assert.equal((error as NodeJS.ErrnoException).code, "EACCES");
+        modeDeniesRead = true;
+      }
+      // Windows mode bits (and privileged POSIX users) cannot seal a file.
+      // Only that exact fixture input gets EACCES; all other I/O stays real.
+      if (!modeDeniesRead) {
+        const denied = () => Object.assign(new Error("sealed fixture"), { code: "EACCES" });
+        fs.readFileSync = ((...args: Parameters<typeof fs.readFileSync>) => {
+          if (args[0] === sealed) { deniedReads++; throw denied(); }
+          return realRead(...args);
+        }) as typeof fs.readFileSync;
+        fs.openSync = ((...args: Parameters<typeof fs.openSync>) => {
+          if (args[0] === sealed) { deniedOpens++; throw denied(); }
+          return realOpen(...args);
+        }) as typeof fs.openSync;
+        syncBuiltinESMExports();
+      }
       const result = gcProjectDir(root, CWD, {
         fileThreshold: 2,
         lineThreshold: 100000,
@@ -246,14 +280,18 @@ test(
         "readable-old.jsonl-4",
       ]);
       assert.equal(fs.existsSync(sealed), true);
-      assert.equal(fs.readdirSync(dir).includes("newest.jsonl"), true);
+      assert.deepEqual(fs.readdirSync(dir).filter((name) => !name.startsWith("compact-")).sort(), ["newest.jsonl", "sealed-old.jsonl"]);
+      if (!modeDeniesRead) {
+        assert.ok(deniedReads > 0, "GC attempted to read the sealed input");
+        assert.equal(deniedOpens, 1, "GC rejected the sealed input before claiming it");
+      }
     } finally {
-      fs.chmodSync(sealed, 0o644);
+      fs.readFileSync = realRead;
+      fs.openSync = realOpen;
+      syncBuiltinESMExports();
+      if (fs.existsSync(sealed)) fs.chmodSync(sealed, 0o644);
     }
-    assert.equal(
-      fs.readFileSync(sealed, "utf8").trim().split("\n").length,
-      5,
-    );
+    assert.equal(fs.readFileSync(sealed, "utf8"), sealedBytes);
   },
 );
 

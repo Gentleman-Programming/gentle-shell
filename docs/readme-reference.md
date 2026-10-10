@@ -301,7 +301,7 @@ gentle-shell [home selectors] setup [--dry-run]
 
 | Flag | Effect |
 | --- | --- |
-| `--link` | Home is `PI_CODING_AGENT_DIR` or `~/.pi/agent`. Reuses your existing pi sign-ins, models, and chats; never writes to its `settings.json`. |
+| `--link` | Home is your own pi home: `GENTLE_SHELL_USER_PI_HOME` when a Gentle Shell session recorded it (so `--link` run from inside an isolated session reaches your original pi, not the isolated home), otherwise `PI_CODING_AGENT_DIR` or `~/.pi/agent`. Reuses your existing pi sign-ins, models, and chats; never writes to its `settings.json`. |
 | `--isolated` | Home is `GENTLE_SHELL_HOME` or `~/.gentle-shell/agent`. No credential seeding. Default when nothing else is configured. |
 | `--home <path>` | Home is the given directory. |
 | `--package-root <dir>` | Force this directory as the gentle-pi package to load, taking over from any conflicting package the target `settings.json` already declares (see "Loading the package" below). |
@@ -359,7 +359,8 @@ If none resolve, `gentle-shell` exits 1 naming all three options. Once a runtime
 | --- | --- |
 | `GENTLE_SHELL_PI` | Overrides pi runtime resolution (see above). |
 | `GENTLE_SHELL_HOME` | Overrides the isolated home directory (default `~/.gentle-shell/agent`). |
-| `PI_CODING_AGENT_DIR` | Read to resolve the `--link` home; also set on the pi child process to the effective home. |
+| `PI_CODING_AGENT_DIR` | Read to resolve the `--link` home when `GENTLE_SHELL_USER_PI_HOME` is unset; also set on the pi child process to the effective home. |
+| `GENTLE_SHELL_USER_PI_HOME` | Set on the pi child process to your own pi home (recorded before isolating). Read back first to resolve the `--link` home and by `/gentle:stats`, so a nested `gentle-shell` keeps pointing at your original pi. |
 | `GENTLE_PI_AGENT_HOME` | Set on the pi child process to the effective home; gentle-pi's own home resolution reads it back. |
 | `GENTLE_SHELL_NO_AUTO_SETUP` | Set to `1` to skip automatic first-run provisioning (see "First run in an isolated or custom home" below). |
 

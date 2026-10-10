@@ -137,6 +137,9 @@ function fixture(t: test.TestContext) {
 		GENTLE_SHELL_PI: piScript,
 		GENTLE_SHELL_NO_AUTO_SETUP: "1",
 	};
+	// A suite launched from inside a Gentle Shell session inherits the outer
+	// session's recorded user Pi home, which --link now honours first (#2015).
+	delete env.GENTLE_SHELL_USER_PI_HOME;
 	return { root, home, gentleShellHome, piScript, env };
 }
 
@@ -713,6 +716,10 @@ test("an isolated launch keeps its own agent home and carries the user's origina
 	const linked = launch({ PI_CODING_AGENT_DIR: customHome }, ["--link"]);
 	assert.equal(linked.PI_CODING_AGENT_DIR, customHome);
 	assert.equal(linked.GENTLE_SHELL_USER_PI_HOME, customHome);
+	// --link from inside an isolated session reuses the preserved original home (#2015).
+	const nestedLinked = launch({ PI_CODING_AGENT_DIR: f.gentleShellHome, GENTLE_SHELL_USER_PI_HOME: customHome }, ["--link"]);
+	assert.equal(nestedLinked.PI_CODING_AGENT_DIR, customHome);
+	assert.equal(nestedLinked.GENTLE_SHELL_USER_PI_HOME, customHome);
 	assert.equal(existsSync(join(customHome, "sessions")), false);
 });
 

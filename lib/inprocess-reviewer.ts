@@ -20,7 +20,7 @@
 // this into the lens relay (lib/review-host-relay.ts); P3 wires the provider
 // role vectors. This file stays a pure completion, never invoked from here.
 
-import type { Api, AssistantMessage, Context, Model, ProviderHeaders, SimpleStreamOptions, TextContent, ThinkingLevel } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Context, Model, ProviderEnv, ProviderHeaders, SimpleStreamOptions, TextContent, ThinkingLevel } from "@earendil-works/pi-ai";
 import type { completeSimple } from "@earendil-works/pi-ai/compat";
 import { SAFE_MODEL_ID_PATTERN } from "./model-routing-authority.ts";
 
@@ -31,9 +31,9 @@ import { SAFE_MODEL_ID_PATTERN } from "./model-routing-authority.ts";
 // the dispatch path: when present, the completion goes through the composed
 // provider it returns (which is what reaches extension-registered providers);
 // when absent, it falls back to `deps.complete`, so a test double with no
-// composition layer still satisfies the seam. The real registry's resolved
-// auth carries extra optional fields (`baseUrl`, `env`) that this narrower
-// shape simply ignores.
+// composition layer still satisfies the seam. Resolved auth includes the
+// request-local endpoint and provider environment, just as pi's normal
+// ModelRuntime.prepareRequest applies them before dispatch.
 // ---------------------------------------------------------------------------
 
 /**
@@ -48,7 +48,7 @@ export interface InProcessReviewerProvider {
 export interface InProcessReviewerRegistry {
 	find(provider: string, modelId: string): Model<Api> | undefined;
 	getApiKeyAndHeaders(model: Model<Api>): Promise<
-		| { readonly ok: true; readonly apiKey?: string; readonly headers?: ProviderHeaders }
+		| { readonly ok: true; readonly apiKey?: string; readonly headers?: ProviderHeaders; readonly baseUrl?: string; readonly env?: ProviderEnv }
 		| { readonly ok: false; readonly error: string }
 	>;
 	getProvider?(provider: string): InProcessReviewerProvider | undefined;
@@ -244,11 +244,16 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 		);
 	}
 
+	// OAuth resolution may supply an account-specific endpoint alongside the
+	// exchanged API key. Match ModelRuntime.prepareRequest: apply that endpoint
+	// to a request-local copy, never mutate the shared registry model.
+	const requestModel = auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
+
 	// Extension side-calls bypass pi's main agent loop, which is where OpenCode
-	// attribution headers are otherwise added, so this completion carries them
-	// itself — as a default beneath the registry's own auth headers, the same
-	// merge order pi's core uses for explicit header sources.
-	const attributionHeaders = openCodeSessionAttributionHeaders(model, request.sessionId);
+	// attribution headers are otherwise added. Use the effective request model
+	// and place attribution defaults beneath the registry's own auth headers,
+	// matching pi's core merge order for explicit header sources.
+	const attributionHeaders = openCodeSessionAttributionHeaders(requestModel, request.sessionId);
 
 	// The caller's own signal (if any) and a floor timeout race together:
 	// whichever fires first aborts the completion. The catch branch below
@@ -270,6 +275,7 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 		signal: combinedSignal,
 		timeoutMs: request.timeoutMs,
 		...(auth.apiKey === undefined ? {} : { apiKey: auth.apiKey }),
+		...(auth.env === undefined ? {} : { env: auth.env }),
 		...(auth.headers === undefined && attributionHeaders === undefined ? {} : { headers: attributionHeaders === undefined ? auth.headers : { ...attributionHeaders, ...auth.headers } }),
 		...(reasoning.reasoning === undefined ? {} : { reasoning: reasoning.reasoning }),
 	};
@@ -295,7 +301,7 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 	// exactly what pi-ai's own compat layer does with the same stream.
 	let assistant: AssistantMessage;
 	try {
-		assistant = provider === undefined ? await deps.complete(model, context, options) : await provider.streamSimple(model, context, options).result();
+		assistant = provider === undefined ? await deps.complete(requestModel, context, options) : await provider.streamSimple(requestModel, context, options).result();
 	} catch (error) {
 		return abortRefusal() ?? refuse(INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED, `Reviewer completion failed for ${request.routingKey}: ${sanitizeErrorExcerpt(error)}`);
 	}

@@ -769,6 +769,9 @@ export default function (pi: ExtensionAPI) {
             if (finished || Date.now() - animStart > 5000) {
               clearInterval(state.timer!);
               state.timer = null;
+              if (!finished) {
+                tick = Number.MAX_SAFE_INTEGER;
+              }
             }
             try { tui.requestRender(); } catch { cleanup(); }
           }, performance ? 250 : 25);
@@ -821,13 +824,23 @@ export default function (pi: ExtensionAPI) {
             b.center(width);
 
             if (state.mode === "minimal") {
-              if (bannerConfig.showTextLogo) for (let logoI = 0; logoI < logoBase.lines.length; logoI++) {
-                const logoLine = logoBase.lines[logoI];
-                b.addRow();
-                b.lines[b.lines.length - 1].push(
-                  ...buildPenLogoLine(logoLine, logoI, logoBase.lines.length, tick),
-                );
-                b.center(width);
+              if (bannerConfig.showTextLogo) {
+                if (width >= logoBase.width + 2) {
+                  for (let logoI = 0; logoI < logoBase.lines.length; logoI++) {
+                    const logoLine = logoBase.lines[logoI];
+                    b.addRow();
+                    b.lines[b.lines.length - 1].push(
+                      ...buildPenLogoLine(logoLine, logoI, logoBase.lines.length, tick),
+                    );
+                    b.center(width);
+                  }
+                } else {
+                  b.addRow();
+                  b.add("accent", "✿ ");
+                  b.add("value", "Gentle Shell");
+                  b.add("accent", " ✿");
+                  b.center(width);
+                }
               }
             } else if (horizontal) {
               const rowCount = Math.max(roseBase.lines.length, logoBase.lines.length);
@@ -864,6 +877,16 @@ export default function (pi: ExtensionAPI) {
                   );
                   b.center(width);
                 }
+                if (showRose) {
+                  b.addRow();
+                  b.center(width);
+                }
+              } else if (bannerConfig.showTextLogo) {
+                b.addRow();
+                b.add("accent", "✿ ");
+                b.add("value", "Gentle Shell");
+                b.add("accent", " ✿");
+                b.center(width);
                 if (showRose) {
                   b.addRow();
                   b.center(width);

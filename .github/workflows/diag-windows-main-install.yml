@@ -1,0 +1,30 @@
+name: diag-windows-main-install
+on:
+  push:
+    branches: [diag/windows-main-install]
+permissions:
+  contents: read
+jobs:
+  diag:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      PNPM_HOME: ${{ github.workspace }}\..\pnpm-home
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: false
+      - shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:PNPM_HOME | Out-Null
+          Add-Content $env:GITHUB_PATH $env:PNPM_HOME
+          Add-Content $env:GITHUB_PATH (Join-Path $env:PNPM_HOME "bin")
+          npm install -g pnpm@11.1.1
+          $env:PATH -split ';' | Select-String -Pattern 'Git|System32$'
+      - shell: pwsh
+        run: node diag/windows-main-install.mjs

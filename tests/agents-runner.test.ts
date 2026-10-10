@@ -31,7 +31,7 @@ interface Harness {
 	advance(ms: number): void;
 }
 
-function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boolean; process?: RunnerDeps["process"]; pid?: number; maxConcurrency?: number; stallTimeoutMs?: number; toolStallTimeoutMs?: number; answer?: Record<string, unknown>; exitOnKill?: boolean; state?: Record<string, unknown>; stateSuccess?: boolean; onNotification?: RunnerHooks["onNotification"]; onSuccessfulMutation?: RunnerHooks["onSuccessfulMutation"]; onFinish?: RunnerHooks["onFinish"] } = {}): Harness {
+function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boolean; process?: RunnerDeps["process"]; pid?: number; maxConcurrency?: number; stallTimeoutMs?: number; toolStallTimeoutMs?: number; cleanupTimeoutMs?: number; answer?: Record<string, unknown>; exitOnKill?: boolean; state?: Record<string, unknown>; stateSuccess?: boolean; onNotification?: RunnerHooks["onNotification"]; onSuccessfulMutation?: RunnerHooks["onSuccessfulMutation"]; onFinish?: RunnerHooks["onFinish"] } = {}): Harness {
 	const children: FakeChild[] = [];
 	const timers: Harness["timers"] = [];
 	const asks: Harness["asks"] = [];
@@ -70,7 +70,7 @@ function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boo
 		pi: { command: "pi", args: [] },
 	};
 	const store = new TaskStore();
-	const runner = new AgentRunner(store, { maxConcurrency: options.maxConcurrency ?? 2, stallTimeoutMs: options.stallTimeoutMs ?? 10_000, toolStallTimeoutMs: options.toolStallTimeoutMs }, deps, {
+	const runner = new AgentRunner(store, { maxConcurrency: options.maxConcurrency ?? 2, stallTimeoutMs: options.stallTimeoutMs ?? 10_000, toolStallTimeoutMs: options.toolStallTimeoutMs, cleanupTimeoutMs: options.cleanupTimeoutMs }, deps, {
 		askUser: async (taskId, ask) => {
 			asks.push({ taskId, method: ask.method });
 			return options.answer ?? { value: "yes" };
@@ -905,7 +905,8 @@ test("AgentRunner runs a task end to end: prompt, deltas into the store, complet
 	assert.equal(finished?.toolCalls, 1);
 	assert.equal(finished?.sessionPath, "/sessions/child.jsonl");
 	assert.equal(finished?.label, "Map the repo");
-	assert.ok(children[0].killed.length > 0, "the child is stopped once the answer is in");
+	assert.ok(children[0].child.stdin.writableEnded, "the child is stopped via orderly shutdown once the answer is in");
+	assert.equal(children[0].killed.length, 0, "no kill signals sent during orderly settlement");
 	assert.equal(store.thread(task.id).items.length, 2);
 	assert.equal((await runner.waitFor(task.id)).status, TASK_STATUS.COMPLETED);
 });
@@ -953,6 +954,65 @@ test("AgentRunner queues beyond max concurrency and starts the next task when on
 	assert.equal(store.get(first.id)?.status, TASK_STATUS.COMPLETED);
 	assert.equal(children.length, 2);
 	assert.equal(store.get(second.id)?.status, TASK_STATUS.RUNNING);
+});
+
+test("AgentRunner requests orderly shutdown via stdin on settlement and does not send SIGTERM immediately (#1740)", async () => {
+	const { store, runner, children } = harness({ exitOnKill: false });
+	const task = runner.run(request());
+	await tick();
+	assert.equal(children.length, 1);
+	children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Done" }] }] });
+	await tick();
+	assert.equal(children[0].killed.length, 0);
+	children[0].emit({ type: "agent_settled" });
+	await tick();
+
+	// Orderly shutdown must have requested stdin.end()
+	assert.equal(children[0].child.stdin.writableEnded, true, "stdin must be ended on settlement to trigger Pi orderly shutdown");
+	// Must NOT send SIGTERM immediately
+	assert.deepEqual(children[0].killed, [], "SIGTERM must not be sent immediately upon settlement");
+	// Task completion and cleanup in flight should be distinguishable
+	assert.equal(store.get(task.id)?.lastStep, "cleaning up", "lastStep distinguishes in-flight cleanup");
+	assert.equal(store.get(task.id)?.status, TASK_STATUS.RUNNING, "task waits for cleanup exit");
+
+	// Child exits cleanly upon session_shutdown completion
+	children[0].exit(0);
+	await tick();
+	await tick();
+	assert.equal(store.get(task.id)?.status, TASK_STATUS.COMPLETED);
+	assert.equal(store.get(task.id)?.lastStep, "done");
+	assert.deepEqual(children[0].killed, [], "clean shutdown completes with zero kill signals sent");
+});
+
+test("AgentRunner escalates to SIGTERM and SIGKILL if orderly cleanup exceeds cleanupTimeoutMs (#1740)", async () => {
+	const { store, runner, children, timers } = harness({ exitOnKill: false, cleanupTimeoutMs: 3000 });
+	const task = runner.run(request());
+	await tick();
+	assert.equal(children.length, 1);
+	children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Done" }] }] });
+	await tick();
+	children[0].emit({ type: "agent_settled" });
+	await tick();
+
+	assert.equal(children[0].child.stdin.writableEnded, true);
+	assert.deepEqual(children[0].killed, []);
+
+	// Find the cleanup timeout timer (3000 ms) and trigger it
+	const cleanupTimer = timers.find((timer) => !timer.cancelled && timer.ms === 3000);
+	assert.ok(cleanupTimer, "cleanup timeout timer must be scheduled");
+	cleanupTimer.fn();
+	await tick();
+
+	// Escalation has fired SIGTERM
+	assert.deepEqual(children[0].killed, ["SIGTERM"]);
+
+	// And termination grace timer (250 ms) is scheduled for SIGKILL
+	const killTimer = timers.find((timer) => !timer.cancelled && timer.ms === 250);
+	assert.ok(killTimer, "SIGKILL escalation timer must be scheduled");
+	killTimer.fn();
+	await tick();
+
+	assert.deepEqual(children[0].killed, ["SIGTERM", "SIGKILL"]);
 });
 
 test("AgentRunner classifies terminal assistant outcomes only after settlement", async () => {

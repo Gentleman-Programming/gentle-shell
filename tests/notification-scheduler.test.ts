@@ -61,13 +61,85 @@ test("serial active plus one pending, minimum interval measured between starts",
 	f.clock.advance(1); assert.deepEqual(f.starts, [300, 1300]);
 });
 
-test("TTL exact boundary and expired pending never replay", async () => {
-	const f = fixture(); assert.equal(f.enqueue(1, "agent.completed", -2000), false);
+test("TTL exact boundary and pending behind unstarted detection never replay", async () => {
+	const f = fixture(true); assert.equal(f.enqueue(1, "agent.completed", -2000), false);
 	assert.equal(f.enqueue(2, "agent.completed", -1999), true);
 	f.clock.advance(300); assert.equal(f.calls.length, 0);
 	f.enqueue(3); f.clock.advance(300); f.enqueue(4);
 	f.clock.advance(2000); f.calls[0].finish(); await tick(); f.clock.advance(5000);
 	assert.equal(f.calls.length, 1);
+});
+
+test("long playback preserves a pending failure without overlap or priority loss", async () => {
+	const f = fixture(); f.enqueue(1); f.clock.advance(300);
+	f.clock.advance(10);
+	assert.equal(f.scheduler.enqueue({ sessionId: "s", runId: "failed", sequence: 1,
+		event: "subagent.failed", occurredAt: f.clock.now }), true);
+	f.clock.advance(2419); // The local success WAV lasts 2429 ms.
+	assert.equal(f.calls.length, 1);
+	assert.equal(f.enqueue(2), false); // A newer success cannot replace the preserved failure.
+	assert.equal(f.enqueue(3, "agent.completed", f.clock.now - 2000), false);
+	f.calls[0].finish(); await tick();
+	assert.equal(f.calls.length, 2);
+	assert.equal(f.calls[1].sound, "builtin:error");
+	assert.deepEqual(f.starts, [300, 2729]);
+	f.calls[1].finish(); await tick(); f.clock.advance(5000);
+	assert.equal(f.calls.length, 2);
+});
+
+test("pending TTL pauses only after the active playback actually starts", async () => {
+	const f = fixture(true); f.enqueue(1); f.clock.advance(300); f.enqueue(2);
+	f.clock.advance(200); assert.equal(f.calls[0].permit.start(), true);
+	f.clock.advance(3000); assert.equal(f.calls.length, 1);
+	f.calls[0].finish(); await tick(); assert.equal(f.calls.length, 2);
+	// 200 ms of the pending event's TTL was spent before playback started.
+	f.clock.advance(1799); assert.equal(f.calls[1].signal.aborted, false);
+	f.clock.advance(1); assert.equal(f.calls[1].signal.aborted, true);
+	assert.equal(f.calls[1].permit.start(), false);
+});
+
+test("equal-priority replacement during playback keeps only the latest candidate", async () => {
+	const f = fixture(); f.enqueue(1); f.clock.advance(300); f.enqueue(2);
+	f.clock.advance(2500);
+	f.settings.audio.events["agent.completed"] = "builtin:attention";
+	f.scheduler.configure(f.settings, false);
+	assert.equal(f.enqueue(3), true);
+	f.clock.advance(2500); f.calls[0].finish(); await tick();
+	assert.equal(f.calls.length, 2);
+	assert.equal(f.calls[1].sound, "builtin:attention");
+	f.calls[1].finish(); await tick(); f.clock.advance(5000);
+	assert.equal(f.calls.length, 2);
+});
+
+test("started preview also preserves the next automatic candidate", async () => {
+	const f = fixture(); assert.equal(f.scheduler.preview("builtin:attention"), true);
+	f.enqueue(1); f.clock.advance(2856);
+	assert.equal(f.calls.length, 1);
+	f.calls[0].finish(); await tick();
+	assert.equal(f.calls.length, 2);
+	assert.equal(f.calls[1].sound, "builtin:success");
+});
+
+test("preserved pending events still expire during minimum interval after playback", async () => {
+	const f = fixture(); f.settings.audio.minimumIntervalMs = 6000;
+	f.scheduler.configure(f.settings, false); f.enqueue(1); f.clock.advance(300);
+	f.enqueue(2); f.clock.advance(2429); f.calls[0].finish(); await tick();
+	f.clock.advance(2000); f.clock.advance(6000);
+	assert.equal(f.calls.length, 1);
+});
+
+test("mute, off, session replacement and disposal discard playback-paused pending events", async () => {
+	for (const action of ["mute", "off", "session", "dispose"] as const) {
+		const f = fixture(); f.enqueue(1); f.clock.advance(300); f.enqueue(2);
+		f.clock.advance(3000);
+		if (action === "dispose") f.scheduler.dispose();
+		else if (action === "session") f.scheduler.resetSession("other");
+		else f.scheduler.configure({ ...f.settings, enabled: action !== "off" }, action === "mute");
+		assert.equal(f.calls[0].signal.aborted, true);
+		f.scheduler.resetSession("s"); f.scheduler.configure(f.settings, false);
+		f.calls[0].finish(); await tick(); f.clock.advance(5000);
+		assert.equal(f.calls.length, 1);
+	}
 });
 
 test("slow detection must acquire start permit immediately before spawn; expires and aborts", async () => {

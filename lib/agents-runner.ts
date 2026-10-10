@@ -230,7 +230,7 @@ const IPC_MARKER = "GENTLE_PI_AGENTS_OWNED_IPC";
 const PARENT_NOTIFICATION_TOOL = "subagent_parent_message";
 /** The exact --tools list, so the child can report requested names Pi dropped silently (#1690). */
 export const REQUESTED_TOOLS_ENV = "GENTLE_PI_AGENTS_REQUESTED_TOOLS";
-const DEFAULT_TOOLS: readonly string[] = [];
+const EXPLICIT_TOOLS_ALLOWLIST_ERROR = "explicit tools allowlist required (it must be non-empty) to launch a child agent";
 const TERMINATION_GRACE_MS = 250;
 const GROUP_CONFIRM_MS = 25;
 const GROUP_CONFIRM_DEADLINE_MS = 1_000;
@@ -269,10 +269,10 @@ export function formatChildExit(code: number | null | undefined, signal?: string
 
 const hostProcess: ProcessControl = { platform: process.platform, kill: (pid, signal) => process.kill(pid, signal) };
 
-// The --tools value, or undefined when Pi keeps its default tools.
-function requestedTools(request: TaskRequest): string | undefined {
-	const tools = request.agent.tools.length > 0 ? [...new Set([...request.agent.tools, PARENT_NOTIFICATION_TOOL])] : DEFAULT_TOOLS;
-	return tools.length > 0 ? tools.join(",") : undefined;
+// Every child must carry an explicit allowlist; never let Pi substitute its defaults.
+function requestedTools(request: TaskRequest): string {
+	if (!Array.isArray(request.agent.tools) || request.agent.tools.length === 0) throw new Error(EXPLICIT_TOOLS_ALLOWLIST_ERROR);
+	return [...new Set([...request.agent.tools, PARENT_NOTIFICATION_TOOL])].join(",");
 }
 
 export function childArguments(request: TaskRequest, instructionsPath?: string): string[] {
@@ -282,7 +282,7 @@ export function childArguments(request: TaskRequest, instructionsPath?: string):
 	if (request.model) args.push("--model", request.thinking ? `${formatModelRef(request.model)}:${request.thinking}` : formatModelRef(request.model));
 	else if (request.thinking) args.push("--thinking", request.thinking);
 	const tools = requestedTools(request);
-	if (tools !== undefined) args.push("--tools", tools);
+	args.push("--tools", tools);
 	if (instructionsPath) {
 		args.push("--append-system-prompt", instructionsPath);
 	} else if (request.agent.instructions.length > 0) {
@@ -483,6 +483,11 @@ export class AgentRunner {
 	// A child that cannot start (missing pi, bad cwd) fails only its task:
 	// spawn exceptions and process errors settle without uncaught host errors.
 	private launch(id: string, request: TaskRequest): void {
+		if (!Array.isArray(request.agent.tools) || request.agent.tools.length === 0) {
+			this.store.update(id, { status: TASK_STATUS.RUNNING, startedAt: this.deps.now(), lastStep: "starting" });
+			this.finish(id, TASK_STATUS.FAILED, EXPLICIT_TOOLS_ALLOWLIST_ERROR);
+			return;
+		}
 		try { request.beforeSpawn?.(); }
 		catch (error) {
 			this.store.update(id, { status: TASK_STATUS.RUNNING, startedAt: this.deps.now(), lastStep: "starting" });
@@ -506,8 +511,7 @@ export class AgentRunner {
 		delete env.GENTLE_PI_SDD_REMEDIATION_PLAN;
 		delete env.GENTLE_PI_RESEARCH_SELECTION;
 		const tools = requestedTools(request);
-		if (tools !== undefined) env[REQUESTED_TOOLS_ENV] = tools;
-		else delete env[REQUESTED_TOOLS_ENV];
+		env[REQUESTED_TOOLS_ENV] = tools;
 		let instructionsTransportDir: string | undefined;
 		let instructionsTransportPath: string | undefined;
 		if (Buffer.byteLength(request.agent.instructions, "utf8") > MAX_INLINE_INSTRUCTIONS_BYTES) {

@@ -13,6 +13,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import https from "node:https";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
@@ -194,16 +195,32 @@ export async function downloadGentleAiAsset(url, destination, maxBytes = MAX_DOW
 	const downloadOnce = async () => {
 		const response = await responseFor(url, redirects), contentLength = Number(response.headers["content-length"] ?? "0");
 		if (!Number.isSafeInteger(contentLength) || contentLength < 0 || contentLength > maxBytes) { response.resume(); throw new Error("Gentle AI download exceeds the maximum allowed size"); }
-		await new Promise((resolve, reject) => {
-			const output = createWriteStream(destination, { flags: "wx", mode: 0o600 }); let received = 0, settled = false;
-			let timer = setTimeout(() => response.destroy(downloadTimeoutError("body")), bodyTimeoutMs);
-			const finish = (callback, value) => { if (!settled) { settled = true; clearTimeout(timer); callback(value); } };
-			const fail = (error) => { response.destroy(); output.destroy(); finish(reject, error); };
-			const reset = () => { clearTimeout(timer); timer = setTimeout(() => response.destroy(downloadTimeoutError("body")), bodyTimeoutMs); };
-			response.on("data", (chunk) => { reset(); received += chunk.length; if (received > maxBytes) response.destroy(new Error("Gentle AI download exceeds the maximum allowed size")); });
-			response.on("error", fail); response.setTimeout?.(bodyTimeoutMs, () => response.destroy(downloadTimeoutError("body")));
-			output.on("error", fail); output.on("finish", () => finish(resolve)); response.pipe(output);
-		});
+		let created = false;
+		try {
+			await new Promise((resolve, reject) => {
+				const output = createWriteStream(destination, { flags: "wx", mode: 0o600 }); let received = 0, settled = false;
+				output.on("open", () => { created = true; });
+				let timer = setTimeout(() => response.destroy(downloadTimeoutError("body")), bodyTimeoutMs);
+				// The exclusive open is asynchronous, so a failed attempt may settle the
+				// download before its destination stream finished with the filesystem. Wait
+				// for that stream to close first: otherwise a late creation outlives the
+				// retry's removal of the destination and the next exclusive open fails with
+				// EEXIST instead of reporting the timeout that caused the retry.
+				const closed = () => new Promise((done) => { if (output.closed) done(); else output.on("close", done); });
+				const finish = (callback, value) => { if (settled) return; settled = true; clearTimeout(timer); void closed().then(() => callback(value)); };
+				const fail = (error) => { response.destroy(); output.destroy(); finish(reject, error); };
+				const reset = () => { clearTimeout(timer); timer = setTimeout(() => response.destroy(downloadTimeoutError("body")), bodyTimeoutMs); };
+				response.on("data", (chunk) => { reset(); received += chunk.length; if (received > maxBytes) response.destroy(new Error("Gentle AI download exceeds the maximum allowed size")); });
+				response.on("error", fail); response.setTimeout?.(bodyTimeoutMs, () => response.destroy(downloadTimeoutError("body")));
+				output.on("error", fail); output.on("finish", () => finish(resolve)); response.pipe(output);
+			});
+		} catch (error) {
+			// A failed attempt removes only the file it created, once its stream closed, so
+			// the retry starts from a free destination path. A path this download never
+			// owned is left alone instead of being deleted with it.
+			if (created) await rm(destination, { force: true });
+			throw error;
+		}
 	};
 	for (let attempt = 1; attempt <= maxAttempts; attempt += 1) try { if (attempt > 1) await rm(destination, { force: true }); await downloadOnce(); return; } catch (error) {
 		if (attempt === maxAttempts || !isRetryableDownloadError(error)) throw error;
@@ -645,31 +662,39 @@ async function installWindowsGentleAiFromGoSumdb(options, packageRoot, architect
 	return withInstallLock(packageRoot, options, async (runtimeRoot) => {
 		await cleanupStaleStagingBundles(runtimeRoot);
 		const stagingDirectory = await mkdtemp(join(runtimeRoot, `.v${INSTALLER_VERSION}.staging-`));
+		// Go builds in a short private directory under the system temp directory, never inside
+		// the package: from a deep pnpm store path (179 characters, run 38063142924) the
+		// working directories Go gives asm.exe inside GOMODCACHE exceed MAX_PATH and
+		// CreateProcess fails with "The directory name is invalid."
+		let buildDirectory = null;
 		try {
 			await chmod(stagingDirectory, 0o700);
-			const buildDirectory = join(stagingDirectory, ".build");
-			await mkdir(buildDirectory, { recursive: true, mode: 0o700 });
+			buildDirectory = await mkdtemp(join(options.temporaryDirectory ?? tmpdir(), "gai-"));
+			await chmod(buildDirectory, 0o700);
 			const goPath = await resolveWindowsGoExecutable(options);
 			const environment = sealedGoEnvironment(goPath, buildDirectory, architecture);
 			for (const directory of [environment.GOBIN, environment.GOPATH, environment.GOMODCACHE, environment.GOCACHE, environment.TEMP]) await mkdir(directory, { recursive: true, mode: 0o700 });
 			await recoverInterruptedPublication(runtimeRoot, (directory) => existingWindowsSourceBundleMatches(directory, execute, goPath, environment, architecture), options);
 			const existing = versionBundlePath(runtimeRoot);
 			if (await existingWindowsSourceBundleMatches(existing, execute, goPath, environment, architecture)) return { installed: false, binaryPath: join(existing, "gentle-ai.exe"), method: GENTLE_AI_INSTALL_METHOD.GO_SUMDB_SOURCE_BUILD };
-			await assertGoToolchain(execute, goPath, environment, stagingDirectory);
-			try { await runCommand(execute, goPath, ["install", GENTLE_AI_WINDOWS_SOURCE_PACKAGE], commandOptions(environment, stagingDirectory, GO_INSTALL_TIMEOUT_MS)); }
+			await assertGoToolchain(execute, goPath, environment, buildDirectory);
+			try { await runCommand(execute, goPath, ["install", GENTLE_AI_WINDOWS_SOURCE_PACKAGE], commandOptions(environment, buildDirectory, GO_INSTALL_TIMEOUT_MS)); }
 			catch (error) { throw new GentleAiInstallerError(GENTLE_AI_GO_INSTALL_FAILED_CODE, `Gentle AI Go SumDB source installation failed for ${GENTLE_AI_WINDOWS_SOURCE_PACKAGE}.`, error); }
 			const builtBinary = join(environment.GOBIN, "gentle-ai.exe"), binaryPath = join(stagingDirectory, "gentle-ai.exe");
 			const details = await lstat(builtBinary);
 			if (!details.isFile() || details.isSymbolicLink()) throw new GentleAiInstallerError(GENTLE_AI_GO_INSTALL_FAILED_CODE, "Gentle AI Go installation produced a non-regular gentle-ai.exe.");
 			await copyFile(builtBinary, binaryPath);
-			const metadata = await verifyGoBuildMetadata(execute, goPath, binaryPath, environment, stagingDirectory, architecture);
-			await assertExactGentleAiVersion(execute, binaryPath, environment, stagingDirectory);
+			const metadata = await verifyGoBuildMetadata(execute, goPath, binaryPath, environment, buildDirectory, architecture);
+			await assertExactGentleAiVersion(execute, binaryPath, environment, buildDirectory);
 			const binarySha256 = await sha256File(binaryPath);
 			await writeFile(join(stagingDirectory, "integrity.json"), canonicalManifest(windowsSourceManifest(metadata, binarySha256, architecture)), { mode: 0o600 });
 			await safeRemoveDirectory(buildDirectory);
 			const published = await publishBundle(runtimeRoot, stagingDirectory, options);
 			return { installed: true, binaryPath: join(published, "gentle-ai.exe"), method: GENTLE_AI_INSTALL_METHOD.GO_SUMDB_SOURCE_BUILD };
-		} finally { await safeRemoveDirectory(stagingDirectory); }
+		} finally {
+			try { if (buildDirectory !== null) await safeRemoveDirectory(buildDirectory); }
+			finally { await safeRemoveDirectory(stagingDirectory); }
+		}
 	});
 }
 

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { VisualCustomizeView } from "../lib/visual-customize-view.ts";
+import { VisualCustomizeView, type CustomizeInline, type CustomizeRow } from "../lib/visual-customize-view.ts";
 import { CommandPalette } from "../lib/command-palette.ts";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { getThemeByName, Theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 
 const theme = { fg: (_role: string, text: string) => text };
+type FoldableRow = CustomizeRow & { visible?: () => boolean; keyhint?: string };
 
 test("Customize shares Commands card geometry, header and focused-row style at wide, narrow and short sizes", () => {
 	for (const [width, height] of [[100, 24], [36, 12], [76, 5]] as const) {
@@ -19,7 +20,7 @@ test("Customize shares Commands card geometry, header and focused-row style at w
 		assert.equal(customize.at(-1), commands.at(-1));
 		assert.ok(customize.every(line => visibleWidth(line) === width));
 		assert.ok(customize.length <= height);
-		assert.match(customize.join("\n"), /Visual customization.*esc/);
+		assert.match(customize.join("\n"), /Customization.*esc/);
 		assert.match(customize.join("\n"), /▸ Animations/);
 		if (height > 5) {
 			view.handleInput("\x1b[C");
@@ -415,4 +416,280 @@ test("view awaits async actions, reports errors and repaints after completion", 
 	await new Promise<void>((resolve) => setImmediate(resolve));
 	assert.deepEqual(errors, ["write failed"]);
 	assert.ok(renders >= 2);
+});
+
+// --- inline bridge (direct rows, no nested native dialogs) --------------------
+
+const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+function inlineView(action: (inline: CustomizeInline) => void | Promise<void>, options: { rowsAvailable?: () => number; onClose?: () => void } = {}) {
+	return new VisualCustomizeView({ rows: [{ label: "Field row", action }], theme, rowsAvailable: options.rowsAvailable ?? (() => 12), requestRender: () => {}, onClose: options.onClose ?? (() => {}) });
+}
+
+test("Notifications header reads Audio notifications while other panes read Customization", () => {
+	const view = new VisualCustomizeView({ rows: [
+		{ category: "Animations", label: "Speed", action: () => {} },
+		{ category: "Notifications", label: "Audio notifications: off", action: () => {} },
+	], theme, requestRender: () => {}, onClose: () => {} });
+	assert.equal(view.title(), "Customization");
+	assert.match(view.render(76).join("\n"), /Customization.*esc/);
+	view.handleInput("\x1b[B");
+	assert.equal(view.title(), "Audio notifications");
+	assert.match(view.render(76).join("\n"), /Audio notifications.*esc/);
+});
+
+test("inline field accepts typed, pasted and Kitty input, submits on Enter and cancels with Escape without closing", async () => {
+	let closed = 0;
+	const submitted: string[] = [];
+	const view = inlineView(async inline => {
+		const value = await inline.input({ prompt: "Path", value: "" });
+		if (value !== undefined) submitted.push(value);
+	}, { onClose: () => { closed++; } });
+	view.render(76);
+	view.handleInput("\r");
+	await tick();
+	assert.match(view.render(76).join("\n"), /Path:/);
+	view.handleInput("a");
+	view.handleInput("\x1b[200~b c\x1b[201~");
+	view.handleInput("\x1b[100u");
+	assert.match(view.render(76).join("\n"), /Path: ab cd/);
+	view.handleInput("\x1b");
+	await tick();
+	assert.equal(closed, 0, "first Escape cancels the field, not the whole card");
+	assert.deepEqual(submitted, []);
+	assert.doesNotMatch(view.render(76).join("\n"), /Path:/);
+	view.handleInput("\x1b");
+	assert.equal(closed, 1, "second Escape closes the card");
+});
+
+test("inline field submits a visible value and drops invisible resizes without writing", async () => {
+	let height = 12;
+	const submitted: string[] = [];
+	const view = inlineView(async inline => {
+		const value = await inline.input({ prompt: "Path", value: "" });
+		if (value !== undefined) submitted.push(value);
+	}, { rowsAvailable: () => height });
+	view.render(76);
+	view.handleInput("\r");
+	await tick();
+	view.handleInput("/local/a.wav");
+	view.render(76);
+	view.handleInput("\r");
+	await tick();
+	assert.deepEqual(submitted, ["/local/a.wav"]);
+
+	const hidden = inlineView(async inline => {
+		const value = await inline.input({ prompt: "Path", value: "x" });
+		if (value !== undefined) submitted.push(value);
+	}, { rowsAvailable: () => height });
+	hidden.render(76);
+	hidden.handleInput("\r");
+	await tick();
+	height = 3; // Resize below the preview area without another render.
+	hidden.handleInput("\r");
+	await tick();
+	assert.deepEqual(submitted, ["/local/a.wav"], "an Enter that cannot see the field must not submit");
+});
+
+test("inline confirmation accepts only a fully visible yes and resolves false otherwise", async () => {
+	let height = 12;
+	const seen: boolean[] = [];
+	const view = inlineView(async inline => { seen.push(await inline.confirm("Replace invalid audio configuration? The existing file is malformed or unreadable.")); }, { rowsAvailable: () => height });
+	view.render(76);
+	view.handleInput("\r");
+	await tick();
+	assert.match(view.render(76).join("\n"), /y yes/);
+	view.handleInput("n");
+	await tick();
+	assert.deepEqual(seen, [false]);
+
+	const second = inlineView(async inline => { seen.push(await inline.confirm("Replace invalid audio configuration? The existing file is malformed or unreadable.")); }, { rowsAvailable: () => height });
+	second.render(76);
+	second.handleInput("\r");
+	await tick();
+	second.handleInput("y");
+	await tick();
+	assert.deepEqual(seen, [false, true]);
+
+	const short = inlineView(async inline => { seen.push(await inline.confirm("Replace invalid audio configuration? The existing file is malformed or unreadable.")); }, { rowsAvailable: () => 5 });
+	short.render(76);
+	short.handleInput("\r");
+	await tick();
+	short.handleInput("y");
+	await tick();
+	assert.deepEqual(seen, [false, true, false], "a confirmation with no visible yes must fail closed");
+});
+
+test("dispose resolves a pending inline field as cancelled without writing", async () => {
+	let observed: CustomizeInline | undefined;
+	const submitted: string[] = [];
+	const view = inlineView(async inline => {
+		observed = inline;
+		const value = await inline.input({ prompt: "Path", value: "" });
+		if (value !== undefined) submitted.push(value);
+	});
+	view.render(76);
+	view.handleInput("\r");
+	await tick();
+	view.dispose();
+	await tick();
+	assert.deepEqual(submitted, []);
+	assert.equal(observed!.disposed, true, "the bridge signals disposal so rows cannot persist");
+	view.handleInput("\x1b");
+	assert.deepEqual(submitted, [], "a disposed view ignores further input");
+});
+
+test("row key shortcuts run before panel shortcuts and are ignored outside the controls pane", () => {
+	const keys: string[] = [];
+	const view = new VisualCustomizeView({ rows: [{ category: "Notifications", label: "event", action: () => {}, key: (data) => { if (data === "p") { keys.push("p"); return true; } return false; } }],
+		theme, requestRender: () => {}, onClose: () => {}, profiles: { list: () => [], save: () => {}, apply: () => {}, delete: () => {}, reset: () => {} } });
+	view.render(76);
+	// Categories pane: the row key is not consulted, so the panel handles p.
+	view.handleInput("p");
+	assert.deepEqual(keys, []);
+	view.handleInput("\x1b");
+	view.handleInput("\x1b[C");
+	view.handleInput("p");
+	assert.deepEqual(keys, ["p"], "the highlighted row consumes p instead of opening profiles");
+});
+
+test("Notifications non-event controls consume p without opening visual profiles and keep the audio title", () => {
+	const listed: string[] = [];
+	const rows: CustomizeRow[] = [
+		{ category: "Notifications", label: "Audio notifications: on", action: () => {} },
+		{ category: "Notifications", label: "Audio: unmuted", action: () => {} },
+		{ category: "Notifications", label: "Advanced: show per-event exceptions", action: () => {} },
+	];
+	const view = new VisualCustomizeView({ rows, theme, requestRender: () => {}, onClose: () => {}, profiles: { list: () => { listed.push("list"); return []; }, save: () => {}, apply: () => {}, delete: () => {}, reset: () => {} } });
+	view.render(76);
+	view.handleInput("\x1b[C");
+	for (let i = 0; i < rows.length; i++) {
+		view.handleInput("p");
+		const frame = view.render(76).join("\n");
+		assert.equal(view.title(), "Audio notifications", `non-event row ${i} must keep the audio title`);
+		assert.match(frame, /Audio notifications/, `non-event row ${i} must stay on the audio card`);
+		assert.doesNotMatch(frame, /Visual profiles/, `non-event row ${i} must not open the profile pane`);
+		if (i < rows.length - 1) view.handleInput("\x1b[B");
+	}
+	assert.deepEqual(listed, [], "the profile catalog must never be listed from Notifications controls");
+});
+
+test("p still opens visual profiles from a non-Notifications control", () => {
+	const listed: string[] = [];
+	const view = new VisualCustomizeView({ rows: [{ category: "Themes", label: "Dark", action: () => {} }], theme, requestRender: () => {}, onClose: () => {}, profiles: { list: () => { listed.push("list"); return []; }, save: () => {}, apply: () => {}, delete: () => {}, reset: () => {} } });
+	view.render(76);
+	view.handleInput("\x1b[C");
+	view.handleInput("p");
+	assert.match(view.render(76).join("\n"), /Visual profiles/);
+	assert.equal(listed.length, 1);
+});
+
+test("the Notifications card footer is audio-specific and never advertises visual profiles", () => {
+	const profiles = { list: () => [], save: () => {}, apply: () => {}, delete: () => {}, reset: () => {} };
+	const view = new VisualCustomizeView({ rows: [
+		{ category: "Animations", label: "Speed", action: () => {} },
+		{ category: "Notifications", label: "Audio notifications: off", action: () => {} },
+	], theme, requestRender: () => {}, onClose: () => {}, rowsAvailable: () => 24, profiles });
+	view.handleInput("\x1b[B");
+	view.handleInput("\x1b[C");
+	for (const width of [60, 80]) {
+		const frame = view.render(width).join("\n");
+		assert.match(frame, /Tab panes · Enter change · p test · Esc close/, `basic audio footer at width ${width}`);
+		assert.doesNotMatch(frame, /f WAV/, `basic audio footer must not advertise file editing at width ${width}`);
+		assert.doesNotMatch(frame, /p profiles/, `audio footer must not advertise profiles at width ${width}`);
+	}
+	const other = new VisualCustomizeView({ rows: [{ category: "Themes", label: "Dark", action: () => {} }], theme, requestRender: () => {}, onClose: () => {}, rowsAvailable: () => 24, profiles });
+	other.handleInput("\x1b[C");
+	assert.match(other.render(80).join("\n"), /p profiles/, "other categories keep the profiles hint");
+});
+
+test("an async row key task holds busy until it settles and releases it after a rejection", async () => {
+	const errors: Error[] = [];
+	const keyed: string[] = [];
+	let actions = 0;
+	const view = new VisualCustomizeView({ rows: [{
+		category: "Notifications", label: "Async row", action: () => { actions++; },
+		key: data => { if (data === "f") { keyed.push("f"); return Promise.reject(new Error("key failed")); } return false; },
+	}], theme, requestRender: () => {}, onClose: () => {}, onError: error => errors.push(error), rowsAvailable: () => 12 });
+	view.render(76);
+	view.handleInput("\x1b[C");
+	view.handleInput("f");
+	view.handleInput("f");
+	assert.deepEqual(keyed, ["f"], "a second key is ignored while the async task is busy");
+	await tick(); await tick();
+	assert.equal(errors.length, 1, "a rejected key surfaces through onError");
+	assert.equal(errors[0]?.message, "key failed");
+	view.handleInput("\r");
+	await tick();
+	assert.equal(actions, 1, "busy is released after the rejected key task settles");
+});
+
+test("a visible() false row is unreachable and its action or key is never invoked", async () => {
+	const actions: string[] = [];
+	const keys: string[] = [];
+	let advanced = false;
+	const rows: FoldableRow[] = [
+		{ category: "Notifications" as const, label: "Basic", action: () => { actions.push("basic"); } },
+		{ category: "Notifications" as const, label: "Hidden detail", visible: () => advanced, action: () => { actions.push("hidden"); }, key: (data: string) => { keys.push(data); return true; } },
+	];
+	const view = new VisualCustomizeView({ rows, theme, rowsAvailable: () => 12, requestRender: () => {}, onClose: () => {} });
+	view.render(76);
+	view.handleInput("\x1b[C");
+	for (let i = 0; i < 3; i++) { view.handleInput("\x1b[B"); assert.doesNotMatch(view.render(76).join("\n"), /Hidden detail/, "a collapsed row must not render"); }
+	view.handleInput("\r");
+	view.handleInput("f");
+	view.handleInput("p");
+	await tick();
+	assert.ok(!actions.includes("hidden"), "a hidden row action must never run");
+	assert.deepEqual(keys, [], "a hidden row key must never run");
+	advanced = true;
+	assert.match(view.render(76).join("\n"), /Hidden detail/, "expanding reveals the row");
+});
+
+test("selection clamps to a visible row after a collapse", async () => {
+	const actions: string[] = [];
+	let advanced = true;
+	const rows: FoldableRow[] = [
+		{ category: "Notifications" as const, label: "Basic", action: () => { actions.push("basic"); } },
+		{ category: "Notifications" as const, label: "Advanced", visible: () => advanced, action: () => { actions.push("advanced"); } },
+	];
+	const view = new VisualCustomizeView({ rows, theme, rowsAvailable: () => 12, requestRender: () => {}, onClose: () => {} });
+	view.render(76);
+	view.handleInput("\x1b[C");
+	view.handleInput("\x1b[B");
+	assert.match(view.render(76).join("\n"), /\u25b8 Advanced/);
+	advanced = false;
+	assert.doesNotMatch(view.render(76).join("\n"), /Advanced/);
+	view.handleInput("\r");
+	await tick();
+	assert.deepEqual(actions, ["basic"], "the collapsed selection clamps to the visible row");
+});
+
+test("a throwing visible() callback hides its row instead of exposing it", async () => {
+	const actions: string[] = [];
+	const rows: FoldableRow[] = [
+		{ category: "Notifications" as const, label: "Boom", visible: () => { throw new Error("boom"); }, action: () => { actions.push("boom"); } },
+		{ category: "Notifications" as const, label: "Safe", action: () => { actions.push("safe"); } },
+	];
+	const view = new VisualCustomizeView({ rows, theme, rowsAvailable: () => 12, requestRender: () => {}, onClose: () => {} });
+	view.render(76);
+	view.handleInput("\x1b[C");
+	assert.doesNotMatch(view.render(76).join("\n"), /Boom/, "a row whose visibility check throws must fail closed");
+	view.handleInput("\r");
+	await tick();
+	assert.deepEqual(actions, ["safe"], "the throwing row must never be activated");
+});
+
+test("the audio footer drops f WAV when the selected row has no keyhint and advertises it when it does", () => {
+	const view = new VisualCustomizeView({ rows: [
+		{ category: "Notifications", label: "Audio notifications: off", action: () => {} },
+		{ category: "Notifications", label: "Success: success tone", action: () => {}, keyhint: "Tab panes · Enter change · f WAV · p test · Esc close" },
+	] as FoldableRow[], theme, rowsAvailable: () => 24, requestRender: () => {}, onClose: () => {}, profiles: { list: () => [], save: () => {}, apply: () => {}, delete: () => {}, reset: () => {} } });
+	view.handleInput("\x1b[C");
+	const basic = view.render(80).join("\n");
+	assert.match(basic, /Tab panes · Enter change · p test · Esc close/, "a row with no keyhint keeps the audio footer without a WAV hint");
+	assert.doesNotMatch(basic, /f WAV/, "the default audio footer must not advertise file editing");
+	view.handleInput("\x1b[B");
+	const advanced = view.render(80).join("\n");
+	assert.match(advanced, /Tab panes · Enter change · f WAV · p test · Esc close/, "a row with a keyhint advertises the WAV key");
 });

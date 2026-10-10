@@ -58,7 +58,7 @@ function dispatchWriter(input: Record<string, unknown>) {
 		cwd,
 		hasUI: false,
 		ui: { confirm: async () => true },
-	} as ExtensionContext);
+	} as unknown as ExtensionContext);
 }
 
 async function assertAccepted(input: Record<string, unknown>, message: string) {

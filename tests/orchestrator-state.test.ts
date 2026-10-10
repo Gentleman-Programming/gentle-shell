@@ -19,7 +19,8 @@ test("only explicit typed branch records become historical knowledge", () => {
 	input.objective = "mutated";
 	const record = cache.get(manager)!;
 	assert.deepEqual(record, { schema: 1, sessionId: "owner", cwd: "/repo", recordedAt: 10,
-		source: "owner-curated", ownerReply: false, authority: "none", state: { objective: "Review", decisions: "Advisory" } });
+		source: "owner-curated", ownerReply: false, authority: "none", state: { objective: "Review", decisions: "Advisory" },
+		aliases: { initialAlias: null, currentAlias: null } });
 	record.state!.objective = "reader mutated";
 	for (let i = 0; i < 1000; i++) assert.equal(cache.get(manager)?.recordedAt, 10);
 	assert.equal(scans, 1);
@@ -43,6 +44,34 @@ test("only explicit typed branch records become historical knowledge", () => {
 	assert.throws(() => cache.publish(manager, {}, append), /stale/);
 	cache.clear();
 	assert.equal(cache.get(foreign), undefined);
+});
+
+test("alias identity preserves status age, validates data, and rejects stale branch publication", () => {
+	const cache = new OrchestratorStateCache();
+	const entries: { type: string; customType: string; data: unknown }[] = [];
+	const manager = { getSessionId: () => "owner", getCwd: () => "/repo", getBranch: () => entries };
+	const append = (customType: string, data: unknown) => entries.push({ type: "custom", customType, data });
+	cache.load(manager);
+	cache.publish(manager, { progress: "Old status" }, append, 10);
+	cache.load(manager); // A new, undeclared record is not legacy history.
+	cache.publish(manager, undefined, append, 20, "First");
+	cache.publish(manager, undefined, append, 30, "Current");
+	assert.equal(cache.get(manager)?.recordedAt, 10);
+	assert.equal(cache.get(manager)?.state?.progress, "Old status");
+	assert.deepEqual(cache.get(manager)?.aliases, { initialAlias: "First", currentAlias: "Current" });
+	const valid = cache.get(manager)!;
+	for (const aliases of [{ initialAlias: "First", currentAlias: "bad\n" }, { initialAlias: "x", currentAlias: null },
+		{ initialAlias: null, currentAlias: "\ud800" }, { initialAlias: "x", currentAlias: "x".repeat(121) },
+		{ initialAlias: null, currentAlias: " x " }, { initialAlias: null, currentAlias: "x", grant: true }])
+		assert.equal(decodePublishedState({ ...valid, aliases }), undefined);
+	const writes = entries.length;
+	for (const subject of [123, {}, "\ud800"]) assert.throws(() => cache.publish(manager, undefined, append, 40, subject), /invalid/);
+	assert.equal(entries.length, writes);
+	assert.throws(() => cache.publish(manager, undefined, () => cache.load(manager), 40, "Stale"), /stale/);
+	assert.deepEqual(cache.get(manager)?.aliases, valid.aliases);
+	cache.publish(manager, null, append, 50);
+	cache.load(manager);
+	assert.deepEqual(cache.get(manager)?.aliases, valid.aliases);
 });
 
 test("recorded cwd preserves only unambiguous native absolute paths", () => {

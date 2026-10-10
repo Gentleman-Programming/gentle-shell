@@ -40,7 +40,7 @@ test("Herdr activity is discoverable through the isolated launcher package", asy
 			runtime: { kind: "path", command: "fake-pi", args: [] },
 			home: { mode: "isolated", source: "default", dir: "/fake/home" },
 			packageRoot, declaration: undefined, takeOver, otherPackagePaths: [],
-			passthrough: [], baseEnv: {}, homedir: "/fake",
+			passthrough: [], baseEnv: {}, homedir: "/fake", cwd: "/fake/cwd",
 		});
 		assert.ok(invocation.args.includes(packageRoot));
 		assert.equal(invocation.env.PI_CODING_AGENT_DIR, "/fake/home");
@@ -70,13 +70,17 @@ function standaloneLauncher(t: test.TestContext) {
 	writeFileSync(join(root, "bin", "gentle-shell.mjs"), readFileSync(binPath));
 	writeFileSync(join(root, "package.json"), readFileSync(join(packageRoot, "package.json")));
 	for (const dir of ["runtime", "scripts"]) symlinkSync(join(packageRoot, dir), join(root, dir), "junction");
-	const env = { HOME: f.home, USERPROFILE: f.home, PATH: `${root}${delimiter}${dirname(process.execPath)}`, GENTLE_SHELL_NO_AUTO_SETUP: "1" };
+	const env = {
+		HOME: f.home, USERPROFILE: f.home, PATH: `${root}${delimiter}${dirname(process.execPath)}`, GENTLE_SHELL_NO_AUTO_SETUP: "1",
+		// Keep executable discovery isolated without making cmd shims unlaunchable.
+		...(process.platform === "win32" ? { ComSpec: process.env.ComSpec, SystemRoot: process.env.SystemRoot } : {}),
+	};
 	return { ...f, root, env, launcher: join(root, "bin", "gentle-shell.mjs") };
 }
 
 test("a genuinely absent adjacent peer falls back to PATH", (t) => {
 	const f = standaloneLauncher(t);
-	writePiScript(join(f.root, "pi"), "0.99.2");
+	writePathPiScript(f.root, "0.99.2");
 	const result = spawnSync(process.execPath, [f.launcher, "--version"], { env: f.env, encoding: "utf8" });
 	assert.equal(result.status, 0, result.stderr);
 	assert.match(result.stdout, /pi 0\.99\.2/);
@@ -88,8 +92,7 @@ test("malformed adjacent metadata never silently falls back to PATH; env overrid
 	mkdirSync(join(peer, "dist", "bundle"), { recursive: true });
 	writeFileSync(join(peer, "dist", "index.js"), "");
 	writePiScript(join(peer, "dist", "bundle", "cli.js"), "0.99.1");
-	const fallback = join(f.root, "pi");
-	writePiScript(fallback, "0.99.2");
+	const fallback = writePathPiScript(f.root, "0.99.2");
 	const base = { name: "@earendil-works/pi-coding-agent", type: "module", exports: { ".": { import: "./dist/index.js" } }, bin: { pi: "dist/bundle/cli.js" } };
 	for (const metadata of [{ ...base, name: "impostor" }, { ...base, bin: { pi: "../outside.js" } }, { ...base, bin: {} }, "malformed"]) {
 		writeFileSync(join(peer, "package.json"), metadata === "malformed" ? "{" : JSON.stringify(metadata));
@@ -134,6 +137,9 @@ function fixture(t: test.TestContext) {
 		GENTLE_SHELL_PI: piScript,
 		GENTLE_SHELL_NO_AUTO_SETUP: "1",
 	};
+	// A suite launched from inside a Gentle Shell session inherits the outer
+	// session's recorded user Pi home, which --link now honours first (#2015).
+	delete env.GENTLE_SHELL_USER_PI_HOME;
 	return { root, home, gentleShellHome, piScript, env };
 }
 
@@ -169,12 +175,24 @@ function writePiScript(path: string, version: string, removeExitCode = 0) {
 			"  PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,",
 			"  GENTLE_PI_AGENT_HOME: process.env.GENTLE_PI_AGENT_HOME,",
 			"  GENTLE_SHELL_USER_PI_HOME: process.env.GENTLE_SHELL_USER_PI_HOME,",
+			"  GENTLE_SHELL_CHILD_PACKAGE_INJECTION: process.env.GENTLE_SHELL_CHILD_PACKAGE_INJECTION,",
 			"}));",
 			"process.exit(0);",
 			"",
 		].join("\n"),
 	);
 	chmodSync(path, 0o755);
+}
+
+// Match the real platform lookup: POSIX accepts the shebang executable,
+// Windows discovers a .cmd shim via PATHEXT. Bundled JS peers stay unchanged.
+function writePathPiScript(root: string, version: string): string {
+	const script = join(root, process.platform === "win32" ? "pi-fixture.mjs" : "pi");
+	writePiScript(script, version);
+	if (process.platform !== "win32") return script;
+	const command = join(root, "pi.cmd");
+	writeFileSync(command, `@echo off\r\n"${process.execPath}" "${script}" %*\r\nexit /b %errorlevel%\r\n`);
+	return command;
 }
 
 function run(env: NodeJS.ProcessEnv, args: string[], options: { cwd?: string } = {}) {
@@ -659,6 +677,20 @@ test("forwarded args reach pi after the injected extension flags, in order", (t)
 	assert.equal(payload.GENTLE_PI_AGENT_HOME, f.gentleShellHome);
 });
 
+// #1690: the spawned pi must carry the launcher's own -e set so the subagent
+// runner can forward it to delegated children; a stale inherited value is replaced.
+test("an isolated launch without a gentle-pi declaration signals its package injection to pi", (t) => {
+	const f = fixture(t);
+	const stale = JSON.stringify({ version: 1, noExtensions: true, extensionPaths: [join(f.root, "outer")] });
+	for (const inherited of [undefined, stale]) {
+		const result = run({ ...f.env, GENTLE_SHELL_CHILD_PACKAGE_INJECTION: inherited }, ["--mode", "rpc"]);
+		assert.equal(result.status, 0, result.stderr);
+		const payload = JSON.parse(result.stdout);
+		assert.deepEqual(payload.args.slice(0, 2), ["-e", packageRoot]);
+		assert.deepEqual(JSON.parse(payload.GENTLE_SHELL_CHILD_PACKAGE_INJECTION), { version: 1, noExtensions: false, extensionPaths: [packageRoot] });
+	}
+});
+
 test("an isolated launch keeps its own agent home and carries the user's original Pi home, even when nested", (t) => {
 	const f = fixture(t);
 	const base = { ...f.env };
@@ -684,6 +716,10 @@ test("an isolated launch keeps its own agent home and carries the user's origina
 	const linked = launch({ PI_CODING_AGENT_DIR: customHome }, ["--link"]);
 	assert.equal(linked.PI_CODING_AGENT_DIR, customHome);
 	assert.equal(linked.GENTLE_SHELL_USER_PI_HOME, customHome);
+	// --link from inside an isolated session reuses the preserved original home (#2015).
+	const nestedLinked = launch({ PI_CODING_AGENT_DIR: f.gentleShellHome, GENTLE_SHELL_USER_PI_HOME: customHome }, ["--link"]);
+	assert.equal(nestedLinked.PI_CODING_AGENT_DIR, customHome);
+	assert.equal(nestedLinked.GENTLE_SHELL_USER_PI_HOME, customHome);
 	assert.equal(existsSync(join(customHome, "sessions")), false);
 });
 

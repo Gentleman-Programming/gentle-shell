@@ -1316,8 +1316,10 @@ export default function promptHistoryExtension(
 ): void {
   const env = deps.env ?? process.env;
   const configHome = deps.gentlePiConfigHome ?? gentlePiConfigHome(env);
-  // Per-prompt gate: re-read so a Customize toggle applies live.
-  const capturing = () => captureEnabled(env, configHome);
+  // Per-prompt gate: re-read so a Customize toggle applies live. A delegated
+  // child never captures: its prompt is a delegation brief, not user history,
+  // and the parent owns the store's init and GC (gentle-shell#1690).
+  const capturing = () => env.GENTLE_PI_AGENTS_CHILD !== "1" && captureEnabled(env, configHome);
   const root = deps.root ?? PI_HISTORY_ROOT;
   const cwd = deps.cwd ?? process.cwd();
   const instanceId = deps.instanceId ?? randomUUID();

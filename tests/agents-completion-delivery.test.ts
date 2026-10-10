@@ -92,3 +92,20 @@ test("dropAll discards pending, consumed, and delivered state", () => {
 	queue.enqueue(task("t1"), 5000);
 	assert.deepEqual(queue.takeDeliverable(5000).map((entry) => entry.task.id), ["t1"], "the queue is fresh after dropAll");
 });
+
+test("requeue returns a failed delivery once, keeps its settle time, and respects consume", () => {
+	const queue = createCompletionQueue<FakeTask>();
+	queue.enqueue(task("t1"), 1000);
+	queue.enqueue(task("t2"), 1000);
+	const [first, second] = queue.takeDeliverable(2000);
+	queue.requeue(first!);
+	queue.requeue(first!);
+	queue.requeue(second!);
+	queue.consume("t2");
+	const retried = queue.takeDeliverable(1000 + STALE_COMPLETION_MS);
+	assert.deepEqual(retried.map((entry) => entry.task.id), ["t1"], "a double requeue yields one entry and a consumed one is dropped");
+	assert.equal(retried[0]!.settledAt, 1000, "the original settle time is kept");
+	assert.equal(retried[0]!.stale, true, "a retried completion can become stale");
+	queue.enqueue(task("t1"), 5000);
+	assert.deepEqual(queue.takeDeliverable(5000), [], "a delivered retry is still delivered at most once");
+});

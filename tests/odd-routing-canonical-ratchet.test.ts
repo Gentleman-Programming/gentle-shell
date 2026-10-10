@@ -84,19 +84,49 @@ const ANCHORS: readonly RoutingAnchor[] = [
 		],
 	},
 	{
-		label: "mapping trigger at 4 or more files",
-		canonical: "**Mapping trigger:** when understanding the work requires 4 or more files",
+		label: "mapping trigger when understanding exceeds the evidence budget",
+		canonical: "**Mapping trigger:** when understanding exceeds the inline batch budget",
+		// gentle-ai#5139 replaced the 4-file count with the evidence budget;
+		// gentle-ai#5218 scoped it to understanding (gentle-shell#1494).
 		mirrors: [
-			{ surface: DELEGATION, includes: "**Mapping trigger (4-file rule):** when understanding the work requires 4 or more files" },
-			{ surface: CORE, includes: "**4-file rule** — 4+ files to understand" },
+			{ surface: DELEGATION, includes: "**Mapping trigger (Evidence-budget rule):** read inline only when the evidence fits one parallel batch of at most 3 calls" },
+			{ surface: CORE, includes: "**Evidence-budget rule** — understanding needs more than one read batch" },
 		],
 	},
 	{
-		label: "writer trigger at 2 or more non-trivial files",
-		canonical: "**Writer trigger:** when implementation touches 2 or more non-trivial files",
+		label: "writer trigger fires only for a large task, never by file count",
+		canonical: "**Writer trigger:** a large task delegates one bounded writer per task; file count never fires this trigger",
+		// Gentle Shell intentionally leads the canon here (gentle-shell#1731): the
+		// writer fires on named reasons (parallelism, context), never on size
+		// alone; T24 turned the price-ratio reason off. The canon port is G1 in
+		// odd/tasks/delegate-for-reason.md.
 		mirrors: [
-			{ surface: DELEGATION, includes: "**Writer trigger (Multi-file write rule):** when implementation touches 2 or more non-trivial files" },
-			{ surface: CORE, includes: "**Multi-file write rule** — 2+ non-trivial files touched" },
+			{ surface: DELEGATION, includes: "**Writer trigger (Writer rule):** a large task alone never delegates, and file count never fires this trigger" },
+			{ surface: CORE, includes: "**Writer rule** — never by file count or a large task alone" },
+		],
+	},
+	{
+		label: "task size decides the route (gentle-shell#1494)",
+		canonical: "### Task Size",
+		mirrors: [
+			{ surface: CORE, includes: "## Task Size" },
+			{ surface: EXTENSION, includes: "Size the task by the orchestrator's Task Size section" },
+		],
+	},
+	{
+		label: "verification trigger is reserved for high risk",
+		canonical: "**Verification trigger:** a high-risk change gets an independent verifier",
+		mirrors: [
+			{ surface: CORE, includes: "**Verification rule** — high risk → independent `gentle-ai-verify`" },
+			{ surface: DELEGATION, includes: "a high-risk change (Task Size) gets an independent `gentle-ai-verify` run" },
+		],
+	},
+	{
+		label: "tracking trigger is reserved for large tasks",
+		canonical: "**Tracking trigger:** a large task gets the feature document",
+		mirrors: [
+			{ surface: CORE, includes: "**Track** — large task → feature document" },
+			{ surface: DELEGATION, includes: "**Track:** a large task gets the feature document" },
 		],
 	},
 	{
@@ -107,9 +137,11 @@ const ANCHORS: readonly RoutingAnchor[] = [
 	{
 		label: "long-session backstop",
 		canonical: "**Long-session backstop:**",
+		// Gentle Shell intentionally leads the canon here: a parent-context token
+		// backstop replaces the tool-call count (tracked by gentle-ai#5139).
 		mirrors: [
-			{ surface: DELEGATION, includes: "**Long-session backstop (Long-session rule):**" },
-			{ surface: CORE, includes: "**Long-session rule** — ~20 tool calls, 5 exploratory reads, or 2 non-mechanical edits without delegation" },
+			{ surface: DELEGATION, includes: "**Context backstop:** when the parent context passes ~150k tokens" },
+			{ surface: CORE, includes: "**Context backstop** — parent context past ~150k tokens" },
 		],
 	},
 	{
@@ -120,10 +152,24 @@ const ANCHORS: readonly RoutingAnchor[] = [
 		],
 	},
 	{
-		label: "triggers never select SDD",
-		canonical: "These triggers never select SDD and never create SDD artifacts",
+		label: "triggers select only the ODD topology",
+		canonical: "These triggers only choose between direct inline and delegated direct inside the organic flow",
 		mirrors: [
-			{ surface: DELEGATION, includes: "These triggers never select SDD and never create SDD artifacts" },
+			{ surface: DELEGATION, includes: "These triggers only choose between direct inline and delegated direct inside ODD" },
+		],
+	},
+	{
+		label: "handoffs pass the feature spec by reference (gentle-shell#1713)",
+		canonical: "Hand off by reference, never by paraphrase: name the document, task, and specs",
+		mirrors: [
+			{ surface: EXTENSION, includes: "Hand off by reference, never by paraphrase: name the document, task, and specs" },
+		],
+	},
+	{
+		label: "verify runs only authorized examples on isolated state",
+		canonical: "runs the spec's examples the parent authorized, against isolated state when they mutate data",
+		mirrors: [
+			{ surface: EXTENSION, includes: "runs the spec's examples the parent authorized, against isolated state when they mutate data" },
 		],
 	},
 	{
@@ -138,7 +184,7 @@ const ANCHORS: readonly RoutingAnchor[] = [
 // rows, so they are mirror-only and not fixture-derived anchors.
 const CORE_ONLY_TRIGGERS = [
 	"**Incident rule** — diagnose wrong cwd/worktree/git/tooling incidents separately",
-	"**Verification rule** — executing/delegating verification commands",
+	"**Verification rule** — high risk → independent `gentle-ai-verify`",
 ] as const;
 
 function fixtureBody(): string {

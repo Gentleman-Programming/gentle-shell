@@ -364,6 +364,213 @@ test("candidate owner publication never removes a replaced marker", (t) => {
 	assert.equal(readdirSync(parent).some((name) => name.endsWith(".reaper-lock")), false);
 });
 
+test("candidate owner publication preserves a replaced marker with 64-bit identity precision loss", (t) => {
+	mockWindowsAcl(t);
+	// The registry canonicalizes the contributor root (e.g. /var -> /private/var on macOS).
+	const cwd = repository(t), parent = join(realpathSync(cwd), ".git", "gentle-ai", "candidate-views");
+	const originalLstat = fs.lstatSync, fsync = fs.fsyncSync, write = fs.writeFileSync;
+	// Modeled identities, not measured NTFS values: distinct 64-bit indices round to one Number.
+	const high = 2n ** 53n;
+	assert.notEqual(high, high + 1n);
+	assert.equal(Number(high), Number(high + 1n));
+	let marker: string | undefined, replaced = false, faults = 0, adds = 0;
+	let savedContent: string | undefined;
+	t.mock.method(fs, "lstatSync", (path: Parameters<typeof fs.lstatSync>[0], ...args: unknown[]) => {
+		const stat = (originalLstat as (...arguments_: unknown[]) => ReturnType<typeof fs.lstatSync>)(path, ...args);
+		if (marker === undefined && typeof path === "string" && path.endsWith(".owner.json") && path === join(parent, readdirSync(parent).find((name) => name.endsWith(".owner.json")) ?? "")) marker = path;
+		if (path !== marker) return stat;
+		const bigint = (args[0] as { bigint?: boolean } | undefined)?.bigint === true;
+		const ino = replaced ? high + 1n : high;
+		// Retain real metadata and Stats methods; only the identity pair is synthetic.
+		return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, {
+			dev: bigint ? high : Number(high), ino: bigint ? ino : Number(ino),
+		});
+	});
+	t.mock.method(fs, "fsyncSync", (fd: number) => {
+		// The reaper lock is synced before marker publication; it is not this fault's boundary.
+		if (marker === undefined || replaced) return fsync(fd);
+		assert.ok(marker, "owned marker identity must be captured before the fault");
+		faults++;
+		savedContent = readFileSync(marker, "utf8");
+		renameSync(marker, `${marker}.saved`);
+		write(marker, "replacement", { mode: 0o600 });
+		replaced = true;
+		throw new Error("fixture marker fsync failure after 64-bit identity replacement");
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const registry = new CandidateViewRegistry((file, args, options) => {
+		if (args[0] === "worktree" && args[1] === "add") adds++;
+		return execFileSync(file, args, options);
+	}, "win32");
+	assert.throws(() => registry.create({ contributorRoot: cwd }), (error: unknown) => error instanceof CandidateViewError && error.reason === "candidate-owner-preparation-failed");
+	assert.equal(faults, 1, "replacement fault must be reached exactly once");
+	assert.equal(adds, 0);
+	assert.ok(marker);
+	assert.equal(readFileSync(`${marker}.saved`, "utf8"), savedContent);
+	assert.equal(readdirSync(parent).some((name) => name.endsWith(".reaper-lock")), false);
+	assert.equal(existsSync(marker), true, "publication rollback deleted the replacement after distinct 64-bit identities rounded to the same Number");
+	assert.equal(readFileSync(marker, "utf8"), "replacement");
+});
+
+test("public POSIX candidate-views parent reports bounded privacy guidance without changing permissions or adding a worktree", { skip: process.platform === "win32" }, (t) => {
+	const cwd = repository(t);
+	const parent = join(cwd, ".git", "gentle-ai", "candidate-views");
+	mkdirSync(parent, { recursive: true, mode: 0o700 });
+	chmodSync(parent, 0o777);
+	let adds = 0;
+	const registry = new CandidateViewRegistry((file, args, options) => {
+		if (args[0] === "worktree" && args[1] === "add") adds++;
+		return execFileSync(file, args, options);
+	});
+	assert.throws(() => registry.create({ contributorRoot: cwd }), (error: unknown) => {
+		assert.ok(error instanceof CandidateViewError);
+		assert.equal(error.reason, "candidate-owner-preparation-failed");
+		assert.deepEqual(error.diagnostics, {
+			code: "candidate-owner-parent-privacy",
+			message: "candidate-views parent must be owned by the current user and inaccessible to group and others; inspect its ownership and permissions, then correct them out of band before retrying START",
+		});
+		assert.doesNotMatch(JSON.stringify(error.diagnostics), new RegExp(cwd));
+		return true;
+	});
+	assert.equal(lstatSync(parent).mode & 0o777, 0o777);
+	assert.equal(adds, 0);
+	chmodSync(parent, 0o700);
+	const view = registry.create({ contributorRoot: cwd });
+	view.cleanup();
+});
+
+test("POSIX chmod-ineffective parent reports filesystem capability guidance before worktree creation", { skip: process.platform === "win32" }, (t) => {
+	const cwd = repository(t);
+	const parent = join(cwd, ".git", "gentle-ai", "candidate-views");
+	mkdirSync(parent, { recursive: true, mode: 0o700 });
+	chmodSync(parent, 0o777);
+	const originalLstat = fs.lstatSync;
+	t.mock.method(fs, "lstatSync", (path: Parameters<typeof fs.lstatSync>[0], ...args: unknown[]) => {
+		const stat = (originalLstat as (...arguments_: unknown[]) => ReturnType<typeof fs.lstatSync>)(path, ...args);
+		return typeof path === "string" && path.includes(".gentle-ai-chmod-probe-")
+			? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { mode: (Number(stat.mode) & ~0o777) | 0o777, uid: process.getuid?.() })
+			: stat;
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	let adds = 0;
+	const registry = new CandidateViewRegistry((file, args, options) => {
+		if (args[0] === "worktree" && args[1] === "add") adds++;
+		return execFileSync(file, args, options);
+	});
+	assert.throws(() => registry.create({ contributorRoot: cwd }), (error: unknown) => {
+		assert.ok(error instanceof CandidateViewError);
+		assert.equal(error.reason, "candidate-owner-preparation-failed");
+		assert.deepEqual(error.diagnostics, {
+			code: "candidate-owner-parent-chmod-ineffective",
+			message: "candidate-views parent filesystem does not honor POSIX permission changes; move this repository's Git common directory to a POSIX-metadata filesystem or enable metadata support before retrying START",
+		});
+		assert.doesNotMatch(JSON.stringify(error.diagnostics), new RegExp(cwd));
+		return true;
+	});
+	assert.equal(adds, 0);
+	assert.equal(readdirSync(parent).some((name) => name.includes(".gentle-ai-chmod-probe-")), false);
+});
+
+test("inconclusive private-mode probe keeps bounded privacy guidance instead of claiming ineffective chmod", { skip: process.platform === "win32" }, (t) => {
+	const cwd = repository(t);
+	const parent = join(cwd, ".git", "gentle-ai", "candidate-views");
+	mkdirSync(parent, { recursive: true, mode: 0o700 });
+	chmodSync(parent, 0o777);
+	const originalMkdir = fs.mkdirSync;
+	t.mock.method(fs, "mkdirSync", (path: Parameters<typeof fs.mkdirSync>[0], ...args: unknown[]) => {
+		if (typeof path === "string" && path.includes(".gentle-ai-chmod-probe-")) throw Object.assign(new Error("probe creation refused"), { code: "EACCES" });
+		return (originalMkdir as (...arguments_: unknown[]) => ReturnType<typeof fs.mkdirSync>)(path, ...args);
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	let adds = 0;
+	const registry = new CandidateViewRegistry((file, args, options) => {
+		if (args[0] === "worktree" && args[1] === "add") adds++;
+		return execFileSync(file, args, options);
+	});
+	assert.throws(() => registry.create({ contributorRoot: cwd }), (error: unknown) => {
+		assert.ok(error instanceof CandidateViewError);
+		assert.equal(error.reason, "candidate-owner-preparation-failed");
+		assert.deepEqual(error.diagnostics, {
+			code: "candidate-owner-parent-privacy",
+			message: "candidate-views parent must be owned by the current user and inaccessible to group and others; inspect its ownership and permissions, then correct them out of band before retrying START",
+		});
+		assert.doesNotMatch(JSON.stringify(error.diagnostics), new RegExp(cwd));
+		return true;
+	});
+	assert.equal(adds, 0);
+	assert.equal(readdirSync(parent).some((name) => name.includes(".gentle-ai-chmod-probe-")), false);
+	chmodSync(parent, 0o700);
+	const view = registry.create({ contributorRoot: cwd });
+	view.cleanup();
+});
+
+test("POSIX parent privacy classification does not probe a replaced path after validating it", { skip: process.platform === "win32" }, (t) => {
+	const cwd = repository(t);
+	const commonDir = realpathSync(join(cwd, ".git"));
+	const parent = join(commonDir, "gentle-ai", "candidate-views");
+	mkdirSync(parent, { recursive: true, mode: 0o700 });
+	const originalLstat = fs.lstatSync;
+	let parentProbes = 0;
+	t.mock.method(fs, "lstatSync", (path: Parameters<typeof fs.lstatSync>[0], ...args: unknown[]) => {
+		if (path === parent && ++parentProbes === 2) {
+			const moved = `${parent}-moved`;
+			renameSync(parent, moved);
+			symlinkSync(moved, parent, "dir");
+		}
+		return (originalLstat as (...args: unknown[]) => ReturnType<typeof fs.lstatSync>)(path, ...args);
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	let failure: unknown;
+	try { assertCandidateOwnerParent(commonDir); } catch (error) { failure = error; }
+	assert.equal(parentProbes, 1, "the privacy decision must share the checked directory probe");
+	assert.equal(failure, undefined);
+});
+
+test("POSIX non-directory and symlink parents never receive privacy guidance", { skip: process.platform === "win32" }, (t) => {
+	const cwd = repository(t);
+	const commonDir = realpathSync(join(cwd, ".git"));
+	const control = join(commonDir, "gentle-ai");
+	const parent = join(control, "candidate-views");
+	mkdirSync(control, { recursive: true, mode: 0o700 });
+	for (const kind of ["file", "symlink"] as const) {
+		if (kind === "file") writeFileSync(parent, "not a directory");
+		else symlinkSync(control, parent, "dir");
+		assert.throws(() => assertCandidateOwnerParent(commonDir), (error: unknown) => {
+			assert.notEqual((error as Error).name, "PosixCandidateOwnerParentPrivacyError");
+			return true;
+		});
+		rmSync(parent);
+	}
+});
+
+test("owner privacy diagnostic sanitizer rejects injected text", () => {
+	for (const code of ["candidate-owner-parent-privacy", "candidate-owner-parent-chmod-ineffective"] as const) {
+		const forged = new CandidateViewError("rejected", "candidate-owner-preparation-failed", {
+			code,
+			message: "private-fixture-path-and-user",
+		} as unknown as ConstructorParameters<typeof CandidateViewError>[2]);
+		assert.equal(forged.diagnostics, undefined);
+	}
+});
+
+test("unknown owner failures never expose arbitrary messages in diagnostics", (t) => {
+	const cwd = repository(t);
+	const secret = "private-fixture-path-and-user";
+	t.mock.method(fs, "fsyncSync", () => { throw new Error(secret); });
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	assert.throws(() => new CandidateViewRegistry().create({ contributorRoot: cwd }), (error: unknown) => {
+		assert.ok(error instanceof CandidateViewError);
+		assert.equal(error.diagnostics, undefined);
+		assert.doesNotMatch(error.message, /private-fixture-path-and-user/);
+		return true;
+	});
+});
+
 test("candidate owner rejects an absent POSIX getuid before worktree creation", { skip: process.platform === "win32" }, (t) => {
 	const originalGetuid = process.getuid;
 	Object.defineProperty(process, "getuid", { configurable: true, value: undefined });
@@ -562,6 +769,47 @@ for (const race of ["root", "registration", "lock"] as const) {
 		if (race === "lock") assert.equal(readFileSync(`${view.root}.reaper-lock`, "utf8"), "replacement");
 	});
 }
+
+test("ordinary cleanup preserves a replaced root with 64-bit identity precision loss", (t) => {
+	mockWindowsAcl(t);
+	const cwd = repository(t), high = 2n ** 53n;
+	const originalLstat = fs.lstatSync;
+	let root = "", replaced = false, lists = 0, removes = 0;
+	const registry = new CandidateViewRegistry((file, args, options) => {
+		// Never allow Git to delete the replacement, even on the failing implementation.
+		if (args[0] === "worktree" && args[1] === "remove") { removes++; return ""; }
+		const result = execFileSync(file, args, options);
+		if (root && args[0] === "worktree" && args[1] === "list" && ++lists === 2) {
+			const pointer = readFileSync(join(root, ".git"));
+			renameSync(root, `${root}.saved`);
+			mkdirSync(root);
+			writeFileSync(join(root, ".git"), pointer);
+			writeFileSync(join(root, "replacement.txt"), "replacement");
+			replaced = true;
+		}
+		return result;
+	});
+	const view = registry.create({ contributorRoot: cwd });
+	root = view.root;
+	t.mock.method(fs, "lstatSync", (path: Parameters<typeof fs.lstatSync>[0], ...args: unknown[]) => {
+		const stat = (originalLstat as (...arguments_: unknown[]) => ReturnType<typeof fs.lstatSync>)(path, ...args);
+		if (path !== root) return stat;
+		const bigint = (args[0] as { bigint?: boolean } | undefined)?.bigint === true;
+		const ino = replaced ? high + 1n : high;
+		return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, {
+			dev: bigint ? high : Number(high), ino: bigint ? ino : Number(ino),
+		});
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	assert.throws(() => view.cleanup());
+	assert.equal(replaced, true);
+	assert.equal(readFileSync(join(root, "replacement.txt"), "utf8"), "replacement");
+	assert.equal(existsSync(`${root}.saved`), true);
+	assert.equal(existsSync(ownerMarker(root)), true);
+	assert.equal(existsSync(`${root}.reaper-lock`), false);
+	assert.equal(removes, 0, "distinct 64-bit directory identities must stop cleanup before Git removal");
+});
 
 test("ordinary cleanup never unlinks a replaced sidecar after Git removal", (t) => {
 	const cwd = repository(t);
@@ -1035,22 +1283,21 @@ test("candidate view skips a shared index that disappears during stat or copy", 
 	for (const phase of ["stat", "copy"] as const) {
 		const originalLstatSync = fs.lstatSync;
 		const originalCopyFileSync = fs.copyFileSync;
-		fs.lstatSync = ((path: string | Buffer, options?: Parameters<typeof lstatSync>[1]) => {
+		t.mock.method(fs, "lstatSync", (path: string | Buffer, options?: Parameters<typeof lstatSync>[1]) => {
 			if (phase === "stat" && path === sharedIndexPath) throw Object.assign(new Error("shared index disappeared"), { code: "ENOENT" });
 			return originalLstatSync(path, options);
-		}) as typeof fs.lstatSync;
-		fs.copyFileSync = ((source: string | Buffer, destination: string | Buffer) => {
+		});
+		t.mock.method(fs, "copyFileSync", (source: string | Buffer, destination: string | Buffer) => {
 			if (phase === "copy" && source === sharedIndexPath) throw Object.assign(new Error("shared index disappeared"), { code: "ENOENT" });
 			return originalCopyFileSync(source, destination);
-		}) as typeof fs.copyFileSync;
+		});
 		syncBuiltinESMExports();
 		let view: ReturnType<typeof createCandidateView> | undefined;
 		try {
 			view = createCandidateView({ contributorRoot, intendedUntracked: [] });
 			assert.equal(view.paths.includes("staged-addition.txt"), true, phase);
 		} finally {
-			fs.lstatSync = originalLstatSync;
-			fs.copyFileSync = originalCopyFileSync;
+			t.mock.restoreAll();
 			syncBuiltinESMExports();
 			view?.cleanup();
 		}
@@ -1277,13 +1524,13 @@ test("corrected views stay within frozen scope and replace projections only when
 	const registry = new CandidateViewRegistry();
 	const initial = registry.create({ contributorRoot }); registry.bind({ token: initial.token, lineageId: "correction", selectedLenses: ["review-risk"] });
 	writeFileSync(join(contributorRoot, "tracked.txt"), "corrected\n");
-	const corrected = registry.createCorrected("correction", contributorRoot);
+	const corrected = registry.createCorrected("correction", contributorRoot, "corrected-1");
 	assert.notEqual(corrected.candidateTree, initial.candidateTree);
 	assert.equal(registry.resolveProjection("correction", contributorRoot).candidateTree, initial.candidateTree);
 	registry.promoteCorrected("correction", corrected.token);
 	assert.equal(registry.resolveProjection("correction", contributorRoot).candidateTree, corrected.candidateTree);
 	writeFileSync(join(contributorRoot, "escaped.txt"), "outside scope\n");
-	assert.throws(() => registry.createCorrected("correction", contributorRoot), /escapes the frozen genesis paths/);
+	assert.throws(() => registry.createCorrected("correction", contributorRoot, "escaped-2"), /escapes the frozen genesis paths/);
 	registry.cleanupTerminal("correction", "approved");
 });
 
@@ -1506,7 +1753,7 @@ test("candidate view compacts an oversized non-ASCII scope losslessly and determ
 		assert.throws(() => readCandidateContextManifestPage(compact.encoded, compact.sha256, actorEntries.length + 1), /cursor/);
 		const nonCanonicalBytes = Buffer.from(JSON.stringify({ gitlinks: decoded.manifest.gitlinks, scopeByMode: decoded.manifest.scopeByMode, version: 1 }), "utf8");
 		assert.throws(
-			() => decodeCandidateContextManifest(gzipSync(nonCanonicalBytes, { mtime: 0 }).toString("base64url"), createHash("sha256").update(nonCanonicalBytes).digest("hex")),
+			() => decodeCandidateContextManifest(gzipSync(nonCanonicalBytes).toString("base64url"), createHash("sha256").update(nonCanonicalBytes).digest("hex")),
 			/canonical/,
 		);
 	} finally {
@@ -1524,7 +1771,7 @@ test("candidate context manifest decoder accepts canonical numeric-looking gitli
 		scopeByMode: { "160000": ["10", "2"] },
 		gitlinks,
 	}), "utf8");
-	const encoded = gzipSync(bytes, { mtime: 0 }).toString("base64url");
+	const encoded = gzipSync(bytes).toString("base64url");
 	assert.deepEqual(decodeCandidateContextManifest(encoded, createHash("sha256").update(bytes).digest("hex")).manifest, {
 		version: 1,
 		scopeByMode: { "160000": ["10", "2"] },
@@ -1543,7 +1790,7 @@ test("candidate context manifest decoder rejects noncanonical nonnumeric gitlink
 		gitlinks,
 	}), "utf8");
 	assert.throws(
-		() => decodeCandidateContextManifest(gzipSync(bytes, { mtime: 0 }).toString("base64url"), createHash("sha256").update(bytes).digest("hex")),
+		() => decodeCandidateContextManifest(gzipSync(bytes).toString("base64url"), createHash("sha256").update(bytes).digest("hex")),
 		/canonical/,
 	);
 });
@@ -1551,7 +1798,7 @@ test("candidate context manifest decoder rejects noncanonical nonnumeric gitlink
 test("candidate context manifest decoder rejects noncanonical gzip transport for verified bytes", () => {
 	const bytes = Buffer.from(JSON.stringify({ version: 1, scopeByMode: { "100644": ["file.ts"] }, gitlinks: {} }), "utf8");
 	const sha256 = createHash("sha256").update(bytes).digest("hex");
-	const canonical = gzipSync(bytes, { mtime: 0 });
+	const canonical = gzipSync(bytes);
 	const noncanonical = Buffer.from(canonical);
 	noncanonical[4] = (noncanonical[4]! + 1) & 0xff;
 	assert.throws(() => decodeCandidateContextManifest(noncanonical.toString("base64url"), sha256), /canonical/);
@@ -1617,6 +1864,100 @@ test("candidate view accepts internal relative symlink targets and rejects unsaf
 		}
 		assert.throws(() => createCandidateView({ contributorRoot }), (error: unknown) => error instanceof CandidateViewError, name);
 	}
+});
+
+test("unchanged committed symlinks materialize as links with core.symlinks disabled or enabled", (t) => {
+	const contributorRoot = repository(t);
+	mkdirSync(join(contributorRoot, "nested"));
+	mkdirSync(join(contributorRoot, "target-dir"));
+	writeFileSync(join(contributorRoot, "target-dir", "file.txt"), "frozen target\n");
+	try {
+		symlinkSync("../target-dir/file.txt", join(contributorRoot, "nested", "link"));
+		symlinkSync("../target-dir", join(contributorRoot, "nested", "directory-link"), "dir");
+		symlinkSync("../missing-file", join(contributorRoot, "nested", "dangling-link"));
+	}
+	catch { t.skip("native symlink creation unavailable"); return; }
+	git(contributorRoot, "add", "nested/link", "nested/directory-link", "nested/dangling-link", "target-dir/file.txt");
+	git(contributorRoot, "-c", "user.name=Candidate Test", "-c", "user.email=candidate@example.invalid", "commit", "-m", "link base");
+	for (const setting of ["false", "true"]) {
+		git(contributorRoot, "config", "core.symlinks", setting);
+		writeFileSync(join(contributorRoot, "tracked.txt"), `changed ${setting}\n`);
+		const view = createCandidateView({ contributorRoot });
+		try {
+			assert.deepEqual(view.paths, ["tracked.txt"]);
+			assert.equal(lstatSync(join(view.root, "nested", "link")).isSymbolicLink(), true);
+			assert.equal(readFileSync(join(view.root, "nested", "link"), "utf8"), "frozen target\n");
+			assert.equal(readFileSync(join(view.root, "nested", "directory-link", "file.txt"), "utf8"), "frozen target\n");
+			assert.equal(lstatSync(join(view.root, "nested", "dangling-link")).isSymbolicLink(), true);
+			assert.equal(readFileSync(join(view.root, "tracked.txt"), "utf8"), `changed ${setting}\n`);
+			assert.equal(git(contributorRoot, "config", "core.symlinks"), setting);
+			view.verify();
+		} finally { view.cleanup(); }
+	}
+});
+
+test("frozen symlink bytes survive disabled checkout, while replaced links and regular files fail verification", (t) => {
+	const cwd = repository(t);
+	try { symlinkSync("tracked.txt", join(cwd, "alias")); }
+	catch { t.skip("native symlink creation unavailable"); return; }
+	git(cwd, "add", "alias");
+	git(cwd, "-c", "user.name=Candidate Test", "-c", "user.email=candidate@example.invalid", "commit", "-m", "link base");
+	git(cwd, "config", "core.symlinks", "false");
+	writeFileSync(join(cwd, "tracked.txt"), "changed\n");
+	const view = createCandidateView({ contributorRoot: cwd });
+	try {
+		assert.deepEqual(readFileSync(join(view.root, "alias"), "utf8"), "changed\n");
+		assert.equal(git(cwd, "cat-file", "blob", git(cwd, "rev-parse", "HEAD:alias")), "tracked.txt");
+		for (const replacement of ["other.txt", "../escape", null]) {
+			chmodSync(view.root, 0o755);
+			rmSync(join(view.root, "alias"));
+			if (replacement === null) writeFileSync(join(view.root, "alias"), "tracked.txt");
+			else symlinkSync(replacement, join(view.root, "alias"));
+			assert.throws(() => view.verify(), CandidateViewError);
+		}
+	} finally { view.cleanup(); }
+});
+
+test("unsafe frozen symlink blobs are rejected before any link is created with core.symlinks disabled", (t) => {
+	for (const target of ["/absolute", "../escape", ".git/config", "bad\\\\target", "bad//target"]) {
+		const cwd = repository(t);
+		git(cwd, "config", "core.symlinks", "false");
+		const safe = execFileSync("git", ["hash-object", "-w", "--stdin"], { cwd, input: "tracked.txt", encoding: "utf8" }).trim();
+		const unsafe = execFileSync("git", ["hash-object", "-w", "--stdin"], { cwd, input: target, encoding: "utf8" }).trim();
+		git(cwd, "update-index", "--add", "--cacheinfo", `120000,${safe},a-safe-link`);
+		git(cwd, "update-index", "--add", "--cacheinfo", `120000,${unsafe},z-unsafe-link`);
+		const base = git(cwd, "rev-parse", "HEAD");
+		git(cwd, "-c", "user.name=Candidate Test", "-c", "user.email=candidate@example.invalid", "commit", "-m", "unsafe frozen link");
+		let creations = 0;
+		const original = fs.symlinkSync;
+		t.mock.method(fs, "symlinkSync", (...args: Parameters<typeof fs.symlinkSync>) => { creations++; return original(...args); });
+		syncBuiltinESMExports();
+		try { assert.throws(() => createCandidateView({ contributorRoot: cwd, baseRef: base, committedOnly: true }), CandidateViewError, target); }
+		finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+		assert.equal(creations, 0, target);
+		assert.equal(git(cwd, "config", "core.symlinks"), "false");
+	}
+});
+
+test("unavailable native symlink capability fails with bounded reason and cleans owned view", (t) => {
+	const cwd = repository(t);
+	try { symlinkSync("tracked.txt", join(cwd, "alias")); }
+	catch { t.skip("native symlink creation unavailable for fixture"); return; }
+	git(cwd, "add", "alias");
+	git(cwd, "-c", "user.name=Candidate Test", "-c", "user.email=candidate@example.invalid", "commit", "-m", "link base");
+	git(cwd, "config", "core.symlinks", "false");
+	writeFileSync(join(cwd, "tracked.txt"), "changed\n");
+	const original = fs.symlinkSync;
+	t.mock.method(fs, "symlinkSync", (...args: Parameters<typeof fs.symlinkSync>) => {
+		if (String(args[1]).includes("candidate-views")) throw Object.assign(new Error("private path and user"), { code: "EPERM" });
+		return original(...args);
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	assert.throws(() => createCandidateView({ contributorRoot: cwd }), (error: unknown) => error instanceof CandidateViewError && error.reason === "symlink-materialization-failed" && !error.message.includes("private path and user"));
+	const parent = join(cwd, ".git", "gentle-ai", "candidate-views");
+	assert.deepEqual(readdirSync(parent), []);
+	assert.equal(git(cwd, "worktree", "list", "--porcelain").includes("candidate-views"), false);
 });
 
 test("candidate view detects symlink target-byte tampering after materialization", (t) => {
@@ -1841,6 +2182,52 @@ test("native projections recover a committed range base from its frozen tree", (
 	const projection = registry.resolveProjection("committed-projection", contributorRoot);
 	assert.equal(projection.baseCommit, baseCommit);
 	assert.equal(projection.committedOnly, true);
+});
+
+test("provider-owned tree remains the exact base across reuse, correction and native dispatch restoration", (t) => {
+	const contributorRoot = repository(t);
+	const baseTree = git(contributorRoot, "rev-parse", "HEAD^{tree}");
+	writeFileSync(join(contributorRoot, "tracked.txt"), "tree-backed candidate\n");
+	git(contributorRoot, "add", "tracked.txt");
+	git(contributorRoot, "-c", "user.name=Candidate Test", "-c", "user.email=candidate@example.invalid", "commit", "-m", "candidate");
+	const head = git(contributorRoot, "rev-parse", "HEAD");
+	const candidateTree = git(contributorRoot, "rev-parse", "HEAD^{tree}");
+	const registry = new CandidateViewRegistry();
+	const first = registry.createOrReuse({ contributorRoot, providerBaseTree: baseTree, committedOnly: true, replayKey: "provider-tree" });
+	try {
+		const reused = registry.createOrReuse({ contributorRoot, providerBaseTree: baseTree, committedOnly: true, replayKey: "provider-tree" });
+		assert.equal(reused.token, first.token);
+		assert.equal(first.baseTree, baseTree);
+		assert.equal(first.baseCommit, head, "HEAD anchors the worktree, not the diff base");
+		registry.retain(first.token, "tree-lineage");
+		const corrected = registry.createCorrected("tree-lineage", contributorRoot, "tree-correction");
+		assert.equal(corrected.baseTree, baseTree);
+		registry.promoteCorrected("tree-lineage", corrected.token, contributorRoot);
+		assert.equal(registry.resolveProjection("tree-lineage", contributorRoot).providerBaseTree, baseTree);
+		const restored = new CandidateViewRegistry();
+		try {
+			restored.restoreCurrentForDispatchFromNative("restored-tree", contributorRoot, { baseTree, currentCandidateTree: candidateTree, paths: ["tracked.txt"], intendedUntracked: [], projection: "staged" }, ["review-reliability"], baseTree);
+			const view = restored.resolveCurrentForLens("review-reliability", contributorRoot);
+			assert.equal(view.baseTree, baseTree);
+			assert.equal(restored.resolveProjection("restored-tree", contributorRoot).providerBaseTree, baseTree);
+		} finally { restored.cleanupAll(); }
+		const finalized = new CandidateViewRegistry();
+		try {
+			const view = finalized.restoreForFinalizeFromNative("finalized-tree", contributorRoot, { baseTree, currentCandidateTree: candidateTree, paths: ["tracked.txt"], intendedUntracked: [], projection: "staged" }, baseTree);
+			assert.equal(view.baseTree, baseTree);
+			assert.equal(finalized.resolveProjection("finalized-tree", contributorRoot).providerBaseTree, baseTree);
+		} finally { finalized.cleanupAll(); }
+	} finally { registry.cleanupAll(); }
+});
+
+test("provider tree materialization and restoration reject wrong objects and mismatched frozen bases", (t) => {
+	const contributorRoot = repository(t);
+	const head = git(contributorRoot, "rev-parse", "HEAD");
+	const baseTree = git(contributorRoot, "rev-parse", "HEAD^{tree}");
+	assert.throws(() => new CandidateViewRegistry().create({ contributorRoot, providerBaseTree: head, committedOnly: true }), (error: unknown) => error instanceof CandidateViewError && error.reason === "provider-base-tree-invalid");
+	assert.throws(() => new CandidateViewRegistry().create({ contributorRoot, baseRef: head, providerBaseTree: baseTree, committedOnly: true }), (error: unknown) => error instanceof CandidateViewError && error.reason === "provider-base-tree-invalid");
+	const registry = new CandidateViewRegistry();
+	assert.throws(() => registry.restoreProjectionFromNative("wrong-tree", contributorRoot, { baseTree, currentCandidateTree: baseTree, paths: [], intendedUntracked: [], projection: "workspace" }, head), (error: unknown) => error instanceof CandidateViewError && error.reason === "provider-base-tree-invalid");
 });
 
 test("fresh registries restore only one exact authoritative reviewing candidate and reject zero or multiple matches", (t) => {

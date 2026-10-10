@@ -14,7 +14,7 @@ The parent resolves skills once per session or before first delegation:
 
 Subagents should receive exact indexed paths. They should not have to rediscover the registry.
 
-Important distinction: SDD subagents still use their assigned executor/phase skill (for example `sdd-apply`, `sdd-design`, or `sdd-verify`). What they should not do during normal runtime is independently discover additional project/user `SKILL.md` files or the registry. The parent passes selected project/user skill paths explicitly.
+Subagents do not independently discover additional project/user `SKILL.md` files or the registry during normal runtime. The parent passes selected project/user skill paths explicitly.
 
 If a subagent reports `skill_resolution`, interpret it as project/user skill resolution:
 

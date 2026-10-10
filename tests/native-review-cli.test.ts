@@ -7,7 +7,7 @@ import {
 	decodeReviewConsentV3,
 } from "../lib/review-integration-v2.ts";
 import {
-	decodeNativeSddStatusV2,
+	NATIVE_REVIEW_OPERATION,
 	NATIVE_REVIEW_DEFAULT_MAX_BUFFER_BYTES,
 	NATIVE_REVIEW_ERROR_CODE,
 	NativeReviewCliError,
@@ -59,100 +59,6 @@ function queuedAdapter(results: readonly QueuedResult[]): {
 function client(adapter: ExecFileAdapter): NativeReviewCliV216 {
 	return new NativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai", 30_000, 1024 * 1024);
 }
-
-// Structural test data follows the 2026-09-11 native 2.7.1-0.20260911070137-350f31554a4b
-// capture: seven dependencies and four phaseInstructions groups, not a legacy alias.
-function nativeSddStatus(changeName = "complete-native-review-lifecycle", workspaceRoot = "/repo"): Record<string, unknown> {
-	return {
-		schemaName: "gentle-ai.sdd-status",
-		schemaVersion: 2,
-		changeName,
-		artifactStore: "openspec",
-		planningHome: { mode: "repo-local", path: `${workspaceRoot}/openspec` },
-		changeRoot: `${workspaceRoot}/openspec/changes/${changeName}`,
-		actionContext: { mode: "repo-local", workspaceRoot, allowedEditRoots: [workspaceRoot] },
-		dependencies: { proposal: "all_done", specs: "all_done", design: "all_done", tasks: "all_done", apply: "all_done", verify: "all_done", archive: "ready" },
-		phaseInstructions: {
-			apply: ["Apply is complete."],
-			verify: ["Verification is complete."],
-			remediate: ["Bind remediation to failed evidence."],
-			archive: ["Archive the selected change."],
-		},
-		blockedReasons: [],
-		nextRecommended: "archive",
-	};
-}
-
-test("native SDD status executes its exact selected-root argv and returns only a validated v2 authority", async () => {
-	const body = nativeSddStatus();
-	const queue = queuedAdapter([{ stdout: JSON.stringify(body) }]);
-	const status = await (client(queue.adapter) as unknown as {
-		sddStatus(request: { changeName: string; workspaceRoot: string }): Promise<Record<string, unknown>>;
-	}).sddStatus({ changeName: "complete-native-review-lifecycle", workspaceRoot: "/repo" });
-
-	assert.deepEqual(status, body);
-	assert.deepEqual(queue.calls, [{
-		file: "/package/.gentle-ai/gentle-ai",
-		arguments: ["sdd-status", "complete-native-review-lifecycle", "--cwd", "/repo", "--json", "--instructions"],
-		cwd: "/repo",
-		timeoutMs: 30_000,
-	}]);
-});
-
-test("native SDD status rejects malformed v2 identities, dependencies, instructions, and blockers", async () => {
-	const invalidInstructions = { apply: ["ok"], verify: ["ok"], remediate: ["ok"], archive: [42] };
-	assert.doesNotThrow(() => decodeNativeSddStatusV2(
-		{ ...nativeSddStatus(), phaseInstructions: { ...invalidInstructions, archive: ["ok"] } },
-		{ changeName: "complete-native-review-lifecycle", workspaceRoot: "/repo" },
-	));
-	const malformed = [
-		{ ...nativeSddStatus(), schemaName: "gentle-pi.sdd-status" },
-		{ ...nativeSddStatus(), schemaVersion: 1 },
-		{ ...nativeSddStatus(), changeName: "other-change" },
-		{ ...nativeSddStatus(), artifactStore: "future-store" },
-		{ ...nativeSddStatus(), planningHome: { mode: "future-mode", path: "/repo/openspec" } },
-		{ ...nativeSddStatus(), planningHome: { mode: "repo-local", path: "/outside" } },
-		{ ...nativeSddStatus(), changeRoot: "bad\nroot" },
-		{ ...nativeSddStatus(), actionContext: { mode: "repo-local", workspaceRoot: "/other", allowedEditRoots: ["/other"] } },
-		{ ...nativeSddStatus(), actionContext: { mode: "future-mode", workspaceRoot: "/repo", allowedEditRoots: ["/repo"] } },
-		{ ...nativeSddStatus(), actionContext: { mode: "repo-local", workspaceRoot: "/repo", allowedEditRoots: ["/outside"] } },
-		{ ...nativeSddStatus(), dependencies: { apply: "all_done", verify: "all_done", archive: "future" } },
-		{ ...nativeSddStatus(), phaseInstructions: invalidInstructions },
-		{ ...nativeSddStatus(), blockedReasons: "not-an-array" },
-		{ ...nativeSddStatus(), nextRecommended: "unknown" },
-		{ ...nativeSddStatus(), instructions: {}, phaseInstructions: undefined },
-		{ ...nativeSddStatus(), phaseInstructions: null },
-	];
-	for (const body of malformed) {
-		await assert.rejects(
-			() => (client(queuedAdapter([{ stdout: JSON.stringify(body) }]).adapter) as unknown as {
-				sddStatus(request: { changeName: string; workspaceRoot: string }): Promise<Record<string, unknown>>;
-			}).sddStatus({ changeName: "complete-native-review-lifecycle", workspaceRoot: "/repo" }),
-			(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE,
-		);
-	}
-});
-
-test("native v2 read-only decoding preserves omitted optional phaseInstructions", () => {
-	const body = nativeSddStatus();
-	delete body.phaseInstructions;
-	assert.equal(decodeNativeSddStatusV2(body, { changeName: "complete-native-review-lifecycle", workspaceRoot: "/repo" }), body);
-});
-
-test("native SDD status keeps malformed JSON, timeout, and nonzero execution fail-closed", async () => {
-	for (const [result, code] of [
-		[{ stdout: "not-json" }, NATIVE_REVIEW_ERROR_CODE.MALFORMED_JSON],
-		[{ stdout: "", timedOut: true }, NATIVE_REVIEW_ERROR_CODE.TIMEOUT],
-		[{ stdout: "{}", exitCode: 1 }, NATIVE_REVIEW_ERROR_CODE.NON_ZERO],
-	] as const) {
-		await assert.rejects(
-			() => (client(queuedAdapter([result]).adapter) as unknown as {
-				sddStatus(request: { changeName: string; workspaceRoot: string }): Promise<Record<string, unknown>>;
-			}).sddStatus({ changeName: "complete-native-review-lifecycle", workspaceRoot: "/repo" }),
-			(error: unknown) => error instanceof NativeReviewCliError && error.code === code && error.mutationOutcome === "none",
-		);
-	}
-});
 
 test("negotiated STATUS accepts the pinned v5 receipt before routing its transition", async () => {
 	const status = fixture("status-v5.captured.json");
@@ -512,6 +418,63 @@ test("native START queries STATUS then executes only the provider-rendered order
 	]);
 });
 
+// Captured from the released gentle-ai 4.0.0 binary, which predates START
+// lens selection (verify-always-rdd-high S8).
+const LENS_SELECTION_UNSUPPORTED_FAILURE = {
+	schema: "gentle-ai.review-integration.failure/v2", contract: "gentle-ai.review-integration/v2", operation: "review.status",
+	phase: "preflight", code: "invalid_request", message: "The negotiated review request is invalid.", mutation_outcome: "not_started",
+	authority_applicability: "not_evaluated", retry_safe: true, replayability: "not_replayable", required_inputs: [],
+	next_action: "correct_request", cause: "flag provided but not defined: -lenses",
+};
+
+test("native START preflights the agent lens selection through STATUS", async () => {
+	const tokens = [
+		"--contract=gentle-ai.review-integration/v2", "--cwd=/repo", `--target=${TARGET}`,
+		"--projection=workspace", "--agent=pi", "--consent=relay",
+		"--lenses=review-risk,review-reliability", "--lenses-reason=changes token parsing",
+	];
+	const queue = queuedAdapter([
+		{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens)) },
+		{ stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) },
+	]);
+	await client(queue.adapter).start({ cwd: "/repo", targetIdentity: TARGET, lenses: ["review-risk", "review-reliability"], lensesReason: "changes token parsing" });
+	assert.deepEqual(queue.calls.map((call) => call.arguments), [
+		["review", "status", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo", "--projection", "workspace", "--agent", "pi",
+			"--lenses", "review-risk,review-reliability", "--lenses-reason", "changes token parsing", "--next-transition"],
+		["review", "start", ...tokens],
+	]);
+});
+
+test("native START falls back to the tier default when the provider predates lens selection", async () => {
+	const tokens = [
+		"--contract=gentle-ai.review-integration/v2", "--cwd=/repo", `--target=${TARGET}`,
+		"--projection=workspace", "--agent=pi", "--consent=relay",
+	];
+	const queue = queuedAdapter([
+		{ stdout: JSON.stringify(LENS_SELECTION_UNSUPPORTED_FAILURE), exitCode: 1 },
+		{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens)) },
+		{ stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) },
+	]);
+	const result = await client(queue.adapter).start({ cwd: "/repo", targetIdentity: TARGET, lenses: ["review-risk"], lensesReason: "changes token parsing" });
+	assert.equal(result.action, "closed");
+	assert.deepEqual(queue.calls.map((call) => call.arguments), [
+		["review", "status", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo", "--projection", "workspace", "--agent", "pi",
+			"--lenses", "review-risk", "--lenses-reason", "changes token parsing", "--next-transition"],
+		["review", "status", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo", "--projection", "workspace", "--agent", "pi", "--next-transition"],
+		["review", "start", ...tokens],
+	]);
+});
+
+test("native START never retries a selection refusal that is not an unknown lens flag", async () => {
+	const refusal = { ...LENS_SELECTION_UNSUPPORTED_FAILURE, cause: 'review status --lenses names unknown lens "security"' };
+	const queue = queuedAdapter([{ stdout: JSON.stringify(refusal), exitCode: 1 }]);
+	await assert.rejects(
+		() => client(queue.adapter).start({ cwd: "/repo", targetIdentity: TARGET, lenses: ["security"], lensesReason: "why" }),
+		(error: unknown) => error instanceof NativeReviewIntegrationError && error.failureEnvelope.cause === refusal.cause,
+	);
+	assert.equal(queue.calls.length, 1);
+});
+
 test("native START relays provider-owned intended-untracked selection and transition argv verbatim", async () => {
 	const selectionValue = JSON.stringify(["new.ts", "nested/other.ts"]);
 	const selectionTokens = ["--selection-kind=untracked", "--selection-json={{value}}", "--selection-proof=provider-issued"];
@@ -786,8 +749,11 @@ test("capture-result receives the controller AbortSignal without an automatic mu
 	assert.equal(receivedTimeout, undefined);
 });
 
-test("native review client exposes native v2 SDD status without adding review lifecycle behavior", () => {
-	assert.equal(typeof (client(queuedAdapter([]).adapter) as unknown as { sddStatus?: unknown }).sddStatus, "function");
+test("native review transport has no SDD operations or methods", () => {
+	assert.equal(Object.values(NATIVE_REVIEW_OPERATION).some((operation) => operation.startsWith("sdd-")), false);
+	const transport = client(queuedAdapter([]).adapter) as unknown as Record<string, unknown>;
+	assert.equal("sddStatus" in transport, false);
+	assert.equal("sddContinue" in transport, false);
 });
 
 test("read-only authority inventory rejects a repository identity mismatch after decoding", async () => {
@@ -999,27 +965,4 @@ test("acknowledge-approved keeps its fail-closed stderr and typed refusal discip
 		() => client(queuedAdapter([{ stdout: "", stderr: "Error: approved acknowledgement names no live compact authority\n", exitCode: 1 }]).adapter).acknowledgeApproved({ argumentTokens: ACKNOWLEDGEMENT_TOKENS, cwd: "/repo", binding: ACKNOWLEDGED_BINDING }),
 		(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.EMPTY_OUTPUT,
 	);
-});
-
-test("native continuation uses a distinct mutating operation and the same v2 decoder", async () => {
-	const queue = queuedAdapter([{ stdout: JSON.stringify(nativeSddStatus()) }, { stdout: "{}" }]);
-	const cli = client(queue.adapter);
-	const request = { changeName: "complete-native-review-lifecycle", workspaceRoot: "/repo" };
-	assert.equal((await cli.sddContinue(request)).nextRecommended, nativeSddStatus().nextRecommended);
-	assert.deepEqual(queue.calls[0]!.arguments, ["sdd-continue", request.changeName, "--cwd", "/repo", "--json", "--instructions"]);
-	assert.equal(queue.calls[0]!.timeoutMs, undefined);
-	await assert.rejects(() => cli.sddContinue(request), (error: unknown) => error instanceof NativeReviewCliError && error.mutating === true);
-});
-
-test("native discovery preserves nullable selection and rejects an invented selected identity", () => {
-	const discovery = { ...nativeSddStatus(), changeName: null, changeRoot: null, nextRecommended: "select-change" };
-	assert.equal(decodeNativeSddStatusV2(discovery, { workspaceRoot: "/repo" }).changeName, null);
-	assert.throws(() => decodeNativeSddStatusV2(discovery, { changeName: "alpha", workspaceRoot: "/repo" }), /identity/);
-});
-
-test("all twelve native actions retain their exact tokens without prose routing", () => {
-	for (const nextRecommended of ["apply", "verify", "remediate", "archive", "archived", "resolve-blockers", "sdd-new", "select-change", "propose", "spec", "design", "tasks"]) {
-		const status = { ...nativeSddStatus(), nextRecommended, ...(nextRecommended === "remediate" ? { remediationState: { required: true, complete: false, failedEvidenceRevision: `sha256:${"a".repeat(64)}` } } : {}) };
-		assert.equal(decodeNativeSddStatusV2(status, { workspaceRoot: "/repo" }).nextRecommended, nextRecommended);
-	}
 });

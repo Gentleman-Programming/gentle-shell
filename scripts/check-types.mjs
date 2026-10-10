@@ -1,11 +1,9 @@
 #!/usr/bin/env node
-// Type gate for a project that does not compile cleanly yet.
+// TypeScript diagnostic ratchet; the committed baseline is now clean.
 //
-// `tsc --noEmit` reports a fixed set of diagnostics on this repository today, so
-// the gate is a ratchet rather than a clean pass: it fails when the number of
-// diagnostics grows for any (file, error code) pair, or when the total grows.
-// Fixing diagnostics and refreshing the baseline is the intended way to shrink
-// it.
+// With a zero baseline, every diagnostic fails the gate. If a nonzero baseline
+// is explicitly accepted, increases for any (file, error code) pair or the
+// total fail. Fixing diagnostics and refreshing the baseline strengthens it.
 //
 // Known blind spot, stated rather than hidden: keying on (file, code) counts is
 // what keeps the baseline stable while files are edited, because line numbers

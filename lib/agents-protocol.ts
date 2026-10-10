@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 
 // Gentle Agents protocol. A child pi process streams RPC events; the host
@@ -147,10 +148,23 @@ export interface TaskSummary {
 
 export type TaskListener = (task: TaskRecord, thread: TaskThread) => void;
 export type SummaryListener = (summary: TaskSummary) => void;
+export interface TaskStatusChange {
+	readonly producerId: string;
+	readonly sessionId: string;
+	readonly parentSessionId: string;
+	readonly taskId: string;
+	readonly runId: string;
+	readonly status: TaskStatus;
+	readonly previousStatus?: TaskStatus;
+	readonly sequence: number;
+}
+export type StatusChangeListener = (change: TaskStatusChange) => void | Promise<void>;
 
 const DEFAULT_LIMITS: ThreadLimits = { maxItems: 400, maxOutputChars: 16_000 };
 /** Child UI requests that block on an answer; everything else (notify, setStatus, setWidget) is noise here. */
 export const DIALOG_METHODS: ReadonlySet<string> = new Set(["select", "confirm", "input", "editor"]);
+/** The one child notify that reaches the task thread: requested --tools the child does not have (#1690). */
+export const MISSING_TOOLS_NOTE_PREFIX = "gentle-agents: requested tools missing in child:";
 const LABEL_MAX = 72;
 const TEXT_CAP = 20_000;
 const ELLIPSIS = "…";
@@ -226,6 +240,65 @@ function childResponse(message: Raw): ChildResponseObservation | undefined {
 	});
 }
 
+const ARGUMENT_PROGRESS_MAX = 4096;
+
+/** Per-child liveness evidence, separate from display events and usage.
+ * RPC deltas have no sequence number. Reject duplicate fingerprints rather
+ * than claiming indistinguishable repeated bytes are fresh progress. Retain
+ * only hashes, never arguments; exhaustion fails closed until a new message.
+ */
+export class ToolArgumentProgress {
+	private timestamp = -1;
+	private active = false;
+	private readonly blocks = new Map<number, boolean>();
+	private readonly fingerprints = new Set<string>();
+
+	observe(raw: Record<string, unknown>): boolean {
+		if (raw.type === "message_start") {
+			const message = raw.message as Raw | undefined;
+			if (message?.role === "assistant" && typeof message.timestamp === "number" && Number.isSafeInteger(message.timestamp)
+				&& message.timestamp >= 0 && message.timestamp > this.timestamp && !this.active) {
+				this.timestamp = message.timestamp;
+				this.active = true;
+				this.blocks.clear();
+				this.fingerprints.clear();
+			}
+			return false;
+		}
+		if (raw.type === "message_end" || raw.type === "agent_end" || raw.type === "agent_settled" || raw.type === "turn_end") {
+			this.active = false;
+			this.blocks.clear();
+			this.fingerprints.clear();
+			return false;
+		}
+		if (!this.active || raw.type !== "message_update") return false;
+		const inner = raw.assistantMessageEvent as Raw | undefined;
+		if (!inner || typeof inner !== "object") return false;
+		const index = inner.contentIndex;
+		if (typeof index !== "number" || !Number.isSafeInteger(index) || index < 0 || index >= ARGUMENT_PROGRESS_MAX) return false;
+		if (inner.type === "toolcall_start") {
+			// Older Pi RPC forwards SDK partial snapshots; current RPC puts the
+			// identity directly on toolcall_start. Neither shape is persisted.
+			const partial = inner.partial as Raw | undefined;
+			const block = Array.isArray(partial?.content) ? partial.content[index] as Raw | undefined : undefined;
+			const id = inner.id ?? (block?.type === "toolCall" ? block.id : undefined);
+			const name = inner.toolName ?? (block?.type === "toolCall" ? block.name : undefined);
+			if (typeof id === "string" && id.length > 0 && typeof name === "string" && name.length > 0 && !this.blocks.has(index)) this.blocks.set(index, true);
+			return false;
+		}
+		if (inner.type === "toolcall_end") {
+			if (this.blocks.has(index)) this.blocks.set(index, false);
+			return false;
+		}
+		if (inner.type !== "toolcall_delta" || this.blocks.get(index) !== true || typeof inner.delta !== "string" || inner.delta.length === 0) return false;
+		if (this.fingerprints.size >= ARGUMENT_PROGRESS_MAX) return false;
+		const fingerprint = createHash("sha256").update(`${index}:`).update(inner.delta).digest("hex");
+		if (this.fingerprints.has(fingerprint)) return false;
+		this.fingerprints.add(fingerprint);
+		return true;
+	}
+}
+
 // One RPC line in, zero or more deltas out. Streaming deltas carry only the
 // chunk; whole-message payloads that pi repeats on every update are ignored.
 export function normalizeRpcEvent(raw: unknown, options: { observeResponses?: boolean } = {}): TaskEvent[] {
@@ -270,6 +343,7 @@ export function normalizeRpcEvent(raw: unknown, options: { observeResponses?: bo
 		case "agent_settled":
 			return [{ type: TASK_EVENT.AGENT_SETTLED }];
 		case "extension_ui_request":
+			if (event.method === "notify" && typeof event.message === "string" && event.message.startsWith(MISSING_TOOLS_NOTE_PREFIX)) return [{ type: TASK_EVENT.NOTE, text: clean(event.message) }];
 			return DIALOG_METHODS.has(String(event.method)) ? [{ type: TASK_EVENT.ASK, request: askRequest(event) }] : [];
 		case "auto_retry_start":
 			return [{ type: TASK_EVENT.NOTE, text: `retrying (${String(event.attempt ?? "?")}/${String(event.maxAttempts ?? "?")})` }];
@@ -400,14 +474,21 @@ export class TaskStore {
 	private readonly listeners = new Map<string, Set<TaskListener>>();
 	private readonly summaryListeners = new Set<SummaryListener>();
 	private readonly limits: Partial<ThreadLimits>;
+	private readonly producerId = randomUUID();
+	private sequence = 0;
+	private readonly runIds = new Map<string, string>();
+	private readonly statusListeners = new Set<StatusChangeListener>();
 
 	constructor(limits: Partial<ThreadLimits> = {}) {
 		this.limits = limits;
 	}
 
 	add(task: TaskRecord): void {
+		const previous = this.tasks.get(task.id)?.status;
+		if (!this.tasks.has(task.id)) this.runIds.set(task.id, randomUUID());
 		this.tasks.set(task.id, task);
 		this.threads.set(task.id, emptyThread(this.limits));
+		this.notifyStatus(task, previous);
 		this.notifySummary();
 	}
 
@@ -416,6 +497,7 @@ export class TaskStore {
 	restore(task: TaskRecord, thread: TaskThread): boolean {
 		if (this.tasks.has(task.id)) return false;
 		this.tasks.set(task.id, task);
+		this.runIds.set(task.id, randomUUID());
 		this.threads.set(task.id, { ...thread, limits: { ...DEFAULT_LIMITS, ...this.limits } });
 		this.notifySummary();
 		return true;
@@ -446,6 +528,7 @@ export class TaskStore {
 		if (!current) return undefined;
 		const next = { ...current, ...patch };
 		this.tasks.set(id, next);
+		this.notifyStatus(next, current.status);
 		this.notifyTask(next);
 		if (next.status !== current.status) this.notifySummary();
 		return next;
@@ -471,6 +554,22 @@ export class TaskStore {
 	subscribeSummary(listener: SummaryListener): () => void {
 		this.summaryListeners.add(listener);
 		return () => this.summaryListeners.delete(listener);
+	}
+
+	/** Optional, content-free observer. Restores and unchanged snapshots are silent. */
+	subscribeStatusChanges(listener: StatusChangeListener): () => void {
+		this.statusListeners.add(listener);
+		return () => { this.statusListeners.delete(listener); };
+	}
+
+	private notifyStatus(task: TaskRecord, previousStatus?: TaskStatus): void {
+		if (task.status === previousStatus) return;
+		const change: TaskStatusChange = Object.freeze({ producerId: this.producerId,
+			sessionId: task.parentSessionId, parentSessionId: task.parentSessionId, taskId: task.id,
+			runId: this.runIds.get(task.id)!, status: task.status, previousStatus, sequence: ++this.sequence });
+		for (const listener of [...this.statusListeners]) {
+			try { void Promise.resolve(listener(change)).catch(() => {}); } catch { /* Observability cannot fail a mutation. */ }
+		}
 	}
 
 	private notifyTask(task: TaskRecord): void {

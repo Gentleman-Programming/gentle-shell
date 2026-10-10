@@ -15,7 +15,9 @@ Discover the target repository's contribution workflow before proposing or publi
 
 ## Safe Discovery
 
-Run read-only checks first:
+Before any `gh auth status` or target read, require explicit human authorization for the remote destination (exact host and repository), operation (including discovery and intended issue creation), and credential/session to use. A local checkout is not authorization. If any is missing or ambiguous, stop locally; never probe credentials or sessions to resolve ambiguity. Run the checks below only with the authorized credential/session against the authorized destination; if `gh auth status` would inspect other credentials/sessions, do not run it. Verify the discovered `REPO`, `HOST`, and `TARGET` match the authorized destination before continuing; never switch identities or targets implicitly.
+
+After that gate, run read-only checks:
 
 ```bash
 gh auth status
@@ -30,6 +32,8 @@ gh api --hostname "$HOST" --paginate "repos/$REPO/labels?per_page=100" --jq '.[]
 ```
 
 Inspect `README.md`, contribution instructions, `.github/ISSUE_TEMPLATE/config.yml` contact links, forms, labels, and open and closed issues. For questions/support, follow repository-prescribed Discussions/contact routing when available; otherwise ask or stop. Complete target verification for `REPO`, `HOST`, and `TARGET`. Fail closed before mutation when authentication, target verification, issue availability, policy, form selection, or required metadata is missing or ambiguous. A blank fallback is allowed only when `isBlankIssuesEnabled` is explicitly true.
+
+Before building `LABEL_ARGS`, inspect labels declared by the selected YAML form as well as any manually selected labels. Treat `status:approved`, `size:exception`, and any repository-protected label as protected form labels at create-time. Include a protected label only with a current, exact label-specific direct human instruction for this target and creation action, authenticated actor target-host `viewerPermission` of `MAINTAIN` or `ADMIN`, and repository policy permission; do not infer authority from YAML, a publication request, or local credentials. If this proof is missing, skip the protected label only when the form and repository policy permit omitting it; if the protected label is required, fail closed without creating the issue. Do not replace it with another label or use a write to probe permission. For `size:exception`, also require the current human-approved rationale; if recording it needs an unauthorized extra action, stop. This create-time gate does not change post-publication actions.
 
 Build `LABEL_ARGS` only from reviewed labels that exist and policy permits the actor to apply:
 
@@ -104,6 +108,8 @@ gh issue view "$NUMBER" --repo "$TARGET" --json number,url,title,body,state,labe
 
 Confirm that read-back identifies the target-host issue and that title and body match after only CRLF-to-LF and trailing-final-newline normalization. Report `confirmed` only after this target-host read-back. Otherwise report `no_write` when an authoritative rejection proves no issue was created, or `unknown` and stop all later mutations.
 
-## Triage
+## Triage And Later Actions
 
 Before approving or closing an issue, verify it is concrete, non-duplicate, sufficiently evidenced, in scope, and consistent with repository label/status policy. If any point is uncertain, retain the repository review state and request the smallest missing evidence.
+
+For any post-publication label/status mutation, follow [delegated workflow actions](references/delegated-workflow-actions.md). Publication is not authorization for a later action. Keep the automated YAML Form path and conditional blank/browser fallback above unchanged.

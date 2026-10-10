@@ -437,6 +437,24 @@ test("normalizeProfilesFile drops an active marker that points nowhere", () => {
 	assert.equal(normalized?.drops.droppedProfiles.length, 0);
 });
 
+test("normalizeProfilesFile accepts effort as alias for thinking in profile entries (#1403)", () => {
+	const normalized = normalizeProfilesFile(
+		JSON.parse(
+			profilesText({
+				hybrid: {
+					"example-agent": { model: "anthropic/claude-sonnet-4", effort: "medium" },
+					"worker": { effort: "high" },
+				},
+			}),
+		),
+	);
+	assert.deepEqual(normalized?.file.profiles.hybrid, {
+		"example-agent": { model: "anthropic/claude-sonnet-4", thinking: "medium" },
+		"worker": { model: undefined, thinking: "high" },
+	});
+	assert.equal(normalized?.drops.droppedAgents.length, 0);
+});
+
 test("bootstrapProfilesFile seeds a current profile, active only when routing is non-empty", () => {
 	const empty = bootstrapProfilesFile({});
 	assert.deepEqual(empty, {
@@ -748,4 +766,16 @@ test("formatOrchestratorSelection separates set, inherit, and inherit-with-think
 		formatOrchestratorSelection({ model: "nan/glm5.3", thinking: "max" }),
 		"nan/glm5.3 · max",
 	);
+});
+
+test("buildProfileListItems marks the session-bound profile ahead of the pinned one", () => {
+	const file = createProfile(createProfile(emptyProfilesFile(), "work", { worker: { model: "zai/glm-4.7" } }), "personal", { solo: { model: "openai/o4-mini" } });
+	const items = buildProfileListItems(file, "work", "personal");
+	assert.equal(items.find((item) => item.id === "personal")?.label, "personal (session)");
+	assert.equal(items.find((item) => item.id === "work")?.label, "work (pinned)");
+	assert.equal(items.find((item) => item.id === "personal")?.description, "1 role");
+	const both = buildProfileListItems(file, "work", "work");
+	assert.equal(both.find((item) => item.id === "work")?.label, "work (session)", "the session marker outranks the pin marker on the same profile");
+	const unbound = buildProfileListItems(file, "work");
+	assert.equal(unbound.find((item) => item.id === "personal")?.label, "personal", "no session marker without a binding");
 });

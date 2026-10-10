@@ -26,7 +26,9 @@ export const COMMAND_PALETTE_CATALOG: readonly CommandPaletteCatalogGroup[] = [
 			{ command: "gentle:review-mode", label: "Review mode (receipt-driven development)" },
 			{ command: "gentle:background-subagents", label: "Background subagents" },
 			{ command: "gentle:double-esc-cancel", label: "Require double Esc to cancel" },
+			{ command: "gentle:customize", label: "Customization · appearance + audio notifications" },
 			{ command: "gentle:animations", label: "Animation mode" },
+			{ command: "gentle:vim", label: "Vim opt-in · Pi slash commands" },
 			{ command: "gentle:telemetry", label: "Telemetry" },
 			{ command: "gentle:banner", label: "Startup banner" },
 			{ command: "gentle:banner-color", label: "Banner color" },
@@ -38,8 +40,10 @@ export const COMMAND_PALETTE_CATALOG: readonly CommandPaletteCatalogGroup[] = [
 	{
 		title: "Session",
 		items: [
+			{ command: "gentle:yolo", label: "🚀 YOLO 🔥 session permission" },
 			{ command: "gentle:changes", label: "Browse captured changes" },
 			{ command: "gentle:agents", label: "Subagents" },
+			{ command: "gentle:jobs", label: "Background jobs" },
 			{ command: "gentle:usage", label: "Subscription usage" },
 			{ command: "gentle:review-session-permission", label: "Review session permission" },
 		],
@@ -49,15 +53,6 @@ export const COMMAND_PALETTE_CATALOG: readonly CommandPaletteCatalogGroup[] = [
 		items: [
 			{ command: "gentle:status", label: "Gentle AI status" },
 			{ command: "gentle:doctor", label: "Doctor" },
-		],
-	},
-	{
-		title: "SDD",
-		items: [
-			{ command: "gentle:sdd-preflight", label: "SDD preflight" },
-			{ command: "gentle-sdd-status", label: "SDD status" },
-			{ command: "gentle-sdd-continue", label: "SDD continue" },
-			{ command: "gentle-sdd-init", label: "SDD init" },
 		],
 	},
 	{

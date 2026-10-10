@@ -19,6 +19,8 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -232,3 +234,35 @@ jobs:
           fi
 
           npm publish --provenance --access public --tag "${DIST_TAG}"
+
+  installers:
+    # Unsigned double-click installers (macOS .command, Windows .cmd, Linux .sh),
+    # built from the same verified release commit once npm publication succeeded,
+    # with stable names so releases/latest/download/<name> links keep working.
+    needs: publish
+    if: github.repository == 'Gentleman-Programming/gentle-shell'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Build double-click installers
+        run: node scripts/build-installer-bundles.mjs --out "${RUNNER_TEMP}/installers"
+
+      - name: Attach installers to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # The tag the publish job verified against protected main, not the raw input.
+          RELEASE_TAG: ${{ needs.publish.outputs.tag }}
+        run: gh release upload "${RELEASE_TAG}" "${RUNNER_TEMP}"/installers/* --repo "${GITHUB_REPOSITORY}" --clobber

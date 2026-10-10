@@ -434,15 +434,31 @@ test("every turn carries the open tasks in appendSystemPrompt (never a returned 
 	assert.match(withTasksEvent.systemPromptOptions.appendSystemPrompt, /1\. \[pending\] Fix the bug/);
 	assert.doesNotMatch(widget()![0], /stale/);
 
-	const staleEvent = promptEvent();
-	await fire("before_agent_start", ctx, staleEvent);
-	assert.match(staleEvent.systemPromptOptions.appendSystemPrompt, /stale: 2 turns without an update/);
+	// Turn 2: list is untouched. The UI card reflects staleness, but the system prompt MUST remain
+	// byte-exact identical to preserve provider prompt prefix caching (#1367).
+	const staleEvent2 = promptEvent();
+	await fire("before_agent_start", ctx, staleEvent2);
+	assert.equal(staleEvent2.systemPromptOptions.appendSystemPrompt, withTasksEvent.systemPromptOptions.appendSystemPrompt, "prompt prefix must stay byte-identical on turn 2");
+	assert.doesNotMatch(staleEvent2.systemPromptOptions.appendSystemPrompt, /stale/);
 	assert.match(widget()![0], /ctrl\+shift\+t collapse/);
 	assert.match(widget()![1], /stale · 2 turns/);
 
+	// Turn 3: list still untouched. UI advances to 3 turns, but prompt stays frozen.
+	const staleEvent3 = promptEvent();
+	await fire("before_agent_start", ctx, staleEvent3);
+	assert.equal(staleEvent3.systemPromptOptions.appendSystemPrompt, withTasksEvent.systemPromptOptions.appendSystemPrompt, "prompt prefix must stay byte-identical on turn 3");
+	assert.doesNotMatch(staleEvent3.systemPromptOptions.appendSystemPrompt, /stale/);
+	assert.match(widget()![1], /stale · 3 turns/);
+
+	// Legitimate task mutation: when tasks actually change, the prompt updates to reflect the new state.
 	await tools.get("todo")!.execute("c2", { action: "update", id: 1, status: "in_progress", note: "on it" }, undefined, undefined, ctx);
 	await fire("tool_execution_end", ctx, { toolName: "todo" });
 	assert.doesNotMatch(widget()![0], /stale/);
+
+	const updatedEvent = promptEvent();
+	await fire("before_agent_start", ctx, updatedEvent);
+	assert.notEqual(updatedEvent.systemPromptOptions.appendSystemPrompt, withTasksEvent.systemPromptOptions.appendSystemPrompt, "prompt must update when tasks actually change");
+	assert.match(updatedEvent.systemPromptOptions.appendSystemPrompt, /1\. \[in_progress\] Fix the bug — on it/);
 });
 
 test("before_agent_start is idempotent: a todo block already present in appendSystemPrompt is not duplicated", async () => {

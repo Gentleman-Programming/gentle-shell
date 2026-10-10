@@ -258,16 +258,15 @@ export function replayTodo(entries: readonly unknown[]): TodoState {
 	return state;
 }
 
-export function todoPromptBlock(state: TodoState, stale: number): string | undefined {
+export function todoPromptBlock(state: TodoState, _stale?: number): string | undefined {
 	if (todoSummary(state).open === 0) return undefined;
 	const lines = state.tasks.map((task, index) => `${index + 1}. [${task.status}] ${task.title}${task.note ? ` — ${task.note}` : ""}`);
-	const staleLine = stale >= STALE_AFTER_TURNS ? `\n(stale: ${stale} turns without an update — bring the list up to date now)` : "";
 	return [
 		"## Todo list",
 		"Keep it current with the `todo` tool: mark a task in_progress before starting it, done right after finishing it, and rewrite the whole list with `write` whenever the plan changes. Update it before you end the turn.",
 		"A blocked task waits on something outside the list: do not work on it until its condition holds. When the plan changes, mark the tasks it made obsolete dropped instead of leaving them pending or marking them done.",
 		...lines,
-	].join("\n") + staleLine;
+	].join("\n");
 }
 
 function taskRow(task: TodoTask, theme: TodoTheme, inner: number): string {

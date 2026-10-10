@@ -315,7 +315,7 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 			current.clearOnNextTurn = false;
 			show(current);
 		}
-		const block = todoPromptBlock(current.state, staleTurns(current.state, current.turn));
+		const block = todoPromptBlock(current.state);
 		if (!block) return undefined;
 		// gentle-shell#1485: pi-claude-bridge drops a handler-returned
 		// systemPrompt, so the open-tasks block goes through appendSystemPrompt.

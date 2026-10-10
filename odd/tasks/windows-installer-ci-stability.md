@@ -4,7 +4,7 @@
 
 Stabilize the intermittent Windows installer CI failure without changing the active runtime or weakening production safety checks. PR #2006 is merged. PR #2008 remains a diagnostic draft, with a non-closing reference to #1965. No merge of this follow-up is authorized.
 
-Root classification is E (unclear): a five-second entry-fixture deadline is a candidate, not a confirmed explanation of the historical worker failures.
+Root classification is C for the reproduced native fixture descendant leak. The historical whole-worker failure remains E: the experiment confirms a cleanup defect, not the cause of every earlier CI failure.
 
 ## Evidence
 
@@ -39,12 +39,18 @@ Allow one controlled native RED experiment, then the fix and its native validati
 ## Progress
 
 - [x] Compare original failures and successful cold-order diagnostics.
-- [ ] Observe controlled native RED and classify the actual defect.
-- [ ] Apply the smallest corresponding correction.
+- [x] Observe controlled native RED and classify the actual defect.
+- [ ] Apply the smallest corresponding correction and validate native GREEN.
 - [ ] Validate native acceptance and independent safety review.
 
 Local candidate validation: `node --experimental-strip-types --test --test-reporter=tap tests/installer-windows-bootstrap.test.ts` reported 37 passes, 16 native skips and zero failures; `node scripts/check-types.mjs` reported no baseline regressions. Final validation after the three process-record assertions also reported no type-baseline regressions; the focused deadline selection reported zero passes and one explicit native-unavailable skip. These Linux results are not native RED.
 
 Independent probe-safety review confirmed fixed invocation settings, finite child sleep, mandatory record evidence and creation-time-scoped cleanup. It did not execute PowerShell or prove either root candidate. The 16-second assertion bounds the entry runner call; external cleanup calls have separate existing five-second bounds.
 
-Commit identities and hosted RED/GREEN will be recorded after execution; none is claimed yet.
+## Native RED and correction candidate
+
+RED commit `e7aa524fa36d54aad8a11ae764666106288fe71f`, Windows job 114107482459 / run 38016389681: the forced call returned after 5,002 ms with `ETIMEDOUT`, null status and SIGKILL. The later ownership-checked cleanup reported `residualReaped: true`. The named regression failed specifically because a recorded PowerShell descendant survived; the remaining 336 installer tests passed. This did not reproduce a worker crash.
+
+The correction extracts the already-used asynchronous `nativeCmd` process lifecycle into `nativeCmdFile`, retaining the first entry's five-second limit and other fixtures' existing limits. The copied complete production batch gains only the existing PID/ticks observation line; a portable byte-preservation test checks this. Spawn errors reject; guard intervention still fails normal entry acceptance; residual cleanup still fails acceptance. The forced-deadline regression must retain its original assertions and stop requiring later reaping.
+
+No production executable, Node version, deadline, policy, ACL, archive, isolation or CI selection changes. Shared runner lifecycle and ownership guards remain one source of truth. Correction candidate local checks: 38 portable passes, 16 unavailable native skips and zero failures; no type-baseline regressions; package-resource check passed (198 files, 69 pinned contract artifacts). Parent and independent structural comparisons confirm the existing async lifecycle/ownership guards and forwarded caller limits are unchanged. Independent safety review found no blocking defect, but does not establish native execution or general process-tree cleanup. Native GREEN remains pending.

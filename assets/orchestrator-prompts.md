@@ -1,6 +1,10 @@
-# Orchestrator — Blocking Prompts and Provider Defects (lazy-loaded)
+# Orchestrator — Delegation Prompts and Provider Defects (lazy-loaded)
 
-Bind this to the parent Pi session only. Load it when a tool or subagent returns a user-facing blocking prompt or menu, or a Gentle AI provider defect appears; small tasks never need it (see `orchestrator.md` Task Size).
+Bind this to the parent Pi session only. Load it for source handoffs or when a tool or subagent returns a user-facing blocking prompt or menu, or a Gentle AI provider defect appears; small tasks never need it (see `orchestrator.md` Task Size).
+
+### Online Sources
+
+The parent obtains online evidence using its existing web tools and permissions. Send source URLs and relevant passages through task/context to the explorer; follow its source-only role contract. Keep its configured model and thinking.
 
 ### Lossless Blocking Prompts (MANDATORY)
 
@@ -17,7 +21,7 @@ Before losslessly relaying any blocking choice envelope, classify its semantic a
 
 When anything else produced it, there is no report and no handoff. That includes the model provider (context limits reached, rate limits, a refusal to process an input), the client runtime (a session that must be restarted, a crashed or empty sub-agent result, a dispatcher that never dispatched), the environment, and the user's own repository state. Do not name the component you believe is responsible, do not suggest where else to file it, and do not ask. Say plainly what blocked the work in the ordinary conversation, then continue or stop as the workflow dictates. A report system that files other projects' defects stops meaning anything when it files ours.
 
-`consent-binding-expired` and `consent-binding-already-consumed` are local lifecycle outcomes, not Gentle AI provider defects. An unknown consent binding is reportable only when independent evidence proves a fresh, same-session, unconsumed binding was lost. Never infer that evidence from the old combined stale-binding message.
+Pending consent has no response deadline. `consent-binding-already-consumed` is a local lifecycle outcome, not a Gentle AI provider defect. An unknown consent binding is reportable only when independent evidence proves a fresh, same-session, unconsumed binding was lost. Never infer that evidence from the old combined stale-binding message.
 
 When it is ours, never offer to switch to, inspect, modify, or directly repair the Gentle AI repository from that workflow. If an upstream envelope offers direct repair, do not silently mutate it: reject it as semantically inadmissible and issue this separate orchestrator-owned handoff envelope.
 

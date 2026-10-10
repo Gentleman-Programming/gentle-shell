@@ -1179,6 +1179,33 @@ async function maybeAutoProvisionHome(home, runtime, { homeHadContentBeforeBoots
 	}
 }
 
+// `gentle-shell upgrade`: runs before any Pi runtime check, since it may replace this package.
+async function handleUpgradeCommand(commandArgs) {
+	const { MainChannelError, runUpgrade } = await import("../scripts/main-channel.mjs");
+	const { hostAdapters } = await import("../scripts/installer-probes.mjs");
+	const { run } = hostAdapters();
+	const which = async (name) => findOnPath(name) ?? null;
+	try {
+		process.exitCode = await runUpgrade({
+			args: commandArgs,
+			ctx: { env: process.env, home: homedir() },
+			platform: process.platform,
+			packageRoot,
+			currentVersion: ownPackageVersion(),
+			adapters: {
+				fetch: globalThis.fetch,
+				fs: await import("node:fs/promises"),
+				which,
+				run: (command, argv, options = {}) => run(command, argv, { env: options.env ?? process.env, cwd: options.cwd, deadlineMs: options.deadlineMs ?? 20 * 60_000 }),
+			},
+			out: (line) => process.stdout.write(`${line}\n`),
+		});
+	} catch (error) {
+		if (error instanceof MainChannelError) fail(`gentle-shell upgrade: ${error.message}`, error.code === "upgrade-usage" ? 2 : 1);
+		throw error;
+	}
+}
+
 async function main() {
 	const args = parseLauncherArgs(process.argv.slice(2));
 	if (args.error !== undefined) fail(`${args.error}\nRun 'gentle-shell --help' for usage.`, 2);
@@ -1188,6 +1215,10 @@ async function main() {
 	}
 	if (args.command === "home") {
 		handleHomeCommand(args.commandArgs);
+		return;
+	}
+	if (args.command === "upgrade") {
+		await handleUpgradeCommand(args.commandArgs);
 		return;
 	}
 

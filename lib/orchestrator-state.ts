@@ -1,4 +1,5 @@
 import { isAbsolute } from "node:path";
+import { decodeTaskAliases, normalizeTaskSubject, type TaskAliases } from "./orchestrator-alias.ts";
 import { decodeWork, type PublishedWork } from "./orchestrator-work.ts";
 
 export const ORCHESTRATOR_STATE_ENTRY = "gentle-agents.published-state";
@@ -7,6 +8,7 @@ export type CuratedState = Partial<Record<typeof fields[number], string>> & { wo
 export interface PublishedState {
 	schema: 1 | 2; sessionId: string; recordedAt: number; cwd: string | null;
 	source: "owner-curated"; ownerReply: false; authority: "none"; state: CuratedState | null;
+	aliases?: TaskAliases;
 }
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const safeText = (v: unknown): v is string => typeof v === "string" && !/[\p{Cc}\p{Cf}\p{Cs}]/u.test(v);
@@ -34,7 +36,8 @@ export function decodeCuratedState(value: unknown): CuratedState | null {
 }
 export function decodePublishedState(value: unknown): PublishedState | undefined {
 	try {
-		const keys = ["schema", "sessionId", "recordedAt", "cwd", "source", "ownerReply", "authority", "state"];
+		const keys = ["schema", "sessionId", "recordedAt", "cwd", "source", "ownerReply", "authority", "state",
+			...(object(value) && Object.hasOwn(value, "aliases") ? ["aliases"] : [])];
 		if (!object(value) || Object.keys(value).length !== keys.length || !keys.every(k => Object.hasOwn(value, k))
 			|| (value.schema !== 1 && value.schema !== 2) || !safeText(value.sessionId) || !value.sessionId || Buffer.byteLength(value.sessionId) > 256
 			|| !Number.isSafeInteger(value.recordedAt) || (value.recordedAt as number) < 0
@@ -42,9 +45,11 @@ export function decodePublishedState(value: unknown): PublishedState | undefined
 			|| value.source !== "owner-curated" || value.ownerReply !== false || value.authority !== "none"
 			|| Buffer.byteLength(JSON.stringify(value)) > 4096) return undefined;
 		const state = decodeCuratedState(value.state);
-		if ((value.schema === 2) !== !!state?.work) return undefined;
+		const aliases = decodeTaskAliases(value.aliases);
+		if ((value.schema === 2) !== !!state?.work || (Object.hasOwn(value, "aliases") && !aliases)) return undefined;
 		return { schema: value.schema, sessionId: value.sessionId, recordedAt: value.recordedAt as number,
-			cwd: safeText(value.cwd) ? value.cwd : null, source: "owner-curated", ownerReply: false, authority: "none", state };
+			cwd: safeText(value.cwd) ? value.cwd : null, source: "owner-curated", ownerReply: false, authority: "none", state,
+			...(aliases ? { aliases } : {}) };
 	} catch { return undefined; }
 }
 interface StateManager {
@@ -56,7 +61,8 @@ export class OrchestratorStateCache {
 	private manager?: StateManager;
 	private sessionId?: string;
 	private value?: PublishedState;
-	clear() { this.manager = undefined; this.sessionId = undefined; this.value = undefined; }
+	private epoch = 0;
+	clear() { this.epoch++; this.manager = undefined; this.sessionId = undefined; this.value = undefined; }
 	load(manager: StateManager) {
 		this.clear();
 		this.manager = manager;
@@ -75,16 +81,27 @@ export class OrchestratorStateCache {
 		return this.manager === manager && this.sessionId === manager.getSessionId() && this.value
 			? structuredClone(this.value) : undefined;
 	}
-	publish(manager: StateManager, input: unknown, append: (type: string, data: PublishedState) => void, now = Date.now()) {
-		const state = decodeCuratedState(input);
+	publish(manager: StateManager, input: unknown, append: (type: string, data: PublishedState) => void, now = Date.now(), subject?: unknown) {
+		const state = input === undefined ? this.value?.state ?? null : decodeCuratedState(input);
+		const declared = normalizeTaskSubject(subject);
 		if (this.manager !== manager || this.sessionId !== manager.getSessionId()) throw new Error("stale-published-state");
-		const cwd = manager.getCwd();
-		const record = decodePublishedState({ schema: state?.work ? 2 : 1, sessionId: manager.getSessionId(), recordedAt: now,
-			cwd: safeCwd(cwd) ? cwd : null,
-			source: "owner-curated", ownerReply: false, authority: "none", state });
+		const epoch = this.epoch;
+		const previous = this.value?.aliases;
+		// Null/null marks a new publication with no declaration yet; legacy absence
+		// cannot establish historical first-task knowledge.
+		let aliases = previous;
+		if (declared) {
+			let initialAlias = previous?.initialAlias ?? null;
+			if (!this.value || previous?.currentAlias === null) initialAlias = declared;
+			aliases = { initialAlias, currentAlias: declared };
+		} else if (!this.value) aliases = { initialAlias: null, currentAlias: null };
+		const cwd = input === undefined && this.value ? this.value.cwd : manager.getCwd();
+		const record = decodePublishedState({ schema: state?.work ? 2 : 1, sessionId: manager.getSessionId(),
+			recordedAt: input === undefined && this.value ? this.value.recordedAt : now, cwd: safeCwd(cwd) ? cwd : null,
+			source: "owner-curated", ownerReply: false, authority: "none", state, ...(aliases ? { aliases } : {}) });
 		if (!record) throw new Error("invalid-published-state");
 		append(ORCHESTRATOR_STATE_ENTRY, structuredClone(record));
-		if (this.manager !== manager || this.sessionId !== record.sessionId || manager.getSessionId() !== record.sessionId) throw new Error("stale-published-state");
+		if (this.epoch !== epoch || this.manager !== manager || this.sessionId !== record.sessionId || manager.getSessionId() !== record.sessionId) throw new Error("stale-published-state");
 		this.value = record;
 	}
 }

@@ -80,3 +80,15 @@ test("primary requires fresh confirmation, cancellation and missing UI block", a
 	const blockers = h.events.filter((entry) => entry.name === "herdr:blocked").map((entry) => (entry.data as { active: boolean }).active);
 	assert.deepEqual(blockers, [true, false, true, false, true, false, true, false]);
 });
+
+test("children block recognized destructive commands sent to bash_background too", async () => {
+	const h = harness(true);
+	const result = await h.handlers[0]({ toolName: "bash_background", input: { command: "echo ok && rm -rf ./data" } }, context(async () => { throw new Error("child must never prompt"); }));
+	assert.equal((result as { block?: boolean })?.block, true);
+});
+
+test("children block recognized destructive commands sent to monitor too", async () => {
+	const h = harness(true);
+	const result = await h.handlers[0]({ toolName: "monitor", input: { command: "echo ok && rm -rf ./data" } }, context(async () => { throw new Error("child must never prompt"); }));
+	assert.equal((result as { block?: boolean })?.block, true);
+});

@@ -14,6 +14,51 @@ import {
 	type TaskRecord,
 } from "../lib/agents-protocol.ts";
 
+test("status observers see only live transitions, remain isolated and cannot fail mutations", () => {
+	const store = new TaskStore();
+	const changes: Array<{ status: string; sequence: number; parentSessionId: string; producerId: string; runId: string }> = [];
+	store.subscribeStatusChanges(() => { throw new Error("listener failure"); });
+	store.subscribeStatusChanges(async () => { throw new Error("async failure"); });
+	const stop = store.subscribeStatusChanges(change => { changes.push(change); });
+	store.restore(record({ id: "restored" }), emptyThread());
+	store.add(record());
+	store.update("t1", { status: TASK_STATUS.RUNNING });
+	store.update("t1", { status: TASK_STATUS.RUNNING, label: "new label" });
+	const ask = { type: TASK_EVENT.ASK, request: { id: "q", method: "input", title: "Question" } } as const;
+	store.apply("t1", ask, 2);
+	store.apply("t1", ask, 3);
+	store.apply("t1", { type: TASK_EVENT.TEXT, text: "answer" }, 4);
+	store.apply("t1", { type: TASK_EVENT.TEXT, text: "more" }, 5);
+	store.add(record({ id: "other", parentSessionId: "s2" }));
+	assert.deepEqual(changes.map(change => change.status), ["queued", "running", "waiting", "running", "queued"]);
+	assert.deepEqual(changes.map(change => change.sequence), [1, 2, 3, 4, 5]);
+	assert.deepEqual(changes.map(change => change.parentSessionId), ["s1", "s1", "s1", "s1", "s2"]);
+	assert.equal(new Set(changes.slice(0, 4).map(change => change.runId)).size, 1);
+	assert.equal(store.get("t1")?.status, "running");
+	const another = new TaskStore();
+	let otherProducer: string | undefined;
+	another.subscribeStatusChanges(change => { otherProducer = change.producerId; });
+	another.add(record());
+	assert.notEqual(otherProducer, changes[0].producerId);
+	stop();
+	store.update("t1", { status: TASK_STATUS.COMPLETED });
+	assert.equal(changes.length, 5);
+});
+
+test("all terminal statuses produce exactly one transition and restore establishes a silent baseline", () => {
+	for (const status of [TASK_STATUS.COMPLETED, TASK_STATUS.FAILED, TASK_STATUS.CANCELLED, TASK_STATUS.TIMED_OUT]) {
+		const store = new TaskStore();
+		const statuses: string[] = [];
+		store.subscribeStatusChanges(change => { statuses.push(change.status); });
+		store.restore(record({ status: TASK_STATUS.RUNNING }), emptyThread());
+		store.update("t1", { status });
+		store.update("t1", { status, result: "report" });
+		store.add(record({ status }));
+		assert.deepEqual(statuses, [status]);
+		assert.equal(store.get("t1")?.status, status);
+	}
+});
+
 // Gentle Agents protocol: the child pi process streams RPC events; the host
 // normalizes them into small typed deltas, applies them to an append-only
 // thread, and notifies only the listeners of the task that changed.

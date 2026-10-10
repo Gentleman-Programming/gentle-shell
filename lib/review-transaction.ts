@@ -994,11 +994,80 @@ function operationForTransition(transition: ReviewTransition): ReviewOperation {
 	throw new ReviewIntegrityError(`Unsupported reducer transition: ${transition}`);
 }
 
+function assertReducerInput(transition: ReviewTransition, input: unknown): asserts input is ReviewReducerInput {
+	const fail = (field: string): never => { throw new ReviewIntegrityError(`Graph reducer input ${field} is invalid`); };
+	const object = (value: unknown, field: string): Record<string, unknown> => {
+		if (typeof value !== "object" || value === null || Array.isArray(value)) return fail(field);
+		return value as Record<string, unknown>;
+	};
+	const string = (value: unknown, field: string): void => { if (typeof value !== "string") fail(field); };
+	const boolean = (value: unknown, field: string): void => { if (typeof value !== "boolean") fail(field); };
+	const strings = (value: unknown, field: string): void => { if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) fail(field); };
+	const rows = (value: unknown, field: string): void => {
+		if (!Array.isArray(value)) return fail(field);
+		// The canonical row decoder checks every field, enum and duplicate ID.
+		createFrozenLedger(value);
+	};
+	const results = (value: unknown, field: string): void => {
+		if (!Array.isArray(value)) return fail(field);
+		for (const item of value) {
+			const result = object(item, field);
+			string(result.id, `${field}.id`);
+			if (!Object.values(RESOLUTION_OUTCOME).some((outcome) => outcome === result.outcome)) fail(`${field}.outcome`);
+		}
+	};
+	const body = object(input, "object");
+	switch (transition) {
+		case REVIEW_TRANSITION.ORDINARY_DISCOVERY: rows(body.rows, "rows"); break;
+		case REVIEW_TRANSITION.JUDGMENT_DAY_DISCOVERY: rows(body.judgeA, "judgeA"); rows(body.judgeB, "judgeB"); break;
+		case REVIEW_TRANSITION.ORDINARY_EVIDENCE:
+			results(body.deterministicResults, "deterministicResults");
+			if (body.refuterResults !== undefined) results(body.refuterResults, "refuterResults");
+			break;
+		case REVIEW_TRANSITION.ORDINARY_FIX:
+		case REVIEW_TRANSITION.JUDGMENT_DAY_FIX:
+			string(body.candidateTree, "candidateTree"); strings(body.fixedIds, "fixedIds"); string(body.fixDiff, "fixDiff");
+			if (body.changedPaths !== undefined) strings(body.changedPaths, "changedPaths");
+			break;
+		case REVIEW_TRANSITION.ORDINARY_NO_FIX: string(body.reason, "reason"); break;
+		case REVIEW_TRANSITION.ORDINARY_FINAL_VERIFICATION:
+		case REVIEW_TRANSITION.JUDGMENT_DAY_FINAL_VERIFICATION:
+			boolean(body.passed, "passed"); if (body.reason !== undefined) string(body.reason, "reason"); break;
+		case REVIEW_TRANSITION.ORDINARY_VALIDATION:
+		case REVIEW_TRANSITION.JUDGMENT_DAY_REJUDGMENT: {
+			const request = object(body.request, "request");
+			strings(request.requested_ids, "request.requested_ids"); rows(request.frozen_rows, "request.frozen_rows"); string(request.frozen_ledger_hash, "request.frozen_ledger_hash");
+			if (transition === REVIEW_TRANSITION.JUDGMENT_DAY_REJUDGMENT) {
+				for (const field of ["fix_diff", "fix_diff_hash", "candidate_tree"]) string(request[field], `request.${field}`);
+				if (typeof request.round !== "number" || !Number.isSafeInteger(request.round) || request.round < 1) fail("request.round");
+				results(body.judgeAResults, "judgeAResults"); results(body.judgeBResults, "judgeBResults");
+			} else {
+				results(body.results, "results");
+				const acceptance = object(request.original_acceptance_tests, "request.original_acceptance_tests");
+				boolean(acceptance.passed, "request.original_acceptance_tests.passed"); string(acceptance.evidence_hash, "request.original_acceptance_tests.evidence_hash");
+				strings(request.original_criterion_regressions, "request.original_criterion_regressions");
+				if (!Array.isArray(request.correction_regressions) || !Array.isArray(request.follow_ups)) return fail("request.validation arrays");
+				for (const value of request.correction_regressions) {
+					const regression = object(value, "request.correction_regressions");
+					string(regression.finding_id, "regression.finding_id"); string(regression.evidence_hash, "regression.evidence_hash"); boolean(regression.passed, "regression.passed");
+				}
+				for (const value of request.follow_ups) {
+					const followUp = object(value, "request.follow_ups");
+					for (const field of ["id", "location", "summary", "evidence_hash"]) string(followUp[field], `follow_up.${field}`);
+				}
+			}
+			break;
+		}
+		default: fail("transition");
+	}
+}
+
 function reduceReviewState(
 	state: ReviewStateV1,
 	transition: ReviewTransition,
-	input: ReviewReducerInput,
+	input: unknown,
 ): ReviewStateV1 {
+	assertReducerInput(transition, input);
 	switch (transition) {
 		case REVIEW_TRANSITION.ORDINARY_DISCOVERY:
 			return recordOrdinaryDiscovery(state, input as OrdinaryDiscoveryInput);
@@ -1456,8 +1525,8 @@ export class ReviewTransactionStore {
 		const existing = current ? (current.body.lineages as Array<Record<string, unknown>>).find((value) => value.lineage_id === next.lineage_id && value.mode === "graph") : undefined;
 		if (previous && !existing) throw new ReviewIntegrityError("Graph predecessor is missing");
 		if (!previous && existing) throw new ReviewIntegrityError("Graph lineage already exists");
-		const predecessor = existing?.head_event_id;
-		if (predecessor !== undefined && typeof predecessor !== "string") throw new ReviewIntegrityError("Graph head is invalid");
+		if (existing?.head_event_id !== undefined && typeof existing.head_event_id !== "string") throw new ReviewIntegrityError("Graph head is invalid");
+		const predecessor = typeof existing?.head_event_id === "string" ? existing.head_event_id : undefined;
 		const last = next.request_journal.at(-1);
 		const descriptor = (() => { try { return graph.readStoreDescriptor(); } catch { return undefined; } })();
 		const reducerTransition = eventContext?.transition ?? (predecessor === undefined ? "start" : last?.operation ?? "state-update");

@@ -5,7 +5,7 @@ import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection, type ChildPac
 // env/fs/exec. `bin/gentle-shell.mjs` (T2) wires these into the real process,
 // filesystem and child process so this module stays fully unit-testable.
 
-export type LauncherCommand = "home" | "setup";
+export type LauncherCommand = "home" | "setup" | "upgrade";
 
 // pi's own package-management subcommands (see pi's cli/args.ts printHelp
 // "Commands" list): each is dispatched by pi itself, before pi's own flag
@@ -36,11 +36,11 @@ export interface ParsedLauncherArgs {
 	error?: string;
 }
 
-// Home-subcommand parsing is deliberately shallow: `home` only counts as the
-// subcommand when it is argv[0], and everything after it is handed over
+// Home- and upgrade-subcommand parsing is deliberately shallow: `home` or
+// `upgrade` only counts as the subcommand when it is argv[0], and everything after it is handed over
 // untouched as commandArgs — T2 owns interpreting `home link|isolated|<path>`.
 export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
-	if (argv[0] === "home") {
+	if (argv[0] === "home" || argv[0] === "upgrade") {
 		return {
 			link: false,
 			isolated: false,
@@ -48,7 +48,7 @@ export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
 			packageRoot: undefined,
 			help: false,
 			version: false,
-			command: "home",
+			command: argv[0],
 			commandArgs: argv.slice(1),
 			passthrough: [],
 			piSubcommand: undefined,
@@ -189,16 +189,17 @@ export interface ResolveHomeInput {
 	config: LauncherConfig | undefined;
 }
 
-// Pi Subagents resolves `PI_CODING_AGENT_DIR || ~/.pi/agent`; `--link` reuses
-// that exact home so gentle-shell never diverges from the user's own pi.
+// Pi Subagents resolves `PI_CODING_AGENT_DIR || ~/.pi/agent`; this is the
+// user's own pi home when no Gentle Shell session is involved.
 function linkDir(env: Record<string, string | undefined>, homedir: string): string {
 	return env.PI_CODING_AGENT_DIR || join(homedir, ".pi", "agent");
 }
 
 // The isolated home replaces PI_CODING_AGENT_DIR for the whole session, so the
 // user's own Pi home travels in this variable for read-only features such as
-// /gentle:stats. An inherited value wins: a gentle-shell launched from inside
-// a Gentle Shell session sees the outer isolated home as PI_CODING_AGENT_DIR.
+// /gentle:stats and for `--link`. An inherited value wins: a gentle-shell
+// launched from inside a Gentle Shell session sees the outer isolated home as
+// PI_CODING_AGENT_DIR, so `--link` must not re-select it (#2015).
 export const USER_PI_HOME_ENV = "GENTLE_SHELL_USER_PI_HOME";
 
 export function userPiHome(env: Record<string, string | undefined>, homedir: string): string {
@@ -212,12 +213,12 @@ function isolatedDir(env: Record<string, string | undefined>, homedir: string): 
 export function resolveHome(input: ResolveHomeInput): ResolvedHome {
 	const { args, env, homedir, config } = input;
 
-	if (args.link) return { mode: "link", dir: linkDir(env, homedir), source: "flag" };
+	if (args.link) return { mode: "link", dir: userPiHome(env, homedir), source: "flag" };
 	if (args.isolated) return { mode: "isolated", dir: isolatedDir(env, homedir), source: "flag" };
 	if (args.home !== undefined) return { mode: "path", dir: args.home, source: "flag" };
 
 	if (config !== undefined) {
-		if (config.mode === "link") return { mode: "link", dir: linkDir(env, homedir), source: "config" };
+		if (config.mode === "link") return { mode: "link", dir: userPiHome(env, homedir), source: "config" };
 		if (config.mode === "isolated") return { mode: "isolated", dir: isolatedDir(env, homedir), source: "config" };
 		return { mode: "path", dir: config.dir, source: "config" };
 	}
@@ -1173,6 +1174,7 @@ export function helpText(): string {
 		"Usage: gentle-shell [options] [-- pi-args...]",
 		"       gentle-shell home [link|isolated|<path>]",
 		"       gentle-shell [home selectors] setup [--dry-run]",
+		"       gentle-shell upgrade [--channel release|main]",
 		"",
 		"Opens pi with the Gentle Shell package loaded, without touching your",
 		"vanilla pi installation.",
@@ -1192,6 +1194,9 @@ export function helpText(): string {
 		"                   (runs the package-local gentle-ai 'install --agent pi --scope global').",
 		"                   Accepts --dry-run, forwarded to gentle-ai. Accepts a home selector",
 		"                   (--link, --isolated, --home <dir>) before it.",
+		"  upgrade          Update Gentle Shell along its channel: the latest release, or the latest",
+		"                   main commits of Gentle Shell and Gentle AI (built locally; needs Go and",
+		"                   pnpm). --channel switches the channel first.",
 		"",
 		"Managing packages:",
 		"  gentle-shell install npm:<pkg>   Run pi's own 'install' against the resolved home.",

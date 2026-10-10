@@ -229,8 +229,8 @@ function assertInstalledPiPairBehavior(version: string, EditorClass: typeof Edit
   assert.equal(adapter.renderSelection(18, { line: 0, col: 0 }, { line: 0, col: 6 }, scrolled).length, scrolled.length);
 }
 
-test("actual bundled Pi 1.0.0 proves editing, undo, paste, selection, wrap and autocomplete", () => {
-  assert.equal(bundledAgent.VERSION, "1.0.0");
+test(`actual bundled Pi ${INSTALLED_PI} proves editing, undo, paste, selection, wrap and autocomplete`, () => {
+  assert.equal(bundledAgent.VERSION, INSTALLED_PI);
   assertInstalledPiPairBehavior(bundledAgent.VERSION, BundledEditor, bundledAgent.CustomEditor, bundledAgent.VERSION);
 });
 
@@ -270,8 +270,8 @@ test("resolveVimRuntime resolves local bundle cli entrypoint when provided", () 
 });
 
 test("audited Pi editor releases are one frozen exact allowlist that includes the installed TUI", () => {
-  assert.deepEqual([...AUDITED_PI_EDITOR_VERSIONS], ["0.99.1", "0.99.2", "1.0.0"]);
-  assert.equal(INSTALLED_PI, "1.0.0", "this audit must exercise actual Pi 1.0.0, not a fabricated release");
+  assert.deepEqual([...AUDITED_PI_EDITOR_VERSIONS], ["0.99.1", "0.99.2", "1.0.0", "1.1.0"]);
+  assert.equal(bundledAgent.VERSION, INSTALLED_PI, "bundled and local metadata must describe the same actual installed release");
   assert.ok(Object.isFrozen(AUDITED_PI_EDITOR_VERSIONS));
   assert.throws(() => (AUDITED_PI_EDITOR_VERSIONS as unknown as string[]).push("0.99.3"), TypeError);
   assert.ok(isAuditedPiEditorVersion(INSTALLED_PI), `installed pi-tui ${INSTALLED_PI} must be audited`);
@@ -302,7 +302,7 @@ function fabricatedPiCli(t: test.TestContext, version: string, tuiVersion = vers
 }
 
 test("bundled host admits each audited release and rejects unknown or mismatched bundle metadata", (t) => {
-  for (const version of ["0.99.1", "0.99.2", "1.0.0"]) {
+  for (const version of AUDITED_PI_EDITOR_VERSIONS) {
     assert.deepEqual(resolveVimRuntime(fabricatedPiCli(t, version), bundledAgent.CustomEditor), { version, editorClass: BundledEditor }, version);
   }
   for (const version of ["0.99.3", "1.0.1", ">=1.0.0", "v1.0.0"]) {
@@ -312,7 +312,7 @@ test("bundled host admits each audited release and rejects unknown or mismatched
 });
 
 test("installed agent/TUI pair admits each audited release and skips unknown or mismatched pairs", (t) => {
-  for (const version of ["0.99.1", "0.99.2", "1.0.0"]) {
+  for (const version of AUDITED_PI_EDITOR_VERSIONS) {
     assert.deepEqual(resolveVimRuntime(fabricatedPiCli(t, version), runtimeAgent.CustomEditor), { version, editorClass: runtimeTui.Editor }, version);
   }
   // Rejected candidates must resolve to the real local pair, not their claim.
@@ -325,7 +325,7 @@ test("installed agent/TUI pair admits each audited release and skips unknown or 
 
 test("adapter admits each verified audited release and rejects unknown or mismatched claims without mutation", () => {
   const host = () => new BundledEditor!({ terminal: { rows: 6 }, requestRender() {} } as never, { borderColor: (s: string) => s } as never);
-  for (const version of ["0.99.1", "0.99.2", "1.0.0"]) {
+  for (const version of AUDITED_PI_EDITOR_VERSIONS) {
     const e = host();
     e.setText("alpha beta");
     const adapter = createVimEditorAdapter(e, version, BundledEditor, version);

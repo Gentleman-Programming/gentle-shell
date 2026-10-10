@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 
 // Gentle Agents protocol. A child pi process streams RPC events; the host
@@ -148,6 +148,17 @@ export interface TaskSummary {
 
 export type TaskListener = (task: TaskRecord, thread: TaskThread) => void;
 export type SummaryListener = (summary: TaskSummary) => void;
+export interface TaskStatusChange {
+	readonly producerId: string;
+	readonly sessionId: string;
+	readonly parentSessionId: string;
+	readonly taskId: string;
+	readonly runId: string;
+	readonly status: TaskStatus;
+	readonly previousStatus?: TaskStatus;
+	readonly sequence: number;
+}
+export type StatusChangeListener = (change: TaskStatusChange) => void | Promise<void>;
 
 const DEFAULT_LIMITS: ThreadLimits = { maxItems: 400, maxOutputChars: 16_000 };
 /** Child UI requests that block on an answer; everything else (notify, setStatus, setWidget) is noise here. */
@@ -463,14 +474,21 @@ export class TaskStore {
 	private readonly listeners = new Map<string, Set<TaskListener>>();
 	private readonly summaryListeners = new Set<SummaryListener>();
 	private readonly limits: Partial<ThreadLimits>;
+	private readonly producerId = randomUUID();
+	private sequence = 0;
+	private readonly runIds = new Map<string, string>();
+	private readonly statusListeners = new Set<StatusChangeListener>();
 
 	constructor(limits: Partial<ThreadLimits> = {}) {
 		this.limits = limits;
 	}
 
 	add(task: TaskRecord): void {
+		const previous = this.tasks.get(task.id)?.status;
+		if (!this.tasks.has(task.id)) this.runIds.set(task.id, randomUUID());
 		this.tasks.set(task.id, task);
 		this.threads.set(task.id, emptyThread(this.limits));
+		this.notifyStatus(task, previous);
 		this.notifySummary();
 	}
 
@@ -479,6 +497,7 @@ export class TaskStore {
 	restore(task: TaskRecord, thread: TaskThread): boolean {
 		if (this.tasks.has(task.id)) return false;
 		this.tasks.set(task.id, task);
+		this.runIds.set(task.id, randomUUID());
 		this.threads.set(task.id, { ...thread, limits: { ...DEFAULT_LIMITS, ...this.limits } });
 		this.notifySummary();
 		return true;
@@ -509,6 +528,7 @@ export class TaskStore {
 		if (!current) return undefined;
 		const next = { ...current, ...patch };
 		this.tasks.set(id, next);
+		this.notifyStatus(next, current.status);
 		this.notifyTask(next);
 		if (next.status !== current.status) this.notifySummary();
 		return next;
@@ -534,6 +554,22 @@ export class TaskStore {
 	subscribeSummary(listener: SummaryListener): () => void {
 		this.summaryListeners.add(listener);
 		return () => this.summaryListeners.delete(listener);
+	}
+
+	/** Optional, content-free observer. Restores and unchanged snapshots are silent. */
+	subscribeStatusChanges(listener: StatusChangeListener): () => void {
+		this.statusListeners.add(listener);
+		return () => { this.statusListeners.delete(listener); };
+	}
+
+	private notifyStatus(task: TaskRecord, previousStatus?: TaskStatus): void {
+		if (task.status === previousStatus) return;
+		const change: TaskStatusChange = Object.freeze({ producerId: this.producerId,
+			sessionId: task.parentSessionId, parentSessionId: task.parentSessionId, taskId: task.id,
+			runId: this.runIds.get(task.id)!, status: task.status, previousStatus, sequence: ++this.sequence });
+		for (const listener of [...this.statusListeners]) {
+			try { void Promise.resolve(listener(change)).catch(() => {}); } catch { /* Observability cannot fail a mutation. */ }
+		}
 	}
 
 	private notifyTask(task: TaskRecord): void {

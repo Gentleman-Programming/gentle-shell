@@ -1,0 +1,39 @@
+name: diag-windows-postinstall
+on:
+  push:
+    branches: [diag/windows-postinstall]
+permissions:
+  contents: read
+jobs:
+  diag:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.14"
+          cache: false
+      - name: Like a user profile, long paths off
+        shell: pwsh
+        run: |
+          "LongPathsEnabled before: $((Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem).LongPathsEnabled)"
+          Set-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem -Name LongPathsEnabled -Value 0
+          "LongPathsEnabled after: $((Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem).LongPathsEnabled)"
+          $pnpmHome = Join-Path $env:LOCALAPPDATA "pnpm"
+          New-Item -ItemType Directory -Force -Path (Join-Path $pnpmHome "bin") | Out-Null
+          "PNPM_HOME=$pnpmHome" >> $env:GITHUB_ENV
+          Add-Content $env:GITHUB_PATH (Join-Path $pnpmHome "bin")
+          npm install -g pnpm@11.1.1
+      - name: pnpm add -g gentle-pi@4.0.0 (postinstall builds Gentle AI from source)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          pnpm add -g "@earendil-works/pi-coding-agent@1.0.0" "gentle-pi@4.0.0" --allow-build=gentle-pi --reporter=append-only 2>&1 | Select-Object -Last 40
+          "exit=$LASTEXITCODE"
+      - name: Rerun the installer from the store location with the full cause chain
+        shell: pwsh
+        run: node diag/windows-postinstall.mjs

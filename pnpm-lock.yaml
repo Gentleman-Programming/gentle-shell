@@ -9,7 +9,7 @@ importers:
   .:
     dependencies:
       '@earendil-works/pi-tui':
-        specifier: 0.85.1
+        specifier: '*'
         version: 0.85.1
       '@heyhuynhgiabuu/pi-pretty':
         specifier: 0.6.14

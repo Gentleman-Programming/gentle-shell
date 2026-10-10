@@ -66,12 +66,12 @@
 		]
 	},
 	"dependencies": {
-		"@earendil-works/pi-tui": "0.85.1",
 		"@heyhuynhgiabuu/pi-pretty": "0.6.14"
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-coding-agent": ">=0.85.1",
-		"typebox": "*"
+		"typebox": "*",
+		"@earendil-works/pi-tui": "*"
 	},
 	"peerDependenciesMeta": {
 		"@earendil-works/pi-coding-agent": {

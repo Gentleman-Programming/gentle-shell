@@ -1,0 +1,23 @@
+name: Bounded Windows entry diagnostic
+
+on:
+  push:
+    branches:
+      - diagnose/2019-windows-entry-01a11d2e
+
+permissions:
+  contents: read
+
+jobs:
+  native-entry-evidence:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+      - name: Run unchanged installer suite selection once with fixture phase evidence
+        run: node --experimental-strip-types --test --test-reporter=tap tests/install-wizard.test.ts tests/installer-server.test.ts tests/verify-package-files.test.ts tests/installer-probes.test.ts tests/installer-runner.test.ts tests/installer-preflight.test.ts tests/installer-posix-bootstrap.test.ts tests/installer-windows-bootstrap.test.ts

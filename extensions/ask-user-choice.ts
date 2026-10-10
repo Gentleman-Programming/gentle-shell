@@ -322,7 +322,10 @@ export default function askUserChoice(pi: ExtensionAPI): void {
 			if (details?.selection) {
 				return new Text(theme.fg("success", `✓ ${details.selection.index}. ${details.selection.label}`), 0, 0);
 			}
-			if (details?.customResponse !== undefined) return new Text(theme.fg("success", "✓ Custom response"), 0, 0);
+			if (details?.customResponse !== undefined) {
+				const text = details.customResponse.trim();
+				return new Text(theme.fg("success", text ? `✓ Custom response — ${details.customResponse}` : "✓ Custom response"), 0, 0);
+			}
 			return new Text(theme.fg("warning", "Cancelled"), 0, 0);
 		},
 	});

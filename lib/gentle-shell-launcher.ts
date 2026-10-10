@@ -1194,6 +1194,7 @@ export function helpText(): string {
 		"                   (runs the package-local gentle-ai 'install --agent pi --scope global').",
 		"                   Accepts --dry-run, forwarded to gentle-ai. Accepts a home selector",
 		"                   (--link, --isolated, --home <dir>) before it.",
+		"                   Warns if configured MCP servers remain disabled; never re-enables them.",
 		"  upgrade          Update Gentle Shell along its channel: the latest release, or the latest",
 		"                   main commits of Gentle Shell and Gentle AI (built locally; needs Go and",
 		"                   pnpm). --channel switches the channel first.",

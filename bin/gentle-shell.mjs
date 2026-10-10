@@ -861,7 +861,58 @@ async function runSetupFlow(home, runtime, { dryRun, stdio, timeoutMs }) {
 	}
 	if (!installResult.ok) return installResult;
 
-	return runPostInstallCleanup(home, runtime, dryRun, stdio, timeoutMs);
+	const cleanupResult = await runPostInstallCleanup(home, runtime, dryRun, stdio, timeoutMs);
+	if (cleanupResult.ok && !dryRun) warnDisabledMCP(home);
+	return cleanupResult;
+}
+
+function mcpAdapterActivity(packages) {
+	if (typeof packages === "string") return packages === "npm:pi-mcp-adapter" || packages.startsWith("npm:pi-mcp-adapter@") ? "active" : "inactive";
+	if (Array.isArray(packages)) {
+		const activities = packages.map(mcpAdapterActivity);
+		return activities.includes("active") ? "active" : activities.includes("unknown") ? "unknown" : "inactive";
+	}
+	if (packages === null || typeof packages !== "object") return "inactive";
+	if (typeof packages.source !== "string") return mcpAdapterActivity(Object.keys(packages));
+	if (mcpAdapterActivity(packages.source) === "inactive") return "inactive";
+	const patterns = packages.extensions;
+	if (patterns === undefined) return packages.autoload === false ? "inactive" : "active";
+	if (!Array.isArray(patterns)) return "unknown";
+	if (patterns.length === 0) return "inactive";
+	if (packages.autoload === false) {
+		return patterns.some(pattern => typeof pattern === "string" && !pattern.startsWith("!") && !pattern.startsWith("-")) ? "unknown" : "inactive";
+	}
+	// Ordinary exclusions run after includes, but exact +path entries can
+	// restore resources. Other filters need actual package files to resolve.
+	if (patterns.includes("!**") && !patterns.some(pattern => typeof pattern === "string" && pattern.startsWith("+"))) return "inactive";
+	return "unknown";
+}
+
+// Onboarding cannot prove who disabled MCP: diagnose, never re-enable servers.
+// This also covers automatic provisioning because both routes share setup.
+function warnDisabledMCP(home) {
+	const settingsPath = join(home.dir, "settings.json");
+	const mcpPath = join(home.dir, "mcp.json");
+	let inspecting = settingsPath;
+	try {
+		const settingsText = readJsonIfExists(settingsPath);
+		if (settingsText === undefined) return;
+		const settings = JSON.parse(settingsText);
+		if (!Array.isArray(settings?.extensions) || !settings.extensions.includes("-builtin:mcp")) return;
+		const activity = mcpAdapterActivity(settings.packages);
+		if (activity === "active") return;
+		inspecting = mcpPath;
+		const mcpText = readJsonIfExists(mcpPath);
+		if (mcpText === undefined) return;
+		const servers = JSON.parse(mcpText)?.mcpServers;
+		if (servers === null || typeof servers !== "object" || Array.isArray(servers) || Object.keys(servers).length === 0) return;
+		const diagnosis = activity === "unknown"
+			? `pi-mcp-adapter activity cannot be confirmed from its extension filters, so servers in ${mcpPath} may not load`
+			: `pi-mcp-adapter is absent or inactive, so servers in ${mcpPath} will not load`;
+		process.stderr.write(`gentle-shell: WARNING: Pi built-in MCP is disabled in ${settingsPath}; ${diagnosis}. If you want these servers enabled, remove -builtin:mcp from extensions in ${settingsPath}, then restart Pi. If MCP is intentionally disabled, keep the setting.\n`);
+	} catch (error) {
+		process.stderr.write(`gentle-shell: WARNING: Pi MCP configuration could not be inspected in ${inspecting}: ${error.message}; inspect or repair it manually.\n`);
+	}
 }
 
 // The stderr line printed once `source` is actually removed from `home`.

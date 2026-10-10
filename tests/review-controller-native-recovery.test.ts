@@ -574,7 +574,7 @@ test("RECOVER, RESET, and RECONCILE keep provider inputs and failures authority-
 
 	for (const error of [
 		new NativeReviewCliError("cancelled", "review/reconcile-authority", true, true, "cancelled"),
-		new NativeReviewCliError("non_zero", "review/reconcile-authority", true, true, "partial", undefined, { schema: "gentle-ai.review-reconcile-audit/v1", status: "partial" }),
+		new NativeReviewCliError("non-zero", "review/reconcile-authority", true, true, "partial", undefined, { schema: "gentle-ai.review-reconcile-audit/v1", status: "partial" }),
 	]) {
 		const failed = await __testing.executeReviewControllerOperation({ operation: "reconcile-authority", input: JSON.stringify(reconciliation) }, process.cwd(), {
 			reconcileAuthority: async () => { throw error; },

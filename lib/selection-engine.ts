@@ -3,7 +3,7 @@ import { isKeyRelease, matchesKey, truncateToWidth, visibleWidth, type EditorCom
 
 /**
  * Native text-selection engine for GentlePromptEditor: shift+home / shift+end
- * selection, alt+a select-all, and replace-on-key (backspace / delete /
+ * selection, alt+e / alt+a select-all, and replace-on-key (backspace / delete /
  * printable character) with reverse-video highlight and a bottom-rule hint.
  * Ported from @exopro/pi-select-del so the petal prompt owns the feature
  * natively — no factory composition, no cross-extension focus handoff.
@@ -12,7 +12,10 @@ import { isKeyRelease, matchesKey, truncateToWidth, visibleWidth, type EditorCom
  *   - shift+home — anchor at the cursor, move to line start (held presses at
  *     the edge keep the selection; only a zero-width span collapses)
  *   - shift+end — anchor at the cursor, move to line end
- *   - alt+a — select all
+ *   - alt+e — select all; alt+a too when no extension shortcut claims it
+ *     (Gentle Agents owns alt+a by default, gentle-shell#1565)
+ *   - a registered extension shortcut always wins over these selection chords,
+ *     matching CustomEditor's own precedence
  *   - backspace / delete / printable character or bracketed paste over an
  *     active selection — replace it in one atomic edit (undo restores text AND cursor)
  *   - any other key — collapse the selection first, then behave natively
@@ -275,8 +278,10 @@ export class SelectionEngine {
 	 * Selection dispatch in front of the native chain. Selection and replace
 	 * keys are handled here; everything else collapses the anchor first, then
 	 * behaves natively. Degraded hosts keep pure native key handling.
+	 * `shortcut` probes registered extension shortcuts before a selection chord
+	 * is consumed; it returns true when a shortcut handled the key.
 	 */
-	handleInput(data: string, native: (data: string) => void): void {
+	handleInput(data: string, native: (data: string) => void, shortcut?: (data: string) => boolean): void {
 		if (this.degraded) {
 			native(data);
 			return;
@@ -314,12 +319,13 @@ export class SelectionEngine {
 			this.pasteBufferedBytes = 0;
 			this.pasteTail = "";
 			this.replaceSelectionWithPaste(frame, native);
-			if (remaining) this.handleInput(remaining, native);
+			if (remaining) this.handleInput(remaining, native, shortcut);
 			return;
 		}
 		// Kitty flag 2 release byte strings still match their own key, so
 		// releases must be dropped before any matchesKey.
 		if (isKeyRelease(data)) return;
+		if (this.isSelectionChord(data) && shortcut?.(data)) return;
 		if (matchesKey(data, "shift+home")) {
 			this.selectToLineEdge(false);
 			return;
@@ -328,7 +334,7 @@ export class SelectionEngine {
 			this.selectToLineEdge(true);
 			return;
 		}
-		if (matchesKey(data, "alt+a")) {
+		if (matchesKey(data, "alt+e") || matchesKey(data, "alt+a")) {
 			this.selectAll();
 			return;
 		}
@@ -424,7 +430,13 @@ export class SelectionEngine {
 		this.internals.tui.requestRender();
 	}
 
-	/** Select the entire editor text (alt+a). Cursor moves to the end of the last line. */
+	/** Chords the engine itself consumes; extension shortcuts are probed first. */
+	private isSelectionChord(data: string): boolean {
+		return matchesKey(data, "shift+home") || matchesKey(data, "shift+end")
+			|| matchesKey(data, "alt+e") || matchesKey(data, "alt+a");
+	}
+
+	/** Select the entire editor text (alt+e / alt+a). Cursor moves to the end of the last line. */
 	private selectAll(): void {
 		const lines = this.s.lines;
 		const lastLine = Math.max(0, lines.length - 1);

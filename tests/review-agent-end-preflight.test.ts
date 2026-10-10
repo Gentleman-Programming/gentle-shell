@@ -260,6 +260,7 @@ for (const scenario of ["same", "changed", "sibling-root", "nested-root", "faile
 		await directWrite(handlers, session);
 		const result = await review.execute("post-ack", { operation: "acknowledge-approved", lineageId }, undefined, undefined, toolContext(session));
 		if (unsuccessful) {
+			assert.ok(typeof result.details === "object" && result.details !== null && "outcome" in result.details && "mutation_outcome" in result.details);
 			assert.equal(result.details.outcome, scenario === "failed" ? "native-operation-failed" : "native-mutation-status-reconciled");
 			assert.equal(result.details.mutation_outcome, scenario === "failed" ? "none" : "unknown");
 		} else assert.deepEqual(result.details, {
@@ -349,6 +350,30 @@ test("agent_end nudges exactly once when RDD is on and STATUS offers review.star
 	assert.ok(content.includes(targetIdentity), "message must name the target identity");
 	assert.equal(entry?.options.triggerTurn, true);
 	assert.equal(statusRequests[0]?.agent, "pi");
+});
+
+// verify-always-rdd-high S2: automatic review is for high risk only. When the
+// native assessment reports review_due false (a medium or passive candidate),
+// agent_end never nudges; review_due true still nudges. An assessment that
+// cannot answer keeps the nudge, so a reminder is never lost to an error.
+test("agent_end nudges only when the native assessment reports review_due", async () => {
+	const targetIdentity = `sha256:${"b".repeat(64)}`;
+	for (const [label, assess, wantNudges] of [
+		["medium, not due", async () => ({ risk: "medium", reviewDue: false, reviewDueReason: "under_budget" }), 0],
+		["high, due", async () => ({ risk: "high", reviewDue: true, reviewDueReason: "high_risk" }), 1],
+		["assessment rejects", async () => { throw new Error("assess failed"); }, 1],
+	] as const) {
+		const native = {
+			reviewMode: onMode("on"),
+			targetStatus: async () => executeStartStatus(targetIdentity),
+			assess,
+		} as unknown as NativeReviewCli;
+		const { handlers, sent } = harness(native);
+		const session = ctx(`agent-end-review-due-${label.replace(/\W+/g, "-")}`);
+		await directWrite(handlers, session);
+		await handlers.get("agent_end")!(agentEndEvent, session);
+		assert.equal(sent.length, wantNudges, label);
+	}
 });
 
 test("agent_end nudges once per target identity and again for a fresh identity", async () => {
@@ -701,7 +726,7 @@ test("session_start negotiates the current target identity when RDD is on", asyn
 		const notifications: Array<{ message: string; severity: string }> = [];
 		const session = {
 			...ctx("session-baseline-record", true, cwd),
-			ui: { notify: (message: string, severity: string) => notifications.push({ message, severity }) },
+			ui: { ...ctx("session-baseline-record", true, cwd).ui, notify: (message: string, severity: string) => { notifications.push({ message, severity }); } },
 		};
 		await sessionStart!({}, session);
 		assert.equal(statusRequests[0]?.agent, "pi");

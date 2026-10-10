@@ -531,7 +531,7 @@ function extensionSourcePath(source: string): string | undefined {
 function shouldSkipDuplicateExtensionLoad(
 	source = import.meta.url,
 	cwd = process.cwd(),
-	state = globalThis as typeof globalThis & SkillRegistryExtensionGlobal,
+	state: SkillRegistryExtensionGlobal = globalThis as typeof globalThis & SkillRegistryExtensionGlobal,
 ): boolean {
 	const currentPath = extensionSourcePath(source);
 	const projectLocalPath = comparablePath(join(cwd, "extensions", "skill-registry.ts"));
@@ -590,6 +590,13 @@ async function startSkillRegistryWatcher(
 	for (const dir of dirs) {
 		try {
 			const watcher = watch(dir, { recursive: true }, refresh);
+			watcher.on("error", (error) => {
+				// Recursive rescans can fail after watch() returns (e.g. a removed
+				// assets directory). Without this listener Node terminates Pi.
+				watcher.close();
+				activeWatchers.delete(watcher);
+				notify(`Skill registry watcher stopped: ${error.message}. Run /skill-registry:refresh to update manually.`, "warning");
+			});
 			activeWatchers.add(watcher);
 		} catch {
 			// Some filesystems do not support recursive watches; session_start/manual refresh still work.

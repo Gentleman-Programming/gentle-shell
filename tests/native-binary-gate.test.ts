@@ -53,6 +53,7 @@ test("without the env var unpinned digests yield a skip with a distinct reason",
 	const unpinned = requireNativeBinary({ ...PINNED, digestsPinned: false, env: {} });
 
 	assert.equal(unpinned.run, false);
+	assert.ok("reason" in unresolved);
 	assert.match(unpinned.reason as string, /digest/i);
 	assert.notEqual(unpinned.reason, unresolved.reason, "the two causes must be distinguishable in output");
 });
@@ -110,6 +111,7 @@ test("without the env var a set but non-existent dev binary path yields a distin
 	const missingVar = requireDevBinary({ devBinaryPath: undefined, exists: false, env: {} });
 	const badPath = requireDevBinary({ devBinaryPath: "/no/such/gentle-ai", exists: false, env: {} });
 	assert.equal(badPath.run, false);
+	assert.ok("reason" in missingVar);
 	assert.match(badPath.reason as string, /\/no\/such\/gentle-ai/);
 	assert.notEqual(badPath.reason, missingVar.reason, "the two causes must be distinguishable in output");
 });

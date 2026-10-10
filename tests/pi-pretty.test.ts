@@ -42,6 +42,16 @@ test("bundled pretty cannot replace or restore an editor owned by the host", asy
 	assert.equal(message, undefined);
 });
 
+test("bundled pretty keeps Pi's native Working row inside Herdr", async () => {
+	const handlers = new Map<string, Function[]>();
+	const pi = { on(name: string, handler: Function) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); } };
+	let visible: boolean | undefined;
+	const ctx = { mode: "tui", ui: { setWorkingVisible(value: boolean) { visible = value; } } };
+	await pretty(pi, undefined, async () => {}, { HERDR_ENV: "1" });
+	for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
+	assert.notEqual(visible, false, "Herdr's native Pi detection reads the standard Working row");
+});
+
 test("disabled shell leaves bundled editor behavior untouched", async () => {
 	let received: unknown;
 	const pi = {};

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { PassThrough, Writable } from "node:stream";
+import { Duplex, PassThrough, Writable } from "node:stream";
 import test from "node:test";
 import { AGENT_MODE, type AgentDefinition } from "../lib/agents-config.ts";
 import { AgentRunner, type ChildLike, type TaskRequest } from "../lib/agents-runner.ts";
@@ -111,6 +111,7 @@ async function productionChild(requests: number, authorize: () => boolean, optio
 		stdio: options.withoutChannel ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", options.stdioMode ?? productionFd3StdioMode],
 	});
 	const pipe = child.stdio[3];
+	assert.ok(pipe === null || pipe === undefined || pipe instanceof Duplex, "fd3 must be a bidirectional channel");
 	const trace = options.diagnosticTrace;
 	const onParentData = () => { if (trace !== undefined) trace.parentRawDataChunkCount += 1; };
 	if (trace !== undefined && pipe !== null && pipe !== undefined) pipe.on("data", onParentData);
@@ -120,9 +121,9 @@ async function productionChild(requests: number, authorize: () => boolean, optio
 			trace.parentAuthorizationCallbackCount += 1;
 			return authorize();
 		};
-	const broker = pipe === null || pipe === undefined
-		? undefined
-		: new ParentStandingReviewPermissionBroker({ readable: pipe, writable: pipe }, parentAuthorize, options);
+	const broker = pipe instanceof Duplex
+		? new ParentStandingReviewPermissionBroker({ readable: pipe, writable: pipe }, parentAuthorize, options)
+		: undefined;
 	if (options.closeChannel && pipe !== null && pipe !== undefined) {
 		broker?.close();
 		pipe.destroy();
@@ -323,7 +324,7 @@ test("fresh Jiti moduleCache:false reloads share fd3 structurally and reject sta
 		stdio: ["ignore", "pipe", "pipe", productionFd3StdioMode],
 	});
 	const pipe = child.stdio[3];
-	assert.ok(pipe);
+	assert.ok(pipe instanceof Duplex, "fd3 must be a bidirectional channel");
 	const broker = new ParentStandingReviewPermissionBroker({ readable: pipe, writable: pipe }, () => true);
 	let stdout = "";
 	let stderr = "";

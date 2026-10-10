@@ -32,7 +32,7 @@ const devBinaryGate = requireDevBinary({
 	exists: typeof DEV_BINARY === "string" && DEV_BINARY.length > 0 && DEV_BINARY.startsWith("/") && existsSync(DEV_BINARY),
 	env: process.env,
 });
-if (!devBinaryGate.run) console.log(`tests/devbinary/native-review-parity.devtest.ts: ${devBinaryGate.reason}`);
+if (devBinaryGate.run === false) console.log(`tests/devbinary/native-review-parity.devtest.ts: ${devBinaryGate.reason}`);
 const RUNNABLE = devBinaryGate.run;
 const DEV_HOME = mkdtempSync(join(tmpdir(), "gentle-pi-dev-binary-home-"));
 const ORIGINAL_HOME = process.env.HOME;

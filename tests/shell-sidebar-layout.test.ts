@@ -302,6 +302,15 @@ test("rail orders unified Status, agents, TODO without standalone changes", (t) 
 	assert.deepEqual(rail(f).render(50).map((line) => line.trim()), ["✿ Gentle Shell ✿", "", "Status", "", "agents", "", "todo"]);
 });
 
+test("rail orders Project Map below Todos when it is registered", (t) => {
+	const f = fixture();
+	for (const key of ["todo", "agents", "project-map"]) {
+		sidebarPart(f.tui, key, { render: () => [key], invalidate() {} });
+	}
+	t.after(installSidebar(f.tui, theme));
+	assert.deepEqual(rail(f).render(50).map((line) => line.trim()).filter(Boolean), ["✿ Gentle Shell ✿", "Status", "agents", "todo", "project-map"]);
+});
+
 test("branding belongs to scroll content before Status, never transcript or narrow bottom", (t) => {
 	const f = fixture();
 	t.after(installSidebar(f.tui, theme));
@@ -615,6 +624,71 @@ test("reuses final sidebar presentation until a relevant invalidation", (t) => {
 	f.host.mode = "regular";
 	assert.equal(f.root[NODE]().type, "vstack");
 	assert.deepEqual(f.bottom.render(80), ["Status"]);
+});
+
+test("reveal bridges local card lines into the rail viewport and clears on disposal", () => {
+	const f = fixture();
+	sidebarPart(f.tui, "todo", { render: () => Array.from({ length: 12 }, (_, index) => `todo ${index}`), invalidate() {} });
+	const dispose = installSidebar(f.tui, theme);
+	const scroll = rail(f);
+	const content = scroll.render(50);
+	scroll.updateLayout(content.length, 2, () => {});
+	const target = content.findIndex((line) => line.includes("todo 8"));
+	assert.ok(target >= 0);
+	sidebarState(f.tui).reveal!("todo", 8);
+	f.root[NODE]();
+	assert.equal(scroll.scrollTop, target, "the local card line is translated through its rail section start");
+	sidebarState(f.tui).reveal!("todo", 9);
+	f.root[NODE]();
+	assert.equal(scroll.scrollTop, target, "an in-viewport target below the first visible line does not scroll");
+	sidebarState(f.tui).reveal!("agents", 0);
+	f.root[NODE]();
+	assert.equal(scroll.scrollTop, target, "an unregistered key is inert");
+	f.host.mode = "regular";
+	sidebarState(f.tui).reveal!("todo", 0);
+	f.root[NODE]();
+	assert.equal(scroll.scrollTop, target, "an inactive rail is inert");
+	dispose();
+	assert.equal(sidebarState(f.tui).reveal, undefined);
+});
+
+test("reveal resolves against the frame being prepared rather than the previous frame", (t) => {
+	const f = fixture();
+	let statusRows = 1;
+	sidebarPart(f.tui, "footer", { render: () => Array.from({ length: statusRows }, (_, index) => `status ${index}`), invalidate() {} });
+	sidebarPart(f.tui, "todo", { render: () => Array.from({ length: 12 }, (_, index) => `todo ${index}`), invalidate() {} });
+	t.after(installSidebar(f.tui, theme));
+	const scroll = rail(f);
+	scroll.updateLayout(60, 3, () => {});
+	statusRows = 20;
+	invalidateSidebar(f.tui);
+	sidebarState(f.tui).reveal!("todo", 8);
+	rail(f);
+	const content = scroll.render(50);
+	const target = content.findIndex((line) => line.includes("todo 8"));
+	assert.ok(target > 20, `expected the todo section to move down, got ${target}`);
+	assert.equal(scroll.scrollTop, target, "the reveal used the frame's own section offset");
+});
+
+test("reveal called while a part renders moves the viewport", (t) => {
+	const f = fixture();
+	let renders = 0;
+	sidebarPart(f.tui, "todo", {
+		render: () => {
+			renders += 1;
+			if (renders === 2) sidebarState(f.tui).reveal!("todo", 8);
+			return Array.from({ length: 12 }, (_, index) => `todo ${index}`);
+		},
+		invalidate() {},
+	});
+	t.after(installSidebar(f.tui, theme));
+	const scroll = rail(f);
+	scroll.updateLayout(scroll.render(50).length, 2, () => {});
+	invalidateSidebar(f.tui);
+	const content = rail(f).render(50);
+	const target = content.findIndex((line) => line.includes("todo 8"));
+	assert.ok(target >= 0);
+	assert.equal(scroll.scrollTop, target, "a reveal from inside the layout pass moves the viewport");
 });
 
 test("cleanup restores the native layout and bottom paint without disposing widgets", () => {

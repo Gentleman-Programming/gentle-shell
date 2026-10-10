@@ -14,11 +14,13 @@ export type BannerColor = "pink" | "cyan" | "yellow" | "green";
 export interface BannerConfig {
   showRose: boolean;
   showTextLogo: boolean;
+  showStats?: boolean;
   color: BannerColor;
 }
 export const DEFAULT_BANNER_CONFIG: BannerConfig = {
   showRose: true,
   showTextLogo: true,
+  showStats: true,
   color: "pink",
 };
 export const BANNER_COLORS: BannerColor[] = ["pink", "cyan", "yellow", "green"];
@@ -81,6 +83,7 @@ function normalizeBannerConfig(value: unknown): BannerConfig {
   return {
     showRose: typeof record.showRose === "boolean" ? record.showRose : DEFAULT_BANNER_CONFIG.showRose,
     showTextLogo: typeof record.showTextLogo === "boolean" ? record.showTextLogo : DEFAULT_BANNER_CONFIG.showTextLogo,
+    ...(typeof record.showStats === "boolean" ? { showStats: record.showStats } : {}),
     color: BANNER_COLORS.includes(record.color as BannerColor) ? record.color as BannerColor : DEFAULT_BANNER_CONFIG.color,
   };
 }
@@ -100,10 +103,20 @@ export async function readBannerConfigForEdit(configHome = gentleAiConfigHome())
   try { value = JSON.parse(raw); } catch { throw new Error(`Cannot edit malformed banner file: ${path}`); }
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`Cannot edit malformed banner file: ${path}`);
   const config = value as Record<string, unknown>;
-  if (typeof config.showRose !== "boolean" || typeof config.showTextLogo !== "boolean" || !BANNER_COLORS.includes(config.color as BannerColor)) {
+  if (
+    typeof config.showRose !== "boolean" ||
+    typeof config.showTextLogo !== "boolean" ||
+    (config.showStats !== undefined && typeof config.showStats !== "boolean") ||
+    !BANNER_COLORS.includes(config.color as BannerColor)
+  ) {
     throw new Error(`Cannot edit malformed banner file: ${path}`);
   }
-  return { showRose: config.showRose, showTextLogo: config.showTextLogo, color: config.color as BannerColor };
+  return {
+    showRose: config.showRose,
+    showTextLogo: config.showTextLogo,
+    ...(typeof config.showStats === "boolean" ? { showStats: config.showStats } : {}),
+    color: config.color as BannerColor,
+  };
 }
 
 export async function readBannerConfig(configHome = gentleAiConfigHome()): Promise<BannerConfig> {
@@ -585,7 +598,7 @@ export default function (pi: ExtensionAPI) {
   const notifyBannerConfig = (ctx: any, config: BannerConfig) => {
     ctx.ui.notify(
       [
-        `Startup banner: rose=${config.showRose ? "on" : "off"}, text logo=${config.showTextLogo ? "on" : "off"}, color=${config.color}`,
+        `Startup banner: rose=${config.showRose ? "on" : "off"}, text logo=${config.showTextLogo ? "on" : "off"}, stats=${(config.showStats ?? DEFAULT_BANNER_CONFIG.showStats) ? "on" : "off"}, color=${config.color}`,
         `Config: ${bannerConfigPath()}`,
         "Changes apply on the next startup banner render.",
       ].join("\n"),
@@ -601,11 +614,13 @@ export default function (pi: ExtensionAPI) {
         const selected = await ctx.ui.select("Startup banner", [
           `Rose: ${config.showRose ? "on" : "off"}`,
           `Text logo: ${config.showTextLogo ? "on" : "off"}`,
+          `Stats: ${(config.showStats ?? DEFAULT_BANNER_CONFIG.showStats) ? "on" : "off"}`,
           `Color: ${config.color}`,
         ]);
         if (!selected) return;
         if (selected.startsWith("Rose:")) config.showRose = !config.showRose;
         else if (selected.startsWith("Text logo:")) config.showTextLogo = !config.showTextLogo;
+        else if (selected.startsWith("Stats:")) config.showStats = !config.showStats;
         else if (selected.startsWith("Color:")) {
           const color = await ctx.ui.select("Startup banner color", [...BANNER_COLORS]);
           if (!color) return;
@@ -616,12 +631,13 @@ export default function (pi: ExtensionAPI) {
       },
     });
   };
-  const registerToggleCommand = (name: string, key: "showRose" | "showTextLogo") => {
+  const registerToggleCommand = (name: string, key: "showRose" | "showTextLogo" | "showStats") => {
     pi.registerCommand(name, {
-      description: `Toggle startup banner ${key === "showRose" ? "rose" : "text logo"}.`,
+      description: `Toggle startup banner ${key === "showRose" ? "rose" : key === "showTextLogo" ? "text logo" : "stats panel"}.`,
       handler: async (_args, ctx) => {
         const config = await readBannerConfig();
-        config[key] = !config[key];
+        const current = key === "showStats" ? (config.showStats ?? DEFAULT_BANNER_CONFIG.showStats) : config[key];
+        config[key] = !current;
         await writeBannerConfig(config);
         notifyBannerConfig(ctx, config);
       },
@@ -648,6 +664,7 @@ export default function (pi: ExtensionAPI) {
   registerBannerCommand("gentle:banner");
   registerToggleCommand("gentle:toggle-rose", "showRose");
   registerToggleCommand("gentle:toggle-text-logo", "showTextLogo");
+  registerToggleCommand("gentle:toggle-stats", "showStats");
   registerColorCommand("gentle:banner-color");
 
   pi.on("session_start", async (_event, ctx) => {
@@ -805,7 +822,8 @@ export default function (pi: ExtensionAPI) {
           /** Renders the persistent header grid; memoized per width, tick, mode and stats so static passes reuse the built lines. */
           render(width: number): string[] {
             if (state.mode === "skip") return [];
-            const headerKey = `${width}|${tick}|${state.mode}|${gitBranch}|${mcpServersCount}|${extensionsCount}|${packagesCount}|${backgroundAgentsCount}|${ctx.cwd}|${skills.length}|${customTools.length}`;
+            const showStats = bannerConfig.showStats ?? DEFAULT_BANNER_CONFIG.showStats;
+            const headerKey = `${width}|${tick}|${state.mode}|${showStats}|${gitBranch}|${mcpServersCount}|${extensionsCount}|${packagesCount}|${backgroundAgentsCount}|${ctx.cwd}|${skills.length}|${customTools.length}`;
             if (headerCache?.key === headerKey) return headerCache.out;
 
             const flashStartTick = 10;
@@ -884,7 +902,7 @@ export default function (pi: ExtensionAPI) {
               }
             }
 
-            if (state.mode === "full" || (!bannerConfig.showRose && !bannerConfig.showTextLogo)) {
+            if (showStats && (state.mode === "full" || (!bannerConfig.showRose && !bannerConfig.showTextLogo))) {
               b.addRow();
               b.center(width);
 

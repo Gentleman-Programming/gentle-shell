@@ -926,6 +926,7 @@ test("setup MCP migration warns without re-enabling configured servers", async (
 			writeFileSync(mcpPath, mcpText);
 			const installer = join(f.root, "retire-adapter.mjs");
 			writeFileSync(installer, [
+				"#!/usr/bin/env node",
 				'import { readFileSync, writeFileSync } from "node:fs";',
 				'import { join } from "node:path";',
 				'const home = process.env.PI_CODING_AGENT_DIR;',
@@ -939,6 +940,7 @@ test("setup MCP migration warns without re-enabling configured servers", async (
 				'writeFileSync(npmPath, JSON.stringify(manifest));',
 				'console.log("installed");',
 			].join("\n"));
+			assert.equal(readFileSync(installer, "utf8").split("\n")[0], "#!/usr/bin/env node");
 			const args = mode === "link" ? ["--link", "setup"] : ["--home", target, "setup"];
 			const result = run({ ...f.env, PI_CODING_AGENT_DIR: target, GENTLE_SHELL_PI: setupMCPExecutable(f.piScript), GENTLE_SHELL_GENTLE_AI_BIN: setupMCPExecutable(installer) }, args);
 			assert.equal(result.status, 0, result.stderr);

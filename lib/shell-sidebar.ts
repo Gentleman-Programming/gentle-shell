@@ -20,8 +20,21 @@ export interface SidebarState {
 	statusHidden?: () => boolean;
 	/** True while a painting top header is the only status row of a narrow fullscreen terminal: the bottom Status bar steps aside. */
 	headerOwnsStatus?: () => boolean;
+	reveal?: (key: string, localLine: number) => void;
 	parts: Map<string, SidebarRail>;
+	headerContributors: Map<string, SidebarHeaderContributor>;
 }
+
+/**
+ * A row group the header region paints above the shell's own rows.
+ *
+ * The header slot has a single owner — `sidebarHeader` replaces whatever was
+ * there — so an extension that owns data the header should show cannot register
+ * a second part. It registers a contributor instead: the owner keeps the region
+ * and composes the contributed rows, and each contribution stays independently
+ * disposable.
+ */
+export type SidebarHeaderContributor = SidebarRail;
 
 /** A rail slot in the fullscreen sidebar. */
 export interface SidebarRail extends Component {
@@ -35,7 +48,7 @@ export interface SidebarRail extends Component {
 }
 export function sidebarState(tui: TUI): SidebarState {
 	const terminal = tui.terminal as unknown as Record<symbol, SidebarState>;
-	return terminal[STATE] ??= { active: false, parts: new Map() };
+	return terminal[STATE] ??= { active: false, parts: new Map(), headerContributors: new Map() };
 }
 
 /** Keep the original bottom component mounted, suppressing only its paint. */
@@ -68,4 +81,29 @@ export function sidebarHeader(tui: TUI, rail: SidebarRail): () => void {
 	return () => {
 		if (state.parts.get("header") === rail) state.parts.delete("header");
 	};
+}
+
+/**
+ * Register rows for the header region to paint above its own.
+ *
+ * Insertion order is paint order, so a contributor registered first is the top
+ * row group. A later registration under the same key replaces the earlier one,
+ * and an old disposer never removes its replacement — the same rule the rail
+ * parts follow.
+ */
+export function sidebarHeaderContributor(tui: TUI, key: string, contributor: SidebarHeaderContributor): () => void {
+	if (!tui.terminal) return () => {};
+	// A terminal outlives module reloads, so a state created by an older loader
+	// may predate this field.
+	const contributors = sidebarState(tui).headerContributors ??= new Map();
+	contributors.set(key, contributor);
+	return () => {
+		if (contributors.get(key) === contributor) contributors.delete(key);
+	};
+}
+
+/** The header contributors in paint order, outermost first. */
+export function sidebarHeaderContributors(tui: TUI): SidebarHeaderContributor[] {
+	if (!tui.terminal) return [];
+	return [...(sidebarState(tui).headerContributors?.values() ?? [])];
 }

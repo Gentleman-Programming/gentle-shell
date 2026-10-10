@@ -7,7 +7,7 @@ permissions:
 jobs:
   diag:
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -17,37 +17,29 @@ jobs:
         with:
           go-version: "1.25.14"
           cache: false
-      - name: Like a user profile, long paths off
+      - name: Long paths off
         shell: pwsh
         run: |
-          "LongPathsEnabled before: $((Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem).LongPathsEnabled)"
           Set-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem -Name LongPathsEnabled -Value 0
-          "LongPathsEnabled after: $((Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem).LongPathsEnabled)"
-          $pnpmHome = Join-Path $env:LOCALAPPDATA "pnpm"
-          New-Item -ItemType Directory -Force -Path (Join-Path $pnpmHome "bin") | Out-Null
-          "PNPM_HOME=$pnpmHome" >> $env:GITHUB_ENV
-          Add-Content $env:GITHUB_PATH (Join-Path $pnpmHome "bin")
-          npm install -g pnpm@11.9.0
-      - name: pnpm 11.9.0 add -g the main package (postinstall builds Gentle AI from source)
+          "LongPathsEnabled: $((Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem).LongPathsEnabled)"
+      - name: Main installer from a short path
         shell: pwsh
-        continue-on-error: true
         run: |
-          pnpm --version
-          $src = Join-Path $env:RUNNER_TEMP "shell-src"
-          New-Item -ItemType Directory -Force -Path $src | Out-Null
-          git archive HEAD | & "$env:SystemRoot\System32\tar.exe" -x -C $src
-          Push-Location $src
-          $m = Get-Content package.json -Raw | ConvertFrom-Json
-          $m.version = "4.0.0-main.$((git -C $env:GITHUB_WORKSPACE rev-parse HEAD).Substring(0,12))"
-          $m.scripts.PSObject.Properties.Remove("prepack"); $m.scripts.PSObject.Properties.Remove("prepare")
-          $m | ConvertTo-Json -Depth 20 | Set-Content package.json -Encoding utf8
-          pnpm pack --pack-destination $env:RUNNER_TEMP
-          Pop-Location
-          $tgz = (Get-ChildItem $env:RUNNER_TEMP -Filter "gentle-pi-*.tgz").FullName
-          pnpm add -g "@earendil-works/pi-coding-agent@1.0.0" "gentle-pi@4.0.0" --allow-build=gentle-pi --reporter=append-only 2>&1 | Select-Object -Last 15
-          "release exit=$LASTEXITCODE"
-          pnpm add -g "$tgz" --allow-build=gentle-pi --reporter=append-only 2>&1 | Select-Object -Last 40
-          "main exit=$LASTEXITCODE"
-      - name: Rerun the installer from the store location with the full cause chain
+          $dst = "C:\g"
+          New-Item -ItemType Directory -Force -Path $dst | Out-Null
+          git archive HEAD | & "$env:SystemRoot\System32\tar.exe" -x -C $dst
+          node diag/run-installer.mjs $dst
+      - name: Main installer at the release store depth (161)
         shell: pwsh
-        run: node diag/windows-postinstall.mjs
+        run: |
+          $dst = Join-Path $env:LOCALAPPDATA ("pnpm\store\v11\links\@\gentle-pi\4.0.0\" + ("e" * 64) + "\node_modules\gentle-pi")
+          New-Item -ItemType Directory -Force -Path $dst | Out-Null
+          git archive HEAD | & "$env:SystemRoot\System32\tar.exe" -x -C $dst
+          node diag/run-installer.mjs $dst
+      - name: Main installer at the main store depth (179)
+        shell: pwsh
+        run: |
+          $dst = Join-Path $env:LOCALAPPDATA ("pnpm\store\v11\links\@\gentle-pi\4.0.0-main.95c618a49a8f\" + ("f" * 64) + "\node_modules\gentle-pi")
+          New-Item -ItemType Directory -Force -Path $dst | Out-Null
+          git archive HEAD | & "$env:SystemRoot\System32\tar.exe" -x -C $dst
+          node diag/run-installer.mjs $dst

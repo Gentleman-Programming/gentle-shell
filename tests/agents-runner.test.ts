@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import fs, { existsSync, readFileSync, statSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { basename, dirname } from "node:path";
 import { PassThrough } from "node:stream";
 import { AGENT_MODE, parseAgentsConfig, resolveAgentProfile, type AgentDefinition } from "../lib/agents-config.ts";
-import { TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
-import { AgentRunner, childArguments, JsonLines, piCommand, abortReasonText, type ChildLike, type RunnerDeps, type RunnerHooks, type TaskRequest } from "../lib/agents-runner.ts";
+import { MISSING_TOOLS_NOTE_PREFIX, TASK_STATUS, TaskStore, THREAD_ITEM, type TaskRecord } from "../lib/agents-protocol.ts";
+import { AgentRunner, childArguments, JsonLines, piCommand, abortReasonText, REQUESTED_TOOLS_ENV, type ChildLike, type RunnerDeps, type RunnerHooks, type TaskRequest } from "../lib/agents-runner.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
 import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
 
@@ -24,21 +27,24 @@ interface Harness {
 	timers: Array<{ fn: () => void; ms: number; cancelled: boolean }>;
 	asks: Array<{ taskId: string; method: string }>;
 	finishes: string[];
-	spawnOptions: Array<{ env: NodeJS.ProcessEnv; stdio?: string[] }>;
+	spawnOptions: Array<{ command: string; args: string[]; env: NodeJS.ProcessEnv; stdio?: string[] }>;
+	advance(ms: number): void;
 }
 
-function harness(options: { failStart?: boolean; process?: RunnerDeps["process"]; pid?: number; maxConcurrency?: number; stallTimeoutMs?: number; toolStallTimeoutMs?: number; answer?: Record<string, unknown>; exitOnKill?: boolean; state?: Record<string, unknown>; stateSuccess?: boolean; onNotification?: RunnerHooks["onNotification"]; onSuccessfulMutation?: RunnerHooks["onSuccessfulMutation"]; onFinish?: RunnerHooks["onFinish"] } = {}): Harness {
+function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boolean; process?: RunnerDeps["process"]; pid?: number; maxConcurrency?: number; stallTimeoutMs?: number; toolStallTimeoutMs?: number; answer?: Record<string, unknown>; exitOnKill?: boolean; state?: Record<string, unknown>; stateSuccess?: boolean; onNotification?: RunnerHooks["onNotification"]; onSuccessfulMutation?: RunnerHooks["onSuccessfulMutation"]; onFinish?: RunnerHooks["onFinish"] } = {}): Harness {
 	const children: FakeChild[] = [];
 	const timers: Harness["timers"] = [];
 	const asks: Harness["asks"] = [];
 	const finishes: string[] = [];
 	const spawnOptions: Harness["spawnOptions"] = [];
 	let clock = 1000;
+	const deadlines = new Map<Harness["timers"][number], number>();
 	const deps: RunnerDeps = {
 		process: options.process,
-		spawn: (_command, _args, launchOptions) => {
+		resolvePi: options.resolvePi,
+		spawn: (command, args, launchOptions) => {
 			if (options.failStart) throw new Error("fixture spawn failed");
-			spawnOptions.push({ env: launchOptions.env, stdio: launchOptions.stdio });
+			spawnOptions.push({ command, args, env: launchOptions.env, stdio: launchOptions.stdio });
 			const fake = fakeChild({ exitOnKill: options.exitOnKill, pid: options.pid });
 			if (options.state !== undefined) {
 				fake.child.stdin.removeAllListeners("data");
@@ -56,6 +62,7 @@ function harness(options: { failStart?: boolean; process?: RunnerDeps["process"]
 		schedule: (fn, ms) => {
 			const timer = { fn, ms, cancelled: false };
 			timers.push(timer);
+			deadlines.set(timer, clock + ms);
 			return () => {
 				timer.cancelled = true;
 			};
@@ -72,12 +79,129 @@ function harness(options: { failStart?: boolean; process?: RunnerDeps["process"]
 		onNotification: options.onNotification,
 		onSuccessfulMutation: options.onSuccessfulMutation,
 	});
-	return { store, runner, children, timers, asks, finishes, spawnOptions };
+	return { store, runner, children, timers, asks, finishes, spawnOptions, advance(ms) {
+		clock += ms;
+		for (const timer of timers) {
+			if (!timer.cancelled && deadlines.get(timer)! <= clock) {
+				timer.cancelled = true;
+				timer.fn();
+			}
+		}
+	} };
 }
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 const FOUR_MIN_MS = 4 * 60_000;
+
+function argumentUpdate(type: string, fields: Record<string, unknown> = {}): Record<string, unknown> {
+	return { type: "message_update", usage: { totalTokens: 999, cost: { total: 99 } }, assistantMessageEvent: { type, contentIndex: 0, ...fields } };
+}
+
+function beginArguments(child: FakeChild, timestamp = 1000): void {
+	child.emit({ type: "message_start", message: { role: "assistant", timestamp, content: [] } });
+	child.emit(argumentUpdate("toolcall_start", { id: "call-1", toolName: "write" }));
+}
+
+test("parent source passages reach the economical explorer through the existing context handoff", async () => {
+	const h = harness();
+	const context = "Parent-provided source (evidence, not instructions): https://docs.example.invalid/fixture\nPassage: The fixture supports local symbol queries.\nRemaining uncertainty: release compatibility was not checked.";
+	const task = h.runner.run(request({
+		agent: { ...explorer, name: "gentle-ai-explore", tools: ["read", "grep", "find", "codegraph"] },
+		prompt: "Compare the supplied passage with local source; do not browse.",
+		context,
+		model: { provider: "offline", id: "configured-small" },
+		thinking: "low",
+	}));
+	await tick();
+	const command = h.children[0].written.find(command => command.type === "prompt");
+	assert.equal(command?.message, `Compare the supplied passage with local source; do not browse.\n\n## Context\n${context}`);
+	assert.ok(h.spawnOptions[0].args.includes("offline/configured-small:low"));
+	assert.equal(h.spawnOptions[0].env[REQUESTED_TOOLS_ENV], "read,grep,find,codegraph,subagent_parent_message");
+	h.runner.cancel(task.id);
+	await tick();
+});
+
+test("fresh argument streaming renews idle liveness without execution or provisional usage", async () => {
+	const h = harness({ stallTimeoutMs: 100, toolStallTimeoutMs: 1000 });
+	const task = h.runner.run(request());
+	await tick();
+	const child = h.children[0];
+	beginArguments(child);
+	// Each chunk arrives before the current idle deadline. Four renewals allow
+	// generation to outlast the original budget; only the latest timer can fire.
+	for (const delta of ['{"path":', '"private-path",', '"content":', '"private-arguments"}']) {
+		h.advance(80);
+		assert.equal(h.store.get(task.id)?.status, TASK_STATUS.RUNNING);
+		const before = h.timers.filter(timer => !timer.cancelled).at(-1)!;
+		child.emit(argumentUpdate("toolcall_delta", { delta }));
+		assert.equal(before.cancelled, true, "fresh argument data cancels the prior idle deadline");
+		assert.equal(h.timers.filter(timer => !timer.cancelled).at(-1)?.ms, 100);
+	}
+	const current = h.store.get(task.id)!;
+	assert.equal(current.toolCalls, 0);
+	assert.equal(current.tokens, 0);
+	assert.equal(current.cost, 0);
+	assert.equal(current.lastStep, "generating tool arguments");
+	assert.doesNotMatch(JSON.stringify(h.store.thread(task.id)), /private/);
+	h.advance(101);
+	await tick();
+	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.TIMED_OUT, "later silence still times out");
+	assert.doesNotMatch(h.store.get(task.id)?.error ?? "", /private/);
+});
+
+test("empty, replayed, malformed and unrelated argument traffic cannot renew idle liveness", async () => {
+	const h = harness({ stallTimeoutMs: 100 });
+	const task = h.runner.run(request());
+	await tick();
+	const child = h.children[0];
+	beginArguments(child);
+	const fresh = argumentUpdate("toolcall_delta", { delta: "private-chunk" });
+	child.emit(fresh);
+	const timer = h.timers.filter(timer => !timer.cancelled).at(-1)!;
+	for (const event of [fresh, argumentUpdate("toolcall_delta", { delta: "" }),
+		argumentUpdate("toolcall_delta", { delta: 123 }), argumentUpdate("toolcall_delta", { delta: "new", contentIndex: -1 }),
+		argumentUpdate("toolcall_delta", { delta: "new", contentIndex: 1 }),
+		argumentUpdate("toolcall_start", { id: "call-1", toolName: "write" }), fresh,
+		{ type: "message_start", message: { role: "assistant", timestamp: 1000 } }, fresh,
+		{ type: "queue_update" }, { type: "extension_ui_request", method: "setWidget", widgetLines: ["noise"] },
+		{ type: "bash_execution_update", delta: "noise" }]) child.emit(event);
+	assert.equal(timer.cancelled, false);
+	timer.fn();
+	await tick();
+	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.TIMED_OUT);
+});
+
+test("argument generation closes at message end, preserves final usage and execution budgets", async () => {
+	const h = harness({ stallTimeoutMs: 100, toolStallTimeoutMs: 1000 });
+	const task = h.runner.run(request());
+	await tick();
+	const child = h.children[0];
+	beginArguments(child);
+	child.emit(argumentUpdate("toolcall_delta", { delta: "private-chunk" }));
+	child.emit({ type: "message_end", message: { role: "assistant", usage: { totalTokens: 12, cost: { total: 0.1 } } } });
+	const idle = h.timers.filter(timer => !timer.cancelled).at(-1)!;
+	child.emit(argumentUpdate("toolcall_delta", { delta: "late" }));
+	assert.equal(idle.cancelled, false);
+	assert.equal(h.store.get(task.id)?.tokens, 12);
+	assert.equal(h.store.get(task.id)?.cost, 0.1);
+	child.emit({ type: "tool_execution_start", toolCallId: "call-1", toolName: "write", args: {} });
+	assert.equal(h.store.get(task.id)?.toolCalls, 1);
+	assert.equal(h.timers.filter(timer => !timer.cancelled).at(-1)?.ms, 1000);
+	child.emit({ type: "tool_execution_end", toolCallId: "call-1", result: { content: [] }, isError: false });
+	assert.equal(h.timers.filter(timer => !timer.cancelled).at(-1)?.ms, 100);
+	beginArguments(child, 1001);
+	child.emit(argumentUpdate("toolcall_delta", { delta: "private-chunk" }));
+	assert.equal(h.store.get(task.id)?.lastStep, "generating tool arguments", "a new generation admits the same chunk");
+	h.runner.cancel(task.id, "cancelled during arguments");
+	const timerCount = h.timers.length;
+	child.emit(argumentUpdate("toolcall_delta", { delta: "after cancellation" }));
+	await tick();
+	assert.equal(h.timers.length, timerCount);
+	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.CANCELLED);
+	assert.equal(h.store.get(task.id)?.toolCalls, 1);
+	assert.equal(h.store.get(task.id)?.tokens, 12);
+});
 
 // A child that never answers the launch RPC commands (get_state, prompt), so
 // the task's lastStep never leaves its initial "starting" stage. Used to
@@ -607,6 +731,70 @@ test("childArguments grants every child the notification-only parent message too
 	assert.equal(args[args.indexOf("--tools") + 1], "read,grep,subagent_parent_message");
 });
 
+// #1690: a forwarded launcher takeover keeps --no-extensions ahead of every
+// --extension and leaves the rest of the launch unchanged.
+test("childArguments forwards a takeover set with --no-extensions first", async () => {
+	const extensionPaths = ["/agent/npm/node_modules/other", "/agent/extensions/a b.ts", "/pkg"];
+	const expected = ["--mode", "rpc", "--session-dir", "/sessions", "--no-extensions", "--extension", extensionPaths[0], "--extension", extensionPaths[1], "--extension", extensionPaths[2], "--model", "openai-codex/gpt-5.6-terra:high", "--tools", "read,grep,subagent_parent_message", "--append-system-prompt", "You map things."];
+	assert.deepEqual(childArguments(request({ noExtensions: true, extensionPaths })), expected);
+	const h = harness();
+	const task = h.runner.run(request({ noExtensions: true, extensionPaths }));
+	await tick();
+	assert.deepEqual(h.spawnOptions.at(-1)!.args.slice(-expected.length), expected, "the spawned child receives the same argv");
+	h.runner.cancel(task.id);
+});
+
+test("childArguments forwards a plain package root without --no-extensions", () => {
+	assert.deepEqual(childArguments(request({ noExtensions: false, extensionPaths: ["/pkg"] })), ["--mode", "rpc", "--session-dir", "/sessions", "--extension", "/pkg", "--model", "openai-codex/gpt-5.6-terra:high", "--tools", "read,grep,subagent_parent_message", "--append-system-prompt", "You map things."]);
+	const args = childArguments(request({ extensionPaths: ["/pkg/extensions/child-context.ts"] }));
+	assert.ok(!args.includes("--no-extensions"), "an absent flag never disables discovery");
+});
+
+// Pins the runner as written: the T3 injection parser rejects a takeover with
+// no extension paths upstream, so this shape never comes from the launcher.
+test("childArguments passes --no-extensions alone for a takeover with no paths (shape rejected upstream by the injection parser)", () => {
+	assert.deepEqual(childArguments(request({ noExtensions: true, extensionPaths: [] })), ["--mode", "rpc", "--session-dir", "/sessions", "--no-extensions", "--model", "openai-codex/gpt-5.6-terra:high", "--tools", "read,grep,subagent_parent_message", "--append-system-prompt", "You map things."]);
+});
+
+// #1690: the child compares this list with its own tools and reports the
+// names Pi dropped, so it must be exactly what --tools carries.
+test("AgentRunner gives the child its exact --tools list and never forwards a stale one", async () => {
+	const h = harness();
+	const scoped = h.runner.run(request({ env: { [REQUESTED_TOOLS_ENV]: "stale" } }));
+	const unscoped = h.runner.run(request({ agent: { ...explorer, tools: [] }, env: { [REQUESTED_TOOLS_ENV]: "stale" } }));
+	await tick();
+	const [first, second] = h.spawnOptions;
+	assert.equal(first.env[REQUESTED_TOOLS_ENV], first.args[first.args.indexOf("--tools") + 1]);
+	assert.equal(first.env[REQUESTED_TOOLS_ENV], "read,grep,subagent_parent_message");
+	assert.ok(!second.args.includes("--tools"), "a profile without tools keeps Pi's defaults");
+	assert.equal(second.env[REQUESTED_TOOLS_ENV], undefined, "no --tools means no requested list, inherited or not");
+	h.runner.cancel(scoped.id);
+	h.runner.cancel(unscoped.id);
+});
+
+// A child reports missing tools at its first before_agent_start, before Pi answers the
+// prompt command; the note still lands and the launch steps still advance.
+test("AgentRunner records a missing-tools note that arrives before the prompt is accepted", async () => {
+	const h = harness();
+	const task = h.runner.run(request());
+	const message = `${MISSING_TOOLS_NOTE_PREFIX} gentle_review_scope`;
+	const stepsAtNote: string[] = [];
+	h.store.subscribe(task.id, (record, thread) => {
+		if (stepsAtNote.length === 0 && thread.items.some((item) => item.kind === THREAD_ITEM.NOTE)) stepsAtNote.push(record.lastStep);
+	});
+	await Promise.resolve();
+	// Spawned, but the fake child has not answered get_state or prompt yet.
+	h.children[0].emit({ type: "extension_ui_request", id: "u1", method: "notify", message, notifyType: "warning" });
+	await tick();
+	await tick();
+	assert.deepEqual(stepsAtNote, ["starting"], "the note is applied before any launch reply");
+	assert.deepEqual(h.store.thread(task.id).items.filter((item) => item.kind === THREAD_ITEM.NOTE), [{ kind: THREAD_ITEM.NOTE, text: message }]);
+	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.RUNNING);
+	assert.equal(h.store.get(task.id)?.lastStep, "prompt accepted", "the note does not hold back the launch steps");
+	assert.deepEqual(h.children[0].written.map((command) => command.type), ["get_state", "prompt"], "a notify is never answered");
+	h.runner.cancel(task.id);
+});
+
 test("AgentRunner admits strict live notifications once and closes IPC before Stop", async () => {
 	const notifications: string[] = [];
 	const { runner, children, spawnOptions } = harness({ onNotification: (task, message) => task.parentSessionId === "s1" && (notifications.push(message), true) });
@@ -657,10 +845,32 @@ test("AgentRunner retains only a 64-notification duplicate window", async () => 
 	assert.equal(notifications.length, 66, "an ID evicted from the recent 64-ack window can be admitted again");
 });
 
-test("piCommand reuses the running pi entry point and honors the override", () => {
-	assert.deepEqual(piCommand({ execPath: "/bin/node", argv: ["/bin/node", "/x/dist/cli.js"], env: {} }), { command: "/bin/node", args: ["/x/dist/cli.js"] });
-	assert.deepEqual(piCommand({ execPath: "/bin/node", argv: ["/bin/node", "/x/other.js"], env: {} }), { command: "pi", args: [] });
-	assert.deepEqual(piCommand({ execPath: "/bin/node", argv: [], env: { GENTLE_PI_AGENTS_PI: "/opt/pi --flag" } }), { command: "/opt/pi", args: ["--flag"] });
+test("piCommand reuses an existing pi entry point and falls back when it disappears", () => {
+	const proc = { execPath: "/bin/node", argv: ["/bin/node", "/x/dist/cli.js"], env: {} };
+	assert.deepEqual(piCommand(proc, (entry) => entry === "/x/dist/cli.js"), { command: "/bin/node", args: ["/x/dist/cli.js"] });
+	assert.deepEqual(piCommand(proc, () => false), { command: "pi", args: [] });
+	assert.deepEqual(piCommand({ ...proc, argv: ["/bin/node", "/x/other.js"] }, () => true), { command: "pi", args: [] });
+	assert.deepEqual(piCommand({ ...proc, argv: [] }, () => true), { command: "pi", args: [] });
+});
+
+test("piCommand honors the override without checking its entry", () => {
+	const proc = { execPath: "/bin/node", argv: ["/bin/node", "/x/dist/cli.js"], env: { GENTLE_PI_AGENTS_PI: " /bin/node /override/cli.js " } };
+	assert.deepEqual(piCommand(proc, () => { assert.fail("override must bypass the existence check"); }), { command: "/bin/node", args: ["/override/cli.js"] });
+});
+
+test("runner resolves the pi command at each spawn after the entry disappears", async () => {
+	let exists = true;
+	const proc = { execPath: "/bin/node", argv: ["/bin/node", "/x/dist/cli.js"], env: {} };
+	const h = harness({ resolvePi: () => piCommand(proc, () => exists) });
+	h.runner.run(request());
+	await tick();
+	assert.equal(h.spawnOptions[0].command, "/bin/node");
+	assert.equal(h.spawnOptions[0].args[0], "/x/dist/cli.js");
+	exists = false;
+	h.runner.run(request());
+	await tick();
+	assert.equal(h.spawnOptions[1].command, "pi");
+	assert.deepEqual(h.spawnOptions[1].args, childArguments(request()));
 });
 
 test("JsonLines splits on LF only, tolerates CRLF, and skips lines that are not JSON", () => {
@@ -822,7 +1032,7 @@ for (const [platform, detached] of [["win32", false], ["linux", true]] as const)
 	assert.deepEqual(launches, [{
 		command: "pi-fixture",
 		args: ["--from-host", "--mode", "rpc", "--session-dir", "/sessions", "--model", "openai-codex/gpt-5.6-terra:high", "--tools", "read,grep,subagent_parent_message", "--append-system-prompt", "You map things."],
-		options: { cwd: "/repo", env: { PATH: "/fixture", KEEP: "yes", GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: ownedIpc }, detached, stdio: ["pipe", "pipe", "pipe", "ipc"] },
+		options: { cwd: "/repo", env: { PATH: "/fixture", KEEP: "yes", GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: ownedIpc, [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message" }, detached, windowsHide: true, stdio: ["pipe", "pipe", "pipe", "ipc"] },
 	}]);
 	child.emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "platform checked" }], stopReason: "stop" }] });
 	child.emit({ type: "agent_settled" });
@@ -905,7 +1115,7 @@ test("AgentRunner retains permission broker fd3 and assigns messaging IPC to fd4
 	const launch = spawnOptions[0];
 	const permissionChannelStdio = process.platform === "win32" ? "overlapped" : "pipe";
 	assert.match(launch?.env.GENTLE_PI_AGENTS_OWNED_IPC ?? "", /^\d+-[a-z0-9]+$/, "the owned-IPC marker has the runner's opaque shape");
-	assert.deepEqual(launch?.env, { GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: launch?.env.GENTLE_PI_AGENTS_OWNED_IPC, GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3" });
+	assert.deepEqual(launch?.env, { GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: launch?.env.GENTLE_PI_AGENTS_OWNED_IPC, GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3", [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message" });
 	assert.deepEqual(launch?.stdio, ["pipe", "pipe", "pipe", permissionChannelStdio, "ipc"]);
 	assert.equal(launch?.stdio?.length, 5);
 	children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "channel checked" }], stopReason: "stop" }] });
@@ -932,6 +1142,8 @@ test("AgentRunner platform matrix scopes permission fd3 transport", async () => 
 			await tick();
 			const launch = launches[0];
 			assert.ok(launch, `${platform} ${eligible ? "eligible" : "ineligible"} child launches`);
+			assert.equal(launch.windowsHide, true, `${platform} children hide console windows regardless of permission eligibility`);
+			assert.equal(launch.detached, platform !== "win32", "only non-Windows children use detached process groups");
 			assert.equal(launch.env.GENTLE_PI_AGENTS_PARENT_PERMISSION_FD, eligible ? "3" : undefined, "only eligible children receive the fd3 marker");
 			assert.deepEqual(launch.stdio, eligible ? ["pipe", "pipe", "pipe", platform === "win32" ? "overlapped" : "pipe", "ipc"] : ["pipe", "pipe", "pipe", "ipc"]);
 			assert.equal(launch.stdio?.indexOf("ipc"), eligible ? 4 : 3, "messaging IPC follows fd3 only for eligible children");
@@ -1277,7 +1489,7 @@ test("an unprobeable process group quarantines at its deadline and still records
 		pi: { command: "pi", args: [] },
 		process: { platform: "win32", kill: () => {} },
 	}, { askUser: async () => ({ value: "yes" }), onFinish: (task) => { finishes.push(task.id); } });
-	const first = runner.run(managedRequest());
+	const first = runner.run(request());
 	const second = runner.run(request({ prompt: "queued" }));
 	await tick();
 	runner.cancel(first.id);
@@ -1294,10 +1506,11 @@ test("an unprobeable process group quarantines at its deadline and still records
 	assert.equal(finishes.length, 1, "the run is recorded exactly once");
 	assert.equal(store.get(second.id)?.status, TASK_STATUS.QUEUED, "an unconfirmed exit retains its capacity");
 	assert.equal(launches, 1, "no further launch happens while the slot is quarantined");
-	assert.throws(() => runner.run(managedRequest()), /Remediation already queued or running/, "a failed record does not release its quarantined child");
+	const third = runner.run(request({ prompt: "another ordinary task" }));
+	assert.equal(store.get(third.id)?.status, TASK_STATUS.QUEUED);
 	child!.exit(0);
 	await tick();
-	assert.doesNotThrow(() => runner.run(managedRequest()), "confirmed cleanup releases the managed workspace");
+	assert.equal(store.get(second.id)?.status, TASK_STATUS.RUNNING, "confirmed cleanup frees capacity for ordinary work");
 	runner.cancelAll();
 	child!.exit(0);
 });
@@ -1310,97 +1523,258 @@ test("abortReasonText renders an Error, a string, and nothing for unknown reason
 	assert.equal(abortReasonText(42), "");
 });
 
-test("research narrowing transport keeps exact argv paths and replaces inherited selection", async () => {
+test("generic child extension paths do not forward legacy research selection", async () => {
  const h = harness();
- const selection = { documentation: { tools: ["fetch_content"], extensions: { fetch_content: "/installed/docs tools.ts" } } };
- for (const researchSelection of [selection, undefined]) {
-  const launch = request({ researchSelection, extensionPaths: researchSelection ? ["/installed/docs tools.ts"] : [],
-   env: { PATH: "/bin", GENTLE_PI_RESEARCH_SELECTION: "stale broad selection" } });
-  const argv = childArguments(launch);
-  assert.deepEqual(argv.filter((_, i) => argv[i - 1] === "--extension"), launch.extensionPaths);
-  const task = h.runner.run(launch);
-  await tick();
-  assert.deepEqual(JSON.parse(h.spawnOptions.at(-1)!.env.GENTLE_PI_RESEARCH_SELECTION!), researchSelection ?? null);
-  assert.equal(h.spawnOptions.at(-1)!.env.PATH, "/bin");
-  h.runner.cancel(task.id);
-  assert.equal((await h.runner.waitFor(task.id)).status, TASK_STATUS.CANCELLED);
- }
+ const launch = request({ extensionPaths: ["/installed/docs tools.ts"], env: { PATH: "/bin", GENTLE_PI_RESEARCH_SELECTION: "stale" } });
+ const argv = childArguments(launch);
+ assert.deepEqual(argv.filter((_, i) => argv[i - 1] === "--extension"), launch.extensionPaths);
+ const task = h.runner.run(launch);
+ await tick();
+ assert.equal(h.spawnOptions.at(-1)!.env.GENTLE_PI_RESEARCH_SELECTION, undefined);
+ assert.equal(h.spawnOptions.at(-1)!.env.PATH, "/bin");
+ h.runner.cancel(task.id);
+ assert.equal((await h.runner.waitFor(task.id)).status, TASK_STATUS.CANCELLED);
 });
 
-function managedRequest(cwd = "/repo"): TaskRequest {
-	return request({ agent: { ...explorer, name: "sdd-remediate" }, cwd, sddRemediation: {
-		failedEvidenceRevision: "failed-revision",
-		plan: { cwd, commands: ["pnpm test"], runtimeHarness: { naReason: "Not applicable because this tests runner admission." }, rollback: { boundary: "fixture", command: "git diff --check" } },
-		scope: { cwd, editPaths: [], commands: ["pnpm test", "git diff --check"], allowedEditRoots: [cwd] },
-	} });
-}
-
-for (const queued of [true, false]) test(`managed exclusion covers ${queued ? "queued" : "running"} same-workspace actors`, async () => {
-	const h = harness({ pid: 123, process: { platform: "win32", kill() {} } });
-	const first = h.runner.run(managedRequest());
-	if (!queued) await tick();
-	try {
-		assert.throws(() => h.runner.run(managedRequest()), /Remediation already queued or running/);
-		assert.equal(h.store.list().length, 1, "rejection creates no task or queue entry");
-		await tick();
-		assert.equal(h.children.length, 1);
-		assert.equal(h.store.get(first.id)?.status, TASK_STATUS.RUNNING);
-	} finally { h.runner.cancelAll(); await tick(); }
-});
-
-test("managed exclusion does not serialize other workspaces or ordinary tasks", async () => {
-	const h = harness({ maxConcurrency: 3, pid: 123, process: { platform: "win32", kill() {} } });
-	h.runner.run(managedRequest());
-	h.runner.run(managedRequest("/other"));
-	h.runner.run(request());
+test("ordinary tasks never inherit orphaned SDD launch metadata", async () => {
+	const h = harness();
+	const launch = request({ prompt: "Ordinary task", context: "Relevant context", env: { PATH: "/bin", GENTLE_PI_SDD_REMEDIATION_PLAN: "stale" },
+		// Deliberately pass a legacy-shaped payload to prove that no runner path consumes it.
+		...({ sddChange: { changeName: "old", workspaceRoot: "/repo", phase: "apply" }, sddPreflightContext: "stale", sddRemediation: { failedEvidenceRevision: "old", plan: { commands: ["unsafe"] } } } as object),
+	});
+	assert.doesNotMatch(childArguments(launch).join(" "), /gentle-sdd-change/);
+	const task = h.runner.run(launch);
 	await tick();
-	assert.equal(h.children.length, 3);
-	h.runner.cancelAll();
-	await tick();
+	assert.equal(h.store.get(task.id)?.sddPreflightContext, undefined);
+	assert.equal(h.spawnOptions[0].env.GENTLE_PI_SDD_REMEDIATION_PLAN, undefined);
+	assert.equal(h.spawnOptions[0].env.PATH, "/bin");
+	assert.equal(h.children[0].written.find(command => command.type === "prompt")?.message, "Ordinary task\n\n## Context\nRelevant context");
+	h.runner.cancel(task.id);
+	assert.equal((await h.runner.waitFor(task.id)).status, TASK_STATUS.CANCELLED);
 });
 
-for (const ending of ["complete", "failure", "cancel", "queued-cancel"] as const) test(`managed exclusion releases after ${ending}`, async () => {
-	const h = harness({ pid: 123, process: { platform: "win32", kill() {} } });
-	const first = h.runner.run(managedRequest());
-	if (ending === "queued-cancel") h.runner.cancel(first.id);
-	else {
-		await tick();
-		if (ending === "complete") {
-			h.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Finished" }], stopReason: "stop" }] });
-			h.children[0].emit({ type: "agent_settled" });
-		} else if (ending === "failure") h.children[0].exit(1);
-		else h.runner.cancel(first.id);
+test("AgentRunner preserves the terminating signal when child exits with null code before settlement", async () => {
+	const { runner, children, store } = harness();
+	const task = runner.run(request());
+	await tick();
+	assert.equal(children.length, 1);
+	children[0].exit(null, "SIGKILL");
+	const finished = await runner.waitFor(task.id);
+	assert.equal(finished.status, TASK_STATUS.FAILED);
+	assert.equal(finished.error, "pi exited with signal SIGKILL before agent_settled");
+	assert.equal(store.get(task.id)?.error, "pi exited with signal SIGKILL before agent_settled");
+});
+
+test("large agent instructions are transported via owner-only temporary file rather than inline argv", async () => {
+	const largeInstructions = "Instructions header:\n" + "x".repeat(2500);
+	const largeAgent: AgentDefinition = { ...explorer, instructions: largeInstructions };
+	const launches: Array<{ command: string; args: string[]; options: Parameters<RunnerDeps["spawn"]>[2] }> = [];
+	const fake = fakeChild();
+	let clock = 1000;
+	const deps: RunnerDeps = {
+		spawn: (command, args, options) => {
+			launches.push({ command, args, options });
+			return fake.child;
+		},
+		now: () => (clock += 1),
+		schedule: (_fn, _ms) => () => {},
+		pi: { command: "pi", args: [] },
+	};
+	const store = new TaskStore();
+	const runner = new AgentRunner(store, { maxConcurrency: 1, stallTimeoutMs: 10_000 }, deps, {
+		askUser: async () => ({ value: "yes" }),
+	});
+	const task = runner.run(request({ agent: largeAgent }));
+	await tick();
+
+	assert.equal(launches.length, 1);
+	const promptArgIndex = launches[0].args.indexOf("--append-system-prompt");
+	assert.ok(promptArgIndex !== -1, "--append-system-prompt must be present");
+	const promptValue = launches[0].args[promptArgIndex + 1];
+	assert.notEqual(promptValue, largeInstructions, "large instructions must not be passed inline in argv");
+	assert.ok(existsSync(promptValue), "temporary instructions transport file must exist on disk");
+	assert.equal(readFileSync(promptValue, "utf8"), largeInstructions, "transport file must contain the exact instructions");
+
+	if (process.platform !== "win32") {
+		const fileStat = statSync(promptValue);
+		assert.equal(fileStat.mode & 0o777, 0o600, "transport file must be owner-only (0o600)");
+		const dirStat = statSync(dirname(promptValue));
+		assert.equal(dirStat.mode & 0o777, 0o700, "transport directory must be owner-only (0o700)");
 	}
-	await h.runner.waitFor(first.id);
-	const next = h.runner.run(managedRequest());
-	await tick();
-	assert.equal(h.store.get(next.id)?.status, TASK_STATUS.RUNNING);
-	h.runner.cancelAll();
-	await tick();
+
+	fake.exit(0);
+	await runner.waitFor(task.id);
+	assert.ok(!existsSync(promptValue), "temporary transport file must be cleaned up on child exit");
+	assert.ok(!existsSync(dirname(promptValue)), "temporary transport directory must be cleaned up on child exit");
 });
 
-test("managed exclusion lasts until child cleanup is confirmed", async () => {
-	const h = harness({ pid: 123, exitOnKill: false, process: { platform: "win32", kill() {} } });
-	const first = h.runner.run(managedRequest());
+test("temporary instructions transport file is cleaned up if spawn throws synchronously", async () => {
+	const largeInstructions = "Instructions header:\n" + "x".repeat(2500);
+	const largeAgent: AgentDefinition = { ...explorer, instructions: largeInstructions };
+	let capturedPromptPath: string | undefined;
+	let clock = 1000;
+	const deps: RunnerDeps = {
+		spawn: (_command, args) => {
+			const idx = args.indexOf("--append-system-prompt");
+			if (idx !== -1) capturedPromptPath = args[idx + 1];
+			throw new Error("spawn failed intentionally");
+		},
+		now: () => (clock += 1),
+		schedule: (_fn, _ms) => () => {},
+		pi: { command: "pi", args: [] },
+	};
+	const store = new TaskStore();
+	const runner = new AgentRunner(store, { maxConcurrency: 1, stallTimeoutMs: 10_000 }, deps, {
+		askUser: async () => ({ value: "yes" }),
+	});
+	const task = runner.run(request({ agent: largeAgent }));
 	await tick();
-	h.runner.cancel(first.id);
-	try { assert.throws(() => h.runner.run(managedRequest()), /Remediation already queued or running/); }
-	finally { h.children[0].exit(0); }
-	await h.runner.waitFor(first.id);
-	const next = h.runner.run(managedRequest());
-	await tick();
-	assert.equal(h.store.get(next.id)?.status, TASK_STATUS.RUNNING);
-	h.runner.cancelAll();
-	for (const child of h.children) child.exit(0);
-	await tick();
+
+	const finished = await runner.waitFor(task.id);
+	assert.equal(finished.status, TASK_STATUS.FAILED);
+	assert.ok(capturedPromptPath, "should have captured a transport file path");
+	assert.ok(!existsSync(capturedPromptPath), "temporary transport file must be cleaned up even when spawn throws");
+	assert.ok(!existsSync(dirname(capturedPromptPath)), "temporary transport directory must be cleaned up even when spawn throws");
 });
 
-test("managed exclusion releases failed startup and ignores historical-only tasks", async () => {
-	const h = harness({ failStart: true });
-	const first = h.runner.run(managedRequest());
-	assert.equal((await h.runner.waitFor(first.id)).status, TASK_STATUS.FAILED);
-	h.store.add({ ...h.store.get(first.id)!, id: "historical-only", status: TASK_STATUS.RUNNING });
-	const next = h.runner.run(managedRequest());
-	assert.equal((await h.runner.waitFor(next.id)).status, TASK_STATUS.FAILED, "the next actor reaches spawn, not a historical admission lock");
-	assert.match(h.store.get(next.id)?.error ?? "", /fixture spawn failed/);
+test("agent instructions over the byte threshold are transported via file even when under the character threshold", async () => {
+	const multibyteInstructions = "界".repeat(400);
+	assert.ok(multibyteInstructions.length < 1000 && Buffer.byteLength(multibyteInstructions, "utf8") > 1000);
+	const launches: string[][] = [];
+	const fake = fakeChild();
+	let clock = 1000;
+	const deps: RunnerDeps = {
+		spawn: (_command, args) => {
+			launches.push(args);
+			return fake.child;
+		},
+		now: () => (clock += 1),
+		schedule: (_fn, _ms) => () => {},
+		pi: { command: "pi", args: [] },
+	};
+	const runner = new AgentRunner(new TaskStore(), { maxConcurrency: 1, stallTimeoutMs: 10_000 }, deps, {
+		askUser: async () => ({ value: "yes" }),
+	});
+	const task = runner.run(request({ agent: { ...explorer, instructions: multibyteInstructions } }));
+	await tick();
+
+	assert.equal(launches.length, 1);
+	const promptValue = launches[0][launches[0].indexOf("--append-system-prompt") + 1];
+	assert.notEqual(promptValue, multibyteInstructions, "multibyte instructions over the byte threshold must not be passed inline");
+	assert.ok(existsSync(promptValue), "temporary instructions transport file must exist on disk");
+	assert.equal(readFileSync(promptValue, "utf8"), multibyteInstructions);
+
+	fake.exit(0);
+	await runner.waitFor(task.id);
+	assert.ok(!existsSync(dirname(promptValue)), "temporary transport directory must be cleaned up on child exit");
+});
+
+test("long agent names are truncated in the instructions transport directory name", async () => {
+	const largeInstructions = "Instructions header:\n" + "x".repeat(2500);
+	const launches: string[][] = [];
+	const fake = fakeChild();
+	let clock = 1000;
+	const deps: RunnerDeps = {
+		spawn: (_command, args) => {
+			launches.push(args);
+			return fake.child;
+		},
+		now: () => (clock += 1),
+		schedule: (_fn, _ms) => () => {},
+		pi: { command: "pi", args: [] },
+	};
+	const runner = new AgentRunner(new TaskStore(), { maxConcurrency: 1, stallTimeoutMs: 10_000 }, deps, {
+		askUser: async () => ({ value: "yes" }),
+	});
+	const task = runner.run(request({ agent: { ...explorer, name: "a".repeat(300), instructions: largeInstructions } }));
+	await tick();
+
+	assert.equal(launches.length, 1, "launch must succeed despite a long agent name");
+	const promptValue = launches[0][launches[0].indexOf("--append-system-prompt") + 1];
+	assert.equal(readFileSync(promptValue, "utf8"), largeInstructions);
+	const dirName = basename(dirname(promptValue));
+	assert.ok(dirName.startsWith(`gentle-pi-subagent-${"a".repeat(64)}-`), dirName);
+	assert.ok(dirName.length <= "gentle-pi-subagent-".length + 64 + 1 + 6, `directory name too long: ${dirName.length}`);
+
+	fake.exit(0);
+	await runner.waitFor(task.id);
+	assert.ok(!existsSync(dirname(promptValue)));
+});
+
+test("temporary instructions transport directory is cleaned up if writing instructions fails", async (t) => {
+	// Fail only the transport write; the ESM named import is refreshed via syncBuiltinESMExports.
+	const originalWriteFileSync = fs.writeFileSync;
+	let transportDir: string | undefined;
+	t.mock.method(fs, "writeFileSync", (...args: Parameters<typeof fs.writeFileSync>) => {
+		const [target] = args;
+		if (typeof target === "string" && basename(target) === "instructions.md" && basename(dirname(target)).startsWith("gentle-pi-subagent-")) {
+			transportDir = dirname(target);
+			throw new Error("EACCES: simulated write failure");
+		}
+		return originalWriteFileSync(...args);
+	});
+	syncBuiltinESMExports();
+	t.after(() => {
+		t.mock.restoreAll();
+		syncBuiltinESMExports();
+	});
+	const failingAgent: AgentDefinition = {
+		...explorer,
+		instructions: "Instructions header:\n" + "x".repeat(2500),
+	};
+	let clock = 1000;
+	const deps: RunnerDeps = {
+		spawn: () => {
+			throw new Error("spawn should not be called when writing instructions fails");
+		},
+		now: () => (clock += 1),
+		schedule: (_fn, _ms) => () => {},
+		pi: { command: "pi", args: [] },
+	};
+	const store = new TaskStore();
+	const runner = new AgentRunner(store, { maxConcurrency: 1, stallTimeoutMs: 10_000 }, deps, {
+		askUser: async () => ({ value: "yes" }),
+	});
+	const task = runner.run(request({ agent: failingAgent }));
+	await tick();
+
+	const finished = await runner.waitFor(task.id);
+	assert.equal(finished.status, TASK_STATUS.FAILED);
+	assert.match(finished.error ?? "", /could not write agent instructions: EACCES: simulated write failure/);
+	assert.ok(transportDir, "transport directory must have been created before the write failed");
+	assert.ok(!existsSync(transportDir), "transport directory must be cleaned up on write failure");
+});
+
+test("temporary instructions transport file is cleaned up if child emits an early error before PID", async () => {
+	const largeInstructions = "Instructions header:\n" + "x".repeat(2500);
+	const largeAgent: AgentDefinition = { ...explorer, instructions: largeInstructions };
+	let capturedPromptPath: string | undefined;
+	const fake = fakeChild({ pid: undefined });
+	let clock = 1000;
+	const deps: RunnerDeps = {
+		spawn: (_command, args) => {
+			const idx = args.indexOf("--append-system-prompt");
+			if (idx !== -1) capturedPromptPath = args[idx + 1];
+			queueMicrotask(() => {
+				fake.fail("spawn ENOENT");
+			});
+			return fake.child;
+		},
+		now: () => (clock += 1),
+		schedule: (_fn, _ms) => () => {},
+		pi: { command: "pi", args: [] },
+	};
+	const store = new TaskStore();
+	const runner = new AgentRunner(store, { maxConcurrency: 1, stallTimeoutMs: 10_000 }, deps, {
+		askUser: async () => ({ value: "yes" }),
+	});
+	const task = runner.run(request({ agent: largeAgent }));
+	await tick();
+
+	const finished = await runner.waitFor(task.id);
+	assert.equal(finished.status, TASK_STATUS.FAILED);
+	assert.match(finished.error ?? "", /could not start pi: spawn ENOENT/);
+	assert.ok(capturedPromptPath, "should have captured a transport file path");
+	assert.ok(!existsSync(capturedPromptPath), "temporary transport file must be cleaned up on early child error");
+	assert.ok(!existsSync(dirname(capturedPromptPath)), "temporary transport directory must be cleaned up on early child error");
 });

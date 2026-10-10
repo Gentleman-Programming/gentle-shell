@@ -26,7 +26,7 @@ const event = (taskId = "local-task") => childEvent("local-session", taskId, lau
 });
 
 test("installed package definitions retain classification after the actual routing transform", () => {
-	// installSddAssets/copyDirectoryFiles copies assets verbatim on first install.
+	// The installer copies packaged agent assets verbatim on first install.
 	// Isolate the real pure routing writer; do not run an installer or read user agents.
 	const source = readFileSync(new URL("../extensions/gentle-ai.ts", import.meta.url), "utf8");
 	const transform = source.match(/function updateFrontmatterRouting\([\s\S]*?\n\}/)?.[0];
@@ -34,17 +34,9 @@ test("installed package definitions retain classification after the actual routi
 	const route = runInNewContext(`(${stripTypeScriptTypes(transform)})`);
 	for (const entry of readdirSync(new URL("../assets/agents/", import.meta.url)).filter(file => file.endsWith(".md"))) {
 		const file = entry.slice(0, -3);
-		const className = file === "sdd-proposal" ? "sdd-propose"
-			: file.startsWith("gentle-ai-") ? file.slice("gentle-ai-".length) : file;
+		const className = file.startsWith("gentle-ai-") ? file.slice("gentle-ai-".length) : file;
 		const kind = parseAgentClass(className);
-		if (file === "sdd-remediate") {
-			assert.equal(kind, undefined, "remediation stays dark in the existing telemetry taxonomy");
-			const definition = parseAgentDefinition(readFileSync(new URL(`../assets/agents/${file}.md`, import.meta.url), "utf8"), file, "global");
-			assert.ok("instructions" in definition);
-			assert.equal(classifyBuiltinAgent(definition), "unknown");
-			continue;
-		}
-		assert.ok(kind, `${file}: telemetry class`);
+		if (!kind) continue; // Review/Judgment Day agents are not child telemetry classes.
 		const asset = new URL(`../assets/agents/${file}.md`, import.meta.url);
 		const content = readFileSync(asset, "utf8");
 		const copied = parseAgentDefinition(content, asset.pathname, "global");
@@ -54,7 +46,7 @@ test("installed package definitions retain classification after the actual routi
 			const parsed = parseAgentDefinition(route(content, entry), asset.pathname, "global");
 			assert.ok("instructions" in parsed);
 			assert.equal(classifyBuiltinAgent(parsed), kind, `${kind}: installed routing`);
-			const customizedClass = parsed.name === "sdd-proposal" ? "sdd-propose" : parseAgentClass(parsed.name) ?? "unknown";
+			const customizedClass = parseAgentClass(parsed.name) ?? "unknown";
 			assert.equal(classifyBuiltinAgent({ ...parsed, instructions: `${parsed.instructions}\nOverride` }), customizedClass);
 			assert.equal(classifyBuiltinAgent({ ...parsed, tools: ["different-tool"] }), customizedClass);
 			assert.equal(classifyBuiltinAgent({ ...parsed, description: "different description" }), customizedClass);
@@ -63,13 +55,13 @@ test("installed package definitions retain classification after the actual routi
 	}
 });
 
-test("packaged sdd-proposal is encoded only as canonical sdd-propose", () => {
-	const path = new URL("../assets/agents/sdd-proposal.md", import.meta.url);
+test("packaged named worker is encoded with its public telemetry class", () => {
+	const path = new URL("../assets/agents/gentle-ai-worker.md", import.meta.url);
 	const packaged = parseAgentDefinition(readFileSync(path, "utf8"), path.pathname, "global");
 	assert.ok("instructions" in packaged);
 	const selection = launchSelection(packaged, { provider: "openai", id: "gpt-4o" }, "high");
-	assert.equal(selection.agentClass, "sdd-propose");
-	const completed = childEvent("local-session", "sdd-propose-task", selection, "completed", {
+	assert.equal(selection.agentClass, "worker");
+	const completed = childEvent("local-session", "worker-task", selection, "completed", {
 		coverage: "final_assistant_messages_only", agentSettled: true, responses: [response()], droppedResponses: 0,
 	});
 	assert.ok(completed);
@@ -79,15 +71,16 @@ test("packaged sdd-proposal is encoded only as canonical sdd-propose", () => {
 	const snapshot = composition.snapshot();
 	const payload = encodeNativeRuntimeEvent(snapshot.responses, snapshot.launches);
 	assert.ok(payload);
-	assert.equal(JSON.parse(payload).rows[0].agent_class, "sdd-propose");
-	assert.ok(!payload.includes("sdd-proposal"));
+	assert.equal(JSON.parse(payload).rows[0].agent_class, "worker");
+	assert.ok(!payload.includes("gentle-ai-worker"));
 });
 
-test("schema-approved packaged names survive customization without exposing private names", () => {
-	const path = new URL("../assets/agents/sdd-apply.md", import.meta.url);
+test("prefixed packaged names require exact fingerprints and do not expose private names", () => {
+	const path = new URL("../assets/agents/gentle-ai-verify.md", import.meta.url);
 	const packaged = parseAgentDefinition(readFileSync(path, "utf8"), path.pathname, "global");
 	assert.ok("instructions" in packaged);
-	assert.equal(classifyBuiltinAgent({ ...packaged, instructions: "customized instructions" }), "sdd-apply");
+	assert.equal(classifyBuiltinAgent(packaged), "verify");
+	assert.equal(classifyBuiltinAgent({ ...packaged, instructions: "customized instructions" }), "unknown");
 
 	assert.equal(classifyBuiltinAgent(workerDefinition), "worker");
 	// This is a packaged frontmatter name, but it is absent from the telemetry
@@ -132,7 +125,7 @@ test("launch distribution and each observed combination remain independent and p
 });
 
 test("registered child launch identity survives catalog state and missing response evidence inherits selection", () => {
-	const path = new URL("../assets/agents/sdd-explore.md", import.meta.url);
+	const path = new URL("../assets/agents/gentle-ai-explore.md", import.meta.url);
 	const agent = parseAgentDefinition(readFileSync(path, "utf8"), path.pathname, "global");
 	assert.ok("instructions" in agent);
 	const selection = launchSelection(agent, { provider: "openai-codex", id: "gpt-5.6-terra" }, "high");
@@ -140,7 +133,7 @@ test("registered child launch identity survives catalog state and missing respon
 		usage: { input: 3, output: 2 } } }, { observeResponses: true })
 		.filter(event => event.type === TASK_EVENT.RESPONSE_OBSERVATION);
 	assert.ok(observation?.type === TASK_EVENT.RESPONSE_OBSERVATION);
-	const completed = childEvent("local-session", "sdd-explore-task", selection, "completed", {
+	const completed = childEvent("local-session", "explore-task", selection, "completed", {
 		coverage: "final_assistant_messages_only", agentSettled: true,
 		responses: Array(5).fill(observation.observation), droppedResponses: 0,
 	});

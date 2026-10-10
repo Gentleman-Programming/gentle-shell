@@ -30,12 +30,12 @@ import test, { after } from "node:test";
 const REPO_ROOT = join(import.meta.dirname, "..");
 const REAL_ASSETS_DIR = join(REPO_ROOT, "assets");
 const FIXTURE_PATH = join(import.meta.dirname, "fixtures", "orchestrator.pre-diet.md");
-const BUDGET_BYTES = 8192;
+// gentle-shell#1731 T10 (user decision): 8,192 -> 8,400 B for the narrowed high-risk items 1 and 3.
+const BUDGET_BYTES = 8400;
 const MIN_CONTROLLED_LONG_ASSETS_ROOT_CHARS = 93;
 
 const LAZY_ASSET_NAMES = [
 	"orchestrator.md",
-	"sdd-orchestrator-workflow.md",
 	"orchestrator-delegation.md",
 	"orchestrator-memory.md",
 	"orchestrator-skills.md",
@@ -123,7 +123,7 @@ function measureOrchestratorPromptBytes(assetsDir: string): number {
 // measuring a shorter render again.
 const RDD_WORST_CASE_LINE = "Receipt-driven development: unknown (native status unavailable)";
 
-test("getOrchestratorPrompt return value stays within the canonical 8,192 B budget at a short assets root", () => {
+test("getOrchestratorPrompt return value stays within the canonical 8,400 B budget at a short assets root", () => {
 	const rendered = __testing.renderOrchestratorPrompt(representativeProductionAssetsDir);
 	assert.ok(
 		rendered.includes(RDD_WORST_CASE_LINE),
@@ -193,17 +193,18 @@ const TARGET_FILE: Record<Target, string> = {
 // Line numbers below are 1-indexed against tests/fixtures/orchestrator.pre-diet.md
 // (frozen byte-identical copy of assets/orchestrator.md at 23,047 B / 312 lines).
 const DISPOSITION_MAP: DispositionRange[] = [
-	{ lines: [1, 4], target: "core", label: "Header + bind" },
+	{ lines: [1, 4], target: "replaced", label: "Header + bind: retired phase qualification" },
 	{ lines: [5, 8], target: "core", label: "Identity Contract" },
 	{ lines: [9, 13], target: "core", label: "Core Role" },
 	{ lines: [15, 15], target: "core", label: "Language Boundary heading" },
 	{ lines: [17, 17], target: "core", label: "Language Boundary LB1 pointer" },
-	{ lines: [19, 19], target: "delegation", label: "Language Boundary LB2 (subagent-English)" },
-	{ lines: [21, 21], target: "core", label: "Language Boundary LB3 (artifact language)" },
+	{ lines: [19, 19], target: "replaced", label: "Language Boundary LB2: request translation replaced by spec-by-reference handoffs (gentle-shell#1713)" },
+	{ lines: [21, 21], target: "replaced", label: "Language Boundary LB3: retired artifact types" },
 	{ lines: [23, 23], target: "core", label: "Language Boundary LB4 (public comment language)" },
-	{ lines: [25, 29], target: "delegation", label: "Language Boundary LB5 (exceptions)" },
-	{ lines: [31, 40], target: "core", label: "Mental Model" },
-	{ lines: [42, 42], target: "core", label: "Work Routing Ladder heading" },
+	{ lines: [25, 28], target: "delegation", label: "Language Boundary LB5 (exceptions)" },
+	{ lines: [29, 29], target: "obsolete", label: "Retired artifact exception" },
+	{ lines: [31, 40], target: "replaced", label: "Mental Model: ODD-only" },
+	{ lines: [42, 42], target: "replaced", label: "Work Routing Ladder heading replaced by Task Size and Mechanisms (gentle-shell#1494)" },
 	{
 		lines: [44, 97],
 		target: "replaced",
@@ -251,7 +252,7 @@ const DISPOSITION_MAP: DispositionRange[] = [
 		target: "obsolete",
 		label: "Parent-selected review lens table replaced by native RAR lens ownership (#312)",
 	},
-	{ lines: [183, 191], target: "core", label: "SDD Workflow pointer" },
+	{ lines: [183, 191], target: "obsolete", label: "Retired workflow pointer" },
 	{ lines: [193, 193], target: "core", label: "Memory Contract heading" },
 	{
 		lines: [195, 195],
@@ -263,9 +264,9 @@ const DISPOSITION_MAP: DispositionRange[] = [
 		target: "replaced",
 		label: "Verbose non-SDD memory forwarding replaced by compact ownership (#3417)",
 	},
-	{ lines: [203, 230], target: "memory", label: "Memory Contract SDD phases table + artifact keys + lifecycle rule" },
+	{ lines: [203, 230], target: "replaced", label: "Retired phase keys; memory lifecycle remains" },
 	{ lines: [232, 232], target: "core", label: "Skill Registry Protocol heading" },
-	{ lines: [234, 253], target: "skills", label: "Skill Registry Protocol detail" },
+	{ lines: [234, 253], target: "replaced", label: "Skill resolution retained without phase roles" },
 	{ lines: [255, 255], target: "core", label: "Intent-Driven Skill Discovery heading" },
 	{ lines: [257, 276], target: "skills", label: "Intent-Driven Skill Discovery detail" },
 	{ lines: [278, 283], target: "core", label: "Safety" },
@@ -284,8 +285,6 @@ const fixtureLines = readFileSync(FIXTURE_PATH, "utf8").split("\n");
 // Fixture line 36 is superseded by ODD (#1035); 187 and 191 predate
 // root-relative lazy assets and canonical-authority resolution. Keep coverage by asserting the
 // intentionally updated production wording instead of weakening the range.
-const CURRENT_SDD_WORKFLOW_PATH = "`sdd-orchestrator-workflow.md`";
-const CURRENT_HARD_PREFLIGHT_INVARIANT = "Hard preflight invariant: `openspec/config.yaml`, existing SDD changes, installed `.pi`/global SDD assets, or a todo named \"preflight\" are not session preflight. Do not mark SDD preflight complete, start `sdd-init`, launch SDD subagents/chains, or move to explore/proposal/spec/design/tasks until this session has an injected `## SDD Session Preflight` block or a canonical-authority resolution. Defaults and capability constraints may resolve fields without confirmation prompts; preserve unresolved-choice and safety gates.";
 const SUPERSEDED_LIFECYCLE_REVIEW_LINES = new Set([
 	70,
 	// 74/77: the loose mode-choice background lines were replaced by the
@@ -304,6 +303,9 @@ const SUPERSEDED_LIFECYCLE_REVIEW_LINES = new Set([
 	154,
 	160,
 	166,
+	// 282: gentle-shell#1731 T4 relaxed the single-writer Safety line to disjoint
+	// Allowed edit surfaces (runtime-enforced) or isolated worktrees.
+	282,
 ]);
 
 for (const range of DISPOSITION_MAP) {
@@ -321,25 +323,7 @@ for (const range of DISPOSITION_MAP) {
 				const trimmed = raw.trim();
 				const expected =
 					ln === 36 ? "- Substantial authorized work: use ODD; track feature progress automatically." :
-					// #1051 keeps the selected store when memory is unavailable.
-					ln === 221 ? "do not switch the selected store" :
-					// Research returns findings; other phases keep direct backend ownership.
-					ln === 205 ? trimmed.replace("Each SDD phase", "Except for output-only `sdd-research`, each SDD phase") :
-					ln === 185 ? trimmed.replace("apply/verify/sync/archive", "apply/verify/archive") :
-					ln === 187
-						? CURRENT_SDD_WORKFLOW_PATH
-						: ln === 191
-							? CURRENT_HARD_PREFLIGHT_INVARIANT
-							: trimmed;
-				// #1051 retires the standalone sync row and its artifact key, not
-				// the surrounding memory/recovery contract or historical fixture.
-				if (ln === 216 || ln === 220) {
-					assert.ok(!targetContent.includes(trimmed), `retired sync contract remains at fixture:${ln}`);
-					assert.match(targetContent, /sdd\/<change>\/archive-report/);
-					assert.match(targetContent, /sdd\/<change>\/verify-report/);
-					assert.doesNotMatch(targetContent, /sdd\/<change>\/sync-report|\| `sdd-sync`/);
-					continue;
-				}
+					trimmed;
 				if (SUPERSEDED_LIFECYCLE_REVIEW_LINES.has(ln)) {
 					assert.ok(
 						!targetContent.includes(trimmed),
@@ -370,11 +354,25 @@ for (const range of DISPOSITION_MAP) {
 
 test("core-alone: load-bearing direct-delegation tokens remain without lazy union", () => {
 	const core = readRealAsset("orchestrator.md");
-	assert.match(core, /4-file rule/);
-	assert.match(core, /Multi-file write rule/);
+	assert.match(core, /Evidence-budget rule/);
+	assert.match(core, /Writer rule/);
 	assert.match(core, /Incident rule/);
 	assert.match(core, /Verification rule/);
-	assert.match(core, /Long-session rule/);
+	assert.match(core, /Context backstop/);
+});
+
+test("lazy coordination detail retains subject guidance without inflating the core", () => {
+	const core = readRealAsset("orchestrator.md");
+	const detail = readRealAsset("orchestrator-delegation.md");
+	assert.match(core, /Bind this to the parent Pi session only/);
+	assert.match(core, /orchestrator-delegation\.md/);
+	assert.match(detail, /on delegation or routing triggers/);
+	assert.match(detail, /Once a meaningful task subject is clear, before delegation or cross-session coordination, call `orchestrator_session_id`/);
+	assert.match(detail, /short, non-sensitive `subject`/);
+	assert.match(detail, /Batch with setup if possible; no extra model call/);
+	assert.match(detail, /Skip tiny replies; exclude user prompts\/private detail/);
+	assert.match(detail, /preserves canonical names\/human renames; never ask humans to type aliases/);
+	assert.match(detail, /Names display only; stable IDs route/);
 });
 
 test("core-alone: dynamic Gentle AI ownership replaces package lifecycle instructions", () => {
@@ -420,7 +418,7 @@ test("relocated lazy bodies are not double-delivered in the always-on core", () 
 	);
 	assert.doesNotMatch(
 		rendered,
-		/### SDD phases/,
+		/### Organic feature continuity/,
 		"memory-only body leaked into the always-on core",
 	);
 	assert.doesNotMatch(
@@ -468,11 +466,16 @@ test("every compressed lazy-file pointer in the core still names the material it
 	const namedPointers: ReadonlyArray<{ file: string; mustName: readonly string[] }> = [
 		{
 			file: "orchestrator-delegation.md",
-			mustName: ["Per-action table", "Work Routing Ladder", "Canonical Workflows", "blocking-prompt relays"],
+			mustName: ["Per-action table", "Work Routing Ladder", "Canonical Workflows"],
 		},
+		// gentle-shell#1494 per-mechanism modules.
+		{ file: "orchestrator-prompts.md", mustName: ["blocking-prompt relays", "provider defects"] },
+		{ file: "orchestrator-tracking.md", mustName: ["Track", "feature document"] },
+		{ file: "orchestrator-verification.md", mustName: ["Verification rule", "high risk"] },
+		{ file: "orchestrator-writer.md", mustName: ["Writer rule", "large task"] },
 		{
 			file: "orchestrator-memory.md",
-			mustName: ["Phase table", "artifact keys"],
+			mustName: ["ODD task continuity", "memory lifecycle"],
 		},
 		{
 			file: "orchestrator-skills.md",
@@ -497,10 +500,5 @@ test("every compressed lazy-file pointer in the core still names the material it
 			);
 		}
 	}
-	// The SDD workflow pointer was never compressed to a bare filename; its
-	// surrounding paragraphs already name the material at length.
-	assert.match(
-		core,
-		/SDD phases, native dispatcher rules, status contract, preflight\/init guards, artifact-store policy, execution mode, Strict TDD forwarding, phase result contract, and review workload guard/,
-	);
+	assert.doesNotMatch(core, /SDD|sdd-|OpenSpec|openspec/i);
 });

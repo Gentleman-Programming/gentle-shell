@@ -1,0 +1,7 @@
+{"type":"session","version":3,"id":"aaa","timestamp":"2026-09-28T10:00:00.000Z","cwd":"/work/alpha"}
+{"type":"model_change","id":"m1","parentId":null,"timestamp":"2026-09-28T10:00:01.000Z","provider":"claude-bridge","modelId":"claude-opus-5-5"}
+{"type":"message","id":"u1","parentId":"m1","timestamp":"2026-09-28T10:00:30.000Z","message":{"role":"user","content":"hello"}}
+{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-09-28T10:01:00.000Z","message":{"role":"assistant","provider":"claude-bridge","model":"claude-opus-5-5","usage":{"input":100,"output":50,"cacheRead":1000,"cacheWrite":200,"totalTokens":1350,"cost":{"total":0.5}}}}
+{not json at all
+{"type":"message","id":"a2","parentId":"a1","timestamp":"2026-09-28T10:30:00.000Z","message":{"role":"assistant","provider":"openai-codex","model":"gpt-6.1-sol","usage":{"input":200,"output":100,"cacheRead":0,"cacheWrite":0,"totalTokens":300,"cost":{"total":0.25}}}}
+{"type":"custom","customType":"gentle-pi.session-change/v1","id":"c1","parentId":"a2","timestamp":"2026-09-28T10:30:01.000Z","data":{}}

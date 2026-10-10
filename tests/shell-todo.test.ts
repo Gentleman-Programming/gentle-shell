@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after, before, type TestContext } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
 	applyTodo,
@@ -12,6 +12,7 @@ import {
 	todoSummary,
 	type TodoState,
 } from "../lib/shell-todo.ts";
+import { CARD_STYLE, cardStyle, setCardStyle, type CardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
 // Gentle Todo: a task list the model rewrites as it works. The reducer is
@@ -26,6 +27,42 @@ const plainTheme = {
 		return `~${text}~`;
 	},
 };
+
+// The card style defaults to float; these assertions pin the outlined (neon)
+// panels unless a test switches the style itself.
+const initialCardStyle = cardStyle();
+before(() => setCardStyle(CARD_STYLE.NEON));
+after(() => setCardStyle(initialCardStyle));
+
+function useCardStyle(t: TestContext, style: CardStyle): void {
+	const found = cardStyle();
+	t.after(() => setCardStyle(found));
+	setCardStyle(style);
+}
+
+const BG_OPEN = "\x1b[48;5;22m";
+const BG_CLOSE = "\x1b[49m";
+
+/** The same theme with a background, so the float style applies (without one panels keep the frame). */
+function withBackground<T extends object>(theme: T): T & { bg(color: string, text: string): string } {
+	return { ...theme, bg: (_color: string, text: string) => `${BG_OPEN}${text}${BG_CLOSE}` };
+}
+
+/** Float panel rows: a painted panel inside transparent one-column margins, between padding rows that keep the accent bar. */
+function assertFloatRows(lines: readonly string[], width: number): void {
+	for (const line of lines) {
+		assert.equal(visibleWidth(line), width, `"${stripAnsi(line)}" is not ${width} wide`);
+		assert.ok(line.startsWith(` ${BG_OPEN}`) && line.endsWith(`${BG_CLOSE} `), `painted inside the margins: ${JSON.stringify(line)}`);
+	}
+	const padding = ` ▎${" ".repeat(width - 3)} `;
+	assert.equal(stripAnsi(lines[0]!), padding, "a padding row with the accent bar sits above the header");
+	assert.equal(stripAnsi(lines.at(-1)!), padding, "a padding row with the accent bar replaces the bottom rule");
+}
+
+/** The text of a body row, without the neon side rails or the float accent bar. */
+function bodyText(row: string): string {
+	return stripAnsi(row).replace(/^ ?[│▎] /u, "").replace(/ ?│? ?$/u, "").trimEnd();
+}
 
 function seeded(): TodoState {
 	return applyTodo(
@@ -134,6 +171,34 @@ test("todoPromptBlock lists open work with the rules, and stays silent when ther
 	assert.equal(todoPromptBlock(allDone, 0), undefined);
 });
 
+test("collapsed long tasks occupy one body line, including stale state, without losing task data", (t) => {
+	const title = "界🙂 long title ".repeat(100);
+	const note = "long description ".repeat(100);
+	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
+		useCardStyle(t, style);
+		for (const status of ["in_progress", "pending", "blocked"]) {
+			const state = applyTodo(emptyTodo(), { action: "write", tasks: [{ title, note, status }] }, 1).state;
+			const snapshot = structuredClone(state);
+			for (const width of [16, 40, 70]) {
+				for (const staleTurns of [0, 4]) {
+					const rows = renderTodoCard(state, withBackground(plainTheme), width, { collapsed: true, staleTurns, scrollable: true });
+					assert.equal(rows.length, style === CARD_STYLE.FLOAT ? 5 : 3);
+					assert.ok(rows.some((row) => stripAnsi(row).includes("…")), "long text signals truncation");
+					for (const row of rows) assert.equal(visibleWidth(row), width);
+				}
+			}
+			assert.deepEqual(state, snapshot);
+		}
+	}
+});
+
+test("non-scrollable Todo caps physical wrapped rows, not task count", () => {
+	const state = applyTodo(emptyTodo(), { action: "write", tasks: [{ title: "long title ".repeat(300), status: "in_progress", note: "long note ".repeat(300) }] }, 1).state;
+	const rows = renderTodoCard(state, plainTheme, 40, { collapsed: false, staleTurns: 4 });
+	assert.ok(rows.length <= 14);
+	assert.match(stripAnsi(rows.at(-2)!), /…/);
+});
+
 test("renderTodoCard draws the framed list with status glyphs and keeps every line at width", () => {
 	const lines = renderTodoCard(seeded(), plainTheme, 60, { collapsed: false, staleTurns: 0, collapseKey: "ctrl+shift+t" });
 	for (const line of lines) assert.equal(visibleWidth(line), 60, `"${stripAnsi(line)}" is not 60 wide`);
@@ -176,8 +241,8 @@ test("renderTodoCard keeps the configured collapse shortcut in the header while 
 
 	const staleCollapsed = renderTodoCard(seeded(), plainTheme, 70, { collapsed: true, staleTurns: 2, collapseKey: "ctrl+shift+t" }).map(stripAnsi);
 	assert.match(staleCollapsed[0], /^╭─ ❀ Todos ▸ Expand · 1 of 3 ─+ ctrl\+shift\+t expand ╮$/);
-	assert.match(staleCollapsed[1], /^│ stale · 2 turns +│$/);
-	assert.match(staleCollapsed[2], /^│ ◐ Fix quiet tools conflict · fixing conflict +│$/);
+	assert.equal(staleCollapsed.length, 3, "staleness stays in the single collapsed body row");
+	assert.match(staleCollapsed[1], /^│ stale · 2 turns · ◐ Fix quiet tools conflict · fixing conflict +│$/);
 
 	const fallback = applyTodo(emptyTodo(), { action: "write", tasks: [{ title: "Finished first", status: "done" }, { title: "First pending" }, { title: "Later pending" }] }, 1).state;
 	assert.match(renderTodoCard(fallback, plainTheme, 70, { collapsed: true, staleTurns: 0 }).map(stripAnsi)[1], /^│ ○ First pending +│$/);
@@ -296,4 +361,143 @@ test("renderTodoCard uses custom shortcuts, omits disabled shortcuts, and remain
 		const lines = renderTodoCard(seeded(), plainTheme, width, { collapsed: false, staleTurns: 2, collapseKey: "ctrl+shift+t" });
 		for (const line of lines) assert.equal(visibleWidth(line), width, `"${stripAnsi(line)}" is not ${width} wide`);
 	}
+});
+
+test("renderTodoCard in the float style keeps its clickable control on the header row, one row below the top padding, above a separator row", (t) => {
+	const theme = withBackground(plainTheme);
+	for (const options of [
+		{ collapsed: false, staleTurns: 0, collapseKey: "ctrl+shift+t" },
+		{ collapsed: true, staleTurns: 0, collapseKey: "ctrl+shift+t" },
+		{ collapsed: false, staleTurns: 4 },
+		{ collapsed: false, staleTurns: 0, scrollable: true },
+	]) {
+		const neon = renderTodoCard(seeded(), theme, 60, options);
+		useCardStyle(t, CARD_STYLE.FLOAT);
+		const float = renderTodoCard(seeded(), theme, 60, options);
+		setCardStyle(CARD_STYLE.NEON);
+		assert.equal(float.length, neon.length + 2, "the top padding and separator rows add two rows");
+		const action = options.collapsed ? "▸ Expand" : "▾ Collapse";
+		const hint = options.collapseKey ? `ctrl\\+shift\\+t {3}` : "";
+		assert.match(stripAnsi(float[1]!), new RegExp(`^ ▎ ❀ Todos ${action}  1 of 3 +${hint}$`), "row 1 is the clickable header");
+		assert.match(stripAnsi(float[2]!), /^ ▎ +$/, "a blank separator row follows the header");
+		assertFloatRows(float, 60);
+		assert.deepEqual(float.slice(3, -1).map(bodyText), neon.slice(1, -1).map(bodyText));
+	}
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const tagged = withBackground({ ...plainTheme, fg: (color: string, text: string) => `<${color}>${text}</${color}>` });
+	const [, header] = renderTodoCard(seeded(), tagged, 120, { collapsed: false, staleTurns: 0, hovered: true });
+	assert.match(stripAnsi(header!), /^ <border>▎<\/border> <accent>❀ Todos <[a-zA-Z]+>▾ Collapse<\/[a-zA-Z]+><\/accent>  <muted>1 of 3<\/muted> +$/, "the hovered control keeps its own role and case");
+});
+
+test("float Todos keeps the configured shortcut visible at rail width without repeating the action", (t) => {
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const theme = withBackground(plainTheme);
+	for (const collapsed of [false, true]) {
+		for (const collapseKey of ["ctrl+shift+t", "alt+t", undefined]) {
+			const rows = renderTodoCard(seeded(), theme, 48, { collapsed, staleTurns: 0, collapseKey });
+			const header = stripAnsi(rows[1]!);
+			assert.match(header, collapsed ? /▸ Expand/ : /▾ Collapse/);
+			if (collapseKey) assert.ok(header.includes(collapseKey));
+			else assert.doesNotMatch(header, /ctrl\+shift\+t|alt\+t/);
+			assert.equal(visibleWidth(rows[1]!), 48);
+		}
+	}
+});
+
+test("a done todo wraps to the float body so the strikethrough never re-wraps", (t) => {
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const state = applyTodo(emptyTodo(), { action: "write", tasks: [{ title: "word ".repeat(20).trim(), status: "done" }] }, 1).state;
+	const lines = renderTodoCard(state, withBackground(plainTheme), 40, { collapsed: false, staleTurns: 0 });
+	assertFloatRows(lines, 40);
+	for (const row of lines.slice(3, -1)) assert.match(stripAnsi(row), /^ ▎ [✓ ] ~[^~]+~ +$/u, "each physical row closes its own strikethrough");
+});
+
+// #1814 dropped: terminal, never counts as open, reads apart from done.
+// #1820 blocked: open but not actionable, always carries its reason.
+
+test("applyTodo accepts dropped and blocked, maps cancel vocabulary to dropped, and names every status on an unknown one", () => {
+	const { state, error } = applyTodo(
+		emptyTodo(),
+		{ action: "write", tasks: [{ title: "Old plan", status: "dropped" }, { title: "Deploy", status: "blocked", note: "waiting for an admin" }, { title: "A", status: "cancelled" }, { title: "B", status: "canceled" }, { title: "C", status: "abandoned" }] },
+		1,
+	);
+	assert.equal(error, undefined);
+	assert.deepEqual(state.tasks.map((task) => task.status), [TODO_STATUS.DROPPED, TODO_STATUS.BLOCKED, TODO_STATUS.DROPPED, TODO_STATUS.DROPPED, TODO_STATUS.DROPPED]);
+	assert.equal(state.tasks[1].note, "waiting for an admin");
+	const bad = applyTodo(emptyTodo(), { action: "write", tasks: [{ title: "X", status: "later" }] }, 1);
+	assert.equal(bad.error, 'unknown status "later" (use pending, in_progress, blocked, done, or dropped)');
+});
+
+test("applyTodo rejects blocked without a note and leaves the list unchanged", () => {
+	const before = seeded();
+	for (const params of [
+		{ action: "add", title: "Deploy", status: "blocked" },
+		{ action: "update", id: 3, status: "blocked" },
+		{ action: "write", tasks: [{ title: "Deploy", status: "blocked", note: "   " }] },
+	]) {
+		const result = applyTodo(before, params, 9);
+		assert.equal(result.error, "blocked needs a note naming what it waits for");
+		assert.equal(result.text, "Error: blocked needs a note naming what it waits for");
+		assert.strictEqual(result.state, before, `${params.action} must not change the list`);
+	}
+	const blocked = applyTodo(before, { action: "update", id: 3, status: "blocked", note: "waiting for the API contract" }, 9);
+	assert.equal(blocked.error, undefined);
+	assert.equal(blocked.text, "#3 Show git bash tails → blocked");
+	const unblocked = applyTodo(blocked.state, { action: "update", id: 3, status: "pending" }, 10);
+	assert.equal(unblocked.state.tasks[2].status, TODO_STATUS.PENDING);
+});
+
+test("dropped tasks never count as open: a list of done and dropped is finished, silent, and never stale", () => {
+	const state = applyTodo(emptyTodo(), { action: "write", tasks: [{ title: "A", status: "done" }, { title: "B", status: "dropped" }, { title: "C", status: "dropped" }] }, 1).state;
+	assert.deepEqual(todoSummary(state), { done: 1, total: 3, open: 0 });
+	assert.equal(todoPromptBlock(state, 5), undefined);
+	assert.equal(staleTurns(state, 9), 0);
+});
+
+test("blocked tasks stay open but alone never make the list stale; an actionable task still does", () => {
+	const blockedOnly = applyTodo(emptyTodo(), { action: "write", tasks: [{ title: "A", status: "done" }, { title: "Deploy", status: "blocked", note: "waiting for an admin" }] }, 1).state;
+	assert.deepEqual(todoSummary(blockedOnly), { done: 1, total: 2, open: 1 });
+	assert.equal(staleTurns(blockedOnly, 9), 0);
+	const block = todoPromptBlock(blockedOnly, 0) ?? "";
+	assert.match(block, /2\. \[blocked\] Deploy — waiting for an admin/);
+	assert.match(block, /A blocked task waits on something outside the list: do not work on it until its condition holds/);
+	assert.match(block, /mark the tasks it made obsolete dropped instead of leaving them pending or marking them done/);
+	const mixed = applyTodo(blockedOnly, { action: "add", title: "Write docs" }, 1).state;
+	assert.equal(staleTurns(mixed, 3), 2);
+});
+
+test("renderTodoCard draws blocked with its reason and dropped dim without strikethrough, excluding dropped from the count", () => {
+	const state = applyTodo(
+		emptyTodo(),
+		{ action: "write", tasks: [{ title: "Ship", status: "done" }, { title: "Old plan", status: "dropped" }, { title: "Deploy", status: "blocked", note: "waiting for an admin" }, { title: "Docs" }] },
+		1,
+	).state;
+	const plain = renderTodoCard(state, plainTheme, 60, { collapsed: false, staleTurns: 0 }).map(stripAnsi);
+	assert.match(plain[0], /Todos ▾ Collapse · 1 of 3/);
+	assert.match(plain[2], /^│ ✕ Old plan +│$/);
+	assert.match(plain[3], /^│ ⊘ Deploy · waiting for an admin +│$/);
+	const roles: string[] = [];
+	const spy = { ...plainTheme, fg(color: string, text: string) { roles.push(`${color}:${text}`); return text; } };
+	renderTodoCard(state, spy, 60, { collapsed: false, staleTurns: 0 });
+	assert.ok(roles.includes("muted:✕") && roles.includes("dim:Old plan"), "dropped: muted glyph, dim title");
+	assert.ok(roles.includes("warning:⊘"), "blocked: warning glyph");
+});
+
+test("the collapsed card skips blocked tasks for the next one, and shows a blocked task only when nothing else is open", () => {
+	const state = applyTodo(emptyTodo(), { action: "write", tasks: [{ title: "Deploy", status: "blocked", note: "waiting for an admin" }, { title: "Docs" }] }, 1).state;
+	assert.match(renderTodoCard(state, plainTheme, 60, { collapsed: true, staleTurns: 0 }).map(stripAnsi)[1], /^│ ○ Docs +│$/);
+	const onlyBlocked = applyTodo(state, { action: "update", id: 2, status: "done" }, 2).state;
+	assert.match(renderTodoCard(onlyBlocked, plainTheme, 60, { collapsed: true, staleTurns: 0 }).map(stripAnsi)[1], /^│ ⊘ Deploy · waiting for an admin +│$/);
+});
+
+test("renderTodoCard folds dropped tasks next to done ones in a long list", () => {
+	const tasks = Array.from({ length: 20 }, (_, index) => ({ title: `Task ${index + 1}`, status: index < 5 ? "done" : index < 8 ? "dropped" : "pending" }));
+	const state = applyTodo(emptyTodo(), { action: "write", tasks }, 1).state;
+	const plain = renderTodoCard(state, plainTheme, 60, { collapsed: false, staleTurns: 0 }).map(stripAnsi);
+	assert.equal(plain.length, 14);
+	assert.match(plain[0], /Todos ▾ Collapse · 5 of 17/);
+	assert.match(plain[1], /^│ ✓ 5 done +│$/);
+	assert.match(plain[2], /^│ ✕ 3 dropped +│$/);
+	assert.match(plain[3], /^│ ○ Task 9 +│$/);
+	assert.match(plain[12], /^│ … 3 more +│$/);
 });

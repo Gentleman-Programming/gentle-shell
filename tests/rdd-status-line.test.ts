@@ -176,10 +176,15 @@ test("resolveRddModeStatus resolves to undefined within the deadline when review
 	const neverSettling = fakeReviewMode(() => new Promise<never>(() => {}));
 	const deadlineMs = 150;
 	const start = Date.now();
-	const status = await resolveRddModeStatus(neverSettling, "/repo-hung", AbortSignal.timeout(deadlineMs));
-	const elapsed = Date.now() - start;
-	assert.equal(status, undefined);
-	assert.ok(elapsed < deadlineMs + 1000, `expected the read to resolve near the ${deadlineMs}ms deadline, took ${elapsed}ms`);
+	const keepalive = setTimeout(() => {}, deadlineMs + 2000);
+	try {
+		const status = await resolveRddModeStatus(neverSettling, "/repo-hung", AbortSignal.timeout(deadlineMs));
+		const elapsed = Date.now() - start;
+		assert.equal(status, undefined);
+		assert.ok(elapsed < deadlineMs + 1000, `expected the read to resolve near the ${deadlineMs}ms deadline, took ${elapsed}ms`);
+	} finally {
+		clearTimeout(keepalive);
+	}
 });
 
 test("resolveRddModeStatus memoizes a resolved status per cwd for RDD_STATUS_MEMO_TTL_MS", async () => {

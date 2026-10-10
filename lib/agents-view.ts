@@ -5,7 +5,7 @@ import { emptyThread, isFinished, TASK_STATUS, type TaskRecord, type TaskStore, 
 import { renderThreadItem, type AgentsThreadTheme } from "./agents-thread-view.ts";
 import { formatElapsed } from "./agents-widget.ts";
 import { createNativePointerScope, type NativePointerRegion } from "./native-pointer-region.ts";
-import { formatTokens } from "./shell-bar.ts";
+import { formatCost, formatTokens } from "./shell-bar.ts";
 import { PresenceCursor, readActivity, type Header, type Target } from "./orchestrator-presence.ts";
 
 // Gentle Agents overlay: tasks on the left, the selected task's thread on
@@ -128,8 +128,22 @@ function fit(text: string, width: number): string {
 	return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
 }
 
+// Deep equality over presence thread items: validated JSON payloads, so only
+// plain objects, arrays, strings, booleans, and null appear. Used to keep the
+// prior item object (and its WeakMap render cache entry) when polled content
+// is render-equivalent at the same position.
+function sameItemValue(a: unknown, b: unknown): boolean {
+	if (a === b) return true;
+	if (typeof a !== "object" || typeof b !== "object" || !a || !b) return false;
+	const left = a as Record<string, unknown>;
+	const right = b as Record<string, unknown>;
+	const keys = Object.keys(left);
+	if (keys.length !== Object.keys(right).length) return false;
+	return keys.every((key) => Object.hasOwn(right, key) && sameItemValue(left[key], right[key]));
+}
+
 export function taskHeader(task: TaskRecord, now: number): string {
-	const parts = [task.agent, task.status, task.model, task.tokens > 0 ? formatTokens(task.tokens) : "", task.cost > 0 ? `$${task.cost.toFixed(2)}` : "", task.startedAt === null ? "" : formatElapsed((task.endedAt ?? now) - task.startedAt)];
+	const parts = [task.agent, task.status, task.model, task.tokens > 0 ? formatTokens(task.tokens) : "", task.cost > 0 ? formatCost(task.cost) : "", task.startedAt === null ? "" : formatElapsed((task.endedAt ?? now) - task.startedAt)];
 	return parts.filter((part) => part.length > 0).join(" · ");
 }
 
@@ -197,8 +211,17 @@ export class AgentsView {
 							const task: TaskRecord = { ...summary, id: `peer:${id}:${summary.id}`, parentSessionId: id,
 								status: summary.status as TaskRecord["status"], mode: "background", prompt: "", cwd: "",
 								thinking: undefined, sessionPath: null, error: null, result: null, lastStep: "", turns: 0, toolCalls: 0, tokens: 0, cost: 0 };
+							const prior = this.remoteThreads.get(task.id);
 							threads.set(task.id, { ...emptyThread(), ...thread,
-								items: thread.items.map((item) => item.kind === "tool" ? { ...item, args: {} } : item) as ThreadItem[] });
+								items: thread.items.map((item, index) => {
+									// Sanitize before equality: presence tool items carry no invocation
+									// args, so compare against the stored sanitized form.
+									const sanitized = item.kind === "tool" ? { ...item, args: {} } : item;
+									const previous = prior?.items[index];
+									// Reuse the prior object when content is render-equivalent so the
+									// WeakMap render cache hits; any delta keeps a fresh identity.
+									return previous !== undefined && sameItemValue(previous, sanitized) ? previous : sanitized;
+								}) as ThreadItem[] });
 							return task;
 						});
 						groups.push({ id, sessionId: id, label: `${header.label}${unavailable ? " · unavailable" : ""}`, tasks });

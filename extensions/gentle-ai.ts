@@ -7314,6 +7314,7 @@ async function executeReviewHostRelayCapture(
 	// keeps compiling unchanged.
 	reviewerSessionId?: string,
 	implicitWorkspaceRoot?: string,
+	getReviewerTransport?: () => ReviewHostRelayRequest["reviewerTransport"],
 ): Promise<Record<string, unknown>> {
 	try {
 		if (slot.submission === undefined) {
@@ -7323,6 +7324,7 @@ async function executeReviewHostRelayCapture(
 				REVIEW_HOST_RELAY_SUBMISSION_MISSING_MESSAGE,
 			);
 		}
+		const reviewerTransport = getReviewerTransport?.();
 		const result = await activeReviewHostRelayRunner((() => {
 			// gentle-pi#311 P2 / P3: the lens's (or, for a v9 host-mediated role
 			// slot, the fixed review-refuter/review-validator routing key's)
@@ -7343,6 +7345,7 @@ async function executeReviewHostRelayCapture(
 				...launch,
 				...(modelRegistry === undefined ? {} : { reviewerRegistry: modelRegistry }),
 				...(reviewerSessionId === undefined ? {} : { reviewerSessionId }),
+				...(reviewerTransport === undefined ? {} : { reviewerTransport }),
 				...(signal === undefined ? {} : { signal }),
 			};
 		})());
@@ -7957,6 +7960,8 @@ async function executeReviewCaptureOperation(
 	// x-opencode-session attribution header. Appended last for the same
 	// positional-call-site reason as modelRegistry above.
 	reviewerSessionId?: string,
+	// Read effective settings only when the acknowledged capture actually runs.
+	getReviewerTransport?: () => ReviewHostRelayRequest["reviewerTransport"],
 ): Promise<Record<string, unknown>> {
 	const parameters = parseReviewCaptureParameters(parametersValue);
 	if (nativeReviewCli === null || nativeReviewCli.targetStatus === undefined) {
@@ -8021,7 +8026,7 @@ async function executeReviewCaptureOperation(
 				mutation_outcome: "none",
 			};
 		}
-		return withCorrectionTarget(await executeReviewHostRelayCapture(hostRelaySlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot));
+		return withCorrectionTarget(await executeReviewHostRelayCapture(hostRelaySlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot, getReviewerTransport));
 	}
 
 	// gentle-pi#311 P3: gentle-ai's v9 contract renders the refuter and
@@ -8047,7 +8052,7 @@ async function executeReviewCaptureOperation(
 				mutation_outcome: "none",
 			};
 		}
-		return withCorrectionTarget(await executeReviewHostRelayCapture(hostMediatedRoleSlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot));
+		return withCorrectionTarget(await executeReviewHostRelayCapture(hostMediatedRoleSlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot, getReviewerTransport));
 	}
 
 	if (selected.input.captureOperation === "review.capture-correction-plan") {
@@ -8132,6 +8137,7 @@ async function executeReviewCaptureGroupOperation(
 	// OpenCode-routed reviewer model carries its x-opencode-session attribution
 	// header. Appended last for the same positional-call-site reason as above.
 	reviewerSessionId?: string,
+	getReviewerTransport?: () => ReviewHostRelayRequest["reviewerTransport"],
 ): Promise<Record<string, unknown>> {
 	const parameters = parseReviewCaptureGroupParameters(parametersValue);
 	if (nativeReviewCli === null || nativeReviewCli.targetStatus === undefined) return { ...captureGroupRejected("native target STATUS is unavailable"), outcome: "native-status-unsupported" };
@@ -8174,6 +8180,7 @@ async function executeReviewCaptureGroupOperation(
 	// Resolve session-over-pin-over-global once for the entire reviewer group,
 	// so every slot uses the same complete routing snapshot.
 	const reviewerRouting = readReviewerModelConfig(cwd, reviewerSessionId);
+	const reviewerTransport = getReviewerTransport?.();
 	const requests: readonly ReviewHostRelayRequest[] = group.slots.map((slot) => ({
 		captureArgumentTokens: slot.captureArgumentTokens,
 		targetCwd: cwd,
@@ -8181,6 +8188,7 @@ async function executeReviewCaptureGroupOperation(
 		...reviewHostRelaySelection(slot.lens, reviewerRouting),
 		...(modelRegistry === undefined ? {} : { reviewerRegistry: modelRegistry }),
 		...(reviewerSessionId === undefined ? {} : { reviewerSessionId }),
+		...(reviewerTransport === undefined ? {} : { reviewerTransport }),
 		...(signal === undefined ? {} : { signal }),
 	}));
 	let prepared: readonly ReviewHostRelayPreparedResult[];
@@ -9624,6 +9632,7 @@ function createGentleAiExtensionForTesting(
 				// OpenCode-routed completion carries its attribution headers
 				// (pi adds those inside the main agent loop; this is not that loop).
 				reviewSessionManagerAndId(ctx)?.sessionId,
+				() => pi.getSettings?.().transport,
 			);
 			return { content: [{ type: "text", text: JSON.stringify(details) }], details };
 		},
@@ -9667,6 +9676,7 @@ function createGentleAiExtensionForTesting(
 				// OpenCode-routed completion carries its attribution headers
 				// (pi adds those inside the main agent loop; this is not that loop).
 				reviewSessionManagerAndId(ctx)?.sessionId,
+				() => pi.getSettings?.().transport,
 			);
 			return {
 				content: [{ type: "text", text: JSON.stringify(details) }],

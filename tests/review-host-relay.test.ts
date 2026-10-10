@@ -1036,3 +1036,31 @@ test("the negotiated decoder carries the provider submission through the capture
 		submission: { ...rawSubmission, values: [{ slot: "reviewer_result", domain: "artifact_path_or_stdin", substitution_location: rawSubmission.argument_tokens.length }] },
 	}] } }), /substitution_location/);
 });
+
+for (const transport of ["sse", "websocket", "websocket-cached", "auto", undefined] as const) {
+	test(`relay forwards reviewer transport ${transport ?? "absent"} unchanged`, async (t) => {
+		const fixture = harness(t);
+		const reviewer = textReviewer(REVIEWER_TEXT);
+		const result = await runRelay(fixture, { reviewerTransport: transport }, reviewer.runReviewer);
+		assert.equal(reviewer.calls.length, 1);
+		assert.equal(reviewer.calls[0]!.transport, transport);
+		assert.equal(Object.hasOwn(reviewer.calls[0]!, "transport"), transport !== undefined);
+		assert.equal(reviewer.calls[0]!.selection, "openai/gpt-5");
+		assert.equal(result.resultByteLength, Buffer.byteLength(REVIEWER_TEXT));
+		assert.equal(readFileSync(fixture.submitCapturePath, "utf8"), REVIEWER_TEXT);
+	});
+
+	test(`group relay forwards reviewer transport ${transport ?? "absent"} to every completion`, async (t) => {
+		const fixture = harness(t);
+		const reviewer = textReviewer(REVIEWER_TEXT);
+		const requests = reviewerGroupRequests(fixture).map((request) => ({ ...request, reviewerTransport: transport }));
+		const results = await runReviewHostRelayReviewerGroup(requests, (request) => prepareReviewHostRelaySlot(request, reviewer.runReviewer));
+		assert.equal(results.length, requests.length);
+		assert.equal(reviewer.calls.length, requests.length);
+		for (const request of reviewer.calls) {
+			assert.equal(request.transport, transport);
+			assert.equal(Object.hasOwn(request, "transport"), transport !== undefined);
+		}
+		assert.equal(readLog(fixture.logPath).length, requests.length, "group preparation only materializes, never submits");
+	});
+}

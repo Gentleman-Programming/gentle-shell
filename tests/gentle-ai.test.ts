@@ -1348,6 +1348,44 @@ test("delivery commands bypass RDD under every mode outcome while command safety
 	}
 });
 
+test("missing confirmation capability denies shell and path calls uniformly", async (t) => {
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-missing-confirm-")));
+	t.after(() => rmSync(cwd, { recursive: true, force: true }));
+	execFileSync("git", ["init", "--quiet", cwd], { stdio: "pipe" });
+	const outside = join(dirname(cwd), "not-created-by-confirm-test.txt");
+	const session = SessionManager.create(cwd, join(cwd, "sessions"));
+	for (const ui of [undefined, {}]) {
+		type Handler = (event: { toolName: string; input: unknown }, ctx: ExtensionContext) => Promise<ToolCallEventResult | undefined>;
+		const handlers = new Map<string, Handler>();
+		const emitted: Array<{ channel: string; data: any }> = [];
+		const pi = {
+			on(name: string, handler: Handler) { handlers.set(name, handler); },
+			events: { emit(channel: string, data: any) { emitted.push({ channel, data }); } },
+			registerCommand() {}, registerTool() {},
+		} as unknown as ExtensionAPI;
+		createGentleAiExtension({ processEnv: { GENTLE_PI_AGENTS_CHILD: "0" }, nativeReviewCli: null })(pi);
+		const ctx = { cwd, hasUI: true, ui, sessionManager: session } as unknown as ExtensionContext;
+		for (const event of [
+			{ toolName: "bash", input: { command: "git rebase main" }, reason: "Gentle AI safety policy blocked the command because it was not confirmed." },
+			{ toolName: "write", input: { path: outside, content: "must not be written" }, reason: "Gentle AI safety policy blocked the path access because it was not confirmed." },
+		]) {
+			emitted.length = 0;
+			assert.deepEqual(await handlers.get("tool_call")!(event, ctx), { block: true, reason: event.reason });
+			const permissions = emitted.filter(({ channel }) => channel === "pi-permission-system:permission-request");
+			assert.deepEqual(permissions.map(({ data }) => data.state), ["waiting", "denied"]);
+			assert.equal(permissions[0].data.requestId, permissions[1].data.requestId);
+			assert.equal(permissions[1].data.toolName, event.toolName);
+			assert.deepEqual(emitted.filter(({ channel }) => channel === "herdr:blocked").map(({ data }) => data.active), [true, false]);
+			assert.equal(existsSync(outside), false, "a denied path call never executes the write");
+		}
+		let prompts = 0;
+		ctx.ui = { confirm: async () => { prompts++; return false; } } as ExtensionContext["ui"];
+		assert.equal((await handlers.get("tool_call")!({ toolName: "write", input: { path: outside, content: "must not be written" } }, ctx))?.block, true);
+		assert.equal(prompts, 1, "missing confirmation cannot cache a grant");
+		assert.equal(existsSync(outside), false);
+	}
+});
+
 test("guarded command confirmation emits a generic correlated permission lifecycle", async () => {
 	type ToolCallHandler = (
 		event: { toolName: string; input: unknown },

@@ -1844,7 +1844,7 @@ async function confirmCommand(
 	if (yoloActive && configuredRestriction === undefined && isOrdinaryYoloPush(command, evaluation)) return undefined;
 
 	// classification === "confirm"
-	if (!ctx.hasUI) {
+	if (!canConfirm(ctx)) {
 		return {
 			block: true,
 			reason:
@@ -1897,6 +1897,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** One fail-closed semantic for both confirmation flows (#1660): a UI without
+ * a callable confirm is headless, so the call is denied with the headless
+ * reason instead of throwing. A confirm that exists and throws still rethrows. */
+function canConfirm(ctx: ExtensionContext): boolean {
+	return ctx.hasUI && typeof ctx.ui?.confirm === "function";
+}
+
 /** #1305 slice 2: path-tool consent fence. Outside the session worktree and
  * registered same-clone worktrees requires per-target, per-session consent;
  * headless sessions fail closed. Bash coverage is slice 3. */
@@ -1918,7 +1925,7 @@ async function confirmOutsideBoundaryTargets(
 	const identity = resolveSessionWorktree(ctx.cwd, ctx.cwd);
 	if (!identity) return undefined;
 	const roots = [identity.root, ...(sessionKey ? registeredRootsForSession(manager, sessionKey).filter((root) => resolveSessionWorktree(root, ctx.cwd)?.commonDir === identity.commonDir) : [])];
-	const decision = evaluatePathFence(toolName, input, ctx.cwd, roots, sessionKey ?? "", sessionKey ? grants : new PathTargetGrants(), ctx.hasUI);
+	const decision = evaluatePathFence(toolName, input, ctx.cwd, roots, sessionKey ?? "", sessionKey ? grants : new PathTargetGrants(), canConfirm(ctx));
 	if (decision.kind === "pass") return undefined;
 	if (decision.kind === "headless-block") return { block: true, reason: decision.reason };
 	if (!sessionKey) return { block: true, reason: "Session identity is unavailable; access outside the session worktree is blocked." };
@@ -1938,7 +1945,7 @@ async function confirmOutsideBoundaryTargets(
 	emitPermissionRequest("waiting");
 	herdrLifecycle.begin();
 	try {
-		approved = (await ctx.ui?.confirm?.("Allow access outside the project root?", decision.targets.join("\n"))) === true;
+		approved = (await ctx.ui.confirm("Allow access outside the project root?", decision.targets.join("\n"))) === true;
 	} catch (error) {
 		confirmationFailed = true;
 		confirmationError = error;

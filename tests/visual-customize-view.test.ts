@@ -442,8 +442,8 @@ test("inline field accepts typed, pasted and Kitty input, submits on Enter and c
 	let closed = 0;
 	const submitted: string[] = [];
 	const view = inlineView(async inline => {
-		const value = await inline.input({ prompt: "Path", value: "" });
-		if (value !== undefined) submitted.push(value);
+		const result = await inline.input({ prompt: "Path", value: "" });
+		if (result) submitted.push(result.value);
 	}, { onClose: () => { closed++; } });
 	view.render(76);
 	view.handleInput("\r");
@@ -466,8 +466,8 @@ test("inline field submits a visible value and drops invisible resizes without w
 	let height = 12;
 	const submitted: string[] = [];
 	const view = inlineView(async inline => {
-		const value = await inline.input({ prompt: "Path", value: "" });
-		if (value !== undefined) submitted.push(value);
+		const result = await inline.input({ prompt: "Path", value: "" });
+		if (result) submitted.push(result.value);
 	}, { rowsAvailable: () => height });
 	view.render(76);
 	view.handleInput("\r");
@@ -479,8 +479,8 @@ test("inline field submits a visible value and drops invisible resizes without w
 	assert.deepEqual(submitted, ["/local/a.wav"]);
 
 	const hidden = inlineView(async inline => {
-		const value = await inline.input({ prompt: "Path", value: "x" });
-		if (value !== undefined) submitted.push(value);
+		const result = await inline.input({ prompt: "Path", value: "x" });
+		if (result) submitted.push(result.value);
 	}, { rowsAvailable: () => height });
 	hidden.render(76);
 	hidden.handleInput("\r");
@@ -525,8 +525,8 @@ test("dispose resolves a pending inline field as cancelled without writing", asy
 	const submitted: string[] = [];
 	const view = inlineView(async inline => {
 		observed = inline;
-		const value = await inline.input({ prompt: "Path", value: "" });
-		if (value !== undefined) submitted.push(value);
+		const result = await inline.input({ prompt: "Path", value: "" });
+		if (result) submitted.push(result.value);
 	});
 	view.render(76);
 	view.handleInput("\r");
@@ -537,6 +537,70 @@ test("dispose resolves a pending inline field as cancelled without writing", asy
 	assert.equal(observed!.disposed, true, "the bridge signals disposal so rows cannot persist");
 	view.handleInput("\x1b");
 	assert.deepEqual(submitted, [], "a disposed view ignores further input");
+});
+
+test("the save shortcut resolves the value marked for saving and the field advertises it", async () => {
+	type Result = { value: string; save: boolean } | undefined;
+	const results: Result[] = [];
+	const view = inlineView(async inline => { results.push(await inline.input({ prompt: "Local audio path", value: "", allowSave: true })); });
+	const frame = () => view.render(76).join("\n");
+	view.render(76);
+	view.handleInput("\r");
+	await tick();
+	assert.match(frame(), /Enter confirm · Ctrl\+S save · Esc cancel/, "a field that offers saving must advertise the shortcut");
+	view.handleInput("/local/a.wav");
+	view.handleInput("\x13");
+	await tick();
+	assert.deepEqual(results, [{ value: "/local/a.wav", save: true }], "Ctrl+S submits the value flagged for saving");
+	assert.doesNotMatch(frame(), /Path:/, "the field closes after the shortcut");
+});
+
+test("the save shortcut accepts the KitKat sequence and Enter never claims to save", async () => {
+	type Result = { value: string; save: boolean } | undefined;
+	const kitty: Result[] = [];
+	const kittyView = inlineView(async inline => { kitty.push(await inline.input({ prompt: "Path", value: "", allowSave: true })); });
+	kittyView.render(76);
+	kittyView.handleInput("\r");
+	await tick();
+	kittyView.handleInput("/local/b.wav");
+	kittyView.handleInput("\x1b[115;5u");
+	await tick();
+	assert.deepEqual(kitty, [{ value: "/local/b.wav", save: true }], "the terminal's control sequence for Ctrl+S saves too");
+
+	const submitted: Result[] = [];
+	const view = inlineView(async inline => { submitted.push(await inline.input({ prompt: "Path", value: "", allowSave: true })); });
+	view.render(76);
+	view.handleInput("\r");
+	await tick();
+	view.handleInput("/local/c.wav");
+	view.handleInput("\r");
+	await tick();
+	assert.deepEqual(submitted, [{ value: "/local/c.wav", save: false }], "Enter assigns without adding the sound to the library");
+});
+
+test("the save shortcut is inert where saving is not offered and never submits an invisible field", async () => {
+	type Result = { value: string; save: boolean } | undefined;
+	const plain: Result[] = [];
+	const view = inlineView(async inline => { plain.push(await inline.input({ prompt: "Path", value: "", })); });
+	view.render(76);
+	view.handleInput("\r");
+	await tick();
+	assert.match(view.render(76).join("\n"), /Enter confirm · Esc cancel/, "a field without saving must not advertise it");
+	view.handleInput("\x13");
+	await tick();
+	assert.deepEqual(plain, [], "Ctrl+S is consumed, never submitted as text");
+	assert.doesNotMatch(view.render(76).join("\n"), /Path: s/, "the shortcut never becomes part of the value");
+
+	let height = 12;
+	const invisible: Result[] = [];
+	const hidden = inlineView(async inline => { invisible.push(await inline.input({ prompt: "Path", value: "x", allowSave: true })); }, { rowsAvailable: () => height });
+	hidden.render(76);
+	hidden.handleInput("\r");
+	await tick();
+	height = 3;
+	hidden.handleInput("\x13");
+	await tick();
+	assert.deepEqual(invisible, [], "a save that cannot see the field must not submit");
 });
 
 test("row key shortcuts run before panel shortcuts and are ignored outside the controls pane", () => {

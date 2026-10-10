@@ -63,13 +63,14 @@ export interface NotificationResolution {
 	readError: boolean;
 	globalFile: string;
 }
-const DEFAULT_IO: NotificationIO = {
+export const DEFAULT_IO: NotificationIO = {
 	readFile: path => readFileSync(path, "utf8"),
 	mkdir: path => { mkdirSync(path, { recursive: true }); },
 	writeFile: (path, content, options) => writeFileSync(path, content, options),
 	rename: renameSync, unlink: unlinkSync,
 };
-const nativeFlavor: NotificationPathFlavor = process.platform === "win32" ? "win32" : "posix";
+/** The native path flavor is part of the validation policy, never a caller guess. */
+export const nativeFlavor: NotificationPathFlavor = process.platform === "win32" ? "win32" : "posix";
 function record(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }

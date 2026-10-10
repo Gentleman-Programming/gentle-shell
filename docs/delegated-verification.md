@@ -1,12 +1,10 @@
 # Delegated verification
 
-How the Gentle Pi orchestrator decides who verifies a bounded writer's work. The always-on parent prompt renders a `Receipt-driven development: on|off|unknown` line; the delegation overlay (`assets/orchestrator-delegation.md`, trigger 5) keys the verification rule on it. This page is package-owned; `docs/review-integration.md` mirrors the Gentle AI contract and must stay byte-identical to it.
+How the Gentle Pi orchestrator decides who verifies a bounded writer's work. The always-on parent prompt renders a `Receipt-driven development: on|off|unknown` line; the verification module (`assets/orchestrator-verification.md`, Verification rule) keys the verification rule on it. This page is package-owned; `docs/review-integration.md` mirrors the Gentle AI contract and must stay byte-identical to it.
 
 ## Receipt-driven development on
 
-The bounded writer runs the exact commands the parent lists under `## Verification`, in the foreground, and reports each as `<command>: <observed result>`. That report is the verification of record and the native review is the independent check. `gentle-ai-verify` is on-demand: a `partial` or `blocked` writer, an expensive or external check the parent wants on a cheaper profile, or a parent spot check.
-
-This `on` path holds only while the native review actually reaches a terminal outcome for the current candidate (gentle-pi#668). A human decline of the consent envelope for this candidate (candidate-scoped, never the RDD kill switch), a clone-local RDD disable discovered mid-flow, or a refused START/STATUS all mean the review never ran, so the parent falls back to the exact risk-gated path below, as if RDD were `off` -- declining a review never lowers the bar below the RDD-off path.
+Verification is the same with RDD on, off, or unknown (verify-always-rdd-high S1). The bounded writer runs the exact commands the parent lists under `## Verification`, in the foreground, and reports each as `<command>: <observed result>`; after it returns, the parent calls `assess` and follows the risk tier below. The native review is an additional outside view of the change: it never replaces or skips the tier's verification, and the tier's verifier runs before review. A declined consent, a clone-local disable, or a refused START/STATUS therefore changes nothing about verification.
 
 ### How `assess` resolves the review outcome (gentle-pi#1175)
 
@@ -44,7 +42,7 @@ The `gentle_review` tool's `assess` operation (`extensions/gentle-ai.ts`) combin
 | high | writer self-verification plus a separate `gentle-ai-verify` run, always |
 | unknown / assess failed | treated as high |
 
-When RDD is `on` and the native review closed for this candidate, the writer's own self-verification is the record and the closed native review is the independent check, except a passive-risk change, which still gets a structural readback instead; any other `nativeReviewOutcome` under `on` follows this same tier table instead (gentle-pi#668). The small-model bias raises the medium tier to high for verification purposes only; an unknown RDD line never lowers a tier below `off`. The parent's own spot check (re-running one reported command before delivery) stays required in every tier.
+This table applies in every RDD state; a closed native review never removes a verifier the tier requires. The small-model bias raises the medium tier to high for verification purposes only; an unknown RDD line never lowers a tier below `off`. The parent's own spot check (re-running one reported command before delivery) stays required in every tier.
 
 A native code review is not a substitute for applicable functional checks: tests, builds, and functional verification such as browser checks for UI changes still run when applicable. Review outcomes never authorize delivery; human consent for native review and the user-owned RDD switch are unchanged.
 

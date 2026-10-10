@@ -4,6 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
 // ---------------------------------------------------------------------------
 // gentle-pi#661/#662: RDD-aware verification rule for delegated work.
@@ -14,15 +15,14 @@ import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 // rendered `Receipt-driven development:` line, stated normatively exactly
 // once in trigger 5 (Verification rule) and referenced -- not restated --
 // everywhere else in this asset:
-//   - `on`             -> the writer's own report is the verification of
-//                         record; `gentle-ai-verify` is on-demand, except
-//                         passive risk, which gets a structural readback.
-//   - `off`/`unknown`  -> gentle-pi#662: the parent calls `gentle_review` with
+//   - every line (`on`, `off`, `unknown`) -> verify-always-rdd-high S1: the
+//                         parent calls `gentle_review` with
 //                         `{"operation":"assess"}` over the writer's diff and
 //                         follows the returned plan by native risk tier
 //                         (passive/medium/high/unassessable), instead of a
-//                         blanket non-trivial judgment. An unknown RDD line
-//                         never lowers a tier below `off`.
+//                         blanket non-trivial judgment.
+//   - `on`             -> the native review is an additional outside view; it
+//                         never replaces or skips the tier's verification.
 // These tests assert the exact distinctive sentences (not bare words like
 // `off`/`unknown`/`partial`/`blocked`), that the tier table is stated exactly
 // once, that the routing ladder paragraph references trigger 5 rather than
@@ -41,14 +41,14 @@ function countOccurrences(haystack: string, needle: string): number {
 	return haystack.split(needle).length - 1;
 }
 
-const delegation = read("assets/orchestrator-delegation.md");
+const delegation = readDelegationDetail();
 const worker = read("assets/agents/gentle-ai-worker.md");
 
-const ON_SENTENCE =
-	"When the line reads `on`, that writer report is the verification of record, and the native review is the independent check the writer cannot influence";
-const OFF_UNKNOWN_SENTENCE =
-	'When the line reads `off` or `unknown`, after the writer returns, call `gentle_review` with `{"operation":"assess"}` over the writer\'s diff and follow the returned plan instead of judging non-triviality from the task description: the operation resolves the native risk tier and states exactly who verifies next.';
-const TIER_TABLE_HEADER = "| Native risk tier | Verification when RDD is `off`/`unknown` |";
+const ROUTING_SENTENCE =
+	'After the writer returns, call `gentle_review` with `{"operation":"assess"}` over the writer\'s diff and follow the returned plan, whatever the `Receipt-driven development:` line reads (`on`, `off`, or `unknown`), instead of judging non-triviality from the task description: the operation resolves the native risk tier and states exactly who verifies next.';
+const RDD_ON_SENTENCE =
+	"When the line reads `on`, the native review is an additional outside view of the change; it never replaces or skips the tier's verification, and the tier's verifier runs before review.";
+const TIER_TABLE_HEADER = "| Native risk tier | Verification (any RDD state) |";
 const PASSIVE_TIER_ROW = "| passive | structural readback by the parent; no separate verifier, no tests |";
 const MEDIUM_TIER_ROW = "| medium | writer self-verification stands; a separate `gentle-ai-verify` run is added only when the writer profile is a small model (mini or low effort) |";
 const HIGH_TIER_ROW = "| high | writer self-verification plus a separate `gentle-ai-verify` run, always |";
@@ -57,19 +57,15 @@ const SMALL_MODEL_BIAS_SENTENCE =
 	"The small-model bias raises the tier by one for verification purposes (medium becomes high); an unknown `Receipt-driven development:` line never lowers a tier below `off`.";
 const SPOT_CHECK_SENTENCE =
 	"The parent spot check (re-running one reported command before delivery) stays required in every tier.";
-// gentle-pi#668: the `on` branch of trigger 5 holds only while the native
-// review actually reaches a terminal outcome for this candidate -- a decline,
-// a clone-local disable, or a refused START/STATUS all fall back to the exact
-// same risk-gated path as `off`.
-const ON_BRANCH_FALLBACK_SENTENCE =
-	'That `on` branch holds only while the native review actually reaches a terminal outcome for this candidate (gentle-pi#668): a human decline of the consent envelope for this candidate (candidate-scoped, never the RDD kill switch), a clone-local RDD disable discovered mid-flow, or a refused START/STATUS all fall back to the risk-gated path exactly as `off` -- call `gentle_review` with `{"operation":"assess"}` (pass `nativeReviewOutcome` when the parent already knows it; the tool derives it from what it itself observed for the candidate otherwise, failing closed to `unknown` when it cannot) and follow the returned plan.';
-
-test("trigger 5 (Verification rule) states the exact on-line routing: writer report is the verification of record", () => {
-	assert.ok(delegation.includes(ON_SENTENCE), "trigger 5 is missing the exact on-line sentence");
+test("trigger 5 (Verification rule) routes every RDD line through assess and the risk tier", () => {
+	assert.ok(delegation.includes(ROUTING_SENTENCE), "trigger 5 is missing the exact routing sentence");
 });
 
-test("trigger 5 states the exact off/unknown-line routing: the parent calls gentle_review's assess operation and follows the returned plan", () => {
-	assert.ok(delegation.includes(OFF_UNKNOWN_SENTENCE), "trigger 5 is missing the exact off/unknown-line sentence");
+test("trigger 5 states that with RDD on the native review adds an outside view and never replaces verification", () => {
+	assert.ok(delegation.includes(RDD_ON_SENTENCE), "trigger 5 is missing the RDD-on sentence");
+	for (const banned of ["verification of record", "becomes on-demand", "on-demand only", "on-demand verify"]) {
+		assert.ok(!delegation.includes(banned), `the native review still replaces verification somewhere: ${banned}`);
+	}
 });
 
 test("trigger 5 states the native risk tier table exactly once, with all four rows", () => {
@@ -86,21 +82,14 @@ test("trigger 5 keeps the parent spot check requirement in every tier", () => {
 	assert.ok(delegation.includes(SPOT_CHECK_SENTENCE), "trigger 5 is missing the parent spot check sentence");
 });
 
-test("trigger 5 states that the on branch holds only while the native review closes for this candidate, falling back to the off path exactly once (gentle-pi#668)", () => {
-	assert.equal(countOccurrences(delegation, ON_BRANCH_FALLBACK_SENTENCE), 1, "trigger 5 is missing (or duplicates) the on-branch fallback sentence");
-});
-
-test("the on-branch fallback sentence names all three non-closed triggers and never introduces a forbidden native RDD marker", () => {
-	for (const clause of ["decline", "clone-local", "refused START/STATUS"]) {
-		assert.ok(ON_BRANCH_FALLBACK_SENTENCE.includes(clause), `on-branch fallback sentence missing: ${clause}`);
-	}
+test("trigger 5 never introduces a forbidden native RDD marker", () => {
 	for (const marker of ["gentle-ai review status", "next_transition", "review.capture-result", "review.validate", "reviewGate.result"]) {
 		assert.ok(!delegation.includes(marker), `stale/forbidden RDD marker introduced: ${marker}`);
 	}
 });
 
-test("the on-line and off/unknown-line routing sentences appear exactly once each (normative statement lives only in trigger 5)", () => {
-	for (const sentence of [ON_SENTENCE, OFF_UNKNOWN_SENTENCE]) {
+test("the routing and RDD-on sentences appear exactly once each (normative statement lives only in trigger 5)", () => {
+	for (const sentence of [ROUTING_SENTENCE, RDD_ON_SENTENCE]) {
 		assert.equal(countOccurrences(delegation, sentence), 1, `expected exactly one occurrence of: ${sentence.slice(0, 60)}...`);
 	}
 });
@@ -110,15 +99,15 @@ test("trigger 5 never restates the retired #661 off/unknown non-trivial judgment
 	assert.doesNotMatch(delegation, /purely passive documentation with no behavior to verify/);
 });
 
-test("the Simple Delegation paragraph references trigger 5 instead of restating the on/off/unknown routing", () => {
+test("the Simple Delegation paragraph references trigger 3 instead of restating the on/off/unknown routing", () => {
 	assert.match(
 		delegation,
-		/per the RDD-aware Verification rule \(trigger 5 under Mandatory Delegation Triggers, gentle-pi#661\)/,
+		/per the RDD-aware Verification rule \(trigger 3 under Mandatory Delegation Triggers, gentle-pi#661\)/,
 	);
-	assert.match(delegation, /the normative on\/off\/unknown routing lives there, not here/);
+	assert.match(delegation, /the normative on\/off\/unknown routing lives in `orchestrator-verification.md`, not here/);
 });
 
-test("delegation overlay's trigger 5 (Verification rule) is RDD-aware", () => {
+test("delegation overlay's Verification rule is RDD-aware", () => {
 	assert.match(delegation, /\*\*Verification rule\*\*.*RDD-aware/);
 });
 
@@ -194,8 +183,8 @@ test("delegation asset references the worker's Known environmental failures defi
 });
 
 test("worker asset never claims completion while a required verification command fails under RDD, except a named environmental failure", () => {
-	assert.match(worker, /this report is the verification of record/i);
-	assert.match(worker, /native review remains the independent check/i);
+	assert.doesNotMatch(worker, /verification of record/i);
+	assert.match(worker, /this report is your self-verification; the risk tier decides whether an independent verifier also runs/i);
 	assert.match(
 		worker,
 		/never report `status: completed` while a required command under `## Verification` is failing, unless that exact failure is named under `## Known environmental failures`\./i,
@@ -279,8 +268,7 @@ const SHARED_POLICY_PHRASES: ReadonlyArray<readonly [string, string]> = [
 	["runtime writer profile", "runtime-recorded model and effort of the pending mutations"],
 	["caller profile is only a fallback", "only a fallback when no runtime evidence exists"],
 	["conservative small-model bias", "keeps the conservative small-model bias"],
-	["non-closed outcomes fall back", "declined, unavailable, or unknown"],
-	["unknown is never closed", "unknown is never treated as closed"],
+	["native review never replaces verification (verify-always-rdd-high S1)", "native review is an additional outside view"],
 	["functional checks still run", "a native code review is not a substitute for applicable functional checks"],
 ];
 

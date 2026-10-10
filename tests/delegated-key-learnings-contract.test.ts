@@ -4,6 +4,7 @@ import { dirname, join, relative, sep } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const AGENTS = join(ROOT, "assets", "agents");
@@ -53,7 +54,7 @@ function strictJsonAgents(): string[] {
 }
 
 test("generic delegation contract instructs the same `## Key Learnings` closing block", () => {
-	const delegation = readFileSync(join(ASSETS, "orchestrator-delegation.md"), "utf8");
+	const delegation = readDelegationDetail();
 	const section = readSection(delegation, "Key Learnings closing block");
 	assert.ok(section, "orchestrator-delegation.md must have a Key Learnings closing block section");
 	for (const [label, regex] of KL_SEMANTICS) {
@@ -159,6 +160,6 @@ test("strict review and Judgment Day agents do not gain Key Learnings or trailin
 });
 
 test("the canonical Key Learnings heading has no trailing colon in any asset", () => {
-	const delegation = readFileSync(join(ASSETS, "orchestrator-delegation.md"), "utf8");
+	const delegation = readDelegationDetail();
 	assert.doesNotMatch(delegation, /`## Key Learnings:`/);
 });

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { __testing } from "../extensions/gentle-ai.ts";
-import { bindSessionRepositoryPreparation, boundSessionRepositoryAuthorityCurrent, captureBoundSessionRepositoryAuthority, isDevelopmentSurface, prepareBoundSessionRepository, sessionRepositoryAuthority } from "../lib/bounded-writer-admission.ts";
+import { allowedEditSurfaces, inheritAllowedEditSurfaces, isBoundedWriter, bindSessionRepositoryPreparation, boundSessionRepositoryAuthorityCurrent, captureBoundSessionRepositoryAuthority, isDevelopmentSurface, prepareBoundSessionRepository, sessionRepositoryAuthority } from "../lib/bounded-writer-admission.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 
 test("development admission excludes sensitive, config and bookkeeping surfaces structurally", () => {
@@ -92,4 +92,31 @@ test("explicit review protects canonical HOME aliases, filesystem root and sensi
 		catch { /* The public boundary can reject before returning an envelope. */ }
 	}
 	assert.equal(calls, 0, "no native STATUS against protected directories");
+});
+
+// gentle-shell#1713: a writer continuation without its own section was
+// rejected, and every retry shortened the follow-up. A continuation resumes
+// the same delegated task, so it inherits the surfaces that launch admitted.
+test("writer continuations inherit the original surfaces only when they carry none", () => {
+	const original = "Implement it.\n\n## Allowed edit surfaces\n- src/model.ts\n- `docs/with space.md`\n\n## Return\nReport";
+	const inherited = inheritAllowedEditSurfaces("gentle-ai-worker", "Continue with the remaining specs.", undefined, original);
+	assert.deepEqual(allowedEditSurfaces(inherited), ["docs/with space.md", "src/model.ts"]);
+	assert.ok(inherited.startsWith("Continue with the remaining specs."));
+	const own = "Continue.\n## Allowed edit surfaces\nsrc/other.ts";
+	assert.equal(inheritAllowedEditSurfaces("gentle-ai-worker", own, undefined, original), own, "a follow-up section is validated as written, never merged");
+	const viaContext = "## Allowed edit surfaces\nsrc/other.ts";
+	assert.equal(inheritAllowedEditSurfaces("worker", "Continue.", viaContext, original), "Continue.");
+	assert.equal(inheritAllowedEditSurfaces("gentle-ai-explore", "Continue.", undefined, original), "Continue.", "non-writers are untouched");
+	assert.equal(inheritAllowedEditSurfaces("jd-fix-agent", "Continue.", undefined, original), "Continue.", "Judgment Day fix batches keep their exact protocol");
+	assert.equal(inheritAllowedEditSurfaces("gentle-ai-worker", "Continue.", undefined, "No surfaces here."), "Continue.", "nothing to inherit stays rejectable");
+	// Review R3-002: an entry admitted only when quoted must round-trip quoted.
+	const quotedOnly = "## Allowed edit surfaces\n- `-`\n- src/model.ts";
+	assert.deepEqual(allowedEditSurfaces(quotedOnly), ["-", "src/model.ts"]);
+	assert.deepEqual(allowedEditSurfaces(inheritAllowedEditSurfaces("worker", "Continue.", undefined, quotedOnly)), ["-", "src/model.ts"]);
+});
+
+// gentle-shell#1731: only agents behind the surfaces guard claim surfaces at runtime.
+test("bounded writers are exactly the agents behind the Allowed edit surfaces guard", () => {
+	for (const name of ["gentle-ai-worker", "worker", "jd-fix-agent"]) assert.equal(isBoundedWriter(name), true, name);
+	for (const name of ["explore", "gentle-ai-explore", "gentle-ai-verify", "reviewer", ""]) assert.equal(isBoundedWriter(name), false, name);
 });

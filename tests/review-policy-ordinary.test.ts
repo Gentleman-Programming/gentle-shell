@@ -121,7 +121,7 @@ test("ordinary discovery runs the selected zero, one, or four lenses exactly onc
 				rows:
 					selected.lenses.length === 0
 						? []
-						: rows().filter(({ lens }) => selected.lenses.includes(lens as ReviewLens)),
+						: rows().filter(({ lens }) => selected.lenses.some((selectedLens) => selectedLens === lens)),
 			},
 		);
 		assert.equal(discovered.phase, REVIEW_PHASE.DISCOVERY_COMPLETE);
@@ -167,7 +167,7 @@ test("no-finding ordinary path runs zero refuters, fixes, and validators then ve
 	assert.equal(resolved.counters.refuter_batches, 0);
 	assert.equal(resolved.counters.fix_batches, 0);
 	assert.equal(resolved.counters.validator_runs, 0);
-	assert.throws(() => ordinaryValidatorRequest(resolved), /fix.*required/i);
+	assert.throws(() => ordinaryValidatorRequest(resolved, validationProof([])), /fix.*required/i);
 
 	const terminal = recordOrdinaryFinalVerification(resolved, { passed: true });
 	assert.equal(terminal.terminal_state, TERMINAL_STATE.APPROVED);

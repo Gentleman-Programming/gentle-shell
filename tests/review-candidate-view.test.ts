@@ -364,6 +364,55 @@ test("candidate owner publication never removes a replaced marker", (t) => {
 	assert.equal(readdirSync(parent).some((name) => name.endsWith(".reaper-lock")), false);
 });
 
+test("candidate owner publication preserves a replaced marker with 64-bit identity precision loss", (t) => {
+	mockWindowsAcl(t);
+	// The registry canonicalizes the contributor root (e.g. /var -> /private/var on macOS).
+	const cwd = repository(t), parent = join(realpathSync(cwd), ".git", "gentle-ai", "candidate-views");
+	const originalLstat = fs.lstatSync, fsync = fs.fsyncSync, write = fs.writeFileSync;
+	// Modeled identities, not measured NTFS values: distinct 64-bit indices round to one Number.
+	const high = 2n ** 53n;
+	assert.notEqual(high, high + 1n);
+	assert.equal(Number(high), Number(high + 1n));
+	let marker: string | undefined, replaced = false, faults = 0, adds = 0;
+	let savedContent: string | undefined;
+	t.mock.method(fs, "lstatSync", (path: Parameters<typeof fs.lstatSync>[0], ...args: unknown[]) => {
+		const stat = (originalLstat as (...arguments_: unknown[]) => ReturnType<typeof fs.lstatSync>)(path, ...args);
+		if (marker === undefined && typeof path === "string" && path.endsWith(".owner.json") && path === join(parent, readdirSync(parent).find((name) => name.endsWith(".owner.json")) ?? "")) marker = path;
+		if (path !== marker) return stat;
+		const bigint = (args[0] as { bigint?: boolean } | undefined)?.bigint === true;
+		const ino = replaced ? high + 1n : high;
+		// Retain real metadata and Stats methods; only the identity pair is synthetic.
+		return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, {
+			dev: bigint ? high : Number(high), ino: bigint ? ino : Number(ino),
+		});
+	});
+	t.mock.method(fs, "fsyncSync", (fd: number) => {
+		// The reaper lock is synced before marker publication; it is not this fault's boundary.
+		if (marker === undefined || replaced) return fsync(fd);
+		assert.ok(marker, "owned marker identity must be captured before the fault");
+		faults++;
+		savedContent = readFileSync(marker, "utf8");
+		renameSync(marker, `${marker}.saved`);
+		write(marker, "replacement", { mode: 0o600 });
+		replaced = true;
+		throw new Error("fixture marker fsync failure after 64-bit identity replacement");
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const registry = new CandidateViewRegistry((file, args, options) => {
+		if (args[0] === "worktree" && args[1] === "add") adds++;
+		return execFileSync(file, args, options);
+	}, "win32");
+	assert.throws(() => registry.create({ contributorRoot: cwd }), (error: unknown) => error instanceof CandidateViewError && error.reason === "candidate-owner-preparation-failed");
+	assert.equal(faults, 1, "replacement fault must be reached exactly once");
+	assert.equal(adds, 0);
+	assert.ok(marker);
+	assert.equal(readFileSync(`${marker}.saved`, "utf8"), savedContent);
+	assert.equal(readdirSync(parent).some((name) => name.endsWith(".reaper-lock")), false);
+	assert.equal(existsSync(marker), true, "publication rollback deleted the replacement after distinct 64-bit identities rounded to the same Number");
+	assert.equal(readFileSync(marker, "utf8"), "replacement");
+});
+
 test("public POSIX candidate-views parent reports bounded privacy guidance without changing permissions or adding a worktree", { skip: process.platform === "win32" }, (t) => {
 	const cwd = repository(t);
 	const parent = join(cwd, ".git", "gentle-ai", "candidate-views");
@@ -720,6 +769,47 @@ for (const race of ["root", "registration", "lock"] as const) {
 		if (race === "lock") assert.equal(readFileSync(`${view.root}.reaper-lock`, "utf8"), "replacement");
 	});
 }
+
+test("ordinary cleanup preserves a replaced root with 64-bit identity precision loss", (t) => {
+	mockWindowsAcl(t);
+	const cwd = repository(t), high = 2n ** 53n;
+	const originalLstat = fs.lstatSync;
+	let root = "", replaced = false, lists = 0, removes = 0;
+	const registry = new CandidateViewRegistry((file, args, options) => {
+		// Never allow Git to delete the replacement, even on the failing implementation.
+		if (args[0] === "worktree" && args[1] === "remove") { removes++; return ""; }
+		const result = execFileSync(file, args, options);
+		if (root && args[0] === "worktree" && args[1] === "list" && ++lists === 2) {
+			const pointer = readFileSync(join(root, ".git"));
+			renameSync(root, `${root}.saved`);
+			mkdirSync(root);
+			writeFileSync(join(root, ".git"), pointer);
+			writeFileSync(join(root, "replacement.txt"), "replacement");
+			replaced = true;
+		}
+		return result;
+	});
+	const view = registry.create({ contributorRoot: cwd });
+	root = view.root;
+	t.mock.method(fs, "lstatSync", (path: Parameters<typeof fs.lstatSync>[0], ...args: unknown[]) => {
+		const stat = (originalLstat as (...arguments_: unknown[]) => ReturnType<typeof fs.lstatSync>)(path, ...args);
+		if (path !== root) return stat;
+		const bigint = (args[0] as { bigint?: boolean } | undefined)?.bigint === true;
+		const ino = replaced ? high + 1n : high;
+		return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, {
+			dev: bigint ? high : Number(high), ino: bigint ? ino : Number(ino),
+		});
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	assert.throws(() => view.cleanup());
+	assert.equal(replaced, true);
+	assert.equal(readFileSync(join(root, "replacement.txt"), "utf8"), "replacement");
+	assert.equal(existsSync(`${root}.saved`), true);
+	assert.equal(existsSync(ownerMarker(root)), true);
+	assert.equal(existsSync(`${root}.reaper-lock`), false);
+	assert.equal(removes, 0, "distinct 64-bit directory identities must stop cleanup before Git removal");
+});
 
 test("ordinary cleanup never unlinks a replaced sidecar after Git removal", (t) => {
 	const cwd = repository(t);
@@ -1193,22 +1283,21 @@ test("candidate view skips a shared index that disappears during stat or copy", 
 	for (const phase of ["stat", "copy"] as const) {
 		const originalLstatSync = fs.lstatSync;
 		const originalCopyFileSync = fs.copyFileSync;
-		fs.lstatSync = ((path: string | Buffer, options?: Parameters<typeof lstatSync>[1]) => {
+		t.mock.method(fs, "lstatSync", (path: string | Buffer, options?: Parameters<typeof lstatSync>[1]) => {
 			if (phase === "stat" && path === sharedIndexPath) throw Object.assign(new Error("shared index disappeared"), { code: "ENOENT" });
 			return originalLstatSync(path, options);
-		}) as typeof fs.lstatSync;
-		fs.copyFileSync = ((source: string | Buffer, destination: string | Buffer) => {
+		});
+		t.mock.method(fs, "copyFileSync", (source: string | Buffer, destination: string | Buffer) => {
 			if (phase === "copy" && source === sharedIndexPath) throw Object.assign(new Error("shared index disappeared"), { code: "ENOENT" });
 			return originalCopyFileSync(source, destination);
-		}) as typeof fs.copyFileSync;
+		});
 		syncBuiltinESMExports();
 		let view: ReturnType<typeof createCandidateView> | undefined;
 		try {
 			view = createCandidateView({ contributorRoot, intendedUntracked: [] });
 			assert.equal(view.paths.includes("staged-addition.txt"), true, phase);
 		} finally {
-			fs.lstatSync = originalLstatSync;
-			fs.copyFileSync = originalCopyFileSync;
+			t.mock.restoreAll();
 			syncBuiltinESMExports();
 			view?.cleanup();
 		}
@@ -1435,13 +1524,13 @@ test("corrected views stay within frozen scope and replace projections only when
 	const registry = new CandidateViewRegistry();
 	const initial = registry.create({ contributorRoot }); registry.bind({ token: initial.token, lineageId: "correction", selectedLenses: ["review-risk"] });
 	writeFileSync(join(contributorRoot, "tracked.txt"), "corrected\n");
-	const corrected = registry.createCorrected("correction", contributorRoot);
+	const corrected = registry.createCorrected("correction", contributorRoot, "corrected-1");
 	assert.notEqual(corrected.candidateTree, initial.candidateTree);
 	assert.equal(registry.resolveProjection("correction", contributorRoot).candidateTree, initial.candidateTree);
 	registry.promoteCorrected("correction", corrected.token);
 	assert.equal(registry.resolveProjection("correction", contributorRoot).candidateTree, corrected.candidateTree);
 	writeFileSync(join(contributorRoot, "escaped.txt"), "outside scope\n");
-	assert.throws(() => registry.createCorrected("correction", contributorRoot), /escapes the frozen genesis paths/);
+	assert.throws(() => registry.createCorrected("correction", contributorRoot, "escaped-2"), /escapes the frozen genesis paths/);
 	registry.cleanupTerminal("correction", "approved");
 });
 
@@ -1664,7 +1753,7 @@ test("candidate view compacts an oversized non-ASCII scope losslessly and determ
 		assert.throws(() => readCandidateContextManifestPage(compact.encoded, compact.sha256, actorEntries.length + 1), /cursor/);
 		const nonCanonicalBytes = Buffer.from(JSON.stringify({ gitlinks: decoded.manifest.gitlinks, scopeByMode: decoded.manifest.scopeByMode, version: 1 }), "utf8");
 		assert.throws(
-			() => decodeCandidateContextManifest(gzipSync(nonCanonicalBytes, { mtime: 0 }).toString("base64url"), createHash("sha256").update(nonCanonicalBytes).digest("hex")),
+			() => decodeCandidateContextManifest(gzipSync(nonCanonicalBytes).toString("base64url"), createHash("sha256").update(nonCanonicalBytes).digest("hex")),
 			/canonical/,
 		);
 	} finally {
@@ -1682,7 +1771,7 @@ test("candidate context manifest decoder accepts canonical numeric-looking gitli
 		scopeByMode: { "160000": ["10", "2"] },
 		gitlinks,
 	}), "utf8");
-	const encoded = gzipSync(bytes, { mtime: 0 }).toString("base64url");
+	const encoded = gzipSync(bytes).toString("base64url");
 	assert.deepEqual(decodeCandidateContextManifest(encoded, createHash("sha256").update(bytes).digest("hex")).manifest, {
 		version: 1,
 		scopeByMode: { "160000": ["10", "2"] },
@@ -1701,7 +1790,7 @@ test("candidate context manifest decoder rejects noncanonical nonnumeric gitlink
 		gitlinks,
 	}), "utf8");
 	assert.throws(
-		() => decodeCandidateContextManifest(gzipSync(bytes, { mtime: 0 }).toString("base64url"), createHash("sha256").update(bytes).digest("hex")),
+		() => decodeCandidateContextManifest(gzipSync(bytes).toString("base64url"), createHash("sha256").update(bytes).digest("hex")),
 		/canonical/,
 	);
 });
@@ -1709,7 +1798,7 @@ test("candidate context manifest decoder rejects noncanonical nonnumeric gitlink
 test("candidate context manifest decoder rejects noncanonical gzip transport for verified bytes", () => {
 	const bytes = Buffer.from(JSON.stringify({ version: 1, scopeByMode: { "100644": ["file.ts"] }, gitlinks: {} }), "utf8");
 	const sha256 = createHash("sha256").update(bytes).digest("hex");
-	const canonical = gzipSync(bytes, { mtime: 0 });
+	const canonical = gzipSync(bytes);
 	const noncanonical = Buffer.from(canonical);
 	noncanonical[4] = (noncanonical[4]! + 1) & 0xff;
 	assert.throws(() => decodeCandidateContextManifest(noncanonical.toString("base64url"), sha256), /canonical/);

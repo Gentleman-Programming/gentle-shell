@@ -42,9 +42,29 @@ test("bundled pretty cannot replace or restore an editor owned by the host", asy
 	assert.equal(message, undefined);
 });
 
+test("bundled pretty keeps Pi's native Working row inside Herdr", async () => {
+	const handlers = new Map<string, Function[]>();
+	const pi = { on(name: string, handler: Function) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); } };
+	let visible: boolean | undefined;
+	const ctx = { mode: "tui", ui: { setWorkingVisible(value: boolean) { visible = value; } } };
+	await pretty(pi, undefined, async () => {}, { HERDR_ENV: "1" });
+	for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
+	assert.notEqual(visible, false, "Herdr's native Pi detection reads the standard Working row");
+});
+
 test("disabled shell leaves bundled editor behavior untouched", async () => {
 	let received: unknown;
 	const pi = {};
 	await pretty(pi, undefined, async (api: unknown) => { received = api; }, { GENTLE_PI_SHELL: "0" });
 	assert.equal(received, pi);
+});
+
+// gentle-shell#1690: a delegated child has no shell (shellEnabled is false),
+// so the upstream fallback would start FFF indexing in every child.
+test("delegated children never load upstream pi-pretty", async () => {
+	let loaded = false;
+	const pi = {};
+	const result = await pretty(pi, undefined, async () => { loaded = true; }, { GENTLE_PI_AGENTS_CHILD: "1" });
+	assert.equal(loaded, false);
+	assert.equal(result, undefined);
 });

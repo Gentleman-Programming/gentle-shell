@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { parseNpmPackResult } from "../scripts/npm-pack-result.mjs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -251,6 +252,25 @@ test("package verification names the native review runtime boundary and packaged
 		/createNativeReviewCli\(\)/,
 		"the production extension must construct its native client from the packaged runtime module",
 	);
+});
+
+test("double-click installers are attached to the release only after the verified publication", () => {
+	const workflow = readFileSync(join(PACKAGE_ROOT, ".github", "workflows", "publish.yml"), "utf8");
+	const job = workflow.match(/^ {2}installers:\n([\s\S]*?)(?=^ {2}[A-Za-z0-9_-]+:\n|(?![\s\S]))/m)?.[1];
+	assert.ok(job, "publish.yml has an installers job");
+	assert.match(job, /^ {4}needs: publish$/m, "installers wait for the verified npm publication");
+	assert.match(job, /^ {4}if: github\.repository == 'Gentleman-Programming\/gentle-shell'$/m);
+	assert.match(job, /^ {6}contents: write$/m, "only this job may write the release");
+	assert.match(job, /ref: \$\{\{ github\.sha \}\}/, "the installers come from the verified release commit");
+	assert.match(job, /persist-credentials: false/);
+	assert.match(job, /node scripts\/build-installer-bundles\.mjs --out "\$\{RUNNER_TEMP\}\/installers"/);
+	assert.match(job, /RELEASE_TAG: \$\{\{ needs\.publish\.outputs\.tag \}\}/, "the tag the publish job verified, not the raw input");
+	assert.match(job, /package-manager-cache: false/);
+	assert.match(workflow, /^ {4}outputs:\n {6}tag: \$\{\{ steps\.release\.outputs\.tag \}\}$/m, "publish exports its verified tag");
+	assert.match(job, /gh release upload "\$\{RELEASE_TAG\}" "\$\{RUNNER_TEMP\}"\/installers\/\* --repo "\$\{GITHUB_REPOSITORY\}" --clobber/);
+	const publish = workflow.match(/^ {2}publish:\n([\s\S]*?)(?=^ {2}installers:\n)/m)?.[1];
+	assert.ok(publish);
+	assert.doesNotMatch(publish, /contents: write/, "the npm publication job keeps read-only contents");
 });
 
 test("npm publication is bound to the exact package tag and triggering commit", () => {
@@ -550,7 +570,7 @@ function readMarkdownSection(source: string, heading: string): string {
 
 function assertWorkerFallbackRouting(section: string, sectionName: string): void {
 	const boundedWriterPolicy = section.match(
-		/For bounded multi-file writes,[\s\S]*?(?=\n\n|\n\s*\d+\.|$)/,
+		/For a large task's bounded writes,[\s\S]*?(?=\n\n|\n\s*\d+\.|$)/,
 	)?.[0];
 	assert.ok(boundedWriterPolicy, `${sectionName} must define bounded writer routing`);
 
@@ -847,6 +867,42 @@ test("selective review migration adopts only untouched legacy copies and preserv
 	}
 });
 
+test("native pulse audio ships owned TypeScript sources without new dependencies or addons", () => {
+	const manifest = readPackageJson();
+	const verifier = readFileSync(join(PACKAGE_ROOT, "scripts", "verify-package-files.mjs"), "utf8");
+	const sources = [
+		"lib/notification-pulse-protocol.ts", "lib/notification-pulse-client.ts",
+		"lib/notification-pulse-stream.ts", "lib/notification-audio-native.ts",
+		"lib/notification-pulse-worker.ts",
+	];
+	for (const source of sources) {
+		assert.ok(existsSync(join(PACKAGE_ROOT, source)), `${source} must exist`);
+		assert.ok(verifier.includes(`"${source}"`), `${source} must be a required package resource`);
+	}
+	assert.ok(!manifest.files?.includes("native/"), "no native addon directory may ship");
+	for (const name of Object.keys(manifest.dependencies ?? {})) assert.doesNotMatch(name, /pulse|audio|sound|native/i, name);
+	for (const name of Object.keys(manifest.scripts ?? {})) assert.doesNotMatch(name, /pulse|native:build|audio:install/i, name);
+	for (const path of ["lib/notification-pulse-worker.ts", "lib/notification-audio-native.ts"]) {
+		const source = readFileSync(join(PACKAGE_ROOT, path), "utf8");
+		assert.doesNotMatch(source, /@earendil-works|\.node["']|addon/i, path);
+		assert.doesNotMatch(source, /postinstall|installer|download/i, path);
+	}
+});
+
+test("native windows audio ships an owned encoded-command adapter without scripts or dependencies", () => {
+	const manifest = readPackageJson();
+	const verifier = readFileSync(join(PACKAGE_ROOT, "scripts", "verify-package-files.mjs"), "utf8");
+	const path = "lib/notification-audio-windows.ts";
+	assert.ok(existsSync(join(PACKAGE_ROOT, path)), `${path} must exist`);
+	assert.ok(verifier.includes(`"${path}"`), `${path} must be a required package resource`);
+	for (const dependency of Object.keys(manifest.dependencies ?? {})) assert.doesNotMatch(dependency, /audio|sound|windows|powershell|native/i, dependency);
+	for (const script of Object.keys(manifest.scripts ?? {})) assert.doesNotMatch(script, /windows:build|powershell|audio:install/i, script);
+	const source = readFileSync(join(PACKAGE_ROOT, path), "utf8");
+	assert.match(source, /-EncodedCommand/, "the adapter must drive the trusted built-in PowerShell host with an encoded command");
+	assert.doesNotMatch(source, /\.ps1|ExecutionPolicy|\.node["']|addon/i, path);
+	assert.doesNotMatch(source, /postinstall|installer|download/i, path);
+});
+
 test("packed tarball excludes retired workflow paths while source retains legacy migration proof", () => {
 	const fixture = "tests/fixtures/legacy/sdd-research-v2.5.0.md";
 	assert.ok(existsSync(join(PACKAGE_ROOT, fixture)), "the historical source fixture must remain available to migration tests");
@@ -857,9 +913,22 @@ test("packed tarball excludes retired workflow paths while source retains legacy
 			encoding: "utf8",
 			maxBuffer: 8 * 1024 * 1024,
 		});
-		const [packed] = JSON.parse(output) as [{ files: { path: string }[] }];
+		const [packed] = parseNpmPackResult(output);
 		assert.ok(packed?.files?.length, "npm pack must return a nonempty tar manifest");
 		assert.ok(packed.files.some(file => file.path === "tests/package-manifest.test.ts"), "other tests remain packed");
+		for (const path of [
+			"extensions/gentle-notifications.ts",
+			"lib/notification-audio.ts", "lib/notification-customize.ts", "lib/notification-events.ts", "lib/notification-policy.ts",
+			"lib/notification-scheduler.ts", "lib/notification-service.ts", "lib/notification-ui.ts",
+			"assets/sounds/success.wav", "assets/sounds/error.wav", "assets/sounds/attention.wav",
+			"assets/sounds/LICENSE.md", "docs/sound-notifications.md", "docs/sound-notifications-proposal.md",
+			"lib/notification-pulse-protocol.ts", "lib/notification-pulse-client.ts", "lib/notification-pulse-stream.ts",
+			"lib/notification-audio-native.ts", "lib/notification-pulse-worker.ts",
+			"lib/notification-audio-windows.ts",
+			"scripts/npm-pack-result.mjs",
+		]) {
+			assert.ok(packed.files.some(file => file.path === path), `${path} must be packed`);
+		}
 		assert.deepEqual(packed.files.filter(file => /sdd|openspec/i.test(file.path)).map(file => file.path), []);
 	} finally {
 		rmSync(destination, { recursive: true, force: true });
@@ -1441,7 +1510,7 @@ test("gentle-ai-worker packages the exact scoped writer contract", () => {
 	const testDiscipline = readMarkdownSection(source, "Test discipline");
 	assert.match(testDiscipline, /Apply the ODD test-first policy by default for behavior changes with applicable runnable deterministic tests and a clear expected outcome/);
 	assert.match(testDiscipline, /Test presence alone does not establish applicability; no TUI toggle or per-task chat choice is needed/);
-	assert.match(testDiscipline, /RED[\s\S]*GREEN[\s\S]*TRIANGULATE[\s\S]*REFACTOR/);
+	assert.match(testDiscipline, /RED[\s\S]*GREEN[\s\S]*PRESERVE[\s\S]*REFACTOR/);
 	assert.match(testDiscipline, /no meaningful RED[\s\S]*proportionate ordinary functional or structural verification/);
 	assert.match(testDiscipline, /Never claim RED\/GREEN evidence that was not observed/);
 	assert.match(
@@ -1636,7 +1705,7 @@ test("normal and forced installation copy generic agents with complete role cont
 					assert.match(source, /compressed (?:handoff|evidence handoff)/);
 					assert.match(source, /Do not use review lenses\. RDD review remains independent and parent-owned\./);
 					if (name === "gentle-ai-verify") {
-						assert.match(source, /exact test, build, or lint commands explicitly authorized by the parent/);
+						assert.match(source, /exact test, build, lint, or spec example commands explicitly authorized by the parent/);
 						assert.match(source, /only outputs the parent explicitly identified as expected/);
 						assert.match(source, /unexpected mutation as a blocker/);
 						assert.match(source, /do not clean it up or fix it/);
@@ -1652,16 +1721,30 @@ test("normal and forced installation copy generic agents with complete role cont
 	}
 });
 
-test("bounded implementation routing uses the same explicit fallback in both policy sections", () => {
+test("bounded implementation routing resolves the explicit canonical fallback reference", () => {
 	const routing = readFileSync(
 		join(PACKAGE_ROOT, "assets", "orchestrator-delegation.md"),
 		"utf8",
 	);
-	const simpleDelegation = readMarkdownSection(routing, "2. Simple Delegation");
+	const reference = "For bounded writes, follow the canonical Writer rule under Mandatory Delegation Triggers.";
+	const resolveSimpleDelegation = (source: string): string => {
+		const simpleDelegation = readMarkdownSection(source, "2. Simple Delegation");
+		assert.ok(simpleDelegation.split("\n").includes(reference), "Simple Delegation must name the exact canonical Writer rule");
+		const canonical = readMarkdownSection(source, "Mandatory Delegation Triggers");
+		assertWorkerFallbackRouting(canonical, "resolved Simple Delegation");
+		return canonical;
+	};
 	const mandatoryDelegation = readMarkdownSection(routing, "Mandatory Delegation Triggers");
 
-	assertWorkerFallbackRouting(simpleDelegation, "Simple Delegation");
+	assertWorkerFallbackRouting(resolveSimpleDelegation(routing), "Simple Delegation");
 	assertWorkerFallbackRouting(mandatoryDelegation, "Mandatory Delegation Triggers");
+	assert.throws(() => resolveSimpleDelegation(routing.replace(reference, "")), /must name the exact canonical Writer rule/);
+	assert.throws(() => resolveSimpleDelegation(routing.replace(reference, reference.replace("Mandatory Delegation Triggers", "Other Rule"))),
+		/must name the exact canonical Writer rule/);
+	assert.throws(() => resolveSimpleDelegation(routing.replace("#### Mandatory Delegation Triggers", "#### Missing Canonical Rule")),
+		/exactly one Mandatory Delegation Triggers section/);
+	assert.throws(() => resolveSimpleDelegation(routing.replace("user-configured `worker`", "unspecified worker")),
+		/must prefer the package-owned worker before a user-configured worker/);
 	assert.doesNotMatch(
 		routing,
 		/non-normative compatibility quotation|former wording is retained|no-runtime inline exception|superseded by the stop requirement/,
@@ -1680,8 +1763,9 @@ test("orchestrator routes generic roles without static RDD lens routing", () => 
 		assert.match(routing, /`gentle-ai-explore`/);
 		assert.match(routing, /`gentle-ai-worker`/);
 		assert.match(routing, /`gentle-ai-verify`/);
-		assert.match(routing, /read-only check within the evidence budget/);
-		assert.match(routing, /(?:verification that |verification commands →).*executes? or delegates?|executing\/delegating verification commands/);
+		assert.match(routing, /focused test and (?:the )?suite/);
+		// The Verification rule line itself must route high risk to the verifier.
+		assert.match(routing, /^\d\. \*\*Verification rule\*\*[^\n]*high[- ]risk[^\n]*`gentle-ai-verify`/m);
 		assert.match(routing, /missing(?: or |\/)unusable[\s\S]*native `Agent`[\s\S]*(?:the )?same read-only/);
 		assert.match(routing, /report (?:the )?fallback/);
 		assert.doesNotMatch(routing, /review lenses? (?:inside|only inside)|review lens routing/i);

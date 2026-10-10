@@ -5,6 +5,7 @@ import test from "node:test";
 import { AGENT_MODE, type AgentDefinition } from "../lib/agents-config.ts";
 import { AgentRunner, type ChildLike, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
 import { TASK_STATUS, TaskStore } from "../lib/agents-protocol.ts";
+import { fakeChild } from "./agents-fake-child.ts";
 
 const fixture = fileURLToPath(new URL("./fixtures/agents-process-child.mjs", import.meta.url));
 const agent: AgentDefinition = { name: "process", description: "test", filePath: "/test.md", scope: "global", instructions: "", model: undefined, thinking: undefined, mode: undefined, tools: [] };
@@ -17,6 +18,36 @@ const waitFor = async (predicate: () => boolean, timeoutMs = 10_000): Promise<vo
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
 };
+
+test("missing RPC streams fail the task without announcing a launch or leaking its queue slot", async () => {
+	const store = new TaskStore();
+	const child = fakeChild();
+	let launched = false;
+	const runner = new AgentRunner(store, { maxConcurrency: 1, stallTimeoutMs: 1000 }, {
+		spawn: () => ({ ...child.child, stdin: null, stdout: null }), now: Date.now,
+		schedule: (fn, ms) => { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); },
+		pi: { command: "pi", args: [] },
+	}, { askUser: async () => ({ cancelled: true }) });
+	const task = runner.run({ ...request("missing streams"), onLaunch: () => { launched = true; } });
+	await waitFor(() => store.get(task.id)?.status === TASK_STATUS.FAILED);
+	assert.equal(launched, false);
+	assert.match(store.get(task.id)!.error!, /RPC streams/);
+	assert.ok(child.killed.length > 0, "the malformed child is still stopped");
+});
+
+test("a real failed OS spawn has no pid and is retained as a launch failure", async () => {
+	const store = new TaskStore();
+	let launched = false;
+	const runner = new AgentRunner(store, { maxConcurrency: 1, stallTimeoutMs: 1000 }, {
+		spawn: (_command, _args, options) => nodeSpawn("/nonexistent/gentle-pi-child", [], { ...options, stdio: ["pipe", "pipe", "pipe", "ipc"] }),
+		now: Date.now, schedule: (fn, ms) => { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); },
+		pi: { command: "unused", args: [] },
+	}, { askUser: async () => ({ cancelled: true }) });
+	const task = runner.run({ ...request("failed spawn"), onLaunch: () => { launched = true; } });
+	await waitFor(() => store.get(task.id)?.status === TASK_STATUS.FAILED);
+	assert.equal(launched, false);
+	assert.match(store.get(task.id)!.error!, /ENOENT/);
+});
 
 test("POSIX cleanup retains queue slots when a leader exits but its TERM-resisting descendant remains", { skip: process.platform === "win32" }, async () => {
 	const store = new TaskStore();

@@ -168,6 +168,36 @@ test("alt+a selects all; backspace replaces the whole text", () => {
 	assert.equal(cursorOf(editor).line, 0);
 });
 
+test("alt+e selects all; backspace replaces the whole text", () => {
+	const editor = makeEditor();
+	const engine = new SelectionEngine(editor);
+	const native = (d: string) => editor.handleInput(d);
+	editor.setText("abc\ndef");
+	engine.handleInput("\x1be", native);
+	engine.handleInput(BACKSPACE, native);
+	assert.equal(editor.getText(), "");
+});
+
+// gentle-shell#1565: a registered extension shortcut owns its chord before
+// any selection key, matching CustomEditor's own precedence.
+test("selection chords yield to a claiming shortcut and keep selecting otherwise", () => {
+	const editor = makeEditor();
+	const engine = new SelectionEngine(editor);
+	const forwarded: string[] = [];
+	const native = (d: string) => { forwarded.push(d); editor.handleInput(d); };
+	const probed: string[] = [];
+	const shortcut = (d: string) => { probed.push(d); return d === ALT_A; };
+	editor.setText("abc");
+	engine.handleInput(ALT_A, native, shortcut);
+	assert.deepEqual(probed, [ALT_A]);
+	assert.deepEqual(forwarded, []);
+	engine.handleInput(BACKSPACE, native, shortcut);
+	assert.equal(editor.getText(), "ab", "a claimed chord must not select");
+	engine.handleInput("\x1be", native, shortcut);
+	engine.handleInput(BACKSPACE, native, shortcut);
+	assert.equal(editor.getText(), "", "an unclaimed chord still selects");
+});
+
 test("movement collapses the selection; later delete behaves natively", () => {
 	const editor = makeEditor();
 	const engine = new SelectionEngine(editor);

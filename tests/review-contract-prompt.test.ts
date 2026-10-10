@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test, { after, before } from "node:test";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createGentleAiExtension, __testing } from "../extensions/gentle-ai.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 
 // gentle-pi#560 / gentle-ai#4056, #4057: since 2026-08-01 Gentle AI stopped
@@ -103,7 +103,7 @@ test("before_agent_start injects the mirrored review execution contract for the 
 	assert.equal(result, undefined, "the handler must not return a replacement systemPrompt");
 	const appended = event.systemPromptOptions.appendSystemPrompt;
 	const expected = mirroredPiOrchestrationText();
-	assert.match(appended, /Substantial authorized work: use ODD/);
+	assert.match(appended, /large tasks get ODD tracking and workers/);
 	assert.match(appended, /For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks/);
 	assert.match(appended, /Test presence alone does not establish applicability; no chat or TUI toggle activates it/);
 	assert.match(appended, /no meaningful RED, explain why and run proportionate ordinary functional or structural verification/);
@@ -111,7 +111,7 @@ test("before_agent_start injects the mirrored review execution contract for the 
 	assert.doesNotMatch(appended, /If tests exist, use strict TDD/);
 	assert.match(appended, /ODD \(Default Workflow, harness section above\) is mandatory on every request/);
 	assert.doesNotMatch(appended, /Prefer SDD\/OpenSpec artifacts/);
-	assert.match(appended, /## Gentle AI review execution contract \(mirrored provider bundle 1\.2\.0\)/);
+	assert.match(appended, /## Gentle AI review execution contract \(mirrored provider bundle 1\.3\.0\)/);
 	assert.ok(appended.includes(expected), "the mirrored orchestration/pi.md text must appear verbatim");
 	assert.match(appended, /call `gentle_review` with {"operation":"inspect"}/);
 	assert.match(appended, /call `gentle_review` with operation `status`, the exact retained `lineageId`, and `workspaceRoot`/);
@@ -162,7 +162,7 @@ test("before_agent_start does not let legacy prompt text bypass primary ODD and 
 	const event = primaryEvent({ systemPrompt: "SDD apply executor body" });
 	await beforeAgentStart(event, ctx());
 	const appended = event.systemPromptOptions.appendSystemPrompt;
-	assert.match(appended, /Substantial authorized work: use ODD/);
+	assert.match(appended, /large tasks get ODD tracking and workers/);
 	assert.match(appended, /Gentle AI review execution contract/);
 	assert.doesNotMatch(appended, /### 3\. SDD \(optional\)/);
 });
@@ -228,3 +228,32 @@ test("rejects a tampered mirror, accepts a matching one, and warns once", async 
 		rmSync(matching, { recursive: true, force: true });
 	}
 });
+
+// gentle-shell#1494 F2: when receipt-driven development is off, the review
+// execution contract is irrelevant to the session, so it is not loaded. On and
+// unknown keep it (unknown fails safe toward the reviewed path).
+function rddCli(effective: "on" | "off" | "throws"): NativeReviewCli {
+	return {
+		reviewMode: async () => {
+			if (effective === "throws") throw new Error("native review mode is unavailable");
+			return { operation: "status", scope: "clone", status: { global: effective, cloneLocal: "", effective, source: "global" } };
+		},
+	} as unknown as NativeReviewCli;
+}
+
+for (const [effective, injected] of [["off", false], ["on", true], ["throws", true]] as const) {
+	test(`before_agent_start ${injected ? "injects" : "skips"} the review execution contract when RDD is ${effective === "throws" ? "unknown" : effective}`, async () => {
+		__testing.clearRddStatusMemoForTesting();
+		try {
+			const { beforeAgentStart } = harness(rddCli(effective));
+			const event = primaryEvent();
+			await beforeAgentStart(event, ctx());
+			const appended = event.systemPromptOptions.appendSystemPrompt;
+			assert.match(appended, /# el Gentleman Orchestrator/, "the harness itself is always injected");
+			if (injected) assert.match(appended, /Gentle AI review execution contract/);
+			else assert.doesNotMatch(appended, /Gentle AI review execution contract/);
+		} finally {
+			__testing.clearRddStatusMemoForTesting();
+		}
+	});
+}

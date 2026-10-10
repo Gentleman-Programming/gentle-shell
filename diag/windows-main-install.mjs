@@ -34,9 +34,9 @@ console.log(`shell commit ${commit}`);
 	await fs.mkdir(join(probe, "out"), { recursive: true });
 	const archive = join(probe, "a.tgz");
 	execFileSync("C:\\Windows\\System32\\tar.exe", ["-czf", archive, "-C", process.env.GITHUB_WORKSPACE, "package.json"]);
-	await traced("C:\\Program Files\\Git\\usr\\bin\\tar.exe", ["-xzf", archive, "-C", join(probe, "out")]);
+	await traced("C:\\Program Files\\Git\\usr\\bin\\tar.exe", ["-xzf", archive, "-C", join(probe, "out")], { deadlineMs: 60_000 });
 	const msysFirst = { ...process.env, PATH: `C:\\Program Files\\Git\\usr\\bin;${process.env.PATH}` };
-	await traced("tar", ["-xzf", archive, "-C", join(probe, "out")], { env: msysFirst });
+	await traced("tar", ["-xzf", archive, "-C", join(probe, "out")], { env: msysFirst, deadlineMs: 60_000 });
 }
 // B. The real flow installs the release stack first, then overlays main.
 const release = await traced(pnpm.command, [...pnpm.prefix, "add", "-g", "@earendil-works/pi-coding-agent@1.0.0", "gentle-pi@4.0.0", "--allow-build=gentle-pi"], { deadlineMs: 20 * 60_000 });

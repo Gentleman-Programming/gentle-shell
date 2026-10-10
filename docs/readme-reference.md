@@ -392,6 +392,43 @@ This take-over exists because two gentle-pi copies loaded at once — the declar
 
 ### `upgrade` subcommand and channels
 
+**Availability:** this subcommand was added on main in commit `96ff045a8`.
+No published `gentle-pi` release through v4.0.0 contains it; a minimum supported
+release version has not been published yet. Package version alone is not enough:
+a main build with the change can still be based on version 4.0.0. Older launchers
+forward `upgrade` to Pi as an ordinary argument, opening a session with it as the
+initial prompt. The `--channel` examples below also require a supporting build.
+
+#### Updating an installation without `upgrade`
+
+Use the installer from a fresh main checkout rather than invoking the old launcher:
+
+```bash
+git clone --branch main https://github.com/Gentleman-Programming/gentle-shell.git
+cd gentle-shell
+
+# macOS and Linux
+sh scripts/bootstrap.sh
+
+# Windows (cmd)
+scripts\bootstrap.cmd
+```
+
+Use a new checkout directory if `gentle-shell` already exists. The bootstrap
+opens the browser installation wizard; it detects the installed Gentle Shell
+and shows the update plan before you confirm. Choose **Latest release** to stay
+on stable, or **Latest main** to install the command from main. Updating to the
+current release does not add `upgrade`; switching back to it from main also
+removes access to the command. Repeat this bootstrap procedure for releases
+without it. If the installer cannot attribute the existing installation to npm
+or pnpm (for example, an `npm link` checkout), it leaves that installation
+untouched and explains why; see the [installation wizard](install-wizard.md).
+
+Do not substitute `gentle-shell update`: that is Pi's package update, not this
+Gentle Shell upgrade/bootstrap operation.
+
+#### Behavior on supporting builds
+
 `gentle-shell upgrade` updates Gentle Shell along its channel, recorded in
 `channel.json` under `GENTLE_PI_CONFIG_HOME` (default `~/.pi/gentle-ai`); no record
 means **release**. It runs before any Pi runtime check, since it may replace this

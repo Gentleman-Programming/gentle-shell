@@ -337,6 +337,12 @@ An older Node.js or an incompatible pnpm (from mise, nvm, nvm-windows, fnm, Volt
 
 ### Keep it up to date
 
+**Release compatibility:** `upgrade` is currently available only in main builds containing commit `96ff045a8`. No published release through `gentle-pi` v4.0.0 supports it; there is no first supported release yet. On older launchers, `gentle-shell upgrade` opens a session with `upgrade` as the prompt instead of updating.
+
+For those installations, use the [browser installer from a fresh main checkout](#path-c-browser-installer-from-a-checkout). It detects an existing installation and shows the update plan before you confirm. Choose **Latest release** to stay on stable (which does not yet provide `upgrade`), or **Latest main** to install a build with the command. See the [older-installation procedure](docs/readme-reference.md#updating-an-installation-without-upgrade).
+
+On a main build that supports `upgrade`:
+
 ```bash
 # Update along your channel: the latest release, or the latest main
 gentle-shell upgrade

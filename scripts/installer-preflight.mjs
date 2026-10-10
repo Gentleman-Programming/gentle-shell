@@ -4,7 +4,7 @@ import {
 	INSTALLER_VERSION,
 	GENTLE_AI_WINDOWS_MINIMUM_GO_VERSION,
 } from "./gentle-ai-installer.mjs";
-import { goPinVersion } from "./installer-downloads.mjs";
+import { artifactFor, goPinVersion } from "./installer-downloads.mjs";
 
 // Read package metadata only: never import the launcher or execute postinstall.
 const metadata = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
@@ -15,7 +15,8 @@ function minimum(range) {
 export const requirements = Object.freeze({
 	node: minimum(metadata.engines.node),
 	pi: minimum(metadata.peerDependencies["@earendil-works/pi-coding-agent"]),
-	pnpm: metadata.packageManager.replace(/^pnpm@/, ""),
+	// pnpm pack can omit packageManager; acquisition still has a verified pin.
+	pnpm: metadata.packageManager?.replace(/^pnpm@/, "") ?? artifactFor("pnpm").version,
 	shell: metadata.version,
 	gentleAi: INSTALLER_VERSION,
 	go: GENTLE_AI_WINDOWS_MINIMUM_GO_VERSION,

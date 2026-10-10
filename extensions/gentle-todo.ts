@@ -1,9 +1,9 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Text, type Component, type TUI } from "@earendil-works/pi-tui";
+import { ScrollView, Text, truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 import { panelHeaderRow } from "../lib/shell-card.ts";
-import { sidebarPart } from "../lib/shell-sidebar.ts";
+import { sidebarPart, sidebarState } from "../lib/shell-sidebar.ts";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import {
 	applyTodo,
@@ -87,6 +87,8 @@ interface TodoSession {
 	ui: ExtensionContext["ui"] | undefined;
 	host: { requestRender(): void } | undefined;
 	tui: TUI | undefined;
+	/** Resolve the visible host when the key is pressed, not when it renders. */
+	scrollTodo?: (lines: number) => void;
 }
 
 function sessionKey(ctx: ExtensionContext): string {
@@ -114,8 +116,20 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		current.host?.requestRender();
 	};
 
-	const todoCard = (current: TodoSession, theme: Parameters<typeof renderTodoCard>[1], scrollable: boolean, spacer: boolean): Component & { dispose(): void } => {
+	const todoCard = (current: TodoSession, theme: Parameters<typeof renderTodoCard>[1], spacer: boolean): Component & { dispose(): void; digest(): string; scrollBy(lines: number): void } => {
 		let hovered = false;
+		let body: string[] = [];
+		let collapsed = current.collapsed;
+		// Widgets are measured as leaves, so native layout cannot assign this
+		// body a viewport. Use native scroll state and explicitly slice its lines
+		// while keeping the collapse header and card footer outside the viewport.
+		const scroll = new ScrollView({ render: () => body, invalidate() {} }, { follow: "none", overscroll: "contain" });
+		const scrollBy = (lines: number) => {
+			if (current.collapsed) return;
+			scroll.scrollBy(lines);
+			if (current.tui) invalidateSidebar(current.tui);
+			current.host?.requestRender();
+		};
 		// The row the rendered card draws its header on: 0 for the outlined
 		// frame, 1 below the float panel's top padding row.
 		let headerRow = 0;
@@ -128,9 +142,25 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 					staleTurns: stale,
 					collapseKey,
 					hovered,
-					...(scrollable ? { scrollable: true } : {}),
+					scrollable: true,
 				});
-				return spacer && lines.length > 0 ? [...lines, ""] : lines;
+				if (collapsed !== current.collapsed) {
+					collapsed = current.collapsed;
+					scroll.scrollToStart();
+				}
+				// At most one third of the screen, capped at 16 rows. Read height
+				// on every render so a mobile resize immediately releases chat space.
+				const terminalRows = current.tui?.terminal?.rows ?? 48;
+				const height = Math.min(16, Math.floor(terminalRows / 3));
+				const bodyStart = headerRow === 1 ? 3 : 1;
+				body = lines.slice(bodyStart, -1);
+				const overflow = !current.collapsed && lines.length + Number(spacer) > height;
+				const room = Math.max(1, height - bodyStart - 1 - Number(spacer) - Number(overflow));
+				scroll.updateLayout(body.length, current.collapsed ? body.length : room, () => current.host?.requestRender());
+				const visible = scroll.render(width).slice(scroll.scrollTop, scroll.scrollTop + scroll.viewportHeight);
+				const output = [...lines.slice(0, bodyStart), ...visible, ...lines.slice(-1)];
+				if (overflow) output.push(theme.fg("muted", truncateToWidth(`↑↓ ${scroll.scrollTop + 1}–${scroll.scrollTop + visible.length}/${body.length} · ctrl+shift+↑/↓`, width)));
+				return spacer && output.length > 0 ? [...output, ""] : output;
 			},
 			invalidate() {
 				hovered = false;
@@ -156,8 +186,17 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 				toggle(current);
 				return { handled: true, render: true };
 			},
+			onWheel(event) {
+				if (current.collapsed || body.length <= scroll.viewportHeight) return undefined;
+				scrollBy(event.wheelDelta ?? 0);
+				return { handled: true, render: true };
+			},
 		});
 		return {
+			scrollBy,
+			// Sidebar caches must observe height-only resizes and local viewport
+			// changes, even when terminal width and task content stay the same.
+			digest: () => JSON.stringify([current.tui?.terminal?.rows, current.collapsed, current.turn, hovered, scroll.scrollTop]),
 			render: (width) => region.render(width),
 			handleMouse: (event) => region.handleMouse(event),
 			invalidate: () => region.invalidate(),
@@ -169,6 +208,7 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		if (current.tui) invalidateSidebar(current.tui);
 		if (!current.ui) return;
 		if (current.state.tasks.length === 0) {
+			current.scrollTodo = undefined;
 			current.ui.setWidget(WIDGET_KEY, undefined);
 			return;
 		}
@@ -176,7 +216,15 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		current.ui.setWidget(WIDGET_KEY, (tui, theme) => {
 			snapshot.host = tui;
 			snapshot.tui = tui;
-			return sidebarPart(tui, "todo", todoCard(snapshot, theme, false, true), todoCard(snapshot, theme, true, false));
+			const bottom = todoCard(snapshot, theme, true);
+			const rail = todoCard(snapshot, theme, false);
+			snapshot.scrollTodo = (lines) => {
+				// Cached rail lines do not re-render when a narrow→wide resize
+				// restores the sidebar. Select ownership from the live layout.
+				const state = tui.terminal ? sidebarState(tui) : undefined;
+				(state?.active && state.ownsHost?.() ? rail : bottom).scrollBy(lines);
+			};
+			return sidebarPart(tui, "todo", bottom, rail);
 		});
 	};
 
@@ -230,6 +278,13 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 			handler: async (ctx) => {
 				toggle(session(ctx));
 			},
+		});
+	}
+
+	for (const [key, lines] of [["ctrl+shift+up", -3], ["ctrl+shift+down", 3]] as const) {
+		pi.registerShortcut(key, {
+			description: `Scroll the Todo list ${lines < 0 ? "up" : "down"}`,
+			handler: async (ctx) => session(ctx).scrollTodo?.(lines),
 		});
 	}
 

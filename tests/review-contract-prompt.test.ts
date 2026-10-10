@@ -3,10 +3,10 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after, before } from "node:test";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createGentleAiExtension, __testing } from "../extensions/gentle-ai.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 
 // gentle-pi#560 / gentle-ai#4056, #4057: since 2026-08-01 Gentle AI stopped
@@ -16,11 +16,42 @@ import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 // These tests exercise the real committed mirror (contracts/review-provider-contract-mirror/)
 // rather than a fake one: the mirror IS the package under test.
 
-type BeforeAgentStartResult = { systemPrompt: string };
+type BeforeAgentStartResult = undefined;
 type BeforeAgentStartHandler = (event: unknown, ctx: ExtensionContext) => Promise<BeforeAgentStartResult>;
+type MutableEvent = { agentName?: string; systemPrompt: string; systemPromptOptions: { appendSystemPrompt: string } };
 
 const REPO_ROOT = join(import.meta.dirname, "..");
 const MIRROR_LOCK_PATH = join(REPO_ROOT, "contracts", "review-provider-contract-mirror", "provider-contract.lock.json");
+
+let fixtureRoot: string | undefined;
+let fixtureCwd: string;
+const fixtureEnvironment: NodeJS.ProcessEnv = {};
+const previousEnvironment = new Map<string, string | undefined>();
+before(() => {
+	fixtureRoot = mkdtempSync(join(tmpdir(), "gentle-pi-review-prompt-"));
+	fixtureCwd = join(fixtureRoot, "project");
+	const home = join(fixtureRoot, "home");
+	mkdirSync(fixtureCwd);
+	mkdirSync(home);
+	Object.assign(fixtureEnvironment, {
+		HOME: home, USERPROFILE: home,
+		GENTLE_PI_CONFIG_HOME: join(home, "config"),
+		GENTLE_PI_AGENT_HOME: join(home, "agents"),
+		PI_CODING_AGENT_DIR: join(home, "pi"),
+		XDG_CONFIG_HOME: join(home, "xdg"),
+	});
+	for (const [key, value] of Object.entries(fixtureEnvironment)) {
+		previousEnvironment.set(key, process.env[key]);
+		process.env[key] = value;
+	}
+});
+after(() => {
+	for (const [key, value] of previousEnvironment) {
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
+	if (fixtureRoot !== undefined) rmSync(fixtureRoot, { recursive: true, force: true });
+});
 
 function mirroredPiOrchestrationText(): string {
 	const lock = JSON.parse(readFileSync(MIRROR_LOCK_PATH, "utf8")) as { contract_semver: string };
@@ -30,7 +61,7 @@ function mirroredPiOrchestrationText(): string {
 	).trim();
 }
 
-function harness(nativeReviewCli: NativeReviewCli | null): { beforeAgentStart: BeforeAgentStartHandler } {
+function harness(nativeReviewCli: NativeReviewCli | null, processEnv?: NodeJS.ProcessEnv): { beforeAgentStart: BeforeAgentStartHandler } {
 	const handlers = new Map<string, BeforeAgentStartHandler>();
 	const pi = {
 		on(name: string, handler: BeforeAgentStartHandler) {
@@ -40,7 +71,12 @@ function harness(nativeReviewCli: NativeReviewCli | null): { beforeAgentStart: B
 		registerCommand() {},
 		registerTool() {},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli })(pi);
+	createGentleAiExtension({
+		nativeReviewCli,
+		processEnv: { ...fixtureEnvironment, GENTLE_PI_AGENTS_CHILD: "0", ...processEnv, GENTLE_AI_TELEMETRY: "0" },
+		resolveTelemetryTriggerBinary: () => join(fixtureCwd, "never-executed"),
+		telemetryTriggerSpawn: () => assert.fail("Review prompt fixtures must not spawn telemetry"),
+	})(pi);
 	const beforeAgentStart = handlers.get("before_agent_start");
 	assert.equal(typeof beforeAgentStart, "function");
 	return { beforeAgentStart: beforeAgentStart as BeforeAgentStartHandler };
@@ -48,7 +84,7 @@ function harness(nativeReviewCli: NativeReviewCli | null): { beforeAgentStart: B
 
 function ctx(overrides: Record<string, unknown> = {}): ExtensionContext {
 	return {
-		cwd: process.cwd(),
+		cwd: fixtureCwd,
 		hasUI: true,
 		ui: { notify() {} },
 		sessionManager: { getSessionId: () => "review-contract-prompt-session" },
@@ -56,30 +92,35 @@ function ctx(overrides: Record<string, unknown> = {}): ExtensionContext {
 	} as unknown as ExtensionContext;
 }
 
-const primaryEvent = { systemPrompt: "base" };
+function primaryEvent(overrides: Partial<MutableEvent> = {}): MutableEvent {
+	return { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" }, ...overrides };
+}
 
-test("before_agent_start injects the mirrored review execution contract for the primary session", async () => {
+test("before_agent_start injects the mirrored review execution contract for the primary session through appendSystemPrompt, never a returned systemPrompt", async () => {
 	const { beforeAgentStart } = harness({} as NativeReviewCli);
-	const result = await beforeAgentStart(primaryEvent, ctx());
+	const event = primaryEvent();
+	const result = await beforeAgentStart(event, ctx());
+	assert.equal(result, undefined, "the handler must not return a replacement systemPrompt");
+	const appended = event.systemPromptOptions.appendSystemPrompt;
 	const expected = mirroredPiOrchestrationText();
-	assert.match(result.systemPrompt, /Substantial authorized work: use ODD/);
-	assert.match(result.systemPrompt, /For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks/);
-	assert.match(result.systemPrompt, /Test presence alone does not establish applicability; no chat or TUI toggle activates it/);
-	assert.match(result.systemPrompt, /no meaningful RED, explain why and run proportionate ordinary functional or structural verification/);
-	assert.match(result.systemPrompt, /Never invent lifecycle evidence or skip checks/);
-	assert.doesNotMatch(result.systemPrompt, /If tests exist, use strict TDD/);
-	assert.match(result.systemPrompt, /ODD \(Default Workflow, harness section above\) is mandatory on every request/);
-	assert.doesNotMatch(result.systemPrompt, /Prefer SDD\/OpenSpec artifacts/);
-	assert.match(result.systemPrompt, /## Gentle AI review execution contract \(mirrored provider bundle 1\.2\.0\)/);
-	assert.ok(result.systemPrompt.includes(expected), "the mirrored orchestration/pi.md text must appear verbatim");
-	assert.match(result.systemPrompt, /call `gentle_review` with {"operation":"inspect"}/);
-	assert.match(result.systemPrompt, /call `gentle_review` with operation `status`, the exact retained `lineageId`, and `workspaceRoot`/);
-	assert.match(result.systemPrompt, /Use `gentle_review_capture` for one current returned slot or `gentle_review_capture_group` for the complete current reviewer group/);
-	assert.match(result.systemPrompt, /An eligible interactive Pi host may resolve `gentle-ai\.review-integration\.consent\/v3` before the envelope reaches the model/);
-	assert.match(result.systemPrompt, /If `gentle_review` returns the envelope unresolved, it is still the original provider-owned two-choice contract/);
-	assert.match(result.systemPrompt, /Never add the host action to a decoded or relayed provider envelope/);
-	assert.match(result.systemPrompt, /An approved capture awaits acknowledgement; it is not burned\. On `approved`, use bound facade STATUS to obtain or replay the exact provider-issued `acknowledge-approved` continuation, then execute it unchanged\. Only its successful returned envelope burns authority; do not issue STATUS after that burn\./);
-	let previousLifecycleIndex = result.systemPrompt.indexOf("## Gentle AI review execution contract");
+	assert.match(appended, /large tasks get ODD tracking and workers/);
+	assert.match(appended, /For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks/);
+	assert.match(appended, /Test presence alone does not establish applicability; no chat or TUI toggle activates it/);
+	assert.match(appended, /no meaningful RED, explain why and run proportionate ordinary functional or structural verification/);
+	assert.match(appended, /Never invent lifecycle evidence or skip checks/);
+	assert.doesNotMatch(appended, /If tests exist, use strict TDD/);
+	assert.match(appended, /ODD \(Default Workflow, harness section above\) is mandatory on every request/);
+	assert.doesNotMatch(appended, /Prefer SDD\/OpenSpec artifacts/);
+	assert.match(appended, /## Gentle AI review execution contract \(mirrored provider bundle 1\.3\.0\)/);
+	assert.ok(appended.includes(expected), "the mirrored orchestration/pi.md text must appear verbatim");
+	assert.match(appended, /call `gentle_review` with {"operation":"inspect"}/);
+	assert.match(appended, /call `gentle_review` with operation `status`, the exact retained `lineageId`, and `workspaceRoot`/);
+	assert.match(appended, /Use `gentle_review_capture` for one current returned slot or `gentle_review_capture_group` for the complete current reviewer group/);
+	assert.match(appended, /An eligible interactive Pi host may resolve `gentle-ai\.review-integration\.consent\/v3` before the envelope reaches the model/);
+	assert.match(appended, /If `gentle_review` returns the envelope unresolved, it is still the original provider-owned two-choice contract/);
+	assert.match(appended, /Never add the host action to a decoded or relayed provider envelope/);
+	assert.match(appended, /An approved capture awaits acknowledgement; it is not burned\. On `approved`, use bound facade STATUS to obtain or replay the exact provider-issued `acknowledge-approved` continuation, then execute it unchanged\. Only its successful returned envelope burns authority; do not issue STATUS after that burn\./);
+	let previousLifecycleIndex = appended.indexOf("## Gentle AI review execution contract");
 	for (const marker of [
 		'call `gentle_review` with {"operation":"inspect"}',
 		"2. **Freeze once.**",
@@ -87,48 +128,69 @@ test("before_agent_start injects the mirrored review execution contract for the 
 		"Use `gentle_review_capture` for one current returned slot",
 		"5. **Acknowledge exactly.**",
 	]) {
-		const markerIndex = result.systemPrompt.indexOf(marker, previousLifecycleIndex + 1);
+		const markerIndex = appended.indexOf(marker, previousLifecycleIndex + 1);
 		assert.ok(markerIndex > previousLifecycleIndex, `${marker} must follow the previous lifecycle step`);
 		previousLifecycleIndex = markerIndex;
 	}
-	assert.doesNotMatch(result.systemPrompt, /authority is already burned/);
-	assert.doesNotMatch(result.systemPrompt, /gentle-ai review status\b.*--agent pi/);
+	assert.doesNotMatch(appended, /authority is already burned/);
+	assert.doesNotMatch(appended, /gentle-ai review status\b.*--agent pi/);
 });
 
 test("before_agent_start does not inject the review execution contract for a named agent session", async () => {
 	const { beforeAgentStart } = harness({} as NativeReviewCli);
-	const result = await beforeAgentStart({ agentName: "review-readability", systemPrompt: "base" }, ctx());
-	assert.doesNotMatch(result.systemPrompt, /Gentle AI review execution contract/);
+	const event = primaryEvent({ agentName: "review-readability" });
+	await beforeAgentStart(event, ctx());
+	assert.doesNotMatch(event.systemPromptOptions.appendSystemPrompt, /Gentle AI review execution contract/);
 });
 
 test("before_agent_start does not inject the review execution contract for gentle-ai-worker", async () => {
 	const { beforeAgentStart } = harness({} as NativeReviewCli);
-	const result = await beforeAgentStart({ agentName: "gentle-ai-worker", systemPrompt: "base" }, ctx());
-	assert.equal(result.systemPrompt, "base");
-	assert.doesNotMatch(result.systemPrompt, /Substantial authorized work: use ODD/);
-	assert.doesNotMatch(result.systemPrompt, /Gentle AI review execution contract/);
+	const event = primaryEvent({ agentName: "gentle-ai-worker" });
+	await beforeAgentStart(event, ctx());
+	assert.equal(event.systemPromptOptions.appendSystemPrompt, "", "a named agent gets nothing appended");
 });
 
 test("before_agent_start does not inject the review execution contract for jd-fix-agent", async () => {
 	const { beforeAgentStart } = harness({} as NativeReviewCli);
-	const result = await beforeAgentStart({ agentName: "jd-fix-agent", systemPrompt: "base" }, ctx());
-	assert.equal(result.systemPrompt, "base");
-	assert.doesNotMatch(result.systemPrompt, /Substantial authorized work: use ODD/);
-	assert.doesNotMatch(result.systemPrompt, /Gentle AI review execution contract/);
+	const event = primaryEvent({ agentName: "jd-fix-agent" });
+	await beforeAgentStart(event, ctx());
+	assert.equal(event.systemPromptOptions.appendSystemPrompt, "", "a named agent gets nothing appended");
 });
 
 test("before_agent_start does not let legacy prompt text bypass primary ODD and review injection", async () => {
 	const { beforeAgentStart } = harness({} as NativeReviewCli);
-	const result = await beforeAgentStart({ systemPrompt: "SDD apply executor body" }, ctx());
-	assert.match(result.systemPrompt, /Substantial authorized work: use ODD/);
-	assert.match(result.systemPrompt, /Gentle AI review execution contract/);
-	assert.doesNotMatch(result.systemPrompt, /### 3\. SDD \(optional\)/);
+	const event = primaryEvent({ systemPrompt: "SDD apply executor body" });
+	await beforeAgentStart(event, ctx());
+	const appended = event.systemPromptOptions.appendSystemPrompt;
+	assert.match(appended, /large tasks get ODD tracking and workers/);
+	assert.match(appended, /Gentle AI review execution contract/);
+	assert.doesNotMatch(appended, /### 3\. SDD \(optional\)/);
+});
+
+test("before_agent_start does not inject the review execution contract or gentlePrompt for a child session (GENTLE_PI_AGENTS_CHILD=1)", async () => {
+	const { beforeAgentStart } = harness({} as NativeReviewCli, { GENTLE_PI_AGENTS_CHILD: "1" });
+	const event = primaryEvent({ systemPromptOptions: { appendSystemPrompt: "Worker-specific instructions" } });
+	const result = await beforeAgentStart(event, ctx());
+	assert.equal(result, undefined, "the handler must not return a replacement systemPrompt");
+	assert.equal(event.systemPromptOptions.appendSystemPrompt, "Worker-specific instructions", "child instructions must remain unchanged, without primary harness or review injection");
 });
 
 test("before_agent_start injects nothing when nativeReviewCli is null", async () => {
 	const { beforeAgentStart } = harness(null);
-	const result = await beforeAgentStart(primaryEvent, ctx());
-	assert.doesNotMatch(result.systemPrompt, /Gentle AI review execution contract/);
+	const event = primaryEvent();
+	await beforeAgentStart(event, ctx());
+	assert.doesNotMatch(event.systemPromptOptions.appendSystemPrompt, /Gentle AI review execution contract/);
+});
+
+test("before_agent_start is idempotent: running twice on the same systemPromptOptions never duplicates the harness", async () => {
+	const { beforeAgentStart } = harness({} as NativeReviewCli);
+	const event = primaryEvent();
+	await beforeAgentStart(event, ctx());
+	const firstLength = event.systemPromptOptions.appendSystemPrompt.length;
+	await beforeAgentStart(event, ctx());
+	assert.equal(event.systemPromptOptions.appendSystemPrompt.length, firstLength, "a second run on the same options object must not append again");
+	const occurrences = event.systemPromptOptions.appendSystemPrompt.split("Gentle AI review execution contract").length - 1;
+	assert.equal(occurrences, 1);
 });
 
 // gentle-ai R1/R3: a tampered mirrored orchestration/pi.md must never be spliced into the system prompt.
@@ -166,3 +228,32 @@ test("rejects a tampered mirror, accepts a matching one, and warns once", async 
 		rmSync(matching, { recursive: true, force: true });
 	}
 });
+
+// gentle-shell#1494 F2: when receipt-driven development is off, the review
+// execution contract is irrelevant to the session, so it is not loaded. On and
+// unknown keep it (unknown fails safe toward the reviewed path).
+function rddCli(effective: "on" | "off" | "throws"): NativeReviewCli {
+	return {
+		reviewMode: async () => {
+			if (effective === "throws") throw new Error("native review mode is unavailable");
+			return { operation: "status", scope: "clone", status: { global: effective, cloneLocal: "", effective, source: "global" } };
+		},
+	} as unknown as NativeReviewCli;
+}
+
+for (const [effective, injected] of [["off", false], ["on", true], ["throws", true]] as const) {
+	test(`before_agent_start ${injected ? "injects" : "skips"} the review execution contract when RDD is ${effective === "throws" ? "unknown" : effective}`, async () => {
+		__testing.clearRddStatusMemoForTesting();
+		try {
+			const { beforeAgentStart } = harness(rddCli(effective));
+			const event = primaryEvent();
+			await beforeAgentStart(event, ctx());
+			const appended = event.systemPromptOptions.appendSystemPrompt;
+			assert.match(appended, /# el Gentleman Orchestrator/, "the harness itself is always injected");
+			if (injected) assert.match(appended, /Gentle AI review execution contract/);
+			else assert.doesNotMatch(appended, /Gentle AI review execution contract/);
+		} finally {
+			__testing.clearRddStatusMemoForTesting();
+		}
+	});
+}

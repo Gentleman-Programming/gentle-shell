@@ -13,6 +13,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import https from "node:https";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
@@ -36,19 +37,20 @@ const WINDOWS_SYSTEM_ROOT = "C:\\Windows";
 // version check below) derives from this constant instead of repeating the
 // literal, so a pin bump cannot leave a stale copy behind. See
 // scripts/install-gentle-ai.mjs for the incident that motivated this.
-export const INSTALLER_VERSION = "3.7.0";
+export const INSTALLER_VERSION = "4.0.0";
 export const RELEASE_BASE_URL = `https://github.com/Gentleman-Programming/gentle-ai/releases/download/v${INSTALLER_VERSION}/`;
 export const GENTLE_AI_INSTALL_METHOD = Object.freeze({
 	SIGNED_RELEASE_ASSET: "signed-release-asset",
 	GO_SUMDB_SOURCE_BUILD: "go-sumdb-source-build",
 });
-export const GENTLE_AI_WINDOWS_SOURCE_PACKAGE_PATH = "github.com/gentleman-programming/gentle-ai/v3/cmd/gentle-ai";
-export const GENTLE_AI_WINDOWS_SOURCE_MODULE = "github.com/gentleman-programming/gentle-ai/v3";
+export const GENTLE_AI_WINDOWS_SOURCE_PACKAGE_PATH = "github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai";
+export const GENTLE_AI_WINDOWS_SOURCE_MODULE = "github.com/gentleman-programming/gentle-ai/v4";
 export const GENTLE_AI_WINDOWS_SOURCE_TAG = `v${INSTALLER_VERSION}`;
-// `go mod download -json github.com/gentleman-programming/gentle-ai/v3@v3.7.0`
+// `go mod download -json github.com/gentleman-programming/gentle-ai/v4@v4.0.0`
 // with GOSUMDB=sum.golang.org reports this exact module SumDB checksum, and the
-// tag resolves to commit 6dee8f833aec9e46015759c5065a9035795d9af1, the published v3.7.0 release head.
-export const GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM = "h1:MQbzHlLdPklUQn0rVE9Mz94UygHsN2OPe7xMfPn9aGw=";
+// tag resolves to commit ff77164d4f56f1665b22fb6fac51c2ccbb769400, the published v4.0.0 release head.
+// v4.0.0 moved the Go module path to the /v4 major-version suffix.
+export const GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM = "h1:pZ/XZ2Pk3U9lgXigOTY62zlxxFOHnc9CjQhLgaV/Hfc=";
 export const GENTLE_AI_WINDOWS_SOURCE_PACKAGE = `${GENTLE_AI_WINDOWS_SOURCE_PACKAGE_PATH}@${GENTLE_AI_WINDOWS_SOURCE_TAG}`;
 export const GENTLE_AI_WINDOWS_MINIMUM_GO_VERSION = "1.25.10";
 export const GENTLE_AI_GO_TOOLCHAIN_UNAVAILABLE_CODE = "GENTLE_AI_GO_TOOLCHAIN_UNAVAILABLE";
@@ -67,7 +69,7 @@ export class GentleAiInstallerError extends Error {
 // Sentinel used while a re-pinned gentle-ai release is not yet published. A
 // sentinel digest can never match a real SHA-256, so installation fails closed,
 // and verify-package-files.mjs refuses to pack/publish while any digest below
-// still holds it. The v3.7.0 digests are pinned from the published release:
+// still holds it. The v4.0.0 digests are pinned from the published release:
 // archive sha256 values verified against the minisign-signed checksums.txt and
 // freshly computed hashes; binary sha256 values computed from the extracted
 // executables.
@@ -109,15 +111,15 @@ async function downloadPinnedGentleAiAsset(asset, destination, options) {
 }
 
 // Windows is absent from signed release archives on purpose. gentle-ai stopped
-// distributing unsigned Windows builds in c4b764d0, so v3.7.0 publishes signed
+// distributing unsigned Windows builds in c4b764d0, so v4.0.0 publishes signed
 // Darwin/Linux archives only. Windows x64/arm64 uses the separately verified
 // exact-tag Go SumDB source-build path below; restore archive rows only when
 // upstream ships signed Windows assets.
 export const GENTLE_AI_RELEASE_ASSETS = Object.freeze({
-	"darwin/amd64": asset("gentle-ai_3.7.0_darwin_amd64.tar.gz", "e55ff3ee06258a90e9195c0e3a593b85f6d79cc439e9e6c04b2596725120a610", "aa30a940e3b75ac218249b3f92d17afd2b972f833258e8212175a73d8e76d5bf", "gentle-ai"),
-	"darwin/arm64": asset("gentle-ai_3.7.0_darwin_arm64.tar.gz", "66eb5740c4506cb2cfd1cc5207439c61cfe07678854f4ac7c83027a95a0e666a", "ca726cf3f9a523dc0112aa113beb634cda389e8b47edc5851254c32979bee89e", "gentle-ai"),
-	"linux/amd64": asset("gentle-ai_3.7.0_linux_amd64.tar.gz", "a730a61a43758f04cc9a4ac644945cc0e8652a1e33d6997a0a3d3f0044d2fff5", "002d09fd2b9628a29986a660c1f51f8a5042ff7fd54c8ab15b7b27de96c6cccc", "gentle-ai"),
-	"linux/arm64": asset("gentle-ai_3.7.0_linux_arm64.tar.gz", "a3a3d3a974f3d9b67d935fe9e306ae83c305da4ec1baed4a5319c10b044cd0eb", "e29546c51d8d65528bf565239ed3fc174da73c5fa3e861e64f20f84b16f28f26", "gentle-ai"),
+	"darwin/amd64": asset("gentle-ai_4.0.0_darwin_amd64.tar.gz", "b5b74f22b38ec3339b38e8c68f797dc76ff12ed6580826a6e425d5c718da80c1", "d4a5b16ff70e65331e17a62356941bb0c75ecb9dbe3a0d98a6b54cfbd76cd6b0", "gentle-ai"),
+	"darwin/arm64": asset("gentle-ai_4.0.0_darwin_arm64.tar.gz", "d2159caf6d68f367b18830ece6af71ef26963d5f5320d7df6a794773f45cc7e9", "18a9f7fae55d85c95684b6d512a4a148d0cb24a856325f72573c34caf65159eb", "gentle-ai"),
+	"linux/amd64": asset("gentle-ai_4.0.0_linux_amd64.tar.gz", "5f4417cf29c969c86da4799942fd673368840901be1bb09c779a12d7ed6096ea", "50ba217b5138c1a9c7d5bf2f79931b1bb89b89c4cf650dcd7ee037657c88158d", "gentle-ai"),
+	"linux/arm64": asset("gentle-ai_4.0.0_linux_arm64.tar.gz", "1383b040c95cfc69206660d73c21907b14ad70ab913f410917c54f43d3147e57", "6703704f0c4a5b70c36fbdc44db641e810871cab16bc28040d06aa1d10704ad3", "gentle-ai"),
 });
 
 // A pinned asset is either a signed archive or, for a prerelease pin only,
@@ -193,16 +195,32 @@ export async function downloadGentleAiAsset(url, destination, maxBytes = MAX_DOW
 	const downloadOnce = async () => {
 		const response = await responseFor(url, redirects), contentLength = Number(response.headers["content-length"] ?? "0");
 		if (!Number.isSafeInteger(contentLength) || contentLength < 0 || contentLength > maxBytes) { response.resume(); throw new Error("Gentle AI download exceeds the maximum allowed size"); }
-		await new Promise((resolve, reject) => {
-			const output = createWriteStream(destination, { flags: "wx", mode: 0o600 }); let received = 0, settled = false;
-			let timer = setTimeout(() => response.destroy(downloadTimeoutError("body")), bodyTimeoutMs);
-			const finish = (callback, value) => { if (!settled) { settled = true; clearTimeout(timer); callback(value); } };
-			const fail = (error) => { response.destroy(); output.destroy(); finish(reject, error); };
-			const reset = () => { clearTimeout(timer); timer = setTimeout(() => response.destroy(downloadTimeoutError("body")), bodyTimeoutMs); };
-			response.on("data", (chunk) => { reset(); received += chunk.length; if (received > maxBytes) response.destroy(new Error("Gentle AI download exceeds the maximum allowed size")); });
-			response.on("error", fail); response.setTimeout?.(bodyTimeoutMs, () => response.destroy(downloadTimeoutError("body")));
-			output.on("error", fail); output.on("finish", () => finish(resolve)); response.pipe(output);
-		});
+		let created = false;
+		try {
+			await new Promise((resolve, reject) => {
+				const output = createWriteStream(destination, { flags: "wx", mode: 0o600 }); let received = 0, settled = false;
+				output.on("open", () => { created = true; });
+				let timer = setTimeout(() => response.destroy(downloadTimeoutError("body")), bodyTimeoutMs);
+				// The exclusive open is asynchronous, so a failed attempt may settle the
+				// download before its destination stream finished with the filesystem. Wait
+				// for that stream to close first: otherwise a late creation outlives the
+				// retry's removal of the destination and the next exclusive open fails with
+				// EEXIST instead of reporting the timeout that caused the retry.
+				const closed = () => new Promise((done) => { if (output.closed) done(); else output.on("close", done); });
+				const finish = (callback, value) => { if (settled) return; settled = true; clearTimeout(timer); void closed().then(() => callback(value)); };
+				const fail = (error) => { response.destroy(); output.destroy(); finish(reject, error); };
+				const reset = () => { clearTimeout(timer); timer = setTimeout(() => response.destroy(downloadTimeoutError("body")), bodyTimeoutMs); };
+				response.on("data", (chunk) => { reset(); received += chunk.length; if (received > maxBytes) response.destroy(new Error("Gentle AI download exceeds the maximum allowed size")); });
+				response.on("error", fail); response.setTimeout?.(bodyTimeoutMs, () => response.destroy(downloadTimeoutError("body")));
+				output.on("error", fail); output.on("finish", () => finish(resolve)); response.pipe(output);
+			});
+		} catch (error) {
+			// A failed attempt removes only the file it created, once its stream closed, so
+			// the retry starts from a free destination path. A path this download never
+			// owned is left alone instead of being deleted with it.
+			if (created) await rm(destination, { force: true });
+			throw error;
+		}
 	};
 	for (let attempt = 1; attempt <= maxAttempts; attempt += 1) try { if (attempt > 1) await rm(destination, { force: true }); await downloadOnce(); return; } catch (error) {
 		if (attempt === maxAttempts || !isRetryableDownloadError(error)) throw error;
@@ -567,7 +585,7 @@ async function recoverInterruptedPublication(runtimeRoot, bundleIsValid, options
 	const live = versionBundlePath(runtimeRoot);
 	const liveExists = await realBundleDirectory(live, runtimeRoot, "live bundle");
 	if (!liveExists) {
-		try { await (options.rename ?? rename)(backup, live); }
+		try { await renameWithWindowsPublicationRetry(backup, live, options); }
 		catch (error) { throw bundleRecoveryError(runtimeRoot, `could not restore valid backup ${backup}: ${error instanceof Error ? error.message : String(error)}`); }
 		return;
 	}
@@ -584,21 +602,43 @@ async function cleanupStaleStagingBundles(runtimeRoot) {
 	}
 }
 
+// Windows publication can lose a race with the just-executed gentle-ai.exe or a
+// real-time scanner still holding the staging directory. Retry only those lock
+// codes, and only on the effective win32 platform, so a permanent failure still
+// surfaces as the original error instead of a successful install.
+const WINDOWS_PUBLICATION_RETRY_DELAYS_MS = [200, 400, 800, 1600];
+
+function isRetryableWindowsPublicationLock(error) {
+	return Boolean(error && typeof error === "object" && ["EPERM", "EBUSY", "EACCES"].includes(error.code));
+}
+
+async function renameWithWindowsPublicationRetry(from, to, options) {
+	const renameFile = options.rename ?? rename;
+	if ((options.platform ?? process.platform) !== "win32") return renameFile(from, to);
+	for (let attempt = 0; attempt <= WINDOWS_PUBLICATION_RETRY_DELAYS_MS.length; attempt += 1) {
+		try { return await renameFile(from, to); }
+		catch (error) {
+			if (attempt === WINDOWS_PUBLICATION_RETRY_DELAYS_MS.length || !isRetryableWindowsPublicationLock(error)) throw error;
+			await new Promise((resolve) => setTimeout(resolve, WINDOWS_PUBLICATION_RETRY_DELAYS_MS[attempt]));
+		}
+	}
+}
+
 async function publishBundle(runtimeRoot, stagingDirectory, options) {
-	const versionDirectory = join(runtimeRoot, `v${INSTALLER_VERSION}`), renameFile = options.rename ?? rename;
+	const versionDirectory = join(runtimeRoot, `v${INSTALLER_VERSION}`);
 	const backupDirectory = join(runtimeRoot, `.v${INSTALLER_VERSION}.backup-${process.pid}-${Date.now()}`);
 	let movedPrior = false;
 	try {
 		try {
 			const current = await lstat(versionDirectory);
 			if (!current.isDirectory() || current.isSymbolicLink()) throw new Error("Gentle AI package-local version directory must be a real directory");
-			await renameFile(versionDirectory, backupDirectory);
+			await renameWithWindowsPublicationRetry(versionDirectory, backupDirectory, options);
 			movedPrior = true;
 		} catch (error) { if (!(error && typeof error === "object" && error.code === "ENOENT")) throw error; }
-		await renameFile(stagingDirectory, versionDirectory);
+		await renameWithWindowsPublicationRetry(stagingDirectory, versionDirectory, options);
 	} catch (error) {
 		if (movedPrior) {
-			try { await renameFile(backupDirectory, versionDirectory); }
+			try { await renameWithWindowsPublicationRetry(backupDirectory, versionDirectory, options); }
 			catch (rollbackError) { throw new Error("Gentle AI bundle publication failed and rollback could not restore the prior bundle", { cause: rollbackError }); }
 		}
 		throw error;
@@ -622,31 +662,39 @@ async function installWindowsGentleAiFromGoSumdb(options, packageRoot, architect
 	return withInstallLock(packageRoot, options, async (runtimeRoot) => {
 		await cleanupStaleStagingBundles(runtimeRoot);
 		const stagingDirectory = await mkdtemp(join(runtimeRoot, `.v${INSTALLER_VERSION}.staging-`));
+		// Go builds in a short private directory under the system temp directory, never inside
+		// the package: from a deep pnpm store path (179 characters, run 38063142924) the
+		// working directories Go gives asm.exe inside GOMODCACHE exceed MAX_PATH and
+		// CreateProcess fails with "The directory name is invalid."
+		let buildDirectory = null;
 		try {
 			await chmod(stagingDirectory, 0o700);
-			const buildDirectory = join(stagingDirectory, ".build");
-			await mkdir(buildDirectory, { recursive: true, mode: 0o700 });
+			buildDirectory = await mkdtemp(join(options.temporaryDirectory ?? tmpdir(), "gai-"));
+			await chmod(buildDirectory, 0o700);
 			const goPath = await resolveWindowsGoExecutable(options);
 			const environment = sealedGoEnvironment(goPath, buildDirectory, architecture);
 			for (const directory of [environment.GOBIN, environment.GOPATH, environment.GOMODCACHE, environment.GOCACHE, environment.TEMP]) await mkdir(directory, { recursive: true, mode: 0o700 });
 			await recoverInterruptedPublication(runtimeRoot, (directory) => existingWindowsSourceBundleMatches(directory, execute, goPath, environment, architecture), options);
 			const existing = versionBundlePath(runtimeRoot);
 			if (await existingWindowsSourceBundleMatches(existing, execute, goPath, environment, architecture)) return { installed: false, binaryPath: join(existing, "gentle-ai.exe"), method: GENTLE_AI_INSTALL_METHOD.GO_SUMDB_SOURCE_BUILD };
-			await assertGoToolchain(execute, goPath, environment, stagingDirectory);
-			try { await runCommand(execute, goPath, ["install", GENTLE_AI_WINDOWS_SOURCE_PACKAGE], commandOptions(environment, stagingDirectory, GO_INSTALL_TIMEOUT_MS)); }
+			await assertGoToolchain(execute, goPath, environment, buildDirectory);
+			try { await runCommand(execute, goPath, ["install", GENTLE_AI_WINDOWS_SOURCE_PACKAGE], commandOptions(environment, buildDirectory, GO_INSTALL_TIMEOUT_MS)); }
 			catch (error) { throw new GentleAiInstallerError(GENTLE_AI_GO_INSTALL_FAILED_CODE, `Gentle AI Go SumDB source installation failed for ${GENTLE_AI_WINDOWS_SOURCE_PACKAGE}.`, error); }
 			const builtBinary = join(environment.GOBIN, "gentle-ai.exe"), binaryPath = join(stagingDirectory, "gentle-ai.exe");
 			const details = await lstat(builtBinary);
 			if (!details.isFile() || details.isSymbolicLink()) throw new GentleAiInstallerError(GENTLE_AI_GO_INSTALL_FAILED_CODE, "Gentle AI Go installation produced a non-regular gentle-ai.exe.");
 			await copyFile(builtBinary, binaryPath);
-			const metadata = await verifyGoBuildMetadata(execute, goPath, binaryPath, environment, stagingDirectory, architecture);
-			await assertExactGentleAiVersion(execute, binaryPath, environment, stagingDirectory);
+			const metadata = await verifyGoBuildMetadata(execute, goPath, binaryPath, environment, buildDirectory, architecture);
+			await assertExactGentleAiVersion(execute, binaryPath, environment, buildDirectory);
 			const binarySha256 = await sha256File(binaryPath);
 			await writeFile(join(stagingDirectory, "integrity.json"), canonicalManifest(windowsSourceManifest(metadata, binarySha256, architecture)), { mode: 0o600 });
 			await safeRemoveDirectory(buildDirectory);
 			const published = await publishBundle(runtimeRoot, stagingDirectory, options);
 			return { installed: true, binaryPath: join(published, "gentle-ai.exe"), method: GENTLE_AI_INSTALL_METHOD.GO_SUMDB_SOURCE_BUILD };
-		} finally { await safeRemoveDirectory(stagingDirectory); }
+		} finally {
+			try { if (buildDirectory !== null) await safeRemoveDirectory(buildDirectory); }
+			finally { await safeRemoveDirectory(stagingDirectory); }
+		}
 	});
 }
 

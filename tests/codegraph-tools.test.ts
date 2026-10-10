@@ -39,6 +39,41 @@ test("CodeGraph tool rejects non-project, nested-project, HOME, and temporary wo
 	assert.equal(calls, 0);
 });
 
+test("CodeGraph query timeout is reported distinctly from user abort and never bounds init (#1901)", async (t) => {
+	const cwd = workspace(t);
+	const ctx = { cwd } as ExtensionContext;
+	// Behaves like execFile: settles only when its signal aborts, then rejects with AbortError.
+	const hanging: CodeGraphRunner = (_args, options) => new Promise((_resolve, reject) => {
+		options.signal?.addEventListener("abort", () => reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError", code: "ABORT_ERR" })), { once: true });
+	});
+
+	const bounded = createCodeGraphTool(hanging, { queryTimeoutMs: 20 });
+	for (const parameters of [{ operation: "query", query: "x" }, { operation: "explore", query: "x" }] as const) {
+		const result = await bounded.execute("test", parameters, undefined, undefined, ctx);
+		assert.match(result.content[0].text, /CodeGraph timed out after 20 ms/);
+		assert.match(result.content[0].text, /Use read, grep, and find/);
+		assert.equal((result.details as { status: string }).status, "failed");
+	}
+
+	// A user cancellation is not a timeout.
+	const user = new AbortController();
+	setTimeout(() => user.abort(), 5);
+	const cancelled = await createCodeGraphTool(hanging, { queryTimeoutMs: 60_000 }).execute("test", { operation: "query", query: "x" }, user.signal, undefined, ctx);
+	assert.doesNotMatch(cancelled.content[0].text, /timed out/);
+	assert.match(cancelled.content[0].text, /CodeGraph failed to run/);
+
+	// init is the legitimately slow first index: only the user's own signal bounds it.
+	let initSignal: AbortSignal | undefined = new AbortController().signal;
+	const slowInit = createCodeGraphTool(async (_args, options) => {
+		initSignal = options.signal;
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		return { stdout: "indexed", stderr: "" };
+	}, { queryTimeoutMs: 20 });
+	const init = await slowInit.execute("test", { operation: "init" }, undefined, undefined, ctx);
+	assert.deepEqual(init.content, [{ type: "text", text: "indexed" }]);
+	assert.equal(initSignal, undefined);
+});
+
 test("CodeGraph tool runs only fixed cwd-scoped init, query, and explore commands", async (t) => {
 	const cwd = workspace(t);
 	const calls: Array<{ args: readonly string[]; cwd: string }> = [];

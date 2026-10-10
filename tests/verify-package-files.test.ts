@@ -1,15 +1,29 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
 	gentleAiVersionPinMismatches,
+	installerPaths,
+	missingRequiredPaths,
 	reconcileContractsOnDisk,
 	reconcileGeneratedRuntimeSources,
+	requiredPaths,
 } from "../scripts/verify-package-files.mjs";
 import { INSTALLER_VERSION, RELEASE_BASE_URL, GENTLE_AI_WINDOWS_SOURCE_TAG } from "../scripts/gentle-ai-installer.mjs";
 import { GENTLE_AI_VERSION } from "../lib/gentle-ai-binary.ts";
+
+test("package resource CLI reconciles the STATUS diagnostic runtime with the generated inventory", () => {
+	const result = spawnSync(process.execPath, [join(process.cwd(), "scripts/verify-package-files.mjs")], {
+		cwd: process.cwd(), encoding: "utf8", env: { ...process.env, NODE_NO_WARNINGS: "1" },
+	});
+	assert.equal(result.status, 0, result.stderr || result.stdout);
+	assert.equal(result.stderr, "");
+	assert.match(result.stdout, /^gentle-pi package resource check passed \(/);
+});
 
 function makeFixtureRoot(): string {
 	return mkdtempSync(join(tmpdir(), "gentle-pi-verify-package-files-"));
@@ -175,6 +189,45 @@ test("both walks report no drift when sources, runtime/*.mjs, requiredPaths, and
 
 		assert.deepEqual(contractsResult, { unlistedOnDisk: [], listedButMissing: [] });
 		assert.deepEqual(sourcesResult, { drifted: [] });
+	} finally {
+		rmSync(fixtureRoot, { recursive: true, force: true });
+	}
+});
+
+test("required package paths include every browser installation wizard file", () => {
+	const expected = [
+		"bin/gentle-shell-install.mjs",
+		"scripts/installer-server.mjs",
+		"scripts/installer-runner.mjs",
+		"scripts/installer-preflight.mjs",
+		"scripts/installer-probes.mjs",
+		"scripts/installer-downloads.mjs",
+		"scripts/main-channel.mjs",
+		"scripts/installer-windows.mjs",
+		"scripts/installer-windows-artifacts.json",
+		"scripts/bootstrap.sh",
+		"scripts/bootstrap.cmd",
+		"assets/install-wizard/index.html",
+		"assets/install-wizard/wizard.js",
+		"assets/install-wizard/wizard.css",
+	];
+	assert.deepEqual([...installerPaths].sort(), [...expected].sort());
+	for (const relativePath of expected) assert.ok(requiredPaths.includes(relativePath), relativePath);
+	const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
+	assert.deepEqual(missingRequiredPaths(repositoryRoot, installerPaths), []);
+});
+
+test("missing required paths are reported, including directories in place of files", () => {
+	const fixtureRoot = makeFixtureRoot();
+	try {
+		mkdirSync(join(fixtureRoot, "bin"), { recursive: true });
+		mkdirSync(join(fixtureRoot, "assets/install-wizard/index.html"), { recursive: true });
+		writeFileSync(join(fixtureRoot, "bin/gentle-shell-install.mjs"), "// entry\n");
+
+		assert.deepEqual(
+			missingRequiredPaths(fixtureRoot, ["bin/gentle-shell-install.mjs", "assets/install-wizard/index.html", "scripts/installer-server.mjs"]),
+			["assets/install-wizard/index.html", "scripts/installer-server.mjs"],
+		);
 	} finally {
 		rmSync(fixtureRoot, { recursive: true, force: true });
 	}

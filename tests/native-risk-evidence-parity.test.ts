@@ -89,3 +89,24 @@ test("an empty file is named before it is described", () => {
 test("a reason with no path contributes no phrase", () => {
 	assert.deepEqual(nativeRiskEvidencePhrases("high", [{ code: "empty_content" }]), []);
 });
+
+// Field truth from gentle-ai main (4.1.0-dev): one committed high-risk
+// candidate's consent/v3 `risk_evidence` beside its START/v4 `risk_reasons`.
+test("dangerous sink and agent escalation reasons render the gentle-ai phrases", () => {
+	assert.deepEqual(
+		nativeRiskEvidencePhrases("high", [
+			{ code: "dangerous_sink", signal: "dangerous_sink", path: "auth/session.py" },
+			{ code: "hot_path", signal: "auth", path: "auth/session.py" },
+			{ code: "process_boundary", signal: "shell_process", path: "auth/session.py" },
+		]),
+		[
+			"a dangerous code pattern in auth/session.py",
+			"authentication in auth/session.py",
+			"code that starts other processes in auth/session.py",
+		],
+	);
+	assert.deepEqual(
+		nativeRiskEvidencePhrases("high", [{ code: "agent_escalation", signal: "agent_escalation" }]),
+		["the agent that made this change flagged it as high risk"],
+	);
+});

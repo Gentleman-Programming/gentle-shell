@@ -371,9 +371,9 @@ test("failed START gives exact mode and serialization guidance and creates no li
 			operation: "start",
 			lineageId: "nested-start-input",
 			idempotencyKey: "nested-start-input-key",
-			input: { mode: "ordinary" },
+			input: { mode: "standard" },
 		}, undefined, undefined, ctx),
-		/START input must be a JSON string.*no lineage was created.*do not call STATUS or ADVANCE/is,
+		/only "ordinary" or "judgment-day".*no lineage was created.*do not call STATUS or ADVANCE/is,
 	);
 	await assert.rejects(
 		controller.execute("invalid-json-start-input", {

@@ -1,9 +1,9 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { stripAnsi } from "./terminal-theme.ts";
+import { CARD_STYLE, type CardStyle } from "./shell-card.ts";
 
-// Gentle Shell prompt frame. pi's editor renders a top rule, padded content
-// lines, and a bottom rule; this module wraps those lines in a rounded frame
-// with a petal that shows what the agent is doing. Everything here is pure.
+// Pure prompt chrome: neon keeps Pi's rule/content/rule rows in a rounded
+// frame; float retains those indices as painted status/content/padding.
 
 export const PROMPT_STATE = {
 	IDLE: "idle",
@@ -43,6 +43,8 @@ export function scanWorkingText(text: string, tick: number, fg: (role: string, t
 const PETAL_TONE_FRAMES = [PETAL_TONE.DEEP, PETAL_TONE.SOFT, PETAL_TONE.ROSE, PETAL_TONE.BRIGHT, PETAL_TONE.ROSE, PETAL_TONE.SOFT, PETAL_TONE.DEEP, PETAL_TONE.DEEP] as const;
 
 export interface PromptFrameOptions {
+	style?: CardStyle;
+	bg?: (role: string, text: string) => string;
 	state: PromptState;
 	tick: number;
 	borderColor: (text: string) => string;
@@ -50,7 +52,7 @@ export interface PromptFrameOptions {
 	bold?: (text: string) => string;
 	/**
 	 * Overrides the editor's own bottom scroll indicator (e.g. "esc again to
-	 * cancel"). Both share the bottom rule's single label slot; an explicit
+	 * cancel"). Both share the bottom rule / float hint slot; an explicit
 	 * hint always wins because it reflects state the editor cannot render on
 	 * its own.
 	 */
@@ -131,8 +133,91 @@ function sideRules(line: string, innerWidth: number, options: PromptFrameOptions
 	return options.borderColor("│") + content + options.borderColor("│");
 }
 
-export function framePromptLines(lines: string[], width: number, options: PromptFrameOptions): string[] {
+export interface PromptLayout {
+	width: number;
+	nativeWidth: number;
+	prefixWidth: number;
+	background: string;
+}
+
+/** Resolve fallback before native wrapping, selection, completion and mouse geometry. */
+export function resolvePromptLayout(width: number, style?: CardStyle, bg?: PromptFrameOptions["bg"]): PromptLayout {
 	width = Math.max(0, Math.floor(width));
+	let background = "";
+	if (style === CARD_STYLE.FLOAT && width >= 10 && bg) {
+		try {
+			const painted = bg("toolSuccessBg", " ");
+			const match = painted.match(/^((?:\x1b\[[\d;]*m)+) (?:\x1b\[(?:49|0)?m)$/);
+			if (match) {
+				for (const sgr of match[1].matchAll(/\x1b\[([\d;]*)m/g)) {
+					for (const command of promptSgrCommands(sgr[1])) {
+						const code = command[0];
+						if (code === 0 || code === 49) background = "";
+						else if ((code >= 40 && code <= 47) || (code >= 100 && code <= 107) ||
+							(code === 48 && ((command[1] === 5 && command.length === 3) || (command[1] === 2 && command.length === 5)))) {
+							background = `\x1b[${command.join(";")}m`;
+						}
+					}
+				}
+			}
+		} catch { /* Missing theme background: retain the entire neon path. */ }
+	}
+	return { width, nativeWidth: Math.max(1, width - (background ? 5 : 2)), prefixWidth: background ? 3 : 1, background };
+}
+
+// Extended-colour parameters belong to one command: zero RGB channels
+// must never be interpreted as full styling resets.
+function promptSgrCommands(parameters: string): number[][] {
+	const codes = parameters.split(";").map(Number);
+	const commands: number[][] = [];
+	for (let i = 0; i < codes.length;) {
+		const extended = codes[i] === 38 || codes[i] === 48 || codes[i] === 58;
+		const length = extended && codes[i + 1] === 2 ? 5 : extended && codes[i + 1] === 5 ? 3 : 1;
+		commands.push(codes.slice(i, i + length));
+		i += length;
+	}
+	return commands;
+}
+
+// Rearm only the panel background, leaving marker/inversion bytes intact.
+function rearmPromptBackground(text: string, background: string): string {
+	return text.replace(/\x1b\[([\d;]*)m/g, (sgr, parameters: string) =>
+		promptSgrCommands(parameters).some(([code]) => code === 0 || code === 49) ? sgr + background : sgr);
+}
+
+/** Same chrome and horizontal prefix for editable and native completion rows. */
+export function floatPromptRow(line: string, layout: PromptLayout, borderColor: PromptFrameOptions["borderColor"]): string {
+	const clipped = truncateToWidth(line, layout.nativeWidth, "");
+	const content = borderColor("▎") + " " + clipped + " ".repeat(Math.max(0, layout.nativeWidth - visibleWidth(clipped))) + " ";
+	return " " + layout.background + rearmPromptBackground(content, layout.background) + "\x1b[49m ";
+}
+
+function floatPromptHint(top: string, bottom: string, options: PromptFrameOptions, width: number): string {
+	const glyph = petalGlyph(options.state, options.tick);
+	const petal = options.fg(petalTone(options.state, options.tick), options.bold ? options.bold(glyph) : glyph);
+	const label = stateLabel(options) ?? "waiting for input";
+	let paintedLabel = "";
+	if (label) {
+		paintedLabel = options.state === PROMPT_STATE.WORKING
+			? scanWorkingText(label, options.tick, options.fg)
+			: options.fg(LABEL_ROLE, label);
+	}
+	const info = [scrollIndicator(top), options.escHint ?? scrollIndicator(bottom)]
+		.filter((text): text is string => Boolean(text))
+		.map((text) => options.fg(LABEL_ROLE, text));
+	const hint = truncateToWidth("  " + petal + (paintedLabel ? " " + paintedLabel : "") + (info.length ? " · " + info.join(" · ") : ""), width, "");
+	return hint + " ".repeat(Math.max(0, width - visibleWidth(hint)));
+}
+
+export function framePromptLines(lines: string[], width: number, options: PromptFrameOptions, layout = resolvePromptLayout(width, options.style, options.bg)): string[] {
+	width = Math.max(0, Math.floor(width));
+	if (layout.background && lines.length >= 2) {
+		return [
+			floatPromptRow(floatPromptHint(lines[0], lines[lines.length - 1], options, layout.nativeWidth).slice(2), layout, options.borderColor),
+			...lines.slice(1, -1).map((line) => floatPromptRow(line, layout, options.borderColor)),
+			floatPromptRow("", layout, options.borderColor),
+		];
+	}
 	if (lines.length < 2) return lines.map((line) => truncateToWidth(line, width, ""));
 	if (width < 2) return lines.map((_line, index) => width === 0 ? "" : options.borderColor(index === 0 ? "╭" : index === lines.length - 1 ? "╰" : "│"));
 	const innerWidth = width - 2;

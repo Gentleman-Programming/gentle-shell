@@ -1,9 +1,11 @@
-// Bounded, explicit ODD phase signal for the Gentle prompt's working label.
-// ODD phases live only in orchestrator instructions; there is no Pi runtime
-// event for them, so this module never infers a phase from tool use or
-// assistant prose. The orchestrator reports a phase explicitly at ODD
-// protocol transitions (see assets/orchestrator-delegation.md); the prompt
-// falls back to the generic "working…" label whenever nothing was reported.
+// Bounded ODD phase signal for the Gentle prompt's working label. There is
+// no Pi runtime event for ODD phases, so the label comes from two sources:
+// phases inferred deterministically from the primary session's tool activity
+// (lib/odd-phase-inference.ts, wired in extensions/gentle-shell.ts) and
+// explicit reports by the orchestrator through gentle_odd_phase, which
+// refine it with phases tools cannot show (see
+// assets/orchestrator-tracking.md). Never inferred from assistant prose;
+// the prompt falls back to the generic "working…" label when nothing applies.
 
 // Covers the ODD protocol steps in AGENTS.md (1 authorize .. 7 close); not a
 // strict one-to-one mapping. "researching"/"deciding" both cover step 3
@@ -32,6 +34,14 @@ export function oddPhaseLabel(phase: OddPhase): string {
 	return `${phase}…`;
 }
 
+/** Who set a session's phase: the orchestrator through gentle_odd_phase, or tool-activity inference. */
+export type OddPhaseSource = "explicit" | "inferred";
+
+interface ReportedOddPhase {
+	phase: OddPhase;
+	source: OddPhaseSource;
+}
+
 /**
  * Session-scoped, best-effort ODD phase signal. Keyed by Pi session id so a
  * background/child agent — which runs as its own OS process with its own
@@ -42,7 +52,7 @@ export function oddPhaseLabel(phase: OddPhase): string {
  * the next one.
  */
 export class OddPhaseRegistry {
-	private readonly phases = new Map<string, OddPhase>();
+	private readonly phases = new Map<string, ReportedOddPhase>();
 	// The WORKING-state pulse loop does not run at all under the "potato"
 	// animation policy (see GentlePromptEditor.startPulse), and workingLabel
 	// is otherwise only read on the next incidental render. Pi's own docs
@@ -58,13 +68,36 @@ export class OddPhaseRegistry {
 	 * with isOddPhase() (or use clear() for the explicit "clear" token)
 	 * before calling this. Returns undefined, without mutating any state or
 	 * requesting a redraw, when there is no session id to scope the report
-	 * to.
+	 * to. The source defaults to "explicit"; tool-activity inference goes
+	 * through infer() so its precedence rule applies.
 	 */
-	report(sessionId: string | undefined, phase: OddPhase): OddPhase | undefined {
+	report(sessionId: string | undefined, phase: OddPhase, source: OddPhaseSource = "explicit"): OddPhase | undefined {
 		if (!sessionId) return undefined;
-		this.phases.set(sessionId, phase);
+		this.phases.set(sessionId, { phase, source });
 		this.renderRequests.get(sessionId)?.();
 		return phase;
+	}
+
+	/**
+	 * Applies a phase inferred from tool activity and returns the session's
+	 * resulting phase. An explicit report is not overridden by an inferred
+	 * "exploring" (read-only tools are routine while researching or
+	 * deciding). Incidental reads and planning bookkeeping also cannot
+	 * displace active implementation/checking. A known delegated exploration
+	 * is a deliberate transition, not an incidental read; later edits and
+	 * checks can still move between active work phases. Inferring the phase
+	 * already shown changes nothing,
+	 * keeps an explicit source explicit, and never requests a redraw, so
+	 * repeated tool calls do not repaint the prompt.
+	 */
+	infer(sessionId: string | undefined, phase: OddPhase, cause: "tool" | "delegation" = "tool"): OddPhase | undefined {
+		if (!sessionId) return undefined;
+		const current = this.phases.get(sessionId);
+		if (current?.phase === phase) return phase;
+		if (phase === "exploring" && cause !== "delegation" &&
+			(current?.source === "explicit" || current?.phase === "implementing" || current?.phase === "checking")) return current?.phase;
+		if (phase === "planning" && (current?.phase === "implementing" || current?.phase === "checking")) return current.phase;
+		return this.report(sessionId, phase, "inferred");
 	}
 
 	/**
@@ -72,6 +105,7 @@ export class OddPhaseRegistry {
 	 * explicit "clear" token). An invalid/unrecognized phase report is
 	 * never a reason to clear: only this method resets the session, so a
 	 * malformed report leaves the previously reported phase in place.
+	 * Clearing also drops the report's source.
 	 */
 	clear(sessionId: string | undefined): void {
 		if (!sessionId) return;
@@ -79,7 +113,7 @@ export class OddPhaseRegistry {
 	}
 
 	get(sessionId: string | undefined): OddPhase | undefined {
-		return sessionId ? this.phases.get(sessionId) : undefined;
+		return sessionId ? this.phases.get(sessionId)?.phase : undefined;
 	}
 
 	/** Working label for the reported phase, or undefined to fall back to the generic "working…" label. */

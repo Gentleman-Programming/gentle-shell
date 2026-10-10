@@ -1,11 +1,16 @@
 import { isSessionChangeEvidence, type SessionChangeEvidence } from "./session-changes.ts";
-import type { Duplex, Readable, Writable } from "node:stream";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Duplex, type Readable, type Writable } from "node:stream";
 import { stripVTControlCharacters } from "node:util";
 import { withoutInteractiveHost } from "./rpc-host.ts";
+import { childPackageExtensionArgs } from "./child-package-injection.ts";
 import { AGENT_MODE, formatModelRef, type AgentDefinition, type AgentMode, type ModelRef } from "./agents-config.ts";
 import { CHILD_QUERY_MAX_INFLIGHT, CHILD_QUERY_TIMEOUT_MS, parseChildFrame, validChildMessage, validChildQueryId } from "./agents-messaging.ts";
 import { ParentStandingReviewPermissionBroker } from "./review-session-standing-permission-ipc.ts";
-import { isFinished, normalizeRpcEvent, TASK_EVENT, TASK_STATUS, taskLabel, type AskRequest, type ChildResponseObservation, type TaskRecord, type TaskStore } from "./agents-protocol.ts";
+import { isFinished, normalizeRpcEvent, ToolArgumentProgress, TASK_EVENT, TASK_STATUS, taskLabel, type AskRequest, type ChildResponseObservation, type TaskRecord, type TaskStore } from "./agents-protocol.ts";
+import { WriterSurfaceRegistry, writerSurfaceConflictMessage } from "./writer-surfaces.ts";
 
 // Gentle Agents runner. Every subagent is its own `pi --mode rpc` process:
 // the host never runs subagent work on the TUI thread. It writes JSON
@@ -13,12 +18,12 @@ import { isFinished, normalizeRpcEvent, TASK_EVENT, TASK_STATUS, taskLabel, type
 // and enforces an inactivity watchdog per task.
 
 export interface ChildLike {
-	pid: number | undefined;
+	pid?: number;
 	connected?: boolean;
-	stdin: Writable;
-	stdout: Readable;
+	stdin: Writable | null;
+	stdout: Readable | null;
 	stderr: Readable | null | undefined;
-	stdio?: Array<Duplex | null | undefined>;
+	stdio?: Array<Readable | Writable | null | undefined>;
 	kill(signal?: NodeJS.Signals): boolean;
 	send?(message: Record<string, unknown>, callback?: (error: Error | null) => void): boolean;
 	disconnect?(): void;
@@ -32,6 +37,7 @@ export interface SpawnOptions {
 	cwd: string;
 	env: NodeJS.ProcessEnv;
 	detached?: boolean;
+	windowsHide?: boolean;
 	stdio?: Array<"pipe" | "ignore" | "inherit" | "ipc" | "overlapped">;
 }
 
@@ -52,6 +58,7 @@ export interface RunnerDeps {
 	now(): number;
 	schedule(fn: () => void, ms: number): () => void;
 	pi: PiCommand;
+	resolvePi?(): PiCommand;
 	process?: ProcessControl;
 }
 
@@ -122,8 +129,18 @@ export interface TaskRequest {
 	sessionDir: string;
 	resumeSessionPath: string | undefined;
 	env: NodeJS.ProcessEnv;
-	// Untrusted narrowing intent; paths come only from matching host provenance.
+	// Host-provided only: the launcher's package injection signal (#1690) or
+	// the curated fallback. Never derived from tool input or agent definitions.
 	extensionPaths?: string[];
+	// Same host-only provenance as extensionPaths (#1690).
+	noExtensions?: boolean;
+	// Parsed `## Allowed edit surfaces` of a bounded writer. While the task is
+	// queued or running it claims them in `cwd`; run() rejects an overlapping
+	// claim (gentle-shell#1731). Read-only agents leave this unset.
+	writerSurfaces?: readonly string[];
+	// Canonical worktree root the claim is keyed to; the parent computes it before
+	// run() so admission stays synchronous. Defaults to `cwd`.
+	writerRoot?: string;
 	// Synchronous admission recheck at dequeue, before any OS spawn. Throws fail
 	// only this task; unlike onLaunch, it must never persist Changes evidence.
 	beforeSpawn?: () => void;
@@ -182,6 +199,8 @@ interface LiveTask {
 	processGroup: number | undefined;
 	terminal: { status: TaskRecord["status"]; error: string | null } | undefined;
 	childExit: number | null | undefined;
+	childExitSignal?: string | null;
+	instructionsTransportDir?: string;
 	cleanupDeadlineAt: number | undefined;
 	quarantined: boolean;
 	nextId: number;
@@ -194,6 +213,7 @@ interface LiveTask {
 	// live work, so the watchdog gives it the tool ceiling instead of the idle
 	// silence budget. Keyed by call id, holding the announced tool name.
 	inFlightTools: Map<string, string>;
+	argumentProgress: ToolArgumentProgress;
 	// Bounded ring buffer of the child's raw stderr output, capped to the last
 	// STDERR_TAIL_MAX characters. Only surfaced on the stall and pre-settle exit
 	// terminal paths, never on completed, cancelled, or other failure reasons.
@@ -201,9 +221,16 @@ interface LiveTask {
 }
 
 const STDERR_TAIL_MAX = 512;
+const DIR_MODE = 0o700;
+const FILE_MODE = 0o600;
+// UTF-8 bytes, not characters: argv size is what kills the child on macOS.
+export const MAX_INLINE_INSTRUCTIONS_BYTES = 1000;
+const MAX_TRANSPORT_PREFIX_CHARS = 64;
 const CHILD_MARKER = "GENTLE_PI_AGENTS_CHILD";
 const IPC_MARKER = "GENTLE_PI_AGENTS_OWNED_IPC";
 const PARENT_NOTIFICATION_TOOL = "subagent_parent_message";
+/** The exact --tools list, so the child can report requested names Pi dropped silently (#1690). */
+export const REQUESTED_TOOLS_ENV = "GENTLE_PI_AGENTS_REQUESTED_TOOLS";
 const DEFAULT_TOOLS: readonly string[] = [];
 const TERMINATION_GRACE_MS = 250;
 const GROUP_CONFIRM_MS = 25;
@@ -235,30 +262,46 @@ function queryRejection(error: unknown): string {
 	return "parent rejected query";
 }
 
+export function formatChildExit(code: number | null | undefined, signal?: string | null): string {
+	if (typeof code === "number") return `code ${code}`;
+	if (signal) return `signal ${signal}`;
+	return `code ${code ?? "unknown"}`;
+}
+
 const hostProcess: ProcessControl = { platform: process.platform, kill: (pid, signal) => process.kill(pid, signal) };
 
-export function childArguments(request: TaskRequest): string[] {
+// The --tools value, or undefined when Pi keeps its default tools.
+function requestedTools(request: TaskRequest): string | undefined {
+	const tools = request.agent.tools.length > 0 ? [...new Set([...request.agent.tools, PARENT_NOTIFICATION_TOOL])] : DEFAULT_TOOLS;
+	return tools.length > 0 ? tools.join(",") : undefined;
+}
+
+export function childArguments(request: TaskRequest, instructionsPath?: string): string[] {
 	const args = ["--mode", "rpc", "--session-dir", request.sessionDir];
-	for (const path of request.extensionPaths ?? []) args.push("--extension", path);
+	args.push(...childPackageExtensionArgs({ noExtensions: request.noExtensions === true, extensionPaths: request.extensionPaths ?? [] }));
 	if (request.resumeSessionPath) args.push("--session", request.resumeSessionPath);
 	if (request.model) args.push("--model", request.thinking ? `${formatModelRef(request.model)}:${request.thinking}` : formatModelRef(request.model));
 	else if (request.thinking) args.push("--thinking", request.thinking);
-	const tools = request.agent.tools.length > 0 ? [...new Set([...request.agent.tools, PARENT_NOTIFICATION_TOOL])] : DEFAULT_TOOLS;
-	if (tools.length > 0) args.push("--tools", tools.join(","));
-	if (request.agent.instructions.length > 0) args.push("--append-system-prompt", request.agent.instructions);
+	const tools = requestedTools(request);
+	if (tools !== undefined) args.push("--tools", tools);
+	if (instructionsPath) {
+		args.push("--append-system-prompt", instructionsPath);
+	} else if (request.agent.instructions.length > 0) {
+		args.push("--append-system-prompt", request.agent.instructions);
+	}
 	return args;
 }
 
-// The child is the same pi that is running us: node plus its cli entry.
+// Reuse the running pi entry while it exists; upgrades may remove it.
 // GENTLE_PI_AGENTS_PI overrides it with a command line.
-export function piCommand(proc: ProcessLike = process): PiCommand {
+export function piCommand(proc: ProcessLike = process, exists: (path: string) => boolean = existsSync): PiCommand {
 	const override = proc.env.GENTLE_PI_AGENTS_PI?.trim();
 	if (override) {
 		const [command, ...args] = override.split(/\s+/);
 		return { command, args };
 	}
 	const entry = proc.argv[1];
-	if (entry && /(^|[\\/])cli\.js$/.test(entry)) return { command: proc.execPath, args: [entry] };
+	if (entry && /(^|[\\/])cli\.js$/.test(entry) && exists(entry)) return { command: proc.execPath, args: [entry] };
 	return { command: "pi", args: [] };
 }
 
@@ -303,6 +346,7 @@ export class AgentRunner {
 	private readonly waiters = new Map<string, Array<(task: TaskRecord) => void>>();
 	private readonly queryWaiters = new Map<string, Array<(query: TaskQuery | undefined) => void>>();
 	private readonly firstQueries = new Map<string, TaskQuery>();
+	private readonly writers = new WriterSurfaceRegistry();
 	private counter = 0;
 
 	constructor(store: TaskStore, limits: RunnerLimits, deps: RunnerDeps, hooks: RunnerHooks) {
@@ -344,8 +388,15 @@ export class AgentRunner {
 		return task;
 	}
 
+	// Check and claim happen in this one synchronous call, so two launches can
+	// never both pass admission for overlapping surfaces; finish() releases.
 	run(request: TaskRequest): TaskRecord {
+		if (request.writerSurfaces) {
+			const conflicts = this.writers.conflicts(request.writerRoot ?? request.cwd, request.writerSurfaces);
+			if (conflicts.length) throw new Error(writerSurfaceConflictMessage(conflicts));
+		}
 		const task = this.createTask(request);
+		if (request.writerSurfaces) this.writers.claim(task.id, request.writerRoot ?? request.cwd, request.writerSurfaces);
 		this.queue.push({ task, request });
 		queueMicrotask(() => this.pump());
 		return task;
@@ -455,21 +506,48 @@ export class AgentRunner {
 		// Do not forward stale legacy child selection or authorization.
 		delete env.GENTLE_PI_SDD_REMEDIATION_PLAN;
 		delete env.GENTLE_PI_RESEARCH_SELECTION;
+		const tools = requestedTools(request);
+		if (tools !== undefined) env[REQUESTED_TOOLS_ENV] = tools;
+		else delete env[REQUESTED_TOOLS_ENV];
+		let instructionsTransportDir: string | undefined;
+		let instructionsTransportPath: string | undefined;
+		if (Buffer.byteLength(request.agent.instructions, "utf8") > MAX_INLINE_INSTRUCTIONS_BYTES) {
+			try {
+				const prefix = (request.agent.name || "instructions").replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, MAX_TRANSPORT_PREFIX_CHARS);
+				instructionsTransportDir = mkdtempSync(join(tmpdir(), `gentle-pi-subagent-${prefix}-`));
+				try { chmodSync(instructionsTransportDir, DIR_MODE); } catch { /* best effort */ }
+				instructionsTransportPath = join(instructionsTransportDir, "instructions.md");
+				writeFileSync(instructionsTransportPath, request.agent.instructions, { mode: FILE_MODE, encoding: "utf8" });
+				try { chmodSync(instructionsTransportPath, FILE_MODE); } catch { /* best effort */ }
+			} catch (error) {
+				if (instructionsTransportDir) {
+					try { rmSync(instructionsTransportDir, { recursive: true, force: true }); } catch { /* best effort */ }
+				}
+				this.store.update(id, { status: TASK_STATUS.RUNNING, startedAt: this.deps.now(), lastStep: "starting" });
+				this.finish(id, TASK_STATUS.FAILED, `could not write agent instructions: ${error instanceof Error ? error.message : String(error)}`);
+				return;
+			}
+		}
 		let child: ChildLike;
 		try {
-			child = this.deps.spawn(this.deps.pi.command, [...this.deps.pi.args, ...childArguments(request)], {
+			const pi = this.deps.resolvePi?.() ?? this.deps.pi;
+			child = this.deps.spawn(pi.command, [...pi.args, ...childArguments(request, instructionsTransportPath)], {
 				cwd: request.cwd,
 				env,
 				detached,
+				windowsHide: true,
 				stdio: hasParentPermissionChannel ? ["pipe", "pipe", "pipe", permissionChannelStdio, "ipc"] : ["pipe", "pipe", "pipe", "ipc"],
 			});
 		} catch (error) {
+			if (instructionsTransportDir) {
+				try { rmSync(instructionsTransportDir, { recursive: true, force: true }); } catch { /* best effort */ }
+			}
 			this.store.update(id, { status: TASK_STATUS.RUNNING, startedAt: this.deps.now(), lastStep: "starting" });
 			this.finish(id, TASK_STATUS.FAILED, `could not start pi: ${error instanceof Error ? error.message : String(error)}`);
 			return;
 		}
 		const processGroup = detached && typeof child.pid === "number" && child.pid > 0 ? child.pid : undefined;
-		const live: LiveTask = { child, sawRunEvent: false, mutationStarts: new Map(), inFlightTools: new Map(), pending: new Map(), queries: new Map(), replies: new Map(), cancelStall: () => {}, cancelGrace: () => {}, processGroup, terminal: undefined, childExit: undefined, cleanupDeadlineAt: undefined, quarantined: false, nextId: 0, ipcClosed: false, acknowledgedIpcIds: new Set(), acknowledgedIpcOrder: [], stderrTail: "" };
+		const live: LiveTask = { child, sawRunEvent: false, mutationStarts: new Map(), inFlightTools: new Map(), argumentProgress: new ToolArgumentProgress(), pending: new Map(), queries: new Map(), replies: new Map(), cancelStall: () => {}, cancelGrace: () => {}, processGroup, terminal: undefined, childExit: undefined, childExitSignal: undefined, instructionsTransportDir, cleanupDeadlineAt: undefined, quarantined: false, nextId: 0, ipcClosed: false, acknowledgedIpcIds: new Set(), acknowledgedIpcOrder: [], stderrTail: "" };
 		if (request.prepareResponseObservations) {
 			let ready = false;
 			live.observationPreparation = () => ready;
@@ -483,7 +561,7 @@ export class AgentRunner {
 		}
 		this.live.set(id, live);
 		const permissionPipe = child.stdio?.[3];
-		if (hasParentPermissionChannel && permissionPipe !== undefined && permissionPipe !== null) {
+		if (hasParentPermissionChannel && permissionPipe instanceof Duplex) {
 			live.permissionBroker = new ParentStandingReviewPermissionBroker(
 				{ readable: permissionPipe, writable: permissionPipe },
 				(repositoryIdentity) => this.live.get(id) === live && !live.terminal && request.authorizeParentStandingReviewPermission?.(repositoryIdentity) === true,
@@ -501,6 +579,11 @@ export class AgentRunner {
 			try { request.onLaunch?.(); }
 			catch (error) { this.requestStop(id, TASK_STATUS.FAILED, `could not register launched worktree: ${error instanceof Error ? error.message : String(error)}`); }
 		});
+		child.on("exit", (code, signal) => this.exited(id, code, signal));
+		if (!child.stdin || !child.stdout) {
+			this.requestStop(id, TASK_STATUS.FAILED, "could not start pi: missing RPC streams");
+			return;
+		}
 		child.stdin.on("error", () => {});
 		this.armStall(id, live);
 		const lines = new JsonLines((value) => this.receive(id, request, value));
@@ -511,7 +594,6 @@ export class AgentRunner {
 			const tail = live.stderrTail + chunk;
 			live.stderrTail = tail.length > STDERR_TAIL_MAX ? tail.slice(-STDERR_TAIL_MAX) : tail;
 		});
-		child.on("exit", (code) => this.exited(id, code));
 		void this.send(id, { type: "get_state" }).then((response) => {
 			const data = response.data as { sessionFile?: unknown; model?: { provider?: unknown; id?: unknown } | null; thinkingLevel?: unknown } | undefined;
 			if (response.success !== true || live.terminal || this.live.get(id) !== live || !data) return;
@@ -550,8 +632,8 @@ export class AgentRunner {
 
 	// An idle child is bounded by the silence budget; a child whose announced
 	// tool call is still running is live work and bounded by the longer tool
-	// ceiling. The budget is chosen from the state at arm time, and every RPC
-	// object re-arms, so a finished tool call returns the task to idle silence.
+	// ceiling. These are renewable silence budgets, not total duration limits.
+	// A finished tool call returns the task to idle silence.
 	private armStall(id: string, live: LiveTask): void {
 		live.cancelStall();
 		const tool = live.inFlightTools.values().next().value;
@@ -681,7 +763,7 @@ export class AgentRunner {
 
 	private write(live: LiveTask, payload: Record<string, unknown>): void {
 		try {
-			live.child.stdin.write(`${JSON.stringify(payload)}\n`);
+			live.child.stdin?.write(`${JSON.stringify(payload)}\n`);
 		} catch {
 			// the child is gone; the exit handler settles the task
 		}
@@ -720,7 +802,12 @@ export class AgentRunner {
 		// renews the watchdog here, so fire-and-forget UI traffic that normalizes
 		// to nothing cannot keep a child that never started its run alive forever
 		// (#1034); the pre-existing timer stays armed until real progress arrives.
-		const progress = events.length > 0;
+		const argumentProgress = live.argumentProgress.observe(raw);
+		if (argumentProgress) {
+			live.sawRunEvent = true;
+			this.store.update(id, { lastStep: "generating tool arguments", lastActivityAt: this.deps.now() });
+		}
+		const progress = events.length > 0 || argumentProgress;
 		for (const event of events) {
 			if (event.type === TASK_EVENT.RESPONSE_OBSERVATION) {
 				const buffer = live.observations;
@@ -844,6 +931,7 @@ export class AgentRunner {
 			if (this.deps.now() >= (live.cleanupDeadlineAt ?? 0)) {
 				live.cancelGrace();
 				live.quarantined = true;
+				this.cleanupLive(live);
 				this.finish(id, TASK_STATUS.FAILED, `process cleanup unconfirmed after ${GROUP_CONFIRM_DEADLINE_MS}ms; capacity quarantined`, live);
 				return;
 			}
@@ -868,10 +956,22 @@ export class AgentRunner {
 		if (this.deps.now() >= (live.cleanupDeadlineAt ?? 0)) {
 			live.cancelGrace();
 			live.quarantined = true;
+			this.cleanupLive(live);
 			this.finish(id, TASK_STATUS.FAILED, `child exit unconfirmed after ${GROUP_CONFIRM_DEADLINE_MS}ms; capacity quarantined`, live);
 			return;
 		}
 		live.cancelGrace = this.deps.schedule(() => this.confirmGroupExit(id, live), GROUP_CONFIRM_MS);
+	}
+
+	private cleanupLive(live: LiveTask): void {
+		live.permissionBroker?.close();
+		this.closeIpc(live);
+		live.cancelStall();
+		live.cancelGrace();
+		if (live.instructionsTransportDir) {
+			try { rmSync(live.instructionsTransportDir, { recursive: true, force: true }); } catch { /* best effort */ }
+			live.instructionsTransportDir = undefined;
+		}
 	}
 
 	private childError(id: string, error: Error): void {
@@ -883,41 +983,42 @@ export class AgentRunner {
 			this.requestStop(id, TASK_STATUS.FAILED, `pi process error: ${error.message}`);
 			return;
 		}
-		live.permissionBroker?.close();
-		this.closeIpc(live);
-		live.cancelStall();
-		live.cancelGrace();
+		this.cleanupLive(live);
 		this.live.delete(id);
 		this.finish(id, TASK_STATUS.FAILED, `could not start pi: ${error.message}`, live);
 	}
 
-	private exited(id: string, code: number | null): void {
+	private exited(id: string, code: number | null, signal?: NodeJS.Signals | string | null): void {
 		const live = this.live.get(id);
 		if (!live) return;
 		live.childExit = code;
+		live.childExitSignal = signal ?? null;
+		const exitDesc = formatChildExit(code, signal);
 		if (this.groupExists(live)) {
-			if (!live.terminal) this.requestStop(id, TASK_STATUS.FAILED, `pi exited with code ${code ?? "unknown"} before agent_settled${this.stderrSuffix(live)}`);
+			if (!live.terminal) this.requestStop(id, TASK_STATUS.FAILED, `pi exited with ${exitDesc} before agent_settled${this.stderrSuffix(live)}`);
 			return;
 		}
 		this.completeExit(id, live);
 	}
 
 	private completeExit(id: string, live: LiveTask): void {
-		live.permissionBroker?.close();
-		this.closeIpc(live);
-		live.cancelStall();
-		live.cancelGrace();
+		this.cleanupLive(live);
 		this.live.delete(id);
 		// Quarantine already notified completion, but its retained slot is now free.
 		if (live.quarantined) {
+			this.writers.release(id);
 			queueMicrotask(() => this.pump());
 			return;
 		}
 		const terminal = live.terminal;
-		this.finish(id, terminal ? terminal.status : TASK_STATUS.FAILED, terminal ? terminal.error : `pi exited with code ${live.childExit ?? "unknown"} before agent_settled${this.stderrSuffix(live)}`, live);
+		const exitDesc = formatChildExit(live.childExit, live.childExitSignal);
+		this.finish(id, terminal ? terminal.status : TASK_STATUS.FAILED, terminal ? terminal.error : `pi exited with ${exitDesc} before agent_settled${this.stderrSuffix(live)}`, live);
 	}
 
 	private finish(id: string, status: TaskRecord["status"], error: string | null, live?: LiveTask): void {
+		// A quarantined child may still be writing: its claim lives as long as its
+		// reserved slot and is released in completeExit on proven exit.
+		if (!live?.quarantined) this.writers.release(id);
 		const current = this.store.get(id);
 		if (!current || isFinished(current.status)) return;
 		const finished = this.store.update(id, { status, endedAt: this.deps.now(), error, lastStep: error ?? "done" });

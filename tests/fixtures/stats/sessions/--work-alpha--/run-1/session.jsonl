@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"nested","timestamp":"2026-09-30T09:00:00.000Z","cwd":"/work/alpha"}
+{"type":"message","id":"a1","parentId":null,"timestamp":"2026-09-30T09:01:00.000Z","message":{"role":"assistant","provider":"x","model":"nested-model","usage":{"input":999999,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":999999,"cost":{"total":99}}}}

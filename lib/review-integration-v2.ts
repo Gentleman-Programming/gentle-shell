@@ -77,8 +77,8 @@ export type ReviewStartState = (typeof REVIEW_START_STATE)[keyof typeof REVIEW_S
 const START_ACTIONS = ["created", "resumed", "closed", "blocked-scope-action"] as const;
 const RISK_LEVELS = ["low", "medium", "high"] as const;
 const REVIEW_LENSES = ["review-risk", "review-resilience", "review-readability", "review-reliability"] as const;
-const RISK_REASON_CODES = ["configuration_change", "empty_content", "executable_change", "executable_mode", "hot_path", "large_change", "non_executable_only", "process_boundary", "process_scan_limit", "service_token", "shell_source"] as const;
-const RISK_SIGNALS = ["auth", "update", "security", "payments", "permissions", "shell_process"] as const;
+const RISK_REASON_CODES = ["agent_escalation", "configuration_change", "dangerous_sink", "empty_content", "executable_change", "executable_mode", "hot_path", "large_change", "non_executable_only", "process_boundary", "process_scan_limit", "service_token", "shell_source"] as const;
+const RISK_SIGNALS = ["auth", "update", "security", "payments", "permissions", "shell_process", "dangerous_sink", "agent_escalation"] as const;
 // "collect" and "execute" are the v2 envelope's projection of a live
 // transaction whose next_transition is mandatory: the root action names the
 // transition kind instead of reading as a terminal stop.
@@ -634,6 +634,23 @@ export interface ReviewEscalationV1 {
 	cause: (typeof ESCALATION_CAUSES)[number];
 	findingIds: readonly string[];
 	refuterOutcomes?: readonly ReviewEscalationRefuterOutcomeV1[];
+}
+
+function decodeReviewEscalationV1(value: unknown, label: string): ReviewEscalationV1 {
+	const source = exactRecord(value, label, ["cause", "finding_ids"], ["refuter_outcomes"]);
+	const escalation: ReviewEscalationV1 = {
+		cause: enumeration(source.cause, ESCALATION_CAUSES, `${label}.cause`),
+		findingIds: stringArray(source.finding_ids, `${label}.finding_ids`),
+	};
+	if (Object.hasOwn(source, "refuter_outcomes")) escalation.refuterOutcomes = array(source.refuter_outcomes, `${label}.refuter_outcomes`, (entry, itemLabel) => {
+		const row = exactRecord(entry, itemLabel, ["finding_id", "outcome", "proof"]);
+		return {
+			findingId: nonempty(row.finding_id, `${itemLabel}.finding_id`),
+			outcome: enumeration(row.outcome, ESCALATION_REFUTER_OUTCOMES, `${itemLabel}.outcome`),
+			proof: nonempty(row.proof, `${itemLabel}.proof`),
+		};
+	});
+	return escalation;
 }
 
 export interface ReviewStatusV3 {
@@ -2104,23 +2121,9 @@ export function decodeReviewStatusV3(value: unknown): ReviewStatusV3 {
 		};
 	}
 
-	let escalation: ReviewEscalationV1 | undefined;
-	if (Object.hasOwn(body, "escalation")) {
-		const label = "status.escalation";
-		const source = exactRecord(body.escalation, label, ["cause", "finding_ids"], ["refuter_outcomes"]);
-		escalation = {
-			cause: enumeration(source.cause, ESCALATION_CAUSES, `${label}.cause`),
-			findingIds: stringArray(source.finding_ids, `${label}.finding_ids`),
-		};
-		if (Object.hasOwn(source, "refuter_outcomes")) escalation.refuterOutcomes = array(source.refuter_outcomes, `${label}.refuter_outcomes`, (entry, itemLabel) => {
-			const row = exactRecord(entry, itemLabel, ["finding_id", "outcome", "proof"]);
-			return {
-				findingId: nonempty(row.finding_id, `${itemLabel}.finding_id`),
-				outcome: enumeration(row.outcome, ESCALATION_REFUTER_OUTCOMES, `${itemLabel}.outcome`),
-				proof: nonempty(row.proof, `${itemLabel}.proof`),
-			};
-		});
-	}
+	const escalation = Object.hasOwn(body, "escalation")
+		? decodeReviewEscalationV1(body.escalation, "status.escalation")
+		: undefined;
 
 	// status/v7 top-level optional digest (gentle-ai v2.6.0): resolves #4066's
 	// closed loop where `sdd-attempt finish` named a digest status never
@@ -2583,7 +2586,11 @@ function assertReviewApprovedAcknowledgementExecuteShapeV1(execute: ReviewNextTr
 	if (execute.arguments.length !== REVIEW_APPROVED_ACKNOWLEDGEMENT_ARGUMENTS.length) throw new TypeError(`acknowledgement.execute.arguments must carry exactly ${REVIEW_APPROVED_ACKNOWLEDGEMENT_ARGUMENTS.length} provider-issued arguments`);
 	const values = execute.arguments.map((argument, index) => { const name = REVIEW_APPROVED_ACKNOWLEDGEMENT_ARGUMENTS[index]!; if (argument.name !== name) throw new TypeError(`acknowledgement.execute.arguments[${index}].name must be ${name}`); const value = nonempty(argument.value, `acknowledgement.execute.arguments[${index}].value`); if (nonempty(argument.token, `acknowledgement.execute.arguments[${index}].token`) !== `--${name}=${value}`) throw new TypeError(`acknowledgement.execute.arguments[${index}].token must exactly match ${name}`); return value; });
 	if (execute.preconditions.length !== 1 || execute.preconditions[0]?.name !== "state" || execute.preconditions[0]?.value !== "approved") throw new TypeError("acknowledgement.execute.preconditions must be the single approved state precondition");
-	return { tokens: execute.arguments.map((argument) => argument.token!) as ReviewApprovedAcknowledgementExecuteTokensV1, values: values as readonly [string, string, string, string, string], lineageId: lineage(execute.binding.lineageId, "acknowledgement.execute.binding.lineage_id"), targetIdentity: sha256(execute.binding.targetIdentity, "acknowledgement.execute.binding.target_identity"), revision: sha256(execute.binding.revision, "acknowledgement.execute.binding.revision") };
+	const tokens = execute.arguments.map((argument) => argument.token!);
+	// The exact five-argument check above validates both vectors before tuple construction.
+	const tokenTuple: ReviewApprovedAcknowledgementExecuteTokensV1 = [tokens[0]!, tokens[1]!, tokens[2]!, tokens[3]!, tokens[4]!];
+	const valueTuple: readonly [string, string, string, string, string] = [values[0]!, values[1]!, values[2]!, values[3]!, values[4]!];
+	return { tokens: tokenTuple, values: valueTuple, lineageId: lineage(execute.binding.lineageId, "acknowledgement.execute.binding.lineage_id"), targetIdentity: sha256(execute.binding.targetIdentity, "acknowledgement.execute.binding.target_identity"), revision: sha256(execute.binding.revision, "acknowledgement.execute.binding.revision") };
 }
 
 /**
@@ -2682,6 +2689,26 @@ export interface ReviewLastEventReviewerResultV1 {
 	resultHash: string;
 }
 
+export interface ReviewTargetedValidatorCheckEvidenceV1 {
+	passed: boolean;
+	evidence: readonly string[];
+	regressions?: readonly {
+		id?: string;
+		location: string;
+		claim: string;
+		proofRefs: readonly string[];
+	}[];
+}
+
+export interface ReviewTargetedValidatorEvidenceV1 {
+	targetedValidationRequestHash: string;
+	correctionTargetIdentity: string;
+	originalCriteria: ReviewTargetedValidatorCheckEvidenceV1;
+	correctionRegression: ReviewTargetedValidatorCheckEvidenceV1;
+	followUps: readonly { observation: string; proofRefs: readonly string[] }[];
+	raw: Record<string, unknown>;
+}
+
 export interface ReviewLastEventClosureV1 {
 	schema: typeof REVIEW_LAST_EVENT_CLOSURE_SCHEMA;
 	operation: ReviewLastEventClosureOperation;
@@ -2692,6 +2719,8 @@ export interface ReviewLastEventClosureV1 {
 	targetIdentity?: string;
 	requestHash?: string;
 	correctionLines?: number;
+	escalation?: ReviewEscalationV1;
+	targetedValidatorEvidence?: ReviewTargetedValidatorEvidenceV1;
 	advisoryFindings?: ReviewAdvisoryFindingsV1;
 	reviewerResults?: readonly ReviewLastEventReviewerResultV1[];
 	statusContinuation?: ReviewStatusContinuationV1;
@@ -2835,18 +2864,67 @@ function decodeReviewLastEventReviewerResultV1(value: unknown, label: string): R
 	};
 }
 
+function decodeReviewTargetedValidatorCheckEvidenceV1(value: unknown, label: string): ReviewTargetedValidatorCheckEvidenceV1 {
+	const check = exactRecord(value, label, ["passed", "evidence"], ["regressions"]);
+	const regressions = Object.hasOwn(check, "regressions")
+		? array(check.regressions, `${label}.regressions`, (entry, entryLabel) => {
+			const row = exactRecord(entry, entryLabel, ["location", "claim", "proof_refs"], ["id"]);
+			return {
+				...(Object.hasOwn(row, "id") ? { id: nonempty(row.id, `${entryLabel}.id`) } : {}),
+				location: nonempty(row.location, `${entryLabel}.location`),
+				claim: nonempty(row.claim, `${entryLabel}.claim`),
+				proofRefs: stringArray(row.proof_refs, `${entryLabel}.proof_refs`, { minimum: 1 }),
+			};
+		}) : undefined;
+	return {
+		passed: boolean(check.passed, `${label}.passed`),
+		// Native admission rejects observations containing only Unicode whitespace.
+		evidence: stringArray(check.evidence, `${label}.evidence`, { minimum: 1, pattern: /[^\p{White_Space}]/u }),
+		...(regressions === undefined ? {} : { regressions }),
+	};
+}
+
+function decodeReviewTargetedValidatorEvidenceV1(value: unknown, label: string): ReviewTargetedValidatorEvidenceV1 {
+	const body = exactRecord(value, label, ["targeted_validation_request_hash", "correction_target_identity", "original_criteria", "correction_regression", "follow_ups"]);
+	return {
+		targetedValidationRequestHash: sha256(body.targeted_validation_request_hash, `${label}.targeted_validation_request_hash`),
+		correctionTargetIdentity: sha256(body.correction_target_identity, `${label}.correction_target_identity`),
+		originalCriteria: decodeReviewTargetedValidatorCheckEvidenceV1(body.original_criteria, `${label}.original_criteria`),
+		correctionRegression: decodeReviewTargetedValidatorCheckEvidenceV1(body.correction_regression, `${label}.correction_regression`),
+		followUps: array(body.follow_ups, `${label}.follow_ups`, (entry, entryLabel) => {
+			const row = exactRecord(entry, entryLabel, ["observation", "proof_refs"]);
+			return { observation: nonempty(row.observation, `${entryLabel}.observation`), proofRefs: stringArray(row.proof_refs, `${entryLabel}.proof_refs`, { minimum: 1 }) };
+		}),
+		raw: body,
+	};
+}
+
 export function decodeReviewLastEventClosureV1(value: unknown): ReviewLastEventClosureV1 {
-	const body = exactRecord(value, "last_event_closure", ["schema", "operation", "lineage_id", "state", "store_revision"], ["target_identity", "request_hash", "correction_lines", "action", "advisory_findings", "reviewer_results", "status_continuation", "acknowledgement"]);
+	const body = exactRecord(value, "last_event_closure", ["schema", "operation", "lineage_id", "state", "store_revision"], ["target_identity", "request_hash", "correction_lines", "action", "escalation", "targeted_validator_evidence", "advisory_findings", "reviewer_results", "status_continuation", "acknowledgement"]);
 	if (body.schema !== REVIEW_LAST_EVENT_CLOSURE_SCHEMA) throw new TypeError(`last_event_closure.schema must be ${REVIEW_LAST_EVENT_CLOSURE_SCHEMA}`);
 	const operation = enumeration(body.operation, Object.values(REVIEW_LAST_EVENT_CLOSURE_OPERATION), "last_event_closure.operation") as ReviewLastEventClosureOperation;
 	const state = enumeration(body.state, REVIEW_LAST_EVENT_TERMINAL_STATES, "last_event_closure.state") as ReviewLastEventClosureState;
+	if (Object.hasOwn(body, "targeted_validator_evidence") && (operation !== REVIEW_LAST_EVENT_CLOSURE_OPERATION.CAPTURE_VALIDATION || state !== "escalated")) {
+		throw new TypeError("last_event_closure targeted_validator_evidence requires escalated review/capture-validation");
+	}
+	// Diagnostic evidence is optional for older providers and never controls terminal authority.
+	const targetedValidatorEvidence = Object.hasOwn(body, "targeted_validator_evidence")
+		? decodeReviewTargetedValidatorEvidenceV1(body.targeted_validator_evidence, "last_event_closure.targeted_validator_evidence")
+		: undefined;
+	if (Object.hasOwn(body, "escalation") && state !== "escalated") throw new TypeError("last_event_closure escalation requires escalated state");
+	// Older native closures omit this diagnostic; its presence never grants a continuation.
+	const escalation = Object.hasOwn(body, "escalation")
+		? decodeReviewEscalationV1(body.escalation, "last_event_closure.escalation")
+		: undefined;
 	const shared = {
 		schema: REVIEW_LAST_EVENT_CLOSURE_SCHEMA,
 		operation,
 		lineageId: lineage(body.lineage_id, "last_event_closure.lineage_id"),
 		state,
 		storeRevision: sha256(body.store_revision, "last_event_closure.store_revision"),
-	};
+		...(escalation === undefined ? {} : { escalation }),
+		...(targetedValidatorEvidence === undefined ? {} : { targetedValidatorEvidence }),
+	} as const;
 	if (operation === REVIEW_LAST_EVENT_CLOSURE_OPERATION.CAPTURE_CORRECTION_PLAN) {
 		if (body.reviewer_results !== undefined) throw new TypeError("last_event_closure reviewer_results requires approved state");
 		if (body.action !== undefined || body.advisory_findings !== undefined || body.status_continuation !== undefined) throw new TypeError("last_event_closure correction-plan cannot carry action, advisory_findings, or status_continuation");

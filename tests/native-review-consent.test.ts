@@ -87,11 +87,11 @@ function queuedAdapter(outputs: readonly Record<string, unknown>[]): { adapter: 
 }
 
 function client(adapter: ExecFileAdapter): NativeReviewCliV216 {
-	return new NativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai", 30_000, 1024 * 1024, async () => undefined, () => executableDigest);
+	return new NativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai", 30_000, 1024 * 1024, async () => undefined);
 }
 
 function runtimeClient(adapter: ExecFileAdapter): RuntimeNativeReviewCliV216 {
-	return new RuntimeNativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai", 30_000, 1024 * 1024, async () => undefined, () => executableDigest);
+	return new RuntimeNativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai", 30_000, 1024 * 1024, async () => undefined);
 }
 
 test("negotiated ordinary START executes the complete STATUS-rendered relay vector and preserves the consent envelope", async () => {

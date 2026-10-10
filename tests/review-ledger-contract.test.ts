@@ -3,10 +3,11 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import test from "node:test";
 import { REVIEW_LENS_PARITY_PATTERNS } from "./support/review-lens-parity.ts";
+import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const CANONICAL = "skills/_shared/review-ledger-contract.md";
-const ORCHESTRATOR = ["assets/orchestrator.md", "assets/orchestrator-delegation.md"];
+const ORCHESTRATOR = ["assets/orchestrator.md", "assets/orchestrator-delegation.md", "assets/orchestrator-writer.md"];
 const REVIEW_LENSES = [
 	"assets/agents/review-risk.md",
 	"assets/agents/review-resilience.md",
@@ -75,7 +76,7 @@ const JUDGMENT_DAY_SEMANTIC_SURFACES = [
 	JD_PROMPTS,
 	...JUDGES,
 	FIX_AGENT,
-	"assets/orchestrator-delegation.md",
+	"assets/orchestrator-writer.md",
 ] as const;
 
 const JUDGMENT_DAY_REJUDGMENT_PATTERNS = [
@@ -333,12 +334,12 @@ test("Judgment Day fix routing has one canonical shape and never falls back to g
 		[FIX_AGENT, read(FIX_AGENT)],
 		[JD_SKILL, read(JD_SKILL)],
 		[JD_PROMPTS, fencedBlock(JD_PROMPTS, "## Fix Agent Prompt")],
-		["assets/orchestrator-delegation.md", read("assets/orchestrator-delegation.md")],
+		["assets/orchestrator-writer.md", read("assets/orchestrator-writer.md")],
 	] as const) {
 		assert.ok(content.includes(canonicalShape), `${path} must carry the canonical Judgment Day fix shape`);
 		assert.match(content, /requires no graph-v1 or native review lineage/i);
 	}
-	const routing = read("assets/orchestrator-delegation.md");
+	const routing = readDelegationDetail();
 	assert.match(routing, /Judgment Day phase roles are never generic fallbacks\./);
 	assert.match(routing, /If the generic writer chain is unavailable, use the documented native generic fallback or stop\./);
 });

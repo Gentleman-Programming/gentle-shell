@@ -1102,6 +1102,27 @@ test("gentle-shell setup removes both the conflicting rpiv package and npm:gentl
 	assert.deepEqual(JSON.parse(lines[2]).args, ["remove", "npm:gentle-pi"]);
 });
 
+test("gentle-shell setup removes npm:gentle-pi that gentle-ai declared even when gentle-ai exits non-zero", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptDeclaringGentlePi(gentleAiScript, [], 3);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript };
+
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 3);
+	assert.match(
+		result.stderr,
+		new RegExp(
+			`gentle-shell: removing npm:gentle-pi from .+: this launcher loads its own gentle-pi ${ownGentlePiVersion().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}, so the home always matches it`,
+		),
+	);
+
+	const lines = result.stdout.trim().split("\n").filter((line) => line.length > 0);
+	assert.equal(lines.length, 2, result.stdout);
+	assert.deepEqual(JSON.parse(lines[0]).args, ["install", "--agent", "pi", "--scope", "global"]);
+	assert.deepEqual(JSON.parse(lines[1]).args, ["remove", "npm:gentle-pi"]);
+});
+
 // A --dry-run gentle-ai install writes nothing, so reading settings.json
 // afterwards would only ever report whatever pre-existed the run (e.g. the
 // isolated-home bootstrap this fixture's fake-gentle-ai script never
@@ -1614,6 +1635,32 @@ test("a failing auto-provision flow names the --home selector in its retry remed
 		result.stderr,
 		new RegExp(`Run \`gentle-shell --home ${target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} setup\` to see the full output\\.`),
 	);
+});
+
+test("a failing auto-provision flow removes declared npm:gentle-pi and injects the local package on continuation", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptDeclaringGentlePi(gentleAiScript, [], 5);
+	writePiScriptEditingSettingsOnRemove(f.piScript);
+	const env = enableAutoProvision({
+		...f.env,
+		GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript,
+		GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0",
+	});
+
+	const result = run(env, ["--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(
+		result.stderr,
+		/gentle-shell: automatic setup failed \(exit 5\); starting anyway and retrying next run\. Run `gentle-shell setup` to see the full output\./,
+	);
+	assert.match(result.stderr, /gentle-shell: removing npm:gentle-pi/);
+
+	const settings = JSON.parse(readFileSync(join(f.gentleShellHome, "settings.json"), "utf8"));
+	assert.deepEqual(settings.packages, []);
+
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, ["-e", packageRoot, "--mode", "rpc"]);
 });
 
 test("GENTLE_SHELL_NO_AUTO_SETUP=1 skips auto-provisioning entirely", (t) => {

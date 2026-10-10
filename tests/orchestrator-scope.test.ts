@@ -93,6 +93,38 @@ test("recency reorders preserve repository facts but retain caller order", () =>
 	assert.equal(calls, 18, "session replacement clears facts");
 });
 
+test("first-eight visibility evicts hidden facts and retains visible unknowns", () => {
+	const host = join(tmpdir(), "scope-visible-host");
+	const tasks = Array.from({ length: 9 }, (_, i) => ({ id: `t${i}`, cwd: join(tmpdir(), `scope-visible-task-${i}`) }));
+	const calls: string[] = [];
+	const cache = new OrchestratorScopeCache(path => {
+		calls.push(path);
+		if (path === tasks[0].cwd) throw new Error("unavailable");
+		return { root: path, commonDir: host };
+	});
+	const first = cache.project(host, tasks, []);
+	assert.deepEqual(calls, [host, ...tasks.slice(0, 8).map(t => t.cwd)]);
+	assert.equal(first.tasks[0].repository.root, null);
+	const unknown = first.tasks[0].repository;
+	const ninthVisible = [tasks[8], ...tasks.slice(0, 8)];
+	const expectedCalls = [...calls];
+	for (const [order, newlyVisible] of [[ninthVisible, tasks[8]], [tasks, tasks[7]], [ninthVisible, tasks[8]]] as const) {
+		const snapshot = cache.project(host, order, []);
+		expectedCalls.push(newlyVisible.cwd);
+		assert.deepEqual(calls, expectedCalls, "each visibility transition resolves only its evicted/newly visible path");
+		assert.deepEqual(snapshot.tasks.map(t => t.id), order.slice(0, 8).map(t => t.id));
+		assert.equal(snapshot.tasks.length, 8);
+		assert.equal(snapshot.omittedTasks, 1);
+		assert.equal(snapshot.complete, false);
+		assert.equal(validRecordedScope(snapshot), true);
+		assert.strictEqual(snapshot.tasks.find(t => t.id === "t0")!.repository, unknown, "visible unknown facts survive every reorder");
+		assert.strictEqual(cache.project(host, order, []), snapshot);
+		assert.deepEqual(calls, expectedCalls, "stable snapshots never resolve again");
+	}
+	assert.equal(calls.filter(path => path === tasks[8].cwd).length, 2, "ninth path is resolved again after eviction");
+	assert.equal(calls.filter(path => path === tasks[0].cwd).length, 1, "visible unknown is not retried");
+});
+
 test("literal recorded roots never alias Unicode separators to another real repository", (t) => {
 	const base = realpathSync(mkdtempSync(join(tmpdir(), "scope-literal-")));
 	t.after(() => rmSync(base, { recursive: true, force: true }));

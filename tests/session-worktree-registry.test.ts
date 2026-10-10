@@ -11,6 +11,9 @@ import { SessionWorktreeRegistry, registeredRootsForSession, resolveSessionWorkt
 function fixture(t: test.TestContext) {
 	const dir = realpathSync(mkdtempSync(join(tmpdir(), "session-worktrees-")));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	// Invalid local metadata stops Git discovery before any ambient ancestor.
+	// Genuine child repositories still resolve their own nearer .git metadata.
+	writeFileSync(join(dir, ".git"), "gitdir: absent-fixture-metadata\n");
 	const main = join(dir, "main");
 	const linked = join(dir, "linked");
 	const other = join(dir, "other");
@@ -249,6 +252,19 @@ function nestedFixture(t: test.TestContext) {
 	writeFileSync(join(inner, "odd", "tasks", "jpg-png-converter.md"), "converted\n");
 	return { dir, outer, inner };
 }
+
+test("a no-repository fixture blocks discovery even inside a real parent repository", (t) => {
+	const f = nestedFixture(t);
+	const isolated = join(f.outer, "isolated");
+	const cwd = join(isolated, "bootstrap");
+	mkdirSync(cwd, { recursive: true });
+	assert.equal(resolveSessionWorktree(cwd, cwd)?.root, f.outer, "the parent is discoverable without the fixture barrier");
+	writeFileSync(join(isolated, ".git"), "gitdir: absent-fixture-metadata\n");
+	assert.equal(resolveSessionWorktree(cwd, cwd), undefined);
+	const registry = host(cwd).registry();
+	registry.start();
+	assert.deepEqual(registry.roots(), []);
+});
 
 test("nearest-repository resolution: an inner repo's files never resolve to an outer ancestor repo", (t) => {
 	const f = nestedFixture(t);

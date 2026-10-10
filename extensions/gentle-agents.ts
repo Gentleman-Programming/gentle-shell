@@ -38,7 +38,7 @@ import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry, ty
 import { WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessionPresenceRegistry, type WindowsSessionRegistryPhaseObserver } from "../lib/windows-session-transport.ts";
 import { hasReviewSessionPermission, resolveCanonicalGitRepositoryIdentitySync, type ReviewSessionManager } from "../lib/review-session-standing-permission.ts";
 import { inheritedUnsafeGitEnvironmentKeys } from "../lib/review-repository.ts";
-import { historyDir, loadHistory, loadStoredTask, pruneHistory, saveTask } from "../lib/agents-history.ts";
+import { historyDir, loadHistory, loadStoredTask, pruneHistory, saveTask, type StoredTask } from "../lib/agents-history.ts";
 import { sessionToMarkdown } from "../lib/agents-transcript.ts";
 import { AgentsView } from "../lib/agents-view.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
@@ -740,6 +740,13 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			.catch(() => {});
 	};
 
+	// A launched task is written to disk immediately so abrupt parent process
+	// termination (SIGKILL, host reboot, crash) leaves a durable record (#1741).
+	// Pruning is deferred until final persistence in onFinish.
+	const persistLaunch = (task: TaskRecord) => {
+		void saveTask(tasksDir, task, store.thread(task.id)).catch(() => {});
+	};
+
 	// A background result used to be handed straight to the host as a followUp
 	// message, but the host only drains that queue when the parent agent stops
 	// calling tools entirely, so in a long orchestrator run the notification
@@ -1400,16 +1407,39 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		return confirmation;
 	};
 
+	// A task stored on disk that never reached a terminal state was in flight
+	// when the parent process was abruptly terminated (kill -9, host reboot,
+	// OOM). When loaded into a new process where it has no live runner, it is
+	// reconciled into a terminal failed state and updated on disk (#1741).
+	const reconcileStored = async (stored: StoredTask): Promise<StoredTask> => {
+		if (isFinished(stored.task.status)) return stored;
+		const reconciledTask: TaskRecord = {
+			...stored.task,
+			status: TASK_STATUS.FAILED,
+			error: stored.task.error ?? "interrupted: parent process terminated while task was in flight",
+			lastStep: "interrupted",
+			endedAt: stored.task.endedAt ?? deps.now(),
+		};
+		try { await saveTask(tasksDir, reconciledTask, stored.thread); } catch { /* best effort */ }
+		return { task: reconciledTask, thread: stored.thread };
+	};
+
 	// Tasks from earlier sessions come back from disk on demand.
 	const resolveTask = async (id: string): Promise<TaskRecord | undefined> => {
 		const live = store.get(id);
-		if (live) return live;
+		if (live && !restoredTaskIds.has(id)) return live;
 		const stored = await loadStoredTask(tasksDir, id);
 		if (stored) {
-			restoredTaskIds.add(stored.task.id);
-			store.restore(stored.task, stored.thread);
+			if (!isFinished(stored.task.status) && stored.task.parentSessionId !== activeSessionId()) {
+				return undefined;
+			}
+			const reconciled = await reconcileStored(stored);
+			restoredTaskIds.add(reconciled.task.id);
+			store.restore(reconciled.task, reconciled.thread);
+			store.update(reconciled.task.id, reconciled.task);
+			return reconciled.task;
 		}
-		return stored?.task;
+		return live;
 	};
 
 	// A guessed id ("1") leads back to real ids instead of a dead end, so the
@@ -1738,6 +1768,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				launched = true;
 				const foreign = foreignRequests.get(request);
 				if (foreign && launchedTaskId) foreignTasks.set(launchedTaskId, foreign);
+				const current = store.get(task.id) ?? task;
+				persistLaunch(current);
 			},
 			...(observe ? { canCollectResponseObservations: metrics.valid, prepareResponseObservations: async () => {
 				if (metrics.finished || owner !== metricsOwner || request.parentSessionId !== activeSessionId() || !runtimeMetricsEnvAllows(deps.env)) return false;
@@ -1752,6 +1784,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const foreignRequest = foreignRequests.get(request);
 		if (launched && foreignRequest) foreignTasks.set(task.id, foreignRequest);
 		ownedTaskIds.add(task.id);
+		persistLaunch(task);
 		publishWork?.(task.id);
 		publishActivity(); // Admission's summary notification precedes runtime ownership.
 		store.subscribe(task.id, () => { publishActivity(); requestRender(); });
@@ -2132,8 +2165,15 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	});
 
 	tool("list_tasks", "List the subagent tasks of this session, newest first.", { properties: {} }, async (_params, ctx) => {
-		const tasks = store.list(ctx.sessionManager.getSessionId() ?? "");
-		return text(tasks.length === 0 ? "No subagent tasks in this session." : tasks.map(describeTask).join("\n"));
+		const sessionId = ctx.sessionManager.getSessionId() ?? "";
+		const tasks = store.list(sessionId);
+		for (const task of tasks) {
+			if (!isFinished(task.status) && restoredTaskIds.has(task.id)) {
+				await resolveTask(task.id);
+			}
+		}
+		const reconciledTasks = store.list(sessionId);
+		return text(reconciledTasks.length === 0 ? "No subagent tasks in this session." : reconciledTasks.map(describeTask).join("\n"));
 	});
 
 	tool("reply", "Reply once to a live query from a child of the current parent session.", { required: ["task_id", "request_id", "message"], properties: { task_id: { type: "string" }, request_id: { type: "string" }, message: { type: "string" } } }, async (params, ctx) => {

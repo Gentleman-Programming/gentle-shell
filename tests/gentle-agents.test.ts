@@ -19,7 +19,7 @@ import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection } from "../lib
 import gentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener } from "../lib/windows-session-transport.ts";
-import { historyDir, loadHistory, saveTask } from "../lib/agents-history.ts";
+import { historyDir, loadHistory, loadStoredTask, saveTask } from "../lib/agents-history.ts";
 import { STALE_COMPLETION_MS } from "../lib/agents-completion-delivery.ts";
 import { applyTaskEvent, emptyThread, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
 import { NativePointerScope } from "../lib/native-pointer-region.ts";
@@ -3734,6 +3734,63 @@ test("a task that finishes live stays visible as history, in both scopes, and it
 	assert.match(overlay.render(80).map(stripAnsi).join("\n"), /Subagent explore/, "the current session's own history shows under all sessions too");
 	overlay.handleInput("\x1b");
 	await opened;
+});
+
+test("an in-flight task is persisted on launch, and reconciles to interrupted if the parent dies before it finishes (#1741)", async () => {
+	const { pi, tools, fire } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	const started = await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Survive abrupt crash", mode: "background" }, undefined, undefined, ctx);
+	const id = (started.details.gentleAgents as { taskId: string }).taskId;
+	assert.ok(id, "task ID allocated");
+
+	// Wait for the async launch persistence to write the file
+	const tasksDir = join(home, ".pi", "agent", "gentle-agents", "tasks");
+	let stored = await loadStoredTask(tasksDir, id);
+	for (let attempt = 0; attempt < 10 && !stored; attempt += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		stored = await loadStoredTask(tasksDir, id);
+	}
+	assert.ok(stored, "the in-flight task is written to disk upon launch");
+	assert.equal(stored.task.id, id);
+	assert.ok(stored.task.status === "queued" || stored.task.status === "running", "task status is in-flight on disk");
+	assert.equal(stored.task.endedAt, null, "task is not ended yet");
+
+	// Simulate abrupt death of parent: no session_shutdown, no runner.cancelAll.
+	// A completely new session in another process starts up with the same disk store.
+	const fresh = fakePi();
+	const freshHarness = deps();
+	gentleAgents(fresh.pi, {}, freshHarness.deps);
+	const freshCtx = fakeContext();
+	await fresh.fire("session_start", freshCtx.ctx);
+
+	// In the new session, subagent_status must NOT fail with "Error: no task <id>"
+	const statusResult = await fresh.tools.get("subagent_status")!.execute("s1", { task_id: id }, undefined, undefined, freshCtx.ctx);
+	assert.doesNotMatch(statusResult.content[0].text, /Error: no task/, "interrupted task must resolve");
+	assert.match(statusResult.content[0].text, /failed/, "status must report terminal failure");
+	assert.match(statusResult.content[0].text, /interrupted/i, "status must explain interruption");
+
+	// The disk record must now be updated to the terminal reconciled state
+	const reconciledOnDisk = await loadStoredTask(tasksDir, id);
+	assert.ok(reconciledOnDisk, "reconciled record on disk");
+	assert.equal(reconciledOnDisk.task.status, "failed");
+	assert.match(reconciledOnDisk.task.error ?? "", /interrupted/i);
+	assert.ok(typeof reconciledOnDisk.task.endedAt === "number", "endedAt is populated");
+
+	// On resume of the original session, subagent_list_tasks must list the interrupted task
+	const resumedPi = fakePi();
+	const resumedHarness = deps();
+	gentleAgents(resumedPi.pi, {}, resumedHarness.deps);
+	const resumedCtx = fakeContext();
+	(resumedCtx.ctx.sessionManager as { getSessionId(): string }).getSessionId = () => ctx.sessionManager.getSessionId();
+	(resumedCtx.ctx.sessionManager as { getEntries(): unknown[] }).getEntries = () => [{ type: "custom" }];
+	await resumedPi.fire("session_start", resumedCtx.ctx, { reason: "resume" });
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	const listResult = await resumedPi.tools.get("subagent_list_tasks")!.execute("l1", {}, undefined, undefined, resumedCtx.ctx);
+	assert.match(listResult.content[0].text, new RegExp(id), "interrupted task must appear in resumed session task list");
+	assert.match(listResult.content[0].text, /interrupted/i);
 });
 
 test("the overlay confirms a running task once and reports when it finishes during confirmation", async () => {

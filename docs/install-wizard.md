@@ -61,6 +61,8 @@ Current requirements come from `package.json` and
 Pi ≥0.99.1, pnpm acquisition 11.1.1, Gentle Shell package 4.0.0 and package-local
 Gentle AI 4.0.0. Windows native source builds require Go ≥1.25.10 when the
 required usable native binary is missing. A reusable binary does not require Go.
+When a build needs Go and the user's Go is missing or older, the installer uses
+its own [pinned Go](#pinned-go) instead of blocking.
 Pins change with the repository; the API reads the metadata rather than copying
 these values into a second installer.
 
@@ -122,8 +124,10 @@ run (for example an older Shell whose global command is missing); Gentle AI and
 setup add no separate `unknown` blocker then, because they are only checked for
 the pinned Shell. When Node.js, Pi, Gentle Shell or Go is simply older than its
 minimum, the wizard's guidance names the found and required versions (for the
-Shell, also the pnpm commands that update or remove it; for Go, that the
-installer does not download Go); other blockers keep their fixed guidance. An
+Shell, also the pnpm commands that update or remove it); other blockers keep
+their fixed guidance. A missing or older Go is not a blocker: `tools.go` is
+`needs-acquire` with `required`, the pinned `version` and the older `found`
+version, and the plan acquires the [pinned Go](#pinned-go). An
 older Node.js or an incompatible pnpm on the user's PATH is not a blocker when
 the bootstrap's pinned copy runs the wizard: the probe reports that copy
 (bootstrap-only) with the user's stable version as `found`, and `tools.node` or
@@ -155,7 +159,9 @@ A clean target receives these intents in dependency order:
    it gets at most one intent, `persist-npm` (npm 11.19.0) when no usable
    npm resolves (on POSIX a working npm from any version manager is usable), `persist-pnpm` (pnpm 11.1.1) when pnpm is bootstrap-only, or
    `persist-package-managers` when both are missing.
-2. On Windows, acquire and verify Go before missing native provisioning.
+2. When a build needs Go (the main channel, or a Windows Gentle Shell install or
+   update whose postinstall may build Gentle AI) and Go is missing or older,
+   `acquire-go` and `verify-go` come before the first step that builds.
 3. Install Pi globally, then `gentle-pi` globally (its existing postinstall owns
    native installation). For an existing Shell with missing native binary, call
    the existing installer instead.
@@ -293,7 +299,7 @@ No-process gates, all returning `blocked`:
    `persist-npm` alone, or `persist-pnpm` alone. The
    [setup recovery](#setup-recovery) plan is exactly `setup-shell` and
    `verify-readiness`, plus optional `setup-global-bin`, and nothing else.
-   Prerequisite acquisition intents (Node, pnpm, Go), `provision-native`, any
+   Prerequisite acquisition intents for Node and pnpm, `provision-native`, any
    other persistence combination, other partial existing stacks and fully
    reused stacks are `unsupported-plan`. `update-pi` (an
    [older Pi](#existing-installations)) needs `tools.pi` to be `needs-update`
@@ -301,10 +307,13 @@ No-process gates, all returning `blocked`:
    update of Gentle Shell, or form a plan of its own with only `verify-readiness`.
    With a reusable Gentle Shell, `install-pi` and `verify-readiness` alone are
    supported too (`tools.pi` `unavailable` or `needs-install`).
-3. On Windows, Go must be `reusable` in a clean-stack plan because gentle-pi's
-   postinstall may build Gentle AI from source; the runner never acquires Go
-   (`go-required`). A recovery or a Pi-only update runs no postinstall, so it
-   needs no Go.
+3. Go: `acquire-go` and `verify-go` come together, only when `tools.go` is
+   `needs-acquire` and the plan builds with Go (the main overlay,
+   `update-shell-main`, or any Windows plan other than a recovery or a Pi-only
+   plan); otherwise `unsupported-plan`. On Windows, Go must be `reusable` or
+   acquired in such a plan because gentle-pi's postinstall may build Gentle AI
+   from source (`go-required`). A recovery or a Pi-only update runs no
+   postinstall, so it needs no Go.
 4. `pnpmGlobalBin` resolves PNPM_HOME (`pnpm-home-unknown` otherwise) and
    `nodePath` is absolute.
 5. pnpm comes from the bootstrap handoff `GENTLE_INSTALL_PNPM_NODE` +
@@ -505,7 +514,7 @@ Pi but never reinstalls or downgrades it, and nothing changes before consent.
 | A pnpm of another major, older than 11.1.1, or whose engine rejects the bootstrap's Node | Left unchanged. Both bootstraps acquire the verified pnpm 11.1.1 as when pnpm is absent, and the plan persists it (`persist-pnpm`, or `persist-package-managers` with npm). The plan says so before consent. Unknown evidence still blocks. |
 | That pnpm in `$PNPM_HOME/bin` itself (where persisting pnpm writes) | Blocked before consent, never replaced or downgraded. The guidance names the found and required versions; an older one is updated with `pnpm self-update 11.1.1`, a newer major is never downgraded. |
 | An older Node.js or incompatible pnpm next to an existing Gentle Shell (updated or current) | Blocked before consent: runtimes are persisted only while installing Gentle Shell. A setup recovery is not blocked and persists nothing. |
-| A Go older than the minimum (main channel, or a Windows build) | Blocked: the installer never downloads Go (`acquire-go` is never run), and the guidance names both versions. |
+| A Go missing or older than the minimum (main channel, or a Windows build) | Left unchanged. The installer downloads its [pinned Go](#pinned-go) only for the build, and the plan says so before consent with the found version (or missing). An unknown Go still blocks. A release install on macOS or Linux never downloads Go. |
 
 Ownership comes from real paths ([`installOwner`](../scripts/main-channel.mjs)):
 pnpm when the package lives under PNPM_HOME, npm only when it is
@@ -565,8 +574,9 @@ unchanged because the consented plan already holds its steps. Neither repository
 publishes main builds, so main is built on this computer
 ([`scripts/main-channel.mjs`](../scripts/main-channel.mjs)):
 
-- Preflight requires a compatible Go (≥ the Windows minimum) on every platform
-  and otherwise blocks with `main-requires-go`. Main steps are added only when the
+- Preflight reuses a Go ≥ the Windows minimum on every platform; a missing or
+  older Go gets the [pinned Go](#pinned-go), and a Go whose version cannot be
+  checked blocks with `main-requires-go`. Main steps are added only when the
   plan installs or completes setup; a stack that is already set up switches with
   `gentle-shell upgrade --channel main`, or the wizard's update plan below.
 - After the release stack is installed and `verify-gentle-ai` passed, the runner:
@@ -590,9 +600,45 @@ publishes main builds, so main is built on this computer
      "shellCommit":…,"gentleAiCommit":…}` to `<config home>/channel.json`.
 - `shell-setup` then runs from the main package. The config home is
   `GENTLE_PI_CONFIG_HOME` or `~/.pi/gentle-ai`, as for the dev-binary override.
+- `gentle-shell upgrade --channel main` builds with the user's Go when it meets
+  the minimum (or its version is unknown, as before), otherwise with the pinned Go
+  an earlier installer run published under `<config home>/tools/go`. It never
+  downloads Go itself: with an older Go and no pinned copy it stops with
+  `main-requires-tools`, naming both versions.
 - Trust: Gentle AI source is verified by Go's checksum database; the Gentle Shell
   source is fetched over TLS from GitHub by exact commit SHA, with no pinned
   digest. Main builds are development builds.
+
+### Pinned Go
+
+Go is needed only after the wizard knows the channel, so it is not a bootstrap
+prerequisite: Node and pnpm are acquired by the bootstraps because the wizard
+cannot run without them, while Go is acquired by the runner after consent, as the
+first mutating steps of a plan that builds with it. Nothing is downloaded before
+consent.
+
+- `acquire-go`: [`acquireGo`](../scripts/installer-downloads.mjs) downloads the
+  official go.dev archive for the platform (darwin, linux and windows; amd64 and
+  arm64), pinned by exact version (Go 1.25.14), size and SHA-256 from go.dev's
+  published checksums (`https://dl.google.com/go/<file>`, where go.dev/dl
+  redirects). The bytes are verified before they are read. The `.tar.gz` (POSIX
+  ustar, PAX `path` only) or Windows `.zip` (stored or deflated, CRC-checked) is
+  extracted in process into a private staging directory: only regular files and
+  directories under `go/`, with no links, traversal, absolute paths or duplicate
+  names, and `go/VERSION` must name the pin. The tree is published without
+  replacing anything as `<config home>/tools/go/<version>/go` (directory `0700`)
+  with a marker naming the archive written last; a later run reuses a marked
+  copy without downloading. Any mismatch fails the step and publishes nothing.
+- `verify-go`: the published `go` (by absolute path, `GOTOOLCHAIN=local`) must
+  print `go version go<pin> …`.
+- The pinned Go is never put on the user's PATH or profile, and the user's Go
+  (Homebrew, mise, an official package, anything) is never run, changed or
+  removed. The runner passes it by path to `build-gentle-ai-main` and puts its
+  `bin` directory first on PATH only for the children that may build Gentle AI:
+  `pnpm add -g` (gentle-pi's Windows postinstall finds `go.exe` there) and the
+  wizard's Gentle Shell update.
+- The plan copy before consent names the pinned version, the Go found (or
+  missing), and that the user's Go, PATH and shell profile stay unchanged.
 
 ### Remaining T7 real-machine checks
 
@@ -874,14 +920,17 @@ With that entry available, the fixed sequence is:
    `>=x.y.z` lower bounds; comparison fills an omitted patch with zero. Actual
    Node versions must remain exact stable versions; other ranges block rather
    than guess. The package is found from the resolved `pnpm` command; when that
-   command is a regular cmd-shim file (as pnpm 11 writes when it installs
-   itself), the search starts from its `# cmd-shim-target=` path. That path only
-   locates `package.json`; `pnpm --version` must still match it. A standalone
-   pnpm (a Mach-O or ELF executable, as mise, asdf and pnpm's own installer
-   provide) embeds its Node runtime and has no `package.json`: it skips the
-   package engine check but must still report an exact stable `--version` and
-   pass the same global `add`/`bin` capability checks. A script or shim without a
-   package still blocks. Prerequisite
+   command is a regular cmd-shim file (as pnpm writes in `$PNPM_HOME` or
+   `$PNPM_HOME/bin` when it installs or updates itself), the search starts from
+   its `# cmd-shim-target=` path or, without one, the single
+   `"$basedir/<target>" "$@"` it runs. That path only locates the evidence;
+   `pnpm --version` must still match it. A standalone pnpm (a Mach-O or ELF
+   executable, directly or as that shim target, as mise, asdf and pnpm's own
+   installer with `@pnpm/exe` provide) embeds its Node runtime: it skips the
+   package engine check but must still report an exact stable `--version`, equal
+   to the version of the `pnpm` or `@pnpm/*` `package.json` beside it when there
+   is one, and pass the same global `add`/`bin` capability checks. A script or
+   shim without a `pnpm` package still blocks. Prerequisite
    checks run from `/`, so a pnpm that switches to a project's `packageManager`
    pin reports its own version.
    A pnpm whose stable version evidence (`package.json`, or a standalone
@@ -1048,11 +1097,11 @@ integrity into another runtime. Pin changes still require fresh primary evidence
   for focused verification. Production storage verification requires native
   Windows and fixed stock PowerShell ACL commands, never POSIX mode/UID evidence.
 
-Go preparation is deliberately **not implemented or invoked** in this unit.
-The standard installation runner blocks on Windows unless preflight reports a
-reusable Go ≥1.25.10, because gentle-pi's postinstall may build Gentle AI from
-source; it never acquires Go or treats an explicit override as native-package
-evidence.
+Go preparation is not part of the Windows bootstrap. The standard installation
+runner blocks on Windows unless preflight reports a reusable Go ≥1.25.10 or the
+plan acquires the [pinned Go](#pinned-go) after consent, because gentle-pi's
+postinstall may build Gentle AI from source; it never treats an explicit
+override as native-package evidence.
 
 ### Policy, bounds and evidence limits
 

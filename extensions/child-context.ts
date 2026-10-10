@@ -1,13 +1,22 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { filterChildSessionContextFiles, type ContextFileOptions } from "../lib/child-context-files.ts";
+import { REQUESTED_TOOLS_ENV } from "../lib/agents-runner.ts";
+import { registerCodeGraphTool } from "./codegraph-tools.ts";
 
 // gentle-shell#1587: delegated children drop the orchestrator-only gentle-ai
 // managed blocks from their context files. Gentle Agents passes this file to
 // every child with --extension because children do not load the gentle-pi
-// package in the isolated Gentle Shell home. It registers one hook and has no
-// other side effects; outside a child session it is a no-op.
+// package in the isolated Gentle Shell home. At startup it also supplies the
+// existing CodeGraph implementation only when explicitly requested and absent
+// (the full package already registers it). Outside a child session it is inert.
 export function createChildContextExtension(env: NodeJS.ProcessEnv = process.env): (pi: ExtensionAPI) => void {
 	return (pi) => {
+		const requested = (env[REQUESTED_TOOLS_ENV] ?? "").split(",").map(name => name.trim());
+		if (env.GENTLE_PI_AGENTS_CHILD === "1" && requested.includes("codegraph")) {
+			pi.on("session_start", () => {
+				if (!pi.getAllTools().some(tool => tool.name === "codegraph")) registerCodeGraphTool(pi);
+			});
+		}
 		pi.on("before_agent_start", (event) => {
 			if (env.GENTLE_PI_AGENTS_CHILD !== "1") return undefined;
 			// The filtered copies replace contextFiles on the same options object

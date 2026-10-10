@@ -5,7 +5,7 @@ import {
 	gentleAiDevBinaryOverrideConfigured,
 	resolveGentleAiBinary,
 } from "../runtime/gentle-ai-binary.mjs";
-import { PI_INSTALL_VERSION, persistencePins, pnpmGlobalBin, requirements } from "./installer-preflight.mjs";
+import { PI_INSTALL_VERSION, goAcquisition, persistencePins, pnpmGlobalBin, requirements } from "./installer-preflight.mjs";
 import { GENTLE_AI_REPOSITORY, SHELL_REPOSITORY, installOwner, mainVersion } from "./main-channel.mjs";
 
 // Standard installation runner: one fixed, consented global pnpm installation
@@ -16,6 +16,8 @@ import { GENTLE_AI_REPOSITORY, SHELL_REPOSITORY, installOwner, mainVersion } fro
 // installed the pinned stack but stopped in setup, a fixed recovery re-verifies
 // that stack and reruns only `gentle-shell setup` (and `pnpm setup`), never `add -g`.
 // An older Pi that pnpm or npm owns is first updated with that package manager.
+// When a build needs Go and the user's is missing or older, the installer's pinned
+// Go is acquired first and given only to the build children, first on PATH.
 
 /** Pi version installed next to gentle-pi (optional peer, resolved in one add). */
 export { PI_INSTALL_VERSION };
@@ -49,6 +51,8 @@ export const failedSteps = Object.freeze([
 	"verify-persistent-pnpm",
 	"check-npm",
 	"configure-npm-prefix",
+	"acquire-go",
+	"verify-go",
 	"install-global",
 	"verify-global-list",
 	"verify-shell-bin",
@@ -82,7 +86,7 @@ const knownActions = Object.freeze({
 	"configure-npm-prefix": { kind: "configure", target: "npm-prefix" },
 	"persist-npm": { kind: "install-global", target: "npm", version: persistencePins.npm },
 	"persist-pnpm": { kind: "install-global", target: "pnpm", version: persistencePins.pnpm },
-	"acquire-go": { kind: "acquire", target: "go", version: requirements.go },
+	"acquire-go": { kind: "acquire", target: "go", version: goAcquisition.version },
 	"verify-go": { kind: "verify", target: "go" },
 	"install-pi": { kind: "install-global", target: "pi", version: requirements.pi },
 	"install-shell": { kind: "install-global", target: "shell", version: requirements.shell },
@@ -108,6 +112,8 @@ const updateActions = ["update-shell-release", "update-shell-main"];
 const piOnlyVariants = Object.freeze([["update-pi", "verify-readiness"], ["install-pi", "verify-readiness"]]);
 // The main channel overlay: all three after a release installation, or none.
 const mainActions = ["build-gentle-ai-main", "install-shell-main", "record-channel"];
+// The pinned Go: both, only when preflight recorded a missing or older Go, or none.
+const goActions = ["acquire-go", "verify-go"];
 // Setup recovery: the pinned stack this pnpm installed is present (planPreflight
 // saw a recoverable setup), so only setup and the optional PATH step remain.
 const recoveryActions = ["setup-shell", "verify-readiness"];
@@ -161,9 +167,12 @@ function validRequest(request) {
 function planGate(plan, platform) {
 	if (plan.blockers.length > 0) return "preflight-blocked";
 	const all = plan.actions.map((action) => action.id);
+	const acquiringGo = goActions.filter((id) => all.includes(id)).length;
+	if (acquiringGo === 1 || (acquiringGo === 2 && plan.tools.go?.status !== "needs-acquire")) return "unsupported-plan";
+	const goReady = plan.tools.go?.status === "reusable" || acquiringGo === 2;
 	const overlay = mainActions.filter((id) => all.includes(id));
-	if (overlay.length > 0 && (overlay.length !== mainActions.length || plan.tools.go?.status !== "reusable")) return "unsupported-plan";
-	const ids = all.filter((id) => !mainActions.includes(id));
+	if (overlay.length > 0 && (overlay.length !== mainActions.length || !goReady)) return "unsupported-plan";
+	const ids = all.filter((id) => !mainActions.includes(id) && !goActions.includes(id));
 	const only = (allowed) => ids.every((id) => allowed.includes(id));
 	// All or nothing, like the persistence variants: never part of an installation.
 	const recovery = recoveryActions.every((id) => ids.includes(id)) && only([...recoveryActions, ...optionalActions]);
@@ -173,10 +182,12 @@ function planGate(plan, platform) {
 	const piOnly = overlay.length === 0 && plan.tools.shell?.status === "reusable" &&
 		piOnlyVariants.some((variant) => variant.every((id) => ids.includes(id)) && only(variant)) &&
 		(updatingPi || ["unavailable", "needs-install"].includes(plan.tools.pi?.status));
-	// gentle-pi's postinstall may build Gentle AI from source on Windows; the runner
-	// never acquires Go. A recovery runs no postinstall: its binary is verified.
-	// A Pi-only update touches no Gentle Shell package either.
-	if (platform === "win32" && (ids.includes("acquire-go") || (!recovery && !piOnly && plan.tools.go?.status !== "reusable"))) return "go-required";
+	// gentle-pi's postinstall may build Gentle AI from source on Windows. A recovery
+	// runs no postinstall: its binary is verified. A Pi-only update touches no
+	// Gentle Shell package either. Go is acquired only for a build that uses it.
+	const windowsBuild = platform === "win32" && !recovery && !piOnly;
+	if (acquiringGo === 2 && overlay.length === 0 && !ids.includes("update-shell-main") && !windowsBuild) return "unsupported-plan";
+	if (windowsBuild && !goReady) return "go-required";
 	const persisting = persistenceActions.filter((id) => ids.includes(id));
 	if (persisting.length > 0 && !persistenceVariants.some((variant) =>
 		variant.length === persisting.length && variant.every((id) => persisting.includes(id)))) return "unsupported-plan";
@@ -184,7 +195,7 @@ function planGate(plan, platform) {
 	if (updating.length > 0) {
 		const valid = updating.length === 1 && overlay.length === 0 && ["setup-shell", "verify-readiness"].every((id) => ids.includes(id)) &&
 			only([...updating, "install-pi", "update-pi", "setup-shell", "verify-readiness"]) &&
-			(updating[0] !== "update-shell-main" || plan.tools.go?.status === "reusable");
+			(updating[0] !== "update-shell-main" || goReady);
 		return valid ? null : "unsupported-plan";
 	}
 	const clean = requiredActions.every((id) => ids.includes(id)) && only([...requiredActions, ...optionalActions, ...persistenceActions]);
@@ -210,6 +221,14 @@ export function childEnvironment(env, platform, globalBin) {
 	const key = pathKeyOf(env, platform);
 	const rest = String(env[key] ?? "").split(path.delimiter).filter((entry) => entry.length > 0);
 	return { ...env, PNPM_HOME: globalBin.pnpmHome, [key]: [globalBin.path, ...rest].join(path.delimiter) };
+}
+
+/** A build child's env: `env` with the pinned Go's bin directory first on PATH. */
+export function goFirstEnvironment(env, platform, goPath) {
+	const path = platform === "win32" ? win32 : posix;
+	const key = pathKeyOf(env, platform);
+	const rest = String(env[key] ?? "").split(path.delimiter).filter((entry) => entry.length > 0);
+	return { ...env, [key]: [path.dirname(goPath), ...rest].join(path.delimiter) };
 }
 
 /** gentle-shell setup gets no bootstrap handoff keys (case-insensitive on Windows). */
@@ -567,8 +586,9 @@ export function setupErrorDetail(text, home, platform) {
  * { code, signal, timedOut, stdout, stderrTail? }, fs { isFile, realpath, readText },
  * verifyGentleAi({ packageRoot, platform, env, home }) and log({ step, status }).
  * An update plan also uses locateShell() and upgradeShell({ channel, packageRoot,
- * currentVersion }); a plan that updates an older Pi uses locatePi(), which returns
- * the single installed Pi as { root, version, owner } or null.
+ * currentVersion, goPath? }); a plan that updates an older Pi uses locatePi(), which returns
+ * the single installed Pi as { root, version, owner } or null. A plan that acquires
+ * Go uses acquireGo(), which returns the published pinned Go as { goPath }.
  * Nothing is ever deleted; no provisioning marker is written. A setup-recovery
  * plan replaces check-existing-stack with check-recoverable-stack and skips
  * install-global; every later step and outcome rule is the same.
@@ -592,7 +612,7 @@ export async function runStandardInstall(request, adapters) {
 	const child = childEnvironment(env, platform, globalBin);
 	const pnpm = await pnpmInvocation(env, platform, adapters.fs).catch(() => null);
 	if (!pnpm) return blocked("pnpm-unavailable");
-	const runPnpm = (args, deadlineMs) => adapters.run(pnpm.command, [...pnpm.prefix, ...args], { env: child, deadlineMs });
+	const runPnpm = (args, deadlineMs, environment = child) => adapters.run(pnpm.command, [...pnpm.prefix, ...args], { env: environment, deadlineMs });
 	const home = adapters.home ?? (platform === "win32" ? env.USERPROFILE : env.HOME);
 
 	const list = () => runPnpm(["list", "-g", "--depth", "0", "--json"], deadlines.probe);
@@ -733,8 +753,23 @@ export async function runStandardInstall(request, adapters) {
 			return after.owner === "pnpm" || samePath(after.root, installedPi.root, platform);
 		}],
 	] : [];
+	// The installer's pinned Go, when acquired: never on the user's PATH, only first
+	// on the PATH of the children that may build Gentle AI (gentle-pi's Windows
+	// postinstall finds go.exe there) and passed by path to the main build.
+	let pinnedGo = null;
+	const buildEnv = () => (pinnedGo ? goFirstEnvironment(child, platform, pinnedGo) : child);
+	const goSteps = ids.includes("acquire-go") ? [
+		["acquire-go", async () => typeof (pinnedGo = (await adapters.acquireGo())?.goPath ?? null) === "string"],
+		// It runs and reports exactly the pinned version; GOTOOLCHAIN=local keeps it from switching toolchains.
+		["verify-go", async () => {
+			if (!path.isAbsolute(pinnedGo) || !spawnable(pinnedGo, platform)) return false;
+			const result = await adapters.run(pinnedGo, ["version"], { env: { ...child, GOTOOLCHAIN: "local" }, cwd: path.dirname(pinnedGo),
+				deadlineMs: deadlines.probe });
+			return succeeded(result) && new RegExp(`^go version go${escapeRegExp(goAcquisition.version)} \\S+$`).test(String(result.stdout ?? "").trim());
+		}],
+	] : [];
 	const install = ["install-global", async () => succeeded(await runPnpm(["add", "-g", ...(shellOnly ? [] : [`${PI_PACKAGE}@${PI_INSTALL_VERSION}`]),
-		`${SHELL_PACKAGE}@${requirements.shell}`, `--allow-build=${SHELL_PACKAGE}`], deadlines.install))];
+		`${SHELL_PACKAGE}@${requirements.shell}`, `--allow-build=${SHELL_PACKAGE}`], deadlines.install, buildEnv()))];
 	function mainSteps() {
 		const channel = adapters.mainChannel;
 		const ctx = { env, home };
@@ -743,7 +778,7 @@ export async function runStandardInstall(request, adapters) {
 		let shellCommit = null;
 		return [
 			["build-gentle-ai-main", async () => {
-				const goPath = await lookPath("go", env, platform, adapters.fs);
+				const goPath = pinnedGo ?? await lookPath("go", env, platform, adapters.fs);
 				if (!goPath || !channel) return false;
 				gentleAiCommit = await channel.resolveCommit(GENTLE_AI_REPOSITORY);
 				await channel.buildGentleAi({ commit: gentleAiCommit, goPath, platform, ctx, run: runIn });
@@ -752,7 +787,7 @@ export async function runStandardInstall(request, adapters) {
 			["install-shell-main", async () => {
 				shellCommit = await channel.resolveCommit(SHELL_REPOSITORY);
 				const tgz = await channel.packShell({ commit: shellCommit, ctx, run: runIn, pnpm });
-				if (!succeeded(await runPnpm(["add", "-g", tgz, `--allow-build=${SHELL_PACKAGE}`], deadlines.install))) return false;
+				if (!succeeded(await runPnpm(["add", "-g", tgz, `--allow-build=${SHELL_PACKAGE}`], deadlines.install, buildEnv()))) return false;
 				const result = await list();
 				if (!succeeded(result)) return false;
 				const root = await verifiedPackageRoot(String(result.stdout ?? ""), globalBin.pnpmHome, platform, adapters.fs,
@@ -769,6 +804,7 @@ export async function runStandardInstall(request, adapters) {
 	}
 	const steps = [
 		...(persistRuntime ? persistence : addOnly ? packageManagers : []),
+		...goSteps,
 		...piSteps,
 		...(recovering ? [] : [install]),
 		["verify-global-list", async () => {
@@ -798,9 +834,11 @@ export async function runStandardInstall(request, adapters) {
 		const channel = update === "update-shell-main" ? "main" : "release";
 		const setupStep = steps.find(([name]) => name === "shell-setup");
 		steps.splice(0, steps.length,
+			...goSteps,
 			...(ids.includes("install-pi") ? [["install-pi", async () => succeeded(await runPnpm(["add", "-g", `${PI_PACKAGE}@${PI_INSTALL_VERSION}`], deadlines.install))]] : []),
 			...piSteps,
-			["update-shell", async () => (await adapters.upgradeShell({ channel, packageRoot: installed.root, currentVersion: installed.version })) === true],
+			["update-shell", async () => (await adapters.upgradeShell({ channel, packageRoot: installed.root, currentVersion: installed.version,
+				...(pinnedGo ? { goPath: pinnedGo } : {}) })) === true],
 			["verify-updated-shell", async () => {
 				const after = await adapters.locateShell();
 				const version = String(after?.version ?? "");

@@ -32,6 +32,8 @@ export const stepLabels = Object.freeze({
 	"build-gentle-ai-main": "Build Gentle AI from main",
 	"install-shell-main": "Install Gentle Shell from main",
 	"record-channel": "Save the main channel",
+	"acquire-go": "Download and verify Go",
+	"verify-go": "Verify the downloaded Go",
 	"check-existing-shell": "Check for an existing Gentle Shell",
 	"check-installed-shell": "Find the installed Gentle Shell",
 	"install-pi": "Install Pi",
@@ -103,9 +105,11 @@ export function expectedSteps(actionIds) {
 	const piCheck = ids.has("update-pi") ? ["check-installed-pi"] : [];
 	const piSteps = ids.has("update-pi") ? ["update-pi", "verify-updated-pi"] : [];
 	// An existing Gentle Shell is updated in place, then set up again.
+	// The installer's pinned Go is acquired after the checks, before anything is installed.
+	const go = ids.has("acquire-go") ? ["acquire-go", "verify-go"] : [];
 	const update = ["update-shell-release", "update-shell-main"].find((id) => ids.has(id));
 	if (update) {
-		return ["check-npm", "check-global-bin", "check-installed-shell", ...piCheck, ...(ids.has("install-pi") ? ["install-pi"] : []),
+		return ["check-npm", "check-global-bin", "check-installed-shell", ...piCheck, ...go, ...(ids.has("install-pi") ? ["install-pi"] : []),
 			...piSteps, "update-shell", "verify-updated-shell", ...(update === "update-shell-release" ? ["verify-gentle-ai"] : []), "shell-setup"];
 	}
 	if (piOnlyPlan(actionIds)) {
@@ -133,7 +137,7 @@ export function expectedSteps(actionIds) {
 		if (addNpm) steps.push("check-npm");
 		if (addPnpm) steps.push("verify-persistent-pnpm");
 	}
-	steps.push(...piSteps, "install-global", "verify-global-list", "verify-shell-bin", "verify-gentle-ai", "shell-setup");
+	steps.push(...go, ...piSteps, "install-global", "verify-global-list", "verify-shell-bin", "verify-gentle-ai", "shell-setup");
 	if (ids.has("setup-global-bin")) steps.push("persist-path");
 	return withMain(ids, steps);
 }
@@ -387,7 +391,7 @@ function disclosureCard(doc, item) {
 
 const channels = Object.freeze([
 	{ value: "release", label: "Latest release", hint: "Recommended. The published Gentle Shell and its pinned Gentle AI binary." },
-	{ value: "main", label: "Latest main", hint: "Development builds: Gentle Shell and Gentle AI from the latest commit of `main`, built on this computer. Needs Go." },
+	{ value: "main", label: "Latest main", hint: "Development builds: Gentle Shell and Gentle AI from the latest commit of `main`, built on this computer with Go. If yours is missing or older, the installer downloads its own pinned Go only for the build." },
 ]);
 
 /** Channel choice shown on every review screen; a change reloads the plan. */

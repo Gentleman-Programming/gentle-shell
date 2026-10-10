@@ -3,6 +3,7 @@ import { closeSync, lstatSync, openSync, readFileSync, readSync, realpathSync, m
 import { basename, dirname, join, resolve, delimiter } from "node:path";
 import { spawnSync, spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
+import { crc32, gunzipSync, inflateRawSync } from "node:zlib";
 
 // Acquisition pins, not compatibility minima. Sources verified before pinning:
 // https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt
@@ -19,6 +20,24 @@ const pnpm = Object.freeze({
 	integrity: "sha512-0f319zxhe2T6GlaoHDyN/g6WbjOmAQqiVrUXrne+Idk+Ba/8DeGoOw5PKdVp9otEaujwaM1yR8C7PfD7TXvfmg==",
 	maxBytes: 32 * 1024 * 1024,
 });
+// Go toolchain used only to build Gentle AI: https://go.dev/dl/?mode=json&include=all
+// lists each archive's sha256 and size; every archive was downloaded and re-hashed
+// before pinning. go.dev/dl/<file> redirects to dl.google.com/go/<file>, and
+// download() refuses redirects, so the pins name the final URL.
+const go = Object.freeze({
+	version: "1.25.14",
+	maxExpandedBytes: 512 * 1024 * 1024,
+	archives: Object.freeze({
+		"darwin-arm64": ["darwin-arm64.tar.gz", "5b26c0b6f308240fca2614fb02f622cfcc8c0cc3b69c78bba4845489a4590259", 58123934],
+		"darwin-x64": ["darwin-amd64.tar.gz", "b09087a67d5792a8b0fcbf74212d62560c94ac8a8fd750ff920d8cb5f1e20118", 60622678],
+		"linux-x64": ["linux-amd64.tar.gz", "a21ae5633a269bcd7e90cf767e48225633795e99d831742cbf3397064fee7712", 59909419],
+		"linux-arm64": ["linux-arm64.tar.gz", "9bf234ea70ffec9347fdf6b22ce4add51717d3386a38a441e8c8743fceb5eaee", 57360344],
+		"win32-x64": ["windows-amd64.zip", "119044a92b3987c341cd6aebb256676dd4780d292f7b4e72a3e9976677841697", 67591780],
+		"win32-arm64": ["windows-arm64.zip", "96fb31ae26b288b5311bd31d8252d4a62c8a661e4dbb64d504cc646e4d10a57f", 64735369],
+	}),
+});
+/** The Go version acquireGo publishes. */
+export const goPinVersion = go.version;
 
 /** Fixed allowlist; callers cannot supply download URLs, checksums or commands. */
 export function artifactFor(name, platform, arch) {
@@ -30,6 +49,13 @@ export function artifactFor(name, platform, arch) {
 			throw new Error("Windows artifact metadata rejected");
 		}
 		return Object.freeze({ name, version: pin.version, platform, arch, url: target.url, integrity: `sha256-${target.sha256}`, maxBytes: pin.maxBytes });
+	}
+	if (name === "go") {
+		const pin = Object.hasOwn(go.archives, `${platform}-${arch}`) ? go.archives[`${platform}-${arch}`] : null;
+		if (!pin) throw new Error("Unsupported acquisition target");
+		const [suffix, sha256, size] = pin;
+		return Object.freeze({ name, version: go.version, platform, arch, url: `https://dl.google.com/go/go${go.version}.${suffix}`,
+			integrity: `sha256-${sha256}`, size, maxBytes: size });
 	}
 	const hash = nodeHashes[`${platform}-${arch}`];
 	if (name !== "node" || !hash) throw new Error("Unsupported acquisition target");
@@ -65,15 +91,18 @@ async function download(descriptor) {
 }
 
 /** Pure descriptor selection + injected byte transport/digest for deterministic tests.
- * Production always hashes actual bytes; test adapters are trusted local code only.
+ * Production always hashes actual bytes; test adapters (download, digest and the
+ * artifact descriptor) are trusted local code only. A descriptor with a size
+ * accepts exactly that many bytes.
  * No extraction or execution is allowed before this function succeeds.
  */
 export async function verifiedDownload(name, adapters = {}, platform, arch) {
-	const descriptor = artifactFor(name, platform, arch);
+	const descriptor = (adapters.artifact ?? artifactFor)(name, platform, arch);
 	let bytes;
 	try { bytes = await (adapters.download ?? download)(descriptor); }
 	catch { throw new Error("Download failed"); }
 	if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > descriptor.maxBytes) throw new Error("Download size rejected");
+	if (descriptor.size !== undefined && bytes.length !== descriptor.size) throw new Error("Download size rejected");
 	const [algorithm, encoded] = descriptor.integrity.split("-");
 	const expected = Buffer.from(encoded, algorithm === "sha256" ? "hex" : "base64");
 	const actual = (adapters.digest ?? ((data, hash) => createHash(hash).update(data).digest()))(bytes, algorithm);
@@ -127,18 +156,32 @@ function findExecutable(name, env) {
 	}
 	return null;
 }
-// pnpm 11 installs itself behind a regular cmd-shim file, not a symlink; its
-// package lives only in the shim's `# cmd-shim-target=` comment. The target is
-// a starting point for the package search, not proof: provePnpm still runs the
-// command and requires its --version to match that package.json.
+function head(path, size) {
+	const buffer = Buffer.alloc(size);
+	const fd = openSync(path, "r");
+	try {
+		return buffer.subarray(0, readSync(fd, buffer, 0, size, 0));
+	} finally {
+		closeSync(fd);
+	}
+}
+// pnpm installs itself in $PNPM_HOME behind a regular cmd-shim file, not a
+// symlink. pnpm 11 names its target in a `# cmd-shim-target=` comment; older
+// shims only run the single `"$basedir/<target>" "$@"` next to the shim. The
+// target is a starting point for the evidence search, not proof: the command
+// itself still has to print the version that evidence names.
 function shimTarget(command) {
 	if (!regular(command)) return null;
-	const head = readFileSync(command, "utf8").slice(0, 4096);
-	const match = /^# cmd-shim-target=(\/[^\r\n]+)$/m.exec(head);
-	return match && stat(match[1]) ? match[1] : null;
+	const text = head(command, 4096).toString("utf8");
+	const match = /^# cmd-shim-target=(\/[^\r\n]+)$/m.exec(text);
+	if (match) return stat(match[1]) ? match[1] : null;
+	const targets = new Set([...text.matchAll(/"\$basedir\/([^"$`\\]+)"[ \t]+"\$@"/g)]
+		.map(([, target]) => join(realpathSync(dirname(command)), target)));
+	const [target] = targets;
+	return targets.size === 1 && stat(target) ? target : null;
 }
-function packageFor(command) {
-	let directory = dirname(realpathSync(shimTarget(command) ?? command));
+function packageFor(target) {
+	let directory = dirname(target);
 	for (let depth = 0; depth < 4; depth += 1) {
 		const file = join(directory, "package.json");
 		if (regular(file)) {
@@ -151,22 +194,22 @@ function packageFor(command) {
 	}
 	throw new Error("Existing pnpm compatibility is unknown: package engine evidence missing");
 }
-// mise, asdf and pnpm's own installer ship pnpm as a standalone native executable
-// that embeds its own Node runtime, so it has no pnpm package.json and the user's
-// Node engine does not apply to it. Only a Mach-O or ELF header qualifies; scripts
-// and shims without a package still need package engine evidence.
+// mise, asdf and pnpm's own installer (directly or behind its shim, as
+// @pnpm/exe) ship pnpm as a standalone native executable that embeds its own
+// Node runtime, so the user's Node engine does not apply to it. Only a Mach-O
+// or ELF header qualifies; scripts and shims without a package still need
+// package engine evidence.
 const nativeHeaders = ["cffaedfe", "cefaedfe", "feedfacf", "feedface", "cafebabe", "bebafeca", "7f454c46"];
-function standalonePnpm(command) {
-	const target = realpathSync(command);
-	if (!regular(target)) return false;
-	const header = Buffer.alloc(4);
-	const fd = openSync(target, "r");
-	try {
-		if (readSync(fd, header, 0, 4, 0) !== 4) return false;
-	} finally {
-		closeSync(fd);
-	}
-	return nativeHeaders.includes(header.toString("hex"));
+function standalonePnpm(target) {
+	return regular(target) && nativeHeaders.includes(head(target, 4).toString("hex"));
+}
+// The pnpm package a native executable ships in (@pnpm/exe, @pnpm/<platform>,
+// pnpm 12), when there is one: its version is what the executable must print.
+function standaloneVersion(target) {
+	const file = join(dirname(target), "package.json");
+	if (!regular(file)) return null;
+	const metadata = JSON.parse(readFileSync(file, "utf8"));
+	return metadata.name === "pnpm" || /^@pnpm\//.test(metadata.name) ? metadata.version : null;
 }
 function provePnpm(command, prefix, metadata, nodeVersion, env, processAdapter, known = null) {
 	if (metadata && (!parts(metadata.version) || !compatibleEngine(metadata.engines?.node, nodeVersion))) {
@@ -234,10 +277,14 @@ export async function ensurePnpm({ tools, env, nodeVersion, adapters = {} }) {
 	const processAdapter = adapters.process ?? processCheck;
 	const existing = findExecutable("pnpm", env);
 	if (existing) {
-		const metadata = standalonePnpm(existing) ? null : packageFor(existing);
+		const target = realpathSync(shimTarget(existing) ?? existing);
+		const standalone = standalonePnpm(target);
+		const metadata = standalone ? null : packageFor(target);
 		const bound = /^>=(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\.(0|[1-9]\d*))?$/.test(metadata?.engines?.node ?? "");
 		// A standalone pnpm reports its version only by running; that answer is reused.
 		const version = metadata ? null : processAdapter(existing, ["--version"], env);
+		const shipped = standalone ? standaloneVersion(target) : null;
+		if (shipped !== null && version !== shipped) throw new Error("pnpm version rejected");
 		const incompatible = metadata
 			? parts(metadata.version) !== null && bound && (!pinnedPnpmCompatible(metadata.version) || !compatibleEngine(metadata.engines.node, nodeVersion))
 			: parts(version) !== null && !pinnedPnpmCompatible(version);
@@ -286,6 +333,195 @@ export async function ensurePnpm({ tools, env, nodeVersion, adapters = {} }) {
 		throw new Error("pnpm verified acquisition failed; no installation completed");
 	} finally {
 		rmSync(stage, { recursive: true, force: true });
+	}
+}
+
+/** A Go archive member: under `go/`, with no empty, `.` or `..` segment and no
+ * backslash, colon or control character. Returns it without a trailing `/`.
+ */
+function goMember(name, directory) {
+	const parts = (directory ? name.replace(/\/$/, "") : name).split("/");
+	if (name.length > 1024 || parts[0] !== "go" || /[\\:\u0000-\u001f\u007f]/.test(name) ||
+		parts.some((part) => part === "" || part === "." || part === "..")) throw new Error("Unsafe Go archive path");
+	return parts.join("/");
+}
+
+/** A PAX extended header that only renames the next member (`path`, as go.dev
+ * uses for non-ASCII names). Any other key could change its meaning: rejected.
+ */
+function paxPath(data) {
+	let path = null;
+	for (let rest = data; rest.length > 0;) {
+		const space = rest.indexOf(0x20);
+		const digits = rest.subarray(0, Math.max(space, 0)).toString("latin1");
+		const length = Number(digits);
+		if (!/^[1-9]\d{0,5}$/.test(digits) || length > rest.length || rest[length - 1] !== 0x0a) throw new Error("Unsafe Go archive header");
+		const record = rest.subarray(space + 1, length - 1).toString("utf8");
+		if (!record.startsWith("path=") || path !== null) throw new Error("Unsafe Go archive header");
+		path = record.slice(5);
+		rest = rest.subarray(length);
+	}
+	if (path === null) throw new Error("Unsafe Go archive header");
+	return path;
+}
+
+/** Members of a go.dev `.tar.gz`: POSIX ustar regular files and directories only. */
+function goTarEntries(bytes) {
+	const tar = gunzipSync(bytes, { maxOutputLength: go.maxExpandedBytes });
+	const text = (block, start, length) => block.subarray(start, start + length).toString("utf8").replace(/\0[^]*$/, "");
+	const number = (block, start, length) => {
+		const value = text(block, start, length).trim();
+		if (!/^[0-7]{1,12}$/.test(value)) throw new Error("Unsafe Go archive header");
+		return parseInt(value, 8);
+	};
+	const entries = [];
+	let renamed = null;
+	for (let offset = 0; ;) {
+		if (offset + 512 > tar.length) throw new Error("Unsafe Go archive termination");
+		const block = tar.subarray(offset, offset + 512);
+		if (block.every((byte) => byte === 0)) {
+			if (renamed !== null || !tar.subarray(offset).every((byte) => byte === 0)) throw new Error("Unsafe Go archive termination");
+			return entries;
+		}
+		let checksum = 0;
+		for (let index = 0; index < 512; index += 1) checksum += index >= 148 && index < 156 ? 0x20 : block[index];
+		if (checksum !== number(block, 148, 8) || block.subarray(257, 265).toString("latin1") !== "ustar\u000000") throw new Error("Unsafe Go archive header");
+		const size = number(block, 124, 12);
+		const type = String.fromCharCode(block[156]);
+		const start = offset + 512;
+		if (start + size > tar.length) throw new Error("Unsafe Go archive termination");
+		offset = start + Math.ceil(size / 512) * 512;
+		if (type === "x" && renamed === null) {
+			renamed = paxPath(tar.subarray(start, start + size));
+			continue;
+		}
+		const directory = type === "5";
+		if (!directory && type !== "0" && type !== "\0") throw new Error("Unsafe Go archive entry type");
+		const prefix = text(block, 345, 155);
+		const name = renamed ?? (prefix ? `${prefix}/${text(block, 0, 100)}` : text(block, 0, 100));
+		renamed = null;
+		if ((directory && size !== 0) || (!directory && name.endsWith("/")) || text(block, 157, 100) !== "") throw new Error("Unsafe Go archive entry type");
+		entries.push({ name: goMember(name, directory), directory, executable: (number(block, 100, 8) & 0o111) !== 0,
+			bytes: tar.subarray(start, start + size) });
+		if (entries.length > 50000) throw new Error("Unsafe Go archive entry count");
+	}
+}
+
+/** Members of a go.dev Windows `.zip`: stored or deflated, unencrypted, no ZIP64,
+ * each matching its local header and CRC-32. A Unix-made member must be a
+ * regular file or directory (go.dev's are), never a link.
+ */
+function goZipEntries(bytes) {
+	const fail = () => { throw new Error("Unsafe Go archive"); };
+	const end = bytes.length - 22;
+	if (end < 0 || bytes.readUInt32LE(end) !== 0x06054b50 || bytes.readUInt16LE(end + 20) !== 0) fail();
+	const count = bytes.readUInt16LE(end + 10);
+	const directoryStart = bytes.readUInt32LE(end + 16);
+	if (bytes.readUInt32LE(end + 4) !== 0 || bytes.readUInt16LE(end + 8) !== count || count > 50000 ||
+		directoryStart + bytes.readUInt32LE(end + 12) !== end) fail();
+	const entries = [];
+	let expanded = 0;
+	let at = directoryStart;
+	for (let index = 0; index < count; index += 1) {
+		if (at + 46 > end || bytes.readUInt32LE(at) !== 0x02014b50) fail();
+		const [flags, method, crc, compressed, size] = [bytes.readUInt16LE(at + 8), bytes.readUInt16LE(at + 10),
+			bytes.readUInt32LE(at + 16), bytes.readUInt32LE(at + 20), bytes.readUInt32LE(at + 24)];
+		const nameLength = bytes.readUInt16LE(at + 28);
+		const mode = bytes.readUInt32LE(at + 38) >>> 16;
+		const local = bytes.readUInt32LE(at + 42);
+		const name = bytes.subarray(at + 46, at + 46 + nameLength).toString("utf8");
+		const directory = name.endsWith("/");
+		const unix = bytes[at + 5] === 3;
+		at += 46 + nameLength + bytes.readUInt16LE(at + 30) + bytes.readUInt16LE(at + 32);
+		if (at > end || (flags & 0x41) !== 0 || (method !== 0 && method !== 8) || compressed === 0xffffffff || size === 0xffffffff) fail();
+		if (unix && (mode & 0o170000) !== (directory ? 0o040000 : 0o100000)) fail();
+		if (local + 30 > directoryStart || bytes.readUInt32LE(local) !== 0x04034b50) fail();
+		const data = local + 30 + bytes.readUInt16LE(local + 26) + bytes.readUInt16LE(local + 28);
+		if (bytes.subarray(local + 30, local + 30 + bytes.readUInt16LE(local + 26)).toString("utf8") !== name || data + compressed > directoryStart) fail();
+		expanded += size;
+		if (expanded > go.maxExpandedBytes || (directory && size !== 0)) fail();
+		const raw = bytes.subarray(data, data + compressed);
+		const content = method === 0 ? raw : inflateRawSync(raw, { maxOutputLength: Math.max(size, 1) });
+		if (content.length !== size || crc32(content) !== crc) fail();
+		entries.push({ name: goMember(name, directory), directory, executable: unix && (mode & 0o111) !== 0, bytes: content });
+	}
+	if (at !== end) fail();
+	return entries;
+}
+
+const GO_MARKER = ".gentle-shell-go";
+/** An existing directory owned by this user that no one else can write to. */
+function privateDirectory(path) {
+	const info = stat(path);
+	if (!info?.isDirectory() || info.isSymbolicLink()) return false;
+	return process.platform === "win32" || (info.uid === process.getuid() && (info.mode & 0o022) === 0);
+}
+
+/** The pinned Go a previous acquireGo published under `root` for this target, or
+ * null: `<root>/<version>` private, marked with the exact pinned archive URL,
+ * holding a regular `go/bin/go` (`go.exe` on Windows). Read-only; never throws.
+ */
+export function installedGo(root, platform, arch, adapters = {}) {
+	try {
+		const descriptor = (adapters.artifact ?? artifactFor)("go", platform, arch);
+		const directory = join(root, descriptor.version);
+		const goPath = join(directory, "go", "bin", platform === "win32" ? "go.exe" : "go");
+		if (!privateDirectory(root) || !privateDirectory(directory) || !regular(join(directory, GO_MARKER))) return null;
+		return readFileSync(join(directory, GO_MARKER), "utf8") === `${descriptor.url}\n` && regular(goPath) ? goPath : null;
+	} catch {
+		return null;
+	}
+}
+
+/** The pinned Go, only to build Gentle AI: the copy installedGo finds, otherwise
+ * the exact go.dev archive, verified (size and SHA-256) before it is read,
+ * extracted in process into a private staging directory (regular files and
+ * directories under `go/` only; no links, traversal or duplicates), checked
+ * against its VERSION and published without replacing anything as
+ * `<root>/<version>/go`, marked last. Nothing outside `root` is written, and the
+ * user's own Go, PATH and profile are never touched. Adapters (artifact,
+ * download, digest) are trusted local test code only.
+ * Returns { goPath, version, acquired }.
+ */
+export async function acquireGo({ root, platform, arch, adapters = {} }) {
+	const descriptor = (adapters.artifact ?? artifactFor)("go", platform, arch);
+	const executable = platform === "win32" ? "go.exe" : "go";
+	const destination = join(root, descriptor.version);
+	const reused = installedGo(root, platform, arch, adapters);
+	if (reused) return { goPath: reused, version: descriptor.version, acquired: false };
+	let stage = null;
+	let claimed = false;
+	try {
+		if (stat(destination)) throw new Error("Conflicting Go destination");
+		const bytes = await verifiedDownload("go", adapters, platform, arch);
+		mkdirSync(root, { recursive: true, mode: 0o700 });
+		if (!privateDirectory(root)) throw new Error("Unsafe Go destination");
+		const entries = descriptor.url.endsWith(".zip") ? goZipEntries(bytes) : goTarEntries(bytes);
+		stage = mkdtempSync(join(root, ".stage-"));
+		for (const entry of entries) {
+			const target = join(stage, ...entry.name.split("/"));
+			if (entry.directory) {
+				mkdirSync(target, { recursive: true, mode: 0o755 });
+			} else {
+				mkdirSync(dirname(target), { recursive: true, mode: 0o755 });
+				// wx: a duplicate member, also one differing only in case, fails closed.
+				writeFileSync(target, entry.bytes, { flag: "wx", mode: entry.executable ? 0o755 : 0o644 });
+			}
+		}
+		const tree = join(stage, "go");
+		if (!regular(join(tree, "bin", executable)) || !regular(join(tree, "VERSION")) ||
+			readFileSync(join(tree, "VERSION"), "utf8").split("\n")[0] !== `go${descriptor.version}`) throw new Error("Go archive content rejected");
+		// mkdir is the atomic no-clobber claim (rename alone can replace an empty directory).
+		mkdirSync(destination, { mode: 0o700 });
+		claimed = true;
+		renameSync(tree, join(destination, "go"));
+		writeFileSync(join(destination, GO_MARKER), `${descriptor.url}\n`, { flag: "wx", mode: 0o600 });
+		return { goPath: join(destination, "go", "bin", executable), version: descriptor.version, acquired: true };
+	} catch (cause) {
+		if (claimed) rmSync(destination, { recursive: true, force: true });
+		throw new Error("Go verified acquisition failed; nothing was published", { cause });
+	} finally {
+		if (stage) rmSync(stage, { recursive: true, force: true });
 	}
 }
 

@@ -6,9 +6,10 @@ import { join, posix, resolve, win32 } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { collectInventory, planPreflight } from "../scripts/installer-preflight.mjs";
 import { createProbes, hostAdapters, userEnvironment } from "../scripts/installer-probes.mjs";
-import { lookPath, packageNativeGentleAi, pnpmInvocation, runStandardInstall } from "../scripts/installer-runner.mjs";
+import { acquireGo } from "../scripts/installer-downloads.mjs";
+import { goFirstEnvironment, lookPath, packageNativeGentleAi, pnpmInvocation, runStandardInstall } from "../scripts/installer-runner.mjs";
 import { createInstallerServer } from "../scripts/installer-server.mjs";
-import { mainChannelAdapter, runUpgrade } from "../scripts/main-channel.mjs";
+import { configHome, mainChannelAdapter, runUpgrade } from "../scripts/main-channel.mjs";
 
 // Browser installation wizard entry, started by the bootstrap with no argv.
 // Thin wiring only: real probes and adapters, the standard runner and the
@@ -138,6 +139,7 @@ async function main() {
 		},
 		runInstall: async (request, log) => {
 			const runnerEnv = await runnerEnvironment({ platform, env, fs });
+			const ctx = { env: runnerEnv, home: runnerEnv.HOME ?? env.HOME ?? env.USERPROFILE };
 			return runStandardInstall(request, {
 			platform,
 			nodePath: process.execPath,
@@ -148,20 +150,28 @@ async function main() {
 			locateShell: () => createProbes({ platform, env, run, fs }).locateShell(),
 			// An older Pi: fresh probes find it before its update and confirm it afterwards.
 			locatePi: () => createProbes({ platform, env, run, fs }).locatePi(),
-			upgradeShell: async ({ channel, packageRoot, currentVersion }) => (await runUpgrade({
-				args: ["--channel", channel],
-				ctx: { env: runnerEnv, home: runnerEnv.HOME ?? env.HOME ?? env.USERPROFILE },
-				platform,
-				packageRoot,
-				currentVersion,
-				adapters: {
-					fetch: globalThis.fetch,
-					fs: fsPromises,
-					which: (name) => lookPath(name, runnerEnv, platform, fs),
-					run: (command, argv, options = {}) => run(command, argv, { env: options.env ?? runnerEnv, cwd: options.cwd, deadlineMs: options.deadlineMs ?? 20 * 60_000 }),
-				},
-				out: () => {},
-			})) === 0,
+			// Only a plan that needs Go and found it missing or older: verified go.dev
+			// bytes under <config home>/tools/go, used by path or child PATH only.
+			acquireGo: () => acquireGo({ root: join(configHome(ctx), "tools", "go"), platform, arch }),
+			// A pinned Go goes first on the PATH of the upgrade's children only.
+			upgradeShell: async ({ channel, packageRoot, currentVersion, goPath }) => {
+				const upgradeEnv = goPath ? goFirstEnvironment(runnerEnv, platform, goPath) : runnerEnv;
+				return (await runUpgrade({
+					args: ["--channel", channel],
+					ctx,
+					platform,
+					arch,
+					packageRoot,
+					currentVersion,
+					adapters: {
+						fetch: globalThis.fetch,
+						fs: fsPromises,
+						which: (name) => lookPath(name, upgradeEnv, platform, fs),
+						run: (command, argv, options = {}) => run(command, argv, { env: options.env ?? upgradeEnv, cwd: options.cwd, deadlineMs: options.deadlineMs ?? 20 * 60_000 }),
+					},
+					out: () => {},
+				})) === 0;
+			},
 			verifyGentleAi: packageNativeGentleAi,
 			// Only a main plan uses it: network access and writes under ~/.pi/gentle-ai.
 			mainChannel: mainChannelAdapter({ fs: fsPromises }),

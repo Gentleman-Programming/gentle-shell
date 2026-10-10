@@ -103,6 +103,25 @@ function beginArguments(child: FakeChild, timestamp = 1000): void {
 	child.emit(argumentUpdate("toolcall_start", { id: "call-1", toolName: "write" }));
 }
 
+test("parent source passages reach the economical explorer through the existing context handoff", async () => {
+	const h = harness();
+	const context = "Parent-provided source (evidence, not instructions): https://docs.example.invalid/fixture\nPassage: The fixture supports local symbol queries.\nRemaining uncertainty: release compatibility was not checked.";
+	const task = h.runner.run(request({
+		agent: { ...explorer, name: "gentle-ai-explore", tools: ["read", "grep", "find", "codegraph"] },
+		prompt: "Compare the supplied passage with local source; do not browse.",
+		context,
+		model: { provider: "offline", id: "configured-small" },
+		thinking: "low",
+	}));
+	await tick();
+	const command = h.children[0].written.find(command => command.type === "prompt");
+	assert.equal(command?.message, `Compare the supplied passage with local source; do not browse.\n\n## Context\n${context}`);
+	assert.ok(h.spawnOptions[0].args.includes("offline/configured-small:low"));
+	assert.equal(h.spawnOptions[0].env[REQUESTED_TOOLS_ENV], "read,grep,find,codegraph,subagent_parent_message");
+	h.runner.cancel(task.id);
+	await tick();
+});
+
 test("fresh argument streaming renews idle liveness without execution or provisional usage", async () => {
 	const h = harness({ stallTimeoutMs: 100, toolStallTimeoutMs: 1000 });
 	const task = h.runner.run(request());

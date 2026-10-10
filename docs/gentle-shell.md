@@ -295,7 +295,9 @@ Tasks are `pending` (`○`), `in_progress` (`◐`), `blocked` (`⊘`), `done` (`
 - `blocked` is open work that waits on something outside the list, such as an admin, another team, or an authorization. It requires a note naming what it waits for, shown next to the title (`⊘ Deploy the cleanup job · waiting for an admin`). Blocked tasks keep the list open, but they never make it stale, and the collapsed card skips them for the next task.
 - `dropped` marks a task a change of plan made obsolete. It renders dim without strikethrough, leaves the `done of total` count, and does not count as open, so a list whose remaining tasks are all `done` or `dropped` is finished. `cancelled`, `canceled`, and `abandoned` are accepted as aliases.
 
-A finished list stays on screen for the turn it finished in and clears at the next. `ctrl+shift+t` collapses the card to the task in progress (`GENTLE_PI_TODO_KEY` rebinds it, `off` disables it); `GENTLE_PI_TODO=0` disables the tool and the card.
+A finished list stays on screen for the turn it finished in and clears at the next. `ctrl+shift+t` collapses the card to one task line, truncating long titles and notes with `…` (`GENTLE_PI_TODO_KEY` rebinds it, `off` disables it); `GENTLE_PI_TODO=0` disables the tool and the card.
+
+Expanded cards reserve at most one third of the terminal height (up to 16 rows, with a minimum for card chrome), both in the sidebar and above the editor on narrow/mobile terminals. Scroll the full task text with the wheel in fullscreen mode or `ctrl+shift+up` / `ctrl+shift+down` in either mode. The collapse header stays visible; the row-range hint shows when more content is available. Task data and the agent's plan remain complete.
 
 ### Gentle Stats
 

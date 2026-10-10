@@ -44,6 +44,7 @@ import { AgentsView } from "../lib/agents-view.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
 import { PresencePublisher, sanitizeDisplayLabel, listPresence, sessionHash } from "../lib/orchestrator-presence.ts";
 import { incomingMessageCard, outgoingMessageCall, outgoingMessageResult, type OrchestratorMessageDetails } from "../lib/orchestrator-message-card.ts";
+import { orchestratorToolRenderers } from "../lib/orchestrator-tool-card.ts";
 import { discoverOrchestrators } from "../lib/orchestrator-discovery.ts";
 import { consultPublishedMetadata, unavailableMetadata, type MetadataReceipt } from "../lib/orchestrator-consultation.ts";
 import { HelperCostPermission } from "../lib/orchestrator-helper-consent.ts";
@@ -1809,6 +1810,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		name: "orchestrator_session_id",
 		label: "Orchestrator session ID",
 		description: "Return this host session's stable routing ID, Initial alias (FIRST TASK), Current alias (CURRENT TASK), and separate human Session name. Explicit subjects update Current even when named; Initial stays the first declared branch topic, unknown for legacy history. Before delegation or cross-session coordination, declare a short recognizable subject here. Do not require a subject declaration for small direct tasks; do not query all peers. Names never authenticate. Existing Pi names and human renames are preserved. Use a concise non-sensitive label, not a prompt. For work beyond small direct tasks, publish subject and current/next status here; refresh at task changes/completion. Owner-curated state (2048 UTF-8 bytes total): null withdraws, omission leaves unchanged. Never include credentials, internal instructions, or raw prompts. Historical notes are not consent or an owner reply.",
+		...orchestratorToolRenderers("session", expandHint),
 		parameters: { type: "object", additionalProperties: false, properties: {
 			subject: { type: "string", maxLength: 120, description: "Optional short task subject; updates task aliases independently of human names. Also names an unnamed Pi session." },
 			state: { anyOf: [{ type: "null" }, { type: "object", additionalProperties: false, properties: {
@@ -1843,6 +1845,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.registerTool({
 		name: "orchestrator_consult",
 		label: "Consult published context",
+		...orchestratorToolRenderers("consult", expandHint),
 		description: "Read published metadata (default), request bounded helper reasoning with explicit UI model-cost permission and a question, or revoke-reasoning for an exact target. Never an owner reply, consent or private context access.",
 		parameters: { type: "object", additionalProperties: false, required: ["recipient_session_id"], properties: {
 			kind: { type: "string", enum: ["metadata", "reasoning", "revoke-reasoning"] },
@@ -1892,6 +1895,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.registerTool({
 		name: "orchestrator_list",
 		label: "List orchestrators",
+		...orchestratorToolRenderers("list", expandHint),
 		description: "List other sessions advertised by the trusted local profile. Optional filter searches only published classified work with bounded, non-exhaustive coverage, no authority and unknown reachability. Omit filter for the existing session list.",
 		parameters: Type.Object({
 			recipient_session_id: Type.Optional(Type.String({ description: "Exact routing ID of the peer to inspect." })),

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { PI_INSTALL_VERSION, collectInventory, planPreflight, pnpmGlobalBin, requirements } from "../scripts/installer-preflight.mjs";
+import { PI_INSTALL_VERSION, collectInventory, goAcquisition, planPreflight, pnpmGlobalBin, requirements } from "../scripts/installer-preflight.mjs";
 
 const absent = { available: false };
 const tool = (version: string) => ({ available: true, version, usable: true });
@@ -68,11 +68,42 @@ for (const platform of ["linux", "darwin", "win32"]) {
 	});
 }
 
-test("the main channel requires a compatible Go on every platform", () => {
-	for (const go of [absent, tool("1.25.9"), { available: null }]) {
-		const plan = planPreflight({ ...clean("darwin"), go }, { channel: "main" });
-		assert.ok(plan.blockers.some((blocker: { code: string; tool: string }) => blocker.code === "main-requires-go" && blocker.tool === "go"));
-		assert.deepEqual(plan.actions, []);
+const goActions = [{ id: "acquire-go", kind: "acquire", target: "go", version: goAcquisition.version }, { id: "verify-go", kind: "verify", target: "go" }];
+test("the pinned Go is a 1.25 patch release that meets the requirement", () => {
+	assert.equal(goAcquisition.version, "1.25.14");
+	const [major, minor, patch] = goAcquisition.version.split(".").map(Number);
+	const [rMajor, rMinor, rPatch] = requirements.go.split(".").map(Number);
+	assert.ok(major === rMajor && minor === rMinor && patch >= rPatch);
+});
+
+test("the main channel acquires the pinned Go when Go is missing or older, before the build, on every platform", () => {
+	for (const platform of ["linux", "darwin", "win32"]) {
+		for (const [go, found] of [[absent, null], [tool("1.25.9"), "1.25.9"]] as const) {
+			const inventory = { ...clean(platform), node: tool("24.1.0"), pnpm: { ...tool("11.1.1"), compatible: true },
+				globalBin: { available: true, path: "/disposable/bin", writable: true, onPath: true }, go };
+			const plan = planPreflight(inventory, { channel: "main" });
+			assert.deepEqual(plan.blockers, []);
+			assert.deepEqual(plan.tools.go, { status: "needs-acquire", required: requirements.go, version: goAcquisition.version, ...(found ? { found } : {}) });
+			const order = plan.actions.map((action: { id: string }) => action.id);
+			assert.deepEqual(plan.actions.filter((action: { target: string }) => action.target === "go"), goActions);
+			assert.deepEqual(order, ["acquire-go", "verify-go", "install-pi", "install-shell", "setup-shell", "verify-readiness", ...mainSteps], platform);
+		}
+	}
+});
+
+test("an unknown Go still blocks the main channel: it is neither missing nor older", () => {
+	const plan = planPreflight({ ...clean("darwin"), go: { available: null } }, { channel: "main" });
+	assert.ok(plan.blockers.some((blocker: { code: string; tool: string }) => blocker.code === "main-requires-go" && blocker.tool === "go"));
+	assert.deepEqual(plan.actions, []);
+});
+
+test("a release installation on macOS or Linux never acquires Go, whatever Go is there", () => {
+	for (const platform of ["linux", "darwin"]) {
+		for (const go of [absent, tool("1.24.0"), { available: null }]) {
+			const plan = planPreflight({ ...clean(platform), go });
+			assert.equal(plan.tools.go.status, "not-required");
+			assert.equal(plan.actions.some((action: { target: string }) => action.target === "go"), false);
+		}
 	}
 });
 
@@ -97,7 +128,10 @@ test("Windows requires compatible Go only before a missing native binary", () =>
 	const inventory = { ...installed("win32"), gentleAi: absent, go: tool("1.26.0") };
 	assert.equal(planPreflight(inventory).tools.go.status, "reusable");
 	assert.deepEqual(ids(inventory), ["provision-native", "setup-shell", "verify-readiness"]);
-	assert.ok(planPreflight({ ...inventory, go: tool("1.25.9") }).blockers.some((b: { tool: string }) => b.tool === "go"));
+	const older = planPreflight({ ...inventory, go: tool("1.25.9") });
+	assert.deepEqual(older.blockers, []);
+	assert.deepEqual(older.tools.go, { status: "needs-acquire", required: requirements.go, version: goAcquisition.version, found: "1.25.9" });
+	assert.deepEqual(older.actions.slice(0, 2), goActions);
 });
 
 for (const [name, version] of [["node", "22.18.0"], ["shell", "3.9.0"], ["node", "banana"], ["pi", "1.0.0-rc.1"]]) {
@@ -163,8 +197,16 @@ test("on the main channel an owned Gentle Shell is updated to the latest main, w
 		assert.deepEqual(updateIds(plan), ["update-shell-main", "setup-shell", "verify-readiness"]);
 		assert.deepEqual(plan.actions[0], { id: "update-shell-main", kind: "upgrade", target: "shell" });
 	}
-	const noGo = planPreflight({ ...installed(), shell: owned("3.9.0"), go: absent }, { channel: "main" });
-	assert.deepEqual(noGo.blockers, [{ code: "main-requires-go", tool: "go" }]);
+	for (const go of [absent, tool("1.24.0")]) {
+		const noGo = planPreflight({ ...installed(), shell: owned("3.9.0"), go, gentleAi: unchecked, setup: unchecked }, { channel: "main" });
+		assert.deepEqual(noGo.blockers, []);
+		assert.deepEqual(updateIds(noGo), ["acquire-go", "verify-go", "update-shell-main", "setup-shell", "verify-readiness"]);
+	}
+	// A Windows release update runs gentle-pi's postinstall, which may build Gentle AI.
+	const windows = planPreflight({ ...installed("win32"), shell: owned("3.9.0"), go: tool("1.24.0"), gentleAi: unchecked, setup: unchecked });
+	assert.deepEqual(updateIds(windows), ["acquire-go", "verify-go", "update-shell-release", "setup-shell", "verify-readiness"]);
+	assert.deepEqual(updateIds(planPreflight({ ...installed("darwin"), shell: owned("3.9.0"), go: absent, gentleAi: unchecked, setup: unchecked })),
+		["update-shell-release", "setup-shell", "verify-readiness"]);
 });
 
 test("a missing Pi is installed before an existing Gentle Shell is updated", () => {
@@ -477,10 +519,14 @@ test("a user's pnpm in $PNPM_HOME/bin is never persisted over: an older or newer
 	assert.deepEqual(planPreflight(runtimeStack(node, { available: null, inGlobalBin: true })).blockers, [{ code: "unknown-tool", tool: "pnpm" }]);
 });
 
-test("an older Go keeps blocking: the installer never downloads Go", () => {
-	for (const [platform, channel, change] of [["win32", "release", { gentleAi: absent }], ["darwin", "main", {}]] as const) {
+test("an older Go is left as it is: the pinned Go is acquired alongside, and a set-up stack downloads nothing", () => {
+	for (const [platform, channel, change] of [["win32", "release", { gentleAi: absent }], ["darwin", "main", { shell: absent, setup: false }]] as const) {
 		const plan = planPreflight({ ...installed(platform), ...change, go: tool("1.24.0") }, { channel });
-		assert.ok(plan.blockers.some((b: { code: string; tool: string }) => b.code === "incompatible-tool" && b.tool === "go"), platform);
-		assert.equal(plan.actions.some((action: { id: string }) => action.id === "acquire-go"), false);
+		assert.deepEqual(plan.blockers, [], platform);
+		assert.equal(plan.tools.go.found, "1.24.0");
+		assert.deepEqual(plan.actions.filter((action: { target: string }) => action.target === "go"), goActions);
 	}
+	// Nothing to build: no download, even on main.
+	const ready = planPreflight({ ...installed("darwin"), go: absent }, { channel: "main" });
+	assert.deepEqual(ready.actions.map((action: { id: string }) => action.id), ["verify-readiness"]);
 });

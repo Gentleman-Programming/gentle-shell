@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync, readdirSync, rmSync, lstatSync, unlinkSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import test, { type TestContext } from "node:test";
-import { artifactFor, verifiedDownload, compatibleEngine, ensurePnpm, launchWizard, bootstrap, removeOwnedTools } from "../scripts/installer-downloads.mjs";
+import { crc32, deflateRawSync, gzipSync } from "node:zlib";
+import { artifactFor, verifiedDownload, compatibleEngine, ensurePnpm, launchWizard, bootstrap, removeOwnedTools, acquireGo, installedGo } from "../scripts/installer-downloads.mjs";
 
 const script = resolve("scripts/bootstrap.sh");
 const helper = resolve("scripts/installer-downloads.mjs");
@@ -351,6 +352,104 @@ posixTest("a script pnpm without a package is not treated as standalone", async 
 		await assert.rejects(ensurePnpm({ tools: f.home, env: { PATH: f.bin }, nodeVersion: "24.21.0", adapters: { process: () => { throw new Error("must not run"); } } }),
 			/package engine evidence missing/);
 	} finally { f.cleanup(); }
+});
+// $PNPM_HOME layouts captured from real macOS installs (get.pnpm.io + `pnpm setup`,
+// `pnpm self-update`, `pnpm add -g`), shims trimmed to the lines naming the target.
+interface PnpmHomeLayout {
+	bin: string; target: string; shim: (home: string) => string; native: boolean;
+	pkg?: { dir: string; json: Record<string, unknown> }; store?: string;
+}
+const setupShim = (target: string) => (home: string) => `#!/bin/sh\nbasedir_abs=$(CDPATH= cd -P -- "$basedir" && pwd -P) || exit $?\nbasedir="$basedir_abs"\n\n` +
+	`exec "$basedir_abs/../${target}"   "$@"\nexit $?\n# cmd-shim-target=${home}/${target}\n`;
+const legacyShim = (target: string) => () => `#!/bin/sh\nbasedir=$(dirname "$(echo "$0" | sed -e 's,\\\\,/,g')")\n\n\n"$basedir/${target}"   "$@"\nexit $?\n`;
+const addGlobalShim = (target: string) => () => `#!/bin/sh\nbasedir=$(dirname "$(echo "$0" | sed -e 's,\\\\,/,g')")\n\nif [ -x "$basedir/node" ]; then\n` +
+	`  exec "$basedir/node"  "$basedir/${target}" "$@"\nelse\n  exec node  "$basedir/${target}" "$@"\nfi\n`;
+const pnpmHomeLayouts: Record<string, PnpmHomeLayout & { version: string; outcome: "reused" | "acquired" }> = {
+	"pnpm 11 setup or self-update (@pnpm/exe in $PNPM_HOME/bin)": {
+		bin: "bin", target: "global/v11/933b1afb/node_modules/@pnpm/exe/pnpm", shim: setupShim("global/v11/933b1afb/node_modules/@pnpm/exe/pnpm"),
+		native: true, store: "store/v11/links/@pnpm/exe/directory/643afacf/node_modules/@pnpm/exe",
+		pkg: { dir: "global/v11/933b1afb/node_modules/@pnpm/exe", json: { name: "@pnpm/exe", version: "11.28.2", bin: { pnpm: "pnpm", pn: "pnpm" } } },
+		version: "11.28.2", outcome: "reused",
+	},
+	"pnpm 10 self-update to 11 (@pnpm/exe in $PNPM_HOME/.tools)": {
+		bin: "", target: ".tools/@pnpm+exe/11.28.2/node_modules/@pnpm/exe/pnpm", shim: legacyShim(".tools/@pnpm+exe/11.28.2/node_modules/@pnpm/exe/pnpm"),
+		native: true, pkg: { dir: ".tools/@pnpm+exe/11.28.2/node_modules/@pnpm/exe", json: { name: "@pnpm/exe", version: "11.28.2" } },
+		version: "11.28.2", outcome: "reused",
+	},
+	"pnpm 10 setup (bare executable in $PNPM_HOME/.tools)": {
+		bin: "", target: ".tools/pnpm-exe/10.34.6/pnpm", shim: legacyShim(".tools/pnpm-exe/10.34.6/pnpm"), native: true,
+		version: "10.34.6", outcome: "acquired",
+	},
+	"pnpm 12 setup (native pnpm package without engines)": {
+		bin: "bin", target: "global/v11/82859147/node_modules/pnpm/pnpm", shim: setupShim("global/v11/82859147/node_modules/pnpm/pnpm"),
+		native: true, pkg: { dir: "global/v11/82859147/node_modules/pnpm", json: { name: "pnpm", version: "12.10.1", bin: { pnpm: "pnpm", pn: "pnpm" } } },
+		version: "12.10.1", outcome: "acquired",
+	},
+	"pnpm 10 add -g pnpm (JS package in $PNPM_HOME/global/5)": {
+		bin: "", target: "global/5/.pnpm/pnpm@10.34.6/node_modules/pnpm/bin/pnpm.cjs", shim: addGlobalShim("global/5/.pnpm/pnpm@10.34.6/node_modules/pnpm/bin/pnpm.cjs"),
+		native: false, pkg: { dir: "global/5/.pnpm/pnpm@10.34.6/node_modules/pnpm", json: { name: "pnpm", version: "10.34.6", engines: { node: ">=18.12" } } },
+		version: "10.34.6", outcome: "acquired",
+	},
+};
+function pnpmHome(f: ReturnType<typeof fixture>, layout: PnpmHomeLayout) {
+	const home = join(f.root, "Library/pnpm");
+	const dir = join(home, layout.bin);
+	const target = join(home, layout.target);
+	mkdirSync(dir, { recursive: true });
+	if (layout.store) {
+		// pnpm 11 links the global package directory into its store.
+		mkdirSync(join(home, layout.store), { recursive: true });
+		mkdirSync(dirname(dirname(target)), { recursive: true });
+		symlinkSync(join(home, layout.store), dirname(target));
+	} else mkdirSync(dirname(target), { recursive: true });
+	if (layout.pkg) {
+		mkdirSync(join(home, layout.pkg.dir), { recursive: true });
+		writeFileSync(join(home, layout.pkg.dir, "package.json"), JSON.stringify(layout.pkg.json));
+	}
+	writeFileSync(target, layout.native ? Buffer.concat([Buffer.from(nativeHeaders["Mach-O 64-bit"]), Buffer.alloc(64)]) : "#!/usr/bin/env node\n", { mode: 0o755 });
+	writeFileSync(join(dir, "pnpm"), layout.shim(home), { mode: 0o755 });
+	return { shim: join(dir, "pnpm"), env: { PATH: `${dir}:${f.bin}` } };
+}
+posixTest("pnpm installed in $PNPM_HOME by pnpm itself is recognized behind its shim", async () => {
+	for (const [label, layout] of Object.entries(pnpmHomeLayouts)) {
+		const f = fixture();
+		try {
+			const { shim, env } = pnpmHome(f, layout);
+			const calls: string[][] = [];
+			const acquisition = acquisitionAdapters();
+			const adapters = { ...acquisition, process: (command: string, args: string[]) => command === shim
+				? standaloneProcess(layout.version, calls)(command, args) : acquisition.process(command, args) };
+			const result = await ensurePnpm({ tools: f.home, env, nodeVersion: "24.21.0", adapters });
+			assert.equal(result.acquired, layout.outcome === "acquired", label);
+			if (layout.outcome === "reused") assert.deepEqual(calls, [["--version"], ["help", "add"], ["help", "bin"]], label);
+			// An incompatible JS pnpm is judged by its package; a native one only by --version.
+			else assert.deepEqual(calls, layout.native ? [["--version"]] : [], label);
+		} finally { f.cleanup(); }
+	}
+});
+posixTest("pnpm behind a $PNPM_HOME shim still fails closed without matching evidence", async () => {
+	const setup = pnpmHomeLayouts["pnpm 11 setup or self-update (@pnpm/exe in $PNPM_HOME/bin)"];
+	const addGlobal = pnpmHomeLayouts["pnpm 10 add -g pnpm (JS package in $PNPM_HOME/global/5)"];
+	const missing = legacyShim(".tools/pnpm-exe/10.34.6/pnpm");
+	const ambiguous = () => `${legacyShim(".tools/a/pnpm")()}"$basedir/.tools/b/pnpm" "$@"\n`;
+	const cases: [string, PnpmHomeLayout, string | undefined, RegExp][] = [
+		["native version differs from its package", setup, "11.27.0", /pnpm version rejected/],
+		["JS target not named pnpm", { ...addGlobal, pkg: { dir: addGlobal.pkg!.dir, json: { ...addGlobal.pkg!.json, name: "not-pnpm" } } }, undefined, /package engine evidence missing/],
+		["target missing", { bin: "", target: "elsewhere/pnpm", shim: missing, native: true }, undefined, /package engine evidence missing/],
+		["two targets", { bin: "", target: ".tools/a/pnpm", shim: ambiguous, native: true }, undefined, /package engine evidence missing/],
+	];
+	for (const [label, layout, version, error] of cases) {
+		const f = fixture();
+		try {
+			const { shim, env } = pnpmHome(f, layout);
+			const adapters = { process: (command: string, args: string[]) => {
+				if (command !== shim || version === undefined) throw new Error("must not run");
+				return standaloneProcess(version)(command, args);
+			}, download: () => { throw new Error("must not download"); } };
+			await assert.rejects(ensurePnpm({ tools: f.home, env, nodeVersion: "24.21.0", adapters }), error, label);
+			assert.deepEqual(readdirSync(f.home), [], label);
+		} finally { f.cleanup(); }
+	}
 });
 posixTest("missing required shell utility is named", () => {
 	const f = fixture();
@@ -720,4 +819,219 @@ posixTest("failed pnpm download never reaches archive/process adapters", async (
 		assert.equal(processes, 0);
 		assert.deepEqual(readdirSync(f.home), []);
 	} finally { f.cleanup(); }
+});
+
+// --- Pinned Go toolchain: official go.dev archives, verified, extracted in process ---------------
+const goPins = {
+	"darwin-arm64": ["go1.25.14.darwin-arm64.tar.gz", "5b26c0b6f308240fca2614fb02f622cfcc8c0cc3b69c78bba4845489a4590259", 58123934],
+	"darwin-x64": ["go1.25.14.darwin-amd64.tar.gz", "b09087a67d5792a8b0fcbf74212d62560c94ac8a8fd750ff920d8cb5f1e20118", 60622678],
+	"linux-x64": ["go1.25.14.linux-amd64.tar.gz", "a21ae5633a269bcd7e90cf767e48225633795e99d831742cbf3397064fee7712", 59909419],
+	"linux-arm64": ["go1.25.14.linux-arm64.tar.gz", "9bf234ea70ffec9347fdf6b22ce4add51717d3386a38a441e8c8743fceb5eaee", 57360344],
+	"win32-x64": ["go1.25.14.windows-amd64.zip", "119044a92b3987c341cd6aebb256676dd4780d292f7b4e72a3e9976677841697", 67591780],
+	"win32-arm64": ["go1.25.14.windows-arm64.zip", "96fb31ae26b288b5311bd31d8252d4a62c8a661e4dbb64d504cc646e4d10a57f", 64735369],
+} as const;
+for (const [target, [file, sha256, size]] of Object.entries(goPins)) {
+	test(`fixed Go descriptor for ${target} is the go.dev archive and checksum`, () => {
+		const [platform, arch] = target.split("-");
+		const artifact = artifactFor("go", platform, arch);
+		assert.equal(artifact.version, "1.25.14");
+		assert.equal(artifact.url, `https://dl.google.com/go/${file}`);
+		assert.equal(artifact.integrity, `sha256-${sha256}`);
+		assert.equal(artifact.size, size);
+	});
+}
+test("Go has no descriptor for other targets", () => {
+	for (const [platform, arch] of [["linux", "ia32"], ["freebsd", "x64"], ["win32", "ia32"]]) {
+		assert.throws(() => artifactFor("go", platform, arch), /Unsupported/);
+	}
+});
+
+function tarHeader(name: string, size: number, { type = "0", mode = 0o644, link = "", prefix = "" } = {}) {
+	const header = Buffer.alloc(512);
+	header.write(name, 0, 100, "utf8");
+	header.write(`${mode.toString(8).padStart(7, "0")}\0`, 100);
+	header.write("0000000\0", 108);
+	header.write("0000000\0", 116);
+	header.write(`${size.toString(8).padStart(11, "0")}\0`, 124);
+	header.write("00000000000\0", 136);
+	header.write("        ", 148);
+	header.write(type, 156);
+	header.write(link, 157);
+	header.write("ustar\0", 257);
+	header.write("00", 263);
+	header.write(prefix, 345);
+	let sum = 0;
+	for (const byte of header) sum += byte;
+	header.write(`${sum.toString(8).padStart(6, "0")}\0 `, 148);
+	return header;
+}
+type GoEntry = { name: string; body?: string; type?: string; mode?: number; link?: string; prefix?: string };
+function tarEntry({ name, body = "", ...options }: GoEntry) {
+	const data = Buffer.from(body);
+	return Buffer.concat([tarHeader(name, data.length, options), data, Buffer.alloc((512 - (data.length % 512)) % 512)]);
+}
+function paxPath(path: string) {
+	const record = (length: number) => `${length} path=${path}\n`;
+	let length = Buffer.byteLength(record(0));
+	while (Buffer.byteLength(record(length)) !== length) length = Buffer.byteLength(record(length));
+	return tarEntry({ name: "go/PaxHeaders.0/x", type: "x", body: record(length) });
+}
+const goTarGz = (...entries: Buffer[]) => gzipSync(Buffer.concat([...entries, Buffer.alloc(1024)]));
+function goZip(files: Array<{ name: string; body: string; mode?: number }>) {
+	const locals: Buffer[] = [];
+	const centrals: Buffer[] = [];
+	let offset = 0;
+	for (const { name, body, mode = 0o100644 } of files) {
+		const data = deflateRawSync(Buffer.from(body));
+		const nameBytes = Buffer.from(name);
+		const local = Buffer.alloc(30);
+		local.writeUInt32LE(0x04034b50, 0);
+		local.writeUInt16LE(20, 4);
+		local.writeUInt16LE(0x800, 6);
+		local.writeUInt16LE(8, 8);
+		local.writeUInt32LE(crc32(Buffer.from(body)), 14);
+		local.writeUInt32LE(data.length, 18);
+		local.writeUInt32LE(Buffer.byteLength(body), 22);
+		local.writeUInt16LE(nameBytes.length, 26);
+		const central = Buffer.alloc(46);
+		central.writeUInt32LE(0x02014b50, 0);
+		central.writeUInt16LE((3 << 8) | 20, 4);
+		central.writeUInt16LE(20, 6);
+		central.writeUInt16LE(0x800, 8);
+		central.writeUInt16LE(8, 10);
+		central.writeUInt32LE(crc32(Buffer.from(body)), 16);
+		central.writeUInt32LE(data.length, 20);
+		central.writeUInt32LE(Buffer.byteLength(body), 24);
+		central.writeUInt16LE(nameBytes.length, 28);
+		central.writeUInt32LE((mode << 16) >>> 0, 38);
+		central.writeUInt32LE(offset, 42);
+		locals.push(local, nameBytes, data);
+		centrals.push(central, nameBytes);
+		offset += local.length + nameBytes.length + data.length;
+	}
+	const directory = Buffer.concat(centrals);
+	const end = Buffer.alloc(22);
+	end.writeUInt32LE(0x06054b50, 0);
+	end.writeUInt16LE(files.length, 8);
+	end.writeUInt16LE(files.length, 10);
+	end.writeUInt32LE(directory.length, 12);
+	end.writeUInt32LE(offset, 16);
+	return Buffer.concat([...locals, directory, end]);
+}
+const goVersionFile = "go1.25.14\ntime 2026-10-01T00:00:00Z\n";
+const goTree = (extra: Buffer[] = []) => goTarGz(
+	tarEntry({ name: "go/", type: "5", mode: 0o755 }),
+	tarEntry({ name: "go/VERSION", body: goVersionFile }),
+	tarEntry({ name: "go/bin/go", body: "#!/bin/sh\necho 'go version go1.25.14 darwin/arm64'\n", mode: 0o755 }),
+	tarEntry({ name: "long-name-with-a-ustar-prefix.go", prefix: "go/src/internal/trace/testdata/generators", body: "package x\n" }),
+	paxPath("go/test/fixedbugs/issue27836.dir/\u00defoo.go"),
+	tarEntry({ name: "go/test/fixedbugs/issue27836.dir/foo.go", body: "package foo\n" }),
+	...extra);
+/** Trusted test adapters standing in for the pinned download: the fixture's own size and hash. */
+function goAdapters(bytes: Buffer, counter = { downloads: 0 }) {
+	return {
+		artifact: (name: string, platform: string, arch: string) => ({ ...artifactFor(name, platform, arch), size: bytes.length, maxBytes: bytes.length,
+			integrity: `sha256-${createHash("sha256").update(bytes).digest("hex")}` }),
+		download: async () => { counter.downloads += 1; return bytes; },
+	};
+}
+function goRoot() {
+	const base = mkdtempSync(join(realpathSync(tmpdir()), "pinned-go-"));
+	return { base, root: join(base, "config", "tools", "go"), cleanup: () => rmSync(base, { recursive: true, force: true }) };
+}
+
+test("the pinned Go is verified, extracted in process and published once into the installer's own directory", async () => {
+	const r = goRoot();
+	try {
+		const counter = { downloads: 0 };
+		const result = await acquireGo({ root: r.root, platform: "darwin", arch: "arm64", adapters: goAdapters(goTree(), counter) });
+		const published = join(r.root, "1.25.14");
+		assert.deepEqual(result, { goPath: join(published, "go", "bin", "go"), version: "1.25.14", acquired: true });
+		assert.equal(readFileSync(join(published, "go", "VERSION"), "utf8"), goVersionFile);
+		assert.equal(readFileSync(join(published, "go/src/internal/trace/testdata/generators/long-name-with-a-ustar-prefix.go"), "utf8"), "package x\n");
+		assert.equal(readFileSync(join(published, "go/test/fixedbugs/issue27836.dir/\u00defoo.go"), "utf8"), "package foo\n");
+		assert.equal(existsSync(join(published, "go/test/fixedbugs/issue27836.dir/foo.go")), false);
+		if (process.platform !== "win32") {
+			assert.equal(lstatSync(result.goPath).mode & 0o777, 0o755);
+			assert.equal(lstatSync(join(published, "go", "VERSION")).mode & 0o777, 0o644);
+			assert.equal(lstatSync(published).mode & 0o077, 0);
+		}
+		assert.deepEqual(readdirSync(r.root), ["1.25.14"], "no staging directory is left behind");
+		assert.equal(installedGo(r.root, "darwin", "arm64"), result.goPath);
+		// A later run reuses the published copy: no download, nothing replaced.
+		const again = await acquireGo({ root: r.root, platform: "darwin", arch: "arm64", adapters: goAdapters(goTree(), counter) });
+		assert.deepEqual(again, { ...result, acquired: false });
+		assert.equal(counter.downloads, 1);
+		// The marker names the exact pinned archive, so another target's copy is not reused.
+		assert.equal(installedGo(r.root, "linux", "x64"), null);
+	} finally { r.cleanup(); }
+});
+
+test("the Windows Go zip is extracted in process into go\\bin\\go.exe", async () => {
+	const r = goRoot();
+	try {
+		const bytes = goZip([{ name: "go/VERSION", body: goVersionFile }, { name: "go/bin/go.exe", body: "MZ", mode: 0o100755 },
+			{ name: "go/src/cmd/go/main.go", body: "package main\n" }]);
+		const result = await acquireGo({ root: r.root, platform: "win32", arch: "x64", adapters: goAdapters(bytes) });
+		assert.equal(result.goPath, join(r.root, "1.25.14", "go", "bin", "go.exe"));
+		assert.equal(readFileSync(result.goPath, "utf8"), "MZ");
+		assert.equal(readFileSync(join(r.root, "1.25.14", "go/src/cmd/go/main.go"), "utf8"), "package main\n");
+	} finally { r.cleanup(); }
+});
+
+test("a Go download with the wrong size or checksum fails closed before anything is extracted", async () => {
+	const r = goRoot();
+	try {
+		const bytes = goTree();
+		const wrongHash = { ...goAdapters(bytes), digest: () => Buffer.alloc(32) };
+		const wrongSize = { ...goAdapters(bytes), download: async () => Buffer.concat([bytes, Buffer.from("x")]) };
+		const truncated = { ...goAdapters(bytes), download: async () => bytes.subarray(1) };
+		for (const [adapters, cause] of [[wrongHash, /integrity/], [wrongSize, /size/], [truncated, /size/]] as const) {
+			await assert.rejects(acquireGo({ root: r.root, platform: "darwin", arch: "arm64", adapters }),
+				(error: Error) => /Go verified acquisition failed/.test(error.message) && cause.test(String((error.cause as Error)?.message)));
+			assert.deepEqual(existsSync(r.root) ? readdirSync(r.root) : [], []);
+		}
+		// The production descriptor is the exact pinned size: anything else is rejected.
+		await assert.rejects(acquireGo({ root: r.root, platform: "darwin", arch: "arm64", adapters: { download: async () => bytes } }),
+			/Go verified acquisition failed/);
+	} finally { r.cleanup(); }
+});
+
+test("an unsafe Go archive fails closed and publishes nothing", async () => {
+	const unsafe: Array<[string, Buffer]> = [
+		["traversal", goTree([tarEntry({ name: "go/../escape", body: "x" })])],
+		["absolute", goTree([tarEntry({ name: "/go/escape", body: "x" })])],
+		["outside go/", goTree([tarEntry({ name: "other/file", body: "x" })])],
+		["backslash", goTree([tarEntry({ name: "go\\..\\escape", body: "x" })])],
+		["symlink", goTree([tarEntry({ name: "go/link", type: "2", link: "/etc/passwd" })])],
+		["hard link", goTree([tarEntry({ name: "go/hard", type: "1", link: "go/VERSION" })])],
+		["duplicate", goTree([tarEntry({ name: "go/VERSION", body: "go1.25.14\n" })])],
+		["unknown pax key", goTree([tarEntry({ name: "go/PaxHeaders.0/y", type: "x", body: "19 linkpath=/etc/x\n" }), tarEntry({ name: "go/y", body: "y" })])],
+		["missing go binary", goTarGz(tarEntry({ name: "go/VERSION", body: goVersionFile }))],
+		["other version", goTarGz(tarEntry({ name: "go/VERSION", body: "go1.25.13\n" }), tarEntry({ name: "go/bin/go", body: "x", mode: 0o755 }))],
+		["not a tar", gzipSync(Buffer.from("not a tar archive"))],
+		["zip symlink", goZip([{ name: "go/VERSION", body: goVersionFile }, { name: "go/bin/go.exe", body: "MZ" }, { name: "go/link", body: "/etc", mode: 0o120777 }])],
+		["zip traversal", goZip([{ name: "go/VERSION", body: goVersionFile }, { name: "go/bin/go.exe", body: "MZ" }, { name: "go/../../escape", body: "x" }])],
+	];
+	for (const [label, bytes] of unsafe) {
+		const r = goRoot();
+		try {
+			const platform = label.startsWith("zip") ? "win32" : "darwin";
+			await assert.rejects(acquireGo({ root: r.root, platform, arch: "arm64", adapters: goAdapters(bytes) }), /Go verified acquisition failed/, label);
+			assert.deepEqual(readdirSync(r.root), [], label);
+			assert.equal(existsSync(join(r.base, "escape")), false, label);
+		} finally { r.cleanup(); }
+	}
+});
+
+test("an existing Go destination the installer did not publish is never replaced", async () => {
+	const r = goRoot();
+	try {
+		mkdirSync(join(r.root, "1.25.14", "go", "bin"), { recursive: true });
+		writeFileSync(join(r.root, "1.25.14", "go", "bin", "go"), "user's own");
+		await assert.rejects(acquireGo({ root: r.root, platform: "darwin", arch: "arm64", adapters: goAdapters(goTree()) }), /Go verified acquisition failed/);
+		assert.equal(readFileSync(join(r.root, "1.25.14", "go", "bin", "go"), "utf8"), "user's own");
+		assert.deepEqual(readdirSync(r.root), ["1.25.14"]);
+		assert.equal(installedGo(r.root, "darwin", "arm64"), null);
+	} finally { r.cleanup(); }
 });

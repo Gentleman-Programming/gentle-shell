@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { gentleAiBinaryPath } from "../runtime/gentle-ai-binary.mjs";
-import { persistencePins, planPreflight, requirements } from "../scripts/installer-preflight.mjs";
+import { goAcquisition, persistencePins, planPreflight, requirements } from "../scripts/installer-preflight.mjs";
 import {
 	PI_INSTALL_VERSION,
 	PI_PACKAGE as PI_PACKAGE_NAME,
@@ -265,15 +265,86 @@ test("preflight blockers and unsupported T4 plans are blocked before any command
 	}
 });
 
-test("Windows without suitable Go is blocked before install", async () => {
-	// Missing Go yields an acquire-go intent; too-old Go is already a preflight blocker.
-	for (const [go, reason] of [[absent, "go-required"], [tool("1.25.9"), "preflight-blocked"]] as const) {
-		const h = harness({ layout: windowsLayout });
-		const result = await runStandardInstall({ plan: plan("win32", { go }), consent: true }, h.adapters);
-		assert.equal(result.outcome, "blocked");
-		assert.equal(result.reason, reason);
-		assert.deepEqual(h.calls, []);
+// The installer's pinned Go: published under its own config directory, never on the user's PATH.
+const PINNED_GO = `${HOME}/.pi/gentle-ai/tools/go/${goAcquisition.version}/go/bin/go`;
+const W_PINNED_GO = `C:\\Users\\u\\.pi\\gentle-ai\\tools\\go\\${goAcquisition.version}\\go\\bin\\go.exe`;
+const goVersion = (platform = "linux") => ({ code: 0, stdout: `go version go${goAcquisition.version} ${platform === "win32" ? "windows" : platform}/amd64\n` });
+/** A harness whose acquireGo publishes the pinned Go (or fails), counting calls. */
+function withGo<T extends { adapters: object }>(h: T, goPath: string | Error = PINNED_GO) {
+	const acquisitions: number[] = [];
+	const adapters = { ...h.adapters, acquireGo: async () => {
+		acquisitions.push(1);
+		if (goPath instanceof Error) throw goPath;
+		return { goPath, version: goAcquisition.version, acquired: true };
+	} };
+	return { ...h, adapters, acquisitions };
+}
+
+test("Windows with a missing or older Go acquires the pinned Go after consent and builds with it first on PATH", async () => {
+	for (const go of [absent, tool("1.25.9")]) {
+		const fixed = plan("win32", { go });
+		assert.deepEqual(fixed.blockers, []);
+		const h = withGo(harness({ layout: windowsLayout, results: { version: goVersion("win32") } }), W_PINNED_GO);
+		const declined = await runStandardInstall({ plan: fixed, consent: false }, h.adapters);
+		assert.equal(declined.reason, "consent-required");
+		assert.deepEqual(h.acquisitions, [], "nothing is downloaded before consent");
+		const result = await runStandardInstall({ plan: fixed, consent: true }, h.adapters);
+		assert.equal(result.outcome, "ready");
+		assert.deepEqual(result.completed, ["check-npm", "check-global-bin", "check-existing-stack", "acquire-go", "verify-go",
+			"install-global", "verify-global-list", "verify-shell-bin", "verify-gentle-ai", "shell-setup"]);
+		assert.deepEqual(h.acquisitions, [1]);
+		const verify = h.calls.find((call) => call.command === W_PINNED_GO);
+		assert.deepEqual(verify?.args, ["version"]);
+		assert.equal(verify?.env.GOTOOLCHAIN, "local");
+		// gentle-pi's postinstall finds go.exe on PATH: the pinned Go comes first, only for that child.
+		const install = h.calls.find((call) => call.args[1] === "add");
+		assert.equal(install?.env.Path.split(";")[0], "C:\\Users\\u\\.pi\\gentle-ai\\tools\\go\\1.25.14\\go\\bin");
+		assert.equal(install?.env.Path.split(";")[1], W_BIN);
+		for (const call of h.calls.filter((call) => call !== install && call !== verify)) assert.equal(call.env.Path.includes("tools\\go"), false);
+		assert.equal(h.adapters.env.Path.includes("tools\\go"), false, "the user's environment is unchanged");
 	}
+});
+
+test("a failed or unverified Go acquisition stops before anything is installed", async () => {
+	const failed = withGo(harness({ layout: windowsLayout }), new Error("Go verified acquisition failed"));
+	const result = await runStandardInstall({ plan: plan("win32", { go: absent }), consent: true }, failed.adapters);
+	assert.deepEqual([result.outcome, result.failedStep], ["failed", "acquire-go"]);
+	assert.deepEqual(result.completed, ["check-npm", "check-global-bin", "check-existing-stack"]);
+	assert.equal(failed.calls.some((call) => call.args[1] === "add"), false);
+	// Without an acquisition adapter the step fails the same way.
+	const missing = harness({ layout: windowsLayout });
+	assert.equal((await runStandardInstall({ plan: plan("win32", { go: absent }), consent: true }, missing.adapters)).failedStep, "acquire-go");
+	for (const [goPath, version] of [[W_PINNED_GO, { code: 0, stdout: "go version go1.25.13 windows/amd64\n" }], [W_PINNED_GO, { code: 1 }],
+		["go.exe", goVersion("win32")]] as const) {
+		const h = withGo(harness({ layout: windowsLayout, results: { version } }), goPath);
+		const outcome = await runStandardInstall({ plan: plan("win32", { go: absent }), consent: true }, h.adapters);
+		assert.deepEqual([outcome.outcome, outcome.failedStep], ["failed", "verify-go"], goPath);
+		assert.equal(h.calls.some((call) => call.args[1] === "add"), false);
+	}
+});
+
+test("an acquisition the plan does not need, or a build without one, is never run", async () => {
+	// A release install on macOS or Linux needs no Go: a forged acquisition is rejected.
+	const forged = plan("linux");
+	forged.tools.go = { status: "needs-acquire", required: requirements.go, version: goAcquisition.version };
+	forged.actions.unshift({ id: "acquire-go", kind: "acquire", target: "go", version: goAcquisition.version }, { id: "verify-go", kind: "verify", target: "go" });
+	// Half an acquisition, or one whose tools record does not ask for it.
+	const half = plan("win32", { go: absent });
+	half.actions = half.actions.filter((action: { id: string }) => action.id !== "verify-go");
+	const unrecorded = plan("win32", { go: absent });
+	unrecorded.tools.go = { status: "reusable", required: requirements.go };
+	for (const fixed of [forged, half, unrecorded]) {
+		const h = withGo(harness({ layout: fixed === forged ? posixLayout : windowsLayout }));
+		const result = await runStandardInstall({ plan: fixed, consent: true }, h.adapters);
+		assert.deepEqual([result.outcome, result.reason], ["blocked", "unsupported-plan"]);
+		assert.deepEqual([h.calls, h.acquisitions], [[], []]);
+	}
+	// Windows still refuses to build when Go is neither reusable nor acquired.
+	const stripped = plan("win32", { go: absent });
+	stripped.actions = stripped.actions.filter((action: { target: string }) => action.target !== "go");
+	const h = withGo(harness({ layout: windowsLayout }));
+	assert.equal((await runStandardInstall({ plan: stripped, consent: true }, h.adapters)).reason, "go-required");
+	assert.deepEqual(h.acquisitions, []);
 });
 
 test("Windows uses the case-insensitive Path key for the child env and bin -g comparison", async () => {
@@ -1122,9 +1193,8 @@ test("Windows setup recovery needs no Go: it never runs add -g, and the native b
 	assert.deepEqual(result.completed, RECOVERY_STEPS);
 	assert.equal(h.pnpmCalls().some((call) => call.startsWith("add")), false);
 	assert.deepEqual(h.calls.at(-1)?.args, [`${W_ROOT}\\bin\\gentle-shell.mjs`, "setup"]);
-	// A clean Windows install still requires Go before gentle-pi's postinstall.
-	assert.equal((await runStandardInstall({ plan: plan("win32", { go: absent }), consent: true }, harness({ layout: windowsLayout }).adapters)).reason,
-		"go-required");
+	// A clean Windows install still provides Go before gentle-pi's postinstall.
+	assert.ok(plan("win32", { go: absent }).actions.some((action: { id: string }) => action.id === "acquire-go"));
 });
 
 // Declared last: node:test runs a file's top-level tests in order.
@@ -1208,6 +1278,23 @@ test("the main build fails without Go on PATH and runs nothing after it", async 
 	assert.equal(result.outcome, "failed");
 	assert.equal(result.failedStep, "build-gentle-ai-main");
 	assert.deepEqual(main.calls.map(([name]) => name), []);
+});
+
+test("a main plan with a missing or older Go builds Gentle AI with the pinned Go and never runs the user's Go", async () => {
+	for (const go of [absent, tool("1.24.0")]) {
+		const fixed = mainPlan({ go });
+		assert.deepEqual(fixed.blockers, []);
+		const h = withGo(mainHarness(undefined, { results: { [LIST]: [emptyList, { code: 0, stdout: listing() },
+			{ code: 0, stdout: listing(PI_INSTALL_VERSION, MAIN_VERSION, MAIN_ROOT) }], [`${MAIN_ROOT}/bin/gentle-shell.mjs setup`]: { code: 0 },
+			version: goVersion() } }));
+		const result = await runStandardInstall({ plan: fixed, consent: true }, h.adapters);
+		assert.equal(result.outcome, "ready");
+		assert.deepEqual(result.completed, ["check-npm", "check-global-bin", "check-existing-stack", "acquire-go", "verify-go", "install-global",
+			"verify-global-list", "verify-shell-bin", "verify-gentle-ai", "build-gentle-ai-main", "install-shell-main", "record-channel", "shell-setup"]);
+		const build = h.main.calls.find(([name]) => name === "buildGentleAi")?.[1] as { goPath: string };
+		assert.equal(build.goPath, PINNED_GO);
+		assert.equal(h.calls.some((call) => call.command === "/usr/bin/go"), false, "the user's Go is never run");
+	}
 });
 
 test("a channel that cannot be recorded fails the record step after the main Shell is installed", async () => {
@@ -1302,6 +1389,19 @@ test("updating to main requires a main version afterwards and skips the pinned b
 	const stale = updateHarness({ located: [{ root: NPM_SHELL_ROOT, version: requirements.shell, owner: "npm" }] });
 	const failed = await runStandardInstall({ plan, consent: true }, stale.adapters);
 	assert.deepEqual([failed.outcome, failed.failedStep], ["failed", "verify-updated-shell"]);
+});
+
+test("updating to main without a usable Go acquires the pinned Go first and hands it to the upgrade", async () => {
+	const mainVersion = `${requirements.shell}-main.6e7e3a18f794`;
+	const fixed = existingPlan({ shell: { available: true, version: requirements.shell, usable: true, global: true, owner: "npm" },
+		gentleAi: { available: null }, setup: { available: null }, go: absent }, "main");
+	assert.deepEqual(fixed.actions.map((action: { id: string }) => action.id), ["acquire-go", "verify-go", "update-shell-main", "setup-shell", "verify-readiness"]);
+	const h = withGo(updateHarness({ located: [{ root: NPM_SHELL_ROOT, version: requirements.shell, owner: "npm" }, { root: NPM_SHELL_ROOT, version: mainVersion, owner: "npm" }],
+		results: { version: goVersion() } }));
+	const result = await runStandardInstall({ plan: fixed, consent: true }, h.adapters);
+	assert.equal(result.outcome, "ready");
+	assert.deepEqual(result.completed.slice(3, 6), ["acquire-go", "verify-go", "update-shell"]);
+	assert.deepEqual(h.upgrades, [{ channel: "main", packageRoot: NPM_SHELL_ROOT, currentVersion: requirements.shell, goPath: PINNED_GO }]);
 });
 
 test("a missing Pi is installed before the existing Gentle Shell is updated", async () => {

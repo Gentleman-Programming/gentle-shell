@@ -356,15 +356,21 @@ test("/api/plan says, before consent, that an older Node and an incompatible pnp
 	}
 });
 
-test("/api/plan names the found and required Go and says the installer does not download it", async () => {
-	const { host, port, login } = await start({ collect: async () => collectedFor("main", { ...mainReady, go: { available: true, version: "1.24.0", usable: true } }) });
-	try {
-		const view = await plan(port, await login());
-		const go = view.blockers.find((blocker: { code: string }) => blocker.code === "incompatible-tool");
-		assert.equal(go.guidance, `Go 1.24.0 is installed, but this installer needs ${requirements.go} or newer. Nothing was replaced. ` +
-			"This installer does not download Go: update it the way you installed it, then select Check again.");
-	} finally {
-		await host.close("test");
+test("/api/plan says before consent which Go is downloaded, only to build, with the Go found and the system unchanged", async () => {
+	for (const [go, found] of [[{ available: true, version: "1.24.0", usable: true }, "Go 1.24.0 on this computer is older than 1.25.10"],
+		[{ available: false }, "Go is missing on this computer"]] as const) {
+		const { host, port, login } = await start({ collect: async () => collectedFor("main", { ...mainReady, go }) });
+		try {
+			const view = await plan(port, await login());
+			assert.deepEqual(view.blockers, []);
+			const acquire = view.actions.find((action: { id: string }) => action.id === "acquire-go");
+			assert.equal(acquire.description, `${found}, so the installer downloads Go 1.25.14 from go.dev, verifies its pinned SHA-256 checksum ` +
+				"and uses it only to build Gentle AI. It is kept in the installer's own folder (~/.pi/gentle-ai/tools/go); your Go, PATH and shell profile are not changed.");
+			assert.equal(view.actions.find((action: { id: string }) => action.id === "verify-go").description,
+				"Check that the downloaded Go runs and reports the pinned version.");
+		} finally {
+			await host.close("test");
+		}
 	}
 });
 
@@ -517,13 +523,14 @@ test("installing a main plan re-checks the computer on the main channel", async 
 	}
 });
 
-test("/api/plan explains that the main channel needs Go", async () => {
-	const { host, port, login } = await start({ collect: async (channel) => collectedFor(channel, { pi: { available: false }, shell: { available: false } }) });
+test("/api/plan explains that the main channel cannot use a Go it cannot check", async () => {
+	const { host, port, login } = await start({ collect: async (channel) => collectedFor(channel, { pi: { available: false }, shell: { available: false }, go: { available: null } }) });
 	try {
 		const cookie = await login();
 		const view = JSON.parse((await send(port, { path: "/api/plan?channel=main", headers: { cookie, ...API } })).body);
 		const blocker = view.blockers.find((item: { code: string }) => item.code === "main-requires-go");
-		assert.equal(blocker.guidance, `The \`main\` channel builds Gentle AI from source and needs Go ${requirements.go} or newer on your PATH. Install Go, or choose the release channel, then select Check again.`);
+		assert.equal(blocker.guidance, "The `main` channel builds Gentle AI with Go, but `go version` did not report a version this installer can check. " +
+			"Make sure `go version` works in a terminal, or choose the release channel, then select Check again.");
 		assert.deepEqual(view.actions, []);
 	} finally {
 		await host.close("test");

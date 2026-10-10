@@ -1,6 +1,10 @@
-# Orchestrator — Blocking Prompts and Provider Defects (lazy-loaded)
+# Orchestrator — Delegation Prompts and Provider Defects (lazy-loaded)
 
-Bind this to the parent Pi session only. Load it when a tool or subagent returns a user-facing blocking prompt or menu, or a Gentle AI provider defect appears; small tasks never need it (see `orchestrator.md` Task Size).
+Bind this to the parent Pi session only. Load it for source handoffs or when a tool or subagent returns a user-facing blocking prompt or menu, or a Gentle AI provider defect appears; small tasks never need it (see `orchestrator.md` Task Size).
+
+### Online Sources
+
+The parent obtains online evidence using its existing web tools and permissions. Send source URLs and relevant passages through task/context to the explorer; follow its source-only role contract. Keep its configured model and thinking.
 
 ### Lossless Blocking Prompts (MANDATORY)
 

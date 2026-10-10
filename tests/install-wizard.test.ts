@@ -443,6 +443,16 @@ test("expectedSteps places the main steps after the release verification and bef
 	for (const id of mainIds) assert.notEqual(wizard.stepLabel(id), id, `label for ${id}`);
 });
 
+test("expectedSteps runs the pinned Go acquisition after the pre-install checks and before anything is installed", () => {
+	const go = ["acquire-go", "verify-go"];
+	assert.deepEqual(wizard.expectedSteps([...go, "install-pi", "install-shell", "setup-shell", "verify-readiness", ...mainIds]),
+		["check-npm", "check-global-bin", "check-existing-stack", ...go, "install-global", "verify-global-list", "verify-shell-bin",
+			"verify-gentle-ai", ...mainIds, "shell-setup"]);
+	assert.deepEqual(wizard.expectedSteps([...go, "update-shell-main", "setup-shell", "verify-readiness"]),
+		["check-npm", "check-global-bin", "check-installed-shell", ...go, "update-shell", "verify-updated-shell", "shell-setup"]);
+	for (const id of go) assert.notEqual(wizard.stepLabel(id), id, `label for ${id}`);
+});
+
 test("the review screen offers the release and main channels and reloads the plan for the chosen one", async () => {
 	const release = await serverPlanView(goReady);
 	const main = await serverPlanView(goReady, "main");
@@ -542,8 +552,8 @@ test("an update plan is reviewed as an update, with an Update button", () => {
 	assert.equal(button(view, "Install Gentle Shell"), undefined);
 });
 
-test("a main plan blocked by a missing Go still lets the user switch back to release", async () => {
-	const blocked = await serverPlanView({}, "main");
+test("a main plan blocked by a Go it cannot check still lets the user switch back to release", async () => {
+	const blocked = await serverPlanView({ go: { available: null } }, "main");
 	assert.ok(blocked.blockers.some((blocker: { code: string }) => blocker.code === "main-requires-go"));
 	const ui = mount({ "GET /api/progress": () => idleProgress(), "GET /api/plan": () => [200, blocked] });
 	await ui.app.start();

@@ -167,6 +167,34 @@ test("todoPromptBlock lists open work with the rules, and stays silent when ther
 	assert.equal(todoPromptBlock(allDone, 0), undefined);
 });
 
+test("collapsed long tasks occupy one body line, including stale state, without losing task data", (t) => {
+	const title = "界🙂 long title ".repeat(100);
+	const note = "long description ".repeat(100);
+	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
+		useCardStyle(t, style);
+		for (const status of ["in_progress", "pending", "blocked"]) {
+			const state = applyTodo(emptyTodo(), { action: "write", tasks: [{ title, note, status }] }, 1).state;
+			const snapshot = structuredClone(state);
+			for (const width of [16, 40, 70]) {
+				for (const staleTurns of [0, 4]) {
+					const rows = renderTodoCard(state, withBackground(plainTheme), width, { collapsed: true, staleTurns, scrollable: true });
+					assert.equal(rows.length, style === CARD_STYLE.FLOAT ? 5 : 3);
+					assert.ok(rows.some((row) => stripAnsi(row).includes("…")), "long text signals truncation");
+					for (const row of rows) assert.equal(visibleWidth(row), width);
+				}
+			}
+			assert.deepEqual(state, snapshot);
+		}
+	}
+});
+
+test("non-scrollable Todo caps physical wrapped rows, not task count", () => {
+	const state = applyTodo(emptyTodo(), { action: "write", tasks: [{ title: "long title ".repeat(300), status: "in_progress", note: "long note ".repeat(300) }] }, 1).state;
+	const rows = renderTodoCard(state, plainTheme, 40, { collapsed: false, staleTurns: 4 });
+	assert.ok(rows.length <= 14);
+	assert.match(stripAnsi(rows.at(-2)!), /…/);
+});
+
 test("renderTodoCard draws the framed list with status glyphs and keeps every line at width", () => {
 	const lines = renderTodoCard(seeded(), plainTheme, 60, { collapsed: false, staleTurns: 0, collapseKey: "ctrl+shift+t" });
 	for (const line of lines) assert.equal(visibleWidth(line), 60, `"${stripAnsi(line)}" is not 60 wide`);
@@ -209,8 +237,8 @@ test("renderTodoCard keeps the configured collapse shortcut in the header while 
 
 	const staleCollapsed = renderTodoCard(seeded(), plainTheme, 70, { collapsed: true, staleTurns: 2, collapseKey: "ctrl+shift+t" }).map(stripAnsi);
 	assert.match(staleCollapsed[0], /^╭─ ❀ Todos ▸ Expand · 1 of 3 ─+ ctrl\+shift\+t expand ╮$/);
-	assert.match(staleCollapsed[1], /^│ stale · 2 turns +│$/);
-	assert.match(staleCollapsed[2], /^│ ◐ Fix quiet tools conflict · fixing conflict +│$/);
+	assert.equal(staleCollapsed.length, 3, "staleness stays in the single collapsed body row");
+	assert.match(staleCollapsed[1], /^│ stale · 2 turns · ◐ Fix quiet tools conflict · fixing conflict +│$/);
 
 	const fallback = applyTodo(emptyTodo(), { action: "write", tasks: [{ title: "Finished first", status: "done" }, { title: "First pending" }, { title: "Later pending" }] }, 1).state;
 	assert.match(renderTodoCard(fallback, plainTheme, 70, { collapsed: true, staleTurns: 0 }).map(stripAnsi)[1], /^│ ○ First pending +│$/);

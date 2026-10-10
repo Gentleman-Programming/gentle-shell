@@ -380,17 +380,28 @@ test("production direct-child deadline rejects valid output followed by hang (Li
 });
 
 const nativeUnavailable = process.platform !== "win32" ? "unavailable: Linux host without Windows PowerShell runner" : false;
-test("native Windows entry: spaces, Unicode, CMD metacharacters and early missing bundle stop", { skip: nativeUnavailable }, () => {
-	const f = fixture();
+test("native Windows entry: spaces, Unicode, CMD metacharacters and early missing bundle stop", { skip: nativeUnavailable }, async () => {
+	const f = nativeFixture();
 	try {
 		const scripts = join(f.root, "scripts"); mkdirSync(scripts);
-		copyFileSync(new URL("../scripts/bootstrap.cmd", import.meta.url), join(scripts, "bootstrap.cmd"));
+		// Observe the copied production entry's first PowerShell handle so the
+		// existing ownership-checked guard can reap it if the fixture times out.
+		writeFileSync(join(scripts, "bootstrap.cmd"), observeStage(readFileSync(new URL("../scripts/bootstrap.cmd", import.meta.url), "utf8")));
 		const local = join(f.root, "home"); mkdirSync(local);
-		const result = spawnSync(join(process.env.SystemRoot!, "System32/cmd.exe"), ["/d", "/c", "scripts\\bootstrap.cmd"], { cwd: f.root, env: { ...process.env, LOCALAPPDATA: local }, timeout: 5000, killSignal: "SIGKILL", encoding: "utf8", maxBuffer: 1024 * 1024 });
-		assert.equal(result.error, undefined); assert.equal(result.status, 1);
+		const env = { ...nativeEnv(f.root), LOCALAPPDATA: local };
+		console.error("WINDOWS_ENTRY_PROBE_START timeoutMs=5000");
+		const started = performance.now();
+		const result = await nativeCmdFile(f.root, "scripts\\bootstrap.cmd", env, 5000);
+		console.error("WINDOWS_ENTRY_PROBE_RESULT", JSON.stringify({ elapsedMs: performance.now() - started, status: result.status, guardKilled: result.guardKilled, expectedDiagnostic: /No acquisition attempted/.test(result.stderr) }));
+		// Spawn errors reject the helper; a guard intervention or unexpected exit
+		// must still fail acceptance rather than being hidden by fixture cleanup.
+		assertNative(result, 1);
 		assert.match(result.stderr, /No acquisition attempted/);
+		assert.match(readFileSync(join(f.root, "process-records"), "utf8").trim(), /^[1-9][0-9]*\|[1-9][0-9]*$/, "the copied entry must expose its first PowerShell handle to fixture cleanup");
 		assert.deepEqual(readdirSync(local), []);
-	} finally { f.cleanup(); }
+	} finally {
+		try { cleanNativeProcesses(f.root); } finally { f.cleanup(); }
+	}
 });
 
 // Native acceptance uses exact CMD command lines, including continuation and
@@ -620,6 +631,13 @@ function processPrimitive() {
 	return [...prefix, stage[childAt], recordChild, ...stage.slice(childAt + 1)].join("\n");
 }
 
+test("native entry observation preserves the complete production batch", () => {
+	const source = readFileSync(new URL("../scripts/bootstrap.cmd", import.meta.url), "utf8");
+	const observed = observeStage(source).split("\n");
+	assert.equal(observed.filter((line) => line === psRecordLine).length, 1);
+	assert.equal(observed.filter((line) => line !== psRecordLine).join("\n"), source);
+});
+
 test("native fixture compositions retain exact production fragments and no transport command", () => {
 	for (const marker of Object.values(stageMarkers)) {
 		const original = cmdStage(marker);
@@ -692,7 +710,10 @@ function cleanNativeProcesses(root: string) {
 }
 async function nativeCmd(root: string, stages: string[], env: NodeJS.ProcessEnv = nativeEnv(root), limit = 14000): Promise<NativeResult> {
 	writeFileSync(join(root, "fixture.cmd"), cmdComposition(stages));
-	const child = spawn(join(process.env.SystemRoot!, "System32/cmd.exe"), ["/d", "/c", "fixture.cmd"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+	return nativeCmdFile(root, "fixture.cmd", env, limit);
+}
+async function nativeCmdFile(root: string, file: string, env: NodeJS.ProcessEnv, limit = 5000): Promise<NativeResult> {
+	const child = spawn(join(process.env.SystemRoot!, "System32/cmd.exe"), ["/d", "/c", file], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
 	let stdout = ""; let stderr = ""; let guardKilled = false;
 	let guardError: unknown;
 	const result = await new Promise<NativeResult>((resolveChild, reject) => {
@@ -713,6 +734,33 @@ async function nativeCmd(root: string, stages: string[], env: NodeJS.ProcessEnv 
 	assert.equal(guardError, undefined);
 	return result;
 }
+test("native Windows: entry fixture deadline is bounded and leaves no recorded descendant", { skip: nativeUnavailable }, async () => {
+	const f = nativeFixture();
+	try {
+		// A finite sleep preserves CMD → PowerShell ancestry without relying on
+		// runner load or leaving a permanently hanging child after a worker crash.
+		const sleepingStage = `"%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
+  "& { if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'Policy constrained' };" ^
+  "[Threading.Thread]::Sleep(20000); }"`;
+		writeFileSync(join(f.root, "fixture.cmd"), cmdComposition([sleepingStage]));
+		const started = performance.now();
+		const result = await nativeCmdFile(f.root, "fixture.cmd", nativeEnv(f.root), 5000);
+		const elapsedMs = performance.now() - started;
+		const records = readFileSync(join(f.root, "process-records"), "utf8").trim().split(/\r?\n/);
+		assert.equal(records.length, 1, "the controlled PowerShell descendant must have been observed");
+		assert.match(records[0], /^[1-9][0-9]*\|[1-9][0-9]*$/);
+		const residualReaped = cleanNativeProcesses(f.root);
+		console.error("WINDOWS_ENTRY_DEADLINE_RESULT", JSON.stringify({ elapsedMs, status: result.status, guardKilled: result.guardKilled, residualReaped }));
+		assert.equal(result.guardKilled, true, "the forced fixture deadline must be reported");
+		assert.equal(result.status, null, "a deadline cannot report successful completion");
+		// Five-second deadline plus two bounded guard invocations and margin.
+		assert.ok(elapsedMs < 16000, `entry fixture exceeded its outer bound: ${elapsedMs}ms`);
+		assert.equal(residualReaped, false, "entry runner must reap recorded descendants; later cleanup must not mask a leak");
+	} finally {
+		try { cleanNativeProcesses(f.root); } finally { f.cleanup(); }
+	}
+});
+
 function assertNative(result: NativeResult, status: number) {
 	const evidence = `stderr: ${result.stderr.slice(0, 4000)}`;
 	assert.equal(result.guardKilled, false, `production fragment must return before the independent outer guard; ${evidence}`);

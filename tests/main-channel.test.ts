@@ -16,8 +16,10 @@ import {
 	packMainShell,
 	readChannel,
 	resolveMainCommit,
+	runUpgrade,
 	writeChannel,
 } from "../scripts/main-channel.mjs";
+import { artifactFor } from "../scripts/installer-downloads.mjs";
 
 const SHELL_SHA = "6e7e3a18f794223396527a54c7c36d19c7d236c6";
 const AI_SHA = "1f9d5e6423e37f7d2316859045f379ba9b5d8c3a";
@@ -191,4 +193,73 @@ test("installOwner attributes another named package, such as the scoped Pi, the 
 		"/u/.local/share/mise/installs/pi/lib/node_modules/@earendil-works/pi-coding-agent"]) {
 		assert.equal(installOwner({ ...roots, packageRoot }), null, packageRoot);
 	}
+});
+
+// `gentle-shell upgrade --channel main` after the installer provided its own pinned Go.
+const NEW_AI = "2222222222222222222222222222222222222222";
+/** A main install whose Gentle Shell is current, so only Gentle AI is rebuilt with Go. */
+async function upgradeWorld({ userGo = null as string | null, pinned = false }) {
+	const s = sandbox();
+	const goDirectory = join(s.home, ".pi", "gentle-ai", "tools", "go", "1.25.14");
+	const pinnedGo = join(goDirectory, "go", "bin", "go");
+	if (pinned) {
+		mkdirSync(join(goDirectory, "go", "bin"), { recursive: true, mode: 0o700 });
+		chmodSync(goDirectory, 0o700);
+		writeFileSync(pinnedGo, "#!/bin/sh\n", { mode: 0o755 });
+		writeFileSync(join(goDirectory, ".gentle-shell-go"), `${artifactFor("go", "darwin", "arm64").url}\n`);
+	}
+	await writeChannel(s.ctx, { channel: "main", shellCommit: SHELL_SHA, gentleAiCommit: AI_SHA }, fsPromises);
+	const calls: Call[] = [];
+	const fetch = async (url: string) => ({ ok: true, status: 200, text: async () => (url.endsWith("/gentle-ai/commits/main") ? NEW_AI : SHELL_SHA) });
+	const run = async (command: string, argv: string[], options: Call["options"]) => {
+		calls.push({ command, argv, options });
+		if (command === "/usr/bin/go" && argv[0] === "version") return { code: 0, stdout: `go version go${userGo} darwin/arm64\n` };
+		if (argv[0] === "install") {
+			mkdirSync(options.env!.GOBIN, { recursive: true });
+			writeFileSync(join(options.env!.GOBIN, "gentle-ai"), "#!/bin/sh\n", { mode: 0o755 });
+			return { code: 0, stdout: "" };
+		}
+		return { code: 0, stdout: `gentle-ai 4.0.1-0.20261008202137-${NEW_AI.slice(0, 12)}\n` };
+	};
+	const which = async (name: string) => (name === "pnpm" || (name === "go" && userGo !== null) ? `/usr/bin/${name}` : null);
+	const upgrade = () => runUpgrade({ args: ["--channel", "main"], ctx: s.ctx, platform: "darwin", arch: "arm64", packageRoot: join(s.root, "pkg"),
+		currentVersion: "4.0.0-main.6e7e3a18f794", adapters: { fetch, run, fs: fsPromises, which }, out: () => {} });
+	const builtWith = () => calls.find((call) => call.argv[0] === "install")?.command;
+	return { ...s, calls, pinnedGo, upgrade, builtWith };
+}
+
+test("upgrading main uses the installer's pinned Go when the user's Go is missing or older, and leaves the user's Go as it is", posixOnly, async () => {
+	for (const userGo of [null, "1.24.0"]) {
+		const w = await upgradeWorld({ userGo, pinned: true });
+		try {
+			assert.equal(await w.upgrade(), 0);
+			assert.equal(w.builtWith(), w.pinnedGo, String(userGo));
+			// The user's Go only reported its version.
+			assert.deepEqual(w.calls.filter((call) => call.command === "/usr/bin/go").map((call) => call.argv), userGo ? [["version"]] : []);
+		} finally { w.cleanup(); }
+	}
+});
+
+test("upgrading main keeps using a user's Go that meets the requirement, even next to the pinned Go", posixOnly, async () => {
+	const w = await upgradeWorld({ userGo: "1.26.0", pinned: true });
+	try {
+		assert.equal(await w.upgrade(), 0);
+		assert.equal(w.builtWith(), "/usr/bin/go");
+	} finally { w.cleanup(); }
+});
+
+test("upgrading main with an older Go and no pinned Go stops before building, naming both versions", posixOnly, async () => {
+	const w = await upgradeWorld({ userGo: "1.24.0" });
+	try {
+		await assert.rejects(w.upgrade(), (error: MainChannelError) => error.code === "main-requires-tools" &&
+			error.message.includes("Go 1.24.0") && error.message.includes("1.25.10"));
+		assert.equal(w.builtWith(), undefined);
+	} finally { w.cleanup(); }
+	// An unpublished or foreign directory at the pinned location is not used either.
+	const foreign = await upgradeWorld({ userGo: null, pinned: true });
+	try {
+		writeFileSync(join(foreign.home, ".pi", "gentle-ai", "tools", "go", "1.25.14", ".gentle-shell-go"), "something else\n");
+		await assert.rejects(foreign.upgrade(), (error: MainChannelError) => error.code === "main-requires-tools");
+		assert.deepEqual(foreign.calls, []);
+	} finally { foreign.cleanup(); }
 });

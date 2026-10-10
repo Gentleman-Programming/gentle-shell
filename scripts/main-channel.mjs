@@ -13,7 +13,8 @@
 // The recorded channel lets `gentle-shell upgrade` follow release or main.
 import { dirname, isAbsolute, join, normalize, relative } from "node:path";
 import { gentleAiDevBinaryRegistrationPath, registerGentleAiDevBinary, unregisterGentleAiDevBinary } from "../runtime/gentle-ai-binary.mjs";
-import { pnpmGlobalBin } from "./installer-preflight.mjs";
+import { installedGo } from "./installer-downloads.mjs";
+import { pnpmGlobalBin, requirements } from "./installer-preflight.mjs";
 
 export const SHELL_REPOSITORY = "Gentleman-Programming/gentle-shell";
 export const GENTLE_AI_REPOSITORY = "Gentleman-Programming/gentle-ai";
@@ -306,13 +307,29 @@ async function removeMainOverride(ctx, fs) {
 	}
 }
 
+/** The Go a main build runs: the user's, unless it is missing or reports a version
+ * older than requirements.go; then the pinned Go the installer published under
+ * the config home (`tools/go`). A Go whose version is unknown is tried as before.
+ * Nothing is downloaded here and the user's Go is never changed.
+ */
+async function mainGo({ userGo, pinnedGo, run }) {
+	if (!userGo) return pinnedGo;
+	const result = await run(userGo, ["version"], { deadlineMs: deadlines.version });
+	const match = succeeded(result) && /^go version go(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\.(0|[1-9]\d*))? \S+$/.exec(String(result.stdout ?? "").trim());
+	if (!match) return userGo;
+	const found = `${match[1]}.${match[2]}.${match[3] ?? "0"}`;
+	if (!older(found, requirements.go)) return userGo;
+	if (pinnedGo) return pinnedGo;
+	throw new MainChannelError("main-requires-tools", `the main channel builds Gentle AI with Go ${requirements.go} or newer, but Go ${found} is on PATH; update it, or run the Gentle Shell installer, which provides its own pinned Go`);
+}
+
 /**
  * Updates Gentle Shell along its recorded channel (or the one `--channel` selects):
  * release goes to the latest npm release, main to the latest `main` commits of
  * Gentle Shell and Gentle AI, rebuilding only what moved. Returns the exit code;
  * failures throw MainChannelError (`upgrade-usage` is a usage error).
  */
-export async function runUpgrade({ args, ctx, platform, packageRoot, currentVersion, adapters, out }) {
+export async function runUpgrade({ args, ctx, platform, arch = process.arch, packageRoot, currentVersion, adapters, out }) {
 	const { fetch, run, fs, which } = adapters;
 	const requested = parseUpgradeArgs(args);
 	const state = await readChannel(ctx, fs);
@@ -329,9 +346,10 @@ export async function runUpgrade({ args, ctx, platform, packageRoot, currentVers
 		out(`Updated gentle-shell ${currentVersion} to ${latest} (release).`);
 		return 0;
 	}
-	const [goPath, pnpmPath] = [await which("go"), await which("pnpm")];
-	if (!goPath || !pnpmPath) {
-		throw new MainChannelError("main-requires-tools", "the main channel builds Gentle AI with Go and packs Gentle Shell with pnpm; put both on PATH");
+	const [userGo, pnpmPath] = [await which("go"), await which("pnpm")];
+	const pinnedGo = installedGo(join(configHome(ctx), "tools", "go"), platform, arch);
+	if ((!userGo && !pinnedGo) || !pnpmPath) {
+		throw new MainChannelError("main-requires-tools", "the main channel builds Gentle AI with Go and packs Gentle Shell with pnpm; put both on PATH (the Gentle Shell installer can provide its own pinned Go)");
 	}
 	const gentleAiCommit = await resolveMainCommit(GENTLE_AI_REPOSITORY, { fetch });
 	const shellCommit = await resolveMainCommit(SHELL_REPOSITORY, { fetch });
@@ -343,7 +361,7 @@ export async function runUpgrade({ args, ctx, platform, packageRoot, currentVers
 		out(`gentle-shell is already at the latest main: ${summary}.`);
 		return 0;
 	}
-	if (!aiCurrent) await buildMainGentleAi({ commit: gentleAiCommit, ctx, platform, goPath, run, fs });
+	if (!aiCurrent) await buildMainGentleAi({ commit: gentleAiCommit, ctx, platform, goPath: await mainGo({ userGo, pinnedGo, run }), run, fs });
 	if (!shellCurrent) {
 		const manager = await ownerManager({ ctx, platform, packageRoot, fs, which, run });
 		const tgz = await packMainShell({ commit: shellCommit, ctx, fetch, run, pnpm: { command: pnpmPath, prefix: [] }, fs });

@@ -4638,6 +4638,17 @@ test("session transport selects a peer for outbound delivery and rejects stale c
 	await h.fire("session_shutdown", ctx);
 });
 
+test("all orchestrator tools own compact and expanded card rendering", () => {
+	const h = fakePi();
+	gentleAgents(h.pi, {}, deps().deps);
+	for (const name of ["orchestrator_session_id", "orchestrator_consult", "orchestrator_list", "orchestrator_send_message"]) {
+		const tool = h.tools.get(name)!;
+		assert.equal(tool.renderShell, "self", name);
+		assert.equal(typeof tool.renderCall, "function", name);
+		assert.equal(typeof tool.renderResult, "function", name);
+	}
+});
+
 // Issue #1364: user consent before cross-orchestrator communication
 test("orchestrator_send_message requires consent on explicit recipient ID and sends nothing when denied", async () => {
 	const h = fakePi();

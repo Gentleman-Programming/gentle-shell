@@ -45,5 +45,6 @@ Common intent hints, not hard routing:
 | Post-ready review comments | `comment-writer`                       |
 | Create/open/prepare PR     | `gentle-ai-branch-pr`                  |
 | Split/stack/large PR       | `gentle-ai-chained-pr`                 |
+| Create/update/document FP; format FP in Spanish / formatear FP en español | `gentle-ai-fp-format` |
 
 Keep this lightweight: loading a skill should improve the immediate task, not force extra ceremony.

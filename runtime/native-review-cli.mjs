@@ -280,6 +280,13 @@ export const NATIVE_REVIEW_LEGACY_ALIAS_REPAIR = {
 }         ;
 
 
+export const NATIVE_REVIEW_ABANDON_REASONS = ["operator_disposition", "retired_schema"]         ;
+
+
+export function isNativeReviewAbandonReason(value         )                                     {
+	return value === "operator_disposition" || value === "retired_schema";
+}
+
 
 
 
@@ -1621,6 +1628,7 @@ class NativeReviewPlainCli {
 	}
 
 	async abandon(request                            )                                      {
+		if (!isNativeReviewAbandonReason(request.reason)) throw new TypeError('Native ABANDON reason must be "operator_disposition" or "retired_schema"');
 		for (const [name, value] of [["lineage", request.lineage], ["expectedRevision", request.expectedRevision], ["snapshotIdentity", request.snapshotIdentity], ["actor", request.actor], ["reason", request.reason]]         ) {
 			if (!isCanonicalProcessString(value)) throw new TypeError(`Native ABANDON ${name} must be a non-empty, trimmed, NUL-free string`);
 		}

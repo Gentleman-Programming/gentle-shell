@@ -279,6 +279,13 @@ export const NATIVE_REVIEW_LEGACY_ALIAS_REPAIR = {
 } as const;
 export type NativeReviewReconcileAnomalies = (typeof NATIVE_REVIEW_RECONCILE_ANOMALIES)[keyof typeof NATIVE_REVIEW_RECONCILE_ANOMALIES];
 
+export const NATIVE_REVIEW_ABANDON_REASONS = ["operator_disposition", "retired_schema"] as const;
+export type NativeReviewAbandonReason = (typeof NATIVE_REVIEW_ABANDON_REASONS)[number];
+
+export function isNativeReviewAbandonReason(value: unknown): value is NativeReviewAbandonReason {
+	return value === "operator_disposition" || value === "retired_schema";
+}
+
 export interface NativeReviewAbandonRequest {
 	cwd: string;
 	lineage: string;
@@ -287,7 +294,7 @@ export interface NativeReviewAbandonRequest {
 	capturedLensResults: readonly string[];
 	findingsPresent: boolean;
 	actor: string;
-	reason: string;
+	reason: NativeReviewAbandonReason;
 	maintainerAuthorization: string;
 	signal?: AbortSignal;
 }
@@ -1620,6 +1627,7 @@ class NativeReviewPlainCli {
 	}
 
 	async abandon(request: NativeReviewAbandonRequest): Promise<NativeReviewRecoveryResult> {
+		if (!isNativeReviewAbandonReason(request.reason)) throw new TypeError('Native ABANDON reason must be "operator_disposition" or "retired_schema"');
 		for (const [name, value] of [["lineage", request.lineage], ["expectedRevision", request.expectedRevision], ["snapshotIdentity", request.snapshotIdentity], ["actor", request.actor], ["reason", request.reason]] as const) {
 			if (!isCanonicalProcessString(value)) throw new TypeError(`Native ABANDON ${name} must be a non-empty, trimmed, NUL-free string`);
 		}

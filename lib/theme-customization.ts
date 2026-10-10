@@ -1,6 +1,6 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute } from "node:path";
-import { colorToRgb, parseColor } from "@earendil-works/pi-tui";
+import { colorToRgb, parseColor } from "./compat-pi-tui.ts";
 
 const MAX_BYTES = 256_000;
 const HEX = /^#[0-9a-fA-F]{6}$/;

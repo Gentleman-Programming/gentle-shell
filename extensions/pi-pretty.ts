@@ -82,13 +82,13 @@ export default async function gentlePiPrettyExtension(
 	// transcript thinking blocks remain untouched as historical reasoning markers.
 	// Inside Herdr the row stays: its native Pi detection reads it.
 	api.on("session_start", (_event, ctx) => {
-		if (ctx.mode === "tui" && !keepNativeWorkingRow(env)) ctx.ui.setWorkingVisible(false);
+		if (ctx.mode === "tui" && !keepNativeWorkingRow(env)) ctx.ui.setWorkingVisible?.(false);
 	});
 	api.on("session_shutdown", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
-		ctx.ui.setWorkingVisible(true);
-		ctx.ui.setWorkingIndicator();
-		ctx.ui.setWorkingMessage();
+		ctx.ui.setWorkingVisible?.(true);
+		ctx.ui.setWorkingIndicator?.();
+		ctx.ui.setWorkingMessage?.();
 	});
 	return result;
 }

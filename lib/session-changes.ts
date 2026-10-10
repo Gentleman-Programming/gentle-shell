@@ -2,7 +2,7 @@ import { constants } from "node:fs";
 import { createHash } from "node:crypto";
 import { open } from "node:fs/promises";
 import { isAbsolute } from "node:path";
-import { generateUnifiedPatch } from "@earendil-works/pi-coding-agent";
+import { generateUnifiedPatch } from "./compat-pi-agent.ts";
 import { changesModel, type ChangedFile, type WorktreeChanges } from "./shell-changes.ts";
 
 export const SESSION_CHANGE_ENTRY = "gentle-pi.session-change/v1";

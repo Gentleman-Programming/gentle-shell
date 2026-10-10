@@ -6,7 +6,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionFactory,
 	type ToolDefinition,
-} from "@earendil-works/pi-coding-agent";
+} from "./compat-pi-agent.ts";
 import { getCapabilities, imageFallback, type Component } from "@earendil-works/pi-tui";
 import {
 	CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardLine, cardRunningLine, cardTop, floatRows, markCardResult,

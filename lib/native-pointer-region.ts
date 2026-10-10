@@ -3,7 +3,7 @@ import {
 	type Component,
 	type TuiMouseEvent,
 	type TuiMouseEventResult,
-} from "@earendil-works/pi-tui";
+} from "./compat-pi-tui.ts";
 
 export type NativePointerCallback = (event: TuiMouseEvent) => TuiMouseEventResult | undefined;
 

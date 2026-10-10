@@ -1978,7 +1978,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// Hide native feedback only when our petal replaces it. Native transcript
 		// thinking blocks remain Pi-owned; this changes only the supported loader UI.
 		// Inside Herdr the row stays: its native Pi detection reads it.
-		if (ownsPrompt && !keepNativeWorkingRow(env)) ctx.ui.setWorkingVisible(false);
+		if (ownsPrompt && !keepNativeWorkingRow(env)) ctx.ui.setWorkingVisible?.(false);
 		const notice = deps.devBinary();
 		ctx.ui.setWidget(
 			DEV_BINARY_WIDGET_KEY,
@@ -2007,9 +2007,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		pendingQueuedText = undefined;
 		prompt?.dispose();
 		prompt = undefined;
-		if ((ctx.ui.getEditorComponent() as PromptFactory | undefined)?.[PROMPT_OWNER]) {
-			ctx.ui.setEditorComponent(undefined);
-			ctx.ui.setWorkingVisible(true);
+		if ((ctx.ui.getEditorComponent?.() as PromptFactory | undefined)?.[PROMPT_OWNER]) {
+			ctx.ui.setEditorComponent?.(undefined);
+			ctx.ui.setWorkingVisible?.(true);
 		}
 		registry?.close();
 		registry = undefined;

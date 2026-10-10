@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 
 export const SESSION_WORKTREE_ENTRY = "gentle-pi.session-worktree/v1";
 export const SESSION_WORKTREE_CHANGED = "gentle-pi:session-worktree-changed";
@@ -16,6 +16,29 @@ interface RegistryHost {
 	events: { emit(name: string, data: unknown): void };
 }
 interface Registration { sessionId: string; root: string; evidence: string }
+
+// Durable entries contain canonical absolute roots, not user path arguments.
+// Never expand relative paths or aliases here: consumers use the stored spelling
+// as authority, whereas Git resolution could validate a different directory.
+function isCanonicalRegisteredRoot(root: unknown): root is string {
+	if (typeof root !== "string" || !isAbsolute(root) || resolve(root) !== root) return false;
+	try { return realpathSync(root) === root; }
+	catch { return false; }
+}
+
+// Boundary reads for other extensions: the roots this session durably
+// registered, without granting registry mutation. Same-clone was enforced at
+// registration time; callers that need freshness re-resolve each root.
+export function registeredRootsForSession(session: SessionReader, sessionId: string): string[] {
+	const roots: string[] = [];
+	if (typeof session.getEntries !== "function") return roots; // harness fakes without durable entries
+	for (const entry of session.getEntries()) {
+		if (entry.type !== "custom" || entry.customType !== SESSION_WORKTREE_ENTRY || !entry.data || typeof entry.data !== "object") continue;
+		const data = entry.data as Partial<Registration>;
+		if (data.sessionId === sessionId && isCanonicalRegisteredRoot(data.root)) roots.push(data.root);
+	}
+	return roots;
+}
 
 // Pass this as a complete child environment, not an overlay on inherited env.
 export function worktreeGitEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
@@ -101,7 +124,7 @@ export class SessionWorktreeRegistry {
 		for (const entry of this.session.getEntries()) {
 			if (entry.type !== "custom" || entry.customType !== SESSION_WORKTREE_ENTRY || !entry.data || typeof entry.data !== "object") continue;
 			const data = entry.data as Partial<Registration>;
-			if (data.sessionId === this.sessionId && typeof data.root === "string" && typeof data.evidence === "string") this.recorded.add(data.root);
+			if (data.sessionId === this.sessionId && isCanonicalRegisteredRoot(data.root) && typeof data.evidence === "string") this.recorded.add(data.root);
 		}
 	}
 

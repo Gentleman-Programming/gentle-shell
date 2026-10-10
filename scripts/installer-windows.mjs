@@ -1,5 +1,5 @@
 import { lstatSync, readFileSync, realpathSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { dirname, join, resolve, win32 } from "node:path";
+import { dirname, extname, join, parse, resolve, win32 } from "node:path";
 import { spawnSync } from "node:child_process";
 import { gunzipSync } from "node:zlib";
 import { artifactFor, verifiedDownload, compatibleEngine, launchWizard, pinnedPnpmCompatible } from "./installer-downloads.mjs";
@@ -34,34 +34,69 @@ export function validateWindowsEntries(entries) {
 	}
 }
 
-// Complete known npm cmd-shim template. EndLocal restores PATH/PATHEXT before
-// the child starts; no Node flags or extra environment assignments are accepted.
-const shimStart = `@ECHO off
-GOTO start
-:find_dp0
-SET dp0=%~dp0
-EXIT /b
-:start
-SETLOCAL
-CALL :find_dp0
-
-IF EXIST "%dp0%\\node.exe" (
-  SET "_prog=%dp0%\\node.exe"
-) ELSE (
-  SET "_prog=node"
-  SET PATHEXT=%PATHEXT:;.JS;=;%
-)
-
-endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%" "%dp0%\\`;
-export function proveWindowsWrapper(text) {
-	if (typeof text !== "string") throw new Error("Unknown pnpm wrapper");
+// Complete Windows command shims, exactly as their generators write them (CRLF
+// read as LF; `\0` marks the one target, a path without quotes or `%`):
+// - npm cmd-shim 4.1-8 and 9 (npm global bins, such as `npm install -g pnpm`;
+//   github.com/npm/cmd-shim tap snapshots): a JS target run by the shim's
+//   sibling node.exe, else `node` from PATH, or a native target run as it is.
+//   EndLocal restores PATH/PATHEXT before the child starts.
+// - pnpm's @zkochan/cmd-shim 9 (pnpm 10-12 global bins from `pnpm add -g`,
+//   `pnpm setup` and `pnpm self-update`): the same two kinds, or a JS target run
+//   by the absolute node.exe pnpm names. pnpm's optional NODE_PATH block only
+//   extends module lookup and is not reproduced.
+// - npm's own npm.cmd that Node.js ships (npm 6-9, and 10-11 with npm-prefix.js):
+//   node as above, then the npm-cli.js under npm's global prefix when one is there.
+// No Node flags, extra environment assignments or other commands are accepted.
+const npmHead = "@ECHO off\nGOTO start\n:find_dp0\nSET dp0=%~dp0\nEXIT /b\n:start\nSETLOCAL\nCALL :find_dp0\n";
+const npmProgram = `${npmHead}\nIF EXIST "%dp0%\\node.exe" (\n  SET "_prog=%dp0%\\node.exe"\n) ELSE (\n  SET "_prog=node"\n`;
+const pnpmJs = "@IF EXIST \"%~dp0\\node.exe\" (\n  \"%~dp0\\node.exe\"  \"\0\" %*\n) ELSE (\n  @SET PATHEXT=%PATHEXT:;.JS;=;%\n  node  \"\0\" %*\n)\n";
+const nodeNpm = (prefix) => `:: Created by npm, please don't edit manually.\n@ECHO OFF\n\nSETLOCAL\n\nSET "NODE_EXE=%~dp0\\node.exe"\nIF NOT EXIST "%NODE_EXE%" (\n  SET "NODE_EXE=node"\n)\n\n${prefix === "prefix-js" ? "SET \"NPM_PREFIX_JS=%~dp0\\node_modules\\npm\\bin\\npm-prefix.js\"\n" : ""}` +
+	`SET "NPM_CLI_JS=%~dp0\\node_modules\\npm\\bin\\npm-cli.js"\nFOR /F "delims=" %%F IN ('CALL "%NODE_EXE%" ${prefix === "prefix-js" ? "\"%NPM_PREFIX_JS%\"" : "\"%NPM_CLI_JS%\" prefix -g"}') DO (\n` +
+	"  SET \"NPM_PREFIX_NPM_CLI_JS=%%F\\node_modules\\npm\\bin\\npm-cli.js\"\n)\nIF EXIST \"%NPM_PREFIX_NPM_CLI_JS%\" (\n  SET \"NPM_CLI_JS=%NPM_PREFIX_NPM_CLI_JS%\"\n)\n\n\"%NODE_EXE%\" \"%NPM_CLI_JS%\" %*\n";
+const npmTemplates = [
+	["entry", `${npmProgram}  SET PATHEXT=%PATHEXT:;.JS;=;%\n)\n\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\\0" %*\n`],
+	["entry", `${npmProgram})\n\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & set PATHEXT=%PATHEXT:;.JS;=;% & "%_prog%"  "%dp0%\\\0" %*\n`],
+	["exe", `${npmHead}"%dp0%\\\0"   %*\n`],
+];
+const pnpmHeader = /^@SETLOCAL\n(?:@IF NOT DEFINED NODE_PATH \(\n {2}@SET "NODE_PATH=([^"\n]*)"\n\) ELSE \(\n {2}@SET "NODE_PATH=\1;%NODE_PATH%"\n\)\n)?/;
+/** The value at every `\0` of template, when text is exactly that template. */
+function filled(text, template) {
+	const [head, next] = template.split("\0");
+	if (!text.startsWith(head)) return null;
+	const value = text.slice(head.length, text.indexOf(next, head.length));
+	return /^[^"%\x00-\x1f]+$/.test(value) && template.replaceAll("\0", value) === text ? value : null;
+}
+/** A shim target: relative to the shim's directory, or absolute on a local drive. */
+function shimPath(value, relative) {
+	if (value === null) return null;
+	if (!relative) return /^[A-Za-z]:\\/.test(value) ? value : null;
+	return value.startsWith("\\") || /^[A-Za-z]:/.test(value) ? null : value;
+}
+/** What a complete known Windows command shim runs, read from its text and never
+ * executed: { exe } a native target; { entry, node } a JS entry run by node (an
+ * absolute node.exe, or null: the shim's sibling node.exe, else `node` from
+ * PATH); or { npm } for Node.js's own npm.cmd ("prefix-js" or "prefix-g": how it
+ * asks for npm's global prefix). Targets are relative to the shim's directory
+ * (backslashes) or absolute. Anything else is null.
+ */
+export function windowsShim(text) {
+	if (typeof text !== "string" || /\r(?!\n)/.test(text)) return null;
 	const normalized = text.replaceAll("\r\n", "\n");
-	for (const entry of ["node_modules\\pnpm\\bin\\pnpm.cjs", "node_modules\\pnpm\\bin\\pnpm.mjs"]) {
-		if (normalized === `${shimStart}${entry}" %*\n`) {
-			return { entry, localNode: "node.exe", fallbackNode: "node", flags: [], environment: "inherited" };
-		}
+	for (const prefix of ["prefix-js", "prefix-g"]) if (normalized === nodeNpm(prefix)) return { npm: prefix };
+	for (const [kind, template] of npmTemplates) {
+		const target = shimPath(filled(normalized, template), true);
+		if (target) return kind === "exe" ? { exe: target } : { entry: target, node: null };
 	}
-	throw new Error("Unknown pnpm wrapper; refusing execution or replacement");
+	const header = pnpmHeader.exec(normalized);
+	if (!header) return null;
+	const rest = normalized.slice(header[0].length);
+	const target = (quoted) => (quoted?.startsWith("%~dp0\\") ? shimPath(quoted.slice(6), true) : shimPath(quoted, false));
+	const javascript = /^@IF EXIST "%~dp0\\node\.exe" \(\n {2}"%~dp0\\node\.exe" {2}"(%~dp0\\[^"%\x00-\x1f]+|[^"%\x00-\x1f]+)" %\*\n/.exec(rest);
+	if (javascript && rest === pnpmJs.replaceAll("\0", javascript[1]) && target(javascript[1])) return { entry: target(javascript[1]), node: null };
+	const pinned = /^@"([A-Za-z]:\\[^"%\x00-\x1f]*\\node\.exe)" {2}"(%~dp0\\[^"%\x00-\x1f]+|[^"%\x00-\x1f]+)" %\*\n$/i.exec(rest);
+	if (pinned && target(pinned[2])) return { entry: target(pinned[2]), node: pinned[1] };
+	const native = /^@"(%~dp0\\[^"%\x00-\x1f]+|[^"%\x00-\x1f]+)" {3}%\*\n$/.exec(rest);
+	return native && target(native[1]) ? { exe: target(native[1]) } : null;
 }
 
 function regular(path) {
@@ -76,7 +111,9 @@ export function windowsProcessCheck(command, args, env) {
 	// Owned direct children only, not a tree/global kill. Descendant-held stdio
 	// is outside this guarantee. Never execute .cmd through a command interpreter.
 	if (/\.(?:cmd|bat)$/i.test(command)) throw new Error("Unproven command interpreter target");
-	const result = spawnSync(command, args, { env, shell: false, encoding: "utf8", timeout: 15000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024, windowsHide: true });
+	// A neutral cwd: inside a project (the bundle itself), pnpm 11 reports, and may
+	// fetch, the version that project's packageManager pins instead of its own.
+	const result = spawnSync(command, args, { cwd: parse(command).root || undefined, env, shell: false, encoding: "utf8", timeout: 15000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024, windowsHide: true });
 	if (result.error || result.status !== 0) throw new Error("Windows prerequisite process failed");
 	return result.stdout.trim();
 }
@@ -209,32 +246,42 @@ function findWindowsCommand(env, name = "pnpm") {
 	// other non-absolute, quoted or UNC entry still fails closed.
 	for (const directory of [process.cwd(), ...path.split(";").filter((entry) => entry !== "")]) {
 		if (!win32.isAbsolute(directory) || directory.startsWith("\\\\") || directory.includes('"')) throw new Error("Unknown Windows PATH");
-		// CMD searches cwd too. An extensionless/other target must block rather
-		// than be silently skipped; honor the wrapper's inherited PATHEXT order.
-		if (exists(join(directory, name))) throw new Error("Unknown extensionless Windows prerequisite");
+		// CMD searches cwd too; honor the wrapper's inherited PATHEXT order.
 		for (const extension of extensions) {
 			const command = join(directory, `${name}${extension}`);
 			if (exists(command)) return command;
 		}
+		// npm, pnpm, Volta and mise write an extensionless Git Bash script beside
+		// each .cmd shim, and CMD runs the PATHEXT match in that directory. An
+		// extensionless/other target alone must block rather than be silently skipped.
+		if (exists(join(directory, name))) throw new Error("Unknown extensionless Windows prerequisite");
 	}
 	return null;
 }
+const STABLE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+function proveGlobal(command, prefix, env, processAdapter) {
+	for (const capability of ["add", "bin"]) {
+		if (!/(?:^|[\s,])--global(?:[\s,=]|$)/.test(processAdapter(command, [...prefix, "help", capability], env))) throw new Error("Windows pnpm global capability rejected");
+	}
+}
 function proveCli(node, entry, metadata, env, processAdapter) {
 	const version = processAdapter(node, ["--version"], env);
-	if (metadata.name !== "pnpm" || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(metadata.version) || !compatibleEngine(windowsNodeFloor, version) || !compatibleEngine(metadata.engines?.node, version)) {
+	if (metadata.name !== "pnpm" || !STABLE.test(metadata.version) || !compatibleEngine(windowsNodeFloor, version) || !compatibleEngine(metadata.engines?.node, version)) {
 		throw new Error("Windows pnpm engine or identity rejected");
 	}
 	if (processAdapter(node, [entry, "--version"], env) !== metadata.version) throw new Error("Windows pnpm version rejected");
-	for (const capability of ["add", "bin"]) {
-		if (!/(?:^|[\s,])--global(?:[\s,=]|$)/.test(processAdapter(node, [entry, "help", capability], env))) throw new Error("Windows pnpm global capability rejected");
-	}
+	proveGlobal(node, [entry], env, processAdapter);
 }
 
 /** Returns a direct invocation, NOT a fabricated npm/pnpm executable shim.
  * T4 must call command + prefix with shell:false and retain this child env.
  * `onStep` receives fixed phase names for diagnostics only; it never alters checks.
- * A proven wrapper whose package reports a stable version of another major or
- * older than the pin is left as it is: the verified pnpm is acquired instead.
+ * The pnpm found is a known shim (windowsShim) of pnpm's own JS entry, run by
+ * the Node that shim selects, or a native pnpm.exe (pnpm's installer and
+ * `pnpm setup`, @pnpm/exe, pnpm 12, a Volta or mise shim), directly or as a
+ * shim's target; a package.json beside that exe must report its version.
+ * One whose stable version is of another major or older than the pin is left as
+ * it is: the verified pnpm is acquired instead. Unknown evidence still refuses.
  */
 export async function ensureWindowsPnpm({ tools, env, node = process.execPath, adapters = {}, onStep = () => {} }) {
 	const processAdapter = adapters.process ?? windowsProcessCheck;
@@ -245,29 +292,61 @@ export async function ensureWindowsPnpm({ tools, env, node = process.execPath, a
 		onStep("wrapper-storage");
 		storage(existing, env);
 		onStep("wrapper");
-		if (!/\.cmd$/i.test(existing) || !regular(existing)) throw new Error("Unknown pnpm wrapper; refusing replacement");
-		const proof = proveWindowsWrapper(readFileSync(existing, "utf8"));
+		const extension = extname(existing).toLowerCase();
+		if (![".cmd", ".exe"].includes(extension) || !regular(existing)) throw new Error("Unknown pnpm wrapper; refusing replacement");
+		const shim = extension === ".exe" ? { exe: parse(existing).base } : windowsShim(readFileSync(existing, "utf8"));
 		const directory = dirname(existing);
-		const entry = join(directory, ...proof.entry.split("\\"));
-		const localNode = join(directory, proof.localNode);
-		// npm cmd-shim selects its sibling node.exe before PATH node. Preserve it.
-		onStep("node-discovery");
-		const selectedNode = exists(localNode) ? localNode : (adapters.findNode ?? ((env) => findWindowsCommand(env, "node")))(env);
-		if (!selectedNode || !/\.exe$/i.test(selectedNode)) throw new Error("Unknown wrapper-selected Node");
-		const metadataPath = join(directory, "node_modules", "pnpm", "package.json");
-		for (const [step, path] of [["node-storage", selectedNode], ["entry-storage", entry], ["metadata-storage", metadataPath]]) {
-			onStep(step);
-			storage(path, env);
-			if (!regular(path)) throw new Error("Unsafe pnpm wrapper target");
-		}
-		onStep("package");
-		const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
-		if (metadata.bin?.pnpm !== `bin/${proof.entry.endsWith("pnpm.cjs") ? "pnpm.cjs" : "pnpm.mjs"}`) throw new Error("Windows pnpm package target rejected");
-		const stable = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(metadata.version ?? "");
-		if (metadata.name !== "pnpm" || !stable || pinnedPnpmCompatible(metadata.version)) {
-			onStep("cli-proof");
-			proveCli(selectedNode, entry, metadata, env, processAdapter);
-			return { acquired: false, env, command: selectedNode, prefix: [entry] };
+		const target = (path) => (win32.isAbsolute(path) ? path : join(directory, ...path.split("\\")));
+		const entry = shim?.entry === undefined ? null : target(shim.entry);
+		const file = entry && parse(entry).base;
+		const packageDirectory = entry && dirname(dirname(entry));
+		// Only pnpm's own bin entry, <...>\node_modules\pnpm\bin\pnpm.(cjs|mjs).
+		const pnpmEntry = entry !== null && /^pnpm\.[cm]js$/.test(file) && parse(dirname(entry)).base === "bin" &&
+			parse(packageDirectory).base === "pnpm" && parse(dirname(packageDirectory)).base === "node_modules";
+		if (shim?.exe === undefined && !pnpmEntry) throw new Error("Unknown pnpm wrapper; refusing execution or replacement");
+		if (pnpmEntry) {
+			// npm cmd-shim selects its sibling node.exe before PATH node. Preserve it.
+			onStep("node-discovery");
+			const localNode = join(directory, "node.exe");
+			const selectedNode = shim.node ?? (exists(localNode) ? localNode : (adapters.findNode ?? ((env) => findWindowsCommand(env, "node")))(env));
+			if (!selectedNode || !/\.exe$/i.test(selectedNode)) throw new Error("Unknown wrapper-selected Node");
+			const metadataPath = join(packageDirectory, "package.json");
+			for (const [step, path] of [["node-storage", selectedNode], ["entry-storage", entry], ["metadata-storage", metadataPath]]) {
+				onStep(step);
+				storage(path, env);
+				if (!regular(path)) throw new Error("Unsafe pnpm wrapper target");
+			}
+			onStep("package");
+			const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
+			if (metadata.bin?.pnpm !== `bin/${file}`) throw new Error("Windows pnpm package target rejected");
+			if (metadata.name !== "pnpm" || !STABLE.test(metadata.version ?? "") || pinnedPnpmCompatible(metadata.version)) {
+				onStep("cli-proof");
+				proveCli(selectedNode, entry, metadata, env, processAdapter);
+				return { acquired: false, env, command: selectedNode, prefix: [entry] };
+			}
+		} else {
+			// @pnpm/exe hard-links its binary under both names; the shim may name either.
+			let exe = target(shim.exe);
+			if (extname(exe) === "" && regular(`${exe}.exe`)) exe = `${exe}.exe`;
+			const metadataPath = join(dirname(exe), "package.json");
+			onStep("exe-storage");
+			storage(exe, env);
+			if (!/\.exe$/i.test(exe) || !regular(exe)) throw new Error("Unsafe pnpm wrapper target");
+			let shipped = null;
+			if (exists(metadataPath)) {
+				storage(metadataPath, env);
+				if (!regular(metadataPath)) throw new Error("Unsafe pnpm wrapper target");
+				const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
+				if (metadata.name === "pnpm" || /^@pnpm\//.test(metadata.name ?? "")) shipped = metadata.version;
+			}
+			// A standalone pnpm embeds its own Node runtime: only what it reports counts.
+			onStep("exe-proof");
+			const version = processAdapter(exe, ["--version"], env);
+			if (!STABLE.test(version) || (shipped !== null && version !== shipped)) throw new Error("Windows pnpm version rejected");
+			if (pinnedPnpmCompatible(version)) {
+				proveGlobal(exe, [], env, processAdapter);
+				return { acquired: false, env, command: exe, prefix: [] };
+			}
 		}
 	}
 	onStep("tools-check");
@@ -311,7 +390,7 @@ export async function ensureWindowsPnpm({ tools, env, node = process.execPath, a
 // one code; the step names the phase. Anything else, including fs, JSON or spawn
 // errors, reports `unexpected-<step>`. No path, SID or exception text is copied.
 const helperSteps = new Set(["bundle", "tools-storage", "pnpm-discovery", "wrapper-storage", "wrapper", "node-discovery", "node-storage", "entry-storage",
-	"metadata-storage", "package", "cli-proof", "tools-check", "download", "archive", "publish", "launch"]);
+	"metadata-storage", "package", "cli-proof", "exe-storage", "exe-proof", "tools-check", "download", "archive", "publish", "launch"]);
 const helperRejections = new Map(Object.entries({
 	"Windows bootstrap requires native Windows": "native-unavailable",
 	"Native Windows storage verification unavailable": "native-unavailable",
@@ -367,7 +446,11 @@ export async function bootstrapWindows({ bundle, tools, env }) {
 		const result = await ensureWindowsPnpm({ tools, env, onStep: (next) => { step = next; } });
 		// Fixed data handoff for the future T5 entry. No caller-controlled command text.
 		step = "launch";
-		await launchWizard({ bundle, env: { ...result.env, GENTLE_INSTALL_PNPM_NODE: result.command, GENTLE_INSTALL_PNPM_ENTRY: result.prefix[0] } });
+		// A native pnpm.exe is handed off as the command itself, a JS entry with its Node.
+		const handoff = result.prefix.length === 0 ? { GENTLE_INSTALL_PNPM_COMMAND: result.command }
+			: { GENTLE_INSTALL_PNPM_NODE: result.command, GENTLE_INSTALL_PNPM_ENTRY: result.prefix[0] };
+		const inherited = Object.entries(result.env).filter(([key]) => !/^GENTLE_INSTALL_PNPM_(?:NODE|ENTRY|COMMAND)$/i.test(key));
+		await launchWizard({ bundle, env: { ...Object.fromEntries(inherited), ...handoff } });
 	} catch (error) {
 		throw Object.assign(new Error("Windows bootstrap rejected"), { reason: windowsBootstrapReason(error, step) });
 	}

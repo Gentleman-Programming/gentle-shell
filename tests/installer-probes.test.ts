@@ -323,6 +323,88 @@ test("Windows pnpm uses the direct bootstrap handoff; a .cmd shim alone is unkno
 	assert.deepEqual(shim.calls, []);
 });
 
+// Windows layouts, verbatim shim text (see installer-windows-bootstrap.test.ts for sources).
+const W_LOCAL = "C:\\Users\\u\\AppData\\Local";
+const W_TOOLS = `${W_LOCAL}\\.gentle-shell-bootstrap-tools.1`;
+const W_TOOLS_NODE = `${W_TOOLS}\\node\\node.exe`;
+const W_TOOLS_ENTRY = `${W_TOOLS}\\pnpm\\package\\bin\\pnpm.mjs`;
+const W_APPDATA_NPM = "C:\\Users\\u\\AppData\\Roaming\\npm";
+const W_NPM_ROOT = `${W_APPDATA_NPM}\\node_modules`;
+const W_NODE_DIR = "C:\\Program Files\\nodejs";
+const W_NODE = `${W_NODE_DIR}\\node.exe`;
+const W_NPM_CLI = `${W_NODE_DIR}\\node_modules\\npm\\bin\\npm-cli.js`;
+const cmdShimHead = "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n";
+const cmdShim = (target: string) => `${cmdShimHead}\r\nIF EXIST "%dp0%\\node.exe" (\r\n  SET "_prog=%dp0%\\node.exe"\r\n) ELSE (\r\n  SET "_prog=node"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\${target}" %*\r\n`;
+const nodeNpmCmd = ":: Created by npm, please don't edit manually.\r\n@ECHO OFF\r\n\r\nSETLOCAL\r\n\r\nSET \"NODE_EXE=%~dp0\\node.exe\"\r\nIF NOT EXIST \"%NODE_EXE%\" (\r\n  SET \"NODE_EXE=node\"\r\n)\r\n\r\nSET \"NPM_PREFIX_JS=%~dp0\\node_modules\\npm\\bin\\npm-prefix.js\"\r\nSET \"NPM_CLI_JS=%~dp0\\node_modules\\npm\\bin\\npm-cli.js\"\r\nFOR /F \"delims=\" %%F IN ('CALL \"%NODE_EXE%\" \"%NPM_PREFIX_JS%\"') DO (\r\n  SET \"NPM_PREFIX_NPM_CLI_JS=%%F\\node_modules\\npm\\bin\\npm-cli.js\"\r\n)\r\nIF EXIST \"%NPM_PREFIX_NPM_CLI_JS%\" (\r\n  SET \"NPM_CLI_JS=%NPM_PREFIX_NPM_CLI_JS%\"\r\n)\r\n\r\n\"%NODE_EXE%\" \"%NPM_CLI_JS%\" %*\r\n";
+const W_PI = `${W_NPM_ROOT}\\@earendil-works\\pi-coding-agent`;
+const W_PI_ENTRY = `${W_PI}\\dist\\bundle\\cli.js`;
+// The wizard on Windows: the bootstrap's Node and pnpm handed off, Node.js on the user's Path.
+const windowsPi = (version: string, { shim = cmdShim("node_modules\\@earendil-works\\pi-coding-agent\\dist\\bundle\\cli.js"), root = W_NPM_ROOT } = {}) => probes({
+	platform: "win32",
+	env: { LOCALAPPDATA: W_LOCAL, USERPROFILE: "C:\\Users\\u", Path: `${W_TOOLS}\\node;${W_APPDATA_NPM};${W_NODE_DIR}`, PATHEXT: ".COM;.EXE;.BAT;.CMD",
+		GENTLE_BOOTSTRAP_TOOLS: W_TOOLS, GENTLE_INSTALL_PNPM_NODE: W_TOOLS_NODE, GENTLE_INSTALL_PNPM_ENTRY: W_TOOLS_ENTRY },
+	files: [`${W_APPDATA_NPM}\\pi.cmd`, `${W_APPDATA_NPM}\\pi`, W_PI_ENTRY, W_NODE, `${W_NODE_DIR}\\npm.cmd`, W_NPM_CLI],
+	dirs: [W_NPM_ROOT, root],
+	texts: { [`${W_APPDATA_NPM}\\pi.cmd`]: shim, [`${W_NODE_DIR}\\npm.cmd`]: nodeNpmCmd,
+		[`${W_PI}\\package.json`]: JSON.stringify({ name: "@earendil-works/pi-coding-agent", version }) },
+	results: { [`${W_TOOLS_NODE} ${W_TOOLS_ENTRY} ${LIST}`]: { code: 0, stdout: "[]" },
+		[`${W_NODE} ${W_PI_ENTRY} --version`]: { code: 0, stdout: `${version}\r\n` },
+		[`${W_NODE} ${W_NPM_CLI} root -g`]: { code: 0, stdout: `${root}\r\n` } },
+});
+test("Windows: an older Pi installed by npm is run through its shim and attributed to npm, as on POSIX", async () => {
+	const npm = windowsPi("0.87.1");
+	assert.deepEqual(await npm.probes.pi(), { available: true, version: "0.87.1", usable: true, external: true, owner: "npm" });
+	assert.deepEqual(await npm.probes.locatePi(), { root: W_PI, version: "0.87.1", owner: "npm" });
+	assert.deepEqual(npm.unexpected, []);
+	assert.equal(npm.calls.some((call) => /\.cmd$/i.test(call.command)), false, "no shim is ever spawned");
+	// npm's global root elsewhere: the Pi is reused or replaced alongside, never attributed.
+	const elsewhere = windowsPi("0.87.1", { root: "C:\\Other\\node_modules" });
+	assert.deepEqual(await elsewhere.probes.pi(), { available: true, version: "0.87.1", usable: true, external: true });
+	// A pi.cmd no structure resolves is never run: unknown, outside pnpm.
+	const mise = windowsPi("0.87.1", { shim: "@echo off\r\nsetlocal\r\nmise x -- %*\r\n" });
+	assert.deepEqual(await mise.probes.pi(), { available: null, outsidePnpm: true });
+	assert.equal(mise.calls.some((call) => call.args.includes("--version")), false);
+});
+
+test("Windows: a user's pnpm in $PNPM_HOME\\bin is run through its shim for the version it reports, never replaced", async () => {
+	const bin = `${W_LOCAL}\\pnpm\\bin`;
+	const exe = `${W_LOCAL}\\pnpm\\global\\v11\\5f1a\\node_modules\\@pnpm\\exe\\pnpm.exe`;
+	const h = probes({ platform: "win32", env: { LOCALAPPDATA: W_LOCAL, USERPROFILE: "C:\\Users\\u", Path: bin, GENTLE_BOOTSTRAP_TOOLS: W_TOOLS,
+		GENTLE_INSTALL_PNPM_NODE: W_TOOLS_NODE, GENTLE_INSTALL_PNPM_ENTRY: W_TOOLS_ENTRY },
+	files: [`${bin}\\pnpm.cmd`, `${bin}\\pnpm`, exe],
+	texts: { [`${bin}\\pnpm.cmd`]: "@SETLOCAL\r\n@\"%~dp0\\..\\global\\v11\\5f1a\\node_modules\\@pnpm\\exe\\pnpm.exe\"   %*\r\n" },
+	results: { [`${W_TOOLS_NODE} ${W_TOOLS_ENTRY} --version`]: { code: 0, stdout: "11.1.1\r\n" }, [`${exe} --version`]: { code: 0, stdout: "11.0.5\r\n" } } });
+	assert.deepEqual(await h.probes.pnpm(), { available: true, version: "11.0.5", usable: true, compatible: false, persistent: true, inGlobalBin: true });
+	assert.deepEqual(h.calls.find((call) => call.command === exe)?.cwd, "C:\\");
+});
+
+test("Windows npm counts by behavior whatever installed it: Node.js, nvm-windows, fnm or a Volta npm.exe", async () => {
+	const layouts = {
+		node: { dir: W_NODE_DIR, npm: "npm.cmd" },
+		nvm: { dir: "C:\\nvm4w\\nodejs", npm: "npm.cmd" },
+		fnm: { dir: `${W_LOCAL}\\fnm_multishells\\1234_1700000000000`, npm: "npm.cmd" },
+		volta: { dir: "C:\\Program Files\\Volta", npm: "npm.exe" },
+	};
+	for (const [name, { dir, npm }] of Object.entries(layouts)) {
+		const node = `${dir}\\node.exe`; const cli = `${dir}\\node_modules\\npm\\bin\\npm-cli.js`;
+		const command = npm === "npm.exe" ? `${dir}\\npm.exe` : node;
+		const prefix = npm === "npm.exe" ? [] : [cli];
+		const h = probes({ platform: "win32", env: { LOCALAPPDATA: W_LOCAL, USERPROFILE: "C:\\Users\\u", Path: dir, PATHEXT: ".COM;.EXE;.BAT;.CMD",
+			GENTLE_INSTALL_PNPM_NODE: W_TOOLS_NODE, GENTLE_INSTALL_PNPM_ENTRY: W_TOOLS_ENTRY },
+		files: [node, `${dir}\\${npm}`, cli], texts: { [`${dir}\\npm.cmd`]: nodeNpmCmd },
+		results: { [`${node} --version`]: { code: 0, stdout: "v24.18.0\r\n" }, [[command, ...prefix, "--version"].join(" ")]: { code: 0, stdout: "11.6.2\r\n" },
+			[[command, ...prefix, "config", "get", "prefix"].join(" ")]: { code: 0, stdout: `${W_APPDATA_NPM}\r\n` } } });
+		assert.deepEqual(await h.probes.node(), { available: true, version: "24.18.0", usable: true, persistent: true, npm: true }, name);
+	}
+	// mise's file shim cannot be run without cmd.exe: no usable npm, so the plan persists one.
+	const mise = `${W_LOCAL}\\mise\\shims`;
+	const h = probes({ platform: "win32", env: { LOCALAPPDATA: W_LOCAL, Path: `${mise};${W_NODE_DIR}`, PATHEXT: ".COM;.EXE;.BAT;.CMD",
+		GENTLE_INSTALL_PNPM_NODE: W_TOOLS_NODE, GENTLE_INSTALL_PNPM_ENTRY: W_TOOLS_ENTRY },
+	files: [`${mise}\\npm.cmd`, W_NODE], texts: { [`${mise}\\npm.cmd`]: "@echo off\r\nsetlocal\r\nmise x -- %*\r\n" },
+	results: { [`${W_NODE} --version`]: { code: 0, stdout: "v24.18.0\r\n" } } });
+	assert.deepEqual(await h.probes.node(), { available: true, version: "24.18.0", usable: true, persistent: true, npm: false });
+});
+
 function listing(dependencies: object) {
 	return JSON.stringify([{ path: `${PNPM_HOME}/global/v11/def`, dependencies }]);
 }

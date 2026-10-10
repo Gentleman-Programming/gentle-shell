@@ -64,7 +64,8 @@ if errorlevel 1 goto failed
 set "GENTLE_BOOTSTRAP_OWNED=1"
 
 rem Select an existing native Node without invoking any command interpreter shim.
-rem Absence alone authorizes pinned acquisition; incompatibility never replaces.
+rem Absence authorizes pinned acquisition, and so does an older stable Node or one
+rem whose storage the probe below cannot trust: it is never replaced or run again.
 "%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
   "& { try { $ErrorActionPreference = 'Stop';" ^
   "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'Managed policy constraint' };" ^
@@ -73,6 +74,7 @@ rem Absence alone authorizes pinned acquisition; incompatibility never replaces.
   "} catch { [Console]::Error.WriteLine('Bootstrap: existing Node resolution failed or policy denied it.'); exit 1 } }"
 if errorlevel 1 goto failed
 
+:acquirenode
 rem Fixed official ZIP transport: no redirects, bounded bytes/time, no TLS changes.
 rem Integrity is verified before ZIP processing or executable publication.
 "%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
@@ -137,10 +139,14 @@ rem Production direct non-forking Node probe: 10s deadline and combined 1-MiB ca
 rem Drain both pipes asynchronously; valid output followed by a hang still fails.
 rem Failures append one fixed reason code; walk codes name the component role only.
 rem .node-target holds a possibly non-ASCII path: written and read as explicit UTF-8.
+rem The user's Node (no .node-stem) is left as it is when it is an older stable
+rem version, or when its storage fails the reparse/owner/ACL checks before it ever
+rem runs: its record is removed and the pinned Node is acquired as when absent.
+rem The acquired Node still has to pass every check; unknown versions still refuse.
 "%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
-  "& { $child = $null; $started = $false; $step = 'policy'; try { $ErrorActionPreference = 'Stop';" ^
+  "& { $child = $null; $started = $false; $acquired = $true; $step = 'policy'; try { $ErrorActionPreference = 'Stop';" ^
   "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'policy' };" ^
-  "$step = 'target'; $tools = $env:GENTLE_BOOTSTRAP_TOOLS; $record = Join-Path $tools '.node-target'; if (-not [IO.File]::Exists($record)) { throw 'missing-target' };" ^
+  "$step = 'target'; $tools = $env:GENTLE_BOOTSTRAP_TOOLS; $record = Join-Path $tools '.node-target'; if (-not [IO.File]::Exists($record)) { throw 'missing-target' }; $acquired = Test-Path -LiteralPath (Join-Path $tools '.node-stem');" ^
   "$node = [IO.File]::ReadAllText($record,[Text.Encoding]::UTF8).TrimEnd([char]13,[char]10); if (-not $node) { throw 'missing-target' };" ^
   "$item = Get-Item -LiteralPath $node -Force; if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'unsafe-target' };" ^
   "if (-not [IO.Path]::IsPathRooted($node) -or $node.StartsWith('\\')) { throw 'unsafe-path' };" ^
@@ -171,12 +177,14 @@ rem .node-target holds a possibly non-ASCII path: written and read as explicit U
   "}; if ($child.ExitCode -ne 0) { throw 'exit-code' };" ^
   "$step = 'version'; $version = $text.Trim(); if ($version -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw 'version-format' };" ^
   "$actual = [Version]$version.Substring(1); $metadata = Get-Content -LiteralPath (Join-Path $env:GENTLE_BOOTSTRAP_BUNDLE 'package.json') -Raw | ConvertFrom-Json;" ^
-  "if ($actual -lt [Version]'24.3.0' -or $actual -lt [Version]$metadata.engines.node.Substring(2)) { throw 'engine' };" ^
-  "if ((Test-Path -LiteralPath (Join-Path $tools '.node-stem')) -and $version -ne 'v24.21.0') { throw 'acquired-version' };" ^
+  "if ($acquired -and $version -ne 'v24.21.0') { throw 'acquired-version' };" ^
+  "if ($actual -lt [Version]'24.3.0' -or $actual -lt [Version]$metadata.engines.node.Substring(2)) { if ($acquired) { throw 'engine' }; [IO.File]::Delete((Join-Path $tools '.node-target')) };" ^
   "} catch { $reason = 'unexpected-' + $step; if ($_.Exception.Message -cmatch '^(policy|missing-target|unsafe-target|unsafe-path|(target|parent|ancestor)-(reparse|owner|acl-mask)|no-start|deadline|output-limit|exit-code|version-format|engine|acquired-version)$') { $reason = $_.Exception.Message };" ^
-  "[Console]::Error.WriteLine('Bootstrap: Node version, execution, deadline, output bound or policy check failed; refusing replacement. Reason: ' + $reason); exit 1 }" ^
+  "if (-not $acquired -and $reason -cmatch '^(unsafe-target|unsafe-path|(target|parent|ancestor)-(reparse|owner|acl-mask))$') { [IO.File]::Delete((Join-Path $env:GENTLE_BOOTSTRAP_TOOLS '.node-target')) }" ^
+  "else { [Console]::Error.WriteLine('Bootstrap: Node version, execution, deadline, output bound or policy check failed; refusing replacement. Reason: ' + $reason); exit 1 } }" ^
   "finally { try { if ($child) { if ($started -and -not $child.HasExited) { $child.Kill(); if (-not $child.WaitForExit(1000)) { throw 'Child termination unconfirmed' } }; $child.Dispose() } } catch { [Console]::Error.WriteLine('Bootstrap: direct-child termination could not be confirmed.'); exit 1 } } }"
 if errorlevel 1 goto failed
+if not exist "%GENTLE_BOOTSTRAP_TOOLS%\.node-target" goto acquirenode
 
 rem Launch the existing Node helper with data arguments; no shell evaluation.
 rem Interactive wizard duration is intentionally unbounded. Only child PATH changes.

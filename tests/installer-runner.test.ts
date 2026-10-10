@@ -10,9 +10,12 @@ import {
 	PI_PACKAGE as PI_PACKAGE_NAME,
 	blockedReasons,
 	failedSteps,
+	genuineNpm,
 	packageNativeGentleAi,
+	pnpmInvocation,
 	runStandardInstall as runUnobserved,
 	setupErrorDetail,
+	windowsInvocation,
 } from "../scripts/installer-runner.mjs";
 
 // Every scenario below runs through this wrapper, which records the blocked
@@ -70,6 +73,8 @@ const W_PM_NPM_CLI = `${W_PM_NPM_DIR}\\bin\\npm-cli.js`;
 const W_STORE = `${W_PNPM_HOME}\\store`;
 const W_STORE_PATH = `${W_STORE}\\v11`;
 const W_STORE_PREFIX = `${W_STORE_PATH}\\links\\node\\24.21.0\\hash`;
+// Node.js's own npm.cmd (npm 10-11 bin/npm.cmd, verbatim from registry.npmjs.org npm@11.19.0).
+const NODE_NPM_CMD = ":: Created by npm, please don't edit manually.\r\n@ECHO OFF\r\n\r\nSETLOCAL\r\n\r\nSET \"NODE_EXE=%~dp0\\node.exe\"\r\nIF NOT EXIST \"%NODE_EXE%\" (\r\n  SET \"NODE_EXE=node\"\r\n)\r\n\r\nSET \"NPM_PREFIX_JS=%~dp0\\node_modules\\npm\\bin\\npm-prefix.js\"\r\nSET \"NPM_CLI_JS=%~dp0\\node_modules\\npm\\bin\\npm-cli.js\"\r\nFOR /F \"delims=\" %%F IN ('CALL \"%NODE_EXE%\" \"%NPM_PREFIX_JS%\"') DO (\r\n  SET \"NPM_PREFIX_NPM_CLI_JS=%%F\\node_modules\\npm\\bin\\npm-cli.js\"\r\n)\r\nIF EXIST \"%NPM_PREFIX_NPM_CLI_JS%\" (\r\n  SET \"NPM_CLI_JS=%NPM_PREFIX_NPM_CLI_JS%\"\r\n)\r\n\r\n\"%NODE_EXE%\" \"%NPM_CLI_JS%\" %*\r\n";
 const WINDOWS_SHIM = `@IF EXIST "%~dp0\\node.exe" (\r\n  "%~dp0\\node.exe"  "%~dp0\\..\\global\\v11\\abc\\node_modules\\npm\\bin\\npm-cli.js" %*\r\n) ELSE (\r\n  node  "%~dp0\\..\\global\\v11\\abc\\node_modules\\npm\\bin\\npm-cli.js" %*\r\n)\r\n`;
 
 type Call = { command: string; args: string[]; env: Record<string, string>; deadlineMs: number; stderrTail?: number; cwd?: string };
@@ -102,10 +107,10 @@ const windowsLayout: Layout = {
 	env: { LOCALAPPDATA: "C:\\Users\\u\\AppData\\Local", USERPROFILE: "C:\\Users\\u",
 		Path: `c:\\users\\u\\appdata\\local\\PNPM\\bin\\;${W_NODE_DIR};C:\\Windows`,
 		GENTLE_INSTALL_PNPM_NODE: W_NODE, GENTLE_INSTALL_PNPM_ENTRY: W_ENTRY },
-	files: [W_NPM_CMD, W_NPM_CLI, `${W_BIN}\\gentle-shell.cmd`],
+	files: [W_NODE, W_NPM_CMD, W_NPM_CLI, `${W_BIN}\\gentle-shell.cmd`],
 	realpaths: { [W_PNPM_HOME]: W_PNPM_HOME, [W_ROOT]: W_ROOT, [W_PM_NPM_CLI]: W_PM_NPM_CLI, [W_STORE]: W_STORE,
 		[W_STORE_PATH]: W_STORE_PATH, [W_STORE_PREFIX]: W_STORE_PREFIX, [W_PM_PNPM_ENTRY]: W_PM_PNPM_ENTRY },
-	texts: { [`${W_NODE_DIR}\\node_modules\\npm\\package.json`]: npmPackage, [`${W_BIN}\\npm.cmd`]: WINDOWS_SHIM,
+	texts: { [`${W_NODE_DIR}\\node_modules\\npm\\package.json`]: npmPackage, [W_NPM_CMD]: NODE_NPM_CMD, [`${W_BIN}\\npm.cmd`]: WINDOWS_SHIM,
 		[`${W_PM_NPM_DIR}\\package.json`]: npmPackage,
 		[`${W_BIN}\\pnpm.cmd`]: WINDOWS_SHIM.replaceAll("npm\\bin\\npm-cli.js", "pnpm\\bin\\pnpm.mjs"),
 		[`${W_PM_PNPM_DIR}\\package.json`]: pnpmPackage },
@@ -366,10 +371,8 @@ test("Windows uses the case-insensitive Path key for the child env and bin -g co
 
 test("Windows npm resolves like Go exec.LookPath: PATH order, then PATHEXT order", async () => {
 	const shadows = [
-		{ files: [`${W_NODE_DIR}\\npm.exe`] },
 		{ files: [`${W_NODE_DIR}\\npm.bat`] },
 		{ files: [`${W_NODE_DIR}\\npm.com`] },
-		{ files: ["C:\\Early\\npm.exe"], env: { Path: `C:\\Early;${W_NODE_DIR}` } },
 		{ files: [`${W_NODE_DIR}\\npm.ps1`, `${W_NODE_DIR}\\npm.exe`], env: { PathExt: ".PS1;.CMD" } },
 	];
 	for (const { files, env } of shadows) {
@@ -379,11 +382,23 @@ test("Windows npm resolves like Go exec.LookPath: PATH order, then PATHEXT order
 		assert.equal(result.reason, "npm-shadowed");
 		assert.equal(h.pnpmCalls().some((call) => call.startsWith("add")), false);
 	}
+	// An npm.exe found first (a Volta or mise shim) runs as it is, with shell:false.
+	for (const { files, env, npm } of [
+		{ files: [`${W_NODE_DIR}\\npm.exe`], npm: `${W_NODE_DIR}\\npm.exe` },
+		{ files: ["C:\\Early\\npm.exe"], env: { Path: `${W_BIN};C:\\Early;${W_NODE_DIR}` }, npm: "C:\\Early\\npm.exe" },
+	]) {
+		const h = harness({ layout: windowsLayout, files, env });
+		assert.equal((await runStandardInstall({ plan: plan("win32"), consent: true }, h.adapters)).outcome, "ready");
+		assert.deepEqual(h.calls.filter((call) => call.command === npm).map((call) => [call.args.join(" "), call.cwd]),
+			[["--version", "C:\\"], ["config get prefix", "C:\\"]]);
+	}
+	// An npm.cmd that is no known shim (here unreadable) is never run.
 	const fake = harness({ layout: windowsLayout, files: ["C:\\Early\\npm.cmd"], env: { Path: `C:\\Early;${W_NODE_DIR}` } });
 	assert.equal((await runStandardInstall({ plan: plan("win32"), consent: true }, fake.adapters)).reason, "npm-unavailable");
-	// PATHEXT order wins inside one directory: .CMD before .EXE resolves the genuine npm.cmd.
+	// PATHEXT order wins inside one directory: .CMD before .EXE resolves Node.js's own npm.cmd.
 	const ordered = harness({ layout: windowsLayout, files: [`${W_NODE_DIR}\\npm.exe`], env: { PATHEXT: "cmd;.EXE" } });
 	assert.equal((await runStandardInstall({ plan: plan("win32"), consent: true }, ordered.adapters)).outcome, "ready");
+	assert.equal(ordered.calls.some((call) => call.command.endsWith("npm.exe")), false);
 	const noCmd = harness({ layout: windowsLayout, env: { PATHEXT: ".EXE;.COM" } });
 	assert.equal((await runStandardInstall({ plan: plan("win32"), consent: true }, noCmd.adapters)).reason, "npm-unavailable");
 	// Windows PowerShell 5.1 appends .CPL, and the wizard inherits that environment.
@@ -395,6 +410,100 @@ test("Windows npm resolves like Go exec.LookPath: PATH order, then PATHEXT order
 	const shadowed = await runStandardInstall({ plan: plan("win32"), consent: true }, cplShadow.adapters);
 	assert.equal(shadowed.reason, "npm-shadowed");
 	assert.equal(cplShadow.pnpmCalls().some((call) => call.startsWith("add")), false);
+});
+
+// Windows command shapes, verbatim from their generators (see installer-windows-bootstrap.test.ts).
+const CMD_SHIM_HEAD = "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n";
+const cmdShim = (target: string) => `${CMD_SHIM_HEAD}\r\nIF EXIST "%dp0%\\node.exe" (\r\n  SET "_prog=%dp0%\\node.exe"\r\n) ELSE (\r\n  SET "_prog=node"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\${target}" %*\r\n`;
+const W_APPDATA_NPM = "C:\\Users\\u\\AppData\\Roaming\\npm";
+const W_REDIRECTED_CLI = `${W_APPDATA_NPM}\\node_modules\\npm\\bin\\npm-cli.js`;
+const W_PREFIX_JS = `${W_NODE_DIR}\\node_modules\\npm\\bin\\npm-prefix.js`;
+function windowsShapes({ files = [] as string[], texts = {} as Record<string, string>, results = {} as Record<string, Result> } = {}) {
+	const calls: { command: string; args: string[]; cwd?: string }[] = [];
+	const fileSet = new Set(files);
+	const adapters = {
+		fs: { isFile: async (path: string) => fileSet.has(path), readText: async (path: string) => {
+			if (!(path in texts)) throw new Error(`ENOENT ${path}`);
+			return texts[path];
+		} },
+		run: async (command: string, args: string[], options: { cwd?: string }) => {
+			calls.push({ command, args, cwd: options.cwd });
+			return { signal: null, timedOut: false, stdout: "", ...(results[[command, ...args].join(" ")] ?? { code: 1 }) };
+		},
+	};
+	return { adapters, calls };
+}
+test("windowsInvocation runs what a Windows npm or pnpm shim runs, never through cmd.exe", async () => {
+	const env = { Path: `${W_APPDATA_NPM};C:\\PathNode;${W_NODE_DIR}`, PATHEXT: ".COM;.EXE;.BAT;.CMD" };
+	// Node.js's own npm.cmd: its sibling node.exe, and the npm under npm's global prefix when it is there.
+	for (const [redirected, entry] of [[true, W_REDIRECTED_CLI], [false, W_NPM_CLI]] as const) {
+		const h = windowsShapes({ files: [W_NODE, W_NPM_CLI, W_PREFIX_JS, ...(redirected ? [W_REDIRECTED_CLI] : [])], texts: { [W_NPM_CMD]: NODE_NPM_CMD },
+			results: { [`${W_NODE} ${W_PREFIX_JS}`]: { code: 0, stdout: `${W_APPDATA_NPM}\r\n` } } });
+		assert.deepEqual(await windowsInvocation(W_NPM_CMD, env, h.adapters), { command: W_NODE, prefix: [entry] });
+		assert.deepEqual(h.calls, [{ command: W_NODE, args: [W_PREFIX_JS], cwd: "C:\\" }], "the fixed prefix query, from the drive root");
+	}
+	// npm 6-9's npm.cmd asks npm-cli.js itself; a failed query keeps the bundled npm.
+	const older = windowsShapes({ files: [W_NODE, W_NPM_CLI, W_REDIRECTED_CLI], texts: { [W_NPM_CMD]: NODE_NPM_CMD.replace(/SET "NPM_PREFIX_JS=[^\r]*\r\n/, "")
+		.replace('"%NPM_PREFIX_JS%"', '"%NPM_CLI_JS%" prefix -g') } });
+	assert.deepEqual(await windowsInvocation(W_NPM_CMD, env, older.adapters), { command: W_NODE, prefix: [W_NPM_CLI] });
+	assert.deepEqual(older.calls.map((call) => call.args), [[W_NPM_CLI, "prefix", "-g"]]);
+	// npm's cmd-shim in its global prefix: no sibling node.exe, so the first node.exe on PATH.
+	const shim = `${W_APPDATA_NPM}\\npm.cmd`;
+	const appdata = windowsShapes({ files: ["C:\\PathNode\\node.exe", W_REDIRECTED_CLI], texts: { [shim]: cmdShim("node_modules\\npm\\bin\\npm-cli.js") } });
+	assert.deepEqual(await windowsInvocation(shim, env, appdata.adapters), { command: "C:\\PathNode\\node.exe", prefix: [W_REDIRECTED_CLI] });
+	// ...never a node.cmd found first, a missing entry, an unknown shim, a .bat or an unreadable file.
+	const nodeCmd = windowsShapes({ files: ["C:\\PathNode\\node.cmd", "C:\\PathNode\\node.exe", W_REDIRECTED_CLI], texts: { [shim]: cmdShim("node_modules\\npm\\bin\\npm-cli.js") } });
+	assert.equal(await windowsInvocation(shim, { ...env, PATHEXT: ".CMD;.EXE" }, nodeCmd.adapters), null);
+	assert.equal(await windowsInvocation(shim, env, windowsShapes({ files: ["C:\\PathNode\\node.exe"], texts: { [shim]: cmdShim("node_modules\\npm\\bin\\npm-cli.js") } }).adapters), null);
+	const mise = windowsShapes({ files: ["C:\\PathNode\\node.exe"], texts: { [shim]: "@echo off\r\nsetlocal\r\nmise x -- %*\r\n" } });
+	assert.equal(await windowsInvocation(shim, env, mise.adapters), null);
+	assert.equal(await windowsInvocation(`${W_APPDATA_NPM}\\npm.bat`, env, mise.adapters), null);
+	assert.equal(await windowsInvocation(`${W_APPDATA_NPM}\\missing.cmd`, env, mise.adapters), null);
+	assert.deepEqual(mise.calls, []);
+	// An npm.exe (Volta, mise) runs as it is.
+	const volta = "C:\\Program Files\\Volta\\npm.exe";
+	assert.deepEqual(await windowsInvocation(volta, env, windowsShapes({ files: [volta] }).adapters), { command: volta, prefix: [] });
+	assert.equal(await windowsInvocation(volta, env, windowsShapes().adapters), null);
+	// pnpm's own shim with the node.exe pnpm pins, and with a native target.
+	const pinnedNode = "C:\\Users\\u\\AppData\\Local\\pnpm\\nodejs\\24.21.0\\node.exe";
+	const pnpmShim = `${W_BIN}\\pnpm.cmd`;
+	const pinned = windowsShapes({ files: [pinnedNode, W_PM_PNPM_ENTRY], texts: { [pnpmShim]: `@SETLOCAL\r\n@"${pinnedNode}"  "%~dp0\\..\\global\\v11\\abc\\node_modules\\pnpm\\bin\\pnpm.mjs" %*\r\n` } });
+	assert.deepEqual(await windowsInvocation(pnpmShim, env, pinned.adapters), { command: pinnedNode, prefix: [W_PM_PNPM_ENTRY] });
+	const exe = `${W_PNPM_HOME}\\global\\v11\\abc\\node_modules\\@pnpm\\exe\\pnpm.exe`;
+	const native = windowsShapes({ files: [exe], texts: { [pnpmShim]: "@SETLOCAL\r\n@\"%~dp0\\..\\global\\v11\\abc\\node_modules\\@pnpm\\exe\\pnpm\"   %*\r\n" } });
+	assert.deepEqual(await windowsInvocation(pnpmShim, env, native.adapters), { command: exe, prefix: [] }, "@pnpm/exe's extensionless hard link runs as its .exe twin");
+});
+
+test("a Windows npm is usable only by behavior: a stable --version and one absolute prefix", async () => {
+	const child = { Path: W_NODE_DIR, PATHEXT: ".COM;.EXE;.BAT;.CMD" };
+	const npm = (version: Result, prefix: Result) => windowsShapes({ files: [W_NODE, W_NPM_CMD, W_NPM_CLI], texts: { [W_NPM_CMD]: NODE_NPM_CMD },
+		results: { [`${W_NODE} ${W_NPM_CLI} --version`]: version, [`${W_NODE} ${W_NPM_CLI} config get prefix`]: prefix } });
+	const working = npm({ code: 0, stdout: "11.19.0\r\n" }, { code: 0, stdout: "C:\\Users\\u\\AppData\\Roaming\\npm\r\n" });
+	assert.deepEqual(await genuineNpm(child, "win32", "C:\\bootstrap\\node.exe", working.adapters), { command: W_NODE, prefix: [W_NPM_CLI] });
+	assert.deepEqual(working.calls.map((call) => [call.command, call.args.slice(1).join(" "), call.cwd]), [[W_NODE, "--version", "C:\\"], [W_NODE, "config get prefix", "C:\\"]],
+		"run with the Node npm.cmd selects, never the installer's");
+	for (const [version, prefix] of [[{ code: 1 }, { code: 0, stdout: "C:\\x" }], [{ code: 0, stdout: "11.19.0-pre" }, { code: 0, stdout: "C:\\x" }],
+		[{ code: 0, stdout: "11.19.0" }, { code: 0, stdout: "relative\\prefix" }], [{ code: 0, stdout: "11.19.0" }, { code: 0, stdout: "C:\\a\r\nC:\\b" }],
+		[{ code: 0, stdout: "11.19.0" }, { code: null, timedOut: true, stdout: "C:\\x" }]] as Result[][]) {
+		assert.equal(await genuineNpm(child, "win32", "C:\\bootstrap\\node.exe", npm(version, prefix).adapters), false, JSON.stringify([version, prefix]));
+	}
+});
+
+test("Windows hands a native pnpm.exe off as the command itself; nothing else is accepted in its place", async () => {
+	const exe = `${W_PNPM_HOME}\\pnpm.exe`;
+	const fs = { isFile: async () => false };
+	assert.deepEqual(await pnpmInvocation({ GENTLE_INSTALL_PNPM_COMMAND: exe }, "win32", fs), { command: exe, prefix: [] });
+	for (const command of ["pnpm.exe", `${W_PNPM_HOME}\\pnpm.cmd`, `${W_PNPM_HOME}\\pnpm`, ""]) {
+		assert.equal(await pnpmInvocation({ GENTLE_INSTALL_PNPM_COMMAND: command }, "win32", fs), null, command);
+	}
+	// Node plus entry still wins, and POSIX never reads the Windows-only key.
+	assert.deepEqual(await pnpmInvocation({ GENTLE_INSTALL_PNPM_COMMAND: exe, GENTLE_INSTALL_PNPM_NODE: W_NODE, GENTLE_INSTALL_PNPM_ENTRY: W_ENTRY }, "win32", fs),
+		{ command: W_NODE, prefix: [W_ENTRY] });
+	assert.equal(await pnpmInvocation({ GENTLE_INSTALL_PNPM_COMMAND: "/opt/pnpm", PATH: "/usr/bin" }, "linux", fs), null);
+	const h = harness({ layout: windowsLayout, env: { GENTLE_INSTALL_PNPM_NODE: "", GENTLE_INSTALL_PNPM_ENTRY: "", GENTLE_INSTALL_PNPM_COMMAND: exe } });
+	const result = await runStandardInstall({ plan: plan("win32"), consent: true }, h.adapters);
+	assert.equal(result.outcome, "ready");
+	assert.deepEqual(h.calls.filter((call) => call.command === exe).map((call) => call.args.join(" ")), ["bin -g", LIST, INSTALL, LIST]);
 });
 
 test("Windows without the direct pnpm handoff is blocked rather than spawning a .cmd shim", async () => {
@@ -1482,6 +1591,31 @@ test("an older npm Pi is updated with npm in its own global root, never with pnp
 	assert.deepEqual(npmCalls.map((call) => call.args.join(" ")), ["--version", "config get prefix", "root -g", NPM_PI_UPDATE]);
 	for (const call of npmCalls.slice(2)) assert.deepEqual(call.env, h.adapters.env);
 	assert.deepEqual(h.pnpmCalls(), ["bin -g", LIST, SHELL_ONLY_ADD, LIST]);
+});
+
+test("Windows: an older npm Pi is updated through what Node.js's npm.cmd runs, never through cmd.exe", async () => {
+	const npmRoot = `${W_APPDATA_NPM}\\node_modules`;
+	const npmPi = `${npmRoot}\\@earendil-works\\pi-coding-agent`;
+	const shell = { available: true, version: requirements.shell, usable: true, global: true, owner: "npm" };
+	const fixed = planPreflight({ platform: "win32", arch: "x64", node: tool("24.18.0"), pnpm: { ...tool("11.1.1"), compatible: true },
+		pi: olderPi("npm"), shell, gentleAi: absent, go: absent, globalBin: { available: true, path: W_BIN, writable: true, onPath: true }, setup: false });
+	assert.deepEqual(fixed.actions.map((action: { id: string }) => action.id), ["update-pi", "verify-readiness"]);
+	// npm reports its root in another case: the same directory on Windows.
+	for (const reported of [npmRoot, npmRoot.toLowerCase()]) {
+		const h = locatingPi(harness({ layout: windowsLayout, results: { "root -g": { code: 0, stdout: `${reported}\r\n` }, [NPM_PI_UPDATE]: { code: 0 } },
+			realpaths: { [reported]: reported } }), [{ root: npmPi, version: "0.87.1", owner: "npm" }, { root: npmPi, version: PI_INSTALL_VERSION, owner: "npm" }]);
+		const result = await runStandardInstall({ plan: fixed, consent: true }, h.adapters);
+		assert.equal(result.outcome, "ready", reported);
+		assert.deepEqual(h.calls.filter((call) => call.command === W_NODE && call.args[0] === W_NPM_CLI).map((call) => call.args.slice(1).join(" ")),
+			["--version", "config get prefix", "root -g", NPM_PI_UPDATE]);
+		assert.equal(h.calls.some((call) => /(?:^|\\)cmd(?:\.exe)?$|\.cmd$/i.test(call.command)), false);
+	}
+	// An npm root that does not hold the Pi blocks before any change.
+	const foreign = locatingPi(harness({ layout: windowsLayout, results: { "root -g": { code: 0, stdout: "C:\\Other\\node_modules\r\n" } },
+		realpaths: { "C:\\Other\\node_modules": "C:\\Other\\node_modules" } }), [{ root: npmPi, version: "0.87.1", owner: "npm" }]);
+	const blocked = await runStandardInstall({ plan: fixed, consent: true }, foreign.adapters);
+	assert.deepEqual([blocked.outcome, blocked.reason], ["blocked", "existing-stack-unverified"]);
+	assert.equal(foreign.calls.some((call) => call.args.includes("install")), false);
 });
 
 test("a failed or unverified Pi update stops before any Gentle Shell change", async () => {

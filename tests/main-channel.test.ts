@@ -195,6 +195,21 @@ test("installOwner attributes another named package, such as the scoped Pi, the 
 	}
 });
 
+test("installOwner follows Windows paths on any host: backslashes and case-insensitive roots", () => {
+	const roots = { pnpmHome: "C:\\Users\\u\\AppData\\Local\\pnpm", npmRoot: "C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules",
+		name: "@earendil-works/pi-coding-agent", platform: "win32" };
+	assert.equal(installOwner({ ...roots, packageRoot: "C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\@earendil-works\\pi-coding-agent" }), "npm");
+	assert.equal(installOwner({ ...roots, packageRoot: "c:\\users\\U\\appdata\\roaming\\NPM\\Node_Modules\\@Earendil-Works\\Pi-Coding-Agent" }), "npm");
+	assert.equal(installOwner({ ...roots, packageRoot: "C:\\Users\\u\\AppData\\Local\\PNPM\\global\\v11\\x\\node_modules\\@earendil-works\\pi-coding-agent" }), "pnpm");
+	for (const packageRoot of ["C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\other\\@earendil-works\\pi-coding-agent",
+		"C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules", "D:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\@earendil-works\\pi-coding-agent",
+		"C:\\Users\\u\\AppData\\Local\\pnpm"]) {
+		assert.equal(installOwner({ ...roots, packageRoot }), null, packageRoot);
+	}
+	// POSIX paths keep their exact case.
+	assert.equal(installOwner({ pnpmHome: null, npmRoot: "/u/lib/node_modules", packageRoot: "/u/lib/node_modules/Gentle-Pi", platform: "linux" }), null);
+});
+
 // `gentle-shell upgrade --channel main` after the installer provided its own pinned Go.
 const NEW_AI = "2222222222222222222222222222222222222222";
 /** A main install whose Gentle Shell is current, so only Gentle AI is rebuilt with Go. */

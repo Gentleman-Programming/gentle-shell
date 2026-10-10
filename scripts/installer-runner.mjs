@@ -7,6 +7,7 @@ import {
 } from "../runtime/gentle-ai-binary.mjs";
 import { PI_INSTALL_VERSION, goAcquisition, persistencePins, pnpmGlobalBin, requirements } from "./installer-preflight.mjs";
 import { GENTLE_AI_REPOSITORY, SHELL_REPOSITORY, installOwner, mainVersion } from "./main-channel.mjs";
+import { windowsShim } from "./installer-windows.mjs";
 
 // Standard installation runner: one fixed, consented global pnpm installation
 // of Pi plus gentle-pi, then the public `gentle-shell setup`. Every adapter is
@@ -245,8 +246,12 @@ export async function pnpmInvocation(env, platform, fs) {
 	if (node && entry) {
 		return path.isAbsolute(node) && path.isAbsolute(entry) ? { command: node, prefix: [entry] } : null;
 	}
-	// A Windows .cmd shim cannot be spawned with shell:false; require the direct handoff.
-	if (platform === "win32") return null;
+	// A Windows .cmd shim cannot be spawned with shell:false; require the direct
+	// handoff: Node plus pnpm's JS entry, or a native pnpm.exe on its own.
+	if (platform === "win32") {
+		const command = env.GENTLE_INSTALL_PNPM_COMMAND;
+		return command && win32.isAbsolute(command) && win32.extname(command).toLowerCase() === ".exe" ? { command, prefix: [] } : null;
+	}
 	for (const directory of String(env.PATH ?? "").split(path.delimiter)) {
 		if (!path.isAbsolute(directory)) continue;
 		const candidate = path.join(directory, "pnpm");
@@ -278,6 +283,55 @@ export async function lookPath(name, env, platform, fs) {
 /** A Windows `.cmd`/`.bat` shim cannot run with shell:false; executables can. */
 export function spawnable(file, platform) {
 	return platform !== "win32" || [".exe", ".com"].includes(win32.extname(file).toLowerCase());
+}
+
+/** How a Windows command runs with shell:false, never through cmd.exe: an .exe
+ * as it is, or what a known shim (windowsShim) runs, its native target or its
+ * JS entry with the Node it selects (an absolute node.exe it names, its sibling
+ * node.exe, else the first node on PATH, which must be an .exe). npm's own
+ * npm.cmd keeps its redirect: it asks npm for the global prefix (from the drive
+ * root, like any probe) and runs the npm-cli.js installed there, when there is
+ * one. Returns { command, prefix } or null when the command is anything else.
+ */
+export async function windowsInvocation(file, env, adapters) {
+	const { fs } = adapters;
+	const extension = win32.extname(file).toLowerCase();
+	if (extension === ".exe") return (await fs.isFile(file)) ? { command: file, prefix: [] } : null;
+	if (extension !== ".cmd") return null;
+	const shim = windowsShim(await fs.readText(file).catch(() => null));
+	if (!shim) return null;
+	const directory = win32.dirname(file);
+	if (shim.exe !== undefined) {
+		// @pnpm/exe hard-links its binary under both names; the shim may name either.
+		let exe = win32.resolve(directory, shim.exe);
+		if (win32.extname(exe) === "" && (await fs.isFile(`${exe}.exe`))) exe = `${exe}.exe`;
+		return win32.extname(exe).toLowerCase() === ".exe" && (await fs.isFile(exe)) ? { command: exe, prefix: [] } : null;
+	}
+	const sibling = win32.join(directory, "node.exe");
+	const node = shim.node ?? ((await fs.isFile(sibling)) ? sibling : await lookPath("node", env, "win32", fs));
+	if (!node || !spawnable(node, "win32") || !(await fs.isFile(node))) return null;
+	const npmCli = (root) => win32.join(root, "node_modules", "npm", "bin", "npm-cli.js");
+	let entry = shim.npm ? npmCli(directory) : win32.resolve(directory, shim.entry);
+	if (shim.npm) {
+		const query = shim.npm === "prefix-js" ? [win32.join(directory, "node_modules", "npm", "bin", "npm-prefix.js")] : [entry, "prefix", "-g"];
+		// Without npm-prefix.js, npm.cmd's FOR /F reads no line and keeps the bundled npm.
+		if (await fs.isFile(query[0])) {
+			const result = await adapters.run(node, query, { env, cwd: win32.parse(node).root, deadlineMs: deadlines.probe });
+			const prefix = succeeded(result) && result.truncated !== true
+				? String(result.stdout ?? "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1) : undefined;
+			if (prefix && win32.isAbsolute(prefix) && (await fs.isFile(npmCli(prefix)))) entry = npmCli(prefix);
+		}
+	}
+	return (await fs.isFile(entry)) ? { command: node, prefix: [entry] } : null;
+}
+
+/** The user's npm as { command, prefix }: the first npm on PATH, run through
+ * windowsInvocation on Windows. Null when none resolves.
+ */
+export async function npmInvocation(env, platform, adapters) {
+	const npm = await lookPath("npm", env, platform, adapters.fs);
+	if (!npm) return null;
+	return platform === "win32" ? windowsInvocation(npm, env, adapters).catch(() => null) : { command: npm, prefix: [] };
 }
 
 /** `.../node_modules/<name>/bin/<file>`: a package's own bin entry. */
@@ -343,48 +397,48 @@ function inGlobalBin(file, platform, globalBin) {
 	return globalBin !== null && samePath(path.dirname(file), globalBin.path, platform);
 }
 
-/** The npm the user runs works in the user's environment: run from `/` with the
- * child env, `npm --version` prints a stable version and `npm config get prefix`
- * one absolute path. Whatever installed it (Node, Homebrew, nvm, fnm, or a
- * mise, asdf or Volta shim), this is how Gentle AI's Engram step will run it.
+/** The npm the user runs works in the user's environment: run from the drive
+ * root (`/` on POSIX) with the child env, `npm --version` prints a stable version
+ * and `npm config get prefix` one absolute path. Whatever installed it (Node,
+ * Homebrew, nvm, fnm, or a mise, asdf or Volta shim), this is how Gentle AI's
+ * Engram step will run it. `npm` is { command, prefix }.
  */
-async function worksAsNpm(npm, child, adapters) {
+async function worksAsNpm(npm, child, adapters, platform) {
+	const path = platform === "win32" ? win32 : posix;
 	const output = async (args) => {
-		const result = await adapters.run(npm, args, { env: child, cwd: "/", deadlineMs: deadlines.probe });
+		const result = await adapters.run(npm.command, [...npm.prefix, ...args], { env: child, cwd: path.parse(npm.command).root, deadlineMs: deadlines.probe });
 		return succeeded(result) && result.truncated !== true ? String(result.stdout ?? "").trim() : null;
 	};
 	if (stable(await output(["--version"])) === null) return false;
 	const prefix = await output(["config", "get", "prefix"]);
-	return prefix !== null && posix.isAbsolute(prefix) && !/[\r\n]/.test(prefix);
+	return prefix !== null && path.isAbsolute(prefix) && !/[\r\n]/.test(prefix);
 }
 
 /** A usable npm: the first npm resolved in the child env.
- * On POSIX any npm outside `$PNPM_HOME/bin` that works there (worksAsNpm) is
- * accepted as { command }. Otherwise the npm package's own CLI must resolve and
- * run, returned as { cli }: for any npm in `$PNPM_HOME/bin` (shim or symlink),
- * pnpm's global npm resolving inside PNPM_HOME at the persistence pin; on
- * Windows, `npm.cmd` with `node_modules/npm` beside it.
- * Returns { command }, { cli }, "npm-shadowed" (Windows: an earlier non-.cmd npm wins) or false.
+ * Any npm outside `$PNPM_HOME/bin` that works there (worksAsNpm) is accepted as
+ * { command, prefix }: on POSIX the command itself, on Windows an npm.exe (a
+ * Volta or mise shim) or what a known npm.cmd runs (windowsInvocation: Node.js's
+ * own npm.cmd, also behind nvm-windows or fnm, or an npm cmd-shim). For any npm
+ * in `$PNPM_HOME/bin` (shim or symlink), pnpm's global npm must resolve inside
+ * PNPM_HOME at the persistence pin and run, returned as { cli }.
+ * Returns { command, prefix }, { cli }, "npm-shadowed" (Windows: an earlier npm
+ * that is neither .cmd nor .exe wins) or false.
  */
 export async function genuineNpm(child, platform, nodePath, adapters, globalBin = null) {
 	const path = platform === "win32" ? win32 : posix;
 	const { fs } = adapters;
 	const first = await lookPath("npm", child, platform, fs);
 	if (!first) return false;
-	if (platform === "win32" && path.extname(first).toLowerCase() !== ".cmd") return "npm-shadowed";
-	let cli;
-	let pinned = null;
+	const extension = path.extname(first).toLowerCase();
 	if (inGlobalBin(first, platform, globalBin)) {
-		cli = await globalShimEntry(first, "npm", "npm-cli.js", platform, globalBin, fs);
-		if (!cli) return false;
-		pinned = persistencePins.npm;
-	} else if (platform === "win32") {
-		cli = path.join(path.dirname(first), "node_modules", "npm", "bin", "npm-cli.js");
-	} else {
-		return (await worksAsNpm(first, child, adapters)) ? { command: first } : false;
+		if (platform === "win32" && extension !== ".cmd") return "npm-shadowed";
+		const cli = await globalShimEntry(first, "npm", "npm-cli.js", platform, globalBin, fs);
+		if (!cli || !entryShape(cli, path, "npm", "npm-cli.js")) return false;
+		return (await runsAsPackage(cli, "npm", persistencePins.npm, nodePath, child, platform, adapters)) ? { cli } : false;
 	}
-	if (!entryShape(cli, path, "npm", "npm-cli.js")) return false;
-	return (await runsAsPackage(cli, "npm", pinned, nodePath, child, platform, adapters)) ? { cli } : false;
+	if (platform === "win32" && ![".cmd", ".exe"].includes(extension)) return "npm-shadowed";
+	const npm = platform === "win32" ? await windowsInvocation(first, child, adapters) : { command: first, prefix: [] };
+	return npm !== null && (await worksAsNpm(npm, child, adapters, platform)) ? npm : false;
 }
 
 /** After adding pnpm, the first pnpm in the child env is pnpm's global shim in
@@ -653,13 +707,13 @@ export async function runStandardInstall(request, adapters) {
 		if (stable(found.version) === null || atLeast(found.version, requirements.pi)) return false;
 		if (typeof found.root !== "string" || !path.isAbsolute(found.root)) return false;
 		if (found.owner === "npm") {
-			// A Windows npm.cmd cannot run with shell:false; the probes never attribute one.
-			const npm = platform === "win32" ? null : await lookPath("npm", env, platform, adapters.fs);
+			// On Windows, what npm.cmd runs (windowsInvocation), never cmd.exe.
+			const npm = await npmInvocation(env, platform, adapters);
 			if (!npm) return false;
-			const result = await adapters.run(npm, ["root", "-g"], { env, deadlineMs: deadlines.probe });
-			const reported = succeeded(result) ? String(result.stdout ?? "").trim().split(/\r?\n/).at(-1) : "";
+			const result = await adapters.run(npm.command, [...npm.prefix, "root", "-g"], { env, deadlineMs: deadlines.probe });
+			const reported = succeeded(result) ? String(result.stdout ?? "").trim().split(/\r?\n/).at(-1).trim() : "";
 			const npmRoot = path.isAbsolute(reported) ? await adapters.fs.realpath(reported) : null;
-			if (installOwner({ packageRoot: found.root, pnpmHome: null, npmRoot, name: PI_PACKAGE }) !== "npm") return false;
+			if (installOwner({ packageRoot: found.root, pnpmHome: null, npmRoot, name: PI_PACKAGE, platform }) !== "npm") return false;
 			npmCommand = npm;
 		}
 		installedPi = found;
@@ -741,7 +795,7 @@ export async function runStandardInstall(request, adapters) {
 		["update-pi", async () => {
 			const spec = `${PI_PACKAGE}@${PI_INSTALL_VERSION}`;
 			const result = installedPi.owner === "npm"
-				? await adapters.run(npmCommand, ["install", "-g", spec], { env, deadlineMs: deadlines.install })
+				? await adapters.run(npmCommand.command, [...npmCommand.prefix, "install", "-g", spec], { env, deadlineMs: deadlines.install })
 				: await runPnpm(["add", "-g", spec], deadlines.install);
 			return succeeded(result);
 		}],

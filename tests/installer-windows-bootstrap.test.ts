@@ -1,16 +1,40 @@
 import assert from "node:assert/strict";
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, copyFileSync, existsSync, symlinkSync, realpathSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, parse } from "node:path";
 import { tmpdir } from "node:os";
 import { gzipSync } from "node:zlib";
 import { spawn, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { artifactFor, compatibleEngine, windowsBootstrapMessage } from "../scripts/installer-downloads.mjs";
-import { validateWindowsEntries, proveWindowsWrapper, windowsNodeFloor, readWindowsPnpmArchive, ensureWindowsPnpm, windowsProcessCheck, windowsAclRuleUnsafe, verifyWindowsStorage,
+import { hostAdapters } from "../scripts/installer-probes.mjs";
+import { lookPath, windowsInvocation } from "../scripts/installer-runner.mjs";
+import { validateWindowsEntries, windowsShim, windowsNodeFloor, readWindowsPnpmArchive, ensureWindowsPnpm, windowsProcessCheck, windowsAclRuleUnsafe, verifyWindowsStorage,
 	bootstrapWindows, windowsBootstrapReason, windowsStorageEvidence } from "../scripts/installer-windows.mjs";
 
-const wrapper = (entry: string) => `@ECHO off\nGOTO start\n:find_dp0\nSET dp0=%~dp0\nEXIT /b\n:start\nSETLOCAL\nCALL :find_dp0\n\nIF EXIST "%dp0%\\node.exe" (\n  SET "_prog=%dp0%\\node.exe"\n) ELSE (\n  SET "_prog=node"\n  SET PATHEXT=%PATHEXT:;.JS;=;%\n)\n\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%" "%dp0%\\${entry}" %*\n`;
+// Real Windows shims, verbatim (CRLF) as their generators write them. npm cmd-shim:
+// github.com/npm/cmd-shim tap-snapshots/test/basic.js.test.cjs, v4.1.0-v8.0.0 ("env
+// shebang"; two spaces before the target) and v9.0.2, and "no shebang" (native).
+const cmdShimHead = "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n";
+const wrapper = (entry: string) => `${cmdShimHead}\r\nIF EXIST "%dp0%\\node.exe" (\r\n  SET "_prog=%dp0%\\node.exe"\r\n) ELSE (\r\n  SET "_prog=node"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\${entry}" %*\r\n`;
+const wrapper9 = (entry: string) => `${cmdShimHead}\r\nIF EXIST "%dp0%\\node.exe" (\r\n  SET "_prog=%dp0%\\node.exe"\r\n) ELSE (\r\n  SET "_prog=node"\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & set PATHEXT=%PATHEXT:;.JS;=;% & "%_prog%"  "%dp0%\\${entry}" %*\r\n`;
+const nativeWrapper = (target: string) => `${cmdShimHead}"%dp0%\\${target}"   %*\r\n`;
+// pnpm's global bins: @zkochan/cmd-shim 9.0.8 generateCmdShim (registry.npmjs.org), for
+// a native target (pnpm setup / self-update installs @pnpm/exe), a JS target, the
+// NODE_PATH block pnpm may add, and a JS target with the node.exe pnpm pins.
+const pnpmNative = (target: string) => `@SETLOCAL\r\n@"%~dp0\\${target}"   %*\r\n`;
+const nodePathBlock = (paths: string) => `@IF NOT DEFINED NODE_PATH (\r\n  @SET "NODE_PATH=${paths}"\r\n) ELSE (\r\n  @SET "NODE_PATH=${paths};%NODE_PATH%"\r\n)\r\n`;
+const pnpmScript = (target: string, block = "") => `@SETLOCAL\r\n${block}@IF EXIST "%~dp0\\node.exe" (\r\n  "%~dp0\\node.exe"  "%~dp0\\${target}" %*\r\n) ELSE (\r\n  @SET PATHEXT=%PATHEXT:;.JS;=;%\r\n  node  "%~dp0\\${target}" %*\r\n)\r\n`;
+const pnpmPinnedNode = (node: string, target: string) => `@SETLOCAL\r\n@"${node}"  "%~dp0\\${target}" %*\r\n`;
+// Node.js's own npm.cmd: npm 6.14.18-9.9.4 bin/npm.cmd, and npm 10.9.4-11.19.0 (npm-prefix.js).
+const nodeNpmCmd = (prefixJs: boolean) => ":: Created by npm, please don't edit manually.\r\n@ECHO OFF\r\n\r\nSETLOCAL\r\n\r\nSET \"NODE_EXE=%~dp0\\node.exe\"\r\nIF NOT EXIST \"%NODE_EXE%\" (\r\n  SET \"NODE_EXE=node\"\r\n)\r\n\r\n" +
+	(prefixJs ? "SET \"NPM_PREFIX_JS=%~dp0\\node_modules\\npm\\bin\\npm-prefix.js\"\r\n" : "") +
+	"SET \"NPM_CLI_JS=%~dp0\\node_modules\\npm\\bin\\npm-cli.js\"\r\n" +
+	(prefixJs ? "FOR /F \"delims=\" %%F IN ('CALL \"%NODE_EXE%\" \"%NPM_PREFIX_JS%\"') DO (\r\n" : "FOR /F \"delims=\" %%F IN ('CALL \"%NODE_EXE%\" \"%NPM_CLI_JS%\" prefix -g') DO (\r\n") +
+	"  SET \"NPM_PREFIX_NPM_CLI_JS=%%F\\node_modules\\npm\\bin\\npm-cli.js\"\r\n)\r\nIF EXIST \"%NPM_PREFIX_NPM_CLI_JS%\" (\r\n  SET \"NPM_CLI_JS=%NPM_PREFIX_NPM_CLI_JS%\"\r\n)\r\n\r\n\"%NODE_EXE%\" \"%NPM_CLI_JS%\" %*\r\n";
+// Shims no structure can resolve: mise's legacy file shim, Volta's package and
+// default shims (github.com/jdx/mise src/shims.rs, volta-cli/volta shim.rs, wix/shim.cmd).
+const unresolvable = ["@echo off\r\nsetlocal\r\nmise x -- %*\r\n", "@echo off\nvolta run %~n0 %*\n", "@echo off\r\n\"%~dpn0.exe\" %*\r\n"];
 
 test("Windows descriptors select immutable official ZIPs without changing POSIX pins", () => {
 	for (const arch of ["x64", "arm64"]) {
@@ -36,13 +60,41 @@ test("Windows archive namespace rejects traversal, aliases, reserved names, ADS 
 	assert.throws(() => validateWindowsEntries([{ name: "package/a" }, { name: "package/a/b" }]), /Unsafe/);
 });
 
-test("only the complete known npm cmd shim proves selected Node and exact JS target", () => {
+test("only complete known Windows shims name what they run: npm cmd-shim, pnpm's cmd-shim and Node.js's npm.cmd", () => {
 	const entry = "node_modules\\pnpm\\bin\\pnpm.cjs";
-	assert.deepEqual(proveWindowsWrapper(wrapper(entry)), { entry, localNode: "node.exe", fallbackNode: "node", flags: [], environment: "inherited" });
-	assert.deepEqual(proveWindowsWrapper(wrapper(entry).replaceAll("\n", "\r\n")), proveWindowsWrapper(wrapper(entry)));
-	for (const altered of [wrapper(entry) + "echo changed\n", wrapper(entry).replace('"%_prog%"', '"%_prog%" --require evil'), wrapper(entry).replace("SETLOCAL", "SET NODE_OPTIONS=--require evil\nSETLOCAL"), wrapper("elsewhere\\pnpm.cjs"), "@node pnpm.mjs %*"]) {
-		assert.throws(() => proveWindowsWrapper(altered), /Unknown pnpm wrapper/);
-	}
+	assert.deepEqual(windowsShim(wrapper(entry)), { entry, node: null });
+	assert.deepEqual(windowsShim(wrapper(entry).replaceAll("\r\n", "\n")), { entry, node: null });
+	assert.deepEqual(windowsShim(wrapper9(entry)), { entry, node: null });
+	assert.deepEqual(windowsShim(nativeWrapper("node_modules\\pnpm\\pnpm.exe")), { exe: "node_modules\\pnpm\\pnpm.exe" });
+	const global = "..\\global\\v11\\5f1a\\node_modules\\@pnpm\\exe\\pnpm.exe";
+	assert.deepEqual(windowsShim(pnpmNative(global)), { exe: global });
+	const script = "..\\global\\v11\\5f1a\\node_modules\\pnpm\\bin\\pnpm.mjs";
+	assert.deepEqual(windowsShim(pnpmScript(script)), { entry: script, node: null });
+	assert.deepEqual(windowsShim(pnpmScript(script, nodePathBlock("C:\\Users\\u\\AppData\\Local\\pnpm\\global\\v11\\node_modules"))), { entry: script, node: null });
+	const pinned = "C:\\Users\\u\\AppData\\Local\\pnpm\\nodejs\\24.21.0\\node.exe";
+	assert.deepEqual(windowsShim(pnpmPinnedNode(pinned, script)), { entry: script, node: pinned });
+	assert.deepEqual(windowsShim(nodeNpmCmd(true)), { npm: "prefix-js" });
+	assert.deepEqual(windowsShim(nodeNpmCmd(false)), { npm: "prefix-g" });
+	const altered = [
+		wrapper(entry) + "echo changed\r\n",
+		wrapper(entry).replace('"%_prog%"', '"%_prog%" --require evil'),
+		wrapper(entry).replace("SETLOCAL", "SET NODE_OPTIONS=--require evil\r\nSETLOCAL"),
+		// The old single-space fixture: no cmd-shim release ever wrote it.
+		wrapper(entry).replace('"%_prog%"  "', '"%_prog%" "'),
+		wrapper('node_modules\\pnpm\\bin\\pnpm.cjs" & calc & "'),
+		wrapper("node_modules\\%PNPM%\\pnpm.cjs"),
+		wrapper("C:\\elsewhere\\pnpm.cjs"),
+		wrapper(entry).replace("\r\n", "\r"),
+		pnpmNative(global).replace("   %*", " --flag %*"),
+		pnpmScript(script).replace('node  "%~dp0', 'node  "%~dp0\\other'),
+		pnpmScript(script, nodePathBlock("A").replace("A;%NODE_PATH%", "B;%NODE_PATH%")),
+		pnpmPinnedNode("node", script),
+		nodeNpmCmd(true).replace("%*\r\n", "%* --evil\r\n"),
+		"@node pnpm.mjs %*",
+		...unresolvable,
+	];
+	for (const text of altered) assert.equal(windowsShim(text), null, JSON.stringify(text));
+	assert.equal(windowsShim(undefined), null);
 });
 
 test("CMD entry contains fixed commands, data-only paths, early bundle checks and no policy bypass", () => {
@@ -325,6 +377,140 @@ test("Windows PATHEXT still rejects duplicate, empty and malformed extensions", 
 	}
 });
 
+// npm, pnpm, Volta and mise write an extensionless Git Bash script beside each .cmd
+// shim, and CMD runs the .cmd there ("native Windows: CMD runs the .cmd ..." below).
+const gitBashScript = "#!/bin/sh\nbasedir=$(dirname \"$(echo \"$0\" | sed -e 's,\\\\,/,g')\")\nexec node \"$basedir/node_modules/pnpm/bin/pnpm.cjs\" \"$@\"\n";
+test("npm's real global pnpm layout is reused: pnpm.cmd beside its Git Bash script and pnpm.ps1; a lone extensionless pnpm still blocks", async () => {
+	for (const shim of [wrapper, wrapper9]) {
+		const f = fixture();
+		try {
+			const npm = join(f.root, "npm"); const nodejs = join(f.root, "nodejs"); const early = join(f.root, "early");
+			pnpmWrapperDirectory(npm, false); mkdirSync(nodejs); mkdirSync(early);
+			writeFileSync(join(npm, "pnpm.cmd"), shim("node_modules\\pnpm\\bin\\pnpm.mjs"));
+			writeFileSync(join(npm, "pnpm"), gitBashScript); writeFileSync(join(npm, "pnpm.ps1"), "#!/usr/bin/env pwsh\n");
+			writeFileSync(join(nodejs, "node.exe"), "not executed fixture"); writeFileSync(join(nodejs, "node"), gitBashScript);
+			const env = { Path: [nodejs, npm].join(";"), PATHEXT: ".COM;.EXE;.BAT;.CMD" };
+			const result = await ensureWindowsPnpm({ tools: f.root, env, adapters: { storage: () => {}, process: cliProcess } });
+			assert.equal(result.acquired, false);
+			assert.equal(result.command, join(nodejs, "node.exe"));
+			assert.deepEqual(result.prefix, [join(npm, "node_modules/pnpm/bin/pnpm.mjs")]);
+			// An extensionless pnpm alone in an earlier directory is never skipped.
+			writeFileSync(join(early, "pnpm"), gitBashScript);
+			await assert.rejects(ensureWindowsPnpm({ tools: f.root, env: { ...env, Path: [early, nodejs, npm].join(";") }, adapters: { storage: () => {},
+				download: () => { throw new Error("must not download"); }, process: () => { throw new Error("must not run"); } } }),
+			(error: Error) => error.message === "Unknown extensionless Windows prerequisite" && windowsBootstrapReason(error, "pnpm-discovery") === "extensionless (pnpm-discovery)");
+		} finally { f.cleanup(); }
+	}
+});
+
+// A native pnpm.exe answers for itself: `--version`, then the global help evidence.
+const exeProcess = (exe: string, version: string, calls: string[][] = []) => (command: string, args: string[]) => {
+	if (command !== exe) return cliProcess(command, args);
+	calls.push(args);
+	if (version === "fails") throw new Error("Windows prerequisite process failed");
+	return args[0] === "--version" ? version : "--global";
+};
+test("a standalone pnpm.exe (pnpm's installer, Volta, mise) is reused when compatible and left alongside the pinned pnpm otherwise", async () => {
+	for (const version of ["11.1.1", "11.28.5"]) {
+		const f = fixture();
+		try {
+			const home = join(f.root, "pnpm"); mkdirSync(home);
+			const exe = join(home, "pnpm.exe"); writeFileSync(exe, "MZ fixture");
+			const calls: string[][] = []; const checked: string[] = [];
+			const result = await ensureWindowsPnpm({ tools: f.root, env: { Path: home, PATHEXT: ".EXE;.CMD" }, adapters: {
+				storage: (path: string) => { checked.push(path); }, download: () => { throw new Error("must not download"); }, process: exeProcess(exe, version, calls) } });
+			assert.deepEqual(result, { acquired: false, env: { Path: home, PATHEXT: ".EXE;.CMD" }, command: exe, prefix: [] }, version);
+			assert.deepEqual(calls, [["--version"], ["help", "add"], ["help", "bin"]]);
+			assert.deepEqual(checked, [exe, exe], "the found command and the exe it runs pass the storage check");
+		} finally { f.cleanup(); }
+	}
+	for (const version of ["10.34.6", "11.0.0", "12.10.1"]) {
+		const f = fixture();
+		try {
+			const home = join(f.root, "pnpm"); mkdirSync(home);
+			const exe = join(home, "pnpm.exe"); writeFileSync(exe, "MZ fixture");
+			const tools = join(f.root, "tools"); mkdirSync(tools);
+			const calls: string[][] = [];
+			const result = await ensureWindowsPnpm({ tools, env: { Path: home, PATHEXT: ".EXE;.CMD" }, adapters: { storage: () => {},
+				download: async () => pnpmTar(), digest, process: exeProcess(exe, version, calls) } });
+			assert.equal(result.acquired, true, version);
+			assert.deepEqual(result.prefix, [join(tools, "pnpm/package/bin/pnpm.mjs")]);
+			assert.deepEqual(calls, [["--version"]], "an incompatible pnpm.exe is only asked for its version");
+			assert.equal(readFileSync(exe, "utf8"), "MZ fixture");
+		} finally { f.cleanup(); }
+	}
+	for (const [version, message] of [["11.0.0-rc.1", "Windows pnpm version rejected"], ["", "Windows pnpm version rejected"], ["fails", "Windows prerequisite process failed"]]) {
+		const f = fixture();
+		try {
+			const exe = join(f.root, "pnpm.exe"); writeFileSync(exe, "MZ fixture");
+			await assert.rejects(ensureWindowsPnpm({ tools: f.root, env: { Path: f.root, PATHEXT: ".EXE;.CMD" }, adapters: { storage: () => {},
+				download: () => { throw new Error("must not download"); }, process: exeProcess(exe, version) } }), (error: Error) => error.message === message, version);
+		} finally { f.cleanup(); }
+	}
+});
+
+test("pnpm's own global bins are followed to the pnpm they run: pnpm setup, self-update, @pnpm/exe, pnpm 12 and pnpm add -g pnpm", async () => {
+	// `pnpm setup` / `pnpm self-update` (pnpm 11): $PNPM_HOME\bin\pnpm.cmd runs @pnpm/exe's pnpm.exe.
+	const global = "..\\global\\v11\\5f1a\\node_modules\\@pnpm\\exe\\pnpm.exe";
+	for (const [reported, outcome] of [["11.2.0", "reused"], ["11.3.0", "rejected"]]) {
+		const f = fixture();
+		try {
+			const bin = join(f.root, "pnpm/bin"); const exeDir = join(f.root, "pnpm/global/v11/5f1a/node_modules/@pnpm/exe");
+			mkdirSync(bin, { recursive: true }); mkdirSync(exeDir, { recursive: true });
+			writeFileSync(join(bin, "pnpm.cmd"), pnpmNative(global)); writeFileSync(join(bin, "pnpm"), gitBashScript); writeFileSync(join(bin, "pnpm.ps1"), "#!/usr/bin/env pwsh\n");
+			const exe = join(exeDir, "pnpm.exe"); writeFileSync(exe, "MZ fixture");
+			writeFileSync(join(exeDir, "package.json"), JSON.stringify({ name: "@pnpm/exe", version: "11.2.0", bin: { pnpm: "pnpm.exe" } }));
+			const checked: string[] = [];
+			const run = ensureWindowsPnpm({ tools: f.root, env: { Path: bin, PATHEXT: ".EXE;.CMD" }, adapters: { storage: (path: string) => { checked.push(path); },
+				download: () => { throw new Error("must not download"); }, process: exeProcess(exe, reported) } });
+			if (outcome === "reused") {
+				assert.deepEqual((await run).command, exe);
+				assert.deepEqual(checked, [join(bin, "pnpm.cmd"), exe, join(exeDir, "package.json")]);
+			} else await assert.rejects(run, /Windows pnpm version rejected/, "the exe must report its package's version");
+		} finally { f.cleanup(); }
+	}
+	// @pnpm/exe 11 or pnpm 12 installed by npm: the shim names the extensionless hard link or the .exe.
+	for (const [target, version, acquired] of [["node_modules\\@pnpm\\exe\\pnpm", "11.26.0", false], ["node_modules\\pnpm\\pnpm.exe", "12.10.1", true]] as const) {
+		const f = fixture();
+		try {
+			const npm = join(f.root, "npm"); const packageDir = join(npm, ...target.split("\\").slice(0, -1)); mkdirSync(packageDir, { recursive: true });
+			writeFileSync(join(npm, "pnpm.cmd"), nativeWrapper(target)); writeFileSync(join(npm, "pnpm"), gitBashScript);
+			writeFileSync(join(packageDir, "pnpm"), "MZ fixture"); writeFileSync(join(packageDir, "pnpm.exe"), "MZ fixture");
+			writeFileSync(join(packageDir, "package.json"), JSON.stringify({ name: target.includes("@pnpm") ? "@pnpm/exe" : "pnpm", version }));
+			const tools = join(f.root, "tools"); mkdirSync(tools);
+			const result = await ensureWindowsPnpm({ tools, env: { Path: npm, PATHEXT: ".EXE;.CMD" }, adapters: { storage: () => {},
+				download: async () => pnpmTar(), digest, process: exeProcess(join(packageDir, "pnpm.exe"), version) } });
+			assert.equal(result.acquired, acquired, target);
+			assert.equal(result.command, acquired ? process.execPath : join(packageDir, "pnpm.exe"));
+		} finally { f.cleanup(); }
+	}
+	// `pnpm add -g pnpm`: pnpm's JS shim, here behind the NODE_PATH block, run by the PATH node.
+	const f = fixture();
+	try {
+		const bin = join(f.root, "pnpm/bin"); const packageDir = join(f.root, "pnpm/global/v11/5f1a/node_modules/pnpm"); const nodejs = join(f.root, "nodejs");
+		mkdirSync(join(packageDir, "bin"), { recursive: true }); mkdirSync(bin, { recursive: true }); mkdirSync(nodejs);
+		writeFileSync(join(bin, "pnpm.cmd"), pnpmScript("..\\global\\v11\\5f1a\\node_modules\\pnpm\\bin\\pnpm.mjs", nodePathBlock(join(f.root, "pnpm/global/v11/node_modules"))));
+		writeFileSync(join(packageDir, "package.json"), JSON.stringify(pinnedPackage)); writeFileSync(join(packageDir, "bin/pnpm.mjs"), "fixture");
+		writeFileSync(join(nodejs, "node.exe"), "not executed fixture");
+		const result = await ensureWindowsPnpm({ tools: f.root, env: { Path: [bin, nodejs].join(";"), PATHEXT: ".EXE;.CMD" }, adapters: { storage: () => {}, process: cliProcess } });
+		assert.deepEqual([result.acquired, result.command, result.prefix], [false, join(nodejs, "node.exe"), [join(packageDir, "bin/pnpm.mjs")]]);
+	} finally { f.cleanup(); }
+});
+
+test("a pnpm.cmd that no structure resolves (mise, Volta, Corepack, Node.js's npm.cmd) is never run or replaced", async () => {
+	const corepack = wrapper("node_modules\\corepack\\dist\\pnpm.js");
+	for (const text of [...unresolvable, corepack, nodeNpmCmd(true)]) {
+		const f = fixture();
+		try {
+			writeFileSync(join(f.root, "pnpm.cmd"), text);
+			await assert.rejects(ensureWindowsPnpm({ tools: f.root, env: { Path: f.root, PATHEXT: ".EXE;.CMD" }, adapters: { storage: () => {},
+				download: () => { throw new Error("must not download"); }, process: () => { throw new Error("must not run"); } } }),
+			(error: Error) => error.message === "Unknown pnpm wrapper; refusing execution or replacement" && windowsBootstrapReason(error, "wrapper") === "wrapper-unproven (wrapper)", text);
+			assert.equal(readFileSync(join(f.root, "pnpm.cmd"), "utf8"), text);
+		} finally { f.cleanup(); }
+	}
+});
+
 for (const sibling of [true, false]) {
 	test(`known cmd wrapper honors ${sibling ? "sibling" : "PATH"}-selected Node without cmd.exe`, async () => {
 		const f = fixture();
@@ -505,6 +691,36 @@ test("Node probe reports one fixed non-sensitive reason code per check beside th
 	assert.ok(processPrimitive().includes("$step = 'policy'"));
 });
 
+// An older stable Node, or one whose storage fails the reparse/owner/ACL walk
+// before it ever runs, is left as it is: its record goes and the verified pinned
+// Node is acquired exactly as when Node is absent (POSIX parity, S2). Never the
+// acquired Node: it must be v24.21.0 and pass every check. Unknown versions refuse.
+test("an older or untrusted user Node re-enters the pinned acquisition once; the acquired Node and unknown versions still refuse", () => {
+	const source = readFileSync(new URL("../scripts/bootstrap.cmd", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+	const probe = cmdStage(stageMarkers.probe).replaceAll("\r\n", "\n");
+	assert.match(probe, /"& \{ \$child = \$null; \$started = \$false; \$acquired = \$true; \$step = 'policy'; try \{/, "refusal is the default before any check");
+	assert.match(probe, /throw 'missing-target' \}; \$acquired = Test-Path -LiteralPath \(Join-Path \$tools '\.node-stem'\);/);
+	assert.match(probe, /if \(\$acquired -and \$version -ne 'v24\.21\.0'\) \{ throw 'acquired-version' \};/);
+	assert.match(probe, /\[Version\]\$metadata\.engines\.node\.Substring\(2\)\) \{ if \(\$acquired\) \{ throw 'engine' \}; \[IO\.File\]::Delete\(\(Join-Path \$tools '\.node-target'\)\) \};/);
+	const untrusted = probe.match(/if \(-not \$acquired -and \$reason -cmatch '\^\(([a-z|()-]+)\)\$'\) \{ \[IO\.File\]::Delete\(\(Join-Path \$env:GENTLE_BOOTSTRAP_TOOLS '\.node-target'\)\) \}\" \^\n {2}\"else \{ \[Console\]::Error\.WriteLine\(/);
+	assert.ok(untrusted, "only fixed storage codes leave the user's Node; everything else still refuses");
+	const leaves = new RegExp(`^(?:${untrusted[1]})$`);
+	for (const code of ["unsafe-target", "unsafe-path", ...probeRoles.flatMap((role) => probeWalkChecks.map((check) => `${role}-${check}`))]) assert.match(code, leaves);
+	for (const code of ["policy", "missing-target", "no-start", "deadline", "output-limit", "exit-code", "version-format", "engine", "acquired-version", "unexpected-start"]) assert.doesNotMatch(code, leaves, code);
+	assert.ok(probe.indexOf("$step = 'acl-walk'") < probe.indexOf("$child.Start()"), "the storage walk finishes before the Node could start");
+	// Flow: a removed record jumps back to the verified download, ZIP and probe stages.
+	const end = source.indexOf(probe) + probe.length;
+	assert.ok(source.slice(end).startsWith('\nif errorlevel 1 goto failed\nif not exist "%GENTLE_BOOTSTRAP_TOOLS%\\.node-target" goto acquirenode\n\nrem Launch'));
+	const label = source.indexOf("\n:acquirenode\n");
+	assert.ok(source.indexOf(stageMarkers.resolve) < label && source.includes("\n:acquirenode\nrem Fixed official ZIP transport"), "the label opens the download stage");
+	assert.equal(source.split(":acquirenode").length, 2, "one label");
+	for (const marker of [stageMarkers.zip, "rem Fixed official ZIP transport"]) {
+		assert.match(cmdStage(marker), /if \(Test-Path -LiteralPath \(Join-Path \$tools '\.node-target'\)\) \{ exit 0 \};/, "a kept record skips acquisition");
+	}
+	// The second pass has .node-stem, so the acquired Node can only pass or refuse: no loop.
+	assert.match(cmdStage("rem Fixed official ZIP transport"), /\$null = New-Item -ItemType File -Path \(Join-Path \$tools '\.node-stem'\) -Value \$stem;/);
+});
+
 // Windows PowerShell 5.1 autoloads Microsoft.PowerShell.Security from PSModulePath.
 // Started from PowerShell 7, the inherited path finds a Core-only copy and every
 // cmdlet of that module fails, so ACL work uses .NET Framework APIs directly.
@@ -626,7 +842,7 @@ function processPrimitive() {
 	const languageAt = stage.findIndex((line) => line.includes("LanguageMode"));
 	assert.ok(childAt > languageAt);
 	const prefix = stage.slice(0, languageAt + 1);
-	prefix.push('  "$tools = $env:GENTLE_BOOTSTRAP_TOOLS; $start = New-Object Diagnostics.ProcessStartInfo; $start.FileName = $env:GENTLE_FIXTURE_NODE; $start.Arguments = [string][char]34 + $env:GENTLE_FIXTURE_PROBE + [char]34; $start.UseShellExecute = $false; $start.CreateNoWindow = $true; $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true;" ^');
+	prefix.push('  "$tools = $env:GENTLE_BOOTSTRAP_TOOLS; $acquired = Test-Path -LiteralPath (Join-Path $tools \'.node-stem\'); $start = New-Object Diagnostics.ProcessStartInfo; $start.FileName = $env:GENTLE_FIXTURE_NODE; $start.Arguments = [string][char]34 + $env:GENTLE_FIXTURE_PROBE + [char]34; $start.UseShellExecute = $false; $start.CreateNoWindow = $true; $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true;" ^');
 	const recordChild = '  "[IO.File]::AppendAllText($env:GENTLE_FIXTURE_RECORDS,([string]$child.Id + [char]124 + [string]$child.StartTime.ToUniversalTime().Ticks + [Environment]::NewLine));" ^';
 	return [...prefix, stage[childAt], recordChild, ...stage.slice(childAt + 1)].join("\n");
 }
@@ -1092,5 +1308,123 @@ test("native Windows: success cleanup keeps unprovable roots, reports them and p
 		assertNative(await nativeCmd(f.root, stages, misnamed), 1);
 		assert.equal(existsSync(join(misnamed.GENTLE_BOOTSTRAP_TOOLS, ".bootstrap-owned")), true);
 		assert.equal(existsSync(join(sibling, ".bootstrap-owned")), true);
+	} finally { f.cleanup(); }
+});
+
+// Native evidence for the Windows command shapes: what CMD itself runs is compared
+// with what the installer runs with shell:false. cmd.exe appears only in these
+// fixtures, with fixed arguments; production never starts it.
+function nativePath(entries: string[], env: NodeJS.ProcessEnv = process.env) {
+	const kept = Object.entries(env).filter(([key]) => !["path", "pathext"].includes(key.toLowerCase()));
+	return { ...Object.fromEntries(kept), Path: entries.join(";"), PATHEXT: ".COM;.EXE;.BAT;.CMD" } as NodeJS.ProcessEnv;
+}
+function viaCmd(shim: string, env: NodeJS.ProcessEnv, cwd = parse(shim).root) {
+	const cmd = join(process.env.SystemRoot!, "System32", "cmd.exe");
+	return spawnSync(cmd, ["/d", "/s", "/c", `""${shim}" --version"`], { cwd, env, encoding: "utf8", timeout: 60000, killSignal: "SIGKILL", windowsHide: true, windowsVerbatimArguments: true });
+}
+test("native Windows: CMD runs the .cmd beside an extensionless Git Bash script, as npm, pnpm, Volta and mise lay them out", { skip: nativeUnavailable }, () => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-cmd-search-")));
+	try {
+		const bin = join(root, "bin"); const away = join(root, "away"); mkdirSync(bin); mkdirSync(away);
+		writeFileSync(join(bin, "pnpm"), gitBashScript); writeFileSync(join(bin, "pnpm.ps1"), "Write-Output ps1\n");
+		writeFileSync(join(bin, "pnpm.cmd"), "@echo cmd-shim-ran\r\n");
+		const env = nativePath([bin, join(process.env.SystemRoot!, "System32")]);
+		const cmd = join(process.env.SystemRoot!, "System32", "cmd.exe");
+		// From PATH, and from the directory itself (CMD searches the current directory first).
+		for (const cwd of [away, bin]) {
+			const result = spawnSync(cmd, ["/d", "/c", "pnpm"], { cwd, env, encoding: "utf8", timeout: 10000, killSignal: "SIGKILL", windowsHide: true });
+			assert.equal(result.error, undefined, cwd);
+			assert.equal(result.status, 0, `${cwd}: ${result.stderr}`);
+			assert.equal(result.stdout.trim(), "cmd-shim-ran", cwd);
+		}
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("native Windows: Node.js's npm.cmd and an npm cmd-shim pnpm.cmd run without cmd.exe exactly what CMD runs", { skip: nativeUnavailable }, async () => {
+	const adapters = hostAdapters();
+	// The npm.cmd beside the Node.js running these tests (actions/setup-node's toolcache).
+	const npm = await lookPath("npm", process.env, "win32", adapters.fs);
+	assert.ok(npm && /\.cmd$/i.test(npm), String(npm));
+	assert.ok(windowsShim(readFileSync(npm, "utf8"))?.npm, "Node.js's own npm.cmd matches a known template");
+	const npmRun = await windowsInvocation(npm, process.env, adapters);
+	assert.ok(npmRun && /\\node\.exe$/i.test(npmRun.command) && /\\npm-cli\.js$/i.test(npmRun.prefix[0]), JSON.stringify(npmRun));
+	const direct = await adapters.run(npmRun.command, [...npmRun.prefix, "--version"], { env: process.env, cwd: parse(npmRun.command).root, deadlineMs: 60000 });
+	const shell = viaCmd(npm, process.env);
+	assert.equal(direct.code, 0); assert.equal(shell.status, 0, shell.stderr);
+	assert.match(direct.stdout.trim(), /^\d+\.\d+\.\d+$/);
+	assert.equal(direct.stdout.trim(), shell.stdout.trim(), "the redirect-aware invocation runs the npm CMD runs");
+	// npm's global pnpm: the cmd-shim beside its Git Bash script, Node from PATH.
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-shim-run-")));
+	try {
+		const bin = join(root, "npm"); const packageDir = join(bin, "node_modules/pnpm");
+		mkdirSync(join(packageDir, "bin"), { recursive: true });
+		writeFileSync(join(bin, "pnpm.cmd"), wrapper("node_modules\\pnpm\\bin\\pnpm.mjs")); writeFileSync(join(bin, "pnpm"), gitBashScript);
+		writeFileSync(join(packageDir, "package.json"), JSON.stringify(pinnedPackage));
+		writeFileSync(join(packageDir, "bin/pnpm.mjs"), "const [first] = process.argv.slice(2); console.log(first === '--version' ? '11.1.1' : '--global');\n");
+		const env = nativePath([bin, dirname(process.execPath), join(process.env.SystemRoot!, "System32")]);
+		const shim = join(bin, "pnpm.cmd");
+		const pnpmRun = await windowsInvocation(shim, env, adapters);
+		assert.deepEqual(pnpmRun, { command: join(dirname(process.execPath), "node.exe"), prefix: [join(packageDir, "bin", "pnpm.mjs")] });
+		const ran = await adapters.run(pnpmRun!.command, [...pnpmRun!.prefix, "--version"], { env, deadlineMs: 60000 });
+		const cmdRan = viaCmd(shim, env);
+		assert.equal(cmdRan.status, 0, cmdRan.stderr);
+		assert.deepEqual([ran.code, ran.stdout.trim()], [0, cmdRan.stdout.trim()]);
+		// The bootstrap's discovery reaches the same pnpm through its real process adapter.
+		const tools = join(root, "tools"); mkdirSync(tools);
+		const reused = await ensureWindowsPnpm({ tools, env, adapters: { storage: () => {} } });
+		assert.deepEqual([reused.acquired, reused.command.toLowerCase(), reused.prefix], [false, join(dirname(process.execPath), "node.exe").toLowerCase(), [join(packageDir, "bin", "pnpm.mjs")]]);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("native Windows: the production probe leaves an older stable user Node for the pinned one and still refuses unknown or acquired versions", { skip: nativeUnavailable }, async () => {
+	for (const [version, stem, status, kept, reason] of [
+		["v20.0.0", false, 0, false, ""], ["v24.21.0", false, 0, true, ""],
+		["v20.0.0-rc.1", false, 1, true, "version-format"], ["v20.0.0", true, 1, true, "acquired-version"],
+	] as const) {
+		const f = await ownedNativeFixture();
+		try {
+			const env = nativeEnv(f.root); mkdirSync(env.GENTLE_BOOTSTRAP_TOOLS);
+			const record = join(env.GENTLE_BOOTSTRAP_TOOLS, ".node-target"); writeFileSync(record, process.execPath);
+			if (stem) writeFileSync(join(env.GENTLE_BOOTSTRAP_TOOLS, ".node-stem"), "node-v24.21.0-win-x64");
+			writeFileSync(join(f.root, "package.json"), JSON.stringify({ engines: { node: ">=24.3.0" } }));
+			const probe = join(f.root, "probe.mjs"); writeFileSync(probe, `console.log(${JSON.stringify(version)});\n`);
+			const result = await nativeCmd(f.root, [processPrimitive()], { ...env, GENTLE_FIXTURE_NODE: process.execPath, GENTLE_FIXTURE_PROBE: probe });
+			assertNative(result, status);
+			assert.equal(existsSync(record), kept, `${version} stem=${stem}`);
+			if (reason) assert.ok(result.stderr.includes(`${probeMessage} Reason: ${reason}`), result.stderr.slice(0, 4000));
+		} finally { f.cleanup(); }
+	}
+});
+
+test("native Windows: the production probe never runs a user Node behind a junction and leaves it for the pinned one", { skip: nativeUnavailable }, async (t) => {
+	const f = await ownedNativeFixture();
+	try {
+		const env = nativeEnv(f.root); mkdirSync(env.GENTLE_BOOTSTRAP_TOOLS);
+		writeFileSync(join(f.root, "package.json"), JSON.stringify({ engines: { node: ">=24.3.0" } }));
+		const real = join(f.root, "real-node"); mkdirSync(real); copyFileSync(process.execPath, join(real, "node.exe"));
+		const linked = join(f.root, "linked-node");
+		try { symlinkSync(real, linked, "junction"); }
+		catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (["EPERM", "EACCES", "ENOTSUP"].includes(code ?? "")) { t.skip(`owned junction creation capability unavailable: ${code}`); return; }
+			throw error;
+		}
+		const record = join(env.GENTLE_BOOTSTRAP_TOOLS, ".node-target");
+		const stage = cmdStage(stageMarkers.probe);
+		// The same current Node in a real directory is trusted, run and kept.
+		writeFileSync(record, join(real, "node.exe"));
+		assertNative(await nativeCmd(f.root, [stage], env), 0);
+		assert.equal(readFileSync(record, "utf8"), join(real, "node.exe"));
+		// Behind the junction it is rejected before it runs: the record goes, nothing fails.
+		rmSync(record); writeFileSync(record, join(linked, "node.exe"));
+		const untrusted = await nativeCmd(f.root, [stage], env);
+		assertNative(untrusted, 0);
+		assert.equal(existsSync(record), false, "a current version would have kept the record had it run");
+		// The acquired Node is held to every check: behind a junction it refuses.
+		writeFileSync(record, join(linked, "node.exe")); writeFileSync(join(env.GENTLE_BOOTSTRAP_TOOLS, ".node-stem"), "node-v24.21.0-win-x64");
+		const acquired = await nativeCmd(f.root, [stage], env);
+		assertNative(acquired, 1);
+		assert.ok(acquired.stderr.includes(`${probeMessage} Reason: parent-reparse`), acquired.stderr.slice(0, 4000));
+		assert.equal(existsSync(record), true);
 	} finally { f.cleanup(); }
 });

@@ -11,7 +11,7 @@
 //     `<version>-main.<sha12>` and packed without `prepack` (which runs the full
 //     test suite), then installed globally like any local tarball.
 // The recorded channel lets `gentle-shell upgrade` follow release or main.
-import { dirname, isAbsolute, join, normalize, relative } from "node:path";
+import { dirname, isAbsolute, join, posix, relative, win32 } from "node:path";
 import { gentleAiDevBinaryRegistrationPath, registerGentleAiDevBinary, unregisterGentleAiDevBinary } from "../runtime/gentle-ai-binary.mjs";
 import { installedGo } from "./installer-downloads.mjs";
 import { pnpmGlobalBin, requirements } from "./installer-preflight.mjs";
@@ -255,11 +255,17 @@ async function latestRelease(fetch) {
  * otherwise), from real (symlink-free) paths: pnpm when it lives under PNPM_HOME,
  * npm only when it is `<npm root -g>/<name>` itself, otherwise null — for example
  * an `npm link` of a source checkout, which must never be reinstalled over.
+ * Paths follow `platform` (this host by default): case-insensitive on Windows.
  */
-export function installOwner({ packageRoot, pnpmHome, npmRoot, name = "gentle-pi" }) {
+export function installOwner({ packageRoot, pnpmHome, npmRoot, name = "gentle-pi", platform = process.platform }) {
+	const path = platform === "win32" ? win32 : posix;
+	const comparable = (value) => (platform === "win32" ? value.toLowerCase() : value);
 	if (typeof packageRoot !== "string") return null;
-	if (typeof pnpmHome === "string" && inside(pnpmHome, packageRoot)) return "pnpm";
-	if (typeof npmRoot === "string" && relative(npmRoot, packageRoot) === normalize(name)) return "npm";
+	if (typeof pnpmHome === "string") {
+		const rest = path.relative(pnpmHome, packageRoot);
+		if (rest !== "" && !rest.startsWith("..") && !path.isAbsolute(rest)) return "pnpm";
+	}
+	if (typeof npmRoot === "string" && comparable(path.relative(npmRoot, packageRoot)) === comparable(path.normalize(name))) return "npm";
 	return null;
 }
 
@@ -279,7 +285,7 @@ async function ownerManager({ ctx, platform, packageRoot, fs, which, run }) {
 		fs.realpath(packageRoot).catch(() => null),
 		npmGlobalRoot(npm, run, fs),
 	]);
-	const name = installOwner({ packageRoot: root, pnpmHome, npmRoot });
+	const name = installOwner({ packageRoot: root, pnpmHome, npmRoot, platform });
 	if (!name) {
 		throw new MainChannelError("upgrade-owner-unknown", `neither pnpm nor npm owns ${root ?? packageRoot} (a linked source checkout, for example); update it the way you installed it`);
 	}

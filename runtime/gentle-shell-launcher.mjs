@@ -190,16 +190,17 @@ export function parseLauncherArgs(argv          )                     {
 
 
 
-// Pi Subagents resolves `PI_CODING_AGENT_DIR || ~/.pi/agent`; `--link` reuses
-// that exact home so gentle-shell never diverges from the user's own pi.
+// Pi Subagents resolves `PI_CODING_AGENT_DIR || ~/.pi/agent`; this is the
+// user's own pi home when no Gentle Shell session is involved.
 function linkDir(env                                    , homedir        )         {
 	return env.PI_CODING_AGENT_DIR || join(homedir, ".pi", "agent");
 }
 
 // The isolated home replaces PI_CODING_AGENT_DIR for the whole session, so the
 // user's own Pi home travels in this variable for read-only features such as
-// /gentle:stats. An inherited value wins: a gentle-shell launched from inside
-// a Gentle Shell session sees the outer isolated home as PI_CODING_AGENT_DIR.
+// /gentle:stats and for `--link`. An inherited value wins: a gentle-shell
+// launched from inside a Gentle Shell session sees the outer isolated home as
+// PI_CODING_AGENT_DIR, so `--link` must not re-select it (#2015).
 export const USER_PI_HOME_ENV = "GENTLE_SHELL_USER_PI_HOME";
 
 export function userPiHome(env                                    , homedir        )         {
@@ -213,12 +214,12 @@ function isolatedDir(env                                    , homedir        )  
 export function resolveHome(input                  )               {
 	const { args, env, homedir, config } = input;
 
-	if (args.link) return { mode: "link", dir: linkDir(env, homedir), source: "flag" };
+	if (args.link) return { mode: "link", dir: userPiHome(env, homedir), source: "flag" };
 	if (args.isolated) return { mode: "isolated", dir: isolatedDir(env, homedir), source: "flag" };
 	if (args.home !== undefined) return { mode: "path", dir: args.home, source: "flag" };
 
 	if (config !== undefined) {
-		if (config.mode === "link") return { mode: "link", dir: linkDir(env, homedir), source: "config" };
+		if (config.mode === "link") return { mode: "link", dir: userPiHome(env, homedir), source: "config" };
 		if (config.mode === "isolated") return { mode: "isolated", dir: isolatedDir(env, homedir), source: "config" };
 		return { mode: "path", dir: config.dir, source: "config" };
 	}

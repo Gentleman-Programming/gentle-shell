@@ -2709,6 +2709,7 @@ test("explicit child roots launch and continue in the actual cwd, persist withou
 	await h.fire("session_start", ctx);
 	const run = h.tools.get("subagent_run")!;
 	await assert.rejects(run.execute("bad", { agent: "explore", task: "Map", workspace_root: "/other-clone", mode: "background" }, undefined, undefined, ctx), /same Git clone/);
+	await assert.rejects(run.execute("bad", { agent: "explore", task: "Map", workspace_root: "/other-clone", mode: "background" }, undefined, undefined, ctx), /subagent_run with repository_root/);
 	assert.deepEqual(launched, []);
 	const result = await run.execute("one", { agent: "explore", task: "Map /other-clone mentioned in prose", workspace_root: childRoot, mode: "background" }, undefined, undefined, ctx);
 	await tick();

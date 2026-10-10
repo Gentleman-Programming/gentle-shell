@@ -4719,6 +4719,7 @@ test("same-session explicit registration after bootstrap does not claim Changes"
 	await register.execute("after", { path: "/repo" }, undefined, undefined, ctx);
 	await register.execute("dedup", { path: "/repo" }, undefined, undefined, ctx);
 	await assert.rejects(register.execute("foreign", { path: "/foreign" }, undefined, undefined, ctx), /same Git clone/);
+	await assert.rejects(register.execute("foreign", { path: "/foreign" }, undefined, undefined, ctx), /subagent_run with repository_root/);
 	assert.equal(ctx.sessionManager, manager);
 	assert.equal(ctx.sessionManager.getEntries().length, 1);
 	await commands.get("gentle:changes")!.handler("", ctx);

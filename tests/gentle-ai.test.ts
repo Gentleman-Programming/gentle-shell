@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -910,6 +911,7 @@ test("ordinary native capture exposes a registered schema and STATUS binding cop
 
 	assert.ok(tools.has("gentle_review_capture"));
 	assert.deepEqual(tools.get("gentle_review_capture")?.parameters.required, ["lineageId", "collectBinding"]);
+	assert.deepEqual(tools.get("gentle_review")?.parameters.required, ["operation"]);
 
 	const sha = `sha256:${"a".repeat(64)}`;
 	const lineageId = "ordinary-capture";
@@ -3323,18 +3325,54 @@ test("p pins the selected profile for the clone without touching the global rout
 });
 
 test("the profile pin scope note sanitizes its worktree-derived path", (t) => {
-	const { fixture, writeStore } = profilesStoreFixture(t);
+	const { fixture, localPinPath: safeLocalPath, writeStore } = profilesStoreFixture(t);
 	writeStore({ team: { worker: { model: "openai/alpha" } } }, "team");
 	const commonDir = join(fixture.root, "git-\x1b]52;c;payload\x07-common");
 	const localPath = join(commonDir, "gentle-ai", "profile-pin.json");
-	writeProfilePinSync(localPath, "team");
+	writeProfilePinSync(safeLocalPath, "team");
 	setProfilePinWorktreeResolverForTesting(() => ({ root: fixture.root, commonDir }));
 
-	const note = __testing.profilePinScopeNote(fixture.root);
-	assert.ok(note);
-	assert.doesNotMatch(note, /[\x00-\x1f\x7f-\x9f]/);
-	assert.doesNotMatch(note, /payload/);
-	assert.match(note, /profile-pin\.json/);
+	// Windows cannot create this hostile filename. Redirect only its disk reads;
+	// the real resolver still passes the unsanitized path to production rendering.
+	const originalExistsSync = fs.existsSync;
+	const originalReadFileSync = fs.readFileSync;
+	let hostileExistsCalls = 0;
+	let hostileReadCalls = 0;
+	try {
+		t.mock.method(fs, "existsSync", (path: Parameters<typeof existsSync>[0]) => {
+			if (path === localPath) {
+				hostileExistsCalls++;
+				return originalExistsSync(safeLocalPath);
+			}
+			return originalExistsSync(path);
+		});
+		t.mock.method(fs, "readFileSync", (...args: Parameters<typeof readFileSync>) => {
+			if (args[0] === localPath) {
+				hostileReadCalls++;
+				args[0] = safeLocalPath;
+			}
+			return originalReadFileSync(...args);
+		});
+		syncBuiltinESMExports();
+
+		const note = __testing.profilePinScopeNote(fixture.root);
+		assert.ok(note);
+		assert.doesNotMatch(note, /[\x00-\x1f\x7f-\x9f]/);
+		assert.doesNotMatch(note, /payload/);
+		assert.match(note, /profile-pin\.json/);
+		assert.equal(hostileExistsCalls, 1);
+		assert.equal(hostileReadCalls, 1);
+	} finally {
+		try {
+			t.mock.restoreAll();
+		} finally {
+			syncBuiltinESMExports();
+		}
+	}
+	assert.equal(fs.existsSync, originalExistsSync);
+	assert.equal(fs.readFileSync, originalReadFileSync);
+	assert.equal(existsSync, originalExistsSync);
+	assert.equal(readFileSync, originalReadFileSync);
 });
 
 test("P declares the profile in the worktree so the routing can be committed", async (t) => {

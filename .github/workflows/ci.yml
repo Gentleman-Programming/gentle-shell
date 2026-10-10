@@ -76,6 +76,127 @@ jobs:
       - name: Verify generated runtime modules
         run: pnpm run check:runtime-modules
 
+  review-routing-focused-windows:
+    if: github.event_name == 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      npm_config_ignore_scripts: "true"
+    steps:
+      - name: Checkout synthetic merge
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 11.1.1
+          dest: ${{ runner.temp }}/setup-pnpm
+
+      - name: Install dependencies without lifecycle scripts
+        shell: pwsh
+        run: pnpm install --frozen-lockfile --ignore-scripts --store-dir "$env:RUNNER_TEMP\pnpm-store"
+
+      - name: Verify merged inventory and run focused routing cases
+        shell: pwsh
+        timeout-minutes: 12
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'review-routing-focused-windows.tap.log'
+          function Evidence([string]$message) { $message | Tee-Object -FilePath $log -Append }
+          # Conservative: even benign inherited GIT_* variables block, never normalize them.
+          $overrides = @(Get-ChildItem Env: | Where-Object Name -Like 'GIT_*' | Select-Object -ExpandProperty Name)
+          if ($overrides.Count -gt 0) {
+            Evidence ('Blocked inherited Git overrides (names only): ' + ($overrides -join ', '))
+            throw 'Inherited Git environment equivalence is unproved'
+          }
+          $event = Get-Content -LiteralPath $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json
+          $head = & git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve checkout HEAD' }
+          $parents = (& git rev-list --parents -n 1 HEAD) -split ' '
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve checkout parents' }
+          $prHead = [string]$event.pull_request.head.sha
+          $prBase = [string]$event.pull_request.base.sha
+          $nodeVersion = & node --version
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve Node version' }
+          $pnpmVersion = & pnpm --version
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve pnpm version' }
+          Evidence "checkout=$head parents=$($parents -join ' ') prHead=$prHead prBase=$prBase node=$nodeVersion pnpm=$pnpmVersion"
+          if ($parents.Count -ne 3 -or $parents[0] -ne $head -or $parents[1] -ne $prBase -or $parents[2] -ne $prHead) {
+            throw 'Checkout is not the declared PR synthetic merge of base and head'
+          }
+          $names = @(
+            'STATUS on approved target preserves workspaceRoot in next_action when distinct from process cwd'
+            'approved acknowledgement burn tears down the retained candidate view and keeps its projection'
+            'approved acknowledgement reports the burn truthfully when candidate-view cleanup fails after it'
+            'capture route recovery uses a trusted committed projection through unknown-outcome reconciliation'
+            'REPAIR retains frozen committed collect selectors and leaves workspace routes unselected'
+            'selectorless STATUS resumes a retained committed correction lineage'
+            'selectorless STATUS uses a retained committed selector only at its retained workspace'
+            'INSPECT rejects malformed committed-range selectors before negotiated STATUS'
+            'INSPECT accepts empty object and empty string input for ambient inspection'
+            'INSPECT ambient input with top-level selected-empty stays read-only when selection is not required'
+          )
+          $file = 'tests/review-controller-native-routing.test.ts'
+          $source = Get-Content -LiteralPath $file -Raw
+          foreach ($name in $names) {
+            $declaration = '(?m)^test\("' + [regex]::Escape($name) + '"\s*,'
+            $count = [regex]::Matches($source, $declaration).Count
+            Evidence "inventory count=$count name=$name"
+            if ($count -ne 1) { throw "Missing or duplicate top-level declaration: $name" }
+          }
+          $pattern = '^(?:' + (($names | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')$'
+          Evidence 'Name filtering does not prevent module imports or global side effects; this is not the full two-file gate.'
+          $previousErrorActionPreference = $ErrorActionPreference
+          $PSNativeCommandUseErrorActionPreference = $false
+          $ErrorActionPreference = 'Continue'
+          & node --experimental-strip-types --test --test-reporter=tap --test-name-pattern $pattern $file 2>&1 | Tee-Object -FilePath $log -Append
+          $status = $LASTEXITCODE
+          $ErrorActionPreference = $previousErrorActionPreference
+          Evidence "nodeExit=$status"
+          if ($status -ne 0) { exit $status }
+          $tap = Get-Content -LiteralPath $log -Raw -ErrorAction Stop
+          $plans = [regex]::Matches($tap, '(?m)^1\.\.(\d+)\r?$')
+          $results = [regex]::Matches($tap, '(?m)^(ok|not ok) (\d+) - (.+)\r?$')
+          $summary = [regex]::Matches($tap, '(?m)^# tests (\d+)\r?\n# suites (\d+)\r?\n# pass (\d+)\r?\n# fail (\d+)\r?\n# cancelled (\d+)\r?\n# skipped (\d+)\r?\n# todo (\d+)\r?\n# duration_ms [\d.]+\r?\n')
+          if ($plans.Count -ne 1 -or $summary.Count -ne 1 -or $summary[0].Index -le $plans[0].Index) {
+            throw 'Missing or duplicate complete top-level TAP plan/final summary'
+          }
+          $s = $summary[0].Groups
+          Evidence "counts tests=$($s[1].Value) suites=$($s[2].Value) pass=$($s[3].Value) fail=$($s[4].Value) cancelled=$($s[5].Value) skipped=$($s[6].Value) todo=$($s[7].Value)"
+          if ([long]$s[4].Value -ne 0 -or [long]$s[5].Value -ne 0 -or [long]$s[7].Value -ne 0 -or [long]$s[3].Value -lt $names.Count) {
+            throw 'Failures, cancellations, TODOs or insufficient executed passes'
+          }
+          if ($results.Count -ne [long]$plans[0].Groups[1].Value -or [long]$s[1].Value -ne ([long]$s[3].Value + [long]$s[6].Value)) {
+            throw 'Incomplete TAP result accounting'
+          }
+          foreach ($name in $names) {
+            $matches = @($results | Where-Object { $_.Groups[3].Value.TrimEnd("`r") -eq $name })
+            if ($matches.Count -ne 1 -or $matches[0].Groups[1].Value -ne 'ok') {
+              throw "Expected exactly one executed PASS without SKIP/TODO: $name"
+            }
+          }
+          $executed = @($results | Where-Object { $_.Groups[3].Value -notmatch '\s+# SKIP\b' })
+          if ($executed.Count -ne $names.Count -or @($results | Where-Object { $_.Groups[1].Value -ne 'ok' -or $_.Groups[3].Value -match '\s+# TODO\b' }).Count -ne 0) {
+            throw 'Unexpected executed top-level cases or failing/TODO results'
+          }
+          Evidence 'Unselected skips are not coverage. Completion is not child-termination or unasserted cleanup proof.'
+
+      - name: Upload focused Windows routing log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: review-routing-focused-windows-log
+          path: ${{ runner.temp }}/review-routing-focused-windows.tap.log
+          retention-days: 7
+          if-no-files-found: warn
+
   review-repository-windows:
     runs-on: windows-latest
     steps:

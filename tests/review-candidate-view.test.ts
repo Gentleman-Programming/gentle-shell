@@ -1845,15 +1845,41 @@ test("candidate view accepts internal relative symlink targets and rejects unsaf
 		accepted.cleanup();
 	}
 
+	// Issue #1811: symlink targets with a single trailing slash pointing to directories are valid POSIX paths
+	const trailingSlashRoot = repository(t);
+	const trailingSlashTarget = "../../.agents/skills/example/";
+	const trailingSlashLink = join(trailingSlashRoot, ".agent", "skills", "example");
+	mkdirSync(join(trailingSlashRoot, ".agents", "skills", "example"), { recursive: true });
+	mkdirSync(join(trailingSlashRoot, ".agent", "skills"), { recursive: true });
+	writeFileSync(join(trailingSlashRoot, ".agents", "skills", "example", "SKILL.md"), "example\n");
+	try {
+		symlinkSync(trailingSlashTarget, trailingSlashLink);
+	} catch {
+		t.skip("platform does not support symlinks");
+		return;
+	}
+	const trailingAccepted = createCandidateView({ contributorRoot: trailingSlashRoot });
+	try {
+		assert.equal(lstatSync(trailingSlashLink).isSymbolicLink(), true);
+		assert.equal(readFileSync(join(trailingAccepted.root, ".agent", "skills", "example", "SKILL.md"), "utf8"), "example\n");
+		trailingAccepted.verify();
+	} finally {
+		trailingAccepted.cleanup();
+	}
+
 	for (const [name, target] of [
 		["escape", "../escape"],
+		["escape with trailing slash", "../escape/"],
 		["absolute", "/absolute-target"],
 		["Windows drive absolute", "C:/absolute-target"],
 		["lowercase Windows drive absolute", "c:/absolute-target"],
 		["metadata", ".git"],
+		["metadata with trailing slash", ".git/"],
 		["control", "unsafe\ntarget"],
 		["backslash", "unsafe\\target"],
 		["empty segment", "unsafe//target"],
+		["multiple trailing slashes", "unsafe//"],
+		["current directory with trailing slash", "./"],
 	] as const) {
 		const contributorRoot = repository(t);
 		try {

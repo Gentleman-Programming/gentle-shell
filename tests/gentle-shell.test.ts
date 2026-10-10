@@ -13,7 +13,7 @@ import { bindSessionProfile, clearSessionProfileBinding, resetSessionProfileBind
 import { createVimEditorAdapter } from "../lib/vim-editor-adapter.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { CHANGE_STATUS } from "../lib/shell-changes.ts";
-import { sidebarPart, sidebarState, type SidebarRail } from "../lib/shell-sidebar.ts";
+import { sidebarHeaderContributor, sidebarPart, sidebarState, type SidebarRail } from "../lib/shell-sidebar.ts";
 import { renderTodoCard } from "../lib/shell-todo.ts";
 import type { ShellBarTheme } from "../lib/shell-bar.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
@@ -656,6 +656,100 @@ test("clicking the header's usage segment opens the usage panel; other header cl
 		assert.match(ui.overlayView!.render(90).join("\n"), /Subscriptions/);
 		ui.closeOverlay?.();
 	} finally {
+		component.dispose();
+	}
+});
+
+const headerHarness = async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" });
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const liveFooterData = { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} };
+	const tui = { terminal: { rows: 40, columns: 160 }, requestRender() {} };
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { render(width: number): string[]; dispose(): void };
+	const component = factory(tui, plainTheme, liveFooterData);
+	return { ui, tui, component, header: () => sidebarState(tui as unknown as TUI).parts.get("header") as SidebarRail };
+};
+
+const headerClick = (x: number, y: number) => ({ type: "click", button: "left", x, y, screenX: x, screenY: y, width: 160, height: 1, shift: false, alt: false, ctrl: false } as TuiMouseEvent);
+
+test("a header contributor paints above the shell's own header rows", async () => {
+	const { tui, component, header } = await headerHarness();
+	const dispose = sidebarHeaderContributor(tui as unknown as TUI, "tabs", { render: () => ["▸ Web · catalog"], invalidate() {} });
+	try {
+		const lines = header().render(160);
+		assert.equal(lines[0], "▸ Web · catalog");
+		assert.match(lines[1]!, /gpt-5\.5/, "the shell's own status line follows the contribution");
+		assert.equal(lines.length, 3, "one contributed row, the status line and the rule");
+	} finally {
+		dispose();
+		component.dispose();
+	}
+});
+
+test("a header contributor that paints nothing leaves the shell's own rows exactly where they were", async () => {
+	const { tui, component, header } = await headerHarness();
+	const dispose = sidebarHeaderContributor(tui as unknown as TUI, "tabs", { render: () => [], invalidate() {} });
+	try {
+		const lines = header().render(160);
+		assert.equal(lines.length, 2, "no contribution means no extra row");
+		assert.match(lines[0]!, /gpt-5\.5/);
+	} finally {
+		dispose();
+		component.dispose();
+	}
+});
+
+test("a contributed row takes the top row's clicks and moves the usage segment down with the status line", async () => {
+	const { ui, tui, component, header } = await headerHarness();
+	const received: number[] = [];
+	const dispose = sidebarHeaderContributor(tui as unknown as TUI, "tabs", {
+		render: () => ["▸ Web · catalog"],
+		invalidate() {},
+		handleMouse(event) { received.push(event.y); return { handled: true, render: true }; },
+	});
+	try {
+		const lines = header().render(160);
+		const usageAt = lines[1]!.indexOf("usage");
+		assert.ok(usageAt >= 0, "the status line still carries the usage segment");
+		assert.equal(header().handleMouse?.(headerClick(usageAt + 1, 0))?.handled, true, "the top row belongs to the contribution");
+		assert.deepEqual(received, [0], "the contribution receives the click rebased to its own first row");
+		assert.equal(header().handleMouse?.(headerClick(usageAt + 1, 1))?.handled, true, "the usage segment moved down with the status line");
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		assert.match(ui.overlayView!.render(90).join("\n"), /Subscriptions/);
+		ui.closeOverlay?.();
+	} finally {
+		dispose();
+		component.dispose();
+	}
+});
+
+test("a contributed row that ignores a click never opens the shell's usage panel from that row", async () => {
+	const { ui, tui, component, header } = await headerHarness();
+	const dispose = sidebarHeaderContributor(tui as unknown as TUI, "tabs", { render: () => ["▸ Web · catalog"], invalidate() {} });
+	try {
+		const lines = header().render(160);
+		const usageAt = lines[1]!.indexOf("usage");
+		assert.equal(header().handleMouse?.(headerClick(usageAt + 1, 0)), undefined, "a contribution row is not the status line");
+		assert.equal(ui.overlayView, undefined, "no panel opened from a contributed row");
+	} finally {
+		dispose();
+		component.dispose();
+	}
+});
+
+test("the header digest follows a contributor's own digest so a changed contribution repaints", async () => {
+	const { tui, component, header } = await headerHarness();
+	const contribution = ["▸ Web · catalog"];
+	const dispose = sidebarHeaderContributor(tui as unknown as TUI, "tabs", { render: () => contribution, invalidate() {}, digest: () => contribution.join("|") });
+	try {
+		const before = header().digest?.();
+		assert.equal(header().digest?.(), before, "an unchanged contribution reuses the prepared header");
+		contribution[0] = "▸ Web · cart";
+		assert.notEqual(header().digest?.(), before, "a changed contribution must repaint the header");
+	} finally {
+		dispose();
 		component.dispose();
 	}
 });

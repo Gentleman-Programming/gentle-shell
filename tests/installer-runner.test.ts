@@ -10,6 +10,7 @@ import {
 	PI_INSTALL_VERSION,
 	PI_PACKAGE as PI_PACKAGE_NAME,
 	blockedReasons,
+	childEnvironment,
 	failedSteps,
 	genuineNpm,
 	packageNativeGentleAi,
@@ -1844,6 +1845,79 @@ test("with a current Gentle Shell, only the installer's Pi is added next to the 
 	assert.deepEqual([outcome.outcome, outcome.failedStep], ["failed", "install-pi"]);
 });
 
+// S6: a private Windows PNPM_HOME is claimed first, after consent and before any
+// command, then every pnpm child gets it and pnpm's own folders inside it.
+const W_LOCAL_DEFAULT = "C:\\Users\\u\\AppData\\Local\\pnpm-weak";
+function privatePlan(change: object = {}, path = W_PNPM_HOME) {
+	return plan("win32", { pnpmHome: { available: true, path, source: "private", rejected: { path: W_LOCAL_DEFAULT, check: "target-acl-mask" } }, ...change });
+}
+function preparing(h: ReturnType<typeof harness>, prepare: (home: string) => unknown = () => "claimed", windows = true) {
+	const prepared: Array<{ home: string; calls: number }> = [];
+	return { ...h, prepared, adapters: { ...h.adapters, env: { ...h.adapters.env, ...(windows ? { PNPM_HOME: W_PNPM_HOME } : {}) },
+		preparePnpmHome: async (home: string) => { prepared.push({ home, calls: h.calls.length }); return prepare(home); } } };
+}
+const xdgKeys = ["XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"];
+test("a private Windows PNPM_HOME is claimed before any command and holds pnpm's config, cache and state", async () => {
+	const h = preparing(harness({ layout: windowsLayout, env: { Path: `${W_NODE_DIR};C:\\Windows` } }));
+	const result = await runStandardInstall({ plan: privatePlan(), consent: true }, h.adapters);
+	assert.equal(result.outcome, "terminal-action-required");
+	assert.deepEqual(h.prepared, [{ home: W_PNPM_HOME, calls: 0 }]);
+	assert.equal(result.completed[0], "prepare-pnpm-home");
+	assert.equal(h.pnpmCalls().at(-1), "setup", "pnpm setup persists the private PNPM_HOME and its bin");
+	for (const call of h.calls) {
+		assert.equal(call.env.PNPM_HOME, W_PNPM_HOME);
+		assert.deepEqual(xdgKeys.map((key) => call.env[key]), [".config", ".cache", ".state"].map((folder) => `${W_PNPM_HOME}\\${folder}`));
+	}
+	// Folders the user set are kept.
+	const own = preparing(harness({ layout: windowsLayout, env: { XDG_CACHE_HOME: "D:\\cache" } }));
+	await runStandardInstall({ plan: privatePlan(), consent: true }, own.adapters);
+	assert.ok(own.calls.every((call) => call.env.XDG_CACHE_HOME === "D:\\cache"));
+	// Without a private PNPM_HOME nothing is claimed and no XDG folder is set, on Windows or POSIX.
+	for (const [layout, fixed] of [[windowsLayout, plan("win32")], [posixLayout, plan()]] as const) {
+		const plain = preparing(harness({ layout }), undefined, layout === windowsLayout);
+		assert.equal((await runStandardInstall({ plan: fixed, consent: true }, plain.adapters)).outcome, "ready");
+		assert.deepEqual(plain.prepared, []);
+		assert.ok(plain.calls.length > 0 && plain.calls.every((call) => xdgKeys.every((key) => !(key in call.env))));
+	}
+	// The private record is Windows-only: a POSIX plan carrying one claims nothing.
+	const posix = preparing(harness(), undefined, false);
+	await runStandardInstall({ plan: { ...plan(), tools: { ...plan().tools, pnpmHome: privatePlan().tools.pnpmHome } }, consent: true }, posix.adapters);
+	assert.deepEqual(posix.prepared, []);
+});
+
+test("a private PNPM_HOME that changed, or could not be claimed, stops before any command", async () => {
+	const moved = preparing(harness({ layout: windowsLayout }));
+	const changed = await runStandardInstall({ plan: privatePlan({}, "C:\\Users\\u\\.pnpm"), consent: true }, moved.adapters);
+	assert.deepEqual([changed.outcome, changed.reason], ["blocked", "pnpm-home-changed"]);
+	assert.deepEqual([moved.prepared, moved.calls], [[], []]);
+	for (const prepare of [() => { throw new Error("Windows PNPM_HOME claim rejected"); }, () => Promise.reject(new Error("x"))]) {
+		const h = preparing(harness({ layout: windowsLayout }), prepare);
+		const failed = await runStandardInstall({ plan: privatePlan(), consent: true }, h.adapters);
+		assert.deepEqual([failed.outcome, failed.failedStep, failed.completed], ["failed", "prepare-pnpm-home", []]);
+		assert.deepEqual(h.calls, []);
+	}
+	const h = harness({ layout: windowsLayout, env: { PNPM_HOME: W_PNPM_HOME } });
+	const missing = await runStandardInstall({ plan: privatePlan(), consent: true }, h.adapters);
+	assert.deepEqual([missing.outcome, missing.failedStep], ["failed", "prepare-pnpm-home"]);
+	assert.deepEqual(h.calls, []);
+});
+
+test("an update with a private PNPM_HOME still persists it with pnpm setup", async () => {
+	const root = "C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\gentle-pi";
+	const fixed = plan("win32", { pi: tool("1.2.0"), shell: { available: true, version: "3.9.0", usable: true, global: true, owner: "npm" },
+		gentleAi: { available: null }, setup: { available: null } });
+	const h = preparing(harness({ layout: windowsLayout, env: { Path: `${W_NODE_DIR};C:\\Windows` }, results: { [`${root}\\bin\\gentle-shell.mjs setup`]: { code: 0 } } }));
+	let locates = 0;
+	const located = [{ root, version: "3.9.0", owner: "npm" }, { root, version: requirements.shell, owner: "npm" }];
+	const adapters = { ...h.adapters, locateShell: async () => located[Math.min(locates++, 1)], upgradeShell: async () => true };
+	const withHome = { ...fixed, tools: { ...fixed.tools, pnpmHome: privatePlan().tools.pnpmHome } };
+	const result = await runStandardInstall({ plan: withHome, consent: true }, adapters);
+	assert.equal(result.outcome, "terminal-action-required");
+	assert.equal(h.pnpmCalls().at(-1), "setup");
+	const plain = await runStandardInstall({ plan: fixed, consent: true }, { ...adapters, preparePnpmHome: undefined });
+	assert.equal(plain.outcome, "ready", "an update keeps the PATH its installation already uses");
+});
+
 test("exported blocked reasons and failed steps match what the scenarios observed", () => {
 	assert.ok(Object.isFrozen(blockedReasons) && Object.isFrozen(failedSteps));
 	assert.equal(new Set(blockedReasons).size, blockedReasons.length);
@@ -1855,3 +1929,18 @@ test("exported blocked reasons and failed steps match what the scenarios observe
 	assert.deepEqual(failedSteps.filter((step) => !observed.steps.has(step)), ["persist-npm", "persist-pnpm"]);
 });
 
+// R2: in private mode the installer's children also get TEMP and TMP inside the
+// claimed private home, so a postinstall's os.tmpdir() (the Gentle AI source
+// build) never uses a %LOCALAPPDATA%\Temp another account may write.
+test("childEnvironment puts TEMP and TMP under a private Windows PNPM_HOME only", () => {
+	const globalBin = { pnpmHome: W_PNPM_HOME, path: W_BIN, onPath: false };
+	const base = { Path: "C:\\Windows", Temp: "C:\\Users\\u\\AppData\\Local\\Temp", TMP: "C:\\Users\\u\\AppData\\Local\\Temp" };
+	const isolated = childEnvironment(base, "win32", globalBin, { privateHome: true });
+	const temps = (env: Record<string, string>) => Object.entries(env).filter(([key]) => /^(TEMP|TMP)$/i.test(key));
+	assert.deepEqual(temps(isolated), [["TEMP", `${W_PNPM_HOME}\\tmp`], ["TMP", `${W_PNPM_HOME}\\tmp`]], "one key each, any spelling replaced");
+	assert.deepEqual(temps(childEnvironment(base, "win32", globalBin)), [["Temp", base.Temp], ["TMP", base.TMP]], "unchanged outside private mode");
+	const posix = { PATH: "/usr/bin", TMPDIR: "/tmp/x" };
+	assert.deepEqual(childEnvironment(posix, "linux", { pnpmHome: PNPM_HOME, path: BIN, onPath: false }, { privateHome: true }),
+		{ ...posix, PNPM_HOME, PATH: `${BIN}:/usr/bin` }, "POSIX unchanged");
+	assert.equal(base.Temp, "C:\\Users\\u\\AppData\\Local\\Temp", "the caller's env is not modified");
+});

@@ -1088,3 +1088,10 @@ test("Copy writes the command through the injected clipboard and reports success
 	assert.equal(button(none.view, "Copy"), undefined, "no clipboard, no Copy button");
 	assert.ok(none.view.textContent.includes("gentle-shell"), "the command is still shown");
 });
+
+test("the PNPM_HOME blocker and the private PNPM_HOME step have labels", () => {
+	const model = wizard.planModel({ planId: "p", ready: false, actions: [], blockers: [{ code: "untrusted-pnpm-home", tool: "pnpmHome", guidance: "g" }],
+		profileChange: { changesProfile: false, binDir: null, description: "x" }, persistence: { tools: [], pnpmHome: null, description: "y" } });
+	assert.equal(model.blockers[0].toolLabel, "pnpm home folder");
+	assert.equal(wizard.stepLabel("prepare-pnpm-home"), "Create the private pnpm folder");
+});

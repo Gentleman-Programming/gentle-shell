@@ -21,6 +21,7 @@ import {
 	succeeded,
 	windowsInvocation,
 } from "./installer-runner.mjs";
+import { verifyWindowsStorage } from "./installer-windows.mjs";
 
 // Real host probes for collectInventory. Every effect goes through injected
 // adapters; probes only run fixed read-only argv (`--version`, `go version`,
@@ -183,19 +184,33 @@ export function hostAdapters({ maxOutputBytes = 1024 * 1024, maxTextBytes = 1024
 }
 
 /**
- * createProbes({ platform, env, run, fs, home?, verifyGentleAi? }) -> the eight
+ * createProbes({ platform, env, run, fs, home?, verifyGentleAi?, storage?, pnpmHome? }) -> the eight
  * named collectInventory probes. `env` is the wizard's environment (bootstrap
  * tools first on PATH); `run` and `fs` follow hostAdapters. Each probe returns
  * the shape collectInventory documents, or { available: null } when unknown or
- * failed; errors are never thrown or retained.
+ * failed; errors are never thrown or retained. On Windows, `storage(file)` walks a
+ * file the way the bootstrap does (verifyWindowsStorage by default) and `pnpmHome`
+ * is the wizard's PNPM_HOME decision (windowsPnpmHome).
  */
-export function createProbes({ platform, env, run, fs, home, verifyGentleAi = packageNativeGentleAi }) {
+export function createProbes({ platform, env, run, fs, home, verifyGentleAi = packageNativeGentleAi,
+	storage = platform === "win32" ? (file) => verifyWindowsStorage(file, env) : null, pnpmHome = null }) {
 	const path = pathOf(platform);
 	const user = userEnvironment({ platform, env });
 	const globalBin = pnpmGlobalBin({ platform, env: user });
 	// pnpm 11 global commands need `$PNPM_HOME/bin` on PATH, as in the runner.
-	const child = globalBin ? childEnvironment(env, platform, globalBin) : env;
-	const userChild = globalBin ? childEnvironment(user, platform, globalBin) : user;
+	const privateHome = platform === "win32" && pnpmHome?.source === "private";
+	const child = globalBin ? childEnvironment(env, platform, globalBin, { privateHome }) : env;
+	const userChild = globalBin ? childEnvironment(user, platform, globalBin, { privateHome }) : user;
+	/** Every file passes the storage walk; any failure means it is not usable. */
+	const trusted = async (files) => {
+		if (!storage) return true;
+		try {
+			for (const file of files) await storage(file);
+			return true;
+		} catch {
+			return false;
+		}
+	};
 	const userHome = home ?? (platform === "win32" ? env.USERPROFILE : env.HOME);
 	const output = async (command, argv, runEnv, deadlineMs) => {
 		const result = await run(command, argv, { env: runEnv, deadlineMs });
@@ -211,6 +226,9 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 	let listing;
 	/** Output of the single `list -g` call, or null when it is unavailable. */
 	const globalListing = () => (listing ??= (async () => {
+		// A private PNPM_HOME this run has not created yet holds nothing; listing it
+		// could make pnpm create it, unprotected, before consent.
+		if (privateHome && globalBin && !(await fs.exists(globalBin.pnpmHome))) return "[]";
 		const pnpm = globalBin ? await pnpmInvocation(env, platform, fs) : null;
 		if (!pnpm) return null;
 		return output(pnpm.command, [...pnpm.prefix, "list", "-g", "--depth", "0", "--json"], child, deadlines.list);
@@ -354,10 +372,12 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 			if (!fromBootstrap(pnpm.prefix[0] ?? pnpm.command)) {
 				return { available: true, version, usable: true, compatible, persistent: await persistentOn("pnpm") };
 			}
-			// That pnpm's version, read in the user's environment.
+			// That pnpm's version, read in the user's environment. On Windows only when its
+			// shim and what it runs pass the storage walk: an untrusted pnpm never runs.
 			const own = await lookPath("pnpm", user, platform, fs);
 			const ownPnpm = own ? await invocation(own) : null;
-			const result = ownPnpm ? await run(ownPnpm.command, [...ownPnpm.prefix, "--version"], { env: user, cwd: path.parse(own).root, deadlineMs: deadlines.version }) : null;
+			const runnable = ownPnpm !== null && await trusted([own, ownPnpm.command, ...ownPnpm.prefix]);
+			const result = runnable ? await run(ownPnpm.command, [...ownPnpm.prefix, "--version"], { env: user, cwd: path.parse(own).root, deadlineMs: deadlines.version }) : null;
 			const found = succeeded(result) && result.truncated !== true ? exactVersion(result.stdout, STABLE) : null;
 			const usableFound = found !== null && Number(found.split(".")[0]) === PNPM_MAJOR && atLeast(found, requirements.pnpm);
 			// Persisting pnpm writes $PNPM_HOME/bin: a user's pnpm there is reported as it is

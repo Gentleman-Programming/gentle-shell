@@ -7,10 +7,12 @@ import { spawn, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { artifactFor, compatibleEngine, windowsBootstrapMessage } from "../scripts/installer-downloads.mjs";
-import { hostAdapters } from "../scripts/installer-probes.mjs";
+import { createProbes, hostAdapters } from "../scripts/installer-probes.mjs";
+import { planPreflight } from "../scripts/installer-preflight.mjs";
 import { lookPath, windowsInvocation } from "../scripts/installer-runner.mjs";
 import { validateWindowsEntries, windowsShim, windowsNodeFloor, readWindowsPnpmArchive, ensureWindowsPnpm, windowsProcessCheck, windowsAclRuleUnsafe, verifyWindowsStorage,
 	bootstrapWindows, windowsBootstrapReason, windowsStorageEvidence } from "../scripts/installer-windows.mjs";
+import * as windowsModule from "../scripts/installer-windows.mjs";
 
 // Real Windows shims, verbatim (CRLF) as their generators write them. npm cmd-shim:
 // github.com/npm/cmd-shim tap-snapshots/test/basic.js.test.cjs, v4.1.0-v8.0.0 ("env
@@ -575,9 +577,12 @@ test("native Windows entry: spaces, Unicode, CMD metacharacters and early missin
 		writeFileSync(join(scripts, "bootstrap.cmd"), observeStage(readFileSync(new URL("../scripts/bootstrap.cmd", import.meta.url), "utf8")));
 		const local = join(f.root, "home"); mkdirSync(local);
 		const env = { ...nativeEnv(f.root), LOCALAPPDATA: local };
-		console.error("WINDOWS_ENTRY_PROBE_START timeoutMs=5000");
+		// The same outer bound as every other production fragment (nativeCmd): a cold
+		// cmd.exe plus Windows PowerShell 5.1 start can exceed 5 s while the CI step runs
+		// the installer suites in parallel. The bundle stage itself has no deadline.
+		console.error("WINDOWS_ENTRY_PROBE_START timeoutMs=14000");
 		const started = performance.now();
-		const result = await nativeCmdFile(f.root, "scripts\\bootstrap.cmd", env, 5000);
+		const result = await nativeCmdFile(f.root, "scripts\\bootstrap.cmd", env, 14000);
 		console.error("WINDOWS_ENTRY_PROBE_RESULT", JSON.stringify({ elapsedMs: performance.now() - started, status: result.status, guardKilled: result.guardKilled, expectedDiagnostic: /No acquisition attempted/.test(result.stderr) }));
 		// Spawn errors reject the helper; a guard intervention or unexpected exit
 		// must still fail acceptance rather than being hidden by fixture cleanup.
@@ -599,7 +604,7 @@ function cmdStage(marker: string) {
 	assert.ok(markerAt >= 0, marker);
 	const start = source.indexOf('"%GENTLE_BOOTSTRAP_PS%" -NoLogo', markerAt);
 	assert.ok(start >= 0);
-	const ends = ["\nif errorlevel 1 goto failed", "\nendlocal & exit /b 0", "\n:finishfailure"]
+	const ends = ["\nif errorlevel 1 goto failed", "\nif errorlevel 3 goto failed", "\nendlocal & exit /b 0", "\n:finishfailure"]
 		.map((terminator) => source.indexOf(terminator, start)).filter((index) => index >= 0);
 	assert.ok(ends.length > 0);
 	return source.slice(start, Math.min(...ends)).replace(/\r$/, "");
@@ -618,7 +623,7 @@ test("success removes only the exact claimed marked root and never fails the ins
 	assert.ok(launch >= 0 && success > source.indexOf("if errorlevel 1 goto failed", launch) && success < exit, "cleanup runs only after the wizard succeeded");
 	const stage = cmdStage(stageMarkers.success).replaceAll("\r\n", "\n");
 	assert.equal(source.slice(source.indexOf(stage) + stage.length, exit), "", "no errorlevel turns a removal problem into failure");
-	assert.match(stage, /GetFullPath\(\$env:LOCALAPPDATA\)/);
+	assert.ok(stage.includes("$parent -ne [IO.Path]::GetFullPath($env:LOCALAPPDATA) -and $parent -ne [IO.Path]::GetFullPath($env:USERPROFILE)"), "a direct child of either claim base");
 	assert.match(stage, /StartsWith\('\.gentle-shell-bootstrap-tools\.',\[StringComparison\]::Ordinal\)/);
 	assert.match(stage, /ReparsePoint/);
 	assert.match(stage, /'\.bootstrap-owned'/);
@@ -654,6 +659,55 @@ test("claim reports one fixed non-sensitive reason code per check beside the unc
 	// Check order is part of the contract: the owner/ACL walk precedes the claim.
 	const order = ["path-mismatch", "home-owner", "ancestor-walk", "create", "collision", "private-acl", "marker"].map((code) => stage.indexOf(`'${code}'`));
 	assert.deepEqual(order, [...order].sort((left, right) => left - right));
+});
+
+// S1: a profile whose %LOCALAPPDATA% another principal may write (acl-mask) or
+// whose owner is untrusted (home-owner) gets exactly one more candidate, a new
+// folder directly under %USERPROFILE%, held to the same checks. Exit 2 tells CMD.
+test("claim tries %LOCALAPPDATA% first and one %USERPROFILE% fallback only after acl-mask or home-owner", () => {
+	const source = readFileSync(new URL("../scripts/bootstrap.cmd", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+	assert.ok(source.includes('set "GENTLE_BOOTSTRAP_TOOLS=%LOCALAPPDATA%\\.gentle-shell-bootstrap-tools.%RANDOM%.%RANDOM%.%RANDOM%"\nset "GENTLE_BOOTSTRAP_FALLBACK_TOOLS=%USERPROFILE%\\.gentle-shell-bootstrap-tools.%RANDOM%.%RANDOM%.%RANDOM%"\n'));
+	const stage = cmdStage(stageMarkers.claim).replaceAll("\r\n", "\n");
+	assert.ok(stage.includes("$candidates = @(,@($env:GENTLE_BOOTSTRAP_TOOLS,$env:LOCALAPPDATA)); if ($env:GENTLE_BOOTSTRAP_FALLBACK_TOOLS) { $candidates += ,@($env:GENTLE_BOOTSTRAP_FALLBACK_TOOLS,$env:USERPROFILE) };"), "LOCALAPPDATA first, then exactly one USERPROFILE candidate");
+	assert.ok(stage.includes("if ($index -eq 0 -and $candidates.Count -gt 1 -and $code -cmatch '^(acl-mask|home-owner)$') { continue }; throw"), "only acl-mask or home-owner on the first candidate reaches the fallback");
+	// Every candidate gets the exact-parent rule, the base owner and the whole walk before anything is created.
+	const steps = ["for ($index = 0; $index -lt $candidates.Count; $index++)", "$step = 'path-mismatch'", "throw 'path-mismatch'", "$step = 'home-owner'", "$step = 'ancestor-walk'",
+		"throw 'ancestor-reparse'", "throw 'ancestor-owner'", "throw 'acl-mask'", "{ continue }; throw", "$step = 'create'"].map((text) => stage.indexOf(text));
+	assert.ok(steps.every((index) => index >= 0), JSON.stringify(steps));
+	assert.deepEqual(steps, [...steps].sort((left, right) => left - right));
+	assert.ok(stage.includes("$path -ne [IO.Path]::GetFullPath($base)"), "the chosen base is the claim's exact parent");
+	assert.ok(stage.includes("if ($index -gt 0) { exit 2 };"));
+	// CMD switches to the fallback only on exit 2, before it records ownership.
+	const end = source.indexOf(stage) + stage.length;
+	assert.ok(source.slice(end).startsWith('\nif errorlevel 3 goto failed\nif errorlevel 2 goto fallbackclaimed\nif errorlevel 1 goto failed\ngoto claimed\n:fallbackclaimed\nset "GENTLE_BOOTSTRAP_TOOLS=%GENTLE_BOOTSTRAP_FALLBACK_TOOLS%"\n:claimed\nset "GENTLE_BOOTSTRAP_FALLBACK_TOOLS="\nset "GENTLE_BOOTSTRAP_OWNED=1"\n'));
+});
+
+test("the claim base may be owned by the user, SYSTEM or Administrators and the private folder is set to the user", () => {
+	const stage = cmdStage(stageMarkers.claim);
+	assert.ok(stage.includes("$owners = @($me.Value,'S-1-5-18','S-1-5-32-544');"), "TrustedInstaller or any other SID cannot own the base");
+	assert.ok(stage.includes("$step = 'home-owner'; $owner = ([IO.Directory]::GetAccessControl($path)).GetOwner([Security.Principal.SecurityIdentifier]); if ($owners -notcontains $owner.Value) {"));
+	assert.ok(stage.includes("$trusted = @($me.Value,'S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464');"), "ancestor owners are unchanged");
+	// An Administrators member's new folders default to BUILTIN\Administrators: the owner
+	// is set explicitly, written with the protected DACL, then read back.
+	const owner = stage.indexOf("$acl = New-Object Security.AccessControl.DirectorySecurity; $acl.SetOwner($me); $acl.SetAccessRuleProtection($true,$false);");
+	const persist = stage.indexOf("[IO.Directory]::SetAccessControl($tools,$acl);");
+	const readback = stage.indexOf("throw 'private-owner'");
+	assert.ok(owner >= 0 && owner < persist && persist < readback);
+	assert.equal(stage.split("SetAccessControl(").length, 2, "owner and DACL are written together, once");
+});
+
+test("a rejected claim keeps its first line, then names each candidate folder and, for acl-mask, the principal and rights", () => {
+	const stage = cmdStage(stageMarkers.claim);
+	assert.ok(stage.includes(`[Console]::Error.WriteLine('${claimMessage} Reason: ' + $reason); foreach ($line in $tried) { [Console]::Error.WriteLine('Bootstrap: storage candidate ' + $line) }; exit 1`));
+	assert.ok(stage.includes("$tried += ($base + ': ' + $code + $detail);"));
+	assert.ok(stage.includes("$detail = ' at ' + $path + ': ' + $rule.IdentityReference.Value + (& $account $rule.IdentityReference) + ' allowed 0x' + ([int]$rule.FileSystemRights).ToString('X8'); throw 'acl-mask'"));
+	assert.ok(stage.includes("$detail = ' owned by ' + $owner.Value + (& $account $owner); throw 'home-owner'"));
+	assert.ok(stage.includes("$account = { param($sid) try { ' (' + $sid.Translate([Security.Principal.NTAccount]).Value + ')' } catch { '' } };"), "the account name is added only when it resolves");
+	// The candidate catch copies only walk codes; anything else stays unexpected-<step>.
+	assert.ok(stage.includes("$code = 'unexpected-' + $step; if ($_.Exception.Message -cmatch '^(path-mismatch|home-owner|ancestor-reparse|ancestor-owner|acl-mask)$') { $code = $_.Exception.Message };"));
+	// A failure after the walk names the chosen folder, which is removed by its own path.
+	assert.ok(stage.includes("if ($step -cmatch '^(create|private-acl|marker)$') { $tried += ($tools + ': ' + $reason) };"));
+	assert.ok(stage.includes("if ($claimed) { Remove-Item -LiteralPath $tools -Recurse -Force -ErrorAction SilentlyContinue };"));
 });
 
 // The Node probe follows the same contract. Walk rejections also name the path
@@ -771,9 +825,10 @@ test("Windows helper reports one fixed non-sensitive reason code beside the unch
 test("Windows helper steps name each pnpm discovery, storage and proof phase", async () => {
 	const steps: string[] = [];
 	const env = { Path: "C:\\fixture", PATHEXT: ".EXE;.CMD" };
+	// A policy denial still stops at the wrapper (an untrusted wrapper is covered below).
 	await assert.rejects(ensureWindowsPnpm({ tools: "C:\\tools", env, onStep: (step: string) => steps.push(step), adapters: {
-		findCommand: () => "C:\\fixture\\pnpm.cmd", storage: () => { throw Object.assign(new Error("Windows ACL evidence rejected"), { check: "target-owner" }); },
-	} }), (error: { check?: string }) => error.check === "target-owner");
+		findCommand: () => "C:\\fixture\\pnpm.cmd", storage: () => { throw Object.assign(new Error("Windows ACL evidence rejected"), { check: "policy" }); },
+	} }), (error: { check?: string }) => error.check === "policy");
 	assert.deepEqual(steps, ["pnpm-discovery", "wrapper-storage"]);
 	// A malformed PATHEXT (here a duplicate extension) still stops discovery and names the code.
 	const unknown: string[] = [];
@@ -790,6 +845,44 @@ test("Windows helper steps name each pnpm discovery, storage and proof phase", a
 	assert.deepEqual(outer, [...outer].sort((left, right) => left - right));
 });
 
+// S1: the user's own pnpm under a %LOCALAPPDATA% another principal may write is
+// never run. Like an untrusted user Node in bootstrap.cmd, a storage rejection of
+// its wrapper, Node, entry or metadata leaves it as it is and the verified pnpm is
+// acquired into the private tools folder. Policy and other failures still stop.
+test("an existing pnpm whose storage fails the walk is never run and the verified pnpm is acquired", async () => {
+	const components = { "wrapper-storage": "pnpm.cmd", "node-storage": "node.exe", "entry-storage": "node_modules/pnpm/bin/pnpm.mjs", "metadata-storage": "node_modules/pnpm/package.json" };
+	for (const [step, component] of Object.entries(components)) {
+		for (const check of ["target-acl-mask", "parent-acl-mask", "ancestor-owner", "target-reparse"]) {
+			const f = fixture();
+			try {
+				const commands = join(f.root, "commands"); pnpmWrapperDirectory(commands);
+				const tools = join(f.root, "tools"); mkdirSync(tools);
+				const steps: string[] = []; const ran: string[] = [];
+				const result = await ensureWindowsPnpm({ tools, env: { Path: commands, PATHEXT: ".EXE;.CMD" }, onStep: (next: string) => steps.push(next), adapters: {
+					storage: (path: string) => { if (path === join(commands, component)) throw Object.assign(new Error("Windows ACL evidence rejected"), { check }); },
+					download: async () => pnpmTar(), digest, process: (command: string, args: string[]) => { ran.push(...[command, ...args].filter((value) => value.startsWith(commands))); return cliProcess(command, args); } } });
+				assert.equal(result.acquired, true, `${step} ${check}`);
+				assert.deepEqual(result.prefix, [join(tools, "pnpm/package/bin/pnpm.mjs")]);
+				assert.equal(steps[steps.indexOf(step) + 1], "tools-check", `${step} ${check}: ${steps}`);
+				assert.deepEqual(ran, [], "nothing from the untrusted pnpm runs");
+			} finally { f.cleanup(); }
+		}
+	}
+	for (const error of [Object.assign(new Error("Windows ACL evidence rejected"), { check: "policy" }), new Error("Windows ACL evidence rejected"), new Error("Windows prerequisite process failed")]) {
+		const f = fixture();
+		try {
+			const commands = join(f.root, "commands"); pnpmWrapperDirectory(commands);
+			const tools = join(f.root, "tools"); mkdirSync(tools);
+			let downloads = 0;
+			await assert.rejects(ensureWindowsPnpm({ tools, env: { Path: commands, PATHEXT: ".EXE;.CMD" }, adapters: {
+				storage: (path: string) => { if (path.startsWith(commands)) throw error; },
+				download: async () => { downloads++; return pnpmTar(); }, digest, process: cliProcess } }), (rejected: unknown) => rejected === error);
+			assert.equal(downloads, 0, error.message);
+			assert.deepEqual(readdirSync(tools), []);
+		} finally { f.cleanup(); }
+	}
+});
+
 test("storage ACL evidence reports a fixed role code and still rejects anything but safe", () => {
 	windowsStorageEvidence("safe");
 	for (const check of ["policy", "target-reparse", "parent-owner", "ancestor-acl-mask"]) {
@@ -803,7 +896,164 @@ test("storage ACL evidence reports a fixed role code and still rejects anything 
 	assert.match(check, /throw \(\$role \+ '-reparse'\)/);
 	assert.match(check, /throw \(\$role \+ '-owner'\)/);
 	assert.match(check, /throw \(\$role \+ '-acl-mask'\)/);
-	assert.match(check, /if \(\$_\.Exception\.Message -cmatch '\^\(policy\|\(target\|parent\|ancestor\)-\(reparse\|owner\|acl-mask\)\)\$'\) \{ 'unsafe:' \+ \$_\.Exception\.Message \} else \{ throw \}/, "unexpected exceptions still exit nonzero");
+	assert.ok(check.includes("if ($_.Exception.Message -cmatch '^(policy|(target|parent|ancestor)-(reparse|owner|acl-mask))$') { 'unsafe:' + $_.Exception.Message + " +
+		"$(if ($detail) { '|' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($detail)) } else { '' }) } else { throw }"), "unexpected exceptions still exit nonzero");
+});
+
+// S6: a walk rejection names the component, the principal and the rights that
+// failed, as base64 UTF-8 after the fixed code, for the PNPM_HOME guidance.
+const encoded = (text: string) => Buffer.from(text, "utf8").toString("base64");
+test("storage ACL evidence carries the failing folder, principal and rights; malformed detail drops the code", () => {
+	const detail = "C:\\Users\\mé\\AppData\\Local|S-1-5-21-1-2-3-1002|PC\\other|0x001301BF";
+	assert.throws(() => windowsStorageEvidence(`unsafe:target-acl-mask|${encoded(detail)}`), (error: Error & { check?: string; detail?: object }) =>
+		error.check === "target-acl-mask" && JSON.stringify(error.detail) === JSON.stringify({ at: "C:\\Users\\mé\\AppData\\Local", sid: "S-1-5-21-1-2-3-1002", account: "PC\\other", rights: "0x001301BF" }));
+	assert.throws(() => windowsStorageEvidence(`unsafe:parent-owner|${encoded("C:\\Users\\m|S-1-5-21-9||")}`), (error: Error & { check?: string; detail?: object }) =>
+		error.check === "parent-owner" && JSON.stringify(error.detail) === JSON.stringify({ at: "C:\\Users\\m", sid: "S-1-5-21-9" }));
+	assert.throws(() => windowsStorageEvidence(`unsafe:target-reparse|${encoded("C:\\link|||")}`), (error: Error & { detail?: object }) => JSON.stringify(error.detail) === JSON.stringify({ at: "C:\\link" }));
+	for (const bad of ["relative|S-1-5-18||", "C:\\x|not-a-sid||", "C:\\x|S-1-5-18||0x1", "C:\\x|S-1-5-18||\n", "C:\\x|S-1-5-18|||extra", "C:\\x|S-1-5-18"]) {
+		assert.throws(() => windowsStorageEvidence(`unsafe:target-acl-mask|${encoded(bad)}`), (error: Error & { check?: string }) => error.check === undefined, bad);
+	}
+	for (const output of [`unsafe:policy|${encoded("C:\\x|||")}`, "unsafe:target-acl-mask|not base64!", `unsafe:target-acl-mask|${encoded("C:\\x|||")}x`]) {
+		assert.throws(() => windowsStorageEvidence(output), (error: Error & { check?: string }) => error.check === undefined, output);
+	}
+	const check = productionAclSources()[2];
+	assert.ok(check.includes("$detail = $path + '|' + $rule.IdentityReference.Value + '|' + (& $account $rule.IdentityReference) + '|0x' + ([int]$rule.FileSystemRights).ToString('X8'); throw ($role + '-acl-mask')"));
+	assert.ok(check.includes("$detail = $path + '|' + $owner.Value + '|' + (& $account $owner) + '|'; throw ($role + '-owner')"));
+	assert.ok(check.includes("$detail = $path + '|||'; throw ($role + '-reparse')"));
+});
+
+// S6 decision fixtures: an in-memory folder tree and an injected walk verdict per
+// path, the same way the helper tests inject storage. `weak` maps a walked path
+// to the check its walk fails; every other walk passes.
+const W_LOCAL = "C:\\Users\\m\\AppData\\Local";
+const W_DEFAULT = `${W_LOCAL}\\pnpm`;
+const W_PRIVATE = "C:\\Users\\m\\.pnpm";
+const homeEnv = { LOCALAPPDATA: W_LOCAL, USERPROFILE: "C:\\Users\\m", SystemRoot: "C:\\Windows" };
+function homeDecision({ env = homeEnv as Record<string, string>, dirs = [] as string[], files = {} as Record<string, string>, weak = {} as Record<string, string>,
+	throws = null as Error | null } = {}) {
+	const walked: string[] = [];
+	const existing = new Set(["C:\\", "C:\\Users", "C:\\Users\\m", "C:\\Users\\m\\AppData", W_LOCAL, ...dirs]);
+	const fs = {
+		kind: (path: string) => (existing.has(path) ? "directory" : path in files ? "file" : "missing"),
+		entries: (path: string) => [...existing, ...Object.keys(files)].filter((entry) => entry !== path && entry.startsWith(`${path}\\`) && !entry.slice(path.length + 1).includes("\\")),
+		readText: (path: string) => files[path],
+	};
+	const storage = (path: string) => {
+		walked.push(path);
+		if (throws) throw throws;
+		if (path in weak) throw Object.assign(new Error("Windows ACL evidence rejected"), { check: weak[path], detail: { at: path, sid: "S-1-5-21-1-2-3-1002", account: "PC\\other", rights: "0x001301BF" } });
+	};
+	return { decide: () => windowsModule.windowsPnpmHome({ env, storage, fs }), wizard: () => windowsModule.windowsWizardEnvironment({ env, storage, fs }), walked };
+}
+const finding = (path: string, check = "target-acl-mask") => ({ check, at: path, sid: "S-1-5-21-1-2-3-1002", account: "PC\\other", rights: "0x001301BF" });
+
+test("a default PNPM_HOME that passes the walk is used as before, absent or present with its bin", () => {
+	const absent = homeDecision();
+	assert.deepEqual(absent.decide(), { available: true, path: W_DEFAULT, source: "default" });
+	assert.deepEqual(absent.walked, [W_LOCAL], "an absent folder walks its nearest existing ancestor");
+	const present = homeDecision({ dirs: [W_DEFAULT, `${W_DEFAULT}\\bin`] });
+	assert.deepEqual(present.decide(), { available: true, path: W_DEFAULT, source: "default" });
+	assert.deepEqual(present.walked, [W_DEFAULT, `${W_DEFAULT}\\bin`]);
+	// The wizard environment is the caller's own object, unchanged.
+	const wizard = present.wizard();
+	assert.deepEqual(wizard.pnpmHome, { available: true, path: W_DEFAULT, source: "default" });
+	assert.deepEqual(wizard.env, homeEnv);
+});
+
+test("a weak default holding nothing switches to %USERPROFILE%\\.pnpm, which must pass the walk itself", () => {
+	for (const dirs of [[], [W_DEFAULT]]) {
+		const weakAt = dirs.length ? W_DEFAULT : W_LOCAL;
+		const h = homeDecision({ dirs, weak: { [weakAt]: "target-acl-mask" } });
+		assert.deepEqual(h.decide(), { available: true, path: W_PRIVATE, source: "private", rejected: { path: W_DEFAULT, ...finding(weakAt) } });
+		assert.deepEqual(h.walked, [weakAt, "C:\\Users\\m"]);
+	}
+	// The private folder already created by this flow (marked) or empty is accepted.
+	const marker = `${W_PRIVATE}\\.gentle-shell-pnpm-home`;
+	for (const [dirs, files] of [[[W_PRIVATE], {}], [[W_PRIVATE, `${W_PRIVATE}\\bin`], { [marker]: "gentle-pi private pnpm home" }]] as const) {
+		const h = homeDecision({ dirs: [...dirs], files: { ...files }, weak: { [W_LOCAL]: "target-acl-mask" } });
+		assert.equal(h.decide().source, "private");
+	}
+	// The wizard environment points PNPM_HOME there; childEnvironment adds pnpm's own folders.
+	const wizard = homeDecision({ weak: { [W_LOCAL]: "target-acl-mask" } }).wizard();
+	assert.deepEqual(wizard.env, { ...homeEnv, PNPM_HOME: W_PRIVATE });
+});
+
+test("a weak default that already holds files, a weak or foreign private folder, or a weak user PNPM_HOME blocks", () => {
+	const installed = homeDecision({ dirs: [W_DEFAULT, `${W_DEFAULT}\\store`], weak: { [W_DEFAULT]: "target-acl-mask" } });
+	assert.deepEqual(installed.decide(), { available: true, path: W_DEFAULT, source: "default", untrusted: finding(W_DEFAULT), installed: true });
+	assert.deepEqual(installed.walked, [W_DEFAULT], "the private folder is never considered");
+	const file = homeDecision({ files: { [W_DEFAULT]: "" }, weak: { [W_DEFAULT]: "target-owner" } });
+	assert.equal(file.decide().installed, true, "anything but an empty real directory counts as installed");
+	const foreign = homeDecision({ dirs: [W_PRIVATE], files: { [`${W_PRIVATE}\\notes.txt`]: "x" }, weak: { [W_LOCAL]: "target-acl-mask" } });
+	assert.deepEqual(foreign.decide(), { available: true, path: W_DEFAULT, source: "default", untrusted: finding(W_LOCAL), private: { path: W_PRIVATE, foreign: true } });
+	const forged = homeDecision({ dirs: [W_PRIVATE], files: { [`${W_PRIVATE}\\.gentle-shell-pnpm-home`]: "other text" }, weak: { [W_LOCAL]: "target-acl-mask" } });
+	assert.equal(forged.decide().private?.foreign, true);
+	const weakPrivate = homeDecision({ weak: { [W_LOCAL]: "target-acl-mask", "C:\\Users\\m": "target-owner" } });
+	assert.deepEqual(weakPrivate.decide(), { available: true, path: W_DEFAULT, source: "default", untrusted: finding(W_LOCAL),
+		private: { path: W_PRIVATE, untrusted: finding("C:\\Users\\m", "target-owner") } });
+	const user = homeDecision({ env: { ...homeEnv, Pnpm_Home: "C:\\pnpm\\" }, weak: { "C:\\": "target-acl-mask" } });
+	assert.deepEqual(user.decide(), { available: true, path: "C:\\pnpm", source: "user", untrusted: finding("C:\\") });
+	assert.deepEqual(user.walked, ["C:\\"], "a set PNPM_HOME is walked; absent here, so its nearest existing ancestor is");
+	assert.throws(() => homeDecision({ env: { ...homeEnv, PNPM_HOME: "D:\\pnpm" } }).decide(), /Unknown Windows PNPM_HOME/, "a drive with no existing folder");
+	// Blockers never change the wizard environment.
+	assert.deepEqual(installed.wizard().env, homeEnv);
+	// An unknowable home is null, as for pnpmGlobalBin; a policy denial or failed walk is a failed check.
+	assert.equal(homeDecision({ env: { ...homeEnv, PNPM_HOME: "relative" } }).decide(), null);
+	assert.equal(homeDecision({ env: { USERPROFILE: "C:\\Users\\m" } }).decide(), null);
+	const policy = homeDecision({ throws: Object.assign(new Error("Windows ACL evidence rejected"), { check: "policy" }) });
+	assert.throws(() => policy.decide());
+	assert.deepEqual(policy.wizard(), { env: homeEnv, pnpmHome: { available: null, failed: true } });
+});
+
+// The private PNPM_HOME is claimed after consent with the bootstrap claim's exact
+// private-ACL primitives; only a marked or empty folder is ever kept or adopted.
+test("the private PNPM_HOME claim reuses the bootstrap's protected DACL and readback, and adopts nothing foreign", () => {
+	const source = readFileSync(new URL("../scripts/installer-windows.mjs", import.meta.url), "utf8");
+	const claim = source.split("const pnpmHomeClaim = String.raw`")[1].split("`;")[0];
+	const bootstrap = cmdStage(stageMarkers.claim).replaceAll("$tools", "$target");
+	for (const statement of [
+		"$acl = New-Object Security.AccessControl.DirectorySecurity; $acl.SetOwner($me); $acl.SetAccessRuleProtection($true,$false);",
+		"foreach ($sid in @($me.Value,'S-1-5-18','S-1-5-32-544')) {",
+		"$identity = New-Object Security.Principal.SecurityIdentifier($sid);",
+		"$rule = New-Object Security.AccessControl.FileSystemAccessRule($identity,'FullControl','ContainerInherit,ObjectInherit','None','Allow'); $acl.AddAccessRule($rule);",
+		"}; [IO.Directory]::SetAccessControl($target,$acl);",
+		"$verified = [IO.Directory]::GetAccessControl($target); if (-not $verified.AreAccessRulesProtected) { throw 'protected-dacl' };",
+		"if ($verified.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $me.Value) { throw 'private-owner' };",
+		"foreach ($rule in $verified.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) { if ($rule.AccessControlType -ne 'Allow' -or @($me.Value,'S-1-5-18','S-1-5-32-544') -notcontains $rule.IdentityReference.Value) { throw 'private-ace' } };",
+	]) {
+		assert.ok(bootstrap.includes(statement), `bootstrap: ${statement}`);
+		assert.ok(claim.includes(statement), `claim: ${statement}`);
+	}
+	assert.ok(claim.includes("if (@(Get-ChildItem -LiteralPath $target -Force).Count -ne 0) {"), "only an empty folder is adopted");
+	assert.ok(claim.includes("(Get-Content -LiteralPath $marker -Raw) -ne 'gentle-pi private pnpm home') { throw 'foreign' };"), "a non-empty one must carry the exact marker");
+	assert.ok(claim.includes("if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'foreign' };"));
+	assert.ok(claim.indexOf("throw 'private-ace'") < claim.indexOf("$null = New-Item -ItemType File -Path $marker"), "marked only after the readback");
+	assert.ok(claim.includes("if ($created) { Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue };"), "only a folder this run created is removed");
+	assert.equal(windowsModule.privatePnpmHome.text, "gentle-pi private pnpm home");
+	// The Node side accepts only the fixed results, then walks the folder again.
+	if (process.platform !== "win32") assert.throws(() => windowsModule.ensureWindowsPnpmHome(W_PRIVATE, homeEnv, { processAdapter: () => "claimed" }), /Native Windows/);
+});
+
+// R2: the claim also creates the children's TEMP/TMP folder inside the claimed
+// home, after the DACL readback, so it inherits that protected DACL; the Node side
+// walks both before any command runs.
+test("prepare-pnpm-home creates the private tmp folder inside the claimed home and walks it", () => {
+	const source = readFileSync(new URL("../scripts/installer-windows.mjs", import.meta.url), "utf8");
+	const claim = source.split("const pnpmHomeClaim = String.raw`")[1].split("`;")[0];
+	const tmp = claim.indexOf("$temp = Join-Path $target 'tmp';");
+	assert.ok(tmp > claim.indexOf("throw 'private-ace'"), "after the readback");
+	assert.ok(claim.includes("if (Test-Path -LiteralPath $temp) { $folder = Get-Item -LiteralPath $temp -Force; if (-not $folder.PSIsContainer -or ($folder.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'foreign' } } else { $null = New-Item -ItemType Directory -Path $temp };"));
+	assert.ok(tmp < claim.indexOf("  $result\n"), "also for a kept home");
+	for (const output of ["claimed", "kept"]) {
+		const walked: string[] = []; const scripts: string[] = [];
+		const result = windowsModule.ensureWindowsPnpmHome(W_PRIVATE, homeEnv, { platform: "win32",
+			processAdapter: (_command: string, args: string[], env: Record<string, string>) => { scripts.push(args[4]); assert.equal(env.GENTLE_WINDOWS_PNPM_HOME, W_PRIVATE); return output; },
+			storage: (path: string) => { walked.push(path); } });
+		assert.equal(result, output);
+		assert.deepEqual(walked, [W_PRIVATE, `${W_PRIVATE}\\tmp`]);
+		assert.equal(scripts[0], claim);
+	}
+	assert.equal(windowsModule.privatePnpmHome.temp, "tmp");
 });
 
 test("production and fixture PowerShell never depend on autoloading Microsoft.PowerShell.Security", () => {
@@ -829,7 +1079,8 @@ function observeStage(stage: string) {
 }
 function cmdComposition(stages: string[]) {
 	return ["@echo off", "setlocal DisableDelayedExpansion", 'set "GENTLE_BOOTSTRAP_PS=%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"',
-		...stages.flatMap((stage) => [...observeStage(stage).split("\n"), "if errorlevel 1 exit /b 1"]),
+		// The stage's own code is kept: a claim reports its fallback with exit 2.
+		...stages.flatMap((stage) => [...observeStage(stage).split("\n"), "if errorlevel 1 exit /b %errorlevel%"]),
 		"echo fixture-sentinel", "exit /b 0", ""].join("\r\n");
 }
 
@@ -873,6 +1124,11 @@ test("native fixture compositions retain exact production fragments and no trans
 	assert.match(owner, /GetOwner\(\[Security\.Principal\.SecurityIdentifier\]\)\.Value -ne \$me\.Value\) \{ throw 'Fixture owner not established' \}/);
 	assert.match(owner, /'Not fixture-owned'/);
 	assert.doesNotMatch(owner, /HttpWebRequest|ExecutionPolicy|Invoke-Expression|\.ps1\b|AddAccessRule|SetAccessRule/);
+	// The Administrators variant only changes the owner it sets, and never on the fixture root.
+	const administrators = cmdComposition([fixtureAdministratorsOwnerSetup]);
+	assert.match(administrators, /\$me = New-Object Security\.Principal\.SecurityIdentifier\('S-1-5-32-544'\); \$acl = \[IO\.Directory\]::GetAccessControl\(\$target\); \$acl\.SetOwner\(\$me\)/);
+	assert.match(administrators, /if \(\(-not \$target\.StartsWith\(\$root/);
+	assert.doesNotMatch(administrators, /GetCurrent\(\)|AddAccessRule|SetAccessRule/);
 });
 
 interface NativeResult {
@@ -1001,15 +1257,16 @@ const fixtureAclSetup = `"%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteract
   "$root = [IO.Path]::GetFullPath($env:GENTLE_FIXTURE_ROOT); $target = [IO.Path]::GetFullPath($env:GENTLE_FIXTURE_ACL_TARGET);" ^
   "if (-not $target.StartsWith($root + [IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase) -or (Get-Content -LiteralPath (Join-Path $root '.fixture-owned') -Raw) -ne 'gentle Windows acceptance fixture') { throw 'Not fixture-owned' };" ^
   "$item = Get-Item -LiteralPath $target -Force; if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Unsafe fixture' };" ^
-  "$rights = [int]$env:GENTLE_FIXTURE_RIGHTS; if (@(4,2,16,256,64,65536,262144,524288) -notcontains $rights) { throw 'Unknown fixture right' };" ^
+  "$rights = [int]$env:GENTLE_FIXTURE_RIGHTS; if (@(4,2,16,256,64,65536,262144,524288,1245631) -notcontains $rights) { throw 'Unknown fixture right' };" ^
   "$acl = [IO.Directory]::GetAccessControl($target); $sid = New-Object Security.Principal.SecurityIdentifier('S-1-1-0');" ^
   "$rule = New-Object Security.AccessControl.FileSystemAccessRule($sid,$rights,'None','None','Allow'); $acl.SetAccessRule($rule); [IO.Directory]::SetAccessControl($target,$acl);" ^
   "}"`;
 
 // Elevated Windows Server runners create directories owned by BUILTIN\Administrators,
 // while the User Profile Service creates a real %LOCALAPPDATA% owned by the user.
-// Production's home-owner check stays strict, so a fixture directory used as
-// LOCALAPPDATA gets the invoking SID as owner and is read back before any stage.
+// Production's home-owner check accepts the user, SYSTEM or Administrators; a fixture
+// directory used as LOCALAPPDATA still gets the invoking SID as owner, read back
+// before any stage, so only the check under test can reject a claim.
 const fixtureOwnerSetup = `"%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
   "& { $ErrorActionPreference = 'Stop';" ^
   "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'Policy constrained' };" ^
@@ -1019,6 +1276,11 @@ const fixtureOwnerSetup = `"%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonIntera
   "$me = [Security.Principal.WindowsIdentity]::GetCurrent().User; $acl = [IO.Directory]::GetAccessControl($target); $acl.SetOwner($me); [IO.Directory]::SetAccessControl($target,$acl);" ^
   "if (([IO.Directory]::GetAccessControl($target)).GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $me.Value) { throw 'Fixture owner not established' };" ^
   "}"`;
+// An elevated Administrators member may hand a new fixture directory to BUILTIN\Administrators,
+// the owner the tester's new folders had; read back before any stage runs.
+const fixtureAdministratorsOwnerSetup = fixtureOwnerSetup
+	.replace("$me = [Security.Principal.WindowsIdentity]::GetCurrent().User;", "$me = New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544');")
+	.replace("($target -ne $root -and -not $target.StartsWith(", "(-not $target.StartsWith(");
 async function ownFixtureDirectory(root: string, target: string) {
 	const result = await nativeCmd(root, [fixtureOwnerSetup], { ...nativeEnv(root), GENTLE_FIXTURE_OWNER_TARGET: target });
 	assert.equal(result.status, 0, `fixture could not own its LOCALAPPDATA directory; stderr: ${result.stderr.slice(0, 4000)}`);
@@ -1119,6 +1381,183 @@ test("native Windows: production checks reject an owned fixture junction without
 		assert.equal(readFileSync(join(target, "unrelated"), "utf8"), "preserve");
 		assert.equal(existsSync(join(target, "new-claim")), false);
 		assert.equal(existsSync(join(home, "new-claim")), false);
+	} finally { f.cleanup(); }
+});
+
+// S1, the tester's layout: another principal may modify %LOCALAPPDATA% (0x1301bf)
+// and new folders belong to Administrators. Fixture folders stand in for both
+// bases; every ancestor above them is the runner's real path, walked as usual.
+const modifyRights = 0x1301bf;
+function candidateEnv(root: string, local: string, profile: string) {
+	return { ...nativeEnv(root, join(local, ".gentle-shell-bootstrap-tools.primary")), LOCALAPPDATA: local, USERPROFILE: profile,
+		GENTLE_BOOTSTRAP_FALLBACK_TOOLS: join(profile, ".gentle-shell-bootstrap-tools.fallback") };
+}
+async function grantEveryone(root: string, target: string, rights: number) {
+	assertNative(await nativeCmd(root, [fixtureAclSetup], { ...nativeEnv(root), GENTLE_FIXTURE_ACL_TARGET: target, GENTLE_FIXTURE_RIGHTS: String(rights) }), 0);
+}
+async function ownByAdministrators(root: string, target: string) {
+	const result = await nativeCmd(root, [fixtureAdministratorsOwnerSetup], { ...nativeEnv(root), GENTLE_FIXTURE_OWNER_TARGET: target });
+	assert.equal(result.status, 0, `fixture could not hand its directory to Administrators; stderr: ${result.stderr.slice(0, 4000)}`);
+}
+function candidateLine(stderr: string, base: string) {
+	return stderr.split(/\r?\n/).find((line) => line.startsWith(`Bootstrap: storage candidate ${base}: `)) ?? "";
+}
+
+test("native Windows: a %LOCALAPPDATA% another principal may modify falls back to an Administrators-owned %USERPROFILE%", { skip: nativeUnavailable }, async () => {
+	const f = await ownedNativeFixture();
+	try {
+		const local = join(f.root, "local"); const profile = join(f.root, "profile"); mkdirSync(local); mkdirSync(profile);
+		await grantEveryone(f.root, local, modifyRights);
+		await ownByAdministrators(f.root, profile);
+		const env = candidateEnv(f.root, local, profile);
+		const result = await nativeCmd(f.root, [cmdStage(stageMarkers.claim)], env);
+		assertNative(result, 2);
+		assert.equal(result.stderr.trim(), "");
+		assert.equal(existsSync(env.GENTLE_BOOTSTRAP_TOOLS), false, "nothing is created under the writable base");
+		// Exit 2 follows the claim's own private-owner readback: the user owns the new folder.
+		assert.equal(readFileSync(join(env.GENTLE_BOOTSTRAP_FALLBACK_TOOLS, ".bootstrap-owned"), "utf8"), "gentle-pi prerequisite tooling only");
+		// The Node side accepts the same location and still rejects the writable base.
+		verifyWindowsStorage(env.GENTLE_BOOTSTRAP_FALLBACK_TOOLS, env);
+		assert.throws(() => verifyWindowsStorage(local, env), (error: { check?: string }) => error.check === "target-acl-mask");
+		// Without a fallback candidate the same base fails acl-mask as before.
+		const alone: NodeJS.ProcessEnv = { ...env }; delete alone.GENTLE_BOOTSTRAP_FALLBACK_TOOLS;
+		assertClaimRejected(await nativeCmd(f.root, [cmdStage(stageMarkers.claim)], alone), "acl-mask");
+		assert.equal(existsSync(env.GENTLE_BOOTSTRAP_TOOLS), false);
+		// A base owned by Administrators (home-owner) is now a valid first candidate too.
+		const owned = { ...candidateEnv(f.root, profile, local), GENTLE_BOOTSTRAP_TOOLS: join(profile, ".gentle-shell-bootstrap-tools.direct") };
+		assertNative(await nativeCmd(f.root, [cmdStage(stageMarkers.claim)], owned), 0);
+		verifyWindowsStorage(owned.GENTLE_BOOTSTRAP_TOOLS, owned);
+	} finally { f.cleanup(); }
+});
+
+test("native Windows: when both candidates fail, the claim names each folder, principal and rights", { skip: nativeUnavailable }, async () => {
+	const f = await ownedNativeFixture();
+	try {
+		const local = join(f.root, "local"); const weak = join(f.root, "weak"); const profile = join(weak, "profile");
+		mkdirSync(local); mkdirSync(profile, { recursive: true });
+		await grantEveryone(f.root, local, modifyRights);
+		// A distant ancestor of the fallback that another principal may write still rejects it.
+		await grantEveryone(f.root, weak, 2);
+		const env = candidateEnv(f.root, local, profile);
+		const result = await nativeCmd(f.root, [cmdStage(stageMarkers.claim)], env);
+		assertClaimRejected(result, "acl-mask");
+		assert.match(candidateLine(result.stderr, local), /: acl-mask at .+: S-1-1-0( \([^)]+\))? allowed 0x001301BF$/, result.stderr);
+		assert.match(candidateLine(result.stderr, profile), /: acl-mask at .+\\weak: S-1-1-0( \([^)]+\))? allowed 0x00100002$/, result.stderr);
+		assert.equal(existsSync(env.GENTLE_BOOTSTRAP_TOOLS), false);
+		assert.equal(existsSync(env.GENTLE_BOOTSTRAP_FALLBACK_TOOLS), false);
+		const inside = join(profile, "tools"); mkdirSync(inside);
+		assert.throws(() => verifyWindowsStorage(inside, env), (error: { check?: string }) => error.check === "ancestor-acl-mask");
+	} finally { f.cleanup(); }
+});
+
+test("native Windows: a user pnpm in a folder another principal may write is never run and the verified pnpm is acquired", { skip: nativeUnavailable }, async () => {
+	const f = await ownedNativeFixture();
+	try {
+		const env = nativeEnv(f.root);
+		assertNative(await nativeCmd(f.root, [cmdStage(stageMarkers.claim)], env), 0);
+		const commands = join(f.root, "commands"); pnpmWrapperDirectory(commands);
+		await grantEveryone(f.root, commands, modifyRights);
+		const ran: string[] = [];
+		const result = await ensureWindowsPnpm({ tools: env.GENTLE_BOOTSTRAP_TOOLS, env: nativePath([commands], env), adapters: {
+			download: async () => pnpmTar(), digest, process: (command: string, args: string[]) => { ran.push(command); return cliProcess(command, args); } } });
+		assert.equal(result.acquired, true);
+		assert.deepEqual(result.prefix, [join(env.GENTLE_BOOTSTRAP_TOOLS, "pnpm", "package", "bin", "pnpm.mjs")]);
+		assert.equal(ran.some((command) => command.startsWith(commands)), false, "the untrusted wrapper's Node never runs");
+	} finally { f.cleanup(); }
+});
+
+// S6 on a real Windows host: fixture folders stand in for %LOCALAPPDATA% and
+// %USERPROFILE%; every ancestor above them is the runner's real path. The
+// runner's own PNPM_HOME, if any, is dropped so pnpm's default applies.
+function withoutPnpmHome(env: NodeJS.ProcessEnv, changes: Record<string, string>) {
+	return { ...Object.fromEntries(Object.entries(env).filter(([key]) => key.toUpperCase() !== "PNPM_HOME")), ...changes } as Record<string, string>;
+}
+test("native Windows: a weak default PNPM_HOME holding nothing makes the plan use a claimed private %USERPROFILE%\\.pnpm", { skip: nativeUnavailable }, async () => {
+	const f = await ownedNativeFixture();
+	try {
+		const local = join(f.root, "local"); const profile = join(f.root, "profile"); mkdirSync(local); mkdirSync(profile);
+		await grantEveryone(f.root, local, modifyRights);
+		const env = withoutPnpmHome(process.env, { LOCALAPPDATA: local, USERPROFILE: profile });
+		const own = join(profile, ".pnpm");
+		const decided = windowsModule.windowsWizardEnvironment({ env });
+		assert.equal(decided.pnpmHome.source, "private", JSON.stringify(decided.pnpmHome));
+		assert.equal(decided.pnpmHome.path, own);
+		assert.deepEqual([decided.pnpmHome.rejected.path, decided.pnpmHome.rejected.check, decided.pnpmHome.rejected.sid, decided.pnpmHome.rejected.rights],
+			[join(local, "pnpm"), "target-acl-mask", "S-1-1-0", "0x001301BF"]);
+		assert.equal(decided.env.PNPM_HOME, own);
+		const plan = planPreflight({ platform: "win32", arch: "x64", node: { available: false }, pnpm: { available: false }, pi: { available: false }, shell: { available: false },
+			gentleAi: { available: false }, go: { available: true, version: "1.26.0", usable: true }, globalBin: { available: true, path: join(own, "bin"), writable: true, onPath: false },
+			setup: false, pnpmHome: decided.pnpmHome });
+		assert.deepEqual([plan.blockers, plan.tools.pnpmHome.status, plan.tools.pnpmHome.path], [[], "private", own]);
+		assert.equal(existsSync(own), false, "nothing is created before consent");
+		// After consent: claimed with the protected DACL and owned by the user (the walk passes), then kept.
+		assert.equal(windowsModule.ensureWindowsPnpmHome(own, env), "claimed");
+		// Its tmp folder (the children's TEMP/TMP) exists and, inheriting the DACL, passed the same walk.
+		assert.equal(existsSync(join(own, "tmp")), true);
+		verifyWindowsStorage(own, env);
+		assert.equal(readFileSync(join(own, ".gentle-shell-pnpm-home"), "utf8"), "gentle-pi private pnpm home");
+		mkdirSync(join(own, "bin"));
+		assert.equal(windowsModule.ensureWindowsPnpmHome(own, env), "kept");
+		assert.equal(windowsModule.windowsPnpmHome({ env }).source, "private", "the folder this flow created is accepted again");
+		// A foreign non-empty folder is never adopted.
+		const other = join(f.root, "other-profile"); mkdirSync(join(other, ".pnpm"), { recursive: true }); writeFileSync(join(other, ".pnpm", "notes.txt"), "keep");
+		const foreign = windowsModule.windowsPnpmHome({ env: { ...env, USERPROFILE: other } });
+		assert.equal(foreign.private?.foreign, true, JSON.stringify(foreign));
+		assert.throws(() => windowsModule.ensureWindowsPnpmHome(join(other, ".pnpm"), env), (error: { check?: string }) => error.check === "foreign");
+		assert.equal(readFileSync(join(other, ".pnpm", "notes.txt"), "utf8"), "keep");
+	} finally { f.cleanup(); }
+});
+
+test("native Windows: a weak default PNPM_HOME that already holds files blocks and names the folder, principal and rights", { skip: nativeUnavailable }, async () => {
+	const f = await ownedNativeFixture();
+	try {
+		const local = join(f.root, "local"); const profile = join(f.root, "profile");
+		mkdirSync(join(local, "pnpm", "store"), { recursive: true }); mkdirSync(profile);
+		await grantEveryone(f.root, join(local, "pnpm"), modifyRights);
+		const env = withoutPnpmHome(process.env, { LOCALAPPDATA: local, USERPROFILE: profile });
+		const decided = windowsModule.windowsWizardEnvironment({ env });
+		assert.equal(decided.pnpmHome.installed, true, JSON.stringify(decided.pnpmHome));
+		// The walk reports the component as Windows PowerShell's GetFullPath resolves it
+		// (long form); the fixture's tmpdir may be an 8.3 short path such as RUNNER~1.
+		assert.equal(decided.pnpmHome.path, join(local, "pnpm"), "the configured folder is kept as the user's environment spells it");
+		assert.deepEqual([realpathSync.native(decided.pnpmHome.untrusted.at), decided.pnpmHome.untrusted.sid, decided.pnpmHome.untrusted.rights],
+			[realpathSync.native(join(local, "pnpm")), "S-1-1-0", "0x001301BF"]);
+		assert.equal(decided.env, env, "the environment is unchanged");
+		const plan = planPreflight({ platform: "win32", arch: "x64", node: { available: false }, pnpm: { available: false }, pi: { available: false }, shell: { available: false },
+			gentleAi: { available: false }, go: { available: false }, globalBin: { available: false }, setup: false, pnpmHome: decided.pnpmHome });
+		assert.ok(plan.blockers.some((blocker: { code: string }) => blocker.code === "untrusted-pnpm-home"));
+		assert.equal(existsSync(join(profile, ".pnpm")), false);
+		assert.deepEqual(readdirSync(join(local, "pnpm")), ["store"], "nothing is moved or deleted");
+		// A PNPM_HOME the user set is held to the same walk.
+		const user = windowsModule.windowsPnpmHome({ env: { ...env, PNPM_HOME: join(local, "pnpm") } });
+		assert.deepEqual([user.source, user.untrusted?.check], ["user", "target-acl-mask"]);
+	} finally { f.cleanup(); }
+});
+
+test("native Windows: the wizard probe never runs a pnpm in a folder another principal may write", { skip: nativeUnavailable }, async () => {
+	const f = await ownedNativeFixture();
+	try {
+		const tools = join(f.root, ".gentle-shell-bootstrap-tools.probe"); mkdirSync(tools);
+		const entry = join(tools, "pnpm.mjs"); writeFileSync(entry, "console.log('11.1.1');\n");
+		const weakBin = join(f.root, "weak-bin"); mkdirSync(weakBin);
+		const exe = join(weakBin, "pnpm.exe"); copyFileSync(process.execPath, exe);
+		const home = join(f.root, "home"); mkdirSync(home);
+		const env = withoutPnpmHome(nativePath([weakBin, join(process.env.SystemRoot!, "System32")]),
+			{ PNPM_HOME: home, GENTLE_BOOTSTRAP_TOOLS: tools, GENTLE_INSTALL_PNPM_NODE: process.execPath, GENTLE_INSTALL_PNPM_ENTRY: entry });
+		const adapters = hostAdapters();
+		const probe = async () => {
+			const ran: string[] = [];
+			const run = (command: string, args: string[], options: Parameters<typeof adapters.run>[2]) => { ran.push(command); return adapters.run(command, args, options); };
+			const result = await createProbes({ platform: "win32", env, run, fs: adapters.fs }).pnpm();
+			return { result, ran };
+		};
+		// Control: in a private folder the user's pnpm.exe is run for its version.
+		const trusted = await probe();
+		assert.ok(trusted.ran.some((command) => command.toLowerCase() === exe.toLowerCase()), JSON.stringify(trusted));
+		await grantEveryone(f.root, weakBin, modifyRights);
+		const weak = await probe();
+		assert.equal(weak.ran.some((command) => command.toLowerCase() === exe.toLowerCase()), false, JSON.stringify(weak));
+		assert.deepEqual(weak.result, { available: true, version: "11.1.1", usable: true, compatible: true, persistent: false });
 	} finally { f.cleanup(); }
 });
 

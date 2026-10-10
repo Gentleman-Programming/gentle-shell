@@ -12,6 +12,7 @@ const LOG_LIMIT = 200;
 /** Human labels for every step the runner logs. Unknown ids are shown as-is. */
 export const stepLabels = Object.freeze({
 	gate: "Safety checks",
+	"prepare-pnpm-home": "Create the private pnpm folder",
 	"check-npm": "Check npm",
 	"check-global-bin": "Check the pnpm global bin directory",
 	"check-existing-stack": "Check for an existing installation",
@@ -57,6 +58,7 @@ const toolLabels = Object.freeze({
 	gentleAi: "Gentle AI",
 	go: "Go",
 	globalBin: "pnpm global bin directory",
+	pnpmHome: "pnpm home folder",
 	setup: "Gentle Shell setup",
 	target: "This computer",
 });

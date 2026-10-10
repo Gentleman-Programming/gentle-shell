@@ -30,7 +30,7 @@ const bootstrapEnv = { HOME, PATH: `${TOOLS}/node/bin:${TOOLS}/pnpm/bin:/usr/bin
 function probes({ env = bootstrapEnv as Record<string, string>, files = [] as string[], dirs = [HOME] as string[],
 	writable = [HOME] as string[], others = [] as string[], realpaths = {} as Record<string, string>,
 	texts = {} as Record<string, string>, results = {} as Record<string, Result | (() => Result)>,
-	integrity = { ok: true } as object, platform = "linux" } = {}) {
+	integrity = { ok: true } as object, platform = "linux", storage = (() => {}) as (file: string) => void, pnpmHome = undefined as object | undefined } = {}) {
 	const calls: Call[] = [];
 	const unexpected: string[] = [];
 	const fileSet = new Set(files);
@@ -39,6 +39,8 @@ function probes({ env = bootstrapEnv as Record<string, string>, files = [] as st
 	const instance = createProbes({
 		platform,
 		env,
+		storage,
+		pnpmHome,
 		run: async (command: string, args: string[], options: { env: Record<string, string>; deadlineMs: number; cwd?: string }) => {
 			calls.push({ command, args, env: options.env, deadlineMs: options.deadlineMs, ...(options.cwd === undefined ? {} : { cwd: options.cwd }) });
 			const key = [command, ...args].join(" ");
@@ -765,4 +767,62 @@ test("host run settles at the deadline even when the child's stdout never closes
 	assert.equal((spawned[0][2] as { shell: boolean }).shell, false);
 	// A late close after the deadline does not change the settled result.
 	child.emit("close", 0, null);
+});
+
+// S6: a pnpm whose storage fails the walk is never run, not even with --version.
+const W_PRIVATE = "C:\\Users\\u\\.pnpm";
+test("Windows: the user's pnpm in a folder another principal may write is never run; the bootstrap's pnpm is used", async () => {
+	const bin = `${W_LOCAL}\\pnpm\\bin`;
+	const exe = `${W_LOCAL}\\pnpm\\global\\v11\\5f1a\\node_modules\\@pnpm\\exe\\pnpm.exe`;
+	const walked: string[] = [];
+	const layout = (storage: (file: string) => void) => probes({ platform: "win32", storage,
+		env: { LOCALAPPDATA: W_LOCAL, USERPROFILE: "C:\\Users\\u", PNPM_HOME: W_PRIVATE, Path: bin, GENTLE_BOOTSTRAP_TOOLS: W_TOOLS,
+			GENTLE_INSTALL_PNPM_NODE: W_TOOLS_NODE, GENTLE_INSTALL_PNPM_ENTRY: W_TOOLS_ENTRY },
+		files: [`${bin}\\pnpm.cmd`, exe],
+		texts: { [`${bin}\\pnpm.cmd`]: "@SETLOCAL\r\n@\"%~dp0\\..\\global\\v11\\5f1a\\node_modules\\@pnpm\\exe\\pnpm.exe\"   %*\r\n" },
+		results: { [`${W_TOOLS_NODE} ${W_TOOLS_ENTRY} --version`]: { code: 0, stdout: "11.1.1\r\n" }, [`${exe} --version`]: { code: 0, stdout: "10.0.0\r\n" } } });
+	const weak = layout((file) => {
+		walked.push(file);
+		if (file.startsWith(`${W_LOCAL}\\pnpm`)) throw Object.assign(new Error("Windows ACL evidence rejected"), { check: "parent-acl-mask" });
+	});
+	assert.deepEqual(await weak.probes.pnpm(), { available: true, version: "11.1.1", usable: true, compatible: true, persistent: false });
+	assert.equal(weak.calls.some((call) => call.command === exe), false, "the untrusted pnpm.exe never runs");
+	assert.ok(walked.includes(`${bin}\\pnpm.cmd`), "its shim is walked before anything runs");
+	// Any failed walk, not only a rejection code, means it is not usable.
+	const unknown = layout(() => { throw new Error("Windows prerequisite process failed"); });
+	await unknown.probes.pnpm();
+	assert.equal(unknown.calls.some((call) => call.command === exe), false);
+	// A trusted one is still run for the version it reports, as before.
+	const trusted = layout(() => {});
+	assert.deepEqual(await trusted.probes.pnpm(), { available: true, version: "11.1.1", usable: true, compatible: true, persistent: false, found: "10.0.0" });
+});
+
+test("Windows: a private PNPM_HOME not created yet holds no global packages, so pnpm list -g never runs before consent", async () => {
+	const env = { LOCALAPPDATA: W_LOCAL, USERPROFILE: "C:\\Users\\u", PNPM_HOME: W_PRIVATE, Path: "C:\\Windows",
+		GENTLE_INSTALL_PNPM_NODE: W_TOOLS_NODE, GENTLE_INSTALL_PNPM_ENTRY: W_TOOLS_ENTRY };
+	const pnpmHome = { available: true, path: W_PRIVATE, source: "private", rejected: { path: `${W_LOCAL}\\pnpm`, check: "target-acl-mask" } };
+	const absentHome = probes({ platform: "win32", env, pnpmHome, dirs: ["C:\\Users\\u"] });
+	assert.deepEqual([await absentHome.probes.shell(), await absentHome.probes.pi(), await absentHome.probes.gentleAi(), await absentHome.probes.setup()],
+		[{ available: false }, { available: false }, { available: false }, false]);
+	assert.deepEqual(absentHome.calls, []);
+	// Once it exists (created by an earlier run), its packages are listed as usual.
+	const existing = probes({ platform: "win32", env, pnpmHome, dirs: ["C:\\Users\\u", W_PRIVATE],
+		results: { [`${W_TOOLS_NODE} ${W_TOOLS_ENTRY} ${LIST}`]: { code: 0, stdout: "[]" } } });
+	assert.deepEqual(await existing.probes.shell(), { available: false });
+	assert.equal(existing.calls.length, 1);
+	assert.equal(existing.calls[0].env.PNPM_HOME, W_PRIVATE);
+});
+
+test("Windows: with a blocked PNPM_HOME decision the real probes run no command and the plan blocks", async () => {
+	const pnpmHome = { available: true, path: `${W_LOCAL}\\pnpm`, source: "default", installed: true,
+		untrusted: { check: "target-acl-mask", at: `${W_LOCAL}\\pnpm`, sid: "S-1-5-21-1", rights: "0x001301BF" } };
+	const env = { LOCALAPPDATA: W_LOCAL, USERPROFILE: "C:\\Users\\u", Path: `${W_LOCAL}\\pnpm\\bin;${W_NODE_DIR}`, PATHEXT: ".COM;.EXE;.BAT;.CMD",
+		GENTLE_INSTALL_PNPM_NODE: W_TOOLS_NODE, GENTLE_INSTALL_PNPM_ENTRY: W_TOOLS_ENTRY };
+	const walked: string[] = [];
+	const h = probes({ platform: "win32", env, pnpmHome, storage: (file) => { walked.push(file); },
+		files: [W_NODE, `${W_NODE_DIR}\\npm.cmd`, W_NPM_CLI, `${W_LOCAL}\\pnpm\\bin\\npm.cmd`], texts: { [`${W_NODE_DIR}\\npm.cmd`]: nodeNpmCmd },
+		results: { [`${W_NODE} --version`]: { code: 0, stdout: "v24.18.0\r\n" }, [`${W_NODE} ${W_NPM_CLI} --version`]: { code: 0, stdout: "11.6.2\r\n" } } });
+	const inventory = await collectInventory({ platform: "win32", arch: "x64", probes: h.probes, pnpmHome });
+	assert.deepEqual([h.calls, walked], [[], []], "no command runs and nothing is walked");
+	assert.deepEqual(planPreflight(inventory).blockers, [{ code: "untrusted-pnpm-home", tool: "pnpmHome" }]);
 });

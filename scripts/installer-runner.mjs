@@ -33,6 +33,7 @@ export const blockedReasons = Object.freeze([
 	"go-required",
 	"unsupported-plan",
 	"pnpm-home-unknown",
+	"pnpm-home-changed",
 	"node-unavailable",
 	"pnpm-unavailable",
 	"npm-unavailable",
@@ -44,6 +45,7 @@ export const blockedReasons = Object.freeze([
 ]);
 /** Every `failedStep` a `failed` outcome can carry (for host guidance; no behavior). */
 export const failedSteps = Object.freeze([
+	"prepare-pnpm-home",
 	"persist-node",
 	"persist-package-managers",
 	"persist-npm",
@@ -216,12 +218,25 @@ function envValue(env, name, platform) {
 	return key === undefined ? undefined : env[key];
 }
 
-/** Child env: the user's env plus PNPM_HOME and `$PNPM_HOME/bin` first on PATH. */
-export function childEnvironment(env, platform, globalBin) {
+/** Child env: the user's env plus PNPM_HOME and `$PNPM_HOME/bin` first on PATH.
+ * With a private Windows PNPM_HOME (S6), pnpm's config, cache and state move into
+ * it too, unless the user set those folders: pnpm otherwise keeps them under
+ * %LOCALAPPDATA%, which another principal may write, and trusts its cached registry
+ * metadata for exact versions. TEMP and TMP always move to its `tmp` folder
+ * (created by prepare-pnpm-home), so a postinstall's os.tmpdir(), such as the
+ * Gentle AI source build, stays private. Only these children get them; nothing
+ * persists them.
+ */
+export function childEnvironment(env, platform, globalBin, { privateHome = false } = {}) {
 	const path = platform === "win32" ? win32 : posix;
 	const key = pathKeyOf(env, platform);
 	const rest = String(env[key] ?? "").split(path.delimiter).filter((entry) => entry.length > 0);
-	return { ...env, PNPM_HOME: globalBin.pnpmHome, [key]: [globalBin.path, ...rest].join(path.delimiter) };
+	const isolate = platform === "win32" && privateHome;
+	const xdg = isolate ? Object.fromEntries([["XDG_CONFIG_HOME", ".config"], ["XDG_CACHE_HOME", ".cache"], ["XDG_STATE_HOME", ".state"]]
+		.filter(([name]) => envValue(env, name, platform) === undefined).map(([name, folder]) => [name, win32.join(globalBin.pnpmHome, folder)])) : {};
+	const temp = isolate ? win32.join(globalBin.pnpmHome, "tmp") : null;
+	const kept = isolate ? Object.fromEntries(Object.entries(env).filter(([name]) => !/^(?:TEMP|TMP)$/i.test(name))) : env;
+	return { ...kept, PNPM_HOME: globalBin.pnpmHome, ...xdg, ...(temp ? { TEMP: temp, TMP: temp } : {}), [key]: [globalBin.path, ...rest].join(path.delimiter) };
 }
 
 /** A build child's env: `env` with the pinned Go's bin directory first on PATH. */
@@ -648,7 +663,9 @@ export function setupErrorDetail(text, home, platform) {
  * An update plan also uses locateShell() and upgradeShell({ channel, packageRoot,
  * currentVersion, goPath? }); a plan that updates an older Pi uses locatePi(), which returns
  * the single installed Pi as { root, version, owner } or null. A plan that acquires
- * Go uses acquireGo(), which returns the published pinned Go as { goPath }.
+ * Go uses acquireGo(), which returns the published pinned Go as { goPath }. A plan
+ * with a private Windows PNPM_HOME (tools.pnpmHome, S6) uses preparePnpmHome(home)
+ * before any command, then persists it with `pnpm setup`.
  * Nothing is ever deleted; no provisioning marker is written. A setup-recovery
  * plan replaces check-existing-stack with check-recoverable-stack and skips
  * install-global; every later step and outcome rule is the same.
@@ -668,8 +685,11 @@ export async function runStandardInstall(request, adapters) {
 	const path = platform === "win32" ? win32 : posix;
 	const globalBin = pnpmGlobalBin({ platform, env });
 	if (!globalBin) return blocked("pnpm-home-unknown");
+	// A private Windows PNPM_HOME (S6): exactly the folder preflight recorded.
+	const privateHome = platform === "win32" && request.plan.tools.pnpmHome?.status === "private";
+	if (privateHome && !samePath(String(request.plan.tools.pnpmHome.path ?? ""), globalBin.pnpmHome, platform)) return blocked("pnpm-home-changed");
 	if (!path.isAbsolute(adapters.nodePath ?? "")) return blocked("node-unavailable");
-	const child = childEnvironment(env, platform, globalBin);
+	const child = childEnvironment(env, platform, globalBin, { privateHome });
 	const pnpm = await pnpmInvocation(env, platform, adapters.fs).catch(() => null);
 	if (!pnpm) return blocked("pnpm-unavailable");
 	const runPnpm = (args, deadlineMs, environment = child, options = {}) => adapters.run(pnpm.command, [...pnpm.prefix, ...args], { env: environment, deadlineMs, ...options });
@@ -785,6 +805,17 @@ export async function runStandardInstall(request, adapters) {
 			return succeeded(result) && notListed(String(result.stdout ?? ""), PI_PACKAGE);
 		}]] : []),
 	];
+	// The private PNPM_HOME is claimed (or the one this flow created is kept) before
+	// any pnpm command could create it with inherited permissions.
+	if (privateHome) {
+		const claimed = await Promise.resolve().then(() => adapters.preparePnpmHome(globalBin.pnpmHome)).then(() => true, () => false);
+		if (!claimed) {
+			log({ step: "prepare-pnpm-home", status: "failed" });
+			return { outcome: "failed", failedStep: "prepare-pnpm-home", completed };
+		}
+		completed.push("prepare-pnpm-home");
+		log({ step: "prepare-pnpm-home", status: "done" });
+	}
 	for (const [step, reason, check] of checks) {
 		const verdict = await check().catch(() => false);
 		if (verdict !== true) return blocked(typeof verdict === "string" ? verdict : reason);
@@ -947,7 +978,8 @@ export async function runStandardInstall(request, adapters) {
 	// A child PATH never proves a fresh terminal; persist it with pnpm's own setup.
 	// globalBin.onPath was computed from the user's own PATH, not the child env.
 	// pnpm setup installs @pnpm/exe over the network, so it gets the setup deadline.
-	// An update keeps the PATH its existing installation already uses.
+	// An update keeps the PATH its existing installation already uses, except in a
+	// new private PNPM_HOME, which pnpm setup must persist for new terminals.
 	if (piOnly) {
 		// The installer's Pi alone: the same `add -g` as install-pi, then found in pnpm's list.
 		steps.splice(0, steps.length, ...(updatingPi ? piSteps : [
@@ -959,7 +991,7 @@ export async function runStandardInstall(request, adapters) {
 			}],
 		]));
 	}
-	const persistPath = !globalBin.onPath && !update && !piOnly;
+	const persistPath = !globalBin.onPath && (privateHome || (!update && !piOnly));
 	if (persistPath) {
 		steps.push(["persist-path", async () => {
 			const result = await adapters.run(pnpm.command, [...pnpm.prefix, "setup"], { env: child, deadlineMs: deadlines.setup, stderrTail: 4096 });

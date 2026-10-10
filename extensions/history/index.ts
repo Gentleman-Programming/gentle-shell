@@ -25,6 +25,7 @@ import {
   type ExtensionAPI,
   type ExtensionCommandContext,
   type Theme,
+  getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 import {
   Container,
@@ -122,15 +123,14 @@ const SELECTOR_FOOTER_HELP =
 /** Width of the "→ " / "  " prefix on each entry line. */
 const ENTRY_PREFIX_WIDTH = 2;
 
-// Legacy agent dir: pre-v1 editor-history files live directly here and are
-// migrated into the store root by migrateLegacyStores().
-const AGENT_DIR = join(homedir(), ".pi", "agent");
-// v2 multi-concurrency store root (design: tmp/multi-concurrency-design.md).
-// It is also the tombstone state dir: <root>/hidden.json.
-const PI_HISTORY_ROOT = join(AGENT_DIR, "history");
-// Sessions root for the one-level transcript scan (spec C1, design §D5).
-// Read-only by invariant — transcripts are never written by this extension.
-const SESSIONS_ROOT = join(AGENT_DIR, "sessions");
+// Legacy vanilla agent dir: pre-v1 editor-history files were written by
+// vanilla Pi directly here and are migrated into the store root by
+// migrateLegacyStores(). Deliberately NOT the active agent dir: legacy files
+// predate Gentle Shell homes, so the migration source stays put (#1618). The
+// v2 store root and the transcript scan root follow Pi's active agent dir
+// (getAgentDir, honoring PI_CODING_AGENT_DIR) and are resolved per extension
+// load in promptHistoryExtension below.
+const LEGACY_AGENT_DIR = join(homedir(), ".pi", "agent");
 
 export interface HistoryDeps {
   env?: NodeJS.ProcessEnv;
@@ -1320,12 +1320,21 @@ export default function promptHistoryExtension(
   // child never captures: its prompt is a delegation brief, not user history,
   // and the parent owns the store's init and GC (gentle-shell#1690).
   const capturing = () => env.GENTLE_PI_AGENTS_CHILD !== "1" && captureEnabled(env, configHome);
-  const root = deps.root ?? PI_HISTORY_ROOT;
+  // The active agent dir follows PI_CODING_AGENT_DIR (for example the Gentle
+  // Shell isolated home), the same source Pi itself and the startup banner
+  // use (#1618; banner precedents 39c8d870 / 1393db7c).
+  const activeAgentDir = getAgentDir();
+  // v2 multi-concurrency store root (design: tmp/multi-concurrency-design.md).
+  // It is also the tombstone state dir: <root>/hidden.json.
+  const root = deps.root ?? join(activeAgentDir, "history");
   const cwd = deps.cwd ?? process.cwd();
   const instanceId = deps.instanceId ?? randomUUID();
   const now = deps.now ?? Date.now;
-  const agentDir = deps.agentDir ?? AGENT_DIR;
-  const sessionsRoot = deps.sessionsRoot ?? SESSIONS_ROOT;
+  // Legacy pre-v1 migration source: the vanilla agent dir (see LEGACY_AGENT_DIR).
+  const agentDir = deps.agentDir ?? LEGACY_AGENT_DIR;
+  // Sessions root for the one-level transcript scan (spec C1, design §D5).
+  // Read-only by invariant — transcripts are never written by this extension.
+  const sessionsRoot = deps.sessionsRoot ?? join(activeAgentDir, "sessions");
   let writerState: SessionWriterState | null = null;
 
   /**

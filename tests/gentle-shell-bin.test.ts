@@ -29,6 +29,19 @@ import test from "node:test";
 const binUrl = new URL("../bin/gentle-shell.mjs", import.meta.url);
 const binPath = fileURLToPath(binUrl);
 const packageRoot = dirname(dirname(binPath));
+const nodeFixturePreload = fileURLToPath(new URL("./support/node-executable-fixture.cjs", import.meta.url));
+
+// Windows backslashes are shell metacharacters even without spaces.
+function remediationHome(path: string): string {
+	return process.platform === "win32" ? `'${path}'` : path;
+}
+
+function executableFixtureEnv(root: string): NodeJS.ProcessEnv {
+	return {
+		TEST_NODE_EXECUTABLE_ROOT: root,
+		NODE_OPTIONS: `--require ${JSON.stringify(nodeFixturePreload)}`,
+	};
+}
 
 test("Herdr activity is discoverable through the isolated launcher package", async () => {
 	const { buildPiInvocation } = await import("../lib/gentle-shell-launcher.ts");
@@ -70,14 +83,17 @@ function standaloneLauncher(t: test.TestContext) {
 	writeFileSync(join(root, "bin", "gentle-shell.mjs"), readFileSync(binPath));
 	writeFileSync(join(root, "package.json"), readFileSync(join(packageRoot, "package.json")));
 	for (const dir of ["runtime", "scripts"]) symlinkSync(join(packageRoot, dir), join(root, dir), "junction");
-	const env = { HOME: f.home, USERPROFILE: f.home, PATH: `${root}${delimiter}${dirname(process.execPath)}`, GENTLE_SHELL_NO_AUTO_SETUP: "1" };
+	const env = { ...executableFixtureEnv(root), HOME: f.home, USERPROFILE: f.home, PATH: `${root}${delimiter}${dirname(process.execPath)}`, GENTLE_SHELL_NO_AUTO_SETUP: "1" };
 	return { ...f, root, env, launcher: join(root, "bin", "gentle-shell.mjs") };
 }
 
 test("a genuinely absent adjacent peer falls back to PATH", (t) => {
 	const f = standaloneLauncher(t);
-	writePiScript(join(f.root, "pi"), "0.99.2");
-	const result = spawnSync(process.execPath, [f.launcher, "--version"], { env: f.env, encoding: "utf8" });
+	const suffix = process.platform === "win32" ? ".mjs" : "";
+	writePiScript(join(f.root, `pi${suffix}`), "0.99.2");
+	// Windows discovery uses PATHEXT; the disposable Node mock is not a CMD shim.
+	const env = process.platform === "win32" ? { ...f.env, PATHEXT: ".mjs" } : f.env;
+	const result = spawnSync(process.execPath, [f.launcher, "--version"], { env, encoding: "utf8" });
 	assert.equal(result.status, 0, result.stderr);
 	assert.match(result.stdout, /pi 0\.99\.2/);
 });
@@ -128,6 +144,7 @@ function fixture(t: test.TestContext) {
 	const gentleShellHome = join(root, "gentle-shell-home");
 	const env: NodeJS.ProcessEnv = {
 		...process.env,
+		...executableFixtureEnv(root),
 		HOME: home,
 		USERPROFILE: home,
 		GENTLE_SHELL_HOME: gentleShellHome,
@@ -1170,7 +1187,7 @@ test("gentle-shell setup --home <dir> includes --home <dir> in the failing-remov
 	assert.match(
 		result.stderr,
 		new RegExp(
-			`gentle-shell: could not remove npm:@juicesharp/rpiv-ask-user-question; run \`gentle-shell --home ${target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} remove npm:@juicesharp/rpiv-ask-user-question\` before starting`,
+			`gentle-shell: could not remove npm:@juicesharp/rpiv-ask-user-question; run \`gentle-shell --home ${remediationHome(target).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} remove npm:@juicesharp/rpiv-ask-user-question\` before starting`,
 		),
 	);
 });
@@ -1222,11 +1239,13 @@ test("gentle-shell setup restores the user's Pi persona file when gentle-ai rewr
 	const originalBytes = JSON.stringify({ mode: "neutral" });
 	writeFileSync(personaPath, originalBytes);
 	chmodSync(personaPath, 0o600);
+	// Assert restoration of the actual filesystem mode, not unsupported POSIX bits.
+	const originalMode = statSync(personaPath).mode & 0o777;
 
 	const result = run(env, ["setup"]);
 	assert.equal(result.status, 0, result.stderr);
 	assert.equal(readFileSync(personaPath, "utf8"), originalBytes);
-	assert.equal(statSync(personaPath).mode & 0o777, 0o600);
+	assert.equal(statSync(personaPath).mode & 0o777, originalMode);
 	assert.match(
 		result.stderr,
 		new RegExp(
@@ -1591,7 +1610,7 @@ test("a failing auto-provision flow names the --home selector in its retry remed
 	assert.equal(result.status, 0, result.stderr);
 	assert.match(
 		result.stderr,
-		new RegExp(`Run \`gentle-shell --home ${target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} setup\` to see the full output\\.`),
+		new RegExp(`Run \`gentle-shell --home ${remediationHome(target).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} setup\` to see the full output\\.`),
 	);
 });
 
@@ -1692,7 +1711,7 @@ test("a --home pointing at an existing non-empty, unmarked directory is never au
 		result.stderr,
 		new RegExp(`gentle-shell: ${target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} already has content and was not set up by gentle-shell`),
 	);
-	assert.match(result.stderr, new RegExp(`run \`gentle-shell --home ${target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} setup\` to provision it`));
+	assert.match(result.stderr, new RegExp(`run \`gentle-shell --home ${remediationHome(target).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} setup\` to provision it`));
 });
 
 test("an empty or nonexistent --home is still auto-provisioned", (t) => {
@@ -1806,14 +1825,23 @@ test("SIGINT during automatic provisioning kills the child and exits 130 without
 	const gentleAiScript = join(f.root, "fake-gentle-ai-sleep.mjs");
 	writeFileSync(
 		gentleAiScript,
-		["#!/usr/bin/env node", `process.stderr.write(${JSON.stringify(CHILD_READY_TOKEN)} + "\\n");`, "await new Promise((resolve) => setTimeout(resolve, 20000));", "process.exit(0);", ""].join(
+		["#!/usr/bin/env node", `process.stderr.write(${JSON.stringify(CHILD_READY_TOKEN)} + ':' + process.pid + "\\n");`, "await new Promise((resolve) => setTimeout(resolve, 20000));", "process.exit(0);", ""].join(
 			"\n",
 		),
 	);
 	chmodSync(gentleAiScript, 0o755);
 	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
 
-	const child = spawn(process.execPath, [binPath, "--mode", "rpc", "-p", "hi"], { env, stdio: ["ignore", "pipe", "pipe"] });
+	// Windows kill(SIGINT) force-terminates instead of delivering a console event.
+	// Model event delivery only there; production signal handlers remain real.
+	if (process.platform === "win32") {
+		const preload = join(f.root, "deliver-interrupt.cjs");
+		writeFileSync(preload, "if (process.send) process.on('message', message => { if (message === 'fixture:SIGINT') process.emit('SIGINT'); });\n");
+		env.NODE_OPTIONS += ` --require ${JSON.stringify(preload)}`;
+	}
+	const child = spawn(process.execPath, [binPath, "--mode", "rpc", "-p", "hi"], {
+		env, stdio: process.platform === "win32" ? ["ignore", "pipe", "pipe", "ipc"] : ["ignore", "pipe", "pipe"],
+	});
 	let stdout = "";
 	child.stdout.on("data", (chunk) => {
 		stdout += chunk.toString("utf8");
@@ -1822,9 +1850,13 @@ test("SIGINT during automatic provisioning kills the child and exits 130 without
 		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 	});
 
-	await waitForStderrMatch(child, new RegExp(CHILD_READY_TOKEN));
-	child.kill("SIGINT");
-	const { code, signal } = await waitForExit(child);
+	const ready = String(await waitForStderrMatch(child, new RegExp(`${CHILD_READY_TOKEN}:\\d+\\n`)));
+	const provisioningPid = Number(ready.match(new RegExp(`${CHILD_READY_TOKEN}:(\\d+)`))![1]);
+	const exited = waitForExit(child);
+	if (process.platform === "win32") child.send("fixture:SIGINT");
+	else child.kill("SIGINT");
+	const { code, signal } = await exited;
+	assert.throws(() => process.kill(provisioningPid, 0), { code: "ESRCH" }, "provisioning child must be gone");
 
 	assert.equal(signal, null, "the launcher process itself must exit normally, not be killed by the signal");
 	assert.equal(code, 130);

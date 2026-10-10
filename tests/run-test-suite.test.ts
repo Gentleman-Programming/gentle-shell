@@ -115,13 +115,13 @@ function probeStageEnvironment(t: test.TestContext, env: NodeJS.ProcessEnv) {
 	const stagesPath = writeStagesFile(t, []);
 	const probePath = join(dirname(stagesPath), "probe.mjs");
 	writeFileSync(probePath, `
-import { readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 const home = process.env.GENTLE_PI_CONFIG_HOME;
 console.log("ENV_PROBE=" + JSON.stringify({
   git: Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase().startsWith("GIT_"))),
   agents: Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase().startsWith("GENTLE_PI_AGENTS_"))),
   home,
-  files: home ? readdirSync(home) : null,
+  files: home && existsSync(home) ? readdirSync(home) : null,
   sentinel: process.env.TEST_ENV_SENTINEL,
 }));
 `);
@@ -160,6 +160,20 @@ test("unit stage strips inherited subagent context without changing later stages
 	const [unit, provider] = probeStageEnvironment(t, env);
 	assert.deepEqual(unit.agents, {});
 	for (const [key, value] of Object.entries(env)) assert.equal(provider.agents[key], value);
+});
+
+test("unit stage accepts an uncreated inherited config home without creating it", (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "gentle-pi-caller-config-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const home = join(dir, "not-created");
+	assert.equal(existsSync(home), false);
+	const [unit, provider] = probeStageEnvironment(t, { GENTLE_PI_CONFIG_HOME: home });
+	assert.notEqual(unit.home, home);
+	assert.deepEqual(unit.files, []);
+	assert.equal(existsSync(unit.home), false);
+	assert.equal(provider.home, home);
+	assert.equal(provider.files, null);
+	assert.equal(existsSync(home), false);
 });
 
 test("unit stage uses an empty temporary config home and removes it after exit", (t) => {

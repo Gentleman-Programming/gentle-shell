@@ -1666,6 +1666,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const parentRepositoryIdentity = resolveCanonicalGitRepositoryIdentitySync(parentWorktreeRoot);
 		const childEnv = { ...deps.env };
 		if (foreign) for (const key of inheritedUnsafeGitEnvironmentKeys(childEnv)) delete childEnv[key];
+		const activeMcpTools = typeof pi.getAllTools === "function"
+			? pi.getAllTools().map((tool) => tool.name).filter((name) => name.startsWith("mcp__"))
+			: undefined;
 		const request: TaskRequest = {
 			agent,
 			prompt,
@@ -1674,6 +1677,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			mode,
 			cwd: target ?? parentWorktreeRoot,
 			parentSessionId,
+			...(activeMcpTools && activeMcpTools.length > 0 ? { mcpTools: activeMcpTools } : {}),
 			...(admittedModel === undefined ? {} : { beforeSpawn: () => {
 				if (!current()) throw new Error("Writer session changed before spawn.");
 				registry.validate(originalCwd);

@@ -1036,3 +1036,51 @@ test("the negotiated decoder carries the provider submission through the capture
 		submission: { ...rawSubmission, values: [{ slot: "reviewer_result", domain: "artifact_path_or_stdin", substitution_location: rawSubmission.argument_tokens.length }] },
 	}] } }), /substitution_location/);
 });
+
+test("relay progress callback surfaces slot lifecycle phases from materialize through submitted", async (t) => {
+	const fixture = harness(t);
+	const phases: string[] = [];
+	await runReviewHostRelaySlot(
+		relayRequest(fixture),
+		textReviewer(REVIEWER_TEXT).runReviewer,
+		(progress) => {
+			phases.push(progress.phase);
+		},
+	);
+	assert.deepEqual(phases, ["materializing", "reviewing", "prepared", "submitting", "submitted"]);
+});
+
+test("relay group runner emits indexed progress across parallel reviewers", async (t) => {
+	const fixture = harness(t);
+	const progressEvents: Array<{ index: number; phase: string }> = [];
+	const requests = [relayRequest(fixture), relayRequest(fixture)];
+	await runReviewHostRelayReviewerGroup(
+		requests,
+		(req, _runReviewer, onProgress) => prepareReviewHostRelaySlot(req, textReviewer(REVIEWER_TEXT).runReviewer, onProgress),
+		(index, progress) => {
+			progressEvents.push({ index, phase: progress.phase });
+		},
+	);
+	const slot0Phases = progressEvents.filter((e) => e.index === 0).map((e) => e.phase);
+	const slot1Phases = progressEvents.filter((e) => e.index === 1).map((e) => e.phase);
+	assert.deepEqual(slot0Phases, ["materializing", "reviewing", "prepared"]);
+	assert.deepEqual(slot1Phases, ["materializing", "reviewing", "prepared"]);
+});
+
+test("relay progress callback emits reviewing progress with initial elapsedMs and periodic updates", async (t) => {
+	const fixture = harness(t);
+	const reviewingEvents: Array<{ phase: string; elapsedMs?: number }> = [];
+	await prepareReviewHostRelaySlot(
+		relayRequest(fixture),
+		textReviewer(REVIEWER_TEXT).runReviewer,
+		(progress) => {
+			if (progress.phase === "reviewing") {
+				reviewingEvents.push({ phase: progress.phase, elapsedMs: progress.elapsedMs });
+			}
+		},
+	);
+	assert.ok(reviewingEvents.length >= 1);
+	assert.equal(reviewingEvents[0]?.phase, "reviewing");
+	assert.equal(reviewingEvents[0]?.elapsedMs, 0);
+});
+

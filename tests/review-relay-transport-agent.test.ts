@@ -508,3 +508,76 @@ test("ordinary STATUS inspection uses the Pi public collect-binding route", asyn
 	assert.deepEqual(agents, ["pi"], "ordinary STATUS must request the Pi public collect-binding route");
 	assert.equal(result.operation, "status");
 });
+
+test("capture surfaces live reviewer progress via onUpdate during single-slot run", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const cwd = repository(t);
+	const lineageId = "relay-progress-single";
+	const { native } = transportAwareNative();
+	const updates: string[] = [];
+	__testing.setReviewHostRelayRunnerForTesting(async (_request, _reviewer, onProgress) => {
+		onProgress?.({ phase: "materializing", lens: "reliability" });
+		onProgress?.({ phase: "reviewing", lens: "reliability" });
+		onProgress?.({ phase: "prepared", lens: "reliability" });
+		onProgress?.({ phase: "submitting", lens: "reliability" });
+		onProgress?.({ phase: "submitted", lens: "reliability" });
+		return { promptByteLength: 128, resultByteLength: 64, submission: '{"admission_decision":"completed"}' };
+	});
+
+	await __testing.executeReviewCaptureOperation(
+		{ lineageId, collectBinding: JSON.stringify(collectInput(lineageId, true)), reviewerRunAcknowledged: true },
+		cwd, native, undefined, new CandidateViewRegistry(),
+		undefined, undefined, undefined, undefined,
+		(partial) => {
+			const first = partial.content[0];
+			if (first && "text" in first) updates.push(first.text);
+		},
+	);
+
+	assert.ok(updates.length >= 5);
+	assert.match(updates[0]!, /\[reliability\]: materializing/);
+	assert.match(updates[1]!, /\[reliability\]: reviewing/);
+	assert.match(updates[2]!, /\[reliability\]: prepared/);
+	assert.match(updates[3]!, /\[reliability\]: submitting/);
+	assert.match(updates[4]!, /\[reliability\]: submitted/);
+});
+
+test("capture group surfaces live progress via onUpdate across parallel reviewers", async (t) => {
+	t.after(() => __testing.setReviewHostRelayGroupRunnersForTesting());
+	const cwd = repository(t);
+	const lineageId = "group-progress-lineage";
+	const inputs = [groupInput(lineageId, "review-risk", 0), groupInput(lineageId, "review-resilience", 1)];
+	const finalStatus = groupStatus(lineageId, []) as ReviewStatusV3 & { nextTransition?: { kind: string; reasonCode: string; collect: { inputs: ReviewCollectInputV3[] } } };
+	delete finalStatus.nextTransition;
+	const { native } = queueNative([groupStatus(lineageId, inputs), groupStatus(lineageId, inputs), groupStatus(lineageId, inputs.slice(1)), finalStatus]);
+	const updates: string[] = [];
+	__testing.setReviewHostRelayGroupRunnersForTesting(
+		async (requests: readonly ReviewHostRelayRequest[], _prepare, onSlotProgress) => {
+			onSlotProgress?.(0, { phase: "reviewing", lens: "review-risk" });
+			onSlotProgress?.(1, { phase: "materializing", lens: "review-resilience" });
+			onSlotProgress?.(1, { phase: "reviewing", lens: "review-resilience" });
+			onSlotProgress?.(0, { phase: "prepared", lens: "review-risk" });
+			onSlotProgress?.(1, { phase: "prepared", lens: "review-resilience" });
+			return requests.map(prepared);
+		},
+		async (result: { promptByteLength: number; resultByteLength: number }, onProgress?: (progress: { phase: "submitting"; lens?: string; role?: string }) => void) => {
+			onProgress?.({ phase: "submitting" });
+			return { promptByteLength: result.promptByteLength, resultByteLength: result.resultByteLength, submission: "{}" };
+		},
+	);
+
+	await __testing.executeReviewCaptureGroupOperation(
+		{ lineageId, collectBindings: inputs.map((input) => JSON.stringify(input)), reviewerRunAcknowledged: true },
+		cwd, native, undefined, new CandidateViewRegistry(),
+		undefined, undefined, undefined, "ses-live-1",
+		(partial) => {
+			const first = partial.content[0];
+			if (first && "text" in first) updates.push(first.text);
+		},
+	);
+
+	assert.ok(updates.length >= 6);
+	assert.ok(updates.some((u) => u.includes("review-risk") && u.includes("reviewing")));
+	assert.ok(updates.some((u) => u.includes("review-risk") && u.includes("submitted")));
+	assert.ok(updates.some((u) => u.includes("review-resilience") && u.includes("submitted")));
+});

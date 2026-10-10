@@ -423,9 +423,75 @@ export interface ReviewHostRelayPreparedResult {
 
 const preparedResultBytes = new WeakMap<ReviewHostRelayPreparedResult, Buffer>();
 
-export type ReviewHostRelayRunner = (request: ReviewHostRelayRequest) => Promise<ReviewHostRelayResult>;
-export type ReviewHostRelayPreparationRunner = (request: ReviewHostRelayRequest) => Promise<ReviewHostRelayPreparedResult>;
-export type ReviewHostRelaySubmissionRunner = (prepared: ReviewHostRelayPreparedResult) => Promise<ReviewHostRelayResult>;
+export type ReviewRelaySlotPhase = "selected" | "materializing" | "reviewing" | "prepared" | "submitting" | "submitted";
+
+export interface ReviewHostRelaySlotProgress {
+	slotIndex?: number;
+	lens?: string;
+	role?: string;
+	phase: ReviewRelaySlotPhase;
+	elapsedMs?: number;
+	detail?: string;
+}
+
+export type ReviewHostRelayProgressCallback = (progress: ReviewHostRelaySlotProgress) => void;
+
+export type ReviewHostRelayRunner = (
+	request: ReviewHostRelayRequest,
+	runReviewer?: typeof runInProcessReviewer,
+	onProgress?: ReviewHostRelayProgressCallback,
+) => Promise<ReviewHostRelayResult>;
+export type ReviewHostRelayPreparationRunner = (
+	request: ReviewHostRelayRequest,
+	runReviewer?: typeof runInProcessReviewer,
+	onProgress?: ReviewHostRelayProgressCallback,
+) => Promise<ReviewHostRelayPreparedResult>;
+export type ReviewHostRelaySubmissionRunner = (prepared: ReviewHostRelayPreparedResult, onProgress?: ReviewHostRelayProgressCallback) => Promise<ReviewHostRelayResult>;
+
+/**
+ * Formats a single review relay slot's progress into a concise user-facing string.
+ *
+ * @param progress - Current progress details for the slot.
+ * @returns Human-readable progress description with optional elapsed time.
+ */
+export function formatReviewHostRelaySlotProgress(progress: ReviewHostRelaySlotProgress): string {
+	const label = progress.lens ?? progress.role ?? "reviewer";
+	const elapsed = progress.elapsedMs !== undefined ? ` (${Math.round(progress.elapsedMs / 1000)}s)` : "";
+	switch (progress.phase) {
+		case "selected":
+			return `[${label}]: queued`;
+		case "materializing":
+			return `[${label}]: materializing…`;
+		case "reviewing":
+			return `[${label}]: reviewing…${elapsed}`;
+		case "prepared":
+			return `[${label}]: prepared${elapsed}`;
+		case "submitting":
+			return `[${label}]: submitting…`;
+		case "submitted":
+			return `[${label}]: submitted`;
+	}
+}
+
+/**
+ * Formats progress across multiple review relay slots into a multi-line status summary.
+ *
+ * @param slots - Array of progress objects for each slot in the group.
+ * @returns Formatted summary listing each slot's label and current phase.
+ */
+export function formatReviewHostRelayGroupProgress(
+	slots: readonly { lens?: string; role?: string; phase: ReviewRelaySlotPhase; elapsedMs?: number }[],
+): string {
+	return slots.map((slot) => {
+		const label = slot.lens ?? slot.role ?? "reviewer";
+		const elapsed = slot.elapsedMs !== undefined ? ` (${Math.round(slot.elapsedMs / 1000)}s)` : "";
+		const phaseText = slot.phase === "materializing" ? "materializing…"
+			: slot.phase === "reviewing" ? `reviewing…${elapsed}`
+			: slot.phase === "submitting" ? "submitting…"
+			: slot.phase;
+		return `• [${label}]: ${phaseText}`;
+	}).join("\n");
+}
 
 const DEFAULT_GENTLE_AI_TIMEOUT_MS = 120_000;
 
@@ -663,11 +729,19 @@ function snapshotReviewHostRelayRequest(request: ReviewHostRelayRequest): Review
 export async function prepareReviewHostRelaySlot(
 	request: ReviewHostRelayRequest,
 	runReviewer: typeof runInProcessReviewer = runInProcessReviewer,
+	onProgress?: ReviewHostRelayProgressCallback,
 ): Promise<ReviewHostRelayPreparedResult> {
 	// Copy mutable transport configuration before the first async boundary. The
 	// supplied AbortSignal intentionally stays live across materialize, reviewer,
 	// and submit, preserving the established cancellation behavior.
 	const preparedRequest = snapshotReviewHostRelayRequest(request);
+	const lens = preparedRequest.routingKey?.replace(/^review-/, "");
+
+	onProgress?.({
+		phase: "materializing",
+		lens,
+		role: preparedRequest.routingKey,
+	});
 
 	// The provider materializes the opaque prompt and detects whether this relay
 	// surface is available. No version sniffing or prompt reconstruction occurs.
@@ -731,6 +805,24 @@ export async function prepareReviewHostRelaySlot(
 	// or aborted refusal still carries the same elapsed/limit evidence a killed
 	// child used to.
 	const startedAt = Date.now();
+	onProgress?.({
+		phase: "reviewing",
+		lens,
+		role: preparedRequest.routingKey,
+		elapsedMs: 0,
+	});
+	let progressInterval: ReturnType<typeof setInterval> | undefined;
+	if (onProgress !== undefined) {
+		progressInterval = setInterval(() => {
+			onProgress({
+				phase: "reviewing",
+				lens,
+				role: preparedRequest.routingKey,
+				elapsedMs: Date.now() - startedAt,
+			});
+		}, 1000);
+		try { progressInterval.unref(); } catch {}
+	}
 	let outcome: InProcessReviewerOutcome;
 	try {
 		outcome = await runReviewer(
@@ -752,6 +844,8 @@ export async function prepareReviewHostRelaySlot(
 			`the reviewer completion could not run: ${error instanceof Error ? error.message : String(error)}`,
 			{ elapsedMs: Date.now() - startedAt, timeoutMs: piTimeoutMs },
 		);
+	} finally {
+		if (progressInterval !== undefined) clearInterval(progressInterval);
 	}
 	if (outcome.kind === "refused") {
 		throw relayReviewerRefusalError(outcome, { elapsedMs: Date.now() - startedAt, timeoutMs: piTimeoutMs }, promptBytes.length);
@@ -763,6 +857,12 @@ export async function prepareReviewHostRelaySlot(
 		resultByteLength: resultBytes.length,
 	});
 	preparedResultBytes.set(prepared, resultBytes);
+	onProgress?.({
+		phase: "prepared",
+		lens,
+		role: preparedRequest.routingKey,
+		elapsedMs: Date.now() - startedAt,
+	});
 	return prepared;
 }
 
@@ -774,11 +874,14 @@ export async function prepareReviewHostRelaySlot(
 export async function runReviewHostRelayReviewerGroup(
 	requests: readonly ReviewHostRelayRequest[],
 	prepare: ReviewHostRelayPreparationRunner = prepareReviewHostRelaySlot,
+	onSlotProgress?: (slotIndex: number, progress: ReviewHostRelaySlotProgress) => void,
 ): Promise<readonly ReviewHostRelayPreparedResult[]> {
 	if (requests.length === 0) {
 		throw new TypeError("Pi host relay reviewer group requires at least one provider-bound request");
 	}
-	const settled = await Promise.allSettled(requests.map(async (request) => await prepare(request)));
+	const settled = await Promise.allSettled(
+		requests.map(async (request, index) => await prepare(request, undefined, (progress) => onSlotProgress?.(index, progress))),
+	);
 	const failed = settled.find((result) => result.status === "rejected");
 	if (failed?.status === "rejected") throw failed.reason;
 	return settled.map((result) => (result as PromiseFulfilledResult<ReviewHostRelayPreparedResult>).value);
@@ -788,7 +891,10 @@ export async function runReviewHostRelayReviewerGroup(
  * Submits one already-reviewed opaque result through the exact provider-owned
  * completing form. Only the provider-declared artifact slot is substituted.
  */
-export async function submitReviewHostRelayPreparedResult(prepared: ReviewHostRelayPreparedResult): Promise<ReviewHostRelayResult> {
+export async function submitReviewHostRelayPreparedResult(
+	prepared: ReviewHostRelayPreparedResult,
+	onProgress?: ReviewHostRelayProgressCallback,
+): Promise<ReviewHostRelayResult> {
 	const resultBytes = preparedResultBytes.get(prepared);
 	if (resultBytes === undefined) throw new TypeError("Pi host relay requires a recognized prepared result");
 	const { request } = prepared;
@@ -806,6 +912,12 @@ export async function submitReviewHostRelayPreparedResult(prepared: ReviewHostRe
 				? token.split(REVIEW_HOST_RELAY_SUBMISSION_VALUE_SLOT).join(resultFile)
 				: token,
 		);
+		const lens = request.routingKey?.replace(/^review-/, "");
+		onProgress?.({
+			phase: "submitting",
+			lens,
+			role: request.routingKey,
+		});
 		let submission: ProcessCapture;
 		try {
 			submission = await collectGentleAiProcess(request.gentleAiExecutable!, ["review", submissionBinding.operationToken, ...submitTokens], {
@@ -832,6 +944,11 @@ export async function submitReviewHostRelayPreparedResult(prepared: ReviewHostRe
 				? `gentle-ai capture submission exceeded its ${request.gentleAiTimeoutMs!}ms bound after ${submission.elapsedMs}ms`
 				: "gentle-ai refused the relayed capture submission", details);
 		}
+		onProgress?.({
+			phase: "submitted",
+			lens,
+			role: request.routingKey,
+		});
 		return {
 			promptByteLength: prepared.promptByteLength,
 			resultByteLength: prepared.resultByteLength,
@@ -865,6 +982,7 @@ export async function submitReviewHostRelayPreparedResult(prepared: ReviewHostRe
 export async function runReviewHostRelaySlot(
 	request: ReviewHostRelayRequest,
 	runReviewer: typeof runInProcessReviewer = runInProcessReviewer,
+	onProgress?: ReviewHostRelayProgressCallback,
 ): Promise<ReviewHostRelayResult> {
-	return await submitReviewHostRelayPreparedResult(await prepareReviewHostRelaySlot(request, runReviewer));
+	return await submitReviewHostRelayPreparedResult(await prepareReviewHostRelaySlot(request, runReviewer, onProgress), onProgress);
 }

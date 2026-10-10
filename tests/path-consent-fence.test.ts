@@ -3,8 +3,16 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { PathTargetGrants, canonicalizeTarget, evaluatePathFence, resolveOutsidePaths } from "../lib/path-consent-fence.ts";
+import {
+	SessionManager,
+	createEditToolDefinition,
+	createFindToolDefinition,
+	createGrepToolDefinition,
+	createLsToolDefinition,
+	createReadToolDefinition,
+	createWriteToolDefinition,
+} from "@earendil-works/pi-coding-agent";
+import { PATH_FENCE_TOOL_NAMES, PathTargetGrants, canonicalizeTarget, evaluatePathFence, resolveOutsidePaths, unclassifiedFenceInputKeys } from "../lib/path-consent-fence.ts";
 import { registeredRootsForSession, SESSION_WORKTREE_ENTRY } from "../lib/session-worktree-registry.ts";
 
 // All writes belong to unique fixtures, never the live clone.
@@ -197,4 +205,25 @@ test("fence passes inside targets and still asks consent for a sensitive outside
 	// The sensitive-path short-circuit and the no-session guard live in
 	// extensions/gentle-ai.ts; tests/gentle-ai.test.ts proves each one keeps
 	// this fence from firing at the tool_call hook.
+});
+
+// #1660 secondary: a fenced tool that gains a path-bearing input key must not
+// be silently unfenced. Every key of the real Pi schemas is classified.
+test("every input key of the fenced tools' real schemas is classified", () => {
+	const definitions = [createReadToolDefinition, createWriteToolDefinition, createEditToolDefinition, createGrepToolDefinition, createFindToolDefinition, createLsToolDefinition]
+		.map((create) => create(process.cwd()));
+	assert.deepEqual(definitions.map((definition) => definition.name).sort(), [...PATH_FENCE_TOOL_NAMES].sort(), "every fenced tool has a schema under test");
+	for (const definition of definitions) {
+		assert.deepEqual(unclassifiedFenceInputKeys(definition.parameters), [], `${definition.name} has no unclassified input key`);
+	}
+});
+
+test("unclassifiedFenceInputKeys flags new top-level and nested keys", () => {
+	const edit = createEditToolDefinition(process.cwd()).parameters as { properties: Record<string, unknown> };
+	assert.deepEqual(unclassifiedFenceInputKeys({ ...edit, properties: { ...edit.properties, backupPath: { type: "string" } } }), ["backupPath"]);
+	assert.deepEqual(unclassifiedFenceInputKeys({
+		type: "object",
+		properties: { edits: { type: "array", items: { type: "object", properties: { oldText: { type: "string" }, target: { type: "string" } } } } },
+	}), ["target"], "array item properties are walked like collectStringPaths walks input");
+	assert.deepEqual(unclassifiedFenceInputKeys({ type: "object", properties: { path: { type: "string" }, limit: { type: "number" } } }), []);
 });

@@ -21,6 +21,21 @@ export class PathTargetGrants {
 
 export const PATH_FENCE_TOOL_NAMES: ReadonlySet<string> = new Set(["read", "write", "edit", "grep", "find", "ls"]);
 const PATH_INPUT_KEYS = new Set(["path", "paths", "file", "files", "filePath", "filePaths"]);
+// Keys of the fenced tools' schemas that never carry a filesystem target. A key
+// in neither set is unclassified: the schema drift test fails until it is.
+const NON_PATH_INPUT_KEYS = new Set(["offset", "limit", "content", "edits", "oldText", "newText", "pattern", "glob", "ignoreCase", "literal", "context"]);
+
+// Walks a JSON schema the way collectStringPaths walks input: object
+// properties and array items, at any depth.
+export function unclassifiedFenceInputKeys(schema: unknown): string[] {
+	if (typeof schema !== "object" || schema === null) return [];
+	const { properties, items } = schema as { properties?: Record<string, unknown>; items?: unknown };
+	const own = Object.entries(properties ?? {}).flatMap(([key, value]) => [
+		...(PATH_INPUT_KEYS.has(key) || NON_PATH_INPUT_KEYS.has(key) ? [] : [key]),
+		...unclassifiedFenceInputKeys(value),
+	]);
+	return [...own, ...unclassifiedFenceInputKeys(items)];
+}
 
 // Single source for path-bearing argument keys; extensions/gentle-ai.ts
 // reuses this collector for its sensitive-path guard.

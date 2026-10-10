@@ -24,6 +24,20 @@ const pnpm = { command: process.execPath, prefix: [pnpmCli] };
 const channel = mainChannelAdapter({ fs });
 const commit = await channel.resolveCommit("Gentleman-Programming/gentle-shell");
 console.log(`shell commit ${commit}`);
+// A. Git for Windows' MSYS tar with a Windows path, as when its usr\bin comes first on PATH.
+{
+	const probe = join(process.env.RUNNER_TEMP, "msys-probe");
+	await fs.rm(probe, { recursive: true, force: true });
+	await fs.mkdir(join(probe, "out"), { recursive: true });
+	const archive = join(probe, "a.tgz");
+	execFileSync("C:\\Windows\\System32\\tar.exe", ["-czf", archive, "-C", process.env.GITHUB_WORKSPACE, "package.json"]);
+	await traced("C:\\Program Files\\Git\\usr\\bin\\tar.exe", ["-xzf", archive, "-C", join(probe, "out")]);
+	const msysFirst = { ...process.env, PATH: `C:\\Program Files\\Git\\usr\\bin;${process.env.PATH}` };
+	await traced("tar", ["-xzf", archive, "-C", join(probe, "out")], { env: msysFirst });
+}
+// B. The real flow installs the release stack first, then overlays main.
+const release = await traced(pnpm.command, [...pnpm.prefix, "add", "-g", "@earendil-works/pi-coding-agent@1.0.0", "gentle-pi@4.0.0", "--allow-build=gentle-pi"], { deadlineMs: 20 * 60_000 });
+console.log(release.code === 0 ? "RELEASE OK" : "RELEASE FAILED");
 let tgz;
 try {
 	tgz = await channel.packShell({ commit, ctx, run: traced, pnpm });
@@ -35,4 +49,5 @@ try {
 const add = await traced(pnpm.command, [...pnpm.prefix, "add", "-g", tgz, "--allow-build=gentle-pi"], { deadlineMs: 20 * 60_000 });
 console.log(add.code === 0 ? "ADD OK" : "ADD FAILED");
 const list = await traced(pnpm.command, [...pnpm.prefix, "list", "-g", "--json"], { deadlineMs: 120_000 });
+console.log(`LIST ${String(list.stdout).replace(/\s+/g, " ").slice(0, 3000)}`);
 process.exit(add.code === 0 ? 0 : 1);

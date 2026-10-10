@@ -21,7 +21,10 @@ const home = process.env.USERPROFILE;
 const ctx = { env: { ...process.env, GENTLE_PI_CONFIG_HOME: join(process.env.RUNNER_TEMP, "gentle-config") }, home };
 const pnpmCli = join(execFileSync("npm.cmd", ["root", "-g"], { encoding: "utf8", shell: true }).trim(), "pnpm", "bin", "pnpm.mjs");
 const pnpm = { command: process.execPath, prefix: [pnpmCli] };
-const channel = mainChannelAdapter({ fs });
+// Diagnostic only: the runner's shared IP hits GitHub's anonymous API limit.
+const authedFetch = (url, init = {}) => String(url).startsWith("https://api.github.com/")
+	? fetch(url, { ...init, headers: { ...(init.headers ?? {}), Authorization: `Bearer ${process.env.GH_TOKEN}` } }) : fetch(url, init);
+const channel = mainChannelAdapter({ fs, fetch: authedFetch });
 const commit = await channel.resolveCommit("Gentleman-Programming/gentle-shell");
 console.log(`shell commit ${commit}`);
 // A. Git for Windows' MSYS tar with a Windows path, as when its usr\bin comes first on PATH.

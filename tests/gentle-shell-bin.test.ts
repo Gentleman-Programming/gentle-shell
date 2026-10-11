@@ -854,7 +854,10 @@ test("gentle-shell setup provisions the resolved home through the pinned gentle-
 	assert.deepEqual(payload.args, ["install", "--agent", "pi", "--scope", "global"]);
 	assert.equal(payload.PI_CODING_AGENT_DIR, f.gentleShellHome);
 	assert.equal(payload.GENTLE_PI_AGENT_HOME, f.gentleShellHome);
-	assert.ok(payload.PATH.startsWith(`${dirname(f.piScript)}${delimiter}`), payload.PATH);
+	// First the temporary `pi` that runs the resolved runtime, then the runtime's own folder.
+	const [launcher, runtimeDir] = payload.PATH.split(delimiter);
+	assert.match(launcher, /gentle-shell-pi-/, payload.PATH);
+	assert.equal(runtimeDir, dirname(f.piScript), payload.PATH);
 
 	// Home resolution runs exactly as a normal run: the isolated home gets
 	// created with its bootstrap TUI setting, same as a plain `gentle-shell`.
@@ -1844,6 +1847,29 @@ test("an empty or nonexistent --home is still auto-provisioned", (t) => {
 
 // #2106: both installers finish with `gentle-shell setup`; the first launch
 // after it must not install the companion packages again.
+// Gentle AI requires a `pi` on its PATH and runs `pi install npm:gentle-pi`.
+// When gentle-shell runs a Pi that is not itself on PATH (the adjacent
+// package, or GENTLE_SHELL_PI), setup must give Gentle AI that same Pi.
+test("setup gives Gentle AI a `pi` on its PATH that runs the same Pi gentle-shell resolved", { skip: process.platform === "win32" }, (t) => {
+	const f = fixture(t);
+	const probe = join(f.root, "pi-from-gentle-ai.txt");
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeFileSync(gentleAiScript, ["#!/usr/bin/env node", "import { spawnSync } from 'node:child_process';", "import { writeFileSync } from 'node:fs';",
+		"const pi = spawnSync('pi', ['--version'], { encoding: 'utf8' });",
+		`writeFileSync(${JSON.stringify(probe)}, JSON.stringify({ status: pi.status, error: pi.error?.code ?? null, stdout: pi.stdout }));`,
+		"process.exit(0);", ""].join("\n"), { mode: 0o755 });
+	// No `pi` anywhere on the user's PATH: only node and the system tools.
+	const temp = join(f.root, "tmp");
+	mkdirSync(temp);
+	const env = { ...f.env, TMPDIR: temp, PATH: [dirname(process.execPath), "/usr/bin", "/bin"].join(":"), GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" };
+
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(JSON.parse(readFileSync(probe, "utf8")), { status: 0, error: null, stdout: "0.99.1\n" });
+	// The launcher is temporary: nothing is left behind in the temp folder it used.
+	assert.deepEqual(readdirSync(temp), []);
+});
+
 test("a successful manual setup records the isolated home, so the first launch does not set it up again", (t) => {
 	const f = fixture(t);
 	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");

@@ -594,7 +594,7 @@ function ensurePackageLocalGentleAi(binaryPath, pinnedVersion, stdio) {
 // home, and the resolved pi runtime's directory is prepended to PATH so
 // gentle-ai's (or pi's own) preflight finds `pi` even when it is bundled or
 // given through GENTLE_SHELL_PI.
-function buildSetupEnv(home, runtime) {
+function buildSetupEnv(home, runtime, piLauncherDir) {
 	// Bundled: our node, then the version's `pi`, ahead of the user's PATH, and
 	// Gentle AI's state, persona and Engram inside the prefix (S9).
 	if (bundledEnv) {
@@ -605,8 +605,29 @@ function buildSetupEnv(home, runtime) {
 		...process.env,
 		PI_CODING_AGENT_DIR: home.dir,
 		GENTLE_PI_AGENT_HOME: home.dir,
-		PATH: `${dirname(runtime.command)}${delimiter}${process.env.PATH ?? ""}`,
+		PATH: [...(piLauncherDir ? [piLauncherDir] : []), dirname(runtime.command), process.env.PATH ?? ""].join(delimiter),
 	};
+}
+
+// Gentle AI requires a `pi` on its PATH and runs `pi install npm:gentle-pi`
+// with it. A Pi gentle-shell resolved elsewhere (the adjacent package, run
+// as `node <cli>`, or GENTLE_SHELL_PI) is not that `pi`, so a first launch
+// from a terminal without one failed every time. This writes a private,
+// temporary `pi` that runs exactly the resolved runtime; null when the
+// runtime already is the `pi` on PATH (or for a bundled install, whose
+// setup PATH already starts with the version's node_modules/.bin).
+function writeSetupPiLauncher(runtime) {
+	if (bundledEnv || runtime.kind === "path") return null;
+	const dir = mkdtempSync(join(tmpdir(), "gentle-shell-pi-"));
+	if (process.platform === "win32") {
+		// Batch expands % even inside quotes; double it so a path stays literal.
+		const quote = (value) => `"${value.replaceAll("%", "%%")}"`;
+		writeFileSync(join(dir, "pi.cmd"), `@echo off\r\n${[runtime.command, ...runtime.args].map(quote).join(" ")} %*\r\nexit /b %errorlevel%\r\n`);
+	} else {
+		const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
+		writeFileSync(join(dir, "pi"), `#!/bin/sh\nexec ${[runtime.command, ...runtime.args].map(quote).join(" ")} "$@"\n`, { mode: 0o700 });
+	}
+	return dir;
 }
 
 // The shared Pi persona file gentle-ai writes on every install, regardless
@@ -897,7 +918,8 @@ async function runSetupFlow(home, runtime, { dryRun, stdio, timeoutMs }) {
 	}
 
 	const setupArgs = ["install", "--agent", "pi", "--scope", "global", ...(dryRun ? ["--dry-run"] : [])];
-	const env = buildSetupEnv(home, runtime);
+	const piLauncherDir = writeSetupPiLauncher(runtime);
+	const env = buildSetupEnv(home, runtime, piLauncherDir);
 	const personaSnapshots = setupPersonaPaths().map((path) => [path, safely("snapshot your Pi persona file", path, undefined, () => snapshotFile(path))]);
 	const statePath = sharedGentleAiStatePath();
 	const originalStateText = safely("read your Gentle AI state file", statePath, undefined, () => readParsableJsonText(statePath));
@@ -915,6 +937,7 @@ async function runSetupFlow(home, runtime, { dryRun, stdio, timeoutMs }) {
 	try {
 		installResult = await spawnAndWait(binaryPath, setupArgs, env, stdio, timeoutMs);
 	} finally {
+		if (piLauncherDir) rmSync(piLauncherDir, { recursive: true, force: true });
 		for (const [personaPath, personaSnapshot] of personaSnapshots) {
 			if (personaSnapshot !== undefined && safely("restore your Pi persona file", personaPath, false, () => restoreFile(personaSnapshot))) {
 				process.stderr.write(`gentle-shell: kept your Pi persona unchanged (gentle-ai rewrote ${personaPath}; tracked upstream)\n`);

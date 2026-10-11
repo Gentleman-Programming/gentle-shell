@@ -51,6 +51,16 @@ function collectInput(lineageId: string): ReviewCollectInputV3 {
 	};
 }
 
+// gentle-ai#4498: the published collectBinding's canonical form sorts arrays
+// as identity multisets (native identifies arguments by name; `order` lives
+// inside each binding), so compare a published binding against its fixture
+// order-insensitively instead of pinning the serialization's row order.
+function canonicalOrder(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(canonicalOrder).sort((a, b) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : JSON.stringify(a) > JSON.stringify(b) ? 1 : 0));
+	if (value !== null && typeof value === "object") return Object.fromEntries(Object.keys(value as Record<string, unknown>).sort().map((key) => [key, canonicalOrder((value as Record<string, unknown>)[key])]));
+	return value;
+}
+
 function status(
 	lineageId: string,
 	inputs: readonly ReviewCollectInputV3[] = [collectInput(lineageId)],
@@ -446,7 +456,7 @@ test("public STATUS exposes one opaque current collect binding without advancing
 	assert.equal(statusCalls, 1);
 	const collectBindings = result.collectBindings as readonly { collectBinding: string }[];
 	assert.equal(collectBindings.length, 1);
-	assert.deepEqual(JSON.parse(collectBindings[0]!.collectBinding), collectInput(lineageId));
+	assert.deepEqual(canonicalOrder(JSON.parse(collectBindings[0]!.collectBinding)), canonicalOrder(collectInput(lineageId)));
 });
 
 test("interleaved sessions sharing a CLI retain only their own capture routes", async () => {
@@ -771,7 +781,7 @@ test("public INSPECT and STATUS publish the exact pi-bound binding that capture 
 		native,
 	);
 	const statusBinding = (publicStatus.collectBindings as readonly { collectBinding: string }[])[0]!.collectBinding;
-	assert.deepEqual(JSON.parse(statusBinding), piBoundInput);
+	assert.deepEqual(canonicalOrder(JSON.parse(statusBinding)), canonicalOrder(piBoundInput));
 
 	const publicInspect = await __testing.executeReviewControllerOperation(
 		{ operation: "inspect" },
@@ -779,7 +789,7 @@ test("public INSPECT and STATUS publish the exact pi-bound binding that capture 
 		native,
 	);
 	const inspectBinding = (publicInspect.collectBindings as readonly { collectBinding: string }[])[0]!.collectBinding;
-	assert.deepEqual(JSON.parse(inspectBinding), piBoundInput);
+	assert.deepEqual(canonicalOrder(JSON.parse(inspectBinding)), canonicalOrder(piBoundInput));
 
 	const publicStart = await __testing.executeReviewControllerOperation(
 		{ operation: "start", input: JSON.stringify({ mode: "ordinary" }) },
@@ -787,7 +797,7 @@ test("public INSPECT and STATUS publish the exact pi-bound binding that capture 
 		native,
 	);
 	const startBinding = (publicStart.collectBindings as readonly { collectBinding: string }[])[0]!.collectBinding;
-	assert.deepEqual(JSON.parse(startBinding), piBoundInput);
+	assert.deepEqual(canonicalOrder(JSON.parse(startBinding)), canonicalOrder(piBoundInput));
 
 	const forecast = await __testing.executeReviewCaptureOperation(
 		{ lineageId, collectBinding: statusBinding },

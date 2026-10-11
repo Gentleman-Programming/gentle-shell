@@ -1341,3 +1341,66 @@ test("a pinned profile missing a required group role is refused typed before any
 	assert.equal(modelLookups, 0, "the typed refusal fires before any model resolution");
 	assert.equal(authAttempts, 0, "the typed refusal fires before any provider auth");
 });
+
+// gentle-ai#4498: native assembles collect inputs from an order-keyed Go map
+// and appends argument rows through several paths that emit the same rows in
+// different relative order, so the caller's submitted binding can carry the
+// same arguments as the fresh STATUS input in a different row order. Binding
+// identity is the multiset of rows; execution always uses the matched fresh
+// STATUS input, so a permuted caller binding must admit, never report the
+// binding as missing or stale.
+test("a single capture admits a binding whose argument rows are permuted against the fresh STATUS input", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const cwd = repository(t);
+	const lineageId = "relay-permuted-binding";
+	const input = relayCollectInput(lineageId, "review-risk", 0);
+	const permuted = JSON.parse(JSON.stringify(input)) as ReviewCollectInputV3;
+	permuted.arguments = [permuted.arguments[1]!, permuted.arguments[0]!, ...permuted.arguments.slice(2)];
+	assert.notDeepEqual(permuted.arguments, input.arguments, "the harness must actually permute the binding rows");
+	const harness = nativeHarness([finalizeStatus(lineageId, [input])]);
+	const relayed: ReviewHostRelayRequest[] = [];
+	__testing.setReviewHostRelayRunnerForTesting(async (request) => {
+		relayed.push(request);
+		return { promptByteLength: 64, resultByteLength: 32, submission: '{"admission_decision":"completed"}' };
+	});
+
+	const result = await __testing.executeReviewCaptureOperation(
+		{ lineageId, collectBinding: JSON.stringify(permuted), reviewerRunAcknowledged: true },
+		cwd,
+		harness.native,
+		undefined, undefined, undefined, false, undefined,
+	) as Record<string, unknown>;
+
+	assert.equal(result.outcome, "native-reviewer-result-captured", `a logically identical binding with permuted rows must admit, got: ${JSON.stringify({ outcome: result.outcome, reason: result.reason })}`);
+	assert.equal(result.status, "captured");
+	assert.equal(relayed.length, 1);
+	assert.deepEqual(relayed[0]!.captureArgumentTokens, input.arguments.map((argument) => argument.token), "execution runs the matched fresh STATUS input rows, not the caller's row order");
+	assert.equal(harness.statusCalls.length, 1);
+});
+
+// gentle-ai#4498: the fresh STATUS render may reorder the same remaining
+// capture-result inputs between submissions; identity is the set (each row
+// carries its own lens/order binding), so a permuted same-set remainder must
+// reconcile instead of reporting capture-group-authority-drift.
+test("a group reconciles when the fresh STATUS suffix offers the same remaining inputs in a different order", async (t) => {
+	t.after(() => __testing.setReviewHostRelayGroupRunnersForTesting());
+	const cwd = repository(t), lineageId = "relay-group-permuted-suffix", inputs = groupInputs(lineageId);
+	const permutedSuffix = finalizeStatus(lineageId, [inputs[3]!, inputs[1]!, inputs[2]!]);
+	const harness = nativeHarness([
+		finalizeStatus(lineageId, inputs), finalizeStatus(lineageId, inputs), permutedSuffix,
+		finalizeStatus(lineageId, inputs.slice(2)), finalizeStatus(lineageId, inputs.slice(3)),
+		providerRefuterRequiredStatus(lineageId),
+	]);
+	let submissions = 0;
+	__testing.setReviewHostRelayGroupRunnersForTesting(async (requests) => requests.map(prepared), async () => {
+		submissions += 1;
+		return { promptByteLength: 64, resultByteLength: 32, submission: "{}" };
+	});
+
+	const result = await runCaptureGroup(cwd, harness, lineageId, inputs);
+
+	assert.equal(result.outcome, "native-reviewer-group-status-reconciled", `a same-set permuted suffix must reconcile, got: ${JSON.stringify({ outcome: result.outcome, reason: result.reason })}`);
+	assert.equal(submissions, 4, "every slot still submits exactly once");
+	assert.equal(harness.statusCalls.length, 6);
+	assert.equal(result.provider_action, "stop");
+});

@@ -7241,9 +7241,14 @@ function renderAgentEndReviewPreflightMessage(targetIdentity: string): string {
 	return `Receipt-driven development is enabled, and this worktree holds an unreviewed candidate (target ${targetIdentity}). First determine whether the user explicitly left this exact target unreviewed. If yes, do not invoke review; report that disposition and continue. Only otherwise, call the gentle_review tool with {"operation":"inspect"} and follow the transition it returns; it currently offers review.start for this target. An eligible interactive Pi host may resolve consent directly with its own three-action UI. If gentle_review instead returns an unresolved gentle-ai.review-integration.consent/v3 envelope, relay that original two-choice provider envelope to the human losslessly. Never answer consent from model prose or tool arguments.\n\nThis extension never runs START itself. This reminder consumes only this session's observed mutation generation.`;
 }
 
+// gentle-ai#4498: the canonical form is an identity token for matching only —
+// the command line comes from the separate `submission.argumentTokens`, and
+// execution always uses the matched fresh STATUS input. Native identifies
+// arguments by name (each binding carries its own `order`), so row order must
+// not affect identity: arrays canonicalize as sorted multisets.
 function canonicalReviewCaptureBinding(value: unknown): string {
 	if (value === null || typeof value === "string" || typeof value === "boolean" || typeof value === "number") return JSON.stringify(value);
-	if (Array.isArray(value)) return `[${value.map((entry) => canonicalReviewCaptureBinding(entry)).join(",")}]`;
+	if (Array.isArray(value)) return `[${value.map((entry) => canonicalReviewCaptureBinding(entry)).sort().join(",")}]`;
 	if (!isRecord(value)) throw new Error("Review capture collectBinding must encode a JSON object");
 	return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalReviewCaptureBinding(value[key])}`).join(",")}}`;
 }
@@ -7373,7 +7378,10 @@ function hasExactReviewCaptureSuffix(status: ReviewStatusV3, expected: readonly 
 	const current = status.nextTransition?.kind === "collect"
 		? (status.nextTransition.collect?.inputs ?? []).filter((input) => input.captureOperation === "review.capture-result").map(canonicalReviewCaptureBinding)
 		: [];
-	return current.length === expected.length && current.every((binding, index) => binding === expected[index]);
+	// gentle-ai#4498: a fresh render may reorder the same inputs; identity is
+	// the set (`order` lives inside each binding), so compare sorted multisets.
+	const currentSorted = [...current].sort(), expectedSorted = [...expected].sort();
+	return currentSorted.length === expectedSorted.length && currentSorted.every((binding, index) => binding === expectedSorted[index]);
 }
 
 function captureGroupAuthorityDrift(status: ReviewStatusV3): Record<string, unknown> {

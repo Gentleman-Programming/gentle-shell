@@ -266,3 +266,18 @@ test("valid property ordering and provider thinking do not change the verdict co
 	assert.equal(result.decision, "deny");
 	assert.doesNotMatch(JSON.stringify(result), /PRIVATE_THINKING/);
 });
+
+test("answered prompts reach the classifier as untrusted context; secret-bearing prompts are dropped", async () => {
+	const f = fixture();
+	const pending = f.run({ trustedMessages: ["Reproduce it.", "yes", "go"], answeredPrompts: [
+		{ prompt: "May I create /work/other/.cache/repro?", reply: "yes" },
+		{ prompt: "Use token=abc123 to call the API?", reply: "go" }] });
+	const call = f.calls[0];
+	const payload = JSON.parse(call.context.messages[0].content as string);
+	assert.deepEqual(payload.trustedMessages, ["Reproduce it.", "yes", "go"]);
+	assert.deepEqual(payload.answeredPrompts, [{ prompt: "May I create /work/other/.cache/repro?", reply: "yes" }]);
+	assert.match(call.context.systemPrompt!, /answeredPrompts/);
+	assert.match(call.context.systemPrompt!, /model-authored/);
+	call.resolve(message());
+	assert.equal((await pending).status, "available");
+});

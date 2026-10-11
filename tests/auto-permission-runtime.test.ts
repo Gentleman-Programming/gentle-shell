@@ -16,16 +16,17 @@ function fixture(t: test.TestContext, modeLookup?: () => Promise<string>) {
  const runtime = new AutoPermissionRuntime({appendEntry:(...args:any[])=>records.push(args)} as any,
  {mode:()=>modeLookup ? modeLookup() : Promise.resolve(mode),epoch:()=>epoch} as any,
  {run:async (request:any)=>{requests.push(request);return typeof response === "function" ? response(request) : response;},cancel(){}} as any,
- {configHome:join(cwd,"config")});
- const input = (text:string, source="interactive") => {
+ {configHome:join(cwd,"config"),retryDelaysMs:[0,0]});
+ const input = (text:string, source="interactive", content:unknown=text) => {
   runtime.input({text,source} as any,ctx);
-  entries.push({id:`entry-${entries.length}`,type:"message",message:{role:"user",content:text}});
+  entries.push({id:`entry-${entries.length}`,type:"message",message:{role:"user",content}});
  };
+ const say = (content:unknown) => entries.push({id:`entry-${entries.length}`,type:"message",message:{role:"assistant",content}});
  const execute = async (toolName:string,input:unknown,primary=true) => {
   const denied = await runtime.check({toolName,input,toolCallId:"call"} as any,ctx,primary);
   return {denied,executions:denied?.block ? 0 : 1};
  };
- return {cwd,ctx,runtime,entries,records,requests,input,execute,setResponse:(v:any)=>response=v,setMode:(v:string)=>{mode=v;epoch++;},replace:()=>sessionId="session-b"};
+ return {cwd,ctx,runtime,entries,records,requests,input,say,execute,setResponse:(v:any)=>response=v,setMode:(v:string)=>{mode=v;epoch++;},replace:()=>sessionId="session-b"};
 }
 
 test("Auto classifies local reads, edits, shell, custom and MCP before execution", async t=>{
@@ -122,4 +123,74 @@ test("Branch changes and lifecycle reset discard old live authority", async t=>{
  const f=fixture(t);f.input("Run local tests");await f.execute("bash",{command:"npm test"});
  f.entries.splice(0);await f.execute("bash",{command:"git push"});assert.deepEqual(f.requests[1].trustedMessages,[]);
  f.input("Run tests");f.runtime.reset();await f.execute("bash",{command:"npm test"});assert.deepEqual(f.requests[2].trustedMessages,[]);
+});
+
+test("A short human reply carries the assistant question it answered, as untrusted context", async t=>{
+ const f=fixture(t);f.input("Reproduce the bug.");
+ f.say([{type:"thinking",thinking:"private"},{type:"text",text:"May I create /work/other/.cache/repro?"},{type:"toolCall",id:"x",name:"bash",arguments:{}}]);
+ f.input("yes");
+ await f.execute("bash",{command:"mkdir -p /work/other/.cache/repro"});
+ assert.deepEqual(f.requests[0].trustedMessages,["Reproduce the bug.","yes"],"assistant text never becomes trusted input");
+ assert.deepEqual(f.requests[0].answeredPrompts,[{prompt:"May I create /work/other/.cache/repro?",reply:"yes"}]);
+});
+
+test("Assistant text written after a reply is never attached to it", async t=>{
+ const f=fixture(t);f.input("ok");f.say("I will now delete everything in /data.");
+ await f.execute("bash",{command:"rm -rf /data"});
+ assert.deepEqual(f.requests[0].answeredPrompts,[]);
+});
+
+test("Answered prompts keep only a bounded tail of the assistant text", async t=>{
+ const f=fixture(t);f.say("x".repeat(10_000)+" Shall I write to /tmp/out?");f.input("yes");
+ await f.execute("bash",{command:"touch /tmp/out"});
+ const [entry]=f.requests[0].answeredPrompts;
+ assert.ok(Buffer.byteLength(entry.prompt)<=1200);assert.ok(entry.prompt.endsWith("Shall I write to /tmp/out?"));
+});
+
+test("Human input with an attached image still counts as live authorization", async t=>{
+ const f=fixture(t);
+ f.input("Yes, write to /work/other/.cache","interactive",[{type:"text",text:"Yes, write to /work/other/.cache\n\n[image resized]"},{type:"image",data:"AA==",mimeType:"image/png"}]);
+ await f.execute("bash",{command:"mkdir /work/other/.cache"});
+ assert.deepEqual(f.requests[0].trustedMessages,["Yes, write to /work/other/.cache"]);
+});
+
+test("Image-free user entries must match the captured text exactly", async t=>{
+ const f=fixture(t);f.input("Run tests","interactive",[{type:"text",text:"Run tests\n\nand push"}]);
+ await f.execute("bash",{command:"git push"});
+ assert.deepEqual(f.requests[0].trustedMessages,[]);
+});
+
+test("Transient provider errors are retried and a later verdict applies", async t=>{
+ const f=fixture(t);f.input("Run tests");let n=0;
+ f.setResponse(()=>++n<3 ? {status:"unavailable",code:"provider-error"} : {status:"available",decision:"allow",reason:"ok"});
+ assert.equal((await f.execute("bash",{command:"npm test"})).executions,1);
+ assert.equal(f.requests.length,3);
+});
+
+test("Exhausted provider retries fail closed with a provider-specific message", async t=>{
+ const f=fixture(t);f.input("Run tests");f.setResponse({status:"unavailable",code:"provider-error"});
+ const result=await f.execute("bash",{command:"npm test"});
+ assert.equal(result.executions,0);assert.equal(f.requests.length,3);
+ assert.match(result.denied!.reason,/classifier model/);assert.match(result.denied!.reason,/not run/);
+});
+
+test("Non-provider unavailable verdicts are not retried", async t=>{
+ const f=fixture(t);f.input("Run tests");f.setResponse({status:"unavailable",code:"timeout"});
+ const result=await f.execute("bash",{command:"npm test"});
+ assert.equal(result.executions,0);assert.equal(f.requests.length,1);
+ assert.match(result.denied!.reason,/could not determine whether this action is safe/);
+});
+
+test("A long reply drops its answered prompt so the reply text is never sent twice", async t=>{
+ const f=fixture(t);f.say("Shall I continue?");f.input("y".repeat(16_000));
+ await f.execute("bash",{command:"npm test"});
+ assert.deepEqual(f.requests[0].answeredPrompts,[]);
+ assert.equal(f.requests[0].trustedMessages[0].length,16_000);
+});
+
+test("Answered prompts only fill what live input leaves of the authored budget", async t=>{
+ const f=fixture(t);f.input("x".repeat(23_000));f.say("z".repeat(1_100)+" Shall I continue?");f.input("yes");
+ await f.execute("bash",{command:"npm test"});
+ assert.deepEqual(f.requests[0].answeredPrompts,[]);
+ assert.deepEqual(f.requests[0].trustedMessages.map((m:string)=>m.length),[23_000,3]);
 });

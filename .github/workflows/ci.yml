@@ -127,7 +127,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        attempt: [1, 2, 3, 4]
+        attempt: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -137,17 +137,31 @@ jobs:
         with:
           go-version: "1.25.14"
           cache: false
-      - name: Isolated in-process run
+      - name: Enable crash dumps for node.exe
         shell: pwsh
         run: |
-          node --version
-          & node --experimental-strip-types --trace-exit --test --test-isolation=none --test-reporter=spec tests/installer-windows-bootstrap.test.ts 2>&1 | Write-Output
-          "EXIT=$LASTEXITCODE (0x{0:X8})" -f $LASTEXITCODE
-      - name: Subprocess run with child stderr
+          $key = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\node.exe"
+          New-Item -Path $key -Force | Out-Null
+          New-ItemProperty -Path $key -Name DumpFolder -PropertyType ExpandString -Value "$env:RUNNER_TEMP\dumps" -Force | Out-Null
+          New-ItemProperty -Path $key -Name DumpType -PropertyType DWord -Value 2 -Force | Out-Null
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\dumps" | Out-Null
+      - name: The exact installer suites step
         shell: pwsh
         run: |
-          & node --experimental-strip-types --test --test-reporter=tap tests/installer-windows-bootstrap.test.ts 2>&1 | Select-String -Pattern "not ok|exitCode|stderr|Assertion|FATAL|abort|# fail" | Write-Output
+          & node --experimental-strip-types --test --test-reporter=tap tests/install-wizard.test.ts tests/installer-server.test.ts tests/verify-package-files.test.ts tests/installer-probes.test.ts tests/installer-runner.test.ts tests/installer-preflight.test.ts tests/installer-posix-bootstrap.test.ts tests/installer-windows-bootstrap.test.ts *> "$env:RUNNER_TEMP\suites.tap"
           "EXIT=$LASTEXITCODE (0x{0:X8})" -f $LASTEXITCODE
+          Select-String -Path "$env:RUNNER_TEMP\suites.tap" -Pattern "^not ok|exitCode|Assertion|FATAL|# fail" | Write-Output
+          Get-ChildItem "$env:RUNNER_TEMP\dumps" | Format-Table Name, Length
+      - name: Upload dumps and output
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: windows-abort-diag-${{ matrix.attempt }}
+          path: |
+            ${{ runner.temp }}/dumps
+            ${{ runner.temp }}/suites.tap
+          if-no-files-found: ignore
+          retention-days: 7
 
   installer:
     name: installer (${{ matrix.os }})

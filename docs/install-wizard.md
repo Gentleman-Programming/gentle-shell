@@ -255,7 +255,7 @@ the listing; truncated, nonzero, signalled or timed-out output is unknown.
 | Probe | Evidence |
 | --- | --- |
 | `node` | The first `node` on the user's real PATH (Go `exec.LookPath` order, PATHEXT on Windows), else the bootstrap one. `persistent` says which. `npm` is the runner's usable-npm proof in the user's real PATH with `$PNPM_HOME/bin` first, so a bootstrap npm never counts. A Windows `.cmd`/`.bat` cannot run with `shell:false`: a Node that resolves to one is unknown, and npm is run through what its shim runs ([Windows command shims](#windows-command-shims)). |
-| `pnpm` | The runner's invocation (bootstrap handoff, or a POSIX `pnpm` on PATH). `compatible` requires a successful run (pnpm checks its Node engine at startup) at the pinned major and at least the pin, because the runner's argv is verified for pnpm 11 only. `persistent` is whether any `pnpm` resolves on the real PATH. A Windows user pnpm in `$PNPM_HOME\bin` whose shim or target fails the storage walk is never run: the bootstrap's pnpm is reported in its place with `inGlobalBin: true`, `untrusted: true` and `persistent: true`, so it does not block and nothing is persisted over it. A user pnpm in `$PNPM_HOME/bin` whose shim is not recognized, or whose `--version` does not report a stable version, is handled the same way with `unchecked: true` instead, on every platform. |
+| `pnpm` | The runner's invocation (bootstrap handoff, or a POSIX `pnpm` on PATH). `compatible` requires a successful run (pnpm checks its Node engine at startup) at the pin or newer, of any major: the runner's commands were run with pnpm 12 against a pnpm 11 global home and back (see [pnpm 12](#pnpm-12)). `persistent` is whether any `pnpm` resolves on the real PATH. A Windows user pnpm in `$PNPM_HOME\bin` whose shim or target fails the storage walk is never run: the bootstrap's pnpm is reported in its place with `inGlobalBin: true`, `untrusted: true` and `persistent: true`, so it does not block and nothing is persisted over it. A user pnpm in `$PNPM_HOME/bin` whose shim is not recognized, or whose `--version` does not report a stable version, is handled the same way with `unchecked: true` instead, on every platform. |
 | `pi`, `shell` | pnpm-global entries from the listing. A package that is not pnpm-global but whose command (`pi`, `gentle-shell`) resolves on the real PATH is unknown, never absent, so another installation is not duplicated. On Windows a `pi.cmd` or `gentle-shell.cmd` is run, and its package found, through what the shim runs; an unknown shim is never run. Shell is `usable` only when `$PNPM_HOME/bin/gentle-shell` (`.cmd` on Windows) exists. |
 | `gentleAi` | Absent without gentle-pi or without its package-native binary. Otherwise compatible only for this package version, a listed path that resolves inside PNPM_HOME and `verifyGentleAi` (default `packageNativeGentleAi`) success; anything else is unknown. |
 | `go` | `go version` from the real PATH; `go1.22` normalizes to `1.22.0`; devel and release-candidate builds are unknown. |
@@ -655,8 +655,8 @@ Pi but never reinstalls or downgrades it, and nothing changes before consent.
 | A Pi older than the minimum that neither pnpm nor npm owns (mise, Homebrew, a standalone binary) | Left unchanged. `install-pi` adds the installer's Pi with pnpm exactly as when Pi is absent (in the same `pnpm add -g` as gentle-pi, before an update of Gentle Shell, or alone when Gentle Shell is current), and the plan says so before consent. |
 | A Gentle Shell neither pnpm nor npm owns (an `npm link` of a source checkout, for example) | Blocked with an explanation; never reinstalled. |
 | A Node.js older than the minimum with a stable version (mise, nvm, Homebrew, an old installer) | Left unchanged. The POSIX bootstrap acquires its verified Node 24.21.0 as when Node is absent, and the plan persists it (`persist-node`, `persist-package-managers`, `configure-npm-prefix`). The plan says so before consent. An unknown or prerelease version still blocks. Windows: `bootstrap.cmd` does the same, and also acquires its Node for a user Node whose storage it cannot trust (nvm-windows' symlink, fnm's junction), which it never runs. |
-| A pnpm of another major, older than 11.1.1, or whose engine rejects the bootstrap's Node | Left unchanged. Both bootstraps acquire the verified pnpm 11.1.1 as when pnpm is absent, and the plan persists it (`persist-pnpm`, or `persist-package-managers` with npm). The plan says so before consent. Unknown evidence still blocks. |
-| That pnpm in `$PNPM_HOME/bin` itself (where persisting pnpm writes) | Blocked before consent, never replaced or downgraded. The guidance names the found and required versions; an older one is updated with `pnpm self-update 11.1.1`, a newer major is never downgraded. |
+| A pnpm older than 11.1.1, or whose engine rejects the bootstrap's Node (or, for the bootstraps only, another major) | Left unchanged. Both bootstraps acquire the verified pnpm 11.1.1 as when pnpm is absent, and the plan persists it (`persist-pnpm`, or `persist-package-managers` with npm). The plan says so before consent. Unknown evidence still blocks. |
+| That pnpm in `$PNPM_HOME/bin` itself (where persisting pnpm writes) | Never replaced or downgraded. At 11.1.1 or newer, of any major (pnpm 12 included), it is used as it is and nothing is persisted over it. An older one blocks before consent; the guidance names the found and required versions and updates it with `pnpm self-update 11.1.1`. |
 | A pnpm in `$PNPM_HOME/bin` whose shim is not recognized or whose `pnpm --version` reports no stable version | Left unchanged and never run again. The bootstrap's verified pnpm runs the installer and nothing is persisted over it (no `persist-pnpm`). The plan says so before consent. |
 | An older Node.js or incompatible pnpm next to an existing Gentle Shell (updated or current) | Blocked before consent: runtimes are persisted only while installing Gentle Shell. A setup recovery is not blocked and persists nothing. |
 | A Go missing or older than the minimum (main channel, or a Windows build) | Left unchanged. The installer downloads its [pinned Go](#pinned-go) only for the build, and the plan says so before consent with the found version (or missing). A Go whose version cannot be checked gets the pinned Go the same way, and is never run for the build. A release install on macOS or Linux never downloads Go. |
@@ -756,10 +756,16 @@ dependency instead of the host peer) needs its own design.
   be root-caused without the reporter's `PNPM_HOME`, `pnpm store path` and
   `readlink -f $PNPM_HOME/bin/npm`, so nothing else changes until that evidence
   exists.
-- A pnpm 12 in `$PNPM_HOME/bin` keeps blocking before consent (it is never
-  replaced or downgraded): the runner's argv is verified for pnpm 11, and an
-  update would run that pnpm 12 with it. This changes only after pnpm 12 is
-  proven empirically.
+- <a id="pnpm-12"></a>A pnpm 12 in `$PNPM_HOME/bin` no longer blocks. Measured on
+  macOS with pnpm 12.11.2 (`pnpm self-update` into an isolated `PNPM_HOME`): the
+  bootstrap's pnpm 11.1.1 ran `bin -g`, `store path`, `add -g` of Pi and of
+  `gentle-pi --allow-build=gentle-pi`, and `list -g --depth 0 --json` there; then
+  pnpm 12 listed, re-added (the `gentle-shell upgrade` path) and removed the same
+  packages, and pnpm 11 still read the global home. Both majors share
+  `store/v11` and `global/v11`. With pnpm 12 alone, `runtime set node … -g`,
+  `add -g npm@…`, Pi and `gentle-pi` also succeeded. pnpm 12 refuses
+  `add -g pnpm` (`ERR_PNPM_GLOBAL_PNPM_INSTALL`); the installer never persists
+  pnpm over a compatible one, so that command is not run.
 
 ### Main channel
 

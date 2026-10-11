@@ -427,11 +427,8 @@ test("/api/plan explains a pnpm in $PNPM_HOME/bin that the installer will not re
 	const inGlobalBin = (pnpm: object) => ({ pnpm: { ...pnpm, inGlobalBin: true } });
 	const cases = [
 		[inGlobalBin({ available: true, version: "11.0.5", usable: true, compatible: false, persistent: true }), "incompatible-tool",
-			`pnpm 11.0.5 is installed in the pnpm global bin directory, where this installer would put its own pnpm, but this installer needs pnpm ${requirements.pnpm} or a newer 11.x. ` +
+			`pnpm 11.0.5 is installed in the pnpm global bin directory, where this installer would put its own pnpm, but this installer needs pnpm ${requirements.pnpm} or newer. ` +
 			`Nothing was replaced. Update it with \`pnpm self-update ${requirements.pnpm}\`, then select Check again.`],
-		[inGlobalBin({ available: true, version: "12.0.0", usable: true, compatible: false, persistent: true }), "incompatible-tool",
-			`pnpm 12.0.0 is installed in the pnpm global bin directory, where this installer would put its own pnpm, but this installer only runs pnpm 11 (${requirements.pnpm} or a newer 11.x). ` +
-			"Nothing was replaced, and this installer never downgrades pnpm. To use it, make a pnpm 11 release your global pnpm the way you prefer, then select Check again."],
 		[inGlobalBin({ available: null }), "unknown-tool",
 			"A pnpm is installed in the pnpm global bin directory, where this installer would put its own pnpm, but its version could not be checked. " +
 			`Nothing was replaced. If \`pnpm --version\` reports a version older than ${requirements.pnpm}, update it with \`pnpm self-update ${requirements.pnpm}\`, then select Check again.`],

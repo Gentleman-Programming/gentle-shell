@@ -258,13 +258,9 @@ function globalBinPnpm(blocker, found, required) {
 		return `A pnpm ${where} but its version could not be checked. Nothing was replaced. ` +
 			`If \`pnpm --version\` reports a version older than ${required}, update it with ${update}, then select Check again.`;
 	}
-	const major = required.split(".")[0];
-	if (older(found, required)) {
-		return `pnpm ${found} ${where} but this installer needs pnpm ${required} or a newer ${major}.x. Nothing was replaced. ` +
-			`Update it with ${update}, then select Check again.`;
-	}
-	return `pnpm ${found} ${where} but this installer only runs pnpm ${major} (${required} or a newer ${major}.x). ` +
-		`Nothing was replaced, and this installer never downgrades pnpm. To use it, make a pnpm ${major} release your global pnpm the way you prefer, then select Check again.`;
+	// Only an older pnpm is incompatible: the pin or newer, of any major, is used as it is.
+	return `pnpm ${found} ${where} but this installer needs pnpm ${required} or newer. Nothing was replaced. ` +
+		`Update it with ${update}, then select Check again.`;
 }
 
 // S6: what the storage walk found on a Windows PNPM_HOME candidate, from the

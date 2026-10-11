@@ -4197,7 +4197,12 @@ test("path fence stays silent for sensitive short-circuits and non-session calle
 		hasUI: true,
 		ui: { confirm },
 	} as unknown as ExtensionContext;
-	assert.equal(await toolCall({ toolName: "read", input: { path: "../sibling/notes.txt" } }, noSessionCtx), undefined, "no sessionManager: the fence stays silent inside a resolvable worktree");
+	// The fence's own verdicts are a consent prompt or an outside-boundary block.
+	// Later admission layers (the Auto permission gate) may still decide the
+	// overall result for a context without a session manager, so assert only
+	// that the fence itself stayed silent.
+	const noSessionResult = await toolCall({ toolName: "read", input: { path: "../sibling/notes.txt" } }, noSessionCtx);
+	assert.doesNotMatch(String(noSessionResult?.reason ?? ""), /^Gentle AI safety policy|^Session identity is unavailable/, "no sessionManager: the fence stays silent inside a resolvable worktree");
 	assert.equal(confirmations.length, 0, "non-session caller never triggers a confirmation");
 });
 

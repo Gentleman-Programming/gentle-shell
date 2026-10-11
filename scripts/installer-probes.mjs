@@ -467,7 +467,10 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 				return { available: true, version, usable: true, compatible, persistent: true, inGlobalBin: true,
 					...(ownPnpm !== null && !runnable ? { untrusted: true } : { unchecked: true }) };
 			}
-			const replaced = found !== null && !usableFound;
+			// The bootstraps run only the pinned major (installer-downloads pinnedPnpmCompatible): a pnpm
+			// of another major beside them is reported, so the plan says it is left unchanged.
+			const sameMajor = found !== null && found.split(".")[0] === requirements.pnpm.split(".")[0];
+			const replaced = found !== null && (!usableFound || !sameMajor);
 			return { available: true, version, usable: true, compatible, persistent: false, ...(replaced ? { found } : {}) };
 		},
 		// Only a Pi older than the minimum reports its owner (pnpm or npm): the one the installer updates.

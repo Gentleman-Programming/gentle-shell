@@ -255,7 +255,9 @@ test("pnpm older than the pin, unparseable, timed out or absent; the pin or newe
 
 test("the bootstrap's pnpm next to an incompatible pnpm on the user's PATH is bootstrap-only and reports the version found", async () => {
 	const results = { [`${TOOLS_PNPM} --version`]: { code: 0, stdout: "11.1.1\n" } };
-	for (const [own, found] of [["10.27.0", "10.27.0"], ["12.0.0", undefined], ["11.1.1", undefined], ["not a version", undefined]] as const) {
+	// The bootstraps run only the pinned major, so a pnpm of another major there is reported as found
+	// (the plan says the pinned pnpm is installed and that one is left unchanged); a newer 11.x is not.
+	for (const [own, found] of [["10.27.0", "10.27.0"], ["12.0.0", "12.0.0"], ["13.0.0", "13.0.0"], ["11.5.0", undefined], ["11.1.1", undefined], ["not a version", undefined]] as const) {
 		const h = probes({ files: [TOOLS_PNPM, "/usr/bin/pnpm"], results: { ...results, "/usr/bin/pnpm --version": { code: 0, stdout: `${own}\n` } } });
 		assert.deepEqual(await h.probes.pnpm(), { available: true, version: "11.1.1", usable: true, compatible: true, persistent: false,
 			...(found ? { found } : {}) }, own);

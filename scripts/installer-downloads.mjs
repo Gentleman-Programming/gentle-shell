@@ -315,8 +315,8 @@ export function removeOwnedTools(tools, home) {
 	}
 }
 
-/** The pnpm the installer runs: the pinned major (the runner's argv is verified
- * for it, as installer-probes checks) at the pinned version or newer.
+/** The pnpm the bootstraps run: the pinned major at the pinned version or newer.
+ * A user's pnpm of a newer major is left as it is and used by the plan (installer-probes).
  */
 export function pinnedPnpmCompatible(version) {
 	const actual = parts(version);

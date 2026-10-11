@@ -10,7 +10,7 @@ Branch: fix/installer-setup-field-reports (from origin/main bcfab37aa). Delivery
 
 ## Tasks
 - T1 [S1] done — route: inline. gentleAiIsolationEnv puts the pinned Engram's folder first on Gentle AI's PATH when published (lib/gentle-ai-binary.ts, runtime regenerated). RED 2 failing (isolation env, bundled setup env) → GREEN 85/85 (isolation, bundled, native-review-cli). Commit: see git log (fix(setup): give Gentle AI the pinned Engram on PATH).
-- T2 [S2] pending — route: inline. Commit: pending.
+- T2 [S2] done — route: inline. A successful non-dry-run `gentle-shell setup` records the provisioning marker only for a home auto-provisioning would own (homeIsForeign); a config write failure only warns. RED 1 failing → GREEN gentle-shell-bin 145/145; preservation test (dry run, failed setup, pi's default home record nothing) passes before and after. Docs: readme-reference. Commit: see git log (fix(setup): record a successful manual setup).
 - T3 [S3] pending — route: inline. Commit: pending.
 - T4 [S1-S3] pending — independent verification (risk item 5: installer/setup), PR, CI, merge per user instruction.
 
@@ -18,3 +18,4 @@ Branch: fix/installer-setup-field-reports (from origin/main bcfab37aa). Delivery
 - L1. User request (verbatim): "una cosa mas que me pasan para que compruebes" (screenshot of #2105, #2106, #2109), then "a ver si ya se arregla con lo que hicimos", then chose "Los tres".
 - L2. Map (explorer mv4dj19x-4-ygvo; parent spot check lib/gentle-ai-binary.ts:56-60, gentle-ai internal/cli/run.go:3572-3582): the bundled and standard plans both run `gentle-shell setup` → `gentle-ai install --agent pi`; Gentle AI resolves Engram with `cmdLookPath("engram")` then the Homebrew prefix, else `brew tap`; the bundled Engram (runtime/engram-3.3.2) is not on the setup PATH. Manual `gentle-shell setup` never writes the provisioning entry (bin/gentle-shell.mjs:1305), so the first launch re-provisions. #1258 sameFile in scripts/install-tui-mode-setting.mjs:64-83. Today's v4.0.0 distribution assets do not fix any of the three.
 - L3. T1: Engram is acquired only in a bundled install; the standard plan provides none, so a standard install without brew still depends on Gentle AI's brew path. Fresh release installs now take the bundled plan (v4.0.0 assets published 2026-10-12).
+- L4. T2: `_shared/SKILL.md` is left alone (gentle-shell never writes it; current Gentle AI deletes it as legacy, internal/components/skills/support.go:74-78). The missing sidebar in #2106 has no identified cause; plausibly the same re-run setup, not proven.

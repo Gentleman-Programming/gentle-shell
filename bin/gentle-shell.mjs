@@ -1071,7 +1071,11 @@ async function removePostInstallSources(sources, index, home, runtime, stdio, ti
 // --dry-run, runs the shared flow with the child's stdio inherited (today's
 // behavior, unchanged), then exits with its result — this is the one place
 // that keeps the pre-S7 exit semantics `handleSetupCommand` always had.
-async function handleSetupCommand(commandArgs, home, runtime) {
+// A successful real run records the home exactly as auto-provisioning does
+// (#2106: both installers finish with this command, and the first launch
+// must not install the packages again), but only for a home auto-provisioning
+// itself would own: never pi's own default home or an unrelated directory.
+async function handleSetupCommand(commandArgs, home, runtime, { homeHadContentBeforeBootstrap }) {
 	let dryRun = false;
 	for (const arg of commandArgs) {
 		if (arg === "--dry-run") {
@@ -1083,6 +1087,19 @@ async function handleSetupCommand(commandArgs, home, runtime) {
 
 	const result = await runSetupFlow(home, runtime, { dryRun, stdio: "inherit" });
 	if (!result.ok && result.message !== undefined) process.stderr.write(`${result.message}\n`);
+	if (result.ok && !dryRun && (home.mode === "isolated" || home.mode === "path")) {
+		const configPath = resolveConfigPath();
+		const homeKey = safeRealpath(home.dir);
+		const config = readRawConfig(configPath);
+		if (!homeIsForeign(home, provisionedEntry(config, homeKey), homeHadContentBeforeBootstrap)) {
+			try {
+				writeRawConfig(configPath, recordProvisioned(config, homeKey, resolveSetupGentleAiPin(), ownPackageVersion(), new Date().toISOString()));
+			} catch (error) {
+				// Setup itself succeeded; the next launch only sets the home up again.
+				process.stderr.write(`gentle-shell: could not record the setup in ${configPath} (${error.message})\n`);
+			}
+		}
+	}
 	process.exit(result.exitCode);
 }
 
@@ -1636,7 +1653,7 @@ async function main() {
 	}
 
 	if (args.command === "setup") {
-		await handleSetupCommand(args.commandArgs, home, runtime);
+		await handleSetupCommand(args.commandArgs, home, runtime, { homeHadContentBeforeBootstrap });
 		return;
 	}
 

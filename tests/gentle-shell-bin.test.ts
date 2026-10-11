@@ -1842,6 +1842,48 @@ test("an empty or nonexistent --home is still auto-provisioned", (t) => {
 	assert.equal(readFileSync(counterPath, "utf8").trim().split("\n").length, 1, "a fresh --home must still be auto-provisioned");
 });
 
+// #2106: both installers finish with `gentle-shell setup`; the first launch
+// after it must not install the companion packages again.
+test("a successful manual setup records the isolated home, so the first launch does not set it up again", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	const counterPath = join(f.root, "gentle-ai-runs.log");
+	writeGentleAiScriptCountingRuns(gentleAiScript, counterPath);
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+
+	const setup = run(env, ["setup"]);
+	assert.equal(setup.status, 0, setup.stderr);
+	const config = JSON.parse(readFileSync(join(f.home, ".gentle-shell", "config.json"), "utf8"));
+	const homeKey = realpathSync(f.gentleShellHome);
+	assert.equal(config.provisioned[homeKey].gentleAi, "3.6.0");
+	assert.equal(config.provisioned[homeKey].gentlePi, ownGentlePiVersion());
+
+	const launch = run(env, ["--mode", "rpc"]);
+	assert.equal(launch.status, 0, launch.stderr);
+	assert.doesNotMatch(launch.stderr, /first run in/);
+	assert.equal(readFileSync(counterPath, "utf8").trim().split("\n").length, 1, "gentle-ai ran only for the manual setup");
+});
+
+test("manual setup records nothing for a dry run, a failed setup or pi's own default agent home", (t) => {
+	const f = fixture(t);
+	const configPath = join(f.home, ".gentle-shell", "config.json");
+	const provisioned = () => (existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")).provisioned ?? {} : {});
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	const failingScript = join(f.root, "failing-gentle-ai.mjs");
+	writeGentleAiScriptCountingRuns(gentleAiScript, join(f.root, "runs.log"));
+	writeGentleAiScriptCountingRuns(failingScript, join(f.root, "failed-runs.log"), 3);
+	const env = { ...f.env, PI_CODING_AGENT_DIR: undefined, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" };
+
+	assert.equal(run(env, ["setup", "--dry-run"]).status, 0);
+	assert.deepEqual(provisioned(), {}, "dry run");
+	assert.notEqual(run({ ...env, GENTLE_SHELL_GENTLE_AI_BIN: failingScript }, ["setup"]).status, 0);
+	assert.deepEqual(provisioned(), {}, "failed setup");
+	const defaultPiHome = join(f.home, ".pi", "agent");
+	const own = run(env, ["--home", defaultPiHome, "setup"]);
+	assert.equal(own.status, 0, own.stderr);
+	assert.deepEqual(provisioned(), {}, "pi's own default agent home is never recorded, so it is never auto-provisioned later");
+});
+
 test("a --home equal to pi's own default agent home is never auto-provisioned, even when empty", (t) => {
 	const f = fixture(t);
 	const defaultPiHome = join(f.home, ".pi", "agent");

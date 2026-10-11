@@ -360,6 +360,16 @@ export const NATIVE_REVIEW_OUTCOME = {
 
 
 
+
+
+
+
+
+
+
+
+
+
 /**
  * Builds the risk-gated verification plan shared by the `off`/`unknown` RDD
  * lines and by an `on` line whose native review did not close for this
@@ -367,12 +377,13 @@ export const NATIVE_REVIEW_OUTCOME = {
  * naming which branch fired, up to and including the word "and"; the
  * tier-specific clause is appended after it.
  */
-function riskGatedPlan(gatePrefix        , risk                  , writerProfile               )                   {
+function riskGatedPlan(gatePrefix        , risk                  , writerProfile               , nativeReviewFirst = false)                   {
 	if (risk === VERIFICATION_TIER.PASSIVE) {
 		return Object.freeze({
 			writerSelfVerification: false,
 			structuralReadbackOnly: true,
 			independentVerifier: false,
+			nativeReviewFirst,
 			reason: `${gatePrefix} the native assessment reports passive risk: a structural readback by the parent is the complete check, with no separate verifier and no tests.`,
 		});
 	}
@@ -383,6 +394,7 @@ function riskGatedPlan(gatePrefix        , risk                  , writerProfile
 			writerSelfVerification: true,
 			structuralReadbackOnly: false,
 			independentVerifier: smallModelBias,
+			nativeReviewFirst,
 			reason: smallModelBias
 				? `${gatePrefix} the native assessment reports medium risk, but the small-model bias raises it one tier to high for verification purposes: the writer self-verifies and a separate independent verifier also runs.`
 				: `${gatePrefix} the native assessment reports medium risk with a large writer profile: the writer's self-verification stands and no separate verifier is required.`,
@@ -394,6 +406,7 @@ function riskGatedPlan(gatePrefix        , risk                  , writerProfile
 		writerSelfVerification: true,
 		structuralReadbackOnly: false,
 		independentVerifier: true,
+		nativeReviewFirst,
 		reason: risk === VERIFICATION_TIER.UNASSESSABLE
 			? `${gatePrefix} the native risk assessment could not be produced, so the candidate is treated as high risk: the writer self-verifies and a separate independent verifier always runs.`
 			: `${gatePrefix} the native assessment reports high risk: the writer self-verifies and a separate independent verifier always runs.`,
@@ -416,11 +429,10 @@ function nonClosedOutcomeClause(outcome                     )         {
 }
 
 /**
- * Computes who verifies a delegated writer's change. Verification follows the
- * native risk tier whatever the RDD line and native review outcome
- * (verify-always-rdd-high S1, superseding the gentle-pi#662/#668 on-path): the
- * native review is an additional outside view and never replaces or skips the
- * tier's verification. `nativeReviewOutcome` only shapes the reason text.
+ * Computes who verifies a delegated writer's change. With RDD on, a due opaque
+ * native continuation runs before independent-verifier routing; exact native
+ * closure then supplies the independent review and suppresses a duplicate
+ * verifier. Non-closing outcomes retain the normal fail-closed risk gate.
  *
  * - `passive`: structural readback by the parent only; no verifier, no tests.
  * - `medium`: the writer self-verifies; a separate independent verifier runs
@@ -438,11 +450,36 @@ export function verificationPlan(input                       )                  
 
 	if (rddLine === RDD_LINE.ON) {
 		const outcome = input.nativeReviewOutcome ?? NATIVE_REVIEW_OUTCOME.UNKNOWN;
-		const clause = outcome === NATIVE_REVIEW_OUTCOME.CLOSED
-			? "the native review closed for this candidate"
+		if (input.nativeReviewFirst === true && outcome === NATIVE_REVIEW_OUTCOME.UNKNOWN) {
+			const deferred = riskGatedPlan(
+				"receipt-driven development is on and native review is due with an opaque continuation; route that continuation before deciding whether a fallback verifier is needed, and",
+				risk,
+				writerProfile,
+				true,
+			);
+			return Object.freeze({
+				...deferred,
+				independentVerifier: false,
+				reason: `${deferred.reason} No independent verifier may run until the native continuation resolves.`,
+			});
+		}
+		if (outcome === NATIVE_REVIEW_OUTCOME.CLOSED && input.workerSelfVerificationComplete !== false) {
+			const closed = riskGatedPlan(
+				"receipt-driven development is on and the native review closed for this candidate; its exact candidate.consumed evidence supplies the independent review, and",
+				risk,
+				writerProfile,
+			);
+			return Object.freeze({
+				...closed,
+				independentVerifier: false,
+				reason: `${closed.reason} No duplicate independent verifier is required.`,
+			});
+		}
+		const fallbackClause = outcome === NATIVE_REVIEW_OUTCOME.CLOSED
+			? "the native review closed but the worker evidence is partial or blocked"
 			: nonClosedOutcomeClause(outcome);
 		return riskGatedPlan(
-			`receipt-driven development is on and ${clause}; the native review is an additional outside view that never replaces verification, so the risk-gated path applies exactly as receipt-driven development off, and`,
+			`receipt-driven development is on and ${fallbackClause}; the risk-gated fallback applies, and`,
 			risk,
 			writerProfile,
 		);

@@ -4,7 +4,7 @@ How the Gentle Pi orchestrator decides who verifies a bounded writer's work. The
 
 ## Receipt-driven development on
 
-Verification is the same with RDD on, off, or unknown (verify-always-rdd-high S1). The bounded writer runs the exact commands the parent lists under `## Verification`, in the foreground, and reports each as `<command>: <observed result>`; after it returns, the parent calls `assess` and follows the risk tier below. The native review is an additional outside view of the change: it never replaces or skips the tier's verification, and the tier's verifier runs before review. A declined consent, a clone-local disable, or a refused START/STATUS therefore changes nothing about verification.
+The bounded writer runs the exact commands the parent lists under `## Verification`, in the foreground, and reports each as `<command>: <observed result>`; that report remains the verification of record. With RDD on, the parent calls `assess` at the final committed work-unit or PR-slice boundary, never over an ambient untracked writer diff. When ASSESS reports `reviewDue: true` with `nextTransition`, `plan.nativeReviewFirst: true` requires routing that opaque continuation unchanged before deciding whether a separate verifier is needed. Do not infer or mutate Git state in plan logic. Exact native `candidate.consumed` closure suppresses a duplicate verifier only with complete worker evidence; the parent passes `workerSelfVerificationComplete: false` for a partial or blocked handoff, retaining the high-risk verifier. A declined consent, clone-local disable, unavailable, malformed, unknown, or unresolved native outcome falls back to the risk-gated verifier behavior; high risk then gets exactly one separate verifier when native review cannot close.
 
 ### How `assess` resolves the review outcome (gentle-pi#1175)
 
@@ -39,10 +39,10 @@ The `gentle_review` tool's `assess` operation (`extensions/gentle-ai.ts`) combin
 | --- | --- |
 | passive | structural readback by the parent; no separate verifier, no tests |
 | medium | writer self-verification stands; a separate `gentle-ai-verify` run is added only when the writer profile is a small model (mini or low effort) |
-| high | writer self-verification plus a separate `gentle-ai-verify` run, always |
+| high | writer self-verification plus exactly one independent review: route a due native continuation first; when native review cannot close, run a separate `gentle-ai-verify` |
 | unknown / assess failed | treated as high |
 
-This table applies in every RDD state; a closed native review never removes a verifier the tier requires. The small-model bias raises the medium tier to high for verification purposes only; an unknown RDD line never lowers a tier below `off`. The parent's own spot check (re-running one reported command before delivery) stays required in every tier.
+This table applies in every RDD state. With RDD on, a due native continuation runs before the table's separate-verifier decision; exact closure supplies the independent review and suppresses duplication. The small-model bias raises the medium tier to high for verification purposes only; an unknown RDD line never lowers a tier below `off`. The parent's own spot check (re-running one reported command before delivery) stays required in every tier.
 
 A native code review is not a substitute for applicable functional checks: tests, builds, and functional verification such as browser checks for UI changes still run when applicable. Review outcomes never authorize delivery; human consent for native review and the user-owned RDD switch are unchanged.
 

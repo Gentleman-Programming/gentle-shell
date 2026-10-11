@@ -394,6 +394,7 @@ export class AgentRunner {
 		this.processControl = deps.process ?? hostProcess;
 	}
 
+	/** Builds the persisted task record from the request, carrying the filtered-env diagnosis when present. */
 	private createTask(request: TaskRequest): TaskRecord {
 		const now = this.deps.now();
 		this.counter += 1;

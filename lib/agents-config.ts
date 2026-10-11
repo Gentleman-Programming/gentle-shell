@@ -171,6 +171,7 @@ function parseMode(value: unknown): AgentMode | undefined | string {
 	return AGENT_MODES.includes(normalized) ? (normalized as AgentMode) : `mode "${value}" is not one of ${AGENT_MODES.join(", ")}`;
 }
 
+/** Parses a frontmatter list value (`[a, b]`, `- item` lines, or comma text) into trimmed entries; undefined yields an empty list. */
 function parseStringList(value: FrontmatterValue | undefined): string[] {
 	if (value === undefined) return [];
 	const items = Array.isArray(value) ? value : value.split(",");
@@ -181,6 +182,7 @@ function scalar(value: FrontmatterValue | undefined): string | undefined {
 	return typeof value === "string" ? value : undefined;
 }
 
+/** Parses one agent markdown file into its definition, or returns a path-scoped error. */
 export function parseAgentDefinition(text: string, filePath: string, scope: AgentScope): AgentDefinition | AgentDefinitionError {
 	const { data, body } = parseFrontmatter(text);
 	const thinking = parseThinking(scalar(data.thinking) ?? scalar(data.effort) ?? scalar(data.thinking_level));

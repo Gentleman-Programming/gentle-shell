@@ -1,7 +1,9 @@
 // Sensitive environment filtering for child agents. A child never inherits
 // credentials from the host process: keys matching password, secret,
 // credential, token, or API/access/private-key names are removed from the
-// child's environment unless the role declares them in `env_keep`.
+// child's environment unless the role declares them in `env_keep`. Live
+// credential channels whose names match no pattern (SSH agent socket, Docker
+// auth config) are filtered explicitly.
 //
 // This module is pure: callers copy the environment first and delete the
 // returned keys from the copy, so the parent's own environment is never
@@ -21,6 +23,9 @@ const SENSITIVE_ENV_KEY_PATTERNS: readonly RegExp[] = [
 const ALWAYS_SENSITIVE_ENV_KEYS = new Set([
 	"TOKEN", "PASSWORD", "PASSWD", "SECRET", "SECRETS", "CREDENTIAL", "CREDENTIALS",
 	"API_KEY", "ACCESS_KEY", "PRIVATE_KEY", "SECRET_KEY",
+	// Live credential channels whose names match no pattern above. Explicit
+	// contract: only these channels are added, not DATABASE_URL or npm config.
+	"SSH_AUTH_SOCK", "DOCKER_AUTH_CONFIG",
 ]);
 
 /**

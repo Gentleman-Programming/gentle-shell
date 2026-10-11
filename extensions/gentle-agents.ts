@@ -1555,6 +1555,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 
 	const roots = (ctx: ExtensionContext) => ({ cwd: ctx.sessionManager.getCwd(), home: deps.home, agentHome });
 
+	/** Builds the task request for one child launch: routing, identity, environment policy, and hooks. */
 	const buildRequest = async (ctx: ExtensionContext, agent: AgentDefinition, prompt: string, label: string | undefined, context: string | undefined, mode: AgentMode, resume?: string, workspaceRoot?: string, signal?: AbortSignal, repositoryRoot?: string): Promise<TaskRequest> => {
 		if (retiredSddAgent(agent.name)) throw new Error("Retired SDD agents cannot be dispatched.");
 		if (![AGENT_MODE.TASK, AGENT_MODE.BACKGROUND].includes(mode)) throw new Error("Subagent mode must be task or background.");

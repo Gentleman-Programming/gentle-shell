@@ -64,6 +64,19 @@ test("exact credential words are always sensitive", () => {
 	]);
 });
 
+test("live credential channels are filtered without broadening to generic URLs", () => {
+	const environment = {
+		SSH_AUTH_SOCK: "x",
+		DOCKER_AUTH_CONFIG: "x",
+		DATABASE_URL: "x",
+		NPM_CONFIG_REGISTRY: "x",
+	};
+	assert.deepEqual(inheritedSensitiveChildEnvironmentKeys(environment), [
+		"DOCKER_AUTH_CONFIG",
+		"SSH_AUTH_SOCK",
+	]);
+});
+
 test("env_keep rescues declared keys, case-insensitively, and only those", () => {
 	const environment = {
 		DB_SERVER: "x",

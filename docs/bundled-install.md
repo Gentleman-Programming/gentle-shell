@@ -259,6 +259,18 @@ What stays the user's:
 - pi-pretty's reads of `$HOME/.pi/agent/settings.json` (its `index.js` and `render.js` look for its settings there whatever the agent home is). This needs an upstream pi-pretty change; `node_modules` is not patched.
 - `GENTLE_SHELL_PREFIX` and `ENGRAM_BIN` reach the agent's shell, like the agent home variables. A gentle-pi the user runs there is not bundled and ignores the prefix (see above).
 
+### Startup update offer
+
+Opening a bundled `gentle-shell` in a terminal checks the npm `gentle-pi/latest` release before Pi starts. The check waits at most 1.5 seconds; offline (`PI_OFFLINE` or `--offline`), unavailable, malformed, same or older releases open normally. Plain startup and `--continue`/`--resume` are supported; commands, other forwarded options, noninteractive/RPC launches, and subagents do not check or prompt. Global npm/pnpm installations are unchanged.
+
+A rose-colored panel shows the current and available Shell versions and a link to that release’s notes. Use arrows or 1–3 to select, then Enter to confirm:
+
+- **Update now (gentle-shell upgrade)** uses the existing verified bundled upgrade. On success, it automatically reopens the newly active Shell with that release’s Node and Pi and the original startup arguments, without showing the prompt again on the handoff. If upgrade fails, its error is shown and the current Shell opens normally; a failed relaunch reports an error rather than silently running the old version.
+- **Not now** (the default; also Escape or end of input) opens normally without saving a preference.
+- **Skip this version** stores only the offered version as `skippedStartupRelease` in the launcher’s `config.json` (or `GENTLE_SHELL_CONFIG` override), preserving unrelated settings. Another newer release can prompt again. A malformed or unwritable file is not replaced; the launcher warns and continues without saving.
+
+Ctrl+C cancels opening (exit 130). No update runs without explicit confirmation. The startup check does not update additional extensions; use `gentle-shell update --extensions` for those. Restarting does not change the working directory, startup arguments, or agent home. Pi remains pinned to the Shell release.
+
 ### `gentle-shell upgrade` in a bundled install
 
 `upgradeBundled` follows the release channel only. `--channel main` is refused until a later task.

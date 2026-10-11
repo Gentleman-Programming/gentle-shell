@@ -282,6 +282,36 @@ function bundledPrefix(t: TestContext, { pi = "1.1.0" } = {}) {
 	return { root, home, userBin, version, piDir, npmCli, engram, run, env, entry: join(shell, "bin", "gentle-shell.mjs") };
 }
 
+test("startup offer precedes Pi, not-now preserves config and omit suppresses just that release", { skip: posixHost }, (t) => {
+	const prefix = bundledPrefix(t);
+	const config = join(prefix.root, "config.json");
+	writeFileSync(config, '{"other":"preserved"}\n');
+	const preload = (latest: string) => `
+		Object.defineProperty(process.stdin, 'isTTY', {value:true});
+		Object.defineProperty(process.stdout, 'isTTY', {value:true});
+		process.stdin.setRawMode = (raw) => { process.stdin.isRaw = raw; };
+		globalThis.fetch = async () => new Response(JSON.stringify({version:${JSON.stringify(latest)}}));
+	`;
+	const run = (latest: string, input: string, args: string[] = []) => spawnSync(process.execPath, [prefix.entry, ...args], {
+		env: { ...prefix.env, NODE_OPTIONS: `--import=data:text/javascript,${encodeURIComponent(preload(latest))}` },
+		encoding: "utf8", input, timeout: 10000,
+	});
+	const skipped = run("999.0.0", "2\r");
+	assert.equal(skipped.status, 0, skipped.stderr);
+	assert.match(skipped.stdout, /Gentle Shell update available/);
+	assert.ok(skipped.stdout.indexOf("Gentle Shell update available") < skipped.stdout.indexOf('"cli":'));
+	assert.equal(readFileSync(config, "utf8"), '{"other":"preserved"}\n');
+	const omitted = run("999.0.0", "3\r");
+	assert.equal(omitted.status, 0, omitted.stderr);
+	assert.deepEqual(JSON.parse(readFileSync(config, "utf8")), { other: "preserved", skippedStartupRelease: "999.0.0" });
+	assert.doesNotMatch(run("999.0.0", "").stdout, /Gentle Shell update available/);
+	assert.match(run("999.0.1", "2\r").stdout, /Gentle Shell update available/);
+	const command = run("999.0.1", "", ["list"]);
+	assert.equal(command.status, 0, command.stderr);
+	assert.doesNotMatch(command.stdout, /Gentle Shell update available/);
+	assert.deepEqual(JSON.parse(command.stdout.trim().split("\n").at(-1)).args, ["list"]);
+});
+
 test("the bundled launcher runs only its version's Pi, with the user's environment and the bundled npm in its own home", { skip: posixHost }, (t) => {
 	const prefix = bundledPrefix(t);
 	const version = prefix.run(["--version"]);

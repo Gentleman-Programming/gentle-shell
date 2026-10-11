@@ -77,6 +77,9 @@ import {
 } from "../runtime/gentle-shell-resume-hint.mjs";
 import { bundledGentleAiPaths, GENTLE_AI_VERSION, gentleAiBinaryPath, gentleAiIsolationEnv, PackageLocalGentleAiBinaryMissingError } from "../runtime/gentle-ai-binary.mjs";
 import { DEFAULT_THEME_NAME, installIsolatedTuiModeSetting } from "../scripts/install-tui-mode-setting.mjs";
+import { shouldCheckStartupUpdate, findStartupUpdate } from "../runtime/gentle-shell-startup-update.mjs";
+import { promptStartupUpdate } from "../runtime/gentle-shell-update-panel.mjs";
+import { applyStartupChoice, omitStartupVersion, resolveStartupRelaunch } from "../runtime/gentle-shell-startup-flow.mjs";
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -1468,7 +1471,49 @@ async function handleSelfUninstallCommand(commandArgs) {
 	});
 }
 
+// Before Pi exists: only the bundled interactive opening may offer an update.
+async function startupUpdate(bundled, args, startupEnv) {
+	if (!shouldCheckStartupUpdate({ args, env: startupEnv, bundled: Boolean(bundled),
+		inputTTY: process.stdin.isTTY === true, outputTTY: process.stdout.isTTY === true })) return undefined;
+	const configPath = resolveConfigPath();
+	let skipped;
+	try { skipped = readRawConfig(configPath).skippedStartupRelease; } catch { /* A notice must not prevent opening. */ }
+	const { latestRelease } = await import("../scripts/main-channel.mjs");
+	const offer = await findStartupUpdate({ current: ownPackageVersion(), skipped,
+		lookup: (signal) => latestRelease((url, options) => fetch(url, { ...options, signal })) });
+	if (!offer) return undefined;
+	let choice;
+	try { choice = await promptStartupUpdate(offer, { color: process.stdout.hasColors?.() === true }); }
+	catch { return undefined; }
+	return applyStartupChoice(choice, {
+		omit: () => omitStartupVersion(() => readJsonIfExists(configPath), (text) => {
+			mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
+			writeFileAtomically(configPath, text, { mode: 0o600 });
+		}, offer.latest),
+		warn: (message) => process.stderr.write(`gentle-shell: ${message}\n`),
+		upgrade: () => handleBundledUpgrade(bundled, []),
+		relaunch: async () => {
+			const next = await resolveStartupRelaunch({ root: bundled.root, home: homedir(), platform: process.platform,
+				env: process.env, argv: process.argv.slice(2) });
+			return new Promise((resolve, reject) => {
+				const child = spawn(next.command, next.args, { stdio: "inherit", env: next.env, shell: false });
+				const forwards = ["SIGINT", "SIGTERM", "SIGHUP"].map((signal) => {
+					const handler = () => child.kill(signal);
+					process.on(signal, handler);
+					return [signal, handler];
+				});
+				const cleanup = () => { for (const [signal, handler] of forwards) process.off(signal, handler); };
+				child.once("error", (error) => { cleanup(); reject(error); });
+				child.once("exit", (code, signal) => { cleanup(); resolve(signal ? signalExitCode(signal) : (code ?? 1)); });
+			});
+		},
+	});
+}
+
 async function main() {
+	// One launch only: never leak the update handoff opt-out into Pi or its tools.
+	const startupEnv = { ...process.env };
+	delete process.env.GENTLE_SHELL_SKIP_STARTUP_UPDATE;
 	const args = parseLauncherArgs(process.argv.slice(2));
 	if (args.error !== undefined) fail(`${args.error}\nRun 'gentle-shell --help' for usage.`, 2);
 	if (args.help) {
@@ -1490,6 +1535,12 @@ async function main() {
 	if (args.command === "self-uninstall") {
 		if (bundled) process.exitCode = await handleBundledSelfUninstall(bundled, args.commandArgs);
 		else await handleSelfUninstallCommand(args.commandArgs);
+		return;
+	}
+
+	const startupCode = await startupUpdate(bundled, args, startupEnv);
+	if (startupCode !== undefined) {
+		process.exitCode = startupCode;
 		return;
 	}
 

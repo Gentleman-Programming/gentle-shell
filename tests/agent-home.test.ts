@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { gentlePiConfigHome } from "../lib/agent-home.ts";
+import { bundledGentlePiAgentHome, gentlePiConfigHome } from "../lib/agent-home.ts";
+import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
 
 // The two Pi homes: `~/.pi/agent` holds Pi's own agent definitions and
 // `~/.pi/gentle-ai` holds everything the Gentle AI commands own. Both are resolved
@@ -72,4 +73,33 @@ test("the config home ignores the Pi agent-home overrides", (t) => {
 		gentlePiConfigHome({ PI_CODING_AGENT_DIR: "/pi/agent", GENTLE_PI_AGENT_HOME: "/gentle/agent" }),
 		join(home, ".pi", "gentle-ai"),
 	);
+});
+
+// S9: a bundled Gentle Shell keeps gentle-pi's config inside its prefix. It is
+// derived from this package's bundled install and the launcher's
+// GENTLE_SHELL_PREFIX, never exported (Gentle AI 4.0.0 reads
+// GENTLE_PI_CONFIG_HOME as a parent folder). The testing overlay stands in for
+// this package running from that install.
+function bundledInstall(t: test.TestContext): string {
+	const prefix = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-bundled-config-")));
+	setBundledInstallForTesting({ root: prefix });
+	t.after(() => {
+		setBundledInstallForTesting(undefined);
+		rmSync(prefix, { recursive: true, force: true });
+	});
+	return prefix;
+}
+
+test("a bundled install derives the config home inside its prefix and the agent home from Pi's", (t) => {
+	isolatedHome(t);
+	const prefix = bundledInstall(t);
+	const env = { GENTLE_SHELL_PREFIX: prefix, GENTLE_PI_CONFIG_HOME: "/home/ana/.pi/gentle-ai", PI_CODING_AGENT_DIR: "/agent" };
+	assert.equal(gentlePiConfigHome(env), join(prefix, "config", "gentle-ai"));
+	assert.equal(bundledGentlePiAgentHome(env), "/agent");
+	// Another prefix, or none, is not this install: everything stays as before.
+	for (const other of [{ GENTLE_PI_CONFIG_HOME: "/custom" }, { GENTLE_SHELL_PREFIX: join(prefix, "other"), GENTLE_PI_CONFIG_HOME: "/custom" }]) {
+		assert.equal(gentlePiConfigHome(other), "/custom");
+		assert.equal(bundledGentlePiAgentHome({ ...other, PI_CODING_AGENT_DIR: "/agent" }), undefined);
+	}
+	assert.equal(gentlePiConfigHome({ GENTLE_PI_CONFIG_HOME: "" }), join(homedir(), ".pi", "gentle-ai"));
 });

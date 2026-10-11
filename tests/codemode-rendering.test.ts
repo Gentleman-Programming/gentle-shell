@@ -431,6 +431,109 @@ function piRow(tool: ToolDefinition, value: AgentToolResult<unknown> | undefined
 
 const pending = () => context({ isPartial: true, executionStarted: true, state: {} });
 
+test("unchanged Code frames reuse paint work in both styles, widths and views", (t) => {
+	const original = cardStyle();
+	t.after(() => setCardStyle(original));
+	const tool = decorateCodemodeTool({ name: "codemode" } as ToolDefinition);
+	const output = Array.from({ length: 300 }, (_, i) => `${i}: 界🌹 e\u0301 \x1b[31mcolored\x1b[0m ${"words ".repeat(12)}`).join("\n");
+	for (const style of Object.values(CARD_STYLE)) {
+		setCardStyle(style);
+		for (const expanded of [false, true]) {
+			for (const width of [80, 160]) {
+				let paints = 0;
+				const painted = {
+					fg: (role: string, text: string) => { paints++; return floatTheme.fg(role, text); },
+					bg: (role: string, text: string) => { paints++; return floatTheme.bg(role, text); },
+				};
+				const ctx = context({ expanded });
+				const components = [tool.renderCall!(ctx.args, painted as never, ctx),
+					tool.renderResult!(result([], output), { expanded, isPartial: false }, painted as never, ctx)];
+				for (const component of components) {
+					const first = [...component.render(width)];
+					const afterFirst = paints;
+					for (let repeat = 0; repeat < 20; repeat++) assert.deepEqual(component.render(width + 0.5), first);
+					assert.equal(paints, afterFirst, "unchanged frame must not repaint");
+					component.invalidate();
+					assert.deepEqual(component.render(width), first, "invalidation preserves exact ANSI output");
+					assert.ok(paints > afterFirst);
+				}
+			}
+		}
+	}
+});
+
+test("Code cache replaces its frame on width, style and theme invalidation", (t) => {
+	const original = cardStyle();
+	t.after(() => setCardStyle(original));
+	setCardStyle(CARD_STYLE.NEON);
+	const tool = decorateCodemodeTool({ name: "codemode" } as ToolDefinition);
+	let paints = 0;
+	let color = "\x1b[31m";
+	const painted = {
+		fg: (_role: string, text: string) => { paints++; return `${color}${text}\x1b[0m`; },
+		bg: floatTheme.bg,
+	};
+	const ctx = context();
+	const value = result([], "hello 界 e\u0301\nsecond");
+	const fresh = () => tool.renderResult!(value, { expanded: false, isPartial: false }, painted as never, ctx);
+	const component = fresh();
+	const first = [...component.render(80)];
+	const before = paints;
+	assert.deepEqual(component.render(80.9), first);
+	assert.equal(paints, before);
+	assert.deepEqual(component.render(160), fresh().render(160));
+	assert.ok(paints > before);
+	setCardStyle(CARD_STYLE.FLOAT);
+	assert.deepEqual(component.render(160), fresh().render(160));
+	setCardStyle(CARD_STYLE.NEON);
+	assert.deepEqual(component.render(80), first);
+	color = "\x1b[35m";
+	component.invalidate();
+	const changed = component.render(80);
+	assert.deepEqual(changed, fresh().render(80));
+	assert.notDeepEqual(changed, first);
+	assert.deepEqual(changed.map(stripAnsi), first.map(stripAnsi));
+	assert.deepEqual(component.render(0), []);
+	assert.deepEqual(component.render(-1), []);
+});
+
+test("cached running Code calls notice result arrival and completion", (t) => {
+	const original = cardStyle();
+	t.after(() => setCardStyle(original));
+	const tool = decorateCodemodeTool({ name: "codemode" } as ToolDefinition);
+	for (const style of Object.values(CARD_STYLE)) {
+		setCardStyle(style);
+		for (const transition of ["result", "completion"]) {
+			const ctx = pending();
+			const component = tool.renderCall!(ctx.args, floatTheme as never, ctx);
+			const running = [...component.render(80)];
+			assert.match(running.map(stripAnsi).join("\n"), /running…/);
+			assert.deepEqual(component.render(80), running);
+			if (transition === "result") tool.renderResult!(result([], "partial"), { expanded: false, isPartial: true }, floatTheme as never, ctx);
+			else ctx.isPartial = false;
+			const changed = component.render(80);
+			assert.doesNotMatch(changed.map(stripAnsi).join("\n"), /running…/);
+			assert.deepEqual(changed, tool.renderCall!(ctx.args, floatTheme as never, ctx).render(80));
+			assert.deepEqual(component.render(80), changed);
+		}
+	}
+});
+
+test("cached Code results do not leak content across partial, final or expanded components", () => {
+	const tool = decorateCodemodeTool({ name: "codemode" } as ToolDefinition);
+	const ctx = pending();
+	const partial = tool.renderResult!(result([], "partial payload"), { expanded: false, isPartial: true }, theme as never, ctx);
+	const first = [...partial.render(80)];
+	assert.deepEqual(partial.render(80), first);
+	const value = result([], "final payload\nsecond\nthird\nfourth detail");
+	const final = tool.renderResult!(value, { expanded: false, isPartial: false }, theme as never, ctx);
+	const expanded = tool.renderResult!(value, { expanded: true, isPartial: false }, theme as never, context({ expanded: true }));
+	assert.match(final.render(80).join("\n"), /final payload/);
+	assert.doesNotMatch(final.render(80).join("\n"), /partial payload|fourth detail/);
+	assert.match(expanded.render(80).join("\n"), /fourth detail/);
+	assert.deepEqual(partial.render(80), first);
+});
+
 test("a running Code card closes its own frame with one running row until a result exists", () => {
 	const tool = registeredCodemode();
 	const roles: string[] = [];

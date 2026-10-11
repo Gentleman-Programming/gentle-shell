@@ -73,6 +73,8 @@ export interface InProcessReviewerRequest {
 	readonly selection: string;
 	/** Routing thinking label: off | minimal | low | medium | high | xhigh | max. Omitted is treated as "off". */
 	readonly thinking?: string;
+	/** Effective Pi transport preference; absent preserves the provider default. */
+	readonly transport?: SimpleStreamOptions["transport"];
 	/** Frozen Go-materialized prompt bytes, submitted verbatim as the one user message. */
 	readonly prompt: Buffer;
 	readonly timeoutMs: number;
@@ -272,6 +274,7 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 		...(auth.apiKey === undefined ? {} : { apiKey: auth.apiKey }),
 		...(auth.headers === undefined && attributionHeaders === undefined ? {} : { headers: attributionHeaders === undefined ? auth.headers : { ...attributionHeaders, ...auth.headers } }),
 		...(reasoning.reasoning === undefined ? {} : { reasoning: reasoning.reasoning }),
+		...(request.transport === undefined ? {} : { transport: request.transport }),
 	};
 
 	// An abort is classified by which signal actually fired, never by the

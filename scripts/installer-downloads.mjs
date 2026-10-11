@@ -38,6 +38,25 @@ const go = Object.freeze({
 });
 /** The Go version acquireGo publishes. */
 export const goPinVersion = go.version;
+// Engram for the bundled install (GENTLE_AI_ENGRAM_BIN and the agent's memory):
+// the Gentleman-Programming/engram release gentle-ai 4.x installs (it takes the
+// latest core release). Each sha256 and size comes from the release's
+// checksums.txt and GitHub's asset digests; every archive was downloaded and
+// re-hashed before pinning. GitHub serves the assets from its asset hosts.
+const engram = Object.freeze({
+	version: "3.3.2",
+	redirectHosts: Object.freeze(["objects.githubusercontent.com", "release-assets.githubusercontent.com"]),
+	archives: Object.freeze({
+		"darwin-arm64": ["darwin_arm64.tar.gz", "3d6b4ac0055883ec23d5b0a04a3cda041653cdf4916fd7e98944692e62fd0441", 7465858],
+		"darwin-x64": ["darwin_amd64.tar.gz", "3da8d7befe8500ff09aa44c48f493eda96513fd3f63c7e4bfb95e3ae85dfae52", 7952089],
+		"linux-x64": ["linux_amd64.tar.gz", "8694d3817b63c5fc5607b5919e88aa929bffa0bafda330513364e10c8ab61445", 7817468],
+		"linux-arm64": ["linux_arm64.tar.gz", "b4546b6e00f68e56da52064f1865c6cbae1d5b0633aeebc36e1a2f20b17683e7", 7168173],
+		"win32-x64": ["windows_amd64.zip", "e00afe91d1baade484d217606d78c2fd91e26a4f9823b603d050c1e4be78233c", 8013889],
+		"win32-arm64": ["windows_arm64.zip", "251d467017f88e4eb7fc186c635a9bf64db5aa39cfc251d35dd4035f38941454", 7224229],
+	}),
+});
+/** The Engram version the bundled install publishes under runtime/. */
+export const engramPinVersion = engram.version;
 
 /** Fixed allowlist; callers cannot supply download URLs, checksums or commands. */
 export function artifactFor(name, platform, arch) {
@@ -49,6 +68,14 @@ export function artifactFor(name, platform, arch) {
 			throw new Error("Windows artifact metadata rejected");
 		}
 		return Object.freeze({ name, version: pin.version, platform, arch, url: target.url, integrity: `sha256-${target.sha256}`, maxBytes: pin.maxBytes });
+	}
+	if (name === "engram") {
+		const pin = Object.hasOwn(engram.archives, `${platform}-${arch}`) ? engram.archives[`${platform}-${arch}`] : null;
+		if (!pin) throw new Error("Unsupported acquisition target");
+		const [suffix, sha256, size] = pin;
+		return Object.freeze({ name, version: engram.version, platform, arch,
+			url: `https://github.com/Gentleman-Programming/engram/releases/download/v${engram.version}/engram_${engram.version}_${suffix}`,
+			integrity: `sha256-${sha256}`, size, maxBytes: size, redirectHosts: engram.redirectHosts });
 	}
 	if (name === "go") {
 		const pin = Object.hasOwn(go.archives, `${platform}-${arch}`) ? go.archives[`${platform}-${arch}`] : null;
@@ -64,9 +91,34 @@ export function artifactFor(name, platform, arch) {
 		integrity: `sha256-${hash}`, maxBytes: 100 * 1024 * 1024 });
 }
 
-async function download(descriptor) {
-	const response = await fetch(descriptor.url, { redirect: "error", signal: AbortSignal.timeout(60000) });
-	if (!response.ok || !response.body) throw new Error("Download failed");
+/** The bytes at descriptor.url, at most descriptor.maxBytes. Redirects are
+ * refused, except up to 5 to an https host in descriptor.redirectHosts (GitHub
+ * serves release assets from another host). A non-2xx answer throws with its
+ * HTTP `status`.
+ */
+export async function download(descriptor) {
+	// identity: fetch would otherwise accept gzip and decode it, so the advertised
+	// length (dl.google.com gzips archives on request) would not match the bytes.
+	const hosts = Array.isArray(descriptor.redirectHosts) ? descriptor.redirectHosts : null;
+	let url = descriptor.url;
+	let response;
+	for (let hops = 0; ; hops += 1) {
+		response = await fetch(url, { redirect: hosts ? "manual" : "error", headers: { "accept-encoding": "identity" }, signal: AbortSignal.timeout(60000) });
+		if (!hosts || ![301, 302, 303, 307, 308].includes(response.status)) break;
+		await response.body?.cancel();
+		const next = new URL(response.headers.get("location") ?? "", url);
+		if (hops >= 5 || next.protocol !== "https:" || !hosts.includes(next.hostname)) throw new Error("Download redirect rejected");
+		url = next.href;
+	}
+	if (!response.ok || !response.body) {
+		await response.body?.cancel();
+		throw Object.assign(new Error(`Download responded ${response.status}`), { status: response.status });
+	}
+	const encoding = response.headers.get("content-encoding");
+	if (encoding && encoding.toLowerCase() !== "identity") {
+		await response.body.cancel();
+		throw new Error(`Download was encoded (${encoding}) although identity was requested`);
+	}
 	const advertised = response.headers.get("content-length");
 	if (advertised && (!/^\d+$/.test(advertised) || Number(advertised) > descriptor.maxBytes)) {
 		await response.body.cancel();
@@ -100,7 +152,7 @@ export async function verifiedDownload(name, adapters = {}, platform, arch) {
 	const descriptor = (adapters.artifact ?? artifactFor)(name, platform, arch);
 	let bytes;
 	try { bytes = await (adapters.download ?? download)(descriptor); }
-	catch { throw new Error("Download failed"); }
+	catch (cause) { throw new Error("Download failed", { cause }); }
 	if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > descriptor.maxBytes) throw new Error("Download size rejected");
 	if (descriptor.size !== undefined && bytes.length !== descriptor.size) throw new Error("Download size rejected");
 	const [algorithm, encoded] = descriptor.integrity.split("-");
@@ -169,10 +221,16 @@ function head(path, size) {
 // symlink. pnpm 11 names its target in a `# cmd-shim-target=` comment; older
 // shims only run the single `"$basedir/<target>" "$@"` next to the shim. The
 // target is a starting point for the evidence search, not proof: the command
-// itself still has to print the version that evidence names.
+// itself still has to print the version that evidence names. A shim is a
+// script read whole, up to 64 KiB; a larger one fails closed. Anything else,
+// such as a native pnpm, is not a shim.
+const SHIM_LIMIT = 64 * 1024;
 function shimTarget(command) {
 	if (!regular(command)) return null;
-	const text = head(command, 4096).toString("utf8");
+	const bytes = head(command, SHIM_LIMIT + 1);
+	if (bytes.subarray(0, 2).toString("latin1") !== "#!") return null;
+	if (bytes.length > SHIM_LIMIT) throw new Error("Existing pnpm compatibility is unknown: shim larger than 64 KiB");
+	const text = bytes.toString("utf8");
 	const match = /^# cmd-shim-target=(\/[^\r\n]+)$/m.exec(text);
 	if (match) return stat(match[1]) ? match[1] : null;
 	const targets = new Set([...text.matchAll(/"\$basedir\/([^"$`\\]+)"[ \t]+"\$@"/g)]

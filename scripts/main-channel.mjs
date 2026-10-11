@@ -13,8 +13,8 @@
 // The recorded channel lets `gentle-shell upgrade` follow release or main.
 import { dirname, isAbsolute, join, posix, relative, win32 } from "node:path";
 import { gentleAiDevBinaryRegistrationPath, registerGentleAiDevBinary, unregisterGentleAiDevBinary } from "../runtime/gentle-ai-binary.mjs";
-import { installedGo } from "./installer-downloads.mjs";
-import { pnpmGlobalBin, requirements } from "./installer-preflight.mjs";
+import { acquireGo as acquirePinnedGo, installedGo } from "./installer-downloads.mjs";
+import { goAcquisition, pnpmGlobalBin, requirements } from "./installer-preflight.mjs";
 
 export const SHELL_REPOSITORY = "Gentleman-Programming/gentle-shell";
 export const GENTLE_AI_REPOSITORY = "Gentleman-Programming/gentle-ai";
@@ -249,7 +249,8 @@ function inside(parent, child) {
 	return path !== "" && !path.startsWith("..") && !isAbsolute(path);
 }
 
-async function latestRelease(fetch) {
+/** The latest stable gentle-pi release on the npm registry. */
+export async function latestRelease(fetch) {
 	let version = null;
 	try {
 		const response = await fetch("https://registry.npmjs.org/gentle-pi/latest", { headers: { Accept: "application/json" } });
@@ -282,17 +283,36 @@ export function installOwner({ packageRoot, pnpmHome, npmRoot, name = "gentle-pi
 	return null;
 }
 
+/** How a package manager runs, as { command, prefix }: what the host's
+ * `invocation(name)` adapter returns when it has one (on Windows, node.exe and
+ * the manager's JS entry, or a native .exe), otherwise the command `which` finds,
+ * with no prefix. A Windows .cmd or .bat cannot run with shell:false, so it
+ * counts as missing. Null when it is missing.
+ */
+async function invocationOf(name, { which, invocation }, platform) {
+	const found = invocation ? await invocation(name) : await which(name).then((command) => (command ? { command, prefix: [] } : null));
+	if (!found || (platform === "win32" && /\.(?:cmd|bat)$/i.test(found.command))) return null;
+	return found;
+}
+
 async function npmGlobalRoot(npm, run, fs) {
 	if (!npm) return null;
-	const result = await run(npm, ["root", "-g"], { deadlineMs: deadlines.version });
+	const result = await run(npm.command, [...npm.prefix, "root", "-g"], { deadlineMs: deadlines.version });
 	const reported = succeeded(result) ? String(result.stdout ?? "").trim().split(/\r?\n/).at(-1) : "";
 	return isAbsolute(reported) ? fs.realpath(reported).catch(() => null) : null;
 }
 
-/** The package manager that owns this installation, or a typed refusal. */
-async function ownerManager({ ctx, platform, packageRoot, fs, which, run }) {
+const OWNER_ADVICE = Object.freeze({ upgrade: "update it the way you installed it", uninstall: "remove it the way you installed it" });
+
+/**
+ * The package manager that owns this installation, as { name, command, prefix },
+ * or a typed refusal whose code names the `command` that asked (`upgrade` or
+ * `uninstall`). adapters: { fs, run, which, invocation? }, as runUpgrade takes them.
+ */
+export async function ownerManager({ ctx, platform, packageRoot, adapters, command: purpose = "upgrade" }) {
+	const { fs, run } = adapters;
 	const bin = pnpmGlobalBin({ platform, env: { HOME: ctx.home, ...ctx.env } });
-	const npm = await which("npm");
+	const npm = await invocationOf("npm", adapters, platform);
 	const [pnpmHome, root, npmRoot] = await Promise.all([
 		bin ? fs.realpath(bin.pnpmHome).catch(() => null) : null,
 		fs.realpath(packageRoot).catch(() => null),
@@ -300,18 +320,34 @@ async function ownerManager({ ctx, platform, packageRoot, fs, which, run }) {
 	]);
 	const name = installOwner({ packageRoot: root, pnpmHome, npmRoot, platform });
 	if (!name) {
-		throw new MainChannelError("upgrade-owner-unknown", `neither pnpm nor npm owns ${root ?? packageRoot} (a linked source checkout, for example); update it the way you installed it`);
+		throw new MainChannelError(`${purpose}-owner-unknown`, `neither pnpm nor npm owns ${root ?? packageRoot} (a linked source checkout, for example); ${OWNER_ADVICE[purpose]}`);
 	}
-	const command = name === "npm" ? npm : await which("pnpm");
-	if (!command) throw new MainChannelError("upgrade-manager-missing", `${name}, which owns this Gentle Shell installation, is not on PATH`);
-	return { name, command };
+	const manager = name === "npm" ? npm : await invocationOf("pnpm", adapters, platform);
+	if (!manager) {
+		throw new MainChannelError(`${purpose}-manager-missing`, `${name}, which owns this Gentle Shell installation, is not on PATH as a command this ${purpose} can run`);
+	}
+	return { name, ...manager };
 }
 
 async function installGlobal(manager, spec, run) {
 	const argv = manager.name === "pnpm" ? ["add", "-g", spec, "--allow-build=gentle-pi"] : ["install", "-g", spec];
-	if (!succeeded(await run(manager.command, argv, { deadlineMs: INSTALL_DEADLINE }))) {
+	if (!succeeded(await run(manager.command, [...manager.prefix, ...argv], { deadlineMs: INSTALL_DEADLINE }))) {
 		throw new MainChannelError("upgrade-install-failed", `${manager.name} could not install ${spec}`);
 	}
+}
+
+const REMOVE_GLOBAL = Object.freeze({ pnpm: Object.freeze(["remove", "-g", "gentle-pi"]), npm: Object.freeze(["uninstall", "-g", "gentle-pi"]) });
+
+/** The command that removes the global gentle-pi with `name` (pnpm or npm), as a user types it. */
+export function removeGlobalCommand(name) {
+	return `${name} ${REMOVE_GLOBAL[name].join(" ")}`;
+}
+
+/** Removes the global gentle-pi with the manager ownerManager resolved (its
+ * verified invocation); true when it succeeded. Nothing else is removed.
+ */
+export async function removeGlobalShell(manager, run) {
+	return succeeded(await run(manager.command, [...manager.prefix, ...REMOVE_GLOBAL[manager.name]], { deadlineMs: INSTALL_DEADLINE }));
 }
 
 /** Removes the dev-binary override only when it points at a main build this module made. */
@@ -326,20 +362,28 @@ async function removeMainOverride(ctx, fs) {
 	}
 }
 
-/** The Go a main build runs: the user's, unless it is missing or reports a version
- * older than requirements.go; then the pinned Go the installer published under
- * the config home (`tools/go`). A Go whose version is unknown is tried as before.
- * Nothing is downloaded here and the user's Go is never changed.
+/** The Go a main build runs: the user's, only when it reports a stable version
+ * that meets requirements.go; otherwise the pinned Go the installer published
+ * under the config home (`tools/go`), downloaded and verified there by
+ * `acquire` when it is not published yet. A missing, older or unchecked Go is
+ * never run for the build, and the user's Go is never changed.
  */
-async function mainGo({ userGo, pinnedGo, run }) {
-	if (!userGo) return pinnedGo;
-	const result = await run(userGo, ["version"], { deadlineMs: deadlines.version });
-	const match = succeeded(result) && /^go version go(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\.(0|[1-9]\d*))? \S+$/.exec(String(result.stdout ?? "").trim());
-	if (!match) return userGo;
-	const found = `${match[1]}.${match[2]}.${match[3] ?? "0"}`;
-	if (!older(found, requirements.go)) return userGo;
+async function mainGo({ userGo, pinnedGo, acquire, run }) {
+	if (userGo) {
+		const result = await run(userGo, ["version"], { deadlineMs: deadlines.version });
+		const match = succeeded(result) && /^go version go(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\.(0|[1-9]\d*))? \S+$/.exec(String(result.stdout ?? "").trim());
+		if (match && !older(`${match[1]}.${match[2]}.${match[3] ?? "0"}`, requirements.go)) return userGo;
+	}
 	if (pinnedGo) return pinnedGo;
-	throw new MainChannelError("main-requires-tools", `the main channel builds Gentle AI with Go ${requirements.go} or newer, but Go ${found} is on PATH; update it, or run the Gentle Shell installer, which provides its own pinned Go`);
+	try {
+		const { goPath } = await acquire();
+		return goPath;
+	} catch (error) {
+		// acquireGo wraps every failure; its cause names what went wrong (download, checksum, destination).
+		const reason = [error, error?.cause].filter((item) => item instanceof Error).map((item) => item.message).join(": ") || String(error);
+		throw new MainChannelError("main-requires-tools", `the main channel builds Gentle AI with Go ${requirements.go} or newer, and getting the pinned ` +
+			`Go ${goAcquisition.version} failed (${reason}); nothing was built, fix the cause, then run gentle-shell upgrade again`);
+	}
 }
 
 /**
@@ -347,6 +391,12 @@ async function mainGo({ userGo, pinnedGo, run }) {
  * release goes to the latest npm release, main to the latest `main` commits of
  * Gentle Shell and Gentle AI, rebuilding only what moved. Returns the exit code;
  * failures throw MainChannelError (`upgrade-usage` is a usage error).
+ * adapters: { fetch, run, fs, which, invocation?, migrate? }; npm and pnpm run as
+ * invocationOf resolves them (Windows hosts pass `invocation`). On release,
+ * `migrate({ latest, owner })` (S4) may move this installation to the bundled
+ * one first: null (no migration, or one that failed and left this package
+ * untouched) keeps the path below for this run, otherwise { code, installed }.
+ * `owner` is called only when a migration can happen.
  */
 export async function runUpgrade({ args, ctx, platform, arch = process.arch, packageRoot, currentVersion, adapters, out }) {
 	const { fetch, run, fs, which } = adapters;
@@ -355,21 +405,31 @@ export async function runUpgrade({ args, ctx, platform, arch = process.arch, pac
 	const channel = requested ?? state.channel;
 	if (channel === "release") {
 		const latest = await latestRelease(fetch);
+		const migrated = adapters.migrate ? await adapters.migrate({ latest, owner: () => ownerManager({ ctx, platform, packageRoot, adapters }) }) : null;
+		if (migrated) {
+			// The old package may stay: it follows the release channel, without a main override.
+			if (migrated.installed) {
+				await removeMainOverride(ctx, fs);
+				await writeChannel(ctx, { channel: "release" }, fs);
+			}
+			return migrated.code;
+		}
 		if (state.channel === "release" && !older(currentVersion, latest)) {
 			out(`gentle-shell ${currentVersion} is already the latest release.`);
 			return 0;
 		}
-		await installGlobal(await ownerManager({ ctx, platform, packageRoot, fs, which, run }), `gentle-pi@${latest}`, run);
+		await installGlobal(await ownerManager({ ctx, platform, packageRoot, adapters }), `gentle-pi@${latest}`, run);
 		await removeMainOverride(ctx, fs);
 		await writeChannel(ctx, { channel: "release" }, fs);
 		out(`Updated gentle-shell ${currentVersion} to ${latest} (release).`);
 		return 0;
 	}
-	const [userGo, pnpmPath] = [await which("go"), await which("pnpm")];
+	const [userGo, pnpm] = [await which("go"), await invocationOf("pnpm", adapters, platform)];
 	const pinnedGo = installedGo(join(configHome(ctx), "tools", "go"), platform, arch);
-	if ((!userGo && !pinnedGo) || !pnpmPath) {
-		throw new MainChannelError("main-requires-tools", "the main channel builds Gentle AI with Go and packs Gentle Shell with pnpm; put both on PATH (the Gentle Shell installer can provide its own pinned Go)");
+	if (!pnpm) {
+		throw new MainChannelError("main-requires-tools", "the main channel packs Gentle Shell with pnpm; put it on PATH (Gentle AI is built with your Go, or with a pinned Go downloaded for the build)");
 	}
+	const acquire = adapters.acquireGo ?? (() => acquirePinnedGo({ root: join(configHome(ctx), "tools", "go"), platform, arch }));
 	const gentleAiCommit = await resolveMainCommit(GENTLE_AI_REPOSITORY, { fetch });
 	const shellCommit = await resolveMainCommit(SHELL_REPOSITORY, { fetch });
 	const onMain = state.channel === "main";
@@ -380,10 +440,10 @@ export async function runUpgrade({ args, ctx, platform, arch = process.arch, pac
 		out(`gentle-shell is already at the latest main: ${summary}.`);
 		return 0;
 	}
-	if (!aiCurrent) await buildMainGentleAi({ commit: gentleAiCommit, ctx, platform, goPath: await mainGo({ userGo, pinnedGo, run }), run, fs });
+	if (!aiCurrent) await buildMainGentleAi({ commit: gentleAiCommit, ctx, platform, goPath: await mainGo({ userGo, pinnedGo, acquire, run }), run, fs });
 	if (!shellCurrent) {
-		const manager = await ownerManager({ ctx, platform, packageRoot, fs, which, run });
-		const tgz = await packMainShell({ commit: shellCommit, ctx, fetch, run, pnpm: { command: pnpmPath, prefix: [] }, fs, platform });
+		const manager = await ownerManager({ ctx, platform, packageRoot, adapters });
+		const tgz = await packMainShell({ commit: shellCommit, ctx, fetch, run, pnpm, fs, platform });
 		await installGlobal(manager, tgz, run);
 	}
 	await writeChannel(ctx, { channel: "main", shellCommit, gentleAiCommit }, fs);

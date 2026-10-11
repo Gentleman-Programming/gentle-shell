@@ -25,6 +25,7 @@ import { resolveVisualSettings, writeVisualSettings } from "../lib/visual-custom
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy } from "../lib/vim-policy.ts";
 import { resolveHistoryCapturePolicy, writeHistoryCapturePolicy } from "../lib/history-capture-policy.ts";
+import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
 import { readBannerConfig } from "../extensions/startup-banner.ts";
 import { listVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
@@ -6196,3 +6197,68 @@ test("an explicit session binding routes the Usage scope ahead of the pin and th
 		resetSessionProfileBindingsForTesting();
 	}
 });
+
+// S9: the config home each of these reads resolves, per case. The OS home is
+// a temporary folder in every case, so no case can reach the real one.
+// "unset" and "empty" are exactly as before: an empty GENTLE_PI_CONFIG_HOME
+// names the current folder. "bundled" stands in for this package running from
+// a bundled install (testing overlay) whose prefix the launcher passed; the
+// user's own GENTLE_PI_CONFIG_HOME is then not this install's.
+type ConfigHomeCase = "unset" | "empty" | "bundled";
+function configHomeCase(t: { after: (fn: () => void) => void }, kind: ConfigHomeCase): { env: NodeJS.ProcessEnv; dir: string; userConfig: string } {
+	const base = realpathSync(mkdtempSync(join(tmpdir(), `config-home-${kind}-`)));
+	const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME, GENTLE_SHELL_PREFIX: process.env.GENTLE_SHELL_PREFIX };
+	const cwd = process.cwd();
+	process.env.HOME = join(base, "home");
+	process.env.USERPROFILE = join(base, "home");
+	delete process.env.GENTLE_PI_CONFIG_HOME;
+	delete process.env.GENTLE_SHELL_PREFIX;
+	t.after(() => {
+		process.chdir(cwd);
+		setBundledInstallForTesting(undefined);
+		for (const [name, value] of Object.entries(saved)) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+		rmSync(base, { recursive: true, force: true });
+	});
+	const userConfig = join(base, "user-config");
+	if (kind === "unset") return { env: {}, dir: join(base, "home", ".pi", "gentle-ai"), userConfig };
+	if (kind === "empty") {
+		mkdirSync(join(base, "cwd"));
+		process.chdir(join(base, "cwd"));
+		return { env: { GENTLE_PI_CONFIG_HOME: "" }, dir: join(base, "cwd"), userConfig };
+	}
+	const prefix = join(base, "prefix");
+	mkdirSync(prefix);
+	setBundledInstallForTesting({ root: prefix });
+	return { env: { GENTLE_SHELL_PREFIX: prefix, GENTLE_PI_CONFIG_HOME: userConfig }, dir: join(prefix, "config", "gentle-ai"), userConfig };
+}
+
+function profileStore(dir: string, active: string, names: string[]) {
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, active, profiles: Object.fromEntries(names.map((name) => [name, {}])) }));
+}
+
+for (const kind of ["unset", "empty", "bundled"] as const) {
+	test(`the profile reader reads the global store from the ${kind} config home`, (t) => {
+		const { env, dir, userConfig } = configHomeCase(t, kind);
+		// The user's own store names another profile: only the bundled case must ignore it.
+		profileStore(userConfig, "team", ["team"]);
+		profileStore(dir, "other", ["team", "other"]);
+		assert.equal(createActiveProfileReader(env)(), "other");
+	});
+
+	test(`the bound profile reader resolves pins against the ${kind} config home`, (t) => {
+		const { env, dir, userConfig } = configHomeCase(t, kind);
+		profileStore(userConfig, "team", ["team"]);
+		profileStore(dir, "team", ["team", "other"]);
+		const repo = join(dir, "..", `repo-${kind}`);
+		mkdirSync(join(repo, ".pi", "gentle-ai"), { recursive: true });
+		writeFileSync(join(repo, ".pi", "gentle-ai", "profile.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile: "other" }));
+		const read = createActiveProfileReader(env);
+		read.bind(repo, () => ({ root: repo, commonDir: join(repo, ".git-common") }));
+		read.refresh();
+		assert.equal(read(), "other (repo)", "the pinned profile exists only in that config home's store");
+	});
+}

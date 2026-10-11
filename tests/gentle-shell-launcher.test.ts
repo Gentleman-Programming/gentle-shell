@@ -163,10 +163,40 @@ test("parseLauncherArgs recognises the upgrade subcommand as argv[0] and capture
 	assert.equal(parsed.piSubcommand, undefined);
 });
 
+test("parseLauncherArgs recognises the self-uninstall subcommand as argv[0] and captures its arguments", () => {
+	const parsed = parseLauncherArgs(["self-uninstall", "--dry-run", "--include-shared"]);
+	assert.equal(parsed.command, "self-uninstall");
+	assert.deepEqual(parsed.commandArgs, ["--dry-run", "--include-shared"]);
+	assert.deepEqual(parsed.passthrough, []);
+	assert.equal(parsed.piSubcommand, undefined);
+	assert.equal(parsed.error, undefined);
+});
+
+test("parseLauncherArgs keeps uninstall as pi's own alias for remove", () => {
+	const parsed = parseLauncherArgs(["uninstall", "npm:x"]);
+	assert.equal(parsed.command, undefined);
+	assert.equal(parsed.piSubcommand, "uninstall");
+	assert.deepEqual(parsed.passthrough, ["uninstall", "npm:x"]);
+});
+
+test("help text documents gentle-shell self-uninstall and its flags", () => {
+	const text = helpText();
+	assert.ok(text.includes("       gentle-shell self-uninstall [--dry-run] [--yes] [--include-shared]"));
+	assert.ok(text.includes("  self-uninstall   Remove Gentle Shell: its own data, the isolated home and the gentle-pi"));
+	assert.match(text, /'gentle-shell uninstall <source>' is pi's own alias for 'remove'/);
+});
+
 test("help text documents gentle-shell upgrade and its channels", () => {
 	const text = helpText();
 	assert.ok(text.includes("       gentle-shell upgrade [--channel release|main]"));
 	assert.ok(text.includes("  upgrade          Update Gentle Shell along its channel: the latest release, or the latest"));
+});
+
+test("help text documents the bundled upgrade, its rollback and the pinned Pi update", () => {
+	const text = helpText();
+	assert.ok(text.includes("       gentle-shell upgrade --rollback"));
+	assert.match(text, /bundled install.*release channel only.*--rollback switches back to the previous kept version/s);
+	assert.match(text, /In a bundled install Pi ships pinned: 'update' without a package\n\s+runs 'gentle-shell upgrade'/);
 });
 
 test("parseLauncherArgs treats home as a plain passthrough token when it is not argv[0]", () => {
@@ -1974,4 +2004,26 @@ test("helpText documents pi's own package-management subcommands", () => {
 	assert.match(text, /\bupdate\b/);
 	assert.match(text, /\bconfig\b/);
 	assert.match(text, /\bauth\b/);
+});
+
+// T3 B3: the isolated-home bootstrap creates ~/.gentle-shell private (0700) even under
+// umask 002, so the bundled prefix claim (which refuses group/other-writable folders) accepts it.
+test("the isolated-home bootstrap creates ~/.gentle-shell as 0700 under umask 002", { skip: process.platform === "win32" ? "POSIX modes" : false }, async () => {
+	const { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } = await import("node:fs");
+	const { spawnSync } = await import("node:child_process");
+	const { tmpdir } = await import("node:os");
+	const root = mkdtempSync(join(tmpdir(), "gentle-shell-umask-"));
+	try {
+		const piScript = join(root, "fake-pi.mjs");
+		writeFileSync(piScript, "#!/usr/bin/env node\nif (process.argv.includes('--version')) console.log('0.99.1');\n");
+		chmodSync(piScript, 0o755);
+		const binPath = fileURLToPath(new URL("../bin/gentle-shell.mjs", import.meta.url));
+		const env = { HOME: root, USERPROFILE: root, PATH: process.env.PATH ?? "/usr/bin:/bin", GENTLE_SHELL_PI: piScript, GENTLE_SHELL_NO_AUTO_SETUP: "1" };
+		const result = spawnSync("/bin/sh", ["-c", 'umask 002; exec "$0" "$@"', process.execPath, binPath, "hello"], { env, encoding: "utf8", input: "" });
+		assert.equal(result.status, 0, result.stderr);
+		assert.equal(statSync(join(root, ".gentle-shell")).mode & 0o777, 0o700);
+		assert.equal(statSync(join(root, ".gentle-shell", "agent")).mode & 0o777, 0o700);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });

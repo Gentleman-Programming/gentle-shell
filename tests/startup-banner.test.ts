@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { syncBuiltinESMExports } from "node:module";
 import fs from "node:fs/promises";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import startup, { isPiCliSubcommandInvocation, readGitBranch } from "../extensions/startup-banner.ts";
+import startup, { isPiCliSubcommandInvocation, readBannerConfig, readGitBranch } from "../extensions/startup-banner.ts";
+import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { stripAnsi } from "../lib/terminal-theme.ts";
@@ -442,3 +443,54 @@ test("delegated children never paint the startup banner", async (t) => {
 	t.mock.timers.tick(50);
 	assert.equal(headers, 0);
 });
+
+// S9: the config home each of these reads resolves, per case. The OS home is
+// a temporary folder in every case, so no case can reach the real one.
+// "unset" and "empty" are exactly as before: an empty GENTLE_PI_CONFIG_HOME
+// names the current folder. "bundled" stands in for this package running from
+// a bundled install (testing overlay) whose prefix the launcher passed; the
+// user's own GENTLE_PI_CONFIG_HOME is then not this install's.
+type ConfigHomeCase = "unset" | "empty" | "bundled";
+function configHomeCase(t: { after: (fn: () => void) => void }, kind: ConfigHomeCase): { env: NodeJS.ProcessEnv; dir: string; userConfig: string } {
+	const base = realpathSync(mkdtempSync(join(tmpdir(), `config-home-${kind}-`)));
+	const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME, GENTLE_SHELL_PREFIX: process.env.GENTLE_SHELL_PREFIX };
+	const cwd = process.cwd();
+	process.env.HOME = join(base, "home");
+	process.env.USERPROFILE = join(base, "home");
+	delete process.env.GENTLE_PI_CONFIG_HOME;
+	delete process.env.GENTLE_SHELL_PREFIX;
+	t.after(() => {
+		process.chdir(cwd);
+		setBundledInstallForTesting(undefined);
+		for (const [name, value] of Object.entries(saved)) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+		rmSync(base, { recursive: true, force: true });
+	});
+	const userConfig = join(base, "user-config");
+	if (kind === "unset") return { env: {}, dir: join(base, "home", ".pi", "gentle-ai"), userConfig };
+	if (kind === "empty") {
+		mkdirSync(join(base, "cwd"));
+		process.chdir(join(base, "cwd"));
+		return { env: { GENTLE_PI_CONFIG_HOME: "" }, dir: join(base, "cwd"), userConfig };
+	}
+	const prefix = join(base, "prefix");
+	mkdirSync(prefix);
+	setBundledInstallForTesting({ root: prefix });
+	return { env: { GENTLE_SHELL_PREFIX: prefix, GENTLE_PI_CONFIG_HOME: userConfig }, dir: join(prefix, "config", "gentle-ai"), userConfig };
+}
+
+for (const kind of ["unset", "empty", "bundled"] as const) {
+	test(`the banner reads its settings from the ${kind} config home`, async (t) => {
+		const { env, dir, userConfig } = configHomeCase(t, kind);
+		Object.assign(process.env, env);
+		const write = (folder: string, color: string) => {
+			mkdirSync(folder, { recursive: true });
+			writeFileSync(join(folder, "banner.json"), JSON.stringify({ showRose: false, showTextLogo: true, color }));
+		};
+		write(userConfig, "yellow");
+		write(dir, "cyan");
+		assert.deepEqual(await readBannerConfig(), { showRose: false, showTextLogo: true, color: "cyan" });
+	});
+}

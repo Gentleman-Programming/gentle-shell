@@ -37,11 +37,12 @@ function isPiSubcommand(token        )                        {
 
 
 
-// Home- and upgrade-subcommand parsing is deliberately shallow: `home` or
-// `upgrade` only counts as the subcommand when it is argv[0], and everything after it is handed over
+// Home-, upgrade- and self-uninstall-subcommand parsing is deliberately shallow:
+// each only counts as the subcommand when it is argv[0], and everything after it is handed over
 // untouched as commandArgs — T2 owns interpreting `home link|isolated|<path>`.
+// `self-uninstall` is not `uninstall`, which stays pi's own alias for `remove`.
 export function parseLauncherArgs(argv          )                     {
-	if (argv[0] === "home" || argv[0] === "upgrade") {
+	if (argv[0] === "home" || argv[0] === "upgrade" || argv[0] === "self-uninstall") {
 		return {
 			link: false,
 			isolated: false,
@@ -207,7 +208,7 @@ export function userPiHome(env                                    , homedir     
 	return env[USER_PI_HOME_ENV] || linkDir(env, homedir);
 }
 
-function isolatedDir(env                                    , homedir        )         {
+export function isolatedDir(env                                    , homedir        )         {
 	return env.GENTLE_SHELL_HOME || join(homedir, ".gentle-shell", "agent");
 }
 
@@ -1176,6 +1177,8 @@ export function helpText()         {
 		"       gentle-shell home [link|isolated|<path>]",
 		"       gentle-shell [home selectors] setup [--dry-run]",
 		"       gentle-shell upgrade [--channel release|main]",
+		"       gentle-shell upgrade --rollback",
+		"       gentle-shell self-uninstall [--dry-run] [--yes] [--include-shared]",
 		"",
 		"Opens pi with the Gentle Shell package loaded, without touching your",
 		"vanilla pi installation.",
@@ -1195,21 +1198,39 @@ export function helpText()         {
 		"                   (runs the package-local gentle-ai 'install --agent pi --scope global').",
 		"                   Accepts --dry-run, forwarded to gentle-ai. Accepts a home selector",
 		"                   (--link, --isolated, --home <dir>) before it.",
+		"                   Warns if configured MCP servers remain disabled; never re-enables them.",
 		"  upgrade          Update Gentle Shell along its channel: the latest release, or the latest",
 		"                   main commits of Gentle Shell and Gentle AI (built locally; needs Go and",
-		"                   pnpm). --channel switches the channel first.",
+		"                   pnpm). --channel switches the channel first. A bundled install (the web",
+		"                   installer's own Node, pnpm and Pi) follows the release channel only:",
+		"                   it installs the new version beside the current one, verifies it, then",
+		"                   switches; --rollback switches back to the previous kept version.",
+		"  self-uninstall   Remove Gentle Shell: its own data, the isolated home and the gentle-pi",
+		"                   package. Shows the plan first and asks before removing (--yes skips",
+		"                   the question). The shared ~/.pi/gentle-ai configuration is kept unless",
+		"                   you accept or pass --include-shared; --dry-run only shows the plan.",
+		"                   Never touches your pi home or custom --home homes.",
 		"",
 		"Managing packages:",
 		"  gentle-shell install npm:<pkg>   Run pi's own 'install' against the resolved home.",
 		"  gentle-shell remove <source>     Run pi's own 'remove' against the resolved home.",
 		"  gentle-shell list                Run pi's own 'list' against the resolved home.",
 		"  gentle-shell update [target]     Run pi's own 'update' against the resolved home.",
+		"                                   In a bundled install Pi ships pinned: 'update' without a package",
+		"                                   runs 'gentle-shell upgrade' instead of updating Pi.",
 		"  gentle-shell config              Run pi's own 'config' against the resolved home.",
 		"  gentle-shell auth <command>      Run pi's own 'auth' against the resolved home.",
+		"  'gentle-shell uninstall <source>' is pi's own alias for 'remove'; to remove Gentle",
+		"  Shell itself, use 'gentle-shell self-uninstall'.",
 		"  These run pi's own commands, forwarded verbatim, against the --isolated home",
 		"  (or your own pi home with --link). Running 'gentle-shell install npm:gentle-pi'",
 		"  inside the isolated home is unnecessary: gentle-shell already loads the",
 		"  package itself.",
+		"",
+		"Bundled interactive startup:",
+		"  Before opening Pi, checks for a newer release (at most 1.5 seconds).",
+		"  Choose Update now to upgrade and reopen, Not now, or Skip this version.",
+		"  Offline, unavailable checks, commands and noninteractive runs open normally.",
 		"",
 		"Environment variables:",
 		"  GENTLE_SHELL_PI       Path to the pi executable to run.",

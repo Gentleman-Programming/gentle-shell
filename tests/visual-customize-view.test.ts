@@ -118,7 +118,7 @@ test("profile name submission never accepts a hidden field at heights 3–5, inc
 
 test("profile preview and cancel never apply; keyboard name and confirmations require deliberate input", async () => {
  const events: string[] = [];
- const profile = { name: "Desk", themeName: "Light Theme", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false } } };
+ const profile = { name: "Desk", themeName: "Light Theme", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: false } } };
  const view = new VisualCustomizeView({ rows: [], theme, requestRender: () => {}, onClose: () => {}, profiles: {
   list: () => [profile], save: (name, replace) => { events.push(`save:${name}:${replace}`); }, apply: (name) => { events.push(`apply:${name}`); }, delete: (name) => { events.push(`delete:${name}`); }, reset: () => { events.push("reset"); },
  } });
@@ -127,6 +127,7 @@ test("profile preview and cancel never apply; keyboard name and confirmations re
  assert.match(view.render(100).join("\n"), /potato.*cyan/);
  assert.match(view.render(100).join("\n"), /hidden.*below-input.*compact/);
  assert.match(view.render(100).join("\n"), /changes:off.*rdd:off.*agents:on.*todo:off.*usageCost:on.*modelDetails:off/);
+ assert.match(view.render(120).join("\n"), /changes:off.*rdd:off.*agents:on.*todo:off.*usageCost:on.*modelDetails:off.*contextWarning:off/);
  view.handleInput("a"); view.handleInput("\x1b");
  assert.deepEqual(events, []);
  view.handleInput("p"); view.handleInput("s"); view.handleInput("New"); view.handleInput("\x7f"); view.handleInput("w\r");
@@ -146,7 +147,7 @@ test("profile preview and cancel never apply; keyboard name and confirmations re
 
 test("profile confirmation stays visible at six rows for every destructive or applying action", async () => {
 	const events: string[] = [];
-	const profile = { name: "Desk", themeName: "Light", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false } } };
+	const profile = { name: "Desk", themeName: "Light", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: false } } };
 	const view = new VisualCustomizeView({ rows: [], theme, rowsAvailable: () => 6, requestRender: () => {}, onClose: () => {}, profiles: {
 		list: () => [profile], save: (name, replace) => { events.push(`save:${name}:${replace}`); }, apply: (name) => { events.push(`apply:${name}`); }, delete: (name) => { events.push(`delete:${name}`); }, reset: () => { events.push("reset"); },
 	} });
@@ -164,7 +165,7 @@ test("profile confirmation stays visible at six rows for every destructive or ap
 
 test("profile confirmation captures selected name across catalog mutation and cancels vanished targets", async () => {
 	const events: string[] = [];
-	const base = { themeName: "Light", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false } } };
+	const base = { themeName: "Light", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: false } } };
 	let catalog = [{ ...base, name: "Desk" }, { ...base, name: "Mobile" }];
 	const view = new VisualCustomizeView({ rows: [], theme, rowsAvailable: () => 6, requestRender: () => {}, onClose: () => {}, profiles: {
 		list: () => catalog, save: (name, replace) => { events.push(`save:${name}:${replace}`); }, apply: (name) => { events.push(`apply:${name}`); }, delete: (name) => { events.push(`delete:${name}`); }, reset: () => { events.push("reset"); },
@@ -189,7 +190,7 @@ test("profile confirmation captures selected name across catalog mutation and ca
 test("unrendered or clipped confirmations cannot be accepted", () => {
 	const events: string[] = [];
 	let height = 6;
-	const base = { name: "Desk", themeName: "Light", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false } } };
+	const base = { name: "Desk", themeName: "Light", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: false } } };
 	const view = new VisualCustomizeView({ rows: [], theme, rowsAvailable: () => height, requestRender: () => {}, onClose: () => {}, profiles: {
 		list: () => [base], save: () => {}, apply: () => {}, delete: () => { events.push("delete"); }, reset: () => { events.push("reset"); },
 	} });
@@ -203,7 +204,7 @@ test("unrendered or clipped confirmations cannot be accepted", () => {
 
 test("profile confirmations cannot execute after an unrendered resize hides full identity and yes", () => {
 	const name = "A".repeat(64);
-	const profile = { name, themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true } } };
+	const profile = { name, themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true } } };
 	for (const [key, action] of [["a", "apply"], ["d", "delete"], ["r", "replace"], ["z", "reset"]] as const) {
 		for (const width of [100, 36]) for (const shortHeight of [1, 2]) {
 			let height = 12;
@@ -225,7 +226,7 @@ test("profile confirmations cannot execute after an unrendered resize hides full
 });
 
 test("profile confirmation refuses a changed target identity without another render", () => {
-	let catalog = [{ name: "First", themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true } } }];
+	let catalog = [{ name: "First", themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true } } }];
 	const effects: string[] = [];
 	const view = new VisualCustomizeView({ rows: [], theme, rowsAvailable: () => 12, requestRender: () => {}, onClose: () => {}, profiles: { list: () => catalog, save: () => {}, apply: name => { effects.push(name); }, delete: () => {}, reset: () => {} } });
 	view.handleInput("p"); view.handleInput("a");
@@ -262,7 +263,7 @@ test("main controls require a visible selected row at the last rendered width an
 });
 
 test("profile confirmation refuses same-name content drift for apply, replace and delete", () => {
-	const original = { name: "Desk", themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true } } };
+	const original = { name: "Desk", themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true } } };
 	for (const key of ["a", "r", "d"]) {
 		let catalog = [original];
 		const effects: string[] = [];
@@ -312,7 +313,7 @@ test("category panel renders bounded wide and narrow frames with independent nav
 test("long profile confirmation displays complete identity and yes instruction before accepting", async () => {
 	const name = "A".repeat(64);
 	const events: string[] = [];
-	const profile = { name, themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true } } };
+	const profile = { name, themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true } } };
 	let height = 8;
 	const view = new VisualCustomizeView({ rows: [], theme, rowsAvailable: () => height, requestRender: () => {}, onClose: () => {}, profiles: { list: () => [profile], save: () => {}, apply: value => { events.push(value); }, delete: () => {}, reset: () => {} } });
 	view.handleInput("p");

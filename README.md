@@ -136,6 +136,8 @@ Bring in help without losing the thread. Focused package-owned Pi agents can map
 
 Review the exact change, not a moving target. Native review keeps one candidate in view, returns risk-scoped evidence, and can surface a bounded correction path. You still decide what happens next in your repository.
 
+Reviewer completions inherit Pi's effective `transport` preference when an acknowledged individual or grouped capture executes. The host forwards a defined value unchanged, with one settings snapshot per group; it never forces SSE or changes model routing. An absent setting or an older Pi API without `getSettings()` preserves the provider default. This completion preference is separate from native `pi_host_relay` coordination, and providers that do not support it may ignore it.
+
 **[Docs →](docs/review-integration.md)**
 
 ---
@@ -170,13 +172,19 @@ Model, effort, and who does what should be choices, not accidents. Named profile
 
 ---
 
-### 🚀 YOLO 🔥 — Session permission, destructive guards intact
+### Permission modes — Normal, Auto, or YOLO
+
+Choose `/gentle:mode auto` to check eligible actions with an independent, tool-free inference using the current session model. Auto covers primary file/shell/custom/MCP tools and nested calls through the SDK pipeline while retaining explicit restrictions, destructive guards and independent consent. It adds separately recorded inference cost and latency; unavailable or stale decisions do not run the action. This is not a sandbox or a claim of proprietary classifier parity.
+
+Save `/gentle:mode default auto` or `/gentle:mode default yolo` to use either optional mode in new primary sessions. `/gentle:mode normal` changes only this session; `/gentle:mode default normal` changes future sessions. Children retain their existing delegation rules, not the parent's elevated mode. **[Commands, scope, cost and limits →](docs/permission-modes.md)**
+
+### 🚀 YOLO 🔥 — Scoped permission, destructive guards intact
 
 > 🚀 **Full speed, destructive actions still ask.** YOLO removes repeated permission questions for ordinary already-scoped work, which suits long autonomous runs. Destructive operations still require fresh confirmation.
 
-`/gentle:yolo enable` supplies standing permission for ordinary already-scoped implementation, checks, commits, non-force pushes and PR creation. Default **OFF**, interactive primary TUI only, bound to the live session and Git clone; `/gentle:yolo disable` revokes it and `/gentle:yolo status` checks it. With no argument, `/gentle:yolo` opens a menu (`enable`, `disable`, `status`) showing the current state; cancelling changes nothing, and without an interactive menu it reports status. Reload and session replacement reset it. Active status plus a separate widget show **🚀 YOLO ON 🔥 — destructive confirmations remain**. Explicit restrictions, configured confirmations/blocks, consequential unresolved choices, destination/credential ambiguity and native consent/recovery decisions remain mandatory. Children get no independent delivery grant. This is not a sandbox.
+`/gentle:yolo enable` supplies standing permission for ordinary already-scoped implementation, checks, commits, non-force pushes and PR creation. **OFF** unless selected or saved as the global default, with interactive primary TUI controls and live session/workspace binding; `/gentle:yolo disable` revokes it and `/gentle:yolo status` checks it. With no argument, `/gentle:yolo` opens a menu (`enable`, `disable`, `status`) showing the current state; cancelling changes nothing, and without an interactive menu it reports status. Reload and session replacement revoke live grants; new primary instances may apply the saved global default. Active status plus a separate widget show **🚀 YOLO ON 🔥 — destructive confirmations remain**. Explicit restrictions, configured confirmations/blocks, consequential unresolved choices, destination/credential ambiguity and native consent/recovery decisions remain mandatory. Children get no independent delivery grant. This is not a sandbox.
 
-Or open `/gentle:customize` → **Editor** and select **YOLO: OFF · session only**, immediately below Vim. Enter or Space toggles the same live-session permission as `/gentle:yolo`; browsing and previews never activate it. Unlike Vim, YOLO is not saved in preferences or visual profiles.
+Or open `/gentle:customize` → **Editor** and select **YOLO: OFF · session only**, immediately below Vim. Enter or Space toggles the same live-session permission as `/gentle:yolo`; browsing and previews never activate it. This live toggle does not save a preference. The separate **Session permissions** and **Default permissions** rows select a current mode or save a user-global default, respectively; repository settings and visual profiles cannot grant either mode.
 
 **[Use and limits →](docs/yolo-mode.md)**
 
@@ -260,6 +268,8 @@ A small window opens, then the installer appears in your browser. Use the tab it
 >
 > Only download from this repository's [Releases](https://github.com/Gentleman-Programming/gentle-shell/releases) page. To check a download, compare its SHA-256 with [gentle-shell-installers-SHA256SUMS.txt](https://github.com/Gentleman-Programming/gentle-shell/releases/latest/download/gentle-shell-installers-SHA256SUMS.txt).
 
+From the first release that publishes its distribution assets, a new installation instead gets Gentle Shell as one self-contained product. Its own Node.js, npm, pnpm and Pi live in `~/.gentle-shell`, and your own tools are not used or changed ([bundled installation](docs/install-wizard.md#bundled-installation)).
+
 The installer is a preview: it is tested on Linux and in CI, while clean-machine runs on macOS and Windows are still being verified. How it works and what it changes: **[installation wizard](docs/install-wizard.md)**.
 
 ### Path A: standalone `gentle-shell` (recommended, no pi changes)
@@ -329,11 +339,17 @@ scripts\bootstrap.cmd
 It installs what is missing (Node.js, pnpm, Pi, Gentle Shell) and updates an existing Gentle Shell or an older Pi; nothing changes until you confirm. The bootstrap gets Node.js and pnpm into a temporary folder if they are missing, then opens the wizard in your browser at a private `127.0.0.1` address. Use the tab it opens: the link works once and expires after 2 minutes. On the review screen, choose what to install:
 
 - **Latest release** (recommended): the published Gentle Shell with its pinned Gentle AI binary.
-- **Latest main**: development builds of Gentle Shell and Gentle AI from the latest commit of `main`, built on your computer with Go. If your Go is missing or older, the installer downloads its own pinned, verified Go only for that build.
+- **Latest main**: development builds of Gentle Shell and Gentle AI from the latest commit of `main`, built on your computer with Go. If your Go is missing, older or its version cannot be checked, the installer downloads its own pinned, verified Go only for that build.
 
-An older Node.js or an incompatible pnpm (from mise, nvm, nvm-windows, fnm, Volta or Homebrew, for example) is left untouched: the installer uses its own pinned, verified copy and installs it under `$PNPM_HOME`, and the plan says so before you confirm; a version manager may still put your own version first in new terminals. This applies only to a new installation: with Gentle Shell already installed, an older Node.js or incompatible pnpm still blocks. On Windows, `bootstrap.cmd` also uses its own Node.js when it cannot verify where yours lives (an nvm-windows symlink or an fnm junction, for example), without running yours. A pnpm in the pnpm global bin directory (`$PNPM_HOME/bin`) is never replaced or downgraded: an older one blocks with the `pnpm self-update` command that updates it. A working `npm` on your PATH (from Node.js, Homebrew, nvm, nvm-windows, fnm, mise, asdf or Volta, for example) is used as it is; the installer adds its own npm only when none works. On Windows it never runs `npm.cmd` or `pnpm.cmd` through a shell: it runs what a recognized shim runs, or the `.exe` itself, and treats any other shim as not usable. When a build needs Go (the main channel, or Windows) and yours is missing or older, the installer downloads a pinned Go from go.dev, verifies its checksum and uses it only to build, from its own folder; your Go and PATH are left untouched, and the plan says so before you confirm. A release install on macOS or Linux never downloads Go. An existing Pi that meets the minimum is reused as it is. An older Pi is updated to the version the installer installs, with the package manager that installed it (pnpm or npm); the plan shows the found and target versions before you confirm. An older Pi that neither manages (mise, Homebrew or a standalone binary, for example) is left untouched, and the installer adds its own Pi with pnpm, as when Pi is missing; Gentle Shell uses that one. Pi is never downgraded. An existing Gentle Shell is updated with the package manager that installed it (pnpm or npm); one it cannot attribute, such as an `npm link` of a source checkout, is left untouched and explained. No checkout dependencies are needed (`pnpm install` is not required). This is a preview: it is tested on Linux and in CI, while clean-machine runs on macOS and Windows are still being verified. Details: **[installation wizard](docs/install-wizard.md)**.
+An older Node.js or an incompatible pnpm (from mise, nvm, nvm-windows, fnm, Volta or Homebrew, for example) is left untouched: the installer uses its own pinned, verified copy and installs it under `$PNPM_HOME`, and the plan says so before you confirm; a version manager may still put your own version first in new terminals. This applies only to a new installation: with Gentle Shell already installed, an older Node.js or incompatible pnpm still blocks. On Windows, `bootstrap.cmd` also uses its own Node.js when it cannot verify where yours lives (an nvm-windows symlink or an fnm junction, for example), without running yours. A pnpm in the pnpm global bin directory (`$PNPM_HOME/bin`) is never replaced or downgraded: an older one blocks with the `pnpm self-update` command that updates it, and one whose version could not be checked is left as it is while the installer uses its own verified pnpm, which the plan says before you confirm. A working `npm` on your PATH (from Node.js, Homebrew, nvm, nvm-windows, fnm, mise, asdf or Volta, for example) is used as it is; the installer adds its own npm only when none works. On Windows it never runs `npm.cmd` or `pnpm.cmd` through a shell: it runs what a recognized shim runs, or the `.exe` itself, and treats any other shim as not usable. It also checks that no other account can change the pnpm home folder (`PNPM_HOME`), and never runs a pnpm from a folder another account can change (or one it cannot prove is pnpm, such as Corepack's `pnpm.cmd`): it uses its own verified pnpm instead and leaves yours as it is. When pnpm's default `%LOCALAPPDATA%\pnpm` fails that check and holds nothing yet, it uses `%USERPROFILE%\.pnpm` instead and `pnpm setup` saves it for new terminals; pnpm commands you run later still keep pnpm's configuration, cache and state under `%LOCALAPPDATA%`, an accepted risk the plan states. When that folder already holds files, or your own `PNPM_HOME` fails the check, it stops and names the folder, the account and its rights. The plan says so before you confirm. Your Node.js, npm, Go, Pi or npm-installed Gentle Shell are used as you already use them; when one lives in a folder another account can change, the plan names that folder, the account and its rights as a notice, without blocking. When a build needs Go (the main channel, or Windows) and yours is missing, older or its version cannot be checked, the installer downloads a pinned Go from go.dev, verifies its checksum and uses it only to build, from its own folder; your Go and PATH are left untouched, and the plan says so before you confirm. A release install on macOS or Linux never downloads Go. An existing Pi that meets the minimum is reused as it is. With pnpm 11, Gentle Shell may run a newer Pi than the installer's that pnpm puts next to it (always at least the minimum); the installer says which one when it finishes. An older Pi is updated to the version the installer installs, with the package manager that installed it (pnpm or npm); the plan shows the found and target versions before you confirm. An older Pi that neither manages (mise, Homebrew or a standalone binary, for example) is left untouched, and the installer adds its own Pi with pnpm, as when Pi is missing; Gentle Shell uses that one. Pi is never downgraded. An existing Gentle Shell is updated with the package manager that installed it (pnpm or npm); one it cannot attribute, such as an `npm link` of a source checkout, is left untouched and explained. No checkout dependencies are needed (`pnpm install` is not required). This is a preview: it is tested on Linux and in CI, while clean-machine runs on macOS and Windows are still being verified. Details: **[installation wizard](docs/install-wizard.md)**.
 
 ### Keep it up to date
+
+**Release compatibility:** `upgrade` is currently available only in main builds containing commit `96ff045a8`. No published release through `gentle-pi` v4.0.0 supports it; there is no first supported release yet. On older launchers, `gentle-shell upgrade` opens a session with `upgrade` as the prompt instead of updating.
+
+For those installations, use the [browser installer from a fresh main checkout](#path-c-browser-installer-from-a-checkout). It detects an existing installation and shows the update plan before you confirm. Choose **Latest release** to stay on stable (which does not yet provide `upgrade`), or **Latest main** to install a build with the command. See the [older-installation procedure](docs/readme-reference.md#updating-an-installation-without-upgrade).
+
+On a main build that supports `upgrade`:
 
 ```bash
 # Update along your channel: the latest release, or the latest main
@@ -342,9 +358,22 @@ gentle-shell upgrade
 # Switch channel
 gentle-shell upgrade --channel main
 gentle-shell upgrade --channel release
+
+# Bundled install: back to the previous version
+gentle-shell upgrade --rollback
 ```
 
-`gentle-shell upgrade` uses the package manager that owns your installation. On the main channel it rebuilds Gentle AI and Gentle Shell from the latest `main` commits (only what changed) and needs pnpm and Go (a Go older than the minimum is replaced, for the build only, by the pinned Go the installer left in its own folder); switching back to release restores the pinned Gentle AI binary. `gentle-shell update` is a different command: it is Pi's own package update. More: **[upgrade reference](docs/readme-reference.md#upgrade-subcommand-and-channels)**.
+`gentle-shell upgrade` uses the package manager that owns your installation. On the main channel it rebuilds Gentle AI and Gentle Shell from the latest `main` commits (only what changed) and needs pnpm and Go (a Go older than the minimum is replaced, for the build only, by the pinned Go the installer left in its own folder); switching back to release restores the pinned Gentle AI binary. With pnpm 11, the updated Gentle Shell may run a newer Pi that pnpm puts next to it (always at least the minimum); your own Pi is never changed. A bundled install (the web installer's own Node, pnpm and Pi) follows the release channel only: it installs the new version beside the current one, verifies it, then switches, keeping the previous version for `--rollback`. On release, once the latest release publishes the bundled distribution, `upgrade` moves a global pnpm or npm installation to the bundled one and asks once before removing the old global `gentle-pi`. `gentle-shell update` is a different command: it is Pi's own package update. In a bundled install Pi ships pinned with Gentle Shell, so updating Pi itself runs `gentle-shell upgrade` instead. More: **[upgrade reference](docs/readme-reference.md#upgrade-subcommand-and-channels)**.
+
+### Remove it
+
+```bash
+# Show what would be removed, then remove it after confirming
+gentle-shell self-uninstall --dry-run
+gentle-shell self-uninstall
+```
+
+`gentle-shell self-uninstall` removes Gentle Shell's own data, its isolated home and the `gentle-pi` package. It keeps the shared Gentle AI configuration in `~/.pi/gentle-ai` unless you accept or pass `--include-shared`, and never touches your Pi home or custom `--home` homes. In a bundled install it removes the bundled folder and the one PATH entry the installer recorded instead ([details](docs/bundled-install.md#self-uninstall)). `gentle-shell uninstall` is Pi's own alias for `remove`. More: **[Removing Gentle Shell](docs/gentle-shell-uninstall.md)**.
 
 ### Background jobs
 
@@ -398,6 +427,7 @@ Start with the product-facing destination, then move into the operational refere
 | [Telemetry](docs/telemetry.md) | Approved fields and source limitations. |
 | [Delegated verification](docs/delegated-verification.md) | Practical verification guidance. |
 | [Skill style guide](docs/skill-style-guide.md) | The package skill contract. |
+| [Removing Gentle Shell](docs/gentle-shell-uninstall.md) | What `gentle-shell self-uninstall` removes, keeps and never touches. |
 | [Installation wizard (preview)](docs/install-wizard.md) | How the browser installer checks your computer, what it installs on the release and main channels, its security model, and what is still being verified. |
 
 <p align="right"><a href="#top">Back to top ↑</a></p>

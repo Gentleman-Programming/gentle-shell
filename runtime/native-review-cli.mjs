@@ -4,7 +4,7 @@ import { chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, posix, win32 } from "node:path";
 import { promisify } from "node:util";
-import { PackageLocalGentleAiBinaryMissingError, resolveGentleAiBinary } from "./gentle-ai-binary.mjs";
+import { gentleAiIsolationEnv, PackageLocalGentleAiBinaryMissingError, resolveGentleAiBinary } from "./gentle-ai-binary.mjs";
 import { GENTLE_PI_REVIEW_RELAY_CONTRACT, GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV } from "./review-relay-contract.mjs";
 import { decodeReviewAssessmentV1,                         } from "./review-risk-assessment.mjs";
 import {
@@ -279,6 +279,13 @@ export const NATIVE_REVIEW_LEGACY_ALIAS_REPAIR = {
 	DISPOSITION: "quarantine-approved-historical-alias",
 }         ;
 
+
+export const NATIVE_REVIEW_ABANDON_REASONS = ["operator_disposition", "retired_schema"]         ;
+
+
+export function isNativeReviewAbandonReason(value         )                                     {
+	return value === "operator_disposition" || value === "retired_schema";
+}
 
 
 
@@ -1110,9 +1117,10 @@ export class NativeReviewCliError extends Error {
 // makes. It declares the Pi host relay handshake on each spawn: gentle-ai
 // refuses pi admission pre-authority without it (gentle-pi#311 P4), and a
 // single injection point keeps the declaration impossible to forget on any
-// individual operation.
+// individual operation. In a bundled install it also keeps Gentle AI's state
+// inside the prefix (gentleAiIsolationEnv, S9).
 export function gentleAiProcessEnvironment(base                    = process.env)                    {
-	return { ...base, [GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV]: GENTLE_PI_REVIEW_RELAY_CONTRACT };
+	return { ...gentleAiIsolationEnv(base), [GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV]: GENTLE_PI_REVIEW_RELAY_CONTRACT };
 }
 
 export function createNodeExecFileAdapter()                  {
@@ -1621,6 +1629,7 @@ class NativeReviewPlainCli {
 	}
 
 	async abandon(request                            )                                      {
+		if (!isNativeReviewAbandonReason(request.reason)) throw new TypeError('Native ABANDON reason must be "operator_disposition" or "retired_schema"');
 		for (const [name, value] of [["lineage", request.lineage], ["expectedRevision", request.expectedRevision], ["snapshotIdentity", request.snapshotIdentity], ["actor", request.actor], ["reason", request.reason]]         ) {
 			if (!isCanonicalProcessString(value)) throw new TypeError(`Native ABANDON ${name} must be a non-empty, trimmed, NUL-free string`);
 		}
@@ -1863,10 +1872,11 @@ function splitNativeConsentInvocation(invocation        )                    {
 			continue;
 		}
 		// Provider invocations are not shell commands. Keep every path backslash
-		// verbatim, including quoted UNC and drive-root paths. Outside quotes,
-		// only a backslash before whitespace joins a space-containing token.
+		// verbatim, including quoted UNC and drive-root paths. Outside quotes, a
+		// backslash escapes only whitespace or a quote, so a space-containing token
+		// and a POSIX-quoted apostrophe (`'it'\''s'`) split exactly.
 		const next = source[index + 1];
-		if (character === "\\" && quote === undefined && next !== undefined && /\s/.test(next)) {
+		if (character === "\\" && quote === undefined && next !== undefined && (/\s/.test(next) || next === "'" || next === '"')) {
 			escaping = true;
 			started = true;
 			continue;

@@ -10,12 +10,15 @@ import {
 	PI_INSTALL_VERSION,
 	PI_PACKAGE as PI_PACKAGE_NAME,
 	blockedReasons,
+	childEnvironment,
 	failedSteps,
 	genuineNpm,
+	lookPath,
 	packageNativeGentleAi,
 	pnpmInvocation,
 	runStandardInstall as runUnobserved,
 	setupErrorDetail,
+	upgradeInvocation,
 	windowsInvocation,
 } from "../scripts/installer-runner.mjs";
 
@@ -87,6 +90,12 @@ type Layout = { platform: string; node: string; entry: string; npmCli: string; s
 
 const npmPackage = JSON.stringify({ name: "npm", version: "11.19.0" });
 const pnpmPackage = JSON.stringify({ name: "pnpm", version: "11.1.1" });
+// pnpm 11 links gentle-pi's optional peer Pi beside gentle-pi in gentle-pi's own
+// global group, at the latest version unless one is already there; the launcher
+// resolves that Pi (a nested node_modules first) from gentle-pi.
+const piPackage = (version = PI_INSTALL_VERSION) => JSON.stringify({ name: "@earendil-works/pi-coding-agent", version });
+const besidePi = (root: string, sep = "/") => `${root.slice(0, root.lastIndexOf(sep))}${sep}@earendil-works${sep}pi-coding-agent${sep}package.json`;
+const nestedPi = (root: string) => `${root}/node_modules/@earendil-works/pi-coding-agent/package.json`;
 const posixLayout: Layout = {
 	platform: "linux", node: NODE, entry: ENTRY, npmCli: NPM_CLI, shellEntry: SHELL_ENTRY, bin: BIN, root: PACKAGE_ROOT,
 	env: { HOME, PATH: `${BIN}:/opt/node/bin:/usr/bin`, GENTLE_INSTALL_PNPM_NODE: NODE, GENTLE_INSTALL_PNPM_ENTRY: ENTRY },
@@ -95,7 +104,8 @@ const posixLayout: Layout = {
 		[`${BIN}/npm`]: `${BIN}/npm`, [PM_NPM_CLI]: PM_NPM_CLI, [STORE]: STORE, [STORE_PATH]: STORE_PATH, [STORE_PREFIX]: STORE_PREFIX,
 		[`${BIN}/pnpm`]: `${BIN}/pnpm`, [PM_PNPM_ENTRY]: PM_PNPM_ENTRY },
 	texts: { "/opt/node/lib/node_modules/npm/package.json": npmPackage, [`${BIN}/npm`]: POSIX_SHIM,
-		[`${PM_NPM_DIR}/package.json`]: npmPackage, [`${BIN}/pnpm`]: POSIX_PNPM_SHIM, [`${PM_PNPM_DIR}/package.json`]: pnpmPackage },
+		[`${PM_NPM_DIR}/package.json`]: npmPackage, [`${BIN}/pnpm`]: POSIX_PNPM_SHIM, [`${PM_PNPM_DIR}/package.json`]: pnpmPackage,
+		[besidePi(PACKAGE_ROOT)]: piPackage() },
 	persistentNode: PERSISTENT_NODE, pmNpmCli: PM_NPM_CLI, pmPnpmEntry: PM_PNPM_ENTRY, pmHome: PNPM_HOME, storePath: STORE_PATH,
 	storePrefix: STORE_PREFIX,
 	creates: { "runtime set node 24.21.0 -g": [PERSISTENT_NODE], "add-pm": [`${BIN}/npm`, PM_NPM_CLI, `${BIN}/pnpm`, PM_PNPM_ENTRY],
@@ -114,7 +124,7 @@ const windowsLayout: Layout = {
 	texts: { [`${W_NODE_DIR}\\node_modules\\npm\\package.json`]: npmPackage, [W_NPM_CMD]: NODE_NPM_CMD, [`${W_BIN}\\npm.cmd`]: WINDOWS_SHIM,
 		[`${W_PM_NPM_DIR}\\package.json`]: npmPackage,
 		[`${W_BIN}\\pnpm.cmd`]: WINDOWS_SHIM.replaceAll("npm\\bin\\npm-cli.js", "pnpm\\bin\\pnpm.mjs"),
-		[`${W_PM_PNPM_DIR}\\package.json`]: pnpmPackage },
+		[`${W_PM_PNPM_DIR}\\package.json`]: pnpmPackage, [besidePi(W_ROOT, "\\")]: piPackage() },
 	persistentNode: W_PERSISTENT_NODE, pmNpmCli: W_PM_NPM_CLI, pmPnpmEntry: W_PM_PNPM_ENTRY,
 	pmHome: W_PNPM_HOME, storePath: W_STORE_PATH, storePrefix: W_STORE_PREFIX,
 	creates: { "runtime set node 24.21.0 -g": [W_PERSISTENT_NODE], "add-pm": [`${W_BIN}\\npm.cmd`, W_PM_NPM_CLI],
@@ -473,6 +483,93 @@ test("windowsInvocation runs what a Windows npm or pnpm shim runs, never through
 	const exe = `${W_PNPM_HOME}\\global\\v11\\abc\\node_modules\\@pnpm\\exe\\pnpm.exe`;
 	const native = windowsShapes({ files: [exe], texts: { [pnpmShim]: "@SETLOCAL\r\n@\"%~dp0\\..\\global\\v11\\abc\\node_modules\\@pnpm\\exe\\pnpm\"   %*\r\n" } });
 	assert.deepEqual(await windowsInvocation(pnpmShim, env, native.adapters), { command: exe, prefix: [] }, "@pnpm/exe's extensionless hard link runs as its .exe twin");
+});
+
+// S10: only local drive paths. A UNC, `\\?\` or drive-less rooted path is never
+// searched, read or run (even a lookup can reach a remote share).
+const nonLocal = ["\\\\server\\share\\bin", "\\\\?\\C:\\bin", "\\\\.\\C:\\bin", "\\bin"];
+function recordedShapes(options: Parameters<typeof windowsShapes>[0] = {}) {
+	const shapes = windowsShapes(options);
+	const touched: string[] = [];
+	const { isFile, readText } = shapes.adapters.fs;
+	shapes.adapters.fs = { isFile: async (path: string) => { touched.push(path); return isFile(path); }, readText: async (path: string) => { touched.push(path); return readText(path); } };
+	return { ...shapes, touched };
+}
+test("Windows lookPath and windowsInvocation accept only local drive paths for the command, the PATH node and the npm prefix", async () => {
+	const env = { Path: [...nonLocal, "C:\\Local"].join(";"), PATHEXT: ".COM;.EXE;.BAT;.CMD" };
+	const everywhere = recordedShapes({ files: [...nonLocal, "C:\\Local"].map((directory) => `${directory}\\node.exe`) });
+	assert.equal(await lookPath("node", env, "win32", everywhere.adapters.fs), "C:\\Local\\node.exe");
+	assert.deepEqual(everywhere.touched.filter((path) => !/^[A-Za-z]:\\/.test(path)), [], "no non-local directory is searched");
+	for (const directory of nonLocal) {
+		const shapes = recordedShapes({ files: [`${directory}\\npm.exe`, `${directory}\\npm.cmd`, W_NODE, W_NPM_CLI], texts: { [`${directory}\\npm.cmd`]: NODE_NPM_CMD } });
+		for (const file of [`${directory}\\npm.exe`, `${directory}\\npm.cmd`]) assert.equal(await windowsInvocation(file, env, shapes.adapters), null, file);
+		assert.deepEqual([shapes.touched, shapes.calls], [[], []], directory);
+	}
+	// The PATH node of a shim without a sibling node.exe: only a local one runs.
+	const shim = `${W_APPDATA_NPM}\\npm.cmd`;
+	const remoteNode = recordedShapes({ files: ["\\\\server\\share\\bin\\node.exe", W_REDIRECTED_CLI], texts: { [shim]: cmdShim("node_modules\\npm\\bin\\npm-cli.js") } });
+	assert.equal(await windowsInvocation(shim, { ...env, Path: "\\\\server\\share\\bin" }, remoteNode.adapters), null);
+	// npm's global prefix: anything but a local drive path keeps the bundled npm.
+	for (const prefix of ["\\\\server\\share\\npm", "\\\\?\\C:\\Users\\u\\AppData\\Roaming\\npm", "\\npm"]) {
+		const h = recordedShapes({ files: [W_NODE, W_NPM_CLI, W_PREFIX_JS, `${prefix}\\node_modules\\npm\\bin\\npm-cli.js`], texts: { [W_NPM_CMD]: NODE_NPM_CMD },
+			results: { [`${W_NODE} ${W_PREFIX_JS}`]: { code: 0, stdout: `${prefix}\r\n` } } });
+		assert.deepEqual(await windowsInvocation(W_NPM_CMD, env, h.adapters), { command: W_NODE, prefix: [W_NPM_CLI] }, prefix);
+		assert.equal(h.touched.some((path) => path.startsWith(prefix)), false, prefix);
+	}
+});
+
+// S11: CMD runs an extensionless shim target through PATHEXT, in PATHEXT order.
+test("an extensionless native shim target runs only when the first PATHEXT match is an .exe", async () => {
+	const pnpmShim = `${W_BIN}\\pnpm.cmd`;
+	const target = `${W_PNPM_HOME}\\global\\v11\\abc\\node_modules\\@pnpm\\exe\\pnpm`;
+	const texts = { [pnpmShim]: "@SETLOCAL\r\n@\"%~dp0\\..\\global\\v11\\abc\\node_modules\\@pnpm\\exe\\pnpm\"   %*\r\n" };
+	const invoke = (files: string[], PATHEXT = ".COM;.EXE;.BAT;.CMD") => windowsInvocation(pnpmShim, { Path: W_BIN, PATHEXT }, windowsShapes({ files, texts }).adapters);
+	assert.deepEqual(await invoke([target, `${target}.exe`, `${target}.cmd`]), { command: `${target}.exe`, prefix: [] });
+	assert.deepEqual(await invoke([`${target}.exe`], "exe;.CMD"), { command: `${target}.exe`, prefix: [] }, "PATHEXT entries are lowercased and dot-prefixed");
+	for (const [files, PATHEXT] of [[[`${target}.com`, `${target}.exe`]], [[`${target}.cmd`, `${target}.exe`], ".CMD;.EXE"], [[`${target}.bat`]], [[target]]] as [string[], string?][]) {
+		assert.equal(await invoke(files, PATHEXT), null, `${files.join(",")} ${PATHEXT ?? ""}`);
+	}
+});
+
+// S8: how `gentle-shell upgrade` (and the wizard's update) runs npm and pnpm on Windows.
+test("upgradeInvocation resolves npm and pnpm on Windows without cmd.exe, and is absent on POSIX", async () => {
+	for (const platform of ["linux", "darwin"]) assert.equal(upgradeInvocation({ platform, env: {}, ...windowsShapes().adapters }), undefined);
+	const env = { Path: `${W_BIN};${W_NODE_DIR}`, PATHEXT: ".COM;.EXE;.BAT;.CMD", GENTLE_INSTALL_PNPM_NODE: "C:\\Tools\\node.exe", GENTLE_INSTALL_PNPM_ENTRY: W_ENTRY };
+	const exe = `${W_PNPM_HOME}\\global\\v11\\abc\\node_modules\\@pnpm\\exe\\pnpm.exe`;
+	const h = windowsShapes({ files: [W_NODE, W_NPM_CMD, W_NPM_CLI, `${W_BIN}\\pnpm.cmd`, exe, `${W_BIN}\\other.cmd`],
+		texts: { [W_NPM_CMD]: NODE_NPM_CMD, [`${W_BIN}\\pnpm.cmd`]: "@SETLOCAL\r\n@\"%~dp0\\..\\global\\v11\\abc\\node_modules\\@pnpm\\exe\\pnpm.exe\"   %*\r\n",
+			[`${W_BIN}\\other.cmd`]: "@echo off\r\nvolta run %~n0 %*\r\n" } });
+	const cli = upgradeInvocation({ platform: "win32", env, ...h.adapters });
+	assert.deepEqual(await cli!("npm"), { command: W_NODE, prefix: [W_NPM_CLI] });
+	assert.deepEqual(await cli!("pnpm"), { command: exe, prefix: [] }, "the CLI runs the user's own pnpm, as its shim runs it");
+	assert.equal(await cli!("other"), null, "a shim no structure resolves never runs");
+	assert.equal(await cli!("missing"), null);
+	// The wizard hands pnpm over from the bootstrap: its verified pnpm runs the update.
+	const wizard = upgradeInvocation({ platform: "win32", env, ...h.adapters, handoff: true });
+	assert.deepEqual(await wizard!("pnpm"), { command: "C:\\Tools\\node.exe", prefix: [W_ENTRY] });
+	assert.deepEqual(await wizard!("npm"), { command: W_NODE, prefix: [W_NPM_CLI] });
+	assert.equal(h.calls.some((call) => /\.(cmd|bat)$/i.test(call.command)), false);
+});
+
+// S9: Corepack's pnpm.cmd runs Corepack, never pnpm's own entry: it is not pnpm.
+test("windowsInvocation runs a pnpm shim only when it names pnpm's own bin entry", async () => {
+	const env = { Path: W_NODE_DIR, PATHEXT: ".COM;.EXE;.BAT;.CMD" };
+	const pnpmCmd = `${W_NODE_DIR}\\pnpm.cmd`;
+	for (const entry of ["node_modules\\corepack\\dist\\pnpm.js", "node_modules\\pnpm\\dist\\pnpm.cjs", "node_modules\\other\\bin\\pnpm.cjs"]) {
+		const h = windowsShapes({ files: [W_NODE, `${W_NODE_DIR}\\${entry}`], texts: { [pnpmCmd]: cmdShim(entry) } });
+		assert.equal(await windowsInvocation(pnpmCmd, env, h.adapters), null, entry);
+		assert.deepEqual(h.calls, []);
+	}
+	for (const file of ["pnpm.cjs", "pnpm.mjs"]) {
+		const entry = `${W_NODE_DIR}\\node_modules\\pnpm\\bin\\${file}`;
+		const h = windowsShapes({ files: [W_NODE, entry], texts: { [pnpmCmd]: cmdShim(`node_modules\\pnpm\\bin\\${file}`) } });
+		assert.deepEqual(await windowsInvocation(pnpmCmd, env, h.adapters), { command: W_NODE, prefix: [entry] }, file);
+	}
+	// Any other command keeps its JS entry, whatever it is called (here Corepack's own shim).
+	const corepackCmd = `${W_NODE_DIR}\\corepack.cmd`;
+	const corepackEntry = `${W_NODE_DIR}\\node_modules\\corepack\\dist\\corepack.js`;
+	const corepack = windowsShapes({ files: [W_NODE, corepackEntry], texts: { [corepackCmd]: cmdShim("node_modules\\corepack\\dist\\corepack.js") } });
+	assert.deepEqual(await windowsInvocation(corepackCmd, env, corepack.adapters), { command: W_NODE, prefix: [corepackEntry] });
 });
 
 test("a Windows npm is usable only by behavior: a stable --version and one absolute prefix", async () => {
@@ -852,9 +949,11 @@ test("package-native integrity rejects development overrides and unverified pack
 });
 
 // Plans whose inventory says Node is bootstrap-only (or npm is not genuine) include fixed persistence steps.
+// The bootstrap's pnpm is bootstrap-only too, so it is persisted with npm.
 const bootstrapNode = { ...tool("24.18.0"), persistent: false, npm: false };
+const bootstrapPnpm = { ...tool("11.1.1"), compatible: true, persistent: false };
 function persistPlan(platform = "linux", node: object = bootstrapNode) {
-	return plan(platform, { node });
+	return plan(platform, { node, pnpm: bootstrapPnpm });
 }
 // pnpm 11 keeps each global add in its own project: npm+pnpm and the stack are listed separately.
 function persistedListing(root = PACKAGE_ROOT, home = PNPM_HOME) {
@@ -924,12 +1023,13 @@ test("an older Node and incompatible pnpm left alongside: the pinned copies run 
 });
 
 test("the full persistence group runs exactly when Node is bootstrap-only", async () => {
-	for (const pnpm of [{ ...tool("11.1.1"), compatible: true, persistent: true }, { ...tool("11.1.1"), compatible: true, persistent: false }]) {
+	// pnpm is added with npm only when it is bootstrap-only too.
+	for (const [pnpm, add] of [[{ ...tool("11.1.1"), compatible: true, persistent: true }, NPM_ADD], [bootstrapPnpm, PM_ADD]] as const) {
 		const h = harness({ results: persistedList });
 		const result = await runStandardInstall({ plan: plan("linux", { node: { ...tool("24.18.0"), persistent: false, npm: true }, pnpm }),
 			consent: true }, h.adapters);
 		assert.equal(result.outcome, "ready");
-		assert.deepEqual(h.pnpmCalls().slice(2, 4), [RUNTIME_SET, PM_ADD]);
+		assert.deepEqual(h.pnpmCalls().slice(2, 4), [RUNTIME_SET, add]);
 	}
 	const h = harness();
 	const result = await runStandardInstall({ plan: plan("linux", { node: { ...tool("24.18.0"), persistent: true, npm: true } }), consent: true }, h.adapters);
@@ -937,6 +1037,26 @@ test("the full persistence group runs exactly when Node is bootstrap-only", asyn
 	assert.equal(result.npmPrefix, undefined);
 	assert.deepEqual(h.pnpmCalls(), ["bin -g", LIST, INSTALL, LIST]);
 	assert.equal(h.calls.some((call) => call.args[0] === PM_NPM_CLI || call.command === PERSISTENT_NODE), false);
+});
+
+test("bootstrap-only Node next to a persistent newer pnpm 11 adds only npm: that pnpm is never downgraded", async () => {
+	const newer = { ...tool("11.5.0"), compatible: true, persistent: true, inGlobalBin: true };
+	const fixed = plan("linux", { node: { ...tool("24.18.0"), persistent: false, npm: true }, pnpm: newer });
+	assert.deepEqual(fixed.actions.slice(0, 3).map((action: { id: string }) => action.id), ["persist-node", "persist-npm", "configure-npm-prefix"]);
+	const h = harness({ results: persistedList });
+	const result = await runStandardInstall({ plan: fixed, consent: true }, h.adapters);
+	assert.equal(result.outcome, "ready");
+	assert.equal(result.npmPrefix, "configured");
+	assert.deepEqual(h.pnpmCalls(), ["bin -g", LIST, RUNTIME_SET, NPM_ADD, "store path", INSTALL, LIST]);
+	assert.deepEqual(result.completed, ["check-global-bin", "check-existing-stack", "persist-node", "persist-npm", "verify-persistent-runtime",
+		"check-npm", "configure-npm-prefix", ...AFTER_STACK]);
+	assert.equal(h.pnpmCalls().some((call) => call.includes("pnpm@")), false);
+	// A failed npm add stops before the stack install, after the runtime.
+	const failing = harness({ results: { ...persistedList, "add-npm": { code: 1 } } });
+	const failed = await runStandardInstall({ plan: fixed, consent: true }, failing.adapters);
+	assert.equal(failed.failedStep, "persist-npm");
+	assert.deepEqual(failed.completed, ["check-global-bin", "check-existing-stack", "persist-node"]);
+	assert.deepEqual(failing.pnpmCalls(), ["bin -g", LIST, RUNTIME_SET, NPM_ADD]);
 });
 
 test("a failed persistence step stops before the stack install and reports completed steps", async () => {
@@ -1194,7 +1314,7 @@ test("persistence variants are accepted only as fixed sets", async () => {
 	const prefix = { id: "configure-npm-prefix", kind: "configure", target: "npm-prefix" };
 	const node = { id: "persist-node", kind: "persist-runtime", target: "node", version: "24.21.0" };
 	const base = plan();
-	for (const extra of [[npmAction, pnpmAction], [both, prefix], [node, npmAction, prefix], [node, both], [npmAction, prefix]]) {
+	for (const extra of [[npmAction, pnpmAction], [both, prefix], [node, pnpmAction, prefix], [node, npmAction], [node, both], [npmAction, prefix]]) {
 		const h = harness();
 		const result = await runStandardInstall({ plan: { ...base, actions: [...extra, ...base.actions] }, consent: true }, h.adapters);
 		assert.equal(result.outcome, "blocked");
@@ -1367,10 +1487,11 @@ function mainChannel() {
 	};
 }
 const MAIN_ADD = `add -g ${MAIN_TGZ} --allow-build=gentle-pi`;
-function mainHarness(mainListing = listing(PI_INSTALL_VERSION, MAIN_VERSION, MAIN_ROOT), extra: object = {}) {
+function mainHarness(mainListing = listing(PI_INSTALL_VERSION, MAIN_VERSION, MAIN_ROOT), extra: { texts?: Record<string, string>; results?: object } = {}) {
 	const h = harness({ files: ["/usr/bin/go"], realpaths: { [MAIN_ROOT]: MAIN_ROOT },
 		results: { [LIST]: [emptyList, { code: 0, stdout: listing() }, { code: 0, stdout: mainListing }],
-			[`${MAIN_ROOT}/bin/gentle-shell.mjs setup`]: { code: 0 } }, ...extra });
+			[`${MAIN_ROOT}/bin/gentle-shell.mjs setup`]: { code: 0 } }, ...extra,
+		texts: { [besidePi(MAIN_ROOT)]: piPackage(), ...extra.texts } });
 	const main = mainChannel();
 	return { ...h, main, adapters: { ...h.adapters, mainChannel: main.adapter } };
 }
@@ -1518,14 +1639,16 @@ const SHELL_ONLY_ADD = `add -g gentle-pi@${requirements.shell} --allow-build=gen
 const NPM_SHELL_ROOT = "/usr/local/lib/node_modules/gentle-pi";
 
 test("with a compatible Pi already installed, only Gentle Shell is added and Pi is left as it is", async () => {
-	const h = harness({ results: { [LIST]: [{ code: 0, stdout: JSON.stringify([{ path: `${PNPM_HOME}/global/v11`, dependencies: {
-		"@earendil-works/pi-coding-agent": { version: "1.2.0" } } }]) }, { code: 0, stdout: listing("1.2.0") }], [SHELL_ONLY_ADD]: { code: 0 } } });
-	const result = await runStandardInstall({ plan: existingPlan({}), consent: true }, h.adapters);
-	assert.equal(result.outcome, "ready");
-	assert.deepEqual(h.pnpmCalls(), ["bin -g", LIST, SHELL_ONLY_ADD, LIST]);
-	assert.deepEqual(result.completed, ["check-npm", "check-global-bin", "check-existing-shell", "install-global",
-		"verify-global-list", "verify-shell-bin", "verify-gentle-ai", "shell-setup"]);
-	assert.equal(h.calls.some((call) => call.args.includes(`${PI_PACKAGE_NAME}@${PI_INSTALL_VERSION}`)), false);
+	// A pnpm Pi newer than PI_INSTALL_VERSION is kept too: gentle-pi gets its own pnpm group, nothing is replaced.
+	for (const version of ["1.2.0", PI_INSTALL_VERSION]) {
+		const h = harness({ results: { [LIST]: [piOnlyList(version), { code: 0, stdout: listing(version) }], [SHELL_ONLY_ADD]: { code: 0 } } });
+		const result = await runStandardInstall({ plan: existingPlan({ pi: tool(version) }), consent: true }, h.adapters);
+		assert.equal(result.outcome, "ready", version);
+		assert.deepEqual(h.pnpmCalls(), ["bin -g", LIST, SHELL_ONLY_ADD, LIST]);
+		assert.deepEqual(result.completed, ["check-npm", "check-global-bin", "check-existing-shell", "install-global",
+			"verify-global-list", "verify-shell-bin", "verify-gentle-ai", "shell-setup"]);
+		assert.equal(h.calls.some((call) => call.args.includes(`${PI_PACKAGE_NAME}@${PI_INSTALL_VERSION}`)), false);
+	}
 });
 
 test("adding only Gentle Shell still refuses a gentle-pi that pnpm already lists", async () => {
@@ -1535,9 +1658,99 @@ test("adding only Gentle Shell still refuses a gentle-pi that pnpm already lists
 	assert.equal(h.calls.some((call) => call.args[1] === "add"), false);
 });
 
+// --- The Pi that Gentle Shell runs: pnpm 11 installs every `add -g` argument as its own
+// group, so gentle-pi may get a newer Pi beside it than PI_INSTALL_VERSION (at least the minimum).
+test("Pi and gentle-pi are added as separate pnpm groups, so a later `pi update` keeps gentle-pi", async () => {
+	const separate = ["add", "-g", `${PI_PACKAGE_NAME}@${PI_INSTALL_VERSION}`, `gentle-pi@${requirements.shell}`, "--allow-build=gentle-pi"];
+	const h = harness();
+	const result = await runStandardInstall({ plan: plan(), consent: true }, h.adapters);
+	assert.equal(result.outcome, "ready");
+	assert.deepEqual(h.calls.filter((call) => call.args[1] === "add").map((call) => call.args.slice(1)), [separate]);
+	assert.equal(h.calls.some((call) => call.args.some((arg) => arg.includes(","))), false);
+	const w = harness({ layout: windowsLayout });
+	assert.equal((await runStandardInstall({ plan: plan("win32"), consent: true }, w.adapters)).outcome, "ready");
+	assert.deepEqual(w.calls.filter((call) => call.args[1] === "add").map((call) => call.args.slice(1)), [separate]);
+});
+
+test("verify-global-list accepts the Pi the launcher runs beside gentle-pi at the minimum or newer, and reports one other than the pin", async () => {
+	// pnpm's latest peer beside gentle-pi (or nested in it): Gentle Shell runs it, and the outcome says which.
+	for (const texts of [{ [besidePi(PACKAGE_ROOT)]: piPackage("1.1.0") }, { [nestedPi(PACKAGE_ROOT)]: piPackage("1.1.0") },
+		{ [besidePi(PACKAGE_ROOT)]: piPackage(requirements.pi) }]) {
+		const h = harness({ texts });
+		const result = await runStandardInstall({ plan: plan(), consent: true }, h.adapters);
+		assert.equal(result.outcome, "ready", JSON.stringify(texts));
+		assert.equal(result.piVersion, Object.values(texts)[0].includes("1.1.0") ? "1.1.0" : requirements.pi);
+	}
+	// The pin itself adds nothing to the outcome.
+	assert.equal("piVersion" in (await runStandardInstall({ plan: plan(), consent: true }, harness().adapters)), false);
+	const wrong = [
+		{ [besidePi(PACKAGE_ROOT)]: piPackage("0.99.0") },
+		// A Pi nested in gentle-pi resolves first, even below the minimum.
+		{ [nestedPi(PACKAGE_ROOT)]: piPackage("0.99.0"), [besidePi(PACKAGE_ROOT)]: piPackage("1.1.0") },
+		{ [besidePi(PACKAGE_ROOT)]: piPackage("1.2.0-beta.1") },
+		{ [besidePi(PACKAGE_ROOT)]: JSON.stringify({ name: "not-pi", version: PI_INSTALL_VERSION }) },
+		{ [besidePi(PACKAGE_ROOT)]: "not json" },
+	];
+	for (const texts of wrong) {
+		const h = harness({ texts });
+		const result = await runStandardInstall({ plan: plan(), consent: true }, h.adapters);
+		assert.deepEqual([result.outcome, result.failedStep], ["failed", "verify-global-list"], JSON.stringify(texts));
+		assert.equal(h.calls.some((call) => call.args[0] === SHELL_ENTRY), false);
+	}
+	// No Pi beside gentle-pi at all: the launcher would run any `pi` on PATH.
+	const bare = `${PNPM_HOME}/global/v11/xyz/node_modules/gentle-pi`;
+	const missing = harness({ realpaths: { [bare]: bare },
+		results: { [LIST]: [emptyList, { code: 0, stdout: listing(PI_INSTALL_VERSION, requirements.shell, bare) }] } });
+	const failed = await runStandardInstall({ plan: plan(), consent: true }, missing.adapters);
+	assert.deepEqual([failed.outcome, failed.failedStep], ["failed", "verify-global-list"]);
+});
+
+test("the main Shell is added alone and its adjacent Pi is verified like the release one", async () => {
+	const h = mainHarness(undefined, { texts: { [besidePi(MAIN_ROOT)]: piPackage("1.1.0") } });
+	const result = await runStandardInstall({ plan: mainPlan(), consent: true }, h.adapters);
+	assert.equal(result.outcome, "ready");
+	assert.equal(result.piVersion, "1.1.0");
+	assert.deepEqual(h.calls.filter((call) => call.args[1] === "add").map((call) => call.args.slice(1)),
+		[INSTALL.split(" "), MAIN_ADD.split(" ")]);
+	const below = mainHarness(undefined, { texts: { [besidePi(MAIN_ROOT)]: piPackage("0.99.0") } });
+	const failed = await runStandardInstall({ plan: mainPlan(), consent: true }, below.adapters);
+	assert.deepEqual([failed.outcome, failed.failedStep], ["failed", "install-shell-main"]);
+});
+
+test("a pnpm-owned Gentle Shell update is verified with a Pi at the minimum or newer beside it; an npm-owned one is not", async () => {
+	const OLD_ROOT = `${PNPM_HOME}/global/v11/old/node_modules/gentle-pi`;
+	const fixed = existingPlan({ shell: { available: true, version: "3.9.0", usable: true, global: true, owner: "pnpm" },
+		gentleAi: { available: null }, setup: { available: null } });
+	const located = [{ root: OLD_ROOT, version: "3.9.0", owner: "pnpm" }, { root: PACKAGE_ROOT, version: requirements.shell, owner: "pnpm" }];
+	const h = updateHarness({ located, texts: { [besidePi(PACKAGE_ROOT)]: piPackage("1.1.0") } });
+	const result = await runStandardInstall({ plan: fixed, consent: true }, h.adapters);
+	assert.equal(result.outcome, "ready");
+	assert.equal(result.piVersion, "1.1.0");
+	assert.deepEqual(result.completed.slice(3, 5), ["update-shell", "verify-updated-shell"]);
+	for (const texts of [{ [besidePi(PACKAGE_ROOT)]: piPackage("0.99.0") }, { [nestedPi(PACKAGE_ROOT)]: piPackage("0.99.0") }]) {
+		const wrong = updateHarness({ located, texts });
+		const failed = await runStandardInstall({ plan: fixed, consent: true }, wrong.adapters);
+		assert.deepEqual([failed.outcome, failed.failedStep], ["failed", "verify-updated-shell"]);
+	}
+	// npm keeps resolving its own peer; nothing beside an npm Shell is read.
+	const npm = updateHarness();
+	const npmResult = await runStandardInstall({ plan: existingPlan({ shell: { available: true, version: "3.9.0", usable: true, global: true, owner: "npm" },
+		gentleAi: { available: null }, setup: { available: null } }), consent: true }, npm.adapters);
+	assert.equal(npmResult.outcome, "ready");
+});
+
+test("a setup recovery accepts a newer Pi beside gentle-pi but not one below the minimum", async () => {
+	const newer = harness({ results: installedList, texts: { [besidePi(PACKAGE_ROOT)]: piPackage("1.1.0") } });
+	assert.equal((await runStandardInstall({ plan: recoveryPlan(), consent: true }, newer.adapters)).outcome, "ready");
+	const h = harness({ results: installedList, texts: { [besidePi(PACKAGE_ROOT)]: piPackage("0.99.0") } });
+	const result = await runStandardInstall({ plan: recoveryPlan(), consent: true }, h.adapters);
+	assert.deepEqual([result.outcome, result.reason], ["blocked", "existing-stack-unverified"]);
+	assert.equal(h.calls.some((call) => call.args[0] === SHELL_ENTRY), false);
+});
+
 function updateHarness({ located = [{ root: NPM_SHELL_ROOT, version: "3.9.0", owner: "npm" }, { root: NPM_SHELL_ROOT, version: requirements.shell, owner: "npm" }] as Array<object | null>,
-	upgrade = async () => true as boolean, results = {} as Record<string, Result> } = {}) {
-	const h = harness({ results: { [`${NPM_SHELL_ROOT}/bin/gentle-shell.mjs setup`]: { code: 0 }, ...results } });
+	upgrade = async () => true as boolean, results = {} as Record<string, Result>, texts = {} as Record<string, string> } = {}) {
+	const h = harness({ results: { [`${NPM_SHELL_ROOT}/bin/gentle-shell.mjs setup`]: { code: 0 }, ...results }, texts });
 	const upgrades: object[] = [];
 	let locates = 0;
 	const adapters = { ...h.adapters,
@@ -1844,14 +2057,102 @@ test("with a current Gentle Shell, only the installer's Pi is added next to the 
 	assert.deepEqual([outcome.outcome, outcome.failedStep], ["failed", "install-pi"]);
 });
 
+// S6: a private Windows PNPM_HOME is claimed first, after consent and before any
+// command, then every pnpm child gets it and pnpm's own folders inside it.
+const W_LOCAL_DEFAULT = "C:\\Users\\u\\AppData\\Local\\pnpm-weak";
+function privatePlan(change: object = {}, path = W_PNPM_HOME) {
+	return plan("win32", { pnpmHome: { available: true, path, source: "private", rejected: { path: W_LOCAL_DEFAULT, check: "target-acl-mask" } }, ...change });
+}
+function preparing(h: ReturnType<typeof harness>, prepare: (home: string) => unknown = () => "claimed", windows = true) {
+	const prepared: Array<{ home: string; calls: number }> = [];
+	return { ...h, prepared, adapters: { ...h.adapters, env: { ...h.adapters.env, ...(windows ? { PNPM_HOME: W_PNPM_HOME } : {}) },
+		preparePnpmHome: async (home: string) => { prepared.push({ home, calls: h.calls.length }); return prepare(home); } } };
+}
+const xdgKeys = ["XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"];
+test("a private Windows PNPM_HOME is claimed before any command and holds pnpm's config, cache and state", async () => {
+	const h = preparing(harness({ layout: windowsLayout, env: { Path: `${W_NODE_DIR};C:\\Windows` } }));
+	const result = await runStandardInstall({ plan: privatePlan(), consent: true }, h.adapters);
+	assert.equal(result.outcome, "terminal-action-required");
+	assert.deepEqual(h.prepared, [{ home: W_PNPM_HOME, calls: 0 }]);
+	assert.equal(result.completed[0], "prepare-pnpm-home");
+	assert.equal(h.pnpmCalls().at(-1), "setup", "pnpm setup persists the private PNPM_HOME and its bin");
+	for (const call of h.calls) {
+		assert.equal(call.env.PNPM_HOME, W_PNPM_HOME);
+		assert.deepEqual(xdgKeys.map((key) => call.env[key]), [".config", ".cache", ".state"].map((folder) => `${W_PNPM_HOME}\\${folder}`));
+	}
+	// Folders the user set are kept.
+	const own = preparing(harness({ layout: windowsLayout, env: { XDG_CACHE_HOME: "D:\\cache" } }));
+	await runStandardInstall({ plan: privatePlan(), consent: true }, own.adapters);
+	assert.ok(own.calls.every((call) => call.env.XDG_CACHE_HOME === "D:\\cache"));
+	// Without a private PNPM_HOME nothing is claimed and no XDG folder is set, on Windows or POSIX.
+	for (const [layout, fixed] of [[windowsLayout, plan("win32")], [posixLayout, plan()]] as const) {
+		const plain = preparing(harness({ layout }), undefined, layout === windowsLayout);
+		assert.equal((await runStandardInstall({ plan: fixed, consent: true }, plain.adapters)).outcome, "ready");
+		assert.deepEqual(plain.prepared, []);
+		assert.ok(plain.calls.length > 0 && plain.calls.every((call) => xdgKeys.every((key) => !(key in call.env))));
+	}
+	// The private record is Windows-only: a POSIX plan carrying one claims nothing.
+	const posix = preparing(harness(), undefined, false);
+	await runStandardInstall({ plan: { ...plan(), tools: { ...plan().tools, pnpmHome: privatePlan().tools.pnpmHome } }, consent: true }, posix.adapters);
+	assert.deepEqual(posix.prepared, []);
+});
+
+test("a private PNPM_HOME that changed, or could not be claimed, stops before any command", async () => {
+	const moved = preparing(harness({ layout: windowsLayout }));
+	const changed = await runStandardInstall({ plan: privatePlan({}, "C:\\Users\\u\\.pnpm"), consent: true }, moved.adapters);
+	assert.deepEqual([changed.outcome, changed.reason], ["blocked", "pnpm-home-changed"]);
+	assert.deepEqual([moved.prepared, moved.calls], [[], []]);
+	for (const prepare of [() => { throw new Error("Windows PNPM_HOME claim rejected"); }, () => Promise.reject(new Error("x"))]) {
+		const h = preparing(harness({ layout: windowsLayout }), prepare);
+		const failed = await runStandardInstall({ plan: privatePlan(), consent: true }, h.adapters);
+		assert.deepEqual([failed.outcome, failed.failedStep, failed.completed], ["failed", "prepare-pnpm-home", []]);
+		assert.deepEqual(h.calls, []);
+	}
+	const h = harness({ layout: windowsLayout, env: { PNPM_HOME: W_PNPM_HOME } });
+	const missing = await runStandardInstall({ plan: privatePlan(), consent: true }, h.adapters);
+	assert.deepEqual([missing.outcome, missing.failedStep], ["failed", "prepare-pnpm-home"]);
+	assert.deepEqual(h.calls, []);
+});
+
+test("an update with a private PNPM_HOME still persists it with pnpm setup", async () => {
+	const root = "C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\gentle-pi";
+	const fixed = plan("win32", { pi: tool("1.2.0"), shell: { available: true, version: "3.9.0", usable: true, global: true, owner: "npm" },
+		gentleAi: { available: null }, setup: { available: null } });
+	const h = preparing(harness({ layout: windowsLayout, env: { Path: `${W_NODE_DIR};C:\\Windows` }, results: { [`${root}\\bin\\gentle-shell.mjs setup`]: { code: 0 } } }));
+	let locates = 0;
+	const located = [{ root, version: "3.9.0", owner: "npm" }, { root, version: requirements.shell, owner: "npm" }];
+	const adapters = { ...h.adapters, locateShell: async () => located[Math.min(locates++, 1)], upgradeShell: async () => true };
+	const withHome = { ...fixed, tools: { ...fixed.tools, pnpmHome: privatePlan().tools.pnpmHome } };
+	const result = await runStandardInstall({ plan: withHome, consent: true }, adapters);
+	assert.equal(result.outcome, "terminal-action-required");
+	assert.equal(h.pnpmCalls().at(-1), "setup");
+	const plain = await runStandardInstall({ plan: fixed, consent: true }, { ...adapters, preparePnpmHome: undefined });
+	assert.equal(plain.outcome, "ready", "an update keeps the PATH its installation already uses");
+});
+
 test("exported blocked reasons and failed steps match what the scenarios observed", () => {
 	assert.ok(Object.isFrozen(blockedReasons) && Object.isFrozen(failedSteps));
 	assert.equal(new Set(blockedReasons).size, blockedReasons.length);
 	assert.equal(new Set(failedSteps).size, failedSteps.length);
 	for (const reason of observed.reasons) assert.ok(blockedReasons.includes(reason), reason);
 	for (const step of observed.steps) assert.ok(failedSteps.includes(step), step);
-	// Every reason is reached; only the single-manager add failures have no scenario above.
+	// Every reason is reached; only the single pnpm add failure has no scenario above.
 	assert.deepEqual(blockedReasons.filter((reason) => !observed.reasons.has(reason)), []);
-	assert.deepEqual(failedSteps.filter((step) => !observed.steps.has(step)), ["persist-npm", "persist-pnpm"]);
+	assert.deepEqual(failedSteps.filter((step) => !observed.steps.has(step)), ["persist-pnpm"]);
 });
 
+// R2: in private mode the installer's children also get TEMP and TMP inside the
+// claimed private home, so a postinstall's os.tmpdir() (the Gentle AI source
+// build) never uses a %LOCALAPPDATA%\Temp another account may write.
+test("childEnvironment puts TEMP and TMP under a private Windows PNPM_HOME only", () => {
+	const globalBin = { pnpmHome: W_PNPM_HOME, path: W_BIN, onPath: false };
+	const base = { Path: "C:\\Windows", Temp: "C:\\Users\\u\\AppData\\Local\\Temp", TMP: "C:\\Users\\u\\AppData\\Local\\Temp" };
+	const isolated = childEnvironment(base, "win32", globalBin, { privateHome: true });
+	const temps = (env: Record<string, string>) => Object.entries(env).filter(([key]) => /^(TEMP|TMP)$/i.test(key));
+	assert.deepEqual(temps(isolated), [["TEMP", `${W_PNPM_HOME}\\tmp`], ["TMP", `${W_PNPM_HOME}\\tmp`]], "one key each, any spelling replaced");
+	assert.deepEqual(temps(childEnvironment(base, "win32", globalBin)), [["Temp", base.Temp], ["TMP", base.TMP]], "unchanged outside private mode");
+	const posix = { PATH: "/usr/bin", TMPDIR: "/tmp/x" };
+	assert.deepEqual(childEnvironment(posix, "linux", { pnpmHome: PNPM_HOME, path: BIN, onPath: false }, { privateHome: true }),
+		{ ...posix, PNPM_HOME, PATH: `${BIN}:/usr/bin` }, "POSIX unchanged");
+	assert.equal(base.Temp, "C:\\Users\\u\\AppData\\Local\\Temp", "the caller's env is not modified");
+});

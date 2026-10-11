@@ -10,7 +10,9 @@
 // POSIX and Windows CI.
 
 import { spawn } from "node:child_process";
-import { readFileSync, realpathSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const DEFAULT_STAGES = Object.freeze([
@@ -20,14 +22,26 @@ export const DEFAULT_STAGES = Object.freeze([
 ]);
 
 export async function runStage(stage) {
-	return await new Promise((resolve) => {
-		const child = spawn(stage.command, { shell: true, stdio: "inherit" });
-		child.on("close", (code) => resolve({ name: stage.name, code: code ?? 1 }));
-		child.on("error", (error) => {
-			console.error(`\n[${stage.name}] spawn failed: ${error.message}`);
-			resolve({ name: stage.name, code: 1 });
+	// Unit fixtures must not inherit the terminal's Git overrides, child-session
+	// identity, or personal guardrails. Other stages retain their existing env.
+	const configHome = stage.name === "unit-tests" ? mkdtempSync(join(tmpdir(), "gentle-pi-unit-config-")) : undefined;
+	const env = configHome ? Object.fromEntries(Object.entries(process.env).filter(([key]) => {
+		const normalizedKey = key.toUpperCase();
+		return !normalizedKey.startsWith("GIT_") && !normalizedKey.startsWith("GENTLE_PI_AGENTS_") && normalizedKey !== "GENTLE_PI_CONFIG_HOME";
+	})) : process.env;
+	if (configHome) env.GENTLE_PI_CONFIG_HOME = configHome;
+	try {
+		return await new Promise((resolve) => {
+			const child = spawn(stage.command, { shell: true, stdio: "inherit", env });
+			child.on("close", (code) => resolve({ name: stage.name, code: code ?? 1 }));
+			child.on("error", (error) => {
+				console.error(`\n[${stage.name}] spawn failed: ${error.message}`);
+				resolve({ name: stage.name, code: 1 });
+			});
 		});
-	});
+	} finally {
+		if (configHome) rmSync(configHome, { recursive: true, force: true });
+	}
 }
 
 export async function runTestSuite(stages = DEFAULT_STAGES, { runStageImpl = runStage, write = (line) => console.log(line) } = {}) {

@@ -10,6 +10,7 @@ import {
 	closeSync,
 	constants as fsConstants,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	openSync,
@@ -55,14 +56,30 @@ import {
 	shellQuote,
 } from "../runtime/gentle-shell-launcher.mjs";
 import {
+	BUNDLED_VERIFY_ENV,
+	bundledChildEnv,
+	bundledPi,
+	bundledSetupEnv,
+	bundledUpdateNext,
+	bundledUpdateNotice,
+	bundledUpdatePlan,
+	nodeBundledFs,
+	parseBundledUpgradeArgs,
+	resolveBundledInstall,
+	withBundledNpmCommand,
+} from "../runtime/gentle-shell-bundled.mjs";
+import {
 	parseResumeHandoff,
 	planResumeHint,
 	RESUME_HANDOFF_DIR_PREFIX,
 	RESUME_HANDOFF_ENV,
 	RESUME_HANDOFF_FILE,
 } from "../runtime/gentle-shell-resume-hint.mjs";
-import { GENTLE_AI_VERSION, gentleAiBinaryPath, PackageLocalGentleAiBinaryMissingError } from "../runtime/gentle-ai-binary.mjs";
+import { bundledGentleAiPaths, GENTLE_AI_VERSION, gentleAiBinaryPath, gentleAiIsolationEnv, PackageLocalGentleAiBinaryMissingError } from "../runtime/gentle-ai-binary.mjs";
 import { DEFAULT_THEME_NAME, installIsolatedTuiModeSetting } from "../scripts/install-tui-mode-setting.mjs";
+import { shouldCheckStartupUpdate, findStartupUpdate } from "../runtime/gentle-shell-startup-update.mjs";
+import { promptStartupUpdate } from "../runtime/gentle-shell-update-panel.mjs";
+import { applyStartupChoice, omitStartupVersion, resolveStartupRelaunch } from "../runtime/gentle-shell-startup-flow.mjs";
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -126,6 +143,33 @@ function findOnPath(name) {
 function signalExitCode(signal) {
 	const number = osConstants.signals[signal];
 	return 128 + (typeof number === "number" ? number : 0);
+}
+
+// A bundled install (S8): this package inside <prefix>/versions/<id> that
+// `current` names (lib/gentle-shell-bundled.ts decides from these reads).
+const bundledFs = nodeBundledFs;
+
+// Set in a bundled install: the environment every child (Pi, setup, the version
+// probe) starts from instead of process.env (the user's own plus Gentle Shell's
+// variables), and the folders setup puts ahead of the user's PATH.
+let bundledEnv;
+let bundledSetupDirs;
+// The bundled install and its Pi cli, for bundledProcessEnv and setup's Engram.
+let bundledInstall;
+let bundledCli;
+
+// The bundled children's environment (bundledChildEnv), with the pinned Engram
+// only once it is published: computed again right before Pi starts, so an
+// Engram the automatic setup just published is used in the same launch.
+function bundledProcessEnv() {
+	const isolation = bundledGentleAiPaths(bundledInstall.root, process.platform);
+	let engram;
+	try {
+		if (lstatSync(isolation.engram).isFile()) engram = isolation.engram;
+	} catch {
+		engram = undefined;
+	}
+	return bundledChildEnv(process.env, { node: process.execPath, cli: bundledCli, prefix: bundledInstall.root, engram });
 }
 
 function ownPackageVersion() {
@@ -551,6 +595,12 @@ function ensurePackageLocalGentleAi(binaryPath, pinnedVersion, stdio) {
 // gentle-ai's (or pi's own) preflight finds `pi` even when it is bundled or
 // given through GENTLE_SHELL_PI.
 function buildSetupEnv(home, runtime) {
+	// Bundled: our node, then the version's `pi`, ahead of the user's PATH, and
+	// Gentle AI's state, persona and Engram inside the prefix (S9).
+	if (bundledEnv) {
+		const env = bundledSetupEnv({ ...bundledEnv, PI_CODING_AGENT_DIR: home.dir, GENTLE_PI_AGENT_HOME: home.dir }, { dirs: bundledSetupDirs, platform: process.platform });
+		return gentleAiIsolationEnv(env, { packageRoot });
+	}
 	return {
 		...process.env,
 		PI_CODING_AGENT_DIR: home.dir,
@@ -568,6 +618,29 @@ function buildSetupEnv(home, runtime) {
 // docs/readme-reference.md's setup "Known limitation".
 function sharedPersonaPath() {
 	return join(homedir(), ".pi", "gentle-ai", "persona.json");
+}
+
+// The persona files a setup run may rewrite. Bundled (S9): the prefix's own,
+// which a Gentle AI with GENTLE_AI_PI_CONFIG_DIR (gentle-ai #5462) writes, and
+// still the user's, which a pinned Gentle AI without it writes; restoring an
+// unchanged file does nothing.
+function setupPersonaPaths() {
+	if (!bundledInstall) return [sharedPersonaPath()];
+	return [join(bundledGentleAiPaths(bundledInstall.root, process.platform).piConfig, "persona.json"), sharedPersonaPath()];
+}
+
+// Bundled setup (S9): the pinned Engram GENTLE_AI_ENGRAM_BIN names, published
+// once in runtime/ (verified, never brew or the user's PATH). A failure stops
+// setup rather than let Gentle AI acquire another Engram.
+async function ensureBundledEngram() {
+	const { ensureEngram, prefixLayout } = await import("../scripts/bundled-install.mjs");
+	const layout = prefixLayout({ platform: process.platform, env: process.env, home: homedir(), root: bundledInstall.root });
+	try {
+		await ensureEngram({ layout, platform: process.platform, arch: process.arch, env: process.env });
+		return { ok: true };
+	} catch (error) {
+		return { ok: false, exitCode: 1, message: `gentle-shell: could not install the pinned Engram in ${layout.engramDir} (${error.message})` };
+	}
 }
 
 // Records `path`'s current state before a child process that might rewrite
@@ -818,10 +891,14 @@ async function runSetupFlow(home, runtime, { dryRun, stdio, timeoutMs }) {
 
 	process.stderr.write(`gentle-shell: provisioning ${home.dir} with the gentle-ai companion packages\n`);
 
+	if (bundledInstall && !dryRun) {
+		const engram = await ensureBundledEngram();
+		if (!engram.ok) return engram;
+	}
+
 	const setupArgs = ["install", "--agent", "pi", "--scope", "global", ...(dryRun ? ["--dry-run"] : [])];
 	const env = buildSetupEnv(home, runtime);
-	const personaPath = sharedPersonaPath();
-	const personaSnapshot = safely("snapshot your Pi persona file", personaPath, undefined, () => snapshotFile(personaPath));
+	const personaSnapshots = setupPersonaPaths().map((path) => [path, safely("snapshot your Pi persona file", path, undefined, () => snapshotFile(path))]);
 	const statePath = sharedGentleAiStatePath();
 	const originalStateText = safely("read your Gentle AI state file", statePath, undefined, () => readParsableJsonText(statePath));
 	// Theme restore (never for --link — that home is the user's own
@@ -838,8 +915,10 @@ async function runSetupFlow(home, runtime, { dryRun, stdio, timeoutMs }) {
 	try {
 		installResult = await spawnAndWait(binaryPath, setupArgs, env, stdio, timeoutMs);
 	} finally {
-		if (personaSnapshot !== undefined && safely("restore your Pi persona file", personaPath, false, () => restoreFile(personaSnapshot))) {
-			process.stderr.write(`gentle-shell: kept your Pi persona unchanged (gentle-ai rewrote ${personaPath}; tracked upstream)\n`);
+		for (const [personaPath, personaSnapshot] of personaSnapshots) {
+			if (personaSnapshot !== undefined && safely("restore your Pi persona file", personaPath, false, () => restoreFile(personaSnapshot))) {
+				process.stderr.write(`gentle-shell: kept your Pi persona unchanged (gentle-ai rewrote ${personaPath}; tracked upstream)\n`);
+			}
 		}
 		if (safely("restore your Gentle AI managed-asset record", statePath, false, () => restoreManagedAssetDigestField(statePath, originalStateText))) {
 			process.stderr.write(
@@ -861,7 +940,58 @@ async function runSetupFlow(home, runtime, { dryRun, stdio, timeoutMs }) {
 	}
 	if (!installResult.ok) return installResult;
 
-	return runPostInstallCleanup(home, runtime, dryRun, stdio, timeoutMs);
+	const cleanupResult = await runPostInstallCleanup(home, runtime, dryRun, stdio, timeoutMs);
+	if (cleanupResult.ok && !dryRun) warnDisabledMCP(home);
+	return cleanupResult;
+}
+
+function mcpAdapterActivity(packages) {
+	if (typeof packages === "string") return packages === "npm:pi-mcp-adapter" || packages.startsWith("npm:pi-mcp-adapter@") ? "active" : "inactive";
+	if (Array.isArray(packages)) {
+		const activities = packages.map(mcpAdapterActivity);
+		return activities.includes("active") ? "active" : activities.includes("unknown") ? "unknown" : "inactive";
+	}
+	if (packages === null || typeof packages !== "object") return "inactive";
+	if (typeof packages.source !== "string") return mcpAdapterActivity(Object.keys(packages));
+	if (mcpAdapterActivity(packages.source) === "inactive") return "inactive";
+	const patterns = packages.extensions;
+	if (patterns === undefined) return packages.autoload === false ? "inactive" : "active";
+	if (!Array.isArray(patterns)) return "unknown";
+	if (patterns.length === 0) return "inactive";
+	if (packages.autoload === false) {
+		return patterns.some(pattern => typeof pattern === "string" && !pattern.startsWith("!") && !pattern.startsWith("-")) ? "unknown" : "inactive";
+	}
+	// Ordinary exclusions run after includes, but exact +path entries can
+	// restore resources. Other filters need actual package files to resolve.
+	if (patterns.includes("!**") && !patterns.some(pattern => typeof pattern === "string" && pattern.startsWith("+"))) return "inactive";
+	return "unknown";
+}
+
+// Onboarding cannot prove who disabled MCP: diagnose, never re-enable servers.
+// This also covers automatic provisioning because both routes share setup.
+function warnDisabledMCP(home) {
+	const settingsPath = join(home.dir, "settings.json");
+	const mcpPath = join(home.dir, "mcp.json");
+	let inspecting = settingsPath;
+	try {
+		const settingsText = readJsonIfExists(settingsPath);
+		if (settingsText === undefined) return;
+		const settings = JSON.parse(settingsText);
+		if (!Array.isArray(settings?.extensions) || !settings.extensions.includes("-builtin:mcp")) return;
+		const activity = mcpAdapterActivity(settings.packages);
+		if (activity === "active") return;
+		inspecting = mcpPath;
+		const mcpText = readJsonIfExists(mcpPath);
+		if (mcpText === undefined) return;
+		const servers = JSON.parse(mcpText)?.mcpServers;
+		if (servers === null || typeof servers !== "object" || Array.isArray(servers) || Object.keys(servers).length === 0) return;
+		const diagnosis = activity === "unknown"
+			? `pi-mcp-adapter activity cannot be confirmed from its extension filters, so servers in ${mcpPath} may not load`
+			: `pi-mcp-adapter is absent or inactive, so servers in ${mcpPath} will not load`;
+		process.stderr.write(`gentle-shell: WARNING: Pi built-in MCP is disabled in ${settingsPath}; ${diagnosis}. If you want these servers enabled, remove -builtin:mcp from extensions in ${settingsPath}, then restart Pi. If MCP is intentionally disabled, keep the setting.\n`);
+	} catch (error) {
+		process.stderr.write(`gentle-shell: WARNING: Pi MCP configuration could not be inspected in ${inspecting}: ${error.message}; inspect or repair it manually.\n`);
+	}
 }
 
 // The stderr line printed once `source` is actually removed from `home`.
@@ -941,7 +1071,11 @@ async function removePostInstallSources(sources, index, home, runtime, stdio, ti
 // --dry-run, runs the shared flow with the child's stdio inherited (today's
 // behavior, unchanged), then exits with its result — this is the one place
 // that keeps the pre-S7 exit semantics `handleSetupCommand` always had.
-async function handleSetupCommand(commandArgs, home, runtime) {
+// A successful real run records the home exactly as auto-provisioning does
+// (#2106: both installers finish with this command, and the first launch
+// must not install the packages again), but only for a home auto-provisioning
+// itself would own: never pi's own default home or an unrelated directory.
+async function handleSetupCommand(commandArgs, home, runtime, { homeHadContentBeforeBootstrap }) {
 	let dryRun = false;
 	for (const arg of commandArgs) {
 		if (arg === "--dry-run") {
@@ -953,6 +1087,19 @@ async function handleSetupCommand(commandArgs, home, runtime) {
 
 	const result = await runSetupFlow(home, runtime, { dryRun, stdio: "inherit" });
 	if (!result.ok && result.message !== undefined) process.stderr.write(`${result.message}\n`);
+	if (result.ok && !dryRun && (home.mode === "isolated" || home.mode === "path")) {
+		const configPath = resolveConfigPath();
+		const homeKey = safeRealpath(home.dir);
+		const config = readRawConfig(configPath);
+		if (!homeIsForeign(home, provisionedEntry(config, homeKey), homeHadContentBeforeBootstrap)) {
+			try {
+				writeRawConfig(configPath, recordProvisioned(config, homeKey, resolveSetupGentleAiPin(), ownPackageVersion(), new Date().toISOString()));
+			} catch (error) {
+				// Setup itself succeeded; the next launch only sets the home up again.
+				process.stderr.write(`gentle-shell: could not record the setup in ${configPath} (${error.message})\n`);
+			}
+		}
+	}
 	process.exit(result.exitCode);
 }
 
@@ -1179,12 +1326,44 @@ async function maybeAutoProvisionHome(home, runtime, { homeHadContentBeforeBoots
 	}
 }
 
+// The adapters `upgrade` and `self-uninstall` run npm and pnpm with: { fs, which, run, invocation? }.
+async function packageManagerAdapters() {
+	const { hostAdapters } = await import("../scripts/installer-probes.mjs");
+	const { upgradeInvocation } = await import("../scripts/installer-runner.mjs");
+	const { run, fs: probeFs } = hostAdapters();
+	// Windows: npm and pnpm are .cmd shims; run what they run, never through cmd.exe.
+	const invocation = upgradeInvocation({ platform: process.platform, env: process.env, run, fs: probeFs });
+	return {
+		fs: await import("node:fs/promises"),
+		which: async (name) => findOnPath(name) ?? null,
+		...(invocation ? { invocation } : {}),
+		run: (command, argv, options = {}) => run(command, argv, { env: options.env ?? process.env, cwd: options.cwd, deadlineMs: options.deadlineMs ?? 20 * 60_000 }),
+	};
+}
+
 // `gentle-shell upgrade`: runs before any Pi runtime check, since it may replace this package.
+// On release, a global pnpm or npm install moves to the bundled one when the
+// latest release publishes its assets (S4), with one question about the old package.
 async function handleUpgradeCommand(commandArgs) {
 	const { MainChannelError, runUpgrade } = await import("../scripts/main-channel.mjs");
-	const { hostAdapters } = await import("../scripts/installer-probes.mjs");
-	const { run } = hostAdapters();
-	const which = async (name) => findOnPath(name) ?? null;
+	const { fetchDistribution, migrateGlobalShell, windowsPathRegistry } = await import("../scripts/bundled-wizard.mjs");
+	const { askLine } = await import("../runtime/gentle-shell-uninstall.mjs");
+	const managers = await packageManagerAdapters();
+	const out = (line) => process.stdout.write(`${line}\n`);
+	const migrate = ({ latest, owner }) => migrateGlobalShell({
+		latest,
+		currentVersion: ownPackageVersion(),
+		platform: process.platform,
+		arch: process.arch,
+		env: process.env,
+		home: homedir(),
+		interactive: process.stdin.isTTY === true && process.stdout.isTTY === true,
+		// End of input or Ctrl+C answers No.
+		ask: (question) => askLine(question, { input: process.stdin, output: process.stdout }).catch(() => ""),
+		out,
+		adapters: { owner, distribution: (version) => fetchDistribution({ version }), run: managers.run,
+			...(process.platform === "win32" ? { registry: windowsPathRegistry(process.env) } : {}) },
+	});
 	try {
 		process.exitCode = await runUpgrade({
 			args: commandArgs,
@@ -1192,13 +1371,8 @@ async function handleUpgradeCommand(commandArgs) {
 			platform: process.platform,
 			packageRoot,
 			currentVersion: ownPackageVersion(),
-			adapters: {
-				fetch: globalThis.fetch,
-				fs: await import("node:fs/promises"),
-				which,
-				run: (command, argv, options = {}) => run(command, argv, { env: options.env ?? process.env, cwd: options.cwd, deadlineMs: options.deadlineMs ?? 20 * 60_000 }),
-			},
-			out: (line) => process.stdout.write(`${line}\n`),
+			adapters: { fetch: globalThis.fetch, ...managers, migrate },
+			out,
 		});
 	} catch (error) {
 		if (error instanceof MainChannelError) fail(`gentle-shell upgrade: ${error.message}`, error.code === "upgrade-usage" ? 2 : 1);
@@ -1206,7 +1380,157 @@ async function handleUpgradeCommand(commandArgs) {
 	}
 }
 
+// `gentle-shell upgrade` in a bundled install: the latest release installed
+// beside the active version, verified, then `current` switched (two versions
+// kept), or `--rollback` to the kept one. Returns the exit code (a failure is
+// printed, not thrown, so `update --all` can go on); a failure leaves `current`
+// as it was.
+async function handleBundledUpgrade(bundled, commandArgs) {
+	const parsed = parseBundledUpgradeArgs(commandArgs);
+	if ("error" in parsed) fail(`gentle-shell upgrade: ${parsed.error}`, parsed.usage ? 2 : 1);
+	const { prefixLayout, rollbackBundled, upgradeBundled } = await import("../scripts/bundled-install.mjs");
+	const layout = prefixLayout({ platform: process.platform, env: process.env, home: homedir(), root: bundled.root });
+	const out = (line) => process.stdout.write(`${line}\n`);
+	try {
+		if (parsed.action === "rollback") {
+			const { from, to } = await rollbackBundled({ layout, home: homedir(), platform: process.platform, arch: process.arch, env: process.env });
+			out(`Switched Gentle Shell from ${from} to ${to}.`);
+			return 0;
+		}
+		const { fetchDistribution } = await import("../scripts/bundled-wizard.mjs");
+		const { latestRelease } = await import("../scripts/main-channel.mjs");
+		await upgradeBundled({
+			layout,
+			home: homedir(),
+			platform: process.platform,
+			arch: process.arch,
+			env: process.env,
+			adapters: { latest: () => latestRelease(globalThis.fetch), distribution: (version) => fetchDistribution({ version }) },
+			out,
+		});
+		return 0;
+	} catch (error) {
+		process.stderr.write(`gentle-shell upgrade: ${error.message}${error.stderr ? `\n${error.stderr}` : ""}\n`);
+		return 1;
+	}
+}
+
+// The bundled npm as the `npmCommand` of a home Gentle Shell owns (the isolated
+// home, or a --home it created or provisioned; never --link or a foreign home),
+// so Pi installs packages with our npm while its tools keep the user's PATH.
+// Only that key is written, and only when it differs.
+async function ensureBundledNpmCommand(bundled, home, homeHadContentBeforeBootstrap) {
+	if (home.mode === "link") return;
+	const previous = provisionedEntry(readRawConfig(resolveConfigPath()), safeRealpath(home.dir));
+	if (homeIsForeign(home, previous, homeHadContentBeforeBootstrap) || !isDirectory(home.dir)) return;
+	const { bundledNpmCommand, ensureNpmShim, prefixLayout } = await import("../scripts/bundled-install.mjs");
+	const layout = prefixLayout({ platform: process.platform, env: process.env, home: homedir(), root: bundled.root });
+	// The entry npmCommand names, also for a runtime installed before it existed.
+	ensureNpmShim(layout);
+	const settingsPath = join(home.dir, "settings.json");
+	const edit = withBundledNpmCommand(readJsonIfExists(settingsPath), bundledNpmCommand(layout));
+	if (edit.status === "malformed") {
+		process.stderr.write(`gentle-shell: ${settingsPath} is not a JSON object, so Pi's package installs use the npm on your PATH\n`);
+	} else if (edit.status === "write") {
+		writeFileAtomically(settingsPath, edit.text);
+	}
+}
+
+// `gentle-shell self-uninstall` in a bundled install (S6, S7): the prefix's own
+// folders and exactly the PATH entry its receipt records; on Windows the running
+// node.exe and launcher are removed by a detached process after this one exits.
+async function handleBundledSelfUninstall(bundled, commandArgs) {
+	const { askLine, runBundledSelfUninstall } = await import("../runtime/gentle-shell-uninstall.mjs");
+	const { describePathReceipt, prefixLayout, readPathReceipt, removePathEntry, scheduleWindowsRemoval } = await import("../scripts/bundled-install.mjs");
+	const windows = process.platform === "win32";
+	const layout = prefixLayout({ platform: process.platform, env: process.env, home: homedir(), root: bundled.root });
+	// Trusted only for the link or startup file the PATH plan can choose for this user.
+	const receipt = readPathReceipt(layout, { env: process.env, home: homedir() });
+	let pathEntry = receipt;
+	if (receipt.status === "recorded") {
+		const registry = windows ? (await import("../scripts/bundled-wizard.mjs")).windowsPathRegistry(process.env) : undefined;
+		pathEntry = { status: "recorded", description: describePathReceipt(receipt.receipt), remove: () => removePathEntry(receipt.receipt, { registry }) };
+	}
+	return runBundledSelfUninstall({
+		args: commandArgs,
+		env: process.env,
+		homedir: homedir(),
+		platform: process.platform,
+		interactive: process.stdin.isTTY === true,
+		root: bundled.root,
+		pathEntry,
+		process: { pid: process.pid, execPath: process.execPath },
+		...(windows ? { deferRemoval: (request) => scheduleWindowsRemoval({ ...request, env: process.env }) } : {}),
+		ask: (question) => askLine(question, { input: process.stdin, output: process.stdout }),
+		out: (line) => process.stdout.write(`${line}\n`),
+		err: (line) => process.stderr.write(`${line}\n`),
+	});
+}
+
+// `gentle-shell self-uninstall`: like upgrade, runs before any Pi runtime check,
+// so it also works when pi is missing.
+async function handleSelfUninstallCommand(commandArgs) {
+	const { askLine, runSelfUninstall } = await import("../runtime/gentle-shell-uninstall.mjs");
+	const { ownerManager } = await import("../scripts/main-channel.mjs");
+	const managers = await packageManagerAdapters();
+	const ctx = { env: process.env, home: homedir() };
+	process.exitCode = await runSelfUninstall({
+		args: commandArgs,
+		env: process.env,
+		homedir: homedir(),
+		platform: process.platform,
+		interactive: process.stdin.isTTY === true,
+		resolveOwner: () => ownerManager({ ctx, platform: process.platform, packageRoot, adapters: managers, command: "uninstall" }),
+		run: (command, argv) => managers.run(command, argv),
+		ask: (question) => askLine(question, { input: process.stdin, output: process.stdout }),
+		out: (line) => process.stdout.write(`${line}\n`),
+		err: (line) => process.stderr.write(`${line}\n`),
+	});
+}
+
+// Before Pi exists: only the bundled interactive opening may offer an update.
+async function startupUpdate(bundled, args, startupEnv) {
+	if (!shouldCheckStartupUpdate({ args, env: startupEnv, bundled: Boolean(bundled),
+		inputTTY: process.stdin.isTTY === true, outputTTY: process.stdout.isTTY === true })) return undefined;
+	const configPath = resolveConfigPath();
+	let skipped;
+	try { skipped = readRawConfig(configPath).skippedStartupRelease; } catch { /* A notice must not prevent opening. */ }
+	const { latestRelease } = await import("../scripts/main-channel.mjs");
+	const offer = await findStartupUpdate({ current: ownPackageVersion(), skipped,
+		lookup: (signal) => latestRelease((url, options) => fetch(url, { ...options, signal })) });
+	if (!offer) return undefined;
+	let choice;
+	try { choice = await promptStartupUpdate(offer, { color: process.stdout.hasColors?.() === true }); }
+	catch { return undefined; }
+	return applyStartupChoice(choice, {
+		omit: () => omitStartupVersion(() => readJsonIfExists(configPath), (text) => {
+			mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
+			writeFileAtomically(configPath, text, { mode: 0o600 });
+		}, offer.latest),
+		warn: (message) => process.stderr.write(`gentle-shell: ${message}\n`),
+		upgrade: () => handleBundledUpgrade(bundled, []),
+		relaunch: async () => {
+			const next = await resolveStartupRelaunch({ root: bundled.root, home: homedir(), platform: process.platform,
+				env: process.env, argv: process.argv.slice(2) });
+			return new Promise((resolve, reject) => {
+				const child = spawn(next.command, next.args, { stdio: "inherit", env: next.env, shell: false });
+				const forwards = ["SIGINT", "SIGTERM", "SIGHUP"].map((signal) => {
+					const handler = () => child.kill(signal);
+					process.on(signal, handler);
+					return [signal, handler];
+				});
+				const cleanup = () => { for (const [signal, handler] of forwards) process.off(signal, handler); };
+				child.once("error", (error) => { cleanup(); reject(error); });
+				child.once("exit", (code, signal) => { cleanup(); resolve(signal ? signalExitCode(signal) : (code ?? 1)); });
+			});
+		},
+	});
+}
+
 async function main() {
+	// One launch only: never leak the update handoff opt-out into Pi or its tools.
+	const startupEnv = { ...process.env };
+	delete process.env.GENTLE_SHELL_SKIP_STARTUP_UPDATE;
 	const args = parseLauncherArgs(process.argv.slice(2));
 	if (args.error !== undefined) fail(`${args.error}\nRun 'gentle-shell --help' for usage.`, 2);
 	if (args.help) {
@@ -1217,8 +1541,23 @@ async function main() {
 		handleHomeCommand(args.commandArgs);
 		return;
 	}
+	// The verification input applies to `--version` only (scripts/bundled-install.mjs upgradeBundled).
+	const verifying = args.version && args.command === undefined ? process.env[BUNDLED_VERIFY_ENV] : undefined;
+	const bundled = resolveBundledInstall({ packageRoot, platform: process.platform, fs: bundledFs, verifying });
 	if (args.command === "upgrade") {
-		await handleUpgradeCommand(args.commandArgs);
+		if (bundled) process.exitCode = await handleBundledUpgrade(bundled, args.commandArgs);
+		else await handleUpgradeCommand(args.commandArgs);
+		return;
+	}
+	if (args.command === "self-uninstall") {
+		if (bundled) process.exitCode = await handleBundledSelfUninstall(bundled, args.commandArgs);
+		else await handleSelfUninstallCommand(args.commandArgs);
+		return;
+	}
+
+	const startupCode = await startupUpdate(bundled, args, startupEnv);
+	if (startupCode !== undefined) {
+		process.exitCode = startupCode;
 		return;
 	}
 
@@ -1226,13 +1565,25 @@ async function main() {
 	let home = resolveHome({ args, env: process.env, homedir: homedir(), config });
 	if (home.mode === "path") home = { ...home, dir: resolvePath(home.dir) };
 
-	const runtime = resolvePiRuntime({
-		env: process.env,
-		resolveBundledCli,
-		findOnPath,
-		nodeExecPath: process.execPath,
-	});
-	if (runtime === undefined) fail(missingPiMessage(), 1);
+	let runtime;
+	if (bundled) {
+		// S8: only the version's own Pi, never GENTLE_SHELL_PI, an adjacent fallback or PATH.
+		const pi = bundledPi(bundled, { platform: process.platform, fs: bundledFs });
+		if (!pi.ok) fail(pi.message, 1);
+		runtime = { kind: "bundled", command: process.execPath, args: [pi.cli] };
+		bundledInstall = bundled;
+		bundledCli = pi.cli;
+		bundledEnv = bundledProcessEnv();
+		bundledSetupDirs = [dirname(process.execPath), join(bundled.versionDir, "node_modules", ".bin")];
+	} else {
+		runtime = resolvePiRuntime({
+			env: process.env,
+			resolveBundledCli,
+			findOnPath,
+			nodeExecPath: process.execPath,
+		});
+		if (runtime === undefined) fail(missingPiMessage(), 1);
+	}
 
 	const versionProbePlan = planSpawn({ command: runtime.command, args: [...runtime.args, "--version"], platform: process.platform });
 	const versionProbe = spawnSync(versionProbePlan.command, versionProbePlan.args, {
@@ -1240,6 +1591,7 @@ async function main() {
 		timeout: 15000,
 		encoding: "utf8",
 		shell: versionProbePlan.shell,
+		env: bundledEnv ?? process.env,
 	});
 	if (versionProbe.error) fail(`Could not run the pi runtime at "${runtime.command}": ${versionProbe.error.message}`, 1);
 	const versionCheck = checkPiVersion(versionProbe.stdout ?? "");
@@ -1248,6 +1600,23 @@ async function main() {
 	if (args.version) {
 		process.stdout.write(`${describeVersion({ gentlePiVersion: ownPackageVersion(), piVersion: versionCheck.version, home })}\n`);
 		process.exit(0);
+	}
+
+	// S5: in a bundled install Pi updates only with Gentle Shell, so Pi's own
+	// update becomes `gentle-shell upgrade` (run when interactive, named
+	// otherwise); package updates still reach Pi.
+	let passthrough = args.passthrough;
+	if (bundled && args.piSubcommand === "update") {
+		const plan = bundledUpdatePlan(args.passthrough);
+		if (plan.self) {
+			const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
+			for (const line of bundledUpdateNotice({ piVersion: versionCheck.version, interactive })) process.stdout.write(`${line}\n`);
+			const code = interactive ? await handleBundledUpgrade(bundled, []) : undefined;
+			const next = bundledUpdateNext(plan, code);
+			if ("exitCode" in next) process.exit(next.exitCode);
+			if (next.note) process.stderr.write(`${next.note}\n`);
+		}
+		passthrough = plan.piArgs;
 	}
 
 	// Home-ownership signal for auto-provisioning (S9, homeIsForeign): must be
@@ -1267,14 +1636,24 @@ async function main() {
 	// Isolated-home bootstrap: only on a home gentle-shell has not seen before
 	// (link never bootstraps — it reuses the user's own pi agent home as-is).
 	if ((home.mode === "isolated" || home.mode === "path") && !existsSync(home.dir)) {
-		mkdirSync(home.dir, { recursive: true });
+		// 0700: under umask 002 a default mode would leave ~/.gentle-shell group-writable,
+		// which the bundled install's prefix claim must tighten or refuse.
+		mkdirSync(home.dir, { recursive: true, mode: 0o700 });
 		await installIsolatedTuiModeSetting(home.dir);
 		writeHomeOwnershipMarker(home); // R3-001: lets a failed first auto-provision attempt still be retried later
 		process.stderr.write(`gentle-shell: using a separate home at ${home.dir}. Run 'gentle-shell --link' to reuse your pi sign-ins and chats.\n`);
 	}
 
+	if (bundled) {
+		try {
+			await ensureBundledNpmCommand(bundled, home, homeHadContentBeforeBootstrap);
+		} catch (error) {
+			process.stderr.write(`gentle-shell: could not give Pi the bundled npm in ${join(home.dir, "settings.json")} (${error.message}); continuing\n`);
+		}
+	}
+
 	if (args.command === "setup") {
-		await handleSetupCommand(args.commandArgs, home, runtime);
+		await handleSetupCommand(args.commandArgs, home, runtime, { homeHadContentBeforeBootstrap });
 		return;
 	}
 
@@ -1402,6 +1781,7 @@ async function main() {
 		}
 	}
 
+	if (bundled) bundledEnv = bundledProcessEnv();
 	const invocation = buildPiInvocation({
 		runtime,
 		home,
@@ -1410,9 +1790,9 @@ async function main() {
 		takeOver,
 		otherPackagePaths,
 		looseExtensionEntries,
-		passthrough: [...managedHerdrExtensionArgs(home, args), ...args.passthrough],
+		passthrough: [...managedHerdrExtensionArgs(home, args), ...passthrough],
 		piSubcommand: args.piSubcommand,
-		baseEnv: process.env,
+		baseEnv: bundledEnv ?? process.env,
 		homedir: homedir(),
 		// The spawn below sets no cwd, so pi runs in the launcher's own.
 		cwd: process.cwd(),

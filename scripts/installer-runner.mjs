@@ -17,7 +17,7 @@ import { windowsShim } from "./installer-windows.mjs";
 // installed the pinned stack but stopped in setup, a fixed recovery re-verifies
 // that stack and reruns only `gentle-shell setup` (and `pnpm setup`), never `add -g`.
 // An older Pi that pnpm or npm owns is first updated with that package manager.
-// When a build needs Go and the user's is missing or older, the installer's pinned
+// When a build needs Go and the user's is missing, older or unchecked, the installer's pinned
 // Go is acquired first and given only to the build children, first on PATH.
 
 /** Pi version installed next to gentle-pi (optional peer, resolved in one add). */
@@ -33,6 +33,7 @@ export const blockedReasons = Object.freeze([
 	"go-required",
 	"unsupported-plan",
 	"pnpm-home-unknown",
+	"pnpm-home-changed",
 	"node-unavailable",
 	"pnpm-unavailable",
 	"npm-unavailable",
@@ -44,6 +45,7 @@ export const blockedReasons = Object.freeze([
 ]);
 /** Every `failedStep` a `failed` outcome can carry (for host guidance; no behavior). */
 export const failedSteps = Object.freeze([
+	"prepare-pnpm-home",
 	"persist-node",
 	"persist-package-managers",
 	"persist-npm",
@@ -113,15 +115,17 @@ const updateActions = ["update-shell-release", "update-shell-main"];
 const piOnlyVariants = Object.freeze([["update-pi", "verify-readiness"], ["install-pi", "verify-readiness"]]);
 // The main channel overlay: all three after a release installation, or none.
 const mainActions = ["build-gentle-ai-main", "install-shell-main", "record-channel"];
-// The pinned Go: both, only when preflight recorded a missing or older Go, or none.
+// The pinned Go: both, only when preflight recorded a missing, older or unchecked Go, or none.
 const goActions = ["acquire-go", "verify-go"];
 // Setup recovery: the pinned stack this pnpm installed is present (planPreflight
 // saw a recoverable setup), so only setup and the optional PATH step remain.
 const recoveryActions = ["setup-shell", "verify-readiness"];
 // Runtime persistence is one of these exact sets planPreflight emits, or nothing:
-// bootstrap-only Node, or a persistent Node missing npm and/or pnpm (one add -g).
+// bootstrap-only Node (with pnpm, or only npm next to a persistent pnpm), or a
+// persistent Node missing npm and/or pnpm (one add -g).
 const persistenceVariants = Object.freeze([
 	["persist-node", "persist-package-managers", "configure-npm-prefix"],
+	["persist-node", "persist-npm", "configure-npm-prefix"],
 	["persist-package-managers"],
 	["persist-npm"],
 	["persist-pnpm"],
@@ -216,12 +220,25 @@ function envValue(env, name, platform) {
 	return key === undefined ? undefined : env[key];
 }
 
-/** Child env: the user's env plus PNPM_HOME and `$PNPM_HOME/bin` first on PATH. */
-export function childEnvironment(env, platform, globalBin) {
+/** Child env: the user's env plus PNPM_HOME and `$PNPM_HOME/bin` first on PATH.
+ * With a private Windows PNPM_HOME (S6), pnpm's config, cache and state move into
+ * it too, unless the user set those folders: pnpm otherwise keeps them under
+ * %LOCALAPPDATA%, which another principal may write, and trusts its cached registry
+ * metadata for exact versions. TEMP and TMP always move to its `tmp` folder
+ * (created by prepare-pnpm-home), so a postinstall's os.tmpdir(), such as the
+ * Gentle AI source build, stays private. Only these children get them; nothing
+ * persists them.
+ */
+export function childEnvironment(env, platform, globalBin, { privateHome = false } = {}) {
 	const path = platform === "win32" ? win32 : posix;
 	const key = pathKeyOf(env, platform);
 	const rest = String(env[key] ?? "").split(path.delimiter).filter((entry) => entry.length > 0);
-	return { ...env, PNPM_HOME: globalBin.pnpmHome, [key]: [globalBin.path, ...rest].join(path.delimiter) };
+	const isolate = platform === "win32" && privateHome;
+	const xdg = isolate ? Object.fromEntries([["XDG_CONFIG_HOME", ".config"], ["XDG_CACHE_HOME", ".cache"], ["XDG_STATE_HOME", ".state"]]
+		.filter(([name]) => envValue(env, name, platform) === undefined).map(([name, folder]) => [name, win32.join(globalBin.pnpmHome, folder)])) : {};
+	const temp = isolate ? win32.join(globalBin.pnpmHome, "tmp") : null;
+	const kept = isolate ? Object.fromEntries(Object.entries(env).filter(([name]) => !/^(?:TEMP|TMP)$/i.test(name))) : env;
+	return { ...kept, PNPM_HOME: globalBin.pnpmHome, ...xdg, ...(temp ? { TEMP: temp, TMP: temp } : {}), [key]: [globalBin.path, ...rest].join(path.delimiter) };
 }
 
 /** A build child's env: `env` with the pinned Go's bin directory first on PATH. */
@@ -260,18 +277,27 @@ export async function pnpmInvocation(env, platform, fs) {
 	return null;
 }
 
+/** Windows PATHEXT extensions in order: lowercased, dot-prefixed, default .com/.exe/.bat/.cmd. */
+function pathExtensions(env) {
+	return String(envValue(env, "PATHEXT", "win32") || ".com;.exe;.bat;.cmd").toLowerCase().split(";")
+		.filter((extension) => extension.length > 0).map((extension) => extension.startsWith(".") ? extension : `.${extension}`);
+}
+
+/** A path on a local drive (`C:\...`). UNC, `\\?\`, `\\.\` and drive-less rooted
+ * paths are not: even looking one up can reach a remote share. */
+const LOCAL_DRIVE = /^[A-Za-z]:\\/;
+
 /** First `name` the way Go's exec.LookPath (used by Gentle AI) finds it: each
  * absolute PATH directory in order and, on Windows, every PATHEXT extension in
- * PATHEXT order (lowercased, dot-prefixed, default .com/.exe/.bat/.cmd).
+ * PATHEXT order (lowercased, dot-prefixed, default .com/.exe/.bat/.cmd). On
+ * Windows only local drive directories are searched; any other one is skipped,
+ * like a relative one, and never touched.
  */
 export async function lookPath(name, env, platform, fs) {
 	const path = platform === "win32" ? win32 : posix;
-	const extensions = platform === "win32"
-		? String(envValue(env, "PATHEXT", platform) || ".com;.exe;.bat;.cmd").toLowerCase().split(";")
-			.filter((extension) => extension.length > 0).map((extension) => extension.startsWith(".") ? extension : `.${extension}`)
-		: [""];
+	const extensions = platform === "win32" ? pathExtensions(env) : [""];
 	for (const directory of String(env[pathKeyOf(env, platform)] ?? "").split(path.delimiter)) {
-		if (!path.isAbsolute(directory)) continue;
+		if (!path.isAbsolute(directory) || (platform === "win32" && !LOCAL_DRIVE.test(directory))) continue;
 		for (const extension of extensions) {
 			const candidate = path.join(directory, `${name}${extension}`);
 			if (await fs.isFile(candidate)) return candidate;
@@ -288,13 +314,18 @@ export function spawnable(file, platform) {
 /** How a Windows command runs with shell:false, never through cmd.exe: an .exe
  * as it is, or what a known shim (windowsShim) runs, its native target or its
  * JS entry with the Node it selects (an absolute node.exe it names, its sibling
- * node.exe, else the first node on PATH, which must be an .exe). npm's own
+ * node.exe, else the first node on PATH, which must be an .exe). A native target
+ * without an extension resolves like CMD resolves it, through PATHEXT in order,
+ * and runs only when that first match is an .exe. A `pnpm.cmd` runs only pnpm's
+ * own `node_modules\pnpm\bin\pnpm.[cm]js` entry (never Corepack's). npm's own
  * npm.cmd keeps its redirect: it asks npm for the global prefix (from the drive
  * root, like any probe) and runs the npm-cli.js installed there, when there is
- * one. Returns { command, prefix } or null when the command is anything else.
+ * one. The command, the Node and npm's prefix must be local drive paths.
+ * Returns { command, prefix } or null when the command is anything else.
  */
 export async function windowsInvocation(file, env, adapters) {
 	const { fs } = adapters;
+	if (!LOCAL_DRIVE.test(file)) return null;
 	const extension = win32.extname(file).toLowerCase();
 	if (extension === ".exe") return (await fs.isFile(file)) ? { command: file, prefix: [] } : null;
 	if (extension !== ".cmd") return null;
@@ -302,16 +333,23 @@ export async function windowsInvocation(file, env, adapters) {
 	if (!shim) return null;
 	const directory = win32.dirname(file);
 	if (shim.exe !== undefined) {
-		// @pnpm/exe hard-links its binary under both names; the shim may name either.
 		let exe = win32.resolve(directory, shim.exe);
-		if (win32.extname(exe) === "" && (await fs.isFile(`${exe}.exe`))) exe = `${exe}.exe`;
+		// @pnpm/exe hard-links its binary under both names; the shim may name either.
+		if (win32.extname(exe) === "") {
+			let first = null;
+			for (const candidate of pathExtensions(env)) if (first === null && (await fs.isFile(`${exe}${candidate}`))) first = `${exe}${candidate}`;
+			if (first === null) return null;
+			exe = first;
+		}
 		return win32.extname(exe).toLowerCase() === ".exe" && (await fs.isFile(exe)) ? { command: exe, prefix: [] } : null;
 	}
 	const sibling = win32.join(directory, "node.exe");
 	const node = shim.node ?? ((await fs.isFile(sibling)) ? sibling : await lookPath("node", env, "win32", fs));
-	if (!node || !spawnable(node, "win32") || !(await fs.isFile(node))) return null;
+	if (!node || !LOCAL_DRIVE.test(node) || !spawnable(node, "win32") || !(await fs.isFile(node))) return null;
 	const npmCli = (root) => win32.join(root, "node_modules", "npm", "bin", "npm-cli.js");
 	let entry = shim.npm ? npmCli(directory) : win32.resolve(directory, shim.entry);
+	const pnpmEntry = (path) => entryShape(path, win32, "pnpm", "pnpm.cjs") || entryShape(path, win32, "pnpm", "pnpm.mjs");
+	if (win32.basename(file).toLowerCase() === "pnpm.cmd" && (shim.npm || !pnpmEntry(entry))) return null;
 	if (shim.npm) {
 		const query = shim.npm === "prefix-js" ? [win32.join(directory, "node_modules", "npm", "bin", "npm-prefix.js")] : [entry, "prefix", "-g"];
 		// Without npm-prefix.js, npm.cmd's FOR /F reads no line and keeps the bundled npm.
@@ -319,7 +357,7 @@ export async function windowsInvocation(file, env, adapters) {
 			const result = await adapters.run(node, query, { env, cwd: win32.parse(node).root, deadlineMs: deadlines.probe });
 			const prefix = succeeded(result) && result.truncated !== true
 				? String(result.stdout ?? "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1) : undefined;
-			if (prefix && win32.isAbsolute(prefix) && (await fs.isFile(npmCli(prefix)))) entry = npmCli(prefix);
+			if (prefix && LOCAL_DRIVE.test(prefix) && (await fs.isFile(npmCli(prefix)))) entry = npmCli(prefix);
 		}
 	}
 	return (await fs.isFile(entry)) ? { command: node, prefix: [entry] } : null;
@@ -332,6 +370,23 @@ export async function npmInvocation(env, platform, adapters) {
 	const npm = await lookPath("npm", env, platform, adapters.fs);
 	if (!npm) return null;
 	return platform === "win32" ? windowsInvocation(npm, env, adapters).catch(() => null) : { command: npm, prefix: [] };
+}
+
+/** runUpgrade's `invocation` adapter on Windows: npm through npmInvocation, any
+ * other command (pnpm) through windowsInvocation of the first one on PATH, or,
+ * with `handoff` (the wizard), pnpm from the bootstrap handoff (pnpmInvocation).
+ * Never a .cmd with shell:false. Undefined on POSIX, where the command `which`
+ * finds runs as it is.
+ */
+export function upgradeInvocation({ platform, env, run, fs, handoff = false }) {
+	if (platform !== "win32") return undefined;
+	const adapters = { run, fs };
+	return async (name) => {
+		if (name === "npm") return npmInvocation(env, platform, adapters);
+		if (name === "pnpm" && handoff) return pnpmInvocation(env, platform, fs);
+		const file = await lookPath(name, env, platform, fs);
+		return file ? windowsInvocation(file, env, adapters).catch(() => null) : null;
+	};
 }
 
 /** `.../node_modules/<name>/bin/<file>`: a package's own bin entry. */
@@ -500,6 +555,37 @@ function notListed(stdout, name) {
 		.some((field) => plainObject(project[field]) && Object.hasOwn(project[field], name))) ? "existing-stack" : true;
 }
 
+/** The version of the Pi the launcher runs from gentle-pi at `root`: Node's
+ * resolution from gentle-pi, nested in its node_modules first, then beside it
+ * (where pnpm 11 links its peer). Null when neither is a readable Pi package.
+ */
+export async function adjacentPiVersion(root, platform, fs) {
+	const path = platform === "win32" ? win32 : posix;
+	const nested = path.join(root, "node_modules", PI_PACKAGE, "package.json");
+	const beside = path.join(path.dirname(root), PI_PACKAGE, "package.json");
+	for (const file of [nested, beside]) {
+		const text = await fs.readText(file).catch(() => null);
+		if (text === null) continue;
+		try {
+			const manifest = JSON.parse(text);
+			return manifest?.name === PI_PACKAGE && typeof manifest.version === "string" ? manifest.version : null;
+		} catch {
+			return null;
+		}
+	}
+	return null;
+}
+
+/** That Pi's version when Gentle Shell can run it: a stable version at
+ * requirements.pi or newer. pnpm 11 installs gentle-pi's optional peer Pi in
+ * gentle-pi's own global group, at its latest version, so it may be newer than
+ * PI_INSTALL_VERSION. Null otherwise (missing, unreadable, prerelease or older).
+ */
+async function runnablePi(root, platform, fs) {
+	const version = await adjacentPiVersion(root, platform, fs);
+	return stable(version) !== null && atLeast(version, requirements.pi) ? version : null;
+}
+
 /** Pre-install `list -g --json`: true when neither package is listed in any
  * project, "existing-stack" when one is, false when the shape is unknown.
  */
@@ -509,8 +595,10 @@ function noExistingStack(stdout) {
 	return listed === 0 ? true : "existing-stack";
 }
 
-/** Installed gentle-pi root from `list -g --json`, confined under PNPM_HOME.
- * Exactly one listed project may own gentle-pi, and Pi must resolve beside it;
+/** Installed gentle-pi root from `list -g --json`, confined under PNPM_HOME, with
+ * the version of the Pi the launcher runs from it ({ root, pi }), or null.
+ * Exactly one listed project may own gentle-pi and list Pi at the pin (unless
+ * only Gentle Shell was added), and that runnable Pi (runnablePi) must exist;
  * other projects (such as the persisted npm and pnpm) are ignored.
  */
 async function verifiedPackageRoot(stdout, pnpmHome, platform, fs, shellVersion = requirements.shell, requirePi = true) {
@@ -525,7 +613,9 @@ async function verifiedPackageRoot(stdout, pnpmHome, platform, fs, shellVersion 
 	if ((requirePi && pi?.version !== PI_INSTALL_VERSION) || shell?.version !== shellVersion) return null;
 	if (typeof shell.path !== "string" || !path.isAbsolute(shell.path)) return null;
 	const [root, home] = [await fs.realpath(shell.path), await fs.realpath(pnpmHome)];
-	return contains(home, root, platform) ? root : null;
+	if (!contains(home, root, platform)) return null;
+	const runs = await runnablePi(root, platform, fs);
+	return runs === null ? null : { root, pi: runs };
 }
 
 /** A stack this pnpm installed whose setup may only be rerun (setup recovery):
@@ -534,7 +624,7 @@ async function verifiedPackageRoot(stdout, pnpmHome, platform, fs, shellVersion 
  * package version, realpath confined under PNPM_HOME). Returns the root or null.
  */
 export async function recoverableStackRoot(stdout, pnpmHome, platform, fs) {
-	return stackListings(stdout) === 2 ? verifiedPackageRoot(stdout, pnpmHome, platform, fs) : null;
+	return stackListings(stdout) === 2 ? (await verifiedPackageRoot(stdout, pnpmHome, platform, fs))?.root ?? null : null;
 }
 
 /** After persistence, node and npm must resolve from `$PNPM_HOME/bin` in the
@@ -641,14 +731,18 @@ export function setupErrorDetail(text, home, platform) {
  * sanitized line (setupErrorDetail) of the failed command's output or of the main
  * channel's error, and a failed `acquire-go` the Go folder in its way, with the home
  * as ~; no other output is kept. When the plan persists the Node runtime, successful
- * outcomes also report npmPrefix: "configured" or "unchanged". Adapters: platform, nodePath, env (user env), home?,
+ * outcomes also report npmPrefix: "configured" or "unchanged". When the Pi beside a pnpm
+ * gentle-pi (the one Gentle Shell runs) is not PI_INSTALL_VERSION, they also report its
+ * piVersion (pnpm 11 may install a newer peer Pi, at least requirements.pi). Adapters: platform, nodePath, env (user env), home?,
  * run(command, argv, { env, deadlineMs, stderrTail? }) with shell:false semantics returning
  * { code, signal, timedOut, stdout, stderrTail? }, fs { isFile, realpath, readText },
  * verifyGentleAi({ packageRoot, platform, env, home }) and log({ step, status }).
  * An update plan also uses locateShell() and upgradeShell({ channel, packageRoot,
  * currentVersion, goPath? }); a plan that updates an older Pi uses locatePi(), which returns
  * the single installed Pi as { root, version, owner } or null. A plan that acquires
- * Go uses acquireGo(), which returns the published pinned Go as { goPath }.
+ * Go uses acquireGo(), which returns the published pinned Go as { goPath }. A plan
+ * with a private Windows PNPM_HOME (tools.pnpmHome, S6) uses preparePnpmHome(home)
+ * before any command, then persists it with `pnpm setup`.
  * Nothing is ever deleted; no provisioning marker is written. A setup-recovery
  * plan replaces check-existing-stack with check-recoverable-stack and skips
  * install-global; every later step and outcome rule is the same.
@@ -668,8 +762,11 @@ export async function runStandardInstall(request, adapters) {
 	const path = platform === "win32" ? win32 : posix;
 	const globalBin = pnpmGlobalBin({ platform, env });
 	if (!globalBin) return blocked("pnpm-home-unknown");
+	// A private Windows PNPM_HOME (S6): exactly the folder preflight recorded.
+	const privateHome = platform === "win32" && request.plan.tools.pnpmHome?.status === "private";
+	if (privateHome && !samePath(String(request.plan.tools.pnpmHome.path ?? ""), globalBin.pnpmHome, platform)) return blocked("pnpm-home-changed");
 	if (!path.isAbsolute(adapters.nodePath ?? "")) return blocked("node-unavailable");
-	const child = childEnvironment(env, platform, globalBin);
+	const child = childEnvironment(env, platform, globalBin, { privateHome });
 	const pnpm = await pnpmInvocation(env, platform, adapters.fs).catch(() => null);
 	if (!pnpm) return blocked("pnpm-unavailable");
 	const runPnpm = (args, deadlineMs, environment = child, options = {}) => adapters.run(pnpm.command, [...pnpm.prefix, ...args], { env: environment, deadlineMs, ...options });
@@ -785,6 +882,17 @@ export async function runStandardInstall(request, adapters) {
 			return succeeded(result) && notListed(String(result.stdout ?? ""), PI_PACKAGE);
 		}]] : []),
 	];
+	// The private PNPM_HOME is claimed (or the one this flow created is kept) before
+	// any pnpm command could create it with inherited permissions.
+	if (privateHome) {
+		const claimed = await Promise.resolve().then(() => adapters.preparePnpmHome(globalBin.pnpmHome)).then(() => true, () => false);
+		if (!claimed) {
+			log({ step: "prepare-pnpm-home", status: "failed" });
+			return { outcome: "failed", failedStep: "prepare-pnpm-home", completed };
+		}
+		completed.push("prepare-pnpm-home");
+		log({ step: "prepare-pnpm-home", status: "done" });
+	}
 	for (const [step, reason, check] of checks) {
 		const verdict = await check().catch(() => false);
 		if (verdict !== true) return blocked(typeof verdict === "string" ? verdict : reason);
@@ -794,23 +902,26 @@ export async function runStandardInstall(request, adapters) {
 
 	// Mutating and post-install steps: a false result or exception is a failure.
 	let packageRoot = null;
+	// The Pi the launcher runs beside a pnpm gentle-pi, once verified.
+	let runsPi = null;
 	let persistentNode = null;
 	let npmPrefix = null;
+	// One add of only the missing managers (fixed versions only: never a blanket build approval).
+	const addOnly = ids.find((id) => ["persist-package-managers", "persist-npm", "persist-pnpm"].includes(id));
+	const addManagers = [addOnly, async () => succeeded(await runPnpm(["add", "-g", ...(addNpm ? [`npm@${persistencePins.npm}`] : []),
+		...(addPnpm ? [`pnpm@${persistencePins.pnpm}`] : [])], deadlines.install))];
 	const persistence = [
 		["persist-node", async () => succeeded(await runPnpm(["runtime", "set", "node", persistencePins.node, "-g"], deadlines.install))],
-		// Fixed versions only: never a blanket build approval.
-		["persist-package-managers", async () => succeeded(await runPnpm(["add", "-g", `npm@${persistencePins.npm}`,
-			`pnpm@${persistencePins.pnpm}`], deadlines.install))],
+		// npm, plus pnpm unless a persistent pnpm (never downgraded) is already there.
+		addManagers,
 		["verify-persistent-runtime", async () => (persistentNode = await persistentRuntime(child, platform, globalBin, adapters)) !== null],
 		["check-npm", async () => (await npmCheck()) === true],
 		["configure-npm-prefix", async () => (npmPrefix = await configureNpmPrefix({ node: persistentNode, cli: npmCli, child,
 			platform, globalBin, adapters, storePath: () => runPnpm(["store", "path"], deadlines.probe) })) !== null],
 	];
 	// A persistent Node is never replaced: one add of only the missing managers.
-	const addOnly = ids.find((id) => ["persist-package-managers", "persist-npm", "persist-pnpm"].includes(id));
 	const packageManagers = [
-		[addOnly, async () => succeeded(await runPnpm(["add", "-g", ...(addNpm ? [`npm@${persistencePins.npm}`] : []),
-			...(addPnpm ? [`pnpm@${persistencePins.pnpm}`] : [])], deadlines.install))],
+		addManagers,
 		...(addNpm ? [["check-npm", async () => (await npmCheck()) === true]] : []),
 		...(addPnpm ? [["verify-persistent-pnpm", () => persistentPnpm(child, platform, adapters.nodePath, globalBin, adapters)]] : []),
 	];
@@ -859,6 +970,8 @@ export async function runStandardInstall(request, adapters) {
 			return succeeded(result) && new RegExp(`^go version go${escapeRegExp(goAcquisition.version)} \\S+$`).test(String(result.stdout ?? "").trim());
 		}],
 	] : [];
+	// Pi and gentle-pi stay separate pnpm groups, so `pi update` (which replaces Pi's
+	// own group) never removes gentle-pi; gentle-pi gets pnpm's peer Pi beside it.
 	const install = ["install-global", () => addGlobal([...(shellOnly ? [] : [`${PI_PACKAGE}@${PI_INSTALL_VERSION}`]),
 		`${SHELL_PACKAGE}@${requirements.shell}`, `--allow-build=${SHELL_PACKAGE}`], buildEnv())];
 	function mainSteps() {
@@ -882,10 +995,10 @@ export async function runStandardInstall(request, adapters) {
 				if (!(await addGlobal([tgz, `--allow-build=${SHELL_PACKAGE}`], buildEnv()))) return false;
 				const result = await list();
 				if (!succeeded(result)) return false;
-				const root = await verifiedPackageRoot(String(result.stdout ?? ""), globalBin.pnpmHome, platform, adapters.fs,
+				const verified = await verifiedPackageRoot(String(result.stdout ?? ""), globalBin.pnpmHome, platform, adapters.fs,
 					mainVersion(requirements.shell, shellCommit), !shellOnly);
-				if (root === null) return false;
-				packageRoot = root;
+				if (verified === null) return false;
+				({ root: packageRoot, pi: runsPi } = verified);
 				return true;
 			})],
 			["record-channel", async () => {
@@ -903,8 +1016,10 @@ export async function runStandardInstall(request, adapters) {
 		["verify-global-list", async () => {
 			const result = await list();
 			if (!succeeded(result)) return false;
-			packageRoot = await verifiedPackageRoot(String(result.stdout ?? ""), globalBin.pnpmHome, platform, adapters.fs, requirements.shell, !shellOnly);
-			return packageRoot !== null;
+			const verified = await verifiedPackageRoot(String(result.stdout ?? ""), globalBin.pnpmHome, platform, adapters.fs, requirements.shell, !shellOnly);
+			if (verified === null) return false;
+			({ root: packageRoot, pi: runsPi } = verified);
+			return true;
 		}],
 		["verify-shell-bin", () => adapters.fs.isFile(path.join(globalBin.path, platform === "win32" ? "gentle-shell.cmd" : "gentle-shell"))],
 		["verify-gentle-ai", async () => (await adapters.verifyGentleAi({ packageRoot, platform, env, home }))?.ok === true],
@@ -938,6 +1053,8 @@ export async function runStandardInstall(request, adapters) {
 				const expected = channel === "main" ? MAIN_VERSION.test(version)
 					: stable(version) !== null && (stable(installed.version) === null || atLeast(version, installed.version));
 				if (!expected || after.owner !== installed.owner || !path.isAbsolute(after.root)) return false;
+				// pnpm gives the updated gentle-pi its peer Pi beside it: the one Gentle Shell runs.
+				if (after.owner === "pnpm" && (runsPi = await runnablePi(after.root, platform, adapters.fs)) === null) return false;
 				packageRoot = after.root;
 				return true;
 			}],
@@ -947,7 +1064,8 @@ export async function runStandardInstall(request, adapters) {
 	// A child PATH never proves a fresh terminal; persist it with pnpm's own setup.
 	// globalBin.onPath was computed from the user's own PATH, not the child env.
 	// pnpm setup installs @pnpm/exe over the network, so it gets the setup deadline.
-	// An update keeps the PATH its existing installation already uses.
+	// An update keeps the PATH its existing installation already uses, except in a
+	// new private PNPM_HOME, which pnpm setup must persist for new terminals.
 	if (piOnly) {
 		// The installer's Pi alone: the same `add -g` as install-pi, then found in pnpm's list.
 		steps.splice(0, steps.length, ...(updatingPi ? piSteps : [
@@ -959,7 +1077,7 @@ export async function runStandardInstall(request, adapters) {
 			}],
 		]));
 	}
-	const persistPath = !globalBin.onPath && !update && !piOnly;
+	const persistPath = !globalBin.onPath && (privateHome || (!update && !piOnly));
 	if (persistPath) {
 		steps.push(["persist-path", async () => {
 			const result = await adapters.run(pnpm.command, [...pnpm.prefix, "setup"], { env: child, deadlineMs: deadlines.setup, stderrTail: 4096 });
@@ -977,7 +1095,8 @@ export async function runStandardInstall(request, adapters) {
 		completed.push(step);
 		log({ step, status: "done" });
 	}
-	const prefix = persistRuntime ? { npmPrefix } : {};
+	// Reported only when Gentle Shell runs a Pi other than the installer's.
+	const prefix = { ...(persistRuntime ? { npmPrefix } : {}), ...(runsPi !== null && runsPi !== PI_INSTALL_VERSION ? { piVersion: runsPi } : {}) };
 	if (persistPath) return { outcome: "terminal-action-required", action: "open-new-terminal", completed, ...prefix };
 	return { outcome: "ready", completed, ...prefix };
 }

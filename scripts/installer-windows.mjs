@@ -1,4 +1,4 @@
-import { lstatSync, readFileSync, realpathSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, realpathSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { dirname, extname, join, parse, resolve, win32 } from "node:path";
 import { spawnSync } from "node:child_process";
 import { gunzipSync } from "node:zlib";
@@ -136,45 +136,316 @@ export function windowsAclRuleUnsafe({ rights, depth, allow = true, inheritOnly 
 // makes Windows PowerShell 5.1 fail to autoload Microsoft.PowerShell.Security.
 // An intentional rejection prints one fixed `unsafe:<role>-<check>` code (the role
 // of the component, never its path); any other exception still exits nonzero.
+// A walk rejection appends `|` and the base64 of the UTF-8 text
+// `<component>|<SID>|<account>|<rights>` (fields after the path may be empty):
+// the folder, the principal and the rights that failed, for user-facing guidance.
 const aclCheck = String.raw`
 $ErrorActionPreference = 'Stop';
+$detail = '';
 try {
   if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'policy' };
   $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value;
   $trusted = @($me, 'S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464');
+  $account = { param($sid) try { $sid.Translate([Security.Principal.NTAccount]).Value } catch { '' } };
   $path = [IO.Path]::GetFullPath($env:GENTLE_WINDOWS_CHECK);
   $depth = 0;
   while ($path) {
     $role = 'ancestor'; if ($depth -eq 0) { $role = 'target' } elseif ($depth -eq 1) { $role = 'parent' };
     $item = Get-Item -LiteralPath $path -Force;
-    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw ($role + '-reparse') };
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { $detail = $path + '|||'; throw ($role + '-reparse') };
     if ($item.PSIsContainer) { $acl = [IO.Directory]::GetAccessControl($path) } else { $acl = [IO.File]::GetAccessControl($path) };
-    if ($trusted -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value) { throw ($role + '-owner') };
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]);
+    if ($trusted -notcontains $owner.Value) { $detail = $path + '|' + $owner.Value + '|' + (& $account $owner) + '|'; throw ($role + '-owner') };
     $allowedRights = 0x1200a9; if ($depth -ge 2) { $allowedRights = 0x1200ad };
     foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
-      if ($rule.AccessControlType -eq 'Allow' -and -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and ([long]$rule.FileSystemRights -band (-bnot [long]$allowedRights)) -and $trusted -notcontains $rule.IdentityReference.Value) { throw ($role + '-acl-mask') };
+      if ($rule.AccessControlType -eq 'Allow' -and -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and ([long]$rule.FileSystemRights -band (-bnot [long]$allowedRights)) -and $trusted -notcontains $rule.IdentityReference.Value) {
+        $detail = $path + '|' + $rule.IdentityReference.Value + '|' + (& $account $rule.IdentityReference) + '|0x' + ([int]$rule.FileSystemRights).ToString('X8'); throw ($role + '-acl-mask') };
     };
     $parent = [IO.Directory]::GetParent($path);
     if ($null -eq $parent) { break }; $path = $parent.FullName; $depth++;
   };
   'safe'
-} catch { if ($_.Exception.Message -cmatch '^(policy|(target|parent|ancestor)-(reparse|owner|acl-mask))$') { 'unsafe:' + $_.Exception.Message } else { throw } }
+} catch { if ($_.Exception.Message -cmatch '^(policy|(target|parent|ancestor)-(reparse|owner|acl-mask))$') { 'unsafe:' + $_.Exception.Message + $(if ($detail) { '|' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($detail)) } else { '' }) } else { throw } }
+`;
+// S6 notice: the same walk over many paths in one launch, for the plan's notice
+// about reused tools in folders another account can change. The paths travel as
+// one environment value joined by `|`, which no Windows path holds. One line per
+// path, in order: `safe`, a walk rejection exactly as above, or `unknown` for any
+// other error on that path (such as an owner that denies READ_CONTROL). A policy
+// denial prints only `unsafe:policy`.
+const aclCheckMany = String.raw`
+$ErrorActionPreference = 'Stop';
+if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { 'unsafe:policy'; exit 0 };
+$me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value;
+$trusted = @($me, 'S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464');
+$account = { param($sid) try { $sid.Translate([Security.Principal.NTAccount]).Value } catch { '' } };
+foreach ($start in $env:GENTLE_WINDOWS_CHECKS.Split('|')) {
+  $detail = '';
+  try {
+    $path = [IO.Path]::GetFullPath($start);
+    $depth = 0;
+    while ($path) {
+      $role = 'ancestor'; if ($depth -eq 0) { $role = 'target' } elseif ($depth -eq 1) { $role = 'parent' };
+      $item = Get-Item -LiteralPath $path -Force;
+      if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { $detail = $path + '|||'; throw ($role + '-reparse') };
+      if ($item.PSIsContainer) { $acl = [IO.Directory]::GetAccessControl($path) } else { $acl = [IO.File]::GetAccessControl($path) };
+      $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]);
+      if ($trusted -notcontains $owner.Value) { $detail = $path + '|' + $owner.Value + '|' + (& $account $owner) + '|'; throw ($role + '-owner') };
+      $allowedRights = 0x1200a9; if ($depth -ge 2) { $allowedRights = 0x1200ad };
+      foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+        if ($rule.AccessControlType -eq 'Allow' -and -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and ([long]$rule.FileSystemRights -band (-bnot [long]$allowedRights)) -and $trusted -notcontains $rule.IdentityReference.Value) {
+          $detail = $path + '|' + $rule.IdentityReference.Value + '|' + (& $account $rule.IdentityReference) + '|0x' + ([int]$rule.FileSystemRights).ToString('X8'); throw ($role + '-acl-mask') };
+      };
+      $parent = [IO.Directory]::GetParent($path);
+      if ($null -eq $parent) { break }; $path = $parent.FullName; $depth++;
+    };
+    'safe'
+  } catch { if ($_.Exception.Message -cmatch '^(target|parent|ancestor)-(reparse|owner|acl-mask)$') { 'unsafe:' + $_.Exception.Message + $(if ($detail) { '|' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($detail)) } else { '' }) } else { 'unknown' } }
+};
 `;
 const storageChecks = /^(?:policy|(?:target|parent|ancestor)-(?:reparse|owner|acl-mask))$/;
-/** Only exact `safe` passes. A fixed rejection code is kept as `check`; any other
+const untrustedStorage = /^(?:target|parent|ancestor)-(?:reparse|owner|acl-mask)$/;
+const storageOutput = /^unsafe:([a-z-]+)(?:\|([A-Za-z0-9+/]+={0,2}))?$/;
+/** The decoded walk detail, or null when it is not exactly that shape. */
+function storageDetail(encoded) {
+	const text = Buffer.from(encoded, "base64").toString("utf8");
+	if (Buffer.from(text, "utf8").toString("base64") !== encoded || /[\x00-\x1f\x7f]/.test(text)) return null;
+	const [path, sid, account, rights, ...rest] = text.split("|");
+	if (rest.length > 0 || rights === undefined || !win32.isAbsolute(path) || (sid !== "" && !/^S-1-\d+(?:-\d+)*$/.test(sid)) ||
+		(rights !== "" && !/^0x[0-9A-F]{8}$/.test(rights))) return null;
+	return { at: path, ...(sid ? { sid } : {}), ...(account ? { account } : {}), ...(rights ? { rights } : {}) };
+}
+/** Only exact `safe` passes. A fixed rejection code is kept as `check`, and a
+ * well-formed walk detail as `detail` ({ at, sid?, account?, rights? }); any other
  * output is rejected without carrying its text.
  */
 export function windowsStorageEvidence(output) {
 	if (output === "safe") return;
-	const check = typeof output === "string" && output.startsWith("unsafe:") ? output.slice(7) : "";
-	throw Object.assign(new Error("Windows ACL evidence rejected"), storageChecks.test(check) ? { check } : {});
+	const match = typeof output === "string" ? storageOutput.exec(output) : null;
+	const detail = match?.[2] === undefined ? undefined : storageDetail(match[2]);
+	const known = match !== null && storageChecks.test(match[1]) && detail !== null && (detail === undefined || untrustedStorage.test(match[1]));
+	throw Object.assign(new Error("Windows ACL evidence rejected"), known ? { check: match[1], ...(detail ? { detail } : {}) } : {});
+}
+function windowsPowerShell(env, script, data, processAdapter) {
+	// Windows process.env is case-insensitive, but a copied environment is not.
+	const systemRoot = env.SystemRoot ?? Object.entries(env).find(([key]) => key.toLowerCase() === "systemroot")?.[1];
+	return processAdapter(join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], { ...env, ...data });
 }
 export function verifyWindowsStorage(path, env, processAdapter = windowsProcessCheck) {
 	if (process.platform !== "win32") throw new Error("Native Windows storage verification unavailable");
 	if (!win32.isAbsolute(path) || path.startsWith("\\\\")) throw new Error("Unsafe Windows storage path");
-	// Windows process.env is case-insensitive, but a copied environment is not.
-	const systemRoot = env.SystemRoot ?? Object.entries(env).find(([key]) => key.toLowerCase() === "systemroot")?.[1];
-	windowsStorageEvidence(processAdapter(join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", aclCheck], { ...env, GENTLE_WINDOWS_CHECK: path }));
+	windowsStorageEvidence(windowsPowerShell(env, aclCheck, { GENTLE_WINDOWS_CHECK: path }, processAdapter));
+}
+
+/** Walks every path (local drive paths, never holding `|`) in one Windows
+ * PowerShell launch (aclCheckMany). Returns one entry per path, in order: null
+ * when it passes, { check: "unchecked", at } when its walk failed for another
+ * reason (it could not be checked), else what failed,
+ * { check, at?, sid?, account?, rights? }. A policy denial, a result count that
+ * does not match, or any other line rejects the whole result; nothing to walk
+ * launches nothing.
+ */
+export function verifyWindowsStorageMany(paths, env, { processAdapter = windowsProcessCheck, platform = process.platform } = {}) {
+	if (platform !== "win32") throw new Error("Native Windows storage verification unavailable");
+	if (paths.some((path) => typeof path !== "string" || !/^[A-Za-z]:\\/.test(path) || /[|\x00-\x1f]/.test(path))) throw new Error("Unsafe Windows storage path");
+	if (paths.length === 0) return [];
+	const rejected = () => new Error("Windows ACL evidence rejected");
+	const lines = windowsPowerShell(env, aclCheckMany, { GENTLE_WINDOWS_CHECKS: paths.join("|") }, processAdapter).split(/\r?\n/);
+	if (lines.length !== paths.length) throw rejected();
+	return lines.map((line, index) => {
+		if (line === "safe") return null;
+		if (line === "unknown") return { check: "unchecked", at: paths[index] };
+		const match = storageOutput.exec(line);
+		const detail = match?.[2] === undefined ? undefined : storageDetail(match[2]);
+		if (!match || !untrustedStorage.test(match[1]) || detail === null) throw rejected();
+		return { check: match[1], ...(detail ?? {}) };
+	});
+}
+
+// S6: the wizard's PNPM_HOME on Windows. pnpm runs and persists binaries there,
+// so it gets the same walk as the bootstrap's tools directory before consent.
+export const privatePnpmHome = Object.freeze({ directory: ".pnpm", marker: ".gentle-shell-pnpm-home", text: "gentle-pi private pnpm home", temp: "tmp" });
+const hostHomeFs = Object.freeze({
+	/** "missing", "directory" or "file" (neither a link), or "other". */
+	kind(path) {
+		let info;
+		try { info = lstatSync(path); }
+		catch (error) { if (error.code === "ENOENT" || error.code === "ENOTDIR") return "missing"; throw error; }
+		if (info.isSymbolicLink()) return "other";
+		return info.isDirectory() ? "directory" : info.isFile() ? "file" : "other";
+	},
+	entries: (path) => readdirSync(path),
+	readText: (path) => readFileSync(path, "utf8"),
+});
+function windowsEnv(env, name) {
+	const key = Object.keys(env).find((candidate) => candidate.toUpperCase() === name);
+	return key === undefined ? undefined : env[key];
+}
+
+/** Which PNPM_HOME the wizard may use, decided before any probe runs:
+ * - a PNPM_HOME the user set, or pnpm's default `%LOCALAPPDATA%\pnpm`, that passes
+ *   the walk: { available: true, path, source: "user" | "default" };
+ * - a default that fails it while holding nothing (absent or an empty directory):
+ *   the private `%USERPROFILE%\.pnpm`, which must pass the walk too and be absent,
+ *   empty or marked as created by this flow:
+ *   { available: true, path, source: "private", rejected: { path, check, at, sid?, account?, rights? } };
+ * - otherwise a blocker: { available: true, path, source, untrusted, installed?, private? }.
+ * The walk covers the folder (or its nearest existing ancestor when it is absent)
+ * and its `bin` when present. Null when PNPM_HOME is unknowable, as for
+ * pnpmGlobalBin. Policy denials and unexpected errors throw.
+ */
+export function windowsPnpmHome({ env, storage = verifyWindowsStorage, fs = hostHomeFs }) {
+	const absolute = (value) => typeof value === "string" && win32.isAbsolute(value) && !value.startsWith("\\\\");
+	const normal = (value) => win32.normalize(value).replace(/(.)[\\/]+$/, "$1");
+	const walk = (home) => {
+		let target = home;
+		while (fs.kind(target) === "missing") {
+			const parent = win32.dirname(target);
+			if (parent === target) throw new Error("Unknown Windows PNPM_HOME");
+			target = parent;
+		}
+		const bin = win32.join(home, "bin");
+		for (const path of target === home && fs.kind(bin) === "directory" ? [home, bin] : [target]) {
+			try {
+				storage(path, env);
+			} catch (error) {
+				if (!untrustedStorage.test(error?.check ?? "")) throw error;
+				return { check: error.check, at: path, ...(error.detail ?? {}) };
+			}
+		}
+		return null;
+	};
+	// "absent", "empty", "marked" (this flow created it) or "used" (anything else).
+	const contents = (home) => {
+		const kind = fs.kind(home);
+		if (kind === "missing") return "absent";
+		if (kind !== "directory") return "used";
+		if (fs.entries(home).length === 0) return "empty";
+		const marker = win32.join(home, privatePnpmHome.marker);
+		return fs.kind(marker) === "file" && fs.readText(marker) === privatePnpmHome.text ? "marked" : "used";
+	};
+	const set = windowsEnv(env, "PNPM_HOME");
+	if (set !== undefined) {
+		if (!absolute(set)) return null;
+		const path = normal(set);
+		const untrusted = walk(path);
+		return { available: true, path, source: "user", ...(untrusted ? { untrusted } : {}) };
+	}
+	const local = windowsEnv(env, "LOCALAPPDATA");
+	if (!absolute(local)) return null;
+	const path = normal(win32.join(local, "pnpm"));
+	const untrusted = walk(path);
+	if (!untrusted) return { available: true, path, source: "default" };
+	const blocked = { available: true, path, source: "default", untrusted };
+	// Never moved, deleted or adopted: anything already there is an installation.
+	if (!["absent", "empty"].includes(contents(path))) return { ...blocked, installed: true };
+	const profile = windowsEnv(env, "USERPROFILE");
+	if (!absolute(profile)) return blocked;
+	const own = normal(win32.join(profile, privatePnpmHome.directory));
+	if (contents(own) === "used") return { ...blocked, private: { path: own, foreign: true } };
+	const ownUntrusted = walk(own);
+	if (ownUntrusted) return { ...blocked, private: { path: own, untrusted: ownUntrusted } };
+	return { available: true, path: own, source: "private", rejected: { path, ...untrusted } };
+}
+
+/** The wizard's environment and PNPM_HOME decision (windowsPnpmHome): a private
+ * PNPM_HOME is set for this process's children only (childEnvironment adds pnpm's
+ * own folders there). A walk that cannot finish is { available: null, failed: true }:
+ * preflight then blocks.
+ */
+export function windowsWizardEnvironment({ env, ...adapters }) {
+	let pnpmHome;
+	try {
+		pnpmHome = windowsPnpmHome({ env, ...adapters });
+	} catch {
+		return { env, pnpmHome: { available: null, failed: true } };
+	}
+	if (pnpmHome?.source !== "private") return { env, pnpmHome };
+	return { env: { ...env, PNPM_HOME: pnpmHome.path }, pnpmHome };
+}
+
+// The private PNPM_HOME, after consent: created, or an empty one adopted, with the
+// bootstrap claim's protected DACL (owner and FullControl for the invoking SID,
+// SYSTEM and Administrators only), read back, then marked. A marked one is kept
+// as it is. Anything else is `foreign` and never changed. Either way its `tmp`
+// folder (the children's TEMP/TMP) is created inside it, inheriting that DACL.
+const pnpmHomeClaim = String.raw`
+$ErrorActionPreference = 'Stop';
+$target = $null; $created = $false;
+try {
+  if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'policy' };
+  $me = [Security.Principal.WindowsIdentity]::GetCurrent().User;
+  $target = [IO.Path]::GetFullPath($env:GENTLE_WINDOWS_PNPM_HOME); if ($target.StartsWith('\')) { throw 'foreign' };
+  $marker = Join-Path $target '.gentle-shell-pnpm-home'; $result = 'claimed';
+  if (Test-Path -LiteralPath $target) {
+    $item = Get-Item -LiteralPath $target -Force; if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'foreign' };
+    if (@(Get-ChildItem -LiteralPath $target -Force).Count -ne 0) {
+      if (-not (Test-Path -LiteralPath $marker)) { throw 'foreign' };
+      $file = Get-Item -LiteralPath $marker -Force;
+      if ($file.PSIsContainer -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -or (Get-Content -LiteralPath $marker -Raw) -ne 'gentle-pi private pnpm home') { throw 'foreign' };
+      $result = 'kept';
+    };
+  } else { $null = New-Item -ItemType Directory -Path $target; $created = $true };
+  if ($result -eq 'claimed') {
+    $acl = New-Object Security.AccessControl.DirectorySecurity; $acl.SetOwner($me); $acl.SetAccessRuleProtection($true,$false);
+    foreach ($sid in @($me.Value,'S-1-5-18','S-1-5-32-544')) {
+      $identity = New-Object Security.Principal.SecurityIdentifier($sid);
+      $rule = New-Object Security.AccessControl.FileSystemAccessRule($identity,'FullControl','ContainerInherit,ObjectInherit','None','Allow'); $acl.AddAccessRule($rule);
+    }; [IO.Directory]::SetAccessControl($target,$acl);
+    $verified = [IO.Directory]::GetAccessControl($target); if (-not $verified.AreAccessRulesProtected) { throw 'protected-dacl' };
+    if ($verified.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $me.Value) { throw 'private-owner' };
+    foreach ($rule in $verified.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) { if ($rule.AccessControlType -ne 'Allow' -or @($me.Value,'S-1-5-18','S-1-5-32-544') -notcontains $rule.IdentityReference.Value) { throw 'private-ace' } };
+    $null = New-Item -ItemType File -Path $marker -Value 'gentle-pi private pnpm home';
+  };
+  $temp = Join-Path $target 'tmp';
+  if (Test-Path -LiteralPath $temp) { $folder = Get-Item -LiteralPath $temp -Force; if (-not $folder.PSIsContainer -or ($folder.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'foreign' } } else { $null = New-Item -ItemType Directory -Path $temp };
+  $result
+} catch {
+  if ($created) { Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue };
+  if ($_.Exception.Message -cmatch '^(policy|foreign|protected-dacl|private-owner|private-ace)$') { 'unsafe:' + $_.Exception.Message } else { throw }
+}
+`;
+/** Claims the private PNPM_HOME (pnpmHomeClaim), then walks it and its `tmp`
+ * folder like any storage. Returns "claimed" or "kept"; anything else throws.
+ */
+export function ensureWindowsPnpmHome(home, env, { processAdapter = windowsProcessCheck, storage = verifyWindowsStorage, platform = process.platform } = {}) {
+	if (platform !== "win32") throw new Error("Native Windows storage verification unavailable");
+	if (!win32.isAbsolute(home) || home.startsWith("\\\\")) throw new Error("Unsafe Windows storage path");
+	const output = windowsPowerShell(env, pnpmHomeClaim, { GENTLE_WINDOWS_PNPM_HOME: home }, processAdapter);
+	if (output !== "claimed" && output !== "kept") {
+		const check = /^unsafe:(policy|foreign|protected-dacl|private-owner|private-ace)$/.exec(output)?.[1];
+		throw Object.assign(new Error("Windows PNPM_HOME claim rejected"), check ? { check } : {});
+	}
+	storage(home, env);
+	storage(win32.join(home, privatePnpmHome.temp), env);
+	return output;
+}
+
+// The same claim for another private folder (the bundled install's prefix): only
+// the folder, its marker file and the marker text differ, and they travel as
+// environment data like every other path.
+const privateFolderClaim = [["$env:GENTLE_WINDOWS_PNPM_HOME", "$env:GENTLE_WINDOWS_PRIVATE_FOLDER"],
+	["'.gentle-shell-pnpm-home'", "$env:GENTLE_WINDOWS_PRIVATE_MARKER"], ["'gentle-pi private pnpm home'", "$env:GENTLE_WINDOWS_PRIVATE_TEXT"]]
+	.reduce((script, [from, to]) => {
+		if (!script.includes(from)) throw new Error("Windows private folder claim template changed");
+		return script.replaceAll(from, to);
+	}, pnpmHomeClaim);
+/** ensureWindowsPnpmHome for another private folder, marked with `marker`
+ * (a `.name` file) holding `text`. Returns "claimed" or "kept"; anything else,
+ * including a non-empty unmarked folder, throws.
+ */
+export function ensureWindowsPrivateFolder(folder, env, { marker, text, processAdapter = windowsProcessCheck, storage = verifyWindowsStorage, platform = process.platform }) {
+	if (platform !== "win32") throw new Error("Native Windows storage verification unavailable");
+	if (!win32.isAbsolute(folder) || folder.startsWith("\\\\")) throw new Error("Unsafe Windows storage path");
+	if (!/^\.[a-z][a-z-]*$/.test(marker) || !/^[a-z][a-z -]*$/.test(text)) throw new Error("Unsafe Windows private folder marker");
+	const output = windowsPowerShell(env, privateFolderClaim, { GENTLE_WINDOWS_PRIVATE_FOLDER: folder, GENTLE_WINDOWS_PRIVATE_MARKER: marker, GENTLE_WINDOWS_PRIVATE_TEXT: text }, processAdapter);
+	if (output !== "claimed" && output !== "kept") {
+		const check = /^unsafe:(policy|foreign|protected-dacl|private-owner|private-ace)$/.exec(output)?.[1];
+		throw Object.assign(new Error("Windows private folder claim rejected"), check ? { check } : {});
+	}
+	storage(folder, env);
+	storage(win32.join(folder, privatePnpmHome.temp), env);
+	return output;
 }
 
 /** Strict bounded tar reader: no system tar, archive links or archive execution.
@@ -225,13 +496,10 @@ export function readWindowsPnpmArchive(bytes) {
 	return entries;
 }
 
-function findWindowsCommand(env, name = "pnpm") {
-	// Alternate CMD cwd-search policy is not silently flattened into our model.
-	if (Object.keys(env).some((key) => key.toLowerCase() === "nodefaultcurrentdirectoryinexepath")) throw new Error("Unknown Windows cwd-search semantics");
-	const value = (name) => Object.entries(env).find(([key]) => key.toLowerCase() === name)?.[1];
-	const path = value("path");
-	const pathExt = value("pathext");
-	if (typeof path !== "string" || typeof pathExt !== "string") throw new Error("Unknown Windows PATH/PATHEXT");
+/** The inherited PATHEXT, validated and lowercased, in order. */
+function pathExtensions(env) {
+	const pathExt = Object.entries(env).find(([key]) => key.toLowerCase() === "pathext")?.[1];
+	if (typeof pathExt !== "string") throw new Error("Unknown Windows PATH/PATHEXT");
 	// Validate before lowercasing: case folding can map non-ASCII (U+212A KELVIN SIGN)
 	// onto ASCII and make a different name look like a known extension.
 	const entries = pathExt.split(";");
@@ -242,6 +510,14 @@ function findWindowsCommand(env, name = "pnpm") {
 	// runtimes add their own. Resolved is not accepted: a .cpl, .py (or any
 	// non-.cmd wrapper / non-.exe Node) found first still fails closed below.
 	if (!extensions.length || new Set(extensions).size !== extensions.length || extensions.some((extension) => !/^\.[a-z0-9]+$/.test(extension))) throw new Error("Unknown Windows PATHEXT semantics");
+	return extensions;
+}
+function findWindowsCommand(env, name = "pnpm") {
+	// Alternate CMD cwd-search policy is not silently flattened into our model.
+	if (Object.keys(env).some((key) => key.toLowerCase() === "nodefaultcurrentdirectoryinexepath")) throw new Error("Unknown Windows cwd-search semantics");
+	const path = Object.entries(env).find(([key]) => key.toLowerCase() === "path")?.[1];
+	if (typeof path !== "string") throw new Error("Unknown Windows PATH/PATHEXT");
+	const extensions = pathExtensions(env);
 	// CMD ignores empty entries (a trailing `;` is the Windows default); every
 	// other non-absolute, quoted or UNC entry still fails closed.
 	for (const directory of [process.cwd(), ...path.split(";").filter((entry) => entry !== "")]) {
@@ -259,6 +535,10 @@ function findWindowsCommand(env, name = "pnpm") {
 	return null;
 }
 const STABLE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+// Not pnpm: Corepack's pnpm.js behind npm's or pnpm's cmd-shim, and mise's file-mode
+// shim (`mise x -- pnpm %*`, or the older `mise x -- %*`; github.com/jdx/mise src/shims.rs).
+const corepackEntry = /(?:^|\\)node_modules\\corepack\\dist\\pnpm\.js$/i;
+const miseFileShim = /^@echo off(\r?\n)setlocal\1mise x -- (?:pnpm )?%\*\1$/;
 function proveGlobal(command, prefix, env, processAdapter) {
 	for (const capability of ["add", "bin"]) {
 		if (!/(?:^|[\s,])--global(?:[\s,=]|$)/.test(processAdapter(command, [...prefix, "help", capability], env))) throw new Error("Windows pnpm global capability rejected");
@@ -279,22 +559,36 @@ function proveCli(node, entry, metadata, env, processAdapter) {
  * The pnpm found is a known shim (windowsShim) of pnpm's own JS entry, run by
  * the Node that shim selects, or a native pnpm.exe (pnpm's installer and
  * `pnpm setup`, @pnpm/exe, pnpm 12, a Volta or mise shim), directly or as a
- * shim's target; a package.json beside that exe must report its version.
+ * shim's target (an extensionless target resolves through PATHEXT, and only an
+ * .exe first match counts); the package.json beside that exe must name pnpm and
+ * its version must be what the exe reports.
  * One whose stable version is of another major or older than the pin is left as
- * it is: the verified pnpm is acquired instead. Unknown evidence still refuses.
+ * it is: the verified pnpm is acquired instead. So is one whose wrapper, Node,
+ * entry, metadata or exe fails the reparse/owner/ACL walk (a %LOCALAPPDATA%
+ * another principal may write): it never runs, like an untrusted user Node in
+ * bootstrap.cmd. A pnpm.exe without pnpm's package.json beside it (a standalone
+ * or Volta/mise shim exe), Corepack's pnpm.cmd and mise's file shim are not
+ * proven pnpm and count as no pnpm at all: never run, the verified pnpm is
+ * acquired. Policy denials and unknown evidence still refuse.
  */
 export async function ensureWindowsPnpm({ tools, env, node = process.execPath, adapters = {}, onStep = () => {} }) {
 	const processAdapter = adapters.process ?? windowsProcessCheck;
 	const storage = adapters.storage ?? verifyWindowsStorage;
 	onStep("pnpm-discovery");
 	const existing = (adapters.findCommand ?? findWindowsCommand)(env);
-	if (existing) {
+	// Thrown only to fall through to acquisition; never escapes.
+	const notPnpm = new Error("Not a proven pnpm");
+	// Only storage checks carry a role code (and notPnpm); everything else keeps stopping.
+	if (existing) try {
 		onStep("wrapper-storage");
 		storage(existing, env);
 		onStep("wrapper");
 		const extension = extname(existing).toLowerCase();
 		if (![".cmd", ".exe"].includes(extension) || !regular(existing)) throw new Error("Unknown pnpm wrapper; refusing replacement");
-		const shim = extension === ".exe" ? { exe: parse(existing).base } : windowsShim(readFileSync(existing, "utf8"));
+		const text = extension === ".cmd" ? readFileSync(existing, "utf8") : null;
+		if (text !== null && miseFileShim.test(text)) throw notPnpm;
+		const shim = extension === ".exe" ? { exe: parse(existing).base } : windowsShim(text);
+		if (shim?.entry !== undefined && corepackEntry.test(shim.entry)) throw notPnpm;
 		const directory = dirname(existing);
 		const target = (path) => (win32.isAbsolute(path) ? path : join(directory, ...path.split("\\")));
 		const entry = shim?.entry === undefined ? null : target(shim.entry);
@@ -326,28 +620,29 @@ export async function ensureWindowsPnpm({ tools, env, node = process.execPath, a
 			}
 		} else {
 			// @pnpm/exe hard-links its binary under both names; the shim may name either.
+			// CMD resolves an extensionless target through PATHEXT, in order.
 			let exe = target(shim.exe);
-			if (extname(exe) === "" && regular(`${exe}.exe`)) exe = `${exe}.exe`;
+			if (extname(exe) === "") exe = pathExtensions(env).map((candidate) => `${exe}${candidate}`).find(exists) ?? exe;
 			const metadataPath = join(dirname(exe), "package.json");
 			onStep("exe-storage");
 			storage(exe, env);
 			if (!/\.exe$/i.test(exe) || !regular(exe)) throw new Error("Unsafe pnpm wrapper target");
-			let shipped = null;
-			if (exists(metadataPath)) {
-				storage(metadataPath, env);
-				if (!regular(metadataPath)) throw new Error("Unsafe pnpm wrapper target");
-				const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
-				if (metadata.name === "pnpm" || /^@pnpm\//.test(metadata.name ?? "")) shipped = metadata.version;
-			}
-			// A standalone pnpm embeds its own Node runtime: only what it reports counts.
+			if (!exists(metadataPath)) throw notPnpm;
+			storage(metadataPath, env);
+			if (!regular(metadataPath)) throw new Error("Unsafe pnpm wrapper target");
+			const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
+			if (metadata.name !== "pnpm" && !/^@pnpm\//.test(metadata.name ?? "")) throw notPnpm;
+			// A standalone pnpm embeds its own Node runtime: it must report its package's version.
 			onStep("exe-proof");
 			const version = processAdapter(exe, ["--version"], env);
-			if (!STABLE.test(version) || (shipped !== null && version !== shipped)) throw new Error("Windows pnpm version rejected");
+			if (!STABLE.test(version) || version !== metadata.version) throw new Error("Windows pnpm version rejected");
 			if (pinnedPnpmCompatible(version)) {
 				proveGlobal(exe, [], env, processAdapter);
 				return { acquired: false, env, command: exe, prefix: [] };
 			}
 		}
+	} catch (error) {
+		if (error !== notPnpm && !untrustedStorage.test(error?.check ?? "")) throw error;
 	}
 	onStep("tools-check");
 	storage(tools, env);

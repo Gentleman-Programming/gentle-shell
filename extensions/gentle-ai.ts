@@ -179,6 +179,8 @@ import {
 	createNativeReviewCli,
 	createNodeExecFileAdapter,
 	isCanonicalProcessString,
+	isNativeReviewAbandonReason,
+	NATIVE_REVIEW_ABANDON_REASONS,
 	isNativeReviewUnachievableVerbRefused,
 	nativeReviewAbandonAuthorization,
 	nativeReviewLegacyAliasRepairAuthorization,
@@ -248,6 +250,8 @@ import {
 } from "../lib/review-integration-v2.ts";
 import { reconcileUnknownReviewLastEventCapture } from "../lib/review-last-event-controller.ts";
 import { registerYoloSessionPolicy, updateYoloPrompt } from "../lib/yolo-session-policy.ts";
+import { AutoPermissionRuntime, updateAutoPrompt, type AutoRuntimeClassifier } from "../lib/auto-permission-runtime.ts";
+import { AutoPermissionClassifier } from "../lib/auto-permission-classifier.ts";
 import { acquireChildStandingReviewPermissionClient, type ChildStandingReviewPermissionClient } from "../lib/review-session-standing-permission-ipc.ts";
 import { isPiConsentV3, presentReviewConsentUi } from "../lib/review-consent-ui.ts";
 import {
@@ -1816,6 +1820,7 @@ async function confirmCommand(
 	events: ExtensionAPI["events"],
 	herdrLifecycle: HerdrConfirmationLifecycle,
 	yoloActive = false,
+	autoGate?: () => Promise<ToolCallEventResult | undefined>,
 ): Promise<ToolCallEventResult | undefined> {
 	const guardrailsConfig = loadRuntimeGuardrailsConfig(ctx.cwd);
 	const evaluation = evaluateGuardedCommand(command, guardrailsConfig);
@@ -1835,10 +1840,28 @@ async function confirmCommand(
 		};
 	}
 
-	if (classification === "not-guarded") return undefined;
+	if (classification === "not-guarded") return autoGate?.();
 
 	// classification is "allow" or "confirm" from this point on
-	if (classification === "allow") return undefined;
+	if (classification === "allow") return autoGate?.();
+
+	// Auto may replace only a default confirmation, never an explicit user/project
+	// ask/block rule or the independent data-loss confirmation.
+	if (autoGate && !evaluation.dataLoss) {
+		let explicit = false;
+		for (const path of [join(gentleAiConfigHome(), "runtime-guardrails.json"), join(ctx.cwd, ".pi", "gentle-ai", "runtime-guardrails.json")]) {
+			try {
+				if (!existsSync(path)) continue;
+				const settings: unknown = JSON.parse(readFileSync(path, "utf8"));
+				if (!isRecord(settings) || (settings.guardedCommands !== undefined && !isRecord(settings.guardedCommands))) { explicit = true; continue; }
+				if (isRecord(settings.guardedCommands) && evaluation.matches.some(match => {
+					const action = (settings.guardedCommands as Record<string, unknown>)[match.key];
+					return action !== undefined && action !== "allow";
+				})) explicit = true;
+			} catch { explicit = true; }
+		}
+		if (!explicit) return autoGate();
+	}
 
 	// Full T1 evaluation has already run. YOLO never changes persistent autonomy.
 	if (yoloActive && configuredRestriction === undefined && isOrdinaryYoloPush(command, evaluation)) return undefined;
@@ -5889,6 +5912,9 @@ async function executeNativeAbandon(
 	if (missing.length > 0) {
 		return { operation, status: "blocked", outcome: "native-input-required", native_operation: nativeOperation, missing_input: missing, mutation_performed: false, mutation_outcome: "none", next_action: "resubmit-with-lineage-actor-and-reason" };
 	}
+	if (!isNativeReviewAbandonReason(input.reason)) {
+		return { operation, status: "blocked", outcome: "native-input-invalid", native_operation: nativeOperation, allowed_reasons: NATIVE_REVIEW_ABANDON_REASONS, mutation_performed: false, mutation_outcome: "none", next_action: "resubmit-with-reason-operator_disposition-or-retired_schema" };
+	}
 	let inventory;
 	try {
 		inventory = await nativeReviewCli.reviewStatus({ cwd, ...(signal === undefined ? {} : { signal }) });
@@ -5908,7 +5934,7 @@ async function executeNativeAbandon(
 		capturedLensResults: entry.discardedWork!.capturedLensResults,
 		findingsPresent: entry.discardedWork!.findingsPresent,
 		actor: String(input.actor),
-		reason: String(input.reason),
+		reason: input.reason,
 	};
 	const authorization = nativeReviewAbandonAuthorization(request);
 	if (context?.hasUI !== true) throw new Error("Review controller ABANDON requires fresh explicit authorization through the interactive Pi UI; headless execution fails closed");
@@ -7372,6 +7398,7 @@ async function executeReviewHostRelayCapture(
 	// keeps compiling unchanged.
 	reviewerSessionId?: string,
 	implicitWorkspaceRoot?: string,
+	getReviewerTransport?: () => ReviewHostRelayRequest["reviewerTransport"],
 ): Promise<Record<string, unknown>> {
 	try {
 		if (slot.submission === undefined) {
@@ -7381,6 +7408,7 @@ async function executeReviewHostRelayCapture(
 				REVIEW_HOST_RELAY_SUBMISSION_MISSING_MESSAGE,
 			);
 		}
+		const reviewerTransport = getReviewerTransport?.();
 		const result = await activeReviewHostRelayRunner((() => {
 			// gentle-pi#311 P2 / P3: the lens's (or, for a v9 host-mediated role
 			// slot, the fixed review-refuter/review-validator routing key's)
@@ -7401,6 +7429,7 @@ async function executeReviewHostRelayCapture(
 				...launch,
 				...(modelRegistry === undefined ? {} : { reviewerRegistry: modelRegistry }),
 				...(reviewerSessionId === undefined ? {} : { reviewerSessionId }),
+				...(reviewerTransport === undefined ? {} : { reviewerTransport }),
 				...(signal === undefined ? {} : { signal }),
 			};
 		})());
@@ -8015,6 +8044,8 @@ async function executeReviewCaptureOperation(
 	// x-opencode-session attribution header. Appended last for the same
 	// positional-call-site reason as modelRegistry above.
 	reviewerSessionId?: string,
+	// Read effective settings only when the acknowledged capture actually runs.
+	getReviewerTransport?: () => ReviewHostRelayRequest["reviewerTransport"],
 ): Promise<Record<string, unknown>> {
 	const parameters = parseReviewCaptureParameters(parametersValue);
 	if (nativeReviewCli === null || nativeReviewCli.targetStatus === undefined) {
@@ -8079,7 +8110,7 @@ async function executeReviewCaptureOperation(
 				mutation_outcome: "none",
 			};
 		}
-		return withCorrectionTarget(await executeReviewHostRelayCapture(hostRelaySlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot));
+		return withCorrectionTarget(await executeReviewHostRelayCapture(hostRelaySlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot, getReviewerTransport));
 	}
 
 	// gentle-pi#311 P3: gentle-ai's v9 contract renders the refuter and
@@ -8105,7 +8136,7 @@ async function executeReviewCaptureOperation(
 				mutation_outcome: "none",
 			};
 		}
-		return withCorrectionTarget(await executeReviewHostRelayCapture(hostMediatedRoleSlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot));
+		return withCorrectionTarget(await executeReviewHostRelayCapture(hostMediatedRoleSlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot, getReviewerTransport));
 	}
 
 	if (selected.input.captureOperation === "review.capture-correction-plan") {
@@ -8190,6 +8221,7 @@ async function executeReviewCaptureGroupOperation(
 	// OpenCode-routed reviewer model carries its x-opencode-session attribution
 	// header. Appended last for the same positional-call-site reason as above.
 	reviewerSessionId?: string,
+	getReviewerTransport?: () => ReviewHostRelayRequest["reviewerTransport"],
 ): Promise<Record<string, unknown>> {
 	const parameters = parseReviewCaptureGroupParameters(parametersValue);
 	if (nativeReviewCli === null || nativeReviewCli.targetStatus === undefined) return { ...captureGroupRejected("native target STATUS is unavailable"), outcome: "native-status-unsupported" };
@@ -8232,6 +8264,7 @@ async function executeReviewCaptureGroupOperation(
 	// Resolve session-over-pin-over-global once for the entire reviewer group,
 	// so every slot uses the same complete routing snapshot.
 	const reviewerRouting = readReviewerModelConfig(cwd, reviewerSessionId);
+	const reviewerTransport = getReviewerTransport?.();
 	const requests: readonly ReviewHostRelayRequest[] = group.slots.map((slot) => ({
 		captureArgumentTokens: slot.captureArgumentTokens,
 		targetCwd: cwd,
@@ -8239,6 +8272,7 @@ async function executeReviewCaptureGroupOperation(
 		...reviewHostRelaySelection(slot.lens, reviewerRouting),
 		...(modelRegistry === undefined ? {} : { reviewerRegistry: modelRegistry }),
 		...(reviewerSessionId === undefined ? {} : { reviewerSessionId }),
+		...(reviewerTransport === undefined ? {} : { reviewerTransport }),
 		...(signal === undefined ? {} : { signal }),
 	}));
 	let prepared: readonly ReviewHostRelayPreparedResult[];
@@ -9440,6 +9474,8 @@ export interface GentleAiRuntimeDependencies {
 	// bounded exec; production leaves this undefined and uses the real node
 	// exec-file adapter shared with the rest of the extension.
 	telemetryExecFileAdapter?: ExecFileAdapter;
+	/** Test-only inference seam; production always uses the active session model. */
+	autoPermissionClassifier?: AutoRuntimeClassifier;
 }
 
 export function createGentleAiExtension(dependencies: GentleAiRuntimeDependencies = {}): (pi: ExtensionAPI) => void {
@@ -9463,8 +9499,22 @@ function createGentleAiExtensionForTesting(
 	const candidateViews = dependencies.candidateViews === undefined ? new CandidateViewRegistry() : dependencies.candidateViews;
 	const herdrLifecycle = createHerdrConfirmationLifecycle(pi.events);
 	const permissionEnvironment = dependencies.processEnv ?? process.env;
-	const yolo = registerYoloSessionPolicy(pi, permissionEnvironment);
+	let autoPermissions: AutoPermissionRuntime | undefined;
+	const yolo = registerYoloSessionPolicy(pi, permissionEnvironment, { onChange: () => autoPermissions?.cancelPending() });
 	const pathTargetGrants = new PathTargetGrants();
+	let classifier: AutoPermissionClassifier | undefined;
+	autoPermissions = new AutoPermissionRuntime(pi, yolo, dependencies.autoPermissionClassifier ?? {
+		run: request => {
+			classifier ??= new AutoPermissionClassifier(request.modelRegistry);
+			return classifier.run(request);
+		},
+		cancel: () => classifier?.cancel(),
+	}, { configHome: gentlePiConfigHome(permissionEnvironment) });
+	const auto = autoPermissions;
+	pi.on("input", (event, ctx) => {
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") auto.input(event, ctx);
+		return { action: "continue" };
+	});
 
 	const setReviewSessionPermissionStatus = (context: ExtensionContext, active: boolean): void => {
 		try {
@@ -9498,6 +9548,7 @@ function createGentleAiExtensionForTesting(
 	const reviewSidebar = createReviewSidebarPublisher(pi);
 	const observedReviewTool: typeof reviewSidebar.tool = (definition) => statusTiming.tool(reviewSidebar.tool(definition));
 	pi.on("session_tree", (_event, ctx) => {
+		auto.reset();
 		reviewSidebar.reset(ctx);
 		statusTiming.reset(ctx);
 	});
@@ -9506,6 +9557,7 @@ function createGentleAiExtensionForTesting(
 	let reminderManager: ExtensionContext["sessionManager"] | undefined;
 	let unbindPreparation: (() => void) | undefined;
 	pi.on("session_shutdown", (event, context) => {
+		auto.reset();
 		yolo.reset(context);
 		reviewSidebar.reset();
 		statusTiming.reset();
@@ -9683,6 +9735,7 @@ function createGentleAiExtensionForTesting(
 				// OpenCode-routed completion carries its attribution headers
 				// (pi adds those inside the main agent loop; this is not that loop).
 				reviewSessionManagerAndId(ctx)?.sessionId,
+				() => pi.getSettings?.().transport,
 			);
 			return { content: [{ type: "text", text: JSON.stringify(details) }], details };
 		},
@@ -9726,6 +9779,7 @@ function createGentleAiExtensionForTesting(
 				// OpenCode-routed completion carries its attribution headers
 				// (pi adds those inside the main agent loop; this is not that loop).
 				reviewSessionManagerAndId(ctx)?.sessionId,
+				() => pi.getSettings?.().transport,
 			);
 			return {
 				content: [{ type: "text", text: JSON.stringify(details) }],
@@ -9879,7 +9933,10 @@ function createGentleAiExtensionForTesting(
 	}));
 
 	pi.on("session_start", async (event, ctx) => {
+		auto.reset();
 		yolo.reset(ctx);
+		// Package-owned children reset local state but never initialize primary defaults.
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") await yolo.mode(ctx);
 		reviewSidebar.reset(ctx);
 		statusTiming.reset(ctx);
 		elapsedTiming = new GentleAiElapsedTimingLedger(ctx.sessionManager, pi);
@@ -10040,6 +10097,7 @@ function createGentleAiExtensionForTesting(
 		// through the mutable appendSystemPrompt section instead of a replacement.
 		appendSystemPromptOnce(event.systemPromptOptions, `${gentlePrompt}${reviewContractPrompt}`);
 		updateYoloPrompt(event.systemPromptOptions, isPrimarySession && await yolo.active(ctx));
+		updateAutoPrompt(event.systemPromptOptions, isPrimarySession && await yolo.mode(ctx) === "auto");
 		return undefined;
 	});
 
@@ -10110,7 +10168,7 @@ function createGentleAiExtensionForTesting(
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
-		const primaryToolCall = (processAgentEndSubagentDepth.get(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey)) ?? 0) === 0;
+		const primaryToolCall = permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && (processAgentEndSubagentDepth.get(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey)) ?? 0) === 0;
 		const yoloActive = primaryToolCall && await yolo.active(ctx);
 		const sensitivePathDenied = evaluateSensitivePathTool(
 			event.toolName,
@@ -10136,14 +10194,27 @@ function createGentleAiExtensionForTesting(
 				};
 			}
 		}
-		if (!SHELL_COMMAND_TOOLS.has(event.toolName) || !isRecord(event.input)) return undefined;
+		const modeConfigDenied = auto.guard(event, ctx);
+		if (modeConfigDenied) return modeConfigDenied;
+		const gate = async (): Promise<ToolCallEventResult | undefined> => {
+			try { return await auto.check(event, ctx, primaryToolCall); }
+			catch { return { block: true, reason: "Auto permission checking failed. This action was not run; do not bypass the check." }; }
+		};
+		if (!SHELL_COMMAND_TOOLS.has(event.toolName) || !isRecord(event.input)) return gate();
 		const command = (event.input as { command?: unknown }).command;
-		if (typeof command !== "string") return undefined;
+		if (typeof command !== "string") return gate();
 		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") {
 			const childDenied = blockChildDestructiveCommand(command);
 			if (childDenied) return childDenied;
 		}
-		return await confirmCommand(command, ctx, pi.events, herdrLifecycle, yoloActive);
+		const modeEpoch = yolo.epoch();
+		const permissionMode = primaryToolCall ? await yolo.mode(ctx) : "normal";
+		// A superseded lookup returns Normal for display, not permission to skip Auto.
+		if (primaryToolCall && modeEpoch !== yolo.epoch()) {
+			return { block: true, reason: "Permission mode changed during tool admission. This action was not run; retry under the current mode." };
+		}
+		const autoGate = permissionMode === "auto" ? gate : undefined;
+		return await confirmCommand(command, ctx, pi.events, herdrLifecycle, yoloActive, autoGate);
 	});
 
 	for (const owner of ["delegation", "review"] as const) {

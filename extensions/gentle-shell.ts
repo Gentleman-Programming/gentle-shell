@@ -30,6 +30,7 @@ import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { inferOddPhase } from "../lib/odd-phase-inference.ts";
 import { isInteractiveMode } from "../lib/rpc-host.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
+import { bundledGentlePiConfigHome } from "../lib/gentle-shell-bundled.ts";
 import { isNanAdaptiveReasoningModel } from "../lib/nan-provider.ts";
 import { resolveAnimationPolicy, writeAnimationPolicy, type AnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy, type VimPolicy } from "../lib/vim-policy.ts";
@@ -175,7 +176,7 @@ export type ActiveProfileReader = (() => string | undefined) & {
 // Unbound reads retain the global file-identity cache, including atomic replacements.
 // Bound reads are snapshots: no filesystem or Git work is done during a frame.
 export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env): ActiveProfileReader {
-	const path = profilesFilePath(env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai"));
+	const path = profilesFilePath(bundledGentlePiConfigHome(env) ?? env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai"));
 	let fingerprint: string | undefined;
 	let name: string | undefined;
 	let bound = false;
@@ -215,7 +216,7 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 		}
 		const pin = identity && cwd ? resolveProfilePin({
 			cwd,
-			configHome: env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai"),
+			configHome: bundledGentlePiConfigHome(env) ?? env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai"),
 			resolveWorktree: () => identity!,
 		}) : undefined;
 		const next = pin ? `${pin.profile} (${pin.source})` : global();
@@ -2050,7 +2051,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		});
 	}
 	pi.registerCommand("gentle:customize", {
-		description: "Configure appearance, audio notifications, global Vim prompt editing, session-only YOLO permission and prompt history capture.",
+		description: "Configure appearance, audio notifications, Vim editing, session permissions and global Auto/YOLO defaults, and prompt history capture.",
 		handler: async (_args, ctx) => {
 			if (ctx.mode !== "tui" || !ctx.hasUI) {
 				if (ctx.hasUI) ctx.ui.notify("Customization requires an interactive terminal.", "warning");
@@ -2176,6 +2177,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				},
 			});
 			let yoloDisplay: YoloDisplay = YOLO_DISPLAY.unavailable;
+			let permissionDisplay = "normal", permissionDefault = "normal";
 			let requestYoloRender = () => {};
 			let refreshing: Promise<void> | undefined;
 			let refreshAgain = false;
@@ -2187,9 +2189,16 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				refreshing = (async () => {
 					while (refreshAgain && !closed) {
 						refreshAgain = false;
-						const next = await adapter?.read().catch(() => YOLO_DISPLAY.unavailable) ?? YOLO_DISPLAY.unavailable;
+						const snapshot = await adapter?.readSnapshot?.().catch(() => undefined);
+						const next = snapshot?.yolo ?? await adapter?.read().catch(() => YOLO_DISPLAY.unavailable) ?? YOLO_DISPLAY.unavailable;
 						if (closed) return;
+						const nextMode = snapshot?.mode ?? "normal";
+						const nextDefault = snapshot?.defaultMode ?? "normal";
+						if (closed) return;
+						if (refreshAgain) continue;
 						yoloDisplay = next;
+						permissionDisplay = nextMode;
+						permissionDefault = nextDefault;
 						requestYoloRender();
 					}
 				})().finally(() => { refreshing = undefined; });
@@ -2206,6 +2215,28 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 						return;
 					}
 					await adapter.toggle();
+					await refreshYolo();
+				},
+			});
+			for (const mode of ["normal", "auto", "yolo"] as const) rows.push({
+				category,
+				label: () => `Session permissions: ${mode.toUpperCase()}${permissionDisplay === mode ? " (current)" : ""}`,
+				preview: () => ({ title: "Permissions · current session", sample: mode === "auto"
+					? "independent session-model action checks · extra inference cost · hard safety and native consent remain"
+					: mode === "yolo" ? "ordinary scoped delivery permission · destructive confirmations remain" : "normal checks · overrides an elevated global default" }),
+				action: async () => {
+					if (closed) return;
+					if (!adapter?.setMode || !await adapter.setMode(mode)) ctx.ui.notify("Session mode unchanged — live primary UI unavailable or changed.", "warning");
+					await refreshYolo();
+				},
+			});
+			for (const mode of ["normal", "auto", "yolo"] as const) rows.push({
+				category,
+				label: () => `Default permissions: ${mode.toUpperCase()}${permissionDefault === mode ? " (saved)" : ""}`,
+				preview: () => ({ title: "Permissions · user-global default", sample: `New primary sessions start in ${mode.toUpperCase()}; current session stays unchanged. ${mode === "auto" ? "Additional classifier inference uses the session model; usage is separate." : "Independent safety and consent remain."}` }),
+				action: async () => {
+					if (closed) return;
+					if (!adapter?.saveDefault || !await adapter.saveDefault(mode)) ctx.ui.notify("Default unchanged — trusted UI unavailable or preference could not be saved.", "warning");
 					await refreshYolo();
 				},
 			});

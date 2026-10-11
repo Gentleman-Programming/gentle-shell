@@ -9,7 +9,9 @@ Audio is **off by default**. In a primary Pi terminal, open `/gentle:customize` 
 - **Audio notifications: on / off** toggles the global switch. Highlighting or rendering the row never discovers a player or enables anything.
 - **Audio: unmuted / muted** toggles this process' mute. Mute survives reload and session replacement; restarting Pi clears it. Muting/disabling discards pending events; resuming never replays them.
 - **Success / Error / Attention** are the three basic types. Each shows its human selection — `success tone` / `error tone` / `attention tone`, `silence`, a local WAV basename, or `Custom (varies)` when the type's events diverge. **Enter** cycles that type between `silence → builtin:success → builtin:error → builtin:attention → silence`; on a mixed type Enter applies the recommended tone for that type. **`f`** opens an inline field to assign a literal absolute local WAV to that type, independently of the other types; the field is prefilled with the current path when the type already owns a file. **`p`** explicitly previews the type's selected sound, never an arbitrary one.
-- **Advanced: show/hide per-event exceptions** reveals the per-event rows (`agent.completed`, `subagent.failed`, …) for one-off overrides. They start folded; expanding or collapsing only changes the card view and never writes configuration or reproduces sound. Each per-event row cycles and assigns its own WAV like a type row. **`f`** and **`p`** on any type or per-event row stay inside the same card; in Notifications `p` never opens the visual profiles pane.
+- **Advanced: show/hide per-event exceptions** reveals the per-event rows (`agent.completed`, `context.high`, …) for one-off overrides. They start folded; expanding or collapsing only changes the card view and never writes configuration or reproduces sound. Each per-event row cycles and assigns its own WAV like a type row. **`f`** and **`p`** on any type or per-event row stay inside the same card; in Notifications `p` never opens the visual profiles pane.
+
+**Context warning.** When context usage reaches **90%** of the active model's window, Gentle warns once per high episode. The sound is the `context.high` event: turn **Audio notifications** on, expand **Advanced**, and select its sound. A file saved before `context.high` existed stays silent for it, so select a sound on that Advanced row to hear it; its recommended tone is `builtin:attention`. The visual warning is fully independent: the **Sections → Section contextWarning** row in `/gentle:customize` (shown by default) toggles it, and neither toggle changes the other. The episode rearms when usage drops below 90%, after a successful compaction, or in a new session; a canceled or failed compaction does not rearm, and the unknown reading right after a successful compaction never repeats the warning.
 
 The inline field and the recovery confirmation render inside the same card. **Escape** cancels the field or confirmation; a second Escape closes the card. If the field, value or `y yes` cannot be shown in full (a resize or a very small terminal), Enter or `y` is refused instead of acting on something invisible. Invalid/unreadable configuration disables automatic audio: saving in that state requires a fresh explicit inline confirmation to replace it, cancel preserves the file and settings, and a failed write does not grant consent to the next attempt. Diagnostics are generic local UI notices, not conversation messages, tools, model context or agent state.
 
@@ -22,11 +24,12 @@ The inline field and the recovery confirmation render inside the same card. **Es
 | Main agent | `agent.completed` | `builtin:success` |
 | Main agent | `agent.failed` | `builtin:error` |
 | Main agent | `agent.attention` | `builtin:attention` |
+| Context | `context.high` | `builtin:attention` |
 | Subagent | `subagent.queued`, `subagent.running`, `subagent.waiting`, `subagent.cancelled` | Silence |
 | Subagent | `subagent.completed` | `builtin:success` |
 | Subagent | `subagent.failed`, `subagent.timed_out` | `builtin:error` |
 
-`session.started` means initial process startup only, once per process, not reload/new/resume/fork. Main outcomes use settled-run evidence; `agent_end` is not success. Attention is an active main-run edge from the existing explicit intervention lifecycle (`herdr:blocked`), not every dialog. Subagent waiting does not imply attention. Restored tasks/history and unchanged snapshots are silent.
+`session.started` means initial process startup only, once per process, not reload/new/resume/fork. Main outcomes use settled-run evidence; `agent_end` is not success. Attention is an active main-run edge from the existing explicit intervention lifecycle (`herdr:blocked`), not every dialog. Subagent waiting does not imply attention. Restored tasks/history and unchanged snapshots are silent. `context.high` is a local runtime signal from the context-usage probe, never a producer bus event, and fires at most once per high episode.
 
 **Shutdown limitation:** `session.shutdown` remains in the schema for compatibility but is excluded from the runtime/UI catalog. Lazy playback cannot reliably finish during immediate cleanup without delaying exit. The historical best-effort proposal is not a promise of a quit sound; shutdown cancels audio instead.
 
@@ -52,6 +55,7 @@ Complete default schema (the shutdown entry is inert):
       "agent.failed": "builtin:error",
       "agent.cancelled": null,
       "agent.attention": "builtin:attention",
+      "context.high": "builtin:attention",
       "subagent.queued": null,
       "subagent.running": null,
       "subagent.waiting": null,
@@ -64,7 +68,7 @@ Complete default schema (the shutdown entry is inert):
 }
 ```
 
-Unknown keys/schema/events are rejected. `enabled` must be boolean; backend must be `auto`; timing values are integer milliseconds: minimum interval 0–60000, coalesce window 0–2000, inclusive. Zero disables that timing window, not the TTL. Writes use an exclusive 0600 temporary file beside the target followed by atomic rename. Changes apply to the live owner immediately and invalidate stale pending mappings. Direct external edits are read on the next session attachment/reload, not polled in the background.
+Unknown keys/schema/events are rejected. `enabled` must be boolean; backend must be `auto`; timing values are integer milliseconds: minimum interval 0–60000, coalesce window 0–2000, inclusive. Zero disables that timing window, not the TTL. Writes use an exclusive 0600 temporary file beside the target followed by atomic rename. Changes apply to the live owner immediately and invalidate stale pending mappings. Direct external edits are read on the next session attachment/reload, not polled in the background. A file saved before `context.high` existed keeps that event silent; selecting a sound on its Advanced row is the only explicit way to enable it.
 
 ## Local WAV security
 
@@ -78,9 +82,9 @@ Playback revalidates and snapshots the bytes in a private 0700 temporary directo
 
 ## Noise and retention
 
-Only the primary **TUI** owner plays. Child processes, print/JSON and **all RPC**, including interactive RPC hosts, are silent. There is no desktop notification or BEL fallback. Two independent Pi processes can overlap; serialization is per process.
+Only the primary **TUI** owner plays. Child processes, print/JSON and **all RPC**, including interactive RPC hosts, are silent. The context visual warning shares that owner guard, so it is also primary-TUI only. There is no desktop notification or BEL fallback. Two independent Pi processes can overlap; serialization is per process.
 
-Ráfagas coalesce into at most one pending candidate, in event priority order: failed/timed_out > main attention > completed > other. Changing the sound does not change event priority. Equal priority selects the latest sound but keeps the first coalesce deadline. Starts respect the minimum interval. Pending events expire at age **2000 ms** (including slow discovery/validation); they are dropped rather than forming a late queue. Preview remains subject to context, file validation, serialization and timeout.
+Ráfagas coalesce into at most one pending candidate, in event priority order: failed/timed_out > main attention > completed > other. Changing the sound does not change event priority. Equal priority selects the latest sound but keeps the first coalesce deadline. Starts respect the minimum interval. Pending events have a **2000 ms** freshness budget (including slow discovery/validation and minimum-interval waits). That budget pauses only while another sound has actually started playing, so a long WAV does not silently discard the next candidate; it resumes with the remaining budget when playback settles. Already stale incoming events are still rejected. Waiting behind discovery that has not started playback does not pause expiry. There is still only one pending candidate, not a growing queue. Preview remains subject to context, file validation, serialization and timeout.
 
 The scheduler keeps a bounded 256-identity FIFO. The owner additionally retains the highest sequence **per producer/run** for the active parent session, across reload, preventing old wire duplicates after FIFO eviction. This map is not size-capped: it costs O(distinct runs) during a long session, is cleared when attaching a different session ID, and disappears on process exit. The actual TaskStore producer increments a store-global sequence on each status change, but current retention is still keyed per run; no producer-wide compaction is claimed here. Muted/off occurrences are consumed, not buffered.
 

@@ -4,7 +4,7 @@ Bind this to the parent Pi session only. Load it for source handoffs or when a t
 
 ### Online Sources
 
-The parent obtains online evidence using its existing web tools and permissions. Send source URLs and relevant passages through task/context to the explorer; follow its source-only role contract. Keep its configured model and thinking.
+Delegate web retrieval to the explorer's installed tools and existing permissions; keep its configured model and thinking. Pass sources already available through task/context when useful. Missing web tools remain a capability gap.
 
 ### Lossless Blocking Prompts (MANDATORY)
 

@@ -7,6 +7,7 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
 import { PI_SUBCOMMANDS } from "../lib/gentle-shell-launcher.ts";
+import { bundledGentlePiConfigHome } from "../lib/gentle-shell-bundled.ts";
 
 
 export type BannerColor = "pink" | "cyan" | "yellow" | "green";
@@ -67,7 +68,7 @@ function rgb(r: number, g: number, b: number, text: string): string {
 }
 
 function gentleAiConfigHome(): string {
-  return process.env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai");
+  return bundledGentlePiConfigHome(process.env) ?? process.env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai");
 }
 
 function bannerConfigPath(configHome = gentleAiConfigHome()): string {

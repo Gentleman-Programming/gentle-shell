@@ -1,7 +1,8 @@
 import { isSessionChangeEvidence, type SessionChangeEvidence } from "./session-changes.ts";
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { tmpdir, userInfo } from "node:os";
+import { join, resolve } from "node:path";
 import { Duplex, type Readable, type Writable } from "node:stream";
 import { stripVTControlCharacters } from "node:util";
 import { withoutInteractiveHost } from "./rpc-host.ts";
@@ -276,9 +277,42 @@ function requestedTools(request: TaskRequest): string | undefined {
 	return tools.length > 0 ? tools.join(",") : undefined;
 }
 
+const WEB_TOOL_NAMES = ["web_enable", "web_search", "source_check", "fetch_content", "get_search_content"];
+
+/** Resolve one already installed, explicitly requested package. Pi's own loader
+ * follows its manifest and supplies SDK aliases; no install or ambient discovery. */
+function requestedWebPackagePaths(request: TaskRequest): string[] {
+	if (!WEB_TOOL_NAMES.every(name => request.agent.tools.includes(name))) return [];
+	try {
+		let agentDir = request.env.PI_CODING_AGENT_DIR;
+		if (!agentDir || /^~(?:$|[/\\])/.test(agentDir)) {
+			const home = (process.platform === "win32" ? request.env.USERPROFILE : request.env.HOME) || userInfo().homedir;
+			agentDir = agentDir ? agentDir.replace(/^~/, home) : join(home, ".pi", "agent");
+		}
+		const manager = new DefaultPackageManager({
+			cwd: request.cwd,
+			agentDir,
+			settingsManager: SettingsManager.inMemory(),
+		});
+		const installed = manager.getInstalledPath("npm:pi-web-access", "user");
+		return installed ? [realpathSync(installed)] : [];
+	} catch {
+		// Missing/incompatible package remains an observable child capability gap.
+		return [];
+	}
+}
+
 export function childArguments(request: TaskRequest, instructionsPath?: string): string[] {
 	const args = ["--mode", "rpc", "--session-dir", request.sessionDir];
-	args.push(...childPackageExtensionArgs({ noExtensions: request.noExtensions === true, extensionPaths: request.extensionPaths ?? [] }));
+	const extensionPaths = [...new Set(request.extensionPaths ?? [])];
+	for (const packagePath of requestedWebPackagePaths(request)) {
+		const injected = extensionPaths.some(path => {
+			try { return realpathSync(resolve(request.cwd, path)) === packagePath; }
+			catch { return false; }
+		});
+		if (!injected) extensionPaths.push(packagePath);
+	}
+	args.push(...childPackageExtensionArgs({ noExtensions: request.noExtensions === true, extensionPaths }));
 	if (request.resumeSessionPath) args.push("--session", request.resumeSessionPath);
 	if (request.model) args.push("--model", request.thinking ? `${formatModelRef(request.model)}:${request.thinking}` : formatModelRef(request.model));
 	else if (request.thinking) args.push("--thinking", request.thinking);

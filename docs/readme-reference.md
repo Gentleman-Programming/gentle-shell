@@ -295,6 +295,9 @@ An orphan branch with commits and no parent has no branch point to name as `base
 gentle-shell [options] [-- pi-args...]
 gentle-shell home [link|isolated|<path>]
 gentle-shell [home selectors] setup [--dry-run]
+gentle-shell upgrade [--channel release|main]
+gentle-shell upgrade --rollback
+gentle-shell self-uninstall [--dry-run] [--yes] [--include-shared]
 ```
 
 ### Flags
@@ -323,7 +326,7 @@ gentle-shell [home selectors] setup [--dry-run]
 
 ### `setup` subcommand
 
-`gentle-shell setup` provisions the resolved home — the same home selection as any other invocation, `--isolated` by default, or `--link`/`--home <path>` when given before `setup` — with the same companion packages a regular `gentle-ai install --agent pi` installs into a Pi agent home: `npm:gentle-pi`, `npm:gentle-engram`, `npm:pi-mcp-adapter`, `npm:@juicesharp/rpiv-ask-user-question`, `npm:pi-web-access`, `npm:pi-btw`, plus running `pi-engram init`. It never touches `~/.pi/agent` unless you pass `--link`.
+`gentle-shell setup` provisions the resolved home — the same home selection as any other invocation, `--isolated` by default, or `--link`/`--home <path>` when given before `setup` — with the same companion packages a regular `gentle-ai install --agent pi` installs into a Pi agent home: `npm:gentle-pi`, `npm:gentle-engram`, `npm:@juicesharp/rpiv-ask-user-question`, `npm:pi-web-access`, `npm:pi-btw`, plus running `pi-engram init`. It never touches `~/.pi/agent` unless you pass `--link`.
 
 It resolves the home and the pi runtime exactly as a normal run does (including the isolated/`--home` bootstrap and the pi version gate), then runs the package-local pinned gentle-ai binary — `gentleAiBinaryPath()` from `lib/gentle-ai-binary.ts`, never a `gentle-ai` found on `PATH` — as:
 
@@ -336,6 +339,8 @@ with `PI_CODING_AGENT_DIR` and `GENTLE_PI_AGENT_HOME` set to the resolved home, 
 Requires the package-local gentle-ai pin at v3.6.0 or newer — the pin that adds `PI_CODING_AGENT_DIR` support to `gentle-ai install`. `setup` enforces this before spawning anything: an older pinned gentle-ai ignores that variable and would silently install into `~/.pi/agent` instead of the target home, so `setup` exits 1 with `gentle-shell: setup needs the package-local gentle-ai v3.6.0 or newer (pinned: <version>); this build cannot provision a home without touching ~/.pi/agent` instead of spawning it.
 
 gentle-ai's managed Pi stack always declares `npm:gentle-pi` itself in the home's `settings.json` as part of that install. Once gentle-ai exits 0, `setup` removes it again immediately: this launcher always loads its own gentle-pi (its own package root, or a take-over — see "Loading the package" below), never the one gentle-ai's stack just installed, so leaving that declaration in place would let the home drift onto whatever gentle-pi npm last installed — or, for a developer running from a source checkout, onto the published npm package — instead of the running launcher's own copy. `setup` also removes `npm:@juicesharp/rpiv-ask-user-question` the same way, if gentle-ai declared it: that package conflicts with gentle-pi's own first-party `ask_user_question` tool, and Pi refuses to load two providers for the same tool name (tracked upstream as gentle-ai #4820). `--dry-run` only reports both pending removals instead of running them. A home only ever keeps a `npm:gentle-pi` declaration — and so only ever stops getting the launcher's own injection (see "Loading the package" below) — when something puts it back after `setup` runs: a hand-edited `settings.json`, or `gentle-shell install npm:gentle-pi` run manually; in that case the home behaves like a regular Pi agent home with gentle-pi installed, and `gentle-shell update npm:gentle-pi` updates it like any other package.
+
+**MCP migration**: Pi >= 0.99.0 provides built-in MCP; gentle-ai retires `pi-mcp-adapter` instead of installing it. After successful setup and package cleanup, Gentle Shell warns on stderr if `settings.json` still contains `"-builtin:mcp"`, `mcp.json` defines servers, and no active adapter remains. The warning names both files and the entry to remove. Setup never removes that entry or edits `mcp.json`: disabling MCP may be intentional. To enable those servers, remove only `"-builtin:mcp"` from `extensions` in the named `settings.json`, preserve other entries, and restart Pi. A declaration with `autoload: false` and no enabling extension patterns, an empty `extensions` list, or an ordinary `extensions: ["!**"]` filter without force-includes is inactive. Other nonempty filters require matching actual package resources, so setup reports uncertain adapter activity instead of silently treating the adapter as active. This read-only check also runs after automatic provisioning, but not during `--dry-run`. Errors encountered by the diagnostic produce an inspection warning without changing a successful setup's exit code; existing install and cleanup failures still propagate normally.
 
 **Known limitation**: gentle-ai always writes its persona file to the shared `~/.pi/gentle-ai/persona.json` without honoring `PI_CODING_AGENT_DIR`, so the persona is shared across every home `gentle-shell setup` provisions, not per-home. `setup` keeps that file byte-identical across the run regardless — snapshotting it before spawning gentle-ai and restoring it afterward, in manual, `--dry-run`, and automatic first-run modes alike — because the pinned gentle-ai still writes the Pi persona outside `PI_CODING_AGENT_DIR`. gentle-ai also records the running binary's managed-asset digest in the shared `~/.gentle-ai/state.json` (`managed_asset_digest`), again regardless of `PI_CODING_AGENT_DIR`, so a `setup` run otherwise leaves the user's own (unrelated, on-`PATH`) gentle-ai reporting its managed assets as outdated and demanding `gentle-ai sync`. `setup` restores just that one field afterward, the same way and in the same modes — but never the whole file, since `state.json` also carries fields (like the installed-agents list) the pinned gentle-ai is meant to update, and it never creates or deletes `state.json` itself.
 
@@ -388,6 +393,43 @@ This take-over exists because two gentle-pi copies loaded at once — the declar
 
 ### `upgrade` subcommand and channels
 
+**Availability:** this subcommand was added on main in commit `96ff045a8`.
+No published `gentle-pi` release through v4.0.0 contains it; a minimum supported
+release version has not been published yet. Package version alone is not enough:
+a main build with the change can still be based on version 4.0.0. Older launchers
+forward `upgrade` to Pi as an ordinary argument, opening a session with it as the
+initial prompt. The `--channel` examples below also require a supporting build.
+
+#### Updating an installation without `upgrade`
+
+Use the installer from a fresh main checkout rather than invoking the old launcher:
+
+```bash
+git clone --branch main https://github.com/Gentleman-Programming/gentle-shell.git
+cd gentle-shell
+
+# macOS and Linux
+sh scripts/bootstrap.sh
+
+# Windows (cmd)
+scripts\bootstrap.cmd
+```
+
+Use a new checkout directory if `gentle-shell` already exists. The bootstrap
+opens the browser installation wizard; it detects the installed Gentle Shell
+and shows the update plan before you confirm. Choose **Latest release** to stay
+on stable, or **Latest main** to install the command from main. Updating to the
+current release does not add `upgrade`; switching back to it from main also
+removes access to the command. Repeat this bootstrap procedure for releases
+without it. If the installer cannot attribute the existing installation to npm
+or pnpm (for example, an `npm link` checkout), it leaves that installation
+untouched and explains why; see the [installation wizard](install-wizard.md).
+
+Do not substitute `gentle-shell update`: that is Pi's package update, not this
+Gentle Shell upgrade/bootstrap operation.
+
+#### Behavior on supporting builds
+
 `gentle-shell upgrade` updates Gentle Shell along its channel, recorded in
 `channel.json` under `GENTLE_PI_CONFIG_HOME` (default `~/.pi/gentle-ai`); no record
 means **release**. It runs before any Pi runtime check, since it may replace this
@@ -397,20 +439,80 @@ package.
   package manager that owns this installation (`pnpm add -g … --allow-build=gentle-pi`
   under PNPM_HOME, otherwise `npm install -g …`). Already current: it says so and
   changes nothing.
+- **Pi with pnpm**: pnpm 11 installs each global add as its own group, and it may
+  give `gentle-pi` a newer Pi as an adjacent peer than the one the installer
+  pins; Gentle Shell runs that adjacent Pi when it meets the minimum. Pi and
+  Gentle Shell stay in separate groups, so Pi's own `pi update` never removes
+  Gentle Shell.
 - **main**: builds Gentle AI from the latest `main` commit with Go and installs
   Gentle Shell packed from the latest `main` commit (`<version>-main.<sha12>`),
   rebuilding only what moved since the recorded commits. The Gentle AI build is
-  used through the dev-binary override. Needs pnpm on PATH and Go: your Go when
-  it meets the minimum (1.25.10), otherwise the pinned Go the installation wizard
-  published under `<config home>/tools/go`. `upgrade` never downloads Go itself;
-  with an older Go and no pinned copy it stops and names both versions.
+  used through the dev-binary override. Needs pnpm on PATH. Gentle AI builds with
+  your Go when it reports a stable version that meets the minimum (1.25.10);
+  otherwise (missing, older, or a version it cannot check) with the pinned Go
+  under `<config home>/tools/go`, which `upgrade` downloads and verifies there
+  when the installation wizard did not publish it yet.
 - `--channel release|main` (or `--channel=…`) switches first. Switching to release
   removes the dev-binary override only when it points at a main build this
   command made; a binary you registered yourself is kept.
+- On Windows npm and pnpm are `.cmd` shims, which never run through a shell:
+  `upgrade` runs what a recognized shim runs (Node.js with npm's or pnpm's own
+  JavaScript entry, or a native `pnpm.exe`). A package manager that resolves only
+  to an unrecognized shim counts as missing. macOS and Linux are unchanged.
+
+- **Bundled install** (the web installer's own Node, pnpm and Pi): `upgrade`
+  follows the release channel only and refuses `--channel main`. It installs the
+  latest release beside the active version, checks that the new launcher reports
+  exactly that release's Gentle Shell and Pi, and only then switches `current`,
+  keeping two versions. An already current release changes nothing, and a failure
+  leaves `current` untouched. `--rollback` switches back to the previous kept
+  version. Details: [Bundled install](bundled-install.md#gentle-shell-upgrade-in-a-bundled-install).
+- **Migration to the bundled install**: on release, when the latest release
+  publishes the bundled distribution, a global pnpm or npm installation moves to
+  the bundled one. `upgrade` explains the move, installs the bundled prefix and
+  checks its launcher. Then it asks once whether to remove the old global
+  `gentle-pi` with its own manager (default No; without a terminal it only prints
+  the command). If the move fails, it names the step and why, leaves the global
+  package as it is, and updates it the usual way for that run. Your Pi and
+  `~/.gentle-shell/agent` are not touched. An `npm link`
+  is named and keeps the path above. Details:
+  [Migration](bundled-install.md#migration-from-a-global-install).
 
 `gentle-shell update` is different: it is Pi's own `update`, forwarded to the
-resolved home. The browser installation wizard offers the same main channel; see
+resolved home. In a bundled install Pi ships pinned with Gentle Shell, so
+every `update` form that updates Pi itself explains that and runs
+`gentle-shell upgrade` (in a terminal) or names it. Those forms are no target,
+`--self`, `self` or `pi`, `--all`, and `self` or `pi` with `--extensions`. The
+extension part of an "all" form, and every package update, still reaches Pi.
+In a bundled install Pi and the agent's commands keep your own environment;
+Pi installs packages with Gentle Shell's npm through the `npmCommand` setting
+of its own home. Details: [Bundled install](bundled-install.md#launcher-in-a-bundled-install).
+The browser installation wizard offers the same main channel; see
 [Installation wizard](install-wizard.md#main-channel).
+
+### `self-uninstall` subcommand
+
+`gentle-shell self-uninstall` prints its plan, asks, then removes Gentle Shell's
+own data (`main/`, `channel.json`, its own `dev-binary.json` and `tools/go` under
+the config home, the isolated home and `~/.gentle-shell/config.json`), then the
+`gentle-pi` package with the package manager that owns it, then `~/.gentle-shell`
+when empty. Like `upgrade`, it runs before any Pi runtime check.
+
+- `--dry-run` only prints the plan; `--yes` skips the question (required without
+  a terminal, otherwise it exits 2).
+- The shared Gentle AI configuration in the config home is kept unless you accept
+  a separate question (default No) or pass `--include-shared`.
+- It never touches your Pi home, custom `--home` homes, `~/.gentle-ai` or the
+  tools the web installer added; the plan lists the latter with how to remove them.
+- An installation neither pnpm nor npm owns (an `npm link`, for example) is
+  refused before anything is removed.
+- From the bundled launcher it removes the bundled install instead: the PATH
+  entry its receipt records, then the prefix's own folders; your Gentle Shell
+  home stays unless you accept or pass `--include-shared`. Details:
+  [Bundled install](bundled-install.md#self-uninstall).
+
+`gentle-shell uninstall <source>` stays Pi's own alias for `remove`. Details,
+refusals and exit codes: [Removing Gentle Shell](gentle-shell-uninstall.md).
 
 ### First run in an isolated or custom home
 
@@ -420,7 +522,7 @@ Right after that bootstrap, and on every later launch, a plain `gentle-shell` ag
 
 Every child process the flow spawns (the gentle-ai installer self-heal, the package-local gentle-ai binary, and the `pi remove` post-install cleanup) has its stdout routed to this launcher's own stderr, together with the flow's own notices, so a headless consumer's stdout — `gentle-shell --mode rpc` or `gentle-shell -p "..."` — stays exactly what it always was: pi's own output, nothing else. The first time it runs in a home you see `gentle-shell: first run in <home>: installing the Gentle AI companion packages (one time; set GENTLE_SHELL_NO_AUTO_SETUP=1 to skip)`; on a gentle-ai pin change you see `gentle-shell: gentle-ai pin changed (<old> -> <new>): updating <home>`; on a gentle-pi version change you see `gentle-shell: gentle-pi changed (<old> -> <new>): updating <home>`; when both changed at once, one line names both.
 
-Automatic provisioning only ever touches a home `gentle-shell` itself owns: the dedicated isolated home, a `--home <path>` (or persisted `home <path>`) that is new or already empty, one carrying the `.gentle-shell-home` ownership marker the bootstrap above wrote (so a `--home` directory whose *first* auto-provision attempt failed — leaving only the bootstrapped `settings.json` and marker behind — is still retried on the next launch instead of being mistaken for a foreign, pre-existing directory), or one this same config marker already recorded as provisioned before (so a later gentle-ai/gentle-pi re-sync still runs). A `--home` that already has content and neither marker — for example pointing at an existing, unrelated directory — is left alone, with one stderr hint (`` gentle-shell: <dir> already has content and was not set up by gentle-shell; run `gentle-shell <home flags> setup` to provision it ``) instead of a silent skip; pointing it at pi's own default agent home is refused the same way even when that directory is empty. `gentle-shell setup` run manually still works against any home — that is explicit intent, not automatic provisioning.
+Automatic provisioning only ever touches a home `gentle-shell` itself owns: the dedicated isolated home, a `--home <path>` (or persisted `home <path>`) that is new or already empty, one carrying the `.gentle-shell-home` ownership marker the bootstrap above wrote (so a `--home` directory whose *first* auto-provision attempt failed — leaving only the bootstrapped `settings.json` and marker behind — is still retried on the next launch instead of being mistaken for a foreign, pre-existing directory), or one this same config marker already recorded as provisioned before (so a later gentle-ai/gentle-pi re-sync still runs). A `--home` that already has content and neither marker — for example pointing at an existing, unrelated directory — is left alone, with one stderr hint (`` gentle-shell: <dir> already has content and was not set up by gentle-shell; run `gentle-shell <home flags> setup` to provision it ``) instead of a silent skip; pointing it at pi's own default agent home is refused the same way even when that directory is empty. `gentle-shell setup` run manually still works against any home — that is explicit intent, not automatic provisioning. A successful manual `setup` (not `--dry-run`) records the same marker, but only for a home automatic provisioning would own by the rules above, so the first launch after the installers' own `setup` does not install the packages again; pi's own default agent home and an unrelated directory are never recorded, and so are never provisioned automatically later.
 
 A failed flow (a non-zero gentle-ai or pi exit, a pin gate refusal, a self-heal that still can't find the binary, or a gentle-ai/`pi remove` child that runs past its timeout ceiling — 15 minutes by default — and gets killed) never blocks the launch: `gentle-shell` prints `` gentle-shell: automatic setup failed (exit <n>); starting anyway and retrying next run. Run `gentle-shell <home flags> setup` to see the full output. ``, followed by the underlying reason on the next line when one is known (a timeout's reason names the *effective* ceiling that fired — `` timed out after 15 minutes `` by default, or in seconds for a shorter override), writes no marker, and starts pi with today's plain injection (the home has no `npm:gentle-pi` declaration to skip it for). The next launch against the same home retries automatically. Manual `setup` never has that ceiling. A spawned child dying by a signal on its own — a crash, an OOM kill, an external `kill`, anything gentle-shell itself did not ask for — is just another failure reported the same way; pi still launches. Only an interrupt actually reaching `gentle-shell` itself (Ctrl-C, or SIGTERM/SIGHUP delivered to the launcher process) is different: it forwards that signal to whichever child is running, kills it, and exits `gentle-shell` itself immediately with the matching signal exit code, without starting pi — you asked the process to stop, not to fall back. This launcher-interrupt tracking covers the package-local gentle-ai install and each `pi remove` cleanup step (both driven through the same async spawn helper); the installer self-heal step that recovers a missing package-local gentle-ai binary runs synchronously and does not carry the same tracking — an interrupt reaching the launcher during that narrow step falls back to Node's default signal handling instead. An otherwise-unexpected failure anywhere in the flow itself (for example an unwritable config.json directory) is also never fatal: it is reported the same way and the launch continues.
 
@@ -550,7 +652,7 @@ parent git/status + clarify → one worker writes authorized fixes → focused v
 
 Legacy pre-graph authority is never migrated. `gentle_review inspect` reports an exact repository-bound destructive reset challenge for legacy corruption; after that fresh interactive authorization, RESET and RECOVER_LOCK route to the audited native `gentle-ai review reclaim` operation and RECOVER routes to native `gentle-ai review recover`, so every destructive transition is executed and audited by the native authority store. Native inputs the request did not carry return a `native-input-required` envelope instead of being invented. Existing graph-v1 ordinary lineages remain readable and gate-validatable but are read-only; Judgment Day remains mutable on graph-v1.
 
-`gentle_review abandon`, `quarantine-legacy`, and `reconcile-authority` remain explicit v2.1.11 maintenance routes. For `abandon` the caller supplies only lineage, actor, and reason (`operator_disposition` or `retired_schema`): Pi freshly reads the native authority inventory, locates the single eligible compact-v2 entry for that lineage, derives its revision, snapshot identity, and discarded-work summary, and displays the exact eight-line `gentle-ai.review-abandon-authorization/v2` binding for fresh interactive approval; inventory-derived fields supplied by the caller are rejected, and the native CLI re-derives non-terminal compact-v2 eligibility and the exact discarded work before accepting it. Legacy quarantine accepts only `historical findings freeze changed unrelated transaction state` with disposition `quarantine-malformed-freeze-event` and uses its exact eight-line binding. Both require fresh interactive approval and fail closed headlessly.
+`gentle_review abandon`, `quarantine-legacy`, and `reconcile-authority` remain explicit v2.1.11 maintenance routes. For `abandon` the caller supplies only lineage, actor, and reason (`operator_disposition` or `retired_schema`). Free-text reasons are rejected locally with both accepted values before any inventory read, approval prompt, or native launch. For a valid reason, Pi freshly reads the native authority inventory, locates the single eligible compact-v2 entry for that lineage, derives its revision, snapshot identity, and discarded-work summary, and displays the exact eight-line `gentle-ai.review-abandon-authorization/v2` binding for fresh interactive approval; inventory-derived fields supplied by the caller are rejected, and the native CLI re-derives non-terminal compact-v2 eligibility and the exact discarded work before accepting it. Legacy quarantine accepts only `historical findings freeze changed unrelated transaction state` with disposition `quarantine-malformed-freeze-event` and uses its exact eight-line binding. Both require fresh interactive approval and fail closed headlessly.
 
 `gentle_review reconcile-authority` accepts one predecessor lineage and revision, one successor lineage and revision, an actor, and a reason. Pi derives the exact seven-line `gentle-ai.review-reconcile-authorization/v1` binding, or appends exactly `anomalies=unchanged_target,malformed_recovery_authorization` for the published dual anomaly in that order. Native code re-derives every anomaly; malformed bindings, changed revisions, unavailable native support, cancellation, and native refusal fail closed through typed envelopes.
 
@@ -1205,6 +1307,13 @@ node --experimental-strip-types --check extensions/gentle-ai.ts
 node --experimental-strip-types --check extensions/startup-banner.ts
 npm pack --dry-run
 ```
+
+`pnpm test` isolates the `unit-tests` stage from inherited `GIT_*` and
+`GENTLE_PI_AGENTS_*` variables and supplies an empty temporary
+`GENTLE_PI_CONFIG_HOME`, removed when the stage exits. Other environment
+variables and the provider-contract/runtime-harness stages remain unchanged.
+Direct `node --test` invocations bypass this isolation. Product Git-environment
+safety checks are unchanged.
 
 ### Cross-lane checks
 

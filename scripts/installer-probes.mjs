@@ -520,6 +520,16 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 			const version = exactVersion(await output(go, ["version"], user, deadlines.version), GO_VERSION);
 			return version ? { available: true, version, usable: true } : unknown();
 		},
+		// Not needed to install; review, worktrees and repository features use it.
+		// Git itself is never run: on macOS /usr/bin/git is a shim that opens an
+		// install dialog without the Command Line Tools, so only `xcode-select -p`
+		// (which never opens one) decides whether that shim is real Git.
+		async git() {
+			const git = await lookPath("git", user, platform, fs);
+			if (!git) return absent();
+			if (platform !== "darwin" || git !== "/usr/bin/git") return { available: true };
+			return { available: succeeded(await run("/usr/bin/xcode-select", ["-p"], { env: user, deadlineMs: deadlines.version })) };
+		},
 		async globalBin() {
 			if (!globalBin) return unknown();
 			// Nearest existing ancestor (or the directory itself); nothing is created.

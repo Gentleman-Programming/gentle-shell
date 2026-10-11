@@ -366,6 +366,19 @@ test("planModel discloses the PATH change and runtime persistence before consent
 		[[false, true], [false, true]]);
 });
 
+// A missing Git is noted on the review screen, never as a blocker: the plan stays installable.
+test("the review screen notes a missing Git and stays installable", async () => {
+	const model = wizard.planModel(await serverPlanView({ git: { available: false } }));
+	assert.match(model.gitNotice, /Git was not found on this computer/);
+	const node = wizard.renderPlan(new FakeDocument(), model, { install() {}, reload() {}, close() {} });
+	assert.match(node.textContent, /Git not found/);
+	assert.match(node.textContent, /sudo apt-get install -y git/);
+	assert.ok(button(node, "Install Gentle Shell"), "still installable");
+	const plain = wizard.planModel(await serverPlanView({ git: { available: true } }));
+	assert.equal(plain.gitNotice, null);
+	assert.doesNotMatch(wizard.renderPlan(new FakeDocument(), plain, { install() {}, reload() {}, close() {} }).textContent, /Git not found/);
+});
+
 // S6 notice: shown on the review screen before consent; it changes nothing else.
 test("the review screen shows the notice about reused tools in folders another account can change", async () => {
 	const weak = { check: "parent-acl-mask", at: "C:\\Users\\m\\AppData\\Roaming", sid: "S-1-5-21-1-2-3-1002", account: "PC\\other", rights: "0x001301BF" };
@@ -1159,6 +1172,11 @@ test("planModel and renderPlan present the bundled install as one self-contained
 	assert.match(node.textContent, /Install Gentle Shell as one self-contained product/);
 	assert.match(node.textContent, /your own Node\.js, npm, pnpm, Go and Pi are not used or changed/i);
 	assert.match(node.textContent, /Install Gentle Shell/);
+	// The default fresh-install path notes a missing Git too.
+	const withGit = wizard.renderPlan(new FakeDocument(), wizard.planModel({ ...view, gitNotice: { description: "Git was not found on this computer." } }),
+		{ install() {}, reload() {}, close() {} });
+	assert.match(withGit.textContent, /Git not found/);
+	assert.doesNotMatch(node.textContent, /Git not found/);
 });
 
 test("outcomeModel gives the PATH line to add when the bundled install may not edit the profile", () => {

@@ -1076,3 +1076,31 @@ test("Windows: with a blocked PNPM_HOME decision the real probes run no command 
 	assert.deepEqual([h.calls, walked], [[], []], "no command runs and nothing is walked");
 	assert.deepEqual(planPreflight(inventory).blockers, [{ code: "untrusted-pnpm-home", tool: "pnpmHome" }]);
 });
+
+// Git is not needed to install, but review, worktrees and repository features use it:
+// the plan only notes when it is missing. Git itself is never run.
+test("the git probe reports whether Git is on the user's PATH without running it", async () => {
+	assert.deepEqual(await probes({ files: ["/usr/bin/git"] }).probes.git(), { available: true });
+	assert.deepEqual(await probes().probes.git(), { available: false });
+	// macOS: /usr/bin/git is a shim that opens an install dialog without the Command Line
+	// Tools, so only `xcode-select -p` is asked, which never opens one.
+	const env = { HOME, PATH: "/usr/bin:/bin" };
+	for (const [code, available] of [[0, true], [2, false]] as const) {
+		const mac = probes({ platform: "darwin", env, files: ["/usr/bin/git"], results: { "/usr/bin/xcode-select -p": { code, stdout: "/Library/Developer/CommandLineTools\n" } } });
+		assert.deepEqual(await mac.probes.git(), { available }, String(code));
+		assert.deepEqual(mac.calls.map((call) => call.command), ["/usr/bin/xcode-select"]);
+	}
+	// Another Git first on PATH (Homebrew, for example) is real Git.
+	const brew = probes({ platform: "darwin", env: { HOME, PATH: "/opt/homebrew/bin:/usr/bin:/bin" }, files: ["/opt/homebrew/bin/git", "/usr/bin/git"] });
+	assert.deepEqual(await brew.probes.git(), { available: true });
+	assert.deepEqual(brew.calls, []);
+});
+
+test("collectInventory keeps the git probe's record only when the probe exists", async () => {
+	const withGit = await collectInventory({ platform: "linux", arch: "x64", probes: { git: async () => ({ available: false }) } });
+	assert.deepEqual(withGit.git, { available: false });
+	const without = await collectInventory({ platform: "linux", arch: "x64", probes: {} });
+	assert.equal("git" in without, false);
+	const failing = await collectInventory({ platform: "linux", arch: "x64", probes: { git: async () => { throw new Error("/private/path"); } } });
+	assert.equal("git" in failing, false);
+});

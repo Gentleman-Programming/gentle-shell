@@ -75,7 +75,8 @@ minimum OS versions, libc compatibility, artifact trust and elevation handling
 remain to be verified in later units.
 
 Probes are named `node`, `pnpm`, `pi`, `shell`, `gentleAi`, `go`, `globalBin`, and
-`setup`. `collectInventory` has no default probes; the real implementations live
+`setup`, plus the optional advisory `git` (kept as `inventory.git` only when the
+probe answers) and Windows `folders`. `collectInventory` has no default probes; the real implementations live
 in [`installer-probes.mjs`](#host-probes). Probes must use bounded read-only
 checks, never launcher setup, postinstall, paid model requests, credential
 inspection or home writes. The collector cannot enforce purity of
@@ -260,6 +261,7 @@ the listing; truncated, nonzero, signalled or timed-out output is unknown.
 | `gentleAi` | Absent without gentle-pi or without its package-native binary. Otherwise compatible only for this package version, a listed path that resolves inside PNPM_HOME and `verifyGentleAi` (default `packageNativeGentleAi`) success; anything else is unknown. |
 | `go` | `go version` from the real PATH; `go1.22` normalizes to `1.22.0`; devel and release-candidate builds are unknown. |
 | `folders` | Windows only, after the other probes: the commands `node`, `npm`, `go`, `pi` and `gentle-shell` resolve to on the real PATH, and what each one runs, walked in one Windows PowerShell launch (`verifyWindowsStorageMany`). Returns `{ node?, npm?, go?, pi?, shell? }` with the first failing path's finding per tool, or `null`. A walk that cannot finish is `null`, never a blocker ([reused tool folders](#reused-tool-folders)). |
+| `git` | Advisory only, for the standard and the bundled plan alike: `{ available }` from `git` on the real PATH, never run. On macOS `/usr/bin/git` is a shim that opens an install dialog without the Command Line Tools, so `xcode-select -p` (which never opens one) decides it; another Git first on PATH counts as it is. A missing Git adds a **Git not found** notice before consent (`gitNotice`) with the install command for the system (`sudo apt-get install -y git` on Debian or Ubuntu, `xcode-select --install`, `winget install --id Git.Git -e`). Installing does not need Git, and it is never a blocker; code review, worktrees and repository features do need it. |
 | `globalBin` | `pnpmGlobalBin` over the real PATH; `writable` is write access on the nearest existing ancestor of `$PNPM_HOME/bin` (itself included). A non-directory ancestor is not writable. |
 | `setup` | `false` when gentle-pi is absent. `{ available: true, recoverable: true }` for the pinned stack this pnpm installed (see [Setup recovery](#setup-recovery)), using the runner's `recoverableStackRoot`. Unknown otherwise, because an existing Shell's setup readiness has no read-only evidence. |
 
@@ -1043,7 +1045,7 @@ HTML).
 | Screen | What the user sees |
 | --- | --- |
 | Check | Shown while `GET /api/progress?after=0` and `GET /api/plan` run. A running installation resumes the Install screen; a finished one shows its outcome instead of a new plan. |
-| Review | Each fixed action with its description, the `profileChange` and `persistence` disclosures (state as text: "Will change", "No change"), on Windows a **Tools in folders other accounts can change** notice when the plan records one ([reused tool folders](#reused-tool-folders)), one consent checkbox and **Install Gentle Shell** (for a setup recovery, "Finish setting up Gentle Shell" and **Complete setup**). Without the checkbox no request is sent; the error is announced and focus moves to the checkbox. Preflight blockers replace the plan with their guidance, **Check again** and **Close installer**. |
+| Review | Each fixed action with its description, the `profileChange` and `persistence` disclosures (state as text: "Will change", "No change"), on Windows a **Tools in folders other accounts can change** notice when the plan records one ([reused tool folders](#reused-tool-folders)), a **Git not found** notice when Git is missing (never a blocker), one consent checkbox and **Install Gentle Shell** (for a setup recovery, "Finish setting up Gentle Shell" and **Complete setup**). Without the checkbox no request is sent; the error is announced and focus moves to the checkbox. Preflight blockers replace the plan with their guidance, **Check again** and **Close installer**. |
 | Install | Expected runner steps (`expectedSteps`) with a text status (Done, In progress, Pending, Failed, Blocked, Not run), a `<progress>` bar and a terminal-style log of `{ seq, step, status, reason }` entries. |
 | Done | `ready`: run `gentle-shell`. `terminal-action-required`: open a new terminal, then run `gentle-shell`. `blocked`/`failed`: the host's guidance, the reason or failed step, the steps that finished and the log. A failed step with a detail also shows it under **Last error from** its label: `gentle-shell setup`, `pnpm setup`, `the Go download`, `pnpm add -g` (`install-global`), `the Gentle Shell main install`, `the Gentle AI main build` or `the Gentle Shell update`, as one plain text node (backticks stay literal). Every outcome offers **Close installer** (`POST /api/shutdown`). |
 

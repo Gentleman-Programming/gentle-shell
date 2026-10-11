@@ -1541,3 +1541,27 @@ test("wizardHandlers plans the bundled install only when the gate says so, and r
 		rmSync(home, { recursive: true, force: true });
 	}
 });
+
+// Git is not needed to install; the plan notes a missing Git, never as a blocker,
+// for the standard and the bundled plan alike (both inventories carry the probe).
+const gitNoticeText = (install: string) => "Git was not found on this computer. Gentle Shell installs and starts without it, but code review, worktrees and other " +
+	`repository features need it. Install it with ${install}, then open a new terminal. This is not a blocker.`;
+test("/api/plan notes a missing Git for the standard and the bundled plan, never as a blocker", async () => {
+	const cases = [
+		[collected({ git: { available: false } }), gitNoticeText("your package manager, for example `sudo apt-get install -y git` on Debian or Ubuntu")],
+		[collected({ platform: "darwin", git: { available: false } }), gitNoticeText("`xcode-select --install` (Apple's Command Line Tools)")],
+		[{ ...bundledCollected({ kind: "none" }), inventory: { ...bundledCollected({ kind: "none" }).inventory, git: { available: false } } }, gitNoticeText("your package manager, for example `sudo apt-get install -y git` on Debian or Ubuntu")],
+		[collected({ git: { available: true } }), null],
+		[collected({}), null],
+	] as const;
+	for (const [result, text] of cases) {
+		const { host, port, login } = await start({ collect: async () => result });
+		try {
+			const view = await plan(port, await login());
+			assert.equal(view.gitNotice?.description ?? null, text);
+			assert.equal(view.blockers.some((blocker: { tool: string }) => blocker.tool === "git"), false);
+		} finally {
+			await host.close("test");
+		}
+	}
+});

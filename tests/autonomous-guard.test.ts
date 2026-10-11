@@ -774,6 +774,56 @@ test("evaluateBashPolicies: forwards yoloActive to every policy", async () => {
 	assert.deepEqual(seen, [true], "the seam must thread yoloActive into policies");
 });
 
+test("evaluateBashPolicies: forwards the Auto permission gate to every policy", async () => {
+	const autoGate = async () => undefined;
+	const seen: unknown[] = [];
+	const seam = makeBashPolicySeamHarness("/stub-cwd");
+	const result = await __testing.evaluateBashPolicies(
+		"echo hello",
+		seam.ctx,
+		seam.events,
+		seam.herdrLifecycle,
+		false,
+		[
+			{
+				name: "auto-gate-recorder",
+				async evaluate(_command, _ctx, _events, _herdrLifecycle, _yoloActive, gate) {
+					seen.push(gate);
+					return undefined;
+				},
+			},
+		],
+		autoGate,
+	);
+	assert.equal(result, undefined);
+	assert.deepEqual(seen, [autoGate], "the seam must thread the Auto gate into policies");
+});
+
+test("evaluateBashPolicies: real runtime-guardrails policy defers a non-guarded command to the Auto gate", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "gentle-ai-bash-policy-auto-"));
+	try {
+		const seam = makeBashPolicySeamHarness(cwd);
+		let gateCalls = 0;
+		const denied = { block: true as const, reason: "auto-mode classifier denied" };
+		const result = await __testing.evaluateBashPolicies(
+			"echo hello",
+			seam.ctx,
+			seam.events,
+			seam.herdrLifecycle,
+			false,
+			undefined,
+			async () => {
+				gateCalls += 1;
+				return denied;
+			},
+		);
+		assert.deepEqual(result, denied, "the Auto gate verdict must reach the caller through the seam");
+		assert.equal(gateCalls, 1);
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
 test('evaluateBashPolicies: ordered policy list is exactly ["runtime-guardrails"]', () => {
 	assert.deepEqual(
 		__testing.BASH_COMMAND_POLICIES.map((policy) => policy.name),

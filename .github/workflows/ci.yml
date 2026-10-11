@@ -118,6 +118,37 @@ jobs:
 
   # The installer suites import only Node built-ins and repository files, so no
   # dependency installation is needed.
+  # DIAGNOSTIC ONLY (#2121), never merged: run the Windows bootstrap test file in the
+  # runner's own process so an abort at exit prints its message here.
+  windows-abort-diag:
+    name: windows-abort-diag (${{ matrix.attempt }})
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        attempt: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: "1.25.14"
+          cache: false
+      - name: Isolated in-process run
+        shell: pwsh
+        run: |
+          node --version
+          & node --experimental-strip-types --trace-exit --test --test-isolation=none --test-reporter=spec tests/installer-windows-bootstrap.test.ts 2>&1 | Write-Output
+          "EXIT=$LASTEXITCODE (0x{0:X8})" -f $LASTEXITCODE
+      - name: Subprocess run with child stderr
+        shell: pwsh
+        run: |
+          & node --experimental-strip-types --test --test-reporter=tap tests/installer-windows-bootstrap.test.ts 2>&1 | Select-String -Pattern "not ok|exitCode|stderr|Assertion|FATAL|abort|# fail" | Write-Output
+          "EXIT=$LASTEXITCODE (0x{0:X8})" -f $LASTEXITCODE
+
   installer:
     name: installer (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

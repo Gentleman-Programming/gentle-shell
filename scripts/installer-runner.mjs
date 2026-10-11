@@ -17,7 +17,7 @@ import { windowsShim } from "./installer-windows.mjs";
 // installed the pinned stack but stopped in setup, a fixed recovery re-verifies
 // that stack and reruns only `gentle-shell setup` (and `pnpm setup`), never `add -g`.
 // An older Pi that pnpm or npm owns is first updated with that package manager.
-// When a build needs Go and the user's is missing or older, the installer's pinned
+// When a build needs Go and the user's is missing, older or unchecked, the installer's pinned
 // Go is acquired first and given only to the build children, first on PATH.
 
 /** Pi version installed next to gentle-pi (optional peer, resolved in one add). */
@@ -115,7 +115,7 @@ const updateActions = ["update-shell-release", "update-shell-main"];
 const piOnlyVariants = Object.freeze([["update-pi", "verify-readiness"], ["install-pi", "verify-readiness"]]);
 // The main channel overlay: all three after a release installation, or none.
 const mainActions = ["build-gentle-ai-main", "install-shell-main", "record-channel"];
-// The pinned Go: both, only when preflight recorded a missing or older Go, or none.
+// The pinned Go: both, only when preflight recorded a missing, older or unchecked Go, or none.
 const goActions = ["acquire-go", "verify-go"];
 // Setup recovery: the pinned stack this pnpm installed is present (planPreflight
 // saw a recoverable setup), so only setup and the optional PATH step remain.

@@ -220,7 +220,7 @@ export function wizardHandlers({ platform, arch, env, run, fs, distributionBase 
 			locatePi: () => createProbes({ platform, env: wizardEnv, run, fs, pnpmHome }).locatePi(),
 			// Only a plan with a private Windows PNPM_HOME: claimed, then walked again.
 			preparePnpmHome: (home) => ensureWindowsPnpmHome(home, runnerEnv),
-			// Only a plan that needs Go and found it missing or older: verified go.dev
+			// Only a plan that needs Go and found it missing, older or unchecked: verified go.dev
 			// bytes under <config home>/tools/go, used by path or child PATH only.
 			acquireGo: () => acquireGo({ root: join(configHome(ctx), "tools", "go"), platform, arch }),
 			// A pinned Go goes first on the PATH of the upgrade's children only.

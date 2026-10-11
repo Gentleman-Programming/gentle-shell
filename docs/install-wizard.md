@@ -61,7 +61,7 @@ Current requirements come from `package.json` and
 Pi ≥0.99.1, pnpm acquisition 11.1.1, Gentle Shell package 4.0.0 and package-local
 Gentle AI 4.0.0. Windows native source builds require Go ≥1.25.10 when the
 required usable native binary is missing. A reusable binary does not require Go.
-When a build needs Go and the user's Go is missing or older, the installer uses
+When a build needs Go and the user's Go is missing, older or unchecked, the installer uses
 its own [pinned Go](#pinned-go) instead of blocking.
 Pins change with the repository; the API reads the metadata rather than copying
 these values into a second installer.
@@ -127,9 +127,10 @@ setup add no separate `unknown` blocker then, because they are only checked for
 the pinned Shell. When Node.js, Pi, Gentle Shell or Go is simply older than its
 minimum, the wizard's guidance names the found and required versions (for the
 Shell, also the pnpm commands that update or remove it); other blockers keep
-their fixed guidance. A missing or older Go is not a blocker: `tools.go` is
+their fixed guidance. A missing, older or unchecked Go is not a blocker: `tools.go` is
 `needs-acquire` with `required`, the pinned `version` and the older `found`
-version, and the plan acquires the [pinned Go](#pinned-go). An
+version (or `unchecked: true` when `go version` reported no version it can
+check), and the plan acquires the [pinned Go](#pinned-go). An
 older Node.js or an incompatible pnpm on the user's PATH is not a blocker when
 the bootstrap's pinned copy runs the wizard: the probe reports that copy
 (bootstrap-only) with the user's stable version as `found`, and `tools.node` or
@@ -161,7 +162,7 @@ A clean target receives these intents in dependency order:
 
 1. Acquire and verify Node, then pnpm; prepare the usable global-bin environment.
 2. When a build needs Go (the main channel, or a Windows Gentle Shell install or
-   update whose postinstall may build Gentle AI) and Go is missing or older,
+   update whose postinstall may build Gentle AI) and Go is missing, older or unchecked,
    `acquire-go` and `verify-go` come next, before every persistence and install
    step, so a failed Go download leaves the computer as it was.
 3. Persist only what is missing. A bootstrap-only reusable Node gets the full
@@ -658,7 +659,7 @@ Pi but never reinstalls or downgrades it, and nothing changes before consent.
 | That pnpm in `$PNPM_HOME/bin` itself (where persisting pnpm writes) | Blocked before consent, never replaced or downgraded. The guidance names the found and required versions; an older one is updated with `pnpm self-update 11.1.1`, a newer major is never downgraded. |
 | A pnpm in `$PNPM_HOME/bin` whose shim is not recognized or whose `pnpm --version` reports no stable version | Left unchanged and never run again. The bootstrap's verified pnpm runs the installer and nothing is persisted over it (no `persist-pnpm`). The plan says so before consent. |
 | An older Node.js or incompatible pnpm next to an existing Gentle Shell (updated or current) | Blocked before consent: runtimes are persisted only while installing Gentle Shell. A setup recovery is not blocked and persists nothing. |
-| A Go missing or older than the minimum (main channel, or a Windows build) | Left unchanged. The installer downloads its [pinned Go](#pinned-go) only for the build, and the plan says so before consent with the found version (or missing). An unknown Go still blocks. A release install on macOS or Linux never downloads Go. |
+| A Go missing or older than the minimum (main channel, or a Windows build) | Left unchanged. The installer downloads its [pinned Go](#pinned-go) only for the build, and the plan says so before consent with the found version (or missing). A Go whose version cannot be checked gets the pinned Go the same way, and is never run for the build. A release install on macOS or Linux never downloads Go. |
 
 Ownership comes from real paths ([`installOwner`](../scripts/main-channel.mjs)):
 pnpm when the package lives under PNPM_HOME, npm only when it is
@@ -769,8 +770,8 @@ publishes main builds, so main is built on this computer
 ([`scripts/main-channel.mjs`](../scripts/main-channel.mjs)):
 
 - Preflight reuses a Go ≥ the Windows minimum on every platform; a missing or
-  older Go gets the [pinned Go](#pinned-go), and a Go whose version cannot be
-  checked blocks with `main-requires-go`. Main steps are added only when the
+  older Go, or one whose version cannot be checked, gets the
+  [pinned Go](#pinned-go), first on the build's PATH. Main steps are added only when the
   plan installs or completes setup; a stack that is already set up switches with
   `gentle-shell upgrade --channel main`, or the wizard's update plan below.
 - After the release stack is installed and `verify-gentle-ai` passed, the runner:

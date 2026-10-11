@@ -610,15 +610,17 @@ test("installing a main plan re-checks the computer on the main channel", async 
 	}
 });
 
-test("/api/plan explains that the main channel cannot use a Go it cannot check", async () => {
+test("/api/plan offers the pinned Go on the main channel for a Go it cannot check", async () => {
 	const { host, port, login } = await start({ collect: async (channel) => collectedFor(channel, { pi: { available: false }, shell: { available: false }, go: { available: null } }) });
 	try {
 		const cookie = await login();
 		const view = JSON.parse((await send(port, { path: "/api/plan?channel=main", headers: { cookie, ...API } })).body);
-		const blocker = view.blockers.find((item: { code: string }) => item.code === "main-requires-go");
-		assert.equal(blocker.guidance, "The `main` channel builds Gentle AI with Go, but `go version` did not report a version this installer can check. " +
-			"Make sure `go version` works in a terminal, or choose the release channel, then select Check again.");
-		assert.deepEqual(view.actions, []);
+		assert.equal(view.blockers.some((item: { tool: string }) => item.tool === "go"), false);
+		const ids = view.actions.map((action: { id: string }) => action.id);
+		assert.equal(ids.indexOf("verify-go"), ids.indexOf("acquire-go") + 1);
+		assert.equal(view.actions.find((action: { id: string }) => action.id === "acquire-go").description, "The Go on this computer did not report a version this installer can check, so the installer downloads Go 1.25.14 " +
+			"from go.dev, verifies its pinned SHA-256 checksum and uses it only to build Gentle AI. It is kept in the installer's own folder " +
+			"(~/.pi/gentle-ai/tools/go); your Go, PATH and shell profile are not changed.");
 	} finally {
 		await host.close("test");
 	}

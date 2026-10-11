@@ -126,10 +126,13 @@ test("the main channel acquires the pinned Go when Go is missing or older, befor
 	}
 });
 
-test("an unknown Go still blocks the main channel: it is neither missing nor older", () => {
-	const plan = planPreflight({ ...clean("darwin"), go: { available: null } }, { channel: "main" });
-	assert.ok(plan.blockers.some((blocker: { code: string; tool: string }) => blocker.code === "main-requires-go" && blocker.tool === "go"));
-	assert.deepEqual(plan.actions, []);
+test("an unknown Go never blocks a build: the build gets the installer's pinned Go, first on PATH", () => {
+	for (const [platform, channel] of [["darwin", "main"], ["linux", "main"], ["win32", "main"], ["win32", "release"]]) {
+		const plan = planPreflight({ ...clean(platform), go: { available: null } }, { channel });
+		assert.deepEqual(plan.blockers, [], `${platform} ${channel}`);
+		assert.deepEqual(plan.tools.go, { status: "needs-acquire", required: requirements.go, version: goAcquisition.version, unchecked: true }, `${platform} ${channel}`);
+		assert.deepEqual(plan.actions.filter((action: { target: string }) => action.target === "go"), goActions, `${platform} ${channel}`);
+	}
 });
 
 test("a release installation on macOS or Linux never acquires Go, whatever Go is there", () => {
@@ -350,9 +353,10 @@ test("a current Shell without its global command still blocks as unknown", () =>
 test("missing Windows Go is acquired before reprovisioning an existing Shell", () => {
 	const inventory = { ...installed("win32"), gentleAi: absent };
 	assert.deepEqual(ids(inventory), ["acquire-go", "verify-go", "provision-native", "setup-shell", "verify-readiness"]);
+	// A Go it cannot check is never run either: the pinned Go builds instead.
 	for (const go of [tool("devel"), { ...tool("1.26.0"), usable: false }]) {
-		assert.equal(planPreflight({ ...inventory, go }).tools.go.status, "unknown");
-		assert.deepEqual(ids({ ...inventory, go }), []);
+		assert.equal(planPreflight({ ...inventory, go }).tools.go.status, "needs-acquire");
+		assert.deepEqual(ids({ ...inventory, go }), ["acquire-go", "verify-go", "provision-native", "setup-shell", "verify-readiness"]);
 	}
 });
 

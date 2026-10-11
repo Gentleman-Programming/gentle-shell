@@ -585,9 +585,9 @@ test("an update plan is reviewed as an update, with an Update button", () => {
 	assert.equal(button(view, "Install Gentle Shell"), undefined);
 });
 
-test("a main plan blocked by a Go it cannot check still lets the user switch back to release", async () => {
-	const blocked = await serverPlanView({ go: { available: null } }, "main");
-	assert.ok(blocked.blockers.some((blocker: { code: string }) => blocker.code === "main-requires-go"));
+test("a blocked main plan still lets the user switch back to release", async () => {
+	const blocked = await serverPlanView({ node: { available: null } }, "main");
+	assert.ok(blocked.blockers.some((blocker: { code: string }) => blocker.code === "unknown-tool"));
 	const ui = mount({ "GET /api/progress": () => idleProgress(), "GET /api/plan": () => [200, blocked] });
 	await ui.app.start();
 	await flush();

@@ -154,8 +154,6 @@ export const guidance = Object.freeze({
 		"unsupported-target": "This operating system or CPU is not supported by the wizard. Follow the README for a manual installation.",
 		"unknown-tool": "A required tool could not be checked safely. Make sure it runs from a terminal, or remove the broken installation, then run the installer again.",
 		"incompatible-tool": "A required tool is installed at an incompatible version. Update it, then run the installer again.",
-		"main-requires-go": "The `main` channel builds Gentle AI with Go, but `go version` did not report a version this installer can check. " +
-			"Make sure `go version` works in a terminal, or choose the release channel, then select Check again.",
 		"untrusted-pnpm-home": "Another account can change the pnpm home folder (PNPM_HOME), where pnpm installs and runs programs, so nothing was installed. " +
 			"Remove that account's write access, or set PNPM_HOME to a private folder such as %USERPROFILE%\\.pnpm, then select Check again.",
 	}),
@@ -358,10 +356,11 @@ function actionDescription(action, plan) {
 		return `Install Pi ${PI_INSTALL_VERSION} globally with pnpm for Gentle Shell. The Pi ${bare(pi.version)} already on this computer ` +
 			"was not installed with pnpm or npm, so it is left unchanged. Gentle Shell uses the installer's Pi; the `pi` command in a terminal may still run the older one.";
 	}
-	// The pinned Go: its version, the Go found (or missing), and what stays unchanged.
+	// The pinned Go: its version, the Go found (older, unchecked or missing), and what stays unchanged.
 	const go = plan.tools?.go;
 	if (action.id === "acquire-go" && go?.status === "needs-acquire" && stable(action.version, go.required)) {
-		const found = stable(go.found) ? `Go ${bare(go.found)} on this computer is older than ${bare(go.required)}` : "Go is missing on this computer";
+		const found = stable(go.found) ? `Go ${bare(go.found)} on this computer is older than ${bare(go.required)}`
+			: go.unchecked === true ? "The Go on this computer did not report a version this installer can check" : "Go is missing on this computer";
 		return `${found}, so the installer downloads Go ${bare(action.version)} from go.dev, verifies its pinned SHA-256 checksum and uses it only to build Gentle AI. ` +
 			"It is kept in the installer's own folder (~/.pi/gentle-ai/tools/go); your Go, PATH and shell profile are not changed.";
 	}

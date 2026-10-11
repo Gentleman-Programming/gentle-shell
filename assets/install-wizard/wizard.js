@@ -427,7 +427,7 @@ function disclosureCard(doc, item) {
 
 const channels = Object.freeze([
 	{ value: "release", label: "Latest release", hint: "Recommended. The published Gentle Shell and its pinned Gentle AI binary." },
-	{ value: "main", label: "Latest main", hint: "Development builds: Gentle Shell and Gentle AI from the latest commit of `main`, built on this computer with Go. If yours is missing or older, the installer downloads its own pinned Go only for the build." },
+	{ value: "main", label: "Latest main", hint: "Development builds: Gentle Shell and Gentle AI from the latest commit of `main`, built on this computer with Go. If yours is missing, older or cannot be checked, the installer downloads its own pinned Go only for the build." },
 ]);
 
 /** Channel choice shown on every review screen; a change reloads the plan. */

@@ -271,7 +271,7 @@ export function formatChildExit(code: number | null | undefined, signal?: string
 
 const hostProcess: ProcessControl = { platform: process.platform, kill: (pid, signal) => process.kill(pid, signal) };
 
-// Every child must carry an explicit allowlist; never let Pi substitute its defaults.
+/** Builds the exact `--tools` value for a child. Every child must carry an explicit allowlist; missing or empty lists throw instead of letting Pi substitute its defaults. */
 function requestedTools(request: TaskRequest): string {
 	if (!Array.isArray(request.agent.tools) || request.agent.tools.length === 0) throw new Error(EXPLICIT_TOOLS_ALLOWLIST_ERROR);
 	return [...new Set([...request.agent.tools, PARENT_NOTIFICATION_TOOL])].join(",");
@@ -302,6 +302,7 @@ function requestedWebPackagePaths(request: TaskRequest): string[] {
 	}
 }
 
+/** Builds the child's argument vector: mode, session dir, injected packages, model, and the always-present `--tools` allowlist. */
 export function childArguments(request: TaskRequest, instructionsPath?: string): string[] {
 	const args = ["--mode", "rpc", "--session-dir", request.sessionDir];
 	const extensionPaths = [...new Set(request.extensionPaths ?? [])];
@@ -515,8 +516,11 @@ export class AgentRunner {
 		}
 	}
 
-	// A child that cannot start (missing pi, bad cwd) fails only its task:
-	// spawn exceptions and process errors settle without uncaught host errors.
+	/**
+	 * Launches one queued child after the allowlist guard. A child that cannot
+	 * start (missing pi, bad cwd) fails only its task: spawn exceptions and
+	 * process errors settle without uncaught host errors.
+	 */
 	private launch(id: string, request: TaskRequest): void {
 		if (!Array.isArray(request.agent.tools) || request.agent.tools.length === 0) {
 			this.store.update(id, { status: TASK_STATUS.RUNNING, startedAt: this.deps.now(), lastStep: "starting" });

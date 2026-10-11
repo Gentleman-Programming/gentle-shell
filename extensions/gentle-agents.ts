@@ -278,6 +278,7 @@ function ownedChildIpc(env: NodeJS.ProcessEnv, candidate: IpcEndpoint | undefine
 // whose normalized tools list is empty. The runner adds parent messaging separately.
 const TOOL_NAME = /^[A-Za-z0-9_.:-]+$/;
 
+/** Renders the catalog's declared-tools annotation; an empty declaration is reported as launch-rejected. */
 function declaredToolInventory(agent: AgentDefinition): string {
 	const usable = agent.tools.filter((name) => TOOL_NAME.test(name));
 	if (usable.length > 0) return `[declared tools (not verified): ${usable.join(", ")}]`;

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,7 +10,7 @@ import { createAssistantMessageEventStream, getCurrentTools, type AssistantMessa
 const webTools = ["web_enable", "web_search", "source_check", "fetch_content", "get_search_content"];
 
 function fixture() {
-	const root = mkdtempSync(join(tmpdir(), "child-web-package-"));
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "child-web-package-")));
 	const agentDir = join(root, "agent");
 	const packageRoot = join(agentDir, "npm", "node_modules", "pi-web-access");
 	mkdirSync(join(packageRoot, "dist"), { recursive: true });

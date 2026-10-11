@@ -277,13 +277,16 @@ const hostProcess: ProcessControl = { platform: process.platform, kill: (pid, si
 const KNOWN_BUILTIN_TOOLS = new Set(["read", "grep", "find", "ls", "edit", "write", "bash", "powershell", "codegraph", "codemode", "tool_search"]);
 const NAMESPACED_TOOL_NAME = /^[a-z0-9]+(?:[_-]+[a-z0-9]+)+$/;
 
-// At least one declared name must be recognizable; an all-garbage allowlist
-// otherwise launches and the child silently loses every requested tool (#1690).
+/**
+ * True when at least one declared name is recognizable: a known single-word
+ * builtin or a namespaced `server_tool` name. An all-garbage allowlist is
+ * rejected because Pi would silently drop every unknown name (#1690).
+ */
 function hasRecognizableToolName(tools: readonly string[]): boolean {
 	return tools.some((tool) => KNOWN_BUILTIN_TOOLS.has(tool) || NAMESPACED_TOOL_NAME.test(tool));
 }
 
-// Every child must carry an explicit allowlist; never let Pi substitute its defaults.
+/** Builds the exact `--tools` value for a child. Every child must carry an explicit allowlist; missing or empty lists throw instead of letting Pi substitute its defaults. */
 function requestedTools(request: TaskRequest): string {
 	if (!Array.isArray(request.agent.tools) || request.agent.tools.length === 0) throw new Error(EXPLICIT_TOOLS_ALLOWLIST_ERROR);
 	if (!hasRecognizableToolName(request.agent.tools)) throw new Error(RECOGNIZABLE_TOOLS_ALLOWLIST_ERROR);
@@ -528,8 +531,11 @@ export class AgentRunner {
 		}
 	}
 
-	// A child that cannot start (missing pi, bad cwd) fails only its task:
-	// spawn exceptions and process errors settle without uncaught host errors.
+	/**
+	 * Launches one queued child after the allowlist guard. A child that cannot
+	 * start (missing pi, bad cwd) fails only its task: spawn exceptions and
+	 * process errors settle without uncaught host errors.
+	 */
 	private launch(id: string, request: TaskRequest): void {
 		if (!Array.isArray(request.agent.tools) || request.agent.tools.length === 0) {
 			this.store.update(id, { status: TASK_STATUS.RUNNING, startedAt: this.deps.now(), lastStep: "starting" });

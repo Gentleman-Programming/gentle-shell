@@ -447,10 +447,11 @@ package.
 - **main**: builds Gentle AI from the latest `main` commit with Go and installs
   Gentle Shell packed from the latest `main` commit (`<version>-main.<sha12>`),
   rebuilding only what moved since the recorded commits. The Gentle AI build is
-  used through the dev-binary override. Needs pnpm on PATH and Go: your Go when
-  it meets the minimum (1.25.10), otherwise the pinned Go the installation wizard
-  published under `<config home>/tools/go`. `upgrade` never downloads Go itself;
-  with an older Go and no pinned copy it stops and names both versions.
+  used through the dev-binary override. Needs pnpm on PATH. Gentle AI builds with
+  your Go when it reports a stable version that meets the minimum (1.25.10);
+  otherwise (missing, older, or a version it cannot check) with the pinned Go
+  under `<config home>/tools/go`, which `upgrade` downloads and verifies there
+  when the installation wizard did not publish it yet.
 - `--channel release|main` (or `--channel=…`) switches first. Switching to release
   removes the dev-binary override only when it points at a main build this
   command made; a binary you registered yourself is kept.

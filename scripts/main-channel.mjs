@@ -13,8 +13,8 @@
 // The recorded channel lets `gentle-shell upgrade` follow release or main.
 import { dirname, isAbsolute, join, posix, relative, win32 } from "node:path";
 import { gentleAiDevBinaryRegistrationPath, registerGentleAiDevBinary, unregisterGentleAiDevBinary } from "../runtime/gentle-ai-binary.mjs";
-import { installedGo } from "./installer-downloads.mjs";
-import { pnpmGlobalBin, requirements } from "./installer-preflight.mjs";
+import { acquireGo as acquirePinnedGo, installedGo } from "./installer-downloads.mjs";
+import { goAcquisition, pnpmGlobalBin, requirements } from "./installer-preflight.mjs";
 
 export const SHELL_REPOSITORY = "Gentleman-Programming/gentle-shell";
 export const GENTLE_AI_REPOSITORY = "Gentleman-Programming/gentle-ai";
@@ -362,20 +362,28 @@ async function removeMainOverride(ctx, fs) {
 	}
 }
 
-/** The Go a main build runs: the user's, unless it is missing or reports a version
- * older than requirements.go; then the pinned Go the installer published under
- * the config home (`tools/go`). A Go whose version is unknown is tried as before.
- * Nothing is downloaded here and the user's Go is never changed.
+/** The Go a main build runs: the user's, only when it reports a stable version
+ * that meets requirements.go; otherwise the pinned Go the installer published
+ * under the config home (`tools/go`), downloaded and verified there by
+ * `acquire` when it is not published yet. A missing, older or unchecked Go is
+ * never run for the build, and the user's Go is never changed.
  */
-async function mainGo({ userGo, pinnedGo, run }) {
-	if (!userGo) return pinnedGo;
-	const result = await run(userGo, ["version"], { deadlineMs: deadlines.version });
-	const match = succeeded(result) && /^go version go(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\.(0|[1-9]\d*))? \S+$/.exec(String(result.stdout ?? "").trim());
-	if (!match) return userGo;
-	const found = `${match[1]}.${match[2]}.${match[3] ?? "0"}`;
-	if (!older(found, requirements.go)) return userGo;
+async function mainGo({ userGo, pinnedGo, acquire, run }) {
+	if (userGo) {
+		const result = await run(userGo, ["version"], { deadlineMs: deadlines.version });
+		const match = succeeded(result) && /^go version go(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\.(0|[1-9]\d*))? \S+$/.exec(String(result.stdout ?? "").trim());
+		if (match && !older(`${match[1]}.${match[2]}.${match[3] ?? "0"}`, requirements.go)) return userGo;
+	}
 	if (pinnedGo) return pinnedGo;
-	throw new MainChannelError("main-requires-tools", `the main channel builds Gentle AI with Go ${requirements.go} or newer, but Go ${found} is on PATH; update it, or run the Gentle Shell installer, which provides its own pinned Go`);
+	try {
+		const { goPath } = await acquire();
+		return goPath;
+	} catch (error) {
+		// acquireGo wraps every failure; its cause names what went wrong (download, checksum, destination).
+		const reason = [error, error?.cause].filter((item) => item instanceof Error).map((item) => item.message).join(": ") || String(error);
+		throw new MainChannelError("main-requires-tools", `the main channel builds Gentle AI with Go ${requirements.go} or newer, and getting the pinned ` +
+			`Go ${goAcquisition.version} failed (${reason}); nothing was built, fix the cause, then run gentle-shell upgrade again`);
+	}
 }
 
 /**
@@ -418,9 +426,10 @@ export async function runUpgrade({ args, ctx, platform, arch = process.arch, pac
 	}
 	const [userGo, pnpm] = [await which("go"), await invocationOf("pnpm", adapters, platform)];
 	const pinnedGo = installedGo(join(configHome(ctx), "tools", "go"), platform, arch);
-	if ((!userGo && !pinnedGo) || !pnpm) {
-		throw new MainChannelError("main-requires-tools", "the main channel builds Gentle AI with Go and packs Gentle Shell with pnpm; put both on PATH (the Gentle Shell installer can provide its own pinned Go)");
+	if (!pnpm) {
+		throw new MainChannelError("main-requires-tools", "the main channel packs Gentle Shell with pnpm; put it on PATH (Gentle AI is built with your Go, or with a pinned Go downloaded for the build)");
 	}
+	const acquire = adapters.acquireGo ?? (() => acquirePinnedGo({ root: join(configHome(ctx), "tools", "go"), platform, arch }));
 	const gentleAiCommit = await resolveMainCommit(GENTLE_AI_REPOSITORY, { fetch });
 	const shellCommit = await resolveMainCommit(SHELL_REPOSITORY, { fetch });
 	const onMain = state.channel === "main";
@@ -431,7 +440,7 @@ export async function runUpgrade({ args, ctx, platform, arch = process.arch, pac
 		out(`gentle-shell is already at the latest main: ${summary}.`);
 		return 0;
 	}
-	if (!aiCurrent) await buildMainGentleAi({ commit: gentleAiCommit, ctx, platform, goPath: await mainGo({ userGo, pinnedGo, run }), run, fs });
+	if (!aiCurrent) await buildMainGentleAi({ commit: gentleAiCommit, ctx, platform, goPath: await mainGo({ userGo, pinnedGo, acquire, run }), run, fs });
 	if (!shellCurrent) {
 		const manager = await ownerManager({ ctx, platform, packageRoot, adapters });
 		const tgz = await packMainShell({ commit: shellCommit, ctx, fetch, run, pnpm, fs, platform });

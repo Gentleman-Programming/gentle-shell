@@ -263,7 +263,7 @@ test("installOwner follows Windows paths on any host: backslashes and case-insen
 // `gentle-shell upgrade --channel main` after the installer provided its own pinned Go.
 const NEW_AI = "2222222222222222222222222222222222222222";
 /** A main install whose Gentle Shell is current, so only Gentle AI is rebuilt with Go. */
-async function upgradeWorld({ userGo = null as string | null, pinned = false }) {
+async function upgradeWorld({ userGo = null as string | null, pinned = false, acquireFails = false }) {
 	const s = sandbox();
 	const goDirectory = join(s.home, ".pi", "gentle-ai", "tools", "go", "1.25.14");
 	const pinnedGo = join(goDirectory, "go", "bin", "go");
@@ -278,7 +278,7 @@ async function upgradeWorld({ userGo = null as string | null, pinned = false }) 
 	const fetch = async (url: string) => ({ ok: true, status: 200, text: async () => (url.endsWith("/gentle-ai/commits/main") ? NEW_AI : SHELL_SHA) });
 	const run = async (command: string, argv: string[], options: Call["options"]) => {
 		calls.push({ command, argv, options });
-		if (command === "/usr/bin/go" && argv[0] === "version") return { code: 0, stdout: `go version go${userGo} darwin/arm64\n` };
+		if (command === "/usr/bin/go" && argv[0] === "version") return { code: 0, stdout: `go version ${userGo === "devel" ? "devel go1.26-abc" : `go${userGo}`} darwin/arm64\n` };
 		if (argv[0] === "install") {
 			mkdirSync(options.env!.GOBIN, { recursive: true });
 			writeFileSync(join(options.env!.GOBIN, "gentle-ai"), "#!/bin/sh\n", { mode: 0o755 });
@@ -287,20 +287,29 @@ async function upgradeWorld({ userGo = null as string | null, pinned = false }) 
 		return { code: 0, stdout: `gentle-ai 4.0.1-0.20261008202137-${NEW_AI.slice(0, 12)}\n` };
 	};
 	const which = async (name: string) => (name === "pnpm" || (name === "go" && userGo !== null) ? `/usr/bin/${name}` : null);
+	// The verified download itself is acquireGo's (installer-downloads tests); here it only publishes the pinned path.
+	const acquired: string[] = [];
+	const acquireGo = async () => {
+		acquired.push(pinnedGo);
+		// As acquireGo fails: wrapped, with the reason as its cause.
+		if (acquireFails) throw new Error("Go verified acquisition failed; nothing was published", { cause: new Error("Conflicting Go destination: /x") });
+		return { goPath: pinnedGo, version: "1.25.14", acquired: true };
+	};
 	const upgrade = () => runUpgrade({ args: ["--channel", "main"], ctx: s.ctx, platform: "darwin", arch: "arm64", packageRoot: join(s.root, "pkg"),
-		currentVersion: "4.0.0-main.6e7e3a18f794", adapters: { fetch, run, fs: fsPromises, which }, out: () => {} });
+		currentVersion: "4.0.0-main.6e7e3a18f794", adapters: { fetch, run, fs: fsPromises, which, acquireGo }, out: () => {} });
 	const builtWith = () => calls.find((call) => call.argv[0] === "install")?.command;
-	return { ...s, calls, pinnedGo, upgrade, builtWith };
+	return { ...s, calls, pinnedGo, upgrade, builtWith, acquired };
 }
 
-test("upgrading main uses the installer's pinned Go when the user's Go is missing or older, and leaves the user's Go as it is", posixOnly, async () => {
-	for (const userGo of [null, "1.24.0"]) {
+test("upgrading main uses the installer's pinned Go when the user's Go is missing, older or cannot be checked, and leaves the user's Go as it is", posixOnly, async () => {
+	for (const userGo of [null, "1.24.0", "devel"]) {
 		const w = await upgradeWorld({ userGo, pinned: true });
 		try {
 			assert.equal(await w.upgrade(), 0);
 			assert.equal(w.builtWith(), w.pinnedGo, String(userGo));
 			// The user's Go only reported its version.
 			assert.deepEqual(w.calls.filter((call) => call.command === "/usr/bin/go").map((call) => call.argv), userGo ? [["version"]] : []);
+			assert.deepEqual(w.acquired, [], "an already published pinned Go is reused");
 		} finally { w.cleanup(); }
 	}
 });
@@ -313,18 +322,23 @@ test("upgrading main keeps using a user's Go that meets the requirement, even ne
 	} finally { w.cleanup(); }
 });
 
-test("upgrading main with an older Go and no pinned Go stops before building, naming both versions", posixOnly, async () => {
-	const w = await upgradeWorld({ userGo: "1.24.0" });
+test("upgrading main without a usable Go downloads the installer's pinned Go once, only to build", posixOnly, async () => {
+	for (const userGo of [null, "1.24.0", "devel"]) {
+		const w = await upgradeWorld({ userGo });
+		try {
+			assert.equal(await w.upgrade(), 0);
+			assert.deepEqual(w.acquired, [w.pinnedGo], String(userGo));
+			assert.equal(w.builtWith(), w.pinnedGo, String(userGo));
+			assert.deepEqual(w.calls.filter((call) => call.command === "/usr/bin/go").map((call) => call.argv), userGo ? [["version"]] : []);
+		} finally { w.cleanup(); }
+	}
+});
+
+test("upgrading main stops before building when the pinned Go cannot be downloaded", posixOnly, async () => {
+	const w = await upgradeWorld({ userGo: "devel", acquireFails: true });
 	try {
 		await assert.rejects(w.upgrade(), (error: MainChannelError) => error.code === "main-requires-tools" &&
-			error.message.includes("Go 1.24.0") && error.message.includes("1.25.10"));
+			error.message.includes("Go 1.25.14") && error.message.includes("Conflicting Go destination: /x") && !error.message.includes("network"));
 		assert.equal(w.builtWith(), undefined);
 	} finally { w.cleanup(); }
-	// An unpublished or foreign directory at the pinned location is not used either.
-	const foreign = await upgradeWorld({ userGo: null, pinned: true });
-	try {
-		writeFileSync(join(foreign.home, ".pi", "gentle-ai", "tools", "go", "1.25.14", ".gentle-shell-go"), "something else\n");
-		await assert.rejects(foreign.upgrade(), (error: MainChannelError) => error.code === "main-requires-tools");
-		assert.deepEqual(foreign.calls, []);
-	} finally { foreign.cleanup(); }
 });

@@ -799,11 +799,13 @@ publishes main builds, so main is built on this computer
      "shellCommit":…,"gentleAiCommit":…}` to `<config home>/channel.json`.
 - `shell-setup` then runs from the main package. The config home is
   `GENTLE_PI_CONFIG_HOME` or `~/.pi/gentle-ai`, as for the dev-binary override.
-- `gentle-shell upgrade --channel main` builds with the user's Go when it meets
-  the minimum (or its version is unknown, as before), otherwise with the pinned Go
-  an earlier installer run published under `<config home>/tools/go`. It never
-  downloads Go itself: with an older Go and no pinned copy it stops with
-  `main-requires-tools`, naming both versions.
+- `gentle-shell upgrade --channel main` builds with the user's Go only when it
+  reports a stable version that meets the minimum. Otherwise (missing, older, or
+  a version it cannot check) it builds with the pinned Go under
+  `<config home>/tools/go`, downloading and verifying it there with the same
+  `acquireGo` as the wizard when no earlier run published it, and only when
+  Gentle AI is rebuilt. A failed download stops with `main-requires-tools`
+  before anything is built; the user's Go is never run for the build.
 - Trust: Gentle AI source is verified by Go's checksum database; the Gentle Shell
   source is fetched over TLS from GitHub by exact commit SHA, with no pinned
   digest. Main builds are development builds.

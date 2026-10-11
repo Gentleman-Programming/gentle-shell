@@ -226,14 +226,13 @@ test("switching to release keeps a dev binary the user registered themselves", a
 	} finally { w.cleanup(); }
 });
 
-test("main needs Go and pnpm on PATH", async () => {
-	for (const tools of [["pnpm", "npm"], ["go", "npm"]]) {
-		const w = world({ tools });
-		try {
-			await assert.rejects(w.upgrade(["--channel", "main"]), (error: MainChannelError) => error.code === "main-requires-tools");
-			assert.deepEqual(w.calls, []);
-		} finally { w.cleanup(); }
-	}
+// A missing Go is not a blocker: the build downloads the pinned Go (main-channel.test.ts).
+test("main needs pnpm on PATH", async () => {
+	const w = world({ tools: ["go", "npm"] });
+	try {
+		await assert.rejects(w.upgrade(["--channel", "main"]), (error: MainChannelError) => error.code === "main-requires-tools");
+		assert.deepEqual(w.calls, []);
+	} finally { w.cleanup(); }
 });
 
 // S8: on Windows npm and pnpm are `.cmd` shims, which cannot run with shell:false.

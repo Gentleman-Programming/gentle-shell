@@ -1870,6 +1870,16 @@ test("setup gives Gentle AI a `pi` on its PATH that runs the same Pi gentle-shel
 	assert.deepEqual(readdirSync(temp), []);
 });
 
+test("setup without a usable temp folder runs as before, without the temporary pi", { skip: process.platform === "win32" }, (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptCountingRuns(gentleAiScript, join(f.root, "runs.log"));
+	const env = { ...f.env, TMPDIR: join(f.root, "missing-tmp"), GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" };
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.doesNotMatch(result.stderr, /mkdtemp|gentle-shell-pi-/);
+});
+
 test("a successful manual setup records the isolated home, so the first launch does not set it up again", (t) => {
 	const f = fixture(t);
 	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");

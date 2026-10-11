@@ -618,11 +618,19 @@ function buildSetupEnv(home, runtime, piLauncherDir) {
 // setup PATH already starts with the version's node_modules/.bin).
 function writeSetupPiLauncher(runtime) {
 	if (bundledEnv || runtime.kind === "path") return null;
-	const dir = mkdtempSync(join(tmpdir(), "gentle-shell-pi-"));
+	let dir;
+	try {
+		dir = mkdtempSync(join(tmpdir(), "gentle-shell-pi-"));
+	} catch {
+		// No usable temp folder: setup runs as it did before, without this `pi`.
+		return null;
+	}
 	if (process.platform === "win32") {
 		// Batch expands % even inside quotes; double it so a path stays literal.
 		const quote = (value) => `"${value.replaceAll("%", "%%")}"`;
-		writeFileSync(join(dir, "pi.cmd"), `@echo off\r\n${[runtime.command, ...runtime.args].map(quote).join(" ")} %*\r\nexit /b %errorlevel%\r\n`);
+		// A batch runtime needs `call`, or control never returns for `exit /b`.
+		const call = /\.(?:cmd|bat)$/i.test(runtime.command) ? "call " : "";
+		writeFileSync(join(dir, "pi.cmd"), `@echo off\r\n${call}${[runtime.command, ...runtime.args].map(quote).join(" ")} %*\r\nexit /b %errorlevel%\r\n`);
 	} else {
 		const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
 		writeFileSync(join(dir, "pi"), `#!/bin/sh\nexec ${[runtime.command, ...runtime.args].map(quote).join(" ")} "$@"\n`, { mode: 0o700 });

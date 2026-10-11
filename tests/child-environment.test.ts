@@ -5,6 +5,7 @@ import { inheritedSensitiveChildEnvironmentKeys } from "../lib/child-environment
 // Sensitive child environment filtering: a child never inherits credentials
 // unless its role declares them in `env_keep`.
 
+/** Credential-shaped names (passwords, secrets, tokens, keys) are removed; the base environment survives. */
 test("passwords, secrets, credentials, tokens, and keys are removed", () => {
 	const environment = {
 		PATH: "C:\\bin",
@@ -34,11 +35,13 @@ test("passwords, secrets, credentials, tokens, and keys are removed", () => {
 	]);
 });
 
+/** Fragment matches inside longer words (TOKENIZER_PATH, SECRETARY_NAME) are not filtered. */
 test("fragment matches inside longer words are not filtered", () => {
 	const environment = { SECRETARY_NAME: "x", TOKENIZER_PATH: "x", COMPASS: "x" };
 	assert.deepEqual(inheritedSensitiveChildEnvironmentKeys(environment), []);
 });
 
+/** Bare credential words (TOKEN, PASSWORD, API_KEY…) are always sensitive. */
 test("exact credential words are always sensitive", () => {
 	const environment = {
 		TOKEN: "x",
@@ -64,6 +67,7 @@ test("exact credential words are always sensitive", () => {
 	]);
 });
 
+/** Live credential channels (SSH agent socket, Docker auth) are filtered; generic URLs are not. */
 test("live credential channels are filtered without broadening to generic URLs", () => {
 	const environment = {
 		SSH_AUTH_SOCK: "x",
@@ -77,6 +81,7 @@ test("live credential channels are filtered without broadening to generic URLs",
 	]);
 });
 
+/** `env_keep` rescues declared names case-insensitively, and only those. */
 test("env_keep rescues declared keys, case-insensitively, and only those", () => {
 	const environment = {
 		DB_SERVER: "x",
@@ -89,6 +94,7 @@ test("env_keep rescues declared keys, case-insensitively, and only those", () =>
 	);
 });
 
+/** The filter is pure: the parent environment object is never mutated. */
 test("filtering is pure: the parent environment object is never mutated", () => {
 	const environment = { PATH: "x", DB_PASSWORD: "x" };
 	const before = { ...environment };

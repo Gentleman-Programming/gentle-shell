@@ -1779,6 +1779,7 @@ test("temporary instructions transport file is cleaned up if child emits an earl
 	assert.ok(!existsSync(dirname(capturedPromptPath)), "temporary transport directory must be cleaned up on early child error");
 });
 
+/** A request with filtered keys stores them by name on the task record; absent → no field. */
 test("the task record carries the filtered environment keys (names only) when present", () => {
 	const h = harness();
 	const filtered = h.runner.run(request({ envFiltered: ["DB_PASSWORD", "GITHUB_PERSONAL_ACCESS_TOKEN"] }));

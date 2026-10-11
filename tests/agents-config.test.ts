@@ -248,6 +248,7 @@ test("a pinned profile replaces subagent routing and leaves every other default 
 	assert.deepEqual(withPinnedModelProfiles(global, {}).modelProfiles, {});
 });
 
+/** Frontmatter `env_keep` parses in `[a, b]` and `- item` styles; absent keys yield an empty list. */
 test("agent frontmatter parses env_keep in both list styles and defaults to empty", () => {
 	const block = parseAgentDefinition(`---
 name: env-auditor

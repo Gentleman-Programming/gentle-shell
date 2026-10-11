@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { TUI } from "@earendil-works/pi-tui";
-import { sidebarHeader, sidebarPart, sidebarState } from "../lib/shell-sidebar.ts";
+import { sidebarHeader, sidebarHeaderContributor, sidebarHeaderContributors, sidebarPart, sidebarState } from "../lib/shell-sidebar.ts";
 
 const host = (terminal?: object) => ({ terminal }) as TUI;
 const component = () => ({ render: (_width = 80) => ["bottom"], invalidate() {} });
@@ -71,4 +71,42 @@ test("sidebarHeader dispose does not remove a replacement rail registered after 
 	sidebarHeader(tui, second);
 	dispose();
 	assert.equal(sidebarState(tui).parts.get("header"), second);
+});
+
+test("header contributors are reported in registration order", () => {
+	const tui = host({});
+	const first = { render: () => ["first row"], invalidate() {} };
+	const second = { render: () => ["second row"], invalidate() {} };
+	sidebarHeaderContributor(tui, "tabs", first);
+	sidebarHeaderContributor(tui, "other", second);
+	assert.deepEqual(sidebarHeaderContributors(tui), [first, second]);
+});
+
+test("disposing a header contributor releases exactly that contribution", () => {
+	const tui = host({});
+	const first = { render: () => ["first row"], invalidate() {} };
+	const second = { render: () => ["second row"], invalidate() {} };
+	const dispose = sidebarHeaderContributor(tui, "tabs", first);
+	sidebarHeaderContributor(tui, "other", second);
+	dispose();
+	assert.deepEqual(sidebarHeaderContributors(tui), [second]);
+});
+
+test("a header contributor disposer does not remove a replacement registered under the same key", () => {
+	const tui = host({});
+	const first = { render: () => [], invalidate() {} };
+	const dispose = sidebarHeaderContributor(tui, "tabs", first);
+	const second = { render: () => [], invalidate() {} };
+	sidebarHeaderContributor(tui, "tabs", second);
+	dispose();
+	assert.deepEqual(sidebarHeaderContributors(tui), [second]);
+});
+
+test("a header contributor on an unsupported host is a harmless no-op", () => {
+	const dispose = sidebarHeaderContributor(host(), "tabs", { render: () => [], invalidate() {} });
+	assert.doesNotThrow(dispose);
+});
+
+test("a terminal with no header contributor reports none", () => {
+	assert.deepEqual(sidebarHeaderContributors(host({})), []);
 });

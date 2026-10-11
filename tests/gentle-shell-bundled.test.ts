@@ -375,6 +375,8 @@ test("bundled setup runs Gentle AI with the prefix's isolation variables and kee
 	assert.equal(seen.GENTLE_AI_HOME, join(prefix.root, "gentle-ai"));
 	assert.equal(seen.GENTLE_AI_PI_CONFIG_DIR, join(prefix.root, "config", "gentle-ai"));
 	assert.equal(seen.GENTLE_AI_ENGRAM_BIN, prefix.engram);
+	// #2105: the pinned Engram is the first `engram` on Gentle AI's PATH, so no `brew` is needed.
+	assert.equal(seen.PATH.split(":")[0], dirname(prefix.engram));
 	assert.equal(seen.GENTLE_AI_NO_SELF_UPDATE, "1");
 	assert.equal(seen.PI_CODING_AGENT_DIR, join(prefix.home, ".gentle-shell", "agent"));
 	// Only setup's Gentle AI gets it, as the parent Gentle AI 4.0.0 reads it as.

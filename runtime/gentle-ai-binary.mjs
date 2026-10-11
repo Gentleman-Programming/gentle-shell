@@ -105,8 +105,16 @@ export function gentleAiIsolationEnv(
 	} catch {
 		// Not published (a prefix from before Engram shipped): Gentle AI gets none.
 	}
+	// Gentle AI 4.0.0 ignores GENTLE_AI_ENGRAM_BIN and looks `engram` up on PATH
+	// first, then falls back to Homebrew (`brew tap`, #2105): the pinned one goes first.
+	const pathKey = Object.keys(env).find((name) => name.toUpperCase() === "PATH") ?? (platform === "win32" ? "Path" : "PATH");
+	const pathModule = platform === "win32" ? win32 : posix;
+	const path = engram
+		? { [pathKey]: [pathModule.dirname(paths.engram), ...(env[pathKey] ?? "").split(pathModule.delimiter).filter((entry) => entry.length > 0)].join(pathModule.delimiter) }
+		: {};
 	return {
 		...env,
+		...path,
 		GENTLE_AI_HOME: paths.home,
 		GENTLE_AI_PI_CONFIG_DIR: paths.piConfig,
 		...(engram ? { GENTLE_AI_ENGRAM_BIN: paths.engram } : {}),

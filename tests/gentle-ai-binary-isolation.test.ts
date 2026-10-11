@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
 import { bundledGentleAiPaths, gentleAiIsolationEnv } from "../lib/gentle-ai-binary.ts";
 import { resetRunningBundledPrefixForTesting, runningBundledPrefix } from "../lib/gentle-shell-bundled.ts";
@@ -55,11 +55,16 @@ test("gentleAiIsolationEnv adds the four Gentle AI variables for this package in
 		GENTLE_AI_ENGRAM_BIN: engram,
 		GENTLE_AI_NO_SELF_UPDATE: "1",
 		GENTLE_PI_CONFIG_HOME: join(prefix, "config"),
+		// #2105: Gentle AI 4.0.0 ignores GENTLE_AI_ENGRAM_BIN and looks `engram` up on PATH
+		// first; with the pinned one first it never falls back to `brew tap`.
+		PATH: `${dirname(engram)}${delimiter}/usr/bin`,
 	});
 	assert.equal("GENTLE_AI_HOME" in base, false, "the caller's environment is not changed");
-	// Without the published Engram, Gentle AI gets no Engram to use.
+	// Without the published Engram, Gentle AI gets no Engram to use, and PATH stays as it was.
 	rmSync(engram);
-	assert.equal("GENTLE_AI_ENGRAM_BIN" in gentleAiIsolationEnv(base, { packageRoot }), false);
+	const without = gentleAiIsolationEnv(base, { packageRoot });
+	assert.equal("GENTLE_AI_ENGRAM_BIN" in without, false);
+	assert.equal(without.PATH, "/usr/bin");
 });
 
 test("gentleAiIsolationEnv returns the environment unchanged outside a bundled install", (t) => {

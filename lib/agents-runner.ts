@@ -130,6 +130,9 @@ export interface TaskRequest {
 	sessionDir: string;
 	resumeSessionPath: string | undefined;
 	env: NodeJS.ProcessEnv;
+	// Sensitive environment keys the parent removed from `env` (names only,
+	// never values); copied into the task record for diagnosis.
+	envFiltered?: string[];
 	// Host-provided only: the launcher's package injection signal (#1690) or
 	// the curated fallback. Never derived from tool input or agent definitions.
 	extensionPaths?: string[];
@@ -409,6 +412,7 @@ export class AgentRunner {
 			model: formatModelRef(request.model),
 			thinking: request.thinking,
 			sessionPath: request.resumeSessionPath ?? null,
+			...(request.envFiltered ? { envFiltered: request.envFiltered } : {}),
 			error: null,
 			result: null,
 			lastStep: "queued",

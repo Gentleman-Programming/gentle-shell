@@ -129,6 +129,8 @@ export interface TaskRecord {
 	model: string;
 	thinking: string | undefined;
 	sessionPath: string | null;
+	/** Sensitive environment keys removed from this child's environment (names only). */
+	envFiltered?: string[];
 	error: string | null;
 	result: string | null;
 	lastStep: string;

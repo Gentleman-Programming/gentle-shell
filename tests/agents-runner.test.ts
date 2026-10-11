@@ -14,7 +14,7 @@ import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
 // The host only parses JSON lines, applies deltas to the store, answers
 // dialogs, and enforces its inactivity watchdog. These tests drive a fake child.
 
-const explorer: AgentDefinition = { name: "explore", description: "maps", filePath: "/a/explore.md", scope: "global", instructions: "You map things.", model: undefined, thinking: undefined, mode: undefined, tools: ["read", "grep"] };
+const explorer: AgentDefinition = { name: "explore", description: "maps", filePath: "/a/explore.md", scope: "global", instructions: "You map things.", model: undefined, thinking: undefined, mode: undefined, tools: ["read", "grep"], envKeep: [] };
 
 function request(overrides: Partial<TaskRequest> = {}): TaskRequest {
 	return { agent: explorer, prompt: "Map the repo", label: undefined, context: undefined, mode: AGENT_MODE.TASK, cwd: "/repo", parentSessionId: "s1", model: { provider: "openai-codex", id: "gpt-5.6-terra" }, thinking: "high", sessionDir: "/sessions", resumeSessionPath: undefined, env: {}, ...overrides };
@@ -1777,4 +1777,13 @@ test("temporary instructions transport file is cleaned up if child emits an earl
 	assert.ok(capturedPromptPath, "should have captured a transport file path");
 	assert.ok(!existsSync(capturedPromptPath), "temporary transport file must be cleaned up on early child error");
 	assert.ok(!existsSync(dirname(capturedPromptPath)), "temporary transport directory must be cleaned up on early child error");
+});
+
+test("the task record carries the filtered environment keys (names only) when present", () => {
+	const h = harness();
+	const filtered = h.runner.run(request({ envFiltered: ["DB_PASSWORD", "GITHUB_PERSONAL_ACCESS_TOKEN"] }));
+	assert.deepEqual(filtered.envFiltered, ["DB_PASSWORD", "GITHUB_PERSONAL_ACCESS_TOKEN"]);
+	const plain = h.runner.run(request({}));
+	assert.equal(plain.envFiltered, undefined);
+	h.runner.cancelAll("test cleanup");
 });

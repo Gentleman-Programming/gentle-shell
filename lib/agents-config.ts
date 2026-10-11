@@ -52,6 +52,7 @@ export interface AgentDefinition {
 	thinking: ThinkingLevel | undefined;
 	mode: AgentMode | undefined;
 	tools: string[];
+	envKeep: string[];
 }
 
 export interface AgentDefinitionError {
@@ -170,7 +171,7 @@ function parseMode(value: unknown): AgentMode | undefined | string {
 	return AGENT_MODES.includes(normalized) ? (normalized as AgentMode) : `mode "${value}" is not one of ${AGENT_MODES.join(", ")}`;
 }
 
-function parseTools(value: FrontmatterValue | undefined): string[] {
+function parseStringList(value: FrontmatterValue | undefined): string[] {
 	if (value === undefined) return [];
 	const items = Array.isArray(value) ? value : value.split(",");
 	return items.map((item) => item.trim()).filter((item) => item.length > 0);
@@ -197,7 +198,8 @@ export function parseAgentDefinition(text: string, filePath: string, scope: Agen
 		model: parseModelRef(data.model),
 		thinking: thinking as ThinkingLevel | undefined,
 		mode: mode as AgentMode | undefined,
-		tools: parseTools(data.tools),
+		tools: parseStringList(data.tools),
+		envKeep: parseStringList(data.env_keep),
 	};
 }
 

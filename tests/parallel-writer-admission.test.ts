@@ -10,7 +10,7 @@ import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
 // `## Allowed edit surfaces` entry. Admission and registration happen in the
 // same synchronous run() call, and every terminal path releases the claim.
 
-const worker: AgentDefinition = { name: "gentle-ai-worker", description: "writes", filePath: "/a/worker.md", scope: "global", instructions: "You write.", model: undefined, thinking: undefined, mode: undefined, tools: ["read", "edit", "write"] };
+const worker: AgentDefinition = { name: "gentle-ai-worker", description: "writes", filePath: "/a/worker.md", scope: "global", instructions: "You write.", model: undefined, thinking: undefined, mode: undefined, tools: ["read", "edit", "write"], envKeep: [] };
 const explorer: AgentDefinition = { ...worker, name: "explore", description: "maps", tools: ["read"] };
 
 function writer(surfaces: string[], overrides: Partial<TaskRequest> = {}): TaskRequest {

@@ -256,7 +256,7 @@ test("quiet tool rendering can be disabled by env", () => {
 
 test("pi-pretty suppresses overlapping tools before quiet tools register", async () => {
 	await withEnvAsync(
-		{ GENTLE_PI_QUIET_TOOLS: undefined, PRETTY_DISABLE_TOOLS: "multi_grep" },
+		{ GENTLE_PI_AGENTS_CHILD: undefined, GENTLE_PI_QUIET_TOOLS: undefined, PRETTY_DISABLE_TOOLS: "multi_grep" },
 		async () => {
 			const { pi, tools } = createPi({ throwOnToolConflict: true });
 
@@ -274,7 +274,7 @@ test("pi-pretty suppresses overlapping tools before quiet tools register", async
 
 test("pi-pretty preserves byte-exact model-visible read results when quiet tools suppress its renderer", async () => {
 	await withEnvAsync(
-		{ GENTLE_PI_QUIET_TOOLS: undefined, PRETTY_DISABLE_TOOLS: undefined },
+		{ GENTLE_PI_AGENTS_CHILD: undefined, GENTLE_PI_QUIET_TOOLS: undefined, PRETTY_DISABLE_TOOLS: undefined },
 		async () => {
 			const { pi, hooks } = createPi();
 			await piPretty(pi as any, fakePiPrettyDeps as any);
@@ -297,6 +297,7 @@ test("pi-pretty preserves byte-exact model-visible read results when quiet tools
 test("pi-pretty suppression is skipped when quiet tools are disabled", async () => {
 	await withEnvAsync(
 		{
+			GENTLE_PI_AGENTS_CHILD: undefined,
 			GENTLE_PI_QUIET_TOOLS: "0",
 			PRETTY_DISABLE_TOOLS: undefined,
 			PRETTY_ENABLE_TOOLS: "ls",
@@ -428,7 +429,7 @@ test("quiet Bash errors preserve meaningful rows for both public output ordering
 			["probe stderr detail \x1b[31mwith terminal color\x1b[0m", ["", ""]],
 			["probe exit status: 7", []],
 		]],
-	] as const;
+	] satisfies ReadonlyArray<readonly [string, ReadonlyArray<readonly [string, readonly string[]]>]>;
 	assert.equal(cases.length, 2);
 	const args = { command: "false" };
 	const renderResult = (result: any, expanded: boolean) => tool.renderResult(result, { expanded, isPartial: false, isError: true }, passthroughTheme, { args, isError: true });

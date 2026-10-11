@@ -5,6 +5,7 @@ rem Fixed stock PowerShell commands; paths are environment DATA, not PS source.
 rem Each invocation is below CMD's logical command length limit.
 set "GENTLE_BOOTSTRAP_BUNDLE=%~dp0.."
 set "GENTLE_BOOTSTRAP_TOOLS=%LOCALAPPDATA%\.gentle-shell-bootstrap-tools.%RANDOM%.%RANDOM%.%RANDOM%"
+set "GENTLE_BOOTSTRAP_FALLBACK_TOOLS=%USERPROFILE%\.gentle-shell-bootstrap-tools.%RANDOM%.%RANDOM%.%RANDOM%"
 set "GENTLE_BOOTSTRAP_OWNED="
 set "GENTLE_BOOTSTRAP_PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 if not exist "%GENTLE_BOOTSTRAP_PS%" goto unavailable
@@ -23,31 +24,42 @@ rem Bundle/dependency checks precede ALL acquisition and per-user writes.
   "} catch { [Console]::Error.WriteLine('Bootstrap: future wizard/dependent bundle file missing, unsupported metadata, or managed policy denial. No acquisition attempted.'); exit 1 } }"
 if errorlevel 1 goto failed
 
-rem Claim an absent unique directory beneath a verified local per-user parent.
+rem Claim an absent unique directory beneath a verified local per-user parent:
+rem %LOCALAPPDATA% first, then one %USERPROFILE% fallback only when the first fails
+rem acl-mask or home-owner. Each candidate gets the exact-parent rule and the whole
+rem walk; exit 2 means the fallback was claimed. Its owner may be the user, SYSTEM
+rem or Administrators; the new directory's owner is set to the user explicitly.
 rem No security changes outside this new prerequisite directory.
 rem Strict target/parent rights: ReadAndExecute + Synchronize (0x1200a9).
 rem Distant existing ancestors additionally permit sibling CreateDirectories (4).
 rem WriteData/reparse-affecting writes, deletion and ACL/owner changes still fail.
-rem Failures append one fixed reason code (the failed check), never path/SID/error text;
+rem Failures append one fixed reason code (the failed check), then one line per
+rem candidate naming its folder and, for acl-mask, the principal and its rights;
 rem other exceptions report unexpected-<step>. ACLs use .NET, not Security-module
 rem cmdlets: PowerShell 7's inherited PSModulePath breaks their 5.1 autoload.
 "%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
-  "& { $claimed = $false; $step = 'policy'; try { $ErrorActionPreference = 'Stop';" ^
+  "& { $claimed = $false; $step = 'policy'; $tools = $null; $tried = @(); try { $ErrorActionPreference = 'Stop';" ^
   "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'policy' };" ^
   "$me = [Security.Principal.WindowsIdentity]::GetCurrent().User;" ^
   "$trusted = @($me.Value,'S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464');" ^
-  "$step = 'path-mismatch'; $tools = [IO.Path]::GetFullPath($env:GENTLE_BOOTSTRAP_TOOLS); $path = [IO.Directory]::GetParent($tools).FullName;" ^
-  "if (-not [IO.Path]::IsPathRooted($env:LOCALAPPDATA) -or $tools.StartsWith('\\') -or $path -ne [IO.Path]::GetFullPath($env:LOCALAPPDATA)) { throw 'path-mismatch' };" ^
-  "$depth = 1;" ^
-  "$step = 'home-owner'; $homeAcl = [IO.Directory]::GetAccessControl($path); if ($homeAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $me.Value) { throw 'home-owner' };" ^
-  "$step = 'ancestor-walk'; while ($path) {" ^
-  "  $item = Get-Item -LiteralPath $path -Force; if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'ancestor-reparse' };" ^
-  "  $acl = [IO.Directory]::GetAccessControl($path); if ($trusted -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value) { throw 'ancestor-owner' };" ^
-  "  $allowedRights = 0x1200a9; if ($depth -ge 2) { $allowedRights = 0x1200ad };" ^
-  "  foreach ($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {" ^
-  "    if ($rule.AccessControlType -eq 'Allow' -and -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and ([long]$rule.FileSystemRights -band (-bnot [long]$allowedRights)) -and $trusted -notcontains $rule.IdentityReference.Value) { throw 'acl-mask' };" ^
-  "  }; $parent = [IO.Directory]::GetParent($path); if ($null -eq $parent) { break }; $path = $parent.FullName; $depth++;" ^
-  "};" ^
+  "$owners = @($me.Value,'S-1-5-18','S-1-5-32-544'); $account = { param($sid) try { ' (' + $sid.Translate([Security.Principal.NTAccount]).Value + ')' } catch { '' } };" ^
+  "$candidates = @(,@($env:GENTLE_BOOTSTRAP_TOOLS,$env:LOCALAPPDATA)); if ($env:GENTLE_BOOTSTRAP_FALLBACK_TOOLS) { $candidates += ,@($env:GENTLE_BOOTSTRAP_FALLBACK_TOOLS,$env:USERPROFILE) };" ^
+  "for ($index = 0; $index -lt $candidates.Count; $index++) { $base = $candidates[$index][1]; $detail = ''; try {" ^
+  "  $step = 'path-mismatch'; $tools = [IO.Path]::GetFullPath($candidates[$index][0]); $path = [IO.Directory]::GetParent($tools).FullName;" ^
+  "  if (-not [IO.Path]::IsPathRooted($base) -or $tools.StartsWith('\\') -or $path -ne [IO.Path]::GetFullPath($base)) { throw 'path-mismatch' };" ^
+  "  $depth = 1;" ^
+  "  $step = 'home-owner'; $owner = ([IO.Directory]::GetAccessControl($path)).GetOwner([Security.Principal.SecurityIdentifier]); if ($owners -notcontains $owner.Value) { $detail = ' owned by ' + $owner.Value + (& $account $owner); throw 'home-owner' };" ^
+  "  $step = 'ancestor-walk'; while ($path) {" ^
+  "    $item = Get-Item -LiteralPath $path -Force; if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'ancestor-reparse' };" ^
+  "    $acl = [IO.Directory]::GetAccessControl($path); if ($trusted -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value) { throw 'ancestor-owner' };" ^
+  "    $allowedRights = 0x1200a9; if ($depth -ge 2) { $allowedRights = 0x1200ad };" ^
+  "    foreach ($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {" ^
+  "      if ($rule.AccessControlType -eq 'Allow' -and -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and ([long]$rule.FileSystemRights -band (-bnot [long]$allowedRights)) -and $trusted -notcontains $rule.IdentityReference.Value) {" ^
+  "        $detail = ' at ' + $path + ': ' + $rule.IdentityReference.Value + (& $account $rule.IdentityReference) + ' allowed 0x' + ([int]$rule.FileSystemRights).ToString('X8'); throw 'acl-mask' };" ^
+  "    }; $parent = [IO.Directory]::GetParent($path); if ($null -eq $parent) { break }; $path = $parent.FullName; $depth++;" ^
+  "  }; break;" ^
+  "} catch { $code = 'unexpected-' + $step; if ($_.Exception.Message -cmatch '^(path-mismatch|home-owner|ancestor-reparse|ancestor-owner|acl-mask)$') { $code = $_.Exception.Message };" ^
+  "  $tried += ($base + ': ' + $code + $detail); if ($index -eq 0 -and $candidates.Count -gt 1 -and $code -cmatch '^(acl-mask|home-owner)$') { continue }; throw } };" ^
   "$step = 'create'; if (Test-Path -LiteralPath $tools) { throw 'collision' }; $null = New-Item -ItemType Directory -Path $tools; $claimed = $true;" ^
   "$step = 'private-acl'; $acl = New-Object Security.AccessControl.DirectorySecurity; $acl.SetOwner($me); $acl.SetAccessRuleProtection($true,$false);" ^
   "foreach ($sid in @($me.Value,'S-1-5-18','S-1-5-32-544')) {" ^
@@ -58,13 +70,23 @@ rem cmdlets: PowerShell 7's inherited PSModulePath breaks their 5.1 autoload.
   "if ($verified.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $me.Value) { throw 'private-owner' };" ^
   "foreach ($rule in $verified.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) { if ($rule.AccessControlType -ne 'Allow' -or @($me.Value,'S-1-5-18','S-1-5-32-544') -notcontains $rule.IdentityReference.Value) { throw 'private-ace' } };" ^
   "$step = 'marker'; $null = New-Item -ItemType File -Path (Join-Path $tools '.bootstrap-owned') -Value 'gentle-pi prerequisite tooling only';" ^
+  "if ($index -gt 0) { exit 2 };" ^
   "} catch { $reason = 'unexpected-' + $step; if ($_.Exception.Message -cmatch '^(policy|path-mismatch|home-owner|ancestor-reparse|ancestor-owner|acl-mask|collision|protected-dacl|private-owner|private-ace)$') { $reason = $_.Exception.Message };" ^
-  "if ($claimed) { Remove-Item -LiteralPath $env:GENTLE_BOOTSTRAP_TOOLS -Recurse -Force -ErrorAction SilentlyContinue }; [Console]::Error.WriteLine('Bootstrap: private storage ACL/reparse/ownership claim failed or policy denied it. Reason: ' + $reason); exit 1 } }"
+  "if ($step -cmatch '^(create|private-acl|marker)$') { $tried += ($tools + ': ' + $reason) };" ^
+  "if ($claimed) { Remove-Item -LiteralPath $tools -Recurse -Force -ErrorAction SilentlyContinue }; [Console]::Error.WriteLine('Bootstrap: private storage ACL/reparse/ownership claim failed or policy denied it. Reason: ' + $reason); foreach ($line in $tried) { [Console]::Error.WriteLine('Bootstrap: storage candidate ' + $line) }; exit 1 } }"
+if errorlevel 3 goto failed
+if errorlevel 2 goto fallbackclaimed
 if errorlevel 1 goto failed
+goto claimed
+:fallbackclaimed
+set "GENTLE_BOOTSTRAP_TOOLS=%GENTLE_BOOTSTRAP_FALLBACK_TOOLS%"
+:claimed
+set "GENTLE_BOOTSTRAP_FALLBACK_TOOLS="
 set "GENTLE_BOOTSTRAP_OWNED=1"
 
 rem Select an existing native Node without invoking any command interpreter shim.
-rem Absence alone authorizes pinned acquisition; incompatibility never replaces.
+rem Absence authorizes pinned acquisition, and so does an older stable Node or one
+rem whose storage the probe below cannot trust: it is never replaced or run again.
 "%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
   "& { try { $ErrorActionPreference = 'Stop';" ^
   "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'Managed policy constraint' };" ^
@@ -73,6 +95,7 @@ rem Absence alone authorizes pinned acquisition; incompatibility never replaces.
   "} catch { [Console]::Error.WriteLine('Bootstrap: existing Node resolution failed or policy denied it.'); exit 1 } }"
 if errorlevel 1 goto failed
 
+:acquirenode
 rem Fixed official ZIP transport: no redirects, bounded bytes/time, no TLS changes.
 rem Integrity is verified before ZIP processing or executable publication.
 "%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
@@ -137,10 +160,14 @@ rem Production direct non-forking Node probe: 10s deadline and combined 1-MiB ca
 rem Drain both pipes asynchronously; valid output followed by a hang still fails.
 rem Failures append one fixed reason code; walk codes name the component role only.
 rem .node-target holds a possibly non-ASCII path: written and read as explicit UTF-8.
+rem The user's Node (no .node-stem) is left as it is when it is an older stable
+rem version, or when its storage fails the reparse/owner/ACL checks before it ever
+rem runs: its record is removed and the pinned Node is acquired as when absent.
+rem The acquired Node still has to pass every check; unknown versions still refuse.
 "%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
-  "& { $child = $null; $started = $false; $step = 'policy'; try { $ErrorActionPreference = 'Stop';" ^
+  "& { $child = $null; $started = $false; $acquired = $true; $step = 'policy'; try { $ErrorActionPreference = 'Stop';" ^
   "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'policy' };" ^
-  "$step = 'target'; $tools = $env:GENTLE_BOOTSTRAP_TOOLS; $record = Join-Path $tools '.node-target'; if (-not [IO.File]::Exists($record)) { throw 'missing-target' };" ^
+  "$step = 'target'; $tools = $env:GENTLE_BOOTSTRAP_TOOLS; $record = Join-Path $tools '.node-target'; if (-not [IO.File]::Exists($record)) { throw 'missing-target' }; $acquired = Test-Path -LiteralPath (Join-Path $tools '.node-stem');" ^
   "$node = [IO.File]::ReadAllText($record,[Text.Encoding]::UTF8).TrimEnd([char]13,[char]10); if (-not $node) { throw 'missing-target' };" ^
   "$item = Get-Item -LiteralPath $node -Force; if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'unsafe-target' };" ^
   "if (-not [IO.Path]::IsPathRooted($node) -or $node.StartsWith('\\')) { throw 'unsafe-path' };" ^
@@ -171,12 +198,14 @@ rem .node-target holds a possibly non-ASCII path: written and read as explicit U
   "}; if ($child.ExitCode -ne 0) { throw 'exit-code' };" ^
   "$step = 'version'; $version = $text.Trim(); if ($version -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw 'version-format' };" ^
   "$actual = [Version]$version.Substring(1); $metadata = Get-Content -LiteralPath (Join-Path $env:GENTLE_BOOTSTRAP_BUNDLE 'package.json') -Raw | ConvertFrom-Json;" ^
-  "if ($actual -lt [Version]'24.3.0' -or $actual -lt [Version]$metadata.engines.node.Substring(2)) { throw 'engine' };" ^
-  "if ((Test-Path -LiteralPath (Join-Path $tools '.node-stem')) -and $version -ne 'v24.21.0') { throw 'acquired-version' };" ^
+  "if ($acquired -and $version -ne 'v24.21.0') { throw 'acquired-version' };" ^
+  "if ($actual -lt [Version]'24.3.0' -or $actual -lt [Version]$metadata.engines.node.Substring(2)) { if ($acquired) { throw 'engine' }; [IO.File]::Delete((Join-Path $tools '.node-target')) };" ^
   "} catch { $reason = 'unexpected-' + $step; if ($_.Exception.Message -cmatch '^(policy|missing-target|unsafe-target|unsafe-path|(target|parent|ancestor)-(reparse|owner|acl-mask)|no-start|deadline|output-limit|exit-code|version-format|engine|acquired-version)$') { $reason = $_.Exception.Message };" ^
-  "[Console]::Error.WriteLine('Bootstrap: Node version, execution, deadline, output bound or policy check failed; refusing replacement. Reason: ' + $reason); exit 1 }" ^
+  "if (-not $acquired -and $reason -cmatch '^(unsafe-target|unsafe-path|(target|parent|ancestor)-(reparse|owner|acl-mask))$') { [IO.File]::Delete((Join-Path $env:GENTLE_BOOTSTRAP_TOOLS '.node-target')) }" ^
+  "else { [Console]::Error.WriteLine('Bootstrap: Node version, execution, deadline, output bound or policy check failed; refusing replacement. Reason: ' + $reason); exit 1 } }" ^
   "finally { try { if ($child) { if ($started -and -not $child.HasExited) { $child.Kill(); if (-not $child.WaitForExit(1000)) { throw 'Child termination unconfirmed' } }; $child.Dispose() } } catch { [Console]::Error.WriteLine('Bootstrap: direct-child termination could not be confirmed.'); exit 1 } } }"
 if errorlevel 1 goto failed
+if not exist "%GENTLE_BOOTSTRAP_TOOLS%\.node-target" goto acquirenode
 
 rem Launch the existing Node helper with data arguments; no shell evaluation.
 rem Interactive wizard duration is intentionally unbounded. Only child PATH changes.
@@ -198,7 +227,7 @@ rem through reparse points. A removal problem never fails the installation.
   "& { try { $ErrorActionPreference = 'Stop';" ^
   "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'Managed policy constraint' };" ^
   "$tools = [IO.Path]::GetFullPath($env:GENTLE_BOOTSTRAP_TOOLS); $parent = [IO.Directory]::GetParent($tools).FullName;" ^
-  "if ($tools.StartsWith('\\') -or $parent -ne [IO.Path]::GetFullPath($env:LOCALAPPDATA) -or -not [IO.Path]::GetFileName($tools).StartsWith('.gentle-shell-bootstrap-tools.',[StringComparison]::Ordinal)) { throw 'Cleanup target rejected' };" ^
+  "if ($tools.StartsWith('\\') -or ($parent -ne [IO.Path]::GetFullPath($env:LOCALAPPDATA) -and $parent -ne [IO.Path]::GetFullPath($env:USERPROFILE)) -or -not [IO.Path]::GetFileName($tools).StartsWith('.gentle-shell-bootstrap-tools.',[StringComparison]::Ordinal)) { throw 'Cleanup target rejected' };" ^
   "$item = Get-Item -LiteralPath $tools -Force;" ^
   "if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Cleanup target rejected' };" ^
   "$marker = Get-Item -LiteralPath (Join-Path $tools '.bootstrap-owned') -Force;" ^

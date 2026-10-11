@@ -72,7 +72,8 @@ export const actionDescriptions = Object.freeze({
 	"acquire-go": "Download the installer's pinned Go from go.dev and verify it, only to build Gentle AI.",
 	"verify-go": "Check that the downloaded Go runs and reports the pinned version.",
 	"install-pi": "Install the Pi coding agent globally with pnpm.",
-	"install-shell": "Install Gentle Shell (gentle-pi) globally with pnpm.",
+	"install-shell": `Install Gentle Shell (gentle-pi) globally with pnpm. pnpm may put a newer Pi than ${PI_INSTALL_VERSION} next to it ` +
+		`(at least Pi ${requirements.pi}), and Gentle Shell runs that Pi.`,
 	"provision-native": "Provision the package-native Gentle AI binary with the existing installer.",
 	"setup-shell": "Run the normal `gentle-shell setup`.",
 	"verify-readiness": "Verify that the installed stack is ready.",
@@ -82,6 +83,13 @@ export const actionDescriptions = Object.freeze({
 	"update-shell-release": "Update Gentle Shell to the latest release with the package manager that installed it (pnpm or npm).",
 	"update-shell-main": "Update Gentle Shell and Gentle AI to the latest commits of `main`, built on this computer, with the package manager that installed Gentle Shell.",
 	"update-pi": "Update Pi with the package manager that installed it (pnpm or npm).",
+	// The bundled install (T1c): the plan's own versions and paths come from bundledDescription.
+	"bundled-prefix": "Create Gentle Shell's private folder for its own runtimes, versions and launcher.",
+	"bundled-runtime": "Download Gentle Shell's pinned Node.js with its npm, and pnpm, and verify their pinned checksums.",
+	"bundled-version": "Install Gentle Shell with its pinned Pi from the release's lockfile.",
+	"bundled-activate": "Make this version the active one and write the `gentle-shell` launcher.",
+	"bundled-path": "Make new terminals find `gentle-shell`.",
+	"bundled-setup": "Run `gentle-shell setup` with the bundled launcher.",
 });
 
 const tryAgain = "Fix the cause, then run the installer again.";
@@ -94,6 +102,7 @@ export const guidance = Object.freeze({
 		"go-required": `Windows needs Go ${requirements.go} or newer before Gentle AI can be provisioned, and this plan neither reuses nor downloads one. Run the installer again to check this computer again.`,
 		"unsupported-plan": "This machine needs steps the wizard does not run yet, such as updating an existing installation. Use `gentle-shell upgrade` or follow the README.",
 		"pnpm-home-unknown": "The pnpm home directory could not be determined. Set PNPM_HOME to an absolute directory, then run the installer again.",
+		"pnpm-home-changed": "The pnpm home folder is not the one the plan was made for. Nothing was installed; run the installer again to check this computer again.",
 		"node-unavailable": "The installer could not find its own Node.js executable. Run the installer again from the bootstrap script.",
 		"pnpm-unavailable": "pnpm could not be started. Run the installer again from the bootstrap script so it can provide pnpm.",
 		"npm-unavailable": "No working npm was found on PATH. Gentle AI needs it; check that `npm --version` works in a new terminal, then run the installer again.",
@@ -104,6 +113,8 @@ export const guidance = Object.freeze({
 		"existing-stack-unverified": "The installed Pi and Gentle Shell changed after the plan was made, or are no longer the versions this installer set up. Nothing was changed; run the installer again to check this computer again.",
 	}),
 	failed: Object.freeze({
+		"prepare-pnpm-home": "The private pnpm folder (%USERPROFILE%\\.pnpm) could not be created, or kept, with access for you, SYSTEM and Administrators only, or it changed after the plan was made. Nothing was installed. " +
+			"If that folder holds files this installer did not put there, move them aside. Then run the installer again.",
 		"persist-node": `Installing Node.js under PNPM_HOME failed. Check your network connection. ${tryAgain}`,
 		"persist-package-managers": `Installing npm and pnpm under PNPM_HOME failed. Check your network connection. ${tryAgain}`,
 		"persist-npm": `Installing npm under PNPM_HOME failed. Check your network connection. ${tryAgain}`,
@@ -129,6 +140,13 @@ export const guidance = Object.freeze({
 		"update-pi": `Updating Pi with the package manager that installed it failed. Gentle Shell was not changed. Check your network connection. ${tryAgain}`,
 		"verify-updated-pi": "After the update, this installer could not find a single Pi at the expected version from the same package manager. Gentle Shell was not changed. Run `pi --version` in a terminal, then run the installer again.",
 		"verify-installed-pi": "After installing Pi, this installer could not find it at the expected version in pnpm's global packages. Gentle Shell and your other Pi were not changed. Run `pnpm list -g` in a terminal, then run the installer again.",
+		"claim-prefix": "Gentle Shell's private folder could not be created, or kept private to your account, so nothing was installed. If that folder holds files this installer did not put there, or another account can change it, fix that, then run the installer again.",
+		"copy-npm-settings": `Your npm registry, authentication and proxy settings could not be read from your npm configuration (~/.npmrc, or NPM_CONFIG_USERCONFIG) and copied into Gentle Shell's private folder. Check that the file is readable. ${tryAgain}`,
+		"install-runtime": `Gentle Shell's pinned Node.js, npm and pnpm (and Go on Windows) could not be downloaded and verified against their pinned checksums. Check your network connection. ${tryAgain}`,
+		"install-version": `Installing Gentle Shell from the release's lockfile failed. Check your network connection and your npm registry and authentication settings. ${tryAgain}`,
+		"activate-version": `The installed version could not be made the active one. ${tryAgain}`,
+		"write-launcher": `The \`gentle-shell\` launcher could not be written in Gentle Shell's private folder. ${tryAgain}`,
+		"bundled-path": "Gentle Shell is installed, but the PATH change could not be made, or it is no longer the one the plan showed, so nothing was changed. Run the installer again to see the current PATH plan.",
 	}),
 	blockers: Object.freeze({
 		"unsupported-target": "This operating system or CPU is not supported by the wizard. Follow the README for a manual installation.",
@@ -136,13 +154,20 @@ export const guidance = Object.freeze({
 		"incompatible-tool": "A required tool is installed at an incompatible version. Update it, then run the installer again.",
 		"main-requires-go": "The `main` channel builds Gentle AI with Go, but `go version` did not report a version this installer can check. " +
 			"Make sure `go version` works in a terminal, or choose the release channel, then select Check again.",
+		"untrusted-pnpm-home": "Another account can change the pnpm home folder (PNPM_HOME), where pnpm installs and runs programs, so nothing was installed. " +
+			"Remove that account's write access, or set PNPM_HOME to a private folder such as %USERPROFILE%\\.pnpm, then select Check again.",
 	}),
 	outcomes: Object.freeze({
 		ready: "Gentle Shell is installed. Run `gentle-shell` in a terminal.",
 		"terminal-action-required": "Gentle Shell is installed. Open a new terminal so it picks up the updated PATH, then run `gentle-shell`.",
+		"add-path-line": "Gentle Shell is installed. Add the line below to your shell profile, open a new terminal, then run `gentle-shell`.",
 	}),
+	// A failed install, main-channel or update step whose detail shows GitHub's anonymous API limit.
+	githubRateLimit: "GitHub's limit for anonymous API requests was reached on this network, so the installation could not finish. Wait up to an hour, then run the installer again.",
 	// A failed shell-setup whose detail shows GitHub's anonymous API limit.
 	setupRateLimit: "`gentle-shell setup` could not finish because GitHub's limit for anonymous API requests was reached on this network. Wait up to an hour, then run the installer again.",
+	// A failed acquire-go whose detail names a Go folder the installer did not publish.
+	goDestinationConflict: `A Go folder from an earlier, interrupted installer run is in the way, and the installer never replaces a folder it cannot prove it published. Remove that folder (shown below), then run the installer again. Nothing was installed.`,
 	// A failed persist-path whose detail shows pnpm could not tell the shell (POSIX SHELL missing or unsupported).
 	persistPathShell: "`pnpm setup` could not tell which shell profile to edit because the SHELL environment variable is missing or names an unsupported shell. Open a regular terminal and run the installer again, or add `$PNPM_HOME/bin` to your PATH yourself.",
 	fallback: "The installation stopped for an unexpected reason. Nothing else will run; check the terminal and run the installer again.",
@@ -158,9 +183,14 @@ function setupDetail(value) {
 }
 const rateLimited = (detail) => /rate limit/i.test(detail) || (/GitHub API/i.test(detail) && /\b403\b/.test(detail));
 const unknownShell = (detail) => /ERR_PNPM_(?:UNKNOWN|UNSUPPORTED)_SHELL/.test(detail);
-// Fixed setup commands whose sanitized last error line may reach the browser.
-const detailSteps = Object.freeze({ "shell-setup": rateLimited, "persist-path": unknownShell });
-const detailGuidance = Object.freeze({ "shell-setup": "setupRateLimit", "persist-path": "persistPathShell" });
+const goConflict = (detail) => detail.startsWith("Conflicting Go destination: ");
+// The main channel's typed error when GitHub refused the latest main commit with HTTP 403.
+const githubLimited = (detail) => rateLimited(detail) || (/\bmain-commit-unavailable\b/.test(detail) && /\bHTTP 403\b/.test(detail));
+// Fixed steps whose sanitized last error line may reach the browser.
+const detailSteps = Object.freeze({ "shell-setup": rateLimited, "install-version": () => false, "persist-path": unknownShell, "acquire-go": goConflict,
+	"install-global": githubLimited, "install-shell-main": githubLimited, "build-gentle-ai-main": githubLimited, "update-shell": githubLimited });
+const detailGuidance = Object.freeze({ "shell-setup": "setupRateLimit", "persist-path": "persistPathShell", "acquire-go": "goDestinationConflict",
+	"install-global": "githubRateLimit", "install-shell-main": "githubRateLimit", "build-gentle-ai-main": "githubRateLimit", "update-shell": "githubRateLimit" });
 
 const ID = /^[a-z][a-z0-9-]{0,63}$/;
 function identifier(value, fallback = "unknown") {
@@ -181,8 +211,12 @@ function sameSecret(expected, actual) {
 	const [a, b] = [Buffer.from(expected), Buffer.from(String(actual))];
 	return a.length === b.length && timingSafeEqual(a, b);
 }
+/** What must not change between review and install. The reused-folder notice
+ * (tools.folders) is advisory and changes no action, so it is left out: a walk
+ * that times out on re-inventory must not turn into a plan-changed loop. */
 function fingerprint(collected) {
-	return createHash("sha256").update(JSON.stringify({ plan: collected.plan, binDir: collected.inventory?.globalBin?.path ?? null }))
+	const tools = Object.fromEntries(Object.entries(collected.plan?.tools ?? {}).filter(([name]) => name !== "folders"));
+	return createHash("sha256").update(JSON.stringify({ plan: { ...collected.plan, tools }, binDir: collected.inventory?.globalBin?.path ?? null }))
 		.digest("hex");
 }
 
@@ -228,11 +262,61 @@ function globalBinPnpm(blocker, found, required) {
 		`Nothing was replaced, and this installer never downgrades pnpm. To use it, make a pnpm ${major} release your global pnpm the way you prefer, then select Check again.`;
 }
 
+// S6: what the storage walk found on a Windows PNPM_HOME candidate, from the
+// wizard's own walk (folder, principal and rights), as one plain phrase.
+function plainText(value) {
+	return typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g, "").slice(0, 300) : null;
+}
+function findingText(finding) {
+	const at = plainText(finding?.at) ?? "a folder above it";
+	const sid = plainText(finding?.sid);
+	const account = plainText(finding?.account);
+	const who = sid ? `${sid}${account ? ` (${account})` : ""}` : "another account";
+	const check = String(finding?.check ?? "");
+	if (check === "unchecked") return `the permissions of ${at} could not be checked`;
+	if (check.endsWith("-acl-mask")) return `${who} can change ${at} (allowed rights ${plainText(finding.rights) ?? "beyond read and execute"})`;
+	if (check.endsWith("-owner")) return `${at} is owned by ${who}, which this installer does not trust`;
+	if (check.endsWith("-reparse")) return `${at} is a link (reparse point) to another location`;
+	return `${at} did not pass the permission check`;
+}
+const privateRemedy = "set PNPM_HOME to a private folder such as %USERPROFILE%\\.pnpm and reinstall your global pnpm packages there";
+function pnpmHomeGuidance(home) {
+	const path = plainText(home?.path);
+	if (!path || typeof home.untrusted !== "object" || home.untrusted === null) return guidance.blockers["untrusted-pnpm-home"];
+	const found = findingText(home.untrusted);
+	const at = plainText(home.untrusted.at) ?? path;
+	if (home.source === "user") {
+		return `PNPM_HOME is set to ${path}, but ${found}. pnpm installs and runs programs there, so nothing was installed. ` +
+			`Remove that account's write access, or ${privateRemedy}, then select Check again.`;
+	}
+	const intro = `pnpm's default folder ${path} is not private: ${found}.`;
+	if (home.installed === true) {
+		return `${intro} It already holds files. This installer never runs programs from a folder another account can change, and never moves or deletes an existing installation, so nothing was installed. ` +
+			`Remove that account's write access to ${at}, or ${privateRemedy}, then select Check again.`;
+	}
+	const own = plainText(home.private?.path);
+	if (own && home.private.foreign === true) {
+		return `${intro} ${own}, the private folder this installer would use instead, already holds files this installer did not create, so nothing was changed. ` +
+			`Remove that account's write access to ${at}, or move ${own} aside, then select Check again.`;
+	}
+	if (own && typeof home.private.untrusted === "object") {
+		return `${intro} ${own}, the private folder this installer would use instead, is not private either: ${findingText(home.private.untrusted)}. Nothing was changed. ` +
+			"Remove the extra access shown, then select Check again.";
+	}
+	return `${intro} Nothing was installed. Remove that account's write access to ${at}, or ${privateRemedy}, then select Check again.`;
+}
+
 /** Names the found and required versions when an incompatible tool is simply
- * older than its minimum, and explains a Pi or Shell installed outside pnpm or
- * a pnpm in the global bin directory; anything else keeps the fixed guidance. */
+ * older than its minimum, and explains a Pi or Shell installed outside pnpm,
+ * a pnpm in the global bin directory or a PNPM_HOME that is not private;
+ * anything else keeps the fixed guidance. */
 function blockerGuidance(blocker, inventory, plan) {
 	const fixed = guidance.blockers[blocker.code] ?? guidance.fallback;
+	if (blocker.code === "untrusted-pnpm-home") return pnpmHomeGuidance(inventory?.pnpmHome);
+	if (blocker.tool === "pnpmHome" && blocker.code === "unknown-tool") {
+		return "The permissions of the pnpm home folder (PNPM_HOME) could not be checked, so nothing was installed. " +
+			"Make sure Windows PowerShell runs in a terminal, then select Check again.";
+	}
 	const pnpmRequired = plan.tools?.pnpm?.required;
 	if (blocker.tool === "pnpm" && ["incompatible-tool", "unknown-tool"].includes(blocker.code) &&
 		inventory?.pnpm?.inGlobalBin === true && STABLE.test(pnpmRequired ?? "")) {
@@ -297,17 +381,102 @@ function alongsideNotes(plan) {
 	return notes;
 }
 
+/** The private PNPM_HOME the plan uses instead of pnpm's default, and why. */
+function privateHomeDescription(home) {
+	const path = plainText(home.path);
+	const fallback = plainText(home.default);
+	return `pnpm's default folder ${fallback} is not private: ${findingText(home.finding)}. So the installer uses a new private folder, ${path}, as PNPM_HOME, ` +
+		`which only you, SYSTEM and Administrators can change. \`pnpm setup\` will save PNPM_HOME=${path} in your user environment and add ${path}\\bin ` +
+		`to your user PATH, so new terminals use it. Nothing in ${fallback} is changed. Open a new terminal afterwards. ` +
+		// S13: pnpm reads its configuration folder only from XDG_CONFIG_HOME or %LOCALAPPDATA%\pnpm\config.
+		"Only the installer's own pnpm steps keep pnpm's configuration, cache and state inside that private folder: pnpm commands you run later keep " +
+		"pnpm's default configuration, cache and state under %LOCALAPPDATA%, which pnpm offers no safe persistent setting to move. This is an accepted risk.";
+}
+
+// S6 notice: reused tools whose folders another account can change (never a blocker).
+const folderTools = Object.freeze({ node: "Node.js", npm: "npm", go: "Go", pi: "Pi", shell: "Gentle Shell" });
+function sharedFoldersView(plan) {
+	const reused = Array.isArray(plan.tools?.folders?.reused) ? plan.tools.folders.reused.filter((entry) => Object.hasOwn(folderTools, entry?.tool)) : [];
+	if (reused.length === 0) return null;
+	const found = reused.map((entry) => `${folderTools[entry.tool]}: ${findingText(entry)}`).join("; ");
+	const unchecked = reused.some((entry) => entry.check === "unchecked");
+	const weak = reused.some((entry) => entry.check !== "unchecked");
+	const where = [weak ? "from folders another account can change" : null, unchecked ? "from folders whose permissions could not be checked" : null].filter(Boolean).join(", or ");
+	const remedies = [weak ? "remove that account's write access" : null,
+		unchecked ? "make sure your account can read the permissions of the paths that could not be checked, on a local drive" : null].filter(Boolean).join(", and ");
+	return {
+		tools: reused.map((entry) => entry.tool),
+		description: `These tools are reused as they are, ${where}. ${found}. ` +
+			"The installer never creates or runs its own programs there, but whoever can change those folders can change what these tools run for you, including for Gentle Shell. " +
+			`This is an accepted risk and not a blocker. To remove it, ${remedies}, then select Check again.`,
+	};
+}
+
+/** A bundled action's text, from the plan's own versions and paths (plain text). */
+function bundledDescription(action, bundled) {
+	const [root, bin, file] = [plainText(bundled.root), plainText(bundled.bin), plainText(bundled.path?.file)];
+	const go = STABLE.test(bundled.go ?? "") ? ` and Go ${bundled.go}` : "";
+	switch (action.id) {
+	case "bundled-prefix": return `Create Gentle Shell's private folder, ${root}, for its own runtimes, its installed versions and the \`gentle-shell\` launcher.`;
+	case "bundled-runtime": return `Download Gentle Shell's pinned Node.js ${plainText(bundled.node)} with its npm and pnpm ${plainText(bundled.pnpm)}${go}, verify their pinned checksums and keep them in that folder. ` +
+		"Your own Node.js, npm, pnpm and Go are not used or changed.";
+	case "bundled-version": return `Install Gentle Shell ${plainText(bundled.shell)} with Pi ${plainText(bundled.pi)} from the release's lockfile with \`pnpm install --frozen-lockfile\`, ` +
+		"so every package is the exact version the release verified. Your npm registry, authentication and proxy settings are respected. Any Pi already on this computer is not used or changed.";
+	case "bundled-path": return bundled.path?.kind === "registry" ? `Add ${bin} to your user PATH so new terminals find \`gentle-shell\`.`
+		: bundled.path?.kind === "symlink" ? `Link ${file} to the \`gentle-shell\` launcher; that folder is already on your PATH.`
+		: `Add one line to ${file} so new terminals find \`gentle-shell\`.`;
+	case "bundled-setup": return "Run `gentle-shell setup` with the bundled launcher to set up Gentle Shell's own Pi home (~/.gentle-shell/agent).";
+	default: return actionDescriptions[action.id] ?? "Prepare the installation.";
+	}
+}
+/** The bundled plan's view: the same shape as planView's, with `bundled: true`. */
+function bundledView(planId, plan) {
+	const bundled = plan.bundled;
+	const [root, bin, file, line] = [plainText(bundled.root), plainText(bundled.bin), plainText(bundled.path?.file), plainText(bundled.path?.line)];
+	const kind = bundled.path?.kind;
+	const profile = {
+		symlink: `The installer links ${file} to the \`gentle-shell\` launcher. That folder is already on your PATH, so no shell profile changes.`,
+		profile: `The installer adds one line to ${file} so new terminals find ${bin}. Open a new terminal afterwards.`,
+		registry: `The installer adds ${bin} to your user PATH so new terminals find \`gentle-shell\`. Open a new terminal afterwards.`,
+		manual: `The installer may not edit ${file} (a link, or a file it cannot write), so it changes nothing there: add this line to ${file} yourself, then open a new terminal: ${line}`,
+	}[kind] ?? `Your PATH already finds ${bin}; no shell profile or PATH change is planned.`;
+	const go = STABLE.test(bundled.go ?? "");
+	return {
+		planId,
+		ready: false,
+		bundled: true,
+		actions: plan.actions.map((action) => ({ id: identifier(action.id), description: bundledDescription(action, bundled) })),
+		blockers: [],
+		profileChange: { changesProfile: ["symlink", "profile", "registry"].includes(kind), command: null, binDir: bin, description: profile },
+		sharedFolders: null,
+		persistence: {
+			tools: ["node", "npm", "pnpm", ...(go ? ["go"] : [])],
+			pnpmHome: root,
+			description: `Gentle Shell installs as one self-contained product: its own pinned Node.js, npm, pnpm${go ? ", Go" : ""} and Pi, kept in ${root}. ` +
+				"Your own Node.js, npm, pnpm, Go and Pi are not used or changed. Only your npm registry, authentication and proxy settings (from ~/.npmrc) are copied into that folder and respected.",
+		},
+	};
+}
+
 function planView(planId, { inventory, plan }) {
+	if (plainObject(plan.bundled)) return bundledView(planId, plan);
 	const ids = plan.actions.map((action) => action.id);
 	const binDir = typeof inventory?.globalBin?.path === "string" ? inventory.globalBin.path : null;
-	const pnpmHome = binDir === null ? null : dirname(binDir);
-	const changesProfile = ids.includes("setup-global-bin");
+	// A private PNPM_HOME (S6) is always persisted by `pnpm setup` (the runner's persist-path).
+	const privateHome = plan.tools?.pnpmHome?.status === "private" ? plan.tools.pnpmHome : null;
+	const pnpmHome = privateHome ? plainText(privateHome.path) : binDir === null ? null : dirname(binDir);
+	const changesProfile = ids.includes("setup-global-bin") || (privateHome !== null && inventory?.globalBin?.onPath !== true);
 	let tools = [];
 	const alongside = alongsideNotes(plan);
-	if (ids.includes("persist-node")) tools = ["node", "npm", "pnpm"];
+	// A persistent pnpm next to a bootstrap-only Node is kept (persist-npm), never replaced.
+	if (ids.includes("persist-node")) tools = ids.includes("persist-npm") ? ["node", "npm"] : ["node", "npm", "pnpm"];
 	else if (ids.includes("persist-package-managers")) tools = ["npm", "pnpm"];
 	else if (ids.includes("persist-npm")) tools = ["npm"];
 	else if (ids.includes("persist-pnpm")) tools = ["pnpm"];
+	// A user's pnpm in $PNPM_HOME/bin that could not be checked: kept, never run again.
+	const unchecked = plan.tools?.pnpm?.unchecked === true
+		? "The pnpm in the pnpm global bin directory could not be checked, so it was left as it is, and the installer uses its own verified pnpm for this installation."
+		: null;
 	return {
 		planId,
 		ready: plan.ready === true,
@@ -324,15 +493,17 @@ function planView(planId, { inventory, plan }) {
 			changesProfile,
 			command: "pnpm setup",
 			binDir,
-			description: changesProfile
+			description: privateHome ? privateHomeDescription(privateHome) : changesProfile
 				? `\`pnpm setup\` will add ${binDir ?? "the pnpm global bin directory"} to your PATH: it edits your shell profile on macOS and Linux, or your user PATH on Windows. Open a new terminal afterwards.`
 				: "Your PATH already contains the pnpm global bin directory; no shell profile or PATH change is planned.",
 		},
+		sharedFolders: sharedFoldersView(plan),
 		persistence: {
 			tools,
 			pnpmHome,
 			description: tools.length > 0
-				? [`${tools.join(", ")} will be installed under $PNPM_HOME (${pnpmHome ?? "pnpm's home directory"}) so new terminals keep working after the temporary installer tools are removed. Existing installations are not replaced.`, ...alongside].join(" ")
+				? [`${tools.join(", ")} will be installed under $PNPM_HOME (${pnpmHome ?? "pnpm's home directory"}) so new terminals keep working after the temporary installer tools are removed. Existing installations are not replaced.`, ...alongside, ...(unchecked ? [unchecked] : [])].join(" ")
+				: unchecked ? `No runtime needs to be installed under $PNPM_HOME. ${unchecked}`
 				: "No runtime needs to be installed under $PNPM_HOME; your existing Node.js, npm and pnpm are reused.",
 		},
 	};
@@ -357,7 +528,19 @@ function outcomeView(result) {
 		}
 	} else {
 		view.guidance = guidance.outcomes[result.outcome];
+		// The Pi Gentle Shell runs, when pnpm put one other than the installer's next to it.
+		if (typeof result.piVersion === "string" && STABLE.test(result.piVersion) && result.piVersion.replace(/^v/, "") !== PI_INSTALL_VERSION) {
+			view.guidance += ` Gentle Shell runs Pi ${result.piVersion.replace(/^v/, "")}, which pnpm installed next to it.`;
+		}
 		if (result.action === "open-new-terminal") view.action = "open-new-terminal";
+		// The bundled install's line for a profile it may not edit: plain text only.
+		const pathLine = result.action === "add-path-line" && plainObject(result.pathLine) ? result.pathLine : null;
+		if (pathLine) {
+			view.action = "add-path-line";
+			view.guidance = guidance.outcomes["add-path-line"];
+			const [file, line] = [setupDetail(pathLine.file), setupDetail(pathLine.line)];
+			if (file === pathLine.file && line === pathLine.line && file && line) view.pathLine = { file, line };
+		}
 		if (["configured", "unchanged"].includes(result.npmPrefix)) view.npmPrefix = result.npmPrefix;
 	}
 	return view;

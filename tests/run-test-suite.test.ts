@@ -1,16 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { DEFAULT_STAGES, runTestSuite } from "../scripts/run-test-suite.mjs";
 
-// `pnpm test` chains its three stages; #1285 requires that a stage-1 failure
-// never suppresses the later stages. These tests cover the runner's
-// orchestration contract with fake stage implementations, so no real test
-// process is spawned.
+// #1285 requires that a stage-1 failure never suppresses later stages.
+// Orchestration tests use fake stages; CLI tests exercise real child processes.
 
 function fakeRunStage(codes) {
 	let index = 0;
@@ -111,6 +109,86 @@ test("direct invocation still runs stages when reached through a file symlink", 
 	assert.equal(result.status, 0);
 	assert.match(result.stdout ?? "", /PASS  only/);
 	assert.match(result.stdout ?? "", /all stages passed/);
+});
+
+function probeStageEnvironment(t: test.TestContext, env: NodeJS.ProcessEnv) {
+	const stagesPath = writeStagesFile(t, []);
+	const probePath = join(dirname(stagesPath), "probe.mjs");
+	writeFileSync(probePath, `
+import { existsSync, readdirSync } from "node:fs";
+const home = process.env.GENTLE_PI_CONFIG_HOME;
+console.log("ENV_PROBE=" + JSON.stringify({
+  git: Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase().startsWith("GIT_"))),
+  agents: Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase().startsWith("GENTLE_PI_AGENTS_"))),
+  home,
+  files: home && existsSync(home) ? readdirSync(home) : null,
+  sentinel: process.env.TEST_ENV_SENTINEL,
+}));
+`);
+	writeFileSync(stagesPath, JSON.stringify([
+		{ name: "unit-tests", command: `node "${probePath}"` },
+		{ name: "provider-contract", command: `node "${probePath}"` },
+	]));
+	const result = spawnSync(process.execPath, [runnerPath, stagesPath], {
+		encoding: "utf8", env: { ...process.env, ...env, TEST_ENV_SENTINEL: "preserved" },
+	});
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(result.stderr, "");
+	assert.match(result.stdout, /PASS  unit-tests/);
+	assert.match(result.stdout, /PASS  provider-contract/);
+	const probes = result.stdout.split(/\r?\n/).filter((line) => line.startsWith("ENV_PROBE="))
+		.map((line) => JSON.parse(line.slice("ENV_PROBE=".length)));
+	assert.equal(probes.length, 2);
+	for (const probe of probes) assert.equal(probe.sentinel, "preserved");
+	return probes;
+}
+
+test("unit stage strips inherited Git configuration without changing later stages", (t) => {
+	const env = {
+		GIT_CONFIG_COUNT: "2",
+		GIT_CONFIG_KEY_0: "credential.interactive", GIT_CONFIG_VALUE_0: "false",
+		GIT_CONFIG_KEY_1: "credential.guiPrompt", GIT_CONFIG_VALUE_1: "false",
+		GIT_DIR: "inherited-repository", GIT_AUTHOR_NAME: "inherited-author",
+	};
+	const [unit, provider] = probeStageEnvironment(t, env);
+	assert.deepEqual(unit.git, {});
+	for (const [key, value] of Object.entries(env)) assert.equal(provider.git[key], value);
+});
+
+test("unit stage strips inherited subagent context without changing later stages", (t) => {
+	const env = { GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: "1" };
+	const [unit, provider] = probeStageEnvironment(t, env);
+	assert.deepEqual(unit.agents, {});
+	for (const [key, value] of Object.entries(env)) assert.equal(provider.agents[key], value);
+});
+
+test("unit stage accepts an uncreated inherited config home without creating it", (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "gentle-pi-caller-config-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const home = join(dir, "not-created");
+	assert.equal(existsSync(home), false);
+	const [unit, provider] = probeStageEnvironment(t, { GENTLE_PI_CONFIG_HOME: home });
+	assert.notEqual(unit.home, home);
+	assert.deepEqual(unit.files, []);
+	assert.equal(existsSync(unit.home), false);
+	assert.equal(provider.home, home);
+	assert.equal(provider.files, null);
+	assert.equal(existsSync(home), false);
+});
+
+test("unit stage uses an empty temporary config home and removes it after exit", (t) => {
+	const home = mkdtempSync(join(tmpdir(), "gentle-pi-caller-config-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	const configPath = join(home, "runtime-guardrails.json");
+	const config = JSON.stringify({ autonomousMode: true, guardedCommands: { gitPush: "allow", gitRebase: "allow", gitBranchDeleteForce: "allow" } });
+	writeFileSync(configPath, config);
+	const [unit, provider] = probeStageEnvironment(t, { GENTLE_PI_CONFIG_HOME: home });
+	assert.notEqual(unit.home, home);
+	assert.deepEqual(unit.files, []);
+	assert.equal(existsSync(unit.home), false);
+	assert.equal(provider.home, home);
+	assert.deepEqual(provider.files, ["runtime-guardrails.json"]);
+	assert.equal(readFileSync(configPath, "utf8"), config);
 });
 
 test("direct invocation rejects a malformed stages file with a non-zero exit", (t) => {

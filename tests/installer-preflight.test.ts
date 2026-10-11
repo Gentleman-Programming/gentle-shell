@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { artifactFor } from "../scripts/installer-downloads.mjs";
 import test from "node:test";
 import { PI_INSTALL_VERSION, collectInventory, goAcquisition, planPreflight, pnpmGlobalBin, requirements } from "../scripts/installer-preflight.mjs";
 
@@ -25,6 +29,25 @@ test("requirements follow repository metadata and native installer pin", () => {
 	assert.equal(requirements.pnpm, pkg.packageManager.split("@")[1]);
 	assert.equal(requirements.shell, pkg.version);
 	assert.equal(requirements.go, "1.25.10");
+});
+
+test("preflight imports a packed manifest without packageManager using the verified pnpm pin", () => {
+	const root = mkdtempSync(fileURLToPath(new URL("./.preflight-packed-", import.meta.url)));
+	try {
+		const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+		delete pkg.packageManager;
+		writeFileSync(join(root, "package.json"), JSON.stringify(pkg));
+		cpSync(new URL("../scripts", import.meta.url), join(root, "scripts"), { recursive: true });
+		const entry = pathToFileURL(join(root, "scripts/installer-preflight.mjs")).href;
+		const result = spawnSync(process.execPath, ["--input-type=module", "-e",
+			`const { requirements } = await import(${JSON.stringify(entry)}); console.log(JSON.stringify(requirements));`], { encoding: "utf8" });
+		assert.equal(result.status, 0, result.stderr);
+		assert.equal(result.stderr, "");
+		assert.equal(result.stdout, `${JSON.stringify({ ...requirements, pnpm: artifactFor("pnpm").version })}\n`);
+		assert.equal(readFileSync(join(root, "package.json"), "utf8"), JSON.stringify(pkg));
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 for (const platform of ["linux", "darwin", "win32"]) {
@@ -74,6 +97,18 @@ test("the pinned Go is a 1.25 patch release that meets the requirement", () => {
 	const [major, minor, patch] = goAcquisition.version.split(".").map(Number);
 	const [rMajor, rMinor, rPatch] = requirements.go.split(".").map(Number);
 	assert.ok(major === rMajor && minor === rMinor && patch >= rPatch);
+});
+
+test("the pinned Go is acquired before the runtime is persisted, so a failed Go download changes nothing", () => {
+	const persisting = { ...tool("24.18.0"), persistent: false, npm: true };
+	for (const [platform, channel] of [["linux", "main"], ["darwin", "main"], ["win32", "release"]] as const) {
+		const inventory = { ...clean(platform), node: persisting, pnpm: { ...tool("11.1.1"), compatible: true, persistent: false },
+			globalBin: { available: true, path: "/disposable/bin", writable: true, onPath: true }, go: absent };
+		const plan = planPreflight(inventory, { channel });
+		assert.deepEqual(plan.blockers, [], platform);
+		assert.deepEqual(plan.actions.map((action: { id: string }) => action.id).slice(0, 5),
+			["acquire-go", "verify-go", "persist-node", "persist-package-managers", "configure-npm-prefix"], platform);
+	}
 });
 
 test("the main channel acquires the pinned Go when Go is missing or older, before the build, on every platform", () => {
@@ -220,6 +255,16 @@ test("an existing compatible Pi from any installation is reused and only Gentle 
 		assert.equal(plan.tools.pi.status, "reusable");
 		assert.deepEqual(updateIds(plan), ["install-shell", "setup-shell", "verify-readiness"]);
 	}
+});
+
+test("a pnpm Pi newer than the installer's pin never blocks: Gentle Shell is added or updated beside it", () => {
+	const newer = { ...tool("1.1.0") };
+	const install = planPreflight({ ...installed(), pi: newer, shell: absent, gentleAi: absent, setup: false });
+	assert.deepEqual([install.blockers, updateIds(install)], [[], ["install-shell", "setup-shell", "verify-readiness"]]);
+	const update = planPreflight({ ...installed(), pi: newer, shell: owned("3.9.0"), gentleAi: unchecked, setup: unchecked });
+	assert.deepEqual([update.blockers, updateIds(update)], [[], ["update-shell-release", "setup-shell", "verify-readiness"]]);
+	// Even a probe that reported an owner is not a blocker: only an older owned Pi is updated.
+	assert.deepEqual(planPreflight({ ...installed(), pi: { ...newer, owner: "pnpm" }, shell: absent, gentleAi: absent, setup: false }).blockers, []);
 });
 
 // An older Pi that pnpm or npm owns is updated to the version the installer installs.
@@ -403,10 +448,11 @@ test("runtime persistence intents persist only what is missing", async () => {
 		pnpm: { ...tool("11.1.1"), compatible: true, ...(pnpmPersistent === undefined ? {} : { persistent: pnpmPersistent }) },
 		globalBin: { available: true, path: "/disposable/bin", writable: true, onPath: true } });
 	const rest = ["install-pi", "install-shell", "setup-shell", "verify-readiness"];
-	// Bootstrap-only Node: the full group, whatever npm and pnpm report.
+	// Bootstrap-only Node: the runtime and npm whatever npm reports, and pnpm only when it is bootstrap-only too.
 	for (const npm of [true, false]) {
 		for (const pnpm of [true, false, undefined]) {
-			assert.deepEqual(ids(stack({ ...tool("24.18.0"), persistent: false, npm }, pnpm)), [...full, ...rest]);
+			const group = pnpm === false ? full : ["persist-node", "persist-npm", "configure-npm-prefix"];
+			assert.deepEqual(ids(stack({ ...tool("24.18.0"), persistent: false, npm }, pnpm)), [...group, ...rest]);
 		}
 	}
 	assert.deepEqual(planPreflight(stack({ ...tool("24.18.0"), persistent: false, npm: true })).actions[0],
@@ -425,7 +471,24 @@ test("runtime persistence intents persist only what is missing", async () => {
 	assert.deepEqual(ids(stack({ ...tool("20.0.0"), persistent: false, npm: false })), []);
 	const unreachable = { ...stack({ ...tool("24.18.0"), persistent: false, npm: false }),
 		globalBin: { available: true, path: "/disposable/bin", writable: true, onPath: false } };
-	assert.deepEqual(ids(unreachable).slice(0, 4), ["setup-global-bin", ...full]);
+	assert.deepEqual(ids({ ...unreachable, pnpm: { ...unreachable.pnpm, persistent: false } }).slice(0, 4), ["setup-global-bin", ...full]);
+});
+
+test("a bootstrap-only Node next to a persistent pnpm persists Node and npm only, never pnpm", async () => {
+	const { persistencePins } = await import("../scripts/installer-preflight.mjs");
+	const stack = (pnpm: object) => ({ ...clean(), node: { ...tool("24.18.0"), persistent: false, npm: true },
+		pnpm: { ...tool("11.1.1"), compatible: true, ...pnpm }, globalBin: { available: true, path: "/disposable/bin", writable: true, onPath: true } });
+	const rest = ["install-pi", "install-shell", "setup-shell", "verify-readiness"];
+	// A compatible newer pnpm 11 already in $PNPM_HOME/bin (or persistent elsewhere) is kept as it is.
+	// So is a Windows user pnpm in $PNPM_HOME\bin that failed the storage walk (S7): never replaced.
+	for (const pnpm of [{ version: "11.5.0", persistent: true, inGlobalBin: true }, { persistent: true }, {},
+		{ version: "11.9.0", persistent: true, inGlobalBin: true, untrusted: true }]) {
+		const plan = planPreflight(stack(pnpm));
+		assert.deepEqual(plan.actions.map((action: { id: string }) => action.id), ["persist-node", "persist-npm", "configure-npm-prefix", ...rest], JSON.stringify(pnpm));
+		assert.deepEqual(plan.actions[1], { id: "persist-npm", kind: "install-global", target: "npm", version: persistencePins.npm });
+	}
+	// A bootstrap-only pnpm is still persisted with npm in one add.
+	assert.deepEqual(ids(stack({ persistent: false })), ["persist-node", "persist-package-managers", "configure-npm-prefix", ...rest]);
 });
 
 // An older Node or an incompatible pnpm on the user's PATH: the bootstrap's
@@ -441,7 +504,9 @@ test("an older Node is left as it is: the pinned Node is persisted alongside ins
 	const plan = planPreflight(runtimeStack(pinnedNode("22.18.0"), { ...pinnedPnpm(), persistent: true }));
 	assert.deepEqual(plan.blockers, []);
 	assert.deepEqual(plan.tools.node, { status: "reusable", required: requirements.node, found: "22.18.0", version: "24.21.0" });
-	assert.deepEqual(updateIds(plan), ["persist-node", "persist-package-managers", "configure-npm-prefix", ...rest]);
+	// The user's persistent pnpm stays; only Node and npm are persisted.
+	assert.deepEqual(updateIds(plan), ["persist-node", "persist-npm", "configure-npm-prefix", ...rest]);
+	assert.deepEqual(updateIds(planPreflight(runtimeStack(pinnedNode("22.18.0"), pinnedPnpm()))), ["persist-node", "persist-package-managers", "configure-npm-prefix", ...rest]);
 });
 
 test("an incompatible pnpm is left as it is: the pinned pnpm is persisted alongside instead of blocking", () => {
@@ -519,6 +584,25 @@ test("a user's pnpm in $PNPM_HOME/bin is never persisted over: an older or newer
 	assert.deepEqual(planPreflight(runtimeStack(node, { available: null, inGlobalBin: true })).blockers, [{ code: "unknown-tool", tool: "pnpm" }]);
 });
 
+test("a user's pnpm in $PNPM_HOME/bin that could not be checked is left as it is: the bootstrap's pnpm runs, nothing is persisted over it", () => {
+	const node = { ...tool("24.18.0"), persistent: true, npm: true };
+	const unchecked = { ...tool("11.1.1"), compatible: true, persistent: true, inGlobalBin: true, unchecked: true };
+	const rest = ["install-pi", "install-shell", "setup-shell", "verify-readiness"];
+	for (const [n, persisted] of [[node, []], [pinnedNode("22.18.0"), ["persist-node", "persist-npm", "configure-npm-prefix"]]] as const) {
+		const plan = planPreflight(runtimeStack(n, unchecked));
+		assert.deepEqual(plan.blockers, []);
+		assert.deepEqual(plan.tools.pnpm, { status: "reusable", required: requirements.pnpm, unchecked: true });
+		assert.deepEqual(plan.actions.map((action: { id: string }) => action.id), [...persisted, ...rest]);
+	}
+	// Only that case is recorded: a checked compatible pnpm there, or an untrusted one (S7), is not.
+	for (const pnpm of [{ ...unchecked, unchecked: undefined }, { ...unchecked, unchecked: undefined, untrusted: true }]) {
+		assert.deepEqual(planPreflight(runtimeStack(node, pnpm)).tools.pnpm, { status: "reusable", required: requirements.pnpm });
+	}
+	// One whose version was read and is incompatible still blocks.
+	assert.deepEqual(planPreflight(runtimeStack(node, { ...tool("11.0.5"), compatible: false, persistent: true, inGlobalBin: true })).blockers,
+		[{ code: "incompatible-tool", tool: "pnpm" }]);
+});
+
 test("an older Go is left as it is: the pinned Go is acquired alongside, and a set-up stack downloads nothing", () => {
 	for (const [platform, channel, change] of [["win32", "release", { gentleAi: absent }], ["darwin", "main", { shell: absent, setup: false }]] as const) {
 		const plan = planPreflight({ ...installed(platform), ...change, go: tool("1.24.0") }, { channel });
@@ -529,4 +613,134 @@ test("an older Go is left as it is: the pinned Go is acquired alongside, and a s
 	// Nothing to build: no download, even on main.
 	const ready = planPreflight({ ...installed("darwin"), go: absent }, { channel: "main" });
 	assert.deepEqual(ready.actions.map((action: { id: string }) => action.id), ["verify-readiness"]);
+});
+
+// S6: the Windows PNPM_HOME decision (windowsPnpmHome) the wizard records before
+// any probe. A passing default leaves the plan exactly as before.
+const W_DEFAULT = "C:\\Users\\m\\AppData\\Local\\pnpm";
+const W_PRIVATE = "C:\\Users\\m\\.pnpm";
+const weakFinding = { check: "target-acl-mask", at: "C:\\Users\\m\\AppData\\Local", sid: "S-1-5-21-1-2-3-1002", account: "PC\\other", rights: "0x001301BF" };
+test("a Windows PNPM_HOME that passes the walk leaves the plan unchanged; POSIX ignores the record", () => {
+	for (const pnpmHome of [{ available: true, path: W_DEFAULT, source: "default" }, { available: true, path: "D:\\pnpm", source: "user" }]) {
+		for (const inventory of [clean("win32"), installed("win32")]) assert.deepEqual(planPreflight({ ...inventory, pnpmHome }), planPreflight(inventory));
+	}
+	const untrusted = { available: true, path: "/home/u/.local/share/pnpm", source: "user", untrusted: weakFinding };
+	assert.deepEqual(planPreflight({ ...clean("linux"), pnpmHome: untrusted }), planPreflight(clean("linux")));
+	assert.deepEqual(planPreflight({ ...clean("win32"), pnpmHome: { available: null } }), planPreflight(clean("win32")), "no decision recorded");
+});
+
+test("a private Windows PNPM_HOME is recorded with the default it replaces and why, and its PATH is set up", () => {
+	const pnpmHome = { available: true, path: W_PRIVATE, source: "private", rejected: { path: W_DEFAULT, ...weakFinding } };
+	const plan = planPreflight({ ...clean("win32"), pnpmHome });
+	assert.deepEqual(plan.blockers, []);
+	assert.deepEqual(plan.tools.pnpmHome, { status: "private", path: W_PRIVATE, default: W_DEFAULT, finding: weakFinding });
+	assert.deepEqual(plan.actions, planPreflight(clean("win32")).actions);
+	assert.ok(plan.actions.some((action: { id: string }) => action.id === "setup-global-bin"));
+	// Only known string fields reach the plan.
+	const odd = planPreflight({ ...clean("win32"), pnpmHome: { ...pnpmHome, rejected: { path: W_DEFAULT, check: "target-owner", at: W_DEFAULT, sid: 7, extra: "x" } } });
+	assert.deepEqual(odd.tools.pnpmHome.finding, { check: "target-owner", at: W_DEFAULT });
+});
+
+test("an untrusted Windows PNPM_HOME, or one that could not be checked, blocks before any action", () => {
+	const cases = [
+		[{ available: true, path: W_DEFAULT, source: "default", untrusted: weakFinding, installed: true }, "untrusted-pnpm-home"],
+		[{ available: true, path: "D:\\pnpm", source: "user", untrusted: weakFinding }, "untrusted-pnpm-home"],
+		[{ available: true, path: W_DEFAULT, source: "default", untrusted: weakFinding, private: { path: W_PRIVATE, foreign: true } }, "untrusted-pnpm-home"],
+		[{ available: null, failed: true }, "unknown-tool"],
+	] as const;
+	for (const [pnpmHome, code] of cases) {
+		for (const inventory of [clean("win32"), installed("win32")]) {
+			const plan = planPreflight({ ...inventory, pnpmHome });
+			assert.deepEqual(plan.blockers.filter((blocker: { tool: string }) => blocker.tool === "pnpmHome"), [{ code, tool: "pnpmHome" }], JSON.stringify(pnpmHome));
+			assert.deepEqual(plan.actions, []);
+			assert.equal(plan.ready, false);
+		}
+	}
+	assert.equal(planPreflight({ ...clean("win32"), pnpmHome: cases[0][0] }).tools.pnpmHome.status, "untrusted");
+});
+
+// R1: a blocked Windows PNPM_HOME decision means no probe runs at all; the plan
+// carries only that blocker.
+test("a blocked Windows PNPM_HOME decision runs no probe and plans only that blocker", async () => {
+	const cases = [
+		[{ available: true, path: W_DEFAULT, source: "default", untrusted: weakFinding, installed: true }, { code: "untrusted-pnpm-home", tool: "pnpmHome" }],
+		[{ available: true, path: "D:\\pnpm", source: "user", untrusted: weakFinding }, { code: "untrusted-pnpm-home", tool: "pnpmHome" }],
+		[{ available: null, failed: true }, { code: "unknown-tool", tool: "pnpmHome" }],
+	] as const;
+	for (const [pnpmHome, blocker] of cases) {
+		const called: string[] = [];
+		const probes = Object.fromEntries(["node", "pnpm", "pi", "shell", "gentleAi", "go", "globalBin", "setup"]
+			.map((name) => [name, async () => { called.push(name); return { available: null }; }]));
+		const inventory = await collectInventory({ platform: "win32", arch: "x64", probes, pnpmHome });
+		assert.deepEqual(called, [], JSON.stringify(pnpmHome));
+		assert.deepEqual(inventory.pnpmHome, pnpmHome);
+		const plan = planPreflight(inventory);
+		assert.deepEqual([plan.blockers, plan.actions, plan.ready], [[blocker], [], false]);
+		// Even with every other tool unknown, that blocker stands alone.
+		assert.deepEqual(planPreflight({ ...clean("win32"), node: { available: null }, pi: { available: null }, pnpmHome }).blockers, [blocker]);
+	}
+	// A passing or private decision still runs every probe.
+	for (const pnpmHome of [{ available: true, path: W_DEFAULT, source: "default" },
+		{ available: true, path: W_PRIVATE, source: "private", rejected: { path: W_DEFAULT, ...weakFinding } }]) {
+		const called: string[] = [];
+		await collectInventory({ platform: "win32", arch: "x64", probes: { node: async () => { called.push("node"); return absent; } }, pnpmHome });
+		assert.deepEqual(called, ["node"]);
+	}
+	// POSIX ignores a decision record.
+	const posixCalled: string[] = [];
+	await collectInventory({ platform: "linux", arch: "x64", probes: { node: async () => { posixCalled.push("node"); return absent; } },
+		pnpmHome: { available: null, failed: true } });
+	assert.deepEqual(posixCalled, ["node"]);
+});
+
+// S6 notice: reused tools whose folders another account can change, from one walk.
+const weakFolder = { check: "parent-acl-mask", at: "C:\\Users\\m\\AppData\\Roaming", sid: "S-1-5-21-1-2-3-1002", account: "PC\\other", rights: "0x001301BF" };
+const allFolders = { node: weakFolder, npm: weakFolder, go: { check: "target-owner", at: "C:\\Go\\bin\\go.exe", sid: "S-1-5-21-9" }, pi: weakFolder, shell: weakFolder };
+test("Windows: collectInventory records the folders walk after the tool probes, and never blocks on it", async () => {
+	const order: string[] = [];
+	const probes = { ...Object.fromEntries(["node", "pnpm", "pi", "shell", "gentleAi", "go", "globalBin", "setup"].map((name) => [name, async () => { order.push(name); return absent; }])),
+		folders: async () => { order.push("folders"); return { node: weakFolder }; } };
+	const inventory = await collectInventory({ platform: "win32", arch: "x64", probes });
+	assert.deepEqual(order, ["node", "pnpm", "pi", "shell", "gentleAi", "go", "globalBin", "setup", "folders"]);
+	assert.deepEqual(inventory.folders, { node: weakFolder });
+	for (const folders of [async () => null, async () => ({}), async () => ({ available: null }), async () => { throw new Error("walk failed"); }]) {
+		const quiet = await collectInventory({ platform: "win32", arch: "x64", probes: { ...probes, folders } });
+		assert.equal("folders" in quiet, false);
+	}
+	// POSIX and a blocked PNPM_HOME decision never walk.
+	order.length = 0;
+	assert.equal("folders" in await collectInventory({ platform: "linux", arch: "x64", probes }), false);
+	assert.equal(order.includes("folders"), false);
+	order.length = 0;
+	await collectInventory({ platform: "win32", arch: "x64", probes, pnpmHome: { available: null, failed: true } });
+	assert.deepEqual(order, []);
+});
+
+test("Windows: the plan notes only the reused tools whose folders another account can change, without blocking", () => {
+	const reused = { ...clean("win32"), node: { ...tool("24.18.0"), persistent: true, npm: true }, pnpm: { ...tool("11.1.1"), compatible: true, persistent: true },
+		pi: { ...tool("1.2.0"), external: true }, go: tool("1.26.0"), globalBin: { available: true, path: "C:\\Users\\m\\AppData\\Local\\pnpm\\bin", writable: true, onPath: true } };
+	const plan = planPreflight({ ...reused, folders: allFolders });
+	assert.deepEqual(plan.blockers, []);
+	assert.deepEqual(plan.actions, planPreflight(reused).actions, "a notice changes no action");
+	assert.deepEqual(plan.tools.folders, { status: "notice", reused: [{ tool: "node", ...weakFolder }, { tool: "npm", ...weakFolder }, { tool: "go", ...allFolders.go }, { tool: "pi", ...weakFolder }] },
+		"Gentle Shell is installed by pnpm here, so its folder is not reused");
+	assert.equal("folders" in planPreflight(reused).tools, false);
+	// Not reused: a Node left for the pinned one, a missing npm, Go not needed, a Pi installed alongside.
+	const replaced = planPreflight({ ...reused, node: { ...tool("24.21.0"), persistent: false, npm: false, found: "22.0.0" },
+		pi: { ...tool("0.80.0"), external: true }, folders: allFolders });
+	assert.deepEqual(replaced.tools.folders?.reused.map((entry: { tool: string }) => entry.tool), ["go"], "only Go, which the Windows build still reuses");
+	const missingNpm = planPreflight({ ...reused, node: { ...tool("24.18.0"), persistent: true, npm: false }, folders: { npm: weakFolder } });
+	assert.equal(missingNpm.tools.folders, undefined);
+	// An npm-owned Gentle Shell that is kept or updated with npm is reused.
+	const npmShell = planPreflight({ ...installed("win32"), node: { ...tool("24.18.0"), persistent: true, npm: true },
+		shell: { ...tool(requirements.shell), global: true, owner: "npm" }, folders: { shell: weakFolder, go: weakFolder } });
+	assert.deepEqual(npmShell.tools.folders?.reused.map((entry: { tool: string }) => entry.tool), ["shell"], "no build here, so Go is not reused");
+	// A path the walk could not check is noted as such; an unknown code never reaches the plan.
+	const unchecked = planPreflight({ ...reused, folders: { node: { check: "unchecked", at: "C:\\nodejs\\node.exe" }, pi: { check: "denied", at: "C:\\x" } } });
+	assert.deepEqual(unchecked.tools.folders, { status: "notice", reused: [{ tool: "node", check: "unchecked", at: "C:\\nodejs\\node.exe" }] });
+	assert.deepEqual(unchecked.blockers, []);
+	// Only known string fields reach the plan; POSIX ignores the record.
+	const odd = planPreflight({ ...reused, folders: { node: { ...weakFolder, sid: 7, extra: "x" }, other: weakFolder } });
+	assert.deepEqual(odd.tools.folders.reused, [{ tool: "node", check: weakFolder.check, at: weakFolder.at, account: weakFolder.account, rights: weakFolder.rights }]);
+	assert.equal(planPreflight({ ...reused, platform: "linux", folders: allFolders }).tools.folders, undefined);
 });

@@ -7,10 +7,12 @@ import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { exitCodeFor, openBrowser, openerFor, redirectPage, runnerEnvironment, writeRedirect } from "../bin/gentle-shell-install.mjs";
+import { exitCodeFor, openBrowser, openerFor, redirectPage, runnerEnvironment, upgradeEnvironment, wizardHandlers, writeRedirect } from "../bin/gentle-shell-install.mjs";
 import { planPreflight, requirements } from "../scripts/installer-preflight.mjs";
 import { PI_INSTALL_VERSION, blockedReasons, failedSteps } from "../scripts/installer-runner.mjs";
 import { createInstallerServer, guidance } from "../scripts/installer-server.mjs";
+import { distributionAsset, prefixLayout } from "../scripts/bundled-install.mjs";
+import { bundledBlockedReasons, bundledFailedSteps, bundledPlan } from "../scripts/bundled-wizard.mjs";
 
 type Response = { status: number; headers: Record<string, string | string[] | undefined>; body: string };
 type Plan = ReturnType<typeof planPreflight>;
@@ -256,6 +258,23 @@ test("/api/plan is built server-side and explains profile and runtime persistenc
 	}
 });
 
+test("/api/plan lists only Node.js and npm for persistence when a newer pnpm 11 is already in $PNPM_HOME/bin", async () => {
+	const { host, port, login, runs } = await start({ collect: async () => collected({
+		pnpm: { available: true, version: "11.5.0", usable: true, compatible: true, persistent: true, inGlobalBin: true },
+	}) });
+	try {
+		const view = await plan(port, await login());
+		assert.deepEqual(view.blockers, []);
+		assert.deepEqual(view.actions.map((action: { id: string }) => action.id).filter((id: string) => /^(persist-|configure-npm)/.test(id)),
+			["persist-node", "persist-npm", "configure-npm-prefix"]);
+		assert.deepEqual(view.persistence.tools, ["node", "npm"]);
+		assert.ok(view.persistence.description.startsWith("node, npm will be installed under $PNPM_HOME"), view.persistence.description);
+		assert.deepEqual(runs, []);
+	} finally {
+		await host.close("test");
+	}
+});
+
 test("/api/plan reports blockers with guidance and no profile change when already on PATH", async () => {
 	const { host, port, login } = await start({ collect: async () => collected({
 		node: { available: true, version: "24.18.0", usable: true, persistent: true, npm: true },
@@ -374,6 +393,36 @@ test("/api/plan says before consent which Go is downloaded, only to build, with 
 	}
 });
 
+test("/api/plan says before consent that a pnpm in $PNPM_HOME/bin that could not be checked is left as it is", async () => {
+	const note = "The pnpm in the pnpm global bin directory could not be checked, so it was left as it is, and the installer uses its own verified pnpm for this installation.";
+	const pnpm = { available: true, version: requirements.pnpm, usable: true, compatible: true, persistent: true, inGlobalBin: true, unchecked: true };
+	const cases = [
+		[{ available: true, version: "24.18.0", usable: true, persistent: true, npm: true }, [], `No runtime needs to be installed under $PNPM_HOME. ${note}`],
+		[{ available: true, version: "24.21.0", usable: true, persistent: false, npm: false }, ["node", "npm"], null],
+	] as const;
+	for (const [node, tools, exact] of cases) {
+		const { host, port, login, runs } = await start({ collect: async () => collected({ node, pnpm }) });
+		try {
+			const view = await plan(port, await login());
+			assert.deepEqual(view.blockers, []);
+			assert.equal(view.ready, false);
+			assert.deepEqual(view.persistence.tools, tools);
+			if (exact) assert.equal(view.persistence.description, exact);
+			else assert.ok(view.persistence.description.endsWith(` ${note}`), view.persistence.description);
+			assert.deepEqual(runs, []);
+		} finally {
+			await host.close("test");
+		}
+	}
+	// A checked pnpm there adds nothing.
+	const checked = await start({ collect: async () => collected({ pnpm: { ...pnpm, unchecked: undefined } }) });
+	try {
+		assert.doesNotMatch((await plan(checked.port, await checked.login())).persistence.description, /could not be checked/);
+	} finally {
+		await checked.host.close("test");
+	}
+});
+
 test("/api/plan explains a pnpm in $PNPM_HOME/bin that the installer will not replace, with how to update it", async () => {
 	const inGlobalBin = (pnpm: object) => ({ pnpm: { ...pnpm, inGlobalBin: true } });
 	const cases = [
@@ -425,6 +474,44 @@ test("/api/plan explains a Pi whose version cannot be read", async () => {
 			"Pi is already installed, but `pi --version` did not report a version this installer can check. Make sure `pi --version` works in a terminal, then select Check again.");
 	} finally {
 		await host.close("test");
+	}
+});
+
+test("/api/plan says that pnpm may put a newer Pi next to Gentle Shell, at least the minimum", async () => {
+	// A newer Pi installed with pnpm never blocks: it is kept as it is.
+	const { host, port, login } = await start({ collect: async () => collected({ pi: { available: true, version: "1.1.0", usable: true } }) });
+	try {
+		const view = await plan(port, await login());
+		assert.deepEqual(view.blockers, []);
+		assert.equal(view.actions.find((action: { id: string }) => action.id === "install-shell").description,
+			`Install Gentle Shell (gentle-pi) globally with pnpm. pnpm may put a newer Pi than ${PI_INSTALL_VERSION} next to it ` +
+			`(at least Pi ${requirements.pi}), and Gentle Shell runs that Pi.`);
+	} finally {
+		await host.close("test");
+	}
+});
+
+test("the outcome says which Pi Gentle Shell runs only when it is not the installer's Pi", async () => {
+	const cases: [object, string][] = [
+		[{ outcome: "ready", completed: [], piVersion: "1.1.0" }, `${guidance.outcomes.ready} Gentle Shell runs Pi 1.1.0, which pnpm installed next to it.`],
+		[{ outcome: "terminal-action-required", action: "open-new-terminal", completed: [], piVersion: "1.1.0" },
+			`${guidance.outcomes["terminal-action-required"]} Gentle Shell runs Pi 1.1.0, which pnpm installed next to it.`],
+		[{ outcome: "ready", completed: [] }, guidance.outcomes.ready],
+		[{ outcome: "ready", completed: [], piVersion: PI_INSTALL_VERSION }, guidance.outcomes.ready],
+		[{ outcome: "ready", completed: [], piVersion: "1.1.0 <script>" }, guidance.outcomes.ready],
+	];
+	for (const [result, expected] of cases) {
+		const { host, port, login } = await start({ runInstall: async () => result as never });
+		try {
+			const cookie = await login();
+			const { planId } = await plan(port, cookie);
+			assert.equal((await post(port, "/api/install", cookie, { planId, consent: true })).status, 202);
+			await waitFor(() => host.outcome() !== null);
+			assert.equal(host.outcome()?.guidance, expected, JSON.stringify(result));
+			assert.equal("piVersion" in (host.outcome() ?? {}), false);
+		} finally {
+			await host.close("test");
+		}
 	}
 });
 
@@ -615,6 +702,41 @@ test("stale planId or a changed re-inventory returns 409 plan-changed without ru
 	}
 });
 
+// A2: the reused-folder notice is advisory. A re-inventory whose walk timed out (no
+// notice), or found another one, still installs the consented plan: no 409 loop.
+test("a re-inventory that differs only in the reused-folder notice still installs the consented plan", async () => {
+	const weak = { check: "parent-acl-mask", at: "C:\\Users\\m\\AppData\\Roaming" };
+	const windows = { platform: "win32", node: { available: true, version: "24.18.0", usable: true, persistent: true, npm: true },
+		pnpm: { available: true, version: "11.1.1", usable: true, compatible: true, persistent: true }, go: { available: true, version: "1.26.0", usable: true } };
+	for (const later of [{}, { folders: { node: { check: "unchecked", at: "C:\\nodejs\\node.exe" } } }]) {
+		let current = collected({ ...windows, folders: { node: weak } });
+		const { host, port, login, runs } = await start({ collect: async () => current });
+		try {
+			const cookie = await login();
+			const { planId } = await plan(port, cookie);
+			current = collected({ ...windows, ...later });
+			const response = await post(port, "/api/install", cookie, { planId, consent: true });
+			assert.equal(response.status, 202, response.body);
+			assert.equal(runs.length, 1);
+			assert.deepEqual(runs[0].request.plan.tools.folders?.reused.map((entry: { tool: string }) => entry.tool), ["node"], "the consented plan runs");
+		} finally {
+			await host.close("test");
+		}
+	}
+	// Any other change still stops it.
+	let current = collected({ ...windows, folders: { node: weak } });
+	const { host, port, login, runs } = await start({ collect: async () => current });
+	try {
+		const cookie = await login();
+		const { planId } = await plan(port, cookie);
+		current = collected({ ...windows, folders: { node: weak }, globalBin: { available: true, path: BIN, writable: true, onPath: true } });
+		assert.equal((await post(port, "/api/install", cookie, { planId, consent: true })).status, 409);
+		assert.equal(runs.length, 0);
+	} finally {
+		await host.close("test");
+	}
+});
+
 test("install runs the server-stored plan once, single-flight, and reports progress with guidance", async () => {
 	const gate = deferred<void>();
 	const runInstall: RunInstall = async (_request, log) => {
@@ -759,7 +881,7 @@ test("a failed setup passes only its bounded detail through, with rate-limit gui
 		}
 	}
 	// A detail on any other step never reaches the browser.
-	const { host, port, login } = await start({ runInstall: async () => ({ outcome: "failed", failedStep: "install-global", completed: [], detail: rateLimited }) });
+	const { host, port, login } = await start({ runInstall: async () => ({ outcome: "failed", failedStep: "record-channel", completed: [], detail: rateLimited }) });
 	try {
 		const cookie = await login();
 		const { planId } = await plan(port, cookie);
@@ -767,7 +889,7 @@ test("a failed setup passes only its bounded detail through, with rate-limit gui
 		await waitFor(() => host.outcome() !== null);
 		const progress = JSON.parse((await send(port, { path: "/api/progress", headers: { cookie, ...API } })).body);
 		assert.equal("detail" in progress.outcome, false);
-		assert.equal(progress.outcome.guidance, guidance.failed["install-global"]);
+		assert.equal(progress.outcome.guidance, guidance.failed["record-channel"]);
 	} finally {
 		await host.close("test");
 	}
@@ -791,6 +913,54 @@ test("a failed setup passes only its bounded detail through, with rate-limit gui
 			await run.host.close("test");
 		}
 	}
+	// A failed Go download passes its folder conflict through, with guidance to remove that folder.
+	const conflict = "Conflicting Go destination: ~/.pi/gentle-ai/tools/go/1.25.14";
+	for (const [detail, expected] of [[conflict, guidance.goDestinationConflict], ["Error: size", guidance.failed["acquire-go"]]]) {
+		const run = await start({ runInstall: async () => ({ outcome: "failed", failedStep: "acquire-go", completed: [], detail }) });
+		try {
+			const cookie = await run.login();
+			const { planId } = await plan(run.port, cookie);
+			await post(run.port, "/api/install", cookie, { planId, consent: true });
+			await waitFor(() => run.host.outcome() !== null);
+			const progress = JSON.parse((await send(run.port, { path: "/api/progress", headers: { cookie, ...API } })).body);
+			assert.equal(progress.outcome.detail, detail);
+			assert.equal(progress.outcome.guidance, expected, detail);
+		} finally {
+			await run.host.close("test");
+		}
+	}
+	// The install, main-channel and update steps pass their detail through; GitHub's anonymous
+	// API limit (a main commit GitHub refused with HTTP 403) gets the rate-limit guidance.
+	const mainLimited = "main-commit-unavailable: GitHub did not return the latest main commit of Gentleman-Programming/gentle-shell (HTTP 403)";
+	for (const [step, detail, expected] of [
+		["install-global", ".../gentle-pi postinstall:   root cause Error: go: open ~/x: The directory name is invalid.", guidance.failed["install-global"]],
+		["install-global", rateLimited, guidance.githubRateLimit],
+		["install-shell-main", mainLimited, guidance.githubRateLimit],
+		["install-shell-main", "main-commit-unavailable: GitHub did not return the latest main commit of Gentleman-Programming/gentle-shell (HTTP 500)", guidance.failed["install-shell-main"]],
+		["build-gentle-ai-main", "main-commit-unavailable: GitHub did not return the latest main commit of Gentleman-Programming/gentle-ai (HTTP 403)", guidance.githubRateLimit],
+		["build-gentle-ai-main", "golang.org/x/sys/cpu: fork/exec ~/asm.exe: The directory name is invalid.", guidance.failed["build-gentle-ai-main"]],
+		["update-shell", mainLimited, guidance.githubRateLimit],
+		["update-shell", "tar: Error is not recoverable: exiting now", guidance.failed["update-shell"]],
+	]) {
+		const run = await start({ runInstall: async () => ({ outcome: "failed", failedStep: step, completed: [], detail }) });
+		try {
+			const cookie = await run.login();
+			const { planId } = await plan(run.port, cookie);
+			await post(run.port, "/api/install", cookie, { planId, consent: true });
+			await waitFor(() => run.host.outcome() !== null);
+			const progress = JSON.parse((await send(run.port, { path: "/api/progress", headers: { cookie, ...API } })).body);
+			assert.equal(progress.outcome.detail, detail, step);
+			assert.equal(progress.outcome.guidance, expected, `${step}: ${detail}`);
+		} finally {
+			await run.host.close("test");
+		}
+	}
+	assert.match(guidance.githubRateLimit, /GitHub/);
+	assert.match(guidance.githubRateLimit, /hour/);
+	assert.doesNotMatch(guidance.githubRateLimit, /gentle-shell setup|token|credential|password|log in|sign in/i);
+	assert.match(guidance.goDestinationConflict, /earlier/);
+	assert.match(guidance.goDestinationConflict, /Remove that folder/);
+	assert.doesNotMatch(guidance.goDestinationConflict, /network/);
 	assert.match(guidance.persistPathShell, /SHELL/);
 	assert.match(guidance.persistPathShell, /regular terminal/);
 	assert.match(guidance.persistPathShell, /\$PNPM_HOME\/bin/);
@@ -896,9 +1066,9 @@ test("guidance covers every runner blocked reason and failed step", () => {
 	assert.ok(blockedReasons.length >= 13 && failedSteps.length >= 14);
 	for (const reason of blockedReasons) assert.ok(typeof guidance.blocked[reason] === "string" && guidance.blocked[reason].length > 20, reason);
 	for (const step of failedSteps) assert.ok(typeof guidance.failed[step] === "string" && guidance.failed[step].length > 20, step);
-	// No stale guidance for a reason or step the runner no longer has.
-	assert.deepEqual(Object.keys(guidance.blocked).sort(), [...blockedReasons].sort());
-	assert.deepEqual(Object.keys(guidance.failed).sort(), [...failedSteps].sort());
+	// No stale guidance for a reason or step the runners (standard and bundled) no longer have.
+	assert.deepEqual(Object.keys(guidance.blocked).sort(), [...new Set([...blockedReasons, ...bundledBlockedReasons])].sort());
+	assert.deepEqual(Object.keys(guidance.failed).sort(), [...new Set([...failedSteps, ...bundledFailedSteps])].sort());
 	for (const code of ["unsupported-target", "unknown-tool", "incompatible-tool"]) assert.ok(guidance.blockers[code].length > 20, code);
 	assert.ok(guidance.fallback.length > 20);
 	assert.ok(Object.isFrozen(guidance) && Object.isFrozen(guidance.blocked) && Object.isFrozen(guidance.failed));
@@ -1128,5 +1298,211 @@ test("onRedeemed runs once, only for a valid code, and a throwing hook never bre
 		assert.equal(redeemed, 1);
 	} finally {
 		await host.close("test");
+	}
+});
+
+// S6: the Windows PNPM_HOME decision reaches the plan copy before consent.
+const W_DEFAULT = "C:\\Users\\m\\AppData\\Local\\pnpm";
+const W_PRIVATE = "C:\\Users\\m\\.pnpm";
+const weak = { check: "target-acl-mask", at: "C:\\Users\\m\\AppData\\Local", sid: "S-1-5-21-1-2-3-1002", account: "PC\\other", rights: "0x001301BF" };
+async function windowsView(pnpmHome: object, changes: Record<string, unknown> = {}) {
+	const { host, port, login } = await start({ collect: async () => collected({ platform: "win32", go: { available: true, version: "1.26.0", usable: true },
+		globalBin: { available: true, path: `${W_PRIVATE}\\bin`, writable: true, onPath: false }, pnpmHome, ...changes }) });
+	try {
+		return await plan(port, await login());
+	} finally {
+		await host.close("test");
+	}
+}
+const names = (text: string, parts: string[]) => { for (const part of parts) assert.ok(text.includes(part), `${part} in: ${text}`); };
+
+test("/api/plan says before consent that a private PNPM_HOME replaces a default another account can change", async () => {
+	const view = await windowsView({ available: true, path: W_PRIVATE, source: "private", rejected: { path: W_DEFAULT, ...weak } });
+	assert.deepEqual(view.blockers, []);
+	assert.equal(view.profileChange.changesProfile, true);
+	names(view.profileChange.description, [W_DEFAULT, weak.at, "S-1-5-21-1-2-3-1002 (PC\\other)", "0x001301BF", W_PRIVATE, "`pnpm setup`",
+		`PNPM_HOME=${W_PRIVATE}`, `${W_PRIVATE}\\bin`, "new terminals", "only you, SYSTEM and Administrators"]);
+	assert.equal(view.persistence.pnpmHome, W_PRIVATE);
+	// S13: the accepted residual risk of later pnpm commands, stated before consent.
+	names(view.profileChange.description, ["pnpm commands you run later", "configuration, cache and state", "%LOCALAPPDATA%", W_DEFAULT]);
+	// A passing default keeps the existing copy.
+	const plain = await windowsView({ available: true, path: W_DEFAULT, source: "default" });
+	assert.doesNotMatch(plain.profileChange.description, /private|%LOCALAPPDATA%/);
+});
+
+// S6 notice: reused tools in folders another account can change, before consent.
+test("/api/plan notes reused tools in folders another account can change, without blocking or changing the plan", async () => {
+	const roaming = { check: "parent-acl-mask", at: "C:\\Users\\m\\AppData\\Roaming", sid: "S-1-5-21-1-2-3-1002", account: "PC\\other", rights: "0x001301BF" };
+	const reused = { node: { available: true, version: "24.18.0", usable: true, persistent: true, npm: true }, pi: { available: true, version: "1.2.0", usable: true, external: true },
+		pnpm: { available: true, version: "11.1.1", usable: true, compatible: true, persistent: true } };
+	const view = await windowsView({ available: true, path: W_DEFAULT, source: "default" }, { ...reused,
+		folders: { node: roaming, npm: roaming, pi: { check: "target-owner", at: "C:\\Users\\m\\AppData\\Roaming\\npm\\pi.cmd", sid: "S-1-5-21-9" } } });
+	assert.deepEqual(view.blockers, []);
+	assert.ok(view.actions.length > 0);
+	names(view.sharedFolders.description, ["Node.js", "npm", "Pi", "S-1-5-21-1-2-3-1002 (PC\\other) can change C:\\Users\\m\\AppData\\Roaming", "0x001301BF",
+		"C:\\Users\\m\\AppData\\Roaming\\npm\\pi.cmd is owned by S-1-5-21-9", "never creates or runs its own programs there", "accepted risk", "not a blocker"]);
+	assert.deepEqual(view.sharedFolders.tools, ["node", "npm", "pi"]);
+	// A1: a path the walk could not check says so, and still does not block.
+	const unchecked = await windowsView({ available: true, path: W_DEFAULT, source: "default" }, { ...reused, folders: { node: { check: "unchecked", at: "C:\\nodejs\\node.exe" } } });
+	assert.deepEqual(unchecked.blockers, []);
+	names(unchecked.sharedFolders.description, ["Node.js: the permissions of C:\\nodejs\\node.exe could not be checked", "could not be checked", "not a blocker",
+		"make sure your account can read the permissions of the paths that could not be checked"]);
+	assert.doesNotMatch(unchecked.sharedFolders.description, /write access/, "nothing says an account can write there");
+	assert.match(view.sharedFolders.description, /remove that account's write access/);
+	assert.doesNotMatch(view.sharedFolders.description, /could not be checked/);
+	// Nothing to note: no record.
+	assert.equal((await windowsView({ available: true, path: W_DEFAULT, source: "default" }, reused)).sharedFolders, null);
+});
+
+test("/api/plan names the folder, principal, rights and remedy when PNPM_HOME is not private", async () => {
+	const cases = [
+		[{ available: true, path: W_DEFAULT, source: "default", untrusted: weak, installed: true }, [W_DEFAULT, "already holds files", "never moves or deletes", "%USERPROFILE%\\.pnpm"]],
+		[{ available: true, path: "D:\\pnpm", source: "user", untrusted: { ...weak, at: "D:\\pnpm" } }, ["PNPM_HOME is set to D:\\pnpm", "%USERPROFILE%\\.pnpm"]],
+		[{ available: true, path: W_DEFAULT, source: "default", untrusted: weak, private: { path: W_PRIVATE, foreign: true } }, [W_PRIVATE, "did not create"]],
+		[{ available: true, path: W_DEFAULT, source: "default", untrusted: weak, private: { path: W_PRIVATE, untrusted: { check: "target-owner", at: "C:\\Users\\m", sid: "S-1-5-21-9" } } },
+			[W_PRIVATE, "C:\\Users\\m is owned by S-1-5-21-9"]],
+	] as const;
+	for (const [pnpmHome, parts] of cases) {
+		const view = await windowsView(pnpmHome);
+		assert.deepEqual(view.actions, []);
+		assert.deepEqual(view.blockers.map((blocker: { code: string; tool: string }) => [blocker.code, blocker.tool]), [["untrusted-pnpm-home", "pnpmHome"]]);
+		names(view.blockers[0].guidance, [...parts, "S-1-5-21-1-2-3-1002 (PC\\other)", "0x001301BF"]);
+	}
+	const failed = await windowsView({ available: null, failed: true });
+	assert.deepEqual(failed.blockers.map((blocker: { code: string; tool: string }) => [blocker.code, blocker.tool]), [["unknown-tool", "pnpmHome"]]);
+	assert.match(failed.blockers[0].guidance, /PNPM_HOME/);
+	assert.ok(guidance.blocked["pnpm-home-changed"].length > 20);
+	assert.ok(guidance.failed["prepare-pnpm-home"].includes("%USERPROFILE%\\.pnpm"));
+});
+
+// R2: an update's children (gentle-shell upgrade, its pnpm and postinstall) get the
+// same private-mode environment as the runner's children; otherwise it is unchanged.
+test("upgradeEnvironment isolates TEMP, TMP and pnpm's folders in a private Windows PNPM_HOME only", () => {
+	const env = { USERPROFILE: "C:\\Users\\m", PNPM_HOME: W_PRIVATE, Path: "C:\\Windows", TEMP: "C:\\Users\\m\\AppData\\Local\\Temp" };
+	const privateHome = { available: true, path: W_PRIVATE, source: "private", rejected: { path: W_DEFAULT, check: "target-acl-mask" } };
+	const isolated = upgradeEnvironment({ platform: "win32", env, pnpmHome: privateHome, goPath: "C:\\go\\bin\\go.exe" });
+	assert.deepEqual([isolated.TEMP, isolated.TMP, isolated.XDG_CACHE_HOME, isolated.PNPM_HOME], [`${W_PRIVATE}\\tmp`, `${W_PRIVATE}\\tmp`, `${W_PRIVATE}\\.cache`, W_PRIVATE]);
+	assert.equal(isolated.Path.split(";")[0], "C:\\go\\bin");
+	assert.deepEqual(upgradeEnvironment({ platform: "win32", env, pnpmHome: { available: true, path: W_PRIVATE, source: "user" } }), env);
+	assert.deepEqual(upgradeEnvironment({ platform: "linux", env: { PATH: "/usr/bin" }, pnpmHome: null }), { PATH: "/usr/bin" });
+});
+
+// T1c: the bundled plan's copy, before consent.
+const bundledDistribution = { status: "published", manifest: { shell: "4.1.0", pi: "1.0.2" }, lockfile: "lock" };
+const bundledLine = 'export PATH="/home/u/.gentle-shell/bin:$PATH" # gentle-shell bundled install';
+function bundledCollected(path: Record<string, unknown>, platform = "linux"): Collected {
+	const layout = platform === "win32" ? prefixLayout({ platform, env: { LOCALAPPDATA: "C:\\L" }, home: "C:\\U" }) : prefixLayout({ platform, env: {}, home: "/home/u" });
+	return { inventory: { ...cleanInventory, platform }, plan: bundledPlan({ platform, distribution: bundledDistribution, layout, path }) as never };
+}
+test("/api/plan describes the bundled install: its own pinned runtimes, the user's tools untouched and npm's network settings respected", async () => {
+	const { host, port, login } = await start({ collect: async () => bundledCollected({ kind: "profile", path: "/home/u/.bashrc", line: bundledLine, create: false }) });
+	try {
+		const view = await plan(port, await login());
+		assert.equal(view.bundled, true);
+		assert.deepEqual(view.actions.map((action: { id: string }) => action.id),
+			["bundled-prefix", "bundled-runtime", "bundled-version", "bundled-activate", "bundled-path", "bundled-setup"]);
+		const text = view.actions.map((action: { description: string }) => action.description).join("\n");
+		assert.match(text, /\/home\/u\/\.gentle-shell/);
+		assert.match(text, /Node\.js 24\.21\.0 with its npm and pnpm 11\.1\.1/);
+		assert.match(text, /Gentle Shell 4\.1\.0 with Pi 1\.0\.2/);
+		assert.match(text, /--frozen-lockfile/);
+		assert.match(text, /\/home\/u\/\.bashrc/);
+		assert.match(text, /gentle-shell setup/);
+		assert.deepEqual(view.persistence.tools, ["node", "npm", "pnpm"]);
+		assert.equal(view.persistence.pnpmHome, "/home/u/.gentle-shell");
+		assert.match(view.persistence.description, /Your own Node\.js, npm, pnpm, Go and Pi are not used or changed/);
+		assert.match(view.persistence.description, /npm registry, authentication and proxy settings/);
+		assert.equal(view.profileChange.changesProfile, true);
+		assert.equal(view.profileChange.command, null);
+		assert.equal(view.profileChange.binDir, "/home/u/.gentle-shell/bin");
+		assert.match(view.profileChange.description, /\/home\/u\/\.bashrc/);
+	} finally {
+		await host.close("test");
+	}
+	const cases: [Record<string, unknown>, RegExp, boolean, string?][] = [
+		[{ kind: "none" }, /already finds/, false],
+		[{ kind: "symlink", path: "/home/u/.local/bin/gentle-shell", target: "/home/u/.gentle-shell/bin/gentle-shell" }, /\/home\/u\/\.local\/bin\/gentle-shell/, true],
+		[{ kind: "manual", path: "/home/u/.zshrc", line: bundledLine, reason: "symlink" }, /add this line to \/home\/u\/\.zshrc yourself/, false],
+		[{ kind: "registry", key: "HKCU\\Environment", name: "Path", entry: "C:\\L\\gentle-shell\\bin" }, /user PATH/, true, "win32"],
+	];
+	for (const [path, description, changes, platform] of cases) {
+		const server = await start({ collect: async () => bundledCollected(path, platform) });
+		try {
+			const view = await plan(server.port, await server.login());
+			assert.match(view.profileChange.description, description, String(path.kind));
+			assert.equal(view.profileChange.changesProfile, changes, String(path.kind));
+			if (path.kind === "manual") assert.ok(view.profileChange.description.includes(bundledLine));
+			if (platform === "win32") {
+				assert.deepEqual(view.persistence.tools, ["node", "npm", "pnpm", "go"]);
+				assert.match(view.actions[1].description, /Go 1\.25\.14/);
+			}
+		} finally {
+			await server.host.close("test");
+		}
+	}
+});
+
+test("bundled outcomes: every bundled step has guidance, pnpm's error line is shown, and a manual PATH line is returned to copy", async () => {
+	for (const step of bundledFailedSteps) assert.equal(typeof guidance.failed[step], "string", step);
+	const cases: [Record<string, unknown>, (view: Record<string, unknown>) => void][] = [
+		[{ outcome: "failed", failedStep: "install-version", completed: ["claim-prefix"], detail: "ERR_PNPM_FETCH_401 GET https://npm.acme.dev/x: Unauthorized" },
+			(view) => { assert.equal(view.detail, "ERR_PNPM_FETCH_401 GET https://npm.acme.dev/x: Unauthorized"); assert.equal(view.guidance, guidance.failed["install-version"]); }],
+		[{ outcome: "terminal-action-required", action: "add-path-line", pathLine: { file: "/home/u/.zshrc", line: bundledLine }, completed: [] },
+			(view) => {
+				assert.equal(view.action, "add-path-line");
+				assert.deepEqual(view.pathLine, { file: "/home/u/.zshrc", line: bundledLine });
+				assert.equal(view.guidance, guidance.outcomes["add-path-line"]);
+			}],
+		[{ outcome: "terminal-action-required", action: "add-path-line", pathLine: { file: "/home/u/.zshrc\u001b[2J", line: 7 }, completed: [] },
+			(view) => { assert.equal("pathLine" in view, false); }],
+	];
+	for (const [result, check] of cases) {
+		const { host, port, login } = await start({ runInstall: async () => result as never });
+		try {
+			const cookie = await login();
+			const { planId } = await plan(port, cookie);
+			assert.equal((await post(port, "/api/install", cookie, { planId, consent: true })).status, 202);
+			await waitFor(() => host.outcome() !== null);
+			check(host.outcome() as Record<string, unknown>);
+		} finally {
+			await host.close("test");
+		}
+	}
+});
+
+// Simulates Linux against the real filesystem (profile files), so it runs on the POSIX runners only.
+test("wizardHandlers plans the bundled install only when the gate says so, and routes its plan to the bundled runner",
+	{ skip: process.platform === "win32" ? "simulated Linux paths need a POSIX filesystem" : false }, async () => {
+	const home = mkdtempSync(join(tmpdir(), "gentle-wizard-handlers-"));
+	try {
+		const asset = distributionAsset({ shell: requirements.shell, pi: "1.0.2" }, "lock");
+		const urls: string[] = [];
+		const download = (published: boolean) => async ({ url }: { url: string }) => {
+			urls.push(url);
+			if (!published) throw Object.assign(new Error("Download responded 404"), { status: 404 });
+			return Buffer.from(url.endsWith(".json") ? asset : "lock");
+		};
+		const env = { HOME: home, PATH: "/usr/bin", SHELL: "/bin/bash" };
+		const handlers = (published: boolean, inventory = cleanInventory) => wizardHandlers({ platform: "linux", arch: "x64", env, run: async () => ({}), fs: {},
+			download: download(published), inventory: async () => structuredClone(inventory) });
+		const bundled = await handlers(true).collectPlan("release");
+		assert.equal(bundled.plan.bundled.shell, requirements.shell);
+		assert.equal(bundled.plan.bundled.root, join(home, ".gentle-shell"));
+		assert.equal(bundled.plan.bundled.path.kind, "profile");
+		assert.deepEqual(urls, [`https://github.com/Gentleman-Programming/gentle-shell/releases/download/v${requirements.shell}/gentle-shell-distribution.json`,
+			`https://github.com/Gentleman-Programming/gentle-shell/releases/download/v${requirements.shell}/gentle-shell-distribution-lock.yaml`]);
+		// Without the assets (v4.0.0 today), on main, or with an existing Gentle Shell: the standard plan, unchanged.
+		urls.length = 0;
+		assert.deepEqual((await handlers(false).collectPlan("release")).plan, planPreflight(cleanInventory));
+		assert.deepEqual((await handlers(true).collectPlan("main")).plan, planPreflight(cleanInventory, { channel: "main" }));
+		const existing = { ...cleanInventory, shell: { available: true, version: requirements.shell, usable: true, global: true, owner: "pnpm" } };
+		assert.deepEqual((await handlers(true, existing).collectPlan("release")).plan, planPreflight(existing));
+		assert.equal(urls.length, 1, "only the release check of a new installation asks for the assets");
+		// The bundled plan goes to the bundled runner, which needs consent like the standard one.
+		const routed = handlers(true);
+		const { plan: consented } = await routed.collectPlan("release");
+		assert.deepEqual(await routed.runInstall({ plan: consented, consent: false }, () => {}), { outcome: "blocked", reason: "consent-required", completed: [] });
+	} finally {
+		rmSync(home, { recursive: true, force: true });
 	}
 });

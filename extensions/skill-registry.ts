@@ -531,7 +531,7 @@ function extensionSourcePath(source: string): string | undefined {
 function shouldSkipDuplicateExtensionLoad(
 	source = import.meta.url,
 	cwd = process.cwd(),
-	state = globalThis as typeof globalThis & SkillRegistryExtensionGlobal,
+	state: SkillRegistryExtensionGlobal = globalThis as typeof globalThis & SkillRegistryExtensionGlobal,
 ): boolean {
 	const currentPath = extensionSourcePath(source);
 	const projectLocalPath = comparablePath(join(cwd, "extensions", "skill-registry.ts"));

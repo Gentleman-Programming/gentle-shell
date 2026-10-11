@@ -64,9 +64,34 @@ export function artifactFor(name, platform, arch) {
 		integrity: `sha256-${hash}`, maxBytes: 100 * 1024 * 1024 });
 }
 
-async function download(descriptor) {
-	const response = await fetch(descriptor.url, { redirect: "error", signal: AbortSignal.timeout(60000) });
-	if (!response.ok || !response.body) throw new Error("Download failed");
+/** The bytes at descriptor.url, at most descriptor.maxBytes. Redirects are
+ * refused, except up to 5 to an https host in descriptor.redirectHosts (GitHub
+ * serves release assets from another host). A non-2xx answer throws with its
+ * HTTP `status`.
+ */
+export async function download(descriptor) {
+	// identity: fetch would otherwise accept gzip and decode it, so the advertised
+	// length (dl.google.com gzips archives on request) would not match the bytes.
+	const hosts = Array.isArray(descriptor.redirectHosts) ? descriptor.redirectHosts : null;
+	let url = descriptor.url;
+	let response;
+	for (let hops = 0; ; hops += 1) {
+		response = await fetch(url, { redirect: hosts ? "manual" : "error", headers: { "accept-encoding": "identity" }, signal: AbortSignal.timeout(60000) });
+		if (!hosts || ![301, 302, 303, 307, 308].includes(response.status)) break;
+		await response.body?.cancel();
+		const next = new URL(response.headers.get("location") ?? "", url);
+		if (hops >= 5 || next.protocol !== "https:" || !hosts.includes(next.hostname)) throw new Error("Download redirect rejected");
+		url = next.href;
+	}
+	if (!response.ok || !response.body) {
+		await response.body?.cancel();
+		throw Object.assign(new Error(`Download responded ${response.status}`), { status: response.status });
+	}
+	const encoding = response.headers.get("content-encoding");
+	if (encoding && encoding.toLowerCase() !== "identity") {
+		await response.body.cancel();
+		throw new Error(`Download was encoded (${encoding}) although identity was requested`);
+	}
 	const advertised = response.headers.get("content-length");
 	if (advertised && (!/^\d+$/.test(advertised) || Number(advertised) > descriptor.maxBytes)) {
 		await response.body.cancel();
@@ -100,7 +125,7 @@ export async function verifiedDownload(name, adapters = {}, platform, arch) {
 	const descriptor = (adapters.artifact ?? artifactFor)(name, platform, arch);
 	let bytes;
 	try { bytes = await (adapters.download ?? download)(descriptor); }
-	catch { throw new Error("Download failed"); }
+	catch (cause) { throw new Error("Download failed", { cause }); }
 	if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > descriptor.maxBytes) throw new Error("Download size rejected");
 	if (descriptor.size !== undefined && bytes.length !== descriptor.size) throw new Error("Download size rejected");
 	const [algorithm, encoded] = descriptor.integrity.split("-");
@@ -169,10 +194,16 @@ function head(path, size) {
 // symlink. pnpm 11 names its target in a `# cmd-shim-target=` comment; older
 // shims only run the single `"$basedir/<target>" "$@"` next to the shim. The
 // target is a starting point for the evidence search, not proof: the command
-// itself still has to print the version that evidence names.
+// itself still has to print the version that evidence names. A shim is a
+// script read whole, up to 64 KiB; a larger one fails closed. Anything else,
+// such as a native pnpm, is not a shim.
+const SHIM_LIMIT = 64 * 1024;
 function shimTarget(command) {
 	if (!regular(command)) return null;
-	const text = head(command, 4096).toString("utf8");
+	const bytes = head(command, SHIM_LIMIT + 1);
+	if (bytes.subarray(0, 2).toString("latin1") !== "#!") return null;
+	if (bytes.length > SHIM_LIMIT) throw new Error("Existing pnpm compatibility is unknown: shim larger than 64 KiB");
+	const text = bytes.toString("utf8");
 	const match = /^# cmd-shim-target=(\/[^\r\n]+)$/m.exec(text);
 	if (match) return stat(match[1]) ? match[1] : null;
 	const targets = new Set([...text.matchAll(/"\$basedir\/([^"$`\\]+)"[ \t]+"\$@"/g)]
@@ -477,8 +508,9 @@ export function installedGo(root, platform, arch, adapters = {}) {
  * the exact go.dev archive, verified (size and SHA-256) before it is read,
  * extracted in process into a private staging directory (regular files and
  * directories under `go/` only; no links, traversal or duplicates), checked
- * against its VERSION and published without replacing anything as
- * `<root>/<version>/go`, marked last. Nothing outside `root` is written, and the
+ * against its VERSION, marked, and published without replacing anything as
+ * `<root>/<version>/go` by one rename of the staging directory, so the
+ * destination never exists unmarked. Nothing outside `root` is written, and the
  * user's own Go, PATH and profile are never touched. Adapters (artifact,
  * download, digest) are trusted local test code only.
  * Returns { goPath, version, acquired }.
@@ -490,9 +522,9 @@ export async function acquireGo({ root, platform, arch, adapters = {} }) {
 	const reused = installedGo(root, platform, arch, adapters);
 	if (reused) return { goPath: reused, version: descriptor.version, acquired: false };
 	let stage = null;
-	let claimed = false;
 	try {
-		if (stat(destination)) throw new Error("Conflicting Go destination");
+		// Never replaced: an unmarked folder may not be the installer's.
+		if (stat(destination)) throw new Error(`Conflicting Go destination: ${destination}`);
 		const bytes = await verifiedDownload("go", adapters, platform, arch);
 		mkdirSync(root, { recursive: true, mode: 0o700 });
 		if (!privateDirectory(root)) throw new Error("Unsafe Go destination");
@@ -511,14 +543,14 @@ export async function acquireGo({ root, platform, arch, adapters = {} }) {
 		const tree = join(stage, "go");
 		if (!regular(join(tree, "bin", executable)) || !regular(join(tree, "VERSION")) ||
 			readFileSync(join(tree, "VERSION"), "utf8").split("\n")[0] !== `go${descriptor.version}`) throw new Error("Go archive content rejected");
-		// mkdir is the atomic no-clobber claim (rename alone can replace an empty directory).
-		mkdirSync(destination, { mode: 0o700 });
-		claimed = true;
-		renameSync(tree, join(destination, "go"));
-		writeFileSync(join(destination, GO_MARKER), `${descriptor.url}\n`, { flag: "wx", mode: 0o600 });
+		// The staging directory becomes the destination whole: marked first, then
+		// one rename (an existing non-empty destination makes it fail).
+		writeFileSync(join(stage, GO_MARKER), `${descriptor.url}\n`, { flag: "wx", mode: 0o600 });
+		if (stat(destination)) throw new Error(`Conflicting Go destination: ${destination}`);
+		renameSync(stage, destination);
+		stage = null;
 		return { goPath: join(destination, "go", "bin", executable), version: descriptor.version, acquired: true };
 	} catch (cause) {
-		if (claimed) rmSync(destination, { recursive: true, force: true });
 		throw new Error("Go verified acquisition failed; nothing was published", { cause });
 	} finally {
 		if (stage) rmSync(stage, { recursive: true, force: true });

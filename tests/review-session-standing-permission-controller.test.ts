@@ -42,7 +42,7 @@ function nonPiV3Consent() {
 }
 
 function consentCustom(select: (title: string, options: string[]) => Promise<string | undefined>) {
-	return async (factory: (...args: never[]) => unknown) => {
+	return async (factory: (...args: unknown[]) => unknown) => {
 		let result: unknown;
 		const component = factory(
 			{ terminal: { rows: 24 }, requestRender() {} },
@@ -241,10 +241,10 @@ function piConsent() {
 	const decoded = consent();
 	return {
 		...decoded,
-		choices: decoded.choices.map((choice) => ({
-			...choice,
-			invocation: choice.invocation.replace(" --consent ", " --agent pi --consent "),
-		})) as typeof decoded.choices,
+		choices: [
+			{ ...decoded.choices[0], invocation: decoded.choices[0].invocation.replace(" --consent ", " --agent pi --consent ") },
+			{ ...decoded.choices[1], invocation: decoded.choices[1].invocation.replace(" --consent ", " --agent pi --consent ") },
+		] as const,
 	};
 }
 
@@ -623,7 +623,7 @@ test("a package-owned child replays its exact pending ordinary grant from a sibl
 	const parentToChild = new PassThrough();
 	const broker = new ParentStandingReviewPermissionBroker(
 		{ readable: childToParent, writable: parentToChild },
-		(repositoryIdentity) => repositoryIdentity === parentIdentity.repositoryIdentity && parentManager.getSessionId() === "parent-session" && hasReviewSessionPermission(parentIdentity),
+		(repositoryIdentity) => repositoryIdentity === parentIdentity.repositoryIdentity && parentIdentity.sessionManager.getSessionId() === "parent-session" && hasReviewSessionPermission(parentIdentity),
 	);
 	const childPermission = new ChildStandingReviewPermissionClient(
 		{ readable: parentToChild, writable: childToParent },

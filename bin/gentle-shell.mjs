@@ -861,7 +861,58 @@ async function runSetupFlow(home, runtime, { dryRun, stdio, timeoutMs }) {
 	}
 	if (!installResult.ok) return installResult;
 
-	return runPostInstallCleanup(home, runtime, dryRun, stdio, timeoutMs);
+	const cleanupResult = await runPostInstallCleanup(home, runtime, dryRun, stdio, timeoutMs);
+	if (cleanupResult.ok && !dryRun) warnDisabledMCP(home);
+	return cleanupResult;
+}
+
+function mcpAdapterActivity(packages) {
+	if (typeof packages === "string") return packages === "npm:pi-mcp-adapter" || packages.startsWith("npm:pi-mcp-adapter@") ? "active" : "inactive";
+	if (Array.isArray(packages)) {
+		const activities = packages.map(mcpAdapterActivity);
+		return activities.includes("active") ? "active" : activities.includes("unknown") ? "unknown" : "inactive";
+	}
+	if (packages === null || typeof packages !== "object") return "inactive";
+	if (typeof packages.source !== "string") return mcpAdapterActivity(Object.keys(packages));
+	if (mcpAdapterActivity(packages.source) === "inactive") return "inactive";
+	const patterns = packages.extensions;
+	if (patterns === undefined) return packages.autoload === false ? "inactive" : "active";
+	if (!Array.isArray(patterns)) return "unknown";
+	if (patterns.length === 0) return "inactive";
+	if (packages.autoload === false) {
+		return patterns.some(pattern => typeof pattern === "string" && !pattern.startsWith("!") && !pattern.startsWith("-")) ? "unknown" : "inactive";
+	}
+	// Ordinary exclusions run after includes, but exact +path entries can
+	// restore resources. Other filters need actual package files to resolve.
+	if (patterns.includes("!**") && !patterns.some(pattern => typeof pattern === "string" && pattern.startsWith("+"))) return "inactive";
+	return "unknown";
+}
+
+// Onboarding cannot prove who disabled MCP: diagnose, never re-enable servers.
+// This also covers automatic provisioning because both routes share setup.
+function warnDisabledMCP(home) {
+	const settingsPath = join(home.dir, "settings.json");
+	const mcpPath = join(home.dir, "mcp.json");
+	let inspecting = settingsPath;
+	try {
+		const settingsText = readJsonIfExists(settingsPath);
+		if (settingsText === undefined) return;
+		const settings = JSON.parse(settingsText);
+		if (!Array.isArray(settings?.extensions) || !settings.extensions.includes("-builtin:mcp")) return;
+		const activity = mcpAdapterActivity(settings.packages);
+		if (activity === "active") return;
+		inspecting = mcpPath;
+		const mcpText = readJsonIfExists(mcpPath);
+		if (mcpText === undefined) return;
+		const servers = JSON.parse(mcpText)?.mcpServers;
+		if (servers === null || typeof servers !== "object" || Array.isArray(servers) || Object.keys(servers).length === 0) return;
+		const diagnosis = activity === "unknown"
+			? `pi-mcp-adapter activity cannot be confirmed from its extension filters, so servers in ${mcpPath} may not load`
+			: `pi-mcp-adapter is absent or inactive, so servers in ${mcpPath} will not load`;
+		process.stderr.write(`gentle-shell: WARNING: Pi built-in MCP is disabled in ${settingsPath}; ${diagnosis}. If you want these servers enabled, remove -builtin:mcp from extensions in ${settingsPath}, then restart Pi. If MCP is intentionally disabled, keep the setting.\n`);
+	} catch (error) {
+		process.stderr.write(`gentle-shell: WARNING: Pi MCP configuration could not be inspected in ${inspecting}: ${error.message}; inspect or repair it manually.\n`);
+	}
 }
 
 // The stderr line printed once `source` is actually removed from `home`.
@@ -1179,12 +1230,25 @@ async function maybeAutoProvisionHome(home, runtime, { homeHadContentBeforeBoots
 	}
 }
 
+// The adapters `upgrade` and `self-uninstall` run npm and pnpm with: { fs, which, run, invocation? }.
+async function packageManagerAdapters() {
+	const { hostAdapters } = await import("../scripts/installer-probes.mjs");
+	const { upgradeInvocation } = await import("../scripts/installer-runner.mjs");
+	const { run, fs: probeFs } = hostAdapters();
+	// Windows: npm and pnpm are .cmd shims; run what they run, never through cmd.exe.
+	const invocation = upgradeInvocation({ platform: process.platform, env: process.env, run, fs: probeFs });
+	return {
+		fs: await import("node:fs/promises"),
+		which: async (name) => findOnPath(name) ?? null,
+		...(invocation ? { invocation } : {}),
+		run: (command, argv, options = {}) => run(command, argv, { env: options.env ?? process.env, cwd: options.cwd, deadlineMs: options.deadlineMs ?? 20 * 60_000 }),
+	};
+}
+
 // `gentle-shell upgrade`: runs before any Pi runtime check, since it may replace this package.
 async function handleUpgradeCommand(commandArgs) {
 	const { MainChannelError, runUpgrade } = await import("../scripts/main-channel.mjs");
-	const { hostAdapters } = await import("../scripts/installer-probes.mjs");
-	const { run } = hostAdapters();
-	const which = async (name) => findOnPath(name) ?? null;
+	const managers = await packageManagerAdapters();
 	try {
 		process.exitCode = await runUpgrade({
 			args: commandArgs,
@@ -1192,18 +1256,34 @@ async function handleUpgradeCommand(commandArgs) {
 			platform: process.platform,
 			packageRoot,
 			currentVersion: ownPackageVersion(),
-			adapters: {
-				fetch: globalThis.fetch,
-				fs: await import("node:fs/promises"),
-				which,
-				run: (command, argv, options = {}) => run(command, argv, { env: options.env ?? process.env, cwd: options.cwd, deadlineMs: options.deadlineMs ?? 20 * 60_000 }),
-			},
+			adapters: { fetch: globalThis.fetch, ...managers },
 			out: (line) => process.stdout.write(`${line}\n`),
 		});
 	} catch (error) {
 		if (error instanceof MainChannelError) fail(`gentle-shell upgrade: ${error.message}`, error.code === "upgrade-usage" ? 2 : 1);
 		throw error;
 	}
+}
+
+// `gentle-shell self-uninstall`: like upgrade, runs before any Pi runtime check,
+// so it also works when pi is missing.
+async function handleSelfUninstallCommand(commandArgs) {
+	const { askLine, runSelfUninstall } = await import("../runtime/gentle-shell-uninstall.mjs");
+	const { ownerManager } = await import("../scripts/main-channel.mjs");
+	const managers = await packageManagerAdapters();
+	const ctx = { env: process.env, home: homedir() };
+	process.exitCode = await runSelfUninstall({
+		args: commandArgs,
+		env: process.env,
+		homedir: homedir(),
+		platform: process.platform,
+		interactive: process.stdin.isTTY === true,
+		resolveOwner: () => ownerManager({ ctx, platform: process.platform, packageRoot, adapters: managers, command: "uninstall" }),
+		run: (command, argv) => managers.run(command, argv),
+		ask: (question) => askLine(question, { input: process.stdin, output: process.stdout }),
+		out: (line) => process.stdout.write(`${line}\n`),
+		err: (line) => process.stderr.write(`${line}\n`),
+	});
 }
 
 async function main() {
@@ -1219,6 +1299,10 @@ async function main() {
 	}
 	if (args.command === "upgrade") {
 		await handleUpgradeCommand(args.commandArgs);
+		return;
+	}
+	if (args.command === "self-uninstall") {
+		await handleSelfUninstallCommand(args.commandArgs);
 		return;
 	}
 

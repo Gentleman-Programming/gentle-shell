@@ -32,7 +32,7 @@ const nativeBinaryGate = requireNativeBinary({
 	digestsPinned: releaseDigestsPinned,
 	env: process.env,
 });
-if (!nativeBinaryGate.run) console.log(`gentle-ai-binary: ${nativeBinaryGate.reason}`);
+if (nativeBinaryGate.run === false) console.log(`gentle-ai-binary: ${nativeBinaryGate.reason}`);
 const verifiedBinaryTest = nativeBinaryGate.run && process.platform !== "win32" ? test : test.skip;
 
 interface PinnedBinaryIsolation {
@@ -44,6 +44,7 @@ interface PinnedBinaryIsolation {
 let pinnedBinaryIsolation: PinnedBinaryIsolation | undefined;
 
 test.beforeEach((t) => {
+	assert.ok("after" in t);
 	const home = mkdtempSync(join(tmpdir(), "gentle-pi-pinned-binary-home-"));
 	const environment: GentleAiDevBinaryEnvironment = { env: { ...process.env }, home };
 	delete environment.env.GENTLE_PI_CONFIG_HOME;

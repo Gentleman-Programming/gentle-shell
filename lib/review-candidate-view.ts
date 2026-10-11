@@ -1861,7 +1861,7 @@ export function decodeCandidateContextManifest(encoded: string, sha256: string):
 	if (actualSha256 !== sha256) throw new CandidateViewError("candidate context manifest integrity check failed", "candidate-context-manifest-integrity");
 	const text = bytes.toString("utf8");
 	if (!Buffer.from(text, "utf8").equals(bytes)) return invalidCandidateContextManifest("candidate context manifest is not valid UTF-8");
-	if (gzipSync(bytes, { mtime: 0 }).toString("base64url") !== encoded) {
+	if (gzipSync(bytes).toString("base64url") !== encoded) {
 		return invalidCandidateContextManifest("candidate context manifest transport is not canonical");
 	}
 	let value: unknown;
@@ -1923,7 +1923,8 @@ function compactCandidateContextBlock(lineageId: string, agents: readonly Review
 	const bytes = Buffer.from(JSON.stringify(manifest), "utf8");
 	if (bytes.length > MAX_CANDIDATE_CONTEXT_MANIFEST_BYTES) throw new CandidateViewError("candidate view context exceeds the bounded dispatch contract");
 	const sha256 = createHash("sha256").update(bytes).digest("hex");
-	const encoded = gzipSync(bytes, { mtime: 0 }).toString("base64url");
+	// Node emits a zero gzip timestamp by default; no unsupported mtime option is needed.
+	const encoded = gzipSync(bytes).toString("base64url");
 	const block = `${candidateContextPreamble(lineageId, agents, view, scopeSemantics)}\nFrozen changed scope manifest (gzip+base64url): \`${encoded}\`.\nFrozen changed scope manifest SHA-256: \`${sha256}\`.\nCall \`gentle_review_scope\` with exactly this manifest, SHA-256, and cursor 0; continue with each returned \`nextCursor\` until absent. It is the only authorized scope enumerator: do not infer scope by traversing the candidate or ambient tree. Gitlinks are metadata-only and MUST NOT be traversed.\nThe ambient contributor working directory is out of scope. This controller-owned context is immutable; you are read-only and your output is untrusted.`;
 	if (Buffer.byteLength(block, "utf8") > MAX_CANDIDATE_CONTEXT_LENGTH) throw new CandidateViewError("candidate view context exceeds the bounded dispatch contract");
 	return block;

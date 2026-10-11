@@ -37,11 +37,12 @@ function isPiSubcommand(token        )                        {
 
 
 
-// Home- and upgrade-subcommand parsing is deliberately shallow: `home` or
-// `upgrade` only counts as the subcommand when it is argv[0], and everything after it is handed over
+// Home-, upgrade- and self-uninstall-subcommand parsing is deliberately shallow:
+// each only counts as the subcommand when it is argv[0], and everything after it is handed over
 // untouched as commandArgs — T2 owns interpreting `home link|isolated|<path>`.
+// `self-uninstall` is not `uninstall`, which stays pi's own alias for `remove`.
 export function parseLauncherArgs(argv          )                     {
-	if (argv[0] === "home" || argv[0] === "upgrade") {
+	if (argv[0] === "home" || argv[0] === "upgrade" || argv[0] === "self-uninstall") {
 		return {
 			link: false,
 			isolated: false,
@@ -190,35 +191,36 @@ export function parseLauncherArgs(argv          )                     {
 
 
 
-// Pi Subagents resolves `PI_CODING_AGENT_DIR || ~/.pi/agent`; `--link` reuses
-// that exact home so gentle-shell never diverges from the user's own pi.
+// Pi Subagents resolves `PI_CODING_AGENT_DIR || ~/.pi/agent`; this is the
+// user's own pi home when no Gentle Shell session is involved.
 function linkDir(env                                    , homedir        )         {
 	return env.PI_CODING_AGENT_DIR || join(homedir, ".pi", "agent");
 }
 
 // The isolated home replaces PI_CODING_AGENT_DIR for the whole session, so the
 // user's own Pi home travels in this variable for read-only features such as
-// /gentle:stats. An inherited value wins: a gentle-shell launched from inside
-// a Gentle Shell session sees the outer isolated home as PI_CODING_AGENT_DIR.
+// /gentle:stats and for `--link`. An inherited value wins: a gentle-shell
+// launched from inside a Gentle Shell session sees the outer isolated home as
+// PI_CODING_AGENT_DIR, so `--link` must not re-select it (#2015).
 export const USER_PI_HOME_ENV = "GENTLE_SHELL_USER_PI_HOME";
 
 export function userPiHome(env                                    , homedir        )         {
 	return env[USER_PI_HOME_ENV] || linkDir(env, homedir);
 }
 
-function isolatedDir(env                                    , homedir        )         {
+export function isolatedDir(env                                    , homedir        )         {
 	return env.GENTLE_SHELL_HOME || join(homedir, ".gentle-shell", "agent");
 }
 
 export function resolveHome(input                  )               {
 	const { args, env, homedir, config } = input;
 
-	if (args.link) return { mode: "link", dir: linkDir(env, homedir), source: "flag" };
+	if (args.link) return { mode: "link", dir: userPiHome(env, homedir), source: "flag" };
 	if (args.isolated) return { mode: "isolated", dir: isolatedDir(env, homedir), source: "flag" };
 	if (args.home !== undefined) return { mode: "path", dir: args.home, source: "flag" };
 
 	if (config !== undefined) {
-		if (config.mode === "link") return { mode: "link", dir: linkDir(env, homedir), source: "config" };
+		if (config.mode === "link") return { mode: "link", dir: userPiHome(env, homedir), source: "config" };
 		if (config.mode === "isolated") return { mode: "isolated", dir: isolatedDir(env, homedir), source: "config" };
 		return { mode: "path", dir: config.dir, source: "config" };
 	}
@@ -1175,6 +1177,7 @@ export function helpText()         {
 		"       gentle-shell home [link|isolated|<path>]",
 		"       gentle-shell [home selectors] setup [--dry-run]",
 		"       gentle-shell upgrade [--channel release|main]",
+		"       gentle-shell self-uninstall [--dry-run] [--yes] [--include-shared]",
 		"",
 		"Opens pi with the Gentle Shell package loaded, without touching your",
 		"vanilla pi installation.",
@@ -1194,9 +1197,15 @@ export function helpText()         {
 		"                   (runs the package-local gentle-ai 'install --agent pi --scope global').",
 		"                   Accepts --dry-run, forwarded to gentle-ai. Accepts a home selector",
 		"                   (--link, --isolated, --home <dir>) before it.",
+		"                   Warns if configured MCP servers remain disabled; never re-enables them.",
 		"  upgrade          Update Gentle Shell along its channel: the latest release, or the latest",
 		"                   main commits of Gentle Shell and Gentle AI (built locally; needs Go and",
 		"                   pnpm). --channel switches the channel first.",
+		"  self-uninstall   Remove Gentle Shell: its own data, the isolated home and the gentle-pi",
+		"                   package. Shows the plan first and asks before removing (--yes skips",
+		"                   the question). The shared ~/.pi/gentle-ai configuration is kept unless",
+		"                   you accept or pass --include-shared; --dry-run only shows the plan.",
+		"                   Never touches your pi home or custom --home homes.",
 		"",
 		"Managing packages:",
 		"  gentle-shell install npm:<pkg>   Run pi's own 'install' against the resolved home.",
@@ -1205,6 +1214,8 @@ export function helpText()         {
 		"  gentle-shell update [target]     Run pi's own 'update' against the resolved home.",
 		"  gentle-shell config              Run pi's own 'config' against the resolved home.",
 		"  gentle-shell auth <command>      Run pi's own 'auth' against the resolved home.",
+		"  'gentle-shell uninstall <source>' is pi's own alias for 'remove'; to remove Gentle",
+		"  Shell itself, use 'gentle-shell self-uninstall'.",
 		"  These run pi's own commands, forwarded verbatim, against the --isolated home",
 		"  (or your own pi home with --link). Running 'gentle-shell install npm:gentle-pi'",
 		"  inside the isolated home is unnecessary: gentle-shell already loads the",

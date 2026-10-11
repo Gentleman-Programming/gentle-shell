@@ -2587,7 +2587,11 @@ function assertReviewApprovedAcknowledgementExecuteShapeV1(execute              
 	if (execute.arguments.length !== REVIEW_APPROVED_ACKNOWLEDGEMENT_ARGUMENTS.length) throw new TypeError(`acknowledgement.execute.arguments must carry exactly ${REVIEW_APPROVED_ACKNOWLEDGEMENT_ARGUMENTS.length} provider-issued arguments`);
 	const values = execute.arguments.map((argument, index) => { const name = REVIEW_APPROVED_ACKNOWLEDGEMENT_ARGUMENTS[index] ; if (argument.name !== name) throw new TypeError(`acknowledgement.execute.arguments[${index}].name must be ${name}`); const value = nonempty(argument.value, `acknowledgement.execute.arguments[${index}].value`); if (nonempty(argument.token, `acknowledgement.execute.arguments[${index}].token`) !== `--${name}=${value}`) throw new TypeError(`acknowledgement.execute.arguments[${index}].token must exactly match ${name}`); return value; });
 	if (execute.preconditions.length !== 1 || execute.preconditions[0]?.name !== "state" || execute.preconditions[0]?.value !== "approved") throw new TypeError("acknowledgement.execute.preconditions must be the single approved state precondition");
-	return { tokens: execute.arguments.map((argument) => argument.token )                                                , values: values                                                     , lineageId: lineage(execute.binding.lineageId, "acknowledgement.execute.binding.lineage_id"), targetIdentity: sha256(execute.binding.targetIdentity, "acknowledgement.execute.binding.target_identity"), revision: sha256(execute.binding.revision, "acknowledgement.execute.binding.revision") };
+	const tokens = execute.arguments.map((argument) => argument.token );
+	// The exact five-argument check above validates both vectors before tuple construction.
+	const tokenTuple                                               = [tokens[0] , tokens[1] , tokens[2] , tokens[3] , tokens[4] ];
+	const valueTuple                                                    = [values[0] , values[1] , values[2] , values[3] , values[4] ];
+	return { tokens: tokenTuple, values: valueTuple, lineageId: lineage(execute.binding.lineageId, "acknowledgement.execute.binding.lineage_id"), targetIdentity: sha256(execute.binding.targetIdentity, "acknowledgement.execute.binding.target_identity"), revision: sha256(execute.binding.revision, "acknowledgement.execute.binding.revision") };
 }
 
 /**
@@ -2921,7 +2925,7 @@ export function decodeReviewLastEventClosureV1(value         )                  
 		storeRevision: sha256(body.store_revision, "last_event_closure.store_revision"),
 		...(escalation === undefined ? {} : { escalation }),
 		...(targetedValidatorEvidence === undefined ? {} : { targetedValidatorEvidence }),
-	};
+	}         ;
 	if (operation === REVIEW_LAST_EVENT_CLOSURE_OPERATION.CAPTURE_CORRECTION_PLAN) {
 		if (body.reviewer_results !== undefined) throw new TypeError("last_event_closure reviewer_results requires approved state");
 		if (body.action !== undefined || body.advisory_findings !== undefined || body.status_continuation !== undefined) throw new TypeError("last_event_closure correction-plan cannot carry action, advisory_findings, or status_continuation");

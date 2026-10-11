@@ -552,6 +552,85 @@ test("native consent completion decodes START/v4 and replays its provider argv u
 	assert.deepEqual(queue.calls[0]?.arguments, consent.choices[0].invocation.split(" ").slice(1));
 });
 
+// Builds a Pi-bound consent/v3 envelope whose choices carry `--lenses-reason`
+// rendered exactly as `rendered`, plus the argv Pi must replay for the granted
+// choice when that rendering splits into `reason`.
+function consentWithLensReason(rendered: string, reason: string): { consent: ReturnType<typeof decodeReviewConsentV3>; expected: readonly string[] } {
+	const rawConsent = fixture("consent-v3.captured.json");
+	rawConsent.agent = "pi";
+	const expected: string[][] = [];
+	for (const choice of rawConsent.choices as Record<string, unknown>[]) {
+		const bound = String(choice.invocation)
+			.replace(/--cwd \S+ --target/, "--cwd /repo --target")
+			.replace(" --consent ", " --agent pi --lenses-reason REASON --consent ");
+		choice.invocation = bound.replace("REASON", () => rendered);
+		expected.push(bound.split(" ").slice(1).map((word) => word === "REASON" ? reason : word));
+	}
+	const consent = decodeReviewConsentV3(rawConsent, "pi");
+	assert.ok(consent.choices[0].invocation.includes(` --lenses-reason ${rendered} `));
+	return { consent, expected: expected[0]! };
+}
+
+// Answers the granted choice and proves Pi launched the package binary exactly
+// once with the exact argv, through execFile and never through a shell.
+async function assertLensReasonReplay(rendered: string, reason: string): Promise<void> {
+	const { consent, expected } = consentWithLensReason(rendered, reason);
+	const queue = queuedAdapter([{ stdout: JSON.stringify(reviewingStartV4(consent.targetIdentity)) }]);
+	const answered = await client(queue.adapter).answerConsent({ cwd: "/repo", consent, answer: "granted" });
+	assert.equal(answered.kind, "started");
+	assert.equal(queue.calls.length, 1);
+	assert.equal(queue.calls[0]?.file, "/package/.gentle-ai/gentle-ai");
+	assert.deepEqual(queue.calls[0]?.arguments, expected);
+	const replayed = queue.calls[0]?.arguments ?? [];
+	const reasonIndex = replayed.indexOf("--lenses-reason");
+	assert.deepEqual(replayed.slice(reasonIndex, reasonIndex + 2), ["--lenses-reason", reason]);
+}
+
+// gentle-ai renders a lens reason with POSIX shell quoting, so an apostrophe
+// arrives as `'...'\''...'`. Pi splits it into exact argv and never runs a shell.
+test("native consent answer replays a POSIX-quoted apostrophe lens reason as one exact argument", async () => {
+	await assertLensReasonReplay("'touched the package'\\''s parser'", "touched the package's parser");
+});
+
+test("native consent answer treats a backslash before an apostrophe outside quotes as an escaped apostrophe", async () => {
+	await assertLensReasonReplay("package\\'s", "package's");
+});
+
+test("native consent answer treats a backslash before a double quote outside quotes as an escaped double quote", async () => {
+	await assertLensReasonReplay('say\\"x\\"', 'say"x"');
+});
+
+test("native consent answer joins a token across a backslash-escaped space outside quotes", async () => {
+	await assertLensReasonReplay("touched\\ parser", "touched parser");
+});
+
+test("native consent answer keeps a backslash before any other character verbatim outside quotes", async () => {
+	await assertLensReasonReplay("C:\\repo", "C:\\repo");
+	await assertLensReasonReplay("\\\\server\\share", "\\\\server\\share");
+	await assertLensReasonReplay("touched\\nparser", "touched\\nparser");
+});
+
+test("native consent answer keeps single quotes literal around double quotes and backslashes", async () => {
+	await assertLensReasonReplay("'say \"x\" and \\y'", 'say "x" and \\y');
+	await assertLensReasonReplay("'touched the package\\'", "touched the package\\");
+});
+
+test("native consent answer keeps backslashes verbatim inside double quotes", async () => {
+	await assertLensReasonReplay('"C:\\repo\\"', "C:\\repo\\");
+});
+
+test("native consent answer still rejects an unterminated quote before launching the provider", async () => {
+	for (const rendered of ["'touched the package'\\''s parser", "'touched the package", '"say x']) {
+		const { consent } = consentWithLensReason(rendered, "unused");
+		const queue = queuedAdapter([]);
+		await assert.rejects(
+			() => client(queue.adapter).answerConsent({ cwd: "/repo", consent, answer: "granted" }),
+			(error: unknown) => error instanceof TypeError && error.message === "Native consent invocation has invalid quoting",
+		);
+		assert.deepEqual(queue.calls, []);
+	}
+});
+
 test("native START refuses invalid committed-range and target bindings before STATUS", async () => {
 	for (const request of [
 		{ cwd: "/repo", baseRef: "origin/main" },

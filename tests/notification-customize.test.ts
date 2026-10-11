@@ -339,6 +339,20 @@ test("the basic card exposes exactly six human controls and an Advanced toggle w
 	} finally { h.owner.retire(); }
 });
 
+test("context.high is exposed as an advanced per-event row that cycles independently", async () => {
+	const h = harness(); try {
+		const rows = h.rows();
+		assert.equal(label(findRow(rows, "context.high:")), "context.high: builtin:attention", "the attention tone is the context default");
+		await findRow(rows, /^Advanced/).action(fakeInline());
+		assert.equal(visibleRows(rows).some(row => label(row).startsWith("context.high:")), true);
+		await findRow(rows, "context.high:").action(fakeInline());
+		const events = getNotificationService()!.getState().settings.audio.events;
+		assert.equal(events["context.high"], null, "Enter cycles the context tone to silence without touching other events");
+		assert.equal(events["agent.attention"], "builtin:attention");
+		assert.equal(h.writes, 1);
+	} finally { h.owner.retire(); }
+});
+
 test("default groups read as their unambiguous human tone", () => {
 	const h = harness(); try {
 		const rows = h.rows();
@@ -348,14 +362,14 @@ test("default groups read as their unambiguous human tone", () => {
 	} finally { h.owner.retire(); }
 });
 
-test("Advanced folds the thirteen detailed event rows inside the same card without writes, probes or playback", async () => {
+test("Advanced folds the fourteen detailed event rows inside the same card without writes, probes or playback", async () => {
 	const h = harness(); try {
 		const rows = h.rows();
-		const detail = () => visibleRows(rows).map(label).filter(text => /^(?:agent|subagent|session)\./.test(text));
+		const detail = () => visibleRows(rows).map(label).filter(text => /^(?:agent|subagent|session|context)\./.test(text));
 		assert.equal(detail().length, 0, "detailed event rows stay folded by default");
 		const toggle = findRow(rows, /^Advanced/);
 		await toggle.action(fakeInline());
-		assert.equal(detail().length, 13, "expanding reveals the thirteen detailed rows");
+		assert.equal(detail().length, 14, "expanding reveals the fourteen detailed rows");
 		await toggle.action(fakeInline());
 		assert.equal(detail().length, 0, "collapsing folds them again");
 		assert.equal(h.writes, 0); assert.equal(h.probes, 0); assert.equal(h.played, 0);

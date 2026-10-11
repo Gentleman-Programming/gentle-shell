@@ -13,6 +13,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import https from "node:https";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
@@ -661,31 +662,39 @@ async function installWindowsGentleAiFromGoSumdb(options, packageRoot, architect
 	return withInstallLock(packageRoot, options, async (runtimeRoot) => {
 		await cleanupStaleStagingBundles(runtimeRoot);
 		const stagingDirectory = await mkdtemp(join(runtimeRoot, `.v${INSTALLER_VERSION}.staging-`));
+		// Go builds in a short private directory under the system temp directory, never inside
+		// the package: from a deep pnpm store path (179 characters, run 38063142924) the
+		// working directories Go gives asm.exe inside GOMODCACHE exceed MAX_PATH and
+		// CreateProcess fails with "The directory name is invalid."
+		let buildDirectory = null;
 		try {
 			await chmod(stagingDirectory, 0o700);
-			const buildDirectory = join(stagingDirectory, ".build");
-			await mkdir(buildDirectory, { recursive: true, mode: 0o700 });
+			buildDirectory = await mkdtemp(join(options.temporaryDirectory ?? tmpdir(), "gai-"));
+			await chmod(buildDirectory, 0o700);
 			const goPath = await resolveWindowsGoExecutable(options);
 			const environment = sealedGoEnvironment(goPath, buildDirectory, architecture);
 			for (const directory of [environment.GOBIN, environment.GOPATH, environment.GOMODCACHE, environment.GOCACHE, environment.TEMP]) await mkdir(directory, { recursive: true, mode: 0o700 });
 			await recoverInterruptedPublication(runtimeRoot, (directory) => existingWindowsSourceBundleMatches(directory, execute, goPath, environment, architecture), options);
 			const existing = versionBundlePath(runtimeRoot);
 			if (await existingWindowsSourceBundleMatches(existing, execute, goPath, environment, architecture)) return { installed: false, binaryPath: join(existing, "gentle-ai.exe"), method: GENTLE_AI_INSTALL_METHOD.GO_SUMDB_SOURCE_BUILD };
-			await assertGoToolchain(execute, goPath, environment, stagingDirectory);
-			try { await runCommand(execute, goPath, ["install", GENTLE_AI_WINDOWS_SOURCE_PACKAGE], commandOptions(environment, stagingDirectory, GO_INSTALL_TIMEOUT_MS)); }
+			await assertGoToolchain(execute, goPath, environment, buildDirectory);
+			try { await runCommand(execute, goPath, ["install", GENTLE_AI_WINDOWS_SOURCE_PACKAGE], commandOptions(environment, buildDirectory, GO_INSTALL_TIMEOUT_MS)); }
 			catch (error) { throw new GentleAiInstallerError(GENTLE_AI_GO_INSTALL_FAILED_CODE, `Gentle AI Go SumDB source installation failed for ${GENTLE_AI_WINDOWS_SOURCE_PACKAGE}.`, error); }
 			const builtBinary = join(environment.GOBIN, "gentle-ai.exe"), binaryPath = join(stagingDirectory, "gentle-ai.exe");
 			const details = await lstat(builtBinary);
 			if (!details.isFile() || details.isSymbolicLink()) throw new GentleAiInstallerError(GENTLE_AI_GO_INSTALL_FAILED_CODE, "Gentle AI Go installation produced a non-regular gentle-ai.exe.");
 			await copyFile(builtBinary, binaryPath);
-			const metadata = await verifyGoBuildMetadata(execute, goPath, binaryPath, environment, stagingDirectory, architecture);
-			await assertExactGentleAiVersion(execute, binaryPath, environment, stagingDirectory);
+			const metadata = await verifyGoBuildMetadata(execute, goPath, binaryPath, environment, buildDirectory, architecture);
+			await assertExactGentleAiVersion(execute, binaryPath, environment, buildDirectory);
 			const binarySha256 = await sha256File(binaryPath);
 			await writeFile(join(stagingDirectory, "integrity.json"), canonicalManifest(windowsSourceManifest(metadata, binarySha256, architecture)), { mode: 0o600 });
 			await safeRemoveDirectory(buildDirectory);
 			const published = await publishBundle(runtimeRoot, stagingDirectory, options);
 			return { installed: true, binaryPath: join(published, "gentle-ai.exe"), method: GENTLE_AI_INSTALL_METHOD.GO_SUMDB_SOURCE_BUILD };
-		} finally { await safeRemoveDirectory(stagingDirectory); }
+		} finally {
+			try { if (buildDirectory !== null) await safeRemoveDirectory(buildDirectory); }
+			finally { await safeRemoveDirectory(stagingDirectory); }
+		}
 	});
 }
 

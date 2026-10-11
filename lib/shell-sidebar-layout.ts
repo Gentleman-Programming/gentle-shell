@@ -379,7 +379,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 		stopped = true;
 		state.active = false;
 		clearInterval(timer);
-		scroll.hideTransientScrollbar();
+		scroll.setScrollbar("hidden");
 		for (const cleanup of cleanups.reverse()) cleanup();
 		tui.requestRender();
 	};

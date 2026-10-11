@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import test from "node:test";
 import {
 	CHANNEL_SCHEMA,
@@ -88,7 +88,7 @@ test("the Gentle Shell main package is packed from the exact commit without prep
 		};
 		const run = async (command: string, argv: string[], options: Call["options"]) => {
 			calls.push({ command, argv, options });
-			if (command === "tar") {
+			if (argv[0] === "-xzf") {
 				const target = argv[argv.indexOf("-C") + 1];
 				writeFileSync(join(target, "package.json"), JSON.stringify({ name: "gentle-pi", version: "4.0.0",
 					scripts: { prepack: "pnpm test", prepare: "x", postinstall: "node scripts/install-gentle-ai.mjs" } }));
@@ -112,6 +112,56 @@ test("the Gentle Shell main package is packed from the exact commit without prep
 		assert.equal(packed.scripts.prepare, undefined);
 		assert.equal(packed.scripts.postinstall, "node scripts/install-gentle-ai.mjs");
 		assert.equal(existsSync(join(s.home, ".pi", "gentle-ai", "main", ".source")), false, "the extracted source is removed");
+	} finally { s.cleanup(); }
+});
+
+// Run 38061123855: with Git for Windows' usr\bin first on PATH, MSYS tar reads `D:\...` as a remote host.
+test("on Windows the source archive is extracted by System32's tar.exe by absolute path; POSIX keeps tar from PATH", async () => {
+	const windowsTar = win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe");
+	for (const [platform, expected] of [["win32", windowsTar], ["linux", "tar"], ["darwin", "tar"]]) {
+		const s = sandbox();
+		try {
+			const extracts: string[] = [];
+			const fetch = async () => ({ ok: true, status: 200, arrayBuffer: async () => new TextEncoder().encode("archive").buffer });
+			const run = async (command: string, argv: string[], options: Call["options"]) => {
+				if (argv[0] === "-xzf") {
+					extracts.push(command);
+					writeFileSync(join(argv[argv.indexOf("-C") + 1], "package.json"), JSON.stringify({ name: "gentle-pi", version: "4.0.0" }));
+				} else {
+					writeFileSync(join(argv[argv.indexOf("--pack-destination") + 1], "gentle-pi-4.0.0-main.6e7e3a18f794.tgz"), "tgz");
+					assert.ok(options.cwd);
+				}
+				return { code: 0, stdout: "" };
+			};
+			await packMainShell({ commit: SHELL_SHA, ctx: s.ctx, fetch, run, pnpm: { command: "/bin/pnpm", prefix: [] }, fs: fsPromises, platform });
+			assert.deepEqual(extracts, [expected], platform);
+		} finally { s.cleanup(); }
+	}
+});
+
+test("a failed source extraction or Go build keeps the command's bounded stderr tail as the error's cause", async () => {
+	const s = sandbox();
+	try {
+		const tail = "tar (child): Cannot connect to D: resolve failed\ntar: Error is not recoverable: exiting now\n";
+		const requested: Array<number | undefined> = [];
+		const fetch = async () => ({ ok: true, status: 200, arrayBuffer: async () => new TextEncoder().encode("archive").buffer });
+		const tar = async (_command: string, _argv: string[], options: { stderrTail?: number }) => {
+			requested.push(options.stderrTail);
+			return { code: 2, stdout: "", stderrTail: tail };
+		};
+		await assert.rejects(packMainShell({ commit: SHELL_SHA, ctx: s.ctx, fetch, run: tar, pnpm: { command: "/bin/pnpm", prefix: [] }, fs: fsPromises, platform: "linux" }),
+			(error: MainChannelError) => error.code === "main-shell-pack-failed" && error.cause instanceof Error && error.cause.message === tail.trim());
+		const go = "go: downloading github.com/gentleman-programming/gentle-ai/v4\ngo: verifying module: checksum mismatch\n";
+		const build = async (_command: string, _argv: string[], options: { stderrTail?: number }) => {
+			requested.push(options.stderrTail);
+			return { code: 1, stdout: "", stderrTail: go };
+		};
+		await assert.rejects(buildMainGentleAi({ commit: AI_SHA, ctx: s.ctx, platform: "linux", goPath: "/go/bin/go", run: build, fs: fsPromises }),
+			(error: MainChannelError) => error.code === "main-gentle-ai-build-failed" && error.cause instanceof Error && error.cause.message === go.trim());
+		assert.deepEqual(requested, [4096, 4096]);
+		// Without any stderr the error has no cause, as before.
+		await assert.rejects(buildMainGentleAi({ commit: AI_SHA, ctx: s.ctx, platform: "linux", goPath: "/go/bin/go", run: async () => ({ code: 1, stdout: "" }), fs: fsPromises }),
+			(error: MainChannelError) => error.code === "main-gentle-ai-build-failed" && error.cause === undefined);
 	} finally { s.cleanup(); }
 });
 
@@ -193,6 +243,21 @@ test("installOwner attributes another named package, such as the scoped Pi, the 
 		"/u/.local/share/mise/installs/pi/lib/node_modules/@earendil-works/pi-coding-agent"]) {
 		assert.equal(installOwner({ ...roots, packageRoot }), null, packageRoot);
 	}
+});
+
+test("installOwner follows Windows paths on any host: backslashes and case-insensitive roots", () => {
+	const roots = { pnpmHome: "C:\\Users\\u\\AppData\\Local\\pnpm", npmRoot: "C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules",
+		name: "@earendil-works/pi-coding-agent", platform: "win32" };
+	assert.equal(installOwner({ ...roots, packageRoot: "C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\@earendil-works\\pi-coding-agent" }), "npm");
+	assert.equal(installOwner({ ...roots, packageRoot: "c:\\users\\U\\appdata\\roaming\\NPM\\Node_Modules\\@Earendil-Works\\Pi-Coding-Agent" }), "npm");
+	assert.equal(installOwner({ ...roots, packageRoot: "C:\\Users\\u\\AppData\\Local\\PNPM\\global\\v11\\x\\node_modules\\@earendil-works\\pi-coding-agent" }), "pnpm");
+	for (const packageRoot of ["C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\other\\@earendil-works\\pi-coding-agent",
+		"C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules", "D:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\@earendil-works\\pi-coding-agent",
+		"C:\\Users\\u\\AppData\\Local\\pnpm"]) {
+		assert.equal(installOwner({ ...roots, packageRoot }), null, packageRoot);
+	}
+	// POSIX paths keep their exact case.
+	assert.equal(installOwner({ pnpmHome: null, npmRoot: "/u/lib/node_modules", packageRoot: "/u/lib/node_modules/Gentle-Pi", platform: "linux" }), null);
 });
 
 // `gentle-shell upgrade --channel main` after the installer provided its own pinned Go.

@@ -82,7 +82,7 @@ export class SessionWorktreeRegistry {
 		if (!this.isCurrent()) throw new Error("Cannot register a worktree for an inactive session.");
 		const identity = this.refreshIdentity();
 		const target = this.resolver(path, this.cwd);
-		if (!target || !identity || target.commonDir !== identity.commonDir) throw new Error("Select an existing worktree in the same Git clone as this session.");
+		if (!target || !identity || target.commonDir !== identity.commonDir) throw new Error("Select an existing worktree in the same Git clone as this session. To work in an independent Git repository, delegate with subagent_run with repository_root instead; it asks for your consent first.");
 		return target.root;
 	}
 

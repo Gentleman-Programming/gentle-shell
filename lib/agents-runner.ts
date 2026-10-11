@@ -1,8 +1,9 @@
 import { isSessionChangeEvidence, type SessionChangeEvidence } from "./session-changes.ts";
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { Duplex, Readable, Writable } from "node:stream";
+import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { tmpdir, userInfo } from "node:os";
+import { join, resolve } from "node:path";
+import { Duplex, type Readable, type Writable } from "node:stream";
 import { stripVTControlCharacters } from "node:util";
 import { withoutInteractiveHost } from "./rpc-host.ts";
 import { childPackageExtensionArgs } from "./child-package-injection.ts";
@@ -18,12 +19,12 @@ import { WriterSurfaceRegistry, writerSurfaceConflictMessage } from "./writer-su
 // and enforces an inactivity watchdog per task.
 
 export interface ChildLike {
-	pid: number | undefined;
+	pid?: number;
 	connected?: boolean;
-	stdin: Writable;
-	stdout: Readable;
+	stdin: Writable | null;
+	stdout: Readable | null;
 	stderr: Readable | null | undefined;
-	stdio?: Array<Duplex | null | undefined>;
+	stdio?: Array<Readable | Writable | null | undefined>;
 	kill(signal?: NodeJS.Signals): boolean;
 	send?(message: Record<string, unknown>, callback?: (error: Error | null) => void): boolean;
 	disconnect?(): void;
@@ -37,6 +38,7 @@ export interface SpawnOptions {
 	cwd: string;
 	env: NodeJS.ProcessEnv;
 	detached?: boolean;
+	windowsHide?: boolean;
 	stdio?: Array<"pipe" | "ignore" | "inherit" | "ipc" | "overlapped">;
 }
 
@@ -275,9 +277,42 @@ function requestedTools(request: TaskRequest): string {
 	return [...new Set([...request.agent.tools, PARENT_NOTIFICATION_TOOL])].join(",");
 }
 
+const WEB_TOOL_NAMES = ["web_enable", "web_search", "source_check", "fetch_content", "get_search_content"];
+
+/** Resolve one already installed, explicitly requested package. Pi's own loader
+ * follows its manifest and supplies SDK aliases; no install or ambient discovery. */
+function requestedWebPackagePaths(request: TaskRequest): string[] {
+	if (!WEB_TOOL_NAMES.every(name => request.agent.tools.includes(name))) return [];
+	try {
+		let agentDir = request.env.PI_CODING_AGENT_DIR;
+		if (!agentDir || /^~(?:$|[/\\])/.test(agentDir)) {
+			const home = (process.platform === "win32" ? request.env.USERPROFILE : request.env.HOME) || userInfo().homedir;
+			agentDir = agentDir ? agentDir.replace(/^~/, home) : join(home, ".pi", "agent");
+		}
+		const manager = new DefaultPackageManager({
+			cwd: request.cwd,
+			agentDir,
+			settingsManager: SettingsManager.inMemory(),
+		});
+		const installed = manager.getInstalledPath("npm:pi-web-access", "user");
+		return installed ? [realpathSync(installed)] : [];
+	} catch {
+		// Missing/incompatible package remains an observable child capability gap.
+		return [];
+	}
+}
+
 export function childArguments(request: TaskRequest, instructionsPath?: string): string[] {
 	const args = ["--mode", "rpc", "--session-dir", request.sessionDir];
-	args.push(...childPackageExtensionArgs({ noExtensions: request.noExtensions === true, extensionPaths: request.extensionPaths ?? [] }));
+	const extensionPaths = [...new Set(request.extensionPaths ?? [])];
+	for (const packagePath of requestedWebPackagePaths(request)) {
+		const injected = extensionPaths.some(path => {
+			try { return realpathSync(resolve(request.cwd, path)) === packagePath; }
+			catch { return false; }
+		});
+		if (!injected) extensionPaths.push(packagePath);
+	}
+	args.push(...childPackageExtensionArgs({ noExtensions: request.noExtensions === true, extensionPaths }));
 	if (request.resumeSessionPath) args.push("--session", request.resumeSessionPath);
 	if (request.model) args.push("--model", request.thinking ? `${formatModelRef(request.model)}:${request.thinking}` : formatModelRef(request.model));
 	else if (request.thinking) args.push("--thinking", request.thinking);
@@ -538,6 +573,7 @@ export class AgentRunner {
 				cwd: request.cwd,
 				env,
 				detached,
+				windowsHide: true,
 				stdio: hasParentPermissionChannel ? ["pipe", "pipe", "pipe", permissionChannelStdio, "ipc"] : ["pipe", "pipe", "pipe", "ipc"],
 			});
 		} catch (error) {
@@ -563,7 +599,7 @@ export class AgentRunner {
 		}
 		this.live.set(id, live);
 		const permissionPipe = child.stdio?.[3];
-		if (hasParentPermissionChannel && permissionPipe !== undefined && permissionPipe !== null) {
+		if (hasParentPermissionChannel && permissionPipe instanceof Duplex) {
 			live.permissionBroker = new ParentStandingReviewPermissionBroker(
 				{ readable: permissionPipe, writable: permissionPipe },
 				(repositoryIdentity) => this.live.get(id) === live && !live.terminal && request.authorizeParentStandingReviewPermission?.(repositoryIdentity) === true,
@@ -581,6 +617,11 @@ export class AgentRunner {
 			try { request.onLaunch?.(); }
 			catch (error) { this.requestStop(id, TASK_STATUS.FAILED, `could not register launched worktree: ${error instanceof Error ? error.message : String(error)}`); }
 		});
+		child.on("exit", (code, signal) => this.exited(id, code, signal));
+		if (!child.stdin || !child.stdout) {
+			this.requestStop(id, TASK_STATUS.FAILED, "could not start pi: missing RPC streams");
+			return;
+		}
 		child.stdin.on("error", () => {});
 		this.armStall(id, live);
 		const lines = new JsonLines((value) => this.receive(id, request, value));
@@ -591,7 +632,6 @@ export class AgentRunner {
 			const tail = live.stderrTail + chunk;
 			live.stderrTail = tail.length > STDERR_TAIL_MAX ? tail.slice(-STDERR_TAIL_MAX) : tail;
 		});
-		child.on("exit", (code, signal) => this.exited(id, code, signal));
 		void this.send(id, { type: "get_state" }).then((response) => {
 			const data = response.data as { sessionFile?: unknown; model?: { provider?: unknown; id?: unknown } | null; thinkingLevel?: unknown } | undefined;
 			if (response.success !== true || live.terminal || this.live.get(id) !== live || !data) return;
@@ -761,7 +801,7 @@ export class AgentRunner {
 
 	private write(live: LiveTask, payload: Record<string, unknown>): void {
 		try {
-			live.child.stdin.write(`${JSON.stringify(payload)}\n`);
+			live.child.stdin?.write(`${JSON.stringify(payload)}\n`);
 		} catch {
 			// the child is gone; the exit handler settles the task
 		}

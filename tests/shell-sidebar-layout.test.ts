@@ -49,7 +49,7 @@ test("grouped Status preserves structured fields and opaque integration text", (
 		const lines = renderShellSidebarBar({
 			cwd: "/project", branch: "main", dirty: 2, sessionName: "session",
 			modelId: "model", effort: "high", contextPercent: 45, contextWindow: 1000,
-			costTotal: 1, subscription: false, statuses: ["opaque integration"],
+			costTotal: 1, subscription: false, usage: undefined, statuses: ["opaque integration"],
 		}, painted, 46);
 		const text = lines.join("\n");
 		let previous = -1;
@@ -452,7 +452,7 @@ test("rail rejects removed or replaced parts before cached geometry is prepared 
 			return { handled: true };
 		},
 	};
-	const mounted = sidebarPart(f.tui, "todo", { render: () => ["Todo bottom"], invalidate() {} }, original);
+	const mounted = sidebarPart(f.tui, "todo", { render: () => ["Todo bottom"], invalidate() {}, dispose() {} }, original);
 	const dispose = installSidebar(f.tui, theme);
 	t.after(dispose);
 	const scroll = rail(f);

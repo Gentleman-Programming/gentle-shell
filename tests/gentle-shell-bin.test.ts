@@ -137,6 +137,9 @@ function fixture(t: test.TestContext) {
 		GENTLE_SHELL_PI: piScript,
 		GENTLE_SHELL_NO_AUTO_SETUP: "1",
 	};
+	// A suite launched from inside a Gentle Shell session inherits the outer
+	// session's recorded user Pi home, which --link now honours first (#2015).
+	delete env.GENTLE_SHELL_USER_PI_HOME;
 	return { root, home, gentleShellHome, piScript, env };
 }
 
@@ -713,6 +716,10 @@ test("an isolated launch keeps its own agent home and carries the user's origina
 	const linked = launch({ PI_CODING_AGENT_DIR: customHome }, ["--link"]);
 	assert.equal(linked.PI_CODING_AGENT_DIR, customHome);
 	assert.equal(linked.GENTLE_SHELL_USER_PI_HOME, customHome);
+	// --link from inside an isolated session reuses the preserved original home (#2015).
+	const nestedLinked = launch({ PI_CODING_AGENT_DIR: f.gentleShellHome, GENTLE_SHELL_USER_PI_HOME: customHome }, ["--link"]);
+	assert.equal(nestedLinked.PI_CODING_AGENT_DIR, customHome);
+	assert.equal(nestedLinked.GENTLE_SHELL_USER_PI_HOME, customHome);
 	assert.equal(existsSync(join(customHome, "sessions")), false);
 });
 
@@ -891,6 +898,119 @@ test("gentle-shell setup passes through the gentle-ai exit code", (t) => {
 
 	const result = run(env, ["setup"]);
 	assert.equal(result.status, 3);
+});
+
+// Windows cannot execute a shebang fixture directly; use the launcher's
+// existing .cmd support without changing the runtime under test.
+function setupMCPExecutable(path: string): string {
+	chmodSync(path, 0o755);
+	if (process.platform !== "win32") return path;
+	const wrapper = `${path}.cmd`;
+	writeFileSync(wrapper, `@echo off\r\n"${process.execPath}" "${path}" %*\r\n`);
+	return wrapper;
+}
+
+test("setup MCP migration warns without re-enabling configured servers", async (t) => {
+	for (const mode of ["link", "path"] as const) {
+		await t.test(mode, (t) => {
+			const f = fixture(t);
+			const target = mode === "link" ? join(f.home, ".pi", "agent") : f.gentleShellHome;
+			mkdirSync(join(target, "npm"), { recursive: true });
+			const settingsPath = join(target, "settings.json");
+			const settings = { theme: "kanagawa", packages: ["npm:pi-mcp-adapter", "npm:other"], extensions: ["-builtin:mcp", "user-extension.ts"] };
+			writeFileSync(settingsPath, JSON.stringify(settings));
+			const npmPath = join(target, "npm", "package.json");
+			writeFileSync(npmPath, JSON.stringify({ dependencies: { "pi-mcp-adapter": "^3.0.0", other: "1.0.0" } }));
+			const mcpPath = join(target, "mcp.json");
+			const mcpText = '{"mcpServers":{"context7":{"command":"npx","args":["context7-mcp"]}}}';
+			writeFileSync(mcpPath, mcpText);
+			const installer = join(f.root, "retire-adapter.mjs");
+			writeFileSync(installer, [
+				"#!/usr/bin/env node",
+				'import { readFileSync, writeFileSync } from "node:fs";',
+				'import { join } from "node:path";',
+				'const home = process.env.PI_CODING_AGENT_DIR;',
+				'const settingsPath = join(home, "settings.json");',
+				'const settings = JSON.parse(readFileSync(settingsPath, "utf8"));',
+				'settings.packages = settings.packages.filter(p => p !== "npm:pi-mcp-adapter");',
+				'writeFileSync(settingsPath, JSON.stringify(settings));',
+				'const npmPath = join(home, "npm", "package.json");',
+				'const manifest = JSON.parse(readFileSync(npmPath, "utf8"));',
+				'delete manifest.dependencies["pi-mcp-adapter"];',
+				'writeFileSync(npmPath, JSON.stringify(manifest));',
+				'console.log("installed");',
+			].join("\n"));
+			assert.equal(readFileSync(installer, "utf8").split("\n")[0], "#!/usr/bin/env node");
+			const args = mode === "link" ? ["--link", "setup"] : ["--home", target, "setup"];
+			const result = run({ ...f.env, PI_CODING_AGENT_DIR: target, GENTLE_SHELL_PI: setupMCPExecutable(f.piScript), GENTLE_SHELL_GENTLE_AI_BIN: setupMCPExecutable(installer) }, args);
+			assert.equal(result.status, 0, result.stderr);
+			assert.equal(result.stdout, "installed\n");
+			assert.equal(result.stderr, `gentle-shell: provisioning ${target} with the gentle-ai companion packages\n` +
+				`gentle-shell: WARNING: Pi built-in MCP is disabled in ${settingsPath}; pi-mcp-adapter is absent or inactive, so servers in ${mcpPath} will not load. If you want these servers enabled, remove -builtin:mcp from extensions in ${settingsPath}, then restart Pi. If MCP is intentionally disabled, keep the setting.\n`);
+			assert.deepEqual(JSON.parse(readFileSync(settingsPath, "utf8")), { ...settings, packages: ["npm:other"] });
+			assert.deepEqual(JSON.parse(readFileSync(npmPath, "utf8")), { dependencies: { other: "1.0.0" } });
+			assert.equal(readFileSync(mcpPath, "utf8"), mcpText);
+		});
+	}
+});
+
+test("setup MCP migration keeps enabled, unconfigured and dry-run homes unchanged", async (t) => {
+	for (const scenario of ["enabled", "unconfigured", "dry-run", "active-adapter"] as const) {
+		await t.test(scenario, (t) => {
+			const f = fixture(t);
+			const target = join(f.home, ".pi", "agent");
+			mkdirSync(target, { recursive: true });
+			const settingsPath = join(target, "settings.json");
+			const settingsText = JSON.stringify({ extensions: scenario === "enabled" ? [] : ["-builtin:mcp"], packages: scenario === "active-adapter" ? ["npm:pi-mcp-adapter@3.0.0"] : [] });
+			writeFileSync(settingsPath, settingsText);
+			const mcpPath = join(target, "mcp.json");
+			const mcpText = JSON.stringify({ mcpServers: scenario === "unconfigured" ? {} : { context7: { command: "npx" } } });
+			writeFileSync(mcpPath, mcpText);
+			const installer = join(f.root, "fake-gentle-ai.mjs");
+			writeGentleAiScript(installer);
+			const dryRun = scenario === "dry-run";
+			const result = run({ ...f.env, PI_CODING_AGENT_DIR: target, GENTLE_SHELL_PI: setupMCPExecutable(f.piScript), GENTLE_SHELL_GENTLE_AI_BIN: setupMCPExecutable(installer) }, ["--link", "setup", ...(dryRun ? ["--dry-run"] : [])]);
+			assert.equal(result.status, 0, result.stderr);
+			assert.deepEqual(JSON.parse(result.stdout).args, ["install", "--agent", "pi", "--scope", "global", ...(dryRun ? ["--dry-run"] : [])]);
+			assert.doesNotMatch(result.stderr, /WARNING:|built-in MCP/);
+			assert.equal(readFileSync(settingsPath, "utf8"), settingsText);
+			assert.equal(readFileSync(mcpPath, "utf8"), mcpText);
+		});
+	}
+});
+
+test("setup MCP migration warns when adapter resource loading is disabled", async (t) => {
+	for (const adapter of [
+		{ source: "npm:pi-mcp-adapter", autoload: false },
+		{ source: "npm:pi-mcp-adapter", autoload: false, extensions: ["!**"] },
+		{ source: "npm:pi-mcp-adapter", extensions: ["!**"] },
+		{ source: "npm:pi-mcp-adapter", extensions: ["index.ts"] },
+	]) {
+		await t.test(JSON.stringify(adapter), (t) => {
+			const f = fixture(t);
+			const target = join(f.home, ".pi", "agent");
+			mkdirSync(target, { recursive: true });
+			const settingsPath = join(target, "settings.json");
+			const uncertain = "extensions" in adapter && adapter.extensions.includes("index.ts");
+			const settingsText = JSON.stringify({ extensions: ["-builtin:mcp"], packages: [adapter] });
+			writeFileSync(settingsPath, settingsText);
+			const mcpPath = join(target, "mcp.json");
+			const mcpText = '{"mcpServers":{"context7":{"command":"npx"}}}';
+			writeFileSync(mcpPath, mcpText);
+			const installer = join(f.root, "fake-gentle-ai.mjs");
+			writeGentleAiScript(installer);
+			const result = run({ ...f.env, PI_CODING_AGENT_DIR: target, GENTLE_SHELL_PI: setupMCPExecutable(f.piScript), GENTLE_SHELL_GENTLE_AI_BIN: setupMCPExecutable(installer) }, ["--link", "setup"]);
+			assert.equal(result.status, 0, result.stderr);
+			assert.deepEqual(JSON.parse(result.stdout).args, ["install", "--agent", "pi", "--scope", "global"]);
+			const diagnosis = uncertain
+				? "pi-mcp-adapter activity cannot be confirmed from its extension filters, so servers in " + mcpPath + " may not load"
+				: "pi-mcp-adapter is absent or inactive, so servers in " + mcpPath + " will not load";
+			assert.equal(result.stderr, `gentle-shell: provisioning ${target} with the gentle-ai companion packages\n` +
+				`gentle-shell: WARNING: Pi built-in MCP is disabled in ${settingsPath}; ${diagnosis}. If you want these servers enabled, remove -builtin:mcp from extensions in ${settingsPath}, then restart Pi. If MCP is intentionally disabled, keep the setting.\n`);
+			assert.equal(readFileSync(settingsPath, "utf8"), settingsText);
+			assert.equal(readFileSync(mcpPath, "utf8"), mcpText);
+		});
+	}
 });
 
 // --- setup subcommand's self-heal for a missing package-local binary -------

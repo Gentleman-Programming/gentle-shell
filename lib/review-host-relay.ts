@@ -41,6 +41,7 @@ import {
 	type InProcessReviewerFailureCode,
 	type InProcessReviewerOutcome,
 	type InProcessReviewerRegistry,
+	type InProcessReviewerRequest,
 } from "./inprocess-reviewer.ts";
 import { REVIEW_PROVIDER_ROLE_CAPTURE_OPERATION, REVIEW_PROVIDER_ROLE_CAPTURE_OPERATIONS, type ReviewCaptureSubmissionV1, type ReviewCollectInputV3 } from "./review-integration-v2.ts";
 import { GENTLE_PI_REVIEW_RELAY_CONTRACT, GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV } from "./review-relay-contract.ts";
@@ -386,6 +387,8 @@ export interface ReviewHostRelayRequest {
 	readonly selection?: string;
 	/** The routing entry's thinking label, forwarded verbatim to the completion. */
 	readonly thinking?: string;
+	/** Effective Pi transport preference, forwarded without forcing a provider default. */
+	readonly reviewerTransport?: InProcessReviewerRequest["transport"];
 	/**
 	 * The caller's live pi session id, forwarded into the in-process completion
 	 * request so an OpenCode-routed reviewer model carries its
@@ -737,6 +740,7 @@ export async function prepareReviewHostRelaySlot(
 			{
 				selection: preparedRequest.selection!,
 				...(preparedRequest.thinking === undefined ? {} : { thinking: preparedRequest.thinking }),
+				...(preparedRequest.reviewerTransport === undefined ? {} : { transport: preparedRequest.reviewerTransport }),
 				...(preparedRequest.reviewerSessionId === undefined ? {} : { sessionId: preparedRequest.reviewerSessionId }),
 				prompt: promptBytes,
 				timeoutMs: piTimeoutMs,

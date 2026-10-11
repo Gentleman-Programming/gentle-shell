@@ -48,6 +48,8 @@ test("canonical roots include cwd, dedupe aliases immediately and reject unrelat
 	assert.deepEqual(registry.roots(), [f.main, f.linked]);
 	assert.equal(h.session.getEntries().length, 2);
 	assert.throws(() => registry.register(f.other, "explicit"), /same Git clone/);
+	// The refusal names the runnable exit for an independent repository (#1915).
+	assert.throws(() => registry.register(f.other, "explicit"), /subagent_run with repository_root/);
 	assert.throws(() => registry.register(join(f.dir, "missing"), "explicit"), /worktree/);
 	assert.equal(resolveSessionWorktree(f.alias, f.main)?.root, f.linked);
 });

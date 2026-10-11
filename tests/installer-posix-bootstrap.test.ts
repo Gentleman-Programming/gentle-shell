@@ -6,6 +6,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import test, { type TestContext } from "node:test";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { crc32, deflateRawSync, gzipSync } from "node:zlib";
 import { artifactFor, verifiedDownload, compatibleEngine, ensurePnpm, launchWizard, bootstrap, removeOwnedTools, acquireGo, installedGo } from "../scripts/installer-downloads.mjs";
 
@@ -99,6 +101,54 @@ test("download helper fails closed on integrity, empty body and adapter failure"
 		await assert.rejects(verifiedDownload("pnpm", { download }), /Download|integrity/);
 	}
 });
+/** A local server that, like dl.google.com, gzips the body when the client accepts it. */
+async function compressingServer(bytes: Buffer, always = false) {
+	const { createServer } = await import("node:http");
+	const seen: string[] = [];
+	const server = createServer((request, response) => {
+		const accepted = String(request.headers["accept-encoding"] ?? "");
+		seen.push(accepted);
+		if (always || /gzip/.test(accepted)) {
+			const body = gzipSync(bytes);
+			response.writeHead(200, { "content-encoding": "gzip", "content-length": String(body.length) });
+			response.end(body);
+		} else {
+			response.writeHead(200, { "content-length": String(bytes.length) });
+			response.end(bytes);
+		}
+	});
+	await new Promise<void>((done) => server.listen(0, "127.0.0.1", () => done()));
+	const { port } = server.address() as { port: number };
+	return { url: `http://127.0.0.1:${port}/go.zip`, seen, close: () => new Promise((done) => server.close(done)) };
+}
+function localArtifact(url: string, bytes: Buffer) {
+	return () => ({ url, size: bytes.length, maxBytes: bytes.length, integrity: `sha256-${createHash("sha256").update(bytes).digest("hex")}` });
+}
+
+test("the real download asks for the identity encoding, so a server that would gzip the archive sends it whole", async () => {
+	const bytes = Buffer.concat([Buffer.from("PK\u0003\u0004"), Buffer.alloc(4096, 7)]);
+	const server = await compressingServer(bytes);
+	try {
+		const result = await verifiedDownload("go", { artifact: localArtifact(server.url, bytes) });
+		assert.deepEqual(result, bytes);
+		assert.deepEqual(server.seen, ["identity"]);
+	} finally { await server.close(); }
+});
+
+test("an encoded response is refused with its cause instead of being reported as truncated", async () => {
+	const bytes = Buffer.alloc(4096, 9);
+	const server = await compressingServer(bytes, true);
+	try {
+		await assert.rejects(verifiedDownload("go", { artifact: localArtifact(server.url, bytes) }),
+			(error: Error) => error.message === "Download failed" && /encoded/.test(String((error.cause as Error)?.message)));
+	} finally { await server.close(); }
+});
+
+test("a failed download keeps the transport error as its cause", async () => {
+	await assert.rejects(verifiedDownload("pnpm", { download: async () => { throw new Error("socket hang up"); } }),
+		(error: Error) => error.message === "Download failed" && (error.cause as Error)?.message === "socket hang up");
+});
+
 test("download helper validates bytes before returning them", async () => {
 	const bytes = Buffer.from("verified fixture");
 	let observed = "";
@@ -265,30 +315,31 @@ posixTest("a pnpm shim without a cmd-shim target still blocks", () => {
 const nativeHeaders: Record<string, number[]> = {
 	"Mach-O 64-bit": [0xcf, 0xfa, 0xed, 0xfe], "Mach-O universal": [0xca, 0xfe, 0xba, 0xbe], ELF: [0x7f, 0x45, 0x4c, 0x46],
 };
-function standalonePnpm(f: ReturnType<typeof fixture>, header: number[], linked = false) {
+function standalonePnpm(f: ReturnType<typeof fixture>, header: number[], linked = false, padding = 64) {
 	const installs = join(f.root, "mise/installs/pnpm/10.27.0");
 	mkdirSync(installs, { recursive: true });
 	const binary = join(installs, "pnpm");
-	writeFileSync(binary, Buffer.concat([Buffer.from(header), Buffer.alloc(64)]), { mode: 0o755 });
+	writeFileSync(binary, Buffer.concat([Buffer.from(header), Buffer.alloc(padding)]), { mode: 0o755 });
 	if (linked) symlinkSync(binary, join(f.bin, "pnpm"));
-	else writeFileSync(join(f.bin, "pnpm"), Buffer.concat([Buffer.from(header), Buffer.alloc(64)]), { mode: 0o755 });
+	else writeFileSync(join(f.bin, "pnpm"), Buffer.concat([Buffer.from(header), Buffer.alloc(padding)]), { mode: 0o755 });
 }
 const standaloneProcess = (version: string, calls: string[][] = []) => (_command: string, args: string[]) => {
 	calls.push(args);
 	return args.at(-1) === "--version" ? version : " --global ";
 };
 posixTest("a standalone native pnpm (mise, pnpm installer) is reused after version and capability proof", async () => {
+	// A real executable is far larger than the 64 KiB a shim may have; only scripts are read as shims.
 	for (const [label, header] of Object.entries(nativeHeaders)) {
-		for (const linked of [false, true]) {
+		for (const [linked, padding] of [[false, 64], [true, 64], [false, 128 * 1024]] as const) {
 			const f = fixture();
 			try {
-				standalonePnpm(f, header, linked);
+				standalonePnpm(f, header, linked, padding);
 				const calls: string[][] = [];
 				const result = await ensurePnpm({ tools: f.home, env: { PATH: f.bin }, nodeVersion: "24.21.0", adapters: {
 					process: standaloneProcess("11.5.0", calls), download: () => { throw new Error("must not download"); },
 				} });
-				assert.equal(result.acquired, false, `${label} linked=${linked}`);
-				assert.deepEqual(calls, [["--version"], ["help", "add"], ["help", "bin"]], `${label} linked=${linked}`);
+				assert.equal(result.acquired, false, `${label} linked=${linked} padding=${padding}`);
+				assert.deepEqual(calls, [["--version"], ["help", "add"], ["help", "bin"]], `${label} linked=${linked} padding=${padding}`);
 				assert.deepEqual(readdirSync(f.home), [], "no private tooling is created");
 			} finally { f.cleanup(); }
 		}
@@ -424,6 +475,40 @@ posixTest("pnpm installed in $PNPM_HOME by pnpm itself is recognized behind its 
 			if (layout.outcome === "reused") assert.deepEqual(calls, [["--version"], ["help", "add"], ["help", "bin"]], label);
 			// An incompatible JS pnpm is judged by its package; a native one only by --version.
 			else assert.deepEqual(calls, layout.native ? [["--version"]] : [], label);
+		} finally { f.cleanup(); }
+	}
+});
+// A shim is read whole up to 64 KiB, so a target named after the first 4 KiB is still found.
+const paddedShim = (shim: (home: string) => string, size: number) => (home: string) => {
+	const [first, ...rest] = shim(home).split("\n");
+	const text = [first, ...rest].join("\n");
+	return `${first}\n${"#".repeat(Math.max(0, size - Buffer.byteLength(text) - 1))}\n${rest.join("\n")}`;
+};
+posixTest("a $PNPM_HOME shim larger than 4 KiB keeps its target; one above 64 KiB fails closed", async () => {
+	const setup = pnpmHomeLayouts["pnpm 11 setup or self-update (@pnpm/exe in $PNPM_HOME/bin)"];
+	const legacy = pnpmHomeLayouts["pnpm 10 self-update to 11 (@pnpm/exe in $PNPM_HOME/.tools)"];
+	for (const [label, layout] of [["cmd-shim-target comment", setup], ["single basedir target", legacy]] as const) {
+		for (const size of [4097, 64 * 1024]) {
+			const f = fixture();
+			try {
+				const { shim, env } = pnpmHome(f, { ...layout, shim: paddedShim(layout.shim, size) });
+				assert.equal(readFileSync(shim).length, size, label);
+				const calls: string[][] = [];
+				const adapters = { process: (command: string, args: string[]) => {
+					if (command !== shim) throw new Error("must not run");
+					return standaloneProcess(layout.version, calls)(command, args);
+				}, download: () => { throw new Error("must not download"); } };
+				const result = await ensurePnpm({ tools: f.home, env, nodeVersion: "24.21.0", adapters });
+				assert.equal(result.acquired, false, `${label} ${size}`);
+				assert.deepEqual(calls, [["--version"], ["help", "add"], ["help", "bin"]], `${label} ${size}`);
+			} finally { f.cleanup(); }
+		}
+		const f = fixture();
+		try {
+			const { env } = pnpmHome(f, { ...layout, shim: paddedShim(layout.shim, 64 * 1024 + 1) });
+			const adapters = { process: () => { throw new Error("must not run"); }, download: () => { throw new Error("must not download"); } };
+			await assert.rejects(ensurePnpm({ tools: f.home, env, nodeVersion: "24.21.0", adapters }), /pnpm compatibility is unknown: shim larger than 64 KiB/, label);
+			assert.deepEqual(readdirSync(f.home), [], label);
 		} finally { f.cleanup(); }
 	}
 });
@@ -1029,9 +1114,62 @@ test("an existing Go destination the installer did not publish is never replaced
 	try {
 		mkdirSync(join(r.root, "1.25.14", "go", "bin"), { recursive: true });
 		writeFileSync(join(r.root, "1.25.14", "go", "bin", "go"), "user's own");
-		await assert.rejects(acquireGo({ root: r.root, platform: "darwin", arch: "arm64", adapters: goAdapters(goTree()) }), /Go verified acquisition failed/);
+		const counter = { downloads: 0 };
+		// The cause names the folder in the way, so the wizard can say which one to remove.
+		await assert.rejects(acquireGo({ root: r.root, platform: "darwin", arch: "arm64", adapters: goAdapters(goTree(), counter) }),
+			(error: Error) => /Go verified acquisition failed/.test(error.message) &&
+				(error.cause as Error)?.message === `Conflicting Go destination: ${join(r.root, "1.25.14")}`);
+		assert.equal(counter.downloads, 0, "nothing is downloaded next to a conflicting folder");
 		assert.equal(readFileSync(join(r.root, "1.25.14", "go", "bin", "go"), "utf8"), "user's own");
 		assert.deepEqual(readdirSync(r.root), ["1.25.14"]);
 		assert.equal(installedGo(r.root, "darwin", "arm64"), null);
 	} finally { r.cleanup(); }
+});
+
+test("the pinned Go destination appears only complete and marked, so an interrupted run never leaves it half published", async () => {
+	const r = goRoot();
+	const destination = join(r.root, "1.25.14");
+	const marker = join(destination, ".gentle-shell-go");
+	const violations: string[] = [];
+	const originals = { mkdirSync: fs.mkdirSync, renameSync: fs.renameSync, writeFileSync: fs.writeFileSync };
+	// Every filesystem mutation is a point where the process could die: after each
+	// one, the destination is either absent or already carries its marker.
+	for (const name of Object.keys(originals) as Array<keyof typeof originals>) {
+		(fs as Record<string, unknown>)[name] = (...args: unknown[]) => {
+			const result = (originals[name] as (...a: unknown[]) => unknown)(...args);
+			if (existsSync(destination) && !existsSync(marker)) violations.push(`${name} ${String(args[0])}`);
+			return result;
+		};
+	}
+	syncBuiltinESMExports();
+	try {
+		// A staging directory left by an earlier interrupted run does not get in the way.
+		mkdirSync(join(r.root, ".stage-interrupted", "go"), { recursive: true, mode: 0o700 });
+		const result = await acquireGo({ root: r.root, platform: "darwin", arch: "arm64", adapters: goAdapters(goTree()) });
+		assert.equal(result.acquired, true);
+		assert.deepEqual(violations, []);
+		assert.equal(readFileSync(marker, "utf8"), `${artifactFor("go", "darwin", "arm64").url}\n`);
+		if (process.platform !== "win32") assert.equal(lstatSync(destination).mode & 0o077, 0);
+		assert.equal(installedGo(r.root, "darwin", "arm64"), result.goPath);
+	} finally {
+		Object.assign(fs, originals);
+		syncBuiltinESMExports();
+		r.cleanup();
+	}
+});
+
+// CI runs the "native Windows" lane on windows-latest and requires every one of
+// those tests to pass with 0 skips: its count is the real number of native tests,
+// the literal ones plus one per pre-Node process primitive mode.
+test("the CI native Windows gate requires exactly the native tests the Windows bootstrap suite defines", () => {
+	const source = readFileSync(new URL("./installer-windows-bootstrap.test.ts", import.meta.url), "utf8");
+	const literal = source.match(/^test\("native Windows[^"]*"/gm)?.length ?? 0;
+	const modes = /^const probeModes = \[([^\]]*)\] as const;$/m.exec(source)?.[1].split(",").filter((mode) => mode.trim().length > 0).length ?? 0;
+	assert.ok(/^for \(const mode of probeModes\) \{\n\ttest\(`native Windows: /m.test(source.slice(source.indexOf("const probeModes"))));
+	const ci = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+	const gate = /\[int\]\$passes\.Groups\[1\]\.Value -ne (\d+) -or/.exec(ci);
+	assert.ok(gate, "the gate compares the passed count exactly");
+	assert.ok(/\[int\]\$skips\.Groups\[1\]\.Value -ne 0/.test(ci), "0 skips stays required");
+	assert.equal(literal + modes, 37);
+	assert.equal(Number(gate[1]), literal + modes);
 });

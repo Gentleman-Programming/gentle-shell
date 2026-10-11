@@ -947,7 +947,7 @@ test("review-acknowledged/v1 is disjoint from every prior captured identity in b
 		["status/v3", decodeReviewStatusV3],
 		["start/v3", decodeReviewStartV3],
 		["start/v4", decodeReviewStartV4],
-		["capabilities/v2", decodeReviewCapabilitiesV2],
+		["capabilities/v2", (value) => decodeReviewCapabilitiesV2(value, CAPTURED_DIGEST)],
 		["consent/v2", decodeReviewConsentV2],
 		["consent/v3", decodeReviewConsentV3],
 		["last-event-closure/v1", decodeReviewLastEventClosureV1],

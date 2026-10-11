@@ -71,10 +71,15 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 		const roots = Array.from({ length: 10 }, (_, i) => join(root, `wt${i}`));
 		for (const cwd of roots) git(clone, "worktree", "add", "--detach", cwd, "HEAD");
 		const gitProbes = new Map<string, number>();
+		const gitProbeOrigins: Array<{ cwd: string; operation: string; origin: string[] }> = [];
 		const runGit = new Proxy(execFileSync, { apply(target, _this, [command, args, options]) {
 			assert.equal(command, "git");
 			assert.ok(String(args[args.indexOf("-C") + 1]).startsWith(root + "/"));
 			const cwd = String(args[args.indexOf("-C") + 1]);
+			gitProbeOrigins.push({ cwd, operation: String(args.at(-1)), origin: (new Error().stack ?? "").split("\n").flatMap(line => {
+				const name = line.match(/\bat (?:async )?([A-Za-z_][\w.$]*)\s*\(/)?.[1];
+				return name ? [name] : [];
+			}).slice(0, 8) });
 			gitProbes.set(cwd, (gitProbes.get(cwd) ?? 0) + 1);
 			return Reflect.apply(target, undefined, [command, args, { ...options, env: gitEnv }]);
 		} });
@@ -228,12 +233,18 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 				const before = calls;
 				let failed = false;
 				let toolProbes = 0;
+				let toolProbeStart = 0;
 				const unsubscribe = session.subscribe(event => {
-					if (event.type === "tool_execution_start" && event.toolName === name) toolProbes = gitProbes.get(cwd) ?? 0;
+					if (event.type === "tool_execution_start" && event.toolName === name) {
+						toolProbes = gitProbes.get(cwd) ?? 0;
+						toolProbeStart = gitProbeOrigins.length;
+					}
 					if (event.type === "tool_execution_end" && event.toolName === name) {
 						result = event.result; failed = event.isError;
 						if (name === "orchestrator_consult" || name === "orchestrator_list") {
-							assert.equal(gitProbes.get(cwd) ?? 0, toolProbes, "metadata query adds no caller Git probes");
+							const added = gitProbeOrigins.slice(toolProbeStart).filter(probe => probe.cwd === cwd).slice(0, 2)
+								.map(({ operation, origin }) => ({ operation, origin }));
+							assert.equal(gitProbes.get(cwd) ?? 0, toolProbes, `metadata query adds no caller Git probes; origins=${JSON.stringify(added)}`);
 						}
 					}
 				});

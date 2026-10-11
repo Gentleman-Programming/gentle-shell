@@ -794,6 +794,44 @@ test("a rejected empty allowlist does not block a following valid task", async (
 	h.runner.cancel(valid.id);
 });
 
+test("AgentRunner rejects an allowlist without any recognizable tool name before spawn", async () => {
+	const h = harness();
+	const task = h.runner.run(request({ agent: { ...explorer, tools: ["reed", "grep2"] } }));
+	await tick();
+	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.FAILED);
+	assert.match(h.store.get(task.id)?.error ?? "", /no recognizable tool/i);
+	assert.deepEqual(h.spawnOptions, [], "an unrecognizable allowlist must be rejected before the fake spawn");
+	assert.deepEqual(h.children, []);
+});
+
+test("a namespaced tool name alone counts as recognizable and reaches spawn", async () => {
+	const h = harness();
+	const task = h.runner.run(request({ agent: { ...explorer, tools: ["custom_server_tool"] } }));
+	await tick();
+	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.RUNNING);
+	assert.equal(h.spawnOptions[0].args[h.spawnOptions[0].args.indexOf("--tools") + 1], "custom_server_tool,subagent_parent_message");
+	h.runner.cancel(task.id);
+});
+
+test("known single-word tools stay recognizable without a namespace", async () => {
+	const h = harness();
+	const task = h.runner.run(request({ agent: { ...explorer, tools: ["codegraph"] } }));
+	await tick();
+	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.RUNNING);
+	h.runner.cancel(task.id);
+});
+
+// One recognizable name is enough: a later typo still launches, and the child
+// reports the dropped name itself (#1690) instead of the launch failing.
+test("one recognizable name is enough for a mixed allowlist", async () => {
+	const h = harness();
+	const task = h.runner.run(request({ agent: { ...explorer, tools: ["read", "grep2"] } }));
+	await tick();
+	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.RUNNING);
+	assert.equal(h.spawnOptions[0].args[h.spawnOptions[0].args.indexOf("--tools") + 1], "read,grep2,subagent_parent_message");
+	h.runner.cancel(task.id);
+});
+
 // #1690: the child compares this list with its own tools and reports the
 // names Pi dropped, so it must be exactly what --tools carries.
 test("AgentRunner gives a non-empty child its exact --tools list and never forwards a stale one", async () => {

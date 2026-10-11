@@ -318,6 +318,7 @@ function requestedWebPackagePaths(request: TaskRequest): string[] {
 	}
 }
 
+/** Builds the child's argument vector: mode, session dir, injected packages, model, and the always-present `--tools` allowlist. */
 export function childArguments(request: TaskRequest, instructionsPath?: string): string[] {
 	const args = ["--mode", "rpc", "--session-dir", request.sessionDir];
 	const extensionPaths = [...new Set(request.extensionPaths ?? [])];

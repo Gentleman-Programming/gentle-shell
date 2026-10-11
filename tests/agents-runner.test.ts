@@ -757,6 +757,7 @@ test("childArguments passes --no-extensions alone for a takeover with no paths (
 	assert.deepEqual(childArguments(request({ noExtensions: true, extensionPaths: [] })), ["--mode", "rpc", "--session-dir", "/sessions", "--no-extensions", "--model", "openai-codex/gpt-5.6-terra:high", "--tools", "read,grep,subagent_parent_message", "--append-system-prompt", "You map things."]);
 });
 
+/** Empty allowlist: the task fails before spawn (fail closed). */
 test("AgentRunner rejects an empty tools allowlist before spawn", async () => {
 	const h = harness();
 	const task = h.runner.run(request({ agent: { ...explorer, tools: [] }, env: { [REQUESTED_TOOLS_ENV]: "stale" } }));
@@ -767,6 +768,7 @@ test("AgentRunner rejects an empty tools allowlist before spawn", async () => {
 	assert.deepEqual(h.children, []);
 });
 
+/** Tools omitted from parsed agent frontmatter are rejected before spawn. */
 test("AgentRunner rejects tools omitted from parsed agent frontmatter before spawn", async () => {
 	const agent = parseAgentDefinition("Instructions for this agent.", "/agents/no-tools.md", "global");
 	assert.ok(!("error" in agent));
@@ -780,6 +782,7 @@ test("AgentRunner rejects tools omitted from parsed agent frontmatter before spa
 	assert.deepEqual(h.children, []);
 });
 
+/** A rejected empty allowlist does not block the next valid task. */
 test("a rejected empty allowlist does not block a following valid task", async () => {
 	const h = harness({ maxConcurrency: 1 });
 	const rejected = h.runner.run(request({ agent: { ...explorer, tools: [] } }));
@@ -794,6 +797,7 @@ test("a rejected empty allowlist does not block a following valid task", async (
 	h.runner.cancel(valid.id);
 });
 
+/** An allowlist with no recognizable tool name fails before spawn (#1690 silent drops). */
 test("AgentRunner rejects an allowlist without any recognizable tool name before spawn", async () => {
 	const h = harness();
 	const task = h.runner.run(request({ agent: { ...explorer, tools: ["reed", "grep2"] } }));
@@ -804,6 +808,7 @@ test("AgentRunner rejects an allowlist without any recognizable tool name before
 	assert.deepEqual(h.children, []);
 });
 
+/** A namespaced name alone counts as recognizable and reaches spawn. */
 test("a namespaced tool name alone counts as recognizable and reaches spawn", async () => {
 	const h = harness();
 	const task = h.runner.run(request({ agent: { ...explorer, tools: ["custom_server_tool"] } }));
@@ -813,6 +818,7 @@ test("a namespaced tool name alone counts as recognizable and reaches spawn", as
 	h.runner.cancel(task.id);
 });
 
+/** Known single-word builtins stay recognizable without a namespace. */
 test("known single-word tools stay recognizable without a namespace", async () => {
 	const h = harness();
 	const task = h.runner.run(request({ agent: { ...explorer, tools: ["codegraph"] } }));
@@ -823,6 +829,7 @@ test("known single-word tools stay recognizable without a namespace", async () =
 
 // One recognizable name is enough: a later typo still launches, and the child
 // reports the dropped name itself (#1690) instead of the launch failing.
+/** One recognizable name is enough for a mixed allowlist. */
 test("one recognizable name is enough for a mixed allowlist", async () => {
 	const h = harness();
 	const task = h.runner.run(request({ agent: { ...explorer, tools: ["read", "grep2"] } }));
@@ -834,6 +841,7 @@ test("one recognizable name is enough for a mixed allowlist", async () => {
 
 // #1690: the child compares this list with its own tools and reports the
 // names Pi dropped, so it must be exactly what --tools carries.
+/** A non-empty child gets its exact `--tools` list, never a stale one. */
 test("AgentRunner gives a non-empty child its exact --tools list and never forwards a stale one", async () => {
 	const h = harness();
 	const task = h.runner.run(request({ env: { [REQUESTED_TOOLS_ENV]: "stale" } }));

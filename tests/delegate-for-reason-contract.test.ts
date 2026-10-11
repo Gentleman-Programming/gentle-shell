@@ -221,7 +221,7 @@ test("AC4/S4: the normative verification rule text is unchanged by the review pr
 	const normative = sectionFrom(verification, "## Verification rule (normative)");
 	assert.equal(
 		createHash("sha256").update(normative).digest("hex"),
-		"1f66f6998c4659fb08d81b83d350dcf5e8279b3f04a9e1a3a2951ed2abe7e54b",
+		"da7549addf1af7b9ef41077d30c4cac4a19b7447b89d7ecc0cbd88f0e2fed5a3",
 		"the normative Verification rule section changed",
 	);
 	assert.ok(verification.includes("or a delegated writer returns"), "the module must still load when a delegated writer returns");

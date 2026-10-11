@@ -13,7 +13,17 @@ const USAGE = "Use /gentle:yolo enable|disable|status. State unchanged.";
 const STALE_MENU = "YOLO unchanged — the session changed while the menu was open.";
 const menuTitle = (state: "ON" | "OFF") => `🚀 Gentle YOLO 🔥 — full speed, destructive actions still ask (current: ${state})`;
 
-export function harness(env: NodeJS.ProcessEnv = {}) {
+// An empty env would resolve the developer's real ~/.pi/gentle-ai and inherit its persisted mode default.
+const isolatedConfigHomes: string[] = [];
+process.once("exit", () => { for (const home of isolatedConfigHomes) rmSync(home, { recursive: true, force: true }); });
+function isolatedConfigHome(): string {
+	const home = mkdtempSync(join(tmpdir(), "yolo-config-"));
+	isolatedConfigHomes.push(home);
+	return home;
+}
+
+export function harness(overrides: NodeJS.ProcessEnv = {}) {
+	const env: NodeJS.ProcessEnv = { GENTLE_PI_CONFIG_HOME: isolatedConfigHome(), ...overrides };
 	const commands = new Map<string, { handler: (args: string, ctx: ExtensionContext) => Promise<void> }>();
 	const handlers = new Map<string, Array<(event: unknown, ctx: ExtensionContext) => unknown>>();
 	const tools: string[] = [];

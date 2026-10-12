@@ -1081,9 +1081,14 @@ let rddStatusUnavailableWarned = false;
 const HOME_REPOSITORY_WARNING = "Gentle Shell is running inside a Git repository rooted at your home folder (or a broad user folder). Every Git operation scans that whole tree, which makes startup and reviews very slow. Open Gentle Shell inside a project folder, or remove the stray .git if you did not create it on purpose.";
 const homeRepositoryWarnings = new Set<string>();
 
+// An unresolvable HOME or a resolver failure is unknown, not a match: the
+// bootstrap guard fails closed there, but startup must not warn or skip work.
 function homeRootedRepository(cwd: string): string | undefined {
-	const root = resolveSessionWorktree(cwd, cwd)?.root;
-	return root !== undefined && isHomeOrBroadUserDirectory(root) ? root : undefined;
+	try {
+		const home = realpathSync.native(homedir());
+		const root = resolveSessionWorktree(cwd, cwd)?.root;
+		return root !== undefined && isHomeOrBroadUserDirectory(root, { home }) ? root : undefined;
+	} catch { return undefined; }
 }
 
 /**

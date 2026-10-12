@@ -122,6 +122,21 @@ test("a normal project repository keeps negotiating and its startup status serve
 	assert.match(event.systemPromptOptions.appendSystemPrompt, /Receipt-driven development: on/);
 });
 
+// S7 CR3: an unresolvable HOME is unknown, not a home-rooted repository. The
+// bootstrap guard still fails closed there; the startup warning does not.
+test("an unresolvable HOME neither warns nor skips the startup review negotiation", async (t) => {
+	const { cwd, environment } = fixture(t, false);
+	const missingHome = join(cwd, "..", "..", "missing-home");
+	process.env.HOME = missingHome;
+	process.env.USERPROFILE = missingHome;
+	const { cli, calls } = nativeCli();
+	const { handlers, notices, ctx } = start(cli, cwd, { ...environment, HOME: missingHome, USERPROFILE: missingHome });
+	await handlers.get("session_start")!({}, ctx);
+	await __testing.startupNegotiationSettled();
+	assert.deepEqual(homeWarning(notices), []);
+	assert.equal(calls.target, 1, "startup still negotiates the review target");
+});
+
 // S5: Pi awaits session_start handlers one after another, so the native review
 // negotiation (two gentle-ai spawns) no longer holds startup. It runs after
 // session_start returns, bounded by a signal, and the first prompt still reuses

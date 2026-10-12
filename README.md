@@ -142,13 +142,13 @@ Reviewer completions inherit Pi's effective `transport` preference when an ackno
 
 ---
 
-### Gentle Changes — Every edit, attributed and reviewable
+### Gentle Changes — What your session left uncommitted
 
-<img width="100%" src="docs/assets/features/changes-view.png" alt="Gentle Changes viewer: worktree accordion with per-file status on the left, the captured diff with line counts on the right, and a keyboard hint row">
+<img width="100%" src="docs/assets/features/changes-view.png" alt="Gentle Changes viewer: worktree accordion with per-file status on the left, the diff against HEAD with line counts on the right, and a keyboard hint row">
 
-You should not have to run `git status` to find out what your agent did. Gentle Changes captures the successful write and edit tool calls from the current session and its owned subagents — no repository scans, no background polling — and shows them in a two-pane viewer with per-file line counts and an honest **diff unavailable** when an external edit breaks continuity. Coverage stops at those tools, so shell commands and failed runs leave no row, and a missing entry never proves a clean tree. `alt+g` opens it; `o` drops the real file into your editor.
+You should not have to run `git status` in every worktree to find out what your agents left behind. Gentle Changes shows the current Git state — working tree against HEAD, untracked files included — of your session's repository plus every worktree its subagents used, one group per root. Commit and it disappears; remove a worktree and its group goes with it. Nothing runs at startup; `alt+g` opens a two-pane viewer with per-file line counts and lazy diffs, and `o` drops the real file into your editor.
 
-**[Docs →](docs/gentle-shell.md#browse-captured-diffs)**
+**[Docs →](docs/gentle-shell.md#browse-changes)**
 
 ---
 

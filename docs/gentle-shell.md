@@ -10,7 +10,7 @@ Source map: [shell extension](../extensions/gentle-shell.ts), [shell bar](../lib
 
 The [v2.6.0 release](https://github.com/Gentleman-Programming/gentle-pi/releases/tag/v2.6.0) makes the workspace state more durable and inspectable:
 
-- Registered worktrees survive reloads. `/gentle:changes` groups each dirty root and presents status, line counts, and lazy diffs without conflating identical paths from different worktrees.
+- Registered worktrees survive reloads. `/gentle:changes` groups each dirty root (the session's repository and its subagents' worktrees) and shows Git status, line counts, and lazy diffs against HEAD without conflating identical paths from different worktrees.
 - Fullscreen pointer navigation and the responsive sidebar keep changes, agents, and TODO usable at changing terminal widths; cached frames avoid redrawing inactive sidebar content while live status still updates.
 - The Agents List and Details views preserve the orchestrator/session hierarchy and completion, abort, and lost-exit history. Parent-child queries and notifications have an explicit handoff path, while model, effort, and usage stay observable per task.
 - Named `/gentle:profiles` atomically route the orchestrator separately from packaged and review roles; see the [technical reference](readme-reference.md#agent-model-profiles) for the profile model.
@@ -34,7 +34,7 @@ At 140 columns or wider, fullscreen defaults to a live header over a transcript-
 - The Status card carries Project (cwd, branch, session name, active profile), Changes, and Integrations (other extensions' statuses); its live digest detects changes without requiring an event. Model, effort, context, cost, and the per-model usage table live in the header instead — the header ticks every frame, so duplicating them in a card would just make that card repaint every frame too.
 - Gentle Agents is not part of the rail in any mode: its one card stays above the editor, where it already lived, with fixed right-aligned columns for `model · effort`, tokens, cost, and elapsed, each sized to the widest value among the shown tasks — so the numbers line up vertically even when one row's values are much shorter than another's. A queued task fills only the elapsed column with the word `queued`, leaving the other columns blank rather than overwriting the row.
 - The sidebar reuses its last frame until something it paints changes, so silent frames stay cheap; a per-section cache means one card's changing digest (or the header's) never forces an unrelated card to redraw.
-- Header placement is configurable. Above input, the float header has a full-width background, painted padding above and below its content, and a transparent `▔` bottom edge. Below input, the float footer groups captured Changes (when present), header data, and locally owned integration statuses under one upper edge; it never duplicates statuses owned by the rail.
+- Header placement is configurable. Above input, the float header has a full-width background, painted padding above and below its content, and a transparent `▔` bottom edge. Below input, the float footer groups Changes (when the session's roots have uncommitted work), header data, and locally owned integration statuses under one upper edge; it never duplicates statuses owned by the rail.
 - Below 140 columns, fullscreen has no sidebar. A configured top header owns the narrow status surface; otherwise the bottom bar owns it, unless Status is hidden. Regular mode keeps the compact one-line bottom bar and the above-editor Agents widget, without a fullscreen header or sidebar.
 
 The regular-mode compact bar replaces pi's three-line footer with a single line of segments:
@@ -62,7 +62,7 @@ The prompt follows the selected card style. `neon` keeps pi's editor in its roun
 - With Vim editing off, the prompt selects text natively: `shift+home` / `shift+end` select to the line edge and `alt+e` selects the whole draft; backspace, delete, a printable key or a paste replaces the selection in one undoable edit. `alt+a` also selects all, but only when no extension shortcut claims it: by default it opens Gentle Agents. A registered extension shortcut always wins over these selection keys.
 - If another extension already installed a custom editor, Gentle Shell leaves it alone.
 
-Changes shows **captured write/edit operations from this agent session and its owned subagents**. It does not scan the repository on startup, read all untracked files, or poll live files in the background. Fullscreen, the sidebar, and mouse interaction are unchanged.
+Changes shows the **current Git state** — working tree against HEAD, untracked files included — of the session's repository and of every worktree or repository its subagents used that still exists. Nothing is scanned at startup; the list fills at the first turn end or when the panel opens, then refreshes at each turn end and while the panel is open. Fullscreen, the sidebar, and mouse interaction are unchanged.
 
 ```text
 ✎ 3 files · +42 −7 · extensions/gentle-shell.ts, lib/shell-bar.ts, tests/x.test.ts · /gentle:changes
@@ -70,32 +70,27 @@ Changes shows **captured write/edit operations from this agent session and its o
 
 ### What appears in Changes
 
-- A worktree appears only after a captured successful mutation. Reading a file, opening a directory, registering a worktree, or launching a child is not mutation evidence.
-- Diffs compare the content observed before the agent's first captured operation with its latest captured result, not with HEAD. Consecutive agent edits combine; an agent revert removes its net change.
-- Edits from your editor or other sessions do not update these captured diffs. If an external or unobserved edit breaks continuity before the next agent operation on the same file, the file is marked **diff unavailable**, rather than mixing ownership.
-- Ordinary attribution accepts only worktrees in the coordinating session's Git clone. A separately authorized foreign child can contribute target-bound Changes without registering its repository as a same-clone worktree. Child evidence requires an owned, successfully spawned task, paired successful write/edit events, and matching canonical target and live grant; model claims alone are not evidence.
-- A changed file's worktree is resolved from its own directory upward (`git rev-parse --show-toplevel` starting there, never from an ancestor's cwd), so a repository nested inside another — a project scaffolded inside a personal workspace clone, say — is always attributed to its own, inner repository, never the outer one.
-- When changes span more than one worktree, each tree header shows that root's own branch name, `no commits yet` for an unborn branch, or `detached` only for a real detached HEAD. The label is read from Git's HEAD once per root while the overlay is open (`symbolic-ref` and `rev-parse --verify`); the overlay still never runs `status`, `diff` or a worktree scan on your behalf.
-- **Coverage is deliberately limited to write/edit tools.** Shell commands, custom mutation tools, failed/interrupted outcomes and children without the capture extension provide no attributed diff. A missing row does not mean the repository is clean or that no other changes occurred.
+- One group per root: the session cwd's repository, worktrees registered with `session_worktree_register` or launched for subagents, and independent repositories of authorized foreign subagents. Captured write/edit evidence only tells Changes which roots exist; Git decides which files are listed.
+- Committed work disappears because Git no longer reports it; a removed worktree disappears because its directory is gone; a root whose Git fails or times out is omitted while the others stay.
+- Each group header shows that root's branch, `no commits yet` for an unborn branch, or `detached` for a real detached HEAD.
+- Edits from your editor, shell commands, or other tools appear too: Changes reflects Git, not attribution. Ignore noise the same way you would for `git status`, with `.gitignore`.
 
 ### Bounds and session lifetime
 
-Capture reads only the named target, up to 64 KiB and 2,000 text lines. Binary, oversized, nonregular and unverifiable snapshots show unavailable counts, never fabricated zero-count proof. At most 256 operation identities and 4 MiB of serialized evidence are retained per session; reaching the limit produces a warning.
+Changes lists every changed file without a count limit. One selected diff is bounded at 1 MiB or 20,000 lines; beyond that the panel shows "Diff too large — press o to open in editor."
 
-Snapshots are stored locally in Pi custom entries (`gentle-pi.session-change/v1`), including bounded before/after source text. Exit/resume and reload restore captures only for the exact same session UUID. New sessions and forks do not inherit attribution from another UUID. Ephemeral `--no-session` runs do not persist after exit. Capturing remains active in headless children and when the visual shell is disabled.
+Captured evidence (`gentle-pi.session-change/v1`) is still stored for session statistics and root discovery, capped at 256 operations and 4 MiB per session, without affecting the Changes list. Reload and resume read the same state from Git; new sessions and forks do not inherit another session's worktrees.
 
-The separate `session_worktree_register` tool still registers canonical same-clone roots for coordination, but registration alone never adds files to Changes. Existing `gentle-pi.session-worktree/v1` entries do not establish file-level attribution.
+### Browse changes
 
-### Browse captured diffs
-
-`/gentle:changes` or `alt+g` opens the two-pane viewer. Worktrees are accordion groups on the left; selecting a file displays its captured diff on the right.
+`/gentle:changes` or `alt+g` opens the two-pane viewer. Worktrees are accordion groups on the left; each file row leads with its name, then its line counts and its directory. Selecting a file shows its full path on the first row of the right pane (clipped from the left so the name stays visible) and its diff against HEAD below it; untracked files show their full content.
 
 - `j`/`k` or arrows navigate. On a group, Enter, Space or Right expands it; Left returns to its parent or collapses it. `ctrl+j/k` or Page Up/Down scroll the diff; Escape or `q` closes.
 - Fullscreen left-click selects files; mouse wheels scroll the file list and diff independently. Hovering an unselected row (worktree or file, in either pane's list) paints it in the same shared hover role every clickable surface in the shell uses; it never opens or selects the file, and never overrides the already-selected row's own role.
-- Opening, pressing `r`, and the overlay's refresh cadence consult only the captured session model. They never rescan Git or load the current file contents. Same-line-count edits invalidate the diff preview by content revision.
-- On a file, `o` or Enter opens the actual current file in `$VISUAL` or `$EDITOR`, with its worktree as cwd. Edits made there are external and are not attributed to the agent.
-- `GENTLE_PI_SHELL_CHANGES_KEY` rebinds the shortcut; `off` disables it. `GENTLE_PI_SHELL_CHANGES_POLL_MS` controls only the open overlay's in-memory refresh. `GENTLE_PI_SHELL_CHANGES_WATCH_MS` no longer enables filesystem polling.
-- No captured changes means no widget and an informational notice; it does not assert that the working tree is clean.
+- Opening, pressing `r`, and the overlay's refresh cadence re-read each root's Git status; a same-line-count edit reloads the open diff.
+- On a file, `o` or Enter opens the actual current file in `$VISUAL` or `$EDITOR`, with its worktree as cwd.
+- `GENTLE_PI_SHELL_CHANGES_KEY` rebinds the shortcut; `off` disables it. `GENTLE_PI_SHELL_CHANGES_POLL_MS` controls how often the open overlay re-reads Git. `GENTLE_PI_SHELL_CHANGES_WATCH_MS` no longer enables filesystem polling.
+- No uncommitted changes in the session's roots means no widget and an informational notice.
 
 ### Command palette
 

@@ -5521,14 +5521,14 @@ test("/gentle:commands shows only curated, registered commands, grouped, by thei
 	assert.match(rendered, /Skills/);
 	assert.doesNotMatch(rendered, /\bSDD\b/, "the SDD group has no registered commands and must not appear");
 	assert.match(rendered, /Assign models and effort/);
-	assert.match(rendered, /Browse captured changes/);
+	assert.match(rendered, /Browse changes/);
 	assert.match(rendered, /Gentle AI status/);
 	assert.match(rendered, /Refresh skill registry/);
 	assert.doesNotMatch(rendered, /gentle:models|gentle:changes|gentle:status|skill-registry:refresh/, "raw command names must not leak; only labels are shown");
 	assert.doesNotMatch(rendered, /gentle:not-in-catalog/);
 	assert.doesNotMatch(rendered, /skill:foo/);
-	const changesLine = lines.find((line) => line.includes("Browse captured changes"));
-	assert.match(changesLine ?? "", /alt\+g/, "expected the configured alt+g shortcut hint next to Browse captured changes");
+	const changesLine = lines.find((line) => line.includes("Browse changes"));
+	assert.match(changesLine ?? "", /alt\+g/, "expected the configured alt+g shortcut hint next to Browse changes");
 	ui.overlayView!.handleInput("\x1b");
 	await opened;
 });

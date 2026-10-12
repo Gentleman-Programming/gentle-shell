@@ -9,6 +9,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import {
 	CHANGE_STATUS,
 	ChangesTracker,
+	FILE_WORK_CONCURRENCY,
 	WorktreeChangesTracker,
 	UNKNOWN_BRANCH,
 	foreignRootBranch,
@@ -201,6 +202,7 @@ test("registered roots hide clean and missing worktrees while metadata never adm
 	assert.equal(tracker.model.files.length, 2, "identical filenames in different roots remain distinct");
 	assert.equal(new Set(tracker.model.files.map((file) => file.path)).size, 2);
 	assert.ok(!calls.includes("/pruned") && !calls.includes("/bare"));
+	assert.deepEqual(tracker.failedRoots, ["/gone"], "a registered root Git cannot read is a failure, not a clean root");
 	roots += "worktree /new\0branch refs/heads/new\0\0";
 	registered.push("/new");
 	await tracker.refresh();
@@ -210,6 +212,29 @@ test("registered roots hide clean and missing worktrees while metadata never adm
 	await tracker.refresh();
 	assert.deepEqual(tracker.worktrees, []);
 	assert.deepEqual(tracker.model, emptyChanges());
+});
+
+test("a root whose Git status fails or rejects is kept apart from clean roots", async () => {
+	let broken = true;
+	const tracker = new WorktreeChangesTracker(async () => ({ stdout: "", code: 0 }), (root) => async (args) => {
+		if (broken && root === "/rejects") throw new Error("git timed out");
+		if (broken && root === "/fails" && args[0] === "status") return { stdout: "", code: 128 };
+		return { stdout: args[0] === "status" && root === "/dirty" ? "?? a.ts\0" : "", code: 0 };
+	}, undefined, () => ["/dirty", "/clean", "/fails", "/rejects"]);
+	await tracker.start();
+	assert.deepEqual(tracker.worktrees.map((tree) => tree.root), ["/dirty"]);
+	assert.deepEqual([...tracker.failedRoots].sort(), ["/fails", "/rejects"], "a failed scan is not a clean root");
+	assert.equal(tracker.scannedRootCount, 4);
+	broken = false;
+	await tracker.refresh();
+	assert.deepEqual(tracker.failedRoots, [], "a later successful scan clears the failure");
+});
+
+test("no registered root is neither a failure nor a scan", async () => {
+	const tracker = new WorktreeChangesTracker(async () => { throw new Error("no Git expected"); }, () => async () => { throw new Error("no Git expected"); });
+	await tracker.start();
+	assert.deepEqual(tracker.failedRoots, []);
+	assert.equal(tracker.scannedRootCount, 0);
 });
 
 test("only registered worktrees are scanned, with whole preexisting and untracked contents", async () => {
@@ -468,4 +493,42 @@ test("ChangesTracker counts the lines of untracked files, which git numstat leav
 	assert.deepEqual(model.files, [file("empty.md", 0, 0, CHANGE_STATUS.UNTRACKED), file("notes.md", 3, 0, CHANGE_STATUS.UNTRACKED)]);
 	assert.equal(model.added, 3);
 	assert.deepEqual(counted, ["notes.md", "empty.md"]);
+});
+
+test("ChangesTracker counts lines and reads revisions for every file with bounded concurrency", async () => {
+	const paths = Array.from({ length: 30 }, (_, index) => `file-${String(index).padStart(2, "0")}.ts`);
+	const porcelain = [" M tracked.ts\0", ...paths.map((path) => `?? ${path}\0`)].join("");
+	const git = async (args: string[]) => ({ stdout: args[0] === "status" ? porcelain : "4\t1\ttracked.ts\n", code: 0 });
+	const pending = new Map<string, number>();
+	const counted: string[] = [];
+	let maxFiles = 0;
+	let overlapped = false;
+	// Every per-file call stays pending for a moment, so concurrent work overlaps.
+	const work = async <T>(path: string, result: () => T): Promise<T> => {
+		pending.set(path, (pending.get(path) ?? 0) + 1);
+		if (pending.get(path)! > 1) overlapped = true;
+		maxFiles = Math.max(maxFiles, pending.size);
+		await new Promise((resolve) => setTimeout(resolve, 2));
+		const left = pending.get(path)! - 1;
+		if (left === 0) pending.delete(path); else pending.set(path, left);
+		return result();
+	};
+	const tracker = new ChangesTracker(git, (path) => work(path, () => {
+		counted.push(path);
+		if (path === "file-07.ts") throw new Error("unreadable");
+		return 2;
+	}), (path) => work(path, () => {
+		if (path === "file-07.ts") throw new Error("unreadable");
+		return `rev:${path}`;
+	}));
+	await tracker.start();
+	const files = new Map(tracker.model.files.map((entry) => [entry.path, entry]));
+	assert.equal(maxFiles, FILE_WORK_CONCURRENCY, "files run concurrently up to the limit, never past it");
+	assert.equal(FILE_WORK_CONCURRENCY, 8);
+	assert.ok(overlapped, "a file's line count and revision lookup run together");
+	assert.deepEqual([...counted].sort(), paths, "every untracked file is counted once; tracked files keep numstat counts");
+	assert.equal(files.size, 31);
+	assert.deepEqual(files.get("tracked.ts"), { ...file("tracked.ts", 4, 1), diffRevision: "rev:tracked.ts" });
+	assert.deepEqual(files.get("file-07.ts"), file("file-07.ts", 0, 0, CHANGE_STATUS.UNTRACKED), "a failing lookup keeps its fallback");
+	for (const path of paths.filter((path) => path !== "file-07.ts")) assert.deepEqual(files.get(path), { ...file(path, 2, 0, CHANGE_STATUS.UNTRACKED), diffRevision: `rev:${path}` });
 });

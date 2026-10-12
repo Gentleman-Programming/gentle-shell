@@ -2057,10 +2057,16 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		const model = await tracker.refresh();
 		if (changes !== tracker) return;
 		applyChanges(ctx, model);
+		// A failed root scan is unknown, never clean: say so whenever one failed.
+		const failed = tracker.failedRoots.length;
+		const roots = tracker.scannedRootCount;
 		if (model.files.length === 0) {
-			ctx.ui.notify("No uncommitted changes in this session's repository or its subagents' worktrees.", "info");
+			if (failed > 0 && failed === roots) ctx.ui.notify(`Could not read Git status for ${failed} ${failed === 1 ? "root" : "roots"}; uncommitted changes are unknown.`, "error");
+			else if (failed > 0) ctx.ui.notify(`No uncommitted changes in the roots Git could read; Git status failed for ${failed} of ${roots} roots.`, "warning");
+			else ctx.ui.notify("No uncommitted changes in this session's repository or its subagents' worktrees.", "info");
 			return;
 		}
+		if (failed > 0) ctx.ui.notify(`Git status failed for ${failed} ${failed === 1 ? "root" : "roots"}; ${failed === 1 ? "its" : "their"} changes are not listed.`, "warning");
 		await showChangesOverlay(ctx, { loadDiff: (root, file) => loadFileDiff(deps.gitRunner(root, DIFF_MAX_BYTES), file), worktrees: () => tracker.worktrees, refresh: () => tracker.refresh(), apply: applyChanges, pollMs: changesPollMs(env) });
 	};
 	pi.registerCommand(CHANGES_COMMAND_NAME, {

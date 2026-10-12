@@ -21,12 +21,12 @@ function fixture(entries: any[] = [], options: { root?: string; sessionId?: stri
 		events: { on: (key, fn) => { listeners.set(key,[...(listeners.get(key) ?? []), fn]); return () => {}; }, emit: (key,data) => listeners.get(key)?.forEach(fn=>fn(data)) },
 		appendEntry: (customType,data) => entries.push({type:"custom",customType,data}), registerTool() {}, registerShortcut() {}, registerMessageRenderer() {},
 		registerCommand: (key, registration) => commands.set(key,registration) };
-	const notices: string[] = [];
+	const notices: string[] = [], levels: string[] = [];
 	const root = options.root ?? "/repo";
 	const sessionId = options.sessionId ?? "session";
 	const overlay: { view?: any; close?: () => void } = {};
 	const ctx: any = { hasUI:true, cwd:root, sessionManager:{getSessionId:()=>sessionId,getEntries:()=>entries},
-		ui: { setFooter() {}, getEditorComponent:()=>({}), setWorkingVisible() {}, setWidget:(key,value)=>value===undefined?widgets.delete(key):widgets.set(key,value), notify:(text)=>notices.push(text),
+		ui: { setFooter() {}, getEditorComponent:()=>({}), setWorkingVisible() {}, setWidget:(key,value)=>value===undefined?widgets.delete(key):widgets.set(key,value), notify:(text,level)=>{ notices.push(text); levels.push(level); },
 			custom:(factory:any)=>new Promise(resolve=>{ overlay.close=()=>resolve(null); overlay.view=factory({terminal:{rows:40,columns:200},requestRender(){}},{fg:(_c:string,t:string)=>t,bold:(t:string)=>t},{},resolve); }) } };
 	shell(pi,{GENTLE_PI_SHELL_CHANGES_POLL_MS:String(options.pollMs ?? 60_000)}, {resolveWorktree:()=>({root,commonDir:root+"/.git"}),devBinary:()=>undefined,
 		gitRunner:(cwd)=>async(args)=>{gitCalls++; return options.gitRunner ? options.gitRunner(cwd)(args) : await new Promise<any>(()=>{});} });
@@ -43,7 +43,7 @@ function fixture(entries: any[] = [], options: { root?: string; sessionId?: stri
 		overlay.close!(); await opened;
 		return {text,trees,files:trees.flatMap(tree=>tree.files)};
 	};
-	return {pi,ctx,entries,notices,commands,widgets,fire,panel,overlay,gitCalls:()=>gitCalls};
+	return {pi,ctx,entries,notices,levels,commands,widgets,fire,panel,overlay,gitCalls:()=>gitCalls};
 }
 
 function tempRepo(t: { after(fn: () => void): void }, name = "gentle-changes-") {
@@ -104,6 +104,7 @@ test("a subagent worktree is its own group and disappears once the worktree is r
 	await f.fire("agent_end"); await settle();
 	const after = await f.panel();
 	assert.deepEqual(after!.trees.map(tree => tree.root), [repo.root], "a removed worktree leaves without error");
+	assert.doesNotMatch(f.notices.join("\n"), /Git status failed|Could not read/, "a removed worktree is not a failed scan");
 	await f.fire("session_shutdown");
 });
 
@@ -152,6 +153,47 @@ test("a failing Git root is omitted while the other roots stay listed", async (t
 	await f.fire("agent_end"); await settle();
 	const panel = await f.panel();
 	assert.deepEqual(panel!.trees.map(tree => [tree.root, tree.files]), [[repo.root, ["file.ts"]]]);
+	assert.match(f.notices.join("\n"), /Git status failed for 1 root\b/, "the panel reports the failed root");
+	await f.fire("session_shutdown");
+});
+
+// A root whose `git status` exits nonzero is a failed scan, never a clean
+// root: when it is the only root the panel must not claim a clean tree.
+const statusFailsAt = (broken: string): Runner => (cwd) => cwd === broken ? async (args) => args[0] === "status" ? { stdout: "", code: 128 } : shellGitRunner(cwd)(args) : shellGitRunner(cwd);
+
+test("when every scanned root fails, Changes reports an error instead of a clean tree", async (t) => {
+	const repo = tempRepo(t);
+	writeFileSync(join(repo.root, "file.ts"), "agent\n");
+	const f = fixture([sessionRoot(repo.root)], { root: repo.root, gitRunner: statusFailsAt(repo.root) });
+	await f.fire("session_start");
+	assert.equal(await f.panel(), undefined);
+	assert.doesNotMatch(f.notices.join("\n"), /No uncommitted changes/);
+	assert.match(f.notices.join("\n"), /Could not read Git status for 1 root\b/);
+	assert.equal(f.levels.at(-1), "error");
+	await f.fire("session_shutdown");
+});
+
+test("a clean root next to a failed one reports the failure count, not a plain clean tree", async (t) => {
+	const repo = tempRepo(t);
+	const broken = tempRepo(t, "gentle-changes-broken-");
+	const f = fixture([sessionRoot(repo.root), sessionRoot(broken.root, "explicit")], { root: repo.root, gitRunner: statusFailsAt(broken.root) });
+	await f.fire("session_start");
+	assert.equal(await f.panel(), undefined);
+	assert.match(f.notices.join("\n"), /Git status failed for 1 of 2 roots/);
+	assert.equal(f.levels.at(-1), "warning");
+	await f.fire("session_shutdown");
+});
+
+test("a dirty root next to a failed one opens the panel and reports the failure count", async (t) => {
+	const repo = tempRepo(t);
+	const broken = tempRepo(t, "gentle-changes-broken-");
+	writeFileSync(join(repo.root, "file.ts"), "agent\n");
+	writeFileSync(join(broken.root, "file.ts"), "agent\n");
+	const f = fixture([sessionRoot(repo.root), sessionRoot(broken.root, "explicit")], { root: repo.root, gitRunner: statusFailsAt(broken.root) });
+	await f.fire("session_start");
+	const panel = await f.panel();
+	assert.deepEqual(panel!.trees.map(tree => [tree.root, tree.files]), [[repo.root, ["file.ts"]]]);
+	assert.match(f.notices.join("\n"), /Git status failed for 1 root\b/);
 	await f.fire("session_shutdown");
 });
 
@@ -210,5 +252,8 @@ test("a repository rooted at HOME is never scanned by Changes", async (t) => {
 	await f.fire("agent_end"); await settle();
 	assert.equal(f.gitCalls(), 0, "no Git runs against a home-rooted repository");
 	assert.equal(f.widgets.has("gentle-shell-changes"), false);
+	assert.equal(await f.panel(), undefined);
+	assert.equal(f.gitCalls(), 0);
+	assert.doesNotMatch(f.notices.join("\n"), /Git status failed|Could not read/, "a filtered home root is not a failed scan");
 	await f.fire("session_shutdown");
 });

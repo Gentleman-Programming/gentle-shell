@@ -44,7 +44,8 @@ test("existing, unreadable or foreign stores without matching provenance are dis
 	for (const store of ["present", "unknown"] as const) {
 		const result = classify({ store });
 		assert.equal(result.policy, "disabled", store);
-		assert.match(result.notice!, /Back up.*update.*restart.*recheck/is);
+		assert.match(result.notice!, /could not verify.*compatibility.*Back up/is);
+		assert.doesNotMatch(result.notice!, /update Engram and restart/i);
 	}
 	assert.equal(classify({ store: "present", endpoint: listening(false, ID) }).policy, "disabled");
 });
@@ -274,8 +275,10 @@ test("the guard fails non-zero, reports the notice and leaves Engram data byte-i
 		assert.match(result.stderr, /Back up first\. \$\(touch injected\)/);
 	}
 	const fallback = spawnSync(GUARD, ["instance-id"], { env: clean({ HOME: root }), encoding: "utf8" });
-	assert.notEqual(fallback.status, 0);
-	assert.match(fallback.stderr, /Engram memory is disabled/);
+	assert.equal(fallback.status, 78);
+	assert.equal(fallback.stdout, "");
+	assert.match(fallback.stderr, /could not verify.*compatibility/i);
+	assert.doesNotMatch(fallback.stderr, /update Engram, restart/i);
 	assert.equal(dataSnapshot(data), before);
 	assert.deepEqual(readdirSync(root).sort(), [".engram"]);
 });

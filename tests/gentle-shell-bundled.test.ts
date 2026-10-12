@@ -457,8 +457,18 @@ test("provenance mismatches disable memory behind the guard: instance, core dige
 		assert.equal(result.status, 0, `${name}: ${result.stderr}`);
 		const seen = lastLaunch(result);
 		assert.deepEqual([seen.env.ENGRAM_STARTUP_POLICY, seen.env.ENGRAM_BIN], ["disabled", prefix.guard], name);
-		assert.match(result.stderr, /memory disabled.*Back up.*update.*restart.*recheck/s, name);
+		assert.match(result.stderr, /memory disabled.*could not verify.*compatibility.*Back up/s, name);
 	}
+});
+
+test("public help explains compatibility evidence without promising update recovery", { skip: posixHost }, (t) => {
+	const prefix = bundledPrefix(t);
+	const result = prefix.run(["--help"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(result.stderr, "");
+	assert.match(result.stdout, /Matching versions or updating alone do not prove compatibility/);
+	assert.match(result.stdout, /\/compatibility/);
+	assert.doesNotMatch(result.stdout, /update Engram, restart/);
 });
 
 test("a foreign pre-existing store stays disabled and never receives provenance", { skip: posixHost }, (t) => {
@@ -634,7 +644,8 @@ test("setup with a foreign existing store runs the installer like the baseline, 
 	assert.equal(setup.status, 0, setup.stderr);
 	assert.equal(installer.runs(), 1);
 	assert.equal(existsSync(prefix.engram), true);
-	assert.match(setup.stderr, /memory disabled.*Back up.*update.*restart.*recheck/s);
+	assert.match(setup.stderr, /memory disabled.*could not verify.*compatibility.*Back up/s);
+	assert.doesNotMatch(setup.stderr, /update Engram and restart/);
 	assert.doesNotMatch(setup.stderr, /deferred/);
 	const guarded = prefix.run([]);
 	assert.equal(guarded.status, 0, guarded.stderr);

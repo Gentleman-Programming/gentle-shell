@@ -1782,7 +1782,7 @@ async function main() {
 	const args = parseLauncherArgs(process.argv.slice(2));
 	if (args.error !== undefined) fail(`${args.error}\nRun 'gentle-shell --help' for usage.`, 2);
 	if (args.help) {
-		process.stdout.write(`${helpText()}\nBundled Engram safety: memory opens only a fresh, verified or Shell-provisioned store; otherwise ENGRAM_BIN\nis Shell's guard and memory stays off. Back up data, update Engram, restart its server and Shell, then recheck.\nAn explicit ENGRAM_BIN or ENGRAM_URL is kept and bypasses the guard.\n`);
+		process.stdout.write(`${helpText()}\nBundled Engram safety: memory opens only a fresh, verified or Shell-provisioned store; otherwise ENGRAM_BIN\nis Shell's guard and memory stays off. Matching versions or updating alone do not prove compatibility.\nReuse requires a server with verified /compatibility evidence or matching Shell-provisioned store identity.\nBack up existing data before manual changes; do not delete it or bypass the safety check.\nShell rechecks on every launch and remains usable without memory.\nAn explicit ENGRAM_BIN or ENGRAM_URL is kept and bypasses the guard.\n`);
 		process.exit(0);
 	}
 	if (args.command === "home") {

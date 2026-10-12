@@ -213,7 +213,7 @@ export function bundledPi(install: BundledInstall, input: { platform: string; fs
 // memory is allowed locally; otherwise the Shell-owned guard, so no provider,
 // whatever loaded it, runs an Engram binary against an unverified store.
 export const ENGRAM_COMPANION_SOURCE = "npm:gentle-engram@0.4.2";
-export const ENGRAM_RECOVERY_NOTICE = "Engram memory disabled: the existing Engram data's compatibility is unknown. Back up your existing Engram data, update Engram and restart its server, then restart Shell to recheck memory safety (it rechecks on every launch). Shell remains usable without memory.";
+export const ENGRAM_RECOVERY_NOTICE = "Engram memory disabled: Shell could not verify safe store or server reuse. Matching versions or updating alone do not prove compatibility. Reuse requires a server with verified /compatibility evidence or matching Shell-provisioned store identity. Back up existing Engram data before manual changes; do not delete it or bypass the safety check. Shell rechecks on every launch and remains usable without memory.";
 // `gentle-shell setup` publishes the verified core (ensureEngram) on every run.
 export const ENGRAM_PROVISION_FAILED_NOTICE = "Engram memory disabled for this launch: Shell could not provision a new Engram store identity, so it cannot vouch for that store. Restart Shell to retry. If Shell keeps reporting unknown compatibility and ~/.engram holds only .instance-id files, back it up and remove it, then restart Shell. Shell remains usable without memory.";
 export const ENGRAM_CORE_MISSING_NOTICE = "Engram memory disabled: the bundled Engram core is not installed yet. Run 'gentle-shell setup' to install the verified core, then restart Shell. Shell remains usable without memory.";

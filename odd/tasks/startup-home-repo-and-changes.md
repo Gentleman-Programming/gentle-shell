@@ -15,10 +15,11 @@ Branch: `fix/startup-home-repo-and-changes` · Delivery: single-pr (user: one PR
 
 | ID | Specs | Route | Status | Commit |
 |----|-------|-------|--------|--------|
-| T1 | S1 | inline | pending | — |
-| T2 | S3 | delegated (parallel with T3, disjoint surfaces) | pending | — |
-| T3 | S2, S4 | delegated (parallel with T2) | pending | — |
-| T4 | S5 | inline or delegated after T3 (shares gentle-ai.ts) | pending | — |
+| T1 | S1 | inline | done (RED 2 fail → GREEN 11/11; related 337 tests 0 fail; typecheck 0) | 00d68f114 |
+| T2 | S3 | delegated (parallel with T3, disjoint surfaces) | in progress | — |
+| T3 | S2, S4 | delegated (parallel with T2) | in progress | — |
+| T4a | S5 (binary digest cache, Windows tree kill) | inline (lib files disjoint from T2/T3) | GREEN, related suites running | — |
+| T4b | S5 (startup negotiation off the awaited path, short startup timeout) | after T3 (shares gentle-ai.ts) | pending | — |
 
 Issue: one issue covering all blocks (single PR), opened in Gentleman-Programming/gentle-shell.
 
@@ -28,3 +29,5 @@ Issue: one issue covering all blocks (single PR), opened in Gentleman-Programmin
 - L2 User chose "Issue + implementar" and selected all four blocks: Guard del home, gentle:changes, Arranque: mejoras rápidas, Arranque: estructural.
 - L3 Evidence: process sample showed gentle-ai.exe waiting ~17.6s on git under a home-level repo. `safeBootstrapDirectory` (lib/bounded-writer-admission.ts:117) only refuses filesystem root and exact `realpathSync(homedir())`. `/gentle:changes` never consults git (lib/session-changes.ts refresh is a no-op). Startup: Pi awaits session_start handlers serially; ~17 sync `git rev-parse` per startup; two awaited gentle-ai spawns (30s default timeouts); skill-registry awaits `git ls-files` without timeout; binary SHA-256 recomputed every invocation; abort kills gentle-ai but not grandchildren.
 - L4 (2026-10-12) User: "crea un solo pr como mejoras de inicio pero trabaja todo en slices". Delivery switched to single-pr; each task stays its own work-unit commit; one issue instead of one per block.
+- L5 T1 risk: item 2 (bootstrap safety guard) → independent verifier at feature end. Behavior note: a session whose cwd is itself HOME/Documents/Desktop/Downloads/OneDrive is now refused for native bootstrap and writer admission; project folders below them still work.
+- L6 Issue #2128 opened (bug, status:needs-review) and read back. T4 split: T4a lib-only now, T4b after T3. T4a RED: digest test reads=2 (expected 1); tree-kill test killed=0. GREEN: gentle-ai-binary + dev-binary 19/19, native-review-cli 53/53. Digest cache keyed by reader and (dev, ino, size, mtimeNs, ctimeNs); rewrite with the same size is re-hashed. T4a risk: item 2 (binary integrity) + item 4 (process lifecycle) → independent verifier at feature end.

@@ -803,6 +803,34 @@ test("node execFile adapter passes AbortSignal to child_process", async () => {
 	await assert.rejects(pending, (error: unknown) => error instanceof Error && error.name === "AbortError");
 });
 
+// On Windows, killing gentle-ai alone leaves its git children running against
+// the repository index; abort and timeout must take the whole tree down.
+test("node execFile adapter kills the whole process tree on Windows abort and timeout", async () => {
+	const killed: number[] = [];
+	const killProcessTree = (pid: number) => { killed.push(pid); process.kill(pid); };
+	const adapter = createNodeExecFileAdapter({ platform: "win32", killProcessTree });
+	const request = { file: process.execPath, arguments: ["-e", "setTimeout(() => {}, 10_000)"], cwd: process.cwd(), maxBufferBytes: 1024 };
+
+	const controller = new AbortController();
+	const aborted = adapter({ ...request, timeoutMs: 30_000, signal: controller.signal });
+	setTimeout(() => controller.abort(), 50);
+	await assert.rejects(aborted, (error: unknown) => error instanceof Error && error.name === "AbortError");
+	assert.equal(killed.length, 1, "abort kills the tree once");
+
+	const timedOut = await adapter({ ...request, timeoutMs: 50 });
+	assert.equal(timedOut.timedOut, true);
+	assert.equal(killed.length, 2, "timeout kills the tree once");
+
+	const preAborted = new AbortController();
+	preAborted.abort();
+	await assert.rejects(adapter({ ...request, timeoutMs: 30_000, signal: preAborted.signal }), (error: unknown) => error instanceof Error && error.name === "AbortError");
+	assert.equal(killed.length, 2, "an already-aborted call spawns nothing");
+
+	const finished = await adapter({ ...request, arguments: ["-p", "'done'"], timeoutMs: 30_000 });
+	assert.deepEqual([finished.exitCode, finished.stdout.trim(), finished.timedOut], [0, "done", false]);
+	assert.equal(killed.length, 2, "a call that finishes kills nothing");
+});
+
 test("capture-result receives the controller AbortSignal without an automatic mutation timeout", async () => {
 	const controller = new AbortController();
 	controller.abort();

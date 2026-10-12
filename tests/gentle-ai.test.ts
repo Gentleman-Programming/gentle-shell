@@ -3963,3 +3963,42 @@ test("Enter without a parent session id fails loud and writes nothing", async (t
 	assert.equal(notifications.at(-1)?.severity, "warning");
 	resetSessionProfileBindingsForTesting();
 });
+
+test("context event hook prunes verbose older tool results while keeping recent turns intact", () => {
+	type ContextHandler = (
+		event: { messages: unknown[] },
+		ctx: ExtensionContext,
+	) => { messages: unknown[] } | undefined;
+
+	const handlers = new Map<string, ContextHandler>();
+	const pi = {
+		on(name: string, handler: ContextHandler) {
+			handlers.set(name, handler);
+		},
+		events: { emit() {} },
+		registerCommand() {},
+		registerTool() {},
+	} as unknown as ExtensionAPI;
+
+	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	const contextHandler = handlers.get("context");
+	assert.equal(typeof contextHandler, "function");
+
+	const verboseOutput = "long output line\n".repeat(300);
+	const messages = [
+		{ role: "user", content: [{ type: "text", text: "Turn 1" }] },
+		{ role: "toolResult", toolName: "bash", content: [{ type: "text", text: verboseOutput }] },
+		{ role: "user", content: [{ type: "text", text: "Turn 2" }] },
+		{ role: "toolResult", toolName: "bash", content: [{ type: "text", text: verboseOutput }] },
+		{ role: "user", content: [{ type: "text", text: "Turn 3" }] },
+		{ role: "toolResult", toolName: "bash", content: [{ type: "text", text: verboseOutput }] },
+	];
+
+	const ctx = { cwd: process.cwd(), hasUI: true } as ExtensionContext;
+	const result = contextHandler!({ messages }, ctx);
+	assert.ok(result && Array.isArray(result.messages));
+	const prunedMessages = result.messages as Array<{ content: Array<{ text: string }> }>;
+	assert.match(prunedMessages[1]!.content[0]!.text, /^\[Output omitted from LLM context:/);
+	assert.equal(prunedMessages[3]!.content[0]!.text, verboseOutput);
+	assert.equal(prunedMessages[5]!.content[0]!.text, verboseOutput);
+});

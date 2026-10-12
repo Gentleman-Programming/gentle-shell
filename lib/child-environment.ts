@@ -10,6 +10,7 @@
 // returned keys from the copy, so the parent's own environment is never
 // modified.
 
+/** Name rules that mark an environment key as credential-shaped (password, secret, token, key). */
 const SENSITIVE_ENV_KEY_PATTERNS: readonly RegExp[] = [
 	/(?:^|_)PASSWORDS?(?:_|$)/,
 	/(?:^|_)PASSWD(?:_|$)/,
@@ -21,6 +22,7 @@ const SENSITIVE_ENV_KEY_PATTERNS: readonly RegExp[] = [
 	/_PRIVATE_KEY/,
 ];
 
+/** Exact env keys treated as sensitive: bare credential words and channels/URLs the patterns cannot express. */
 const ALWAYS_SENSITIVE_ENV_KEYS = new Set([
 	"TOKEN", "PASSWORD", "PASSWD", "SECRET", "SECRETS", "CREDENTIAL", "CREDENTIALS",
 	"API_KEY", "ACCESS_KEY", "PRIVATE_KEY", "SECRET_KEY",

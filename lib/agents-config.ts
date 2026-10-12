@@ -42,6 +42,7 @@ export interface ModelRef {
 	id: string;
 }
 
+/** One agent definition parsed from markdown frontmatter: identity, scope, routing, and declared tools. */
 export interface AgentDefinition {
 	name: string;
 	description: string;
@@ -52,6 +53,7 @@ export interface AgentDefinition {
 	thinking: ThinkingLevel | undefined;
 	mode: AgentMode | undefined;
 	tools: string[];
+	/** Exact environment variable names this agent keeps when the parent filters sensitive keys. */
 	envKeep: string[];
 }
 

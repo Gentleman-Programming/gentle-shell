@@ -109,6 +109,7 @@ export interface TaskThread {
 	limits: ThreadLimits;
 }
 
+/** Persisted record of one child task: identity, routing, status, and diagnostic fields. */
 export interface TaskRecord {
 	/** Retained legacy payload, never interpreted or replayed as launch authority. */
 	sddRemediation?: unknown;

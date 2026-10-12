@@ -143,6 +143,20 @@ jobs:
           go-version: "1.25.14"
           cache: false
 
+      # #2121: a test-file process intermittently aborts at exit (0xC0000409) with
+      # no message. Windows Error Reporting keeps a dump of any node.exe crash,
+      # uploaded below only when the job fails, to find its cause.
+      - name: Capture node.exe crash dumps (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dumps = Join-Path $env:RUNNER_TEMP "node-dumps"
+          New-Item -ItemType Directory -Force $dumps | Out-Null
+          $key = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\node.exe"
+          New-Item -Path $key -Force | Out-Null
+          New-ItemProperty -Path $key -Name DumpFolder -PropertyType ExpandString -Value $dumps -Force | Out-Null
+          New-ItemProperty -Path $key -Name DumpType -PropertyType DWord -Value 1 -Force | Out-Null
+
       - name: Run installer suites
         run: node --experimental-strip-types --test --test-reporter=tap tests/install-wizard.test.ts tests/installer-server.test.ts tests/verify-package-files.test.ts tests/installer-probes.test.ts tests/installer-runner.test.ts tests/installer-preflight.test.ts tests/installer-posix-bootstrap.test.ts tests/installer-windows-bootstrap.test.ts
 
@@ -161,3 +175,12 @@ jobs:
           $passes = [regex]::Match($text, "(?m)^# pass (\d+)$")
           $skips = [regex]::Match($text, "(?m)^# skipped (\d+)$")
           if (!$passes.Success -or [int]$passes.Groups[1].Value -ne 38 -or !$skips.Success -or [int]$skips.Groups[1].Value -ne 0) { throw "Native Windows installer tests were skipped or not selected" }
+
+      - name: Upload node.exe crash dumps (Windows, on failure)
+        if: failure() && runner.os == 'Windows'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: node-crash-dumps
+          path: ${{ runner.temp }}/node-dumps
+          if-no-files-found: ignore
+          retention-days: 14

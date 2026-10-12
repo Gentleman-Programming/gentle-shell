@@ -14,6 +14,18 @@ One classifier lease covers all rounds. Cancellation or timeout returns promptly
 
 Usage in the run result aggregates completed calls. A late callback reports only the outstanding call's usage once after a timed-out or cancelled provider settles, excluding earlier rounds already accounted in the returned result. Unknown usage in any call makes aggregate usage unknown. No model reasoning, raw provider errors or raw evidence are logged.
 
+## Timeout diagnostics
+
+Classifier results and late-settlement receipts include a metadata-only `diagnostic` object. The runtime projects only these fields into its existing `gentle-auto-permission` entries, and appends them to timeout blocking messages so a failed read can be diagnosed without opening private session files:
+
+- `implementation`: `auto-classifier-diagnostics-v1`, a marker for this instrumentation, not a source hash or proof of the loaded SDK.
+- `elapsedMs`: monotonic milliseconds since this classifier invocation began, rounded down; late receipts measure through settlement.
+- `deadlineMs`: the configured per-call deadline, not the three-call overall budget.
+- `timerFired`: whether a local deadline callback actually ran. The `timeout` label alone does not prove that a timer fired.
+- `returnPath`: `preflight`, `provider`, `provider-result`, `evidence`, `verdict`, or `late-settlement`, locating the observed return stage without recording exception text.
+
+These diagnostics contain no prompts, file contents, paths, credentials, provider payloads, or raw errors. Unknown fields are dropped; invalid metadata is omitted. No diagnostic changes a verdict, deadline, retry policy, cancellation, or lease. Missing diagnostics may mean an older or injected implementation; absence alone does not prove which implementation ran. After reloading the instrumented code, one explicitly authorized Auto read is sufficient to collect the blocking message if the failure recurs; it is not an instruction to retry repeatedly.
+
 ## Scope
 
 This unit changes classifier behavior only. Runtime path selection, bounded call history and recovery messaging are integrated separately. Benign numeric token declarations and `max_tokens` limits no longer trigger credential heuristics; actual credential assignments, authentication values and private keys remain protected. Prior actions are projected once, not charged twice. Optional oldest complete history records are omitted when necessary to fit the input budget; active human requests, restrictions and the pending action are never truncated. No sandbox, Normal/YOLO, native-consent, or hard-policy changes are made.

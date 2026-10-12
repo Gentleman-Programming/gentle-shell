@@ -11,10 +11,12 @@ function fixture(t: test.TestContext, modeLookup?: () => Promise<string>) {
  t.after(() => rmSync(cwd, {recursive:true,force:true}));
  let sessionId = "session-a", mode = "auto", epoch = 1;
  const entries: any[] = [], records: any[] = [], requests: any[] = [];
+ const sourceInfo={path:"/installed/gentle-engram/index.ts",source:"npm:gentle-engram@0.2.0",origin:"package",scope:"user"};
+ const tools=["mem_current_project","mem_save","mem_session_summary"].map(name=>({name,sourceInfo}));
  let response: any = {status:"available",decision:"allow",reason:"In scope",usage:{input:2,output:1,totalTokens:3,costTotal:0.01}};
  const manager = {getSessionId:()=>sessionId,getBranch:()=>entries,getLeafId:()=>entries.at(-1)?.id ?? null};
  const ctx: any = {cwd,mode:"tui",hasUI:true,sessionManager:manager,model:{id:"test",provider:"test"},signal:new AbortController().signal,ui:{setStatus(){},notify(){}}};
- const runtime = new AutoPermissionRuntime({appendEntry:(...args:any[])=>records.push(args)} as any,
+ const runtime = new AutoPermissionRuntime({appendEntry:(...args:any[])=>records.push(args),getAllTools:()=>tools} as any,
  {mode:()=>modeLookup ? modeLookup() : Promise.resolve(mode),epoch:()=>epoch} as any,
  {run:async (request:any)=>{requests.push(request);return typeof response === "function" ? response(request) : response;},cancel(){}} as any,
  {configHome:join(cwd,"config"),retryDelaysMs:[0,0]});
@@ -29,6 +31,39 @@ function fixture(t: test.TestContext, modeLookup?: () => Promise<string>) {
  };
  return {cwd,ctx,runtime,entries,records,requests,input,say,execute,setResponse:(v:any)=>response=v,setMode:(v:string)=>{mode=v;epoch++;},replace:()=>sessionId="session-b"};
 }
+
+test("verified task memory is classifier context, never a bypass or a forged project", async t=>{
+ const f=fixture(t);f.input("Investigate this project and retain task findings, but never save secrets.");
+ const input={cwd:f.cwd};
+ await f.execute("mem_current_project",input);
+ (f.runtime as any).toolResult({toolName:"mem_current_project",toolCallId:"call",input,isError:false,
+  details:{data:{cwd:f.cwd,project:"canonical",project_source:"git_remote",available_projects:null}}},f.ctx);
+ f.setResponse({status:"available",decision:"deny",reason:"Explicit restriction still applies"});
+ const saved=await f.execute("mem_save",{cwd:f.cwd,project:"canonical",title:"Finding",content:"Task finding"});
+ assert.equal(saved.executions,0);
+ assert.deepEqual(f.requests.at(-1).memoryContext,{provider:"gentle-engram",operation:"mem_save",cwd:f.cwd,project:"canonical"});
+ await f.execute("mem_save",{project:"canonical",content:"Task finding"});
+ assert.equal(f.requests.at(-1).memoryContext,undefined,"action's project claim is not sufficient");
+ f.runtime.cancelPending();f.input("Continue investigating without publishing.");
+ await f.execute("mem_save",{cwd:f.cwd,project:"canonical",content:"Task finding"});
+ assert.equal(f.requests.at(-1).memoryContext,undefined,"cancel/mode changes drop live binding");
+});
+
+test("Auto diagnostic receipts and timeout messages contain only bounded metadata", async t=>{
+ const f=fixture(t);f.input("Read the local documentation.");
+ const diagnostic={implementation:"auto-classifier-diagnostics-v1",elapsedMs:0,deadlineMs:20000,timerFired:false,returnPath:"preflight"};
+ f.setResponse({status:"unavailable",code:"timeout",diagnostic:{...diagnostic,prompt:"PRIVATE_INPUT",error:"PRIVATE_ERROR"}});
+ const result=await f.execute("read",{path:"docs/permission-modes.md"});
+ assert.equal(result.executions,0);
+ assert.ok(result.denied!.reason.includes(`Diagnostic: ${JSON.stringify(diagnostic)}`));
+ assert.deepEqual(f.records[0][1].diagnostic,diagnostic);
+ assert.doesNotMatch(JSON.stringify(f.records)+result.denied!.reason,/PRIVATE_INPUT|PRIVATE_ERROR/);
+ f.setResponse({status:"unavailable",code:"timeout",diagnostic:{...diagnostic,returnPath:"PRIVATE_ERROR"}});
+ const malformed=await f.execute("read",{path:"docs/permission-modes.md"});
+ assert.equal(malformed.executions,0);
+ assert.equal(f.records[1][1].diagnostic,undefined);
+ assert.doesNotMatch(malformed.denied!.reason,/PRIVATE_ERROR|Diagnostic:/);
+});
 
 test("Auto classifies local reads, edits, shell, custom and MCP before execution", async t=>{
  const f=fixture(t); f.input("Implement the change locally; do not publish.");

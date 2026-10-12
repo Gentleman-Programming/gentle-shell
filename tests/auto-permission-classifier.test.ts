@@ -48,6 +48,55 @@ async function nextRound(f: ReturnType<typeof fixture>, count = 2) {
 	assert.equal(f.calls.length, count);
 }
 
+test("task memory policy uses bounded host destination evidence without promoting narration",async()=>{
+ const f=fixture();
+ const memoryContext={provider:"gentle-engram",operation:"mem_save",project:"workspace",cwd:"/workspace"};
+ const pending=f.run({action:{toolName:"mem_save",input:{project:"workspace",cwd:"/workspace",content:"Parser finding"}},memoryContext} as any);
+ const payload=JSON.parse(f.calls[0].context.messages[0].content as string);
+ assert.deepEqual(payload.memoryContext,memoryContext);
+ assert.match(f.calls[0].context.systemPrompt!,/Routine task-linked project memory/);
+ assert.match(f.calls[0].context.systemPrompt!,/Explicit no-save/);
+ f.calls[0].resolve(message());assert.equal((await pending).decision,"allow");
+ for(const bad of [{...memoryContext,project:"x".repeat(257)},{...memoryContext,operation:"mem_delete"},{...memoryContext,extra:"untrusted claim"}]) {
+  const invalid=fixture();const result=await invalid.run({memoryContext:bad} as any);
+  assert.equal(result.code,"invalid-input");assert.equal(invalid.calls.length,0);
+ }
+});
+
+test("Auto diagnostics distinguish actual deadlines from immediate timeout labels without retaining input", async t => {
+	const timed = fixture(5), pending = timed.run();
+	const result = await pending;
+	const diagnostic = (result as any).diagnostic;
+	assert.equal(result.code, "timeout");
+	assert.deepEqual(Object.keys(diagnostic).sort(), ["deadlineMs", "elapsedMs", "implementation", "returnPath", "timerFired"].sort());
+	assert.equal(diagnostic.implementation, "auto-classifier-diagnostics-v1");
+	assert.equal(diagnostic.deadlineMs, 5);
+	assert.equal(diagnostic.timerFired, true);
+	assert.equal(diagnostic.returnPath, "provider");
+	assert.ok(Number.isSafeInteger(diagnostic.elapsedMs) && diagnostic.elapsedMs >= 0);
+	assert.equal(timed.engine.busy, true, "diagnostics do not release an unsettled provider lease");
+	timed.calls[0].resolve(message()); await tick();
+	assert.equal(timed.engine.busy, false);
+
+	const immediate = fixture();
+	const action = new Proxy({ toolName: "read", input: { path: "PRIVATE_INPUT" } }, {
+		getPrototypeOf() { throw Error("timeout"); },
+	});
+	const early = await immediate.run({ action });
+	assert.equal(early.code, "timeout", "instrumentation preserves existing error mapping");
+	assert.equal((early as any).diagnostic.timerFired, false);
+	assert.equal((early as any).diagnostic.returnPath, "preflight");
+	assert.equal(immediate.calls.length, 0);
+	assert.doesNotMatch(JSON.stringify((early as any).diagnostic), /PRIVATE_INPUT|timeout/);
+
+	const normal = fixture(), allowed = normal.run();
+	normal.calls[0].resolve(message());
+	const success = await allowed;
+	assert.equal(success.decision, "allow");
+	assert.equal((success as any).diagnostic.timerFired, false);
+	assert.equal((success as any).diagnostic.returnPath, "verdict");
+});
+
 test("blocked and exhausted inspection never falls through to an allow", async t => {
 	evidenceFixture(t);
 	for (const [reply, code] of [[inspection("../outside.ts"), "evidence-unavailable"],

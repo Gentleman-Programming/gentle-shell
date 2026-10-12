@@ -1,9 +1,11 @@
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import type { ExtensionAPI, ExtensionContext, InputEvent, ToolCallEvent, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, InputEvent, ToolCallEvent, ToolCallEventResult, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { gentlePiConfigHome } from "./agent-home.ts";
+import { AutoPermissionMemory } from "./auto-permission-memory.ts";
 import { subscribeHumanAnswers, type HumanAnswerReceipt } from "./auto-permission-answers.ts";
 import { resolveAutoPermissionEvidencePath } from "./auto-permission-evidence.ts";
+import { AUTO_PERMISSION_DIAGNOSTIC_PATHS, type AutoPermissionDiagnostic } from "./auto-permission-classifier.ts";
 import { appendSystemPromptOnce, type AppendableSystemPromptOptions } from "./append-system-prompt.ts";
 
 export const AUTO_DIRECTIVE = `<gentle-auto-permissions>
@@ -16,7 +18,18 @@ export function updateAutoPrompt(options: AppendableSystemPromptOptions | undefi
 }
 
 type ModeController = {mode(ctx: ExtensionContext): Promise<string>; epoch(): number};
-type Verdict = {status: string; decision?: string; reason?: string; code?: string; usage?: unknown; usageKnown?: boolean; actualModel?: unknown; requestedModel?: unknown};
+type Verdict = {status: string; decision?: string; reason?: string; code?: string; usage?: unknown; usageKnown?: boolean; actualModel?: unknown; requestedModel?: unknown; diagnostic?: unknown};
+/** Project a closed metadata schema; injected classifiers cannot add payloads to diagnostics. */
+function safeDiagnostic(value: unknown): AutoPermissionDiagnostic | undefined {
+ try {
+  if(!value || typeof value!=="object")return undefined;
+  const {implementation,elapsedMs,deadlineMs,timerFired,returnPath}=value as AutoPermissionDiagnostic;
+  if(implementation!=="auto-classifier-diagnostics-v1" || !Number.isSafeInteger(elapsedMs) || elapsedMs<0 ||
+   !Number.isFinite(deadlineMs) || deadlineMs<1 || deadlineMs>20000 || typeof timerFired!=="boolean" ||
+   !AUTO_PERMISSION_DIAGNOSTIC_PATHS.includes(returnPath))return undefined;
+  return {implementation,elapsedMs,deadlineMs,timerFired,returnPath};
+ } catch { return undefined; }
+}
 export type AutoRuntimeClassifier = {run(request: any): Promise<Verdict>; cancel(): void};
 type Classifier = AutoRuntimeClassifier;
 type BranchItem = {id: string; type: string; message?: {role: string; content: unknown}};
@@ -156,16 +169,23 @@ export class AutoPermissionRuntime {
  private overflow = false;
  private configHome: string;
  private pi: Pick<ExtensionAPI,"appendEntry">;
+ private memory: AutoPermissionMemory;
  private modes: ModeController;
  private classifier: Classifier;
- constructor(pi: Pick<ExtensionAPI,"appendEntry">, modes: ModeController, classifier: Classifier,
+ constructor(pi: Pick<ExtensionAPI,"appendEntry"> & Partial<Pick<ExtensionAPI,"getAllTools">>, modes: ModeController, classifier: Classifier,
   options: {configHome?: string; retryDelaysMs?: number[]} = {}) {
   this.pi=pi;this.modes=modes;this.classifier=classifier;
+  this.memory=new AutoPermissionMemory(()=>pi.getAllTools?.() ?? []);
   this.configHome = resolve(options.configHome ?? gentlePiConfigHome());
   this.retryDelaysMs = options.retryDelaysMs ?? PROVIDER_RETRY_DELAYS_MS;
  }
  private retryDelaysMs: number[];
+ toolResult(event: ToolResultEvent, ctx: ExtensionContext): void {
+  this.own(ctx);
+  this.memory.result(event,ctx,this.modes.epoch());
+ }
  cancelPending(): void {
+  this.memory.clear();
   this.unsubscribeAnswers?.();this.unsubscribeAnswers=undefined;
   this.hostAnswers=[];this.answerEpoch=undefined;
   this.generation++;
@@ -284,10 +304,10 @@ export class AutoPermissionRuntime {
   return false;
  }
  private record(ctx: ExtensionContext, event: Pick<ToolCallEvent,"toolName"|"toolCallId">, result: Verdict, late=false): void {
-  const usage=numericUsage(result.usage);
+  const usage=numericUsage(result.usage), diagnostic=safeDiagnostic(result.diagnostic);
   // Receipts carry no raw command, input, transcript, or provider-generated rationale.
   try {this.pi.appendEntry("gentle-auto-permission",{schema:1,toolCallId:event.toolCallId,toolName:event.toolName,
-   status:result.status,decision:result.decision,code:result.code,usage,usageKnown:result.usageKnown,late,actualModel:result.actualModel});} catch { /* Missing persistence never creates permission. */ }
+   status:result.status,decision:result.decision,code:result.code,usage,usageKnown:result.usageKnown,late,actualModel:result.actualModel,...(diagnostic ? {diagnostic} : {})});} catch { /* Missing persistence never creates permission. */ }
   if(!late)this.calls++;
   this.tokens+=usage.totalTokens ?? 0;this.cost+=usage.costTotal ?? 0;
   try {ctx.ui.setStatus("gentle:auto-usage",`Auto checks ${this.calls} · ${this.tokens} tokens · $${this.cost.toFixed(4)} (separate)`);} catch { /* Headless. */ }
@@ -304,7 +324,7 @@ export class AutoPermissionRuntime {
   const mode=await this.modes.mode(ctx);
   if(generation!==this.generation || epoch!==this.modes.epoch() || owner!==this.owner || ctx.signal?.aborted)
    return block("Auto decision expired during mode lookup. The action was not run.");
-  if(mode!=="auto")return undefined;
+  if(mode!=="auto") { this.memory.admitted(event,ctx,epoch);return undefined; }
   this.observeAnswers(ctx);
   // Independent executors retain their own consent and delegation authorities.
   if(OWNED_CONTROL_TOOLS.has(event.toolName))return undefined;
@@ -321,13 +341,16 @@ export class AutoPermissionRuntime {
    ...this.liveHostAnswers(ctx).map(answer=>answer.anchor)];
   let serialized: string;
   try {serialized=JSON.stringify(event.input);}catch{return block("Auto could not evaluate invalid tool input. The action was not run.");}
+  const memoryContext=this.memory.context(event,ctx,epoch);
+  const memoryBinding=JSON.stringify(memoryContext);
   const current=()=>{ try {
    // SDK branch changes must revoke removed input even before a host tree event.
    const currentBranchIds=new Set(this.branch(ctx).map(entry=>entry.id));
    return generation===this.generation && epoch===this.modes.epoch() && owner===this.owner &&
    owner?.manager===ctx.sessionManager && owner.id===ctx.sessionManager.getSessionId() && owner.cwd===ctx.cwd &&
    model.id===ctx.model?.id && model.provider===ctx.model?.provider && JSON.stringify(event.input)===serialized &&
-   trustedEntryIds.every(id=>currentBranchIds.has(id));
+   trustedEntryIds.every(id=>currentBranchIds.has(id)) &&
+   JSON.stringify(this.memory.context(event,ctx,epoch))===memoryBinding;
   } catch {return false;} };
   const paths=evidencePaths(event.toolName,JSON.parse(serialized),ctx.cwd);
   // Canonical cwd allows safe inspection in workspaces reached through /tmp-like aliases.
@@ -341,7 +364,7 @@ export class AutoPermissionRuntime {
    for(let attempt=0;attempt<=this.retryDelaysMs.length;attempt++){
     if(attempt>0 && (!(await pause(this.retryDelaysMs[attempt-1],controller.signal)) || !current()))break;
     try {
-     result=await this.classifier.run({trustedMessages,answeredPrompts,action:{toolName:event.toolName,input:JSON.parse(serialized)},
+     result=await this.classifier.run({trustedMessages,answeredPrompts,memoryContext,action:{toolName:event.toolName,input:JSON.parse(serialized)},
       priorActions:this.priorActions,evidencePaths:paths,cwd:classifierCwd,model:ctx.model,modelRegistry:ctx.modelRegistry,isCurrent:current,signal:controller.signal,
       onUsage:(late: Omit<Verdict,"status">)=>{
        if(owner?.manager===ctx.sessionManager && owner.id===ctx.sessionManager.getSessionId()) this.record(ctx,event,{...late,status:"settled"},true);
@@ -358,7 +381,9 @@ export class AutoPermissionRuntime {
    // Contention and revocation are not failed safety judgements or provider outages.
    if(!["busy","cancelled","revoked"].includes(result.code ?? ""))this.unavailable++;
    if(result.code==="provider-error")return block(`Auto could not reach its classifier model (provider error after ${this.retryDelaysMs.length+1} attempts). The action was not run. Retry later, switch the session model, or continue with manual permissions; do not treat a missing verdict as permission or evade this check.`);
-   return block(`${UNAVAILABLE_REASONS[result.code ?? ""] ?? "Auto received no usable classifier verdict. Retry later or use manual permissions."} The action was not run. A missing verdict is not permission; do not evade this check.`);
+   const diagnostic=result.code==="timeout" ? safeDiagnostic(result.diagnostic) : undefined;
+   const detail=diagnostic ? ` Diagnostic: ${JSON.stringify(diagnostic)}.` : "";
+   return block(`${UNAVAILABLE_REASONS[result.code ?? ""] ?? "Auto received no usable classifier verdict. Retry later or use manual permissions."} The action was not run. A missing verdict is not permission; do not evade this check.${detail}`);
   }
   this.unavailable=0;
   if(result.decision==="deny"){
@@ -368,6 +393,7 @@ export class AutoPermissionRuntime {
    return block(`Auto denied this action: ${reason}. Find a materially safer alternative within the request, or ask the user; do not pursue the same effect through another tool.`);
   }
   this.consecutive=0;
+  this.memory.admitted(event,ctx,epoch);
   // Keep only complete recent records: truncated source could hide side effects. Missing
   // script evidence can be inspected by the reviewer, never inferred from an omitted record.
   const action={toolName:event.toolName,input:JSON.parse(serialized)};

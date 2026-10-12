@@ -2,6 +2,18 @@
 
 Use **Normal**, **Auto**, or **YOLO** for the current primary session. Optionally save any of them as the user-global default for future sessions. These modes do not redesign Gentle Shell delegation, expand the task you authorized, or replace independent safety and consent.
 
+## Task-linked project memory
+
+Auto still classifies every memory call. It can treat a non-sensitive Engram finding or session summary as auxiliary work within the live authorized task, rather than requiring a separate request for each save. Explicit no-save/no-persistence restrictions always win; this does not permit secrets, deletion, maintenance, personal/global or cross-project writes, or unrelated `topic_key` overwrites.
+
+This contextual treatment requires live host evidence, not a tool name or an assistant claim:
+
+- The effective `mem_current_project` and write registrations must come from the same native `npm:gentle-engram` package source. MCP adapters, namesakes, ambiguous effective registry entries and unavailable provenance do not qualify. Pi resolves duplicate tool names before exposing this registry; the check follows the effective winning registration, not historical registrations.
+- An already-authorized `mem_current_project({cwd})` must complete successfully in this session with exactly the current workspace cwd, a nonempty canonical project, `git_remote` or `dir_basename` resolution, and no ambiguity, alternatives or warning/error fields.
+- The subsequent native `mem_save` or `mem_session_summary` must explicitly supply that same `cwd` and `project`; saves must use project scope (or its default). Self-asserted project names alone do not qualify.
+
+The evidence is never restored from transcript text. Session/workspace replacement, permission-mode cancellation, removed branch anchors, provider changes or an unsuccessful new resolution invalidate its applicability. No extra resolution call is launched automatically by the admission layer. Without this evidence, calls remain on ordinary contextual classification; they are not automatically allowed or denied by this adapter. Fixture tests prove these boundaries and plumbing, not a live model's interpretation of the policy.
+
 ## Quick path
 
 ```text

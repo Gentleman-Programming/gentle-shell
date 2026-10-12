@@ -116,6 +116,8 @@ Say what you need once, then keep moving. el Gentleman helps turn intent into cl
 
 Bring in help without losing the thread. Focused package-owned Pi agents can map a codebase, implement a bounded change, or verify it, while one parent stays accountable for the scope, the decisions, and the final summary.
 
+The parent delegates for a reason, not for size. Understanding that outgrows one inline batch (about 3 calls and 10k tokens) gets one read-only explorer; two or more independent units with disjoint edit surfaces get parallel writers; a high-risk change gets an independent verifier; a long session hands its next unit to a fresh worker. Without a named reason the parent works inline — file count and task size never decide the route.
+
 **[Docs →](docs/readme-reference.md#how-the-harness-decides-what-to-do)**
 
 ---
@@ -124,7 +126,9 @@ Bring in help without losing the thread. Focused package-owned Pi agents can map
 
 <img width="100%" src="docs/assets/diagrams/odd-workflow.svg" alt="Organic Driven Development as seven numbered steps: Authorize, Explore, Resolve uncertainty, and Classify across the top row; Classify forks, so small understood work stays light while substantial work gets step five, Track, with one feature document; both paths converge on Implement task by task and then Close, above a dashed band marking that one feature document mirrored in Engram lets work resume across sessions">
 
-**Organic Driven Development (ODD)** is the everyday path: the agent explores before changing anything, clarifies only real decisions, and keeps small understood work small. Substantial, authorized work gets one recoverable feature document — mirrored in memory when available — so progress, evidence, and the next step survive an interruption; checks follow the configured TDD mode.
+**Organic Driven Development (ODD)** is the everyday path: the agent explores before changing anything, clarifies only real decisions, and keeps small understood work small. Substantial, authorized work gets one recoverable feature document — mirrored in memory when available — so progress, evidence, and the next step survive an interruption; behavior changes are test-first by default when a runnable test applies.
+
+Tasks are sized by understanding, risk, and resumability: work you could finish from the request and `git diff` alone runs inline, with no subagents and no task document. The feature document quotes your spec verbatim, and every handoff points at it instead of paraphrasing it, so exact strings, error messages, and examples reach the workers intact.
 
 **[Docs →](docs/readme-reference.md#organic-driven-development)**
 
@@ -135,6 +139,8 @@ Bring in help without losing the thread. Focused package-owned Pi agents can map
 <img width="100%" src="docs/assets/diagrams/native-review.svg" alt="Diagram showing one frozen candidate passing through risk-scoped native review to an outcome, while human delivery choices stay separate">
 
 Review the exact change, not a moving target. Native review keeps one candidate in view, returns risk-scoped evidence, and can surface a bounded correction path. You still decide what happens next in your repository.
+
+Review is proportionate: verification follows the risk tier in every RDD state, a review is only due for high-risk work, and the agent forwards the 4R lenses that fit what it touched — with its reason — instead of paying for all four.
 
 Reviewer completions inherit Pi's effective `transport` preference when an acknowledged individual or grouped capture executes. The host forwards a defined value unchanged, with one settings snapshot per group; it never forces SSE or changes model routing. An absent setting or an older Pi API without `getSettings()` preserves the provider default. This completion preference is separate from native `pi_host_relay` coordination, and providers that do not support it may ignore it.
 
@@ -228,13 +234,32 @@ Cross-orchestrator messages appear as compact `🤖 Sender → 🤖 Recipient` c
 
 ---
 
-### What's new in v3.5
+### What's new in v4.1
 
-The [v3.5.1 release](https://github.com/Gentleman-Programming/gentle-shell/releases/tag/v3.5.1) makes Gentle Shell runnable on its own:
+The [v4.1.0 release](https://github.com/Gentleman-Programming/gentle-shell/releases/tag/v4.1.0) makes Gentle Shell installable on a clean machine and pins Gentle AI v4.1.1:
 
-- **Standalone launcher:** `npm i -g gentle-pi` installs `gentle-shell`, which opens Pi with the Gentle Shell package loaded from its own home (`~/.gentle-shell/agent`) or, with `--link`, from your existing `~/.pi/agent`; `gentle-shell install npm:<pkg>` and the other pi subcommands run against the selected home. A bundled or `PATH` pi is used, never a modified one.
-- **Link mode take-over:** when `~/.pi/agent` already declares gentle-pi as a path package, the launcher takes over extension loading (`--no-extensions` plus explicit `-e` for every other declared package and loose extension) so tools never register twice.
-- **Interactive RPC hosts:** with `GENTLE_SHELL_INTERACTIVE_HOST=1` and `--mode rpc`, ask-user tools use pi's RPC dialogs and gentle-agents publishes live subagent activity for the desktop app. See the [reference](docs/readme-reference.md#interactive-rpc-hosts).
+- **Clean-machine installers:** a browser wizard and double-click installers for macOS, Windows, and Linux install what is missing, update what you have, and ask once before changing anything. See [Get started](#get-started).
+- **Bundled Gentle Shell:** a new installation keeps its exact Pi, pinned Gentle AI, Engram, and state in one prefix; existing global installs can migrate, the launcher offers updates, and `gentle-shell self-uninstall` removes it.
+- **Background jobs and monitors:** `bash_background` wakes the agent once when a command exits, and `monitor` turns each output line of a long-running command into an event. Inspect them with `/gentle:jobs` ([Background jobs](#background-jobs)).
+- **Contextual Auto permissions:** Auto decides with the conversation's context and image input, retries provider failures, and can be the saved default ([Permission modes](#permission-modes--normal-auto-or-yolo)).
+- **Cross-session coordination:** sessions publish a recognizable subject, task aliases, repository scope, and a bounded work classification that other sessions can list, search, and consult with explicit cost permission.
+- **Session-bound profiles:** the active profile binds to the parent session, and orchestrator and reviewer routing apply per session.
+- **Delegate for a reason and review by risk:** see [Focused agents](#focused-agents--context-with-a-return-path), [ODD](#odd--the-everyday-workflow), and [Native review](#native-review--review-the-exact-change).
+
+---
+
+### Measured — What proportional routing changed
+
+The routing rules came from benchmarks. These runs use a local benchmark with hidden acceptance suites; each cell is a single run (n=1), and cost is API-equivalent.
+
+| Scenario | Before | After |
+| :--- | :--- | :--- |
+| 3-line bug in one function | 335 s · 56 turns · $0.339 | **77 s · 10 turns · $0.105** — inline, no subagents |
+| Bug rooted in shared logic | 479 s · $0.361 | **276 s · $0.207** — one explorer |
+| Data migration (high risk) | 559 s · $0.403 · needed a feedback round | 539 s · $0.555 · **accepted on the first round** — one independent verifier |
+| 73-line spec, 26 hidden checks | Paraphrased handoffs: 13 failing, still 23/26 after two feedback rounds | Spec passed by reference ([#1718](https://github.com/Gentleman-Programming/gentle-shell/pull/1718)) |
+
+Against the same model in Codex CLI, with blind review of every solution, Gentle Shell was accepted on the first round in every cell and ranked higher on the medium (3 of 3 runs) and large tasks; it was close on the small one. The large task still took about three times longer (17.5–17.9 min vs 6.1 min) — that gap is open work. Sources: [#1723](https://github.com/Gentleman-Programming/gentle-shell/pull/1723), [#1794](https://github.com/Gentleman-Programming/gentle-shell/pull/1794), [#1713](https://github.com/Gentleman-Programming/gentle-shell/issues/1713).
 
 ---
 
@@ -258,7 +283,7 @@ Download the installer for your computer, double-click it, and follow the steps 
 | **Windows** | [gentle-shell-installer-windows.zip](https://github.com/Gentleman-Programming/gentle-shell/releases/latest/download/gentle-shell-installer-windows.zip) | Right-click the zip → **Extract All**. Open the extracted folder, then the *Gentle Shell Installer* folder inside it, and double-click **Install Gentle Shell.cmd**. It does not run from inside the zip. |
 | **Linux** | [gentle-shell-installer-linux.tar.gz](https://github.com/Gentleman-Programming/gentle-shell/releases/latest/download/gentle-shell-installer-linux.tar.gz) | Extract it, then double-click **install-gentle-shell.sh**. If your file manager does not run scripts, run `sh install-gentle-shell.sh` in that folder. |
 
-A small window opens, then the installer appears in your browser. Use the tab it opens, and keep the small window open until the installer says it is done. If a download link does not open, the newest release does not include the installers yet: use [Path C](#path-c-browser-installer-from-a-checkout) meanwhile.
+A small window opens, then the installer appears in your browser. Use the tab it opens, and keep the small window open until the installer says it is done.
 
 > **Your computer will warn you the first time.** These installers are not signed with an Apple or Microsoft developer certificate yet, so the system cannot verify who made them. That warning is expected; here is how to continue:
 >
@@ -268,7 +293,7 @@ A small window opens, then the installer appears in your browser. Use the tab it
 >
 > Only download from this repository's [Releases](https://github.com/Gentleman-Programming/gentle-shell/releases) page. To check a download, compare its SHA-256 with [gentle-shell-installers-SHA256SUMS.txt](https://github.com/Gentleman-Programming/gentle-shell/releases/latest/download/gentle-shell-installers-SHA256SUMS.txt).
 
-From the first release that publishes its distribution assets, a new installation instead gets Gentle Shell as one self-contained product. Its own Node.js, npm, pnpm and Pi live in `~/.gentle-shell`, and your own tools are not used or changed ([bundled installation](docs/install-wizard.md#bundled-installation)).
+A new installation gets Gentle Shell as one self-contained product. Its own Node.js, npm, pnpm and Pi live in `~/.gentle-shell`, and your own tools are not used or changed ([bundled installation](docs/install-wizard.md#bundled-installation)).
 
 The installer is a preview: it is tested on Linux and in CI, while clean-machine runs on macOS and Windows are still being verified. How it works and what it changes: **[installation wizard](docs/install-wizard.md)**.
 
@@ -307,8 +332,8 @@ Every other argument is forwarded to pi unchanged, for example `gentle-shell --m
 Install the stable release into an existing pi agent, restart Pi, then synchronize the installed assets.
 
 ```bash
-# Published stable release: v3.5.1
-pi install npm:gentle-pi@3.5.1
+# Published stable release: v4.1.0
+pi install npm:gentle-pi@4.1.0
 
 # Restart Pi, then run:
 gentle-ai sync
@@ -317,7 +342,7 @@ gentle-ai sync
 pi
 ```
 
-See the [v3.5.1 release notes](https://github.com/Gentleman-Programming/gentle-shell/releases/tag/v3.5.1) for version-specific changes.
+See the [v4.1.0 release notes](https://github.com/Gentleman-Programming/gentle-shell/releases/tag/v4.1.0) for version-specific changes.
 
 **Builtin codemode warning.** gentle-pi replaces Pi's builtin `codemode` with its compact renderer, so Pi warns at startup that the builtin was not loaded. In your own Pi home (`pi` with this package, or `gentle-shell --link`), gentle-pi asks once in the interactive TUI whether to add `"-builtin:codemode"` to `extensions` in the agent `settings.json` (usually `~/.pi/agent/settings.json`); it writes only if you accept, and the warning disappears from the next launch. A declined prompt is not repeated. To silence it by hand, add the entry yourself, for example `"extensions": ["-builtin:codemode"]`. Isolated `gentle-shell` homes already carry it.
 
@@ -345,9 +370,9 @@ An older Node.js or an incompatible pnpm (from mise, nvm, nvm-windows, fnm, Volt
 
 ### Keep it up to date
 
-**Release compatibility:** `upgrade` is currently available only in main builds containing commit `96ff045a8`. No published release through `gentle-pi` v4.0.0 supports it; there is no first supported release yet. On older launchers, `gentle-shell upgrade` opens a session with `upgrade` as the prompt instead of updating.
+**Release compatibility:** `upgrade` is available from `gentle-pi` v4.1.0 (and in main builds containing commit `96ff045a8`). Releases through v4.0.0 do not support it: on those launchers, `gentle-shell upgrade` opens a session with `upgrade` as the prompt instead of updating.
 
-For those installations, use the [browser installer from a fresh main checkout](#path-c-browser-installer-from-a-checkout). It detects an existing installation and shows the update plan before you confirm. Choose **Latest release** to stay on stable (which does not yet provide `upgrade`), or **Latest main** to install a build with the command. See the [older-installation procedure](docs/readme-reference.md#updating-an-installation-without-upgrade).
+For those installations, download the [latest installer](#easiest-download-and-double-click-no-terminal-needed) or use the [browser installer from a fresh main checkout](#path-c-browser-installer-from-a-checkout). It detects an existing installation and shows the update plan before you confirm. See the [older-installation procedure](docs/readme-reference.md#updating-an-installation-without-upgrade).
 
 On a main build that supports `upgrade`:
 

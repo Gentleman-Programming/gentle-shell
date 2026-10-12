@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import { isAbsolute } from "node:path";
-import { generateUnifiedPatch } from "@earendil-works/pi-coding-agent";
+import { generateUnifiedPatch } from "./compat-pi-agent.ts";
 import { changesModel, type ChangedFile, type WorktreeChanges } from "./shell-changes.ts";
 import { SESSION_WORKTREE_ENTRY } from "./session-worktree-registry.ts";
 

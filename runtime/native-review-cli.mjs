@@ -1125,13 +1125,28 @@ export function gentleAiProcessEnvironment(base                    = process.env
 
 
 
+
+
+// A bare "taskkill" resolves from the current directory before PATH on
+// Windows, so a repository shipping its own taskkill.exe would run on any
+// abort. Always use the System32 binary, from System32 itself.
+export function windowsTaskkillPath(env                    = process.env)         {
+	const systemRoot = env.SystemRoot || env.windir;
+	return win32.join(systemRoot && win32.isAbsolute(systemRoot) ? systemRoot : "C:\\Windows", "System32", "taskkill.exe");
+}
+
 // taskkill walks the tree from a live parent, so it must run before the
 // parent dies; Node's own abort/timeout kill would orphan the git children.
-export const windowsProcessTreeKiller                    = (pid) => {
-	try {
-		spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }).on("error", () => {});
-	} catch { /* Best effort: the call still settles through its own child. */ }
-};
+export function createWindowsProcessTreeKiller(env                    = process.env, spawnProcess                = spawn)                    {
+	const taskkill = windowsTaskkillPath(env);
+	return (pid) => {
+		try {
+			spawnProcess(taskkill, ["/pid", String(pid), "/T", "/F"], { cwd: win32.dirname(taskkill), stdio: "ignore", windowsHide: true }).on("error", () => {});
+		} catch { /* Best effort: the call still settles through its own child. */ }
+	};
+}
+
+export const windowsProcessTreeKiller                    = (pid) => createWindowsProcessTreeKiller()(pid);
 
 const WINDOWS_TREE_KILL_GRACE_MS = 1_000;
 

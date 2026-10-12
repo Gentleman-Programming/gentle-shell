@@ -14,6 +14,8 @@ import {
 	NativeReviewCliV216,
 	NativeReviewIntegrationError,
 	createNodeExecFileAdapter,
+	createWindowsProcessTreeKiller,
+	windowsTaskkillPath,
 	gentleAiProcessEnvironment,
 	isNativeReviewUnachievableVerbRefused,
 	type ExecFileAdapter,
@@ -839,6 +841,17 @@ test("node execFile adapter still enforces the timeout on Windows when the tree 
 	const result = await adapter({ file: process.execPath, arguments: ["-e", "setTimeout(() => {}, 5_000)"], cwd: process.cwd(), maxBufferBytes: 1024, timeoutMs: 100 });
 	assert.equal(result.timedOut, true);
 	assert.ok(Date.now() - startedAt < 3_000, `settled after ${Date.now() - startedAt}ms`);
+});
+
+// A bare "taskkill" resolves from the current directory first on Windows, so a
+// repository shipping its own taskkill.exe would run on any abort or timeout.
+test("Windows tree kill runs taskkill by its absolute System32 path from a trusted cwd", () => {
+	const calls: Array<{ file: string; args: readonly string[]; cwd: string }> = [];
+	const kill = createWindowsProcessTreeKiller({ SystemRoot: "D:\\Windows" }, (file, args, options) => { calls.push({ file, args, cwd: options.cwd }); return { on() {} }; });
+	kill(42);
+	assert.deepEqual(calls, [{ file: "D:\\Windows\\System32\\taskkill.exe", args: ["/pid", "42", "/T", "/F"], cwd: "D:\\Windows\\System32" }]);
+	assert.equal(windowsTaskkillPath({}), "C:\\Windows\\System32\\taskkill.exe");
+	assert.equal(windowsTaskkillPath({ SystemRoot: "relative\\dir" }), "C:\\Windows\\System32\\taskkill.exe", "a relative SystemRoot is never trusted");
 });
 
 test("capture-result receives the controller AbortSignal without an automatic mutation timeout", async () => {

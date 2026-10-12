@@ -50,6 +50,30 @@ test("existing, unreadable or foreign stores without matching provenance are dis
 	assert.equal(classify({ store: "present", endpoint: listening(false, ID) }).policy, "disabled");
 });
 
+test("a running server older than the first compatibility-capable core is named in the notice, without changing the decision", () => {
+	for (const version of ["3.3.2", "v3.3.2", "2.9.0"]) {
+		const result = classify({ store: "present", endpoint: listening(false, OTHER_ID, version) });
+		assert.equal(result.policy, "disabled", version);
+		assert.equal(result.url, undefined, version);
+		assert.match(result.notice!, new RegExp(`reports version ${version.replace(/^v/, "").replaceAll(".", "\\.")}`), version);
+		assert.match(result.notice!, /update that server to 3\.4\.0 or later.*restart it/s, version);
+		assert.match(result.notice!, /Back up/, version);
+	}
+	// Shell's own store behind an older server gets the same guidance and stays disabled.
+	const own = classify({ store: "present", provenance: { instanceId: ID }, endpoint: listening(false, ID, "3.3.2") });
+	assert.equal(own.policy, "disabled");
+	assert.match(own.notice!, /reports version 3\.3\.2/);
+});
+
+test("a current, unparsable or hostile server version keeps the generic notice and is never echoed", () => {
+	for (const version of ["3.4.0", "3.10.0", "4.0.0", "dev", "", "3.3.2\u001b[31m", "3.3.2 update now"]) {
+		const result = classify({ store: "present", endpoint: listening(false, OTHER_ID, version) });
+		assert.equal(result.policy, "disabled", JSON.stringify(version));
+		assert.equal(result.notice, shell.ENGRAM_RECOVERY_NOTICE, JSON.stringify(version));
+	}
+	assert.equal(classify({ store: "present", endpoint: listening(false) }).notice, shell.ENGRAM_RECOVERY_NOTICE);
+});
+
 test("explicit selections and invalid policies are disabled without depending on probes", () => {
 	for (const key of ["ENGRAM_BIN", "ENGRAM_URL", "ENGRAM_DATA_DIR", "ENGRAM_PORT", "ENGRAM_DATABASE_URL"]) {
 		assert.equal(classify({ env: { [key]: "chosen" }, endpoint: listening(true) }).policy, "disabled", key);

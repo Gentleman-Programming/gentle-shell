@@ -218,6 +218,21 @@ export const ENGRAM_RECOVERY_NOTICE = "Engram memory disabled: Shell could not v
 // `gentle-shell setup` publishes the verified core (ensureEngram) on every run.
 export const ENGRAM_PROVISION_FAILED_NOTICE = "Engram memory disabled for this launch: Shell could not provision a new Engram store identity, so it cannot vouch for that store. Restart Shell to retry. If Shell keeps reporting unknown compatibility and ~/.engram holds only .instance-id files, back it up and remove it, then restart Shell. Shell remains usable without memory.";
 export const ENGRAM_CORE_MISSING_NOTICE = "Engram memory disabled: the bundled Engram core is not installed yet. Run 'gentle-shell setup' to install the verified core, then restart Shell. Shell remains usable without memory.";
+// The first Engram release whose server answers GET /compatibility (PR #1792).
+export const ENGRAM_COMPATIBILITY_MIN_VERSION = "3.4.0";
+export function engramOutdatedServerNotice(version        )         {
+	return `Engram memory disabled: the running Engram server reports version ${version}, which cannot prove store compatibility. Back up your Engram data, update that server to ${ENGRAM_COMPATIBILITY_MIN_VERSION} or later with the method you installed it with, and restart it; updating Shell alone does not replace a running server. Shell rechecks on every launch and remains usable without memory.`;
+}
+// A strictly numeric x.y.z (optionally v-prefixed) older than the minimum. The
+// version comes from the server, so anything else is never echoed to the user.
+function outdatedServerVersion(version                    )                     {
+	const match = /^v?(\d{1,4})\.(\d{1,4})\.(\d{1,4})$/.exec(version ?? "");
+	if (match === null) return undefined;
+	const parts = match.slice(1).map(Number);
+	const minimum = ENGRAM_COMPATIBILITY_MIN_VERSION.split(".").map(Number);
+	const index = parts.findIndex((part, i) => part !== minimum[i]);
+	return index >= 0 && parts[index] < minimum[index] ? parts.join(".") : undefined;
+}
 // The default endpoint gentle-engram uses without ENGRAM_URL or ENGRAM_PORT.
 export const ENGRAM_DEFAULT_PORT = 7437;
 export const ENGRAM_DEFAULT_URL = `http://127.0.0.1:${ENGRAM_DEFAULT_PORT}`;
@@ -239,11 +254,13 @@ export function engramProbeAllowed(env     )          {
 // Evidence only: never run an executable, open SQLite or infer compatibility
 // from versions. `provenance` means Shell's own record matched the store
 // (directory, .instance-id, core digest) and its header showed no newer schema.
+// A server version only selects the wording of a disabled decision.
 export function classifyEngramStartup(input
 	                                                          )                {
-	const unknown                = { policy: "disabled", notice: ENGRAM_RECOVERY_NOTICE };
-	if (!engramProbeAllowed(input.env)) return unknown;
+	if (!engramProbeAllowed(input.env)) return { policy: "disabled", notice: ENGRAM_RECOVERY_NOTICE };
 	const endpoint = input.endpoint;
+	const outdated = endpoint.kind === "listening" && !endpoint.compatible ? outdatedServerVersion(endpoint.healthVersion) : undefined;
+	const unknown                = { policy: "disabled", notice: outdated === undefined ? ENGRAM_RECOVERY_NOTICE : engramOutdatedServerNotice(outdated) };
 	if (endpoint.kind === "listening" && endpoint.compatible) return { policy: "allow", url: ENGRAM_DEFAULT_URL };
 	if (endpoint.kind === "refused" && input.store === "absent") {
 		return input.core ? { policy: "allow", fresh: true } : { policy: "disabled", notice: ENGRAM_CORE_MISSING_NOTICE };

@@ -520,6 +520,23 @@ test("a verified /compatibility server is reused through an explicit URL and the
 	assert.equal(lastLaunch(unready.run([], { FIXTURE_ENGRAM_PORT: notReady })).env.ENGRAM_STARTUP_POLICY, "disabled");
 });
 
+test("a foreign store behind a 3.3.2 server stays guarded and the launch names the server version to update", { skip: posixHost }, async (t) => {
+	const prefix = bundledPrefix(t);
+	const data = join(prefix.home, ".engram");
+	mkdirSync(data);
+	writeHeader(join(data, "engram.db"), 1);
+	const before = readFileSync(join(data, "engram.db"));
+	// Engram 3.3.2 has no /compatibility route (the fixture answers 404).
+	const port = await engramServer(t, { "/health": [200, { status: "ok", service: "engram", version: "3.3.2", instance_id: OTHER_STORE_ID }] });
+	const result = prefix.run([], { FIXTURE_ENGRAM_PORT: port });
+	assert.equal(result.status, 0, result.stderr);
+	const seen = lastLaunch(result);
+	assert.deepEqual([seen.env.ENGRAM_STARTUP_POLICY, seen.env.ENGRAM_BIN, seen.env.ENGRAM_URL], ["disabled", prefix.guard, undefined]);
+	assert.match(result.stderr, /memory disabled.*reports version 3\.3\.2.*update that server to 3\.4\.0 or later/s);
+	assert.deepEqual(readFileSync(join(data, "engram.db")), before);
+	assert.equal(existsSync(provenancePath(prefix)), false);
+});
+
 test("a fresh launch whose launcher is killed during Pi already has finalized provenance, and the next launch allows memory", { skip: posixHost }, (t) => {
 	const prefix = bundledPrefix(t);
 	const first = prefix.run([], { FIXTURE_CREATE_STORE: STORE_ID, FIXTURE_KILL_LAUNCHER: "1" });

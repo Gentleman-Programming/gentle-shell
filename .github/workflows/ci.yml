@@ -128,21 +128,23 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24"
-      - name: Capture crash dumps of node.exe
+      - name: Capture crash dumps of node.exe and powershell.exe
         shell: pwsh
         run: |
           $dumps = Join-Path $env:RUNNER_TEMP "node-dumps"
           New-Item -ItemType Directory -Force $dumps | Out-Null
-          $key = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\node.exe"
-          New-Item -Path $key -Force | Out-Null
-          New-ItemProperty -Path $key -Name DumpFolder -PropertyType ExpandString -Value $dumps -Force | Out-Null
-          New-ItemProperty -Path $key -Name DumpType -PropertyType DWord -Value 2 -Force | Out-Null
-      - name: Abort a node process on purpose
+          foreach ($exe in @("node.exe", "powershell.exe")) {
+            $key = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\$exe"
+            New-Item -Path $key -Force | Out-Null
+            New-ItemProperty -Path $key -Name DumpFolder -PropertyType ExpandString -Value $dumps -Force | Out-Null
+            New-ItemProperty -Path $key -Name DumpType -PropertyType DWord -Value 2 -Force | Out-Null
+          }
+      - name: Fast-fail a process on purpose
         shell: pwsh
         run: |
-          & node -e "process.abort()"
+          & powershell.exe -NoProfile -Command "[Environment]::FailFast('gentle-shell #2121 dump capture proof')"
           "EXIT=$LASTEXITCODE (0x{0:X8})" -f $LASTEXITCODE
-          Start-Sleep -Seconds 10
+          Start-Sleep -Seconds 15
           Get-ChildItem (Join-Path $env:RUNNER_TEMP "node-dumps") | Format-Table Name, Length
       - name: Upload node.exe crash dumps
         if: always()

@@ -1783,7 +1783,9 @@ test("temporary instructions transport file is cleaned up if child emits an earl
 
 // Execution budgets bound total work, not silence: the stall watchdog still owns
 // a quiet child, and these ceilings own a busy one. Both read the counters the
-// card already shows, and both stop through the same termination path.
+// card already shows, and both stop through the same termination path. A ceiling
+// fires on continued work, so a child that finishes exactly at the ceiling keeps
+// its final report instead of being cut off mid-settle.
 function completeTurn(child: FakeChild, tokens = 0): void {
 	child.emit({ type: "message_end", message: { role: "assistant", usage: { totalTokens: tokens, cost: { total: 0 } } } });
 	child.emit({ type: "turn_end" });
@@ -1798,6 +1800,9 @@ test("max_turns stops the child when the recorded turn count reaches the ceiling
 	await tick();
 	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.RUNNING, "one turn is below a ceiling of two");
 	completeTurn(child);
+	await tick();
+	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.RUNNING, "the turn that reaches the ceiling does not cut the child off");
+	child.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "turn three" } });
 	await tick();
 	const finished = await h.runner.waitFor(task.id);
 	assert.equal(finished.status, TASK_STATUS.TIMED_OUT);
@@ -1830,11 +1835,45 @@ test("max_total_tokens stops the child on reported usage alone", async () => {
 	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.RUNNING, "one turn of usage is below the ceiling");
 	completeTurn(child, 60_000);
 	await tick();
+	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.RUNNING, "reported usage alone does not cut the child off");
+	child.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "turn three" } });
+	await tick();
 	const finished = await h.runner.waitFor(task.id);
 	assert.equal(finished.status, TASK_STATUS.TIMED_OUT);
 	assert.match(finished.error ?? "", /reached max_total_tokens 100000 \(120000 reported\) after:/);
 	assert.equal(finished.tokens, 120_000, "the ceiling reads the reported usage the card shows");
-	assert.equal(finished.turns, 1, "the usage that crossed the ceiling stopped the child before its turn completed");
+	assert.equal(finished.turns, 2, "the turn that carried the crossing usage still completes");
+});
+
+test("a child that completes its task exactly at max_turns still delivers the final report", async () => {
+	const h = harness({ stallTimeoutMs: FOUR_MIN_MS, maxTurns: 1 });
+	const task = h.runner.run(request());
+	await tick();
+	const child = h.children[0];
+	completeTurn(child);
+	child.emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "bounded and done" }], stopReason: "stop" }] });
+	child.emit({ type: "agent_settled" });
+	await tick();
+	const finished = await h.runner.waitFor(task.id);
+	assert.equal(finished.status, TASK_STATUS.COMPLETED, "the turn ceiling must not cut off a task that finished at the ceiling");
+	assert.equal(finished.result, "bounded and done");
+	assert.equal(finished.turns, 1);
+	assert.equal(finished.error, null, "the ceiling never fired");
+});
+
+test("a child that finishes exactly at max_total_tokens still delivers the final report", async () => {
+	const h = harness({ stallTimeoutMs: FOUR_MIN_MS, maxTotalTokens: 100_000 });
+	const task = h.runner.run(request());
+	await tick();
+	const child = h.children[0];
+	completeTurn(child, 120_000);
+	child.emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "over budget but done" }], stopReason: "stop" }] });
+	child.emit({ type: "agent_settled" });
+	await tick();
+	const finished = await h.runner.waitFor(task.id);
+	assert.equal(finished.status, TASK_STATUS.COMPLETED, "the token ceiling must not cut off a task that finished at the ceiling");
+	assert.equal(finished.result, "over budget but done");
+	assert.equal(finished.error, null, "the ceiling never fired");
 });
 
 test("a provider that reports no usage leaves the token ceiling inert", async () => {
@@ -1853,8 +1892,9 @@ test("a provider that reports no usage leaves the token ceiling inert", async ()
 
 test("a task that emits an event while waiting counts as resumed and is then stopped by the ceiling", async () => {
 	// No budget needs a special case for a waiting task: the store already resumes
-	// one on any non-ASK event (agents-protocol.ts:426), and only an event that
-	// changes turns or tokens can cross a ceiling. This pins that contract.
+	// one on any non-ASK event (applyTaskEvent, lib/agents-protocol.ts). A turn that
+	// completes while waiting is counted, and the next frame that keeps the child
+	// working is what stops it. This pins that contract.
 	let release: (answer: Record<string, unknown>) => void = () => {};
 	const answered = new Promise<Record<string, unknown>>((resolve) => { release = resolve; });
 	const h = harness({ stallTimeoutMs: FOUR_MIN_MS, maxTurns: 1, answer: answered });
@@ -1866,8 +1906,12 @@ test("a task that emits an event while waiting counts as resumed and is then sto
 	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.WAITING, "the child is waiting on the operator");
 	completeTurn(child);
 	await tick();
+	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.RUNNING, "a non-ASK event resumes the waiting task");
+	assert.equal(h.store.get(task.id)?.turns, 1);
+	child.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "resumed" } });
+	await tick();
 	const finished = await h.runner.waitFor(task.id);
-	assert.equal(finished.status, TASK_STATUS.TIMED_OUT, "the frame that crosses the ceiling also resumes the task");
+	assert.equal(finished.status, TASK_STATUS.TIMED_OUT, "the resumed task is stopped once it keeps working past the ceiling");
 	assert.equal(finished.turns, 1);
 	assert.match(finished.error ?? "", /reached max_turns 1 after:/);
 	release({ value: "yes" });

@@ -223,10 +223,11 @@ export const ENGRAM_COMPATIBILITY_MIN_VERSION = "3.4.0";
 export function engramOutdatedServerNotice(version        )         {
 	return `Engram memory disabled: the running Engram server reports version ${version}, which cannot prove store compatibility. Back up your Engram data, update that server to ${ENGRAM_COMPATIBILITY_MIN_VERSION} or later with the method you installed it with, and restart it; updating Shell alone does not replace a running server. Shell rechecks on every launch and remains usable without memory.`;
 }
-// A strictly numeric x.y.z (optionally v-prefixed) older than the minimum. The
-// version comes from the server, so anything else is never echoed to the user.
+// A canonical numeric x.y.z (optionally v-prefixed, no leading zeros) older than
+// the minimum. The version comes from the server, so anything else is never
+// echoed to the user.
 function outdatedServerVersion(version                    )                     {
-	const match = /^v?(\d{1,4})\.(\d{1,4})\.(\d{1,4})$/.exec(version ?? "");
+	const match = /^v?(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})$/.exec(version ?? "");
 	if (match === null) return undefined;
 	const parts = match.slice(1).map(Number);
 	const minimum = ENGRAM_COMPATIBILITY_MIN_VERSION.split(".").map(Number);

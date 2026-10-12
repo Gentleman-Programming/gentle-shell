@@ -66,7 +66,7 @@ test("a running server older than the first compatibility-capable core is named 
 });
 
 test("a current, unparsable or hostile server version keeps the generic notice and is never echoed", () => {
-	for (const version of ["3.4.0", "3.10.0", "4.0.0", "dev", "", "3.3.2\u001b[31m", "3.3.2 update now"]) {
+	for (const version of ["3.4.0", "3.10.0", "4.0.0", "dev", "", "3.3.2\u001b[31m", "3.3.2 update now", "03.3.2", "3.03.2", "3.3.02", "v03.3.2"]) {
 		const result = classify({ store: "present", endpoint: listening(false, OTHER_ID, version) });
 		assert.equal(result.policy, "disabled", JSON.stringify(version));
 		assert.equal(result.notice, shell.ENGRAM_RECOVERY_NOTICE, JSON.stringify(version));

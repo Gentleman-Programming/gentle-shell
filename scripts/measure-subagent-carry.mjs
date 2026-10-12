@@ -10,12 +10,18 @@
 // child. That cumulative total ("carry load") is what the provider re-reads per
 // call, and comparing it with the one-time content total is the amplification.
 //
+// `--days` chooses which delegations to report: a child counts when it has activity
+// inside the window. Each reported child is then measured over its full transcript,
+// because a turn re-reads every tool result that preceded it, including the ones
+// added before the window opened, so counting only in-window entries would
+// understate the carry.
+//
 // Read-only: it opens session transcripts and prints aggregates. No writes, no
 // network, no dependencies.
 //
 // Usage: node scripts/measure-subagent-carry.mjs [--days N] [--top N] [--json]
 //        [--home DIR]
-//   --days  window in days, filtered by entry timestamp   (default 7)
+//   --days  days of activity that decide which children to report (default 7)
 //   --top   how many of the heaviest children to list     (default 5)
 //   --home  agent home to read (default $GENTLE_PI_AGENT_HOME,
 //           then $PI_CODING_AGENT_DIR, then ~/.pi/agent)
@@ -72,10 +78,15 @@ function textBytes(message) {
 	return total;
 }
 
+// Persisted timestamps are ISO strings, so Number() alone yields NaN and lets every
+// entry through; parse strings with Date.parse and keep numeric support.
+const readTime = (value) => (typeof value === "string" ? Date.parse(value) : Number(value));
+
 const children = [];
 for (const file of walk(root)) {
+	let fileTime = 0;
 	try {
-		if (statSync(file).mtimeMs < cutoff) continue;
+		fileTime = statSync(file).mtimeMs;
 	} catch {
 		continue;
 	}
@@ -90,6 +101,7 @@ for (const file of walk(root)) {
 	let calls = 0;
 	let turns = 0;
 	let tokens = 0;
+	let last = Number.NaN;
 	for (const line of lines) {
 		if (!line.trim()) continue;
 		let entry;
@@ -98,10 +110,10 @@ for (const file of walk(root)) {
 		} catch {
 			continue;
 		}
+		const when = readTime(entry?.timestamp);
+		if (Number.isFinite(when) && !(when <= last)) last = when;
 		const message = entry?.message;
 		if (!message || typeof message !== "object") continue;
-		const when = Number(entry.timestamp);
-		if (Number.isFinite(when) && when < cutoff) continue;
 		if (message.role === "toolResult") {
 			unique += textBytes(message);
 			calls += 1;
@@ -113,6 +125,10 @@ for (const file of walk(root)) {
 			if (Number.isFinite(total) && total > 0) tokens += total;
 		}
 	}
+	// The window selects which children to report; each one is then measured over its
+	// full transcript. A file with no readable timestamp falls back to its mtime.
+	const active = Number.isFinite(last) ? last : fileTime;
+	if (active < cutoff) continue;
 	if (calls > 0 || turns > 0) children.push({ id: file.slice(root.length + 1), unique, carry, calls, turns, tokens });
 }
 
@@ -137,7 +153,8 @@ if (asJson) {
 	// 4 bytes per token is a rough English-text ratio, useful to compare against the
 	// provider's own numbers rather than as a measurement of them.
 	const approxTokens = (value) => `${(value / 4 / 1_000_000).toFixed(1)}M`;
-	console.log(`Subagent carry load, last ${days} day(s) — ${root}`);
+	console.log(`Subagent carry load — ${root}`);
+	console.log(`children active in the last ${days} day(s), each measured over its full transcript`);
 	console.log(`children with activity      ${children.length}`);
 	console.log(`unique tool-result content  ${unique.toLocaleString("en-US")} B (~${approxTokens(unique)} tokens)`);
 	console.log(`cumulative carry load       ${carry.toLocaleString("en-US")} B (~${approxTokens(carry)} tokens)`);

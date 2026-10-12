@@ -17,7 +17,10 @@ interface Pending { sessionId: string; inputPath: string; path: string; root: st
 const normalized = (text: string) => text.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
 const unknown = (): ChangeSnapshot => ({ kind: "unavailable", reason: "Tool snapshots could not be verified; diff unavailable." });
 
-/** Observe explicit write/edit outcomes, never infer ownership from Git status or shell text. */
+/**
+ * Observe explicit write/edit outcomes, never infer ownership from Git status or shell text.
+ * Git only reconciles captured entries against HEAD later (SessionChanges.refresh); it never attributes.
+ */
 export function installSessionChangeCapture(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, resolver: WorktreeResolver = resolveSessionWorktree): void {
 	const child = env.GENTLE_PI_AGENTS_CHILD === "1";
 	const pending = new Map<string, Pending>();

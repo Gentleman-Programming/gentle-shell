@@ -4673,7 +4673,7 @@ function sessionChange(ctx: ExtensionContext, id: string, root: string, path: st
 }
 
 test("captured changes update the widget and bar without repository scans", async () => {
- const { pi, handlers, git } = fakePi([{numstat:"999\t0\tforeign.ts\n",porcelain:"?? foreign.ts\0"}]);
+ const { pi, handlers, git } = fakePi([{numstat:"999\t0\tforeign.ts\n",porcelain:" M lib/b.ts\0?? foreign.ts\0"}]);
  gentleShell(pi,{});
  const {ctx,ui}=fakeContext();
  await fire(handlers,"session_start",ctx);
@@ -4690,19 +4690,42 @@ test("captured changes update the widget and bar without repository scans", asyn
  assert.match(rail.render(46).join("\n"), /1 file · \+2 −0/);
  sessionChange(ctx,"b","/repo","lib/b.ts","one\ntwo\n","one\ntwo\nthree\n");
  await fire(handlers,"agent_end",ctx);
+ await new Promise(resolve=>setTimeout(resolve,10));
  assert.notEqual(rail.digest!(), digest, "same-count line changes invalidate the unified Status");
  assert.match(rail.render(46).join("\n"), /1 file · \+3 −0/);
- assert.equal(git.length,0);
+ assert.doesNotMatch(rail.render(46).join("\n"), /foreign/);
+ assert.ok(onlyReconciliation(git, ["lib/b.ts"]), `turn end ran more than reconciliation: ${JSON.stringify(git)}`);
+ await fire(handlers,"session_shutdown",ctx);
+});
+
+test("committed captured changes leave the widget and the footer counter at turn end", async () => {
+ const { handlers, git, pi } = fakePi([{numstat:"",porcelain:""}]);
+ gentleShell(pi,{});
+ const {ctx,ui}=fakeContext();
+ sessionChange(ctx,"a","/repo","lib/b.ts","","one\n");
+ await fire(handlers,"session_start",ctx);
+ assert.equal(git.length,0,"startup never reconciles");
+ assert.match(renderFooter(ui),/main ±1/);
+ await fire(handlers,"agent_end",ctx);
+ await new Promise(resolve=>setTimeout(resolve,10));
+ assert.ok(onlyReconciliation(git, ["lib/b.ts"]), JSON.stringify(git));
+ assert.doesNotMatch(renderFooter(ui),/±/);
+ assert.equal(ui.widgets.has("gentle-shell-changes"),false);
  await fire(handlers,"session_shutdown",ctx);
 });
 
 
-// The changes overlay may ask Git for each captured root's HEAD label, and
-// nothing else: no status, diff, numstat or worktree scan behind the user's
-// back. Labelling is metadata, scanning is the behaviour these tests forbid.
+// The changes overlay may ask Git for each captured root's HEAD label and to
+// reconcile captured paths against HEAD, and nothing else: no unscoped status,
+// diff, numstat or worktree scan behind the user's back. Reconciliation is
+// limited to captured paths, so Git never attributes a file to the agent.
+const reconciles = (command: string[], paths?: readonly string[]) => command[0] === "status" && command.includes("--") &&
+ command.slice(command.indexOf("--") + 1).every((spec) => spec.startsWith(":(literal)")) &&
+ (!paths || command.slice(command.indexOf("--") + 1).sort().join("\0") === paths.map((path) => ":(literal)" + path).sort().join("\0"));
+const onlyReconciliation = (git: readonly string[][], paths?: readonly string[]) => git.length > 0 && git.every((args) => reconciles(args[0] === "-C" ? args.slice(2) : args, paths));
 const onlyHeadLabels = (git: readonly string[][]) => git.every((args) => {
  const command = args[0] === "-C" ? args.slice(2) : args;
- return command[0] === "symbolic-ref" || (command[0] === "rev-parse" && command.includes("--verify"));
+ return command[0] === "symbolic-ref" || (command[0] === "rev-parse" && command.includes("--verify")) || reconciles(command);
 });
 
 test("same-session explicit registration after bootstrap does not claim Changes", async () => {
@@ -4731,7 +4754,7 @@ test("same-session explicit registration after bootstrap does not claim Changes"
 });
 
 test("Changes opens only for captured mutations, not registered dirty roots", async () => {
- const {pi,handlers,commands,tools,git}=fakePi();
+ const {pi,handlers,commands,tools,git}=fakePi([{numstat:"",porcelain:" M file.ts\0?? dirty.ts\0"}]);
  gentleShell(pi,{});
  const {ctx,ui,overlayReady}=fakeContext();
  await fire(handlers,"session_start",ctx);
@@ -4750,7 +4773,7 @@ test("Changes opens only for captured mutations, not registered dirty roots", as
 });
 
 test("overlay groups captured roots and refreshes same-count diffs without HEAD or external files", async () => {
- const {pi,handlers,commands,git}=fakePi();
+ const {pi,handlers,commands,git}=fakePi([{numstat:"",porcelain:" M same.ts\0"}]);
  gentleShell(pi,{GENTLE_PI_SHELL_CHANGES_POLL_MS:"5"});
  const {ctx,ui,overlayReady}=fakeContext();
  sessionChange(ctx,"a","/repo","same.ts","old\n","first\n");

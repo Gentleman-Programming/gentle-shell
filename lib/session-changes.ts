@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { open } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { generateUnifiedPatch } from "@earendil-works/pi-coding-agent";
-import { changesModel, type ChangedFile, type WorktreeChanges } from "./shell-changes.ts";
+import { changesModel, type ChangedFile, type GitRunner, type WorktreeChanges } from "./shell-changes.ts";
 
 export const SESSION_CHANGE_ENTRY = "gentle-pi.session-change/v1";
 export const SESSION_CHANGE_EVENT = "gentle-pi:session-change";
@@ -65,6 +65,21 @@ export function isSessionChangeEvidence(value: unknown): value is SessionChangeE
 export const sameSnapshot = (a: ChangeSnapshot, b: ChangeSnapshot): boolean =>
 	a.kind === b.kind && (a.kind === "absent" || (a.kind === "text" && b.kind === "text" && a.text === b.text));
 const snapshotText = (value: ChangeSnapshot) => value.kind === "text" ? value.text : "";
+const shown = (state: FileState) => Boolean(state.unavailable) || !sameSnapshot(state.before, state.after);
+const gitPath = (path: string) => path.replace(/\\/g, "/");
+
+/** Paths Git still reports as differing from HEAD, including both names of a rename or copy. */
+function porcelainPaths(stdout: string): Set<string> {
+	const records = stdout.split("\0");
+	const paths = new Set<string>();
+	for (let i = 0; i < records.length; i++) {
+		const record = records[i];
+		if (record.length < 4) continue;
+		paths.add(record.slice(3));
+		if (/[RC]/.test(record.slice(0, 2)) && i + 1 < records.length) paths.add(records[++i]);
+	}
+	return paths;
+}
 
 export class SessionChanges {
 	private readonly seen = new Set<string>();
@@ -74,6 +89,9 @@ export class SessionChanges {
 	notice: string | undefined;
 	readonly sessionId: string;
 	private cached: WorktreeChanges[] | undefined;
+	/** Captured entries Git last saw matching HEAD; hidden, never discarded. */
+	private readonly settled = new Map<string, Set<string>>();
+	private reconciling: Promise<void> | undefined;
 	constructor(sessionId: string, entries: readonly Entry[] = []) { this.sessionId = sessionId; this.restore(entries); }
 
 	restore(entries: readonly Entry[]): void {
@@ -104,12 +122,14 @@ export class SessionChanges {
 		// Keep the final state even after an own revert, to detect later external edits.
 		this.patch(evidence.path, state);
 		files.set(evidence.path, state);
+		this.settled.get(evidence.root)?.delete(evidence.path);
 		this.cached = undefined;
 		return true;
 	}
 	private changed(root: string): ChangedFile[] {
+		const settled = this.settled.get(root);
 		return [...(this.files.get(root) ?? [])].flatMap(([path, state]) => {
-			if (!state.unavailable && sameSnapshot(state.before, state.after)) return [];
+			if (!shown(state) || settled?.has(path)) return [];
 			const patch = this.patch(path, state);
 			const patchLines = patch.split("\n");
 			const firstHunk = patchLines.findIndex(line => line.startsWith("@@"));
@@ -139,7 +159,36 @@ export class SessionChanges {
 		this.announced = true;
 		return this.notice;
 	}
-	async refresh() { return this.model; }
+	/** Without Git this only returns the captured model. With Git, first reconcile it against HEAD. */
+	async refresh(gitForRoot?: (root: string) => GitRunner) {
+		if (gitForRoot) await (this.reconciling ??= this.reconcile(gitForRoot).finally(() => { this.reconciling = undefined; }));
+		return this.model;
+	}
+	/**
+	 * Hide captured files whose content matches HEAD again (committed or reverted outside the agent).
+	 * Git only removes or restores captured entries; paths it reports beyond them are never attributed.
+	 * A failed status leaves the root exactly as it was.
+	 */
+	private async reconcile(gitForRoot: (root: string) => GitRunner): Promise<void> {
+		await Promise.all([...this.files].map(async ([root, files]) => {
+			const candidates = [...files].filter(([, state]) => shown(state));
+			if (candidates.length === 0) return;
+			let result: Awaited<ReturnType<GitRunner>>;
+			try {
+				result = await gitForRoot(root)(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored", "--", ...candidates.map(([path]) => ":(literal)" + gitPath(path))]);
+			} catch { return; }
+			if (result.code !== 0) return;
+			const dirty = porcelainPaths(result.stdout);
+			let settled = this.settled.get(root);
+			if (!settled) this.settled.set(root, settled = new Set());
+			for (const [path, state] of candidates) {
+				// Evidence recorded while Git ran is newer than its answer.
+				if (files.get(path) !== state) continue;
+				if (dirty.has(gitPath(path))) settled.delete(path); else settled.add(path);
+			}
+			this.cached = undefined;
+		}));
+	}
 	loadDiff(root: string, file: ChangedFile): string {
 		const state = this.files.get(root)?.get(file.path);
 		return state ? this.patch(file.path, state) : "No captured agent diff for this file.";

@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import shell from "../extensions/gentle-shell.ts";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import shell, { shellGitRunner } from "../extensions/gentle-shell.ts";
 import { SESSION_CHANGE_ENTRY, SESSION_CHANGE_EVENT } from "../lib/session-changes.ts";
 
-function fixture(entries: any[] = []) {
+function fixture(entries: any[] = [], options: { root?: string; gitRunner?: (root: string) => (args: string[]) => Promise<any> } = {}) {
 	const handlers = new Map<string, Function[]>(), listeners = new Map<string, Function[]>();
 	const commands = new Map<string, any>(), widgets = new Map<string, any>();
 	let gitCalls = 0;
@@ -12,10 +16,11 @@ function fixture(entries: any[] = []) {
 		appendEntry: (customType,data) => entries.push({type:"custom",customType,data}), registerTool() {}, registerShortcut() {}, registerMessageRenderer() {},
 		registerCommand: (key, registration) => commands.set(key,registration) };
 	const notices: string[] = [];
-	const ctx: any = { hasUI:true, cwd:"/repo", sessionManager:{getSessionId:()=>"session",getEntries:()=>entries},
+	const root = options.root ?? "/repo";
+	const ctx: any = { hasUI:true, cwd:root, sessionManager:{getSessionId:()=>"session",getEntries:()=>entries},
 		ui: { setFooter() {}, getEditorComponent:()=>({}), setWorkingVisible() {}, setWidget:(key,value)=>widgets.set(key,value), notify:(text)=>notices.push(text) } };
-	shell(pi,{}, {resolveWorktree:()=>({root:"/repo",commonDir:"/git"}),devBinary:()=>undefined,
-		gitRunner:()=>async()=>{gitCalls++; return await new Promise<any>(()=>{});} });
+	shell(pi,{}, {resolveWorktree:()=>({root,commonDir:root+"/.git"}),devBinary:()=>undefined,
+		gitRunner:(cwd)=>async(args)=>{gitCalls++; return options.gitRunner ? options.gitRunner(cwd)(args) : await new Promise<any>(()=>{});} });
 	const fire=async(key,event={})=>{for(const fn of handlers.get(key)??[]) await fn(event,ctx);};
 	return {pi,ctx,entries,notices,commands,widgets,fire,gitCalls:()=>gitCalls};
 }
@@ -50,6 +55,8 @@ test("the changes overlay labels each session tree with its root's branch instea
 	shell(pi,{},{resolveWorktree:()=>({root:"/repo",commonDir:"/git"}),devBinary:()=>undefined,
 		gitRunner:(root:string)=>async(args:string[])=>{gitRoots.push(root);await new Promise(r=>setImmediate(r));
 			if(args[0]==="symbolic-ref")return root==="/repo"?{stdout:"feature\n",code:0}:{stdout:"",code:1};
+			// Opening reconciles captured paths; both stay dirty so both trees are listed.
+			if(args[0]==="status")return {stdout:"?? own.ts\0",code:0};
 			return {stdout:"deadbeef\n",code:0};}});
 	for(const fn of handlers.get("session_start")??[])await fn({},ctx);
 	void commands.get("gentle:changes").handler("",ctx);
@@ -62,4 +69,47 @@ test("the changes overlay labels each session tree with its root's branch instea
 	assert.deepEqual([...new Set(gitRoots)].sort(),["/other","/repo"],"git is asked once per root, only while the overlay is open");
 	assert.ok(renders>0,"a resolved label asks the overlay to repaint");
 	for(const fn of handlers.get("session_shutdown")??[])await fn({},ctx);
+});
+
+function tempRepo() {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-changes-")));
+	const git = (...args: string[]) => execFileSync("git", ["-C", root, "-c", "user.name=test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", ...args], { encoding: "utf8" });
+	git("init", "-q");
+	writeFileSync(join(root, "file.ts"), "base\n");
+	git("add", "file.ts"); git("commit", "-q", "-m", "base");
+	return { root, git, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+}
+const captured = (root: string, id: string, before: string, after: string) => ({ type: "custom", customType: SESSION_CHANGE_ENTRY,
+	data: { sessionId: "session", evidence: { id, root, path: "file.ts", before: { kind: "text", text: before }, after: { kind: "text", text: after } } } });
+const settle = async () => { for (let i = 0; i < 20; i++) await new Promise(resolve => setTimeout(resolve, 5)); };
+
+test("an agent edit that is committed leaves Changes and the counter, and reappears when edited again", async () => {
+	const repo = tempRepo();
+	try {
+		writeFileSync(join(repo.root, "file.ts"), "agent\n");
+		const entries: any[] = [captured(repo.root, "a", "base\n", "agent\n")];
+		const f = fixture(entries, { root: repo.root, gitRunner: (cwd) => shellGitRunner(cwd) });
+		await f.fire("session_start");
+		assert.equal(f.gitCalls(), 0, "startup never reconciles");
+		await f.fire("agent_end"); await settle();
+		assert.equal(typeof f.widgets.get("gentle-shell-changes"), "function", "an uncommitted agent edit stays listed");
+		repo.git("commit", "-q", "-am", "agent work");
+		await f.fire("agent_end"); await settle();
+		assert.equal(f.widgets.get("gentle-shell-changes"), undefined, "committed work leaves the widget and counter");
+		await f.commands.get("gentle:changes").handler("", f.ctx);
+		assert.match(f.notices.join("\n"), /No captured agent changes/);
+		writeFileSync(join(repo.root, "file.ts"), "edited again\n");
+		await f.fire("agent_end"); await settle();
+		assert.equal(typeof f.widgets.get("gentle-shell-changes"), "function", "a dirty file reappears with its session diff");
+		await f.fire("session_shutdown");
+	} finally { repo.cleanup(); }
+});
+
+test("a failing Git leaves the captured list unchanged", async () => {
+	const f = fixture([captured("/repo", "a", "base\n", "agent\n")], { gitRunner: () => async () => ({ stdout: "", code: 128 }) });
+	await f.fire("session_start");
+	await f.fire("agent_end"); await settle();
+	assert.ok(f.gitCalls() > 0, "agent end reconciles captured roots");
+	assert.equal(typeof f.widgets.get("gentle-shell-changes"), "function");
+	await f.fire("session_shutdown");
 });

@@ -1313,8 +1313,9 @@ interface OverlayDeps {
 	gitForRoot(root: string): GitRunner;
 }
 
-// Refresh only the captured session model. Never read live files here; the
-// only Git the overlay touches is each root's HEAD, to label its tree.
+// Refresh only the captured session model. Never read live files here. Git
+// labels each root's HEAD and reconciles captured paths against it (hiding
+// committed ones); it only reconciles, never attributes a file to the agent.
 async function showChangesOverlay(ctx: ExtensionContext, deps: OverlayDeps): Promise<void> {
 	let host: ExternalEditorHost | undefined;
 	let view: WorktreeChangesView | undefined;
@@ -1815,11 +1816,13 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		shown = fingerprint;
 		showChanges(ctx, model, visualSettings.visibility.changes, (width) => groupedChangesOwner(width));
 	};
-	const refreshChanges = async (ctx: ExtensionContext) => {
+	const gitForRoot = (root: string) => deps.gitRunner(root);
+	// Reconcile with Git only when asked (panel, turn end), never at startup or per captured edit.
+	const refreshChanges = async (ctx: ExtensionContext, reconcile = false) => {
 		const tracker = changes;
 		if (!tracker || !ctx.hasUI || registry?.sessionId !== ctx.sessionManager.getSessionId()) return;
 		tracker.restore(ctx.sessionManager.getEntries());
-		const model = await tracker.refresh();
+		const model = await tracker.refresh(reconcile ? gitForRoot : undefined);
 		if (changes === tracker) applyChanges(ctx, model);
 	};
 	const unsubscribeWorktrees = pi.events.on(SESSION_CHANGE_EVENT, (data) => {
@@ -2021,12 +2024,13 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const openChanges = async (ctx: ExtensionContext) => {
 		if (!changes) return;
 		const tracker = changes;
-		const model = await tracker.refresh();
+		const model = await tracker.refresh(gitForRoot);
+		applyChanges(ctx, model);
 		if (model.files.length === 0) {
 			ctx.ui.notify("No captured agent changes. Only successful write/edit operations from this session and its subagents are shown; shell changes are not attributed.", "info");
 			return;
 		}
-		await showChangesOverlay(ctx, { loadDiff: (root, file) => tracker.loadDiff(root, file), worktrees: () => tracker.worktrees, refresh: () => tracker.refresh(), apply: applyChanges, pollMs: changesPollMs(env), gitForRoot: (root) => deps.gitRunner(root) });
+		await showChangesOverlay(ctx, { loadDiff: (root, file) => tracker.loadDiff(root, file), worktrees: () => tracker.worktrees, refresh: () => tracker.refresh(gitForRoot), apply: applyChanges, pollMs: changesPollMs(env), gitForRoot });
 	};
 	pi.registerCommand(CHANGES_COMMAND_NAME, {
 		description: "Browse captured write/edit changes from this agent session and its subagents, excluding preexisting and external edits. Shell changes are not attributed. Press o to open $EDITOR.",
@@ -2565,6 +2569,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	});
 	pi.on("agent_end", async (_event, ctx) => {
 		await refreshChanges(ctx);
+		// Committed work leaves Changes; a slow or failing Git never holds the turn end.
+		void refreshChanges(ctx, true).catch(() => {});
 		void refreshUsage(ctx, false);
 	});
 	pi.on("model_select", (event, ctx) => {

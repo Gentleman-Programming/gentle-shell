@@ -112,3 +112,76 @@ test("capture-limit notice is delivered once but stays on the model", () => {
 	assert.equal(new SessionChanges("s").takeNotice(),undefined);
 	assert.equal(new SessionChanges("s").model.notice,undefined);
 });
+
+// Git only reconciles captured entries against HEAD; it never attributes new ones.
+const porcelain = (...paths: string[]) => paths.map(path => " M " + path + "\0").join("");
+function scriptedGit(answers: Array<{ stdout: string; code: number } | Error>) {
+	const calls: Array<{ root: string; args: string[] }> = [];
+	return { calls, gitFor: (root: string) => async (args: string[]) => {
+		calls.push({ root, args });
+		const answer = answers[Math.min(calls.length - 1, answers.length - 1)];
+		if (answer instanceof Error) throw answer;
+		return answer;
+	} };
+}
+
+test("captured files that match HEAD again are hidden and reappear with their session diff when dirty", async () => {
+	const changes = new SessionChanges("session");
+	changes.record(evidence("a", "/repo", "kept.ts"));
+	changes.record(evidence("b", "/repo", "committed.ts"));
+	const git = scriptedGit([{ stdout: porcelain("kept.ts"), code: 0 }, { stdout: porcelain("kept.ts", "committed.ts"), code: 0 }]);
+	const model = await changes.refresh(git.gitFor);
+	assert.deepEqual(model.files.map(file => file.path), ["kept.ts"]);
+	assert.equal(changes.model.files.length, 1);
+	assert.equal(git.calls.length, 1, "one status per root");
+	const args = git.calls[0].args;
+	assert.deepEqual(args.slice(0, 4), ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+	assert.deepEqual(args.slice(args.indexOf("--") + 1).sort(), [":(literal)committed.ts", ":(literal)kept.ts"]);
+	await changes.refresh(git.gitFor);
+	assert.deepEqual(changes.model.files.map(file => file.path).sort(), ["committed.ts", "kept.ts"]);
+	assert.match(changes.loadDiff("/repo", changes.model.files.find(file => file.path === "committed.ts")!), /\+new/);
+});
+
+test("reconciliation never attributes files that only Git reports", async () => {
+	const changes = new SessionChanges("session");
+	changes.record(evidence());
+	const git = scriptedGit([{ stdout: porcelain("file.ts", "foreign.ts") + "?? other.ts\0", code: 0 }]);
+	assert.deepEqual((await changes.refresh(git.gitFor)).files.map(file => file.path), ["file.ts"]);
+	assert.equal(await new SessionChanges("empty").refresh(git.gitFor).then(() => git.calls.length), 1, "roots without captured files never ask Git");
+});
+
+test("Git failures leave the captured list unchanged", async () => {
+	const changes = new SessionChanges("session");
+	changes.record(evidence("a", "/repo", "a.ts"));
+	changes.record(evidence("b", "/repo", "b.ts"));
+	await changes.refresh(scriptedGit([{ stdout: porcelain("a.ts"), code: 0 }]).gitFor);
+	assert.deepEqual(changes.model.files.map(file => file.path), ["a.ts"]);
+	for (const failure of [{ stdout: "", code: 128 }, { stdout: "", code: 1 }, new Error("spawn failed")]) {
+		await changes.refresh(scriptedGit([failure]).gitFor);
+		assert.deepEqual(changes.model.files.map(file => file.path), ["a.ts"], "a failed status neither hides nor restores entries");
+	}
+});
+
+test("renamed porcelain records keep both captured names visible", async () => {
+	const changes = new SessionChanges("session");
+	changes.record(evidence("a", "/repo", "old.ts"));
+	changes.record({ ...evidence("b", "/repo", "new.ts"), before: absent });
+	await changes.refresh(scriptedGit([{ stdout: "R  new.ts\0old.ts\0", code: 0 }]).gitFor);
+	assert.deepEqual(changes.model.files.map(file => file.path).sort(), ["new.ts", "old.ts"]);
+});
+
+test("a later agent edit shows a hidden file again, and an edit during reconciliation is never hidden", async () => {
+	const changes = new SessionChanges("session");
+	changes.record(evidence());
+	await changes.refresh(scriptedGit([{ stdout: "", code: 0 }]).gitFor);
+	assert.deepEqual(changes.worktrees, []);
+	changes.record(evidence("b", "/repo", "file.ts", text("new\n"), text("again\n")));
+	assert.equal(changes.model.files.length, 1);
+	let release!: (value: { stdout: string; code: number }) => void;
+	const pending = changes.refresh(() => () => new Promise(resolve => { release = resolve; }));
+	await new Promise(resolve => setImmediate(resolve));
+	changes.record(evidence("c", "/repo", "file.ts", text("again\n"), text("during\n")));
+	release({ stdout: "", code: 0 });
+	await pending;
+	assert.equal(changes.model.files.length, 1, "a status taken before the latest edit cannot hide it");
+});

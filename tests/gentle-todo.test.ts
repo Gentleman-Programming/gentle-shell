@@ -114,10 +114,25 @@ test("long Todo widgets stay bounded, scroll, resize and keep their collapse con
 		assert.equal((result.details.gentleTodo as { tasks: { title: string; note: string }[] }).tasks[0].title, title.trim());
 		assert.equal((result.details.gentleTodo as { tasks: { title: string; note: string }[] }).tasks[0].note, note.trim());
 		await shortcuts.get("ctrl+shift+t")!.handler(ctx);
-		await shortcuts.get("ctrl+shift+down")!.handler(ctx);
+		await shortcuts.get("alt+shift+down")!.handler(ctx);
 		assert.notDeepEqual(bottom.render(40), collapsed, "keyboard scrolling is available without mouse");
 	}
 	t.after(() => setCardStyle(CARD_STYLE.NEON));
+});
+
+test("Todo shortcuts never take a key Pi binds by default, so startup reports no shortcut conflict", async () => {
+	// Pi keeps its default table in dist/core/keybindings.js, next to the package entry.
+	const { KEYBINDINGS } = await import(new URL("core/keybindings.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href) as
+		{ KEYBINDINGS: Record<string, { defaultKeys?: string | string[] }> };
+	assert.ok("tui.altScreen.previousPrompt" in KEYBINDINGS, "the table includes Pi's built-in prompt navigation");
+	const owners = new Map<string, string[]>();
+	for (const [id, binding] of Object.entries(KEYBINDINGS)) {
+		for (const key of ([] as string[]).concat(binding.defaultKeys ?? [])) owners.set(key, [...(owners.get(key) ?? []), id]);
+	}
+	const { pi, shortcuts } = fakePi();
+	gentleTodo(pi, {});
+	assert.deepEqual([...shortcuts.keys()].sort(), ["alt+shift+down", "alt+shift+up", "ctrl+shift+t"]);
+	for (const key of shortcuts.keys()) assert.equal(owners.get(key), undefined, `${key} is a Pi default for ${owners.get(key)?.join(", ")}`);
 });
 
 test("Todo keyboard scrolling targets the visible card after a cached sidebar breakpoint round-trip", async (t) => {
@@ -146,11 +161,11 @@ test("Todo keyboard scrolling targets the visible card after a cached sidebar br
 			bottom.render(40);
 			tui.terminal.columns = 160;
 			const before = railLines();
-			await shortcuts.get("ctrl+shift+down")!.handler(ctx);
+			await shortcuts.get("alt+shift+down")!.handler(ctx);
 			const after = railLines();
 			assert.notDeepEqual(after, before, "DOWN changes the visible cached rail, not the hidden bottom widget");
 			assert.match(after.join("\n"), /↑↓ 4–/);
-			await shortcuts.get("ctrl+shift+up")!.handler(ctx);
+			await shortcuts.get("alt+shift+up")!.handler(ctx);
 			assert.deepEqual(railLines(), before, "UP restores the expanded viewport");
 		} finally {
 			dispose();

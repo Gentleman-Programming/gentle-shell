@@ -295,7 +295,7 @@ Tasks are `pending` (`○`), `in_progress` (`◐`), `blocked` (`⊘`), `done` (`
 
 A finished list stays on screen for the turn it finished in and clears at the next. `ctrl+shift+t` collapses the card to one task line, truncating long titles and notes with `…` (`GENTLE_PI_TODO_KEY` rebinds it, `off` disables it); `GENTLE_PI_TODO=0` disables the tool and the card.
 
-Expanded cards reserve at most one third of the terminal height (up to 16 rows, with a minimum for card chrome), both in the sidebar and above the editor on narrow/mobile terminals. Scroll the full task text with the wheel in fullscreen mode or `ctrl+shift+up` / `ctrl+shift+down` in either mode. The collapse header stays visible; the row-range hint shows when more content is available. Task data and the agent's plan remain complete.
+Expanded cards reserve at most one third of the terminal height (up to 16 rows, with a minimum for card chrome), both in the sidebar and above the editor on narrow/mobile terminals. Scroll the full task text with the wheel in fullscreen mode or `alt+shift+up` / `alt+shift+down` in either mode (Pi keeps `ctrl+shift+up` / `ctrl+shift+down` for its own prompt navigation). The collapse header stays visible; the row-range hint shows when more content is available. Task data and the agent's plan remain complete.
 
 ### Gentle Stats
 

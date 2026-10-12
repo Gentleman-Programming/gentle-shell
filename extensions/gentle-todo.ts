@@ -281,7 +281,9 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		});
 	}
 
-	for (const [key, lines] of [["ctrl+shift+up", -3], ["ctrl+shift+down", 3]] as const) {
+	// Pi binds ctrl+shift+up/down to prompt navigation (tui.altScreen.*Prompt) and
+	// alt+up/down to dequeue and model reordering; alt+shift+up/down are free.
+	for (const [key, lines] of [["alt+shift+up", -3], ["alt+shift+down", 3]] as const) {
 		pi.registerShortcut(key, {
 			description: `Scroll the Todo list ${lines < 0 ? "up" : "down"}`,
 			handler: async (ctx) => session(ctx).scrollTodo?.(lines),

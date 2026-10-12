@@ -2300,6 +2300,11 @@ async function withOmittedAgentsClearedAsync(
 	return completed;
 }
 
+// Match gentle-agents.ts's dispatch retirement contract, not incidental "sdd" text.
+function isRetiredSddAgentName(name: string): boolean {
+	return /^sdd(?:-|$)/.test(name);
+}
+
 function parseAgentName(filePath: string): string | undefined {
 	let content: string;
 	try {
@@ -2308,7 +2313,7 @@ function parseAgentName(filePath: string): string | undefined {
 		return undefined;
 	}
 	const name = content.match(/^name:\s*["']?([^"'\n]+)["']?\s*$/m)?.[1]?.trim();
-	if (!name) return undefined;
+	if (!name || isRetiredSddAgentName(name)) return undefined;
 	const packageName = content
 		.match(/^package:\s*["']?([^"'\n]+)["']?\s*$/m)?.[1]
 		?.trim();
@@ -2325,7 +2330,7 @@ async function parseAgentNameAsync(
 		return undefined;
 	}
 	const name = content.match(/^name:\s*["']?([^"'\n]+)["']?\s*$/m)?.[1]?.trim();
-	if (!name) return undefined;
+	if (!name || isRetiredSddAgentName(name)) return undefined;
 	const packageName = content
 		.match(/^package:\s*["']?([^"'\n]+)["']?\s*$/m)?.[1]
 		?.trim();
@@ -2741,6 +2746,9 @@ export function applyModelConfig(
 		else skipped += 1;
 	}
 	for (const [name, entry] of Object.entries(config)) {
+		// Orphan keys lack the raw-name boundary: preserve any possible SDD identity.
+		// Discovered ordinary agents, including SDD-looking packages, stay routable.
+		if (!seenAgents.has(name) && /(?:^|\.)sdd(?:-|$)/.test(name)) continue;
 		if (isProviderReviewRole(name)) continue;
 		// The orchestrator is routing, not an agent: its model lives in Pi's global
 		// settings.json and must never reach subagents.json.
@@ -2793,6 +2801,7 @@ export async function applyModelConfigAsync(
 		else skipped += 1;
 	}
 	for (const [name, entry] of Object.entries(config)) {
+		if (!seenAgents.has(name) && /(?:^|\.)sdd(?:-|$)/.test(name)) continue;
 		if (isProviderReviewRole(name)) continue;
 		if (isProfileOrchestratorKey(name)) continue;
 		if (!seenAgents.has(name) && isClearRoutingEntry(entry)) {

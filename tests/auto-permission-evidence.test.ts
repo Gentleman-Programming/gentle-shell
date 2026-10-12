@@ -5,6 +5,34 @@ import { readAutoPermissionEvidence, resolveAutoPermissionEvidencePath } from ".
 
 const cwd = process.cwd();
 const path = "docs/auto-permission-evidence.md";
+test("Auto evidence-limit diagnostics distinguish invalid budgets, stat size and read growth", async t => {
+	const path = "fixture.ts";
+	const check = (tag: string) => (error: any) => {
+		assert.equal(error.message, "evidence-limit");
+		assert.equal(error.evidenceLimit, tag);
+		assert.deepEqual(Object.keys(error), ["evidenceLimit"]);
+		return true;
+	};
+	for (const maxBytes of [0, -1, NaN, 1.5])
+		await assert.rejects(readAutoPermissionEvidence({ cwd, paths: [path], path, maxBytes }), check("invalid-byte-budget"));
+	t.mock.method(fs, "realpath", async (path: string) => path);
+	const stat = { dev: 1, ino: 1, nlink: 1, size: 11, mtimeMs: 0, ctimeMs: 0,
+		isSymbolicLink: () => false, isFile: () => true };
+	t.mock.method(fs, "lstat", async () => stat);
+	let opened = 0, closed = 0;
+	t.mock.method(fs, "open", async () => {
+		opened++;
+		return { stat: async () => stat, read: async (buffer: Buffer, offset: number, length: number) =>
+			({ bytesRead: Buffer.from("x".repeat(11)).copy(buffer, offset, offset, offset + length) }),
+			close: async () => { closed++; } };
+	});
+	await assert.rejects(readAutoPermissionEvidence({ cwd, paths: [path], path, maxBytes: 10 }), check("file-stat-bytes"));
+	assert.equal(opened, 0);
+	stat.size = 4;
+	await assert.rejects(readAutoPermissionEvidence({ cwd, paths: [path], path, maxBytes: 10 }), check("file-read-bytes"));
+	assert.equal(opened, 1); assert.equal(closed, 1);
+});
+
 test("evidence reads only a complete bounded relevant project file", async () => {
 	const result = await readAutoPermissionEvidence({ cwd, paths: [path], path });
 	assert.equal(result.path, path);

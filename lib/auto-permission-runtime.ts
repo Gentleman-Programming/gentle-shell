@@ -1,10 +1,11 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext, InputEvent, ToolCallEvent, ToolCallEventResult, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { gentlePiConfigHome } from "./agent-home.ts";
 import { AutoPermissionMemory } from "./auto-permission-memory.ts";
+import { projectToolContext } from "./auto-permission-tool-context.ts";
 import { subscribeHumanAnswers, type HumanAnswerReceipt } from "./auto-permission-answers.ts";
-import { resolveAutoPermissionEvidencePath } from "./auto-permission-evidence.ts";
+import { AUTO_PERMISSION_EVIDENCE_BYTES, AUTO_PERMISSION_EVIDENCE_LIMITS, resolveAutoPermissionEvidencePath } from "./auto-permission-evidence.ts";
 import { AUTO_PERMISSION_DIAGNOSTIC_PATHS, type AutoPermissionDiagnostic } from "./auto-permission-classifier.ts";
 import { appendSystemPromptOnce, type AppendableSystemPromptOptions } from "./append-system-prompt.ts";
 
@@ -23,11 +24,12 @@ type Verdict = {status: string; decision?: string; reason?: string; code?: strin
 function safeDiagnostic(value: unknown): AutoPermissionDiagnostic | undefined {
  try {
   if(!value || typeof value!=="object")return undefined;
-  const {implementation,elapsedMs,deadlineMs,timerFired,returnPath}=value as AutoPermissionDiagnostic;
+  const {implementation,elapsedMs,deadlineMs,timerFired,returnPath,evidenceLimit}=value as AutoPermissionDiagnostic;
   if(implementation!=="auto-classifier-diagnostics-v1" || !Number.isSafeInteger(elapsedMs) || elapsedMs<0 ||
    !Number.isFinite(deadlineMs) || deadlineMs<1 || deadlineMs>20000 || typeof timerFired!=="boolean" ||
-   !AUTO_PERMISSION_DIAGNOSTIC_PATHS.includes(returnPath))return undefined;
-  return {implementation,elapsedMs,deadlineMs,timerFired,returnPath};
+   !AUTO_PERMISSION_DIAGNOSTIC_PATHS.includes(returnPath) ||
+   (evidenceLimit!==undefined && !AUTO_PERMISSION_EVIDENCE_LIMITS.includes(evidenceLimit)))return undefined;
+  return {implementation,elapsedMs,deadlineMs,timerFired,returnPath,...(evidenceLimit ? {evidenceLimit} : {})};
  } catch { return undefined; }
 }
 export type AutoRuntimeClassifier = {run(request: any): Promise<Verdict>; cancel(): void};
@@ -45,6 +47,28 @@ const DENIAL_LIMIT = 3, TOTAL_DENIAL_LIMIT = 20;
 const MAX_AUTHORED_BYTES = 24_000;
 // Answered prompts are context, not authority: keep each tail short and the total (prompt plus repeated reply) well inside the classifier budget.
 const PROMPT_TAIL_BYTES = 1_200, PROMPT_TOTAL_BYTES = 4_000;
+// Codex-style window for long sessions: never block every action on size. Oversized messages keep
+// their start and end; the first (task) and latest messages are always kept, recent ones fill the rest.
+// Sizes here are JSON-serialized bytes, as the classifier measures them; the reserve leaves room
+// for the omission policy that is only sent once history is omitted.
+const MESSAGE_WINDOW_BYTES = 6_000, OMISSION_RESERVE_BYTES = 1_024;
+const serialized = (text: string): number => Buffer.byteLength(JSON.stringify(text))-2;
+function codePointBytes(text: string, max: number, fromEnd: boolean): string {
+ let bytes=0;const points=Array.from(text);const kept:string[]=[];
+ for(const point of fromEnd ? points.reverse() : points) {
+  const size=serialized(point);
+  if(bytes+size>max)break;
+  bytes+=size;kept.push(point);
+ }
+ return (fromEnd ? kept.reverse() : kept).join("");
+}
+function middleTruncate(text: string): string {
+ if(serialized(text)<=MESSAGE_WINDOW_BYTES)return text;
+ const size=Buffer.byteLength(text);
+ const keep=Math.floor((MESSAGE_WINDOW_BYTES-64)/2);
+ const head=codePointBytes(text,keep,false), tailText=codePointBytes(text,keep,true);
+ return `${head} [${size-Buffer.byteLength(head)-Buffer.byteLength(tailText)} bytes omitted by host] ${tailText}`;
+}
 const PROVIDER_RETRY_DELAYS_MS = [500, 1_500];
 const HISTORY_BYTES = 4_000, HISTORY_ENTRIES = 12;
 const UNAVAILABLE_REASONS: Record<string,string> = {
@@ -75,6 +99,24 @@ function canonical(path: string): string {
  while (!existsSync(ancestor)) { const parent = dirname(ancestor); if (parent === ancestor) break; ancestor = parent; }
  return resolve(realpathSync(ancestor), relative(ancestor, absolute));
 }
+/** True only for an existing symlink-free in-project regular file larger than the reader accepts.
+ * lstat walks each component from cwd and stops at any symlink, so no outside path is ever examined.
+ * Anything else keeps its existing candidate path; the reader still re-checks everything. */
+function oversizedLocalFile(cwd: string, path: string): boolean {
+ try {
+  const parts=path.split("/");
+  let current=realpathSync(resolve(cwd));
+  for(let i=0;i<parts.length;i++) {
+   current=resolve(current,parts[i]);
+   const stat=lstatSync(current,{throwIfNoEntry:false});
+   if(!stat || stat.isSymbolicLink())return false;
+   if(i===parts.length-1)return stat.isFile() && stat.size>AUTO_PERMISSION_EVIDENCE_BYTES;
+   if(!stat.isDirectory())return false;
+  }
+  return false;
+ } catch { return false; }
+}
+
 /** Select explicit file operands, never evaluate a shell or crawl prior read paths.
  * Unsupported shell syntax stays tool-free rather than inspecting a file in the wrong cwd. */
 function evidencePaths(toolName: string, input: unknown, cwd: string): string[] {
@@ -103,7 +145,13 @@ function evidencePaths(toolName: string, input: unknown, cwd: string): string[] 
  const result:string[]=[];
  for(const candidate of candidates) {
   const path=isAbsolute(candidate) ? relative(resolve(cwd),candidate).split(sep).join("/") : candidate.replace(/^\.\//,"");
-  try {resolveAutoPermissionEvidencePath(resolve(cwd),[path],path);if(!result.includes(path))result.push(path);}catch { /* Unsupported/credential paths are not inspection candidates. */ }
+  try {
+   resolveAutoPermissionEvidencePath(resolve(cwd),[path],path);
+   // Never offer a file the reader must reject: the classifier then judges without it instead of
+   // failing technically. Missing files keep their existing path; the reader still re-checks size.
+   if(oversizedLocalFile(cwd,path))continue;
+   if(!result.includes(path))result.push(path);
+  } catch { /* Unsupported/credential paths are not inspection candidates. */ }
  }
  return result.slice(0,12);
 }
@@ -166,9 +214,8 @@ export class AutoPermissionRuntime {
  private tokens = 0;
  private cost = 0;
  private active = new Set<AbortController>();
- private overflow = false;
  private configHome: string;
- private pi: Pick<ExtensionAPI,"appendEntry">;
+ private pi: Pick<ExtensionAPI,"appendEntry"> & Partial<Pick<ExtensionAPI,"getAllTools">>;
  private memory: AutoPermissionMemory;
  private modes: ModeController;
  private classifier: Classifier;
@@ -180,6 +227,10 @@ export class AutoPermissionRuntime {
   this.retryDelaysMs = options.retryDelaysMs ?? PROVIDER_RETRY_DELAYS_MS;
  }
  private retryDelaysMs: number[];
+ private toolContext(name:string) {
+  try { return projectToolContext(this.pi.getAllTools?.().find(tool=>tool.name===name),name); }
+  catch { return undefined; }
+ }
  toolResult(event: ToolResultEvent, ctx: ExtensionContext): void {
   this.own(ctx);
   this.memory.result(event,ctx,this.modes.epoch());
@@ -195,7 +246,7 @@ export class AutoPermissionRuntime {
  reset(): void {
   this.cancelPending();
   this.active.clear();this.owner=undefined;this.requests=[];this.priorActions=[];this.inputOrder=0;
-  this.consecutive=0;this.total=0;this.unavailable=0;this.calls=0;this.tokens=0;this.cost=0;this.overflow=false;
+  this.consecutive=0;this.total=0;this.unavailable=0;this.calls=0;this.tokens=0;this.cost=0;
  }
  private own(ctx: ExtensionContext): void {
   const id=ctx.sessionManager.getSessionId();
@@ -222,13 +273,8 @@ export class AutoPermissionRuntime {
   if(!text.trim())return;
   // Preserve the entire referent: cutting option descriptions can change what "yes" means.
   const prompt=receipt.prompt;
-  const host=this.liveHostAnswers(ctx);
-  const authored=this.requests.reduce((sum,r)=>sum+Buffer.byteLength(r.text),0)+
-   host.reduce((sum,r)=>sum+Buffer.byteLength(r.text)+Buffer.byteLength(r.prompt),0);
-  if(typeof prompt!=="string" || authored+Buffer.byteLength(text)+Buffer.byteLength(prompt)>MAX_AUTHORED_BYTES ||
-   host.reduce((sum,r)=>sum+Buffer.byteLength(r.text)+Buffer.byteLength(r.prompt),0)+Buffer.byteLength(text)+Buffer.byteLength(prompt)>PROMPT_TOTAL_BYTES) {
-   this.overflow=true;return;
-  }
+  // Size never blocks: the reply joins the bounded window and its prompt is kept only while it fits.
+  if(typeof prompt!=="string")return;
   this.generation++;
   for(const controller of this.active)controller.abort();
   this.classifier.cancel();
@@ -254,17 +300,13 @@ export class AutoPermissionRuntime {
   // Optional action history is not authority. A new request starts a fresh evidence window;
   // all live human restrictions below remain intact.
   this.priorActions=[];
-  if (this.requests.reduce((sum,r)=>sum+Buffer.byteLength(r.text),0)+
-   this.liveHostAnswers(ctx).reduce((sum,r)=>sum+Buffer.byteLength(r.text)+Buffer.byteLength(r.prompt),0)+Buffer.byteLength(event.text)>MAX_AUTHORED_BYTES) {
-   this.overflow=true;return; // Never truncate away a restriction and keep approving.
-  }
   const branch=this.branch(ctx);
   // Captured now, before any later assistant text exists, so a reply never inherits a question asked after it.
   const last=branch.findLast(e=>e.type==="message" && (e.message?.role==="assistant" || e.message?.role==="user"));
   const prompt=last?.message?.role==="assistant" ? tail(assistantText(last.message.content),PROMPT_TAIL_BYTES) : "";
   this.requests.push({text:event.text,order:++this.inputOrder,before:new Set(branch.map(e=>e.id)),...(prompt ? {prompt} : {})});
  }
- private trusted(ctx: ExtensionContext): string[] {
+ private trusted(ctx: ExtensionContext): {messages: string[]; kept: Set<number>; omitted: number} {
   const branch=this.branch(ctx), ids=new Set(branch.map(e=>e.id));
   for(const request of this.requests) {
    if(request.entryId) continue;
@@ -272,17 +314,38 @@ export class AutoPermissionRuntime {
    if(match) request.entryId=match.id;
   }
   // Switching branches cannot reuse an approval whose actual input entry is absent.
-  return [...this.live(ids),...this.liveHostAnswers(ctx)].sort((a,b)=>a.order-b.order).map(r=>r.text);
+  const all=[...this.live(ids),...this.liveHostAnswers(ctx)].sort((a,b)=>a.order-b.order);
+  const full=all.map(r=>r.text);
+  if(Buffer.byteLength(full.join(""))<=MAX_AUTHORED_BYTES)return {messages:full,kept:new Set(all.map(r=>r.order)),omitted:0};
+  // Over budget: keep the task (first) and the latest message, then the most recent contiguous ones.
+  const texts=full.map(middleTruncate);
+  const keep=new Set([0,all.length-1]);
+  // +3 per entry covers the array's quotes and separator.
+  const cost=(i:number)=>serialized(texts[i])+3;
+  let budget=MAX_AUTHORED_BYTES-OMISSION_RESERVE_BYTES-2-[...keep].reduce((sum,i)=>sum+cost(i),0);
+  for(let i=all.length-2;i>0;i--) {
+   const size=cost(i);
+   if(size>budget)break;
+   budget-=size;keep.add(i);
+  }
+  const order=[...keep].sort((a,b)=>a-b);
+  return {messages:order.map(i=>texts[i]),kept:new Set(order.map(i=>all[i].order)),omitted:all.length-keep.size};
  }
  private live(ids: Set<string>): AuthoredInput[] { return this.requests.filter(r=>r.entryId && ids.has(r.entryId)); }
  /** Newest first within a fixed budget that also counts the repeated reply; dropped pairs leave their replies trusted. */
- private answered(ctx: ExtensionContext): {prompt:string;reply:string}[] {
-  const live=this.live(new Set(this.branch(ctx).map(e=>e.id)));
-  // Pairs only use what live input leaves of the authored budget, so the classifier input never grows past its previous ceiling.
-  const host=this.liveHostAnswers(ctx);
-  const hostBytes=host.reduce((sum,r)=>sum+Buffer.byteLength(r.prompt)+Buffer.byteLength(r.text),0);
-  let budget=Math.min(PROMPT_TOTAL_BYTES,MAX_AUTHORED_BYTES-live.reduce((sum,r)=>sum+Buffer.byteLength(r.text),0))-hostBytes;
-  const kept: {prompt:string;reply:string}[]=host.map(r=>({prompt:r.prompt,reply:r.text}));
+ private answered(ctx: ExtensionContext, window: {messages: string[]; kept: Set<number>}): {prompt:string;reply:string}[] {
+  // Only pairs whose reply is in the window; omitted replies must not return through their prompt.
+  const live=this.live(new Set(this.branch(ctx).map(e=>e.id))).filter(r=>window.kept.has(r.order));
+  const kept: {prompt:string;reply:string}[]=[];
+  // Host answers keep their full question, newest first within their own budget, as before the window existed.
+  let hostBudget=PROMPT_TOTAL_BYTES;
+  for(const answer of this.liveHostAnswers(ctx).filter(r=>window.kept.has(r.order)).reverse()) {
+   const size=Buffer.byteLength(answer.prompt)+Buffer.byteLength(answer.text);
+   if(size>hostBudget)continue;
+   hostBudget-=size;kept.unshift({prompt:answer.prompt,reply:answer.text});
+  }
+  // Typed-reply pairs use what live requests and host pairs leave, so the classifier input never grows past its previous ceiling.
+  let budget=Math.min(PROMPT_TOTAL_BYTES,MAX_AUTHORED_BYTES-live.reduce((sum,r)=>sum+Buffer.byteLength(r.text),0))-(PROMPT_TOTAL_BYTES-hostBudget);
   for(const request of live.reverse()) {
    if(!request.prompt) continue;
    const size=Buffer.byteLength(request.prompt)+Buffer.byteLength(request.text);
@@ -331,11 +394,11 @@ export class AutoPermissionRuntime {
   if(this.consecutive>=DENIAL_LIMIT || this.total>=TOTAL_DENIAL_LIMIT || this.unavailable>=DENIAL_LIMIT)
    return block("Auto mode is paused after repeated denials or unavailable checks. Stop this attempt and ask the user for a safer, specific instruction; do not route around the boundary.");
   // Local reads can disclose explicitly forbidden data; they need the same check.
-  if(this.overflow)return block("Auto cannot retain all live user restrictions within its context limit. Continue with manual permissions or start a new session with an explicit scoped request.");
   if(!ctx.model)return block("Auto could not evaluate this action: no session model is available. The action was not run.");
   // Copy identity values: a host can update its model object in place.
   const model={id:ctx.model.id,provider:ctx.model.provider};
-  const trustedMessages=this.trusted(ctx), answeredPrompts=this.answered(ctx);
+  const window=this.trusted(ctx), trustedMessages=window.messages, answeredPrompts=this.answered(ctx,window);
+  const omittedTrustedMessages=window.omitted || undefined;
   const branchIds=new Set(this.branch(ctx).map(entry=>entry.id));
   const trustedEntryIds=[...this.requests.flatMap(request=>request.entryId && branchIds.has(request.entryId) ? [request.entryId] : []),
    ...this.liveHostAnswers(ctx).map(answer=>answer.anchor)];
@@ -343,6 +406,7 @@ export class AutoPermissionRuntime {
   try {serialized=JSON.stringify(event.input);}catch{return block("Auto could not evaluate invalid tool input. The action was not run.");}
   const memoryContext=this.memory.context(event,ctx,epoch);
   const memoryBinding=JSON.stringify(memoryContext);
+  const toolContext=this.toolContext(event.toolName),toolBinding=JSON.stringify(toolContext);
   const current=()=>{ try {
    // SDK branch changes must revoke removed input even before a host tree event.
    const currentBranchIds=new Set(this.branch(ctx).map(entry=>entry.id));
@@ -350,7 +414,8 @@ export class AutoPermissionRuntime {
    owner?.manager===ctx.sessionManager && owner.id===ctx.sessionManager.getSessionId() && owner.cwd===ctx.cwd &&
    model.id===ctx.model?.id && model.provider===ctx.model?.provider && JSON.stringify(event.input)===serialized &&
    trustedEntryIds.every(id=>currentBranchIds.has(id)) &&
-   JSON.stringify(this.memory.context(event,ctx,epoch))===memoryBinding;
+   JSON.stringify(this.memory.context(event,ctx,epoch))===memoryBinding &&
+   JSON.stringify(this.toolContext(event.toolName))===toolBinding;
   } catch {return false;} };
   const paths=evidencePaths(event.toolName,JSON.parse(serialized),ctx.cwd);
   // Canonical cwd allows safe inspection in workspaces reached through /tmp-like aliases.
@@ -364,7 +429,7 @@ export class AutoPermissionRuntime {
    for(let attempt=0;attempt<=this.retryDelaysMs.length;attempt++){
     if(attempt>0 && (!(await pause(this.retryDelaysMs[attempt-1],controller.signal)) || !current()))break;
     try {
-     result=await this.classifier.run({trustedMessages,answeredPrompts,memoryContext,action:{toolName:event.toolName,input:JSON.parse(serialized)},
+     result=await this.classifier.run({trustedMessages,...(omittedTrustedMessages ? {omittedTrustedMessages} : {}),answeredPrompts,memoryContext,toolContext,action:{toolName:event.toolName,input:JSON.parse(serialized)},
       priorActions:this.priorActions,evidencePaths:paths,cwd:classifierCwd,model:ctx.model,modelRegistry:ctx.modelRegistry,isCurrent:current,signal:controller.signal,
       onUsage:(late: Omit<Verdict,"status">)=>{
        if(owner?.manager===ctx.sessionManager && owner.id===ctx.sessionManager.getSessionId()) this.record(ctx,event,{...late,status:"settled"},true);
@@ -381,7 +446,7 @@ export class AutoPermissionRuntime {
    // Contention and revocation are not failed safety judgements or provider outages.
    if(!["busy","cancelled","revoked"].includes(result.code ?? ""))this.unavailable++;
    if(result.code==="provider-error")return block(`Auto could not reach its classifier model (provider error after ${this.retryDelaysMs.length+1} attempts). The action was not run. Retry later, switch the session model, or continue with manual permissions; do not treat a missing verdict as permission or evade this check.`);
-   const diagnostic=result.code==="timeout" ? safeDiagnostic(result.diagnostic) : undefined;
+   const diagnostic=["timeout","evidence-limit"].includes(result.code ?? "") ? safeDiagnostic(result.diagnostic) : undefined;
    const detail=diagnostic ? ` Diagnostic: ${JSON.stringify(diagnostic)}.` : "";
    return block(`${UNAVAILABLE_REASONS[result.code ?? ""] ?? "Auto received no usable classifier verdict. Retry later or use manual permissions."} The action was not run. A missing verdict is not permission; do not evade this check.${detail}`);
   }

@@ -3,6 +3,17 @@ import fs from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
 export const AUTO_PERMISSION_EVIDENCE_BYTES = 8192;
+export const AUTO_PERMISSION_EVIDENCE_LIMITS = ["path-count", "provider-rounds", "file-count", "duplicate-file",
+	"context-bytes", "invalid-byte-budget", "file-stat-bytes", "file-read-bytes"] as const;
+export type AutoPermissionEvidenceLimit = typeof AUTO_PERMISSION_EVIDENCE_LIMITS[number];
+/** Host-only discriminator; the public error message remains unchanged. */
+export class AutoPermissionEvidenceLimitError extends Error {
+	readonly evidenceLimit: AutoPermissionEvidenceLimit;
+	constructor(evidenceLimit: AutoPermissionEvidenceLimit) {
+		super("evidence-limit");
+		this.evidenceLimit = evidenceLimit;
+	}
+}
 const forbidden = /^(?:\.env(?:\..*)?|\.git|\.ssh|\.aws|\.azure|\.config|\.gnupg|\.kube|\.docker|\.pi|\.worktrees|node_modules(?:\..*)?|\.npmrc|\.netrc|\.pypirc|auth\.json|oauth.*|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|.*\.(?:pem|key|p12|pfx)|.*(?:credentials?|secrets?|passwords?|tokens?).*)$/i;
 
 /** Exact host-selected paths, not a model-selected project crawl. Paths never grant permission. */
@@ -26,7 +37,7 @@ export async function readAutoPermissionEvidence(options: {
 	cancelled();
 	const target = resolveAutoPermissionEvidencePath(options.cwd, options.paths, options.path);
 	const maxBytes = Math.min(AUTO_PERMISSION_EVIDENCE_BYTES, options.maxBytes ?? AUTO_PERMISSION_EVIDENCE_BYTES);
-	if (!Number.isInteger(maxBytes) || maxBytes < 1) throw Error("evidence-limit");
+	if (!Number.isInteger(maxBytes) || maxBytes < 1) throw new AutoPermissionEvidenceLimitError("invalid-byte-budget");
 	let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
 	try {
 		const root = resolve(options.cwd);
@@ -44,7 +55,7 @@ export async function readAutoPermissionEvidence(options: {
 			return stat;
 		};
 		const before = await check();
-		if (before.size > maxBytes) throw Error("evidence-limit");
+		if (before.size > maxBytes) throw new AutoPermissionEvidenceLimitError("file-stat-bytes");
 		cancelled();
 		handle = await fs.open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
 		const opened = await handle.stat(), after = await check();
@@ -61,7 +72,7 @@ export async function readAutoPermissionEvidence(options: {
 			bytes += chunk.bytesRead;
 		}
 		cancelled();
-		if (bytes > maxBytes) throw Error("evidence-limit");
+		if (bytes > maxBytes) throw new AutoPermissionEvidenceLimitError("file-read-bytes");
 		const final = await handle.stat();
 		if (final.size !== bytes || final.mtimeMs !== opened.mtimeMs || final.ctimeMs !== opened.ctimeMs) throw Error("evidence-unavailable");
 		const content = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, bytes));

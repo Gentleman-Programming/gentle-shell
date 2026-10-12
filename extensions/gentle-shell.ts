@@ -2261,7 +2261,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			});
 			for (const mode of ["normal", "auto", "yolo"] as const) rows.push({
 				category,
-				label: () => `Session permissions: ${mode.toUpperCase()}${permissionDisplay === mode ? " (current)" : ""}`,
+				label: () => `Session permissions: ${mode.toUpperCase()}${mode === "auto" ? " (beta)" : ""}${permissionDisplay === mode ? " (current)" : ""}`,
 				preview: () => ({ title: "Permissions · current session", sample: mode === "auto"
 					? "independent session-model action checks · extra inference cost · hard safety and native consent remain"
 					: mode === "yolo" ? "ordinary scoped delivery permission · destructive confirmations remain" : "normal checks · overrides an elevated global default" }),
@@ -2273,7 +2273,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			});
 			for (const mode of ["normal", "auto", "yolo"] as const) rows.push({
 				category,
-				label: () => `Default permissions: ${mode.toUpperCase()}${permissionDefault === mode ? " (saved)" : ""}`,
+				label: () => `Default permissions: ${mode.toUpperCase()}${mode === "auto" ? " (beta)" : ""}${permissionDefault === mode ? " (saved)" : ""}`,
 				preview: () => ({ title: "Permissions · user-global default", sample: `New primary sessions start in ${mode.toUpperCase()}; current session stays unchanged. ${mode === "auto" ? "Additional classifier inference uses the session model; usage is separate." : "Independent safety and consent remain."}` }),
 				action: async () => {
 					if (closed) return;

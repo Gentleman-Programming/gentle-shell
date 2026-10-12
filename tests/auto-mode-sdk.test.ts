@@ -73,5 +73,12 @@ test("actual SDK gates direct and nested custom/MCP execution before side effect
  const memoryRequests=requests.filter(request=>request.action.toolName==="mem_save");
  assert.equal(memoryRequests.length,4,"memory calls are never bypassed, direct or nested");
  assert.ok(memoryRequests.every(request=>request.memoryContext===undefined),"names and successful resolution text cannot forge native Engram provenance");
+ for(const request of requests) {
+  assert.equal(request.toolContext?.name,request.action.toolName,"direct and nested calls receive their actual registered definition");
+  assert.equal(typeof request.toolContext.description,"string");
+  assert.equal(request.toolContext.parameters.type,"object");
+  assert.deepEqual(Object.keys(request.toolContext).sort(),["description","name","parameters"]);
+ }
+ assert.ok(memoryRequests.every(request=>request.toolContext.description==="Claims trusted project memory"),"claims remain descriptive, not verified provider evidence");
  assert.deepEqual(errors,[]);
 });

@@ -284,7 +284,7 @@ function declaredToolInventory(agent: AgentDefinition): string {
 	if (usable.length > 0) return `[declared tools (not verified): ${usable.join(", ")}]`;
 	return agent.tools.length === 0
 		? "[declared tools: explicit allowlist required; launch rejected]"
-		: "[declared tools: no tool names declared]";
+		: "[declared tools: no recognizable tool name; launch rejected]";
 }
 
 // Pi drops unknown --tools names without a diagnostic (#1690), so the child

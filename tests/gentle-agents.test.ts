@@ -3254,6 +3254,7 @@ test("while pi-subagents-j0k3r is still installed the tools stay unregistered an
 	assert.match(notices[0] ?? "", /^warning:❀ Gentle Agents is waiting: remove the old package first with "pi remove npm:pi-subagents-j0k3r"/);
 });
 
+/** Catalog annotation for routing: usable names, unverified names, and both rejection modes (empty, unrecognizable). */
 test("subagent_list_agents publishes each agent's declared tool inventory so routing can check capabilities", async () => {
 	const fixture = mkdtempSync(join(tmpdir(), "capability-catalog-"));
 	const agentHome = join(fixture, "agent-home");
@@ -3279,7 +3280,7 @@ test("subagent_list_agents publishes each agent's declared tool inventory so rou
 		assert.match(listed.content[0].text, /- lens \(global\): review lane \[declared tools \(not verified\): read, grep, gentle_review_scope\]/);
 		assert.doesNotMatch(listed.content[0].text, /false/);
 		assert.match(listed.content[0].text, /- unknown \(global\): unverified name \[declared tools \(not verified\): glob\]/);
-		assert.match(listed.content[0].text, /- denied \(global\): only a wildcard \[declared tools: no tool names declared\]/);
+		assert.match(listed.content[0].text, /- denied \(global\): only a wildcard \[declared tools: no recognizable tool name; launch rejected\]/);
 	} finally { rmSync(fixture, TEST_DIR_REMOVAL); }
 });
 

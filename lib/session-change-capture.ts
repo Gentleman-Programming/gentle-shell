@@ -5,7 +5,7 @@ import { dirname, relative, resolve } from "node:path";
 import { homedir } from "node:os";
 import { resolveSessionWorktree, type WorktreeResolver } from "./session-worktree-registry.ts";
 import { SessionChanges, readChangeSnapshot, sameSnapshot, textSnapshot, isSessionChangeEvidence,
-	SESSION_CHANGE_ENTRY, SESSION_CHANGE_EVENT, SESSION_CHANGE_RELAY, type SessionChangeEvidence, type ChangeSnapshot } from "./session-changes.ts";
+	SESSION_CHANGE_ENTRY, SESSION_CHANGE_RELAY, type SessionChangeEvidence, type ChangeSnapshot } from "./session-changes.ts";
 
 const foreignPublishers = new WeakMap<ExtensionAPI, (sessionId: string, evidence: SessionChangeEvidence) => void>();
 /** Internal authenticated handoff from a successful child tool callback, never a model message or public event. */
@@ -19,7 +19,7 @@ const unknown = (): ChangeSnapshot => ({ kind: "unavailable", reason: "Tool snap
 
 /**
  * Observe explicit write/edit outcomes, never infer ownership from Git status or shell text.
- * Git only reconciles captured entries against HEAD later (SessionChanges.refresh); it never attributes.
+ * The evidence feeds session statistics and names the roots /gentle:changes reads from Git.
  */
 export function installSessionChangeCapture(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, resolver: WorktreeResolver = resolveSessionWorktree): void {
 	const child = env.GENTLE_PI_AGENTS_CHILD === "1";
@@ -29,8 +29,6 @@ export function installSessionChangeCapture(pi: ExtensionAPI, env: NodeJS.Proces
 	const publish = (evidence: SessionChangeEvidence) => {
 		if (!current || !store || current.sessionManager.getSessionId() !== store.sessionId) return;
 		if (store.record(evidence)) pi.appendEntry(SESSION_CHANGE_ENTRY, { sessionId: store.sessionId, evidence });
-		const notice = store.takeNotice();
-		pi.events.emit(SESSION_CHANGE_EVENT, { sessionId: store.sessionId, ...(notice ? { notice } : {}) });
 	};
 	foreignPublishers.set(pi, (sessionId, evidence) => {
 		if (!child && current?.sessionManager.getSessionId() === sessionId && isSessionChangeEvidence(evidence)) publish(evidence);

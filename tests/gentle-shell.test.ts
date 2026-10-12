@@ -12,7 +12,7 @@ import { CODEX_USAGE_URL, NAN_QUOTA_URL, USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA
 import { bindSessionProfile, clearSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import { createVimEditorAdapter, isAuditedPiEditorVersion } from "../lib/vim-editor-adapter.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
-import { CHANGE_STATUS } from "../lib/shell-changes.ts";
+import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE } from "../lib/shell-changes.ts";
 import { sidebarPart, sidebarState, type SidebarRail } from "../lib/shell-sidebar.ts";
 import { renderTodoCard } from "../lib/shell-todo.ts";
 import type { ShellBarTheme } from "../lib/shell-bar.ts";
@@ -57,7 +57,7 @@ function isolatedEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
 	isolatedConfigHomes.push(home);
 	return { ...env, GENTLE_PI_CONFIG_HOME: home };
 }
-const gentleShell: typeof installGentleShell = (pi, env, deps) => installGentleShell(pi, isolatedEnv(env), { resolveWorktree, gitRunner: (cwd) => async (args) => pi.exec("git", ["-C", cwd, ...args], { timeout: 5000 }), ...deps });
+const gentleShell: typeof installGentleShell = (pi, env, deps) => installGentleShell(pi, isolatedEnv(env), { resolveWorktree, gitRunner: (cwd) => async (args) => pi.exec("git", ["-C", cwd, ...args], { timeout: 5000 }), rootExists: () => true, ...deps });
 
 const plainTheme = {
 	fg(_color: string, value: string) {
@@ -156,6 +156,8 @@ function fakePi(script: GitScript[] = [{ numstat: "", porcelain: "" }], commands
 		async exec(_command: string, args: string[]) {
 			git.push(args);
 			if (args.includes("worktree")) return { stdout: "worktree /repo\0branch refs/heads/main\0\0", stderr: "", code: 0, killed: false };
+			// Roots outside the worktree list read as a detached HEAD.
+			if (args.includes("symbolic-ref")) return { stdout: "", stderr: "", code: 1, killed: false };
 			const isNumstat = args.includes("diff");
 			const step = script[Math.min(isNumstat ? round : round++, script.length - 1)];
 			return { stdout: isNumstat ? step.numstat : step.porcelain, stderr: "", code: 0, killed: false };
@@ -3551,7 +3553,7 @@ test("T4d unified float footer uses one live owner and restores legacy Changes o
 	const home = scopedDoubleEscCancelConfigHome(t);
 	writeCardStyle("float", { gentlePiConfigHome: home });
 	writeVisualSettings({ ...resolveVisualSettings({ gentlePiConfigHome: home }).settings, headerPlacement: "below-input" }, { gentlePiConfigHome: home });
-	const { pi, handlers, commands } = fakePi();
+	const { pi, handlers, commands } = fakePi([{ numstat: "2\t0\tlib/live.ts\n", porcelain: " M lib/live.ts\0" }, { numstat: "3\t0\tlib/live.ts\n", porcelain: " M lib/live.ts\0" }]);
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
 	const { ctx, ui, overlayReady } = fakeContext();
 	await fire(handlers, "session_start", ctx);
@@ -3575,8 +3577,8 @@ test("T4d unified float footer uses one live owner and restores legacy Changes o
 		assert.equal(footer.handleMouse?.(click(initialUsageX, 3, 139)), undefined);
 		assert.equal(footer.handleMouse?.(click(initialUsageX, 2, 139))?.handled, true);
 		ui.closeOverlay?.();
-		sessionChange(ctx, "t4d-a", "/repo", "lib/live.ts", "", "one\ntwo\n");
 		await fire(handlers, "agent_end", ctx);
+		await changesSettled();
 		const changes = widget("gentle-shell-changes");
 		for (const width of [139, 140, 240]) {
 			tui.terminal.columns = width;
@@ -3599,9 +3601,9 @@ test("T4d unified float footer uses one live owner and restores legacy Changes o
 		statuses.set("mcp", "MCP updated");
 		assert.notEqual(railHeader.digest!(), digest, "live status changes update the grouped digest");
 		const statusDigest = railHeader.digest!();
-		sessionChange(ctx, "t4d-b", "/repo", "lib/live.ts", "one\ntwo\n", "one\ntwo\nthree\n");
 		await fire(handlers, "agent_end", ctx);
-		assert.notEqual(railHeader.digest!(), statusDigest, "captured changes update the grouped digest");
+		await changesSettled();
+		assert.notEqual(railHeader.digest!(), statusDigest, "Git changes update the grouped digest");
 		assert.match(stripAnsi(footer.render(240).join("\n")), /\+3 −0/);
 		assert.match(stripAnsi(footer.render(240).join("\n")), /MCP updated/);
 		state.active = true;
@@ -4664,72 +4666,69 @@ function renderFooter(ui: FakeUi): string {
 	return factory(fakeTui, plainTheme, footerData).render(160)[0];
 }
 
-function sessionChange(ctx: ExtensionContext, id: string, root: string, path: string, before = "", after = "agent\n"): void {
- const entries = ctx.sessionManager.getEntries() as any[];
- entries.push({ type: "custom", customType: "gentle-pi.session-change/v1", data: {
-  sessionId: ctx.sessionManager.getSessionId(),
-  evidence: { id, root, path, before: before ? {kind:"text",text:before} : {kind:"absent"}, after:{kind:"text",text:after} },
- } });
-}
+// Changes refreshes from Git off the turn-end path; let the fake scan land.
+const changesSettled = () => new Promise<void>((resolve) => setTimeout(resolve, 10));
 
-test("captured changes update the widget and bar without repository scans", async () => {
- const { pi, handlers, git } = fakePi([{numstat:"999\t0\tforeign.ts\n",porcelain:" M lib/b.ts\0?? foreign.ts\0"}]);
+// Changes reads each root's Git state and nothing else: worktree labels,
+// status and numstat against HEAD, and a lazy diff of the selected file.
+const gitStateOnly = (git: readonly string[][]) => git.length > 0 && git.every((args) => {
+ const command = args[0] === "-C" ? args.slice(2) : args;
+ return (command[0] === "worktree" && command[1] === "list") || (command[0] === "status" && command.includes("--porcelain=v1"))
+  || (command[0] === "diff" && command.includes("HEAD")) || command[0] === "symbolic-ref" || (command[0] === "rev-parse" && command.includes("--verify"));
+});
+
+test("Changes lists the session root's Git state at turn end, never at startup", async () => {
+ const { pi, handlers, git } = fakePi([{numstat:"2\t0\tlib/b.ts\n",porcelain:" M lib/b.ts\0?? other.ts\0"},{numstat:"3\t0\tlib/b.ts\n",porcelain:" M lib/b.ts\0?? other.ts\0"}]);
  gentleShell(pi,{});
  const {ctx,ui}=fakeContext();
  await fire(handlers,"session_start",ctx);
  assert.equal(git.length,0);
  assert.equal(ui.widgets.has("gentle-shell-changes"),false);
- sessionChange(ctx,"a","/repo","lib/b.ts","","one\ntwo\n");
- pi.events.emit("gentle-pi:session-change",{sessionId:ctx.sessionManager.getSessionId()});
- await new Promise(resolve=>setImmediate(resolve));
+ await fire(handlers,"agent_end",ctx);
+ await changesSettled();
  const factory=ui.widgets.get("gentle-shell-changes") as any;
- assert.match(factory(fakeTui,plainTheme).render(140)[0],/1 file · \+2 −0/);
- assert.match(renderFooter(ui),/main ±1/);
+ assert.match(factory(fakeTui,plainTheme).render(140)[0],/2 files · \+2 −0/, "files no agent wrote are listed too: Git decides");
+ assert.match(renderFooter(ui),/main ±2/);
  const rail = sidebarState(fakeTui as unknown as TUI).parts.get("footer")!;
  const digest = rail.digest!();
- assert.match(rail.render(46).join("\n"), /1 file · \+2 −0/);
- sessionChange(ctx,"b","/repo","lib/b.ts","one\ntwo\n","one\ntwo\nthree\n");
+ assert.match(rail.render(46).join("\n"), /2 files · \+2 −0/);
  await fire(handlers,"agent_end",ctx);
- await new Promise(resolve=>setTimeout(resolve,10));
+ await changesSettled();
  assert.notEqual(rail.digest!(), digest, "same-count line changes invalidate the unified Status");
- assert.match(rail.render(46).join("\n"), /1 file · \+3 −0/);
- assert.doesNotMatch(rail.render(46).join("\n"), /foreign/);
- assert.ok(onlyReconciliation(git, ["lib/b.ts"]), `turn end ran more than reconciliation: ${JSON.stringify(git)}`);
+ assert.match(rail.render(46).join("\n"), /2 files · \+3 −0/);
+ assert.ok(gitStateOnly(git), JSON.stringify(git));
+ assert.ok(git.every((args) => args[1] === "/repo"), "only the session's own root is scanned");
  await fire(handlers,"session_shutdown",ctx);
 });
 
-test("committed captured changes leave the widget and the footer counter at turn end", async () => {
- const { handlers, git, pi } = fakePi([{numstat:"",porcelain:""}]);
+test("committed work leaves the widget and the footer counter at the next turn end", async () => {
+ const { handlers, git, pi } = fakePi([{numstat:"1\t0\tlib/b.ts\n",porcelain:" M lib/b.ts\0"},{numstat:"",porcelain:""}]);
  gentleShell(pi,{});
  const {ctx,ui}=fakeContext();
- sessionChange(ctx,"a","/repo","lib/b.ts","","one\n");
  await fire(handlers,"session_start",ctx);
- assert.equal(git.length,0,"startup never reconciles");
+ assert.equal(git.length,0,"startup never scans");
+ await fire(handlers,"agent_end",ctx);
+ await changesSettled();
  assert.match(renderFooter(ui),/main ±1/);
  await fire(handlers,"agent_end",ctx);
- await new Promise(resolve=>setTimeout(resolve,10));
- assert.ok(onlyReconciliation(git, ["lib/b.ts"]), JSON.stringify(git));
+ await changesSettled();
  assert.doesNotMatch(renderFooter(ui),/±/);
  assert.equal(ui.widgets.has("gentle-shell-changes"),false);
  await fire(handlers,"session_shutdown",ctx);
 });
 
-
-// The changes overlay may ask Git for each captured root's HEAD label and to
-// reconcile captured paths against HEAD, and nothing else: no unscoped status,
-// diff, numstat or worktree scan behind the user's back. Reconciliation is
-// limited to captured paths, so Git never attributes a file to the agent.
-const reconciles = (command: string[], paths?: readonly string[]) => command[0] === "status" && command.includes("--") &&
- command.slice(command.indexOf("--") + 1).every((spec) => spec.startsWith(":(literal)")) &&
- (!paths || command.slice(command.indexOf("--") + 1).sort().join("\0") === paths.map((path) => ":(literal)" + path).sort().join("\0"));
-const onlyReconciliation = (git: readonly string[][], paths?: readonly string[]) => git.length > 0 && git.every((args) => reconciles(args[0] === "-C" ? args.slice(2) : args, paths));
-const onlyHeadLabels = (git: readonly string[][]) => git.every((args) => {
- const command = args[0] === "-C" ? args.slice(2) : args;
- return command[0] === "symbolic-ref" || (command[0] === "rev-parse" && command.includes("--verify")) || reconciles(command);
+test("a turn end never waits for Git", async () => {
+ const { pi, handlers } = fakePi();
+ (pi as unknown as { exec: () => Promise<never> }).exec = () => new Promise<never>(() => {});
+ gentleShell(pi,{});
+ const {ctx}=fakeContext();
+ await fire(handlers,"session_start",ctx);
+ await Promise.race([fire(handlers,"agent_end",ctx), new Promise((_, reject) => setTimeout(() => reject(new Error("agent_end waited for Git")), 100))]);
+ await fire(handlers,"session_shutdown",ctx);
 });
 
-test("same-session explicit registration after bootstrap does not claim Changes", async () => {
-	const { pi, handlers, commands, tools, git } = fakePi();
+test("explicit registration validates the clone, and a clean registered root shows no Changes", async () => {
+	const { pi, handlers, commands, tools } = fakePi();
 	let bootstrapped = false;
 	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
 		resolveWorktree: (path) => bootstrapped ? { root: path === "." ? "/repo" : path, commonDir: path === "/foreign" ? "/foreign/git" : "/repo/.git" } : undefined,
@@ -4747,67 +4746,41 @@ test("same-session explicit registration after bootstrap does not claim Changes"
 	assert.equal(ctx.sessionManager, manager);
 	assert.equal(ctx.sessionManager.getEntries().length, 1);
 	await commands.get("gentle:changes")!.handler("", ctx);
-	assert.match(ui.notices.join("\n"), /No captured agent changes/);
+	assert.match(ui.notices.join("\n"), /No uncommitted changes/);
 	assert.equal(ui.overlay, undefined);
-	assert.deepEqual(git, []);
 	await fire(handlers, "session_shutdown", ctx);
 });
 
-test("Changes opens only for captured mutations, not registered dirty roots", async () => {
+test("a registered worktree opens Changes as its own group", async () => {
  const {pi,handlers,commands,tools,git}=fakePi([{numstat:"",porcelain:" M file.ts\0?? dirty.ts\0"}]);
  gentleShell(pi,{});
  const {ctx,ui,overlayReady}=fakeContext();
  await fire(handlers,"session_start",ctx);
  await tools.get("session_worktree_register")!.execute("r",{path:"/linked"},undefined,undefined,ctx);
- await commands.get("gentle:changes")!.handler("",ctx);
- assert.match(ui.notices.join("\n"),/No captured agent changes/);
- assert.equal(ui.overlay,undefined);
- sessionChange(ctx,"a","/linked","file.ts");
- await fire(handlers,"agent_end",ctx);
- const opened=commands.get("gentle:changes")!.handler("",ctx);
- await overlayReady;
- assert.match(ui.overlayView!.render(140).join("\n"),/linked/);
- assert.ok(onlyHeadLabels(git), `overlay ran more than HEAD labelling: ${JSON.stringify(git)}`);
- ui.closeOverlay?.(); await opened;
- await fire(handlers,"session_shutdown",ctx);
-});
-
-test("overlay groups captured roots and refreshes same-count diffs without HEAD or external files", async () => {
- const {pi,handlers,commands,git}=fakePi([{numstat:"",porcelain:" M same.ts\0"}]);
- gentleShell(pi,{GENTLE_PI_SHELL_CHANGES_POLL_MS:"5"});
- const {ctx,ui,overlayReady}=fakeContext();
- sessionChange(ctx,"a","/repo","same.ts","old\n","first\n");
- sessionChange(ctx,"child:a","/linked","same.ts","old\n","child\n");
- await fire(handlers,"session_start",ctx);
  const opened=commands.get("gentle:changes")!.handler("",ctx);
  await overlayReady;
  try {
-  ui.overlayView!.handleInput("\r"); ui.overlayView!.handleInput("j");
-  await new Promise(resolve=>setTimeout(resolve,10));
-  assert.match(ui.overlayView!.render(140).join("\n"),/first/);
-  sessionChange(ctx,"b","/repo","same.ts","first\n","second\n");
-  pi.events.emit("gentle-pi:session-change",{sessionId:ctx.sessionManager.getSessionId()});
-  await new Promise(resolve=>setTimeout(resolve,20));
-  assert.match(ui.overlayView!.render(140).join("\n"),/second/);
-  assert.doesNotMatch(ui.overlayView!.render(140).join("\n"),/first/);
-  assert.ok(onlyHeadLabels(git), `overlay ran more than HEAD labelling: ${JSON.stringify(git)}`);
+  const rendered=ui.overlayView!.render(140).join("\n");
+  assert.match(rendered,/main · repo/);
+  assert.match(rendered,/detached · linked/, "a root outside the worktree list asks for its own HEAD");
+  assert.ok(gitStateOnly(git), JSON.stringify(git));
  } finally { ui.closeOverlay?.(); await opened; await fire(handlers,"session_shutdown",ctx); }
 });
 
-test("new sessions ignore inherited captures, while reload restores the same session", async () => {
+test("new sessions do not inherit another session's worktrees", async () => {
  const h=fakePi(); gentleShell(h.pi,{});
  const first=fakeContext();
- sessionChange(first.ctx,"a","/repo","own.ts");
  await fire(h.handlers,"session_start",first.ctx);
- assert.match(renderFooter(first.ui),/±1/);
- await fire(h.handlers,"session_start",first.ctx);
- assert.match(renderFooter(first.ui),/±1/);
+ await h.tools.get("session_worktree_register")!.execute("r",{path:"/linked"},undefined,undefined,first.ctx);
+ await fire(h.handlers,"session_shutdown",first.ctx);
  const next=fakeContext({entries:[...first.ctx.sessionManager.getEntries()]});
  (next.ctx.sessionManager as any).getSessionId=()=>"new-session";
  await fire(h.handlers,"session_start",next.ctx);
- h.pi.events.emit("gentle-pi:session-change",{sessionId:"shell-session"});
- assert.doesNotMatch(renderFooter(next.ui),/±1/);
- assert.equal(h.git.length,0);
+ h.git.length=0;
+ await fire(h.handlers,"agent_end",next.ctx);
+ await changesSettled();
+ assert.ok(h.git.length>0);
+ assert.ok(h.git.every((args)=>args[1]==="/repo"), JSON.stringify(h.git));
  await fire(h.handlers,"session_shutdown",next.ctx);
 });
 
@@ -4839,7 +4812,7 @@ test("registered canonical root governs real Git discovery, status and diff desp
 	h.pi.exec = ((command: string, args: string[], options: { timeout?: number } = {}) => new Promise((resolve) => {
 		execFile(command, args, { env: poisoned, encoding: "utf8", timeout: options.timeout, maxBuffer: Infinity }, (error, stdout, stderr) => resolve({ stdout, stderr, code: error ? typeof error.code === "number" ? error.code : 1 : 0, killed: Boolean(error?.killed) }));
 	})) as ExtensionAPI["exec"];
-	const { ctx, ui } = fakeContext();
+	const { ctx, ui, overlayReady } = fakeContext();
 	(ctx as unknown as { cwd: string }).cwd = selected;
 	(ctx.sessionManager as unknown as { getCwd(): string }).getCwd = () => selected;
 	const run = shellGitRunner(selected, poisoned);
@@ -4849,7 +4822,7 @@ test("registered canonical root governs real Git discovery, status and diff desp
 	installGentleShell(h.pi, isolatedEnv({ GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }), { devBinary: () => undefined, gitRunner: (cwd) => shellGitRunner(cwd, poisoned) });
 	await fire(h.handlers, "session_start", ctx);
 	t.after(() => fire(h.handlers, "session_shutdown", ctx));
-	assert.equal(ui.widgets.has("gentle-shell-changes"), false, "preexisting dirty files are not agent changes");
+	assert.equal(ui.widgets.has("gentle-shell-changes"), false, "startup never scans the repository");
 	const diff = await loadFileDiff(run, { path: "tracked.txt", added: 1, deleted: 1, status: CHANGE_STATUS.MODIFIED });
 	assert.match(diff, /\+selected change/);
 	assert.doesNotMatch(diff, /foreign change/);
@@ -4863,8 +4836,15 @@ test("registered canonical root governs real Git discovery, status and diff desp
 	assert.equal(largeDiff.code, 0);
 	assert.ok(largeDiff.stdout.length > 1024 * 1024, "output must not inherit execFile's default one MiB cap");
 	assert.match(largeDiff.stdout, /\+selected final marker/);
-	await h.commands.get("gentle:changes")!.handler("", ctx);
-	assert.equal(ui.overlay, undefined);
+	const bounded = shellGitRunner(selected, poisoned, execFile, DIFF_MAX_BYTES);
+	assert.equal((await bounded(["diff", "HEAD", "--", "tracked.txt"])).truncated, true, "the diff runner stops at its bound instead of buffering everything");
+	assert.ok(await loadFileDiff(bounded, { path: "tracked.txt", added: 70_001, deleted: 1, status: CHANGE_STATUS.MODIFIED }) === DIFF_TOO_LARGE);
+	const opened = h.commands.get("gentle:changes")!.handler("", ctx);
+	await overlayReady;
+	const trees = (ui.overlayView as unknown as { trees: Array<{ root: string; model: { files: Array<{ path: string }> } }> }).trees;
+	assert.deepEqual(trees.map((tree) => [tree.root, tree.model.files.map((file) => file.path)]), [[selected, ["selected-only.txt", "tracked.txt"]]], "inherited routing never lists the foreign repository");
+	ui.closeOverlay?.();
+	await opened;
 });
 
 test("loadFileDiff asks git for a HEAD diff, or a no-index diff for untracked files", async () => {
@@ -4879,6 +4859,17 @@ test("loadFileDiff asks git for a HEAD diff, or a no-index diff for untracked fi
 		["diff", "HEAD", "--", "lib/a.ts"],
 		["diff", "--no-index", "--", "/dev/null", "notes.md"],
 	]);
+});
+
+test("loadFileDiff replaces one oversized diff with a short open-in-editor line", async () => {
+	const answer = (stdout: string, truncated?: boolean) => async () => ({ stdout, code: 0, ...(truncated ? { truncated } : {}) });
+	const file = { path: "big.ts", added: 1, deleted: 0, status: CHANGE_STATUS.MODIFIED };
+	// assert.ok keeps a failure from printing megabytes of diff.
+	assert.ok(await loadFileDiff(answer("+x\n".repeat(DIFF_MAX_LINES + 1)), file) === DIFF_TOO_LARGE, "too many lines");
+	assert.ok(await loadFileDiff(answer("+" + "x".repeat(DIFF_MAX_BYTES)), file) === DIFF_TOO_LARGE, "too many bytes");
+	assert.ok(await loadFileDiff(answer("+partial", true), file) === DIFF_TOO_LARGE, "a runner that hit its buffer bound");
+	assert.match(DIFF_TOO_LARGE, /too large.*o.*editor/i);
+	assert.equal(await loadFileDiff(answer("+x\n".repeat(10)), file), "+x\n".repeat(10));
 });
 
 test("shell Git runner hides initial and repeated background polling children", async () => {
@@ -4936,23 +4927,24 @@ test("gentleShell binds the changes shortcut to the same handler as the command"
 	const shortcut = shortcuts.get("alt+g");
 	assert.ok(shortcut, "alt+g not registered");
 	await shortcut.handler(ctx);
-	assert.match(ui.notices.join("\n"), /No captured agent changes/);
+	assert.match(ui.notices.join("\n"), /No uncommitted changes/);
 
 	const silent = fakePi();
 	gentleShell(silent.pi, { GENTLE_PI_SHELL_CHANGES_KEY: "off" });
 	assert.equal(silent.shortcuts.has("alt+g"), false, "the changes shortcut must not register when disabled");
 });
 
-test("external edits do not pollute Changes or trigger background Git scans", async () => {
+test("Changes never polls Git in the background; external edits appear at turn end", async () => {
  const {pi,handlers,git}=fakePi([{numstat:"4\t2\texternal.ts\n",porcelain:" M external.ts\0"}]);
  gentleShell(pi,{GENTLE_PI_SHELL_CHANGES_WATCH_MS:"5"});
  const {ctx,ui}=fakeContext();
  await fire(handlers,"session_start",ctx);
  await new Promise(resolve=>setTimeout(resolve,30));
- await fire(handlers,"agent_end",ctx);
  assert.equal(git.length,0);
  assert.equal(ui.widgets.has("gentle-shell-changes"),false);
- assert.doesNotMatch(renderFooter(ui),/±/);
+ await fire(handlers,"agent_end",ctx);
+ await changesSettled();
+ assert.match(renderFooter(ui),/±1/);
  await fire(handlers,"session_shutdown",ctx);
 });
 

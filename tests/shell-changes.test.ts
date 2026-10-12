@@ -10,7 +10,6 @@ import {
 	CHANGE_STATUS,
 	ChangesTracker,
 	WorktreeChangesTracker,
-	RootBranchLabels,
 	UNKNOWN_BRANCH,
 	foreignRootBranch,
 	parseWorktrees,
@@ -110,14 +109,6 @@ test("changesSummary and the widget describe the session at a glance", () => {
 	assert.equal(rest.length, 0);
 	assert.match(line, /^✎ 3 files · \+42 −7 · extensions\/gentle-shell\.ts · lib\/shell-bar\.ts · tests\/x\.test\.ts {2,}\/gentle:changes$/);
 	assert.equal(visibleWidth(line), 120, "the command sits on the right edge");
-});
-
-test("changesSummary and the widget surface the capture limit", () => {
-	const model = changesModel([file("a.ts", 1, 0)]);
-	model.notice = "Session change capture limit reached; additional changes are not displayed.";
-	assert.equal(changesSummary(model), "1 file · +1 −0 · capture limit reached");
-	assert.match(renderChangesWidget(model, plainTheme, 200)[0], /capture limit reached/);
-	assert.doesNotMatch(changesSummary(changesModel([file("a.ts", 1, 0)])), /capture limit reached/);
 });
 
 test("renderChangesWidget colors counts by direction and yields nothing when clean", () => {
@@ -477,59 +468,4 @@ test("ChangesTracker counts the lines of untracked files, which git numstat leav
 	assert.deepEqual(model.files, [file("empty.md", 0, 0, CHANGE_STATUS.UNTRACKED), file("notes.md", 3, 0, CHANGE_STATUS.UNTRACKED)]);
 	assert.equal(model.added, 3);
 	assert.deepEqual(counted, ["notes.md", "empty.md"]);
-});
-
-// The session-evidence tracker behind /gentle:changes knows roots, never
-// branches. The overlay decorates its trees with each root's own HEAD state,
-// resolved once per root and reported back so the view can repaint; until git
-// answers the tree shows no branch (the view's "detached" fallback), and a
-// genuinely detached HEAD stays that way.
-test("RootBranchLabels decorates session trees with each root's branch once git answers", async () => {
-	const calls = new Map<string, string[][]>();
-	const answers: Record<string, { symbolic: { stdout: string; code: number }; verify: { stdout: string; code: number } }> = {
-		"/repo": { symbolic: { stdout: "feature\n", code: 0 }, verify: { stdout: "deadbeef\n", code: 0 } },
-		"/fresh": { symbolic: { stdout: "main\n", code: 0 }, verify: { stdout: "", code: 1 } },
-		"/pinned": { symbolic: { stdout: "", code: 1 }, verify: { stdout: "deadbeef\n", code: 0 } },
-	};
-	let changed = 0;
-	const labels = new RootBranchLabels((root) => async (args) => {
-		calls.set(root, [...(calls.get(root) ?? []), args]);
-		await new Promise((resolve) => setImmediate(resolve));
-		return args[0] === "symbolic-ref" ? answers[root]!.symbolic : answers[root]!.verify;
-	}, () => changed++);
-	const trees = Object.keys(answers).map((root) => ({ root, model: changesModel([]) }));
-	const first = labels.decorate(trees);
-	assert.deepEqual(first.map((tree) => tree.branch), [undefined, undefined, undefined], "nothing is labelled before git answers");
-	await labels.settled();
-	assert.equal(changed, 3, "each resolved root asks the view to repaint once");
-	const second = labels.decorate(trees);
-	assert.deepEqual(second.map((tree) => tree.branch), ["feature", "no commits yet", undefined]);
-	labels.decorate(trees);
-	await labels.settled();
-	assert.deepEqual([...calls.values()].map((list) => list.length), [2, 2, 1], "one resolution per root, never per decorate call");
-	assert.equal(changed, 3);
-});
-
-// A root that could not even be asked (removed, git unavailable, the runner
-// itself rejecting) must read UNKNOWN_BRANCH -- never the same undefined a
-// genuine detached HEAD produces, and never silently stay unlabelled forever.
-test("RootBranchLabels labels a root UNKNOWN_BRANCH when it could not be asked, distinct from a real detached HEAD", async () => {
-	let changed = 0;
-	const labels = new RootBranchLabels((root) => async () => {
-		await new Promise((resolve) => setImmediate(resolve));
-		if (root === "/gone") throw new Error("root removed");
-		return { stdout: "", code: 1 };
-	}, () => changed++);
-	const trees = [
-		{ root: "/gone", model: changesModel([]) },
-		{ root: "/detached", model: changesModel([]) },
-	];
-	labels.decorate(trees);
-	await labels.settled();
-	assert.deepEqual(
-		labels.decorate(trees).map((tree) => tree.branch),
-		[UNKNOWN_BRANCH, undefined],
-		"a failed ask reads UNKNOWN_BRANCH; a real detached HEAD still reads undefined (the view's detached fallback)",
-	);
-	assert.equal(changed, 2, "a failed ask still resolves and asks the view to repaint, instead of hanging forever");
 });

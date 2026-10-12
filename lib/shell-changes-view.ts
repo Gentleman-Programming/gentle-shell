@@ -1,7 +1,7 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { basename, posix } from "node:path";
-import { CHANGE_STATUS, changesSummary, type ChangedFile, type ChangesModel, type WorktreeChanges } from "./shell-changes.ts";
+import { CHANGE_STATUS, DIFF_TOO_LARGE, changesSummary, type ChangedFile, type ChangesModel, type WorktreeChanges } from "./shell-changes.ts";
 import { paintHoverable } from "./shell-hover.ts";
 
 // Gentle Shell changes overlay: a framed two-pane view with the working
@@ -583,7 +583,8 @@ export class ChangesView {
 		void this.deps.loadDiff(file).then(
 			(text) => {
 				if (this.disposed) return;
-				this.diffs.set(file.path, colorDiff(text, this.deps.theme));
+				// An oversized diff arrives as one plain line pointing at the editor.
+				this.diffs.set(file.path, text === DIFF_TOO_LARGE ? [this.deps.theme.fg(ROLE.EMPTY, text)] : colorDiff(text, this.deps.theme));
 				this.deps.requestRender();
 			},
 			() => {

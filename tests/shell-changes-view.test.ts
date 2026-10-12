@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { TuiAltScreen, visibleWidth, type Terminal, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import { CHANGE_STATUS, changesModel, type ChangedFile } from "../lib/shell-changes.ts";
+import { CHANGE_STATUS, DIFF_TOO_LARGE, changesModel, type ChangedFile } from "../lib/shell-changes.ts";
 import { WorktreeChangesView, ChangesView, colorDiff, type ChangesViewDeps } from "../lib/shell-changes-view.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
@@ -600,6 +600,23 @@ test("ChangesView scrolls the diff pane and shows an empty state for files witho
 	const empty = view({ async loadDiff() { return ""; } });
 	await settle();
 	assert.match(stripAnsi(empty.view.render(80)[2]), /no diff for this file/);
+});
+
+test("ChangesView shows an oversized diff as one plain open-in-editor line and stays responsive", async () => {
+	const tagged = view({ theme: taggedTheme, async loadDiff() { return DIFF_TOO_LARGE; } }).view;
+	await settle();
+	const rendered = tagged.render(100).join("\n");
+	assert.match(rendered, /<dim>Diff too large/, "one plain line instead of a colored diff");
+	assert.doesNotMatch(rendered, /<toolDiff\w+>Diff too large/);
+	const { view: component, events } = view({ async loadDiff(target) { return target.path === "lib/a.ts" ? DIFF_TOO_LARGE : DIFF_A; } });
+	await settle();
+	assert.match(stripAnsi(component.render(140).join("\n")), /Diff too large — press o to open in editor\./);
+	component.handleInput("j");
+	await settle();
+	assert.match(stripAnsi(component.render(140).join("\n")), /\+const c = 4;/);
+	component.handleInput("k");
+	component.handleInput("o");
+	assert.ok(events.includes("open:lib/a.ts"));
 });
 
 test("ChangesView opens the selected file and closes on escape or q", async () => {

@@ -31,6 +31,18 @@ const ALWAYS_SENSITIVE_ENV_KEYS = new Set([
 	"SSH_AUTH_SOCK", "DOCKER_AUTH_CONFIG", "DATABASE_URL",
 ]);
 
+/** A key normalized for case-insensitive matching against the keep list and the sensitive-name rules. */
+const normalizeEnvKey = (key: string) => key.toUpperCase();
+
+/** Whether a normalized key is always sensitive or matches one of the sensitive-name patterns. */
+const isSensitiveEnvKey = (normalizedKey: string) => {
+	if (ALWAYS_SENSITIVE_ENV_KEYS.has(normalizedKey)) return true;
+	for (const pattern of SENSITIVE_ENV_KEY_PATTERNS) {
+		if (pattern.test(normalizedKey)) return true;
+	}
+	return false;
+};
+
 /**
  * Environment keys that must not reach a child agent, sorted. `keep` lists the
  * exact names a role declares it needs; matching is case-insensitive and a
@@ -40,13 +52,12 @@ export function inheritedSensitiveChildEnvironmentKeys(
 	environment: NodeJS.ProcessEnv = process.env,
 	keep: readonly string[] = [],
 ): string[] {
-	const keepKeys = new Set(keep.map((key) => key.toUpperCase()));
-	return Object.keys(environment)
-		.filter((key) => {
-			const normalizedKey = key.toUpperCase();
-			if (keepKeys.has(normalizedKey)) return false;
-			return ALWAYS_SENSITIVE_ENV_KEYS.has(normalizedKey)
-				|| SENSITIVE_ENV_KEY_PATTERNS.some((pattern) => pattern.test(normalizedKey));
-		})
-		.toSorted();
+	const keepKeys = new Set(keep.map(normalizeEnvKey));
+	const sensitiveKeys: string[] = [];
+	for (const key of Object.keys(environment)) {
+		const normalizedKey = normalizeEnvKey(key);
+		if (keepKeys.has(normalizedKey)) continue;
+		if (isSensitiveEnvKey(normalizedKey)) sensitiveKeys.push(key);
+	}
+	return sensitiveKeys.toSorted();
 }

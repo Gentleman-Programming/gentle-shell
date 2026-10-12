@@ -462,6 +462,7 @@ export async function answerThroughUi(ui: ExtensionContext["ui"] | undefined, as
 	}
 }
 
+/** Gentle Agents extension entry point: registers the subagent tools and card, and owns child-launch plumbing. */
 export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<AgentsDeps> = {}): void {
 	const childIpc = ownedChildIpc(env, overrides.childIpc ?? (process.send ? process as unknown as IpcEndpoint : undefined));
 	if (env.GENTLE_PI_AGENTS_CHILD === "1") {

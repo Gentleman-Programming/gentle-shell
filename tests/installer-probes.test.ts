@@ -241,8 +241,8 @@ test("pnpm from the bootstrap is bootstrap-only; one on the user's PATH is persi
 	assert.deepEqual(await persistent.probes.pnpm(), { available: true, version: "11.4.0", usable: true, compatible: true, persistent: true });
 });
 
-test("pnpm outside the verified major, unparseable, timed out or absent", async () => {
-	for (const [stdout, compatible] of [["10.30.0", false], ["12.0.0", false], ["11.0.9", false], ["11.1.1", true]] as const) {
+test("pnpm older than the pin, unparseable, timed out or absent; the pin or newer of any major is compatible", async () => {
+	for (const [stdout, compatible] of [["10.30.0", false], ["12.0.0", true], ["11.0.9", false], ["11.1.1", true]] as const) {
 		const h = probes({ files: [TOOLS_PNPM], results: { [`${TOOLS_PNPM} --version`]: { code: 0, stdout } } });
 		assert.equal((await h.probes.pnpm()).compatible, compatible);
 	}
@@ -255,7 +255,9 @@ test("pnpm outside the verified major, unparseable, timed out or absent", async 
 
 test("the bootstrap's pnpm next to an incompatible pnpm on the user's PATH is bootstrap-only and reports the version found", async () => {
 	const results = { [`${TOOLS_PNPM} --version`]: { code: 0, stdout: "11.1.1\n" } };
-	for (const [own, found] of [["10.27.0", "10.27.0"], ["12.0.0", "12.0.0"], ["11.1.1", undefined], ["not a version", undefined]] as const) {
+	// The bootstraps run only the pinned major, so a pnpm of another major there is reported as found
+	// (the plan says the pinned pnpm is installed and that one is left unchanged); a newer 11.x is not.
+	for (const [own, found] of [["10.27.0", "10.27.0"], ["12.0.0", "12.0.0"], ["13.0.0", "13.0.0"], ["11.5.0", undefined], ["11.1.1", undefined], ["not a version", undefined]] as const) {
 		const h = probes({ files: [TOOLS_PNPM, "/usr/bin/pnpm"], results: { ...results, "/usr/bin/pnpm --version": { code: 0, stdout: `${own}\n` } } });
 		assert.deepEqual(await h.probes.pnpm(), { available: true, version: "11.1.1", usable: true, compatible: true, persistent: false,
 			...(found ? { found } : {}) }, own);
@@ -279,9 +281,10 @@ test("a user's pnpm in $PNPM_HOME/bin is reported as it is next to the bootstrap
 	// Persisting pnpm writes $PNPM_HOME/bin/pnpm: the user's own pnpm there is never replaced or downgraded.
 	const env = { HOME, PATH: `${TOOLS}/node/bin:${TOOLS}/pnpm/bin:${BIN}:/usr/bin:/bin` };
 	const results = { [`${TOOLS_PNPM} --version`]: { code: 0, stdout: "11.1.1\n" } };
-	for (const own of ["11.0.5", "12.0.0", "10.27.0"]) {
+	// Compatible means the pin or newer, of any major: pnpm 12 runs the installer's commands (measured).
+	for (const [own, compatible] of [["11.0.5", false], ["10.27.0", false], ["12.0.0", true], ["12.11.2", true], ["13.0.0", true]] as const) {
 		const h = probes({ env, files: [TOOLS_PNPM, `${BIN}/pnpm`], results: { ...results, [`${BIN}/pnpm --version`]: { code: 0, stdout: `${own}\n` } } });
-		assert.deepEqual(await h.probes.pnpm(), { available: true, version: own, usable: true, compatible: false, persistent: true, inGlobalBin: true }, own);
+		assert.deepEqual(await h.probes.pnpm(), { available: true, version: own, usable: true, compatible, persistent: true, inGlobalBin: true }, own);
 	}
 	// Without a stable version it is left as it is and never replaced: the bootstrap's
 	// pnpm is reported in its place, as persistent, so nothing is persisted over it.
@@ -293,8 +296,8 @@ test("a user's pnpm in $PNPM_HOME/bin is reported as it is next to the bootstrap
 	// A compatible one there needs nothing persisted over it.
 	const current = probes({ env, files: [TOOLS_PNPM, `${BIN}/pnpm`], results: { ...results, [`${BIN}/pnpm --version`]: { code: 0, stdout: "11.5.0\n" } } });
 	assert.deepEqual(await current.probes.pnpm(), { available: true, version: "11.5.0", usable: true, compatible: true, persistent: true, inGlobalBin: true });
-	// Through the planner: a blocker before consent, and nothing persisted over it.
-	for (const own of ["11.0.5", "12.0.0"]) {
+	// Through the planner: an older one blocks before consent; a newer major does not; nothing is persisted over either.
+	for (const own of ["11.0.5", "12.11.2"]) {
 		const h = probes({ env, files: [TOOLS_PNPM, `${BIN}/pnpm`], results: { ...results, [`${BIN}/pnpm --version`]: { code: 0, stdout: `${own}\n` } } });
 		const inventory = await collectInventory({ platform: "linux", arch: "x64", probes: { pnpm: h.probes.pnpm,
 			node: async () => ({ available: true, version: "24.18.0", usable: true, persistent: true, npm: true }),
@@ -302,8 +305,11 @@ test("a user's pnpm in $PNPM_HOME/bin is reported as it is next to the bootstrap
 			go: async () => ({ available: false }), globalBin: async () => ({ available: true, path: BIN, writable: true, onPath: true }),
 			setup: async () => false } });
 		const plan = planPreflight(inventory);
-		assert.deepEqual(plan.blockers, [{ code: "incompatible-tool", tool: "pnpm" }], own);
-		assert.deepEqual(plan.actions, []);
+		const older = own === "11.0.5";
+		assert.deepEqual(plan.blockers, older ? [{ code: "incompatible-tool", tool: "pnpm" }] : [], own);
+		if (older) assert.deepEqual(plan.actions, []);
+		assert.equal(plan.actions.some((action: { id: string }) => ["persist-pnpm", "persist-package-managers"].includes(action.id) &&
+			JSON.stringify(action).includes("pnpm@")), false, own);
 	}
 	// The same user pnpm outside $PNPM_HOME/bin keeps the pinned copy alongside.
 	const outside = probes({ files: [TOOLS_PNPM, "/usr/bin/pnpm"], results: { ...results, "/usr/bin/pnpm --version": { code: 0, stdout: "11.0.5\n" } } });
@@ -1069,4 +1075,32 @@ test("Windows: with a blocked PNPM_HOME decision the real probes run no command 
 	const inventory = await collectInventory({ platform: "win32", arch: "x64", probes: h.probes, pnpmHome });
 	assert.deepEqual([h.calls, walked], [[], []], "no command runs and nothing is walked");
 	assert.deepEqual(planPreflight(inventory).blockers, [{ code: "untrusted-pnpm-home", tool: "pnpmHome" }]);
+});
+
+// Git is not needed to install, but review, worktrees and repository features use it:
+// the plan only notes when it is missing. Git itself is never run.
+test("the git probe reports whether Git is on the user's PATH without running it", async () => {
+	assert.deepEqual(await probes({ files: ["/usr/bin/git"] }).probes.git(), { available: true });
+	assert.deepEqual(await probes().probes.git(), { available: false });
+	// macOS: /usr/bin/git is a shim that opens an install dialog without the Command Line
+	// Tools, so only `xcode-select -p` is asked, which never opens one.
+	const env = { HOME, PATH: "/usr/bin:/bin" };
+	for (const [code, available] of [[0, true], [2, false]] as const) {
+		const mac = probes({ platform: "darwin", env, files: ["/usr/bin/git"], results: { "/usr/bin/xcode-select -p": { code, stdout: "/Library/Developer/CommandLineTools\n" } } });
+		assert.deepEqual(await mac.probes.git(), { available }, String(code));
+		assert.deepEqual(mac.calls.map((call) => call.command), ["/usr/bin/xcode-select"]);
+	}
+	// Another Git first on PATH (Homebrew, for example) is real Git.
+	const brew = probes({ platform: "darwin", env: { HOME, PATH: "/opt/homebrew/bin:/usr/bin:/bin" }, files: ["/opt/homebrew/bin/git", "/usr/bin/git"] });
+	assert.deepEqual(await brew.probes.git(), { available: true });
+	assert.deepEqual(brew.calls, []);
+});
+
+test("collectInventory keeps the git probe's record only when the probe exists", async () => {
+	const withGit = await collectInventory({ platform: "linux", arch: "x64", probes: { git: async () => ({ available: false }) } });
+	assert.deepEqual(withGit.git, { available: false });
+	const without = await collectInventory({ platform: "linux", arch: "x64", probes: {} });
+	assert.equal("git" in without, false);
+	const failing = await collectInventory({ platform: "linux", arch: "x64", probes: { git: async () => { throw new Error("/private/path"); } } });
+	assert.equal("git" in failing, false);
 });

@@ -14,6 +14,8 @@ import {
 	NativeReviewCliV216,
 	NativeReviewIntegrationError,
 	createNodeExecFileAdapter,
+	createWindowsProcessTreeKiller,
+	windowsTaskkillPath,
 	gentleAiProcessEnvironment,
 	isNativeReviewUnachievableVerbRefused,
 	type ExecFileAdapter,
@@ -801,6 +803,76 @@ test("node execFile adapter passes AbortSignal to child_process", async () => {
 	});
 	controller.abort();
 	await assert.rejects(pending, (error: unknown) => error instanceof Error && error.name === "AbortError");
+});
+
+// On Windows, killing gentle-ai alone leaves its git children running against
+// the repository index; abort and timeout must take the whole tree down.
+test("node execFile adapter kills the whole process tree on Windows abort and timeout", async () => {
+	const killed: number[] = [];
+	const killProcessTree = (pid: number) => { killed.push(pid); process.kill(pid); };
+	const adapter = createNodeExecFileAdapter({ platform: "win32", killProcessTree });
+	const request = { file: process.execPath, arguments: ["-e", "setTimeout(() => {}, 10_000)"], cwd: process.cwd(), maxBufferBytes: 1024 };
+
+	const controller = new AbortController();
+	const aborted = adapter({ ...request, timeoutMs: 30_000, signal: controller.signal });
+	setTimeout(() => controller.abort(), 50);
+	await assert.rejects(aborted, (error: unknown) => error instanceof Error && error.name === "AbortError");
+	assert.equal(killed.length, 1, "abort kills the tree once");
+
+	const timedOut = await adapter({ ...request, timeoutMs: 50 });
+	assert.equal(timedOut.timedOut, true);
+	assert.equal(killed.length, 2, "timeout kills the tree once");
+
+	const preAborted = new AbortController();
+	preAborted.abort();
+	await assert.rejects(adapter({ ...request, timeoutMs: 30_000, signal: preAborted.signal }), (error: unknown) => error instanceof Error && error.name === "AbortError");
+	assert.equal(killed.length, 2, "an already-aborted call spawns nothing");
+
+	const finished = await adapter({ ...request, arguments: ["-p", "'done'"], timeoutMs: 30_000 });
+	assert.deepEqual([finished.exitCode, finished.stdout.trim(), finished.timedOut], [0, "done", false]);
+	assert.equal(killed.length, 2, "a call that finishes kills nothing");
+});
+
+// taskkill can be unavailable (AppLocker, a broken PATH): the deadline must
+// still hold, through a direct kill of gentle-ai itself.
+test("node execFile adapter still enforces the timeout on Windows when the tree kill does nothing", async () => {
+	const adapter = createNodeExecFileAdapter({ platform: "win32", killProcessTree: () => {} });
+	const startedAt = Date.now();
+	const result = await adapter({ file: process.execPath, arguments: ["-e", "setTimeout(() => {}, 5_000)"], cwd: process.cwd(), maxBufferBytes: 1024, timeoutMs: 100 });
+	assert.equal(result.timedOut, true);
+	assert.ok(Date.now() - startedAt < 3_000, `settled after ${Date.now() - startedAt}ms`);
+});
+
+// A descendant that inherited gentle-ai's stdout/stderr keeps the pipes open
+// after gentle-ai itself exits; the deadline must still hold.
+test("node execFile adapter enforces the Windows timeout when a descendant holds the inherited pipes", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "gentle-pi-tree-kill-"));
+	const pidFile = join(directory, "descendant.pid");
+	const script = `const { spawn } = require("node:child_process"); const d = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "inherit" }); require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(d.pid)); d.unref();`;
+	try {
+		const adapter = createNodeExecFileAdapter({ platform: "win32", killProcessTree: () => {} });
+		const startedAt = Date.now();
+		const pending = adapter({ file: process.execPath, arguments: ["-e", script], cwd: process.cwd(), maxBufferBytes: 1024, timeoutMs: 300 });
+		const result = await Promise.race([pending, new Promise<"unsettled">((resolve) => setTimeout(() => resolve("unsettled"), 6_000).unref())]);
+		assert.notEqual(result, "unsettled", "the call settles while the descendant still holds the pipes");
+		if (result === "unsettled") return;
+		assert.equal(result.timedOut, true);
+		assert.ok(Date.now() - startedAt < 4_000, `settled after ${Date.now() - startedAt}ms`);
+	} finally {
+		try { process.kill(Number(readFileSync(pidFile, "utf8"))); } catch { /* Already gone. */ }
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+// A bare "taskkill" resolves from the current directory first on Windows, so a
+// repository shipping its own taskkill.exe would run on any abort or timeout.
+test("Windows tree kill runs taskkill by its absolute System32 path from a trusted cwd", () => {
+	const calls: Array<{ file: string; args: readonly string[]; cwd: string }> = [];
+	const kill = createWindowsProcessTreeKiller({ SystemRoot: "D:\\Windows" }, (file, args, options) => { calls.push({ file, args, cwd: options.cwd }); return { on() {} }; });
+	kill(42);
+	assert.deepEqual(calls, [{ file: "D:\\Windows\\System32\\taskkill.exe", args: ["/pid", "42", "/T", "/F"], cwd: "D:\\Windows\\System32" }]);
+	assert.equal(windowsTaskkillPath({}), "C:\\Windows\\System32\\taskkill.exe");
+	assert.equal(windowsTaskkillPath({ SystemRoot: "relative\\dir" }), "C:\\Windows\\System32\\taskkill.exe", "a relative SystemRoot is never trusted");
 });
 
 test("capture-result receives the controller AbortSignal without an automatic mutation timeout", async () => {

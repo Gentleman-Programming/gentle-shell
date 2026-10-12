@@ -107,6 +107,11 @@ export async function collectInventory({ platform, arch, probes = {}, pnpmHome }
 			inventory[name] = { available: null };
 		}
 	}
+	// Optional, advisory only (the plan notes a missing Git): kept only from a probe that answered.
+	if (probes.git) {
+		const git = await Promise.resolve().then(() => probes.git()).catch(() => null);
+		if (plainRecord(git) && typeof git.available === "boolean") inventory.git = { available: git.available };
+	}
 	if (platform === "win32" && probes.folders) {
 		const folders = await Promise.resolve().then(() => probes.folders()).catch(() => null);
 		if (plainRecord(folders) && !("available" in folders) && Object.keys(folders).length > 0) inventory.folders = folders;

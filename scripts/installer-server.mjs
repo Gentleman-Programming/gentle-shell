@@ -258,13 +258,9 @@ function globalBinPnpm(blocker, found, required) {
 		return `A pnpm ${where} but its version could not be checked. Nothing was replaced. ` +
 			`If \`pnpm --version\` reports a version older than ${required}, update it with ${update}, then select Check again.`;
 	}
-	const major = required.split(".")[0];
-	if (older(found, required)) {
-		return `pnpm ${found} ${where} but this installer needs pnpm ${required} or a newer ${major}.x. Nothing was replaced. ` +
-			`Update it with ${update}, then select Check again.`;
-	}
-	return `pnpm ${found} ${where} but this installer only runs pnpm ${major} (${required} or a newer ${major}.x). ` +
-		`Nothing was replaced, and this installer never downgrades pnpm. To use it, make a pnpm ${major} release your global pnpm the way you prefer, then select Check again.`;
+	// Only an older pnpm is incompatible: the pin or newer, of any major, is used as it is.
+	return `pnpm ${found} ${where} but this installer needs pnpm ${required} or newer. Nothing was replaced. ` +
+		`Update it with ${update}, then select Check again.`;
 }
 
 // S6: what the storage walk found on a Windows PNPM_HOME candidate, from the
@@ -399,6 +395,19 @@ function privateHomeDescription(home) {
 		"pnpm's default configuration, cache and state under %LOCALAPPDATA%, which pnpm offers no safe persistent setting to move. This is an accepted risk.";
 }
 
+// A missing Git (never a blocker): installing does not need it, repository features do.
+const gitInstall = Object.freeze({
+	darwin: "`xcode-select --install` (Apple's Command Line Tools)",
+	win32: "`winget install --id Git.Git -e`",
+	linux: "your package manager, for example `sudo apt-get install -y git` on Debian or Ubuntu",
+});
+function gitNoticeView(inventory) {
+	if (inventory?.git?.available !== false) return null;
+	const install = gitInstall[inventory.platform] ?? gitInstall.linux;
+	return { description: "Git was not found on this computer. Gentle Shell installs and starts without it, but code review, worktrees and other " +
+		`repository features need it. Install it with ${install}, then open a new terminal. This is not a blocker.` };
+}
+
 // S6 notice: reused tools whose folders another account can change (never a blocker).
 const folderTools = Object.freeze({ node: "Node.js", npm: "npm", go: "Go", pi: "Pi", shell: "Gentle Shell" });
 function sharedFoldersView(plan) {
@@ -438,7 +447,7 @@ function bundledDescription(action, bundled) {
 	}
 }
 /** The bundled plan's view: the same shape as planView's, with `bundled: true`. */
-function bundledView(planId, plan) {
+function bundledView(planId, plan, inventory) {
 	const bundled = plan.bundled;
 	const [root, bin, file, line] = [plainText(bundled.root), plainText(bundled.bin), plainText(bundled.path?.file), plainText(bundled.path?.line)];
 	const kind = bundled.path?.kind;
@@ -457,6 +466,7 @@ function bundledView(planId, plan) {
 		blockers: [],
 		profileChange: { changesProfile: ["symlink", "profile", "registry"].includes(kind), command: null, binDir: bin, description: profile },
 		sharedFolders: null,
+		gitNotice: gitNoticeView(inventory),
 		persistence: {
 			tools: ["node", "npm", "pnpm", ...(go ? ["go"] : [])],
 			pnpmHome: root,
@@ -467,7 +477,7 @@ function bundledView(planId, plan) {
 }
 
 function planView(planId, { inventory, plan }) {
-	if (plainObject(plan.bundled)) return bundledView(planId, plan);
+	if (plainObject(plan.bundled)) return bundledView(planId, plan, inventory);
 	const ids = plan.actions.map((action) => action.id);
 	const binDir = typeof inventory?.globalBin?.path === "string" ? inventory.globalBin.path : null;
 	// A private PNPM_HOME (S6) is always persisted by `pnpm setup` (the runner's persist-path).
@@ -506,6 +516,7 @@ function planView(planId, { inventory, plan }) {
 				: "Your PATH already contains the pnpm global bin directory; no shell profile or PATH change is planned.",
 		},
 		sharedFolders: sharedFoldersView(plan),
+		gitNotice: gitNoticeView(inventory),
 		persistence: {
 			tools,
 			pnpmHome,

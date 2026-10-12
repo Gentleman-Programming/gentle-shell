@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, posix, win32 } from "node:path";
@@ -1075,6 +1075,13 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// to /v4 without a review-integration/v2 change. No new negotiated
 	// capability is asserted.
 	"4.0.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v4.1.1 repeats 4.0.0: the published binary still advertises
+	// capabilities/v2.6 under review-integration/v2. The provider contract moved
+	// from 1.2.0 to 1.3.0 (additive agent lens selection, gentle-ai#5348), with
+	// published tarball SHA-256
+	// b04b6b75d1a446c942a816fbf92932d16f8c3d3001f93159dee2a92bbf2ebe44.
+	// No new negotiated capability identity is asserted.
+	"4.1.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 });
 
 export interface NativeReviewProcessDiagnostics {
@@ -1122,16 +1129,92 @@ export function gentleAiProcessEnvironment(base: NodeJS.ProcessEnv = process.env
 	return { ...gentleAiIsolationEnv(base), [GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV]: GENTLE_PI_REVIEW_RELAY_CONTRACT };
 }
 
-export function createNodeExecFileAdapter(): ExecFileAdapter {
+export type ProcessTreeKiller = (pid: number) => void;
+
+type TreeKillSpawn = (file: string, args: readonly string[], options: { cwd: string; stdio: "ignore"; windowsHide: true }) => { on(event: "error", listener: () => void): unknown };
+
+// A bare "taskkill" resolves from the current directory before PATH on
+// Windows, so a repository shipping its own taskkill.exe would run on any
+// abort. Always use the System32 binary, from System32 itself.
+export function windowsTaskkillPath(env: NodeJS.ProcessEnv = process.env): string {
+	const systemRoot = env.SystemRoot || env.windir;
+	return win32.join(systemRoot && win32.isAbsolute(systemRoot) ? systemRoot : "C:\\Windows", "System32", "taskkill.exe");
+}
+
+// taskkill walks the tree from a live parent, so it must run before the
+// parent dies; Node's own abort/timeout kill would orphan the git children.
+export function createWindowsProcessTreeKiller(env: NodeJS.ProcessEnv = process.env, spawnProcess: TreeKillSpawn = spawn): ProcessTreeKiller {
+	const taskkill = windowsTaskkillPath(env);
+	return (pid) => {
+		try {
+			spawnProcess(taskkill, ["/pid", String(pid), "/T", "/F"], { cwd: win32.dirname(taskkill), stdio: "ignore", windowsHide: true }).on("error", () => {});
+		} catch { /* Best effort: the call still settles through its own child. */ }
+	};
+}
+
+export const windowsProcessTreeKiller: ProcessTreeKiller = (pid) => createWindowsProcessTreeKiller()(pid);
+
+const WINDOWS_TREE_KILL_GRACE_MS = 1_000;
+
+function abortError(signal: AbortSignal): Error {
+	return Object.assign(new Error("The operation was aborted", { cause: signal.reason }), { name: "AbortError", code: "ABORT_ERR" });
+}
+
+function execFileResultFromError(error: unknown, timedOut: boolean): ExecFileResult {
+	const detail = error as NodeJS.ErrnoException & { stdout?: string; stderr?: string; code?: string | number; signal?: NodeJS.Signals; killed?: boolean };
+	if (detail.code === "ENOENT" || detail.code === "EACCES" || detail.name === "AbortError") throw error;
+	const outputLimitExceeded = detail.code === "ENOBUFS" || detail.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+	return { stdout: detail.stdout ?? "", stderr: detail.stderr ?? "", exitCode: typeof detail.code === "number" ? detail.code : 1, signal: detail.signal ?? null, timedOut: !outputLimitExceeded && (timedOut || detail.killed === true), outputLimitExceeded };
+}
+
+// Windows: abort and timeout kill the whole process tree instead of only
+// gentle-ai, with the same observable results as the POSIX path.
+function windowsExecFile(request: ExecFileRequest, killProcessTree: ProcessTreeKiller): Promise<ExecFileResult> {
+	const { signal } = request;
+	if (signal?.aborted) return Promise.reject(abortError(signal));
+	return new Promise((resolve, reject) => {
+		let timedOut = false, aborted = false, pipesCut = false;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		let fallback: ReturnType<typeof setTimeout> | undefined;
+		const child = execFile(request.file, [...request.arguments], { cwd: request.cwd, encoding: "utf8", shell: false, windowsHide: true, maxBuffer: request.maxBufferBytes, env: gentleAiProcessEnvironment() }, (error, stdout, stderr) => {
+			if (timer !== undefined) clearTimeout(timer);
+			if (fallback !== undefined) clearTimeout(fallback);
+			signal?.removeEventListener("abort", onAbort);
+			if (aborted && signal) { reject(abortError(signal)); return; }
+			if (error === null) { resolve({ stdout, stderr, exitCode: 0, signal: null, timedOut: pipesCut, outputLimitExceeded: false }); return; }
+			try { resolve(execFileResultFromError(Object.assign(error, { stdout, stderr }), timedOut)); } catch (failure) { reject(failure); }
+		});
+		// If taskkill cannot run (AppLocker, a broken PATH), still end gentle-ai
+		// itself so the deadline holds; its children may then outlive it. A
+		// surviving descendant can still hold the inherited stdout/stderr open,
+		// which would keep execFile from calling back, so cut the pipes too.
+		const killTree = () => {
+			if (child.pid === undefined) { child.kill(); return; }
+			killProcessTree(child.pid);
+			fallback = setTimeout(() => {
+				if (child.exitCode === null && child.signalCode === null) child.kill();
+				pipesCut = true;
+				child.stdout?.destroy();
+				child.stderr?.destroy();
+			}, WINDOWS_TREE_KILL_GRACE_MS);
+		};
+		function onAbort(): void { if (aborted || timedOut) return; aborted = true; killTree(); }
+		signal?.addEventListener("abort", onAbort, { once: true });
+		if (request.timeoutMs !== undefined && request.timeoutMs > 0) timer = setTimeout(() => { if (aborted) return; timedOut = true; killTree(); }, request.timeoutMs);
+	});
+}
+
+export function createNodeExecFileAdapter(options: { readonly platform?: NodeJS.Platform; readonly killProcessTree?: ProcessTreeKiller } = {}): ExecFileAdapter {
+	if ((options.platform ?? process.platform) === "win32") {
+		const killProcessTree = options.killProcessTree ?? windowsProcessTreeKiller;
+		return (request) => windowsExecFile(request, killProcessTree);
+	}
 	return async (request) => {
 		try {
 			const output = await execFileAsync(request.file, [...request.arguments], { cwd: request.cwd, encoding: "utf8", shell: false, windowsHide: true, timeout: request.timeoutMs, maxBuffer: request.maxBufferBytes, signal: request.signal, env: gentleAiProcessEnvironment() });
 			return { stdout: output.stdout, stderr: output.stderr, exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
 		} catch (error) {
-			const detail = error as NodeJS.ErrnoException & { stdout?: string; stderr?: string; code?: string | number; signal?: NodeJS.Signals; killed?: boolean };
-			if (detail.code === "ENOENT" || detail.code === "EACCES" || detail.name === "AbortError") throw error;
-			const outputLimitExceeded = detail.code === "ENOBUFS" || detail.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
-			return { stdout: detail.stdout ?? "", stderr: detail.stderr ?? "", exitCode: typeof detail.code === "number" ? detail.code : 1, signal: detail.signal ?? null, timedOut: !outputLimitExceeded && detail.killed === true, outputLimitExceeded };
+			return execFileResultFromError(error, false);
 		}
 	};
 }

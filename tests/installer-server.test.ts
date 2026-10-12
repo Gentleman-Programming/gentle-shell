@@ -306,8 +306,8 @@ test("/api/plan names the found and required version of an older Gentle Shell an
 		const view = await plan(port, await login());
 		assert.deepEqual(view.blockers.map((blocker: { code: string; tool: string }) => [blocker.code, blocker.tool]), [["incompatible-tool", "shell"]]);
 		assert.equal(view.blockers[0].guidance,
-			"Gentle Shell 3.4.0 is installed globally with pnpm, but this installer needs 4.0.0 or newer. Nothing was replaced. " +
-			"Update it with `pnpm add -g gentle-pi@4.0.0`, or remove it with `pnpm remove -g gentle-pi`, then select Check again.");
+			"Gentle Shell 3.4.0 is installed globally with pnpm, but this installer needs 4.1.0 or newer. Nothing was replaced. " +
+			"Update it with `pnpm add -g gentle-pi@4.1.0`, or remove it with `pnpm remove -g gentle-pi`, then select Check again.");
 		assert.deepEqual(view.actions, []);
 	} finally {
 		await host.close("test");
@@ -427,11 +427,8 @@ test("/api/plan explains a pnpm in $PNPM_HOME/bin that the installer will not re
 	const inGlobalBin = (pnpm: object) => ({ pnpm: { ...pnpm, inGlobalBin: true } });
 	const cases = [
 		[inGlobalBin({ available: true, version: "11.0.5", usable: true, compatible: false, persistent: true }), "incompatible-tool",
-			`pnpm 11.0.5 is installed in the pnpm global bin directory, where this installer would put its own pnpm, but this installer needs pnpm ${requirements.pnpm} or a newer 11.x. ` +
+			`pnpm 11.0.5 is installed in the pnpm global bin directory, where this installer would put its own pnpm, but this installer needs pnpm ${requirements.pnpm} or newer. ` +
 			`Nothing was replaced. Update it with \`pnpm self-update ${requirements.pnpm}\`, then select Check again.`],
-		[inGlobalBin({ available: true, version: "12.0.0", usable: true, compatible: false, persistent: true }), "incompatible-tool",
-			`pnpm 12.0.0 is installed in the pnpm global bin directory, where this installer would put its own pnpm, but this installer only runs pnpm 11 (${requirements.pnpm} or a newer 11.x). ` +
-			"Nothing was replaced, and this installer never downgrades pnpm. To use it, make a pnpm 11 release your global pnpm the way you prefer, then select Check again."],
 		[inGlobalBin({ available: null }), "unknown-tool",
 			"A pnpm is installed in the pnpm global bin directory, where this installer would put its own pnpm, but its version could not be checked. " +
 			`Nothing was replaced. If \`pnpm --version\` reports a version older than ${requirements.pnpm}, update it with \`pnpm self-update ${requirements.pnpm}\`, then select Check again.`],
@@ -1542,5 +1539,29 @@ test("wizardHandlers plans the bundled install only when the gate says so, and r
 		assert.deepEqual(await routed.runInstall({ plan: consented, consent: false }, () => {}), { outcome: "blocked", reason: "consent-required", completed: [] });
 	} finally {
 		rmSync(home, { recursive: true, force: true });
+	}
+});
+
+// Git is not needed to install; the plan notes a missing Git, never as a blocker,
+// for the standard and the bundled plan alike (both inventories carry the probe).
+const gitNoticeText = (install: string) => "Git was not found on this computer. Gentle Shell installs and starts without it, but code review, worktrees and other " +
+	`repository features need it. Install it with ${install}, then open a new terminal. This is not a blocker.`;
+test("/api/plan notes a missing Git for the standard and the bundled plan, never as a blocker", async () => {
+	const cases = [
+		[collected({ git: { available: false } }), gitNoticeText("your package manager, for example `sudo apt-get install -y git` on Debian or Ubuntu")],
+		[collected({ platform: "darwin", git: { available: false } }), gitNoticeText("`xcode-select --install` (Apple's Command Line Tools)")],
+		[{ ...bundledCollected({ kind: "none" }), inventory: { ...bundledCollected({ kind: "none" }).inventory, git: { available: false } } }, gitNoticeText("your package manager, for example `sudo apt-get install -y git` on Debian or Ubuntu")],
+		[collected({ git: { available: true } }), null],
+		[collected({}), null],
+	] as const;
+	for (const [result, text] of cases) {
+		const { host, port, login } = await start({ collect: async () => result });
+		try {
+			const view = await plan(port, await login());
+			assert.equal(view.gitNotice?.description ?? null, text);
+			assert.equal(view.blockers.some((blocker: { tool: string }) => blocker.tool === "git"), false);
+		} finally {
+			await host.close("test");
+		}
 	}
 });

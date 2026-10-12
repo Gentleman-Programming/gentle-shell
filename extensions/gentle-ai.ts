@@ -2,7 +2,7 @@ import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import { recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
 import { SHELL_COMMAND_TOOLS } from "../lib/background-jobs.ts";
 import { blockChildDestructiveCommand } from "./child-safety.ts";
-import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRepositoryPreparation, captureBoundSessionRepositoryAuthority, prepareBoundSessionRepository, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sourcePathWithinProject } from "../lib/bounded-writer-admission.ts";
+import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRepositoryPreparation, captureBoundSessionRepositoryAuthority, isHomeOrBroadUserDirectory, prepareBoundSessionRepository, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sourcePathWithinProject } from "../lib/bounded-writer-admission.ts";
 import { consumeReviewMutation, pendingReviewMutation, pendingReviewMutationProfiles, recordReviewMutation, type ReceiptSession } from "../lib/review-reminder-receipt.ts";
 import { createReviewSidebarPublisher } from "../lib/review-sidebar-state.ts";
 import { StatusTimingDiagnostics } from "../lib/status-timing-diagnostics.ts";
@@ -1074,6 +1074,22 @@ async function resolveReviewAssessmentPlan(
 }
 
 let rddStatusUnavailableWarned = false;
+
+// S2 (startup-home-repo-and-changes): a repository rooted at HOME, an ancestor
+// of it or a broad user folder makes every Git call scan the user's whole
+// tree. Warn once per process and repository, never per session restart.
+const HOME_REPOSITORY_WARNING = "Gentle Shell is running inside a Git repository rooted at your home folder (or a broad user folder). Every Git operation scans that whole tree, which makes startup and reviews very slow. Open Gentle Shell inside a project folder, or remove the stray .git if you did not create it on purpose.";
+const homeRepositoryWarnings = new Set<string>();
+
+// An unresolvable HOME or a resolver failure is unknown, not a match: the
+// bootstrap guard fails closed there, but startup must not warn or skip work.
+function homeRootedRepository(cwd: string): string | undefined {
+	try {
+		const home = realpathSync.native(homedir());
+		const root = resolveSessionWorktree(cwd, cwd)?.root;
+		return root !== undefined && isHomeOrBroadUserDirectory(root, { home }) ? root : undefined;
+	} catch { return undefined; }
+}
 
 /**
  * Best-effort native RDD mode status read for prompt rendering, memoized per
@@ -5645,11 +5661,15 @@ function nativeReviewModeSkipped(operation: ReviewControllerOperation, source: N
 
 // The legacy START compatibility gate is deliberately permissive when mode is
 // unavailable. It is not authorization to enter bootstrap-capable native code.
-async function nativeRepositoryPreparationEnabled(nativeReviewCli: NativeReviewCli | null, cwd: string, signal?: AbortSignal): Promise<boolean> {
+// `rememberForPrompt` lets a decoded read serve the next prompt's RDD status
+// line from the memo instead of spawning the same STATUS again.
+async function nativeRepositoryPreparationEnabled(nativeReviewCli: NativeReviewCli | null, cwd: string, signal?: AbortSignal, rememberForPrompt = false): Promise<boolean> {
 	if (nativeReviewCli?.reviewMode === undefined) return false;
 	try {
 		const mode = await nativeReviewCli.reviewMode({ cwd, operation: NATIVE_REVIEW_MODE_OPERATION.STATUS, ...(signal === undefined ? {} : { signal }) });
-		return mode.operation === NATIVE_REVIEW_MODE_OPERATION.STATUS && isValidRddModeStatus(mode.status) && mode.status.effective === "on";
+		const decoded = mode.operation === NATIVE_REVIEW_MODE_OPERATION.STATUS && isValidRddModeStatus(mode.status);
+		if (decoded && rememberForPrompt) rddStatusMemo.set(cwd, { status: mode.status, expiresAt: Date.now() + RDD_STATUS_MEMO_TTL_MS });
+		return decoded && mode.status.effective === "on";
 	} catch {
 		return false;
 	}
@@ -7786,20 +7806,32 @@ async function negotiatedStatusForHostTransport(
 // an effective-off mode, or any STATUS error or transport refusal. Startup
 // negotiation and mutation-gated `agent_end` use the same native whole-target
 // path; neither derives candidate scope from local mutation receipts.
+// S5 (startup-home-repo-and-changes): the startup negotiation runs after
+// session_start returns, bounded by this deadline. Its in-flight review mode
+// read is kept per cwd so the first prompt waits for it instead of spawning
+// the same STATUS again.
+const STARTUP_NEGOTIATION_TIMEOUT_MS = 10_000;
+const startupModeReads = new Map<string, Promise<unknown>>();
+const startupNegotiations = new Set<Promise<void>>();
+
 async function resolveNegotiatedReviewStatusForSession(
 	nativeReviewCli: NativeReviewCli | null,
 	ctx: ExtensionContext,
 	sessionKey: PendingReviewConsentSessionKey,
+	signal?: AbortSignal,
 ): Promise<ReviewStatusV3 | undefined> {
 	if (nativeReviewCli?.reviewMode === undefined || nativeReviewCli.targetStatus === undefined) return undefined;
 	if (ctx.hasUI !== true || !resolveSessionWorktree(ctx.cwd, ctx.cwd)) return undefined;
 	// STATUS can prepare an unversioned directory natively. Only a successfully
 	// decoded effective-on mode authorizes that entry; bootstrap never counts as
 	// an own mutation and native owns all metadata/ancestor safety decisions.
-	if (!await nativeRepositoryPreparationEnabled(nativeReviewCli, ctx.cwd)) return undefined;
+	const modeRead = nativeRepositoryPreparationEnabled(nativeReviewCli, ctx.cwd, signal, true);
+	startupModeReads.set(ctx.cwd, modeRead);
+	const enabled = await modeRead.finally(() => { if (startupModeReads.get(ctx.cwd) === modeRead) startupModeReads.delete(ctx.cwd); });
+	if (!enabled) return undefined;
 	try {
 		const retainedSelections = ((key: PendingReviewConsentSessionKey) => processRetainedNativeStatusSelections.get(key) ?? processRetainedNativeStatusSelections.set(key, new Map()).get(key)!)(sessionKey);
-		const negotiated = await negotiatedStatusForHostTransport(nativeReviewCli, { cwd: ctx.cwd }, retainedSelections, ctx.cwd);
+		const negotiated = await negotiatedStatusForHostTransport(nativeReviewCli, { cwd: ctx.cwd, ...(signal === undefined ? {} : { signal }) }, retainedSelections, ctx.cwd);
 		return negotiated.status;
 	} catch {
 		return undefined;
@@ -9446,6 +9478,9 @@ export const __testing = {
 	RDD_STATUS_TIMEOUT_MS,
 	RDD_STATUS_MEMO_TTL_MS,
 	clearRddStatusMemoForTesting,
+	async startupNegotiationSettled(): Promise<void> {
+		await Promise.all([...startupNegotiations]);
+	},
 	readNativeReviewOutcome,
 	recordNativeReviewOutcome,
 	clearNativeReviewOutcomeMemoForTesting,
@@ -9992,6 +10027,11 @@ function createGentleAiExtensionForTesting(
 				return negotiated.status !== undefined && current() && safeBootstrapDirectory(originalCwd) === root && identity?.root === root;
 			} catch { return false; }
 		}, () => reminderSessionActive && reminderEpoch === epoch && reminderManager === manager) : undefined;
+		const homeRoot = homeRootedRepository(ctx.cwd);
+		if (homeRoot !== undefined && ctx.hasUI && !homeRepositoryWarnings.has(homeRoot)) {
+			homeRepositoryWarnings.add(homeRoot);
+			try { ctx.ui.notify(HOME_REPOSITORY_WARNING, "warning"); } catch { /* Nonblocking notice only. */ }
+		}
 		try { candidateViews?.sweepOrphans(ctx.cwd); } catch { /* Ownership sweeping must not block startup. */ }
 		const reason = (event as { reason?: unknown }).reason;
 		if (reason !== "reload") revokeCurrentReviewSessionPermission(ctx);
@@ -10026,12 +10066,15 @@ function createGentleAiExtensionForTesting(
 		}
 		// Keep the startup transport negotiation, but do not treat its target as
 		// an ownership baseline: reload may have outstanding durable receipts.
-		try {
-			const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
-			await resolveNegotiatedReviewStatusForSession(nativeReviewCli, ctx, sessionKey);
-		} catch {
-			// Startup negotiation is best-effort only; never surface or throw.
-		}
+		// A home-rooted repository skips it: native STATUS would scan the whole home.
+		if (homeRoot !== undefined) return;
+		// Pi awaits session_start handlers serially, so this runs after startup
+		// returns: two native spawns no longer hold the shell's first render.
+		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
+		const negotiation = resolveNegotiatedReviewStatusForSession(nativeReviewCli, ctx, sessionKey, AbortSignal.timeout(STARTUP_NEGOTIATION_TIMEOUT_MS))
+			.then(() => undefined, () => undefined) // Best-effort only; never surface or throw.
+			.finally(() => { startupNegotiations.delete(negotiation); });
+		startupNegotiations.add(negotiation);
 	};
 
 	pi.on("before_agent_start", async (event, ctx) => {
@@ -10071,9 +10114,14 @@ function createGentleAiExtensionForTesting(
 		// resolveRddStatusLine never throws and never hangs past
 		// RDD_STATUS_TIMEOUT_MS: an absent/timed-out/aborted/failing native
 		// binary renders the fail-closed "unknown" line instead.
+		const rddStatusSignal = AbortSignal.timeout(RDD_STATUS_TIMEOUT_MS);
+		// A startup read still in flight fills the memo: wait for it within the
+		// same deadline instead of spawning the same STATUS a second time.
+		const inFlightModeRead = isPrimarySession ? startupModeReads.get(ctx.cwd) : undefined;
+		if (inFlightModeRead !== undefined) await Promise.race([inFlightModeRead, rddAbortRejection(rddStatusSignal)]).catch(() => undefined);
 		const rddStatusLine = !isPrimarySession
 			? undefined
-			: await resolveRddStatusLine(nativeReviewCli, ctx.cwd, AbortSignal.timeout(RDD_STATUS_TIMEOUT_MS), undefined, ctx);
+			: await resolveRddStatusLine(nativeReviewCli, ctx.cwd, rddStatusSignal, undefined, ctx);
 		const gentlePrompt = rddStatusLine === undefined
 			? ""
 			: `\n\n${buildGentlePrompt(

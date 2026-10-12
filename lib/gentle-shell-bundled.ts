@@ -1,4 +1,6 @@
 import { lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import { request as httpRequest } from "node:http";
+import { createConnection } from "node:net";
 import { dirname, posix, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -206,14 +208,205 @@ export function bundledPi(install: BundledInstall, input: { platform: string; fs
 // which gentle-pi derives its config folder and gives its own gentle-ai runs
 // Gentle AI's variables, never set here because the agent's shell would pass
 // them to a gentle-ai the user runs), and the published Engram as
-// gentle-engram's ENGRAM_BIN unless the user chose one.
-export function bundledChildEnv(base: Env, input: { node: string; cli: string; prefix: string; engram?: string }): Env {
+// gentle-engram's ENGRAM_BIN unless the user chose one. With a memory decision
+// (S2, S6): the startup policy, and ENGRAM_BIN is the verified core only when
+// memory is allowed locally; otherwise the Shell-owned guard, so no provider,
+// whatever loaded it, runs an Engram binary against an unverified store.
+export const ENGRAM_COMPANION_SOURCE = "npm:gentle-engram@0.4.2";
+export const ENGRAM_RECOVERY_NOTICE = "Engram memory disabled: the existing Engram data's compatibility is unknown. Back up your existing Engram data, update Engram and restart its server, then restart Shell to recheck memory safety (it rechecks on every launch). Shell remains usable without memory.";
+// `gentle-shell setup` publishes the verified core (ensureEngram) on every run.
+export const ENGRAM_PROVISION_FAILED_NOTICE = "Engram memory disabled for this launch: Shell could not provision a new Engram store identity, so it cannot vouch for that store. Restart Shell to retry. If Shell keeps reporting unknown compatibility and ~/.engram holds only .instance-id files, back it up and remove it, then restart Shell. Shell remains usable without memory.";
+export const ENGRAM_CORE_MISSING_NOTICE = "Engram memory disabled: the bundled Engram core is not installed yet. Run 'gentle-shell setup' to install the verified core, then restart Shell. Shell remains usable without memory.";
+// The default endpoint gentle-engram uses without ENGRAM_URL or ENGRAM_PORT.
+export const ENGRAM_DEFAULT_PORT = 7437;
+export const ENGRAM_DEFAULT_URL = `http://127.0.0.1:${ENGRAM_DEFAULT_PORT}`;
+const ENGRAM_SELECTIONS = ["ENGRAM_BIN", "ENGRAM_URL", "ENGRAM_DATA_DIR", "ENGRAM_PORT", "ENGRAM_DATABASE_URL"];
+const HEX32 = /^[a-f0-9]{32}$/;
+
+export type EngramProbe = { kind: "refused" } | { kind: "unknown" } | { kind: "listening"; compatible: boolean; healthInstanceId?: string; healthVersion?: string };
+// `fresh`: Shell provisions a new store this run and may record its provenance.
+// `url`: a running server verified through /compatibility, reached explicitly.
+export type EngramStartup = { policy: "allow" | "disabled"; notice?: string; url?: string; fresh?: true };
+
+// Without an invalid policy or an explicit Engram selection, the default
+// endpoint may be probed; an explicit selection is never contacted.
+export function engramProbeAllowed(env: Env): boolean {
+	const policy = env.ENGRAM_STARTUP_POLICY;
+	return (policy === undefined || policy === "allow") && !ENGRAM_SELECTIONS.some((key) => Boolean(env[key]?.trim()));
+}
+
+// Evidence only: never run an executable, open SQLite or infer compatibility
+// from versions. `provenance` means Shell's own record matched the store
+// (directory, .instance-id, core digest) and its header showed no newer schema.
+export function classifyEngramStartup(input: { env: Env; store: "absent" | "present" | "unknown"; endpoint: EngramProbe; core: boolean;
+	coreVersion: string; provenance?: { instanceId: string } }): EngramStartup {
+	const unknown: EngramStartup = { policy: "disabled", notice: ENGRAM_RECOVERY_NOTICE };
+	if (!engramProbeAllowed(input.env)) return unknown;
+	const endpoint = input.endpoint;
+	if (endpoint.kind === "listening" && endpoint.compatible) return { policy: "allow", url: ENGRAM_DEFAULT_URL };
+	if (endpoint.kind === "refused" && input.store === "absent") {
+		return input.core ? { policy: "allow", fresh: true } : { policy: "disabled", notice: ENGRAM_CORE_MISSING_NOTICE };
+	}
+	const own = input.provenance;
+	if (own === undefined || !input.core || input.store !== "present") return unknown;
+	// Shell's own store, created by this exact core: offline, the provider starts
+	// that core; a running server must be that store and that exact core.
+	if (endpoint.kind === "refused") return { policy: "allow" };
+	if (endpoint.kind === "listening" && endpoint.healthInstanceId === own.instanceId && endpoint.healthVersion === input.coreVersion) return { policy: "allow" };
+	return unknown;
+}
+
+// The exact contract a startup-verified store reports (Engram GET /compatibility).
+export function isReadyCompatibility(text: string): boolean {
+	const body = parseJson(text);
+	return typeof body === "object" && body !== null && !Array.isArray(body) && body.status === "ready" && body.active_reuse_authorized === true &&
+		body.capability === "startup-verified-store-v1" && body.revision === 1 && body.source === "active" && body.offline_automatic_opening_authorized !== true &&
+		typeof body.instance_id === "string" && HEX32.test(body.instance_id) && typeof body.runtime_id === "string" && HEX32.test(body.runtime_id);
+}
+
+const PROBE_BODY_LIMIT = 16 * 1024;
+type LocalAnswer = { kind: "refused" } | { kind: "unknown" } | { kind: "response"; status: number; body: string };
+
+// One bounded GET on a direct loopback socket: no agent, proxy, redirects or
+// credentials (ENGRAM_HTTP_TOKEN belongs to the user's server, never sent).
+function localGet(port: number, path: string, timeoutMs: number): Promise<LocalAnswer> {
+	return new Promise((resolve) => {
+		let settled = false;
+		let socket: ReturnType<typeof createConnection> | undefined;
+		const finish = (answer: LocalAnswer) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			request.destroy();
+			socket?.destroy();
+			resolve(answer);
+		};
+		const request = httpRequest({ host: "127.0.0.1", port, path, method: "GET", headers: { accept: "application/json" },
+			createConnection: () => (socket = createConnection({ host: "127.0.0.1", port })) }, (response) => {
+			const chunks: Buffer[] = [];
+			let size = 0;
+			response.on("data", (chunk: Buffer) => {
+				size += chunk.length;
+				if (size > PROBE_BODY_LIMIT) finish({ kind: "response", status: 0, body: "" });
+				else chunks.push(chunk);
+			});
+			response.on("end", () => finish({ kind: "response", status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") }));
+			response.on("error", () => finish({ kind: "unknown" }));
+		});
+		const timer = setTimeout(() => finish({ kind: "unknown" }), timeoutMs);
+		request.on("error", (error: NodeJS.ErrnoException) => finish({ kind: error.code === "ECONNREFUSED" ? "refused" : "unknown" }));
+		request.end();
+	});
+}
+
+// Read-only probe of the default endpoint: /compatibility, then /health for
+// the running instance and version. Never inferred from /health alone.
+export async function probeEngramEndpoint(input: { port?: number; timeoutMs?: number } = {}): Promise<EngramProbe> {
+	const port = input.port ?? ENGRAM_DEFAULT_PORT;
+	const timeoutMs = input.timeoutMs ?? 1000;
+	const compatibility = await localGet(port, "/compatibility", timeoutMs);
+	if (compatibility.kind !== "response") return compatibility;
+	if (compatibility.status === 200 && isReadyCompatibility(compatibility.body)) return { kind: "listening", compatible: true };
+	const health = await localGet(port, "/health", timeoutMs);
+	const body = health.kind === "response" && health.status === 200 ? parseJson(health.body) : undefined;
+	const identified = typeof body?.instance_id === "string" && HEX32.test(body.instance_id) && typeof body.version === "string";
+	return { kind: "listening", compatible: false, healthInstanceId: identified ? body.instance_id : undefined, healthVersion: identified ? body.version : undefined };
+}
+
+// Shell's own record of a store it provisioned fresh with the verified core.
+// Written only after Shell itself provisioned the store's identity, before Pi starts.
+export type EngramProvenance = { schema: 1; dataDir: string; instanceId: string; coreSha256: string };
+
+export function engramProvenancePath(prefix: string, platform: string = process.platform): string {
+	return pathFor(platform).join(bundledPiConfigParent(prefix, platform), "engram-provenance.json");
+}
+
+export function parseEngramProvenance(text: string | undefined): EngramProvenance | undefined {
+	const record = parseJson(text);
+	if (record?.schema !== 1 || typeof record.dataDir !== "string" || !(posix.isAbsolute(record.dataDir) || win32.isAbsolute(record.dataDir)) ||
+		typeof record.instanceId !== "string" || !HEX32.test(record.instanceId) || typeof record.coreSha256 !== "string" || !/^[a-f0-9]{64}$/.test(record.coreSha256)) return undefined;
+	return { schema: 1, dataDir: record.dataDir, instanceId: record.instanceId, coreSha256: record.coreSha256 };
+}
+
+export function engramProvenanceMatches(record: EngramProvenance | undefined, observed: { dataDir: string; instanceId?: string; coreSha256?: string }): boolean {
+	return record !== undefined && record.dataDir === observed.dataDir && record.instanceId === observed.instanceId && record.coreSha256 === observed.coreSha256;
+}
+
+// The bundled core's own schema (SQLite user_version), verified from the
+// tagged source: v3.3.2:internal/store/store.go `const schemaVersion = 1`.
+// A pin without a verified entry leaves the header check unavailable.
+const BUNDLED_ENGRAM_SCHEMA: Record<string, number> = { "3.3.2": 1 };
+
+export function bundledEngramSchema(coreVersion: string): number | undefined {
+	return Object.hasOwn(BUNDLED_ENGRAM_SCHEMA, coreVersion) ? BUNDLED_ENGRAM_SCHEMA[coreVersion] : undefined;
+}
+
+// SQLite's user_version from the raw database header (bytes 60-63), or
+// undefined for anything that is not a well-formed rollback or WAL database.
+export function sqliteHeaderUserVersion(header: Uint8Array, size: number): number | undefined {
+	if (header.length < 100 || Buffer.from(header.subarray(0, 16)).toString("latin1") !== "SQLite format 3\0") return undefined;
+	const view = new DataView(header.buffer, header.byteOffset, header.byteLength);
+	const raw = view.getUint16(16);
+	const pageSize = raw === 1 ? 65536 : raw;
+	if (pageSize < 512 || pageSize > 65536 || (pageSize & (pageSize - 1)) !== 0 || size < pageSize || size % pageSize !== 0) return undefined;
+	if (![1, 2].includes(header[18]) || ![1, 2].includes(header[19])) return undefined;
+	return view.getUint32(60);
+}
+
+// A tripwire, not a compatibility proof: a header newer than the bundled
+// schema means another Engram migrated the store. Equal or lower (including a
+// stale 0 before a WAL checkpoint) is no signal either way.
+export function engramHeaderAllows(userVersion: number | undefined, bundledSchema: number | undefined): boolean {
+	return userVersion !== undefined && bundledSchema !== undefined && userVersion <= bundledSchema;
+}
+
+// Pi 1.1.0 options that always take the next token as their value (cli/args.js);
+// options that skip a dash-led next token never hide a version or help flag.
+const PI_VALUE_OPTIONS = new Set(["--provider", "--model", "--api-key", "--system-prompt", "--append-system-prompt", "--name", "-n", "--session",
+	"--session-id", "--fork", "--session-dir", "--models", "--tools", "-t", "--exclude-tools", "-xt", "--thinking", "--export", "--extension", "-e",
+	"--skill", "--prompt-template", "--theme"]);
+
+// Whether Pi reads its arguments as a version or help request: such a token in
+// flag position, before Pi's own `--` and not as another option's value.
+export function piVersionOrHelpRequested(argv: string[]): boolean {
+	for (let i = 0; i < argv.length; i += 1) {
+		const arg = argv[i];
+		if (arg === "--") return false;
+		if (arg === "--version" || arg === "-v" || arg === "--help" || arg === "-h") return true;
+		if (PI_VALUE_OPTIONS.has(arg)) i += 1;
+	}
+	return false;
+}
+
+export function supportsEngramStartupPolicy(metadata: string | undefined): boolean {
+	const pkg = parseJson(metadata);
+	return pkg?.name === "gentle-engram" && pkg.engram?.startupPolicy === 1;
+}
+
+export function bundledChildEnv(base: Env, input: { node: string; cli: string; prefix: string; engram?: string; guard?: string; memory?: EngramStartup }): Env {
 	const env: Env = { ...base, PI_SKIP_VERSION_CHECK: "1", [GENTLE_SHELL_PREFIX_ENV]: input.prefix };
 	delete env.GENTLE_SHELL_PI;
 	delete env[BUNDLED_VERIFY_ENV];
 	if (/\s/.test(`${input.node}${input.cli}`)) delete env.GENTLE_PI_AGENTS_PI;
 	else env.GENTLE_PI_AGENTS_PI = `${input.node} ${input.cli}`;
-	if (input.engram !== undefined && !base.ENGRAM_BIN?.trim()) env.ENGRAM_BIN = input.engram;
+	const memory = input.memory;
+	if (memory === undefined) {
+		if (input.engram !== undefined && !base.ENGRAM_BIN?.trim()) env.ENGRAM_BIN = input.engram;
+		return env;
+	}
+	if (input.guard === undefined) throw new Error("A memory decision needs the Engram guard path.");
+	env.ENGRAM_STARTUP_POLICY = memory.policy;
+	if (memory.notice) env.ENGRAM_STARTUP_NOTICE = [memory.notice, base.ENGRAM_STARTUP_NOTICE].filter(Boolean).join(" ");
+	// An explicit ENGRAM_BIN or ENGRAM_URL is the user's choice: never replaced.
+	// An explicit URL alone still gets the verified core (or the guard), never PATH.
+	if (base.ENGRAM_BIN?.trim()) return env;
+	if (base.ENGRAM_URL?.trim()) {
+		env.ENGRAM_BIN = input.engram ?? input.guard;
+		return env;
+	}
+	if (memory.url !== undefined) env.ENGRAM_URL = memory.url;
+	const local = memory.policy === "allow" && memory.url === undefined ? input.engram : undefined;
+	env.ENGRAM_BIN = local ?? input.guard;
 	return env;
 }
 

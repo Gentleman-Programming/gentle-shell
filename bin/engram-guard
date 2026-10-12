@@ -1,0 +1,9 @@
+#!/bin/sh
+# Gentle Shell's Engram guard. A bundled Gentle Shell points ENGRAM_BIN here
+# when memory is disabled (unknown store compatibility or a missing bundled
+# core) and the user selected neither ENGRAM_BIN nor ENGRAM_URL. Providers reach
+# local Engram data only by running ENGRAM_BIN, so failing here stops them
+# before any store is opened, created or migrated. It never runs Engram and
+# never reads or writes Engram data; the notice is printed as data, not run.
+printf '%s\n' "${ENGRAM_STARTUP_NOTICE:-Engram memory is disabled by Gentle Shell: Engram store compatibility could not be verified. Back up your Engram data, update Engram, restart its server and Shell, then recheck.}" >&2
+exit 78

@@ -326,6 +326,10 @@ gentle-shell self-uninstall [--dry-run] [--yes] [--include-shared]
 
 ### `setup` subcommand
 
+**Bundled Engram safety:** a fresh state uses the checksum-pinned Engram 3.3.2: before Pi starts, Shell provisions the new store's identity with that core and records it, so later launches keep using it, and a store Shell did not provision is never adopted. A running server is reused only through Engram's exact `GET /compatibility` ready contract, or when it is Shell's own store with the recorded `/health` instance and the exact bundled core version. Anything else (foreign or unknown data, provenance mismatch, a newer schema in the database header, a token-protected or unknown server) disables memory with backup/update/restart/recheck guidance, and Shell points `ENGRAM_BIN` at its own guard (`bin/engram-guard`), which fails before any store access for every gentle-engram from 0.4.1 on, whichever Pi route loaded it. No compatibility is inferred from versions. An explicit `ENGRAM_BIN` or `ENGRAM_URL` is never replaced and bypasses the guard. Every launch also pins `npm:gentle-engram@0.4.2` through Pi's own `install` command and verifies `engram.startupPolicy: 1`; a failed check is reported and Shell still starts. See [bundled startup safety](bundled-install.md#engram-startup-safety) for the full rules and known limits.
+
+The memory decision never skips or fails bundled setup: it always publishes the verified core, runs Gentle AI and pins the companion, then only selects the Engram environment (core or guard) for setup children and the launched Pi. `--dry-run` installs nothing. Non-bundled setup keeps the existing behavior described below.
+
 `gentle-shell setup` provisions the resolved home — the same home selection as any other invocation, `--isolated` by default, or `--link`/`--home <path>` when given before `setup` — with the same companion packages a regular `gentle-ai install --agent pi` installs into a Pi agent home: `npm:gentle-pi`, `npm:gentle-engram`, `npm:@juicesharp/rpiv-ask-user-question`, `npm:pi-web-access`, `npm:pi-btw`, plus running `pi-engram init`. It never touches `~/.pi/agent` unless you pass `--link`.
 
 It resolves the home and the pi runtime exactly as a normal run does (including the isolated/`--home` bootstrap and the pi version gate), then runs the package-local pinned gentle-ai binary — `gentleAiBinaryPath()` from `lib/gentle-ai-binary.ts`, never a `gentle-ai` found on `PATH` — as:
@@ -368,6 +372,9 @@ If none resolve, `gentle-shell` exits 1 naming all three options. Once a runtime
 | `GENTLE_SHELL_USER_PI_HOME` | Set on the pi child process to your own pi home (recorded before isolating). Read back first to resolve the `--link` home and by `/gentle:stats`, so a nested `gentle-shell` keeps pointing at your original pi. |
 | `GENTLE_PI_AGENT_HOME` | Set on the pi child process to the effective home; gentle-pi's own home resolution reads it back. |
 | `GENTLE_SHELL_NO_AUTO_SETUP` | Set to `1` to skip automatic first-run provisioning (see "First run in an isolated or custom home" below). |
+| `ENGRAM_STARTUP_POLICY` | Bundled startup recomputes `allow` or `disabled` from safety evidence. Explicit empty/invalid values remain disabled; user `allow` does not override unknown data. Standalone provider behavior with the variable absent is unchanged. |
+| `ENGRAM_STARTUP_NOTICE` | Display-only recovery guidance; never executed. |
+| `ENGRAM_BIN`, `ENGRAM_URL`, `ENGRAM_PORT`, `ENGRAM_DATA_DIR`, `ENGRAM_DATABASE_URL` | Explicit selections are not probed by Shell and keep bundled memory disabled. An explicit `ENGRAM_BIN` or `ENGRAM_URL` is never replaced and bypasses the guard (an `ENGRAM_URL` alone still gets the verified core, or the guard, as `ENGRAM_BIN`); without them, bundled Shell sets `ENGRAM_BIN` (core or guard) and, for verified reuse, `ENGRAM_URL`. |
 
 ### Loading the package
 

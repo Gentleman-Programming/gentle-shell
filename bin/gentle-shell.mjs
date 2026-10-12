@@ -10,12 +10,14 @@ import {
 	closeSync,
 	constants as fsConstants,
 	existsSync,
+	fstatSync,
 	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	openSync,
 	readdirSync,
 	readFileSync,
+	readSync,
 	realpathSync,
 	renameSync,
 	rmSync,
@@ -25,6 +27,7 @@ import {
 import { constants as osConstants, homedir, tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve as resolvePath } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
 	buildPiInvocation,
@@ -57,6 +60,20 @@ import {
 } from "../runtime/gentle-shell-launcher.mjs";
 import {
 	BUNDLED_VERIFY_ENV,
+	bundledEngramSchema,
+	classifyEngramStartup,
+	ENGRAM_COMPANION_SOURCE,
+	ENGRAM_PROVISION_FAILED_NOTICE,
+	ENGRAM_RECOVERY_NOTICE,
+	engramHeaderAllows,
+	engramProbeAllowed,
+	engramProvenanceMatches,
+	engramProvenancePath,
+	parseEngramProvenance,
+	piVersionOrHelpRequested,
+	probeEngramEndpoint,
+	sqliteHeaderUserVersion,
+	supportsEngramStartupPolicy,
 	bundledChildEnv,
 	bundledPi,
 	bundledSetupEnv,
@@ -77,6 +94,7 @@ import {
 } from "../runtime/gentle-shell-resume-hint.mjs";
 import { bundledGentleAiPaths, GENTLE_AI_VERSION, gentleAiBinaryPath, gentleAiIsolationEnv, PackageLocalGentleAiBinaryMissingError } from "../runtime/gentle-ai-binary.mjs";
 import { DEFAULT_THEME_NAME, installIsolatedTuiModeSetting } from "../scripts/install-tui-mode-setting.mjs";
+import { artifactFor, engramPinVersion } from "../scripts/installer-downloads.mjs";
 import { shouldCheckStartupUpdate, findStartupUpdate } from "../runtime/gentle-shell-startup-update.mjs";
 import { promptStartupUpdate } from "../runtime/gentle-shell-update-panel.mjs";
 import { applyStartupChoice, omitStartupVersion, resolveStartupRelaunch } from "../runtime/gentle-shell-startup-flow.mjs";
@@ -157,19 +175,204 @@ let bundledSetupDirs;
 // The bundled install and its Pi cli, for bundledProcessEnv and setup's Engram.
 let bundledInstall;
 let bundledCli;
+let bundledMemory;
+// The Shell-owned guard ENGRAM_BIN names when memory is disabled (bin/engram-guard).
+const ENGRAM_GUARD = join(packageRoot, "bin", "engram-guard");
+
+// The pinned core only as ensureEngram published it: its runtime marker for
+// this release's archive and a regular file. Never a link or a PATH engram.
+function verifiedBundledCore() {
+	const core = bundledGentleAiPaths(bundledInstall.root, process.platform).engram;
+	try {
+		const marker = readFileSync(join(dirname(core), ".gentle-shell-runtime"), "utf8");
+		if (marker === `${artifactFor("engram", process.platform, process.arch).url}\n` && lstatSync(core).isFile()) return core;
+	} catch {
+		// Missing, unmarked, or an unsupported target: no verified core.
+	}
+	return undefined;
+}
+
+function sha256File(path) {
+	return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function readSmallRegularFile(path, limit) {
+	try {
+		const info = lstatSync(path);
+		return info.isFile() && info.size <= limit ? readFileSync(path, "utf8") : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+// The database's raw SQLite header, read as a plain file (never through
+// SQLite): a regular, unlinked engram.db whose opened identity is the one seen.
+function readSqliteUserVersion(path) {
+	let fd;
+	try {
+		const seen = lstatSync(path);
+		if (!seen.isFile()) return undefined;
+		fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+		const opened = fstatSync(fd);
+		if (opened.ino !== seen.ino || opened.dev !== seen.dev) return undefined;
+		const header = Buffer.alloc(100);
+		return readSync(fd, header, 0, 100, 0) === 100 ? sqliteHeaderUserVersion(header, opened.size) : undefined;
+	} catch {
+		return undefined;
+	} finally {
+		if (fd !== undefined) closeSync(fd);
+	}
+}
+
+// The default data directory without opening it: presence, canonical path,
+// the .instance-id file and the database header. A link is never followed.
+function observeEngramStore() {
+	const dir = join(homedir(), ".engram");
+	let dataDir;
+	try {
+		if (!lstatSync(dir).isDirectory()) return { store: "unknown" };
+		dataDir = realpathSync(dir);
+	} catch (error) {
+		return { store: error.code === "ENOENT" ? "absent" : "unknown" };
+	}
+	return { store: "present", dir, dataDir, instanceId: readSmallRegularFile(join(dir, ".instance-id"), 128)?.trim() };
+}
+
+// Only the identity files Engram's `instance-id` writes: a store Shell
+// provisioned whose session has not created its database yet.
+function identityOnlyStore(dir) {
+	try {
+		return readdirSync(dir).every((name) => name === ".instance-id" || name === ".instance-id.lock" || name.startsWith(".instance-id-"));
+	} catch {
+		return false;
+	}
+}
+
+// Shell's own store: the record Shell wrote when it provisioned this exact
+// directory's identity, the same core digest, and a database header no newer
+// than the bundled schema (or no database yet).
+function ownEngramStore(observed, core) {
+	let record;
+	try {
+		record = parseEngramProvenance(readJsonIfExists(engramProvenancePath(bundledInstall.root, process.platform)));
+	} catch {
+		return undefined;
+	}
+	if (record === undefined || observed.store !== "present" || core === undefined) return undefined;
+	if (!engramProvenanceMatches(record, { dataDir: observed.dataDir, instanceId: observed.instanceId, coreSha256: sha256File(core) })) return undefined;
+	const headerAllows = engramHeaderAllows(readSqliteUserVersion(join(observed.dir, "engram.db")), bundledEngramSchema(engramPinVersion));
+	return headerAllows || identityOnlyStore(observed.dir) ? { instanceId: record.instanceId } : undefined;
+}
+
+// Evidence only: file metadata, the raw header and a bounded read-only probe
+// of the default endpoint. No Engram executable, SQLite, identity repair, or
+// contact with an explicitly selected endpoint.
+async function classifyBundledMemory() {
+	const core = verifiedBundledCore();
+	const decision = { env: process.env, core: core !== undefined, coreVersion: engramPinVersion };
+	if (!engramProbeAllowed(process.env)) return classifyEngramStartup({ ...decision, store: "unknown", endpoint: { kind: "unknown" } });
+	const observed = observeEngramStore();
+	const endpoint = await probeEngramEndpoint();
+	return classifyEngramStartup({ ...decision, store: observed.store, endpoint, provenance: ownEngramStore(observed, core) });
+}
+
+// Verified read-only in Engram v3.3.2: `engram instance-id` first runs a GitHub
+// update check that sends GH_TOKEN or GITHUB_TOKEN (cmd/engram/main.go:742-744,
+// 835-847; internal/version/check.go:23-24,60-70,171-176) unless
+// ENGRAM_NO_UPDATE_CHECK is set (check.go:19,49-51,114-117). It then resolves the
+// default ~/.engram (main.go:749-765) and runs EnsureInstanceID
+// (internal/store/instance.go:15-79): the data dir, `.instance-id.lock` (waits
+// up to 60s, internal/store/migration_lock.go:29-76) and `.instance-id`. It
+// returns (main.go:767-775) before orphan migration (main.go:779) and opens no
+// database. The timeout stays below that lock wait: a held lock means a
+// concurrent creator, and memory then stays off for the launch.
+const ENGRAM_PROVISION_TIMEOUT_MS = 15000;
+
+// A fresh launch's store identity, provisioned by Shell itself with the verified
+// core before Pi starts, then recorded. False when any step fails.
+function provisionEngramStore() {
+	const core = verifiedBundledCore();
+	if (core === undefined || observeEngramStore().store !== "absent") return false;
+	let target;
+	try {
+		target = join(realpathSync(homedir()), ".engram");
+	} catch {
+		return false;
+	}
+	// The provider's own environment, except for this one invocation: no update
+	// check and no GitHub tokens. ENGRAM_DATA_DIR is never set here.
+	const env = { ...process.env, ENGRAM_NO_UPDATE_CHECK: "1" };
+	delete env.GH_TOKEN;
+	delete env.GITHUB_TOKEN;
+	const result = spawnSync(core, ["instance-id"], { env, encoding: "utf8", timeout: ENGRAM_PROVISION_TIMEOUT_MS, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+	const observed = observeEngramStore();
+	if (result.status !== 0 || observed.store !== "present" || observed.dataDir !== target || !/^[a-f0-9]{32}$/.test(observed.instanceId ?? "") ||
+		String(result.stdout).trim() !== observed.instanceId) return false;
+	return writeEngramProvenance({ schema: 1, dataDir: target, instanceId: observed.instanceId, coreSha256: sha256File(core) });
+}
+
+function writeEngramProvenance(record) {
+	try {
+		const path = engramProvenancePath(bundledInstall.root, process.platform);
+		mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+		const temporary = `${path}.${process.pid}.tmp`;
+		writeFileSync(temporary, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+		renameSync(temporary, path);
+		return true;
+	} catch (error) {
+		process.stderr.write(`gentle-shell: could not record Engram provenance (${error.message})\n`);
+		return false;
+	}
+}
+
+// Use Pi's supported configuration-only install command, never an alternate
+// extension loader. Verify advertised enforcement before trusting the policy.
+async function ensureEngramCompanion(home, runtime, stdio, timeoutMs) {
+	const metadata = join(home.dir, "npm", "node_modules", "gentle-engram", "package.json");
+	let packages;
+	try {
+		packages = JSON.parse(readJsonIfExists(join(home.dir, "settings.json")) ?? "{}").packages ?? [];
+	} catch {
+		return { ok: false, exitCode: 1, message: "gentle-shell: cannot verify Engram startupPolicy from malformed settings; repair settings and recheck" };
+	}
+	if (!Array.isArray(packages)) return { ok: false, exitCode: 1, message: "gentle-shell: cannot verify Engram startupPolicy from non-array packages" };
+	let pinned = false;
+	let local = false;
+	let npmSelected = false;
+	for (const entry of packages) {
+		const source = typeof entry === "string" ? entry : entry?.source;
+		if (source === ENGRAM_COMPANION_SOURCE) pinned = true;
+		if (typeof source === "string" && /^npm:gentle-engram(?:@|$)/.test(source)) npmSelected = true;
+		if (typeof source !== "string" || source.startsWith("npm:")) continue;
+		// Preserve an explicit local companion selection rather than overwrite it.
+		const selected = resolvePath(home.dir, source);
+		if (readPackageName(selected) !== "gentle-engram") continue;
+		if (!supportsEngramStartupPolicy(readJsonIfExists(join(selected, "package.json")))) {
+			return { ok: false, exitCode: 1, message: `gentle-shell: selected companion ${source} lacks engram.startupPolicy=1; update it and recheck (selection preserved)` };
+		}
+		local = true;
+	}
+	if (local && !npmSelected) return { ok: true };
+	if (pinned && supportsEngramStartupPolicy(readJsonIfExists(metadata))) return { ok: true };
+	process.stderr.write(`gentle-shell: installing policy-capable companion ${ENGRAM_COMPANION_SOURCE} through Pi\n`);
+	const result = await spawnAndWait(runtime.command, [...runtime.args, "install", ENGRAM_COMPANION_SOURCE], buildSetupEnv(home, runtime), stdio, timeoutMs);
+	let declared = false;
+	try {
+		declared = JSON.parse(readJsonIfExists(join(home.dir, "settings.json")) ?? "{}").packages?.some((entry) =>
+			(typeof entry === "string" ? entry : entry?.source) === ENGRAM_COMPANION_SOURCE) === true;
+	} catch { /* Missing or malformed readback cannot establish enforcement. */ }
+	if (!result.ok || result.timedOut || !declared || !supportsEngramStartupPolicy(readJsonIfExists(metadata))) {
+		return { ok: false, exitCode: 1, message: "gentle-shell: companion installation did not establish engram.startupPolicy=1; the Engram guard still keeps unverified stores closed. Repair gentle-engram, then restart Shell." };
+	}
+	return { ok: true };
+}
 
 // The bundled children's environment (bundledChildEnv), with the pinned Engram
 // only once it is published: computed again right before Pi starts, so an
 // Engram the automatic setup just published is used in the same launch.
 function bundledProcessEnv() {
-	const isolation = bundledGentleAiPaths(bundledInstall.root, process.platform);
-	let engram;
-	try {
-		if (lstatSync(isolation.engram).isFile()) engram = isolation.engram;
-	} catch {
-		engram = undefined;
-	}
-	return bundledChildEnv(process.env, { node: process.execPath, cli: bundledCli, prefix: bundledInstall.root, engram });
+	return bundledChildEnv(process.env, { node: process.execPath, cli: bundledCli, prefix: bundledInstall.root, engram: verifiedBundledCore(),
+		guard: ENGRAM_GUARD, memory: bundledMemory });
 }
 
 function ownPackageVersion() {
@@ -924,6 +1127,15 @@ async function runSetupFlow(home, runtime, { dryRun, stdio, timeoutMs }) {
 		const engram = await ensureBundledEngram();
 		if (!engram.ok) return engram;
 	}
+	// The memory decision never skips setup: it only selects the Engram
+	// environment (core or guard, policy, ENGRAM_URL) setup's children and the
+	// launched Pi get. Gentle AI's `install --agent pi` and `pi-engram init` open
+	// no store. Reclassified now that the verified core may just be published.
+	if (bundledInstall) {
+		bundledMemory = await classifyBundledMemory();
+		bundledEnv = bundledProcessEnv();
+		if (bundledMemory.notice) process.stderr.write(`gentle-shell: ${bundledMemory.notice}\n`);
+	}
 
 	const setupArgs = ["install", "--agent", "pi", "--scope", "global", ...(dryRun ? ["--dry-run"] : [])];
 	const piLauncherDir = writeSetupPiLauncher(runtime);
@@ -972,7 +1184,12 @@ async function runSetupFlow(home, runtime, { dryRun, stdio, timeoutMs }) {
 	if (!installResult.ok) return installResult;
 
 	const cleanupResult = await runPostInstallCleanup(home, runtime, dryRun, stdio, timeoutMs);
-	if (cleanupResult.ok && !dryRun) warnDisabledMCP(home);
+	if (cleanupResult.ok && !dryRun) {
+		warnDisabledMCP(home);
+		// The guard and policy protect memory, so the companion check only warns.
+		const companion = bundledInstall ? await ensureEngramCompanion(home, runtime, stdio, timeoutMs) : { ok: true };
+		if (!companion.ok) process.stderr.write(`${companion.message}\n`);
+	}
 	return cleanupResult;
 }
 
@@ -1565,7 +1782,7 @@ async function main() {
 	const args = parseLauncherArgs(process.argv.slice(2));
 	if (args.error !== undefined) fail(`${args.error}\nRun 'gentle-shell --help' for usage.`, 2);
 	if (args.help) {
-		process.stdout.write(`${helpText()}\n`);
+		process.stdout.write(`${helpText()}\nBundled Engram safety: memory opens only a fresh, verified or Shell-provisioned store; otherwise ENGRAM_BIN\nis Shell's guard and memory stays off. Back up data, update Engram, restart its server and Shell, then recheck.\nAn explicit ENGRAM_BIN or ENGRAM_URL is kept and bypasses the guard.\n`);
 		process.exit(0);
 	}
 	if (args.command === "home") {
@@ -1596,6 +1813,9 @@ async function main() {
 	let home = resolveHome({ args, env: process.env, homedir: homedir(), config });
 	if (home.mode === "path") home = { ...home, dir: resolvePath(home.dir) };
 
+	// Version and help runs (Shell's own or forwarded to Pi) never probe Engram,
+	// ensure the companion, print memory notices or touch provenance.
+	const engramQuiet = args.version || piVersionOrHelpRequested(args.passthrough);
 	let runtime;
 	if (bundled) {
 		// S8: only the version's own Pi, never GENTLE_SHELL_PI, an adjacent fallback or PATH.
@@ -1604,6 +1824,7 @@ async function main() {
 		runtime = { kind: "bundled", command: process.execPath, args: [pi.cli] };
 		bundledInstall = bundled;
 		bundledCli = pi.cli;
+		bundledMemory = engramQuiet ? { policy: "disabled", notice: ENGRAM_RECOVERY_NOTICE } : await classifyBundledMemory();
 		bundledEnv = bundledProcessEnv();
 		bundledSetupDirs = [dirname(process.execPath), join(bundled.versionDir, "node_modules", ".bin")];
 	} else {
@@ -1812,7 +2033,23 @@ async function main() {
 		}
 	}
 
-	if (bundled) bundledEnv = bundledProcessEnv();
+	if (bundled) {
+		// Recheck after setup and before provider loading: never carry a stale
+		// fresh-store decision across an installer that could create data.
+		if (args.piSubcommand === undefined && !engramQuiet) {
+			bundledMemory = await classifyBundledMemory();
+			bundledEnv = bundledProcessEnv();
+			// The guard protects memory whatever provider loads, so a companion that
+			// could not be verified is reported, never a reason to stop Shell.
+			const companion = await ensureEngramCompanion(home, runtime, ["ignore", 2, 2], 10000);
+			if (!companion.ok) process.stderr.write(`${companion.message}\n`);
+			// A fresh store's identity and provenance exist before Pi starts, or
+			// memory stays off: Pi never runs with allow without a written record.
+			if (bundledMemory.fresh && !provisionEngramStore()) bundledMemory = { policy: "disabled", notice: ENGRAM_PROVISION_FAILED_NOTICE };
+			if (bundledMemory.notice) process.stderr.write(`gentle-shell: ${bundledMemory.notice}\n`);
+		}
+		bundledEnv = bundledProcessEnv();
+	}
 	const invocation = buildPiInvocation({
 		runtime,
 		home,

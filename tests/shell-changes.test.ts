@@ -235,7 +235,7 @@ test("worktree refresh shares one scan so polling faster than discovery cannot p
 		scans++;
 		if (scans === 2) await new Promise<void>((resolve) => { release = resolve; });
 		return { stdout: "", code: 0 };
-	}, () => async () => ({ stdout: "", code: 0 }));
+	}, () => async () => ({ stdout: "", code: 0 }), undefined, () => ["/root"]); // A root to scan; none means no Git at all.
 	await tracker.start();
 	const first = tracker.refresh();
 	const overlapping = tracker.refresh();

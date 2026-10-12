@@ -195,3 +195,20 @@ test("the open panel diffs the selected file against HEAD and reloads a same-cou
 		assert.match(await shows(/\+secnd/), /\+secnd/, "the poll reloads a same-count edit");
 	} finally { f.overlay.close!(); await opened; await f.fire("session_shutdown"); }
 });
+
+// A repository rooted at HOME (or a broad user folder) makes `git status` scan
+// the user's whole tree: Changes never scans such a root, at turn end or in
+// the panel, matching the startup warning that tells the user to move.
+test("a repository rooted at HOME is never scanned by Changes", async (t) => {
+	const repo = tempRepo(t, "gentle-changes-home-");
+	writeFileSync(join(repo.root, "file.ts"), "dirty at home\n");
+	const previousHome = process.env.HOME;
+	process.env.HOME = repo.root;
+	t.after(() => { if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome; });
+	const f = fixture([sessionRoot(repo.root)], { root: repo.root, gitRunner: real });
+	await f.fire("session_start");
+	await f.fire("agent_end"); await settle();
+	assert.equal(f.gitCalls(), 0, "no Git runs against a home-rooted repository");
+	assert.equal(f.widgets.has("gentle-shell-changes"), false);
+	await f.fire("session_shutdown");
+});

@@ -1132,6 +1132,8 @@ export const windowsProcessTreeKiller: ProcessTreeKiller = (pid) => {
 	} catch { /* Best effort: the call still settles through its own child. */ }
 };
 
+const WINDOWS_TREE_KILL_GRACE_MS = 1_000;
+
 function abortError(signal: AbortSignal): Error {
 	return Object.assign(new Error("The operation was aborted", { cause: signal.reason }), { name: "AbortError", code: "ABORT_ERR" });
 }
@@ -1151,14 +1153,22 @@ function windowsExecFile(request: ExecFileRequest, killProcessTree: ProcessTreeK
 	return new Promise((resolve, reject) => {
 		let timedOut = false, aborted = false;
 		let timer: ReturnType<typeof setTimeout> | undefined;
+		let fallback: ReturnType<typeof setTimeout> | undefined;
 		const child = execFile(request.file, [...request.arguments], { cwd: request.cwd, encoding: "utf8", shell: false, windowsHide: true, maxBuffer: request.maxBufferBytes, env: gentleAiProcessEnvironment() }, (error, stdout, stderr) => {
 			if (timer !== undefined) clearTimeout(timer);
+			if (fallback !== undefined) clearTimeout(fallback);
 			signal?.removeEventListener("abort", onAbort);
 			if (aborted && signal) { reject(abortError(signal)); return; }
 			if (error === null) { resolve({ stdout, stderr, exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false }); return; }
 			try { resolve(execFileResultFromError(Object.assign(error, { stdout, stderr }), timedOut)); } catch (failure) { reject(failure); }
 		});
-		const killTree = () => { if (child.pid === undefined) child.kill(); else killProcessTree(child.pid); };
+		// If taskkill cannot run (AppLocker, a broken PATH), still end gentle-ai
+		// itself so the deadline holds; its children may then outlive it.
+		const killTree = () => {
+			if (child.pid === undefined) { child.kill(); return; }
+			killProcessTree(child.pid);
+			fallback = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill(); }, WINDOWS_TREE_KILL_GRACE_MS);
+		};
 		function onAbort(): void { if (aborted || timedOut) return; aborted = true; killTree(); }
 		signal?.addEventListener("abort", onAbort, { once: true });
 		if (request.timeoutMs !== undefined && request.timeoutMs > 0) timer = setTimeout(() => { if (aborted) return; timedOut = true; killTree(); }, request.timeoutMs);

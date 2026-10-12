@@ -248,10 +248,15 @@ export class WorktreeChangesTracker {
 	}
 
 	private async capture(): Promise<ChangesModel> {
-		const result = await this.discover(["worktree", "list", "--porcelain", "-z"]).catch(() => ({ code: 128, stdout: "" }));
-		const metadata = new Map((result.code === 0 ? parseWorktrees(result.stdout) : []).map((tree) => [tree.root, tree]));
 		// Discovery labels registered roots; it never grants visibility to siblings.
 		const roots = new Set(this.registeredRoots());
+		// No root to scan means no Git at all, not even branch discovery.
+		if (roots.size === 0) {
+			this.worktrees = [];
+			return this.model;
+		}
+		const result = await this.discover(["worktree", "list", "--porcelain", "-z"]).catch(() => ({ code: 128, stdout: "" }));
+		const metadata = new Map((result.code === 0 ? parseWorktrees(result.stdout) : []).map((tree) => [tree.root, tree]));
 		// Roots scan in parallel so one slow root does not delay the others.
 		const scanned = await Promise.all([...roots].map(async (root): Promise<WorktreeChanges | undefined> => {
 			const known = metadata.get(root);

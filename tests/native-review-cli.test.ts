@@ -831,6 +831,16 @@ test("node execFile adapter kills the whole process tree on Windows abort and ti
 	assert.equal(killed.length, 2, "a call that finishes kills nothing");
 });
 
+// taskkill can be unavailable (AppLocker, a broken PATH): the deadline must
+// still hold, through a direct kill of gentle-ai itself.
+test("node execFile adapter still enforces the timeout on Windows when the tree kill does nothing", async () => {
+	const adapter = createNodeExecFileAdapter({ platform: "win32", killProcessTree: () => {} });
+	const startedAt = Date.now();
+	const result = await adapter({ file: process.execPath, arguments: ["-e", "setTimeout(() => {}, 5_000)"], cwd: process.cwd(), maxBufferBytes: 1024, timeoutMs: 100 });
+	assert.equal(result.timedOut, true);
+	assert.ok(Date.now() - startedAt < 3_000, `settled after ${Date.now() - startedAt}ms`);
+});
+
 test("capture-result receives the controller AbortSignal without an automatic mutation timeout", async () => {
 	const controller = new AbortController();
 	controller.abort();

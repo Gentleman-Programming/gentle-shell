@@ -25,7 +25,7 @@ Changing the default does **not** change the current session. To return this ses
 | Mode | Behavior |
 | --- | --- |
 | **Normal** | Existing permission behavior; the default when no valid global preference exists. |
-| **Auto** | A separate, tool-free inference using the current session model checks eligible actions against live user intent before execution. Local reads are classified too; locality does not exempt an action from explicit restrictions. |
+| **Auto** | A separate reviewer using the current session model checks eligible actions against live user intent before execution. Local reads are classified too; locality does not exempt an action from explicit restrictions. |
 | **YOLO** | Standing permission for ordinary already-authorized work and delivery; no Auto classifier. Destructive and independent consent boundaries remain. [Full YOLO details](yolo-mode.md). |
 
 ## Commands and menu
@@ -45,9 +45,15 @@ Current-session selection takes precedence over the global default. Repository s
 
 Auto intercepts eligible primary tool calls before their executors run, including `write`/`edit`, shell tools (`bash`, `bash_background`, `monitor`), custom/MCP tools, and nested calls dispatched through Pi's tool-event pipeline, such as codemode's `executeTool` calls. Local `read`, `grep`, `find`, and `ls` calls are classified, as are local edits. Workspace locality is not a safety exemption: explicit read prohibitions and read-only instructions remain part of the decision.
 
-The classifier receives a bounded projection of captured live interactive requests, the proposed action and relevant earlier actions. Tool output and arbitrary `role: user` transcript entries are not authority. A resumed transcript or RPC/extension message alone cannot establish the live interactive intent Auto requires. If context cannot be safely represented, the action is not run.
+The classifier receives a bounded projection of captured live interactive requests, the proposed action and relevant earlier actions. For simple local script commands it can request bounded read-only inspection of exact host-selected files before deciding. This is evidence gathering, not permission to run a script. Tool output and arbitrary `role: user` transcript entries are not authority. A resumed transcript or RPC/extension message alone cannot establish the live interactive intent Auto requires. If context cannot be safely represented, the action is not run.
 
 A live request with an attached image still counts; its typed text is what the classifier receives. When a live request answers the assistant, the classifier also receives a bounded tail of the assistant message immediately before it, paired with the reply. That prompt is model-authored, untrusted context: it never authorizes anything by itself and only resolves what a short reply such as "yes" refers to. A reply authorizes only what its prompt concretely named, so authorize writes outside the project by naming the location (for example, "yes, write to `/path/.cache`"). Prompts that look secret-bearing are dropped, leaving the bare reply.
+
+Earlier actions are optional evidence, not permission precedent. Auto retains at most 12 complete recent records within 4 KB, omits oversized records rather than truncating script contents, and clears this window on fresh human input. It still retains live human restrictions: a new instruction does not silently erase an earlier prohibition. A large previous write therefore does not consume every later action's classification budget.
+
+Auto deliberately does not cache blanket approval for reads or command names. Files and script effects can change, and an explicit prohibition such as “do not read private-notes.txt” still applies to otherwise routine local work.
+
+Answers submitted through the first-party choice and questionnaire UI are captured directly by the host, not reconstructed from tool results. Auto keeps the actual selected label or free text alongside the complete displayed question/options as **untrusted context**, so a generic “Yes” retains its original scope. Valid answers can recover a paused Auto check. Opaque choice tokens never become permission text. Cancelled, stale, noninteractive, or unrelated-session responses grant nothing; mode/session changes revoke captured UI answers. Oversized prompt/answer pairs fail closed rather than silently dropping restrictions. See [host-answer provenance](auto-permission-answers.md).
 
 An allow verdict only returns control to the original executor and remaining guards. A denial blocks execution and asks the agent to find a materially safer action within the request—not hide the same effect behind a different tool, script, or delegate. If safe progress needs a real human decision, the agent must ask.
 
@@ -61,9 +67,22 @@ An allow verdict only returns control to the original executor and remaining gua
 
 ## Failure behavior and cost
 
-Auto uses the **current session model and existing model registry/authentication** in an independent tool-free request. It does not ask the acting conversation to approve itself. Enabling or saving Auto discloses this additional inference; individual actions do not each ask for inference consent. Depending on the provider, these checks add token cost and latency.
+Auto uses the **current session model and existing model registry/authentication** in an independent request. Ordinary checks remain tool-free; an eligible script check can inspect at most two complete 8 KB files, with at most three provider calls and a 60-second overall limit. Each provider call has a 20-second deadline. Only explicit script operands in simple shell commands, or `package.json` for supported package-script commands, are eligible. Compound commands, cwd-changing options (such as `bun --cwd nested check.ts`), substitutions and globs are not expanded; Auto does not crawl directories or execute a script to assess it. See [inspection limits and accounting](auto-permission-evidence.md). It does not ask the acting conversation to approve itself. Enabling or saving Auto discloses this additional inference; individual actions do not each ask for inference consent. Depending on the provider, these checks add token cost and latency.
 
-Invalid or unavailable verdicts, errors, timeouts, cancellation and stale decisions do not authorize execution. A provider error (for example a transient `503`) is retried twice with a short backoff while the action, mode, model and session stay current; if every attempt fails, the action is not run and the block names the classifier provider as the cause. Changing the action, model, mode or session invalidates a pending decision. Three consecutive denials, twenty total denials since the latest live input, or three consecutive unavailable checks pause further eligible actions pending a safer human instruction. Oversized retained intent requires manual permissions or a fresh scoped session rather than silently dropping restrictions.
+Invalid or unavailable verdicts, errors, timeouts, cancellation and stale decisions do not authorize execution. A provider error (for example a transient `503`) is retried twice with a short backoff while the action, mode, model and session stay current; if every attempt fails, the action is not run and the block names the classifier provider as the cause. Changing the action, model, mode or session invalidates a pending decision. Three consecutive denials, twenty total denials since the latest live input, or three counted unavailable checks without a usable verdict pause further eligible actions pending a safer human instruction. Contention (`busy`), cancellation and expired decisions do not count toward the unavailable-check limit. Oversized retained intent requires manual permissions or a fresh scoped session rather than silently dropping restrictions.
+
+Technical failures are not safety verdicts:
+
+| Failure | What to do |
+| --- | --- |
+| Timeout | The action did not run; a timeout alone does not mean it is unsafe. Wait for the pending provider request to settle, then retry or use manual permissions. |
+| Classifier still settling | Do not launch more checks to route around the pending request. This does not consume the unavailable-check limit. |
+| Context over budget | Narrow the current action or use manual permissions. Repeating the same oversized input does not help. |
+| Potentially sensitive evidence | Use non-sensitive evidence or manual review; do not reveal credentials to secure approval. |
+| No live human request | Provide a specific instruction in the current branch. A transcript alone is not restored authorization. |
+| Invalid/truncated verdict | Retry later or use manual permissions. No action is authorized by a malformed reply. |
+
+Changing to manual permissions is always a human decision; Auto never changes mode to recover itself.
 
 The **Auto checks** status and `gentle-auto-permission` session entries account for classifier attempts separately, including denied calls that never produce a normal tool result. Available late usage is recorded when the same live session still owns it. These records are **not included in Pi's native conversation totals**; unavailable usage is not evidence that an attempt was free.
 
@@ -75,7 +94,7 @@ Live mode selection is bound to the SessionManager, session ID and canonical Git
 
 ## Limits
 
-Auto is contextual permission checking, **not an operating-system sandbox or a guarantee against prompt injection**. The model can misjudge an action; lexical guards and secret projection are not comprehensive inspection of scripts or tool implementations. Use constrained credentials and process/container isolation for containment.
+Auto is contextual permission checking, **not an operating-system sandbox or a guarantee against prompt injection**. The model can misjudge an action; bounded file evidence, lexical guards and secret projection are not comprehensive inspection of scripts, their dependencies or tool implementations. Use constrained credentials and process/container isolation for containment.
 
 The design follows Claude Code's general Auto approach, not a claim of identical proprietary classifier behavior. Offline tests establish gating, cancellation, precedence and SDK integration mechanics—not real-provider classification accuracy.
 

@@ -35,22 +35,30 @@ choosing a default is a policy decision that needs the maintainer's own data.
 
 **D2 — Enforce in `receive()`, after the events of a frame are applied to the store.** Rationale:
 `TaskRecord.turns` is already incremented on `TURN_END` and `TaskRecord.tokens` on `USAGE`
-(`lib/agents-protocol.ts:431`, `:443`), so the counters the budget reads are the counters the
-card already shows. No second accounting path can drift from the displayed one.
+(`lib/agents-protocol.ts`), so the counters the budget reads are the counters the card already
+shows. No second accounting path can drift from the displayed one. The decision also reads the
+frame's own events (D3), so applying them first is what lets the same frame both record the
+crossing and decide to stop.
 
-**D3 — Reach the ceiling, stop; reuse `TASK_STATUS.TIMED_OUT` and `requestStop`.** Rationale:
-a ceiling that can be crossed by one more turn is not a ceiling. Reusing the existing stop path
+**D3 — Reach the ceiling, stop on the next continued-work frame; reuse `TASK_STATUS.TIMED_OUT`
+and `requestStop`.** Rationale: a ceiling that can be crossed by one more turn is not a ceiling,
+but the frame that closes a turn or a run is not continued work. The ceilings fire only on the
+frames that show the child still producing (text, thinking, a tool call, or an error);
+`turn_end`, `agent_end`, `agent_settled` and the `usage` frame at a turn's end never stop a child
+that has already produced its result. So a task that finishes exactly at the ceiling is
+`completed` with its final report, and `max_turns: 1` can succeed. Reusing the existing stop path
 (SIGTERM, process-group confirmation, slot release, `onFinish`) means the budget introduces no
-new termination mechanism and therefore no new failure mode. Declared cost: a child cut at the
-boundary returns no final report; the error text says exactly which budget was reached and at
-which `lastStep`, so the parent can re-delegate the remainder.
+new termination mechanism and therefore no new failure mode. Declared cost: a child cut past the
+boundary returns no final report and the stop lands one frame after the crossing; the error text
+says exactly which budget was reached and at which `lastStep`, so the parent can re-delegate the
+remainder.
 
 **D4 — No special case for a task waiting on a human answer.** The first design exempted a
 `WAITING` task, reasoning that stopping it would erase a question the operator is reading. A
-test proved that branch unreachable: `store.apply` already resumes a waiting task on any
-non-`ASK` event (`lib/agents-protocol.ts:426`), and only an event that changes `turns` or
-`tokens` can cross a ceiling, so the crossing frame is itself the resume. The branch was
-removed rather than kept as a reassuring but dead one, and a test now pins the real contract.
+test proved that branch unreachable: `applyTaskEvent` already resumes a waiting task on any
+non-`ASK` event (`lib/agents-protocol.ts`), and the ceiling only fires on a continued-work frame,
+which is itself the resume. The branch was removed rather than kept as a reassuring but dead one,
+and a test now pins the real contract.
 
 **D5 — The token budget fails open.** It only fires on tokens the provider actually reported, so
 a model whose gateway reports `usage: 0` (the `supportsUsageInStreaming` family of bugs) never
@@ -112,6 +120,8 @@ children, the output format and the store it reads.
 |---|---|
 | focused tests (`agents-runner` + `agents-config`) | 112 tests, 112 pass |
 | RED before the implementation | the three ceiling tests failed by timeout; both no-regression guards passed |
+| focused tests after the review round (`agents-runner` + `agents-config` + `measure-subagent-carry`, rebased tree) | 116 tests, 116 pass |
+| RED for the boundary fix | the two "finishes exactly at the ceiling" tests fail against the pre-fix runner (`TIMED_OUT` instead of `COMPLETED`); both pass after |
 | unit stage (`tests/*.test.ts`) | 5001 tests, 4954 pass, 3 fail |
 | those 3 failures | pre-existing: the same two files report 205/195/3 with and without this change (A/B via `git stash`) |
 | `check:provider-contract` | pass |
@@ -131,6 +141,8 @@ The 3 pre-existing failures live in `tests/review-candidate-view.test.ts` and
 | T4 | S4 | Docs: config key list and the behavior paragraph in `docs/gentle-shell.md` | `b2920482` |
 | T5 | S2 | Evidence: `scripts/measure-subagent-carry.mjs` | `00ae7f24` |
 | T6 | S1-S4 | PR description: problem, measurement, design, declared cost, open questions | PR body |
+| T7 | S3 | RED + GREEN: a child that finishes exactly at a ceiling keeps its report; the ceilings stop only on continued work (`lib/agents-runner.ts`, `tests/agents-runner.test.ts`) | review round |
+| T8 | S3 | Docs: boundary behavior in `docs/gentle-shell.md` and D2-D4 here | review round |
 
 ## Log
 
@@ -159,3 +171,10 @@ The 3 pre-existing failures live in `tests/review-candidate-view.test.ts` and
 - L7: work units `b2920482` (behavior, tests, docs) and `00ae7f24` (measurement script); this
   record is the third. Branch `feat/runner-execution-budgets` in the linked worktree, based on
   `main` `7b9b3a08`. Nothing is pushed.
+- L8: review round. `carlosmoradev` showed that a child finishing exactly at `max_turns` is cut
+  off before `agent_end`, so `max_turns: 1` can never succeed, and CodeRabbit found two bugs in
+  the measurement script. D3 was wrong: a ceiling must bound the child's next turn of work, not
+  the frame that closes the turn it already finished. The ceilings now fire only on
+  continued-work frames, `docs/gentle-shell.md` and D2-D4 reflect it, and both of CodeRabbit's
+  findings are fixed and pinned by `tests/measure-subagent-carry.test.ts`. The branch is rebased
+  onto `main` and force-pushed as a review response.

@@ -121,47 +121,37 @@ jobs:
   # DIAGNOSTIC ONLY (#2121), never merged: run the Windows bootstrap test file in the
   # runner's own process so an abort at exit prints its message here.
   windows-abort-diag:
-    name: windows-abort-diag (${{ matrix.attempt }})
+    name: windows-abort-diag (dump capture proof)
     runs-on: windows-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        attempt: [1, 2, 3, 4, 5, 6]
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24"
-      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
-        with:
-          go-version: "1.25.14"
-          cache: false
-      - name: Enable crash dumps for node.exe
+      - name: Capture crash dumps of node.exe
         shell: pwsh
         run: |
+          $dumps = Join-Path $env:RUNNER_TEMP "node-dumps"
+          New-Item -ItemType Directory -Force $dumps | Out-Null
           $key = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\node.exe"
           New-Item -Path $key -Force | Out-Null
-          New-ItemProperty -Path $key -Name DumpFolder -PropertyType ExpandString -Value "$env:RUNNER_TEMP\dumps" -Force | Out-Null
+          New-ItemProperty -Path $key -Name DumpFolder -PropertyType ExpandString -Value $dumps -Force | Out-Null
           New-ItemProperty -Path $key -Name DumpType -PropertyType DWord -Value 2 -Force | Out-Null
-          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\dumps" | Out-Null
-      - name: The exact installer suites step
+      - name: Abort a node process on purpose
         shell: pwsh
         run: |
-          & node --experimental-strip-types --test --test-reporter=tap tests/install-wizard.test.ts tests/installer-server.test.ts tests/verify-package-files.test.ts tests/installer-probes.test.ts tests/installer-runner.test.ts tests/installer-preflight.test.ts tests/installer-posix-bootstrap.test.ts tests/installer-windows-bootstrap.test.ts *> "$env:RUNNER_TEMP\suites.tap"
+          & node -e "process.abort()"
           "EXIT=$LASTEXITCODE (0x{0:X8})" -f $LASTEXITCODE
-          Select-String -Path "$env:RUNNER_TEMP\suites.tap" -Pattern "^not ok|exitCode|Assertion|FATAL|# fail" | Write-Output
-          Get-ChildItem "$env:RUNNER_TEMP\dumps" | Format-Table Name, Length
-      - name: Upload dumps and output
+          Start-Sleep -Seconds 10
+          Get-ChildItem (Join-Path $env:RUNNER_TEMP "node-dumps") | Format-Table Name, Length
+      - name: Upload node.exe crash dumps
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: windows-abort-diag-${{ matrix.attempt }}
-          path: |
-            ${{ runner.temp }}/dumps
-            ${{ runner.temp }}/suites.tap
-          if-no-files-found: ignore
-          retention-days: 7
+          name: node-dumps-proof
+          path: ${{ runner.temp }}/node-dumps
+          if-no-files-found: warn
+          retention-days: 3
 
   installer:
     name: installer (${{ matrix.os }})

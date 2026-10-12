@@ -452,6 +452,7 @@ test("a child disconnect during a pending parent response cannot crash the broke
 	}
 });
 
+/** Real fd3 authorization rechecks flow through the permission launch end to end. */
 test("AgentRunner delivers real fd3 authorization rechecks through its permission launch", { timeout: 15_000 }, async () => {
 	const PROBE_DEADLINE_MS = 12_000;
 	const CLOSE_GRACE_MS = 750;

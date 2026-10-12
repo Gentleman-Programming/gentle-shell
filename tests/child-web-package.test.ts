@@ -9,6 +9,7 @@ import { createAssistantMessageEventStream, getCurrentTools, type AssistantMessa
 
 const webTools = ["web_enable", "web_search", "source_check", "fetch_content", "get_search_content"];
 
+/** Request fixture for a web-enabled child: a real package layout under a temp agent home. */
 function fixture() {
 	const root = mkdtempSync(join(tmpdir(), "child-web-package-"));
 	const agentDir = join(root, "agent");

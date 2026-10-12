@@ -67,8 +67,8 @@ test("exact credential words are always sensitive", () => {
 	]);
 });
 
-/** Live credential channels (SSH agent socket, Docker auth) are filtered; generic URLs are not. */
-test("live credential channels are filtered without broadening to generic URLs", () => {
+/** Live credential channels (SSH agent socket, Docker auth) and credential-bearing database URLs are filtered; other generic URLs are not. */
+test("live credential channels and credential-bearing database URLs are filtered, without broadening to other generic URLs", () => {
 	const environment = {
 		SSH_AUTH_SOCK: "x",
 		DOCKER_AUTH_CONFIG: "x",
@@ -76,20 +76,22 @@ test("live credential channels are filtered without broadening to generic URLs",
 		NPM_CONFIG_REGISTRY: "x",
 	};
 	assert.deepEqual(inheritedSensitiveChildEnvironmentKeys(environment), [
+		"DATABASE_URL",
 		"DOCKER_AUTH_CONFIG",
 		"SSH_AUTH_SOCK",
 	]);
 });
 
-/** `env_keep` rescues declared names case-insensitively, and only those. */
+/** `env_keep` rescues declared names case-insensitively — including a filtered DATABASE_URL — and only those. */
 test("env_keep rescues declared keys, case-insensitively, and only those", () => {
 	const environment = {
 		DB_SERVER: "x",
 		SQLSERVER_DB_PASSWORD: "x",
+		DATABASE_URL: "x",
 		GITHUB_PERSONAL_ACCESS_TOKEN: "x",
 	};
 	assert.deepEqual(
-		inheritedSensitiveChildEnvironmentKeys(environment, ["sqlserver_db_password", "DB_SERVER"]),
+		inheritedSensitiveChildEnvironmentKeys(environment, ["sqlserver_db_password", "DB_SERVER", "DATABASE_URL"]),
 		["GITHUB_PERSONAL_ACCESS_TOKEN"],
 	);
 });

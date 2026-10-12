@@ -93,6 +93,7 @@ test("an undiscovered agent resolves to undefined", () => {
 	);
 });
 
+/** The pinned profile's model and thinking surface on the launch profile. */
 test("resolvePinnedAgentProfile returns the launch profile with its model and thinking", () => {
 	const f = fixture("launch-profile");
 	f.writePinnedProfile({ deep: { explore: { model: "openai/alpha", thinking: "minimal" } } }, "deep");

@@ -843,6 +843,27 @@ test("node execFile adapter still enforces the timeout on Windows when the tree 
 	assert.ok(Date.now() - startedAt < 3_000, `settled after ${Date.now() - startedAt}ms`);
 });
 
+// A descendant that inherited gentle-ai's stdout/stderr keeps the pipes open
+// after gentle-ai itself exits; the deadline must still hold.
+test("node execFile adapter enforces the Windows timeout when a descendant holds the inherited pipes", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "gentle-pi-tree-kill-"));
+	const pidFile = join(directory, "descendant.pid");
+	const script = `const { spawn } = require("node:child_process"); const d = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "inherit" }); require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(d.pid)); d.unref();`;
+	try {
+		const adapter = createNodeExecFileAdapter({ platform: "win32", killProcessTree: () => {} });
+		const startedAt = Date.now();
+		const pending = adapter({ file: process.execPath, arguments: ["-e", script], cwd: process.cwd(), maxBufferBytes: 1024, timeoutMs: 300 });
+		const result = await Promise.race([pending, new Promise<"unsettled">((resolve) => setTimeout(() => resolve("unsettled"), 6_000).unref())]);
+		assert.notEqual(result, "unsettled", "the call settles while the descendant still holds the pipes");
+		if (result === "unsettled") return;
+		assert.equal(result.timedOut, true);
+		assert.ok(Date.now() - startedAt < 4_000, `settled after ${Date.now() - startedAt}ms`);
+	} finally {
+		try { process.kill(Number(readFileSync(pidFile, "utf8"))); } catch { /* Already gone. */ }
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
 // A bare "taskkill" resolves from the current directory first on Windows, so a
 // repository shipping its own taskkill.exe would run on any abort or timeout.
 test("Windows tree kill runs taskkill by its absolute System32 path from a trusted cwd", () => {

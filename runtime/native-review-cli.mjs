@@ -1167,7 +1167,7 @@ function windowsExecFile(request                 , killProcessTree              
 	const { signal } = request;
 	if (signal?.aborted) return Promise.reject(abortError(signal));
 	return new Promise((resolve, reject) => {
-		let timedOut = false, aborted = false;
+		let timedOut = false, aborted = false, pipesCut = false;
 		let timer                                           ;
 		let fallback                                           ;
 		const child = execFile(request.file, [...request.arguments], { cwd: request.cwd, encoding: "utf8", shell: false, windowsHide: true, maxBuffer: request.maxBufferBytes, env: gentleAiProcessEnvironment() }, (error, stdout, stderr) => {
@@ -1175,15 +1175,22 @@ function windowsExecFile(request                 , killProcessTree              
 			if (fallback !== undefined) clearTimeout(fallback);
 			signal?.removeEventListener("abort", onAbort);
 			if (aborted && signal) { reject(abortError(signal)); return; }
-			if (error === null) { resolve({ stdout, stderr, exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false }); return; }
+			if (error === null) { resolve({ stdout, stderr, exitCode: 0, signal: null, timedOut: pipesCut, outputLimitExceeded: false }); return; }
 			try { resolve(execFileResultFromError(Object.assign(error, { stdout, stderr }), timedOut)); } catch (failure) { reject(failure); }
 		});
 		// If taskkill cannot run (AppLocker, a broken PATH), still end gentle-ai
-		// itself so the deadline holds; its children may then outlive it.
+		// itself so the deadline holds; its children may then outlive it. A
+		// surviving descendant can still hold the inherited stdout/stderr open,
+		// which would keep execFile from calling back, so cut the pipes too.
 		const killTree = () => {
 			if (child.pid === undefined) { child.kill(); return; }
 			killProcessTree(child.pid);
-			fallback = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill(); }, WINDOWS_TREE_KILL_GRACE_MS);
+			fallback = setTimeout(() => {
+				if (child.exitCode === null && child.signalCode === null) child.kill();
+				pipesCut = true;
+				child.stdout?.destroy();
+				child.stderr?.destroy();
+			}, WINDOWS_TREE_KILL_GRACE_MS);
 		};
 		function onAbort()       { if (aborted || timedOut) return; aborted = true; killTree(); }
 		signal?.addEventListener("abort", onAbort, { once: true });

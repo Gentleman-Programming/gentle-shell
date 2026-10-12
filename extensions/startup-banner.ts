@@ -549,12 +549,17 @@ async function countPackageExtensions(packages: unknown[]): Promise<number> {
   return count;
 }
 
-export function readGitBranch(cwd: string, run: typeof execFile = execFile): Promise<string> {
+// A repository rooted at HOME can make even this lookup crawl; a timeout reads
+// as the ordinary failure instead of holding the banner stats.
+const GIT_BRANCH_TIMEOUT_MS = 3000;
+
+export function readGitBranch(cwd: string, run: typeof execFile = execFile, timeoutMs = GIT_BRANCH_TIMEOUT_MS): Promise<string> {
   return new Promise((resolve) => {
     run("git", ["-C", cwd, "branch", "--show-current"], {
       encoding: "utf8",
       shell: false,
       windowsHide: true,
+      timeout: timeoutMs,
     }, (error, stdout) => {
       if (error) {
         resolve("Not a git repo");

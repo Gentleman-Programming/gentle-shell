@@ -7,7 +7,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after, before } from "node:test";
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
+
+// S5 (startup-home-repo-and-changes): startup review negotiation runs after
+// session_start returns and passes its deadline signal to native STATUS.
+// These tests observe negotiation outcomes, so they wait for it, and they
+// compare request contracts without the per-call signal.
+const settleStartup = () => __testing.startupNegotiationSettled();
+function withoutSignal<T>(request: T): T {
+	if (request === null || typeof request !== "object" || !("signal" in request)) return request;
+	const { signal: _signal, ...rest } = request as Record<string, unknown>;
+	return rest as T;
+}
 import { NATIVE_REVIEW_ERROR_CODE, NativeReviewCliError, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import type { ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 
@@ -235,7 +246,7 @@ for (const scenario of ["same", "changed", "sibling-root", "nested-root", "faile
 		const native = {
 			reviewMode: onMode("on"),
 			targetStatus: async (request: unknown) => {
-				statusRequests.push(request);
+				statusRequests.push(withoutSignal(request));
 				return burned ? executeStartStatus(nextTarget) : approved;
 			},
 			acknowledgeApproved: async (request: unknown) => {
@@ -301,6 +312,7 @@ test("passive session events outside Git with RDD off never invoke native STATUS
 		const { handlers } = harness(native);
 		const session = ctx("outside-git", true, cwd);
 		await handlers.get("session_start")!({ type: "session_start" }, session);
+		await settleStartup();
 		await handlers.get("agent_end")!(agentEndEvent, session);
 		assert.deepEqual(calls, [], "passive non-Git events need no native entry");
 		assert.equal(existsSync(join(cwd, ".git")), false, "passive events must not initialize Git");
@@ -312,7 +324,7 @@ test("agent_end performs no STATUS call and sends nothing when RDD is off", asyn
 	const native = {
 		reviewMode: onMode("off"),
 		targetStatus: async (request: unknown) => {
-			statusRequests.push(request);
+			statusRequests.push(withoutSignal(request));
 			throw new Error("targetStatus must not be called when RDD is off");
 		},
 	} as unknown as NativeReviewCli;
@@ -330,7 +342,7 @@ test("agent_end nudges exactly once when RDD is on and STATUS offers review.star
 	const native = {
 		reviewMode: onMode("on"),
 		targetStatus: async (request: { agent?: string }) => {
-			statusRequests.push(request);
+			statusRequests.push(withoutSignal(request));
 			return executeStartStatus(targetIdentity);
 		},
 	} as unknown as NativeReviewCli;
@@ -456,7 +468,7 @@ test("gentle-ai-worker agent_end never queries native review", async () => {
 	const native = {
 		reviewMode: onMode("on"),
 		targetStatus: async (request: unknown) => {
-			statusRequests.push(request);
+			statusRequests.push(withoutSignal(request));
 			throw new Error("a bounded worker must not own native review");
 		},
 	} as unknown as NativeReviewCli;
@@ -477,7 +489,7 @@ test("agent_end sends nothing and performs no STATUS call when GENTLE_PI_AGENTS_
 	const native = {
 		reviewMode: onMode("on"),
 		targetStatus: async (request: unknown) => {
-			statusRequests.push(request);
+			statusRequests.push(withoutSignal(request));
 			throw new Error("targetStatus must not be called in a child session");
 		},
 	} as unknown as NativeReviewCli;
@@ -563,12 +575,14 @@ for (const scenario of ["reload", "fork", "new", "off-branch"] as const) {
 			const first = harness(native, entries);
 			const session = ctx(`receipt-${scenario}`, true, cwd);
 			await first.handlers.get("session_start")!({}, session);
+			await settleStartup();
 			await directWrite(first.handlers, session);
 			await first.handlers.get("session_shutdown")!({ reason: "reload" }, session);
 			const resumed = harness(native, entries);
 			const next = ctx(scenario === "reload" || scenario === "off-branch" ? `receipt-${scenario}` : `replacement-${scenario}`, true, cwd);
 			if (scenario === "off-branch") next.sessionManager.getBranch = () => [];
 			await resumed.handlers.get("session_start")!({ reason: scenario }, next);
+			await settleStartup();
 			const beforeEnd = statusCalls;
 			await resumed.handlers.get("agent_end")!(agentEndEvent, next);
 			assert.equal(statusCalls - beforeEnd, scenario === "reload" ? 1 : 0);
@@ -649,6 +663,7 @@ for (const mode of ["on", "off", "unknown", "missing", "malformed", "incompatibl
 			const { handlers, sent } = harness(native);
 			const session = ctx(`non-git-${mode}`, true, cwd);
 			await handlers.get("session_start")!({}, session);
+			await settleStartup();
 			assert.equal(requests.length, 0, "passive startup cannot bootstrap");
 			assert.equal(existsSync(join(cwd, ".git")), false);
 			await handlers.get("agent_end")!(agentEndEvent, session);
@@ -668,6 +683,7 @@ for (const path of ["odd/tasks/feature.md", "README.md", ".pi/settings.json", "m
 			const h = harness({ reviewMode: onMode("on"), targetStatus: async () => { calls++; return stopStatus("unused"); } } as unknown as NativeReviewCli);
 			const session = ctx("non-source", false, cwd);
 			await h.handlers.get("session_start")!({}, session);
+			await settleStartup();
 			await h.handlers.get("tool_result")!({ toolName: "write", toolCallId: "bookkeeping", input: { path }, isError: false }, session);
 			assert.equal(calls, 0);
 			assert.equal(existsSync(join(cwd, ".git")), false);
@@ -684,6 +700,7 @@ for (const initiallyGit of [true, false]) {
 			} } as unknown as NativeReviewCli);
 			const session = ctx("established-source", false, cwd);
 			await h.handlers.get("session_start")!({}, session);
+			await settleStartup();
 			if (!initiallyGit) { await directWrite(h.handlers, session); assert.equal(calls, 1); }
 			await rename(join(cwd, ".git"), join(cwd, "saved-git"));
 			calls = 0;
@@ -702,6 +719,7 @@ test("headless successful source write prepares after binding without a reminder
 		} } as unknown as NativeReviewCli);
 		const session = ctx("headless-source", false, cwd);
 		await h.handlers.get("session_start")!({}, session);
+		await settleStartup();
 		await directWrite(h.handlers, session);
 		assert.equal(calls, 1);
 		assert.equal(existsSync(join(cwd, ".git")), true);
@@ -715,7 +733,7 @@ test("session_start negotiates the current target identity when RDD is on", asyn
 	const native = {
 		reviewMode: onMode("on"),
 		targetStatus: async (request: { agent?: string }) => {
-			statusRequests.push(request);
+			statusRequests.push(withoutSignal(request));
 			return executeStartStatus(targetIdentity);
 		},
 	} as unknown as NativeReviewCli;
@@ -729,6 +747,7 @@ test("session_start negotiates the current target identity when RDD is on", asyn
 			ui: { ...ctx("session-baseline-record", true, cwd).ui, notify: (message: string, severity: string) => { notifications.push({ message, severity }); } },
 		};
 		await sessionStart!({}, session);
+		await settleStartup();
 		assert.equal(statusRequests[0]?.agent, "pi");
 		assert.deepEqual(sent, []);
 		assert.deepEqual(notifications, []);
@@ -748,6 +767,8 @@ test("agent_end skips pre-session work, then nudges after an own mutation", asyn
 		const session = ctx("session-baseline-skip", true, cwd);
 
 		await sessionStart!({}, session);
+
+		await settleStartup();
 		await agentEnd!(agentEndEvent, session);
 		assert.deepEqual(sent, [], "the baseline candidate predates the session and is not nudged");
 
@@ -771,7 +792,7 @@ for (const ownsMutation of [false, true]) {
 		const native = {
 			reviewMode: onMode("on"),
 			targetStatus: async (request: unknown) => {
-				statusRequests.push(request);
+				statusRequests.push(withoutSignal(request));
 				return executeStartStatus(targetIdentity);
 			},
 		} as unknown as NativeReviewCli;
@@ -785,6 +806,8 @@ for (const ownsMutation of [false, true]) {
 			assert.equal(typeof agentEnd, "function");
 
 			await sessionStart!({}, session);
+
+			await settleStartup();
 			assert.deepEqual(statusRequests, [{ cwd, agent: "pi" }], "startup records targetA separately");
 			assert.deepEqual(sent, []);
 			// Like host event delivery, an event without a subscriber is a no-op.
@@ -835,7 +858,7 @@ test("agent_end reminds for an own write after startup with RDD off", async () =
 			status: { global: "", cloneLocal: mode === "on" ? "on" : "", effective: mode, source: "clone_local" },
 		}),
 		targetStatus: async (request: unknown) => {
-			statusRequests.push(request);
+			statusRequests.push(withoutSignal(request));
 			if (mode === "off") throw new Error("targetStatus must not be called when RDD is off");
 			return executeStartStatus(targetIdentity);
 		},
@@ -847,6 +870,8 @@ test("agent_end reminds for an own write after startup with RDD off", async () =
 		const session = ctx("session-baseline-rdd-off", true, cwd);
 
 		await sessionStart!({}, session);
+
+		await settleStartup();
 		assert.deepEqual(statusRequests, []);
 
 		mode = "on";
@@ -895,6 +920,8 @@ test("session_shutdown does not turn the baseline into an own mutation", async (
 		const session = ctx("session-baseline-shutdown", true, cwd);
 
 		await sessionStart!({}, session);
+
+		await settleStartup();
 		await agentEnd!(agentEndEvent, session);
 		assert.deepEqual(sent, [], "the baseline candidate is skipped");
 

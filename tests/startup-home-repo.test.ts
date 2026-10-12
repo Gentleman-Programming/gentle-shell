@@ -112,6 +112,7 @@ test("a normal project repository keeps negotiating and its startup status serve
 	const { cli, calls } = nativeCli();
 	const { handlers, notices, ctx } = start(cli, cwd, environment);
 	await handlers.get("session_start")!({}, ctx);
+	await __testing.startupNegotiationSettled();
 	assert.deepEqual(homeWarning(notices), []);
 	assert.equal(calls.target, 1, "startup still negotiates the review target");
 	assert.equal(calls.mode, 1);
@@ -119,4 +120,36 @@ test("a normal project repository keeps negotiating and its startup status serve
 	await handlers.get("before_agent_start")!(event, ctx);
 	assert.equal(calls.mode, 1, "the first prompt reuses the startup review mode status");
 	assert.match(event.systemPromptOptions.appendSystemPrompt, /Receipt-driven development: on/);
+});
+
+// S5: Pi awaits session_start handlers one after another, so the native review
+// negotiation (two gentle-ai spawns) no longer holds startup. It runs after
+// session_start returns, bounded by a signal, and the first prompt still reuses
+// its RDD status instead of spawning the same read again.
+test("startup returns before the native review negotiation finishes, and the first prompt still reuses its status", async (t) => {
+	const { cwd, environment } = fixture(t, false);
+	const { cli, calls } = nativeCli();
+	let release!: () => void;
+	const gate = new Promise<void>(resolve => { release = resolve; });
+	const signals: Array<AbortSignal | undefined> = [];
+	const slowMode = cli.reviewMode!.bind(cli);
+	(cli as { reviewMode: NativeReviewCli["reviewMode"] }).reviewMode = (async (request: { signal?: AbortSignal }) => {
+		signals.push(request.signal);
+		await gate;
+		return slowMode(request as never);
+	}) as NativeReviewCli["reviewMode"];
+	const { handlers, ctx } = start(cli, cwd, environment);
+	const started = handlers.get("session_start")!({}, ctx) as Promise<void>;
+	const outcome = await Promise.race([started.then(() => "returned"), new Promise(resolve => setTimeout(() => resolve("blocked"), 500))]);
+	assert.equal(outcome, "returned", "session_start must not wait for native review negotiation");
+	assert.equal(calls.target, 0, "negotiation is still pending");
+	assert.ok(signals[0] instanceof AbortSignal, "the startup review mode read is bounded by a signal");
+	const event = { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" } };
+	const prompt = handlers.get("before_agent_start")!(event, ctx) as Promise<void>;
+	release();
+	await prompt;
+	assert.equal(calls.mode, 1, "the first prompt waits for the in-flight startup read instead of spawning another");
+	assert.match(event.systemPromptOptions.appendSystemPrompt, /Receipt-driven development: on/);
+	await __testing.startupNegotiationSettled();
+	assert.equal(calls.target, 1, "the negotiation still completes after startup");
 });

@@ -695,6 +695,7 @@ export default function (pi: ExtensionAPI) {
 				}
 				if (quarantinedLegacy) {
 					setTimeout(() => {
+						if (generation !== startupGeneration) return;
 						void (async () => {
 							try {
 								const result = await regenerateRegistry(cwd, true);

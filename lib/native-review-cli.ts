@@ -1075,6 +1075,13 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// to /v4 without a review-integration/v2 change. No new negotiated
 	// capability is asserted.
 	"4.0.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v4.1.1 repeats 4.0.0: the published binary still advertises
+	// capabilities/v2.6 under review-integration/v2. The provider contract moved
+	// from 1.2.0 to 1.3.0 (additive agent lens selection, gentle-ai#5348), with
+	// published tarball SHA-256
+	// b04b6b75d1a446c942a816fbf92932d16f8c3d3001f93159dee2a92bbf2ebe44.
+	// No new negotiated capability identity is asserted.
+	"4.1.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 });
 
 export interface NativeReviewProcessDiagnostics {

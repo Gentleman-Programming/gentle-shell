@@ -14,7 +14,7 @@ const message = (patch: Partial<AssistantMessage> = {}): AssistantMessage => ({ 
 	content: [{ type: "text", text: '{"decision":"allow","reason":"Routine local work within the request."}' }],
 	usage: { input: 11, output: 7, cacheRead: 2, cacheWrite: 0, totalTokens: 20,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.01 } }, ...patch });
-function fixture(deadlineMs = 1000, onUsage?: (receipt: AutoPermissionUsageReceipt) => void) {
+function fixture(deadlineMs = 1000, onUsage?: (receipt: AutoPermissionUsageReceipt) => void, onCall?: (count: number) => void) {
 	const calls: { model: Model<Api>; context: Context; options?: ModelsSimpleStreamOptions;
 		resolve: (m: AssistantMessage) => void; reject: (e: unknown) => void }[] = [];
 	const engine = new AutoPermissionClassifier({ streamSimple(model, context, options) {
@@ -23,6 +23,7 @@ function fixture(deadlineMs = 1000, onUsage?: (receipt: AutoPermissionUsageRecei
 		const pending = new Promise<AssistantMessage>((yes, no) => { resolve = yes; reject = no; });
 		stream.result = () => pending; // Public SDK interface; deliberately ignores provider abort.
 		calls.push({ model, context, options, resolve, reject });
+		onCall?.(calls.length);
 		return stream;
 	} }, { deadlineMs, onUsage });
 	const run = (patch: Partial<AutoPermissionRequest> = {}) => engine.run({ trustedMessages: ["Fix the local parser and run its tests."],
@@ -348,12 +349,22 @@ test("optional history drops oldest complete records before crowding out current
 	assert.equal((await pending).decision, "allow");
 });
 
-test("opt-in evidence tool supplies untrusted file results before the exact action verdict", async () => {
-	const f = fixture(), pending = f.run({ cwd: process.cwd(), evidencePaths: ["docs/auto-permission-evidence.md"] });
+test("opt-in evidence tool supplies untrusted file results before the exact action verdict", async t => {
+	// Real file IO can finish after many event-loop turns on a busy CI runner.
+	const realpath = fs.realpath.bind(fs);
+	t.mock.method(fs, "realpath", async (...args: Parameters<typeof fs.realpath>) => {
+		await new Promise(resolve => setTimeout(resolve, 25));
+		return realpath(...args);
+	});
+	let secondCall!: () => void;
+	const ready = new Promise<void>(resolve => { secondCall = resolve; });
+	const f = fixture(1000, undefined, count => { if (count === 2) secondCall(); });
+	const pending = f.run({ cwd: process.cwd(), evidencePaths: ["docs/auto-permission-evidence.md"] });
 	assert.equal(f.calls[0].context.tools?.[0]?.name, "inspect_permission_file");
 	f.calls[0].resolve(message({ stopReason: "toolUse", content: [{ type: "toolCall", id: "read1", name: "inspect_permission_file",
 		arguments: { path: "docs/auto-permission-evidence.md" } }] }));
-	for (let i = 0; i < 50 && f.calls.length < 2; i++) await tick();
+	// A failed classification also settles this wait, preserving the original bounded deadline.
+	await Promise.race([ready, pending]);
 	assert.equal(f.calls.length, 2);
 	const result = f.calls[1].context.messages.at(-1)!;
 	assert.equal(result.role, "toolResult");

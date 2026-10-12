@@ -276,16 +276,11 @@ async function classifyBundledMemory() {
 	return classifyEngramStartup({ ...decision, store: observed.store, endpoint, provenance: ownEngramStore(observed, core) });
 }
 
-// Verified read-only in Engram v3.3.2: `engram instance-id` first runs a GitHub
-// update check that sends GH_TOKEN or GITHUB_TOKEN (cmd/engram/main.go:742-744,
-// 835-847; internal/version/check.go:23-24,60-70,171-176) unless
-// ENGRAM_NO_UPDATE_CHECK is set (check.go:19,49-51,114-117). It then resolves the
-// default ~/.engram (main.go:749-765) and runs EnsureInstanceID
-// (internal/store/instance.go:15-79): the data dir, `.instance-id.lock` (waits
-// up to 60s, internal/store/migration_lock.go:29-76) and `.instance-id`. It
-// returns (main.go:767-775) before orphan migration (main.go:779) and opens no
-// database. The timeout stays below that lock wait: a held lock means a
-// concurrent creator, and memory then stays off for the launch.
+// Verified with the published Engram v3.4.0 darwin-arm64 binary in an isolated
+// HOME: `instance-id` creates only `.instance-id.lock` and `.instance-id`,
+// without a database. Keep update checks suppressed and GitHub tokens removed
+// for this provisioning invocation. The timeout stays below the identity lock
+// wait: a held lock means a concurrent creator, so memory stays off that launch.
 const ENGRAM_PROVISION_TIMEOUT_MS = 15000;
 
 // A fresh launch's store identity, provisioned by Shell itself with the verified

@@ -334,9 +334,9 @@ export function engramProvenanceMatches(record                              , ob
 }
 
 // The bundled core's own schema (SQLite user_version), verified from the
-// tagged source: v3.3.2:internal/store/store.go `const schemaVersion = 1`.
+// tagged sources v3.3.2 and v3.4.0: internal/store/store.go `const schemaVersion = 1`.
 // A pin without a verified entry leaves the header check unavailable.
-const BUNDLED_ENGRAM_SCHEMA                         = { "3.3.2": 1 };
+const BUNDLED_ENGRAM_SCHEMA                         = { "3.3.2": 1, "3.4.0": 1 };
 
 export function bundledEngramSchema(coreVersion        )                     {
 	return Object.hasOwn(BUNDLED_ENGRAM_SCHEMA, coreVersion) ? BUNDLED_ENGRAM_SCHEMA[coreVersion] : undefined;

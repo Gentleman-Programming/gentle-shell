@@ -16,7 +16,7 @@ const OTHER_ID = "fedcba9876543210fedcba9876543210";
 const READY = { revision: 1, source: "active", status: "ready", offline_automatic_opening_authorized: false, active_reuse_authorized: true,
 	instance_id: ID, runtime_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", capability: "startup-verified-store-v1" };
 const REFUSED: shell.EngramProbe = { kind: "refused" };
-const CORE = "3.3.2";
+const CORE = "3.4.0";
 const listening = (compatible: boolean, healthInstanceId?: string, healthVersion = CORE): shell.EngramProbe =>
 	({ kind: "listening", compatible, healthInstanceId, healthVersion: healthInstanceId === undefined ? undefined : healthVersion });
 
@@ -75,7 +75,7 @@ test("Shell provenance allows its own store only for the same instance and the s
 	assert.deepEqual(classify({ store: "present", provenance }), { policy: "allow" });
 	assert.deepEqual(classify({ store: "present", provenance, endpoint: listening(false, ID) }), { policy: "allow" });
 	assert.equal(classify({ store: "present", provenance, endpoint: listening(false, OTHER_ID) }).policy, "disabled");
-	for (const version of ["3.3.3", "v3.3.2", "dev", ""]) {
+	for (const version of ["3.3.3", "v3.4.0", "dev", ""]) {
 		assert.equal(classify({ store: "present", provenance, endpoint: listening(false, ID, version) }).policy, "disabled", version);
 	}
 	assert.equal(classify({ store: "present", provenance, endpoint: listening(false) }).policy, "disabled");
@@ -150,6 +150,7 @@ test("provenance matches only the same directory, instance and core digest", () 
 test("the header is a newer-schema tripwire against the verified bundled schema, never a compatibility proof", () => {
 	// v3.3.2:internal/store/store.go declares schemaVersion = 1.
 	assert.equal(shell.bundledEngramSchema("3.3.2"), 1);
+	assert.equal(shell.bundledEngramSchema("3.4.0"), 1);
 	assert.equal(shell.bundledEngramSchema("3.3.3"), undefined);
 	for (const userVersion of [0, 1]) assert.equal(shell.engramHeaderAllows(userVersion, 1), true, String(userVersion));
 	assert.equal(shell.engramHeaderAllows(2, 1), false);
@@ -216,7 +217,7 @@ test("probe reports refused for a closed port and unknown for a silent listener"
 	assert.ok(Date.now() - started < 2000);
 });
 
-const base = { node: "/node", cli: "/pi", prefix: "/prefix", engram: "/prefix/runtime/engram-3.3.2/engram", guard: GUARD };
+const base = { node: "/node", cli: "/pi", prefix: "/prefix", engram: "/prefix/runtime/engram-3.4.0/engram", guard: GUARD };
 
 test("disabled memory without explicit selections points ENGRAM_BIN at the guard and keeps the policy", () => {
 	const memory = classify({ store: "present" });

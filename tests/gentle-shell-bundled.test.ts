@@ -128,7 +128,7 @@ test("bundledPi fails with the version, the pinned Pi and the way to repair it",
 	assert.equal(bundledPi(install, { platform: "linux", fs: outside }).ok, false);
 });
 
-const ISOLATION = { prefix: "/g", engram: "/g/runtime/engram-3.3.2/engram" };
+const ISOLATION = { prefix: "/g", engram: "/g/runtime/engram-3.4.0/engram" };
 
 test("bundledChildEnv keeps the user's environment and adds only the bundled Pi, the prefix and Engram, no Pi override and no Pi update check", () => {
 	const user = { PATH: "/home/ana/.nvm/bin:/usr/bin", NODE_OPTIONS: "--max-old-space-size=4096", npm_config_registry: "https://npm.example", npm_config_prefix: "/home/ana/.npm-global",
@@ -140,7 +140,7 @@ test("bundledChildEnv keeps the user's environment and adds only the bundled Pi,
 	// folder from the prefix, and Gentle AI 4.0.0 reads that variable as a parent.
 	assert.deepEqual(env, { PATH: user.PATH, NODE_OPTIONS: user.NODE_OPTIONS, npm_config_registry: user.npm_config_registry, npm_config_prefix: user.npm_config_prefix,
 		GENTLE_PI_CONFIG_HOME: user.GENTLE_PI_CONFIG_HOME, GENTLE_PI_AGENTS_PI: "/g/node /g/cli.js", PI_SKIP_VERSION_CHECK: "1", GENTLE_SHELL_PREFIX: "/g",
-		ENGRAM_BIN: "/g/runtime/engram-3.3.2/engram" });
+		ENGRAM_BIN: "/g/runtime/engram-3.4.0/engram" });
 	// The subagent runner splits that variable on whitespace: a spaced path falls
 	// back to its own default, the running node and cli.js.
 	const spaced = bundledChildEnv({ GENTLE_PI_AGENTS_PI: "pi" }, { node: "C:\\Users\\Ana Li\\node.exe", cli: "C:\\cli.js", ...ISOLATION });

@@ -94,6 +94,32 @@ test("verified task memory is classifier context, never a bypass or a forged pro
  assert.equal(f.requests.at(-1).memoryContext,undefined,"cancel/mode changes drop live binding");
 });
 
+test("Engram destination binding recovers after reload only through a fresh admitted resolver", async t=>{
+ const f=fixture(t);
+ const authorize=()=>f.input("Retain non-sensitive findings for this project.");
+ const resolve=async()=>{
+  const input={cwd:f.cwd};
+  assert.equal((await f.execute("mem_current_project",input)).executions,1);
+  f.runtime.toolResult({toolName:"mem_current_project",toolCallId:"call",input,isError:false,
+   details:{data:{cwd:f.cwd,project:"canonical",project_source:"git_remote",available_projects:null}}} as any,f.ctx);
+ };
+ const summary=()=>f.execute("mem_session_summary",{cwd:f.cwd,project:"canonical",content:"Synthetic task finding"});
+ const expected={provider:"gentle-engram",operation:"mem_session_summary",cwd:f.cwd,project:"canonical"};
+ authorize();await resolve();await summary();
+ assert.deepEqual(f.requests.at(-1).memoryContext,expected);
+ assert.equal(f.records.at(-1)[1].memoryContextAttached,true);
+ f.runtime.reset();authorize();await summary();
+ assert.equal(f.requests.at(-1).memoryContext,undefined,"transcript does not restore destination authority");
+ assert.equal(f.records.at(-1)[1].memoryContextAttached,false);
+ await resolve();await summary();
+ assert.deepEqual(f.requests.at(-1).memoryContext,expected,"fresh resolver restores destination context");
+ f.input("Continue the same task.");await summary();
+ assert.deepEqual(f.requests.at(-1).memoryContext,expected,"ordinary human input does not revoke destination binding");
+ f.setResponse({status:"available",decision:"deny",reason:"Persistence forbidden"});
+ assert.equal((await summary()).executions,0,"verified destination never bypasses a deny");
+ assert.deepEqual(f.requests.at(-1).memoryContext,expected);
+});
+
 test("Auto diagnostic receipts and timeout messages contain only bounded metadata", async t=>{
  const f=fixture(t);f.input("Read the local documentation.");
  const diagnostic={implementation:"auto-classifier-diagnostics-v1",elapsedMs:0,deadlineMs:20000,timerFired:false,returnPath:"preflight"};

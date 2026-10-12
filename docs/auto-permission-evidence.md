@@ -14,6 +14,12 @@ One classifier lease covers all rounds. Cancellation or timeout returns promptly
 
 Usage in the run result aggregates completed calls. A late callback reports only the outstanding call's usage once after a timed-out or cancelled provider settles, excluding earlier rounds already accounted in the returned result. Unknown usage in any call makes aggregate usage unknown. No model reasoning, raw provider errors or raw evidence are logged.
 
+## Compound action selection
+
+The runtime accepts up to four simple segments joined by `&&` for evidence selection only. Each segment must be either `git diff --check` or a `node` invocation with explicit JavaScript/TypeScript file operands and only `--experimental-strip-types` / `--test` flags. Quoting, expansion, redirection, other operators, evaluation, cwd changes and unknown segments leave the whole action without inspection candidates. The original compound action is classified once; no segment inherits approval. Existing path confinement and inspection budgets remain unchanged. Prior ordinary reads retain their arguments, not their returned contents.
+
+Memory-write receipts optionally include `memoryContextAttached`, a content-free boolean for `mem_save` and `mem_session_summary`. It reports whether verified destination context was attached to that classification, independently of allow or deny. It is omitted for other actions and grants no permission.
+
 ## Timeout and evidence-limit diagnostics
 
 Classifier results and late-settlement receipts include a metadata-only `diagnostic` object. The runtime projects only these fields into its existing `gentle-auto-permission` entries, and appends them to timeout and evidence-limit blocking messages so a failed read can be diagnosed without opening private session files:

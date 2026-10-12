@@ -122,7 +122,18 @@ function oversizedLocalFile(cwd: string, path: string): boolean {
 function evidencePaths(toolName: string, input: unknown, cwd: string): string[] {
  if(!["bash","bash_background","monitor"].includes(toolName))return [];
  const command=(input as {command?:unknown})?.command;
- if(typeof command!=="string" || /[$`;&|<>(){}*?\\\r\n]/.test(command))return [];
+ if(typeof command!=="string")return [];
+ if(command.includes("&&")) {
+  // Evidence only: validate the whole narrow expression before selecting operands.
+  // No shell evaluation, cwd changes, quoting, redirection or inherited approval.
+  const segments=command.split("&&").map(part=>part.trim());
+  if(segments.length>4 || segments.some(part=>!part || /[$`;&|<>(){}*?\\\r\n\"']/.test(part)))return [];
+  const valid=segments.every(part=>part==="git diff --check" ||
+   /^node(?:\s+(?:--experimental-strip-types|--test))*\s+[\w./-]+\.(?:[cm]?[jt]s)(?:\s+[\w./-]+\.(?:[cm]?[jt]s))*$/.test(part));
+  if(!valid)return [];
+  return [...new Set(segments.flatMap(part=>evidencePaths(toolName,{command:part},cwd)))].slice(0,12);
+ }
+ if(/[$`;&|<>(){}*?\\\r\n]/.test(command))return [];
  const tokens:string[]=[];
  let token="",quote="";
  for(const char of command) {
@@ -366,11 +377,11 @@ export class AutoPermissionRuntime {
   }
   return false;
  }
- private record(ctx: ExtensionContext, event: Pick<ToolCallEvent,"toolName"|"toolCallId">, result: Verdict, late=false): void {
+ private record(ctx: ExtensionContext, event: Pick<ToolCallEvent,"toolName"|"toolCallId">, result: Verdict, late=false, memoryContextAttached?: boolean): void {
   const usage=numericUsage(result.usage), diagnostic=safeDiagnostic(result.diagnostic);
   // Receipts carry no raw command, input, transcript, or provider-generated rationale.
   try {this.pi.appendEntry("gentle-auto-permission",{schema:1,toolCallId:event.toolCallId,toolName:event.toolName,
-   status:result.status,decision:result.decision,code:result.code,usage,usageKnown:result.usageKnown,late,actualModel:result.actualModel,...(diagnostic ? {diagnostic} : {})});} catch { /* Missing persistence never creates permission. */ }
+   status:result.status,decision:result.decision,code:result.code,usage,usageKnown:result.usageKnown,late,actualModel:result.actualModel,...(memoryContextAttached === undefined ? {} : {memoryContextAttached}),...(diagnostic ? {diagnostic} : {})});} catch { /* Missing persistence never creates permission. */ }
   if(!late)this.calls++;
   this.tokens+=usage.totalTokens ?? 0;this.cost+=usage.costTotal ?? 0;
   try {ctx.ui.setStatus("gentle:auto-usage",`Auto checks ${this.calls} · ${this.tokens} tokens · $${this.cost.toFixed(4)} (separate)`);} catch { /* Headless. */ }
@@ -405,6 +416,7 @@ export class AutoPermissionRuntime {
   let serialized: string;
   try {serialized=JSON.stringify(event.input);}catch{return block("Auto could not evaluate invalid tool input. The action was not run.");}
   const memoryContext=this.memory.context(event,ctx,epoch);
+  const memoryContextAttached=["mem_save","mem_session_summary"].includes(event.toolName) ? memoryContext !== undefined : undefined;
   const memoryBinding=JSON.stringify(memoryContext);
   const toolContext=this.toolContext(event.toolName),toolBinding=JSON.stringify(toolContext);
   const current=()=>{ try {
@@ -432,11 +444,11 @@ export class AutoPermissionRuntime {
      result=await this.classifier.run({trustedMessages,...(omittedTrustedMessages ? {omittedTrustedMessages} : {}),answeredPrompts,memoryContext,toolContext,action:{toolName:event.toolName,input:JSON.parse(serialized)},
       priorActions:this.priorActions,evidencePaths:paths,cwd:classifierCwd,model:ctx.model,modelRegistry:ctx.modelRegistry,isCurrent:current,signal:controller.signal,
       onUsage:(late: Omit<Verdict,"status">)=>{
-       if(owner?.manager===ctx.sessionManager && owner.id===ctx.sessionManager.getSessionId()) this.record(ctx,event,{...late,status:"settled"},true);
+       if(owner?.manager===ctx.sessionManager && owner.id===ctx.sessionManager.getSessionId()) this.record(ctx,event,{...late,status:"settled"},true,memoryContextAttached);
       }});
     }catch{result={status:"unavailable",code:"provider-error"};}
     // Record attempts even when revoked; never transplant old receipts into a replacement session.
-    if(owner?.manager===ctx.sessionManager && owner.id===ctx.sessionManager.getSessionId())this.record(ctx,event,result);
+    if(owner?.manager===ctx.sessionManager && owner.id===ctx.sessionManager.getSessionId())this.record(ctx,event,result,false,memoryContextAttached);
     if(result.status==="available" || result.code!=="provider-error" || controller.signal.aborted)break;
    }
   }finally{ctx.signal?.removeEventListener("abort",onAbort);this.active.delete(controller);}

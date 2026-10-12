@@ -1515,6 +1515,23 @@ async function fetchFromSource(source: UsageSource, apiKey: string | undefined, 
 	}
 }
 
+// Changes refreshes started without awaiting (turn end, worktree registration)
+// are tracked so tests can wait for them instead of guessing a delay.
+const backgroundChangeRefreshes = new Set<Promise<void>>();
+function trackChangeRefresh(refresh: Promise<void>): void {
+	const tracked = refresh.catch(() => {}).finally(() => { backgroundChangeRefreshes.delete(tracked); });
+	backgroundChangeRefreshes.add(tracked);
+}
+
+/** Resolves once every background Changes refresh has finished, or after `timeoutMs` for one that never settles. */
+export async function backgroundChangeRefreshesSettled(timeoutMs = 2000): Promise<void> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const deadline = new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); });
+	const settled = (async () => { while (backgroundChangeRefreshes.size > 0) await Promise.all([...backgroundChangeRefreshes]); })();
+	await Promise.race([settled, deadline]);
+	clearTimeout(timer);
+}
+
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	installSessionChangeCapture(pi, env, overrides.resolveWorktree ?? resolveSessionWorktree);
 	if (!shellEnabled(env)) return;
@@ -1853,7 +1870,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			if (!registry || registry.sessionId !== ctx.sessionManager.getSessionId()) throw new Error("No active session worktree registry.");
 			const root = registry.register((params as { path: string }).path, "explicit");
-			void refreshChanges(ctx).catch(() => {});
+			trackChangeRefresh(refreshChanges(ctx));
 			return { content: [{ type: "text", text: `Registered session worktree: ${root}` }], details: { root, sessionId: registry.sessionId } };
 		},
 	});
@@ -2582,7 +2599,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	});
 	pi.on("agent_end", async (_event, ctx) => {
 		// A slow or failing Git never holds the turn end.
-		void refreshChanges(ctx).catch(() => {});
+		trackChangeRefresh(refreshChanges(ctx));
 		void refreshUsage(ctx, false);
 	});
 	pi.on("model_select", (event, ctx) => {

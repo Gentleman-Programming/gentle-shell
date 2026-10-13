@@ -366,3 +366,31 @@ test("the detail card names each env's config scope", () => {
 	const base = renderEnvsScreen(initialEnvsState([baseEntry(), scoped("work")], undefined, { base: true }), 120, 30).map(stripAnsi).join("\n");
 	assert.match(base, /Config +the shared configuration envs can reuse/);
 });
+
+test("the source row reads as inactive until a category is an own copy", () => {
+	const s0 = initialEnvsState([baseEntry(), scoped("work")]);
+	const { state } = press(s0, char("n"), ...typed("client"), { name: "enter" });
+	const idle = renderEnvsScreen(state, 110, 30).map(stripAnsi).join("\n");
+	assert.match(idle, /Mark categories as Own copy \(space\),/);
+	assert.match(idle, /then choose where their copies come from\./);
+	assert.match(idle, /New own copies from +— mark a category as Own copy first/);
+	assert.doesNotMatch(idle, /New own copies from +Gentle Shell base/);
+	const active = renderEnvsScreen(press(state, char(" ")).state, 110, 30).map(stripAnsi).join("\n");
+	assert.match(active, /New own copies from +Gentle Shell base/);
+});
+
+test("enter on the source row with nothing own explains instead of silently doing nothing", () => {
+	const s0 = initialEnvsState([baseEntry(), scoped("work")]);
+	const { state } = press(s0, char("n"), ...typed("client"), { name: "enter" }, { name: "down" }, { name: "down" }, { name: "down" }, { name: "down" }, { name: "right" });
+	assert.deepEqual(state.scope?.source, { kind: "base" }, "the source does not change while nothing is own");
+	assert.match(state.message ?? "", /mark a category as Own copy first/);
+});
+
+test("applying an unchanged config form says nothing changed", () => {
+	const s0 = initialEnvsState([baseEntry(), scoped("work")], undefined, "work");
+	const { state, effect } = press(s0, char("c"), { name: "enter" });
+	assert.equal(effect, undefined);
+	assert.equal(state.scope, undefined);
+	assert.match(state.message ?? "", /No changes/);
+	assert.match(state.message ?? "", /Own copy/);
+});

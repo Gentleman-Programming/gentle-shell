@@ -169,8 +169,10 @@ function sourceFields(source: ScopeSource): { from?: string; empty?: true } {
 	return source.kind === "env" ? { from: source.name } : source.kind === "empty" ? { empty: true } : {};
 }
 
+const NOTHING_OWN = "Nothing to copy yet: mark a category as Own copy first (space).";
+
 function reduceScope(state: EnvsState, form: EnvsScopeForm, key: EnvsKey): EnvsStep {
-	const set = (next: Partial<EnvsScopeForm>): EnvsStep => ({ state: { ...state, scope: { ...form, ...next } } });
+	const set = (next: Partial<EnvsScopeForm>): EnvsStep => ({ state: { ...state, message: undefined, scope: { ...form, ...next } } });
 	if (key.name === "escape" || key.name === "ctrl-c") return { state: { ...state, scope: undefined } };
 	if (key.name === "up") return set({ cursor: Math.max(0, form.cursor - 1) });
 	if (key.name === "down") return set({ cursor: Math.min(CONFIG_CATEGORIES.length, form.cursor + 1) });
@@ -183,6 +185,8 @@ function reduceScope(state: EnvsState, form: EnvsScopeForm, key: EnvsKey): EnvsS
 		return set({ own: CONFIG_CATEGORIES.filter((c) => own.includes(c)) });
 	}
 	if (toggle) {
+		// The source only matters for own copies: say so instead of cycling it silently.
+		if (form.own.length === 0) return { state: { ...state, message: NOTHING_OWN } };
 		const sources = scopeSources(state, form);
 		const index = sources.findIndex((source) => sameSource(source, form.source));
 		const step = key.name === "left" ? -1 : 1;
@@ -193,7 +197,9 @@ function reduceScope(state: EnvsState, form: EnvsScopeForm, key: EnvsKey): EnvsS
 	if (form.mode === "create") return { state: close, effect: { kind: "create", name: form.name, own: form.own, ...sourceFields(form.source) } };
 	const share = form.initial.filter((c) => !form.own.includes(c));
 	const added = form.own.filter((c) => !form.initial.includes(c));
-	if (share.length === 0 && added.length === 0) return { state: close };
+	if (share.length === 0 && added.length === 0) {
+		return { state: { ...close, message: `No changes for ${form.name}: mark a category as Own copy, or share one again, to change it.` } };
+	}
 	return { state: close, effect: { kind: "scope", name: form.name, own: added, share, ...(added.length > 0 ? sourceFields(form.source) : {}) } };
 }
 
@@ -370,11 +376,15 @@ function scopeRows(form: EnvsScopeForm, paint: Paint): CardRow[] {
 		return { text, style: selected ? (fitted: string) => paint.rose(paint.bold(fitted)) : undefined };
 	};
 	return [
-		{ text: form.mode === "create" ? "Choose what this env shares with the base home." : "Change what this env owns.", style: paint.label },
+		{ text: "Mark categories as Own copy (space),", style: paint.label },
+		{ text: "then choose where their copies come from.", style: paint.label },
 		{ text: "" },
 		...CONFIG_CATEGORIES.map((category, index) => row(form.cursor === index, CATEGORY_TITLES[category], form.own.includes(category) ? "Own copy" : "Shared with base")),
 		{ text: "" },
-		row(form.cursor === CONFIG_CATEGORIES.length, "New own copies from", sourceLabel(form.source), 21),
+		form.own.length === 0
+			// Inactive until something is own: nothing would be copied yet.
+			? { ...row(form.cursor === CONFIG_CATEGORIES.length, "New own copies from", "— mark a category as Own copy first", 21), style: paint.muted }
+			: row(form.cursor === CONFIG_CATEGORIES.length, "New own copies from", sourceLabel(form.source), 21),
 		{ text: "" },
 		{ text: "Shared follows the base home live; an own copy diverges.", style: paint.muted },
 	];
@@ -421,7 +431,7 @@ export function renderEnvsScreen(state: EnvsState, width: number, height: number
 		footer.push(p.error === undefined ? center(paint.muted(fit("enter confirm · esc cancel", w)), w) : center(paint.error(fit(p.error, w)), w));
 	} else if (state.scope !== undefined) {
 		const hints: Array<[string, string]> = [...SCOPE_HINTS.slice(0, 4), ["enter", state.scope.mode === "create" ? "create" : "apply"], SCOPE_HINTS[4]];
-		footer.push("");
+		footer.push(state.message === undefined ? "" : center(paint.value(fit(state.message, w)), w));
 		footer.push(...hintLines(Math.min(w, 110), paint, hints).map((line) => center(line, w)));
 	} else {
 		footer.push(state.message === undefined ? "" : center(paint.value(fit(state.message, w)), w));

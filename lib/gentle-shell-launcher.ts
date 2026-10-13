@@ -10,7 +10,7 @@ export type LauncherCommand = "home" | "setup" | "upgrade" | "self-uninstall" | 
 // pi's own package-management subcommands (see pi's cli/args.ts printHelp
 // "Commands" list): each is dispatched by pi itself, before pi's own flag
 // parsing, purely on argv[0]. `uninstall` is pi's alias for `remove`.
-export const PI_SUBCOMMANDS = ["install", "remove", "uninstall", "update", "list", "config", "auth"] as const;
+export const PI_SUBCOMMANDS = ["install", "remove", "uninstall", "update", "list", "config", "auth", "mcp"] as const;
 
 export type PiSubcommand = (typeof PI_SUBCOMMANDS)[number];
 
@@ -76,6 +76,9 @@ export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
 			if (passthrough.length === 0 && rest.length > 0 && isPiSubcommand(rest[0])) {
 				piSubcommand = rest[0];
 			}
+			// After a pi subcommand the separator belongs to it, e.g.
+			// `mcp add <server> -- <command>`; only a leading one is the launcher's.
+			if (piSubcommand !== undefined && passthrough.length > 0) passthrough.push(arg);
 			passthrough.push(...rest);
 			break;
 		}
@@ -875,7 +878,7 @@ export interface BuildPiInvocationInput {
 	passthrough: string[];
 	// Set when parseLauncherArgs recognised passthrough[0] as one of
 	// PI_SUBCOMMANDS. pi dispatches install/remove/uninstall/update/list/
-	// config/auth on argv[0] before its own flag parsing, so none of the
+	// config/auth/mcp on argv[0] before its own flag parsing, so none of the
 	// gentle-pi extension injection below may precede it.
 	piSubcommand?: PiSubcommand;
 	baseEnv: Record<string, string | undefined>;
@@ -896,7 +899,7 @@ export interface PiInvocation {
 
 // Four cases, checked in this order — `piSubcommand` first, then `takeOver`:
 //   - piSubcommand: pi dispatches install/remove/uninstall/update/list/
-//     config/auth on argv[0] before it even parses flags, so any injected
+//     config/auth/mcp on argv[0] before it even parses flags, so any injected
 //     -e flag ahead of it stops pi from
 //     recognising its subcommand at all — this is exactly the observed
 //     2026-09-22 bug where `gentle-shell install npm:x` opened an
@@ -1225,6 +1228,8 @@ export function helpText(): string {
 		"                                   runs 'gentle-shell upgrade' instead of updating Pi.",
 		"  gentle-shell config              Run pi's own 'config' against the resolved home.",
 		"  gentle-shell auth <command>      Run pi's own 'auth' against the resolved home.",
+		"  gentle-shell mcp <command>       Run pi's own 'mcp' (add, list, login, logout) against the",
+		"                                   resolved home, e.g. gentle-shell mcp add <name> -- <command>.",
 		"  'gentle-shell uninstall <source>' is pi's own alias for 'remove'; to remove Gentle",
 		"  Shell itself, use 'gentle-shell self-uninstall'.",
 		"  These run pi's own commands, forwarded verbatim, against the --isolated home",

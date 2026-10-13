@@ -307,6 +307,19 @@ test("parseLauncherArgs recognises a pi subcommand as the first token after --",
 	assert.deepEqual(parsed.passthrough, ["install", "npm:x"]);
 });
 
+test("parseLauncherArgs keeps a separator that follows a pi subcommand (#2140)", () => {
+	const parsed = parseLauncherArgs(["mcp", "add", "demo", "--", "npx", "demo-server"]);
+	assert.equal(parsed.piSubcommand, "mcp");
+	assert.deepEqual(parsed.passthrough, ["mcp", "add", "demo", "--", "npx", "demo-server"]);
+});
+
+test("parseLauncherArgs still consumes a later separator when no pi subcommand started", () => {
+	const parsed = parseLauncherArgs(["hello", "--", "--link"]);
+	assert.equal(parsed.piSubcommand, undefined);
+	assert.equal(parsed.link, false);
+	assert.deepEqual(parsed.passthrough, ["hello", "--link"]);
+});
+
 test("parseLauncherArgs errors when --link is combined with --isolated", () => {
 	const parsed = parseLauncherArgs(["--link", "--isolated"]);
 	assert.match(parsed.error ?? "", /--link/);

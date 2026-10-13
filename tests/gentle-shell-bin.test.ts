@@ -815,6 +815,17 @@ test("gentle-shell install npm:<pkg> forwards the subcommand and its argument ve
 	assert.equal(payload.PI_CODING_AGENT_DIR, f.gentleShellHome);
 });
 
+// #2140: pi dispatches `mcp` on argv[0] only, so an injected -e ahead of it
+// turned `gentle-shell mcp list` into an interactive prompt.
+test("gentle-shell mcp add <server> -- <cmd> forwards to pi's own mcp verbatim, with no injected extension flags", (t) => {
+	const f = fixture(t);
+	const result = run(f.env, ["mcp", "add", "demo", "--", "npx", "-y", "demo-server"]);
+	assert.equal(result.status, 0, result.stderr);
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, ["mcp", "add", "demo", "--", "npx", "-y", "demo-server"]);
+	assert.equal(payload.PI_CODING_AGENT_DIR, f.gentleShellHome);
+});
+
 test("a too-old pi exits 1 naming both versions", (t) => {
 	const f = fixture(t);
 	writePiScript(f.piScript, "0.80.0");
@@ -2601,6 +2612,13 @@ test("--help mentions the setup subcommand", (t) => {
 	const result = run(f.env, ["--help"]);
 	assert.equal(result.status, 0, result.stderr);
 	assert.match(result.stdout, /\bsetup\b/);
+});
+
+test("--help lists the mcp subcommand", (t) => {
+	const f = fixture(t);
+	const result = run(f.env, ["--help"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, /gentle-shell mcp /);
 });
 
 // --- --link takeover of a conflicting path package -----------------------

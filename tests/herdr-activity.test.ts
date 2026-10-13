@@ -262,7 +262,7 @@ test("setup hint states active publishing and gives read-only sidebar guidance",
 		"info: Herdr's default sidebar does not show task titles; add these two rows to the Agents sidebar rows in your Herdr config: ['$summary'], ['$summary2']",
 		"info: Sidebar rows belong to the config of the Herdr client that displays the session, including when Pi runs over SSH",
 		"info: After editing, reload or restart Herdr; Gentle Shell never changes Herdr config",
-		"info: Details: docs/readme-reference.md#herdr-active-work-summary",
+		"info: Details: https://github.com/Gentleman-Programming/gentle-shell/blob/main/docs/readme-reference.md#herdr-active-work-summary",
 	]);
 });
 

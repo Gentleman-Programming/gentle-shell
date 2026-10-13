@@ -77,7 +77,7 @@ test("inside Herdr, /gentle:doctor appends the read-only sidebar setup hint", as
 			"info: Herdr's default sidebar does not show task titles; add these two rows to the Agents sidebar rows in your Herdr config: ['$summary'], ['$summary2']",
 			"info: Sidebar rows belong to the config of the Herdr client that displays the session, including when Pi runs over SSH",
 			"info: After editing, reload or restart Herdr; Gentle Shell never changes Herdr config",
-			"info: Details: docs/readme-reference.md#herdr-active-work-summary",
+			"info: Details: https://github.com/Gentleman-Programming/gentle-shell/blob/main/docs/readme-reference.md#herdr-active-work-summary",
 		].join("\n")), notifications[0]!.message);
 		assert.ok(notifications[0]!.message.startsWith(baseline[0]!.message), "existing doctor lines are unchanged");
 	} finally {

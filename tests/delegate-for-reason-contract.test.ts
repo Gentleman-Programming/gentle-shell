@@ -99,7 +99,7 @@ test("T24/L49: configured per-agent model routing still applies to writers launc
 test("AC4: verification stays risk-gated and the writer reasons never include risk", () => {
 	assert.ok(
 		core.includes(
-			"3. **Verification rule** — high risk → independent `gentle-ai-verify` after the change's own checks (`orchestrator-verification.md`); otherwise checks run inline.",
+			"3. **Verification rule** — high risk → independent `gentle-ai-verify`; else inline; gates/overengineering: `orchestrator-verification.md`.",
 		),
 		"core Verification rule changed",
 	);
@@ -203,12 +203,13 @@ test("T11/S4: the parent hands verify the whole spec, authorizes its probes and 
 	const item = reviewItem("4. **Verify handoff**");
 	for (const clause of [
 		"the whole feature document",
-		"every `S#`, never one task",
+		"the assigned unit and its linked `S#` plus affected interactions",
+		"final feature verification covers every `S#`",
 		"the baseline commit",
 		"probes on isolated state",
 		"typecheck",
 		"`gentle-ai-verify` holds the checklist",
-		"every unmet item before closing",
+		"every in-scope unmet item before closing the unit",
 		"the writer commits its probes as regression tests",
 	]) {
 		assert.ok(item.includes(clause), `verify handoff item is missing: ${clause}`);

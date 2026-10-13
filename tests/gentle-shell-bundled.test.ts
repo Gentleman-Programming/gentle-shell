@@ -1207,7 +1207,7 @@ test("named envs work in a bundled install and survive its self-uninstall", { sk
 	assert.equal(created.status, 0, created.stderr);
 	const dir = join(prefix.root, "envs", "work");
 	assert.ok(existsSync(join(dir, ".gentle-shell-home")));
-	assert.match(prefix.run(["envs", "list"]).stdout, /^ {2}work /m);
+	assert.match(prefix.run(["envs", "list"]).stdout, /^work +\//m);
 
 	const launched = prefix.run(["--env", "work"], { FIXTURE_NO_PROBE: "0" });
 	assert.equal(launched.status, 0, launched.stderr);

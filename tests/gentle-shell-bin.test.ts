@@ -3546,8 +3546,9 @@ test("envs without a TTY lists envs, marks the default, and honors GENTLE_SHELL_
 	assert.equal(run(env, ["home", join(envsDir, "b")]).status, 0);
 	const listed = run(env, ["envs"]);
 	assert.equal(listed.status, 0, listed.stderr);
-	assert.match(listed.stdout, /^  a /m);
-	assert.match(listed.stdout, /^\* b /m);
+	assert.match(listed.stdout, /^a +\//m);
+	assert.match(listed.stdout, /^b \(default\) +\//m);
+	assert.doesNotMatch(listed.stdout, /^\*/m, "no leading star: the default reads like /gentle:profiles markers");
 	const version = run(env, ["--version"]);
 	assert.match(version.stdout, new RegExp(`home path ${join(envsDir, "b").replace(/[\\.]/g, "\\$&")}`));
 });
@@ -3562,10 +3563,10 @@ test("envs rejects unknown subcommands with usage", (t) => {
 test("envs lists the base home first and stars exactly what a plain launch opens", (t) => {
 	const f = fixture(t);
 	assert.equal(run(f.env, ["envs", "new", "work"]).status, 0);
-	const starred = () => run(f.env, ["envs", "list"]).stdout.split("\n").filter((line) => line.startsWith("*")).map((line) => line.split(/\s+/)[1]);
+	const starred = () => run(f.env, ["envs", "list"]).stdout.split("\n").filter((line) => /^\S+ \(default\)/.test(line)).map((line) => line.split(/\s+/)[0]);
 	const opened = () => JSON.parse(run(f.env, ["-p", "hi"]).stdout.trim().split("\n").at(-1) ?? "{}").PI_CODING_AGENT_DIR;
 	const lines = run(f.env, ["envs", "list"]).stdout.split("\n");
-	assert.match(lines[0], new RegExp(`^\\* \\[base\\] +${f.gentleShellHome.replace(/[\\.]/g, "\\$&")} `), "base first, default with no config");
+	assert.match(lines[0], new RegExp(`^\\[base\\] \\(default\\) +${f.gentleShellHome.replace(/[\\.]/g, "\\$&")} `), "base first, default with no config");
 	assert.equal(opened(), f.gentleShellHome);
 
 	assert.equal(run(f.env, ["home", "link"]).status, 0);

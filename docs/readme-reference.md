@@ -377,7 +377,7 @@ A named env is a separate agent home managed by gentle-shell under `~/.gentle-sh
 | Command | Effect |
 | --- | --- |
 | `gentle-shell envs` | On a terminal, opens a full-screen env manager. Without a TTY, it behaves like `envs list`. |
-| `gentle-shell envs list` | Prints the base home as `[base]`, then every env, each with its setup state; `*` marks what a plain `gentle-shell` opens. |
+| `gentle-shell envs list` | Prints the base home as `[base]`, then every env, each with its setup state; `(default)` after a name marks what a plain `gentle-shell` opens. |
 | `gentle-shell envs new <name>` | Creates the env without launching it. Its first launch installs the companion packages, the same as any new `--home`. |
 | `gentle-shell --env <name> [...]` | Launches, sets up (`--env <name> setup`), or runs pi subcommands (`--env <name> install npm:x`) in that env. |
 

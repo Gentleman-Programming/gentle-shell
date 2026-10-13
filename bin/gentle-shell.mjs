@@ -850,15 +850,16 @@ function runLauncherForEnv(target, extraArgs) {
 
 function printEnvList(root) {
 	const entries = loadEnvSummaries(root);
-	const label = (env) => (env.base ? "[base]" : env.name);
+	// The default reads like the /gentle:profiles markers: `name (default)`.
+	const label = (env) => `${env.base ? "[base]" : env.name}${env.isDefault ? " (default)" : ""}`;
 	const width = Math.max(...entries.map((env) => label(env).length));
 	for (const env of entries) {
-		process.stdout.write(`${env.isDefault ? "*" : " "} ${label(env).padEnd(width)}  ${env.dir}  (${env.provisioned})\n`);
+		process.stdout.write(`${label(env).padEnd(width)}  ${env.dir}  (${env.provisioned})\n`);
 	}
 	if (entries.length === 1) process.stdout.write(`No named envs in ${root} yet. Create one with 'gentle-shell envs new <name>'.\n`);
 }
 
-const ENVS_USAGE = "Usage: gentle-shell envs [list | new <name>]\n  envs        open the env manager (TTY), or list envs\n  envs list   print every env; * marks the default\n  envs new    create an env without launching it";
+const ENVS_USAGE = "Usage: gentle-shell envs [list | new <name>]\n  envs        open the env manager (TTY), or list envs\n  envs list   print the base home and every env; (default) marks what a plain launch opens\n  envs new    create an env without launching it";
 
 // Returns the launcher selector to launch with, or undefined when nothing should launch.
 async function handleEnvsCommand(commandArgs) {

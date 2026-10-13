@@ -1,5 +1,5 @@
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
-import { recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
+import { dataArgumentRanges, recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
 import { SHELL_COMMAND_TOOLS } from "../lib/background-jobs.ts";
 import { blockChildDestructiveCommand } from "./child-safety.ts";
 import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRepositoryPreparation, captureBoundSessionRepositoryAuthority, isHomeOrBroadUserDirectory, prepareBoundSessionRepository, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sourcePathWithinProject } from "../lib/bounded-writer-admission.ts";
@@ -1451,12 +1451,15 @@ function collectGuardedMatches(
 	config: RuntimeGuardrailsConfig,
 ): GuardMatch[] {
 	const matches: GuardMatch[] = [];
+	const dataRanges = dataArgumentRanges(command);
 	for (const [key, pattern] of Object.entries(GUARDED_KEY_PATTERNS) as [
 		GuardedCommandKey,
 		RegExp,
 	][]) {
 		const globalPattern = new RegExp(pattern.source, `${pattern.flags}g`);
 		for (const match of command.matchAll(globalPattern)) {
+			// gentle-shell#2174: text inside a data command's argument is not an operation.
+			if (inDataArgument(dataRanges, match.index)) continue;
 			const action = config.autonomousMode
 				? (config.guardedCommands[key] ?? AUTONOMOUS_DEFAULT_ACTIONS[key])
 				: "confirm";
@@ -1470,6 +1473,10 @@ function collectGuardedMatches(
 	return matches.sort((left, right) => left.triggerIndex - right.triggerIndex);
 }
 
+function inDataArgument(ranges: ReadonlyArray<readonly [number, number]>, index: number): boolean {
+	return ranges.some(([start, end]) => index >= start && index < end);
+}
+
 function evaluateGuardedCommand(
 	command: string,
 	config: RuntimeGuardrailsConfig,
@@ -1480,8 +1487,10 @@ function evaluateGuardedCommand(
 	if (hardDeny) return { action: "block", triggerIndex: hardDeny.triggerIndex, matches };
 
 	// Hard denies override every configured action across the complete command.
+	const dataRanges = dataArgumentRanges(command);
 	for (const pattern of DENIED_BASH_PATTERNS) {
-		const denied = pattern.exec(command);
+		const denied = [...command.matchAll(new RegExp(pattern.source, `${pattern.flags.replace("g", "")}g`))]
+			.find((candidate) => !inDataArgument(dataRanges, candidate.index));
 		if (!denied) continue;
 		const matchedAction = matches.find((match) =>
 			match.triggerIndex >= denied.index && match.triggerIndex < denied.index + denied[0].length,

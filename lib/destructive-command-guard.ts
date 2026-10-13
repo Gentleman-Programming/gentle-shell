@@ -15,14 +15,18 @@ interface Token {
 }
 const separators = new Set([";", "&&", "||", "|", "&", "\n", "(", ")"]);
 
-/** Keep quoted arguments intact so harmless prose is never treated as a command. */
-function tokenize(command: string): Token[] {
-	const tokens: Token[] = [];
-	// Literal, named heredocs are data, not executable shell segments.
-	command = command.replace(/<<-?\s*(['"]?)([A-Za-z_]\w*)\1[^\n]*\n[\s\S]*?\n\2(?=\n|$)/g, (raw) => {
+/** Literal, named heredocs are data, not executable shell segments; offsets are preserved. */
+function blankHeredocs(command: string): string {
+	return command.replace(/<<-?\s*(['"]?)([A-Za-z_]\w*)\1[^\n]*\n[\s\S]*?\n\2(?=\n|$)/g, (raw) => {
 		const headerLength = raw.indexOf("\n") + 1;
 		return raw.slice(0, headerLength) + " ".repeat(raw.length - headerLength);
 	});
+}
+
+/** Keep quoted arguments intact so harmless prose is never treated as a command. */
+function tokenize(command: string): Token[] {
+	const tokens: Token[] = [];
+	command = blankHeredocs(command);
 	const pattern = /(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s;&|()'"\\])+|&&|\|\||[;&|()\n]/g;
 	for (const match of command.matchAll(pattern)) {
 		const raw = match[0];
@@ -37,6 +41,91 @@ function tokenize(command: string): Token[] {
 	return tokens;
 }
 const executable = (value: string) => value.split("/").at(-1) ?? value;
+
+const WRAPPER_VALUE_OPTIONS: Record<string, readonly string[]> = {
+	env: ["-u", "--unset", "-C", "--chdir"],
+	sudo: ["-u", "-g", "-h", "-p", "-C", "--user", "--group", "--host", "--prompt", "--chdir"],
+	timeout: ["-s", "--signal", "-k", "--kill-after"],
+	xargs: ["-n", "-I", "-P", "--max-args", "--replace", "--max-procs"],
+};
+const WRAPPERS = ["env", "sudo", "command", "exec", "nohup", "timeout", "xargs"];
+
+/** Index of the executable token after assignments and familiar wrappers. */
+function headCursor(segment: readonly Token[]): number {
+	let cursor = 0;
+	while (cursor < segment.length) {
+		const value = segment[cursor].value;
+		if (/^[A-Za-z_][A-Za-z_0-9]*=/.test(value)) {
+			cursor++;
+			continue;
+		}
+		const name = executable(value);
+		if (!WRAPPERS.includes(name)) break;
+		cursor++;
+		while (cursor < segment.length && segment[cursor].value.startsWith("-")) {
+			const flag = segment[cursor++].value;
+			if (flag === "--") break;
+			if (WRAPPER_VALUE_OPTIONS[name]?.includes(flag)) cursor++;
+		}
+		if (name === "timeout") cursor++;
+	}
+	return cursor;
+}
+
+// gentle-shell#2174: commands whose arguments are searched, printed or viewed
+// text, never executed. `sed` qualifies only without an `e` (execute) command
+// or flag. The list is an allowlist on purpose: an unknown head keeps the
+// lexical guard, so a missing entry costs a dialog, never a bypass.
+const DATA_COMMANDS = new Set([
+	"grep", "egrep", "fgrep", "rg", "ag", "ack", "echo", "printf", "cat", "head", "tail", "less", "more",
+	"wc", "sort", "uniq", "cut", "tr", "jq", "diff", "ls", "file", "stat", "sed",
+]);
+// Any of these anywhere makes the whole command opaque: they can run text as code.
+const OPAQUE_HEADS = new Set([
+	"sh", "bash", "zsh", "dash", "ksh", "fish", "eval", "source", ".", "ssh", "su", "watch", "parallel", "find",
+	"python", "python3", "node", "perl", "ruby", "deno", "bun", "osascript", "awk", "gawk", "script",
+]);
+const sedExecutes = (args: readonly string[]) => args.some((arg) => /(?:^|[;\n{]\s*)e(?:\s|$)|\/[A-Za-z0-9]*e[A-Za-z0-9]*\s*(?:;|$)/.test(arg));
+
+/**
+ * Byte ranges of the command that are plain arguments of a known data command
+ * (gentle-shell#2174). A guarded or denied pattern matching only inside these
+ * ranges is prose, not an operation. Returns no ranges, keeping every lexical
+ * match, when the command is opaque: command or process substitution, an
+ * interpreter or remote shell anywhere, or quoting the tokenizer cannot
+ * account for.
+ */
+export function dataArgumentRanges(command: string): Array<readonly [number, number]> {
+	if (/\$\(|`|[<>]\(/.test(command)) return [];
+	const blanked = blankHeredocs(command);
+	const tokens = tokenize(command);
+	const covered = new Uint8Array(blanked.length);
+	for (const token of tokens) covered.fill(1, token.index, token.index + token.raw.length);
+	for (let index = 0; index < blanked.length; index++) {
+		if (!covered[index] && !/\s/.test(blanked[index])) return [];
+	}
+	const ranges: Array<readonly [number, number]> = [];
+	let start = 0;
+	for (let end = 0; end <= tokens.length; end++) {
+		if (end < tokens.length && !tokens[end].operator) continue;
+		const segment = tokens.slice(start, end);
+		start = end + 1;
+		const cursor = headCursor(segment);
+		const head = segment[cursor];
+		if (head === undefined) continue;
+		const name = executable(head.value);
+		if (OPAQUE_HEADS.has(name)) return [];
+		const args = segment.slice(cursor + 1).map((token) => token.value);
+		if (!DATA_COMMANDS.has(name) || (name === "sed" && sedExecutes(args))) continue;
+		ranges.push([head.index + head.raw.length, tokens[end]?.index ?? command.length]);
+	}
+	// A heredoc body belongs to the segment of its `<<` header, which the
+	// header's trailing newline would otherwise split off.
+	for (const heredoc of command.matchAll(/<<-?\s*(['"]?)([A-Za-z_]\w*)\1[^\n]*\n[\s\S]*?\n\2(?=\n|$)/g)) {
+		if (ranges.some(([from, to]) => heredoc.index >= from && heredoc.index < to)) ranges.push([heredoc.index, heredoc.index + heredoc[0].length]);
+	}
+	return ranges;
+}
 
 function sqlDestroys(sql: string): boolean {
 	// Mask quoted identifiers as non-keyword atoms, and remove comments and
@@ -60,30 +149,8 @@ export function recognizeDestructiveCommands(command: string, depth = 0): Destru
 	for (let end = 0; end <= tokens.length; end++) {
 		if (end < tokens.length && !tokens[end].operator) continue;
 		const segment = tokens.slice(start, end);
-		let cursor = 0;
 		// Assignments and familiar executable wrappers preserve command position.
-		while (cursor < segment.length) {
-			const value = segment[cursor].value;
-			if (/^[A-Za-z_][A-Za-z_0-9]*=/.test(value)) {
-				cursor++;
-				continue;
-			}
-			const name = executable(value);
-			if (!["env", "sudo", "command", "exec", "nohup", "timeout", "xargs"].includes(name)) break;
-			const valueOptions: Record<string, readonly string[]> = {
-				env: ["-u", "--unset", "-C", "--chdir"],
-				sudo: ["-u", "-g", "-h", "-p", "-C", "--user", "--group", "--host", "--prompt", "--chdir"],
-				timeout: ["-s", "--signal", "-k", "--kill-after"],
-				xargs: ["-n", "-I", "-P", "--max-args", "--replace", "--max-procs"],
-			};
-			cursor++;
-			while (cursor < segment.length && segment[cursor].value.startsWith("-")) {
-				const flag = segment[cursor++].value;
-				if (flag === "--") break;
-				if (valueOptions[name]?.includes(flag)) cursor++;
-			}
-			if (name === "timeout") cursor++;
-		}
+		const cursor = headCursor(segment);
 		const head = segment[cursor];
 		const name = executable(head?.value ?? "");
 		const args = segment.slice(cursor + 1).map((token) => token.value);

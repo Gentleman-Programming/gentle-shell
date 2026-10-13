@@ -70,14 +70,15 @@ Changes shows the **current Git state** — working tree against HEAD, untracked
 
 ### What appears in Changes
 
-- One group per root: the session cwd's repository, worktrees registered with `session_worktree_register` or launched for subagents, and independent repositories of authorized foreign subagents. Captured write/edit evidence only tells Changes which roots exist; Git decides which files are listed.
+- One group per root: the session cwd's repository, worktrees registered with `session_worktree_register` or launched for subagents, and independent repositories of authorized foreign subagents. Captured write/edit evidence only tells Changes which roots exist; Git supplies the file inventory, with the dependency-backup exception below.
 - Committed work disappears because Git no longer reports it; a removed worktree disappears because its directory is gone; a root whose Git fails or times out is omitted while the others stay.
 - Each group header shows that root's branch, `no commits yet` for an unborn branch, or `detached` for a real detached HEAD.
-- Edits from your editor, shell commands, or other tools appear too: Changes reflects Git, not attribution. Ignore noise the same way you would for `git status`, with `.gitignore`.
+- Edits from your editor, shell commands, or other tools appear too: Changes reflects Git, not attribution.
+- Untracked files inside `node_modules.backup-*` directories are automatically excluded before counting lines, at any depth; no `.gitignore` setup is needed. The suffix must be nonempty. Tracked files in those directories and ordinary new source files remain visible. Other unwanted artifacts can still be excluded with `.gitignore`.
 
 ### Bounds and session lifetime
 
-Changes lists every changed file without a count limit. One selected diff is bounded at 1 MiB or 20,000 lines; beyond that the panel shows "Diff too large — press o to open in editor."
+Changes lists every changed file outside the untracked dependency-backup exclusion without a count limit. One selected diff is bounded at 1 MiB or 20,000 lines; beyond that the panel shows "Diff too large — press o to open in editor."
 
 Captured evidence (`gentle-pi.session-change/v1`) is still stored for session statistics and root discovery, capped at 256 operations and 4 MiB per session, without affecting the Changes list. Reload and resume read the same state from Git; new sessions and forks do not inherit another session's worktrees.
 

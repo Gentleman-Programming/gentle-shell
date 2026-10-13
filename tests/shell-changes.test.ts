@@ -159,6 +159,24 @@ test("ChangesTracker reads the working tree on start and again on refresh", asyn
 	assert.deepEqual(calls[1], ["status", "--porcelain=v1", "--untracked-files=all", "-z"]);
 });
 
+test("ChangesTracker skips untracked dependency backups but preserves tracked edits and legitimate new files", async () => {
+	const backup = "node_modules.backup-20261007-192802/pkg/index.js";
+	const nestedBackup = "packages/app/node_modules.backup-local/pkg/index.js";
+	const tracked = "node_modules.backup-local/tracked.ts";
+	const legitimate = ["src/new.ts", "node_modules.backup-notes.md", "node_modules.backup-/new.ts"];
+	const { git } = fakeGit(
+		[`4\t2\t${tracked}\n`],
+		[[`?? ${backup}`, `?? ${nestedBackup}`, ` M ${tracked}`, ...legitimate.map((path) => `?? ${path}`)].join("\0") + "\0"],
+	);
+	const counted: string[] = [];
+	const tracker = new ChangesTracker(git, async (path) => { counted.push(path); return 3; });
+	await tracker.start();
+	assert.deepEqual(counted.sort(), [...legitimate].sort());
+	assert.deepEqual(tracker.model, changesModel([
+		file(tracked, 4, 2), ...legitimate.map((path) => file(path, 3, 0, CHANGE_STATUS.UNTRACKED)),
+	]));
+});
+
 test("ChangesTracker stays quiet outside a git repository", async () => {
 	const { git, calls } = fakeGit([""], [""], 128);
 	const tracker = new ChangesTracker(git);

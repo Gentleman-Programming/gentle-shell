@@ -306,3 +306,55 @@ test("the on and off renders are never longer than the unknown (worst-case) rend
 		}
 	}
 });
+
+// gentle-shell#1029: the rendered RDD line is part of the cached system-prompt
+// prefix. A re-read after the TTL that fails or times out must not flip a
+// known on/off line to "unknown" and back: the last successfully read status
+// stays until the native reader reports a different status.
+test("resolveRddModeStatus keeps the last known status when a later re-read fails", async () => {
+	clearRddStatusMemoForTesting();
+	const cwd = "/repo-sticky-status";
+	let clock = 1_000_000;
+	const now = () => clock;
+	let fail = false;
+	let calls = 0;
+	const cli: Pick<NativeReviewCli, "reviewMode"> = {
+		async reviewMode() {
+			calls += 1;
+			if (fail) throw new Error("native review CLI unavailable");
+			return modeResult("on", NATIVE_REVIEW_MODE_SOURCE.GLOBAL);
+		},
+	};
+	const first = await resolveRddModeStatus(cli, cwd, undefined, now);
+	assert.equal(first?.effective, "on");
+	fail = true;
+	clock += RDD_STATUS_MEMO_TTL_MS + 1;
+	const second = await resolveRddModeStatus(cli, cwd, undefined, now);
+	assert.equal(calls, 2, "the expired memo must still trigger a re-read");
+	assert.deepEqual(second, first, "a failed re-read must keep the last known status, not render unknown");
+	assert.equal(
+		await resolveRddStatusLine(cli, cwd, undefined, now),
+		"Receipt-driven development: on (decided by global)",
+	);
+});
+
+test("resolveRddModeStatus still follows a real status change after a re-read", async () => {
+	clearRddStatusMemoForTesting();
+	const cwd = "/repo-status-change";
+	let clock = 1_000_000;
+	const now = () => clock;
+	let effective: "on" | "off" = "on";
+	const cli: Pick<NativeReviewCli, "reviewMode"> = {
+		async reviewMode() { return modeResult(effective, NATIVE_REVIEW_MODE_SOURCE.GLOBAL); },
+	};
+	assert.equal((await resolveRddModeStatus(cli, cwd, undefined, now))?.effective, "on");
+	effective = "off";
+	clock += RDD_STATUS_MEMO_TTL_MS + 1;
+	assert.equal((await resolveRddModeStatus(cli, cwd, undefined, now))?.effective, "off");
+});
+
+test("resolveRddModeStatus stays unknown when no status was ever read", async () => {
+	clearRddStatusMemoForTesting();
+	const cli = fakeReviewMode(() => { throw new Error("never available"); });
+	assert.equal(await resolveRddModeStatus(cli, "/repo-never-known"), undefined);
+});

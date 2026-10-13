@@ -200,3 +200,59 @@ test("buildPiInvocation scopes own config categories to the env and never leaks 
 	const isolated = buildPiInvocation({ ...base, home: { mode: "isolated", dir: "/h/.gentle-shell/agent", source: "default" }, baseEnv: inherited });
 	assert.ok(!("GENTLE_SHELL_ENV_CONFIG_HOME" in isolated.env), "the base home never inherits env scope");
 });
+
+// --- per-env config scope (VS Code-like profiles) --------------------------------
+
+test("env scope files are tolerant: anything unreadable means sharing everything", async () => {
+	const { parseEnvScope, serializeEnvScope } = await import("../lib/gentle-shell-envs.ts");
+	assert.deepEqual(parseEnvScope(undefined), []);
+	assert.deepEqual(parseEnvScope("{"), []);
+	assert.deepEqual(parseEnvScope(JSON.stringify({ schema: 2, own: ["persona"] })), [], "unknown schema");
+	assert.deepEqual(parseEnvScope(JSON.stringify({ schema: 1, own: ["appearance", "bogus", "persona", "persona"] })), ["persona", "appearance"]);
+	assert.deepEqual(parseEnvScope(serializeEnvScope(["behavior", "models"])), ["models", "behavior"]);
+});
+
+test("parseScopeFlags reads --own/--share/--from/--empty with all and validation", async () => {
+	const { parseScopeFlags } = await import("../lib/gentle-shell-envs.ts");
+	assert.deepEqual(parseScopeFlags([]), { own: [], share: [], from: undefined, empty: false });
+	assert.deepEqual(parseScopeFlags(["--own", "persona,appearance", "--from", "work"]), { own: ["persona", "appearance"], share: [], from: "work", empty: false });
+	assert.deepEqual(parseScopeFlags(["--own=all", "--empty"]).own, ["models", "persona", "appearance", "behavior"]);
+	assert.deepEqual(parseScopeFlags(["--share", "all"]).share, ["models", "persona", "appearance", "behavior"]);
+	assert.match(parseScopeFlags(["--own", "bogus"]).error ?? "", /unknown config category "bogus"/);
+	assert.match(parseScopeFlags(["--own"]).error ?? "", /--own needs/);
+	assert.match(parseScopeFlags(["--from", "work", "--empty"]).error ?? "", /--from and --empty/);
+	assert.match(parseScopeFlags(["--own", "persona", "--share", "persona"]).error ?? "", /both own and shared/);
+	assert.match(parseScopeFlags(["--bogus"]).error ?? "", /unknown option/);
+	assert.match(parseScopeFlags(["--from", "Bad"]).error ?? "", /env name/);
+});
+
+test("planScopeChange seeds only categories that become own, from a source or empty", async () => {
+	const { planScopeChange } = await import("../lib/gentle-shell-envs.ts");
+	const plan = planScopeChange({ current: ["persona"], own: ["persona", "appearance", "models"], share: [], seed: { kind: "copy" } });
+	assert.deepEqual(plan.next, ["models", "persona", "appearance"]);
+	assert.deepEqual(plan.seed, ["models", "appearance"], "persona was already own: its files are kept");
+	const back = planScopeChange({ current: ["persona", "models"], own: [], share: ["models"], seed: { kind: "empty" } });
+	assert.deepEqual(back.next, ["persona"]);
+	assert.deepEqual(back.seed, []);
+});
+
+test("seedOperations copies existing source files and clears the rest, never outside the category", async () => {
+	const { seedOperations } = await import("../lib/gentle-shell-envs.ts");
+	const exists = (path: string) => ["/src/persona.json", "/src/card-style.json"].includes(path);
+	const ops = seedOperations({ categories: ["persona", "appearance"], mode: "copy", sourceDirFor: () => "/src", targetDir: "/t", exists });
+	assert.deepEqual(ops.filter((op) => op.kind === "copy"), [
+		{ kind: "copy", from: join("/src", "persona.json"), to: join("/t", "persona.json") },
+		{ kind: "copy", from: join("/src", "card-style.json"), to: join("/t", "card-style.json") },
+	]);
+	assert.ok(ops.some((op) => op.kind === "remove" && op.path === join("/t", "banner.json")), "a source default resets the target");
+	assert.ok(ops.every((op) => !(op.kind === "remove" && op.path.endsWith("models.json"))), "other categories untouched");
+	const empty = seedOperations({ categories: ["persona"], mode: "empty", sourceDirFor: () => "/src", targetDir: "/t", exists });
+	assert.deepEqual(empty, [{ kind: "remove", path: join("/t", "persona.json") }]);
+});
+
+test("describeEnvScope reads like a sentence for the gate", async () => {
+	const { describeEnvScope } = await import("../lib/gentle-shell-envs.ts");
+	assert.equal(describeEnvScope([]), "shares everything with the base home");
+	assert.equal(describeEnvScope(["models", "persona", "appearance", "behavior"]), "fully own (shares nothing)");
+	assert.equal(describeEnvScope(["persona", "appearance"]), "own persona, appearance · shares models & profiles, behavior");
+});

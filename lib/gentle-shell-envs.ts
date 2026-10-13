@@ -1,4 +1,5 @@
 import { basename, dirname, join, resolve as resolvePath } from "node:path";
+import { CONFIG_CATEGORIES, CONFIG_CATEGORY_FILES, type ConfigCategory, isConfigCategory } from "./gentle-config-scope.ts";
 
 // Named environments for the gentle-shell launcher: pure, side-effect-free
 // helpers over injected env/config/file text. An env is an ordinary managed
@@ -159,4 +160,130 @@ export function summarizeEnv(input: EnvSummaryInput): EnvSummary {
 		lastSessionAt: input.lastSessionAt,
 		...(input.base ? { base: true } : {}),
 	};
+}
+
+// --- per-env config scope (lib/gentle-config-scope.ts) ------------------------
+// Like VS Code profiles: each category of Gentle's config is either shared
+// with the base home (live) or owned by the env (its own copy in
+// `<env>/gentle-ai`). Only that persistent choice is stored; copying or
+// starting empty is a one-time seed when a category becomes own.
+
+export const ENV_SCOPE_FILE = ".gentle-shell-env.json";
+const ENV_SCOPE_SCHEMA = 1;
+
+// Tolerant: a missing, malformed or unknown-schema file means "share
+// everything", today's behavior for every env created before scopes existed.
+export function parseEnvScope(text: string | undefined): ConfigCategory[] {
+	const own = parseObject(text);
+	if (own === undefined || own.schema !== ENV_SCOPE_SCHEMA || !Array.isArray(own.own)) return [];
+	const listed = own.own.filter((value): value is string => typeof value === "string");
+	return CONFIG_CATEGORIES.filter((category) => listed.includes(category));
+}
+
+export function serializeEnvScope(own: readonly ConfigCategory[]): string {
+	return `${JSON.stringify({ schema: ENV_SCOPE_SCHEMA, own: CONFIG_CATEGORIES.filter((category) => own.includes(category)) }, null, 2)}\n`;
+}
+
+export interface ScopeFlags {
+	own: ConfigCategory[];
+	share: ConfigCategory[];
+	// Env to copy newly own categories from; undefined copies from the base home.
+	from?: string;
+	empty: boolean;
+	error?: string;
+}
+
+function categoryList(value: string): { categories: ConfigCategory[]; error?: string } {
+	if (value === "all") return { categories: [...CONFIG_CATEGORIES] };
+	const categories: ConfigCategory[] = [];
+	for (const raw of value.split(",").map((part) => part.trim()).filter((part) => part.length > 0)) {
+		if (!isConfigCategory(raw)) return { categories, error: `unknown config category "${raw}" (use ${CONFIG_CATEGORIES.join(", ")} or all)` };
+		if (!categories.includes(raw)) categories.push(raw);
+	}
+	return { categories };
+}
+
+// `--own <list|all>`, `--share <list|all>`, `--from <env>` and `--empty`, as
+// `--flag value` or `--flag=value`.
+export function parseScopeFlags(args: readonly string[]): ScopeFlags {
+	const result: ScopeFlags = { own: [], share: [], from: undefined, empty: false };
+	const fail = (error: string): ScopeFlags => ({ ...result, error });
+	for (let i = 0; i < args.length; i += 1) {
+		const arg = args[i];
+		if (arg === "--empty") {
+			result.empty = true;
+			continue;
+		}
+		const match = /^--(own|share|from)(?:=(.*))?$/.exec(arg);
+		if (match === null) return fail(`unknown option ${arg}`);
+		const [, flag, inline] = match;
+		const value = inline ?? args[i + 1];
+		if (inline === undefined) i += 1;
+		if (value === undefined || value.length === 0) return fail(`--${flag} needs a value`);
+		if (flag === "from") {
+			const invalid = validateEnvName(value);
+			if (invalid !== undefined) return fail(invalid);
+			result.from = value;
+			continue;
+		}
+		const list = categoryList(value);
+		if (list.error !== undefined) return fail(list.error);
+		result[flag as "own" | "share"] = list.categories;
+	}
+	if (result.from !== undefined && result.empty) return fail("--from and --empty cannot be combined");
+	const both = result.own.find((category) => result.share.includes(category));
+	if (both !== undefined) return fail(`"${both}" cannot be both own and shared`);
+	return result;
+}
+
+export type ScopeSeed = { kind: "copy"; from?: string } | { kind: "empty" };
+
+export interface ScopeChangePlan {
+	next: ConfigCategory[];
+	// Categories that become own now and need their one-time seed.
+	seed: ConfigCategory[];
+}
+
+export function planScopeChange(input: { current: readonly ConfigCategory[]; own: readonly ConfigCategory[]; share: readonly ConfigCategory[]; seed: ScopeSeed }): ScopeChangePlan {
+	const next = CONFIG_CATEGORIES.filter((category) => !input.share.includes(category) && (input.current.includes(category) || input.own.includes(category)));
+	return { next, seed: next.filter((category) => !input.current.includes(category)) };
+}
+
+export type SeedOperation = { kind: "copy"; from: string; to: string } | { kind: "remove"; path: string };
+
+// The file operations that seed `categories` in `targetDir`: a copy of each
+// file the source has, and a removal of each one it lacks (so the target
+// starts from the source's defaults), or only removals when starting empty.
+// Never touches a file outside these categories.
+export function seedOperations(input: {
+	categories: readonly ConfigCategory[];
+	mode: "copy" | "empty";
+	sourceDirFor: (category: ConfigCategory) => string;
+	targetDir: string;
+	exists: (path: string) => boolean;
+}): SeedOperation[] {
+	const operations: SeedOperation[] = [];
+	for (const category of input.categories) {
+		for (const file of CONFIG_CATEGORY_FILES[category]) {
+			const to = join(input.targetDir, file);
+			const from = join(input.sourceDirFor(category), file);
+			if (input.mode === "copy" && input.exists(from)) operations.push({ kind: "copy", from, to });
+			else operations.push({ kind: "remove", path: to });
+		}
+	}
+	return operations;
+}
+
+export const CONFIG_CATEGORY_LABELS: Readonly<Record<ConfigCategory, string>> = Object.freeze({
+	models: "models & profiles",
+	persona: "persona",
+	appearance: "appearance",
+	behavior: "behavior",
+});
+
+export function describeEnvScope(own: readonly ConfigCategory[]): string {
+	if (own.length === 0) return "shares everything with the base home";
+	if (own.length === CONFIG_CATEGORIES.length) return "fully own (shares nothing)";
+	const label = (list: readonly ConfigCategory[]) => list.map((category) => CONFIG_CATEGORY_LABELS[category]).join(", ");
+	return `own ${label(CONFIG_CATEGORIES.filter((c) => own.includes(c)))} · shares ${label(CONFIG_CATEGORIES.filter((c) => !own.includes(c)))}`;
 }

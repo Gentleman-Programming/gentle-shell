@@ -3627,3 +3627,68 @@ test("the envs manager never lists or touches a symlinked env", (t) => {
 	assert.equal(readFileSync(join(outside, "keep.txt"), "utf8"), "keep");
 	assert.deepEqual(readdirSync(envs), ["linked"]);
 });
+
+// --- per-env config scope (envs new/config, launch scope) -----------------------
+
+test("envs new --own seeds own categories from the base config home and the launch scopes them", (t) => {
+	const f = fixture(t);
+	const base = join(f.root, "base-config");
+	const env = { ...f.env, GENTLE_PI_CONFIG_HOME: base };
+	mkdirSync(base, { recursive: true });
+	writeFileSync(join(base, "persona.json"), '{"persona":"base"}');
+	writeFileSync(join(base, "models.json"), '{"routing":"base"}');
+	const created = run(env, ["envs", "new", "work", "--own", "persona"]);
+	assert.equal(created.status, 0, created.stderr);
+	const dir = join(f.home, ".gentle-shell", "envs", "work");
+	assert.equal(readFileSync(join(dir, "gentle-ai", "persona.json"), "utf8"), '{"persona":"base"}', "copied from the base");
+	assert.equal(existsSync(join(dir, "gentle-ai", "models.json")), false, "shared categories are not copied");
+	assert.deepEqual(JSON.parse(readFileSync(join(dir, ".gentle-shell-env.json"), "utf8")), { schema: 1, own: ["persona"] });
+	const launched = JSON.parse(run(env, ["--env", "work", "-p", "hi"]).stdout.trim().split("\n").at(-1) ?? "{}");
+	assert.equal(launched.PI_CODING_AGENT_DIR, dir);
+	const shown = run(env, ["envs", "config", "work"]);
+	assert.equal(shown.status, 0, shown.stderr);
+	assert.match(shown.stdout, /own persona · shares models & profiles, appearance, behavior/);
+});
+
+test("envs config changes scope with --from another env or --empty, and --share keeps own files", (t) => {
+	const f = fixture(t);
+	const base = join(f.root, "base-config");
+	const env = { ...f.env, GENTLE_PI_CONFIG_HOME: base };
+	mkdirSync(base, { recursive: true });
+	writeFileSync(join(base, "persona.json"), '{"persona":"base"}');
+	assert.equal(run(env, ["envs", "new", "a", "--own", "persona"]).status, 0);
+	const envs = join(f.home, ".gentle-shell", "envs");
+	writeFileSync(join(envs, "a", "gentle-ai", "persona.json"), '{"persona":"a"}');
+	assert.equal(run(env, ["envs", "new", "b"]).status, 0);
+	assert.equal(run(env, ["envs", "config", "b", "--own", "persona", "--from", "a"]).status, 0);
+	assert.equal(readFileSync(join(envs, "b", "gentle-ai", "persona.json"), "utf8"), '{"persona":"a"}', "copied from env a's own persona");
+	assert.equal(run(env, ["envs", "config", "a", "--share", "persona"]).status, 0);
+	assert.equal(JSON.parse(readFileSync(join(envs, "a", ".gentle-shell-env.json"), "utf8")).own.length, 0);
+	assert.equal(existsSync(join(envs, "a", "gentle-ai", "persona.json")), true, "sharing again keeps the own copy on disk");
+	assert.equal(run(env, ["envs", "config", "b", "--own", "all", "--empty"]).status, 0);
+	assert.equal(existsSync(join(envs, "b", "gentle-ai", "persona.json")), true, "already own: --empty never wipes it");
+	assert.equal(existsSync(join(envs, "b", "gentle-ai", "models.json")), false);
+	const bad = run(env, ["envs", "config", "b", "--own", "persona", "--from", "nope"]);
+	assert.equal(bad.status, 2);
+	assert.match(bad.stderr, /unknown env "nope"/);
+	assert.equal(run(env, ["envs", "config", "nope"]).status, 2);
+});
+
+test("a launched env carries its own config scope to Pi, and a sharing env clears an inherited one", (t) => {
+	const f = fixture(t);
+	const pi = join(f.root, "scope-pi.mjs");
+	writeFileSync(pi, [
+		"#!/usr/bin/env node",
+		"if (process.argv.includes('--version')) { console.log('1.2.0'); process.exit(0); }",
+		"console.log(JSON.stringify({ home: process.env.GENTLE_SHELL_ENV_CONFIG_HOME ?? null, own: process.env.GENTLE_SHELL_ENV_OWN_CONFIG ?? null }));",
+		"",
+	].join("\n"));
+	chmodSync(pi, 0o755);
+	const env = { ...f.env, GENTLE_SHELL_PI: pi, GENTLE_PI_CONFIG_HOME: join(f.root, "base-config"), GENTLE_SHELL_ENV_CONFIG_HOME: "/outer/gentle-ai", GENTLE_SHELL_ENV_OWN_CONFIG: "models" };
+	assert.equal(run(env, ["envs", "new", "own", "--own", "persona,behavior", "--empty"]).status, 0);
+	assert.equal(run(env, ["envs", "new", "plain"]).status, 0);
+	const last = (args: string[]) => JSON.parse(run(env, args).stdout.trim().split("\n").at(-1) ?? "{}");
+	assert.deepEqual(last(["--env", "own", "-p", "hi"]), { home: join(f.home, ".gentle-shell", "envs", "own", "gentle-ai"), own: "persona,behavior" });
+	assert.deepEqual(last(["--env", "plain", "-p", "hi"]), { home: null, own: null });
+	assert.deepEqual(last(["-p", "hi"]), { home: null, own: null }, "the base home never inherits env scope");
+});

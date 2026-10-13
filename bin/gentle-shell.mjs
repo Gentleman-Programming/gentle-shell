@@ -92,6 +92,7 @@ import {
 	bundledUpdateNext,
 	bundledUpdateNotice,
 	bundledUpdatePlan,
+	bundledPiConfigDir,
 	nodeBundledFs,
 	parseBundledUpgradeArgs,
 	resolveBundledInstall,
@@ -107,6 +108,13 @@ import {
 import { bundledGentleAiPaths, GENTLE_AI_VERSION, gentleAiBinaryPath, gentleAiIsolationEnv, PackageLocalGentleAiBinaryMissingError } from "../runtime/gentle-ai-binary.mjs";
 import { DEFAULT_THEME_NAME, installIsolatedTuiModeSetting } from "../scripts/install-tui-mode-setting.mjs";
 import {
+	describeEnvScope,
+	ENV_SCOPE_FILE,
+	parseEnvScope,
+	parseScopeFlags,
+	planScopeChange,
+	seedOperations,
+	serializeEnvScope,
 	envDir,
 	envNameForDir,
 	envsRoot,
@@ -704,6 +712,46 @@ async function handleImportPiCommand(args) {
 
 // --- named envs (`gentle-shell envs`, lib/gentle-shell-envs*.ts) -------------
 
+// The env's own Gentle config categories (lib/gentle-config-scope.ts); a
+// missing or unreadable scope file means it shares everything.
+function readEnvScope(dir) {
+	return parseEnvScope(readTextOrUndefined(join(dir, ENV_SCOPE_FILE)));
+}
+
+// The shared (base) Gentle config home, exactly as a Pi process of this
+// install resolves it without env scope: the bundled prefix's config, then
+// GENTLE_PI_CONFIG_HOME, then ~/.pi/gentle-ai.
+function sharedConfigHome() {
+	const install = resolveBundledInstall({ packageRoot, platform: process.platform, fs: bundledFs });
+	if (install) return bundledPiConfigDir(install.root);
+	return process.env.GENTLE_PI_CONFIG_HOME || join(homedir(), ".pi", "gentle-ai");
+}
+
+// Applies --own/--share/--from/--empty to one env: seeds the categories that
+// become own (a copy from the base home or another env, or empty), then
+// persists the scope. Sharing a category again keeps its own files on disk.
+function applyEnvScope(root, name, flags) {
+	const dir = envDir(root, name);
+	const current = readEnvScope(dir);
+	const plan = planScopeChange({ current, own: flags.own, share: flags.share, seed: flags.empty ? { kind: "empty" } : { kind: "copy", from: flags.from } });
+	let sourceDirFor = () => sharedConfigHome();
+	if (flags.from !== undefined) {
+		const fromDir = envDir(root, flags.from);
+		if (!existsSync(fromDir)) throw Object.assign(new Error(`unknown env "${flags.from}"`), { usage: true });
+		const fromOwn = readEnvScope(fromDir);
+		const shared = sharedConfigHome();
+		sourceDirFor = (category) => (fromOwn.includes(category) ? join(fromDir, "gentle-ai") : shared);
+	}
+	const targetDir = join(dir, "gentle-ai");
+	if (plan.seed.length > 0) mkdirSync(targetDir, { recursive: true, mode: 0o700 });
+	for (const op of seedOperations({ categories: plan.seed, mode: flags.empty ? "empty" : "copy", sourceDirFor, targetDir, exists: existsSync })) {
+		if (op.kind === "copy") copyFileSync(op.from, op.to);
+		else rmSync(op.path, { force: true });
+	}
+	writeFileAtomically(join(dir, ENV_SCOPE_FILE), serializeEnvScope(plan.next), { mode: 0o600 });
+	return plan;
+}
+
 function currentEnvsRoot() {
 	return envsRoot(process.env, homedir());
 }
@@ -859,7 +907,7 @@ function printEnvList(root) {
 	if (entries.length === 1) process.stdout.write(`No named envs in ${root} yet. Create one with 'gentle-shell envs new <name>'.\n`);
 }
 
-const ENVS_USAGE = "Usage: gentle-shell envs [list | new <name>]\n  envs        open the env manager (TTY), or list envs\n  envs list   print the base home and every env; (default) marks what a plain launch opens\n  envs new    create an env without launching it";
+const ENVS_USAGE = "Usage: gentle-shell envs [list | new <name> [scope] | config <name> [scope]]\n  envs          open the env manager (TTY), or list envs\n  envs list     print the base home and every env; (default) marks what a plain launch opens\n  envs new      create an env without launching it\n  envs config   show or change which Gentle config an env owns\n  scope: --own <list|all> --share <list|all> [--from <env> | --empty]\n         categories: models, persona, appearance, behavior; new own ones copy\n         from the base home (or --from <env>), or start --empty";
 
 // Returns the launcher selector to launch with, or undefined when nothing should launch.
 async function handleEnvsCommand(commandArgs) {
@@ -869,13 +917,33 @@ async function handleEnvsCommand(commandArgs) {
 		printEnvList(root);
 		return undefined;
 	}
-	if (sub === "new" && rest.length === 1) {
-		const invalid = validateEnvName(rest[0]);
+	if (sub === "new" && rest.length >= 1) {
+		const [name, ...flagArgs] = rest;
+		const invalid = validateEnvName(name);
 		if (invalid !== undefined) fail(`gentle-shell: ${invalid}`, 2);
+		const flags = parseScopeFlags(flagArgs);
+		if (flags.error !== undefined) fail(`gentle-shell: ${flags.error}`, 2);
+		if (flags.from !== undefined && !existsSync(envDir(root, flags.from))) fail(`gentle-shell: unknown env "${flags.from}"`, 2);
 		try {
-			process.stdout.write(`Created env ${rest[0]} at ${await createEnv(root, rest[0])}\n`);
+			process.stdout.write(`Created env ${name} at ${await createEnv(root, name)}\n`);
+			if (flags.own.length > 0) process.stdout.write(`Config: ${describeEnvScope(applyEnvScope(root, name, flags).next)}\n`);
 		} catch (error) {
-			fail(`gentle-shell: ${error.message}`, 1);
+			fail(`gentle-shell: ${error.message}`, error.usage ? 2 : 1);
+		}
+		return undefined;
+	}
+	if (sub === "config" && rest.length >= 1) {
+		const [name, ...flagArgs] = rest;
+		const invalid = validateEnvName(name);
+		if (invalid !== undefined) fail(`gentle-shell: ${invalid}`, 2);
+		if (!existsSync(envDir(root, name))) fail(`gentle-shell: unknown env "${name}"`, 2);
+		const flags = parseScopeFlags(flagArgs);
+		if (flags.error !== undefined) fail(`gentle-shell: ${flags.error}`, 2);
+		try {
+			const own = flagArgs.length === 0 ? readEnvScope(envDir(root, name)) : applyEnvScope(root, name, flags).next;
+			process.stdout.write(`${name}: ${describeEnvScope(own)}\n`);
+		} catch (error) {
+			fail(`gentle-shell: ${error.message}`, error.usage ? 2 : 1);
 		}
 		return undefined;
 	}
@@ -2288,6 +2356,8 @@ async function main() {
 	if (args.env !== undefined && !existsSync(home.dir)) {
 		fail(`gentle-shell: unknown env "${args.env}" (${home.dir}).\nCreate it with 'gentle-shell envs new ${args.env}' or manage envs with 'gentle-shell envs'.`, 2);
 	}
+	// The env's own Gentle config categories travel with the launch.
+	if (home.env !== undefined) home = { ...home, ownConfig: readEnvScope(home.dir) };
 
 	// Version and help runs (Shell's own or forwarded to Pi) never probe Engram,
 	// ensure the companion, print memory notices or touch provenance.

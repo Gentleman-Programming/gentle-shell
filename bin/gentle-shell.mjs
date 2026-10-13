@@ -23,7 +23,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { constants as osConstants, homedir, tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve as resolvePath } from "node:path";
+import { delimiter, dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
@@ -193,20 +193,49 @@ function probePiVersion(runtime) {
 	return checkPiVersion(versionProbe.stdout ?? "");
 }
 
+// On Windows, GENTLE_SHELL_PI/PATH often resolves to a .cmd/.bat wrapper: a
+// fixed batch-script text file around a real script, not an OS-level
+// indirection like a symlink. statSync on the wrapper alone never changes
+// when only the wrapped script does, so a cache keyed on the wrapper's own
+// identity could keep reusing a version that no longer matches what actually
+// runs. Fold the wrapped script's own identity in when the wrapper's text
+// names one we can find; when it doesn't (an unrecognized wrapper shape),
+// return undefined so the caller never trusts (or writes) a cache entry for
+// it, falling back to a real spawn every time instead of a possibly stale hit.
+function resolveVersionProbeIdentity(command) {
+	let primary;
+	try {
+		primary = statSync(command);
+	} catch {
+		return undefined;
+	}
+	if (!/\.(cmd|bat)$/i.test(command)) return { dev: primary.dev, ino: primary.ino, size: primary.size, mtimeMs: primary.mtimeMs };
+	let text;
+	try {
+		text = readFileSync(command, "utf8");
+	} catch {
+		return undefined;
+	}
+	const match = /"([^"]+\.(?:m?c?js))"/i.exec(text);
+	if (match === null) return undefined;
+	const targetPath = isAbsolute(match[1]) ? match[1] : resolvePath(dirname(command), match[1]);
+	let target;
+	try {
+		target = statSync(targetPath);
+	} catch {
+		return undefined;
+	}
+	return { dev: primary.dev, ino: primary.ino, size: primary.size + target.size, mtimeMs: Math.max(primary.mtimeMs, target.mtimeMs) };
+}
+
 // env/path runtimes have no in-memory version (unlike bundled, #2096), but a
 // real pi executable at a given path rarely changes: cache the probed version
-// keyed by that exact path's dev+ino+size+mtimeMs identity, and only spawn
-// again once that identity changes. Best-effort: a failed stat, a missing or
-// malformed cache entry, or a concurrent write losing this one just falls
-// back to (or repeats) the real spawn, never a wrong version.
+// keyed by that exact path's identity (resolveVersionProbeIdentity above),
+// and only spawn again once that identity changes. Best-effort: a failed
+// stat, a missing or malformed cache entry, or a concurrent write losing this
+// one just falls back to (or repeats) the real spawn, never a wrong version.
 function probePiVersionCached(runtime, configPath) {
-	let identity;
-	try {
-		const stat = statSync(runtime.command);
-		identity = { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs };
-	} catch {
-		identity = undefined;
-	}
+	const identity = resolveVersionProbeIdentity(runtime.command);
 	if (identity !== undefined) {
 		const cached = cachedPiVersion(readRawConfig(configPath), runtime.command);
 		if (cached !== undefined && matchesFileIdentity(cached, identity)) return checkPiVersion(cached.version);

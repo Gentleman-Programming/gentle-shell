@@ -451,14 +451,21 @@ function isFileIdentity(value         )                        {
 	return typeof record.dev === "number" && typeof record.ino === "number" && typeof record.size === "number" && typeof record.mtimeMs === "number";
 }
 
-// A cached version string that VERSION_PATTERN cannot parse is treated the
-// same as a missing entry (a cache miss, re-probe), never trusted as-is and
-// never a hard failure — a malformed write must never make a launch that
-// used to succeed fail outright.
+// recordPiVersion only ever writes checkPiVersion's own already-clean "X.Y.Z"
+// result, never a prefix or suffix, so the cache's own validation can afford
+// to require an exact match — unlike VERSION_PATTERN above (which intentionally
+// tolerates surrounding text in a real --version probe's raw stdout).
+const CANONICAL_VERSION_PATTERN = /^\d+\.\d+\.\d+$/;
+
+// A cached version string that is not an exact clean version (unparseable,
+// or valid-looking text with garbage around it) is treated the same as a
+// missing entry (a cache miss, re-probe), never trusted as-is and never a
+// hard failure — a malformed write must never make a launch that used to
+// succeed fail outright.
 function isCachedPiVersion(value         )                           {
 	if (typeof value !== "object" || value === null) return false;
 	const record = value                           ;
-	return typeof record.version === "string" && VERSION_PATTERN.test(record.version) && isFileIdentity(record);
+	return typeof record.version === "string" && CANONICAL_VERSION_PATTERN.test(record.version) && isFileIdentity(record);
 }
 
 // Tolerant like provisionedEntry above: a missing, non-object, or malformed

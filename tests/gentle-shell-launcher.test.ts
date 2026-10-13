@@ -652,6 +652,11 @@ test("cachedPiVersion tolerates a non-object cache map or a malformed entry inst
 	for (const config of malformedConfigs) assert.equal(cachedPiVersion(config, "/usr/bin/pi"), undefined, JSON.stringify(config));
 });
 
+test("cachedPiVersion rejects a version string with any extra text around a valid-looking version", () => {
+	const config = { piVersionProbeCache: { "/usr/bin/pi": { dev: 1, ino: 2, size: 100, mtimeMs: 1000, version: "garbage 0.1.0" } } };
+	assert.equal(cachedPiVersion(config, "/usr/bin/pi"), undefined);
+});
+
 test("matchesFileIdentity is true only for an exact dev+ino+size+mtimeMs match", () => {
 	const identity = { dev: 1, ino: 2, size: 100, mtimeMs: 1000 };
 	const cached = { ...identity, version: "1.1.0" };

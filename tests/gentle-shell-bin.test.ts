@@ -140,6 +140,36 @@ test("a cache hit for an env-override pi skips the real version spawn on the nex
 	assert.equal(readFileSync(log, "utf8").length, 1, "the cached version is reused instead of spawning again");
 });
 
+test("a changed script behind an unchanged .cmd wrapper still invalidates the cache on Windows", { skip: process.platform !== "win32" }, (t) => {
+	const f = fixture(t);
+	const { command, log } = writeCountingPiScript(f.root, "0.99.5");
+	const env = { ...f.env, GENTLE_SHELL_PI: command };
+	assert.equal(run(env, ["--version"]).status, 0);
+	assert.equal(readFileSync(log, "utf8").length, 1);
+
+	const script = join(f.root, "counting-pi.mjs");
+	const wrapperBefore = readFileSync(command);
+	writeFileSync(
+		script,
+		[
+			"#!/usr/bin/env node",
+			"// version 0.99.6",
+			"import { appendFileSync } from 'node:fs';",
+			`appendFileSync(${JSON.stringify(log)}, "x");`,
+			"const args = process.argv.slice(2);",
+			`if (args.includes("--version")) { console.log("0.99.6"); }`,
+			"process.exit(0);",
+			"",
+		].join("\n"),
+	);
+	assert.deepEqual(readFileSync(command), wrapperBefore, "the .cmd wrapper itself is untouched");
+
+	const result = run(env, ["--version"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, /pi 0\.99\.6/);
+	assert.equal(readFileSync(log, "utf8").length, 2, "the wrapped script changed, so a cache keyed only by the unchanged wrapper must not reuse the old version");
+});
+
 test("a changed pi binary at the same path invalidates the cache and re-probes", (t) => {
 	const f = fixture(t);
 	const { command, log } = writeCountingPiScript(f.root, "0.99.5");

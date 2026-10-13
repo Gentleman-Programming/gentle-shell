@@ -107,10 +107,15 @@ import { bundledGentleAiPaths, GENTLE_AI_VERSION, gentleAiBinaryPath, gentleAiIs
 import { DEFAULT_THEME_NAME, installIsolatedTuiModeSetting } from "../scripts/install-tui-mode-setting.mjs";
 import {
 	envDir,
+	envNameForDir,
 	envsRoot,
+	removeEnvFromConfig,
+	renameEnvInConfig,
+	setDefaultEnvInConfig,
 	summarizeEnv,
 	validateEnvName,
 } from "../runtime/gentle-shell-envs.mjs";
+import { initialEnvsState, parseKeys, reduceEnvs, renderEnvsScreen } from "../runtime/gentle-shell-envs-tui.mjs";
 import { artifactFor, engramPinVersion } from "../scripts/installer-downloads.mjs";
 import { migrateBundledEngram, migrationPending, supportsBundledSessionOwned, MIGRATION_PENDING_NOTICE, MIGRATION_USAGE } from "../scripts/bundled-engram-migration.mjs";
 import { shouldCheckStartupUpdate, findStartupUpdate } from "../runtime/gentle-shell-startup-update.mjs";
@@ -786,6 +791,48 @@ async function createEnv(root, name) {
 	return dir;
 }
 
+// Guards every destructive path: only a direct, validly named child of the
+// envs root that is a real directory (not a symlink to elsewhere).
+function assertManagedEnvDir(root, name) {
+	const dir = envDir(root, name);
+	if (envNameForDir(root, dir) !== name) throw new Error(`refusing to touch ${dir}: not a managed env`);
+	const stat = lstatSync(dir);
+	if (!stat.isDirectory()) throw new Error(`refusing to touch ${dir}: not a directory`);
+	return dir;
+}
+
+function renameEnv(root, from, to) {
+	const oldDir = assertManagedEnvDir(root, from);
+	const newDir = envDir(root, to);
+	if (validateEnvName(to) !== undefined) throw new Error(validateEnvName(to));
+	if (existsSync(newDir)) throw new Error(`env "${to}" already exists`);
+	const aliases = [...new Set([oldDir, safeRealpath(oldDir)])];
+	renameSync(oldDir, newDir);
+	const configPath = resolveConfigPath();
+	writeRawConfig(configPath, renameEnvInConfig(readRawConfig(configPath), aliases, newDir, safeRealpath(newDir)));
+}
+
+function deleteEnv(root, name) {
+	const dir = assertManagedEnvDir(root, name);
+	const aliases = [...new Set([dir, safeRealpath(dir)])];
+	rmSync(dir, { recursive: true, force: true });
+	const configPath = resolveConfigPath();
+	writeRawConfig(configPath, removeEnvFromConfig(readRawConfig(configPath), aliases));
+}
+
+function setDefaultEnv(root, name) {
+	const dir = assertManagedEnvDir(root, name);
+	const configPath = resolveConfigPath();
+	writeRawConfig(configPath, setDefaultEnvInConfig(readRawConfig(configPath), dir));
+}
+
+// Runs this same launcher against one env (setup/install/auth) in the
+// foreground, outside the manager's alternate screen.
+function runLauncherForEnv(name, extraArgs) {
+	const result = spawnSync(process.execPath, [fileURLToPath(import.meta.url), "--env", name, ...extraArgs], { stdio: "inherit", env: process.env });
+	return result.error ? 1 : (result.status ?? 1);
+}
+
 function printEnvList(root) {
 	const envs = loadEnvSummaries(root);
 	if (envs.length === 0) {
@@ -798,14 +845,15 @@ function printEnvList(root) {
 	}
 }
 
-const ENVS_USAGE = "Usage: gentle-shell envs [list | new <name>]\n  envs        list envs\n  envs list   print every env; * marks the default\n  envs new    create an env without launching it";
+const ENVS_USAGE = "Usage: gentle-shell envs [list | new <name>]\n  envs        open the env manager (TTY), or list envs\n  envs list   print every env; * marks the default\n  envs new    create an env without launching it";
 
+// Returns the env name to launch, or undefined when nothing should launch.
 async function handleEnvsCommand(commandArgs) {
 	const root = currentEnvsRoot();
 	const [sub, ...rest] = commandArgs;
 	if (sub === "list" && rest.length === 0) {
 		printEnvList(root);
-		return;
+		return undefined;
 	}
 	if (sub === "new" && rest.length === 1) {
 		const invalid = validateEnvName(rest[0]);
@@ -815,14 +863,145 @@ async function handleEnvsCommand(commandArgs) {
 		} catch (error) {
 			fail(`gentle-shell: ${error.message}`, 1);
 		}
-		return;
+		return undefined;
 	}
 	if (sub === "--help" || sub === "-h") {
 		process.stdout.write(`${ENVS_USAGE}\n`);
-		return;
+		return undefined;
 	}
 	if (sub !== undefined) fail(`${ENVS_USAGE}`, 2);
-	printEnvList(root);
+	if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
+		printEnvList(root);
+		return undefined;
+	}
+	return runEnvsManager(root);
+}
+
+// One alternate-screen session: draws `state`, feeds keys to the reducer and
+// applies in-place effects through `apply`, and resolves with the first
+// effect that needs the real terminal (quit, launch, setup, install, auth).
+// The terminal is always restored, including when `apply` throws.
+function envsScreenSession(initial, apply) {
+	const { stdin, stdout } = process;
+	return new Promise((resolve) => {
+		let state = initial;
+		const draw = () => {
+			// Some ptys report 0x0 until resized; fall back to a usable size.
+			const lines = renderEnvsScreen(state, stdout.columns || 80, stdout.rows || 24);
+			stdout.write(`\x1b[H${lines.map((line) => `${line}\x1b[K`).join("\r\n")}\x1b[J`);
+		};
+		const finish = (effect) => {
+			finished = true;
+			stdin.off("data", onData);
+			stdout.off("resize", draw);
+			stdin.setRawMode(false);
+			stdin.pause();
+			stdout.write("\x1b[?25h\x1b[?1049l");
+			resolve({ state, effect });
+		};
+		// Input is handled strictly in order: a key pressed while `apply` is
+		// still writing to disk waits for it instead of racing it.
+		let queue = Promise.resolve();
+		let finished = false;
+		const onData = (data) => {
+			queue = queue.then(() => handle(data)).catch((error) => {
+				state = { ...state, message: `Error: ${error.message}` };
+				if (!finished) draw();
+			});
+		};
+		const handle = async (data) => {
+			if (finished) return;
+			for (const key of parseKeys(data.toString("utf8"))) {
+				const step = reduceEnvs(state, key);
+				state = step.state;
+				if (step.effect === undefined) continue;
+				const kind = step.effect.kind;
+				if (kind === "create" || kind === "rename" || kind === "delete" || kind === "set-default") {
+					state = await apply(state, step.effect);
+					continue;
+				}
+				finish(step.effect);
+				return;
+			}
+			draw();
+		};
+		stdout.write("\x1b[?1049h\x1b[?25l");
+		stdin.setRawMode(true);
+		stdin.resume();
+		stdin.on("data", onData);
+		stdout.on("resize", draw);
+		draw();
+	});
+}
+
+function waitForAnyKey(message) {
+	const { stdin, stdout } = process;
+	stdout.write(`\n${message}`);
+	return new Promise((resolve) => {
+		stdin.setRawMode(true);
+		stdin.resume();
+		stdin.once("data", () => {
+			stdin.setRawMode(false);
+			stdin.pause();
+			stdout.write("\n");
+			resolve();
+		});
+	});
+}
+
+async function runEnvsManager(root) {
+	// Reloads from disk after every change so the view never drifts from it.
+	const reload = (message, selectName) => initialEnvsState(loadEnvSummaries(root), message, selectName);
+	const apply = async (state, effect) => {
+		try {
+			if (effect.kind === "create") {
+				await createEnv(root, effect.name);
+				return reload(`Created ${effect.name}. Press enter to launch it (first launch installs the companion packages).`, effect.name);
+			}
+			if (effect.kind === "rename") {
+				renameEnv(root, effect.from, effect.to);
+				return reload(`Renamed ${effect.from} to ${effect.to}.`, effect.to);
+			}
+			if (effect.kind === "delete") {
+				deleteEnv(root, effect.name);
+				return reload(`Deleted ${effect.name}.`);
+			}
+			setDefaultEnv(root, effect.name);
+			return reload(`${effect.name} is now the default: a plain 'gentle-shell' opens it.`, effect.name);
+		} catch (error) {
+			return { ...state, message: `Error: ${error.message}` };
+		}
+	};
+
+	let state = reload();
+	for (;;) {
+		const { state: last, effect } = await envsScreenSession(state, apply);
+		if (effect.kind === "quit") return undefined;
+		if (effect.kind === "launch") return effect.name;
+		let code;
+		if (effect.kind === "setup") {
+			process.stdout.write(`gentle-shell: setting up env ${effect.name}\n`);
+			code = runLauncherForEnv(effect.name, ["setup"]);
+		} else if (effect.kind === "install") {
+			code = runLauncherForEnv(effect.name, ["install", effect.source]);
+		} else {
+			// Pi signs in from inside a session (/login); outside one it can
+			// only check readiness, which needs a provider per call.
+			const providers = last.envs.find((env) => env.name === effect.name)?.providers ?? [];
+			if (providers.length === 0) {
+				process.stdout.write(`No providers signed in to ${effect.name}. Launch it and run /login inside the session.\n`);
+				code = 0;
+			} else {
+				code = 0;
+				for (const provider of providers) {
+					const providerCode = runLauncherForEnv(effect.name, ["auth", "check", "--provider", provider]);
+					if (providerCode !== 0) code = providerCode;
+				}
+			}
+		}
+		await waitForAnyKey(`${code === 0 ? "Done" : `Finished with exit code ${code}`}. Press any key to return to the env manager.`);
+		state = reload(code === 0 ? undefined : `Last action exited with code ${code}.`, effect.name);
+	}
 }
 
 // Test/development-only override for the setup subcommand's gentle-ai
@@ -2031,8 +2210,12 @@ async function main() {
 		return;
 	}
 	if (args.command === "envs") {
-		await handleEnvsCommand(args.commandArgs);
-		return;
+		const launch = await handleEnvsCommand(args.commandArgs);
+		if (launch === undefined) return;
+		// Re-enter the ordinary launch exactly as `gentle-shell --env <name>`,
+		// so startup checks, provisioning and resume hints all see that argv.
+		process.argv = [...process.argv.slice(0, 2), "--env", launch];
+		return main();
 	}
 	// The verification input applies to `--version` only (scripts/bundled-install.mjs upgradeBundled).
 	const verifying = args.version && args.command === undefined ? process.env[BUNDLED_VERIFY_ENV] : undefined;

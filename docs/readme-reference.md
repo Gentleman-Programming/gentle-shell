@@ -383,9 +383,36 @@ A named env is a separate agent home managed by gentle-shell under `~/.gentle-sh
 
 The manager lists the install's own home first, as `Gentle Shell base`. It is the `--isolated` home (`GENTLE_SHELL_HOME` or `~/.gentle-shell/agent`), the one Gentle Shell always used before envs, and nothing about it changes. Opening it is `--isolated`, and making it the default persists `"home": "isolated"`, exactly like `gentle-shell home isolated`. Its sessions carry no env label. It cannot be renamed or deleted from the manager, and an env may still be named `base`. The `(default)` marker, like the `(active)` marker in `/gentle:profiles`, names what a plain launch opens: the base home when no `home` is persisted (or it is `isolated` or malformed), the env a persisted path names, and nothing in the list for `link`.
 
-Manager keys: `↑`/`↓` or `j`/`k` select. `enter` launches the selected env. `n` creates an env, `r` renames it, and `d` deletes it after you type its name. `s` makes it the default. `p` runs `setup`, `i` installs a package source, and `a` runs `pi auth check` for each signed-in provider. `q` or `esc` quits. The detail pane shows the path, the setup record, the session count and last session, the signed-in provider ids (never credential values), and the declared packages.
+Manager keys: `↑`/`↓` or `j`/`k` select. `enter` launches the selected env. `n` creates an env (after its name, a config form opens; see below), `r` renames it, and `d` deletes it after you type its name. `s` makes it the default. `p` runs `setup`, `i` installs a package source, and `a` runs `pi auth check` for each signed-in provider. `c` opens the config form for the selected env. `q` or `esc` quits. The detail pane shows the path, the setup record, the session count and last session, the signed-in provider ids (never credential values), the config scope, and the declared packages.
 
-Inside a session, the header shows `env <name>` right after the brand, and it stays there as the header narrows. The Status card shows an `Env` group with the name, above `Project`. The launcher passes the name to Pi as `GENTLE_SHELL_ENV`, only for a named env, and clears any inherited value for every other home. The default env is stored as the ordinary persisted `home` path, so a plain `gentle-shell` opens it, and `gentle-shell home link|isolated|<path>` replaces it. Renaming or deleting an env keeps `config.json` consistent: its setup record and default follow it or are removed. Envs are separate homes, not sandboxes. They share the repository you work in, `~/.pi/gentle-ai/persona.json`, and `~/.gentle-ai/state.json`, like every other home. Named envs work the same in a bundled (standalone) install. There, the envs root shares `~/.gentle-shell` with the prefix and launches use the bundled Pi. Both `self-uninstall` variants list the envs root once, as "your named envs", under *Not touched*, and never remove it. They also refuse a plan that would remove anything inside it, for example a `GENTLE_SHELL_HOME` that points into an env.
+Inside a session, the header shows `env <name>` right after the brand, and it stays there as the header narrows. The Status card shows an `Env` group with the name, above `Project`. The launcher passes the name to Pi as `GENTLE_SHELL_ENV`, only for a named env, and clears any inherited value for every other home. The default env is stored as the ordinary persisted `home` path, so a plain `gentle-shell` opens it, and `gentle-shell home link|isolated|<path>` replaces it. Renaming or deleting an env keeps `config.json` consistent: its setup record and default follow it or are removed. Envs are separate homes, not sandboxes. By default they share the repository you work in, Gentle's own configuration (see *Per-env Gentle configuration* below), the Engram memory, and `~/.gentle-ai/state.json`, like every other home. Named envs work the same in a bundled (standalone) install. There, the envs root shares `~/.gentle-shell` with the prefix and launches use the bundled Pi. Both `self-uninstall` variants list the envs root once, as "your named envs", under *Not touched*, and never remove it. They also refuse a plan that would remove anything inside it, for example a `GENTLE_SHELL_HOME` that points into an env.
+
+### Per-env Gentle configuration
+
+Like VS Code profiles, each named env chooses, per category, whether it shares Gentle's own configuration with the base home or keeps its own copy:
+
+| Category | What it covers | Files |
+| --- | --- | --- |
+| `models` | Per-agent model routing and `/gentle:profiles` | `models.json`, `profiles.json` and their exports |
+| `persona` | el Gentleman's persona | `persona.json` |
+| `appearance` | `/gentle:customize`: visual settings and profiles, cards, animations, banner, notifications, Vim | see `lib/gentle-config-scope.ts` |
+| `behavior` | Permission mode, runtime guardrails, history capture, background subagents, double Esc, builtin codemode opt-out | see `lib/gentle-config-scope.ts` |
+
+Models and profiles stay together because a profile is a snapshot of the routing, and applying one rewrites `models.json`. The update channel and the dev-binary registration belong to the install and are always shared. Repository settings (`<repo>/.pi/gentle-ai/`) stay with the repository.
+
+A shared category follows the base configuration live: `~/.pi/gentle-ai`, `GENTLE_PI_CONFIG_HOME`, or the bundled install's own config, resolved exactly as before. An own category lives in `<env>/gentle-ai/`. When a category becomes own it is seeded once, by copying from the base home or from another env (that env's effective files, own or shared), or by starting empty with the defaults. A category that is already own is never wiped, and sharing it again keeps its files on disk for later. The choice is stored in `<env>/.gentle-shell-env.json`. An env without that file (every env created before this feature) shares everything.
+
+```bash
+gentle-shell envs new client --own persona,appearance      # copies them from the base home
+gentle-shell envs new lab --own all --empty                # owns everything, starting from defaults
+gentle-shell envs config client                            # describes the scope
+gentle-shell envs config client --own models --from work   # copies work's models & profiles
+gentle-shell envs config client --share appearance         # shares it again (own files kept)
+```
+
+In the manager, `n` opens the same choice as a form after the name: `↑`/`↓` move, `space` or `←`/`→` toggle a category or change the source of new own copies, `a` toggles all, `enter` creates (or applies, for `c` on an existing env), and `esc` cancels. Enter with the defaults shares everything, exactly as before. The base home has no scope: it holds the shared configuration.
+
+When an env owns categories, the launcher passes `GENTLE_SHELL_ENV_CONFIG_HOME` (`<env>/gentle-ai`) and `GENTLE_SHELL_ENV_OWN_CONFIG` to Pi. They win over the bundled config and `GENTLE_PI_CONFIG_HOME` for those categories only. The launcher clears them for every other home, so a nested launch never inherits another env's scope. Scope changes apply from the env's next session. The Engram memory is not part of this yet: all envs still share it.
 
 ### Managing packages
 

@@ -102,7 +102,7 @@ interface ModeIdentity {
 /** UI/slash authoring only. Defaults are read from the dedicated trusted user store. */
 export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessEnv,
 	options: { onChange?: () => void } = {}): YoloSessionController {
-	const store = { gentlePiConfigHome: gentlePiConfigHome(env) };
+	const store = { gentlePiConfigHome: gentlePiConfigHome(env, "behavior") };
 	let generation = 0;
 	let ownerGeneration = 0;
 	let liveMode: PermissionMode = "normal";

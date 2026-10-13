@@ -95,7 +95,7 @@ export function resolveBackgroundSubagentsPolicy(
 	let projectFile = "";
 	let globalFile = "";
 	try {
-		const configHome = options.gentlePiConfigHome ?? gentlePiConfigHome();
+		const configHome = options.gentlePiConfigHome ?? gentlePiConfigHome(undefined, "behavior");
 		projectFile = join(cwd, ".pi", "gentle-ai", BACKGROUND_SUBAGENTS_FILE);
 		globalFile = join(configHome, BACKGROUND_SUBAGENTS_FILE);
 		const projectFileExists = existsSync(projectFile);

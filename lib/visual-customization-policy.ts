@@ -93,7 +93,7 @@ export function parseVisualSettingsFile(raw: string): VisualSettings | undefined
 	} catch { return undefined; }
 }
 export function resolveVisualSettings(options: VisualOptions = {}): VisualResolution {
-	const globalFile = join(options.gentlePiConfigHome ?? gentlePiConfigHome(), "visual-customization.json");
+	const globalFile = join(options.gentlePiConfigHome ?? gentlePiConfigHome(undefined, "appearance"), "visual-customization.json");
 	try {
 		const settings = parseVisualSettingsFile(readFileSync(globalFile, "utf8"));
 		return { settings: settings ?? structuredClone(DEFAULT_VISUAL_SETTINGS), source: "global_file", malformed: settings === undefined, readError: false, globalFile };
@@ -105,7 +105,7 @@ export function resolveVisualSettings(options: VisualOptions = {}): VisualResolu
 /** Same-directory rename keeps partial JSON invisible to readers. */
 export function writeVisualSettings(settings: VisualSettings, options: VisualOptions = {}): string {
 	if (!isVisualSettings(settings)) throw new TypeError("Invalid visual settings");
-	const home = options.gentlePiConfigHome ?? gentlePiConfigHome();
+	const home = options.gentlePiConfigHome ?? gentlePiConfigHome(undefined, "appearance");
 	const path = join(home, "visual-customization.json");
 	const temporary = `${path}.${randomUUID()}.tmp`;
 	mkdirSync(home, { recursive: true });

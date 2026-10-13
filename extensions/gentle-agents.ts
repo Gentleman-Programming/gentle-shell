@@ -537,7 +537,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	let ui: ExtensionContext["ui"] | undefined;
 	let host: { requestRender(): void } | undefined;
 	let sidebarTui: TUI | undefined;
-	const visualHome = gentlePiConfigHome(env);
+	const visualHome = gentlePiConfigHome(env, "appearance");
 	let agentsVisible = resolveVisualSettings({ gentlePiConfigHome: visualHome }).settings.visibility.agents;
 	let stopVisualUpdates: (() => void) | undefined;
 	let sessions: ExtensionContext["sessionManager"] | undefined;
@@ -1614,7 +1614,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// bound session used to kill its own non-git writer mid-preparation because
 		// admission still read only the pin/global layers). Slice 3b-ii: the same
 		// read covers the frozen inherited profile and `follow` mode.
-		const profileConfigHome = gentlePiConfigHome(deps.env);
+		const profileConfigHome = gentlePiConfigHome(deps.env, "models");
 		const sessionProfile = resolveSessionProfile({
 			sessionId: ctx.sessionManager.getSessionId(),
 			cwd: originalCwd,
@@ -2315,7 +2315,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			freezeSessionProfileAtStartup({
 				sessionId: ctx.sessionManager.getSessionId(),
 				cwd: ctx.sessionManager.getCwd(),
-				configHome: gentlePiConfigHome(deps.env),
+				configHome: gentlePiConfigHome(deps.env, "models"),
 				resolveWorktree: deps.resolveWorktree,
 				env: deps.env,
 			});

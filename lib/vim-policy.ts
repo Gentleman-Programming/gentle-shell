@@ -24,7 +24,7 @@ export function parseVimPolicyFile(raw: string): VimPolicy | undefined {
 }
 
 export function resolveVimPolicy(options: VimOptions = {}): VimResolution {
-	const globalFile = join(options.gentlePiConfigHome ?? gentlePiConfigHome(), "vim.json");
+	const globalFile = join(options.gentlePiConfigHome ?? gentlePiConfigHome(undefined, "appearance"), "vim.json");
 	try {
 		const policy = parseVimPolicyFile(readFileSync(globalFile, "utf8"));
 		return { policy: policy ?? "off", source: "global_file", malformed: policy === undefined, globalFile };
@@ -35,7 +35,7 @@ export function resolveVimPolicy(options: VimOptions = {}): VimResolution {
 }
 
 export function writeVimPolicy(policy: VimPolicy, options: VimOptions = {}): string {
-	const home = options.gentlePiConfigHome ?? gentlePiConfigHome();
+	const home = options.gentlePiConfigHome ?? gentlePiConfigHome(undefined, "appearance");
 	const path = join(home, "vim.json");
 	const temporary = `${path}.${randomUUID()}.tmp`;
 	mkdirSync(home, { recursive: true });

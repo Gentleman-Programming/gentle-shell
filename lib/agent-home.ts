@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { resolveGentlePiConfigHome, runningBundledPrefix } from "./gentle-shell-bundled.ts";
+import { type ConfigCategory, envConfigHomeFor } from "./gentle-config-scope.ts";
 
 export { GENTLE_SHELL_CONFIG_HOME_ENV } from "./gentle-shell-bundled.ts";
 
@@ -18,8 +19,13 @@ export function resolveGentlePiAgentHome(env: NodeJS.ProcessEnv = process.env): 
 // the standalone launcher's isolated home next to its agent dir (#2201). The rule
 // itself lives in resolveGentlePiConfigHome, a generated runtime module, so the
 // launcher and the Gentle AI process environment share it too.
-export function gentlePiConfigHome(env: NodeJS.ProcessEnv = process.env): string {
-	return resolveGentlePiConfigHome(env, homedir());
+//
+// `category` names what the caller reads or writes (lib/gentle-config-scope.ts).
+// In a named env that owns that category, it resolves to the env's own config
+// home, ahead of that rule. Every other case, and install-level reads that pass
+// no category, keep the rule.
+export function gentlePiConfigHome(env: NodeJS.ProcessEnv = process.env, category?: ConfigCategory): string {
+	return envConfigHomeFor(env, category) ?? resolveGentlePiConfigHome(env, homedir());
 }
 
 // The agent home Pi runs with, only in a bundled Gentle Shell (S9): there the

@@ -119,7 +119,7 @@ export function restoreNotificationPreset(settings: NotificationSettings): Notif
 	return { ...structuredClone(DEFAULT_NOTIFICATION_SETTINGS), enabled: settings.enabled };
 }
 export function resolveNotificationSettings(options: NotificationOptions = {}): NotificationResolution {
-	const globalFile = join(options.gentlePiConfigHome || gentlePiConfigHome(), "notifications.json");
+	const globalFile = join(options.gentlePiConfigHome || gentlePiConfigHome(undefined, "appearance"), "notifications.json");
 	try {
 		const settings = parseNotificationSettingsFile((options.io ?? DEFAULT_IO).readFile(globalFile), options.pathFlavor);
 		return { settings: settings ?? structuredClone(DEFAULT_NOTIFICATION_SETTINGS), source: "global_file", malformed: settings === undefined, readError: false, globalFile };
@@ -132,7 +132,7 @@ export function resolveNotificationSettings(options: NotificationOptions = {}): 
 export function writeNotificationSettings(settings: NotificationSettings, options: NotificationOptions = {}): string {
 	if (!isNotificationSettings(settings, options.pathFlavor)) throw new TypeError("Invalid notification settings");
 	const io = options.io ?? DEFAULT_IO;
-	const home = options.gentlePiConfigHome || gentlePiConfigHome();
+	const home = options.gentlePiConfigHome || gentlePiConfigHome(undefined, "appearance");
 	const path = join(home, "notifications.json");
 	const temporary = `${path}.${randomUUID()}.tmp`;
 	io.mkdir(home);

@@ -42,6 +42,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Key, Text, isKeyRelease, matchesKey, truncateToWidth, type KeybindingsManager, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { resolveGentlePiAgentHome, gentlePiConfigHome } from "../lib/agent-home.ts";
+import type { ConfigCategory } from "../lib/gentle-config-scope.ts";
 import {
 	BACKGROUND_SUBAGENTS_FILE,
 	BACKGROUND_SUBAGENTS_SCHEMA,
@@ -391,7 +392,7 @@ const DEFAULT_BACKGROUND_SUBAGENTS_RENDERING: BackgroundSubagentsRendering = {
 /** Write the global policy file, creating the config home when needed. */
 function writeGlobalBackgroundSubagentsPolicy(
 	policy: BackgroundSubagentsPolicy,
-	configHome: string = gentleAiConfigHome(),
+	configHome: string = gentleAiConfigHome("behavior"),
 ): string {
 	const path = join(configHome, BACKGROUND_SUBAGENTS_FILE);
 	mkdirSync(configHome, { recursive: true });
@@ -1617,7 +1618,7 @@ function loadRuntimeGuardrailsConfig(
 			return { autonomousMode: true, guardedCommands: {} };
 		}
 
-		const configHome = options.gentlePiConfigHome ?? gentleAiConfigHome();
+		const configHome = options.gentlePiConfigHome ?? gentleAiConfigHome("behavior");
 		const globalConfigPath = join(configHome, "runtime-guardrails.json");
 		const projectConfigPath = join(cwd, ".pi", "gentle-ai", "runtime-guardrails.json");
 
@@ -1915,7 +1916,7 @@ function isReversibleYoloCommand(command: string, evaluation: GuardEvaluation): 
 /** Preserve explicitly configured confirmations for the waivable keys present, even when legacy env/autonomy resolution ignores them. */
 function yoloConfiguredRestriction(cwd: string, keys: readonly GuardedCommandKey[], options: LoadGuardrailsOptions = {}): GuardAction | undefined {
 	let restriction: GuardAction | undefined;
-	for (const path of [join(options.gentlePiConfigHome ?? gentleAiConfigHome(), "runtime-guardrails.json"), join(cwd, ".pi", "gentle-ai", "runtime-guardrails.json")]) {
+	for (const path of [join(options.gentlePiConfigHome ?? gentleAiConfigHome("behavior"), "runtime-guardrails.json"), join(cwd, ".pi", "gentle-ai", "runtime-guardrails.json")]) {
 		try {
 			if (!existsSync(path)) continue;
 			const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
@@ -1969,7 +1970,7 @@ async function confirmCommand(
 	// ask/block rule or the independent data-loss confirmation.
 	if (autoGate && !evaluation.dataLoss) {
 		let explicit = false;
-		for (const path of [join(gentleAiConfigHome(), "runtime-guardrails.json"), join(ctx.cwd, ".pi", "gentle-ai", "runtime-guardrails.json")]) {
+		for (const path of [join(gentleAiConfigHome("behavior"), "runtime-guardrails.json"), join(ctx.cwd, ".pi", "gentle-ai", "runtime-guardrails.json")]) {
 			try {
 				if (!existsSync(path)) continue;
 				const settings: unknown = JSON.parse(readFileSync(path, "utf8"));
@@ -2040,16 +2041,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function gentleAiConfigHome(): string {
-	return gentlePiConfigHome();
+function gentleAiConfigHome(category: ConfigCategory): string {
+	return gentlePiConfigHome(undefined, category);
 }
 
 function modelConfigPath(_cwd: string): string {
-	return join(gentleAiConfigHome(), "models.json");
+	return join(gentleAiConfigHome("models"), "models.json");
 }
 
 function modelExportPath(_cwd: string): string {
-	return join(gentleAiConfigHome(), "models.export.json");
+	return join(gentleAiConfigHome("models"), "models.export.json");
 }
 
 const MODEL_EXPORT_KIND = "gentle-pi.agent_model_routing";
@@ -2064,7 +2065,7 @@ function projectPersonaConfigPath(cwd: string): string {
 }
 
 function personaConfigPath(_cwd: string): string {
-	return join(gentleAiConfigHome(), "persona.json");
+	return join(gentleAiConfigHome("persona"), "persona.json");
 }
 
 function readPersonaFile(path: string): PersonaMode | undefined {
@@ -2315,7 +2316,7 @@ async function readMaterializedRoutingEntryAsync(
  * would use -- there is no second precedence rule here.
  */
 function pinnedEffectiveModelConfig(cwd: string): AgentModelConfig | undefined {
-	const resolution = resolveProfilePin({ cwd, configHome: gentleAiConfigHome() });
+	const resolution = resolveProfilePin({ cwd, configHome: gentleAiConfigHome("models") });
 	return resolution === undefined ? undefined : cloneModelConfig(resolution.modelProfiles);
 }
 
@@ -3657,9 +3658,9 @@ interface CurrentProfileTarget {
  */
 function resolveCurrentProfileTarget(
 	cwd: string,
-	store: ProfilesFileReadResult = readProfilesFileResult(profilesFilePath(gentleAiConfigHome())),
+	store: ProfilesFileReadResult = readProfilesFileResult(profilesFilePath(gentleAiConfigHome("models"))),
 ): CurrentProfileTarget | undefined {
-	const pin = resolveProfilePin({ cwd, configHome: gentleAiConfigHome() });
+	const pin = resolveProfilePin({ cwd, configHome: gentleAiConfigHome("models") });
 	if (pin) return { name: pin.profile, source: "pinned" };
 	if (store.status !== "valid" || store.file.active === undefined) return undefined;
 	if (!hasOwnProfile(store.file.profiles, store.file.active)) return undefined;
@@ -3678,7 +3679,7 @@ function describeCurrentProfileTarget(target: CurrentProfileTarget | undefined):
  * outcome here speaks only about the profile.
  */
 function updateCurrentProfileFromSavedRouting(ctx: ExtensionContext, pi: ExtensionAPI): void {
-	const path = profilesFilePath(gentleAiConfigHome());
+	const path = profilesFilePath(gentleAiConfigHome("models"));
 	const read = readProfilesFileResult(path);
 	if (read.status === "invalid") {
 		ctx.ui.notify(
@@ -3861,7 +3862,7 @@ function followRenamedPin(
  * names exactly what a launch would use.
  */
 function profilePinScopeNote(cwd: string): string | undefined {
-	const resolution = resolveProfilePin({ cwd, configHome: gentleAiConfigHome() });
+	const resolution = resolveProfilePin({ cwd, configHome: gentleAiConfigHome("models") });
 	if (!resolution) return undefined;
 	return sanitizeTerminalText(
 		`This repository pins profile "${resolution.profile}" (${resolution.source} pin at ${resolution.path}), so its subagent launches resolve that profile instead of the global routing. Change or remove the pin with /gentle:profiles (p or P).`,
@@ -4441,7 +4442,7 @@ async function runProfilesPanelAction(
 			// pin wins, applying is repo-scoped: re-pin this clone and write no global
 			// routing, no materialized stores, and no orchestrator. The committed
 			// declaration is never rewritten behind a commit.
-			const pinResolution = resolveProfilePin({ cwd: ctx.cwd, configHome: gentleAiConfigHome() });
+			const pinResolution = resolveProfilePin({ cwd: ctx.cwd, configHome: gentleAiConfigHome("models") });
 			if (pinResolution) {
 				const localPath = pinResolution.status.localPath;
 				let pinNote: string;
@@ -4914,7 +4915,7 @@ async function runProfilesPanelAction(
 		}
 		case "export": {
 			if (!hasOwnProfile(file.profiles, result.name)) return file;
-			const exportPath = profileExportPath(gentleAiConfigHome());
+			const exportPath = profileExportPath(gentleAiConfigHome("models"));
 			try {
 				const text = serializeProfileExport(result.name, file.profiles[result.name]);
 				await mkdir(dirname(exportPath), { recursive: true });
@@ -4926,7 +4927,7 @@ async function runProfilesPanelAction(
 			return file;
 		}
 		case "import": {
-			const importPath = profileExportPath(gentleAiConfigHome());
+			const importPath = profileExportPath(gentleAiConfigHome("models"));
 			let text: string;
 			try {
 				text = await readFile(importPath, "utf8");
@@ -4976,7 +4977,7 @@ async function runProfilesPanelAction(
 
 /** `/gentle:profiles`: seed or open the store, then loop the panel over one action at a time until it closes. */
 async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): Promise<void> {
-	const path = profilesFilePath(gentleAiConfigHome());
+	const path = profilesFilePath(gentleAiConfigHome("models"));
 	const read = readProfilesFileResult(path);
 	if (read.status === "invalid") {
 		ctx.ui.notify(
@@ -9580,7 +9581,7 @@ function createGentleAiExtensionForTesting(
 			return classifier.run(request);
 		},
 		cancel: () => classifier?.cancel(),
-	}, { configHome: gentlePiConfigHome(permissionEnvironment) });
+	}, { configHome: gentlePiConfigHome(permissionEnvironment, "behavior") });
 	const auto = autoPermissions;
 	pi.on("tool_result", (event, ctx) => {
 		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") auto.toolResult(event, ctx);

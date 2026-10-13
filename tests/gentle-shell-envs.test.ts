@@ -177,3 +177,26 @@ test("summarizeEnv reports whether the home was ever set up", () => {
 	assert.equal(summarizeEnv({ name: "x", dir: "/e/x", isDefault: false, sessionCount: 0 }).setUp, false);
 	assert.equal(summarizeEnv({ name: "x", dir: "/e/x", isDefault: false, sessionCount: 0, provisioned: { gentleAi: "1", at: "2026-01-01" } }).setUp, true);
 });
+
+test("buildPiInvocation scopes own config categories to the env and never leaks inherited scope", async () => {
+	const { buildPiInvocation } = await import("../lib/gentle-shell-launcher.ts");
+	const base = {
+		runtime: { kind: "path" as const, command: "pi", args: [] },
+		packageRoot: "/pkg",
+		declaration: undefined,
+		takeOver: false,
+		otherPackagePaths: [],
+		passthrough: [],
+		homedir: "/h",
+		cwd: "/w",
+	};
+	const dir = join("/h", ".gentle-shell", "envs", "work");
+	const own = buildPiInvocation({ ...base, home: { mode: "path", dir, source: "flag", env: "work", ownConfig: ["persona", "appearance"] }, baseEnv: {} });
+	assert.equal(own.env.GENTLE_SHELL_ENV_CONFIG_HOME, join(dir, "gentle-ai"));
+	assert.equal(own.env.GENTLE_SHELL_ENV_OWN_CONFIG, "persona,appearance");
+	const inherited = { GENTLE_SHELL_ENV_CONFIG_HOME: "/outer/gentle-ai", GENTLE_SHELL_ENV_OWN_CONFIG: "models" };
+	const shared = buildPiInvocation({ ...base, home: { mode: "path", dir, source: "flag", env: "work" }, baseEnv: inherited });
+	assert.ok(!("GENTLE_SHELL_ENV_CONFIG_HOME" in shared.env) && !("GENTLE_SHELL_ENV_OWN_CONFIG" in shared.env), "a sharing env clears outer scope");
+	const isolated = buildPiInvocation({ ...base, home: { mode: "isolated", dir: "/h/.gentle-shell/agent", source: "default" }, baseEnv: inherited });
+	assert.ok(!("GENTLE_SHELL_ENV_CONFIG_HOME" in isolated.env), "the base home never inherits env scope");
+});

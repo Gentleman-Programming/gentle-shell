@@ -15,6 +15,7 @@ const sources = [
 	"status-timing-diagnostics",
 	"telemetry-trigger",
 	"child-package-injection",
+	"gentle-config-scope",
 	"gentle-shell-envs",
 	"gentle-brand",
 	"gentle-shell-envs-tui",

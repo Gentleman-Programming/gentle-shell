@@ -27,7 +27,7 @@ export type BuiltinCodemodeOptOutOutcome =
 export interface BuiltinCodemodeOptOutOptions {
 	/** Pi agent dir whose settings.json receives the entry; defaults to getAgentDir(). */
 	agentDir?: string;
-	/** gentle-pi config home holding the remembered decline; defaults to gentlePiConfigHome(). */
+	/** gentle-pi config home holding the remembered decline; defaults to gentlePiConfigHome(undefined, "behavior"). */
 	configHome?: string;
 	/** Effective (merged) settings `extensions`, e.g. from pi.getSettings(). */
 	effectiveExtensions?: unknown;
@@ -69,7 +69,7 @@ export function withBuiltinExtensionExcluded(settingsText: string, builtin = BUI
 	return settingsText.endsWith("\n") ? `${serialized}\n` : serialized;
 }
 
-export function builtinCodemodeOptOutStatePath(configHome = gentlePiConfigHome()): string {
+export function builtinCodemodeOptOutStatePath(configHome = gentlePiConfigHome(undefined, "behavior")): string {
 	return join(configHome, "builtin-codemode-optout.json");
 }
 
@@ -138,7 +138,7 @@ export async function offerBuiltinCodemodeOptOut(ctx: BuiltinCodemodeOptOutConte
 		if (!ctx.hasUI || ctx.mode !== "tui") return "no-ui";
 		if (hasExplicitBuiltinEntry(options.effectiveExtensions)) return "explicit-entry";
 		const settingsPath = resolve(options.agentDir ?? getAgentDir(), "settings.json");
-		const configHome = options.configHome ?? gentlePiConfigHome();
+		const configHome = options.configHome ?? gentlePiConfigHome(undefined, "behavior");
 		const currentText = readIfExists(settingsPath);
 		if (currentText === undefined) return "unwritable";
 		try {

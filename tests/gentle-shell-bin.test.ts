@@ -3513,3 +3513,48 @@ test("gentle-shell setup asks Gentle AI to skip npm:gentle-pi, so nothing is ins
 	assert.deepEqual(JSON.parse(lines[0]), { args: ["install", "--agent", "pi", "--scope", "global"], excluded: "npm:gentle-pi" });
 });
 
+// --- named envs (`envs`, `--env`; lib/gentle-shell-envs.ts) -------------------
+
+test("envs new creates a managed, owned env that --env launches into", (t) => {
+	const f = fixture(t);
+	const created = run(f.env, ["envs", "new", "work"]);
+	assert.equal(created.status, 0, created.stderr);
+	const dir = join(f.home, ".gentle-shell", "envs", "work");
+	assert.ok(existsSync(join(dir, ".gentle-shell-home")), "carries the ownership marker");
+	const launched = run(f.env, ["--env", "work", "-p", "hi"]);
+	assert.equal(launched.status, 0, launched.stderr);
+	assert.equal(JSON.parse(launched.stdout.trim().split("\n").at(-1) ?? "{}").PI_CODING_AGENT_DIR, dir);
+});
+
+test("--env never creates an unknown env and rejects invalid names", (t) => {
+	const f = fixture(t);
+	const unknown = run(f.env, ["--env", "nope"]);
+	assert.equal(unknown.status, 2);
+	assert.match(unknown.stderr, /unknown env "nope"/);
+	assert.equal(existsSync(join(f.home, ".gentle-shell", "envs", "nope")), false);
+	assert.equal(run(f.env, ["envs", "new", "Bad"]).status, 2);
+	assert.equal(run(f.env, ["envs", "new", "dup"]).status, 0);
+	assert.equal(run(f.env, ["envs", "new", "dup"]).status, 1);
+});
+
+test("envs without a TTY lists envs, marks the default, and honors GENTLE_SHELL_ENVS_DIR", (t) => {
+	const f = fixture(t);
+	const envsDir = join(f.root, "custom-envs");
+	const env = { ...f.env, GENTLE_SHELL_ENVS_DIR: envsDir };
+	assert.equal(run(env, ["envs", "new", "a"]).status, 0);
+	assert.equal(run(env, ["envs", "new", "b"]).status, 0);
+	assert.equal(run(env, ["home", join(envsDir, "b")]).status, 0);
+	const listed = run(env, ["envs"]);
+	assert.equal(listed.status, 0, listed.stderr);
+	assert.match(listed.stdout, /^  a /m);
+	assert.match(listed.stdout, /^\* b /m);
+	const version = run(env, ["--version"]);
+	assert.match(version.stdout, new RegExp(`home path ${join(envsDir, "b").replace(/[\\.]/g, "\\$&")}`));
+});
+
+test("envs rejects unknown subcommands with usage", (t) => {
+	const f = fixture(t);
+	const result = run(f.env, ["envs", "bogus"]);
+	assert.equal(result.status, 2);
+	assert.match(result.stderr, /Usage: gentle-shell envs/);
+});

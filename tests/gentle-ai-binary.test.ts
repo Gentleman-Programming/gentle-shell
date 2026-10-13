@@ -98,7 +98,7 @@ async function writeWindowsSourceBinary(packageRoot: string): Promise<{ binaryPa
 		method: "go-sumdb-source-build",
 		package: "github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai",
 		module: "github.com/gentleman-programming/gentle-ai/v4",
-		tag: "v4.0.0",
+		tag: "v4.1.1",
 		architecture: process.arch === "x64" ? "x64" : "arm64",
 		binarySha256: createHash("sha256").update(binary).digest("hex"),
 		moduleChecksum: GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM,
@@ -173,6 +173,22 @@ test("runtime validates a Windows Go SumDB source manifest and rejects tampering
 	await symlink(ambient, binaryPath);
 	assert.throws(() => resolveGentleAiBinary(packageRoot, "win32"), /package-local-binary-missing/);
 	assert.doesNotMatch(gentleAiBinaryPathForTest(packageRoot), /(^|[/\\])PATH($|[/\\])/i);
+});
+
+// Every native call resolved the binary by reading and hashing all of it; on
+// Windows each read is also scanned by antivirus. The digest is reused only
+// while the file keeps its identity (device, inode, size, mtime and ctime).
+test("runtime reuses the binary digest while the file is unchanged and re-hashes after any rewrite", async () => {
+	const packageRoot = await mkdtemp(join(tmpdir(), "gentle-pi-binary-digest-cache-"));
+	const { binaryPath } = await writeWindowsSourceBinary(packageRoot);
+	let reads = 0;
+	const countingRead = (path: string) => { reads++; return readFileSync(path); };
+	assert.equal(resolveGentleAiBinary(packageRoot, "win32", countingRead), binaryPath);
+	assert.equal(resolveGentleAiBinary(packageRoot, "win32", countingRead), binaryPath);
+	assert.equal(reads, 1, "an unchanged binary is hashed once");
+	await writeFile(binaryPath, "tampered Windows source build");
+	assert.throws(() => resolveGentleAiBinary(packageRoot, "win32", countingRead), /package-local-binary-missing/);
+	assert.equal(reads, 2, "a rewritten binary is hashed again, even with the same size");
 });
 
 function gentleAiBinaryPathForTest(packageRoot: string): string {

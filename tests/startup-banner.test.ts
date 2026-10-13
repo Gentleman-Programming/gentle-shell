@@ -76,8 +76,24 @@ test("startup branch lookup uses direct git argv and hides its Windows child", a
 	assert.deepEqual(calls, [{
 		command: "git",
 		args: ["-C", "/repo with spaces & metacharacters", "branch", "--show-current"],
-		options: { encoding: "utf8", shell: false, windowsHide: true },
+		options: { encoding: "utf8", shell: false, windowsHide: true, timeout: 3000 },
     }]);
+});
+
+// S4: a hung `git branch` (for example a repository rooted at HOME) must not
+// keep the banner waiting; a timeout reads as the ordinary failure path.
+test("startup branch lookup times out into the not-a-repo fallback", { skip: process.platform === "win32" }, async (t) => {
+	const bin = mkdtempSync(join(tmpdir(), "gp-banner-slow-git-"));
+	writeFileSync(join(bin, "git"), "#!/bin/sh\nexec sleep 3\n", { mode: 0o755 });
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${bin}:${previousPath ?? ""}`;
+	t.after(() => {
+		process.env.PATH = previousPath;
+		rmSync(bin, { recursive: true, force: true });
+	});
+	const started = Date.now();
+	assert.equal(await readGitBranch(bin, undefined, 200), "Not a git repo");
+	assert.ok(Date.now() - started < 2000, "the lookup must stop at its timeout");
 });
 
 test("startup banner keeps animating after invalidate and cleans up on dispose", async (t) => {

@@ -25,7 +25,7 @@ export const requirements = Object.freeze({
 /** Pi version the installer installs next to gentle-pi, and the version an older
  * Pi is updated to (never below requirements.pi; the runner asserts it).
  */
-export const PI_INSTALL_VERSION = "1.0.0";
+export const PI_INSTALL_VERSION = "1.2.0";
 
 /** Runtime persisted under PNPM_HOME. Bootstrap-only Node: `pnpm runtime set
  * node <node> -g`, then `pnpm add -g npm@<npm> pnpm@<pnpm>`, or only npm when
@@ -106,6 +106,11 @@ export async function collectInventory({ platform, arch, probes = {}, pnpmHome }
 			// Do not retain probe errors: they can contain private paths or credentials.
 			inventory[name] = { available: null };
 		}
+	}
+	// Optional, advisory only (the plan notes a missing Git): kept only from a probe that answered.
+	if (probes.git) {
+		const git = await Promise.resolve().then(() => probes.git()).catch(() => null);
+		if (plainRecord(git) && typeof git.available === "boolean") inventory.git = { available: git.available };
 	}
 	if (platform === "win32" && probes.folders) {
 		const folders = await Promise.resolve().then(() => probes.folders()).catch(() => null);

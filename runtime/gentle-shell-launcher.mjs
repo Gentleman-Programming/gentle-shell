@@ -11,7 +11,7 @@ import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection,              
 // pi's own package-management subcommands (see pi's cli/args.ts printHelp
 // "Commands" list): each is dispatched by pi itself, before pi's own flag
 // parsing, purely on argv[0]. `uninstall` is pi's alias for `remove`.
-export const PI_SUBCOMMANDS = ["install", "remove", "uninstall", "update", "list", "config", "auth"]         ;
+export const PI_SUBCOMMANDS = ["install", "remove", "uninstall", "update", "list", "config", "auth", "mcp"]         ;
 
 
 
@@ -42,7 +42,7 @@ function isPiSubcommand(token        )                        {
 // untouched as commandArgs — T2 owns interpreting `home link|isolated|<path>`.
 // `self-uninstall` is not `uninstall`, which stays pi's own alias for `remove`.
 export function parseLauncherArgs(argv          )                     {
-	if (argv[0] === "home" || argv[0] === "upgrade" || argv[0] === "self-uninstall") {
+	if (argv[0] === "home" || argv[0] === "upgrade" || argv[0] === "self-uninstall" || argv[0] === "memory") {
 		return {
 			link: false,
 			isolated: false,
@@ -77,6 +77,9 @@ export function parseLauncherArgs(argv          )                     {
 			if (passthrough.length === 0 && rest.length > 0 && isPiSubcommand(rest[0])) {
 				piSubcommand = rest[0];
 			}
+			// After a pi subcommand the separator belongs to it, e.g.
+			// `mcp add <server> -- <command>`; only a leading one is the launcher's.
+			if (piSubcommand !== undefined && passthrough.length > 0) passthrough.push(arg);
 			passthrough.push(...rest);
 			break;
 		}
@@ -393,7 +396,7 @@ export function missingPiMessage()         {
 
 // --- pi version gate ---------------------------------------------------------
 
-export const MIN_PI_VERSION = "0.99.1";
+export const MIN_PI_VERSION = "1.2.0";
 
 
 
@@ -897,7 +900,7 @@ export function discoverLooseExtensionEntries(dir        , fs                  )
 
 // Four cases, checked in this order — `piSubcommand` first, then `takeOver`:
 //   - piSubcommand: pi dispatches install/remove/uninstall/update/list/
-//     config/auth on argv[0] before it even parses flags, so any injected
+//     config/auth/mcp on argv[0] before it even parses flags, so any injected
 //     -e flag ahead of it stops pi from
 //     recognising its subcommand at all — this is exactly the observed
 //     2026-09-22 bug where `gentle-shell install npm:x` opened an
@@ -1178,6 +1181,7 @@ export function helpText()         {
 		"       gentle-shell [home selectors] setup [--dry-run]",
 		"       gentle-shell upgrade [--channel release|main]",
 		"       gentle-shell upgrade --rollback",
+		"       gentle-shell memory migrate --confirm-quiescent",
 		"       gentle-shell self-uninstall [--dry-run] [--yes] [--include-shared]",
 		"",
 		"Opens pi with the Gentle Shell package loaded, without touching your",
@@ -1205,6 +1209,11 @@ export function helpText()         {
 		"                   installer's own Node, pnpm and Pi) follows the release channel only:",
 		"                   it installs the new version beside the current one, verifies it, then",
 		"                   switches; --rollback switches back to the previous kept version.",
+		"  memory migrate   Explicit bundled-store recovery using the verified core's migrate-copy.",
+		"                   Requires --confirm-quiescent: stop ALL Engram clients first. Keeps the",
+		"                   original directory as a backup; never runs automatically on upgrade.",
+		"                   Requires a bundled core release supporting migrate-copy; older cores",
+		"                   fail closed without changing the source or its provenance.",
 		"  self-uninstall   Remove Gentle Shell: its own data, the isolated home and the gentle-pi",
 		"                   package. Shows the plan first and asks before removing (--yes skips",
 		"                   the question). The shared ~/.pi/gentle-ai configuration is kept unless",
@@ -1220,6 +1229,8 @@ export function helpText()         {
 		"                                   runs 'gentle-shell upgrade' instead of updating Pi.",
 		"  gentle-shell config              Run pi's own 'config' against the resolved home.",
 		"  gentle-shell auth <command>      Run pi's own 'auth' against the resolved home.",
+		"  gentle-shell mcp <command>       Run pi's own 'mcp' (add, list, login, logout) against the",
+		"                                   resolved home, e.g. gentle-shell mcp add <name> -- <command>.",
 		"  'gentle-shell uninstall <source>' is pi's own alias for 'remove'; to remove Gentle",
 		"  Shell itself, use 'gentle-shell self-uninstall'.",
 		"  These run pi's own commands, forwarded verbatim, against the --isolated home",

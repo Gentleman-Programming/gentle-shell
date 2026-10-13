@@ -1,6 +1,6 @@
 import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, parse, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, parse, relative, resolve } from "node:path";
 import { resolveSessionWorktree, type WorktreeResolver } from "./session-worktree-registry.ts";
 
 const WRITER_NAMES = ["gentle-ai-worker", "worker", "jd-fix-agent"];
@@ -114,11 +114,37 @@ export function isDevelopmentSurface(path: string): boolean {
 	return /\.(?:[cm]?[jt]sx?|go|rs|py|java|kt|swift|c|cc|cpp|h|hpp|cs|rb|php|vue|svelte|html|css|scss|sass|sql|sh)$/i.test(normalized) || /^(?:src|lib|tests?|app|packages)\/(?:[^\s]+\/)*\*\*?(?:\/\*)?$/.test(normalized);
 }
 
-export function safeBootstrapDirectory(path: string): string | undefined {
+// Broad folders a user opens by accident. A repository there (or in HOME, or
+// above it) makes every Git call scan the user's whole tree.
+const BROAD_HOME_FOLDER = /^(?:documents|desktop|downloads|onedrive(?: - .+)?)$/i;
+const BROAD_ONEDRIVE_FOLDER = /^(?:documents|desktop)$/i;
+
+export interface BootstrapDirectoryOptions {
+	/** Defaults to the canonical home directory. */
+	readonly home?: string;
+	/** Defaults to `process.platform`; Windows paths compare case-insensitively. */
+	readonly platform?: NodeJS.Platform;
+}
+
+/** True when `path` is HOME, an ancestor of it, or a broad folder directly under it. */
+export function isHomeOrBroadUserDirectory(path: string, options: BootstrapDirectoryOptions = {}): boolean {
+	const platform = options.platform ?? process.platform;
+	const fold = (value: string) => platform === "win32" ? value.toLowerCase() : value;
+	let home: string;
+	try { home = options.home ?? realpathSync.native(homedir()); } catch { return true; }
+	const target = fold(path), canonicalHome = fold(home);
+	const towardHome = relative(target, canonicalHome);
+	if (towardHome === "" || (!isAbsolute(towardHome) && towardHome !== ".." && !towardHome.startsWith("..\\") && !towardHome.startsWith("../"))) return true;
+	const parent = dirname(target);
+	if (parent === canonicalHome) return BROAD_HOME_FOLDER.test(basename(path));
+	return dirname(parent) === canonicalHome && /^onedrive(?: - .+)?$/i.test(basename(parent)) && BROAD_ONEDRIVE_FOLDER.test(basename(path));
+}
+
+export function safeBootstrapDirectory(path: string, options: BootstrapDirectoryOptions = {}): string | undefined {
 	try {
 		if (!isAbsolute(path)) return undefined;
 		const root = realpathSync(path);
-		if (!statSync(root).isDirectory() || root === parse(root).root || root === realpathSync(homedir())) return undefined;
+		if (!statSync(root).isDirectory() || root === parse(root).root || isHomeOrBroadUserDirectory(realpathSync.native(root), options)) return undefined;
 		if (/(^|[\\/])(?:\.ssh|\.credentials|\.aws|\.gnupg|\.config|secrets|credentials|tokens|keychains)(?:[\\/]|$)|(?:^|[\\/])\.env(?:$|[./_-])/i.test(root)) return undefined;
 		return root;
 	} catch { return undefined; }

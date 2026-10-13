@@ -350,6 +350,30 @@ function sameFile(before                              , after                   
 	return before.dev === after.dev && before.ino === after.ino && before.size === after.size && before.mtimeMs === after.mtimeMs;
 }
 
+// Reading and hashing the whole binary on every native call is expensive, and
+// on Windows antivirus scans each read. The digest is reused only while the
+// file keeps its full identity; any rewrite changes ctime, which callers cannot
+// set, so a replaced binary is always hashed again. Keyed per reader so an
+// injected reader never sees another reader's digest.
+const binaryDigestCache = new WeakMap                                                                                               ();
+
+function binaryIdentity(path        )         {
+	const details = lstatSync(path, { bigint: true });
+	return [details.dev, details.ino, details.size, details.mtimeNs, details.ctimeNs].join(":");
+}
+
+function binaryDigest(path        , readBinary                          )         {
+	let entries = binaryDigestCache.get(readBinary);
+	if (entries === undefined) binaryDigestCache.set(readBinary, entries = new Map());
+	const identity = binaryIdentity(path);
+	const cached = entries.get(path);
+	if (cached?.identity === identity) return cached.sha256;
+	const digest = sha256(readBinary(path));
+	if (binaryIdentity(path) === identity) entries.set(path, { identity, sha256: digest });
+	else entries.delete(path);
+	return digest;
+}
+
 export function resolveGentleAiBinary(
 	packageRoot = dirname(dirname(fileURLToPath(import.meta.url))),
 	platform = process.platform,
@@ -378,7 +402,7 @@ export function resolveGentleAiBinary(
 		const beforeManifest = lstatSync(manifestPath);
 		const manifestContents = readFileSync(manifestPath, "utf8");
 		const manifest = JSON.parse(manifestContents)                           ;
-		const binarySha256 = sha256(readBinary(binaryPath));
+		const binarySha256 = binaryDigest(binaryPath, readBinary);
 		const expected = expectedRuntimeManifest(platform, binarySha256, manifest);
 		if (!isCanonicalManifest(manifestContents, manifest, expected)) throw new Error("invalid runtime integrity manifest");
 		const afterBinary = lstatSync(binaryPath);

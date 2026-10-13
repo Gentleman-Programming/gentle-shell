@@ -29,19 +29,22 @@ function fixture(t: test.TestContext) {
  const manager = SessionManager.inMemory(root), anchor = manager.appendCustomEntry("probe-anchor", {});
  const commands = new Map<string, any>(), hooks = new Map<string, any[]>();
  const receipts: any[] = [], providerCalls: any[] = [], notices: string[] = [], statuses: any[] = [];
- let decision = "allow", pending = false, announce!: () => void, receiptChanged: (() => void) | undefined;
+ let decision = "allow", pending = false, inspectPath: string | undefined, announce!: () => void, receiptChanged: (() => void) | undefined;
  const started = new Promise<void>(resolve => { announce = resolve; });
  const registry: any = {
   streamSimple(selected: any, context: any, options: any) {
-   assert.deepEqual(context.tools, []);
-   assert.equal(options.toolChoice, "none");
+   const paths=JSON.parse(context.messages[0].content).evidencePaths ?? [];
+   assert.equal(options.toolChoice, paths.length ? "auto" : "none");
+   assert.deepEqual(context.tools.map((tool:any)=>tool.name),paths.length ? ["inspect_permission_file"] : []);
+   if(paths.length)assert.deepEqual(context.tools[0].parameters.properties.path.enum,paths);
    assert.equal(options.maxRetries, 0);
    let resolve!: (value: any) => void;
    const promise = new Promise(r => { resolve = r; });
    const call = { selected, context, options, resolve: () => resolve({
     role: "assistant", api: "fixture", provider: selected.provider, model: selected.id,
-    stopReason: "stop", timestamp: 1,
-    content: [{ type: "text", text: JSON.stringify({ decision, reason: decision === "deny"
+    stopReason: inspectPath && context.messages.length===1 ? "toolUse" : "stop", timestamp: 1,
+    content: inspectPath && context.messages.length===1 ? [{type:"toolCall",id:"inspect",name:"inspect_permission_file",arguments:{path:inspectPath}}] :
+     [{ type: "text", text: JSON.stringify({ decision, reason: decision === "deny"
      ? "Only inspection is authorized; do not change files." : "Local fixture action." }) }],
     usage: { input: 5, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 8,
      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.02 } },
@@ -81,6 +84,7 @@ function fixture(t: test.TestContext) {
   call: (toolName: string, input: any) => emit("tool_call", { toolName, input, toolCallId: "probe-call" }),
   enable: () => commands.get("gentle:mode").handler("auto", ctx),
   setDecision(value: string) { decision = value; }, setPending(value: boolean) { pending = value; },
+  inspect(path: string) { inspectPath=path; },
   started: () => deadline(started, "one inference started"),
   waitForReceipts(count: number) {
    if (receipts.length >= count) return Promise.resolve();
@@ -90,6 +94,20 @@ function fixture(t: test.TestContext) {
   },
  };
 }
+
+test("public hook supplies exact script evidence without executing or modifying the script", async t=>{
+ const f=fixture(t);mkdirSync(join(f.root,"scripts"));
+ const script=join(f.root,"scripts","check.mjs"), content="console.log('fixture-only');\n";
+ writeFileSync(script,content);
+ await f.enable();await f.input("Run the local checker after inspecting its effects.");
+ f.inspect("scripts/check.mjs");
+ const result=await f.call("bash",{command:"node scripts/check.mjs"});
+ assert.equal(result?.block,undefined);
+ assert.equal(f.providerCalls.length,2);
+ const evidence=f.providerCalls.at(-1).context.messages.find((message:any)=>message.role==="toolResult");
+ assert.deepEqual(JSON.parse(evidence.content[0].text).untrustedFileEvidence,{path:"scripts/check.mjs",content});
+ assert.equal(readFileSync(script,"utf8"),content,"inspection is read-only");
+});
 
 function deadline<T>(event: Promise<T>, label: string): Promise<T> {
  return new Promise((resolve, reject) => {

@@ -192,7 +192,12 @@ test("active YOLO waives only ordinary push after full destructive/guard evaluat
 	await h.command("enable");
 	assert.equal(await call("git push origin main"), undefined);
 	assert.equal(h.confirmations(), 1);
-	for (const command of ["git push origin main && rm -rf ./data", `sh -c "psql -c 'DROP TABLE users'"`, "git push origin main && git rebase main", "git push --force origin main", "git push origin main && npm publish", "git -C /other push origin main", "sh -c 'git push origin main'"]) {
+	// gentle-shell#2172: reversible compound delivery is waived too.
+	for (const command of ["git commit -m 'fix: x' && git push -u origin feature/x", "git push origin main && gh pr create --fill", "git -C /other push origin main", "git rebase origin/main && git push"]) {
+		assert.equal(await call(command), undefined, command);
+	}
+	assert.equal(h.confirmations(), 1, "waived commands never reach the confirmation dialog");
+	for (const command of ["git push origin main && rm -rf ./data", `sh -c "psql -c 'DROP TABLE users'"`, "git push origin main && git rebase -i main", "git push --force origin main", "git push origin main && npm publish", "git push origin :main", "sh -c 'git push origin main'"]) {
 		assert.ok(await call(command), command);
 	}
 	await h.command("disable"); assert.ok(await call("git push origin main"));

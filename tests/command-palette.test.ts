@@ -136,7 +136,7 @@ const GROUPS: CommandPaletteGroup[] = [
 	},
 	{
 		title: "Session",
-		items: [{ command: "gentle:changes", label: "Browse captured changes", shortcut: "alt+g" }],
+		items: [{ command: "gentle:changes", label: "Browse changes", shortcut: "alt+g" }],
 	},
 ];
 
@@ -245,9 +245,9 @@ test("render shows group titles and one row per item, with the shortcut right-al
 	assert.match(lines, /Session/);
 	assert.match(lines, /Assign models and effort/);
 	assert.match(lines, /Agent-model profiles/);
-	const changesLine = render(GROUPS, "").find((line) => line.includes("Browse captured changes"));
-	assert.ok(changesLine, "expected a row for Browse captured changes");
-	assert.match(changesLine!, /Browse captured changes[\s\S]*alt\+g/);
+	const changesLine = render(GROUPS, "").find((line) => line.includes("Browse changes"));
+	assert.ok(changesLine, "expected a row for Browse changes");
+	assert.match(changesLine!, /Browse changes[\s\S]*alt\+g/);
 });
 
 test("render omits the shortcut column for an item without one", () => {

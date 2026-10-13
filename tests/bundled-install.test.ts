@@ -17,7 +17,7 @@ const posixTest = (name: string, fn: (t: TestContext) => void | Promise<void>) =
 const NODE = "24.21.0";
 const PNPM = "11.1.1";
 const NPM = "11.19.0";
-const ENGRAM = "3.3.2";
+const ENGRAM = "3.4.0";
 
 // Every temporary home this file creates is removed when the file's tests end.
 const roots: string[] = [];
@@ -373,8 +373,8 @@ posixTest("ensureEngram downloads nothing when the prefix is missing", async () 
 });
 
 test("engramExecutable takes only the top-level engram from the tarball and engram.exe from the zip, regular files only", () => {
-	const tarball = { url: "https://github.com/Gentleman-Programming/engram/releases/download/v3.3.2/engram_3.3.2_linux_amd64.tar.gz" };
-	const zipped = { url: "https://github.com/Gentleman-Programming/engram/releases/download/v3.3.2/engram_3.3.2_windows_amd64.zip" };
+	const tarball = { url: "https://github.com/Gentleman-Programming/engram/releases/download/v3.4.0/engram_3.4.0_linux_amd64.tar.gz" };
+	const zipped = { url: "https://github.com/Gentleman-Programming/engram/releases/download/v3.4.0/engram_3.4.0_windows_amd64.zip" };
 	assert.deepEqual(engramExecutable(engramArchive, tarball), engramBytes);
 	const exe = Buffer.from("MZ engram");
 	assert.deepEqual(engramExecutable(zip([["tools/cloud-sync-projects.ps1", Buffer.from("x")], ["engram.exe", exe]]), zipped), exe);

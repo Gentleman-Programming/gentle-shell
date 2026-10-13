@@ -16,6 +16,7 @@ import {
 	TODO_TOOL_NAME,
 	todoCardTone,
 	todoPromptBlock,
+	todoStateMessage,
 	todoSummary,
 	type TodoParams,
 	type TodoState,
@@ -24,10 +25,12 @@ import {
 // Gentle Todo: the task list the model keeps while it works, drawn as a
 // Gentle Shell card above the editor. Three things keep it current that a
 // static tool description cannot: `write` replaces the whole list in one
-// call, each run's system prompt carries the open tasks and the rules, and
-// a list that goes untouched while tasks stay open is marked stale for both
-// the human and the model. Long runs also receive one request-local reminder
-// after several tool-use turns, without waking the agent or changing tasks.
+// call, each run's system prompt carries a byte-stable rules block while the
+// open tasks reach the model as a request-local trailing message (so list
+// changes never invalidate the cached prompt prefix, gentle-shell#1662), and
+// a list that goes untouched while tasks stay open is marked stale for the
+// human. Long runs also receive one request-local reminder after several
+// tool-use turns, without waking the agent or changing tasks.
 
 const WIDGET_KEY = "gentle-todo";
 const STATUS_ENUM = ["pending", "in_progress", "blocked", "done", "dropped"];
@@ -281,7 +284,9 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		});
 	}
 
-	for (const [key, lines] of [["ctrl+shift+up", -3], ["ctrl+shift+down", 3]] as const) {
+	// Pi binds ctrl+shift+up/down to prompt navigation (tui.altScreen.*Prompt) and
+	// alt+up/down to dequeue and model reordering; alt+shift+up/down are free.
+	for (const [key, lines] of [["alt+shift+up", -3], ["alt+shift+down", 3]] as const) {
 		pi.registerShortcut(key, {
 			description: `Scroll the Todo list ${lines < 0 ? "up" : "down"}`,
 			handler: async (ctx) => session(ctx).scrollTodo?.(lines),
@@ -315,11 +320,10 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 			current.clearOnNextTurn = false;
 			show(current);
 		}
-		const block = todoPromptBlock(current.state, staleTurns(current.state, current.turn));
-		if (!block) return undefined;
 		// gentle-shell#1485: pi-claude-bridge drops a handler-returned
-		// systemPrompt, so the open-tasks block goes through appendSystemPrompt.
-		appendSystemPromptOnce(event.systemPromptOptions, block);
+		// systemPrompt, so the rules block goes through appendSystemPrompt. It is
+		// the same bytes on every turn, list or no list (gentle-shell#1662).
+		appendSystemPromptOnce(event.systemPromptOptions, todoPromptBlock());
 		return undefined;
 	});
 
@@ -335,14 +339,20 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 
 	pi.on("context", (event, ctx) => {
 		const current = session(ctx);
-		if (current.reminded || current.toolTurnsSinceWrite < REMIND_AFTER_TOOL_TURNS) return undefined;
-		if (!current.state.tasks.some((task) => task.status === "pending" || task.status === "in_progress")) return undefined;
-		current.reminded = true;
 		// Context transforms are request-local: no transcript entry, UI
-		// notification, continuation or provider-specific wake is needed.
-		return {
-			messages: [...event.messages, { role: "custom" as const, customType: "gentle-todo-reminder", content: TODO_REMINDER, display: false, timestamp: Date.now() }],
-		};
+		// notification, continuation or provider-specific wake is needed. The
+		// current list trails the transcript (gentle-shell#1662), then the
+		// one-shot reminder when it is due.
+		const trailing: Array<{ role: "custom"; customType: string; content: string; display: false; timestamp: number }> = [];
+		const state = todoStateMessage(current.state);
+		if (state !== undefined) trailing.push({ role: "custom", customType: "gentle-todo-state", content: state, display: false, timestamp: Date.now() });
+		const actionable = current.state.tasks.some((task) => task.status === "pending" || task.status === "in_progress");
+		if (!current.reminded && current.toolTurnsSinceWrite >= REMIND_AFTER_TOOL_TURNS && actionable) {
+			current.reminded = true;
+			trailing.push({ role: "custom", customType: "gentle-todo-reminder", content: TODO_REMINDER, display: false, timestamp: Date.now() });
+		}
+		if (trailing.length === 0) return undefined;
+		return { messages: [...event.messages, ...trailing] };
 	});
 
 	pi.on("tool_execution_end", (event, ctx) => {

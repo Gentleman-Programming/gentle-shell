@@ -31,7 +31,6 @@ import { verifyWindowsStorage, verifyWindowsStorageMany } from "./installer-wind
 const SECOND = 1000;
 const deadlines = Object.freeze({ version: 10 * SECOND, list: 30 * SECOND });
 const BOOTSTRAP_TOOLS = /^\.gentle-shell-bootstrap-tools\./;
-const PNPM_MAJOR = Number(requirements.pnpm.split(".")[0]);
 
 const unknown = () => ({ available: null });
 const absent = () => ({ available: false });
@@ -442,8 +441,9 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 			if (!pnpm) return (await lookPath("pnpm", env, platform, fs)) ? unknown() : absent();
 			const version = exactVersion(await output(pnpm.command, [...pnpm.prefix, "--version"], child, deadlines.version), STABLE);
 			if (!version) return unknown();
-			// pnpm checks its Node engine at startup; the runner's argv is verified for pnpm 11 only.
-			const compatible = Number(version.split(".")[0]) === PNPM_MAJOR && atLeast(version, requirements.pnpm);
+			// pnpm checks its Node engine at startup. Any major at the pin or newer: the
+			// runner's commands were run with pnpm 12 against a pnpm 11 global home and back.
+			const compatible = atLeast(version, requirements.pnpm);
 			// The bootstrap's own pnpm (POSIX PATH or Windows handoff entry) is bootstrap-only
 			// even next to the user's pnpm, which it acquired because that one is incompatible.
 			if (!fromBootstrap(pnpm.prefix[0] ?? pnpm.command)) {
@@ -456,7 +456,7 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 			const runnable = ownPnpm !== null && await trusted([own, ownPnpm.command, ...ownPnpm.prefix]);
 			const result = runnable ? await run(ownPnpm.command, [...ownPnpm.prefix, "--version"], { env: user, cwd: path.parse(own).root, deadlineMs: deadlines.version }) : null;
 			const found = succeeded(result) && result.truncated !== true ? exactVersion(result.stdout, STABLE) : null;
-			const usableFound = found !== null && Number(found.split(".")[0]) === PNPM_MAJOR && atLeast(found, requirements.pnpm);
+			const usableFound = found !== null && atLeast(found, requirements.pnpm);
 			// Persisting pnpm writes $PNPM_HOME/bin: a user's pnpm there with a stable version
 			// is reported as it is (an incompatible one blocks), never replaced or downgraded.
 			// One that fails the walk (untrusted), or whose shim is not recognized or whose
@@ -467,7 +467,10 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 				return { available: true, version, usable: true, compatible, persistent: true, inGlobalBin: true,
 					...(ownPnpm !== null && !runnable ? { untrusted: true } : { unchecked: true }) };
 			}
-			const replaced = found !== null && !usableFound;
+			// The bootstraps run only the pinned major (installer-downloads pinnedPnpmCompatible): a pnpm
+			// of another major beside them is reported, so the plan says it is left unchanged.
+			const sameMajor = found !== null && found.split(".")[0] === requirements.pnpm.split(".")[0];
+			const replaced = found !== null && (!usableFound || !sameMajor);
 			return { available: true, version, usable: true, compatible, persistent: false, ...(replaced ? { found } : {}) };
 		},
 		// Only a Pi older than the minimum reports its owner (pnpm or npm): the one the installer updates.
@@ -516,6 +519,16 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 			if (!spawnable(go, platform)) return unknown();
 			const version = exactVersion(await output(go, ["version"], user, deadlines.version), GO_VERSION);
 			return version ? { available: true, version, usable: true } : unknown();
+		},
+		// Not needed to install; review, worktrees and repository features use it.
+		// Git itself is never run: on macOS /usr/bin/git is a shim that opens an
+		// install dialog without the Command Line Tools, so only `xcode-select -p`
+		// (which never opens one) decides whether that shim is real Git.
+		async git() {
+			const git = await lookPath("git", user, platform, fs);
+			if (!git) return absent();
+			if (platform !== "darwin" || git !== "/usr/bin/git") return { available: true };
+			return { available: succeeded(await run("/usr/bin/xcode-select", ["-p"], { env: user, deadlineMs: deadlines.version })) };
 		},
 		async globalBin() {
 			if (!globalBin) return unknown();

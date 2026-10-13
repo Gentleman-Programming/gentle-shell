@@ -115,8 +115,25 @@ test("both extensions land their block in appendSystemPrompt on one shared optio
 
 	const appended = event.systemPromptOptions.appendSystemPrompt;
 	assert.match(appended, /el Gentleman Identity and Harness/);
+	const continuityStart = appended.indexOf("## Authorized work continuity");
+	const coreStart = appended.indexOf("# el Gentleman Orchestrator");
+	assert.ok(continuityStart >= 0 && continuityStart < coreStart,
+		"continuity must be always injected in the identity/harness, outside the budgeted core");
+	assert.equal(appended.split("## Authorized work continuity").length - 1, 1);
+	const continuity = appended.slice(continuityStart, coreStart);
+	for (const clause of [
+		"necessary in-scope implementation, documentation and verification steps",
+		"Never end a turn merely announcing an immediately executable authorized next step; execute it instead",
+		"required explicit consent, a denied action, unavailable required proof, or the human's explicit stop",
+		"Do not infer permission for publishing, destructive actions, unrelated scope or native consent",
+		"Report a concrete blocker and the exact decision needed",
+		"launch the bounded action and end the turn when no independent in-scope work remains",
+		"Retain its identity and resume the already-authorized continuation automatically on its completion event",
+		"do not ask the human to say \"continue\", poll, or claim completion while checks remain pending",
+	]) assert.ok(continuity.includes(clause), `missing continuity clause: ${clause}`);
 	assert.match(appended, /## Todo list/);
-	assert.match(appended, /1\. \[pending\] Fix the bug/);
+	// gentle-shell#1662: the list itself travels as a request-local message, never in the prompt.
+	assert.doesNotMatch(appended, /Fix the bug/);
 	assert.ok(
 		appended.indexOf("el Gentleman Identity and Harness") < appended.indexOf("## Todo list"),
 		"gentle-ai's block must precede gentle-todo's, matching handler registration order",

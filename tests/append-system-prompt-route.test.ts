@@ -116,7 +116,8 @@ test("both extensions land their block in appendSystemPrompt on one shared optio
 	const appended = event.systemPromptOptions.appendSystemPrompt;
 	assert.match(appended, /el Gentleman Identity and Harness/);
 	assert.match(appended, /## Todo list/);
-	assert.match(appended, /1\. \[pending\] Fix the bug/);
+	// gentle-shell#1662: the list itself travels as a request-local message, never in the prompt.
+	assert.doesNotMatch(appended, /Fix the bug/);
 	assert.ok(
 		appended.indexOf("el Gentleman Identity and Harness") < appended.indexOf("## Todo list"),
 		"gentle-ai's block must precede gentle-todo's, matching handler registration order",

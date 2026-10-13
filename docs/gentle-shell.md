@@ -284,8 +284,8 @@ The `todo` tool and its card replace the third-party todo extension (remove `npm
 The runtime helps keep the list current beyond a static tool description:
 
 - `write` replaces the whole list in one call, so the model rewrites the plan instead of patching it; `add`, `update`, `clear`, and `list` remain for single moves.
-- Each agent run's system prompt carries the open tasks and the rules: in_progress before starting, done right after finishing, update before ending the run.
-- A list that goes two agent runs untouched while pending or in-progress tasks remain turns amber with `stale · N turns`, and the prompt reports that age.
+- Each agent run's system prompt carries the same byte-stable rules block (in_progress before starting, done right after finishing, update before ending the run), so the cached prompt prefix never changes because of the list. While tasks stay open, the current list reaches the model as a hidden, request-local message at the end of each request; it is never persisted and never enters the system prompt, so status, title, note and ordering changes cost only the tail of the request.
+- A list that goes two agent runs untouched while pending or in-progress tasks remain turns amber with `stale · N turns` on the card; that age is shown to the human only.
 - Within a long run, after four tool-use model turns without a successful todo write, the next model request receives one hidden, request-local reminder to review the plan. A successful `write`, `add`, `update`, or `clear` resets and rearms it; `list` and rejected writes do not. The turn containing the write does not count toward the threshold. Empty, finished and blocked-only plans receive no reminder. Reminder tracking restarts when the session loads; it does not change the existing card freshness, persist a message, start an extra model turn, change task statuses, or connect to subagents.
 
 Tasks are `pending` (`○`), `in_progress` (`◐`), `blocked` (`⊘`), `done` (`✓`), or `dropped` (`✕`):

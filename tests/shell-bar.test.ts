@@ -856,3 +856,39 @@ test("the narrow-layout bottom-only bar stays unchanged in the float style", (t)
 	useCardStyle(t, CARD_STYLE.FLOAT);
 	assert.deepEqual(renderShellBottomOnlyBar(data, theme, 100, "alt+u"), neon);
 });
+
+// --- named env (GENTLE_SHELL_ENV, lib/gentle-shell-envs.ts) ------------------
+
+test("buildShellHeaderModel carries the env only when a named env is active", () => {
+	assert.equal(buildShellHeaderModel(model({ env: "work" })).env, "work");
+	assert.ok(!("env" in buildShellHeaderModel(model())));
+});
+
+test("renderShellHeaderBar shows the env right after the brand", () => {
+	const { text } = renderShellHeaderBar(buildShellHeaderModel(model({ env: "work", profile: "team" })), plainTheme, 140);
+	assert.ok(text.startsWith("✿ Gentle Shell ⟡ env work ⟡ ~/work/gentle-pi main"), text);
+	const { text: plain } = renderShellHeaderBar(buildShellHeaderModel(model()), plainTheme, 140);
+	assert.doesNotMatch(plain, /env /);
+});
+
+test("renderShellHeaderBar keeps the env after profile, effort and location are dropped", () => {
+	const header = buildShellHeaderModel(model({ env: "work", profile: "team" }));
+	for (const width of [100, 90, 70]) {
+		const { text } = renderShellHeaderBar(header, plainTheme, width);
+		assert.equal(visibleWidth(text), width);
+		assert.match(text, /^✿ Gentle Shell ⟡ env work/, `width ${width}: ${text}`);
+	}
+});
+
+test("minimal density hides the brand but still names the env", () => {
+	const settings = { ...DEFAULT_VISUAL_SETTINGS, density: "minimal" as const };
+	const { text } = renderShellHeaderBar(buildShellHeaderModel(model({ env: "work" })), plainTheme, 140, undefined, settings);
+	assert.doesNotMatch(text, /Gentle Shell/);
+	assert.match(text, /^env work/);
+});
+
+test("sidebar Status card names the env under Project", () => {
+	const text = renderShellSidebarBar(model({ env: "work" }), plainTheme, 60).join("\n");
+	assert.match(text, /Env work/);
+	assert.doesNotMatch(renderShellSidebarBar(model(), plainTheme, 60).join("\n"), /Env /);
+});

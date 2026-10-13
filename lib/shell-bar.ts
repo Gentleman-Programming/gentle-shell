@@ -22,6 +22,8 @@ export interface ShellBarModel {
 	review?: ReviewSidebarSnapshot;
 	jobs?: RunningJobDisplay[];
 	profile?: string;
+	// The named env this session runs in (gentle-shell --env), if any.
+	env?: string;
 	changes?: { files: number; added: number; deleted: number; notice?: string };
 	cwd: string;
 	branch: string | null;
@@ -48,6 +50,7 @@ export interface ShellHeaderModel {
 	modelId: string;
 	effort: string | undefined;
 	profile?: string;
+	env?: string;
 	contextPercent: number | null;
 	costTotal: number;
 	subscription: boolean;
@@ -60,6 +63,7 @@ export interface ShellHeaderModel {
 export function buildShellHeaderModel(model: ShellBarModel, showJobs = false): ShellHeaderModel {
 	const { cwd, branch, dirty, modelId, effort, profile, contextPercent, costTotal, subscription, usage } = model;
 	return { cwd, branch, dirty, modelId, effort, profile, contextPercent, costTotal, subscription, usage,
+		...(model.env ? { env: model.env } : {}),
 		...(showJobs && model.jobs?.length ? { jobs: model.jobs.length } : {}) };
 }
 
@@ -229,6 +233,7 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 			title: "Project",
 			lines: [
 				value(model.cwd),
+				...(model.env ? [`${label("Env")} ${value(sanitizeStatus(model.env))}`] : []),
 				...(branch ? [branch] : []),
 				...(model.sessionName ? [`${label("Session")} ${value(model.sessionName)}`] : []),
 				...(model.profile ? [`${label("Profile")} ${value(sanitizeStatus(model.profile))}`] : []),
@@ -277,18 +282,21 @@ const HEADER_BRAND = "✿ Gentle Shell";
 // alive as long as anything can still share the row with the right-aligned
 // counters.
 function headerLeftStages(model: ShellHeaderModel, theme: ShellBarTheme, showModelDetails: boolean): string[][] {
+	// The env stays beside the brand in every stage: which home this session
+	// writes to matters more than any detail that gives way before it.
 	const brand = theme.fg(ROLE.BRAND, theme.bold(HEADER_BRAND));
+	const env = model.env ? [`${theme.fg(ROLE.LABEL, "env")} ${theme.fg(ROLE.VALUE, theme.bold(sanitizeStatus(model.env)))}`] : [];
 	const location = locationSegment(model, theme);
-	if (!showModelDetails) return [[brand, location], [brand]];
+	if (!showModelDetails) return [[brand, ...env, location], [brand, ...env]];
 	const withEffort = executionSegment(model.modelId, model.effort, theme);
 	const modelOnly = executionSegment(model.modelId, undefined, theme);
 	const withProfile = model.profile ? `${withEffort} ${theme.fg(ROLE.LABEL, "·")} ${theme.fg(ROLE.MODEL, sanitizeStatus(model.profile))}` : withEffort;
 	return [
-		[brand, location, withProfile],
-		[brand, location, withEffort],
-		[brand, location, modelOnly],
-		[brand, modelOnly],
-		[brand],
+		[brand, ...env, location, withProfile],
+		[brand, ...env, location, withEffort],
+		[brand, ...env, location, modelOnly],
+		[brand, ...env, modelOnly],
+		[brand, ...env],
 	];
 }
 

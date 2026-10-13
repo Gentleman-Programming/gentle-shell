@@ -2,7 +2,9 @@
 import { basename, dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection,                            } from "./child-package-injection.mjs";
 import { GENTLE_SHELL_CONFIG_HOME_ENV } from "./gentle-shell-bundled.mjs";
-import { envDir, envNameForDir, envsRoot, validateEnvName } from "./gentle-shell-envs.mjs";
+import { ENV_NAME_ENV, envDir, envNameForDir, envsRoot, validateEnvName } from "./gentle-shell-envs.mjs";
+
+export { ENV_NAME_ENV };
 
 // The gentle-shell launcher: pure, side-effect-free functions over injected
 // env/fs/exec. `bin/gentle-shell.mjs` (T2) wires these into the real process,
@@ -1125,6 +1127,11 @@ export function buildPiInvocation(input                        )               {
 	const configHome = input.bundled === true ? undefined : standaloneConfigHome(input.home);
 	if (configHome === undefined) delete env[GENTLE_SHELL_CONFIG_HOME_ENV];
 	else env[GENTLE_SHELL_CONFIG_HOME_ENV] = configHome;
+
+	// Exactly this home's env name: an inherited value (a gentle-shell started
+	// from inside another env's session) must never label a different home.
+	if (input.home.env === undefined) delete env[ENV_NAME_ENV];
+	else env[ENV_NAME_ENV] = input.home.env;
 	if (childInjection === undefined) delete env[CHILD_PACKAGE_INJECTION_ENV];
 	else env[CHILD_PACKAGE_INJECTION_ENV] = encodeChildPackageInjection(childInjection);
 

@@ -8,6 +8,17 @@ import { basename, dirname, join, resolve as resolvePath } from "node:path";
 
 export const ENVS_DIR_ENV = "GENTLE_SHELL_ENVS_DIR";
 
+// Set by the launcher on the Pi process when the home is a named env, so the
+// Gentle Shell UI can name it. Never set for any other home.
+export const ENV_NAME_ENV = "GENTLE_SHELL_ENV";
+
+// The active env's name for display, or undefined. Only a valid name is
+// trusted: the value is shown in the UI, so anything else is ignored.
+export function activeEnvName(env                                    )                     {
+	const name = env[ENV_NAME_ENV];
+	return name !== undefined && validateEnvName(name) === undefined ? name : undefined;
+}
+
 const ENV_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,39}$/;
 
 // Lowercase only, so names stay identical on case-insensitive filesystems;

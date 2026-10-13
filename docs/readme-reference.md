@@ -381,7 +381,7 @@ A named env is a separate agent home managed by gentle-shell under `~/.gentle-sh
 | `gentle-shell envs new <name>` | Creates the env without launching it. Its first launch installs the companion packages, the same as any new `--home`. |
 | `gentle-shell --env <name> [...]` | Launches, sets up (`--env <name> setup`), or runs pi subcommands (`--env <name> install npm:x`) in that env. |
 
-The default env is stored as the ordinary persisted `home` path, so a plain `gentle-shell` opens it, and `gentle-shell home link|isolated|<path>` replaces it. Envs are separate homes, not sandboxes. They share the repository you work in, `~/.pi/gentle-ai/persona.json`, and `~/.gentle-ai/state.json`, like every other home. `self-uninstall` does not remove `~/.gentle-shell/envs`.
+Inside a session, the header shows `env <name>` right after the brand, and it stays there as the header narrows. The Status card's Project group shows `Env <name>`. The launcher passes the name to Pi as `GENTLE_SHELL_ENV`, only for a named env, and clears any inherited value for every other home. The default env is stored as the ordinary persisted `home` path, so a plain `gentle-shell` opens it, and `gentle-shell home link|isolated|<path>` replaces it. Envs are separate homes, not sandboxes. They share the repository you work in, `~/.pi/gentle-ai/persona.json`, and `~/.gentle-ai/state.json`, like every other home. `self-uninstall` does not remove `~/.gentle-shell/envs`.
 
 ### Managing packages
 

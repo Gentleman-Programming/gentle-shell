@@ -125,6 +125,7 @@ import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
 import { SelectionEngine } from "../lib/selection-engine.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
 import { buildNotificationRows } from "../lib/notification-customize.ts";
+import { activeEnvName } from "../lib/gentle-shell-envs.ts";
 
 // Gentle Shell: the visual layer gentle-pi puts on top of pi. It installs the
 // status bar, the petal prompt, the working-tree changes widget and overlay,
@@ -151,6 +152,8 @@ interface ShellBarComponent {
 interface BuildOptions {
 	jobs?: RunningJobDisplay[];
 	profile?: string;
+	// Named env from the launcher (GENTLE_SHELL_ENV); omitted for other homes.
+	env?: string;
 	home?: string;
 	dirty?: number;
 	usage?: ProviderUsage;
@@ -319,6 +322,7 @@ export function buildShellBarModel(
 	return {
 		cwd: shortenHome(ctx.sessionManager.getCwd(), home),
 		profile: options.profile,
+		...(options.env ? { env: options.env } : {}),
 		branch: footerData.getGitBranch(),
 		dirty: options.dirty,
 		sessionName: ctx.sessionManager.getSessionName(),
@@ -1916,7 +1920,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// statuses. The digest is what keeps the fullscreen memo honest, and it
 			// rebuilds the model exactly as the narrow bottom bar does every frame.
 			const footerModel = (): ShellBarModel => ({
-				...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: usage.get(ctx.model?.provider ?? ""), profile: deps.activeProfile(), jobs: runningJobs }),
+				...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: usage.get(ctx.model?.provider ?? ""), profile: deps.activeProfile(), env: activeEnvName(process.env), jobs: runningJobs }),
 				changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted },
 				review,
 			});

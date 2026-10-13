@@ -136,3 +136,30 @@ test("resolveHome names a persisted default that lives in the envs root", () => 
 	assert.equal(plain.env, undefined);
 	assert.deepEqual(homeSelectorFlags(plain), ["--home", "/other"]);
 });
+
+test("buildPiInvocation names the env for the session and never leaks an inherited one", async () => {
+	const { buildPiInvocation, ENV_NAME_ENV } = await import("../lib/gentle-shell-launcher.ts");
+	const base = {
+		runtime: { kind: "path" as const, command: "pi", args: [] },
+		packageRoot: "/pkg",
+		declaration: undefined,
+		takeOver: false,
+		otherPackagePaths: [],
+		passthrough: [],
+		homedir: "/h",
+		cwd: "/w",
+	};
+	const named = buildPiInvocation({ ...base, home: { mode: "path", dir: "/h/.gentle-shell/envs/work", source: "flag", env: "work" }, baseEnv: {} });
+	assert.equal(ENV_NAME_ENV, "GENTLE_SHELL_ENV");
+	assert.equal(named.env.GENTLE_SHELL_ENV, "work");
+	const plain = buildPiInvocation({ ...base, home: { mode: "isolated", dir: "/h/.gentle-shell/agent", source: "default" }, baseEnv: { GENTLE_SHELL_ENV: "outer" } });
+	assert.ok(!("GENTLE_SHELL_ENV" in plain.env), "an outer session's env name never reaches a different home");
+});
+
+test("activeEnvName accepts only a valid env name from the environment", async () => {
+	const { activeEnvName } = await import("../lib/gentle-shell-envs.ts");
+	assert.equal(activeEnvName({ GENTLE_SHELL_ENV: "work" }), "work");
+	assert.equal(activeEnvName({}), undefined);
+	assert.equal(activeEnvName({ GENTLE_SHELL_ENV: "" }), undefined);
+	assert.equal(activeEnvName({ GENTLE_SHELL_ENV: "\x1b[31mevil" }), undefined);
+});

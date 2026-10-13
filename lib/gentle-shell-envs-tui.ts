@@ -201,6 +201,16 @@ function visible(text: string): number {
 	return [...text.replace(/\x1b\[[0-9;]*m/g, "")].length;
 }
 
+// Text from the user's own files (paths, package sources, provider ids) is
+// shown as plain text: escape sequences and other control characters are
+// dropped so a file can never move the cursor or retitle the terminal.
+function plain(text: string): string {
+	return text
+		.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\|$)/g, "")
+		.replace(/(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]/g, "")
+		.replace(/[\x00-\x1f\x7f-\x9f]/g, "");
+}
+
 function fit(text: string, width: number): string {
 	if (width <= 0) return "";
 	const chars = [...text];
@@ -256,12 +266,12 @@ function detailRows(env: EnvSummary | undefined, inner: number, paint: Paint): C
 	return [
 		...(env.base ? [{ text: "The install's own home, as before envs (--isolated).", style: paint.label }] : []),
 		...(env.isDefault ? [{ text: "Default: a plain gentle-shell opens it", style: paint.rose }] : []),
-		field("Path", env.dir),
-		field("Setup", env.setUp === false ? "not set up yet" : env.provisioned),
+		field("Path", plain(env.dir)),
+		field("Setup", env.setUp === false ? "not set up yet" : plain(env.provisioned)),
 		field("Sessions", sessions),
-		field("Sign-ins", env.providers.length > 0 ? env.providers.join(", ") : "none yet: /login inside the session"),
+		field("Sign-ins", env.providers.length > 0 ? env.providers.map(plain).join(", ") : "none yet: /login inside the session"),
 		field("Packages", env.packages.length > 0 ? `${env.packages.length}` : env.setUp === false ? "installed when you first open it" : "none"),
-		...env.packages.map((source) => ({ text: `  · ${source}`, style: paint.muted })),
+		...env.packages.map((source) => ({ text: `  · ${plain(source)}`, style: paint.muted })),
 	];
 }
 

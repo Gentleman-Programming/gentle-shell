@@ -279,3 +279,13 @@ test("a home that was never set up says it is set up on first open, never just '
 	const ready = initialEnvsState([env("work", { setUp: true })]);
 	assert.match(renderEnvsScreen(ready, 100, 24).map(stripAnsi).join("\n"), /Packages +none/);
 });
+
+test("text from the user's own files never reaches the terminal as control sequences", () => {
+	const evil = env("work", { dir: "/e/work\x1b]0;x\x07", packages: ["npm:a\x1b[2J"], providers: ["anth\x1b[31mropic"], provisioned: "ok\r" });
+	const lines = renderEnvsScreen(initialEnvsState([evil]), 100, 24, { color: false });
+	// The renderer's own SGR styling is allowed; nothing else may remain.
+	for (const line of lines) assert.doesNotMatch(stripAnsi(line), /[\x00-\x1f\x7f]/, JSON.stringify(line));
+	const text = lines.join("\n");
+	assert.match(text, /npm:a/);
+	assert.match(text, /anthropic|anth.*ropic/);
+});

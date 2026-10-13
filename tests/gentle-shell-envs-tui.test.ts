@@ -148,3 +148,78 @@ test("render degrades without throwing on tiny terminals", () => {
 function stripAnsi(text: string): string {
 	return text.replace(/\x1b\[[0-9;]*m/g, "");
 }
+
+// --- Gentle visual identity -------------------------------------------------
+
+const ROSE = "\x1b[38;2;255;118;195m";
+const sample = () => initialEnvsState([
+	env("work", { isDefault: true, packages: ["npm:gentle-engram"], providers: ["anthropic"], sessionCount: 2 }),
+	env("personal"),
+]);
+
+test("the gate is branded: Gentle Shell title with version and a call to choose an env", () => {
+	const text = renderEnvsScreen(sample(), 100, 24, { version: "4.2.0" }).map(stripAnsi).join("\n");
+	assert.match(text, /✿ Gentle Shell/);
+	assert.match(text, /v4\.2\.0/);
+	assert.match(text, /Choose an environment/);
+});
+
+test("envs and details render as rounded Gentle cards with the rose title glyph", () => {
+	const lines = renderEnvsScreen(sample(), 100, 24).map(stripAnsi);
+	assert.ok(lines.some((line) => /╭─ ✿ Envs ─+╮/.test(line)), lines.join("\n"));
+	assert.ok(lines.some((line) => /╭─ ✿ work ─+╮/.test(line)), "detail card titled with the selected env");
+	assert.ok(lines.some((line) => /^╰─+╯/.test(line)));
+});
+
+test("the selected env is marked with the Gentle chevron and the default with a star", () => {
+	const text = renderEnvsScreen(sample(), 100, 24).map(stripAnsi).join("\n");
+	assert.match(text, /│ ❯ ★ work/);
+	assert.match(text, /│ {5}personal/);
+});
+
+test("color uses the Gentle rose and never reverse video; monochrome emits no truecolor", () => {
+	const colored = renderEnvsScreen(sample(), 100, 24, { color: true }).join("\n");
+	assert.ok(colored.includes(ROSE), "rose accent");
+	assert.ok(!colored.includes("\x1b[7m"), "no reverse video");
+	const plain = renderEnvsScreen(sample(), 100, 24, { color: false }).join("\n");
+	assert.ok(!plain.includes("\x1b[38;2;"), "no truecolor without color");
+});
+
+test("tall terminals show the Gentle rose artwork; short ones keep only the title", () => {
+	const tall = renderEnvsScreen(sample(), 100, 40).map(stripAnsi).join("\n");
+	assert.match(tall, /[⣀-⣿]{6}/, "braille rose shown");
+	const short = renderEnvsScreen(sample(), 100, 20).map(stripAnsi).join("\n");
+	assert.doesNotMatch(short, /[⣀-⣿]{6}/);
+	assert.match(short, /✿ Gentle Shell/);
+});
+
+test("the gate is a centered composition: cards fit their content on wide, tall terminals", () => {
+	const lines = renderEnvsScreen(sample(), 200, 60).map(stripAnsi);
+	const top = lines.findIndex((line) => line.includes("╭─ ✿ Envs"));
+	const bottom = lines.findIndex((line, index) => index > top && line.trimStart().startsWith("╰"));
+	assert.ok(bottom - top < 20, `cards fit content, got ${bottom - top} rows`);
+	assert.ok(lines[top].indexOf("╭") >= 40, "block centered horizontally");
+	assert.ok(lines[top].trimEnd().length - lines[top].indexOf("╭") <= 112, "block width capped");
+	assert.ok(lines.findIndex((line) => line.includes("✿ Gentle Shell")) > 5, "vertically centered, not glued to the top");
+});
+
+test("key hints wrap instead of losing actions, and sit right under the cards", () => {
+	for (const width of [80, 60]) {
+		const lines = renderEnvsScreen(sample(), width, 24).map(stripAnsi);
+		const text = lines.join("\n");
+		for (const hint of ["enter open", "n new", "d delete", "q quit"]) assert.ok(text.includes(hint), `${width}: ${hint}`);
+		const bottom = lines.findLastIndex((line) => line.trimStart().startsWith("╰"));
+		const hints = lines.findIndex((line) => line.includes("enter open"));
+		assert.ok(hints > bottom && hints - bottom <= 3, `${width}: hints right under the cards`);
+	}
+});
+
+test("every layout fills the terminal exactly within its width", () => {
+	for (const [w, h] of [[160, 50], [100, 40], [80, 24], [60, 16], [40, 12], [20, 6], [10, 3]] as const) {
+		for (const color of [true, false]) {
+			const lines = renderEnvsScreen(sample(), w, h, { color, version: "4.2.0" });
+			assert.equal(lines.length, h, `${w}x${h}`);
+			for (const line of lines) assert.ok([...stripAnsi(line)].length <= w, `${w}x${h}: ${stripAnsi(line)}`);
+		}
+	}
+});

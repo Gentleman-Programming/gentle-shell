@@ -883,11 +883,17 @@ async function handleEnvsCommand(commandArgs) {
 // The terminal is always restored, including when `apply` throws.
 function envsScreenSession(initial, apply) {
 	const { stdin, stdout } = process;
+	// Gentle truecolor only where the terminal has it and NO_COLOR is unset;
+	// otherwise the same layout in monochrome.
+	const renderOptions = {
+		color: !process.env.NO_COLOR && stdout.hasColors?.(2 ** 24) === true,
+		version: ownPackageVersion(),
+	};
 	return new Promise((resolve) => {
 		let state = initial;
 		const draw = () => {
 			// Some ptys report 0x0 until resized; fall back to a usable size.
-			const lines = renderEnvsScreen(state, stdout.columns || 80, stdout.rows || 24);
+			const lines = renderEnvsScreen(state, stdout.columns || 80, stdout.rows || 24, renderOptions);
 			stdout.write(`\x1b[H${lines.map((line) => `${line}\x1b[K`).join("\r\n")}\x1b[J`);
 		};
 		const finish = (effect) => {

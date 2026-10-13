@@ -16,6 +16,7 @@ const sources = [
 	"telemetry-trigger",
 	"child-package-injection",
 	"gentle-shell-envs",
+	"gentle-brand",
 	"gentle-shell-envs-tui",
 	"gentle-shell-launcher",
 	"gentle-shell-bundled",

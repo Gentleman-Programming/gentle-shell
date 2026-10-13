@@ -215,6 +215,8 @@ The current package requires Pi 1.2.0 or newer and Node >=22.19.0. Development t
 
 The `subagent_*` tools and the agents card replace the third-party subagents package (remove `npm:pi-subagents-j0k3r` from your pi packages; while it is still installed the tools stay unregistered and a warning says so at startup). Agent definitions and settings are the ones you already have: markdown agents in `~/.pi/agent/agents/`, `~/.pi/agent/subagents/`, `<cwd>/.pi/agents/`, `<cwd>/.pi/subagents/` (project beats global, `subagents/` beats `agents/`), and `subagents.json` at the global and project level (`default_model`, `default_effort`, `default_mode`, `model_profiles`, `stall_timeout_ms`, `tool_stall_timeout_ms`, `max_concurrency`, `history_max_tasks`).
 
+Children do not inherit sensitive environment variables (passwords, secrets, credentials, tokens, API/access/private keys) or credential-bearing database URLs (`DATABASE_URL`) from the parent process. If a child's tooling needs one of them — for example a database password that an MCP server the child starts interpolates from the environment — declare it in the agent frontmatter: `env_keep: [DB_SERVER, DB_PASSWORD]`. Filtering only removes keys from the child's own copy of the environment; the parent's environment is never modified.
+
 Agent paths follow `GENTLE_PI_AGENT_HOME`, then `PI_CODING_AGENT_DIR`, then `~/.pi/agent` for definitions, config, history, child sessions, and transcripts. These overrides select the agent profile; they do not sandbox project or shared global resources.
 
 ```text

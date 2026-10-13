@@ -7,7 +7,7 @@ import { AgentRunner } from "../lib/agents-runner.ts";
 import { fakeChild } from "./agents-fake-child.ts";
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
-const agent: AgentDefinition = { name: "worker", description: "", filePath: "/a.md", scope: "global", instructions: "", model: undefined, thinking: undefined, mode: undefined, tools: ["read"] };
+const agent: AgentDefinition = { name: "worker", description: "", filePath: "/a.md", scope: "global", instructions: "", model: undefined, thinking: undefined, mode: undefined, tools: ["read"], envKeep: [] };
 const request = (mode: AgentMode = AGENT_MODE.BACKGROUND) => ({ agent, prompt: "work", label: undefined, context: undefined, mode, cwd: "/repo", parentSessionId: "s1", model: undefined, thinking: undefined, sessionDir: "/sessions", resumeSessionPath: undefined, env: {} });
 
 test("ChildMessenger validates query replies and settles timeout, callback failure, and disconnect once", async () => {

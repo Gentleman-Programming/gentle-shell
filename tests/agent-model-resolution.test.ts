@@ -93,10 +93,11 @@ test("an undiscovered agent resolves to undefined", () => {
 	);
 });
 
+/** The pinned profile's model and thinking surface on the launch profile. */
 test("resolvePinnedAgentProfile returns the launch profile with its model and thinking", () => {
 	const f = fixture("launch-profile");
 	f.writePinnedProfile({ deep: { explore: { model: "openai/alpha", thinking: "minimal" } } }, "deep");
-	const agent: AgentDefinition = { name: "explore", description: "", filePath: "", scope: "global", instructions: "", model: undefined, thinking: undefined, mode: undefined, tools: [] };
+	const agent: AgentDefinition = { name: "explore", description: "", filePath: "", scope: "global", instructions: "", model: undefined, thinking: undefined, mode: undefined, tools: [], envKeep: [] };
 	const profile = resolvePinnedAgentProfile(agent, { roots: f.roots, pinCwd: f.cwd, configHome: f.configHome, resolveWorktree: f.resolveWorktree });
 	assert.deepEqual(profile.model, { provider: "openai", id: "alpha" });
 	assert.equal(profile.thinking, "minimal");

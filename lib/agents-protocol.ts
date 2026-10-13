@@ -109,6 +109,7 @@ export interface TaskThread {
 	limits: ThreadLimits;
 }
 
+/** Persisted record of one child task: identity, routing, status, and diagnostic fields. */
 export interface TaskRecord {
 	/** Retained legacy payload, never interpreted or replayed as launch authority. */
 	sddRemediation?: unknown;
@@ -132,6 +133,8 @@ export interface TaskRecord {
 	modelSource?: string;
 	thinking: string | undefined;
 	sessionPath: string | null;
+	/** Sensitive environment keys removed from this child's environment (names only). */
+	envFiltered?: string[];
 	error: string | null;
 	result: string | null;
 	lastStep: string;

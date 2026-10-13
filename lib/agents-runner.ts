@@ -117,6 +117,7 @@ export interface RunnerHooks {
 	onSuccessfulMutation?(task: TaskRecord, tool: { toolName: "write" | "edit"; toolCallId: string; path: string; evidence?: SessionChangeEvidence }): void | Promise<void>;
 }
 
+/** One child launch request: agent, routing, environment policy, and host-provided options. */
 export interface TaskRequest {
 	agent: AgentDefinition;
 	prompt: string;
@@ -130,6 +131,8 @@ export interface TaskRequest {
 	sessionDir: string;
 	resumeSessionPath: string | undefined;
 	env: NodeJS.ProcessEnv;
+	/** Sensitive environment keys the parent removed from `env` (names only, never values); copied into the task record for diagnosis. */
+	envFiltered?: string[];
 	// Host-provided only: the launcher's package injection signal (#1690) or
 	// the curated fallback. Never derived from tool input or agent definitions.
 	extensionPaths?: string[];
@@ -374,6 +377,7 @@ export function promptText(request: TaskRequest): string {
 	return request.context ? `${request.prompt}\n\n## Context\n${request.context}` : request.prompt;
 }
 
+/** Spawns and tracks child agent processes: launch, IPC, task records, and lifecycle. */
 export class AgentRunner {
 	private readonly store: TaskStore;
 	private readonly limits: RunnerLimits;
@@ -396,6 +400,7 @@ export class AgentRunner {
 		this.processControl = deps.process ?? hostProcess;
 	}
 
+	/** Builds the persisted task record from the request, carrying the filtered-env diagnosis when present. */
 	private createTask(request: TaskRequest): TaskRecord {
 		const now = this.deps.now();
 		this.counter += 1;
@@ -416,6 +421,7 @@ export class AgentRunner {
 			...(request.modelSource === undefined ? {} : { modelSource: request.modelSource }),
 			thinking: request.thinking,
 			sessionPath: request.resumeSessionPath ?? null,
+			...(request.envFiltered ? { envFiltered: request.envFiltered } : {}),
 			error: null,
 			result: null,
 			lastStep: "queued",

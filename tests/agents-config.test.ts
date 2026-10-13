@@ -247,3 +247,40 @@ test("a pinned profile replaces subagent routing and leaves every other default 
 	// repository can pin "everything inherits" without touching the global store.
 	assert.deepEqual(withPinnedModelProfiles(global, {}).modelProfiles, {});
 });
+
+/** Frontmatter `env_keep` parses in `[a, b]` and `- item` styles; absent keys yield an empty list. */
+test("agent frontmatter parses env_keep in both list styles and defaults to empty", () => {
+	const block = parseAgentDefinition(`---
+name: env-auditor
+description: Reads only.
+tools:
+  - read
+env_keep:
+  - DB_SERVER
+  - DB_PASSWORD
+---
+
+Inspect nothing else.
+`, "/tmp/env-auditor.md", "global");
+	assert.ok(!("error" in block));
+	assert.deepEqual(block.envKeep, ["DB_SERVER", "DB_PASSWORD"]);
+	const inline = parseAgentDefinition(`---
+name: inline-env
+description: Reads only.
+env_keep: [AWS_REGION]
+---
+
+Inspect nothing else.
+`, "/tmp/inline-env.md", "global");
+	assert.ok(!("error" in inline));
+	assert.deepEqual(inline.envKeep, ["AWS_REGION"]);
+	const missing = parseAgentDefinition(`---
+name: no-env
+description: Reads only.
+---
+
+Inspect nothing else.
+`, "/tmp/no-env.md", "global");
+	assert.ok(!("error" in missing));
+	assert.deepEqual(missing.envKeep, []);
+});

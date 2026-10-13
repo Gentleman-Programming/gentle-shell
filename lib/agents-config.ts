@@ -42,6 +42,7 @@ export interface ModelRef {
 	id: string;
 }
 
+/** One agent definition parsed from markdown frontmatter: identity, scope, routing, and declared tools. */
 export interface AgentDefinition {
 	name: string;
 	description: string;
@@ -52,6 +53,8 @@ export interface AgentDefinition {
 	thinking: ThinkingLevel | undefined;
 	mode: AgentMode | undefined;
 	tools: string[];
+	/** Exact environment variable names this agent keeps when the parent filters sensitive keys. */
+	envKeep: string[];
 }
 
 export interface AgentDefinitionError {
@@ -170,7 +173,8 @@ function parseMode(value: unknown): AgentMode | undefined | string {
 	return AGENT_MODES.includes(normalized) ? (normalized as AgentMode) : `mode "${value}" is not one of ${AGENT_MODES.join(", ")}`;
 }
 
-function parseTools(value: FrontmatterValue | undefined): string[] {
+/** Parses a frontmatter list value (`[a, b]`, `- item` lines, or comma text) into trimmed entries; undefined yields an empty list. */
+function parseStringList(value: FrontmatterValue | undefined): string[] {
 	if (value === undefined) return [];
 	const items = Array.isArray(value) ? value : value.split(",");
 	return items.map((item) => item.trim()).filter((item) => item.length > 0);
@@ -180,6 +184,7 @@ function scalar(value: FrontmatterValue | undefined): string | undefined {
 	return typeof value === "string" ? value : undefined;
 }
 
+/** Parses one agent markdown file into its definition, or returns a path-scoped error. */
 export function parseAgentDefinition(text: string, filePath: string, scope: AgentScope): AgentDefinition | AgentDefinitionError {
 	const { data, body } = parseFrontmatter(text);
 	const thinking = parseThinking(scalar(data.thinking) ?? scalar(data.effort) ?? scalar(data.thinking_level));
@@ -197,7 +202,8 @@ export function parseAgentDefinition(text: string, filePath: string, scope: Agen
 		model: parseModelRef(data.model),
 		thinking: thinking as ThinkingLevel | undefined,
 		mode: mode as AgentMode | undefined,
-		tools: parseTools(data.tools),
+		tools: parseStringList(data.tools),
+		envKeep: parseStringList(data.env_keep),
 	};
 }
 

@@ -9,6 +9,7 @@ import { createAssistantMessageEventStream, getCurrentTools, type AssistantMessa
 
 const webTools = ["web_enable", "web_search", "source_check", "fetch_content", "get_search_content"];
 
+/** Request fixture for a web-enabled child: a real package layout under a temp agent home. */
 function fixture() {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "child-web-package-")));
 	const agentDir = join(root, "agent");
@@ -20,7 +21,7 @@ function fixture() {
 		agent: {
 			name: "gentle-ai-explore", description: "Public fixture", filePath: join(root, "explorer.md"), scope: "global",
 			tools: ["read", "grep", "find", "codegraph", ...webTools], instructions: "Explore without modifying source.",
-			model: undefined, thinking: undefined, mode: undefined,
+			model: undefined, thinking: undefined, mode: undefined, envKeep: [],
 		},
 		prompt: "Explore the public fixture", label: undefined, context: undefined, mode: "task",
 		parentSessionId: "fixture-parent", resumeSessionPath: undefined,

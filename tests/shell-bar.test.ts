@@ -887,8 +887,12 @@ test("minimal density hides the brand but still names the env", () => {
 	assert.match(text, /^env work/);
 });
 
-test("sidebar Status card names the env under Project", () => {
-	const text = renderShellSidebarBar(model({ env: "work" }), plainTheme, 60).join("\n");
-	assert.match(text, /Env work/);
-	assert.doesNotMatch(renderShellSidebarBar(model(), plainTheme, 60).join("\n"), /Env /);
+test("sidebar Status card shows the env as its own group above Project", () => {
+	const lines = renderShellSidebarBar(model({ env: "work" }), plainTheme, 60).map((line) => line.replace(/[│▎]/g, "").trim());
+	const env = lines.indexOf("Env");
+	const project = lines.indexOf("Project");
+	assert.ok(env >= 0 && project > env, lines.join("\n"));
+	assert.ok(lines.slice(env + 1, project).includes("work"), lines.join("\n"));
+	assert.ok(!lines.slice(project).some((line) => /^Env\b/.test(line)), "no Env line left inside Project");
+	assert.ok(!renderShellSidebarBar(model(), plainTheme, 60).some((line) => /\bEnv\b/.test(line)));
 });

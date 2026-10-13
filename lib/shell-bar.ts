@@ -229,11 +229,12 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 	// this event-driven card keeps only what a footer/model-switch event does
 	// not already refresh every frame.
 	const groups: Array<{ title: string; lines: string[] }> = [
+		// The named env comes first: it decides which home this session writes to.
+		...(model.env ? [{ title: "Env", lines: [value(sanitizeStatus(model.env))] }] : []),
 		{
 			title: "Project",
 			lines: [
 				value(model.cwd),
-				...(model.env ? [`${label("Env")} ${value(sanitizeStatus(model.env))}`] : []),
 				...(branch ? [branch] : []),
 				...(model.sessionName ? [`${label("Session")} ${value(model.sessionName)}`] : []),
 				...(model.profile ? [`${label("Profile")} ${value(sanitizeStatus(model.profile))}`] : []),

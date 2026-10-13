@@ -202,7 +202,7 @@ gentle-shell
 gentle-shell --link
 ```
 
-`gentle-shell` alone starts in its own home, `~/.gentle-shell/agent`. `gentle-shell --link` reuses `~/.pi/agent` as-is. Run `gentle-shell home link` to make `--link` the default. Full flags, env vars, and modes: [gentle-shell launcher](#gentle-shell-launcher).
+`gentle-shell` alone starts in its own home, `~/.gentle-shell/agent`, with its own settings in `~/.gentle-shell/gentle-ai` ([config home](#config-home)). `gentle-shell --link` reuses `~/.pi/agent` as-is. Run `gentle-shell home link` to make `--link` the default. Full flags, env vars, and modes: [gentle-shell launcher](#gentle-shell-launcher).
 
 ### Path B: inside an existing pi
 
@@ -308,7 +308,7 @@ gentle-shell self-uninstall [--dry-run] [--yes] [--include-shared]
 | Flag | Effect |
 | --- | --- |
 | `--link` | Home is your own pi home: `GENTLE_SHELL_USER_PI_HOME` when a Gentle Shell session recorded it (so `--link` run from inside an isolated session reaches your original pi, not the isolated home), otherwise `PI_CODING_AGENT_DIR` or `~/.pi/agent`. Reuses your existing pi sign-ins, models, and chats; never writes to its `settings.json`. |
-| `--isolated` | Home is `GENTLE_SHELL_HOME` or `~/.gentle-shell/agent`. No credential seeding. Default when nothing else is configured. |
+| `--isolated` | Home is `GENTLE_SHELL_HOME` or `~/.gentle-shell/agent`, with its own settings in the `gentle-ai` folder next to it ([config home](#config-home)). No credential seeding. Default when nothing else is configured. |
 | `--home <path>` | Home is the given directory. |
 | `--package-root <dir>` | Force this directory as the gentle-pi package to load, taking over from any conflicting package the target `settings.json` already declares (see "Loading the package" below). |
 | `--help`, `-h` | Print usage (flags, commands, env vars) and exit 0. |
@@ -316,6 +316,42 @@ gentle-shell self-uninstall [--dry-run] [--yes] [--include-shared]
 | `--` | Everything after is forwarded to pi verbatim, even text that looks like a `gentle-shell` flag. |
 
 `--link`, `--isolated`, and `--home` are mutually exclusive; combining two is a usage error, as is `--home` or `--home=` with an empty value. Effective-home precedence: an explicit flag wins, then the persisted `home` subcommand choice, then the `--isolated` default. Every argument gentle-shell does not recognize — `--mode rpc`, `-p "..."`, etc. — is forwarded to pi unchanged.
+
+### Config home
+
+Gentle Shell keeps its settings (profiles, models, banner, vim, permission mode
+and the other `/gentle:*` preferences) in one config home. Every reader uses the
+same rule, in this order:
+
+1. A bundled install: `<prefix>/config/gentle-ai`.
+2. `GENTLE_PI_CONFIG_HOME`, when set and not empty.
+3. The isolated home (`--isolated`, the default): the `gentle-ai` folder next to
+   it, `~/.gentle-shell/gentle-ai` (or `<parent of GENTLE_SHELL_HOME>/gentle-ai`).
+   The launcher tells Pi through `GENTLE_SHELL_CONFIG_HOME`.
+4. Otherwise `~/.pi/gentle-ai`: `--link`, a custom `--home <path>`, and
+   gentle-pi installed inside Pi (Path B).
+
+So a standalone install and a Pi install with gentle-pi no longer share one
+store. Wherever this document names `~/.pi/gentle-ai` for a user setting, the
+isolated home uses `~/.gentle-shell/gentle-ai` instead.
+
+**First launch after the move.** When `~/.gentle-shell/gentle-ai` does not exist
+yet, the launcher creates it (mode `0700`) and copies the regular files from
+`~/.pi/gentle-ai` into it once, printing one line that names both folders. It
+never overwrites, never changes or deletes the source (Pi still uses it), and
+skips symbolic links and subfolders. A failed copy is reported and the launch
+continues. Once the folder exists, nothing is copied again. With an explicit
+`GENTLE_PI_CONFIG_HOME` nothing is copied.
+
+**Files that stay in `~/.pi/gentle-ai`.** The main channel's install-level state
+(`channel.json`, `dev-binary.json`, `main/` and `tools/go`) is written by the
+installer and `gentle-shell upgrade`, outside any session, so it keeps
+`GENTLE_PI_CONFIG_HOME` or `~/.pi/gentle-ai` for every home and is not copied.
+Gentle AI runs that Gentle Shell starts from the isolated home get the same
+folder the bundled way (`GENTLE_AI_PI_CONFIG_DIR`, plus `GENTLE_PI_CONFIG_HOME`
+set to its parent for Gentle AI 4.0.0). A Gentle AI release that ignores both
+still writes `persona.json` to `~/.pi/gentle-ai`, so `setup` restores both
+persona files.
 
 ### `home` subcommand and `~/.gentle-shell/config.json`
 
@@ -357,7 +393,7 @@ gentle-ai's managed Pi stack always declares `npm:gentle-pi` itself in the home'
 
 **MCP migration**: Pi >= 0.99.0 provides built-in MCP; gentle-ai retires `pi-mcp-adapter` instead of installing it. After successful setup and package cleanup, Gentle Shell warns on stderr if `settings.json` still contains `"-builtin:mcp"`, `mcp.json` defines servers, and no active adapter remains. The warning names both files and the entry to remove. Setup never removes that entry or edits `mcp.json`: disabling MCP may be intentional. To enable those servers, remove only `"-builtin:mcp"` from `extensions` in the named `settings.json`, preserve other entries, and restart Pi. A declaration with `autoload: false` and no enabling extension patterns, an empty `extensions` list, or an ordinary `extensions: ["!**"]` filter without force-includes is inactive. Other nonempty filters require matching actual package resources, so setup reports uncertain adapter activity instead of silently treating the adapter as active. This read-only check also runs after automatic provisioning, but not during `--dry-run`. Errors encountered by the diagnostic produce an inspection warning without changing a successful setup's exit code; existing install and cleanup failures still propagate normally.
 
-**Known limitation**: gentle-ai always writes its persona file to the shared `~/.pi/gentle-ai/persona.json` without honoring `PI_CODING_AGENT_DIR`, so the persona is shared across every home `gentle-shell setup` provisions, not per-home. `setup` keeps that file byte-identical across the run regardless — snapshotting it before spawning gentle-ai and restoring it afterward, in manual, `--dry-run`, and automatic first-run modes alike — because the pinned gentle-ai still writes the Pi persona outside `PI_CODING_AGENT_DIR`. gentle-ai also records the running binary's managed-asset digest in the shared `~/.gentle-ai/state.json` (`managed_asset_digest`), again regardless of `PI_CODING_AGENT_DIR`, so a `setup` run otherwise leaves the user's own (unrelated, on-`PATH`) gentle-ai reporting its managed assets as outdated and demanding `gentle-ai sync`. `setup` restores just that one field afterward, the same way and in the same modes — but never the whole file, since `state.json` also carries fields (like the installed-agents list) the pinned gentle-ai is meant to update, and it never creates or deletes `state.json` itself.
+**Known limitation**: the pinned gentle-ai writes its persona file to the shared `~/.pi/gentle-ai/persona.json` without honoring `PI_CODING_AGENT_DIR` (for the isolated home it may also write `~/.gentle-shell/gentle-ai/persona.json`; both are restored), so the persona is shared across every home `gentle-shell setup` provisions, not per-home. `setup` keeps that file byte-identical across the run regardless — snapshotting it before spawning gentle-ai and restoring it afterward, in manual, `--dry-run`, and automatic first-run modes alike — because the pinned gentle-ai still writes the Pi persona outside `PI_CODING_AGENT_DIR`. gentle-ai also records the running binary's managed-asset digest in the shared `~/.gentle-ai/state.json` (`managed_asset_digest`), again regardless of `PI_CODING_AGENT_DIR`, so a `setup` run otherwise leaves the user's own (unrelated, on-`PATH`) gentle-ai reporting its managed assets as outdated and demanding `gentle-ai sync`. `setup` restores just that one field afterward, the same way and in the same modes — but never the whole file, since `state.json` also carries fields (like the installed-agents list) the pinned gentle-ai is meant to update, and it never creates or deletes `state.json` itself.
 
 **Test/development only**: `GENTLE_SHELL_GENTLE_AI_BIN` overrides which gentle-ai executable `setup` runs, bypassing the pinned package-local resolution. `GENTLE_SHELL_GENTLE_AI_PIN` overrides the pin version `setup` (and automatic first-run provisioning, below) checks against `MIN_SETUP_GENTLE_AI_VERSION` (3.6.0), independent of `GENTLE_SHELL_GENTLE_AI_BIN`. `GENTLE_SHELL_GENTLE_AI_INSTALLER` overrides the script path `setup` runs to self-heal a missing package-local binary, instead of the real `scripts/install-gentle-ai.mjs`. `GENTLE_SHELL_CONFIG` overrides the launcher config.json path (normally `<homedir>/.gentle-shell/config.json`), read and written by the `home` subcommand and by automatic first-run provisioning's marker. `GENTLE_SHELL_AUTO_SETUP_TIMEOUT_MS` overrides automatic first-run provisioning's 15-minute per-child timeout ceiling (manual `setup` never has one). All five exist for the test suite and for exercising a different gentle-ai build/pin/installer/config/timeout; end users never need them.
 
@@ -382,6 +418,8 @@ If none resolve, `gentle-shell` exits 1 naming all three options. Once a runtime
 | `PI_CODING_AGENT_DIR` | Read to resolve the `--link` home when `GENTLE_SHELL_USER_PI_HOME` is unset; also set on the pi child process to the effective home. |
 | `GENTLE_SHELL_USER_PI_HOME` | Set on the pi child process to your own pi home (recorded before isolating). Read back first to resolve the `--link` home and by `/gentle:stats`, so a nested `gentle-shell` keeps pointing at your original pi. |
 | `GENTLE_PI_AGENT_HOME` | Set on the pi child process to the effective home; gentle-pi's own home resolution reads it back. |
+| `GENTLE_SHELL_CONFIG_HOME` | Set on the pi child process only for the isolated home, to its config folder ([config home](#config-home)); removed for `--link`, `--home` and bundled launches. |
+| `GENTLE_PI_CONFIG_HOME` | Your own override of the config home for every mode except a bundled install; outranks the isolated home's folder. |
 | `GENTLE_SHELL_NO_AUTO_SETUP` | Set to `1` to skip automatic first-run provisioning (see "First run in an isolated or custom home" below). |
 | `ENGRAM_STARTUP_POLICY` | Bundled startup recomputes `allow` or `disabled` from safety evidence. Explicit empty/invalid values remain disabled; user `allow` does not override unknown data. Standalone provider behavior with the variable absent is unchanged. |
 | `ENGRAM_STARTUP_NOTICE` | Display-only recovery guidance; never executed. |

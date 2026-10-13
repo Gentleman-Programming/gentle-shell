@@ -1327,6 +1327,7 @@ test("buildPiInvocation still injects the launcher env for a pi subcommand", () 
 		PI_CODING_AGENT_DIR: "/gentle-shell/agent",
 		GENTLE_PI_AGENT_HOME: "/gentle-shell/agent",
 		GENTLE_SHELL_USER_PI_HOME: join("/home/u", ".pi", "agent"),
+		GENTLE_SHELL_CONFIG_HOME: join("/gentle-shell", "gentle-ai"),
 	});
 });
 

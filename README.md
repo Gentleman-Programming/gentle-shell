@@ -491,7 +491,7 @@ gentle-shell
 gentle-shell --link
 ```
 
-`gentle-shell` alone starts in its own home, `~/.gentle-shell/agent`, and sets that home up on first run — no separate step. Gentle Shell keeps its own home with the Gentle AI companion packages and no conflicting plugins; gentle-pi itself always stays this launcher's own copy, never one installed into the home; your pi install is untouched. That home also defaults to the Gentleman-Cute theme unless you set your own. `gentle-shell --link` reuses `~/.pi/agent` as-is, is never auto-provisioned, and never has its theme touched.
+`gentle-shell` alone starts in its own home, `~/.gentle-shell/agent`, keeps its settings in `~/.gentle-shell/gentle-ai` (copied once from `~/.pi/gentle-ai` on the first launch that needs it), and sets that home up on first run — no separate step. Gentle Shell keeps its own home with the Gentle AI companion packages and no conflicting plugins; gentle-pi itself always stays this launcher's own copy, never one installed into the home; your pi install is untouched. That home also defaults to the Gentleman-Cute theme unless you set your own. `gentle-shell --link` reuses `~/.pi/agent` as-is, is never auto-provisioned, and never has its theme touched.
 
 ```bash
 # Re-run provisioning by hand, e.g. to see the full install output
@@ -592,7 +592,7 @@ gentle-shell self-uninstall --dry-run
 gentle-shell self-uninstall
 ```
 
-`gentle-shell self-uninstall` removes Gentle Shell's own data, its isolated home and the `gentle-pi` package. It keeps the shared Gentle AI configuration in `~/.pi/gentle-ai` unless you accept or pass `--include-shared`, and never touches your Pi home or custom `--home` homes. In a bundled install it removes the bundled folder and the one PATH entry the installer recorded instead ([details](docs/bundled-install.md#self-uninstall)). `gentle-shell uninstall` is Pi's own alias for `remove`. More: **[Removing Gentle Shell](docs/gentle-shell-uninstall.md)**.
+`gentle-shell self-uninstall` removes Gentle Shell's own data, its isolated home with its settings in `~/.gentle-shell/gentle-ai`, and the `gentle-pi` package. It keeps the shared Gentle AI configuration in `~/.pi/gentle-ai` unless you accept or pass `--include-shared`, and never touches your Pi home or custom `--home` homes. In a bundled install it removes the bundled folder and the one PATH entry the installer recorded instead ([details](docs/bundled-install.md#self-uninstall)). `gentle-shell uninstall` is Pi's own alias for `remove`. More: **[Removing Gentle Shell](docs/gentle-shell-uninstall.md)**.
 
 For prerequisites, source-checkout instructions, full install behavior, and release policy, use the **[installation reference](docs/readme-reference.md#install)**. For everyday work, describe the outcome and follow [ODD](#odd--the-everyday-workflow).
 

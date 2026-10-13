@@ -31,7 +31,6 @@ import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { inferOddPhase } from "../lib/odd-phase-inference.ts";
 import { isInteractiveMode } from "../lib/rpc-host.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
-import { bundledGentlePiConfigHome } from "../lib/gentle-shell-bundled.ts";
 import { isNanAdaptiveReasoningModel } from "../lib/nan-provider.ts";
 import { resolveAnimationPolicy, writeAnimationPolicy, type AnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy, type VimPolicy } from "../lib/vim-policy.ts";
@@ -180,7 +179,7 @@ export type ActiveProfileReader = (() => string | undefined) & {
 // Unbound reads retain the global file-identity cache, including atomic replacements.
 // Bound reads are snapshots: no filesystem or Git work is done during a frame.
 export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env): ActiveProfileReader {
-	const path = profilesFilePath(bundledGentlePiConfigHome(env) ?? env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai"));
+	const path = profilesFilePath(gentlePiConfigHome(env));
 	let fingerprint: string | undefined;
 	let name: string | undefined;
 	let bound = false;
@@ -215,7 +214,7 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 		const next = cwd === undefined ? global() : sessionProfileLabel(resolveSessionProfile({
 			sessionId,
 			cwd,
-			configHome: bundledGentlePiConfigHome(env) ?? env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai"),
+			configHome: gentlePiConfigHome(env),
 			resolveWorktree: () => identity,
 			env,
 		}));

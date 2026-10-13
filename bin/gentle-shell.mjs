@@ -9,6 +9,7 @@ import {
 	chmodSync,
 	closeSync,
 	constants as fsConstants,
+	copyFileSync,
 	existsSync,
 	fstatSync,
 	lstatSync,
@@ -52,11 +53,13 @@ import {
 	POST_INSTALL_REMOVAL_SOURCES,
 	postInstallRemovals,
 	provisionedEntry,
+	migrateStandaloneConfig,
 	recordProvisioned,
 	resolveHome,
 	resolvePiRuntime,
 	restoreJsonField,
 	shellQuote,
+	standaloneConfigHome,
 } from "../runtime/gentle-shell-launcher.mjs";
 import {
 	BUNDLED_VERIFY_ENV,
@@ -68,6 +71,7 @@ import {
 	ENGRAM_PROVISION_FAILED_NOTICE,
 	ENGRAM_RECOVERY_NOTICE,
 	engramHeaderAllows,
+	GENTLE_SHELL_CONFIG_HOME_ENV,
 	engramProbeAllowed,
 	engramProvenanceMatches,
 	engramProvenancePath,
@@ -817,12 +821,18 @@ function buildSetupEnv(home, runtime, piLauncherDir) {
 		const env = bundledSetupEnv({ ...bundledEnv, PI_CODING_AGENT_DIR: home.dir, GENTLE_PI_AGENT_HOME: home.dir }, { dirs: bundledSetupDirs, platform: process.platform });
 		return gentleAiIsolationEnv(env, { packageRoot });
 	}
-	return {
+	const env = {
 		...process.env,
 		PI_CODING_AGENT_DIR: home.dir,
 		GENTLE_PI_AGENT_HOME: home.dir,
 		PATH: [...(piLauncherDir ? [piLauncherDir] : []), dirname(runtime.command), process.env.PATH ?? ""].join(delimiter),
 	};
+	// #2201: the isolated home's own config folder, given to Gentle AI the
+	// bundled way (gentleAiIsolationEnv); never an outer session's marker.
+	const configHome = standaloneConfigHome(home);
+	if (configHome === undefined) delete env[GENTLE_SHELL_CONFIG_HOME_ENV];
+	else env[GENTLE_SHELL_CONFIG_HOME_ENV] = configHome;
+	return gentleAiIsolationEnv(env, { packageRoot });
 }
 
 // Gentle AI requires a `pi` on its PATH and runs `pi install npm:gentle-pi`
@@ -865,14 +875,33 @@ function sharedPersonaPath() {
 	return join(homedir(), ".pi", "gentle-ai", "persona.json");
 }
 
-// The persona files a setup run may rewrite. Bundled (S9): the prefix's own,
-// which a Gentle AI with GENTLE_AI_PI_CONFIG_DIR (gentle-ai #5462) writes, and
-// still the user's, which a pinned Gentle AI without it writes; restoring an
-// unchanged file does nothing.
-function setupPersonaPaths() {
-	if (!bundledInstall) return [sharedPersonaPath()];
-	return [join(bundledGentleAiPaths(bundledInstall.root, process.platform).piConfig, "persona.json"), sharedPersonaPath()];
+// The persona files a setup run may rewrite. Bundled (S9) and the standalone
+// isolated home (#2201): its own config folder's, which a Gentle AI with
+// GENTLE_AI_PI_CONFIG_DIR (gentle-ai #5462) writes, and still the user's,
+// which a pinned Gentle AI without it writes; restoring an unchanged file
+// does nothing.
+function setupPersonaPaths(home) {
+	if (bundledInstall) return [join(bundledGentleAiPaths(bundledInstall.root, process.platform).piConfig, "persona.json"), sharedPersonaPath()];
+	const configHome = standaloneConfigHome(home);
+	return configHome === undefined ? [sharedPersonaPath()] : [join(configHome, "persona.json"), sharedPersonaPath()];
 }
+
+// The real filesystem behind migrateStandaloneConfig (#2201).
+const configMigrationFs = {
+	kind: (path) => {
+		try {
+			const stat = lstatSync(path);
+			return stat.isDirectory() ? "dir" : stat.isFile() ? "file" : "other";
+		} catch {
+			return "missing";
+		}
+	},
+	list: (path) => readdirSync(path),
+	mkdirPrivate: (path) => {
+		mkdirSync(path, { recursive: true, mode: 0o700 });
+	},
+	copyNew: (from, to) => copyFileSync(from, to, fsConstants.COPYFILE_EXCL),
+};
 
 // Bundled setup (S9): the pinned Engram GENTLE_AI_ENGRAM_BIN names, published
 // once in runtime/ (verified, never brew or the user's PATH). A failure stops
@@ -1153,7 +1182,7 @@ async function runSetupFlow(home, runtime, { dryRun, stdio, timeoutMs }) {
 	const setupArgs = ["install", "--agent", "pi", "--scope", "global", ...(dryRun ? ["--dry-run"] : [])];
 	const piLauncherDir = writeSetupPiLauncher(runtime);
 	const env = buildSetupEnv(home, runtime, piLauncherDir);
-	const personaSnapshots = setupPersonaPaths().map((path) => [path, safely("snapshot your Pi persona file", path, undefined, () => snapshotFile(path))]);
+	const personaSnapshots = setupPersonaPaths(home).map((path) => [path, safely("snapshot your Pi persona file", path, undefined, () => snapshotFile(path))]);
 	const statePath = sharedGentleAiStatePath();
 	const originalStateText = safely("read your Gentle AI state file", statePath, undefined, () => readParsableJsonText(statePath));
 	// Theme restore (never for --link — that home is the user's own
@@ -1933,6 +1962,19 @@ async function main() {
 		process.stderr.write(`gentle-shell: using a separate home at ${home.dir}. Run 'gentle-shell --link' to reuse your pi sign-ins and chats.\n`);
 	}
 
+	// #2201: the standalone isolated home's own config folder, seeded once from
+	// the shared ~/.pi/gentle-ai. Not when an explicit GENTLE_PI_CONFIG_HOME
+	// decides the config home; never blocks the launch.
+	const configHome = bundled || process.env.GENTLE_PI_CONFIG_HOME ? undefined : standaloneConfigHome(home);
+	if (configHome !== undefined) {
+		try {
+			const migration = migrateStandaloneConfig({ source: join(homedir(), ".pi", "gentle-ai"), target: configHome, fs: configMigrationFs });
+			for (const line of migration.lines) process.stderr.write(`${line}\n`);
+		} catch (error) {
+			process.stderr.write(`gentle-shell: could not prepare ${configHome} (${error.message}); continuing\n`);
+		}
+	}
+
 	if (bundled) {
 		try {
 			await ensureBundledNpmCommand(bundled, home, homeHadContentBeforeBootstrap);
@@ -2108,6 +2150,7 @@ async function main() {
 		passthrough: [...managedHerdrExtensionArgs(home, args), ...passthrough],
 		piSubcommand: args.piSubcommand,
 		baseEnv: bundledEnv ?? process.env,
+		bundled: Boolean(bundled),
 		homedir: homedir(),
 		// The spawn below sets no cwd, so pi runs in the launcher's own.
 		cwd: process.cwd(),

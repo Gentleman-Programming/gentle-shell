@@ -339,7 +339,7 @@ export function renderEnvsScreen(state: EnvsState, width: number, height: number
 		const offset = Math.max(0, Math.min(state.selected - visibleRows + 1, state.envs.length - visibleRows));
 		const listRows: CardRow[] = state.envs.slice(offset, offset + visibleRows).map((env, index) => {
 			const selected = index + offset === state.selected;
-			const text = `${selected ? "❯" : " "} ${env.isDefault ? "★" : " "} ${env.base ? `◆ ${BRAND_NAME} base` : env.name}`;
+			const text = `${selected ? "❯" : " "} ${env.isDefault ? "★" : " "} ${env.base ? `${BRAND_NAME} base` : env.name}`;
 			return { text, style: selected ? (fitted: string) => paint.rose(paint.bold(fitted)) : undefined };
 		});
 		if (state.envs.length === 0) listRows.push({ text: "  (none)", style: paint.muted });

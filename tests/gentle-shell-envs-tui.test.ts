@@ -256,7 +256,8 @@ test("an env may be named base: the base home never takes part in name checks", 
 test("the base home renders first with its own marker and card, starred when default", () => {
 	const s0 = initialEnvsState([baseEntry({ isDefault: true }), env("work")]);
 	const text = renderEnvsScreen(s0, 100, 24).map(stripAnsi).join("\n");
-	assert.match(text, /│ ❯ ★ ◆ Gentle Shell base/);
+	assert.match(text, /│ ❯ ★ Gentle Shell base/);
+	assert.doesNotMatch(text, /◆/, "no marker that would need a legend");
 	assert.match(text, /╭─ ✿ Base home ─+╮/);
 	assert.match(text, /The install's own home/);
 	assert.equal(s0.selected, 0, "initial selection follows the default");

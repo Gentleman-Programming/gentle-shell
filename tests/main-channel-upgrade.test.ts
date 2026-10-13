@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { CHANNEL_SCHEMA, MainChannelError, ownerManager, readChannel, removeGlobalShell, runUpgrade, writeChannel } from "../scripts/main-channel.mjs";
+import { requirements } from "../scripts/installer-preflight.mjs";
 
 const AI_SHA = "1f9d5e6423e37f7d2316859045f379ba9b5d8c3a";
 const SHELL_SHA = "6e7e3a18f794223396527a54c7c36d19c7d236c6";
@@ -53,6 +54,9 @@ function world({ owner = "pnpm", latest = "4.1.0", commits = { ai: AI_SHA, shell
 			for (const name of ["gentle-ai", "gentle-ai.exe"]) writeFileSync(join(options.env!.GOBIN, name), "#!/bin/sh\n", { mode: 0o755 });
 			return { code: 0, stdout: "" };
 		}
+		if (argv[0] === "version" && command === `${bin}/go`) {
+			return { code: 0, stdout: `go version go${requirements.go} ${platform}/amd64\n` };
+		}
 		if (argv[0] === "version") {
 			const sha = command.split("/").at(-2) ?? "";
 			return { code: 0, stdout: `gentle-ai 4.0.1-0.20261008202137-${sha.slice(0, 12)}\n` };
@@ -69,7 +73,9 @@ function world({ owner = "pnpm", latest = "4.1.0", commits = { ai: AI_SHA, shell
 	};
 	const which = async (name: string) => (tools.includes(name) ? `${bin}/${name}${name === "go" ? "" : suffix}` : null);
 	const upgrade = (args: string[], currentVersion = "4.0.0") => runUpgrade({ args, ctx, platform, packageRoot, currentVersion,
-		adapters: { fetch, run, fs, which, ...(invocation ? { invocation } : {}), ...(migrate ? { migrate } : {}) }, out: (line: string) => lines.push(line) });
+		adapters: { fetch, run, fs, which,
+			acquireGo: async () => { throw new Error("Unexpected Go acquisition in sandboxed upgrade fixture"); },
+			...(invocation ? { invocation } : {}), ...(migrate ? { migrate } : {}) }, out: (line: string) => lines.push(line) });
 	const installs = () => calls.filter((call) => call.argv.some((arg) => ["add", "install"].includes(arg)) && !call.argv.some((arg) => arg.includes("cmd/gentle-ai@")))
 		.map((call) => `${call.command} ${call.argv.join(" ")}`);
 	const manager = (command?: string) => ownerManager({ ctx, platform, packageRoot, adapters: { fs, run, which, ...(invocation ? { invocation } : {}) },

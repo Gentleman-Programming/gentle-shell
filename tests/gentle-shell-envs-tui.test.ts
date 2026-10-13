@@ -223,3 +223,47 @@ test("every layout fills the terminal exactly within its width", () => {
 		}
 	}
 });
+
+// --- the base home (the install's own home, `--isolated`) ----------------------
+
+const baseEntry = (extra: Partial<EnvSummary> = {}): EnvSummary => env("base", { dir: "/h/.gentle-shell/agent", base: true, ...extra });
+
+test("base home actions carry base and never a managed env name", () => {
+	const s0 = initialEnvsState([baseEntry(), env("work")]);
+	assert.deepEqual(press(s0, { name: "enter" }).effect, { kind: "launch", name: "base", base: true });
+	assert.deepEqual(press(s0, char("s")).effect, { kind: "set-default", name: "base", base: true });
+	assert.deepEqual(press(s0, char("p")).effect, { kind: "setup", name: "base", base: true });
+	assert.deepEqual(press(s0, char("a")).effect, { kind: "auth-check", name: "base", base: true });
+	assert.deepEqual(press(s0, char("i"), ...typed("npm:pi-btw"), { name: "enter" }).effect, { kind: "install", name: "base", source: "npm:pi-btw", base: true });
+	assert.deepEqual(press(s0, { name: "down" }, { name: "enter" }).effect, { kind: "launch", name: "work" }, "envs keep their exact effects");
+});
+
+test("the base home can be neither renamed nor deleted", () => {
+	const s0 = initialEnvsState([baseEntry(), env("work")]);
+	for (const key of ["r", "d"]) {
+		const { state, effect } = press(s0, char(key));
+		assert.equal(effect, undefined);
+		assert.equal(state.prompt, undefined);
+		assert.match(state.message ?? "", /base home/);
+	}
+});
+
+test("an env may be named base: the base home never takes part in name checks", () => {
+	const s0 = initialEnvsState([baseEntry(), env("work")]);
+	assert.deepEqual(press(s0, char("n"), ...typed("base"), { name: "enter" }).effect, { kind: "create", name: "base" });
+});
+
+test("the base home renders first with its own marker and card, starred when default", () => {
+	const s0 = initialEnvsState([baseEntry({ isDefault: true }), env("work")]);
+	const text = renderEnvsScreen(s0, 100, 24).map(stripAnsi).join("\n");
+	assert.match(text, /│ ❯ ★ ◆ Gentle Shell base/);
+	assert.match(text, /╭─ ✿ Base home ─+╮/);
+	assert.match(text, /The install's own home/);
+	assert.equal(s0.selected, 0, "initial selection follows the default");
+});
+
+test("reselection never confuses the base home with an env of the same name", () => {
+	const envs = [baseEntry(), env("base"), env("work")];
+	assert.equal(initialEnvsState(envs, undefined, "base").selected, 1);
+	assert.equal(initialEnvsState(envs, undefined, { base: true }).selected, 0);
+});

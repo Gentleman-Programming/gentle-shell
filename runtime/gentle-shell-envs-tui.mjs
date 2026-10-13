@@ -16,6 +16,8 @@ import {                  validateEnvName } from "./gentle-shell-envs.mjs";
 
 
 
+// `base: true` targets the install's own home (`--isolated`), never an env:
+// an env may even be named like the base entry.
 
 
 
@@ -46,8 +48,13 @@ import {                  validateEnvName } from "./gentle-shell-envs.mjs";
 
 
 
-export function initialEnvsState(envs              , message         , selectName         )            {
-	const byName = selectName === undefined ? -1 : envs.findIndex((e) => e.name === selectName);
+
+// `select` names an env, or `{ base: true }` for the base home: an env may
+// share the base entry's display name, so the two are never matched by name.
+export function initialEnvsState(envs              , message         , select                          )            {
+	const byName = select === undefined ? -1
+		: typeof select === "string" ? envs.findIndex((e) => !e.base && e.name === select)
+		: envs.findIndex((e) => e.base === true);
 	const byDefault = envs.findIndex((e) => e.isDefault);
 	return { envs, selected: byName >= 0 ? byName : Math.max(0, byDefault), message };
 }
@@ -110,7 +117,7 @@ function reducePrompt(state           , prompt            , key         )       
 		if (prompt.kind === "rename" && value === target) return { state: { ...state, prompt: undefined } };
 		const invalid = validateEnvName(value);
 		if (invalid !== undefined) return fail(invalid);
-		if (state.envs.some((e) => e.name === value)) return fail(`env "${value}" already exists`);
+		if (state.envs.some((e) => !e.base && e.name === value)) return fail(`env "${value}" already exists`);
 		return done(prompt.kind === "create" ? { kind: "create", name: value } : { kind: "rename", from: target, to: value });
 	}
 	if (prompt.kind === "delete") {
@@ -118,7 +125,7 @@ function reducePrompt(state           , prompt            , key         )       
 		return done({ kind: "delete", name: target });
 	}
 	if (value.length === 0) return fail("enter a package source, e.g. npm:pi-btw");
-	return done({ kind: "install", name: target, source: value });
+	return done(prompt.targetBase ? { kind: "install", name: target, source: value, base: true } : { kind: "install", name: target, source: value });
 }
 
 export function reduceEnvs(state           , key         )           {
@@ -137,12 +144,16 @@ export function reduceEnvs(state           , key         )           {
 	if (!scoped) return { state };
 	if (current === undefined) return { state: { ...state, message: EMPTY_HINT } };
 	const name = current.name;
-	if (key.name === "enter") return { state, effect: { kind: "launch", name } };
-	if (char === "s") return { state, effect: { kind: "set-default", name } };
-	if (char === "p") return { state, effect: { kind: "setup", name } };
-	if (char === "a") return { state, effect: { kind: "auth-check", name } };
+	const base = current.base ? { base: true          } : {};
+	if (key.name === "enter") return { state, effect: { kind: "launch", name, ...base } };
+	if (char === "s") return { state, effect: { kind: "set-default", name, ...base } };
+	if (char === "p") return { state, effect: { kind: "setup", name, ...base } };
+	if (char === "a") return { state, effect: { kind: "auth-check", name, ...base } };
+	if (current.base && (char === "r" || char === "d")) {
+		return { state: { ...state, message: "The base home belongs to the install: it can't be renamed or deleted." } };
+	}
 	if (char === "r") return openPrompt(state, { kind: "rename", label: `Rename "${name}" to`, value: name, target: name });
-	if (char === "i") return openPrompt(state, { kind: "install", label: `Install into "${name}"`, value: "", target: name });
+	if (char === "i") return openPrompt(state, { kind: "install", label: `Install into "${current.base ? "the base home" : name}"`, value: "", target: name, ...(current.base ? { targetBase: true } : {}) });
 	return openPrompt(state, { kind: "delete", label: `Delete "${name}" and all its data? Type its name`, value: "", target: name });
 }
 
@@ -244,6 +255,7 @@ function detailRows(env                        , inner        , paint       )   
 		return { text, style: (fitted) => `${paint.label(fitted.slice(0, head.length))}${fitted.slice(head.length)}` };
 	};
 	return [
+		...(env.base ? [{ text: "The install's own home, as before envs (--isolated).", style: paint.label }] : []),
 		...(env.isDefault ? [{ text: "★ Default: a plain gentle-shell opens it", style: paint.rose }] : []),
 		field("Path", env.dir),
 		field("Setup", env.provisioned),
@@ -328,13 +340,13 @@ export function renderEnvsScreen(state           , width        , height        
 		const offset = Math.max(0, Math.min(state.selected - visibleRows + 1, state.envs.length - visibleRows));
 		const listRows            = state.envs.slice(offset, offset + visibleRows).map((env, index) => {
 			const selected = index + offset === state.selected;
-			const text = `${selected ? "❯" : " "} ${env.isDefault ? "★" : " "} ${env.name}`;
+			const text = `${selected ? "❯" : " "} ${env.isDefault ? "★" : " "} ${env.base ? `◆ ${BRAND_NAME} base` : env.name}`;
 			return { text, style: selected ? (fitted        ) => paint.rose(paint.bold(fitted)) : undefined };
 		});
 		if (state.envs.length === 0) listRows.push({ text: "  (none)", style: paint.muted });
 		const list = card("Envs", listRows, listWidth, bodyHeight, paint);
 		if (sideBySide) {
-			const detail = card(selectedEnv?.name ?? "Welcome", details, detailWidth, bodyHeight, paint);
+			const detail = card(selectedEnv === undefined ? "Welcome" : selectedEnv.base ? "Base home" : selectedEnv.name, details, detailWidth, bodyHeight, paint);
 			for (let row = 0; row < bodyHeight; row += 1) body.push(`${lead}${list[row]} ${detail[row]}`);
 		} else {
 			body.push(...list.map((line) => lead + line));

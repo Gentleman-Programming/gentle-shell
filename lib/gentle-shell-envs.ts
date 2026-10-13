@@ -101,6 +101,8 @@ export interface EnvSummaryInput {
 	provisioned?: { gentleAi: string; gentlePi?: string; at: string };
 	sessionCount: number;
 	lastSessionAt?: string;
+	// The install's own home (`--isolated`), listed beside the named envs.
+	base?: boolean;
 }
 
 export interface EnvSummary {
@@ -113,6 +115,7 @@ export interface EnvSummary {
 	provisioned: string;
 	sessionCount: number;
 	lastSessionAt?: string;
+	base?: boolean;
 }
 
 function parseObject(text: string | undefined): Record<string, unknown> | undefined {
@@ -151,5 +154,6 @@ export function summarizeEnv(input: EnvSummaryInput): EnvSummary {
 		provisioned,
 		sessionCount: input.sessionCount,
 		lastSessionAt: input.lastSessionAt,
+		...(input.base ? { base: true } : {}),
 	};
 }

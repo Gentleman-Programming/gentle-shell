@@ -3558,3 +3558,24 @@ test("envs rejects unknown subcommands with usage", (t) => {
 	assert.equal(result.status, 2);
 	assert.match(result.stderr, /Usage: gentle-shell envs/);
 });
+
+test("envs lists the base home first and stars exactly what a plain launch opens", (t) => {
+	const f = fixture(t);
+	assert.equal(run(f.env, ["envs", "new", "work"]).status, 0);
+	const starred = () => run(f.env, ["envs", "list"]).stdout.split("\n").filter((line) => line.startsWith("*")).map((line) => line.split(/\s+/)[1]);
+	const opened = () => JSON.parse(run(f.env, ["-p", "hi"]).stdout.trim().split("\n").at(-1) ?? "{}").PI_CODING_AGENT_DIR;
+	const lines = run(f.env, ["envs", "list"]).stdout.split("\n");
+	assert.match(lines[0], new RegExp(`^\\* \\[base\\] +${f.gentleShellHome.replace(/[\\.]/g, "\\$&")} `), "base first, default with no config");
+	assert.equal(opened(), f.gentleShellHome);
+
+	assert.equal(run(f.env, ["home", "link"]).status, 0);
+	assert.deepEqual(starred(), [], "link opens none of the listed homes");
+
+	assert.equal(run(f.env, ["home", join(f.home, ".gentle-shell", "envs", "work")]).status, 0);
+	assert.deepEqual(starred(), ["work"]);
+	assert.equal(opened(), join(f.home, ".gentle-shell", "envs", "work"));
+
+	assert.equal(run(f.env, ["home", "isolated"]).status, 0);
+	assert.deepEqual(starred(), ["[base]"]);
+	assert.equal(opened(), f.gentleShellHome);
+});

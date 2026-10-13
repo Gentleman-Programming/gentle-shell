@@ -40,6 +40,7 @@ import {
 	forceJsonFieldIfAbsentInOriginal,
 	helpText,
 	homeSelectorFlags,
+	isolatedDir,
 	isSetupCapablePin,
 	launcherConfigPath,
 	MIN_SETUP_GENTLE_AI_VERSION,
@@ -758,25 +759,39 @@ function readTextOrUndefined(path) {
 	}
 }
 
+// The base home first (the install's own `--isolated` home, exactly as the
+// launcher resolves it), then the named envs. The default follows the same
+// precedence a plain launch uses: a missing, malformed or "isolated" home
+// setting opens the base home, "link" opens none of these, a path opens the
+// env it names.
 function loadEnvSummaries(root) {
 	const rawConfig = readRawConfig(resolveConfigPath());
-	const defaultHome = typeof rawConfig.home === "string" && rawConfig.home !== "link" && rawConfig.home !== "isolated" ? rawConfig.home : undefined;
-	const defaultReal = defaultHome === undefined ? undefined : safeRealpath(resolvePath(defaultHome));
-	return listEnvNames(root).map((name) => {
-		const dir = envDir(root, name);
+	const persisted = loadConfig();
+	const defaultReal = persisted?.mode === "path" ? safeRealpath(resolvePath(persisted.dir)) : undefined;
+	const summarize = (name, dir, extra) => {
 		const real = safeRealpath(dir);
 		const sessions = sessionStats(dir);
 		return summarizeEnv({
 			name,
 			dir,
-			isDefault: defaultReal !== undefined && defaultReal === real,
 			settingsText: readTextOrUndefined(join(dir, "settings.json")),
 			authText: readTextOrUndefined(join(dir, "auth.json")),
 			provisioned: provisionedEntry(rawConfig, real),
 			sessionCount: sessions.count,
 			lastSessionAt: sessions.last,
+			isDefault: defaultReal !== undefined && defaultReal === real,
+			...extra,
 		});
-	});
+	};
+	const baseDir = resolvePath(isolatedDir(process.env, homedir()));
+	const base = summarize("base", baseDir, { base: true, ...(persisted === undefined || persisted.mode === "isolated" ? { isDefault: true } : {}) });
+	return [base, ...listEnvNames(root).map((name) => summarize(name, envDir(root, name), {}))];
+}
+
+// The launcher selector that reproduces an entry: `--isolated` for the base
+// home (never an env name, which may even be "base"), `--env <name>` otherwise.
+function entrySelector(target) {
+	return target.base ? ["--isolated"] : ["--env", target.name];
 }
 
 // Same bootstrap a first `--home` launch performs, so the env is owned by
@@ -828,26 +843,24 @@ function setDefaultEnv(root, name) {
 
 // Runs this same launcher against one env (setup/install/auth) in the
 // foreground, outside the manager's alternate screen.
-function runLauncherForEnv(name, extraArgs) {
-	const result = spawnSync(process.execPath, [fileURLToPath(import.meta.url), "--env", name, ...extraArgs], { stdio: "inherit", env: process.env });
+function runLauncherForEnv(target, extraArgs) {
+	const result = spawnSync(process.execPath, [fileURLToPath(import.meta.url), ...entrySelector(target), ...extraArgs], { stdio: "inherit", env: process.env });
 	return result.error ? 1 : (result.status ?? 1);
 }
 
 function printEnvList(root) {
-	const envs = loadEnvSummaries(root);
-	if (envs.length === 0) {
-		process.stdout.write(`No envs in ${root}. Create one with 'gentle-shell envs new <name>'.\n`);
-		return;
+	const entries = loadEnvSummaries(root);
+	const label = (env) => (env.base ? "[base]" : env.name);
+	const width = Math.max(...entries.map((env) => label(env).length));
+	for (const env of entries) {
+		process.stdout.write(`${env.isDefault ? "*" : " "} ${label(env).padEnd(width)}  ${env.dir}  (${env.provisioned})\n`);
 	}
-	const width = Math.max(...envs.map((env) => env.name.length));
-	for (const env of envs) {
-		process.stdout.write(`${env.isDefault ? "*" : " "} ${env.name.padEnd(width)}  ${env.dir}  (${env.provisioned})\n`);
-	}
+	if (entries.length === 1) process.stdout.write(`No named envs in ${root} yet. Create one with 'gentle-shell envs new <name>'.\n`);
 }
 
 const ENVS_USAGE = "Usage: gentle-shell envs [list | new <name>]\n  envs        open the env manager (TTY), or list envs\n  envs list   print every env; * marks the default\n  envs new    create an env without launching it";
 
-// Returns the env name to launch, or undefined when nothing should launch.
+// Returns the launcher selector to launch with, or undefined when nothing should launch.
 async function handleEnvsCommand(commandArgs) {
 	const root = currentEnvsRoot();
 	const [sub, ...rest] = commandArgs;
@@ -972,6 +985,12 @@ async function runEnvsManager(root) {
 				deleteEnv(root, effect.name);
 				return reload(`Deleted ${effect.name}.`);
 			}
+			if (effect.base) {
+				// Exactly what `gentle-shell home isolated` persists.
+				const configPath = resolveConfigPath();
+				writeRawConfig(configPath, { ...readRawConfig(configPath), home: "isolated" });
+				return reload("The base home is now the default: a plain 'gentle-shell' opens it.", { base: true });
+			}
 			setDefaultEnv(root, effect.name);
 			return reload(`${effect.name} is now the default: a plain 'gentle-shell' opens it.`, effect.name);
 		} catch (error) {
@@ -983,30 +1002,32 @@ async function runEnvsManager(root) {
 	for (;;) {
 		const { state: last, effect } = await envsScreenSession(state, apply);
 		if (effect.kind === "quit") return undefined;
-		if (effect.kind === "launch") return effect.name;
+		if (effect.kind === "launch") return entrySelector(effect);
+		const what = effect.base ? "the base home" : `env ${effect.name}`;
 		let code;
 		if (effect.kind === "setup") {
-			process.stdout.write(`gentle-shell: setting up env ${effect.name}\n`);
-			code = runLauncherForEnv(effect.name, ["setup"]);
+			process.stdout.write(`gentle-shell: setting up ${what}; downloads can take a few minutes (Ctrl-C cancels)\n`);
+			code = runLauncherForEnv(effect, ["setup"]);
 		} else if (effect.kind === "install") {
-			code = runLauncherForEnv(effect.name, ["install", effect.source]);
+			process.stdout.write(`gentle-shell: installing ${effect.source} into ${what} (Ctrl-C cancels)\n`);
+			code = runLauncherForEnv(effect, ["install", effect.source]);
 		} else {
 			// Pi signs in from inside a session (/login); outside one it can
 			// only check readiness, which needs a provider per call.
-			const providers = last.envs.find((env) => env.name === effect.name)?.providers ?? [];
+			const providers = last.envs.find((env) => (effect.base ? env.base === true : !env.base && env.name === effect.name))?.providers ?? [];
 			if (providers.length === 0) {
-				process.stdout.write(`No providers signed in to ${effect.name}. Launch it and run /login inside the session.\n`);
+				process.stdout.write(`No providers signed in to ${what}. Launch it and run /login inside the session.\n`);
 				code = 0;
 			} else {
 				code = 0;
 				for (const provider of providers) {
-					const providerCode = runLauncherForEnv(effect.name, ["auth", "check", "--provider", provider]);
+					const providerCode = runLauncherForEnv(effect, ["auth", "check", "--provider", provider]);
 					if (providerCode !== 0) code = providerCode;
 				}
 			}
 		}
 		await waitForAnyKey(`${code === 0 ? "Done" : `Finished with exit code ${code}`}. Press any key to return to the env manager.`);
-		state = reload(code === 0 ? undefined : `Last action exited with code ${code}.`, effect.name);
+		state = reload(code === 0 ? undefined : `Last action exited with code ${code}.`, effect.base ? { base: true } : effect.name);
 	}
 }
 
@@ -2216,11 +2237,12 @@ async function main() {
 		return;
 	}
 	if (args.command === "envs") {
-		const launch = await handleEnvsCommand(args.commandArgs);
-		if (launch === undefined) return;
-		// Re-enter the ordinary launch exactly as `gentle-shell --env <name>`,
-		// so startup checks, provisioning and resume hints all see that argv.
-		process.argv = [...process.argv.slice(0, 2), "--env", launch];
+		const selector = await handleEnvsCommand(args.commandArgs);
+		if (selector === undefined) return;
+		// Re-enter the ordinary launch exactly as `gentle-shell --env <name>`
+		// (or `--isolated` for the base home), so startup checks, provisioning
+		// and resume hints all see that argv.
+		process.argv = [...process.argv.slice(0, 2), ...selector];
 		return main();
 	}
 	// The verification input applies to `--version` only (scripts/bundled-install.mjs upgradeBundled).

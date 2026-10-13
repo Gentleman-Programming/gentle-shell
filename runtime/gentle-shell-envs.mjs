@@ -116,6 +116,9 @@ export function removeEnvFromConfig(config           , aliases                  
 
 
 
+
+
+
 function parseObject(text                    )                                      {
 	if (text === undefined) return undefined;
 	try {
@@ -152,5 +155,6 @@ export function summarizeEnv(input                 )             {
 		provisioned,
 		sessionCount: input.sessionCount,
 		lastSessionAt: input.lastSessionAt,
+		...(input.base ? { base: true } : {}),
 	};
 }

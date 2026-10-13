@@ -20,6 +20,7 @@ import {
 	readdirSync,
 	readFileSync,
 	realpathSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import {
@@ -264,6 +265,7 @@ import {
 	sameReviewSessionIdentity,
 	type ReviewSessionIdentity,
 } from "../lib/review-session-standing-permission.ts";
+import { herdrSetupHint } from "../lib/herdr-activity.ts";
 
 const GRAPH_V1_ORDINARY_READ_ONLY = "Graph-v1 ordinary review authority is read-only; use native compact-v2 review operations";
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -10402,6 +10404,10 @@ function createGentleAiExtensionForTesting(
 			if (modelConfig.status === "invalid") {
 				lines.push(`remedy: fix or remove ${modelConfig.path}`);
 			}
+			lines.push(...herdrSetupHint(process.env, {
+				interactive: ctx.mode === "tui" && ctx.hasUI,
+				isSocket: (path) => { try { return statSync(path).isSocket(); } catch { return false; } },
+			}));
 			ctx.ui.notify(
 				lines.join("\n"),
 				lines.some((line) => line.startsWith("fail:")) || assetLines.some((line) => line.startsWith("warn:")) ? "warning" : "info",

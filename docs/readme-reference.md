@@ -98,6 +98,9 @@ missing Herdr/socket contexts do not publish. The packaged extension loads throu
 
 Herdr 0.8.2/protocol 20 needs **two separate rows**, not a newline inside a token:
 add `['$summary'], ['$summary2']` to the Agents sidebar rows in your config.
+Inside a Herdr pane, `/gentle:doctor` shows whether publishing is active and this
+read-only setup hint; Gentle Shell never edits Herdr config. Configure the Herdr
+client that displays the session (also over SSH), then reload or restart Herdr.
 The first row is `◐ title`; the extension prefixes the optional continuation with
 two spaces, though Herdr may normalize leading whitespace.
 Text wraps by display cells, preferring word boundaries unless a grapheme-safe
@@ -598,7 +601,7 @@ Synthetic tests prove the observer's behavior, not the cause of issue #213. A ne
 
 ```text
 /gentle:status          Check package assets and global model config.
-/gentle:doctor          Run read-only diagnostics for assets, config, tools, and guards.
+/gentle:doctor          Run read-only diagnostics for assets, config, tools, guards, and Herdr setup.
 /gentle:models             Assign global model/effort routing to packaged/custom agents.
 /gentle:profiles           Create, switch, and manage global agent-model profiles.
 /gentle:persona            Switch between gentleman and neutral persona modes.
@@ -1125,7 +1128,7 @@ The notice appears once per distinct change: further launches stay quiet until t
 | Command                          | What it does                                                        |
 | -------------------------------- | ------------------------------------------------------------------- |
 | `/gentle:status`              | Shows package assets and global model config status. |
-| `/gentle:doctor`              | Runs read-only diagnostics for assets, model/persona config, memory tools, and safety guards. |
+| `/gentle:doctor`              | Runs read-only diagnostics for assets, model/persona config, memory tools, safety guards, and (inside Herdr) the task-summary sidebar setup. |
 | `/gentle:models`                 | Opens global model + effort assignment UI. Press `x` to export, `r` to restore saved routing, and `u` to save routing and capture the session in the current profile. |
 | `/gentle:profiles`               | Opens global agent-model profiles: apply live, create, snapshot, duplicate, rename, delete, export, and import. |
 | `/gentle:commands`               | Opens the command palette (default `alt+k`): a curated, grouped menu (Configuration, Session, Diagnostics, Skills) of registered Gentle commands; search and run by label. |

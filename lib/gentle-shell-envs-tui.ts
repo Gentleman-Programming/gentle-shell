@@ -1,5 +1,6 @@
 import { BRAND_GLYPH, BRAND_NAME, GENTLE_COLORS, ROSE_ART, type Rgb, truecolor } from "./gentle-brand.ts";
-import { type EnvSummary, validateEnvName } from "./gentle-shell-envs.ts";
+import { CONFIG_CATEGORIES, type ConfigCategory } from "./gentle-config-scope.ts";
+import { CONFIG_CATEGORY_LABELS, describeEnvScope, type EnvSummary, validateEnvName } from "./gentle-shell-envs.ts";
 
 // The `gentle-shell envs` manager: a pure key parser, reducer and renderer.
 // It is dependency-free on purpose (no pi-tui), because the launcher runs
@@ -9,6 +10,8 @@ import { type EnvSummary, validateEnvName } from "./gentle-shell-envs.ts";
 export type EnvsKey =
 	| { name: "up" }
 	| { name: "down" }
+	| { name: "left" }
+	| { name: "right" }
 	| { name: "enter" }
 	| { name: "backspace" }
 	| { name: "escape" }
@@ -23,7 +26,10 @@ export type EnvsEffect =
 	| { kind: "set-default"; name: string; base?: true }
 	| { kind: "setup"; name: string; base?: true }
 	| { kind: "auth-check"; name: string; base?: true }
-	| { kind: "create"; name: string }
+	// own: categories the new env owns; from/empty: where their copies come
+	// from (the base home when neither is set).
+	| { kind: "create"; name: string; own: ConfigCategory[]; from?: string; empty?: true }
+	| { kind: "scope"; name: string; own: ConfigCategory[]; share: ConfigCategory[]; from?: string; empty?: true }
 	| { kind: "rename"; from: string; to: string }
 	| { kind: "delete"; name: string }
 	| { kind: "install"; name: string; source: string; base?: true };
@@ -40,10 +46,26 @@ export interface EnvsPrompt {
 	error?: string;
 }
 
+// The VS Code-like config form: per category, shared with the base home or
+// an own copy; plus where newly own copies come from.
+export type ScopeSource = { kind: "base" } | { kind: "env"; name: string } | { kind: "empty" };
+
+export interface EnvsScopeForm {
+	mode: "create" | "edit";
+	name: string;
+	own: ConfigCategory[];
+	// The scope the env had when the form opened (edit), [] for a new env.
+	initial: ConfigCategory[];
+	source: ScopeSource;
+	// 0..3 the categories, 4 the source row.
+	cursor: number;
+}
+
 export interface EnvsState {
 	envs: EnvSummary[];
 	selected: number;
 	prompt?: EnvsPrompt;
+	scope?: EnvsScopeForm;
 	// One-line status shown above the key hints (results, hints).
 	message?: string;
 }
@@ -74,6 +96,8 @@ export function parseKeys(data: string): EnvsKey[] {
 				const sequence = chars.slice(i + 2, j + 1).join("");
 				if (sequence === "A") keys.push({ name: "up" });
 				else if (sequence === "B") keys.push({ name: "down" });
+				else if (sequence === "C") keys.push({ name: "right" });
+				else if (sequence === "D") keys.push({ name: "left" });
 				i = j;
 				continue;
 			}
@@ -117,7 +141,11 @@ function reducePrompt(state: EnvsState, prompt: EnvsPrompt, key: EnvsKey): EnvsS
 		const invalid = validateEnvName(value);
 		if (invalid !== undefined) return fail(invalid);
 		if (state.envs.some((e) => !e.base && e.name === value)) return fail(`env "${value}" already exists`);
-		return done(prompt.kind === "create" ? { kind: "create", name: value } : { kind: "rename", from: target, to: value });
+		if (prompt.kind === "create") {
+			// Like a new VS Code profile: choose what to share before creating.
+			return { state: { ...state, prompt: undefined, scope: { mode: "create", name: value, own: [], initial: [], source: { kind: "base" }, cursor: 0 } } };
+		}
+		return done({ kind: "rename", from: target, to: value });
 	}
 	if (prompt.kind === "delete") {
 		if (value !== target) return fail(`type "${target}" to confirm, or esc to cancel`);
@@ -127,8 +155,51 @@ function reducePrompt(state: EnvsState, prompt: EnvsPrompt, key: EnvsKey): EnvsS
 	return done(prompt.targetBase ? { kind: "install", name: target, source: value, base: true } : { kind: "install", name: target, source: value });
 }
 
+// Sources a newly own copy can come from: the base home, every other env, or empty.
+function scopeSources(state: EnvsState, form: EnvsScopeForm): ScopeSource[] {
+	const envs = state.envs.filter((env) => !env.base && env.name !== form.name).map((env): ScopeSource => ({ kind: "env", name: env.name }));
+	return [{ kind: "base" }, ...envs, { kind: "empty" }];
+}
+
+function sameSource(a: ScopeSource, b: ScopeSource): boolean {
+	return a.kind === b.kind && (a.kind !== "env" || (b.kind === "env" && a.name === b.name));
+}
+
+function sourceFields(source: ScopeSource): { from?: string; empty?: true } {
+	return source.kind === "env" ? { from: source.name } : source.kind === "empty" ? { empty: true } : {};
+}
+
+function reduceScope(state: EnvsState, form: EnvsScopeForm, key: EnvsKey): EnvsStep {
+	const set = (next: Partial<EnvsScopeForm>): EnvsStep => ({ state: { ...state, scope: { ...form, ...next } } });
+	if (key.name === "escape" || key.name === "ctrl-c") return { state: { ...state, scope: undefined } };
+	if (key.name === "up") return set({ cursor: Math.max(0, form.cursor - 1) });
+	if (key.name === "down") return set({ cursor: Math.min(CONFIG_CATEGORIES.length, form.cursor + 1) });
+	const char = key.name === "char" ? key.char : undefined;
+	if (char === "a") return set({ own: form.own.length === CONFIG_CATEGORIES.length ? [] : [...CONFIG_CATEGORIES] });
+	const toggle = char === " " || key.name === "left" || key.name === "right";
+	if (toggle && form.cursor < CONFIG_CATEGORIES.length) {
+		const category = CONFIG_CATEGORIES[form.cursor];
+		const own = form.own.includes(category) ? form.own.filter((c) => c !== category) : [...form.own, category];
+		return set({ own: CONFIG_CATEGORIES.filter((c) => own.includes(c)) });
+	}
+	if (toggle) {
+		const sources = scopeSources(state, form);
+		const index = sources.findIndex((source) => sameSource(source, form.source));
+		const step = key.name === "left" ? -1 : 1;
+		return set({ source: sources[(index + step + sources.length) % sources.length] });
+	}
+	if (key.name !== "enter") return { state };
+	const close = { ...state, scope: undefined };
+	if (form.mode === "create") return { state: close, effect: { kind: "create", name: form.name, own: form.own, ...sourceFields(form.source) } };
+	const share = form.initial.filter((c) => !form.own.includes(c));
+	const added = form.own.filter((c) => !form.initial.includes(c));
+	if (share.length === 0 && added.length === 0) return { state: close };
+	return { state: close, effect: { kind: "scope", name: form.name, own: added, share, ...(added.length > 0 ? sourceFields(form.source) : {}) } };
+}
+
 export function reduceEnvs(state: EnvsState, key: EnvsKey): EnvsStep {
 	if (state.prompt !== undefined) return reducePrompt(state, state.prompt, key);
+	if (state.scope !== undefined) return reduceScope(state, state.scope, key);
 
 	if (key.name === "ctrl-c" || key.name === "escape") return { state, effect: { kind: "quit" } };
 	const last = state.envs.length - 1;
@@ -139,7 +210,7 @@ export function reduceEnvs(state: EnvsState, key: EnvsKey): EnvsStep {
 	if (char === "n") return openPrompt(state, { kind: "create", label: "New env name", value: "" });
 
 	const current = state.envs[state.selected];
-	const scoped = key.name === "enter" || (char !== undefined && "sparid".includes(char));
+	const scoped = key.name === "enter" || (char !== undefined && "sparidc".includes(char));
 	if (!scoped) return { state };
 	if (current === undefined) return { state: { ...state, message: EMPTY_HINT } };
 	const name = current.name;
@@ -150,6 +221,11 @@ export function reduceEnvs(state: EnvsState, key: EnvsKey): EnvsStep {
 	if (char === "a") return { state, effect: { kind: "auth-check", name, ...base } };
 	if (current.base && (char === "r" || char === "d")) {
 		return { state: { ...state, message: "The base home belongs to the install: it can't be renamed or deleted." } };
+	}
+	if (char === "c") {
+		if (current.base) return { state: { ...state, message: "The base home holds the shared configuration every env can reuse; press c on an env to choose what it owns." } };
+		const own = current.own ?? [];
+		return { state: { ...state, message: undefined, scope: { mode: "edit", name, own, initial: own, source: { kind: "base" }, cursor: 0 } } };
 	}
 	if (char === "r") return openPrompt(state, { kind: "rename", label: `Rename "${name}" to`, value: name, target: name });
 	if (char === "i") return openPrompt(state, { kind: "install", label: `Install into "${current.base ? "the base home" : name}"`, value: "", target: name, ...(current.base ? { targetBase: true } : {}) });
@@ -270,22 +346,53 @@ function detailRows(env: EnvSummary | undefined, inner: number, paint: Paint): C
 		field("Setup", env.setUp === false ? "not set up yet" : plain(env.provisioned)),
 		field("Sessions", sessions),
 		field("Sign-ins", env.providers.length > 0 ? env.providers.map(plain).join(", ") : "none yet: /login inside the session"),
+		field("Config", env.base ? "the shared configuration envs can reuse" : describeEnvScope(env.own ?? [])),
 		field("Packages", env.packages.length > 0 ? `${env.packages.length}` : env.setUp === false ? "installed when you first open it" : "none"),
 		...env.packages.map((source) => ({ text: `  · ${plain(source)}`, style: paint.muted })),
 	];
 }
 
+// The VS Code-like config form, drawn in place of the detail card.
+const CATEGORY_TITLES: Readonly<Record<ConfigCategory, string>> = Object.freeze({
+	models: "Models & profiles",
+	persona: "Persona",
+	appearance: "Appearance",
+	behavior: "Behavior",
+});
+
+function sourceLabel(source: ScopeSource): string {
+	return source.kind === "base" ? `${BRAND_NAME} base` : source.kind === "env" ? `env ${source.name}` : "Empty (defaults)";
+}
+
+function scopeRows(form: EnvsScopeForm, paint: Paint): CardRow[] {
+	const row = (selected: boolean, label: string, value: string, width = 20): CardRow => {
+		const text = `${selected ? "❯" : " "} ${label.padEnd(width)}${value}`;
+		return { text, style: selected ? (fitted: string) => paint.rose(paint.bold(fitted)) : undefined };
+	};
+	return [
+		{ text: form.mode === "create" ? "Choose what this env shares with the base home." : "Change what this env owns.", style: paint.label },
+		{ text: "" },
+		...CONFIG_CATEGORIES.map((category, index) => row(form.cursor === index, CATEGORY_TITLES[category], form.own.includes(category) ? "Own copy" : "Shared with base")),
+		{ text: "" },
+		row(form.cursor === CONFIG_CATEGORIES.length, "New own copies from", sourceLabel(form.source), 21),
+		{ text: "" },
+		{ text: "Shared follows the base home live; an own copy diverges.", style: paint.muted },
+	];
+}
+
+const SCOPE_HINTS: Array<[string, string]> = [["↑↓", "move"], ["space", "toggle"], ["←→", "change"], ["a", "all"], ["esc", "cancel"]];
+
 const HINTS: Array<[string, string]> = [
 	["enter", "open"], ["n", "new"], ["r", "rename"], ["d", "delete"], ["s", "default"],
-	["p", "setup"], ["i", "install"], ["a", "sign-ins"], ["q", "quit"],
+	["p", "setup"], ["i", "install"], ["a", "sign-ins"], ["c", "config"], ["q", "quit"],
 ];
 
 // Wrapped, never truncated: every action stays discoverable at any width.
-function hintLines(width: number, paint: Paint): string[] {
+function hintLines(width: number, paint: Paint, hints: Array<[string, string]> = HINTS): string[] {
 	const lines: string[] = [];
 	let parts: string[] = [];
 	let used = 0;
-	for (const [key, action] of HINTS) {
+	for (const [key, action] of hints) {
 		const size = `${key} ${action}`.length;
 		const extra = (parts.length > 0 ? 3 : 0) + size;
 		if (parts.length > 0 && used + extra > width) {
@@ -312,6 +419,10 @@ export function renderEnvsScreen(state: EnvsState, width: number, height: number
 		const p = state.prompt;
 		footer.push(`${paint.rose(paint.bold("❯"))} ${paint.bold(fit(`${p.label}: ${p.value}`, Math.max(0, w - 3)))}${paint.rose("▏")}`);
 		footer.push(p.error === undefined ? center(paint.muted(fit("enter confirm · esc cancel", w)), w) : center(paint.error(fit(p.error, w)), w));
+	} else if (state.scope !== undefined) {
+		const hints: Array<[string, string]> = [...SCOPE_HINTS.slice(0, 4), ["enter", state.scope.mode === "create" ? "create" : "apply"], SCOPE_HINTS[4]];
+		footer.push("");
+		footer.push(...hintLines(Math.min(w, 110), paint, hints).map((line) => center(line, w)));
 	} else {
 		footer.push(state.message === undefined ? "" : center(paint.value(fit(state.message, w)), w));
 		footer.push(...hintLines(Math.min(w, 110), paint).map((line) => center(line, w)));
@@ -340,7 +451,8 @@ export function renderEnvsScreen(state: EnvsState, width: number, height: number
 	const longest = Math.max(0, ...state.envs.map((env) => [...(env.base ? `${BRAND_NAME} base` : env.name)].length + (env.isDefault ? " (default)".length : 0)));
 	const listWidth = sideBySide ? Math.min(Math.max(20, Math.floor(blockWidth * 0.3), longest + 6), 40, blockWidth - 30) : blockWidth;
 	const detailWidth = blockWidth - listWidth - 1;
-	const details = detailRows(selectedEnv, Math.max(1, detailWidth - 4), paint);
+	const form = state.scope;
+	const details = form !== undefined ? scopeRows(form, paint) : detailRows(selectedEnv, Math.max(1, detailWidth - 4), paint);
 	const contentRows = Math.max(state.envs.length || 1, sideBySide ? details.length : 0) + 2;
 	const available = Math.max(0, h - header.length - footer.length);
 	const bodyHeight = Math.min(available, Math.max(6, contentRows + 1));
@@ -358,7 +470,8 @@ export function renderEnvsScreen(state: EnvsState, width: number, height: number
 		if (state.envs.length === 0) listRows.push({ text: "  (none)", style: paint.muted });
 		const list = card("Envs", listRows, listWidth, bodyHeight, paint);
 		if (sideBySide) {
-			const detail = card(selectedEnv === undefined ? "Welcome" : selectedEnv.base ? "Base home" : selectedEnv.name, details, detailWidth, bodyHeight, paint);
+			const title = form !== undefined ? `${form.mode === "create" ? "New env" : "Config"} · ${form.name}` : selectedEnv === undefined ? "Welcome" : selectedEnv.base ? "Base home" : selectedEnv.name;
+			const detail = card(title, details, detailWidth, bodyHeight, paint);
 			for (let row = 0; row < bodyHeight; row += 1) body.push(`${lead}${list[row]} ${detail[row]}`);
 		} else {
 			body.push(...list.map((line) => lead + line));

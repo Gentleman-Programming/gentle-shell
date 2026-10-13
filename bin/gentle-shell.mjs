@@ -833,7 +833,7 @@ function loadEnvSummaries(root) {
 	};
 	const baseDir = resolvePath(isolatedDir(process.env, homedir()));
 	const base = summarize("base", baseDir, { base: true, ...(persisted === undefined || persisted.mode === "isolated" ? { isDefault: true } : {}) });
-	return [base, ...listEnvNames(root).map((name) => summarize(name, envDir(root, name), {}))];
+	return [base, ...listEnvNames(root).map((name) => summarize(name, envDir(root, name), { own: readEnvScope(envDir(root, name)) }))];
 }
 
 // The launcher selector that reproduces an entry: `--isolated` for the base
@@ -1004,7 +1004,7 @@ function envsScreenSession(initial, apply) {
 				state = step.state;
 				if (step.effect === undefined) continue;
 				const kind = step.effect.kind;
-				if (kind === "create" || kind === "rename" || kind === "delete" || kind === "set-default") {
+				if (kind === "create" || kind === "rename" || kind === "delete" || kind === "set-default" || kind === "scope") {
 					state = await apply(state, step.effect);
 					continue;
 				}
@@ -1044,7 +1044,14 @@ async function runEnvsManager(root) {
 		try {
 			if (effect.kind === "create") {
 				await createEnv(root, effect.name);
-				return reload(`Created ${effect.name}. Press enter to launch it (first launch installs the companion packages).`, effect.name);
+				const scopeNote = effect.own.length > 0
+					? ` Config: ${describeEnvScope(applyEnvScope(root, effect.name, { own: effect.own, share: [], from: effect.from, empty: effect.empty === true }).next)}.`
+					: "";
+				return reload(`Created ${effect.name}.${scopeNote} Press enter to launch it (first launch installs the companion packages).`, effect.name);
+			}
+			if (effect.kind === "scope") {
+				const plan = applyEnvScope(root, effect.name, { own: effect.own, share: effect.share, from: effect.from, empty: effect.empty === true });
+				return reload(`${effect.name}: ${describeEnvScope(plan.next)}. Applies from its next session.`, effect.name);
 			}
 			if (effect.kind === "rename") {
 				renameEnv(root, effect.from, effect.to);

@@ -256,3 +256,8 @@ test("describeEnvScope reads like a sentence for the gate", async () => {
 	assert.equal(describeEnvScope(["models", "persona", "appearance", "behavior"]), "fully own (shares nothing)");
 	assert.equal(describeEnvScope(["persona", "appearance"]), "own persona, appearance · shares models & profiles, behavior");
 });
+
+test("summarizeEnv carries the env's own config categories to the gate", () => {
+	assert.deepEqual(summarizeEnv({ name: "w", dir: "/e/w", isDefault: false, sessionCount: 0, own: ["persona"] }).own, ["persona"]);
+	assert.deepEqual(summarizeEnv({ name: "w", dir: "/e/w", isDefault: false, sessionCount: 0 }).own, []);
+});

@@ -104,6 +104,8 @@ export interface EnvSummaryInput {
 	lastSessionAt?: string;
 	// The install's own home (`--isolated`), listed beside the named envs.
 	base?: boolean;
+	// Gentle config categories this env owns; omitted means none.
+	own?: readonly ConfigCategory[];
 }
 
 export interface EnvSummary {
@@ -119,6 +121,8 @@ export interface EnvSummary {
 	sessionCount: number;
 	lastSessionAt?: string;
 	base?: boolean;
+	// Gentle config categories this env owns (lib/gentle-config-scope.ts).
+	own?: ConfigCategory[];
 }
 
 function parseObject(text: string | undefined): Record<string, unknown> | undefined {
@@ -159,6 +163,7 @@ export function summarizeEnv(input: EnvSummaryInput): EnvSummary {
 		sessionCount: input.sessionCount,
 		lastSessionAt: input.lastSessionAt,
 		...(input.base ? { base: true } : {}),
+		own: [...(input.own ?? [])],
 	};
 }
 

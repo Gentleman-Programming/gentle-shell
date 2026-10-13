@@ -34,6 +34,7 @@ test("parseKeys decodes arrows, enter, backspace, escape, ctrl-c and printable t
 	assert.deepEqual(parseKeys("\x1b"), [{ name: "escape" }]);
 	assert.deepEqual(parseKeys("\x1bOA\x1bOB"), [{ name: "up" }, { name: "down" }]);
 	assert.deepEqual(parseKeys("\x1b[5~"), [], "unknown escape sequences are dropped");
+	assert.deepEqual(parseKeys("\x1b[D\x1b[C "), [{ name: "left" }, { name: "right" }, char(" ")]);
 });
 
 // --- navigation and direct actions -------------------------------------------
@@ -75,9 +76,13 @@ test("n opens a name prompt that validates and rejects duplicates before creatin
 	assert.match(bad.state.prompt?.error ?? "", /env name/);
 	const dup = press(s0, char("n"), ...typed("work"), { name: "enter" });
 	assert.match(dup.state.prompt?.error ?? "", /already exists/);
-	const ok = press(s0, char("n"), ...typed("perzonal"), { name: "backspace" }, { name: "backspace" }, ...typed("al"), { name: "enter" });
-	assert.deepEqual(ok.effect, { kind: "create", name: "perzonal".slice(0, -2) + "al" });
-	assert.equal(ok.state.prompt, undefined);
+	const named = press(s0, char("n"), ...typed("perzonal"), { name: "backspace" }, { name: "backspace" }, ...typed("al"), { name: "enter" });
+	assert.equal(named.effect, undefined, "a valid name opens the config form first");
+	assert.equal(named.state.prompt, undefined);
+	assert.equal(named.state.scope?.name, "perzonal");
+	const ok = press(named.state, { name: "enter" });
+	assert.deepEqual(ok.effect, { kind: "create", name: "perzonal", own: [] }, "enter with defaults shares everything, as before");
+	assert.equal(ok.state.scope, undefined);
 });
 
 test("keys typed into a prompt never trigger list actions", () => {
@@ -251,7 +256,7 @@ test("the base home can be neither renamed nor deleted", () => {
 
 test("an env may be named base: the base home never takes part in name checks", () => {
 	const s0 = initialEnvsState([baseEntry(), env("work")]);
-	assert.deepEqual(press(s0, char("n"), ...typed("base"), { name: "enter" }).effect, { kind: "create", name: "base" });
+	assert.deepEqual(press(s0, char("n"), ...typed("base"), { name: "enter" }, { name: "enter" }).effect, { kind: "create", name: "base", own: [] });
 });
 
 test("the base home renders first with its own marker and card, starred when default", () => {
@@ -288,4 +293,76 @@ test("text from the user's own files never reaches the terminal as control seque
 	const text = lines.join("\n");
 	assert.match(text, /npm:a/);
 	assert.match(text, /anthropic|anth.*ropic/);
+});
+
+// --- config scope form (VS Code-like profiles) -------------------------------------
+
+const scoped = (name: string, own: EnvSummary["own"] = [], extra: Partial<EnvSummary> = {}) => env(name, { own, ...extra });
+
+test("the new-env form toggles categories and picks where own copies come from", () => {
+	const s0 = initialEnvsState([baseEntry(), scoped("work", ["persona"]), scoped("lab")]);
+	let { state } = press(s0, char("n"), ...typed("client"), { name: "enter" });
+	assert.equal(state.scope?.mode, "create");
+	state = press(state, { name: "down" }, char(" ")).state; // persona -> own
+	state = press(state, { name: "down" }, { name: "right" }).state; // appearance -> own
+	assert.deepEqual(state.scope?.own, ["persona", "appearance"]);
+	// The source row cycles: base -> each other env -> empty.
+	state = press(state, { name: "down" }, { name: "down" }, { name: "right" }).state;
+	assert.deepEqual(state.scope?.source, { kind: "env", name: "work" });
+	state = press(state, { name: "right" }, { name: "right" }).state;
+	assert.deepEqual(state.scope?.source, { kind: "empty" });
+	state = press(state, { name: "right" }).state;
+	assert.deepEqual(state.scope?.source, { kind: "base" }, "wraps around");
+	state = press(state, { name: "left" }).state;
+	assert.deepEqual(state.scope?.source, { kind: "empty" });
+	assert.deepEqual(press(state, { name: "enter" }).effect, { kind: "create", name: "client", own: ["persona", "appearance"], empty: true });
+	const fromWork = press(state, { name: "right" }, { name: "right" }, { name: "enter" }).effect;
+	assert.deepEqual(fromWork, { kind: "create", name: "client", own: ["persona", "appearance"], from: "work" });
+});
+
+test("a toggles every category own or shared, and esc cancels without creating", () => {
+	const s0 = initialEnvsState([baseEntry(), scoped("work")]);
+	const { state } = press(s0, char("n"), ...typed("x"), { name: "enter" }, char("a"));
+	assert.deepEqual(state.scope?.own, ["models", "persona", "appearance", "behavior"]);
+	assert.deepEqual(press(state, char("a")).state.scope?.own, []);
+	const cancelled = press(state, { name: "escape" });
+	assert.equal(cancelled.effect, undefined);
+	assert.equal(cancelled.state.scope, undefined);
+});
+
+test("c edits an existing env's scope; seeding applies only to newly own categories", () => {
+	const s0 = initialEnvsState([baseEntry(), scoped("work", ["persona"]), scoped("lab")], undefined, "work");
+	const { state } = press(s0, char("c"));
+	assert.equal(state.scope?.mode, "edit");
+	assert.deepEqual(state.scope?.own, ["persona"]);
+	const edited = press(state, char(" "), { name: "down" }, char(" "), { name: "enter" });
+	assert.deepEqual(edited.effect, { kind: "scope", name: "work", own: ["models"], share: ["persona"] });
+	assert.deepEqual(press(state, { name: "enter" }).effect, undefined, "no change, nothing to apply");
+	assert.equal(press(state, { name: "enter" }).state.scope, undefined);
+});
+
+test("c on the base home explains it is the shared configuration", () => {
+	const { state, effect } = press(initialEnvsState([baseEntry(), scoped("work")]), char("c"));
+	assert.equal(effect, undefined);
+	assert.equal(state.scope, undefined);
+	assert.match(state.message ?? "", /shared configuration/);
+});
+
+test("the form renders as a Gentle card with each category's choice and the source", () => {
+	const s0 = initialEnvsState([baseEntry(), scoped("work", ["persona"])]);
+	const { state } = press(s0, char("n"), ...typed("client"), { name: "enter" }, { name: "down" }, char(" "));
+	const text = renderEnvsScreen(state, 110, 30).map(stripAnsi).join("\n");
+	assert.match(text, /╭─ ✿ New env · client ─+╮/);
+	assert.match(text, /Models & profiles +Shared with base/);
+	assert.match(text, /❯ Persona +Own copy/);
+	assert.match(text, /New own copies from +Gentle Shell base/);
+	assert.match(text, /space toggle/);
+	assert.match(text, /enter create/);
+});
+
+test("the detail card names each env's config scope", () => {
+	const s0 = initialEnvsState([baseEntry(), scoped("work", ["persona", "appearance"])], undefined, "work");
+	assert.match(renderEnvsScreen(s0, 120, 30).map(stripAnsi).join("\n"), /Config +own persona, appearance · shares models & profiles, behavior/);
+	const base = renderEnvsScreen(initialEnvsState([baseEntry(), scoped("work")], undefined, { base: true }), 120, 30).map(stripAnsi).join("\n");
+	assert.match(base, /Config +the shared configuration envs can reuse/);
 });

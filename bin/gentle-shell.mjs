@@ -28,6 +28,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
 	buildPiInvocation,
+	cachedPiVersion,
 	checkPiVersion,
 	decideTakeOver,
 	describeVersion,
@@ -38,6 +39,7 @@ import {
 	homeSelectorFlags,
 	isSetupCapablePin,
 	launcherConfigPath,
+	matchesFileIdentity,
 	MIN_SETUP_GENTLE_AI_VERSION,
 	missingPiMessage,
 	needsProvisioning,
@@ -49,6 +51,7 @@ import {
 	POST_INSTALL_REMOVAL_SOURCES,
 	postInstallRemovals,
 	provisionedEntry,
+	recordPiVersion,
 	recordProvisioned,
 	resolveHome,
 	resolvePiRuntime,
@@ -188,6 +191,31 @@ function probePiVersion(runtime) {
 	});
 	if (versionProbe.error) fail(`Could not run the pi runtime at "${runtime.command}": ${versionProbe.error.message}`, 1);
 	return checkPiVersion(versionProbe.stdout ?? "");
+}
+
+// env/path runtimes have no in-memory version (unlike bundled, #2096), but a
+// real pi executable at a given path rarely changes: cache the probed version
+// keyed by that exact path's dev+ino+size+mtimeMs identity, and only spawn
+// again once that identity changes. Best-effort: a failed stat, a missing or
+// malformed cache entry, or a concurrent write losing this one just falls
+// back to (or repeats) the real spawn, never a wrong version.
+function probePiVersionCached(runtime, configPath) {
+	let identity;
+	try {
+		const stat = statSync(runtime.command);
+		identity = { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs };
+	} catch {
+		identity = undefined;
+	}
+	if (identity !== undefined) {
+		const cached = cachedPiVersion(readRawConfig(configPath), runtime.command);
+		if (cached !== undefined && matchesFileIdentity(cached, identity)) return checkPiVersion(cached.version);
+	}
+	const probed = probePiVersion(runtime);
+	if (probed.ok && identity !== undefined) {
+		writeRawConfig(configPath, recordPiVersion(readRawConfig(configPath), runtime.command, identity, probed.version));
+	}
+	return probed;
 }
 
 function emptyArgs() {
@@ -1537,7 +1565,7 @@ async function main() {
 	// the pinned dependency): spawning a whole process just to print it back
 	// is the redundant cost issue #2096 reports, so only env/path runtimes
 	// (which have no such in-memory source) still pay for a real probe.
-	const versionCheck = runtime.version !== undefined ? checkPiVersion(runtime.version) : probePiVersion(runtime);
+	const versionCheck = runtime.version !== undefined ? checkPiVersion(runtime.version) : probePiVersionCached(runtime, resolveConfigPath());
 	if (!versionCheck.ok) fail(versionCheck.message, 1);
 
 	if (args.version) {

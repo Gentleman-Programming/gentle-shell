@@ -106,6 +106,49 @@ test("malformed adjacent metadata never silently falls back to PATH; env overrid
 	assert.match(override.stdout, /pi 0\.99\.2/);
 });
 
+// --- pi version probe cache (env/path runtimes, #2096) ---------------------
+
+test("a cache hit for an env-override pi skips the real version spawn on the next launch", (t) => {
+	const f = fixture(t);
+	const { command, log } = writeCountingPiScript(f.root, "0.99.5");
+	const env = { ...f.env, GENTLE_SHELL_PI: command };
+	const first = run(env, ["--version"]);
+	assert.equal(first.status, 0, first.stderr);
+	assert.match(first.stdout, /pi 0\.99\.5/);
+	assert.equal(readFileSync(log, "utf8").length, 1, "first launch spawns the probe once");
+
+	const second = run(env, ["--version"]);
+	assert.equal(second.status, 0, second.stderr);
+	assert.match(second.stdout, /pi 0\.99\.5/);
+	assert.equal(readFileSync(log, "utf8").length, 1, "the cached version is reused instead of spawning again");
+});
+
+test("a changed pi binary at the same path invalidates the cache and re-probes", (t) => {
+	const f = fixture(t);
+	const { command, log } = writeCountingPiScript(f.root, "0.99.5");
+	const env = { ...f.env, GENTLE_SHELL_PI: command };
+	assert.equal(run(env, ["--version"]).status, 0);
+	assert.equal(readFileSync(log, "utf8").length, 1);
+
+	writeCountingPiScript(f.root, "0.99.6");
+	const result = run(env, ["--version"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, /pi 0\.99\.6/);
+	assert.equal(readFileSync(log, "utf8").length, 2, "a changed binary re-probes instead of trusting the stale cache");
+});
+
+test("a malformed pi version cache entry in config.json is tolerated and just re-probes", (t) => {
+	const f = fixture(t);
+	const { command } = writeCountingPiScript(f.root, "0.99.5");
+	const env = { ...f.env, GENTLE_SHELL_PI: command };
+	const configPath = join(f.home, ".gentle-shell", "config.json");
+	mkdirSync(dirname(configPath), { recursive: true });
+	writeFileSync(configPath, JSON.stringify({ piVersionProbeCache: "not-an-object" }));
+	const result = run(env, ["--version"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, /pi 0\.99\.5/);
+});
+
 // The launcher's own gentle-pi version, exactly as `ownPackageVersion()` in
 // bin/gentle-shell.mjs reads it (package.json at packageRoot) — used to
 // assert the post-install gentle-pi removal message and the provisioning
@@ -197,6 +240,38 @@ function writePathPiScript(root: string, version: string): string {
 
 function run(env: NodeJS.ProcessEnv, args: string[], options: { cwd?: string } = {}) {
 	return spawnSync(process.execPath, [binPath, ...args], { encoding: "utf8", env, ...options });
+}
+
+// Same contract as writePiScript's --version branch, plus one observable
+// side effect per invocation (an appended byte in a shared .invocations
+// file) so a test can tell whether the version-probe cache (#2096) actually
+// skipped the real spawn. Same POSIX-shebang-vs-Windows-.cmd-shim split as
+// writePathPiScript, with `version` embedded as a comment in whichever file
+// is the one actually resolved and stat'd on each platform (runtime.command),
+// so a version change is also a genuine identity change there — the same way
+// a real, different pi binary would never keep the old one's dev/ino/size/mtimeMs.
+function writeCountingPiScript(root: string, version: string): { command: string; log: string } {
+	const log = join(root, "counting-pi.invocations");
+	if (!existsSync(log)) writeFileSync(log, "");
+	const script = join(root, "counting-pi.mjs");
+	writeFileSync(
+		script,
+		[
+			"#!/usr/bin/env node",
+			`// version ${version}`,
+			"import { appendFileSync } from 'node:fs';",
+			`appendFileSync(${JSON.stringify(log)}, "x");`,
+			"const args = process.argv.slice(2);",
+			`if (args.includes("--version")) { console.log(${JSON.stringify(version)}); }`,
+			"process.exit(0);",
+			"",
+		].join("\n"),
+	);
+	chmodSync(script, 0o755);
+	if (process.platform !== "win32") return { command: script, log };
+	const command = join(root, "counting-pi.cmd");
+	writeFileSync(command, `@echo off\r\nrem version ${version}\r\n"${process.execPath}" "${script}" %*\r\nexit /b %errorlevel%\r\n`);
+	return { command, log };
 }
 
 // Herdr tests model terminal/socket metadata only: no socket is opened and the

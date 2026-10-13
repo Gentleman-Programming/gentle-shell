@@ -5,21 +5,39 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { __testing } from "../extensions/gentle-ai.ts";
 
-const { classifyGuardedCommand, evaluateGuardedCommand, guardedCommandPreview, guardedCommandTitle, isOrdinaryYoloPush, yoloPushConfiguredRestriction } = __testing;
+const { classifyGuardedCommand, evaluateGuardedCommand, guardedCommandPreview, guardedCommandTitle, isReversibleYoloCommand, yoloConfiguredRestriction } = __testing;
 
-test("YOLO waiver only selects a single ordinary default-confirm push after full evaluation", () => {
+// gentle-shell#2172: YOLO waives every reversible push and non-interactive
+// rebase segment; anything that deletes, rewrites or publishes keeps asking.
+test("YOLO waives reversible push and rebase segments after full evaluation (#2172)", () => {
 	const config = { autonomousMode: false, guardedCommands: {} };
-	for (const command of ["git push", "git push -u origin feature/test", "git push --set-upstream origin main"]) {
-		assert.equal(isOrdinaryYoloPush(command, evaluateGuardedCommand(command, config)), true, command);
+	for (const command of [
+		"git push", "git push -u origin feature/test", "git push --set-upstream origin main", "git push origin HEAD",
+		"git push -q origin main", "git push --quiet --tags", "git push --no-verify origin main", "git push --follow-tags -v origin main",
+		"git push origin HEAD:refs/heads/feature/x", "git push origin main:main",
+		"git -C /other push origin main", "env X=1 git push origin main",
+		"git add -A && git commit -m 'fix: x && y' && git push -u origin feature/test",
+		"git push origin main && gh pr create --fill", "cd sub && git push", "git push origin main; git status",
+		"git rebase main", "git rebase origin/main", "git rebase --onto main feature~3 feature", "git rebase --continue", "git rebase --abort", "git rebase --autostash main",
+		"git fetch origin && git rebase origin/main && git push",
+		"git\tpush\torigin\tmain", "git -C dir rebase main", "command git push origin main", "env -i git push origin main", "GIT_AUTHOR_NAME=x git push origin main",
+	]) {
+		assert.equal(isReversibleYoloCommand(command, evaluateGuardedCommand(command, config)), true, command);
 	}
 	for (const command of [
-		"git push --delete origin main", "git push origin :main", "git push --mirror origin",
-		"git push --prune origin", "git push -f origin main", "git -C /other push origin main",
-		"git push origin main; git status", "env X=1 git push origin main", "sudo git push origin main",
-		"git push origin main && git rebase main", "git push origin main && npm publish",
+		"git push --delete origin main", "git push -d origin main", "git push origin :main", "git push origin +main", "git push --mirror origin",
+		"git push --prune origin", "git push --all origin", "git push -f origin main", "git push --force-with-lease origin main",
+		"git push --receive-pack=evil origin main", "git push --exec=evil origin main", "git push --repo=/other origin main", "git push -o ci.skip origin main",
+		"sudo git push origin main", "git push origin main && npm publish", "git push origin main && pi remove foo", "git push origin main && git branch -D old",
 		`sh -c 'git push origin main'`, `git push origin main && sh -c "psql -c 'DROP TABLE users'"`,
-		"git push origin main && find data -delete", "git push origin main && rm -r data",
-	]) assert.equal(isOrdinaryYoloPush(command, evaluateGuardedCommand(command, config)), false, command);
+		"git push origin main && find data -delete", "git push origin main && rm -r data", "git push origin main && git stash drop", "git push origin main && git reset --hard",
+		"git rebase -i HEAD~3", "git rebase --interactive main", "git rebase -x 'make test' main", "git rebase --exec 'make test' main",
+		"git commit -m x", "git status",
+		// Global git options that run or redirect code are not inspected by the segment grammar, so they never qualify.
+		"git -c core.sshCommand=evil push origin main", "git --exec-path=/evil push origin main", "git --git-dir=/x push origin main", "git -C dir rebase -i main",
+		"git push origin $(echo main)", "git push origin `echo main`", "GIT_SSH=\"evil\" git push origin main",
+		"sh -c 'git push; echo done'", "bash -c 'git push && echo done'", "sh -c 'git rebase main; echo done'", "eval 'git push origin main'", "sudo -u x git push origin main",
+	]) assert.equal(isReversibleYoloCommand(command, evaluateGuardedCommand(command, config)), false, command);
 });
 
 test("YOLO preserves explicit push restrictions in either config layer independently of persistent autonomy", () => {
@@ -27,18 +45,23 @@ test("YOLO preserves explicit push restrictions in either config layer independe
 	const cwd = join(root, "repo");
 	const home = join(root, "home");
 	try {
-		assert.equal(yoloPushConfiguredRestriction(cwd, { gentlePiConfigHome: home }), undefined);
+		const pushOnly = (): unknown => yoloConfiguredRestriction(cwd, ["gitPush"], { gentlePiConfigHome: home });
+		assert.equal(pushOnly(), undefined);
 		writeConfig(home, "runtime-guardrails.json", { autonomousMode: false, guardedCommands: { gitPush: "confirm" } });
 		writeConfig(cwd, ".pi/gentle-ai/runtime-guardrails.json", { autonomousMode: true, guardedCommands: { gitPush: "allow" } });
-		assert.equal(yoloPushConfiguredRestriction(cwd, { gentlePiConfigHome: home }), "confirm");
+		assert.equal(pushOnly(), "confirm");
 		writeConfig(home, "runtime-guardrails.json", { autonomousMode: true, guardedCommands: { gitPush: "allow" } });
-		assert.equal(yoloPushConfiguredRestriction(cwd, { gentlePiConfigHome: home }), undefined);
+		assert.equal(pushOnly(), undefined);
 		writeConfig(cwd, ".pi/gentle-ai/runtime-guardrails.json", { guardedCommands: { gitPush: "block" } });
-		assert.equal(yoloPushConfiguredRestriction(cwd, { gentlePiConfigHome: home }), "block");
+		assert.equal(pushOnly(), "block");
 		writeConfig(cwd, ".pi/gentle-ai/runtime-guardrails.json", { guardedCommands: { gitPush: "confirm" } });
-		assert.equal(yoloPushConfiguredRestriction(cwd, { gentlePiConfigHome: home }), "confirm");
+		assert.equal(pushOnly(), "confirm");
 		writeConfig(cwd, ".pi/gentle-ai/runtime-guardrails.json", null);
-		assert.equal(yoloPushConfiguredRestriction(cwd, { gentlePiConfigHome: home }), "confirm");
+		assert.equal(pushOnly(), "confirm");
+		// gentle-shell#2172: a rebase rule restricts only commands that rebase.
+		writeConfig(cwd, ".pi/gentle-ai/runtime-guardrails.json", { guardedCommands: { gitRebase: "block" } });
+		assert.equal(pushOnly(), undefined, "a rebase rule does not restrict a push-only command");
+		assert.equal(yoloConfiguredRestriction(cwd, ["gitPush", "gitRebase"], { gentlePiConfigHome: home }), "block");
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 

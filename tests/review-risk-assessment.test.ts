@@ -337,22 +337,42 @@ const RDD_LINES: readonly RddLine[] = [RDD_LINE.ON, RDD_LINE.OFF, RDD_LINE.UNKNO
 const PROFILES: readonly WriterProfile[] = [WRITER_PROFILE.SMALL, WRITER_PROFILE.LARGE];
 const NON_CLOSED_OUTCOMES: readonly NativeReviewOutcome[] = [NATIVE_REVIEW_OUTCOME.DECLINED, NATIVE_REVIEW_OUTCOME.UNAVAILABLE, NATIVE_REVIEW_OUTCOME.UNKNOWN];
 
-// verify-always-rdd-high S1: the native review is an additional outside view
-// and never replaces verification, so a closed review under rdd on yields the
-// exact risk-gated plan rdd off yields, for every risk and writer profile.
-test("verificationPlan: rdd on + closed behaves exactly like rdd off for every risk/profile combination", () => {
+test("verificationPlan: rdd on + exact native closure suppresses a duplicate independent verifier", () => {
 	for (const risk of RISKS) {
 		for (const writerProfile of PROFILES) {
-			const off = verificationPlan({ rddLine: RDD_LINE.OFF, risk, writerProfile });
 			const closed = verificationPlan({ rddLine: RDD_LINE.ON, risk, writerProfile, nativeReviewOutcome: NATIVE_REVIEW_OUTCOME.CLOSED });
-			assert.equal(closed.writerSelfVerification, off.writerSelfVerification, `closed, risk ${risk}, profile ${writerProfile}`);
-			assert.equal(closed.structuralReadbackOnly, off.structuralReadbackOnly, `closed, risk ${risk}, profile ${writerProfile}`);
-			assert.equal(closed.independentVerifier, off.independentVerifier, `closed, risk ${risk}, profile ${writerProfile}`);
+			assert.equal(closed.independentVerifier, false, `closed, risk ${risk}, profile ${writerProfile}`);
+			assert.equal(closed.nativeReviewFirst, false, `closure is already terminal, risk ${risk}, profile ${writerProfile}`);
 		}
 	}
 	const high = verificationPlan({ rddLine: RDD_LINE.ON, risk: VERIFICATION_TIER.HIGH, writerProfile: WRITER_PROFILE.LARGE, nativeReviewOutcome: NATIVE_REVIEW_OUTCOME.CLOSED });
-	assert.equal(high.independentVerifier, true, "a closed review never removes the high-risk independent verifier");
-	assert.match(high.reason, /never replaces verification/);
+	assert.equal(high.writerSelfVerification, true, "closure preserves worker self-verification");
+	assert.match(high.reason, /closed for this candidate/);
+});
+
+test("verificationPlan: RDD-on high risk with partial worker evidence keeps one verifier after native closure", () => {
+	const plan = verificationPlan({
+		rddLine: RDD_LINE.ON,
+		risk: VERIFICATION_TIER.HIGH,
+		writerProfile: WRITER_PROFILE.LARGE,
+		nativeReviewOutcome: NATIVE_REVIEW_OUTCOME.CLOSED,
+		workerSelfVerificationComplete: false,
+	});
+	assert.equal(plan.independentVerifier, true);
+	assert.equal(plan.nativeReviewFirst, false);
+});
+
+test("verificationPlan: rdd on + due native continuation defers an independent verifier", () => {
+	const plan = verificationPlan({
+		rddLine: RDD_LINE.ON,
+		risk: VERIFICATION_TIER.HIGH,
+		writerProfile: WRITER_PROFILE.LARGE,
+		nativeReviewOutcome: NATIVE_REVIEW_OUTCOME.UNKNOWN,
+		nativeReviewFirst: true,
+	});
+	assert.equal(plan.nativeReviewFirst, true);
+	assert.equal(plan.independentVerifier, false, "the parent must route native review before deciding on a verifier");
+	assert.equal(plan.writerSelfVerification, true);
 });
 
 // ---------------------------------------------------------------------------
@@ -389,9 +409,9 @@ test("verificationPlan: an omitted nativeReviewOutcome under rdd on defaults to 
 	}
 });
 
-test("verificationPlan: on+closed+medium+small -> verifier (the small-model bias still applies)", () => {
+test("verificationPlan: on+closed+medium+small -> no duplicate verifier", () => {
 	const plan = verificationPlan({ rddLine: RDD_LINE.ON, risk: VERIFICATION_TIER.MEDIUM, writerProfile: WRITER_PROFILE.SMALL, nativeReviewOutcome: NATIVE_REVIEW_OUTCOME.CLOSED });
-	assert.equal(plan.independentVerifier, true);
+	assert.equal(plan.independentVerifier, false);
 	assert.equal(plan.writerSelfVerification, true);
 });
 
@@ -887,7 +907,7 @@ test("gentle_review assess: native consumed true derives closed for this candida
 	assert.equal(details.nativeReviewOutcome, "closed");
 	assert.equal(details.outcome_source, "derived");
 	assert.equal(details.plan.writerSelfVerification, true);
-	assert.equal(details.plan.independentVerifier, true, "a natively closed candidate keeps the risk-tier verifier (verify-always-rdd-high S1)");
+	assert.equal(details.plan.independentVerifier, false, "an exact native closure suppresses the duplicate verifier");
 });
 
 test("gentle_review assess: a caller-declared closed without native consumed evidence fails closed to unknown", async () => {
@@ -903,7 +923,7 @@ test("gentle_review assess: a caller-declared closed corroborated by native cons
 	const details = await assessWith(closureCli({ consumed: true }), { nativeReviewOutcome: "closed" });
 	assert.equal(details.nativeReviewOutcome, "closed");
 	assert.equal(details.outcome_source, "derived", "closure is attributed to the native evidence, not to the caller's claim");
-	assert.equal(details.plan.independentVerifier, true, "closure never removes the risk-tier verifier");
+	assert.equal(details.plan.independentVerifier, false, "exact native closure suppresses the duplicate verifier");
 });
 
 test("gentle_review assess: explicit declined, unavailable, or unknown beats native consumed (only ever raises the bar)", async () => {
@@ -1259,6 +1279,22 @@ test("gentle_review assess: consumed, reviewDue, reviewDueReason, and nextTransi
 	assert.deepEqual(details.nextTransition, nextTransition());
 	const text = JSON.parse(result.content[0].text) as Record<string, unknown>;
 	assert.deepEqual(text.nextTransition, nextTransition());
+});
+
+test("gentle_review assess: RDD-on due native continuation is declared before verifier routing", async () => {
+	const queue = queuedAdapter([{ stdout: JSON.stringify(newEnvelope({ candidate: { kind: "current-changes", consumed: false } })) }]);
+	const client = nativeClient(queue.adapter);
+	const nativeReviewCli: Partial<NativeReviewCli> = {
+		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "", effective: "on", source: NATIVE_REVIEW_MODE_SOURCE.GLOBAL } }),
+		assess: client.assess.bind(client),
+	};
+	const result = await reviewControllerTool(nativeReviewCli).execute("due-native-first", { operation: "assess", input: JSON.stringify({ writerModelId: "claude-sonnet-5", writerEffort: "high" }) }, undefined, undefined, ctx);
+	const details = result.details as { reviewDue: boolean; nextTransition: Record<string, unknown>; plan: { nativeReviewFirst: boolean; independentVerifier: boolean; writerSelfVerification: boolean } };
+	assert.equal(details.reviewDue, true);
+	assert.deepEqual(details.nextTransition, nextTransition());
+	assert.equal(details.plan.nativeReviewFirst, true, "the typed plan makes native review the required next action");
+	assert.equal(details.plan.independentVerifier, false, "no verifier can run before the due native continuation resolves");
+	assert.equal(details.plan.writerSelfVerification, true);
 });
 
 test("gentle_review assess: an older native envelope projects no consumed/reviewDue/reviewDueReason/nextTransition", async () => {

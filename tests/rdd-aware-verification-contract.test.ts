@@ -42,44 +42,45 @@ function countOccurrences(haystack: string, needle: string): number {
 }
 
 const delegation = readDelegationDetail();
+const verification = read("assets/orchestrator-verification.md");
 const worker = read("assets/agents/gentle-ai-worker.md");
 
 const ROUTING_SENTENCE =
-	'After the writer returns, call `gentle_review` with `{"operation":"assess"}` over the writer\'s diff and follow the returned plan, whatever the `Receipt-driven development:` line reads (`on`, `off`, or `unknown`), instead of judging non-triviality from the task description: the operation resolves the native risk tier and states exactly who verifies next.';
+	'After the writer returns, call `gentle_review` with `{"operation":"assess","input":"{\\"baseRef\\":\\"<previous-boundary>\\",\\"committedOnly\\":true}"}` at the final committed work-unit or PR-slice boundary, never over an ambient untracked writer diff when RDD is on.';
 const RDD_ON_SENTENCE =
-	"When the line reads `on`, the native review is an additional outside view of the change; it never replaces or skips the tier's verification, and the tier's verifier runs before review.";
+	'When RDD is `on` and ASSESS reports `reviewDue: true` with `nextTransition`, `plan.nativeReviewFirst: true` means route that opaque continuation unchanged before deciding on an independent verifier.';
 const TIER_TABLE_HEADER = "| Native risk tier | Verification (any RDD state) |";
 const PASSIVE_TIER_ROW = "| passive | structural readback by the parent; no separate verifier, no tests |";
 const MEDIUM_TIER_ROW = "| medium | writer self-verification stands; a separate `gentle-ai-verify` run is added only when the writer profile is a small model (mini or low effort) |";
-const HIGH_TIER_ROW = "| high | writer self-verification plus a separate `gentle-ai-verify` run, always |";
+const HIGH_TIER_ROW = "| high | writer self-verification plus exactly one independent review: route a due native continuation first; when native review cannot close, run a separate `gentle-ai-verify` |";
 const UNASSESSABLE_TIER_ROW = "| unknown / assess failed | treated as high |";
 const SMALL_MODEL_BIAS_SENTENCE =
 	"The small-model bias raises the tier by one for verification purposes (medium becomes high); an unknown `Receipt-driven development:` line never lowers a tier below `off`.";
 const SPOT_CHECK_SENTENCE =
 	"The parent spot check (re-running one reported command before delivery) stays required in every tier.";
 test("trigger 5 (Verification rule) routes every RDD line through assess and the risk tier", () => {
-	assert.ok(delegation.includes(ROUTING_SENTENCE), "trigger 5 is missing the exact routing sentence");
+	assert.ok(verification.includes(ROUTING_SENTENCE), "Verification rule is missing the committed-boundary routing sentence");
 });
 
 test("trigger 5 states that with RDD on the native review adds an outside view and never replaces verification", () => {
-	assert.ok(delegation.includes(RDD_ON_SENTENCE), "trigger 5 is missing the RDD-on sentence");
-	for (const banned of ["verification of record", "becomes on-demand", "on-demand only", "on-demand verify"]) {
-		assert.ok(!delegation.includes(banned), `the native review still replaces verification somewhere: ${banned}`);
+	assert.ok(verification.includes(RDD_ON_SENTENCE), "Verification rule is missing the RDD-on review-first sentence");
+	for (const banned of ["verifier runs before review", "verify-always-rdd-high", "a closed review never removes the separate verifier"]) {
+		assert.ok(!verification.includes(banned), `stale verifier-before-review policy remains: ${banned}`);
 	}
 });
 
 test("trigger 5 states the native risk tier table exactly once, with all four rows", () => {
 	for (const row of [TIER_TABLE_HEADER, PASSIVE_TIER_ROW, MEDIUM_TIER_ROW, HIGH_TIER_ROW, UNASSESSABLE_TIER_ROW]) {
-		assert.equal(countOccurrences(delegation, row), 1, `expected exactly one occurrence of tier table row: ${row}`);
+		assert.equal(countOccurrences(verification, row), 1, `expected exactly one occurrence of tier table row: ${row}`);
 	}
 });
 
 test("trigger 5 states the small-model bias and the unknown-never-lowers-a-tier rule", () => {
-	assert.ok(delegation.includes(SMALL_MODEL_BIAS_SENTENCE), "trigger 5 is missing the small-model bias sentence");
+	assert.ok(verification.includes(SMALL_MODEL_BIAS_SENTENCE), "Verification rule is missing the small-model bias sentence");
 });
 
 test("trigger 5 keeps the parent spot check requirement in every tier", () => {
-	assert.ok(delegation.includes(SPOT_CHECK_SENTENCE), "trigger 5 is missing the parent spot check sentence");
+	assert.ok(verification.includes(SPOT_CHECK_SENTENCE), "Verification rule is missing the parent spot check sentence");
 });
 
 test("trigger 5 never introduces a forbidden native RDD marker", () => {
@@ -90,21 +91,22 @@ test("trigger 5 never introduces a forbidden native RDD marker", () => {
 
 test("the routing and RDD-on sentences appear exactly once each (normative statement lives only in trigger 5)", () => {
 	for (const sentence of [ROUTING_SENTENCE, RDD_ON_SENTENCE]) {
-		assert.equal(countOccurrences(delegation, sentence), 1, `expected exactly one occurrence of: ${sentence.slice(0, 60)}...`);
+		assert.equal(countOccurrences(verification, sentence), 1, `expected exactly one occurrence of: ${sentence.slice(0, 60)}...`);
 	}
 });
 
 test("trigger 5 never restates the retired #661 off/unknown non-trivial judgment", () => {
-	assert.doesNotMatch(delegation, /non-trivial change, in addition to the writer's own report/);
-	assert.doesNotMatch(delegation, /purely passive documentation with no behavior to verify/);
+	assert.doesNotMatch(verification, /verifier runs before review/);
+	assert.doesNotMatch(verification, /a closed review never removes the separate verifier/);
 });
 
-test("the Simple Delegation paragraph references trigger 3 instead of restating the on/off/unknown routing", () => {
+test("the Simple Delegation paragraph references trigger 3 and the canonical review-first routing", () => {
 	assert.match(
 		delegation,
 		/per the RDD-aware Verification rule \(trigger 3 under Mandatory Delegation Triggers, gentle-pi#661\)/,
 	);
-	assert.match(delegation, /the normative on\/off\/unknown routing lives in `orchestrator-verification.md`, not here/);
+	assert.match(delegation, /the normative routing lives in `orchestrator-verification.md`, not here/);
+	assert.match(delegation, /a due opaque native continuation routes before that verifier decision/);
 });
 
 test("delegation overlay's Verification rule is RDD-aware", () => {
@@ -258,7 +260,7 @@ function normalizePolicyText(text: string): string {
 
 const POLICY_SURFACES: ReadonlyArray<readonly [string, string]> = [
 	["gentle_review tool contract", normalizePolicyText(registeredReviewToolContract())],
-	["assets/orchestrator-delegation.md", normalizePolicyText(delegation)],
+	["assets/orchestrator-verification.md", normalizePolicyText(verification)],
 	["docs/delegated-verification.md", normalizePolicyText(read("docs/delegated-verification.md"))],
 ];
 
@@ -268,7 +270,7 @@ const SHARED_POLICY_PHRASES: ReadonlyArray<readonly [string, string]> = [
 	["runtime writer profile", "runtime-recorded model and effort of the pending mutations"],
 	["caller profile is only a fallback", "only a fallback when no runtime evidence exists"],
 	["conservative small-model bias", "keeps the conservative small-model bias"],
-	["native review never replaces verification (verify-always-rdd-high S1)", "native review is an additional outside view"],
+	["review-first native continuation", "plan.nativereviewfirst"],
 	["functional checks still run", "a native code review is not a substitute for applicable functional checks"],
 ];
 

@@ -902,6 +902,9 @@ interface ReviewAssessmentPlanDetails {
 		writerSelfVerification: boolean;
 		structuralReadbackOnly: boolean;
 		independentVerifier: boolean;
+		// True requires routing the opaque native continuation before any
+		// independent-verifier decision.
+		nativeReviewFirst: boolean;
 		reason: string;
 	};
 }
@@ -1041,7 +1044,20 @@ async function resolveReviewAssessmentPlan(
 	const targetIdentity = needsMemo ? await readCurrentTargetIdentityBestEffort(nativeReviewCli, cwd, signal) : undefined;
 	const memoOutcome = targetIdentity === undefined ? undefined : readNativeReviewOutcome(cwd, targetIdentity);
 	const { nativeReviewOutcome, outcomeSource } = resolveAssessNativeReviewOutcome(input, assessment, memoOutcome);
-	const plan = verificationPlan({ rddLine, risk, writerProfile, nativeReviewOutcome });
+	// A due native continuation is authoritative routing evidence. Keep the
+	// opaque payload separate and never infer or mutate Git state here.
+	const nativeReviewFirst = rddLine === RDD_LINE.ON &&
+		assessment?.reviewDue === true &&
+		assessment.nextTransition !== undefined &&
+		nativeReviewOutcome === NATIVE_REVIEW_OUTCOME.UNKNOWN;
+	const plan = verificationPlan({
+		rddLine,
+		risk,
+		writerProfile,
+		nativeReviewOutcome,
+		nativeReviewFirst,
+		workerSelfVerificationComplete: input.workerSelfVerificationComplete,
+	});
 	return {
 		schema: "gentle-pi.review-assessment-plan/v1",
 		risk,
@@ -5140,7 +5156,7 @@ const REVIEW_CONTROLLER_PARAMETER_FIELDS = {
 		},
 		input: {
 			type: "string",
-			description: "A JSON object or serialized object string for START/ASSESS only; every other operation requires a serialized object string. New native ordinary START uses {\"mode\":\"ordinary\"}, plus the agent lens selection {\"lenses\":[\"risk\",...],\"lensesReason\":\"<what you touched and how>\"} (both or neither, 1-4 of risk, resilience, readability, reliability; never with focus; providers that predate it keep the tier default); answer-consent uses exactly {\"consentBinding\":\"<opaque id>\",\"answer\":\"granted|declined\"}. Ordinary provider capture belongs only to gentle_review_capture. An explicit baseRef requires committedOnly: true and requests a committed range, while repository-local policyPath remains optional. baseRef must be HEAD, a full 40- or 64-character commit id, or a ref name; abbreviated commit ids are rejected as base-ref-unresolvable. ASSESS accepts an optional object with baseRef, committedOnly, writerModelId, writerEffort, and nativeReviewOutcome (gentle-pi#662/#668/#1175). The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); writerModelId and writerEffort are only a fallback when no runtime evidence exists (caller), and with neither the profile fails closed to small (fallback). A missing model, a mini model token (gemini is not mini), or low effort keeps the conservative small-model bias. ASSESS derives `closed` only from the native candidate.consumed fact for this exact candidate, which native records only when the approved review for that candidate is acknowledged; a caller-supplied closed is not authority and, without that fact, resolves to unknown. Every outcome yields the exact risk-gated plan ASSESS returns when RDD is off: a closed review never removes the separate verifier the tier requires (verify-always-rdd-high S1), unknown is never treated as closed, and a decline is candidate-scoped and never lowers the bar below the RDD-off path. A declined or unavailable outcome, stated explicitly or recorded by this process for this exact candidate (never a different one, and never from repository state alone), wins over closure. The returned outcome_source (explicit|derived|unknown) says which of these produced the value. Legacy controller input remains separate.",
+			description: "A JSON object or serialized object string for START/ASSESS only; every other operation requires a serialized object string. New native ordinary START uses {\"mode\":\"ordinary\"}, plus the agent lens selection {\"lenses\":[\"risk\",...],\"lensesReason\":\"<what you touched and how>\"} (both or neither, 1-4 of risk, resilience, readability, reliability; never with focus; providers that predate it keep the tier default); answer-consent uses exactly {\"consentBinding\":\"<opaque id>\",\"answer\":\"granted|declined\"}. Ordinary provider capture belongs only to gentle_review_capture. An explicit baseRef requires committedOnly: true and requests a committed range, while repository-local policyPath remains optional. baseRef must be HEAD, a full 40- or 64-character commit id, or a ref name; abbreviated commit ids are rejected as base-ref-unresolvable. ASSESS accepts an optional object with baseRef, committedOnly, writerModelId, writerEffort, nativeReviewOutcome, and workerSelfVerificationComplete (false only for partial or blocked worker evidence). The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); writerModelId and writerEffort are only a fallback when no runtime evidence exists (caller), and with neither the profile fails closed to small (fallback). A missing model, a mini model token (gemini is not mini), or low effort keeps the conservative small-model bias. ASSESS derives `closed` only from the native candidate.consumed fact for this exact candidate, which native records only when the approved review for that candidate is acknowledged; a caller-supplied closed is not authority and, without that fact, resolves to unknown. With RDD on, when ASSESS reports reviewDue true with nextTransition, plan.nativeReviewFirst requires routing that opaque continuation unchanged before deciding on a separate verifier. Exact candidate.consumed closure supplies the independent review and suppresses a duplicate verifier; unknown is never treated as closed, and a declined, unavailable, malformed, or unresolved outcome follows the risk-gated fallback. A declined or unavailable outcome, stated explicitly or recorded by this process for this exact candidate (never a different one, and never from repository state alone), wins over closure. The returned outcome_source (explicit|derived|unknown) says which of these produced the value. Legacy controller input remains separate.",
 		},
 		outputPath: { type: "string", description: "Retired with legacy bundle export; ignored. Export returns legacy-operation-retired." },
 		inputPath: { type: "string", description: "Repository-local JSON input file for the separate legacy controller flow (alternative to input). Legacy bundle import is retired." },
@@ -5259,6 +5275,9 @@ interface ReviewAssessInput extends Pick<NativeReviewAssessRequest, "untrackedSc
 	// candidate's own target identity (never a different one); `closed` is
 	// never auto-derived -- pass it explicitly.
 	nativeReviewOutcome?: NativeReviewOutcome;
+	// False records a writer handoff with partial or blocked verification
+	// evidence, so native closure cannot suppress the high-risk verifier.
+	workerSelfVerificationComplete?: boolean;
 	// gentle-shell#1494: the agent raises this candidate to high by citing a
 	// high-risk item; it can never lower the native tier.
 	escalate?: AgentRiskEscalation;
@@ -5271,16 +5290,19 @@ function isNativeReviewOutcome(value: unknown): value is NativeReviewOutcome {
 function parseReviewAssessInput(operation: ReviewControllerOperation, raw: string | undefined): ReviewAssessInput {
 	if (raw === undefined) return {};
 	const value = parseControllerJson(raw, operation);
-	const allowed = new Set(["baseRef", "committedOnly", "writerModelId", "writerEffort", "nativeReviewOutcome", "escalate", "untrackedScope", "expectedUntrackedInventory", "intendedUntracked"]);
+	const allowed = new Set(["baseRef", "committedOnly", "writerModelId", "writerEffort", "nativeReviewOutcome", "workerSelfVerificationComplete", "escalate", "untrackedScope", "expectedUntrackedInventory", "intendedUntracked"]);
 	const unexpected = Object.keys(value).find((key) => !allowed.has(key));
 	if (unexpected !== undefined) throw new Error(`Review controller ${operation} input does not accept ${unexpected}`);
-	const { baseRef, committedOnly, writerModelId, writerEffort, nativeReviewOutcome, escalate } = value;
+	const { baseRef, committedOnly, writerModelId, writerEffort, nativeReviewOutcome, workerSelfVerificationComplete, escalate } = value;
 	if (baseRef !== undefined && typeof baseRef !== "string") throw new Error(`Review controller ${operation} input baseRef must be a string`);
 	if (committedOnly !== undefined && typeof committedOnly !== "boolean") throw new Error(`Review controller ${operation} input committedOnly must be a boolean`);
 	if (writerModelId !== undefined && typeof writerModelId !== "string") throw new Error(`Review controller ${operation} input writerModelId must be a string`);
 	if (writerEffort !== undefined && typeof writerEffort !== "string") throw new Error(`Review controller ${operation} input writerEffort must be a string`);
 	if (nativeReviewOutcome !== undefined && !isNativeReviewOutcome(nativeReviewOutcome)) {
 		throw new Error(`Review controller ${operation} input nativeReviewOutcome must be one of ${Object.values(NATIVE_REVIEW_OUTCOME).join(", ")}`);
+	}
+	if (workerSelfVerificationComplete !== undefined && typeof workerSelfVerificationComplete !== "boolean") {
+		throw new Error(`Review controller ${operation} input workerSelfVerificationComplete must be a boolean`);
 	}
 	return {
 		...(baseRef === undefined ? {} : { baseRef: baseRef as string }),
@@ -5289,6 +5311,7 @@ function parseReviewAssessInput(operation: ReviewControllerOperation, raw: strin
 		...(writerModelId === undefined ? {} : { writerModelId: writerModelId as string }),
 		...(writerEffort === undefined ? {} : { writerEffort: writerEffort as string }),
 		...(nativeReviewOutcome === undefined ? {} : { nativeReviewOutcome: nativeReviewOutcome as NativeReviewOutcome }),
+		...(workerSelfVerificationComplete === undefined ? {} : { workerSelfVerificationComplete: workerSelfVerificationComplete as boolean }),
 		...(escalate === undefined ? {} : { escalate: decodeAgentRiskEscalation(escalate) }),
 	};
 }

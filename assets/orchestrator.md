@@ -50,11 +50,11 @@ Before launching bounded writer (`gentle-ai-worker` or `worker`), derive nonempt
 
 ## Mechanisms
 
-Mandatory Delegation Triggers — each mechanism turns on only by its own trigger and is then mandatory (prefer `subagent_run`; role missing/unusable: native `Agent`, same read-only constraints; report fallback). When it resolves, re-evaluate task size.
+Mandatory Delegation Triggers — each mechanism turns on only by its own trigger; mandatory. missing/unusable: native `Agent`, same read-only; report fallback. re-evaluate task size.
 
 1. **Ask** — open product or design decision → one focused question; stop and wait.
 2. **Evidence-budget rule** — understanding needs more than one read batch or >~5 sequential lookups → one `gentle-ai-explore`, handoff at most ~2k tokens with `path:line` evidence; one spot check only; never for reading before an inline write.
-3. **Verification rule** — high risk → independent `gentle-ai-verify` after the change's own checks (`orchestrator-verification.md`); otherwise checks run inline.
+3. **Verification rule** — high risk → independent `gentle-ai-verify` after the change's own checks (`orchestrator-verification.md`); otherwise checks run inline. ASSESS decides; RDD due native continuation routes first.
 4. **Track** — large task → feature document, Engram mirror, `todo`, work-unit commits (`orchestrator-tracking.md`, `orchestrator-memory.md`).
 5. **Writer rule** — never by file count or a large task alone; only for a reason (`orchestrator-writer.md`): 2+ independent units, disjoint files, each heavier than a subagent start, launched together in background, else inline; Context backstop.
 6. **Incident rule** — diagnose wrong cwd/worktree/git/tooling incidents separately before resuming.

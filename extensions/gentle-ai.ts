@@ -10247,7 +10247,10 @@ function createGentleAiExtensionForTesting(
 		if (event.toolName === "subagent_run") {
 			const judgmentDayFixDenied = rejectInvalidJudgmentDayFixDispatch(event.input);
 			if (judgmentDayFixDenied) return judgmentDayFixDenied;
-			const writerScopeDenied = rejectUnscopedBoundedWriterDispatch(event.input);
+			const writerScopeDenied = rejectUnscopedBoundedWriterDispatch(
+				event.input,
+				ctx.sessionManager?.getCwd?.() ?? ctx.cwd,
+			);
 			if (writerScopeDenied) return writerScopeDenied;
 			try {
 				injectReviewCandidateView(event.input, candidateViews);

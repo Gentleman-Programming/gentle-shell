@@ -390,7 +390,24 @@ async function run() {
 	assert.ok(flags.has("no-skill-registry"), "missing no-skill-registry flag");
 	assert.ok(hooks.has("session_start"), "missing session_start hook");
 	assert.ok(hooks.has("session_shutdown"), "missing session_shutdown hook");
-	assert.equal(hooks.has("input"), false, "retired SDD slash input must not be intercepted");
+	assert.ok(hooks.has("input"), "missing live input provenance hook");
+	for (const text of [
+		"/sdd-init", "/sdd-continue", "/sdd-status", "/gentle-sdd-init",
+		"/gentle-sdd-continue", "/gentle-sdd-status", "/gentle:install-sdd",
+		"/gentle:sdd-preflight", "/gentle-ai:install-sdd", "/gentle-ai:sdd-preflight",
+		"/gentle-ai:sdd-status", "/gentle-ai:sdd-continue",
+		"Inspect this project without changing files.", "/ordinary-unregistered-command",
+	]) {
+		const event = { text, source: "interactive", images: [] };
+		const before = structuredClone(event);
+		const emittedBefore = emittedEvents.length;
+		for (const handler of hooks.get("input")) {
+			assert.deepEqual(await handler(event, createCtx(ROOT)), { action: "continue" },
+				`input must pass through without slash interception: ${text}`);
+		}
+		assert.deepEqual(event, before, "input text and attachments must remain unchanged");
+		assert.equal(emittedEvents.length, emittedBefore, "input must not dispatch slash logic");
+	}
 	assert.ok(hooks.has("before_agent_start"), "missing before_agent_start hook");
 	assert.ok(hooks.has("tool_call"), "missing tool_call hook");
 	for (const toolName of ["read", "grep", "find", "ls", "edit", "write"]) {

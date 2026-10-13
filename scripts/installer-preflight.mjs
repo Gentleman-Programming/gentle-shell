@@ -25,7 +25,7 @@ export const requirements = Object.freeze({
 /** Pi version the installer installs next to gentle-pi, and the version an older
  * Pi is updated to (never below requirements.pi; the runner asserts it).
  */
-export const PI_INSTALL_VERSION = "1.0.0";
+export const PI_INSTALL_VERSION = "1.2.0";
 
 /** Runtime persisted under PNPM_HOME. Bootstrap-only Node: `pnpm runtime set
  * node <node> -g`, then `pnpm add -g npm@<npm> pnpm@<pnpm>`, or only npm when
@@ -36,7 +36,7 @@ export const PI_INSTALL_VERSION = "1.0.0";
 export const persistencePins = Object.freeze({ node: "24.21.0", npm: "11.19.0", pnpm: requirements.pnpm });
 
 /** Go the installer downloads only to build Gentle AI, when a build needs Go and
- * the user's Go is missing or older than requirements.go (installer-downloads.mjs).
+ * the user's Go is missing, older than requirements.go or unchecked (installer-downloads.mjs).
  */
 export const goAcquisition = Object.freeze({ version: goPinVersion });
 
@@ -106,6 +106,11 @@ export async function collectInventory({ platform, arch, probes = {}, pnpmHome }
 			// Do not retain probe errors: they can contain private paths or credentials.
 			inventory[name] = { available: null };
 		}
+	}
+	// Optional, advisory only (the plan notes a missing Git): kept only from a probe that answered.
+	if (probes.git) {
+		const git = await Promise.resolve().then(() => probes.git()).catch(() => null);
+		if (plainRecord(git) && typeof git.available === "boolean") inventory.git = { available: git.available };
 	}
 	if (platform === "win32" && probes.folders) {
 		const folders = await Promise.resolve().then(() => probes.folders()).catch(() => null);
@@ -247,16 +252,16 @@ export function planPreflight(inventory, { channel = "release" } = {}) {
 	// Windows release update needs Go like an installation; main always does.
 	const windowsBuild = platform === "win32" && (update !== null || (needsNative && !npmCurrent));
 	const goStatus = windowsBuild || main ? classify(inventory.go, requirements.go) : "not-required";
-	if (goStatus === "unavailable" || goStatus === "incompatible") {
-		// A missing or older Go is left as it is: the build gets the installer's
-		// pinned Go, downloaded after consent only when a build actually runs.
+	if (goStatus === "unavailable" || goStatus === "incompatible" || goStatus === "unknown") {
+		// A missing, older or unreadable Go is left as it is: the build gets the
+		// installer's pinned Go, first on PATH, downloaded after consent only when
+		// a build actually runs.
 		const found = goStatus === "incompatible" ? versionParts(inventory.go.version).join(".") : null;
-		tools.go = { status: "needs-acquire", required: requirements.go, version: goAcquisition.version, ...(found ? { found } : {}) };
+		tools.go = { status: "needs-acquire", required: requirements.go, version: goAcquisition.version, ...(found ? { found } : {}),
+			...(goStatus === "unknown" ? { unchecked: true } : {}) };
 	} else {
 		record("go", goStatus, requirements.go);
 	}
-	// A Go that cannot be checked is neither missing nor older: main still blocks.
-	if (main && tools.go.status === "unknown") blockers.push({ code: "main-requires-go", tool: "go" });
 	const bin = inventory.globalBin;
 	const binKnown = bin?.available === true && typeof bin.path === "string" && bin.path.trim().length > 0 &&
 		bin.writable === true && typeof bin.onPath === "boolean";

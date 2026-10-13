@@ -30,6 +30,31 @@ import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
 initTheme("dark");
 
+// Observe the actual UI boundary, not a guessed number of identity-read microtasks.
+function confirmationObserver() {
+	let count = 0;
+	const listeners = new Set<() => void>();
+	return {
+		observe() { count++; for (const listener of listeners) listener(); },
+		waitFor(expected: number): Promise<void> {
+			if (count >= expected) return Promise.resolve();
+			return new Promise((resolve, reject) => {
+				const deadline = setTimeout(() => {
+					listeners.delete(check);
+					reject(new Error(`Confirmation deadline: expected ${expected}, observed ${count}`));
+				}, 1000);
+				const check = () => {
+					if (count < expected) return;
+					clearTimeout(deadline);
+					listeners.delete(check);
+					resolve();
+				};
+				listeners.add(check);
+			});
+		},
+	};
+}
+
 function writeMarkdown(path: string, content: string): void {
 	mkdirSync(dirname(path), { recursive: true });
 	writeFileSync(path, content);
@@ -1370,6 +1395,7 @@ test("guarded command confirmation emits a generic correlated permission lifecyc
 	const handlers = new Map<string, ToolCallHandler>();
 	const emitted: EmittedEvent[] = [];
 	const sequence: string[] = [];
+	const confirmation = confirmationObserver();
 	let confirm!: () => Promise<boolean>;
 	const pi = {
 		on(name: string, handler: ToolCallHandler) {
@@ -1399,6 +1425,7 @@ test("guarded command confirmation emits a generic correlated permission lifecyc
 			ui: {
 				confirm: async () => {
 					sequence.push("confirm");
+					confirmation.observe();
 					return confirm();
 				},
 			},
@@ -1410,7 +1437,7 @@ test("guarded command confirmation emits a generic correlated permission lifecyc
 			input: { command: "git rebase main --secret-command-content" },
 		}, ctx);
 
-		await Promise.resolve();
+		await confirmation.waitFor(1);
 		assert.equal(emitted[0].channel, "pi-permission-system:permission-request");
 		assert.equal(emitted[0].data.state, "waiting");
 		assert.deepEqual(emitted[1], {
@@ -1514,6 +1541,7 @@ test("concurrent guarded confirmations coalesce the Herdr lifecycle per extensio
 	const createHarness = () => {
 		const handlers = new Map<string, ToolCallHandler>();
 		const emitted: EmittedEvent[] = [];
+		const confirmation = confirmationObserver();
 		const confirmations: Array<(approved: boolean) => void> = [];
 		const pi = {
 			on(name: string, handler: ToolCallHandler) {
@@ -1524,7 +1552,7 @@ test("concurrent guarded confirmations coalesce the Herdr lifecycle per extensio
 			registerTool() {},
 		} as unknown as ExtensionAPI;
 		createGentleAiExtension({ processEnv: { GENTLE_PI_AGENTS_CHILD: "0" }, nativeReviewCli: null })(pi);
-		return { handlers, emitted, confirmations };
+		return { handlers, emitted, confirmations, confirmation };
 	};
 	const first = createHarness();
 	const second = createHarness();
@@ -1534,12 +1562,15 @@ test("concurrent guarded confirmations coalesce the Herdr lifecycle per extensio
 			cwd,
 			hasUI: true,
 			ui: {
-				confirm: async () => new Promise<boolean>((resolve) => { confirmations.push(resolve); }),
+				confirm: async () => new Promise<boolean>((resolve) => {
+					confirmations.push(resolve);
+					(confirmations === first.confirmations ? first : second).confirmation.observe();
+				}),
 			},
 		} as unknown as ExtensionContext);
 		const firstRequest = first.handlers.get("tool_call")!({ toolName: "bash", input: { command: "git rebase main" } }, context(first.confirmations));
 		const secondRequest = first.handlers.get("tool_call")!({ toolName: "bash", input: { command: "git rebase main --another-command" } }, context(first.confirmations));
-		await Promise.resolve();
+		await first.confirmation.waitFor(2);
 		assert.deepEqual(first.emitted.map(({ channel, data }) => ({ channel, state: data.state, active: data.active })), [
 			{ channel: "pi-permission-system:permission-request", state: "waiting", active: undefined },
 			{ channel: "herdr:blocked", state: undefined, active: true },
@@ -1562,7 +1593,7 @@ test("concurrent guarded confirmations coalesce the Herdr lifecycle per extensio
 		]);
 
 		const independentRequest = second.handlers.get("tool_call")!({ toolName: "bash", input: { command: "git rebase main --independent-command" } }, context(second.confirmations));
-		await Promise.resolve();
+		await second.confirmation.waitFor(1);
 		assert.equal(second.emitted.filter(({ channel }) => channel === "herdr:blocked").length, 1);
 		assert.equal(second.emitted.find(({ channel }) => channel === "herdr:blocked")?.data.active, true);
 		assert.equal(second.confirmations.length, 1);
@@ -1669,6 +1700,7 @@ test("Herdr preserves the initial label and balanced edges across overlapping so
 		const handlers = new Map<string, ToolCallHandler>();
 		const eventHandlers = new Map<string, (data: unknown) => void>();
 		const herdrEvents: HerdrBlockedEvent[] = [];
+		const confirmation = confirmationObserver();
 		const confirmations: Array<(approved: boolean) => void> = [];
 		const pi = {
 			on(name: string, handler: ToolCallHandler) {
@@ -1693,10 +1725,10 @@ test("Herdr preserves the initial label and balanced edges across overlapping so
 			cwd: process.cwd(),
 			hasUI: true,
 			ui: {
-				confirm: async () => new Promise<boolean>((resolve) => { confirmations.push(resolve); }),
+				confirm: async () => new Promise<boolean>((resolve) => { confirmations.push(resolve); confirmation.observe(); }),
 			},
 		} as unknown as ExtensionContext;
-		return { confirmations, context, herdrEvents, pi, toolCall: handlers.get("tool_call")! };
+		return { confirmations, confirmation, context, herdrEvents, pi, toolCall: handlers.get("tool_call")! };
 	};
 
 	const guardedFirst = createHarness();
@@ -1704,7 +1736,7 @@ test("Herdr preserves the initial label and balanced edges across overlapping so
 		{ toolName: "bash", input: { command: "git rebase main" } },
 		guardedFirst.context,
 	);
-	await Promise.resolve();
+	await guardedFirst.confirmation.waitFor(1);
 	guardedFirst.pi.events.emit("rpiv:ask-user:blocked", { active: true });
 	guardedFirst.confirmations[0]!(true);
 	assert.equal(await guardedRequest, undefined);
@@ -1725,7 +1757,7 @@ test("Herdr preserves the initial label and balanced edges across overlapping so
 		const request = overlap.toolCall(
 			{ toolName: "bash", input: { command: "git rebase main" } }, overlap.context,
 		);
-		await Promise.resolve();
+		await overlap.confirmation.waitFor(1);
 		for (const channel of channels.filter((channel) => channel !== lastChannel)) {
 			overlap.pi.events.emit(channel, { active: false });
 			overlap.pi.events.emit(channel, { active: false });
@@ -1745,7 +1777,7 @@ test("Herdr preserves the initial label and balanced edges across overlapping so
 		{ toolName: "bash", input: { command: "git rebase main" } },
 		questionnaireFirst.context,
 	);
-	await Promise.resolve();
+	await questionnaireFirst.confirmation.waitFor(1);
 	questionnaireFirst.pi.events.emit("rpiv:ask-user:blocked", { active: false });
 	questionnaireFirst.confirmations[0]!(false);
 	await questionnaireRequest;
@@ -1765,6 +1797,7 @@ test("closed choice blockers retain the visible choice label through guarded-con
 	const eventHandlers = new Map<string, (data: unknown) => void>();
 	const herdrEvents: HerdrBlockedEvent[] = [];
 	const choiceEvents: Array<{ active: boolean }> = [];
+	const confirmation = confirmationObserver();
 	const confirmations: Array<(approved: boolean) => void> = [];
 	const pi = {
 		on(name: string, handler: ToolCallHandler) {
@@ -1802,11 +1835,11 @@ test("closed choice blockers retain the visible choice label through guarded-con
 			cwd: process.cwd(),
 			hasUI: true,
 			ui: {
-				confirm: async () => new Promise<boolean>((resolve) => { confirmations.push(resolve); }),
+				confirm: async () => new Promise<boolean>((resolve) => { confirmations.push(resolve); confirmation.observe(); }),
 			},
 		} as unknown as ExtensionContext,
 	);
-	await Promise.resolve();
+	await confirmation.waitFor(1);
 	assert.equal(confirmations.length, 1);
 	assert.deepEqual(herdrEvents, [{ active: true, label: "Choice awaiting input" }]);
 

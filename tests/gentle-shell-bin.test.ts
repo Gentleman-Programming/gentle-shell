@@ -80,10 +80,10 @@ function standaloneLauncher(t: test.TestContext) {
 
 test("a genuinely absent adjacent peer falls back to PATH", (t) => {
 	const f = standaloneLauncher(t);
-	writePathPiScript(f.root, "0.99.2");
+	writePathPiScript(f.root, "1.2.1");
 	const result = spawnSync(process.execPath, [f.launcher, "--version"], { env: f.env, encoding: "utf8" });
 	assert.equal(result.status, 0, result.stderr);
-	assert.match(result.stdout, /pi 0\.99\.2/);
+	assert.match(result.stdout, /pi 1\.2\.1/);
 });
 
 test("malformed adjacent metadata never silently falls back to PATH; env override still wins", (t) => {
@@ -91,8 +91,8 @@ test("malformed adjacent metadata never silently falls back to PATH; env overrid
 	const peer = join(f.root, "node_modules", "@earendil-works", "pi-coding-agent");
 	mkdirSync(join(peer, "dist", "bundle"), { recursive: true });
 	writeFileSync(join(peer, "dist", "index.js"), "");
-	writePiScript(join(peer, "dist", "bundle", "cli.js"), "0.99.1");
-	const fallback = writePathPiScript(f.root, "0.99.2");
+	writePiScript(join(peer, "dist", "bundle", "cli.js"), "1.2.0");
+	const fallback = writePathPiScript(f.root, "1.2.1");
 	const base = { name: "@earendil-works/pi-coding-agent", type: "module", exports: { ".": { import: "./dist/index.js" } }, bin: { pi: "dist/bundle/cli.js" } };
 	for (const metadata of [{ ...base, name: "impostor" }, { ...base, bin: { pi: "../outside.js" } }, { ...base, bin: {} }, "malformed"]) {
 		writeFileSync(join(peer, "package.json"), metadata === "malformed" ? "{" : JSON.stringify(metadata));
@@ -103,7 +103,7 @@ test("malformed adjacent metadata never silently falls back to PATH; env overrid
 	writeFileSync(join(peer, "package.json"), JSON.stringify({ ...base, name: "impostor" }));
 	const override = spawnSync(process.execPath, [f.launcher, "--version"], { env: { ...f.env, GENTLE_SHELL_PI: fallback }, encoding: "utf8" });
 	assert.equal(override.status, 0, override.stderr);
-	assert.match(override.stdout, /pi 0\.99\.2/);
+	assert.match(override.stdout, /pi 1\.2\.1/);
 });
 
 test("an adjacent package.json with a non-string version fails closed with a clean message, not a crash", (t) => {
@@ -275,7 +275,7 @@ function fixture(t: test.TestContext) {
 	const home = join(root, "home");
 	mkdirSync(home, { recursive: true });
 	const piScript = join(root, "fake-pi.mjs");
-	writePiScript(piScript, "0.99.1");
+	writePiScript(piScript, "1.2.0");
 	const gentleShellHome = join(root, "gentle-shell-home");
 	const env: NodeJS.ProcessEnv = {
 		...process.env,
@@ -676,7 +676,7 @@ function writeGentleAiScriptDeclaringGentlePi(path: string, extraSources: string
 // the invocation), this models what a real `pi remove` does to settings.json
 // closely enough to prove a later plain launch sees the declaration gone and
 // resumes the launcher's own injection.
-function writePiScriptEditingSettingsOnRemove(path: string, version = "0.99.1") {
+function writePiScriptEditingSettingsOnRemove(path: string, version = "1.2.0") {
 	writeFileSync(
 		path,
 		[
@@ -995,13 +995,24 @@ test("gentle-shell install npm:<pkg> forwards the subcommand and its argument ve
 	assert.equal(payload.PI_CODING_AGENT_DIR, f.gentleShellHome);
 });
 
+// #2140: pi dispatches `mcp` on argv[0] only, so an injected -e ahead of it
+// turned `gentle-shell mcp list` into an interactive prompt.
+test("gentle-shell mcp add <server> -- <cmd> forwards to pi's own mcp verbatim, with no injected extension flags", (t) => {
+	const f = fixture(t);
+	const result = run(f.env, ["mcp", "add", "demo", "--", "npx", "-y", "demo-server"]);
+	assert.equal(result.status, 0, result.stderr);
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, ["mcp", "add", "demo", "--", "npx", "-y", "demo-server"]);
+	assert.equal(payload.PI_CODING_AGENT_DIR, f.gentleShellHome);
+});
+
 test("a too-old pi exits 1 naming both versions", (t) => {
 	const f = fixture(t);
 	writePiScript(f.piScript, "0.80.0");
 	const result = run(f.env, []);
 	assert.equal(result.status, 1);
 	assert.match(result.stderr, /0\.80\.0/);
-	assert.match(result.stderr, /0\.99\.1/);
+	assert.match(result.stderr, /1\.2\.0/);
 });
 
 test("--version prints three lines", (t) => {
@@ -1011,7 +1022,7 @@ test("--version prints three lines", (t) => {
 	const lines = result.stdout.trim().split("\n");
 	assert.equal(lines.length, 3);
 	assert.match(lines[0], /^gentle-shell /);
-	assert.match(lines[1], /^pi 0\.99\.1$/);
+	assert.match(lines[1], /^pi 1\.2\.0$/);
 	assert.match(lines[2], /^home isolated /);
 });
 
@@ -1034,7 +1045,10 @@ test("gentle-shell setup provisions the resolved home through the pinned gentle-
 	assert.deepEqual(payload.args, ["install", "--agent", "pi", "--scope", "global"]);
 	assert.equal(payload.PI_CODING_AGENT_DIR, f.gentleShellHome);
 	assert.equal(payload.GENTLE_PI_AGENT_HOME, f.gentleShellHome);
-	assert.ok(payload.PATH.startsWith(`${dirname(f.piScript)}${delimiter}`), payload.PATH);
+	// First the temporary `pi` that runs the resolved runtime, then the runtime's own folder.
+	const [launcher, runtimeDir] = payload.PATH.split(delimiter);
+	assert.match(launcher, /gentle-shell-pi-/, payload.PATH);
+	assert.equal(runtimeDir, dirname(f.piScript), payload.PATH);
 
 	// Home resolution runs exactly as a normal run: the isolated home gets
 	// created with its bootstrap TUI setting, same as a plain `gentle-shell`.
@@ -1455,7 +1469,7 @@ test("gentle-shell setup propagates a non-zero pi remove exit code with an actio
 	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
 	writeGentleAiScriptDeclaringConflict(gentleAiScript);
 	const failingPiScript = join(f.root, "fake-pi-remove-fails.mjs");
-	writePiScript(failingPiScript, "0.99.1", 7);
+	writePiScript(failingPiScript, "1.2.0", 7);
 	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_PI: failingPiScript };
 
 	const result = run(env, ["setup"]);
@@ -1476,7 +1490,7 @@ test("gentle-shell setup --home <dir> includes --home <dir> in the failing-remov
 	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
 	writeGentleAiScriptDeclaringConflict(gentleAiScript);
 	const failingPiScript = join(f.root, "fake-pi-remove-fails.mjs");
-	writePiScript(failingPiScript, "0.99.1", 7);
+	writePiScript(failingPiScript, "1.2.0", 7);
 	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_PI: failingPiScript };
 
 	const result = run(env, ["--home", target, "setup"]);
@@ -1500,7 +1514,7 @@ test("gentle-shell setup shell-quotes a --home path containing a space in the fa
 	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
 	writeGentleAiScriptDeclaringConflict(gentleAiScript);
 	const failingPiScript = join(f.root, "fake-pi-remove-fails.mjs");
-	writePiScript(failingPiScript, "0.99.1", 7);
+	writePiScript(failingPiScript, "1.2.0", 7);
 	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_PI: failingPiScript };
 
 	const result = run(env, ["--home", target, "setup"]);
@@ -2022,6 +2036,81 @@ test("an empty or nonexistent --home is still auto-provisioned", (t) => {
 	assert.equal(readFileSync(counterPath, "utf8").trim().split("\n").length, 1, "a fresh --home must still be auto-provisioned");
 });
 
+// #2106: both installers finish with `gentle-shell setup`; the first launch
+// after it must not install the companion packages again.
+// Gentle AI requires a `pi` on its PATH and runs `pi install npm:gentle-pi`.
+// When gentle-shell runs a Pi that is not itself on PATH (the adjacent
+// package, or GENTLE_SHELL_PI), setup must give Gentle AI that same Pi.
+test("setup gives Gentle AI a `pi` on its PATH that runs the same Pi gentle-shell resolved", { skip: process.platform === "win32" }, (t) => {
+	const f = fixture(t);
+	const probe = join(f.root, "pi-from-gentle-ai.txt");
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeFileSync(gentleAiScript, ["#!/usr/bin/env node", "import { spawnSync } from 'node:child_process';", "import { writeFileSync } from 'node:fs';",
+		"const pi = spawnSync('pi', ['--version'], { encoding: 'utf8' });",
+		`writeFileSync(${JSON.stringify(probe)}, JSON.stringify({ status: pi.status, error: pi.error?.code ?? null, stdout: pi.stdout }));`,
+		"process.exit(0);", ""].join("\n"), { mode: 0o755 });
+	// No `pi` anywhere on the user's PATH: only node and the system tools.
+	const temp = join(f.root, "tmp");
+	mkdirSync(temp);
+	const env = { ...f.env, TMPDIR: temp, PATH: [dirname(process.execPath), "/usr/bin", "/bin"].join(":"), GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" };
+
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(JSON.parse(readFileSync(probe, "utf8")), { status: 0, error: null, stdout: "1.2.0\n" });
+	// The launcher is temporary: nothing is left behind in the temp folder it used.
+	assert.deepEqual(readdirSync(temp), []);
+});
+
+test("setup without a usable temp folder runs as before, without the temporary pi", { skip: process.platform === "win32" }, (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptCountingRuns(gentleAiScript, join(f.root, "runs.log"));
+	const env = { ...f.env, TMPDIR: join(f.root, "missing-tmp"), GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" };
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.doesNotMatch(result.stderr, /mkdtemp|gentle-shell-pi-/);
+});
+
+test("a successful manual setup records the isolated home, so the first launch does not set it up again", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	const counterPath = join(f.root, "gentle-ai-runs.log");
+	writeGentleAiScriptCountingRuns(gentleAiScript, counterPath);
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+
+	const setup = run(env, ["setup"]);
+	assert.equal(setup.status, 0, setup.stderr);
+	const config = JSON.parse(readFileSync(join(f.home, ".gentle-shell", "config.json"), "utf8"));
+	const homeKey = realpathSync(f.gentleShellHome);
+	assert.equal(config.provisioned[homeKey].gentleAi, "3.6.0");
+	assert.equal(config.provisioned[homeKey].gentlePi, ownGentlePiVersion());
+
+	const launch = run(env, ["--mode", "rpc"]);
+	assert.equal(launch.status, 0, launch.stderr);
+	assert.doesNotMatch(launch.stderr, /first run in/);
+	assert.equal(readFileSync(counterPath, "utf8").trim().split("\n").length, 1, "gentle-ai ran only for the manual setup");
+});
+
+test("manual setup records nothing for a dry run, a failed setup or pi's own default agent home", (t) => {
+	const f = fixture(t);
+	const configPath = join(f.home, ".gentle-shell", "config.json");
+	const provisioned = () => (existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")).provisioned ?? {} : {});
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	const failingScript = join(f.root, "failing-gentle-ai.mjs");
+	writeGentleAiScriptCountingRuns(gentleAiScript, join(f.root, "runs.log"));
+	writeGentleAiScriptCountingRuns(failingScript, join(f.root, "failed-runs.log"), 3);
+	const env = { ...f.env, PI_CODING_AGENT_DIR: undefined, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" };
+
+	assert.equal(run(env, ["setup", "--dry-run"]).status, 0);
+	assert.deepEqual(provisioned(), {}, "dry run");
+	assert.notEqual(run({ ...env, GENTLE_SHELL_GENTLE_AI_BIN: failingScript }, ["setup"]).status, 0);
+	assert.deepEqual(provisioned(), {}, "failed setup");
+	const defaultPiHome = join(f.home, ".pi", "agent");
+	const own = run(env, ["--home", defaultPiHome, "setup"]);
+	assert.equal(own.status, 0, own.stderr);
+	assert.deepEqual(provisioned(), {}, "pi's own default agent home is never recorded, so it is never auto-provisioned later");
+});
+
 test("a --home equal to pi's own default agent home is never auto-provisioned, even when empty", (t) => {
 	const f = fixture(t);
 	const defaultPiHome = join(f.home, ".pi", "agent");
@@ -2273,7 +2362,7 @@ test("a hung 'pi remove' during post-install cleanup is killed after the timeout
 		[
 			"#!/usr/bin/env node",
 			"const args = process.argv.slice(2);",
-			'if (args.includes("--version")) { console.log("0.99.1"); process.exit(0); }',
+			'if (args.includes("--version")) { console.log("1.2.0"); process.exit(0); }',
 			"if (args[0] === 'remove') { await new Promise((resolve) => setTimeout(resolve, 60000)); process.exit(0); }",
 			"console.log(JSON.stringify({ args, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR }));",
 			"process.exit(0);",
@@ -2703,6 +2792,13 @@ test("--help mentions the setup subcommand", (t) => {
 	const result = run(f.env, ["--help"]);
 	assert.equal(result.status, 0, result.stderr);
 	assert.match(result.stdout, /\bsetup\b/);
+});
+
+test("--help lists the mcp subcommand", (t) => {
+	const f = fixture(t);
+	const result = run(f.env, ["--help"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, /gentle-shell mcp /);
 });
 
 // --- --link takeover of a conflicting path package -----------------------
@@ -3288,7 +3384,7 @@ function writeHandoffPiScript(path: string, exitCode = 0) {
 			"#!/usr/bin/env node",
 			"const { writeFileSync } = require('node:fs');",
 			"const args = process.argv.slice(2);",
-			"if (args.includes('--version')) { console.log('0.99.1'); process.exit(0); }",
+			"if (args.includes('--version')) { console.log('1.2.0'); process.exit(0); }",
 			"const handoff = process.env.GENTLE_SHELL_RESUME_HANDOFF;",
 			"if (handoff) writeFileSync(handoff, JSON.stringify({ sessionId: 'abc' }));",
 			"if (process.env.PI_STUB_PRINT_ENV) console.log(JSON.stringify({ args, handoff }));",
@@ -3389,7 +3485,7 @@ function writeWaitingPiScript(path: string) {
 		[
 			"#!/usr/bin/env node",
 			"const { writeFileSync } = require('node:fs');",
-			"if (process.argv.includes('--version')) { console.log('0.99.1'); process.exit(0); }",
+			"if (process.argv.includes('--version')) { console.log('1.2.0'); process.exit(0); }",
 			"writeFileSync(process.env.GENTLE_SHELL_RESUME_HANDOFF, JSON.stringify({ sessionId: 'abc' }));",
 			"const quit = () => { process.stdout.write('To resume this session: pi --session abc\\n'); process.exit(0); };",
 			"process.on('SIGHUP', quit);",
@@ -3431,7 +3527,7 @@ test("on a TTY a cross-project session resumes by its session file", { skip: !ha
 		[
 			"#!/usr/bin/env node",
 			"const { writeFileSync } = require('node:fs');",
-			"if (process.argv.includes('--version')) { console.log('0.99.1'); process.exit(0); }",
+			"if (process.argv.includes('--version')) { console.log('1.2.0'); process.exit(0); }",
 			`writeFileSync(process.env.GENTLE_SHELL_RESUME_HANDOFF, JSON.stringify({ sessionId: 'abc', sessionFile: ${JSON.stringify(sessionFile)} }));`,
 			"process.stdout.write('To resume this session: pi --session abc\\n');",
 			"",

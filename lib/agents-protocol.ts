@@ -127,6 +127,9 @@ export interface TaskRecord {
 	startedAt: number | null;
 	endedAt: number | null;
 	model: string;
+	/** Launch-layer token recorded next to `model` (#2180): which profile layer won.
+	 * Host-computed at the launch seam; absent for requests and records that never named one. */
+	modelSource?: string;
 	thinking: string | undefined;
 	sessionPath: string | null;
 	error: string | null;

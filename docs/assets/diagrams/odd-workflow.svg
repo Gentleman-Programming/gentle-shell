@@ -1,74 +1,136 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="960" height="760" viewBox="0 0 960 760" role="img" aria-labelledby="odd-title odd-desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="500" viewBox="0 0 1000 500" role="img" aria-labelledby="odd-title odd-desc">
   <title id="odd-title">Organic Driven Development workflow</title>
   <desc id="odd-desc">One feature moves through the seven ODD protocol steps. Authorize, explore, resolve uncertainty, then classify: small understood work stays light with no durable artifacts, while substantial work is tracked in one feature document before the first write. Both paths implement task by task and close with verified proof. The same feature document carries progress across sessions so work resumes instead of restarting.</desc>
   <defs>
-    <linearGradient id="odd-bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#100c15"/><stop offset="1" stop-color="#21101f"/></linearGradient>
-    <marker id="odd-arrow" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" viewBox="0 0 10 10" refX="10" refY="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#f095c8"/></marker>
+    <linearGradient id="odd-bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0f0b13"/><stop offset="1" stop-color="#1a0e19"/></linearGradient>
+    <radialGradient id="odd-glow" cx="0.12" cy="0" r="0.7"><stop stop-color="#f095c8" stop-opacity="0.16"/><stop offset="1" stop-color="#f095c8" stop-opacity="0"/></radialGradient>
+    <linearGradient id="odd-card" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#1d1520"/><stop offset="1" stop-color="#151017"/></linearGradient>
+    <linearGradient id="odd-accent" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#3a1932"/><stop offset="1" stop-color="#1e1020"/></linearGradient>
+    <pattern id="odd-dots" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#ffffff" fill-opacity="0.045"/></pattern>
+    <filter id="odd-shine" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="10"/></filter>
+    <marker id="odd-arrow" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" viewBox="0 0 8 8" refX="7" refY="4" orient="auto"><path d="M0 0.5 7 4 0 7.5z" fill="#f095c8"/></marker>
   </defs>
-  <rect width="960" height="760" rx="20" fill="url(#odd-bg)"/>
-  <text x="40" y="65" fill="#fff7f1" font-family="Arial, Helvetica, sans-serif" font-size="44" font-weight="700">Explore, track, implement.</text>
-  <text x="40" y="120" fill="#d7a0b8" font-family="Arial, Helvetica, sans-serif" font-size="44" font-weight="700">Resume without ceremony.</text>
-  <g fill="#1c1420" stroke="#d7a0b8" stroke-width="2">
-    <rect x="40" y="170" width="196" height="120" rx="16"/>
-    <rect x="268" y="170" width="196" height="120" rx="16"/>
-    <rect x="496" y="170" width="196" height="120" rx="16"/>
-    <rect x="724" y="170" width="196" height="120" rx="16"/>
-    <rect x="724" y="330" width="196" height="120" rx="16" fill="#2a1426" stroke="#f095c8" stroke-width="3"/>
-    <rect x="610" y="490" width="196" height="120" rx="16"/>
-    <rect x="268" y="490" width="196" height="120" rx="16"/>
-  </g>
-  <rect x="496" y="330" width="196" height="120" rx="16" fill="#18121b" stroke="#d7a0b8" stroke-width="2" stroke-dasharray="6 6"/>
-  <g fill="none" stroke="#f095c8" stroke-width="3" stroke-linecap="round" marker-end="url(#odd-arrow)">
-    <path d="M236 230H268"/>
-    <path d="M464 230H496"/>
-    <path d="M692 230H724"/>
-    <path d="M822 290V330"/>
-    <path d="M822 290V310H594V330"/>
-    <path d="M708 470V490"/>
-    <path d="M610 550H464"/>
-  </g>
-  <g fill="none" stroke="#f095c8" stroke-width="3" stroke-linecap="round">
-    <path d="M594 450V470H708"/>
-    <path d="M822 450V470H708"/>
-  </g>
-  <g font-family="Arial, Helvetica, sans-serif" font-size="20" fill="#d7a0b8" opacity="0.85">
-    <text x="56" y="198">01</text>
-    <text x="284" y="198">02</text>
-    <text x="512" y="198">03</text>
-    <text x="740" y="198">04</text>
-    <text x="740" y="358">05</text>
-    <text x="626" y="518">06</text>
-    <text x="284" y="518">07</text>
-  </g>
-  <g font-family="Arial, Helvetica, sans-serif" text-anchor="middle">
-    <g fill="#fff7f1" font-size="30" font-weight="700">
-      <text x="138" y="222">Authorize</text>
-      <text x="366" y="222">Explore</text>
-      <text x="594" y="222">Resolve</text>
-      <text x="822" y="222">Classify</text>
-      <text x="822" y="382">Track</text>
-      <text x="594" y="382">Stay light</text>
-      <text x="708" y="542">Implement</text>
-      <text x="366" y="542">Close</text>
+
+  <!-- canvas -->
+  <rect width="1000" height="500" rx="24" fill="url(#odd-bg)"/>
+  <rect width="1000" height="500" rx="24" fill="url(#odd-dots)"/>
+  <rect width="1000" height="500" rx="24" fill="url(#odd-glow)"/>
+  <rect x="0.5" y="0.5" width="999" height="499" rx="23.5" fill="none" stroke="#f095c8" stroke-opacity="0.16"/>
+
+  <g font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, 'Helvetica Neue', Arial, sans-serif">
+
+    <!-- eyebrow -->
+    <text x="36" y="52" fill="#f095c8" font-size="12.5" font-weight="700" letter-spacing="2.6">ORGANIC DRIVEN DEVELOPMENT</text>
+    <text x="964" y="52" fill="#8e7987" font-size="13" text-anchor="end">small work stays light · substantial work gets tracked</text>
+
+    <!-- phase brackets -->
+    <g fill="#8e7987" font-size="11" font-weight="700" letter-spacing="2" text-anchor="middle">
+      <text x="220" y="94">UNDERSTAND</text>
+      <text x="552" y="94">DECIDE</text>
+      <text x="844" y="94">DELIVER</text>
     </g>
-    <g fill="#d7a0b8" font-size="22">
-      <text x="138" y="262">read-only</text>
-      <text x="366" y="262">code and needs</text>
-      <text x="594" y="262">uncertainty</text>
-      <text x="822" y="262">substantial?</text>
-      <text x="822" y="422">one document</text>
-      <text x="594" y="422">small work</text>
-      <text x="708" y="582">task by task</text>
-      <text x="366" y="582">verified proof</text>
+    <g fill="none" stroke="#f095c8" stroke-opacity="0.28" stroke-width="1">
+      <path d="M36 110V104H404V110"/>
+      <path d="M420 110V104H684V110"/>
+      <path d="M724 110V104H964V110"/>
     </g>
-  </g>
-  <g font-family="Arial, Helvetica, sans-serif" font-size="22" fill="#d7a0b8">
-    <text x="708" y="302" text-anchor="middle">small</text>
-    <text x="838" y="316" text-anchor="start">substantial</text>
-  </g>
-  <rect x="40" y="650" width="880" height="90" rx="16" fill="#18121b" stroke="#d7a0b8" stroke-width="2" stroke-dasharray="8 7"/>
-  <g font-family="Arial, Helvetica, sans-serif" text-anchor="middle">
-    <text x="480" y="686" fill="#fff7f1" font-size="34" font-weight="700">Resume where you stopped</text>
-    <text x="480" y="722" fill="#d7a0b8" font-size="26">One feature document, mirrored in Engram across sessions.</text>
+
+    <!-- flow lines -->
+    <g fill="none" stroke="#f095c8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#odd-arrow)">
+      <path d="M148 250H162"/>
+      <path d="M276 250H290"/>
+      <path d="M404 250H418"/>
+      <path d="M532 250H544Q552 250 552 242V200Q552 192 560 192H570"/>
+      <path d="M532 250H544Q552 250 552 258V300Q552 308 560 308H570"/>
+      <path d="M684 192H696Q704 192 704 200V242Q704 250 712 250H722"/>
+      <path d="M684 308H696Q704 308 704 300V258Q704 250 712 250H722"/>
+      <path d="M836 250H850"/>
+    </g>
+    <path d="M628 386V410" fill="none" stroke="#f095c8" stroke-opacity="0.45" stroke-width="1.5" stroke-dasharray="2 5" stroke-linecap="round"/>
+
+    <!-- branch labels -->
+    <g fill="#c99bb4" font-size="12" font-weight="600" letter-spacing="0.6" text-anchor="middle">
+      <text x="628" y="134">small</text>
+      <text x="628" y="378">substantial</text>
+    </g>
+
+    <!-- accent glows -->
+    <g fill="#f095c8" opacity="0.22" filter="url(#odd-shine)">
+      <rect x="430" y="204" width="92" height="92" rx="16"/>
+      <rect x="582" y="270" width="92" height="76" rx="16"/>
+    </g>
+
+    <!-- cards -->
+    <g stroke-width="1">
+      <rect x="36" y="194" width="112" height="112" rx="14" fill="url(#odd-card)" stroke="#f095c8" stroke-opacity="0.22"/>
+      <rect x="164" y="194" width="112" height="112" rx="14" fill="url(#odd-card)" stroke="#f095c8" stroke-opacity="0.22"/>
+      <rect x="292" y="194" width="112" height="112" rx="14" fill="url(#odd-card)" stroke="#f095c8" stroke-opacity="0.22"/>
+      <rect x="420" y="194" width="112" height="112" rx="14" fill="url(#odd-accent)" stroke="#f095c8" stroke-width="1.5"/>
+      <rect x="572" y="144" width="112" height="96" rx="14" fill="#130e15" stroke="#d7a0b8" stroke-opacity="0.55" stroke-dasharray="5 5"/>
+      <rect x="572" y="260" width="112" height="96" rx="14" fill="url(#odd-accent)" stroke="#f095c8" stroke-width="1.5"/>
+      <rect x="724" y="194" width="112" height="112" rx="14" fill="url(#odd-card)" stroke="#f095c8" stroke-opacity="0.22"/>
+      <rect x="852" y="194" width="112" height="112" rx="14" fill="url(#odd-card)" stroke="#f095c8" stroke-opacity="0.45"/>
+    </g>
+
+    <!-- step numbers -->
+    <g fill="#f095c8" fill-opacity="0.13">
+      <rect x="48" y="206" width="30" height="18" rx="9"/>
+      <rect x="176" y="206" width="30" height="18" rx="9"/>
+      <rect x="304" y="206" width="30" height="18" rx="9"/>
+      <rect x="432" y="206" width="30" height="18" rx="9" fill-opacity="0.26"/>
+      <rect x="584" y="272" width="30" height="18" rx="9" fill-opacity="0.26"/>
+      <rect x="736" y="206" width="30" height="18" rx="9"/>
+      <rect x="864" y="206" width="30" height="18" rx="9"/>
+    </g>
+    <g fill="#f5b8da" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="700" text-anchor="middle">
+      <text x="63" y="219">01</text>
+      <text x="191" y="219">02</text>
+      <text x="319" y="219">03</text>
+      <text x="447" y="219">04</text>
+      <text x="599" y="285">05</text>
+      <text x="751" y="219">06</text>
+      <text x="879" y="219">07</text>
+    </g>
+
+    <!-- icons (24px grid) -->
+    <g fill="none" stroke="#f095c8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <g transform="translate(116 203) scale(0.8)"><path d="M12 3 19 6v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/></g>
+      <g transform="translate(244 203) scale(0.8)"><circle cx="11" cy="11" r="6"/><path d="M15.5 15.5 20 20"/></g>
+      <g transform="translate(372 203) scale(0.8)"><path d="M4 5h16v11h-9l-4 4v-4H4z"/><path d="M10 9.2a2 2 0 1 1 2.6 1.9c-.4.2-.6.5-.6.9"/><path d="M12 13.6v.1"/></g>
+      <g transform="translate(500 203) scale(0.8)"><path d="M12 3l9 9-9 9-9-9z"/><path d="M12 8v5M12 16v.1"/></g>
+      <g transform="translate(652 153) scale(0.8)"><path d="M20 4C12 4 6 10 6 18"/><path d="M6 18c8 0 14-6 14-14"/><path d="M4 20l2-2M9 15l6-6"/></g>
+      <g transform="translate(652 269) scale(0.8)"><path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M10 13h6M10 17h6"/></g>
+      <g transform="translate(804 203) scale(0.8)"><path d="M9 8l-4 4 4 4M15 8l4 4-4 4"/></g>
+      <g transform="translate(932 203) scale(0.8)"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l3 2.5 5-5.5"/></g>
+    </g>
+
+    <!-- titles -->
+    <g fill="#fbeff5" font-size="17" font-weight="650">
+      <text x="48" y="266">Authorize</text>
+      <text x="176" y="266">Explore</text>
+      <text x="304" y="266">Resolve</text>
+      <text x="432" y="266">Classify</text>
+      <text x="584" y="202">Stay light</text>
+      <text x="584" y="318">Track</text>
+      <text x="736" y="266">Implement</text>
+      <text x="864" y="266">Close</text>
+    </g>
+    <g fill="#a8939f" font-size="12.5">
+      <text x="48" y="288">read-only</text>
+      <text x="176" y="288">code and needs</text>
+      <text x="304" y="288">uncertainty</text>
+      <text x="432" y="288">substantial?</text>
+      <text x="584" y="222">small work</text>
+      <text x="584" y="338">one document</text>
+      <text x="736" y="288">task by task</text>
+      <text x="864" y="288">verified proof</text>
+    </g>
+
+    <!-- resume band -->
+    <rect x="36" y="410" width="928" height="56" rx="14" fill="#f095c8" fill-opacity="0.06" stroke="#f095c8" stroke-opacity="0.22"/>
+    <g fill="none" stroke="#f095c8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" transform="translate(56 426) scale(1)">
+      <path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 4v5h-5"/>
+    </g>
+    <text x="92" y="443" font-size="15.5"><tspan fill="#fbeff5" font-weight="650">Resume where you stopped</tspan><tspan fill="#a8939f" dx="10">One feature document, mirrored in Engram across sessions.</tspan></text>
   </g>
 </svg>

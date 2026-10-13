@@ -126,10 +126,13 @@ test("the main channel acquires the pinned Go when Go is missing or older, befor
 	}
 });
 
-test("an unknown Go still blocks the main channel: it is neither missing nor older", () => {
-	const plan = planPreflight({ ...clean("darwin"), go: { available: null } }, { channel: "main" });
-	assert.ok(plan.blockers.some((blocker: { code: string; tool: string }) => blocker.code === "main-requires-go" && blocker.tool === "go"));
-	assert.deepEqual(plan.actions, []);
+test("an unknown Go never blocks a build: the build gets the installer's pinned Go, first on PATH", () => {
+	for (const [platform, channel] of [["darwin", "main"], ["linux", "main"], ["win32", "main"], ["win32", "release"]]) {
+		const plan = planPreflight({ ...clean(platform), go: { available: null } }, { channel });
+		assert.deepEqual(plan.blockers, [], `${platform} ${channel}`);
+		assert.deepEqual(plan.tools.go, { status: "needs-acquire", required: requirements.go, version: goAcquisition.version, unchecked: true }, `${platform} ${channel}`);
+		assert.deepEqual(plan.actions.filter((action: { target: string }) => action.target === "go"), goActions, `${platform} ${channel}`);
+	}
 });
 
 test("a release installation on macOS or Linux never acquires Go, whatever Go is there", () => {
@@ -250,7 +253,7 @@ test("a missing Pi is installed before an existing Gentle Shell is updated", () 
 });
 
 test("an existing compatible Pi from any installation is reused and only Gentle Shell is installed", () => {
-	for (const pi of [tool("1.2.0"), { ...tool("1.0.4"), external: true }]) {
+	for (const pi of [tool("1.2.0"), { ...tool("1.2.4"), external: true }]) {
 		const plan = planPreflight({ ...installed(), pi, shell: absent, gentleAi: absent, setup: false });
 		assert.equal(plan.tools.pi.status, "reusable");
 		assert.deepEqual(updateIds(plan), ["install-shell", "setup-shell", "verify-readiness"]);
@@ -258,7 +261,7 @@ test("an existing compatible Pi from any installation is reused and only Gentle 
 });
 
 test("a pnpm Pi newer than the installer's pin never blocks: Gentle Shell is added or updated beside it", () => {
-	const newer = { ...tool("1.1.0") };
+	const newer = { ...tool("1.2.1") };
 	const install = planPreflight({ ...installed(), pi: newer, shell: absent, gentleAi: absent, setup: false });
 	assert.deepEqual([install.blockers, updateIds(install)], [[], ["install-shell", "setup-shell", "verify-readiness"]]);
 	const update = planPreflight({ ...installed(), pi: newer, shell: owned("3.9.0"), gentleAi: unchecked, setup: unchecked });
@@ -350,16 +353,17 @@ test("a current Shell without its global command still blocks as unknown", () =>
 test("missing Windows Go is acquired before reprovisioning an existing Shell", () => {
 	const inventory = { ...installed("win32"), gentleAi: absent };
 	assert.deepEqual(ids(inventory), ["acquire-go", "verify-go", "provision-native", "setup-shell", "verify-readiness"]);
+	// A Go it cannot check is never run either: the pinned Go builds instead.
 	for (const go of [tool("devel"), { ...tool("1.26.0"), usable: false }]) {
-		assert.equal(planPreflight({ ...inventory, go }).tools.go.status, "unknown");
-		assert.deepEqual(ids({ ...inventory, go }), []);
+		assert.equal(planPreflight({ ...inventory, go }).tools.go.status, "needs-acquire");
+		assert.deepEqual(ids({ ...inventory, go }), ["acquire-go", "verify-go", "provision-native", "setup-shell", "verify-readiness"]);
 	}
 });
 
 // A pinned stack this pnpm installed whose setup did not finish (setup probe: recoverable).
 const recoverable = { available: true, recoverable: true };
 function partial(change: object = {}) {
-	return { ...installed(), pi: tool("1.0.0"), shell: { ...tool(requirements.shell), global: true }, setup: recoverable, ...change };
+	return { ...installed(), pi: tool("1.2.0"), shell: { ...tool(requirements.shell), global: true }, setup: recoverable, ...change };
 }
 
 test("a recoverable stack only reruns setup, with PATH setup when the global bin is off PATH", () => {

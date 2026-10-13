@@ -13,7 +13,17 @@ const USAGE = "Use /gentle:yolo enable|disable|status. State unchanged.";
 const STALE_MENU = "YOLO unchanged — the session changed while the menu was open.";
 const menuTitle = (state: "ON" | "OFF") => `🚀 Gentle YOLO 🔥 — full speed, destructive actions still ask (current: ${state})`;
 
-export function harness(env: NodeJS.ProcessEnv = {}) {
+// An empty env would resolve the developer's real ~/.pi/gentle-ai and inherit its persisted mode default.
+const isolatedConfigHomes: string[] = [];
+process.once("exit", () => { for (const home of isolatedConfigHomes) rmSync(home, { recursive: true, force: true }); });
+function isolatedConfigHome(): string {
+	const home = mkdtempSync(join(tmpdir(), "yolo-config-"));
+	isolatedConfigHomes.push(home);
+	return home;
+}
+
+export function harness(overrides: NodeJS.ProcessEnv = {}) {
+	const env: NodeJS.ProcessEnv = { GENTLE_PI_CONFIG_HOME: isolatedConfigHome(), ...overrides };
 	const commands = new Map<string, { handler: (args: string, ctx: ExtensionContext) => Promise<void> }>();
 	const handlers = new Map<string, Array<(event: unknown, ctx: ExtensionContext) => unknown>>();
 	const tools: string[] = [];
@@ -132,12 +142,12 @@ test("revocation wins over an activation still awaiting Git identity", async () 
 	}
 });
 
-test("child, headless, RPC and unidentified repository cannot activate", async () => {
-	for (const variant of ["child", "headless", "rpc", "no-repository"]) {
+test("child, headless, RPC and nonexistent workspace cannot activate", async () => {
+	for (const variant of ["child", "headless", "rpc", "no-workspace"]) {
 		const h = harness(variant === "child" ? { GENTLE_PI_AGENTS_CHILD: "1" } : {});
 		if (variant === "headless") Object.assign(h.ctx, { hasUI: false });
 		if (variant === "rpc") Object.assign(h.ctx, { mode: "rpc" });
-		if (variant === "no-repository") Object.assign(h.ctx, { cwd: "/" });
+		if (variant === "no-workspace") Object.assign(h.ctx, { cwd: "/nonexistent-gentle-workspace" });
 		await h.command("enable"); assert.notEqual(h.statuses.get("gentle:yolo"), ON_TEXT);
 		h.setSelect(async () => "enable");
 		await h.command(""); assert.notEqual(h.statuses.get("gentle:yolo"), ON_TEXT, `${variant} menu enable fails closed`);
@@ -182,7 +192,12 @@ test("active YOLO waives only ordinary push after full destructive/guard evaluat
 	await h.command("enable");
 	assert.equal(await call("git push origin main"), undefined);
 	assert.equal(h.confirmations(), 1);
-	for (const command of ["git push origin main && rm -rf ./data", `sh -c "psql -c 'DROP TABLE users'"`, "git push origin main && git rebase main", "git push --force origin main", "git push origin main && npm publish", "git -C /other push origin main", "sh -c 'git push origin main'"]) {
+	// gentle-shell#2172: reversible compound delivery is waived too.
+	for (const command of ["git commit -m 'fix: x' && git push -u origin feature/x", "git push origin main && gh pr create --fill", "git -C /other push origin main", "git rebase origin/main && git push"]) {
+		assert.equal(await call(command), undefined, command);
+	}
+	assert.equal(h.confirmations(), 1, "waived commands never reach the confirmation dialog");
+	for (const command of ["git push origin main && rm -rf ./data", `sh -c "psql -c 'DROP TABLE users'"`, "git push origin main && git rebase -i main", "git push --force origin main", "git push origin main && npm publish", "git push origin :main", "sh -c 'git push origin main'"]) {
 		assert.ok(await call(command), command);
 	}
 	await h.command("disable"); assert.ok(await call("git push origin main"));

@@ -17,6 +17,9 @@ const sources = [
 	"child-package-injection",
 	"gentle-shell-launcher",
 	"gentle-shell-bundled",
+	"gentle-shell-startup-update",
+	"gentle-shell-update-panel",
+	"gentle-shell-startup-flow",
 	"gentle-shell-resume-hint",
 	"gentle-shell-uninstall",
 ];

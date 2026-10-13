@@ -154,8 +154,6 @@ export const guidance = Object.freeze({
 		"unsupported-target": "This operating system or CPU is not supported by the wizard. Follow the README for a manual installation.",
 		"unknown-tool": "A required tool could not be checked safely. Make sure it runs from a terminal, or remove the broken installation, then run the installer again.",
 		"incompatible-tool": "A required tool is installed at an incompatible version. Update it, then run the installer again.",
-		"main-requires-go": "The `main` channel builds Gentle AI with Go, but `go version` did not report a version this installer can check. " +
-			"Make sure `go version` works in a terminal, or choose the release channel, then select Check again.",
 		"untrusted-pnpm-home": "Another account can change the pnpm home folder (PNPM_HOME), where pnpm installs and runs programs, so nothing was installed. " +
 			"Remove that account's write access, or set PNPM_HOME to a private folder such as %USERPROFILE%\\.pnpm, then select Check again.",
 	}),
@@ -260,13 +258,9 @@ function globalBinPnpm(blocker, found, required) {
 		return `A pnpm ${where} but its version could not be checked. Nothing was replaced. ` +
 			`If \`pnpm --version\` reports a version older than ${required}, update it with ${update}, then select Check again.`;
 	}
-	const major = required.split(".")[0];
-	if (older(found, required)) {
-		return `pnpm ${found} ${where} but this installer needs pnpm ${required} or a newer ${major}.x. Nothing was replaced. ` +
-			`Update it with ${update}, then select Check again.`;
-	}
-	return `pnpm ${found} ${where} but this installer only runs pnpm ${major} (${required} or a newer ${major}.x). ` +
-		`Nothing was replaced, and this installer never downgrades pnpm. To use it, make a pnpm ${major} release your global pnpm the way you prefer, then select Check again.`;
+	// Only an older pnpm is incompatible: the pin or newer, of any major, is used as it is.
+	return `pnpm ${found} ${where} but this installer needs pnpm ${required} or newer. Nothing was replaced. ` +
+		`Update it with ${update}, then select Check again.`;
 }
 
 // S6: what the storage walk found on a Windows PNPM_HOME candidate, from the
@@ -358,10 +352,11 @@ function actionDescription(action, plan) {
 		return `Install Pi ${PI_INSTALL_VERSION} globally with pnpm for Gentle Shell. The Pi ${bare(pi.version)} already on this computer ` +
 			"was not installed with pnpm or npm, so it is left unchanged. Gentle Shell uses the installer's Pi; the `pi` command in a terminal may still run the older one.";
 	}
-	// The pinned Go: its version, the Go found (or missing), and what stays unchanged.
+	// The pinned Go: its version, the Go found (older, unchecked or missing), and what stays unchanged.
 	const go = plan.tools?.go;
 	if (action.id === "acquire-go" && go?.status === "needs-acquire" && stable(action.version, go.required)) {
-		const found = stable(go.found) ? `Go ${bare(go.found)} on this computer is older than ${bare(go.required)}` : "Go is missing on this computer";
+		const found = stable(go.found) ? `Go ${bare(go.found)} on this computer is older than ${bare(go.required)}`
+			: go.unchecked === true ? "The Go on this computer did not report a version this installer can check" : "Go is missing on this computer";
 		return `${found}, so the installer downloads Go ${bare(action.version)} from go.dev, verifies its pinned SHA-256 checksum and uses it only to build Gentle AI. ` +
 			"It is kept in the installer's own folder (~/.pi/gentle-ai/tools/go); your Go, PATH and shell profile are not changed.";
 	}
@@ -398,6 +393,19 @@ function privateHomeDescription(home) {
 		// S13: pnpm reads its configuration folder only from XDG_CONFIG_HOME or %LOCALAPPDATA%\pnpm\config.
 		"Only the installer's own pnpm steps keep pnpm's configuration, cache and state inside that private folder: pnpm commands you run later keep " +
 		"pnpm's default configuration, cache and state under %LOCALAPPDATA%, which pnpm offers no safe persistent setting to move. This is an accepted risk.";
+}
+
+// A missing Git (never a blocker): installing does not need it, repository features do.
+const gitInstall = Object.freeze({
+	darwin: "`xcode-select --install` (Apple's Command Line Tools)",
+	win32: "`winget install --id Git.Git -e`",
+	linux: "your package manager, for example `sudo apt-get install -y git` on Debian or Ubuntu",
+});
+function gitNoticeView(inventory) {
+	if (inventory?.git?.available !== false) return null;
+	const install = gitInstall[inventory.platform] ?? gitInstall.linux;
+	return { description: "Git was not found on this computer. Gentle Shell installs and starts without it, but code review, worktrees and other " +
+		`repository features need it. Install it with ${install}, then open a new terminal. This is not a blocker.` };
 }
 
 // S6 notice: reused tools whose folders another account can change (never a blocker).
@@ -439,7 +447,7 @@ function bundledDescription(action, bundled) {
 	}
 }
 /** The bundled plan's view: the same shape as planView's, with `bundled: true`. */
-function bundledView(planId, plan) {
+function bundledView(planId, plan, inventory) {
 	const bundled = plan.bundled;
 	const [root, bin, file, line] = [plainText(bundled.root), plainText(bundled.bin), plainText(bundled.path?.file), plainText(bundled.path?.line)];
 	const kind = bundled.path?.kind;
@@ -458,6 +466,7 @@ function bundledView(planId, plan) {
 		blockers: [],
 		profileChange: { changesProfile: ["symlink", "profile", "registry"].includes(kind), command: null, binDir: bin, description: profile },
 		sharedFolders: null,
+		gitNotice: gitNoticeView(inventory),
 		persistence: {
 			tools: ["node", "npm", "pnpm", ...(go ? ["go"] : [])],
 			pnpmHome: root,
@@ -468,7 +477,7 @@ function bundledView(planId, plan) {
 }
 
 function planView(planId, { inventory, plan }) {
-	if (plainObject(plan.bundled)) return bundledView(planId, plan);
+	if (plainObject(plan.bundled)) return bundledView(planId, plan, inventory);
 	const ids = plan.actions.map((action) => action.id);
 	const binDir = typeof inventory?.globalBin?.path === "string" ? inventory.globalBin.path : null;
 	// A private PNPM_HOME (S6) is always persisted by `pnpm setup` (the runner's persist-path).
@@ -507,6 +516,7 @@ function planView(planId, { inventory, plan }) {
 				: "Your PATH already contains the pnpm global bin directory; no shell profile or PATH change is planned.",
 		},
 		sharedFolders: sharedFoldersView(plan),
+		gitNotice: gitNoticeView(inventory),
 		persistence: {
 			tools,
 			pnpmHome,

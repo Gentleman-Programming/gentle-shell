@@ -202,6 +202,8 @@ export function planModel(view) {
 		blockers,
 		// S6: reused tools in folders another account can change; a notice, never a blocker.
 		notice: typeof view?.sharedFolders?.description === "string" ? text(view.sharedFolders.description) : null,
+		// A missing Git: noted before consent, never a blocker.
+		gitNotice: typeof view?.gitNotice?.description === "string" ? text(view.gitNotice.description) : null,
 		disclosures: [
 			{
 				id: "profile",
@@ -427,7 +429,7 @@ function disclosureCard(doc, item) {
 
 const channels = Object.freeze([
 	{ value: "release", label: "Latest release", hint: "Recommended. The published Gentle Shell and its pinned Gentle AI binary." },
-	{ value: "main", label: "Latest main", hint: "Development builds: Gentle Shell and Gentle AI from the latest commit of `main`, built on this computer with Go. If yours is missing or older, the installer downloads its own pinned Go only for the build." },
+	{ value: "main", label: "Latest main", hint: "Development builds: Gentle Shell and Gentle AI from the latest commit of `main`, built on this computer with Go. If yours is missing, older or cannot be checked, the installer downloads its own pinned Go only for the build." },
 ]);
 
 /** Channel choice shown on every review screen; a change reloads the plan. */
@@ -509,6 +511,9 @@ export function renderPlan(doc, model, handlers) {
 	model.notice ? el(doc, "section", { class: "alert alert-warning", "aria-labelledby": "notice-title" },
 		el(doc, "h2", { id: "notice-title", class: "alert-title" }, el(doc, "span", { "aria-hidden": "true" }, "! "), "Tools in folders other accounts can change"),
 		el(doc, "p", {}, rich(doc, model.notice))) : null,
+	model.gitNotice ? el(doc, "section", { class: "alert alert-warning", "aria-labelledby": "git-notice-title" },
+		el(doc, "h2", { id: "git-notice-title", class: "alert-title" }, el(doc, "span", { "aria-hidden": "true" }, "! "), "Git not found"),
+		el(doc, "p", {}, rich(doc, model.gitNotice))) : null,
 	el(doc, "section", { class: "block", "aria-labelledby": "steps-title" },
 		el(doc, "h2", { id: "steps-title", class: "section-title" }, recovery ? "Setup steps" : updating || updatingPi ? "Update steps" : "Installation steps"),
 		el(doc, "ol", { class: "plan-steps" }, model.actions.map((action) => el(doc, "li", {},

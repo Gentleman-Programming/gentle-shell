@@ -163,3 +163,12 @@ test("activeEnvName accepts only a valid env name from the environment", async (
 	assert.equal(activeEnvName({ GENTLE_SHELL_ENV: "" }), undefined);
 	assert.equal(activeEnvName({ GENTLE_SHELL_ENV: "\x1b[31mevil" }), undefined);
 });
+
+test("resolveHome names an explicit --home that is an env in the envs root", () => {
+	const dir = join("/h", ".gentle-shell", "envs", "work");
+	const home = resolveHome({ args: parseLauncherArgs(["--home", dir]), env: {}, homedir: "/h", config: undefined });
+	assert.equal(home.env, "work");
+	assert.deepEqual(homeSelectorFlags(home), ["--env", "work"]);
+	const other = resolveHome({ args: parseLauncherArgs(["--home", "/elsewhere/work"]), env: {}, homedir: "/h", config: undefined });
+	assert.equal(other.env, undefined);
+});

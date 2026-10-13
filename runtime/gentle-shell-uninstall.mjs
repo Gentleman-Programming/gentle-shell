@@ -350,7 +350,9 @@ async function planSelfUninstall(input                    , configHome        , 
 	// Named envs are user data: their root is listed once, never each env as a
 	// custom --home home, and the overlap check below protects all of them.
 	const namedEnvs = envsRoot(env, homedir);
-	const namedEnvsReal = inspect(namedEnvs, "dir") === "ok" ? canonical(namedEnvs) : undefined;
+	// A symlinked root still holds the user's envs: protect its real target too.
+	const namedEnvsState = inspect(namedEnvs, "dir");
+	const namedEnvsReal = namedEnvsState === "ok" || (namedEnvsState === "symlink" && inspect(canonical(namedEnvs), "dir") === "ok") ? canonical(namedEnvs) : undefined;
 	if (namedEnvsReal !== undefined) {
 		seen.add(comparable(namedEnvsReal, platform));
 		plan.notTouched.push({ path: namedEnvs, label: NAMED_ENVS_LABEL });

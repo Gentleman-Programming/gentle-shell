@@ -331,7 +331,11 @@ export function resolveHome(input                  )               {
 
 	if (args.link) return { mode: "link", dir: userPiHome(env, homedir), source: "flag" };
 	if (args.isolated) return { mode: "isolated", dir: isolatedDir(env, homedir), source: "flag" };
-	if (args.home !== undefined) return { mode: "path", dir: args.home, source: "flag" };
+	if (args.home !== undefined) {
+		// An explicit --home into the envs root is that env, labelled like --env.
+		const name = envNameForDir(envsRoot(env, homedir), args.home);
+		return name === undefined ? { mode: "path", dir: args.home, source: "flag" } : { mode: "path", dir: args.home, source: "flag", env: name };
+	}
 	if (args.env !== undefined) return { mode: "path", dir: envDir(envsRoot(env, homedir), args.env), source: "flag", env: args.env };
 
 	if (config !== undefined) {

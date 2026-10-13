@@ -1920,7 +1920,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// statuses. The digest is what keeps the fullscreen memo honest, and it
 			// rebuilds the model exactly as the narrow bottom bar does every frame.
 			const footerModel = (): ShellBarModel => ({
-				...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: usage.get(ctx.model?.provider ?? ""), profile: deps.activeProfile(), env: activeEnvName(process.env), jobs: runningJobs }),
+				...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: usage.get(ctx.model?.provider ?? ""), profile: deps.activeProfile(), env: activeEnvName(env), jobs: runningJobs }),
 				changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted },
 				review,
 			});

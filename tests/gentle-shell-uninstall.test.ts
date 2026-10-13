@@ -424,6 +424,18 @@ test("named envs are listed once as not touched and kept, even as the default or
 	} finally { w.cleanup(); }
 });
 
+test("a symlinked named envs root is still listed as not touched and kept", posixOnly, async () => {
+	const w = world();
+	try {
+		const real = join(w.root, "real-envs");
+		write(join(real, "work", ".gentle-shell-home"));
+		symlinkSync(real, join(w.home, ".gentle-shell", "envs"));
+		assert.equal(await w.uninstall(["--yes"]), 0);
+		assert.ok(w.out.join("\n").includes(`${join(w.home, ".gentle-shell", "envs")}  (your named envs)`));
+		assert.equal(existsSync(join(real, "work", ".gentle-shell-home")), true);
+	} finally { w.cleanup(); }
+});
+
 test("an isolated home inside the named envs is refused, never removed", async () => {
 	const w = world();
 	try {

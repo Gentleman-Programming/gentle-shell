@@ -47,7 +47,6 @@ test("guarded words inside data-command arguments are not guarded operations (#2
 	const config = { autonomousMode: false, guardedCommands: {} };
 	for (const command of [
 		"grep -n 'git push origin main' probe.mts",
-		"sed -i '' 's/\\[\"git push origin main\", false\\]/x/' probe.mts",
 		"grep -o '\"command\":\"[^\"]*git push[^\"]*\"' session.jsonl | sort | uniq -c | sort -rn | head -8",
 		"rg 'npm publish' docs",
 		"echo 'remember to git push later'",
@@ -70,6 +69,21 @@ test("guarded words inside data-command arguments are not guarded operations (#2
 		["cat <<'EOF' | bash\ngit push -f origin main\nEOF", "block"],
 		["git reset --hard", "block"],
 		["echo ok; git push --force origin main", "block"],
+		// Verifier counterexamples: every executor or unproven heredoc keeps the lexical guard.
+		["cat <<EOF; git push origin main\nhello\nEOF", "confirm"],
+		["cat <<EOF; chmod -R 777 /tmp/guard-target\nhello\nEOF", "block"],
+		["echo '<<true'\ngit push --force origin main\ntrue", "block"],
+		["printf '%s\\n' 'git push --force origin main' | xargs env", "block"],
+		["printf '%s\\n' 'git push origin main' | sudo -s", "confirm"],
+		["printf '%s\\n' 'git push origin main' | env -S 'sh -s'", "confirm"],
+		["printf '%s\\n' 'git push origin main' | exec -a cat sh", "confirm"],
+		["printf '%s\\n' 'git push origin main' | builtin source /dev/stdin", "confirm"],
+		["printf '%s\\n' 'git push origin main' | $'sh'", "confirm"],
+		["printf x | sed 's|.*|git push --force origin main|e'", "block"],
+		["printf x | sed '1e git push origin main'", "confirm"],
+		["echo 'git push origin main' | at now", "confirm"],
+		["echo 'git push origin main' > x.sh && ./x.sh", "confirm"],
+		["sed -i '' 's/a/git push/' file", "confirm"],
 	] as const) assert.equal(classifyGuardedCommand(command, config), expected, command);
 });
 

@@ -24,9 +24,9 @@ function blankHeredocs(command: string): string {
 }
 
 /** Keep quoted arguments intact so harmless prose is never treated as a command. */
-function tokenize(command: string): Token[] {
+function tokenize(command: string, blank = true): Token[] {
 	const tokens: Token[] = [];
-	command = blankHeredocs(command);
+	if (blank) command = blankHeredocs(command);
 	const pattern = /(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s;&|()'"\\])+|&&|\|\||[;&|()\n]/g;
 	for (const match of command.matchAll(pattern)) {
 		const raw = match[0];
@@ -73,19 +73,17 @@ function headCursor(segment: readonly Token[]): number {
 }
 
 // gentle-shell#2174: commands whose arguments are searched, printed or viewed
-// text, never executed. `sed` qualifies only without an `e` (execute) command
-// or flag. The list is an allowlist on purpose: an unknown head keeps the
-// lexical guard, so a missing entry costs a dialog, never a bypass.
+// text, never executed and never fed to an executor. `sed` is absent on
+// purpose: GNU sed executes scripts through `e` with any delimiter or address.
+// The exemption applies only when EVERY segment head is in DATA_COMMANDS or
+// INERT_COMMANDS, so an unknown consumer (`| at now`, `&& ./x.sh`) keeps the
+// lexical guard: a missing entry costs a dialog, never a bypass.
 const DATA_COMMANDS = new Set([
 	"grep", "egrep", "fgrep", "rg", "ag", "ack", "echo", "printf", "cat", "head", "tail", "less", "more",
-	"wc", "sort", "uniq", "cut", "tr", "jq", "diff", "ls", "file", "stat", "sed",
+	"wc", "sort", "uniq", "cut", "tr", "jq", "diff", "ls", "file", "stat",
 ]);
-// Any of these anywhere makes the whole command opaque: they can run text as code.
-const OPAQUE_HEADS = new Set([
-	"sh", "bash", "zsh", "dash", "ksh", "fish", "eval", "source", ".", "ssh", "su", "watch", "parallel", "find",
-	"python", "python3", "node", "perl", "ruby", "deno", "bun", "osascript", "awk", "gawk", "script",
-]);
-const sedExecutes = (args: readonly string[]) => args.some((arg) => /(?:^|[;\n{]\s*)e(?:\s|$)|\/[A-Za-z0-9]*e[A-Za-z0-9]*\s*(?:;|$)/.test(arg));
+const INERT_COMMANDS = new Set(["cd", "pwd", "true", "false", "test", "[", "mkdir", "touch"]);
+const HEREDOC_RE = /<<-?\s*(['"]?)([A-Za-z_]\w*)\1[^\n]*\n[\s\S]*?\n\2(?=\n|$)/g;
 
 /**
  * Byte ranges of the command that are plain arguments of a known data command
@@ -97,6 +95,11 @@ const sedExecutes = (args: readonly string[]) => args.some((arg) => /(?:^|[;\n{]
  */
 export function dataArgumentRanges(command: string): Array<readonly [number, number]> {
 	if (/\$\(|`|[<>]\(/.test(command)) return [];
+	// A heredoc counts only when its `<<` starts an unquoted token of the raw
+	// command; quoted text such as `echo '<<x'` must not blank following lines.
+	const rawStarts = new Set(tokenize(command, false).filter((token) => token.raw.startsWith("<<")).map((token) => token.index));
+	const heredocs = [...command.matchAll(HEREDOC_RE)];
+	if (heredocs.some((heredoc) => !rawStarts.has(heredoc.index))) return [];
 	const blanked = blankHeredocs(command);
 	const tokens = tokenize(command);
 	const covered = new Uint8Array(blanked.length);
@@ -110,19 +113,25 @@ export function dataArgumentRanges(command: string): Array<readonly [number, num
 		if (end < tokens.length && !tokens[end].operator) continue;
 		const segment = tokens.slice(start, end);
 		start = end + 1;
-		const cursor = headCursor(segment);
+		if (segment.length === 0) continue;
+		// Only plain assignments, optionally after a flagless `env`, may precede
+		// the head; every other wrapper or wrapper flag can change what runs.
+		let cursor = 0;
+		if (segment[0].value === "env") cursor++;
+		while (cursor < segment.length && /^[A-Za-z_][A-Za-z_0-9]*=/.test(segment[cursor].value)) cursor++;
 		const head = segment[cursor];
-		if (head === undefined) continue;
-		const name = executable(head.value);
-		if (OPAQUE_HEADS.has(name)) return [];
-		const args = segment.slice(cursor + 1).map((token) => token.value);
-		if (!DATA_COMMANDS.has(name) || (name === "sed" && sedExecutes(args))) continue;
+		if (head === undefined || head.value !== head.raw) return [];
+		const name = head.value;
+		if (INERT_COMMANDS.has(name)) continue;
+		if (!DATA_COMMANDS.has(name)) return [];
 		ranges.push([head.index + head.raw.length, tokens[end]?.index ?? command.length]);
 	}
 	// A heredoc body belongs to the segment of its `<<` header, which the
-	// header's trailing newline would otherwise split off.
-	for (const heredoc of command.matchAll(/<<-?\s*(['"]?)([A-Za-z_]\w*)\1[^\n]*\n[\s\S]*?\n\2(?=\n|$)/g)) {
-		if (ranges.some(([from, to]) => heredoc.index >= from && heredoc.index < to)) ranges.push([heredoc.index, heredoc.index + heredoc[0].length]);
+	// header's trailing newline would otherwise split off. Only the body is
+	// covered: the rest of the header line can hold further commands.
+	for (const heredoc of heredocs) {
+		const bodyStart = heredoc.index + heredoc[0].indexOf("\n") + 1;
+		if (ranges.some(([from, to]) => heredoc.index >= from && heredoc.index < to)) ranges.push([bodyStart, heredoc.index + heredoc[0].length]);
 	}
 	return ranges;
 }

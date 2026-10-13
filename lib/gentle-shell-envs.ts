@@ -113,6 +113,8 @@ export interface EnvSummary {
 	// Provider ids only: credential values never leave auth.json.
 	providers: string[];
 	provisioned: string;
+	// False until gentle-shell provisioned this home; its first launch does.
+	setUp?: boolean;
 	sessionCount: number;
 	lastSessionAt?: string;
 	base?: boolean;
@@ -152,6 +154,7 @@ export function summarizeEnv(input: EnvSummaryInput): EnvSummary {
 		packages: packageSources(input.settingsText),
 		providers: Object.keys(parseObject(input.authText) ?? {}).sort(),
 		provisioned,
+		setUp: p !== undefined,
 		sessionCount: input.sessionCount,
 		lastSessionAt: input.lastSessionAt,
 		...(input.base ? { base: true } : {}),

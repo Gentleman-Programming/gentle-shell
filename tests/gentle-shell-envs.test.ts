@@ -172,3 +172,8 @@ test("resolveHome names an explicit --home that is an env in the envs root", () 
 	const other = resolveHome({ args: parseLauncherArgs(["--home", "/elsewhere/work"]), env: {}, homedir: "/h", config: undefined });
 	assert.equal(other.env, undefined);
 });
+
+test("summarizeEnv reports whether the home was ever set up", () => {
+	assert.equal(summarizeEnv({ name: "x", dir: "/e/x", isDefault: false, sessionCount: 0 }).setUp, false);
+	assert.equal(summarizeEnv({ name: "x", dir: "/e/x", isDefault: false, sessionCount: 0, provisioned: { gentleAi: "1", at: "2026-01-01" } }).setUp, true);
+});

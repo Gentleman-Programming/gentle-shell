@@ -267,3 +267,13 @@ test("reselection never confuses the base home with an env of the same name", ()
 	assert.equal(initialEnvsState(envs, undefined, "base").selected, 1);
 	assert.equal(initialEnvsState(envs, undefined, { base: true }).selected, 0);
 });
+
+test("a home that was never set up says it is set up on first open, never just 'none'", () => {
+	const fresh = initialEnvsState([baseEntry({ provisioned: "not provisioned", setUp: false })]);
+	const text = renderEnvsScreen(fresh, 100, 24).map(stripAnsi).join("\n");
+	assert.match(text, /Setup +not set up yet/);
+	assert.match(text, /Packages +installed when you first open it/);
+	assert.doesNotMatch(text, /Packages +none/);
+	const ready = initialEnvsState([env("work", { setUp: true })]);
+	assert.match(renderEnvsScreen(ready, 100, 24).map(stripAnsi).join("\n"), /Packages +none/);
+});

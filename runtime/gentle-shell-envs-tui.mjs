@@ -258,10 +258,10 @@ function detailRows(env                        , inner        , paint       )   
 		...(env.base ? [{ text: "The install's own home, as before envs (--isolated).", style: paint.label }] : []),
 		...(env.isDefault ? [{ text: "★ Default: a plain gentle-shell opens it", style: paint.rose }] : []),
 		field("Path", env.dir),
-		field("Setup", env.provisioned),
+		field("Setup", env.setUp === false ? "not set up yet" : env.provisioned),
 		field("Sessions", sessions),
 		field("Sign-ins", env.providers.length > 0 ? env.providers.join(", ") : "none yet: /login inside the session"),
-		field("Packages", env.packages.length > 0 ? `${env.packages.length}` : "none"),
+		field("Packages", env.packages.length > 0 ? `${env.packages.length}` : env.setUp === false ? "installed when you first open it" : "none"),
 		...env.packages.map((source) => ({ text: `  · ${source}`, style: paint.muted })),
 	];
 }

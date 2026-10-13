@@ -119,6 +119,8 @@ export function removeEnvFromConfig(config           , aliases                  
 
 
 
+
+
 function parseObject(text                    )                                      {
 	if (text === undefined) return undefined;
 	try {
@@ -153,6 +155,7 @@ export function summarizeEnv(input                 )             {
 		packages: packageSources(input.settingsText),
 		providers: Object.keys(parseObject(input.authText) ?? {}).sort(),
 		provisioned,
+		setUp: p !== undefined,
 		sessionCount: input.sessionCount,
 		lastSessionAt: input.lastSessionAt,
 		...(input.base ? { base: true } : {}),

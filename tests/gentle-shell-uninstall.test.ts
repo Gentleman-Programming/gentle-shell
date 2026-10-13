@@ -408,6 +408,33 @@ test("custom --home homes and the user's Pi home are listed as not touched", asy
 	} finally { w.cleanup(); }
 });
 
+test("named envs are listed once as not touched and kept, even as the default or provisioned home", async () => {
+	const w = world();
+	try {
+		const envs = join(w.home, ".gentle-shell", "envs");
+		const work = join(envs, "work");
+		const personal = join(envs, "personal");
+		for (const dir of [work, personal]) write(join(dir, ".gentle-shell-home"));
+		write(w.paths.launcherConfig, JSON.stringify({ home: work, provisioned: { [personal]: { gentleAi: "4.0.0", at: "now" } } }));
+		assert.equal(await w.uninstall(["--yes"]), 0);
+		const plan = w.out.join("\n");
+		assert.ok(plan.includes(`${envs}  (your named envs)`), plan);
+		assert.doesNotMatch(plan, /envs[\\/]work +\(custom --home home\)/);
+		for (const dir of [work, personal]) assert.equal(existsSync(join(dir, ".gentle-shell-home")), true, dir);
+	} finally { w.cleanup(); }
+});
+
+test("an isolated home inside the named envs is refused, never removed", async () => {
+	const w = world();
+	try {
+		const work = join(w.home, ".gentle-shell", "envs", "work");
+		write(join(work, ".gentle-shell-home"));
+		write(join(work, "auth.json"), "{}");
+		await refused(w, { GENTLE_SHELL_HOME: work }, /your named envs/);
+		assert.equal(existsSync(join(work, "auth.json")), true);
+	} finally { w.cleanup(); }
+});
+
 test("tools the installer may have added are listed with how to remove them, never removed", async () => {
 	for (const platform of ["darwin", "win32"]) {
 		const w = world();

@@ -2,6 +2,9 @@ import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmdir
 import { createInterface } from "node:readline";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isolatedDir, launcherConfigPath, parseRawLauncherConfig, provisionedEntry, userPiHome } from "./gentle-shell-launcher.ts";
+import { envsRoot } from "./gentle-shell-envs.ts";
+
+const NAMED_ENVS_LABEL = "your named envs";
 
 // `gentle-shell self-uninstall`: removes what Gentle Shell itself created, then
 // the gentle-pi package with the package manager that owns it. Everything is
@@ -343,6 +346,14 @@ async function planSelfUninstall(input: SelfUninstallInput, configHome: string, 
 
 	const seen = new Set([comparable(isolatedReal, platform), comparable(canonical(piHome), platform)]);
 	plan.notTouched.push({ path: piHome, label: "your Pi home" });
+	// Named envs are user data: their root is listed once, never each env as a
+	// custom --home home, and the overlap check below protects all of them.
+	const namedEnvs = envsRoot(env, homedir);
+	const namedEnvsReal = inspect(namedEnvs, "dir") === "ok" ? canonical(namedEnvs) : undefined;
+	if (namedEnvsReal !== undefined) {
+		seen.add(comparable(namedEnvsReal, platform));
+		plan.notTouched.push({ path: namedEnvs, label: NAMED_ENVS_LABEL });
+	}
 	const customHomes = [typeof launcherConfig.home === "string" && !["link", "isolated", ""].includes(launcherConfig.home) ? launcherConfig.home : undefined];
 	const provisioned = launcherConfig.provisioned;
 	if (typeof provisioned === "object" && provisioned !== null && !Array.isArray(provisioned)) customHomes.push(...Object.keys(provisioned));
@@ -350,6 +361,7 @@ async function planSelfUninstall(input: SelfUninstallInput, configHome: string, 
 		if (home === undefined || !isAbsolute(home)) continue;
 		const key = comparable(canonical(home), platform);
 		if (seen.has(key)) continue;
+		if (namedEnvsReal !== undefined && within(namedEnvsReal, canonical(home), platform)) continue;
 		seen.add(key);
 		plan.notTouched.push({ path: home, label: "custom --home home" });
 	}
@@ -690,8 +702,13 @@ function planBundledSelfUninstall(input: BundledSelfUninstallInput): BundledPlan
 	if (windows) consider(join(root, BUNDLED_WINDOWS_MARKER.name), "the bundled install's folder marker", "file", plan.own);
 	consider(join(shellHome, "agent"), "your sign-ins, chats, settings and extensions", "dir", plan.shared);
 	consider(join(shellHome, "config.json"), "the launcher's settings", "file", plan.shared);
+	const namedEnvs = envsRoot(env, homedir);
+	const hasNamedEnvs = inspect(namedEnvs, "dir") === "ok";
 	const known = new Set([...BUNDLED_OWN.map((item) => item.name), ...(windows ? [BUNDLED_WINDOWS_MARKER.name] : []),
-		...(same(canonical(shellHome), real) ? ["agent", "config.json"] : [])]);
+		...(same(canonical(shellHome), real) ? ["agent", "config.json"] : []),
+		// Named envs are user data that may share the prefix folder: kept, and
+		// listed below instead of as an unknown entry.
+		...(hasNamedEnvs && same(canonical(dirname(namedEnvs)), real) ? [basename(namedEnvs)] : [])]);
 	for (const name of names) {
 		if (known.has(name)) continue;
 		foreign = true;
@@ -699,6 +716,7 @@ function planBundledSelfUninstall(input: BundledSelfUninstallInput): BundledPlan
 	}
 	plan.removeRoot = !foreign;
 
+	if (hasNamedEnvs) guards.push({ path: namedEnvs, label: NAMED_ENVS_LABEL, inside: true });
 	for (const removal of [...plan.own, ...plan.shared]) {
 		const reason = collision(canonical(removal.path), guards, platform);
 		if (reason) plan.refusals.push(`${removal.path} would be removed, but it ${reason}; refusing to remove anything.`);
@@ -706,6 +724,7 @@ function planBundledSelfUninstall(input: BundledSelfUninstallInput): BundledPlan
 
 	plan.notTouched.push({ path: piHome, label: "your Pi home" }, { path: join(homedir, ".pi", "gentle-ai"), label: "Gentle AI's configuration for Pi" },
 		{ path: join(homedir, ".gentle-ai"), label: "Gentle AI's own state" }, { path: join(homedir, ".engram"), label: "Engram's memory" });
+	if (hasNamedEnvs) plan.notTouched.push({ path: namedEnvs, label: NAMED_ENVS_LABEL });
 	if (env.GENTLE_SHELL_HOME && !same(canonical(env.GENTLE_SHELL_HOME), canonical(join(shellHome, "agent")))) {
 		plan.notTouched.push({ path: env.GENTLE_SHELL_HOME, label: "the Gentle Shell home GENTLE_SHELL_HOME names" });
 	}

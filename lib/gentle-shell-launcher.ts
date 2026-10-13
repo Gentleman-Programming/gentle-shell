@@ -1,4 +1,4 @@
-import { dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection, type ChildPackageInjection } from "./child-package-injection.ts";
 import { GENTLE_SHELL_CONFIG_HOME_ENV } from "./gentle-shell-bundled.ts";
 
@@ -220,7 +220,13 @@ export function isolatedDir(env: Record<string, string | undefined>, homedir: st
 // GENTLE_SHELL_CONFIG_HOME_ENV. `--link` and a custom `--home` keep the shared
 // ~/.pi/gentle-ai: undefined for them.
 export function standaloneConfigHome(home: ResolvedHome): string | undefined {
-	return home.mode === "isolated" ? join(dirname(resolvePath(home.dir)), "gentle-ai") : undefined;
+	if (home.mode !== "isolated") return undefined;
+	const dir = resolvePath(home.dir);
+	const parent = dirname(dir);
+	// Only inside a .gentle-shell folder is the sibling Gentle Shell's own: next
+	// to a custom GENTLE_SHELL_HOME (~/myagent) it would adopt ~/gentle-ai, which
+	// may be anyone's, so such homes keep the shared config home.
+	return basename(dir) === "agent" && basename(parent) === ".gentle-shell" ? join(parent, "gentle-ai") : undefined;
 }
 
 // The filesystem behind migrateStandaloneConfig; bin/gentle-shell.mjs wires the real one.
@@ -1322,7 +1328,8 @@ export function helpText(): string {
 		"Environment variables:",
 		"  GENTLE_SHELL_PI       Path to the pi executable to run.",
 		"  GENTLE_SHELL_HOME     Directory for the isolated home (default: ~/.gentle-shell/agent);",
-		"                        its settings live in the gentle-ai folder next to it.",
+		"                        inside a .gentle-shell folder, its settings live in the gentle-ai",
+		"                        folder next to it; elsewhere they stay in ~/.pi/gentle-ai.",
 		"  GENTLE_PI_CONFIG_HOME Gentle Shell settings folder for every home, overriding the above.",
 		"  PI_CODING_AGENT_DIR   Directory for the --link home, shared with pi itself.",
 		"",

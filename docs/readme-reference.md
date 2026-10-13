@@ -308,7 +308,7 @@ gentle-shell self-uninstall [--dry-run] [--yes] [--include-shared]
 | Flag | Effect |
 | --- | --- |
 | `--link` | Home is your own pi home: `GENTLE_SHELL_USER_PI_HOME` when a Gentle Shell session recorded it (so `--link` run from inside an isolated session reaches your original pi, not the isolated home), otherwise `PI_CODING_AGENT_DIR` or `~/.pi/agent`. Reuses your existing pi sign-ins, models, and chats; never writes to its `settings.json`. |
-| `--isolated` | Home is `GENTLE_SHELL_HOME` or `~/.gentle-shell/agent`, with its own settings in the `gentle-ai` folder next to it ([config home](#config-home)). No credential seeding. Default when nothing else is configured. |
+| `--isolated` | Home is `GENTLE_SHELL_HOME` or `~/.gentle-shell/agent`, with its own settings in `~/.gentle-shell/gentle-ai` ([config home](#config-home)); a custom `GENTLE_SHELL_HOME` outside a `.gentle-shell` folder keeps `~/.pi/gentle-ai`. No credential seeding. Default when nothing else is configured. |
 | `--home <path>` | Home is the given directory. |
 | `--package-root <dir>` | Force this directory as the gentle-pi package to load, taking over from any conflicting package the target `settings.json` already declares (see "Loading the package" below). |
 | `--help`, `-h` | Print usage (flags, commands, env vars) and exit 0. |
@@ -325,11 +325,13 @@ same rule, in this order:
 
 1. A bundled install: `<prefix>/config/gentle-ai`.
 2. `GENTLE_PI_CONFIG_HOME`, when set and not empty.
-3. The isolated home (`--isolated`, the default): the `gentle-ai` folder next to
-   it, `~/.gentle-shell/gentle-ai` (or `<parent of GENTLE_SHELL_HOME>/gentle-ai`).
-   The launcher tells Pi through `GENTLE_SHELL_CONFIG_HOME`.
-4. Otherwise `~/.pi/gentle-ai`: `--link`, a custom `--home <path>`, and
-   gentle-pi installed inside Pi (Path B).
+3. The isolated home (`--isolated`, the default) at `<dir>/.gentle-shell/agent`:
+   the `gentle-ai` folder next to it, `~/.gentle-shell/gentle-ai` by default. The
+   launcher tells Pi through `GENTLE_SHELL_CONFIG_HOME`.
+4. Otherwise `~/.pi/gentle-ai`: `--link`, a custom `--home <path>`, a custom
+   `GENTLE_SHELL_HOME` outside a `.gentle-shell` folder (its parent may be any
+   folder, such as your home, so Gentle Shell never claims a `gentle-ai` folder
+   there), and gentle-pi installed inside Pi (Path B).
 
 So a standalone install and a Pi install with gentle-pi no longer share one
 store. Wherever this document names `~/.pi/gentle-ai` for a user setting, the

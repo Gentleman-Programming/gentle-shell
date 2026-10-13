@@ -102,8 +102,12 @@ test("the launcher gives Pi the marker only in its isolated home", () => {
 	const isolatedLaunch = launch(isolated().home);
 	assert.equal(isolatedLaunch.env[MARKER], "/os-home/.gentle-shell/gentle-ai");
 	assert.equal(isolatedLaunch.env.GENTLE_PI_CONFIG_HOME, undefined, "GENTLE_PI_CONFIG_HOME is never exported to Pi");
-	assert.equal(launch(isolated("/custom/shell/agent").home).env[MARKER], "/custom/shell/gentle-ai", "GENTLE_SHELL_HOME's sibling");
 	assert.equal(standaloneConfigHome(isolated().home), "/os-home/.gentle-shell/gentle-ai");
+	// A custom GENTLE_SHELL_HOME's parent may be anyone's folder (~/myagent ->
+	// ~/gentle-ai), so only a .gentle-shell/agent home gets its own config folder.
+	assert.equal(launch(isolated("/custom/shell/agent").home).env[MARKER], undefined, "no marker beside a custom GENTLE_SHELL_HOME");
+	assert.equal(standaloneConfigHome(isolated("/os-home/myagent").home), undefined, "never the generic ~/gentle-ai");
+	assert.equal(standaloneConfigHome(isolated("/data/.gentle-shell/agent").home), "/data/.gentle-shell/gentle-ai");
 });
 
 test("--link, a custom --home and a bundled launch keep today's config home and drop an inherited marker", () => {

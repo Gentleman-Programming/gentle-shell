@@ -171,10 +171,11 @@ test("envs and details render as rounded Gentle cards with the rose title glyph"
 	assert.ok(lines.some((line) => /^╰─+╯/.test(line)));
 });
 
-test("the selected env is marked with the Gentle chevron and the default with a star", () => {
+test("the selected env is marked with the Gentle chevron and the default like /gentle:profiles markers", () => {
 	const text = renderEnvsScreen(sample(), 100, 24).map(stripAnsi).join("\n");
-	assert.match(text, /│ ❯ ★ work/);
-	assert.match(text, /│ {5}personal/);
+	assert.match(text, /│ ❯ work \(default\)/);
+	assert.doesNotMatch(text, /★/, "the default reads like /gentle:profiles markers, not a star");
+	assert.match(text, /│ {3}personal/);
 });
 
 test("color uses the Gentle rose and never reverse video; monochrome emits no truecolor", () => {
@@ -256,7 +257,7 @@ test("an env may be named base: the base home never takes part in name checks", 
 test("the base home renders first with its own marker and card, starred when default", () => {
 	const s0 = initialEnvsState([baseEntry({ isDefault: true }), env("work")]);
 	const text = renderEnvsScreen(s0, 100, 24).map(stripAnsi).join("\n");
-	assert.match(text, /│ ❯ ★ Gentle Shell base/);
+	assert.match(text, /│ ❯ Gentle Shell base \(default\)/);
 	assert.doesNotMatch(text, /◆/, "no marker that would need a legend");
 	assert.match(text, /╭─ ✿ Base home ─+╮/);
 	assert.match(text, /The install's own home/);

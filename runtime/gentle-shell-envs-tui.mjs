@@ -197,7 +197,7 @@ function painter(color         )        {
 }
 
 // Visible width: the renderer only emits single-cell characters (ASCII,
-// box drawing, braille, ✿ ★ ❯ ·) outside of its own SGR sequences.
+// box drawing, braille, ✿ ❯ ·) outside of its own SGR sequences.
 function visible(text        )         {
 	return [...text.replace(/\x1b\[[0-9;]*m/g, "")].length;
 }
@@ -256,7 +256,7 @@ function detailRows(env                        , inner        , paint       )   
 	};
 	return [
 		...(env.base ? [{ text: "The install's own home, as before envs (--isolated).", style: paint.label }] : []),
-		...(env.isDefault ? [{ text: "★ Default: a plain gentle-shell opens it", style: paint.rose }] : []),
+		...(env.isDefault ? [{ text: "Default: a plain gentle-shell opens it", style: paint.rose }] : []),
 		field("Path", env.dir),
 		field("Setup", env.setUp === false ? "not set up yet" : env.provisioned),
 		field("Sessions", sessions),
@@ -327,7 +327,9 @@ export function renderEnvsScreen(state           , width        , height        
 	const lead = " ".repeat(Math.floor((w - blockWidth) / 2));
 	const selectedEnv = state.envs[state.selected];
 	const sideBySide = blockWidth >= 56;
-	const listWidth = sideBySide ? Math.min(32, Math.max(20, Math.floor(blockWidth * 0.3))) : blockWidth;
+	// Wide enough for the longest entry (marker and `(default)` included), within bounds.
+	const longest = Math.max(0, ...state.envs.map((env) => [...(env.base ? `${BRAND_NAME} base` : env.name)].length + (env.isDefault ? " (default)".length : 0)));
+	const listWidth = sideBySide ? Math.min(Math.max(20, Math.floor(blockWidth * 0.3), longest + 6), 40, blockWidth - 30) : blockWidth;
 	const detailWidth = blockWidth - listWidth - 1;
 	const details = detailRows(selectedEnv, Math.max(1, detailWidth - 4), paint);
 	const contentRows = Math.max(state.envs.length || 1, sideBySide ? details.length : 0) + 2;
@@ -340,7 +342,8 @@ export function renderEnvsScreen(state           , width        , height        
 		const offset = Math.max(0, Math.min(state.selected - visibleRows + 1, state.envs.length - visibleRows));
 		const listRows            = state.envs.slice(offset, offset + visibleRows).map((env, index) => {
 			const selected = index + offset === state.selected;
-			const text = `${selected ? "❯" : " "} ${env.isDefault ? "★" : " "} ${env.base ? `${BRAND_NAME} base` : env.name}`;
+			// The default reads like the /gentle:profiles markers: `name (default)`.
+			const text = `${selected ? "❯" : " "} ${env.base ? `${BRAND_NAME} base` : env.name}${env.isDefault ? " (default)" : ""}`;
 			return { text, style: selected ? (fitted        ) => paint.rose(paint.bold(fitted)) : undefined };
 		});
 		if (state.envs.length === 0) listRows.push({ text: "  (none)", style: paint.muted });
